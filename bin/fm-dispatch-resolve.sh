@@ -3,11 +3,10 @@
 # profile from a task brief with typesafe.ai's System One model (Jev), opt-in.
 #
 # Usage:
-#   fm-dispatch-resolve.sh <brief-file> [--summary <text>] [--project <name>]
+#   fm-dispatch-resolve.sh <brief-file> --summary <text>
 #
-#   --summary <text>  the classification text to send; without it, the text
-#                     after the brief's first "Dispatch summary: " line.
-#   --project <name>  accepted for compatibility; never sent.
+#   --summary <text>  the generic classification text firstmate writes; the
+#                     only summary source.
 #
 # Opt-in gate: TYPESAFE_API_KEY non-empty in this process environment, else a
 #   TYPESAFE_API_KEY= line in $FM_HOME/.env read with fmx_env_get, the same
@@ -19,9 +18,9 @@
 #
 # What leaves the machine: only the allow-listed state {task: {kind, mode,
 #   summary}} that the STATE step below builds from the brief's delivery-contract
-#   line and the redacted --summary or "Dispatch summary:" text; never any other
-#   brief byte or the project name. No summary left after redaction means the
-#   non-clear reason "no dispatch summary to match" with no network call.
+#   line and the redacted --summary text; never any other brief byte. No
+#   summary left after redaction means the non-clear reason "no dispatch
+#   summary to match" with no network call.
 #   docs/configuration.md "Typed dispatch resolution" owns the allow-list.
 #
 # What it does when on with at least one rule and a summary: one POST to
@@ -47,7 +46,7 @@
 #   dispatch-resolve:
 #     status: clear | ambiguous | escalate | error
 #     model/latency_ms/tokens, rule (when excerpt) and confidence, probabilities
-#     sent: kind=.. mode=.. summary=<the exact redacted summary sent>
+#     sent: kind=.. mode=.. summary=<the exact redacted summary sent>   (every outcome after the request)
 #     reason: <why the status is not clear>
 #     candidate: <harness>:<model> provider=.. scope=.. remaining=..% spendPriority=.. runway=.. -> eligible | eligible, unranked: <reason> | not eligible: <reason>
 #     profile: --harness <h> [--model <m>] [--effort <e>]     (status clear only)
@@ -115,7 +114,6 @@ BRIEF='' SUMMARY='' RULES_PATH="$CONFIG/crew-dispatch.json" RULES=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --summary) [ $# -ge 2 ] || die "--summary needs a value"; SUMMARY=$2; shift 2 ;;
-    --project) [ $# -ge 2 ] || die "--project needs a value"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) [ -z "$BRIEF" ] || die "one brief file only"; BRIEF=$1; shift ;;
@@ -228,11 +226,14 @@ done < <(jq -r '
   | map(.harness) | unique | .[]' "$RULES")
 
 RULE_COUNT=$(jq -r '(.rules // []) | length' "$RULES")
+SENT_LINE=''
 
 emit_error() {
   local reason=$1
   echo "dispatch-resolve: error ($reason)" >&2
-  printf 'dispatch-resolve:\n  status: error\n  reason: %s\n' "$reason"
+  printf 'dispatch-resolve:\n  status: error\n'
+  [ -z "$SENT_LINE" ] || printf '%s\n' "$SENT_LINE"
+  printf '  reason: %s\n' "$reason"
   exit 0
 }
 
@@ -268,7 +269,7 @@ STATE=$(jq -n --rawfile brief "$BRIEF" --arg summary "$SUMMARY" --argjson max "$
            elif any($lines[]; startswith("This is a SCOUT task")) then "scout"
            else null end),
     mode: (if (["no-mistakes", "direct-PR", "local-only"] | index($mode_line)) != null then $mode_line else null end),
-    summary: ((if $summary != "" then $summary else first_after("Dispatch summary:") // "" end) | redact_summary)
+    summary: ($summary | redact_summary)
   }') || die "could not read brief file: $BRIEF"
 [ -n "$(jq -r '.summary' <<<"$STATE")" ] || no_summary
 
@@ -293,6 +294,7 @@ command -v curl >/dev/null 2>&1 || emit_error "curl not installed"
       }
     }')
   T0=$(fm_timing_now_ms)
+  SENT_LINE=$(jq -r '"  sent: kind=\(.kind // "-") mode=\(.mode // "-") summary=\(.summary)"' <<<"$STATE") || emit_error "output rendering failed"
   HTTP=$(printf '%s' "$REQUEST" | curl -sS --max-time "$TS_TIMEOUT" -o "$RESP_FILE" -w '%{http_code}' \
     -X POST "$TS_BASE/v1/systemone" -H 'Content-Type: application/json' \
     -H @/dev/fd/3 3< <(printf 'Authorization: Bearer %s\n' "$TYPESAFE_API_KEY_PRIVATE") \
@@ -321,7 +323,7 @@ quota-axi --json > "$QUOTA" 2>/dev/null || emit_error "quota-axi --json failed"
 fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
 
 # ---- resolution: declared gates + quota evidence + argmax, all in jq ------------
-RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" --argjson task "$STATE" \
+RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" \
   --slurpfile resp "$RESP_FILE" --slurpfile rules "$RULES" --slurpfile quota "$QUOTA" "$FM_QUOTA_ROW_JQ"'
   ($resp[0]) as $r | ($rules[0]) as $cfg | ($quota[0]) as $q | ($r.answers.rule) as $a |
   def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
@@ -416,8 +418,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
     model: $r.model, latency_ms: $lat, tokens: ($r.usage // null),
     rule: $choice,
     rule_when: (if $rule == null then $none_criterion else $rule.when end | .[0:60]),
-    confidence: $a.confidence, probabilities: $a.probabilities,
-    sent: $task
+    confidence: $a.confidence, probabilities: $a.probabilities
   } as $ev |
   if $sel.invalid then $ev + {status: "error", reason: $sel.invalid}
   elif $a.confidence < ($floor | tonumber) then
@@ -442,7 +443,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
     end
   end') || emit_error "resolution failed"
 
-TEXT=$(jq -r '
+TEXT=$(jq -r --arg sent "$SENT_LINE" '
   def flat: tostring | gsub("[\t\r\n]"; " ");
   def show($value): ($value // "-") | flat;
   def shell_arg: flat | @sh;
@@ -451,7 +452,7 @@ TEXT=$(jq -r '
   "  model: \(show(.model))   latency_ms: \(show(.latency_ms))   tokens: \(show(.tokens.input_tokens))/\(show(.tokens.output_tokens))",
   "  rule: \(.rule | flat) (\(.rule_when | flat))   confidence: \(.confidence | flat)",
   "  probabilities: \([.probabilities | to_entries[] | "\(.key | flat)=\(.value | flat)"] | join(" "))",
-  "  sent: kind=\(show(.sent.kind)) mode=\(show(.sent.mode)) summary=\(.sent.summary | flat)",
+  $sent,
   (if .reason then "  reason: \(.reason | flat)" else empty end),
   (if .note then "  note: \(.note | flat)" else empty end),
   (if .unranked_note then "  note: \(.unranked_note | flat)" else empty end),

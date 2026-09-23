@@ -640,7 +640,7 @@ This section is the single owner of the tool's operator contract; the script hea
 Rules come only from the effective home's `config/crew-dispatch.json`; `FM_CONFIG_OVERRIDE` selects the config directory for tests and specialized setup like the other scripts.
 
 ```sh
-bin/fm-dispatch-resolve.sh data/<id>/brief.md        # TOON block on stdout
+bin/fm-dispatch-resolve.sh data/<id>/brief.md --summary "<generic nature of the work>"        # TOON block on stdout
 ```
 
 Firstmate invokes the resolve path directly after writing the brief, without a preflight; the absent-key off line is handled exactly like every other non-clear outcome.
@@ -651,14 +651,13 @@ The request state is exactly this allow-list, and nothing else from the brief, t
 | --- | --- | --- |
 | `kind` | the brief's `Delivery contract: mode=` line, else its `This is a SCOUT task` line | `ship`, `scout`, or null |
 | `mode` | that delivery-contract line | `no-mistakes`, `direct-PR`, `local-only`, or null for anything else |
-| `summary` | the `--summary` text, else the text after the brief's first line beginning `Dispatch summary:` | one redacted line of at most 160 characters |
+| `summary` | the `--summary` text firstmate writes, the only summary source | one redacted line of at most 160 characters |
 
-The summary is the classification text, so write it as a short, generic description of the kind of work, such as "A simple bug fix with a stated root cause", never project, customer, design, or CAD detail.
+The summary describes only the nature of the work, such as "bounded UI polish in an existing panel" or "difficult diagnosis across components", and never names a project, customer, product, part, person, or file.
 Before sending, the tool replaces every code span and every token that looks like a URL or domain, email, file path, file name or other dotted name, `KEY=value` assignment, known secret prefix, or long or digit-bearing opaque identifier with `[redacted]`, collapses whitespace and control characters to single spaces, and truncates at a word boundary.
-The `--project` flag is accepted for compatibility and never sent.
 When no summary is given, or nothing but redactions remains, the result is the non-clear reason `no dispatch summary to match` with no model or quota request.
 Each rule's `when` text is also sent verbatim as a Choice option, so keep private detail out of those texts too.
-The printed `sent:` line shows exactly the kind, mode, and summary that left the machine.
+The printed `sent:` line shows exactly the kind, mode, and summary that left the machine, on every outcome once the request has been sent, including `error`.
 The tool asks one Choice question whose options are every rule's `when` plus the fixed neutral option for no matching rule; the model never sees quota, catalogs, `why`, `use`, or approvals.
 An absent rules file, a default-only file, or `rules: []` returns the non-clear reason `no rules to match` without a model or quota request, leaving firstmate's existing routing in control; an existing but unreadable or malformed rules file, including a broken symlink, remains an actionable exit 2 configuration error.
 Everything after the answer runs in code: the confidence floor, the matched rule's `approval` and `floor`, each candidate's `provider` and `floor`, every applicable account-wide and model/product row from one `quota-axi --json` snapshot, and the numeric `spendPriority` argmax over candidates using each candidate's limiting row.
