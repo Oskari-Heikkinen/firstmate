@@ -13,11 +13,18 @@ metadata:
 # quota-array-dispatch
 
 This skill is the single owner of the completion-aware profile-array selection procedure.
-`AGENTS.md` section 4 owns the always-loaded intake boundary, load trigger, malformed-config refusal, every-candidate accounting, and strongest-reasoning/tie safety rules.
+`AGENTS.md` section 4 owns the always-loaded routing precedence, load trigger, and typed-resolver handoff.
 `harness-adapters` owns harness verification, model/provider discovery, and effort fallback.
 `quota-axi` remains data-only: it publishes `spendPriority` as a comparable scalar and never recommends, selects, ranks, or infers a route.
 Do not add a daemon, opaque composite score, routing wrapper, hard-coded model-specific policy, or producer-side route recommendation.
 The [worker helper](../../../bin/fm-quota-choose.sh) and [typed resolver](../../../docs/configuration.md#typed-dispatch-resolution-env-typesafe_api_key) own their deterministic mapping boundaries.
+
+## Intake safety rules
+
+Firstmate alone resolves a matched profile array: begin with `quota-axi`'s default TOON at that intake, using the narrow TOON-then-`--json` fallback below only for genuine ambiguity, evaluate every configured candidate against that current output, and choose with inspectable `spendPriority` as the one quota-perspective ranker after the three gates.
+Never omit a candidate, guess, fall back silently, or call the result quota-informed without the every-candidate accounting below.
+Never infer a credential store, provider family, or quota mapping from a harness, model, or source name; missing quota or authentication evidence is disclosed uncertainty, never a credential or login escalation.
+Preserve malformed profile configuration as an actionable error rather than selecting around it.
 
 ## Worker-side quota helper
 
