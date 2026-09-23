@@ -921,7 +921,16 @@ EOF
     assert_grep "git push origin HEAD:<default-branch>" "$brief" "direct-push brief lacks the fast-forward landing push"
     assert_grep "Never add \`--force\`" "$brief" "direct-push brief does not forbid a force push"
     assert_grep "Never force-push anything" "$brief" "direct-push rule one does not forbid a force push"
-    assert_grep "After 3 refused pushes" "$brief" "direct-push brief does not bound the push race"
+    assert_grep "after 5 refused pushes" "$brief" "direct-push brief does not bound the push race at 5"
+    assert_grep "governed by this bound instead of the general rule to stop after hitting the same obstacle twice" "$brief" \
+      "direct-push push-race bound does not supersede the same-obstacle rule"
+    assert_grep "sed 's#^origin/##'" "$brief" "direct-push brief does not strip origin/ from the default-branch name"
+    assert_grep "without re-running step 1; only the landing loop rebases" "$brief" \
+      "direct-push ready refresh does not skip the rebase"
+    assert_grep "wait for the default branch's checks on your pushed commit in one bounded blocking wait" "$brief" \
+      "direct-push brief does not wait for the default branch's checks after landing"
+    assert_grep "Only once the default branch's checks on your pushed commit are green" "$brief" \
+      "direct-push landed done is not held for green default-branch checks"
     assert_grep "every matrix leg" "$brief" "direct-push brief does not require CI-equivalent local tests"
     assert_grep "git fetch origin" "$brief" "direct-push setup does not start from the latest origin default branch"
     assert_no_grep "no-mistakes axi respond" "$brief" "direct-push brief carries the pipeline gate contract"

@@ -362,7 +362,8 @@ The path's worker, automated gates, and captain approval remain authoritative:
 Delivery mode and `yolo` are orthogonal.
 `yolo` governs merge authority only: with it off, the captain approves every PR merge, direct-push landing, and local-only landing; with it on, firstmate merges green, in-scope work itself and a direct-push worker lands its own tested work.
 Never merge a red PR under either setting unless a current explicit captain instruction names the single GitHub check waived through `fm-pr-merge.sh --allow-red`; that attended-only waiver still requires every other check green.
-A direct push is a landing too: it never lands a head whose full local suite did not pass on the current default branch, and a default branch that goes red after one is fixed forward or reverted at once.
+A direct push is a landing too: it never lands a head whose full local suite did not pass on the current default branch.
+Its worker then waits once, bounded, for the default branch's checks on its pushed commit, fixes forward or reverts at once through the same landing loop if they go red, and reports landed only once they are green, or blocked naming the red check.
 Destructive, irreversible, and security-sensitive merges still escalate.
 Without a current explicit captain instruction that states the concrete merge, the green default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Load `ask-user-authority` before deciding any ask-user finding; the implementation worker never answers its own finding.
@@ -398,7 +399,7 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 ### PR ready, landing, and teardown
 
 For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done [at=<epoch>]: PR <url> checks green` after CI is green, while `direct-PR` reports `done [at=<epoch>]: PR <url>` after opening the PR, each only for a non-draft PR; a lane that deliberately holds a draft declares a wait instead, and `bin/fm-pr-check.sh` refuses to arm merge monitoring on a draft.
-A `direct-push` task has no PR: it reports `done [at=<epoch>]: ready in branch fm/<id> ...` when stopping at ready and `done [at=<epoch>]: landed <sha> on <default-branch>` once pushed, `bin/fm-crew-state.sh` says whether that head is on origin's default branch, and no merge poll is armed.
+A `direct-push` task has no PR: it reports `done [at=<epoch>]: ready in branch fm/<id> ...` when stopping at ready and `done [at=<epoch>]: landed <sha> on <default-branch>` once pushed and the default branch's checks on it are green, `bin/fm-crew-state.sh` says whether that head is on origin's default branch, and no merge poll is armed.
 Run `bin/fm-pr-check.sh <id> <PR url>` with the URL copied from that ready signal or the resolved checks-green `fm-crew-state.sh` line - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
 `bin/fm-dod-lib.sh` owns the named-head gate on that ready signal: a ship `done:` whose named head exists only in the worker's disposable copy is not ready (`bin/fm-crew-state.sh` reports blocked, `bin/fm-pr-check.sh` refuses to register, and a secondmate does not publish that done upstream).
 That blocked reading is the gate working, not a stuck worker, so steer the worker on the commit the refusal names rather than waiting.

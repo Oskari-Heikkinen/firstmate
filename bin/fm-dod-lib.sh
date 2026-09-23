@@ -298,7 +298,7 @@ EOF
 # Definition of done
 Delivery contract: mode=direct-push
 This task ships **direct-push**: no PR and no pipeline; your tested commit lands on the project's default branch as a plain fast-forward push.
-Below, \`<default-branch>\` is origin's default branch; \`git symbolic-ref --short refs/remotes/origin/HEAD\` names it, after \`git remote set-head origin --auto\` if that ref is missing.
+Below, \`<default-branch>\` is origin's bare default-branch name such as \`main\`, without an \`origin/\` prefix: \`git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##'\` prints it, after \`git remote set-head origin --auto\` if that ref is missing.
 The task is complete only when committed on your branch \`fm/$id\`.
 Before landing, discover what the project's CI runs - its workflow files such as \`.github/workflows/\`, plus its \`AGENTS.md\` or README - and run that same full suite locally, as thorough as CI: every job and every matrix leg (for example each language version CI tests), including its lint and build steps.
 If a CI leg cannot run on this machine, append \`blocked [at=<epoch>]: {the leg and why}\` and stop rather than landing without it.
@@ -308,16 +308,19 @@ Landing loop:
 1. \`git fetch origin\`, then \`git rebase origin/<default-branch>\`, resolving any conflict in keeping with the task.
 2. Run the full local suite on the rebased head. If anything fails, fix it, commit, and go back to step 1.
 3. \`git push origin HEAD:<default-branch>\` - a plain push. Never add \`--force\`, \`--force-with-lease\`, or a \`+\` refspec.
-4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1. After 3 refused pushes, append \`blocked [at=<epoch>]: lost the push race 3 times; {what keeps landing}\` and stop instead of looping.
+4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1.
+   Lost push races are governed by this bound instead of the general rule to stop after hitting the same obstacle twice: after 5 refused pushes, append \`blocked [at=<epoch>]: lost the push race 5 times; {what keeps landing}\` and stop instead of looping.
+5. After the push succeeds, wait for the default branch's checks on your pushed commit in one bounded blocking wait of at most 30 minutes, for example \`gh run list --commit <sha>\` then \`timeout 1800 gh run watch <run-id> --exit-status\` for each run; if the project runs no checks on the default branch, there is nothing to wait for.
+6. If a check goes red because of your change, fix it forward or revert your commit at once, through this same landing loop from step 1, and wait again on the new pushed commit.
+   If you cannot get those checks green, or the wait's bound elapses first, append \`blocked [at=<epoch>]: {the red or pending check} on {default-branch} at {sha}\` and stop.
 Never push to the default branch a head whose full suite did not pass on top of the current \`origin/<default-branch>\`.
-After the push succeeds, append \`done [at=<epoch>]: landed {sha} on {default-branch}\` naming the pushed commit, and stop.
+Only once the default branch's checks on your pushed commit are green, append \`done [at=<epoch>]: landed {sha} on {default-branch}\` naming that commit, and stop.
 Once landed, delete the task branch from origin (\`git push origin --delete fm/$id\`) if you pushed one for ready.
 
 Stopping at ready: run steps 1 and 2, push the tested head to your own task branch with \`git push origin HEAD:refs/heads/fm/$id\`, append \`done [at=<epoch>]: ready in branch fm/$id tested on {default-branch} at {sha}\`, and stop.
-To refresh that ready branch before landing, add commits and push them the same plain way; never force it, since the landing loop rebases onto the current default branch anyway.
+To refresh that already-pushed ready branch, add commits, run the full local suite on the new head, and push it the same plain way without re-running step 1; only the landing loop rebases, so never rebase or force the ready branch.
 When firstmate relays landing approval, run the landing loop and report the landed \`done:\` the same way.
 Either \`done:\` is accepted only when this copy's HEAD - your latest commit - is on origin: the default branch once landed, your task branch when ready. The check tests that commit, not merely that a branch moved.
-After a landing, the project's own checks run on the default branch; if firstmate relays that they went red, fix it forward at once or revert your commit, through the same landing loop.
 Do NOT run /no-mistakes and do NOT open a PR.
 EOF
       ;;
