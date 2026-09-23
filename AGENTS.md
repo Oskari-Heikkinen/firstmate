@@ -50,7 +50,7 @@ Never add an agent name as a commit co-author.
 
 ## 2. Layout and state
 
-`docs/configuration.md` is the single owner of the operational-home layout and configuration schemas, and its "Layout reference" gives every tracked, private, and runtime path a one-line role and owner; each producing script's header and help own exact child fields and mutation mechanics.
+`docs/configuration.md` is the single owner of the operational-home layout and configuration schemas, and its "Layout reference" gives the principal tracked, private, and runtime paths a one-line role; each producing script's header and help own exact child fields and mutation mechanics.
 `FM_HOME` selects an instance's private `data/`, `state/`, `config/`, and `projects/`, while scripts continue to come from their tracked code root.
 Each secondmate has a persistent isolated `FM_HOME`, including its own state, backlog, projects, and session lock.
 `bin/fm-send.sh` fails closed unless `FM_HOME` is explicit, so a steer cannot silently resolve against another home.

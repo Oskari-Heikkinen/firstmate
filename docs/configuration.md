@@ -19,7 +19,7 @@ Untracked files and directories whose names begin with `scratchpad` are also git
 `bin/fm-contributions.sh` owns durable published-contribution records under each task, observation bounds, equivalent triage-label configuration, and the authenticated contribution check.
 The producing PR and Relay helpers own the fields they append, [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns status-event vocabulary, optional emission-time syntax, and legacy unknown-time handling, and `bin/fm-crew-state.sh` owns current-state reconciliation.
 The [`bin/fm-fleet-snapshot.sh` header](../bin/fm-fleet-snapshot.sh) owns the snapshot's event-time and age fields, including secondmate parent-event projections.
-The layout reference below gives each path a one-line role and names its owner; wake, watcher, away-mode, and Relay-specific state mechanics remain with those named scripts and reference sections.
+The layout reference below gives each listed path a one-line role and, where one exists, its owning script; wake, watcher, away-mode, and Relay-specific state mechanics remain with those named scripts and reference sections.
 
 `bin/fm-session-start.sh`'s header is the single owner of session-start ordering, composed commands, digest contents, and the digest's startup mechanism.
 `bin/fm-startup-network.sh`'s header owns the deferred startup stage that keeps every external-network call and the potentially slow inactive-outcome scan off that digest's blocking path, including its state files and the safety argument for running them later.
