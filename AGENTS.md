@@ -363,7 +363,8 @@ Delivery mode and `yolo` are orthogonal.
 `yolo` governs merge authority only: with it off, the captain approves every PR merge, direct-push landing, and local-only landing; with it on, firstmate merges green, in-scope work itself and a direct-push worker lands its own tested work.
 Never merge a red PR under either setting unless a current explicit captain instruction names the single GitHub check waived through `fm-pr-merge.sh --allow-red`; that attended-only waiver still requires every other check green.
 A direct push is a landing too: it never lands a head whose full local suite did not pass on the current default branch.
-Its worker then waits once, bounded, for the default branch's checks on its pushed commit, fixes forward or reverts at once through the same landing loop if they go red, and reports landed only once they are green, or blocked naming the red check.
+Its worker then waits once, bounded, for the default branch's checks on its pushed commit when a workflow triggers on that push, fixes forward or reverts at once through the same landing loop if they go red, and reports landed only once they are green on its change or a fix-forward of it, or blocked naming the red check.
+A revert is reported as `blocked [at=<epoch>]: reverted <sha> on <default-branch> because <red check>`, never as landed.
 Destructive, irreversible, and security-sensitive merges still escalate.
 Without a current explicit captain instruction that states the concrete merge, the green default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Load `ask-user-authority` before deciding any ask-user finding; the implementation worker never answers its own finding.

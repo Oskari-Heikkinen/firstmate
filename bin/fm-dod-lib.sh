@@ -310,11 +310,13 @@ Landing loop:
 3. \`git push origin HEAD:<default-branch>\` - a plain push. Never add \`--force\`, \`--force-with-lease\`, or a \`+\` refspec.
 4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1.
    Lost push races are governed by this bound instead of the general rule to stop after hitting the same obstacle twice: after 5 refused pushes, append \`blocked [at=<epoch>]: lost the push race 5 times; {what keeps landing}\` and stop instead of looping.
-5. After the push succeeds, wait for the default branch's checks on your pushed commit in one bounded blocking wait of at most 30 minutes, for example \`gh run list --commit <sha>\` then \`timeout 1800 gh run watch <run-id> --exit-status\` for each run; if the project runs no checks on the default branch, there is nothing to wait for.
-6. If a check goes red because of your change, fix it forward or revert your commit at once, through this same landing loop from step 1, and wait again on the new pushed commit.
+5. After the push succeeds, decide from the push triggers in the workflow files you already inspected whether a push to the default branch runs checks; an empty first run listing is not evidence of none, and only when no workflow triggers on that push is there nothing to wait for.
+   Otherwise wait for those checks on your pushed commit in one bounded blocking wait of at most 30 minutes: re-list with \`gh run list --commit <sha>\` until the runs for that commit appear, then watch each with \`gh run watch <run-id> --exit-status\`, all within the same bound.
+6. If a check goes red because of your change, fix it forward at once through this same landing loop from step 1 and wait again on the new pushed commit, or revert your commit at once through the same loop.
+   A revert ends the task with \`blocked [at=<epoch>]: reverted {sha} on {default-branch} because {red check}\`, never a landed \`done:\`.
    If you cannot get those checks green, or the wait's bound elapses first, append \`blocked [at=<epoch>]: {the red or pending check} on {default-branch} at {sha}\` and stop.
 Never push to the default branch a head whose full suite did not pass on top of the current \`origin/<default-branch>\`.
-Only once the default branch's checks on your pushed commit are green, append \`done [at=<epoch>]: landed {sha} on {default-branch}\` naming that commit, and stop.
+Only once the default branch's checks are green on your change, or on a fix-forward of it, append \`done [at=<epoch>]: landed {sha} on {default-branch}\` naming that commit, and stop.
 Once landed, delete the task branch from origin (\`git push origin --delete fm/$id\`) if you pushed one for ready.
 
 Stopping at ready: run steps 1 and 2, push the tested head to your own task branch with \`git push origin HEAD:refs/heads/fm/$id\`, append \`done [at=<epoch>]: ready in branch fm/$id tested on {default-branch} at {sha}\`, and stop.

@@ -927,9 +927,15 @@ EOF
     assert_grep "sed 's#^origin/##'" "$brief" "direct-push brief does not strip origin/ from the default-branch name"
     assert_grep "without re-running step 1; only the landing loop rebases" "$brief" \
       "direct-push ready refresh does not skip the rebase"
-    assert_grep "wait for the default branch's checks on your pushed commit in one bounded blocking wait" "$brief" \
+    assert_grep "wait for those checks on your pushed commit in one bounded blocking wait" "$brief" \
       "direct-push brief does not wait for the default branch's checks after landing"
-    assert_grep "Only once the default branch's checks on your pushed commit are green" "$brief" \
+    assert_grep "decide from the push triggers in the workflow files you already inspected" "$brief" \
+      "direct-push brief decides whether checks exist from a run listing instead of workflow triggers"
+    assert_grep "until the runs for that commit appear" "$brief" \
+      "direct-push brief does not re-list until the pushed commit's runs appear"
+    assert_grep "A revert ends the task with \`blocked [at=<epoch>]: reverted {sha} on {default-branch} because {red check}\`, never a landed \`done:\`" "$brief" \
+      "direct-push brief reports a revert as landed"
+    assert_grep "Only once the default branch's checks are green on your change, or on a fix-forward of it" "$brief" \
       "direct-push landed done is not held for green default-branch checks"
     assert_grep "every matrix leg" "$brief" "direct-push brief does not require CI-equivalent local tests"
     assert_grep "git fetch origin" "$brief" "direct-push setup does not start from the latest origin default branch"
