@@ -28,10 +28,21 @@ for command_name in bash chmod cp dirname jq mktemp rm; do
   ln -s "$(command -v "$command_name")" "$NO_CURL_BIN/$command_name"
 done
 
+# The brief carries private sentinels outside the allow-list; only its
+# delivery-contract line and its Dispatch summary line may shape the request.
 cat > "$BRIEF" <<'MD'
 # Task
-Fix the off-by-one in the pager: root cause is the `<=` on line 40 of pager.sh, expected behavior is one page per call.
+## Captain's intent
+Fix the off-by-one in the PRIVATE-CAD-SPEC lattice pager: root cause is the `<=` on line 40 of pager.sh, expected behavior is one page per call.
+Staging notes live at https://private.example.invalid/cad/notes and /home/captain/projects/secret-cad/lattice.step.
+Deploy token ghp_PRIVATETOKEN0123456789abcdefABCDEF, contact owner@private.example.invalid.
+
+Dispatch summary: A simple bug fix with a stated root cause in the pager.
+
+# Definition of done
+Delivery contract: mode=no-mistakes
 MD
+BRIEF_SENTINELS='PRIVATE-CAD-SPEC off-by-one pager.sh private.example.invalid secret-cad lattice.step ghp_PRIVATETOKEN owner@ Captain Staging Deploy secret-project-name'
 
 cat > "$BASE_RULES" <<'JSON'
 {
@@ -216,7 +227,7 @@ pass "TYPESAFE_API_KEY= in .env activates the tool; environment and config overr
 # --- clear: request shape, secret handling, argmax --------------------------
 reset_log
 write_response "$RESPONSE" rule_4 0.9
-TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project pager
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project secret-project-name
 expect_code 0 "$code" "clear exits 0"
 assert_contains "$out" 'dispatch-resolve:' "TOON block header"
 assert_contains "$out" '  status: clear' "clear status"
@@ -235,8 +246,11 @@ assert_equals "Authorization: Bearer $KEY" "$(cat "$LOG/header")" "curl receives
 assert_equals $'curl:clean\nquota-axi:clean' "$(cat "$LOG/child-env")" "the API key is absent from every child environment"
 body=$(cat "$LOG/body")
 assert_equals 'jev-latest' "$(jq -r .model <<<"$body")" "default model is jev-latest"
-assert_equals 'pager' "$(jq -r .state.task.project <<<"$body")" "project rides in the state"
-assert_contains "$(jq -r .state.task.brief <<<"$body")" 'off-by-one in the pager' "the whole brief rides in the state"
+assert_equals '{"task":{"kind":"ship","mode":"no-mistakes","summary":"A simple bug fix with a stated root cause in the pager."}}' "$(jq -c .state <<<"$body")" "the state is exactly the allow-listed kind, mode, and summary"
+for sentinel in $BRIEF_SENTINELS; do
+  assert_not_contains "$body" "$sentinel" "brief content outside the allow-list never reaches the request: $sentinel"
+done
+assert_contains "$out" '  sent: kind=ship mode=no-mistakes summary=A simple bug fix with a stated root cause in the pager.' "the output shows exactly what was sent"
 assert_equals '["rule"]' "$(jq -c '.questions | keys' <<<"$body")" "only the rule Choice is asked"
 assert_equals '["default","rule_1","rule_2","rule_3","rule_4"]' "$(jq -c '.questions.rule.criteria | keys' <<<"$body")" "one option per rule plus default"
 assert_equals 'No listed rule applies to this task.' "$(jq -r '.questions.rule.criteria.default' <<<"$body")" "the fixed generic none criterion is the default option"
@@ -245,6 +259,56 @@ assert_not_contains "$body" 'SECRET-WHY-TEXT' "why text never leaves the machine
 assert_not_contains "$body" 'spendPriority' "quota never leaves the machine"
 assert_not_contains "$body" 'cursor-grok' "use profiles never leave the machine"
 pass "clear: one rule Choice request, key on the fd header only, spendPriority argmax over every candidate"
+
+# --- allow-list: summary source, redaction, bounds, kind, and mode -----------
+request_state() {  # <brief> [args...]: run once; sets code, out, err, and state
+  local brief=$1
+  shift
+  reset_log
+  write_response "$RESPONSE" rule_4 0.9
+  TYPESAFE_API_KEY=$KEY run code out err "$brief" "$@"
+  if [ -f "$LOG/body" ]; then state=$(jq -c .state "$LOG/body"); else state=no-request; fi
+}
+request_state "$BRIEF" --summary 'Small bug fix in the exporter.'
+assert_equals '{"task":{"kind":"ship","mode":"no-mistakes","summary":"Small bug fix in the exporter."}}' "$state" "--summary wins over the brief's summary line"
+# shellcheck disable=SC2016 # literal backticks are the code span under test
+LEAKY_SUMMARY='Fix `load_lattice()` per https://x.invalid/a and www.private.invalid, see ~/cad/part.step or C:\\cad\\part, mail a@b.invalid, KEY=abc, ghp_short sk-live-abc xoxb-1 AKIAABC eyJhbGci, id 0123456789abcdef, node CADPARTNUMBERWITHOUTDIGITSX, v1.2.3 done.'
+request_state "$BRIEF" --summary "$LEAKY_SUMMARY"
+assert_equals '{"task":{"kind":"ship","mode":"no-mistakes","summary":"Fix [redacted] per [redacted] and [redacted] see [redacted] or [redacted] mail [redacted] id [redacted] node [redacted] done."}}' "$state" "code spans, URLs, paths, emails, assignments, secret prefixes, opaque tokens, and dotted names are redacted"
+for leak in load_lattice x.invalid private.invalid part.step 'cad' a@b KEY= abc ghp_ sk-live xoxb AKIA eyJ 0123456789abcdef CADPARTNUMBER 1.2.3; do
+  assert_not_contains "$(cat "$LOG/body")" "$leak" "redacted summary token never reaches the request: $leak"
+done
+LONG_SUMMARY=$(printf 'word%.0s ' $(seq 1 80))
+request_state "$BRIEF" --summary "$LONG_SUMMARY"
+summary=$(jq -r .task.summary <<<"$state")
+[ "${#summary}" -le 160 ] || fail "summary is bounded to 160 characters (got ${#summary})"
+[ "${#summary}" -gt 100 ] || fail "summary bound keeps the leading text (got ${#summary})"
+assert_not_contains "$summary" $'\n' "summary is one line"
+request_state "$BRIEF" --summary $'Bug fix\nin the\tpager'
+assert_equals 'Bug fix in the pager' "$(jq -r .task.summary <<<"$state")" "control characters collapse to single spaces"
+SCOUT_BRIEF="$TMP_ROOT/scout-brief.md"
+printf '%s\n' '# Setup' 'This is a SCOUT task: the deliverable is a written report, not a PR.' 'Dispatch summary: Investigate a flaky test.' > "$SCOUT_BRIEF"
+request_state "$SCOUT_BRIEF"
+assert_equals '{"task":{"kind":"scout","mode":null,"summary":"Investigate a flaky test."}}' "$state" "a scout brief sends kind scout and no mode"
+ODD_BRIEF="$TMP_ROOT/odd-brief.md"
+printf '%s\n' 'Delivery contract: mode=private-mode-name extra' 'Dispatch summary: Bug fix.' > "$ODD_BRIEF"
+request_state "$ODD_BRIEF"
+assert_equals '{"task":{"kind":"ship","mode":null,"summary":"Bug fix."}}' "$state" "an unknown delivery mode is never sent"
+PLAIN_BRIEF="$TMP_ROOT/plain-brief.md"
+printf '%s\n' 'Dispatch summary: Bug fix.' > "$PLAIN_BRIEF"
+request_state "$PLAIN_BRIEF"
+assert_equals '{"task":{"kind":null,"mode":null,"summary":"Bug fix."}}' "$state" "a brief with neither contract line sends null kind and mode"
+NO_SUMMARY_BRIEF="$TMP_ROOT/no-summary-brief.md"
+grep -v '^Dispatch summary:' "$BRIEF" > "$NO_SUMMARY_BRIEF"
+request_state "$NO_SUMMARY_BRIEF"
+expect_code 0 "$code" "no summary exits 0"
+assert_equals 'no-request' "$state" "no summary never calls the API"
+assert_equals $'dispatch-resolve:\n  status: escalate\n  reason: no dispatch summary to match' "$out" "no summary is a non-clear result"
+assert_absent "$LOG/quota-axi.calls" "no summary never reads quota-axi"
+request_state "$BRIEF" --summary 'https://private.invalid/x /home/a/b ghp_abc'
+assert_equals 'no-request' "$state" "a summary left with no words after redaction never calls the API"
+assert_contains "$out" '  reason: no dispatch summary to match' "a fully redacted summary is a non-clear result"
+pass "only kind, mode, and a bounded redacted summary leave the machine; no summary means no request"
 
 # --- rules are snapshotted and line output is injection-safe -------------------
 MUTATED_RULES="$TMP_ROOT/mutated-rules.json"

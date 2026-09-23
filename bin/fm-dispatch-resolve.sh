@@ -3,7 +3,11 @@
 # profile from a task brief with typesafe.ai's System One model (Jev), opt-in.
 #
 # Usage:
-#   fm-dispatch-resolve.sh <brief-file> [--project <name>]
+#   fm-dispatch-resolve.sh <brief-file> [--summary <text>] [--project <name>]
+#
+#   --summary <text>  the classification text to send; without it, the text
+#                     after the brief's first "Dispatch summary: " line.
+#   --project <name>  accepted for compatibility; never sent.
 #
 # Opt-in gate: TYPESAFE_API_KEY non-empty in this process environment, else a
 #   TYPESAFE_API_KEY= line in $FM_HOME/.env read with fmx_env_get, the same
@@ -13,12 +17,20 @@
 #   The key lives in one shell variable and reaches curl as a header read from
 #   a file descriptor, never on argv; nothing logs or writes it.
 #
-# What it does when on with at least one rule: one POST to
-#   https://api.typesafe.ai/v1/systemone with the project name and the whole brief as
-#   state and ONE Choice question whose
-#   options are every rule's `when` from config/crew-dispatch.json plus one
-#   fixed generic none option. Jev returns the matched rule, a probability per
-#   option, and a confidence. Everything after that is jq: the confidence
+# What leaves the machine: only the allow-listed state {task: {kind, mode,
+#   summary}} that the STATE step below builds from the brief's delivery-contract
+#   line and the redacted --summary or "Dispatch summary:" text; never any other
+#   brief byte or the project name. No summary left after redaction means the
+#   non-clear reason "no dispatch summary to match" with no network call.
+#   docs/configuration.md "Typed dispatch resolution" owns the allow-list.
+#
+# What it does when on with at least one rule and a summary: one POST to
+#   https://api.typesafe.ai/v1/systemone with that state and ONE Choice
+#   question whose options are every rule's `when` from
+#   config/crew-dispatch.json plus one fixed generic none option. Jev returns
+#   the matched rule, a probability per option, and a confidence. The rule
+#   `when` texts leave the machine verbatim, so the operator keeps private
+#   detail out of them. Everything after that is jq: the confidence
 #   floor, the rule's declared `approval` and `floor`, each profile's declared
 #   `provider` and `floor`, the quota rows from ONE quota-axi --json snapshot
 #   (schema 5 or 6; each candidate binds to one row through quota_row in
@@ -35,12 +47,14 @@
 #   dispatch-resolve:
 #     status: clear | ambiguous | escalate | error
 #     model/latency_ms/tokens, rule (when excerpt) and confidence, probabilities
+#     sent: kind=.. mode=.. summary=<the exact redacted summary sent>
 #     reason: <why the status is not clear>
 #     candidate: <harness>:<model> provider=.. scope=.. remaining=..% spendPriority=.. runway=.. -> eligible | eligible, unranked: <reason> | not eligible: <reason>
 #     profile: --harness <h> [--model <m>] [--effort <e>]     (status clear only)
 #   clear     -> pass the profile line to fm-spawn.sh unless you state a reason to override
 #   ambiguous -> confidence below the floor; decide as today from the probabilities
-#   escalate  -> the rule requires captain approval, no candidate is rankable, or a genuine tie
+#   escalate  -> the rule requires captain approval, no candidate is rankable, a genuine tie,
+#                or nothing to match (no rules, or no dispatch summary)
 #   error     -> API, network, response, or quota-axi failure; decide as today
 #   Every outcome exits 0 so an intake is never blocked by this tool.
 #   Exit 2 only for a usage or configuration error (unreadable brief, an
@@ -78,10 +92,15 @@ TS_MODEL=jev-latest
 TS_BASE=https://api.typesafe.ai
 TS_TIMEOUT=5
 DEFAULT_WHEN="No listed rule applies to this task."
+SUMMARY_MAX=160
 
 die() { printf 'error: %s\n' "$1" >&2; exit 2; }
 no_rules() {
   printf 'dispatch-resolve:\n  status: escalate\n  reason: no rules to match\n'
+  exit 0
+}
+no_summary() {
+  printf 'dispatch-resolve:\n  status: escalate\n  reason: no dispatch summary to match\n'
   exit 0
 }
 usage() {
@@ -92,10 +111,11 @@ usage() {
   ' "$0"
 }
 
-BRIEF='' PROJECT='' RULES_PATH="$CONFIG/crew-dispatch.json" RULES=''
+BRIEF='' SUMMARY='' RULES_PATH="$CONFIG/crew-dispatch.json" RULES=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --project) [ $# -ge 2 ] || die "--project needs a value"; PROJECT=$2; shift 2 ;;
+    --summary) [ $# -ge 2 ] || die "--summary needs a value"; SUMMARY=$2; shift 2 ;;
+    --project) [ $# -ge 2 ] || die "--project needs a value"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) [ -z "$BRIEF" ] || die "one brief file only"; BRIEF=$1; shift ;;
@@ -220,22 +240,54 @@ if [ "$RULE_COUNT" -eq 0 ]; then
   no_rules
 fi
 
+# ---- the allow-list: the only task state that leaves the machine ---------------
+# The brief is read here and nowhere else; only kind, mode, and the redacted
+# summary survive into STATE, and the request is built from STATE alone.
+STATE=$(jq -n --rawfile brief "$BRIEF" --arg summary "$SUMMARY" --argjson max "$SUMMARY_MAX" '
+  ($brief | split("\n") | map(rtrimstr("\r"))) as $lines |
+  def first_after($prefix):
+    [$lines[] | select(startswith($prefix)) | ltrimstr($prefix)] | first // null;
+  def opaque:
+    gsub("^[^A-Za-z0-9]+|[^A-Za-z0-9]+$"; "") | (length >= 24) or (test("[0-9]") and length >= 12);
+  def private_token:
+    test("://") or test("^www\\."; "i") or test("[@/\\\\=~]")
+    or test("[A-Za-z0-9]\\.[A-Za-z0-9]")
+    or test("^[^A-Za-z0-9]*((sk|pk|rk)[-_]|gh[pousr]_|github_pat_|glpat-|xox[a-z]-|AKIA|eyJ|npm_)")
+    or opaque;
+  def redact_summary:
+    gsub("[[:cntrl:]]"; " ")
+    | gsub("`[^`]*`"; " [redacted] ") | gsub("`"; " ")
+    | [splits("\\s+") | select(length > 0) | if private_token then "[redacted]" else . end]
+    | reduce .[] as $t ([]; if $t == "[redacted]" and (last // "") == "[redacted]" then . else . + [$t] end)
+    | join(" ")
+    | if length > $max then .[0:$max] | sub("\\s+\\S*$"; "") else . end
+    | if gsub("\\[redacted\\]"; "") | test("[[:alpha:]]") then . else "" end;
+  (first_after("Delivery contract: mode=") | if . == null then null else split(" ")[0] end) as $mode_line |
+  {
+    kind: (if $mode_line != null then "ship"
+           elif any($lines[]; startswith("This is a SCOUT task")) then "scout"
+           else null end),
+    mode: (if (["no-mistakes", "direct-PR", "local-only"] | index($mode_line)) != null then $mode_line else null end),
+    summary: ((if $summary != "" then $summary else first_after("Dispatch summary:") // "" end) | redact_summary)
+  }') || die "could not read brief file: $BRIEF"
+[ -n "$(jq -r '.summary' <<<"$STATE")" ] || no_summary
+
 RESP_FILE=$(mktemp) || die "mktemp failed"
 QUOTA=$(mktemp) || { rm -f "$RESP_FILE"; die "mktemp failed"; }
 trap 'rm -f "$RULES" "$RESP_FILE" "$QUOTA"' EXIT
 LAT_MS=null
 command -v curl >/dev/null 2>&1 || emit_error "curl not installed"
-  REQUEST=$(jq -n --rawfile brief "$BRIEF" --arg project "$PROJECT" --arg model "$TS_MODEL" \
+  REQUEST=$(jq -n --argjson task "$STATE" --arg model "$TS_MODEL" \
     --arg none_criterion "$DEFAULT_WHEN" --slurpfile rules "$RULES" '
     ($rules[0]) as $cfg |
     ($cfg.rules | to_entries | map({key: ("rule_" + ((.key + 1) | tostring)), value: .value.when}) | from_entries) as $criteria |
     {
       model: $model,
-      state: {task: {project: $project, brief: $brief}},
+      state: {task: $task},
       questions: {
         rule: {
           type: "choice",
-          instructions: "Which ONE dispatch rule best fits `task` (read `task.brief` and `task.project`)? Each option is the rule'"'"'s own matching condition; pick `default` when no rule'"'"'s condition is met, including when a rule'"'"'s own exemption text excludes this task.",
+          instructions: "Which ONE dispatch rule best fits `task` (read `task.summary`, with `task.kind` and `task.mode` when present)? Each option is the rule'"'"'s own matching condition; pick `default` when no rule'"'"'s condition is met, including when a rule'"'"'s own exemption text excludes this task.",
           criteria: ($criteria + {default: $none_criterion})
         }
       }
@@ -269,7 +321,7 @@ quota-axi --json > "$QUOTA" 2>/dev/null || emit_error "quota-axi --json failed"
 fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
 
 # ---- resolution: declared gates + quota evidence + argmax, all in jq ------------
-RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" \
+RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" --argjson task "$STATE" \
   --slurpfile resp "$RESP_FILE" --slurpfile rules "$RULES" --slurpfile quota "$QUOTA" "$FM_QUOTA_ROW_JQ"'
   ($resp[0]) as $r | ($rules[0]) as $cfg | ($quota[0]) as $q | ($r.answers.rule) as $a |
   def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
@@ -364,7 +416,8 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
     model: $r.model, latency_ms: $lat, tokens: ($r.usage // null),
     rule: $choice,
     rule_when: (if $rule == null then $none_criterion else $rule.when end | .[0:60]),
-    confidence: $a.confidence, probabilities: $a.probabilities
+    confidence: $a.confidence, probabilities: $a.probabilities,
+    sent: $task
   } as $ev |
   if $sel.invalid then $ev + {status: "error", reason: $sel.invalid}
   elif $a.confidence < ($floor | tonumber) then
@@ -398,6 +451,7 @@ TEXT=$(jq -r '
   "  model: \(show(.model))   latency_ms: \(show(.latency_ms))   tokens: \(show(.tokens.input_tokens))/\(show(.tokens.output_tokens))",
   "  rule: \(.rule | flat) (\(.rule_when | flat))   confidence: \(.confidence | flat)",
   "  probabilities: \([.probabilities | to_entries[] | "\(.key | flat)=\(.value | flat)"] | join(" "))",
+  "  sent: kind=\(show(.sent.kind)) mode=\(show(.sent.mode)) summary=\(.sent.summary | flat)",
   (if .reason then "  reason: \(.reason | flat)" else empty end),
   (if .note then "  note: \(.note | flat)" else empty end),
   (if .unranked_note then "  note: \(.unranked_note | flat)" else empty end),
