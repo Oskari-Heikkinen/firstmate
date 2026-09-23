@@ -91,7 +91,7 @@ EOF
 missing both flags||ship spawns require --mode
 missing --yolo|--mode no-mistakes|ship spawns require --yolo
 missing --mode|--yolo off|ship spawns require --mode
-unknown mode|--mode nope --yolo off|must be one of no-mistakes, direct-PR, local-only
+unknown mode|--mode nope --yolo off|must be one of no-mistakes, direct-PR, direct-push, local-only
 unknown yolo|--mode no-mistakes --yolo maybe|--yolo must be on or off
 conditional policy as a task mode|--mode no-mistakes-prod-only --yolo off|classify this task's surface
 ROWS
@@ -188,6 +188,10 @@ no-mistakes project shipped local-only|- proj [no-mistakes] - fixture (added 202
 no-mistakes project shipped no-mistakes|- proj [no-mistakes] - fixture (added 2026-01-01)|no-mistakes|quiet|no-mistakes
 local-only project shipped no-mistakes|- proj [local-only] - fixture (added 2026-01-01)|no-mistakes|quiet|local-only
 conditional policy shipped direct-PR|- proj [no-mistakes-prod-only] - fixture (added 2026-01-01)|direct-PR|quiet|no-mistakes-prod-only
+direct-PR project shipped direct-push|- proj [direct-PR] - fixture (added 2026-01-01)|direct-push|notice|direct-PR
+direct-push project shipped direct-push|- proj [direct-push +yolo] - fixture (added 2026-01-01)|direct-push|quiet|direct-push
+direct-push project shipped direct-PR|- proj [direct-push] - fixture (added 2026-01-01)|direct-PR|quiet|direct-push
+direct-push project shipped local-only|- proj [direct-push] - fixture (added 2026-01-01)|local-only|notice|direct-push
 unregistered project resolves to the no-mistakes standing default|- other [no-mistakes] - fixture (added 2026-01-01)|direct-PR|notice|no-mistakes
 ROWS
   pass "fm-spawn: a rigor downgrade against the registered posture is announced, never blocked"
@@ -318,7 +322,7 @@ printf '%s' "$2" > "$FM_TEST_CAPTURE"
 STUB
   chmod +x "$sendroot/bin/fm-send.sh"
 
-  for mode in no-mistakes direct-PR local-only; do
+  for mode in no-mistakes direct-PR direct-push local-only; do
     id="promote-dod-$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
     meta="$home/state/$id.meta"
     printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$meta"
@@ -358,13 +362,16 @@ STUB
     # Compare the public outputs of both real generation paths. The promoted
     # payload ends at its Definition of done, as does an ordinary generated
     # brief, so identical suffixes prove both workers receive the same contract.
+    # A promoted direct-push payload then carries its landing authority, which a
+    # launch brief receives from the spawn instead, so the comparison stops there.
     rm "$home/data/$id/brief.md"
     FM_HOME="$home" "$BRIEF" "$id" fixture-project --mode "$mode" >/dev/null 2>&1 \
       || fail "$mode: ordinary ship brief generation should succeed"
     brief_dod="$TMP_ROOT/promote-dod/brief-dod-$id"
     delivered_dod="$TMP_ROOT/promote-dod/delivered-dod-$id"
     awk '/^# Definition of done$/ { emit=1 } emit' "$home/data/$id/brief.md" > "$brief_dod"
-    awk '/^# Definition of done$/ { emit=1 } emit' "$payload" > "$delivered_dod"
+    awk '/^# Current landing authority$/ { exit } /^# Definition of done$/ { emit=1 } emit' "$payload" \
+      | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > "$delivered_dod"
     cmp -s "$brief_dod" "$delivered_dod" \
       || fail "$mode: promotion and ordinary brief generation delivered different Definitions of done"
   done
@@ -395,6 +402,13 @@ STUB
     "promoted local-only worker lost its no-remote contract"
   assert_no_grep "no-mistakes axi respond" "$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr" \
     "promoted direct-PR worker received the pipeline gate contract"
+  payload="$TMP_ROOT/promote-dod/payload-promote-dod-direct-push"
+  grep -qx '# Current landing authority' "$payload" \
+    || fail "promoted direct-push worker did not receive its landing authority"
+  assert_grep "only after firstmate relays approval" "$payload" \
+    "promoted direct-push worker under yolo off was not held for landing approval"
+  assert_no_grep "no-mistakes axi respond" "$payload" \
+    "promoted direct-push worker received the pipeline gate contract"
   pass "fm-promote: a promoted worker receives the same mode-specific delivery contract a briefed one does"
 }
 
@@ -409,6 +423,7 @@ test_project_mode_maps_the_conditional_policy() {
 - prodproj [no-mistakes-prod-only] - fixture (added 2026-01-01)
 - yoloproj [no-mistakes-prod-only +yolo] - fixture (added 2026-01-01)
 - flatproj [direct-PR] - fixture (added 2026-01-01)
+- pushproj [direct-push +yolo] - fixture (added 2026-01-01)
 - typoproj [no-mistakez] - fixture (added 2026-01-01)
 EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" prodproj 2>/dev/null)
@@ -424,6 +439,11 @@ EOF
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" --raw flatproj 2>/dev/null)
   [ "$out" = "direct-PR off" ] || fail "--raw altered a flat registered mode (got '$out')"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" pushproj 2>/dev/null)
+  [ "$out" = "direct-push on" ] || fail "a registered direct-push +yolo posture was not parsed (got '$out')"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" pushproj 2>&1 >/dev/null)
+  [ -z "$err" ] || fail "a registered direct-push posture warned as unknown: $err"
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" typoproj 2>/dev/null)
   [ "$out" = "no-mistakes off" ] || fail "a typo'd mode no longer falls back to the most rigorous default"
@@ -881,6 +901,61 @@ EOF
   pass "fm-spawn: every legacy worker receives scoped role instructions without changing project or primary instructions"
 }
 
+# direct-push is the one mode whose worker lands its own work, so its brief,
+# which never carries yolo, gets the land-now-or-stop-at-ready decision from the
+# spawn's recorded yolo in the launch brief. A PR merge poll has nothing to
+# watch for it, so arming one is refused.
+test_direct_push_brief_spawn_and_pr_check() {
+  local rec home proj fakebin id brief out status yolo launch
+  rec=$(make_home direct-push "- proj [direct-push] - fixture (added 2026-01-01)")
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  for yolo in on off; do
+    id=delivery-push-$yolo
+    FM_HOME="$home" "$BRIEF" "$id" proj --mode direct-push >/dev/null 2>&1 \
+      || fail "direct-push brief should scaffold"
+    brief="$home/data/$id/brief.md"
+    grep -qx 'Delivery contract: mode=direct-push' "$brief" \
+      || fail "direct-push brief lacks its machine-readable contract line"
+    assert_grep "git push origin HEAD:<default-branch>" "$brief" "direct-push brief lacks the fast-forward landing push"
+    assert_grep "Never add \`--force\`" "$brief" "direct-push brief does not forbid a force push"
+    assert_grep "Never force-push anything" "$brief" "direct-push rule one does not forbid a force push"
+    assert_grep "After 3 refused pushes" "$brief" "direct-push brief does not bound the push race"
+    assert_grep "every matrix leg" "$brief" "direct-push brief does not require CI-equivalent local tests"
+    assert_grep "git fetch origin" "$brief" "direct-push setup does not start from the latest origin default branch"
+    assert_no_grep "no-mistakes axi respond" "$brief" "direct-push brief carries the pipeline gate contract"
+    ! grep -qx '# Current landing authority' "$brief" || fail "the yolo-free brief carried a landing authority"
+    fill_brief_subsections "$brief" "Ship the change without a PR." "Land through the direct push."
+
+    out=$(run_spawn "$home" "$fakebin" "$id" "$proj" claude --mode direct-push --yolo "$yolo")
+    assert_not_contains "$out" "delivery mismatch" "an agreeing direct-push spawn was reported as a mismatch"
+    assert_not_contains "$out" "less rigor" "direct-push on a direct-push project printed a downgrade notice"
+    launch="$home/data/$id/launch-brief.md"
+    assert_present "$launch" "direct-push spawn with yolo $yolo rendered no launch brief"
+    [ "$(grep -c '^# Current landing authority$' "$launch")" = 1 ] \
+      || fail "direct-push launch brief with yolo $yolo lacks exactly one landing authority"
+    case "$yolo" in
+      on)
+        assert_grep "Landing is pre-authorized" "$launch" "yolo on did not pre-authorize the landing"
+        assert_no_grep "only after firstmate relays approval" "$launch" "yolo on still held the landing" ;;
+      off)
+        assert_grep "only after firstmate relays approval" "$launch" "yolo off did not hold the landing for approval"
+        assert_no_grep "Landing is pre-authorized" "$launch" "yolo off pre-authorized the landing" ;;
+    esac
+  done
+
+  id=delivery-push-prcheck
+  printf 'window=fm-%s\nkind=ship\nmode=direct-push\nyolo=on\nworktree=%s\n' "$id" "$proj" > "$home/state/$id.meta"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-pr-check.sh" "$id" https://github.com/o/r/pull/7 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "arming a PR merge poll for a direct-push task should refuse"
+  assert_contains "$out" "no PR merge to monitor" "direct-push PR-check refusal did not explain itself"
+  assert_no_grep '^pr=' "$home/state/$id.meta" "refused direct-push PR check recorded a PR"
+  assert_absent "$home/state/$id.check.sh" "refused direct-push PR check armed a merge poll"
+  pass "direct-push: the brief lands by fast-forward push, the spawn adds landing authority per yolo, and no PR poll is armed"
+}
+
 test_authorized_intent_keeps_words_without_composed_address
 test_spawn_refreshes_legacy_worker_roles
 test_ship_spawn_requires_a_valid_delivery_contract
@@ -893,4 +968,5 @@ test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
 test_spawn_and_promote_require_filled_task_subsections
+test_direct_push_brief_spawn_and_pr_check
 echo "# all fm-task-delivery tests passed"

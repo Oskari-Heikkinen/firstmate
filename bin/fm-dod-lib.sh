@@ -18,9 +18,10 @@
 # pr_head= in no-mistakes mode, or a recorded merge
 # (state/<id>.pr-poll-merge-notified). Teardown's landed-work test remains the
 # complete discard gate.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
-# stdout with no trailing blank line. The caller validates the mode; an unknown
-# mode is refused rather than silently rendered as the pipeline contract.
+# fm_dod_block <no-mistakes|direct-PR|direct-push|local-only> <task-id> prints
+# the block on stdout with no trailing blank line. The caller validates the
+# mode; an unknown mode is refused rather than silently rendered as the
+# pipeline contract.
 # The block opens with the fixed machine-readable "Delivery contract: mode=<mode>"
 # line that bin/fm-spawn.sh checks a ship brief against.
 # The two PR-based blocks require a non-draft pull request before the done
@@ -55,6 +56,15 @@
 # conflicting role is superseded rather than duplicated.
 # fm_ship_rule_one owns the mode-specific first ship safety rule shared by an
 # ordinary ship brief and the durable contract written during scout promotion.
+# direct-push is the one mode whose worker lands its own work: it fast-forwards
+# origin's default branch itself, with no PR, after the project's full local
+# suite passes on top of that branch. Its block is yolo-agnostic because a
+# brief never carries yolo; fm_landing_authority_block owns the yolo-dependent
+# "land now or stop at ready" section, which bin/fm-spawn.sh appends to every
+# direct-push launch brief from the task's recorded yolo and bin/fm-promote.sh
+# appends to a promoted worker's ship instructions. The named-head gate needs
+# nothing mode-specific for it: a landed head is on origin's default branch and
+# a ready head on origin's fm/<id>, both remote-tracking refs.
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-pr-lib.sh"
@@ -77,11 +87,14 @@ Project instructions still govern the work wherever they do not conflict with th
 EOF
 }
 
-fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id>
+fm_ship_rule_one() {  # <no-mistakes|direct-PR|direct-push|local-only> <task-id>
   local mode=$1 id=$2
   case "$mode" in
     direct-PR)
       printf '%s\n' "1. Never push to the default branch (push only your \`fm/$id\` branch). Never merge a PR."
+      ;;
+    direct-push)
+      printf '%s\n' "1. Push to the default branch only through the Definition of done's landing loop, when the landing authority allows it; otherwise push only your \`fm/$id\` branch. Never force-push anything, and never open or merge a PR."
       ;;
     local-only)
       printf '%s\n' "1. Never push to any remote and never open a PR. Work only on your \`fm/$id\` branch; firstmate handles the merge into local \`main\`."
@@ -280,6 +293,34 @@ If you deliberately keep the PR a draft, append \`paused [at=<epoch>]: {why the 
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
       ;;
+    direct-push)
+      cat <<EOF
+# Definition of done
+Delivery contract: mode=direct-push
+This task ships **direct-push**: no PR and no pipeline; your tested commit lands on the project's default branch as a plain fast-forward push.
+Below, \`<default-branch>\` is origin's default branch; \`git symbolic-ref --short refs/remotes/origin/HEAD\` names it, after \`git remote set-head origin --auto\` if that ref is missing.
+The task is complete only when committed on your branch \`fm/$id\`.
+Before landing, discover what the project's CI runs - its workflow files such as \`.github/workflows/\`, plus its \`AGENTS.md\` or README - and run that same full suite locally, as thorough as CI: every job and every matrix leg (for example each language version CI tests), including its lint and build steps.
+If a CI leg cannot run on this machine, append \`blocked [at=<epoch>]: {the leg and why}\` and stop rather than landing without it.
+The \`# Current landing authority\` section of your launch instructions says whether you land now or stop at ready; without that section, stop at ready.
+
+Landing loop:
+1. \`git fetch origin\`, then \`git rebase origin/<default-branch>\`, resolving any conflict in keeping with the task.
+2. Run the full local suite on the rebased head. If anything fails, fix it, commit, and go back to step 1.
+3. \`git push origin HEAD:<default-branch>\` - a plain push. Never add \`--force\`, \`--force-with-lease\`, or a \`+\` refspec.
+4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1. After 3 refused pushes, append \`blocked [at=<epoch>]: lost the push race 3 times; {what keeps landing}\` and stop instead of looping.
+Never push to the default branch a head whose full suite did not pass on top of the current \`origin/<default-branch>\`.
+After the push succeeds, append \`done [at=<epoch>]: landed {sha} on {default-branch}\` naming the pushed commit, and stop.
+Once landed, delete the task branch from origin (\`git push origin --delete fm/$id\`) if you pushed one for ready.
+
+Stopping at ready: run steps 1 and 2, push the tested head to your own task branch with \`git push origin HEAD:refs/heads/fm/$id\`, append \`done [at=<epoch>]: ready in branch fm/$id tested on {default-branch} at {sha}\`, and stop.
+To refresh that ready branch before landing, add commits and push them the same plain way; never force it, since the landing loop rebases onto the current default branch anyway.
+When firstmate relays landing approval, run the landing loop and report the landed \`done:\` the same way.
+Either \`done:\` is accepted only when this copy's HEAD - your latest commit - is on origin: the default branch once landed, your task branch when ready. The check tests that commit, not merely that a branch moved.
+After a landing, the project's own checks run on the default branch; if firstmate relays that they went red, fix it forward at once or revert your commit, through the same landing loop.
+Do NOT run /no-mistakes and do NOT open a PR.
+EOF
+      ;;
     local-only)
       cat <<EOF
 # Definition of done
@@ -341,6 +382,33 @@ EOF
   esac
 }
 
+# The yolo-dependent landing section of a direct-push worker's instructions.
+# yolo on pre-authorizes the worker's own landing; yolo off stops it at ready
+# until firstmate relays approval, so AGENTS.md hard rule 2 holds for a push
+# that is itself the landing. Any other value is refused rather than guessed.
+fm_landing_authority_block() {  # <on|off>
+  case "$1" in
+    on)
+      cat <<'EOF'
+# Current landing authority
+This section supersedes every earlier instruction about when this direct-push task lands.
+Landing is pre-authorized for this task: when the work is complete, run the Definition of done's landing loop and report the landed `done:`.
+EOF
+      ;;
+    off)
+      cat <<'EOF'
+# Current landing authority
+This section supersedes every earlier instruction about when this direct-push task lands.
+Landing waits for approval: when the work is complete, stop at ready as the Definition of done describes, and run the landing loop only after firstmate relays approval to land this task.
+EOF
+      ;;
+    *)
+      echo "error: fm_landing_authority_block: yolo must be on or off (got '$1')" >&2
+      return 1
+      ;;
+  esac
+}
+
 # 0 when <sha> is contained in a ref under <namespace> in <repo>.
 # --contains tests that exact commit, so a branch that moved to a different
 # tip does not count.
@@ -371,7 +439,7 @@ fm_dod_should_gate_ship_done() {  # <kind> <mode> <line>
   [ "$(status_line_verb "$3")" = "done" ] || return 1
   note=$(status_line_note "$3")
   case "$2" in
-    direct-PR|local-only) return 0 ;;
+    direct-PR|direct-push|local-only) return 0 ;;
     no-mistakes|'') fm_dod_note_reports_ci_ready "$note" ;;
     *) return 1 ;;
   esac
@@ -430,6 +498,27 @@ fm_dod_named_head_reachable_outside_worktree() {  # <worktree> <project> <mode> 
   fm_dod_ref_contains "$wt" refs/remotes "$sha" && return 0
   fm_dod_ref_contains "$project" refs/remotes "$sha" && return 0
   [ "$mode" = local-only ] && fm_dod_ref_contains "$project" refs/heads "$sha"
+}
+
+# 0 when <sha> is on origin's default branch in <repo> - the landed test for a
+# direct-push head, which needs no PR record - printing that remote-tracking
+# branch (for example origin/main). The default is origin/HEAD, else
+# origin/main, else origin/master; a repo with none of them has nothing landed.
+fm_dod_head_on_origin_default() {  # <repo> <sha>
+  local repo=$1 sha=$2 ref='' candidate
+  [ -n "$repo" ] && [ -d "$repo" ] && [ -n "$sha" ] || return 1
+  ref=$(git -C "$repo" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) || ref=
+  if [ -z "$ref" ]; then
+    for candidate in refs/remotes/origin/main refs/remotes/origin/master; do
+      if git -C "$repo" show-ref --verify --quiet "$candidate"; then
+        ref=$candidate
+        break
+      fi
+    done
+  fi
+  [ -n "$ref" ] || return 1
+  git -C "$repo" merge-base --is-ancestor "$sha" "$ref" 2>/dev/null || return 1
+  printf '%s\n' "${ref#refs/remotes/}"
 }
 
 # 0 when <line> is not a ship done: to gate, when it names the task's recorded

@@ -69,6 +69,8 @@
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
 # for the common case where there is no remote at all.
+# A direct-push ship needs no PR record: its landed head is on origin's default
+# branch, a remote-tracking ref, so the first test above already accepts it.
 # Scout tasks (kind=scout in meta) carve out of that check: their worktree is
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
@@ -1517,7 +1519,9 @@ work_is_landed() {
 
 # The completion links this teardown already holds locally. A scout's
 # deliverable is its report, a local-only ship lands on local main, and every
-# other ship carries the PR recorded on its own record.
+# other ship carries the PR recorded on its own record; a direct-push ship has
+# none, so it closes with no artifact, which bin/fm-landed-lib.sh still counts
+# as a delivery.
 BACKLOG_DONE_ARGS=()
 backlog_done_args() {
   local data_relative
