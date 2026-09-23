@@ -1,0 +1,5 @@
+relative links checked=181 broken=0
+AGENTS.md section 2 now 2,567 chars; has code block: False
+section 2 pointer to docs/configuration.md Layout reference: True
+docs/configuration.md has '## Layout reference' heading: False
+never-hand-edit list items in section 2: 5

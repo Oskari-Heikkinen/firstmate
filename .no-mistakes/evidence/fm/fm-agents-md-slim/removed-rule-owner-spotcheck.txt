@@ -1,0 +1,18 @@
+Spot-check: rules removed from AGENTS.md prose still have an owner (grep of the tracked tree at 8c5efe7, excluding AGENTS.md unless noted)
+effort fallback: xhigh for ambiguous investigation             -> NONE [AGENTS.md:0]
+session start: ABSENT marker semantics                         -> AGENTS.md bin/fm-claude-trust.sh .agents/skills/secondmate-provisioning/SKILL.md  [AGENTS.md:1]
+session start: read-only session runs no network checks        -> NONE [AGENTS.md:0]
+secondmate kept out of backlog items                           -> NONE [AGENTS.md:0]
+local-only work stays in main home                             -> bin/fm-branch-prompt.sh bin/fm-project-mode.sh bin/fm-contributions.sh  [AGENTS.md:6]
+backlog gate moves item to In flight at spawn                  -> bin/fm-backlog-receive.sh bin/fm-fleet-snapshot.sh bin/fm-inbox.sh  [AGENTS.md:0]
+secondmate routed reply via status or document pointer         -> bin/fm-procevent-remote-reply.sh bin/fm-config-inherit-lib.sh .agents/skills/stow/SKILL.md  [AGENTS.md:0]
+strongest-reasoning class preserved when all tight             -> docs/verification/dispatch-resolve.md docs/verification/dispatch-auth.md .agents/skills/quota-array-dispatch/SKILL.md  [AGENTS.md:0]
+evidence ties broken without array-order bias                  -> NONE [AGENTS.md:0]
+decision steer --resolve-key                                   -> AGENTS.md bin/fm-watch.sh bin/fm-branch-prompt.sh  [AGENTS.md:1]
+custom check FM_CHECK_TIMEOUT contract                         -> bin/fm-tool-update-check.sh bin/fm-check-register.sh bin/fm-mail-check.sh  [AGENTS.md:0]
+
+Follow-up on the NONE rows (looser searches):
+- effort fallback (low / xhigh / never max): .agents/skills/harness-adapters/references/common/model-and-effort.md lines 11-18; AGENTS.md section 4 keeps "never select max effort without explicit captain preference".
+- secondmates are never backlog items: still in AGENTS.md section 10 ("persistent secondmates never appear as backlog items") and bin/fm-backlog-transition-lib.sh.
+- evidence ties without array-order bias: .agents/skills/quota-array-dispatch/SKILL.md ("Genuine ties: stop and report every tied candidate").
+- read-only session network checks: behavior is owned by the bin/fm-session-start.sh and bin/fm-startup-network.sh headers (read-only probe path); AGENTS.md section 3 names bin/fm-startup-network.sh as the owner.

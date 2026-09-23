@@ -1,0 +1,30 @@
+$ head -8 bin/fm-check-register.sh   # authoring contract now lives in the owning script header
+#!/usr/bin/env bash
+# Bind an intentional custom watcher check to its current bytes.
+# Usage: fm-check-register.sh <id>
+# Authoring contract for a custom state/<id>.check.sh: keep it an ordinary
+# single-link mode-0700 file, print one line only when firstmate should wake,
+# print nothing otherwise, and finish before FM_CHECK_TIMEOUT. Register its
+# current bytes here before the watcher may execute it.
+# Retire with fm-check-unregister.sh <id>; do not hand-compose an rm.
+
+$ FM_HOME=<scratch> bin/fm-check-register.sh demo
+registered: state/demo.check.sh
+exit=0
+$ ls -l state/
+  total 8
+  -rw------- 1 oskari oskari 84 Sep 23 18:43 demo.check-trust
+  -rwx------ 1 oskari oskari 48 Sep 23 18:43 demo.check.sh
+$ cat state/demo.check-trust
+fm-custom-check-v1
+b586c68cd958c3590c5d4bee5c7110919fbec7d3f5b9770d5bcf10cd6cabefff
+
+$ FM_HOME=<scratch> bin/fm-check-register.sh "../bad"   # adversarial id
+error: invalid custom check registration
+exit=2
+$ chmod 755 demo.check.sh; FM_HOME=<scratch> bin/fm-check-register.sh demo   # violates mode-0700 contract
+error: custom check is unavailable
+exit=1
+$ FM_HOME=<scratch> bin/fm-check-unregister.sh demo
+unregistered: state/demo.check.sh
+exit=0

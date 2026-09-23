@@ -1,0 +1,40 @@
+Captain, here are the answers. Nothing was run or changed.
+
+**1. Runtime records under `state/` you must never hand-edit, move, or delete**
+*Source: AGENTS.md §2, already in my context.*
+- The session lock sidecar `.lock-session`, the watcher recovery record `.watcher-down`, the wake queue `.wake-queue`, and the `.watch.lock` and `.wake-queue.lock` locks.
+- Watcher internals: `.hash-*`, `.count-*`, `.stale-*`, `.stale-since-*`, `.churn-since-*`, `.paused-*`, `.wedge-escalations-*`, `.dead-reported-*`, `.writing-*`, `.waiting-*`, `.seen-*`, `.hb-surfaced-*`, `.last-*` (including `.last-watcher-beat`), and `.heartbeat-streak`.
+- Sub-supervisor internals: `.subsuper-*` and `.supervise-daemon.*`.
+- Claude Stop auto-arm records (`.claude-autoarm*`, `.turnend-claude-blocks*`) and Cursor stop-hook records (`.cursor-park-owner*`, `.turnend-cursor-blocks`).
+- Any other record that the layout reference says only one script writes. Examples: `.afk-contract`, busy-state records, supervision leases, check trust bindings, `procevent/`, `when/`, `decision-bindings/`, `reconcile-requests/`, and the mail-plane cursors.
+
+**2. `pr-poll-retirement` and `.watch-triage.log`**
+*Source: I opened `docs/configuration.md`, "Layout reference" (lines 98 and 135).*
+- `state/<id>.pr-poll-retirement` is a private receipt tied to one exact, validated merged result. It lets an interrupted cleanup recover after a crash, and it is removed once that task's merge-poll files are retired. Its owning scripts manage it, so don't touch it.
+- `state/.watch-triage.log` is the watcher's size-capped debug log of notifications it absorbed. Nothing relies on it, and **it is safe to delete**.
+
+**3. Adding a custom `state/<id>.check.sh`**
+*Source: AGENTS.md §7 only points to the owner. I opened the header of `bin/fm-check-register.sh` (lines 4–8).*
+- **What the script must do:** be an ordinary single-link file with mode 0700. It prints exactly one line only when firstmate should wake, prints nothing otherwise, and finishes before `FM_CHECK_TIMEOUT`.
+- **Before the watcher runs it:** run `bin/fm-check-register.sh <id>`. This binds the script's current bytes into `state/<id>.check-trust`. If you edit the script afterwards, the hash no longer matches and the watcher won't run it until you register it again.
+- **To retire it:** run `bin/fm-check-unregister.sh <id>`, or teardown for a spawned task. Never remove it with a hand-written `rm`.
+
+**4. Profile array with missing quota data for one candidate and malformed config for another**
+*Source: AGENTS.md §4 only says to load the skill. I opened `.agents/skills/quota-array-dispatch/SKILL.md`: "Intake safety rules", "1. Eligibility", and "Rank by spendPriority".*
+- **Missing quota data:** treat it as uncertainty you disclose, not a reason to block. The candidate stays eligible and you state what is unknown. Never treat it as zero or healthy, and never turn it into a credential or login escalation. When candidates are otherwise comparable, prefer the one with known viable evidence. If no candidate can be ranked after the one allowed fallback from the default output to `--json`, escalate rather than pick arbitrarily.
+- **Malformed config:** report it as an error someone needs to fix. Don't rank around it or quietly select a different candidate instead. Duplicate concrete profiles also count as a configuration error.
+- **Both cases:** every candidate must be listed in the rationale before you select or escalate.
+
+**5. What the steer back to the worker must contain after you decide**
+*Source: AGENTS.md §7 says to load the skill before delivering the decision. I opened `.agents/skills/ask-user-authority/SKILL.md`, "Deliver the decision".*
+Send one exact decision to the same worker. It must name:
+- the decision key
+- the step
+- the action
+- the affected finding IDs
+- any instructions needed
+- the exact response command
+
+Send it with `bin/fm-send.sh --resolve-key` so the open decision record closes when you answer. The steer must also require the matching `resolved` event, forbid `--yes`, and require the worker to handle every synchronous return until the run completes or a genuinely new escalation comes up. Resume supervision right after the decision lands.
+
+[num_turns=7]

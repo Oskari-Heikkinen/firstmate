@@ -1,0 +1,12 @@
+old AGENTS.md: 86,955 chars; new AGENTS.md: 58,860 chars; reduction 28,095 chars (32.3%)
+old section-2 layout block: 20,762 chars, 103 lines
+docs/configuration.md 'Layout reference' block: 20,774 chars, 103 lines
+entries in old block: 103; missing from Layout reference: 2; present with edited wording: 31
+  MISSING: decision-bindings/ private records marking a captured-answer source as feeding the keyed-answer intake, with a legacy origin on pre-collapse records; written only by bin/fm-captain-hold.sh bind, dropped by unbind and by source retirement (section 13; docs/captain-hold-lifecycle.md)
+  MISSING: reconcile-requests/ private open obligations to re-check a captain call whose board selection was `reconcile`; written only by bin/fm-captain-hold.sh, retired by its verify-then-decide outcomes or a normal answer that settles the call (section 13; docs/captain-hold-lifecycle.md)
+old block still in AGENTS.md: False
+
+After normalizing only cross-reference wording ('section N'->'AGENTS.md section N', 'docs/configuration.md'->"this doc's"):
+  old entries=103 new entries=103 identical_in_order=False
+  DIFF: projects/ cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exc || projects/ cloned repos; gitignored; read-only except under AGENTS.md hard rule 1's concrete captain-approved project ope
+  DIFF: <id>.meta task metadata; each producer script's header owns its exact fields and mutation contract, with docs/configurat || <id>.meta task metadata; each producer script's header owns its exact fields and mutation contract, with this doc routin

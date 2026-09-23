@@ -1,0 +1,5 @@
+Real Claude Code 2.1.280 headless (-p) in throwaway git-archive checkouts of each commit; CLAUDE.md -> @AGENTS.md auto-loaded as project memory;
+project hooks disabled (--settings disableAllHooks, project settings.json emptied in the throwaway copy); identical prompt 'Reply with exactly: OK'.
+base (before)   9296f9b: result='OK' input=2 cache_create=41088 cache_read=8567 total_prompt_tokens=49657
+target (after)  8c5efe7: result='OK' input=2 cache_create=31176 cache_read=8568 total_prompt_tokens=39746
+prompt tokens saved on every API call of a Claude supervisor session: 9,911 (20.0% of the whole first-call prompt)
