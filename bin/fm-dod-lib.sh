@@ -71,6 +71,10 @@
 # shellcheck source=bin/fm-classify-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-classify-lib.sh"
 
+# A direct-push worker's post-landing wait bound, in minutes: roughly two
+# back-to-back full default-branch CI runs, since a superseded run waits behind one.
+FM_DIRECT_PUSH_CHECK_WAIT_MINUTES=90
+
 fm_brief_worker_role() {  # <state-dir> <task-id>
   local state=$1 task_id=$2
   cat <<'EOF'
@@ -311,8 +315,9 @@ Landing loop:
 4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1.
    Lost push races are governed by this bound instead of the general rule to stop after hitting the same obstacle twice: after 5 refused pushes, append \`blocked [at=<epoch>]: lost the push race 5 times; {what keeps landing}\` and stop instead of looping.
 5. After the push succeeds, decide from the push triggers in the workflow files you already inspected, counting their \`paths\` and \`paths-ignore\` filters against the files your change touched, whether your push runs checks; an empty first run listing is not evidence of none, and only when no workflow triggers on that push is there nothing to wait for.
-   Otherwise wait for those checks on your pushed commit in one bounded blocking wait of at most 30 minutes: re-list with \`gh run list --commit <sha>\` until the runs for that commit appear, then watch each with \`gh run watch <run-id> --exit-status\`, all within the same bound.
-   If a run for your commit is cancelled or never created because a later push to the default branch superseded it, wait within the same bound on the checks for the newest \`origin/<default-branch>\` commit that contains yours, and treat those as the checks on your change.
+   Otherwise wait for those checks on your pushed commit in one bounded blocking wait of at most $FM_DIRECT_PUSH_CHECK_WAIT_MINUTES minutes: re-list with \`gh run list --commit <sha>\` until the runs for that commit appear, then watch each with \`gh run watch <run-id> --exit-status\`, all within the same bound.
+   If a run for your commit is cancelled or never created because a later push to the default branch superseded it, follow within the same bound only the newest \`origin/<default-branch>\` commit containing yours that has a completed, not cancelled, run of each workflow your push triggered, and treat those runs as the checks on your change.
+   Count a workflow green only from such a completed run of that same workflow, never from other workflows' runs or from a commit that did not run it.
 6. If a check on your change goes red because of your change, fix it forward at once through this same landing loop from step 1 and wait again on the new pushed commit, or revert your commit at once through the same loop.
    A revert ends the task with \`blocked [at=<epoch>]: reverted {sha} on {default-branch} because {red check}\`, never a landed \`done:\`.
    If you cannot get those checks green, or the wait's bound elapses first, append \`blocked [at=<epoch>]: {the red or pending check} on {default-branch} at {sha}\` and stop.
