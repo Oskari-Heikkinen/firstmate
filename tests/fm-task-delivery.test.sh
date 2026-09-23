@@ -935,8 +935,12 @@ EOF
       "direct-push brief does not re-list until the pushed commit's runs appear"
     assert_grep "counting their \`paths\` and \`paths-ignore\` filters" "$brief" \
       "direct-push brief ignores path filters when deciding whether the push runs checks"
-    assert_grep "only the newest \`origin/<default-branch>\` commit containing yours that has a completed, not cancelled, run of each workflow your push triggered" "$brief" \
+    assert_grep "Judge each workflow your push triggered on its own: one that completed on your own commit counts from that run." "$brief" \
+      "direct-push brief requires one commit to complete every workflow"
+    assert_grep "follow within the same bound the newest \`origin/<default-branch>\` commit containing yours that has a completed, not cancelled, run of that same workflow" "$brief" \
       "direct-push brief does not follow a superseded run to a completed run of the same workflow"
+    assert_grep "first append \`paused [at=<epoch>]: waiting on {default-branch} checks for {sha} until <YYYY-MM-DDTHH:MMZ>\`" "$brief" \
+      "direct-push brief does not declare a paused wait before the post-landing check wait"
     assert_grep "Count a workflow green only from such a completed run of that same workflow" "$brief" \
       "direct-push brief counts a workflow green from a commit that never ran it"
     assert_grep "one bounded blocking wait of at most 90 minutes" "$brief" \
