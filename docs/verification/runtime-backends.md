@@ -508,6 +508,82 @@ The lab home was deleted and the test entry was removed from the store and verif
 That automated spawn case runs against a fake claude, so it asserts the store entry and the launch command and nothing more; the live arms above are what establish that the entry actually suppresses the dialog.
 The composer-classification record below observes the same gate from the other side, where an untrusted worktree left Claude, Grok, and Muse unverified because the guard reads a first-launch trust dialog as an unreadable composer.
 
+## Nested worktree instruction isolation
+
+Verified 2026-09-23 on Claude Code 2.1.280, Pi 0.85.1, and codex-cli 0.154.0.
+A ship or scout worktree can lie inside a firstmate home when a second mate's project clone keeps an in-project Treehouse pool, as `<home>/projects/<project>/.treehouse/<pool>/<n>/<project>`.
+`tests/fm-nested-home-context-live-e2e.test.sh` is the command that refreshes this record; it runs by default wherever Claude or Pi is installed because it submits no prompt to a provider.
+
+Every arm pointed the real harness at a local server that saved the request body and answered with an error, so each result is the exact first model request the binary would have sent.
+The fixture home held `CLAUDE.md` containing `@AGENTS.md` and an `AGENTS.md` carrying a marker, the project carried its own marked `CLAUDE.md` and `AGENTS.md`, and one linked worktree sat inside the home while another sat outside it.
+Claude ran with an isolated `CLAUDE_CONFIG_DIR` whose project entries carry the external-import approval that the fleet's real entries carry; without that approval Claude's print mode silently drops the home's `@AGENTS.md` import, which is why a bare fixture shows no leak.
+
+```sh
+FM_NESTED_HOME_CONTEXT_LIVE=1 tests/fm-nested-home-context-live-e2e.test.sh
+```
+
+```
+ok - claude 2.1.280 (Claude Code): a nested worker's first request drops the home contract, keeps the project's, and a home session keeps its own
+ok - pi 0.85.1: a nested worker's first request drops the home contract, keeps the project's, and a home session keeps its own
+# fm-nested-home-context live guard checked 2 harness(es)
+```
+
+Each harness passed four arms: the nested worktree without Firstmate's launch material carried the home contract, the nested worktree with it did not, the outside worktree did not, and a session whose cwd is the home did.
+The project's own instruction file was present in every worktree arm.
+
+### Claude
+
+Claude walks every ancestor of its cwd and loads each directory's `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/`, and `CLAUDE.local.md`, skipping only directories of the primary checkout that contain the linked worktree.
+The home above that checkout is therefore loaded, and its `@AGENTS.md` import pulls in the whole supervisor contract.
+The installed binary's settings schema describes the control that removes it:
+
+```
+claudeMdExcludes: Glob patterns or absolute paths of CLAUDE.md files to exclude from loading. Patterns are matched against absolute file paths using picomatch. Only applies to User, Project, and Local memory types (Managed/policy files cannot be excluded).
+```
+
+The exclusion is read from the merged settings, so the per-launch `--settings` JSON carries it without touching any settings file, and the check runs on every file the loader visits, imports included.
+With this repository's own 86,955-byte `AGENTS.md` as the home contract, a nested worker's captured first request fell from 200,548 bytes to 112,433 bytes.
+An interactive launch of the same nested worktree without the exclusion stopped on the import dialog:
+
+```
+  Allow external CLAUDE.md file imports?
+  This project's CLAUDE.md imports files outside the current working directory. Never allow this for third-party repositories.
+  External imports:
+    <fixture>/home/AGENTS.md
+  ❯ No, disable external imports
+    Yes, allow external imports
+```
+
+The same launch with the exclusion reached the composer with no dialog.
+Claude's project skill discovery stops at the worktree's git root, so the home's `.claude/skills` were absent from the nested worker's request, and recent real nested worker transcripts on this host listed no Firstmate skill either.
+
+### Pi
+
+Pi's `loadProjectContextFiles` walks from cwd to the filesystem root and loads the first of `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, or `CLAUDE.MD` in each directory, so a nested worker loads the home's `AGENTS.md`.
+Pi offers only the all-or-nothing `--no-context-files`, which would also drop the project's own file.
+Its `before_agent_start` extension event receives the loaded files as `systemPromptOptions.contextFiles` and may return a replacement system prompt, and handlers chain, so the per-task extension removes exactly each nested home file's rendered `<project_instructions path="...">` block on every turn.
+Pi's `.agents/skills` discovery stops at the git root, so no home skill reached the nested worker.
+
+### Codex
+
+Codex stops its `AGENTS.md` walk at the project root, which for a linked worktree is the worktree itself, so it needs no launch change.
+The same capture technique, with a custom `model_providers` entry pointing at the local server, confirmed it.
+
+```sh
+codex exec --skip-git-repo-check -c 'model_providers.cap={name="cap",base_url="http://127.0.0.1:<port>/v1",wire_api="responses"}' -c model_provider=cap -m m hi
+```
+
+The nested worktree's request carried the project's `AGENTS.md` and neither the home's `AGENTS.md` nor its `.agents/skills`, while a session whose cwd is the home carried both.
+
+### Other harnesses
+
+None of the remaining adapters is installed on this host, so each verdict comes from reading the named published package or its bundled documentation on 2026-09-23 rather than from a live capture.
+OpenCode 1.18.32, Kimi Code 2.1.0, and Gemini CLI 0.60.0 stop their instruction-file search at the worktree's git root in code, and Grok 1.0.41, Muse 1.3.0, and Antigravity 1.2.9 document the same bound, so a nested worker of theirs never reaches the home.
+Rovo Dev documents loading instruction files from parent directories without naming a bound, and Devin 3000.11.1 ships no readable bound, so both remain unverified.
+Cursor Agent CLI 2026.09.18 walks to the filesystem root, and Oh My Pi 18.2.11 walks past the git root up to `$HOME`, so both load the home's `AGENTS.md` for a nested worker and stay unfixed.
+Cursor offers no per-path exclusion: its hidden `--exclude-workspace-context` drops every workspace instruction including the project's own, and its third-party toggle drops only `CLAUDE.md` files.
+Oh My Pi's only per-launch controls are coarse `--config` switches such as disabling the whole `claude-md` provider, its `before_agent_start` event exposes the system prompt without the list of loaded files, and its subagents receive the discovered files directly, so no per-task extension can remove just the home file.
+
 ## Launch-prompt backstop signatures
 
 `bin/fm-busy-lib.sh`'s launch-prompt backstop (`fm_busy_launch_prompt_parked`) reclassifies a launch whose busy record is still pinned at the fm-spawn seed as `unknown launch-prompt`, rather than `busy fm-spawn`, when the captured pane matches that harness's own recognized trust, sign-in, or first-run dialog.
