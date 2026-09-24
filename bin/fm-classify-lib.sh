@@ -108,6 +108,17 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
 
+# The hard ceiling on how long a standing declared wait may go unseen by the
+# supervisor, however the recheck scheduling around it defers or absorbs it: one
+# day by default. Unseen counts from the later of the wait's last delivered
+# recheck and its latest status line, whose own signal already reached the
+# supervisor. A lane past it is shown again, together with every other standing
+# wait, so a forgotten wait still cannot rot invisibly. bin/fm-watch.sh owns the
+# cold-cache-aware scheduling this bounds; both consumers read
+# FM_STANDING_WAITS_CEILING_SECS with this default.
+# shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
+FM_STANDING_WAITS_CEILING_SECS_DEFAULT=86400
+
 # fm_utc_iso_to_epoch <YYYY-MM-DDTHH:MM[:SS]Z>: the one portable UTC ISO 8601
 # reader shared by the declared-wait vocabulary and the away-posture record
 # (bin/fm-afk-contract.sh). Prints epoch seconds; returns 1 on any other shape
@@ -260,8 +271,8 @@ status_is_captain_held() {  # <status-line>
 # Both declarations can intentionally leave a crew's endpoint idle, so both
 # supervisors give them one cadence: the away-mode daemon defers the wedge and
 # ages a pause marker instead, and the watcher applies its bounded pause cadence
-# once pause_state_class has admitted the wait (fm-watch.sh owns which liveness
-# evidence each kind of crew must supply for that).
+# once pause_state_class has admitted the wait, which it does for every
+# agent-liveness verdict unless the crew is provably working.
 status_is_paused_or_captain_held() {  # <status-line>
   local line=$1
   status_is_paused "$line" || status_is_captain_held "$line"
@@ -2262,6 +2273,105 @@ crew_absorb_class() {  # <id>
     case "$src" in run-step|pane) printf 'working'; return ;; esac
   fi
   printf 'none'
+}
+
+# The "nothing changed" fingerprint of a lane under a declared external wait
+# (paused:). The watcher's and the away-mode daemon's declared-wait rechecks
+# compare it with the one taken when the wait was declared or last shown to the
+# supervisor, and absorb a recheck whose lane shows no change up to
+# FM_STANDING_WAITS_CEILING_SECS. It covers every change a recheck exists to
+# catch: the status log (status_observed_signature), the current-state verdict
+# and its source from FM_CREW_STATE_BIN, the agent's liveness verdict, the task
+# copy's HEAD and dirty bit, the count of unread steering-inbox records, and, for
+# a lane whose metadata records a GitHub `pr=`, that PR's state, head, and
+# whether any check is failing (a pending check reads the same as a passing one,
+# so only a closed, merged, red, or moved PR changes it). The pane is left out:
+# a repainting pane is not evidence the wait changed. A second mate is read
+# through its status and inbox only, since its endpoint liveness and home are
+# not what its wait is about. Every read is bounded. Prints one line, or fails
+# when any part cannot be read, and a caller that cannot prove the lane
+# unchanged must treat it as changed.
+declared_wait_fingerprint() {  # <state-dir> <task-id>
+  local state=$1 task=$2 meta sig line crew src=- agent=- wt head=- dirty=- inbox=0 f pr pr_fp=none out
+  meta="$state/$task.meta"
+  [ -f "$meta" ] || return 1
+  sig=$(status_observed_signature "$state/$task.status") || return 1
+  line=$("$FM_CREW_STATE_BIN" "$task" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  crew=${line#state: }; crew=${crew%% *}
+  case "$line" in *'source: '*) src=${line#*source: }; src=${src%% *} ;; esac
+  if [ "$(fm_meta_get "$meta" kind)" != secondmate ] && [ -z "$(fm_meta_get "$meta" remote)" ]; then
+    agent=$(fm_backend_agent_state "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || return 1
+    [ -n "$agent" ] || return 1
+    wt=$(fm_meta_get "$meta" worktree)
+    if [ -n "$wt" ] && [ -d "$wt" ]; then
+      head=$(fm_run_timed 5 git -C "$wt" --no-optional-locks rev-parse HEAD 2>/dev/null) || return 1
+      out=$(fm_run_timed 5 git -C "$wt" --no-optional-locks status --porcelain 2>/dev/null) || return 1
+      if [ -n "$out" ]; then dirty=1; else dirty=0; fi
+    elif [ -n "$wt" ]; then
+      head=absent
+    fi
+  fi
+  for f in "$state/$task.inbox"/*.msg; do
+    [ -e "$f" ] && inbox=$((inbox + 1))
+  done
+  pr=$(fm_meta_get "$meta" pr)
+  if [ -n "$pr" ]; then
+    case "$pr" in https://github.com/*/*/pull/[0-9]*) ;; *) return 1 ;; esac
+    out=$(fm_run_timed 5 gh pr view "$pr" --json state,headRefOid,statusCheckRollup 2>/dev/null) || return 1
+    pr_fp=$(printf '%s' "$out" | jq -r '[.state, .headRefOid,
+      (if any(.statusCheckRollup[]?; (.conclusion // .state // "") as $s
+        | ($s=="FAILURE" or $s=="ERROR" or $s=="TIMED_OUT" or $s=="CANCELLED" or $s=="ACTION_REQUIRED" or $s=="STARTUP_FAILURE"))
+       then "red" else "ok" end)] | map(tostring) | join(":")' 2>/dev/null) || return 1
+    case "$pr_fp" in ''|null:*|*:null:*) return 1 ;; esac
+  fi
+  printf 'status=%s crew=%s/%s agent=%s head=%s dirty=%s inbox=%s pr=%s' \
+    "$sig" "$crew" "$src" "$agent" "$head" "$dirty" "$inbox" "$pr_fp"
+}
+
+# The baseline a declared wait's rechecks are compared with lives in
+# <state>/.recheck-fp-<window-key>: the declaration it was taken for (the
+# caller's scope string, which names the status-log signature), then the
+# fingerprint, empty when it could not be read. The watcher and the daemon share
+# it, keyed on the watcher's window key, so a baseline survives a change of
+# supervision posture. `once` records it only when none exists for this
+# declaration yet, `refresh` re-reads it, and `set` records the fingerprint the
+# caller already read (empty for an unreadable one, so the next recheck is shown
+# rather than absorbed).
+declared_wait_baseline_record() {  # <state> <window-key> <task> <declaration> <once|refresh|set> [fingerprint]
+  local state=$1 key=$2 task=$3 base=$4 how=$5 fp=${6-} f have=''
+  f="$state/.recheck-fp-$key"
+  if [ "$how" = once ]; then
+    { IFS= read -r have; } 2>/dev/null < "$f" || true
+    [ "$have" != "$base" ] || return 0
+  fi
+  if [ "$how" != set ]; then
+    fp=$(declared_wait_fingerprint "$state" "$task") || fp=''
+  fi
+  printf '%s\n%s\n' "$base" "$fp" > "$f"
+}
+
+# Compare a lane's current declared_wait_fingerprint with its baseline for
+# <declaration>. Returns 0 when both were read and match, 1 when they differ,
+# and 2 when there is nothing to compare (no baseline for this declaration, an
+# unreadable baseline, or an unreadable fingerprint now), which a caller must
+# treat exactly like a change. Sets DECLARED_WAIT_FP to the fingerprint just
+# read (empty when unreadable) so the caller can re-baseline without a second
+# read, and DECLARED_WAIT_CHANGES to the names of the parts that differ.
+DECLARED_WAIT_FP=
+DECLARED_WAIT_CHANGES=
+declared_wait_compare() {  # <state> <window-key> <task> <declaration>
+  local state=$1 key=$2 task=$3 base=$4 have='' was='' part
+  DECLARED_WAIT_FP=
+  DECLARED_WAIT_CHANGES=
+  { IFS= read -r have; IFS= read -r was; } 2>/dev/null < "$state/.recheck-fp-$key" || true
+  DECLARED_WAIT_FP=$(declared_wait_fingerprint "$state" "$task") || { DECLARED_WAIT_FP=''; return 2; }
+  [ "$have" = "$base" ] && [ -n "$was" ] || return 2
+  [ "$DECLARED_WAIT_FP" != "$was" ] || return 0
+  for part in $DECLARED_WAIT_FP; do
+    case " $was " in *" $part "*) ;; *) DECLARED_WAIT_CHANGES="${DECLARED_WAIT_CHANGES:+$DECLARED_WAIT_CHANGES, }${part%%=*}" ;; esac
+  done
+  return 1
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class

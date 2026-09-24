@@ -162,7 +162,7 @@ Classify each wake this way:
 - `signal` or `stale` whose latest status declares a wait, either a `paused:` external wait or a verified `captain-held` transfer, tracks the pause rather than a wedge whether its pane reads idle or busy.
   An unreported captain-relevant event in the newly classified span still escalates immediately while the current declaration independently keeps the pause cadence.
   With no unreported actionable event, the wake self-handles, and the current declaration outranks an enriched possible-wedge reason so it never escalates on the `FM_STALE_ESCALATE_SECS` cadence.
-  If a declared external wait is still declared past `FM_PAUSE_RESURFACE_SECS` (default four hours), housekeeping sends one recheck and resets the pause window; a captain-held transfer is never rechecked while the posture record exists.
+  If a declared external wait is still declared past `FM_PAUSE_RESURFACE_SECS` (default four hours), housekeeping sends one recheck and resets the pause window, except that a lane whose fingerprint is unchanged since the wait was last shown is absorbed until `FM_STANDING_WAITS_CEILING_SECS` (default one day), when every such standing wait escalates together; a captain-held transfer is never rechecked while the posture record exists.
   The window ages against the crew's own latest status line, so only a status append that stops declaring the wait ends this routing and restores wedge detection.
 - `check` -> always escalate. Check scripts print only when firstmate should wake.
 - `stale` with a terminal status or bare legacy captain-relevant line -> escalate.
