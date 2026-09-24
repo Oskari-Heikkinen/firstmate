@@ -35,8 +35,8 @@
 # optional helper. Authoritative multi-provider routing - including provider
 # discovery from the harness catalog and quota matching by that explicit
 # provider - is owned by the quota-array-dispatch skill, not by this helper.
-# Use this helper only when the brief already fixed the candidate order and
-# every candidate's provider is the harness's primary family.
+# Use this helper only when the brief already fixed the
+# candidate order and every candidate's provider is the harness's primary family.
 #
 # omp (Oh My Pi) has no single primary family, so its candidate model prefix
 # selects the family: openai-codex/<id> checks the codex row and
