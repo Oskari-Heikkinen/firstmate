@@ -6469,6 +6469,40 @@ SH
   pass "a declared wait on a PR is rechecked only when the PR goes red, moves, or closes"
 }
 
+# While the away-mode daemon owns triage it alone compares a declared wait's
+# fingerprint and decides whether to escalate it. The watcher hands a due
+# recheck over as a plain stale wake, which the daemon self-handles, so it must
+# not re-baseline the lane or mark it shown: the daemon's own recheck of a lane
+# that changed must still escalate the change to the captain.
+away_housekeeping() {  # <dir> <crew-state-line>
+  # shellcheck disable=SC2016 # The sourced daemon script and state dir are the inner shell's positional parameters.
+  env PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" FM_CREW_STATE_BIN="$1/fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE="$2" FM_FAKE_TMUX_WINDOWS=fm-a FM_FAKE_TMUX_CAPTURE="$1/pane.txt" \
+    FM_PAUSE_RESURFACE_SECS=240 FM_ESCALATE_BATCH_SECS=999999 FM_DAEMON_PRIMARY_HARNESS=claude \
+    bash -c '. "$1"; housekeeping "$2"' _ "$ROOT/bin/fm-supervise-daemon.sh" "$1/state"
+}
+
+test_away_mode_declared_wait_change_reaches_the_daemon() {
+  local dir state now changed='state: stopped · source: status-log · agent exited'
+  dir=$(make_case recheck-away-change); state="$dir/state"
+  recheck_lane "$dir" a 0
+  date '+%s' > "$state/.afk"
+  away_housekeeping "$dir" 'state: paused · source: status-log · holding for the upstream release'
+  [ -e "$state/.subsuper-paused-a" ] || fail "the daemon did not start tracking the declared wait"
+  # The lane changes, and the watcher reaches the due recheck first.
+  now=$(date +%s)
+  set_mtime "$((now - 5000))" "$state/a.status"
+  recheck_watch "$dir" fm-a FM_FAKE_CREW_STATE="$changed"
+  wait_for_exit "$RECHECK_PID" 100 || fail "the watcher did not hand the due recheck to the away-mode daemon"
+  [ "$(queued_stale_rows "$state" test:fm-a)" -eq 1 ] || fail "the due recheck was not handed over as one stale wake"
+  [ ! -e "$state/.recheck-surfaced-test_fm-a" ] || fail "the watcher marked the lane shown while the daemon owns triage"
+  echo $((now - 5000)) > "$state/.subsuper-paused-a"
+  away_housekeeping "$dir" "$changed"
+  grep -F 'the lane changed since its wait was last shown (crew)' "$state/.subsuper-escalations" >/dev/null \
+    || fail "the watcher's handoff let the daemon absorb a changed lane: $(cat "$state/.subsuper-escalations" 2>/dev/null)"
+  pass "in away mode a changed declared wait still reaches the captain through the daemon, whatever the watcher saw first"
+}
+
 # CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the bash-3.2
 # churn-deferral regression. The rest of this file is not a 3.2 snapshot suite.
 if [ -n "${FM_TEST_ONLY:-}" ]; then
@@ -6620,3 +6654,4 @@ test_cold_captain_held_recheck_waits_like_any_declared_wait
 test_passed_until_is_urgent_once_then_fingerprinted
 test_standing_waits_digest_lists_every_standing_wait
 test_pr_backed_declared_wait_wakes_only_on_a_pr_change
+test_away_mode_declared_wait_change_reaches_the_daemon

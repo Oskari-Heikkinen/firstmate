@@ -316,8 +316,10 @@ PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT
 # without being shown to the supervisor, so a forgotten wait still cannot rot
 # invisibly. A lane whose fingerprint changed and the first recheck after a
 # paused wait's declared `until` time passes are delivered when due, still
-# coalesced with whatever else is pending, and the away-mode daemon, which
-# batches its own digests, gets every due recheck at once.
+# coalesced with whatever else is pending. While the away-mode daemon owns
+# triage it owns this whole schedule too: the watcher hands it each due recheck
+# as the plain stale wake it classifies itself, and leaves the fingerprint
+# baseline and the delivery time it compares against untouched.
 RECHECK_WARM_SECS=3300
 STANDING_WAITS_CEILING_SECS=${FM_STANDING_WAITS_CEILING_SECS:-$FM_STANDING_WAITS_CEILING_SECS_DEFAULT}
 case "$STANDING_WAITS_CEILING_SECS" in ''|*[!0-9]*|0) STANDING_WAITS_CEILING_SECS=$FM_STANDING_WAITS_CEILING_SECS_DEFAULT ;; esac
@@ -1468,6 +1470,11 @@ handle_paused_stale() {  # <window> <task> <hash>
     detail="paused, awaiting external"
     reason="paused @AGE@s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
   fi
+  if afk_present; then
+    resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win (${reason//@AGE@/$age})" "$declaration" "$min_age"
+    triage_log "absorbed stale ($detail, age ${age}s): $win"
+    return 0
+  fi
   if ! recheck_is_due "$key" "$age" "$declaration" "$min_age"; then
     [ "$kind" = held ] || recheck_baseline "$key" "$task" "$base" once
     triage_log "absorbed stale ($detail, age ${age}s): $win"
@@ -1498,7 +1505,9 @@ recheck_is_due() {  # <key> <age> <scope> <min-age>
 
 # Record the lane's declared-wait baseline (declared_wait_baseline_record in
 # fm-classify-lib.sh) that a later recheck of this declaration is compared with.
+# The away-mode daemon owns the baseline while it owns triage.
 recheck_baseline() {  # <key> <task> <declaration> <once|refresh|set> [fingerprint]
+  ! afk_present || return 0
   declared_wait_baseline_record "$STATE" "$@" || exit 1
 }
 
@@ -1647,7 +1656,7 @@ recheck_flush() {  # <poll|ride>
       triage_log "could not queue declared-wait rechecks alongside another wake; they stay queued"
       return 1
     fi
-    date +%s > "$STATE/.recheck-surfaced-${keys[$i]}"
+    afk_present || date +%s > "$STATE/.recheck-surfaced-${keys[$i]}"
     rm -f "$STATE/.recheck-due-${keys[$i]}" "$STATE/.recheck-absorbed-${keys[$i]}"
     n=$((n + 1))
     [ -n "$first" ] || first=${reasons[$i]}
