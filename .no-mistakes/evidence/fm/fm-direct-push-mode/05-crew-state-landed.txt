@@ -1,0 +1,14 @@
+$ cat <worktree>/.test-runs.log   # every suite run the project recorded
+1790235637 start shell=bash head=b988e63b38af609eb1b3ca84421cfd60ac0d6f95 dirty=0
+1790235676 start shell=dash head=b988e63b38af609eb1b3ca84421cfd60ac0d6f95 dirty=0
+1790235715 start shell=bash head=5b707df1a1ba30bf000d8c16d684b65c8515bcb3 dirty=0
+1790235754 start shell=dash head=5b707df1a1ba30bf000d8c16d684b65c8515bcb3 dirty=0
+
+$ git --git-dir=origin.git log --oneline --graph main
+* 5b707df Add mul to calc.sh
+* f9b4aac other worker lands a note
+* c70a2b0 initial
+
+$ bin/fm-crew-state.sh dp-land3
+state: done · source: status-log · landed 5b707df1a1ba30bf000d8c16d684b65c8515bcb3 on main · landed on origin/main
+[exit 0]

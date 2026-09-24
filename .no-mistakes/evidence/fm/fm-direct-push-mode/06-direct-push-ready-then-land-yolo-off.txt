@@ -1,0 +1,145 @@
+
+$ git checkout -b fm/dp-ready3
+Switched to a new branch 'fm/dp-ready3'
+[exit 0]
+
+$ printf 'sub() { echo $(( $1 - $2 )); }\n' >> calc.sh
+[exit 0]
+
+$ sed -i 's/^check "add 2 3".*/&\ncheck "sub 9 4" "$(sub 9 4)" 5/' tests/run.sh
+[exit 0]
+
+$ git add calc.sh tests/run.sh && git -c user.name=dp-ready3 -c user.email=w@example.invalid commit -qm "Add sub to calc.sh"
+[exit 0]
+
+### Adversarial: claim ready before pushing anything
+
+$ echo "done [at=$(date +%s)]: ready in branch fm/dp-ready3 tested on main at $(git rev-parse HEAD)" >> /tmp/fm-dpush-lab/home/state/dp-ready3.status
+[exit 0]
+
+[firstmate] $ /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39535C9N8YY0760F5MNX2N8/bin/fm-crew-state.sh dp-ready3
+state: blocked · source: status-log · named head 7188569097207d2bc2454a179a0fd33b559d22ea is unreachable outside the worker copy
+[exit 0]
+
+### Stopping at ready (landing authority: yolo off): steps 1 and 2, then push the task branch
+
+$ git fetch origin && git rebase origin/$DB
+Rebasing (1/1)Auto-merging calc.sh
+CONFLICT (content): Merge conflict in calc.sh
+Auto-merging tests/run.sh
+CONFLICT (content): Merge conflict in tests/run.sh
+error: could not apply 7188569... Add sub to calc.sh
+hint: Resolve all conflicts manually, mark them as resolved with
+hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+hint: You can instead skip this commit: run "git rebase --skip".
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+Could not apply 7188569... Add sub to calc.sh
+[exit 1]
+(rebase stopped on a conflict with the landed mul change: resolve keeping both functions and both checks)
+
+$ git diff --name-only --diff-filter=U
+calc.sh
+tests/run.sh
+[exit 0]
+
+$ printf '#!/bin/sh\n# Tiny arithmetic helpers, sourced by test.sh.\nadd() { echo $(( $1 + $2 )); }\nmul() { echo $(( $1 * $2 )); }\nsub() { echo $(( $1 - $2 )); }\n' > calc.sh
+[exit 0]
+
+$ git show origin/main:tests/run.sh | sed 's/^check "mul 4 5".*/&\ncheck "sub 9 4" "$(sub 9 4)" 5/' > tests/run.sh
+[exit 0]
+
+$ git add calc.sh tests/run.sh && GIT_EDITOR=true git -c user.name=dp-ready3 -c user.email=w@example.invalid rebase --continue && git log --oneline -4
+[detached HEAD ce6a6c4] Add sub to calc.sh
+ 2 files changed, 2 insertions(+)
+                                                                                Successfully rebased and updated refs/heads/fm/dp-ready3.
+ce6a6c4 Add sub to calc.sh
+5b707df Add mul to calc.sh
+f9b4aac other worker lands a note
+c70a2b0 initial
+[exit 0]
+
+$ TEST_SHELL=bash ./test.sh
+ok - add 2 3
+ok - mul 4 5
+ok - sub 9 4
+suite passed
+[exit 0]
+
+$ TEST_SHELL=dash ./test.sh
+ok - add 2 3
+ok - mul 4 5
+ok - sub 9 4
+suite passed
+[exit 0]
+
+$ git push origin HEAD:refs/heads/fm/dp-ready3
+To file:///tmp/fm-dpush-lab/origin.git
+ * [new branch]      HEAD -> fm/dp-ready3
+[exit 0]
+
+$ echo "done [at=$(date +%s)]: ready in branch fm/dp-ready3 tested on main at $(git rev-parse HEAD)" >> /tmp/fm-dpush-lab/home/state/dp-ready3.status
+[exit 0]
+
+[firstmate] $ /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39535C9N8YY0760F5MNX2N8/bin/fm-crew-state.sh dp-ready3
+state: done · source: status-log · ready in branch fm/dp-ready3 tested on main at ce6a6c46eeffa928c0854d3c5d69862363679524 · not landed on origin's default branch
+[exit 0]
+
+[firstmate] $ git --git-dir=/tmp/fm-dpush-lab/origin.git log --oneline -1 main
+5b707df Add mul to calc.sh
+[exit 0]
+
+### Adversarial: firstmate tries to arm a PR merge poll for this direct-push task
+
+[firstmate] $ /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39535C9N8YY0760F5MNX2N8/bin/fm-pr-check.sh dp-ready3 https://github.com/example/dpproj/pull/1
+error: task dp-ready3 ships mode=direct-push, which lands by a fast-forward push to the default branch with no PR; there is no PR merge to monitor
+[exit 1]
+
+[firstmate] $ grep -c '^pr=' /tmp/fm-dpush-lab/home/state/dp-ready3.meta; ls /tmp/fm-dpush-lab/home/state/dp-ready3.check.sh 2>&1
+0
+ls: cannot access '/tmp/fm-dpush-lab/home/state/dp-ready3.check.sh': No such file or directory
+[exit 2]
+
+### firstmate relays landing approval -> the worker runs the landing loop
+
+$ git fetch origin && git rebase origin/$DB
+Current branch fm/dp-ready3 is up to date.
+[exit 0]
+
+$ TEST_SHELL=bash ./test.sh
+ok - add 2 3
+ok - mul 4 5
+ok - sub 9 4
+suite passed
+[exit 0]
+
+$ TEST_SHELL=dash ./test.sh
+ok - add 2 3
+ok - mul 4 5
+ok - sub 9 4
+suite passed
+[exit 0]
+
+$ git push origin HEAD:$DB
+To file:///tmp/fm-dpush-lab/origin.git
+   5b707df..ce6a6c4  HEAD -> main
+[exit 0]
+
+$ git push origin --delete fm/dp-ready3
+To file:///tmp/fm-dpush-lab/origin.git
+ - [deleted]         fm/dp-ready3
+[exit 0]
+
+$ echo "done [at=$(date +%s)]: landed $(git rev-parse HEAD) on $DB" >> /tmp/fm-dpush-lab/home/state/dp-ready3.status
+[exit 0]
+
+[firstmate] $ /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39535C9N8YY0760F5MNX2N8/bin/fm-crew-state.sh dp-ready3
+state: done · source: status-log · landed ce6a6c46eeffa928c0854d3c5d69862363679524 on main · landed on origin/main
+[exit 0]
+
+[firstmate] $ git --git-dir=/tmp/fm-dpush-lab/origin.git log --oneline --graph main; git --git-dir=/tmp/fm-dpush-lab/origin.git branch --list
+* ce6a6c4 Add sub to calc.sh
+* 5b707df Add mul to calc.sh
+* f9b4aac other worker lands a note
+* c70a2b0 initial
+* main
+[exit 0]

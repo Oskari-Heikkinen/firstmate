@@ -1,0 +1,112 @@
+### Setup (brief: verify isolation, create branch, start from latest origin default branch)
+
+$ pwd -P; git rev-parse --show-toplevel
+/home/oskari/.treehouse/dpproj-c4368b/1/dpproj
+/home/oskari/.treehouse/dpproj-c4368b/1/dpproj
+[exit 0]
+
+$ git checkout -b fm/dp-land3
+Switched to a new branch 'fm/dp-land3'
+[exit 0]
+
+$ git fetch origin
+[exit 0]
+
+$ DB=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true; [ -n "$DB" ] || { git remote set-head origin --auto >/dev/null; DB=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##'); }; echo default-branch=$DB
+default-branch=main
+[exit 0]
+
+$ git rebase origin/$DB
+Current branch fm/dp-land3 is up to date.
+[exit 0]
+### Implement
+
+$ printf 'mul() { echo $(( $1 * $2 )); }\n' >> calc.sh
+[exit 0]
+
+$ sed -i 's/^check "add 2 3".*/&\ncheck "mul 4 5" "$(mul 4 5)" 20/' tests/run.sh
+[exit 0]
+
+$ git add calc.sh tests/run.sh && git -c user.name=dp-land3 -c user.email=w@example.invalid commit -qm "Add mul to calc.sh" && git log --oneline -3
+b988e63 Add mul to calc.sh
+c70a2b0 initial
+[exit 0]
+
+$ echo "working [at=$(date +%s)]: mul implemented; entering landing loop" >> /tmp/fm-dpush-lab/home/state/dp-land3.status
+[exit 0]
+### Landing loop, attempt 1
+
+$ git fetch origin && git rebase origin/$DB
+Current branch fm/dp-land3 is up to date.
+[exit 0]
+
+$ TEST_SHELL=bash ./test.sh
+ok - add 2 3
+ok - mul 4 5
+suite passed
+[exit 0]
+
+$ TEST_SHELL=dash ./test.sh
+ok - add 2 3
+ok - mul 4 5
+suite passed
+[exit 0]
+### (lab) another worker lands on origin/main while this worker was testing
+
+$ rm -rf /tmp/fm-dpush-lab/other && git clone -q file:///tmp/fm-dpush-lab/origin.git /tmp/fm-dpush-lab/other && echo 'note from another worker' >> /tmp/fm-dpush-lab/other/NOTES.md && git -C /tmp/fm-dpush-lab/other add NOTES.md && git -C /tmp/fm-dpush-lab/other -c user.name=OtherWorker -c user.email=o@example.invalid commit -qm 'other worker lands a note' && git -C /tmp/fm-dpush-lab/other push -q origin HEAD:main && git -C /tmp/fm-dpush-lab/other log --oneline -3
+f9b4aac other worker lands a note
+c70a2b0 initial
+[exit 0]
+
+$ git push origin HEAD:$DB
+To file:///tmp/fm-dpush-lab/origin.git
+ ! [rejected]        HEAD -> main (fetch first)
+error: failed to push some refs to 'file:///tmp/fm-dpush-lab/origin.git'
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally. This is usually caused by another repository pushing to
+hint: the same ref. If you want to integrate the remote changes, use
+hint: 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+[exit 1]
+### Push refused as non-fast-forward -> back to step 1 (attempt 2)
+
+$ git fetch origin && git rebase origin/$DB && git log --oneline -4
+From file:///tmp/fm-dpush-lab/origin
+   c70a2b0..f9b4aac  main       -> origin/main
+Rebasing (1/1)                                                                                Successfully rebased and updated refs/heads/fm/dp-land3.
+5b707df Add mul to calc.sh
+f9b4aac other worker lands a note
+c70a2b0 initial
+[exit 0]
+
+$ TEST_SHELL=bash ./test.sh
+ok - add 2 3
+ok - mul 4 5
+suite passed
+[exit 0]
+
+$ TEST_SHELL=dash ./test.sh
+ok - add 2 3
+ok - mul 4 5
+suite passed
+[exit 0]
+
+$ git push origin HEAD:$DB
+To file:///tmp/fm-dpush-lab/origin.git
+   f9b4aac..5b707df  HEAD -> main
+[exit 0]
+### Step 5: ci.yml triggers only on pull_request, so this push to main runs no checks; nothing to wait for
+
+$ grep -A2 '^on:' .github/workflows/ci.yml
+on:
+  pull_request:
+jobs:
+[exit 0]
+
+$ echo "done [at=$(date +%s)]: landed 5b707df1a1ba30bf000d8c16d684b65c8515bcb3 on $DB" >> /tmp/fm-dpush-lab/home/state/dp-land3.status
+[exit 0]
+
+$ cat /tmp/fm-dpush-lab/home/state/dp-land3.status
+working [at=1790235637]: mul implemented; entering landing loop
+done [at=1790235793]: landed 5b707df1a1ba30bf000d8c16d684b65c8515bcb3 on main
+[exit 0]

@@ -1,0 +1,45 @@
+$ bin/fm-teardown.sh dp-land3
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  3 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown: reaping leaked worktree process(es) for dp-land3: 1476308 1481762
+teardown: force-killing leaked worktree process(es) for dp-land3: 1476308
+🌳 Worktree returned to pool.
+dpproj: synced c70a2b0..ce6a6c4
+teardown dp-land3 complete (window firstmate:fm-dp-land3, worktree /home/oskari/.treehouse/dpproj-c4368b/1/dpproj)
+Backlog: dp-land3 is closed in /tmp/fm-dpush-lab/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+
+$ bin/fm-teardown.sh dp-ready3
+teardown: reaping leaked worktree process(es) for dp-ready3: 1486072 1491749
+teardown: force-killing leaked worktree process(es) for dp-ready3: 1486072
+🌳 Worktree returned to pool.
+dpproj: already current
+teardown dp-ready3 complete (window firstmate:fm-dp-ready3, worktree /home/oskari/.treehouse/dpproj-c4368b/2/dpproj)
+Backlog: dp-ready3 is closed in /tmp/fm-dpush-lab/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+
+$ bin/fm-teardown.sh dp-unlanded
+REFUSED: worktree /home/oskari/.treehouse/dpproj-c4368b/3/dpproj has work not on any remote and not landed.
+unpushed commits:
+7c4ffc1 Add div (never pushed)
+Push the branch, land its PR, or get the captain's explicit OK to discard, then --force.
+[exit 1]
+
+$ cat data/backlog.md
+# Backlog
+
+## In flight
+- [ ] dp-unlanded - Add div (kind: ship) (since 2026-09-24)
+## Queued
+## Done
+- [x] dp-ready3 - Add sub to calc.sh (kind: ship) (done 2026-09-24)
+- [x] dp-land3 - Add mul to calc.sh (kind: ship) (done 2026-09-24)
+- [x] dp-ready2 - Add sub to calc.sh (kind: ship) (done 2026-09-24)
+- [x] dp-land2 - Add mul to calc.sh (kind: ship) (done 2026-09-24)
+- [x] dp-ready - Add sub to calc.sh (kind: ship) (done 2026-09-24)
+- [x] dp-land - Add mul to calc.sh (kind: ship) (done 2026-09-24)

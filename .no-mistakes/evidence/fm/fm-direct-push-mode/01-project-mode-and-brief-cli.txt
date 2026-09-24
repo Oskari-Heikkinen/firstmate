@@ -1,0 +1,14 @@
+$ bin/fm-project-mode.sh dpproj
+direct-push on
+exit=0
+
+$ bin/fm-brief.sh dp-bogus dpproj --mode direct-pusher
+error: --mode must be one of no-mistakes, direct-PR, direct-push, local-only (got 'direct-pusher')
+exit=1
+
+$ bin/fm-brief.sh dp-land dpproj --mode direct-push
+scaffolded: /tmp/fm-dpush-lab/home/data/dp-land/brief.md (ship, mode=direct-push; replace {TASK} and {FIRSTMATE_SPEC})
+exit=0
+$ bin/fm-brief.sh dp-ready dpproj --mode direct-push
+scaffolded: /tmp/fm-dpush-lab/home/data/dp-ready/brief.md (ship, mode=direct-push; replace {TASK} and {FIRSTMATE_SPEC})
+exit=0
