@@ -1,0 +1,13 @@
+window=fmlab:fm-nest1
+endpoint_task_id=nest1
+worktree=/tmp/fm-nested-lab.dV6Qpz/home/projects/proj/.treehouse/proj-2e6b6d/1/proj
+project=/tmp/fm-nested-lab.dV6Qpz/home/projects/proj
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+tasktmp=/tmp/fm-nest1
+model=default
+effort=default
+busy_gen=g1790236138.2955810.32463
+spawn_gen=s1790236138.2953531.28004

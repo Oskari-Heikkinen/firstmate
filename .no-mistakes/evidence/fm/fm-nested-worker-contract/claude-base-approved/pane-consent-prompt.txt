@@ -1,0 +1,50 @@
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+treehouse get
+oskari@OskuTETMET:/tmp/fm-nested-lab.6TRoKA/home/projects/proj$ treehouse get
+🌳 Setting up worktree...
+🌳 Entered worktree at /tmp/fm-nested-lab.6TRoKA/home/projects/proj/.treehouse/proj-affa80/1/proj. Type 'exit' to return.
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+oskari@OskuTETMET:/tmp/fm-nested-lab.6TRoKA/home/projects/proj/.treehouse/proj-affa80/1/proj$ export GOTMPDIR=/tmp/fm-nest1/gotmp
+oskari@OskuTETMET:/tmp/fm-nested-lab.6TRoKA/home/projects/proj/.treehouse/proj-affa80/1/proj$ export COMPACT_ADVISER_DISABLE=1
+oskari@OskuTETMET:/tmp/fm-nested-lab.6TRoKA/home/projects/proj/.treehouse/proj-affa80/1/proj$ export FM_TASK_ID=nest1
+oskari@OskuTETMET:/tmp/fm-nested-lab.6TRoKA/home/projects/proj/.treehouse/proj-affa80/1/proj$ . '/tmp/fm-nest1+30355f93b1d99a974b0b9b12dd0eeff5a56d04e2aae092c997e60bd3faf4594f/launch.s1790236218.30797
+90.25251.sh'
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Allow external CLAUDE.md file imports?
+
+  This project's CLAUDE.md imports files outside the current working directory. Never allow this for third-party repositories.
+
+  External imports:
+    /tmp/fm-nested-lab.6TRoKA/home/AGENTS.md
+
+  Important: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks https://code.claude.com/docs/en/security
+
+  ❯ No, disable external imports
+    Yes, allow external imports
+
+  Enter to confirm · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

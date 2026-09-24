@@ -1,0 +1,27 @@
+private tmux socket: fmnest-base-2953185
+fm-root: /tmp/fm-base-9296f9b.BuN0 (9296f9b)
+home: /tmp/fm-nested-lab.dV6Qpz/home  harness: claude
+fm-spawn rc=0
+window=fmlab:fm-nest1
+endpoint_task_id=nest1
+worktree=/tmp/fm-nested-lab.dV6Qpz/home/projects/proj/.treehouse/proj-2e6b6d/1/proj
+project=/tmp/fm-nested-lab.dV6Qpz/home/projects/proj
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+tasktmp=/tmp/fm-nest1
+model=default
+effort=default
+busy_gen=g1790236138.2955810.32463
+spawn_gen=s1790236138.2953531.28004
+worktree: /tmp/fm-nested-lab.dV6Qpz/home/projects/proj/.treehouse/proj-2e6b6d/1/proj
+--- captured requests ---
+--- pane shows external-include consent prompt? ---
+  Allow external CLAUDE.md file imports?
+  This project's CLAUDE.md imports files outside the current working directory. Never allow this for third-party repositories.
+  External imports:
+  Important: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks https://code.claude.com/docs/en/security
+  ❯ No, disable external imports
+(end)
+private tmux server fmnest-base-2953185 killed

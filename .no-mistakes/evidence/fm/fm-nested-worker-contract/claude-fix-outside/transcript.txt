@@ -1,0 +1,26 @@
+private tmux socket: fmnest-outside-3549710
+fm-root: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M395280RBV9FN0GB892PQ7FP (113ae1c)
+home: /tmp/fm-nested-lab.2Gw3rM/home  harness: claude
+fm-spawn rc=0
+window=fmlab:fm-nest1
+endpoint_task_id=nest1
+worktree=/tmp/fm-nested-lab.2Gw3rM/outside-pool/.treehouse/proj-dbd440/1/proj
+project=/tmp/fm-nested-lab.2Gw3rM/home/projects/proj
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+tasktmp=/tmp/fm-nest1
+model=default
+effort=default
+busy_gen=g1790236339.3564061.87
+spawn_gen=s1790236340.3550752.5222
+worktree: /tmp/fm-nested-lab.2Gw3rM/outside-pool/.treehouse/proj-dbd440/1/proj
+--- captured requests ---
+000_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=0 bytes=6401
+001_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=78145
+002_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=78145
+--- pane shows external-include consent prompt? ---
+  When this task works on Firstmate itself, the repository root AGENTS.md (also imported by CLAUDE.md) is project content and the supervisor contract for the firstmate managing you: follow this brief
+(end)
+private tmux server fmnest-outside-3549710 killed

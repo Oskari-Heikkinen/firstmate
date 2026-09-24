@@ -1,0 +1,22 @@
+== claude-base
+  Allow external CLAUDE.md file imports?
+== claude-base-approved
+000_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=0 bytes=6401
+001_v1_messages.json: HOME_CONTRACT_MARKER=1 PROJECT_MARKER=1 bytes=78439
+002_v1_messages.json: HOME_CONTRACT_MARKER=1 PROJECT_MARKER=1 bytes=78439
+== claude-fix
+000_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=0 bytes=6401
+001_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=78157
+002_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=78157
+== claude-fix-approved
+000_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=0 bytes=6401
+001_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=78157
+002_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=78157
+== claude-fix-outside
+000_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=0 bytes=6401
+001_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=78145
+002_v1_messages.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=78145
+== pi-base
+000_v1_chat_completions.json: HOME_CONTRACT_MARKER=1 PROJECT_MARKER=1 bytes=9500
+== pi-fix
+000_v1_chat_completions.json: HOME_CONTRACT_MARKER=0 PROJECT_MARKER=1 bytes=9345
