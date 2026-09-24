@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -17,7 +17,8 @@
 #   `## Captain's intent` line opening with a Captain label or address.
 #   Every ship or scout spawn renders `launch-brief.md`; for a no-mistakes ship
 #   it also carries the current `--intent` contract and the extracted captain
-#   intent. A legacy mixed Task is accepted there only under bin/fm-dod-lib.sh's
+#   intent, and for a direct-push ship the landing-authority section
+#   bin/fm-dod-lib.sh renders from this task's yolo. A legacy mixed Task is accepted there only under bin/fm-dod-lib.sh's
 #   provenance-marking rules; unmarked legacy Tasks stop for migration rather
 #   than becoming intent. That library owns the parsing and intent rules. When
 #   the explicit mode carries less rigor than the project's standing posture, a
@@ -764,7 +765,7 @@ else
   # and record no delivery posture; secondmate spawns hardcode theirs.
   if [ "$KIND" = ship ]; then
     [ "$MODE_SET" -eq 1 ] || {
-      echo "error: ship spawns require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
+      echo "error: ship spawns require --mode <no-mistakes|direct-PR|direct-push|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
       exit 1
     }
     [ "$YOLO_SET" -eq 1 ] || {
@@ -772,13 +773,13 @@ else
       exit 1
     }
     case "$MODE" in
-    no-mistakes | direct-PR | local-only) ;;
+    no-mistakes | direct-PR | direct-push | local-only) ;;
     no-mistakes-prod-only)
       echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to no-mistakes or direct-PR at intake" >&2
       exit 1
       ;;
     *)
-      echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2
+      echo "error: --mode must be one of no-mistakes, direct-PR, direct-push, local-only (got '$MODE')" >&2
       exit 1
       ;;
     esac
@@ -2778,6 +2779,9 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
         fm_brief_intent_overlay "$CAPTAIN_INTENT"
+      fi &&
+      if [ "$KIND" = ship ] && [ "$MODE" = direct-push ]; then
+        printf '\n' && fm_landing_authority_block "$YOLO"
       fi
   } >"$BRIEF_TMP" || {
     rm -f -- "$BRIEF_TMP"
@@ -2791,10 +2795,13 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   fi
 fi
 
-delivery_rigor_rank() { # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
+# direct-push ranks below direct-PR: both skip the pipeline, but direct-push
+# lands with no PR, so no review or pre-merge CI stands before the default branch.
+delivery_rigor_rank() { # <mode> -> 4 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
-  no-mistakes) echo 3 ;;
-  direct-PR) echo 2 ;;
+  no-mistakes) echo 4 ;;
+  direct-PR) echo 3 ;;
+  direct-push) echo 2 ;;
   local-only) echo 1 ;;
   *) echo 0 ;;
   esac

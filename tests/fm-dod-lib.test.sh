@@ -303,6 +303,44 @@ test_non_done_lines_are_not_gated() {
   pass "non-done lines are not gated"
 }
 
+# A direct-push worker lands by pushing its tested head straight to origin's
+# default branch, so no PR is recorded: the landed head is accepted because
+# origin's default branch holds it, and that branch is reported as where it
+# landed. The ready (not yet landed) head is on origin's fm/<id> instead.
+test_direct_push_landed_and_ready_heads() {
+  local repo wt sha reason rc landed
+  repo="$TMP_ROOT/push-repo"
+  wt="$TMP_ROOT/push-wt"
+  fm_git_worktree "$repo" "$wt" fm/push
+  git -C "$repo" fetch -q origin
+  git -C "$wt" commit -q --allow-empty -m 'tested change'
+  sha=$(git -C "$wt" rev-parse HEAD)
+
+  reason=$(accept_done ship direct-push "$wt" "$repo" "done: landed $sha on main")
+  rc=$?
+  [ "$rc" -eq 1 ] || fail "direct-push done: with an unpushed head was accepted"
+  case "$reason" in
+    *"named head $sha is unreachable outside the worker copy") ;;
+    *) fail "direct-push unpushed refusal did not name the commit: $reason" ;;
+  esac
+  fm_dod_head_on_origin_default "$wt" "$sha" >/dev/null \
+    && fail "an unpushed head was reported as landed on origin's default branch"
+
+  git -C "$wt" push -q origin HEAD:refs/heads/fm/push
+  accept_done ship direct-push "$wt" "$repo" "done: ready in branch fm/push tested on main at $sha" \
+    || fail "direct-push ready head pushed to its task branch was refused"
+  fm_dod_head_on_origin_default "$wt" "$sha" >/dev/null \
+    && fail "a ready head only on its task branch was reported as landed"
+
+  git -C "$wt" push -q origin HEAD:main
+  accept_done ship direct-push "$wt" "$repo" "done: landed $sha on main" \
+    || fail "direct-push head landed on origin's default branch was refused"
+  landed=$(fm_dod_head_on_origin_default "$wt" "$sha") \
+    || fail "a head pushed to origin's default branch was not reported as landed"
+  [ "$landed" = origin/main ] || fail "landed head named the wrong branch: '$landed'"
+  pass "direct-push: an unpushed head is refused, a ready head is accepted but not landed, a pushed head is landed"
+}
+
 test_scout_done_is_not_gated
 test_unpushed_ship_done_is_refused
 test_no_mistakes_prevalidation_done_is_not_gated
@@ -319,5 +357,7 @@ test_local_only_linked_branch_is_accepted
 test_local_only_detached_head_is_refused
 test_standalone_local_only_needs_project_ref
 test_non_done_lines_are_not_gated
+
+test_direct_push_landed_and_ready_heads
 
 echo "all fm-dod-lib tests passed"
