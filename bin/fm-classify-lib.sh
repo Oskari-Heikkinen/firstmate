@@ -1593,11 +1593,11 @@ EOF
 }
 
 status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe kind working classified
+  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe kind absorbable classified
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
-    working=false
+    absorbable=false
     case "
 $fully_presented
 " in *$'\n'"$task"$'\n'*) safe=true ;; esac
@@ -1615,9 +1615,11 @@ $fully_presented
         case "$line" in
           *[![:space:]]*)
             status_line_is_unread_surface "$line" "$kind" || continue
-            if [ "$kind" = secondmate ] && [ "$(status_line_verb "$line")" = working ]; then
-              working=true
-              continue
+            if [ "$kind" = secondmate ]; then
+              case "$(status_line_verb "$line")" in
+                working) absorbable=true; continue ;;
+                note) _fm_status_line_has_corr "$line" && { absorbable=true; continue; } ;;
+              esac
             fi
             safe=true
             break
@@ -1626,10 +1628,11 @@ $fully_presented
       done <<EOF
 $lines
 EOF
-      # A secondmate's absorbed `working:` lines alone may advance the cursor
+      # A secondmate's absorbable lines (`working:` progress and correlated
+      # notes, which may be acknowledgements) alone may advance the cursor
       # only up to the watcher's classified offset: later bytes are untriaged,
       # and skipping them would strip the annotation from their eventual wake.
-      if [ "$safe" = false ] && [ "$working" = true ]; then
+      if [ "$safe" = false ] && [ "$absorbable" = true ]; then
         classified=$(status_presentation_marker_offset "$(status_signal_seen_marker_path "$state" "$task")" "$f")
         case "$classified" in ''|*[!0-9]*) classified=0 ;; esac
         [ "$classified" -ge "$endpoint" ] || endpoint=$classified
@@ -2207,6 +2210,11 @@ status_span_secondmate_routine() {  # <status-file> <start> <end> <ident> <note-
   return "$rc"
 }
 
+_fm_status_line_has_corr() {  # <status-line>
+  case "$1" in *corr=[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]*) return 0 ;; esac
+  return 1
+}
+
 _fm_status_secondmate_routine_chunk() {  # <status-file> <start> <chunk-file> <note-predicate> [<predicate-args>...]
   local f=$1 start=$2 chunk_file=$3 predicate=$4 line verb number=0 any=0
   shift 4
@@ -2216,9 +2224,7 @@ _fm_status_secondmate_routine_chunk() {  # <status-file> <start> <chunk-file> <n
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
     case "$line" in *:*) status_line_verb "$line" verb ;; *) return 1 ;; esac
     case "$verb" in
-      working)
-        case "$line" in *corr=[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]*) return 1 ;; esac
-        ;;
+      working) ! _fm_status_line_has_corr "$line" || return 1 ;;
       note) "$predicate" "$@" "$line" || return 1 ;;
       "done") _fm_status_secondmate_duplicate_done "$f" "$start" "$chunk_file" "$number" "$line" || return 1 ;;
       *) return 1 ;;

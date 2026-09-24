@@ -1701,8 +1701,30 @@ test_secondmate_working_ack_keeps_unclassified_outcome_annotation() {
   pass "a presented working line does not acknowledge a later mate line the watcher has not classified"
 }
 
+test_secondmate_ack_note_keeps_unclassified_outcome_annotation() {
+  local dir state drain_out corr
+  dir=$(make_case mate-ack-note-cap)
+  corr=$(mate_expectation "$dir" ack) || fail "could not create the ack expectation"
+  dir=$(mate_routine_case mate-ack-note-cap '' "note [corr=$corr]: taken up, will follow the standing note")
+  state="$dir/state"; drain_out="$dir/drain.out"
+  assert_mate_span_absorbed "$dir" "an acknowledgement of an ack-typed request"
+  printf '%s\n' 'failed: child kid CI broke on main' 'working: retrying the build' >> "$state/mate.status"
+  printf 'needs-decision: pick A or B\n' > "$state/other.status"
+  append_wake "$state" signal other.status "signal: $state/other.status" \
+    || fail "queueing the unrelated wake failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2> "$dir/drain.err" || fail "the unrelated drain failed"
+  grep -F "mate note [corr=$corr]: taken up, will follow the standing note" "$drain_out" >/dev/null \
+    || fail "the absorbed acknowledgement did not ride along: $(cat "$drain_out")"
+  ack_drain_err "$state" "$dir/drain.err" >/dev/null || fail "acknowledging the unrelated drain failed"
+  assert_mate_span_wakes "$dir" "a mate failure the watcher had not classified"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "the failure drain failed"
+  grep -F 'failed: child kid CI broke on main' "$drain_out" >/dev/null \
+    || fail "the mate failure lost its wake annotation: $(cat "$drain_out")"
+  pass "a presented acknowledgement does not acknowledge a later mate line the watcher has not classified"
+}
+
 test_secondmate_ack_absorbed_answer_wakes() {
-  local dir corr
+  local dir corr answer
   dir=$(make_case mate-ack-absorbed)
   corr=$(mate_expectation "$dir" ack) || fail "could not create the ack expectation"
   dir=$(mate_routine_case mate-ack-absorbed 'note: bootstrap' "note [corr=$corr]: taken up, will follow the standing note")
@@ -1718,6 +1740,12 @@ test_secondmate_ack_absorbed_answer_wakes() {
   dir=$(mate_routine_case mate-answer-wakes 'note: bootstrap' "note [corr=$corr]: the ledger is clean")
   assert_mate_span_wakes "$dir" "a reply to an answer-typed request"
 
+  dir=$(make_case mate-mixed-corr-wakes)
+  corr=$(mate_expectation "$dir" ack) || fail "could not create the ack expectation"
+  answer=$(mate_expectation "$dir" answer) || fail "could not create the answer expectation"
+  dir=$(mate_routine_case mate-mixed-corr-wakes 'note: bootstrap' "note: corr=$corr noted; corr=$answer the ledger audit found 3 drifted entries")
+  assert_mate_span_wakes "$dir" "a note answering both an ack-typed and an answer-typed request"
+
   dir=$(make_case mate-answer-working-wakes)
   corr=$(mate_expectation "$dir" answer) || fail "could not create the answer expectation"
   dir=$(mate_routine_case mate-answer-working-wakes 'note: bootstrap' "working [key=audit]: corr=$corr started the ledger audit")
@@ -1725,7 +1753,7 @@ test_secondmate_ack_absorbed_answer_wakes() {
 
   dir=$(mate_routine_case mate-mixed-wakes 'note: bootstrap' $'working: still on it\nnote: the vendor changed their API')
   assert_mate_span_wakes "$dir" "a working line followed by an uncorrelated note"
-  pass "an ack-typed acknowledgement is absorbed; answers, correlated progress, done replies, and mixed spans wake"
+  pass "an ack-typed acknowledgement is absorbed; answers, mixed-token notes, correlated progress, done replies, and mixed spans wake"
 }
 
 test_secondmate_duplicate_done_absorbed_only_when_adjacent() {
@@ -6778,6 +6806,7 @@ test_secondmate_working_line_absorbed_and_presented
 test_secondmate_ack_absorbed_answer_wakes
 test_secondmate_ack_resolves_silently_and_is_presented
 test_secondmate_working_ack_keeps_unclassified_outcome_annotation
+test_secondmate_ack_note_keeps_unclassified_outcome_annotation
 test_secondmate_duplicate_done_absorbed_only_when_adjacent
 test_crewmate_duplicate_done_still_wakes
 test_self_announced_close_does_not_rewake_but_next_note_does

@@ -605,24 +605,26 @@ fm_pending_reply_line_resolves() {  # <line> <corr_id>
 }
 
 # 0 when <line> on <task_id>'s parent channel is a routine acknowledgement: a
-# note: line whose correlation token names this home's expectation for that
-# same task, recorded with expect=ack. Any other verb, an uncorrelated or
-# foreign correlation, and an answer expectation return 1, so the line keeps
+# note: line whose every correlation token names this home's expectation for
+# that same task, recorded with expect=ack. Any other verb, an uncorrelated or
+# foreign correlation, and any answer expectation return 1, so the line keeps
 # waking the parent. This is the note predicate the watcher hands to
 # bin/fm-classify-lib.sh's status_span_secondmate_routine, which owns which
 # secondmate lines are routine; this library owns only what an expectation says.
 fm_pending_reply_line_acks() {  # <state-dir> <task_id> <line>
-  local state=$1 task_id=$2 line=$3 verb corr rec
+  local state=$1 task_id=$2 line=$3 verb corrs corr rec
   [ -n "$task_id" ] && [ -n "$line" ] || return 1
   status_line_verb "$line" verb
   [ "$verb" = note ] || return 1
-  corr=$(fm_pending_reply_extract_corr "$line")
-  [ -n "$corr" ] || return 1
-  fm_pending_reply_line_resolves "$line" "$corr" || return 1
-  rec=$(fm_pending_reply_path "$state" "$corr")
-  [ -f "$rec" ] && [ ! -L "$rec" ] || return 1
-  [ "$(fm_pending_reply_get "$rec" task_id)" = "$task_id" ] || return 1
-  [ "$(fm_pending_reply_expect_of "$rec")" = ack ]
+  corrs=$(printf '%s' "$line" | grep -oE "$FM_PENDING_REPLY_CORR_RE" 2>/dev/null | cut -d= -f2- | tr 'A-F' 'a-f')
+  [ -n "$corrs" ] || return 1
+  for corr in $corrs; do
+    fm_pending_reply_line_resolves "$line" "$corr" || return 1
+    rec=$(fm_pending_reply_path "$state" "$corr")
+    [ -f "$rec" ] && [ ! -L "$rec" ] || return 1
+    [ "$(fm_pending_reply_get "$rec" task_id)" = "$task_id" ] || return 1
+    [ "$(fm_pending_reply_expect_of "$rec")" = ack ] || return 1
+  done
 }
 
 # Scan a status file for a correlated resolve. Prints the matching line or empty.
