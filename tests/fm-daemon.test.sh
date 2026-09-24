@@ -1179,7 +1179,7 @@ pause_fp_housekeeping() {  # <dir> <crew-state-line> [standing-waits-ceiling-sec
     export FM_FAKE_TMUX_WINDOW="sess:fm-held-fp1" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
       FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
       FM_FAKE_CREW_STATE="$crew" FM_PAUSE_RESURFACE_SECS=240 FM_STANDING_WAITS_CEILING_SECS="$ceiling"
-    [ "$#" -eq 0 ] || export "$@"
+    local kv; for kv in "$@"; do export "${kv?}"; done
     PATH="$dir/fakebin:$PATH" housekeeping "$dir/state"
   )
 }
