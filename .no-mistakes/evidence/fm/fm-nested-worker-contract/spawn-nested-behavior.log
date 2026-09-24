@@ -1,0 +1,6 @@
+ok - a nested claude worker's launch excludes only the home's own instruction files
+ok - a claude worker whose worktree is outside the home launches unchanged
+ok - a second mate's launch excludes no instruction file, so its home contract still loads
+ok - a nested pi worker's extension drops the home context file and keeps the project's
+ok - a pi worker whose worktree is outside the home registers no context filter
+# all fm-spawn-nested-home-context tests passed

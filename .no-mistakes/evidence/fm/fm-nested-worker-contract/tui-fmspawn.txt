@@ -1,0 +1,33 @@
+$ cd /tmp/fm-lab-nested.mbhxQR/home/projects/proj/.treehouse/pool/1/proj
+$ claude --dangerously-skip-permissions --settings '{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false},"claudeMdExcludes":["/tmp/fm-lab-nested.mbhxQR/home/CLAUDE.md","/tmp/fm-lab-nested.mbhxQR/home/CLAUDE.local.md","/tmp/fm-lab-nested.mbhxQR/home/AGENTS.md","/tmp/fm-lab-nested.mbhxQR/home/.claude/CLAUDE.md","/tmp/fm-lab-nested.mbhxQR/home/.claude/rules/**"]}'
+
+
+ ▐▛███▛█   Claude Code v2.1.281
+▝▜██████▀  Opus 5.5 (1M context) · API Usage Billing
+  ▝▝ ▝▝    /tmp/fm-lab-nested.mbhxQR/home/projects/proj/.treehouse/pool/1/proj
+
+
+● agents-md: no CLAUDE.md found; AGENTS.md loaded:
+  /tmp/fm-lab-nested.mbhxQR/home/projects/proj/.treehouse/pool/1/proj/AGENTS.md
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                     tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -1,0 +1,8 @@
+== glob metacharacter (home=/tmp/fm-nested-adv.LERR7b/home[1]) spawn exit=0
+warning: firstmate home /tmp/fm-nested-adv.LERR7b/home[1] contains a glob character, so this nested claude worker still loads its instruction files
+settings arg as the shell parses it: {"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}
+{"valid_json":true,"claudeMdExcludes":null}
+== apostrophe (home=/tmp/fm-nested-adv.LERR7b/cap'n home) spawn exit=0
+(no glob warning)
+settings arg as the shell parses it: {"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false},"claudeMdExcludes":["/tmp/fm-nested-adv.LERR7b/cap'n home/CLAUDE.md","/tmp/fm-nested-adv.LERR7b/cap'n home/CLAUDE.local.md","/tmp/fm-nested-adv.LERR7b/cap'n home/AGENTS.md","/tmp/fm-nested-adv.LERR7b/cap'n home/.claude/CLAUDE.md","/tmp/fm-nested-adv.LERR7b/cap'n home/.claude/rules/**"]}
+{"valid_json":true,"claudeMdExcludes":["/tmp/fm-nested-adv.LERR7b/cap'n home/CLAUDE.md","/tmp/fm-nested-adv.LERR7b/cap'n home/CLAUDE.local.md","/tmp/fm-nested-adv.LERR7b/cap'n home/AGENTS.md","/tmp/fm-nested-adv.LERR7b/cap'n home/.claude/CLAUDE.md","/tmp/fm-nested-adv.LERR7b/cap'n home/.claude/rules/**"]}

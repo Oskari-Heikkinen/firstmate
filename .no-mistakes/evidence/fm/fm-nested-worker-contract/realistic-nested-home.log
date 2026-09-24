@@ -1,0 +1,21 @@
+== fm-spawn claude --settings for nested worker (home=/tmp/fm-nested-real.sUbBVQ/home):
+{
+  "feedbackDrafts": "off",
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+  "claudeMdExcludes": [
+    "/tmp/fm-nested-real.sUbBVQ/home/CLAUDE.md",
+    "/tmp/fm-nested-real.sUbBVQ/home/CLAUDE.local.md",
+    "/tmp/fm-nested-real.sUbBVQ/home/AGENTS.md",
+    "/tmp/fm-nested-real.sUbBVQ/home/.claude/CLAUDE.md",
+    "/tmp/fm-nested-real.sUbBVQ/home/.claude/rules/**"
+  ]
+}
+== first model request from a worker nested in the home (2.1.281 (Claude Code); pi 0.85.1)
+claude nested, pre-change launch   request_bytes= 174654  home_contract_hits=1  project_rules_hits=1  firstmate_skill_names_found=3/3
+claude nested, fm-spawn launch     request_bytes= 113090  home_contract_hits=0  project_rules_hits=1  firstmate_skill_names_found=0/3
+pi nested, no filter               request_bytes=  67908  home_contract_hits=1  project_rules_hits=1  firstmate_skill_names_found=3/3
+pi nested, fm-spawn extension      request_bytes=   7099  home_contract_hits=0  project_rules_hits=1  firstmate_skill_names_found=0/3
