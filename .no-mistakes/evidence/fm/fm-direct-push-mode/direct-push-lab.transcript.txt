@@ -1,0 +1,139 @@
+
+=== private tmux server fm-dp-lab-2268514
+
+=== fm-brief.sh dpush-on proj --mode direct-push
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-brief.sh dpush-on proj --mode direct-push
+scaffolded: /tmp/fm-dp-lab.41cICM/home/data/dpush-on/brief.md (ship, mode=direct-push; replace {TASK} and {FIRSTMATE_SPEC})
+[exit 0]
+
+=== fm-spawn.sh dpush-on --mode direct-push --yolo on --backend tmux (private socket)
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-spawn.sh dpush-on /tmp/fm-dp-lab.41cICM/projects/proj --harness claude --backend tmux --mode direct-push --yolo on
+spawned dpush-on harness=claude kind=ship mode=direct-push yolo=on window=firstmate:fm-dpush-on worktree=/tmp/fm-dp-lab.41cICM/treehouse/.treehouse/proj-8d0235/1/proj
+[exit 0]
+meta:
+worktree=/tmp/fm-dp-lab.41cICM/treehouse/.treehouse/proj-8d0235/1/proj
+kind=ship
+mode=direct-push
+yolo=on
+landing authority section in launch brief:
+# Current landing authority
+This section supersedes every earlier instruction about when this direct-push task lands.
+Landing is pre-authorized for this task: when the work is complete, run the Definition of done's landing loop and report the landed `done:`.
+
+=== fm-brief.sh dpush-off proj --mode direct-push
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-brief.sh dpush-off proj --mode direct-push
+scaffolded: /tmp/fm-dp-lab.41cICM/home/data/dpush-off/brief.md (ship, mode=direct-push; replace {TASK} and {FIRSTMATE_SPEC})
+[exit 0]
+
+=== fm-spawn.sh dpush-off --mode direct-push --yolo off --backend tmux (private socket)
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-spawn.sh dpush-off /tmp/fm-dp-lab.41cICM/projects/proj --harness claude --backend tmux --mode direct-push --yolo off
+spawned dpush-off harness=claude kind=ship mode=direct-push yolo=off window=firstmate:fm-dpush-off worktree=/tmp/fm-dp-lab.41cICM/treehouse/.treehouse/proj-8d0235/2/proj
+[exit 0]
+meta:
+worktree=/tmp/fm-dp-lab.41cICM/treehouse/.treehouse/proj-8d0235/2/proj
+kind=ship
+mode=direct-push
+yolo=off
+landing authority section in launch brief:
+# Current landing authority
+This section supersedes every earlier instruction about when this direct-push task lands.
+Landing waits for approval: when the work is complete, stop at ready as the Definition of done describes, and run the landing loop only after firstmate relays approval to land this task.
+
+=== [dpush-on] worker: implement and commit on fm/dpush-on
+HEAD
+default branch: main
+
+=== [dpush-on] adversarial: a done: whose head is not on origin must not read done
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-crew-state.sh dpush-on
+state: blocked · source: status-log · named head d0013c79305cb31e1360f2853601b285ac221c78 is unreachable outside the worker copy
+[exit 0]
+
+=== [dpush-on] landing loop step 1-2: fetch, rebase, full suite (another worker lands meanwhile)
+suite: (meanwhile another worker landed on origin/main)
+suite: all checks passed
+
+=== [dpush-on] step 3: plain push to the default branch - expected to be refused (lost race)
+$ git push origin HEAD:main
+To file:///tmp/fm-dp-lab.41cICM/proj.origin.git
+ ! [rejected]        HEAD -> main (fetch first)
+error: failed to push some refs to 'file:///tmp/fm-dp-lab.41cICM/proj.origin.git'
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally. This is usually caused by another repository pushing to
+hint: the same ref. If you want to integrate the remote changes, use
+hint: 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+[exit 1]
+RESULT: first push refused as non-fast-forward (race lost, nothing overwritten)
+origin/main tip after refused push: 16227da other worker lands first
+
+=== [dpush-on] step 4 -> 1-2 again: re-fetch, rebase, re-run the full suite
+suite: all checks passed
+
+=== [dpush-on] step 3 again: plain push
+$ git push origin HEAD:main
+To file:///tmp/fm-dp-lab.41cICM/proj.origin.git
+   16227da..d01af60  HEAD -> main
+[exit 0]
+origin main history:
+d01af60 bump VERSION to 2
+16227da other worker lands first
+274c62a initial
+
+=== [dpush-on] firstmate reads crew state after landing
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-crew-state.sh dpush-on
+state: done · source: status-log · landed d01af60dd79ade36ec2ff8ebcaae45040531f369 on main · landed on origin/main
+[exit 0]
+
+=== [dpush-on] firstmate tries to arm a PR merge poll for a direct-push task
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 FM_STATE_OVERRIDE=/tmp/fm-dp-lab.41cICM/home/state /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-pr-check.sh dpush-on https://github.com/o/r/pull/1
+error: task dpush-on ships mode=direct-push, which lands by a fast-forward push to the default branch with no PR; there is no PR merge to monitor
+[exit 1]
+pr= lines recorded in meta: 0
+
+=== [dpush-off] worker: implement and commit
+
+=== [dpush-off] adversarial: teardown before anything is pushed must refuse
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-teardown.sh dpush-off
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: worktree /tmp/fm-dp-lab.41cICM/treehouse/.treehouse/proj-8d0235/2/proj has work not on any remote and not landed.
+unpushed commits:
+16ca6a5 add NOTE
+Push the branch, land its PR, or get the captain's explicit OK to discard, then --force.
+[exit 1]
+
+=== [dpush-off] stop at ready: steps 1-2, then push to fm/dpush-off only
+suite: all checks passed
+$ git push origin HEAD:refs/heads/fm/dpush-off
+To file:///tmp/fm-dp-lab.41cICM/proj.origin.git
+ * [new branch]      HEAD -> fm/dpush-off
+[exit 0]
+RESULT: origin/main unchanged by the yolo-off worker
+
+=== [dpush-off] firstmate reads crew state at ready
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-crew-state.sh dpush-off
+state: done · source: status-log · ready in branch fm/dpush-off tested on main at 0dd386dea9b369ca078ffbe8e2614bebfce7a260 · not landed on origin's default branch
+[exit 0]
+
+=== [dpush-on] teardown after landing (no PR recorded)
+$ env FM_HOME=/tmp/fm-dp-lab.41cICM/home FM_ROOT_OVERRIDE=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK FM_SPAWN_NO_GUARD=1 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39AGWYZWG2QS24ZYE6GG7GK/bin/fm-teardown.sh dpush-on
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+teardown: reaping leaked worktree process(es) for dpush-on: 2270838 2277785
+teardown: force-killing leaked worktree process(es) for dpush-on: 2270838
+🌳 Worktree returned to pool.
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+/tmp/fm-dp-lab.41cICM/projects/proj: synced 274c62a..d01af60
+teardown dpush-on complete (window firstmate:fm-dpush-on, worktree /tmp/fm-dp-lab.41cICM/treehouse/.treehouse/proj-8d0235/1/proj)
+Backlog: dpush-on is closed in /tmp/fm-dp-lab.41cICM/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+backlog row:
+  id: dpush-on
+  state: done
+
+=== cleanup
+private tmux server fm-dp-lab-2268514 killed
