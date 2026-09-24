@@ -7,13 +7,32 @@
 # both use this owner without duplicating lint configuration.
 # The explicit --fast mode is local-only and disables ShellCheck's extended
 # dataflow analysis while preserving ordinary shell lint checks and source
-# following. CI, main, and merge-base-less runs keep --norc --external-sources
-# with full dataflow over the whole canonical set. An ordinary local branch
-# (changed-file mode, including the no-mistakes lint step) drops
-# --external-sources, keeps dataflow, and excludes SC1091, SC2034, SC2153,
-# and SC2329, the codes that need library context. Those codes still run in
-# CI over the whole set. Explicit paths keep --external-sources with the
-# selected dataflow mode.
+# following. CI (explicit paths included), main, and merge-base-less runs keep
+# --norc --external-sources with full dataflow over the whole canonical set.
+#
+# Local split mode. Outside CI, changed-file mode (including the no-mistakes
+# lint step) and explicit paths never run ShellCheck with --external-sources
+# and extended analysis on the same invocation, because that combination
+# dominates memory: on the largest source closure it peaks at about three and
+# a half times the costlier split pass (docs/verification/lint-option-a.md),
+# and parallel local runs can exhaust the host.
+# Instead each root gets two cheap invocations, one at a time per worker:
+#   1. extended dataflow without --external-sources, excluding the cross-file
+#      codes SC1091, SC2034, SC2153, SC2154, and SC2329, whose verdicts need
+#      library context this pass does not load;
+#   2. --external-sources without extended analysis, --include'd to exactly
+#      those cross-file codes, so it restores them with library context
+#      without raising the extra findings (such as SC2086 on values dataflow
+#      proves safe) that disabling dataflow would otherwise add.
+# Every code is owned by exactly one pass, so no diagnostic prints twice.
+# Relative to CI's single full pass, the split can still miss:
+#   - SC2329 (function never invoked), which needs both source context and
+#     dataflow, so neither pass can raise it and it stays CI-only;
+#   - any other diagnostic whose verdict depends on dataflow facts defined in
+#     a sourced file, since the dataflow pass sees each root alone (it may
+#     also report such a finding that CI's source-aware pass would not);
+#   - any cross-file code whose verdict would change with dataflow enabled.
+# CI runs the full pass over every root, so these gaps never reach main.
 # Tests stop source analysis at imported production modules because CI analyzes
 # every production shell separately as a canonical, source-aware root.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
@@ -30,12 +49,12 @@
 #   - Otherwise (an ordinary local branch with a real merge-base) it lints
 #     only the canonical-set files changed since that merge-base, including
 #     uncommitted local edits, via plain local `git diff` (no network, no
-#     `gh`). That local pass drops --external-sources and excludes SC1091,
-#     SC2034, SC2153, and SC2329. A branch with zero matching changed files
+#     `gh`), in local split mode. A branch with zero matching changed files
 #     skips ShellCheck and prints a "no changed lint targets" note, then
 #     still runs the backend-purity check and validates workflows.
 # Explicit paths always bypass this file-set selection and lint exactly the
-# given paths, matching the same config, without the workflow YAML check.
+# given paths, in local split mode outside CI and full mode in CI, without the
+# workflow YAML check.
 # Explicit core bin/ and bin/backends/ scripts still receive the
 # backend-purity check. The backend-purity check rejects direct Beads CLI
 # invocations in the core bin/ and bin/backends/ scripts so every configured
@@ -57,7 +76,7 @@
 # Usage:
 #   fm-lint.sh                         lint the context-selected file set (see above)
 #   fm-lint.sh --fast [path]...       local lint with extended analysis disabled
-#   fm-lint.sh <path>...               lint explicit roots with the same config
+#   fm-lint.sh <path>...               lint explicit roots (local split mode outside CI)
 #   fm-lint.sh --jobs <1|2> [path]...  override bounded worker count
 #   fm-lint.sh --partition <1of2|2of2> lint one full-rigor canonical CI partition
 #   fm-lint.sh --telemetry <path> ...  write a quiet metrics snapshot
@@ -67,9 +86,9 @@
 set -u
 
 REQUIRED_SHELLCHECK=0.11.0
-# Cross-file codes that need --external-sources. Local changed-file mode
-# cannot judge them, so they stay CI-only.
-LOCAL_NOX_EXCLUDE=SC1091,SC2034,SC2153,SC2329
+# Cross-file codes whose verdict needs --external-sources. The local split's
+# dataflow pass excludes them and its source-following pass checks only them.
+LOCAL_CROSS_FILE_CODES=SC1091,SC2034,SC2153,SC2154,SC2329
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SELF="$SELF_DIR/fm-lint.sh"
 ROOT="$(cd "$SELF_DIR/.." && pwd -P)"
@@ -84,9 +103,21 @@ fm_lint_worker_stop() {
   FM_LINT_WORKER_SHELLCHECK_PID=
 }
 
+# fm_lint_worker_invoke <output> <shellcheck-arg>...: run one ShellCheck
+# invocation, appending its diagnostics, where the signal traps can stop it.
+fm_lint_worker_invoke() {
+  local output=$1 invocation_rc=0
+  shift
+  "$FM_LINT_SHELLCHECK" "$@" >> "$output" 2>&1 &
+  FM_LINT_WORKER_SHELLCHECK_PID=$!
+  wait "$FM_LINT_WORKER_SHELLCHECK_PID" || invocation_rc=$?
+  FM_LINT_WORKER_SHELLCHECK_PID=
+  return "$invocation_rc"
+}
+
 fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
   local manifest=$1 output_dir=$2 shard_index=$3 tab index path output invocation_rc rc=0
-  local -a roots shellcheck_args
+  local -a roots
   roots=()
   tab=$(printf '\t')
   while IFS="$tab" read -r index path || [ -n "${index:-}${path:-}" ]; do
@@ -94,41 +125,37 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
     roots+=("$path")
   done < "$manifest"
   output="$output_dir/shard.$shard_index"
+  : > "$output.out"
   if [ "${#roots[@]}" -gt 0 ]; then
     trap 'fm_lint_worker_stop; exit 129' HUP
     trap 'fm_lint_worker_stop; exit 130' INT
     trap 'fm_lint_worker_stop; exit 143' TERM
-    shellcheck_args=(--norc)
-    if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
-      shellcheck_args+=(--external-sources)
-    fi
-    if [ -n "${FM_LINT_INTERNAL_EXCLUDE:-}" ]; then
-      shellcheck_args+=(--exclude="$FM_LINT_INTERNAL_EXCLUDE")
-    fi
-    if [ "${FM_LINT_INTERNAL_FAST:-0}" -eq 1 ]; then
-      shellcheck_args+=(--extended-analysis=false)
-    fi
-    : > "$output.out"
-    if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
-      "$FM_LINT_SHELLCHECK" "${shellcheck_args[@]}" -- "${roots[@]}" >> "$output.out" 2>&1 &
-      FM_LINT_WORKER_SHELLCHECK_PID=$!
-      wait "$FM_LINT_WORKER_SHELLCHECK_PID" || rc=$?
-      FM_LINT_WORKER_SHELLCHECK_PID=
-    else
-      for path in "${roots[@]}"; do
-        invocation_rc=0
-        "$FM_LINT_SHELLCHECK" "${shellcheck_args[@]}" -- "$path" >> "$output.out" 2>&1 &
-        FM_LINT_WORKER_SHELLCHECK_PID=$!
-        wait "$FM_LINT_WORKER_SHELLCHECK_PID" || invocation_rc=$?
-        FM_LINT_WORKER_SHELLCHECK_PID=
-        if [ "$rc" -eq 0 ] && [ "$invocation_rc" -ne 0 ]; then
-          rc=$invocation_rc
-        fi
-      done
-    fi
+    case "${FM_LINT_INTERNAL_MODE:-full}" in
+      split)
+        # One root at a time, two cheap passes that own disjoint codes: the
+        # dataflow pass without source following owns every code except the
+        # cross-file ones, and the source-following pass without dataflow owns
+        # exactly those cross-file codes.
+        for path in "${roots[@]}"; do
+          invocation_rc=0
+          fm_lint_worker_invoke "$output.out" --norc \
+            --exclude="$FM_LINT_INTERNAL_CROSS_FILE_CODES" -- "$path" || invocation_rc=$?
+          [ "$rc" -ne 0 ] || rc=$invocation_rc
+          invocation_rc=0
+          fm_lint_worker_invoke "$output.out" --norc --external-sources --extended-analysis=false \
+            --include="$FM_LINT_INTERNAL_CROSS_FILE_CODES" -- "$path" || invocation_rc=$?
+          [ "$rc" -ne 0 ] || rc=$invocation_rc
+        done
+        ;;
+      fast)
+        fm_lint_worker_invoke "$output.out" --norc --external-sources --extended-analysis=false \
+          -- "${roots[@]}" || rc=$?
+        ;;
+      *)
+        fm_lint_worker_invoke "$output.out" --norc --external-sources -- "${roots[@]}" || rc=$?
+        ;;
+    esac
     trap - HUP INT TERM
-  else
-    : > "$output.out"
   fi
   printf '%s\n' "$rc" > "$output.rc"
   return "$rc"
@@ -520,8 +547,6 @@ fm_lint_is_canonical_root() {
 
 CHANGED_MODE=0
 EXPLICIT_PATHS=0
-FOLLOW_SOURCES=1
-EXCLUDE_CODES=
 if [ "$#" -gt 0 ]; then
   EXPLICIT_PATHS=1
   ROOTS=("$@")
@@ -549,10 +574,11 @@ else
     done < <(git diff --name-only --diff-filter=ACMR -z "$merge_base" -- 2>/dev/null | LC_ALL=C sort -z)
   fi
 fi
-if [ "$CHANGED_MODE" -eq 1 ] && [ "$FAST" -eq 0 ]; then
-  FOLLOW_SOURCES=0
-  EXCLUDE_CODES=$LOCAL_NOX_EXCLUDE
-  ANALYSIS_MODE=local
+# Local changed-file and explicit-path runs never combine source following
+# with extended analysis; only the full canonical set and CI pay that cost.
+if [ "$FAST" -eq 0 ] && { [ "$CHANGED_MODE" -eq 1 ] || [ "$EXPLICIT_PATHS" -eq 1 ]; } \
+  && [ "${GITHUB_ACTIONS:-}" != true ] && [ "${CI:-}" != true ]; then
+  ANALYSIS_MODE='split'
 fi
 # Stable largest-first packing is shared by cross-runner partition selection
 # and the two local workers. Weights are a scheduling proxy, never a skip rule.
@@ -617,8 +643,8 @@ if [ "$resolved" != "$REQUIRED_SHELLCHECK" ]; then
 fi
 if [ "$FAST" -eq 1 ]; then
   printf 'fm-lint.sh: fast local mode; ShellCheck extended analysis disabled\n' >&2
-elif [ "$FOLLOW_SOURCES" -eq 0 ]; then
-  printf 'fm-lint.sh: local changed-file mode; ShellCheck source following disabled\n' >&2
+elif [ "$ANALYSIS_MODE" = split ]; then
+  printf 'fm-lint.sh: local split mode; extended analysis and source following run as separate per-file passes\n' >&2
 else
   printf 'fm-lint.sh: full ShellCheck extended analysis enabled\n' >&2
 fi
@@ -737,23 +763,23 @@ fm_lint_run_worker() {  # <worker-index>
     if [ "$(uname)" = Darwin ]; then
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -lp -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
-        FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
+        env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_MODE="$ANALYSIS_MODE" \
+        FM_LINT_INTERNAL_CROSS_FILE_CODES="$LOCAL_CROSS_FILE_CODES" \
         FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     else
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
-        FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
+        env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_MODE="$ANALYSIS_MODE" \
+        FM_LINT_INTERNAL_CROSS_FILE_CODES="$LOCAL_CROSS_FILE_CODES" \
         FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     fi
   else
     [ -z "$TELEMETRY" ] || printf 'timing_unavailable=1\n' > "$timing"
     exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
-      env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
-      FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
+      env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_MODE="$ANALYSIS_MODE" \
+      FM_LINT_INTERNAL_CROSS_FILE_CODES="$LOCAL_CROSS_FILE_CODES" \
       FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
       "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
   fi
@@ -840,11 +866,7 @@ if [ -n "$TELEMETRY" ]; then
   source_directives=$(wc -l < "$TMP_ROOT/source-targets" | tr -d '[:space:]')
   source_boundaries=$(grep -c '^/dev/null$' "$TMP_ROOT/source-targets" 2>/dev/null || true)
   case "$source_boundaries" in ''|*[!0-9]*) source_boundaries=0 ;; esac
-  if [ "$FOLLOW_SOURCES" -eq 1 ]; then
-    source_followed=$((source_directives - source_boundaries))
-  else
-    source_followed=0
-  fi
+  source_followed=$((source_directives - source_boundaries))
   source_targets=$(LC_ALL=C sort -u "$TMP_ROOT/source-targets" | wc -l | tr -d '[:space:]')
   content_cksum=$(cksum "$TMP_ROOT/content-cksums" | awk '{print $1 "-" $2}')
   git_head=$(git rev-parse HEAD 2>/dev/null || printf 'unavailable')
