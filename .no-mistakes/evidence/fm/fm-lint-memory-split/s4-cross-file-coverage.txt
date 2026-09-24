@@ -1,0 +1,89 @@
+=== fixture main.sh ===
+     1	#!/usr/bin/env bash
+     2	# shellcheck source-path=SCRIPTDIR
+     3	consumed_by_library=1        # consumed only in lib.sh -> no SC2034 expected
+     4	# shellcheck source=lib.sh
+     5	. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+     6	truly_unused=1               # SC2034 expected (cross-file pass)
+     7	printf '%s\n' "$library_value"   # defined in lib.sh -> no SC2154 expected
+     8	printf '%s\n' "$never_defined"   # SC2154 expected (cross-file pass)
+     9	count=5
+    10	printf '%s\n' $count         # dataflow proves safe -> no SC2086 expected
+    11	printf '%s\n' $1             # SC2086 expected (dataflow pass)
+=== fixture lib.sh ===
+     1	#!/usr/bin/env bash
+     2	printf '%s\n' "$consumed_by_library"
+     3	library_value=ok
+
+=== LOCAL split: bin/fm-lint.sh main.sh ===
+exit=1
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local split mode; extended analysis and source following run as separate per-file passes
+
+In /tmp/fmlint-fixture.keNZ/main.sh line 11:
+printf '%s\n' $1             # SC2086 expected (dataflow pass)
+              ^-- SC2086 (info): Double quote to prevent globbing and word splitting.
+
+Did you mean:
+printf '%s\n' "$1"             # SC2086 expected (dataflow pass)
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2086 -- Double quote to prevent globbing ...
+
+In /tmp/fmlint-fixture.keNZ/main.sh line 6:
+truly_unused=1               # SC2034 expected (cross-file pass)
+^----------^ SC2034 (warning): truly_unused appears unused. Verify use (or export if used externally).
+
+
+In /tmp/fmlint-fixture.keNZ/main.sh line 8:
+printf '%s\n' "$never_defined"   # SC2154 expected (cross-file pass)
+               ^------------^ SC2154 (warning): never_defined is referenced but not assigned.
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2034 -- truly_unused appears unused. Veri...
+  https://www.shellcheck.net/wiki/SC2154 -- never_defined is referenced but n...
+
+=== CI full: CI=true bin/fm-lint.sh main.sh ===
+exit=1
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: full ShellCheck extended analysis enabled
+
+In /tmp/fmlint-fixture.keNZ/main.sh line 6:
+truly_unused=1               # SC2034 expected (cross-file pass)
+^----------^ SC2034 (warning): truly_unused appears unused. Verify use (or export if used externally).
+
+
+In /tmp/fmlint-fixture.keNZ/main.sh line 8:
+printf '%s\n' "$never_defined"   # SC2154 expected (cross-file pass)
+               ^------------^ SC2154 (warning): never_defined is referenced but not assigned.
+
+
+In /tmp/fmlint-fixture.keNZ/main.sh line 11:
+printf '%s\n' $1             # SC2086 expected (dataflow pass)
+              ^-- SC2086 (info): Double quote to prevent globbing and word splitting.
+
+Did you mean:
+printf '%s\n' "$1"             # SC2086 expected (dataflow pass)
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2034 -- truly_unused appears unused. Veri...
+  https://www.shellcheck.net/wiki/SC2154 -- never_defined is referenced but n...
+  https://www.shellcheck.net/wiki/SC2086 -- Double quote to prevent globbing ...
+
+=== diagnostic codes by line: split vs CI ===
+[split]
+
+ In /tmp/fmlint-fixture.keNZ/main.sh line 11: SC2086 SC2086 SC2086 SC2086 
+ In /tmp/fmlint-fixture.keNZ/main.sh line 6: SC2034 SC2034 
+ In /tmp/fmlint-fixture.keNZ/main.sh line 8: SC2154 SC2154 SC2034 SC2154
+
+[ci]
+
+ In /tmp/fmlint-fixture.keNZ/main.sh line 6: SC2034 SC2034 
+ In /tmp/fmlint-fixture.keNZ/main.sh line 8: SC2154 SC2154 
+ In /tmp/fmlint-fixture.keNZ/main.sh line 11: SC2086 SC2086 SC2086 SC2034 SC2154 SC2086
+
+=== invocations ===
+start=1790244803.421526169 end=1790244803.473755849 rc=1 peak_kib=13440 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fmlint-fixture.keNZ/main.sh
+start=1790244803.483358889 end=1790244803.541745544 rc=1 peak_kib=13312 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fmlint-fixture.keNZ/main.sh
+start=1790244803.629967953 end=1790244803.691726120 rc=1 peak_kib=13696 args=--norc --external-sources -- /tmp/fmlint-fixture.keNZ/main.sh

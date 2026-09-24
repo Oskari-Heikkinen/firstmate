@@ -1,0 +1,1 @@
+start=1790244860.940689882 end=1790244861.005994500 rc=0 peak_kib=14720 args=--norc --external-sources --extended-analysis=false -- bin/fm-install-shellcheck.sh

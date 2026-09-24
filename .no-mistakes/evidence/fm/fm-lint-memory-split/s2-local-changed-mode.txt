@@ -1,0 +1,24 @@
+$ git diff --name-only $(git merge-base HEAD origin/main)
+bin/fm-lint.sh
+docs/verification/lint-option-a.md
+tests/fm-lint.test.sh
+
+$ env -u CI -u GITHUB_ACTIONS bin/fm-lint.sh --telemetry s2-telemetry.tsv   # no args, default 2 workers (what the no-mistakes lint step runs)
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local split mode; extended analysis and source following run as separate per-file passes
+fm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)
+fm-lint-workflows.sh: 3 workflow files valid
+exit=0
+
+--- every ShellCheck invocation (wrapper log) ---
+start=1790244787.380372028 end=1790244788.018525931 rc=0 peak_kib=133504 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-lint.sh
+start=1790244788.029157778 end=1790244788.252949341 rc=0 peak_kib=23936 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-lint.sh
+start=1790244787.378399974 end=1790244788.453186279 rc=0 peak_kib=152064 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- tests/fm-lint.test.sh
+start=1790244788.463641971 end=1790244789.085508579 rc=0 peak_kib=45184 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- tests/fm-lint.test.sh
+
+--- telemetry excerpt ---
+analysis_mode	split
+source_directives	5
+source_followed_directives	3
+worker_wall_sum_seconds	2.61
+worker_rss_sum_kib	285568

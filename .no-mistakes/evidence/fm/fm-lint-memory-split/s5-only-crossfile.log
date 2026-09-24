@@ -1,0 +1,2 @@
+start=1790244814.917258282 end=1790244814.983020535 rc=0 peak_kib=13056 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fmlint-fixture.keNZ/only-crossfile.sh
+start=1790244814.992489375 end=1790244815.036699761 rc=1 peak_kib=12032 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fmlint-fixture.keNZ/only-crossfile.sh

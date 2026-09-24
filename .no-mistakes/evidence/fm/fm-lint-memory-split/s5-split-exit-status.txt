@@ -1,0 +1,8 @@
+=== normalized finding sets (file:line:code), split vs CI, from s4 fixture ===
+[split] line11:SC2086 line6:SC2034 line8:SC2154
+[ci] line11:SC2086 line6:SC2034 line8:SC2154
+
+=== exit status when only ONE of the two split passes finds something ===
+only-dataflow   fm-lint exit=1  pass rcs: rc=1,rc=0
+only-crossfile  fm-lint exit=1  pass rcs: rc=0,rc=1
+clean           fm-lint exit=0  pass rcs: rc=0,rc=0

@@ -1,0 +1,2 @@
+start=1790244716.787387775 end=1790244722.276256109 rc=0 peak_kib=1597952 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+start=1790244722.286794832 end=1790244729.600117882 rc=0 peak_kib=393600 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh

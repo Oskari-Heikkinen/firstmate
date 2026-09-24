@@ -1,0 +1,2 @@
+start=1790244815.128300313 end=1790244815.186039188 rc=0 peak_kib=12800 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fmlint-fixture.keNZ/clean.sh
+start=1790244815.195847227 end=1790244815.245687860 rc=0 peak_kib=12416 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fmlint-fixture.keNZ/clean.sh

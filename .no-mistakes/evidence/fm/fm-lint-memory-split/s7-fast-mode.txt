@@ -1,0 +1,5 @@
+$ bin/fm-lint.sh --fast bin/fm-install-shellcheck.sh
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: fast local mode; ShellCheck extended analysis disabled
+exit=0
+start=1790244860.940689882 end=1790244861.005994500 rc=0 peak_kib=14720 args=--norc --external-sources --extended-analysis=false -- bin/fm-install-shellcheck.sh

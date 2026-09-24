@@ -1,0 +1,8 @@
+SIGINT -> fm-lint pid 2257281
+  shellcheck processes running at signal: 1 (shellcheck --norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh )
+  fm-lint exit status: 130
+  shellcheck processes left 1s later:     0
+SIGTERM -> fm-lint pid 2262209
+  shellcheck processes running at signal: 1 (shellcheck --norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh )
+  fm-lint exit status: 143
+  shellcheck processes left 1s later:     0

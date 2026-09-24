@@ -1,0 +1,7 @@
+$ CI=true bin/fm-lint.sh bin/fm-spawn.sh
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: full ShellCheck extended analysis enabled
+exit=0
+
+--- every ShellCheck invocation (wrapper log) ---
+start=1790244738.026171001 end=1790244765.809959560 rc=0 peak_kib=5490948 args=--norc --external-sources -- bin/fm-spawn.sh
