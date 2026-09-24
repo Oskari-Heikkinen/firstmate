@@ -1,0 +1,16 @@
+===== S7: COLD supervisor, 3 unchanged live waits (2 paused, 1 captain-held), cadence 15s, ceiling 45s
+RESULT S7: watcher woke 38s after arming (a's status reached 45s unseen at ~37s)
+--- watcher stdout:
+stale: fmlab:fm-h (captain-held 42s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold) [standing-waits digest: 3 declared wait(s) queued with this wake]
+--- triage log:
+  [2026-09-24T12:06:22+0200] absorbed paused recheck (fingerprint unchanged, age 16s): fmlab:fm-a
+  [2026-09-24T12:06:26+0200] queued declared-wait recheck (due, age 17s): fmlab:fm-h
+  [2026-09-24T12:06:30+0200] absorbed paused recheck (fingerprint unchanged, age 16s): fmlab:fm-b
+  [2026-09-24T12:06:39+0200] absorbed paused recheck (fingerprint unchanged, age 32s): fmlab:fm-a
+  [2026-09-24T12:06:42+0200] queued declared-wait recheck (due, age 33s): fmlab:fm-h
+  [2026-09-24T12:06:45+0200] absorbed paused recheck (fingerprint unchanged, age 30s): fmlab:fm-b
+--- wake queue:
+1790244411	1	stale	fmlab:fm-h	stale: fmlab:fm-h (captain-held 42s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+1790244411	2	stale	fmlab:fm-a	stale: fmlab:fm-a (paused 45s, awaiting external - standing wait, nothing about it changed since it was last shown; confirm the wait still holds)
+1790244412	3	stale	fmlab:fm-b	stale: fmlab:fm-b (paused 37s, awaiting external - standing wait, nothing about it changed since it was last shown; confirm the wait still holds)
+--- stdout wake-reason lines: 1

@@ -1,0 +1,11 @@
+===== S8: live lane whose meta records pr= (real gh reads of https://github.com/Oskari-Heikkinen/firstmate/pull/6, read-only)
+--- baseline:
+crew=unknown/pane agent=alive head=e47667c95b9e6a1a8742d823624a14e2bc71cb76 dirty=0 inbox=0 pr=OPEN:00c67b703e1920791a62fe4d47fe6748d69df0b1:red
+RESULT S8a: unchanged open PR -> no wake after 35s
+[2026-09-24T12:07:22+0200] absorbed paused recheck (fingerprint unchanged, age 15s): fmlab:fm-a
+[2026-09-24T12:07:37+0200] absorbed paused recheck (fingerprint unchanged, age 30s): fmlab:fm-a
+--- S8b: the lane's recorded PR is repointed to merged PR #3 (real forge read returns MERGED) at 12:07:41
+RESULT S8b: watcher woke at 12:07:53
+stale: fmlab:fm-a (paused 47s, awaiting external - the lane changed since its wait was last shown (pr); confirm the wait still holds)
+--- baseline after delivery:
+crew=unknown/pane agent=alive head=e47667c95b9e6a1a8742d823624a14e2bc71cb76 dirty=0 inbox=0 pr=MERGED:bf444e3c155685114fab8e2a748dbe11b9747d6e:ok

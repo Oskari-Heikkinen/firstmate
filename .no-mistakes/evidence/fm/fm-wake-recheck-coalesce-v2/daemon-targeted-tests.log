@@ -1,0 +1,8 @@
+ok - a busy pane cannot gate the pause clear once its crew's status no longer declares the wait
+ok - housekeeping matures a busy pane's declared-wait window into exactly one recheck per window
+ok - housekeeping bounds a distant declared time, defers to a near one, and rechecks a passed one at once
+ok - housekeeping absorbs unchanged declared-wait rechecks, then escalates every standing wait together at the ceiling
+ok - housekeeping escalates a due declared-wait recheck whose lane changed, naming what changed
+ok - housekeeping escalates a PR-backed declared wait only when the PR goes red, moves, or closes
+ok - housekeeping escalates a declared-wait recheck whose agent crashed under the declaration
+ok - housekeeping escalates a passed declared time at once only once, then compares the lane's fingerprint

@@ -1,0 +1,9 @@
+===== S10 AWAY MODE: real daemon, two unchanged secondmate waits, cadence 15s, ceiling 50s
+--- daemon log:
+  [2026-09-24T12:13:44+0200] daemon starting (pid 2227412); target=fmlab:sup; target_source=FM_SUPERVISOR_TARGET; backend=tmux; backend_source=FM_SUPERVISOR_BACKEND; afk=on; inject_skip='heartbeat'; stale_escalate=240s; batch=999999s
+  [2026-09-24T12:14:02+0200] self-handle (paused recheck, fingerprint unchanged): fmlab:fm-a
+  [2026-09-24T12:14:02+0200] self-handle (paused recheck, fingerprint unchanged): fmlab:fm-b
+  [2026-09-24T12:14:32+0200] self-handle (paused recheck, fingerprint unchanged): fmlab:fm-a
+--- buffered captain escalations:
+paused 29s (awaiting external, standing wait, nothing about it changed since it was last shown; confirm the wait still holds): fmlab:fm-b
+paused 48s (awaiting external, standing wait, nothing about it changed since it was last shown; confirm the wait still holds): fmlab:fm-a

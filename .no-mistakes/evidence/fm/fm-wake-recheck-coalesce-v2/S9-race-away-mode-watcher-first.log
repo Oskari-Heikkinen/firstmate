@@ -1,0 +1,34 @@
+===== S9-race (status 8s older than the daemon marker, so the watcher reaches the due recheck first) [prefix: /tmp/fmlive/prefix/bin] AWAY MODE: real fm-supervise-daemon.sh (runs fm-watch.sh as child), secondmate lane paused on PR #6
+--- baseline recorded: crew=paused/status-log agent=- head=- dirty=- inbox=0 pr=OPEN:00c67b703e1920791a62fe4d47fe6748d69df0b1:red
+--- daemon began tracking the wait at 12:12:04 (marker exists: yes)
+--- lane changed: its PR now reads MERGED (repointed to merged PR #3) at 12:12:04; waiting 45s
+--- daemon log (fingerprint / pause lines):
+  [2026-09-24T12:12:03+0200] daemon starting (pid 2069466); target=fmlab:sup; target_source=FM_SUPERVISOR_TARGET; backend=tmux; backend_source=FM_SUPERVISOR_BACKEND; afk=on; inject_skip='heartbeat'; stale_escalate=240s; batch=999999s
+  [2026-09-24T12:12:12+0200] wake: stale: fmlab:fm-a (paused 16s, awaiting external - the lane changed since its wait was last shown (pr); confirm the wait still holds)
+  [2026-09-24T12:12:13+0200] self-handle (paused): stale: fmlab:fm-a (paused 16s, awaiting external - the lane changed since its wait was last shown (pr); confirm the wait still holds) -> paused (awaiting external), rechecked on a long cadence: paused: waiting for review on https://github.com/Oskari-Heikkinen/firstmate/pull/6
+  [2026-09-24T12:12:22+0200] self-handle (paused recheck, fingerprint unchanged): fmlab:fm-a
+--- watcher triage log (recheck lines):
+  [2026-09-24T12:12:11+0200] queued declared-wait recheck (urgent, age 15s): fmlab:fm-a
+  [2026-09-24T12:12:27+0200] absorbed paused recheck (fingerprint unchanged, age 31s): fmlab:fm-a
+  [2026-09-24T12:12:44+0200] absorbed paused recheck (fingerprint unchanged, age 48s): fmlab:fm-a
+--- .recheck-surfaced stamped by watcher? /tmp/fmlive/s9-prefix/home/state/.recheck-surfaced-fmlab_fm-a
+--- buffered captain escalations (.subsuper-escalations):
+  (none)
+RESULT S9 [prefix]: change NOT escalated
+===== S9-race (status 8s older than the daemon marker, so the watcher reaches the due recheck first) [fixed: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39CQCHTWJ1P4P2CA1T0Y9SH/bin] AWAY MODE: real fm-supervise-daemon.sh (runs fm-watch.sh as child), secondmate lane paused on PR #6
+--- baseline recorded: crew=paused/status-log agent=- head=- dirty=- inbox=0 pr=OPEN:00c67b703e1920791a62fe4d47fe6748d69df0b1:red
+--- daemon began tracking the wait at 12:12:48 (marker exists: yes)
+--- lane changed: its PR now reads MERGED (repointed to merged PR #3) at 12:12:48; waiting 45s
+--- daemon log (fingerprint / pause lines):
+  [2026-09-24T12:12:47+0200] daemon starting (pid 2125819); target=fmlab:sup; target_source=FM_SUPERVISOR_TARGET; backend=tmux; backend_source=FM_SUPERVISOR_BACKEND; afk=on; inject_skip='heartbeat'; stale_escalate=240s; batch=999999s
+  [2026-09-24T12:12:55+0200] wake: stale: fmlab:fm-a (paused 15s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+  [2026-09-24T12:12:56+0200] self-handle (paused): stale: fmlab:fm-a (paused 15s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds) -> paused (awaiting external), rechecked on a long cadence: paused: waiting for review on https://github.com/Oskari-Heikkinen/firstmate/pull/6
+  [2026-09-24T12:13:11+0200] wake: stale: fmlab:fm-a (paused 31s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+  [2026-09-24T12:13:12+0200] self-handle (paused): stale: fmlab:fm-a (paused 31s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds) -> paused (awaiting external), rechecked on a long cadence: paused: waiting for review on https://github.com/Oskari-Heikkinen/firstmate/pull/6
+  [2026-09-24T12:13:25+0200] wake: stale: fmlab:fm-a (paused 46s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+  [2026-09-24T12:13:26+0200] self-handle (paused): stale: fmlab:fm-a (paused 46s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds) -> paused (awaiting external), rechecked on a long cadence: paused: waiting for review on https://github.com/Oskari-Heikkinen/firstmate/pull/6
+--- watcher triage log (recheck lines):
+--- .recheck-surfaced stamped by watcher? /tmp/fmlive/s9-fixed/home/state/.recheck-surfaced-fmlab_fm-a
+--- buffered captain escalations (.subsuper-escalations):
+paused 17s (awaiting external, the lane changed since its wait was last shown (pr); confirm the wait still holds): fmlab:fm-a
+RESULT S9 [fixed]: change ESCALATED to captain

@@ -1,0 +1,10 @@
+===== [base] single live lane appends needs-decision
+signal: /tmp/fmlive/dup-base/home/state/c.status
+--- queue:
+1790244359	1	signal	c.status	needs-decision: /tmp/fmlive/dup-base/home/state/c.status
+1790244359	2	signal	c.status	needs-decision: /tmp/fmlive/dup-base/home/state/c.status
+===== [change] single live lane appends needs-decision
+signal: /tmp/fmlive/dup-change/home/state/c.status
+--- queue:
+1790244365	1	signal	c.status	needs-decision: /tmp/fmlive/dup-change/home/state/c.status
+1790244366	2	signal	c.status	needs-decision: /tmp/fmlive/dup-change/home/state/c.status

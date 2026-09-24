@@ -1,0 +1,10 @@
+===== S5: two live lanes change and fall due on the same poll -> one wake
+--- committed in both task copies at 12:04:28
+RESULT S5: watcher woke at 12:04:36
+--- watcher stdout:
+stale: fmlab:fm-b (paused 15s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds)
+--- triage log:
+  [2026-09-24T12:04:36+0200] queued declared-wait recheck (urgent, age 15s): fmlab:fm-b
+--- wake queue (one row per lane, one wake):
+1790244276	1	stale	fmlab:fm-b	stale: fmlab:fm-b (paused 15s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds)
+--- stdout wake-reason lines: 1

@@ -1,0 +1,25 @@
+===== S6: COLD supervisor; due captain-held recheck is held, then rides along with the next real wake
+RESULT S6a: 15s later no wake; held recheck file:
+due
+fmlab:fm-a
+1790244297
+stale: fmlab:fm-a (captain-held @AGE@s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+
+--- lane c (live) now appends needs-decision at 12:05:42
+RESULT S6b: watcher woke at 12:05:46
+--- watcher stdout:
+signal: /tmp/fmlive/s6/home/state/c.status
+--- triage log:
+  [2026-09-24T12:05:28+0200] queued declared-wait recheck (due, age 31s): fmlab:fm-a
+  [2026-09-24T12:05:33+0200] absorbed stale (captain-held, awaiting the captain, age 36s): fmlab:fm-a
+  [2026-09-24T12:05:35+0200] absorbed stale (captain-held, awaiting the captain, age 38s): fmlab:fm-a
+  [2026-09-24T12:05:37+0200] absorbed stale (captain-held, awaiting the captain, age 40s): fmlab:fm-a
+  [2026-09-24T12:05:39+0200] absorbed stale (captain-held, awaiting the captain, age 42s): fmlab:fm-a
+  [2026-09-24T12:05:41+0200] absorbed stale (captain-held, awaiting the captain, age 44s): fmlab:fm-a
+  [2026-09-24T12:05:42+0200] absorbed paused recheck (fingerprint unchanged, age 15s): fmlab:fm-b
+  [2026-09-24T12:05:46+0200] queued 1 declared-wait recheck(s) with another wake
+--- wake queue:
+1790244346	1	signal	c.status	needs-decision: /tmp/fmlive/s6/home/state/c.status
+1790244346	2	signal	c.status	needs-decision: /tmp/fmlive/s6/home/state/c.status
+1790244346	3	stale	fmlab:fm-a	stale: fmlab:fm-a (captain-held 49s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+--- held file remaining: none

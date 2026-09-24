@@ -1,0 +1,38 @@
+== test_declared_pause_is_absorbed_for_every_agent_liveness_verdict
+ok - a declared pause is absorbed on the bounded cadence for alive, unknown, and dead agent liveness
+rc=0
+== test_exited_declared_pause_is_bounded_and_live_gate_uses_pause_cadence
+ok - exited declared-pause and captain-held panes use bounded pause cadence, and a live decision gate is absorbed on that same cadence
+rc=0
+== test_procevent_surface_keeps_the_queue_lock_while_a_recheck_rides_along
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 2 --recovery-generation 915356.1790243919.FNWrcX
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+ok - a recheck riding along with a process-event wake keeps the queue lock through the marker commit
+rc=0
+== test_codue_declared_rechecks_coalesce_into_one_wake
+ok - declared-wait rechecks that fall due together are delivered as one wake
+rc=0
+== test_cold_declared_recheck_rides_along_with_the_next_wake
+ok - a cold due recheck waits for the next wake and rides along with it, dropping waits that ended
+rc=0
+== test_cold_declared_recheck_wakes_at_the_standing_ceiling
+ok - a cold due recheck still wakes on its own once the wait reaches the standing-waits ceiling
+rc=0
+== test_warm_turn_delivers_a_held_recheck
+ok - a held recheck is delivered as soon as the supervisor takes a turn
+rc=0
+== test_cold_captain_held_recheck_waits_like_any_declared_wait
+ok - a routine captain-held recheck waits for a warm supervisor, another wake, or the ceiling
+rc=0
+== test_passed_until_is_urgent_once_then_fingerprinted
+ok - a passed until time is rechecked at once only the first time, then like any declared wait
+rc=0
+== test_standing_waits_digest_lists_every_standing_wait
+ok - unchanged declared waits are absorbed when due, then shown together in one standing-waits wake at the ceiling
+rc=0
+== test_pr_backed_declared_wait_wakes_only_on_a_pr_change
+ok - a declared wait on a PR is rechecked only when the PR goes red, moves, or closes
+rc=0
+== test_away_mode_declared_wait_change_reaches_the_daemon
+ok - in away mode a changed declared wait still reaches the captain through the daemon, whatever the watcher saw first
+rc=0

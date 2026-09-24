@@ -1,0 +1,43 @@
+===== S2+S3: warm supervisor, resurface cadence 15s, live worker under paused:
+--- baseline recorded at first sight (.recheck-fp-fmlab_fm-a):
+declared:r1:3430007374726f6e673a323039363a3433373631323a323032362d30392d32342031323a30323a34372e373734363836353232202b3032303000726567756c61722066696c653a38316234002d007265616461626c65007265616461626c65
+status=r1:3430007374726f6e673a323039363a3433373631323a323032362d30392d32342031323a30323a34372e373734363836353232202b3032303000726567756c61722066696c653a38316234002d007265616461626c65007265616461626c65 crew=unknown/pane agent=alive head=0b9e0a4510f59763f4b3ba96c7117bc94d0dbea3 dirty=0 inbox=0 pr=none
+RESULT S2: after 35s (recheck due at 15s and 30s) no wake; watcher still running
+absorbed-unchanged recheck count: 2
+[2026-09-24T12:03:03+0200] absorbed paused recheck (fingerprint unchanged, age 15s): fmlab:fm-a
+[2026-09-24T12:03:18+0200] absorbed paused recheck (fingerprint unchanged, age 31s): fmlab:fm-a
+--- S3: make a real commit in the task copy (HEAD moves) at 12:03:23
+RESULT S3: watcher woke at 12:03:35
+--- watcher stdout:
+stale: fmlab:fm-a (paused 47s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds)
+--- triage log:
+  [2026-09-24T12:02:49+0200] absorbed stale (paused, awaiting external, age 1s): fmlab:fm-a
+  [2026-09-24T12:02:51+0200] absorbed stale (paused, awaiting external, age 4s): fmlab:fm-a
+  [2026-09-24T12:02:52+0200] absorbed stale (paused, awaiting external, age 5s): fmlab:fm-a
+  [2026-09-24T12:02:54+0200] absorbed stale (paused, awaiting external, age 7s): fmlab:fm-a
+  [2026-09-24T12:02:56+0200] absorbed stale (paused, awaiting external, age 9s): fmlab:fm-a
+  [2026-09-24T12:02:57+0200] absorbed stale (paused, awaiting external, age 10s): fmlab:fm-a
+  [2026-09-24T12:02:59+0200] absorbed stale (paused, awaiting external, age 12s): fmlab:fm-a
+  [2026-09-24T12:03:01+0200] absorbed stale (paused, awaiting external, age 14s): fmlab:fm-a
+  [2026-09-24T12:03:03+0200] absorbed paused recheck (fingerprint unchanged, age 15s): fmlab:fm-a
+  [2026-09-24T12:03:04+0200] absorbed stale (paused, awaiting external, age 17s): fmlab:fm-a
+  [2026-09-24T12:03:06+0200] absorbed stale (paused, awaiting external, age 19s): fmlab:fm-a
+  [2026-09-24T12:03:08+0200] absorbed stale (paused, awaiting external, age 21s): fmlab:fm-a
+  [2026-09-24T12:03:09+0200] absorbed stale (paused, awaiting external, age 22s): fmlab:fm-a
+  [2026-09-24T12:03:11+0200] absorbed stale (paused, awaiting external, age 24s): fmlab:fm-a
+  [2026-09-24T12:03:13+0200] absorbed stale (paused, awaiting external, age 26s): fmlab:fm-a
+  [2026-09-24T12:03:14+0200] absorbed stale (paused, awaiting external, age 27s): fmlab:fm-a
+  [2026-09-24T12:03:16+0200] absorbed stale (paused, awaiting external, age 29s): fmlab:fm-a
+  [2026-09-24T12:03:18+0200] absorbed paused recheck (fingerprint unchanged, age 31s): fmlab:fm-a
+  [2026-09-24T12:03:20+0200] absorbed stale (paused, awaiting external, age 33s): fmlab:fm-a
+  [2026-09-24T12:03:20+0200] absorbed stale (paused, awaiting external, age 33s): fmlab:fm-a
+  [2026-09-24T12:03:22+0200] absorbed stale (paused, awaiting external, age 35s): fmlab:fm-a
+  [2026-09-24T12:03:24+0200] absorbed stale (paused, awaiting external, age 37s): fmlab:fm-a
+  [2026-09-24T12:03:26+0200] absorbed stale (paused, awaiting external, age 38s): fmlab:fm-a
+  [2026-09-24T12:03:27+0200] absorbed stale (paused, awaiting external, age 40s): fmlab:fm-a
+  [2026-09-24T12:03:29+0200] absorbed stale (paused, awaiting external, age 42s): fmlab:fm-a
+  [2026-09-24T12:03:31+0200] absorbed stale (paused, awaiting external, age 44s): fmlab:fm-a
+  [2026-09-24T12:03:32+0200] absorbed stale (paused, awaiting external, age 45s): fmlab:fm-a
+  [2026-09-24T12:03:34+0200] queued declared-wait recheck (urgent, age 47s): fmlab:fm-a
+--- wake queue:
+1790244214	1	stale	fmlab:fm-a	stale: fmlab:fm-a (paused 47s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds)

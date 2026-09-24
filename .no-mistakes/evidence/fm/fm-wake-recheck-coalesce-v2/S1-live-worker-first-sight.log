@@ -1,0 +1,18 @@
+===== S1 [base watcher: /tmp/fmlive/base/bin] live worker (claude alive in tmux) declared paused:, fresh status
+RESULT: watcher EXITED (woke the supervisor)
+--- watcher stdout:
+stale: fmlab:fm-a
+--- triage log:
+--- wake queue:
+1790244140	1	stale	fmlab:fm-a	stale: fmlab:fm-a
+===== S1 [change watcher: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M39CQCHTWJ1P4P2CA1T0Y9SH/bin] live worker (claude alive in tmux) declared paused:, fresh status
+RESULT: watcher still running after 12s - no wake
+--- watcher stdout:
+--- triage log:
+  [2026-09-24T12:02:23+0200] absorbed stale (paused, awaiting external, age 1s): fmlab:fm-a
+  [2026-09-24T12:02:26+0200] absorbed stale (paused, awaiting external, age 5s): fmlab:fm-a
+  [2026-09-24T12:02:28+0200] absorbed stale (paused, awaiting external, age 6s): fmlab:fm-a
+  [2026-09-24T12:02:29+0200] absorbed stale (paused, awaiting external, age 8s): fmlab:fm-a
+  [2026-09-24T12:02:31+0200] absorbed stale (paused, awaiting external, age 10s): fmlab:fm-a
+  [2026-09-24T12:02:32+0200] absorbed stale (paused, awaiting external, age 11s): fmlab:fm-a
+--- wake queue:

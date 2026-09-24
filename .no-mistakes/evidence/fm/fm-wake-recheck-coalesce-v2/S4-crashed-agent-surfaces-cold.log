@@ -1,0 +1,10 @@
+===== S4: COLD supervisor (FM_TEST_RECHECK_WARM_SECS=0), live worker under paused:, agent then crashes
+--- agent state before: alive
+--- agent killed with Ctrl-C at 12:04:06; agent state now: dead
+RESULT S4: watcher woke at 12:04:16
+--- watcher stdout:
+stale: fmlab:fm-a (paused 16s, awaiting external - the lane changed since its wait was last shown (agent); confirm the wait still holds)
+--- triage log:
+  [2026-09-24T12:04:16+0200] queued declared-wait recheck (urgent, age 15s): fmlab:fm-a
+--- wake queue:
+1790244256	1	stale	fmlab:fm-a	stale: fmlab:fm-a (paused 16s, awaiting external - the lane changed since its wait was last shown (agent); confirm the wait still holds)

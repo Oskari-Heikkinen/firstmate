@@ -1,0 +1,15 @@
+===== S5b: two live lanes changed while the watcher was down; both due when it re-arms -> one wake
+--- first-sight baselines recorded:
+crew=unknown/pane agent=alive head=5bc30f6958662ec8b0e81b43bb8b531e059a3ec5 dirty=0 inbox=0 pr=none
+crew=unknown/pane agent=alive head=5e26d639c96ed5c882327d96c92d6741b0f89b42 dirty=0 inbox=0 pr=none
+--- both task copies committed; both waits now 20s old (past the 15s cadence). Re-arming watcher at 12:05:14
+RESULT S5b: watcher woke at 12:05:18
+--- watcher stdout:
+stale: fmlab:fm-a (paused 24s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds) [+1 more declared-wait recheck(s) queued with this wake]
+--- triage log:
+  [2026-09-24T12:05:17+0200] queued declared-wait recheck (urgent, age 23s): fmlab:fm-a
+  [2026-09-24T12:05:18+0200] queued declared-wait recheck (urgent, age 23s): fmlab:fm-b
+--- wake queue:
+1790244318	1	stale	fmlab:fm-a	stale: fmlab:fm-a (paused 24s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds)
+1790244318	2	stale	fmlab:fm-b	stale: fmlab:fm-b (paused 24s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds)
+--- stdout wake-reason lines: 1
