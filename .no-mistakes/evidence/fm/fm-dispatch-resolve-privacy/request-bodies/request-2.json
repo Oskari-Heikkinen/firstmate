@@ -1,0 +1,21 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "task": {
+      "kind": "ship",
+      "mode": "no-mistakes",
+      "summary": "Fix [redacted] in [redacted] per [redacted] and [redacted] mail [redacted] id [redacted] bug fix"
+    }
+  },
+  "questions": {
+    "rule": {
+      "type": "choice",
+      "instructions": "Which ONE dispatch rule best fits `task` (read `task.summary`, with `task.kind` and `task.mode` when present)? Each option is the rule's own matching condition; pick `default` when no rule's condition is met, including when a rule's own exemption text excludes this task.",
+      "criteria": {
+        "rule_1": "A simple bug fix with a stated root cause.",
+        "rule_2": "Genuinely very difficult design or planning work.",
+        "default": "No listed rule applies to this task."
+      }
+    }
+  }
+}
