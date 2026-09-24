@@ -6,7 +6,7 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>]
+# fm_dod_block <no-mistakes|direct-PR|direct-push|local-only> <task-id> [branch] [<forge>]
 # prints the block on stdout with no trailing blank line. The caller validates the
 # mode; an unknown mode is refused rather than silently rendered as the pipeline
 # contract.
@@ -95,6 +95,15 @@
 # ordinary ship brief and the durable contract written during scout promotion.
 # It takes the same optional trailing forge argument, because the rule that keeps
 # a worker off a remote is exactly the rule that changes when the forge does.
+# direct-push is the one mode whose worker lands its own work: it fast-forwards
+# origin's default branch itself, with no PR, after the project's full local
+# suite passes on top of that branch. Its block is yolo-agnostic because a
+# brief never carries yolo; fm_landing_authority_block owns the yolo-dependent
+# "land now or stop at ready" section, which bin/fm-spawn.sh appends to every
+# direct-push launch brief from the task's recorded yolo and bin/fm-promote.sh
+# appends to a promoted worker's ship instructions. The named-head gate needs
+# nothing mode-specific for it: a landed head is on origin's default branch and
+# a ready head on origin's ship branch, both remote-tracking refs.
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-pr-lib.sh"
@@ -104,6 +113,10 @@
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-nm-run-lib.sh"
 # shellcheck source=bin/fm-brief-heading-lib.sh
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-brief-heading-lib.sh"
+
+# A direct-push worker's post-landing wait bound, in minutes: roughly two
+# back-to-back full default-branch CI runs, since a superseded run waits behind one.
+FM_DIRECT_PUSH_CHECK_WAIT_MINUTES=90
 
 fm_brief_worker_role() {  # <state-dir> <task-id>
   local state=$1 task_id=$2
@@ -137,10 +150,14 @@ fm_forge_valid_for_mode() {  # <forge> <mode> <caller>
     echo "error: $caller: forge=$forge cannot ship mode=local-only - that mode publishes nothing, so a forge has no meaning there, and its landing would fast-forward local main with content the review server has never seen; ship no-mistakes or direct-PR, which publish through the forge" >&2
     return 1
   fi
+  if [ "$forge" != none ] && [ "$mode" = direct-push ]; then
+    echo "error: $caller: forge=$forge cannot ship mode=direct-push - that mode lands on the default branch with a plain push, bypassing the review server the forge binding exists to route through; ship no-mistakes or direct-PR, which publish through the forge" >&2
+    return 1
+  fi
   return 0
 }
 
-fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>]
+fm_ship_rule_one() {  # <no-mistakes|direct-PR|direct-push|local-only> <task-id> [branch] [<forge>]
   local mode=$1 id=$2 forge=${4:-none}
   local branch=${3:-fm/$id}
   fm_forge_valid_for_mode "$forge" "$mode" fm_ship_rule_one || return 1
@@ -151,6 +168,9 @@ fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> [branch] [<
   case "$mode" in
     direct-PR)
       printf '%s\n' "1. Never push to the default branch (push only your \`$branch\` branch). Never merge a PR."
+      ;;
+    direct-push)
+      printf '%s\n' "1. Push to the default branch only through the Definition of done's landing loop, when the landing authority allows it; otherwise push only your \`$branch\` branch. Never force-push anything, and never open or merge a PR."
       ;;
     local-only)
       printf '%s\n' "1. Never push to any remote and never open a PR. Work only on your \`$branch\` branch; firstmate handles the merge into local \`main\`."
@@ -406,6 +426,44 @@ If you deliberately keep the PR a draft, append \`paused [at=<epoch>]: {why the 
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
       ;;
+    direct-push:*)
+      cat <<EOF
+# Definition of done
+Delivery contract: mode=direct-push
+Ship branch: $branch
+This task ships **direct-push**: no PR and no pipeline; your tested commit lands on the project's default branch as a plain fast-forward push.
+Below, \`<default-branch>\` is origin's bare default-branch name such as \`main\`, without an \`origin/\` prefix: \`git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##'\` prints it, after \`git remote set-head origin --auto\` if that ref is missing.
+The task is complete only when committed on your branch \`$branch\`.
+Before landing, discover what the project's CI runs - its workflow files such as \`.github/workflows/\`, plus its \`AGENTS.md\` or README - and run that same full suite locally, as thorough as CI: every job and every matrix leg (for example each language version CI tests), including its lint and build steps.
+If a CI leg cannot run on this machine, append \`blocked [at=<epoch>]: {the leg and why}\` and stop rather than landing without it.
+The \`# Current landing authority\` section of your launch instructions says whether you land now or stop at ready; without that section, stop at ready.
+
+Landing loop:
+1. \`git fetch origin\`, then \`git rebase origin/<default-branch>\`, resolving any conflict in keeping with the task.
+2. Run the full local suite on the rebased head. If anything fails, fix it, commit, and go back to step 1.
+3. \`git push origin HEAD:<default-branch>\` - a plain push. Never add \`--force\`, \`--force-with-lease\`, or a \`+\` refspec.
+4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1.
+   Lost push races are governed by this bound instead of the general rule to stop after hitting the same obstacle twice: after 5 refused pushes, append \`blocked [at=<epoch>]: lost the push race 5 times; {what keeps landing}\` and stop instead of looping.
+5. After the push succeeds, decide from the push triggers in the workflow files you already inspected, counting their \`paths\` and \`paths-ignore\` filters against the files your change touched, whether your push runs checks; an empty first run listing is not evidence of none, and only when no workflow triggers on that push is there nothing to wait for.
+   Otherwise, first append \`paused [at=<epoch>]: waiting on {default-branch} checks for {sha} until <YYYY-MM-DDTHH:MMZ>\`, with the UTC deadline set to now plus the wait bound, so the long wait is not mistaken for a wedge; the landed \`done:\` or \`blocked:\` you append after the wait ends that pause.
+   Then wait for those checks on your pushed commit in one bounded blocking wait of at most $FM_DIRECT_PUSH_CHECK_WAIT_MINUTES minutes: re-list with \`gh run list --commit <sha>\` until the runs for that commit appear, then watch each with \`gh run watch <run-id> --exit-status\`, all within the same bound.
+   Judge each workflow your push triggered on its own: one that completed on your own commit counts from that run.
+   For each workflow whose run on your commit was cancelled or never created because a later push to the default branch superseded it, follow within the same bound the newest \`origin/<default-branch>\` commit containing yours that has a completed, not cancelled, run of that same workflow, and treat that run as its check on your change.
+   Count a workflow green only from such a completed run of that same workflow, never from other workflows' runs or from a commit that did not run it.
+6. If a check on your change goes red because of your change, fix it forward at once through this same landing loop from step 1 and wait again on the new pushed commit, or revert your commit at once through the same loop.
+   A revert ends the task with \`blocked [at=<epoch>]: reverted {sha} on {default-branch} because {red check}\`, never a landed \`done:\`.
+   If you cannot get those checks green, or the wait's bound elapses first, append \`blocked [at=<epoch>]: {the red or pending check} on {default-branch} at {sha}\` and stop.
+Never push to the default branch a head whose full suite did not pass on top of the current \`origin/<default-branch>\`.
+Only once the default branch's checks are green on your change, or on a fix-forward of it, append \`done [at=<epoch>]: landed {sha} on {default-branch}\` naming your own last pushed commit, and stop.
+Once landed, delete the task branch from origin (\`git push origin --delete $branch\`) if you pushed one for ready.
+
+Stopping at ready: run steps 1 and 2, push the tested head to your own task branch with \`git push origin HEAD:refs/heads/$branch\`, append \`done [at=<epoch>]: ready in branch $branch tested on {default-branch} at {sha}\`, and stop.
+To refresh that already-pushed ready branch, add commits, run the full local suite on the new head, and push it the same plain way without re-running step 1; only the landing loop rebases, so never rebase or force the ready branch.
+When firstmate relays landing approval, run the landing loop and report the landed \`done:\` the same way.
+Either \`done:\` is accepted only when this copy's HEAD - your latest commit - is on origin: the default branch once landed, your task branch when ready. The check tests that commit, not merely that a branch moved.
+Do NOT run /no-mistakes and do NOT open a PR.
+EOF
+      ;;
     local-only:*)
       cat <<EOF
 # Definition of done
@@ -443,6 +501,33 @@ EOF
     *)
       echo "error: fm_dod_block: unknown delivery mode '$mode'" >&2
       return 1 ;;
+  esac
+}
+
+# The yolo-dependent landing section of a direct-push worker's instructions.
+# yolo on pre-authorizes the worker's own landing; yolo off stops it at ready
+# until firstmate relays approval, so AGENTS.md hard rule 2 holds for a push
+# that is itself the landing. Any other value is refused rather than guessed.
+fm_landing_authority_block() {  # <on|off>
+  case "$1" in
+    on)
+      cat <<'EOF'
+# Current landing authority
+This section supersedes every earlier instruction about when this direct-push task lands.
+Landing is pre-authorized for this task: when the work is complete, run the Definition of done's landing loop and report the landed `done:`.
+EOF
+      ;;
+    off)
+      cat <<'EOF'
+# Current landing authority
+This section supersedes every earlier instruction about when this direct-push task lands.
+Landing waits for approval: when the work is complete, stop at ready as the Definition of done describes, and run the landing loop only after firstmate relays approval to land this task.
+EOF
+      ;;
+    *)
+      echo "error: fm_landing_authority_block: yolo must be on or off (got '$1')" >&2
+      return 1
+      ;;
   esac
 }
 
@@ -486,7 +571,7 @@ fm_dod_should_gate_ship_done() {  # <kind> <mode> <line>
   [ "$(status_line_verb "$3")" = "done" ] || return 1
   note=$(status_line_note "$3")
   case "$2" in
-    direct-PR|local-only) return 0 ;;
+    direct-PR|direct-push|local-only) return 0 ;;
     no-mistakes|'')
       fm_dod_note_reports_ci_ready "$note" || fm_dod_note_reports_published_change "$note" ;;
     *) return 1 ;;
@@ -614,6 +699,27 @@ fm_dod_named_head_reachable_outside_worktree() {  # <worktree> <project> <mode> 
   fm_dod_ref_contains "$wt" refs/remotes "$sha" && return 0
   fm_dod_ref_contains "$project" refs/remotes "$sha" && return 0
   [ "$mode" = local-only ] && fm_dod_ref_contains "$project" refs/heads "$sha"
+}
+
+# 0 when <sha> is on origin's default branch in <repo> - the landed test for a
+# direct-push head, which needs no PR record - printing that remote-tracking
+# branch (for example origin/main). The default is origin/HEAD, else
+# origin/main, else origin/master; a repo with none of them has nothing landed.
+fm_dod_head_on_origin_default() {  # <repo> <sha>
+  local repo=$1 sha=$2 ref='' candidate
+  [ -n "$repo" ] && [ -d "$repo" ] && [ -n "$sha" ] || return 1
+  ref=$(git -C "$repo" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) || ref=
+  if [ -z "$ref" ]; then
+    for candidate in refs/remotes/origin/main refs/remotes/origin/master; do
+      if git -C "$repo" show-ref --verify --quiet "$candidate"; then
+        ref=$candidate
+        break
+      fi
+    done
+  fi
+  [ -n "$ref" ] || return 1
+  git -C "$repo" merge-base --is-ancestor "$sha" "$ref" 2>/dev/null || return 1
+  printf '%s\n' "${ref#refs/remotes/}"
 }
 
 # 0 when <line> is not a ship done: to gate, when it names the task's recorded

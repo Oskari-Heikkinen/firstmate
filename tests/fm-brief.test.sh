@@ -199,7 +199,7 @@ test_ship_modes_generate_clean_briefs() {
   home="$TMP_ROOT/ship-home"
   write_registry "$home"
 
-  for id_mode in "brief-nomistakes-a1:no-mistakes" "brief-directpr-a2:direct-PR" "brief-localonly-a3:local-only"; do
+  for id_mode in "brief-nomistakes-a1:no-mistakes" "brief-directpr-a2:direct-PR" "brief-directpush-a4:direct-push" "brief-localonly-a3:local-only"; do
     id=${id_mode%%:*}
     mode=${id_mode##*:}
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1; status=$?
@@ -218,7 +218,7 @@ test_ship_modes_generate_clean_briefs() {
       "$id: brief missing nonterminal working:/setup-complete gate protection"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
-  pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
+  pass "fm-brief.sh: no-mistakes/direct-PR/direct-push/local-only briefs generate cleanly"
 }
 
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
@@ -242,7 +242,7 @@ test_ship_mode_is_required_and_closed_set() {
   done <<'ROWS'
 missing --mode||ship briefs require --mode
 empty --mode value|--mode|requires a value
-unknown mode value|--mode nope|must be one of no-mistakes, direct-PR, local-only
+unknown mode value|--mode nope|must be one of no-mistakes, direct-PR, direct-push, local-only
 conditional policy is not a task mode|--mode no-mistakes-prod-only|classify this task's surface
 ROWS
   pass "fm-brief.sh: ship --mode is required and closed-set validated"

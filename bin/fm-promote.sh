@@ -35,7 +35,9 @@
 # its value against the registry; bin/fm-project-mode.sh's header owns the
 # binding and bin/fm-dod-lib.sh owns what it changes for the worker, including
 # the refusal of a forge on local-only.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>]
+# A direct-push promotion's instructions also carry the landing-authority section
+# for --yolo (bin/fm-dod-lib.sh).
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off> [--branch-prefix <prefix>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -93,9 +95,9 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>" >&2; exit 1; }
+[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off>" >&2; exit 1; }
 [ "$MODE_SET" -eq 1 ] || {
-  echo "error: promotion requires --mode <no-mistakes|direct-PR|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md" >&2
+  echo "error: promotion requires --mode <no-mistakes|direct-PR|direct-push|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md" >&2
   exit 1
 }
 [ "$YOLO_SET" -eq 1 ] || {
@@ -103,11 +105,11 @@ done
   exit 1
 }
 case "$MODE" in
-  no-mistakes|direct-PR|local-only) ;;
+  no-mistakes|direct-PR|direct-push|local-only) ;;
   no-mistakes-prod-only)
     echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to no-mistakes or direct-PR" >&2
     exit 1 ;;
-  *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
+  *) echo "error: --mode must be one of no-mistakes, direct-PR, direct-push, local-only (got '$MODE')" >&2; exit 1 ;;
 esac
 case "$YOLO" in
   on|off) ;;
@@ -280,6 +282,12 @@ $PROMOTION_SHIP_SPEC
 
 EOF
   promote_delivery_contract
+  # The current worker never re-reads a launch brief, so it receives the
+  # yolo-dependent landing section here; a relaunch gets it from bin/fm-spawn.sh.
+  if [ "$MODE" = direct-push ]; then
+    printf '\n'
+    fm_landing_authority_block "$YOLO"
+  fi
 } > "$TMP" || { echo "error: could not render ship instructions for mode=$MODE" >&2; exit 1; }
 mv "$TMP" "$INSTRUCTIONS"
 TMP=
