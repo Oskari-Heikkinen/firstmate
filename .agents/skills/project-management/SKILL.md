@@ -40,6 +40,8 @@ Choose that posture when adding or creating the project:
 
 - `no-mistakes` runs the full validation pipeline before a PR.
 - `direct-PR` pushes and opens a PR without the no-mistakes pipeline.
+- `direct-push` has no PR: the worker passes the project's full local suite, as thorough as its CI, on top of the current default branch and lands with a fast-forward push to it; fit it to projects where many parallel PRs would go stale against the default branch.
+  Its tasks that will run on shared servers, which need an independent review first, or that are large or risky still take a PR mode at intake.
 - `local-only` has no required remote or PR and lands only through the approved local fast-forward path.
 - `no-mistakes-prod-only` is a conditional policy rather than one flat mode: genuinely internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`.
 
@@ -57,7 +59,7 @@ Default it off for every project and every posture, and enable it only on the ca
 Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
 A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
-A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
+A `direct-PR` or `direct-push` project needs an `origin` remote but skips no-mistakes initialization.
 A `local-only` project may have no remote and skips no-mistakes initialization.
 
 ## Create a project

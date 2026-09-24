@@ -16,6 +16,9 @@
 # draft state does not refuse, matching how the head read below is optional.
 # bin/fm-pr-merge.sh records through this script with FM_PR_CHECK_MERGE=1 and
 # skips this refusal, because its own merge-time draft refusal is authoritative.
+# A mode=direct-push task is refused before anything is recorded: it lands by a
+# fast-forward push with no PR, so a merge poll would watch nothing
+# (bin/fm-dod-lib.sh owns that delivery contract).
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -53,6 +56,10 @@ NUMBER=$FM_PR_NUMBER
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" != 1 ]; then
   echo "error: task metadata is unavailable" >&2
+  exit 1
+fi
+if [ "$(grep '^mode=' "$META" | tail -1 | cut -d= -f2- || true)" = direct-push ]; then
+  echo "error: task $ID ships mode=direct-push, which lands by a fast-forward push to the default branch with no PR; there is no PR merge to monitor" >&2
   exit 1
 fi
 
