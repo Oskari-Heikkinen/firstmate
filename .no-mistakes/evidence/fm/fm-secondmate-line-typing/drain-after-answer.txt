@@ -1,0 +1,10 @@
+1790256659	2	signal	mate.status	signal: /tmp/fm-live-secondmate.8uPSMw/home/state/mate.status
+wake annotation: unread wake-EVENT since last drain, not current state: mate.status: note: bootstrap
+wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: auditing the release notes
+wake annotation: unread wake-EVENT since last drain, not current state: mate.status: note [corr=d6a4703eccffed19]: taken up, will follow the standing note
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note [corr=67f21cfd43263c6e]: the ledger audit found 3 drifted entries
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate note: bootstrap
+mate working: auditing the release notes
+mate note [corr=d6a4703eccffed19]: taken up, will follow the standing note
+mate note [corr=67f21cfd43263c6e]: the ledger audit found 3 drifted entries

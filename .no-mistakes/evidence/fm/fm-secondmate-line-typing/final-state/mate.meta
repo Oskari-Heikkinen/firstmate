@@ -1,0 +1,10 @@
+window=fmlive:fm-mate
+endpoint_task_id=mate
+worktree=/tmp/fm-live-secondmate.8uPSMw/home
+project=/tmp/fm-live-secondmate.8uPSMw/home
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=/tmp/fm-live-secondmate.8uPSMw/home
+projects=alpha

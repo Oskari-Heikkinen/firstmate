@@ -1,0 +1,12 @@
+note: bootstrap
+working: auditing the release notes
+note [corr=d6a4703eccffed19]: taken up, will follow the standing note
+note [corr=67f21cfd43263c6e]: the ledger audit found 3 drifted entries
+note: the vendor changed their API
+working: retrying
+failed: child kid CI broke on main
+note: corr=126a96dbaab175c3 noted; corr=4d9cb8e11f41915a two PRs are stale
+done [key=child-pr-kid]: child kid PR ready: https://github.com/o/r/pull/7 mode=no-mistakes yolo=off
+done [key=child-outcome-kid-done-0123abcd]: child kid done: shipped pr=https://github.com/o/r/pull/7 mode=no-mistakes yolo=off
+done [key=child-outcome-kid-done-0123abcd]: child kid done: shipped pr=https://github.com/o/r/pull/7 mode=no-mistakes yolo=off report=data/kid/report.md
+done [key=merged-kid]: merged kid https://github.com/o/r/pull/8

@@ -1,0 +1,4 @@
+1790256665	4	signal	mate.status	signal: /tmp/fm-live-secondmate.8uPSMw/home/state/mate.status
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note: the vendor changed their API
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate note: the vendor changed their API

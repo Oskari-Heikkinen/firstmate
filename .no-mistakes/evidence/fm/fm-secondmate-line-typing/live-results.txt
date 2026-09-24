@@ -1,0 +1,15 @@
+S1-expect-persisted | pass
+S1b-expect-refusals | pass
+S2-working-absorbed | pass
+S3-ack-absorbed | pass
+S3b-ack-record-resolved | pass
+S4-answer-wakes | pass
+S5-absorbed-lines-presented-at-next-wake | pass
+S6-untagged-note-wakes | pass
+S6b-presented-once-not-reprinted | pass
+S7-working-then-failed-wakes | pass
+S8-mixed-corr-note-wakes | pass
+S9-first-pr-ready-wakes | pass
+S10-duplicate-done-absorbed | pass
+S11-duplicate-with-report-wakes | pass
+S12-different-pr-merge-wakes | pass

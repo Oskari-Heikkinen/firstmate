@@ -1,0 +1,5 @@
+
+### provision lab fm-lab-secondmate-rt-843287-1361
+fm-herdr-lab: fleet-state tripwire requires exactly one running default session
+provision failed
+fm-herdr-lab: missing fleet-state tripwire for 'fm-lab-secondmate-rt-843287-1361'; refusing destructive calls
