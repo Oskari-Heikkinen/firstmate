@@ -555,7 +555,9 @@ An interactive launch of the same nested worktree without the exclusion stopped 
 ```
 
 The same launch with the exclusion reached the composer with no dialog.
-Claude's project skill discovery stops at the worktree's git root, so the home's `.claude/skills` were absent from the nested worker's request, and recent real nested worker transcripts on this host listed no Firstmate skill either.
+The token-usage study that prompted this fix also reported the home's `.claude/skills` in nested workers' skill listings, about 1.5K tokens, but that leak did not reproduce on Claude Code 2.1.280.
+It was measured two ways: the captured first request of a nested worker whose home held `.claude/skills` listed none of those skills, because Claude's project skill discovery stops at the worktree's git root, and recent real nested worker transcripts on this host listed no Firstmate skill either.
+Instruction files were therefore the only leak found, so launches carry no skill exclusion.
 
 ### Pi
 

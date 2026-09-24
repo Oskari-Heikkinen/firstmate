@@ -4040,23 +4040,19 @@ exclude_path() {
 # <home>/projects/<project>/.treehouse/<pool>/<n>/<project>. Claude and Pi both
 # load instruction files from every ancestor directory, so such a worker would
 # otherwise carry the home's whole supervisor contract - which its launch brief
-# tells it not to follow - on every model call. NESTED_HOMES lists, canonical
-# and one per line, each firstmate home (this home and its code root) that
-# strictly contains the worktree. It stays empty for a secondmate, whose cwd is
-# its own home and whose contract must keep loading, and for a worktree outside
-# every home, so neither launch changes. Only those home directories' own
-# instruction files are dropped; the project's files still load from the
-# worktree. docs/verification/runtime-backends.md records the per-harness
-# evidence, including the harnesses this nesting does not reach.
-NESTED_HOMES=
+# tells it not to follow - on every model call. NESTED_HOME is this home,
+# canonical, when it strictly contains the worktree. It stays empty for a
+# secondmate, whose cwd is its own home and whose contract must keep loading,
+# and for a worktree outside the home, so neither launch changes. Only the
+# home directory's own instruction files are dropped; the project's files
+# still load from the worktree. docs/verification/runtime-backends.md records
+# the per-harness evidence, including the harnesses this nesting does not reach.
+NESTED_HOME=
 if [ "$KIND" != secondmate ]; then
-  nested_wt=$(resolve_path "$WT")
-  for nested_home in "$FM_HOME" "$FM_ROOT"; do
-    nested_home=$(resolve_path "$nested_home")
-    path_is_ancestor_of "$nested_home" "$nested_wt" || continue
-    case $'\n'"$NESTED_HOMES" in *$'\n'"$nested_home"$'\n'*) continue ;; esac
-    NESTED_HOMES+="$nested_home"$'\n'
-  done
+  nested_home=$(resolve_path "$FM_HOME")
+  if path_is_ancestor_of "$nested_home" "$(resolve_path "$WT")"; then
+    NESTED_HOME=$nested_home
+  fi
 fi
 # Claude's claudeMdExcludes setting (verified on 2.1.280) takes absolute paths
 # or picomatch globs, matched against every User, Project, and Local memory
@@ -4066,20 +4062,17 @@ fi
 # A home whose path contains a glob metacharacter cannot be written as a
 # literal pattern, so it is reported and left loading rather than guessed at.
 claude_md_excludes_setting() {
-  local home pattern list=
-  while IFS= read -r home; do
-    [ -n "$home" ] || continue
-    case "$home" in
-    *[][*?{}\(\)!+@\\]*)
-      echo "warning: firstmate home $home contains a glob character, so this nested claude worker still loads its instruction files" >&2
-      continue
-      ;;
-    esac
-    for pattern in "$home/CLAUDE.md" "$home/CLAUDE.local.md" "$home/AGENTS.md" "$home/.claude/CLAUDE.md" "$home/.claude/rules/**"; do
-      list+="${list:+,}\"$(json_escape "$pattern")\""
-    done
-  done <<<"$NESTED_HOMES"
-  [ -n "$list" ] || return 0
+  local home=$NESTED_HOME pattern list=
+  [ -n "$home" ] || return 0
+  case "$home" in
+  *[][*?{}\(\)!+@\\]*)
+    echo "warning: firstmate home $home contains a glob character, so this nested claude worker still loads its instruction files" >&2
+    return 0
+    ;;
+  esac
+  for pattern in "$home/CLAUDE.md" "$home/CLAUDE.local.md" "$home/AGENTS.md" "$home/.claude/CLAUDE.md" "$home/.claude/rules/**"; do
+    list+="${list:+,}\"$(json_escape "$pattern")\""
+  done
   printf ',"claudeMdExcludes":[%s]' "$list"
 }
 if [ "$RELAUNCH" -eq 1 ]; then
@@ -4265,21 +4258,16 @@ EOF
     # elsewhere loads without a dialog. Lives in state/, cleaned by teardown.
     # Pi has no per-file context exclude, only the all-or-nothing
     # --no-context-files that would also drop the project's own AGENTS.md, so
-    # a worktree nested in a firstmate home (NESTED_HOMES above) gets a
+    # a worktree nested in a firstmate home (NESTED_HOME above) gets a
     # before_agent_start handler instead: Pi hands it the structured context
     # files it loaded, and it removes exactly the rendered block of each file
-    # that sits directly in a nested home, every turn (verified on Pi 0.85.1).
+    # that sits directly in the nested home, every turn (verified on Pi 0.85.1).
     pi_context_filter=
-    if [ -n "$NESTED_HOMES" ]; then
-      pi_nested_homes=
-      while IFS= read -r nested_home; do
-        [ -n "$nested_home" ] || continue
-        pi_nested_homes+="${pi_nested_homes:+, }\"$(json_escape "$nested_home")\""
-      done <<<"$NESTED_HOMES"
+    if [ -n "$NESTED_HOME" ]; then
       pi_context_filter="  // This worktree lies inside a firstmate home; drop that home's own
   // instruction files from the system prompt so the worker never carries the
   // supervisor contract its launch brief tells it not to follow.
-  const nestedHomes = [$pi_nested_homes];
+  const nestedHome = \"$(json_escape "$NESTED_HOME")\";
   const canonicalDir = (file: string) => {
     try { return realpathSync(dirname(file)); } catch { return dirname(file); }
   };
@@ -4289,7 +4277,7 @@ EOF
     let prompt: string = event.systemPrompt;
     for (const file of files) {
       if (!file || typeof file.path !== \"string\") continue;
-      if (!nestedHomes.includes(canonicalDir(file.path))) continue;
+      if (canonicalDir(file.path) !== nestedHome) continue;
       const block = \"<project_instructions path=\\\"\" + file.path + \"\\\">\\n\" + file.content + \"\\n</project_instructions>\\n\\n\";
       const at = prompt.indexOf(block);
       if (at !== -1) prompt = prompt.slice(0, at) + prompt.slice(at + block.length);
