@@ -2015,6 +2015,43 @@ test_unpushed_ship_done_is_blocked() {
   pass "unpushed ship done: is current-state blocked"
 }
 
+# A direct-push task has no PR: its done: is current-state done once the named
+# head is on origin, and git - not the worker's note - says whether that head
+# has landed on origin's default branch or is only ready on its task branch.
+test_direct_push_done_reports_landing() {
+  reset_fakes
+  local d sha out
+  d=$(new_case direct-push-done)
+  make_repo_on_branch "$d/wt" fm/push
+  git -C "$d/wt" commit -q --allow-empty -m 'tested change'
+  sha=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/push.meta" \
+    "window=fm:fm-push" "worktree=$d/wt" "project=$d/wt" \
+    "kind=ship" "mode=direct-push" "yolo=off" "harness=claude"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" push
+
+  printf 'done: ready in branch fm/push tested on main at %s\n' "$sha" > "$d/state/push.status"
+  out=$(run_crew_state "$d" push)
+  assert_contains "$out" "state: blocked" "an unpushed direct-push done: must not read as done"
+
+  git -C "$d/wt" update-ref refs/remotes/origin/fm/push "$sha"
+  out=$(run_crew_state "$d" push)
+  assert_contains "$out" "state: done" "a direct-push head ready on its task branch must read done"
+  assert_contains "$out" "not landed on origin's default branch" "a ready direct-push head was not reported as unlanded"
+
+  printf 'done: landed %s on main\n' "$sha" >> "$d/state/push.status"
+  git -C "$d/wt" update-ref refs/remotes/origin/main "$sha"
+  out=$(run_crew_state "$d" push)
+  assert_contains "$out" "state: done" "a landed direct-push head must read done"
+  assert_contains "$out" "landed on origin/main" "a landed direct-push head was not reported as landed"
+  assert_not_contains "$out" "not landed" "a landed direct-push head was also reported as unlanded"
+  pass "direct-push done: reads done once on origin and reports whether it landed"
+}
+
 # Fleet snapshot hands crew-state a captured meta copy outside state/. The
 # poll's merge marker stays in the live state dir, so a squash-merged PR whose
 # branch fleet sync pruned still reads done there.
@@ -5206,6 +5243,7 @@ test_terminal_run_without_live_sibling_is_unchanged
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_unpushed_ship_done_is_blocked
+test_direct_push_done_reports_landing
 test_merged_pr_reads_done_under_captured_meta
 test_no_mistakes_prevalidation_done_stays_done
 test_moved_remote_branch_without_named_head_is_blocked

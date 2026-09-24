@@ -18,7 +18,8 @@
 # delivery regardless of release state or other links in its title.
 #
 # The distinction that decides the section is delivery: Recently Landed is
-# merged PRs, completed scouts, and finished local-only merges. A closed row
+# merged PRs, completed scouts, and finished local-only merges; a direct-push
+# landing closes with no artifact and is kept by the no-artifact fallback below. A closed row
 # whose artifact matches its merged or done completion verb is a delivery only
 # when it retains no captain-question provenance. A retained scout is identified
 # by its kind and recorded report because its title links do not change what it
