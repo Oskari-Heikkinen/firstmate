@@ -2210,6 +2210,31 @@ signal_files_actionable() {  # <status-file> ...
   return "$found"
 }
 
+# The secondmate status files in this signal batch whose newly classified span
+# is routine - progress lines, acknowledgements of requests sent expecting
+# only an acknowledgement, and repeated outcomes - printed as a space-separated
+# list. Called only for a batch with no captain-relevant span, and reads
+# exactly the bytes signal_files_actionable just classified (FM_SIGNAL_SURFACE_ENDPOINTS), so a
+# line appended after that classification is never absorbed with it.
+# bin/fm-classify-lib.sh's status_span_secondmate_routine owns which lines are
+# routine, and bin/fm-pending-reply-lib.sh's fm_pending_reply_line_acks owns
+# what an acknowledgement is. A file absent from the list keeps today's rule:
+# a secondmate's status append always wakes (signal_crew_provably_working).
+signal_secondmate_routine_files() {
+  local f endpoint ident task out=''
+  while IFS=$(printf '\t') read -r f endpoint ident; do
+    [ -n "$f" ] || continue
+    [ "$(_fm_status_kind "$f")" = secondmate ] || continue
+    task=$(basename "$f"); task="${task%.status}"
+    status_span_secondmate_routine "$f" "$(fm_wake_signal_seen_size "$STATE" "$f")" \
+      "$endpoint" "$ident" fm_pending_reply_line_acks "$STATE" "$task" || continue
+    out="$out $f"
+  done <<EOF
+$FM_SIGNAL_SURFACE_ENDPOINTS
+EOF
+  printf '%s' "$out"
+}
+
 # Surfaced-marker bookkeeping for the heartbeat backstop is owned by
 # fm-push-transition-lib.sh because push and poll paths must write one format.
 # Mark each actionable status log through the endpoint captured by the heartbeat
@@ -2796,7 +2821,9 @@ EOF
     #   - any status file gained a captain-relevant event since it was last
     #     classified (its whole new span, not merely its last line);
     #   - or it is a no-verb wake (a bare turn-end, a working: note) with no
-    #     positive evidence the crew is still executing - the crew stopped its turn
+    #     positive evidence the crew is still executing, once any secondmate
+    #     status file whose new span is only routine lines
+    #     (signal_secondmate_routine_files) is set aside - the crew stopped its turn
     #     with no actively-running pipeline and no busy pane, so it may be done
     #     (even via an interactive menu that wrote no done: status), waiting on a
     #     decision, or wedged. Absorbing such a turn-end is exactly the
@@ -2819,6 +2846,19 @@ EOF
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
     signal_files_actionable $files
     signal_actionable=$?
+    # Set aside a secondmate's routine-only span before asking for working
+    # proof: an idle mate is healthy, so its progress line or acknowledgement
+    # needs no crew evidence, and it rides along in the next drain's UNREAD
+    # STATUS. Anything else in the batch still needs the proofs below; a batch
+    # of only routine mate spans is benign outright.
+    signal_rest=$files
+    if [ "$signal_actionable" -ne 0 ] && ! afk_present; then
+      signal_routine=$(signal_secondmate_routine_files)
+      signal_rest=''
+      for f in $files; do
+        case " $signal_routine " in *" $f "*) ;; *) signal_rest="$signal_rest $f" ;; esac
+      done
+    fi
     # A decision-owned file's queued row payload is marked "needs-decision:"
     # instead of the ordinary "signal:" below (other files in the same batch
     # keep the ordinary payload). The wake reason line itself, and every
@@ -2831,7 +2871,8 @@ EOF
     # bin/fm-supervise-daemon.sh).
     # shellcheck disable=SC2086  # same space-separated status-path list
     if afk_present || [ "$signal_actionable" -eq 0 ] \
-      || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then
+      || { [ -n "$signal_rest" ] \
+        && ! signal_crew_provably_working $signal_rest && ! signal_turnend_panes_churned $signal_rest; }; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         file_reason="$reason"

@@ -29,6 +29,8 @@
 #  15. Remote parent-replies.status is not classified as wrong-home
 #  16. An escalated correlation stays retryable while undelivered, is never reset
 #      once delivered, and its delivery-unknown decision still closes on resolve
+#  17. The expect= kind is persisted, defaults to answer, and only a correlated
+#      note on an ack request is a routine acknowledgement
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -772,6 +774,56 @@ test_unrelated_and_stale_corr_cannot_resolve() {
   fi
   [ "$(phase_of "$state" "$corr")" = awaiting_report ] || fail "phase must stay awaiting_report"
   pass "unrelated events and stale correlation ids cannot resolve"
+}
+
+test_expect_kind_is_persisted_and_types_acknowledgements() {
+  local home state ack answer legacy rec other
+  home=$(setup_parent expect-kind)
+  state="$home/state"
+  # shellcheck disable=SC2031
+  export FM_PENDING_REPLY_NOW=7000
+  ack=$(fm_pending_reply_create "$home" "$state" "hibit" "take this up" ack)
+  answer=$(fm_pending_reply_create "$home" "$state" "hibit" "what did you find")
+  legacy=$(fm_pending_reply_create "$home" "$state" "hibit" "older request")
+  rec=$(fm_pending_reply_path "$state" "$ack")
+  [ "$(fm_pending_reply_get "$rec" expect)" = ack ] || fail "ack expectation was not persisted"
+  [ "$(fm_pending_reply_get "$(fm_pending_reply_path "$state" "$answer")" expect)" = answer ] \
+    || fail "the default expectation is not answer"
+  # A record written before the field existed means answer.
+  rec=$(fm_pending_reply_path "$state" "$legacy")
+  grep -v '^expect=' "$rec" > "$rec.tmp" && mv "$rec.tmp" "$rec"
+  [ "$(fm_pending_reply_expect_of "$rec")" = answer ] || fail "a legacy record did not default to answer"
+  if fm_pending_reply_create "$home" "$state" "hibit" "bad kind" maybe >/dev/null; then
+    fail "an invalid expectation kind was accepted"
+  fi
+
+  fm_pending_reply_line_acks "$state" hibit "note [corr=$ack]: taken up" \
+    || fail "a correlated note on an ack request was not an acknowledgement"
+  if fm_pending_reply_line_acks "$state" hibit "done [corr=$ack]: finished it"; then
+    fail "a correlated done on an ack request was treated as a routine acknowledgement"
+  fi
+  if fm_pending_reply_line_acks "$state" hibit "note [corr=$answer]: here is the answer"; then
+    fail "a correlated note on an answer request was treated as a routine acknowledgement"
+  fi
+  if fm_pending_reply_line_acks "$state" hibit "note [corr=$legacy]: legacy reply"; then
+    fail "a correlated note on a legacy record was treated as a routine acknowledgement"
+  fi
+  if fm_pending_reply_line_acks "$state" otherhome "note [corr=$ack]: taken up"; then
+    fail "an acknowledgement on another task's channel was accepted"
+  fi
+  other=$(fm_pending_reply_new_id)
+  if fm_pending_reply_line_acks "$state" hibit "note [corr=$other]: unknown correlation"; then
+    fail "a note with an unknown correlation was treated as an acknowledgement"
+  fi
+  if fm_pending_reply_line_acks "$state" hibit "note: taken up"; then
+    fail "an uncorrelated note was treated as an acknowledgement"
+  fi
+  # The kind never changes resolution: an ack request still resolves on its reply.
+  fm_pending_reply_mark_delivered "$state" "$ack"
+  printf 'note [corr=%s]: taken up\n' "$ack" > "$state/hibit.status"
+  fm_pending_reply_try_resolve "$state" "$ack" || fail "an acknowledgement did not resolve its ack request"
+  [ "$(phase_of "$state" "$ack")" = resolved ] || fail "an ack request did not reach resolved"
+  pass "expect= is persisted, defaults to answer, and only a correlated ack note is routine"
 }
 
 test_restart_preserves_expectation_and_parent_destination() {
@@ -1641,5 +1693,6 @@ test_mechanical_helper_writes_parent_channel
 test_remote_parent_replies_is_not_wrong_home
 test_local_parent_replies_is_wrong_home_evidence
 test_escalated_undelivered_correlation_stays_retryable
+test_expect_kind_is_persisted_and_types_acknowledgements
 
 printf 'ok - all pending-reply tests passed\n'

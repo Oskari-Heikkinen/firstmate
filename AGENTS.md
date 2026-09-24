@@ -209,6 +209,7 @@ When a steer answers an open keyed decision or blocker, pass `fm-send`'s `--reso
 `fm-send` is the data plane for text the worker should read; never use its key or text paths for interrupt, exit, or other lifecycle control, because routing-marked lifecycle text becomes chat the worker reasons about instead of executing.
 Drive a worker's lifecycle through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which owns the per-runtime mechanics, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](docs/agent-control.md)).
 For the parent-owned correlation, recovery, and escalation contract on marked secondmate requests, see `bin/fm-pending-reply-lib.sh`.
+When a marked secondmate request needs only confirmation that it was taken up, pass `fm-send`'s `--expect ack` so that acknowledgement rides along at the next wake instead of waking this home; [`docs/secondmate-parent-channel.md`](docs/secondmate-parent-channel.md) owns which second-mate lines wake.
 Supervise all live work under section 8.
 
 ### Selected delivery path and merge authority
