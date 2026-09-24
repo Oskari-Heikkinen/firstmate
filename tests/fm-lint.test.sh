@@ -21,6 +21,9 @@ LINT="$ROOT/bin/fm-lint.sh"
 INSTALLER="$ROOT/bin/fm-install-shellcheck.sh"
 # The pinned version, read from the single source (the one owner itself).
 REQUIRED=$("$LINT" --required-version)
+# The local split's cross-file code set, stated independently of the owner so
+# a silent change to it fails here.
+CROSS_FILE_CODES=SC1091,SC2034,SC2153,SC2154,SC2329
 
 # Official GitHub release asset sha256 values for shellcheck v0.11.0 .tar.xz
 # archives (https://github.com/koalaman/shellcheck/releases/tag/v0.11.0). Tests
@@ -162,6 +165,7 @@ test_help_reports_the_complete_interface() {
   assert_contains "$help" "SC1091" "fm-lint.sh --help omitted the local SC1091 exclusion"
   assert_contains "$help" "SC2034" "fm-lint.sh --help omitted the local SC2034 exclusion"
   assert_contains "$help" "SC2153" "fm-lint.sh --help omitted the local SC2153 exclusion"
+  assert_contains "$help" "SC2154" "fm-lint.sh --help omitted the local SC2154 exclusion"
   assert_contains "$help" "SC2329" "fm-lint.sh --help omitted the local SC2329 exclusion"
   pass "fm-lint.sh --help reports the complete executable interface"
 }
@@ -295,7 +299,9 @@ fm_lint_write_diff_file() {
 # selected without depending on real ShellCheck findings. When
 # FM_TEST_MODE_LOG is set, it records the effective analysis mode, treating
 # ShellCheck's default as full analysis. When FM_TEST_FLAG_LOG is set, it
-# records whether --external-sources was passed and the --exclude value.
+# records whether --external-sources was passed and the --exclude value. When
+# FM_TEST_CALL_LOG is set, it records one line per invocation naming source
+# following, analysis mode, --exclude, --include, and the roots.
 fm_lint_stub_shellcheck() {
   local fakebin=$1 log=$2
   : > "$log"
@@ -308,6 +314,7 @@ fi
 mode=on
 follow=no
 exclude=none
+include=none
 while [ "\$#" -gt 0 ] && [ "\$1" != -- ]; do
   case "\$1" in
     --extended-analysis=false) mode=off ;;
@@ -317,6 +324,7 @@ while [ "\$#" -gt 0 ] && [ "\$1" != -- ]; do
       shift
       exclude=\${1:-none}
       ;;
+    --include=*) include=\${1#--include=} ;;
   esac
   shift
 done
@@ -327,6 +335,10 @@ if [ -n "\${FM_TEST_FLAG_LOG:-}" ]; then
   printf 'external-sources=%s\nexclude=%s\n' "\$follow" "\$exclude" >> "\$FM_TEST_FLAG_LOG"
 fi
 [ "\$#" -eq 0 ] || shift
+if [ -n "\${FM_TEST_CALL_LOG:-}" ]; then
+  printf 'external-sources=%s analysis=%s exclude=%s include=%s roots=%s\n' \
+    "\$follow" "\$mode" "\$exclude" "\$include" "\$*" >> "\$FM_TEST_CALL_LOG"
+fi
 printf '%s\n' "\$@" >> "$log"
 exit 0
 SH
@@ -519,7 +531,7 @@ test_changed_mode_lints_only_the_changed_file() {
     FM_TEST_GIT_BRANCH=feature \
     FM_TEST_GIT_DIFF_FILE="$diff_file" "$LINT" 2>&1) \
     || fail "changed-mode lint run failed"$'\n'"$out"
-  [ "$(cat "$log")" = "$target" ] \
+  [ "$(LC_ALL=C sort -u "$log")" = "$target" ] \
     || fail "changed-mode lint did not run ShellCheck on exactly the changed file"$'\n'"logged: $(cat "$log")"
   pass "fm-lint.sh changed mode lints only the changed canonical file"
 }
@@ -567,7 +579,7 @@ test_explicit_path_bypasses_changed_logic() {
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
     FM_TEST_GIT_MERGE_BASE_OK=0 \
     "$LINT" "$target" 2>&1) || fail "explicit-path lint failed"$'\n'"$out"
-  [ "$(cat "$log")" = "$target" ] \
+  [ "$(LC_ALL=C sort -u "$log")" = "$target" ] \
     || fail "explicit path lint did not run on exactly the requested file"$'\n'"logged: $(cat "$log")"
   pass "fm-lint.sh explicit paths bypass changed-file mode selection"
 }
@@ -625,14 +637,23 @@ fm_lint_assert_flag_log() {
     || fail "ShellCheck flags were not external-sources=$expected_follow exclude=$expected_exclude"$'\n'"$(cat "$flag_log")"
 }
 
-test_changed_mode_drops_external_sources_and_excludes_cross_file_codes() {
-  local tmp fakebin log flag_log mode_log diff_file telemetry out target
-  tmp=$(fm_test_tmproot fm-lint-local-nox)
+# fm_lint_split_calls <root>...: the exact per-invocation call log the local
+# split must produce for the given roots, in order.
+fm_lint_split_calls() {
+  local root
+  for root in "$@"; do
+    printf 'external-sources=no analysis=on exclude=%s include=none roots=%s\n' "$CROSS_FILE_CODES" "$root"
+    printf 'external-sources=yes analysis=off exclude=none include=%s roots=%s\n' "$CROSS_FILE_CODES" "$root"
+  done
+}
+
+test_changed_mode_runs_the_local_split() {
+  local tmp fakebin log call_log telemetry diff_file out target
+  tmp=$(fm_test_tmproot fm-lint-local-split)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
-  flag_log="$tmp/flags.log"
-  mode_log="$tmp/mode.log"
+  call_log="$tmp/calls.log"
   telemetry="$tmp/telemetry.tsv"
   fm_lint_stub_shellcheck "$fakebin" "$log"
   diff_file="$tmp/diff.nul"
@@ -642,32 +663,29 @@ test_changed_mode_drops_external_sources_and_excludes_cross_file_codes() {
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
     FM_TEST_GIT_BRANCH=feature \
     FM_TEST_GIT_DIFF_FILE="$diff_file" \
-    FM_TEST_FLAG_LOG="$flag_log" FM_TEST_MODE_LOG="$mode_log" \
+    FM_TEST_CALL_LOG="$call_log" \
     "$LINT" --telemetry "$telemetry" 2>&1) \
     || fail "changed-mode local lint failed"$'\n'"$out"
-  [ "$(cat "$log")" = "$target" ] \
-    || fail "changed-mode lint did not run ShellCheck on exactly the changed file"$'\n'"logged: $(cat "$log")"
-  [ "$(cat "$mode_log")" = on ] \
-    || fail "changed-mode local lint disabled dataflow analysis"
-  fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
-  assert_contains "$out" "source following disabled" \
-    "changed-mode local lint did not disclose dropped source following"
-  assert_grep $'analysis_mode\tlocal' "$telemetry" \
-    "telemetry did not record local analysis mode"
+  [ "$(cat "$call_log")" = "$(fm_lint_split_calls "$target")" ] \
+    || fail "changed-mode lint did not run the two-pass local split"$'\n'"$(cat "$call_log")"
+  assert_contains "$out" "local split mode" \
+    "changed-mode local lint did not disclose the split analysis"
+  assert_grep $'analysis_mode\tsplit' "$telemetry" \
+    "telemetry did not record split analysis mode"
   assert_grep $'source_directives\t5' "$telemetry" \
     "telemetry did not count the changed root's source directives"
-  assert_grep $'source_followed_directives\t0' "$telemetry" \
-    "telemetry reported followed sources in no-external-sources mode"
-  pass "fm-lint.sh changed mode drops source following and excludes cross-file codes"
+  assert_grep $'source_followed_directives\t5' "$telemetry" \
+    "telemetry did not count the split's source-following pass"
+  pass "fm-lint.sh changed mode never combines source following with extended analysis"
 }
 
-test_changed_mode_invokes_shellcheck_once_per_root() {
-  local tmp fakebin log flag_log diff_file out first second invocation_count
+test_split_mode_invokes_shellcheck_twice_per_root() {
+  local tmp fakebin log call_log diff_file out first second
   tmp=$(fm_test_tmproot fm-lint-local-per-root)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
-  flag_log="$tmp/flags.log"
+  call_log="$tmp/calls.log"
   fm_lint_stub_shellcheck "$fakebin" "$log"
   diff_file="$tmp/diff.nul"
   first="bin/fm-install-shellcheck.sh"
@@ -676,15 +694,11 @@ test_changed_mode_invokes_shellcheck_once_per_root() {
 
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
     FM_TEST_GIT_BRANCH=feature FM_TEST_GIT_DIFF_FILE="$diff_file" \
-    FM_TEST_FLAG_LOG="$flag_log" "$LINT" 2>&1) \
+    FM_TEST_CALL_LOG="$call_log" "$LINT" 2>&1) \
     || fail "changed-mode per-root lint failed"$'\n'"$out"
-  [ "$(LC_ALL=C sort "$log")" = "$first"$'\n'"$second" ] \
-    || fail "changed-mode lint did not analyze both changed roots"$'\n'"logged: $(cat "$log")"
-  invocation_count=$(grep -c '^external-sources=' "$flag_log" || true)
-  [ "$invocation_count" -eq 2 ] \
-    || fail "changed-mode lint used $invocation_count ShellCheck calls for two roots"
-  fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
-  pass "fm-lint.sh changed mode invokes ShellCheck once per root"
+  [ "$(LC_ALL=C sort "$call_log")" = "$(fm_lint_split_calls "$first" "$second" | LC_ALL=C sort)" ] \
+    || fail "split lint did not run exactly two single-root passes per changed root"$'\n'"$(cat "$call_log")"
+  pass "fm-lint.sh split mode invokes ShellCheck twice per root, one root at a time"
 }
 
 test_ci_keeps_external_sources_without_local_exclusions() {
@@ -745,22 +759,23 @@ test_merge_base_less_keeps_external_sources() {
   pass "fm-lint.sh without a merge-base keeps source following without the local exclusion list"
 }
 
-test_explicit_path_keeps_external_sources() {
-  local tmp fakebin log flag_log out target
-  tmp=$(fm_test_tmproot fm-lint-explicit-follow)
+test_explicit_path_runs_the_local_split() {
+  local tmp fakebin log call_log out target
+  tmp=$(fm_test_tmproot fm-lint-explicit-split)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
-  flag_log="$tmp/flags.log"
+  call_log="$tmp/calls.log"
   fm_lint_stub_shellcheck "$fakebin" "$log"
   target="bin/fm-install-shellcheck.sh"
 
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
-    FM_TEST_GIT_BRANCH=feature \
-    FM_TEST_FLAG_LOG="$flag_log" "$LINT" "$target" 2>&1) \
+    FM_TEST_GIT_BRANCH=main \
+    FM_TEST_CALL_LOG="$call_log" "$LINT" "$target" 2>&1) \
     || fail "explicit-path lint failed"$'\n'"$out"
-  fm_lint_assert_flag_log "$flag_log" yes none
-  pass "fm-lint.sh explicit paths keep source following"
+  [ "$(cat "$call_log")" = "$(fm_lint_split_calls "$target")" ] \
+    || fail "local explicit-path lint did not run the two-pass split"$'\n'"$(cat "$call_log")"
+  pass "fm-lint.sh local explicit paths run the split, even on main"
 }
 
 test_fast_mode_on_a_local_branch_keeps_source_following() {
@@ -788,13 +803,13 @@ test_fast_mode_on_a_local_branch_keeps_source_following() {
   pass "fm-lint.sh --fast on a local branch keeps source following"
 }
 
-test_changed_mode_hides_cross_file_codes_that_ci_still_sees() {
+test_split_covers_cross_file_codes_with_library_context() {
   if ! pinned_ready; then
-    pass "SKIP (ShellCheck $REQUIRED not resolved): changed-mode exclusion behavior"
+    pass "SKIP (ShellCheck $REQUIRED not resolved): split cross-file coverage"
     return
   fi
-  local tmp fakebin diff_file fixture out rc test_root lint
-  tmp=$(fm_test_tmproot fm-lint-local-exclude-behavior)
+  local tmp fakebin diff_file fixture lib out rc test_root lint
+  tmp=$(fm_test_tmproot fm-lint-split-coverage)
   test_root="$tmp/repo"
   mkdir -p "$test_root/bin/backends" "$test_root/tests" "$test_root/.github/workflows"
   lint="$test_root/bin/fm-lint.sh"
@@ -802,15 +817,25 @@ test_changed_mode_hides_cross_file_codes_that_ci_still_sees() {
   cp "$ROOT/bin/fm-lint-workflows.sh" "$test_root/bin/"
   cp "$ROOT"/.github/workflows/* "$test_root/.github/workflows/"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$test_root/bin/backends/noop.sh"
-  fixture="$test_root/tests/fm-lint-local-exclude-fixture.test.sh"
+  fixture="$test_root/tests/fm-lint-split-fixture.test.sh"
+  lib="$test_root/tests/fm-lint-split-fixture-lib.sh"
+  cat > "$lib" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$consumed_by_library"
+library_value=ok
+SH
   cat > "$fixture" <<'SH'
 #!/usr/bin/env bash
-# Assigned here and only consumed by a library the local gate does not follow.
-cross_file_only=1
+consumed_by_library=1
+# shellcheck source=tests/fm-lint-split-fixture-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-lint-split-fixture-lib.sh"
+truly_unused=1
+printf '%s\n' "$library_value"
+count=5
+printf '%s\n' $count
 outer() {
   (
-    # Defined here and only invoked by a library the local gate does not follow.
-    cross_file_helper() {
+    never_called() {
       printf 'ok\n'
     }
     printf 'hi\n'
@@ -821,24 +846,38 @@ SH
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   diff_file="$tmp/diff.nul"
-  fm_lint_write_diff_file "$diff_file" "tests/fm-lint-local-exclude-fixture.test.sh"
+  fm_lint_write_diff_file "$diff_file" "tests/fm-lint-split-fixture.test.sh"
 
   rc=0
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
     FM_TEST_GIT_BRANCH=feature \
     FM_TEST_GIT_DIFF_FILE="$diff_file" "$lint" 2>&1) || rc=$?
-  [ "$rc" -eq 0 ] \
-    || fail "changed-mode local lint failed a cross-file-only fixture"$'\n'"$out"
-  assert_not_contains "$out" "SC2034" "changed-mode local lint still reported SC2034"
-  assert_not_contains "$out" "SC2329" "changed-mode local lint still reported SC2329"
+  [ "$rc" -ne 0 ] || fail "changed-mode split passed a genuinely unused variable"$'\n'"$out"
+  assert_contains "$out" "truly_unused appears unused" \
+    "the split's source-following pass did not restore SC2034"
+  assert_not_contains "$out" "consumed_by_library appears unused" \
+    "the split judged SC2034 without library context"
+  assert_not_contains "$out" "SC2154" "the split judged SC2154 without library context"
+  assert_not_contains "$out" "SC2086" \
+    "the split's no-dataflow pass leaked a finding dataflow proves safe"
+  assert_not_contains "$out" "SC2329" "the split raised the documented CI-only SC2329"
+  [ "$(printf '%s\n' "$out" | grep -Fc 'SC2034 (warning)')" -eq 1 ] \
+    || fail "the split printed a cross-file diagnostic more than once"$'\n'"$out"
 
   rc=0
-  out=$("$lint" "$fixture" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail "explicit-path lint passed a cross-file-only fixture"$'\n'"$out"
-  assert_contains "$out" "SC2034" "explicit-path lint did not keep SC2034"
-  assert_contains "$out" "SC2329" "explicit-path lint did not keep SC2329"
-  rm -f "$fixture"
-  pass "fm-lint.sh changed mode excludes cross-file codes that explicit paths still report"
+  out=$(GITHUB_ACTIONS='' CI='' "$lint" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "local explicit-path split passed a genuinely unused variable"$'\n'"$out"
+  assert_contains "$out" "truly_unused appears unused" "local explicit-path split lost SC2034"
+  assert_not_contains "$out" "SC2329" "local explicit-path split raised the documented CI-only SC2329"
+
+  rc=0
+  out=$(CI=true "$lint" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "CI lint passed the split coverage fixture"$'\n'"$out"
+  assert_contains "$out" "truly_unused appears unused" "CI lint lost SC2034"
+  assert_contains "$out" "SC2329" "CI lint lost the source-aware dataflow SC2329"
+  assert_not_contains "$out" "SC2154" "CI lint lost library context"
+  assert_not_contains "$out" "SC2086" "CI lint lost dataflow"
+  pass "fm-lint.sh split restores cross-file codes with library context and leaves SC2329 to CI"
 }
 
 # One ShellCheck process per root. Passing the whole canonical set in a
@@ -886,7 +925,7 @@ test_local_exclusion_list_covers_every_no_external_sources_code() {
   while IFS= read -r code; do
     [ -n "$code" ] || continue
     case "$code" in
-      SC1091|SC2034|SC2153|SC2329) ;;
+      SC1091|SC2034|SC2153|SC2154|SC2329) ;;
       *) unexpected="${unexpected}${unexpected:+ }$code" ;;
     esac
   done < <(printf '%s\n' "$out" | sed -n 's/.*\[\(SC[0-9][0-9]*\)\].*/\1/p' | LC_ALL=C sort -u)
@@ -1273,7 +1312,7 @@ test_jobs_are_deterministic_and_complete() {
     return
   fi
   local tmp good bad_a bad_b out_clean_1 out_clean_2 out_fail_1 out_fail_2 out_fail_2b
-  local telemetry telemetry_out cleanup_tmp cleanup_out rc_clean_1 rc_clean_2 rc_fail_1 rc_fail_2 rc_fail_2b rc_bad_jobs
+  local telemetry telemetry_out expected_mode cleanup_tmp cleanup_out rc_clean_1 rc_clean_2 rc_fail_1 rc_fail_2 rc_fail_2b rc_bad_jobs
   tmp=$(fm_test_tmproot fm-lint-jobs)
   mkdir -p "$tmp"
   good="$tmp/good.sh"
@@ -1325,7 +1364,12 @@ SH
     || fail "telemetry-enabled clean lint failed"
   [ "$telemetry_out" = "$out_clean_2" ] || fail "quiet telemetry changed routine lint output"
   assert_grep $'format\tfm-lint-telemetry-v1' "$telemetry" "telemetry format marker is missing"
-  assert_grep $'analysis_mode\tfull' "$telemetry" "telemetry did not record full analysis mode"
+  expected_mode='split'
+  if [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]; then
+    expected_mode=full
+  fi
+  assert_grep "analysis_mode"$'\t'"$expected_mode" "$telemetry" \
+    "telemetry did not record the context's $expected_mode analysis mode"
   assert_grep $'jobs\t2' "$telemetry" "telemetry did not record bounded jobs"
   assert_grep $'root_count\t1' "$telemetry" "telemetry did not record root count"
   assert_grep $'wall_seconds\t' "$telemetry" "telemetry did not record wall time"
@@ -1566,7 +1610,7 @@ test_memory_evidence_outranks_findings_and_signal_reasons() {
     for name in oom-exit1 oom-heap oom-kill oom-text-findings; do
       reason=$(awk -F '\t' -v root="/$name.sh" \
         '$1 == "end" && substr($3, length($3) - length(root) + 1) == root { print $10 }' \
-        "$roots_log")
+        "$roots_log" | LC_ALL=C sort -u)
       case "$name" in
         oom-text-findings)
           [ "$reason" = findings ] \
@@ -1597,8 +1641,9 @@ test_source_excerpt_with_oom_text_stays_findings() {
 x=$1
 shellcheck: out of memory $x
 SH
+  # CI pins the single full pass, so each root has exactly one record.
   rc=0
-  out=$("$LINT" --telemetry "$tmp/lint.tsv" "$fixture" 2>&1) || rc=$?
+  out=$(CI=true "$LINT" --telemetry "$tmp/lint.tsv" "$fixture" 2>&1) || rc=$?
   [ "$rc" -eq 1 ] || fail "a root with an ordinary finding exited $rc, expected 1"$'\n'"$out"
   assert_contains "$out" "shellcheck: out of memory" "the source excerpt was not echoed with the finding"
   assert_contains "$out" "SC2086" "the ordinary finding was not reported"
@@ -1610,7 +1655,7 @@ SH
   # ordinary file error that names the path on stderr; it is an error, not a
   # memory death.
   rc=0
-  out=$("$LINT" --telemetry "$tmp/missing.tsv" "$tmp/out of memory.sh" 2>&1) || rc=$?
+  out=$(CI=true "$LINT" --telemetry "$tmp/missing.tsv" "$tmp/out of memory.sh" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "a missing root unexpectedly passed"$'\n'"$out"
   assert_contains "$out" "out of memory.sh" "the missing root's file error did not name its path"
   reason=$(awk -F '\t' '$1 == "end" && $3 ~ /out of memory\.sh$/ { print $10 }' "$tmp/missing.roots.tsv")
@@ -1769,8 +1814,9 @@ test_roots_sidecar_records_per_root_lifecycle() {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$beta"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$gamma"
 
+  # CI pins the single full pass, so each root has exactly one record.
   rc=0
-  out=$(PATH="$fakebin:$PATH" FM_TEST_STUB_LOG="$stub_log" \
+  out=$(CI=true PATH="$fakebin:$PATH" FM_TEST_STUB_LOG="$stub_log" \
     "$LINT" --telemetry "$telemetry" "$alpha" "$beta" "$gamma" 2>&1) || rc=$?
   [ "$rc" -eq 0 ] || fail "a clean bounded run failed"$'\n'"$out"
   [ -f "$roots_log" ] || fail "the run wrote no per-root sidecar beside telemetry"
@@ -1904,12 +1950,12 @@ test_main_branch_forces_full_lint
 test_explicit_path_bypasses_changed_logic
 test_zero_changed_files_exits_clean
 test_list_files_respects_changed_mode
-test_changed_mode_drops_external_sources_and_excludes_cross_file_codes
-test_changed_mode_invokes_shellcheck_once_per_root
+test_changed_mode_runs_the_local_split
+test_split_mode_invokes_shellcheck_twice_per_root
 test_ci_keeps_external_sources_without_local_exclusions
 test_main_branch_keeps_external_sources
 test_merge_base_less_keeps_external_sources
-test_explicit_path_keeps_external_sources
+test_explicit_path_runs_the_local_split
 test_fast_mode_on_a_local_branch_keeps_source_following
-test_changed_mode_hides_cross_file_codes_that_ci_still_sees
+test_split_covers_cross_file_codes_with_library_context
 test_local_exclusion_list_covers_every_no_external_sources_code

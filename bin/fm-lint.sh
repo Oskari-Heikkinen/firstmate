@@ -8,12 +8,35 @@
 # The explicit --fast mode is local-only and disables ShellCheck's extended
 # dataflow analysis while preserving ordinary shell lint checks and source
 # following. CI, main, and merge-base-less runs keep --norc --external-sources
-# with full dataflow over the whole canonical set. An ordinary local branch
-# (changed-file mode, including the no-mistakes lint step) drops
-# --external-sources, keeps dataflow, and excludes SC1091, SC2034, SC2153,
-# and SC2329, the codes that need library context. Those codes still run in
-# CI over the whole set. Explicit paths keep --external-sources with the
-# selected dataflow mode.
+# with full dataflow over the whole canonical set; explicit paths in CI get
+# that same full pass over just the given paths.
+#
+# Local split mode. Outside CI, changed-file mode (including the no-mistakes
+# lint step) and explicit paths never run ShellCheck with --external-sources
+# and extended analysis on the same invocation, because that combination
+# dominates memory: on the largest source closure it peaks at about three and
+# a half times the costlier split pass (docs/verification/lint-option-a.md),
+# and parallel local runs can exhaust the host.
+# Instead each root gets two cheap invocations, one at a time per worker:
+#   1. extended dataflow without --external-sources, excluding the cross-file
+#      codes SC1091, SC2034, SC2153, SC2154, and SC2329, whose verdicts need
+#      library context this pass does not load;
+#   2. --external-sources without extended analysis, --include'd to exactly
+#      those cross-file codes, so it restores them with library context
+#      without raising the extra findings (such as SC2086 on values dataflow
+#      proves safe) that disabling dataflow would otherwise add.
+# Every code is owned by exactly one pass, so no diagnostic prints twice.
+# Each pass is its own per-root ShellCheck process under the same bounds and
+# roots-log records as any other root, its mode recorded as split-dataflow or
+# split-sources.
+# Relative to CI's single full pass, the split can still miss:
+#   - SC2329 (function never invoked), which needs both source context and
+#     dataflow, so neither pass can raise it and it stays CI-only;
+#   - any other diagnostic whose verdict depends on dataflow facts defined in
+#     a sourced file, since the dataflow pass sees each root alone (it may
+#     also report such a finding that CI's source-aware pass would not);
+#   - any cross-file code whose verdict would change with dataflow enabled.
+# CI runs the full pass over every root, so these gaps never reach main.
 # Tests stop source analysis at imported production modules because CI analyzes
 # every production shell separately as a canonical, source-aware root.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
@@ -30,12 +53,12 @@
 #   - Otherwise (an ordinary local branch with a real merge-base) it lints
 #     only the canonical-set files changed since that merge-base, including
 #     uncommitted local edits, via plain local `git diff` (no network, no
-#     `gh`). That local pass drops --external-sources and excludes SC1091,
-#     SC2034, SC2153, and SC2329. A branch with zero matching changed files
+#     `gh`), in local split mode. A branch with zero matching changed files
 #     skips ShellCheck and prints a "no changed lint targets" note, then
 #     still runs the backend-purity check and validates workflows.
 # Explicit paths always bypass this file-set selection and lint exactly the
-# given paths, matching the same config, without the workflow YAML check.
+# given paths, in local split mode outside CI and full mode in CI, without the
+# workflow YAML check.
 # Explicit core bin/ and bin/backends/ scripts still receive the
 # backend-purity check. The backend-purity check rejects direct Beads CLI
 # invocations in the core bin/ and bin/backends/ scripts so every configured
@@ -91,7 +114,7 @@
 # Usage:
 #   fm-lint.sh                         lint the context-selected file set (see above)
 #   fm-lint.sh --fast [path]...       local lint with extended analysis disabled
-#   fm-lint.sh <path>...               lint explicit roots with the same config
+#   fm-lint.sh <path>...               lint explicit roots (local split mode outside CI)
 #   fm-lint.sh --jobs <1|2> [path]...  override concurrent worker count
 #   fm-lint.sh --partition <1of2|2of2> lint one full-rigor canonical CI partition
 #   fm-lint.sh --telemetry <path> ...  write a quiet metrics snapshot
@@ -101,9 +124,9 @@
 set -u
 
 REQUIRED_SHELLCHECK=0.11.0
-# Cross-file codes that need --external-sources. Local changed-file mode
-# cannot judge them, so they stay CI-only.
-LOCAL_NOX_EXCLUDE=SC1091,SC2034,SC2153,SC2329
+# Cross-file codes whose verdict needs --external-sources. The local split's
+# dataflow pass excludes them and its source-following pass checks only them.
+LOCAL_CROSS_FILE_CODES=SC1091,SC2034,SC2153,SC2154,SC2329
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SELF="$SELF_DIR/fm-lint.sh"
 ROOT="$(cd "$SELF_DIR/.." && pwd -P)"
@@ -211,21 +234,23 @@ fm_lint_classify_root() {  # <rc> <root-stderr-file>
 
 # Run one selected root in its own ShellCheck process, record its lifecycle
 # in the roots log, and append its diagnostics to the shard output.
-fm_lint_run_root() {  # <index> <path> <output-dir> <shard-index>
-  local index=$1 path=$2 output_dir=$3 shard_index=$4
-  local root_out="$output_dir/root.$shard_index.$index.out"
-  local root_err="$output_dir/root.$shard_index.$index.err"
-  local rss_file="$output_dir/root.$shard_index.$index.rss"
+fm_lint_run_root() {  # <index> <path> <output-dir> <shard-index> [<split-pass>]
+  local index=$1 path=$2 output_dir=$3 shard_index=$4 pass=${5:-}
+  local tag=$index${pass:+.$pass}
+  local root_out="$output_dir/root.$shard_index.$tag.out"
+  local root_err="$output_dir/root.$shard_index.$tag.err"
+  local rss_file="$output_dir/root.$shard_index.$tag.rss"
+  local mode=${FM_LINT_INTERNAL_MODE:-}${pass:+-$pass}
   local start_ms end_ms duration_ms invocation_rc=0 reason rss_kib
   start_ms=$(fm_lint_now_ms)
   if [ -n "${FM_LINT_INTERNAL_ROOTS_LOG:-}" ]; then
     printf 'begin\t%s\t%s\t%s\t%s\t%s\n' \
-      "$index" "$path" "$shard_index" "${FM_LINT_INTERNAL_MODE:-}" "$start_ms" \
+      "$index" "$path" "$shard_index" "$mode" "$start_ms" \
       >> "$FM_LINT_INTERNAL_ROOTS_LOG"
   fi
   if [ "${FM_LINT_INTERNAL_PROGRESS:-0}" = 1 ]; then
     printf 'fm-lint: begin %s (shard %s, %s mode)\n' \
-      "$path" "$shard_index" "${FM_LINT_INTERNAL_MODE:-unknown}" >&2
+      "$path" "$shard_index" "${mode:-unknown}" >&2
   fi
   if [ "${FM_LINT_INTERNAL_BOUNDED:-none}" != none ]; then
     # The watchdog runs in a process group of its own (the same setpgrp hop the
@@ -255,7 +280,7 @@ fm_lint_run_root() {  # <index> <path> <output-dir> <shard-index>
   reason=$(fm_lint_classify_root "$invocation_rc" "$root_err")
   if [ -n "${FM_LINT_INTERNAL_ROOTS_LOG:-}" ]; then
     printf 'end\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$index" "$path" "$shard_index" "${FM_LINT_INTERNAL_MODE:-}" \
+      "$index" "$path" "$shard_index" "$mode" \
       "$start_ms" "$end_ms" "$duration_ms" "$invocation_rc" "$reason" "$rss_kib" \
       >> "$FM_LINT_INTERNAL_ROOTS_LOG"
   fi
@@ -295,6 +320,21 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
     for entry in "${root_entries[@]}"; do
       index=${entry%%"$tab"*}
       path=${entry#*"$tab"}
+      if [ "${FM_LINT_INTERNAL_MODE:-}" = split ]; then
+        # Two cheap passes that own disjoint codes: the dataflow pass without
+        # source following owns every code except the cross-file ones, and the
+        # source-following pass without dataflow owns exactly those codes.
+        FM_LINT_WORKER_ARGS=(--norc --exclude="$FM_LINT_INTERNAL_CROSS_FILE_CODES")
+        invocation_rc=0
+        fm_lint_run_root "$index" "$path" "$output_dir" "$shard_index" dataflow || invocation_rc=$?
+        [ "$rc" -ne 0 ] || rc=$invocation_rc
+        FM_LINT_WORKER_ARGS=(--norc --external-sources --extended-analysis=false
+          --include="$FM_LINT_INTERNAL_CROSS_FILE_CODES")
+        invocation_rc=0
+        fm_lint_run_root "$index" "$path" "$output_dir" "$shard_index" sources || invocation_rc=$?
+        [ "$rc" -ne 0 ] || rc=$invocation_rc
+        continue
+      fi
       invocation_rc=0
       fm_lint_run_root "$index" "$path" "$output_dir" "$shard_index" || invocation_rc=$?
       if [ "$rc" -eq 0 ] && [ "$invocation_rc" -ne 0 ]; then
@@ -776,10 +816,11 @@ else
     done < <(git diff --name-only --diff-filter=ACMR -z "$merge_base" -- 2>/dev/null | LC_ALL=C sort -z)
   fi
 fi
-if [ "$CHANGED_MODE" -eq 1 ] && [ "$FAST" -eq 0 ]; then
-  FOLLOW_SOURCES=0
-  EXCLUDE_CODES=$LOCAL_NOX_EXCLUDE
-  ANALYSIS_MODE=local
+# Local changed-file and explicit-path runs never combine source following
+# with extended analysis; only the full canonical set and CI pay that cost.
+if [ "$FAST" -eq 0 ] && { [ "$CHANGED_MODE" -eq 1 ] || [ "$EXPLICIT_PATHS" -eq 1 ]; } \
+  && [ "${GITHUB_ACTIONS:-}" != true ] && [ "${CI:-}" != true ]; then
+  ANALYSIS_MODE='split'
 fi
 # Stable largest-first packing is shared by cross-runner partition selection
 # and the two local workers. Weights are a scheduling proxy, never a skip rule.
@@ -844,8 +885,8 @@ if [ "$resolved" != "$REQUIRED_SHELLCHECK" ]; then
 fi
 if [ "$FAST" -eq 1 ]; then
   printf 'fm-lint.sh: fast local mode; ShellCheck extended analysis disabled\n' >&2
-elif [ "$FOLLOW_SOURCES" -eq 0 ]; then
-  printf 'fm-lint.sh: local changed-file mode; ShellCheck source following disabled\n' >&2
+elif [ "$ANALYSIS_MODE" = split ]; then
+  printf 'fm-lint.sh: local split mode; extended analysis and source following run as separate per-file passes\n' >&2
 else
   printf 'fm-lint.sh: full ShellCheck extended analysis enabled\n' >&2
 fi
@@ -1089,6 +1130,7 @@ fm_lint_run_worker() {  # <worker-index>
     FM_LINT_INTERNAL_GRACE="$ROOT_GRACE"
     FM_LINT_INTERNAL_ROOTS_LOG="$ROOTS_LOG"
     FM_LINT_INTERNAL_MODE="$ANALYSIS_MODE"
+    FM_LINT_INTERNAL_CROSS_FILE_CODES="$LOCAL_CROSS_FILE_CODES"
     FM_LINT_INTERNAL_PROGRESS="$PROGRESS"
     FM_LINT_SHELLCHECK="$SHELLCHECK_BIN"
     FM_LINT_PERL_BIN="$PERL_BIN"
@@ -1164,13 +1206,14 @@ while [ "$worker" -lt "$SHARD_COUNT" ]; do
 done
 
 # Close the roots log with completion counts so a mid-run kill leaves
-# begun-but-unfinished roots attributable by name. result_exit is appended
+# begun-but-unfinished roots attributable by name. Records are keyed by mode
+# too, so each local split pass counts as its own invocation. result_exit is appended
 # after the purity and workflow checks so it records the run's final status.
 if [ -s "$ROOTS_LOG" ]; then
   read -r roots_completed roots_unfinished roots_begun <<EOF
 $(awk -F '\t' '
-  $1 == "begin" { begun[$2 FS $3] = 1; total++ }
-  $1 == "end" { ended[$2 FS $3] = 1; done_count++ }
+  $1 == "begin" { begun[$2 FS $3 FS $5] = 1; total++ }
+  $1 == "end" { ended[$2 FS $3 FS $5] = 1; done_count++ }
   END { unfinished = 0; for (key in begun) if (!(key in ended)) unfinished++
         printf "%d %d %d\n", done_count + 0, unfinished, total + 0 }
 ' "$ROOTS_LOG")
