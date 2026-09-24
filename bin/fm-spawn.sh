@@ -300,7 +300,7 @@
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
 #     __CLAUDEMDEXCLUDES__ the claudeMdExcludes member of claude's --settings JSON for a
 #                  worktree nested in a firstmate home, or empty (claude_md_excludes_setting)
-#     __PIBIN__   quoted concrete Pi-family executable path resolved from PATH
+#     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
