@@ -1,0 +1,20 @@
+AGENTS.md: 58859 chars (base 86955), ~19619 est tokens at ceil(bytes/3)
+backticked repo paths referenced: 32; unresolved: none
+named skills: 0; missing skill dirs: none
+configuration.md heading refs from AGENTS.md: 'Typed dispatch resolution' -> resolves as a prefix of heading '## Typed dispatch resolution (.env TYPESAFE_API_KEY)'
+'Layout reference' heading present: True
+ok ask-user-authority
+ok bootstrap-diagnostics
+ok captain-hold-lifecycle
+ok diagnostic-reasoning
+ok firstmate-codexapp
+ok firstmate-coding-guidelines
+ok firstmate-orca
+ok fmx-respond
+ok harness-adapters
+ok process-event-sources
+ok project-management
+ok quota-array-dispatch
+ok secondmate-provisioning
+ok stuck-crewmate-recovery
+note: 'away-supervisor' in AGENTS.md is an input kind from bin/fm-operational-input.sh, not a skill, so it is excluded from the skill check

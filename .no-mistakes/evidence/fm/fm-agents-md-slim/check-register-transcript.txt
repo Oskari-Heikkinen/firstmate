@@ -1,0 +1,9 @@
+$ FM_HOME=<tmp> bin/fm-check-register.sh demo
+registered: state/demo.check.sh
+exit=0
+$ cat state/demo.check-trust
+fm-custom-check-v1
+1d95fc04a80c952f49ce4188627c53b0fbe8c44041b952d592acd1de99861466
+$ FM_HOME=<tmp> bin/fm-check-register.sh "bad id"
+error: invalid custom check registration
+exit=2

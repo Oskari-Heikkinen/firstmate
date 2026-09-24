@@ -1,0 +1,2 @@
+old layout block lines: 103; path tokens checked: 229
+missing from docs/configuration.md: ['(section', '(section']
