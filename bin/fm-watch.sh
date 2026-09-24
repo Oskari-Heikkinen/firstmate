@@ -314,12 +314,11 @@ PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT
 # wake this watcher raises for any other reason. Only when neither happens does
 # it wake on its own, once a pending wait has gone STANDING_WAITS_CEILING_SECS
 # without being shown to the supervisor, so a forgotten wait still cannot rot
-# invisibly. A captain-held transfer and a paused wait whose declared `until`
-# time has passed are delivered when due, still coalesced with whatever else is
-# pending, and the away-mode daemon, which batches its own digests, gets every
-# due recheck at once.
-RECHECK_WARM_SECS=${FM_RECHECK_WARM_SECS:-3300}
-case "$RECHECK_WARM_SECS" in ''|*[!0-9]*) RECHECK_WARM_SECS=3300 ;; esac
+# invisibly. A lane whose fingerprint changed and the first recheck after a
+# paused wait's declared `until` time passes are delivered when due, still
+# coalesced with whatever else is pending, and the away-mode daemon, which
+# batches its own digests, gets every due recheck at once.
+RECHECK_WARM_SECS=3300
 STANDING_WAITS_CEILING_SECS=${FM_STANDING_WAITS_CEILING_SECS:-$FM_STANDING_WAITS_CEILING_SECS_DEFAULT}
 case "$STANDING_WAITS_CEILING_SECS" in ''|*[!0-9]*|0) STANDING_WAITS_CEILING_SECS=$FM_STANDING_WAITS_CEILING_SECS_DEFAULT ;; esac
 WATCH_STARTED_EPOCH=$(date +%s)
@@ -1441,8 +1440,7 @@ handle_paused_stale() {  # <window> <task> <hash>
       triage_log "absorbed stale (captain-held, never rechecked while the away-posture record exists): $win"
       return 0
     fi
-    # A verified hold keeps its own cadence: it is delivered as soon as it is due.
-    kind=urgent
+    kind=held
     detail="captain-held, awaiting the captain"
     reason="captain-held @AGE@s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
   elif until=$(status_paused_until "$last"); then
@@ -1455,21 +1453,23 @@ handle_paused_stale() {  # <window> <task> <hash>
       reason="paused @AGE@s, awaiting external - the declared time is beyond the recheck cadence; confirm the wait still holds"
     else
       # The declared time has passed: recheck now, once per declaration, then
-      # hold the cadence. The worker named this moment, so it is delivered
-      # when due rather than held for a warm supervisor or matched against the
-      # lane's fingerprint.
-      kind=until
+      # hold the cadence. The worker named this moment, so its first recheck
+      # is delivered when due rather than held for a warm supervisor or matched
+      # against the lane's fingerprint; later ones are ordinary rechecks.
       detail="paused, declared time reached"
       reason="paused @AGE@s, awaiting external - the declared clearing time has passed, rechecked on a long cadence not a wedge; confirm the wait cleared"
       declaration="$declaration:due"
-      min_age=0
+      if [ "$(cat "$STATE/.paused-resurfaced-$key" 2>/dev/null || true)" != "$declaration" ]; then
+        kind=until
+        min_age=0
+      fi
     fi
   else
     detail="paused, awaiting external"
     reason="paused @AGE@s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
   fi
   if ! recheck_is_due "$key" "$age" "$declaration" "$min_age"; then
-    [ "$kind" = urgent ] || recheck_baseline "$key" "$task" "$base" once
+    [ "$kind" = held ] || recheck_baseline "$key" "$task" "$base" once
     triage_log "absorbed stale ($detail, age ${age}s): $win"
     return 0
   fi
@@ -1477,7 +1477,7 @@ handle_paused_stale() {  # <window> <task> <hash>
     due) recheck_fingerprint_due "$win" "$key" "$task" "$age" "$mtime" "$reason" "$declaration" "$base" ;;
     until) recheck_baseline "$key" "$task" "$base" refresh
       recheck_queue "$win" "$key" "$age" "$mtime" urgent "stale: $win ($reason)" "$declaration" ;;
-    *) recheck_queue "$win" "$key" "$age" "$mtime" "$kind" "stale: $win ($reason)" "$declaration" ;;
+    held) recheck_queue "$win" "$key" "$age" "$mtime" due "stale: $win ($reason)" "$declaration" ;;
   esac
 }
 
@@ -1588,8 +1588,9 @@ recheck_unseen_age() {  # <key> <task>
 # window, so acknowledgement and away-mode classification see exactly the rows
 # a single recheck used to produce.
 RECHECK_FLUSHING=0
+WAKE_QUEUE_LOCK_HELD=0
 recheck_flush() {  # <poll|ride>
-  local mode=$1 f key kind win anchor reason task last now fire=0 standing=0 i n=0 first=''
+  local mode=$1 append f key kind win anchor reason task last now fire=0 standing=0 i n=0 first=''
   local -a keys=() wins=() reasons=() held_keys=() held_wins=() held_reasons=()
   [ "$RECHECK_FLUSHING" -eq 0 ] || return 0
   now=$(date +%s)
@@ -1631,15 +1632,17 @@ recheck_flush() {  # <poll|ride>
   fi
   [ "${#keys[@]}" -gt 0 ] || return 0
   if [ "$mode" = poll ] && [ "$fire" -eq 0 ]; then
-    if afk_present || [ "$(supervisor_turn_age)" -lt "$RECHECK_WARM_SECS" ]; then
+    if afk_present || [ "$(supervisor_turn_age)" -lt "${FM_TEST_RECHECK_WARM_SECS:-$RECHECK_WARM_SECS}" ]; then
       fire=1
     else
       return 0
     fi
   fi
+  append=fm_wake_append
+  [ "$WAKE_QUEUE_LOCK_HELD" -eq 0 ] || append=fm_wake_append_locked
   RECHECK_FLUSHING=1
   for i in "${!keys[@]}"; do
-    if ! fm_wake_append stale "${wins[$i]}" "${reasons[$i]}"; then
+    if ! "$append" stale "${wins[$i]}" "${reasons[$i]}"; then
       [ "$mode" = poll ] && exit 1
       triage_log "could not queue declared-wait rechecks alongside another wake; they stay queued"
       return 1
@@ -2005,6 +2008,7 @@ procevent_surface_after_output() {
       fi
     done
   fi
+  WAKE_QUEUE_LOCK_HELD=0
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   return "$status"
 }
@@ -2044,6 +2048,7 @@ procevent_surface_queued() {
   fi
   # shellcheck disable=SC2034 # Consumed by wake() in the separately linted transition owner.
   FM_WAKE_POST_OUTPUT_ACTION=procevent_surface_after_output
+  WAKE_QUEUE_LOCK_HELD=1
   wake "$reason"
 }
 

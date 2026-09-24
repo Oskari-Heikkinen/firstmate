@@ -1171,12 +1171,17 @@ test_housekeeping_declared_time_controls_pause_recheck() {
 # its wait was first seen is absorbed and its window reset, a changed lane is
 # escalated naming what changed, and once one wait goes the standing-waits
 # ceiling unseen every absorbed wait is escalated in the same pass.
-pause_fp_housekeeping() {  # <dir> <crew-state-line> [standing-waits-ceiling-secs]
+pause_fp_housekeeping() {  # <dir> <crew-state-line> [standing-waits-ceiling-secs [VAR=value]...]
   local dir=$1 crew=$2 ceiling=${3:-86400}
-  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW="sess:fm-held-fp1" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
-    FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
-    FM_FAKE_CREW_STATE="$crew" FM_PAUSE_RESURFACE_SECS=240 FM_STANDING_WAITS_CEILING_SECS="$ceiling" \
-    housekeeping "$dir/state"
+  shift 2
+  [ "$#" -eq 0 ] || shift
+  (
+    export FM_FAKE_TMUX_WINDOW="sess:fm-held-fp1" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+      FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+      FM_FAKE_CREW_STATE="$crew" FM_PAUSE_RESURFACE_SECS=240 FM_STANDING_WAITS_CEILING_SECS="$ceiling"
+    [ "$#" -eq 0 ] || export "$@"
+    PATH="$dir/fakebin:$PATH" housekeeping "$dir/state"
+  )
 }
 
 pause_fp_lane() {  # <dir> <task>
@@ -1232,6 +1237,88 @@ test_housekeeping_changed_pause_recheck_names_the_change() {
   grep -F 'the lane changed since its wait was last shown (crew)' "$state/.subsuper-escalations" >/dev/null \
     || fail "a changed lane under a declared wait was not escalated naming the change: $(cat "$state/.subsuper-escalations" 2>/dev/null)"
   pass "housekeeping escalates a due declared-wait recheck whose lane changed, naming what changed"
+}
+
+test_housekeeping_pr_backed_pause_recheck_escalates_only_on_a_pr_change() {
+  local dir state crew json case_spec name body
+  dir=$(make_supercase pause-fingerprint-pr); state="$dir/state"; json="$dir/pr.json"
+  make_fake_crew_state "$dir/fakebin" >/dev/null
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+cat "$FM_FAKE_GH_PR_JSON"
+SH
+  chmod +x "$dir/fakebin/gh"
+  printf 'idle prompt $\n' > "$dir/pane.txt"
+  crew='state: paused · source: status-log · holding for the maintainers'
+  pause_fp_lane "$dir" held-fp1
+  printf 'pr=https://github.com/o/r/pull/7\n' >> "$state/held-fp1.meta"
+  printf '{"state":"OPEN","headRefOid":"aaa","statusCheckRollup":[{"conclusion":"SUCCESS"}]}' > "$json"
+  pause_fp_housekeeping "$dir" "$crew" 86400 FM_FAKE_GH_PR_JSON="$json"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "the first sight of a PR-backed declared wait was escalated"
+  # Checks re-running on the same head are not a change.
+  printf '{"state":"OPEN","headRefOid":"aaa","statusCheckRollup":[{"state":"PENDING"}]}' > "$json"
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-held-fp1"
+  pause_fp_housekeeping "$dir" "$crew" 86400 FM_FAKE_GH_PR_JSON="$json"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a PR whose checks are only re-running was escalated: $(cat "$state/.subsuper-escalations")"
+  for case_spec in \
+    'red|{"state":"OPEN","headRefOid":"aaa","statusCheckRollup":[{"conclusion":"FAILURE"}]}' \
+    'moved|{"state":"OPEN","headRefOid":"bbb","statusCheckRollup":[{"conclusion":"FAILURE"}]}' \
+    'closed|{"state":"CLOSED","headRefOid":"bbb","statusCheckRollup":[{"conclusion":"FAILURE"}]}'
+  do
+    name=${case_spec%%|*}; body=${case_spec#*|}
+    printf '%s' "$body" > "$json"
+    : > "$state/.subsuper-escalations"
+    echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-held-fp1"
+    pause_fp_housekeeping "$dir" "$crew" 86400 FM_FAKE_GH_PR_JSON="$json"
+    grep -F 'the lane changed since its wait was last shown (pr)' "$state/.subsuper-escalations" >/dev/null \
+      || fail "[$name] a PR change under a declared wait was not escalated naming it: $(cat "$state/.subsuper-escalations")"
+  done
+  pass "housekeeping escalates a PR-backed declared wait only when the PR goes red, moves, or closes"
+}
+
+test_housekeeping_pause_recheck_escalates_an_agent_liveness_change() {
+  local dir state crew
+  dir=$(make_supercase pause-fingerprint-agent); state="$dir/state"
+  make_fake_crew_state "$dir/fakebin" >/dev/null
+  printf 'idle prompt $\n' > "$dir/pane.txt"
+  crew='state: paused · source: status-log · holding for the upstream tool release'
+  pause_fp_lane "$dir" held-fp1
+  # The lane's window is listed, so its agent is not proven gone.
+  pause_fp_housekeeping "$dir" "$crew" 86400 FM_FAKE_TMUX_WINDOW=fm-held-fp1
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-held-fp1"
+  pause_fp_housekeeping "$dir" "$crew" 86400 FM_FAKE_TMUX_WINDOW=fm-held-fp1
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "an unchanged agent under a declared wait was escalated: $(cat "$state/.subsuper-escalations")"
+  # The agent crashes and its window goes with it; the declaration still stands.
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-held-fp1"
+  pause_fp_housekeeping "$dir" "$crew"
+  grep -F 'the lane changed since its wait was last shown (agent)' "$state/.subsuper-escalations" >/dev/null \
+    || fail "a crashed agent under a declared wait was not escalated naming it: $(cat "$state/.subsuper-escalations" 2>/dev/null)"
+  pass "housekeeping escalates a declared-wait recheck whose agent crashed under the declaration"
+}
+
+test_housekeeping_passed_until_is_escalated_at_once_only_once() {
+  local dir state crew now past escalations
+  dir=$(make_supercase pause-fingerprint-until); state="$dir/state"
+  make_fake_crew_state "$dir/fakebin" >/dev/null
+  printf 'idle prompt $\n' > "$dir/pane.txt"
+  crew='state: paused · source: status-log · waiting for the vendor'
+  pause_fp_lane "$dir" held-fp1
+  now=$(date +%s)
+  if [ "$(uname)" = Darwin ]; then past=$(date -u -r "$((now - 120))" +%Y-%m-%dT%H:%M:%SZ)
+  else past=$(date -u -d "@$((now - 120))" +%Y-%m-%dT%H:%M:%SZ); fi
+  printf 'paused: waiting for the vendor reply until %s\n' "$past" > "$state/held-fp1.status"
+  pause_fp_housekeeping "$dir" "$crew"
+  escalations=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$escalations" -eq 1 ] || fail "a passed declared time was not escalated at once"
+  # A later recheck past the cadence finds nothing changed and is absorbed.
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-held-fp1"
+  pause_fp_housekeeping "$dir" "$crew"
+  escalations=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$escalations" -eq 1 ] \
+    || fail "every later recheck of a passed declared time escalated: $(cat "$state/.subsuper-escalations")"
+  pass "housekeeping escalates a passed declared time at once only once, then compares the lane's fingerprint"
 }
 
 # A pane still idle but whose status is no longer a pause (the crew changed state
@@ -2888,6 +2975,9 @@ test_housekeeping_busy_declared_wait_matures_its_window
 test_housekeeping_declared_time_controls_pause_recheck
 test_housekeeping_unchanged_pause_recheck_absorbed_until_standing_ceiling
 test_housekeeping_changed_pause_recheck_names_the_change
+test_housekeeping_pr_backed_pause_recheck_escalates_only_on_a_pr_change
+test_housekeeping_pause_recheck_escalates_an_agent_liveness_change
+test_housekeeping_passed_until_is_escalated_at_once_only_once
 test_housekeeping_paused_unpaused_cleared
 test_housekeeping_captain_held_resolved_cleared
 test_housekeeping_stale_marker_transitions_to_pause

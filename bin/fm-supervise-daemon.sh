@@ -1085,7 +1085,7 @@ standing_waits_digest() {  # <state> <due> <ceiling-secs>
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
   local state=$1 now due f key task win marker age last max_defer oldest pause_secs marker_epoch until bounded_until pause_reason
-  local standing_secs standing_due watcher_key declaration fp_rc
+  local standing_secs standing_due watcher_key declaration fp_rc until_due
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1186,6 +1186,7 @@ housekeeping() {  # <state>
     due="$state/.subsuper-pause-until-due-$key"
     until=
     bounded_until=0
+    until_due=0
     if status_is_captain_held "$last" && fm_afk_contract_present "$state"; then
       continue
     fi
@@ -1196,6 +1197,8 @@ housekeeping() {  # <state>
         bounded_until=1
       elif [ "$(cat "$due" 2>/dev/null || true)" = "$until" ]; then
         [ "$age" -ge "$pause_secs" ] || continue
+      else
+        until_due=1
       fi
     else
       [ "$age" -ge "$pause_secs" ] || continue
@@ -1223,9 +1226,9 @@ housekeeping() {  # <state>
           else
             pause_reason="paused ${age}s (awaiting external, recheck whether the wait still holds): $win"
           fi
-          if [ -n "$until" ] && [ "$now" -ge "$until" ]; then
-            # The worker named this moment, so it is delivered without a
-            # fingerprint comparison, and the baseline restarts from it.
+          if [ "$until_due" -eq 1 ]; then
+            # The worker named this moment, so its first recheck is delivered
+            # without a fingerprint comparison, and the baseline restarts from it.
             declared_wait_baseline_record "$state" "$watcher_key" "$task" "$declaration" refresh || true
           else
             # The same nothing-changed fingerprint the watcher applies: an
@@ -1250,7 +1253,7 @@ housekeeping() {  # <state>
             _now > "$marker"
             _now > "$state/.recheck-surfaced-$watcher_key"
             rm -f "$state/.subsuper-pause-absorbed-$key"
-            if [ -n "$until" ] && [ "$now" -ge "$until" ]; then
+            if [ "$until_due" -eq 1 ]; then
               printf '%s\n' "$until" > "$due"
             fi
           fi

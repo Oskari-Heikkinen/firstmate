@@ -5689,6 +5689,32 @@ test_procevent_surface_serializes_with_drain() {
   pass "queue revalidation, proactive output, and marker commit serialize with drain"
 }
 
+test_procevent_surface_keeps_the_queue_lock_while_a_recheck_rides_along() {
+  local dir state out drain_out ready release pid drain_pid
+  dir=$(make_case procevent-ride-lock); state="$dir/state"; out="$dir/watch.out"
+  drain_out="$dir/drain.out"; ready="$dir/marker-ready"; release="$dir/marker-release"
+  printf 'window=test:fm-a\nkind=secondmate\n' > "$state/a.meta"
+  printf 'paused: holding for the upstream release\n' > "$state/a.status"
+  printf '%s' "$(seen_sig "$state/a.status")" > "$state/.seen-a_status"
+  printf 'due\ntest:fm-a\n%s\nstale: test:fm-a (paused @AGE@s, awaiting external)\n' "$(date +%s)" \
+    > "$state/.recheck-due-test_fm-a"
+  append_wake "$state" check "procevent:ride-lock:1" "check: procevent fixture ride-lock 1"
+  install_marker_mv_fault "$dir"
+  FM_MARKER_MV_MODE=pause FM_MARKER_MV_READY="$ready" FM_MARKER_MV_RELEASE="$release" \
+    procevent_watch_bg "$dir" "$out"
+  pid=$!
+  wait_numeric_file "$ready" 100 || fail "the watcher never reached its marker commit boundary"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" &
+  drain_pid=$!
+  wait_live "$drain_pid" 50 || fail "a recheck riding along with a process-event wake let a drain split the surfacing transition"
+  touch "$release"
+  wait "$pid" || fail "the paused watcher did not finish surfacing"
+  wait "$drain_pid" || fail "the concurrent drain failed after surfacing committed"
+  grep -F "procevent:ride-lock:1" "$drain_out" >/dev/null || fail "the serialized drain lost the process-event record"
+  grep -F "test:fm-a (paused" "$drain_out" >/dev/null || fail "the held recheck did not ride along with the process-event wake"
+  pass "a recheck riding along with a process-event wake keeps the queue lock through the marker commit"
+}
+
 test_procevent_surface_crash_boundaries() {
   local dir state out fifo pid reader marker exit_status replay_err sequence generation
   dir=$(make_case procevent-output-fail); state="$dir/state"; out="$dir/watch.out"; fifo="$dir/output.fifo"
@@ -6258,7 +6284,7 @@ test_cold_declared_recheck_rides_along_with_the_next_wake() {
   dir=$(make_case recheck-cold); state="$dir/state"
   recheck_lane "$dir" a 500
   recheck_lane "$dir" b 500
-  recheck_watch "$dir" "$(printf 'fm-a\nfm-b')" FM_RECHECK_WARM_SECS=0
+  recheck_watch "$dir" "$(printf 'fm-a\nfm-b')" FM_TEST_RECHECK_WARM_SECS=0
   if ! wait_poll_cycle "$state" "$RECHECK_PID" || ! wait_poll_cycle "$state" "$RECHECK_PID"; then
     reap "$RECHECK_PID"; fail "a cold supervisor was woken for due rechecks alone: $(cat "$dir/watch.out")"
   fi
@@ -6282,7 +6308,7 @@ test_cold_declared_recheck_wakes_at_the_standing_ceiling() {
   local dir state
   dir=$(make_case recheck-ceiling); state="$dir/state"
   recheck_lane "$dir" a 700
-  recheck_watch "$dir" fm-a FM_RECHECK_WARM_SECS=0 FM_STANDING_WAITS_CEILING_SECS=600
+  recheck_watch "$dir" fm-a FM_TEST_RECHECK_WARM_SECS=0 FM_STANDING_WAITS_CEILING_SECS=600
   wait_for_exit "$RECHECK_PID" 100 || fail "a declared wait unseen past the ceiling stayed held"
   grep -F 'stale: test:fm-a (paused' "$dir/watch.out" >/dev/null || fail "the ceiling wake was not the recheck: $(cat "$dir/watch.out")"
   [ -e "$state/.recheck-surfaced-test_fm-a" ] || fail "the ceiling delivery was not recorded"
@@ -6296,7 +6322,7 @@ test_warm_turn_delivers_a_held_recheck() {
   # counts as a recent turn. The lane's current state cannot be read, so the
   # recheck cannot be proven unchanged and is scheduled rather than absorbed.
   recheck_lane "$dir" a 228
-  recheck_watch "$dir" fm-a FM_RECHECK_WARM_SECS=8 FM_FAKE_CREW_STATE_a='current state unavailable'
+  recheck_watch "$dir" fm-a FM_TEST_RECHECK_WARM_SECS=8 FM_FAKE_CREW_STATE_a='current state unavailable'
   while [ ! -e "$state/.recheck-due-test_fm-a" ] && [ "$i" -lt 250 ]; do
     kill -0 "$RECHECK_PID" 2>/dev/null || break
     sleep 0.1; i=$((i + 1))
@@ -6308,14 +6334,45 @@ test_warm_turn_delivers_a_held_recheck() {
   pass "a held recheck is delivered as soon as the supervisor takes a turn"
 }
 
-test_cold_captain_held_recheck_keeps_its_cadence() {
+test_cold_captain_held_recheck_waits_like_any_declared_wait() {
   local dir state
   dir=$(make_case recheck-held-cold); state="$dir/state"
   recheck_lane "$dir" a 500 'captain-held: the captain is choosing the release channel'
-  recheck_watch "$dir" fm-a FM_RECHECK_WARM_SECS=0
-  wait_for_exit "$RECHECK_PID" 100 || fail "a cold captain-held recheck was held back"
-  grep -F 'awaiting the captain' "$dir/watch.out" >/dev/null || fail "the captain-held recheck did not fire: $(cat "$dir/watch.out")"
-  pass "a captain-held recheck is delivered at its cadence even to a cold supervisor"
+  recheck_watch "$dir" fm-a FM_TEST_RECHECK_WARM_SECS=0
+  if ! wait_poll_cycle "$state" "$RECHECK_PID" || ! wait_poll_cycle "$state" "$RECHECK_PID"; then
+    reap "$RECHECK_PID"; fail "a cold supervisor was woken for a routine captain-held recheck alone: $(cat "$dir/watch.out")"
+  fi
+  reap "$RECHECK_PID"
+  [ ! -s "$state/.wake-queue" ] || fail "a cold captain-held recheck was queued as a wake on its own"
+  [ -e "$state/.recheck-due-test_fm-a" ] || fail "the cold captain-held recheck was not held"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the held captain-held stop"
+  recheck_watch "$dir" fm-a FM_TEST_RECHECK_WARM_SECS=0 FM_STANDING_WAITS_CEILING_SECS=400
+  wait_for_exit "$RECHECK_PID" 100 || fail "a held captain-held recheck past the ceiling stayed held"
+  grep -F 'awaiting the captain' "$dir/watch.out" >/dev/null || fail "the ceiling wake was not the captain-held recheck: $(cat "$dir/watch.out")"
+  pass "a routine captain-held recheck waits for a warm supervisor, another wake, or the ceiling"
+}
+
+test_passed_until_is_urgent_once_then_fingerprinted() {
+  local dir state now
+  dir=$(make_case recheck-until-repeat); state="$dir/state"
+  recheck_lane "$dir" a 500 "paused: vendor reply, until $(iso_utc_at "$(( $(date +%s) - 60 ))")"
+  recheck_watch "$dir" fm-a FM_TEST_RECHECK_WARM_SECS=0
+  wait_for_exit "$RECHECK_PID" 100 || fail "a passed until time was held back from a cold supervisor"
+  grep -F 'declared clearing time has passed' "$dir/watch.out" >/dev/null \
+    || fail "the first passed-until recheck did not fire: $(cat "$dir/watch.out")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the passed-until recheck"
+  now=$(date +%s)
+  set_mtime "$((now - 500))" "$state/.paused-resurfaced-test_fm-a"
+  set_mtime "$((now - 500))" "$state/.recheck-surfaced-test_fm-a"
+  recheck_watch "$dir" fm-a FM_TEST_RECHECK_WARM_SECS=0
+  if ! wait_poll_cycle "$state" "$RECHECK_PID" || ! wait_poll_cycle "$state" "$RECHECK_PID"; then
+    reap "$RECHECK_PID"; fail "a later recheck of an unchanged passed-until wait woke a cold supervisor: $(cat "$dir/watch.out")"
+  fi
+  reap "$RECHECK_PID"
+  [ ! -s "$state/.wake-queue" ] || fail "a later recheck of an unchanged passed-until wait was queued: $(cat "$state/.wake-queue")"
+  grep -F 'absorbed paused recheck (fingerprint unchanged' "$state/.watch-triage.log" >/dev/null \
+    || fail "the later passed-until recheck was not compared with the lane's fingerprint"
+  pass "a passed until time is rechecked at once only the first time, then like any declared wait"
 }
 
 # --- a due recheck of a declared wait whose lane did not change is absorbed --
@@ -6359,7 +6416,7 @@ test_standing_waits_digest_lists_every_standing_wait() {
   ack_stopped_cycle "$state" || fail "could not acknowledge the unchanged-recheck stop"
   # Lane a then goes the ceiling unseen: one wake brings every standing wait.
   set_mtime "$((now - 700))" "$state/a.status"
-  recheck_watch "$dir" "$(printf 'fm-a\nfm-b')" FM_STANDING_WAITS_CEILING_SECS=600 FM_RECHECK_WARM_SECS=0
+  recheck_watch "$dir" "$(printf 'fm-a\nfm-b')" FM_STANDING_WAITS_CEILING_SECS=600 FM_TEST_RECHECK_WARM_SECS=0
   wait_for_exit "$RECHECK_PID" 100 || fail "a standing wait past the ceiling never woke the supervisor"
   lines=$(grep -c '^stale: ' "$dir/watch.out")
   [ "$lines" -eq 1 ] || fail "the standing waits raised $lines wake reasons instead of one: $(cat "$dir/watch.out")"
@@ -6403,7 +6460,7 @@ SH
     name=${case_spec%%|*}; body=${case_spec#*|}
     printf '%s' "$body" > "$json"
     set_mtime "$(( $(date +%s) - 500 ))" "$state/.paused-resurfaced-test_fm-a"
-    recheck_watch "$dir" fm-a FM_FAKE_GH_PR_JSON="$json" FM_RECHECK_WARM_SECS=0
+    recheck_watch "$dir" fm-a FM_FAKE_GH_PR_JSON="$json" FM_TEST_RECHECK_WARM_SECS=0
     wait_for_exit "$RECHECK_PID" 100 || fail "[$name] a PR change under a declared wait never woke the supervisor"
     grep -F 'changed since its wait was last shown (pr)' "$dir/watch.out" >/dev/null \
       || fail "[$name] the recheck did not name the PR change: $(cat "$dir/watch.out")"
@@ -6538,6 +6595,7 @@ test_procevent_marker_keys_are_injective
 test_procevent_headlines_classify_queue_keys
 test_procevent_launch_failed_episodes_are_each_delivered
 test_procevent_surface_serializes_with_drain
+test_procevent_surface_keeps_the_queue_lock_while_a_recheck_rides_along
 test_procevent_surface_crash_boundaries
 test_procevent_marker_failure_exits_and_replays
 test_heartbeat_no_change_absorbed
@@ -6558,6 +6616,7 @@ test_codue_declared_rechecks_coalesce_into_one_wake
 test_cold_declared_recheck_rides_along_with_the_next_wake
 test_cold_declared_recheck_wakes_at_the_standing_ceiling
 test_warm_turn_delivers_a_held_recheck
-test_cold_captain_held_recheck_keeps_its_cadence
+test_cold_captain_held_recheck_waits_like_any_declared_wait
+test_passed_until_is_urgent_once_then_fingerprinted
 test_standing_waits_digest_lists_every_standing_wait
 test_pr_backed_declared_wait_wakes_only_on_a_pr_change
