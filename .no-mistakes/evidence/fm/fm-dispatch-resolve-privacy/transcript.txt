@@ -1,0 +1,70 @@
+=== S1 off by default: no TYPESAFE_API_KEY in env or FM_HOME/.env ===
+$ env -u TYPESAFE_API_KEY bin/fm-dispatch-resolve.sh /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/brief.md --summary bounded bug fix in an existing part model
+dispatch-resolve: off (TYPESAFE_API_KEY absent from the environment and /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/home/.env)
+[exit 0]  [requests captured so far: 0]
+
+=== S2 private brief + generic summary: only allow-listed state leaves ===
+$ env TYPESAFE_API_KEY=fake-test-key-7c1d-not-real bin/fm-dispatch-resolve.sh /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/brief.md --summary bounded bug fix in an existing part model
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 25   tokens: 120/60
+  rule: rule_2 (A bounded bug fix or small UI polish.)   confidence: 0.9
+  probabilities: rule_1=0.02 rule_2=0.96 default=0.02
+  sent: kind=ship mode=no-mistakes summary=bounded bug fix in an existing part model
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=79%  spendPriority=0.2  runway=through_reset  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=60%  spendPriority=0.5  runway=through_reset  -> eligible
+  profile: --harness 'codex' --model 'gpt-5.6-sol'
+[exit 0]  [requests captured so far: 1]
+
+=== S3 adversarial leaky summary (reviewer example + URL/path/email/token/code span) ===
+$ env TYPESAFE_API_KEY=fake-test-key-7c1d-not-real bin/fm-dispatch-resolve.sh /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/brief.md --summary Refactor export_step_file in LatticeBracket for AcmeCorp; see https://portal.globex.invalid/x /home/captain/cad/bracket_v3.step captain@globex.invalid `hole_spacing()` ghp_PRIVATETOKEN0123 sk-live-abc123 bracket_v3.step
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 18   tokens: 120/60
+  rule: rule_2 (A bounded bug fix or small UI polish.)   confidence: 0.9
+  probabilities: rule_1=0.02 rule_2=0.96 default=0.02
+  sent: kind=ship mode=no-mistakes summary=Refactor [redacted] in LatticeBracket for AcmeCorp; see [redacted]
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=79%  spendPriority=0.2  runway=through_reset  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=60%  spendPriority=0.5  runway=through_reset  -> eligible
+  profile: --harness 'codex' --model 'gpt-5.6-sol'
+[exit 0]  [requests captured so far: 2]
+
+=== S4a no --summary (brief has a Dispatch summary: line) -> escalate, no request ===
+$ env TYPESAFE_API_KEY=fake-test-key-7c1d-not-real bin/fm-dispatch-resolve.sh /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/brief.md
+dispatch-resolve:
+  status: escalate
+  reason: no dispatch summary to match
+[exit 0]  [requests captured so far: 2]
+
+=== S4b summary with nothing left after redaction -> escalate, no request ===
+$ env TYPESAFE_API_KEY=fake-test-key-7c1d-not-real bin/fm-dispatch-resolve.sh /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/brief.md --summary https://portal.globex.invalid/x /home/captain/cad ghp_abc export_step_file
+dispatch-resolve:
+  status: escalate
+  reason: no dispatch summary to match
+[exit 0]  [requests captured so far: 2]
+
+=== S5 removed --project flag is rejected ===
+$ env TYPESAFE_API_KEY=fake-test-key-7c1d-not-real bin/fm-dispatch-resolve.sh /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/brief.md --project Globex --summary bounded bug fix
+error: unknown flag --project
+[exit 2]  [requests captured so far: 2]
+
+=== S6 error after the request was sent (server answers 401) -> sent: line still printed ===
+$ env TYPESAFE_API_KEY=fake-test-key-7c1d-not-real bin/fm-dispatch-resolve.sh /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/brief.md --summary difficult diagnosis across components
+dispatch-resolve: error (http 401 after 19 ms: {"type": "error", "error": {"type": "authentication_error", "message": "invalid api key"}})
+dispatch-resolve:
+  status: error
+  sent: kind=ship mode=no-mistakes summary=difficult diagnosis across components
+  reason: http 401 after 19 ms: {"type": "error", "error": {"type": "authentication_error", "message": "invalid api key"}}
+[exit 0]  [requests captured so far: 3]
+
+=== S6b transport failure after send (server down) ===
+$ env TYPESAFE_API_KEY=fake-test-key-7c1d-not-real bin/fm-dispatch-resolve.sh /home/oskari/.no-mistakes/evidence/01M39540S8ZD26DNA74KK1RK1P/lab/brief.md --summary difficult diagnosis across components
+dispatch-resolve: error (http 000 after 17 ms: )
+dispatch-resolve:
+  status: error
+  sent: kind=ship mode=no-mistakes summary=difficult diagnosis across components
+  reason: http 000 after 17 ms: 
+[exit 0]  [requests captured so far: 3]
+

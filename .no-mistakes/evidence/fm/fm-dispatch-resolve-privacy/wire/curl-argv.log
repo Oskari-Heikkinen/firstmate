@@ -1,0 +1,4 @@
+-sS --max-time 5 -o /tmp/tmp.CZLgb8JqMr -w %{http_code} -X POST https://api.typesafe.ai/v1/systemone -H Content-Type: application/json -H @/dev/fd/3 --data-binary @-
+-sS --max-time 5 -o /tmp/tmp.uUylcjJ0Ok -w %{http_code} -X POST https://api.typesafe.ai/v1/systemone -H Content-Type: application/json -H @/dev/fd/3 --data-binary @-
+-sS --max-time 5 -o /tmp/tmp.6MXC6GD7cD -w %{http_code} -X POST https://api.typesafe.ai/v1/systemone -H Content-Type: application/json -H @/dev/fd/3 --data-binary @-
+-sS --max-time 5 -o /tmp/tmp.KHJnhRnnyH -w %{http_code} -X POST https://api.typesafe.ai/v1/systemone -H Content-Type: application/json -H @/dev/fd/3 --data-binary @-

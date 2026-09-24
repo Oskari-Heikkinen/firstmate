@@ -1,0 +1,29 @@
+POST /v1/systemone HTTP/1.1
+Host: 127.0.0.1:18765
+User-Agent: curl/8.5.0
+Accept: */*
+Content-Type: application/json
+Authorization: Bearer <fake test key>
+Content-Length: 749
+
+{
+  "model": "jev-latest",
+  "state": {
+    "task": {
+      "kind": "ship",
+      "mode": "no-mistakes",
+      "summary": "Refactor [redacted] in LatticeBracket for AcmeCorp; see [redacted]"
+    }
+  },
+  "questions": {
+    "rule": {
+      "type": "choice",
+      "instructions": "Which ONE dispatch rule best fits `task` (read `task.summary`, with `task.kind` and `task.mode` when present)? Each option is the rule's own matching condition; pick `default` when no rule's condition is met, including when a rule's own exemption text excludes this task.",
+      "criteria": {
+        "rule_1": "New feature work.",
+        "rule_2": "A bounded bug fix or small UI polish.",
+        "default": "No listed rule applies to this task."
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+Stress: 3000 in-process calls of fm_control_harness_supported for the FIRST list entry (claude, returns early) and one unknown name; any stderr byte is a failure.
+[eba9a19] stderr lines: none   wrong return codes: none
+[HEAD] stderr lines: none   wrong return codes: none
+
+Every verified harness still accepted, unknown/empty rejected (HEAD):
+  [claude]     supported
+  [codex]      supported
+  [opencode]   supported
+  [pi]         supported
+  [pi-signed]  supported
+  [grok]       supported
+  [kimi]       supported
+  [cursor]     supported
+  [gemini]     supported
+  [muse]       supported
+  [rovo]       supported
+  [omp]        supported
+  [agy]        supported
+  [devin]      supported
+  [bogus]      rejected
+  []           rejected
+  [claude codex] rejected
+  [*]          rejected
+
+CLI: bin/fm-quota-choose.sh --candidate claude:default --candidate rovo:default, 300 runs, stderr must be exactly one line
+  (snapshot: claude at 0% so the trailing rovo candidate is evaluated, as in the CI test)
+  sample stderr: error: unknown harness: rovo
+  runs with stderr other than exactly that line: 0 

@@ -1,0 +1,4 @@
+{"rules":[
+ {"when":"New feature work.","use":{"harness":"claude","model":"opus","effort":"high"}},
+ {"when":"A bounded bug fix or small UI polish.","use":[{"harness":"claude","model":"sonnet","effort":"high"},{"harness":"codex","model":"gpt-5.6-sol"}]}],
+ "default":{"harness":"claude","model":"opus"}}

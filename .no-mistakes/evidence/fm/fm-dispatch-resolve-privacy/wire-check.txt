@@ -1,0 +1,80 @@
+===== req01.raw (raw bytes received by local capture endpoint) =====
+POST /v1/systemone HTTP/1.1
+Host: 127.0.0.1:18765
+User-Agent: curl/8.5.0
+Accept: */*
+Content-Type: application/json
+Authorization: Bearer <fake test key>
+Content-Length: 724
+
+===== req02.raw (raw bytes received by local capture endpoint) =====
+POST /v1/systemone HTTP/1.1
+Host: 127.0.0.1:18765
+User-Agent: curl/8.5.0
+Accept: */*
+Content-Type: application/json
+Authorization: Bearer <fake test key>
+Content-Length: 749
+
+===== req03.raw (raw bytes received by local capture endpoint) =====
+POST /v1/systemone HTTP/1.1
+Host: 127.0.0.1:18765
+User-Agent: curl/8.5.0
+Accept: */*
+Content-Type: application/json
+Authorization: Bearer <fake test key>
+Content-Length: 720
+
+
+===== private sentinels searched in ALL captured request bytes =====
+ACME-LATTICE -> 0 occurrences
+Globex -> 0 occurrences
+globex -> 0 occurrences
+bracket_v3 -> 0 occurrences
+/home/captain -> 0 occurrences
+hunter2 -> 0 occurrences
+ghp_PRIVATE -> 0 occurrences
+PRIVATE-BRIEF-LINE -> 0 occurrences
+export_step_file -> 0 occurrences
+hole_spacing -> 0 occurrences
+sk-live -> 0 occurrences
+portal. -> 0 occurrences
+captain@ -> 0 occurrences
+Captain's intent -> 0 occurrences
+hole spacing -> 0 occurrences
+
+===== API key placement =====
+key on curl argv: 0 lines
+key in Authorization header: req02.raw:1 req01.raw:1 req03.raw:1 
+key in request bodies: 0
+curl argv of request 1:
+-sS --max-time 5 -o <tmpfile> -w %{http_code} -X POST https://api.typesafe.ai/v1/systemone -H Content-Type: application/json -H @/dev/fd/3 --data-binary @-
+
+
+===== state object in each captured request =====
+req01.raw: {"task":{"kind":"ship","mode":"no-mistakes","summary":"bounded bug fix in an existing part model"}}
+req02.raw: {"task":{"kind":"ship","mode":"no-mistakes","summary":"Refactor [redacted] in LatticeBracket for AcmeCorp; see [redacted]"}}
+req03.raw: {"task":{"kind":"ship","mode":"no-mistakes","summary":"difficult diagnosis across components"}}
+
+===== full captured request body (req01) =====
+{
+  "model": "jev-latest",
+  "state": {
+    "task": {
+      "kind": "ship",
+      "mode": "no-mistakes",
+      "summary": "bounded bug fix in an existing part model"
+    }
+  },
+  "questions": {
+    "rule": {
+      "type": "choice",
+      "instructions": "Which ONE dispatch rule best fits `task` (read `task.summary`, with `task.kind` and `task.mode` when present)? Each option is the rule's own matching condition; pick `default` when no rule's condition is met, including when a rule's own exemption text excludes this task.",
+      "criteria": {
+        "rule_1": "New feature work.",
+        "rule_2": "A bounded bug fix or small UI polish.",
+        "default": "No listed rule applies to this task."
+      }
+    }
+  }
+}
