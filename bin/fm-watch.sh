@@ -2034,10 +2034,10 @@ signal_files_actionable() {  # <status-file> ...
 }
 
 # The secondmate status files in this signal batch whose newly classified span
-# is routine - progress lines and acknowledgements of requests sent expecting
-# only an acknowledgement - printed as a space-separated list. Called only for a
-# batch with no captain-relevant span, and reads exactly the bytes
-# signal_files_actionable just classified (FM_SIGNAL_SURFACE_ENDPOINTS), so a
+# is routine - progress lines, acknowledgements of requests sent expecting
+# only an acknowledgement, and repeated outcomes - printed as a space-separated
+# list. Called only for a batch with no captain-relevant span, and reads
+# exactly the bytes signal_files_actionable just classified (FM_SIGNAL_SURFACE_ENDPOINTS), so a
 # line appended after that classification is never absorbed with it.
 # bin/fm-classify-lib.sh's status_span_secondmate_routine owns which lines are
 # routine, and bin/fm-pending-reply-lib.sh's fm_pending_reply_line_acks owns

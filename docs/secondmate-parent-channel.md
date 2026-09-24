@@ -51,8 +51,8 @@ Three kinds of routine line do not wake the parent, because none of them changes
 - A correlated `note:` acknowledgement of a request the parent sent with `bin/fm-send.sh --expect ack`.
   It is also presented at the next real wake.
   A request sent without `--expect`, or with `--expect answer`, still wakes on its reply, and a `done:`, decision, blocker, or failure reply always wakes whatever was expected.
-- A repeated script-published `done:` outcome that states the same PR-ready or merge fact as the nearest earlier outcome line, for example the PR-ready line at registration after the ledger line for the same child and PR.
-  Any other event in between, such as a failure, a note, or progress, makes the repeat wake again, because the outcome may carry news.
+- A repeated script-published `done:` outcome that states a PR-ready or merge fact an earlier outcome line already stated, for example the PR-ready line at registration and the ledger line for the same child and PR, in either order.
+  Other outcome lines in between do not matter, but any other event in between, such as a failure, a note, or progress, makes the repeat wake again, because the outcome may carry news.
   A repeat that carries a `report=` pointer also wakes, because the pointer is new content.
 
 A span that mixes any of these with anything else wakes the parent, so an uncorrelated `note:` is never absorbed.

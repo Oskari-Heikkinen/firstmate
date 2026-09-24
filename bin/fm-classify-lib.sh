@@ -1615,6 +1615,9 @@ $fully_presented
       done <<EOF
 $lines
 EOF
+      # A secondmate's absorbed `working:` lines alone may advance the cursor
+      # only up to the watcher's classified offset: later bytes are untriaged,
+      # and skipping them would strip the annotation from their eventual wake.
       if [ "$safe" = false ] && [ "$working" = true ]; then
         classified=$(status_presentation_marker_offset "$(status_signal_seen_marker_path "$state" "$task")" "$f")
         case "$classified" in ''|*[!0-9]*) classified=0 ;; esac
@@ -1697,9 +1700,9 @@ EOF
 # aborts presentation without advancing any offset. A trusted cursor at EOF
 # prints nothing, so already-presented bytes are not replayed as new. Teardown
 # retires a task's manifest row with its status file, so reusing a task ID starts
-# the replacement log unread at byte 0. Informational `note:` lines and
-# reserved-key pending-reply resolutions are the fleet-wide unread surface;
-# they are not open decisions and are not persisted in the folded open-set.
+# the replacement log unread at byte 0. The lines status_line_is_unread_surface
+# admits are the fleet-wide unread surface; they are not open decisions and are
+# not persisted in the folded open-set.
 
 # Read the legacy per-task open-decisions cursor used to seed the presentation
 # offset before the fleet manifest exists. A fold-version mismatch, identity
