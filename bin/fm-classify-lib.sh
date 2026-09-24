@@ -1582,10 +1582,11 @@ EOF
 }
 
 status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe kind
+  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe kind working classified
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
+    working=false
     case "
 $fully_presented
 " in *$'\n'"$task"$'\n'*) safe=true ;; esac
@@ -1602,13 +1603,26 @@ $fully_presented
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
           *[![:space:]]*)
-            if status_line_is_unread_surface "$line" "$kind"; then safe=true; break; fi
+            status_line_is_unread_surface "$line" "$kind" || continue
+            if [ "$kind" = secondmate ] && [ "$(status_line_verb "$line")" = working ]; then
+              working=true
+              continue
+            fi
+            safe=true
+            break
             ;;
         esac
       done <<EOF
 $lines
 EOF
-      if [ "$safe" = false ]; then endpoint=$offset; fi
+      if [ "$safe" = false ] && [ "$working" = true ]; then
+        classified=$(status_presentation_marker_offset "$(status_signal_seen_marker_path "$state" "$task")" "$f")
+        case "$classified" in ''|*[!0-9]*) classified=0 ;; esac
+        [ "$classified" -ge "$endpoint" ] || endpoint=$classified
+        [ "$endpoint" -ge "$offset" ] || endpoint=$offset
+      elif [ "$safe" = false ]; then
+        endpoint=$offset
+      fi
     fi
     printf '%s\t%s\t%s\n' "$task" "$endpoint" "$ident" || return 1
   done <<EOF
@@ -2269,24 +2283,12 @@ status_done_identity() {  # <status-line> [<out-var>]
 # the line wakes. The earlier copy was itself actionable when classified,
 # because classification only ever advances past bytes it has decided.
 _fm_status_secondmate_duplicate_done() {  # <status-file> <start-offset> <chunk-file> <line-number> <line>
-  local f=$1 start=$2 chunk=$3 number=$4 line=$5 fact earlier prior verb i
-  local -a history=()
+  local f=$1 start=$2 chunk=$3 number=$4 line=$5 fact earlier prior verb
   _fm_key_before_colon "$line" || return 1
   status_done_identity "$line" fact || return 1
   case "$line" in *" report="[![:space:]]*) return 1 ;; esac
   [ "$(_fm_status_kind "$f")" = secondmate ] || return 1
-  if [ "$start" -gt 0 ]; then
-    while IFS= read -r earlier || [ -n "$earlier" ]; do
-      history+=("$earlier")
-    done < <(_fm_status_read_span "$f" 0 "$start" 2>/dev/null)
-  fi
-  if [ "$number" -gt 1 ]; then
-    while IFS= read -r earlier || [ -n "$earlier" ]; do
-      history+=("$earlier")
-    done < <(sed -n "1,$((number - 1))p" "$chunk" 2>/dev/null)
-  fi
-  for ((i = ${#history[@]} - 1; i >= 0; i--)); do
-    earlier=${history[$i]}
+  while IFS= read -r earlier || [ -n "$earlier" ]; do
     case "$earlier" in *[![:space:]]*) ;; *) continue ;; esac
     case "$earlier" in *:*) status_line_verb "$earlier" verb ;; *) continue ;; esac
     if [ "$verb" = "done" ]; then
@@ -2301,7 +2303,10 @@ _fm_status_secondmate_duplicate_done() {  # <status-file> <start-offset> <chunk-
       "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}") return 1 ;;
     esac
     status_is_captain_relevant "$earlier" && return 1
-  done
+  done < <({
+    if [ "$start" -gt 0 ]; then _fm_status_read_span "$f" 0 "$start" 2>/dev/null; printf '\n'; fi
+    if [ "$number" -gt 1 ]; then sed -n "1,$((number - 1))p" "$chunk" 2>/dev/null; fi
+  } | awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }')
   return 1
 }
 

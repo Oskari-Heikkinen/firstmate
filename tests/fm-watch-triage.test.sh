@@ -1643,6 +1643,64 @@ test_secondmate_working_line_absorbed_and_presented() {
   pass "a second mate's working line is absorbed and rides along at the next real wake"
 }
 
+mate_expectation_phase() {  # <state> <corr>
+  bash -c '. "$1"; fm_pending_reply_get "$(fm_pending_reply_path "$2" "$3")" phase' \
+    _ "$ROOT/bin/fm-pending-reply-lib.sh" "$1" "$2"
+}
+
+test_secondmate_ack_resolves_silently_and_is_presented() {
+  local dir state out drain_out pid corr i=0
+  dir=$(make_case mate-ack-resolves); state="$dir/state"
+  corr=$(mate_expectation "$dir" ack) || fail "could not create the ack expectation"
+  bash -c '. "$1"; fm_pending_reply_mark_delivered "$2" "$3"' \
+    _ "$ROOT/bin/fm-pending-reply-lib.sh" "$state" "$corr" || fail "could not mark the ack request delivered"
+  dir=$(mate_routine_case mate-ack-resolves 'note: bootstrap' "note [corr=$corr]: taken up, will follow the standing note")
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle worker'
+  watch_bg "$state" "$dir/fakebin" "$out"
+  pid=$!
+  wait_for_absorbed "$state" "$pid" 'absorbed benign' \
+    || fail "an acknowledgement of a delivered ack-typed request woke the parent: $(cat "$out")"
+  while [ "$i" -lt 100 ] && [ "$(mate_expectation_phase "$state" "$corr")" != resolved ]; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  [ "$(mate_expectation_phase "$state" "$corr")" = resolved ] \
+    || fail "the acknowledged ack-typed request did not resolve"
+  [ ! -s "$out" ] || fail "resolving the ack-typed request printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "resolving the ack-typed request enqueued a durable wake"
+  printf 'needs-decision: pick A or B\n' > "$state/other.status"
+  append_wake "$state" signal other.status "signal: $state/other.status" \
+    || fail "queueing the next real wake failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "the next drain failed"
+  grep -F "mate note [corr=$corr]: taken up, will follow the standing note" "$drain_out" >/dev/null \
+    || fail "the absorbed acknowledgement did not ride along at the next wake: $(cat "$drain_out")"
+  pass "an acknowledgement resolves its ack-typed request silently and rides along at the next real wake"
+}
+
+test_secondmate_working_ack_keeps_unclassified_outcome_annotation() {
+  local dir state out drain_out pid
+  dir=$(mate_routine_case mate-working-ack-cap '' 'working: auditing the release notes')
+  state="$dir/state"; out="$dir/watch.out"; drain_out="$dir/drain.out"
+  assert_mate_span_absorbed "$dir" "a second mate's working line"
+  printf '%s\n' 'failed: child kid CI broke on main' 'working: retrying the build' >> "$state/mate.status"
+  printf 'needs-decision: pick A or B\n' > "$state/other.status"
+  append_wake "$state" signal other.status "signal: $state/other.status" \
+    || fail "queueing the unrelated wake failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2> "$dir/drain.err" || fail "the unrelated drain failed"
+  grep -F 'mate working: auditing the release notes' "$drain_out" >/dev/null \
+    || fail "the absorbed working line did not ride along: $(cat "$drain_out")"
+  ack_drain_err "$state" "$dir/drain.err" >/dev/null || fail "acknowledging the unrelated drain failed"
+  assert_mate_span_wakes "$dir" "a mate failure the watcher had not classified"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "the failure drain failed"
+  grep -F 'failed: child kid CI broke on main' "$drain_out" >/dev/null \
+    || fail "the mate failure lost its wake annotation: $(cat "$drain_out")"
+  pass "a presented working line does not acknowledge a later mate line the watcher has not classified"
+}
+
 test_secondmate_ack_absorbed_answer_wakes() {
   local dir corr
   dir=$(make_case mate-ack-absorbed)
@@ -6335,6 +6393,8 @@ test_secondmate_buried_block_wakes_despite_busy_agent
 test_status_done_identity_classifier
 test_secondmate_working_line_absorbed_and_presented
 test_secondmate_ack_absorbed_answer_wakes
+test_secondmate_ack_resolves_silently_and_is_presented
+test_secondmate_working_ack_keeps_unclassified_outcome_annotation
 test_secondmate_duplicate_done_absorbed_only_when_adjacent
 test_crewmate_duplicate_done_still_wakes
 test_self_announced_close_does_not_rewake_but_next_note_does

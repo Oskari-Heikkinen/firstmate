@@ -453,6 +453,7 @@ test_secondmate_working_line_rides_along_once() {
   # The watcher absorbs a second mate's progress line, so the next drain is
   # where main reads it; a crewmate's progress line stays silent as before.
   printf 'working: auditing the release notes\n' >> "$state/mate.status"
+  prime_status_seen "$state" "$state/mate.status" || fail "could not mark the working line absorbed"
   printf 'working: compiling step 2\n' >> "$state/crew.status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain over routine working lines failed"
   grep -F 'mate working: auditing the release notes' "$out" >/dev/null \
