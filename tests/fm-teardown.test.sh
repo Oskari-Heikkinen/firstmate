@@ -822,6 +822,44 @@ test_no_mistakes_truly_unpushed_refuses() {
   pass "no-mistakes worktree with genuinely unlanded work is refused (safety preserved)"
 }
 
+test_direct_push_landed_on_origin_main_allows() {
+  local case_dir rc
+  case_dir=$(make_case direct-push-landed)
+  write_meta "$case_dir" direct-push ship
+  seed_backlog_in_flight "$case_dir"
+  wt_commit_file "$case_dir" feature.txt landed "direct-push work"
+  # The worker landed by fast-forwarding origin's default branch itself: no PR
+  # exists and none is recorded, and the push updates the shared origin/main.
+  git -C "$case_dir/wt" push -q origin HEAD:main
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "direct-push-landed: teardown should succeed when HEAD is on origin/main with no PR"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "direct-push-landed: teardown printed a REFUSED line"
+  [ "$(backlog_row_state "$case_dir")" = "done" ] \
+    || fail "direct-push-landed: backlog item was not closed: $(backlog_row_state "$case_dir")"
+  pass "direct-push worktree whose head landed on origin/main is torn down with no PR recorded"
+}
+
+test_direct_push_unlanded_refuses() {
+  local case_dir rc
+  case_dir=$(make_case direct-push-unlanded)
+  write_meta "$case_dir" direct-push ship
+  wt_commit_file "$case_dir" feature.txt unlanded "direct-push work not pushed"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "direct-push-unlanded: teardown should refuse"
+  grep -q REFUSED "$case_dir/stderr" || fail "direct-push-unlanded: no REFUSED line in stderr"
+  pass "direct-push worktree with work not on origin is refused"
+}
+
 test_squash_merged_branch_deleted_allows() {
   local case_dir rc pr_head
   case_dir=$(make_case squash-merged)
@@ -3891,6 +3929,8 @@ test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
+test_direct_push_landed_on_origin_main_allows
+test_direct_push_unlanded_refuses
 test_local_only_force_overrides_unpushed
 test_secondmate_pr_registration_publishes_ready_line
 test_secondmate_home_teardown_delivers_final_line_or_refuses

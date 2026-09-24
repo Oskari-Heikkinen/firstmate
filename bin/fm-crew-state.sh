@@ -234,10 +234,20 @@ fi
 # and its reason rather than a wedge-suspect idle.
 # A ship `done:` is not current-state done while bin/fm-dod-lib.sh refuses the
 # named-head reachability gate: that claim is blocked so a disposable copy is
-# not treated as finished-and-safe.
+# not treated as finished-and-safe. An accepted direct-push done also says
+# whether the head has landed - it is on origin's default branch - or is only
+# ready on its task branch, read from git rather than the worker's note.
 emit_ship_status_done() {  # [extra-detail]
-  local extra=${1:-} reason
+  local extra=${1:-} reason landed_on head
   if reason=$(fm_dod_accept_ship_done "$KIND" "$(meta_value mode)" "$WT" "$(meta_value project)" "$LOG_LINE" "$STATE" "$ID" "$META"); then
+    if [ "$KIND" = ship ] && [ "$(meta_value mode)" = direct-push ]; then
+      head=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null || true)
+      if landed_on=$(fm_dod_head_on_origin_default "$WT" "$head"); then
+        extra="${extra:+$extra${SEP}}landed on $landed_on"
+      else
+        extra="${extra:+$extra${SEP}}not landed on origin's default branch"
+      fi
+    fi
     emit "done" status-log "$(status_line_note "$LOG_LINE")${extra:+${SEP}$extra}"
   fi
   emit blocked status-log "$reason"
