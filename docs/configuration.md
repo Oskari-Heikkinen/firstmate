@@ -648,11 +648,26 @@ This section is the single owner of the tool's operator contract; the script hea
 Rules come only from the effective home's `config/crew-dispatch.json`; `FM_CONFIG_OVERRIDE` selects the config directory for tests and specialized setup like the other scripts.
 
 ```sh
-bin/fm-dispatch-resolve.sh data/<id>/brief.md --project <name>        # TOON block on stdout
+bin/fm-dispatch-resolve.sh data/<id>/brief.md --summary "<generic nature of the work>"        # TOON block on stdout
 ```
 
 Firstmate invokes the resolve path directly after writing the brief, without a preflight; the absent-key off line is handled exactly like every other non-clear outcome.
-When on and at least one rule exists, the tool sends the project name and the whole brief as state and asks one Choice question whose options are every rule's `when` plus the fixed neutral option for no matching rule; the model never sees quota, catalogs, `why`, `use`, or approvals.
+The brief itself never leaves the machine.
+The request state is exactly this allow-list, and nothing else from the brief, the project, or the home is sent:
+
+| Field | Source | Sent value |
+| --- | --- | --- |
+| `kind` | the brief's `Delivery contract: mode=` line, else its `This is a SCOUT task` line | `ship`, `scout`, or null |
+| `mode` | that delivery-contract line | `no-mistakes`, `direct-PR`, `direct-push`, `local-only`, or null for anything else |
+| `summary` | the `--summary` text firstmate writes, the only summary source | one redacted line of at most 160 characters |
+
+The summary describes only the nature of the work, such as "bounded UI polish in an existing panel" or "difficult diagnosis across components", and never names a project, customer, product, part, person, or file.
+Before sending, the tool replaces every code span and every token that looks like a URL or domain, email, file path, file name or other dotted name, `KEY=value` assignment, underscore-joined identifier such as `snake_case`, known secret prefix, opaque identifier of 24 or more characters, or digit-bearing identifier of 12 or more characters with `[redacted]`, collapses whitespace and control characters to single spaces, and truncates at a word boundary.
+Shorter tokens pass through unchanged, including short part numbers such as `PN-4471-B2` and colon-joined names such as `user:name`, so the authoring rule above, which never names a project, part, or person, is the primary guard and redaction is only a backstop.
+When no summary is given, or nothing but redactions remains, the result is the non-clear reason `no dispatch summary to match` with no model or quota request.
+Each rule's `when` text is also sent verbatim as a Choice option, so keep private detail out of those texts too.
+The printed `sent:` line shows exactly the kind, mode, and summary that left the machine, on every outcome once the request has been sent, including `error`.
+The tool asks one Choice question whose options are every rule's `when` plus the fixed neutral option for no matching rule; the model never sees quota, catalogs, `why`, `use`, or approvals.
 An absent rules file, a default-only file, or `rules: []` returns the non-clear reason `no rules to match` without a model or quota request, leaving firstmate's existing routing in control; an existing but unreadable or malformed rules file, including a broken symlink, remains an actionable exit 2 configuration error.
 Everything after the answer runs in code: the confidence floor, the matched rule's `approval` and `floor`, each candidate's `provider` and `floor`, every applicable account-wide and model/product row from one `quota-axi --json` snapshot, and the numeric `spendPriority` argmax over candidates using each candidate's limiting row.
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
@@ -661,7 +676,7 @@ Known applicable rows from a provider with partial quota semantics remain rankab
 Any applicable `exhausted_now` row or known zero bound makes that candidate ineligible, and a known profile-floor shortfall does the same before unrelated quota uncertainty is considered.
 Missing or nonnumeric `spendPriority` evidence is never ranked, and every candidate is printed beside its evidence or the reason it was not rankable, including on ambiguous and approval-gated outcomes that emit no profile.
 On the opted-in path, duplicate concrete profiles with the same harness, model, and effort inside one rule or the default array are configuration errors rather than ties.
-The result is one of `clear` (a `profile:` line ready for `fm-spawn.sh`), `ambiguous` (confidence below the floor), `escalate` (an approval-gated rule, unverifiable rule floor, nothing rankable, or a genuine tie), or `error` (API, network, malformed response metadata, rendering, or quota-axi failure), and every one of them exits 0.
+The result is one of `clear` (a `profile:` line ready for `fm-spawn.sh`), `ambiguous` (confidence below the floor), `escalate` (an approval-gated rule, unverifiable rule floor, nothing rankable, a genuine tie, or no rules or summary to match), or `error` (API, network, malformed response metadata, rendering, or quota-axi failure), and every one of them exits 0.
 Response probabilities must contain exactly every offered choice, use numeric values from 0 through 1, and sum to approximately 1 within 0.01.
 Only a usage or configuration error exits 2: an unreadable brief, an existing but unreadable or malformed canonical rules file, or missing `jq`, each reported and never selected around.
 Missing `curl` is a normal structured `error` outcome with exit 0 so firstmate uses today's routing.
