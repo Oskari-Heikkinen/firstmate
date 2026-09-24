@@ -251,7 +251,7 @@ STATE=$(jq -n --rawfile brief "$BRIEF" --arg summary "$SUMMARY" --argjson max "$
   def opaque:
     gsub("^[^A-Za-z0-9]+|[^A-Za-z0-9]+$"; "") | (length >= 24) or (test("[0-9]") and length >= 12);
   def private_token:
-    test("://") or test("^www\\."; "i") or test("[@/\\\\=~]")
+    test("://") or test("^www\\."; "i") or test("[@/\\\\=~_]")
     or test("[A-Za-z0-9]\\.[A-Za-z0-9]")
     or test("^[^A-Za-z0-9]*((sk|pk|rk)[-_]|gh[pousr]_|github_pat_|glpat-|xox[a-z]-|AKIA|eyJ|npm_)")
     or opaque;

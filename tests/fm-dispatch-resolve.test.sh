@@ -279,6 +279,9 @@ assert_equals '{"task":{"kind":"ship","mode":"no-mistakes","summary":"Fix [redac
 for leak in load_lattice x.invalid private.invalid part.step 'cad' a@b KEY= abc ghp_ sk-live xoxb AKIA eyJ 0123456789abcdef CADPARTNUMBER 1.2.3; do
   assert_not_contains "$(cat "$LOG/body")" "$leak" "redacted summary token never reaches the request: $leak"
 done
+request_state "$BRIEF" --summary 'Refactor export_step_file in LatticeBracket for AcmeCorp'
+assert_equals 'Refactor [redacted] in LatticeBracket for AcmeCorp' "$(jq -r .task.summary <<<"$state")" "snake_case identifiers outside code spans are redacted"
+assert_not_contains "$(cat "$LOG/body")" 'export_step_file' "a snake_case identifier never reaches the request"
 LONG_SUMMARY=$(printf 'word%.0s ' $(seq 1 80))
 request_state "$BRIEF" --summary "$LONG_SUMMARY"
 summary=$(jq -r .task.summary <<<"$state")

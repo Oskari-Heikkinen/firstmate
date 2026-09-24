@@ -654,7 +654,7 @@ The request state is exactly this allow-list, and nothing else from the brief, t
 | `summary` | the `--summary` text firstmate writes, the only summary source | one redacted line of at most 160 characters |
 
 The summary describes only the nature of the work, such as "bounded UI polish in an existing panel" or "difficult diagnosis across components", and never names a project, customer, product, part, person, or file.
-Before sending, the tool replaces every code span and every token that looks like a URL or domain, email, file path, file name or other dotted name, `KEY=value` assignment, known secret prefix, or long or digit-bearing opaque identifier with `[redacted]`, collapses whitespace and control characters to single spaces, and truncates at a word boundary.
+Before sending, the tool replaces every code span and every token that looks like a URL or domain, email, file path, file name or other dotted name, `KEY=value` assignment, underscore-joined identifier such as `snake_case`, known secret prefix, or long or digit-bearing opaque identifier with `[redacted]`, collapses whitespace and control characters to single spaces, and truncates at a word boundary.
 When no summary is given, or nothing but redactions remains, the result is the non-clear reason `no dispatch summary to match` with no model or quota request.
 Each rule's `when` text is also sent verbatim as a Choice option, so keep private detail out of those texts too.
 The printed `sent:` line shows exactly the kind, mode, and summary that left the machine, on every outcome once the request has been sent, including `error`.
