@@ -981,6 +981,14 @@ When stripping is enabled, the hooks directory is read-only, so a hook manager r
 The flag is a home-wide attribution choice, so it is inherited into secondmate homes under the [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) inherited-local-material contract and a secondmate's own workers keep AI trailers too.
 Per-machine Cursor `cli-config.json` attribution-off is not this contract: it does not travel with Firstmate, defaults back to on when unset, and only feeds the CLI's request to the server, so it suppresses the trailer rather than preventing it.
 
+A ship or scout whose worktree lies inside the firstmate home that launches it, such as a second mate's project clone with an in-project Treehouse pool, does not load that home's own instruction files.
+Claude and Pi read instruction files from every ancestor directory, so without this such a worker would carry the home's whole supervisor contract in every model request.
+A Claude launch gets a `claudeMdExcludes` list in its inline `--settings` JSON, and a Pi launch's per-task extension removes those files from the system prompt.
+The project's own instruction files still load from the worktree, and a secondmate or a worker whose worktree is outside that home launches unchanged.
+Codex stops its instruction walk at the worktree's git root and needs nothing.
+Cursor Agent CLI and Oh My Pi also walk above the git root but offer no per-path exclusion, so a nested worker on either still loads the home's `AGENTS.md`; keep their worktrees outside every home.
+[`fm-spawn.sh`](../bin/fm-spawn.sh) owns the mechanics, and [runtime backend verification](verification/runtime-backends.md#nested-worktree-instruction-isolation) records the per-harness evidence, including the harnesses not verified.
+
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
 `config/crew-dispatch.json` is an optional local, gitignored file containing natural-language rules that firstmate reads before dispatching a crewmate or scout.
