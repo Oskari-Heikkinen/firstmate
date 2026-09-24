@@ -1110,7 +1110,7 @@ This section is the single owner of the tool's operator contract; the script hea
 Rules come only from the effective home's `config/crew-dispatch.json`; `FM_CONFIG_OVERRIDE` selects the config directory for tests and specialized setup like the other scripts.
 
 ```sh
-bin/fm-dispatch-resolve.sh data/<id>/brief.md --project <name>        # TOON block on stdout
+bin/fm-dispatch-resolve.sh data/<id>/brief.md --summary "<generic nature of the work>"        # TOON block on stdout
 ```
 
 **When firstmate invokes the resolver**
@@ -1119,13 +1119,23 @@ Firstmate invokes the resolve path directly after writing the brief, without a p
 
 **What the model receives**
 
-When on and at least one rule exists, the tool sends the project name and the brief's task-specific text as state and asks one Choice question whose options are every rule's `when` plus the fixed neutral option for no matching rule; the model never sees quota, catalogs, `why`, `use`, approvals, or confidence floors.
-The task-specific text is the brief's `## Captain's intent` and `## Firstmate spec` sections under `# Task` that `bin/fm-brief.sh` scaffolds, read by the same parser that feeds `fm-spawn.sh` validation and the no-mistakes `--intent` contract; a brief with neither section is sent whole.
+The brief itself never leaves the machine.
+The request state is exactly this allow-list, and nothing else from the brief, the project, or the home is sent:
 
-When the sections are sent from a scout brief, the line `Brief kind: scout (report only)` comes first, taken from the scaffold's scout contract line; ship briefs and briefs sent whole get no kind line.
+| Field | Source | Sent value |
+| --- | --- | --- |
+| `kind` | the brief's `This is a SCOUT task` line | `scout`, or null for every other brief |
+| `summary` | the `--summary` text firstmate writes, the only summary source | one redacted line of at most 160 characters |
+
 A ship brief's delivery mode is deliberately not sent, because in live runs naming it pushed a routine ship brief toward the hardest tier (see [the verification record](verification/dispatch-resolve.md)).
 
-The scaffold's standard setup, rules, and definition-of-done text is the same in every brief, so leaving it out keeps its safety language from reading as a signal about the task.
+The summary describes only the nature of the work, such as "bounded UI polish in an existing panel" or "difficult diagnosis across components", and never names a project, customer, product, part, person, or file.
+Before sending, the tool replaces every code span and every token that looks like a URL or domain, email, file path, file name or other dotted name, `KEY=value` assignment, underscore-joined identifier such as `snake_case`, known secret prefix, opaque identifier of 24 or more characters, or digit-bearing identifier of 12 or more characters with `[redacted]`, collapses whitespace and control characters to single spaces, and truncates at a word boundary.
+Shorter tokens pass through unchanged, including short part numbers such as `PN-4471-B2` and colon-joined names such as `user:name`, so the authoring rule above, which never names a project, part, or person, is the primary guard and redaction is only a backstop.
+When no summary is given, or nothing but redactions remains, the result is the non-clear reason `no dispatch summary to match` with no model or quota request.
+Each rule's `when` text is also sent verbatim as a Choice option, so keep private detail out of those texts too.
+The printed `sent:` line shows exactly the kind and summary that left the machine, on every outcome once the request has been sent, including `error`.
+The tool asks one Choice question whose options are every rule's `when` plus the fixed neutral option for no matching rule; the model never sees quota, catalogs, `why`, `use`, approvals, or confidence floors.
 
 **Never-send list (config/dispatch-never-send)**
 
@@ -1141,7 +1151,7 @@ Every entry is trimmed of surrounding whitespace, and any run of whitespace, in 
 Example Client Ltd
 ```
 
-Before the request is sent, every string in it is checked: the project name, the task text, each rule's `when`, and the fixed question text.
+Before the request is sent, every string in it is checked: the kind, the redacted summary, each rule's `when`, and the fixed question text.
 A match stops the request: the resolver behaves exactly as when it is off, printing one `dispatch-resolve: off (...; nothing sent)` line on stderr and nothing on stdout, making no network or quota call, and exiting 0, so firstmate dispatches through its existing intake.
 A list that is present but not a readable regular file also stops the request the same way rather than sending unchecked text.
 That one diagnostic names the list line number at most and never prints the listed value or the matching text.
@@ -1188,7 +1198,7 @@ No qualifying option, or two equally probable qualifying options, produces `ambi
 | --- | --- |
 | `clear` | A `profile:` line ready for `fm-spawn.sh`. |
 | `ambiguous` | Confidence below the floor with no runner-up taken. |
-| `escalate` | An approval-gated rule, unverifiable rule floor, nothing rankable, or a genuine tie. |
+| `escalate` | An approval-gated rule, unverifiable rule floor, nothing rankable, a genuine tie, or no rules or dispatch summary to match. |
 | `error` | API, network, malformed response metadata, rendering, or quota-axi failure. |
 
 Every result above exits 0.

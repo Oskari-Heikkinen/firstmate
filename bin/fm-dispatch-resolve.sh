@@ -3,7 +3,10 @@
 # profile from a task brief with typesafe.ai's System One model (Jev), opt-in.
 #
 # Usage:
-#   fm-dispatch-resolve.sh <brief-file> [--project <name>]
+#   fm-dispatch-resolve.sh <brief-file> --summary <text>
+#
+#   --summary <text>  the generic classification text firstmate writes; the
+#                     only summary source.
 #
 # Opt-in gate: TYPESAFE_API_KEY non-empty in this process environment, else a
 #   TYPESAFE_API_KEY= line in $FM_HOME/.env read with fmx_env_get, the same
@@ -13,19 +16,27 @@
 #   The key lives in one shell variable and reaches curl as a header read from
 #   a file descriptor, never on argv; nothing logs or writes it.
 #
-# What it does when on with at least one rule: one POST to
-#   https://api.typesafe.ai/v1/systemone with the project name and the brief's
-#   `## Captain's intent` and `## Firstmate spec` sections, tagged when it is a
-#   scout brief (the whole brief when it has neither section), as state and
-#   ONE Choice question whose options are every rule's `when` from
+# What leaves the machine: only the allow-listed state {task: {kind,
+#   summary}} that the STATE step below builds from the brief's scout contract
+#   line and the redacted --summary text; never any other brief byte, and never
+#   the project name. A ship brief's delivery mode is deliberately not sent,
+#   because live runs showed it pushing routine ship briefs to the top tier. No
+#   summary left after redaction means the non-clear reason "no dispatch
+#   summary to match" with no network call.
+#   docs/configuration.md "Typed dispatch resolution" owns the allow-list.
+#
+# What it does when on with at least one rule and a summary: one POST to
+#   https://api.typesafe.ai/v1/systemone with that state and ONE Choice
+#   question whose options are every rule's `when` from
 #   config/crew-dispatch.json plus one fixed generic none option. Jev returns
-#   the matched rule, a probability per option, and a confidence. Everything
-#   after that is jq: the confidence floor (0.6 on the answer confidence, or a
-#   rule's declared `min_confidence` on that rule's probability, falling to the
-#   most probable other option that clears its own floor), the rule's declared
-#   `approval` and `floor`, each profile's declared `provider` and `floor`, the
-#   quota rows from ONE quota-axi --json snapshot (schema 5 or 6; each
-#   candidate binds to one row through quota_row in
+#   the matched rule, a probability per option, and a confidence. The rule
+#   `when` texts leave the machine verbatim, so the operator keeps private
+#   detail out of them. Everything after that is jq: the confidence floor (0.6
+#   on the answer confidence, or a rule's declared `min_confidence` on that
+#   rule's probability, falling to the most probable other option that clears
+#   its own floor), the rule's declared `approval` and `floor`, each profile's
+#   declared `provider` and `floor`, the quota rows from ONE quota-axi --json
+#   snapshot (schema 5 or 6; each candidate binds to one row through quota_row in
 #   bin/fm-quota-axi-lib.sh, so a Pi lane such as openai-codex-work/...
 #   reads its own account's row and an expanded provider with no row for the
 #   candidate is unmeasured, never blocked), and the spendPriority argmax over
@@ -50,12 +61,14 @@
 #     status: clear | ambiguous | escalate | error
 #     model/latency_ms/tokens, rule (when excerpt) and confidence, probabilities
 #     fallback: <runner-up rule taken when the picked rule missed its own floor>
+#     sent: kind=.. summary=<the exact redacted summary sent>   (every outcome after the request)
 #     reason: <why the status is not clear>
 #     candidate: <harness>:<model> provider=.. scope=.. remaining=..% spendPriority=.. runway=.. -> eligible | eligible, unranked: <reason> | not eligible: <reason>
 #     profile: --harness <h> [--model <m>] [--effort <e>]     (status clear only)
 #   clear     -> pass the profile line to fm-spawn.sh unless you state a reason to override
 #   ambiguous -> confidence below the floor; decide as today from the probabilities
-#   escalate  -> the rule requires captain approval, no candidate is rankable, or a genuine tie
+#   escalate  -> the rule requires captain approval, no candidate is rankable, a genuine tie,
+#                or nothing to match (no rules, or no dispatch summary)
 #   error     -> API, network, response, or quota-axi failure; decide as today
 #   Every outcome exits 0 so an intake is never blocked by this tool.
 #   Exit 2 only for a usage or configuration error (unreadable brief, an
@@ -87,18 +100,21 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-env-lib.sh"
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
-# shellcheck source=bin/fm-brief-heading-lib.sh
-. "$SCRIPT_DIR/fm-brief-heading-lib.sh"
 
 CONFIDENCE_FLOOR=0.6
 TS_MODEL=jev-latest
 TS_BASE=https://api.typesafe.ai
 TS_TIMEOUT=5
 DEFAULT_WHEN="No listed rule applies to this task."
+SUMMARY_MAX=160
 
 die() { printf 'error: %s\n' "$1" >&2; exit 2; }
 no_rules() {
   printf 'dispatch-resolve:\n  status: escalate\n  reason: no rules to match\n'
+  exit 0
+}
+no_summary() {
+  printf 'dispatch-resolve:\n  status: escalate\n  reason: no dispatch summary to match\n'
   exit 0
 }
 usage() {
@@ -109,11 +125,11 @@ usage() {
   ' "$0"
 }
 
-BRIEF='' PROJECT='' RULES_PATH="$CONFIG/crew-dispatch.json" RULES=''
+BRIEF='' SUMMARY='' RULES_PATH="$CONFIG/crew-dispatch.json" RULES=''
 NEVER_SEND_PATH="$CONFIG/dispatch-never-send"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --project) [ $# -ge 2 ] || die "--project needs a value"; PROJECT=$2; shift 2 ;;
+    --summary) [ $# -ge 2 ] || die "--summary needs a value"; SUMMARY=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) [ -z "$BRIEF" ] || die "one brief file only"; BRIEF=$1; shift ;;
@@ -227,11 +243,14 @@ done < <(jq -r '
   | map(.harness) | unique | .[]' "$RULES")
 
 RULE_COUNT=$(jq -r '(.rules // []) | length' "$RULES")
+SENT_LINE=''
 
 emit_error() {
   local reason=$1
   echo "dispatch-resolve: error ($reason)" >&2
-  printf 'dispatch-resolve:\n  status: error\n  reason: %s\n' "$reason"
+  printf 'dispatch-resolve:\n  status: error\n'
+  [ -z "$SENT_LINE" ] || printf '%s\n' "$SENT_LINE"
+  printf '  reason: %s\n' "$reason"
   exit 0
 }
 
@@ -239,11 +258,38 @@ if [ "$RULE_COUNT" -eq 0 ]; then
   no_rules
 fi
 
+# ---- the allow-list: the only task state that leaves the machine ---------------
+# The brief is read here and nowhere else; only the scout kind and the
+# redacted summary survive into STATE, and the request is built from STATE
+# alone. A ship brief's delivery mode is deliberately not sent: live runs showed
+# it pushing routine ship briefs to the top tier.
+STATE=$(jq -n --rawfile brief "$BRIEF" --arg summary "$SUMMARY" --argjson max "$SUMMARY_MAX" '
+  ($brief | split("\n") | map(rtrimstr("\r"))) as $lines |
+  def opaque:
+    gsub("^[^A-Za-z0-9]+|[^A-Za-z0-9]+$"; "") | (length >= 24) or (test("[0-9]") and length >= 12);
+  def private_token:
+    test("://") or test("^www\\."; "i") or test("[@/\\\\=~_]")
+    or test("[A-Za-z0-9]\\.[A-Za-z0-9]")
+    or test("^[^A-Za-z0-9]*((sk|pk|rk)[-_]|gh[pousr]_|github_pat_|glpat-|xox[a-z]-|AKIA|eyJ|npm_)")
+    or opaque;
+  def redact_summary:
+    gsub("[[:cntrl:]]"; " ")
+    | gsub("`[^`]*`"; " [redacted] ") | gsub("`"; " ")
+    | [splits("\\s+") | select(length > 0) | if private_token then "[redacted]" else . end]
+    | reduce .[] as $t ([]; if $t == "[redacted]" and (last // "") == "[redacted]" then . else . + [$t] end)
+    | join(" ")
+    | if length > $max then .[0:$max] | sub("\\s+\\S*$"; "") else . end
+    | if gsub("\\[redacted\\]"; "") | test("[[:alpha:]]") then . else "" end;
+  {
+    kind: (if any($lines[]; startswith("This is a SCOUT task")) then "scout" else null end),
+    summary: ($summary | redact_summary)
+  }') || die "could not read brief file: $BRIEF"
+[ -n "$(jq -r '.summary' <<<"$STATE")" ] || no_summary
+
 RESP_FILE=$(mktemp) || die "mktemp failed"
 QUOTA=$(mktemp) || { rm -f "$RESP_FILE"; die "mktemp failed"; }
-TASK_TEXT=$(mktemp) || { rm -f "$RESP_FILE" "$QUOTA"; die "mktemp failed"; }
-SEND_TEXT=$(mktemp) || { rm -f "$RESP_FILE" "$QUOTA" "$TASK_TEXT"; die "mktemp failed"; }
-trap 'rm -f "$RULES" "$RESP_FILE" "$QUOTA" "$TASK_TEXT" "$SEND_TEXT"' EXIT
+SEND_TEXT=$(mktemp) || { rm -f "$RESP_FILE" "$QUOTA"; die "mktemp failed"; }
+trap 'rm -f "$RULES" "$RESP_FILE" "$QUOTA" "$SEND_TEXT"' EXIT
 
 never_send_off() {
   echo "dispatch-resolve: off ($1; nothing sent)" >&2
@@ -279,47 +325,25 @@ never_send_check() {
   done <<<"$list"
 }
 
-# Send Jev only the task-specific sections bin/fm-brief.sh scaffolds, plus a
-# scout tag from the scout contract line; the rest of a scaffolded brief is
-# standard boilerplate whose safety language reads as high stakes on every task.
-# A brief with neither section goes whole. Ship delivery mode is deliberately
-# not sent: live runs showed it pushing routine ship briefs to the top tier.
-brief_kind() {
-  if grep -qxF 'This is a SCOUT task: the deliverable is a written report, not a PR.' "$BRIEF"; then
-    printf 'Brief kind: scout (report only)\n\n'
-  fi
-}
-task_sections() {
-  local heading
-  for heading in "## Captain's intent" "## Firstmate spec"; do
-    fm_brief_task_heading_present "$BRIEF" "$heading" || continue
-    printf '%s\n%s\n\n' "$heading" "$(fm_brief_task_heading_body "$BRIEF" "$heading")"
-  done
-}
-SECTIONS=$(task_sections)
-if [ -n "$SECTIONS" ]; then
-  { brief_kind; printf '%s\n' "$SECTIONS"; } > "$TASK_TEXT" || die "could not read brief: $BRIEF"
-else
-  cp "$BRIEF" "$TASK_TEXT" || die "could not read brief: $BRIEF"
-fi
 LAT_MS=null
 command -v curl >/dev/null 2>&1 || emit_error "curl not installed"
-  REQUEST=$(jq -n --rawfile brief "$TASK_TEXT" --arg project "$PROJECT" --arg model "$TS_MODEL" \
+  REQUEST=$(jq -n --argjson task "$STATE" --arg model "$TS_MODEL" \
     --arg none_criterion "$DEFAULT_WHEN" --slurpfile rules "$RULES" '
     ($rules[0]) as $cfg |
     ($cfg.rules | to_entries | map({key: ("rule_" + ((.key + 1) | tostring)), value: .value.when}) | from_entries) as $criteria |
     {
       model: $model,
-      state: {task: {project: $project, brief: $brief}},
+      state: {task: $task},
       questions: {
         rule: {
           type: "choice",
-          instructions: "Which ONE dispatch rule best fits `task` (read `task.brief` and `task.project`)? Each option is the rule'"'"'s own matching condition; pick `default` when no rule'"'"'s condition is met, including when a rule'"'"'s own exemption text excludes this task.",
+          instructions: "Which ONE dispatch rule best fits `task` (read `task.summary`, with `task.kind` when present)? Each option is the rule'"'"'s own matching condition; pick `default` when no rule'"'"'s condition is met, including when a rule'"'"'s own exemption text excludes this task.",
           criteria: ($criteria + {default: $none_criterion})
         }
       }
     }')
   never_send_check
+  SENT_LINE=$(jq -r '"  sent: kind=\(.kind // "-") summary=\(.summary)"' <<<"$STATE") || emit_error "output rendering failed"
   T0=$(fm_timing_now_ms)
   HTTP=$(printf '%s' "$REQUEST" | curl -sS --max-time "$TS_TIMEOUT" -o "$RESP_FILE" -w '%{http_code}' \
     -X POST "$TS_BASE/v1/systemone" -H 'Content-Type: application/json' \
@@ -493,7 +517,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
     end
   end') || emit_error "resolution failed"
 
-TEXT=$(jq -r '
+TEXT=$(jq -r --arg sent "$SENT_LINE" '
   def flat: tostring | gsub("[\t\r\n]"; " ");
   def show($value): ($value // "-") | flat;
   def shell_arg: flat | @sh;
@@ -503,6 +527,7 @@ TEXT=$(jq -r '
   "  rule: \(.rule | flat) (\(.rule_when | flat))   confidence: \(.confidence | flat)",
   "  probabilities: \([.probabilities | to_entries[] | "\(.key | flat)=\(.value | flat)"] | join(" "))",
   (if .fallback then "  fallback: \(.fallback | flat)" else empty end),
+  $sent,
   (if .reason then "  reason: \(.reason | flat)" else empty end),
   (if .note then "  note: \(.note | flat)" else empty end),
   (if .unranked_note then "  note: \(.unranked_note | flat)" else empty end),
