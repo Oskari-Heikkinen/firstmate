@@ -1,0 +1,7 @@
+### tests/fm-control.test.sh at 2eb89da with base-commit fm-control-lib.sh swapped in
+not ok - an early harness match should not leave a writer on a closed pipe, got: tests/fm-control.test.sh: line 509: printf: write error: Broken pipe
+exit=1
+
+### tests/fm-control.test.sh at 2eb89da (fixed lib)
+exit=0
+ok - fm-control-lib: a verified-harness lookup matches exactly and never writes to stderr

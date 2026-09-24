@@ -1,0 +1,6 @@
+### OLD lib (base eba9a19)
+     26 UNEXPECTED: error: invalid candidate: claude:
+     26 /tmp/fm-old/bin/fm-control-lib.sh: line 66: printf: write error: Broken pipe
+     11 error: invalid candidate: claude:
+     11 UNEXPECTED: /tmp/fm-old/bin/fm-control-lib.sh: line 66: printf: write error: Broken pipe
+      1 bin=/tmp/fm-old/bin runs=8000 unexpected_output_runs=37

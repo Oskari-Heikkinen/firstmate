@@ -1,0 +1,16 @@
+### Adversarial harness names through the real fm-quota-choose.sh CLI (fixed lib, SIGPIPE ignored)
+'claude codex:default' rc=2  error: invalid candidate: claude codex:default
+'c*:default'           rc=2  error: invalid candidate: c*:default
+'clau:default'         rc=2  error: unknown harness: clau
+':default'             rc=2  error: invalid candidate: :default
+'someagent:default'    rc=2  error: unknown harness: someagent
+'claude:default'       rc=0  claude default
+'codex:default'        rc=0  codex default
+'kimi:default'         rc=1  none
+
+### tests/fm-quota-choose.test.sh with SIGPIPE ignored (CI condition), 5 runs
+run 1 exit=0 55 ok, 0 failures/broken-pipe lines
+run 2 exit=0 55 ok, 0 failures/broken-pipe lines
+run 3 exit=0 55 ok, 0 failures/broken-pipe lines
+run 4 exit=0 55 ok, 0 failures/broken-pipe lines
+run 5 exit=0 55 ok, 0 failures/broken-pipe lines

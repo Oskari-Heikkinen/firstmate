@@ -1,0 +1,10 @@
+### Sourced fm-control-lib.sh exact-match lookup, SIGPIPE ignored, cwd containing files named like harnesses
+accept claude accept codex accept opencode accept pi accept pi-signed accept grok accept kimi accept cursor accept gemini accept muse accept rovo accept omp accept agy accept devin 
+reject []
+reject [c*]
+reject [claude codex]
+reject [clau]
+reject [ claude]
+reject [claude ]
+reject [cx]
+reject [*]
