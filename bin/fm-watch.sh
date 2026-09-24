@@ -295,16 +295,35 @@ SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-}
 case "$SECONDMATE_WAKE_STALL_SECS" in ''|*[!0-9]*|0) SECONDMATE_WAKE_STALL_SECS=180 ;; esac
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
-# A captain-held or paused crew whose agent has confidently exited uses the same
-# bounded cadence, while a live or ambiguously read agent surfaces on first sight
-# and is then held to that same cadence; a secondmate earns the cadence on its
-# declaration alone, because its endpoint liveness is deliberately never read
-# (pause_state_class owns that split).
+# A captain-held or paused crew uses that same bounded cadence for every
+# agent-liveness verdict, including alive and unknown; a dead agent stays on
+# the recheck rather than surfacing promptly (issue 2713).
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten wait cannot rot
 # invisibly - except an item held for the captain while the away-posture record
 # exists, which is never rechecked (afk_record_present below).
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+# A declared-wait recheck that falls due is never delivered on its own the
+# moment it is due. Every due recheck is queued as pending and all of them are
+# delivered together as ONE wake (recheck_flush), because each wake costs a
+# supervisor turn and a turn after a long idle rewrites the supervisor's whole
+# prompt cache. The pending set is delivered at once while the supervisor's
+# cache is still warm - it took a turn within RECHECK_WARM_SECS, read from this
+# watcher's own start (a supervisor arms the watcher at the end of a turn) and
+# Claude's turn-end auto-arm ledger - and otherwise rides along with the next
+# wake this watcher raises for any other reason. Only when neither happens does
+# it wake on its own, once a pending wait has gone STANDING_WAITS_CEILING_SECS
+# without being shown to the supervisor, so a forgotten wait still cannot rot
+# invisibly. A lane whose fingerprint changed and the first recheck after a
+# paused wait's declared `until` time passes are delivered when due, still
+# coalesced with whatever else is pending. While the away-mode daemon owns
+# triage it owns this whole schedule too: the watcher hands it each due recheck
+# as the plain stale wake it classifies itself, and leaves the fingerprint
+# baseline and the delivery time it compares against untouched.
+RECHECK_WARM_SECS=3300
+STANDING_WAITS_CEILING_SECS=${FM_STANDING_WAITS_CEILING_SECS:-$FM_STANDING_WAITS_CEILING_SECS_DEFAULT}
+case "$STANDING_WAITS_CEILING_SECS" in ''|*[!0-9]*|0) STANDING_WAITS_CEILING_SECS=$FM_STANDING_WAITS_CEILING_SECS_DEFAULT ;; esac
+WATCH_STARTED_EPOCH=$(date +%s)
 # A declared wait that names WHEN it clears (`paused: ... until <UTC ISO 8601>`,
 # status_paused_until in fm-classify-lib.sh) is condition-aware: it is not
 # rechecked before that time, and it is rechecked once as soon as that time
@@ -1381,23 +1400,29 @@ busy_turn_over_age() {  # <task>
 }
 
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
-# dead-agent captain-held transfer, and re-surface it once every
-# PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
+# captain-held transfer, and queue a recheck once every
+# PAUSE_RESURFACE_SECS so it cannot rot invisibly. Called on any
 # stale poll once pause_state_class permits the bounded cadence, so it must be
-# cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
-# status file mtime, not a per-hash marker, so a churny idle pane (a ticking
-# clock, a token counter) cannot keep resetting the cadence the way a hash-tied
-# timer would. The bounded re-surface itself is the shared resurface_absorbed
-# above, throttled by this window's own .paused-resurfaced-<key> marker. Advances
-# the stale suppressor to <hash> and flags the key paused.
+# cheap: it reads crew state only for the lane fingerprint of a `paused:` wait,
+# on first sight and when its recheck falls due. The re-surface age is anchored
+# on the status file mtime, not a per-hash marker, so a churny idle pane (a
+# ticking clock, a token counter) cannot keep resetting the cadence the way a
+# hash-tied timer would. A due `paused:` recheck is first matched against that
+# fingerprint (recheck_fingerprint_due); a recheck it does not absorb is queued
+# by recheck_queue below, throttled by this window's own
+# .paused-resurfaced-<key> marker, and delivered by recheck_flush together with
+# every other due recheck. Advances the stale suppressor to <hash> and flags
+# the key paused.
 #
 # The recheck names WHICH human the declared wait is on, because that is the whole
 # point of a recheck the captain reads: an external dependency for paused:, and the
 # captain themself for a verified hold. Only the captain-held verb takes the second
 # wording; a caller that reached the bounded cadence off pause tracking alone, with
 # no declaring verb left on the log, keeps the external-wait wording it always had.
+# The reason carries @AGE@ in place of the wait's age, filled in at delivery so a
+# recheck that waited for a warm supervisor still reports how old the wait is.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age detail reason declaration last until now min_age
+  local win=$1 task=$2 h=$3 key statusf mtime age detail reason declaration last until now min_age kind=due base
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -1411,34 +1436,262 @@ handle_paused_stale() {  # <window> <task> <hash>
   last=$(last_status_line "$statusf")
   min_age=$PAUSE_RESURFACE_SECS
   declaration="declared:$(fm_wake_signal_sig "$statusf" || true)"
+  base=$declaration
   if status_is_captain_held "$last"; then
     if afk_record_present; then
       triage_log "absorbed stale (captain-held, never rechecked while the away-posture record exists): $win"
       return 0
     fi
+    kind=held
     detail="captain-held, awaiting the captain"
-    reason="captain-held ${age}s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
+    reason="captain-held @AGE@s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
   elif until=$(status_paused_until "$last"); then
     if [ "$now" -lt "$until" ] && [ "$age" -lt "$PAUSE_RESURFACE_SECS" ]; then
+      recheck_baseline "$key" "$task" "$base" once
       triage_log "absorbed stale (paused until $(( until - now ))s from now, declared time not reached): $win"
       return 0
     elif [ "$now" -lt "$until" ]; then
       detail="paused, declared time beyond recheck cadence"
-      reason="paused ${age}s, awaiting external - the declared time is beyond the recheck cadence; confirm the wait still holds"
+      reason="paused @AGE@s, awaiting external - the declared time is beyond the recheck cadence; confirm the wait still holds"
     else
       # The declared time has passed: recheck now, once per declaration, then
-      # hold the cadence.
+      # hold the cadence. The worker named this moment, so its first recheck
+      # is delivered when due rather than held for a warm supervisor or matched
+      # against the lane's fingerprint; later ones are ordinary rechecks.
       detail="paused, declared time reached"
-      reason="paused ${age}s, awaiting external - the declared clearing time has passed, rechecked on a long cadence not a wedge; confirm the wait cleared"
+      reason="paused @AGE@s, awaiting external - the declared clearing time has passed, rechecked on a long cadence not a wedge; confirm the wait cleared"
       declaration="$declaration:due"
-      min_age=0
+      if [ "$(cat "$STATE/.paused-resurfaced-$key" 2>/dev/null || true)" != "$declaration" ]; then
+        kind=until
+        min_age=0
+      fi
     fi
   else
     detail="paused, awaiting external"
-    reason="paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
+    reason="paused @AGE@s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
   fi
-  resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win ($reason)" "$declaration" "$min_age"
-  triage_log "absorbed stale ($detail, age ${age}s): $win"
+  if afk_present; then
+    resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win (${reason//@AGE@/$age})" "$declaration" "$min_age"
+    triage_log "absorbed stale ($detail, age ${age}s): $win"
+    return 0
+  fi
+  if ! recheck_is_due "$key" "$age" "$declaration" "$min_age"; then
+    [ "$kind" = held ] || recheck_baseline "$key" "$task" "$base" once
+    triage_log "absorbed stale ($detail, age ${age}s): $win"
+    return 0
+  fi
+  case "$kind" in
+    due) recheck_fingerprint_due "$win" "$key" "$task" "$age" "$mtime" "$reason" "$declaration" "$base" ;;
+    until) recheck_baseline "$key" "$task" "$base" refresh
+      recheck_queue "$win" "$key" "$age" "$mtime" urgent "stale: $win ($reason)" "$declaration" ;;
+    held) recheck_queue "$win" "$key" "$age" "$mtime" due "stale: $win ($reason)" "$declaration" ;;
+  esac
+}
+
+# 0 when the declared-wait recheck for this window is due, resurface_absorbed's
+# gate exactly: while the throttle is absent or names this same declaration, the
+# wait must be at least <min-age> seconds old and its last recheck
+# PAUSE_RESURFACE_SECS old; a declaration other than the one last rechecked is
+# due at once.
+recheck_is_due() {  # <key> <age> <scope> <min-age>
+  local key=$1 age=$2 scope=$3 min_age=$4 throttle
+  throttle="$STATE/.paused-resurfaced-$key"
+  if [ ! -e "$throttle" ] || [ "$(cat "$throttle" 2>/dev/null || true)" = "$scope" ]; then
+    [ "$age" -ge "$min_age" ] || return 1
+    [ "$(age_of "$throttle")" -ge "$PAUSE_RESURFACE_SECS" ] || return 1   # 999999 when no prior re-surface
+  fi
+  return 0
+}
+
+# Record the lane's declared-wait baseline (declared_wait_baseline_record in
+# fm-classify-lib.sh) that a later recheck of this declaration is compared with.
+# The away-mode daemon owns the baseline while it owns triage.
+recheck_baseline() {  # <key> <task> <declaration> <once|refresh|set> [fingerprint]
+  ! afk_present || return 0
+  declared_wait_baseline_record "$STATE" "$@" || exit 1
+}
+
+# A due recheck of a paused: wait. It is absorbed without waking anyone when
+# the lane's fingerprint matches the baseline taken when the wait was declared
+# or last shown, until the lane has gone STANDING_WAITS_CEILING_SECS unseen;
+# then it is queued for the standing-waits digest. A changed fingerprint is
+# queued for delivery when due, naming what changed, and one that cannot be
+# compared (no baseline, or an unreadable part) is queued as an ordinary recheck.
+recheck_fingerprint_due() {  # <window> <key> <task> <age> <anchor> <reason> <scope> <declaration>
+  local win=$1 key=$2 task=$3 age=$4 anchor=$5 reason=$6 scope=$7 base=$8 kind=due standing rc=0
+  standing="paused @AGE@s, awaiting external - standing wait, nothing about it changed since it was last shown; confirm the wait still holds"
+  declared_wait_compare "$STATE" "$key" "$task" "$base" || rc=$?
+  case "$rc" in
+    0)
+      if [ "$(recheck_unseen_age "$key" "$task")" -lt "$STANDING_WAITS_CEILING_SECS" ]; then
+        printf '%s\n%s\n%s\n%s\n' absorbed "$win" "$anchor" "stale: $win ($standing)" > "$STATE/.recheck-absorbed-$key" || exit 1
+        printf '%s' "$scope" > "$STATE/.paused-resurfaced-$key"
+        triage_log "absorbed paused recheck (fingerprint unchanged, age ${age}s): $win"
+        return 0
+      fi
+      kind=standing
+      reason=$standing
+      ;;
+    1)
+      kind=urgent
+      reason="paused @AGE@s, awaiting external - the lane changed since its wait was last shown (${DECLARED_WAIT_CHANGES:-status}); confirm the wait still holds"
+      ;;
+  esac
+  recheck_baseline "$key" "$task" "$base" set "$DECLARED_WAIT_FP"
+  recheck_queue "$win" "$key" "$age" "$anchor" "$kind" "stale: $win ($reason)" "$scope"
+}
+
+# Queue one declared-wait recheck that has fallen due, for recheck_flush to
+# deliver, replacing any absorbed record for the window. The throttle advances
+# when the recheck is queued, after the queued record is written, so one due
+# recheck is queued once rather than on every poll while it waits for delivery.
+# <kind> is `urgent` for a recheck delivered as soon as it is due, `standing`
+# for one that reached STANDING_WAITS_CEILING_SECS unseen and brings the
+# standing-waits digest with it, and `due` for one recheck_flush may hold for a
+# warm supervisor.
+recheck_queue() {  # <window> <key> <age> <age-anchor-epoch> <urgent|standing|due> <reason> <scope>
+  local win=$1 key=$2 age=$3 anchor=$4 kind=$5 reason=$6 scope=$7
+  printf '%s\n%s\n%s\n%s\n' "$kind" "$win" "$anchor" "$reason" > "$STATE/.recheck-due-$key" || exit 1
+  rm -f "$STATE/.recheck-absorbed-$key"
+  printf '%s' "$scope" > "$STATE/.paused-resurfaced-$key"
+  triage_log "queued declared-wait recheck ($kind, age ${age}s): $win"
+}
+
+# Seconds since the supervisor last took a turn, as far as this watcher can
+# tell: the later of this watcher's own start, since a supervisor arms the
+# watcher as a turn ends, and Claude's turn-end auto-arm ledger, which also
+# moves on a turn that raised no wake. A turn this watcher cannot see only makes
+# the supervisor look colder, so a recheck waits longer, never less.
+supervisor_turn_age() {
+  local age claude
+  age=$(( $(date +%s) - WATCH_STARTED_EPOCH ))
+  claude=$(age_of "$STATE/.claude-autoarm-epoch")
+  [ "$claude" -lt "$age" ] && age=$claude
+  printf '%s' "$age"
+}
+
+# Seconds a lane under a declared wait has gone unseen by the supervisor: since
+# the later of its last delivered recheck and its latest status line, whose own
+# signal already reached the supervisor.
+recheck_unseen_age() {  # <key> <task>
+  local seen status
+  seen=$(age_of "$STATE/.recheck-surfaced-$1")
+  status=$(age_of "$STATE/$2.status")
+  [ "$status" -lt "$seen" ] && seen=$status
+  printf '%s' "$seen"
+}
+
+# Deliver the queued declared-wait rechecks together (see RECHECK_WARM_SECS
+# above for the schedule). `poll` runs once per poll after the pane scan and
+# raises one wake for the whole set when any queued recheck is urgent, any lane
+# has reached STANDING_WAITS_CEILING_SECS unseen, the supervisor is warm, or
+# the away-mode daemon owns triage; otherwise it leaves the set queued. `ride`
+# runs from wake() for any other wake and queues the whole set with it, so the
+# supervisor reads every due recheck in a turn it is taking anyway. A recheck
+# absorbed because nothing about its lane changed is delivered only in the
+# standing-waits digest: once any absorbed or queued lane reaches the ceiling,
+# every absorbed lane comes with it, so the standing waits are listed together
+# once rather than each on its own day. A recheck whose wait is no longer
+# declared, or is a captain-held transfer the away-posture record silences, is
+# dropped instead. Each delivered row is its own durable stale record for its
+# window, so acknowledgement and away-mode classification see exactly the rows
+# a single recheck used to produce.
+RECHECK_FLUSHING=0
+WAKE_QUEUE_LOCK_HELD=0
+recheck_flush() {  # <poll|ride>
+  local mode=$1 append f key kind win anchor reason task last now fire=0 standing=0 i n=0 first=''
+  local -a keys=() wins=() reasons=() held_keys=() held_wins=() held_reasons=()
+  [ "$RECHECK_FLUSHING" -eq 0 ] || return 0
+  now=$(date +%s)
+  for f in "$STATE"/.recheck-due-* "$STATE"/.recheck-absorbed-*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+      */.recheck-due-*) key=${f##*/.recheck-due-} ;;
+      *) key=${f##*/.recheck-absorbed-}
+        [ ! -e "$STATE/.recheck-due-$key" ] || continue ;;
+    esac
+    kind='' win='' anchor='' reason=''
+    { IFS= read -r kind; IFS= read -r win; IFS= read -r anchor; IFS= read -r reason; } 2>/dev/null < "$f" || true
+    task=
+    [ -z "$win" ] || task=$(window_to_task "$win" "$STATE")
+    last=
+    [ -z "$task" ] || last=$(last_status_line "$STATE/$task.status")
+    if [ -z "$task" ] || [ -z "$reason" ] || ! status_is_paused_or_captain_held "$last" \
+      || captain_held_silenced "$last"; then
+      rm -f "$f"
+      triage_log "dropped queued declared-wait recheck (wait no longer declared): ${win:-$key}"
+      continue
+    fi
+    case "$anchor" in ''|*[!0-9]*) anchor=$now ;; esac
+    reason=${reason//@AGE@/$(( now - anchor ))}
+    [ "$kind" = standing ] && standing=1
+    [ "$(recheck_unseen_age "$key" "$task")" -ge "$STANDING_WAITS_CEILING_SECS" ] && standing=1
+    if [ "$kind" = absorbed ]; then
+      held_keys+=("$key"); held_wins+=("$win"); held_reasons+=("$reason")
+      continue
+    fi
+    keys+=("$key"); wins+=("$win"); reasons+=("$reason")
+    [ "$kind" = urgent ] && fire=1
+  done
+  if [ "$standing" -eq 1 ]; then
+    fire=1
+    for i in "${!held_keys[@]}"; do
+      keys+=("${held_keys[$i]}"); wins+=("${held_wins[$i]}"); reasons+=("${held_reasons[$i]}")
+    done
+  fi
+  [ "${#keys[@]}" -gt 0 ] || return 0
+  if [ "$mode" = poll ] && [ "$fire" -eq 0 ]; then
+    if afk_present || [ "$(supervisor_turn_age)" -lt "${FM_TEST_RECHECK_WARM_SECS:-$RECHECK_WARM_SECS}" ]; then
+      fire=1
+    else
+      return 0
+    fi
+  fi
+  append=fm_wake_append
+  [ "$WAKE_QUEUE_LOCK_HELD" -eq 0 ] || append=fm_wake_append_locked
+  RECHECK_FLUSHING=1
+  for i in "${!keys[@]}"; do
+    if ! "$append" stale "${wins[$i]}" "${reasons[$i]}"; then
+      [ "$mode" = poll ] && exit 1
+      triage_log "could not queue declared-wait rechecks alongside another wake; they stay queued"
+      return 1
+    fi
+    afk_present || date +%s > "$STATE/.recheck-surfaced-${keys[$i]}"
+    rm -f "$STATE/.recheck-due-${keys[$i]}" "$STATE/.recheck-absorbed-${keys[$i]}"
+    n=$((n + 1))
+    [ -n "$first" ] || first=${reasons[$i]}
+  done
+  if [ "$mode" = ride ]; then
+    triage_log "queued $n declared-wait recheck(s) with another wake"
+    return 0
+  fi
+  if [ "$standing" -eq 1 ]; then
+    first="$first [standing-waits digest: $n declared wait(s) queued with this wake]"
+  elif [ "$n" -gt 1 ]; then
+    first="$first [+$((n - 1)) more declared-wait recheck(s) queued with this wake]"
+  fi
+  wake "$first"
+}
+
+recheck_ride_along() {  # <reason>
+  recheck_flush ride
+}
+# shellcheck disable=SC2034 # Consumed by wake() in the separately linted transition owner.
+FM_WAKE_PRE_OUTPUT_ACTION=recheck_ride_along
+
+# Retire every per-window recheck record whose window no longer declares a wait
+# on this poll, so a lane that resumed, finished, or was torn down cannot leave
+# a queued recheck, a fingerprint baseline, or an old delivery time behind for a
+# later declaration.
+recheck_sweep() {  # <space-delimited declared window keys>
+  local declared=$1 f key
+  for f in "$STATE"/.recheck-due-* "$STATE"/.recheck-absorbed-* "$STATE"/.recheck-fp-* "$STATE"/.recheck-surfaced-*; do
+    [ -e "$f" ] || continue
+    key=${f##*/.recheck-}
+    key=${key#*-}
+    case "$declared" in *" $key "*) continue ;; esac
+    rm -f "$f"
+  done
 }
 
 # Apply the busy-pane completed-turn bound to a window whose bound has already
@@ -1515,30 +1768,20 @@ clear_pause_state() {  # <window-key>
   rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
 }
 
-# The hash-scoped half of clear_pause_tracking: the stale suppressor, its wedge
-# timer and escalation count, and both deferral chains the timer can take - the
-# write-deferral chain and the wait-deferral throttle. Split out so a caller
-# that must keep a window's DECLARATION-scoped pause state - its .paused-* flag,
-# recheck, and re-surface throttle - can still reset the per-hash half alone.
-clear_stale_hash_tracking() {  # <window-key>
+clear_pause_tracking() {  # <window-key>
   local key=$1
+  clear_pause_state "$key"
   clear_write_tracking "$key"
   rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" \
     "$STATE/.waiting-resurfaced-$key"
 }
 
-clear_pause_tracking() {  # <window-key>
-  local key=$1
-  clear_pause_state "$key"
-  clear_stale_hash_tracking "$key"
-}
-
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# After fm-crew-state has fallen back to stopped or unknown, paused classification is
-# recovered only for a confidently dead ordinary crew, or for a secondmate, whose
-# endpoint liveness this function deliberately never reads.
+# A standing declaration is kept for every fm_backend_agent_state verdict.
+# Only a working crew-state class outranks it. Dead and unknown liveness stay
+# on the bounded recheck; issue 2713 does not invent prompt dead-worker surfacing.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive kind
+  local win=$1 task=$2 key last recheck_file class
   key=$(window_key "$win")
   last=$(last_status_line "$STATE/$task.status")
   recheck_file="$STATE/.paused-rechecked-$key"
@@ -1547,19 +1790,7 @@ pause_state_class() {  # <window> <task>
     crew_absorb_class "$task"
     return
   fi
-  # Read once past the declared-wait gate and reused by both liveness gates below,
-  # so a mate's stale poll costs one metadata scan rather than one per gate, and the
-  # far more common no-declaration path above still costs none.
-  kind=$(window_kind "$win")
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$kind" != secondmate ]; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-      if [ "$agent_alive" != dead ]; then
-        rm -f "$recheck_file"
-        printf 'none'
-        return
-      fi
-    fi
     printf 'paused'
     return
   fi
@@ -1569,28 +1800,13 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if [ "$kind" != secondmate ]; then
-    agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-    if [ "$agent_alive" != dead ]; then
-      rm -f "$recheck_file"
-      printf 'none'
-      return
-    fi
-  fi
   # Recover paused classification for a declared wait that authoritative crew state
-  # could not name. Reaching here already proves the only two admissible cases: an
-  # ordinary crew whose agent the gate above confirmed dead, so no live decision gate
-  # is being silenced, or a secondmate, whose endpoint liveness is deliberately never
-  # read and so cannot supply that confirmation. Without the mate case a mate's
-  # status-declared `captain-held` transfer - which has no current-state mapping
-  # and so arrives as `none` - would be silenced by every caller rather than taking
-  # the bounded re-surface cadence, and a forgotten declaration would rot invisibly.
-  [ "$class" = none ] && class=paused
-  case "$class" in
-    paused) date +%s > "$recheck_file" ;;
-    *) rm -f "$recheck_file" ;;
-  esac
-  printf '%s' "$class"
+  # could not name, including a mate's status-declared `captain-held` transfer,
+  # which has no current-state mapping and so arrives as `none`. Without this
+  # recovery that wait would be silenced by every caller rather than taking the
+  # bounded re-surface cadence, and a forgotten declaration would rot invisibly.
+  date +%s > "$recheck_file"
+  printf 'paused'
 }
 
 # The two records of one ordinary crew wait, and why its stale alarm reads both.
@@ -1628,19 +1844,12 @@ task_captain_call_open() {  # <task>
   return 0
 }
 
-# The identity a re-surface throttle is bound to: the task's whole status-log
-# signature. Any new status event - a replacement wait, a fresh delivery, a
-# blocker - changes it and so starts its own window instead of inheriting the
-# silence of the one before it.
-stale_wait_declaration() {  # <task>
-  printf 'declared:%s' "$(fm_wake_signal_sig "$STATE/$1.status" || true)"
-}
-
-# The same scope for a captain call, carrying the CALL's own lifecycle identity
-# beside the status signature. The status log is not enough on its own: a task
-# can be answered with `--release` and held again as a genuinely different call
-# without any status append, and binding the throttle to the signature alone let
-# the second call inherit the first one's silence and absorbed its first sight.
+# The identity a re-surface throttle is bound to for a captain call, carrying
+# the CALL's own lifecycle identity beside the status signature. The status log
+# is not enough on its own: a task can be answered with `--release` and held
+# again as a genuinely different call without any status append, and binding the
+# throttle to the signature alone let the second call inherit the first one's
+# silence and absorbed its first sight.
 # That first sight is the one alarm this bound must never swallow - a decision
 # waiting on the captain that is never surfaced is invisible, where a delivery
 # announced twice is merely noise.
@@ -1692,54 +1901,23 @@ captain_call_stale_bound() {  # <window-key> <task>
 
 # Surface a stale pane no classifier could resolve, so firstmate inspects it: it
 # may have finished through an interactive menu that wrote no status, be waiting on
-# a decision, or be wedged. pause_state_class deliberately answers `none` for a
-# still-LIVE agent even under a declared wait, so a worker genuinely waiting on a
-# decision is never silenced - which routes every parked-but-live worker here, on
-# first sight of each distinct stale hash.
+# a decision, or be wedged. A standing declared wait is admitted by
+# pause_state_class for every liveness verdict and takes handle_paused_stale, so a
+# parked worker does not reach this path on the declaration or on liveness.
 #
-# So a legitimate wait bounds this path to the same once-per-PAUSE_RESURFACE_SECS
-# cadence resurface_absorbed owns for the absorbed paths, throttled by this
-# window's own .paused-resurfaced-<key> marker: an idle parked pane still churns
-# its hash (a clock, a token counter), and each new hash re-enters this path, so
-# without that bound one wait re-alarms firstmate for its whole duration.
 # The FIRST sight still wakes, keeping the inspect-an-inconclusive-state intent,
 # and the throttle is read BEFORE anything is queued and advanced only by a wake
 # that really fires - a throttle written by the wake it should have prevented, or
 # read after that wake was already appended, bounds nothing.
-# Both records of an ordinary crew wait bound it (see task_captain_call_open
-# above): the status line the worker declared, and the backlog hold firstmate
-# recorded once the captain took the work in hand.
+# An ordinary crew wait recorded only in the backlog (see task_captain_call_open
+# above) still bounds this path: the worker's last line is often a delivery, which
+# no line predicate can read as a wait.
 surface_nonterminal_stale() {  # <window> <hash>
-  local win=$1 h=$2 key task last declared=1 bounded=1 throttled=1 until now
+  local win=$1 h=$2 key task bounded=1 throttled=1
   key=$(window_key "$win")
   task=$(window_to_task "$win" "$STATE")
-  last=$(last_status_line "$STATE/$task.status")
   STALE_WAIT_DECLARATION=
-  if status_is_paused "$last"; then
-    declared=0
-    bounded=0
-    STALE_WAIT_DECLARATION=$(stale_wait_declaration "$task")
-    if until=$(status_paused_until "$last"); then
-      now=$(date +%s)
-      if [ "$now" -lt "$until" ]; then
-        throttled=0
-      else
-        STALE_WAIT_DECLARATION="$STALE_WAIT_DECLARATION:due"
-        stale_wait_throttled "$key" "$STALE_WAIT_DECLARATION" && throttled=0
-      fi
-    else
-      stale_wait_throttled "$key" "$STALE_WAIT_DECLARATION" && throttled=0
-    fi
-  elif status_is_captain_held "$last"; then
-    declared=0
-    bounded=0
-    STALE_WAIT_DECLARATION=$(stale_wait_declaration "$task")
-    if captain_held_silenced "$last"; then
-      throttled=0
-    else
-      stale_wait_throttled "$key" "$STALE_WAIT_DECLARATION" && throttled=0
-    fi
-  elif captain_call_stale_bound "$key" "$task"; then
+  if captain_call_stale_bound "$key" "$task"; then
     bounded=0
     throttled=0
   elif [ -n "$STALE_WAIT_DECLARATION" ]; then
@@ -1752,22 +1930,19 @@ surface_nonterminal_stale() {  # <window> <hash>
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key"
   clear_write_tracking "$key"
-  if [ "$declared" -eq 0 ]; then
-    : > "$STATE/.paused-$key"
-    date +%s > "$STATE/.paused-rechecked-$key"
-  elif [ "$bounded" -eq 0 ]; then
+  if [ "$bounded" -eq 0 ]; then
     # A backlog hold is NOT a declared pause, and must not be dressed up as one:
     # the loop-top reconciliation and pause_state_class both read the status LINE,
     # so a .paused-* flag this line does not support would be cleared on the next
-    # poll - taking the throttle with it - and would hand the mate and dead-agent
-    # cadences a declaration they were never given. Only the shared re-surface
+    # poll - taking the throttle with it - and would hand the declared-wait
+    # cadence a declaration it was never given. Only the shared re-surface
     # marker is kept, which is the whole of what this bound needs.
     rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key"
   else
     clear_pause_state "$key"
   fi
   if [ "$throttled" -eq 0 ]; then
-    triage_log "absorbed non-terminal stale (declared wait or open captain call already re-surfaced this window): $win"
+    triage_log "absorbed non-terminal stale (open captain call already re-surfaced this window): $win"
     return 0
   fi
   wake "stale: $win"
@@ -1842,6 +2017,7 @@ procevent_surface_after_output() {
       fi
     done
   fi
+  WAKE_QUEUE_LOCK_HELD=0
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   return "$status"
 }
@@ -1881,6 +2057,7 @@ procevent_surface_queued() {
   fi
   # shellcheck disable=SC2034 # Consumed by wake() in the separately linted transition owner.
   FM_WAKE_POST_OUTPUT_ACTION=procevent_surface_after_output
+  WAKE_QUEUE_LOCK_HELD=1
   wake "$reason"
 }
 
@@ -2762,6 +2939,7 @@ EOF
   # stale hash is surfaced, absorbed, or timed toward escalation once (.stale-*
   # remembers the hash already classified, or the declaration a busy pane's
   # crossed turn bound already handed to the away-mode daemon).
+  recheck_declared_keys=' '
   while IFS= read -r w; do
     kind=$(window_kind "$w")
     task=$(window_to_task "$w" "$STATE")
@@ -2770,7 +2948,9 @@ EOF
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
     key=$(window_key "$w")
     last=$(last_status_line "$STATE/$task.status")
-    if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then
+    if status_is_paused_or_captain_held "$last"; then
+      recheck_declared_keys="$recheck_declared_keys$key "
+    elif [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$key"
     fi
     # An idle secondmate endpoint is healthy by design, so a mate is admitted to
@@ -2886,9 +3066,9 @@ EOF
           #   - working: an actively-running pipeline legitimately sits on a static
           #     pane (e.g. waiting on CI), so absorb and start the wedge timer so a
           #     genuinely frozen run still escalates past STALE_ESCALATE_SECS;
-          #   - paused: a declared wait pause_state_class admits (its header owns which
-          #     liveness evidence each kind of crew must supply), so absorb on the long
-          #     PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
+          #   - paused: a declared wait pause_state_class admits for every liveness
+          #     verdict, so absorb on the long PAUSE_RESURFACE_SECS cadence instead of
+          #     wedge-escalating;
           #   - none: no running pipeline, no exact busy verdict, no admitted declared wait.
           #     Surface immediately so firstmate inspects the inconclusive state
           #     (it may be done via an interactive menu that wrote no done: status,
@@ -2960,15 +3140,6 @@ EOF
       if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then
         case "$(pause_state_class "$w" "$task")" in
           paused) handle_paused_stale "$w" "$task" "$h" ;;
-          # Inconclusive, but the declared wait itself still stands, so only the
-          # per-hash bookkeeping resets. The re-surface throttle bounds the
-          # DECLARATION, not the pane hash: an idle parked pane whose display
-          # ticks (a clock, a token counter) changes hash without changing what
-          # is being waited on, and clearing the throttle here would hand that
-          # same wait a fresh window on every tick - the first sight of each new
-          # hash reaches surface_nonterminal_stale below, so the whole declared
-          # wait would re-alarm far inside PAUSE_RESURFACE_SECS.
-          none)   clear_stale_hash_tracking "$key" ;;
           *)      clear_pause_tracking "$key" ;;
         esac
       elif [ "$paused_bound" -ne 0 ] && [ -e "$pf" ]; then
@@ -2978,6 +3149,8 @@ EOF
       fi
     fi
   done < <(recorded_windows)
+  recheck_sweep "$recheck_declared_keys"
+  recheck_flush poll
 
   # Heartbeat: the watcher runs a cheap fleet-scan at a regular cadence no matter
   # what. Time-based via .last-heartbeat mtime; interval doubles per consecutive

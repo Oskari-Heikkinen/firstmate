@@ -489,6 +489,28 @@ test_unverified_harness_is_refused() {
   pass "fm-control: a harness with no verified control mechanics is refused, not guessed at"
 }
 
+test_harness_supported_is_silent_on_early_match() {
+  local h err
+  err=$(
+    trap '' PIPE
+    # shellcheck disable=SC2329 # Invoked by fm_control_harness_supported.
+    fm_control_harnesses() {
+      printf '%s\n' claude
+      sleep 0.2
+      printf '%s\n' codex opencode
+    }
+    fm_control_harness_supported claude 2>&1 || echo "rejected claude"
+  )
+  [ -z "$err" ] || fail "an early harness match should not leave a writer on a closed pipe, got: $err"
+  for h in $(fm_control_harnesses); do
+    fm_control_harness_supported "$h" || fail "harness lookup rejected listed harness '$h'"
+  done
+  for h in '' someagent 'claude codex' 'c*' clau; do
+    if fm_control_harness_supported "$h"; then fail "harness lookup accepted '$h'"; fi
+  done
+  pass "fm-control-lib: a verified-harness lookup matches exactly and never writes to stderr"
+}
+
 # --- 2. backend capability matrix -------------------------------------------
 
 test_backend_key_capability_matrix() {
@@ -1040,6 +1062,7 @@ test_devin_interrupt_dismisses_revert_picker
 test_devin_stuck_picker_refuses_and_exit_types_nothing
 test_opencode_interrupts_twice_and_others_once
 test_unverified_harness_is_refused
+test_harness_supported_is_silent_on_early_match
 test_harness_family_resolution
 test_prefixed_recorded_harness_reaches_each_control_verb
 test_backend_key_capability_matrix

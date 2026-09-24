@@ -69,3 +69,26 @@ awk '
 
 CPU and RSS vary with host load, so percentage claims must compare runs from one measurement window.
 When results must be compared across windows, use the reported `bytes_allocated` totals as the stable work proxy rather than quoting a CPU or RSS ratio.
+
+## Local split passes
+
+Option A alone drops every cross-file code, so local changed-file and explicit-path runs now pair it with a second cheap pass.
+`bin/fm-lint.sh`'s header owns the split's definition and the finding classes it can still miss relative to CI.
+The 2026-09-24 measurement ran the repository-pinned ShellCheck 0.11.0 Linux x86_64 build at commit `9296f9b9d2566797b9a9aecaa5956bb8e471d2cd` against `bin/fm-spawn.sh`, the largest source closure, one invocation at a time:
+
+```bash
+C=SC1091,SC2034,SC2153,SC2154,SC2329
+/usr/bin/time -f '%e s %M KiB' shellcheck --norc --external-sources -- bin/fm-spawn.sh >/dev/null
+/usr/bin/time -f '%e s %M KiB' shellcheck --norc --exclude="$C" -- bin/fm-spawn.sh >/dev/null
+/usr/bin/time -f '%e s %M KiB' shellcheck --norc --external-sources --extended-analysis=false \
+  --include="$C" -- bin/fm-spawn.sh >/dev/null
+```
+
+```text
+32.19 s 5459328 KiB
+5.53 s 1571328 KiB
+8.30 s 381312 KiB
+```
+
+The first line is CI's full pass, the second is the split's dataflow pass, and the third is its source-following pass.
+The split's worst process therefore needs about 29% of the full pass's peak memory, and the two passes together took about 43% of its wall time.
