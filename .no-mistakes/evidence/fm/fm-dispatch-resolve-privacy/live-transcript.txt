@@ -1,0 +1,188 @@
+================================================================
+## [1] Private brief + generic summary: only allow-listed state leaves
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --summary Bounded\ UI\ polish\ in\ an\ existing\ panel
+exit=0
+--- stdout
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 23   tokens: 300/40
+  rule: rule_2 (Bounded UI polish in an existing panel.)   confidence: 0.91
+  probabilities: rule_1=0.03 rule_2=0.91 rule_3=0.03 default=0.03
+  sent: kind=ship mode=no-mistakes summary=Bounded UI polish in an existing panel
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=75%  spendPriority=0.4673  runway=through_reset  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models
+  profile: --harness 'claude' --model 'sonnet' --effort 'high'
+--- stderr
+--- requests received by the local api.typesafe.ai stand-in: 1
+--- wire state (exact .state of the POST body):
+{
+  "task": {
+    "kind": "ship",
+    "mode": "no-mistakes",
+    "summary": "Bounded UI polish in an existing panel"
+  }
+}
+--- wire top-level keys: ["model","questions","state"]   task keys: ["kind","mode","summary"]
+--- Authorization header on the wire matches key: true
+--- private brief sentinels found in wire body: none
+--- key on curl argv: no
+--- key in body: no
+================================================================
+## [2] Adversarial summary: URL, path, email, token, code span, dotted file, snake_case
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --summary Bounded\ UI\ polish\ at\ https://cad.acme.invalid/x\ in\ /home/captain/cad\ for\ jane.doe@acme.invalid\ using\ ghp_LIVEPRIVATETOKEN0123456789abcdefXYZ\ fix\ \`renderPreview\(\)\`\ in\ panel.tsx
+exit=0
+--- stdout
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 20   tokens: 300/40
+  rule: rule_2 (Bounded UI polish in an existing panel.)   confidence: 0.91
+  probabilities: rule_1=0.03 rule_2=0.91 rule_3=0.03 default=0.03
+  sent: kind=ship mode=no-mistakes summary=Bounded UI polish at [redacted] in [redacted] for [redacted] using [redacted] fix [redacted] in [redacted]
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=75%  spendPriority=0.4673  runway=through_reset  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models
+  profile: --harness 'claude' --model 'sonnet' --effort 'high'
+--- stderr
+--- requests received by the local api.typesafe.ai stand-in: 1
+--- wire state (exact .state of the POST body):
+{
+  "task": {
+    "kind": "ship",
+    "mode": "no-mistakes",
+    "summary": "Bounded UI polish at [redacted] in [redacted] for [redacted] using [redacted] fix [redacted] in [redacted]"
+  }
+}
+--- wire top-level keys: ["model","questions","state"]   task keys: ["kind","mode","summary"]
+--- Authorization header on the wire matches key: true
+--- private brief sentinels found in wire body: none
+--- key on curl argv: no
+--- key in body: no
+================================================================
+## [3] Reviewer example: snake_case identifier redacted
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --summary Refactor\ export_step_file\ in\ LatticeBracket\ for\ AcmeCorp
+exit=0
+--- stdout
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 20   tokens: 300/40
+  rule: rule_2 (Bounded UI polish in an existing panel.)   confidence: 0.91
+  probabilities: rule_1=0.03 rule_2=0.91 rule_3=0.03 default=0.03
+  sent: kind=ship mode=no-mistakes summary=Refactor [redacted] in LatticeBracket for AcmeCorp
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=75%  spendPriority=0.4673  runway=through_reset  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models
+  profile: --harness 'claude' --model 'sonnet' --effort 'high'
+--- stderr
+--- requests received by the local api.typesafe.ai stand-in: 1
+--- wire state (exact .state of the POST body):
+{
+  "task": {
+    "kind": "ship",
+    "mode": "no-mistakes",
+    "summary": "Refactor [redacted] in LatticeBracket for AcmeCorp"
+  }
+}
+--- wire top-level keys: ["model","questions","state"]   task keys: ["kind","mode","summary"]
+--- Authorization header on the wire matches key: true
+--- private brief sentinels found in wire body: none
+--- key on curl argv: no
+--- key in body: no
+================================================================
+## [4] No --summary (brief still has a Dispatch summary: line): escalate, no request
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md
+exit=0
+--- stdout
+dispatch-resolve:
+  status: escalate
+  reason: no dispatch summary to match
+--- stderr
+--- requests received by the local api.typesafe.ai stand-in: 0
+================================================================
+## [5] Summary that is entirely private tokens: escalate, no request
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --summary https://cad.acme.invalid/x\ /home/captain/secret.step\ \`code\`
+exit=0
+--- stdout
+dispatch-resolve:
+  status: escalate
+  reason: no dispatch summary to match
+--- stderr
+--- requests received by the local api.typesafe.ai stand-in: 0
+================================================================
+## [6] Removed --project flag is rejected
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --project LatticeCAD --summary Bounded\ UI\ polish\ in\ an\ existing\ panel
+exit=2
+--- stdout
+--- stderr
+error: unknown flag --project
+--- requests received by the local api.typesafe.ai stand-in: 0
+================================================================
+## [7] Error after send (HTTP 500): sent line still shown
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --summary Difficult\ diagnosis\ across\ components
+exit=0
+--- stdout
+dispatch-resolve:
+  status: error
+  sent: kind=ship mode=no-mistakes summary=Difficult diagnosis across components
+  reason: http 500 after 20 ms: {"error": "internal"}
+--- stderr
+dispatch-resolve: error (http 500 after 20 ms: {"error": "internal"})
+--- requests received by the local api.typesafe.ai stand-in: 1
+--- wire state (exact .state of the POST body):
+{
+  "task": {
+    "kind": "ship",
+    "mode": "no-mistakes",
+    "summary": "Difficult diagnosis across components"
+  }
+}
+--- wire top-level keys: ["model","questions","state"]   task keys: ["kind","mode","summary"]
+--- Authorization header on the wire matches key: true
+--- private brief sentinels found in wire body: none
+--- key on curl argv: no
+--- key in body: no
+================================================================
+## [8] Error after send (HTTP 429): sent line still shown
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --summary Difficult\ diagnosis\ across\ components
+exit=0
+--- stdout
+dispatch-resolve:
+  status: error
+  sent: kind=ship mode=no-mistakes summary=Difficult diagnosis across components
+  reason: http 429 after 19 ms: {"error": "rate limited"}
+--- stderr
+dispatch-resolve: error (http 429 after 19 ms: {"error": "rate limited"})
+--- requests received by the local api.typesafe.ai stand-in: 1
+--- wire state (exact .state of the POST body):
+{
+  "task": {
+    "kind": "ship",
+    "mode": "no-mistakes",
+    "summary": "Difficult diagnosis across components"
+  }
+}
+--- wire top-level keys: ["model","questions","state"]   task keys: ["kind","mode","summary"]
+--- Authorization header on the wire matches key: true
+--- private brief sentinels found in wire body: none
+--- key on curl argv: no
+--- key in body: no
+================================================================
+## [9] Transport failure after send (endpoint down): sent line still shown
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --summary Difficult\ diagnosis\ across\ components
+exit=0
+--- stdout
+dispatch-resolve:
+  status: error
+  sent: kind=ship mode=no-mistakes summary=Difficult diagnosis across components
+  reason: http 000 after 18 ms: 
+--- stderr
+dispatch-resolve: error (http 000 after 18 ms: )
+--- requests received by the local api.typesafe.ai stand-in: 0
+================================================================
+## [10] No key: tool is off, no request
+$ fm-dispatch-resolve.sh /tmp/fm-dr-live.NFV3we/brief.md --summary Bounded\ UI\ polish\ in\ an\ existing\ panel
+exit=0
+--- stdout
+--- stderr
+dispatch-resolve: off (TYPESAFE_API_KEY absent from the environment and /tmp/fm-dr-live.NFV3we/home/.env)
+--- requests received by the local api.typesafe.ai stand-in: 0
