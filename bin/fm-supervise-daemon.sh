@@ -101,6 +101,11 @@
 #                                   `until` time cannot extend this bound, and a
 #                                   captain-held transfer is never rechecked
 #                                   while the away-posture record exists
+#          FM_STANDING_WAITS_CEILING_SECS  longest a declared paused: wait
+#                                   whose rechecks keep finding nothing changed
+#                                   (its fingerprint, fm-classify-lib.sh) may go
+#                                   unseen before it is escalated again, with
+#                                   every other such wait (default 86400)
 #          FM_ESCALATE_BATCH_SECS   buffer window for batched escalation
 #                                   digests; 0 = flush immediately (default 90)
 #          FM_HEARTBEAT_SCAN_SECS   cadence for the catch-all status scan
@@ -501,16 +506,38 @@ stale_marker_remove() {  # <window> <state>
 # churny pane (many distinct stale hashes map to one marker), keeping the cadence
 # hash-immune.
 pause_marker_record() {  # <window> <state> - create if absent
-  local win=$1 state=$2 key marker
-  key=$(_stale_key "$(window_to_task "$win" "$state")")
+  local win=$1 state=$2 task key marker
+  task=$(window_to_task "$win" "$state")
+  key=$(_stale_key "$task")
   marker="$state/.subsuper-paused-$key"
-  [ -e "$marker" ] || _now > "$marker"
+  [ -e "$marker" ] && return 0
+  _now > "$marker"
+  if status_is_paused "$(last_status_line "$state/$task.status")"; then
+    declared_wait_baseline_record "$state" "$(_stale_key "$win")" "$task" \
+      "$(pause_declaration "$state" "$task")" once || true
+  fi
+}
+
+# The declaration a paused: wait's fingerprint baseline is bound to, the same
+# scope string the watcher binds its own to, so the two share one baseline.
+pause_declaration() {  # <state> <task>
+  printf 'declared:%s' "$(status_observed_signature "$1/$2.status" || true)"
+}
+
+# Seconds a lane under a declared wait has gone unseen by the supervisor
+# (FM_STANDING_WAITS_CEILING_SECS_DEFAULT in fm-classify-lib.sh owns the rule).
+pause_unseen_age() {  # <state> <window> <task>
+  local seen status
+  seen=$(_file_age "$1/.recheck-surfaced-$(_stale_key "$2")")
+  status=$(_file_age "$1/$3.status")
+  [ "$status" -lt "$seen" ] && seen=$status
+  printf '%s' "$seen"
 }
 
 pause_marker_remove() {  # <window> <state>
   local win=$1 state=$2 key
   key=$(_stale_key "$(window_to_task "$win" "$state")")
-  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-pause-until-due-$key"
+  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-pause-until-due-$key" "$state/.subsuper-pause-absorbed-$key"
 }
 
 clear_pause_tracking() {  # <window> <state>
@@ -519,6 +546,7 @@ clear_pause_tracking() {  # <window> <state>
   key=$(_stale_key "$task")
   watcher_key=$(_stale_key "$win")
   rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-pause-until-due-$key" "$state/.subsuper-stale-$key" \
+    "$state/.subsuper-pause-absorbed-$key" "$state/.recheck-fp-$watcher_key" "$state/.recheck-surfaced-$watcher_key" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
     "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key" \
     "$state/.writing-since-$watcher_key" "$state/.writing-resurfaced-$watcher_key" \
@@ -1004,6 +1032,39 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
   fi
 }
 
+# The standing-waits digest: once any declared wait reaches the standing-waits
+# ceiling (<due> is 1 when this pass already escalated one), or any wait whose
+# unchanged recheck was absorbed has gone that long unseen, every absorbed wait
+# still declared is escalated with it, so the batch lists the standing waits
+# together rather than each on its own day. A lane whose wait ended meanwhile is
+# dropped.
+standing_waits_digest() {  # <state> <due> <ceiling-secs>
+  local state=$1 due=$2 ceiling=$3 f key win task last age
+  local -a wins=() tasks=() keys=()
+  for f in "$state"/.subsuper-pause-absorbed-*; do
+    [ -e "$f" ] || continue
+    key=${f##*/.subsuper-pause-absorbed-}
+    win=$(window_for_task "$key" "$state" 2>/dev/null || true)
+    task=
+    [ -z "$win" ] || task=$(window_to_task "$win" "$state")
+    last=
+    [ -z "$task" ] || last=$(last_status_line "$state/$task.status")
+    if [ -z "$task" ] || ! status_is_paused "$last"; then
+      rm -f "$f"; continue
+    fi
+    [ "$(pause_unseen_age "$state" "$win" "$task")" -lt "$ceiling" ] || due=1
+    wins+=("$win"); tasks+=("$task"); keys+=("$key")
+  done
+  [ "$due" -eq 1 ] || return 0
+  for f in "${!wins[@]}"; do
+    age=$(_file_age "$state/${tasks[$f]}.status")
+    if escalate_add "$state" "paused ${age}s (awaiting external, standing wait, nothing about it changed since it was last shown; confirm the wait still holds): ${wins[$f]}"; then
+      _now > "$state/.recheck-surfaced-$(_stale_key "${wins[$f]}")"
+      rm -f "$state/.subsuper-pause-absorbed-${keys[$f]}"
+    fi
+  done
+}
+
 # --- housekeeping (runs every tick while the watcher is mid-cycle) ----------
 # Four cheap jobs, each guarded so an empty/quiet fleet costs near zero:
 #  1) batch flush: if the escalation buffer's oldest content is older than
@@ -1016,11 +1077,15 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  2b) pause re-surface: for each declared-wait marker past PAUSE_RESURFACE_SECS,
 #     re-peek; gone -> clear; still declaring the wait, on an idle OR a busy pane
 #     -> escalate a recheck digest naming which human the wait is on, and reset
-#     the window (repeating bounded re-surface, never a wedge).
+#     the window (repeating bounded re-surface, never a wedge). A paused: wait
+#     whose lane fingerprint is unchanged since it was last shown is instead
+#     absorbed and its window reset, until the standing-waits ceiling brings
+#     every such wait back in one batch.
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
   local state=$1 now due f key task win marker age last max_defer oldest pause_secs marker_epoch until bounded_until pause_reason
+  local standing_secs standing_due watcher_key declaration fp_rc
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1099,6 +1164,9 @@ housekeeping() {  # <state>
   # authority, and the loop head above already drops the marker the moment that line
   # stops declaring the wait.
   pause_secs=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+  standing_secs=${FM_STANDING_WAITS_CEILING_SECS:-$FM_STANDING_WAITS_CEILING_SECS_DEFAULT}
+  case "$standing_secs" in ''|*[!0-9]*|0) standing_secs=$FM_STANDING_WAITS_CEILING_SECS_DEFAULT ;; esac
+  standing_due=0
   for marker in "$state"/.subsuper-paused-*; do
     [ -e "$marker" ] || continue
     key="${marker##*.subsuper-paused-}"
@@ -1148,13 +1216,40 @@ housekeeping() {  # <state>
             _now > "$marker"
           fi
         elif [ -n "$last" ] && status_is_paused "$last"; then
+          watcher_key=$(_stale_key "$win")
+          declaration=$(pause_declaration "$state" "$task")
           if [ "$bounded_until" -eq 1 ]; then
             pause_reason="paused ${age}s (awaiting external, the declared time is beyond the recheck cadence; confirm the wait still holds): $win"
           else
             pause_reason="paused ${age}s (awaiting external, recheck whether the wait still holds): $win"
           fi
+          if [ -n "$until" ] && [ "$now" -ge "$until" ]; then
+            # The worker named this moment, so it is delivered without a
+            # fingerprint comparison, and the baseline restarts from it.
+            declared_wait_baseline_record "$state" "$watcher_key" "$task" "$declaration" refresh || true
+          else
+            # The same nothing-changed fingerprint the watcher applies: an
+            # unchanged lane is absorbed and its window reset, until it has
+            # gone the standing-waits ceiling unseen.
+            fp_rc=0
+            declared_wait_compare "$state" "$watcher_key" "$task" "$declaration" || fp_rc=$?
+            if [ "$fp_rc" -eq 0 ] && [ "$(pause_unseen_age "$state" "$win" "$task")" -lt "$standing_secs" ]; then
+              _now > "$marker"
+              : > "$state/.subsuper-pause-absorbed-$key"
+              log "self-handle (paused recheck, fingerprint unchanged): $win"
+              continue
+            elif [ "$fp_rc" -eq 0 ]; then
+              pause_reason="paused ${age}s (awaiting external, standing wait, nothing about it changed since it was last shown; confirm the wait still holds): $win"
+              standing_due=1
+            elif [ "$fp_rc" -eq 1 ]; then
+              pause_reason="paused ${age}s (awaiting external, the lane changed since its wait was last shown (${DECLARED_WAIT_CHANGES:-status}); confirm the wait still holds): $win"
+            fi
+            declared_wait_baseline_record "$state" "$watcher_key" "$task" "$declaration" set "$DECLARED_WAIT_FP" || true
+          fi
           if escalate_add "$state" "$pause_reason"; then
             _now > "$marker"
+            _now > "$state/.recheck-surfaced-$watcher_key"
+            rm -f "$state/.subsuper-pause-absorbed-$key"
             if [ -n "$until" ] && [ "$now" -ge "$until" ]; then
               printf '%s\n' "$until" > "$due"
             fi
@@ -1165,6 +1260,7 @@ housekeeping() {  # <state>
         ;;
     esac
   done
+  standing_waits_digest "$state" "$standing_due" "$standing_secs"
 
   # (3) heartbeat scan (catch-all for a captain-relevant status the per-wake
   #     classifier may have missed). Cheap: status files only, no tmux. It walks
