@@ -1,0 +1,1 @@
+300 runs of fm-quota-choose.sh --candidate claude:default --candidate rovo:default; stderr mismatches (e.g. 'Broken pipe'): 0; sample stderr: error: unknown harness: rovo

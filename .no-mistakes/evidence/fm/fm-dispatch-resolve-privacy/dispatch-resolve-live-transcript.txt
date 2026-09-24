@@ -1,0 +1,227 @@
+Live transcript: real bin/fm-dispatch-resolve.sh (commit 5d05c301) on briefs scaffolded by real bin/fm-brief.sh,
+with {TASK}/{FIRSTMATE_SPEC} filled with private sentinels. Real quota-axi --json snapshot. Real /usr/bin/curl performs the POST;
+a PATH shim only rewrites https://api.typesafe.ai -> http://127.0.0.1:18765, a local capture server that records the exact bytes
+received and replies with a canned Jev-shaped answer (no captain API key exists yet, so the real API was not called).
+Private sentinels checked on the wire: PRIVATE-CAD-SPEC AcmeCorp LatticeBracket LB-7731 export_step_file secret-cad lattice.step private.example.invalid ghp_PRIVATETOKEN owner@ lattice_export Jane Captain
+
+################ S1 key absent: off, no request
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=0
+--- stdout:
+--- stderr:
+dispatch-resolve: off (TYPESAFE_API_KEY absent from the environment and $LAB/home/.env)
+--- curl invocations: 0
+
+################ S2 no-mistakes brief with private detail + generic summary (key in env) -> clear
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: clear
+  model: jev-lab-stub   latency_ms: 14   tokens: 100/9
+  rule: rule_1 (A simple bug fix with a stated root cause.)   confidence: 0.93
+  probabilities: rule_1=0.96 rule_2=0.02 default=0.02
+  sent: kind=ship mode=no-mistakes summary=bounded bug fix with a stated root cause in an existing component
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=62%  spendPriority=-0.1078  runway=projected_exhaustion  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models
+  profile: --harness 'claude' --model 'sonnet' --effort 'high'
+--- stderr:
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"ship","mode":"no-mistakes","summary":"bounded bug fix with a stated root cause in an existing component"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
+################ S3 key only in FM_HOME/.env, direct-push brief
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-dp/brief.md --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: clear
+  model: jev-lab-stub   latency_ms: 12   tokens: 100/9
+  rule: rule_1 (A simple bug fix with a stated root cause.)   confidence: 0.93
+  probabilities: rule_1=0.96 rule_2=0.02 default=0.02
+  sent: kind=ship mode=direct-push summary=bounded bug fix with a stated root cause in an existing component
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=62%  spendPriority=-0.1078  runway=projected_exhaustion  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models
+  profile: --harness 'claude' --model 'sonnet' --effort 'high'
+--- stderr:
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"ship","mode":"direct-push","summary":"bounded bug fix with a stated root cause in an existing component"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
+################ S4 direct-PR brief
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-dpr/brief.md --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: clear
+  model: jev-lab-stub   latency_ms: 12   tokens: 100/9
+  rule: rule_1 (A simple bug fix with a stated root cause.)   confidence: 0.93
+  probabilities: rule_1=0.96 rule_2=0.02 default=0.02
+  sent: kind=ship mode=direct-PR summary=bounded bug fix with a stated root cause in an existing component
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=62%  spendPriority=-0.1078  runway=projected_exhaustion  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models
+  profile: --harness 'claude' --model 'sonnet' --effort 'high'
+--- stderr:
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"ship","mode":"direct-PR","summary":"bounded bug fix with a stated root cause in an existing component"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
+################ S5 local-only brief
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-lo/brief.md --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: clear
+  model: jev-lab-stub   latency_ms: 12   tokens: 100/9
+  rule: rule_1 (A simple bug fix with a stated root cause.)   confidence: 0.93
+  probabilities: rule_1=0.96 rule_2=0.02 default=0.02
+  sent: kind=ship mode=local-only summary=bounded bug fix with a stated root cause in an existing component
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=62%  spendPriority=-0.1078  runway=projected_exhaustion  -> eligible
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models
+  profile: --harness 'claude' --model 'sonnet' --effort 'high'
+--- stderr:
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"ship","mode":"local-only","summary":"bounded bug fix with a stated root cause in an existing component"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
+################ S6 scout brief, Jev picks default
+$ fm-dispatch-resolve.sh $LAB/home/data/scout-1/brief.md --summary difficult\ diagnosis\ across\ components 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: escalate
+  model: jev-lab-stub   latency_ms: 13   tokens: 100/9
+  rule: default (No listed rule applies to this task.)   confidence: 0.9
+  probabilities: rule_1=0.02 rule_2=0.02 default=0.96
+  sent: kind=scout mode=- summary=difficult diagnosis across components
+  reason: no rankable eligible candidate
+  note: no rule matched
+  candidate: claude:opus  provider=claude  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider claude unmeasured (unknown): disclosed uncertainty
+--- stderr:
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"scout","mode":null,"summary":"difficult diagnosis across components"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
+################ S7 adversarial summary stuffed with private tokens
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md --summary Refactor\ export_step_file\ in\ \`lattice.py\`\ for\ owner@private.example.invalid\ at\ https://private.example.invalid/cad\ using\ /home/captain/secret-cad/lattice.step\ and\ ghp_PRIVATETOKEN0123456789abcdefABCDEF 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: escalate
+  model: jev-lab-stub   latency_ms: 12   tokens: 100/9
+  rule: rule_1 (A simple bug fix with a stated root cause.)   confidence: 0.93
+  probabilities: rule_1=0.96 rule_2=0.02 default=0.02
+  sent: kind=ship mode=no-mistakes summary=Refactor [redacted] in [redacted] for [redacted] at [redacted] using [redacted] and [redacted]
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: claude:sonnet  provider=claude  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider claude unmeasured (unknown): disclosed uncertainty
+  candidate: codex:gpt-5.6-sol  provider=codex  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models
+--- stderr:
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"ship","mode":"no-mistakes","summary":"Refactor [redacted] in [redacted] for [redacted] at [redacted] using [redacted] and [redacted]"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
+################ S8 summary entirely private -> escalate, no request
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md --summary \`export_step_file\`\ /home/captain/lattice.step\ owner@x.invalid 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: escalate
+  reason: no dispatch summary to match
+--- stderr:
+--- curl invocations: 0
+
+################ S9 no --summary at all -> escalate, no request
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: escalate
+  reason: no dispatch summary to match
+--- stderr:
+--- curl invocations: 0
+
+################ S10 --project is rejected
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md --project AcmeCorp --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=2
+--- stdout:
+--- stderr:
+error: unknown flag --project
+--- curl invocations: 0
+
+################ S11 API 500 after send -> error with sent: line
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: error
+  sent: kind=ship mode=no-mistakes summary=bounded bug fix with a stated root cause in an existing component
+  reason: http 500 after 12 ms: {"error":"upstream boom"}
+--- stderr:
+dispatch-resolve: error (http 500 after 12 ms: {"error":"upstream boom"})
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"ship","mode":"no-mistakes","summary":"bounded bug fix with a stated root cause in an existing component"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
+################ S12 malformed API answer after send -> error with sent: line
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: error
+  sent: kind=ship mode=no-mistakes summary=bounded bug fix with a stated root cause in an existing component
+  reason: response is not a rule Choice answer
+--- stderr:
+dispatch-resolve: error (response is not a rule Choice answer)
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"ship","mode":"no-mistakes","summary":"bounded bug fix with a stated root cause in an existing component"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
+################ S13 captain-approval rule matched -> escalate
+$ fm-dispatch-resolve.sh $LAB/home/data/ship-nm/brief.md --summary bounded\ bug\ fix\ with\ a\ stated\ root\ cause\ in\ an\ existing\ component 
+--- exit=0
+--- stdout:
+dispatch-resolve:
+  status: escalate
+  model: jev-lab-stub   latency_ms: 14   tokens: 100/9
+  rule: rule_2 (Genuinely very difficult design or planning work.)   confidence: 0.9
+  probabilities: rule_1=0.02 rule_2=0.96 default=0.02
+  sent: kind=ship mode=no-mistakes summary=bounded bug fix with a stated root cause in an existing component
+  reason: rule requires the captain's explicit approval before dispatch
+  candidate: claude:opus  provider=claude  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider claude unmeasured (unknown): disclosed uncertainty
+--- stderr:
+--- curl invocations: 1
+--- API key on curl argv: no
+--- Authorization header received by stand-in: Authorization: Bearer <lab key>
+--- state received by stand-in: {"task":{"kind":"ship","mode":"no-mistakes","summary":"bounded bug fix with a stated root cause in an existing component"}}
+--- top-level keys: ["model","questions","state"]   criteria: {"rule_1":"A simple bug fix with a stated root cause.","rule_2":"Genuinely very difficult design or planning work.","default":"No listed rule applies to this task."}
+--- private sentinels found on the wire: none
+
