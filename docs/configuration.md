@@ -455,10 +455,10 @@ This applies only to agents Firstmate launches; the captain's own primary Firstm
 
 Every claude launch's inline `--settings` JSON also carries `"attribution":{"commit":"","pr":"","sessionUrl":false}`, so a spawned worker never writes a Co-Authored-By trailer, Claude-Session link, or generated-with line into a commit or PR body regardless of which settings scopes end up loaded.
 
-A ship or scout whose worktree lies inside a firstmate home, such as a second mate's project clone with an in-project Treehouse pool, does not load that home's own instruction files.
+A ship or scout whose worktree lies inside the firstmate home that launches it, such as a second mate's project clone with an in-project Treehouse pool, does not load that home's own instruction files.
 Claude and Pi read instruction files from every ancestor directory, so without this such a worker would carry the home's whole supervisor contract in every model request.
 A Claude launch gets a `claudeMdExcludes` list in its inline `--settings` JSON, and a Pi launch's per-task extension removes those files from the system prompt.
-The project's own instruction files still load from the worktree, and a secondmate or a worker whose worktree is outside every home launches unchanged.
+The project's own instruction files still load from the worktree, and a secondmate or a worker whose worktree is outside that home launches unchanged.
 Codex stops its instruction walk at the worktree's git root and needs nothing.
 Cursor Agent CLI and Oh My Pi also walk above the git root but offer no per-path exclusion, so a nested worker on either still loads the home's `AGENTS.md`; keep their worktrees outside every home.
 [`fm-spawn.sh`](../bin/fm-spawn.sh) owns the mechanics, and [runtime backend verification](verification/runtime-backends.md#nested-worktree-instruction-isolation) records the per-harness evidence, including the harnesses not verified.
