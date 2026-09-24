@@ -7,8 +7,9 @@
 # both use this owner without duplicating lint configuration.
 # The explicit --fast mode is local-only and disables ShellCheck's extended
 # dataflow analysis while preserving ordinary shell lint checks and source
-# following. CI (explicit paths included), main, and merge-base-less runs keep
-# --norc --external-sources with full dataflow over the whole canonical set.
+# following. CI, main, and merge-base-less runs keep --norc --external-sources
+# with full dataflow over the whole canonical set; explicit paths in CI get
+# that same full pass over just the given paths.
 #
 # Local split mode. Outside CI, changed-file mode (including the no-mistakes
 # lint step) and explicit paths never run ShellCheck with --external-sources
