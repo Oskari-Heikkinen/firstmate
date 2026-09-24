@@ -6149,6 +6149,129 @@ test_paused_until_that_passed_is_rechecked_before_the_cadence() {
   pass "a declared wait whose until time has passed is rechecked at once, then held to the cadence"
 }
 
+# --- due declared-wait rechecks are delivered together, cache-aware ---------
+# Each recheck used to wake the supervisor on its own the moment it fell due,
+# and a supervisor idle for over an hour rewrote its whole prompt cache for each
+# of those turns. Due rechecks now queue and are delivered as one wake: at once
+# while the supervisor took a turn recently, with any other wake otherwise, and
+# on their own only at FM_STANDING_WAITS_CEILING_SECS.
+
+# One idle second-mate lane under a declared wait whose status line is
+# <status-age> seconds old, stably stale at the shared pane text.
+recheck_lane() {  # <dir> <task> <status-age-secs> [<status-line>]
+  local dir=$1 task=$2 age=$3 line=${4:-paused: holding for the upstream release} state statusf back key
+  state="$dir/state"
+  printf 'idle, waiting' > "$dir/pane.txt"
+  printf 'window=test:fm-%s\nkind=secondmate\n' "$task" > "$state/$task.meta"
+  statusf="$state/$task.status"
+  printf '%s\n' "$line" > "$statusf"
+  back=$(( $(date +%s) - age ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-${task}_status"
+  key="test_fm-$task"
+  printf '%s' "$(hash_text 'idle, waiting')" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+}
+
+# Start a watcher over <windows> (newline-separated) with a 240s recheck
+# cadence; extra VAR=value arguments reach the watcher. Pid in RECHECK_PID.
+recheck_watch() {  # <dir> <windows> [VAR=value]...
+  local dir=$1 windows=$2
+  shift 2
+  env PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOWS="$windows" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available' \
+    FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$dir/watch.out" 2>&1 &
+  RECHECK_PID=$!
+}
+
+queued_stale_rows() {  # <state> <window>
+  awk -F '\t' -v w="$2" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$1/.wake-queue" 2>/dev/null || echo 0
+}
+
+test_codue_declared_rechecks_coalesce_into_one_wake() {
+  local dir state lines
+  dir=$(make_case recheck-coalesce); state="$dir/state"
+  recheck_lane "$dir" a 500
+  recheck_lane "$dir" b 500
+  recheck_watch "$dir" "$(printf 'fm-a\nfm-b')"
+  wait_for_exit "$RECHECK_PID" 100 || fail "two due declared-wait rechecks raised no wake"
+  lines=$(grep -c '^stale: ' "$dir/watch.out")
+  [ "$lines" -eq 1 ] || fail "co-due rechecks printed $lines wake reasons instead of one: $(cat "$dir/watch.out")"
+  grep -F '+1 more declared-wait recheck(s) queued with this wake' "$dir/watch.out" >/dev/null \
+    || fail "the coalesced wake did not say another recheck came with it: $(cat "$dir/watch.out")"
+  [ "$(queued_stale_rows "$state" test:fm-a)" -eq 1 ] || fail "lane a's recheck was not queued exactly once"
+  [ "$(queued_stale_rows "$state" test:fm-b)" -eq 1 ] || fail "lane b's recheck was not queued exactly once"
+  grep -F 'paused 5' "$state/.wake-queue" >/dev/null || fail "the queued recheck lost the wait's age: $(cat "$state/.wake-queue")"
+  pass "declared-wait rechecks that fall due together are delivered as one wake"
+}
+
+test_cold_declared_recheck_rides_along_with_the_next_wake() {
+  local dir state
+  dir=$(make_case recheck-cold); state="$dir/state"
+  recheck_lane "$dir" a 500
+  recheck_lane "$dir" b 500
+  recheck_watch "$dir" "$(printf 'fm-a\nfm-b')" FM_RECHECK_WARM_SECS=0
+  if ! wait_poll_cycle "$state" "$RECHECK_PID" || ! wait_poll_cycle "$state" "$RECHECK_PID"; then
+    reap "$RECHECK_PID"; fail "a cold supervisor was woken for due rechecks alone: $(cat "$dir/watch.out")"
+  fi
+  [ ! -s "$state/.wake-queue" ] || fail "a cold due recheck was queued as a wake on its own"
+  [ -e "$state/.recheck-due-test_fm-a" ] || fail "the cold due recheck for lane a was not held"
+  # Lane b's wait ends; lane c then raises a real wake that the held recheck
+  # for lane a rides along with, while b's no longer applies.
+  printf 'working: resumed after the release\n' >> "$state/b.status"
+  printf '%s' "$(seen_sig "$state/b.status")" > "$state/.seen-b_status"
+  printf 'window=test:fm-c\nkind=ship\n' > "$state/c.meta"
+  printf 'needs-decision: pick a release channel\n' > "$state/c.status"
+  wait_for_exit "$RECHECK_PID" 100 || fail "the real wake never fired"
+  grep -F 'signal: ' "$dir/watch.out" >/dev/null || fail "the watcher did not exit on the real signal: $(cat "$dir/watch.out")"
+  [ "$(queued_stale_rows "$state" test:fm-a)" -eq 1 ] || fail "the held recheck did not ride along with the real wake: $(cat "$state/.wake-queue")"
+  [ "$(queued_stale_rows "$state" test:fm-b)" -eq 0 ] || fail "a recheck for a wait that ended was still delivered"
+  [ ! -e "$state/.recheck-due-test_fm-a" ] || fail "a delivered recheck stayed held"
+  pass "a cold due recheck waits for the next wake and rides along with it, dropping waits that ended"
+}
+
+test_cold_declared_recheck_wakes_at_the_standing_ceiling() {
+  local dir state
+  dir=$(make_case recheck-ceiling); state="$dir/state"
+  recheck_lane "$dir" a 700
+  recheck_watch "$dir" fm-a FM_RECHECK_WARM_SECS=0 FM_STANDING_WAITS_CEILING_SECS=600
+  wait_for_exit "$RECHECK_PID" 100 || fail "a declared wait unseen past the ceiling stayed held"
+  grep -F 'stale: test:fm-a (paused' "$dir/watch.out" >/dev/null || fail "the ceiling wake was not the recheck: $(cat "$dir/watch.out")"
+  [ -e "$state/.recheck-surfaced-test_fm-a" ] || fail "the ceiling delivery was not recorded"
+  pass "a cold due recheck still wakes on its own once the wait reaches the standing-waits ceiling"
+}
+
+test_warm_turn_delivers_a_held_recheck() {
+  local dir state i=0
+  dir=$(make_case recheck-warm); state="$dir/state"
+  # Due twelve seconds after the watcher starts, when its own start no longer
+  # counts as a recent turn.
+  recheck_lane "$dir" a 228
+  recheck_watch "$dir" fm-a FM_RECHECK_WARM_SECS=8
+  while [ ! -e "$state/.recheck-due-test_fm-a" ] && [ "$i" -lt 250 ]; do
+    kill -0 "$RECHECK_PID" 2>/dev/null || break
+    sleep 0.1; i=$((i + 1))
+  done
+  [ -e "$state/.recheck-due-test_fm-a" ] || { reap "$RECHECK_PID"; fail "the recheck was not held while the supervisor was cold: $(cat "$dir/watch.out")"; }
+  : > "$state/.claude-autoarm-epoch"
+  wait_for_exit "$RECHECK_PID" 100 || fail "a turn-end left the held recheck undelivered"
+  grep -F 'stale: test:fm-a (paused' "$dir/watch.out" >/dev/null || fail "the warm delivery was not the recheck: $(cat "$dir/watch.out")"
+  pass "a held recheck is delivered as soon as the supervisor takes a turn"
+}
+
+test_cold_captain_held_recheck_keeps_its_cadence() {
+  local dir state
+  dir=$(make_case recheck-held-cold); state="$dir/state"
+  recheck_lane "$dir" a 500 'captain-held: the captain is choosing the release channel'
+  recheck_watch "$dir" fm-a FM_RECHECK_WARM_SECS=0
+  wait_for_exit "$RECHECK_PID" 100 || fail "a cold captain-held recheck was held back"
+  grep -F 'awaiting the captain' "$dir/watch.out" >/dev/null || fail "the captain-held recheck did not fire: $(cat "$dir/watch.out")"
+  pass "a captain-held recheck is delivered at its cadence even to a cold supervisor"
+}
+
 # CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the bash-3.2
 # churn-deferral regression. The rest of this file is not a 3.2 snapshot suite.
 if [ -n "${FM_TEST_ONLY:-}" ]; then
@@ -6291,3 +6414,8 @@ test_afk_one_shot_never_hands_off_captain_held_under_away_record
 test_paused_until_near_future_is_quiet_before_the_cadence
 test_paused_until_wrong_year_is_bounded_by_the_cadence
 test_paused_until_that_passed_is_rechecked_before_the_cadence
+test_codue_declared_rechecks_coalesce_into_one_wake
+test_cold_declared_recheck_rides_along_with_the_next_wake
+test_cold_declared_recheck_wakes_at_the_standing_ceiling
+test_warm_turn_delivers_a_held_recheck
+test_cold_captain_held_recheck_keeps_its_cadence

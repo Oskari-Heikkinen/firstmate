@@ -108,6 +108,17 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
 
+# The hard ceiling on how long a standing declared wait may go unseen by the
+# supervisor, however the recheck scheduling around it defers it: one
+# day by default. Unseen counts from the later of the wait's last delivered
+# recheck and its latest status line, whose own signal already reached the
+# supervisor. A lane past it is shown again, together with every other standing
+# wait, so a forgotten wait still cannot rot invisibly. bin/fm-watch.sh owns the
+# cold-cache-aware scheduling this bounds; both consumers read
+# FM_STANDING_WAITS_CEILING_SECS with this default.
+# shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
+FM_STANDING_WAITS_CEILING_SECS_DEFAULT=86400
+
 # fm_utc_iso_to_epoch <YYYY-MM-DDTHH:MM[:SS]Z>: the one portable UTC ISO 8601
 # reader shared by the declared-wait vocabulary and the away-posture record
 # (bin/fm-afk-contract.sh). Prints epoch seconds; returns 1 on any other shape
