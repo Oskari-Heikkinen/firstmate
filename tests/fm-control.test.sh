@@ -490,16 +490,20 @@ test_unverified_harness_is_refused() {
 }
 
 test_harness_supported_is_silent_on_early_match() {
-  local h err i
+  local h err
   err=$(
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-      while read -r h; do
-        fm_control_harness_supported "$h" || echo "rejected $h"
-      done < <(fm_control_harnesses)
-      fm_control_harness_supported claude || echo "rejected claude"
-    done 2>&1
+    trap '' PIPE
+    fm_control_harnesses() {
+      printf '%s\n' claude
+      sleep 0.2
+      printf '%s\n' codex opencode
+    }
+    fm_control_harness_supported claude 2>&1 || echo "rejected claude"
   )
-  [ -z "$err" ] || fail "harness lookup should be silent and accept every listed harness, got: $err"
+  [ -z "$err" ] || fail "an early harness match should not leave a writer on a closed pipe, got: $err"
+  for h in $(fm_control_harnesses); do
+    fm_control_harness_supported "$h" || fail "harness lookup rejected listed harness '$h'"
+  done
   for h in '' someagent 'claude codex' 'c*' clau; do
     if fm_control_harness_supported "$h"; then fail "harness lookup accepted '$h'"; fi
   done
