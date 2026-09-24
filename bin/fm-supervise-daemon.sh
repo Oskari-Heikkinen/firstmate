@@ -1154,7 +1154,8 @@ housekeeping() {  # <state>
   # escalated as one - but it MUST re-surface, so neither a forgotten pause nor a
   # forgotten captain hold can rot invisibly. Past the window: gone -> drop; still
   # declaring the wait -> escalate a recheck digest and reset the marker so the window
-  # repeats. The digest names WHICH human the wait is on, because the captain is the
+  # repeats, unless a paused: lane's fingerprint is unchanged, which is absorbed until
+  # the standing-waits ceiling (standing_waits_digest). The digest names WHICH human the wait is on, because the captain is the
   # one reading it: an external dependency for a paused: declaration, and the captain
   # themself for a verified hold transfer.
   # Pane busy state does NOT end the wait. A declared wait can legitimately hold a
