@@ -1,0 +1,18 @@
+== tests/fm-pending-reply.test.sh
+ok - local parent-replies.status remains wrong-home evidence
+ok - an escalated correlation stays retryable only while undelivered
+ok - expect= is persisted, defaults to answer, and only a correlated ack note is routine
+ok - all pending-reply tests passed
+rc=0
+== tests/fm-send-secondmate-marker.test.sh
+ok - fm-send: --expect records the reply kind and is refused where no reply is expected
+ok - fm-send: the marker is '[fm-from-firstmate]' + terminal-safe U+2063, while direct captain text stays unmarked
+ok - fm-marker: from-firstmate transformation is idempotent
+ok - fm-send: marked secondmate payload preserves trailing newline bytes in its record
+rc=0
+== tests/fm-wake-drain-unread-status.test.sh
+ok - routine working and branch-covered done lines print nothing on an empty-queue drain
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+ok - a second mate's working line rides along once in UNREAD STATUS; a crewmate's does not
+rc=0
