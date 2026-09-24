@@ -493,6 +493,7 @@ test_harness_supported_is_silent_on_early_match() {
   local h err
   err=$(
     trap '' PIPE
+    # shellcheck disable=SC2329 # Invoked by fm_control_harness_supported.
     fm_control_harnesses() {
       printf '%s\n' claude
       sleep 0.2
