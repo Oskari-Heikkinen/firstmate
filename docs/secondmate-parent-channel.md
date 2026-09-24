@@ -40,6 +40,24 @@ The pending-reply guard may restate only the correlated line from a local mate's
 Other correlated mate-home status lines remain wrong-home evidence, while a remote home's routed `state/parent-replies.status` is already the parent channel and is not classified as wrong-home.
 A missed-reply escalation includes the complete first sighting path and line number in readable shell-escaped form.
 
+## What wakes the parent
+
+Every captain-relevant line on the channel wakes the parent at once: a PR ready or merged, a decision, a blocker, a failure, a finished investigation, and any line the mate addresses to the captain.
+Three kinds of routine line do not wake the parent, because none of them changes what the parent does next:
+
+- A `working:` progress line.
+  It is presented once, with the other unread status, at the parent's next real wake.
+  A correlated one still resolves its request exactly as before, and the pending-reply recovery and escalation still bound a request that gets no reply at all.
+- A correlated `note:` acknowledgement of a request the parent sent with `bin/fm-send.sh --expect ack`.
+  It is also presented at the next real wake.
+  A request sent without `--expect`, or with `--expect answer`, still wakes on its reply, and a `done:`, decision, blocker, or failure reply always wakes whatever was expected.
+- A repeated script-published `done:` outcome that states the same PR-ready or merge fact as the nearest earlier outcome line, for example the PR-ready line at registration after the ledger line for the same child and PR.
+  Any other event in between, such as a failure, a note, or progress, makes the repeat wake again, because the outcome may carry news.
+
+A span that mixes any of these with anything else wakes the parent, so an uncorrelated `note:` is never absorbed.
+`bin/fm-classify-lib.sh` owns which lines are routine and which outcome lines repeat, `bin/fm-pending-reply-lib.sh` owns what an acknowledgement is, and `bin/fm-watch.sh` applies both on every poll.
+The rule reads only the parent's own status log and pending-reply records, so it is identical for every harness and runtime backend.
+
 ## What is deliberately not built
 
 - No mirror of the mate's chat: chat can mix outcomes with other conversation, so choosing which sentence is an outcome would itself be model behavior, and every harness exposes turn text differently.
@@ -55,6 +73,8 @@ A missed-reply escalation includes the complete first sighting path and line num
 `tests/fm-teardown.test.sh` covers teardown delivering a child's final line and refusing when the channel cannot be written.
 `tests/fm-brief.test.sh` pins the charter's channel rule.
 `tests/fm-pending-reply.test.sh` covers helper-selected local routing, remote-channel classification, same-basename restatement before false escalation, readable wrong-home diagnostics, and the rule that arbitrary mate-home sightings never acknowledge a reply.
+`tests/fm-watch-triage.test.sh` covers the routine lines above against a real watcher: an absorbed `working:` line that rides along at the next wake, an absorbed acknowledgement, the answer, `done:`, and mixed spans that still wake, and a repeated outcome absorbed only when nothing intervened.
+`tests/fm-pending-reply.test.sh` and `tests/fm-send-secondmate-marker.test.sh` cover the recorded acknowledgement kind, and `tests/fm-wake-drain-unread-status.test.sh` covers the ride-along presentation.
 
 ## Live verification
 

@@ -17,6 +17,8 @@
 #   4. The --key path never carries the marker and never enqueues a record.
 #   5. Direct captain text stays unmarked, and already-marked text is idempotent.
 #   6. The marker is the label plus terminal-safe U+2063 INVISIBLE SEPARATOR.
+#   7. --expect records the reply kind on the expectation and is refused for a
+#      crewmate, an invalid kind, --fire-and-forget, and --key.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -200,6 +202,44 @@ test_explicit_window_is_not_marked() {
   pass "fm-send: explicit endpoints stay unmarked with or without local metadata"
 }
 
+test_expect_kind_is_recorded_and_refused_where_no_reply_is_expected() {
+  local dir fb log home rc got corr rec
+  dir="$TMP_ROOT/expect"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home expect)
+  fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+  fm_write_meta "$home/state/build.meta" \
+    "window=sess:fm-build" "worktree=$home/wt" "project=$home/p" \
+    "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-pending-reply-lib.sh"
+
+  run_send "$fb" "$home" "$log" "domain" --expect ack "standing note: prefer small PRs"; rc=$?
+  expect_code 0 "$rc" "an ack-typed secondmate send should succeed"
+  got=$(record_body "$home/state/domain.inbox/001.msg")
+  corr=$(fm_pending_reply_extract_corr "$got")
+  rec=$(fm_pending_reply_path "$home/state" "$corr")
+  [ "$(fm_pending_reply_get "$rec" expect)" = ack ] \
+    || fail "--expect ack was not recorded on the pending-reply expectation"
+  run_send "$fb" "$home" "$log" "domain" "what did the audit find"; rc=$?
+  expect_code 0 "$rc" "a default secondmate send should succeed"
+  corr=$(fm_pending_reply_extract_corr "$(record_body "$home/state/domain.inbox/002.msg")")
+  [ "$(fm_pending_reply_get "$(fm_pending_reply_path "$home/state" "$corr")" expect)" = answer ] \
+    || fail "a send without --expect did not record an answer expectation"
+
+  run_send "$fb" "$home" "$log" "build" --expect ack "fix the test"; rc=$?
+  [ "$rc" -ne 0 ] || fail "--expect was accepted for a crewmate target, which carries no reply expectation"
+  [ ! -d "$home/state/build.inbox" ] || fail "a refused --expect still enqueued a crewmate steer"
+  run_send "$fb" "$home" "$log" "domain" --expect maybe "bad kind"; rc=$?
+  [ "$rc" -ne 0 ] || fail "an invalid --expect kind was accepted"
+  run_send "$fb" "$home" "$log" "domain" --fire-and-forget fyi-1 --expect ack "fyi"; rc=$?
+  [ "$rc" -ne 0 ] || fail "--expect was accepted together with --fire-and-forget"
+  run_send "$fb" "$home" "$log" "domain" --expect ack --key Escape; rc=$?
+  [ "$rc" -ne 0 ] || fail "--expect was accepted together with --key"
+  [ ! -e "$home/state/domain.inbox/003.msg" ] || fail "a refused --expect still enqueued a secondmate steer"
+  pass "fm-send: --expect records the reply kind and is refused where no reply is expected"
+}
+
 test_key_path_is_not_marked() {
   local dir fb log home rc
   dir="$TMP_ROOT/key"; mkdir -p "$dir"
@@ -273,6 +313,7 @@ test_exact_secondmate_task_id_is_marked
 test_crewmate_target_is_not_marked
 test_explicit_window_is_not_marked
 test_key_path_is_not_marked
+test_expect_kind_is_recorded_and_refused_where_no_reply_is_expected
 test_marker_is_label_plus_invisible_separator
 test_marker_transformation_is_idempotent
 test_marked_send_preserves_trailing_newlines

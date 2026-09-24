@@ -1582,7 +1582,7 @@ EOF
 }
 
 status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe
+  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe kind
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
@@ -1591,6 +1591,7 @@ $fully_presented
 " in *$'\n'"$task"$'\n'*) safe=true ;; esac
     if [ "$safe" = false ]; then
       f="$state/$task.status"
+      kind=$(_fm_status_kind "$f")
       offset=$(status_presentation_cursor_offset "$f") || return 1
       lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
       # Once any informational line in this span is presented fleet-wide, the
@@ -1601,7 +1602,7 @@ $fully_presented
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
           *[![:space:]]*)
-            if status_line_is_unread_surface "$line"; then safe=true; break; fi
+            if status_line_is_unread_surface "$line" "$kind"; then safe=true; break; fi
             ;;
         esac
       done <<EOF
@@ -1790,13 +1791,19 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
 }
 
 # 0 when a status line is an informational `note:` or a reserved-key
-# pending-reply resolution. Those lines never fold into OPEN DECISIONS, so the
-# drain's unread-status surface is their only guaranteed presentation.
-status_line_is_unread_surface() {  # <status-line>
-  local line=$1 verb key note resolve held prefix
+# pending-reply resolution, or, on a secondmate's parent channel (<kind>
+# secondmate), a `working:` progress line. Those lines never fold into OPEN
+# DECISIONS, so the drain's unread-status surface is their only guaranteed
+# presentation. A secondmate's `working:` line is included because the watcher
+# absorbs it without a wake (status_span_secondmate_routine below), so this
+# ride-along at the next real drain is where the parent reads it; a crewmate's
+# `working:` line is not, because its own wake annotation already carries it.
+status_line_is_unread_surface() {  # <status-line> [<kind>]
+  local line=$1 kind=${2:-} verb key note resolve held prefix
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
   [ "$verb" = note ] && return 0
+  [ "$verb" = working ] && [ "$kind" = secondmate ] && return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   case "$verb" in
@@ -1817,19 +1824,21 @@ status_line_is_unread_surface() {  # <status-line>
 }
 
 # Fleet-wide unread informational lines: one "<task>\t<status-line>" row per
-# still-unread `note:` or pending-reply resolution, in glob (task id) order.
+# still-unread line status_line_is_unread_surface admits for that task's kind,
+# in glob (task id) order.
 # Prints nothing when none are unread. Directory scan rejects status symlinks
 # the same way scan_open_decisions does.
 scan_unread_surface_lines() {  # <state>
-  local state=$1 f task lines line
+  local state=$1 f task lines line kind
   for f in "$state"/*.status; do
     [ -e "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
     lines=$(status_new_lines_since_cursor "$f") || return 1
     [ -n "$lines" ] || continue
+    kind=$(_fm_status_kind "$f")
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      status_line_is_unread_surface "$line" || continue
+      status_line_is_unread_surface "$line" "$kind" || continue
       printf '%s\t%s\n' "$task" "$line"
     done <<EOF
 $lines
@@ -1839,15 +1848,16 @@ EOF
 }
 
 scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f lines line
+  local state=$1 snapshot=$2 task endpoint ident f lines line kind
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
     lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
     [ -n "$lines" ] || continue
+    kind=$(_fm_status_kind "$f")
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      status_line_is_unread_surface "$line" || continue
+      status_line_is_unread_surface "$line" "$kind" || continue
       printf '%s\t%s\n' "$task" "$line"
     done <<EOF
 $lines
@@ -2123,6 +2133,173 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
   printf '%s' "$origins"
 }
 
+# --- secondmate parent-channel routine lines and duplicate outcomes -----------
+#
+# A secondmate's parent status file is its routed-reply channel, so the parent
+# watcher treats every append there as content to read. This section is the one
+# owner of the two narrow exceptions, and docs/secondmate-parent-channel.md
+# records why each is safe. Both are evidence-driven: anything they do not
+# positively recognize keeps waking the parent exactly as before.
+#
+# 1. Routine lines. status_span_secondmate_routine returns 0 when every
+#    non-blank line in [<start>, <end>) of <status-file> is either
+#      - a `working:` line: progress that carries no content the parent must
+#        act on; a correlated one still resolves its pending-reply record
+#        exactly as before, and bin/fm-pending-reply-lib.sh's recovery and
+#        escalation ladder still bounds a request that gets no reply; or
+#      - a `note:` line that <note-predicate> accepts, which the watcher binds
+#        to fm_pending_reply_line_acks: a correlated acknowledgement of a
+#        request the parent sent expecting only an acknowledgement
+#        (bin/fm-send.sh --expect ack); or
+#      - a repeated script-published `done:` outcome (2. below), which the
+#        span classifier already set aside as not captain-relevant.
+#    Any other verb, continuation prose, and a span that cannot be read under
+#    the same file identity <ident> return 1. An absorbed progress line or
+#    acknowledgement is still presented once, riding along at the next real
+#    drain through status_line_is_unread_surface's UNREAD STATUS rows; a
+#    repeated outcome was already presented with its first copy.
+status_span_secondmate_routine() {  # <status-file> <start> <end> <ident> <note-predicate> [<predicate-args>...]
+  local f=$1 start=$2 end=$3 ident=$4 predicate=$5 cur_ident chunk_file rc
+  shift 5
+  case "$start" in ''|*[!0-9]*) return 1 ;; esac
+  case "$end" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$start" -lt "$end" ] || return 1
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || return 1
+  [ -n "$ident" ] && [ "$cur_ident" = "$ident" ] || return 1
+  chunk_file="$(_fm_status_span_scratch "$f").routine"
+  _fm_status_read_span "$f" "$start" "$((end - start))" > "$chunk_file" 2>/dev/null \
+    || { rm -f "$chunk_file"; return 1; }
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || { rm -f "$chunk_file"; return 1; }
+  [ "$cur_ident" = "$ident" ] || { rm -f "$chunk_file"; return 1; }
+  rc=0
+  _fm_status_secondmate_routine_chunk "$f" "$start" "$chunk_file" "$predicate" "$@" || rc=1
+  rm -f "$chunk_file"
+  return "$rc"
+}
+
+_fm_status_secondmate_routine_chunk() {  # <status-file> <start> <chunk-file> <note-predicate> [<predicate-args>...]
+  local f=$1 start=$2 chunk_file=$3 predicate=$4 line verb number=0 any=0
+  shift 4
+  # shellcheck disable=SC2094 # The loop and the duplicate check below only read the span scratch.
+  while IFS= read -r line || [ -n "$line" ]; do
+    number=$((number + 1))
+    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    case "$line" in *:*) status_line_verb "$line" verb ;; *) return 1 ;; esac
+    case "$verb" in
+      working) ;;
+      note) "$predicate" "$@" "$line" || return 1 ;;
+      "done") _fm_status_secondmate_duplicate_done "$f" "$start" "$chunk_file" "$number" "$line" || return 1 ;;
+      *) return 1 ;;
+    esac
+    any=1
+  done < "$chunk_file"
+  [ "$any" -eq 1 ]
+}
+
+# 2. Duplicate outcomes. A secondmate home's scripts publish a child's delivered
+#    outcome on the parent channel, and two of them can state the same fact:
+#    bin/fm-pr-check.sh's PR-ready line at registration and
+#    bin/fm-inactive-reconcile.sh's ledger line for that child's ready `done:`
+#    arrive in either order. The first copy wakes the parent; a later copy adds
+#    nothing. status_done_identity names the fact a `done:` line states, for
+#    the exact shapes this fleet's own writers produce and nothing else:
+#      ready <url>   done [key=child-pr-<id>]: child <id> PR ready: <url> ...
+#                    done [key=child-outcome-<id>-done-<fp>]: child <id> done: ... pr=<url> ...
+#                    done: PR <url>[ checks green]   (a worker-shaped ready signal)
+#      merged <url>  done [key=merged-<id>]: merged <id> <url>[ <authority>]
+#    Prints the identity (or assigns it to <out-var>) and returns 0; returns 1
+#    for every other line, including any mate-written prose about a PR.
+status_done_identity() {  # <status-line> [<out-var>]
+  local line=$1 verb key note id _fm_done_fact='' re
+  status_line_verb "$line" verb
+  [ "$verb" = "done" ] || return 1
+  note=$(status_line_note "$line")
+  key=''
+  if _fm_key_before_colon "$line"; then
+    key=$(_fm_decision_key "$line") || return 1
+  fi
+  case "$key" in
+    child-pr-*)
+      id=${key#child-pr-}
+      re='^child ([^[:space:]]+) PR ready: (https?://[^[:space:]]+)( |$)'
+      [[ $note =~ $re ]] && [ "${BASH_REMATCH[1]}" = "$id" ] || return 1
+      _fm_done_fact="ready ${BASH_REMATCH[2]}"
+      ;;
+    child-outcome-*-done-????????)
+      id=${key#child-outcome-}
+      id=${id%-done-????????}
+      re='^child ([^[:space:]]+) done: '
+      [[ $note =~ $re ]] && [ "${BASH_REMATCH[1]}" = "$id" ] || return 1
+      # The publisher appends pr= after the child's own note, so the last
+      # occurrence is the recorded one.
+      re='.* pr=(https?://[^[:space:]]+)( |$)'
+      [[ " $note" =~ $re ]] || return 1
+      _fm_done_fact="ready ${BASH_REMATCH[1]}"
+      ;;
+    merged-*)
+      id=${key#merged-}
+      re='^merged ([^[:space:]]+) (https?://[^[:space:]]+)( [a-z-]+)?$'
+      [[ $note =~ $re ]] && [ "${BASH_REMATCH[1]}" = "$id" ] || return 1
+      _fm_done_fact="merged ${BASH_REMATCH[2]}"
+      ;;
+    '')
+      re='^PR (https?://[^[:space:]]+)( checks green)?$'
+      [[ $note =~ $re ]] || return 1
+      _fm_done_fact="ready ${BASH_REMATCH[1]}"
+      ;;
+    *) return 1 ;;
+  esac
+  if [ "$#" -gt 1 ]; then printf -v "$2" '%s' "$_fm_done_fact"; else printf '%s' "$_fm_done_fact"; fi
+}
+
+# 0 when <line>, the <line-number>th line of the span captured in <chunk-file>
+# from <start-offset> of a secondmate's <status-file>, is a script-published
+# `done:` (a keyed shape above) whose identity the parent was already woken
+# for. The log itself is the record of that: walking back from the line, the
+# nearest earlier event must be a `done:` with the same identity, stepping
+# over only blank lines, prose, and other `done:` lines (a mate's commentary on
+# a delivered outcome, or another child's outcome on the same channel). Any
+# other event in between - a failure, blocker, decision, note, progress,
+# resolution, or declared wait - means the outcome may carry news again, so
+# the line wakes. The earlier copy was itself actionable when classified,
+# because classification only ever advances past bytes it has decided.
+_fm_status_secondmate_duplicate_done() {  # <status-file> <start-offset> <chunk-file> <line-number> <line>
+  local f=$1 start=$2 chunk=$3 number=$4 line=$5 fact earlier prior verb i
+  local -a history=()
+  _fm_key_before_colon "$line" || return 1
+  status_done_identity "$line" fact || return 1
+  [ "$(_fm_status_kind "$f")" = secondmate ] || return 1
+  if [ "$start" -gt 0 ]; then
+    while IFS= read -r earlier || [ -n "$earlier" ]; do
+      history+=("$earlier")
+    done < <(_fm_status_read_span "$f" 0 "$start" 2>/dev/null)
+  fi
+  if [ "$number" -gt 1 ]; then
+    while IFS= read -r earlier || [ -n "$earlier" ]; do
+      history+=("$earlier")
+    done < <(sed -n "1,$((number - 1))p" "$chunk" 2>/dev/null)
+  fi
+  for ((i = ${#history[@]} - 1; i >= 0; i--)); do
+    earlier=${history[$i]}
+    case "$earlier" in *[![:space:]]*) ;; *) continue ;; esac
+    case "$earlier" in *:*) status_line_verb "$earlier" verb ;; *) continue ;; esac
+    if [ "$verb" = "done" ]; then
+      status_done_identity "$earlier" prior || continue
+      [ "$prior" = "$fact" ] && return 0
+      continue
+    fi
+    case "$verb" in
+      working|needs-decision|blocked|failed|note|\
+      "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}"|\
+      "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"|\
+      "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}") return 1 ;;
+    esac
+    status_is_captain_relevant "$earlier" && return 1
+  done
+  return 1
+}
+
 status_span_first_actionable_record() {  # <status-file> <start-offset> [record-var] [needs-decision-var]
   local f=$1 start=${2:-0} output_var=${3-} needs_var=${4-} size ident cur_ident scratch chunk_file result
   local line verb key origins='' folded=0 rc=1 failed=0 line_number=0 live_line='' events='' _line _key _fm_span_needs_decision=0
@@ -2201,6 +2378,11 @@ EOF
         rc=0
         ;;
       *)
+        # A secondmate's repeated script-published outcome (section above).
+        if [ "$verb" = "done" ] \
+          && _fm_status_secondmate_duplicate_done "$f" "$start" "$chunk_file" "$line_number" "$line"; then
+          continue
+        fi
         [ -n "$events" ] && events="${events} ; "
         events="${events}${line}"
         rc=0

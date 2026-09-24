@@ -441,6 +441,33 @@ test_routine_working_and_covered_done_stay_silent_on_the_empty_queue() {
   pass "routine working and branch-covered done lines print nothing on an empty-queue drain"
 }
 
+test_secondmate_working_line_rides_along_once() {
+  local dir state out
+  dir=$(make_case mate-working)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'kind=secondmate\n' > "$state/mate.meta"
+  prime_cursor "$state" "$state/mate.status"
+  prime_cursor "$state" "$state/crew.status"
+
+  # The watcher absorbs a second mate's progress line, so the next drain is
+  # where main reads it; a crewmate's progress line stays silent as before.
+  printf 'working: auditing the release notes\n' >> "$state/mate.status"
+  printf 'working: compiling step 2\n' >> "$state/crew.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain over routine working lines failed"
+  grep -F 'mate working: auditing the release notes' "$out" >/dev/null \
+    || fail "a second mate's absorbed working line was not surfaced: $(cat "$out")"
+  if grep -F 'compiling step 2' "$out" >/dev/null; then
+    fail "a crewmate's routine working line was surfaced: $(cat "$out")"
+  fi
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "second drain failed"
+  if grep -F 'auditing the release notes' "$out" >/dev/null; then
+    fail "an already-presented second-mate working line was replayed: $(cat "$out")"
+  fi
+  pass "a second mate's working line rides along once in UNREAD STATUS; a crewmate's does not"
+}
+
 test_incident_note_answer_buried_under_routine_note_surfaces_both
 test_already_presented_notes_are_not_replayed
 test_brand_new_note_after_presentation_is_surfaced
@@ -455,3 +482,4 @@ test_snapshot_failure_is_visible
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
 test_routine_working_and_covered_done_stay_silent_on_the_empty_queue
+test_secondmate_working_line_rides_along_once

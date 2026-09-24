@@ -32,6 +32,16 @@
 #   parent_status=          absolute path of parent state/<task_id>.status
 #   parent_status_scan_signature=
 #   request_summary=        short sanitized summary (no secrets by design)
+#   expect=                 answer | ack - what the parent needs back, chosen at
+#                           send time (bin/fm-send.sh --expect). answer (the
+#                           default, and what a record without the field means)
+#                           expects content the parent must read, so the
+#                           correlated reply wakes it. ack expects only
+#                           confirmation that the request was taken up, so a
+#                           correlated note: reply is routine
+#                           (fm_pending_reply_line_acks). The kind never changes
+#                           what resolves the record or the recovery and
+#                           escalation ladder below.
 #   created_epoch=          when the expectation was created
 #   delivered_epoch=        when the marked request was confirmed delivered
 #                           (empty until delivery; delivery never resolves)
@@ -291,12 +301,29 @@ fm_pending_reply_embed_corr() {  # <message> <corr_id> <result-var>
   printf -v "$result_var" '%s' "${FM_FROMFIRST_MARK}${token} ${body}"
 }
 
+# 0 when <kind> is a valid expectation kind for the expect= field above.
+fm_pending_reply_expect_valid() {  # <kind>
+  case "${1-}" in answer|ack) return 0 ;; esac
+  return 1
+}
+
+# The expectation kind a record carries; a record without the field (every
+# record written before the field existed) expects an answer.
+fm_pending_reply_expect_of() {  # <record-path>
+  local kind
+  kind=$(fm_pending_reply_get "$1" expect)
+  fm_pending_reply_expect_valid "$kind" || kind=answer
+  printf '%s' "$kind"
+}
+
 # Create a durable pending-reply expectation. Prints corr_id on success.
 # Does not deliver anything. Fails if parent paths cannot be prepared.
-fm_pending_reply_create() {  # <parent-home> <state-dir> <task_id> <request-text>
-  local parent_home=$1 state=$2 task_id=$3 request_text=$4
+# <expect> is the expect= kind above and defaults to answer.
+fm_pending_reply_create() {  # <parent-home> <state-dir> <task_id> <request-text> [<expect>]
+  local parent_home=$1 state=$2 task_id=$3 request_text=$4 expect=${5:-answer}
   local dir rec corr now summary status_path tmp
   [ -n "$parent_home" ] && [ -n "$state" ] && [ -n "$task_id" ] || return 2
+  fm_pending_reply_expect_valid "$expect" || return 2
   dir=$(fm_pending_reply_dir "$state")
   mkdir -p "$dir" || return 1
   chmod 700 "$dir" 2>/dev/null || true
@@ -330,6 +357,7 @@ parent_home=$parent_home
 parent_status=$status_path
 parent_status_scan_signature=
 request_summary=$summary
+expect=$expect
 created_epoch=$now
 delivered_epoch=
 phase=awaiting_report
@@ -574,6 +602,27 @@ fm_pending_reply_line_resolves() {  # <line> <corr_id>
     *pending-reply-missed*) return 1 ;;
   esac
   fm_pending_reply_text_has_corr "$line" "$corr"
+}
+
+# 0 when <line> on <task_id>'s parent channel is a routine acknowledgement: a
+# note: line whose correlation token names this home's expectation for that
+# same task, recorded with expect=ack. Any other verb, an uncorrelated or
+# foreign correlation, and an answer expectation return 1, so the line keeps
+# waking the parent. This is the note predicate the watcher hands to
+# bin/fm-classify-lib.sh's status_span_secondmate_routine, which owns which
+# secondmate lines are routine; this library owns only what an expectation says.
+fm_pending_reply_line_acks() {  # <state-dir> <task_id> <line>
+  local state=$1 task_id=$2 line=$3 verb corr rec
+  [ -n "$task_id" ] && [ -n "$line" ] || return 1
+  status_line_verb "$line" verb
+  [ "$verb" = note ] || return 1
+  corr=$(fm_pending_reply_extract_corr "$line")
+  [ -n "$corr" ] || return 1
+  fm_pending_reply_line_resolves "$line" "$corr" || return 1
+  rec=$(fm_pending_reply_path "$state" "$corr")
+  [ -f "$rec" ] && [ ! -L "$rec" ] || return 1
+  [ "$(fm_pending_reply_get "$rec" task_id)" = "$task_id" ] || return 1
+  [ "$(fm_pending_reply_expect_of "$rec")" = ack ]
 }
 
 # Scan a status file for a correlated resolve. Prints the matching line or empty.

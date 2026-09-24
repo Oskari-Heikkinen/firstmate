@@ -394,8 +394,10 @@ EOF
   fi
 }
 
-# Print still-unread informational status lines (note: answers and pending-reply
-# resolutions) that the OPEN DECISIONS fold never carries. Uses the same
+# Print still-unread informational status lines (note: answers, pending-reply
+# resolutions, and a second mate's watcher-absorbed working: lines, as
+# bin/fm-classify-lib.sh's status_line_is_unread_surface admits them) that the
+# OPEN DECISIONS fold never carries. Uses the same
 # cursor-backed unread span as the annotation path, and runs on every drain -
 # including the empty-queue fast path - so a buried answer cannot be swallowed
 # when the fold later advances the cursor. Prints nothing when nothing is

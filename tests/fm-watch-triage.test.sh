@@ -1535,9 +1535,11 @@ test_secondmate_status_note_surfaced_despite_busy_agent() {
   dir=$(make_case secondmate-note-surfaced); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
   printf 'kind=secondmate\n' > "$state/mate.meta"
-  printf 'working: routed reply landed in the parent stream\n' > "$state/mate.status"
+  printf 'note: routed reply landed in the parent stream\n' > "$state/mate.status"
   # Busy evidence that would absorb an ordinary crewmate's no-verb note must
   # not absorb a secondmate's: its status stream is the routed-reply channel.
+  # Only a mate's routine lines (working:, a typed acknowledgement) are set
+  # aside, never an uncorrelated note.
   export FM_FAKE_CREW_STATE='state: working · source: run-step · running'
   FM_CONFIG_OVERRIDE="$(churn_config "$dir")" watch_bg "$state" "$fakebin" "$out"
   pid=$!
@@ -1548,6 +1550,157 @@ test_secondmate_status_note_surfaced_despite_busy_agent() {
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/mate.status" >/dev/null \
     || fail "surfaced secondmate note was not queued"
   pass "a secondmate's status note surfaces even while its own agent is busy"
+}
+
+# --- secondmate routine lines (docs/secondmate-parent-channel.md) -----------
+
+# A mate case whose status log already holds <primed> as seen, with <appended>
+# written after it: the new span the watcher classifies on its first poll.
+mate_routine_case() {  # <name> <primed> <appended> -> dir
+  local dir state
+  dir=$(make_case "$1"); state="$dir/state"
+  printf 'kind=secondmate\n' > "$state/mate.meta"
+  if [ -n "$2" ]; then printf '%s\n' "$2" > "$state/mate.status"; else : > "$state/mate.status"; fi
+  prime_status_seen "$state" "$state/mate.status" || fail "could not prime the $1 baseline"
+  printf '%s\n' "$3" >> "$state/mate.status"
+  printf '%s\n' "$dir"
+}
+
+# Create a pending-reply expectation of <expect> kind for task mate; prints corr.
+mate_expectation() {  # <dir> <expect>
+  bash -c '. "$1"; fm_pending_reply_create "$2" "$2/state" mate "routed request" "$3"' \
+    _ "$ROOT/bin/fm-pending-reply-lib.sh" "$1" "$2"
+}
+
+mate_status_seen_size() {  # <state>
+  FM_STATE_OVERRIDE="$1" bash -c '. "$1"; fm_wake_signal_seen_size "$2" "$3"' \
+    _ "$ROOT/bin/fm-wake-lib.sh" "$1" "$1/mate.status"
+}
+
+# The watcher absorbs <dir>'s mate span: no exit, no queued wake, and the
+# classified position advanced past it.
+assert_mate_span_absorbed() {  # <dir> <what>
+  local dir=$1 what=$2 state out pid
+  state="$dir/state"; out="$dir/watch.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle worker'
+  watch_bg "$state" "$dir/fakebin" "$out"
+  pid=$!
+  wait_for_absorbed "$state" "$pid" 'absorbed benign' \
+    || fail "$what woke the parent: $(cat "$out")"
+  reap "$pid"
+  [ ! -s "$out" ] || fail "$what printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "$what enqueued a durable wake"
+  [ "$(mate_status_seen_size "$state")" = "$(size_of "$state/mate.status")" ] \
+    || fail "$what did not advance the classified position"
+  unset FM_FAKE_CREW_STATE
+}
+
+# The watcher surfaces <dir>'s mate span even though the mate reads busy.
+assert_mate_span_wakes() {  # <dir> <what>
+  local dir=$1 what=$2 state out pid
+  state="$dir/state"; out="$dir/watch.out"
+  export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  watch_bg "$state" "$dir/fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "$what was absorbed instead of waking the parent"
+  grep -F "signal: $state/mate.status" "$out" >/dev/null \
+    || fail "$what did not surface as a signal: $(cat "$out")"
+  grep -F "$state/mate.status" "$state/.wake-queue" >/dev/null \
+    || fail "$what was not durably queued"
+  unset FM_FAKE_CREW_STATE
+}
+
+test_status_done_identity_classifier() {
+  local url=https://github.com/o/r/pull/7 got
+  got=$(status_done_identity "done [key=child-pr-kid]: child kid PR ready: $url mode=no-mistakes yolo=off")
+  [ "$got" = "ready $url" ] || fail "child PR-ready identity was '$got'"
+  got=$(status_done_identity "done [key=child-outcome-kid-done-0123abcd]: child kid done: shipped pr=$url mode=no-mistakes yolo=off report=")
+  [ "$got" = "ready $url" ] || fail "child outcome identity was '$got'"
+  got=$(status_done_identity "done [key=merged-kid]: merged kid $url")
+  [ "$got" = "merged $url" ] || fail "merge outcome identity was '$got'"
+  got=$(status_done_identity "done: PR $url checks green")
+  [ "$got" = "ready $url" ] || fail "unkeyed PR-ready identity was '$got'"
+  status_done_identity "done [key=child-pr-kid]: child other PR ready: $url" >/dev/null \
+    && fail "a PR-ready line naming another child had an identity"
+  status_done_identity "done: finished the audit, see report" >/dev/null \
+    && fail "a prose done line had an identity"
+  status_done_identity "done [key=child-outcome-kid-done-0123abcd]: child kid done: scout report ready report=/x/report.md" >/dev/null \
+    && fail "a scout outcome without a PR had an identity"
+  pass "only script-published PR-ready and merged done lines carry a dedupe identity"
+}
+
+test_secondmate_working_line_absorbed_and_presented() {
+  local dir state drain_out
+  dir=$(mate_routine_case mate-working-absorbed 'note: bootstrap' 'working: auditing the release notes')
+  state="$dir/state"; drain_out="$dir/drain.out"
+  assert_mate_span_absorbed "$dir" "a second mate's working line"
+  printf 'needs-decision: pick A or B\n' > "$state/other.status"
+  append_wake "$state" signal other.status "signal: $state/other.status" \
+    || fail "queueing the next real wake failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "the next drain failed"
+  grep -F 'mate working: auditing the release notes' "$drain_out" >/dev/null \
+    || fail "the absorbed working line did not ride along at the next wake: $(cat "$drain_out")"
+  pass "a second mate's working line is absorbed and rides along at the next real wake"
+}
+
+test_secondmate_ack_absorbed_answer_wakes() {
+  local dir corr
+  dir=$(make_case mate-ack-absorbed)
+  corr=$(mate_expectation "$dir" ack) || fail "could not create the ack expectation"
+  dir=$(mate_routine_case mate-ack-absorbed 'note: bootstrap' "note [corr=$corr]: taken up, will follow the standing note")
+  assert_mate_span_absorbed "$dir" "an acknowledgement of an ack-typed request"
+
+  dir=$(make_case mate-ack-done)
+  corr=$(mate_expectation "$dir" ack) || fail "could not create the ack expectation"
+  dir=$(mate_routine_case mate-ack-done 'note: bootstrap' "done [corr=$corr]: finished it")
+  assert_mate_span_wakes "$dir" "a done reply to an ack-typed request"
+
+  dir=$(make_case mate-answer-wakes)
+  corr=$(mate_expectation "$dir" answer) || fail "could not create the answer expectation"
+  dir=$(mate_routine_case mate-answer-wakes 'note: bootstrap' "note [corr=$corr]: the ledger is clean")
+  assert_mate_span_wakes "$dir" "a reply to an answer-typed request"
+
+  dir=$(mate_routine_case mate-mixed-wakes 'note: bootstrap' $'working: still on it\nnote: the vendor changed their API')
+  assert_mate_span_wakes "$dir" "a working line followed by an uncorrelated note"
+  pass "an ack-typed acknowledgement is absorbed; answers, done replies, and mixed spans wake"
+}
+
+test_secondmate_duplicate_done_absorbed_only_when_adjacent() {
+  local url=https://github.com/o/r/pull/7 outcome ready merged dir
+  outcome="done [key=child-outcome-kid-done-0123abcd]: child kid done: shipped pr=$url mode=no-mistakes yolo=off report="
+  ready="done [key=child-pr-kid]: child kid PR ready: $url mode=no-mistakes yolo=off"
+  merged="done [key=merged-kid]: merged kid $url"
+
+  dir=$(mate_routine_case mate-dup-ready "$outcome" "$ready")
+  assert_mate_span_absorbed "$dir" "a repeated PR-ready line for the same PR"
+  dir=$(mate_routine_case mate-dup-merged "$merged" "$merged")
+  assert_mate_span_absorbed "$dir" "a repeated merge line for the same PR"
+
+  dir=$(mate_routine_case mate-dup-after-failure "$outcome"$'\nfailed: CI broke on main' "$ready")
+  assert_mate_span_wakes "$dir" "a PR-ready line after an intervening failure"
+  dir=$(mate_routine_case mate-dup-after-note "$outcome"$'\nnote: reopened for a follow-up fix' "$ready")
+  assert_mate_span_wakes "$dir" "a PR-ready line after an intervening note"
+  dir=$(mate_routine_case mate-dup-other-pr "$outcome" "done [key=child-pr-kid]: child kid PR ready: https://github.com/o/r/pull/8 mode=no-mistakes yolo=off")
+  assert_mate_span_wakes "$dir" "a PR-ready line for a different PR"
+  dir=$(mate_routine_case mate-dup-ready-then-merged "$ready" "$merged")
+  assert_mate_span_wakes "$dir" "the first merge line after a PR-ready line"
+  pass "a second mate's repeated PR-ready or merge line is absorbed only when nothing intervened"
+}
+
+test_crewmate_duplicate_done_still_wakes() {
+  local dir state out pid line='done: PR https://github.com/o/r/pull/7 checks green'
+  dir=$(make_case crew-dup-done); state="$dir/state"; out="$dir/watch.out"
+  printf '%s\n' "$line" > "$state/task.status"
+  prime_status_seen "$state" "$state/task.status" || fail "could not prime the crewmate baseline"
+  printf '%s\n' "$line" >> "$state/task.status"
+  export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  watch_bg "$state" "$dir/fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a crewmate's repeated done line was absorbed"
+  grep -F "signal: $state/task.status" "$out" >/dev/null \
+    || fail "a crewmate's repeated done line did not surface: $(cat "$out")"
+  unset FM_FAKE_CREW_STATE
+  pass "the duplicate-done rule is confined to second mates"
 }
 
 test_secondmate_buried_block_wakes_despite_busy_agent() {
@@ -6169,6 +6322,11 @@ test_turn_ended_surfaced_batch_opens_no_partial_deadline
 test_working_note_not_working_surfaced
 test_secondmate_status_note_surfaced_despite_busy_agent
 test_secondmate_buried_block_wakes_despite_busy_agent
+test_status_done_identity_classifier
+test_secondmate_working_line_absorbed_and_presented
+test_secondmate_ack_absorbed_answer_wakes
+test_secondmate_duplicate_done_absorbed_only_when_adjacent
+test_crewmate_duplicate_done_still_wakes
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_self_announced_close_after_open_decisions_fold_does_not_rewake
 test_folded_worker_decision_without_home_append_still_wakes

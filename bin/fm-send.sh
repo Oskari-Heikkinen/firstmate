@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Steer a task by durable record: write the message into the task's steering
 # inbox and ring a constant doorbell line into its terminal, best-effort.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id>] <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id> | --expect ack|answer] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -116,6 +116,18 @@
 # inspect (it can no longer reconcile or escalate on its own). Only a
 # failed enqueue discards the expectation. On the typed plane an unconfirmed submit (exit 3) keeps
 # it armed rather than dropping it, and only a proven send failure discards it.
+# --expect ack|answer (a reply-bearing marked secondmate request only) records
+# what the parent needs back on that expectation (bin/fm-pending-reply-lib.sh
+# owns the expect= field). answer, the default, is a request whose reply carries
+# content to read, so the correlated reply wakes this home. Pass --expect ack
+# when confirmation that the mate took the request up is enough - an FYI, a
+# standing instruction, a nudge - so a correlated note: acknowledgement is
+# absorbed by the watcher and presented at the next real wake instead
+# (bin/fm-classify-lib.sh's status_span_secondmate_routine). Either way a
+# captain-relevant reply (done, needs-decision, blocked, failed) still wakes
+# immediately, and the missed-report recovery and escalation are unchanged.
+# A resend under FM_PENDING_REPLY_EXISTING_CORR keeps the recorded kind and
+# refuses a conflicting --expect.
 # Set FM_PENDING_REPLY_EXISTING_CORR=<id> when re-sending a recovery request
 # for an already-open expectation so a second record is not created. Direct
 # unmarked captain input never creates one. A marked secondmate instruction
@@ -465,6 +477,18 @@ fi
 # message exactly as before, so ordinary sends are byte-identical.
 RESOLVE_KEYS=
 FIRE_AND_FORGET_ID=
+EXPECT_KIND=
+fm_send_set_expect() { # <kind>
+  [ -z "$EXPECT_KIND" ] || {
+    echo "error: duplicate --expect" >&2
+    return 1
+  }
+  fm_pending_reply_expect_valid "$1" || {
+    echo "error: --expect must be ack or answer (got '$1')" >&2
+    return 1
+  }
+  EXPECT_KIND=$1
+}
 fm_send_add_resolve_key() { # <key>
   local k=$1
   case "$k" in
@@ -513,6 +537,18 @@ while :; do
       exit 1
     }
     FIRE_AND_FORGET_ID=${1#--fire-and-forget=}
+    shift
+    ;;
+  --expect)
+    [ $# -ge 2 ] || {
+      echo "error: --expect requires ack or answer" >&2
+      exit 1
+    }
+    fm_send_set_expect "$2" || exit 1
+    shift 2
+    ;;
+  --expect=*)
+    fm_send_set_expect "${1#--expect=}" || exit 1
     shift
     ;;
   *) break ;;
@@ -609,6 +645,19 @@ if [ -n "$FIRE_AND_FORGET_ID" ]; then
   [ -z "$RESOLVE_KEYS" ] ||
     {
       echo "error: --fire-and-forget cannot accompany --resolve-key" >&2
+      exit 1
+    }
+fi
+
+if [ -n "$EXPECT_KIND" ]; then
+  [ "$MARK_FROM_FIRSTMATE" = 1 ] ||
+    {
+      echo "error: --expect requires a recorded secondmate task selector; only a marked secondmate request carries a reply expectation" >&2
+      exit 1
+    }
+  [ -z "$FIRE_AND_FORGET_ID" ] ||
+    {
+      echo "error: --expect cannot accompany --fire-and-forget, which expects no reply" >&2
       exit 1
     }
 fi
@@ -764,6 +813,11 @@ if [ "${1:-}" = "--key" ]; then
       echo "error: --fire-and-forget cannot accompany --key" >&2
       exit 1
     }
+  [ -z "$EXPECT_KIND" ] ||
+    {
+      echo "error: --expect cannot accompany --key; a keystroke carries no request" >&2
+      exit 1
+    }
   case "$*" in
   *--resolve-key*)
     echo "error: --resolve-key cannot accompany --key; answering a decision requires a text answer" >&2
@@ -827,6 +881,10 @@ else
     if [ -n "$existing_corr" ] &&
       fm_pending_reply_corr_reusable "$STATE" "$existing_corr" "$TARGET_TASK_ID"; then
       PENDING_REPLY_CORR=$existing_corr
+      if [ -n "$EXPECT_KIND" ] && [ "$EXPECT_KIND" != "$(fm_pending_reply_expect_of "$(fm_pending_reply_path "$STATE" "$existing_corr")")" ]; then
+        echo "error: --expect $EXPECT_KIND conflicts with the kind recorded on reused correlation $existing_corr; resend without --expect to keep it" >&2
+        exit 1
+      fi
     else
       if [ "$existing_corr_explicit" = 1 ]; then
         echo "error: explicitly requested pending-reply correlation '${existing_corr:-empty}' is not reusable for $TARGET_TASK_ID; refusing to mint a replacement correlation" >&2
@@ -836,7 +894,7 @@ else
         echo "error: cannot create pending-reply expectation without a resolvable secondmate task id" >&2
         exit 1
       fi
-      PENDING_REPLY_CORR=$(fm_pending_reply_create "$FM_HOME" "$STATE" "$TARGET_TASK_ID" "$MESSAGE") ||
+      PENDING_REPLY_CORR=$(fm_pending_reply_create "$FM_HOME" "$STATE" "$TARGET_TASK_ID" "$MESSAGE" "${EXPECT_KIND:-answer}") ||
         {
           echo "error: failed to create parent pending-reply expectation for $TARGET_TASK_ID" >&2
           exit 1
