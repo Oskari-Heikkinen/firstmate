@@ -1,0 +1,39 @@
+
+=== [10:44:05] daemon started pid=3686229 (afk on); lanes m n o declared paused
+
+=== [10:44:16] lane n's agent crashes (age 12s)
+agent states: m=alive n=dead
+
+=== [10:45:04] at lane age 60s (two recheck cadences in): escalation buffer
+  buffered: paused 30s (awaiting external, the lane changed since its wait was last shown (agent); confirm the wait still holds): fmlive:fm-n
+
+=== [10:45:04] daemon log so far (pause handling)
+  [2026-09-24T10:44:14+0200] self-handle: signal: /tmp/fmlive-s7/home/state/m.status /tmp/fmlive-s7/home/state/n.status /tmp/fmlive-s7/home/state/o.status -> routine signal: m.status: paused: waiting for vendor reply on the API quota | n.status: paused: waiting for the upstream release | o.status: paused: waiting for the design review
+  [2026-09-24T10:44:14+0200] self-handle: signal: /tmp/fmlive-s7/home/state/m.status /tmp/fmlive-s7/home/state/n.status /tmp/fmlive-s7/home/state/o.status -> routine signal: m.status: paused: waiting for vendor reply on the API quota | n.status: paused: waiting for the upstream release | o.status: paused: waiting for the design review
+  [2026-09-24T10:44:15+0200] self-handle: signal: /tmp/fmlive-s7/home/state/m.status /tmp/fmlive-s7/home/state/n.status /tmp/fmlive-s7/home/state/o.status -> routine signal: m.status: paused: waiting for vendor reply on the API quota | n.status: paused: waiting for the upstream release | o.status: paused: waiting for the design review
+  [2026-09-24T10:44:23+0200] self-handle (paused): stale: fmlive:fm-m -> paused (awaiting external), rechecked on a long cadence: paused: waiting for vendor reply on the API quota
+  [2026-09-24T10:44:28+0200] self-handle (paused): stale: fmlive:fm-n -> paused (awaiting external), rechecked on a long cadence: paused: waiting for the upstream release
+  [2026-09-24T10:44:32+0200] self-handle (paused): stale: fmlive:fm-o -> paused (awaiting external), rechecked on a long cadence: paused: waiting for the design review
+  [2026-09-24T10:44:37+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-m
+  [2026-09-24T10:44:37+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-o
+
+=== [10:45:49] at lane age 105s (past the 95s standing-waits ceiling): escalation buffer
+  buffered: paused 30s (awaiting external, the lane changed since its wait was last shown (agent); confirm the wait still holds): fmlive:fm-n
+  buffered: paused 30s (awaiting external, standing wait, nothing about it changed since it was last shown; confirm the wait still holds): fmlive:fm-m
+  buffered: paused 96s (awaiting external, standing wait, nothing about it changed since it was last shown; confirm the wait still holds): fmlive:fm-n
+  buffered: paused 96s (awaiting external, standing wait, nothing about it changed since it was last shown; confirm the wait still holds): fmlive:fm-o
+
+=== [10:45:49] daemon log (pause handling, whole run)
+  [2026-09-24T10:44:14+0200] self-handle: signal: /tmp/fmlive-s7/home/state/m.status /tmp/fmlive-s7/home/state/n.status /tmp/fmlive-s7/home/state/o.status -> routine signal: m.status: paused: waiting for vendor reply on the API quota | n.status: paused: waiting for the upstream release | o.status: paused: waiting for the design review
+  [2026-09-24T10:44:14+0200] self-handle: signal: /tmp/fmlive-s7/home/state/m.status /tmp/fmlive-s7/home/state/n.status /tmp/fmlive-s7/home/state/o.status -> routine signal: m.status: paused: waiting for vendor reply on the API quota | n.status: paused: waiting for the upstream release | o.status: paused: waiting for the design review
+  [2026-09-24T10:44:15+0200] self-handle: signal: /tmp/fmlive-s7/home/state/m.status /tmp/fmlive-s7/home/state/n.status /tmp/fmlive-s7/home/state/o.status -> routine signal: m.status: paused: waiting for vendor reply on the API quota | n.status: paused: waiting for the upstream release | o.status: paused: waiting for the design review
+  [2026-09-24T10:44:23+0200] self-handle (paused): stale: fmlive:fm-m -> paused (awaiting external), rechecked on a long cadence: paused: waiting for vendor reply on the API quota
+  [2026-09-24T10:44:28+0200] self-handle (paused): stale: fmlive:fm-n -> paused (awaiting external), rechecked on a long cadence: paused: waiting for the upstream release
+  [2026-09-24T10:44:32+0200] self-handle (paused): stale: fmlive:fm-o -> paused (awaiting external), rechecked on a long cadence: paused: waiting for the design review
+  [2026-09-24T10:44:37+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-m
+  [2026-09-24T10:44:37+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-o
+  [2026-09-24T10:45:08+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-m
+  [2026-09-24T10:45:08+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-n
+  [2026-09-24T10:45:09+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-o
+  [2026-09-24T10:45:40+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-n
+  [2026-09-24T10:45:41+0200] self-handle (paused recheck, fingerprint unchanged): fmlive:fm-o

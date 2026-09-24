@@ -1,0 +1,16 @@
+prime: signal: /tmp/fmlive-s6/home/state/p.status
+
+=== [10:43:41] real PR read: {"headRefOid":"6ba0c7304697dcec60cf3696ae148878fd57bcee","state":"OPEN"}
+
+=== [10:43:41] baseline: pr=OPEN:6ba0c7304697dcec60cf3696ae148878fd57bcee:ok
+S10 PASS: unchanged real PR, due recheck absorbed, no wake (lane age 33s)
+[2026-09-24T10:43:54+0200] absorbed paused recheck (fingerprint unchanged, age 25s): fmlive:fm-p
+
+=== [10:44:01] S10b[red]: the (wrapped) PR read now reports red
+stale: fmlive:fm-p (paused 52s, awaiting external - the lane changed since its wait was last shown (pr); confirm the wait still holds)
+
+=== [10:44:22] S10b[moved]: the (wrapped) PR read now reports moved
+stale: fmlive:fm-p (paused 79s, awaiting external - the lane changed since its wait was last shown (pr); confirm the wait still holds)
+
+=== [10:44:49] S10b[closed]: the (wrapped) PR read now reports closed
+stale: fmlive:fm-p (paused 106s, awaiting external - the lane changed since its wait was last shown (pr); confirm the wait still holds)

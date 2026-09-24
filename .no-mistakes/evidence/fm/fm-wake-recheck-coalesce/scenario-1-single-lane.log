@@ -1,0 +1,27 @@
+
+=== [10:40:31] ack the initial status signal (the real drain), then re-arm the watcher
+1790239215	2	signal	a.status	signal: /tmp/fmlive-s1/home/state/a.status
+wake annotation: latest wake-EVENT observed at drain, not current state: a.status: paused: waiting for vendor reply on the API quota
+
+=== [10:40:32] S1: re-armed over a live worker (agent state: alive) whose last line is: paused: waiting for vendor reply on the API quota
+S1 PASS: no wake in 15s of polling
+[2026-09-24T10:40:42+0200] absorbed stale (paused, awaiting external, age 31s): fmlive:fm-a
+[2026-09-24T10:40:44+0200] absorbed stale (paused, awaiting external, age 33s): fmlive:fm-a
+[2026-09-24T10:40:46+0200] absorbed stale (paused, awaiting external, age 35s): fmlive:fm-a
+wake-queue rows: 0 (after ack)
+baseline declared:r1:3530007374726f6e673a323039363a3333323731343a323032362d30392d32342031303a34303a31312e323939353830323335202b3032303000726567756c61722066696c653a38316234002d007265616461626c65007265616461626c65|status=r1:3530007374726f6e673a323039363a3333323731343a323032362d30392d32342031303a34303a31312e323939353830323335202b3032303000726567756c61722066696c653a38316234002d007265616461626c65007265616461626c65 crew=unknown/pane agent=alive head=2d8078328eeaf75afa84f8ca59ede95bc23f586e dirty=0 inbox=0 pr=none|
+
+=== [10:40:47] S2: wait for the status line to age past the 40s recheck cadence with nothing changed
+S2 PASS: watcher still armed; no wake for the due recheck
+[2026-09-24T10:40:51+0200] absorbed paused recheck (fingerprint unchanged, age 40s): fmlive:fm-a
+
+=== [10:40:59] S3: kill the agent process in the pane (a crash under the standing declaration)
+agent state now: dead
+S3 watcher woke:
+--- watcher armed pid=3365349 FM_PAUSE_RESURFACE_SECS=40 FM_STANDING_WAITS_CEILING_SECS=100000 ---
+stale: fmlive:fm-a (paused 82s, awaiting external - the lane changed since its wait was last shown (agent); confirm the wait still holds)
+  drained: 1790239293	3	stale	fmlive:fm-a	stale: fmlive:fm-a (paused 82s, awaiting external - the lane changed since its wait was last shown (agent); confirm the wait still holds)
+[2026-09-24T10:41:28+0200] absorbed stale (paused, awaiting external, age 77s): fmlive:fm-a
+[2026-09-24T10:41:30+0200] absorbed stale (paused, awaiting external, age 79s): fmlive:fm-a
+[2026-09-24T10:41:30+0200] absorbed stale (paused, awaiting external, age 79s): fmlive:fm-a
+[2026-09-24T10:41:33+0200] queued declared-wait recheck (urgent, age 81s): fmlive:fm-a

@@ -1,0 +1,23 @@
+prime: signal: /tmp/fmlive-s2/home/state/a.status /tmp/fmlive-s2/home/state/b.status /tmp/fmlive-s2/home/state/c.status /tmp/fmlive-s2/home/state/d.status
+
+=== [10:43:19] first sight: watcher armed, lanes aged 16s; queue rows after ack: 0
+
+=== [10:43:25] lanes a and b change under their declarations: their task copies go dirty
+
+=== [10:43:47] watcher woke once, lanes aged 44s. printed wake reasons:
+stale: fmlive:fm-a (paused 43s, awaiting external - the lane changed since its wait was last shown (dirty); confirm the wait still holds) [+3 more declared-wait recheck(s) queued with this wake]
+number of wake reason lines printed by this arm: 1
+queued stale rows for fmlive:fm-a: 1
+queued stale rows for fmlive:fm-b: 1
+queued stale rows for fmlive:fm-c: 1
+queued stale rows for fmlive:fm-d: 1
+
+=== [10:43:47] drained by the supervisor:
+1790239426	9	stale	fmlive:fm-a	stale: fmlive:fm-a (paused 43s, awaiting external - the lane changed since its wait was last shown (dirty); confirm the wait still holds)
+1790239426	10	stale	fmlive:fm-b	stale: fmlive:fm-b (paused 43s, awaiting external - the lane changed since its wait was last shown (dirty); confirm the wait still holds)
+1790239427	11	stale	fmlive:fm-c	stale: fmlive:fm-c (captain-held 43s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+1790239427	12	stale	fmlive:fm-d	stale: fmlive:fm-d (captain-held 43s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+[2026-09-24T10:43:45+0200] queued declared-wait recheck (urgent, age 41s): fmlive:fm-a
+[2026-09-24T10:43:45+0200] queued declared-wait recheck (urgent, age 42s): fmlive:fm-b
+[2026-09-24T10:43:46+0200] queued declared-wait recheck (due, age 43s): fmlive:fm-c
+[2026-09-24T10:43:46+0200] queued declared-wait recheck (due, age 43s): fmlive:fm-d

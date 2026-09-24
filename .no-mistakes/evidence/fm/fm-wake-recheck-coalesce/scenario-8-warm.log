@@ -1,0 +1,14 @@
+prime: signal: /tmp/fmlive-s8/home/state/h.status
+
+=== [10:47:08] watcher armed at lane age 14s; recheck due at 30s, i.e. well after the 8s warm window
+
+=== [10:47:24] recheck due at lane age 30s: held record /tmp/fmlive-s8/home/state/.recheck-due-fmlive_fm-h; watcher alive: yes
+
+=== [10:47:32] 8s later: watcher alive (no wake): yes; wake-queue rows: 0
+0
+
+=== [10:47:32] the supervisor takes a turn: state/.claude-autoarm-epoch moves
+
+=== [10:47:33] watcher woke:
+stale: fmlive:fm-h (captain-held 38s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+1790239652	3	stale	fmlive:fm-h	stale: fmlive:fm-h (captain-held 38s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)

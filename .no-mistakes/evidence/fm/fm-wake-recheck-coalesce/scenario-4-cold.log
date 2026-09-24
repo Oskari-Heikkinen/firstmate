@@ -1,0 +1,34 @@
+prime: signal: /tmp/fmlive-s4/home/state/h.status /tmp/fmlive-s4/home/state/i.status
+
+=== [10:43:16] armed cold (warm window 0), 30s cadence; waiting until both waits are due and 20s beyond
+S6a PASS: no wake at age 50s though both rechecks are due
+[2026-09-24T10:43:34+0200] queued declared-wait recheck (due, age 31s): fmlive:fm-h
+[2026-09-24T10:43:35+0200] absorbed paused recheck (fingerprint unchanged, age 31s): fmlive:fm-i
+
+=== [10:43:53] a third lane raises a real, captain-relevant signal
+
+=== [10:43:56] watcher woke:
+signal: /tmp/fmlive-s4/home/state/j.status
+queued stale rows for fmlive:fm-h: 1
+queued stale rows for fmlive:fm-i: 0
+
+=== [10:43:56] drained by the supervisor:
+1790239435	6	signal	j.status	needs-decision: /tmp/fmlive-s4/home/state/j.status
+1790239436	7	stale	fmlive:fm-h	stale: fmlive:fm-h (captain-held 53s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+wake annotation: latest wake-EVENT observed at drain, not current state: j.status: needs-decision: pick a release channel for the SDK
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+j needs-decision: pick a release channel for the SDK
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+=== [10:43:58] S7: re-arm with an 8s warm window; wait for h's next recheck to be held cold
+held: /tmp/fmlive-s4/home/state/.recheck-due-fmlive_fm-h  watcher alive: yes
+5s later, still no wake: no
+
+=== [10:44:08] the supervisor takes a turn (Claude turn-end ledger state/.claude-autoarm-epoch moves)
+
+=== [10:44:08] watcher woke:
+stale: fmlive:fm-h (captain-held 62s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+1790239445	8	stale	fmlive:fm-h	stale: fmlive:fm-h (captain-held 62s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+j needs-decision: pick a release channel for the SDK
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'

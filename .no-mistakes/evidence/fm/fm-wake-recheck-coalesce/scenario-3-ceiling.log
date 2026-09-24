@@ -1,0 +1,21 @@
+prime: signal: /tmp/fmlive-s3/home/state/e.status /tmp/fmlive-s3/home/state/f.status
+
+=== [10:43:17] armed cold (warm window 0) with a 25s recheck cadence and an 80s standing-waits ceiling
+
+=== [10:44:24] watcher woke, lanes aged 81s:
+stale: fmlive:fm-e (paused 81s, awaiting external - standing wait, nothing about it changed since it was last shown; confirm the wait still holds) [standing-waits digest: 2 declared wait(s) queued with this wake]
+wake reason lines printed: 1
+queued stale rows for fmlive:fm-e: 1
+queued stale rows for fmlive:fm-f: 1
+
+=== [10:44:24] triage log (absorbed rechecks before the ceiling):
+[2026-09-24T10:43:28+0200] absorbed paused recheck (fingerprint unchanged, age 25s): fmlive:fm-e
+[2026-09-24T10:43:29+0200] absorbed paused recheck (fingerprint unchanged, age 26s): fmlive:fm-f
+[2026-09-24T10:43:53+0200] absorbed paused recheck (fingerprint unchanged, age 50s): fmlive:fm-e
+[2026-09-24T10:43:56+0200] absorbed paused recheck (fingerprint unchanged, age 53s): fmlive:fm-f
+[2026-09-24T10:44:18+0200] absorbed paused recheck (fingerprint unchanged, age 75s): fmlive:fm-e
+[2026-09-24T10:44:21+0200] absorbed paused recheck (fingerprint unchanged, age 78s): fmlive:fm-f
+
+=== [10:44:24] drained by the supervisor:
+1790239464	5	stale	fmlive:fm-e	stale: fmlive:fm-e (paused 81s, awaiting external - standing wait, nothing about it changed since it was last shown; confirm the wait still holds)
+1790239464	6	stale	fmlive:fm-f	stale: fmlive:fm-f (paused 81s, awaiting external - standing wait, nothing about it changed since it was last shown; confirm the wait still holds)

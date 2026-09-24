@@ -1,0 +1,21 @@
+prime: signal: /tmp/fmlive-s5/home/state/k.status /tmp/fmlive-s5/home/state/u.status
+
+=== [10:43:17] armed cold; lane u declared until 2026-09-24T08:43:28Z
+
+=== [10:43:29] watcher woke at 08:43:29Z:
+stale: fmlive:fm-u (paused 26s, awaiting external - the declared clearing time has passed, rechecked on a long cadence not a wedge; confirm the wait cleared)
+
+=== [10:43:31] S9: lane k's task copy gets a new commit; re-armed cold; waiting past the next due rechecks
+
+=== [10:43:45] watcher woke (lane u aged 42s):
+stale: fmlive:fm-k (paused 42s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds)
+queued stale rows for fmlive:fm-u in this wake: 0
+queued stale rows for fmlive:fm-k in this wake: 1
+1790239425	6	stale	fmlive:fm-k	stale: fmlive:fm-k (paused 42s, awaiting external - the lane changed since its wait was last shown (head); confirm the wait still holds)
+
+=== [10:43:47] S8b: re-armed cold; wait until lane u's next recheck after the until time is due
+S8b PASS: no wake at lane u age 78s
+
+=== [10:44:23] triage log for lane u after its until time:
+[2026-09-24T10:43:29+0200] queued declared-wait recheck (urgent, age 25s): fmlive:fm-u
+[2026-09-24T10:44:10+0200] absorbed paused recheck (fingerprint unchanged, age 67s): fmlive:fm-u
