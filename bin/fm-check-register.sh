@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Bind an intentional custom watcher check to its current bytes.
 # Usage: fm-check-register.sh <id>
+# Authoring contract for a custom state/<id>.check.sh: keep it an ordinary
+# single-link mode-0700 file, print one line only when firstmate should wake,
+# print nothing otherwise, and finish before FM_CHECK_TIMEOUT. Register its
+# current bytes here before the watcher may execute it.
 # Retire with fm-check-unregister.sh <id>; do not hand-compose an rm.
 set -u
 
