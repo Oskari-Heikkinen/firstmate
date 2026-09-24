@@ -1,0 +1,4 @@
+rc=0 wall=0.57s max_rss_kib=132608 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-lint.sh
+rc=0 wall=0.24s max_rss_kib=23936 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-lint.sh
+rc=0 wall=1.03s max_rss_kib=153856 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- tests/fm-lint.test.sh
+rc=0 wall=0.59s max_rss_kib=45184 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- tests/fm-lint.test.sh

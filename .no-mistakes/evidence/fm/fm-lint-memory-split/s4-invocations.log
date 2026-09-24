@@ -1,0 +1,9 @@
+rc=1 wall=0.05s max_rss_kib=13312 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fm-lint-fixture.Dlzo/main.sh
+rc=1 wall=0.05s max_rss_kib=13184 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fm-lint-fixture.Dlzo/main.sh
+rc=1 wall=0.04s max_rss_kib=13312 args=--norc --external-sources -- /tmp/fm-lint-fixture.Dlzo/main.sh
+rc=0 wall=0.04s max_rss_kib=12032 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fm-lint-fixture.Dlzo/only-cross.sh
+rc=1 wall=0.03s max_rss_kib=11392 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fm-lint-fixture.Dlzo/only-cross.sh
+rc=1 wall=0.04s max_rss_kib=12032 args=--norc --external-sources -- /tmp/fm-lint-fixture.Dlzo/only-cross.sh
+rc=0 wall=0.04s max_rss_kib=12928 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fm-lint-fixture.Dlzo/clean-uses-lib.sh
+rc=0 wall=0.02s max_rss_kib=13184 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- /tmp/fm-lint-fixture.Dlzo/clean-uses-lib.sh
+rc=0 wall=0.04s max_rss_kib=13440 args=--norc --external-sources -- /tmp/fm-lint-fixture.Dlzo/clean-uses-lib.sh

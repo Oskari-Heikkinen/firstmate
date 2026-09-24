@@ -1,0 +1,12 @@
+5 concurrent local 'bin/fm-lint.sh bin/fm-spawn.sh' runs (host slot guard bypassed; each ShellCheck process capped at 2500M, no swap); total wall 20s
+run1 exit=0
+run2 exit=0
+run3 exit=0
+run4 exit=0
+run5 exit=0
+available before: 11:20:30.3 used_mib=7824 avail_mib=16208 procs=7
+lowest available during run: 8824 | 11:20:37.2 used_mib=15207 avail_mib=8824 procs=17
+(procs= in memory samples counts matching command lines, including the time/systemd-run wrappers, so it overstates real ShellCheck processes)
+max per-process RSS (KiB): 1571328
+ShellCheck invocations: 10; non-zero rc: 0
+invocations combining --external-sources with extended analysis: 0

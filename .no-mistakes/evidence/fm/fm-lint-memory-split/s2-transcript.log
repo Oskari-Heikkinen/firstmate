@@ -1,0 +1,14 @@
+== CI=true bin/fm-lint.sh bin/fm-lint.sh
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: full ShellCheck extended analysis enabled
+exit=0
+-- invocations:
+rc=0 wall=0.65s max_rss_kib=132608 args=--norc --external-sources -- bin/fm-lint.sh
+analysis_mode	full
+== GITHUB_ACTIONS=true bin/fm-lint.sh bin/fm-lint.sh
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: full ShellCheck extended analysis enabled
+exit=0
+-- invocations:
+rc=0 wall=0.60s max_rss_kib=132608 args=--norc --external-sources -- bin/fm-lint.sh
+analysis_mode	full

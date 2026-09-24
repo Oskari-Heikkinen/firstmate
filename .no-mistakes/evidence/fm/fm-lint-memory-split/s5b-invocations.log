@@ -1,0 +1,10 @@
+11:20:37 rc=0 wall=7.36s max_rss_kib=1571200 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:38 rc=0 wall=7.84s max_rss_kib=1570944 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:38 rc=0 wall=7.91s max_rss_kib=1571328 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:38 rc=0 wall=7.92s max_rss_kib=1571328 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:38 rc=0 wall=7.98s max_rss_kib=1571072 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:49 rc=0 wall=11.44s max_rss_kib=381184 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:49 rc=0 wall=11.54s max_rss_kib=386432 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:49 rc=0 wall=11.53s max_rss_kib=391552 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:50 rc=0 wall=11.70s max_rss_kib=380928 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+11:20:50 rc=0 wall=12.36s max_rss_kib=391424 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh

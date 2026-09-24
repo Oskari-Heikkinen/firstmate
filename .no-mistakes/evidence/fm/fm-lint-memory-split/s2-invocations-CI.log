@@ -1,0 +1,1 @@
+rc=0 wall=0.65s max_rss_kib=132608 args=--norc --external-sources -- bin/fm-lint.sh

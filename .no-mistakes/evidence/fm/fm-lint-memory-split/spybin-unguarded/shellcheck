@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Spy without the host slot limit: each process runs in its own 2.5G/no-swap
+# systemd scope, logs argv and peak RSS, and execs the real ShellCheck 0.11.0.
+real=$HOME/.local/lib/shellcheck-0.11.0/shellcheck
+case "${1:-}" in --version|-V) exec "$real" "$@";; esac
+tf=$(mktemp)
+/usr/bin/time -f '%e %M' -o "$tf" systemd-run --user --scope --quiet --collect -p MemoryMax=2500M -p MemorySwapMax=0 -- "$real" "$@"; rc=$?
+read -r wall rss < <(tail -1 "$tf"); rm -f "$tf"
+printf '%s rc=%s wall=%ss max_rss_kib=%s args=%s\n' "$(date +%T)" "$rc" "$wall" "$rss" "$*" >> "${SPY_LOG:?}"
+exit "$rc"

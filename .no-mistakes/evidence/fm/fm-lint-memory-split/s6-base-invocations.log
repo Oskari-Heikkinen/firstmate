@@ -1,0 +1,1 @@
+rc=0 wall=31.14s max_rss_kib=5442944 args=--norc --external-sources -- bin/fm-spawn.sh

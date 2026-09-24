@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Spy: log argv and per-process peak RSS, then run the real ShellCheck.
+real=/home/oskari/.local/bin/shellcheck
+case "${1:-}" in --version|-V) exec "$real" "$@";; esac
+log=${SPY_LOG:?}
+tf=$(mktemp)
+/usr/bin/time -f '%e %M' -o "$tf" "$real" "$@"; rc=$?
+read -r wall rss < <(tail -1 "$tf"); rm -f "$tf"
+printf 'rc=%s wall=%ss max_rss_kib=%s args=%s\n' "$rc" "$wall" "$rss" "$*" >> "$log"
+exit "$rc"

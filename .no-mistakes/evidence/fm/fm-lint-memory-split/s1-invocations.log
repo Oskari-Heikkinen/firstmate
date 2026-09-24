@@ -1,0 +1,2 @@
+rc=0 wall=6.23s max_rss_kib=1571072 args=--norc --exclude=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh
+rc=0 wall=8.65s max_rss_kib=391424 args=--norc --external-sources --extended-analysis=false --include=SC1091,SC2034,SC2153,SC2154,SC2329 -- bin/fm-spawn.sh

@@ -1,0 +1,10 @@
+5 parallel local 'bin/fm-lint.sh bin/fm-spawn.sh' runs, total wall 46s
+run1 exit=0
+run2 exit=0
+run3 exit=0
+run4 exit=0
+run5 exit=0
+baseline avail before: 11:12:13 used_mib=8515 avail_mib=15517
+min available during run: 13320 11:12:19 used_mib=10711 avail_mib=13320
+max per-process RSS (KiB): 1571328
+invocations combining --external-sources with extended analysis: 0
