@@ -67,10 +67,17 @@ fm_control_harnesses() {
 }
 
 fm_control_harness_supported() {  # <harness>
-  local harness
-  while read -r harness; do
-    [ "$harness" = "${1-}" ] && return 0
-  done < <(fm_control_harnesses)
+  # Match against the captured list rather than reading a live pipe: an early
+  # return while fm_control_harnesses is still writing makes its printf hit a
+  # closed pipe and print a "write error: Broken pipe" diagnostic to stderr.
+  local list
+  list=$(fm_control_harnesses)
+  case "${1-}" in
+    ''|*[[:space:]]*) return 1 ;;
+  esac
+  case " $(printf '%s' "$list" | tr '\n' ' ') " in
+    *" ${1} "*) return 0 ;;
+  esac
   return 1
 }
 
