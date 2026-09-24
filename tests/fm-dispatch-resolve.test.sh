@@ -294,6 +294,10 @@ SCOUT_BRIEF="$TMP_ROOT/scout-brief.md"
 printf '%s\n' '# Setup' 'This is a SCOUT task: the deliverable is a written report, not a PR.' > "$SCOUT_BRIEF"
 request_state "$SCOUT_BRIEF" --summary 'Investigate a flaky test.'
 assert_equals '{"task":{"kind":"scout","mode":null,"summary":"Investigate a flaky test."}}' "$state" "a scout brief sends kind scout and no mode"
+DIRECT_PUSH_BRIEF="$TMP_ROOT/direct-push-brief.md"
+printf '%s\n' 'Delivery contract: mode=direct-push' > "$DIRECT_PUSH_BRIEF"
+request_state "$DIRECT_PUSH_BRIEF" --summary 'Bug fix.'
+assert_equals '{"task":{"kind":"ship","mode":"direct-push","summary":"Bug fix."}}' "$state" "a direct-push brief sends mode direct-push"
 ODD_BRIEF="$TMP_ROOT/odd-brief.md"
 printf '%s\n' 'Delivery contract: mode=private-mode-name extra' > "$ODD_BRIEF"
 request_state "$ODD_BRIEF" --summary 'Bug fix.'

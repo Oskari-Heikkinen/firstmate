@@ -650,7 +650,7 @@ The request state is exactly this allow-list, and nothing else from the brief, t
 | Field | Source | Sent value |
 | --- | --- | --- |
 | `kind` | the brief's `Delivery contract: mode=` line, else its `This is a SCOUT task` line | `ship`, `scout`, or null |
-| `mode` | that delivery-contract line | `no-mistakes`, `direct-PR`, `local-only`, or null for anything else |
+| `mode` | that delivery-contract line | `no-mistakes`, `direct-PR`, `direct-push`, `local-only`, or null for anything else |
 | `summary` | the `--summary` text firstmate writes, the only summary source | one redacted line of at most 160 characters |
 
 The summary describes only the nature of the work, such as "bounded UI polish in an existing panel" or "difficult diagnosis across components", and never names a project, customer, product, part, person, or file.

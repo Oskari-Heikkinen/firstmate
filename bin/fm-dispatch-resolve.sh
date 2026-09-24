@@ -268,7 +268,7 @@ STATE=$(jq -n --rawfile brief "$BRIEF" --arg summary "$SUMMARY" --argjson max "$
     kind: (if $mode_line != null then "ship"
            elif any($lines[]; startswith("This is a SCOUT task")) then "scout"
            else null end),
-    mode: (if (["no-mistakes", "direct-PR", "local-only"] | index($mode_line)) != null then $mode_line else null end),
+    mode: (if (["no-mistakes", "direct-PR", "direct-push", "local-only"] | index($mode_line)) != null then $mode_line else null end),
     summary: ($summary | redact_summary)
   }') || die "could not read brief file: $BRIEF"
 [ -n "$(jq -r '.summary' <<<"$STATE")" ] || no_summary
@@ -293,8 +293,8 @@ command -v curl >/dev/null 2>&1 || emit_error "curl not installed"
         }
       }
     }')
-  T0=$(fm_timing_now_ms)
   SENT_LINE=$(jq -r '"  sent: kind=\(.kind // "-") mode=\(.mode // "-") summary=\(.summary)"' <<<"$STATE") || emit_error "output rendering failed"
+  T0=$(fm_timing_now_ms)
   HTTP=$(printf '%s' "$REQUEST" | curl -sS --max-time "$TS_TIMEOUT" -o "$RESP_FILE" -w '%{http_code}' \
     -X POST "$TS_BASE/v1/systemone" -H 'Content-Type: application/json' \
     -H @/dev/fd/3 3< <(printf 'Authorization: Bearer %s\n' "$TYPESAFE_API_KEY_PRIVATE") \
