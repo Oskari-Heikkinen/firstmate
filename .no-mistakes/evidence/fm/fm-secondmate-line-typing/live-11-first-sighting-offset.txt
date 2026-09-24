@@ -1,0 +1,7 @@
+## first-sighting offset check
+before first line: marker=size 0
+woke: signal: $LAB/parent/state/mate.status
+after first wake: file size=18 marker size=0
+after re-arm (3s): marker size=18
+woke: signal: $LAB/parent/state/mate.status
+after second wake: file size=49 marker size=18

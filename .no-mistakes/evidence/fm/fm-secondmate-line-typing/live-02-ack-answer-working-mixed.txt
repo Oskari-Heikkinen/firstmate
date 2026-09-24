@@ -1,0 +1,65 @@
+## Ack-typed reply, plain progress, answer-typed reply, correlated progress, mixed span
+pending dfaa06a405609303: phase=awaiting_report (expect=ack)
+### S4 ack-typed correlated note reply via fm-secondmate-report.sh  (expected: absorb)
+  [mate.status size=40 classified(.seen)=40]
+$ (mate) m_report note dfaa06a405609303 taken up, will squash-merge from now on
+RESULT: parent WOKEN. watcher stdout: signal: $LAB/parent/state/mate.status
+$ fm-wake-drain.sh
+1790247163	4	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note [corr=dfaa06a405609303] [at=1790247165]: taken up, will squash-merge from now on (via-helper)
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate note [corr=dfaa06a405609303] [at=1790247165]: taken up, will squash-merge from now on (via-helper)
+
+pending dfaa06a405609303 after: phase=awaiting_report
+
+### S8 uncorrelated working line  (expected: absorb)
+  [mate.status size=139 classified(.seen)=139]
+$ (mate) mate_line working: auditing the child ledgers
+RESULT: parent NOT woken (watcher alive through 15s of 1s polls); queue: (wake queue empty)
+[2026-09-24T12:52:52+0200] absorbed benign signal: $LAB/parent/state/mate.status
+
+### S6 answer-typed correlated note reply via fm-secondmate-report.sh  (expected: wake)
+  [mate.status size=175 classified(.seen)=175]
+$ (mate) m_report note 948dfb209fce264c ledger audit: 3 children clean, 1 missing report
+RESULT: parent WOKEN. watcher stdout: check: rearm-resurface
+$ fm-wake-drain.sh
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working: auditing the child ledgers
+mate note [corr=948dfb209fce264c] [at=1790247187]: ledger audit: 3 children clean, 1 missing report (via-helper)
+
+pending 948dfb209fce264c after: phase=awaiting_report
+
+### S7 correlated working line on an answer-typed request  (expected: wake)
+  [mate.status size=283 classified(.seen)=283]
+$ (mate) mate_line working [key=prs]: corr=6a958a18007f1681 collecting the open child PRs
+RESULT: parent WOKEN. watcher stdout: signal: $LAB/parent/state/mate.status
+$ fm-wake-drain.sh
+1790247191	6	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working [key=prs]: corr=6a958a18007f1681 collecting the open child PRs
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working [key=prs]: corr=6a958a18007f1681 collecting the open child PRs
+
+pending 6a958a18007f1681 after: phase=awaiting_report
+
+### S8b uncorrelated working line right after a woken correlated one  (expected: absorb)
+  [mate.status size=354 classified(.seen)=354]
+$ (mate) mate_line working: still collecting PR states
+RESULT: parent WOKEN. watcher stdout: signal: $LAB/parent/state/mate.status
+$ fm-wake-drain.sh
+1790247195	8	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working: still collecting PR states
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working: still collecting PR states
+
+### S9 working line then an uncorrelated note in one span  (expected: wake)
+  [mate.status size=390 classified(.seen)=390]
+$ (mate) mate_line working: rechecking CI note: the vendor changed their API, pausing child kid
+RESULT: parent WOKEN. watcher stdout: signal: $LAB/parent/state/mate.status
+$ fm-wake-drain.sh
+1790247204	10	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: rechecking CI
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note: the vendor changed their API, pausing child kid
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working: rechecking CI
+mate note: the vendor changed their API, pausing child kid
+

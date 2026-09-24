@@ -1,0 +1,10 @@
+delay=0.5 kind=working [seen=955 size=955] -> WOKEN: check: rearm-resurface 
+delay=1 kind=working [seen=981 size=981] -> WOKEN: check: rearm-resurface 
+delay=1.5 kind=working [seen=1005 size=1005] -> WOKEN: check: rearm-resurface 
+delay=2 kind=working [seen=1031 size=1031] -> WOKEN: check: rearm-resurface 
+delay=2.5 kind=working [seen=1055 size=1055] -> WOKEN: check: rearm-resurface 
+delay=0.5 kind=ack [seen=1081 size=1081] -> WOKEN: check: rearm-resurface phase=resolved
+delay=1 kind=ack [seen=1161 size=1161] -> WOKEN: check: rearm-resurface phase=resolved
+delay=1.5 kind=ack [seen=1239 size=1239] -> WOKEN: check: rearm-resurface phase=awaiting_report
+delay=2 kind=ack [seen=1319 size=1319] -> WOKEN: check: rearm-resurface phase=awaiting_report
+delay=2.5 kind=ack [seen=1397 size=1397] -> WOKEN: check: rearm-resurface phase=awaiting_report

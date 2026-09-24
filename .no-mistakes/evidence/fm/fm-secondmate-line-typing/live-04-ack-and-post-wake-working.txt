@@ -1,0 +1,30 @@
+## Fresh requests for a clean re-drive
+ack corr=2b4b6b30d5a60545 (phase=awaiting_report); answer corr=b2afd23ab9135342 (phase=awaiting_report)
+### S4 ack-typed correlated note reply via fm-secondmate-report.sh  (expected: absorb)
+HARNESS: watcher not caught up before append (exited: check: rearm-resurface)
+  [mate.status size=530 classified(.seen)=530]
+$ (mate) m_report note 2b4b6b30d5a60545 noted, will expect runner churn tonight
+RESULT: parent NOT woken (watcher alive through 15s of 1s polls); queue: (wake queue empty)
+[2026-09-24T12:54:45+0200] absorbed benign signal: $LAB/parent/state/mate.status
+
+pending 2b4b6b30d5a60545 after: phase=resolved
+
+### S7 correlated working line on the answer-typed request  (expected: wake)
+HARNESS: watcher not caught up before append (exited: check: rearm-resurface)
+  [mate.status size=629 classified(.seen)=629]
+$ (mate) mate_line working [key=blocked]: corr=b2afd23ab9135342 counting blocked children
+RESULT: parent WOKEN. watcher stdout: signal: $LAB/parent/state/mate.status
+$ fm-wake-drain.sh
+1790247308	12	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working [key=blocked]: corr=b2afd23ab9135342 counting blocked children
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working [key=blocked]: corr=b2afd23ab9135342 counting blocked children
+
+pending b2afd23ab9135342 after: phase=resolved
+
+### S8b uncorrelated working line right after a woken correlated one  (expected: absorb)
+  [mate.status size=700 classified(.seen)=700]
+$ (mate) mate_line working: still counting
+RESULT: parent NOT woken (watcher alive through 15s of 1s polls); queue: (wake queue empty)
+[2026-09-24T12:55:16+0200] absorbed benign signal: $LAB/parent/state/mate.status
+

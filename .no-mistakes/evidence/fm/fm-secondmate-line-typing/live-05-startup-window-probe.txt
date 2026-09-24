@@ -1,0 +1,14 @@
+### plain working line appended 0.3s after a fresh watcher start (expected: absorb)
+  [mate.status size=724 classified(.seen)=724]
+RESULT: not woken
+
+### plain working line appended 3s after a fresh watcher start (expected: absorb)
+  [mate.status size=756 classified(.seen)=756]
+RESULT: WOKEN: check: rearm-resurface
+[2026-09-24T12:54:45+0200] absorbed benign signal: $LAB/parent/state/mate.status
+[2026-09-24T12:55:16+0200] absorbed benign signal: $LAB/parent/state/mate.status
+[2026-09-24T12:55:43+0200] absorbed benign signal: $LAB/parent/state/mate.status
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working: startup-window probe A
+mate working: startup-window probe B
+

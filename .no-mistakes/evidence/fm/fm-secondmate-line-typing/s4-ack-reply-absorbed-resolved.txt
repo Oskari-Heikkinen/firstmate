@@ -1,0 +1,15 @@
+## S4 ack-typed correlated reply resolves silently; mate working line absorbed
+pending ceaf78e6706a062a before: phase=awaiting_report expect=ack
+$ (mate home) fm-secondmate-report.sh note ceaf78e6706a062a "taken up, will squash-merge from now on"
+exit=0
+$ (mate) echo "working: auditing the child ledgers" >> parent/state/mate.status
+watcher EXITED (woke) - UNEXPECTED. stdout:
+stale: lab:fm-other
+pending ceaf78e6706a062a after: phase=resolved
+$ tail parent/state/mate.status
+note [corr=ceaf78e6706a062a] [at=1790246926]: taken up, will squash-merge from now on (via-helper)
+working: auditing the child ledgers
+$ queued wakes
+1790246930	3	stale	lab:fm-other	stale: lab:fm-other
+$ watcher triage log (absorb decisions)
+[2026-09-24T12:48:50+0200] absorbed benign signal: $LAB/parent/state/mate.status

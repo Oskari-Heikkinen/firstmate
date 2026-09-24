@@ -1,0 +1,25 @@
+$ fm-send.sh mate --expect maybe "x"
+error: --expect must be ack or answer (got 'maybe')
+exit=1
+$ fm-send.sh other --expect ack "x"   (ordinary crewmate)
+error: --expect requires a recorded secondmate task selector; only a marked secondmate request carries a reply expectation
+exit=1
+$ fm-send.sh mate --fire-and-forget d1 --expect ack "x"
+error: --fire-and-forget delivery id must be 16 lowercase hex characters
+exit=1
+$ fm-send.sh mate --expect ack --expect answer "x"
+error: duplicate --expect
+exit=1
+$ FM_PENDING_REPLY_EXISTING_CORR=ceaf78e6706a062a fm-send.sh mate --expect answer "resend"   (conflicts with recorded ack)
+error: --expect answer conflicts with the kind recorded on reused correlation ceaf78e6706a062a; resend without --expect to keep it
+exit=1
+$ FM_PENDING_REPLY_EXISTING_CORR=ceaf78e6706a062a fm-send.sh mate "resend"   (keeps recorded kind)
+fm-send: doorbell not typed because the agent in lab:fm-mate has exited; the steer is durably recorded at /tmp/fm-smline-lab.FHmuru/parent/state/mate.inbox/004.msg for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane
+exit=0
+--- pending-replies/ceaf78e6706a062a after resend
+expect=ack
+phase=awaiting_report
+pending records before: 3, after: 3
+$ fm-send.sh mate --fire-and-forget 0123456789abcdef --expect ack "x"
+error: --expect cannot accompany --fire-and-forget, which expects no reply
+exit=1

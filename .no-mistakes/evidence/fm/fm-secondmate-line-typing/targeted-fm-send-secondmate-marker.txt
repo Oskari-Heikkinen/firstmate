@@ -1,0 +1,9 @@
+ok - fm-send: a kind=secondmate target gets the from-firstmate marker and corr prepended
+ok - fm-send: an exact kind=secondmate task id is marked with corr exactly once
+ok - fm-send: exact-id and stable-label kind=ship selectors are sent unmarked
+ok - fm-send: explicit endpoints stay unmarked with or without local metadata
+ok - fm-send: the --key path carries no marker (no literal text is typed)
+ok - fm-send: --expect records the reply kind and is refused where no reply is expected
+ok - fm-send: the marker is '[fm-from-firstmate]' + terminal-safe U+2063, while direct captain text stays unmarked
+ok - fm-marker: from-firstmate transformation is idempotent
+ok - fm-send: marked secondmate payload preserves trailing newline bytes in its record

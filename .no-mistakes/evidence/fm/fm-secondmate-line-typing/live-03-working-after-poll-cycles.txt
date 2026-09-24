@@ -1,0 +1,14 @@
+## Re-run with the watcher through >=2 full poll cycles before each append
+### S8c uncorrelated working line  (expected: absorb)
+  [mate.status size=467 classified(.seen)=467]
+$ (mate) mate_line working: drafting the release notes
+RESULT: parent NOT woken (watcher alive through 15s of 1s polls); queue: (wake queue empty)
+[2026-09-24T12:53:47+0200] absorbed benign signal: $LAB/parent/state/mate.status
+
+### S8d uncorrelated working line again  (expected: absorb)
+HARNESS: watcher not caught up before append (exited: check: rearm-resurface)
+  [mate.status size=503 classified(.seen)=503]
+$ (mate) mate_line working: release notes 50%
+RESULT: parent NOT woken (watcher alive through 15s of 1s polls); queue: (wake queue empty)
+[2026-09-24T12:54:09+0200] absorbed benign signal: $LAB/parent/state/mate.status
+

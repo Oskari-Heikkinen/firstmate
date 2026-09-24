@@ -1,0 +1,8 @@
+## Steady state after the S6-S9 drains (inbox taken up by the mate)
+  [mate.status size=467 classified(.seen)=467]
+### R1 uncorrelated working line alone  (expected: absorb)
+$ (mate) mate_line working: drafting the release notes
+RESULT: parent NOT woken (watcher alive through 15s of 1s polls); queue: (wake queue empty)
+[2026-09-24T12:50:39+0200] absorbed benign signal: $LAB/parent/state/mate.status
+
+  [mate.status size=503 classified(.seen)=503]

@@ -1,0 +1,15 @@
+# Fresh isolated lab (FM_HOME=$LAB/parent, mate home $LAB/mate, private tmux socket); real bin/fm-send.sh, fm-secondmate-report.sh, fm-watch.sh, fm-wake-drain.sh from this worktree
+## Setup: parent sends one ack-typed and two answer-typed requests; the mate takes up its inbox
+pending 6a958a18007f1681: request_summary=list the open child PRs expect=answer phase=awaiting_report 
+pending 948dfb209fce264c: request_summary=what is the audit status of the ledger? expect=answer phase=awaiting_report 
+pending dfaa06a405609303: request_summary=standing note: prefer squash merges from now on expect=ack phase=awaiting_report 
+### S3 uncorrelated note (first line on the channel)  (expected: wake)
+  [mate.status size=0 classified(.seen)=0]
+$ (mate) mate_line note: mate online, picking up the queue
+RESULT: parent WOKEN. watcher stdout: signal: $LAB/parent/state/mate.status
+$ fm-wake-drain.sh
+1790247150	2	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note: mate online, picking up the queue
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate note: mate online, picking up the queue
+

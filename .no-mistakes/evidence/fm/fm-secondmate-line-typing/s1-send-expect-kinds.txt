@@ -1,0 +1,43 @@
+# isolated lab: FM_HOME=/tmp/fm-smline-lab.FHmuru/parent (tmp), mate home /tmp/fm-smline-lab.FHmuru/mate, private tmux socket under /tmp/fm-smline-lab.FHmuru/tmux
+$ fm-send.sh mate --expect ack "standing note: prefer squash merges from now on"
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fm-send: doorbell not typed because the agent in lab:fm-mate has exited; the steer is durably recorded at /tmp/fm-smline-lab.FHmuru/parent/state/mate.inbox/001.msg for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane
+exit=0
+$ fm-send.sh mate "what is the audit status of the ledger?"   (no --expect)
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+fm-send: doorbell not typed because the agent in lab:fm-mate has exited; the steer is durably recorded at /tmp/fm-smline-lab.FHmuru/parent/state/mate.inbox/002.msg for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane
+exit=0
+$ fm-send.sh mate --expect answer "list the open child PRs"
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+fm-send: doorbell not typed because the agent in lab:fm-mate has exited; the steer is durably recorded at /tmp/fm-smline-lab.FHmuru/parent/state/mate.inbox/003.msg for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane
+exit=0
+--- pending-replies/37d14907dd94d771
+task_id=mate
+request_summary=what is the audit status of the ledger?
+expect=answer
+phase=awaiting_report
+delivered_epoch=1790246865
+--- pending-replies/ceaf78e6706a062a
+task_id=mate
+request_summary=standing note: prefer squash merges from now on
+expect=ack
+phase=awaiting_report
+delivered_epoch=1790246864
+--- pending-replies/f67acb3d988b67b6
+task_id=mate
+request_summary=list the open child PRs
+expect=answer
+phase=awaiting_report
+delivered_epoch=1790246866
+$ mate inbox records
+$LAB/parent/state/mate.inbox/002.msg
+$LAB/parent/state/mate.inbox/001.msg
+$LAB/parent/state/mate.inbox/003.msg
+$ mate pane (doorbell) tail
+bash-5.2$

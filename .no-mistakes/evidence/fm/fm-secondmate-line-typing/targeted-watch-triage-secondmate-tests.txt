@@ -1,0 +1,16 @@
+ok - status_span_has_actionable: benign absorbed, captain events surfaced, classified events not re-fired
+ok - an actionable event is not hidden by later routine appends, and is named as itself
+ok - span classification retires closed decisions and surfaces rejected transitions for reconciliation
+ok - span classification from an offset keeps closed decisions closed and live ones live
+ok - a malformed seen signature causes the whole status log to be classified
+ok - stale_is_terminal: terminal status surfaces, non-terminal and no-status are benign
+ok - classifier primitives: keyed decisions and activity phases, captain relevance, window-to-task, and overrides
+ok - only script-published PR-ready and merged done lines carry a dedupe identity
+ok - a secondmate's status note surfaces even while its own agent is busy
+ok - a second mate's working line is absorbed and rides along at the next real wake
+ok - an acknowledgement resolves its ack-typed request silently and rides along at the next real wake
+ok - a presented working line does not acknowledge a later mate line the watcher has not classified
+ok - an ack-typed acknowledgement is absorbed; answers, correlated progress, done replies, and mixed spans wake
+ok - a second mate's repeated PR-ready or merge line is absorbed only when nothing intervened
+ok - the duplicate-done rule is confined to second mates
+ok - a secondmate blocker wakes despite busy evidence and later unrelated appends

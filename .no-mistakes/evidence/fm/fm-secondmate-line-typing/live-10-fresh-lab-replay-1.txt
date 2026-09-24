@@ -1,0 +1,22 @@
+## replay 1: fresh lab, brand-new empty parent channel, production lifecycle
+[first uncorrelated note] expected=wake [classified= size=0] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247723	2	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note: mate online
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate note: mate online
+[ack-typed reply 1.5s after re-arm] expected=absorb [classified=0 size=18] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247729	4	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note [corr=ce1adf7952133b14] [at=1790247727]: taken up (via-helper)
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate note [corr=ce1adf7952133b14] [at=1790247727]: taken up (via-helper)
+    pending ack ce1adf7952133b14: phase=awaiting_report
+[plain working] expected=absorb [classified=86 size=86] -> not woken (watcher still polling)
+[answer-typed reply] expected=wake [classified=104 size=104] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247744	6	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: auditing
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note [corr=3c7c0c9ceeba61f4] [at=1790247741]: audit clean (via-helper)
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working: auditing
+    mate note [corr=3c7c0c9ceeba61f4] [at=1790247741]: audit clean (via-helper)
+    pending answer 3c7c0c9ceeba61f4: phase=resolved
+[plain working 1.5s after re-arm] expected=absorb [classified=175 size=175] -> not woken (watcher still polling)

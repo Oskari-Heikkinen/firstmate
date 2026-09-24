@@ -1,0 +1,26 @@
+### natural wake on an uncorrelated note, drain+ack, restart watcher, plain working line after 1.5s (expected: absorb)
+  wake: check: rearm-resurface
+  [mate.status size=809 classified(.seen)=788]
+RESULT: WOKEN: signal: $LAB/parent/state/mate.status
+  [mate.status size=845 classified(.seen)=845]
+1790247381	14	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working: post-wake probe after 1.5s
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working: post-wake probe after 1.5s
+
+### natural wake on an uncorrelated note, drain+ack, restart watcher, plain working line after 1.5s (expected: absorb)
+  wake: signal: $LAB/parent/state/mate.status
+  [mate.status size=866 classified(.seen)=866]
+RESULT: not woken
+  [mate.status size=902 classified(.seen)=902]
+
+### natural wake on an uncorrelated note, drain+ack, restart watcher, plain working line after 5s (expected: absorb)
+  wake: check: rearm-resurface
+  [mate.status size=921 classified(.seen)=921]
+RESULT: WOKEN: signal: $LAB/parent/state/mate.status
+  [mate.status size=955 classified(.seen)=921]
+1790247412	18	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working: post-wake probe after 5s
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working: post-wake probe after 5s
+

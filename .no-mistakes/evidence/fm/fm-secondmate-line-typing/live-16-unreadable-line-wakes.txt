@@ -1,0 +1,14 @@
+## Unreadable (verb-less) mate line still wakes; routine line before it does not hide it
+[U0 plain working (routine)] expected=absorb [classified=16 size=16] -> not woken (watcher still polling)
+[U1 verb-less prose line] expected=wake [classified=36 size=36] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790248332	4	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: warming up
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: the vendor sandbox is down and I cannot continue
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working: warming up
+[U2 working line then a verb-less continuation in one span] expected=wake [classified=85 size=85] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790248336	6	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: retrying
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status:    ...and the retry also failed
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working: retrying

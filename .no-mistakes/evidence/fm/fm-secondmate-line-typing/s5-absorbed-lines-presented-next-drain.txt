@@ -1,0 +1,8 @@
+## S5 next real wake presents the absorbed ack and working line in UNREAD STATUS
+$ fm-wake-drain.sh   (draining the unrelated stale wake)
+1790246930	3	stale	lab:fm-other	stale: lab:fm-other
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate note [corr=ceaf78e6706a062a] [at=1790246926]: taken up, will squash-merge from now on (via-helper)
+mate working: auditing the child ledgers
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+$ fm-wake-drain.sh   (again: presented once, not re-printed)

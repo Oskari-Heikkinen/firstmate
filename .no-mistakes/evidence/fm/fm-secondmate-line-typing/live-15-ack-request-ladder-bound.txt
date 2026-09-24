@@ -1,0 +1,26 @@
+## Ack-typed request that never gets a reply: the ladder still bounds it while progress lines are absorbed
+corr=7d69774236e62bb0 expect=ack phase=awaiting_report grace_secs=15 
+t+10s working line 1 absorbed; record phase=awaiting_report
+t+21s working line 2 absorbed; record phase=recovery_sent
+t+29s working line 3 absorbed; record phase=recovery_sent
+t+38s WOKE: signal: $LAB/parent/state/mate.status
+  record: recovery_sent_epoch=1790248076 escalated_epoch=1790248094 phase=escalated 
+    1790248096	28	signal	mate.status	needs-decision: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: ladder probe progress 1
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: ladder probe progress 2
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: ladder probe progress 3
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: ladder probe progress 4
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: blocked [key=pending-reply-7d69774236e62bb0] [at=1790248094]: pending-reply-missed: task=mate pending-reply-id=7d69774236e62bb0 request=FYI: ladder probe, please confirm
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working: ladder probe progress 1
+    mate working: ladder probe progress 2
+    mate working: ladder probe progress 3
+    mate working: ladder probe progress 4
+    OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+    mate [key=rel] needs-decision: cut the release now or wait for kid6?
+    mate [key=pending-reply-7d69774236e62bb0] blocked: pending-reply-missed: task=mate pending-reply-id=7d69774236e62bb0 request=FYI: ladder probe, please confirm
+    OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+final record: expect=ack resolved_epoch= recovery_attempted_epoch=1790248075 recovery_sent_epoch=1790248076 escalated_epoch=1790248094 phase=escalated 
+$ mate inbox (recovery resend lands here)
+002.msg
+handled

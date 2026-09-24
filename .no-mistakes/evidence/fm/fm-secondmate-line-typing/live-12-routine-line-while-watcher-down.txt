@@ -1,0 +1,16 @@
+## routine line appended while the watcher is down (parent handling a wake), then re-arm
+initial: signal: $LAB/parent/state/mate.status
+  [mate.status size=16 classified(.seen)=16]
+woke on note 1: signal: $LAB/parent/state/mate.status
+  [mate.status size=44 classified(.seen)=44]
+(watcher down; parent handling the wake) mate appends: working: handling item 1
+(parent re-arms the watcher)
+RESULT 1: not woken (absorbed)
+  [mate.status size=69 classified(.seen)=69]
+  [mate.status size=69 classified(.seen)=69]
+woke on note 2: signal: $LAB/parent/state/mate.status
+  [mate.status size=97 classified(.seen)=97]
+(watcher down; parent handling the wake) mate appends: working: handling item 2
+(parent re-arms the watcher)
+RESULT 2: not woken (absorbed)
+  [mate.status size=122 classified(.seen)=122]

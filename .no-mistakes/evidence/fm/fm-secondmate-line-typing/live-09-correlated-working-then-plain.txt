@@ -1,0 +1,30 @@
+[corr-working-1 (answer-kind)] expected=wake [classified=1840 size=1840] -> WOKE: check: rearm-resurface
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working [key=q1]: corr=1154adeb07b8a4ed looking into it
+    pending 1154adeb07b8a4ed after wake+drain: phase=awaiting_report
+[plain-working-1 (1.5s after re-arm)] expected=absorb [classified=1840 size=1896] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247665	26	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working [key=q1]: corr=1154adeb07b8a4ed looking into it
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working: seq 1 still looking
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working [key=q1]: corr=1154adeb07b8a4ed looking into it
+    mate working: seq 1 still looking
+    pending 1154adeb07b8a4ed: phase=resolved
+[corr-working-2 (answer-kind)] expected=wake [classified=1925 size=1925] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247674	28	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working [key=q2]: corr=531e5d5ac971dbee looking into it
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working [key=q2]: corr=531e5d5ac971dbee looking into it
+    pending 531e5d5ac971dbee after wake+drain: phase=resolved
+[plain-working-2 (1.5s after re-arm)] expected=absorb [classified=1981 size=1981] -> not woken (watcher still polling)
+    pending 531e5d5ac971dbee: phase=resolved
+[corr-working-3 (answer-kind)] expected=wake [classified=2010 size=2010] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247690	30	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: seq 2 still looking
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working [key=q3]: corr=f0ccd06224ba74ef looking into it
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working: seq 2 still looking
+    mate working [key=q3]: corr=f0ccd06224ba74ef looking into it
+    pending f0ccd06224ba74ef after wake+drain: phase=resolved
+[plain-working-3 (1.5s after re-arm)] expected=absorb [classified=2066 size=2066] -> not woken (watcher still polling)
+    pending f0ccd06224ba74ef: phase=resolved

@@ -1,0 +1,32 @@
+$ fm-send.sh mate --expect answer "which children still lack a report?"
+new corr=ba42d79817220020 expect=answer
+  [mate.status size=503 classified(.seen)=503]
+### R2 correlated working line on the answer request  (expected: wake)
+$ (mate) mate_line working [key=reports]: corr=ba42d79817220020 scanning the child reports
+RESULT: parent WOKEN. watcher stdout: watcher: already running pid 102076
+$ fm-wake-drain.sh
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working: drafting the release notes
+mate working [key=reports]: corr=ba42d79817220020 scanning the child reports
+
+  [mate.status size=575 classified(.seen)=503]
+pending ba42d79817220020: phase=awaiting_report
+### R3 uncorrelated working line right after  (expected: absorb)
+$ (mate) mate_line working: still scanning
+RESULT: parent WOKEN. watcher stdout: signal: $LAB/parent/state/mate.status
+$ fm-wake-drain.sh
+1790247065	12	signal	mate.status	signal: $LAB/parent/state/mate.status
+wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working [key=reports]: corr=ba42d79817220020 scanning the child reports
+wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: working: still scanning
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+mate working [key=reports]: corr=ba42d79817220020 scanning the child reports
+mate working: still scanning
+
+  [mate.status size=599 classified(.seen)=575]
+pending ba42d79817220020: phase=resolved
+### R4 another uncorrelated working line  (expected: absorb)
+$ (mate) mate_line working: scan 80% done
+RESULT: parent NOT woken (watcher alive through 15s of 1s polls); queue: (wake queue empty)
+[2026-09-24T12:51:12+0200] absorbed benign signal: $LAB/parent/state/mate.status
+
+  [mate.status size=622 classified(.seen)=622]

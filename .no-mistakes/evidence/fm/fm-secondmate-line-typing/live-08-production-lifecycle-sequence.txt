@@ -1,0 +1,32 @@
+[note-1] expected=wake [classified=1477 size=1477] -> WOKE: check: rearm-resurface
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate note: uncorrelated status 1
+[ack-1 (1.5s after re-arm)] expected=absorb [classified=1477 size=1505] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247550	20	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note [corr=ea5b3303b28bf132] [at=1790247549]: ack seq 1 (via-helper)
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate note [corr=ea5b3303b28bf132] [at=1790247549]: ack seq 1 (via-helper)
+    pending ea5b3303b28bf132: phase=awaiting_report
+[working-1] expected=absorb [classified=1574 size=1574] -> not woken (watcher still polling)
+[note-2] expected=wake [classified=1598 size=1598] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247566	22	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: seq 1 progress
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note: uncorrelated status 2
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working: seq 1 progress
+    mate note: uncorrelated status 2
+[ack-2 (1.5s after re-arm)] expected=absorb [classified=1626 size=1626] -> not woken (watcher still polling)
+    pending ba806d32cd0fbe71: phase=resolved
+[working-2] expected=absorb [classified=1695 size=1695] -> not woken (watcher still polling)
+[note-3] expected=wake [classified=1719 size=1719] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247594	24	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: note [corr=ba806d32cd0fbe71] [at=1790247570]: ack seq 2 (via-helper)
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: seq 2 progress
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: note: uncorrelated status 3
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate note [corr=ba806d32cd0fbe71] [at=1790247570]: ack seq 2 (via-helper)
+    mate working: seq 2 progress
+    mate note: uncorrelated status 3
+[ack-3 (1.5s after re-arm)] expected=absorb [classified=1747 size=1747] -> not woken (watcher still polling)
+    pending 9689fc3f1cfd49df: phase=resolved
+[working-3] expected=absorb [classified=1816 size=1816] -> not woken (watcher still polling)

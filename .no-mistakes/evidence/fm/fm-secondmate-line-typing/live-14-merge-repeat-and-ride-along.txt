@@ -1,0 +1,23 @@
+## Merge-fact repeat that bypasses append_once (direct append, fresh stamp)
+[D9a kid5 merged via fm_merge_outcome_report (first merge fact)] expected=wake [classified=1334 size=1334] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790248012	24	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=merged-kid5] [at=1790248009]: merged kid5 https://github.com/o/r/pull/46
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=merged-kid5] [at=1790248009]: merged kid5 https://github.com/o/r/pull/46
+[D9b same merge fact appended again with a new stamp (repeat)] expected=absorb [classified=1417 size=1417] -> not woken (watcher still polling)
+[D9c then a plain working line (routine)] expected=absorb [classified=1500 size=1500] -> not woken (watcher still polling)
+[D9d an unrelated real wake: a needs-decision from the mate] expected=wake [classified=1531 size=1531] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790248034	26	signal	mate.status	needs-decision: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: done [key=merged-kid5] [at=1790248013]: merged kid5 https://github.com/o/r/pull/46
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: working: tidying up after kid5
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: needs-decision [key=rel]: cut the release now or wait for kid6?
+    UNREAD STATUS (new since last drain, not re-printed after this presentation):
+    mate working: tidying up after kid5
+    OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+    mate [key=rel] needs-decision: cut the release now or wait for kid6?
+    OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+$ tail -4 parent/state/mate.status
+done [key=merged-kid5] [at=1790248009]: merged kid5 https://github.com/o/r/pull/46
+done [key=merged-kid5] [at=1790248013]: merged kid5 https://github.com/o/r/pull/46
+working: tidying up after kid5
+needs-decision [key=rel]: cut the release now or wait for kid6?

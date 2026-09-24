@@ -1,0 +1,68 @@
+## Duplicate script-published done outcomes on the parent channel (production lifecycle)
+[D1 kid ledger outcome (first copy of ready fact)] expected=wake [classified=16 size=16] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247923	4	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=child-outcome-kid-done-0123abcd] [at=1790247921]: child kid done: shipped the parser fix pr=https://github.com/o/r/pull/41 mode=no-mistakes yolo=off
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=child-outcome-kid-done-0123abcd] [at=1790247921]: child kid done: shipped the parser fix pr=https://github.com/o/r/pull/41 mode=no-mistakes yolo=off
+[D2 kid PR-ready registration line, same PR (repeat)] expected=absorb [classified=175 size=175] -> not woken (watcher still polling)
+[D3 kid merged via fm_merge_outcome_report (first merge fact)] expected=wake [classified=293 size=293] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247935	6	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: unread wake-EVENT since last drain, not current state: mate.status: done [key=child-pr-kid] [at=1790247925]: child kid PR ready: https://github.com/o/r/pull/41 mode=no-mistakes yolo=off
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=merged-kid] [at=1790247935]: merged kid https://github.com/o/r/pull/41
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=merged-kid] [at=1790247935]: merged kid https://github.com/o/r/pull/41
+[D4 kid merged line published again (repeat)] expected=absorb [classified=374 size=374] -> not woken (watcher still polling)
+[D5a kid2 PR-ready (first copy)] expected=wake [classified=374 size=374] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247950	8	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=child-pr-kid2] [at=1790247947]: child kid2 PR ready: https://github.com/o/r/pull/42 mode=no-mistakes yolo=off
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=child-pr-kid2] [at=1790247947]: child kid2 PR ready: https://github.com/o/r/pull/42 mode=no-mistakes yolo=off
+[D5b kid2 ledger outcome WITH report= pointer (new content)] expected=wake [classified=494 size=494] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247955	10	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=child-outcome-kid2-done-89abcdef] [at=1790247952]: child kid2 done: shipped pr=https://github.com/o/r/pull/42 mode=no-mistakes yolo=off report=data/kid2/report.md
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=child-outcome-kid2-done-89abcdef] [at=1790247952]: child kid2 done: shipped pr=https://github.com/o/r/pull/42 mode=no-mistakes yolo=off report=data/kid2/report.md
+[D6a kid3 ledger outcome (first copy)] expected=wake [classified=667 size=667] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247961	12	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=child-outcome-kid3-done-11112222] [at=1790247958]: child kid3 done: shipped pr=https://github.com/o/r/pull/43 mode=no-mistakes yolo=off
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=child-outcome-kid3-done-11112222] [at=1790247958]: child kid3 done: shipped pr=https://github.com/o/r/pull/43 mode=no-mistakes yolo=off
+[D6b intervening failure] expected=wake [classified=813 size=813] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247966	14	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: failed [key=child-outcome-kid3-failed-33334444] [at=1790247963]: child kid3 failed: CI broke on main
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate failed [key=child-outcome-kid3-failed-33334444] [at=1790247963]: child kid3 failed: CI broke on main
+[D6c kid3 PR-ready after the failure (must wake)] expected=wake [classified=914 size=914] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247970	16	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=child-pr-kid3] [at=1790247967]: child kid3 PR ready: https://github.com/o/r/pull/43 mode=no-mistakes yolo=off
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=child-pr-kid3] [at=1790247967]: child kid3 PR ready: https://github.com/o/r/pull/43 mode=no-mistakes yolo=off
+[D7a kid4 PR-ready PR 44] expected=wake [classified=1034 size=1034] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247975	18	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=child-pr-kid4] [at=1790247972]: child kid4 PR ready: https://github.com/o/r/pull/44 mode=no-mistakes yolo=off
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=child-pr-kid4] [at=1790247972]: child kid4 PR ready: https://github.com/o/r/pull/44 mode=no-mistakes yolo=off
+[D7b kid4 PR-ready for a DIFFERENT PR 45] expected=wake [classified=1154 size=1154] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247980	20	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done [key=child-pr-kid4] [at=1790247978]: child kid4 PR ready: https://github.com/o/r/pull/45 mode=no-mistakes yolo=off
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done [key=child-pr-kid4] [at=1790247978]: child kid4 PR ready: https://github.com/o/r/pull/45 mode=no-mistakes yolo=off
+[D8 mate prose done about a PR (not script-published)] expected=wake [classified=1274 size=1274] -> WOKE: signal: $LAB/parent/state/mate.status
+    1790247986	22	signal	mate.status	signal: $LAB/parent/state/mate.status
+    wake annotation: latest wake-EVENT observed at drain, not current state: mate.status: done: kid4 looks good to me, https://github.com/o/r/pull/45
+    STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+    mate done: kid4 looks good to me, https://github.com/o/r/pull/45
+
+$ tail of parent/state/mate.status
+note: bootstrap
+done [key=child-outcome-kid-done-0123abcd] [at=1790247921]: child kid done: shipped the parser fix pr=https://github.com/o/r/pull/41 mode=no-mistakes yolo=off
+done [key=child-pr-kid] [at=1790247925]: child kid PR ready: https://github.com/o/r/pull/41 mode=no-mistakes yolo=off
+done [key=merged-kid] [at=1790247935]: merged kid https://github.com/o/r/pull/41
+done [key=child-pr-kid2] [at=1790247947]: child kid2 PR ready: https://github.com/o/r/pull/42 mode=no-mistakes yolo=off
+done [key=child-outcome-kid2-done-89abcdef] [at=1790247952]: child kid2 done: shipped pr=https://github.com/o/r/pull/42 mode=no-mistakes yolo=off report=data/kid2/report.md
+done [key=child-outcome-kid3-done-11112222] [at=1790247958]: child kid3 done: shipped pr=https://github.com/o/r/pull/43 mode=no-mistakes yolo=off
+failed [key=child-outcome-kid3-failed-33334444] [at=1790247963]: child kid3 failed: CI broke on main
+done [key=child-pr-kid3] [at=1790247967]: child kid3 PR ready: https://github.com/o/r/pull/43 mode=no-mistakes yolo=off
+done [key=child-pr-kid4] [at=1790247972]: child kid4 PR ready: https://github.com/o/r/pull/44 mode=no-mistakes yolo=off
+done [key=child-pr-kid4] [at=1790247978]: child kid4 PR ready: https://github.com/o/r/pull/45 mode=no-mistakes yolo=off
+done: kid4 looks good to me, https://github.com/o/r/pull/45
