@@ -2143,10 +2143,11 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
 #
 # 1. Routine lines. status_span_secondmate_routine returns 0 when every
 #    non-blank line in [<start>, <end>) of <status-file> is either
-#      - a `working:` line: progress that carries no content the parent must
-#        act on; a correlated one still resolves its pending-reply record
-#        exactly as before, and bin/fm-pending-reply-lib.sh's recovery and
-#        escalation ladder still bounds a request that gets no reply; or
+#      - a `working:` line without a correlation token: progress that carries
+#        no content the parent must act on. A correlated one resolves its
+#        pending-reply record, so it wakes the parent exactly as before, and
+#        bin/fm-pending-reply-lib.sh's recovery and escalation ladder still
+#        bounds a request that gets no reply; or
 #      - a `note:` line that <note-predicate> accepts, which the watcher binds
 #        to fm_pending_reply_line_acks: a correlated acknowledgement of a
 #        request the parent sent expecting only an acknowledgement
@@ -2187,7 +2188,9 @@ _fm_status_secondmate_routine_chunk() {  # <status-file> <start> <chunk-file> <n
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
     case "$line" in *:*) status_line_verb "$line" verb ;; *) return 1 ;; esac
     case "$verb" in
-      working) ;;
+      working)
+        case "$line" in *corr=[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]*) return 1 ;; esac
+        ;;
       note) "$predicate" "$@" "$line" || return 1 ;;
       "done") _fm_status_secondmate_duplicate_done "$f" "$start" "$chunk_file" "$number" "$line" || return 1 ;;
       *) return 1 ;;
@@ -2202,7 +2205,8 @@ _fm_status_secondmate_routine_chunk() {  # <status-file> <start> <chunk-file> <n
 #    bin/fm-pr-check.sh's PR-ready line at registration and
 #    bin/fm-inactive-reconcile.sh's ledger line for that child's ready `done:`
 #    arrive in either order. The first copy wakes the parent; a later copy adds
-#    nothing. status_done_identity names the fact a `done:` line states, for
+#    nothing unless it carries a report= pointer, which is new content and
+#    wakes. status_done_identity names the fact a `done:` line states, for
 #    the exact shapes this fleet's own writers produce and nothing else:
 #      ready <url>   done [key=child-pr-<id>]: child <id> PR ready: <url> ...
 #                    done [key=child-outcome-<id>-done-<fp>]: child <id> done: ... pr=<url> ...
@@ -2269,6 +2273,7 @@ _fm_status_secondmate_duplicate_done() {  # <status-file> <start-offset> <chunk-
   local -a history=()
   _fm_key_before_colon "$line" || return 1
   status_done_identity "$line" fact || return 1
+  case "$line" in *" report="[![:space:]]*) return 1 ;; esac
   [ "$(_fm_status_kind "$f")" = secondmate ] || return 1
   if [ "$start" -gt 0 ]; then
     while IFS= read -r earlier || [ -n "$earlier" ]; do

@@ -1660,14 +1660,19 @@ test_secondmate_ack_absorbed_answer_wakes() {
   dir=$(mate_routine_case mate-answer-wakes 'note: bootstrap' "note [corr=$corr]: the ledger is clean")
   assert_mate_span_wakes "$dir" "a reply to an answer-typed request"
 
+  dir=$(make_case mate-answer-working-wakes)
+  corr=$(mate_expectation "$dir" answer) || fail "could not create the answer expectation"
+  dir=$(mate_routine_case mate-answer-working-wakes 'note: bootstrap' "working [key=audit]: corr=$corr started the ledger audit")
+  assert_mate_span_wakes "$dir" "a correlated working line on an answer-typed request"
+
   dir=$(mate_routine_case mate-mixed-wakes 'note: bootstrap' $'working: still on it\nnote: the vendor changed their API')
   assert_mate_span_wakes "$dir" "a working line followed by an uncorrelated note"
-  pass "an ack-typed acknowledgement is absorbed; answers, done replies, and mixed spans wake"
+  pass "an ack-typed acknowledgement is absorbed; answers, correlated progress, done replies, and mixed spans wake"
 }
 
 test_secondmate_duplicate_done_absorbed_only_when_adjacent() {
   local url=https://github.com/o/r/pull/7 outcome ready merged dir
-  outcome="done [key=child-outcome-kid-done-0123abcd]: child kid done: shipped pr=$url mode=no-mistakes yolo=off report="
+  outcome="done [key=child-outcome-kid-done-0123abcd]: child kid done: shipped pr=$url mode=no-mistakes yolo=off"
   ready="done [key=child-pr-kid]: child kid PR ready: $url mode=no-mistakes yolo=off"
   merged="done [key=merged-kid]: merged kid $url"
 
@@ -1675,6 +1680,11 @@ test_secondmate_duplicate_done_absorbed_only_when_adjacent() {
   assert_mate_span_absorbed "$dir" "a repeated PR-ready line for the same PR"
   dir=$(mate_routine_case mate-dup-merged "$merged" "$merged")
   assert_mate_span_absorbed "$dir" "a repeated merge line for the same PR"
+  dir=$(mate_routine_case mate-dup-outcome "$ready" "$outcome")
+  assert_mate_span_absorbed "$dir" "a repeated ledger outcome without a report pointer"
+
+  dir=$(mate_routine_case mate-dup-outcome-report "$ready" "$outcome report=data/kid/report.md")
+  assert_mate_span_wakes "$dir" "a repeated ledger outcome carrying a report pointer"
 
   dir=$(mate_routine_case mate-dup-after-failure "$outcome"$'\nfailed: CI broke on main' "$ready")
   assert_mate_span_wakes "$dir" "a PR-ready line after an intervening failure"

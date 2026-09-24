@@ -45,14 +45,15 @@ A missed-reply escalation includes the complete first sighting path and line num
 Every captain-relevant line on the channel wakes the parent at once: a PR ready or merged, a decision, a blocker, a failure, a finished investigation, and any line the mate addresses to the captain.
 Three kinds of routine line do not wake the parent, because none of them changes what the parent does next:
 
-- A `working:` progress line.
+- A `working:` progress line without a correlation token.
   It is presented once, with the other unread status, at the parent's next real wake.
-  A correlated one still resolves its request exactly as before, and the pending-reply recovery and escalation still bound a request that gets no reply at all.
+  A correlated one resolves its request, so it still wakes the parent exactly as before, and the pending-reply recovery and escalation still bound a request that gets no reply at all.
 - A correlated `note:` acknowledgement of a request the parent sent with `bin/fm-send.sh --expect ack`.
   It is also presented at the next real wake.
   A request sent without `--expect`, or with `--expect answer`, still wakes on its reply, and a `done:`, decision, blocker, or failure reply always wakes whatever was expected.
 - A repeated script-published `done:` outcome that states the same PR-ready or merge fact as the nearest earlier outcome line, for example the PR-ready line at registration after the ledger line for the same child and PR.
   Any other event in between, such as a failure, a note, or progress, makes the repeat wake again, because the outcome may carry news.
+  A repeat that carries a `report=` pointer also wakes, because the pointer is new content.
 
 A span that mixes any of these with anything else wakes the parent, so an uncorrelated `note:` is never absorbed.
 `bin/fm-classify-lib.sh` owns which lines are routine and which outcome lines repeat, `bin/fm-pending-reply-lib.sh` owns what an acknowledgement is, and `bin/fm-watch.sh` applies both on every poll.
