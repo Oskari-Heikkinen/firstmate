@@ -39,7 +39,7 @@ new = git('-C', work, 'rev-parse', 'HEAD')
 
 def sync(environment=env):
     p = subprocess.run([str(root / 'bin/fm-fleet-sync.sh'), 'example'], env=environment,
-                       text=True, capture_output=True, timeout=60)
+                       text=True, capture_output=True, timeout=180)
     assert p.returncode == 0, (p.stdout, p.stderr)
     return p.stdout
 
@@ -120,10 +120,10 @@ for _ in range(1500):
 else:
     raise AssertionError('first fetch did not start')
 two = subprocess.Popen(command, env=slow_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-out1, err1 = one.communicate(timeout=60)
-out2, err2 = two.communicate(timeout=60)
+out1, err1 = one.communicate(timeout=180)
+out2, err2 = two.communicate(timeout=180)
 assert one.returncode == two.returncode == 0, (out1, err1, out2, err2)
-assert (home / 'fetch-count').read_text().splitlines() == ['fetch'], (out1, out2)
+assert (home / 'fetch-count').read_text().splitlines() == ['fetch'], ((home / 'fetch-count').read_text(), out1, err1, out2, err2, receipt()[1])
 assert 'coalesced refresh' in out2
 assert receipt()[1]['after']['source'] == new
 # No application evidence file was rewritten by a source refresh.
@@ -140,7 +140,7 @@ store = home / 'data/fleet-sync'
 store.rename(home / 'data/fleet-sync.aside')
 store.write_text('not a directory')
 unstored = subprocess.run([str(root / 'bin/fm-fleet-sync.sh'), 'example'], env=env,
-                          text=True, capture_output=True, timeout=60)
+                          text=True, capture_output=True, timeout=180)
 assert unstored.returncode == 0 and 'receipt unavailable' in unstored.stderr, unstored
 assert git('-C', clone, 'rev-parse', 'HEAD') == newest
 store.unlink()

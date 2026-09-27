@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Fleet-sync receipt coordinator and read-only application provenance join.
 
-Internal: sync SCRIPT HOME CLONE serializes overlapping requests per physical
-clone using an OS lock under HOME/data/fleet-sync. A request queued behind a
-successful observation completed after its arrival reuses that receipt, so
+Internal: sync SCRIPT HOME CLONE [REQUESTED_AT] serializes overlapping requests
+per physical clone using an OS lock under HOME/data/fleet-sync. A request queued
+behind a successful observation completed after its arrival (the caller's entry
+time in Unix seconds, else this process's start) reuses that receipt, so
 concurrent duplicate refresh requests do not fetch twice. Sequential requests
 still fetch; a previous timestamp is not proof of a fresh remote. Failed or
 skipped observations are not coalesced. Only fm-fleet-sync.sh owns Git mutation.
@@ -91,8 +92,12 @@ def coalescible(target, home, clone, requested):
             and old.get("after") == observation(clone))
 
 
-def sync(script, home, clone):
-    requested = time.time()
+def sync(script, home, clone, requested=None):
+    try:
+        # Bash EPOCHREALTIME follows the locale's decimal separator.
+        requested = float(str(requested).replace(",", "."))
+    except ValueError:
+        requested = time.time()
     home, clone = Path(home).resolve(), Path(clone).resolve()
     directory = home / "data" / "fleet-sync"
     key = digest(str(clone).encode())

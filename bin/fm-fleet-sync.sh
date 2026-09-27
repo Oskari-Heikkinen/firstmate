@@ -36,6 +36,8 @@
 # `fm-fleet-sync.sh dotfiles-private` syncs just that one clone, same as
 # passing its full projects/dotfiles-private path.
 set -eu
+# Arrival time for receipt coalescing, stamped before any setup work can delay it.
+REQUESTED_AT=${EPOCHREALTIME:-$(date +%s)}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -465,7 +467,7 @@ sync_project() {
     sync_project_impl "$1"
     return 0
   fi
-  python3 "$SCRIPT_DIR/fm-fleet-provenance.py" sync "$SCRIPT_DIR/fm-fleet-sync.sh" "$FM_HOME" "$1" || true
+  python3 "$SCRIPT_DIR/fm-fleet-provenance.py" sync "$SCRIPT_DIR/fm-fleet-sync.sh" "$FM_HOME" "$1" "$REQUESTED_AT" || true
 }
 
 if [ "$RECEIPT_CHILD" -eq 1 ]; then
