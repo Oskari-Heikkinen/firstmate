@@ -24,9 +24,13 @@ for n in 1 2 3 4 5 6 7 8; do
   mkdir -p "$POOL/$n"
   git -C "$T/main" worktree add -q --detach "$POOL/$n/repo" main
 done
+# 1: clean and landed, with ignored cache content the row must name;
 # 2: referenced by a task record; 3: tracked edit; 4: untracked file;
 # 5: unlanded commit; 6: leased; 7: live process; 8: stale owner claim.
 printf 'worktree=%s\ntasktmp=%s\n' "$POOL/2/repo" "$T/tmp/fm-a" > "$T/main/state/task-a.meta"
+echo 'cache/' >> "$T/main/.git/info/exclude"
+mkdir "$POOL/1/repo/cache"
+echo warm > "$POOL/1/repo/cache/blob"
 echo changed > "$POOL/3/repo/file"
 echo scratch > "$POOL/4/repo/new"
 echo two > "$POOL/5/repo/file"
@@ -79,7 +83,7 @@ def row(section, path):
     assert len(m) == 1, (path, section)
     return m[0]
 pool = T + '/pool/repo-abc/'
-assert 'on origin/main' in row(remove, pool + '1')
+assert 'on origin/main; ignored content goes too: cache/' in row(remove, pool + '1')
 for n, why in [('2', 'task-a.meta (worktree=)'), ('3', 'uncommitted tracked'),
                ('4', 'untracked files: new'), ('5', 'is not on origin/main'),
                ('6', 'leased to mate-x'), ('7', 'live process'),

@@ -30,9 +30,10 @@ A pool slot is REMOVE only when ALL hold: not leased, no referencing meta line,
 no owner claim, not a home, no live process with cwd, root or open file inside
 (read from /proc), exactly one git copy whose own top level it is, no tracked
 change and no untracked file, and HEAD an ancestor of origin's default branch as
-already recorded locally (no fetch). A scratch folder is REMOVE only when it is
-unreferenced, has no live process, nothing inside changed for --idle-hours
-(default 24), and its path is cited by no home's data/**/*.md. Any check that
+already recorded locally (no fetch); ignored content that would go with it
+(caches, environments, local evidence) is named in the row. A scratch folder is
+REMOVE only when it is unreferenced, has no live process, nothing inside changed
+for --idle-hours (default 24), and its path is cited by no home's data/**/*.md. Any check that
 errors, times out or cannot be read keeps the item in KEEP with the reason.
 
 Read-only by construction: the only subprocesses are an allowlist of read-only
@@ -123,7 +124,7 @@ class Inventory:
         for slot, wts in slots:
             for wt in wts:
                 if self.is_home(wt):
-                    homes.add(wt)
+                    homes.add(wt.resolve())
         for slot, wts in slots:
             for wt in wts:
                 main = self.common_parent(wt)
@@ -220,11 +221,12 @@ class Inventory:
             return False, 'not a readable git copy (%s)' % (err or p.stderr.strip()[:80])
         if os.path.realpath(p.stdout.strip()) != os.path.realpath(wt):
             return False, 'git top level is %s, not this copy' % p.stdout.strip()
-        p, err = self.git(wt, 'status', '--porcelain', '--untracked-files=normal')
+        p, err = self.git(wt, 'status', '--porcelain', '--untracked-files=normal', '--ignored')
         if err or p.returncode != 0:
             return False, 'git status failed (%s)' % (err or p.stderr.strip()[:80])
         lines = [ln for ln in p.stdout.splitlines() if ln]
-        tracked = [ln for ln in lines if not ln.startswith('??')]
+        tracked = [ln for ln in lines if ln[:2] not in ('??', '!!')]
+        ignored = [ln[3:] for ln in lines if ln.startswith('!!')]
         untracked = [ln for ln in lines if ln.startswith('??')]
         if tracked:
             return False, '%d uncommitted tracked change(s)' % len(tracked)
@@ -243,7 +245,11 @@ class Inventory:
             return False, 'ancestry check failed (%s)' % (err or p.stderr.strip()[:80])
         if p.returncode == 1:
             return False, 'head %s is not on %s' % (head, default)
-        return True, 'clean, head %s on %s' % (head, default)
+        kept = ''
+        if ignored:
+            more = ' +%d more' % (len(ignored) - 5) if len(ignored) > 5 else ''
+            kept = '; ignored content goes too: %s%s' % (', '.join(ignored[:5]), more)
+        return True, 'clean, head %s on %s%s' % (head, default, kept)
 
     def leases(self, key):
         f = key / 'treehouse-state.json'
