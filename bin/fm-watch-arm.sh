@@ -407,20 +407,48 @@ if [ "$mode" = handling-delivered ]; then
   exit $?
 fi
 
+# Home-scoped stop of the identity-verified watcher recorded in THIS home's
+# lock. TERM lets its cleanup release the lock. A holder still alive after the
+# bounded wait is killed only when its beacon is also stale - it is blocked in
+# a step that never returns - leaving a dead-pid lock the fresh watcher
+# reclaims; a TERM-resistant holder with a fresh beacon is a healthy peer the
+# arm below attaches to instead. Waiting for the exit before relaunching keeps
+# the fresh watcher from seeing the dying one as a live holder.
+# The holder's beacon is stale: older than GRACE, or - before its first beat -
+# a lock older than GRACE, the same test fm-watch.sh applies before refusing a
+# live holder, so a peer still starting up is never read as wedged.
+holder_beacon_stale() {
+  if [ -e "$BEAT" ]; then
+    [ "$(fm_path_age "$BEAT")" -ge "$GRACE" ]
+  else
+    [ "$(fm_path_age "$WATCH_LOCK")" -ge "$GRACE" ]
+  fi
+}
+
+stop_recorded_watcher() {  # <pid>
+  local pid=$1 i=0
+  kill -TERM "$pid" 2>/dev/null || true
+  while [ "$i" -lt 50 ] && fm_pid_alive "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if fm_pid_alive "$pid" && holder_beacon_stale \
+    && fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$pid" "$FM_HOME"; then
+    kill -KILL "$pid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 50 ] && fm_pid_alive "$pid"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+  fi
+}
+
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   if fm_pid_alive "$lock_pid"; then
     if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
-      kill -TERM "$lock_pid" 2>/dev/null || true
-      # Wait for it to actually exit before relaunching, so the fresh watcher
-      # either takes a released lock or reclaims a now-dead-pid stale lock instead
-      # of seeing the dying one as a live holder and no-opping.
-      i=0
-      while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
-        sleep 0.1
-        i=$((i + 1))
-      done
+      stop_recorded_watcher "$lock_pid"
     else
       if ! clear_stale_recorded_watcher_lock; then
         echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
@@ -440,6 +468,22 @@ if [ "$mode" = arm ] && healthy_watcher; then
   report_attached
   attach_and_wait "$HEALTHY_PID"
   exit $?
+fi
+
+# A live holder that is provably THIS home's watcher but whose beacon is older
+# than GRACE is wedged inside one step: fm-watch.sh refreshes the beacon at
+# every step boundary, so no healthy cycle ages it that far. Its own watchdog
+# normally stops it; if that watchdog is gone too, recover here through the
+# same identity-verified stop as --restart rather than refusing every arm until
+# someone kills it by hand.
+if [ "$mode" = arm ]; then
+  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  if fm_pid_alive "$lock_pid" \
+    && fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME" \
+    && holder_beacon_stale; then
+    echo "watcher: stopping wedged pid=$lock_pid (beacon stale >= ${GRACE}s)" >&2
+    stop_recorded_watcher "$lock_pid"
+  fi
 fi
 
 # Start a watcher as a tracked child and confirm it before settling in. The child
