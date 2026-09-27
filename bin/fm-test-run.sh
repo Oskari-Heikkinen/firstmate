@@ -436,6 +436,7 @@ family_for_basename() {
     fm-procevent-observe.test.sh|fm-procevent-quota.test.sh|fm-procevent-when.test.sh|fm-procevent.test.sh|\
     fm-park.test.sh|fm-live-gate.test.sh|\
     fm-project-origin.test.sh|fm-public-followup.test.sh|fm-quota-choose.test.sh|\
+    fm-rereview-brief.test.sh|\
     fm-remote-entrypoint.test.sh|fm-remote-secondmate-parent-binding.test.sh|\
     fm-send-remote-delivery.test.sh|fm-spawn-pool-base-freshen.test.sh|\
     fm-test-fixture-cleanup.test.sh|fm-test-fixtures.test.sh|\
@@ -1676,6 +1677,9 @@ families_for_changed_path() {
       printf '%s\n' "__script__:fm-procevent-quota.test.sh"
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       printf '%s\n' "__script__:fm-dispatch-resolve.test.sh"
+      ;;
+    bin/fm-rereview-brief.sh)
+      printf '%s\n' __script__:fm-rereview-brief.test.sh
       ;;
     bin/fm-procevent-observe.sh|bin/fm-procevent-ready.sh)
       printf '%s\n' __script__:fm-procevent-observe.test.sh
