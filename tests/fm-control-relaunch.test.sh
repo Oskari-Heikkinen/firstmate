@@ -487,6 +487,45 @@ test_relaunch_preserves_durable_task_metadata() {
   pass "fm-control relaunch: durable task metadata survives replacement launch publication"
 }
 
+relaunch_keeps_the_recorded_pr_lines_as_the_record_tail() {  # <case> <id> <trace on|off>
+  local dir out rc id=$2
+  dir=$(new_case "$1" "$id")
+  add_ship_task "$dir" "$id" claude
+  {
+    printf '%s\n' "pr=https://github.com/example/repo/pull/${id#rl}"
+    printf '%s\n' 'pr_head=0123456789abcdef0123456789abcdef01234567'
+  } >> "$dir/home/state/$id.meta"
+  if [ "$3" = on ]; then
+    printf '%s\n' "$$" > "$dir/home/state/.lock"
+    printf '%s on\n' "$$" > "$dir/home/state/.trace-context-effective"
+  fi
+  # shellcheck source=/dev/null
+  ( . "$ROOT/bin/fm-pr-lib.sh"; fm_pr_metadata_identity_parse "$dir/home/state/$id.meta" ) \
+    || fail "the fixture record should pass PR metadata validation before relaunch"
+
+  out=$(run_control "$dir" "$id" relaunch --note "waiting on the PR merge"); rc=$?
+  expect_code 0 "$rc" "relaunch of a task with a recorded PR should succeed"$'\n'"$out"
+  [ -n "$(meta_field "$dir" "$id" control_relaunch_tx)" ] \
+    || fail "the relaunched record should identify its relaunch transaction"
+  if [ "$3" = on ]; then
+    fm_trace_context_valid "$(meta_field "$dir" "$id" traceparent)" \
+      || fail "the relaunched record should carry the replacement's trace context"
+  fi
+  # shellcheck source=/dev/null
+  ( . "$ROOT/bin/fm-pr-lib.sh"; fm_pr_metadata_identity_parse "$dir/home/state/$id.meta" ) \
+    || fail "relaunch must keep the recorded PR lines valid for merge monitoring:"$'\n'"$(cat "$dir/home/state/$id.meta")"
+}
+
+test_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail() {
+  relaunch_keeps_the_recorded_pr_lines_as_the_record_tail pr-tail rl38 off
+  pass "fm-control relaunch: a recorded PR stays valid for merge monitoring after relaunch"
+}
+
+test_traced_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail() {
+  relaunch_keeps_the_recorded_pr_lines_as_the_record_tail pr-tail-traced rl39 on
+  pass "fm-control relaunch: a recorded PR stays valid for merge monitoring after a traced relaunch"
+}
+
 test_relaunch_serializes_concurrent_durable_metadata_publication() {
   local dir control_pid link_pid rc i=0 traceparent prepare launch_release waiting ready release
   dir=$(new_case metadata-race rl28)
@@ -2257,6 +2296,8 @@ test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
+test_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail
+test_traced_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions
