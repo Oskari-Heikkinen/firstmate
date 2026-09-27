@@ -14,8 +14,8 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|direct-push|local-only> [--branch-prefix <prefix>] [--forge <none|gerrit> [--shape squash]] [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|direct-push|local-only> [--branch-prefix <prefix>] [--forge <none|gerrit> [--shape squash]] [--herdr-lab] [--role-packet FILE]
+#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab] [--role-packet FILE]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -122,6 +122,9 @@
 # regular file, or text carrying its own "Delivery contract: mode=" line (which
 # a later scout promotion could not outrank), stops the scaffold before
 # anything is written. Secondmate charters never take it.
+# --role-packet FILE optionally appends validated receipt-derived role context
+# for ship/scout briefs; bin/fm-current-view.py owns the reference schema.
+# It validates before writing and never rewrites intent or instruction precedence.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -194,6 +197,8 @@ FORGE=none
 FORGE_SET=0
 SHAPE=
 SHAPE_SET=0
+ROLE_PACKET=
+ROLE_CONTEXT=
 POS=()
 want_value=
 for a in "$@"; do
@@ -206,6 +211,7 @@ for a in "$@"; do
       branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
       forge) FORGE=$a; FORGE_SET=1 ;;
       shape) SHAPE=$a; SHAPE_SET=1 ;;
+      role-packet) ROLE_PACKET=$a ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -216,6 +222,7 @@ for a in "$@"; do
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
+    --role-packet) want_value=role-packet ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --branch-prefix) want_value="branch-prefix" ;;
@@ -319,12 +326,22 @@ fi
 
 # Append the include as the last section of a ship or scout scaffold.
 append_brief_include() {
+  if [ -n "$ROLE_CONTEXT" ]; then
+    printf '\n%s\n' "$ROLE_CONTEXT" >> "$BRIEF"
+  fi
   [ -n "$BRIEF_INCLUDE_BODY" ] || return 0
   printf '\n%s\n%s\n%s\n' \
     '# Home brief additions' \
     "These are this home's standing additions; every other section of this brief takes precedence over anything here that conflicts." \
     "$BRIEF_INCLUDE_BODY" >> "$BRIEF"
 }
+
+if [ -n "$ROLE_PACKET" ]; then
+  [ "$KIND" != secondmate ] || { echo 'error: --role-packet is for ship/scout briefs' >&2; exit 1; }
+  packet_mode=$MODE
+  [ "$KIND" != scout ] || packet_mode=scout
+  ROLE_CONTEXT=$(python3 "$SCRIPT_DIR/fm-current-view.py" brief --manifest "$ROLE_PACKET" --task "$ID" --mode "$packet_mode" --home "$FM_HOME") || exit 1
+fi
 
 BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }

@@ -26,6 +26,9 @@
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
 # fetch_with_packed_refs_lock_guard and the FM_FLEET_SYNC_PACKED_REFS_LOCK_* knobs.
+# Structured per-clone receipts and overlapping-request coalescing are owned by
+# bin/fm-fleet-provenance.py (see its --help for the application readout).
+# Receipts live under $FM_HOME/data/fleet-sync; they never restart an application.
 # Usage: fm-fleet-sync.sh [<project-dir-or-name>]
 # The single-project form accepts either a path (absolute, or relative to the
 # caller's cwd) or a bare "<name>"/"projects/<name>" form, resolved against
@@ -35,6 +38,8 @@
 # `fm-fleet-sync.sh dotfiles-private` syncs just that one clone, same as
 # passing its full projects/dotfiles-private path.
 set -eu
+# Arrival time for receipt coalescing, stamped before any setup work can delay it.
+REQUESTED_AT=${EPOCHREALTIME:-$(date +%s)}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -46,7 +51,16 @@ PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
 FM_LOCK_LOG_PREFIX=fleet-sync
-"$FM_ROOT/bin/fm-guard.sh" || true
+# A per-clone receipt child re-enters this script; the parent already ran the guard.
+RECEIPT_CHILD=0
+RECEIPT_RESULT=
+if [ "${1:-}" = --receipt-child ] && [ $# -eq 3 ]; then
+  RECEIPT_CHILD=1
+  RECEIPT_RESULT=$3
+  shift
+  set -- "$1"
+fi
+[ "$RECEIPT_CHILD" -eq 1 ] || "$FM_ROOT/bin/fm-guard.sh" || true
 
 # Bounded recovery for an orphaned .git/packed-refs.lock. A git ref rewrite
 # (fetch --prune, branch -D, pack-refs) killed after creating the lock but before
@@ -294,12 +308,15 @@ stuck_state() {
 # how far behind origin/<default> it is, so a chronically-stuck clone is visibly
 # distinct from a benign one-off skip.
 report_stuck() {
+  SYNC_OUTCOME=stuck
   local state=$1 behind
   behind=$(git -C "$PROJ" rev-list --count "HEAD..$BASE" 2>/dev/null) || behind="?"
   echo "$label: STUCK: on $state, $behind commits behind $BASE - needs attention"
 }
 
-sync_project() {
+sync_project_impl() {
+  SYNC_OUTCOME=skipped
+  SYNC_FETCH_SUCCEEDED=false
   PROJ=$1
   label=$(project_label)
 
@@ -349,6 +366,7 @@ sync_project() {
     return 0
   fi
 
+  SYNC_FETCH_SUCCEEDED=true
   prune_gone_branches || true
 
   DEFAULT=$(default_branch) || {
@@ -409,7 +427,9 @@ sync_project() {
     return 0
   }
   if [ "$local_rev" = "$remote_rev" ]; then
+    SYNC_OUTCOME=current
     if [ "$recovered" = yes ]; then
+      SYNC_OUTCOME=recovered
       echo "$label: recovered: re-attached $DEFAULT (already current)"
     else
       echo "$label: already current"
@@ -437,13 +457,30 @@ sync_project() {
     echo "$label: skipped: fast-forward completed but cannot read local $DEFAULT"
     return 0
   }
+  SYNC_OUTCOME=synced
   if [ "$recovered" = yes ]; then
+    SYNC_OUTCOME=recovered
     echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
   else
     echo "$label: synced $before..$after"
   fi
   return 0
 }
+
+sync_project() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "$(basename "$1"): warning: python3 not found; refreshing without a receipt" >&2
+    sync_project_impl "$1"
+    return 0
+  fi
+  python3 "$SCRIPT_DIR/fm-fleet-provenance.py" sync "$SCRIPT_DIR/fm-fleet-sync.sh" "$FM_HOME" "$1" "$REQUESTED_AT" || true
+}
+
+if [ "$RECEIPT_CHILD" -eq 1 ]; then
+  sync_project_impl "$1"
+  printf '{"outcome":"%s","fetch_succeeded":%s}\n' "$SYNC_OUTCOME" "$SYNC_FETCH_SUCCEEDED" > "$RECEIPT_RESULT"
+  exit 0
+fi
 
 if [ $# -eq 1 ]; then
   sync_project "$(resolve_project_arg "$1")"

@@ -1348,6 +1348,22 @@ It uses the same live secondmate discovery and propagation helper as bootstrap; 
 - That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 - Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
 
+## Receipt-derived operational readouts
+
+[`bin/fm-resume-packet.sh`](../bin/fm-resume-packet.sh) renders a compact current packet from the existing fleet snapshot and explicitly selected owner receipts, leaving authored intent, rationale and hazards as digest-bound references.
+The same optional role packet can enrich the fleet snapshot or the ordinary brief scaffold; [`bin/fm-current-view.py`](../bin/fm-current-view.py) owns the reference schema, identity checks and invocation help.
+These views are observations, not admission, release, deletion or decision-closing authority, and do not create another task database or daemon.
+Owner adapters must supply receipts explicitly; no tool discovers approval by choosing the newest prose.
+
+[`bin/fm-application-provenance.sh`](../bin/fm-application-provenance.sh) exposes the workbench-readable join between a fleet-sync receipt and optional owner-supplied build, server and browser observations.
+[`bin/fm-fleet-provenance.py`](../bin/fm-fleet-provenance.py) owns per-clone receipt/coalescing mechanics and the provenance input/output schema.
+Source refresh never installs dependencies, restarts the application or reloads the browser; unknown or stale application evidence stays unknown.
+
+[`bin/fm-usage-audit.sh`](../bin/fm-usage-audit.sh) reruns local measurements over explicitly selected usage exports, status logs, event receipts and script inventories without uploading their contents.
+[`bin/fm-usage-audit.py`](../bin/fm-usage-audit.py) owns its versioned classifier, input schemas, bounds, uncertainty and metadata-only output contract.
+Measured usage is separate from inferred repetition candidates; neither status volume nor identical helper files proves wasted reasoning.
+Behavioral verification lives in `tests/fm-current-view.test.sh`, `tests/fm-fleet-provenance.test.sh` and `tests/fm-usage-audit.test.sh`.
+
 ## Watched tool updates (config/watched-tools.json)
 
 `config/watched-tools.json` is an optional local, gitignored list of the tools this home depends on.
