@@ -2526,10 +2526,10 @@ watcher_watchdog_owns() {
 }
 watcher_watchdog_start() {
   (
-    nap= self=$BASHPID
+    nap='' self=$BASHPID
     trap - EXIT HUP INT
     trap '[ -z "$nap" ] || kill "$nap" 2>/dev/null; exit 0' TERM
-    seen= still=0 pipe= kids=
+    seen='' still=0 pipe='' kids=''
     while :; do
       sleep "$WATCHDOG_INTERVAL" &
       nap=$!
