@@ -109,6 +109,9 @@
 #     unavailable child state or an untrustworthy backlog collapses to unknown.
 #     Which closed rows a home contributes is bin/fm-landed-lib.sh's rule, shared
 #     with the bearings projection so one Recently Landed section has one owner.
+#   hints.recorded_open_decisions preserves the authoritative keyed fold before
+#     lifecycle presentation filtering; resume packets never close these by prose.
+#   --receipts FILE adds owner_view; bin/fm-current-view.py owns its schema.
 #   contributions: cached owned-contribution coverage; fm-contributions.sh owns it.
 #   secondmate_guidance: return-channel action note for renderers and bearings.
 #
@@ -232,7 +235,7 @@ esac
 
 usage() {
   cat <<'EOF'
-usage: fm-fleet-snapshot.sh --json
+usage: fm-fleet-snapshot.sh --json [--receipts FILE]
        fm-fleet-snapshot.sh --secondmate-home-summary
 
 Print a structured snapshot of the firstmate fleet.
@@ -294,6 +297,21 @@ case "${1:---json}" in
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
+
+RECEIPT_MANIFEST=
+[ $# -eq 0 ] || shift
+if [ "${1:-}" = --receipts ] && [ $# -eq 2 ] && [ "$OUTPUT_MODE" = json ]; then
+  RECEIPT_MANIFEST=$2
+elif [ $# -ne 0 ]; then
+  usage >&2; exit 2
+fi
+receipt_projection() {
+  if [ -n "$RECEIPT_MANIFEST" ]; then
+    python3 "$SCRIPT_DIR/fm-current-view.py" snapshot --manifest "$RECEIPT_MANIFEST"
+  else
+    cat
+  fi
+}
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
 
@@ -744,7 +762,7 @@ task_json_lines() {
   local remote_host remote_root current_file endpoint_file observation_line index=0
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
-  local open_decisions_tsv open_decisions_json
+  local open_decisions_tsv open_decisions_json recorded_open_decisions_json
 
   while [ "$index" -lt "$SNAPSHOT_TASK_META_COUNT" ]; do
     meta=${SNAPSHOT_TASK_METAS[index]}
@@ -813,6 +831,12 @@ task_json_lines() {
     # non-authoritative status-log/none read on a still-live task, keeps the fold's
     # open decision surfacing.
     open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
+    # Unknown kind disables the fold's single-owner terminal shortcut: the
+    # resume view needs explicit resolution/transfer evidence, not later done prose.
+    recorded_open_decisions_json=$(status_open_decisions "$status_log" unknown | jq -R -s '
+      [ splits("\n") | select(length > 0)
+        | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
+        | select(. != null) ]')
     if [ "$kind" != secondmate ] && \
        { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
            && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
@@ -879,6 +903,7 @@ task_json_lines() {
       --argjson worktree_path "$worktree_json" \
       --argjson home_path "$home_json" \
       --argjson endpoint_exists "$endpoint_exists" \
+      --argjson recorded_open_decisions "$recorded_open_decisions_json" \
       --argjson open_decisions "$open_decisions_json" \
       --argjson pending_decision "$(bool_json "$pending_decision")" \
       --argjson blocked_event "$(bool_json "$blocked_event")" \
@@ -912,6 +937,7 @@ task_json_lines() {
           pending_decision:$pending_decision,
           blocked_event:$blocked_event,
           open_decisions:$open_decisions,
+          recorded_open_decisions:$recorded_open_decisions,
           scout_report_present:$report_present,
           last_event_text:$last_event_raw
         },
@@ -2033,6 +2059,7 @@ secondmate_current_json "$TASKS_JSON_FILE" "$SECONDMATE_CURRENT_JSON_FILE" \
 secondmate_landed_from_current_json "$SECONDMATE_CURRENT_JSON_FILE" "$SECONDMATE_LANDED_JSON_FILE" \
   || { echo "fm-fleet-snapshot: secondmate landed projection failed" >&2; exit 1; }
 
+set -o pipefail
 jq -n \
   --arg generated "$SNAPSHOT_NOW" \
   --arg fm_home "$FM_HOME" \
@@ -2072,4 +2099,4 @@ jq -n \
      secondmate_guidance:{
        note:"For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."
      }
-   }'
+   }' | receipt_projection
