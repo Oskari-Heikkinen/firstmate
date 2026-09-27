@@ -293,17 +293,43 @@ report_attached() {
   echo "watcher: attached pid=$HEALTHY_PID (beacon ${age}s)"
 }
 
+# A heavily loaded host can stretch a live watcher's startup - lock claim, then
+# identity, then first beacon - past CONFIRM_TIMEOUT. Past that base window the
+# confirmations below keep waiting only while startup is visibly still under way,
+# and never past START_CAP_SECONDS: the guard's own staleness threshold, so the
+# wait never outlasts what supervision already tolerates as a live gap.
+START_CAP_SECONDS=$GRACE
+[ "$START_CAP_SECONDS" -ge "$CONFIRM_TIMEOUT" ] 2>/dev/null || START_CAP_SECONDS=$CONFIRM_TIMEOUT
+
+# A successor is still starting when a live process claimed this home's lock
+# within the cap and has not published a contradicting identity. A long-held
+# lock whose beacon went stale is a wedged holder, not a starting one.
+successor_starting() {
+  local pid identity
+  pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" || return 1
+  [ "$(fm_path_age "$WATCH_LOCK/pid")" -lt "$START_CAP_SECONDS" ] || return 1
+  identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
+  [ -z "$identity" ] || [ "$identity" = "$(fm_pid_identity "$pid" 2>/dev/null || true)" ]
+}
+
 # Give a successor the same bounded confirmation window used for a fresh child.
 # Adapter-owned continuations normally win immediately, but the bound avoids a
 # false failure when process-close delivery and lock publication cross briefly.
 wait_for_healthy_successor() {
-  local deadline
+  local started deadline cap now
   # date(1) exposes whole seconds. Add one rounding second so a timeout of one
   # second cannot collapse to a few milliseconds when called near a boundary.
-  deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
+  started=$(date +%s)
+  deadline=$(( started + CONFIRM_TIMEOUT + 1 ))
+  cap=$(( started + START_CAP_SECONDS + 1 ))
   while :; do
     healthy_watcher && return 0
-    [ "$(date +%s)" -ge "$deadline" ] && return 1
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      [ "$now" -lt "$cap" ] || return 1
+      successor_starting || return 1
+    fi
     sleep 0.2
   done
 }
@@ -548,8 +574,12 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   exit 1
 }
 # date(1) exposes whole seconds. Keep the configured confirmation budget from
-# collapsing when startup begins just before the next second boundary.
-deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
+# collapsing when startup begins just before the next second boundary. Past the
+# base window a still-running child is a slow start, not a failure, so only the
+# cap ends the confirmation wait while it lives; an exited child ends it at once.
+confirm_started=$(date +%s)
+deadline=$(( confirm_started + CONFIRM_TIMEOUT + 1 ))
+confirm_cap=$(( confirm_started + START_CAP_SECONDS + 1 ))
 if [ -n "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ]; then
   FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$child_out" &
 else
@@ -658,7 +688,11 @@ while :; do
     owned_child_finished "$rc"
     exit $?
   fi
-  [ "$(date +%s)" -ge "$deadline" ] && break
+  now=$(date +%s)
+  if [ "$now" -ge "$deadline" ]; then
+    [ "$now" -lt "$confirm_cap" ] || break
+    fm_pid_alive "$child" || break
+  fi
   sleep 0.2
 done
 

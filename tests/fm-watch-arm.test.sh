@@ -1194,6 +1194,257 @@ test_reaper_stops_a_tracked_watcher() {
   pass "watch-arm: the test reaper stops a watcher armed for a tracked temporary home"
 }
 
+# A heavily loaded host (load average around 128) stretched a real watcher's
+# startup past the arm's base confirmation window, and the arm then reported
+# failure and killed a watcher that was still coming up, leaving none. These cases
+# run the real arm against a copy of bin/ whose watcher is a stub that stays alive
+# but takes the lock and first beacon only after the base window has passed, and
+# one that exits instead. The live slow starter must be confirmed; the exiting one
+# must still fail as soon as it exits, not at the startup cap.
+make_slow_start_bin() {  # <dir>
+  local dir=$1
+  mkdir -p "$dir/root"
+  cp -R "$ROOT/bin" "$dir/root/bin"
+  cat > "$dir/root/bin/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+STUB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$STUB_DIR/fm-wake-lib.sh"
+if [ "${FM_TEST_STUB_NEVER_BEAT:-0}" = 1 ]; then
+  printf '%s\n' "${BASHPID:-$$}" > "$STATE/starting-child"
+  while :; do sleep 0.1; done
+fi
+sleep "$FM_TEST_STUB_START_DELAY"
+[ -z "${FM_TEST_STUB_EXIT:-}" ] || exit "$FM_TEST_STUB_EXIT"
+fm_lock_try_acquire "$STATE/.watch.lock" || exit 1
+printf '%s\n' "$FM_HOME" > "$STATE/.watch.lock/fm-home"
+printf '%s\n' "$STUB_DIR/fm-watch.sh" > "$STATE/.watch.lock/watcher-path"
+fm_pid_identity "${BASHPID:-$$}" > "$STATE/.watch.lock/pid-identity"
+while :; do
+  touch "$STATE/.last-watcher-beat"
+  sleep 1
+done
+SH
+  chmod +x "$dir/root/bin/fm-watch.sh"
+}
+
+test_slow_starting_watcher_is_confirmed_past_the_base_window() {
+  local dir armout i started_at elapsed
+  dir=$(make_case slow-start-confirmed)
+  armout="$dir/arm.out"
+  make_slow_start_bin "$dir"
+  mkdir -p "$dir/home/data"
+  started_at=$(date +%s)
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/state" \
+    FM_ARM_CONFIRM_TIMEOUT=1 FM_TEST_STUB_START_DELAY=5 \
+    "$dir/root/bin/fm-watch-arm.sh" > "$armout" 2>&1 &
+  ARM_PID=$!
+  i=0
+  while [ "$i" -lt 600 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    is_live_non_zombie "$ARM_PID" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  elapsed=$(( $(date +%s) - started_at ))
+  grep -q '^watcher: started pid=' "$armout" \
+    || fail "a live watcher slower than the base window was not confirmed: $(cat "$armout")"
+  # Divergence guard: the confirmation really came after the base window.
+  [ "$elapsed" -ge 3 ] || fail "the slow starter was confirmed after only ${elapsed}s"
+  is_live_non_zombie "$ARM_PID" || fail "the arm did not stay attached to its confirmed watcher"
+  kill -TERM "$ARM_PID" 2>/dev/null || true
+  wait "$ARM_PID" 2>/dev/null || true
+  pass "watch-arm: a live watcher slower than the base confirm window is confirmed"
+}
+
+# Exercise the attached arm's distinct successor-confirmation path. The new
+# holder claims the released lock promptly, then delays its first beacon beyond
+# the base window; observing a live lock holder must extend the successor wait.
+test_successor_confirmation_window() {  # <delayed|cap|old-lock|wrong-identity>
+  local mode=$1 never_beat=1 dir armout seedout successor_pid i started_at elapsed status cap=30
+  case "$mode" in delayed) never_beat=0 ;; cap) cap=5 ;; esac
+  dir=$(make_case "slow-successor-$mode")
+  armout="$dir/arm.out"
+  seedout="$dir/seed.out"
+  make_slow_start_bin "$dir"
+  mkdir -p "$dir/home/data"
+  cat > "$dir/root/bin/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+STUB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$STUB_DIR/fm-wake-lib.sh"
+if [ "$FM_TEST_STUB_ROLE" = successor ]; then
+  while [ ! -f "$STATE/handoff-ready" ]; do sleep 0.1; done
+fi
+fm_lock_try_acquire "$STATE/.watch.lock" || exit 1
+printf '%s\n' "$FM_HOME" > "$STATE/.watch.lock/fm-home"
+printf '%s\n' "$STUB_DIR/fm-watch.sh" > "$STATE/.watch.lock/watcher-path"
+fm_pid_identity "${BASHPID:-$$}" > "$STATE/.watch.lock/pid-identity"
+cleanup() {
+  rm -f "$STATE/.last-watcher-beat"
+  fm_lock_release "$STATE/.watch.lock"
+  touch "$STATE/handoff-ready"
+  exit 0
+}
+trap cleanup TERM
+if [ "$FM_TEST_STUB_ROLE" = successor ]; then
+  case "$FM_TEST_STUB_MODE" in
+    old-lock) touch -t 200001010000 "$STATE/.watch.lock/pid" ;;
+    wrong-identity) printf 'wrong-start-identity\n' > "$STATE/.watch.lock/pid-identity" ;;
+  esac
+  touch "$STATE/successor-claimed-lock"
+  if [ "${FM_TEST_STUB_NEVER_BEAT:-0}" = 1 ]; then
+    while :; do sleep 0.1; done
+  fi
+  sleep 8
+fi
+while :; do
+  touch "$STATE/.last-watcher-beat"
+  sleep 0.1
+done
+SH
+  chmod +x "$dir/root/bin/fm-watch.sh"
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/state" \
+    FM_TEST_STUB_ROLE=seed "$dir/root/bin/fm-watch.sh" > "$seedout" 2>&1 &
+  SEED_PID=$!
+  i=0
+  while [ "$i" -lt 600 ]; do
+    [ -f "$dir/state/.last-watcher-beat" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -f "$dir/state/.last-watcher-beat" ] || fail "successor fixture seed never became healthy"
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/state" \
+    FM_ARM_CONFIRM_TIMEOUT=3 FM_ARM_ATTACH_POLL=0.1 FM_GUARD_GRACE="$cap" \
+    "$dir/root/bin/fm-watch-arm.sh" > "$armout" 2>&1 &
+  ARM_PID=$!
+  i=0
+  while [ "$i" -lt 600 ]; do
+    grep -qF "watcher: attached pid=$SEED_PID" "$armout" 2>/dev/null && break
+    is_live_non_zombie "$ARM_PID" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$SEED_PID" "$armout" \
+    || fail "arm did not attach to successor fixture seed: $(cat "$armout")"
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/state" \
+    FM_TEST_STUB_ROLE=successor FM_TEST_STUB_NEVER_BEAT="$never_beat" FM_TEST_STUB_MODE="$mode" \
+    "$dir/root/bin/fm-watch.sh" > "$dir/successor.out" 2>&1 &
+  successor_pid=$!
+  started_at=$(date +%s)
+  kill -TERM "$SEED_PID" 2>/dev/null || fail "could not release the seed lock"
+  wait "$SEED_PID" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 600 ]; do
+    grep -qF "watcher: attached pid=$successor_pid" "$armout" 2>/dev/null && break
+    is_live_non_zombie "$ARM_PID" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ "$never_beat" = 1 ]; then
+    wait_for_exit "$ARM_PID" 600
+    status=$?
+    elapsed=$(( $(date +%s) - started_at ))
+    [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+      || fail "arm did not fail at the successor startup cap: $(cat "$armout")"
+    [ -f "$dir/state/successor-claimed-lock" ] \
+      || fail "successor cap fixture never took its lock"
+    is_live_non_zombie "$successor_pid" || fail "successor exited instead of hitting the cap"
+    [ ! -e "$dir/state/.last-watcher-beat" ] || fail "capped successor unexpectedly beat"
+    if [ "$mode" = cap ]; then
+      [ "$elapsed" -ge 5 ] && [ "$elapsed" -lt 30 ] \
+        || fail "successor wait did not stop at its hard cap (${elapsed}s)"
+    else
+      # Refusing these holders must use the base window, not the 30s cap.
+      [ "$elapsed" -lt 20 ] || fail "$mode extended the base window (${elapsed}s)"
+      case "$mode" in
+        old-lock)
+          [ "$dir/state/.watch.lock/pid" -ot "$dir/state/handoff-ready" ] \
+            || fail "old-lock fixture did not actually age its pid record"
+          ;;
+        wrong-identity)
+          grep -qx 'wrong-start-identity' "$dir/state/.watch.lock/pid-identity" \
+            || fail "wrong-identity fixture did not actually contradict the successor identity"
+          ;;
+      esac
+    fi
+    grep -q '^watcher: FAILED' "$armout" || fail "unhealthy successor did not report failure"
+    ! grep -qF "watcher: attached pid=$successor_pid" "$armout" \
+      || fail "arm confirmed a successor that never beat"
+    kill -TERM "$successor_pid" 2>/dev/null || true
+    wait "$successor_pid" 2>/dev/null || true
+    pass "watch-arm: successor $mode stops the wait without confirming a holder that never beats"
+    return
+  fi
+  elapsed=$(( $(date +%s) - started_at ))
+  grep -qF "watcher: attached pid=$successor_pid" "$armout" \
+    || fail "arm failed instead of waiting for the delayed successor beacon: $(cat "$armout")"
+  [ "$elapsed" -ge 5 ] || fail "successor became healthy inside the base window (${elapsed}s)"
+  ! grep -q '^watcher: FAILED' "$armout" || fail "arm reported a failed successor: $(cat "$armout")"
+  is_live_non_zombie "$ARM_PID" || fail "arm did not stay attached to the successor"
+  kill -TERM "$ARM_PID" "$successor_pid" 2>/dev/null || true
+  wait "$ARM_PID" 2>/dev/null || true
+  wait "$successor_pid" 2>/dev/null || true
+  pass "watch-arm: a successor with a delayed first beacon extends the base confirmation window"
+}
+
+test_alive_child_without_a_beacon_fails_at_the_hard_cap() {
+  local dir armout status started_at elapsed i child_pid
+  dir=$(make_case slow-child-cap)
+  armout="$dir/arm.out"
+  make_slow_start_bin "$dir"
+  mkdir -p "$dir/home/data"
+  started_at=$(date +%s)
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/state" \
+    FM_ARM_CONFIRM_TIMEOUT=1 FM_GUARD_GRACE=5 FM_TEST_STUB_NEVER_BEAT=1 \
+    "$dir/root/bin/fm-watch-arm.sh" > "$armout" 2>&1 &
+  ARM_PID=$!
+  i=0
+  while [ "$i" -lt 600 ]; do
+    [ -f "$dir/state/starting-child" ] && break
+    is_live_non_zombie "$ARM_PID" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  child_pid=$(cat "$dir/state/starting-child" 2>/dev/null || true)
+  is_live_non_zombie "$child_pid" || fail "cap fixture child never started"
+  wait_for_exit "$ARM_PID" 600
+  status=$?
+  elapsed=$(( $(date +%s) - started_at ))
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "arm did not fail at the fresh-child startup cap: $(cat "$armout")"
+  [ "$elapsed" -ge 5 ] && [ "$elapsed" -lt 30 ] \
+    || fail "fresh-child wait did not stop at its hard cap (${elapsed}s)"
+  [ ! -e "$dir/state/.last-watcher-beat" ] || fail "capped child unexpectedly beat"
+  grep -q '^watcher: FAILED' "$armout" || fail "capped child did not report failure"
+  ! grep -q '^watcher: started' "$armout" || fail "arm confirmed a child that never beat"
+  pass "watch-arm: an alive child that never beats still fails at the hard cap"
+}
+
+test_watcher_exiting_during_slow_start_still_fails_promptly() {
+  local dir armout status started_at elapsed
+  dir=$(make_case slow-start-exits)
+  armout="$dir/arm.out"
+  make_slow_start_bin "$dir"
+  mkdir -p "$dir/home/data"
+  started_at=$(date +%s)
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/state" \
+    FM_ARM_CONFIRM_TIMEOUT=1 FM_TEST_STUB_START_DELAY=3 FM_TEST_STUB_EXIT=3 \
+    "$dir/root/bin/fm-watch-arm.sh" > "$armout" 2>&1 &
+  ARM_PID=$!
+  wait_for_exit "$ARM_PID" 600
+  status=$?
+  elapsed=$(( $(date +%s) - started_at ))
+  [ "$status" -ne 124 ] || fail "the arm kept waiting on a watcher that exited: $(cat "$armout")"
+  [ "$status" -ne 0 ] || fail "the arm reported success for a watcher that exited: $(cat "$armout")"
+  grep -q '^watcher: FAILED' "$armout" \
+    || fail "the arm did not report the typed failure line: $(cat "$armout")"
+  ! grep -q '^watcher: started' "$armout" \
+    || fail "the arm reported a started watcher that exited: $(cat "$armout")"
+  [ "$elapsed" -lt 60 ] || fail "the arm took ${elapsed}s to fail on a watcher that exited"
+  pass "watch-arm: a watcher that exits during a slow start still fails promptly"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_arm_refuses_an_unusable_launch_confirm_window
@@ -1217,3 +1468,10 @@ test_handling_window_close_keeps_the_acknowledgement_valid
 test_moved_generation_acknowledgement_is_self_healing
 test_downtime_marker_does_not_follow_symlink
 test_stop_ends_the_home_watcher_and_publishes_downtime
+test_slow_starting_watcher_is_confirmed_past_the_base_window
+test_watcher_exiting_during_slow_start_still_fails_promptly
+test_successor_confirmation_window delayed
+test_successor_confirmation_window cap
+test_successor_confirmation_window old-lock
+test_successor_confirmation_window wrong-identity
+test_alive_child_without_a_beacon_fails_at_the_hard_cap
