@@ -170,6 +170,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-account-lib.sh
+. "$SCRIPT_DIR/fm-account-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -844,6 +846,16 @@ resolve_relaunch_profile() {
   fi
   if [ "$TARGET_EFFORT" = ultra ]; then
     "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$TARGET_HARNESS" "$TARGET_MODEL" "$TARGET_EFFORT" || return 1
+  fi
+  # The launch owner also refuses a subscription account it cannot honor
+  # (bin/fm-account-lib.sh); asking the same resolver here keeps that refusal
+  # before the running agent is stopped too.
+  if [ "$TARGET_HARNESS" = claude ]; then
+    local account_home
+    account_home=$(fm_meta_get "$META" home)
+    [ -n "$account_home" ] || account_home=$WT
+    fm_account_resolve_spawn "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" "$KIND" 1 "$META" "$account_home" \
+      || die "$FM_ACCOUNT_ERROR; refusing to stop $ID for a launch that must be refused"
   fi
 }
 

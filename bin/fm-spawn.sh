@@ -68,6 +68,10 @@
 #   from that harness's launch rather than guessed. Ultra is the explicit
 #   exception: bin/fm-harness.sh validate-native-effort owns its model scope;
 #   supported Pi launches receive --codex-effort ultra, never --thinking ultra.
+#   A Claude launch's subscription login (CLAUDE_CONFIG_DIR) is chosen by
+#   bin/fm-account-lib.sh's fm_account_resolve_spawn, which owns its precedence,
+#   floor failover, and refusals; the task record keeps account= and
+#   claude_config_dir= so a relaunch stays on it.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
 #   is authorized). Without it, the script resolves FM_BACKEND, then
@@ -568,6 +572,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-account-lib.sh
+. "$SCRIPT_DIR/fm-account-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -3983,6 +3989,26 @@ fi
 # path that was not pre-registered, refuses to count a busy turn as ready until
 # it has done so. agy is crewmate/scout only (refused above for secondmate), so
 # only the worktree shape applies.
+# Subscription account: bin/fm-account-lib.sh owns which Claude login this
+# launch uses (FM_SPAWN_ACCOUNT, a second mate's pin, the task's recorded
+# account, or this home's new-spawn choice with its floor failover). Exporting
+# the chosen folder here makes the trust registration below and the launch
+# forwarding further down both use it; a named account that cannot be honored
+# refuses before anything per-task exists.
+SPAWN_ACCOUNT=
+if [ "$HARNESS" = claude ]; then
+  if ! fm_account_resolve_spawn "$CONFIG" "$STATE" "$KIND" "$RELAUNCH" "${RELAUNCH_META:-}" "$PROJ_ABS"; then
+    echo "error: $FM_ACCOUNT_ERROR; refusing to launch $ID on another login" >&2
+    exit 1
+  fi
+  [ -z "$FM_ACCOUNT_NOTICE" ] || echo "$FM_ACCOUNT_NOTICE" >&2
+  if [ -n "$FM_ACCOUNT_DIR" ]; then
+    CLAUDE_CONFIG_DIR=$FM_ACCOUNT_DIR
+    export CLAUDE_CONFIG_DIR
+  fi
+  SPAWN_ACCOUNT=$FM_ACCOUNT_NAME
+fi
+
 AGY_TRUST_PREREGISTERED=0
 case "$HARNESS" in
 claude*)
@@ -4563,7 +4589,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort account claude_config_dir busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -4581,6 +4607,8 @@ preserve_relaunch_meta() {
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  [ -z "$SPAWN_ACCOUNT" ] || echo "account=$SPAWN_ACCOUNT"
+  [ "$HARNESS" != claude ] || [ -z "${CLAUDE_CONFIG_DIR:-}" ] || echo "claude_config_dir=$CLAUDE_CONFIG_DIR"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.
@@ -4765,9 +4793,10 @@ esac
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
 # back to the default ~/.claude store even when firstmate itself runs under a
 # different CLAUDE_CONFIG_DIR (for example a work-vs-personal subscription split).
-# Forward firstmate's own resolved store onto the claude launch so the crewmate
-# uses the same credential/config firstmate is authenticated with. Only when set;
-# an unset value is the single-store default and needs no prefix.
+# Forward the resolved store - firstmate's own, or the subscription account
+# chosen above - onto the claude launch so the worker uses exactly that
+# credential/config. Only when set; an unset value is the single-store default
+# and needs no prefix.
 if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
 fi

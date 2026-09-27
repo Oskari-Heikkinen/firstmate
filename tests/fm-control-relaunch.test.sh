@@ -647,6 +647,50 @@ test_relaunch_appends_the_progress_note_to_the_instructions() {
   pass "fm-control relaunch: progress and the Firstmate-worktree worker identity reach the replacement"
 }
 
+# add_accounts <case-dir>: register gmail and work logins for this home.
+add_accounts() {
+  mkdir -p "$1/home/config" "$1/gmail" "$1/work"
+  printf 'gmail claude %s\nwork claude %s\n' "$1/gmail" "$1/work" > "$1/home/config/accounts"
+}
+
+test_account_switch_relaunch_records_and_keeps_the_new_login() {
+  local dir out rc
+  dir=$(new_case account rl-acct)
+  add_ship_task "$dir" rl-acct claude
+  add_accounts "$dir"
+  printf 'account=gmail\nclaude_config_dir=%s\n' "$dir/gmail" >> "$dir/home/state/rl-acct.meta"
+  out=$(FM_SPAWN_ACCOUNT=work run_control "$dir" rl-acct relaunch --note "moved to another login"); rc=$?
+  expect_code 0 "$rc" "an account switch relaunch should succeed"$'\n'"$out"
+  [ "$(meta_field "$dir" rl-acct account)" = work ] || fail "the record must carry the new account"
+  [ "$(meta_field "$dir" rl-acct claude_config_dir)" = "$dir/work" ] || fail "the record must carry the new login folder"
+  assert_grep "CLAUDE_CONFIG_DIR='$dir/work' " "$dir/fake/literal" "the replacement must launch on the new login"
+  : > "$dir/fake/literal"
+  out=$(run_control "$dir" rl-acct relaunch --note "ordinary restart"); rc=$?
+  expect_code 0 "$rc" "a later plain relaunch should succeed"$'\n'"$out"
+  [ "$(meta_field "$dir" rl-acct account)" = work ] || fail "a later relaunch must not revert the account"
+  assert_grep "CLAUDE_CONFIG_DIR='$dir/work' " "$dir/fake/literal" "a later relaunch must stay on the recorded login"
+  pass "fm-control relaunch: an account switch is recorded and a later relaunch keeps it"
+}
+
+test_account_switch_to_an_unusable_login_refuses_before_stop() {
+  local dir out rc
+  dir=$(new_case account-refuse rl-acct2)
+  add_ship_task "$dir" rl-acct2 claude
+  add_accounts "$dir"
+  printf 'account=gmail\n' >> "$dir/home/state/rl-acct2.meta"
+  out=$(FM_SPAWN_ACCOUNT=nosuch run_control "$dir" rl-acct2 relaunch --note "moved"); rc=$?
+  [ "$rc" -ne 0 ] || fail "an unregistered account must refuse"
+  assert_contains "$out" "account 'nosuch' named by the requested switch is not registered" "the refusal names the account"
+  assert_no_grep "/exit" "$dir/fake/literal" "the running agent must not be stopped"
+  rm -rf "$dir/gmail"
+  out=$(run_control "$dir" rl-acct2 relaunch --note "restart"); rc=$?
+  [ "$rc" -ne 0 ] || fail "a recorded login that no longer exists must refuse"
+  assert_contains "$out" "sign in to it first" "the refusal asks for sign-in"
+  assert_no_grep "/exit" "$dir/fake/literal" "the running agent must not be stopped"
+  [ "$(meta_field "$dir" rl-acct2 account)" = gmail ] || fail "a refused relaunch changes nothing"
+  pass "fm-control relaunch: an account that cannot be honored refuses before the agent is stopped"
+}
+
 test_relaunch_requires_a_note_for_a_ship_task() {
   local dir out rc before
   dir=$(new_case nonote rl3)
@@ -2302,6 +2346,8 @@ test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions
 test_relaunch_requires_a_note_for_a_ship_task
+test_account_switch_relaunch_records_and_keeps_the_new_login
+test_account_switch_to_an_unusable_login_refuses_before_stop
 test_harness_switch_moves_the_record_and_clears_prior_wiring
 test_harness_switch_does_not_carry_the_old_profile_axes
 test_harness_switch_resolves_a_prefixed_recorded_harness
