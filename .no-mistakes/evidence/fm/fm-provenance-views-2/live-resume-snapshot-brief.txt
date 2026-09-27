@@ -1,0 +1,119 @@
+=== S8: resume packet from the real fleet snapshot + owner receipts ===
+
+$ bin/fm-resume-packet.sh --manifest packet.json
+# Resume packet
+
+Observations only; inspect owner evidence before acting.
+Authored intent/rationale and history are linked, not regenerated.
+{
+ "authority": "observation-only",
+ "role": "analysis",
+ "task": "job",
+ "spawn_gen": "g1",
+ "decision_evidence": "recorded-fold",
+ "recorded_open_decisions": [
+  {
+   "key": "scope",
+   "summary": "pick scope",
+   "verb": "needs-decision"
+  }
+ ],
+ "history": "<tmp>/home/state/job.status"
+}
+  receipt r3 -> in-progress waiting  deps= ['upstream-review']
+  receipt ? -> unknown  receipt identity/schema mismatch deps= None
+  receipt r5 -> collection-problems partial  deps= []
+  receipt r1 -> verified-terminal analysis-done  deps= []
+  receipt r2 -> terminal-unverified claims-done-no-proof  deps= []
+status log unchanged (done does not close decision): 3 lines
+
+=== S9: plain snapshot omits raw fold; --receipts adds owner_view ===
+
+$ bin/fm-fleet-snapshot.sh --json | jq hints keys
+["blocked_event","last_event_text","open_decisions","pending_decision","scout_report_present"]
+
+$ bin/fm-fleet-snapshot.sh --json --receipts packet.json | jq
+{"hints":["blocked_event","last_event_text","open_decisions","pending_decision","recorded_open_decisions","scout_report_present"],"owner_view":{"role":"analysis","authority":"observation-only","states":["verified-terminal","terminal-unverified","in-progress","unknown","collection-problems"]}}
+
+=== S10: role brief ===
+
+$ bin/fm-brief.sh job repo --mode direct-PR --role-packet packet.json   (packet contains invalid receipt)
+fm-current-view: role packet contains invalid receipt references
+exit=1 brief exists: no
+
+$ bin/fm-brief.sh job repo --mode local-only --role-packet packet.json   (mode mismatch)
+fm-current-view: brief task/delivery mismatch
+exit=1 brief exists: no
+
+$ bin/fm-brief.sh job --secondmate --no-projects --role-packet packet.json
+error: --role-packet is for ship/scout briefs
+exit=1
+
+$ FM_HOME=<symlink to home> bin/fm-brief.sh job repo --mode direct-PR --role-packet packet.json
+scaffolded: <tmp>/home-link/data/job/brief.md (ship, mode=direct-PR; replace {TASK} and {FIRSTMATE_SPEC})
+exit=0
+--- brief.md: contract/intent lines and appended role section ---
+4:## Captain's intent
+5:{TASK}
+77:Delivery contract: mode=direct-PR
+# Receipt-derived role context (observations, not authority)
+
+Original intent and launch instruction precedence remain unchanged.
+Role scope and owned paths below describe the supplied owner packet; they grant no new access.
+
+```json
+{
+  "intent": {
+    "path": "intent.md",
+    "sha256": "4d7a588a422357107b801912e348349749afc7d1825d597fa64ac13b7c3f8c82"
+  },
+  "omitted_milestone_references": [],
+  "owned_paths": [
+    "data/job"
+  ],
+  "rationale": {
+    "path": "hazards.md",
+    "sha256": "6b3944304294ade16b89a6af7cc2df9609e216c1d7f42bd95f65275071778b46"
+  },
+  "receipts": [
+    {
+      "dependencies": [
+        "upstream-review"
+      ],
+      "evidence_count": 1,
+      "freshness": {
+        "age_seconds": 5.565299034118652,
+        "observed_at": 1790524515.4478312,
+        "state": "fresh"
+      },
+      "gaps": [],
+      "id": "r3",
+      "milestone": "waiting",
+      "observer": "obs-A",
+      "owner_reported_versions": {
+        "kit": "v2"
+      },
+      "reference": {
+        "path": "r3.json",
+        "sha256": "68ccaf19255372131782e8e488d1275556e49d7ff0273a4eee74171cc5192e1a"
+      },
+      "state": "in-progress"
+    },
+    {
+      "dependencies": [],
+      "evidence_count": 1,
+      "freshness": {
+        "age_seconds": 5.56482720375061,
+        "observed_at": 1790524515.4478312,
+        "state": "fresh"
+      },
+      "gaps": [],
+      "id": "r1",
+      "milestone": "analysis-done",
+      "observer": "obs-A",
+      "owner_reported_versions": {
+        "kit": "v2"
+      },
+      "reference": {
+        "path": "r1.json",
+intent file untouched: Build exactly the approved thing.

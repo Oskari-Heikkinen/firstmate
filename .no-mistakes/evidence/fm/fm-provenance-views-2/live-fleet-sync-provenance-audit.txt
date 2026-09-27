@@ -1,0 +1,65 @@
+=== S1/S2/S3: full-fleet sync over 3 clones (alpha behind, beta diverged, gamma dirty) ===
+
+$ FM_ROOT_OVERRIDE=<guard-counting root> bin/fm-fleet-sync.sh
+alpha: synced d9bec1d..0f75707
+beta: STUCK: on diverged main, 1 commits behind origin/main - needs attention
+gamma: STUCK: on branch main with uncommitted changes, 1 commits behind origin/main - needs attention
+guard invocations for a 3-clone full sync: 1
+
+$ jq receipt for alpha
+{"clone":"alpha","outcome":"synced","fetch_succeeded":true,"before_source":"d9bec1d1","after_source":"0f757070","remote_tip":"0f757070","dirty":false,"branch":"main"}
+
+$ jq receipt for beta
+{"clone":"beta","outcome":"stuck","fetch_succeeded":true,"before_source":"a9a4b62f","after_source":"a9a4b62f","remote_tip":"38cbb170","dirty":false,"branch":"main"}
+
+$ jq receipt for gamma
+{"clone":"gamma","outcome":"stuck","fetch_succeeded":true,"before_source":"38e966ac","after_source":"38e966ac","remote_tip":"d29d2f37","dirty":true,"branch":"main"}
+beta HEAD still local diverged commit: yes
+gamma uncommitted edit preserved: uncommitted; stash list empty: yes
+
+=== S4: application provenance readout (alpha) ===
+
+$ fm-application-provenance.sh RECEIPT   (no owner app evidence)
+{"source_current":true,"application_state":"unknown","stages":{"browser":"unknown","build":"unknown","server":"unknown"}}
+
+$ ... --application app.json  (build/server/browser all at synced source)
+{"source_current":true,"application_state":"owner-reported-match","stages":{"browser":"observed","build":"observed","server":"observed"}}
+
+$ ... --application app.json  (server/browser still on previous commit)
+{"source_current":true,"application_state":"source-updated-app-not-updated","stages":{"browser":"observed","build":"observed","server":"observed"}}
+
+$ ... --application app.json  (browser on commit outside source history)
+{"source_current":true,"application_state":"app-revision-outside-source-history","stages":{"browser":"observed","build":"observed","server":"observed"}}
+
+$ ... --application app.json  (server/browser observations stale)
+{"source_current":true,"application_state":"unknown","stages":{"browser":"unknown","build":"unknown","server":"unknown"}}
+
+$ ... --max-age 1 after 2s (stale source receipt)
+{"source_current":false,"application_state":"unknown","stages":{"browser":"observed","build":"observed","server":"observed"}}
+
+$ fm-application-provenance.sh <beta receipt> (diverged clone)
+{"source_current":false,"application_state":"unknown","stages":{"browser":"unknown","build":"unknown","server":"unknown"}}
+
+=== S5: symlinked project path keeps project label ===
+
+$ bin/fm-fleet-sync.sh alias
+alias: already current
+
+=== S6: fetch failure never claims current remote ===
+
+$ bin/fm-fleet-sync.sh alpha
+alpha: skipped: fetch failed: fatal: '/tmp/fm-live-e2e/home.F9Up/missing.git' does not appear to be a git repository
+{"outcome":"skipped","fetch_succeeded":"see receipt","source_current":false,"application_state":"unknown"}
+{"outcome":"skipped","fetch_succeeded":false}
+
+=== S7: usage audit privacy / dedup / truncated tail ===
+
+$ bin/fm-usage-audit.sh --home H --usage usage.jsonl --events ledger.jsonl --status t.status
+{"classifier":"local-metadata-v1","by_role":{"crew":{"calls":1,"input_tokens":500,"cached_input_tokens":300,"exporter_cycle_kinds":{"wait-renewal":1}},"scout":{"calls":1,"input_tokens":500,"cached_input_tokens":300,"exporter_cycle_kinds":{"work":1}}},"ledger":{"coverage":"unknown; ledger has no gap/rotation identity","exact_unique_lower_bound":{"task.status":1},"raw_counts":{"task.status":2}},"status":{"ack":1,"paused":1,"working":1},"quality":{"conflicting_event_ids":0,"conflicting_usage_ids":0,"duplicate_usage_ids":1,"exact_ledger_duplicates":1,"incomplete_tails":1},"samples":[{"class":"incomplete-tail","file_id":"e015f5f7b0f790a69ed540e6a51984675bb0a5f27822856ea7f45005c61a0178","line":3},{"class":"inferred-paused-candidate","file_id":"04f04d740cb414b1f232bc33020de4a106d8df0e7bdb9255a89e7355bfa62e3c","line":1},{"class":"inferred-ack-candidate","file_id":"04f04d740cb414b1f232bc33020de4a106d8df0e7bdb9255a89e7355bfa62e3c","line":2}]}
+secret present in output: 0
+
+$ bin/fm-usage-audit.sh --home H --status /etc/passwd   (outside selected roots)
+fm-usage-audit: invalid/unreadable input (ValueError); see --help
+exit=1
+
+home removed: /tmp/fm-live-e2e/home.F9Up
