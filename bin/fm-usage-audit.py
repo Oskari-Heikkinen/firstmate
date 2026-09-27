@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Repeatable home-local metadata-only usage/repetition audit (classifier v1).
 
-Usage: fm-usage-audit.sh --home DIR [--usage JSONL] [--events JSONL]
+Usage: fm-usage-audit.sh --home DIR [--also-root DIR] [--usage JSONL] [--events JSONL]
        [--status FILE] [--scripts DIR] [--inventory DIR] [--queue-log FILE]
        [--since EPOCH] [--until EPOCH] [--line-limit N]
 Flags selecting inputs repeat; no implicit scans, remote IO or transcript export.
-All inputs must resolve inside the selected home. Symlinks escaping it are
-refused, script scans ignore symlinks. Output is JSON on stdout, no files changed.
+Relative inputs resolve inside the selected home; an absolute input must resolve
+inside the home or an explicitly selected --also-root (for example a sibling home
+or a local queue-log directory). Symlinks escaping every selected root are
+refused, script scans ignore symlinks. File IDs digest root index plus relative
+path. Output is JSON on stdout, no files changed.
 
 Approved usage export rows: schema=fm-usage.v1, id, role, ts (Unix seconds),
 input_tokens, output_tokens, cached_input_tokens, context_tokens (nonnegative
@@ -90,6 +93,7 @@ def label(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--home", required=True)
+    parser.add_argument("--also-root", action="append", default=[])
     for flag in ("usage", "events", "status", "scripts", "inventory", "queue-log"):
         parser.add_argument(f"--{flag}", action="append", default=[])
     parser.add_argument("--line-limit", type=int)
@@ -101,6 +105,18 @@ def main():
     if args.since > args.until or (args.line_limit is not None and args.line_limit < 1):
         raise ValueError("invalid window/prefix")
     home = Path(args.home).resolve(strict=True)
+    roots = [home] + [Path(r).resolve(strict=True) for r in args.also_root]
+
+    def contained(value):
+        # Relative inputs name the home; absolute ones may sit in any selected root.
+        candidates = roots if Path(value).is_absolute() else roots[:1]
+        for index, base in enumerate(candidates):
+            try:
+                path = local_path(base, value)
+            except ValueError:
+                continue
+            return path, digest(f"{index}:{path.relative_to(base)}".encode())
+        raise ValueError("input outside selected roots")
     counts = Counter()
     inputs, samples = [], []
     usages, conflicts, events, event_conflicts = {}, set(), {}, set()
@@ -125,7 +141,7 @@ def main():
     for kind in ("usage", "events", "status", "scripts", "inventory", "queue_log"):
         paths = []
         for value in getattr(args, kind):
-            path = local_path(home, value)
+            path, root_fid = contained(value)
             if kind == "inventory":
                 if (kind, path) in visited:
                     counts["duplicate_input_paths"] += 1
@@ -145,7 +161,7 @@ def main():
                                        if p.name.endswith(s)), "other")
                         suffixes[suffix] += 1
                         manifest.append({"name_digest": digest(p.name.encode()), "bytes": p.stat().st_size})
-                inventories.append({"directory_id": digest(str(path.relative_to(home)).encode()),
+                inventories.append({"directory_id": root_fid,
                                     "manifest_sha256": digest(canonical(manifest)),
                                     "files": len(manifest), "by_suffix": suffixes})
             elif kind == "scripts":
@@ -163,13 +179,12 @@ def main():
             else:
                 paths.append(path)
         for path in paths:
-            path = local_path(home, str(path))
+            path, fid = contained(str(path))
             if (kind, path) in visited:
                 counts["duplicate_input_paths"] += 1
                 continue
             visited.add((kind, path))
             raw = bytes_at(path)
-            fid = digest(str(path.relative_to(home)).encode())
             inputs.append({"kind": kind, "file_id": fid, "sha256": digest(raw), "bytes": len(raw)})
             if kind == "scripts":
                 script_counts[path.suffix] += 1

@@ -5,7 +5,8 @@ set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-usage-audit)
-python3 - "$ROOT" "$TMP_ROOT" <<'PY'
+mkdir "$TMP_ROOT/home"
+python3 - "$ROOT" "$TMP_ROOT/home" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -76,6 +77,12 @@ assert run('--inventory', 'approvals')['directory_inventories'][0]['by_suffix'] 
 assert run('--status', 'status')['actual_usage']['available'] is False
 assert run(*args, '--usage', 'usage.jsonl')['quality']['duplicate_input_paths'] == 1
 run('--status', root / 'AGENTS.md', ok=False)
+# An explicitly selected sibling root admits absolute inputs; relative ones stay home-local.
+sibling = home.parent / 'sibling-root'
+sibling.mkdir()
+(sibling / 'queue.log').write_text('RESULT outcome=landed main=abcdef0123\n')
+assert run('--also-root', sibling, '--queue-log', sibling / 'queue.log')['queue_log']['outcomes'] == {'landed': 1}
+run('--queue-log', sibling / 'queue.log', ok=False)
 (home / 'escape').symlink_to(root / 'AGENTS.md')
 run('--status', 'escape', ok=False)
 jsonl('invalid.jsonl', [{**usage, 'cached_input_tokens': 9999}, {**usage, 'input_tokens': -1},
