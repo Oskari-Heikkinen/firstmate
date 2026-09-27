@@ -137,7 +137,7 @@ def receipts(m, home):
 
 
 def project(snapshot, m, rows):
-    if snapshot["schema"] != "fm-fleet-snapshot.v1" or snapshot["fm_home"] != m["home"]:
+    if snapshot["schema"] != "fm-fleet-snapshot.v1" or Path(snapshot["fm_home"]).resolve() != Path(m["home"]):
         raise ValueError("snapshot schema/home mismatch")
     task = next((t for t in snapshot["tasks"] if t["id"] == m["task"]), None)
     if task is None or task.get("spawn_gen") != m["spawn_gen"]:
@@ -173,7 +173,7 @@ def main():
     m, home = packet(args.manifest)
     rows = receipts(m, home)
     if args.command == "brief":
-        if args.task != m["task"] or args.mode != m["mode"] or args.home != m["home"]:
+        if args.task != m["task"] or args.mode != m["mode"] or Path(args.home).resolve() != Path(m["home"]):
             raise ValueError("brief task/delivery mismatch")
         if any(r["state"] == "unknown" for r in rows):
             raise ValueError("role packet contains invalid receipt references")
@@ -193,7 +193,8 @@ def main():
     else:
         env = dict(os.environ, FM_HOME=str(home))
         snapshot = json.loads(subprocess.check_output(
-            [str(Path(__file__).with_name("fm-fleet-snapshot.sh")), "--json"], env=env))
+            [str(Path(__file__).with_name("fm-fleet-snapshot.sh")), "--json", "--receipts", args.manifest],
+            env=env))
     task, rows = project(snapshot, m, rows)
     view = {"schema": "fm-current-view.v1", "authority": "observation-only",
             "task": m["task"], "spawn_gen": m["spawn_gen"], "role": m["role"],

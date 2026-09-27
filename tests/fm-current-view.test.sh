@@ -125,6 +125,17 @@ with (home / 'state/job.status').open('a') as out:
     out.write('resolved [at=102] [key=choose]: actual answer\n')
 actual = json.loads(run('fm-fleet-snapshot.sh', '--json', '--receipts', mpath))
 assert actual['tasks'][0]['hints']['recorded_open_decisions'] == []
+# The raw fold is computed only for receipt consumers; plain JSON omits it.
+assert 'recorded_open_decisions' not in json.loads(run('fm-fleet-snapshot.sh', '--json'))['tasks'][0]['hints']
+view = json.loads(run('fm-resume-packet.sh', '--manifest', mpath, '--json'))
+assert view['decision_evidence'] == 'recorded-fold' and view['recorded_open_decisions'] == []
+# A home reached through a symlink still matches the packet's physical home.
+link = tmp / 'home-link'
+link.symlink_to(home)
+env['FM_HOME'] = str(link)
+(home / 'data/job/brief.md').unlink()
+assert json.loads(run('fm-fleet-snapshot.sh', '--json', '--receipts', mpath))['owner_view']['role'] == 'analysis'
+run('fm-brief.sh', 'job', 'repo', '--mode', 'direct-PR', '--role-packet', mpath)
 assert intent.read_text() == 'Implement exactly this approved request.\n'
 print('PASS: receipt views, role brief validation, generation binding and decision preservation')
 PY

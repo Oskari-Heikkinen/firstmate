@@ -109,8 +109,9 @@
 #     unavailable child state or an untrustworthy backlog collapses to unknown.
 #     Which closed rows a home contributes is bin/fm-landed-lib.sh's rule, shared
 #     with the bearings projection so one Recently Landed section has one owner.
-#   hints.recorded_open_decisions preserves the authoritative keyed fold before
-#     lifecycle presentation filtering; resume packets never close these by prose.
+#   hints.recorded_open_decisions (only with --receipts) preserves the authoritative
+#     keyed fold before lifecycle presentation filtering; resume packets never close
+#     these by prose.
 #   --receipts FILE adds owner_view; bin/fm-current-view.py owns its schema.
 #   contributions: cached owned-contribution coverage; fm-contributions.sh owns it.
 #   secondmate_guidance: return-channel action note for renderers and bearings.
@@ -833,7 +834,8 @@ task_json_lines() {
     open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
     # Unknown kind disables the fold's single-owner terminal shortcut: the
     # resume view needs explicit resolution/transfer evidence, not later done prose.
-    recorded_open_decisions_json=$(status_open_decisions "$status_log" unknown | jq -R -s '
+    recorded_open_decisions_json=null
+    [ -z "$RECEIPT_MANIFEST" ] || recorded_open_decisions_json=$(status_open_decisions "$status_log" unknown | jq -R -s '
       [ splits("\n") | select(length > 0)
         | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
         | select(. != null) ]')
@@ -933,14 +935,13 @@ task_json_lines() {
                   else "unknown" end),
           observed_at:$observed_at,freshness:"fresh"},
         pr:{url:($pr | if . == "" then null else . end),source:$pr_source,head:($pr_head | if . == "" then null else . end)},
-        hints:{
+        hints:({
           pending_decision:$pending_decision,
           blocked_event:$blocked_event,
           open_decisions:$open_decisions,
-          recorded_open_decisions:$recorded_open_decisions,
           scout_report_present:$report_present,
           last_event_text:$last_event_raw
-        },
+        } + (if $recorded_open_decisions == null then {} else {recorded_open_decisions:$recorded_open_decisions} end)),
         actions:(
           if $kind == "secondmate" then
             {send:"bin/fm-send.sh fm-\($id) \u0027<request>\u0027",
