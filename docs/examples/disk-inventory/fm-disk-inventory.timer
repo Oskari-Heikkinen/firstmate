@@ -1,0 +1,11 @@
+# Example systemd user timer running fm-disk-inventory.service nightly.
+# Enable only by choice: systemctl --user enable --now fm-disk-inventory.timer
+[Unit]
+Description=Nightly firstmate read-only disk inventory
+
+[Timer]
+OnCalendar=*-*-* 04:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

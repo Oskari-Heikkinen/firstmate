@@ -60,6 +60,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
   <id>/handoff.md    a parked task's handoff (goal, done, waiting for, next steps), plus park-resume-note.md and park-exit.log beside it; written only by bin/fm-park.sh
   fleet-sync/        atomic per-clone source-refresh receipts and OS-lock anchors, written only by bin/fm-fleet-provenance.py through fm-fleet-sync.sh; observations, not application-update authority
+  housekeeping/      dated read-only disk inventories written only by bin/fm-disk-inventory.sh; proposals, never deletion authority
 projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception
 state/               runtime records and signals; gitignored
   <id>.status        append-only wake events, not current-state truth; bin/fm-classify-lib.sh owns their syntax

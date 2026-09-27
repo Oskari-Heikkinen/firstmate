@@ -1,0 +1,11 @@
+# Example systemd user service for the opt-in nightly disk inventory.
+# Copy to ~/.config/systemd/user/ and replace both paths with this machine's
+# firstmate code root and the home to inventory.
+[Unit]
+Description=Firstmate read-only disk inventory
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=%h/firstmate/bin/fm-disk-inventory.sh --home %h/firstmate

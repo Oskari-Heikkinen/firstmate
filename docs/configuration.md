@@ -1483,6 +1483,15 @@ A missing file means no project feeds, the default session roots and default thr
 - `broad_root <path>` adds a path the broad-search rule treats as too wide, beside `/`, `/home`, `$HOME`, `$HOME/.treehouse`, `/mnt/c`, every home root and its `data/`.
 - `unit <unit> <owner>` adds a systemd user unit whose last result the Health panel shows.
 
+## Disk inventory (data/housekeeping)
+
+[`bin/fm-disk-inventory.sh`](../bin/fm-disk-inventory.sh) writes a read-only KEEP / REMOVE / other-homes inventory of one home, its pool slots, the shared pools, no-mistakes worktrees and task temp folders to `data/housekeeping/inventory-<date>.md`.
+It deletes, moves and changes nothing; a REMOVE row only proposes an item that passed every safety check, and deletion stays a captain decision.
+[`bin/fm-disk-inventory.py`](../bin/fm-disk-inventory.py) owns the checks, flags, output path rule and scan limits.
+Periodic runs are opt-in and never enabled by default: copy the example user service and timer in [`docs/examples/disk-inventory/`](examples/disk-inventory/), adjust their paths, and enable the timer with `systemctl --user enable --now fm-disk-inventory.timer`.
+The [`disk-inventory`](../.agents/skills/disk-inventory/SKILL.md) skill owns how agents use and relay the inventory.
+Behavioral verification lives in `tests/fm-disk-inventory.test.sh`.
+
 ## Watched tool updates (config/watched-tools.json)
 
 `config/watched-tools.json` is an optional local, gitignored list of the tools this home depends on.
