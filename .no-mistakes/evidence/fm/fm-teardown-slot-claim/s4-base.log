@@ -1,0 +1,19 @@
+################ S4: stale side - tear down the parked scout while the claim names the owner -> scout records go, owner's slot/window/claim untouched
+$ FM_HOME=/tmp/fm-live-s4.Ef4F/lattice-mate bin/fm-captain-hold.sh complete lattice-gen-audit-search --none
+complete: lattice-gen-audit-search captain-call inventory reviewed
+[exit 0]
+$ FM_HOME=/tmp/fm-live-s4.Ef4F/lattice-mate bin/fm-teardown.sh lattice-gen-audit-search
+REFUSED: task lattice-gen-audit-search's recorded worktree /tmp/fm-live-s4.Ef4F/pool/.treehouse/project-21a2fd/1/project is also task lattice-auto-return's recorded worktree.
+Returning that pool slot would kill lattice-auto-return's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh lattice-gen-audit-search; bin/fm-crew-state.sh lattice-auto-return), then re-run teardown.
+[exit 1]
+--- state after ---
+records: lattice-auto-return.meta lattice-gen-audit-search.meta 
+claim: task=lattice-auto-return home=/tmp/fm-live-s4.Ef4F/lattice-mate 
+tmux windows: keep fm-lattice-auto-return 
+sentinel in slot: present
+claude (relaunched agent) processes alive: 0
+treehouse calls: 
+treehouse status: 1     leased       /tmp/fm-live-s4.Ef4F/pool/.treehouse/project-21a2fd/1/project  (held by fm-live)
+                   bash (314808)
+owner pane shell pid 314808 alive: yes

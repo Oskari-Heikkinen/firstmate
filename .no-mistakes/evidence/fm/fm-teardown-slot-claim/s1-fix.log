@@ -1,0 +1,30 @@
+=== slot: /tmp/fm-live-s1.ikJe/pool/.treehouse/project-703ef6/1/project
+=== records: lattice-gen-audit-search (parked, no window) and lattice-auto-return (window fm-lattice-auto-return idle in slot); claim task=lattice-auto-return
+$ FM_HOME=/tmp/fm-live-s1.ikJe/lattice-mate bin/fm-teardown.sh lattice-auto-return
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+warning: task lattice-gen-audit-search's recorded worktree /tmp/fm-live-s1.ikJe/pool/.treehouse/project-703ef6/1/project is stale: that pool slot's owner claim names task lattice-auto-return and lattice-gen-audit-search's endpoint reads 'missing', so its copy was reused and it is torn down as lattice-auto-return's; lattice-gen-audit-search's record is left untouched.
+teardown: reaping leaked worktree process(es) for lattice-auto-return: 181210
+teardown: force-killing leaked worktree process(es) for lattice-auto-return: 181210
+A new version of treehouse is available: v2.3.0 → v3.1.0
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+/tmp/fm-live-s1.ikJe/project: skipped: origin/master does not exist
+teardown lattice-auto-return complete (window firstmate:fm-lattice-auto-return, worktree /tmp/fm-live-s1.ikJe/pool/.treehouse/project-703ef6/1/project)
+Backlog: lattice-auto-return just finished (this home keeps no markdown backlog at /tmp/fm-live-s1.ikJe/lattice-mate/data/backlog.md). Update /tmp/fm-live-s1.ikJe/lattice-mate/data/backlog.md - move lattice-auto-return to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+--- state after ---
+records: lattice-gen-audit-search.meta 
+claim: 
+claim: <none>
+tmux windows: keep 
+sentinel in slot: present
+treehouse status: 1     available    /tmp/fm-live-s1.ikJe/pool/.treehouse/project-703ef6/1/project
+scout record content kept: window=firstmate:fm-lattice-gen-audit-search endpoint_task_id=lattice-gen-audit-search worktree=/tmp/fm-live-s1.ikJe/pool/.treehouse/project-703ef6/1/project project=/tmp/fm-live-s1.ikJe/project kind=scout 

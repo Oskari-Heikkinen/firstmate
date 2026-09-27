@@ -1,0 +1,43 @@
+######## REPO=/tmp/fm-base.zyed
+################ S7: forced teardown of the lattice-mate secondmate home whose two children share the claimed slot -> slot returned exactly once, both child records cleared
+=== root home /tmp/fm-live-s7.wJXD/root holds secondmate lattice-mate; /tmp/fm-live-s7.wJXD/lattice-mate holds lattice-auto-return (claim owner, idle window) and parked lattice-gen-audit-search (no window) on one slot
+$ FM_HOME=/tmp/fm-live-s7.wJXD/root bin/fm-teardown.sh lattice-mate --force
+REFUSED: task lattice-auto-return's recorded worktree /tmp/fm-live-s7.wJXD/pool/.treehouse/project-566f43/1/project is also task lattice-gen-audit-search's recorded worktree.
+Returning that pool slot would kill lattice-gen-audit-search's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh lattice-auto-return; bin/fm-crew-state.sh lattice-gen-audit-search), then re-run teardown.
+[exit 1]
+--- state after ---
+records: lattice-auto-return.meta lattice-gen-audit-search.meta 
+claim: task=lattice-auto-return home=/tmp/fm-live-s7.wJXD/lattice-mate 
+tmux windows: keep fm-lattice-mate fm-lattice-auto-return 
+sentinel in slot: gone
+claude (relaunched agent) processes alive: 0
+treehouse calls: 
+treehouse status: 1     leased       /tmp/fm-live-s7.wJXD/pool/.treehouse/project-566f43/1/project  (held by fm-live)
+                   bash (328238)
+root records: lattice-mate.meta 
+treehouse return count for the slot: 0
+0
+slot dir still exists: yes
+######## REPO=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3H9RMMNBBRY10HJ1F9QYRH4
+################ S7: forced teardown of the lattice-mate secondmate home whose two children share the claimed slot -> slot returned exactly once, both child records cleared
+=== root home /tmp/fm-live-s7.mt0Q/root holds secondmate lattice-mate; /tmp/fm-live-s7.mt0Q/lattice-mate holds lattice-auto-return (claim owner, idle window) and parked lattice-gen-audit-search (no window) on one slot
+$ FM_HOME=/tmp/fm-live-s7.mt0Q/root bin/fm-teardown.sh lattice-mate --force
+warning: task lattice-gen-audit-search's recorded worktree /tmp/fm-live-s7.mt0Q/pool/.treehouse/project-6cdbe1/1/project is stale: that pool slot's owner claim names task lattice-auto-return and lattice-gen-audit-search's endpoint reads 'missing', so its copy was reused and it is torn down as lattice-auto-return's; lattice-gen-audit-search's record is left untouched.
+warning: task lattice-gen-audit-search's recorded worktree /tmp/fm-live-s7.mt0Q/pool/.treehouse/project-6cdbe1/1/project was reassigned to task lattice-auto-return (home /tmp/fm-live-s7.mt0Q/lattice-mate), which claimed that pool slot after this record was written; that slot is no longer lattice-gen-audit-search's, so its processes, copy, and claim are left untouched and only lattice-gen-audit-search's own cleanup runs.
+
+🌳 Worktree returned to pool.
+teardown lattice-mate complete (window firstmate:fm-lattice-mate, worktree /tmp/fm-live-s7.mt0Q/lattice-mate)
+[exit 0]
+--- state after ---
+/home/oskari/.no-mistakes/evidence/01M3H9RMMNBBRY10HJ1F9QYRH4/live-drive-lib.sh: line 44: cd: /tmp/fm-live-s7.mt0Q/lattice-mate/state: No such file or directory
+records: 
+claim: <none>
+tmux windows: keep 
+sentinel in slot: gone
+claude (relaunched agent) processes alive: 0
+treehouse calls: treehouse return --force /tmp/fm-live-s7.mt0Q/pool/.treehouse/project-6cdbe1/1/project;
+treehouse status: 1     available    /tmp/fm-live-s7.mt0Q/pool/.treehouse/project-6cdbe1/1/project
+root records: 
+treehouse return count for the slot: 1
+slot dir still exists: yes

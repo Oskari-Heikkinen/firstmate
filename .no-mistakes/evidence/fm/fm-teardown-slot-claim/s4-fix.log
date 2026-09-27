@@ -1,0 +1,19 @@
+################ S4: stale side - tear down the parked scout while the claim names the owner -> scout records go, owner's slot/window/claim untouched
+$ FM_HOME=/tmp/fm-live-s4.VbyN/lattice-mate bin/fm-captain-hold.sh complete lattice-gen-audit-search --none
+complete: lattice-gen-audit-search captain-call inventory reviewed
+[exit 0]
+$ FM_HOME=/tmp/fm-live-s4.VbyN/lattice-mate bin/fm-teardown.sh lattice-gen-audit-search
+warning: task lattice-gen-audit-search's recorded worktree /tmp/fm-live-s4.VbyN/pool/.treehouse/project-f2a721/1/project was reassigned to task lattice-auto-return (home /tmp/fm-live-s4.VbyN/lattice-mate), which claimed that pool slot after this record was written; that slot is no longer lattice-gen-audit-search's, so its processes, copy, and claim are left untouched and only lattice-gen-audit-search's own cleanup runs.
+teardown lattice-gen-audit-search complete (window firstmate:fm-lattice-gen-audit-search; pool slot /tmp/fm-live-s4.VbyN/pool/.treehouse/project-f2a721/1/project left to task lattice-auto-return (home /tmp/fm-live-s4.VbyN/lattice-mate), which it was reassigned to)
+Backlog: lattice-gen-audit-search just finished (this home keeps no markdown backlog at /tmp/fm-live-s4.VbyN/lattice-mate/data/backlog.md). Update /tmp/fm-live-s4.VbyN/lattice-mate/data/backlog.md - move lattice-gen-audit-search to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+--- state after ---
+records: lattice-auto-return.meta 
+claim: task=lattice-auto-return home=/tmp/fm-live-s4.VbyN/lattice-mate 
+tmux windows: keep fm-lattice-auto-return 
+sentinel in slot: present
+claude (relaunched agent) processes alive: 0
+treehouse calls: 
+treehouse status: 1     leased       /tmp/fm-live-s4.VbyN/pool/.treehouse/project-f2a721/1/project  (held by fm-live)
+                   bash (298183)
+owner pane shell pid 298183 alive: yes

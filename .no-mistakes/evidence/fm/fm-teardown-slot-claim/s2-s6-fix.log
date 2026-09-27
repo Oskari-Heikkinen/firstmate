@@ -1,0 +1,102 @@
+################ S2: relaunched scout is ALIVE in the claimed slot -> owner teardown must refuse, nothing killed
+$ FM_HOME=/tmp/fm-live-s2.0IKh/lattice-mate bin/fm-teardown.sh lattice-auto-return
+REFUSED: task lattice-gen-audit-search's endpoint reads 'alive', not confidently dead or agent-less, so the owner claim naming task lattice-auto-return cannot prove its recorded worktree /tmp/fm-live-s2.0IKh/pool/.treehouse/project-8e2843/1/project stale.
+REFUSED: task lattice-auto-return's recorded worktree /tmp/fm-live-s2.0IKh/pool/.treehouse/project-8e2843/1/project is also task lattice-gen-audit-search's recorded worktree.
+Returning that pool slot would kill lattice-gen-audit-search's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh lattice-auto-return; bin/fm-crew-state.sh lattice-gen-audit-search), then re-run teardown.
+[exit 1]
+--- state after ---
+records: lattice-auto-return.meta lattice-gen-audit-search.meta 
+claim: task=lattice-auto-return home=/tmp/fm-live-s2.0IKh/lattice-mate 
+tmux windows: keep fm-lattice-auto-return fm-lattice-gen-audit-search 
+sentinel in slot: present
+claude (relaunched agent) processes alive: 1
+treehouse calls: 
+treehouse status: 1     leased       /tmp/fm-live-s2.0IKh/pool/.treehouse/project-8e2843/1/project  (held by fm-live)
+                   bash (236443), claude (236525)
+
+################ S3: scout window exists but holds only an idle shell (classifier: dead) -> owner teardown proceeds
+$ FM_HOME=/tmp/fm-live-s3.cRDs/lattice-mate bin/fm-teardown.sh lattice-auto-return
+warning: task lattice-gen-audit-search's recorded worktree /tmp/fm-live-s3.cRDs/pool/.treehouse/project-917ce8/1/project is stale: that pool slot's owner claim names task lattice-auto-return and lattice-gen-audit-search's endpoint reads 'dead', so its copy was reused and it is torn down as lattice-auto-return's; lattice-gen-audit-search's record is left untouched.
+teardown: reaping leaked worktree process(es) for lattice-auto-return: 244418 244483
+teardown: force-killing leaked worktree process(es) for lattice-auto-return: 244418 244483
+
+🌳 Worktree returned to pool.
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+/tmp/fm-live-s3.cRDs/project: skipped: origin/master does not exist
+teardown lattice-auto-return complete (window firstmate:fm-lattice-auto-return, worktree /tmp/fm-live-s3.cRDs/pool/.treehouse/project-917ce8/1/project)
+Backlog: lattice-auto-return just finished (this home keeps no markdown backlog at /tmp/fm-live-s3.cRDs/lattice-mate/data/backlog.md). Update /tmp/fm-live-s3.cRDs/lattice-mate/data/backlog.md - move lattice-auto-return to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+--- state after ---
+records: lattice-gen-audit-search.meta 
+claim: <none>
+tmux windows: keep 
+sentinel in slot: present
+claude (relaunched agent) processes alive: 0
+treehouse calls: treehouse return --force /tmp/fm-live-s3.cRDs/pool/.treehouse/project-917ce8/1/project;
+treehouse status: 1     available    /tmp/fm-live-s3.cRDs/pool/.treehouse/project-917ce8/1/project
+
+################ S4: stale side - tear down the parked scout while the claim names the owner -> scout records go, owner's slot/window/claim untouched
+$ FM_HOME=/tmp/fm-live-s4.NWNV/lattice-mate bin/fm-teardown.sh lattice-gen-audit-search
+warning: task lattice-gen-audit-search's recorded worktree /tmp/fm-live-s4.NWNV/pool/.treehouse/project-3223eb/1/project was reassigned to task lattice-auto-return (home /tmp/fm-live-s4.NWNV/lattice-mate), which claimed that pool slot after this record was written; that slot is no longer lattice-gen-audit-search's, so its processes, copy, and claim are left untouched and only lattice-gen-audit-search's own cleanup runs.
+fm-captain-hold: origin lattice-gen-audit-search has no completed captain-call inventory
+REFUSED: scout task lattice-gen-audit-search has not passed the captain-call completion gate.
+Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown.
+[exit 1]
+--- state after ---
+records: lattice-auto-return.meta lattice-gen-audit-search.meta 
+claim: task=lattice-auto-return home=/tmp/fm-live-s4.NWNV/lattice-mate 
+tmux windows: keep fm-lattice-auto-return 
+sentinel in slot: present
+claude (relaunched agent) processes alive: 0
+treehouse calls: 
+treehouse status: 1     leased       /tmp/fm-live-s4.NWNV/pool/.treehouse/project-3223eb/1/project  (held by fm-live)
+                   bash (263449)
+
+################ S5: adversarial - secondmate record names the slot as worktree= and home=, claim names owner -> must still refuse
+$ FM_HOME=/tmp/fm-live-s5.5rM2/lattice-mate bin/fm-teardown.sh lattice-auto-return
+REFUSED: task lattice-auto-return's recorded worktree /tmp/fm-live-s5.5rM2/pool/.treehouse/project-9831bc/1/project is also task lattice-gen-audit-search's recorded worktree.
+Returning that pool slot would kill lattice-gen-audit-search's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh lattice-auto-return; bin/fm-crew-state.sh lattice-gen-audit-search), then re-run teardown.
+[exit 1]
+--- state after ---
+records: lattice-auto-return.meta lattice-gen-audit-search.meta 
+claim: task=lattice-auto-return home=/tmp/fm-live-s5.5rM2/lattice-mate 
+tmux windows: keep fm-lattice-auto-return 
+sentinel in slot: present
+claude (relaunched agent) processes alive: 0
+treehouse calls: 
+treehouse status: 1     leased       /tmp/fm-live-s5.5rM2/pool/.treehouse/project-9831bc/1/project  (held by fm-live)
+                   bash (269391)
+
+################ S6: adversarial - same double record but NO claim -> must still refuse
+$ FM_HOME=/tmp/fm-live-s6.A0GV/lattice-mate bin/fm-teardown.sh lattice-auto-return
+REFUSED: task lattice-auto-return's recorded worktree /tmp/fm-live-s6.A0GV/pool/.treehouse/project-c2417d/1/project is also task lattice-gen-audit-search's recorded worktree.
+Returning that pool slot would kill lattice-gen-audit-search's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh lattice-auto-return; bin/fm-crew-state.sh lattice-gen-audit-search), then re-run teardown.
+[exit 1]
+--- state after ---
+records: lattice-auto-return.meta lattice-gen-audit-search.meta 
+claim: <none>
+tmux windows: keep fm-lattice-auto-return 
+sentinel in slot: present
+claude (relaunched agent) processes alive: 0
+treehouse calls: 
+treehouse status: 1     leased       /tmp/fm-live-s6.A0GV/pool/.treehouse/project-c2417d/1/project  (held by fm-live)
+                   bash (275750)
+
+################ S6b: adversarial - non-secondmate record names the slot only as home= (endpoint missing), claim names owner -> must still refuse
+$ FM_HOME=/tmp/fm-live-s6b.2H4B/lattice-mate bin/fm-teardown.sh lattice-auto-return
+REFUSED: task lattice-auto-return's recorded worktree /tmp/fm-live-s6b.2H4B/pool/.treehouse/project-640377/1/project is also task lattice-gen-audit-search's recorded home.
+Returning that pool slot would kill lattice-gen-audit-search's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh lattice-auto-return; bin/fm-crew-state.sh lattice-gen-audit-search), then re-run teardown.
+[exit 1]
+--- state after ---
+records: lattice-auto-return.meta lattice-gen-audit-search.meta 
+claim: task=lattice-auto-return home=/tmp/fm-live-s6b.2H4B/lattice-mate 
+tmux windows: keep fm-lattice-auto-return 
+sentinel in slot: present
+claude (relaunched agent) processes alive: 0
+treehouse calls: 
+treehouse status: 1     leased       /tmp/fm-live-s6b.2H4B/pool/.treehouse/project-640377/1/project  (held by fm-live)
+                   bash (280693)
