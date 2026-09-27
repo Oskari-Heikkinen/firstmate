@@ -1,0 +1,47 @@
+== [fixed trace=off] fm-pr-check.sh rl587 https://github.com/example/repo/pull/587
+  armed: state/rl587.check.sh
+== meta before relaunch
+  window=fmses:fm-rl587
+  endpoint_task_id=rl587
+  worktree=/tmp/fm-live-relaunch-fixed.uMtoMZ/wt
+  project=/tmp/fm-live-relaunch-fixed.uMtoMZ/proj
+  harness=claude
+  kind=ship
+  mode=no-mistakes
+  yolo=off
+  tasktmp=/tmp/fm-rl587
+  model=default
+  effort=default
+  pr=https://github.com/example/repo/pull/587
+  pr_head=e52e8f4ad8c7fc4f55a46b1a4d1caec6184fe7c9
+== fm_pr_poll_artifacts_valid (before relaunch): ACCEPTED
+== pane before relaunch: claude
+== fm-control.sh rl587 relaunch --note ... (#1)
+  warning: /tmp/fm-live-relaunch-fixed.uMtoMZ/home/data/rl587/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  relaunched rl587 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl587 worktree=/tmp/fm-live-relaunch-fixed.uMtoMZ/wt
+  rc=0
+  pane after relaunch #1:
+    | ╭──────────────╮
+    | │              │
+    | ╰──────────────╯
+== pane after relaunch: claude
+== meta after relaunch
+  window=fmses:fm-rl587
+  endpoint_task_id=rl587
+  worktree=/tmp/fm-live-relaunch-fixed.uMtoMZ/wt
+  project=/tmp/fm-live-relaunch-fixed.uMtoMZ/proj
+  harness=claude
+  kind=ship
+  mode=no-mistakes
+  yolo=off
+  tasktmp=/tmp/fm-rl587
+  model=default
+  effort=default
+  busy_gen=g1790508568.1785309.7984
+  spawn_gen=s1790508568.1783063.28871
+  control_relaunch_tx=1778129.20260927T112926Z.25533
+  pr=https://github.com/example/repo/pull/587
+  pr_head=e52e8f4ad8c7fc4f55a46b1a4d1caec6184fe7c9
+== fm_pr_poll_artifacts_valid (after relaunch): ACCEPTED
+== watcher cycle after relaunch (PR reported MERGED)
+  watcher cycle 1: check: /tmp/fm-live-relaunch-fixed.uMtoMZ/home/state/rl587.check.sh: merged

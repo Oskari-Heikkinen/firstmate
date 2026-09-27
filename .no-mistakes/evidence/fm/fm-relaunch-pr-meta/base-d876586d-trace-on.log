@@ -1,0 +1,48 @@
+== [base trace=on] fm-pr-check.sh rl729 https://github.com/example/repo/pull/729
+  armed: state/rl729.check.sh
+== meta before relaunch
+  window=fmses:fm-rl729
+  endpoint_task_id=rl729
+  worktree=/tmp/fm-live-relaunch-base.Apl1WU/wt
+  project=/tmp/fm-live-relaunch-base.Apl1WU/proj
+  harness=claude
+  kind=ship
+  mode=no-mistakes
+  yolo=off
+  tasktmp=/tmp/fm-rl729
+  model=default
+  effort=default
+  pr=https://github.com/example/repo/pull/729
+  pr_head=c24be2adb392d17a630a6bbb3577b75b6c072327
+== fm_pr_poll_artifacts_valid (before relaunch): ACCEPTED
+== pane before relaunch: claude
+== fm-control.sh rl729 relaunch --note ... (#1)
+  warning: /tmp/fm-live-relaunch-base.Apl1WU/home/data/rl729/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  relaunched rl729 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl729 worktree=/tmp/fm-live-relaunch-base.Apl1WU/wt
+  rc=0
+  pane after relaunch #1:
+    | ╭──────────────╮
+    | │              │
+    | ╰──────────────╯
+== pane after relaunch: claude
+== meta after relaunch
+  window=fmses:fm-rl729
+  endpoint_task_id=rl729
+  worktree=/tmp/fm-live-relaunch-base.Apl1WU/wt
+  project=/tmp/fm-live-relaunch-base.Apl1WU/proj
+  harness=claude
+  kind=ship
+  mode=no-mistakes
+  yolo=off
+  tasktmp=/tmp/fm-rl729
+  model=default
+  effort=default
+  busy_gen=g1790508659.1919676.13863
+  spawn_gen=s1790508660.1917672.1664
+  pr=https://github.com/example/repo/pull/729
+  pr_head=c24be2adb392d17a630a6bbb3577b75b6c072327
+  control_relaunch_tx=1913658.20260927T113058Z.10792
+  traceparent=00-03bd870f976f4da007beffaec3d5a54f-760c4a068a571b4d-01
+== fm_pr_poll_artifacts_valid (after relaunch): REJECTED
+== watcher cycle after relaunch (PR reported MERGED)
+  watcher cycle 1: check: rejected unauthenticated state checks: /tmp/fm-live-relaunch-base.Apl1WU/home/state/rl729.check.sh
