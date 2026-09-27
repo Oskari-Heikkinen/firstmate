@@ -5,7 +5,7 @@ Usage: fm-current-view.py snapshot --manifest FILE < snapshot.json
        fm-current-view.py resume --manifest FILE [--snapshot FILE] [--json]
        fm-current-view.py brief --manifest FILE --task ID --mode MODE --home DIR
 
-Manifest schema fm-role-packet.v1: home (absolute), task, spawn_gen, role,
+Manifest schema fm-role-packet.v1: home (absolute physical path), task, spawn_gen, role,
 mode (a concrete delivery mode or scout), owned_paths (home-relative paths),
 intent {path,sha256}, rationale {path,sha256}, receipts [{path,sha256}].
 Intent and rationale are references, never rewritten or interpreted as approval.
@@ -33,7 +33,8 @@ observations, link omitted milestones and evidence rather than repeating them,
 and never treat presentation order as supersession. --json retains the full view.
 It keeps
 recorded open decisions, backlog holds/dependencies and current state separate
-from receipt milestones. Snapshot generation disagreement invalidates receipt
+from receipt milestones; a snapshot without the --receipts decision fold reports
+decision evidence as unknown. Snapshot generation disagreement invalidates receipt
 projection. Brief mode validates all references before producing an optional
 observational appendix; it never emits executable commands or changes intent,
 role precedence, delivery mode, or merge permission.
