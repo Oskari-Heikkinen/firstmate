@@ -4825,6 +4825,8 @@ spawn_record_traceparent() {
     acquired=1
   fi
   SPAWN_META_TMP="$STATE/.$ID.meta.trace.${BASHPID:-$$}"
+  # Insert before any recorded pr= line rather than appending, so the
+  # pr=/pr_head= pair stays the record's tail that bin/fm-pr-lib.sh requires.
   if [ ! -f "$meta" ] || [ ! -w "$meta" ] ||
     ! awk -F= -v tp="traceparent=$SPAWN_TRACEPARENT" '
         $1 == "traceparent" { next }
