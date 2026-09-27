@@ -47,7 +47,7 @@ def receipt():
     path = home / 'data/fleet-sync' / (hashlib.sha256(str(clone).encode()).hexdigest() + '.json')
     return path, json.loads(path.read_text())
 
-sync()
+assert sync().startswith('example: '), 'status lines keep the project name'
 p, r = receipt()
 assert r['before']['source'] == old and r['after']['source'] == new, r
 assert r['after']['remote_tip'] == new and r['fetch_succeeded'] is True, r
@@ -83,6 +83,10 @@ assert readout(False)['application_state'] == 'unknown'
 assert readout()['application_state'] == 'owner-reported-match'
 app['stages']['browser']['revision'] = old
 assert readout()['application_state'] == 'source-updated-app-not-updated'
+# A stage running code outside the synced history is not merely behind.
+app['stages']['browser']['revision'] = '0' * 40
+assert readout()['application_state'] == 'app-revision-outside-source-history'
+app['stages']['browser']['revision'] = old
 app['stages']['browser']['observed_at'] = 1
 assert readout()['application_state'] == 'unknown'
 app['stages']['browser']['observed_at'] = time.time() + 999
@@ -107,24 +111,41 @@ wrapper = tools / 'git'
 wrapper.write_text('#!/usr/bin/env bash\n'
                    'if [ "${3:-}" = fetch ]; then\n'
                    f'  echo fetch >> "{home}/fetch-count"\n'
-                   '  sleep 2\nfi\n'
+                   f'  for _ in $(seq 1200); do [ -e "{home}/release" ] && break; sleep .1; done\n'
+                   'fi\n'
                    f'exec "{real_git}" "$@"\n')
 wrapper.chmod(0o755)
 slow_env = dict(env, PATH=str(tools) + os.pathsep + env['PATH'])
 command = [str(root / 'bin/fm-fleet-sync.sh'), 'example']
-one = subprocess.Popen(command, env=slow_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-for _ in range(1500):
-    if (home / 'fetch-count').exists():
-        break
-    time.sleep(.02)
-else:
-    raise AssertionError('first fetch did not start')
-two = subprocess.Popen(command, env=slow_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-out1, err1 = one.communicate(timeout=180)
-out2, err2 = two.communicate(timeout=180)
-assert one.returncode == two.returncode == 0, (out1, err1, out2, err2)
-assert (home / 'fetch-count').read_text().splitlines() == ['fetch'], ((home / 'fetch-count').read_text(), out1, err1, out2, err2, receipt()[1])
-assert 'coalesced refresh' in out2
+
+def overlap(late_requests):
+    """Hold one fetch in flight, send later requests, then release every fetch."""
+    for name in ('fetch-count', 'release'):
+        (home / name).unlink(missing_ok=True)
+    first = subprocess.Popen(command, env=slow_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    for _ in range(1500):
+        if (home / 'fetch-count').exists():
+            break
+        time.sleep(.02)
+    else:
+        raise AssertionError('first fetch did not start')
+    later = [subprocess.Popen(command, env=slow_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+             for _ in range(late_requests)]
+    # Later requests stamp arrival at entry; give a loaded machine time to get there.
+    time.sleep(5)
+    (home / 'release').write_text('')
+    outputs = [process.communicate(timeout=180) for process in [first, *later]]
+    assert all(process.returncode == 0 for process in [first, *later]), outputs
+    return len((home / 'fetch-count').read_text().splitlines()), [out for out, _ in outputs]
+
+# A request arriving after a fetch began never reuses it: the remote may have moved.
+fetches, outputs = overlap(1)
+assert fetches == 2, (fetches, outputs)
+assert not any('coalesced refresh' in out for out in outputs), outputs
+# Requests queued together behind that in-flight run share its successor's fetch.
+fetches, outputs = overlap(2)
+assert fetches == 2, (fetches, outputs)
+assert sum('coalesced refresh' in out for out in outputs[1:]) == 1, outputs
 assert receipt()[1]['after']['source'] == new
 # No application evidence file was rewritten by a source refresh.
 assert evidence.read_text() == 'changed'

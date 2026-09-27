@@ -49,7 +49,16 @@ PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
 FM_LOCK_LOG_PREFIX=fleet-sync
-"$FM_ROOT/bin/fm-guard.sh" || true
+# A per-clone receipt child re-enters this script; the parent already ran the guard.
+RECEIPT_CHILD=0
+RECEIPT_RESULT=
+if [ "${1:-}" = --receipt-child ] && [ $# -eq 3 ]; then
+  RECEIPT_CHILD=1
+  RECEIPT_RESULT=$3
+  shift
+  set -- "$1"
+fi
+[ "$RECEIPT_CHILD" -eq 1 ] || "$FM_ROOT/bin/fm-guard.sh" || true
 
 # Bounded recovery for an orphaned .git/packed-refs.lock. A git ref rewrite
 # (fetch --prune, branch -D, pack-refs) killed after creating the lock but before
@@ -74,14 +83,6 @@ usage() {
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
-fi
-RECEIPT_CHILD=0
-RECEIPT_RESULT=
-if [ "${1:-}" = --receipt-child ] && [ $# -eq 3 ]; then
-  RECEIPT_CHILD=1
-  RECEIPT_RESULT=$3
-  shift
-  set -- "$1"
 fi
 [ $# -le 1 ] || { usage; exit 1; }
 

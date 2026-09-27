@@ -3,10 +3,12 @@
 
 Internal: sync SCRIPT HOME CLONE [REQUESTED_AT] serializes overlapping requests
 per physical clone using an OS lock under HOME/data/fleet-sync. A request queued
-behind a successful observation completed after its arrival (the caller's entry
-time in Unix seconds, else this process's start) reuses that receipt, so
-concurrent duplicate refresh requests do not fetch twice. Sequential requests
-still fetch; a previous timestamp is not proof of a fresh remote. Failed or
+behind a successful observation that STARTED after its arrival (the caller's
+entry time in Unix seconds, else this process's start) reuses that receipt, so
+requests queued behind the same in-flight run share its successor's fetch. A
+request arriving after a fetch began always fetches again, because a remote
+change may have landed in between; a previous timestamp is not proof of a
+fresh remote. Failed or
 skipped observations are not coalesced. Only fm-fleet-sync.sh owns Git mutation.
 Receipts are atomically replaced per clone at data/fleet-sync/<sha256(path)>.json;
 these are observations, not a second project registry. Interrupted writes leave
@@ -25,8 +27,10 @@ stages object with optional build/server/browser members, each {revision,
 observed_at, identity, evidence:{path,sha256}}. Evidence is home-local, exact
 SHA-256 bound and supplied by the application owner, not inferred from Git or
 PID presence. Stage revision is a full 40/64-digit hex commit. Missing, stale,
-future, malformed or unbound stages stay unknown. Fresh mismatching stages
-mean source-updated-app-not-updated; equal stages mean owner-reported-match,
+future, malformed or unbound stages stay unknown. Fresh stages that are strict
+ancestors of the synced source mean source-updated-app-not-updated; a stage
+revision outside that history (unlanded, newer or unknown to the clone) means
+app-revision-outside-source-history; equal stages mean owner-reported-match,
 not a new running-process proof. max-age defaults to 300 seconds and applies
 to source and all stage observations. Never choose a newer prose as authority.
 """
@@ -68,6 +72,7 @@ def observation(clone):
 
 
 def run_child(script, clone):
+    # clone is the caller's spelling, so the child's status label stays the project name.
     with tempfile.TemporaryDirectory(prefix="fm-sync-") as tmp:
         response = Path(tmp) / "result.json"
         child = subprocess.run([script, "--receipt-child", str(clone), str(response)], check=False)
@@ -87,7 +92,7 @@ def coalescible(target, home, clone, requested):
         return False
     return (isinstance(old, dict) and old.get("schema") == "fm-fleet-sync.v1"
             and old.get("home") == str(home) and old.get("clone") == str(clone)
-            and old.get("fetch_succeeded") is True and old.get("completed_at", 0) >= requested
+            and old.get("fetch_succeeded") is True and old.get("started_at", 0) >= requested
             and old.get("outcome") in ("current", "synced", "recovered")
             and old.get("after") == observation(clone))
 
@@ -98,6 +103,7 @@ def sync(script, home, clone, requested=None):
         requested = float(str(requested).replace(",", "."))
     except ValueError:
         requested = time.time()
+    given = clone
     home, clone = Path(home).resolve(), Path(clone).resolve()
     directory = home / "data" / "fleet-sync"
     key = digest(str(clone).encode())
@@ -108,7 +114,7 @@ def sync(script, home, clone, requested=None):
     except OSError as error:
         # A missing receipt must never cost the refresh itself.
         print(f"{clone.name}: warning: fleet-sync receipt unavailable ({error.strerror})", file=sys.stderr)
-        return run_child(script, clone)[0]
+        return run_child(script, given)[0]
     with lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if coalescible(target, home, clone, requested):
@@ -116,7 +122,7 @@ def sync(script, home, clone, requested=None):
             return 0
         started = time.time()
         before = observation(clone)
-        code, result = run_child(script, clone)
+        code, result = run_child(script, given)
         receipt = {"schema": "fm-fleet-sync.v1", "home": str(home), "clone": str(clone),
                    "requested_at": requested, "started_at": started, "completed_at": time.time(),
                    "before": before, "after": observation(clone), **result}
@@ -160,9 +166,15 @@ def readout(args):
             stage = {"state": "unknown", "reason": "invalid or unavailable owner evidence"}
         stages[name] = stage
     known = [s for s in stages.values() if s["state"] == "observed"]
+    differing = [s for s in known if s["revision"] != after["source"]]
     state = "unknown"
-    if source_current and any(s["revision"] != after["source"] for s in known):
-        state = "source-updated-app-not-updated"
+    if source_current and differing:
+        # Only an ancestor of the synced source is "behind"; anything else runs other code.
+        behind = all(subprocess.run(["git", "-C", receipt["clone"], "merge-base", "--is-ancestor",
+                                     s["revision"], after["source"]],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    check=False).returncode == 0 for s in differing)
+        state = "source-updated-app-not-updated" if behind else "app-revision-outside-source-history"
     elif source_current and len(known) == 3:
         state = "owner-reported-match"
     emit({"schema": "fm-application-provenance.v1", "authority": "observation-only",
