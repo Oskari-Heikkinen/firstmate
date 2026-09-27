@@ -983,6 +983,180 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
   pass "fm-teardown: a pool slot claimed by another task is left alone while the task's own cleanup finishes"
 }
 
+# A parked scout whose copy the pool reused still names the slot, while the
+# task that took the slot next holds the slot's owner claim. Both records name
+# one slot, so the record scan alone deadlocks them; the claim settles which is
+# stale. The owner tears down and returns its slot, and the stale scout tears
+# down its own records without touching the slot the claimant holds.
+test_owner_claim_resolves_a_stale_record_on_the_same_slot() {
+  local dir owner=slot-owner stale=parked-scout worker rc
+
+  dir=$(make_case slot-claim-over-stale-record)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$owner"
+
+  run_case "$dir" "$owner" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "the slot's claimed owner could not tear down past a stale record: $(cat "$dir/stderr")"
+  assert_absent "$dir/home/state/$owner.meta" "owner teardown left its own record"
+  assert_present "$dir/home/state/$stale.meta" "owner teardown removed the stale scout's record"
+  assert_absent "$dir/pool/1/.fm-slot-owner" "owner teardown left its spent slot claim behind"
+  grep -Fq "treehouse <return>" "$dir/runtime.log" \
+    || fail "owner teardown did not return its claimed pool slot: $(cat "$dir/runtime.log")"
+  assert_contains "$(cat "$dir/stderr")" "$stale" \
+    "the warning should name the stale record it overrode"
+
+  # A relaunch can put a live agent back into the scout's old slot without
+  # reading the claim, so a colliding record whose endpoint the classifier
+  # reads as alive still refuses, and nothing is killed, reset, or returned.
+  dir=$(make_case claimed-slot-under-relaunched-scout)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$owner"
+  cat > "$dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+printf 'tmux' >> "\${FM_RUNTIME_LOG:?}"
+printf ' <%s>' "\$@" >> "\${FM_RUNTIME_LOG:?}"
+printf '\n' >> "\${FM_RUNTIME_LOG:?}"
+case "\$1" in
+  list-windows) printf '%s\n' fm-$stale ;;
+  display-message) printf '%s\n' /dev/pts/999 ;;
+esac
+exit 0
+SH
+  cat > "$dir/fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *" -t "*) printf '%s\n' '4242 4242 4242 claude' ;;
+esac
+exit 0
+SH
+  chmod +x "$dir/fakebin/tmux" "$dir/fakebin/ps"
+  set +e
+  run_case "$dir" "$owner" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "teardown overrode a colliding record whose relaunched agent is alive"
+  assert_present "$dir/home/state/$owner.meta" "relaunched-scout collision removed the owner record"
+  assert_present "$dir/home/state/$stale.meta" "relaunched-scout collision removed the scout record"
+  assert_present "$dir/worktree/sentinel" "relaunched-scout collision reset the slot"
+  assert_present "$dir/pool/1/.fm-slot-owner" "relaunched-scout collision dropped the slot claim"
+  ! grep -Eq "^treehouse|kill" "$dir/runtime.log" \
+    || fail "relaunched-scout collision ran a mutating runtime command: $(cat "$dir/runtime.log")"
+  assert_contains "$(cat "$dir/stderr")" "would kill $stale's processes" \
+    "the live-endpoint collision should keep the kill refusal"
+  assert_contains "$(cat "$dir/stderr")" "endpoint reads 'alive'" \
+    "the live-endpoint collision should refuse on the classifier's alive verdict"
+
+  # The stale side of the same deadlock: the claim names the other task, so
+  # the scout's own cleanup finishes and the claimant's slot, worker, and
+  # record are left exactly as they were.
+  dir=$(make_case stale-record-under-other-claim)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$owner"
+  ( cd "$dir/worktree" && exec sleep 30 ) &
+  worker=$!
+
+  set +e
+  run_case "$dir" "$stale" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "the stale scout could not tear down under another task's claim: $(cat "$dir/stderr")"
+  kill -0 "$worker" 2>/dev/null || fail "stale-scout teardown killed the claimant's worker"
+  assert_present "$dir/worktree/sentinel" "stale-scout teardown reset the claimant's slot"
+  assert_present "$dir/home/state/$owner.meta" "stale-scout teardown removed the claimant's record"
+  assert_reassigned_slot_left_alone "$dir" "$stale" "$owner" "stale scout under another task's claim"
+  kill "$worker" 2>/dev/null || true
+  wait "$worker" 2>/dev/null || true
+
+  # With no claim to settle it, the same two records remain a genuine
+  # double-claim and still refuse before any mutation.
+  dir=$(make_case unclaimed-double-record)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  assert_refused_without_mutation "$dir" "$owner" "unclaimed double record"
+  assert_present "$dir/home/state/$stale.meta" "unclaimed double record removed the other record"
+  assert_contains "$(cat "$dir/stderr")" "$stale" \
+    "the unclaimed refusal should name the other record"
+
+  # A secondmate home lease never writes or clears the claim, so a claim
+  # naming the owner cannot prove a secondmate record on the slot stale.
+  dir=$(make_case claimed-slot-under-secondmate-home)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "home=$dir/worktree" \
+    "project=$dir/project" "kind=secondmate"
+  fm_write_meta "$dir/home/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$owner"
+  assert_refused_without_mutation "$dir" "$owner" "claimed slot under a secondmate home"
+  assert_present "$dir/home/state/$stale.meta" "claimed slot under a secondmate home removed the secondmate record"
+  assert_present "$dir/pool/1/.fm-slot-owner" "claimed slot under a secondmate home dropped the slot claim"
+  assert_contains "$(cat "$dir/stderr")" "REFUSED" \
+    "the secondmate collision should refuse, not warn"
+
+  pass "fm-teardown: a slot's owner claim resolves a stale record on the same slot, and an unclaimed double record or secondmate home still refuses"
+}
+
+# Forced secondmate teardown walks each child in turn, so the claimed owner can
+# return the slot and release its claim before the stale sibling is reached.
+# The stale sibling must keep the reassignment its preflight read, not re-read
+# the now-absent claim as ownership and return the same slot a second time.
+test_forced_secondmate_keeps_a_stale_child_off_its_claimed_sibling_slot() {
+  local dir mate parent=mate-task owner=lattice-auto-return stale=lattice-gen-audit-search returns
+
+  dir=$(make_case secondmate-children-share-claimed-slot)
+  mark_case_as_treehouse_pool "$dir"
+  mate="$dir/mate"
+  mkdir -p "$mate/state" "$mate/data" "$mate/config"
+  printf '%s' "$parent" > "$mate/.fm-secondmate-home"
+  fm_write_meta "$dir/home/state/$parent.meta" \
+    "window=firstmate:fm-$parent" "endpoint_task_id=$parent" \
+    "worktree=$mate" "project=$mate" "home=$mate" \
+    "kind=secondmate" "mode=secondmate" "harness=echo" "yolo=off" "projects=alpha"
+  fm_write_meta "$mate/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$mate/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$owner" "$mate"
+
+  run_case "$dir" "$parent" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "forced secondmate teardown could not clear children sharing a claimed slot: $(cat "$dir/stderr")"
+  assert_absent "$mate/state/$owner.meta" "forced secondmate teardown left the slot owner's record"
+  assert_absent "$mate/state/$stale.meta" "forced secondmate teardown left the stale scout's record"
+  returns=$(grep -c "^treehouse <return>.*<$dir/worktree>" "$dir/runtime.log" || true)
+  [ "$returns" -eq 1 ] \
+    || fail "the shared pool slot was returned $returns times instead of once: $(cat "$dir/runtime.log")"
+  assert_present "$dir/pool/1/project" "forced secondmate teardown deleted the shared pool slot"
+
+  pass "fm-teardown: forced secondmate teardown returns a claimed child slot once and leaves its stale sibling off it"
+}
+
 # The two states that must never become a false refusal: the task's own claim,
 # and no claim at all (a slot taken before claims existed, or already returned).
 test_own_and_absent_slot_claims_still_tear_down() {
@@ -1404,6 +1578,8 @@ test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
 test_own_and_absent_slot_claims_still_tear_down
+test_owner_claim_resolves_a_stale_record_on_the_same_slot
+test_forced_secondmate_keeps_a_stale_child_off_its_claimed_sibling_slot
 test_recorded_endpoint_that_changed_directory_still_tears_down
 test_project_lock_anchors_at_the_local_root_across_home_layouts
 test_remote_seeded_home_returns_its_uncontested_slot

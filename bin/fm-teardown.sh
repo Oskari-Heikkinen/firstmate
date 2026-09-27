@@ -88,7 +88,10 @@
 # cleanup step, teardown verifies record exclusivity: no OTHER task record in
 # this home or any locally registered Firstmate home may name the same live path
 # in its worktree= or home=. One live path with two task records is the reuse
-# collision itself, whichever record is stale.
+# collision itself, whichever record is stale - unless the slot's owner claim
+# (below) settles which: a claim naming this task marks another non-secondmate
+# record's worktree= stale once that record's endpoint reads dead or missing,
+# and a claim naming another task means no slot step runs at all.
 # That scan alone cannot prove THIS record is the current owner, because the task
 # that took the slot next may leave no record it can reach - its own worker may
 # have exited and its record been cleaned up, or it may live in a home this
@@ -438,6 +441,7 @@ DESCENDANT_TASK_IDS=()
 DESCENDANT_TASK_KINDS=()
 DESCENDANT_TASK_HOMES=()
 DESCENDANT_TREEHOUSE_LOCK_PATHS=()
+DESCENDANT_REASSIGNED_SLOTS=()
 teardown_release_locks() {
   local status=$? i
   if declare -F teardown_release_herdr_locks >/dev/null 2>&1; then
@@ -2344,10 +2348,28 @@ collect_local_firstmate_states() {
   done
 }
 
+# The slot's owner claim is read first because it outranks the record scan (see
+# require_owned_worktree_slot_record below for the claim's states). A claim
+# naming another task means no slot step will run, so a colliding record cannot
+# be harmed and scanning would only strand this record. A claim naming this task
+# proves another worker record naming the slot as its worktree is the stale one
+# - its copy was already reused when the pool handed the slot on - so that
+# collision warns instead of refusing - but only once the recovery-grade
+# classifier (fm_backend_agent_state) reads that record's endpoint as dead or
+# missing, because a relaunch can put a live worker back into its old slot
+# without reading the claim; any other endpoint state still refuses. A
+# secondmate record, or any record naming the slot as its home, still refuses:
+# secondmate home leases never write or clear the claim, so the claim cannot
+# prove them stale. A colliding record with
+# this same task id, which the claim cannot tell apart, also still refuses. With
+# no claim, the scan alone decides.
 require_exclusive_worktree_slot_record() {
   local record_meta=$1 record_id=$2 record_state=$3 worktree=$4
-  local slot state_dir other other_id field other_path other_slot
+  local slot state_dir other other_id field other_path other_slot claim endpoint
   slot=$(canonical_existing_dir "$worktree") || return 0
+  fm_treehouse_slot_owner_state "$slot" "$record_id"
+  claim=$FM_TREEHOUSE_SLOT_OWNER
+  [ "$claim" != other ] || return 0
   collect_local_firstmate_states "$record_state" || return 1
   for state_dir in "${TREEHOUSE_OWNER_STATES[@]}"; do
     for other in "$state_dir"/*.meta; do
@@ -2363,6 +2385,17 @@ require_exclusive_worktree_slot_record() {
         [ -n "$other_path" ] || continue
         other_slot=$(canonical_existing_dir "$other_path") || continue
         [ "$other_slot" = "$slot" ] || continue
+        if [ "$claim" = mine ] && [ "$field" = worktree ] && [ "$other_id" != "$record_id" ] \
+          && [ "$(fm_meta_get "$other" kind)" != secondmate ]; then
+          endpoint=$(fm_backend_agent_state "$(fm_backend_of_meta "$other")" "$(fm_backend_target_of_meta "$other")")
+          case "$endpoint" in
+            dead|missing)
+              echo "warning: task $other_id's recorded $field $slot is stale: that pool slot's owner claim names task $record_id and $other_id's endpoint reads '$endpoint', so its copy was reused and it is torn down as $record_id's; $other_id's record is left untouched." >&2
+              continue
+              ;;
+          esac
+          echo "REFUSED: task $other_id's endpoint reads '$endpoint', not confidently dead or agent-less, so the owner claim naming task $record_id cannot prove its recorded $field $slot stale." >&2
+        fi
         echo "REFUSED: task $record_id's recorded worktree $slot is also task $other_id's recorded $field." >&2
         echo "Returning that pool slot would kill $other_id's processes and reset its copy, so nothing was changed - not even with --force." >&2
         echo "Reconcile whichever record is wrong (bin/fm-crew-state.sh $record_id; bin/fm-crew-state.sh $other_id), then re-run teardown." >&2
@@ -2968,7 +3001,8 @@ preflight_descendant_treehouse_slots() {
     owner_rc=0
     require_owned_worktree_slot_record "$task_id" "$worktree" || owner_rc=$?
     case "$owner_rc" in
-      0|"$TEARDOWN_SLOT_REASSIGNED_RC") ;;
+      0) ;;
+      "$TEARDOWN_SLOT_REASSIGNED_RC") DESCENDANT_REASSIGNED_SLOTS+=("$state/$task_id") ;;
       *) return 1 ;;
     esac
   done
@@ -3184,7 +3218,7 @@ endpoint_close_refusal() {  # <subject> <backend> <target> <honors-force>
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_owner_rc
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_reassigned reassigned
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -3246,15 +3280,13 @@ cleanup_firstmate_home_children() {
       # The same ownership determination as the parent's own slot: a child
       # slot reassigned to another task is not this child's to kill, reset,
       # or return, so only its records are cleaned up. The preflight above
-      # already named the reassignment on stderr under the same lock.
-      child_owner_rc=0
-      if fm_treehouse_pool_slot "$child_proj" "$child_wt"; then
-        require_owned_worktree_slot_record "$child_id" "$child_wt" 2>/dev/null || child_owner_rc=$?
-      fi
-      if [ "$child_owner_rc" -eq "$TEARDOWN_SLOT_REASSIGNED_RC" ]; then
+      # made that determination and named it on stderr under the same lock.
+      child_reassigned=0
+      for reassigned in "${DESCENDANT_REASSIGNED_SLOTS[@]+"${DESCENDANT_REASSIGNED_SLOTS[@]}"}"; do
+        [ "$reassigned" != "$sub_state/$child_id" ] || child_reassigned=1
+      done
+      if [ "$child_reassigned" = 1 ]; then
         :
-      elif [ "$child_owner_rc" -ne 0 ]; then
-        require_owned_worktree_slot_record "$child_id" "$child_wt" || return 1
       else
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
