@@ -77,6 +77,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (AGENTS.md section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
+  fleet-sync/       atomic per-clone source-refresh receipts and OS-lock anchors, written only by bin/fm-fleet-provenance.py through fm-fleet-sync.sh; observations, not application-update authority
 projects/            cloned repos; gitignored; read-only except under AGENTS.md hard rule 1's concrete captain-approved project operation exception
 state/               runtime records and signals; gitignored
   <id>.status        append-only wake events, not current-state truth; bin/fm-classify-lib.sh owns their syntax
@@ -764,6 +765,22 @@ A changed remote home instead receives one durably recorded marked re-read instr
 The locked bootstrap inheritance pass uses the same placement-specific behavior; see `secondmate-provisioning` for the single contract owner.
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
+
+## Receipt-derived operational readouts
+
+[`bin/fm-resume-packet.sh`](../bin/fm-resume-packet.sh) renders a compact current packet from the existing fleet snapshot and explicitly selected owner receipts, leaving authored intent, rationale and hazards as digest-bound references.
+The same optional role packet can enrich the fleet snapshot or the ordinary brief scaffold; [`bin/fm-current-view.py`](../bin/fm-current-view.py) owns the reference schema, identity checks and invocation help.
+These views are observations, not admission, release, deletion or decision-closing authority, and do not create another task database or daemon.
+Owner adapters must supply receipts explicitly; no tool discovers approval by choosing the newest prose.
+
+[`bin/fm-application-provenance.sh`](../bin/fm-application-provenance.sh) exposes the workbench-readable join between a fleet-sync receipt and optional owner-supplied build, server and browser observations.
+[`bin/fm-fleet-provenance.py`](../bin/fm-fleet-provenance.py) owns per-clone receipt/coalescing mechanics and the provenance input/output schema.
+Source refresh never installs dependencies, restarts the application or reloads the browser; unknown or stale application evidence stays unknown.
+
+[`bin/fm-usage-audit.sh`](../bin/fm-usage-audit.sh) reruns local measurements over explicitly selected usage exports, status logs, event receipts and script inventories without uploading their contents.
+[`bin/fm-usage-audit.py`](../bin/fm-usage-audit.py) owns its versioned classifier, input schemas, bounds, uncertainty and metadata-only output contract.
+Measured usage is separate from inferred repetition candidates; neither status volume nor identical helper files proves wasted reasoning.
+Behavioral verification lives in `tests/fm-current-view.test.sh`, `tests/fm-fleet-provenance.test.sh` and `tests/fm-usage-audit.test.sh`.
 
 ## Watched tool updates (config/watched-tools.json)
 
