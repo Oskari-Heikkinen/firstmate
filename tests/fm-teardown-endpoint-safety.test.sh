@@ -1104,6 +1104,42 @@ SH
   pass "fm-teardown: a slot's owner claim resolves a stale record on the same slot, and an unclaimed double record or secondmate home still refuses"
 }
 
+# Forced secondmate teardown walks each child in turn, so the claimed owner can
+# return the slot and release its claim before the stale sibling is reached.
+# The stale sibling must keep the reassignment its preflight read, not re-read
+# the now-absent claim as ownership and return the same slot a second time.
+test_forced_secondmate_keeps_a_stale_child_off_its_claimed_sibling_slot() {
+  local dir mate parent=mate-task owner=lattice-auto-return stale=lattice-gen-audit-search returns
+
+  dir=$(make_case secondmate-children-share-claimed-slot)
+  mark_case_as_treehouse_pool "$dir"
+  mate="$dir/mate"
+  mkdir -p "$mate/state" "$mate/data" "$mate/config"
+  printf '%s' "$parent" > "$mate/.fm-secondmate-home"
+  fm_write_meta "$dir/home/state/$parent.meta" \
+    "window=firstmate:fm-$parent" "endpoint_task_id=$parent" \
+    "worktree=$mate" "project=$mate" "home=$mate" \
+    "kind=secondmate" "mode=secondmate" "harness=echo" "yolo=off" "projects=alpha"
+  fm_write_meta "$mate/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$mate/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$owner" "$mate"
+
+  run_case "$dir" "$parent" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "forced secondmate teardown could not clear children sharing a claimed slot: $(cat "$dir/stderr")"
+  assert_absent "$mate/state/$owner.meta" "forced secondmate teardown left the slot owner's record"
+  assert_absent "$mate/state/$stale.meta" "forced secondmate teardown left the stale scout's record"
+  returns=$(grep -c "^treehouse <return>.*<$dir/worktree>" "$dir/runtime.log" || true)
+  [ "$returns" -eq 1 ] \
+    || fail "the shared pool slot was returned $returns times instead of once: $(cat "$dir/runtime.log")"
+  assert_present "$dir/pool/1/project" "forced secondmate teardown deleted the shared pool slot"
+
+  pass "fm-teardown: forced secondmate teardown returns a claimed child slot once and leaves its stale sibling off it"
+}
+
 # The two states that must never become a false refusal: the task's own claim,
 # and no claim at all (a slot taken before claims existed, or already returned).
 test_own_and_absent_slot_claims_still_tear_down() {
@@ -1526,6 +1562,7 @@ test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
 test_own_and_absent_slot_claims_still_tear_down
 test_owner_claim_resolves_a_stale_record_on_the_same_slot
+test_forced_secondmate_keeps_a_stale_child_off_its_claimed_sibling_slot
 test_recorded_endpoint_that_changed_directory_still_tears_down
 test_project_lock_anchors_at_the_local_root_across_home_layouts
 test_remote_seeded_home_returns_its_uncontested_slot

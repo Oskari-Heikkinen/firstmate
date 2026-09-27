@@ -394,6 +394,7 @@ DESCENDANT_TASK_IDS=()
 DESCENDANT_TASK_KINDS=()
 DESCENDANT_TASK_HOMES=()
 DESCENDANT_TREEHOUSE_LOCK_PATHS=()
+DESCENDANT_REASSIGNED_SLOTS=()
 teardown_release_locks() {
   local status=$? i
   if declare -F teardown_release_herdr_locks >/dev/null 2>&1; then
@@ -2923,7 +2924,8 @@ preflight_descendant_treehouse_slots() {
     owner_rc=0
     require_owned_worktree_slot_record "$task_id" "$worktree" || owner_rc=$?
     case "$owner_rc" in
-      0|"$TEARDOWN_SLOT_REASSIGNED_RC") ;;
+      0) ;;
+      "$TEARDOWN_SLOT_REASSIGNED_RC") DESCENDANT_REASSIGNED_SLOTS+=("$state/$task_id") ;;
       *) return 1 ;;
     esac
   done
@@ -3141,7 +3143,7 @@ endpoint_close_refusal() {  # <subject> <backend> <target> <honors-force>
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_owner_rc
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_reassigned reassigned
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -3203,15 +3205,13 @@ cleanup_firstmate_home_children() {
       # The same ownership determination as the parent's own slot: a child
       # slot reassigned to another task is not this child's to kill, reset,
       # or return, so only its records are cleaned up. The preflight above
-      # already named the reassignment on stderr under the same lock.
-      child_owner_rc=0
-      if fm_treehouse_pool_slot "$child_proj" "$child_wt"; then
-        require_owned_worktree_slot_record "$child_id" "$child_wt" 2>/dev/null || child_owner_rc=$?
-      fi
-      if [ "$child_owner_rc" -eq "$TEARDOWN_SLOT_REASSIGNED_RC" ]; then
+      # made that determination and named it on stderr under the same lock.
+      child_reassigned=0
+      for reassigned in "${DESCENDANT_REASSIGNED_SLOTS[@]+"${DESCENDANT_REASSIGNED_SLOTS[@]}"}"; do
+        [ "$reassigned" != "$sub_state/$child_id" ] || child_reassigned=1
+      done
+      if [ "$child_reassigned" = 1 ]; then
         :
-      elif [ "$child_owner_rc" -ne 0 ]; then
-        require_owned_worktree_slot_record "$child_id" "$child_wt" || return 1
       else
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
