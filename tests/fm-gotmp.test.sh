@@ -3,7 +3,7 @@
 #
 # fm-spawn gives each task a temp root /tmp/fm-<id>/ with Go's build temp nested at
 # gotmp/, exports GOTMPDIR into the crewmate pane, and records tasktmp= in the task's
-# meta. fm-teardown reads tasktmp= and removes the whole root on cleanup.
+# meta. fm-teardown reads tasktmp= and removes only the task's own root on cleanup.
 #
 # These tests exercise fm-teardown directly as a subprocess against a fake FM_HOME/FM_ROOT
 # built so the real script resolves into it, with stub helper scripts.
@@ -30,8 +30,12 @@ pass() {
 }
 
 TMP_ROOT=
+OWN_TASK_TMP=
 
 cleanup() {
+  if [ -n "${OWN_TASK_TMP:-}" ]; then
+    rm -rf -- "$OWN_TASK_TMP"
+  fi
   if [ -n "${TMP_ROOT:-}" ]; then
     rm -rf "$TMP_ROOT"
   fi
@@ -75,6 +79,7 @@ SH
   # fm-timeout-lib.sh: the shared hard bound fm-classify-lib.sh sources for the
   # wedge detector's bounded worktree write probe.
   ln -s "$ROOT/bin/fm-timeout-lib.sh" "$fake/bin/fm-timeout-lib.sh"
+  ln -s "$ROOT/bin/fm-task-evidence-lib.sh" "$fake/bin/fm-task-evidence-lib.sh"
   ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   ln -s "$ROOT/bin/fm-path-lib.sh" "$fake/bin/fm-path-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.
@@ -138,8 +143,10 @@ META
 # --- fm-teardown side (real subprocess) ---
 
 test_teardown_removes_tasktmp_dir() {
-  local id=td-rm-z2
-  local task_tmp="$TMP_ROOT/fm-$id"
+  local id="td-rm-z2-$$-$RANDOM"
+  local task_tmp="/tmp/fm-$id"
+  [ ! -e "$task_tmp" ] && [ ! -L "$task_tmp" ] || fail "fixture tasktmp already exists"
+  OWN_TASK_TMP=$task_tmp
   mkdir -p "$task_tmp/gotmp"
   printf 'leftover\n' > "$task_tmp/gotmp/build-artifact"
   local fake
@@ -151,7 +158,8 @@ test_teardown_removes_tasktmp_dir() {
     || fail "teardown exited non-zero with a valid tasktmp"
   [ ! -e "$task_tmp" ] \
     || fail "teardown did not remove the tasktmp dir ($task_tmp still exists)"
-  pass "fm-teardown removes the dir pointed to by tasktmp= in meta"
+  OWN_TASK_TMP=
+  pass "fm-teardown removes its own /tmp/fm-<id> dir recorded by tasktmp= in meta"
 }
 
 test_teardown_skips_gracefully_when_dir_missing() {

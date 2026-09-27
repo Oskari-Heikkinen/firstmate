@@ -983,6 +983,51 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
   pass "fm-teardown: a pool slot claimed by another task is left alone while the task's own cleanup finishes"
 }
 
+test_reassigned_slot_evidence_keeps_only_the_verified_prior_snapshot() {
+  local dir id=stale-evidence other=new-owner ev hash rc
+  dir=$(make_case slot-reassigned-evidence)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$other" "$dir/other-home"
+  ev="$dir/home/data/$id/evidence"
+  mkdir -p "$ev/copy/workspace" "$dir/worktree/workspace"
+  printf 'old evidence\n' > "$ev/copy/workspace/prior.txt"
+  hash=$({ sha256sum "$ev/copy/workspace/prior.txt" 2>/dev/null \
+    || shasum -a 256 "$ev/copy/workspace/prior.txt"; } | awk '{print $1}')
+  printf '%s  copy/workspace/prior.txt\n' "$hash" > "$ev/MANIFEST.sha256"
+  printf 'another task owns this\n' > "$dir/worktree/workspace/prior.txt"
+  printf 'never copy this\n' > "$dir/worktree/workspace/foreign.txt"
+  printf '%s\n' workspace/prior.txt workspace/foreign.txt workspace/missing.txt \
+    > "$dir/home/data/$id/evidence.list"
+  printf 'Lost undeclared evidence: %s/workspace/undeclared.txt\n' "$dir/worktree" \
+    > "$dir/home/data/$id/report.md"
+
+  rc=0
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" || rc=$?
+  [ "$rc" -eq 0 ] || fail "reassigned evidence prevented cleanup: $(cat "$dir/stderr")"
+  assert_reassigned_slot_left_alone "$dir" "$id" "$other" "reassigned evidence"
+  [ "$(cat "$ev/copy/workspace/prior.txt")" = 'old evidence' ] \
+    || fail "reassigned evidence: cleanup copied the new owner's evidence over the prior snapshot"
+  [ "$(cat "$dir/worktree/workspace/prior.txt")" = 'another task owns this' ] \
+    || fail "reassigned evidence: cleanup changed the new owner's evidence"
+  assert_absent "$ev/copy/workspace/foreign.txt" "reassigned evidence: copied the new owner's file"
+  assert_absent "$ev/copy/workspace/missing.txt" "reassigned evidence: invented a missing snapshot"
+  [ "$(wc -l < "$ev/MANIFEST.sha256" | tr -d ' ')" = 1 ] \
+    || fail "reassigned evidence: the manifest should contain only the verified prior snapshot"
+  [ "$({ sha256sum "$ev/copy/workspace/prior.txt" 2>/dev/null \
+    || shasum -a 256 "$ev/copy/workspace/prior.txt"; } | awk '{print $1}')" = "$hash" ] \
+    || fail "reassigned evidence: the carried snapshot no longer verifies"
+  assert_contains "$(cat "$dir/stderr")" "$dir/worktree/workspace/foreign.txt" \
+    "reassigned evidence: missing warning for declared evidence without a prior snapshot"
+  assert_contains "$(cat "$dir/stderr")" "$dir/worktree/workspace/missing.txt" \
+    "reassigned evidence: missing warning for a missing declared source"
+  assert_contains "$(cat "$dir/stderr")" "$dir/worktree/workspace/undeclared.txt" \
+    "reassigned evidence: missing warning for the undeclared reference"
+  pass "fm-teardown: reassigned slots warn about lost evidence and carry only the verified prior snapshot"
+}
+
 # A landed direct-push task whose slot now belongs to a PR-mode task: the open PR
 # on the claimant's branch is that task's, so it must neither be looked up nor
 # block this task's own cleanup.
@@ -1622,6 +1667,7 @@ test_reused_pool_slot_refuses_before_touching_the_other_task
 test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
+test_reassigned_slot_evidence_keeps_only_the_verified_prior_snapshot
 test_reassigned_slot_skips_the_direct_push_open_pr_refusal
 test_own_and_absent_slot_claims_still_tear_down
 test_owner_claim_resolves_a_stale_record_on_the_same_slot

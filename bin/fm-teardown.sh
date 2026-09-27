@@ -86,6 +86,12 @@
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
 # unresolved-decision completion gate verifies its captain-held inventory.
+# Before any destructive step, and for every kind but a secondmate, teardown
+# copies the evidence a task declares inside its copy or its own temp folder
+# out to data/<id>/evidence/ and refuses while a record under data/<id>/ still
+# references an undeclared path inside either; bin/fm-task-evidence-lib.sh owns
+# that contract. After cleanup it removes the recorded temp folder only when it
+# is exactly the task's own /tmp/fm-<id>.
 # Before destructive cleanup, teardown validates task check artifacts as
 # ordinary single-link files on the state device. It refuses and preserves
 # task state when that proof fails; otherwise it removes the task's check,
@@ -325,6 +331,7 @@ for _teardown_source in \
   fm-backlog-transition-lib.sh \
   fm-timeout-lib.sh \
   fm-backend.sh \
+  fm-task-evidence-lib.sh \
   fm-control-lib.sh \
   fm-lock-lib.sh \
   fm-classify-lib.sh \
@@ -355,6 +362,8 @@ unset _teardown_source
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-task-evidence-lib.sh
+. "$SCRIPT_DIR/fm-task-evidence-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
@@ -3563,6 +3572,16 @@ if teardown_owns_worktree && [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+# Declared evidence leaves the copy and the task's temp folder before either
+# is returned or removed, and a durable record still pointing into them
+# refuses here, while nothing has been changed yet. bin/fm-task-evidence-lib.sh
+# owns the declaration, copy-out, and refusal contract; --force lifts neither.
+if [ "$KIND" != secondmate ]; then
+  TEARDOWN_EVIDENCE_COPY_OWNED=0
+  if teardown_owns_worktree; then TEARDOWN_EVIDENCE_COPY_OWNED=1; fi
+  fm_task_evidence_preserve "$ID" "$DATA" "$WT" "$TEARDOWN_EVIDENCE_COPY_OWNED" "$TASK_TMP" || exit 1
+fi
+
 # A Herdr close may reposition shared workspace order, so the whole
 # destructive sequence below (worktree return, pane close, record removal)
 # runs under the named-session presentation lock, acquired BEFORE anything is
@@ -3837,7 +3856,18 @@ remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
+# Only the task's own root is removed: the recorded value must be exactly
+# /tmp/fm-<id> and a real directory owned by this user, never a symlink or any
+# other recorded path, which is left in place and named instead.
+if [ -n "$TASK_TMP" ]; then
+  if [ "$TASK_TMP" = "/tmp/fm-$ID" ] && [ ! -L "$TASK_TMP" ]; then
+    if [ -d "$TASK_TMP" ] && [ -O "$TASK_TMP" ]; then
+      rm -rf -- "$TASK_TMP"
+    fi
+  elif [ -e "$TASK_TMP" ] || [ -L "$TASK_TMP" ]; then
+    echo "warning: recorded tasktmp $TASK_TMP for $ID is not its own /tmp/fm-$ID folder; left in place" >&2
+  fi
+fi
 # Retire only this Firstmate home's launch namespace. Its never-reused per-spawn
 # files leave the equal task-id namespace of every other home untouched.
 teardown_launch_home_token() {

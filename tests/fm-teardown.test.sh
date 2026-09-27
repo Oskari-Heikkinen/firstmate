@@ -4340,6 +4340,327 @@ test_retained_sources_still_reach_the_ordinary_refusal() {
   pass "present required sources still reach the ordinary teardown refusal"
 }
 
+# Evidence preservation (bin/fm-task-evidence-lib.sh): declared evidence is
+# copied out of the copy and the task's temp folder with a verified sha256
+# manifest before cleanup, and a record under data/<id>/ that still points at an
+# undeclared path inside either refuses cleanup before anything is changed.
+# Evidence normally lives in ignored scratch, which the dirty-copy refusal does
+# not count as uncommitted work.
+ignore_workspace() {  # <case-dir>
+  printf 'workspace/\n' >> "$(git -C "$1/wt" rev-parse --git-common-dir)/info/exclude"
+}
+
+evidence_manifest_verifies() {  # <evidence-dir>
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$1" && sha256sum -c --quiet MANIFEST.sha256)
+  else
+    (cd "$1" && shasum -a 256 -c --quiet MANIFEST.sha256)
+  fi
+}
+
+test_declared_evidence_is_copied_out_with_a_verified_manifest() {
+  local case_dir rc ev
+  case_dir=$(make_case evidence-copied)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' "tasktmp=$case_dir/tasktmp" >> "$case_dir/state/task-x1.meta"
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/wt/workspace/merge" "$case_dir/tasktmp/scratch" "$case_dir/data/task-x1"
+  printf 'merge evidence\n' > "$case_dir/wt/workspace/merge/result.txt"
+  printf 'clean reference\n' > "$case_dir/wt/workspace/clean-ref.txt"
+  printf 'scratch log\n' > "$case_dir/tasktmp/scratch/run.log"
+  printf '%s\n' '# evidence for the report' workspace \
+    "$case_dir/tasktmp/scratch/run.log" > "$case_dir/data/task-x1/evidence.list"
+  printf 'See %s:42 and %s:5:3.\n' "$case_dir/wt/workspace/merge/result.txt" \
+    "$case_dir/tasktmp/scratch/run.log" > "$case_dir/data/task-x1/report.md"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "evidence-copied: teardown should succeed: $(cat "$case_dir/stderr")"
+  ev="$case_dir/data/task-x1/evidence"
+  [ "$(cat "$ev/copy/workspace/merge/result.txt")" = "merge evidence" ] \
+    || fail "evidence-copied: the declared copy directory was not copied out"
+  [ "$(cat "$ev/copy/workspace/clean-ref.txt")" = "clean reference" ] \
+    || fail "evidence-copied: a file under the declared directory was not copied out"
+  [ "$(cat "$ev/tmp/scratch/run.log")" = "scratch log" ] \
+    || fail "evidence-copied: the declared temp-folder file was not copied out"
+  [ "$(wc -l < "$ev/MANIFEST.sha256" | tr -d ' ')" = 3 ] \
+    || fail "evidence-copied: manifest should list exactly the three copied files: $(cat "$ev/MANIFEST.sha256")"
+  evidence_manifest_verifies "$ev" || fail "evidence-copied: the manifest does not verify the copied evidence"
+  assert_absent "$case_dir/state/task-x1.meta" "evidence-copied: teardown left the task record"
+  pass "declared evidence in the copy and the task's temp folder is copied out with a verifying sha256 manifest"
+}
+
+test_undeclared_reference_into_the_copy_refuses_then_declaring_it_proceeds() {
+  local case_dir rc
+  case_dir=$(make_case evidence-dangling)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' "tasktmp=$case_dir/tasktmp" >> "$case_dir/state/task-x1.meta"
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/data/task-x1/notes"
+  printf 'unique\n' > "$case_dir/wt/workspace/review.txt"
+  printf 'scratch\n' > "$case_dir/tasktmp/out.txt"
+  printf 'Evidence: %s:42.\n' "$case_dir/wt/workspace/review.txt" > "$case_dir/data/task-x1/report.md"
+  printf 'log (%s:5:3)\n' "$case_dir/tasktmp/out.txt" > "$case_dir/data/task-x1/notes/n.md"
+  # A mention of the copy's root itself names no file inside it.
+  printf 'Worked in %s/ today.\n' "$case_dir/wt" > "$case_dir/data/task-x1/brief.md"
+
+  for flag in "" --force; do
+    rc=0
+    run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "evidence-dangling: teardown ${flag:-without --force} proceeded with a dangling reference"
+    assert_grep "references $case_dir/wt/workspace/review.txt," "$case_dir/stderr" \
+      "evidence-dangling: refusal did not name the copy reference: $(cat "$case_dir/stderr")"
+    assert_grep "references $case_dir/tasktmp/out.txt," "$case_dir/stderr" \
+      "evidence-dangling: refusal did not name the temp-folder reference: $(cat "$case_dir/stderr")"
+    if grep -qF "references $case_dir/wt/ " "$case_dir/stderr" \
+       || grep -qF "references $case_dir/wt," "$case_dir/stderr"; then
+      fail "evidence-dangling: a mention of the copy root itself was treated as a dangling reference"
+    fi
+    assert_present "$case_dir/state/task-x1.meta" "evidence-dangling: refusal removed the task record"
+    assert_present "$case_dir/wt/workspace/review.txt" "evidence-dangling: refusal touched the copy"
+    assert_absent "$case_dir/data/task-x1/evidence" "evidence-dangling: refusal installed a partial evidence copy"
+  done
+
+  printf '%s\n' workspace/review.txt "$case_dir/tasktmp/out.txt" > "$case_dir/data/task-x1/evidence.list"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "evidence-dangling: teardown should proceed once the references are declared: $(cat "$case_dir/stderr")"
+  [ "$(cat "$case_dir/data/task-x1/evidence/copy/workspace/review.txt")" = unique ] \
+    || fail "evidence-dangling: the declared reference was not copied out"
+  pass "a record referencing an undeclared path inside the copy or temp folder refuses cleanup (even with --force) until it is declared"
+}
+
+test_clean_tracked_source_citations_need_no_evidence_declaration() {
+  local case_dir rc
+  case_dir=$(make_case evidence-tracked-clean)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" source.c 'int main(void) { return 0; }'
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/data/task-x1"
+  printf 'Source: %s:42 and %s:5:3.\n' "$case_dir/wt/source.c" "$case_dir/wt/source.c" \
+    > "$case_dir/data/task-x1/report.md"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "clean tracked citations should not require declarations: $(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/state/task-x1.meta" "clean citations left task record"
+  assert_absent "$case_dir/data/task-x1/evidence" "clean citations should not create snapshots"
+  pass "clean tracked source file:line and file:line:column citations do not block cleanup"
+}
+
+test_unrecoverable_copy_citations_still_refuse_even_with_force() {
+  local case_dir rc variant file
+  for variant in modified assume-unchanged skip-worktree staged-add untracked ignored deleted; do
+    case_dir=$(make_case "evidence-unrecoverable-$variant")
+    write_meta "$case_dir" no-mistakes ship
+    wt_commit_file "$case_dir" source.c 'original source'
+    land_shippable_commit "$case_dir"
+    file=source.c
+    case "$variant" in
+      modified) printf 'local change\n' > "$case_dir/wt/$file" ;;
+      assume-unchanged|skip-worktree)
+        git -C "$case_dir/wt" update-index "--$variant" -- "$file"
+        printf 'hidden local change\n' > "$case_dir/wt/$file"
+        ;;
+      staged-add|untracked)
+        file=new.c
+        printf 'new source\n' > "$case_dir/wt/$file"
+        [ "$variant" != staged-add ] || git -C "$case_dir/wt" add -- "$file"
+        ;;
+      ignored)
+        ignore_workspace "$case_dir"
+        file=workspace/review.txt
+        mkdir -p "$case_dir/wt/workspace"
+        printf 'unique review\n' > "$case_dir/wt/$file"
+        ;;
+      deleted) rm -- "$case_dir/wt/$file" ;;
+    esac
+    mkdir -p "$case_dir/data/task-x1"
+    printf 'Evidence: %s/%s:42:3.\n' "$case_dir/wt" "$file" > "$case_dir/data/task-x1/report.md"
+    rc=0
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "$variant source citation bypassed evidence refusal"
+    assert_grep "references $case_dir/wt/$file," "$case_dir/stderr" \
+      "$variant source citation should refuse as undeclared evidence: $(cat "$case_dir/stderr")"
+    assert_present "$case_dir/state/task-x1.meta" "$variant refusal removed task record"
+    assert_absent "$case_dir/data/task-x1/evidence" "$variant refusal installed a snapshot"
+  done
+  pass "untracked, ignored, added, deleted and modified source citations refuse, including hidden modifications and --force"
+}
+
+test_evidence_declaration_outside_the_task_roots_refuses() {
+  local case_dir rc entry
+  case_dir=$(make_case evidence-outside)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/data/task-x1" "$case_dir/elsewhere"
+  printf 'x\n' > "$case_dir/elsewhere/f"
+  mkdir -p "$case_dir/wt/workspace"
+  ln -s "$case_dir/elsewhere/f" "$case_dir/wt/workspace/link"
+  for entry in "$case_dir/elsewhere/f" "workspace/../../elsewhere/f" workspace/link workspace/missing.txt; do
+    printf '%s\n' "$entry" > "$case_dir/data/task-x1/evidence.list"
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "evidence-outside: teardown accepted the evidence entry '$entry'"
+    grep -q '^REFUSED: .*evidence' "$case_dir/stderr" \
+      || fail "evidence-outside: refusal for '$entry' did not name the evidence entry: $(cat "$case_dir/stderr")"
+    assert_present "$case_dir/state/task-x1.meta" "evidence-outside: refusal removed the task record"
+  done
+  pass "an evidence entry outside the copy or temp folder, escaping by .., a symlink, or a missing path refuses cleanup"
+}
+
+test_own_task_temp_folder_is_removed_and_nothing_else() {
+  local case_dir rc id own
+  case_dir=$(make_case evidence-own-tmp)
+  id="task-ev$$-$RANDOM"
+  own="/tmp/fm-$id"
+  [ ! -e "$own" ] || fail "evidence-own-tmp: fixture temp folder $own already exists"
+  land_shippable_commit "$case_dir"
+  mkdir -p "$own/gotmp" "$case_dir/other-tmp"
+  fm_write_meta "$case_dir/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" "worktree=$case_dir/wt" \
+    "project=$case_dir/project" "kind=ship" "mode=no-mistakes" \
+    "spawn_gen=teardown-test-$id" "tasktmp=$own"
+  rc=0
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    FM_CONFIG_OVERRIDE="$case_dir/config" PATH="$case_dir/fakebin:$PATH" \
+    "$TEARDOWN" "$id" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  if [ -e "$own" ]; then rm -rf "$own"; fail "evidence-own-tmp: the task's own temp folder survived cleanup (rc=$rc): $(cat "$case_dir/stderr")"; fi
+  expect_code 0 "$rc" "evidence-own-tmp: teardown should succeed: $(cat "$case_dir/stderr")"
+
+  case_dir=$(make_case evidence-foreign-tmp)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' "tasktmp=$case_dir/other-tmp" >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/other-tmp"
+  land_shippable_commit "$case_dir"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "evidence-foreign-tmp: teardown should succeed: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/other-tmp" "evidence-foreign-tmp: cleanup removed a recorded temp folder that is not the task's own"
+  assert_grep "not its own /tmp/fm-task-x1 folder" "$case_dir/stderr" \
+    "evidence-foreign-tmp: cleanup did not name the temp folder it left in place"
+  pass "cleanup removes the task's own /tmp/fm-<id> folder and leaves any other recorded temp path in place"
+}
+
+test_symlinked_own_task_temp_folder_is_left_in_place() {
+  local case_dir id own rc
+  case_dir=$(make_case evidence-linked-tmp)
+  id="task-ev-link$$-$RANDOM"
+  own="/tmp/fm-$id"
+  [ ! -e "$own" ] && [ ! -L "$own" ] || fail "fixture temp path $own already exists"
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/foreign-tmp"
+  printf 'keep\n' > "$case_dir/foreign-tmp/sentinel"
+  ln -s "$case_dir/foreign-tmp" "$own"
+  fm_write_meta "$case_dir/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" "worktree=$case_dir/wt" \
+    "project=$case_dir/project" "kind=ship" "mode=no-mistakes" \
+    "spawn_gen=teardown-test-$id" "tasktmp=$own"
+  rc=0
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    FM_CONFIG_OVERRIDE="$case_dir/config" PATH="$case_dir/fakebin:$PATH" \
+    "$TEARDOWN" "$id" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  if [ ! -L "$own" ]; then fail "cleanup removed the symlinked task temp path"; fi
+  rm -- "$own"
+  expect_code 0 "$rc" "symlinked task temp path should be left in place: $(cat "$case_dir/stderr")"
+  [ "$(cat "$case_dir/foreign-tmp/sentinel")" = keep ] || fail "cleanup changed the symlink target"
+  assert_grep "left in place" "$case_dir/stderr" "cleanup should warn about the symlinked temp path"
+  pass "cleanup never removes a symlinked own task temp folder or its target"
+}
+
+test_overlapping_evidence_declarations_refuse() {
+  local case_dir rc entries
+  case_dir=$(make_case evidence-overlap)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/wt/workspace" "$case_dir/data/task-x1"
+  printf 'kept\n' > "$case_dir/wt/workspace/review.txt"
+  for entries in $'workspace/review.txt\nworkspace/review.txt' \
+    $'workspace\nworkspace/review.txt' $'workspace/review.txt\nworkspace'; do
+    printf '%s\n' "$entries" > "$case_dir/data/task-x1/evidence.list"
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "cleanup accepted overlapping evidence declarations"
+    assert_grep "overlaps another entry" "$case_dir/stderr" "refusal should name the overlap"
+    assert_present "$case_dir/state/task-x1.meta" "overlap refusal removed task record"
+    assert_present "$case_dir/wt/workspace/review.txt" "overlap refusal touched evidence"
+    assert_absent "$case_dir/data/task-x1/evidence" "overlap refusal installed a partial snapshot"
+  done
+  pass "cleanup refuses duplicate and nested evidence declarations in either order"
+}
+
+test_failed_final_staged_verification_refuses_without_replacing_prior_evidence() {
+  local case_dir rc real_shasum ev
+  case_dir=$(make_case evidence-final-verify)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  ev="$case_dir/data/task-x1/evidence"
+  mkdir -p "$case_dir/wt/workspace" "$ev"
+  printf 'new evidence\n' > "$case_dir/wt/workspace/review.txt"
+  printf 'prior snapshot\n' > "$ev/sentinel"
+  printf '%s\n' workspace/review.txt > "$case_dir/data/task-x1/evidence.list"
+  real_shasum=$(command -v shasum) || fail "shasum needed for final-verification fixture"
+  # The first staging hash agrees with the source; a second staging hash
+  # disagrees to exercise the final verification independently of copy-out.
+  cat > "$case_dir/fakebin/shasum" <<SH
+#!/usr/bin/env bash
+case "\$3" in
+  *'.evidence.new.'*)
+    if [ -e "$case_dir/staging-hashed" ]; then
+      printf '%064d  %s\\n' 0 "\$3"
+      exit 0
+    fi
+    : > "$case_dir/staging-hashed"
+    ;;
+esac
+exec "$real_shasum" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/shasum"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "cleanup accepted a staged snapshot whose final hash changed"
+  assert_grep "staged evidence copy/workspace/review.txt for task-x1 failed verification" \
+    "$case_dir/stderr" "refusal should identify final verification: $(cat "$case_dir/stderr")"
+  [ "$(cat "$ev/sentinel")" = 'prior snapshot' ] || fail "verification failure replaced earlier evidence"
+  assert_absent "$ev/copy/workspace/review.txt" "verification failure installed new evidence"
+  assert_present "$case_dir/state/task-x1.meta" "verification failure removed task record"
+  assert_present "$case_dir/wt/workspace/review.txt" "verification failure removed source"
+  pass "failed final staged verification preserves the source and earlier evidence snapshot"
+}
+
+test_retried_cleanup_keeps_a_verified_earlier_evidence_copy() {
+  local case_dir rc ev hash
+  case_dir=$(make_case evidence-carry)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  ev="$case_dir/data/task-x1/evidence"
+  mkdir -p "$ev/copy/workspace"
+  printf 'kept\n' > "$ev/copy/workspace/gone.txt"
+  hash=$(cd "$ev" && { sha256sum copy/workspace/gone.txt 2>/dev/null || shasum -a 256 copy/workspace/gone.txt; } | awk '{print $1}')
+  printf '%s  copy/workspace/gone.txt\n' "$hash" > "$ev/MANIFEST.sha256"
+  printf '%s\n' workspace/gone.txt > "$case_dir/data/task-x1/evidence.list"
+
+  printf 'tampered\n' > "$ev/copy/workspace/gone.txt"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "evidence-carry: teardown accepted an earlier copy that no longer verifies"
+  assert_grep "no verified earlier copy" "$case_dir/stderr" \
+    "evidence-carry: refusal did not explain the unverifiable earlier copy: $(cat "$case_dir/stderr")"
+
+  printf 'kept\n' > "$ev/copy/workspace/gone.txt"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "evidence-carry: teardown should keep the verified earlier copy: $(cat "$case_dir/stderr")"
+  [ "$(cat "$ev/copy/workspace/gone.txt")" = kept ] || fail "evidence-carry: the earlier copy was not kept"
+  evidence_manifest_verifies "$ev" || fail "evidence-carry: the kept copy's manifest does not verify"
+  pass "a retried cleanup whose declared source is already gone keeps the earlier copy only while it still verifies"
+}
+
 # Every case builds its own sandbox under a name of its own from the shared
 # read-only git world template, and reaps or signals only processes rooted in
 # its own worktree or started by itself, so no case depends on another or on
@@ -4453,4 +4774,14 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_exec_changed_process_is_still_reaped \
   test_persistent_scan_refuses_after_bounded_retries \
   test_process_exit_during_identity_lookup_does_not_refuse \
-  test_run_abort_precedes_process_reap_precedes_worktree_removal
+  test_run_abort_precedes_process_reap_precedes_worktree_removal \
+  test_declared_evidence_is_copied_out_with_a_verified_manifest \
+  test_undeclared_reference_into_the_copy_refuses_then_declaring_it_proceeds \
+  test_clean_tracked_source_citations_need_no_evidence_declaration \
+  test_unrecoverable_copy_citations_still_refuse_even_with_force \
+  test_evidence_declaration_outside_the_task_roots_refuses \
+  test_own_task_temp_folder_is_removed_and_nothing_else \
+  test_symlinked_own_task_temp_folder_is_left_in_place \
+  test_overlapping_evidence_declarations_refuse \
+  test_failed_final_staged_verification_refuses_without_replacing_prior_evidence \
+  test_retried_cleanup_keeps_a_verified_earlier_evidence_copy

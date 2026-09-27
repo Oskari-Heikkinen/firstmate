@@ -390,6 +390,10 @@ The move IS the acknowledgement: without it firstmate rings again and eventually
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
 
+# One pointer, shared by the ship and scout scaffolds, to the owner of how a
+# worker keeps evidence that lives in its disposable copy or temp folder.
+EVIDENCE_LINE="If a report, note, or other record you leave under \`$DATA/$ID/\` cites a file inside your copy or your task temp folder, follow \`$FM_ROOT/.agents/skills/task-evidence/SKILL.md\` so cleanup preserves it instead of refusing."
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -615,6 +619,7 @@ $INBOX_SECTION
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+$EVIDENCE_LINE
 $LAVISH_LINE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append \`done [at=<epoch>]: {one-line conclusion}\` to the status file and stop.
@@ -700,6 +705,7 @@ $INBOX_SECTION
 # Project memory
 A project's \`AGENTS.md\` or \`CLAUDE.md\` is loaded into every agent session in that project, so edit it only to correct information that is factually wrong - including information your own change made wrong - and never to add knowledge because it is missing.
 A correction edits only the wrong text: do not run \`$FM_ROOT/bin/fm-ensure-agents-md.sh\`, create either file, or add sections, headings, or pointers alongside it.
+$EVIDENCE_LINE
 
 $DOD
 EOF

@@ -944,6 +944,26 @@ test_ship_and_scout_teach_validation_round_pause() {
   pass "fm-brief.sh: ship and scout scaffolds teach validation-round pauses"
 }
 
+test_ship_and_scout_point_at_the_task_evidence_skill() {
+  local home kind id brief
+  home="$TMP_ROOT/task-evidence-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="evidence-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" sample --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" sample --mode no-mistakes >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_grep "$ROOT/.agents/skills/task-evidence/SKILL.md" "$brief" \
+      "$kind brief did not point workers at the task-evidence skill"
+    assert_grep "\`$home/data/$id/\`" "$brief" \
+      "$kind brief did not name the task's own data folder for evidence records"
+  done
+  pass "fm-brief.sh: ship and scout scaffolds point workers at the task-evidence skill"
+}
+
 test_scout_and_secondmate_load_decision_hold_policy() {
   local home scout charter
   home="$TMP_ROOT/decision-policy-home"
@@ -1348,6 +1368,7 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_ship_and_scout_teach_validation_round_pause
+test_ship_and_scout_point_at_the_task_evidence_skill
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_scout_lavish_line_follows_presentation_floor
