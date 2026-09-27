@@ -1067,6 +1067,26 @@ test_kimi_capture_fallback_uses_recorded_harness() (
   pass "pending replies scope Kimi capture fallback by recorded harness"
 )
 
+test_tick_reports_progress_before_each_record() {
+  (
+    local home state count=0 corr
+    home=$(setup_parent tick-progress)
+    state="$home/state"
+    # shellcheck disable=SC2030,SC2031
+    export FM_PENDING_REPLY_NOW=10100
+    for corr in first second third; do
+      corr=$(fm_pending_reply_create "$home" "$state" hibit "$corr request")
+      fm_pending_reply_mark_delivered "$state" "$corr"
+      printf 'done [corr=%s]: complete\n' "$corr" >> "$state/hibit.status"
+      fm_pending_reply_try_resolve "$state" "$corr" || fail "resolved fixture should resolve"
+    done
+    count_record() { count=$((count + 1)); }
+    fm_pending_reply_tick "$state" count_record || fail "tick with a progress hook failed"
+    [ "$count" -eq 3 ] || fail "tick reported progress $count times for 3 records"
+  ) || fail "tick progress regression failed"
+  pass "tick reports progress once before each pending record"
+}
+
 test_tick_skips_terminal_and_reuses_target_observation() {
   (
     local home state open1 open2 resolved escalated rec probe_log probes scan_log scans snapshot
@@ -1680,6 +1700,7 @@ test_helper_report_resolves
 test_busy_idle_observation_via_backend_abstraction
 test_unknown_backend_state_uses_capture_fallback
 test_kimi_capture_fallback_uses_recorded_harness
+test_tick_reports_progress_before_each_record
 test_tick_skips_terminal_and_reuses_target_observation
 test_correlations_reuse_only_for_matching_open_task
 test_tick_end_to_end_missed_then_escalate

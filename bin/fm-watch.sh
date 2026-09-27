@@ -2505,9 +2505,12 @@ pr_poll_publish_release() {
 # this watcher is stuck inside one step - for example blocked forever reading a
 # command substitution whose pipe a detached grandchild still holds open, with
 # no child left to time out. A small sibling process started once per watcher
-# observes the beacon and, once it has counted that same grace of its own
-# intervals without a beat (so a host suspend that ages the beacon's wall-clock
-# mtime never reads as a wedge), stops exactly this watcher: TERM so
+# observes the beacon. A live child of the watcher, or a different pipe on the
+# fd a command substitution reads (fd 3) than at its previous sample, is
+# progress inside a long step, so it refreshes the beacon itself. Once it has
+# counted that same grace of its own intervals with neither a beat nor such
+# progress (so a host suspend that ages the beacon's wall-clock mtime never
+# reads as a wedge), it stops exactly this watcher: TERM so
 # watcher_cleanup releases the lock and publishes downtime recovery, then KILL
 # if the step still holds it, which leaves a dead-pid lock the next arm
 # reclaims. It signals only while this home's lock still names this watcher
@@ -2522,10 +2525,22 @@ watcher_watchdog_owns() {
 }
 watcher_watchdog_start() {
   (
-    trap - EXIT HUP INT TERM
-    seen= still=0
-    while sleep "$WATCHDOG_INTERVAL"; do
+    nap= self=$BASHPID
+    trap - EXIT HUP INT
+    trap '[ -z "$nap" ] || kill "$nap" 2>/dev/null; exit 0' TERM
+    seen= still=0 pipe=
+    while :; do
+      sleep "$WATCHDOG_INTERVAL" &
+      nap=$!
+      wait "$nap" || exit 0
+      nap=
       watcher_watchdog_owns || exit 0
+      last_pipe=$pipe
+      pipe=$(readlink "/proc/$WATCHER_PID/fd/3" 2>/dev/null || true)
+      if [ "$pipe" != "$last_pipe" ] \
+        || pgrep -P "$WATCHER_PID" 2>/dev/null | grep -qvx "$self"; then
+        touch "$STATE/.last-watcher-beat"
+      fi
       mtime=$(fm_path_mtime "$STATE/.last-watcher-beat")
       if [ "$mtime" != "$seen" ]; then
         seen=$mtime
@@ -2705,7 +2720,7 @@ while :; do
   # parent reports, observe backend busy/idle turn completion, send one recovery
   # repost after grace, and escalate once if the recovery turn is also missed.
   # No conversation scraping; unresolved records are never silently expired.
-  fm_pending_reply_tick "$STATE" || true
+  fm_pending_reply_tick "$STATE" watcher_beat || true
 
   # A live secondmate endpoint does not prove that its own wake loop is alive.
   # Observe the foreign queue before the rest of this cycle so an aged row wakes
