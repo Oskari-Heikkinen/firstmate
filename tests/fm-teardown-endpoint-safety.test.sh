@@ -1036,7 +1036,25 @@ test_owner_claim_resolves_a_stale_record_on_the_same_slot() {
   assert_contains "$(cat "$dir/stderr")" "$stale" \
     "the unclaimed refusal should name the other record"
 
-  pass "fm-teardown: a slot's owner claim resolves a stale record on the same slot, and an unclaimed double record still refuses"
+  # A secondmate home lease never writes or clears the claim, so a claim
+  # naming the owner cannot prove a secondmate record on the slot stale.
+  dir=$(make_case claimed-slot-under-secondmate-home)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "home=$dir/worktree" \
+    "project=$dir/project" "kind=secondmate"
+  fm_write_meta "$dir/home/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$owner"
+  assert_refused_without_mutation "$dir" "$owner" "claimed slot under a secondmate home"
+  assert_present "$dir/home/state/$stale.meta" "claimed slot under a secondmate home removed the secondmate record"
+  assert_present "$dir/pool/1/.fm-slot-owner" "claimed slot under a secondmate home dropped the slot claim"
+  assert_contains "$(cat "$dir/stderr")" "REFUSED" \
+    "the secondmate collision should refuse, not warn"
+
+  pass "fm-teardown: a slot's owner claim resolves a stale record on the same slot, and an unclaimed double record or secondmate home still refuses"
 }
 
 # The two states that must never become a false refusal: the task's own claim,

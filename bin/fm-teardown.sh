@@ -89,8 +89,9 @@
 # this home or any locally registered Firstmate home may name the same live path
 # in its worktree= or home=. One live path with two task records is the reuse
 # collision itself, whichever record is stale - unless the slot's owner claim
-# (below) settles which: a claim naming this task marks the other record stale,
-# and a claim naming another task means no slot step runs at all.
+# (below) settles which: a claim naming this task marks another non-secondmate
+# record's worktree= stale, and a claim naming another task means no slot step
+# runs at all.
 # That scan alone cannot prove THIS record is the current owner, because the task
 # that took the slot next may leave no record it can reach - its own worker may
 # have exited and its record been cleaned up, or it may live in a home this
@@ -2280,10 +2281,13 @@ collect_local_firstmate_states() {
 # require_owned_worktree_slot_record below for the claim's states). A claim
 # naming another task means no slot step will run, so a colliding record cannot
 # be harmed and scanning would only strand this record. A claim naming this task
-# proves any other record naming the slot is the stale one - its copy was
-# already reused when the pool handed the slot on - so that collision warns
-# instead of refusing; only a colliding record with this same task id, which the
-# claim cannot tell apart, still refuses. With no claim, the scan alone decides.
+# proves another worker record naming the slot as its worktree is the stale one
+# - its copy was already reused when the pool handed the slot on - so that
+# collision warns instead of refusing. A secondmate record, or any record naming
+# the slot as its home, still refuses: secondmate home leases never write or
+# clear the claim, so the claim cannot prove them stale. A colliding record with
+# this same task id, which the claim cannot tell apart, also still refuses. With
+# no claim, the scan alone decides.
 require_exclusive_worktree_slot_record() {
   local record_meta=$1 record_id=$2 record_state=$3 worktree=$4
   local slot state_dir other other_id field other_path other_slot claim
@@ -2302,7 +2306,8 @@ require_exclusive_worktree_slot_record() {
         [ -n "$other_path" ] || continue
         other_slot=$(canonical_existing_dir "$other_path") || continue
         [ "$other_slot" = "$slot" ] || continue
-        if [ "$claim" = mine ] && [ "$other_id" != "$record_id" ]; then
+        if [ "$claim" = mine ] && [ "$field" = worktree ] && [ "$other_id" != "$record_id" ] \
+          && [ "$(fm_meta_get "$other" kind)" != secondmate ]; then
           echo "warning: task $other_id's recorded $field $slot is stale: that pool slot's owner claim names task $record_id, so its copy was reused and it is torn down as $record_id's; $other_id's record is left untouched." >&2
           continue
         fi
