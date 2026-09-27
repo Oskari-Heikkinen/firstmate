@@ -33,15 +33,16 @@
 #                                                        - a clean cycle ended with no wake and no
 #                                                          verified healthy successor
 # It NEVER reports started/attached/healthy off a stale beacon or a dead/reused pid: a
-# stale-beacon or dead-pid holder either self-heals (the fresh child steals the
-# dead lock per the singleton self-eviction/steal path and is confirmed) or this
-# returns the FAILED line. On started it waits the child and propagates the wake
-# reason; on attached it stays live across identity-matched successors. A cycle
-# that ends with no reason line and no healthy successor is resolved against the
-# watcher's identity-bound delivery record: a matching record reports that wake
-# and exits 0, and only a cycle that delivered nothing is the typed nonzero
-# failure. Neither is ever a clean empty completion. On FAILED it exits non-zero
-# so the failure is loud. A live cycle already present means re-arm attaches - do
+# stale-beacon or dead-pid holder either self-heals (a live identity-verified
+# holder wedged past the stale grace is stopped first, then the fresh child
+# steals the dead lock per the singleton self-eviction/steal path and is
+# confirmed) or this returns the FAILED line. On started it waits the child and
+# propagates the wake reason; on attached it stays live across identity-matched
+# successors. A cycle that ends with no reason line and no healthy successor is
+# resolved against the watcher's identity-bound delivery record: a matching
+# record reports that wake and exits 0, and only a cycle that delivered nothing
+# is the typed nonzero failure. Neither is ever a clean empty completion. On
+# FAILED it exits non-zero so the failure is loud. A live cycle already present means re-arm attaches - do
 # not start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to

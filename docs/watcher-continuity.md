@@ -113,7 +113,7 @@ The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYC
 `state/.watch-triage.log` remains only the watcher's bounded absorbed-wake debug log and carries no lifecycle semantics.
 
 The default 300-second grace is unchanged.
-Only the watcher process touches `state/.last-watcher-beat`; no helper process can make a wedged watcher appear healthy.
+Only the watcher and its own wedge watchdog touch `state/.last-watcher-beat`, and the watchdog only on observed progress inside a step, so no helper can make a wedged watcher appear healthy; [`turnend-guard.md`](turnend-guard.md#guard-grace-and-the-poll-cadence) owns the refresh and wedge-recovery rules.
 The watcher uses bash's native fatal handling for HUP and TERM, including during a blocked poll, so both run its EXIT cleanup; `watcher_stop_signals` in `bin/fm-watch.sh` owns the signal-handling rationale.
 
 ## Regression coverage
