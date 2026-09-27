@@ -227,8 +227,8 @@ fi
 POLL=${FM_POLL:-15}                   # seconds between cycles
 # The liveness beacon is touched at the top of every cycle and refreshed at its
 # step boundaries (see watcher_beat), including just before the terminal wait
-# (event_wait_or_sleep), so a healthy cycle's beacon ages by at most
-# STEP_BEAT_SECS plus its longest single step or POLL.
+# (event_wait_or_sleep), so a healthy cycle's beacon ages by at most its
+# longest single step or POLL.
 # fm_poll_derived_grace (bin/fm-wake-lib.sh, already sourced
 # transitively above) is the single owner of the max(300, poll+60)
 # derivation - see docs/turnend-guard.md "Guard grace and the poll cadence".
@@ -2501,16 +2501,18 @@ pr_poll_publish_release() {
 }
 
 # Wedge watchdog. A step boundary refreshes the beacon (watcher_beat below), so
-# a beacon older than WATCHER_STALE_GRACE means this watcher is stuck inside one
-# step - for example blocked forever reading a command substitution whose pipe
-# a detached grandchild still holds open, with no child left to time out. A
-# small sibling process started once per watcher observes the beacon and, past
-# that same grace, stops exactly this watcher: TERM so watcher_cleanup releases
-# the lock and publishes downtime recovery, then KILL if the step still holds
-# it, which leaves a dead-pid lock the next arm reclaims. It signals only while
-# this home's lock still names this watcher with its recorded identity, so it
-# can never touch a successor or another home's watcher, and it exits as soon
-# as this watcher is gone.
+# a beacon this watchdog has seen stay unchanged for WATCHER_STALE_GRACE means
+# this watcher is stuck inside one step - for example blocked forever reading a
+# command substitution whose pipe a detached grandchild still holds open, with
+# no child left to time out. A small sibling process started once per watcher
+# observes the beacon and, once it has counted that same grace of its own
+# intervals without a beat (so a host suspend that ages the beacon's wall-clock
+# mtime never reads as a wedge), stops exactly this watcher: TERM so
+# watcher_cleanup releases the lock and publishes downtime recovery, then KILL
+# if the step still holds it, which leaves a dead-pid lock the next arm
+# reclaims. It signals only while this home's lock still names this watcher
+# with its recorded identity, so it can never touch a successor or another
+# home's watcher, and it exits as soon as this watcher is gone.
 WATCHDOG_PID=
 WATCHDOG_INTERVAL=${FM_WATCHER_WATCHDOG_INTERVAL:-15}
 case "$WATCHDOG_INTERVAL" in ''|*[!0-9]*|0) WATCHDOG_INTERVAL=15 ;; esac
@@ -2521,12 +2523,18 @@ watcher_watchdog_owns() {
 watcher_watchdog_start() {
   (
     trap - EXIT HUP INT TERM
-    i=0
+    seen= still=0
     while sleep "$WATCHDOG_INTERVAL"; do
       watcher_watchdog_owns || exit 0
-      age=$(fm_path_age "$STATE/.last-watcher-beat")
-      [ "$age" -ge "$WATCHER_STALE_GRACE" ] || continue
-      triage_log "watchdog: stopping wedged watcher pid $WATCHER_PID (beacon ${age}s >= ${WATCHER_STALE_GRACE}s)"
+      mtime=$(fm_path_mtime "$STATE/.last-watcher-beat")
+      if [ "$mtime" != "$seen" ]; then
+        seen=$mtime
+        still=0
+        continue
+      fi
+      still=$((still + WATCHDOG_INTERVAL))
+      [ "$still" -ge "$WATCHER_STALE_GRACE" ] || continue
+      triage_log "watchdog: stopping wedged watcher pid $WATCHER_PID (beacon unchanged for ${still}s >= ${WATCHER_STALE_GRACE}s)"
       kill -TERM "$WATCHER_PID" 2>/dev/null || exit 0
       i=0
       while [ "$i" -lt 100 ] && kill -0 "$WATCHER_PID" 2>/dev/null; do
@@ -2655,22 +2663,13 @@ resurface_after_downtime() {
 # healthy watcher read stale mid-cycle and refused concurrent re-arms. The loop
 # calls this at each step boundary instead of from a background timer, so a
 # single step that stays blocked still ages the beacon and still reads wedged.
-# The top of each cycle passes `force`; a step boundary refreshes only once
-# STEP_BEAT_SECS have passed since the last touch (tracked with the $SECONDS
-# builtin, so skipping costs no fork), which leaves a short cycle's beacon
-# exactly as before and bounds a long cycle's beacon age far inside the grace.
-STEP_BEAT_SECS=${FM_WATCHER_STEP_BEAT_SECS:-10}
-case "$STEP_BEAT_SECS" in ''|*[!0-9]*) STEP_BEAT_SECS=10 ;; esac
-LAST_BEAT_SECONDS=
+# The top of each cycle also records that cycle's sequence number as the
+# beacon's content, so a reader can tell a new cycle from a step beat.
+WATCHER_CYCLE=0
 watcher_beat() {
-  if [ "${1:-}" != force ] && [ -n "$LAST_BEAT_SECONDS" ] \
-    && [ $((SECONDS - LAST_BEAT_SECONDS)) -lt "$STEP_BEAT_SECS" ]; then
-    return 0
-  fi
   touch "$STATE/.last-watcher-beat"
-  LAST_BEAT_SECONDS=$SECONDS
 }
-watcher_beat force
+watcher_beat
 watcher_watchdog_start
 
 while :; do
@@ -2684,7 +2683,8 @@ while :; do
     exit 0
   fi
 
-  watcher_beat force
+  WATCHER_CYCLE=$((WATCHER_CYCLE + 1))
+  printf '%s\n' "$WATCHER_CYCLE" > "$STATE/.last-watcher-beat"
 
   # Opt-in fleet activity ledger (docs/fleet-ledger.md): pick up newly appended
   # status lines before this cycle can exit on a wake. Off costs one file test.

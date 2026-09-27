@@ -231,7 +231,7 @@ test_long_healthy_cycle_keeps_beacon_fresh() {
   register_slow_check "$dir" slow-b 3
   register_slow_check "$dir" slow-c 3
   register_slow_check "$dir" slow-d 3
-  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_WATCHER_WATCHDOG_INTERVAL=1 FM_WATCHER_STEP_BEAT_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=30 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" &
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_WATCHER_WATCHDOG_INTERVAL=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=30 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" &
   pid=$!
   wait_for_check_start "$dir" slow-d "$pid" || { reap_watcher "$pid"; fail "watcher never reached the last slow check"; }
   first=$(sed -n '1s/ .*//p' "$dir/check-starts.log")
@@ -347,6 +347,99 @@ test_arm_recovers_wedged_live_holder() {
   wait_for_exit "$armpid" 100 >/dev/null 2>&1 || kill -KILL "$armpid" 2>/dev/null || true
   wait "$armpid" 2>/dev/null || true
   pass "arm recovers a live wedged watcher through its identity-verified home-scoped stop"
+}
+
+# Set <path>'s own mtime (a symlink's, not its target's) <secs> into the past.
+backdate() {  # <path> <secs>
+  local epoch stamp
+  epoch=$(( $(date +%s) - $2 ))
+  stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S 2>/dev/null || date -r "$epoch" +%Y%m%d%H%M.%S)
+  touch -h -t "$stamp" "$1"
+}
+
+# Start a quiet watcher with extra env and wait until it has stamped its first
+# cycle and settled into that cycle's terminal wait. Sets SEED_PID.
+start_idle_watcher() {  # <dir> [env assignments...]
+  local dir=$1 i=0
+  shift
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" &
+  SEED_PID=$!
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/state/.last-watcher-beat" ]; do
+    kill -0 "$SEED_PID" 2>/dev/null || fail "seed watcher exited before its first cycle: $(cat "$dir/watch.err")"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -s "$dir/state/.last-watcher-beat" ] || { reap_watcher "$SEED_PID"; fail "seed watcher never stamped a cycle"; }
+  sleep 1
+}
+
+test_arm_uses_poll_derived_grace_for_wedge_recovery() {
+  # A long-poll home's healthy watcher sits in its terminal wait with a beacon
+  # older than the historical 300s but inside its own poll-derived grace. An
+  # arm with no FM_GUARD_GRACE must judge it by that same grace and attach,
+  # not stop it as wedged.
+  local dir state armout armpid i
+  dir=$(make_case arm-long-poll-grace)
+  state="$dir/state"
+  armout="$dir/arm.out"
+  start_idle_watcher "$dir" FM_POLL=600
+  backdate "$state/.last-watcher-beat" 400
+  backdate "$state/.watch.lock" 1000
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=600 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=2 "$WATCH_ARM" > "$armout" 2>&1 &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 100 ] && ! grep -qE 'watcher: (attached|stopping wedged)' "$armout" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! grep -qF 'watcher: stopping wedged' "$armout" || { reap_watcher "$SEED_PID"; fail "arm stopped a healthy long-poll watcher: $(cat "$armout")"; }
+  grep -qF "watcher: attached pid=$SEED_PID" "$armout" || { reap_watcher "$SEED_PID"; fail "arm did not attach to the healthy long-poll watcher: $(cat "$armout")"; }
+  reap_watcher "$SEED_PID"
+  wait_for_exit "$armpid" 100 >/dev/null 2>&1 || kill -KILL "$armpid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  pass "arm judges a long-poll watcher's beacon by the watcher's own poll-derived grace"
+}
+
+test_arm_spares_starting_holder_behind_old_beacon() {
+  # A watcher that took the lock less than the grace ago cannot have been
+  # wedged past it, even when the beacon it has not yet refreshed (here left
+  # by a predecessor) is older than the grace.
+  local dir state armout armpid
+  dir=$(make_case arm-starting-holder)
+  state="$dir/state"
+  armout="$dir/arm.out"
+  start_idle_watcher "$dir" FM_POLL=600 FM_GUARD_GRACE=30 FM_WATCHER_WATCHDOG_INTERVAL=3600
+  backdate "$state/.last-watcher-beat" 1000
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=600 FM_GUARD_GRACE=30 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" 2>&1 &
+  armpid=$!
+  wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS" >/dev/null 2>&1 || kill -KILL "$armpid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  ! grep -qF 'watcher: stopping wedged' "$armout" || { reap_watcher "$SEED_PID"; fail "arm stopped a holder whose lock is younger than the grace: $(cat "$armout")"; }
+  is_live_non_zombie "$SEED_PID" || fail "the holder whose lock is younger than the grace did not survive the arm"
+  reap_watcher "$SEED_PID"
+  pass "arm never reads a holder that took the lock inside the grace as wedged"
+}
+
+test_watchdog_ignores_wall_clock_jump() {
+  # After a host suspend the beacon's wall-clock age jumps past the grace
+  # before the resumed watcher's next beat. The watchdog counts its own
+  # intervals without a beacon change, so that jump alone never stops a
+  # watcher that keeps beating.
+  local dir state
+  dir=$(make_case watchdog-wall-clock-jump)
+  state="$dir/state"
+  start_idle_watcher "$dir" FM_POLL=4 FM_GUARD_GRACE=8 FM_WATCHER_WATCHDOG_INTERVAL=1
+  backdate "$state/.last-watcher-beat" 1000
+  sleep 6
+  if grep -qF 'watchdog: stopping wedged watcher' "$state/.watch-triage.log" 2>/dev/null; then
+    reap_watcher "$SEED_PID"
+    fail "the watchdog stopped a beating watcher on a wall-clock jump alone"
+  fi
+  is_live_non_zombie "$SEED_PID" || fail "a beating watcher did not survive a wall-clock jump"
+  [ "$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_age "$2"' _ "$LIB" "$state/.last-watcher-beat")" -lt 8 ] \
+    || { reap_watcher "$SEED_PID"; fail "the watcher did not refresh its beacon after the wall-clock jump"; }
+  reap_watcher "$SEED_PID"
+  pass "the wedge watchdog does not mistake a wall-clock jump for a wedge"
 }
 
 test_guard_warnings() {
@@ -1351,6 +1444,9 @@ test_long_healthy_cycle_keeps_beacon_fresh
 test_wedged_step_is_stopped_by_watchdog
 test_orphaned_pipe_read_is_stopped_by_watchdog
 test_arm_recovers_wedged_live_holder
+test_arm_uses_poll_derived_grace_for_wedge_recovery
+test_arm_spares_starting_holder_behind_old_beacon
+test_watchdog_ignores_wall_clock_jump
 test_guard_warnings
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock

@@ -67,8 +67,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
 BEAT="$STATE/.last-watcher-beat"
-# "Fresh" reuses the guard's threshold so there is one definition of liveness.
-GRACE=${FM_GUARD_GRACE:-300}
+# "Fresh" reuses the guard's threshold so there is one definition of liveness,
+# with the same poll-derived default fm-watch.sh uses.
+GRACE=${FM_GUARD_GRACE:-$(fm_poll_derived_grace)}
+# A live holder reads wedged past fm-watch.sh's own stale-grace resolution.
+WEDGE_GRACE=${FM_WATCHER_STALE_GRACE:-$GRACE}
 # How long to wait for a freshly forked watcher to acquire the lock and beat.
 # Git Bash/MSYS pays a much higher fork cost while the watcher completes its
 # required pre-lock migration, so its bounded default covers that cold start.
@@ -414,15 +417,12 @@ fi
 # reclaims; a TERM-resistant holder with a fresh beacon is a healthy peer the
 # arm below attaches to instead. Waiting for the exit before relaunching keeps
 # the fresh watcher from seeing the dying one as a live holder.
-# The holder's beacon is stale: older than GRACE, or - before its first beat -
-# a lock older than GRACE, the same test fm-watch.sh applies before refusing a
-# live holder, so a peer still starting up is never read as wedged.
+# The holder's beacon (absent or left by a predecessor included) is older than
+# WEDGE_GRACE, and so is its lock claim, so a peer that took the lock less than
+# that grace ago and is still starting up is never read as wedged.
 holder_beacon_stale() {
-  if [ -e "$BEAT" ]; then
-    [ "$(fm_path_age "$BEAT")" -ge "$GRACE" ]
-  else
-    [ "$(fm_path_age "$WATCH_LOCK")" -ge "$GRACE" ]
-  fi
+  [ "$(fm_path_age "$WATCH_LOCK")" -ge "$WEDGE_GRACE" ] \
+    && [ "$(fm_path_age "$BEAT")" -ge "$WEDGE_GRACE" ]
 }
 
 stop_recorded_watcher() {  # <pid>
@@ -470,9 +470,10 @@ if [ "$mode" = arm ] && healthy_watcher; then
   exit $?
 fi
 
-# A live holder that is provably THIS home's watcher but whose beacon is older
-# than GRACE is wedged inside one step: fm-watch.sh refreshes the beacon at
-# every step boundary, so no healthy cycle ages it that far. Its own watchdog
+# A live holder that is provably THIS home's watcher but whose beacon and lock
+# are both older than WEDGE_GRACE is wedged inside one step: fm-watch.sh
+# refreshes the beacon at every step boundary, so no healthy cycle ages it that
+# far. Its own watchdog
 # normally stops it; if that watchdog is gone too, recover here through the
 # same identity-verified stop as --restart rather than refusing every arm until
 # someone kills it by hand.
@@ -481,7 +482,7 @@ if [ "$mode" = arm ]; then
   if fm_pid_alive "$lock_pid" \
     && fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME" \
     && holder_beacon_stale; then
-    echo "watcher: stopping wedged pid=$lock_pid (beacon stale >= ${GRACE}s)" >&2
+    echo "watcher: stopping wedged pid=$lock_pid (beacon stale >= ${WEDGE_GRACE}s)" >&2
     stop_recorded_watcher "$lock_pid"
   fi
 fi
