@@ -887,6 +887,30 @@ When the file is absent, worker launches do not add a board address and retain t
 Malformed or unreadable values refuse the launch before the worker starts.
 The address selects the existing shared server; it does not authorize starting or stopping the server, and the Lavish startup crash remains a vendor-tool concern.
 
+## Subscription accounts (config/accounts)
+
+The optional local, gitignored `config/accounts` registers the subscription logins the fleet may run on, one per line as `<name> <provider> <login-folder> [<priority>]`.
+A Claude login folder is the `CLAUDE_CONFIG_DIR` the harness reads and a Codex one is its `CODEX_HOME`; only Claude accounts are ever chosen for a launch, while other providers are shown with their usage.
+Firstmate never reads, copies, or prints a credential: usage comes from quota-axi's read of one login folder, and only a folder's existence is checked directly.
+With no registry, every launch is unchanged and forwards the launching session's own login.
+A home's `config/claude-account` pin ("Worker account pin" above) outranks the registry: that home's Claude launches always use the pinned login, and moving one of its agents to another account refuses.
+
+`bin/fm-account.sh status` shows each account's percent left, runway, and reset time, and which sessions, second mates, and workers run on it, read from each task record's `account=`.
+An agent launched before the registry existed is attributed to its launcher's account and marked `~` until it is moved or pinned.
+`bin/fm-account.sh panel` toggles the same view as a side pane when run inside Herdr, and `bin/fm-account.sh watch` runs it in any terminal.
+`bin/fm-account.sh use <task> <account>` moves one second mate or worker through the guarded relaunch path, and `bin/fm-account.sh default <account>` sets where new spawns start.
+The chosen account is recorded durably, in a worker's task record or in the second mate's own `config/account`, so a later relaunch or respawn does not revert it.
+
+`config/account-floor` holds the percent-left floor, default 10.
+While an account is below it, new ship and scout spawns start on the next registered Claude account with room, in priority order, and say so.
+Unknown usage is never treated as low, so a failed read never moves work.
+Automatic rebalancing is on whenever the registry exists, unless `config/account-auto` says `off`.
+Session start then arms a watcher check that wakes firstmate only when a move is due or the advice changes, and firstmate runs `bin/fm-account.sh rebalance` without asking the captain.
+Rebalancing moves second mates and between-steps workers, never one mid-command or mid-validation run; a busy worker waits for a later run.
+Only the captain can restart this home's own session or sign in to a login that does not exist yet, so those appear as one-line advice instead.
+The registry, floor, and auto setting are inherited into secondmate homes, while `config/account` and `config/spawn-account` stay per home.
+The headers of `bin/fm-account-lib.sh` and `bin/fm-account.sh` own the exact formats, the spawn account precedence, and the runtime records.
+
 ## Home brief include (config/brief-include.md)
 
 The optional local, gitignored `config/brief-include.md` adds standing worker instructions to every ship and scout brief.
@@ -2393,6 +2417,11 @@ FM_SEND_RETRIES=3       # fm-send typed-plane Enter-retry attempts after typing 
 FM_SEND_SLEEP=0.4       # seconds between fm-send typed-plane submit checks
 FM_SEND_SETTLE=1        # seconds fm-send waits after a successful typed-plane submit; 0 disables
 FM_PENDING_REPLY_GRACE_SECS=120   # seconds after marked-request delivery before a completed turn without a correlated parent report is eligible for its one recovery repost
+# subscription accounts; see "Subscription accounts" above
+FM_SPAWN_ACCOUNT=       # one launch's explicit account name, set by bin/fm-account.sh for a switch relaunch; beats every recorded or configured account
+FM_ACCOUNT_USAGE_TTL=120   # seconds a cached per-account usage read stays fresh
+FM_ACCOUNT_QUOTA_TIMEOUT=20   # seconds bounding one quota-axi read of one login
+FM_ACCOUNT_PANEL_RATIO=    # optional Herdr split ratio for the accounts panel
 # sub-supervisor (bin/fm-supervise-daemon.sh); presence-gated via /afk
 FM_SUPERVISOR_BACKEND=             # optional supervisor pane backend override; tmux/herdr only, otherwise detects $TMUX_PANE then HERDR_ENV/HERDR_PANE_ID before tmux fallback
 FM_SUPERVISOR_TARGET=              # optional supervisor pane target override; tmux target or herdr <session>:<pane-id>, otherwise auto-detected

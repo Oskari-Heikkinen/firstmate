@@ -1583,6 +1583,14 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
     "$SCRIPT_DIR/fm-contributions.sh" arm --if-owned >/dev/null \
       || echo "MISSING: contribution observation could not be armed; coverage is unconfirmed"
   fi
+  # Keep this home's automatic account-rebalancing check in step with its
+  # config/accounts and config/account-auto (bin/fm-account.sh owns both);
+  # local, idempotent, and silent when nothing changes.
+  if local_phase && [ -x "$SCRIPT_DIR/fm-account.sh" ]; then
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+      "$SCRIPT_DIR/fm-account.sh" auto sync >/dev/null 2>&1 \
+      || echo "MISSING: automatic account rebalancing could not be armed; run bin/fm-account.sh auto on to see why"
+  fi
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true
     cat "$fleet_sync_out"

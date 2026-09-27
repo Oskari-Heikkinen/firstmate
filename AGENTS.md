@@ -111,6 +111,7 @@ Do not add model-specific versions of that policy.
 `secondmate-provisioning` owns secondmate harness pins and inherited local material, while `harness-adapters` owns the harness consequences.
 Dispatch only on a backend that `fm-spawn` validates as spawn-capable; pass an explicit per-spawn `--backend` only under that exact task's own authority, never as later-task precedent (selection contract: [`docs/configuration.md`](docs/configuration.md) "Runtime backend").
 A missing dependency, authentication failure, unsupported backend, or version refusal is a blocker; never silently retry on another backend.
+`bin/fm-account.sh` owns subscription accounts, account switching, and automatic rebalancing; on its `accounts` check wake, run `bin/fm-account.sh rebalance` without asking the captain and relay only its "needs the captain" lines.
 
 ## 5. Recovery
 
