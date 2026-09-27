@@ -849,6 +849,7 @@ EOF
   assert_contains "$out" "another live firstmate session holds the lock" "read-only banner did not surface fm-lock.sh's own error text"
   assert_contains "$out" "Skipping every mutating step" "read-only banner did not explain what was skipped"
   assert_contains "$out" "skipped (read-only session)" "wake-queue section did not report itself skipped"
+  assert_not_contains "$out" "Dead-worker relaunch" "a read-only session showed a relaunch plan it will never run"
   assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" "read-only guard did not surface watcher-liveness alarm"
   assert_contains "$out" "queued wakes pending - left untouched because this session lacks verified fleet-lock ownership" "read-only guard did not leave queued wakes untouched without verified lock ownership"
   assert_contains "$out" "TANGLE: primary checkout on feature branch 'fm/read-only-tangle'" "read-only bootstrap did not surface the tangle diagnostic"
@@ -1626,6 +1627,55 @@ SH
   pass "a digest child killed mid-stage is bannered by the parent, which still exits 0"
 }
 
+# The locked digest prints the dead-worker relaunch plan (bin/fm-reboot-relaunch.sh
+# owns its lines) for a task whose agent is gone from its surviving pane, and says
+# nothing about a task whose agent still runs.
+test_dead_worker_relaunch_plan_is_shown_for_a_gone_agent_only() {
+  local rec root home fakebin out id wt
+  rec=$(new_world reboot-plan)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+target=
+prev=
+for a in "$@"; do
+  [ "$prev" = -t ] && target=$a
+  prev=$a
+done
+case "${1:-}" in
+  list-windows) printf 'fm-task-live\nfm-task-dead\n'; exit 0 ;;
+  display-message)
+    case "$*" in
+      *pane_current_command*)
+        case "$target" in *task-live*) echo claude ;; *) echo zsh ;; esac ;;
+      *) echo '%1' ;;
+    esac
+    exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  for id in task-live task-dead; do
+    wt="$home/wt-$id"
+    mkdir -p "$wt" "$home/data/$id"
+    printf '# brief\n' > "$home/data/$id/brief.md"
+    printf 'window=fm-sess:fm-%s\nendpoint_task_id=%s\nworktree=%s\nproject=%s\nkind=ship\nharness=claude\n' \
+      "$id" "$id" "$wt" "$root" > "$home/state/$id.meta"
+    printf 'working: busy\n' > "$home/state/$id.status"
+  done
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "Dead-worker relaunch" "the locked digest did not show the dead-worker relaunch plan"
+  assert_contains "$out" "relaunch task-dead: agent gone from its surviving tmux endpoint" \
+    "the relaunch plan did not name the task whose agent is gone"
+  assert_not_contains "$out" " task-live: " "the relaunch plan listed a task whose agent is running"
+  pass "session start: the dead-worker relaunch plan names a gone agent and skips a running one"
+}
+
 # --- composition: real scripts run, not reimplemented ------------------------
 
 test_composition_invokes_real_scripts() {
@@ -1863,7 +1913,7 @@ EOF
   assert_contains "$out" "SESSION START" "the digest did not complete"
   assert_contains "$out" "IN PROGRESS - the deferred network checks have not finished yet." \
     "the digest did not disclose that its network checks were still running"
-  assert_contains "$out" "NOT yet confirmed: GitHub authentication, dead-secondmate relaunch" \
+  assert_contains "$out" "NOT yet confirmed: GitHub authentication, dead-worker relaunch, dead-secondmate relaunch" \
     "the digest did not name the checks it has not confirmed"
   assert_not_contains "$out" "NEEDS_GH_AUTH" \
     "the digest reported a GitHub-auth verdict it could not yet have"
@@ -2999,6 +3049,7 @@ test_status_tail_bounding
 test_status_tail_line_cap
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
+test_dead_worker_relaunch_plan_is_shown_for_a_gone_agent_only
 test_endpoint_liveness_herdr
 test_endpoint_read_death_is_isolated_and_reported
 test_endpoint_read_hang_is_bounded_and_reported

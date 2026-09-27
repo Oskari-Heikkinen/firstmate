@@ -789,6 +789,9 @@ test_local_only_truly_unpushed_refuses() {
   case_dir=$(make_case truly-unpushed)
   write_meta "$case_dir" local-only ship
   wt_commit "$case_dir" "unpushed work"
+  # Refused cleanup must preserve recovery records with the unlanded work.
+  printf 'exited=1\n' > "$case_dir/state/task-x1.control-exit"
+  printf 'key=boot:test\nresult=relaunched\n' > "$case_dir/state/task-x1.reboot-relaunch"
   # No fork, no push to origin, not merged into main.
 
   set +e
@@ -798,6 +801,8 @@ test_local_only_truly_unpushed_refuses() {
 
   expect_code 1 "$rc" "truly-unpushed: teardown should refuse"
   grep -q REFUSED "$case_dir/stderr" || fail "truly-unpushed: no REFUSED line in stderr"
+  assert_present "$case_dir/state/task-x1.control-exit" "refused cleanup lost the deliberate-exit record"
+  assert_present "$case_dir/state/task-x1.reboot-relaunch" "refused cleanup lost the reboot-relaunch record"
   pass "local-only worktree with truly unpushed work is refused (safety preserved)"
 }
 
@@ -812,6 +817,8 @@ test_local_only_merged_to_local_main_allows() {
   local wt_head
   wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
   git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  printf 'exited=1\n' > "$case_dir/state/task-x1.control-exit"
+  printf 'key=boot:test\nresult=relaunched\n' > "$case_dir/state/task-x1.reboot-relaunch"
 
   set +e
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -820,6 +827,8 @@ test_local_only_merged_to_local_main_allows() {
 
   expect_code 0 "$rc" "merged-main: teardown should succeed when work is merged into local main"
   ! grep -q REFUSED "$case_dir/stderr" || fail "merged-main: teardown printed a REFUSED line"
+  assert_absent "$case_dir/state/task-x1.control-exit" "cleanup left the deliberate-exit record"
+  assert_absent "$case_dir/state/task-x1.reboot-relaunch" "cleanup left the reboot-relaunch record"
   pass "local-only worktree with work merged into local main is torn down (no regression)"
 }
 

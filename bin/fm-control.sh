@@ -34,7 +34,10 @@
 #              otherwise reports `cancel=not-running` having sent one press.
 #   exit       Stop the agent, preserving its terminal endpoint, worktree, and
 #              every uncommitted change. Interrupts first when the task reads
-#              busy, then submits the harness's exit command. Postcondition:
+#              busy, then submits the harness's exit command. Records
+#              state/<id>.control-exit so the session-start relaunch
+#              (bin/fm-reboot-relaunch.sh) leaves a deliberately stopped task
+#              stopped; a completed relaunch clears it. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
 #              Already-stopped is success (idempotent). An endpoint that reads
 #              `missing` is put through the control plane's per-backend absence
@@ -1207,6 +1210,8 @@ do_relaunch() {
   fm_status_supersede_blockers "$STATE" "$STATE/$ID.status" relaunch \
     "relaunched on $TARGET_HARNESS (from $PRIOR_RECORDED_HARNESS)" \
     || echo "warning: could not record that the relaunch of $ID superseded its open blockers" >&2
+  # A running replacement supersedes any earlier deliberate stop.
+  rm -f "$STATE/$ID.control-exit" 2>/dev/null || true
   echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
 }
 
@@ -1231,6 +1236,11 @@ case "$VERB" in
     ;;
   exit)
     result=$(do_exit)
+    # A deliberate stop is durable intent: bin/fm-reboot-relaunch.sh leaves a
+    # task carrying this record stopped at session start instead of reviving it.
+    # A later relaunch removes it, and teardown removes it with the task.
+    printf 'exited=%s\n' "$(date +%s)" > "$STATE/$ID.control-exit" 2>/dev/null \
+      || echo "warning: could not record that $ID was stopped deliberately; an automatic session-start relaunch may revive it" >&2
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)

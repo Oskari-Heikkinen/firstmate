@@ -779,8 +779,8 @@ GITHUB_TOKEN=ghp_supersecretvalue" \
   assert_grep 'unrecordable' "$home/state/.startup-network.timings" \
     "free text was silently dropped instead of being marked unrecordable"
   lines=$(grep -c . "$home/state/.startup-network.timings")
-  [ "$lines" -eq 2 ] \
-    || fail "one sweep record plus the stage total should be 2 lines, got $lines"
+  [ "$lines" -eq 3 ] \
+    || fail "one sweep record, the dead-worker relaunch step, and the stage total should be 3 lines, got $lines"
 
   # The step itself is still measured - only its untrustworthy label is refused,
   # so a sweep that mislabels itself still shows up as time spent.
@@ -859,6 +859,65 @@ EOF
   pass "fm-startup-network: a held publish lock ends the worker inside its budget with a failed-rerun record"
 }
 
+# The dead-worker relaunch (bin/fm-reboot-relaunch.sh owns its gate) runs only
+# in locked work, ahead of the sweeps, under its own bound, and its lines and
+# failures land in the same report.
+fake_reboot_relaunch() {  # <root> <log>
+  rm -f "$1/bin/fm-reboot-relaunch.sh"
+  cat > "$1/bin/fm-reboot-relaunch.sh" <<SH
+#!/usr/bin/env bash
+printf 'relaunch %s\n' "\$*" >> '$2'
+[ -z "\${FM_FAKE_RELAUNCH_SLEEP:-}" ] || sleep "\$FM_FAKE_RELAUNCH_SLEEP"
+[ -z "\${FM_FAKE_RELAUNCH_OUT:-}" ] || printf '%s\n' "\$FM_FAKE_RELAUNCH_OUT"
+exit "\${FM_FAKE_RELAUNCH_RC:-0}"
+SH
+  chmod +x "$1/bin/fm-reboot-relaunch.sh"
+}
+
+test_dead_worker_relaunch_runs_only_in_locked_work_and_reports_its_failures() {
+  local rec home root log report
+  rec=$(new_world reboot-relaunch)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  fake_reboot_relaunch "$root" "$log"
+  printf '%s\n' $$ > "$home/state/.lock"
+
+  FM_FAKE_BOOTSTRAP_LOG="$log" run_stage "$home" "$root" run --locked 0
+  assert_no_grep 'relaunch ' "$log" "an unlocked run started the dead-worker relaunch"
+
+  : > "$log"
+  FM_FAKE_BOOTSTRAP_LOG="$log" \
+    FM_FAKE_RELAUNCH_OUT='BOOTSTRAP_INFO: reboot relaunch: relaunched t1 (fixture)' \
+    run_stage "$home" "$root" run --locked 1 --lock-pid $$
+  assert_grep "relaunch run --lock-pid $$ --deadline " "$log" \
+    "a locked run did not hand the relaunch its lock owner and deadline"
+  [ "$(head -1 "$log" | cut -c1-9)" = 'relaunch ' ] \
+    || fail "the relaunch did not run ahead of the sweeps: $(cat "$log")"
+  report=$(run_stage "$home" "$root" report)
+  assert_contains "$report" "BOOTSTRAP_INFO: reboot relaunch: relaunched t1 (fixture)" \
+    "the relaunch's own lines did not reach the report"
+  assert_grep 'network=only detect_only=0' "$log" "the sweeps did not still run after the relaunch"
+
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_RELAUNCH_RC=7 \
+    run_stage "$home" "$root" run --locked 1 --lock-pid $$
+  assert_contains "$(run_stage "$home" "$root" report)" \
+    "REBOOT_RELAUNCH: the dead-worker relaunch exited 7" "a failed relaunch step was swallowed"
+
+  # Time the relaunch spends extends the stage deadline rather than eating the
+  # sweeps' budget, so a slow relaunch never times the network checks out.
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=1 FM_FAKE_RELAUNCH_SLEEP=4 \
+    FM_STARTUP_NETWORK_TIMEOUT=3 run_stage "$home" "$root" run --locked 1 --lock-pid $$
+  [ "$(sed -n 's/^state=//p' "$home/state/.startup-network.status")" = 'done' ] \
+    || fail "a relaunch longer than the stage budget starved the sweeps: $(run_stage "$home" "$root" report)"
+
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_RELAUNCH_SLEEP=10 FM_REBOOT_RELAUNCH_TIMEOUT=1 \
+    run_stage "$home" "$root" run --locked 1 --lock-pid $$
+  assert_contains "$(run_stage "$home" "$root" report)" \
+    "REBOOT_RELAUNCH: the dead-worker relaunch hit its 1s bound" "a wedged relaunch step was not reported"
+  pass "fm-startup-network: the dead-worker relaunch runs first in locked work only, and its failures are reported"
+}
+
 test_wait_fails_without_a_published_stage
 test_start_returns_without_holding_the_callers_stdout
 test_harvest_acknowledgement_suppresses_the_wake_and_no_claim_produces_it
@@ -881,3 +940,4 @@ test_a_bounded_run_still_publishes_the_timings_it_managed_to_record
 test_the_timing_artifact_cannot_carry_a_command_line_or_forge_records
 test_a_held_publish_lock_cannot_keep_the_worker_alive_past_its_budget
 echo "# fm-startup-network.test.sh: all assertions passed"
+test_dead_worker_relaunch_runs_only_in_locked_work_and_reports_its_failures

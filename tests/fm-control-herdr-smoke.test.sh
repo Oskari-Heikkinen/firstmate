@@ -307,6 +307,52 @@ awk -F= '$1 == "harness" {$0="harness=claude"} {print}' "$HOME_DIR/state/hsmoke.
 mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
 pass "real herdr: a stale registration no longer blocks relaunch, and the endpoint and local copy survive"
 
+# --- the session-start dead-worker relaunch (bin/fm-reboot-relaunch.sh) -----
+#
+# After a reboot the pane survives as a bare shell and the worker's agent is
+# gone. The session-start step must prove that through the real registry and
+# relaunch the worker in place, exactly once per boot. The inert `codex` on the
+# pane PATH stands in for the harness, so no model is launched.
+awk -F= '$1 == "harness" {$0="harness=codex"} {print}' "$HOME_DIR/state/hsmoke.meta" \
+  > "$HOME_DIR/state/hsmoke.meta.tmp"
+mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
+printf 'paused [key=reboot]: reboot-safe; resume note written\n' >> "$HOME_DIR/state/hsmoke.status"
+printf 'Continue from step 2.\n' > "$HOME_DIR/data/hsmoke/resume.md"
+printf '%s\n' "$$" > "$HOME_DIR/state/.lock"
+[ "$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")" = dead ] \
+  || version_fail "the pane the harness left behind does not read dead, so the reboot case would be vacuous"
+run_reboot() {
+  env FM_HOME="$HOME_DIR" HERDR_SESSION="$SESSION" FM_SPAWN_NO_GUARD=1 \
+    FM_REBOOT_RELAUNCH_BOOT_ID="smoke-boot-$$" FM_CONTROL_POLL=0.2 FM_CONTROL_EXIT_WAIT=2 \
+    "$ROOT/bin/fm-reboot-relaunch.sh" run --lock-pid "$$" 2>&1
+}
+rm -f "$SCRATCH/codex-launched"
+OUT=$(run_reboot) || fail "the session-start relaunch should succeed on a real agent-free pane: $OUT"
+case "$OUT" in
+  *"BOOTSTRAP_INFO: reboot relaunch: relaunched hsmoke"*) : ;;
+  *) fail "the session-start relaunch should report the relaunch, got: $OUT" ;;
+esac
+for _ in $(seq 1 20); do
+  [ ! -e "$SCRATCH/codex-launched" ] || break
+  sleep 0.1
+done
+[ -e "$SCRATCH/codex-launched" ] || fail "the session-start relaunch did not launch the replacement harness"
+[ "$(sed -n 's/^window=//p' "$HOME_DIR/state/hsmoke.meta" | tail -1)" = "$SESSION:$PANE_ID" ] \
+  || fail "the session-start relaunch replaced its endpoint instead of reusing it"
+grep -F "Read your resume note first" "$HOME_DIR/data/hsmoke/brief.md" >/dev/null \
+  || fail "the session-start relaunch did not leave its note in the instructions"
+rm -f "$SCRATCH/codex-launched"
+OUT=$(run_reboot) || fail "a second session-start relaunch in the same boot should not fail: $OUT"
+case "$OUT" in
+  *"left hsmoke stopped: an automatic relaunch was already attempted"*) : ;;
+  *) fail "a second session start in the same boot must not relaunch again, got: $OUT" ;;
+esac
+[ ! -e "$SCRATCH/codex-launched" ] || fail "the second session start launched the harness again"
+awk -F= '$1 == "harness" {$0="harness=claude"} {print}' "$HOME_DIR/state/hsmoke.meta" \
+  > "$HOME_DIR/state/hsmoke.meta.tmp"
+mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
+pass "real herdr: the session-start relaunch revives an agent-free pane in place, once per boot"
+
 # Last: the foreground process is a plain `sleep`, so the pane never draws any
 # recognized composer chrome. exit's composer-empty guard (bin/fm-control.sh)
 # therefore refuses before ever typing the exit command, rather than typing it

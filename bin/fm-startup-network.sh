@@ -94,7 +94,7 @@
 #                             wake.
 #   .startup-network.timings  per-step elapsed times for the last run, in
 #                             bin/fm-timing-lib.sh's tab-separated format: the
-#                             stage total, one record per network phase (gh auth,
+#                             stage total, one record per phase (dead-worker relaunch, gh auth,
 #                             secondmate liveness, secondmate convergence, handoff
 #                             delivery, fleet sync), one per secondmate for the
 #                             remote-touching steps (id and host), and one per
@@ -105,9 +105,18 @@
 #   .startup-network.lock     serializes publication, harvest acknowledgement,
 #                             and the wake decision; every wait on it is bounded.
 #
-# The whole stage is bounded by FM_STARTUP_NETWORK_TIMEOUT (default 120s), one
-# aggregate deadline covering both the inactive-outcome scan and network sweeps
-# plus every lock the worker waits on before them.
+# LOCKED DEAD-WORKER RELAUNCH. Locked work first runs bin/fm-reboot-relaunch.sh
+# run, which relaunches this home's recorded workers whose agent is proven gone;
+# that script owns the gate, idempotency, and opt-out, and its lines join the
+# report in the same protocol. It runs before the inactive-outcome scan so the
+# scan reads the relaunched tasks' new state, and under its own bound,
+# FM_REBOOT_RELAUNCH_TIMEOUT (default 300s), with starts cut off one launch wait
+# (FM_CONTROL_LAUNCH_WAIT plus 30s) before that bound.
+#
+# The rest of the stage is bounded by FM_STARTUP_NETWORK_TIMEOUT (default 120s),
+# one aggregate deadline covering both the inactive-outcome scan and network
+# sweeps plus every lock the worker waits on before them; time the relaunch step
+# spends extends that deadline rather than consuming it.
 # Publication and delivery are bounded the same way by FM_SESSION_START_TIMEOUT.
 # A lock that a live process still holds at either deadline ends the worker with
 # a failed record naming that holder and the rerun command, never a wait that
@@ -175,6 +184,33 @@ stage_budget() {
   printf '%s' "$budget"
 }
 
+# The dead-worker relaunch runs ahead of the sweeps under its own bound, because
+# one relaunch can take tens of seconds and several after a reboot would
+# otherwise starve the network checks of their budget.
+relaunch_budget() {
+  local budget=${FM_REBOOT_RELAUNCH_TIMEOUT:-300}
+  case "$budget" in ''|*[!0-9]*|0) budget=300 ;; esac
+  printf '%s' "$budget"
+}
+
+# How long before its bound the relaunch step stops STARTING relaunches, so the
+# bound never cuts one short mid-transaction: one full launch wait plus margin.
+relaunch_reserve() {
+  local wait=${FM_CONTROL_LAUNCH_WAIT:-90}
+  case "$wait" in ''|*[!0-9]*) wait=90 ;; esac
+  printf '%s' "$((wait + 30))"
+}
+
+# The worker's whole lifetime bound: the relaunch step for locked work, then the
+# sweeps.
+worker_budget() {
+  if [ "$(status_get phases)" = probe,sweeps ]; then
+    printf '%s' "$(( $(stage_budget) + $(relaunch_budget) ))"
+  else
+    stage_budget
+  fi
+}
+
 delivery_budget() {
   local budget=${FM_SESSION_START_TIMEOUT:-120}
   case "$budget" in ''|*[!0-9]*|0) budget=120 ;; esac
@@ -216,7 +252,7 @@ worker_alive() {
   started=$(status_get started)
   age=$(age_of "$started")
   case "$age" in ''|*[!0-9]*) return 0 ;; esac
-  [ "$age" -le "$(( $(stage_budget) + 30 ))" ]
+  [ "$age" -le "$(( $(worker_budget) + 30 ))" ]
 }
 
 # The exact phase names the digest and the report use, so "what has not been
@@ -224,7 +260,7 @@ worker_alive() {
 phase_label() {  # <phases>
   case "$1" in
     probe) printf 'GitHub authentication' ;;
-    probe,sweeps) printf 'GitHub authentication, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, project clone refresh with its drift reporting, and inactive terminal-outcome reconciliation' ;;
+    probe,sweeps) printf 'GitHub authentication, dead-worker relaunch, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, project clone refresh with its drift reporting, and inactive terminal-outcome reconciliation' ;;
     *) printf 'the deferred network checks' ;;
   esac
 }
@@ -479,6 +515,7 @@ publish_lock_held() {  # <generation> <phases> <locked> <started> <lockdir> <out
 
 cmd_run() {  # <locked> <lock-pid> <generation>
   local locked=$1 lock_pid=$2 generation=$3 phases started budget out rc sweep_locked=0 downgraded=0 internal=0 lease_held=0 timings stage_started stage_deadline
+  local relaunch_rc relaunch_limit relaunch_deadline relaunch_started relaunch_began
   mkdir -p "$STATE" 2>/dev/null || return 1
   started=$(now)
   budget=$(stage_budget)
@@ -564,6 +601,28 @@ EOF
       downgraded=1
     fi
   fi
+  # Dead-worker relaunch runs first, before the inactive-outcome scan reads the
+  # same tasks' current state, and under its own bound. bin/fm-reboot-relaunch.sh
+  # owns the relaunch gate, its idempotency, and its opt-out; it re-checks that
+  # the lock still names the owner captured here, and it stops starting
+  # relaunches early enough that the bound never cuts one short.
+  if [ "$sweep_locked" -eq 1 ]; then
+    relaunch_started=$(fm_timing_now_ms)
+    relaunch_began=$(now)
+    relaunch_limit=$(relaunch_budget)
+    relaunch_deadline=$(( $(now) + relaunch_limit - $(relaunch_reserve) ))
+    relaunch_rc=0
+    fm_run_timed "$relaunch_limit" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      "$SCRIPT_DIR/fm-reboot-relaunch.sh" run --lock-pid "$lock_pid" \
+      --deadline "$relaunch_deadline" >>"$out" 2>&1 || relaunch_rc=$?
+    case "$relaunch_rc" in
+      0) ;;
+      124) printf 'REBOOT_RELAUNCH: the dead-worker relaunch hit its %ss bound, so a relaunch may have been cut short; check each task it names with bin/fm-crew-state.sh\n' "$relaunch_limit" >> "$out" ;;
+      *) printf 'REBOOT_RELAUNCH: the dead-worker relaunch exited %s, so recorded workers whose agent died may not have been relaunched; rerun %s/bin/fm-reboot-relaunch.sh plan to see them\n' "$relaunch_rc" "$FM_ROOT" >> "$out" ;;
+    esac
+    fm_timing_record phase reboot-relaunch "$relaunch_started"
+    stage_deadline=$(( stage_deadline + $(now) - relaunch_began ))
+  fi
   # One aggregate deadline covers both deferred operations. The inactive scan
   # retains its own tighter per-scan bound inside this outer bound. Findings
   # need no report translation: the scan writes its ordinary durable
@@ -579,10 +638,10 @@ EOF
         script_dir=$1
         "$script_dir/fm-inactive-reconcile.sh" scan --startup >/dev/null 2>&1 || true
         exec "$script_dir/fm-bootstrap.sh"
-      ' _ "$SCRIPT_DIR" >"$out" 2>&1 || rc=$?
+      ' _ "$SCRIPT_DIR" >>"$out" 2>&1 || rc=$?
   else
     fm_run_timed "$budget" env FM_BOOTSTRAP_NETWORK=only FM_BOOTSTRAP_DETECT_ONLY=1 \
-      "$SCRIPT_DIR/fm-bootstrap.sh" >"$out" 2>&1 || rc=$?
+      "$SCRIPT_DIR/fm-bootstrap.sh" >>"$out" 2>&1 || rc=$?
   fi
   [ "$lease_held" -eq 0 ] || fm_lock_release "$STATE/.lock.acquire"
   # The bounded run as a whole, so the per-phase records can be read against the
@@ -590,7 +649,7 @@ EOF
   fm_timing_record stage network-checks "$stage_started" "$phases"
 
   if [ "$downgraded" -eq 1 ]; then
-    printf 'NETWORK_CHECKS: the fleet lock was no longer held by the session that requested these, so dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh were skipped; they belong to whichever session holds the lock now\n' >> "$out"
+    printf 'NETWORK_CHECKS: the fleet lock was no longer held by the session that requested these, so dead-worker relaunch, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh were skipped; they belong to whichever session holds the lock now\n' >> "$out"
   fi
   case "$rc" in
     0) publish "$generation" 'done' "$phases" "$sweep_locked" "$started" "$rc" "$out" "$timings" ;;
@@ -656,7 +715,7 @@ print_pending() {
   age=$(age_of "$started")
   printf 'IN PROGRESS - the deferred network checks have not finished yet.\n'
   printf 'NOT yet confirmed: %s.\n' "$(phase_label "$phases")"
-  [ -z "$age" ] || printf 'Started %ss ago, bounded at %ss.\n' "$age" "$(stage_budget)"
+  [ -z "$age" ] || printf 'Started %ss ago, bounded at %ss.\n' "$age" "$(worker_budget)"
   # shellcheck disable=SC2016  # The backticked wake name is literal digest text.
   printf 'Only a FAILED or otherwise actionable result arrives as a `check: startup-network` wake; a clean success stays silent.\n'
   printf 'The durable result is readable on demand with %s/bin/fm-startup-network.sh report; until it finishes, treat none of it as confirmed.\n' "$FM_ROOT"

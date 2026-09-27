@@ -53,7 +53,10 @@
 #                       run serially, so with a wedged backend the stage's
 #                       ceiling is tasks x the per-read bound
 #                       (FM_SESSION_START_ENDPOINT_TIMEOUT, default 10s) and
-#                       can itself reach the digest's runtime bound.
+#                       can itself reach the digest's runtime bound. A locked
+#                       full start also prints the dead-worker relaunch plan
+#                       here, read before step 7's deferred stage started
+#                       relaunching.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
 #   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
@@ -242,6 +245,7 @@ AGENTS_BASELINE_FILE="$STATE/.session-start-agents-baseline"
 
 REEMIT=0
 SESSION_SOURCE=
+REBOOT_PLAN=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --reemit)
@@ -720,6 +724,13 @@ if [ "$READ_ONLY" -eq 0 ]; then
   # steer, or merge anyway, so it has no action left for an auth verdict to gate.
   NETWORK_STAGE_LOCKED=1
   [ "$REEMIT" -eq 0 ] || NETWORK_STAGE_LOCKED=0
+  # The dead-worker relaunch plan is read BEFORE the deferred stage starts, so
+  # it describes the fleet the relaunch step will act on rather than racing it.
+  # Read-only; the relaunch itself runs in that stage (bin/fm-reboot-relaunch.sh).
+  if [ "$REEMIT" -eq 0 ]; then
+    REBOOT_PLAN=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-reboot-relaunch.sh" plan 2>/dev/null) || REBOOT_PLAN=
+  fi
   "$SCRIPT_DIR/fm-startup-network.sh" start \
     --locked "$NETWORK_STAGE_LOCKED" --harvest-pid $$ >/dev/null 2>&1 || true
 fi
@@ -917,6 +928,13 @@ for meta in "$STATE"/*.meta; do
   fi
 done
 [ "$META_FOUND" -eq 1 ] || printf '(none)\n'
+
+# Printed only when a recorded worker's agent is not proven running, and only on
+# the locked full start that also launched the relaunch step.
+if [ -n "$REBOOT_PLAN" ]; then
+  subsection "Dead-worker relaunch (bin/fm-reboot-relaunch.sh plan, read before the relaunch step ran)"
+  printf '%s\n' "$REBOOT_PLAN"
+fi
 
 subsection "Orphan status logs (state/*.status without matching .meta)"
 ORPHAN_STATUS_FOUND=0

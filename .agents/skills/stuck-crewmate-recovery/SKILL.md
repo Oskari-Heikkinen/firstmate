@@ -4,6 +4,7 @@ description: >-
   Agent-only playbook for stuck or missing ordinary Firstmate direct reports.
   Use when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
   Also use on the inverse case: a live crewmate reporting the no-mistakes pipeline dead, unreachable, or timed out.
+  Also use on a `REBOOT_RELAUNCH:` line from the session-start dead-worker relaunch.
   Reconciles recorded work before escalating from targeted inspection through safe relaunch or failure.
 user-invocable: false
 metadata:
@@ -26,6 +27,17 @@ The target window's harness is recorded as `harness=` in `state/<id>.meta`.
 
 This procedure covers ordinary `kind=ship` and `kind=scout` direct reports.
 Load `secondmate-provisioning` instead for `kind=secondmate` recovery.
+
+### The automatic relaunch runs first
+
+After a reboot or any other agent death, a locked session start relaunches these workers itself, so do not hand-relaunch them.
+The digest's FLEET STATE shows the plan under "Dead-worker relaunch": `relaunch <id>` lines name the workers about to be relaunched, and `stopped <id>` lines name the ones being left alone.
+The relaunch itself runs in the deferred startup-network worker ahead of its network checks, so wait for `bin/fm-startup-network.sh report` or its `check: startup-network` notification rather than acting on the plan.
+`bin/fm-reboot-relaunch.sh`'s header owns the eligibility gate, the note it adds to the brief, the per-boot idempotency record `state/<id>.reboot-relaunch`, the `config/reboot-relaunch` opt-out, and the output lines.
+In the report, `BOOTSTRAP_INFO: reboot relaunch: relaunched <id>` means the worker is back with the restart note in its brief, so just keep supervising it.
+`BOOTSTRAP_INFO: reboot relaunch: left <id> stopped: <reason>` means a declared wait, finished work, a deliberate `fm-control exit` (recorded in `state/<id>.control-exit`), or an earlier attempt in this boot left it stopped on purpose; handle it through the ordinary lifecycle for that reason.
+A `REBOOT_RELAUNCH:` line means the task needs this playbook: its proof was ambiguous, its record or local copy is broken, or its relaunch failed; continue with the manual reconciliation below for that task only.
+A relaunch that fails or was already attempted this boot is never retried automatically, and a read-only session relaunches nothing.
 
 For a REMOTE secondmate, `fm-crew-state` and `fm-peek` read the actual remote endpoint over `fm-on.sh`, and `fm-send` reports a delivered-with-pending-confirmation steer as delivered (their headers own the contracts); an `unknown-remote` read or unreachable-host failure means the remote state could not be read, never that the mate is dead or the send failed.
 Recover a genuinely stuck remote mate only through `bin/fm-spawn.sh <id> --secondmate`, never raw herdr pane close/kill surgery, which strands the endpoint binding.
