@@ -924,6 +924,89 @@ test_arm_refuses_an_unusable_launch_confirm_window() {
   pass "watch-arm: an unusable launch confirm window refuses to arm by name"
 }
 
+# A heavily loaded host (load average around 128) stretched a real watcher's
+# startup past the arm's base confirmation window, and the arm then reported
+# failure and killed a watcher that was still coming up, leaving none. These cases
+# run the real arm against a copy of bin/ whose watcher is a stub that stays alive
+# but takes the lock and first beacon only after the base window has passed, and
+# one that exits instead. The live slow starter must be confirmed; the exiting one
+# must still fail as soon as it exits, not at the startup cap.
+make_slow_start_bin() {  # <dir>
+  local dir=$1
+  mkdir -p "$dir/root"
+  cp -R "$ROOT/bin" "$dir/root/bin"
+  cat > "$dir/root/bin/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+STUB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$STUB_DIR/fm-wake-lib.sh"
+sleep "$FM_TEST_STUB_START_DELAY"
+[ -z "${FM_TEST_STUB_EXIT:-}" ] || exit "$FM_TEST_STUB_EXIT"
+fm_lock_try_acquire "$STATE/.watch.lock" || exit 1
+printf '%s\n' "$FM_HOME" > "$STATE/.watch.lock/fm-home"
+printf '%s\n' "$STUB_DIR/fm-watch.sh" > "$STATE/.watch.lock/watcher-path"
+fm_pid_identity "${BASHPID:-$$}" > "$STATE/.watch.lock/pid-identity"
+while :; do
+  touch "$STATE/.last-watcher-beat"
+  sleep 1
+done
+SH
+  chmod +x "$dir/root/bin/fm-watch.sh"
+}
+
+test_slow_starting_watcher_is_confirmed_past_the_base_window() {
+  local dir armout i started_at elapsed
+  dir=$(make_case slow-start-confirmed)
+  armout="$dir/arm.out"
+  make_slow_start_bin "$dir"
+  mkdir -p "$dir/home/data"
+  started_at=$(date +%s)
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/state" \
+    FM_ARM_CONFIRM_TIMEOUT=1 FM_TEST_STUB_START_DELAY=5 \
+    "$dir/root/bin/fm-watch-arm.sh" > "$armout" 2>&1 &
+  ARM_PID=$!
+  i=0
+  while [ "$i" -lt 600 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    is_live_non_zombie "$ARM_PID" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  elapsed=$(( $(date +%s) - started_at ))
+  grep -q '^watcher: started pid=' "$armout" \
+    || fail "a live watcher slower than the base window was not confirmed: $(cat "$armout")"
+  # Divergence guard: the confirmation really came after the base window.
+  [ "$elapsed" -ge 3 ] || fail "the slow starter was confirmed after only ${elapsed}s"
+  is_live_non_zombie "$ARM_PID" || fail "the arm did not stay attached to its confirmed watcher"
+  kill -TERM "$ARM_PID" 2>/dev/null || true
+  wait "$ARM_PID" 2>/dev/null || true
+  pass "watch-arm: a live watcher slower than the base confirm window is confirmed"
+}
+
+test_watcher_exiting_during_slow_start_still_fails_promptly() {
+  local dir armout status started_at elapsed
+  dir=$(make_case slow-start-exits)
+  armout="$dir/arm.out"
+  make_slow_start_bin "$dir"
+  mkdir -p "$dir/home/data"
+  started_at=$(date +%s)
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/state" \
+    FM_ARM_CONFIRM_TIMEOUT=1 FM_TEST_STUB_START_DELAY=3 FM_TEST_STUB_EXIT=3 \
+    "$dir/root/bin/fm-watch-arm.sh" > "$armout" 2>&1 &
+  ARM_PID=$!
+  wait_for_exit "$ARM_PID" 600
+  status=$?
+  elapsed=$(( $(date +%s) - started_at ))
+  [ "$status" -ne 124 ] || fail "the arm kept waiting on a watcher that exited: $(cat "$armout")"
+  [ "$status" -ne 0 ] || fail "the arm reported success for a watcher that exited: $(cat "$armout")"
+  grep -q '^watcher: FAILED' "$armout" \
+    || fail "the arm did not report the typed failure line: $(cat "$armout")"
+  ! grep -q '^watcher: started' "$armout" \
+    || fail "the arm reported a started watcher that exited: $(cat "$armout")"
+  [ "$elapsed" -lt 60 ] || fail "the arm took ${elapsed}s to fail on a watcher that exited"
+  pass "watch-arm: a watcher that exits during a slow start still fails promptly"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_arm_refuses_an_unusable_launch_confirm_window
@@ -940,3 +1023,5 @@ test_markerless_legacy_queue_is_recovered_on_arm
 test_handling_window_close_keeps_the_acknowledgement_valid
 test_moved_generation_acknowledgement_is_self_healing
 test_downtime_marker_does_not_follow_symlink
+test_slow_starting_watcher_is_confirmed_past_the_base_window
+test_watcher_exiting_during_slow_start_still_fails_promptly
