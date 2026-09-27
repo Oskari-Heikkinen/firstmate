@@ -90,8 +90,8 @@
 # in its worktree= or home=. One live path with two task records is the reuse
 # collision itself, whichever record is stale - unless the slot's owner claim
 # (below) settles which: a claim naming this task marks another non-secondmate
-# record's worktree= stale, and a claim naming another task means no slot step
-# runs at all.
+# record's worktree= stale once that record's endpoint reads dead or missing,
+# and a claim naming another task means no slot step runs at all.
 # That scan alone cannot prove THIS record is the current owner, because the task
 # that took the slot next may leave no record it can reach - its own worker may
 # have exited and its record been cleaned up, or it may live in a home this
@@ -2283,14 +2283,18 @@ collect_local_firstmate_states() {
 # be harmed and scanning would only strand this record. A claim naming this task
 # proves another worker record naming the slot as its worktree is the stale one
 # - its copy was already reused when the pool handed the slot on - so that
-# collision warns instead of refusing. A secondmate record, or any record naming
-# the slot as its home, still refuses: secondmate home leases never write or
-# clear the claim, so the claim cannot prove them stale. A colliding record with
+# collision warns instead of refusing - but only once the recovery-grade
+# classifier (fm_backend_agent_state) reads that record's endpoint as dead or
+# missing, because a relaunch can put a live worker back into its old slot
+# without reading the claim; any other endpoint state still refuses. A
+# secondmate record, or any record naming the slot as its home, still refuses:
+# secondmate home leases never write or clear the claim, so the claim cannot
+# prove them stale. A colliding record with
 # this same task id, which the claim cannot tell apart, also still refuses. With
 # no claim, the scan alone decides.
 require_exclusive_worktree_slot_record() {
   local record_meta=$1 record_id=$2 record_state=$3 worktree=$4
-  local slot state_dir other other_id field other_path other_slot claim
+  local slot state_dir other other_id field other_path other_slot claim endpoint
   slot=$(canonical_existing_dir "$worktree") || return 0
   fm_treehouse_slot_owner_state "$slot" "$record_id"
   claim=$FM_TREEHOUSE_SLOT_OWNER
@@ -2308,8 +2312,14 @@ require_exclusive_worktree_slot_record() {
         [ "$other_slot" = "$slot" ] || continue
         if [ "$claim" = mine ] && [ "$field" = worktree ] && [ "$other_id" != "$record_id" ] \
           && [ "$(fm_meta_get "$other" kind)" != secondmate ]; then
-          echo "warning: task $other_id's recorded $field $slot is stale: that pool slot's owner claim names task $record_id, so its copy was reused and it is torn down as $record_id's; $other_id's record is left untouched." >&2
-          continue
+          endpoint=$(fm_backend_agent_state "$(fm_backend_of_meta "$other")" "$(fm_backend_target_of_meta "$other")")
+          case "$endpoint" in
+            dead|missing)
+              echo "warning: task $other_id's recorded $field $slot is stale: that pool slot's owner claim names task $record_id and $other_id's endpoint reads '$endpoint', so its copy was reused and it is torn down as $record_id's; $other_id's record is left untouched." >&2
+              continue
+              ;;
+          esac
+          echo "REFUSED: task $other_id's endpoint reads '$endpoint', not confidently dead or agent-less, so the owner claim naming task $record_id cannot prove its recorded $field $slot stale." >&2
         fi
         echo "REFUSED: task $record_id's recorded worktree $slot is also task $other_id's recorded $field." >&2
         echo "Returning that pool slot would kill $other_id's processes and reset its copy, so nothing was changed - not even with --force." >&2

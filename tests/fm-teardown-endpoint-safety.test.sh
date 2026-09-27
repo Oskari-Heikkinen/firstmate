@@ -994,6 +994,53 @@ test_owner_claim_resolves_a_stale_record_on_the_same_slot() {
   assert_contains "$(cat "$dir/stderr")" "$stale" \
     "the warning should name the stale record it overrode"
 
+  # A relaunch can put a live agent back into the scout's old slot without
+  # reading the claim, so a colliding record whose endpoint the classifier
+  # reads as alive still refuses, and nothing is killed, reset, or returned.
+  dir=$(make_case claimed-slot-under-relaunched-scout)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$owner.meta" \
+    "window=firstmate:fm-$owner" "endpoint_task_id=$owner" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$owner"
+  cat > "$dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+printf 'tmux' >> "\${FM_RUNTIME_LOG:?}"
+printf ' <%s>' "\$@" >> "\${FM_RUNTIME_LOG:?}"
+printf '\n' >> "\${FM_RUNTIME_LOG:?}"
+case "\$1" in
+  list-windows) printf '%s\n' fm-$stale ;;
+  display-message) printf '%s\n' /dev/pts/999 ;;
+esac
+exit 0
+SH
+  cat > "$dir/fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *" -t "*) printf '%s\n' '4242 4242 4242 claude' ;;
+esac
+exit 0
+SH
+  chmod +x "$dir/fakebin/tmux" "$dir/fakebin/ps"
+  set +e
+  run_case "$dir" "$owner" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "teardown overrode a colliding record whose relaunched agent is alive"
+  assert_present "$dir/home/state/$owner.meta" "relaunched-scout collision removed the owner record"
+  assert_present "$dir/home/state/$stale.meta" "relaunched-scout collision removed the scout record"
+  assert_present "$dir/worktree/sentinel" "relaunched-scout collision reset the slot"
+  assert_present "$dir/pool/1/.fm-slot-owner" "relaunched-scout collision dropped the slot claim"
+  ! grep -Eq "^treehouse|kill" "$dir/runtime.log" \
+    || fail "relaunched-scout collision ran a mutating runtime command: $(cat "$dir/runtime.log")"
+  assert_contains "$(cat "$dir/stderr")" "would kill $stale's processes" \
+    "the live-endpoint collision should keep the kill refusal"
+  assert_contains "$(cat "$dir/stderr")" "endpoint reads 'alive'" \
+    "the live-endpoint collision should refuse on the classifier's alive verdict"
+
   # The stale side of the same deadlock: the claim names the other task, so
   # the scout's own cleanup finishes and the claimant's slot, worker, and
   # record are left exactly as they were.
