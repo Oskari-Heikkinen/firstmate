@@ -555,7 +555,8 @@ This section is the single owner of its keys; an absent file or key uses the def
 | `secondmate_wait_max_s` | 60 | (how long a secondmate launch waits before it starts anyway) |
 | `agent_process_names` | the verified harness executables | (the process names counted as live agents) |
 
-A launch that is not admitted waits with jittered backoff and then refuses with a message naming every unmet condition; `bin/fm-spawn.sh --admission-override` starts one spawn at once and prints what it skipped.
+A launch that is not admitted waits with jittered backoff and then refuses with a message naming every unmet condition.
+`bin/fm-spawn.sh --admission-override` starts one spawn at once and prints what it skipped; it is reserved for a spawn firstmate directs because a landing depends on it, never a routine way past a busy machine.
 The live agent count includes secondmates and supervisor sessions, so secondmate launches count toward the cap, but a secondmate launch is never refused: after its shorter wait it starts with a warning, so a home's own recovery cannot deadlock behind the fleet it belongs to.
 Pacing restart-shaped launches per home is what staggers a start or restart that relaunches several workers at once.
 A signal the host cannot provide, such as pressure files on older kernels or anything on macOS, is skipped rather than blocking.

@@ -355,7 +355,7 @@ while :; do
       echo "warning: admission: secondmate $LABEL starting after ${elapsed}s despite: $UNMET (a home's own recovery is never refused)" >&2
       exit 0
     fi
-    echo "error: admission refused for $LABEL after ${elapsed}s: $UNMET; retry later, or pass --admission-override to start it anyway" >&2
+    echo "error: admission refused for $LABEL after ${elapsed}s: $UNMET; retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override" >&2
     exit 3
   fi
   if [ "$announced" = 0 ]; then

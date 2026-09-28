@@ -65,7 +65,8 @@
 #   pressure, load, the machine-wide agent cap, and per-home relaunch pacing),
 #   which waits with backoff and then refuses naming the unmet condition; a
 #   secondmate is never refused, only delayed. --admission-override starts this
-#   one spawn at once and prints what it skipped.
+#   one spawn at once and prints what it skipped; it is reserved for a spawn
+#   firstmate directs because a landing depends on it.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max|ultra> are concrete profile
