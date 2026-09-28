@@ -448,6 +448,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 # Rules
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+   Search only inside this worktree: never grep or find over a firstmate home's \`data/\` or \`state/\`, \`/\`, or \`/mnt/c\`, and bound any wider search with \`-xdev\` and \`--exclude-dir\`.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`$STATUS_APPEND\`
@@ -541,6 +542,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 # Rules
 $RULE1
 2. Stay inside this worktree; modify nothing outside it.
+   Search only inside this worktree: never grep or find over a firstmate home's \`data/\` or \`state/\`, \`/\`, or \`/mnt/c\`, and bound any wider search with \`-xdev\` and \`--exclude-dir\`.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`$STATUS_APPEND\`

@@ -47,6 +47,11 @@ umask 022
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Keep fixture spawns independent of the test host's memory, load, and live
+# agent count: bin/fm-admission.sh admits at once under FM_ADMISSION=off.
+# tests/fm-admission.test.sh unsets it to exercise the real gate.
+export FM_ADMISSION=off
+
 # Clear the task-worker marker bin/fm-spawn.sh exports into ship and scout
 # panes. This suite builds git-init fixture repositories whose primary checkout
 # it runs a copied bin/fm-test-run.sh in, and that runner refuses the primary
