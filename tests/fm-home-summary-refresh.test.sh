@@ -154,9 +154,12 @@ WATCH_PID=
 
 run_producer "$NOW_TWO" "$EPOCH_TWO" > "$TMP_ROOT/fresh-summary.json" \
   || fail "fresh secondmate-home-summary production failed"
-jq -S 'del(.generated, .generated_epoch)' "$HOME_DIR/state/home-summary.json" \
+# The monitoring verdict carries its own wall-clock observation time and beacon
+# age, so like the generation time they differ between two otherwise equal runs.
+normalize_summary='del(.generated, .generated_epoch, .supervision.observed_at, .supervision.beacon_age_seconds)'
+jq -S "$normalize_summary" "$HOME_DIR/state/home-summary.json" \
   > "$TMP_ROOT/published-normalized.json"
-jq -S 'del(.generated, .generated_epoch)' "$TMP_ROOT/fresh-summary.json" \
+jq -S "$normalize_summary" "$TMP_ROOT/fresh-summary.json" \
   > "$TMP_ROOT/fresh-normalized.json"
 cmp -s "$TMP_ROOT/published-normalized.json" "$TMP_ROOT/fresh-normalized.json" \
   || fail "the status-triggered ledger differed from the real fresh producer"
