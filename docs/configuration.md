@@ -795,7 +795,7 @@ A missing file means no project feeds, the default session roots and default thr
 - `feed <name> <path> <version> <max_age_seconds> <owner> [link]` adds one project feed; `max_age_seconds` 0 turns the freshness check off.
   Known versions are `fm-board-items.v1` (a JSON file `{schema, generated_epoch, items[]}` whose items already use the board's item shape), `tetjet-queue-snapshot.v1`, `merge-queue-log.v1` and `hypotheses-overview.v1`.
   A missing, stale, unreadable or unknown-version feed becomes a blind-spot line naming the feed and its owner.
-- `threshold <name> <integer>` overrides a detector threshold or `summary_max_age` (default 7200 seconds) and `merge_stall_seconds` (default 3600); `bin/fm_board_tokens.py` owns the detector names and defaults.
+- `threshold <name> <integer>` overrides a detector threshold or `summary_max_age` (default 7200 seconds), `verdict_max_age` (default 900 seconds; a healthy monitoring verdict from an older summary shows as unconfirmed) and `merge_stall_seconds` (default 3600); `bin/fm_board_tokens.py` owns the detector names and defaults.
 - `session_root <path>` names a folder of per-project session folders to read, one level deep; without any, the board reads `~/.claude-work/projects` and `~/.claude/projects`.
 - `broad_root <path>` adds a path the broad-search rule treats as too wide, beside `/`, `/home`, `$HOME`, `$HOME/.treehouse`, `/mnt/c`, every home root and its `data/`.
 - `unit <unit> <owner>` adds a systemd user unit whose last result the Health panel shows.

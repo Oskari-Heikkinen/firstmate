@@ -16,7 +16,8 @@ Outputs, both written atomically under ``state/board/``:
 - ``tokens.json`` (fm-board-tokens.v1): token counts per area, task, kind and
   session, plus the seven detector rules' counts.
 - ``usage/<YYYY-MM-DD>.jsonl``: one fm-usage.v1 row per newly seen message for
-  bin/fm-usage-audit.sh (kept 7 days).
+  bin/fm-usage-audit.sh (kept 7 days), stamped with that message's own time. A
+  file read again after a reset repeats its earlier rows byte for byte.
 
 Nothing here stores or emits transcript content, command text, prompts, hosts
 or secrets: only counts, hashes, tool names and rule labels. Paths read by the
@@ -197,7 +198,8 @@ class Ctx:
         self.user_home = user_home
         self.roots = roots
         self.homes = homes
-        self.new_rows = {}     # (file key, mid hash) -> wait flag
+        self.new_rows = {}     # (file key, mid hash) -> [message epoch, wait flag]
+        self.reset = set()     # file keys read again from the start this run
 
 
 def _consume_line(ctx, fkey, st, raw, is_sub):
@@ -235,7 +237,7 @@ def _consume_line(ctx, fkey, st, raw, is_sub):
         if new and isinstance(model, str) and TOOL_NAME_RE.match(model):
             _bump(agg["model"], model)
         if new:
-            ctx.new_rows.setdefault((fkey, mkey), False)
+            ctx.new_rows.setdefault((fkey, mkey), [_iso_epoch(ts), False])
             if not is_sub:
                 epoch = _iso_epoch(ts)
                 last = agg["main_last_ts"]
@@ -280,10 +282,12 @@ def _consume_line(ctx, fkey, st, raw, is_sub):
                 agg["broad_unbounded"] += int(unb)
                 if LOOP_RE.search(cmd):
                     agg["loops"] += 1
-                    ctx.new_rows[(fkey, mkey)] = True
+                    if (fkey, mkey) in ctx.new_rows:
+                        ctx.new_rows[(fkey, mkey)][1] = True
                 elif SLEEP_RE.search(cmd):
                     agg["sleeps"] += 1
-                    ctx.new_rows[(fkey, mkey)] = True
+                    if (fkey, mkey) in ctx.new_rows:
+                        ctx.new_rows[(fkey, mkey)][1] = True
                 if STATUS_RE.search(cmd) and "echo" in cmd:
                     agg["status_n"] += 1
                     agg["status_max"] = max(agg["status_max"], len(cmd))
@@ -470,6 +474,7 @@ def run(board_dir, now, session_roots, areas, starts, task_index, thresholds, us
         if st is None or st.get("dev") != sb.st_dev or st.get("ino") != sb.st_ino or sb.st_size < st.get("offset", 0):
             if st is not None:
                 stats["reset"] += 1
+                ctx.reset.add(fkey)
             st = {"dev": sb.st_dev, "ino": sb.st_ino, "offset": 0, "agg": _new_agg()}
             cur["files"][fkey] = st
         st["session"] = _h(stem, 12)
@@ -619,19 +624,33 @@ def _write_usage(board_dir, now, day, ctx, cur, summary):
     for r in summary["sessions"]:
         role = re.sub(r"[^A-Za-z0-9_.-]", "-", "%s.%s" % (r["area"], r["kind"]))[:128]
         role_of[r["session"]] = role
+    path = os.path.join(udir, day + ".jsonl")
+    prior = {}
+    if any(fkey in ctx.reset for fkey, _ in ctx.new_rows):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        prior.setdefault(json.loads(line)["id"], line.rstrip("\n"))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+        except OSError:
+            pass
     lines = []
-    for (fkey, mkey), waiting in ctx.new_rows.items():
+    for (fkey, mkey), (ts, waiting) in ctx.new_rows.items():
         st = cur["files"].get(fkey)
         if not st or mkey not in st["agg"]["mids"]:
             continue
+        if fkey + "." + mkey in prior:
+            lines.append(prior[fkey + "." + mkey])
+            continue
         u = st["agg"]["mids"][mkey]
-        ts = _iso_epoch(st["agg"]["last"] or "") or int(now)
         lines.append(json.dumps({
             "schema": "fm-usage.v1", "id": fkey + "." + mkey,
-            "role": role_of.get(st["session"], "other.unknown"), "ts": ts,
+            "role": role_of.get(st["session"], "other.unknown"), "ts": ts or int(now),
             "input_tokens": u[0] + u[1] + u[2], "output_tokens": u[3],
             "cached_input_tokens": u[2], "context_tokens": u[0] + u[1] + u[2],
             "cycle_kind": "wait-renewal" if waiting else "unknown",
         }, sort_keys=True))
-    with open(os.path.join(udir, day + ".jsonl"), "a", encoding="utf-8") as fh:
+    with open(path, "a", encoding="utf-8") as fh:
         fh.write("".join(line + "\n" for line in lines))

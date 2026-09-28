@@ -41,7 +41,7 @@ SUMMARY_SCHEMA = "fm-secondmate-home-summary.v1"
 PANELS = ["decisions", "health", "work", "pipeline", "waste", "tokens"]
 STATES = {"ok", "bad", "warn", "blind", "idle", "info"}
 SOURCE_TIMEOUT = 5.0
-DEFAULTS = {"summary_max_age": 7200, "merge_stall_seconds": 3600}
+DEFAULTS = {"summary_max_age": 7200, "verdict_max_age": 900, "merge_stall_seconds": 3600}
 FEED_VERSIONS = ("fm-board-items.v1", "tetjet-queue-snapshot.v1", "merge-queue-log.v1",
                  "hypotheses-overview.v1")
 HYPOTHESES_HEADER = ["Running", "Ready to test", "Open after a result", "Want to test",
@@ -297,7 +297,7 @@ def decisions(board, summaries, homes):
             board.add("decisions", group, title, state, since=since, owner=owner, detail=detail)
         extra = omitted(s, "decisions_open")
         if extra:
-            board.add("decisions", "Waiting on a supervisor", "%d more open items in %s" % (extra, area),
+            board.add("decisions", "Not listed by the summary", "%d more open items in %s" % (extra, area),
                       "info", owner=area, detail="Not listed by the area's summary.")
         for q in s.get("queued") or []:
             if isinstance(q, dict) and q.get("hold_bucket") in ("dated", "aged", "blocked"):
@@ -320,14 +320,22 @@ def health_and_work(board, summaries, homes):
                       + ". Its tasks are still listed one by one.")
         sup = s.get("supervision") if isinstance(s.get("supervision"), dict) else None
         verdict = (sup or {}).get("state")
-        if verdict == "healthy":
+        gen = s.get("generated_epoch") if isinstance(s.get("generated_epoch"), int) else None
+        age = board.now - gen if gen is not None else None
+        if verdict == "healthy" and (age is None or age > board.thresholds["verdict_max_age"]):
+            board.add("health", "Blind spots", "%s: monitoring unconfirmed" % area, "blind", owner=area,
+                      detail="Last healthy verdict is %s old; the summary has not been refreshed since."
+                      % ago(age) if age is not None else "The summary carries no time, so its healthy "
+                      "verdict cannot be confirmed.")
+        elif verdict == "healthy":
             board.add("health", "Monitoring", "%s: monitoring running" % area, "ok", owner=area)
         elif verdict == "down":
             board.add("health", "Monitoring", "%s: monitoring down" % area, "bad", owner=area,
                       detail=trunc((sup or {}).get("reason") or "", 120) or None)
         else:
             board.add("health", "Blind spots", "%s: monitoring verdict unknown" % area, "blind",
-                      owner=area, detail="The area's summary publishes no monitoring verdict.")
+                      owner=area, detail="The area's summary publishes no monitoring verdict."
+                      if sup is None else "Reason: %s." % trunc(sup.get("reason") or "none given", 120))
         row = table.setdefault(area, {"working": 0, "idle": 0, "parked": 0, "empty": 0})
         for e in s.get("endpoints") or []:
             if not isinstance(e, dict):
@@ -373,7 +381,7 @@ def health_and_work(board, summaries, homes):
                           detail="State: %s." % state)
         extra = omitted(s, "endpoints")
         if extra:
-            board.add("work", "Parked, no agent", "%d more tasks in %s" % (extra, area), "info",
+            board.add("work", "Not listed by the summary", "%d more tasks in %s" % (extra, area), "info",
                       owner=area, detail="Not listed by the area's summary.")
         queued = (s.get("counts") or {}).get("queued")
         if isinstance(queued, int):
@@ -904,7 +912,7 @@ def main(argv=None):
                 task_index[ep["id"]] = (area, str(ep.get("kind") or "task"))
     roots = cfg["session_roots"] or [os.path.expanduser("~/.claude-work/projects"),
                                      os.path.expanduser("~/.claude/projects")]
-    deadline = started + max(5, args.budget - 8 - (time.monotonic() - started))
+    deadline = max(started + args.budget - 8, time.monotonic() + 5)
     try:
         tok = fm_board_tokens.run(board_dir, now, roots, [(a, h) for a, h, r in homes if not r],
                                   load_spawn_starts(homes), task_index,
