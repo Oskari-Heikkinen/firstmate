@@ -51,7 +51,9 @@ MODEL=${FM_OMP_LIVE_MODEL:-openai-codex/gpt-6-astra}
 # a 20s grace is comfortably healthy in normal operation and lets stage 3 make
 # the beacon stale by freezing the watcher for a bounded time instead of killing
 # it: a killed watcher closes its arm child and the extension re-arms within
-# milliseconds, which would keep the guard from ever firing.
+# milliseconds, which would keep the guard from ever firing. The watcher's own
+# wedge watchdog is a separate process SIGSTOP does not freeze, so the lab
+# spaces its checks past the whole run to keep it from stopping that watcher.
 GUARD_GRACE=20
 LAB="$ROOT/.omp-live-e2e.$$"
 PROJECT="$LAB/project"
@@ -191,7 +193,7 @@ mkfifo "$RPC_IN" || fail "could not create the rpc fifo"
     env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_AGENT -u CURSOR_INVOKED_AS \
       -u FM_HOME -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_DATA_OVERRIDE \
       FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 \
-      FM_GUARD_GRACE="$GUARD_GRACE" \
+      FM_GUARD_GRACE="$GUARD_GRACE" FM_WATCHER_WATCHDOG_INTERVAL=86400 \
       omp --mode rpc --no-session --cwd "$PROJECT" --config "$PROJECT/.omp/fm-worker-overlay.yml" --auto-approve \
         --model "$MODEL" --thinking low < "$RPC_IN" > "$RPC_LOG" 2> "$RPC_ERR"
 ) &

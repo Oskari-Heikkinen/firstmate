@@ -206,8 +206,16 @@ With `state/.afk` absent the daemon lock proves nothing and the strict watcher p
 
 ### Guard grace and the poll cadence
 
-`bin/fm-watch.sh` touches `state/.last-watcher-beat` once per cycle, immediately before its terminal wait (`event_wait_or_sleep`) as well as at the top of the next cycle.
-A healthy watcher's beacon can therefore legitimately age up to `FM_POLL` seconds between touches.
+`bin/fm-watch.sh` touches `state/.last-watcher-beat` at the top of every cycle and refreshes it at the cycle's step boundaries (`watcher_beat`: each registered check, each window's pane scan, around the signal grace, and immediately before its terminal wait `event_wait_or_sleep`).
+A healthy watcher's beacon therefore ages by at most its longest single step or `FM_POLL` seconds, however long the whole cycle runs.
+The top-of-cycle touch also writes that cycle's sequence number into the file, so a reader can tell a new cycle from a step refresh.
+A step that walks many records refreshes it per record too: the pending-reply scan (`fm_pending_reply_tick`) revisits every durable record each poll, and a parent home with about 1200 resolved records spends minutes in that one step.
+A single step that stays blocked still ages the beacon, which is why the loop refreshes it itself rather than from a background timer: a genuinely wedged watcher still reads stale once that step passes grace.
+The watcher's own watchdog also counts progress it can see from outside the loop: a different set of child processes of the watcher, or a different pipe on fd 3 (where a command substitution reads), than at its previous sample refreshes the beacon.
+A step made of many short invocations is therefore never read as wedged, while a step blocked on one child that never exits (such as a hung `tmux capture-pane`) still ages the beacon.
+A watcher with neither is recovered without a manual kill: the watchdog stops it once it has counted that grace of its own check intervals without seeing the beacon change (TERM, then KILL if the blocked step holds on), so a host suspend that only ages the beacon's wall-clock mtime is not mistaken for a wedge.
+The watchdog signals only the pid this home's lock records with a matching identity, never a pattern match across homes.
+If the watchdog is gone too, a re-arm evicts the holder once its beacon passes the hard stall bound described below.
 
 A fixed 300-second grace default stops correctly bounding staleness once a home's `FM_POLL` reaches or exceeds it.
 A perfectly healthy watcher mid-wait would then read stale at the edge of every full poll cycle by definition.
