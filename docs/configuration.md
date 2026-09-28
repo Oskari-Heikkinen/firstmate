@@ -67,6 +67,7 @@ config/wedge-defer-parked-gate  optional presence flag opting this home into the
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/watched-tools.json  optional list of the tools this home depends on, read by the update check armed with bin/fm-tool-update-check.sh; LOCAL, gitignored, firstmate-maintained but human-editable, and NOT inherited by secondmate homes; see this doc's "Watched tool updates"
+config/board-feeds   optional fleet board feed list, detector thresholds, session roots and watched scheduled units; LOCAL, gitignored, and not inherited; absent means no project feeds and default thresholds; see this doc's "Fleet board feeds" and docs/fleet-board.md
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
@@ -110,6 +111,8 @@ state/               runtime records and signals; gitignored
   tool-updates.check.sh  generated watched-tool update poll shim and its .check-trust binding; present only after bin/fm-tool-update-check.sh arm; its report record .tool-updates is what keeps one pending update from being reported on every poll
   mail.check.sh      generated received-mail poll shim and its .check-trust binding; present only after bin/fm-mail-check.sh arm; report record .mail-check (mail schema: this doc's "Mail plane")
   .mail-seen .mail-woken .mail-retry .mail-retry-pos .mail-turn .mail-seen.lock  mail-plane poll cursor, emission journal, transient-fetch retry set, retry-scan position, contended-slot turn flag, and overlapping-poll lock; written only by bin/fm-mail.sh (mail schema: this doc's "Mail plane")
+  board/             fleet board output: the page index.html and board.json (fm-board.v1), plus the token reader's tokens.json (fm-board-tokens.v1), private cursor tokens-cursor.json and usage/<YYYY-MM-DD>.jsonl fm-usage.v1 rows kept seven days; written only by bin/fm-board.sh; safe to delete, the next build starts over (docs/fleet-board.md)
+  spawn-starts.jsonl append-only fm-spawn-start.v1 record per spawn (task, kind, home, working copy, spawn generation and epoch, harness, model, project); written only by bin/fm-spawn.sh and never removed by teardown, so token attribution can tell which task ran in a reused copy
   pending-replies/   parent-owned secondmate pending-reply records (correlation id, delivery vs reply, recovery, escalation); fm-pending-reply-lib.sh
   procevent/         registered process-to-event sources, one private record per canonical source id; written only by bin/fm-procevent.sh, and their presence alone keeps supervision required (AGENTS.md section 13)
   procevent-inbox/   private captured results and their durable handled-acknowledgement markers; source output lives here and never in an event line
@@ -780,7 +783,22 @@ Source refresh never installs dependencies, restarts the application or reloads 
 [`bin/fm-usage-audit.sh`](../bin/fm-usage-audit.sh) reruns local measurements over explicitly selected usage exports, status logs, event receipts and script inventories without uploading their contents.
 [`bin/fm-usage-audit.py`](../bin/fm-usage-audit.py) owns its versioned classifier, input schemas, bounds, uncertainty and metadata-only output contract.
 Measured usage is separate from inferred repetition candidates; neither status volume nor identical helper files proves wasted reasoning.
+The fleet board's token reader writes `state/board/usage/<YYYY-MM-DD>.jsonl`, which this audit accepts through `--usage`.
 Behavioral verification lives in `tests/fm-current-view.test.sh`, `tests/fm-fleet-provenance.test.sh` and `tests/fm-usage-audit.test.sh`.
+
+## Fleet board feeds (config/board-feeds)
+
+`config/board-feeds` is an optional, local, gitignored, line-oriented file read by [`bin/fm-board.sh`](../bin/fm-board.sh); [`docs/examples/board-feeds`](examples/board-feeds) is a tracked example.
+A missing file means no project feeds, the default session roots and default thresholds.
+`#` starts a comment, fields are separated by whitespace, and paths cannot contain spaces.
+
+- `feed <name> <path> <version> <max_age_seconds> <owner> [link]` adds one project feed; `max_age_seconds` 0 turns the freshness check off.
+  Known versions are `fm-board-items.v1` (a JSON file `{schema, generated_epoch, items[]}` whose items already use the board's item shape), `tetjet-queue-snapshot.v1`, `merge-queue-log.v1` and `hypotheses-overview.v1`.
+  A missing, stale, unreadable or unknown-version feed becomes a blind-spot line naming the feed and its owner.
+- `threshold <name> <integer>` overrides a detector threshold or `summary_max_age` (default 7200 seconds) and `merge_stall_seconds` (default 3600); `bin/fm_board_tokens.py` owns the detector names and defaults.
+- `session_root <path>` names a folder of per-project session folders to read, one level deep; without any, the board reads `~/.claude-work/projects` and `~/.claude/projects`.
+- `broad_root <path>` adds a path the broad-search rule treats as too wide, beside `/`, `/home`, `$HOME`, `$HOME/.treehouse`, `/mnt/c`, every home root and its `data/`.
+- `unit <unit> <owner>` adds a systemd user unit whose last result the Health panel shows.
 
 ## Watched tool updates (config/watched-tools.json)
 

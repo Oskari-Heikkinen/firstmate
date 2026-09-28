@@ -767,6 +767,36 @@ status_open_decisions() {  # <status-file> [<kind>]
   printf '%s' "$open"
 }
 
+# Emission time of a decision the fold above still holds open: the optional
+# [at=<epoch>] of the newest needs-decision or blocked line stating <key>, which
+# is the line that (re)opened it, because every opening line replaces the key's
+# record. Prints the epoch; nonzero when that line carries no well-formed time or
+# no such line exists, so an unknown time stays unknown rather than guessed.
+# Reads only lines that can state <key> (a fixed-string prefilter), newest
+# first, so a long log costs one grep rather than a per-line fold.
+status_decision_opened_at() {  # <status-file> <key> -> epoch; nonzero when unknown
+  local f=$1 key=$2 line verb lkey epoch candidates
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  if [ "$key" = default ]; then
+    candidates=$(grep -E '^[[:space:]]*(needs-decision|blocked)' "$f" 2>/dev/null || true)
+  else
+    candidates=$(grep -F "[key=$key]" "$f" 2>/dev/null || true)
+  fi
+  [ -n "$candidates" ] || return 1
+  while IFS= read -r line; do
+    status_line_verb "$line" verb
+    case "$verb" in needs-decision|blocked) ;; *) continue ;; esac
+    lkey=$(_fm_decision_key "$line") || continue
+    [ "$lkey" = "$key" ] || continue
+    _fm_status_at_epoch "$line" epoch || return 1
+    printf '%s\n' "$epoch"
+    return 0
+  done <<EOF
+$(printf '%s\n' "$candidates" | awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }')
+EOF
+  return 1
+}
+
 # Resolve the log's current declaration at one boundary for crew-state consumers.
 # Any decision the fold still holds open wins over unrelated events, and the
 # fold's most recently opened record supplies it; the latest recognized event

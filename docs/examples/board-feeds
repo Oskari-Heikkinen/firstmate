@@ -1,0 +1,23 @@
+# Example config/board-feeds for bin/fm-board.sh (docs/configuration.md "Fleet board feeds").
+# Copy to <home>/config/board-feeds and edit the paths; a missing file means no feeds.
+
+# feed <name> <path> <version> <max_age_seconds> <owner> [link]
+feed tetjet-queue /home/me/homes/tetjet/data/offload/queue-snapshot.json tetjet-queue-snapshot.v1 900 tetjet
+feed merge-train /home/me/.cache/merge-queue/queue.log merge-queue-log.v1 0 research
+feed hypotheses /home/me/firstmate/projects/research/hypotheses/OVERVIEW.md hypotheses-overview.v1 0 research
+feed data-audit /home/me/homes/data/state/data-audit.board.json fm-board-items.v1 3600 data
+
+# threshold <name> <integer>; the defaults are shown
+threshold repeat_min 3
+threshold wait_min 5
+threshold context_tokens 200000
+threshold summary_max_age 7200
+
+# session_root <path>; without any, ~/.claude-work/projects and ~/.claude/projects
+session_root /home/me/.claude-work/projects
+
+# broad_root <path>; an extra path the broad-search rule treats as too wide
+broad_root /srv/shared
+
+# unit <systemd user unit> <owner>
+unit tetjet-feed.service tetjet

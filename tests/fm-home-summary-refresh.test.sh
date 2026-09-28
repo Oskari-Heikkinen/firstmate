@@ -731,6 +731,92 @@ jq -e '
   || fail "an unreachable remote task was not reported as unknown"
 pass "producer skips remote per-task state probes"
 
+# A read-only view must be able to show a home truthfully even when the home's
+# own classification is invalid: every task keeps its row with title, kind,
+# endpoint presence and last event; the monitoring verdict is published by its
+# owner; and each open decision says whether it waits on the captain or on a
+# supervisor, with its emission time and age.
+ACC_HOME="$TMP_ROOT/accuracy-home"
+mkdir -p "$ACC_HOME/state" "$ACC_HOME/data" "$ACC_HOME/config" \
+  "$ACC_HOME/projects/task" "$ACC_HOME/mate"
+printf '# Seeded Firstmate home\n' > "$ACC_HOME/AGENTS.md"
+printf 'accuracy\n' > "$ACC_HOME/.fm-secondmate-home"
+fm_git_init_commit "$ACC_HOME/projects/task"
+cat > "$ACC_HOME/data/backlog.md" <<'EOF'
+## In flight
+- [ ] acc-task - Keep rows when invalid (repo: firstmate) (kind: ship) (since 2026-08-28)
+
+## Queued
+- [ ] acc-call - Pick the base (repo: firstmate) (kind: captain) (hold: captain pick pending) (hold-kind: captain) (since 2026-08-27)
+
+## Done
+EOF
+for acc_id in acc-task stray-task; do
+  fm_write_meta "$ACC_HOME/state/$acc_id.meta" \
+    "window=fmtest:fm-$acc_id" \
+    "worktree=$ACC_HOME/projects/task" \
+    "project=firstmate" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "spawn_gen=fm.$acc_id"
+done
+fm_write_secondmate_meta "$ACC_HOME/state/far-mate.meta" "$ACC_HOME/mate" \
+  "fmtest:fm-far-mate" firstmate claude
+printf 'working [at=%s]: started\nneeds-decision [key=acc-q] [at=%s]: which base to rebuild from\n' \
+  "$((EPOCH_TWO - 900))" "$((EPOCH_TWO - 60))" > "$ACC_HOME/state/acc-task.status"
+printf 'working [at=%s]: doing unowned work\n' "$((EPOCH_TWO - 30))" \
+  > "$ACC_HOME/state/stray-task.status"
+printf 'needs-decision [key=captain-hold-far-call-1] [at=%s]: captain hold far-call: pick one\nneeds-decision [key=mate-q]: untimed question\nneeds-decision [key=mate-timed] [at=%s]: timed question\n' \
+  "$((EPOCH_TWO - 600))" "$((EPOCH_TWO - 60))" > "$ACC_HOME/state/far-mate.status"
+touch "$ACC_HOME/state/.last-watcher-beat"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$ACC_HOME" \
+  FM_SUPERVISION_MODEL=autoarm \
+  FM_SNAPSHOT_NOW="$NOW_TWO" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_TWO" \
+  "$SNAPSHOT" --secondmate-home-summary > "$TMP_ROOT/accuracy-summary.json" \
+  || fail "the accuracy home summary failed"
+jq -e --argjson now "$EPOCH_TWO" '
+  .valid == false
+  and .invalidity.kind == "unowned_current"
+  and any(.endpoints[]; .id == "acc-task" and .title == "Keep rows when invalid"
+          and .kind == "ship" and .backlog_state == "in_flight"
+          and .last_event.state == "needs-decision" and .last_event.age_seconds == 60
+          and (.endpoint | has("exists")))
+  and any(.endpoints[]; .id == "stray-task" and .title == null
+          and .last_event.state == "working" and .last_event.age_seconds == 30)
+' "$TMP_ROOT/accuracy-summary.json" >/dev/null \
+  || fail "per-task rows were not kept on an invalid home: $(jq -c '.endpoints' "$TMP_ROOT/accuracy-summary.json")"
+pass "an invalid home still publishes every task row with title, kind and last event"
+jq -e '
+  .supervision.source == "fm-primary-ready.v1"
+  and .supervision.state == "healthy"
+  and (.supervision | has("reason") and has("can_receive") and has("posture"))
+' "$TMP_ROOT/accuracy-summary.json" >/dev/null \
+  || fail "the monitoring verdict was not published: $(jq -c '.supervision' "$TMP_ROOT/accuracy-summary.json")"
+rm -f "$ACC_HOME/state/.last-watcher-beat"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$ACC_HOME" \
+  FM_SUPERVISION_MODEL=persistent \
+  FM_SNAPSHOT_NOW="$NOW_TWO" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_TWO" \
+  "$SNAPSHOT" --secondmate-home-summary > "$TMP_ROOT/accuracy-down.json" \
+  || fail "the accuracy home summary failed without a beacon"
+jq -e '.supervision.state == "down" and .supervision.reason == "no-beacon"' \
+  "$TMP_ROOT/accuracy-down.json" >/dev/null \
+  || fail "a lapsed monitoring verdict was not published as down: $(jq -c '.supervision' "$TMP_ROOT/accuracy-down.json")"
+pass "the summary publishes the owner's monitoring verdict"
+jq -e --argjson now "$EPOCH_TWO" '
+  any(.decisions_open[]; .key == "acc-call" and .for == "captain" and .source == "backlog"
+      and .opened_at_epoch == ("2026-08-27T00:00:00Z" | fromdateiso8601)
+      and .age_seconds == ($now - .opened_at_epoch))
+  and any(.decisions_open[]; .key == "mate-timed" and .for == "supervisor"
+          and .opened_at_epoch == ($now - 60) and .age_seconds == 60)
+  and any(.decisions_open[]; .key == "captain-hold-far-call-1" and .for == "captain"
+          and .source == "status" and .age_seconds == 600)
+  and any(.decisions_open[]; .key == "mate-q" and .for == "supervisor"
+          and .opened_at_epoch == null and .age_seconds == null)
+' "$TMP_ROOT/accuracy-summary.json" >/dev/null \
+  || fail "open decisions lacked audience or emission time: $(jq -c '.decisions_open' "$TMP_ROOT/accuracy-summary.json")"
+pass "open decisions name the captain or a supervisor with emission time and age"
+
 # The watcher's beacon is what the rest of supervision reads as proof it is
 # alive. Publication is side-band, so no matter how long it takes, the beacon
 # must keep advancing. Hold the publication lock for the whole observation
