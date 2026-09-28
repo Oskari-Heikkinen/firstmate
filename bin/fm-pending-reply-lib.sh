@@ -14,10 +14,11 @@
 # one automatic recovery request asking for a repost through the parent channel,
 # and escalate once if the recovery turn also completes without a correlated
 # report. Never loop, never repeatedly inject, never silently expire unresolved
-# records, and never treat wrong-home or structured-home heuristics as
-# acknowledgement. A same-basename restatement-copy of the mate home's
-# state/<task_id>.status onto the parent channel is a repair of the
-# FM_HOME-relative mixup, not acknowledgement of an arbitrary mate-home file.
+# records (only resolved ones are pruned, see fm_pending_reply_prune), and
+# never treat wrong-home or structured-home heuristics as acknowledgement. A
+# same-basename restatement-copy of the mate home's state/<task_id>.status onto
+# the parent channel is a repair of the FM_HOME-relative mixup, not
+# acknowledgement of an arbitrary mate-home file.
 #
 # Record location (parent FM_HOME):
 #   state/pending-replies/<corr_id>
@@ -110,6 +111,8 @@
 #
 # Tunables (env):
 #   FM_PENDING_REPLY_GRACE_SECS   default 120
+#   FM_PENDING_REPLY_RETENTION_SECS default 86400; how long a resolved record
+#                                 is kept before the tick prunes it
 #   FM_PENDING_REPLY_DIR_OVERRIDE override the pending-replies directory (tests)
 #   FM_PENDING_REPLY_SEND_HOOK    optional command template for recovery delivery
 #                                 (tests); receives task_id and full message as args
@@ -129,6 +132,7 @@ _FM_PENDING_REPLY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/n
 FM_PENDING_REPLY_SCHEMA='fm-pending-reply.v1'
 FM_PENDING_REPLY_CORR_RE='corr=[A-Fa-f0-9]{16}'
 FM_PENDING_REPLY_GRACE_DEFAULT=120
+FM_PENDING_REPLY_RETENTION_DEFAULT=86400
 
 fm_pending_reply_now() {
   if [ -n "${FM_PENDING_REPLY_NOW:-}" ]; then
@@ -1482,28 +1486,127 @@ fm_pending_reply_tick_one() {  # <state-dir> <corr_id> <busy_state> [secondmate-
   return 0
 }
 
+# Retention for resolved records. A resolved record is settled bookkeeping; the
+# tick only needs it until any escalation it opened has been closed. Past the
+# retention bound (counted from resolved_epoch, or created_epoch for a record
+# without one) the watcher tick deletes it and its delivery-confirmation file,
+# so a busy home's directory stays bounded instead of growing by every routed
+# request. Unresolved records are never pruned, a resolved record whose
+# escalation close is still pending is kept until that close lands, and a
+# record a backlog-handoff receiver wake marker still names is kept for that
+# marker's owner (bin/fm-backlog-handoff.sh).
+fm_pending_reply_retention_secs() {
+  local r=${FM_PENDING_REPLY_RETENTION_SECS:-$FM_PENDING_REPLY_RETENTION_DEFAULT}
+  case "$r" in
+    ''|*[!0-9]*|0) r=$FM_PENDING_REPLY_RETENTION_DEFAULT ;;
+  esac
+  printf '%s' "$r"
+}
+
+# Read the tick's summary fields from <record-path> in one in-process pass,
+# with the same last-assignment-wins semantics as fm_pending_reply_get, into
+# the caller's _fm_prs_* variables. No fork, no lock.
+_fm_pending_reply_read_summary() {  # <record-path>
+  local key value
+  _fm_prs_corr_id='' _fm_prs_task_id='' _fm_prs_phase='' _fm_prs_created=''
+  _fm_prs_resolved='' _fm_prs_escalated='' _fm_prs_escalation_closed=''
+  [ -f "$1" ] || return 1
+  while IFS='=' read -r key value || [ -n "$key" ]; do
+    case "$key" in
+      corr_id) _fm_prs_corr_id=$value ;;
+      task_id) _fm_prs_task_id=$value ;;
+      phase) _fm_prs_phase=$value ;;
+      created_epoch) _fm_prs_created=$value ;;
+      resolved_epoch) _fm_prs_resolved=$value ;;
+      escalated_epoch) _fm_prs_escalated=$value ;;
+      escalation_closed_epoch) _fm_prs_escalation_closed=$value ;;
+    esac
+  done < "$1"
+  return 0
+}
+
+# 0 when the summary just read is a resolved record past retention at <now>.
+_fm_pending_reply_summary_prunable() {  # <now> <retention-secs>
+  local since
+  [ "$_fm_prs_phase" = resolved ] || return 1
+  [ -z "$_fm_prs_escalated" ] || [ -n "$_fm_prs_escalation_closed" ] || return 1
+  since=$_fm_prs_resolved
+  case "$since" in ''|*[!0-9]*) since=$_fm_prs_created ;; esac
+  case "$since" in ''|*[!0-9]*) return 1 ;; esac
+  [ $(($1 - since)) -ge "$2" ]
+}
+
+# Prune the named resolved records. Each is re-read immediately before removal,
+# and only a record that is still resolved, past retention, and without an
+# unclosed escalation goes. That state is terminal: no path in this library
+# writes such a record again (every writer returns before touching a resolved
+# record whose escalation is closed or absent), so the removal needs no
+# per-correlation lock and a concurrent tick, resolve, or teardown can at most
+# find the record already gone. Deliberately lock-free and single-rm, because a
+# lock cycle per record is exactly the per-record cost a busy home cannot
+# afford. Idempotent: an already-removed record is skipped.
+fm_pending_reply_prune() {  # <state-dir> <corr_id>...
+  local state=$1 corr rec now retention markers='' marker value dir confirm_prefix
+  local _fm_prs_corr_id _fm_prs_task_id _fm_prs_phase _fm_prs_created
+  local _fm_prs_resolved _fm_prs_escalated _fm_prs_escalation_closed
+  local -a doomed=()
+  shift
+  [ $# -gt 0 ] || return 0
+  for marker in "$state"/.backlog-handoff-*.wake-pending; do
+    [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+    value=$(cat "$marker" 2>/dev/null || true)
+    value=${value#*:}
+    markers="$markers ${value%%:*}"
+  done
+  now=$(fm_pending_reply_now)
+  retention=$(fm_pending_reply_retention_secs)
+  dir=$(fm_pending_reply_dir "$state")
+  confirm_prefix=$(fm_pending_reply_delivery_confirmation_path "$state" '')
+  for corr in "$@"; do
+    case "$corr" in ''|*/*|.*) continue ;; esac
+    case " $markers " in *" $corr "*) continue ;; esac
+    rec="$dir/$corr"
+    [ -f "$rec" ] && [ ! -L "$rec" ] || continue
+    _fm_pending_reply_read_summary "$rec" || continue
+    _fm_pending_reply_summary_prunable "$now" "$retention" || continue
+    doomed+=("$rec" "$confirm_prefix$corr")
+  done
+  [ "${#doomed[@]}" -eq 0 ] || rm -f -- "${doomed[@]}" 2>/dev/null || true
+  return 0
+}
+
 # Scan every pending record for this parent state. Safe to call every poll.
 # Never scrapes secondmate conversation; uses only parent status, backend busy
 # state, and optional secondmate-home wrong-home path checks.
 fm_pending_reply_tick() {  # <state-dir>
   local state=$1 dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host
-  local observation observation_task found i
-  local -a observation_tasks=() observation_values=()
+  local observation observation_task found i now retention
+  local _fm_prs_corr_id _fm_prs_task_id _fm_prs_phase _fm_prs_created
+  local _fm_prs_resolved _fm_prs_escalated _fm_prs_escalation_closed
+  local -a observation_tasks=() observation_values=() prunable=()
   dir=$(fm_pending_reply_dir "$state")
   [ -d "$dir" ] || return 0
+  now=$(fm_pending_reply_now)
+  retention=$(fm_pending_reply_retention_secs)
   for rec in "$dir"/*; do
     [ -f "$rec" ] || continue
-    case "$(basename "$rec")" in
+    case "${rec##*/}" in
       .*) continue ;;
     esac
-    corr=$(fm_pending_reply_get "$rec" corr_id)
-    [ -n "$corr" ] || corr=$(basename "$rec")
-    task_id=$(fm_pending_reply_get "$rec" task_id)
-    phase=$(fm_pending_reply_get "$rec" phase)
+    _fm_pending_reply_read_summary "$rec" || continue
+    corr=$_fm_prs_corr_id
+    [ -n "$corr" ] || corr=${rec##*/}
+    task_id=$_fm_prs_task_id
+    phase=$_fm_prs_phase
     if [ "$phase" = resolved ]; then
-      # Cheap no-op unless an escalation for this record is still open; this is
-      # the retry that makes the close converge after a transient write failure.
-      fm_pending_reply_close_escalation "$state" "$corr" || true
+      # A settled record costs one read and no lock. Only an escalation whose
+      # close has not landed yet takes the locked retry that makes the close
+      # converge after a transient write failure; past retention it is pruned.
+      if [ -n "$_fm_prs_escalated" ] && [ -z "$_fm_prs_escalation_closed" ]; then
+        fm_pending_reply_close_escalation "$state" "$corr" || true
+      elif _fm_pending_reply_summary_prunable "$now" "$retention"; then
+        prunable+=("$corr")
+      fi
       continue
     fi
     fm_pending_reply_reconcile_delivery "$state" "$corr" || true
@@ -1595,6 +1698,7 @@ fm_pending_reply_tick() {  # <state-dir>
     fi
     fm_pending_reply_tick_one "$state" "$corr" "$busy" "$sm_home" || true
   done
+  fm_pending_reply_prune "$state" "${prunable[@]}" || true
   return 0
 }
 
