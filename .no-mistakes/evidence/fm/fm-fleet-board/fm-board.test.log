@@ -1,0 +1,23 @@
+ok - every missing, stale, unknown-version or unread source is a blind-spot line naming it and its owner
+ok - every item uses the single item shape
+ok - a mirrored captain hold is judged by its owner: live counted once, deferred parked, answered shown apart
+ok - supervisor questions stay out of the captain's calls and a call carries its opening time
+ok - open items cut by the summary's bounds get their own label, not a supervisor wait
+ok - health shows each area's monitoring verdict and an incomplete summary without hiding its tasks
+ok - a healthy verdict from a summary older than its refresh allows shows as unconfirmed, not green
+ok - an unknown monitoring verdict shows the reason its summary publishes
+ok - work separates working, working with no agent, parked, empty tabs and tasks the summary cut
+ok - feed mappings: queue states, merge train stall and landings, hypothesis counts, owner items, scheduled jobs
+ok - usage counts once per message id across a multi-part turn, helper agents join their session
+ok - each of the seven detector rules flags its fixture
+ok - a reused copy credits each session to the task spawned before it; branch, home root and pipeline fall back
+ok - each fm-usage.v1 row carries its own message's time, not the file's newest
+ok - fm-usage.v1 rows are written once per message and accepted by the usage audit
+ok - no transcript content, command text, read paths, money or quota field reaches any output
+ok - an append is read from the cursor, and an unterminated last line waits
+ok - a file shorter than its cursor is read again from the start
+ok - rows written again after a cursor reset are byte-identical, so the audit sees no conflict
+ok - a replaced file (new inode) resets its cursor, and an unchanged file reads nothing
+ok - install-timer writes a niced oneshot service and 5-minute timer for the given home and enables it
+ok - uninstall-timer disables the timer and removes both units
+ok - install-timer refuses a path a unit line cannot carry

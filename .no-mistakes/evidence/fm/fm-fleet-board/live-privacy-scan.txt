@@ -1,0 +1,7 @@
+tokens.json: forbidden_keys=[] transcript_markers=[]
+index.html: forbidden_keys=[] transcript_markers=[]
+tokens-cursor.json: forbidden_keys=[] transcript_markers=[]
+board.json: forbidden_keys=[] transcript_markers=[]
+usage/2026-09-28.jsonl: forbidden_keys=[] transcript_markers=[]
+page money/quota mentions: ['appear on the Tokens panel; it never shows money, remaining allowance, quota or run-out']
+script tag: False  meta refresh: True

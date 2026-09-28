@@ -1,0 +1,4 @@
+blind	main: monitoring verdict unknown — The area's summary publishes no monitoring verdict.
+blind	stale-mate: monitoring unconfirmed — Last healthy verdict is 43 min old; the summary has not been refreshed since.
+ok	fresh: monitoring running — null
+blind	fresh-unknown: monitoring verdict unknown — Reason: supervision-model-unknown-for-home.

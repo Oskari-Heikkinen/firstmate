@@ -1,0 +1,20 @@
+blind	[Blind spots] vanished-mate summary: missing — Not found (state/home-summary.json).
+blind	[Blind spots] main: monitoring verdict unknown — The area's summary publishes no monitoring verdict.
+warn	[Areas] lattice-mate summary marks itself incomplete — live child state has no in-flight backlog item: lattice-acceptance-gate0=unknown. Its tasks are still listed one by one.
+blind	[Blind spots] lattice-mate: monitoring verdict unknown — The area's summary publishes no monitoring verdict.
+warn	[Areas] lattice-research-mate summary marks itself incomplete — child current state unavailable: etc-redesign, fixture-rerecord, housekeeping, informed-batch-prune, load-path-step, merge-train-service, move-certified-select…. Its tasks are still listed one by one.
+blind	[Blind spots] lattice-research-mate: monitoring verdict unknown — The area's summary publishes no monitoring verdict.
+warn	[Areas] tetjet-mate summary marks itself incomplete — child current state unavailable: tj-auto-capacity, tj-auto-handoff, tj-auto-package, tj-auto-receipts, tj-auto-services, tj-autoremove-r4, tj-kit-resume. Its tasks are still listed one by one.
+blind	[Blind spots] tetjet-mate: monitoring verdict unknown — The area's summary publishes no monitoring verdict.
+blind	[Blind spots] lattice-ml-mate: monitoring verdict unknown — The area's summary publishes no monitoring verdict.
+warn	[Areas] tooling-mate summary marks itself incomplete — in-flight backlog item has terminal child state: fm-typed-receipts=failed. Its tasks are still listed one by one.
+blind	[Blind spots] tooling-mate: monitoring verdict unknown — The area's summary publishes no monitoring verdict.
+blind	[Blind spots] stale-mate: monitoring unconfirmed — Last healthy verdict is 40 min old; the summary has not been refreshed since.
+blind	[Blind spots] merge-train: missing — not found
+blind	[Blind spots] future-feed: unknown version — Configured version nope.v7 has no mapper.
+ok	[Scheduled jobs] lattice-tetjet-queue-feed.service — null
+ok	[Scheduled jobs] fm-account-watch.service — null
+blind	[Blind spots] scheduled job no-such-unit.service: missing — Unit not found.
+blind	[Blind spots] Spawn admission verdict: not published yet — Why a new worker cannot start (slot cap, memory) appears here once spawn publishes it.
+blind	[Blind spots] Heavy slot status: not published yet — Which heavy job holds the shared slot appears here once the slot owner publishes it.
+blind	[Blind spots] Status volume: not measured yet — Status text volume into each supervisor appears here once it is published as counts.

@@ -1,0 +1,66 @@
+Lab build against the real fleet's published summaries and real Claude session records (read-only); lab home output only.
+schema: fm-board.v1
+
+Sources (name -> status, owner):
+  main summary                       ok               owner=main
+  lattice-mate summary               ok               owner=lattice-mate
+  lattice-research-mate summary      ok               owner=lattice-research-mate
+  tetjet-mate summary                ok               owner=tetjet-mate
+  lattice-ml-mate summary            ok               owner=lattice-ml-mate
+  tooling-mate summary               ok               owner=tooling-mate
+  Project feeds                      not-configured   owner=board
+  Spawn admission verdict            not-configured   owner=tooling
+  Heavy slot status                  not-configured   owner=tooling
+  Status volume                      not-configured   owner=tooling
+  Session records                    ok               owner=board
+
+Items per panel/group:
+  decisions  Answered, not yet closed by the owner    3
+  decisions  Needs a call now                         17
+  decisions  Not listed by the summary                1
+  decisions  Parked on purpose                        7
+  decisions  Waiting on a supervisor                  1
+  health     Areas                                    4
+  health     Blind spots                              10
+  pipeline   Queued work per area                     6
+  tokens     By area                                  6
+  tokens     By kind of agent                         5
+  tokens     By task                                  20
+  tokens     Detectors                                7
+  waste      Habits                                   5
+  work       Idle agent                               15
+  work       Parked, no agent                         35
+  work       Working                                  2
+
+Health > Monitoring / Blind spots (titles):
+  [blind] main: monitoring verdict unknown | The area's summary publishes no monitoring verdict.
+  [warn] lattice-mate summary marks itself incomplete | live child state has no in-flight backlog item: lattice-acceptance-gate0=unknown. Its tasks are still listed o
+  [blind] lattice-mate: monitoring verdict unknown | The area's summary publishes no monitoring verdict.
+  [warn] lattice-research-mate summary marks itself incomplete | child current state unavailable: etc-redesign, fixture-rerecord, housekeeping, informed-batch-prune, load-path
+  [blind] lattice-research-mate: monitoring verdict unknown | The area's summary publishes no monitoring verdict.
+  [warn] tetjet-mate summary marks itself incomplete | child current state unavailable: tj-auto-capacity, tj-auto-handoff, tj-auto-package, tj-auto-receipts, tj-auto
+  [blind] tetjet-mate: monitoring verdict unknown | The area's summary publishes no monitoring verdict.
+  [blind] lattice-ml-mate: monitoring verdict unknown | The area's summary publishes no monitoring verdict.
+  [warn] tooling-mate summary marks itself incomplete | in-flight backlog item has terminal child state: fm-typed-receipts=failed. Its tasks are still listed one by o
+  [blind] tooling-mate: monitoring verdict unknown | The area's summary publishes no monitoring verdict.
+  [blind] Project feeds: not set up yet | No config/board-feeds file lists any feed.
+  [blind] Spawn admission verdict: not published yet | Why a new worker cannot start (slot cap, memory) appears here once spawn publishes it.
+  [blind] Heavy slot status: not published yet | Which heavy job holds the shared slot appears here once the slot owner publishes it.
+  [blind] Status volume: not measured yet | Status text volume into each supervisor appears here once it is published as counts.
+
+Token reader: day=2026-09-28 files={'behind': 0, 'bytes_read': 258464193, 'files': 89, 'read': 89, 'reset': 0, 'unreadable': 0}
+Detector rules:
+  repeat     sessions=24 {'count': 499}
+  wait       sessions=29 {'count': 431}
+  broad      sessions=27 {'count': 74}
+  reread     sessions=2 {'count': 2}
+  idle_wake  sessions=13 {'count': 19}
+  status_prose sessions=51 {'count': 396}
+  swollen    sessions=10 {'count': 10}
+by_area: [('tetjet-mate', 919481283), ('lattice-research-mate', 516941949), ('tooling-mate', 267937776), ('other', 157102682), ('lattice-mate', 89986552), ('pipeline', 7366428)]
+by_kind: [('no task record', 1233853203), ('supervisor', 396393373), ('task', 164100984), ('unknown', 157102682), ('pipeline', 7366428)]
+tasks credited: 20 sessions today: 71
+
+money/quota terms in page text: ['allowance', 'cost', 'quota', 'run-out']
+sentence containing them: ['Token counts appear on the Tokens panel; it never shows money, remaining allowance, quota or run-out.']
+<script> present: False | meta refresh: 300

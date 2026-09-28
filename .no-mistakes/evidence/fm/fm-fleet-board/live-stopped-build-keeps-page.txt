@@ -1,0 +1,10 @@
+== build stopped early (the python builder is frozen right after exec, then killed): previous page must stay
+a589ec37c65d4bd60f47fbecc73cc2388264f788c3b460c4815bbe5abf7ef718  /tmp/fm-board-live.91oT/main/state/board/index.html
+4e59e008738a5ad78278e239906c0d421313945cc394e23f16af98cacd9563ae  /tmp/fm-board-live.91oT/main/state/board/board.json
+froze pid=83104: TN    19 python3
+bin/fm-board.sh: line 135: 83099 Killed                  "${prefix[@]}" python3 "$SCRIPT_DIR/fm-board.py" --home "$home" --homes "$BUILD_TMP/homes.tsv" --budget "$RUN_CAP" ${now:+--now "$now"}
+fm-board.sh rc=137
+a589ec37c65d4bd60f47fbecc73cc2388264f788c3b460c4815bbe5abf7ef718  /tmp/fm-board-live.91oT/main/state/board/index.html
+4e59e008738a5ad78278e239906c0d421313945cc394e23f16af98cacd9563ae  /tmp/fm-board-live.91oT/main/state/board/board.json
+page unchanged after stopped build: yes
+leftover tmp files: 0

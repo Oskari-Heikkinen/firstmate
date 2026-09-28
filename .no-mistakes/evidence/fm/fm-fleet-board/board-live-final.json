@@ -1,0 +1,2484 @@
+{
+ "generated_epoch": 1790617984,
+ "home": "/tmp/fm-board-live.91oT/main",
+ "items": [
+  {
+   "detail": "Not found (state/home-summary.json).",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "vanished-mate",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "vanished-mate summary: missing"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "item 8 filed; same doc /home/oskari/.treehouse/firstmate-7bab20/1/firstmate/data/automation-owner-side/interface.md. Workbench banner: already on main - the he\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-ml-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "model status + test-run plan in /home/oskari/.treehouse/firstmate-65d58b/6/firstmate/data/ml-live-ab-run/plan.md: final rerun done and meets the bar (temporal \u2026"
+  },
+  {
+   "detail": "No longer waiting on a call in lattice-research-mate (answered or deferred); its mirror here still needs closing.",
+   "group": "Answered, not yet closed by the owner",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "captain hold maint-gen-kernel: Deferred by the captain on 2026-09-27: lets defer for now. Keep out of his lists until he asks; questions unchanged in this task\u2026"
+  },
+  {
+   "detail": "No longer waiting on a call in lattice-research-mate (answered or deferred); its mirror here still needs closing.",
+   "group": "Answered, not yet closed by the owner",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "captain hold opt-eval-cost-captain-calls: Deferred by the captain on 2026-09-27: lets defer for now. Keep out of his lists until he asks; questions unchanged i\u2026"
+  },
+  {
+   "detail": "No longer waiting on a call in lattice-research-mate (answered or deferred); its mirror here still needs closing.",
+   "group": "Answered, not yet closed by the owner",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "captain hold maint-start-methods-captain-calls: Deferred by the captain on 2026-09-27: lets defer for now. Keep out of his lists until he asks; questions uncha\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "corr=901bd5538d11dad2 disk numbers per 663, for the captain and tetjet-mate. (1) Laptop C: after deleting only the archives, full result folders take 0.24-0.30\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "corr=0e804d1b3ead8c0a item 5 needs tetjet-mate to agree the request-queue interface: /home/oskari/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-request-q\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "corr=fa02623af8bd9e21 the runs-path diagnosis is finished and was not complex, so it stayed at medium effort: /home/oskari/.treehouse/firstmate-7bab20/2/firstm\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "corr=9db6063abd37df9b housekeeping applied: 40.57 GiB freed, measured. Group A: 0.73 GiB (partial download, split original; the operator had already removed th\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "for tetjet-mate, via main (corr=7b2fe9d264ddc8b2). Wave 1 of the combined informed-search A/B is filed through tj-handoff intake but is waiting on rule R5. The\u2026"
+  },
+  {
+   "detail": "Not listed by the area's summary.",
+   "group": "Not listed by the summary",
+   "link": null,
+   "owner": "main",
+   "panel": "decisions",
+   "since": null,
+   "state": "info",
+   "title": "14 more open items in main"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "Generation audit: run outputs and publication"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "Generation audit: start structure and growth"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "Beam and plate support regions under shell contact"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "Contact-face protrusion: keep forces/supports at the surface, no rod or joint material outside the part volume"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "Captain's call: start/move run review R1-R18 and constraint-continuation Q1-Q3"
+  },
+  {
+   "detail": "A question between areas, not a call for the captain.",
+   "group": "Waiting on a supervisor",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "info",
+   "title": "applied A 0.729 GiB and B 39.837 GiB, 40.566 GiB freed and logged in data/housekeeping/applied.jsonl; C refused on every run: lattice_run.retention archive-run\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "hypothesis register landed on main c8c36074 (f50847f3) after wf-1 was filed; run code identical to fee1f390. The filed wf-1 card (e2c65626...) is REFUSED by th\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "landed 96b0852dd32f6d19cfadd3779c97863ea95b9dee on main (merge train service + land skill); cutover install/start commands, precondition (no old-agent member l\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "request ready: /home/oskari/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/requests/search-keep-going-validate-2.json sha256 dd70525163ca2559ed55c\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "Apply the agent input prune plan, phased across homes"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "Plan: prune and restructure always-loaded agent input across homes"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "item 8 filed; same doc /home/oskari/.treehouse/firstmate-7bab20/1/firstmate/data/automation-owner-side/interface.md. Workbench banner: already on main - the he\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-ml-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "model status + test-run plan in /home/oskari/.treehouse/firstmate-65d58b/6/firstmate/data/ml-live-ab-run/plan.md: final rerun done and meets the bar (temporal \u2026"
+  },
+  {
+   "detail": "No longer waiting on a call in lattice-research-mate (answered or deferred); its mirror here still needs closing.",
+   "group": "Answered, not yet closed by the owner",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "captain hold maint-gen-kernel: Deferred by the captain on 2026-09-27: lets defer for now. Keep out of his lists until he asks; questions unchanged in this task\u2026"
+  },
+  {
+   "detail": "No longer waiting on a call in lattice-research-mate (answered or deferred); its mirror here still needs closing.",
+   "group": "Answered, not yet closed by the owner",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "captain hold opt-eval-cost-captain-calls: Deferred by the captain on 2026-09-27: lets defer for now. Keep out of his lists until he asks; questions unchanged i\u2026"
+  },
+  {
+   "detail": "No longer waiting on a call in lattice-research-mate (answered or deferred); its mirror here still needs closing.",
+   "group": "Answered, not yet closed by the owner",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "captain hold maint-start-methods-captain-calls: Deferred by the captain on 2026-09-27: lets defer for now. Keep out of his lists until he asks; questions uncha\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "corr=901bd5538d11dad2 disk numbers per 663, for the captain and tetjet-mate. (1) Laptop C: after deleting only the archives, full result folders take 0.24-0.30\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "corr=0e804d1b3ead8c0a item 5 needs tetjet-mate to agree the request-queue interface: /home/oskari/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-request-q\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "corr=fa02623af8bd9e21 the runs-path diagnosis is finished and was not complex, so it stayed at medium effort: /home/oskari/.treehouse/firstmate-7bab20/2/firstm\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "corr=9db6063abd37df9b housekeeping applied: 40.57 GiB freed, measured. Group A: 0.73 GiB (partial download, split original; the operator had already removed th\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "warn",
+   "title": "for tetjet-mate, via main (corr=7b2fe9d264ddc8b2). Wave 1 of the combined informed-search A/B is filed through tj-handoff intake but is waiting on rule R5. The\u2026"
+  },
+  {
+   "detail": "Not listed by the area's summary.",
+   "group": "Not listed by the summary",
+   "link": null,
+   "owner": "stale-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "info",
+   "title": "14 more open items in stale-mate"
+  },
+  {
+   "detail": "Open 65 min.",
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "fresh",
+   "panel": "decisions",
+   "since": 1790614072,
+   "state": "warn",
+   "title": "Apply the agent input prune plan, phased across homes"
+  },
+  {
+   "detail": "Open 66 min.",
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "fresh",
+   "panel": "decisions",
+   "since": 1790614005,
+   "state": "warn",
+   "title": "Plan: prune and restructure always-loaded agent input across homes"
+  },
+  {
+   "detail": "Open 65 min.",
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "decisions",
+   "since": 1790614072,
+   "state": "warn",
+   "title": "Apply the agent input prune plan, phased across homes"
+  },
+  {
+   "detail": "Open 66 min.",
+   "group": "Needs a call now",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "decisions",
+   "since": 1790614005,
+   "state": "warn",
+   "title": "Plan: prune and restructure always-loaded agent input across homes"
+  },
+  {
+   "detail": "back 2026-10-27",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Buckling below-3 questions 2-4, deferred until real engineering numbers arrive"
+  },
+  {
+   "detail": "back 2026-12-31",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Evaluator scout captain calls: option C picker, fade-band end, degeneracy-safe share, margin in record, eigen gating la\u2026"
+  },
+  {
+   "detail": "back 2026-12-31",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Maintenance/optimization scout: maint-run-kits"
+  },
+  {
+   "detail": "back 2026-12-31",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Maintenance/optimization scout: maint-experiment-drivers"
+  },
+  {
+   "detail": "back 2026-12-31",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Maintenance/optimization scout: opt-retire"
+  },
+  {
+   "detail": "back 2026-12-31",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Memory/search-waste scout captain calls: feasible mass-adding moves, batch and priced-bridge re-offers, plateau stop, s\u2026"
+  },
+  {
+   "detail": "waits on other work",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Build scheduled Main CI + checks-approved pointer switch (one lattice-research commit via merge train)"
+  },
+  {
+   "detail": "waits on other work",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "fresh",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Build scheduled Main CI + checks-approved pointer switch (one lattice-research commit via merge train)"
+  },
+  {
+   "detail": "waits on other work",
+   "group": "Parked on purpose",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "decisions",
+   "since": null,
+   "state": "idle",
+   "title": "Build scheduled Main CI + checks-approved pointer switch (one lattice-research commit via merge train)"
+  },
+  {
+   "detail": "The area's summary publishes no monitoring verdict.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "main",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "main: monitoring verdict unknown"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "main",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "main",
+   "value": 2,
+   "view": "count"
+  },
+  {
+   "detail": "live child state has no in-flight backlog item: lattice-acceptance-gate0=unknown. Its tasks are still listed one by one.",
+   "group": "Areas",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "health",
+   "since": null,
+   "state": "warn",
+   "title": "lattice-mate summary marks itself incomplete"
+  },
+  {
+   "detail": "The area's summary publishes no monitoring verdict.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "lattice-mate: monitoring verdict unknown"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "lattice-acceptance-gate0"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "lattice-dxf-import-ui"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "lattice-experiment-reports-view"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "lattice-gen-audit-outputs"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "lattice-gen-audit-start"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "lattice-mate",
+   "value": 9,
+   "view": "count"
+  },
+  {
+   "detail": "child current state unavailable: etc-redesign, fixture-rerecord, housekeeping, informed-batch-prune, load-path-step, merge-train-service, move-certified-select\u2026. Its tasks are still listed one by one.",
+   "group": "Areas",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "health",
+   "since": null,
+   "state": "warn",
+   "title": "lattice-research-mate summary marks itself incomplete"
+  },
+  {
+   "detail": "The area's summary publishes no monitoring verdict.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "lattice-research-mate: monitoring verdict unknown"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "etc-redesign"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fixture-rerecord"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "housekeeping"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "informed-batch-prune"
+  },
+  {
+   "detail": "State: parked.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "informed-combined-ab"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "load-path-step"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "merge-agent"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "merge-train-service"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "move-certified-selection"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "move-composite-repair"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "move-refusal-screen"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "move-staged-search"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "move-swap-batches-2"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "replay-all-ops"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "rolling-analyst"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "search-keep-going"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "stability-inputs-settable"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tetjet-backlog"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tetjet-request-queue"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "lattice-research-mate",
+   "value": 36,
+   "view": "count"
+  },
+  {
+   "detail": "child current state unavailable: tj-auto-capacity, tj-auto-handoff, tj-auto-package, tj-auto-receipts, tj-auto-services, tj-autoremove-r4, tj-kit-resume. Its tasks are still listed one by one.",
+   "group": "Areas",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "health",
+   "since": null,
+   "state": "warn",
+   "title": "tetjet-mate summary marks itself incomplete"
+  },
+  {
+   "detail": "The area's summary publishes no monitoring verdict.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "tetjet-mate: monitoring verdict unknown"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-auto-capacity"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-auto-handoff"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-auto-package"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-auto-receipts"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-auto-removal"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-auto-services"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-autoremove-r4"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-batch-prep"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-kit-resume"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-kit-review"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-offload-review"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "tj-operator"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "tetjet-mate",
+   "value": 4,
+   "view": "count"
+  },
+  {
+   "detail": "The area's summary publishes no monitoring verdict.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "lattice-ml-mate",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "lattice-ml-mate: monitoring verdict unknown"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "lattice-ml-mate",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "lattice-ml-mate",
+   "value": 4,
+   "view": "count"
+  },
+  {
+   "detail": "in-flight backlog item has terminal child state: fm-typed-receipts=failed. Its tasks are still listed one by one.",
+   "group": "Areas",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "health",
+   "since": null,
+   "state": "warn",
+   "title": "tooling-mate summary marks itself incomplete"
+  },
+  {
+   "detail": "The area's summary publishes no monitoring verdict.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "tooling-mate: monitoring verdict unknown"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-arm-confirm-under-load"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-cleanup-evidence"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-data-gate"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-disk-inventory"
+  },
+  {
+   "detail": null,
+   "group": "Working",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "ok",
+   "title": "fm-fleet-board"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-lag-pending-prune"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-lag-spawn-admission"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-merge-queue-glue"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-ordered-landings"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-quiet-waits"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-reboot-relaunch"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-rereview-brief-gen"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "fm-watcher-beacon-stale"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "lag-heavy-slot-gate"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "lattice-ci-red-alert"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "work",
+   "since": null,
+   "state": "idle",
+   "title": "upstream-sync"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "tooling-mate",
+   "value": 6,
+   "view": "count"
+  },
+  {
+   "detail": "Last healthy verdict is 43 min old; the summary has not been refreshed since.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "stale-mate",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "stale-mate: monitoring unconfirmed"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "stale-mate",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "stale-mate",
+   "value": 2,
+   "view": "count"
+  },
+  {
+   "detail": "in-flight backlog item has terminal child state: fm-typed-receipts=failed. Its tasks are still listed one by one.",
+   "group": "Areas",
+   "link": null,
+   "owner": "fresh",
+   "panel": "health",
+   "since": null,
+   "state": "warn",
+   "title": "fresh summary marks itself incomplete"
+  },
+  {
+   "detail": null,
+   "group": "Monitoring",
+   "link": null,
+   "owner": "fresh",
+   "panel": "health",
+   "since": null,
+   "state": "ok",
+   "title": "fresh: monitoring running"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Watcher arm startup confirmation (10 s default) expires under heavy machine load (load av\u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 7: teardown copies declared evidence out, refuses dangling refs, removes \u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790609302,
+   "state": "idle",
+   "title": "User-level search gate for every harness: block recursive scans of bulk data, allow exact\u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 7: scheduled read-only disk inventory KEEP/REMOVE table"
+  },
+  {
+   "detail": null,
+   "group": "Working",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790617154,
+   "state": "ok",
+   "title": "Build the fleet board: read-only generator, 5-min niced user timer, local page, token and\u2026"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790602423,
+   "state": "idle",
+   "title": "Lag fix 1: prune resolved pending-reply records, cheaper watcher tick"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790597044,
+   "state": "idle",
+   "title": "Lag fix 2+3: spawn admission by memory/CPU/load, agent cap, staggered relaunch, search gu\u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Owner-side merge-queue glue: consume final RESULT per head, write done/failed, guarded cl\u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 8: dependency-ordered landings via blocked-by + rebase-and-go watch"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 3: watcher quiet waits, superseded blockers, config acks"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 4: guarded auto-relaunch of workers at session start after reboot"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 8: re-review brief generator"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790602424,
+   "state": "idle",
+   "title": "Watcher beacon refreshes only at cycle start, so quiet cycles >300s look stale and the Cl\u2026"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790594658,
+   "state": "idle",
+   "title": "Lag fix 2: heavy-slot v3.1 CPU/pressure gate and memory-limited scope"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790611520,
+   "state": "idle",
+   "title": "lattice CI red alert check plus testing skill extensions"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh",
+   "panel": "work",
+   "since": 1790594625,
+   "state": "idle",
+   "title": "Replay fork commits onto upstream/main (99 behind), report conflicts and landing recommen\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "fresh",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "fresh",
+   "value": 6,
+   "view": "count"
+  },
+  {
+   "detail": "in-flight backlog item has terminal child state: fm-typed-receipts=failed. Its tasks are still listed one by one.",
+   "group": "Areas",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "health",
+   "since": null,
+   "state": "warn",
+   "title": "fresh-unknown summary marks itself incomplete"
+  },
+  {
+   "detail": "Reason: supervision-model-unknown-for-home.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "fresh-unknown: monitoring verdict unknown"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Watcher arm startup confirmation (10 s default) expires under heavy machine load (load av\u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 7: teardown copies declared evidence out, refuses dangling refs, removes \u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790609302,
+   "state": "idle",
+   "title": "User-level search gate for every harness: block recursive scans of bulk data, allow exact\u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 7: scheduled read-only disk inventory KEEP/REMOVE table"
+  },
+  {
+   "detail": null,
+   "group": "Working",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790617154,
+   "state": "ok",
+   "title": "Build the fleet board: read-only generator, 5-min niced user timer, local page, token and\u2026"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790602423,
+   "state": "idle",
+   "title": "Lag fix 1: prune resolved pending-reply records, cheaper watcher tick"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790597044,
+   "state": "idle",
+   "title": "Lag fix 2+3: spawn admission by memory/CPU/load, agent cap, staggered relaunch, search gu\u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Owner-side merge-queue glue: consume final RESULT per head, write done/failed, guarded cl\u2026"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 8: dependency-ordered landings via blocked-by + rebase-and-go watch"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 3: watcher quiet waits, superseded blockers, config acks"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 4: guarded auto-relaunch of workers at session start after reboot"
+  },
+  {
+   "detail": "State: unknown.",
+   "group": "Parked, no agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790586449,
+   "state": "idle",
+   "title": "Automation item 8: re-review brief generator"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790602424,
+   "state": "idle",
+   "title": "Watcher beacon refreshes only at cycle start, so quiet cycles >300s look stale and the Cl\u2026"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790594658,
+   "state": "idle",
+   "title": "Lag fix 2: heavy-slot v3.1 CPU/pressure gate and memory-limited scope"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790611520,
+   "state": "idle",
+   "title": "lattice CI red alert check plus testing skill extensions"
+  },
+  {
+   "detail": "State: paused.",
+   "group": "Idle agent",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "work",
+   "since": 1790594625,
+   "state": "idle",
+   "title": "Replay fork commits onto upstream/main (99 behind), report conflicts and landing recommen\u2026"
+  },
+  {
+   "detail": null,
+   "group": "Queued work per area",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "fresh-unknown",
+   "value": 6,
+   "view": "count"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "ended, closeout unverified",
+   "value": 98,
+   "view": "bar"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "released",
+   "value": 94,
+   "view": "bar"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "unknown",
+   "value": 15,
+   "view": "bar"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "stopped",
+   "value": 5,
+   "view": "bar"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "under review",
+   "value": 4,
+   "view": "bar"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "refused",
+   "value": 3,
+   "view": "bar"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "request withdrawn",
+   "value": 3,
+   "view": "bar"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "cancelled",
+   "value": 2,
+   "view": "bar"
+  },
+  {
+   "detail": null,
+   "group": "tetjet-queue \u00b7 226 jobs \u00b7 0 runs live",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "pipeline",
+   "since": null,
+   "state": "info",
+   "title": "unselected subject",
+   "value": 2,
+   "view": "bar"
+  },
+  {
+   "detail": "not found",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "research",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "merge-train: missing"
+  },
+  {
+   "detail": "Configured version nope.v7 has no mapper.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "lab-owner",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "future-feed: unknown version"
+  },
+  {
+   "detail": null,
+   "group": "Scheduled jobs",
+   "link": null,
+   "owner": "tetjet",
+   "panel": "health",
+   "since": null,
+   "state": "ok",
+   "title": "lattice-tetjet-queue-feed.service"
+  },
+  {
+   "detail": null,
+   "group": "Scheduled jobs",
+   "link": null,
+   "owner": "tooling",
+   "panel": "health",
+   "since": null,
+   "state": "ok",
+   "title": "fm-account-watch.service"
+  },
+  {
+   "detail": "Unit not found.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "lab-owner",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "scheduled job no-such-unit.service: missing"
+  },
+  {
+   "detail": "Why a new worker cannot start (slot cap, memory) appears here once spawn publishes it.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "tooling",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "Spawn admission verdict: not published yet"
+  },
+  {
+   "detail": "Which heavy job holds the shared slot appears here once the slot owner publishes it.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "tooling",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "Heavy slot status: not published yet"
+  },
+  {
+   "detail": "Status text volume into each supervisor appears here once it is published as counts.",
+   "group": "Blind spots",
+   "link": null,
+   "owner": "tooling",
+   "panel": "health",
+   "since": null,
+   "state": "blind",
+   "title": "Status volume: not measured yet"
+  },
+  {
+   "detail": "16 sessions",
+   "group": "By area",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "tetjet-mate",
+   "value": 935291094,
+   "view": "bar"
+  },
+  {
+   "detail": "25 sessions",
+   "group": "By area",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "lattice-research-mate",
+   "value": 518095189,
+   "view": "bar"
+  },
+  {
+   "detail": "6 sessions",
+   "group": "By area",
+   "link": null,
+   "owner": "other",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "other",
+   "value": 157102682,
+   "view": "bar"
+  },
+  {
+   "detail": "7 sessions",
+   "group": "By area",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "fresh-unknown",
+   "value": 141545999,
+   "view": "bar"
+  },
+  {
+   "detail": "9 sessions",
+   "group": "By area",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "tooling-mate",
+   "value": 127549034,
+   "view": "bar"
+  },
+  {
+   "detail": "4 sessions",
+   "group": "By area",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "lattice-mate",
+   "value": 89986552,
+   "view": "bar"
+  },
+  {
+   "detail": "7 sessions",
+   "group": "By area",
+   "link": null,
+   "owner": "pipeline",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "pipeline",
+   "value": 11559461,
+   "view": "bar"
+  },
+  {
+   "detail": "47 sessions",
+   "group": "By kind of agent",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "no task record",
+   "value": 1248429067,
+   "view": "bar"
+  },
+  {
+   "detail": "4 sessions",
+   "group": "By kind of agent",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "supervisor",
+   "value": 399244337,
+   "view": "bar"
+  },
+  {
+   "detail": "6 sessions",
+   "group": "By kind of agent",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "unknown",
+   "value": 157102682,
+   "view": "bar"
+  },
+  {
+   "detail": "7 sessions",
+   "group": "By kind of agent",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "ship",
+   "value": 141545999,
+   "view": "bar"
+  },
+  {
+   "detail": "3 sessions",
+   "group": "By kind of agent",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "task",
+   "value": 23248465,
+   "view": "bar"
+  },
+  {
+   "detail": "7 sessions",
+   "group": "By kind of agent",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "pipeline",
+   "value": 11559461,
+   "view": "bar"
+  },
+  {
+   "detail": "767 M tokens \u00b7 no task record \u00b7 15 sessions \u00b7 4878 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "(in tetjet-mate, no task record)",
+   "value": 766731584
+  },
+  {
+   "detail": "381 M tokens \u00b7 no task record \u00b7 21 sessions \u00b7 2650 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "(in lattice-research-mate, no task record)",
+   "value": 381331569
+  },
+  {
+   "detail": "169 M tokens \u00b7 supervisor \u00b7 1 sessions \u00b7 982 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "tetjet-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "tetjet-mate supervisor",
+   "value": 168559510
+  },
+  {
+   "detail": "157 M tokens \u00b7 unknown \u00b7 6 sessions \u00b7 1002 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "other",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "(unattributed)",
+   "value": 157102682
+  },
+  {
+   "detail": "114 M tokens \u00b7 supervisor \u00b7 1 sessions \u00b7 665 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "lattice-research-mate supervisor",
+   "value": 113515155
+  },
+  {
+   "detail": "85 M tokens \u00b7 supervisor \u00b7 1 sessions \u00b7 520 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "tooling-mate supervisor",
+   "value": 84954351
+  },
+  {
+   "detail": "69 M tokens \u00b7 ship \u00b7 1 sessions \u00b7 422 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "upstream-sync",
+   "value": 68659688
+  },
+  {
+   "detail": "58 M tokens \u00b7 no task record \u00b7 3 sessions \u00b7 386 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "(in lattice-mate, no task record)",
+   "value": 57771231
+  },
+  {
+   "detail": "43 M tokens \u00b7 no task record \u00b7 8 sessions \u00b7 358 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "tooling-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "(in tooling-mate, no task record)",
+   "value": 42594683
+  },
+  {
+   "detail": "34 M tokens \u00b7 ship \u00b7 1 sessions \u00b7 202 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "fm-fleet-board",
+   "value": 34105419
+  },
+  {
+   "detail": "32 M tokens \u00b7 supervisor \u00b7 1 sessions \u00b7 186 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "lattice-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "lattice-mate supervisor",
+   "value": 32215321
+  },
+  {
+   "detail": "13 M tokens \u00b7 task \u00b7 1 sessions \u00b7 109 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "informed-batch-prune",
+   "value": 13286065
+  },
+  {
+   "detail": "12 M tokens \u00b7 ship \u00b7 1 sessions \u00b7 74 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "lattice-ci-red-alert",
+   "value": 12077590
+  },
+  {
+   "detail": "12 M tokens \u00b7 pipeline \u00b7 7 sessions \u00b7 156 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "pipeline",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "(validation pipeline)",
+   "value": 11559461
+  },
+  {
+   "detail": "9.8 M tokens \u00b7 ship \u00b7 1 sessions \u00b7 55 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "fm-data-gate",
+   "value": 9827134
+  },
+  {
+   "detail": "9.1 M tokens \u00b7 task \u00b7 1 sessions \u00b7 69 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "load-path-step",
+   "value": 9067272
+  },
+  {
+   "detail": "9.0 M tokens \u00b7 ship \u00b7 1 sessions \u00b7 66 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "fm-lag-spawn-admission",
+   "value": 8987929
+  },
+  {
+   "detail": "5.0 M tokens \u00b7 ship \u00b7 1 sessions \u00b7 40 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "fm-lag-pending-prune",
+   "value": 4969963
+  },
+  {
+   "detail": "2.9 M tokens \u00b7 ship \u00b7 1 sessions \u00b7 36 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "fresh-unknown",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "fm-watcher-beacon-stale",
+   "value": 2918276
+  },
+  {
+   "detail": "895 k tokens \u00b7 task \u00b7 1 sessions \u00b7 15 turns",
+   "group": "By task",
+   "link": null,
+   "owner": "lattice-research-mate",
+   "panel": "tokens",
+   "since": null,
+   "state": "info",
+   "title": "tetjet-request-queue",
+   "value": 895128
+  },
+  {
+   "detail": "24 sessions flagged today",
+   "group": "Detectors",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "warn",
+   "title": "Repeated identical calls: 508",
+   "value": 508
+  },
+  {
+   "detail": "29 sessions flagged today",
+   "group": "Detectors",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "warn",
+   "title": "Wait loops and sleeps: 437",
+   "value": 437
+  },
+  {
+   "detail": "28 sessions flagged today",
+   "group": "Detectors",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "warn",
+   "title": "Broad searches: 76",
+   "value": 76
+  },
+  {
+   "detail": "2 sessions flagged today",
+   "group": "Detectors",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "warn",
+   "title": "Big files read again and again: 2",
+   "value": 2
+  },
+  {
+   "detail": "13 sessions flagged today",
+   "group": "Detectors",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "warn",
+   "title": "Long idle, then wake: 19",
+   "value": 19
+  },
+  {
+   "detail": "51 sessions flagged today",
+   "group": "Detectors",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "warn",
+   "title": "Oversized status lines: 396",
+   "value": 396
+  },
+  {
+   "detail": "10 sessions flagged today",
+   "group": "Detectors",
+   "link": null,
+   "owner": null,
+   "panel": "tokens",
+   "since": null,
+   "state": "warn",
+   "title": "Swollen context: 10",
+   "value": 10
+  },
+  {
+   "detail": "29 sessions today. Fix: Register the wait as a condition watch instead of a loop.",
+   "group": "Habits",
+   "link": null,
+   "owner": null,
+   "panel": "waste",
+   "since": null,
+   "state": "warn",
+   "title": "Wait loops and sleeps: 437"
+  },
+  {
+   "detail": "24 sessions today. Fix: Publish the answer once and read the summary.",
+   "group": "Habits",
+   "link": null,
+   "owner": null,
+   "panel": "waste",
+   "since": null,
+   "state": "warn",
+   "title": "Repeated identical calls: 508"
+  },
+  {
+   "detail": "28 sessions today. Fix: Search named folders only.",
+   "group": "Habits",
+   "link": null,
+   "owner": null,
+   "panel": "waste",
+   "since": null,
+   "state": "warn",
+   "title": "Broad searches: 76"
+  },
+  {
+   "detail": "51 sessions today. Fix: Short typed status lines, detail in files.",
+   "group": "Habits",
+   "link": null,
+   "owner": null,
+   "panel": "waste",
+   "since": null,
+   "state": "warn",
+   "title": "Oversized status lines: 396"
+  },
+  {
+   "detail": "13 sessions today. Fix: Exit when idle and let an event start a fresh agent.",
+   "group": "Habits",
+   "link": null,
+   "owner": null,
+   "panel": "waste",
+   "since": null,
+   "state": "warn",
+   "title": "Long idle, then wake: 19"
+  }
+ ],
+ "schema": "fm-board.v1",
+ "sources": [
+  {
+   "age_seconds": 536,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "main summary",
+   "owner": "main",
+   "status": "ok"
+  },
+  {
+   "age_seconds": 315,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "lattice-mate summary",
+   "owner": "lattice-mate",
+   "status": "ok"
+  },
+  {
+   "age_seconds": 181,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "lattice-research-mate summary",
+   "owner": "lattice-research-mate",
+   "status": "ok"
+  },
+  {
+   "age_seconds": 55,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "tetjet-mate summary",
+   "owner": "tetjet-mate",
+   "status": "ok"
+  },
+  {
+   "age_seconds": 6898,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "lattice-ml-mate summary",
+   "owner": "lattice-ml-mate",
+   "status": "ok"
+  },
+  {
+   "age_seconds": 242,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "tooling-mate summary",
+   "owner": "tooling-mate",
+   "status": "ok"
+  },
+  {
+   "age_seconds": 2560,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "stale-mate summary",
+   "owner": "stale-mate",
+   "status": "ok"
+  },
+  {
+   "age_seconds": null,
+   "detail": "Not found (state/home-summary.json).",
+   "kind": "home-summary",
+   "name": "vanished-mate summary",
+   "owner": "vanished-mate",
+   "status": "missing"
+  },
+  {
+   "age_seconds": 15,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "fresh summary",
+   "owner": "fresh",
+   "status": "ok"
+  },
+  {
+   "age_seconds": 15,
+   "detail": null,
+   "kind": "home-summary",
+   "name": "fresh-unknown summary",
+   "owner": "fresh-unknown",
+   "status": "ok"
+  },
+  {
+   "age_seconds": 65,
+   "detail": null,
+   "kind": "feed",
+   "name": "tetjet-queue",
+   "owner": "tetjet",
+   "status": "ok"
+  },
+  {
+   "age_seconds": null,
+   "detail": "not found",
+   "kind": "feed",
+   "name": "merge-train",
+   "owner": "research",
+   "status": "missing"
+  },
+  {
+   "age_seconds": null,
+   "detail": "Configured version nope.v7 has no mapper.",
+   "kind": "feed",
+   "name": "future-feed",
+   "owner": "lab-owner",
+   "status": "unknown-version"
+  },
+  {
+   "age_seconds": null,
+   "detail": null,
+   "kind": "systemd",
+   "name": "scheduled job lattice-tetjet-queue-feed.service",
+   "owner": "tetjet",
+   "status": "ok"
+  },
+  {
+   "age_seconds": null,
+   "detail": null,
+   "kind": "systemd",
+   "name": "scheduled job fm-account-watch.service",
+   "owner": "tooling",
+   "status": "ok"
+  },
+  {
+   "age_seconds": null,
+   "detail": "Unit not found.",
+   "kind": "systemd",
+   "name": "scheduled job no-such-unit.service",
+   "owner": "lab-owner",
+   "status": "missing"
+  },
+  {
+   "age_seconds": null,
+   "detail": "Why a new worker cannot start (slot cap, memory) appears here once spawn publishes it.",
+   "kind": "static",
+   "name": "Spawn admission verdict",
+   "owner": "tooling",
+   "status": "not-configured"
+  },
+  {
+   "age_seconds": null,
+   "detail": "Which heavy job holds the shared slot appears here once the slot owner publishes it.",
+   "kind": "static",
+   "name": "Heavy slot status",
+   "owner": "tooling",
+   "status": "not-configured"
+  },
+  {
+   "age_seconds": null,
+   "detail": "Status text volume into each supervisor appears here once it is published as counts.",
+   "kind": "static",
+   "name": "Status volume",
+   "owner": "tooling",
+   "status": "not-configured"
+  },
+  {
+   "age_seconds": null,
+   "detail": null,
+   "kind": "tokens",
+   "name": "Session records",
+   "owner": "board",
+   "status": "ok"
+  }
+ ],
+ "work": {
+  "fresh": {
+   "empty": 0,
+   "idle": 7,
+   "parked": 8,
+   "working": 1
+  },
+  "fresh-unknown": {
+   "empty": 0,
+   "idle": 7,
+   "parked": 8,
+   "working": 1
+  },
+  "lattice-mate": {
+   "empty": 0,
+   "idle": 0,
+   "parked": 5,
+   "working": 0
+  },
+  "lattice-ml-mate": {
+   "empty": 0,
+   "idle": 0,
+   "parked": 0,
+   "working": 0
+  },
+  "lattice-research-mate": {
+   "empty": 0,
+   "idle": 3,
+   "parked": 16,
+   "working": 0
+  },
+  "main": {
+   "empty": 0,
+   "idle": 0,
+   "parked": 0,
+   "working": 0
+  },
+  "stale-mate": {
+   "empty": 0,
+   "idle": 0,
+   "parked": 0,
+   "working": 0
+  },
+  "tetjet-mate": {
+   "empty": 0,
+   "idle": 6,
+   "parked": 6,
+   "working": 0
+  },
+  "tooling-mate": {
+   "empty": 0,
+   "idle": 7,
+   "parked": 8,
+   "working": 1
+  }
+ }
+}

@@ -1,0 +1,18 @@
+ok	main summary	main
+ok	lattice-mate summary	lattice-mate
+ok	lattice-research-mate summary	lattice-research-mate
+ok	tetjet-mate summary	tetjet-mate
+ok	lattice-ml-mate summary	lattice-ml-mate
+ok	tooling-mate summary	tooling-mate
+ok	stale-mate summary	stale-mate
+missing	vanished-mate summary	vanished-mate
+ok	tetjet-queue	tetjet
+missing	merge-train	research
+unknown-version	future-feed	lab-owner
+ok	scheduled job lattice-tetjet-queue-feed.service	tetjet
+ok	scheduled job fm-account-watch.service	tooling
+missing	scheduled job no-such-unit.service	lab-owner
+not-configured	Spawn admission verdict	tooling
+not-configured	Heavy slot status	tooling
+not-configured	Status volume	tooling
+ok	Session records	board

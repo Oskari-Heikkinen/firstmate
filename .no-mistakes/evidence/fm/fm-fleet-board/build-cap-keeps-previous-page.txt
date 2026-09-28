@@ -1,0 +1,3 @@
+$ fm-board.sh --home <lab> (python3 shim sleeps 90s before the build)
+exit code: 1 after 58s
+index.html and board.json unchanged (sha1 identical before and after)

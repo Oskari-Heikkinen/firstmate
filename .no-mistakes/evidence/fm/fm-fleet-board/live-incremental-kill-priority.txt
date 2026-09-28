@@ -1,0 +1,25 @@
+== second build (incremental cursor on live session records)
+/tmp/fm-board-live.91oT/main/state/board/index.html
+wall=0.15s maxrss=32268KB
+{"behind":0,"bytes_read":2224178,"files":92,"read":92,"reset":0,"unreadable":0}
+== usage audit over the board's fm-usage.v1 rows
+{"available":true,"quality":{"conflicting_event_ids":0,"conflicting_usage_ids":0}}
+== build killed after 1s: previous page must stay
+/tmp/fm-board-live.91oT/main/state/board/index.html
+killed rc=0
+page CHANGED
+board.json
+index.html
+tokens-cursor.json
+tokens.json
+usage
+0
+== build process priority (nice/ionice) observed while running
+28381   0 /bin/bash -c source /home/oskari/.claude-work/shell-snapshots/snapshot-bash-1790
+none: prio 0
+28394   0 /bin/bash -c source /home/oskari/.claude-work/shell-snapshots/snapshot-bash-1790
+none: prio 0
+29184   0 timeout -k 5 60 nice -n 19 ionice -c3 python3 /home/oskari/.no-mistakes/worktree
+none: prio 0
+29187  19 python3 /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3MFSM1VFG8022NHZR3GV
+idle
