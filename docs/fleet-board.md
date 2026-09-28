@@ -37,6 +37,8 @@ Facts no owner publishes yet (why a spawn was refused, which heavy job holds the
 - **Waste**: habits where an agent does a script's job, from the token reader's rules and the work records.
 - **Tokens**: today's token counts per area, kind of agent, task and agent, and the seven detector rules.
 
+Tasks and open items an area's summary leaves out to stay bounded are counted under "Not listed by the summary", because the board cannot know their state.
+
 ## Tokens
 
 The reader keeps a byte cursor per session file and reads only lines appended since the last build; a replaced or shortened file is read again from the start.
