@@ -673,6 +673,10 @@ test_local_only_fork_remote_allows() {
   # The supervision branch's bounded per-task outcome cache is a footprint of
   # the retired task, not a record anything reads after it is gone.
   printf 'fm-branch-outcome-index-v1\t5\t0\t-\n' > "$case_dir/state/.task-x1.branch-outcome-index"
+  # The spawn start record is home-wide history that token attribution joins
+  # on after the task is gone, so cleanup must leave it intact.
+  printf '%s\n' '{"schema":"fm-spawn-start.v1","task":"task-x1","spawn_epoch":1}' \
+    > "$case_dir/state/spawn-starts.jsonl"
 
   set +e
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -680,6 +684,8 @@ test_local_only_fork_remote_allows() {
   set -e
 
   expect_code 0 "$rc" "fork-allow: teardown should succeed when HEAD is on a fork remote"
+  grep -q '"task":"task-x1"' "$case_dir/state/spawn-starts.jsonl" \
+    || fail "fork-allow: teardown removed the task's durable spawn start record"
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
   [ ! -e "$case_dir/state/.task-x1.branch-outcome-index" ] \
     || fail "fork-allow: teardown left the task's branch outcome index behind"

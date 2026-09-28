@@ -1362,7 +1362,22 @@ Source refresh never installs dependencies, restarts the application or reloads 
 [`bin/fm-usage-audit.sh`](../bin/fm-usage-audit.sh) reruns local measurements over explicitly selected usage exports, status logs, event receipts and script inventories without uploading their contents.
 [`bin/fm-usage-audit.py`](../bin/fm-usage-audit.py) owns its versioned classifier, input schemas, bounds, uncertainty and metadata-only output contract.
 Measured usage is separate from inferred repetition candidates; neither status volume nor identical helper files proves wasted reasoning.
+The fleet board's token reader writes `state/board/usage/<YYYY-MM-DD>.jsonl`, which this audit accepts through `--usage`.
 Behavioral verification lives in `tests/fm-current-view.test.sh`, `tests/fm-fleet-provenance.test.sh` and `tests/fm-usage-audit.test.sh`.
+
+## Fleet board feeds (config/board-feeds)
+
+`config/board-feeds` is an optional, local, gitignored, line-oriented file read by [`bin/fm-board.sh`](../bin/fm-board.sh); [`docs/examples/board-feeds`](examples/board-feeds) is a tracked example.
+A missing file means no project feeds, the default session roots and default thresholds.
+`#` starts a comment, fields are separated by whitespace, and paths cannot contain spaces.
+
+- `feed <name> <path> <version> <max_age_seconds> <owner> [link]` adds one project feed; `max_age_seconds` 0 turns the freshness check off.
+  Known versions are `fm-board-items.v1` (a JSON file `{schema, generated_epoch, items[]}` whose items already use the board's item shape), `tetjet-queue-snapshot.v1`, `merge-queue-log.v1` and `hypotheses-overview.v1`.
+  A missing, stale, unreadable or unknown-version feed becomes a blind-spot line naming the feed and its owner.
+- `threshold <name> <integer>` overrides a detector threshold or `summary_max_age` (default 7200 seconds), `verdict_max_age` (default 900 seconds; a healthy monitoring verdict from an older summary shows as unconfirmed) and `merge_stall_seconds` (default 3600); `bin/fm_board_tokens.py` owns the detector names and defaults.
+- `session_root <path>` names a folder of per-project session folders to read, one level deep; without any, the board reads `~/.claude-work/projects` and `~/.claude/projects`.
+- `broad_root <path>` adds a path the broad-search rule treats as too wide, beside `/`, `/home`, `$HOME`, `$HOME/.treehouse`, `/mnt/c`, every home root and its `data/`.
+- `unit <unit> <owner>` adds a systemd user unit whose last result the Health panel shows.
 
 ## Watched tool updates (config/watched-tools.json)
 
@@ -2326,6 +2341,7 @@ FM_HOME_SUMMARY_TIMEOUT=60     # seconds bounding the complete best-effort home-
 FM_HOME_SUMMARY_ERROR_LOG_MAX_BYTES=65536   # approximate size cap for state/.home-summary-refresh.log before it is trimmed to the newest 200 lines; invalid or zero values use 65536
 FM_HOME_SUMMARY_FAILURE_REPORT=2   # recorded publication failures since the ledger's own last publication before session start reports a HOME_SUMMARY line; invalid or zero values use 2
 FM_SNAPSHOT_CREW_STATE_TIMEOUT=10   # seconds bounding each local per-task current-state read inside bin/fm-fleet-snapshot.sh; remote endpoint liveness is not probed on the snapshot path
+FM_SNAPSHOT_SUPERVISION_TIMEOUT=5   # seconds bounding the monitoring-verdict read republished as a home summary's supervision object; a read that times out is published as unknown
 FM_SNAPSHOT_LOCAL_READ_CONCURRENCY=8   # maximum local tasks whose current-state and endpoint observations are collected concurrently during snapshot composition
 FM_SNAPSHOT_BUDGET=5                # one total seconds budget for all concurrent remote home-ledger reads
 FM_SNAPSHOT_CACHE_DIR=$FM_HOME/state/secondmate-summary-cache   # private parent-side cache of successfully fetched remote home ledgers

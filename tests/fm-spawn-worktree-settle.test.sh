@@ -134,6 +134,33 @@ test_single_stale_first_read_is_not_accepted() {
   pass "a single transient stale pane_current_path read is not accepted as the worktree"
 }
 
+# Every spawn appends one durable start record naming the task, its copy and its
+# start time, so a later reader can attribute a session in a reused copy to the
+# task that owned that copy when the session began, even after cleanup.
+test_spawn_appends_durable_start_record() {
+  local rec id out status gen
+  id=settle-start-record-z4
+  rec=$(make_settle_case settle-start-record "$id" 0)
+  read_settle_record "$rec"
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should succeed"$'\n'"$out"
+  gen=$(sed -n 's/^spawn_gen=//p' "$HOME_DIR/state/$id.meta")
+  [ -f "$HOME_DIR/state/spawn-starts.jsonl" ] || fail "spawn wrote no durable start record"
+  jq -e -s --arg id "$id" --arg wt "$WT_DIR" --arg home "$HOME_DIR" --arg gen "$gen" '
+    length == 1
+    and .[0].schema == "fm-spawn-start.v1"
+    and .[0].task == $id and .[0].kind == "ship"
+    and .[0].worktree == $wt and .[0].home == $home
+    and .[0].spawn_gen == $gen
+    and (.[0].spawn_epoch | type) == "number"
+    and .[0].relaunch == false
+  ' "$HOME_DIR/state/spawn-starts.jsonl" >/dev/null \
+    || fail "durable start record was wrong: $(cat "$HOME_DIR/state/spawn-starts.jsonl")"
+  pass "spawn appends a durable start record naming the task, its copy and its start time"
+}
+
 # A pane that reports the real worktree from the very first read costs exactly
 # one confirming read - not a whole extra polling cycle on top of it. Counting
 # the pane reads measures the loop itself; wall-clock time would fold in every
@@ -223,6 +250,7 @@ test_primary_checkout_that_never_settles_fails_at_the_deadline() {
 
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_read
+test_spawn_appends_durable_start_record
 test_transient_primary_checkout_is_not_accepted
 test_primary_checkout_that_never_settles_fails_at_the_deadline
 

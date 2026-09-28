@@ -5597,4 +5597,17 @@ SPAWN_ACCOUNT=
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT account_provider=$WORKER_ACCOUNT_PROVIDER"
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
+# Durable start record: one fm-spawn-start.v1 line per fresh spawn or relaunch
+# appended to state/spawn-starts.jsonl, which teardown never removes, so a later
+# reader (bin/fm-board.sh's token reader) can attribute an agent session in a
+# reused copy to the task that owned that copy when the session began.
+# Best-effort: a failed append never changes this spawn's result.
+{ jq -cn --arg task "$ID" --arg kind "$KIND" --arg home "$FM_HOME" --arg worktree "$WT" \
+    --arg spawn_gen "$SPAWN_GEN" --arg harness "$HARNESS" --arg model "${MODEL:-default}" \
+    --arg project "${PROJ_ABS##*/}" --argjson relaunch "$([ "$RELAUNCH" -eq 1 ] && echo true || echo false)" \
+    '{schema:"fm-spawn-start.v1",task:$task,kind:$kind,home:$home,worktree:$worktree,
+      spawn_gen:$spawn_gen,
+      spawn_epoch:(first($spawn_gen | capture("^s(?<e>[0-9]+)") | .e | tonumber) // null),
+      harness:$harness,model:$model,project:$project,relaunch:$relaunch}' \
+    >> "$STATE/spawn-starts.jsonl"; } 2>/dev/null || true
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT"

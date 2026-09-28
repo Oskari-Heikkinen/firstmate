@@ -63,7 +63,10 @@
 #     hints.open_decisions is the keyed open-decision set returned by
 #     fm-classify-lib.sh's authoritative status_open_decisions fold and reconciled
 #     against current_state; hints.pending_decision and hints.blocked_event are
-#     booleans derived from that set.
+#     booleans derived from that set. Each open decision carries opened_at_epoch,
+#     the emission time of the line that opened it (fm-classify-lib.sh's
+#     status_decision_opened_at), and age_seconds from it; both are null when
+#     that line has no emission time, and a future time leaves the age null.
 #     endpoint.exists is the cheap local backend endpoint-presence read.
 #     endpoint.agent_alive is populated for local secondmates only, where it is
 #     useful return-channel supervision data; remote secondmates use "unknown"
@@ -258,6 +261,16 @@ queued with hold_reason, hold_kind, hold_until,
 hold_bucket, hold_age_days, and plural blocker fields for downstream
 projections. A captain hold is actionable only when every blocker is Done, any
 hold-until date has arrived, and an undated hold remains below the aging threshold.
+Each decisions_open row names who it waits on in for: "captain" for a captain
+hold (a backlog hold, or a parent-channel mirror keyed captain-hold-*) and
+"supervisor" for any other open question a worker raised, with opened_at_epoch
+(the hold-set time or the opening line's emission time) and age_seconds, each
+null when unknown.
+endpoints[] keeps one row per task whatever the home-level validity, with the
+backlog title, kind, current state, endpoint presence, and the last status
+event's state and age (historical wake data, never current state).
+supervision republishes the home's monitoring verdict (home_supervision_json);
+FM_SNAPSHOT_SUPERVISION_TIMEOUT (default 5 seconds) bounds that read.
 Cross-home collection uses FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the
 count bound) and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Every sampled remote home's state/home-summary.json is fetched concurrently
@@ -763,7 +776,7 @@ task_json_lines() {
   local remote_host remote_root current_file endpoint_file observation_line index=0
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
-  local open_decisions_tsv open_decisions_json recorded_open_decisions_json
+  local open_decisions_tsv open_decisions_json recorded_open_decisions_json decision_line decision_at
 
   while [ "$index" -lt "$SNAPSHOT_TASK_META_COUNT" ]; do
     meta=${SNAPSHOT_TASK_METAS[index]}
@@ -846,10 +859,19 @@ task_json_lines() {
          || { [ "$current_state" = "done" ] || [ "$current_state" = "failed" ]; }; }; then
       open_decisions_tsv=""
     fi
-    open_decisions_json=$(printf '%s' "$open_decisions_tsv" | jq -R -s '
+    open_decisions_json=$(printf '%s' "$open_decisions_tsv" \
+      | while IFS= read -r decision_line || [ -n "$decision_line" ]; do
+          [ -n "$decision_line" ] || continue
+          decision_at=$(status_decision_opened_at "$status_log" "${decision_line%%$'\t'*}") || decision_at=
+          printf '%s\t%s\n' "$decision_at" "$decision_line"
+        done | jq -R -s --argjson now "$SNAPSHOT_EPOCH" '
       [ splits("\n") | select(length > 0)
-        | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
-        | select(. != null) ]')
+        | (capture("^(?<at>[0-9]*)\t(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
+        | select(. != null)
+        | (if .at == "" then null else (.at | tonumber) end) as $at
+        | del(.at)
+        | . + {opened_at_epoch:$at,
+               age_seconds:(if $at != null and $at <= $now then $now - $at else null end)} ]')
     pending_decision=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "needs-decision") then 1 else 0 end')
     blocked_event=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "blocked") then 1 else 0 end')
 
@@ -993,6 +1015,33 @@ main_inventory_json() {  # <backlog-json-file> <tasks-json-file>
 # validated parent read needs.
 # This mode never reads parent events or terminal text and never aggregates
 # nested secondmates.
+# The summary's supervision object republishes this home's model-aware
+# monitoring verdict from `fm-inbox.sh ready` (fm-primary-ready.v1), whose
+# header and fm_watcher_supervision_verdict own its meaning, so no reader ever
+# interprets watcher internals itself. A verdict that cannot be read within
+# FM_SNAPSHOT_SUPERVISION_TIMEOUT (default 5 seconds) is published as unknown.
+home_supervision_json() {
+  local ready
+  ready=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    fm_run_timed "${FM_SNAPSHOT_SUPERVISION_TIMEOUT:-5}" "$SCRIPT_DIR/fm-inbox.sh" ready 2>/dev/null) || ready=
+  printf '%s' "$ready" | jq -c -s '
+    (.[0] // null) as $r
+    | if ($r | type) == "object" and $r.schema == "fm-primary-ready.v1" then
+        {source:"fm-primary-ready.v1",
+         state:($r.wake_consumer.state // "unknown"),
+         reason:($r.wake_consumer.reason // null),
+         can_receive:($r.can_receive // "unknown"),
+         posture:($r.posture.state // "unknown"),
+         lock:($r.lock.state // "unknown"),
+         beacon_age_seconds:($r.wake_consumer.beacon_age_seconds // null),
+         observed_at:($r.observed_at // null)}
+      else
+        {source:null,state:"unknown",reason:"verdict-unavailable",can_receive:"unknown",
+         posture:"unknown",lock:"unknown",beacon_age_seconds:null,observed_at:null}
+      end' 2>/dev/null \
+    || printf '%s\n' '{"source":null,"state":"unknown","reason":"verdict-unavailable","can_receive":"unknown","posture":"unknown","lock":"unknown","beacon_age_seconds":null,"observed_at":null}'
+}
+
 secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
   jq -n \
     --arg generated "$SNAPSHOT_NOW" \
@@ -1003,7 +1052,8 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
     --argjson decisions_n "$FM_SNAPSHOT_SECONDMATE_DECISIONS" \
     --argjson landed_n "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" \
     --slurpfile backlog "$1" \
-    --slurpfile tasks "$2" --slurpfile contributions "$CONTRIBUTIONS_JSON_FILE" "$FM_LANDED_JQ_DEFS"'
+    --slurpfile tasks "$2" --slurpfile contributions "$CONTRIBUTIONS_JSON_FILE" \
+    --slurpfile supervision "$JSON_TRANSPORT_DIR/supervision.json" "$FM_LANDED_JQ_DEFS"'
     ($backlog[0]) as $backlog
     | ($tasks[0]) as $tasks
     | def trunc($n):
@@ -1014,6 +1064,8 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
       | if ($filed | type) != "string" then null
         elif ($filed | test("T")) then try ($filed | fromdateiso8601) catch null
         else try (($filed + "T00:00:00Z") | fromdateiso8601) catch null end;
+    def age_from($epoch):
+      if $epoch != null and $epoch <= $generated_epoch then $generated_epoch - $epoch else null end;
     def newest_filed_first:
       to_entries
       | sort_by((.value | filed_epoch) as $epoch
@@ -1034,7 +1086,9 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             reason:(.hold_reason | trunc(160)),
             hold_until:(.hold_until // null),
             hold_bucket:(.hold_bucket // null),
-            hold_age_days:(.hold_age_days // null),source:"backlog"} ]) as $captain_holds_all
+            hold_age_days:(.hold_age_days // null),source:"backlog",for:"captain",
+            opened_at_epoch:({since:(.hold_set // .since)} | filed_epoch)}
+         | .age_seconds = age_from(.opened_at_epoch) ]) as $captain_holds_all
     | ([ $backlog.records[]? | select(landed_record)
          | {id:(.id | trunc(120)),title:(.title | trunc(120)),
             kind:((.kind // null) | if . == null then null else trunc(40) end),
@@ -1087,7 +1141,9 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             doing:((.current_state.detail // "") | trunc(120))} ]) as $active_all
     | ($captain_holds_all
        + ([ $tasks[] as $t | ($t.hints.open_decisions // [])[]
-            | {id:$t.id,key,verb,summary:(.summary | trunc(160)),reason:null,source:"status"} ])) as $decisions_all
+            | {id:$t.id,key,verb,summary:(.summary | trunc(160)),reason:null,source:"status",
+               for:(if (.key | startswith("captain-hold-")) then "captain" else "supervisor" end),
+               opened_at_epoch:(.opened_at_epoch // null),age_seconds:(.age_seconds // null)} ])) as $decisions_all
     | ([ $queued_all[]
          | select((.unresolved_blocker_ids | length) > 0 or (.hold_reason != null and .hold_kind != null))
          | {id:(.id | trunc(120)),title:(.title | trunc(90)),
@@ -1156,8 +1212,17 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
              + (map(select(.captain_actionable == true)) | newest_filed_first))
           | .[:$queued_n]),
         landed:(if $landed_n == 0 then $landed_all else $landed_all[:$landed_n] end),
-        endpoints:([$tasks[] | {id,state:.current_state.state,source:.current_state.source,
-          endpoint:(.endpoint + {target:((.endpoint.target // null) | if . == null then null else trunc(240) end)})}][:$child_n]),
+        supervision:$supervision[0],
+        endpoints:([$tasks[] as $t
+          | ([$backlog.records[]? | select(.structured and .id == $t.id)] | first // null) as $work
+          | ($t.paths.status_log.last_event // {}) as $event
+          | {id:$t.id,state:$t.current_state.state,source:$t.current_state.source,
+             title:(($work.title // null) | if . == null then null else trunc(90) end),
+             kind:$t.kind,
+             backlog_state:($work.state // null),
+             last_event:{state:(($event.state // "") | if . == "" then null else trunc(40) end),
+                         age_seconds:($event.age_seconds // null)},
+             endpoint:($t.endpoint + {target:(($t.endpoint.target // null) | if . == null then null else trunc(240) end)})}][:$child_n]),
         counts:{
           active_children:($active_all | length),
           decisions_open:($decisions_all | length),
@@ -2049,6 +2114,8 @@ FM_CONTRIBUTIONS_NOW="$SNAPSHOT_NOW" "$SCRIPT_DIR/fm-contributions.sh" snapshot 
   || { echo "fm-fleet-snapshot: contribution coverage unavailable" >&2; exit 1; }
 
 if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
+  home_supervision_json > "$JSON_TRANSPORT_DIR/supervision.json" \
+    || { echo "fm-fleet-snapshot: supervision verdict staging failed" >&2; exit 1; }
   secondmate_home_summary_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" \
     || { echo "fm-fleet-snapshot: secondmate home summary failed" >&2; exit 1; }
   exit 0

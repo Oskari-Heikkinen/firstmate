@@ -46,6 +46,7 @@ config/wedge-defer-parked-gate  optional presence flag opting this home into the
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/watched-tools.json  optional list of the tools this home depends on, read by the update check armed with bin/fm-tool-update-check.sh; LOCAL, gitignored, firstmate-maintained but human-editable, and NOT inherited by secondmate homes; see docs/configuration.md "Watched tool updates"
+config/board-feeds   optional fleet board feed list, detector thresholds, session roots and watched scheduled units; LOCAL, gitignored, and not inherited; absent means no project feeds and default thresholds; see docs/configuration.md "Fleet board feeds" and docs/fleet-board.md
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
@@ -91,6 +92,8 @@ state/               runtime records and signals; gitignored
   tool-updates.check.sh  generated watched-tool update poll shim and its .check-trust binding; present only after bin/fm-tool-update-check.sh arm; its report record .tool-updates is what keeps one pending update from being reported on every poll
   mail.check.sh      generated received-mail poll shim and its .check-trust binding; present only after bin/fm-mail-check.sh arm; report record .mail-check (mail schema: docs/configuration.md "Mail plane")
   .mail-seen .mail-woken .mail-retry .mail-retry-pos .mail-turn .mail-seen.lock  mail-plane poll cursor, emission journal, transient-fetch retry set, retry-scan position, contended-slot turn flag, and overlapping-poll lock; written only by bin/fm-mail.sh (mail schema: docs/configuration.md "Mail plane")
+  board/             fleet board output: the page index.html and board.json (fm-board.v1), plus the token reader's tokens.json (fm-board-tokens.v1), private cursor tokens-cursor.json and usage/<YYYY-MM-DD>.jsonl fm-usage.v1 rows kept seven days; written only by bin/fm-board.sh; safe to delete, the next build starts over (docs/fleet-board.md)
+  spawn-starts.jsonl append-only fm-spawn-start.v1 record per spawn (task, kind, home, working copy, spawn generation and epoch, harness, model, project); written only by bin/fm-spawn.sh and never removed by teardown, so token attribution can tell which task ran in a reused copy
   pending-replies/   parent-owned secondmate pending-reply records (correlation id, delivery vs reply, recovery, escalation); fm-pending-reply-lib.sh
   procevent/         registered process-to-event sources, one private record per canonical source id; written only by bin/fm-procevent.sh, and their presence alone keeps supervision required (`process-event-sources` skill)
   procevent-inbox/   private captured results and their durable handled-acknowledgement markers; source output lives here and never in an event line

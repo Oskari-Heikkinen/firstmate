@@ -337,6 +337,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/examples/board-feeds",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/examples/crew-dispatch.json",
       "audience": "operator-example"
     },
@@ -375,6 +379,10 @@
     {
       "path": "docs/gitlab-merge-watch.md",
       "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/fleet-board.md",
+      "audience": "operator-current"
     },
     {
       "path": "docs/fleet-ledger.md",
