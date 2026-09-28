@@ -542,6 +542,32 @@ Rebalancing and its watcher check carry sign-in and no-room advice from the main
 The registry, floor, and auto setting are inherited into secondmate homes, while `config/account` and `config/spawn-account` stay per home.
 The headers of `bin/fm-account-lib.sh` and `bin/fm-account.sh` own the exact formats, the spawn account precedence, and the runtime records.
 
+## Machine admission (~/.config/fm-admission/rules.json)
+
+Every local agent launch passes one machine-wide admission gate before anything is created, so a burst of spawns or relaunches cannot exhaust memory or CPU.
+The rules are machine-wide rather than per home: every home on the machine, and the separate heavy-work slot tool, read the same optional JSON object at `${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json}`.
+This section is the single owner of its keys; an absent file or key uses the default shown, and a malformed file warns and uses every default.
+
+| Key | Default | Admits only while |
+| --- | --- | --- |
+| `mem_floor_mib` | 6144 | `MemAvailable` stays at or above this floor after the new unit's cost |
+| `agent_cost_mib` | 400 | (the memory charged for each new agent, and for each admitted in the last 60 s) |
+| `mem_full_avg10_max` | 5 | memory pressure `full avg10` is at or below this percent |
+| `cpu_some_avg10_max` | 40 | CPU pressure `some avg10` is at or below this percent |
+| `load1_per_core_max` | 1.5 | the 1-minute load divided by online CPUs is at or below this |
+| `max_agents` | 24 | live agent processes on the machine, across every home and counting the new one, stay within this cap |
+| `relaunch_per_minute_per_home` | 2 | a home has made fewer restart-shaped launches (relaunches and secondmate respawns) in the last minute |
+| `wait_max_s` | 300 | (how long a launch waits for admission before it is refused) |
+| `secondmate_wait_max_s` | 60 | (how long a secondmate launch waits before it starts anyway) |
+| `agent_process_names` | the verified harness executables | (the process names counted as live agents) |
+
+A launch that is not admitted waits with jittered backoff and then refuses with a message naming every unmet condition; `bin/fm-spawn.sh --admission-override` starts one spawn at once and prints what it skipped.
+The live agent count includes secondmates and supervisor sessions, so secondmate launches count toward the cap, but a secondmate launch is never refused: after its shorter wait it starts with a warning, so a home's own recovery cannot deadlock behind the fleet it belongs to.
+Pacing restart-shaped launches per home is what staggers a start or restart that relaunches several workers at once.
+A signal the host cannot provide, such as pressure files on older kernels or anything on macOS, is skipped rather than blocking.
+This gate decides whether a launch may start, while the read-only Jev memory guard only diagnoses pressure after the fact; both read the same `/proc/meminfo` facts.
+`bin/fm-admission.sh`'s header owns the exact signals, the ledger, the test seams, and `FM_ADMISSION=off`.
+
 ## Home brief include (config/brief-include.md)
 
 The optional local, gitignored `config/brief-include.md` carries standing worker instructions that one captain wants on every ship and scout brief, so private brief content needs no edit to a tracked file.
