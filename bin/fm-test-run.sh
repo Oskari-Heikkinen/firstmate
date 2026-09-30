@@ -408,7 +408,7 @@ family_for_basename() {
     fm-no-mistakes-required.test.sh|fm-peek-remote.test.sh|\
     fm-pending-reply.test.sh|fm-pi-branch-extension.test.sh|\
     fm-procevent-observe.test.sh|fm-procevent-quota.test.sh|fm-procevent-when.test.sh|fm-procevent.test.sh|\
-    fm-live-gate.test.sh|\
+    fm-park.test.sh|fm-live-gate.test.sh|\
     fm-project-origin.test.sh|fm-public-followup.test.sh|fm-quota-choose.test.sh|\
     fm-remote-entrypoint.test.sh|fm-remote-secondmate-parent-binding.test.sh|\
     fm-send-remote-delivery.test.sh|fm-spawn-pool-base-freshen.test.sh|\
@@ -1453,6 +1453,9 @@ families_for_changed_path() {
       ;;
     bin/fm-procevent-quota.sh)
       printf '%s\n' "__script__:fm-procevent-quota.test.sh"
+      ;;
+    bin/fm-park.sh)
+      printf '%s\n' __script__:fm-park.test.sh
       ;;
     bin/fm-quota-choose.sh)
       printf '%s\n' "__script__:fm-quota-choose.test.sh"

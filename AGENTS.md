@@ -60,7 +60,7 @@ Tracked files hold shared instructions and tooling; `data/` holds durable privat
 Never hand-edit, move, or delete these runtime records under `state/`; only their owning scripts may write them:
 
 - The session lock sidecar `.lock-session` (written only by `bin/fm-lock.sh`), the watcher recovery record `.watcher-down`, the durable wake queue `.wake-queue`, and the `.watch.lock` and `.wake-queue.lock` locks.
-- Watcher internals: `.hash-*`, `.count-*`, `.stale-*`, `.stale-since-*`, `.churn-since-*`, `.paused-*`, `.wedge-escalations-*`, `.dead-reported-*`, `.writing-*`, `.waiting-*`, `.seen-*`, `.hb-surfaced-*`, `.last-*` (including the `.last-watcher-beat` liveness beacon), and `.heartbeat-streak`.
+- Watcher internals: `.hash-*`, `.count-*`, `.stale-*`, `.stale-since-*`, `.churn-since-*`, `.paused-*`, `.wedge-escalations-*`, `.dead-reported-*`, `.writing-*`, `.waiting-*`, `.seen-*`, `.hb-surfaced-*`, `.idle-nudge-*`, `.last-*` (including the `.last-watcher-beat` liveness beacon), and `.heartbeat-streak`.
 - Sub-supervisor internals `.subsuper-*` and `.supervise-daemon.*`.
 - Claude Stop auto-arm records `.claude-autoarm*` and `.turnend-claude-blocks*`, and Cursor stop-hook records `.cursor-park-owner*` and `.turnend-cursor-blocks`.
 - Every other record the layout reference names as written only by one script, such as `.afk-contract`, busy-state records, supervision leases, check trust bindings, `procevent/`, `when/`, `decision-bindings/`, `reconcile-requests/`, and the mail-plane cursors.
@@ -311,6 +311,7 @@ Treat any `RECORD DIVERGENCE` section as a contradiction between two records of 
 After handling all emitted wakes and reconciling the OPEN DECISIONS and UNREAD STATUS sections, run the exact generation-bound `--ack-through` command printed as `WAKE_ACK_REQUIRED`; interruption before that acknowledgement deliberately leaves the work durable for idempotent re-handling.
 A status line is a wake event, not current state; use `bin/fm-crew-state.sh` when current state matters, especially before re-escalating an old decision, blocker, or pause.
 A declared `paused:` event means a bounded external wait expected to clear on its own, while `blocked:` means firstmate action is needed.
+A worker that only waits on an external result is parked through `bin/fm-park.sh` rather than left idle; its header owns the handoff, resume, and wake contract.
 
 Handle actionable wakes as follows:
 
