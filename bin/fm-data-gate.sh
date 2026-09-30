@@ -16,7 +16,7 @@
 #   fm-data-gate.sh --harness H --tool grep|glob [--path P] [--pattern G] [--cwd DIR]
 #   fm-data-gate.sh mode      print the effective mode
 #   fm-data-gate.sh refresh   rediscover homes and bulk paths into the roots cache
-#   fm-data-gate.sh roots     print the effective protected roots
+#   fm-data-gate.sh roots     print the effective protected roots and bulk patterns
 #
 # Mode: LATTICE_DATA_GATE (log|enforce), else the first word of
 # ~/.config/lattice-data-gate/mode, else log. An unknown value means log.

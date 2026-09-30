@@ -23,7 +23,8 @@
 //   fm-data-gate-policy.mjs refresh
 //     rediscovers homes and bulk paths and rewrites the roots cache.
 //   fm-data-gate-policy.mjs roots
-//     prints the effective protected roots (cache or live), one per line.
+//     prints the store, the effective protected roots, and the bulk patterns
+//     (cache or live), one per line.
 
 import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
 import {
