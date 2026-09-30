@@ -278,7 +278,28 @@ test_arm_and_disarm() {
   pass "arm registers the watcher check with its settings and disarm retires it"
 }
 
+test_results_root_in_status() {
+  reset_state
+  set_sizes 60 600 400
+  local out rr="$TMP_ROOT/results-root"
+  out=$(FM_DISK_ROOM_RESULTS_ROOT="$rr" run_room status)
+  assert_not_contains "$out" "fetched results root" "no results-root file adds no lines"
+  printf '/mnt/d/lattice-data/tetjet-results/{task}\nformat=lattice-storage-results-root/v1\nactive=ssd\nstate=ok\nssd_letter=D\nssd_fs=exFAT\nssd_free_bytes=%s\nssd_total_bytes=%s\n' \
+    $(( 1700 * GIB )) $(( 1863 * GIB )) >"$rr"
+  out=$(FM_DISK_ROOM_RESULTS_ROOT="$rr" run_room status)
+  assert_contains "$out" "SSD D: 1700.0 GiB free of 1863.0 GiB (exFAT)" "the SSD's room is reported"
+  assert_contains "$out" "fetched results root: SSD D:" "the active root is named"
+  out=$(FM_DISK_ROOM_RESULTS_ROOT="$rr" run_room status --json)
+  assert_equals '"ssd"' "$(json_field "$out" results_active)" "json names the active root"
+  assert_equals $(( 1700 * GIB )) "$(json_field "$out" ssd_free)" "json carries the SSD free space"
+  sed -i 's/^active=ssd/active=c/; s/^state=ok/state=full/' "$rr"
+  out=$(FM_DISK_ROOM_RESULTS_ROOT="$rr" run_room status)
+  assert_contains "$out" "fetched results root: C: fallback (SSD full)" "the fallback and its cause are named"
+  pass "status reports the SSD's room and the active results root"
+}
+
 test_status_real_room_and_reclaim
+test_results_root_in_status
 test_check_margin
 test_low_advice
 test_unknown_reclaim

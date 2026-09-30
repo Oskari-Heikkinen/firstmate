@@ -14,7 +14,9 @@
 # Usage:
 #   fm-disk-room.sh status [--json]
 #       Print host free, Linux free, reservations, real room, the disk file's
-#       slack and its reclaimable estimate, and the last compaction result.
+#       slack and its reclaimable estimate, the last compaction result, and
+#       the external SSD's room with the active fetched-results root (read
+#       from the results-root file bin/fm-storage.sh publishes).
 #   fm-disk-room.sh check --expect-write SIZE [--exclude NAME]
 #       Admission: exit 0 when real room minus SIZE stays at or above the
 #       margin, 1 when it would fall below, 2 when a reading fails or on misuse.
@@ -48,6 +50,8 @@
 #   FM_DISK_ROOM_MB_GROUPS  ext4 mb_groups file (default /proc/fs/ext4/<dev>/mb_groups)
 #   FM_DISK_ROOM_COMPACT_RESULT  last-result file written by fm-wsl-reclaim.ps1
 #                         (default <host>/ProgramData/firstmate/wsl-compact-last.txt)
+#   FM_DISK_ROOM_RESULTS_ROOT  results-root file from bin/fm-storage.sh
+#                         (default ${XDG_CONFIG_HOME:-~/.config}/lattice-storage/results-root)
 #   FM_DISK_ROOM_STATE    reservations and alert record
 #                         (default ${XDG_STATE_HOME:-~/.local/state}/fm-disk-room)
 #   FM_DISK_ROOM_NOW      epoch override for tests
@@ -275,15 +279,29 @@ advice() {
   fi
 }
 
+# results_root: sets RR_ACTIVE (ssd, c, or empty when no file), RR_STATE,
+# RR_LETTER, RR_FS, RR_FREE and RR_TOTAL from fm-storage.sh's results-root file.
+results_root() {
+  local f v
+  f=${FM_DISK_ROOM_RESULTS_ROOT:-${XDG_CONFIG_HOME:-${HOME:-/tmp}/.config}/lattice-storage/results-root}
+  RR_ACTIVE='' RR_STATE='' RR_LETTER='' RR_FS='' RR_FREE='' RR_TOTAL=''
+  [ -r "$f" ] || return 0
+  rr() { sed -n "2,\${s/^$1=//p}" "$f" | head -n 1 | tr -cd 'A-Za-z0-9._ -'; }
+  RR_ACTIVE=$(rr active); RR_STATE=$(rr state); RR_LETTER=$(rr ssd_letter); RR_FS=$(rr ssd_fs)
+  v=$(rr ssd_free_bytes); case "$v" in ''|*[!0-9]*) ;; *) RR_FREE=$v ;; esac
+  v=$(rr ssd_total_bytes); case "$v" in ''|*[!0-9]*) ;; *) RR_TOTAL=$v ;; esac
+}
+
 cmd_status() {
   local json=0
   [ "${1:-}" = "--json" ] && json=1
   measure || die "$ERR"
+  results_root
   if [ "$json" = 1 ]; then
-    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"slack":%s,"reclaimable":%s}\n' \
+    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s}\n' \
       "$MARGIN" "$HOST" "${HOST_FREE:-null}" "$LINUX_FREE" "$LINUX_USED" "$RESERVED" "$ROOM" \
       "$([ "$ROOM" -lt "$MARGIN" ] && echo true || echo false)" "$VHDX" "${VHDX_SIZE:-null}" \
-      "${FRAG:-null}" "${SLACK:-null}" "${RECLAIM:-null}"
+      "${FRAG:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}"
     return 0
   fi
   printf 'real room: %s GiB (limited by %s; margin %s GiB)%s\n' "$(gib "$ROOM")" "$(limit_name)" "$(gib "$MARGIN")" \
@@ -303,6 +321,13 @@ cmd_status() {
     printf 'disk file: not found (set FM_DISK_ROOM_VHDX)\n'
   fi
   [ -n "$COMPACT" ] && printf 'last compaction: %s\n' "$COMPACT"
+  if [ -n "$RR_LETTER" ] && [ -n "$RR_FREE" ] && [ -n "$RR_TOTAL" ]; then
+    printf 'SSD %s: %s GiB free of %s GiB (%s)\n' "$RR_LETTER" "$(gib "$RR_FREE")" "$(gib "$RR_TOTAL")" "${RR_FS:-unknown filesystem}"
+  fi
+  case "$RR_ACTIVE" in
+    ssd) printf 'fetched results root: SSD %s:\n' "$RR_LETTER" ;;
+    c) printf 'fetched results root: C: fallback (SSD %s)\n' "$RR_STATE" ;;
+  esac
   return 0
 }
 

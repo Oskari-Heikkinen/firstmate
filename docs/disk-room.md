@@ -18,6 +18,7 @@ When that table or the disk file cannot be read, the monitor reports reclaimable
 
 The margin is the room that must remain after a job's expected write, 20 GiB by default (`FM_DISK_ROOM_MARGIN`).
 Sizes are binary (G = GiB), matching what Windows Explorer shows as GB.
+`status` also reports an external SSD's room and which root fetched results use, read from the file [`docs/storage.md`](storage.md) describes.
 
 ## Admitting big writes
 
