@@ -1,0 +1,7 @@
+$ fm-procevent.sh handled when-park-pk1 3   (supervisor handles the never-true wake)
+handled: when-park-pk1 3
+$ fm-park.sh pk1 --handoff handoffs/pk1-deadline.md   (extend the wait; agent already stopped)
+parked pk1: waiting for file:/tmp/fm-park-live.AA3lJa/results/never-arrives.json until 2026-10-07T15:48:27Z; agent stopped (already-stopped pk1 harness=pi backend=tmux endpoint=firstmate:fm-pk1 worktree=/home/oskari/.treehouse/project-0813ff/1/project)
+exit=0
+park_state=parked
+park_deadline=2026-10-07T15:48:27Z

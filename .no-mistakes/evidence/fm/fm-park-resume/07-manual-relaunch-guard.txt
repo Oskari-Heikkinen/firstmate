@@ -1,0 +1,41 @@
+$ fm-control.sh pk1 relaunch --note "captain wants it back now"   (manual relaunch without fm-park.sh cancel)
+notice: pk1 ships mode=local-only while the standing posture for project is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+relaunched pk1 harness=pi from=pi model=default effort=default backend=tmux endpoint=firstmate:fm-pk1 worktree=/home/oskari/.treehouse/project-0813ff/1/project
+exit=0
+record: spawn_gen=s1790783183.3977037.13709  park_spawn_gen=s1790783102.3856652.15690
+live agent child pid: 3703830
+
+$ touch results/review-done   (the parked condition now holds)
+
+## outcome classified
+when-park-pk1.1.result: fired
+
+## park fields left in the record (none expected)
+(none)
+
+## live session untouched
+aliveagent child pid now: 3703830
+spawn_gen=s1790783183.3977037.13709
+
+## supervisor wake queue tail
+1790783104	1	check	procevent:when-park-pk1:1	check: procevent when when-park-pk1 1
+
+## runner action output (reason)
+
+## (settled ~20s later) outcome of the guarded resume
+when-park-pk1.2.result: action-failed
+when: when-park-pk1
+status: action-failed
+detail: the condition held but the action exited 1
+condition_polls: 10
+action_exit: 1
+output:
+fm-park: task pk1 was relaunched or respawned since it parked, so its live session was left running and the park cleared; nothing was relaunched
+
+## supervisor wake queue tail
+1790783209	2	check	procevent:when-park-pk1:2	check: procevent when when-park-pk1 2
+
+## watch source retired after firing once
+(no when-park-pk1.source)
+## agent still alive, same pid
+alive3703830

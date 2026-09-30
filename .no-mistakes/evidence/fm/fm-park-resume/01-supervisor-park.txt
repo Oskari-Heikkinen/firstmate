@@ -1,0 +1,7 @@
+$ fm-park.sh validate handoffs/pk1.md
+handoff ok: waiting for file:/tmp/fm-park-live.AA3lJa/results/run-42.json
+exit=0
+
+$ fm-park.sh pk1 --handoff handoffs/pk1.md   (run by the supervisor, outside the worktree)
+parked pk1: waiting for file:/tmp/fm-park-live.AA3lJa/results/run-42.json until 2026-10-07T15:44:01Z; agent stopped (stopped pk1 harness=pi backend=tmux endpoint=firstmate:fm-pk1 worktree=/home/oskari/.treehouse/project-0813ff/1/project)
+exit=0

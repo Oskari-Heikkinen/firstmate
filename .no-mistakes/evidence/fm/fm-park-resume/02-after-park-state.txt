@@ -1,0 +1,35 @@
+## pane after park (agent process gone, shell remains)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.treehouse/project-0813ff/1/project (detached)
+0.0%/0 (auto)                                                                                                                                                                                    unknown
+oskari@OskuTETMET:~/.treehouse/project-0813ff/1/project$
+
+## agent state per the tmux backend
+dead
+## pi processes in the lab
+(none)
+
+## task record park fields
+spawn_gen=s1790783018.3702335.26643
+park_state=parked
+park_handoff=/tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md
+park_when=file:/tmp/fm-park-live.AA3lJa/results/run-42.json
+park_deadline=2026-10-07T15:44:01Z
+park_at=1790783041
+park_spawn_gen=s1790783018.3702335.26643
+
+## status tail
+paused [at=1790783042]: parked until 2026-10-07T15:44:01Z - waiting for file:/tmp/fm-park-live.AA3lJa/results/run-42.json; relaunches automatically with /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md
+
+## installed handoff
+-rw-rw-r-- 1 oskari oskari 344 Sep 30 17:44 /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md
+
+## worktree status (before vs after)
+?? notes-draft.md
+?? notes-draft.md
+draft summary, not yet committed
+
+## registered watch
+when-park-pk1.source

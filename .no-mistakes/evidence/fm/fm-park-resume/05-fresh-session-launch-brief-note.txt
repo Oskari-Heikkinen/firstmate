@@ -1,0 +1,14 @@
+## launch-brief.md delivered to the fresh session (generated launch prompt), progress note section
+## Progress note (2026-09-30T15:45:01Z)
+
+This task was relaunched. Continue from here; the local copy and every
+uncommitted change are exactly as the previous worker left them.
+
+First, check your instruction inbox: list /tmp/fm-park-live.AA3lJa/home/state/pk1.inbox/*.msg, act on
+each message in numeric order, then mv each handled file into
+/tmp/fm-park-live.AA3lJa/home/state/pk1.inbox/handled/. A steer sent before the relaunch survives there.
+
+This task was parked while it waited on an external result, and the wait is over: the results are at /tmp/fm-park-live.AA3lJa/results/run-42.json.
+The condition was: file:/tmp/fm-park-live.AA3lJa/results/run-42.json
+Read the handoff at /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md first; it records the goal, what was already done, and the next steps.
+Continue from its next steps. If you must wait on something external again, park again rather than idling.

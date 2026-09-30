@@ -1,0 +1,26 @@
+$ fm-park.sh pk1 --handoff handoffs/pk1-deadline.md   (while the supervisor has not yet handled the action-failed outcome)
+fm-park: could not arm the resume watch, so task pk1 was not parked and its agent keeps running: error: an unhandled captured result exists for when-park-pk1; handle it before re-arming
+exit=1
+record park_state: park_state=cancelled
+agent: alive
+$ fm-procevent.sh handled when-park-pk1 2   (supervisor acknowledges the wake)
+handled: when-park-pk1 2
+exit=0
+
+$ fm-park.sh pk1 --handoff handoffs/pk1-deadline.md --deadline 2026-09-30T15:48:01Z
+parked pk1: waiting for file:/tmp/fm-park-live.AA3lJa/results/never-arrives.json until 2026-09-30T15:48:01Z; agent stopped (stopped pk1 harness=pi backend=tmux endpoint=firstmate:fm-pk1 worktree=/home/oskari/.treehouse/project-0813ff/1/project)
+exit=0
+
+## after the deadline (15:48:03Z)
+when-park-pk1.3.result: never-true
+when: when-park-pk1
+status: never-true
+detail: the condition never held for 2 consecutive polls within 39s of arming
+condition_polls: 14
+
+## supervisor wake queue tail
+1790783282	3	check	procevent:when-park-pk1:3	check: procevent when when-park-pk1 3
+
+## nothing relaunched: agent still stopped, record still parked, no resumed status line
+deadpark_state=parked
+paused [at=1790783242]: parked until 2026-09-30T15:48:01Z - waiting for file:/tmp/fm-park-live.AA3lJa/results/never-arrives.json; relaunches automatically with /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md

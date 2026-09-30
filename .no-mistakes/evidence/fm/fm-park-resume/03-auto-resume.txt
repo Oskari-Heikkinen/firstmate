@@ -1,0 +1,36 @@
+## results file written at 15:45:18Z; task auto-resumed about 5s later
+
+## watch outcome (classified by fm-procevent-when)
+fired
+
+## supervisor wake queue
+1790783104	1	check	procevent:when-park-pk1:1	check: procevent when when-park-pk1 1
+
+## task record after resume
+spawn_gen=s1790783102.3856652.15690
+park_handoff=/tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md
+park_when=file:/tmp/fm-park-live.AA3lJa/results/run-42.json
+park_deadline=2026-10-07T15:44:01Z
+park_at=1790783041
+park_spawn_gen=s1790783018.3702335.26643
+park_state=resumed
+park_resumed_at=1790783104
+
+## status tail
+paused [at=1790783042]: parked until 2026-10-07T15:44:01Z - waiting for file:/tmp/fm-park-live.AA3lJa/results/run-42.json; relaunches automatically with /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md
+working [at=1790783104]: resumed from park - file:/tmp/fm-park-live.AA3lJa/results/run-42.json held; fresh session started from /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md
+
+## resume note handed to the fresh session
+This task was parked while it waited on an external result, and the wait is over: the results are at /tmp/fm-park-live.AA3lJa/results/run-42.json.
+The condition was: file:/tmp/fm-park-live.AA3lJa/results/run-42.json
+Read the handoff at /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md first; it records the goal, what was already done, and the next steps.
+Continue from its next steps. If you must wait on something external again, park again rather than idling.
+
+## agent state of the endpoint now
+alive
+## worktree still holds the uncommitted draft
+?? notes-draft.md
+
+## fresh session launch brief tail (the progress note)
+launch.s1790783018.3702335.26643.sh
+launch.s1790783102.3856652.15690.sh

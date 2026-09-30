@@ -1,0 +1,16 @@
+## real watcher loop after pk2 parked in response to the nudge
+[t+30s] watcher exit=0: signal: /tmp/fm-park-live.AA3lJa/home/state/pk2.status
+    queued: 1790783924	12	signal	pk2.status	signal: /tmp/fm-park-live.AA3lJa/home/state/pk2.status
+[t+34s] watcher exit=0: stale: firstmate:fm-pk2 (unread firstmate instruction: /tmp/fm-park-live.AA3lJa/home/state/pk2.inbox/001.msg is unhandled and the worker's agent has exited or its endpoint is missing, so the doorbell was not typed; recover the worker)
+    queued: 1790783928	13	stale	firstmate:fm-pk2	stale: firstmate:fm-pk2 (unread firstmate instruction: /tmp/fm-park-live.AA3lJa/home/state/pk2.inbox/001.msg is unhandled and the worker's agent has exited or its endpoint is missing, so the doorbell was not typed; recover the worker)
+[t+77s] watcher exit=124: (no wake)
+
+## .idle-nudge marker for pk2 after the watcher saw the declared wait: removed
+
+## triage log: both parked panes absorbed as declared waits
+[2026-09-30T17:59:23+0200] absorbed stale (paused until 604144s from now, declared time not reached): firstmate:fm-pk1
+[2026-09-30T17:59:23+0200] absorbed stale (paused until 604564s from now, declared time not reached): firstmate:fm-pk2
+[2026-09-30T17:59:26+0200] absorbed stale (paused until 604141s from now, declared time not reached): firstmate:fm-pk1
+[2026-09-30T17:59:26+0200] absorbed stale (paused until 604561s from now, declared time not reached): firstmate:fm-pk2
+
+Note: the lab Pi has no credentials, so it could not act on or acknowledge the nudge message (001.msg); the one-off "unread firstmate instruction" wake above comes from that unacknowledged inbox record on a now-stopped agent.

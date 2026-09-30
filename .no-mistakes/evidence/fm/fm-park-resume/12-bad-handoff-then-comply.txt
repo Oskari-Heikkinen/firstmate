@@ -1,0 +1,13 @@
+$ (worker pk2, in its worktree) fm-park.sh pk2 --handoff handoffs/pk2-bad.md
+fm-park: handoff /tmp/fm-park-live.AA3lJa/handoffs/pk2-bad.md is incomplete:
+  - section "done" is missing or empty
+  - section "next steps" is missing or empty
+  - "Waiting for" names no condition (file:<path>, pr-merged:<url>, or cmd:<executable> [args])
+A handoff needs ## Goal, ## Done, ## Waiting for (with one machine-checkable condition), and ## Next steps.
+exit=1
+agent: alivepark fields: 0; watch registered: 0
+
+$ (worker pk2, complying with the nudge) fm-park.sh pk2 --handoff handoffs/pk2.md
+parked pk2: waiting for file:/tmp/fm-park-live.AA3lJa/results/pk2-review.md until 2026-10-07T15:55:27Z; this session stops in a few seconds and a fresh one starts with /tmp/fm-park-live.AA3lJa/home/data/pk2/handoff.md when the condition holds
+exit=0
+agent after detached exit: deadnudge marker before the watcher sees the park: escalated 1790783653

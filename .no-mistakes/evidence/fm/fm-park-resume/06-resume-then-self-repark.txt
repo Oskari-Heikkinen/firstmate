@@ -1,0 +1,28 @@
+## pending unhandled outcomes before the re-park
+when-park-pk1.1.adapter
+when-park-pk1.1.result
+
+$ cd <worktree> && FM_TASK_ID=pk1 fm-park.sh pk1 --handoff handoffs/pk1-review.md --when 'cmd:/usr/bin/test -e .../review-done'   (the resumed worker parking itself)
+parked pk1: waiting for cmd:/usr/bin/test -e /tmp/fm-park-live.AA3lJa/results/review-done until 2026-10-07T15:45:42Z; this session stops in a few seconds and a fresh one starts with /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md when the condition holds
+exit=0
+
+## agent state 1s after (the command returned before its session stops)
+alive
+## agent state ~9s after
+dead
+## park-exit.log
+stopped pk1 harness=pi backend=tmux endpoint=firstmate:fm-pk1 worktree=/home/oskari/.treehouse/project-0813ff/1/project
+
+## pending outcomes after (the earlier fired result was acknowledged by park)
+when-park-pk1.1.adapter
+when-park-pk1.1.handled
+when-park-pk1.1.result
+
+## record
+spawn_gen=s1790783102.3856652.15690
+park_state=parked
+park_when=cmd:/usr/bin/test -e /tmp/fm-park-live.AA3lJa/results/review-done
+park_spawn_gen=s1790783102.3856652.15690
+
+## status tail
+paused [at=1790783143]: parked until 2026-10-07T15:45:42Z - waiting for cmd:/usr/bin/test -e /tmp/fm-park-live.AA3lJa/results/review-done; relaunches automatically with /tmp/fm-park-live.AA3lJa/home/data/pk1/handoff.md

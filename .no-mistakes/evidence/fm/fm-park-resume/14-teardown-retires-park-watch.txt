@@ -1,0 +1,22 @@
+## before teardown of parked pk2
+park_state=parked
+when-park-pk2.2096-3591155.last-launch
+when-park-pk2.runner
+when-park-pk2.source
+runner processes for when-park-pk2: 1
+
+$ fm-teardown.sh pk2 --force   (captain abandons the parked task)
+
+🌳 Worktree returned to pool.
+teardown pk2 complete (window firstmate:fm-pk2, worktree /home/oskari/.treehouse/project-0813ff/2/project)
+Backlog: pk2 just finished (this home keeps no markdown backlog at /tmp/fm-park-live.AA3lJa/home/data/backlog.md). Update /tmp/fm-park-live.AA3lJa/home/data/backlog.md - move pk2 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+exit=0
+
+## after teardown
+when-park-pk2.2096-3591155.last-launch
+runner processes for when-park-pk2: 1
+ls: cannot access '/tmp/fm-park-live.AA3lJa/home/state/pk2.meta': No such file or directory
+
+## 13s later: processes for this lab home mentioning a park watch
+      1 when-park-pk1
+(only parked pk1 still has a runner; the pk2 runner stopped with the retire)

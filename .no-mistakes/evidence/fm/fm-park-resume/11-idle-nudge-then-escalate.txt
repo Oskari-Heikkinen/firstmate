@@ -1,0 +1,31 @@
+## real watcher loop (FM_POLL=3, FM_IDLE_PARK_GRACE=45): pk2 idle, last status "working:", no declared wait; pk1 parked
+[t+39s] watcher exit=0: signal: /tmp/fm-park-live.AA3lJa/home/state/pk2.turn-ended
+    queued: 1790783645	9	signal	pk2.turn-ended	signal: /tmp/fm-park-live.AA3lJa/home/state/pk2.turn-ended
+[t+95s] watcher exit=0: stale: firstmate:fm-pk2 (idle 48s after being told to park or finish, with no declared wait; inspect the worker)
+    .idle-nudge marker: escalated 1790783653
+    pk2 inbox: 001.msg handled 
+    queued: 1790783701	10	stale	firstmate:fm-pk2	stale: firstmate:fm-pk2 (idle 48s after being told to park or finish, with no declared wait; inspect the worker)
+
+## watcher triage log (pk1 parked = absorbed as a declared wait; pk2 = nudged, absorbed in grace, then surfaced)
+[2026-09-30T17:54:56+0200] absorbed stale (paused until 604411s from now, declared time not reached): firstmate:fm-pk1
+[2026-09-30T17:55:00+0200] absorbed stale (paused until 604407s from now, declared time not reached): firstmate:fm-pk1
+[2026-09-30T17:54:18+0200] idle park nudge sent (no declared wait): firstmate:fm-pk2
+[2026-09-30T17:54:36+0200] absorbed non-terminal stale (park-or-finish nudge 23s ago, inside the grace): firstmate:fm-pk2
+[2026-09-30T17:54:43+0200] absorbed non-terminal stale (park-or-finish nudge 30s ago, inside the grace): firstmate:fm-pk2
+[2026-09-30T17:54:50+0200] absorbed non-terminal stale (park-or-finish nudge 37s ago, inside the grace): firstmate:fm-pk2
+[2026-09-30T17:54:57+0200] absorbed non-terminal stale (park-or-finish nudge 44s ago, inside the grace): firstmate:fm-pk2
+
+## the steer delivered to pk2 (durable inbox record written by fm-send)
+schema=fm-task-inbox.v1
+at=2026-09-30T15:54:15Z
+--
+Firstmate: you have gone idle with no declared wait. If you are waiting on an external result, park as your brief's park rule says (details: FM_HOME=/tmp/fm-park-live.AA3lJa/home /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SEGT2N4G1AE8KR5MSMS2NM/bin/fm-park.sh --help); otherwise finish the task, or append the status line your instructions define for where you are.
+## pk2 pane after the doorbell
+ Error: No API key found for the selected model.
+ Use /login to log into a provider via OAuth or API key. See:
+   /home/oskari/.local/npm/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md
+   /home/oskari/.local/npm/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.treehouse/project-0813ff/2/project (detached)
+0.0%/0 (auto)                                                                                                                                                                                    unknown

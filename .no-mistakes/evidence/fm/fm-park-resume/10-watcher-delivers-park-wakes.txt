@@ -1,0 +1,9 @@
+## watcher run 1: exits at once to hand firstmate the queued park outcomes
+check: process-event result captured: procevent:when-park-pk1:1 procevent:when-park-pk1:2 procevent:when-park-pk1:3
+
+## firstmate drains the wake queue
+1790783104	1	check	procevent:when-park-pk1:1	check: procevent when when-park-pk1 1
+1790783209	2	check	procevent:when-park-pk1:2	check: procevent when when-park-pk1 2
+1790783282	3	check	procevent:when-park-pk1:3	check: procevent when when-park-pk1 3
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 3 --recovery-generation 3863046.1790783104.ADoQKZ
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.

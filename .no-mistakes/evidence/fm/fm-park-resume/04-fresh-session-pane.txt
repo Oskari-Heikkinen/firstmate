@@ -1,0 +1,15 @@
+## fresh session pane (pi relaunched in the same window)
+ Error: No API key found for the selected model.
+ Use /login to log into a provider via OAuth or API key. See:
+   /home/oskari/.local/npm/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md
+   /home/oskari/.local/npm/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md
+ Warning: tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 0.99.1 is available. Run pi update
+ Changelog: https://pi.dev/changelog
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.treehouse/project-0813ff/1/project (detached)
+0.0%/0 (auto)                                                                                                                                                                                    unknown
