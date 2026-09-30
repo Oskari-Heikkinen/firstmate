@@ -37,9 +37,11 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=bin/fm-marker-lib.sh
+# Stop source analysis at the production libraries, which CI lints as their own
+# roots; inlining them here took this test's ShellCheck past 14 GB.
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-marker-lib.sh"
-# shellcheck source=bin/fm-pending-reply-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-pending-reply-lib.sh"
 
 SEND="$ROOT/bin/fm-send.sh"
@@ -590,7 +592,9 @@ test_undelivered_records_are_scan_immutable() {
       || fail "undelivered wrong-home check should be inert"
     fm_pending_reply_tick_one "$state" "$corr" busy "$sm_home" \
       || fail "undelivered direct tick should be inert"
+    # shellcheck disable=SC2329 # Runtime override called by the sourced production library.
     fm_backend_busy_state() { fail "undelivered watcher tick must not probe the backend"; }
+    # shellcheck disable=SC2329 # Runtime override called by the sourced production library.
     fm_backend_capture() { fail "undelivered watcher tick must not capture the backend"; }
     fm_pending_reply_tick "$state" || fail "undelivered watcher tick should succeed"
     after=$(cat "$rec")
@@ -615,6 +619,7 @@ test_delivery_confirmation_fallback_reconciles() {
     export FM_PENDING_REPLY_NOW=5750
     corr=$(fm_pending_reply_create "$home" "$state" hibit "confirmed delivery")
     rec=$(fm_pending_reply_path "$state" "$corr")
+    # shellcheck disable=SC2329 # Runtime override called by the sourced production library.
     fm_pending_reply_mark_delivered() { return 1; }
     if fm_pending_reply_confirm_delivery "$state" "$corr"; then
       fail "primary delivery commit failure should be reported"
@@ -711,6 +716,7 @@ test_delivery_confirmation_serializes_with_reconciliation() {
     calls="$home/mark-delivered.calls"
     entered="$home/mark-delivered.entered"
     release="$home/mark-delivered.release"
+    # shellcheck disable=SC2329 # Runtime override called by the sourced production library.
     fm_pending_reply_mark_delivered() {
       local pending_state=$1 pending_corr=$2 pending_epoch=$3 pending_rec phase
       printf '%s\n' "${BASHPID:-$$}" >> "$calls"
@@ -839,7 +845,7 @@ test_restart_preserves_expectation_and_parent_destination() {
   parent_status=$(fm_pending_reply_get "$rec" parent_status)
   parent_home=$(fm_pending_reply_get "$rec" parent_home)
   # Simulate process restart: re-source library and re-read the same record.
-  # shellcheck source=bin/fm-pending-reply-lib.sh
+  # shellcheck source=/dev/null
   . "$ROOT/bin/fm-pending-reply-lib.sh"
   [ -f "$rec" ] || fail "record must survive restart"
   [ "$(fm_pending_reply_get "$rec" parent_status)" = "$parent_status" ] \
@@ -919,6 +925,7 @@ test_fm_send_marked_secondmate_creates_pending_and_embeds_corr() {
   run_send "$fb" "$home" "$log" "hibit" "audit the build"; rc=$?
   expect_code 0 "$rc" "secondmate send should succeed"
   got=$(latest_record_body "$home" hibit)
+  # shellcheck disable=SC2031 # Set by the sourced production library, outside this analysis.
   case "$got" in
     "$FM_FROMFIRST_MARK"corr=*) : ;;
     *) fail "secondmate steer record must embed marker+corr"$'\n'"$(printf '%s' "$got" | od -An -c)" ;;
@@ -1006,7 +1013,9 @@ test_unknown_backend_state_uses_capture_fallback() {
       fm_pending_reply_mark_delivered "$state" "$corr"
       fm_write_secondmate_meta "$state/hibit.meta" "$sm_home" "session:fm-hibit" alpha pi
       [ "$backend" = tmux ] || printf 'backend=%s\n' "$backend" >> "$state/hibit.meta"
+      # shellcheck disable=SC2329 # Runtime override called by the sourced production library.
       fm_backend_busy_state() { printf 'unknown'; }
+      # shellcheck disable=SC2329 # Runtime override called by the sourced production library.
       fm_backend_capture() { printf '%s' "$FM_PENDING_TEST_CAPTURE"; }
       # Invoked indirectly through FM_PENDING_REPLY_SEND_HOOK.
       # shellcheck disable=SC2329
@@ -1050,7 +1059,9 @@ test_kimi_capture_fallback_uses_recorded_harness() (
   corr=$(fm_pending_reply_create "$home" "$state" hibit "kimi fallback")
   fm_pending_reply_mark_delivered "$state" "$corr"
   fm_write_secondmate_meta "$state/hibit.meta" "$sm_home" "session:fm-hibit" alpha kimi
+  # shellcheck disable=SC2329 # Runtime override called by the sourced production library.
   fm_backend_busy_state() { printf 'unknown'; }
+  # shellcheck disable=SC2329 # Runtime override called by the sourced production library.
   fm_backend_capture() { printf '%s' "$FM_PENDING_KIMI_CAPTURE"; }
   export FM_PENDING_KIMI_CAPTURE=' 🌑 · Tip: ask Kimi to schedule tasks, e.g. "remind me at 5pm"'
 
@@ -1169,6 +1180,7 @@ test_correlations_reuse_only_for_matching_open_task() {
     || fail "cross-task expectation must belong to the new target"
   printf 'done [corr=%s]: complete\n' "$corr1" > "$state/domain.status"
   fm_pending_reply_try_resolve "$state" "$corr1" || fail "first expectation should resolve"
+  # shellcheck disable=SC2031 # Set by the sourced production library, outside this analysis.
   run_send "$fb" "$home" "$log" domain "${FM_FROMFIRST_MARK}corr=${corr1} follow-up" \
     || fail "resolved-correlation follow-up failed"
   corr3=$(fm_pending_reply_extract_corr "$(latest_record_body "$home" domain)")
@@ -1659,6 +1671,7 @@ write_record() {  # <state> <corr> <task> <phase> <created> <resolved> [escalate
   local dir
   dir=$(fm_pending_reply_dir "$1")
   mkdir -p "$dir"
+  # shellcheck disable=SC2031 # Set by the sourced production library, outside this analysis.
   printf '%s\n' "schema=$FM_PENDING_REPLY_SCHEMA" "corr_id=$2" "task_id=$3" \
     "parent_status=${1}/$3.status" "created_epoch=$5" "delivered_epoch=${9-$5}" \
     "phase=$4" "resolved_epoch=$6" "escalated_epoch=${7-}" \

@@ -66,7 +66,9 @@
 # concurrency, not diagnostics or exit selection.
 # --partition 1of2/2of2 splits the entire canonical inventory across
 # two CI runners, each with those same bounded workers. Partitions are complete,
-# disjoint, and byte-weight balanced; --list-files exposes their actual roots.
+# disjoint, and balanced by expanded source bytes (see the packing notes below);
+# --list-files exposes their actual roots. Within any run, every heavy root
+# shares one worker, so two heavy ShellCheck analyses never overlap on a host.
 # Partition mode is always full source-aware analysis, never changed-only or
 # --fast, and does not accept explicit paths. Each partition also runs workflow
 # lint and backend-purity checks, keeping either invocation independently useful.
@@ -583,9 +585,22 @@ if [ "$FAST" -eq 0 ] && { [ "$CHANGED_MODE" -eq 1 ] || [ "$EXPLICIT_PATHS" -eq 1
 fi
 # Stable largest-first packing is shared by cross-runner partition selection
 # and the two local workers. Weights are a scheduling proxy, never a skip rule.
+# A root's weight is its expanded source bytes: its own bytes plus, recursively,
+# the bytes of every file ShellCheck follows from it, counted once per source
+# edge. That covers `# shellcheck source=<path>` directives and undirected
+# `. "$VAR/<path>"` or `source "$VAR/<path>"` commands, which ShellCheck resolves
+# as ./<path> from the repository root; source=/dev/null boundaries and missing
+# targets add nothing. Peak ShellCheck memory tracks this weight far better than
+# a root's own size, and one multi-root ShellCheck process peaks near its
+# single most expensive root rather than the sum of its roots.
 TAB=$(printf '\t')
+# Roots at or above this many expanded source bytes are heavy: measured under
+# the pinned ShellCheck, every root above about 3 GB peak RSS but one (a
+# self-contained test near 3.5 GB) crosses it. Heavy roots always share one
+# worker, so two heavy analyses never run concurrently on one host.
+HEAVY_SOURCE_BYTES=1000000
 fm_lint_root_weights() {
-  local index=1 path weight
+  local path
   for path in "${ROOTS[@]}"; do
     case "$path" in
       *"$TAB"*|*$'\n'*)
@@ -593,14 +608,59 @@ fm_lint_root_weights() {
         return 2
         ;;
     esac
-    weight=1
-    if [ -f "$path" ]; then
-      weight=$(wc -c < "$path" 2>/dev/null | tr -d '[:space:]')
-    fi
-    case "$weight" in ''|*[!0-9]*) weight=1 ;; esac
-    printf '%s\t%s\t%s\n' "$weight" "$index" "$path"
-    index=$((index + 1))
   done
+  [ "${#ROOTS[@]}" -gt 0 ] || return 0
+  printf '%s\n' "${ROOTS[@]}" | LC_ALL=C awk '
+    function parse(file,    line, target, pending, rc) {
+      parsed[file]=1
+      size[file]=0
+      ndeps[file]=0
+      pending=0
+      while ((rc=(getline line < file)) > 0) {
+        size[file]+=length(line) + 1
+        if (line ~ /^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]/) {
+          if (match(line, /[[:space:]]source=[^[:space:]]+/)) {
+            pending=1
+            target=substr(line, RSTART + 8, RLENGTH - 8)
+            if (target != "/dev/null") deps[file, ++ndeps[file]]=target
+          }
+          continue
+        }
+        if (line ~ /^[[:space:]]*(#|$)/) continue
+        if (!pending && match(line, /^[[:space:]]*(\.|source)[[:space:]]+"?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?\//)) {
+          target=substr(line, RSTART + RLENGTH)
+          sub(/[";[:space:]].*$/, "", target)
+          if (target != "") deps[file, ++ndeps[file]]=target
+        }
+        pending=0
+      }
+      if (rc >= 0) close(file)
+    }
+    # A source cycle adds nothing on its back edge. Totals that met a cycle
+    # are not memoized, so every root weight is independent of root order.
+    function expanded(file,    i, total, outer) {
+      if (file in memo) return memo[file]
+      if (file in active) {
+        cycle=1
+        return 0
+      }
+      if (!(file in parsed)) parse(file)
+      outer=cycle
+      cycle=0
+      active[file]=1
+      total=size[file]
+      for (i=1; i <= ndeps[file]; i++) total+=expanded(deps[file, i])
+      delete active[file]
+      if (!cycle) memo[file]=total
+      cycle=cycle || outer
+      return total
+    }
+    {
+      weight=expanded($0)
+      if (weight < 1) weight=1
+      printf "%d\t%d\t%s\n", weight, NR, $0
+    }
+  '
 }
 
 if [ -n "$PARTITION" ]; then
@@ -703,14 +763,18 @@ done
 
 fm_lint_root_weights > "$WEIGHTS" || exit $?
 
-# Largest-first deterministic greedy assignment keeps the two bounded workers
-# balanced without affecting replay order. Direct bytes are a stable portable
-# proxy after the expensive dynamic adapter source fan-out is cut.
+# Deterministic assignment without affecting replay order: every heavy root
+# goes to the first worker, whose one ShellCheck process then peaks near its
+# single heaviest root, and light roots fill both workers largest-first by
+# weight. The concurrent worker therefore never holds a heavy root.
 WORKER_LOADS=(0 0)
+HEAVY_ROOT_COUNT=0
 LC_ALL=C sort -t "$TAB" -k1,1nr -k2,2n "$WEIGHTS" > "$WEIGHTS.sorted"
 while IFS="$TAB" read -r weight index path; do
   worker=0
-  if [ "${WORKER_LOADS[1]}" -lt "${WORKER_LOADS[0]}" ]; then
+  if [ "$weight" -ge "$HEAVY_SOURCE_BYTES" ]; then
+    HEAVY_ROOT_COUNT=$((HEAVY_ROOT_COUNT + 1))
+  elif [ "${WORKER_LOADS[1]}" -lt "${WORKER_LOADS[0]}" ]; then
     worker=1
   fi
   printf '%s\t%s\n' "$index" "$path" >> "$TMP_ROOT/manifest.$worker"
@@ -924,6 +988,7 @@ EOF
     printf 'source_target_count\t%s\n' "$source_targets"
     printf 'shard_1_weight_bytes\t%s\n' "${WORKER_LOADS[0]}"
     printf 'shard_2_weight_bytes\t%s\n' "${WORKER_LOADS[1]:-0}"
+    printf 'heavy_root_count\t%s\n' "$HEAVY_ROOT_COUNT"
     printf 'wall_seconds\t%s\n' "$((TELEMETRY_END_EPOCH - TELEMETRY_START_EPOCH))"
     printf 'worker_wall_sum_seconds\t%s\n' "$timing_worker_wall"
     printf 'max_worker_wall_seconds\t%s\n' "$max_worker_wall"

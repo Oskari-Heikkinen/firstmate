@@ -1302,6 +1302,105 @@ SH
   pass "jobs=1 and jobs=2 preserve deterministic diagnostics, failures, cleanup bounds, and quiet telemetry"
 }
 
+# Regression origin: packing roots by their own byte size put the costliest
+# ShellCheck roots, whose memory comes from the source closure they pull in,
+# into both concurrent workers, and one CI runner summed two multi-GB analyses
+# until it was killed. Heavy roots must share one worker regardless of their own
+# size, counting directive and undirected sources but not /dev/null boundaries.
+test_heavy_source_closures_share_one_worker() {
+  local tmp rel fakebin call_log calls out lib root invocation heavy_hits all_hits
+  local -a heavy light
+  tmp=$(mktemp -d "$ROOT/.fm-lint-heavy.XXXXXX")
+  if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
+    trap fm_test_cleanup EXIT
+  fi
+  FM_TEST_CLEANUP_DIRS+=("$tmp")
+  rel=${tmp#"$ROOT/"}
+  fakebin=$(fm_fakebin "$tmp")
+  call_log="$tmp/calls.log"
+  fm_lint_stub_shellcheck "$fakebin" "$tmp/shellcheck.log"
+  lib="$tmp/big-lib.sh"
+  { printf '#!/usr/bin/env bash\n'; yes '# filler that stands in for a large sourced library' | head -c 600000; } > "$lib"
+  cat > "$tmp/mid.sh" <<SH
+#!/usr/bin/env bash
+# shellcheck source=$rel/big-lib.sh
+. "\$ROOT/$rel/big-lib.sh"
+# shellcheck source=$rel/big-lib.sh
+. "\$ROOT/$rel/big-lib.sh"
+SH
+  # Own sizes alone would pack light-bulky, heavy-directive, and
+  # heavy-undirected so that the heavy roots land in different workers.
+  cat > "$tmp/heavy-directive.sh" <<SH
+#!/usr/bin/env bash
+# shellcheck source=$rel/big-lib.sh
+. "\$1"
+# shellcheck disable=SC1090 source=$rel/big-lib.sh
+. "\$1"
+SH
+  yes '# filler' | head -c 350000 >> "$tmp/heavy-directive.sh"
+  cat > "$tmp/heavy-undirected.sh" <<SH
+#!/usr/bin/env bash
+. "\$ROOT/$rel/big-lib.sh"
+source "\${FM_DIR}/$rel/big-lib.sh"
+SH
+  yes '# filler' | head -c 300000 >> "$tmp/heavy-undirected.sh"
+  cat > "$tmp/heavy-chain.sh" <<SH
+#!/usr/bin/env bash
+# shellcheck source=$rel/mid.sh
+. "\$1"
+SH
+  cat > "$tmp/light-boundary.sh" <<SH
+#!/usr/bin/env bash
+# shellcheck source=/dev/null
+. "\$ROOT/$rel/big-lib.sh"
+# Stop here.
+# shellcheck source=/dev/null
+. "\$ROOT/$rel/big-lib.sh"
+SH
+  { printf '#!/usr/bin/env bash\n'; yes '# filler that makes this root the largest file on its own' | head -c 400000; } > "$tmp/light-bulky.sh"
+  cat > "$tmp/light-cycle-a.sh" <<SH
+#!/usr/bin/env bash
+# shellcheck source=$rel/light-cycle-b.sh
+. "\$1"
+SH
+  cat > "$tmp/light-cycle-b.sh" <<SH
+#!/usr/bin/env bash
+# shellcheck source=$rel/light-cycle-a.sh
+. "\$1"
+SH
+  printf '#!/usr/bin/env bash\nprintf small\n' > "$tmp/light-small.sh"
+  heavy=("$tmp/heavy-directive.sh" "$tmp/heavy-undirected.sh" "$tmp/heavy-chain.sh")
+  light=("$tmp/light-boundary.sh" "$tmp/light-bulky.sh" "$tmp/light-cycle-a.sh" "$tmp/light-cycle-b.sh" "$tmp/light-small.sh")
+
+  out=$(PATH="$fakebin:$PATH" CI=true FM_TEST_CALL_LOG="$call_log" \
+    "$LINT" "${light[@]}" "${heavy[@]}" 2>&1) \
+    || fail "heavy-closure packing lint failed"$'\n'"$out"
+  [ "$(wc -l < "$call_log" | tr -d '[:space:]')" -eq 2 ] \
+    || fail "full lint did not run exactly two worker invocations"$'\n'"$(cat "$call_log")"
+  calls=$(cat "$call_log")
+  all_hits=0
+  while IFS= read -r invocation; do
+    heavy_hits=0
+    for root in "${heavy[@]}"; do
+      case " ${invocation#*roots=} " in *" $root "*) heavy_hits=$((heavy_hits + 1)) ;; esac
+    done
+    [ "$heavy_hits" -eq 0 ] || [ "$heavy_hits" -eq "${#heavy[@]}" ] \
+      || fail "heavy roots were split across concurrent workers"$'\n'"$calls"
+    all_hits=$((all_hits + heavy_hits))
+    for root in "${light[@]}"; do
+      case " ${invocation#*roots=} " in *" $root "*) all_hits=$((all_hits + 1)) ;; esac
+    done
+  done <<< "$calls"
+  [ "$all_hits" -eq $((${#heavy[@]} + ${#light[@]})) ] \
+    || fail "heavy-closure packing lost or duplicated roots"$'\n'"$calls"
+  PATH="$fakebin:$PATH" CI=true FM_TEST_CALL_LOG="$tmp/calls-2.log" \
+    "$LINT" "${light[@]}" "${heavy[@]}" > /dev/null 2>&1 \
+    || fail "repeated heavy-closure packing lint failed"
+  [ "$(LC_ALL=C sort "$tmp/calls-2.log")" = "$(LC_ALL=C sort "$call_log")" ] \
+    || fail "heavy-closure packing is nondeterministic"
+  pass "heavy source closures share one worker while light roots, boundaries, and cycles fill both"
+}
+
 test_worker_trees_stop_on_signal() {
   local tmp fakebin fixture jobs telemetry lint_tmp pid_file out_file telemetry_file
   local parent_pid shellcheck_pid i parent_rc survivor
@@ -1471,6 +1570,7 @@ test_rejects_direct_beads_cli_in_explicit_core_path
 test_ignores_ambient_shellcheck_opts
 test_clean_fixture_passes
 test_jobs_are_deterministic_and_complete
+test_heavy_source_closures_share_one_worker
 test_worker_trees_stop_on_signal
 test_seeded_module_boundary_parity
 test_changed_mode_lints_only_the_changed_file
