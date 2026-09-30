@@ -31,6 +31,8 @@
 #      once delivered, and its delivery-unknown decision still closes on resolve
 #  17. The expect= kind is persisted, defaults to answer, and only a correlated
 #      note on an ack request is a routine acknowledgement
+#  18. Resolved records past retention are pruned by the tick, open ones never,
+#      and a tick over many settled records stays fast
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1652,6 +1654,102 @@ test_escalated_undelivered_correlation_stays_retryable() {
   pass "an escalated correlation stays retryable only while undelivered"
 }
 
+# Write a minimal record straight to disk so a bulk fixture stays cheap.
+write_record() {  # <state> <corr> <task> <phase> <created> <resolved> [escalated] [closed] [delivered]
+  local dir
+  dir=$(fm_pending_reply_dir "$1")
+  mkdir -p "$dir"
+  printf '%s\n' "schema=$FM_PENDING_REPLY_SCHEMA" "corr_id=$2" "task_id=$3" \
+    "parent_status=${1}/$3.status" "created_epoch=$5" "delivered_epoch=${9-$5}" \
+    "phase=$4" "resolved_epoch=$6" "escalated_epoch=${7-}" \
+    "escalation_closed_epoch=${8-}" > "$dir/$2"
+}
+
+test_tick_prunes_resolved_records_past_retention() {
+  (
+    local home state dir now old recent
+    home=$(setup_parent retention)
+    state="$home/state"
+    dir=$(fm_pending_reply_dir "$state")
+    now=200000
+    old=$((now - 86400))
+    recent=$((now - 86399))
+    # shellcheck disable=SC2030,SC2031
+    export FM_PENDING_REPLY_NOW=$now
+    write_record "$state" aaaaaaaaaaaaaaa1 gone resolved 100 "$old"
+    printf 'confirmed=100\n' > "$(fm_pending_reply_delivery_confirmation_path "$state" aaaaaaaaaaaaaaa1)"
+    write_record "$state" aaaaaaaaaaaaaaa2 gone resolved 100 "$recent"
+    write_record "$state" aaaaaaaaaaaaaaa3 gone resolved 100 "$old" 150 ''
+    write_record "$state" aaaaaaaaaaaaaaa4 gone resolved 100 "$old" 150 160
+    write_record "$state" aaaaaaaaaaaaaaa5 gone resolved 100 ''
+    write_record "$state" aaaaaaaaaaaaaaa6 gone resolved 100 "$old"
+    printf 'confirmed:aaaaaaaaaaaaaaa6\n' > "$state/.backlog-handoff-gone.wake-pending"
+    write_record "$state" bbbbbbbbbbbbbbb1 gone awaiting_report 100 '' '' '' ''
+    write_record "$state" bbbbbbbbbbbbbbb2 gone delivery_unknown 100 '' '' '' ''
+    write_record "$state" bbbbbbbbbbbbbbb3 gone escalated 100 '' 150 '' 100
+    write_record "$state" bbbbbbbbbbbbbbb4 gone recovery_sent 100 '' '' '' 100
+    fm_pending_reply_tick "$state" || fail "retention tick should succeed"
+    [ ! -e "$dir/aaaaaaaaaaaaaaa1" ] || fail "resolved record at the retention bound should be pruned"
+    [ ! -e "$(fm_pending_reply_delivery_confirmation_path "$state" aaaaaaaaaaaaaaa1)" ] \
+      || fail "a pruned record's delivery confirmation should go with it"
+    [ -f "$dir/aaaaaaaaaaaaaaa2" ] || fail "resolved record inside retention must be kept"
+    [ ! -e "$dir/aaaaaaaaaaaaaaa4" ] || fail "a resolved record whose escalation is closed should prune"
+    [ -f "$dir/aaaaaaaaaaaaaaa5" ] || fail "a resolved record without resolved_epoch must be kept"
+    [ -f "$dir/aaaaaaaaaaaaaaa6" ] || fail "a record a receiver wake marker names must be kept"
+    [ -f "$dir/aaaaaaaaaaaaaaa3" ] || fail "an escalation close must land before its record is pruned"
+    [ -n "$(fm_pending_reply_get "$dir/aaaaaaaaaaaaaaa3" escalation_closed_epoch)" ] \
+      || fail "the tick should still retry the pending escalation close"
+    for c in bbbbbbbbbbbbbbb1 bbbbbbbbbbbbbbb2 bbbbbbbbbbbbbbb3 bbbbbbbbbbbbbbb4; do
+      [ -f "$dir/$c" ] || fail "unresolved record $c must never be pruned"
+    done
+    fm_pending_reply_tick "$state" || fail "second retention tick should succeed"
+    [ ! -e "$dir/aaaaaaaaaaaaaaa3" ] || fail "record should prune once its escalation close landed"
+    [ -f "$dir/aaaaaaaaaaaaaaa2" ] || fail "resolved record inside retention must still be kept"
+    for c in bbbbbbbbbbbbbbb1 bbbbbbbbbbbbbbb2 bbbbbbbbbbbbbbb3 bbbbbbbbbbbbbbb4; do
+      [ -f "$dir/$c" ] || fail "unresolved record $c must survive repeated ticks"
+    done
+    FM_PENDING_REPLY_RETENTION_SECS=1 fm_pending_reply_tick "$state" \
+      || fail "configured retention tick should succeed"
+    [ ! -e "$dir/aaaaaaaaaaaaaaa2" ] || fail "a configured shorter retention should prune sooner"
+    fm_pending_reply_prune "$state" aaaaaaaaaaaaaaa2 bbbbbbbbbbbbbbb1 ../x \
+      || fail "pruning is idempotent and ignores open or foreign names"
+    [ -f "$dir/bbbbbbbbbbbbbbb1" ] || fail "a direct prune call must re-check and keep open records"
+  ) || fail "resolved-record retention regression failed"
+  pass "tick prunes resolved records past retention and never touches open ones"
+}
+
+test_tick_over_many_resolved_records_is_fast() {
+  (
+    local home state dir now i corr start elapsed left
+    home=$(setup_parent bulk)
+    state="$home/state"
+    dir=$(fm_pending_reply_dir "$state")
+    now=500000
+    # shellcheck disable=SC2030,SC2031
+    export FM_PENDING_REPLY_NOW=$now
+    for ((i = 0; i < 1500; i++)); do
+      corr=$(printf 'c%015x' "$i")
+      write_record "$state" "$corr" bulk resolved 100 $((now - 60))
+    done
+    write_record "$state" dddddddddddddddd bulk awaiting_report 100 '' '' '' ''
+    start=$SECONDS
+    fm_pending_reply_tick "$state" || fail "bulk steady-state tick should succeed"
+    elapsed=$((SECONDS - start))
+    [ "$elapsed" -le 20 ] || fail "a tick over 1500 settled records took ${elapsed}s"
+    left=$(find "$dir" -type f ! -name '.*' | wc -l | tr -d ' ')
+    [ "$left" = 1501 ] || fail "records inside retention must all be kept, got $left"
+    export FM_PENDING_REPLY_NOW=$((now + 86400))
+    start=$SECONDS
+    fm_pending_reply_tick "$state" || fail "bulk first-run prune should succeed"
+    elapsed=$((SECONDS - start))
+    [ "$elapsed" -le 20 ] || fail "pruning 1500 aged records took ${elapsed}s"
+    left=$(find "$dir" -type f ! -name '.*' | wc -l | tr -d ' ')
+    [ "$left" = 1 ] || fail "every aged resolved record should prune, leaving the open one, got $left"
+    [ -f "$dir/dddddddddddddddd" ] || fail "the open record must survive the bulk prune"
+  ) || fail "bulk resolved-record tick regression failed"
+  pass "a tick over 1500 resolved records stays fast and prunes them once aged"
+}
+
 # --- run --------------------------------------------------------------------
 
 test_normal_correlated_reply_resolves_once
@@ -1694,5 +1792,7 @@ test_remote_parent_replies_is_not_wrong_home
 test_local_parent_replies_is_wrong_home_evidence
 test_escalated_undelivered_correlation_stays_retryable
 test_expect_kind_is_persisted_and_types_acknowledgements
+test_tick_prunes_resolved_records_past_retention
+test_tick_over_many_resolved_records_is_fast
 
 printf 'ok - all pending-reply tests passed\n'

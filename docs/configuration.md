@@ -2451,6 +2451,7 @@ FM_SEND_RETRIES=3       # fm-send typed-plane Enter-retry attempts after typing 
 FM_SEND_SLEEP=0.4       # seconds between fm-send typed-plane submit checks
 FM_SEND_SETTLE=1        # seconds fm-send waits after a successful typed-plane submit; 0 disables
 FM_PENDING_REPLY_GRACE_SECS=120   # seconds after marked-request delivery before a completed turn without a correlated parent report is eligible for its one recovery repost
+FM_PENDING_REPLY_RETENTION_SECS=86400   # seconds a resolved pending-reply record is kept before the watcher tick prunes it; unresolved records are never pruned
 # subscription accounts; see "Subscription accounts" above
 FM_SPAWN_ACCOUNT=       # one launch's explicit account name, set by bin/fm-account.sh for a switch relaunch; beats every recorded or configured account
 FM_ACCOUNT_USAGE_TTL=120   # seconds a cached per-account usage read stays fresh
