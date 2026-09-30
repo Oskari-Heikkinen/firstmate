@@ -53,6 +53,9 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-arm-pretool-check.sh` | Stable PreToolUse transport for the watcher-arm command policy (docs/arm-pretool-check.md) |
 | `fm-arm-command-policy.mjs` | Semantic owner of the watcher-arm PreToolUse policy (docs/arm-pretool-check.md)   |
 | `fm-subagent-pretool-check.sh` | Primary-home delegation-shape PreToolUse guard (docs/subagent-guard.md) |
+| `fm-data-gate.sh`       | User-level PreToolUse data gate against recursive scans of bulk run data, home roots, `~`, `/` and drives (docs/data-gate.md) |
+| `fm-data-gate-policy.mjs` | Decision owner for the data gate: parsing, target resolution, protected roots, home discovery, decision log (docs/data-gate.md) |
+| `fm-data-gate-install.sh` | Install, remove, or inspect the data gate in every harness's user-level settings, with backups and exact restore (docs/data-gate.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home and maintain `data/secondmates.md` |
 | `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host              |
