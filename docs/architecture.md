@@ -16,6 +16,7 @@ The first hash still alarms, each new hash inside that window is absorbed, and a
 The throttle is scoped to both the current captain-call lifecycle and the status-log state, so releasing and re-holding the same task without a status append starts a fresh window whose first new hash alarms.
 A secondmate reaches the stale path only for a wait declared in its status line, so a hold recorded only in the backlog while its last line is `working:` or `done:` is outside this guard.
 Reaching that case would require consulting the backlog for windows the secondmate gate deliberately skips, putting backlog reads on the ordinary poll hot path this design preserves.
+A non-terminal stale ship or scout pane with no declared wait and no open captain call is first told once to park through `bin/fm-park.sh` or finish, and wakes firstmate only if it is still idle after `FM_IDLE_PARK_GRACE`; `FM_IDLE_PARK_NUDGE=off` restores the immediate wake.
 Repeated provably-working stale escalations on the same unchanged pane add an escalation count to the wake reason and, at `FM_WEDGE_DEMAND_INSPECT_COUNT`, a `demand-deep-inspection` marker.
 In the same branch that is about to escalate, the pane's own account of its quiet is consulted first: the worker's declared `paused:` or verified `captain-held` status line.
 That declaration defers the escalation to the `FM_PAUSE_RESURFACE_SECS` recheck cadence instead, because a lane waiting on something it named is silent for a reason the escalation would misreport, and the ladder would otherwise climb for as long as the wait lasts.
