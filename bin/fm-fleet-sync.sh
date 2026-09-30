@@ -311,7 +311,8 @@ stuck_state() {
     s="branch $cur"
   elif [ "$dirty" = yes ]; then
     s="detached HEAD"
-  elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
+  elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
+      && ! ahead_of_base HEAD; then
     s="detached HEAD with unique commits"
   elif default_checked_out_elsewhere; then
     s="detached HEAD ($DEFAULT checked out in another worktree)"
@@ -427,7 +428,9 @@ sync_project_impl() {
       cur=$DEFAULT
     elif [ -z "$cur" ] && [ "$dirty" = no ] \
         && ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
-        && ahead_of_base HEAD; then
+        && ahead_of_base HEAD \
+        && ! default_checked_out_elsewhere \
+        && local_default_safe_for_recovery; then
       report_ahead "detached HEAD "
       return 0
     else

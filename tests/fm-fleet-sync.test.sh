@@ -511,6 +511,29 @@ test_sync_ref_detached_ahead_waits_untouched() {
   pass "detached HEAD past fm.syncRef but within origin/<default> waits untouched"
 }
 
+test_sync_ref_detached_ahead_with_local_main_work_is_stuck() {
+  local home clone out before main_rev
+  home=$(new_home)
+  clone=$(build_pair "$home" syncdetwork)
+  git -C "$clone" config fm.syncRef checks-approved
+  advance_origin "$home" syncdetwork C1
+  push_origin_ref "$home" syncdetwork checks-approved main
+  advance_origin "$home" syncdetwork C2
+  run_sync "$home" "$clone" >/dev/null
+  commit_file "$clone" local.txt local "unpushed local commit on main"
+  main_rev=$(git -C "$clone" rev-parse main)
+  git -C "$clone" checkout --detach --quiet origin/main
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "syncdetwork: STUCK: on detached HEAD (local main diverged from origin/checks-approved)" "local work on main behind a detached HEAD past fm.syncRef reports STUCK"
+  assert_not_contains "$out" "ahead of sync base" "local work on main is never hidden behind a benign wait"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "detached HEAD was moved"
+  [ "$(git -C "$clone" rev-parse main)" = "$main_rev" ] || fail "local main with unpushed work was moved"
+  pass "detached HEAD past fm.syncRef with local work on main keeps STUCK"
+}
+
 test_sync_ref_detached_behind_with_ahead_default_recovers() {
   local home clone out main_rev
   home=$(new_home)
@@ -902,6 +925,7 @@ test_sync_ref_missing_refuses_without_fallback
 test_sync_ref_global_config_ignored
 test_sync_ref_enabled_on_ahead_clone_waits
 test_sync_ref_detached_ahead_waits_untouched
+test_sync_ref_detached_ahead_with_local_main_work_is_stuck
 test_sync_ref_detached_behind_with_ahead_default_recovers
 test_sync_ref_ahead_with_local_work_is_stuck
 test_sync_ref_not_ancestor_is_stuck_untouched
