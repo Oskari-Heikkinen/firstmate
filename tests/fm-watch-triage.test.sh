@@ -2601,6 +2601,7 @@ test_idle_ship_nudge_grace_not_wedge_escalated() {
   printf '1\n' > "$state/.count-$key"
   printf '%s' "$pane_hash" > "$state/.stale-$key"
   printf 'nudged %s\n' "$(date +%s)" > "$state/.idle-nudge-$key"
+  # shellcheck disable=SC2016 # single quotes are deliberate: the fake script expands its own $1
   printf '#!/usr/bin/env bash\necho "$1" >> %q\n' "$sendlog" > "$fakebin/fake-send.sh"
   chmod +x "$fakebin/fake-send.sh"
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
@@ -2632,6 +2633,7 @@ test_idle_secondmate_not_nudged() {
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text "quiet mate")" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
+  # shellcheck disable=SC2016 # single quotes are deliberate: the fake script expands its own $1
   printf '#!/usr/bin/env bash\necho "$1" >> %q\n' "$sendlog" > "$fakebin/fake-send.sh"
   chmod +x "$fakebin/fake-send.sh"
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
