@@ -1,0 +1,129 @@
+$ npm root -g -> /tmp/fm-pi-pin-test/pi-0.87.1/lib/node_modules
+$ installed: 0.87.1
+FM_TEST_BEGIN 2026-09-30T11:38:36Z tests/fm-calm-pi-extension.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - Pi calm resolves its persistent home independently of Pi's launch directory
+ok - Pi calm compatibility evidence never rejects a Pi version for being newer than 0.82.0, and still fails closed on a missing or malformed version
+ok - a missing collapsed-thinking presentation API degrades only that Calm adapter with a clear skip reason, while the rest of Calm still registers
+ok - missing Pi presentation class exports reach the independent adapter degradation path
+ok - Calm registers none of its 7 built-in tool wrappers at load while config/calm is off, and all 7 synchronously at load while config/calm is on
+ok - Calm's first same-session /calm activation claims every uncontested built-in, leaves a foreign bash tool fully intact and callable, warns prominently and logs the contested name, and only rows constructed before that activation - the documented bound - fail to retroactively collapse
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+ok - Pi calm on collapses mid-turn assistant working notes to zero height while Calm off keeps them, leaves streaming, truncated-final, and genuine final replies untouched, never mutates the messages, ignores every /calm argument, and restores a legacy persisted max as ordinary Calm on
+ok - Pi operational follow-up E2E processes exact user-role notifications once while Calm hides current and adjacent rows, Calm off and absent render them, and restart preserves semantics
+ok - Pi Calm native /skill:ahoy geometry keeps every collapsed thinking and tool block at zero height while preserving expansion, history, restart, and Calm-off rendering
+ok - Pi Calm working ship keeps its centered two-row asymmetric Unicode boat inside a deterministic long-wave trough, paints all water standard blue and the whole boat standard yellow with balanced resets, keeps ANSI-stripped width exact, reverses cleanly at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and leaves Calm-off visibility untouched
+ok - the rendered-export-DOM guard renders in one pass, retries a bounded number of Chrome start-up failures, and reports the Chrome binary, Chrome version, Pi version, exit status, and Chrome diagnostic when every attempt fails
+ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+FM_TEST_END 2026-09-30T11:39:55Z tests/fm-calm-pi-extension.test.sh exit=0 duration_ms=79441 gate_skip=false
+FM_TEST_BEGIN 2026-09-30T11:39:55Z tests/fm-pi-branch-extension.test.sh family=standalone expected_gate_skip=none
+ok - fm_branch_outcomes hides through ToolExecutionComponent while Calm-off and HTML export stay stock
+ok - the installed Pi still bounds the picker's list and ranks its search
+ok - branch owns accepted wakes with a stable prefix and deterministic verdict-driven delivery
+ok - a captain outcome reaches main's model as one typed, sequence-keyed processing request while routine notes stay plain
+ok - requested and unsolicited healthy outcomes keep distinct delivery and event ownership
+ok - captain outcomes are exact and exactly once across crash, reload, busy main, compaction, and an unrelated assistant response
+ok - a captain outcome opens one sequence-keyed processing turn, survives empty and unrelated answers, is re-presented at run end and session start, and closes only on its acknowledgement
+ok - scopeForUnreadWake excludes every main-only class without vetoing eligible task-local rows, and writes the eligible snapshot
+ok - branch prompt_cache_key is stable per home across sessions and distinct between homes
+ok - branch default-on eligibility (task-scoped, heartbeat, legacy flag ignored) binds and a broken branch rejects to watcher fallback
+ok - under the away-posture record the wake carries the verbatim read-back tail, claims every row, opens no processing turn, cancels a pending request, and presents the accumulated rows after archive
+ok - an accepted away-only wake rejects after archive, while a drained task-local wake stays a quiet no-op
+ok - a claimed heartbeat row on a non-heartbeat away wake lifts task scoping for the fleet report
+ok - a heartbeat review survives a check row arriving before its drain
+ok - fm_branch_report refuses a task the wake did not name, fleet included, while a heartbeat is unscoped
+ok - pre-drain eligibility re-check excludes a newly main-owned row without deferring eligible work
+ok - a co-present needs-decision row neither vetoes nor falsely settles routine branch delivery
+ok - a settled branch turn without a durable outcome falls back and releases its grant for main replay
+ok - provider-error latches cool down, re-probe once with backoff, and recover through a durable report
+ok - selection changes preserve in-flight transcript ownership and reset provider-error streaks
+ok - a stale main claim returns the durable wake to watcher delivery
+ok - pre-drain eligibility re-check no-ops an already-drained wake
+ok - dialog mirror filters tool and operational traffic, lands before wakes, and keeps a durable cursor
+ok - the dialog mirror re-anchors for each session's new branch conversation and stays incremental within it
+ok - every main session start begins a new branch conversation while one session keeps its own
+ok - the current pin state binds every branch build, and clearing it returns the branch to main's model
+ok - unpinned branches follow main model changes live while pinned branches stay fixed
+ok - supervision-model command persists the captain's pick and rebinds the live branch
+ok - supervision-model opens a bounded searchable list, follow main first, and pins the branch alone
+ok - branch model picker keeps follow main first and filters the eligible catalog
+ok - the effort pin binds every branch build, and clearing it returns the branch to main's effort
+ok - unpinned branches follow main effort changes live while pinned branches stay fixed
+ok - an extension-registered provider resolves in the isolated branch runtime
+ok - supervision-model runs an effort picker after the model picker and persists both independently
+ok - an unusable model pin rejects to watcher fallback and an unparseable one is treated as no pin
+ok - replacement activation cleans old branch leases and retries failed cleanup
+ok - branch activates on a cold start once the lock is acquired, never before
+ok - queued wakes and mirrors stop mutating branch state after lock ownership is lost
+ok - stale reports, shells, mirrors, cursors, leases, and prompts perform no side effects
+ok - a Pi session that does not own the lock accepts nothing and mutates no branch state
+ok - an extension rebind re-mirrors undelivered dialog instead of dropping it
+ok - outcome delivery keeps the event loop running and interleaved reports stay ordered and exactly once
+ok - a session replaced mid-delivery cancels cleanly and the stored outcome still arrives exactly once
+ok - a failing store script surfaces to the branch and its outcome is neither lost nor delivered twice
+ok - a failed cursor write re-delivers a routine note exactly once more while a captain outcome stays deduplicated
+FM_TEST_END 2026-09-30T11:44:20Z tests/fm-pi-branch-extension.test.sh exit=0 duration_ms=264359 gate_skip=false
+FM_TEST_BEGIN 2026-09-30T11:44:20Z tests/fm-pi-watch-extension.test.sh family=watcher-wake-lock expected_gate_skip=none
+ok - Pi extension reports external healthy watcher output
+ok - Pi custom tool exposes repair-only metadata and returns automatic-continuation guidance
+ok - Pi redundant tool call returns ownership guidance and spawns no second child
+ok - Pi scheduled retry remains extension-owned after another tool call
+ok - Pi actionable close starts one successor before wake delivery settles
+ok - Pi actionable output waits for predecessor close before successor restoration
+ok - Pi dispatcher branch offer owns accepted wakes and falls back to main
+ok - Pi dispatcher flags a fleet-wide heartbeat offer as branch-eligible
+ok - a co-present check row neither vetoes nor rides a heartbeat into main
+ok - every main-only check class still reaches main, never the supervision branch
+ok - a captain-held signal trigger reaches main with routine rows present
+ok - an unread pending-reply escalation keeps later stale aliases on main
+ok - a mixed batch of two distinct files - one routine, one needs-decision - routes wholly to main
+ok - a co-present needs-decision row neither vetoes nor rides a heartbeat into main
+ok - heartbeat restoration failure stays on main
+ok - watcher-failure repair stays with main even with a live, accepting branch listener
+ok - under the away-posture record every actionable row is offered to the branch while broken-queue wakes and watcher-failure alarms still reach main
+ok - Pi refused handling handshake is classified and not swallowed
+ok - Pi hung successor falls back to one typed actionable wake
+ok - Pi unretired successor falls back without an overlapping retry
+ok - Pi late unretired closes resume classified supervision
+ok - Pi clean empty close triggers a bounded continuity retry
+ok - Pi established clean closes stop at the configured retry limit
+ok - Pi close handler verifies session-lock ownership before successor launch
+ok - Pi watcher arm distinguishes all session lock ownership states
+ok - Pi session transitions auto-arm through a generation owner across /new /resume /fork/reload, stale callbacks, and quit
+ok - Pi session replacement auto-arms and carries its in-flight actionable close
+ok - Pi replacement replays a streaming follow-up before consumption
+ok - Pi streaming-time wake delivery keeps the successor chain and replays only unconsumed wakes
+ok - Pi retries a verified successor that failed during wake delivery once that delivery settles
+ok - Pi replacement receives actionable closes after retirement timeout
+ok - Pi replacement handoff tokens stay unique across fresh modules
+ok - Pi replacement persistence failure keeps its predecessor until a successor commits
+ok - Pi process-exit cleanup listener remains singular across session replacement
+ok - Pi process-exit cleanup stops the attached arm child
+ok - OpenCode plugins have an explicit ESM boundary even under a typeless parent package
+ok - OpenCode watcher plugin uses the effective FM_HOME state
+ok - OpenCode watcher plugin sources the effective config
+ok - OpenCode watcher plugin requires session lock ownership
+ok - OpenCode watcher coordinator respects primary scope
+ok - OpenCode watcher plugin starts one successor before wake prompt delivery settles
+ok - OpenCode pre-ready actionable close preserves its successor
+ok - OpenCode hung successor falls back to one typed actionable wake
+ok - OpenCode unretired successor falls back without an overlapping retry
+ok - OpenCode late unretired closes resume classified supervision
+ok - OpenCode clean empty close triggers a bounded continuity retry
+ok - OpenCode established clean closes stop at the configured retry limit
+ok - OpenCode close handler verifies session-lock ownership before successor launch
+ok - OpenCode watcher plugin coordinates with the turn-end guard
+ok - OpenCode healthy arm output does not suppress the turn-end guard
+FM_TEST_END 2026-09-30T11:45:15Z tests/fm-pi-watch-extension.test.sh exit=0 duration_ms=55385 gate_skip=false
+FM_TEST_BEGIN 2026-09-30T11:45:15Z tests/fm-pi-primary-types.test.sh family=pure-contract-unit expected_gate_skip=none
+skip: Pi extension typecheck prerequisite not found: tsc
+fm-test-run: required gate skip token seen in tests/fm-pi-primary-types.test.sh: skip: Pi extension typecheck prerequisite not found
+FM_TEST_END 2026-09-30T11:45:16Z tests/fm-pi-primary-types.test.sh exit=1 duration_ms=131 gate_skip=false
+FM_TEST_SUMMARY total=4 failed=1 skipped_gate=0 duration_ms=399860
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=79572 failed=1
+FM_TEST_SUMMARY_FAMILY family=standalone count=1 duration_ms=264359 failed=0
+FM_TEST_SUMMARY_FAMILY family=watcher-wake-lock count=1 duration_ms=55385 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-pi-branch-extension.test.sh duration_ms=264359
+FM_TEST_SLOWEST rank=2 script=tests/fm-calm-pi-extension.test.sh duration_ms=79441
+FM_TEST_SLOWEST rank=3 script=tests/fm-pi-watch-extension.test.sh duration_ms=55385
+FM_TEST_SLOWEST rank=4 script=tests/fm-pi-primary-types.test.sh duration_ms=131
+exit=1

@@ -1,0 +1,14 @@
+== job tests-portable-parallel-1: running workflow step script verbatim (npm global prefix redirected to /tmp/fm-pi-pin-test/step-tests-portable-parallel-1)
+exit 0
+
+added 144 packages in 21s
+/tmp/fm-pi-pin-test/step-tests-portable-parallel-1/lib
+└── @earendil-works/pi-coding-agent@0.87.1
+
+== job tests-portable-serial: running workflow step script verbatim (npm global prefix redirected to /tmp/fm-pi-pin-test/step-tests-portable-serial)
+exit 0
+
+added 144 packages in 25s
+/tmp/fm-pi-pin-test/step-tests-portable-serial/lib
+└── @earendil-works/pi-coding-agent@0.87.1
+
