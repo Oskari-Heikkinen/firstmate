@@ -1,0 +1,7 @@
+# Panel frame (watch --once) on the branch's second-mate home: shows expired and the local sign-in need
+Accounts  (floor 10%)
+work     claude    ?  runway -      resets -  [expired: renews on next use]
+    on it: s2
+retired  claude    ?  runway -      resets -  [missing-folder]
+New spawns: work
+Needs the captain: sign in to account retired (claude login folder /tmp/fmlive.3aio/gone-login)

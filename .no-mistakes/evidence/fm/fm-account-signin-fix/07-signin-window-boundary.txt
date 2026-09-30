@@ -1,0 +1,9 @@
+# Boundary: 3+ readings that do NOT yet span the window stay silent; the wake comes once first..last >= window.
+# FM_ACCOUNT_USAGE_TTL=5 (one real read per check, as the 120s default gives in production), FM_ACCOUNT_SIGNIN_CONFIRM_SECS=40, a check every ~10s.
+check #1 at +3s  streak retired: count=1 span=0s -> <silent>
+check #2 at +13s  streak retired: count=2 span=10s -> <silent>
+check #3 at +25s  streak retired: count=3 span=21s -> <silent>
+check #4 at +36s  streak retired: count=4 span=33s -> <silent>
+check #5 at +45s  streak retired: count=5 span=42s -> accounts: needs the captain: sign in to account retired (claude login folder /tmp/fmlive.3aio/gone-login)
+check #6 at +58s  streak retired: count=6 span=55s -> <silent>
+check #7 at +68s  streak retired: count=7 span=65s -> <silent>

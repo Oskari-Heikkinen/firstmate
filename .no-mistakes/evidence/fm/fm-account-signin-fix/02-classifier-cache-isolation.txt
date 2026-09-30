@@ -1,0 +1,6 @@
+# Control: the same classifier read run bare (no throwaway XDG_CACHE_HOME), to show what fm-account's isolation prevents
+after bare classifier read of dead: f992ce997073513c {"sentinel":"user-cache-snapshot"}
+after bare classifier read of lapsed: f992ce997073513c {"sentinel":"user-cache-snapshot"}
+fm-account's shared cache (xdg) after its classifier reads: f992ce997073513c {"sentinel":"user-cache-snapshot"}
+0
+# note: the seeded cache held no Claude snapshot, so the bare control read did not change it either; the evidence here is only that fm-account's reads left the shared cache byte-identical and left no fm-account-classify.* temp dir behind.

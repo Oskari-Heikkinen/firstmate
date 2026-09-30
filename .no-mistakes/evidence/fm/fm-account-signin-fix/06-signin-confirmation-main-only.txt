@@ -1,0 +1,43 @@
+# Scenario: sign-in confirmation (3 readings spanning the window) and main-home-only wake lines, live.
+# retired = registered Claude login whose folder does not exist (reads missing-folder, which counts toward the sign-in streak)
+# work = lapsed-token login with a refresh token, read by the real quota-axi. FM_ACCOUNT_USAGE_TTL=0, FM_ACCOUNT_SIGNIN_CONFIRM_SECS=20.
+=== BASE (ae87dbc2) main home, first check: wakes at once ===
+accounts: needs the captain: sign in to account retired (claude login folder /tmp/fmlive.3aio/gone-login)
+--- check #1 at +6s
+  BRANCH main  streak retired=1790765145|1790765146|2 work=none work-usage=expired -> <silent>
+  BRANCH mate  streak retired=1790765148|1790765149|2 -> <silent>
+--- check #2 at +19s
+  BRANCH main  streak retired=1790765145|1790765160|4 work=none work-usage=expired -> <silent>
+  BRANCH mate  streak retired=1790765148|1790765163|4 -> <silent>
+--- check #3 at +30s
+  BRANCH main  streak retired=1790765145|1790765171|6 work=none work-usage=expired -> accounts: needs the captain: sign in to account retired (claude login folder /tmp/fmlive.3aio/gone-login)
+  BRANCH mate  streak retired=1790765148|1790765174|6 -> <silent>
+--- check #4 at +49s
+  BRANCH main  streak retired=1790765145|1790765186|8 work=none work-usage=expired -> <silent>
+  BRANCH mate  streak retired=1790765148|1790765193|8 -> <silent>
+--- check #5 at +65s
+  BRANCH main  streak retired=1790765145|1790765203|10 work=none work-usage=expired -> <silent>
+  BRANCH mate  streak retired=1790765148|1790765209|10 -> <silent>
+--- check #6 at +79s
+  BRANCH main  streak retired=1790765145|1790765221|12 work=none work-usage=expired -> <silent>
+  BRANCH mate  streak retired=1790765148|1790765223|12 -> <silent>
+
+=== BRANCH mate home: rebalance (captain form) - no sign-in line even though its own streak is confirmed ===
+balanced: no agent needs to move
+
+=== BRANCH mate home: status - still shows the sign-in locally ===
+Accounts  (floor 10%)
+work     claude    ?  runway -      resets -  [expired: renews on next use]
+    on it: s2
+retired  claude    ?  runway -      resets -  [missing-folder]
+New spawns: work
+Needs the captain: sign in to account retired (claude login folder /tmp/fmlive.3aio/gone-login)
+
+=== BRANCH main home: rebalance (captain form) ===
+balanced: no agent needs to move
+needs the captain: sign in to account retired (claude login folder /tmp/fmlive.3aio/gone-login)
+
+=== Adversarial: login folder comes back as a renewable login (retired -> lapsed creds); an expired reading clears the streak ===
+  retired usage=expired streak=<removed> .account-check=1790765172|3864593955|1790765244 -> <silent>
+=== folder gone again: first new reading starts a fresh streak and does not wake ===
+  retired streak=1790765245|1790765247|2 -> <silent>

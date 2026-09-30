@@ -1,0 +1,79 @@
+# Live flap run: every ~30s, one rebalance --check per home, each a real quota-axi read of the synthetic logins.
+# work = lapsed token WITH refresh token; gmail = lapsed token, NO refresh token. Window scaled to 60s (FM_ACCOUNT_SIGNIN_CONFIRM_SECS=60).
+# raw = what bin reads recorded for gmail/work in that home's usage cache on this check.
+--- check #1 at 12:34:49
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #2 at 12:35:33
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #3 at 12:36:13
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #4 at 12:36:54
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #5 at 12:37:32
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #6 at 12:38:12
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #7 at 12:38:49
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #8 at 12:39:45
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #9 at 12:40:30
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #10 at 12:41:15
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #11 at 12:41:58
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #12 at 12:42:38
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #13 at 12:43:20
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #14 at 12:44:02
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #15 at 12:44:42
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+--- check #16 at 12:45:23
+  BASE   main  raw gmail/work=rate_limited/rate_limited  -> <silent>
+  BRANCH main  raw gmail/work=rate_limited/expired  streak gmail=none work=none  -> <silent>
+  BRANCH mate  raw gmail/work=rate_limited/expired  streak gmail=none  -> <silent>
+=== after loop: BRANCH status on the second-mate home (local display still shows everything) ===
+Accounts  (floor 10%)
+work     claude    ?  runway -      resets -  [expired: renews on next use]
+    on it: s1
+gmail    claude    ?  runway -      resets -  [rate_limited]
+New spawns: work
+=== after loop: BRANCH status on the main home ===
+Accounts  (floor 10%)
+work     claude    ?  runway -      resets -  [expired: renews on next use]
+    on it: main
+gmail    claude    ?  runway -      resets -  [rate_limited]
+New spawns: work

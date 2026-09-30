@@ -1,0 +1,15 @@
+ok - a malformed account registry refuses every command and wakes the watcher form
+ok - status shows usage per login, who runs where, new-spawn routing, planned moves, and advice
+ok - usage reads are cached, and unknown usage is never treated as low
+ok - the floor file and registry priority decide which login has room
+ok - rebalance --dry-run plans, and the watcher form wakes only when a move or advice changes
+ok - a lapsed Claude login that still holds a refresh token reads expired, not signed out
+ok - sign-in lines reach the captain only from main, once three reads over the window confirm them
+ok - advice that goes quiet and returns unchanged wakes again only after the confirmation window
+ok - use pins a second mate durably and refuses the session, other providers, missing logins, and busy workers
+ok - default records and clears the account new spawns start from
+ok - auto keeps the watcher check in step with the registry and the on/off setting
+ok - panel opens a Herdr side pane on the caller's session and a second toggle closes it
+ok - a fresh spawn leaves a login below the floor and records the one it used
+ok - a spawn refuses rather than launching on a login other than the one named
+# all fm-account tests passed

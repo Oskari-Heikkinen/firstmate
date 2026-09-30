@@ -1,0 +1,25 @@
+# Scenario: the watcher (rebalance --check) wakes the captain for a sign-in only once 3 readings span the window.
+# FM_ACCOUNT_USAGE_TTL=0 (every check is a real quota-axi read), FM_ACCOUNT_SIGNIN_CONFIRM_SECS=6 (window scaled down from 900s)
+=== BASE (ae87dbc2), main home: first check ===
+accounts: needs the captain: sign in to account work (claude login folder /tmp/fmlive.3aio/lapsed); sign in to account gmail (claude login folder /tmp/fmlive.3aio/dead)
+[rc=0]
+
+=== BRANCH main home, check #1 at 12:33:14 ===
+<silent>
+   streak gmail:    streak work: <none>   .account-check: <none>
+=== BRANCH main home, check #2 at 12:33:26 ===
+<silent>
+   streak gmail:    streak work: <none>   .account-check: <none>
+=== BRANCH main home, check #3 at 12:33:38 ===
+<silent>
+   streak gmail:    streak work: <none>   .account-check: <none>
+=== BRANCH main home, check #4 at 12:33:45 ===
+<silent>
+   streak gmail:    streak work: <none>   .account-check: <none>
+=== BRANCH main home, check #5 at 12:33:53 ===
+<silent>
+   streak gmail:    streak work: <none>   .account-check: <none>
+
+=== BRANCH main home: rebalance (captain form, not --check) ===
+balanced: no agent needs to move
+# note: from here on Anthropic answered every read with 429, so gmail read rate_limited, which by design leaves the streak unchanged (no streak file, no wake), while work stayed expired. The confirmation path is driven in 06 and 07.

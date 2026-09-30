@@ -1,0 +1,39 @@
+# Scenario: status on a lapsed-but-renewable login vs a truly signed-out login
+# work = synthetic Claude login, access token expired 1h ago, holds a refresh token
+# gmail = synthetic Claude login, access token expired 1h ago, no refresh token
+# Both read by the REAL quota-axi 0.1.53 against the real Anthropic endpoint.
+$ sha256sum lapsed/.credentials.json dead/.credentials.json; sha256sum xdg/quota-axi/quotas.json  (before)
+87549b227f20b8de73311c5f69f780b3216db89b523a5cd8bcea83d407e0b9a5  lapsed/.credentials.json
+89e0ce556942d5f048cfe4f8fd6767690c05dc6f81acb91c4d5aac23feed725e  dead/.credentials.json
+f992ce997073513c50e7a8f73c33d62bdf7c9c311590652420a10a4775d48c44  xdg/quota-axi/quotas.json
+
+=== BASE (ae87dbc2) bin/fm-account.sh status --refresh ===
+Accounts  (floor 10%)
+work     claude    ?  runway -      resets -  [auth_required]
+    on it: main
+gmail    claude    ?  runway -      resets -  [auth_required]
+New spawns: work
+Needs the captain: sign in to account work (claude login folder /tmp/fmlive.3aio/lapsed)
+Needs the captain: sign in to account gmail (claude login folder /tmp/fmlive.3aio/dead)
+
+=== BRANCH (fcaabce2) bin/fm-account.sh status --refresh ===
+Accounts  (floor 10%)
+work     claude    ?  runway -      resets -  [expired: renews on next use]
+    on it: main
+gmail    claude    ?  runway -      resets -  [auth_required]
+New spawns: work
+Needs the captain: sign in to account gmail (claude login folder /tmp/fmlive.3aio/dead)
+
+=== BRANCH status --json (accounts) ===
+[{"name":"work","provider":"claude","login_folder":"/tmp/fmlive.3aio/lapsed","status":"expired","percent_left":null,"resets_at":null,"runway_seconds":null,"plan":null,"low":false},{"name":"gmail","provider":"claude","login_folder":"/tmp/fmlive.3aio/dead","status":"auth_required","percent_left":null,"resets_at":null,"runway_seconds":null,"plan":null,"low":false}]
+
+$ state records written by the branch read
+.account-signin-gmail: 1790764362|1790764362|1
+.account-usage-gmail: 1790764360|auth_required||||
+.account-usage-work: 1790764358|expired||||
+
+$ sha256sum (after)
+87549b227f20b8de73311c5f69f780b3216db89b523a5cd8bcea83d407e0b9a5  lapsed/.credentials.json
+89e0ce556942d5f048cfe4f8fd6767690c05dc6f81acb91c4d5aac23feed725e  dead/.credentials.json
+f992ce997073513c50e7a8f73c33d62bdf7c9c311590652420a10a4775d48c44  xdg/quota-axi/quotas.json
+{"sentinel":"user-cache-snapshot"}
