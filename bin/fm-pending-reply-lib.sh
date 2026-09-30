@@ -1488,10 +1488,10 @@ fm_pending_reply_tick_one() {  # <state-dir> <corr_id> <busy_state> [secondmate-
 
 # Retention for resolved records. A resolved record is settled bookkeeping; the
 # tick only needs it until any escalation it opened has been closed. Past the
-# retention bound (counted from resolved_epoch, or created_epoch for a record
-# without one) the watcher tick deletes it and its delivery-confirmation file,
-# so a busy home's directory stays bounded instead of growing by every routed
-# request. Unresolved records are never pruned, a resolved record whose
+# retention bound (counted from resolved_epoch) the watcher tick deletes it and
+# its delivery-confirmation file, so a busy home's directory stays bounded
+# instead of growing by every routed request. Unresolved records and resolved
+# records without a resolved_epoch are never pruned, a resolved record whose
 # escalation close is still pending is kept until that close lands, and a
 # record a backlog-handoff receiver wake marker still names is kept for that
 # marker's owner (bin/fm-backlog-handoff.sh).
@@ -1508,7 +1508,7 @@ fm_pending_reply_retention_secs() {
 # the caller's _fm_prs_* variables. No fork, no lock.
 _fm_pending_reply_read_summary() {  # <record-path>
   local key value
-  _fm_prs_corr_id='' _fm_prs_task_id='' _fm_prs_phase='' _fm_prs_created=''
+  _fm_prs_corr_id='' _fm_prs_task_id='' _fm_prs_phase=''
   _fm_prs_resolved='' _fm_prs_escalated='' _fm_prs_escalation_closed=''
   [ -f "$1" ] || return 1
   while IFS='=' read -r key value || [ -n "$key" ]; do
@@ -1516,7 +1516,6 @@ _fm_pending_reply_read_summary() {  # <record-path>
       corr_id) _fm_prs_corr_id=$value ;;
       task_id) _fm_prs_task_id=$value ;;
       phase) _fm_prs_phase=$value ;;
-      created_epoch) _fm_prs_created=$value ;;
       resolved_epoch) _fm_prs_resolved=$value ;;
       escalated_epoch) _fm_prs_escalated=$value ;;
       escalation_closed_epoch) _fm_prs_escalation_closed=$value ;;
@@ -1531,7 +1530,6 @@ _fm_pending_reply_summary_prunable() {  # <now> <retention-secs>
   [ "$_fm_prs_phase" = resolved ] || return 1
   [ -z "$_fm_prs_escalated" ] || [ -n "$_fm_prs_escalation_closed" ] || return 1
   since=$_fm_prs_resolved
-  case "$since" in ''|*[!0-9]*) since=$_fm_prs_created ;; esac
   case "$since" in ''|*[!0-9]*) return 1 ;; esac
   [ $(($1 - since)) -ge "$2" ]
 }
@@ -1547,7 +1545,7 @@ _fm_pending_reply_summary_prunable() {  # <now> <retention-secs>
 # afford. Idempotent: an already-removed record is skipped.
 fm_pending_reply_prune() {  # <state-dir> <corr_id>...
   local state=$1 corr rec now retention markers='' marker value dir confirm_prefix
-  local _fm_prs_corr_id _fm_prs_task_id _fm_prs_phase _fm_prs_created
+  local _fm_prs_corr_id _fm_prs_task_id _fm_prs_phase
   local _fm_prs_resolved _fm_prs_escalated _fm_prs_escalation_closed
   local -a doomed=()
   shift
@@ -1581,7 +1579,7 @@ fm_pending_reply_prune() {  # <state-dir> <corr_id>...
 fm_pending_reply_tick() {  # <state-dir>
   local state=$1 dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host
   local observation observation_task found i now retention
-  local _fm_prs_corr_id _fm_prs_task_id _fm_prs_phase _fm_prs_created
+  local _fm_prs_corr_id _fm_prs_task_id _fm_prs_phase
   local _fm_prs_resolved _fm_prs_escalated _fm_prs_escalation_closed
   local -a observation_tasks=() observation_values=() prunable=()
   dir=$(fm_pending_reply_dir "$state")
@@ -1698,7 +1696,7 @@ fm_pending_reply_tick() {  # <state-dir>
     fi
     fm_pending_reply_tick_one "$state" "$corr" "$busy" "$sm_home" || true
   done
-  fm_pending_reply_prune "$state" "${prunable[@]}" || true
+  [ "${#prunable[@]}" -eq 0 ] || fm_pending_reply_prune "$state" "${prunable[@]}" || true
   return 0
 }
 

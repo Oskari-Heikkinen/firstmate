@@ -1694,7 +1694,7 @@ test_tick_prunes_resolved_records_past_retention() {
       || fail "a pruned record's delivery confirmation should go with it"
     [ -f "$dir/aaaaaaaaaaaaaaa2" ] || fail "resolved record inside retention must be kept"
     [ ! -e "$dir/aaaaaaaaaaaaaaa4" ] || fail "a resolved record whose escalation is closed should prune"
-    [ ! -e "$dir/aaaaaaaaaaaaaaa5" ] || fail "a resolved record without resolved_epoch ages from created_epoch"
+    [ -f "$dir/aaaaaaaaaaaaaaa5" ] || fail "a resolved record without resolved_epoch must be kept"
     [ -f "$dir/aaaaaaaaaaaaaaa6" ] || fail "a record a receiver wake marker names must be kept"
     [ -f "$dir/aaaaaaaaaaaaaaa3" ] || fail "an escalation close must land before its record is pruned"
     [ -n "$(fm_pending_reply_get "$dir/aaaaaaaaaaaaaaa3" escalation_closed_epoch)" ] \
