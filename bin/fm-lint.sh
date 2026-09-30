@@ -611,11 +611,73 @@ fm_lint_root_weights() {
   done
   [ "${#ROOTS[@]}" -gt 0 ] || return 0
   printf '%s\n' "${ROOTS[@]}" | LC_ALL=C awk '
+    # Carries quote, command-substitution, and here-document state across
+    # physical lines, so source commands inside a multi-line string such as a
+    # bash -c body, which ShellCheck never follows, add nothing.
+    function scan(line,    i, j, c, top, rest, body) {
+      if (heredoc != "") {
+        body=line
+        if (heredoc_tabs) sub(/^\t+/, "", body)
+        if (body == heredoc) heredoc=""
+        return
+      }
+      i=1
+      while (1) {
+        top=depth ? stack[depth] : ""
+        rest=substr(line, i)
+        if (top == "\047") {
+          if (!(j=index(rest, "\047"))) return
+          depth--
+          i+=j
+          continue
+        }
+        if (!match(rest, /[\\\047"$()#<]/)) return
+        i+=RSTART
+        c=substr(line, i - 1, 1)
+        if (c == "\\") {
+          i++
+          continue
+        }
+        if (top == "$\047") {
+          if (c == "\047") depth--
+          continue
+        }
+        if (c == "$" && substr(line, i, 1) == "(") {
+          stack[++depth]="("
+          parens[depth]=0
+          i++
+          continue
+        }
+        if (top == "\"") {
+          if (c == "\"") depth--
+          continue
+        }
+        if (c == "\047") stack[++depth]="\047"
+        else if (c == "\"") stack[++depth]="\""
+        else if (c == "$" && substr(line, i, 1) == "\047") {
+          stack[++depth]="$\047"
+          i++
+        } else if (top == "(" && c == "(") parens[depth]++
+        else if (top == "(" && c == ")") {
+          if (parens[depth]) parens[depth]--
+          else depth--
+        } else if (c == "#" && (i == 2 || substr(line, i - 2, 1) ~ /[[:space:];&|()]/)) return
+        else if (c == "<" && substr(line, i - 1, 3) == "<<<") i+=2
+        else if (c == "<" && match(substr(line, i - 1), /^<<-?[[:space:]]*[\\\047"]?[A-Za-z_][A-Za-z0-9_]*[\047"]?/)) {
+          heredoc=substr(line, i + 1, RLENGTH - 2)
+          heredoc_tabs=(substr(heredoc, 1, 1) == "-")
+          gsub(/[-[:space:]\\\047"]/, "", heredoc)
+          i+=RLENGTH - 1
+        }
+      }
+    }
     function parse(file,    line, target, pending, rc) {
       parsed[file]=1
       size[file]=0
       ndeps[file]=0
       pending=0
+      depth=0
+      heredoc=""
       while ((rc=(getline line < file)) > 0) {
         size[file]+=length(line) + 1
         if (line ~ /^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]/) {
@@ -624,15 +686,19 @@ fm_lint_root_weights() {
             target=substr(line, RSTART + 8, RLENGTH - 8)
             if (target != "/dev/null") deps[file, ++ndeps[file]]=target
           }
+          scan(line)
           continue
         }
-        if (line ~ /^[[:space:]]*(#|$)/) continue
-        if (!pending && match(line, /^[[:space:]]*(\.|source)[[:space:]]+"?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?\//)) {
-          target=substr(line, RSTART + RLENGTH)
-          sub(/[";[:space:]].*$/, "", target)
-          if (target != "") deps[file, ++ndeps[file]]=target
+        if (heredoc == "" && (!depth || stack[depth] == "(")) {
+          if (line ~ /^[[:space:]]*(#|$)/) continue
+          if (!pending && match(line, /^[[:space:]]*(\.|source)[[:space:]]+"?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?\//)) {
+            target=substr(line, RSTART + RLENGTH)
+            sub(/[";[:space:]].*$/, "", target)
+            if (target != "") deps[file, ++ndeps[file]]=target
+          }
         }
         pending=0
+        scan(line)
       }
       if (rc >= 0) close(file)
     }
@@ -768,13 +834,10 @@ fm_lint_root_weights > "$WEIGHTS" || exit $?
 # single heaviest root, and light roots fill both workers largest-first by
 # weight. The concurrent worker therefore never holds a heavy root.
 WORKER_LOADS=(0 0)
-HEAVY_ROOT_COUNT=0
 LC_ALL=C sort -t "$TAB" -k1,1nr -k2,2n "$WEIGHTS" > "$WEIGHTS.sorted"
 while IFS="$TAB" read -r weight index path; do
   worker=0
-  if [ "$weight" -ge "$HEAVY_SOURCE_BYTES" ]; then
-    HEAVY_ROOT_COUNT=$((HEAVY_ROOT_COUNT + 1))
-  elif [ "${WORKER_LOADS[1]}" -lt "${WORKER_LOADS[0]}" ]; then
+  if [ "$weight" -lt "$HEAVY_SOURCE_BYTES" ] && [ "${WORKER_LOADS[1]}" -lt "${WORKER_LOADS[0]}" ]; then
     worker=1
   fi
   printf '%s\t%s\n' "$index" "$path" >> "$TMP_ROOT/manifest.$worker"
@@ -988,7 +1051,6 @@ EOF
     printf 'source_target_count\t%s\n' "$source_targets"
     printf 'shard_1_weight_bytes\t%s\n' "${WORKER_LOADS[0]}"
     printf 'shard_2_weight_bytes\t%s\n' "${WORKER_LOADS[1]:-0}"
-    printf 'heavy_root_count\t%s\n' "$HEAVY_ROOT_COUNT"
     printf 'wall_seconds\t%s\n' "$((TELEMETRY_END_EPOCH - TELEMETRY_START_EPOCH))"
     printf 'worker_wall_sum_seconds\t%s\n' "$timing_worker_wall"
     printf 'max_worker_wall_seconds\t%s\n' "$max_worker_wall"

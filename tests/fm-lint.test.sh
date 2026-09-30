@@ -1306,9 +1306,12 @@ SH
 # ShellCheck roots, whose memory comes from the source closure they pull in,
 # into both concurrent workers, and one CI runner summed two multi-GB analyses
 # until it was killed. Heavy roots must share one worker regardless of their own
-# size, counting directive and undirected sources but not /dev/null boundaries.
+# size, counting directive and undirected sources, including those in command
+# substitutions, but not /dev/null boundaries or sources inside strings and
+# here-documents, which ShellCheck never follows.
 test_heavy_source_closures_share_one_worker() {
-  local tmp rel fakebin call_log calls out lib root invocation heavy_hits all_hits
+  local tmp rel fakebin call_log calls out lib root invocation heavy_hits light_hits
+  local heavy_workers light_workers
   local -a heavy light
   tmp=$(mktemp -d "$ROOT/.fm-lint-heavy.XXXXXX")
   if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
@@ -1340,6 +1343,7 @@ SH
   yes '# filler' | head -c 350000 >> "$tmp/heavy-directive.sh"
   cat > "$tmp/heavy-undirected.sh" <<SH
 #!/usr/bin/env bash
+printf '%s\n' "it's not a quote"
 . "\$ROOT/$rel/big-lib.sh"
 source "\${FM_DIR}/$rel/big-lib.sh"
 SH
@@ -1349,6 +1353,13 @@ SH
 # shellcheck source=$rel/mid.sh
 . "\$1"
 SH
+  cat > "$tmp/heavy-substitution.sh" <<SH
+#!/usr/bin/env bash
+out=\$(
+  . "\$ROOT/$rel/big-lib.sh"
+  . "\$ROOT/$rel/big-lib.sh"
+)
+SH
   cat > "$tmp/light-boundary.sh" <<SH
 #!/usr/bin/env bash
 # shellcheck source=/dev/null
@@ -1356,6 +1367,17 @@ SH
 # Stop here.
 # shellcheck source=/dev/null
 . "\$ROOT/$rel/big-lib.sh"
+SH
+  cat > "$tmp/light-quoted.sh" <<SH
+#!/usr/bin/env bash
+bash -c '
+  . "\$ROOT/$rel/big-lib.sh"
+  . "\$ROOT/$rel/big-lib.sh"
+'
+cat <<'EOS'
+. "\$ROOT/$rel/big-lib.sh"
+. "\$ROOT/$rel/big-lib.sh"
+EOS
 SH
   { printf '#!/usr/bin/env bash\n'; yes '# filler that makes this root the largest file on its own' | head -c 400000; } > "$tmp/light-bulky.sh"
   cat > "$tmp/light-cycle-a.sh" <<SH
@@ -1369,8 +1391,8 @@ SH
 . "\$1"
 SH
   printf '#!/usr/bin/env bash\nprintf small\n' > "$tmp/light-small.sh"
-  heavy=("$tmp/heavy-directive.sh" "$tmp/heavy-undirected.sh" "$tmp/heavy-chain.sh")
-  light=("$tmp/light-boundary.sh" "$tmp/light-bulky.sh" "$tmp/light-cycle-a.sh" "$tmp/light-cycle-b.sh" "$tmp/light-small.sh")
+  heavy=("$tmp/heavy-directive.sh" "$tmp/heavy-undirected.sh" "$tmp/heavy-chain.sh" "$tmp/heavy-substitution.sh")
+  light=("$tmp/light-boundary.sh" "$tmp/light-quoted.sh" "$tmp/light-bulky.sh" "$tmp/light-cycle-a.sh" "$tmp/light-cycle-b.sh" "$tmp/light-small.sh")
 
   out=$(PATH="$fakebin:$PATH" CI=true FM_TEST_CALL_LOG="$call_log" \
     "$LINT" "${light[@]}" "${heavy[@]}" 2>&1) \
@@ -1378,27 +1400,31 @@ SH
   [ "$(wc -l < "$call_log" | tr -d '[:space:]')" -eq 2 ] \
     || fail "full lint did not run exactly two worker invocations"$'\n'"$(cat "$call_log")"
   calls=$(cat "$call_log")
-  all_hits=0
+  heavy_workers=0
+  light_workers=0
   while IFS= read -r invocation; do
     heavy_hits=0
+    light_hits=0
     for root in "${heavy[@]}"; do
       case " ${invocation#*roots=} " in *" $root "*) heavy_hits=$((heavy_hits + 1)) ;; esac
     done
-    [ "$heavy_hits" -eq 0 ] || [ "$heavy_hits" -eq "${#heavy[@]}" ] \
-      || fail "heavy roots were split across concurrent workers"$'\n'"$calls"
-    all_hits=$((all_hits + heavy_hits))
     for root in "${light[@]}"; do
-      case " ${invocation#*roots=} " in *" $root "*) all_hits=$((all_hits + 1)) ;; esac
+      case " ${invocation#*roots=} " in *" $root "*) light_hits=$((light_hits + 1)) ;; esac
     done
+    if [ "$heavy_hits" -eq "${#heavy[@]}" ] && [ "$light_hits" -eq 0 ]; then
+      heavy_workers=$((heavy_workers + 1))
+    elif [ "$heavy_hits" -eq 0 ] && [ "$light_hits" -eq "${#light[@]}" ]; then
+      light_workers=$((light_workers + 1))
+    fi
   done <<< "$calls"
-  [ "$all_hits" -eq $((${#heavy[@]} + ${#light[@]})) ] \
-    || fail "heavy-closure packing lost or duplicated roots"$'\n'"$calls"
+  [ "$heavy_workers" -eq 1 ] && [ "$light_workers" -eq 1 ] \
+    || fail "one worker must hold exactly the heavy roots and the other exactly the light roots"$'\n'"$calls"
   PATH="$fakebin:$PATH" CI=true FM_TEST_CALL_LOG="$tmp/calls-2.log" \
     "$LINT" "${light[@]}" "${heavy[@]}" > /dev/null 2>&1 \
     || fail "repeated heavy-closure packing lint failed"
   [ "$(LC_ALL=C sort "$tmp/calls-2.log")" = "$(LC_ALL=C sort "$call_log")" ] \
     || fail "heavy-closure packing is nondeterministic"
-  pass "heavy source closures share one worker while light roots, boundaries, and cycles fill both"
+  pass "heavy source closures share one worker; boundaries, quoted sources, and cycles stay light"
 }
 
 test_worker_trees_stop_on_signal() {

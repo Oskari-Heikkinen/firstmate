@@ -631,6 +631,7 @@ test_delivery_confirmation_fallback_reconciles() {
     [ -f "$marker" ] || fail "delivery confirmation fallback marker should persist"
     [ -z "$(fm_pending_reply_get "$rec" delivered_epoch)" ] \
       || fail "failed primary commit should leave delivered_epoch empty"
+    # shellcheck source=/dev/null
     . "$ROOT/bin/fm-pending-reply-lib.sh"
     fm_pending_reply_tick_one "$state" "$corr" unknown \
       || fail "watcher should reconcile the delivery marker"
@@ -925,7 +926,6 @@ test_fm_send_marked_secondmate_creates_pending_and_embeds_corr() {
   run_send "$fb" "$home" "$log" "hibit" "audit the build"; rc=$?
   expect_code 0 "$rc" "secondmate send should succeed"
   got=$(latest_record_body "$home" hibit)
-  # shellcheck disable=SC2031 # Set by the sourced production library, outside this analysis.
   case "$got" in
     "$FM_FROMFIRST_MARK"corr=*) : ;;
     *) fail "secondmate steer record must embed marker+corr"$'\n'"$(printf '%s' "$got" | od -An -c)" ;;
@@ -1180,7 +1180,6 @@ test_correlations_reuse_only_for_matching_open_task() {
     || fail "cross-task expectation must belong to the new target"
   printf 'done [corr=%s]: complete\n' "$corr1" > "$state/domain.status"
   fm_pending_reply_try_resolve "$state" "$corr1" || fail "first expectation should resolve"
-  # shellcheck disable=SC2031 # Set by the sourced production library, outside this analysis.
   run_send "$fb" "$home" "$log" domain "${FM_FROMFIRST_MARK}corr=${corr1} follow-up" \
     || fail "resolved-correlation follow-up failed"
   corr3=$(fm_pending_reply_extract_corr "$(latest_record_body "$home" domain)")
@@ -1671,7 +1670,6 @@ write_record() {  # <state> <corr> <task> <phase> <created> <resolved> [escalate
   local dir
   dir=$(fm_pending_reply_dir "$1")
   mkdir -p "$dir"
-  # shellcheck disable=SC2031 # Set by the sourced production library, outside this analysis.
   printf '%s\n' "schema=$FM_PENDING_REPLY_SCHEMA" "corr_id=$2" "task_id=$3" \
     "parent_status=${1}/$3.status" "created_epoch=$5" "delivered_epoch=${9-$5}" \
     "phase=$4" "resolved_epoch=$6" "escalated_epoch=${7-}" \
