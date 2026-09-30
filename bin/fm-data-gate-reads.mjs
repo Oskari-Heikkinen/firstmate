@@ -253,9 +253,12 @@ function nodeReads(tokens, state, depth, out) {
     if (token.type === "group") analyzeReads(token.content, state.cwd, depth + 1, out);
     for (const sub of token.subs || []) analyzeReads(sub.content, state.cwd, depth + 1, out);
   }
+  const stdin = [];
   for (let i = 0; i < tokens.length; i += 1) {
     if (tokens[i].type === "redir" && /^\d*<$/.test(tokens[i].value) && tokens[i + 1]?.type === "word") {
-      out.push({ tool: "redirect", word: tokens[i + 1], cwd: state.cwd, bound: null });
+      const read = { tool: "redirect", word: tokens[i + 1], cwd: state.cwd, bound: null };
+      out.push(read);
+      if (/^0?<$/.test(tokens[i].value)) stdin.push(read);
     }
   }
   const position = commandPosition(tokens);
@@ -292,9 +295,11 @@ function nodeReads(tokens, state, depth, out) {
   if (!spec) return;
   if (spec.head) {
     const parsed = headArgs(args, name === "tail");
+    for (const read of stdin) read.bound = parsed.bound;
     for (const word of parsed.files) out.push({ tool: name, word, cwd: state.cwd, bound: parsed.bound });
     return;
   }
+  for (const read of stdin) read.pipeable = STREAMING.has(name);
   for (const word of readerOperands(spec, args)) out.push({ tool: name, word, cwd: state.cwd, bound: null, pipeable: STREAMING.has(name) });
 }
 
