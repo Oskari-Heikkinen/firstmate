@@ -41,9 +41,15 @@
 #            not between steps (retried by the next run), then print one line
 #            per move plus any restart or sign-in the captain must do. Only the
 #            captain can restart this home's own session or sign in to a login.
+#            Only the main home prints sign-in and no-room lines here, and a
+#            sign-in only once the lib's sign-in streak confirms it; status and
+#            the panel still show every home's current readings.
 #            --dry-run prints the plan only. --check is the watcher form: it
 #            prints one wake line only when a move is due or the advice changed
-#            (or 30 minutes after an unhandled move line) and nothing otherwise.
+#            (or 30 minutes after an unhandled move line) and nothing otherwise;
+#            advice that goes quiet and returns unchanged within the sign-in
+#            confirmation window (FM_ACCOUNT_SIGNIN_CONFIRM_SECS, default 900)
+#            does not wake again.
 # auto       on/off writes config/account-auto; sync makes state/accounts.check.sh
 #            match it: installed and registered (bin/fm-check-register.sh) while
 #            config/accounts exists and auto is not off, retired otherwise.
@@ -57,9 +63,10 @@
 #            default, a rebalance now, q close. --once draws one frame and exits.
 #
 # Runtime records written only here: state/.account-usage-<name> (lib cache),
-# state/account-moves.log (<epoch>|<id>|<from>|<to>|<result>),
-# state/.account-check (the --check fingerprint), state/.account-panel (the
-# running panel's pid).
+# state/.account-signin-<name> (lib sign-in streak), state/account-moves.log
+# (<epoch>|<id>|<from>|<to>|<result>),
+# state/.account-check (<epoch>|<fingerprint>|<quiet-since-epoch>, the --check
+# fingerprint), state/.account-panel (the running panel's pid).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -182,25 +189,33 @@ log_move() {  # <id> <from> <to> <result>
   printf '%s|%s|%s|%s|%s\n' "$(date +%s)" "$1" "${2:--}" "$3" "$4" >>"$MOVES_LOG" 2>/dev/null || true
 }
 
-# advice <agents> <accounts>: captain-facing lines (restart this session, sign
-# in), one per line.
+# advice <agents> <accounts> [captain]: captain-facing lines (restart this
+# session, sign in), one per line. With captain (rebalance), sign-in and
+# no-room lines come from the main home only, and a sign-in line exactly while
+# the lib's sign-in streak confirms it.
 advice() {
-  local agents=$1 accounts=$2 floor room self_acct name provider dir status left rest
+  local agents=$1 accounts=$2 captain=${3:-} floor room self_acct name provider dir status left rest main=0
+  [ "$(self_label)" = main ] && main=1
   floor=$(fm_account_floor "$CONFIG")
   room=$(fm_account_room "$CONFIG" "$STATE")
   self_acct=$(printf '%s\n' "$agents" | awk -F'|' '$6 == "session" { print $5; exit }')
-  if [ "$(self_label)" = main ] && [ -n "$self_acct" ] && fm_account_is_low "$CONFIG" "$STATE" "$self_acct" && [ -n "$room" ] && [ "$room" != "$self_acct" ]; then
+  if [ "$main" = 1 ] && [ -n "$self_acct" ] && fm_account_is_low "$CONFIG" "$STATE" "$self_acct" && [ -n "$room" ] && [ "$room" != "$self_acct" ]; then
     fm_account_get "$CONFIG" "$room"
     printf 'restart this main session on %s: exit it, then start it again with CLAUDE_CONFIG_DIR=%s (%s is below the %s%% floor)\n' \
       "$room" "$FM_ACCOUNT_DIR" "$self_acct" "$floor"
   fi
   while IFS='|' read -r name provider dir status left rest; do
     [ -n "$name" ] || continue
+    # The captain form follows the confirmed streak, not this one reading, so
+    # an in-between rate_limited or error reading neither drops nor adds a line.
+    if [ -n "$captain" ]; then
+      [ "$main" = 1 ] && fm_account_signin_confirmed "$STATE" "$name" && status=auth_required || status=
+    fi
     case "$status" in
       auth_required | missing-folder) printf 'sign in to account %s (%s login folder %s)\n' "$name" "$provider" "$dir" ;;
     esac
   done <<<"$accounts"
-  if [ -z "$room" ] && printf '%s\n' "$accounts" | awk -F'|' -v f="$floor" '$2 == "claude" && $5 != "" && $5 < f { found = 1 } END { exit !found }'; then
+  if [ -z "$room" ] && { [ -z "$captain" ] || [ "$main" = 1 ]; } && printf '%s\n' "$accounts" | awk -F'|' -v f="$floor" '$2 == "claude" && $5 != "" && $5 < f { found = 1 } END { exit !found }'; then
     printf 'no Claude account has room above the %s%% floor; sign in to another login or wait for a reset\n' "$floor"
   fi
 }
@@ -265,7 +280,11 @@ cmd_status() {
     line=$(printf '%-8s %-6s %4s  runway %-6s resets %s' "$name" "$provider" \
       "$pct" "$(fmt_duration "$runway")" \
       "$( [ -n "$reset" ] && printf 'in %s' "$(fmt_duration $((reset > now ? reset - now : 0)))" || printf -- '-')")
-    [ "$status" = fresh ] || [ -z "$status" ] || line="$line  [$status]"
+    case "$status" in
+      fresh | '') ;;
+      expired) line="$line  [expired: renews on next use]" ;;
+      *) line="$line  [$status]" ;;
+    esac
     if [ "$provider" = claude ] && [ -n "$left" ] && [ "$left" -lt "$floor" ]; then line="$line  LOW"; fi
     printf '%s\n' "$line"
     on=$(printf '%s\n' "$agents" | awk -F'|' -v a="$name" '
@@ -413,7 +432,7 @@ cmd_default() {
 }
 
 cmd_rebalance() {
-  local check=0 dry=0 agents accounts moves adv id kind from to fp last stamp now line ready mates
+  local check=0 dry=0 agents accounts moves adv id kind from to fp last stamp quiet now line ready mates window
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check=1 ;;
@@ -431,7 +450,7 @@ cmd_rebalance() {
   agents=$(collect_agents)
   accounts=$(account_rows "${FM_ACCOUNT_USAGE_TTL:-120}")
   moves=$(plan_moves "$agents")
-  adv=$(advice "$agents" "$accounts")
+  adv=$(advice "$agents" "$accounts" captain)
   if [ "$check" = 1 ]; then
     ready=
     while IFS='|' read -r id kind from to; do
@@ -442,14 +461,25 @@ cmd_rebalance() {
     moves=${ready%$'\n'}
     fp=$(printf '%s\n%s' "$moves" "$adv" | cksum | awk '{ print $1 }')
     now=$(date +%s)
-    last='' stamp=0
-    [ -f "$STATE/.account-check" ] && IFS='|' read -r stamp last <"$STATE/.account-check"
+    last='' stamp=0 quiet=''
+    [ -f "$STATE/.account-check" ] && IFS='|' read -r stamp last quiet <"$STATE/.account-check"
     case "$stamp" in '' | *[!0-9]*) stamp=0 ;; esac
-    [ -n "$moves$adv" ] || { rm -f "$STATE/.account-check"; return 0; }
-    if [ "$fp" = "$last" ] && { [ -z "$moves" ] || [ $((now - stamp)) -lt 1800 ]; }; then
+    case "$quiet" in *[!0-9]*) quiet='' ;; esac
+    window=${FM_ACCOUNT_SIGNIN_CONFIRM_SECS:-900}
+    case "$window" in '' | *[!0-9]*) window=900 ;; esac
+    # Quiet advice keeps the last fingerprint and notes when it went quiet, so
+    # the same advice returning inside the window is not a new wake.
+    if [ -z "$moves$adv" ]; then
+      [ ! -f "$STATE/.account-check" ] || [ -n "$quiet" ] ||
+        printf '%s|%s|%s\n' "$stamp" "$last" "$now" >"$STATE/.account-check" 2>/dev/null || true
       return 0
     fi
-    printf '%s|%s\n' "$now" "$fp" >"$STATE/.account-check" 2>/dev/null || true
+    if [ "$fp" = "$last" ] && { [ -z "$quiet" ] || [ $((now - quiet)) -lt "$window" ]; } &&
+      { [ -z "$moves" ] || [ $((now - stamp)) -lt 1800 ]; }; then
+      [ -z "$quiet" ] || printf '%s|%s|\n' "$stamp" "$last" >"$STATE/.account-check" 2>/dev/null || true
+      return 0
+    fi
+    printf '%s|%s|\n' "$now" "$fp" >"$STATE/.account-check" 2>/dev/null || true
     line='accounts:'
     [ -z "$moves" ] || line="$line $(printf '%s\n' "$moves" | awk -F'|' '{ s = s (s ? ", " : "") $1 " " $3 "->" $4 } END { print s }') - run bin/fm-account.sh rebalance (automatic, no captain approval);"
     [ -z "$adv" ] || line="$line needs the captain: $(printf '%s\n' "$adv" | paste -sd';' - | sed 's/;/; /g')"
