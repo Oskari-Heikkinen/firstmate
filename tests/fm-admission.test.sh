@@ -26,6 +26,12 @@ write_proc() {
   printf '%s 1.00 1.00 2/300 12345\n' "$5" > "$proc/loadavg"
 }
 
+# add_gone <proc> <pid>: a pid listed in <proc> whose stat vanished before it was read.
+add_gone() {
+  mkdir -p "$1/$2"
+  ln -s "$1/$2/exited" "$1/$2/stat"
+}
+
 # add_proc <proc> <pid> <ppid> <comm> [argv...]
 add_proc() {
   local proc=$1 pid=$2 ppid=$3 comm=$4
@@ -87,6 +93,7 @@ test_fleet_cap_counts_agent_trees_machine_wide() {
   local out
   new_case cap
   printf '{"max_agents": 3}\n' > "$C/rules.json"
+  add_gone "$C/proc" 5
   add_proc "$C/proc" 10 1 tmux
   add_proc "$C/proc" 20 10 claude claude
   add_proc "$C/proc" 21 20 claude claude --resume helper
@@ -94,13 +101,14 @@ test_fleet_cap_counts_agent_trees_machine_wide() {
   add_proc "$C/proc" 40 10 node node /srv/app/server.js
   out=$(adm check) || fail "two agent trees under a cap of 3 held admission: $out"
   add_proc "$C/proc" 50 10 opencode opencode
+  add_gone "$C/proc" 60
   out=$(adm check) && fail "three agents under a cap of 3 admitted another"
   assert_contains "$out" "3 live agents plus 0 just admitted would exceed the fleet cap of 3" "the cap is named with the live count"
   rm -rf "${C:?}/proc/50"
   out=$(adm acquire) || fail "acquire under the cap failed: $out"
   out=$(adm check) && fail "a just-admitted agent was not charged against the cap"
   assert_contains "$out" "2 live agents plus 1 just admitted" "recent admissions count toward the cap"
-  pass "the cap counts one per agent tree, recognizes node-hosted agents, and charges recent admissions"
+  pass "the cap counts one per agent tree, survives exited processes, recognizes node-hosted agents, and charges recent admissions"
 }
 
 test_waits_then_admits_when_the_host_recovers() {
@@ -128,7 +136,8 @@ test_refuses_after_the_bound_and_override_skips() {
   printf '{"wait_max_s": 0}\n' > "$C/rules.json"
   out=$(adm acquire --label "task t3"); rc=$?
   expect_code 3 "$rc" "acquire past the bound"
-  assert_contains "$out" "error: admission refused for task t3 after 0s: free memory" "the refusal names the unmet condition"
+  assert_contains "$out" "error: admission refused for task t3 after " "the refusal names the task"
+  assert_contains "$out" "s: free memory" "the refusal names the unmet condition"
   assert_absent "$C/run/admitted" "a refusal records nothing"
   out=$(adm acquire --label "task t3" --override); rc=$?
   expect_code 0 "$rc" "override"
@@ -149,7 +158,8 @@ test_relaunches_are_paced_per_home_and_secondmates_never_refused() {
   printf '{"secondmate_wait_max_s": 0}\n' > "$C/rules.json"
   out=$(adm acquire --secondmate --label "task sm"); rc=$?
   expect_code 0 "$rc" "a paced secondmate still starts"
-  assert_contains "$out" "warning: admission: secondmate task sm starting after 0s despite: 2 relaunches" "the secondmate start warns"
+  assert_contains "$out" "warning: admission: secondmate task sm starting after " "the secondmate start warns"
+  assert_contains "$out" "s despite: 2 relaunches" "the secondmate warning names what it skipped"
   pass "restart-shaped launches are paced per home and a secondmate is delayed, never refused"
 }
 

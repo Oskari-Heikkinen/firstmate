@@ -580,9 +580,9 @@ When `powershell.exe` is missing or slow the guard grades on Linux signals alone
 The response is graded, and each level includes the ones below it:
 
 - `warn` records the sample and the level change in the guard's logs.
-- `park` parks this home's idle workers - those whose current state is a declared wait and that already carry `data/<id>/handoff.md` - through `bin/fm-park.sh`, at most once per `park_interval_s`; while `bin/fm-park.sh` is absent it logs that park acts as warn only.
+- `park` passes over this home's idle workers - ship and scout tasks not already parked whose current state is a declared wait - at most once per `park_interval_s`: one whose `data/<id>/handoff.md` passes `bin/fm-park.sh validate` is parked with `bin/fm-park.sh <id> --handoff data/<id>/handoff.md`, and any other gets one steer through `bin/fm-send.sh` asking it to write that handoff and park itself; the pass stays inside the watcher's check timeout and leaves the rest for the next pass, and while `bin/fm-park.sh` is absent it logs that park acts as warn only.
 - `refuse` makes every new agent spawn (the machine admission gate above) and every heavy-job start (`fm-mem-guard.sh admit`) wait and then refuse, naming the memory guard.
-- `critical` also wakes the primary home's supervisor once per `critical_rewake_s`; secondmate homes never raise this wake.
+- `critical` also wakes the primary home's supervisor once per `critical_rewake_s`, before any park work; secondmate homes never raise this wake.
 
 A level rises at once and falls only after `clear_samples` consecutive better samples.
 The fleet-wide agent budget is the admission gate's `max_agents`, counted across every home on the machine.
@@ -615,8 +615,8 @@ Each `memory_guard` threshold is four numbers, one per level from `warn` to `cri
 | `mem_max` | `8G` | `MemoryMax`: the job is OOM-killed inside its scope above it; also the job's cost for `--admit` |
 | `swap_max` | `2G` | `MemorySwapMax` for the job |
 
-Handing Linux page cache back to Windows and sizing WSL itself need Windows-side or root changes that no script here makes: the WSL `memory` limit should leave Windows several GB of real headroom, and `autoMemoryReclaim` (`gradual` or `dropCache` in `.wslconfig`) reclaims only while the VM is idle, so a busy fleet also needs a root timer that drops clean page cache when it is large.
-The headers of `bin/fm-mem-guard.sh` and `bin/fm-job-cap.sh` own the exact commands, records, and test seams.
+Sizing WSL itself (`.wslconfig` memory limit, reclaim mode, and swap) and handing Linux page cache back to Windows need Windows-side or root changes that no script here makes; they are an operator handover prepared outside the repository, not repository content.
+The headers of `bin/fm-mem-guard.sh` and `bin/fm-job-cap.sh` own only those scripts' own commands, records, and test seams.
 
 ## Home brief include (config/brief-include.md)
 

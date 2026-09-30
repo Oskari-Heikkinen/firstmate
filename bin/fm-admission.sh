@@ -124,7 +124,7 @@ live_agents() {
   [ -d "$PROC" ] || return 1
   # shellcheck disable=SC2016 # the single-quoted text is an awk program
   rows=$(find "$PROC" -mindepth 2 -maxdepth 2 -name stat -path "$PROC/[0-9]*/stat" -print0 2>/dev/null |
-    xargs -0 awk '{
+    xargs -0 cat -- 2>/dev/null | awk '{
       line = $0
       o = index(line, "("); c = 0
       for (i = length(line); i > o; i--) if (substr(line, i, 1) == ")") { c = i; break }

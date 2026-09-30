@@ -18,9 +18,15 @@
 #   tick    samples, grades with hysteresis, records the machine level, appends
 #           one line to the bounded sample log, and responds for this home:
 #             warn     log only;
-#             park     also parks this home's idle workers through bin/fm-park.sh
-#                      (a worker whose current state is a declared wait and that
-#                      has data/<id>/handoff.md), at most once per park_interval_s;
+#             park     also passes over this home's idle workers (ship or scout
+#                      tasks not already parked whose current state is a declared
+#                      wait), at most once per park_interval_s: one whose
+#                      data/<id>/handoff.md passes `fm-park.sh validate` is parked
+#                      with `fm-park.sh <id> --handoff data/<id>/handoff.md`; any
+#                      other gets one steer through bin/fm-send.sh asking it to
+#                      write that handoff and park itself with bin/fm-park.sh.
+#                      The pass ends inside the watcher's FM_CHECK_TIMEOUT
+#                      (default 30s) and leaves the rest for the next pass;
 #                      without bin/fm-park.sh it logs that park acts as warn only;
 #             refuse   also makes every new agent spawn (bin/fm-admission.sh) and
 #                      heavy-job start (`admit`) refuse, naming the memory guard;
@@ -28,8 +34,8 @@
 #                      critical_rewake_s while still critical. Secondmate homes
 #                      never print it, so only main is woken.
 #           --check is the watcher form: identical, and stdout carries only the
-#           wake line. Every level at or above one step includes the lower
-#           steps' responses.
+#           wake line, printed before any park work. Every level at or above one
+#           step includes the lower steps' responses.
 #   level   prints `<level> <epoch> <reasons>` from the recorded machine level,
 #           or `unknown` when none is recorded within state_max_age_s. It never
 #           samples, so admission can call it on every launch.
@@ -383,9 +389,17 @@ cmd_admit() {
   echo admit
 }
 
-# park_idle: park this home's idle workers that already carry a handoff.
+# bounded <cmd...>: run cmd under the time left before PARK_STOP (epoch seconds).
+bounded() {
+  local left=$((PARK_STOP - $(date +%s)))
+  [ "$left" -ge 1 ] || return 124
+  [ "$left" -le 20 ] || left=20
+  timeout "$left" "$@"
+}
+
+# park_idle <level>: park this home's idle workers, or steer them to park themselves.
 park_idle() {
-  local t last meta id handoff cond st out rc parked=0
+  local level=$1 t last meta id handoff st out rc parked=0 steered=0 budget
   t=$(now)
   last=$(cat "$STATE/.mem-guard-park" 2>/dev/null) || last=0
   case "$last" in '' | *[!0-9]*) last=0 ;; esac
@@ -395,26 +409,43 @@ park_idle() {
     event "park: bin/fm-park.sh is not installed in $FM_HOME, so the park level acts as warn only"
     return 0
   fi
+  budget=${FM_CHECK_TIMEOUT:-30}
+  case "$budget" in '' | *[!0-9]*) budget=30 ;; esac
+  PARK_STOP=$((TICK_START + budget - 5))
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
     ! grep -q '^kind=secondmate$' "$meta" 2>/dev/null || continue
-    handoff="$DATA/$id/handoff.md"
-    [ -f "$handoff" ] || continue
-    st=$(FM_CREW_STATE_NO_FORGE=1 timeout 20 "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null | head -1)
+    [ "$(sed -n 's/^park_state=//p' "$meta" 2>/dev/null | tail -1)" != parked ] || continue
+    if [ $((PARK_STOP - $(date +%s))) -lt 2 ]; then
+      event "park: $FM_HOME pass reached its time budget at $id; the rest wait for the next pass"
+      break
+    fi
+    st=$(FM_CREW_STATE_NO_FORGE=1 bounded "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null | head -1)
     case "$st" in 'state: paused'*) ;; *) continue ;; esac
-    cond=$(awk '/^## / { inside = ($0 ~ /^## Waiting for/) ; next } inside && NF { print; exit }' "$handoff")
-    [ -n "$cond" ] || { event "park: $FM_HOME $id skipped: its handoff names no wait condition"; continue; }
-    out=$("$SCRIPT_DIR/fm-park.sh" "$id" --handoff "$handoff" --when "$cond" 2>&1)
-    rc=$?
-    if [ "$rc" = 0 ]; then
-      parked=$((parked + 1))
-      event "park: $FM_HOME $id parked"
+    handoff="$DATA/$id/handoff.md"
+    if [ -f "$handoff" ] && bounded "$SCRIPT_DIR/fm-park.sh" validate "$handoff" >/dev/null 2>&1; then
+      out=$(bounded "$SCRIPT_DIR/fm-park.sh" "$id" --handoff "$handoff" 2>&1)
+      rc=$?
+      if [ "$rc" = 0 ]; then
+        parked=$((parked + 1))
+        event "park: $FM_HOME $id parked"
+      else
+        event "park: $FM_HOME $id not parked (exit $rc): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+      fi
     else
-      event "park: $FM_HOME $id not parked (exit $rc): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+      out=$(FM_HOME="$FM_HOME" bounded "$SCRIPT_DIR/fm-send.sh" "$id" "memory guard: the machine is at $level and your session is idle on a declared wait. Write $handoff (Goal, Done, Waiting for, Next steps), then park yourself with $SCRIPT_DIR/fm-park.sh $id --handoff $handoff so your session is released until the result arrives." 2>&1)
+      rc=$?
+      if [ "$rc" = 0 ]; then
+        steered=$((steered + 1))
+        event "park: $FM_HOME $id steered to write its handoff and park itself"
+      else
+        event "park: $FM_HOME $id steer failed (exit $rc): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+      fi
     fi
   done
   [ "$parked" = 0 ] || event "park: $FM_HOME parked $parked idle worker(s)"
+  [ "$steered" = 0 ] || event "park: $FM_HOME steered $steered idle worker(s) to park themselves"
 }
 
 is_secondmate_home() {
@@ -424,6 +455,7 @@ is_secondmate_home() {
 cmd_tick() {
   local check=0 t prev_i new_i below reasons wake last
   [ "${1:-}" = --check ] && check=1
+  TICK_START=$(date +%s)
   guard_dir_ready || { echo "error: cannot create $GUARD_DIR" >&2; exit 1; }
   take_sample 0
   grade
@@ -449,9 +481,6 @@ cmd_tick() {
   lock_release "$LOCK"
 
   wake=
-  if [ "$new_i" -ge 2 ] && [ -d "$STATE" ]; then
-    park_idle
-  fi
   if [ "$new_i" -ge 4 ] && [ -d "$STATE" ] && ! is_secondmate_home; then
     last=$(cat "$STATE/.mem-guard-wake" 2>/dev/null) || last=0
     case "$last" in '' | *[!0-9]*) last=0 ;; esac
@@ -467,6 +496,9 @@ cmd_tick() {
   else
     printf 'level=%s\nreasons=%s\n' "$(level_name "$new_i")" "$reasons"
     [ -z "$wake" ] || printf 'wake=%s\n' "$wake"
+  fi
+  if [ "$new_i" -ge 2 ] && [ -d "$STATE" ]; then
+    park_idle "$(level_name "$new_i")"
   fi
 }
 

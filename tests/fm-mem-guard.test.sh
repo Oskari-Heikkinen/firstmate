@@ -147,37 +147,82 @@ test_critical_wakes_only_main_once_per_window() {
   pass "critical wakes a primary home once per critical_rewake_s and never a secondmate home"
 }
 
-test_park_level_parks_idle_workers_with_a_handoff() {
-  local out
+# fake_park_tools: an fm-park.sh whose validate accepts a handoff with a "Waiting for"
+# section and whose park form records its arguments, and an fm-send.sh recording each steer.
+fake_park_tools() {
+  cat > "$C/home/bin/fm-park.sh" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = validate ]; then grep -q '^## Waiting for' "\$2"; exit; fi
+printf '%s\n' "\$*" >> "$C/park-calls"
+SH
+  cat > "$C/home/bin/fm-send.sh" <<SH
+#!/usr/bin/env bash
+printf '%s %s\n' "\$FM_HOME" "\$1" >> "$C/send-calls"
+printf '%s\n' "\$2" > "$C/send-text"
+SH
+  chmod +x "$C/home/bin/fm-park.sh" "$C/home/bin/fm-send.sh"
+}
+
+# fake_crew_state <paused-ids> [delay-seconds]: listed ids read as a declared wait, others as working.
+fake_crew_state() {
+  cat > "$C/home/bin/fm-crew-state.sh" <<SH
+#!/usr/bin/env bash
+sleep ${2:-0}
+case " $1 " in
+  *" \$1 "*) echo "state: paused · source: status-log · waiting on a run" ;;
+  *) echo "state: working · source: pane · busy" ;;
+esac
+SH
+  chmod +x "$C/home/bin/fm-crew-state.sh"
+}
+
+HANDOFF='# Handoff\n\n## Goal\nx\n\n## Done\nd\n\n## Waiting for\n\npr-merged:https://example.test/pr/1\n\n## Next steps\ny\n'
+
+test_park_level_parks_or_steers_idle_workers() {
+  local id
   new_case park
   fake_ps 2500 10
   rm -f "$C/home/bin/fm-park.sh"
   guard tick >/dev/null
   assert_grep "park: bin/fm-park.sh is not installed in $C/home, so the park level acts as warn only" "$C/guard/events.log" "without fm-park.sh park is warn only and says so"
-  cat > "$C/home/bin/fm-park.sh" <<SH
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$C/park-calls"
-SH
-  cat > "$C/home/bin/fm-crew-state.sh" <<'SH'
-#!/usr/bin/env bash
-case "$1" in
-  w-paused) echo "state: paused · source: status-log · waiting on a run" ;;
-  *) echo "state: working · source: pane · busy" ;;
-esac
-SH
-  chmod +x "$C/home/bin/fm-park.sh" "$C/home/bin/fm-crew-state.sh"
-  for id in w-paused w-busy w-nohandoff; do printf 'kind=ship\n' > "$C/home/state/$id.meta"; done
+  fake_park_tools
+  fake_crew_state "w-paused w-invalid w-nohandoff w-parked mate"
+  for id in w-paused w-busy w-invalid w-nohandoff w-parked; do printf 'kind=ship\n' > "$C/home/state/$id.meta"; done
+  printf 'park_state=parked\n' >> "$C/home/state/w-parked.meta"
   printf 'kind=secondmate\n' > "$C/home/state/mate.meta"
-  mkdir -p "$C/home/data/w-paused" "$C/home/data/w-busy" "$C/home/data/mate"
-  printf '# Handoff\n\n## Goal\nx\n\n## Waiting for\n\npr-merged https://example.test/pr/1\n\n## Next steps\ny\n' > "$C/home/data/w-paused/handoff.md"
-  cp "$C/home/data/w-paused/handoff.md" "$C/home/data/w-busy/handoff.md"
-  cp "$C/home/data/w-paused/handoff.md" "$C/home/data/mate/handoff.md"
+  for id in w-paused w-busy w-invalid w-parked mate; do mkdir -p "$C/home/data/$id"; done
+  for id in w-paused w-busy w-parked mate; do printf '%b' "$HANDOFF" > "$C/home/data/$id/handoff.md"; done
+  printf '# Handoff\n\n## Goal\nx\n' > "$C/home/data/w-invalid/handoff.md"
   FM_MEM_GUARD_NOW=1000100 guard tick >/dev/null
-  assert_absent "$C/park-calls" "a second park inside park_interval_s does nothing"
+  assert_absent "$C/park-calls" "a second pass inside park_interval_s does nothing"
+  assert_absent "$C/send-calls" "a second pass inside park_interval_s steers nobody"
   FM_MEM_GUARD_NOW=1001000 guard tick >/dev/null
-  assert_equals "w-paused --handoff $C/home/data/w-paused/handoff.md --when pr-merged https://example.test/pr/1" "$(cat "$C/park-calls")" "only the declared-wait worker with a handoff is parked, with its wait condition"
+  assert_equals "w-paused --handoff $C/home/data/w-paused/handoff.md" "$(cat "$C/park-calls")" "only the idle worker with a valid handoff is parked, with no guessed condition"
+  assert_equals "$C/home w-invalid"$'\n'"$C/home w-nohandoff" "$(sort "$C/send-calls")" "idle workers without a valid handoff are steered once each through this home"
+  assert_contains "$(cat "$C/send-text")" "park yourself with $C/home/bin/fm-park.sh w-nohandoff --handoff $C/home/data/w-nohandoff/handoff.md" "the steer names the handoff and the park command"
   assert_grep "park: $C/home w-paused parked" "$C/guard/events.log" "the park is logged"
-  pass "the park level parks this home's idle workers through fm-park.sh, or logs warn-only without it"
+  assert_grep "park: $C/home w-invalid steered to write its handoff and park itself" "$C/guard/events.log" "the steer is logged"
+  FM_MEM_GUARD_NOW=1001100 guard tick >/dev/null
+  assert_equals 2 "$(wc -l < "$C/send-calls" | tr -d ' ')" "a worker is steered at most once per park_interval_s"
+  pass "the park level parks idle workers with a valid handoff, steers the rest once per interval, or logs warn-only without fm-park.sh"
+}
+
+test_critical_wake_precedes_park_work() {
+  local out rc
+  new_case wakefirst
+  fake_ps 900 10
+  fake_park_tools
+  fake_crew_state "w-a w-b" 30
+  for id in w-a w-b; do printf 'kind=ship\n' > "$C/home/state/$id.meta"; done
+  out=$(timeout 2 "$GUARD" tick --check 2>/dev/null)
+  assert_equals "memory guard critical: Windows available 900 MiB (critical); new agents and heavy jobs are refused; park or finish waiting workers and stop heavy jobs (bin/fm-mem-guard.sh status)" "$out" "a check killed during park work still delivered the wake"
+  assert_present "$C/home/state/.mem-guard-wake" "the wake epoch is recorded before park work"
+  rm -f "$C/home/state/.mem-guard-wake" "$C/home/state/.mem-guard-park"
+  out=$(FM_CHECK_TIMEOUT=9 timeout 15 "$GUARD" tick --check 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "a park pass bounded by the check timeout"
+  assert_contains "$out" "memory guard critical" "the bounded tick still wakes"
+  assert_grep "park: $C/home pass reached its time budget at w-" "$C/guard/events.log" "a pass that runs out of time says who waits"
+  pass "the critical wake is printed and recorded before park work, and the park pass ends inside the check timeout"
 }
 
 test_rules_override_and_malformed_values_warn() {
@@ -199,7 +244,12 @@ test_auto_sync_arms_and_retires_the_check() {
   out=$(FM_HOME="$C/home" "$GUARD" auto sync 2>&1) || fail "auto sync failed: $out"
   assert_present "$C/home/state/mem-guard.check.sh" "sync arms the check"
   assert_present "$C/home/state/mem-guard.check-trust" "sync registers the check"
-  assert_grep "tick --check" "$C/home/state/mem-guard.check.sh" "the check runs the watcher form"
+  out=$("$C/home/state/mem-guard.check.sh" 2>&1) || fail "the generated check failed: $out"
+  assert_equals "" "$out" "the generated check prints nothing on a healthy machine"
+  fake_ps 900 10
+  guard sample --fresh >/dev/null
+  out=$("$C/home/state/mem-guard.check.sh" 2>&1) || fail "the generated check failed: $out"
+  assert_equals "memory guard critical: Windows available 900 MiB (critical); new agents and heavy jobs are refused; park or finish waiting workers and stop heavy jobs (bin/fm-mem-guard.sh status)" "$out" "the generated check prints exactly the wake line when critical"
   out=$("$GUARD" auto off 2>&1) || fail "auto off failed: $out"
   assert_absent "$C/home/state/mem-guard.check.sh" "off retires the check"
   assert_equals off "$(cat "$C/home/config/mem-guard")" "off is recorded"
@@ -258,7 +308,8 @@ test_sample_degrades_to_linux_only
 test_grading_levels_and_hysteresis
 test_admit_refuses_heavy_jobs
 test_critical_wakes_only_main_once_per_window
-test_park_level_parks_idle_workers_with_a_handoff
+test_park_level_parks_or_steers_idle_workers
+test_critical_wake_precedes_park_work
 test_rules_override_and_malformed_values_warn
 test_auto_sync_arms_and_retires_the_check
 test_job_cap_scopes_and_refuses
