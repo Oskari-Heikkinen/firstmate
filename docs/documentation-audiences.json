@@ -357,6 +357,10 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/examples/heavy-slot-mem-guard.patch",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/examples/process-event-extension/file-signal.mjs",
       "audience": "operator-example"
     },

@@ -52,6 +52,15 @@ export FM_GATE_REFUSE_BYPASS=1
 # leaked harness pin alone stays inert outside a suite.
 export FM_TEST_SEAM=1
 
+# Keep fixture spawns independent of the test host's memory, load, and live
+# agent count: bin/fm-admission.sh admits at once under FM_ADMISSION=off.
+# tests/fm-admission.test.sh unsets it to exercise the real gate.
+export FM_ADMISSION=off
+
+# The memory guard likewise never samples, records, or arms a check for the
+# test host; tests/fm-mem-guard.test.sh unsets it to exercise the real guard.
+export FM_MEM_GUARD=off
+
 # Clear the task-worker marker bin/fm-spawn.sh exports into ship and scout
 # panes. This suite builds git-init fixture repositories whose primary checkout
 # it runs a copied bin/fm-test-run.sh in, and that runner refuses the primary
