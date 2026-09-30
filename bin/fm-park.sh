@@ -57,7 +57,8 @@
 #           are cleared, and the nonzero exit wakes the supervisor with that
 #           reason; the watch fires once, so it is already spent.
 # cancel    Retire the watch and mark the record park_state=cancelled, without
-#           relaunching anything.
+#           relaunching anything. Tearing down a parked task
+#           (bin/fm-teardown.sh) retires its watch the same way.
 # stop      The detached exit of a self-park: after FM_PARK_SELF_EXIT_DELAY
 #           seconds (3) stop the agent through `bin/fm-control.sh <id> exit`; if
 #           that fails, append a blocked: status line naming park-exit.log so the
