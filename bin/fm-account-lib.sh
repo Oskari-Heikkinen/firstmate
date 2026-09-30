@@ -19,7 +19,7 @@
 # read says a Claude login needs sign-in or is rate limited, one more read of
 # the same folder classifies it (quota-axi --no-credential-refresh, with
 # CLAUDE_CODE_OAUTH_TOKEN unset so no env token answers for the folder), and
-# only its status and authStatus are used, never its usage numbers: a lapsed
+# only its authStatus is used, never its usage numbers: a lapsed
 # access token that still holds a refresh token is status expired (it renews
 # on next use), not a sign-out.
 #
@@ -47,12 +47,13 @@
 # FM_ACCOUNT_USAGE_TTL (seconds, default 120) bounds its age;
 # FM_ACCOUNT_QUOTA_TIMEOUT (seconds, default 20) bounds one quota-axi read.
 #
-# Sign-in streak: state/.account-signin-<name>, one line "<first-epoch>|<count>"
-# written only here at each real read. A read of auth_required or
+# Sign-in streak: state/.account-signin-<name>, one line
+# "<first-epoch>|<last-epoch>|<count>" written only here at each real read. A read of auth_required or
 # missing-folder counts it up, fresh or expired removes it, and any other
 # status (rate_limited, error, unreadable) leaves it alone. A login is
 # confirmed as needing sign-in (fm_account_signin_confirmed) only after at
-# least 3 counted reads spanning FM_ACCOUNT_SIGNIN_CONFIRM_SECS (default 900).
+# least 3 counted reads whose first and last span FM_ACCOUNT_SIGNIN_CONFIRM_SECS
+# (default 900).
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
@@ -205,7 +206,7 @@ fm_account_iso_epoch() {
 # empty fields for anything unknown. Never fails.
 fm_account_fetch() {
   local provider=$1 dir=$2 json row reset_iso reset='' timeout=${FM_ACCOUNT_QUOTA_TIMEOUT:-20}
-  local status left runway plan auth cls
+  local status left runway plan
   if ! command -v quota-axi >/dev/null 2>&1; then
     printf 'no-quota-axi||||\n'
     return 0
@@ -232,22 +233,15 @@ fm_account_fetch() {
       ($a.effectivePercentRemaining // "" | tostring),
       ($reset // ""),
       (if $a.runway.status? == "projected_exhaustion" then ($a.runway.usableRunwaySeconds // "" | tostring) else "" end),
-      ($r.plan // ""),
-      ($r.state.authStatus // "") ] | join("|") end' 2>/dev/null) || row=
+      ($r.plan // "") ] | join("|") end' 2>/dev/null) || row=
   [ -n "$row" ] || row='unreadable||||'
-  IFS='|' read -r status left reset_iso runway plan auth <<<"$row"
-  [ "$auth" != expired_refreshable ] || status=expired
+  IFS='|' read -r status left reset_iso runway plan <<<"$row"
   # A lapsed Claude access token draws 401 and 429 alternately from the
-  # profile-only read; the classifier keeps auth_required only when it agrees
-  # (or cannot be read), and says expired whenever a refresh token remains.
+  # profile-only read; only the classifier's expired_refreshable, a login that
+  # still holds a refresh token, turns either reading into expired.
   if [ "$provider" = claude ]; then
     case "$status" in auth_required | rate_limited)
-      cls=$(fm_account_classify_claude "$dir" "$timeout")
-      if [ "${cls#*|}" = expired_refreshable ]; then
-        status=expired
-      elif [ "$status" = auth_required ] && [ -n "$cls" ] && [ "${cls%%|*}" != auth_required ]; then
-        status=expired
-      fi
+      [ "$(fm_account_classify_claude "$dir" "$timeout")" != expired_refreshable ] || status=expired
       ;;
     esac
   fi
@@ -257,21 +251,21 @@ fm_account_fetch() {
   printf '%s|%s|%s|%s|%s\n' "$status" "$left" "$reset" "$runway" "$plan"
 }
 
-# fm_account_classify_claude <dir> <timeout>: "<status>|<authStatus>" from
-# quota-axi's own classifier for one Claude login, read without refreshing or
-# writing the credential, or nothing when that read is unreadable. Only these
-# two fields are taken; its usage numbers never are.
+# fm_account_classify_claude <dir> <timeout>: the authStatus from quota-axi's
+# own classifier for one Claude login, read without refreshing or writing the
+# credential, or nothing when that read is unreadable. Only this field is
+# taken; its usage numbers never are.
 fm_account_classify_claude() {
   local json
   json=$(fm_run_timed "$2" env -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR="$1" quota-axi --provider claude --no-credential-refresh --json 2>/dev/null </dev/null) || true
   printf '%s' "$json" | jq -r '([.providers[]? | select(.provider == "claude")] | first) as $r |
-    if $r == null then empty else "\($r.state.status // "")|\($r.state.authStatus // "")" end' 2>/dev/null || true
+    if $r == null then empty else ($r.state.authStatus // "") end' 2>/dev/null || true
 }
 
 # fm_account_signin_note <state-dir> <name> <status>: update the sign-in
 # streak for one real read (see the header).
 fm_account_signin_note() {
-  local rec="$1/.account-signin-$2" first='' count='' now tmp
+  local rec="$1/.account-signin-$2" first='' last='' count='' now tmp
   [ -d "$1" ] || return 0
   case "$3" in
     fresh | expired) rm -f "$rec" 2>/dev/null; return 0 ;;
@@ -279,23 +273,22 @@ fm_account_signin_note() {
     *) return 0 ;;
   esac
   now=$(date +%s)
-  [ -f "$rec" ] && IFS='|' read -r first count <"$rec"
-  case "$first" in '' | *[!0-9]*) first=$now count=0 ;; esac
-  case "$count" in '' | *[!0-9]*) count=0 ;; esac
+  [ -f "$rec" ] && IFS='|' read -r first last count <"$rec"
+  case "$first$count" in '' | *[!0-9]*) first=$now count=0 ;; esac
   tmp="$rec.tmp.${BASHPID:-$$}"
-  if ! { printf '%s|%s\n' "$first" "$((count + 1))" >"$tmp" && mv -f "$tmp" "$rec"; } 2>/dev/null; then
+  if ! { printf '%s|%s|%s\n' "$first" "$now" "$((count + 1))" >"$tmp" && mv -f "$tmp" "$rec"; } 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null
   fi
 }
 
 # fm_account_signin_confirmed <state-dir> <name>: 0 when the login's sign-in
-# streak has at least 3 reads spanning the confirmation window.
+# streak has at least 3 reads whose first and last span the confirmation window.
 fm_account_signin_confirmed() {
-  local first='' count='' window=${FM_ACCOUNT_SIGNIN_CONFIRM_SECS:-900}
-  [ -f "$1/.account-signin-$2" ] && IFS='|' read -r first count <"$1/.account-signin-$2"
-  case "$first$count" in '' | *[!0-9]*) return 1 ;; esac
+  local first='' last='' count='' window=${FM_ACCOUNT_SIGNIN_CONFIRM_SECS:-900}
+  [ -f "$1/.account-signin-$2" ] && IFS='|' read -r first last count <"$1/.account-signin-$2"
+  case "$first$last$count" in '' | *[!0-9]*) return 1 ;; esac
   case "$window" in '' | *[!0-9]*) window=900 ;; esac
-  [ "$count" -ge 3 ] && [ $(($(date +%s) - first)) -ge "$window" ]
+  [ "$count" -ge 3 ] && [ $((last - first)) -ge "$window" ]
 }
 
 # fm_account_usage <config-dir> <state-dir> <name> [ttl]: cached usage line

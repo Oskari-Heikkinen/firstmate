@@ -437,9 +437,10 @@ test_a_lapsed_login_reads_expired_not_signed_out() {
   assert_contains "$out" "[expired: renews on next use]" "the table says an expired login renews on next use"
   classify_case lapsed-429 "0 rate_limited - unavailable expired_refreshable"
   assert_equals expired "$(gmail_status)" "a 429 on a lapsed token that still renews is expired too"
-  classify_case direct "0 unavailable expired_refreshable"
-  assert_equals expired "$(gmail_status)" "the profile read's own expired_refreshable is expired"
-  assert_not_contains "$(cat "$C/quota.log")" "claude $C/gmail full" "no classifier read is needed then"
+  classify_case no-refresh "0 auth_required - unavailable -"
+  assert_equals auth_required "$(gmail_status)" "a lapsed login with no refresh token still needs sign-in"
+  classify_case classifier-limited "0 auth_required - rate_limited -"
+  assert_equals auth_required "$(gmail_status)" "a rate-limited classifier read leaves the sign-in reading alone"
   classify_case limited "0 rate_limited - rate_limited -"
   assert_equals rate_limited "$(gmail_status)" "a genuine rate limit stays rate limited"
   classify_case signed-out "0 auth_required - auth_required -"
@@ -457,7 +458,7 @@ sweep() {
 }
 
 test_b_signin_lines_wait_for_confirmation_and_come_from_main() {
-  local out i
+  local out i now
   new_case signin
   printf '80 fresh\n' > "$C/codex/fake-quota"
   printf '0 auth_required - auth_required -\n' > "$C/gmail/fake-quota"
@@ -496,6 +497,16 @@ test_b_signin_lines_wait_for_confirmation_and_come_from_main() {
   out=$(run_account status --json)
   assert_contains "$(json_get "$out" '.advice | join("\n")')" "sign in to account gmail" "a second mate's status still shows the sign-in"
   assert_contains "$(json_get "$out" '.advice | join("\n")')" "no Claude account has room" "and the no-room line"
+  new_case signin-span
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  printf '0 rate_limited - rate_limited -\n' > "$C/gmail/fake-quota"
+  now=$(date +%s)
+  printf '%s|%s|3\n' "$((now - 1000))" "$((now - 760))" > "$H/state/.account-signin-gmail"
+  out=$(sweep)
+  assert_equals "" "$out" "three reads spanning less than the window stay unconfirmed however long ago they began"
+  printf '%s|%s|3\n' "$((now - 1000))" "$((now - 100))" > "$H/state/.account-signin-gmail"
+  out=$(sweep)
+  assert_contains "$out" "needs the captain: sign in to account gmail" "three reads spanning the window confirm the sign-in"
   pass "sign-in lines reach the captain only from main, once three reads over the window confirm them"
 }
 
