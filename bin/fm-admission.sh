@@ -30,8 +30,9 @@
 #
 # Signals (Linux): MemAvailable from <proc>/meminfo, `full avg10` from
 # <proc>/pressure/memory, `some avg10` from <proc>/pressure/cpu, the 1-minute
-# load from <proc>/loadavg divided by the online CPU count, and the live agent
-# count. A signal that cannot be read is skipped rather than blocking (macOS has
+# load from <proc>/loadavg divided by the online CPU count, the live agent
+# count, and the memory guard's recorded level (`fm-mem-guard.sh level`), which
+# holds every launch while it is refuse or critical. A signal that cannot be read is skipped rather than blocking (macOS has
 # none of them), and `check` names each skipped signal on stderr.
 # Live agents are processes on this machine whose comm, or whose script name
 # under a node or bun interpreter, is in agent_process_names, excluding any
@@ -48,6 +49,7 @@
 # count), FM_ADMISSION_SLEEP (command run with the wait seconds; default sleep).
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROC=${FM_PROC_ROOT_OVERRIDE:-/proc}
 RULES_FILE=${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json}
 RUN_DIR=${FM_ADMISSION_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/fm-admission-$(id -u)}
@@ -169,7 +171,7 @@ recent_admissions() {
 
 # evaluate: sets UNMET (empty when admitted) and SKIPPED.
 evaluate() {
-  local now avail need psi load agents recent paced
+  local now avail need psi load agents recent paced guard
   UNMET=
   SKIPPED=
   now=$(date +%s)
@@ -199,6 +201,15 @@ evaluate() {
     [ $((agents + recent + 1)) -le "$R_max_agents" ] || UNMET="$UNMET; ${agents} live agents plus ${recent} just admitted would exceed the fleet cap of ${R_max_agents}"
   else
     SKIPPED="$SKIPPED agent-count"
+  fi
+  # The memory guard (bin/fm-mem-guard.sh) also watches the Windows host; its
+  # recorded refuse or critical level holds every launch.
+  if guard=$("$SCRIPT_DIR/fm-mem-guard.sh" level 2>/dev/null); then
+    case "$guard" in
+    refuse\ * | critical\ *)
+      UNMET="$UNMET; memory guard is at ${guard%% *}: $(printf '%s' "$guard" | cut -d' ' -f3-)"
+      ;;
+    esac
   fi
   if [ "$RESTART" = 1 ]; then
     paced=$(recent_admissions $((now - 60)) "$HOME_DIR")

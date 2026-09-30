@@ -41,6 +41,7 @@ new_case() {
   mkdir -p "$C/home/state"
   export FM_PROC_ROOT_OVERRIDE="$C/proc" FM_ADMISSION_NPROC=16
   export FM_ADMISSION_RULES="$C/rules.json" FM_ADMISSION_RUN_DIR="$C/run" FM_HOME="$C/home"
+  export FM_MEM_GUARD_DIR="$C/guard"
   write_proc "$C/proc" 16000000 0.00 1.00 4.00
   printf '{}\n' > "$C/rules.json"
 }
@@ -164,6 +165,22 @@ test_malformed_rules_and_disabled_gate() {
   pass "a malformed rules file warns and falls back, and FM_ADMISSION=off admits"
 }
 
+test_memory_guard_refusal_holds_admission() {
+  local out
+  new_case guard
+  mkdir -p "$C/guard"
+  printf 'refuse %s 0 Windows available 1500 MiB (refuse)\n' "$(date +%s)" > "$C/guard/level"
+  out=$("$ADMISSION" check 2>/dev/null) || true
+  assert_equals admit "$out" "a guard level is ignored while the guard is off"
+  out=$(FM_MEM_GUARD='' "$ADMISSION" check 2>/dev/null) && fail "a refusing memory guard admitted: $out"
+  assert_contains "$out" "memory guard is at refuse: Windows available 1500 MiB (refuse)" "the guard and its reason are named"
+  printf 'refuse %s 0 old\n' "$(( $(date +%s) - 3600 ))" > "$C/guard/level"
+  out=$(FM_MEM_GUARD='' "$ADMISSION" check 2>/dev/null) || fail "a stale guard level held admission: $out"
+  printf 'park %s 0 Windows paging 70 MiB/s (park)\n' "$(date +%s)" > "$C/guard/level"
+  out=$(FM_MEM_GUARD='' "$ADMISSION" check 2>/dev/null) || fail "a park-level guard held admission: $out"
+  pass "a fresh refuse or critical memory-guard level holds admission; stale and lower levels do not"
+}
+
 test_spawn_refuses_before_creating_anything() {
   local out rc fakebin
   new_case spawn
@@ -191,6 +208,7 @@ test_waits_then_admits_when_the_host_recovers
 test_refuses_after_the_bound_and_override_skips
 test_relaunches_are_paced_per_home_and_secondmates_never_refused
 test_malformed_rules_and_disabled_gate
+test_memory_guard_refusal_holds_admission
 test_spawn_refuses_before_creating_anything
 
 echo "# all fm-admission tests passed"
