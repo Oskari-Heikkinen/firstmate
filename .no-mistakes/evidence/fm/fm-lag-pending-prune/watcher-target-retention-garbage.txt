@@ -1,0 +1,16 @@
+== [target garbage retention 'abc' falls back to default] seeded 1509 records, 150 delivery confirmations in /tmp/fm-prune-live.r1Obsx
+   launch 1 cycle-top 1 at +0.6s, records left=1509
+   launch 1 ended at +6.6s (still running when stopped: no), records left=9
+   watcher stdout: signal: /tmp/fm-prune-live.r1Obsx/state/open.status
+   bulk aged records left: 0 / 1500
+   delivery confirmations left: 0 / 150
+   aaaaaaaaaaaaaa01 KEPT   (phase=resolved, esc_closed=)
+   aaaaaaaaaaaaaa02 KEPT   (phase=resolved, esc_closed=)
+   aaaaaaaaaaaaaa03 KEPT   (phase=resolved, esc_closed=)
+   aaaaaaaaaaaaaa04 KEPT   (phase=resolved, esc_closed=1790765031)
+   aaaaaaaaaaaaaa05 KEPT   (phase=resolved, esc_closed=)
+   bbbbbbbbbbbbbb01 KEPT   (phase=awaiting_report, esc_closed=)
+   bbbbbbbbbbbbbb02 KEPT   (phase=escalated, esc_closed=)
+   bbbbbbbbbbbbbb03 KEPT   (phase=escalated, esc_closed=)
+   bbbbbbbbbbbbbb04 KEPT   (phase=recovery_sent, esc_closed=)
+   backend stub calls: 0

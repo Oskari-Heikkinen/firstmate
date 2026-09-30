@@ -1,0 +1,18 @@
+== [base ae87dbc2 (before change)] seeded 1509 records, 150 delivery confirmations in /tmp/fm-prune-live.X3wCX2
+   launch 1 cycle-top 1 at +1.3s, records left=1509
+   launch 1 ended at +240.7s (still running when stopped: yes), records left=1509
+   launch 2 cycle-top 1 at +240.9s, records left=1509
+   launch 2 cycle-top 2 at +242.7s, records left=1509
+   launch 2 ended at +480.2s (still running when stopped: yes), records left=1509
+   bulk aged records left: 1500 / 1500
+   delivery confirmations left: 150 / 150
+   aaaaaaaaaaaaaa01 KEPT   (phase=resolved, esc_closed=)
+   aaaaaaaaaaaaaa02 KEPT   (phase=resolved, esc_closed=)
+   aaaaaaaaaaaaaa03 KEPT   (phase=resolved, esc_closed=)
+   aaaaaaaaaaaaaa04 KEPT   (phase=resolved, esc_closed=1790764508)
+   aaaaaaaaaaaaaa05 KEPT   (phase=resolved, esc_closed=)
+   bbbbbbbbbbbbbb01 KEPT   (phase=awaiting_report, esc_closed=)
+   bbbbbbbbbbbbbb02 KEPT   (phase=escalated, esc_closed=)
+   bbbbbbbbbbbbbb03 KEPT   (phase=escalated, esc_closed=)
+   bbbbbbbbbbbbbb04 KEPT   (phase=recovery_sent, esc_closed=)
+   backend stub calls: 0

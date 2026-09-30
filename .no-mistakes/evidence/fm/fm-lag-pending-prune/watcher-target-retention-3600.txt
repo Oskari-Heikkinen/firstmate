@@ -1,0 +1,24 @@
+== [target retention 3600] seeded 1509 records, 150 delivery confirmations in /tmp/fm-prune-live.k7SMEY
+   launch 1 cycle-top 1 at +0.6s, records left=1509
+   launch 1 ended at +7.7s (still running when stopped: no), records left=7
+   watcher stdout: signal: /tmp/fm-prune-live.k7SMEY/state/open.status
+   launch 2 cycle-top 1 at +7.7s, records left=7
+   launch 2 cycle-top 2 at +8.3s, records left=7
+   launch 2 ended at +10.8s (still running when stopped: no), records left=6
+   watcher stdout: check: rearm-resurface
+   launch 3 cycle-top 1 at +10.9s, records left=6
+   launch 3 cycle-top 2 at +11.5s, records left=6
+   launch 3 ended at +12.2s (still running when stopped: no), records left=6
+   watcher stdout: check: rearm-resurface
+   bulk aged records left: 0 / 1500
+   delivery confirmations left: 0 / 150
+   aaaaaaaaaaaaaa01 PRUNED
+   aaaaaaaaaaaaaa02 PRUNED
+   aaaaaaaaaaaaaa03 KEPT   (phase=resolved, esc_closed=)
+   aaaaaaaaaaaaaa04 PRUNED
+   aaaaaaaaaaaaaa05 KEPT   (phase=resolved, esc_closed=)
+   bbbbbbbbbbbbbb01 KEPT   (phase=awaiting_report, esc_closed=)
+   bbbbbbbbbbbbbb02 KEPT   (phase=escalated, esc_closed=)
+   bbbbbbbbbbbbbb03 KEPT   (phase=escalated, esc_closed=)
+   bbbbbbbbbbbbbb04 KEPT   (phase=recovery_sent, esc_closed=)
+   backend stub calls: 0
