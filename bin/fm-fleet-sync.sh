@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 # Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
+# its sync base when safe, and prune local branches whose upstream tracking
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
+# The sync base is origin/<default> unless the clone sets a clone-local
+# `git config fm.syncRef <branch>` (off by default): then it is origin/<branch>
+# and the local <default> branch fast-forwards to that under the same guards
+# below; a missing origin/<branch> is skipped, never replaced by origin/<default>.
+# A clean <default> or detached HEAD already past that base but holding nothing
+# outside origin/<default> is reported "ahead of sync base" and left in place,
+# never moved backwards; a clean detached HEAD behind it whose <default> is such an
+# ahead branch is still re-attached. "origin/<default>" in the rest of this header
+# means the sync base.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -275,9 +284,22 @@ default_checked_out_elsewhere() {
     | grep -Fxq -- "$DEFAULT"
 }
 
+# ahead_of_base <rev>: <rev> is past the sync base but holds nothing outside
+# origin/<default>. Only possible with fm.syncRef set, when the two differ.
+ahead_of_base() {
+  git -C "$PROJ" merge-base --is-ancestor "$BASE" "$1" 2>/dev/null \
+    && git -C "$PROJ" merge-base --is-ancestor "$1" "origin/$DEFAULT" 2>/dev/null
+}
+
+report_ahead() {
+  SYNC_OUTCOME=ahead
+  echo "$label: $1ahead of sync base $BASE; waiting for it to catch up"
+}
+
 local_default_safe_for_recovery() {
   ! git -C "$PROJ" rev-parse --verify --quiet "$DEFAULT^{commit}" >/dev/null \
-    || git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE" 2>/dev/null
+    || git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE" 2>/dev/null \
+    || ahead_of_base "$DEFAULT"
 }
 
 # Human-readable name for the unsafe state the clone is in, used in the STUCK
@@ -289,7 +311,8 @@ stuck_state() {
     s="branch $cur"
   elif [ "$dirty" = yes ]; then
     s="detached HEAD"
-  elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
+  elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
+      && ! ahead_of_base HEAD; then
     s="detached HEAD with unique commits"
   elif default_checked_out_elsewhere; then
     s="detached HEAD ($DEFAULT checked out in another worktree)"
@@ -315,6 +338,7 @@ report_stuck() {
 sync_project_impl() {
   SYNC_OUTCOME=skipped
   SYNC_FETCH_SUCCEEDED=false
+  BASE=
   PROJ=$1
   label=$(project_label)
 
@@ -369,6 +393,10 @@ sync_project_impl() {
     return 0
   }
   BASE="origin/$DEFAULT"
+  sync_ref=$(git -C "$PROJ" config --local --get fm.syncRef 2>/dev/null || true)
+  if [ -n "$sync_ref" ]; then
+    BASE="origin/$sync_ref"
+  fi
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
     echo "$label: skipped: $BASE does not exist"
     return 0
@@ -398,6 +426,13 @@ sync_project_impl() {
       fi
       recovered=yes
       cur=$DEFAULT
+    elif [ -z "$cur" ] && [ "$dirty" = no ] \
+        && ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
+        && ahead_of_base HEAD \
+        && ! default_checked_out_elsewhere \
+        && local_default_safe_for_recovery; then
+      report_ahead "detached HEAD "
+      return 0
     else
       report_stuck "$(stuck_state)"
       return 0
@@ -432,6 +467,14 @@ sync_project_impl() {
     return 0
   fi
   if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
+    if ahead_of_base "$DEFAULT"; then
+      if [ "$recovered" = yes ]; then
+        report_ahead "recovered: re-attached $DEFAULT; "
+      else
+        report_ahead ""
+      fi
+      return 0
+    fi
     report_stuck "diverged $DEFAULT"
     return 0
   fi
@@ -473,7 +516,9 @@ sync_project() {
 
 if [ "$RECEIPT_CHILD" -eq 1 ]; then
   sync_project_impl "$1"
-  printf '{"outcome":"%s","fetch_succeeded":%s}\n' "$SYNC_OUTCOME" "$SYNC_FETCH_SUCCEEDED" > "$RECEIPT_RESULT"
+  base_json=${BASE//\\/\\\\}
+  base_json=${base_json//\"/\\\"}
+  printf '{"outcome":"%s","fetch_succeeded":%s,"base":"%s"}\n' "$SYNC_OUTCOME" "$SYNC_FETCH_SUCCEEDED" "$base_json" > "$RECEIPT_RESULT"
   exit 0
 fi
 

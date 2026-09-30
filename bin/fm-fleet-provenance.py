@@ -18,7 +18,8 @@ as stable OS-lock anchors. No application commands, installs or reloads run.
 Public: read RECEIPT [--application FILE] [--max-age SECONDS]
 Outputs fm-application-provenance.v1 JSON for workbench consumers. Sync receipts
 bind clone, requested/start/completed times, outcome, before/after source,
-remote-tracking tip and whether fetch succeeded. A tracking tip after failed
+the sync base the refresh used (origin/<default>, or origin/<fm.syncRef>) with
+its remote-tracking tip, and whether fetch succeeded. A tracking tip after failed
 fetch is explicitly NOT a current remote tip. Git dirty/ahead/diverged state is
 reported, never repaired here. The sync script remains sole safety owner.
 
@@ -55,10 +56,10 @@ def git(clone, *args):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def observation(clone):
+def observation(clone, base=None):
     if git(clone, "rev-parse", "--show-toplevel") != str(clone):
         return {"source": None, "remote_tip": None, "branch": None, "dirty": None}
-    branch = git(clone, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    branch = base or git(clone, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if branch is None:
         for candidate in ("main", "master"):
             if git(clone, "rev-parse", "--verify", f"refs/heads/{candidate}"):
@@ -94,7 +95,7 @@ def coalescible(target, home, clone, requested):
             and old.get("home") == str(home) and old.get("clone") == str(clone)
             and old.get("fetch_succeeded") is True and old.get("started_at", 0) >= requested
             and old.get("outcome") in ("current", "synced", "recovered")
-            and old.get("after") == observation(clone))
+            and old.get("after") == observation(clone, old.get("base")))
 
 
 def sync(script, home, clone, requested=None):
@@ -125,7 +126,7 @@ def sync(script, home, clone, requested=None):
         code, result = run_child(script, given)
         receipt = {"schema": "fm-fleet-sync.v1", "home": str(home), "clone": str(clone),
                    "requested_at": requested, "started_at": started, "completed_at": time.time(),
-                   "before": before, "after": observation(clone), **result}
+                   "before": before, "after": observation(clone, result.get("base")), **result}
         receipt["id"] = digest(json.dumps(receipt, sort_keys=True).encode())
         try:
             atomic(target, receipt)
