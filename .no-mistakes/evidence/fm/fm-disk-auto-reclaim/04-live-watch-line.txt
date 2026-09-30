@@ -1,0 +1,29 @@
+# default margin 20G, real room ~80 GiB
+$ bin/fm-disk-room.sh watch-line
+exit=0 output=[]
+
+# margin raised above the real room to simulate running short
+$ FM_DISK_ROOM_MARGIN=100G bin/fm-disk-room.sh watch-line
+exit=0 output=[disk room low: 79.8 GiB real room on /mnt/c after 0.0 GiB of declared writes (margin 100.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved]
+$ FM_DISK_ROOM_MARGIN=100G bin/fm-disk-room.sh watch-line   # again, same reading
+exit=0 output=[]
+$ FM_DISK_ROOM_MARGIN=100G FM_DISK_ROOM_NOW=$(( $(date +%s) + 21601 )) bin/fm-disk-room.sh watch-line   # 6 h later
+exit=0 output=[disk room low: 79.8 GiB real room on /mnt/c after 0.0 GiB of declared writes (margin 100.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved]
+
+# a 10 GiB reservation (a >5 GiB further drop) re-alerts before 6 h
+reserved dropper: 10.0 GiB
+$ FM_DISK_ROOM_MARGIN=100G FM_DISK_ROOM_NOW=$(( $(date +%s) + 21700 )) bin/fm-disk-room.sh watch-line
+exit=0 output=[]
+
+# back above margin: silent, alert record cleared
+$ bin/fm-disk-room.sh watch-line
+exit=0 output=[]
+alert record present: no
+
+# a failed reading (host drive path not mounted)
+$ FM_DISK_ROOM_HOST=/mnt/nosuchdrive bin/fm-disk-room.sh watch-line
+exit=0 output=[disk room: cannot measure (host drive /mnt/nosuchdrive is not mounted)]
+$ FM_DISK_ROOM_HOST=/mnt/nosuchdrive bin/fm-disk-room.sh watch-line   # again
+exit=0 output=[]
+$ FM_DISK_ROOM_HOST=/mnt/nosuchdrive bin/fm-disk-room.sh check --expect-write 1G
+exit=2 output=[cannot measure disk room: host drive /mnt/nosuchdrive is not mounted]

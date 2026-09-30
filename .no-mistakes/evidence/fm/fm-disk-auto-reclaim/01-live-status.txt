@@ -1,0 +1,20 @@
+$ bin/fm-disk-room.sh status
+real room: 79.8 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 79.8 GiB
+Linux free: 574.5 GiB, used 381.1 GiB
+reserved writes: 0.0 GiB
+disk file: 446.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 64.9 GiB, of which fragmented 60.4 GiB; reclaimable by compaction about 4.5 GiB
+
+real	0m3.259s
+user	0m0.055s
+sys	0m0.299s
+exit=0
+
+$ bin/fm-disk-room.sh status --json
+{"margin":21474836480,"host":"/mnt/c","host_free":85699166208,"linux_free":616884137984,"linux_used":409224683520,"reserved":0,"room":85699166208,"low":false,"vhdx":"/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx","vhdx_size":478927650816,"fragmented_free":64819748864,"slack":69702967296,"reclaimable":4883218432}
+exit=0
+
+$ df -h / /mnt/c   # raw df for comparison
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdd       1007G  382G  575G  40% /
+C:\             952G  872G   80G  92% /mnt/c

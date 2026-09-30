@@ -1,0 +1,26 @@
+> powershell.exe -NoProfile -ExecutionPolicy Bypass -File ...\fm-wsl-reclaim.ps1 -Install   (non-elevated)
+This mode needs an elevated PowerShell (Run as administrator).
+At \\wsl.localhost\Ubuntu-24.04\home\oskari\.no-mistakes\worktrees\ca1b14ddd4b9\01M3SD38618T5CE9XDV7G9A6BZ\bin\fm-wsl-r
+eclaim.ps1:58 char:28
++ ... t-Admin)) { throw 'This mode needs an elevated PowerShell (Run as adm ...
+exit=1
+
+> powershell.exe -NoProfile -ExecutionPolicy Bypass -File ...\fm-wsl-reclaim.ps1 -Now   (non-elevated)
+This mode needs an elevated PowerShell (Run as administrator).
+At \\wsl.localhost\Ubuntu-24.04\home\oskari\.no-mistakes\worktrees\ca1b14ddd4b9\01M3SD38618T5CE9XDV7G9A6BZ\bin\fm-wsl-r
+eclaim.ps1:58 char:28
++ ... t-Admin)) { throw 'This mode needs an elevated PowerShell (Run as adm ...
+exit=1
+
+> powershell.exe -NoProfile -ExecutionPolicy Bypass -File ...\fm-wsl-reclaim.ps1 -Uninstall   (non-elevated)
+This mode needs an elevated PowerShell (Run as administrator).
+At \\wsl.localhost\Ubuntu-24.04\home\oskari\.no-mistakes\worktrees\ca1b14ddd4b9\01M3SD38618T5CE9XDV7G9A6BZ\bin\fm-wsl-r
+eclaim.ps1:58 char:28
++ ... t-Admin)) { throw 'This mode needs an elevated PowerShell (Run as adm ...
+exit=1
+
+C:\ProgramData\firstmate exists: no
+WSL still running (this shell's uptime): 711.50s
+> -Plan after the refusals
+task installed: False
+file list: (not installed; resolved now)

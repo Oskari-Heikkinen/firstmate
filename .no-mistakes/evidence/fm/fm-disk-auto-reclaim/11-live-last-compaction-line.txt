@@ -1,0 +1,11 @@
+$ file wsl-compact-last.txt
+/mnt/c/Users/Oskari/AppData/Local/Temp/fmdr-ps-harness/wsl-compact-last.txt: ASCII text, with CRLF line terminators
+$ FM_DISK_ROOM_COMPACT_RESULT=<PowerShell-written wsl-compact-last.txt> bin/fm-disk-room.sh status
+real room: 79.7 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 79.7 GiB
+Linux free: 574.4 GiB, used 381.2 GiB
+reserved writes: 0.0 GiB
+disk file: 446.1 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 64.9 GiB, of which fragmented 60.4 GiB; reclaimable by compaction about 4.5 GiB
+last compaction: 2026-09-30T17:25:25 startup partial reclaimed 0.0 GiB
+$ bin/fm-disk-room.sh status | grep -c "last compaction"   # default location (task not installed)
+0

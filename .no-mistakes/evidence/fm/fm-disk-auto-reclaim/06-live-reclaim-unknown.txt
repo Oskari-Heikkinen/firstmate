@@ -1,0 +1,29 @@
+# fragmented-free table unreadable (FM_DISK_ROOM_MB_GROUPS=/nonexistent); real disk file and real drives
+$ FM_DISK_ROOM_MB_GROUPS=/nonexistent bin/fm-disk-room.sh status
+real room: 79.8 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 79.8 GiB
+Linux free: 574.4 GiB, used 381.3 GiB
+reserved writes: 0.0 GiB
+disk file: 446.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 64.8 GiB, fragmented unknown; reclaimable by compaction unknown
+$ FM_DISK_ROOM_MB_GROUPS=/nonexistent bin/fm-disk-room.sh status --json
+{"margin":21474836480,"host":"/mnt/c","host_free":85695463424,"linux_free":616733077504,"linux_used":409375731712,"reserved":0,"room":85695463424,"low":false,"vhdx":"/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx","vhdx_size":478927650816,"fragmented_free":null,"slack":69551919104,"reclaimable":null}
+$ FM_DISK_ROOM_MB_GROUPS=/nonexistent bin/fm-disk-room.sh check --expect-write 65G
+low: only 14.8 GiB would be left on /mnt/c after a 65.0 GiB write (margin 20.0 GiB); reclaimable by compaction unknown (fragmented free space unreadable); run fm-disk-room.sh status
+exit=1
+
+# disk file not found (FM_DISK_ROOM_VHDX points nowhere)
+$ FM_DISK_ROOM_VHDX=/mnt/c/nope/ext4.vhdx bin/fm-disk-room.sh status
+real room: 79.8 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 79.8 GiB
+Linux free: 574.4 GiB, used 381.3 GiB
+reserved writes: 0.0 GiB
+disk file: not found (set FM_DISK_ROOM_VHDX)
+$ FM_DISK_ROOM_VHDX=/mnt/c/nope/ext4.vhdx bin/fm-disk-room.sh check --expect-write 65G
+low: only 14.8 GiB would be left on /mnt/c after a 65.0 GiB write (margin 20.0 GiB); reclaimable by compaction unknown (disk file not found); run fm-disk-room.sh status
+exit=1
+
+# no Windows drive at all (Linux-only host)
+$ FM_DISK_ROOM_HOST= bin/fm-disk-room.sh status
+real room: 574.4 GiB (limited by Linux; margin 20.0 GiB)
+Linux free: 574.4 GiB, used 381.3 GiB
+reserved writes: 0.0 GiB

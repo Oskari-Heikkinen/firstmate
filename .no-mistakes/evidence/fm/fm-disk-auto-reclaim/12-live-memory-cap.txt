@@ -1,0 +1,6 @@
+$ grep -i memory /mnt/c/Users/Oskari/.wslconfig
+memory=18GB
+$ grep MemTotal /proc/meminfo
+MemTotal:       18415804 kB
+$ uptime -s   # WSL VM start
+2026-09-30 17:13:06

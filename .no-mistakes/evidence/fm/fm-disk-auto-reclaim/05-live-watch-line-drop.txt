@@ -1,0 +1,11 @@
+# FM_DISK_ROOM_MARGIN=100G (above real room), real clock throughout
+$ bin/fm-disk-room.sh watch-line
+exit=0 output=[disk room low: 79.8 GiB real room on /mnt/c after 0.0 GiB of declared writes (margin 100.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved]
+$ bin/fm-disk-room.sh reserve small 3G --ttl 600; bin/fm-disk-room.sh watch-line   # 3 GiB further drop: stays quiet
+reserved small: 3.0 GiB
+exit=0 output=[]
+$ bin/fm-disk-room.sh reserve big 10G --ttl 600; bin/fm-disk-room.sh watch-line   # 13 GiB total drop: re-alerts
+reserved big: 10.0 GiB
+exit=0 output=[disk room low: 66.8 GiB real room on /mnt/c after 13.0 GiB of declared writes (margin 100.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved]
+$ bin/fm-disk-room.sh watch-line   # default margin: silent
+exit=0 output=[]

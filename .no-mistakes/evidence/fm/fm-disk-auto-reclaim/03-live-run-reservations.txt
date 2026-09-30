@@ -1,0 +1,28 @@
+$ bin/fm-disk-room.sh run --name keeper-slice --expect-write 20G -- sleep 6 &
+$ bin/fm-disk-room.sh status   # while keeper-slice runs
+real room: 59.8 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 79.8 GiB
+Linux free: 574.5 GiB, used 381.1 GiB
+reserved writes: 20.0 GiB (keeper-slice 20.0 GiB)
+disk file: 446.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 64.9 GiB, of which fragmented 60.4 GiB; reclaimable by compaction about 4.5 GiB
+
+$ bin/fm-disk-room.sh check --expect-write 40G   # second job sees the first reservation
+low: only 19.8 GiB would be left on /mnt/c after a 40.0 GiB write (margin 20.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved
+exit=1
+
+$ bin/fm-disk-room.sh run --name second-slice --expect-write 45G -- touch /tmp/fmdr-ran.pDAz
+fm-disk-room: refused second-slice: low: only 14.8 GiB would be left on /mnt/c after a 45.0 GiB write (margin 20.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved
+exit=75
+command ran: no
+
+keeper-slice exited 0
+$ bin/fm-disk-room.sh status | grep reserved   # after keeper-slice exits
+reserved writes: 0.0 GiB
+
+$ bin/fm-disk-room.sh run --name second-slice --expect-write 45G -- touch /tmp/fmdr-ran.pDAz
+exit=0
+command ran: yes
+
+$ bin/fm-disk-room.sh run --name huge --expect-write 70G -- true
+fm-disk-room: refused huge: low: only 9.8 GiB would be left on /mnt/c after a 70.0 GiB write (margin 20.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved
+exit=75

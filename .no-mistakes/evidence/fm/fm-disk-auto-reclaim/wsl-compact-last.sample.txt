@@ -1,0 +1,7 @@
+finished=2026-09-30T17:25:25
+mode=startup
+result=partial
+reclaimed_bytes=0
+c_free_bytes=85661409280
+file=C:\Users\Oskari\AppData\Local\Temp\fmdr-ps-harness\nope.vhdx|0|0|missing
+file=C:\Users\Oskari\AppData\Local\Temp\fmdr-ps-harness\sparse.bin|16|16|sparse-skipped

@@ -1,0 +1,25 @@
+--- Invoke-Wsl with a Linux command that writes stderr and exits 3 ($ErrorActionPreference=Stop, PS 5.1.26100.9444)
+returned: exit 3: out
+warning-on-stderr
+--- Invoke-Wsl with a clean command
+returned: exit 0
+--- Test-Sparse on a normal and a sparse file
+plain  sparse=False
+sparse sparse=True
+--- Invoke-Compact skips a sparse file and a missing file without running diskpart
+sparse  -> sparse-skipped
+missing -> missing
+--- Invoke-CompactAll writes the last-result file (file list = one missing + one sparse disk)
+2026-09-30T17:25:25 compact start: C:\Users\Oskari\AppData\Local\Temp\fmdr-ps-harness\nope.vhdx (0 GiB)
+2026-09-30T17:25:25 compact missing: C:\Users\Oskari\AppData\Local\Temp\fmdr-ps-harness\nope.vhdx 0 -> 0 GiB
+2026-09-30T17:25:25 compact start: C:\Users\Oskari\AppData\Local\Temp\fmdr-ps-harness\sparse.bin (0 GiB)
+2026-09-30T17:25:25 compact sparse-skipped: C:\Users\Oskari\AppData\Local\Temp\fmdr-ps-harness\sparse.bin 0 -> 0 GiB
+2026-09-30T17:25:26 reclaimed 0.0 GiB; C: free 79.8 GiB
+--- wsl-compact-last.txt
+finished=2026-09-30T17:25:25
+mode=startup
+result=partial
+reclaimed_bytes=0
+c_free_bytes=85661409280
+file=C:\Users\Oskari\AppData\Local\Temp\fmdr-ps-harness\nope.vhdx|0|0|missing
+file=C:\Users\Oskari\AppData\Local\Temp\fmdr-ps-harness\sparse.bin|16|16|sparse-skipped

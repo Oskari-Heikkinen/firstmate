@@ -1,0 +1,7 @@
+> powershell.exe -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04\home\oskari\.no-mistakes\worktrees\ca1b14ddd4b9\01M3SD38618T5CE9XDV7G9A6BZ\bin\fm-wsl-reclaim.ps1 -Plan
+task installed: False
+file list: (not installed; resolved now)
+C:\Users\Oskari\AppData\Local\wsl\{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}\ext4.vhdx  446.1 GiB  sparse=False  in-use=True
+C:\Users\Oskari\AppData\Local\Docker\wsl\disk\docker_data.vhdx  95.9 GiB  sparse=False  in-use=False
+C: free: 79.8 GiB
+exit=0

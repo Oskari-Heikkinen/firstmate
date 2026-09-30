@@ -1,0 +1,21 @@
+$ bin/fm-disk-room.sh check --expect-write 20G
+ok: 59.8 GiB left after a 20.0 GiB write (margin 20.0 GiB)
+exit=0
+
+$ bin/fm-disk-room.sh check --expect-write 55G
+ok: 24.8 GiB left after a 55.0 GiB write (margin 20.0 GiB)
+exit=0
+
+$ bin/fm-disk-room.sh check --expect-write 65G
+low: only 14.8 GiB would be left on /mnt/c after a 65.0 GiB write (margin 20.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved
+exit=1
+
+$ bin/fm-disk-room.sh check --expect-write 500G
+low: only -420.2 GiB would be left on /mnt/c after a 500.0 GiB write (margin 20.0 GiB); compaction would reclaim under 5 GiB; data must be freed or moved
+exit=1
+
+$ time bin/fm-disk-room.sh status   # second run uses the cached disk-file path
+
+real	0m0.114s
+user	0m0.044s
+sys	0m0.051s
