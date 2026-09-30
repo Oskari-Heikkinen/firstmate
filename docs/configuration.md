@@ -537,7 +537,7 @@ Session start then arms a watcher check that wakes firstmate only when a move is
 Rebalancing moves second mates and between-steps workers, never one mid-command or mid-validation run; a busy worker waits for a later run.
 Only the captain can restart this home's own session or sign in to a login that does not exist yet, so those appear as one-line advice instead.
 A Claude login whose access token lapsed but can still renew shows as expired, not as needing sign-in, because it renews on next use.
-The watcher check carries sign-in and no-room advice from the main home only, and a sign-in only after three reads over 15 minutes agree, while `status` and the panel show every home's current readings.
+Rebalancing and its watcher check carry sign-in and no-room advice from the main home only, and a sign-in only after three reads over 15 minutes agree, while `status` and the panel show every home's current readings.
 The registry, floor, and auto setting are inherited into secondmate homes, while `config/account` and `config/spawn-account` stay per home.
 The headers of `bin/fm-account-lib.sh` and `bin/fm-account.sh` own the exact formats, the spawn account precedence, and the runtime records.
 
@@ -1438,6 +1438,7 @@ FM_PENDING_REPLY_GRACE_SECS=120   # seconds after marked-request delivery before
 FM_SPAWN_ACCOUNT=       # one launch's explicit account name, set by bin/fm-account.sh for a switch relaunch; beats every recorded or configured account
 FM_ACCOUNT_USAGE_TTL=120   # seconds a cached per-account usage read stays fresh
 FM_ACCOUNT_QUOTA_TIMEOUT=20   # seconds bounding one quota-axi read of one login
+FM_ACCOUNT_SIGNIN_CONFIRM_SECS=900   # seconds a login's sign-in readings must span before rebalance advises a sign-in
 FM_ACCOUNT_PANEL_RATIO=    # optional Herdr split ratio for the accounts panel
 # sub-supervisor (bin/fm-supervise-daemon.sh); presence-gated via /afk
 FM_SUPERVISOR_BACKEND=             # optional supervisor pane backend override; tmux/herdr only, otherwise detects $TMUX_PANE then HERDR_ENV/HERDR_PANE_ID before tmux fallback
