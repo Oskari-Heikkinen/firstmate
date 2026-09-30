@@ -18,7 +18,8 @@
 # redacted, and only the folder's existence is ever tested directly. When that
 # read says a Claude login needs sign-in or is rate limited, one more read of
 # the same folder classifies it (quota-axi --no-credential-refresh, with
-# CLAUDE_CODE_OAUTH_TOKEN unset so no env token answers for the folder), and
+# CLAUDE_CODE_OAUTH_TOKEN unset so no env token answers for the folder, and a
+# throwaway XDG_CACHE_HOME so quota-axi's shared cache is left alone), and
 # only its authStatus is used, never its usage numbers: a lapsed
 # access token that still holds a refresh token is status expired (it renews
 # on next use), not a sign-out.
@@ -253,11 +254,14 @@ fm_account_fetch() {
 
 # fm_account_classify_claude <dir> <timeout>: the authStatus from quota-axi's
 # own classifier for one Claude login, read without refreshing or writing the
-# credential, or nothing when that read is unreadable. Only this field is
-# taken; its usage numbers never are.
+# credential and against a throwaway quota cache so the shared one is never
+# written or cleared, or nothing when that read is unreadable. Only this field
+# is taken; its usage numbers never are.
 fm_account_classify_claude() {
-  local json
-  json=$(fm_run_timed "$2" env -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR="$1" quota-axi --provider claude --no-credential-refresh --json 2>/dev/null </dev/null) || true
+  local json cache
+  cache=$(mktemp -d "${TMPDIR:-/tmp}/fm-account-classify.XXXXXX" 2>/dev/null) || return 0
+  json=$(fm_run_timed "$2" env -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR="$1" XDG_CACHE_HOME="$cache" quota-axi --provider claude --no-credential-refresh --json 2>/dev/null </dev/null) || true
+  rm -rf "$cache"
   printf '%s' "$json" | jq -r '([.providers[]? | select(.provider == "claude")] | first) as $r |
     if $r == null then empty else ($r.state.authStatus // "") end' 2>/dev/null || true
 }

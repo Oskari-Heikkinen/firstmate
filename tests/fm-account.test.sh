@@ -21,7 +21,8 @@ unset FM_ACCOUNT_USAGE_TTL FM_ACCOUNT_QUOTA_TIMEOUT FM_ACCOUNT_PANEL_RATIO FM_SP
 # FM_FAKE_QUOTA_LOG as "<provider> <dir> <profile|full> <refresh|no-refresh>
 # <token|no-token>". A --profile-only read answers <status> and <auth-status>;
 # any other read is the classifier and answers <full-status> and
-# <full-auth-status> (default: the same two). "-" is an absent auth status.
+# <full-auth-status> (default: the same two), and writes the quota cache under
+# XDG_CACHE_HOME the way the real tool does. "-" is an absent auth status.
 # Status "garbage" prints unparseable output; any status other than fresh
 # prints a row with no usage and exits nonzero, the way the real tool reports a
 # login that needs sign-in.
@@ -45,6 +46,8 @@ left=50 status=fresh auth=- fstatus= fauth=
 [ ! -f "$dir/fake-quota" ] || read -r left status auth fstatus fauth < "$dir/fake-quota"
 if [ "$mode" = full ]; then
   status=${fstatus:-$status} auth=${fauth:-${auth:--}}
+  mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/quota-axi"
+  : > "${XDG_CACHE_HOME:-$HOME/.cache}/quota-axi/quotas.json"
 fi
 case "$status" in
   garbage) echo 'not json'; exit 0 ;;
@@ -419,7 +422,8 @@ test_spawn_refuses_an_unregistered_or_missing_login() {
 classify_case() {
   new_case "$1"
   printf '%s\n' "$2" > "$C/gmail/fake-quota"
-  OUT=$(CLAUDE_CODE_OAUTH_TOKEN=not-a-real-token run_account status --json)
+  mkdir -p "$C/tmp"
+  OUT=$(CLAUDE_CODE_OAUTH_TOKEN=not-a-real-token XDG_CACHE_HOME="$C/user-home/.cache" TMPDIR="$C/tmp" run_account status --json)
 }
 
 gmail_status() {
@@ -433,6 +437,8 @@ test_a_lapsed_login_reads_expired_not_signed_out() {
   assert_not_contains "$(json_get "$OUT" '.advice | join("\n")')" "sign in to account gmail" "an expired login is not a sign-in"
   assert_contains "$(cat "$C/quota.log")" "claude $C/gmail full no-refresh no-token" "the classifier read never refreshes and never sees an env token"
   assert_not_contains "$(cat "$C/quota.log")" "codex $C/codex full" "only Claude logins are classified"
+  assert_absent "$C/user-home/.cache/quota-axi/quotas.json" "the classifier read never writes the shared quota cache"
+  assert_equals "" "$(ls -A "$C/tmp")" "the classifier's throwaway cache is removed"
   out=$(run_account status)
   assert_contains "$out" "[expired: renews on next use]" "the table says an expired login renews on next use"
   classify_case lapsed-429 "0 rate_limited - unavailable expired_refreshable"
