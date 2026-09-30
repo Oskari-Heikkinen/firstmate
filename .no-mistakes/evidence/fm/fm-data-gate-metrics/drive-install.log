@@ -1,0 +1,82 @@
+$ fm-data-gate-install.sh install --dry-run
+dry run: nothing was written
+created   /tmp/fm-dg-inst.mD77/home/.config/systemd/user/lattice-data-gate-report.service (+daily report service)
+created   /tmp/fm-dg-inst.mD77/home/.config/systemd/user/lattice-data-gate-report.timer (+daily report timer)
+would enable lattice-data-gate-report.timer
+
+$ fm-data-gate-install.sh install
+created   ~/.claude/settings.json (+Claude PreToolUse Bash|Grep|Glob|Read)
+created   ~/.config/systemd/user/lattice-data-gate-report.service (+daily report service)
+created   ~/.config/systemd/user/lattice-data-gate-report.timer (+daily report timer)
+created   ~/.config/lattice-data-gate/mode (+gate modes (scan log, size log))
+enabled lattice-data-gate-report.timer
+refreshed roots cache ~/.local/state/lattice-data-gate/roots.json (homes=0, bulk=0)
+gate /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh; mode after install: scan and size rules log unless ~/.config/lattice-data-gate/mode, LATTICE_DATA_GATE or LATTICE_DATA_GATE_SIZE says otherwise
+exit=0
+
+--- systemctl calls:
+systemctl --user daemon-reload
+systemctl --user enable --now lattice-data-gate-report.timer
+
+--- installed service:
+# Installed by bin/fm-data-gate-install.sh into ~/.config/systemd/user with
+# /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate-report.sh replaced by the checkout's bin/fm-data-gate-report.sh and /opt/node24/bin
+# by the directory of the node that ran the installer.
+[Unit]
+Description=Lattice data gate daily report (bin/fm-data-gate-report.sh)
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=15min
+Environment="PATH=/opt/node24/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/env bash "/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate-report.sh"
+--- installed timer:
+# Installed by bin/fm-data-gate-install.sh into ~/.config/systemd/user.
+# 00:40 leaves the report's 30-minute DIGEST.md window past midnight complete.
+[Unit]
+Description=Write the lattice data gate report for the finished day
+
+[Timer]
+OnCalendar=*-*-* 00:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+$ systemd-analyze verify (service + timer)
+exit=1
+$ systemd-analyze calendar "*-*-* 00:40:00"
+Normalized form: *-*-* 00:40:00
+    Next elapse: Thu 2026-10-01 00:40:00 CEST
+       (in UTC): Wed 2026-09-30 22:40:00 UTC
+       From now: 5h 6min left
+
+--- run the installed ExecStart with the unit's Environment, nice/ionice as the unit sets:
+ExecStart=/usr/bin/env bash "<worktree>/bin/fm-data-gate-report.sh"
+Data gate 2026-09-29: agents read 0 B in 0 reads (est. returned 0 B; none); scans would-block 0, blocked 0; size would-block 0, blocked 0; >200 MB whole-file reads 0; digests 0 read, hit rate n/a; no disk/PSI samples
+exit=0
+2026-09-29.md
+
+$ fm-data-gate-install.sh install (re-run, idempotent)
+unchanged ~/.claude/settings.json (Claude PreToolUse Bash|Grep|Glob|Read already present)
+unchanged ~/.config/systemd/user/lattice-data-gate-report.service (daily report service already present)
+unchanged ~/.config/systemd/user/lattice-data-gate-report.timer (daily report timer already present)
+enabled lattice-data-gate-report.timer
+
+$ fm-data-gate-install.sh uninstall
+removed   ~/.claude/settings.json (created by install)
+removed   ~/.config/systemd/user/lattice-data-gate-report.service (created by install)
+removed   ~/.config/systemd/user/lattice-data-gate-report.timer (created by install)
+removed   ~/.config/lattice-data-gate/mode (created by install)
+decision log kept: ~/.local/state/lattice-data-gate/decisions.jsonl
+--- systemctl calls:
+systemctl --user disable --now lattice-data-gate-report.timer
+systemctl --user daemon-reload
+ls: cannot access '/tmp/fm-dg-inst.mD77/home/.config/systemd/user': No such file or directory
+reports kept:
+2026-09-29.md
+
+--- correction: the 'exit=1' above was grep -v's status (it filtered all lines). Re-run of systemd-analyze on the rendered units:
+systemd-analyze verify exit=0

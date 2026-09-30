@@ -1,0 +1,141 @@
+== S1 Claude Read tool hook (stdin PreToolUse JSON), log mode ==
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log bash -c printf %s "$0" | "$1" --harness claude {"session_id":"sess-A","cwd":"/tmp/fm-dg-live.7Mzp/home/Tools/firstmate","tool_name":"Read","tool_input":{"file_path":"data/big/lines.txt","offset":10,"limit":100}} /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh
+exit=0 output=[]
+{"tool":"Read","path":"~/Tools/firstmate/data/big/lines.txt","size":3893,"bounded":true,"bytes_requested":389,"bytes_returned_est":389,"whole_file":false,"size_rule_would_block":false,"is_digest":false,"harness":"claude","task":null,"home":"~/Tools/firstmate","session":"sess-A"}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log bash -c printf %s "$0" | "$1" --harness claude {"session_id":"sess-A","cwd":"/tmp/fm-dg-live.7Mzp/home/Tools/firstmate","tool_name":"Read","tool_input":{"file_path":"data/big/table.jsonl"}} /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh
+exit=0 output=[]
+{"tool":"Read","path":"~/Tools/firstmate/data/big/table.jsonl","size":20971520,"bounded":false,"bytes_requested":20971520,"bytes_returned_est":0,"whole_file":true,"size_rule_would_block":false,"is_digest":false,"harness":"claude","task":null,"home":"~/Tools/firstmate","session":"sess-A"}
+
+== S2 size rule enforce: unbounded Read of 300 MB is refused AND logged with would_block=true ==
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=enforce bash -c printf %s "$0" | "$1" --harness claude {"session_id":"sess-B","cwd":"/tmp/fm-dg-live.7Mzp/home/Tools/firstmate","tool_name":"Read","tool_input":{"file_path":"data/big/huge.csv"}} /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh
+exit=2 output=[BLOCKED (data gate): Read would read all of /tmp/fm-dg-live.7Mzp/home/Tools/firstmate/data/big/huge.csv (300 MiB; the whole-file limit is 200 MiB).
+Use:  the file's DIGEST.md or its catalog entry firs]
+{"tool":"Read","path":"~/Tools/firstmate/data/big/huge.csv","size":314572800,"bounded":false,"bytes_requested":314572800,"bytes_returned_est":0,"whole_file":true,"size_rule_would_block":true,"is_digest":false,"harness":"claude","task":null,"home":"~/Tools/firstmate","session":"sess-B"}
+
+== S3 shell reads via pi/opencode --command, log mode ==
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command cat data/big/lines.txt
+exit=0 output=[]
+rows added: 1
+   {"path":"big/lines.txt","size":3893,"bounded":false,"bytes_requested":3893,"whole_file":true,"size_rule_would_block":false}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command head -n 5 data/big/huge.csv
+exit=0 output=[]
+rows added: 1
+   {"path":"big/huge.csv","size":314572800,"bounded":true,"bytes_requested":327680,"whole_file":false,"size_rule_would_block":false}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command tail -n +2 data/big/huge.csv
+exit=0 output=[]
+rows added: 1
+   {"path":"big/huge.csv","size":314572800,"bounded":false,"bytes_requested":314572800,"whole_file":true,"size_rule_would_block":false}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command head -c 1000 data/big/huge.csv
+exit=0 output=[]
+rows added: 1
+   {"path":"big/huge.csv","size":314572800,"bounded":true,"bytes_requested":1000,"whole_file":false,"size_rule_would_block":false}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command grep foo data/big/table.jsonl | head -n 20
+exit=0 output=[]
+rows added: 1
+   {"path":"big/table.jsonl","size":20971520,"bounded":true,"bytes_requested":1310720,"whole_file":false,"size_rule_would_block":false}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command sort data/big/table.jsonl | head -n 3
+exit=0 output=[]
+rows added: 1
+   {"path":"big/table.jsonl","size":20971520,"bounded":false,"bytes_requested":20971520,"whole_file":true,"size_rule_would_block":false}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command head -n 5 < data/big/huge.csv
+exit=0 output=[]
+rows added: 1
+   {"path":"big/huge.csv","size":314572800,"bounded":true,"bytes_requested":327680,"whole_file":false,"size_rule_would_block":false}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command grep x data/big/lines.txt 3< data/big/huge.csv | head -n 2
+exit=0 output=[]
+rows added: 2
+   {"path":"big/huge.csv","size":314572800,"bounded":false,"bytes_requested":314572800,"whole_file":true,"size_rule_would_block":false}
+   {"path":"big/lines.txt","size":3893,"bounded":true,"bytes_requested":8,"whole_file":false,"size_rule_would_block":false}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command python3 -c "open('data/big/huge.csv').read()"
+exit=0 output=[]
+rows added: 1
+   {"path":"big/huge.csv","size":314572800,"bounded":false,"bytes_requested":314572800,"whole_file":true,"size_rule_would_block":true}
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home --command cat link/huge.csv
+exit=0 output=[]
+rows added: 1
+   {"path":"link/huge.csv","size":314572800,"bounded":false,"bytes_requested":314572800,"whole_file":true,"size_rule_would_block":true}
+
+== S4 task attribution from fm/<id> worktree branch (opencode) ==
+
+$ g LATTICE_DATA_GATE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness opencode --cwd /tmp/fm-dg-live.7Mzp/pool/1/project --command cat notes.md
+exit=0 output=[]
+{"tool":"cat","path":"/tmp/fm-dg-live.7Mzp/pool/1/project/notes.md","size":141,"bounded":false,"bytes_requested":141,"bytes_returned_est":141,"whole_file":true,"size_rule_would_block":false,"is_digest":false,"harness":"opencode","task":"demo-task","home":null,"session":null}
+
+== S5 Codex shell payload on stdin ==
+
+$ g LATTICE_DATA_GATE=log bash -c printf %s "$0" | "$1" --harness codex {"session_id":"sess-C","cwd":"/tmp/fm-dg-live.7Mzp/home/Tools/firstmate","tool_name":"Bash","tool_input":{"command":"wc -l data/big/lines.txt"}} /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh
+exit=0 output=[]
+{"tool":"wc","path":"~/Tools/firstmate/data/big/lines.txt","size":3893,"bounded":false,"bytes_requested":3893,"bytes_returned_est":3893,"whole_file":true,"size_rule_would_block":false,"is_digest":false,"harness":"codex","task":null,"home":"~/Tools/firstmate","session":"sess-C"}
+
+== S6 digest hit then miss (Claude, session sess-D reads digest then the 300 MB file; sess-E only the small digest) ==
+{"tool":"Read","path":"~/Tools/firstmate/data/big/DIGEST.md","size":10,"bounded":false,"bytes_requested":10,"bytes_returned_est":10,"whole_file":true,"size_rule_would_block":false,"is_digest":true,"harness":"claude","task":null,"home":"~/Tools/firstmate","session":"sess-D"}
+{"tool":"Read","path":"~/Tools/firstmate/data/big/huge.csv","size":314572800,"bounded":true,"bytes_requested":6553600,"bytes_returned_est":6553600,"whole_file":false,"size_rule_would_block":false,"is_digest":false,"harness":"claude","task":null,"home":"~/Tools/firstmate","session":"sess-D"}
+{"tool":"Read","path":"~/Tools/firstmate/data/small/DIGEST.md","size":10,"bounded":false,"bytes_requested":10,"bytes_returned_est":10,"whole_file":true,"size_rule_would_block":false,"is_digest":true,"harness":"claude","task":null,"home":"~/Tools/firstmate","session":"sess-E"}
+
+== S7 guard: LATTICE_DATA_GATE_READS=off records nothing; non-read command records nothing ==
+rows added: 0
+
+== S8 guard: read log cannot block — unwritable state dir still allows silently ==
+
+$ g LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness pi --cwd /tmp/fm-dg-live.7Mzp/home/Tools/firstmate --command cat data/big/lines.txt
+exit=0 output=[]
+hook latency ms: 108
+
+== S9 daily report ==
+$ fm-data-gate-report.sh --date 2026-09-30
+Data gate 2026-09-30: agents read 1.6 GB in 21 reads (est. returned 1.3 GB; largest 315 MB huge.csv); scans would-block 0, blocked 0; size would-block 3, blocked 1; >200 MB whole-file reads 3; digests 2 read, hit rate 50%; disk root +1.0 GB, /mnt/c +200 MB, written 100 MB; IO PSI some 2.0% full 0.5%; baseline 1.2 GB per day
+exit=0
+--- /tmp/fm-dg-live.7Mzp/home/.local/state/lattice-data-gate/reports/2026-09-30.md:
+# Data gate report 2026-09-30
+
+| Measure | Value |
+|---|---:|
+| Bytes requested by agents | 1.6 GB in 21 reads (14 whole-file, 12 of files > 10 MB) |
+| Bytes returned (est., harness Read caps) | 1.3 GB |
+| By harness | pi 1.3 GB, claude 342 MB, codex 3.9 kB, opencode 141 B |
+| Whole-file reads > 200 MB (size rule would block) | 3 |
+| Gate scan decisions | 0 logged, 0 would-block, 0 blocked |
+| Gate size decisions | 4 logged, 3 would-block, 1 blocked |
+| Gate errors (allowed) | 0 |
+| DIGEST.md reads | 2: 1 hit, 1 miss (50%; miss = a > 10 MB file in the same folder read within 30 min) |
+| Disk growth | root +1.0 GB, /mnt/c +200 MB |
+| Disk IO | 2.0 MB read, 100 MB written (3 samples) |
+| PSI mean avg60 | io some 2.0% (peak 3.0%), io full 0.5%, memory some 0.2%, memory full 0.1% |
+| Baseline (before) | agents requested on average 1.2 GB per day |
+
+Largest reads:
+
+- 315 MB Read ~/Tools/firstmate/data/big/huge.csv (claude)
+- 315 MB tail ~/Tools/firstmate/data/big/huge.csv (pi)
+- 315 MB redirect ~/Tools/firstmate/data/big/huge.csv (pi)
+- 315 MB python3 ~/Tools/firstmate/data/big/huge.csv (pi)
+- 315 MB cat ~/link/huge.csv (pi)
+
+Relay: Data gate 2026-09-30: agents read 1.6 GB in 21 reads (est. returned 1.3 GB; largest 315 MB huge.csv); scans would-block 0, blocked 0; size would-block 3, blocked 1; >200 MB whole-file reads 3; digests 2 read, hit rate 50%; disk root +1.0 GB, /mnt/c +200 MB, written 100 MB; IO PSI some 2.0% full 0.5%; baseline 1.2 GB per day
+--- read logs after prune:
+reads-2026-09-20.jsonl
+reads-2026-09-30.jsonl
+$ fm-data-gate-report.sh --today (removed flag)
+fm-data-gate-report: unknown argument: --today
+exit=1
+$ fm-data-gate-report.sh --date 2026-13
+fm-data-gate-report: --date must be YYYY-MM-DD: 2026-13
+exit=1
+$ fm-data-gate-report.sh (default yesterday, no reads)
+Data gate 2026-09-29: agents read 0 B in 0 reads (est. returned 0 B; none); scans would-block 0, blocked 0; size would-block 0, blocked 0; >200 MB whole-file reads 0; digests 0 read, hit rate n/a; no disk/PSI samples; baseline 1.2 GB per day
+exit=0
+2026-09-29.md
+2026-09-30.md
