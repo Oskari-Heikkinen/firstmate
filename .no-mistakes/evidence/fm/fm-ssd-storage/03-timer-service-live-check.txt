@@ -1,0 +1,26 @@
+# generated service run as a transient systemd --user unit with its own Nice/IO/Environment (isolated XDG_CONFIG_HOME/XDG_STATE_HOME)
+$ systemd-run --user --wait --pipe -p Type=oneshot -p Nice=19 -p IOSchedulingClass=idle -p Environment=PATH=/usr/local/bin:/usr/bin:/bin:/mnt/c/Windows/System32/WindowsPowerShell/v1.0 -p Environment=XDG_CONFIG_HOME=/tmp/fmstor-live.9Uee/xdg -p Environment=XDG_STATE_HOME=/tmp/fmstor-live.9Uee/state /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3STD43200C9YXKQAV9T9SJR/bin/fm-storage.sh check
+results root: /home/oskari/tetjet-results/{task} (absent: no SSD found in Windows)
+exit=0
+--- published results-root
+/home/oskari/tetjet-results/{task}
+format=lattice-storage-results-root/v1
+active=c
+state=absent
+reason=no SSD found in Windows
+checked_at=1790794808
+fallback=/home/oskari/tetjet-results/{task}
+--- notification file (first absent reading is a silent baseline)
+(no notes written)
+--- last-state
+absent
+
+# F1 regression: the pre-fix unit PATH (no WSL interop, no PowerShell dir) still finds powershell.exe via the fixed fallback
+results root: /home/oskari/tetjet-results/{task} (absent: no SSD found in Windows)
+exit=0
+--- status
+results root: /home/oskari/tetjet-results/{task} (C: fallback, state absent, checked 0 s ago)
+reason: no SSD found in Windows
+fallback: /home/oskari/tetjet-results/{task}
+--- root (reader rules) for task run-42
+/home/oskari/tetjet-results/run-42

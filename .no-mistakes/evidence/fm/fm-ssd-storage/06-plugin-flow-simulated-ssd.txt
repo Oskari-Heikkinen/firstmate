@@ -1,0 +1,60 @@
+## 1. before the SSD arrives
+results root: /home/oskari/tetjet-results/{task} (absent: no SSD found in Windows)
+notes: 0
+
+## 2. colleague plugs in a 2 TB exFAT SSD that Windows gives E: (WSL has it at /mnt/e, stand-in dir)
+candidate: E: exFAT, 1.82 TiB total, 1.82 TiB free, id \\?\Volume{t7-2tb}\, label T7 Shield
+state: usable
+results root: /tmp/fmstor-live.9Uee/flow/mnt/e/lattice-data/tetjet-results/{task} (ok: SSD E: exFAT, 1.82 TiB free)
+results root: /tmp/fmstor-live.9Uee/flow/mnt/e/lattice-data/tetjet-results/{task} (SSD, state ok, checked 0 s ago)
+reason: SSD E: exFAT, 1.82 TiB free
+SSD E: exFAT, 1.82 TiB free of 1.82 TiB, write speed 292 MiB/s
+fallback: /home/oskari/tetjet-results/{task}
+--- folder layout on the SSD
+.
+./lattice-data
+./lattice-data/.lattice-storage-id
+./lattice-data/archive
+./lattice-data/tetjet-results
+marker: \\?\Volume{t7-2tb}\
+--- ssd-identity
+uniqueid=\\?\Volume{t7-2tb}\
+letter=E
+fs=exFAT
+label=T7 Shield
+setup_at=1790794874
+write_mib_s=292
+--- Firstmate notification file
+note [at=1790794874]: SSD storage ok: SSD E: exFAT, 1.82 TiB free; fetched results go to /tmp/fmstor-live.9Uee/flow/mnt/e/lattice-data/tetjet-results/{task}
+--- reader: root run-42
+/tmp/fmstor-live.9Uee/flow/mnt/e/lattice-data/tetjet-results/run-42
+
+## 3. next timer ticks: idempotent, no second note, no second speed test
+results root: /tmp/fmstor-live.9Uee/flow/mnt/e/lattice-data/tetjet-results/{task} (ok: SSD E: exFAT, 1.82 TiB free)
+results root: /tmp/fmstor-live.9Uee/flow/mnt/e/lattice-data/tetjet-results/{task} (ok: SSD E: exFAT, 1.82 TiB free)
+notes: 1
+setup_at unchanged: 1790794874
+
+## 4. fm-disk-room.sh status on the real host, reading the published results-root
+real room: 141.1 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 141.1 GiB
+Linux free: 541.4 GiB, used 414.3 GiB
+reserved writes: 0.0 GiB
+disk file: 482.2 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 67.9 GiB, of which fragmented 63.1 GiB; reclaimable by compaction about 4.8 GiB
+last compaction: 2026-09-30T20:22:33 startup ok reclaimed 92.9 GiB
+SSD E: 1861.7 GiB free of 1863.0 GiB (exFAT)
+fetched results root: SSD E:
+exit=0
+{'results_active': 'ssd', 'results_state': 'ok', 'ssd_free': 1999000000000, 'ssd_total': 2000381014016}
+
+## 5. SSD fills up (free drops under 50 GiB)
+results root: /home/oskari/tetjet-results/{task} (full: SSD E: has 0.04 TiB free, under the 0.05 TiB minimum)
+/home/oskari/tetjet-results/run-43
+note [at=1790794875]: SSD storage full: SSD E: has 0.04 TiB free, under the 0.05 TiB minimum; fetched results go to /home/oskari/tetjet-results/{task}
+
+## 6. colleague unplugs it
+results root: /home/oskari/tetjet-results/{task} (absent: no SSD found in Windows)
+/home/oskari/tetjet-results/run-44
+note [at=1790794875]: SSD storage absent: no SSD found in Windows; fetched results go to /home/oskari/tetjet-results/{task}
+last compaction: 2026-09-30T20:22:33 startup ok reclaimed 92.9 GiB
+fetched results root: C: fallback (SSD absent)

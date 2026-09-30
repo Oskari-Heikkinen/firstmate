@@ -1,0 +1,22 @@
+# control: /usr/bin/sudo -n -k /usr/bin/true (covered only by the password rule)
+sudo: a password is required
+exit=1
+
+# mount path: simulated Windows listing shows a 2 TB NTFS D:; real /proc/self/mountinfo; script's sudo call run through the REAL sudo (-k)
+results root: /home/oskari/tetjet-results/{task} (not-mounted: SSD D: is in Windows but not mounted in WSL; restart the laptop with the SSD plugged in, or see the mount rule section in docs/storage.md)
+exit=0
+script ran: sudo -n /usr/bin/mount -t drvfs D: /mnt/d -o uid=1000,gid=1000
+mount: /mnt/d: special device D: does not exist.
+       dmesg(1) may have more information after failed mount system call.
+<3>WSL (373838 - ) ERROR: UtilCreateProcessAndWait:709: /bin/mount failed with status 0x2000
+  real sudo exit=32
+(sudo passed without a password and mount itself ran; it fails only because this laptop has no D: yet)
+
+# release path: remembered SSD letter D, REAL Windows listing (no D:), fake mountinfo shows /mnt/d still mounted
+results root: /home/oskari/tetjet-results/{task} (stale-mount: SSD removed but /mnt/d is still mounted and could not be released)
+exit=0
+script ran: sudo -n /usr/bin/umount -l /mnt/d
+umount: /mnt/d: not mounted.
+  real sudo exit=32
+(sudo passed without a password and umount itself ran; real /mnt/d was not mounted, so it reports stale-mount against the fake table)
+real mounts at /mnt/d afterwards: 0

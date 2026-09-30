@@ -1,0 +1,17 @@
+$ bash tests/fm-storage.test.sh
+ok - no SSD publishes the C: fallback without notifying
+ok - a mounted NTFS SSD becomes the root, once, idempotently
+ok - an exFAT SSD is used
+ok - a RAW or unformatted SSD is reported and never touched
+ok - a full SSD falls back to C:
+ok - a small USB stick is ignored
+ok - without the mount rule the SSD is reported and C: stays active
+ok - a removed SSD releases its stale mount
+ok - a stale-mount release skips a letter another volume now holds
+ok - an unknown write speed is measured again on the next check
+ok - check finds powershell.exe outside PATH
+ok - the remembered SSD identity decides between large volumes
+ok - a failed Windows call falls back to C:
+ok - root applies the reader rules and falls back on any doubt
+ok - check refuses to publish without a C: fallback
+exit=0

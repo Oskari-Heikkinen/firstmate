@@ -1,0 +1,3 @@
+$ PATH=/usr/bin:/bin FM_STORAGE_CONFIG=$T/cfg FM_STORAGE_STATE=$T/st bin/fm-storage.sh detect
+state: absent - no SSD found in Windows
+exit=0

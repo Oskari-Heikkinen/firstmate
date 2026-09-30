@@ -1,0 +1,29 @@
+# install-timer into an isolated XDG_CONFIG_HOME (systemctl hidden so the real user manager is not touched)
+$ XDG_CONFIG_HOME=/tmp/fmstor-live.9Uee/xdg bin/fm-storage.sh install-timer --fallback '/home/oskari/tetjet-results/{task}' --notify /tmp/fmstor-live.9Uee/notes.txt
+wrote /tmp/fmstor-live.9Uee/xdg/lattice-storage/storage.conf, /tmp/fmstor-live.9Uee/xdg/systemd/user/fm-storage.service and fm-storage.timer
+fm-storage: systemctl not found; enable later with: systemctl --user daemon-reload && systemctl --user enable --now fm-storage.timer
+exit=2
+--- storage.conf
+fallback=/home/oskari/tetjet-results/{task}
+notify=/tmp/fmstor-live.9Uee/notes.txt
+--- fm-storage.service
+[Unit]
+Description=Choose the fetched-results root (external SSD or C: fallback)
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/mnt/c/Windows/System32/WindowsPowerShell/v1.0
+ExecStart=/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3STD43200C9YXKQAV9T9SJR/bin/fm-storage.sh check
+--- fm-storage.timer
+[Unit]
+Description=Check the external SSD every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

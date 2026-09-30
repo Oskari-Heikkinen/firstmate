@@ -1,0 +1,18 @@
+## A. SSD arrives with a RAW volume at E:
+results root: /home/oskari/tetjet-results/{task} (raw: SSD E: (1.82 TiB) filesystem is RAW (RAW, unformatted or unsupported); formatting needs the captain; nothing written)
+files written on SSD: 0
+note [at=1790794893]: SSD storage raw: SSD E: (1.82 TiB) filesystem is RAW (RAW, unformatted or unsupported); formatting needs the captain; nothing written; fetched results go to /home/oskari/tetjet-results/{task}
+
+## B. SSD arrives unformatted: a 2 TB USB disk with no lettered volume (partition style RAW)
+results root: /home/oskari/tetjet-results/{task} (raw: disk 1 (USB, 1.82 TiB, partition style RAW) has no lettered NTFS or exFAT volume; formatting needs the captain; nothing written)
+files written on SSD: 0
+note [at=1790794893]: SSD storage raw: disk 1 (USB, 1.82 TiB, partition style RAW) has no lettered NTFS or exFAT volume; formatting needs the captain; nothing written; fetched results go to /home/oskari/tetjet-results/{task}
+
+## C. only a 64 GB USB stick at E: is ignored
+results root: /home/oskari/tetjet-results/{task} (absent: no SSD found in Windows)
+files written on stick: 0
+
+## D. SSD mounted as I: (outside the rule's D-H) and not yet in WSL
+results root: /home/oskari/tetjet-results/{task} (not-mounted: SSD is I:, outside the mount rule's letters D to H)
+sudo calls: 0
+

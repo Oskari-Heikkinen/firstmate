@@ -1,0 +1,6 @@
+# contrast: the pre-fix script (b4d4adfe) under the pre-fix unit PATH, same transient systemd --user unit
+results root: /home/oskari/tetjet-results/{task} (unreadable: could not list Windows volumes (powershell.exe failed or timed out))
+exit=0
+# fixed script, same environment
+results root: /home/oskari/tetjet-results/{task} (absent: no SSD found in Windows)
+exit=0
