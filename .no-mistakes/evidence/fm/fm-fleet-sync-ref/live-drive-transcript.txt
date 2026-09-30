@@ -1,0 +1,60 @@
+== S1: fm.syncRef unset -> clone fast-forwards to origin/main as before
+  $ FM_HOME=$H fm-fleet-sync.sh plain
+    plain: synced daac5db..f6df67a
+    [plain] HEAD=f6df67a branch=main origin/main=f6df67a origin/checks-approved=daac5db
+  PASS: unset clone synced to origin/main tip
+== S2: clone-local fm.syncRef=checks-approved -> local main fast-forwards to origin/checks-approved, not main tip
+  $ git -C projects/lattice config fm.syncRef checks-approved
+  $ FM_HOME=$H fm-fleet-sync.sh lattice
+    lattice: synced df9da97..5fe5e9d
+    [lattice] HEAD=5fe5e9d branch=main origin/main=ef674f8 origin/checks-approved=5fe5e9d
+  PASS: syncRef clone at approved commit, behind origin/main
+  receipt: {"outcome": "synced", "base": "origin/checks-approved", "fetch_succeeded": true, "after": {"branch": "main", "dirty": false, "remote_tip": "5fe5e9deb34213b9db3b8dfe0ebf67ccd5915cc8", "source": "5fe5e9deb34213b9db3b8dfe0ebf67ccd5915cc8"}}
+  PASS: receipt base=origin/checks-approved, remote_tip == approved source
+  application readout: {'source_current': True}
+  PASS: application provenance reads source_current=true
+  $ FM_HOME=$H fm-fleet-sync.sh lattice
+    lattice: already current
+  PASS: second run: already current despite origin/main ahead
+== S3: checks-approved advances after green CI -> next sync follows it
+  $ FM_HOME=$H fm-fleet-sync.sh lattice
+    lattice: synced 5fe5e9d..ef674f8
+    [lattice] HEAD=ef674f8 branch=main origin/main=44fe7eb origin/checks-approved=ef674f8
+  PASS: followed checks-approved forward, still behind main tip
+== S4 (adversarial): fm.syncRef names missing origin ref -> skipped, NO fallback to origin/main
+  $ FM_HOME=$H fm-fleet-sync.sh missing
+    missing: skipped: origin/checks-approved does not exist
+    [missing] HEAD=a0ec2d1 branch=main origin/main=17b237c origin/checks-approved=none
+  PASS: skipped by name, clone not moved
+== S5 (adversarial): global fm.syncRef is ignored (clone-local only)
+  $ git config --global fm.syncRef checks-approved
+  $ FM_HOME=$H fm-fleet-sync.sh globalc
+    globalc: synced 91e5aad..d07150f
+    [globalc] HEAD=d07150f branch=main origin/main=d07150f origin/checks-approved=91e5aad
+  PASS: global setting did not change sync base
+== S6: enabling fm.syncRef on a clone already at origin/main tip -> benign 'ahead', never STUCK, never moved back
+  $ git config fm.syncRef checks-approved (main at 36ef6da)
+  $ FM_HOME=$H fm-fleet-sync.sh ahead
+    ahead: ahead of sync base origin/checks-approved; waiting for it to catch up
+    [ahead] HEAD=36ef6da branch=main origin/main=36ef6da origin/checks-approved=312f1b9
+  PASS: reported ahead/waiting, main untouched
+== S7 (adversarial): local unpushed commit on main atop checks-approved -> STUCK, untouched
+  $ FM_HOME=$H fm-fleet-sync.sh work
+    work: STUCK: on diverged main, 0 commits behind origin/checks-approved - needs attention
+    [work] HEAD=cdd1f47 branch=main origin/main=3bf40f3 origin/checks-approved=6bd082b
+  PASS: STUCK diverged main, local work untouched
+== S8: detached HEAD at origin/main tip past checks-approved -> benign wait; with local main work -> STUCK
+  $ FM_HOME=$H fm-fleet-sync.sh det
+    det: detached HEAD ahead of sync base origin/checks-approved; waiting for it to catch up
+    [det] HEAD=c1dc6d3 branch=DETACHED origin/main=c1dc6d3 origin/checks-approved=71e57a2
+  PASS: detached ahead waits, untouched
+branch 'main' set up to track 'origin/checks-approved'.
+  $ FM_HOME=$H fm-fleet-sync.sh det
+    det: STUCK: on detached HEAD (local main diverged from origin/checks-approved), 0 commits behind origin/checks-approved - needs attention
+    [det] HEAD=c1dc6d3 branch=DETACHED origin/main=c1dc6d3 origin/checks-approved=71e57a2
+  PASS: detached + local main work is STUCK, local main untouched
+== S9: whole-fleet run through bootstrap: STUCK relayed as FLEET_SYNC, benign ahead not relayed
+    FLEET_SYNC: missing: skipped: origin/checks-approved does not exist
+    FLEET_SYNC: work: STUCK: on diverged main, 0 commits behind origin/checks-approved - needs attention
+  PASS: bootstrap relays STUCK for work, stays quiet for ahead/lattice
+== RESULT: 13 passed, 0 failed
