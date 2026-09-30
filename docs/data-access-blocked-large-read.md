@@ -10,7 +10,7 @@ When this file changes, repeat that step so the two copies match.
 
 ## Blocked large read
 
-The data gate refuses a whole-file read of one file over its size limit (200 MiB unless configured): the Read tool without an offset or limit, `cat`, `less`, `grep`, `rg`, `sed`, `awk`, `jq`, `wc`, `sort`, `cut`, a checksum, `zcat`, `dd` without `count=`, a Python `open()` of a literal path, or any `< file` redirect.
+The data gate refuses a whole-file read of one file over its size limit (200 MiB unless configured): the Read tool without an offset or limit, `cat`, `less`, `grep`, `rg`, `sed`, `awk`, `jq`, `wc` (but not `wc -c`), `sort`, `cut`, a checksum, `zcat`, `dd` without `count=`, a Python `open()` or `Path().read_text()` of a literal path, or any `< file` redirect.
 Bounded reads always pass, so the refusal is never a reason to stop: go down this list and stop at the first step that answers the question.
 
 1. **Summary first.**
