@@ -1,0 +1,26 @@
+$ fm-job-cap.sh --admit --mem-high 32M --mem-max 64M --swap-max 0 -- sh -c "cat /proc/self/cgroup; cat /sys/fs/cgroup\$(cut -d: -f3 /proc/self/cgroup)/memory.{high,max,swap.max}"
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r46488fa9498d404ab4910c03c8bc9f72.scope
+memory.high=33554432 memory.max=67108864 memory.swap.max=0
+exit=0
+
+$ fm-job-cap.sh --admit --mem-high 32M --mem-max 64M --swap-max 0 -- python3 -c "<allocate 300 MiB in 10 MiB steps>"   # runaway job
+allocated 10 MiB
+allocated 20 MiB
+allocated 30 MiB
+Terminated
+exit=143 (non-zero: killed inside its own scope)
+
+$ echo alive; the calling shell and host keep running
+alive
+
+Sep 30 18:15:20 OskuTETMET systemd[207]: Stopping run-rbb6ae0aea58a484c9efe141143e209c2.scope - /usr/bin/bash -c "\n    cg=\$(cut -d: -f3 /proc/self/cgroup)\n    missing=\n    [ -e \"/sys/fs/cgroup\$cg/io.max\" ] || missing=\"disk-speed\"\n    [ -e \"/sys/fs/cgroup\$cg/memory.max\" ] || missing=\"\${missing:+\$missing and }memory\"\n    if [ -n \"\$missing\" ]; then\n      echo \"fm-job-cap: WARNING \$missing cap NOT applied (controller not delegated to the user manager)\" >&2\n      [ \"\$1\" = 1 ] && { echo \"fm-job-cap: refusing (--strict)\" >&2; exit 3; }\n    fi\n    nice=\$2\n    shift 2\n    if [ \"\$nice\" = 1 ]; then exec nice -n 19 ionice -c3 \"\$@\"; fi\n    exec \"\$@\"" fm-job-cap 0 1 python3 -c "\nimport sys\nb=[]\nfor i in range(30):\n    b.append(bytearray(10*1024*1024)); print(\"allocated\", (i+1)*10, \"MiB\", flush=True)\nprint(\"RUNAWAY FINISHED UNCAPPED\")"...
+Sep 30 18:15:20 OskuTETMET systemd[207]: Stopped run-rbb6ae0aea58a484c9efe141143e209c2.scope - /usr/bin/bash -c "\n    cg=\$(cut -d: -f3 /proc/self/cgroup)\n    missing=\n    [ -e \"/sys/fs/cgroup\$cg/io.max\" ] || missing=\"disk-speed\"\n    [ -e \"/sys/fs/cgroup\$cg/memory.max\" ] || missing=\"\${missing:+\$missing and }memory\"\n    if [ -n \"\$missing\" ]; then\n      echo \"fm-job-cap: WARNING \$missing cap NOT applied (controller not delegated to the user manager)\" >&2\n      [ \"\$1\" = 1 ] && { echo \"fm-job-cap: refusing (--strict)\" >&2; exit 3; }\n    fi\n    nice=\$2\n    shift 2\n    if [ \"\$nice\" = 1 ]; then exec nice -n 19 ionice -c3 \"\$@\"; fi\n    exec \"\$@\"" fm-job-cap 0 1 python3 -c "\nimport sys\nb=[]\nfor i in range(30):\n    b.append(bytearray(10*1024*1024)); print(\"allocated\", (i+1)*10, \"MiB\", flush=True)\nprint(\"RUNAWAY FINISHED UNCAPPED\")".
+# note: exit=143 above is from the operator stop of the throttled scope (systemctl --user stop), not an OOM kill; the job never exceeded MemoryHigh+slack and the host never paged for it.
+
+# Captured while the runaway job was still running (~3 min after start), before the stop above:
+# /sys/fs/cgroup/.../app.slice/run-rbb6ae0aea58a484c9efe141143e209c2.scope
+memory.current=36507648 memory.high=33554432 memory.max=67108864
+memory.events: low 0 high 10663 max 0 oom 0 oom_kill 0 oom_group_kill 0
+job state: D (disk sleep) wchan=mem_cgroup_handle_over_high  RSS 40960 kB
+host MemAvailable: 8115 MiB (unaffected)
+=> the job is throttled by the kernel at its MemoryHigh inside its own scope; the host is untouched.

@@ -1,0 +1,26 @@
+# Real host swap, isolated rules: swap ladder [500,1000,1500] MiB; other Linux ladders moved out of reach so swap alone grades.
+# 'growing' = default linux_swapout_mibps_min 1; 'residual' = same swap level but linux_swapout_mibps_min 100000 (models swap left behind with no growth).
+real: SwapCached: 728 MiB  SwapTotal: 16384 MiB  SwapFree: 13447 MiB   pswpout 1524632
+[18:15:52] growing tick#1: level=ok reasons=all signals within limits | swapout record: 1790784954 1524632 
+[18:15:54] residual tick#1: level=ok reasons=all signals within limits | swapout record: 1790784955 1524632 
+[18:15:58] growing tick#2 (+3s, inside the 60s floor): level=ok reasons=all signals within limits | swapout record: 1790784954 1524632 
+[18:15:58] residual tick#2 (+3s, inside the 60s floor): level=ok reasons=all signals within limits | swapout record: 1790784955 1524632 
+real: pswpout 1565426
+[18:16:55] growing tick#3 (+65s): level=refuse reasons=Linux swap used 2206 MiB, growing 3.0 MiB/s (refuse) | swapout record: 1790785017 1573403 1790784954 1524632
+[18:16:57] residual tick#3 (+65s): level=ok reasons=all signals within limits | swapout record: 1790785019 1575687 1790784955 1524632
+[18:17:01] growing tick#4 (+67s, 2s after #3: rate still spans >=60s via the older pair): level=refuse reasons=Linux swap used 2220 MiB, growing 3.2 MiB/s (refuse) | swapout record: 1790785017 1573403 1790784954 1524632
+[18:17:02] residual tick#4 (+67s, 2s after #3: rate still spans >=60s via the older pair): level=ok reasons=all signals within limits | swapout record: 1790785019 1575687 1790784955 1524632
+--- growing samples.log
+1790784954 level=ok graded=ok win_avail_mib=2310 win_paging_mibps=0.0 linux_avail_mib=8179 linux_cache_mib=7086 linux_swap_used_mib=2207 swapout_mibps=- psi_full=0.48 win_source=powershell
+1790784958 level=ok graded=ok win_avail_mib=2310 win_paging_mibps=0.0 linux_avail_mib=8587 linux_cache_mib=7211 linux_swap_used_mib=2206 swapout_mibps=- psi_full=0.32 win_source=cache_4s
+1790785017 level=refuse graded=refuse win_avail_mib=2109 win_paging_mibps=0.0 linux_avail_mib=4978 linux_cache_mib=4291 linux_swap_used_mib=2206 swapout_mibps=3.0 psi_full=0.66 win_source=powershell
+1790785022 level=refuse graded=refuse win_avail_mib=2109 win_paging_mibps=0.0 linux_avail_mib=4469 linux_cache_mib=3624 linux_swap_used_mib=2220 swapout_mibps=3.2 psi_full=0.59 win_source=cache_5s
+--- growing events.log
+2026-09-30T16:16:57Z level ok -> refuse: Linux swap used 2206 MiB, growing 3.0 MiB/s (refuse)
+2026-09-30T16:16:57Z park: bin/fm-park.sh is not installed in /tmp/fm-mg-swap.AjgC/h, so the park level acts as warn only
+--- residual samples.log
+1790784955 level=ok graded=ok win_avail_mib=2306 win_paging_mibps=0.0 linux_avail_mib=8237 linux_cache_mib=7087 linux_swap_used_mib=2207 swapout_mibps=- psi_full=0.39 win_source=powershell
+1790784958 level=ok graded=ok win_avail_mib=2306 win_paging_mibps=0.0 linux_avail_mib=8568 linux_cache_mib=7212 linux_swap_used_mib=2206 swapout_mibps=- psi_full=0.32 win_source=cache_3s
+1790785019 level=ok graded=ok win_avail_mib=2103 win_paging_mibps=0.6 linux_avail_mib=4723 linux_cache_mib=4221 linux_swap_used_mib=2205 swapout_mibps=3.1 psi_full=0.66 win_source=powershell
+1790785023 level=ok graded=ok win_avail_mib=2103 win_paging_mibps=0.6 linux_avail_mib=4704 linux_cache_mib=3648 linux_swap_used_mib=2218 swapout_mibps=3.2 psi_full=0.59 win_source=cache_3s
+--- residual events.log

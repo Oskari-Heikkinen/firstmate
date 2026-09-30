@@ -1,0 +1,39 @@
+$ fm-mem-guard.sh sample --fresh   # real host: real powershell.exe, real /proc
+win_total_mib=32048
+win_free_mib=2184
+win_available_mib=2106
+win_paging_mibps=0.0
+win_source=powershell
+linux_total_mib=17984
+linux_available_mib=8425
+linux_cache_mib=7635
+linux_swap_used_mib=2060
+linux_swapout_mibps=
+linux_psi_some_avg10=1.51
+linux_psi_full_avg10=0.85
+
+real	0m2.528s
+user	0m0.049s
+sys	0m0.042s
+exit=0
+
+$ fm-mem-guard.sh sample   # second call within win_cache_s reuses the shared cache
+win_source=cache 0s
+
+$ fm-mem-guard.sh status
+win_total_mib=32048
+win_free_mib=2184
+win_available_mib=2106
+win_paging_mibps=0.0
+win_source=cache 0s
+linux_total_mib=17984
+linux_available_mib=8418
+linux_cache_mib=7637
+linux_swap_used_mib=2060
+linux_swapout_mibps=
+linux_psi_some_avg10=1.51
+linux_psi_full_avg10=0.85
+graded=ok
+graded_reasons=all signals within limits
+recorded=unknown (no tick within 900s)
+exit=0

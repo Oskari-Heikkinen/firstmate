@@ -1,0 +1,16 @@
+ok - sample reads Windows and Linux memory and shares one cached powershell reading
+ok - a missing or slow powershell degrades the sample to Linux-only and says why
+ok - signals grade on their ladders, the level rises at once and falls after clear_samples
+ok - defaults grade Linux memory and only sample Windows available memory
+ok - swap grades only on a tick where it grows, never past refuse, and residual swap clears
+ok - admit refuses heavy jobs at refuse or critical and charges the job's memory
+ok - critical wakes a primary home once per critical_rewake_s and never a secondmate home
+ok - the park level parks idle workers with a valid handoff, steers the rest once per interval, or logs warn-only without fm-park.sh
+ok - a park pass never starts a park it cannot finish, and each pass progresses past where the last one stopped
+ok - the park level never re-parks from a handoff that predates the task's last park or resume
+ok - the critical wake is printed and recorded before park work, and the park pass ends inside the check timeout
+ok - rules override thresholds and malformed values warn and keep defaults
+ok - auto sync arms and registers the watcher check, and off retires it
+ok - fm-job-cap scopes memory and disk caps, refuses through the guard, and says when it cannot cap
+# all fm-mem-guard tests passed
+exit=0

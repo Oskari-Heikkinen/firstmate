@@ -1,0 +1,19 @@
+# real host, built-in defaults (no rules file), isolated guard dir and ledger
+$ fm-admission.sh rules
+mem_floor_mib=3072
+agent_cost_mib=400
+mem_full_avg10_max=5
+cpu_some_avg10_max=40
+load1_per_core_max=1.5
+max_agents=40
+relaunch_per_minute_per_home=2
+wait_max_s=300
+secondmate_wait_max_s=60
+agent_process_names=claude codex opencode pi pi-signed grok kimi cursor-agent omp gemini devin agy muse
+rules_file=/tmp/fm-mg-adm.5U22/none.json
+
+$ fm-admission.sh check
+admit
+exit=0
+
+# for reference: live claude/codex agent processes on this host: 33 claude, 2 codex-ish

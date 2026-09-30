@@ -1,0 +1,11 @@
+ok - a healthy host admits at once and records the admission
+ok - memory, memory pressure, cpu pressure, and load each hold admission and a rule raises the bar
+ok - the cap counts one per agent tree, survives exited processes, recognizes node-hosted agents, and charges recent admissions
+ok - a held launch waits with backoff and is admitted once the host recovers
+ok - a launch refuses loudly after its bound, and an override starts it with a notice
+ok - restart-shaped launches are paced per home and a secondmate is delayed, never refused
+ok - a malformed rules file warns and falls back, and FM_ADMISSION=off admits
+ok - a fresh refuse or critical memory-guard level holds admission; stale and lower levels do not
+ok - fm-spawn refuses before creating anything, and --admission-override launches
+# all fm-admission tests passed
+exit=0

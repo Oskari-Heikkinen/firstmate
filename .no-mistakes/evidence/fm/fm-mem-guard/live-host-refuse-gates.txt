@@ -1,0 +1,41 @@
+# rules: {"wait_max_s": 6, "memory_guard": {"linux_available_mib": [40000, 30000, 20000, 1000]}}   (Linux ladder raised above this host's real MemAvailable so the real sample grades refuse)
+$ fm-admission.sh check   # before any guard tick
+admit
+exit=0
+
+$ fm-mem-guard.sh tick   # real host sample
+level=refuse
+reasons=Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn)
+exit=0
+
+$ fm-mem-guard.sh level
+refuse 1790784754 Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn)
+
+$ fm-admission.sh check
+wait: memory guard is at refuse: Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn)
+exit=1
+
+$ fm-admission.sh acquire --label "task live-demo"   # what fm-spawn.sh calls
+admission: task live-demo waiting (up to 6s): memory guard is at refuse: Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn)
+error: admission refused for task live-demo after 6s: memory guard is at refuse: Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn); retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override
+
+real	0m6.552s
+user	0m0.201s
+sys	0m0.320s
+exit=3
+
+$ fm-mem-guard.sh admit --cost-mib 512   # heavy-job slot hook
+refuse: memory guard is at refuse: Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn)
+exit=1
+
+$ fm-job-cap.sh --admit --mem-max 256M -- echo SHOULD-NOT-RUN
+fm-job-cap: refuse: memory guard is at refuse: Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn)
+exit=75
+
+$ fm-admission.sh acquire --override --label "task landing-critical"
+notice: admission override for task landing-critical - skipped: memory guard is at refuse: Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn)
+exit=0
+
+--- events.log
+2026-09-30T16:12:34Z level ok -> refuse: Linux available 8397 MiB (refuse); Linux memory pressure full avg10 2.59% (warn)
+2026-09-30T16:12:34Z park: bin/fm-park.sh is not installed in /tmp/fm-mg-refuse.exme/home, so the park level acts as warn only

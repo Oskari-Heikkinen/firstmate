@@ -1,0 +1,29 @@
+$ fm-mem-guard.sh tick   # t0 (no swapout record yet)
+18:12:05
+level=ok
+reasons=all signals within limits
+swapout record: 1790784725 1297511 
+
+$ fm-mem-guard.sh tick   # t0+5s: inside the 60s floor, record is kept, no rate yet
+18:12:10
+level=ok
+reasons=all signals within limits
+swapout record: 1790784725 1297511 
+
+$ fm-mem-guard.sh tick   # t0+65s: rate spans >=60s, record rotates (newest first)
+18:13:05
+pswpout 1384721
+level=warn
+reasons=Linux memory pressure full avg10 4.31% (warn)
+swapout record: 1790784795 1390847 1790784725 1297511
+linux_swap_used_mib=2116
+linux_swapout_mibps=5.2
+
+--- samples.log
+1790784725 level=ok graded=ok win_avail_mib=2106 win_paging_mibps=0.0 linux_avail_mib=8123 linux_cache_mib=7592 linux_swap_used_mib=2061 swapout_mibps=- psi_full=0.39 win_source=cache_12s
+1790784730 level=ok graded=ok win_avail_mib=2106 win_paging_mibps=0.0 linux_avail_mib=8019 linux_cache_mib=7483 linux_swap_used_mib=2081 swapout_mibps=- psi_full=0.39 win_source=cache_17s
+1790784795 level=warn graded=warn win_avail_mib=2106 win_paging_mibps=0.0 linux_avail_mib=8555 linux_cache_mib=7935 linux_swap_used_mib=2117 swapout_mibps=5.2 psi_full=4.31 win_source=cache_72s_(refresh_failed:_powershell.exe_gave_no_memory_reading_(exit_1))
+--- level record
+warn 1790784795 0 Linux memory pressure full avg10 4.31% (warn)
+--- events.log
+2026-09-30T16:13:15Z level ok -> warn: Linux memory pressure full avg10 4.31% (warn)
