@@ -1,0 +1,45 @@
+SETUP: scratch home with w1 (paused, valid handoff), w2 (paused, no handoff), w3 (working). bin/ = this branch + REAL bin/fm-park.sh from fm/fm-park-resume. Stubs: fm-crew-state.sh (status-log verb), fm-send.sh (logs steer), fm-control via FM_PARK_CONTROL_OVERRIDE (logs lifecycle verb).
+
+$ fm-mem-guard.sh tick   (real host sample graded at park)
+level=park
+reasons=Windows available 2523 MiB (park)
+
+-- w1 meta after the pass (real fm-park.sh recorded the park):
+park_state=parked
+park_handoff=/tmp/fmmg.uLQZ/parkhome/data/w1/handoff.md
+park_when=file:/tmp/fmmg.uLQZ/never-arrives.json
+park_deadline=2026-10-07T15:30:07Z
+park_at=1790782207
+-- w1 status tail:
+paused [at=1790782207]: parked until 2026-10-07T15:30:07Z - waiting for file:/tmp/fmmg.uLQZ/never-arrives.json; relaunches automatically with /tmp/fmmg.uLQZ/parkhome/data/w1/handoff.md
+-- control log (exit sent to w1 only):
+w1 exit
+-- steer log (w2 only):
+w2	memory guard: the machine is at park and your session is idle on a declared wait. Write /tmp/fmmg.uLQZ/parkhome/data/w2/handoff.md (Goal, Done, Waiting for, Next steps), then park yourself with /tmp/fmmg.uLQZ/root/bin/fm-park.sh w2 --han
+-- armed watch:
+procevent
+when
+when-park-w1.source
+-- events.log park lines:
+2026-09-30T15:30:06Z level ok -> park: Windows available 2523 MiB (park)
+2026-09-30T15:30:07Z park: /tmp/fmmg.uLQZ/parkhome w1 parked
+2026-09-30T15:30:07Z park: /tmp/fmmg.uLQZ/parkhome w2 steered to write its handoff and park itself
+2026-09-30T15:30:07Z park: /tmp/fmmg.uLQZ/parkhome parked 1 idle worker(s)
+2026-09-30T15:30:07Z park: /tmp/fmmg.uLQZ/parkhome steered 1 idle worker(s) to park themselves
+
+== stale-handoff guard: real resume, then a new paused wait with the OLD handoff
+resumed w1: fake relaunch ok
+[resume exit 0]
+park_state=resumed
+park_resumed_at=1790782207
+$ fm-mem-guard.sh tick
+level=park
+reasons=Windows available 2523 MiB (park)
+-- control log (must NOT re-park w1 from its stale handoff):
+-- steer log:
+w1	memory guard: the machine is at park and your session is idle on a declared wait. Write /tmp/fmmg.uLQZ/parkhome/data/w1/handoff.md (Goal, Done, Waiting for, 
+w2	memory guard: the machine is at park and your session is idle on a declared wait. Write /tmp/fmmg.uLQZ/parkhome/data/w2/handoff.md (Goal, Done, Waiting for, 
+-- events:
+2026-09-30T15:30:09Z park: /tmp/fmmg.uLQZ/parkhome w1 steered to write its handoff and park itself
+2026-09-30T15:30:09Z park: /tmp/fmmg.uLQZ/parkhome w2 steered to write its handoff and park itself
+2026-09-30T15:30:09Z park: /tmp/fmmg.uLQZ/parkhome steered 2 idle worker(s) to park themselves

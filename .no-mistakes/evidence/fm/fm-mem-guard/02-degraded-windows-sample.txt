@@ -1,0 +1,41 @@
+$ FM_MEM_GUARD_POWERSHELL=/nonexistent bin/fm-mem-guard.sh sample --fresh   (fresh guard dir, no cache)
+win_total_mib=
+win_free_mib=
+win_available_mib=
+win_paging_mibps=
+win_source=unavailable: powershell.exe not found
+linux_total_mib=17984
+linux_available_mib=11016
+linux_cache_mib=10448
+linux_swap_used_mib=1
+linux_psi_some_avg10=0.00
+linux_psi_full_avg10=0.00
+
+$ FM_MEM_GUARD_POWERSHELL=<hangs 30s> win_timeout_s=2 bin/fm-mem-guard.sh sample --fresh
+win_total_mib=
+win_free_mib=
+win_available_mib=
+win_paging_mibps=
+win_source=unavailable: powershell.exe timed out after 2s
+linux_total_mib=17984
+linux_available_mib=10786
+linux_cache_mib=10423
+linux_swap_used_mib=1
+linux_psi_some_avg10=0.00
+linux_psi_full_avg10=0.00
+
+real	0m2.127s
+user	0m0.056s
+sys	0m0.041s
+
+$ same, but a Windows reading is already cached (live guard dir from scenario 1)
+win_total_mib=32048
+win_free_mib=1835
+win_available_mib=1785
+win_paging_mibps=0.0
+win_source=cache 14s (refresh failed: powershell.exe timed out after 2s)
+
+$ tick with powershell missing -> Linux-only grading, event logged
+level=ok
+reasons=Linux-only (Windows unavailable: powershell.exe not found)
+2026-09-30T15:23:13Z sample degraded to Linux-only: Windows unavailable: powershell.exe not found

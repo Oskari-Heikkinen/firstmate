@@ -1,0 +1,47 @@
+$ bin/fm-job-cap.sh --mem-high 96M --mem-max 128M --swap-max 0 -- bash -c "<print own cgroup limits>"
+scope=/user.slice/user-1000.slice/user@1000.service/app.slice/run-rbce5679cfeb544d2ab4b7611b3d91029.scope
+memory.high=100663296 memory.max=134217728 memory.swap.max=0
+io.max=8:48 rbps=40000000 wbps=40000000 riops=max wiops=max
+nice=19
+idle
+[exit 0]
+
+$ bin/fm-job-cap.sh --mem-high 96M --mem-max 128M --swap-max 0 -- python3 -c "<allocate 1 GiB in 32 MiB chunks>"   (runaway job)
+allocated 32 MiB
+allocated 64 MiB
+allocated 96 MiB
+Terminated
+[job exit 143]  <- the job died inside its own scope
+caller shell still alive: pid 1601699; journal:
+Sep 30 17:26:53 OskuTETMET systemd[207]: Stopping run-r470f0aa5f1514717a15f456da5588be4.scope - /usr/bin/bash -c "\n    cg=\$(cut -d: -f3 /proc/self/cgroup)\n    missing=\n    [ -e \"/sys/fs/cgroup\$cg/io.max\" ] || missing=\"disk-speed\"\n    [ -e \"/sys/fs/cgroup\$cg/memory.max\" ] || missing=\"\${missing:+\$missing and }memory\"\n    if [ -n \"\$missing\" ]; then\n      echo \"fm-job-cap: WARNING \$missing cap NOT applied (controller not delegated to the user manager)\" >&2\n      [ \"\$1\" = 1 ] && { echo \"fm-job-cap: refusing (--strict)\" >&2; exit 3; }\n    fi\n    nice=\$2\n    shift 2\n    if [ \"\$nice\" = 1 ]; then exec nice -n 19 ionice -c3 \"\$@\"; fi\n    exec \"\$@\"" fm-job-cap 0 1 python3 -c "\nimport sys\nb=[]\nfor i in range(32):\n    b.append(bytearray(32*1024*1024)); print(\"allocated\", (i+1)*32, \"MiB\", flush=True)\nprint(\"NOT CAPPED: reached 1 GiB\")"...
+Sep 30 17:26:53 OskuTETMET systemd[207]: Stopped run-r470f0aa5f1514717a15f456da5588be4.scope - /usr/bin/bash -c "\n    cg=\$(cut -d: -f3 /proc/self/cgroup)\n    missing=\n    [ -e \"/sys/fs/cgroup\$cg/io.max\" ] || missing=\"disk-speed\"\n    [ -e \"/sys/fs/cgroup\$cg/memory.max\" ] || missing=\"\${missing:+\$missing and }memory\"\n    if [ -n \"\$missing\" ]; then\n      echo \"fm-job-cap: WARNING \$missing cap NOT applied (controller not delegated to the user manager)\" >&2\n      [ \"\$1\" = 1 ] && { echo \"fm-job-cap: refusing (--strict)\" >&2; exit 3; }\n    fi\n    nice=\$2\n    shift 2\n    if [ \"\$nice\" = 1 ]; then exec nice -n 19 ionice -c3 \"\$@\"; fi\n    exec \"\$@\"" fm-job-cap 0 1 python3 -c "\nimport sys\nb=[]\nfor i in range(32):\n    b.append(bytearray(32*1024*1024)); print(\"allocated\", (i+1)*32, \"MiB\", flush=True)\nprint(\"NOT CAPPED: reached 1 GiB\")".
+
+-- guard at refuse: --admit refuses before the job starts (exit 75)
+$ bin/fm-job-cap.sh --admit --mem-max 2G -- echo JOB-RAN
+fm-job-cap: refuse: memory guard is at refuse: Windows available 1700 MiB (refuse)
+[exit 75]
+-- guard ok but job cost would push Linux MemAvailable below refuse floor
+linux MemAvailable: 7726 MiB
+$ bin/fm-job-cap.sh --admit --mem-max 10G -- echo JOB-RAN
+fm-job-cap: refuse: memory guard: Linux available 7715 MiB minus this job's 10240 MiB is below the 3072 MiB refuse line
+[exit 75]
+$ bin/fm-job-cap.sh --admit --mem-max 512M -- echo JOB-RAN
+JOB-RAN
+[exit 0]
+
+NOTE (tester): the runaway above did NOT die by itself. It was throttled at MemoryHigh (memory.current 106774528 over memory.high 100663296, memory.events high=19896 oom_kill=0, process state D in mem_cgroup_handle_over_high, scope memory PSI full avg10=28%) and the host stayed responsive. After 2+ minutes of throttling the tester stopped the scope with 'systemctl --user stop', hence exit 143.
+
+$ bin/fm-job-cap.sh --mem-high infinity --mem-max 128M --swap-max 0 -- python3 -c "<allocate 1 GiB>"   (MemoryMax hard stop)
+allocated 32 MiB
+allocated 64 MiB
+allocated 96 MiB
+/bin/bash: line 19: 1862427 Killed                  timeout 60 bin/fm-job-cap.sh --mem-high infinity --mem-max 128M --swap-max 0 -- python3 -c '
+b=[]
+for i in range(32):
+    b.append(bytearray(32*1024*1024)); print("allocated", (i+1)*32, "MiB", flush=True)
+print("NOT CAPPED: reached 1 GiB")'
+[job exit 137]  (137 = SIGKILL from the OOM killer inside the job's own scope)
+caller shell still alive (pid 1862417). kernel log:
+[  794.536762] oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=user@1000.service,mems_allowed=0,oom_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/run-rc067832757154be2b2efe539f384740f.scope,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/run-rc067832757154be2b2efe539f384740f.scope,task=python3,pid=1862843,uid=1000
+[  794.536775] Memory cgroup out of memory: Killed process 1862843 (python3) total-vm:146448kB, anon-rss:130560kB, file-rss:6272kB, shmem-rss:0kB, UID:1000 pgtables:324kB oom_score_adj:200
+Sep 30 17:27:07 OskuTETMET systemd[207]: run-rc067832757154be2b2efe539f384740f.scope: A process of this unit has been killed by the OOM killer.

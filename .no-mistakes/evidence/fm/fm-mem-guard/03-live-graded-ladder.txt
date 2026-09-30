@@ -1,0 +1,84 @@
+## rules: win_available_mib=[100,90,80,70] (real Windows available is ~ MiB)
+$ bin/fm-mem-guard.sh tick
+level=ok
+reasons=all signals within limits
+[exit 0]
+$ bin/fm-mem-guard.sh level
+ok 1790781817 all signals within limits
+[exit 0]
+$ bin/fm-mem-guard.sh admit
+admit
+[exit 0]
+## rules: win_available_mib=[99999,90,80,70] (real Windows available is ~1743 MiB)
+$ bin/fm-mem-guard.sh tick
+level=warn
+reasons=Windows available 1743 MiB (warn)
+[exit 0]
+## rules: win_available_mib=[99999,99998,80,70] (real Windows available is ~1743 MiB)
+$ bin/fm-mem-guard.sh tick
+level=park
+reasons=Windows available 1743 MiB (park)
+[exit 0]
+-- park level without bin/fm-park.sh: events.log
+2026-09-30T15:23:38Z level warn -> park: Windows available 1743 MiB (park)
+2026-09-30T15:23:38Z park: bin/fm-park.sh is not installed in /tmp/fmmg.uLQZ/home, so the park level acts as warn only
+1790781818
+## rules: win_available_mib=[99999,99998,99997,70] (real Windows available is ~1743 MiB)
+$ bin/fm-mem-guard.sh tick
+level=refuse
+reasons=Windows available 1743 MiB (refuse)
+[exit 0]
+$ bin/fm-mem-guard.sh admit --cost-mib 512
+refuse: memory guard is at refuse: Windows available 1743 MiB (refuse)
+[exit 1]
+$ bin/fm-admission.sh check --home /tmp/fmmg.uLQZ/home
+wait: memory guard is at refuse: Windows available 1743 MiB (refuse)
+[exit 1]
+$ bin/fm-admission.sh acquire --home /tmp/fmmg.uLQZ/home --label task demo-1
+error: admission refused for task demo-1 after 1s: memory guard is at refuse: Windows available 1743 MiB (refuse); retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override
+[exit 3]
+## rules: win_available_mib=[99999,99998,99997,99996] (real Windows available is ~1743 MiB)
+-- critical, watcher form (stdout is only the wake line):
+$ bin/fm-mem-guard.sh tick --check
+memory guard critical: Windows available 1743 MiB (critical); new agents and heavy jobs are refused; park or finish waiting workers and stop heavy jobs (bin/fm-mem-guard.sh status)
+[exit 0]
+-- second critical tick inside critical_rewake_s: no second wake
+$ bin/fm-mem-guard.sh tick --check
+[exit 0]
+-- secondmate home at critical: never wakes
+$ bin/fm-mem-guard.sh tick --check
+[exit 0]
+-- recovery with hysteresis (clear_samples=2)
+## rules: win_available_mib=[100,90,80,70] (real Windows available is ~1743 MiB)
+$ bin/fm-mem-guard.sh tick
+level=critical
+reasons=all signals within limits
+[exit 0]
+$ bin/fm-mem-guard.sh tick
+level=ok
+reasons=all signals within limits
+[exit 0]
+$ bin/fm-mem-guard.sh admit
+admit
+[exit 0]
+.
+..
+.mem-guard-park
+-- events.log
+2026-09-30T15:23:37Z level ok -> warn: Windows available 1743 MiB (warn)
+2026-09-30T15:23:38Z level warn -> park: Windows available 1743 MiB (park)
+2026-09-30T15:23:38Z park: bin/fm-park.sh is not installed in /tmp/fmmg.uLQZ/home, so the park level acts as warn only
+2026-09-30T15:23:38Z level park -> refuse: Windows available 1743 MiB (refuse)
+2026-09-30T15:23:39Z level refuse -> critical: Windows available 1743 MiB (critical)
+2026-09-30T15:23:39Z park: bin/fm-park.sh is not installed in /tmp/fmmg.uLQZ/sm, so the park level acts as warn only
+2026-09-30T15:23:40Z level critical -> ok: all signals within limits
+-- samples.log
+1790781817 level=ok graded=ok win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11158 linux_cache_mib=10631 linux_swap_used_mib=2 psi_full=0.00 win_source=powershell
+1790781817 level=warn graded=warn win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11242 linux_cache_mib=10632 linux_swap_used_mib=2 psi_full=0.00 win_source=cache_0s
+1790781818 level=park graded=park win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11160 linux_cache_mib=10671 linux_swap_used_mib=2 psi_full=0.00 win_source=cache_1s
+1790781818 level=refuse graded=refuse win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11110 linux_cache_mib=10689 linux_swap_used_mib=2 psi_full=0.00 win_source=cache_1s
+1790781819 level=critical graded=critical win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11068 linux_cache_mib=10652 linux_swap_used_mib=2 psi_full=0.00 win_source=cache_2s
+1790781819 level=critical graded=critical win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11169 linux_cache_mib=10682 linux_swap_used_mib=2 psi_full=0.00 win_source=cache_2s
+1790781819 level=critical graded=critical win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11155 linux_cache_mib=10686 linux_swap_used_mib=2 psi_full=0.00 win_source=cache_2s
+1790781819 level=critical graded=ok win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11136 linux_cache_mib=10690 linux_swap_used_mib=2 psi_full=0.00 win_source=cache_2s
+1790781820 level=ok graded=ok win_avail_mib=1743 win_paging_mibps=0.0 linux_avail_mib=11105 linux_cache_mib=10695 linux_swap_used_mib=2 psi_full=0.00 win_source=cache_2s

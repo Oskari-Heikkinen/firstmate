@@ -1,0 +1,28 @@
+-- 6 homes tick concurrently with an empty Windows cache (real powershell.exe behind a counting wrapper), default rules
+home h1: level=ok reasons=Linux-only (Windows unavailable: no Windows reading within 600s) 
+home h2: level=ok reasons=Linux-only (Windows unavailable: no Windows reading within 600s) 
+home h3: level=ok reasons=Linux-only (Windows unavailable: no Windows reading within 600s) 
+home h4: level=ok reasons=Linux-only (Windows unavailable: no Windows reading within 600s) 
+home h5: level=park reasons=Windows available 2552 MiB (park) 
+home h6: level=ok reasons=Linux-only (Windows unavailable: no Windows reading within 600s) 
+powershell.exe invocations: 1
+samples.log win_source per tick:
+      1 win_source=powershell
+      5 win_source=unavailable:_no_Windows_reading_within_600s
+level record: park 1790782239 0 Windows available 2552 MiB (park)
+.
+..
+events.log
+level
+samples.log
+windows
+
+-- steady state: same 6 homes tick concurrently 120s later (cache present but past win_cache_s=60)
+home h1: level=park reasons=Windows available 2776 MiB (park) 
+home h2: level=park reasons=Windows available 2552 MiB (park) 
+home h3: level=park reasons=Windows available 2552 MiB (park) 
+home h4: level=park reasons=Windows available 2552 MiB (park) 
+home h5: level=park reasons=Windows available 2552 MiB (park) 
+home h6: level=park reasons=Windows available 2552 MiB (park) 
+powershell.exe invocations: 1
+level record: park 1790782372 0 Windows available 2776 MiB (park)

@@ -1,0 +1,22 @@
+-- live agent processes on this machine (all firstmate homes), by comm:
+26
+     26 claude
+$ fm-admission.sh check   (max_agents=1000)
+admit
+
+real	0m0.238s
+user	0m0.071s
+sys	0m0.129s
+[exit 0]
+$ fm-admission.sh check   (max_agents=3, fleet-wide)
+wait: 26 live agents plus 0 just admitted would exceed the fleet cap of 3
+[exit 1]
+$ fm-admission.sh acquire --home <another home>   (max_agents=3, wait_max_s=0)
+error: admission refused for task other-1 after 0s: 26 live agents plus 0 just admitted would exceed the fleet cap of 3; retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override
+[exit 3]
+$ fm-admission.sh acquire --secondmate   (a secondmate is delayed, never refused; secondmate_wait_max_s=0)
+warning: admission: secondmate task sm-1 starting after 0s despite: 26 live agents plus 0 just admitted would exceed the fleet cap of 3 (a home's own recovery is never refused)
+[exit 0]
+-- default rules on the real host right now:
+wait: 26 live agents plus 1 just admitted would exceed the fleet cap of 24
+[exit 1]

@@ -1,0 +1,47 @@
+$ bin/fm-mem-guard.sh sample --fresh   (real WSL host, isolated FM_MEM_GUARD_DIR)
+win_total_mib=32048
+win_free_mib=1835
+win_available_mib=1785
+win_paging_mibps=0.0
+win_source=powershell
+linux_total_mib=17984
+linux_available_mib=11018
+linux_cache_mib=10512
+linux_swap_used_mib=1
+linux_psi_some_avg10=0.00
+linux_psi_full_avg10=0.00
+
+real	0m3.187s
+user	0m0.044s
+sys	0m0.037s
+
+$ bin/fm-mem-guard.sh sample   (second call reads the machine-wide cache)
+win_total_mib=32048
+win_free_mib=1835
+win_available_mib=1785
+win_paging_mibps=0.0
+win_source=cache 0s
+linux_total_mib=17984
+linux_available_mib=11007
+linux_cache_mib=10512
+linux_swap_used_mib=1
+linux_psi_some_avg10=0.00
+linux_psi_full_avg10=0.00
+
+$ bin/fm-mem-guard.sh status
+win_total_mib=32048
+win_free_mib=1835
+win_available_mib=1785
+win_paging_mibps=0.0
+win_source=cache 0s
+linux_total_mib=17984
+linux_available_mib=11001
+linux_cache_mib=10513
+linux_swap_used_mib=1
+linux_psi_some_avg10=0.00
+linux_psi_full_avg10=0.00
+graded=refuse
+graded_reasons=Windows available 1785 MiB (refuse)
+recorded=unknown (no tick within 900s)
+$ cat $FM_MEM_GUARD_DIR/windows
+1790781777 32817692 1879592 1785 0 0

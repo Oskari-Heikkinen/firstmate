@@ -1,0 +1,27 @@
+$ fm-mem-guard.sh tick   (real host sample; refuse threshold above the current Windows reading)
+level=refuse
+reasons=Windows available 2229 MiB (refuse)
+
+$ fm-spawn.sh mg-s1 <project> --mode no-mistakes --yolo off
+error: admission refused for task mg-s1 after 0s: memory guard is at refuse: Windows available 2229 MiB (refuse); retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override
+[exit 1]
+state/ after refusal: 
+no mg-s1.meta: nothing was created
+
+$ fm-spawn.sh mg-s1 ... --admission-override
+notice: admission override for task mg-s1 - skipped: memory guard is at refuse: Windows available 2229 MiB (refuse)
+warning: /tmp/fmmg.uLQZ/spawncase/home/data/mg-s1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned mg-s1 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-mg-s1 worktree=/tmp/fmmg.uLQZ/spawncase/wt
+[exit 0]
+mg-s1.meta exists: the overridden spawn launched (fake tmux backend)
+
+-- guard drops to ok (hysteresis: two healthy ticks), then a fresh spawn is admitted without override
+level=ok
+reasons=all signals within limits
+warning: /tmp/fmmg.uLQZ/spawncase/home/data/mg-s2/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned mg-s2 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-mg-s2 worktree=/tmp/fmmg.uLQZ/spawncase/wt2
+[exit 0]
+mg-s2.meta exists: admitted
+-- admission ledger:
+1790782082 fresh /tmp/fmmg.uLQZ/spawncase/home
+1790782087 fresh /tmp/fmmg.uLQZ/spawncase/home
