@@ -270,6 +270,13 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 # second mate's, runs only the append; the watcher capture is the backstop.
 STATUS_APPEND="echo \"{state} [at=<epoch>]: {one short line}\" >> $STATUS_FILE && { [ ! -e $(shell_quote "$CONFIG/fleet-ledger") ] || $(shell_quote "$FM_ROOT/bin/fm-fleet-ledger.sh") appended $(shell_quote "$CONFIG") $STATUS_FILE >/dev/null 2>&1 || true; }"
 INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
+# The park-when-waiting rule every ship and scout scaffold carries; fm-park.sh's
+# header owns the handoff format, conditions, and resume semantics.
+PARK_RULE="   When that wait is on an external result that will take a while (a run, a merge, a review, another team),
+   park instead of idling: write a handoff file outside tracked content with sections \`## Goal\`, \`## Done\`,
+   \`## Waiting for\` (one condition: \`file:<absolute-path>\`, \`pr-merged:<url>\`, or \`cmd:<executable> [args]\`),
+   and \`## Next steps\`, then run \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-park.sh") $ID --handoff <file>\`.
+   It stops this session and starts a fresh one with your handoff when the condition holds; its \`--help\` has the details."
 
 # The receive-and-ack half of the steering-inbox contract, included in every
 # scaffold kind. The record format, doorbell line, and re-ring ladder are
@@ -464,6 +471,7 @@ The report is the only thing that survives, so anything worth keeping must be in
    firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
    treating it as a possible wedge. When you know when the wait clears, say so in the line with
    \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) and firstmate rechecks at that time instead.
+$PARK_RULE
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
@@ -558,7 +566,9 @@ $RULE1
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own ($CREWMATE_PAUSE_WAIT_EXAMPLES):
    firstmate then leaves your idle pane alone and rechecks it on a long
-   cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   cadence instead of treating it as a possible wedge.
+$PARK_RULE
+   Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions),
    append \`needs-decision [at=<epoch>]: {summary of options}\` and stop. Firstmate will reply with the decision.

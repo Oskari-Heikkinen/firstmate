@@ -286,6 +286,19 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # any legitimate interval without observable progress, including silent long
 # tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
+# Idle park nudge: a ship or scout pane gone quiet with no declared wait, no
+# captain call, and nothing provably working is first told, once, to park
+# (bin/fm-park.sh) or finish, instead of waking firstmate at once. The idle bound
+# is the stale threshold itself (FM_WATCHER_STALE_GRACE). If the pane is still
+# idle IDLE_PARK_GRACE seconds after the nudge, firstmate is woken with the
+# ordinary stale wake naming the ignored nudge; a later idle episode inside
+# IDLE_PARK_REPEAT of that nudge wakes firstmate directly rather than nudging
+# again. FM_IDLE_PARK_NUDGE=off restores the immediate wake.
+IDLE_PARK_NUDGE=${FM_IDLE_PARK_NUDGE:-on}
+IDLE_PARK_GRACE=${FM_IDLE_PARK_GRACE:-}
+case "$IDLE_PARK_GRACE" in ''|*[!0-9]*) IDLE_PARK_GRACE=600 ;; esac
+IDLE_PARK_REPEAT=${FM_IDLE_PARK_REPEAT:-}
+case "$IDLE_PARK_REPEAT" in ''|*[!0-9]*) IDLE_PARK_REPEAT=3600 ;; esac
 # A local secondmate's foreign queue is checked on every poll, but only after this
 # bounded interval with no drain progress can it produce a parent notification.
 # A healthy mate drains its queue between turns, not inside one, so this default
@@ -1913,18 +1926,25 @@ captain_call_stale_bound() {  # <window-key> <task>
 # above) still bounds this path: the worker's last line is often a delivery, which
 # no line predicate can read as a wait.
 surface_nonterminal_stale() {  # <window> <hash>
-  local win=$1 h=$2 key task bounded=1 throttled=1
+  local win=$1 h=$2 key task bounded=1 throttled=1 reason
   key=$(window_key "$win")
   task=$(window_to_task "$win" "$STATE")
   STALE_WAIT_DECLARATION=
+  IDLE_PARK_REASON=
   if captain_call_stale_bound "$key" "$task"; then
     bounded=0
     throttled=0
   elif [ -n "$STALE_WAIT_DECLARATION" ]; then
     bounded=0
+  elif idle_park_nudge "$win" "$key" "$task"; then
+    printf '%s' "$h" > "$STATE/.stale-$key"
+    rm -f "$STATE/.stale-since-$key"
+    clear_write_tracking "$key"
+    return 0
   fi
+  reason="stale: $win${IDLE_PARK_REASON:+ ($IDLE_PARK_REASON)}"
   if [ "$throttled" -ne 0 ]; then
-    fm_wake_append stale "$win" "stale: $win" || exit 1
+    fm_wake_append stale "$win" "$reason" || exit 1
     stale_wait_record "$key"
   fi
   printf '%s' "$h" > "$STATE/.stale-$key"
@@ -1945,7 +1965,48 @@ surface_nonterminal_stale() {  # <window> <hash>
     triage_log "absorbed non-terminal stale (open captain call already re-surfaced this window): $win"
     return 0
   fi
-  wake "stale: $win"
+  wake "$reason"
+}
+
+# The idle park nudge (knobs above). Its one marker, .idle-nudge-<key>, holds
+# "nudged <epoch>" or "escalated <epoch>" for the latest nudge. Returns 0 when
+# the stale is absorbed (just nudged, or still inside the grace), 1 when it must
+# surface, with IDLE_PARK_REASON naming an ignored nudge when there was one.
+idle_park_nudge() {  # <window> <key> <task>
+  local win=$1 key=$2 task=$3 marker verdict='' at='' now age send text
+  IDLE_PARK_REASON=
+  [ "$IDLE_PARK_NUDGE" != off ] && [ -n "$task" ] || return 1
+  case "$(fm_meta_get "$STATE/$task.meta" kind)" in ship|scout) ;; *) return 1 ;; esac
+  marker="$STATE/.idle-nudge-$key"
+  now=$(date +%s)
+  [ ! -f "$marker" ] || read -r verdict at < "$marker" || true
+  case "$at" in ''|*[!0-9]*) verdict='' ;; esac
+  if [ -n "$verdict" ] && [ $(( now - at )) -lt "$IDLE_PARK_REPEAT" ]; then
+    age=$(( now - at ))
+    if [ "$verdict" = nudged ] && [ "$age" -lt "$IDLE_PARK_GRACE" ]; then
+      triage_log "absorbed non-terminal stale (park-or-finish nudge ${age}s ago, inside the grace): $win"
+      return 0
+    fi
+    printf 'escalated %s\n' "$at" > "$marker"
+    IDLE_PARK_REASON="idle ${age}s after being told to park or finish, with no declared wait; inspect the worker"
+    return 1
+  fi
+  send=${FM_SEND_BIN:-$SCRIPT_DIR/fm-send.sh}
+  text="Firstmate: you have gone idle with no declared wait. If you are waiting on an external result (a run, a merge, a review, another team), park instead of idling: write a handoff with sections Goal, Done, Waiting for (one condition: file:<absolute-path>, pr-merged:<url>, or cmd:<executable> [args]), and Next steps, then run FM_HOME=$(printf %q "$FM_HOME") $(printf %q "$SCRIPT_DIR/fm-park.sh") $task --handoff <file>. Otherwise finish the task, or append the status line your instructions define for where you are."
+  FM_HOME="$FM_HOME" "$send" "$task" "$text" >/dev/null 2>&1 || return 1
+  printf 'nudged %s\n' "$now" > "$marker"
+  triage_log "idle park nudge sent (no declared wait): $win"
+  return 0
+}
+
+# 0 when this window's nudge is still unanswered past its grace, so an unchanged
+# idle pane surfaces through surface_nonterminal_stale. One marker read per poll.
+idle_park_nudge_due() {  # <window-key>
+  local verdict='' at=''
+  [ "$IDLE_PARK_NUDGE" != off ] || return 1
+  [ -f "$STATE/.idle-nudge-$1" ] && read -r verdict at < "$STATE/.idle-nudge-$1" || return 1
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$verdict" = nudged ] && [ $(( $(date +%s) - at )) -ge "$IDLE_PARK_GRACE" ]
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
@@ -3101,6 +3162,8 @@ EOF
                          triage_log "absorbed non-terminal stale (provably working): $w" ;;
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
+            elif idle_park_nudge_due "$key"; then
+              surface_nonterminal_stale "$w" "$h"
             else
               wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$task" "$h"
             fi
