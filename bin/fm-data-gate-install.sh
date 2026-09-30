@@ -4,7 +4,7 @@
 # Usage: fm-data-gate-install.sh install|uninstall|status [--dry-run] [--gate PATH]
 #
 # install   Merges one gate entry into each existing harness's user-level hook
-#           settings (settings.json PreToolUse Bash|Grep|Glob in ~/.claude,
+#           settings (settings.json PreToolUse Bash|Grep|Glob|Read in ~/.claude,
 #           ~/.claude-work and every Claude login folder in a discovered home's
 #           config/accounts; ~/.codex/hooks.json PreToolUse Bash plus its trust
 #           hash in ~/.codex/config.toml) and writes global Grok, OpenCode, Pi
@@ -13,7 +13,8 @@
 #           block in every discovered home's data/bulk-paths.txt and writes a
 #           marked .ignore/.rgignore block listing those bulk dirs into that
 #           data/ and ~/lattice-ledger,
-#           writes ~/.config/lattice-data-gate/mode = log when absent, and
+#           writes ~/.config/lattice-data-gate/mode as `log` plus `size log`
+#           when absent (both rules log; an existing file is never edited), and
 #           refreshes the roots cache. Every file it changes is copied first
 #           to ~/.local/state/lattice-data-gate/backups/<timestamp>/, and the
 #           original bytes are recorded in install-manifest.json there.

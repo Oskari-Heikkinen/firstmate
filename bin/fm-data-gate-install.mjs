@@ -31,6 +31,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 import { DEFAULT_BULK, bulkEntries, discover, writeCache, stateDir, cachePath, logPath } from "./fm-data-gate-policy.mjs";
 
 const MARK = "fm-data-gate.sh";
@@ -219,6 +220,7 @@ export const LatticeDataGate = async ({ directory }) => ({
     let args;
     if (tool === "bash" && typeof a.command === "string") args = ["--harness", "opencode", "--cwd", cwd, "--command", a.command];
     else if (tool === "grep" || tool === "glob") args = ["--harness", "opencode", "--cwd", cwd, "--tool", tool, "--path", a.path || "", "--pattern", a.pattern || ""];
+    else if (tool === "read") args = ["--harness", "opencode", "--cwd", cwd, "--tool", "read", "--path", a.filePath || a.path || "", ...(a.offset != null ? ["--offset", String(a.offset)] : []), ...(a.limit != null ? ["--limit", String(a.limit)] : [])];
     else return;
     const result = await run(args, cwd);
     if (result.code === 2) throw new Error(result.stderr.trim() || "blocked by the data gate");
@@ -261,6 +263,8 @@ export default function (pi: any) {
       args = ["--harness", "${harness}", "--cwd", cwd, "--command", input.command];
     } else if (event.toolName === "grep" || event.toolName === "find") {
       args = ["--harness", "${harness}", "--cwd", cwd, "--tool", "grep", "--path", String(input.path || ""), "--pattern", String(input.pattern || "")];
+    } else if (event.toolName === "read") {
+      args = ["--harness", "${harness}", "--cwd", cwd, "--tool", "read", "--path", String(input.path || input.file_path || ""), ...(input.offset != null ? ["--offset", String(input.offset)] : []), ...(input.limit != null ? ["--limit", String(input.limit)] : [])];
     } else {
       return {};
     }
@@ -324,7 +328,7 @@ function targets(gate) {
   const plan = [];
   const roots = discover();
   for (const dir of claudeConfigDirs(roots.homes)) {
-    plan.push({ path: join(dir, "settings.json"), kind: "json", label: `Claude PreToolUse Bash|Grep|Glob`, build: (text) => mergeJsonHook(text, "Bash|Grep|Glob", claudeCommand(gate)) });
+    plan.push({ path: join(dir, "settings.json"), kind: "json", label: `Claude PreToolUse Bash|Grep|Glob|Read`, build: (text) => mergeJsonHook(text, "Bash|Grep|Glob|Read", claudeCommand(gate)) });
   }
   if (isDir(join(h, ".codex"))) {
     const hooksPath = join(h, ".codex", "hooks.json");
@@ -375,7 +379,7 @@ function targets(gate) {
     for (const name of [".ignore", ".rgignore"]) plan.push({ path: join(ledger, name), kind: "block", label: "bulk ignore list", build: (text) => mergeBlock(text, LEDGER_BULK) });
   }
   const modeFile = join(h, ".config", "lattice-data-gate", "mode");
-  if (!existsSync(modeFile)) plan.push({ path: modeFile, kind: "file", label: "gate mode (log)", build: () => "log\n" });
+  if (!existsSync(modeFile)) plan.push({ path: modeFile, kind: "file", label: "gate modes (scan log, size log)", build: () => "log\nsize log\n" });
   return { plan, roots };
 }
 
@@ -472,7 +476,7 @@ function install({ dryRun, gate }) {
     writeCache(roots);
   }
   lines.push(`${dryRun ? "would refresh" : "refreshed"} roots cache ${cachePath()} (homes=${roots.homes.length}, bulk=${roots.bulk.length})`);
-  lines.push(`gate ${gate}; mode after install: log unless ~/.config/lattice-data-gate/mode or LATTICE_DATA_GATE says otherwise`);
+  lines.push(`gate ${gate}; mode after install: scan and size rules log unless ~/.config/lattice-data-gate/mode, LATTICE_DATA_GATE or LATTICE_DATA_GATE_SIZE says otherwise`);
   if (dryRun) lines.unshift("dry run: nothing was written");
   return lines;
 }
@@ -550,12 +554,22 @@ function uninstall({ dryRun }) {
   return lines;
 }
 
+// One answer from the gate's own mode resolution (bin/fm-data-gate.sh owns it).
+function gateQuery(gate, ...args) {
+  try {
+    return execFileSync(gate, args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
 function status({ gate }) {
   const { plan, roots } = targets(gate);
   const manifest = loadManifest();
   const lines = [];
   const mode = (process.env.LATTICE_DATA_GATE || (read(join(home(), ".config", "lattice-data-gate", "mode")) || "").trim().split(/\s+/)[0] || "log");
   lines.push(`mode      ${mode === "enforce" ? mode : "log"}`);
+  lines.push(`size      ${gateQuery(gate, "mode", "size") || "(unknown)"}, limit ${gateQuery(gate, "size-limit") || "(unknown)"} bytes`);
   lines.push(`gate      ${gate}`);
   const log = read(logPath());
   const records = log ? log.split("\n").filter(Boolean) : [];

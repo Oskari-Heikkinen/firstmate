@@ -55,8 +55,8 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-arm-pretool-check.sh` | Stable PreToolUse transport for the watcher-arm command policy (docs/arm-pretool-check.md) |
 | `fm-arm-command-policy.mjs` | Semantic owner of the watcher-arm PreToolUse policy (docs/arm-pretool-check.md)   |
 | `fm-subagent-pretool-check.sh` | Primary-home delegation-shape PreToolUse guard (docs/subagent-guard.md) |
-| `fm-data-gate.sh`       | User-level PreToolUse data gate against recursive scans of bulk run data, home roots, `~`, `/` and drives (docs/data-gate.md) |
-| `fm-data-gate-policy.mjs` | Decision owner for the data gate: parsing, target resolution, protected roots, home discovery, decision log (docs/data-gate.md) |
+| `fm-data-gate.sh`       | User-level PreToolUse data gate against recursive scans of bulk run data, home roots, `~`, `/` and drives, and whole reads of files over the size limit (docs/data-gate.md) |
+| `fm-data-gate-policy.mjs` | Decision owner for the data gate: parsing, target resolution, protected roots, read recognition and the size rule, home discovery, decision log (docs/data-gate.md) |
 | `fm-data-gate-install.sh` | Install, remove, or inspect the data gate in every harness's user-level settings, with backups and exact restore (docs/data-gate.md) |
 | `fm-disk-room.sh`        | Real free room on a WSL laptop, admission of big writes with reservations, and the standing low-room watcher check (docs/disk-room.md) |
 | `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |

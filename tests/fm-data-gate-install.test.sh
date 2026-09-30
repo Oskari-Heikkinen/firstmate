@@ -94,15 +94,16 @@ test_install_merges_and_backs_up() {
     if (cmds !== "gh-axi,chrome-devtools-axi,lavish-axi") throw new Error("SessionStart disturbed: " + cmds);
     if (s.theme !== "dark") throw new Error("other keys disturbed");
     const pre = s.hooks.PreToolUse;
-    if (pre.length !== 1 || pre[0].matcher !== "Bash|Grep|Glob" || !pre[0].hooks[0].command.includes("fm-data-gate.sh")) throw new Error(JSON.stringify(pre));
+    if (pre.length !== 1 || pre[0].matcher !== "Bash|Grep|Glob|Read" || !pre[0].hooks[0].command.includes("fm-data-gate.sh")) throw new Error(JSON.stringify(pre));
   ' "$h/.claude/settings.json" || fail "claude settings keep existing entries and gain one gate entry"
   node -e '
     const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
     if (s.hooks.SessionStart.length !== 3 || s.hooks.PreToolUse[0].matcher !== "Bash") throw new Error("codex merge wrong");
   ' "$h/.codex/hooks.json" || fail "codex hooks keep axi entries and gain a Bash gate entry"
   assert_absent "$h/.codex-alt/settings.json" "a Codex account folder gets no Claude settings"
-  assert_equals "log" "$(cat "$h/.config/lattice-data-gate/mode")" "default mode after install is log"
+  assert_equals "log"$'\n'"size log" "$(cat "$h/.config/lattice-data-gate/mode")" "a fresh mode file puts both rules in log"
   assert_equals "log" "$(HOME="$h" env -u LATTICE_DATA_GATE "$GATE" mode)" "the gate reads mode log"
+  assert_equals "log" "$(HOME="$h" env -u LATTICE_DATA_GATE_SIZE "$GATE" mode size)" "the gate reads the size rule's mode log"
   assert_grep "rolling-runs-v9/slices/" "$h/Tools/firstmate/data/.rgignore" "home ignore lists its bulk paths"
   assert_grep "search-recording/" "$h/lattice-ledger/.ignore" "ledger ignore lists search-recording"
   assert_grep "scratch/" "$h/lattice-ledger/.ignore" "an existing ignore entry is kept"
@@ -240,7 +241,8 @@ test_installed_adapters_call_the_gate() {
   local h cmd payload cwd="$TMP_ROOT/adapters/Tools/firstmate"
   h=$(new_home adapters)
   inst "$h" install >/dev/null || fail "install failed"
-  printf 'enforce\n' >"$h/.config/lattice-data-gate/mode"
+  printf 'enforce\nsize enforce\n' >"$h/.config/lattice-data-gate/mode"
+  truncate -s 300M "$cwd/big.bin"
   payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],tool_name:"Bash",tool_input:{command:"rg foo"}}))' "$cwd")
 
   cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse[0].hooks[0].command)' "$h/.claude/settings.json")
@@ -248,6 +250,12 @@ test_installed_adapters_call_the_gate() {
   expect_code 2 $? "the installed Claude hook command refuses a home-root scan"
   printf '%s' "$payload" | HOME="$h" GROK_AGENT=1 sh -c "$cmd" >/dev/null 2>&1
   expect_code 0 $? "the Claude hook stands down under Grok"
+  printf '{"cwd":"%s","tool_name":"Read","tool_input":{"file_path":"%s/big.bin"}}' "$cwd" "$cwd" \
+    | HOME="$h" env -u GROK_AGENT -u GROK_HOOK_EVENT sh -c "$cmd" >/dev/null 2>&1
+  expect_code 2 $? "the installed Claude hook refuses a whole Read of a file over the limit"
+  printf '{"cwd":"%s","tool_name":"Read","tool_input":{"file_path":"%s/big.bin","offset":1,"limit":50}}' "$cwd" "$cwd" \
+    | HOME="$h" env -u GROK_AGENT -u GROK_HOOK_EVENT sh -c "$cmd" >/dev/null 2>&1
+  expect_code 0 $? "the installed Claude hook allows a Read with offset and limit"
 
   cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse[0].hooks[0].command)' "$h/.codex/hooks.json")
   printf '%s' "$payload" | HOME="$h" sh -c "$cmd" >/dev/null 2>&1
@@ -271,6 +279,10 @@ test_installed_adapters_call_the_gate() {
     if (allowed.block) throw new Error("pi blocked an allowed call");
     const grep = await handlers.tool_call({ type: "tool_call", toolName: "grep", input: { pattern: "x", path: "/" } }, { cwd });
     if (!grep.block) throw new Error("pi grep tool over / not blocked");
+    const read = await handlers.tool_call({ type: "tool_call", toolName: "read", input: { path: "big.bin" } }, { cwd });
+    if (!read.block || !read.reason.includes("Blocked large read")) throw new Error("pi whole read of a big file not blocked: " + JSON.stringify(read));
+    const window = await handlers.tool_call({ type: "tool_call", toolName: "read", input: { path: "big.bin", offset: 1, limit: 20 } }, { cwd });
+    if (window.block) throw new Error("pi blocked a bounded read");
   ' "$h/.pi/agent/extensions/lattice-data-gate.ts" "$cwd" 2>&1 || fail "the installed Pi extension blocks through the gate"
   fi
 
@@ -282,7 +294,12 @@ test_installed_adapters_call_the_gate() {
     try { await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "du -sh ~" } }); } catch (e) { threw = e.message.startsWith("BLOCKED (data gate)"); }
     if (!threw) throw new Error("opencode did not block");
     await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "ls" } });
+    threw = false;
+    try { await hooks["tool.execute.before"]({ tool: "read" }, { args: { filePath: cwd + "/big.bin" } }); } catch (e) { threw = e.message.includes("Blocked large read"); }
+    if (!threw) throw new Error("opencode did not block a whole read of a big file");
+    await hooks["tool.execute.before"]({ tool: "read" }, { args: { filePath: cwd + "/big.bin", offset: 0, limit: 10 } });
   ' "$h/.config/opencode/plugins/lattice-data-gate.js" "$cwd" 2>&1 || fail "the installed OpenCode plugin blocks through the gate"
+  rm -f "$cwd/big.bin"
   pass "installed Claude, Codex, Grok, Pi and OpenCode adapters call the gate"
 }
 
@@ -315,6 +332,7 @@ test_codex_trust_and_status() {
   assert_grep 'x = 1' "$h/.codex/config.toml" "other Codex tables are kept"
   out=$(inst "$h" status) || fail "status failed"
   assert_contains "$out" "mode      log" "status shows the mode"
+  assert_contains "$out" "size      log, limit 209715200 bytes" "status shows the size rule's mode and limit"
   assert_contains "$out" "installed $h/.codex/hooks.json" "status after install"
   assert_contains "$out" "installed $h/.codex/config.toml" "status sees the Codex trust entry"
   printf '[later]\ny = 2\n' >>"$h/.codex/config.toml"

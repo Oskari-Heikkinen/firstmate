@@ -333,6 +333,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/data-access-blocked-large-read.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/disk-room.md",
       "audience": "operator-current"
     },
