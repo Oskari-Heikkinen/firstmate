@@ -379,8 +379,16 @@ test_bulk_dir_created_after_cache() {
   expect_code 2 $? "a new tetjet-results parent is refused"
   gate enforce --harness pi --cwd "$MAIN" --command 'rg foo data/rolling-runs-v12/slices/s1' >/dev/null 2>&1
   expect_code 0 $? "one named slice inside it is allowed"
-  rm -rf "$MAIN/data/rolling-runs-v12" "$MAIN/data/exp3"
-  pass "bulk dirs created after the roots cache are protected"
+  mkdir -p "$TMP_ROOT/off/rolling-runs-v13/slices/s1"
+  ln -s "$TMP_ROOT/off/rolling-runs-v13" "$MAIN/data/rolling-runs-v13"
+  gate enforce --harness pi --cwd "$MAIN" --command 'du -sh data/rolling-runs-v13' >/dev/null 2>&1
+  expect_code 2 $? "a symlinked rolling-runs dir is refused"
+  gate enforce --harness pi --cwd "$MAIN" --command 'find data/rolling-runs-v13/slices -name x' >/dev/null 2>&1
+  expect_code 2 $? "the slices dir behind a symlink is refused"
+  gate enforce --harness pi --cwd "$MAIN" --command 'rg foo data/rolling-runs-v13/slices/s1' >/dev/null 2>&1
+  expect_code 0 $? "one named slice behind a symlink is allowed"
+  rm -rf "$MAIN/data/rolling-runs-v12" "$MAIN/data/exp3" "$MAIN/data/rolling-runs-v13" "$TMP_ROOT/off"
+  pass "bulk dirs created after the roots cache or reached by symlink are protected"
 }
 
 test_unknown_mode_is_log() {

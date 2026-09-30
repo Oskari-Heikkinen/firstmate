@@ -159,8 +159,9 @@ export function bulkEntries(text) {
   return (text || "").split("\n").map((raw) => raw.replace(/#.*/, "").trim()).filter(Boolean);
 }
 
-// Bulk patterns stay patterns (static prefix realpath'd), so a bulk directory
-// created after discovery is protected without waiting for a refresh.
+// Bulk patterns stay patterns (static prefix realpath'd) and are expanded per
+// decision, so a bulk directory created after discovery is protected without
+// waiting for a refresh.
 function bulkPatternsOf(home) {
   const data = join(home, "data");
   return bulkEntries(readText(join(data, "bulk-paths.txt"))).map((line) => {
@@ -217,7 +218,8 @@ function loadRoots() {
 }
 
 // The protected set. `exact` roots are refused when the target is the root or
-// one of its ancestors; scanning inside one (below it) is allowed.
+// one of its ancestors; scanning inside one (below it) is allowed. Each bulk
+// pattern's existing matches join it realpath'd, so a symlinked bulk dir counts.
 export function protectedRoots(roots = loadRoots()) {
   const home = realish(gateHome());
   const exact = new Set(["/", home, "/mnt/c", join(home, ".cache")]);
@@ -226,6 +228,9 @@ export function protectedRoots(roots = loadRoots()) {
   for (const h of roots.homes) {
     exact.add(h);
     exact.add(realish(join(h, "data")));
+  }
+  for (const pattern of roots.bulk) {
+    for (const match of globExpand(pattern)) if (existsSync(match)) exact.add(realish(match));
   }
   return { exact: [...exact], bulk: roots.bulk, store: realish(join(home, "lattice-store")), home };
 }
@@ -247,25 +252,12 @@ function storeVerdict(target, store) {
   return "block";
 }
 
-// A target is a bulk directory, or an ancestor of an existing one, when its
-// segments match the pattern's leading segments and, if it stops short, the
-// rest of the pattern has a match below it (single-directory reads only).
-function bulkHit(target, pattern) {
-  const want = pattern.split("/").filter(Boolean);
-  const have = target.split("/").filter(Boolean);
-  if (have.length > want.length) return false;
-  for (let i = 0; i < have.length; i += 1) if (!segmentRegex(want[i]).test(have[i])) return false;
-  if (have.length === want.length) return true;
-  return globExpand(join(target, ...want.slice(have.length))).some((p) => existsSync(p));
-}
-
 export function classifyTarget(target, roots) {
   if (isFile(target)) return "allow";
   const store = storeVerdict(target, roots.store);
   if (store) return store;
   if (isAncestorOrSelf(target, roots.store)) return "block";
   for (const root of roots.exact) if (isAncestorOrSelf(target, root)) return "block";
-  for (const pattern of roots.bulk) if (bulkHit(target, pattern)) return "block";
   return "allow";
 }
 
