@@ -60,6 +60,7 @@ config/lavish-axi-host  optional one-line per-machine Lavish server address; LOC
 config/accounts      optional subscription-account registry (name, provider, login folder, priority) read by bin/fm-account.sh and every Claude launch; LOCAL, gitignored; inherited by secondmate homes; see this doc's "Subscription accounts"
 config/account-floor config/account-auto  optional percent-left floor below which work leaves an account (default 10) and "off" opt-out from automatic account rebalancing; LOCAL, gitignored; inherited by secondmate homes
 config/account config/spawn-account  this home's own account pin (written into a secondmate home by bin/fm-account.sh use) and the account its new spawns start on (bin/fm-account.sh default); LOCAL, gitignored, and never inherited
+config/mem-guard     optional "off" opt-out from this home's memory-guard check (bin/fm-mem-guard.sh auto); LOCAL, gitignored; see this doc's "Memory guard"
 config/brief-include.md  optional standing worker instructions appended verbatim as the last section of every ship and scout scaffold; LOCAL, gitignored, and not inherited; keep its text out of `## Firstmate spec`; see this doc's "Home brief include"
 config/fleet-ledger  optional presence flag opting this home in to the default-off fleet activity ledger state/fleet-ledger.jsonl that outside tools can follow; LOCAL, gitignored, and not inherited; see docs/fleet-ledger.md
 config/turnend-churn-absorb  optional presence flag opting this home into the default-off absorb of bare turn-end wakes on pane churn; LOCAL, gitignored, and not inherited; see this doc's "Turn-end pane-churn absorb"
@@ -131,6 +132,7 @@ state/               runtime records and signals; gitignored
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   accounts.check.sh  generated automatic account-rebalancing poll shim and its .check-trust binding; present only while config/accounts exists and config/account-auto is not off; bin/fm-account.sh auto owns it
   account-moves.log .account-usage-<name> .account-signin-<name> .account-check .account-panel  account move history, per-account usage cache, per-account sign-in streak, rebalancing-check fingerprint, and the running panel's pid; written only by bin/fm-account.sh and bin/fm-account-lib.sh
+  mem-guard.check.sh .mem-guard-park .mem-guard-wake  generated memory-guard poll shim and its .check-trust binding (present unless config/mem-guard is off), plus the last park epoch (with where the next park pass starts after an unfinished one) and the last critical-wake epoch; written only by bin/fm-mem-guard.sh
   .startup-network.*  status, report, per-step elapsed timings, inline-print claim, and lock for the deferred startup stage that runs network checks and the inactive-outcome scan off the digest's blocking path; bin/fm-startup-network.sh
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
@@ -542,6 +544,82 @@ A Claude login whose access token lapsed but can still renew shows as expired, n
 Rebalancing and its watcher check carry sign-in and no-room advice from the main home only, and a sign-in only after three reads over 15 minutes agree, while `status` and the panel show every home's current readings.
 The registry, floor, and auto setting are inherited into secondmate homes, while `config/account` and `config/spawn-account` stay per home.
 The headers of `bin/fm-account-lib.sh` and `bin/fm-account.sh` own the exact formats, the spawn account precedence, and the runtime records.
+
+## Machine admission (~/.config/fm-admission/rules.json)
+
+Every local agent launch passes one machine-wide admission gate before anything is created, so a burst of spawns or relaunches cannot exhaust memory or CPU.
+The rules are machine-wide rather than per home: every home on the machine, and the separate heavy-work slot tool, read the same optional JSON object at `${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json}`.
+This section is the single owner of its keys; an absent file or key uses the default shown, and a malformed file warns and uses every default.
+
+| Key | Default | Admits only while |
+| --- | --- | --- |
+| `mem_floor_mib` | 3072 | `MemAvailable` stays at or above this floor after the new unit's cost (the memory guard's refuse line) |
+| `agent_cost_mib` | 400 | (the memory charged for each new agent, and for each admitted in the last 60 s) |
+| `mem_full_avg10_max` | 5 | memory pressure `full avg10` is at or below this percent |
+| `cpu_some_avg10_max` | 40 | CPU pressure `some avg10` is at or below this percent |
+| `load1_per_core_max` | 1.5 | the 1-minute load divided by online CPUs is at or below this |
+| `max_agents` | 40 | live agent processes on the machine, across every home and counting the new one, stay within this cap |
+| `relaunch_per_minute_per_home` | 2 | a home has made fewer restart-shaped launches (relaunches and secondmate respawns) in the last minute |
+| `wait_max_s` | 300 | (how long a launch waits for admission before it is refused) |
+| `secondmate_wait_max_s` | 60 | (how long a secondmate launch waits before it starts anyway) |
+| `agent_process_names` | the verified harness executables | (the process names counted as live agents) |
+
+A launch that is not admitted waits with jittered backoff and then refuses with a message naming every unmet condition.
+`bin/fm-spawn.sh --admission-override` starts one spawn at once and prints what it skipped; it is reserved for a spawn firstmate directs because a landing depends on it, never a routine way past a busy machine.
+The live agent count includes secondmates and supervisor sessions, so secondmate launches count toward the cap, but a secondmate launch is never refused: after its shorter wait it starts with a warning, so a home's own recovery cannot deadlock behind the fleet it belongs to.
+Pacing restart-shaped launches per home is what staggers a start or restart that relaunches several workers at once.
+A signal the host cannot provide, such as pressure files on older kernels or anything on macOS, is skipped rather than blocking.
+The gate also holds every launch while the memory guard below records `refuse` or `critical`, so pressure on the Windows host counts as well as Linux signals.
+`bin/fm-admission.sh`'s header owns the exact signals, the ledger, the test seams, and `FM_ADMISSION=off`.
+
+## Memory guard
+
+`bin/fm-mem-guard.sh` watches memory on both sides of a WSL machine - Windows available memory and paging rate through one bounded, cached `powershell.exe` reading shared by every home, and Linux `MemAvailable`, page cache, swap, swap-out rate, and memory pressure - and grades the machine `ok`, `warn`, `park`, `refuse`, or `critical`.
+Each home's watcher runs it as the generated `mem-guard.check.sh` check, which bootstrap arms unless `config/mem-guard` says `off`; any home's tick updates the one machine-wide level.
+When `powershell.exe` is missing or slow the guard grades on Linux signals alone and logs why, so a native Linux host works the same without the Windows half.
+
+The response is graded, and each level includes the ones below it:
+
+- `warn` records the sample and the level change in the guard's logs.
+- `park` passes over this home's idle workers - ship and scout tasks not already parked whose current state is a declared wait - at most once per `park_interval_s`: one whose `data/<id>/handoff.md` passes `bin/fm-park.sh validate` and was written after the task's last park or resume is parked with `bin/fm-park.sh <id> --handoff data/<id>/handoff.md`, and any other gets one steer through `bin/fm-send.sh` asking it to write that handoff and park itself; the pass stays inside the watcher's check timeout, never starts a park it lacks the time to finish, and the next pass starts where an unfinished one stopped, past a worker whose park it could not afford, and while `bin/fm-park.sh` is absent it logs that park acts as warn only.
+- `refuse` makes every new agent spawn (the machine admission gate above) and every heavy-job start (`fm-mem-guard.sh admit`) wait and then refuse, naming the memory guard.
+- `critical` also wakes the primary home's supervisor once per `critical_rewake_s`, before any park work; secondmate homes never raise this wake.
+
+A level rises at once and falls only after `clear_samples` consecutive better samples.
+The fleet-wide agent budget is the admission gate's `max_agents`, counted across every home on the machine.
+
+Heavy jobs run through `bin/fm-job-cap.sh`, which puts one job in a systemd user scope with disk-speed caps plus `MemoryHigh`, `MemoryMax`, and `MemorySwapMax`, so a runaway job is throttled or killed inside its own scope instead of starving the machine; `--admit` asks the guard first.
+A heavy-job slot tool calls `fm-mem-guard.sh admit --cost-mib <job cap>` before starting a job; [`docs/examples/heavy-slot-mem-guard.patch`](examples/heavy-slot-mem-guard.patch) shows the hook and the job cap wired into one such tool.
+
+Thresholds and caps live in the same machine-wide rules file as admission, `${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json}`, under two optional objects that this section owns.
+Each `memory_guard` threshold is four numbers, one per level from `warn` to `critical`, except `linux_swap_used_mib`, which is three numbers from `warn` to `refuse`, so swap alone never reaches `critical`:
+
+| `memory_guard` key | Default | Meaning |
+| --- | --- | --- |
+| `win_available_mib` | unset | Windows available memory at or below each value; always sampled and logged, but graded only when set, because a capped WSL VM keeps its memory resident and low Windows available memory is then expected |
+| `win_paging_mibps` | `[30, 60, 90, 120]` | Windows paging (pages in plus out) in MiB/s at or above each value |
+| `linux_available_mib` | `[4096, 3584, 3072, 1536]` | Linux `MemAvailable` at or below each value; the third is also the heavy-job refuse line after the job's cost |
+| `linux_swap_used_mib` | `[4096, 5120, 6144]` | Linux swap in use (`SwapTotal` minus `SwapFree` minus `SwapCached`) at or above each value, counted only on a tick where swap is growing; on any other tick swap grades `ok`, so swap left behind after pressure ends does not hold a level |
+| `linux_swapout_mibps_min` | 1 | whole MiB/s of swap-out (`pswpout` in `/proc/vmstat`, measured over at least the last 60 s of ticks across every home) above which swap counts as growing |
+| `linux_psi_full_avg10` | `[2, 5, 10, 25]` | Linux memory pressure `full avg10` percent at or above each value |
+| `win_timeout_s` | 20 | bound on one `powershell.exe` reading |
+| `win_cache_s` | 60 | age under which the shared Windows reading is reused |
+| `win_stale_max_s` | 600 | age after which a Windows reading is ignored |
+| `state_max_age_s` | 900 | age after which the recorded level reads `unknown` and holds nothing |
+| `clear_samples` | 2 | consecutive better samples before the level falls |
+| `park_interval_s` | 900 | least time between park passes in one home |
+| `critical_rewake_s` | 1800 | least time between critical wakes in one home |
+| `log_max_lines` | 5000 | lines kept in each guard log |
+
+| `job_cap` key | Default | Meaning |
+| --- | --- | --- |
+| `read_bw`, `write_bw` | `40M` | disk read and write bandwidth caps on the root disk |
+| `mem_high` | `6G` | `MemoryHigh`: the kernel throttles and reclaims the job above it |
+| `mem_max` | `8G` | `MemoryMax`: the job is OOM-killed inside its scope above it; also the job's cost for `--admit` |
+| `swap_max` | `2G` | `MemorySwapMax` for the job |
+
+Sizing WSL itself (`.wslconfig` memory limit, reclaim mode, and swap) and handing Linux page cache back to Windows need Windows-side or root changes that no script here makes; they are an operator handover prepared outside the repository, not repository content.
+The headers of `bin/fm-mem-guard.sh` and `bin/fm-job-cap.sh` own only those scripts' own commands, records, and test seams.
 
 ## Home brief include (config/brief-include.md)
 

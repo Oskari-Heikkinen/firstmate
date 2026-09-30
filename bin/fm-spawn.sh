@@ -60,6 +60,13 @@
 #   The replacement still never starts outside the copy
 #   holding the work: a Herdr shell that has drifted out of the recorded
 #   worktree is told once to return, and only a shell that will not go refuses.
+#   Every local launch - fresh, --relaunch, or --secondmate - first passes
+#   bin/fm-admission.sh's machine admission gate (free memory, memory and CPU
+#   pressure, load, the machine-wide agent cap, and per-home relaunch pacing),
+#   which waits with backoff and then refuses naming the unmet condition; a
+#   secondmate is never refused, only delayed. --admission-override starts this
+#   one spawn at once and prints what it skipped; it is reserved for a spawn
+#   firstmate directs because a landing depends on it.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max|ultra> are concrete profile
@@ -597,6 +604,7 @@ MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
+ADMISSION_OVERRIDE=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -654,6 +662,7 @@ for a in "$@"; do
     KIND_SET=1
     ;;
   --relaunch) RELAUNCH=1 ;;
+  --admission-override) ADMISSION_OVERRIDE=1 ;;
   --harness) want_value=harness ;;
   --harness=*)
     HARNESS_ARG=${a#--harness=}
@@ -1371,6 +1380,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   # spanning several modes is two invocations rather than a silent mixed dispatch.
   [ "$MODE_SET" -eq 0 ] || shared_args+=(--mode "$MODE")
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
+  [ "$ADMISSION_OVERRIDE" -ne 1 ] || shared_args+=(--admission-override)
   for pair in "${POS[@]}"; do
     case "$pair" in
     *=*) : ;;
@@ -1472,6 +1482,23 @@ spawn_require_relocated_queued_work() {
     exit 1
   fi
 }
+# Machine admission (bin/fm-admission.sh owns the rules, waiting, and refusal
+# text): every local launch waits for free memory, pressure, load, and the
+# machine-wide agent cap before any lock, endpoint, or worktree exists, and a
+# relaunch or secondmate respawn is also paced per home so a restart staggers.
+# A remote secondmate runs elsewhere, so it is gated only once it proves local.
+spawn_admission_gate() {
+  local kind=$KIND
+  local -a args=(acquire --home "$FM_HOME" --label "task $ID")
+  if [ "$RELAUNCH" -eq 1 ]; then
+    args+=(--relaunch)
+    kind=$(grep '^kind=' "$STATE/$ID.meta" 2>/dev/null | tail -1 | cut -d= -f2-)
+  fi
+  [ "$kind" != secondmate ] || args+=(--secondmate)
+  [ "$ADMISSION_OVERRIDE" -ne 1 ] || args+=(--override)
+  "$SCRIPT_DIR/fm-admission.sh" "${args[@]}" || exit 1
+}
+[ "$KIND" = secondmate ] || spawn_admission_gate
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
@@ -1533,6 +1560,7 @@ if [ "$KIND" = secondmate ]; then
     remote_spawn_rc=$?
   fi
   [ "$remote_spawn_rc" -eq 3 ] || exit "$remote_spawn_rc"
+  spawn_admission_gate
 fi
 # Backend selection (data/fm-backend-design-d7): explicit --backend, else
 # FM_BACKEND env, else config/backend, else runtime auto-detection, else

@@ -1,0 +1,42 @@
+--- a/data/heavy-slot.sh
++++ b/data/heavy-slot.sh
+@@ -99,9 +99,23 @@
+   return 1
+ }
+ 
++# Firstmate's memory guard and job cap (bin/fm-mem-guard.sh, bin/fm-job-cap.sh).
++fm_bin=${FM_BIN_DIR:-$HOME/Tools/firstmate/bin}
+ # Run the job under the disk-speed cap (see header). $1 = 1 for a test/land job (no nice).
++# With Firstmate's fm-job-cap.sh the scope also carries MemoryHigh/MemoryMax: the job's own
++# declared cap when its command names one, else the job_cap defaults in the admission rules.
+ run_capped() {
+   local nonice=$1; shift
++  if [ -x "$fm_bin/fm-job-cap.sh" ]; then
++    local -a cap=()
++    [ "$nonice" = 1 ] && cap+=(--no-nice)
++    if printf '%s\n' "$*" | grep -Eq 'MemoryMax=|ulimit -v [0-9]'; then
++      local kib; kib=$(job_cap_kib "$@")
++      cap+=(--mem-max "$((kib / 1024))M" --mem-high "$((kib * 3 / 4 / 1024))M")
++    fi
++    "$fm_bin/fm-job-cap.sh" "${cap[@]}" -- "$@"
++    return
++  fi
+   if [ -x "$HOME/.local/bin/fm-io-cap" ] && systemctl --user show-environment >/dev/null 2>&1; then
+     if [ "$nonice" = 1 ]; then
+       local dev; dev=$(findmnt -no SOURCE /)
+@@ -149,7 +163,14 @@
+ mem_ok() {
+   local avail
+   avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+-  [ "$avail" -ge $(( $(job_cap_kib "$@") + 4194304 )) ]
++  [ "$avail" -ge $(( $(job_cap_kib "$@") + 4194304 )) ] || return 1
++  # Machine memory guard (Windows host too): exit 1 means refuse; a missing guard admits.
++  if [ -x "$fm_bin/fm-mem-guard.sh" ]; then
++    local verdict
++    if ! verdict=$("$fm_bin/fm-mem-guard.sh" admit --cost-mib $(( $(job_cap_kib "$@") / 1024 )) 2>/dev/null); then
++      case "$verdict" in refuse:*) return 1 ;; esac
++    fi
++  fi
+ }
+ 
+ while :; do
