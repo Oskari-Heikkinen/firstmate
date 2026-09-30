@@ -14,15 +14,18 @@
 #           marked .ignore/.rgignore block listing those bulk dirs into that
 #           data/ and ~/lattice-ledger,
 #           writes ~/.config/lattice-data-gate/mode as `log` plus `size log`
-#           when absent (both rules log; an existing file is never edited), and
-#           refreshes the roots cache. Every file it changes is copied first
+#           when absent (both rules log; an existing file is never edited),
+#           writes the daily report's lattice-data-gate-report.service and
+#           .timer (bin/systemd/) into ~/.config/systemd/user and enables the
+#           timer with systemctl --user, and refreshes the roots cache.
+#           Every file it changes is copied first
 #           to ~/.local/state/lattice-data-gate/backups/<timestamp>/, and the
 #           original bytes are recorded in install-manifest.json there.
 #           Re-running changes nothing that is already current.
 # uninstall Restores each file to its exact pre-install bytes (or deletes a
 #           file install created) when it still holds what the first install
-#           wrote; otherwise removes only the gate entries. The decision log
-#           stays.
+#           wrote; otherwise removes only the gate entries. It disables the
+#           report timer first. The decision log, read logs and reports stay.
 # status    Prints the mode, the log, the roots cache, and each target's state,
 #           including the Codex trust entry for the gate hook.
 # --dry-run Prints the per-file summary and writes nothing.

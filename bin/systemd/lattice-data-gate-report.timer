@@ -1,0 +1,11 @@
+# Installed by bin/fm-data-gate-install.sh into ~/.config/systemd/user.
+# 00:40 leaves the report's 30-minute DIGEST.md window past midnight complete.
+[Unit]
+Description=Write the lattice data gate report for the finished day
+
+[Timer]
+OnCalendar=*-*-* 00:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

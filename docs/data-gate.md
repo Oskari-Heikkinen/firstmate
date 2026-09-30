@@ -8,6 +8,7 @@ It is one layer of the data-storage plan: the bulk store's unlistable directorie
 
 `bin/fm-data-gate.sh` is the entry point every adapter calls, and its header owns the exit and output contract.
 `bin/fm-data-gate-policy.mjs` owns both decisions, and `bin/fm-data-gate-install.sh` owns installation.
+`bin/fm-data-gate-reads.mjs` owns the read log and the daily report that measure how well the data changes work.
 
 ## What the scan rule refuses and what it allows
 
@@ -122,6 +123,25 @@ Error records carry an `error` field instead of `targets`.
 While a rule runs in `log`, review its would-block lines before switching it to `enforce`, for example `grep '"would_block_rules":\["scan"' ~/.local/state/lattice-data-gate/decisions.jsonl` for the scan rule or `grep '"would_block_rules":\[[^]]*"size"' ~/.local/state/lattice-data-gate/decisions.jsonl` for the size rule.
 Each false block becomes an allow rule and a test row before that rule switches to `enforce`.
 
+## The read log and the daily report
+
+The same hooks also record every agent file read they see, in every mode, so bytes read before and after a data change can be compared.
+A read is the Read tool, or a shell command naming a file for `cat`, `head`, `tail`, `less`, `wc`, `sort`, `jq`, `sed`, `awk`, `grep`, `rg` and similar readers, a `< file` redirect, or `python -c` with `open('file')`.
+Each named regular file gets one row in the day's `~/.local/state/lattice-data-gate/reads-YYYY-MM-DD.jsonl` with `ts`, `harness`, `home`, `task`, `session`, `cwd`, `tool`, `path`, `size`, `bounded`, `bytes_requested`, `bytes_returned_est`, `whole_file`, `size_rule_would_block` (the size rule's own verdict for the call from `bin/fm-data-gate-policy.mjs`, at the configured size limit, whatever that rule's mode) and `is_digest` (the file is a `DIGEST.md`).
+`bytes_requested` is the whole file unless the call bounds it: `head -c` and `tail -c` count bytes, while a line bound (`head -n`, `tail -n`, a Read `limit`, or a piped `| head` after a streaming reader such as `cat`, `grep`, `sed`, `awk` or `jq`) is converted with the file's bytes per line from one 64 KiB head sample and marked `bytes_estimated`.
+`tail -n +N`, `head -n -N`, and `sort`, `tac`, `wc`, `uniq`, checksums, `diff` or `cmp` piped to `head` read the whole file and count as unbounded.
+An unlimited Read counts as the whole file, as the transcript baseline counts it; `bytes_returned_est` applies the harness's Read caps instead (Claude 2000 lines and a refusal above 256 KB without a limit, Pi and OMP 2000 lines and 50 KB, OpenCode 2000 lines) and equals `bytes_requested` for shell reads.
+The task is `FM_TASK_ID`, else the `fm/<id>` branch of the working directory's worktree; the home is `FM_HOME`, else the discovered home containing the working directory, else the home holding that task's status file.
+Field names follow the transcript baseline in the main home's `data/fm-read-baseline/`, so its numbers stay comparable.
+The read path never blocks, never prints, stats each file once, and is bounded to three seconds; `LATTICE_DATA_GATE_READS=off` turns it off.
+Directories, missing files and glob or variable operands are not recorded.
+
+`bin/fm-data-gate-report.sh` summarizes one local day (default yesterday) in `~/.local/state/lattice-data-gate/reports/<date>.md` and prints one relay line: bytes requested by agents (the headline, comparable with the baseline) and the estimated bytes returned, the largest reads, scan and size would-blocks and blocks from the decision log (by a record's `would_block_rules` and each rule's mode; a record without them is the scan rule's), the reads the size rule would refuse, the `DIGEST.md` hit rate, disk growth and IO pressure from the `fm-io-sample` log `samples.jsonl`, and the baseline headline when that baseline report exists.
+A `DIGEST.md` read is a miss when the same session (else task, else working directory) reads a file over 10 MB in the same folder within 30 minutes, a fixed window, and a hit otherwise.
+The installer's `lattice-data-gate-report.timer` runs it daily at 00:40 under `Nice=19` and the idle IO class, so the window past midnight is complete.
+After each report, read logs dated more than `LATTICE_DATA_GATE_READS_KEEP_DAYS` days ago (default 60) are deleted; the decision log and `samples.jsonl` are not rotated.
+Its header owns the options.
+
 ## Install, status and uninstall
 
 Run the installer from a durable Firstmate checkout, never a disposable task worktree, because every hook calls the gate by its absolute path.
@@ -135,9 +155,9 @@ bin/fm-data-gate-install.sh uninstall
 
 `install` touches only harnesses whose user config directory already exists, and merges one gate entry without disturbing existing entries.
 It copies every file it changes to `~/.local/state/lattice-data-gate/backups/<timestamp>/` first, records the original bytes in `install-manifest.json` there, and prints what it did per file.
-It also generates the bulk block in every discovered home's `data/bulk-paths.txt`, writes a marked block listing those bulk directories into `.ignore` and `.rgignore` in that `data/` and in `~/lattice-ledger`, writes `~/.config/lattice-data-gate/mode` as `log` plus `size log` when it is absent (an existing mode file is never edited), and refreshes the roots cache.
+It also generates the bulk block in every discovered home's `data/bulk-paths.txt`, writes a marked block listing those bulk directories into `.ignore` and `.rgignore` in that `data/` and in `~/lattice-ledger`, writes `~/.config/lattice-data-gate/mode` as `log` plus `size log` when it is absent (an existing mode file is never edited), writes the daily report's `lattice-data-gate-report.service` and `.timer` from `bin/systemd/` into `~/.config/systemd/user` and enables the timer with `systemctl --user`, and refreshes the roots cache.
 Re-running it changes nothing that is already current.
-`uninstall` puts back the exact pre-install bytes of each file that still holds what the first `install` wrote, deletes files and directories `install` created, and removes only the gate entries from a file that changed since, including a change made between two installs; the decision log stays.
+`uninstall` puts back the exact pre-install bytes of each file that still holds what the first `install` wrote, deletes files and directories `install` created, and removes only the gate entries from a file that changed since, including a change made between two installs; it disables the report timer first, and the decision log, read logs and reports stay.
 
 | Harness | Installed as | Covers |
 | --- | --- | --- |
@@ -152,6 +172,7 @@ Codex refuses a new or changed hook until it is trusted ("Hooks need review"), a
 So the installer, run by the operator, records the trust hash for exactly the gate hook as `[hooks.state."<hooks.json>:pre_tool_use:<group>:<handler>"]` in `~/.codex/config.toml`, the same entry an interactive approval writes, and `uninstall` removes it; `status` reports whether it is present.
 Known limit: Firstmate launches Codex workers and scouts with Codex's hook layer disabled, so the gate does not fire inside those sessions; the unlistable store directories still apply there.
 The Claude entry stands down under Grok, which can also load Claude settings, so a Grok session is gated only by its own hook.
+Codex and Grok reads are logged only when they go through the shell.
 Cursor, Kimi, Gemini, Muse, Rovo, Antigravity and Devin get no adapter from this installer.
 
 ## Adding an allow rule
@@ -167,7 +188,9 @@ For a one-off search, the refusal itself names the override: search the named sm
 ```sh
 tests/fm-data-gate.test.sh
 tests/fm-data-gate-install.test.sh
+tests/fm-data-gate-reads.test.sh
 ```
 
 The first suite drives both rules' decision tables through a fake home: the scan table includes every read in the data-storage plan's legitimate-reads table as allowed, and the size tables replay the shapes of real recorded reads (the gate's decision log and lattice-research's S1r replay fixture) against 300 MiB sparse files and small ones.
-The second runs the installer only against a temporary `HOME` and proves the dry run, idempotent re-install, byte-identical uninstall, and that each installed adapter calls the gate.
+The second runs the installer only against a temporary `HOME` and proves the dry run, idempotent re-install, byte-identical uninstall, and that each installed adapter calls the gate and logs reads.
+The third drives the read log and the daily report through a fake home.
