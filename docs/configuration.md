@@ -1396,6 +1396,7 @@ The locked session-start deferred network stage runs bootstrap's best-effort pro
 
 - It emits `FLEET_SYNC:` for skipped refreshes that may matter, recovered self-heals, and `STUCK:` alarms.
 - Normal completed runs keep local-only and no-origin skips silent.
+- A clone may opt into a different sync base with clone-local `git config fm.syncRef <branch>`, such as a production pointer that only advances to CI-tested commits; its local default branch then fast-forwards to `origin/<branch>` under the same guards, a missing `origin/<branch>` is a reported skip rather than a fallback, receipts record that base's tip as `remote_tip`, and [`fm-fleet-sync.sh`'s header](../bin/fm-fleet-sync.sh) owns the exact behavior, including the benign "ahead of sync base" outcome that is never moved backwards.
 - If bootstrap kills a timed-out refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
 
 **Stale Git lock recovery**
