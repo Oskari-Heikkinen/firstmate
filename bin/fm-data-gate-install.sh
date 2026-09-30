@@ -4,31 +4,35 @@
 # Usage: fm-data-gate-install.sh install|uninstall|status [--dry-run] [--gate PATH]
 #
 # install   Merges one gate entry into each existing harness's user-level hook
-#           settings (~/.claude/settings.json and ~/.claude-work/settings.json
-#           PreToolUse Bash|Grep|Glob, ~/.codex/hooks.json PreToolUse Bash) and
-#           writes global Grok, OpenCode, Pi and OMP hook or plugin files, only
-#           for harnesses whose user config directory exists. Existing entries
-#           are kept. It writes a marked .ignore/.rgignore block listing bulk
-#           dirs into every discovered home's data/ and ~/lattice-ledger,
+#           settings (settings.json PreToolUse Bash|Grep|Glob in ~/.claude,
+#           ~/.claude-work and every Claude login folder in a discovered home's
+#           config/accounts; ~/.codex/hooks.json PreToolUse Bash plus its trust
+#           hash in ~/.codex/config.toml) and writes global Grok, OpenCode, Pi
+#           and OMP hook or plugin files, only for harnesses whose user config
+#           directory exists. Existing entries are kept. It generates the bulk
+#           block in every discovered home's data/bulk-paths.txt and writes a
+#           marked .ignore/.rgignore block listing those bulk dirs into that
+#           data/ and ~/lattice-ledger,
 #           writes ~/.config/lattice-data-gate/mode = log when absent, and
 #           refreshes the roots cache. Every file it changes is copied first
 #           to ~/.local/state/lattice-data-gate/backups/<timestamp>/, and the
 #           original bytes are recorded in install-manifest.json there.
 #           Re-running changes nothing that is already current.
 # uninstall Restores each file to its exact pre-install bytes (or deletes a
-#           file install created) when it still holds what install wrote;
-#           otherwise removes only the gate entries. The decision log stays.
+#           file install created) when it still holds what the first install
+#           wrote; otherwise removes only the gate entries. The decision log
+#           stays.
 # status    Prints the mode, the log, the roots cache, and each target's state,
-#           including whether Codex has recorded trust for the gate hook.
+#           including the Codex trust entry for the gate hook.
 # --dry-run Prints the per-file summary and writes nothing.
 # --gate    The gate script the hooks call; default: this checkout's
 #           bin/fm-data-gate.sh. Install from a durable checkout, never from
 #           a disposable task worktree.
 #
-# Codex re-trust: Codex refuses a new or changed hook until an operator
-# approves it once ("Hooks need review") in an interactive session. This
-# installer never writes Codex's trust store, because that would manufacture
-# consent. Every target is derived from $HOME only.
+# Codex re-trust: Codex refuses a new or changed hook until it is trusted
+# ("Hooks need review"), which Firstmate's key plane cannot answer, so install
+# records the trust hash for exactly the gate hook and uninstall removes it.
+# Every target is derived from $HOME and the registries of homes under it.
 # docs/data-gate.md owns the operator contract.
 set -u
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)

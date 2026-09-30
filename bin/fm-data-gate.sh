@@ -5,10 +5,10 @@
 # recursive scan (grep -r, rg, ugrep, ag, find, du, tree, ls -R, the Grep and
 # Glob tools, or any of those over ssh) whose target is, or is an ancestor of,
 # a protected root: the bulk store, a Firstmate home root or its data/ root, a
-# generated bulk path, the ledger's bulk folders, ~, /, /mnt/<drive>, or
-# ~/.cache. bin/fm-data-gate-policy.mjs owns that decision; this wrapper owns
-# the mode, the cheap prefilter, the time bound, the error fallback, and the
-# per-harness deny rendering. docs/data-gate.md owns the contract.
+# generated bulk path, the ledger's bulk folders, ~, /, /mnt/c, or ~/.cache.
+# bin/fm-data-gate-policy.mjs owns that decision; this wrapper owns the mode,
+# the cheap prefilter, the time bound, the error fallback, and the per-harness
+# deny rendering. docs/data-gate.md owns the contract.
 #
 # Usage:
 #   <PreToolUse JSON on stdin> | fm-data-gate.sh --harness claude|codex|grok
@@ -18,13 +18,12 @@
 #   fm-data-gate.sh refresh   rediscover homes and bulk paths into the roots cache
 #   fm-data-gate.sh roots     print the effective protected roots
 #
-# Mode: LATTICE_DATA_GATE (log|enforce|off), else the first word of
+# Mode: LATTICE_DATA_GATE (log|enforce), else the first word of
 # ~/.config/lattice-data-gate/mode, else log. An unknown value means log.
 #   log     - always allow; scan-shaped calls append one JSONL record
 #             {ts, harness, cwd, cmd, verdict, would_block, ...} to
 #             ~/.local/state/lattice-data-gate/decisions.jsonl.
 #   enforce - refuse a would-block call with the refusal text below; still logs.
-#   off     - do nothing.
 #
 # Exit/output contract:
 #   ALLOW - exit 0, no output.
@@ -49,7 +48,7 @@ gate_mode() {
     read -r mode _ <"${HOME:-/}/.config/lattice-data-gate/mode" || true
   fi
   case "$mode" in
-    enforce|off) printf '%s\n' "$mode" ;;
+    enforce) printf '%s\n' "$mode" ;;
     *) printf 'log\n' ;;
   esac
 }
@@ -115,7 +114,6 @@ while [ "$#" -gt 0 ]; do
 done
 
 MODE=$(gate_mode)
-[ "$MODE" = off ] && exit 0
 
 args=(decide --harness "$HARNESS" --mode "$MODE")
 [ -n "$CWD" ] && args+=(--cwd "$CWD")

@@ -29,10 +29,10 @@ make_home_shape() {
 build_fixture() {
   make_home_shape "$MAIN"
   mkdir -p "$MAIN/data/task1" "$MAIN/data/rolling-runs-v11-2-1/slices/s1" \
-    "$MAIN/data/tetjet-offload/results/r1"
+    "$MAIN/data/tetjet-offload/results/r1" "$MAIN/data/exp2/tetjet-results/t1"
   printf 'report\n' >"$MAIN/data/task1/report.md"
   printf '{}\n' >"$MAIN/data/tetjet-offload/results/r1/receipt.json"
-  printf '# bulk\nrolling-runs-v11-2-1/slices\n' >"$MAIN/data/bulk-paths.txt"
+  printf '# bulk\nrolling-runs-*/slices/\n*/tetjet-results/\n' >"$MAIN/data/bulk-paths.txt"
   make_home_shape "$SM"
   : >"$SM/.fm-secondmate-home"
   make_home_shape "$WT"
@@ -50,6 +50,7 @@ EOF
   : >"$FAKE_HOME/lattice-ledger/geometry/site/ws/run/x.json"
   ln -s "$FAKE_HOME/lattice-store" "$FAKE_HOME/link-store"
   ln -s "$MAIN/data" "$FAKE_HOME/data-link"
+  ln -s "$MAIN" "$FAKE_HOME/fm-link"
 }
 
 cwd_of() {
@@ -59,6 +60,7 @@ cwd_of() {
     S) printf '%s\n' "$SM" ;;
     W) printf '%s\n' "$WT" ;;
     '~') printf '%s\n' "$FAKE_HOME" ;;
+    L) printf '%s\n' "$FAKE_HOME/fm-link" ;;
     *) fail "unknown cwd key $1" ;;
   esac
 }
@@ -132,7 +134,7 @@ block|H|grep -d recurse foo ~
 block|H|find / -name x
 block|H|find /mnt/c -name x
 block|H|ls -R /mnt
-block|H|du -sh /mnt/d
+allow|H|du -sh /mnt/d
 block|H|tree ~
 block|H|ag foo ~/.cache
 block|H|rg foo ~/lattice-store
@@ -144,10 +146,16 @@ block|H|rg foo ~/lattice-ledger
 block|H|du -sh data/rolling-runs-v11-2-1
 block|H|du -sh data/rolling-runs-v11-2-1/slices
 block|H|du -sh data/*
+block|H|find data/exp2 -name x
+block|H|rg foo data/exp2/tetjet-results
+allow|H|rg foo data/exp2/tetjet-results/t1
 block|S|rg foo
 block|H|rg foo ~/.treehouse
 block|H|du -sh ~/.treehouse/*/*/firstmate/data
 block|~|rg foo
+block|L|rg foo
+block|L|find -name x
+block|L|du -sh .
 # --- Parsing edges ---
 block|H|rg "foo bar" "$HOME"
 block|H|rg 'foo' "${HOME}/"
@@ -178,6 +186,13 @@ allow|H|rg foo data/task*
 allow|H|du -sh ~/lattice-store/items/*/*
 block|H|du -sh ~/lattice-store/items/*
 allow|H|find data/task1 -name '*.md' | xargs grep -l foo
+allow|H|git log --oneline | rg fix
+allow|H|ps aux | ag node
+allow|H|git log |& ugrep fix
+allow|H|rg foo < data/task1/report.md
+block|H|git log | grep -r fix
+block|H|git log | rg fix ~
+block|H|git log | find -name x
 block|H|echo x | xargs grep -r foo ~
 block|H|nice -n 19 ionice -c3 rg foo ~
 block|H|timeout 60 du -sh ~
@@ -187,6 +202,11 @@ block|H|echo "$(find ~ -name x)"
 block|H|ssh engineer@10.0.0.3 find / -name x
 block|H|ssh -i key engineer@10.0.0.3 'grep -r foo ~'
 block|H|ssh engineer@10.0.0.3 grep -r foo
+allow|H|ssh engineer@10.0.0.3 'cd /srv/app && find . -name x'
+block|H|ssh engineer@10.0.0.3 'cd / && find . -name x'
+block|H|ssh engineer@10.0.0.3 'cd /srv && cd && find . -name x'
+block|H|ssh engineer@10.0.0.3 find /mnt/c -name x
+allow|H|ssh engineer@10.0.0.3 find /mnt/d -name x
 EOF
 )
 
@@ -198,11 +218,14 @@ allow|H|grep|~/lattice-ledger/runs/E1.md|foo
 block|H|grep|~/lattice-store|foo
 block|H|grep|/|foo
 block|H|glob||**/*.md
-allow|H|glob||*.md
-allow|H|glob||data/task1/**/*.md
-block|H|glob||data/**/report.md
-block|H|glob||~/**/*.md
+block|H|glob||*.md
+allow|H|glob|data/task1|**/*.md
+block|H|glob|data|*.md
+block|H|glob||data/task1/**/*.md
+block|H|glob|~|*.md
 allow|W|glob||**/*.ts
+block|L|grep|||
+block|L|glob||*.md
 EOF
 )
 
@@ -210,7 +233,7 @@ run_bash_table() {
   local failures=0 count=0 pending="" line
   while IFS= read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
-    if [[ "$line" =~ ^(allow|block)\|[HTSW~]\| ]]; then
+    if [[ "$line" =~ ^(allow|block)\|[HTSW~L]\| ]]; then
       [ -n "$pending" ] && { run_bash_case "$pending" || failures=$((failures + 1)); count=$((count + 1)); }
       pending=$line
     else
@@ -300,7 +323,10 @@ test_enforce_transports() {
   expect_code 2 $? "claude Grep tool without path over a home root is refused"
   payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],tool_name:"Glob",tool_input:{pattern:"*.md",path:process.argv[1]}}))' "$MAIN")
   printf '%s' "$payload" | gate enforce --harness claude >/dev/null 2>&1
-  expect_code 0 $? "claude Glob without ** is not a recursive scan"
+  expect_code 2 $? "claude Glob over a home root is refused by its path"
+  payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],tool_name:"Glob",tool_input:{pattern:"**/*.md",path:process.argv[1]+"/data/task1"}}))' "$MAIN")
+  printf '%s' "$payload" | gate enforce --harness claude >/dev/null 2>&1
+  expect_code 0 $? "claude Glob inside a small named folder is allowed"
   pass "enforce transports render per harness"
 }
 
@@ -337,14 +363,13 @@ test_log_mode_default() {
   pass "log mode allows and records decisions"
 }
 
-test_off_mode() {
-  local log="$FAKE_HOME/.local/state/lattice-data-gate/decisions.jsonl" before after
-  before=$(wc -l <"$log" 2>/dev/null || echo 0)
+test_unknown_mode_is_log() {
+  local log="$FAKE_HOME/.local/state/lattice-data-gate/decisions.jsonl"
+  assert_equals "log" "$(HOME="$FAKE_HOME" LATTICE_DATA_GATE=off "$GATE" mode)" "off is not a mode; it reads as log"
   gate off --harness pi --cwd "$MAIN" --command 'rg foo /' >/dev/null 2>&1
-  expect_code 0 $? "off mode allows"
-  after=$(wc -l <"$log" 2>/dev/null || echo 0)
-  assert_equals "$before" "$after" "off mode logs nothing"
-  pass "off mode does nothing"
+  expect_code 0 $? "an unknown mode allows"
+  tail -n 1 "$log" | grep -q '"cmd":"rg foo /".*"would_block":true' || fail "an unknown mode still records like log"
+  pass "an unknown mode behaves as log"
 }
 
 test_internal_error_allows_and_logs() {
@@ -365,7 +390,9 @@ test_home_discovery() {
   roots=$(HOME="$FAKE_HOME" "$GATE" roots)
   assert_contains "$roots" "root $MAIN" "main home discovered"
   assert_contains "$roots" "root $SM/data" "secondmate home from the treehouse pool discovered"
-  assert_contains "$roots" "root $MAIN/data/rolling-runs-v11-2-1/slices" "bulk path from bulk-paths.txt"
+  assert_contains "$roots" "root $MAIN/data/rolling-runs-v11-2-1/slices" "globbed bulk path from bulk-paths.txt"
+  assert_contains "$roots" "root $MAIN/data/exp2/tetjet-results" "a */ bulk glob expands one level"
+  assert_not_contains "$roots" "root $MAIN/data/task1/tetjet-results" "a glob expansion keeps only existing dirs"
   assert_not_contains "$roots" "root $WT" "a task worktree in the pool is not a home"
   pass "homes come from named registry and pool files"
 }
@@ -376,5 +403,5 @@ test_bash_table
 test_tool_table
 test_enforce_transports
 test_log_mode_default
-test_off_mode
+test_unknown_mode_is_log
 test_internal_error_allows_and_logs

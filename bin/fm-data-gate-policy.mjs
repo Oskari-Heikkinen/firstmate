@@ -37,7 +37,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, posix, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MAX_DEPTH = 6;
@@ -45,6 +45,11 @@ const MAX_GLOB_MATCHES = 256;
 const MAX_HOMES = 64;
 const CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const CMD_LOG_LIMIT = 4000;
+
+// The one definition of a home's bulk directories, relative to its data/.
+// bin/fm-data-gate-install.sh generates it into each home's data/bulk-paths.txt,
+// which feeds both the protected set below and the .ignore/.rgignore files.
+export const DEFAULT_BULK = ["rolling-runs-*/slices/", "*/tetjet-results/", "shell-contact-first-runs/runs*/"];
 
 export function gateHome() {
   return process.env.HOME || "/";
@@ -150,22 +155,24 @@ function isFirstmateHome(path) {
   return isFile(join(path, "AGENTS.md")) && isDir(join(path, "bin")) && isDir(join(path, "data"));
 }
 
+export function bulkEntries(text) {
+  return (text || "").split("\n").map((raw) => raw.replace(/#.*/, "").trim()).filter(Boolean);
+}
+
 function bulkPathsOf(home) {
   const data = join(home, "data");
   const out = [];
-  for (const raw of readText(join(data, "bulk-paths.txt")).split("\n")) {
-    const line = raw.replace(/#.*/, "").trim();
-    if (!line) continue;
-    out.push(isAbsolute(line) ? line : join(data, line));
+  for (const line of bulkEntries(readText(join(data, "bulk-paths.txt")))) {
+    const pattern = isAbsolute(line) ? line : join(data, line);
+    if (/[*?[]/.test(pattern)) out.push(...globExpand(pattern).filter((p) => existsSync(p)));
+    else out.push(pattern);
   }
   return out;
 }
 
 export function discover() {
   const home = gateHome();
-  const seeds = [join(home, "Tools", "firstmate")];
-  for (const extra of (process.env.LATTICE_DATA_GATE_HOMES || "").split(":")) if (extra) seeds.push(extra);
-  seeds.push(...poolHomes(home));
+  const seeds = [join(home, "Tools", "firstmate"), ...poolHomes(home)];
   const homes = [];
   const seen = new Set();
   const queue = [...seeds];
@@ -245,7 +252,6 @@ export function classifyTarget(target, roots) {
   if (isFile(target)) return "allow";
   const store = storeVerdict(target, roots.store);
   if (store) return store;
-  if (/^\/mnt\/[A-Za-z]$/.test(target) || target === "/mnt") return "block";
   if (isAncestorOrSelf(target, roots.store)) return "block";
   for (const root of roots.exact) if (isAncestorOrSelf(target, root)) return "block";
   return "allow";
@@ -492,12 +498,17 @@ function skipOptions(words, index, argLetters) {
 // ---------------------------------------------------------------------------
 // Command analysis.
 
-function remoteVerdict(tool, words) {
-  const targets = words.length ? words.map((w) => w.value) : ["~"];
+function remotePath(cwd, raw) {
+  if (/^(\/|~|\$HOME|\$\{HOME\})/.test(raw)) return raw;
+  return posix.join(cwd, raw);
+}
+
+function remoteVerdict(tool, words, cwd) {
+  const targets = words.length ? words.map((w) => remotePath(cwd, w.value)) : [cwd];
   for (const raw of targets) {
     const t = raw.replace(/\/+$/, "") || "/";
-    if (["/", "~", ".", "$HOME", "${HOME}", "/home", "/mnt", "/root"].includes(t)) return { tool: `ssh ${tool}`, target: `remote:${raw}` };
-    if (/^\/home\/[^/]+$/.test(t) || /^\/mnt\/[^/]+$/.test(t)) return { tool: `ssh ${tool}`, target: `remote:${raw}` };
+    if (["/", "~", ".", "$HOME", "${HOME}", "/home", "/mnt", "/mnt/c", "/root"].includes(t)) return { tool: `ssh ${tool}`, target: `remote:${raw}` };
+    if (/^\/home\/[^/]+$/.test(t)) return { tool: `ssh ${tool}`, target: `remote:${raw}` };
   }
   return null;
 }
@@ -512,10 +523,13 @@ function analyzeSsh(words, index, depth) {
   i += 1;
   const remote = words.slice(i).map((w) => w.value).join(" ");
   if (!remote.trim()) return { scans: [] };
-  return analyze(remote, "/", depth + 1, true);
+  return analyze(remote, "~", depth + 1, true);
 }
 
-function analyzeNode(tokens, state, depth, remote) {
+// Pathless searches that read stdin, not the cwd, when it is a pipe or redirect.
+const STDIN_READERS = new Set(["rg", "ag", "ugrep", "ug"]);
+
+function analyzeNode(tokens, state, depth, remote, pipedStdin) {
   const scans = [];
   for (const token of tokens) {
     if (token.type === "group") scans.push(...analyze(token.content, state.cwd, depth + 1, remote).scans);
@@ -552,10 +566,11 @@ function analyzeNode(tokens, state, depth, remote) {
   if (name === "cd" || name === "pushd") {
     const dest = args.find((w) => !w.value.startsWith("-") || w.value === "-");
     if (dest?.value === "-") return scans;
-    if (!dest) state.cwd = gateHome();
+    if (remote) state.cwd = dest ? remotePath(state.cwd, dest.value) : "~";
+    else if (!dest) state.cwd = realish(gateHome());
     else {
       const value = expandHomeVars(dest);
-      if (value !== null && !remote) state.cwd = realish(isAbsolute(value) ? value : resolve(state.cwd, value));
+      if (value !== null) state.cwd = realish(isAbsolute(value) ? value : resolve(state.cwd, value));
     }
     return scans;
   }
@@ -580,13 +595,15 @@ function analyzeNode(tokens, state, depth, remote) {
   if (!parsed.scan) return scans;
   const viaXargs = words.slice(position.index, index).some((w) => basename(w.value) === "xargs");
   if (remote) {
-    const hit = remoteVerdict(name, parsed.paths);
+    const hit = remoteVerdict(name, parsed.paths, state.cwd);
     if (hit) scans.push({ ...hit, verdict: "block" });
-    else scans.push({ tool: `ssh ${name}`, target: `remote:${parsed.paths.map((w) => w.value).join(" ") || "~"}`, verdict: "allow" });
+    else scans.push({ tool: `ssh ${name}`, target: `remote:${parsed.paths.map((w) => remotePath(state.cwd, w.value)).join(" ") || state.cwd}`, verdict: "allow" });
     return scans;
   }
   if (parsed.paths.length === 0) {
+    const stdinRedirect = tokens.some((t) => t.type === "redir" && t.value.startsWith("<"));
     if (viaXargs) scans.push({ tool: name, target: "(paths from stdin)", verdict: "allow", unresolved: true });
+    else if (STDIN_READERS.has(name) && (pipedStdin || stdinRedirect)) scans.push({ tool: name, target: "(stdin)", verdict: "allow" });
     else scans.push({ tool: name, target: state.cwd, verdict: null });
     return scans;
   }
@@ -605,41 +622,33 @@ export function analyze(command, cwd, depth = 0, remote = false) {
   if (depth > MAX_DEPTH) return { scans: [] };
   const lexed = new Lexer(command.replace(/\\\r?\n/g, "")).tokenize();
   if (lexed.error) return { scans: [], error: lexed.error };
-  const { nodes } = splitProgram(lexed.tokens);
+  const { nodes, separators } = splitProgram(lexed.tokens);
   const state = { cwd };
   const scans = [];
-  for (const node of nodes) scans.push(...analyzeNode(node, state, depth, remote));
+  nodes.forEach((node, i) => {
+    const pipedStdin = i > 0 && (separators[i - 1] === "|" || separators[i - 1] === "|&");
+    scans.push(...analyzeNode(node, state, depth, remote, pipedStdin));
+  });
   return { scans };
 }
 
-function toolTarget(kind, path, pattern, cwd) {
-  const base = path ? (resolveTargets(path, cwd) || [resolve(cwd, path)]) : [cwd];
-  if (kind === "glob") {
-    const pat = pattern || "";
-    if (!pat.includes("**")) return { scan: false, targets: [] };
-    const prefix = pat.split("**")[0];
-    const staticDir = /[*?[{]/.test(prefix) ? prefix.slice(0, prefix.search(/[*?[{]/)) : prefix;
-    if (isAbsolute(pat) || pat.startsWith("~")) {
-      const expanded = staticDir.startsWith("~") ? gateHome() + staticDir.slice(1) : staticDir;
-      return { scan: true, targets: [realish(expanded || "/")] };
-    }
-    return { scan: true, targets: base.map((b) => realish(join(b, staticDir))) };
-  }
-  return { scan: true, targets: base };
+// The Grep and Glob tools both walk their path, or the cwd when they have none.
+function toolTargets(path, cwd) {
+  return path ? (resolveTargets(path, cwd) || [resolve(cwd, path)]) : [cwd];
 }
 
 // Decide one call. Returns { verdict, scans, tool, target, note }.
 export function decide(call, roots = protectedRoots()) {
   let scans;
   let note;
+  const cwd = realish(call.cwd);
   if (call.kind === "bash") {
-    const result = analyze(call.command, call.cwd);
+    const result = analyze(call.command, cwd);
     scans = result.scans;
     if (result.error) note = `unparsed: ${result.error}`;
   } else {
     const tool = call.kind === "glob" ? "Glob" : "Grep";
-    const t = toolTarget(call.kind, call.path, call.pattern, call.cwd);
-    scans = t.scan ? t.targets.map((target) => ({ tool, target, verdict: null })) : [];
+    scans = toolTargets(call.path, cwd).map((target) => ({ tool, target, verdict: null }));
   }
   for (const scan of scans) if (!scan.verdict) scan.verdict = classifyTarget(scan.target, roots);
   const blocked = scans.find((s) => s.verdict === "block");
