@@ -219,8 +219,9 @@ function loadRoots() {
 
 // The protected set. `exact` roots are refused when the target is the root or
 // one of its ancestors; scanning inside one (below it) is allowed. Bulk
-// patterns are matched against each target by bulkHit, and their existing
-// matches (capped) also join `exact` realpath'd, so a symlinked bulk dir counts.
+// patterns are matched against each target by bulkHit, and all their existing
+// matches (uncapped: no `**`, one readdir per segment) also join `exact`
+// realpath'd, so a symlinked bulk dir counts however it is reached.
 export function protectedRoots(roots = loadRoots()) {
   const home = realish(gateHome());
   const exact = new Set(["/", home, "/mnt/c", join(home, ".cache")]);
@@ -231,7 +232,7 @@ export function protectedRoots(roots = loadRoots()) {
     exact.add(realish(join(h, "data")));
   }
   for (const pattern of roots.bulk) {
-    for (const match of globExpand(pattern)) if (existsSync(match)) exact.add(realish(match));
+    for (const match of globExpand(pattern, Infinity)) if (existsSync(match)) exact.add(realish(match));
   }
   return { exact: [...exact], bulk: roots.bulk, store: realish(join(home, "lattice-store")), home };
 }
@@ -321,7 +322,7 @@ function segmentRegex(segment) {
 // Expand one absolute glob pattern one directory level at a time. A `**`
 // segment stands for everything below its static prefix, so the prefix itself
 // becomes the target. Too many matches collapse to the static prefix too.
-function globExpand(pattern) {
+function globExpand(pattern, cap = MAX_GLOB_MATCHES) {
   const parts = pattern.split("/");
   let paths = [parts[0] === "" ? "/" : parts[0]];
   for (let i = 1; i < parts.length; i += 1) {
@@ -344,7 +345,7 @@ function globExpand(pattern) {
       for (const name of names) {
         if (name.startsWith(".") && !segment.startsWith(".")) continue;
         if (regex.test(name)) next.push(join(dir, name));
-        if (next.length > MAX_GLOB_MATCHES) return paths;
+        if (next.length > cap) return paths;
       }
     }
     if (next.length === 0) return [pattern];

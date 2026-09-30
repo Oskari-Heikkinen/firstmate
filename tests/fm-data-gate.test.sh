@@ -402,6 +402,16 @@ test_bulk_dirs_past_glob_cap() {
   expect_code 2 $? "its parent is refused past 256 data/ entries"
   gate enforce --harness pi --cwd "$MAIN" --command 'du -sh data/many7/tetjet-results' >/dev/null 2>&1
   expect_code 2 $? "a symlinked tetjet-results dir is refused past 256 data/ entries"
+  gate enforce --harness pi --cwd "$MAIN" --command 'cd data/many7/tetjet-results && du -sh .' >/dev/null 2>&1
+  expect_code 2 $? "a symlinked bulk dir reached by cd is refused past 256 data/ entries"
+  gate enforce --harness pi --cwd "$MAIN" --command "du -sh $TMP_ROOT/off2/tr" >/dev/null 2>&1
+  expect_code 2 $? "a symlinked bulk dir named by its realpath is refused past 256 data/ entries"
+  gate enforce --harness pi --cwd "$MAIN/data/many7/tetjet-results" --command 'rg foo' >/dev/null 2>&1
+  expect_code 2 $? "pathless rg with cwd in a symlinked bulk dir is refused"
+  gate enforce --harness pi --cwd "$MAIN/data/many7/tetjet-results" --command 'find -name x' >/dev/null 2>&1
+  expect_code 2 $? "pathless find with cwd in a symlinked bulk dir is refused"
+  gate enforce --harness claude --cwd "$MAIN/data/many7/tetjet-results" --tool grep --pattern foo >/dev/null 2>&1
+  expect_code 2 $? "a pathless Grep tool with cwd in a symlinked bulk dir is refused"
   gate enforce --harness pi --cwd "$MAIN" --command 'du -sh data/rolling-runs-v14' >/dev/null 2>&1
   expect_code 2 $? "a rolling-runs dir is refused past 256 data/ entries"
   gate enforce --harness pi --cwd "$MAIN" --command 'rg foo data/many9' >/dev/null 2>&1
