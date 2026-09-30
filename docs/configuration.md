@@ -573,7 +573,7 @@ The gate also holds every launch while the memory guard below records `refuse` o
 
 ## Memory guard
 
-`bin/fm-mem-guard.sh` watches memory on both sides of a WSL machine - Windows available memory and paging rate through one bounded, cached `powershell.exe` reading shared by every home, and Linux `MemAvailable`, page cache, swap, and memory pressure - and grades the machine `ok`, `warn`, `park`, `refuse`, or `critical`.
+`bin/fm-mem-guard.sh` watches memory on both sides of a WSL machine - Windows available memory and paging rate through one bounded, cached `powershell.exe` reading shared by every home, and Linux `MemAvailable`, page cache, swap, swap-out rate, and memory pressure - and grades the machine `ok`, `warn`, `park`, `refuse`, or `critical`.
 Each home's watcher runs it as the generated `mem-guard.check.sh` check, which bootstrap arms unless `config/mem-guard` says `off`; any home's tick updates the one machine-wide level.
 When `powershell.exe` is missing or slow the guard grades on Linux signals alone and logs why, so a native Linux host works the same without the Windows half.
 
@@ -591,14 +591,15 @@ Heavy jobs run through `bin/fm-job-cap.sh`, which puts one job in a systemd user
 A heavy-job slot tool calls `fm-mem-guard.sh admit --cost-mib <job cap>` before starting a job; [`docs/examples/heavy-slot-mem-guard.patch`](examples/heavy-slot-mem-guard.patch) shows the hook and the job cap wired into one such tool.
 
 Thresholds and caps live in the same machine-wide rules file as admission, `${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json}`, under two optional objects that this section owns.
-Each `memory_guard` threshold is four numbers, one per level from `warn` to `critical`:
+Each `memory_guard` threshold is four numbers, one per level from `warn` to `critical`, except `linux_swap_used_mib`, which is three numbers from `warn` to `refuse`, so swap alone never reaches `critical`:
 
 | `memory_guard` key | Default | Meaning |
 | --- | --- | --- |
 | `win_available_mib` | unset | Windows available memory at or below each value; always sampled and logged, but graded only when set, because a capped WSL VM keeps its memory resident and low Windows available memory is then expected |
 | `win_paging_mibps` | `[30, 60, 90, 120]` | Windows paging (pages in plus out) in MiB/s at or above each value |
 | `linux_available_mib` | `[4096, 3584, 3072, 1536]` | Linux `MemAvailable` at or below each value; the third is also the heavy-job refuse line after the job's cost |
-| `linux_swap_used_mib` | `[4096, 5120, 6144, 10240]` | Linux swap in use (`SwapTotal` minus `SwapFree`) at or above each value |
+| `linux_swap_used_mib` | `[4096, 5120, 6144]` | Linux swap in use (`SwapTotal` minus `SwapFree` minus `SwapCached`) at or above each value, counted only on a tick where swap is growing; on any other tick swap grades `ok`, so swap left behind after pressure ends does not hold a level |
+| `linux_swapout_mibps_min` | 1 | whole MiB/s of swap-out (`pswpout` in `/proc/vmstat` since the previous tick) above which swap counts as growing |
 | `linux_psi_full_avg10` | `[2, 5, 10, 25]` | Linux memory pressure `full avg10` percent at or above each value |
 | `win_timeout_s` | 20 | bound on one `powershell.exe` reading |
 | `win_cache_s` | 60 | age under which the shared Windows reading is reused |

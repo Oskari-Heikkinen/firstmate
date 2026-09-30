@@ -7,8 +7,8 @@
 #        fm-mem-guard.sh admit [--cost-mib <n>]
 #        fm-mem-guard.sh auto sync|on|off
 #   sample  prints one sample as key=value lines: Windows available memory and
-#           paging rate (win_*), Linux MemAvailable, page cache, swap, and
-#           memory pressure (linux_*), and win_source, which is `powershell`,
+#           paging rate (win_*), Linux MemAvailable, page cache, swap, swap-out
+#           rate since the last tick, and memory pressure (linux_*), and win_source, which is `powershell`,
 #           `cache <age>s`, or `unavailable: <reason>`. The Windows side comes
 #           from one bounded powershell.exe call shared machine-wide through a
 #           cache; when powershell.exe is missing, slow, or unreadable the
@@ -54,8 +54,9 @@
 #           runs sync at every session start.
 #
 # Levels, lowest first: ok warn park refuse critical. Each signal has four
-# thresholds, one per level from warn to critical, and the machine level is the
-# highest any signal reaches. A lower level is recorded only after clear_samples
+# thresholds, one per level from warn to critical, except swap, which has three
+# (warn park refuse) and grades only on a tick where swap is growing; the
+# machine level is the highest any signal reaches. A lower level is recorded only after clear_samples
 # consecutive samples grade below the recorded one; a higher level is recorded
 # at once.
 #
@@ -68,6 +69,7 @@
 # ${FM_MEM_GUARD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fm-mem-guard}:
 #   level        `<level> <epoch> <below-count> <reasons>`
 #   windows      `<epoch> <total_kib> <free_kib> <avail_mib> <pages_in/s> <pages_out/s>`
+#   swapout      `<epoch> <pswpout>` from /proc/vmstat at the last tick
 #   samples.log  one line per tick, trimmed to log_max_lines
 #   events.log   one line per level change, park action, or degraded sample, trimmed likewise
 #   lock/        mkdir lock around record writes; win.lock/ around the powershell call
@@ -93,6 +95,7 @@ RULES_FILE=${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json}
 GUARD_DIR=${FM_MEM_GUARD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fm-mem-guard}
 LEVEL_FILE="$GUARD_DIR/level"
 WIN_FILE="$GUARD_DIR/windows"
+SWAPOUT_FILE="$GUARD_DIR/swapout"
 SAMPLES_LOG="$GUARD_DIR/samples.log"
 EVENTS_LOG="$GUARD_DIR/events.log"
 LOCK="$GUARD_DIR/lock"
@@ -100,14 +103,14 @@ WIN_LOCK="$GUARD_DIR/win.lock"
 CHECK_ID=mem-guard
 LEVELS="ok warn park refuse critical"
 
-# Built-in defaults; thresholds are "warn park refuse critical".
+# Built-in defaults; thresholds are "warn park refuse critical" (swap: "warn park refuse").
 # Windows available memory is sampled and logged but graded only when the rules
 # file sets win_available_mib: with WSL capped, its memory is resident and low
 # Windows available memory is expected, so host paging is the Windows signal.
 T_win_available_mib=""                         # Windows available memory at or below
 T_win_paging_mibps="30 60 90 120"              # Windows paging (pages in + out) at or above
 T_linux_available_mib="4096 3584 3072 1536"    # Linux MemAvailable at or below
-T_linux_swap_used_mib="4096 5120 6144 10240"   # Linux swap in use at or above
+T_linux_swap_used_mib="4096 5120 6144"         # Linux swap in use at or above, while swap grows
 T_linux_psi_full_avg10="2 5 10 25"             # Linux memory pressure full avg10 at or above
 R_win_timeout_s=20
 R_win_cache_s=60
@@ -117,22 +120,25 @@ R_clear_samples=2
 R_park_interval_s=900
 R_critical_rewake_s=1800
 R_log_max_lines=5000
+R_linux_swapout_mibps_min=1
 
 THRESHOLD_KEYS="win_available_mib win_paging_mibps linux_available_mib linux_swap_used_mib linux_psi_full_avg10"
-RULE_KEYS="win_timeout_s win_cache_s win_stale_max_s state_max_age_s clear_samples park_interval_s critical_rewake_s log_max_lines"
+RULE_KEYS="win_timeout_s win_cache_s win_stale_max_s state_max_age_s clear_samples park_interval_s critical_rewake_s log_max_lines linux_swapout_mibps_min"
 
 now() { printf '%s' "${FM_MEM_GUARD_NOW:-$(date +%s)}"; }
 
 load_rules() {
-  local key val
+  local key val n names
   [ -f "$RULES_FILE" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   jq -e '.memory_guard | type == "object"' "$RULES_FILE" >/dev/null 2>&1 || return 0
   for key in $THRESHOLD_KEYS; do
     jq -e --arg k "$key" '.memory_guard | has($k)' "$RULES_FILE" >/dev/null 2>&1 || continue
-    val=$(jq -r --arg k "$key" '.memory_guard[$k] | select(type == "array" and length == 4 and all(type == "number")) | map(tostring) | join(" ")' "$RULES_FILE" 2>/dev/null) || val=
+    n=4 names="four numbers (warn park refuse critical)"
+    [ "$key" != linux_swap_used_mib ] || n=3 names="three numbers (warn park refuse)"
+    val=$(jq -r --arg k "$key" --argjson n "$n" '.memory_guard[$k] | select(type == "array" and length == $n and all(type == "number")) | map(tostring) | join(" ")' "$RULES_FILE" 2>/dev/null) || val=
     if [ -z "$val" ]; then
-      echo "warning: fm-mem-guard: memory_guard.$key in $RULES_FILE is not four numbers (warn park refuse critical); using the default" >&2
+      echo "warning: fm-mem-guard: memory_guard.$key in $RULES_FILE is not $names; using the default" >&2
       continue
     fi
     printf -v "T_$key" '%s' "$val"
@@ -282,13 +288,30 @@ meminfo_kib() { # <field>
   awk -v f="$1:" '$1 == f { print $2; found = 1; exit } END { exit !found }' "$PROC/meminfo" 2>/dev/null
 }
 
+# linux_read: sets LINUX_* values; LINUX_SWAPOUT_MIBPS is the swap-out rate since
+# the last tick's swapout record, empty without one.
 linux_read() {
-  local v c b st sf
+  local v c b st sf sc rec_epoch rec_out
   LINUX_AVAIL_MIB='' LINUX_TOTAL_MIB='' LINUX_CACHE_MIB='' LINUX_SWAP_USED_MIB='' LINUX_PSI_SOME='' LINUX_PSI_FULL=''
+  LINUX_PSWPOUT='' LINUX_SWAPOUT_MIBPS=''
   v=$(meminfo_kib MemAvailable) && LINUX_AVAIL_MIB=$((v / 1024))
   v=$(meminfo_kib MemTotal) && LINUX_TOTAL_MIB=$((v / 1024))
   if c=$(meminfo_kib Cached) && b=$(meminfo_kib Buffers); then LINUX_CACHE_MIB=$(((c + b) / 1024)); fi
-  if st=$(meminfo_kib SwapTotal) && sf=$(meminfo_kib SwapFree); then LINUX_SWAP_USED_MIB=$(((st - sf) / 1024)); fi
+  if st=$(meminfo_kib SwapTotal) && sf=$(meminfo_kib SwapFree); then
+    sc=$(meminfo_kib SwapCached) || sc=0
+    LINUX_SWAP_USED_MIB=$(((st - sf - sc) / 1024))
+  fi
+  LINUX_PSWPOUT=$(awk '$1 == "pswpout" && $2 ~ /^[0-9]+$/ { print $2; exit }' "$PROC/vmstat" 2>/dev/null)
+  if [ -n "$LINUX_PSWPOUT" ] && read -r rec_epoch rec_out 2>/dev/null <"$SWAPOUT_FILE"; then
+    case "$rec_epoch$rec_out" in
+    '' | *[!0-9]*) ;;
+    *)
+      if [ "$(now)" -gt "$rec_epoch" ] && [ "$LINUX_PSWPOUT" -ge "$rec_out" ]; then
+        LINUX_SWAPOUT_MIBPS=$(awk -v d="$((LINUX_PSWPOUT - rec_out))" -v s="$(($(now) - rec_epoch))" 'BEGIN { printf "%.1f", d * 4 / 1024 / s }')
+      fi
+      ;;
+    esac
+  fi
   LINUX_PSI_SOME=$(awk '$1 == "some" { for (i = 2; i <= NF; i++) if ($i ~ /^avg10=/) { sub(/^avg10=/, "", $i); print $i } }' "$PROC/pressure/memory" 2>/dev/null)
   LINUX_PSI_FULL=$(awk '$1 == "full" { for (i = 2; i <= NF; i++) if ($i ~ /^avg10=/) { sub(/^avg10=/, "", $i); print $i } }' "$PROC/pressure/memory" 2>/dev/null)
 }
@@ -308,6 +331,7 @@ print_sample() {
   printf 'linux_available_mib=%s\n' "$LINUX_AVAIL_MIB"
   printf 'linux_cache_mib=%s\n' "$LINUX_CACHE_MIB"
   printf 'linux_swap_used_mib=%s\n' "$LINUX_SWAP_USED_MIB"
+  printf 'linux_swapout_mibps=%s\n' "$LINUX_SWAPOUT_MIBPS"
   printf 'linux_psi_some_avg10=%s\n' "$LINUX_PSI_SOME"
   printf 'linux_psi_full_avg10=%s\n' "$LINUX_PSI_FULL"
 }
@@ -335,8 +359,11 @@ grade() {
   g=$(grade_signal "$LINUX_AVAIL_MIB" below "$T_linux_available_mib")
   [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Linux available ${LINUX_AVAIL_MIB} MiB ($(level_name "$g"))"
   [ "$g" -le "$GRADE" ] || GRADE=$g
-  g=$(grade_signal "$LINUX_SWAP_USED_MIB" above "$T_linux_swap_used_mib")
-  [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Linux swap used ${LINUX_SWAP_USED_MIB} MiB ($(level_name "$g"))"
+  g=0
+  if [ -n "$LINUX_SWAPOUT_MIBPS" ] && awk -v r="$LINUX_SWAPOUT_MIBPS" -v m="$R_linux_swapout_mibps_min" 'BEGIN { exit !(r + 0 > m + 0) }'; then
+    g=$(grade_signal "$LINUX_SWAP_USED_MIB" above "$T_linux_swap_used_mib")
+  fi
+  [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Linux swap used ${LINUX_SWAP_USED_MIB} MiB, growing ${LINUX_SWAPOUT_MIBPS} MiB/s ($(level_name "$g"))"
   [ "$g" -le "$GRADE" ] || GRADE=$g
   g=$(grade_signal "$LINUX_PSI_FULL" above "$T_linux_psi_full_avg10")
   [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Linux memory pressure full avg10 ${LINUX_PSI_FULL}% ($(level_name "$g"))"
@@ -510,8 +537,11 @@ cmd_tick() {
   fi
   reasons=${GRADE_REASONS:-all signals within limits}
   printf '%s %s %s %s\n' "$(level_name "$new_i")" "$t" "$below" "$reasons" >"$LEVEL_FILE.tmp.$$" && mv -f "$LEVEL_FILE.tmp.$$" "$LEVEL_FILE"
-  append_bounded "$SAMPLES_LOG" "$t level=$(level_name "$new_i") graded=$(level_name "$GRADE") win_avail_mib=${WIN_AVAIL_MIB:--} win_paging_mibps=${WIN_PAGING_MIBPS:--} linux_avail_mib=${LINUX_AVAIL_MIB:--} linux_cache_mib=${LINUX_CACHE_MIB:--} linux_swap_used_mib=${LINUX_SWAP_USED_MIB:--} psi_full=${LINUX_PSI_FULL:--} win_source=${WIN_SOURCE// /_}"
+  append_bounded "$SAMPLES_LOG" "$t level=$(level_name "$new_i") graded=$(level_name "$GRADE") win_avail_mib=${WIN_AVAIL_MIB:--} win_paging_mibps=${WIN_PAGING_MIBPS:--} linux_avail_mib=${LINUX_AVAIL_MIB:--} linux_cache_mib=${LINUX_CACHE_MIB:--} linux_swap_used_mib=${LINUX_SWAP_USED_MIB:--} swapout_mibps=${LINUX_SWAPOUT_MIBPS:--} psi_full=${LINUX_PSI_FULL:--} win_source=${WIN_SOURCE// /_}"
   [ "$new_i" = "$prev_i" ] || event "level $(level_name "$prev_i") -> $(level_name "$new_i"): $reasons"
+  if [ -n "$LINUX_PSWPOUT" ] && [ "$(awk '{ print $1 }' "$SWAPOUT_FILE" 2>/dev/null)" != "$t" ]; then
+    printf '%s %s\n' "$t" "$LINUX_PSWPOUT" >"$SWAPOUT_FILE.tmp.$$" && mv -f "$SWAPOUT_FILE.tmp.$$" "$SWAPOUT_FILE"
+  fi
   case "$WIN_SOURCE" in unavailable:*) event "sample degraded to Linux-only: Windows ${WIN_SOURCE}" ;; esac
   lock_release "$LOCK"
 

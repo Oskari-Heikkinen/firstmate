@@ -15,10 +15,11 @@ TMP_ROOT=$(fm_test_tmproot fm-mem-guard)
 # tests/lib.sh disables the guard for every other suite; this one exercises it.
 unset FM_MEM_GUARD
 
-# write_proc <avail-kib> <full-avg10> [swap-free-kib]
+# write_proc <avail-kib> <full-avg10> [swap-free-kib] [swap-cached-kib] [pswpout-pages]
 write_proc() {
   mkdir -p "$C/proc/pressure"
-  printf 'MemTotal:       24000000 kB\nMemFree:          100000 kB\nMemAvailable:   %s kB\nBuffers:          524288 kB\nCached:          2097152 kB\nSwapTotal:       8388608 kB\nSwapFree:        %s kB\n' "$1" "${3:-7340032}" > "$C/proc/meminfo"
+  printf 'MemTotal:       24000000 kB\nMemFree:          100000 kB\nMemAvailable:   %s kB\nBuffers:          524288 kB\nCached:          2097152 kB\nSwapCached:     %s kB\nSwapTotal:       8388608 kB\nSwapFree:        %s kB\n' "$1" "${4:-0}" "${3:-7340032}" > "$C/proc/meminfo"
+  printf 'pswpin 0\npswpout %s\n' "${5:-0}" > "$C/proc/vmstat"
   printf 'some avg10=1.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' "$2" > "$C/proc/pressure/memory"
 }
 
@@ -121,14 +122,34 @@ test_defaults_grade_linux_and_only_sample_windows_available() {
   out=$(guard tick)
   assert_contains "$out" "level=ok" "low Windows available memory alone does not grade by default"
   assert_grep "win_avail_mib=900" "$C/guard/samples.log" "Windows available memory is still logged"
-  write_proc 16000000 0.00 1048576
-  out=$(FM_MEM_GUARD_NOW=1000100 guard tick)
-  assert_contains "$out" "level=refuse" "7168 MiB of swap in use grades refuse"
-  assert_contains "$out" "Linux swap used 7168 MiB (refuse)" "the swap signal is named"
   write_proc 3600000 0.00
-  out=$(FM_MEM_GUARD_NOW=1000200 guard tick)
+  out=$(FM_MEM_GUARD_NOW=1000100 guard tick)
   assert_contains "$out" "Linux available 3515 MiB (park)" "Linux MemAvailable grades on its default ladder"
-  pass "defaults grade Linux memory and swap and only sample Windows available memory"
+  pass "defaults grade Linux memory and only sample Windows available memory"
+}
+
+test_swap_grades_only_while_growing() {
+  local out
+  new_case swap
+  printf '{}\n' > "$C/rules.json"
+  # 1 GiB free and 1 GiB swap-cached of 8 GiB: 6144 MiB counts as used.
+  write_proc 12582912 0.00 1048576 1048576 0
+  out=$(guard tick)
+  assert_contains "$out" "level=ok" "swap without a previous tick's swap-out reading grades ok"
+  write_proc 12582912 0.00 1048576 1048576 128000
+  out=$(FM_MEM_GUARD_NOW=1000100 guard tick)
+  assert_contains "$out" "level=refuse" "swap past the refuse line while swapping out grades refuse"
+  assert_contains "$out" "Linux swap used 6144 MiB, growing 5.0 MiB/s (refuse)" "swap-cached pages are not counted and the growth is named"
+  out=$(FM_MEM_GUARD_NOW=1000200 guard tick)
+  assert_contains "$out" "reasons=all signals within limits" "the same swap with no swap-out grades ok"
+  assert_contains "$out" "level=refuse" "one quiet tick holds the level"
+  out=$(FM_MEM_GUARD_NOW=1000300 guard tick)
+  assert_contains "$out" "level=ok" "residual swap after swapping stops clears the level"
+  assert_grep "level refuse -> ok" "$C/guard/events.log" "the fall is logged"
+  write_proc 12582912 0.00 0 0 1000000
+  out=$(FM_MEM_GUARD_NOW=1000400 guard tick)
+  assert_contains "$out" "level=refuse" "swap alone never grades critical"
+  pass "swap grades only on a tick where it grows, never past refuse, and residual swap clears"
 }
 
 test_admit_refuses_heavy_jobs() {
@@ -368,6 +389,7 @@ test_sample_reads_both_sides_and_caches_windows
 test_sample_degrades_to_linux_only
 test_grading_levels_and_hysteresis
 test_defaults_grade_linux_and_only_sample_windows_available
+test_swap_grades_only_while_growing
 test_admit_refuses_heavy_jobs
 test_critical_wakes_only_main_once_per_window
 test_park_level_parks_or_steers_idle_workers
