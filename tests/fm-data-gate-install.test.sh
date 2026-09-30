@@ -8,13 +8,23 @@
 # a later edit (only gate entries removed, even across a re-install), an
 # unparseable settings file (left untouched), every registered Claude login
 # folder, the generated bulk paths, the Codex trust entry, and the installed
-# hooks, plugins and extensions actually calling the gate.
+# hooks, plugins and extensions actually calling the gate and logging reads,
+# and the daily report timer (with a fake systemctl, so no user manager is
+# touched).
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-data-gate-install)
+FAKEBIN=$(fm_fakebin "$TMP_ROOT")
+cat >"$FAKEBIN/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG:?}"
+EOF
+chmod +x "$FAKEBIN/systemctl"
+export FAKE_SYSTEMCTL_LOG="$TMP_ROOT/systemctl.log"
+export PATH="$FAKEBIN:$PATH"
 INSTALL="$ROOT/bin/fm-data-gate-install.sh"
 GATE="$ROOT/bin/fm-data-gate.sh"
 
@@ -303,6 +313,57 @@ test_installed_adapters_call_the_gate() {
   pass "installed Claude, Codex, Grok, Pi and OpenCode adapters call the gate"
 }
 
+test_installed_adapters_log_reads() {
+  local h cmd payload reads cwd
+  h=$(new_home readlog)
+  cwd="$h/Tools/firstmate"
+  reads="$h/.local/state/lattice-data-gate/reads-$(date +%F).jsonl"
+  inst "$h" install >/dev/null || fail "install failed"
+  printf 'enforce\n' >"$h/.config/lattice-data-gate/mode"
+  printf 'hello\n' >"$cwd/claude.txt"
+  cp "$cwd/claude.txt" "$cwd/opencode.txt"
+  cp "$cwd/claude.txt" "$cwd/pi.txt"
+
+  payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],session_id:"s1",tool_name:"Read",tool_input:{file_path:process.argv[1]+"/claude.txt"}}))' "$cwd")
+  cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse[0].hooks[0].command)' "$h/.claude/settings.json")
+  printf '%s' "$payload" | HOME="$h" env -u GROK_AGENT -u GROK_HOOK_EVENT sh -c "$cmd" >/dev/null 2>&1
+  expect_code 0 $? "the installed Claude hook allows a Read in enforce mode"
+  assert_grep "\"harness\":\"claude\",\"home\":\"$cwd\"" "$reads" "the installed Claude hook logs a Read"
+
+  HOME="$h" node --input-type=module -e '
+    const [plugin, cwd] = process.argv.slice(1);
+    const mod = await import(plugin);
+    const hooks = await mod.LatticeDataGate({ directory: cwd });
+    await hooks["tool.execute.before"]({ tool: "read" }, { args: { filePath: cwd + "/opencode.txt", limit: 1 } });
+  ' "$h/.config/opencode/plugins/lattice-data-gate.js" "$cwd" 2>&1 || fail "the installed OpenCode plugin passes a read"
+  grep -q '"harness":"opencode".*opencode.txt.*"lines":1' "$reads" || fail "the installed OpenCode plugin logs a bounded read"
+
+  if [ "$(node -p 'Boolean(process.features.typescript)' 2>/dev/null)" != true ]; then
+    pass "this node cannot load TypeScript; the Pi read check is skipped here"
+  else
+  HOME="$h" node --input-type=module -e '
+    const [ext, cwd] = process.argv.slice(1);
+    const mod = await import(ext);
+    const handlers = {};
+    mod.default({ on: (name, fn) => { handlers[name] = fn; } });
+    const result = await handlers.tool_call({ type: "tool_call", toolName: "read", input: { path: cwd + "/pi.txt" } }, { cwd });
+    if (result.block) throw new Error("pi blocked a read");
+  ' "$h/.pi/agent/extensions/lattice-data-gate.ts" "$cwd" 2>&1 || fail "the installed Pi extension passes a read"
+  grep -q '"harness":"pi".*pi.txt' "$reads" || fail "the installed Pi extension logs a read"
+  fi
+  pass "installed Claude, OpenCode and Pi adapters log reads without blocking them"
+}
+
+test_reinstall_upgrades_old_claude_matcher() {
+  local h matcher
+  h=$(new_home upgrade)
+  printf '{"hooks":{"PreToolUse":[{"matcher":"Bash|Grep|Glob","hooks":[{"type":"command","command":"exec /old/fm-data-gate.sh --harness claude","timeout":10}]},{"matcher":"Bash","hooks":[{"type":"command","command":"other"}]}]}}\n' >"$h/.claude/settings.json"
+  inst "$h" install >/dev/null || fail "install failed"
+  matcher=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse; process.stdout.write(p.map((g)=>g.matcher).join(","))' "$h/.claude/settings.json")
+  assert_equals "Bash|Grep|Glob|Read,Bash" "$matcher" "an earlier gate entry is upgraded to match Read in place"
+  pass "re-install upgrades an earlier Claude gate entry to include Read"
+}
+
 # Codex's hook trust contract (codex-rs hooks discovery): the key is
 # "<hooks.json>:pre_tool_use:<group>:<handler>" and the hash is sha256 over the
 # key-sorted compact JSON of {event_name, matcher, hooks:[normalized handler]}.
@@ -344,6 +405,55 @@ test_codex_trust_and_status() {
   pass "install records the Codex trust hash and status reports it"
 }
 
+unit_value() {  # <unit file> <section> <key>: the key's value, parsed as systemd reads it
+  node -e '
+    const [file, section, key] = process.argv.slice(1);
+    let current = "";
+    for (const raw of require("fs").readFileSync(file, "utf8").split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const header = line.match(/^\[(.+)\]$/);
+      if (header) current = header[1];
+      else if (current === section && line.slice(0, line.indexOf("=")) === key) process.stdout.write(line.slice(line.indexOf("=") + 1));
+    }' "$1" "$2" "$3"
+}
+
+test_report_timer() {
+  local h units service timer exec out
+  h=$(new_home timer)
+  units="$h/.config/systemd/user"
+  service="$units/lattice-data-gate-report.service"
+  timer="$units/lattice-data-gate-report.timer"
+  : >"$FAKE_SYSTEMCTL_LOG"
+  out=$(inst "$h" install --dry-run) || fail "dry-run install failed"
+  assert_contains "$out" "would enable lattice-data-gate-report.timer" "dry run names the timer"
+  assert_equals "" "$(cat "$FAKE_SYSTEMCTL_LOG")" "dry run calls no systemctl"
+  out=$(inst "$h" install) || fail "install failed"
+  assert_contains "$out" "enabled lattice-data-gate-report.timer" "install reports the timer enabled"
+  assert_equals "--user daemon-reload
+--user enable --now lattice-data-gate-report.timer" "$(cat "$FAKE_SYSTEMCTL_LOG")" "install reloads the user manager and enables the timer"
+  assert_equals "oneshot|19|idle" "$(unit_value "$service" Service Type)|$(unit_value "$service" Service Nice)|$(unit_value "$service" Service IOSchedulingClass)" \
+    "the report runs as a oneshot at nice 19 in the idle IO class"
+  assert_equals "*-*-* 00:40:00|true|timers.target" "$(unit_value "$timer" Timer OnCalendar)|$(unit_value "$timer" Timer Persistent)|$(unit_value "$timer" Install WantedBy)" \
+    "the timer fires daily shortly after midnight and catches up a missed run"
+  exec=$(unit_value "$service" Service ExecStart)
+  out=$(HOME="$h" sh -c "$exec") || fail "the service's ExecStart does not run the report: $out"
+  assert_contains "$out" "Data gate $(date -d yesterday +%F): agents read" "the service's ExecStart writes yesterday's report"
+  assert_present "$h/.local/state/lattice-data-gate/reports/$(date -d yesterday +%F).md" "and the report file"
+  out=$(inst "$h" status) || fail "status failed"
+  assert_contains "$out" "installed $timer" "status sees the timer unit"
+  : >"$FAKE_SYSTEMCTL_LOG"
+  inst "$h" uninstall >/dev/null || fail "uninstall failed"
+  assert_equals "--user disable --now lattice-data-gate-report.timer
+--user daemon-reload" "$(cat "$FAKE_SYSTEMCTL_LOG")" "uninstall disables the timer and reloads the user manager"
+  assert_absent "$units" "uninstall removes the units and the unit directory it created"
+  mkdir -p "$TMP_ROOT/no-systemctl"
+  out=$(PATH="$TMP_ROOT/no-systemctl" HOME="$h" "$(command -v node)" "$ROOT/bin/fm-data-gate-install.mjs" install) || fail "install without systemctl failed"
+  assert_contains "$out" "not enabled lattice-data-gate-report.timer (systemctl not found); run: systemctl --user daemon-reload" "install without systemctl says how to enable the timer"
+  assert_present "$timer" "and still writes the units"
+  pass "install writes and enables the daily report timer, and uninstall disables and removes it"
+}
+
 test_dry_run_writes_nothing
 test_install_merges_and_backs_up
 test_reinstall_is_idempotent
@@ -354,4 +464,7 @@ test_uninstall_after_edit_strips_only_gate
 test_unparseable_settings_left_untouched
 test_only_existing_harnesses
 test_installed_adapters_call_the_gate
+test_installed_adapters_log_reads
+test_reinstall_upgrades_old_claude_matcher
 test_codex_trust_and_status
+test_report_timer

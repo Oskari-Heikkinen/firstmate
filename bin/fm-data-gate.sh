@@ -37,6 +37,13 @@
 # Size limit: LATTICE_DATA_GATE_SIZE_LIMIT, else the file's `size-limit N[K|M|G]`
 # line (binary units; a bare number is bytes), else 200M. Invalid means 200M.
 #
+# Read log: in every mode a read-shaped call (the Read tool, or a shell command
+# naming a reader such as cat, head, tail, jq, sed, grep or python -c open) is
+# also passed to bin/fm-data-gate-reads.mjs, which appends one row per named
+# file to ~/.local/state/lattice-data-gate/reads-<date>.jsonl. That path never blocks,
+# never prints, and is bounded to three seconds. LATTICE_DATA_GATE_READS=off
+# turns it off.
+#
 # Exit/output contract:
 #   ALLOW - exit 0, no output.
 #   DENY (a rule in enforce) - exit 2 and the refusal on stderr; --harness grok
@@ -54,6 +61,9 @@ SCAN_WORDS='(^|[^A-Za-z0-9_])(grep|egrep|fgrep|rg|ugrep|ug|ag|find|du|tree|ls|gl
 # and a < redirect. head and tail are bounded and never need Node.
 READ_WORDS='(^|[^A-Za-z0-9_])(cat|tac|nl|less|more|bat|awk|gawk|mawk|sed|wc|sort|uniq|cut|paste|jq|diff|cmp|strings|base64|sha(1|224|256|384|512)sum|md5sum|b2sum|cksum|xxd|od|hexdump|g?zcat|xzcat|bzcat|zstdcat|gzip|gunzip|xz|zstd|bzip2|dd|python[0-9.]*)([^A-Za-z0-9_]|$)|<'
 DEFAULT_SIZE_LIMIT=209715200
+READS="$HERE/fm-data-gate-reads.mjs"
+# What the read log records: every reader, bounded or not, and the Read tool.
+LOG_READ_WORDS='(^|[^A-Za-z0-9_])(cat|tac|head|tail|less|more|nl|wc|uniq|cut|sort|bat|md5sum|sha1sum|sha256sum|zcat|xxd|od|strings|diff|cmp|grep|egrep|fgrep|rg|ugrep|ag|sed|awk|jq|python[0-9.]*)([^A-Za-z0-9_]|$)|[^<]<[^<(&]|"tool_name" *: *"Read"'
 
 usage() {
   sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//; /^set -u/d'
@@ -163,6 +173,17 @@ See skill data-access, section "Blocked large read". If none of these fits, ask 
 EOF
 }
 
+# Log-only: never blocks, never prints, bounded, allows on any error.
+log_reads() {
+  [ "${LATTICE_DATA_GATE_READS:-on}" != off ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 3 node "$READS" log --size-limit "$SIZE_LIMIT" "$@" >/dev/null 2>&1 || true
+  else
+    node "$READS" log --size-limit "$SIZE_LIMIT" "$@" >/dev/null 2>&1 || true
+  fi
+}
+
 run_policy() {
   if command -v timeout >/dev/null 2>&1; then
     timeout 5 node "$POLICY" "$@"
@@ -208,10 +229,12 @@ args=(decide --harness "$HARNESS" --mode "$MODE" --size-mode "$SIZE_MODE" --size
 [ -n "$CWD" ] && args+=(--cwd "$CWD")
 PAYLOAD=""
 if [ "$CMD_SET" = 1 ]; then
+  ! printf '%s' "$CMD" | grep -qE "$LOG_READ_WORDS" || log_reads --harness "$HARNESS" ${CWD:+--cwd "$CWD"} --command "$CMD"
   printf '%s' "$CMD" | grep -qiE "$SCAN_WORDS|$READ_WORDS" || exit 0
   args+=(--command "$CMD")
   DESC=$CMD
 elif [ "$TOOL" = read ]; then
+  [ -n "$TPATH" ] && log_reads --harness "$HARNESS" ${CWD:+--cwd "$CWD"} --tool read --path "$TPATH" ${OFFSET:+--offset "$OFFSET"} ${LIMIT:+--limit "$LIMIT"}
   bounded=0
   [ -n "$OFFSET$LIMIT" ] && bounded=1
   fpath=$TPATH
@@ -235,6 +258,7 @@ else
   [ -t 0 ] && exit 0
   PAYLOAD=$(cat 2>/dev/null || true)
   [ -n "$PAYLOAD" ] || exit 0
+  ! printf '%s' "$PAYLOAD" | grep -qE "$LOG_READ_WORDS" || printf '%s' "$PAYLOAD" | log_reads --harness "$HARNESS" --stdin ${CWD:+--cwd "$CWD"}
   if [[ "$PAYLOAD" =~ \"tool_?[Nn]ame\"[[:space:]]*:[[:space:]]*\"[Rr]ead\" ]]; then
     bounded=0
     [[ "$PAYLOAD" =~ \"(offset|limit)\"[[:space:]]*:[[:space:]]*[0-9] ]] && bounded=1
