@@ -515,12 +515,22 @@ PY
 block|H|python3 -c 'import json; print(len(json.load(open("REPLACED_BIG_FINAL"))))'
 allow|H|python3 -c 'import json; print(len(json.load(open("REPLACED_SMALL_FINAL"))))'
 allow|H|python3 -m lattice_ledger show E1
+# false blocks found in review: a Path stat and a write-mode open read nothing
+allow|H|python3 -c "from pathlib import Path; print(Path('REPLACED_BIG_FINAL').stat().st_size)"
+block|H|python3 -c "from pathlib import Path; print(len(Path('REPLACED_BIG_FINAL').read_text()))"
+allow|H|python3 -c "open('REPLACED_BIG_FINAL', 'a').write('x')"
+allow|H|python3 -c "open('REPLACED_BIG_FINAL', mode='wb').close()"
+block|H|python3 -c "print(len(open('REPLACED_BIG_FINAL', 'rb').read()))"
 # log #33, #76: virtual files
 allow|H|cat /proc/meminfo | head -8; cat /proc/sys/vm/swappiness
 # log #40, #159: head and tail always pass
 allow|H|tail -3 ~/big/entries.jsonl; head -30 ~/big/rolling.py; head -c 8192 ~/big/final.json
 allow|H|tail -n 50 < ~/big/entries.jsonl
 block|H|wc -l < ~/big/entries.jsonl
+# false blocks found in review: a byte count is a stat, not a read
+allow|H|wc -c ~/big/entries.jsonl; wc --bytes ~/big/final.json; wc -c < ~/big/entries.jsonl
+block|H|wc -lc ~/big/entries.jsonl
+block|H|wc ~/big/entries.jsonl
 block|H|while read -r line; do :; done < ~/big/entries.jsonl
 allow|H|dd if=~/big/archive.tar bs=1M skip=10 count=4 status=none | xxd | head
 block|H|dd if=~/big/archive.tar of=/dev/null bs=1M
@@ -687,6 +697,11 @@ test_size_refusal_and_modes() {
   assert_equals "enforce" "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE "$GATE" mode size)" "without a size line the size rule enforces by default"
   HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE -u LATTICE_DATA_GATE_SIZE "$GATE" --harness pi --cwd "$MAIN" --command "cat $big" >/dev/null 2>&1
   expect_code 2 $? "the default size mode refuses even when the scan rule logs"
+
+  printf 'enforce\nsize-limit 1G\nsize log' >"$conf"
+  assert_equals "log" "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE "$GATE" mode size)" "a last size line without a newline is read"
+  printf 'enforce\nsize-limit 1G' >"$conf"
+  assert_equals 1073741824 "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE_LIMIT "$GATE" size-limit)" "a last size-limit line without a newline is read"
 
   printf 'log\nsize enforce\nsize-limit 1G\n' >"$conf"
   assert_equals 1073741824 "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE_LIMIT "$GATE" size-limit)" "a size-limit line sets the limit"

@@ -48,16 +48,16 @@ A whole-file read is:
 
 - the Read tool (Claude `Read`, OpenCode and Pi `read`) with neither an offset nor a limit;
 - `cat`, `tac`, `nl`, `less`, `more`, `bat`, `grep`, `egrep`, `fgrep`, `rg`, `ag`, `ugrep`, `awk`, `sed`, `wc`, `sort`, `uniq`, `cut`, `paste`, `jq`, `diff`, `cmp`, `strings`, `base64`, the `sha*sum`, `md5sum`, `b2sum` and `cksum` checksums, `xxd`, `od`, `hexdump`, `zcat` and its siblings, `gzip`, `xz`, `zstd` or `bzip2` with `-c`, `-t` or `-l`, and `dd if=`, each on its named file operands;
-- `python` or `python3` with `-c` code or a heredoc script that calls `open()` or `Path()` on a literal path;
+- `python` or `python3` with `-c` code or a heredoc script that reads a literal path with `open()` or `Path().read_text()`, `.read_bytes()` or `.open()` (a `w`, `a` or `x` mode is a write, not a read);
 - any command's `< FILE` stdin redirect.
 
 The shell parsing is the scan rule's (pipelines, chains, subshells, substitutions, `bash -c`, wrappers, `cd`), plus literal `NAME=value` and `export NAME=value` assignments earlier in the same command, so `D=~/x; sed -n 1,9p $D/f` resolves.
 
 These always pass:
 
-- bounded reads: `head` and `tail` (also fed by `<`), the Read tool with an offset or a limit, `sed` whose script quits (`sed -n 'A,Bp;Bq'`), `xxd -l`, `od -N`, `hexdump -n`, `cmp -n`, `bat -r`, `dd` with `count=`, a Python script that seeks or reads a counted amount, and a streamer (`cat`, `tac`, `nl`, `zcat` and its siblings, `xxd`, `od`, `hexdump`, `strings`, `base64`) piped straight into `head`;
+- bounded reads: `head` and `tail` (also fed by `<`), the Read tool with an offset or a limit, `sed` whose script quits (`sed -n 'A,Bp;Bq'`), `xxd -l`, `od -N`, `hexdump -n`, `cmp -n`, `bat -r`, `dd` with `count=`, `wc -c` (a byte count is a `stat`, not a read), a Python script that seeks or reads a counted amount, and a streamer (`cat`, `tac`, `nl`, `zcat` and its siblings, `xxd`, `od`, `hexdump`, `strings`, `base64`) piped straight into `head`;
 - a niced one-off read, run under both `nice -n 19` and `ionice -c3`, which is the data-access skill's last-resort procedure;
-- anything that is not a regular file (directories, `/dev`, `/proc`), a missing file, and a path the gate cannot resolve (an unknown variable, a command substitution, `sys.argv`);
+- anything that is not a regular file (directories, `/dev`, `/proc`), a missing file, and a path the gate cannot resolve (an unknown or non-literal variable, a command substitution, `sys.argv`);
 - commands that are not reads of the file into the agent: `cp`, `mv`, `rsync`, `tar`, `lattice-data`, `python -m`, and a script file run by path.
 
 Our own verified jobs are not agent tool calls and are never gated here; the disk-speed cap covers them.

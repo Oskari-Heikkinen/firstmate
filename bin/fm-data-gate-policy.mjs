@@ -781,6 +781,11 @@ function ddReader(args) {
   return { files, bounded };
 }
 
+function wcReader(args) {
+  const { options, operands } = operandsAfterOptions(args);
+  return { files: operands, bounded: options.length > 0 && has(options, "c", "bytes") && options.every((o) => o.name === "c" || o.name === "bytes") };
+}
+
 function boundedBy(shortArg, bound, longArg = [], longBound = []) {
   return (args) => {
     const { options, operands } = operandsAfterOptions(args, { shortArg, longArg });
@@ -816,7 +821,7 @@ const READERS = {
   gawk: awkReader,
   mawk: awkReader,
   sed: sedReader,
-  wc: plainReader(),
+  wc: wcReader,
   sort: plainReader("koSTt", ["key", "output", "buffer-size", "temporary-directory", "field-separator", "parallel", "files0-from"]),
   uniq: plainReader("fsw", ["skip-fields", "skip-chars", "check-chars"]),
   cut: plainReader("bcdf", ["bytes", "characters", "delimiter", "fields", "output-delimiter"]),
@@ -853,13 +858,23 @@ const READERS = {
 // head and tail read a bounded amount from the start or end of what they are fed.
 const BOUNDED_STDIN = new Set(["head", "tail"]);
 
-// Literal paths a Python -c or stdin script opens whole. A script that seeks or
-// reads a counted amount is a bounded read.
+// Literal paths a Python -c or stdin script opens whole for reading: open() and
+// Path().read_text/read_bytes/open without a w, a or x mode. A script that seeks
+// or reads a counted amount is a bounded read.
 function pythonReads(code) {
   const bounded = /\.seek\(|\.read\(\s*\d|readline\(|islice\(|mmap\./.test(code);
   const paths = [];
-  const pattern = /\b(?:open|Path)\(\s*(?:[rfbu]{0,2})?(["'])([^"'\n]+)\1/g;
-  for (const match of code.matchAll(pattern)) if (!/[{}]/.test(match[2])) paths.push(match[2]);
+  const pattern = /\b(open|Path)\(\s*[rfbu]{0,2}(["'])([^"'\n]+)\2\s*/g;
+  for (const match of code.matchAll(pattern)) {
+    let rest = code.slice(match.index + match[0].length);
+    if (match[1] === "Path") {
+      const method = rest.match(/^\)\s*\.(?:read_text|read_bytes|open)\(/);
+      if (!method) continue;
+      rest = rest.slice(method[0].length);
+    } else rest = rest.replace(/^,/, "");
+    if (/^\s*(?:mode\s*=\s*)?[rfbu]{0,2}(["'])[^"'\n]*[wax]/.test(rest) || /[{}]/.test(match[3])) continue;
+    paths.push(match[3]);
+  }
   return { paths, bounded };
 }
 
@@ -888,20 +903,18 @@ function readsOfNode(name, args, tokens, state, flags) {
   };
   if (name === "export") rememberAssignments(args, state);
   const reader = READERS[name];
-  if (reader) {
-    const parsed = reader(args);
-    const bounded = parsed.bounded || (flags.pipedToHead && STREAMERS.has(name));
-    for (const word of parsed.files) add(name, word, bounded);
-  }
+  const parsed = reader ? reader(args) : { files: [], bounded: false };
+  const bounded = parsed.bounded || (flags.pipedToHead && STREAMERS.has(name));
+  for (const word of parsed.files) add(name, word, bounded);
   if (name === "python" || name === "python3" || /^python3\.\d+$/.test(name)) {
-    const parsed = pythonReader(args, tokens);
-    for (const path of parsed.paths) add(name, { value: path, literal: true, subs: [], unquotedExpansion: false }, parsed.bounded);
+    const script = pythonReader(args, tokens);
+    for (const path of script.paths) add(name, { value: path, literal: true, subs: [], unquotedExpansion: false }, script.bounded);
   }
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (token.type !== "redir" || token.value !== "<" || token.fd !== 0 || token.inlineTarget) continue;
     const target = tokens[i + 1];
-    if (target?.type === "word") add(`${name} <`, target, BOUNDED_STDIN.has(name) || (name === "dd" && args.some((w) => /^count=/.test(w.value))));
+    if (target?.type === "word") add(`${name} <`, target, BOUNDED_STDIN.has(name) || Boolean(parsed.bounded));
   }
   return found;
 }

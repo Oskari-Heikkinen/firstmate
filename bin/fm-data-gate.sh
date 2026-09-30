@@ -63,7 +63,7 @@ usage() {
 mode_file_value() {
   local key value
   [ -r "$MODE_FILE" ] || return 0
-  while read -r key value _; do
+  while read -r key value _ || [ -n "$key" ]; do
     if [ "$key" = "$1" ]; then
       printf '%s' "$value"
       return 0
