@@ -64,6 +64,9 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-remote-readiness-lib.sh` | Shared remote second-mate readiness gate: check and, when needed, repair then re-check through `fm-remote-doctor.sh` |
 | [`fm-project-origin-lib.sh`](../bin/fm-project-origin-lib.sh) | Accepted origin-form owner shared by both remote provisioning boundaries |
 | `fm-spawn.sh`            | Spawn crewmates, scouts, `id=repo` batches, and secondmates on the resolved harness and runtime backend |
+| `fm-admission.sh`        | Machine-wide admission gate every local agent launch waits on: free memory, pressure, load, the fleet-wide agent cap, and relaunch pacing |
+| `fm-mem-guard.sh`        | Sample Windows and Linux memory, grade the machine, and respond: warn, park idle workers, refuse new agents and heavy jobs, wake main at critical |
+| `fm-job-cap.sh`          | Run one heavy job in a systemd user scope with disk-speed and memory caps, optionally asking the memory guard first |
 | `fm-backend.sh`          | Runtime-backend selection, meta helpers, selector resolution, and operation dispatch |
 | `fm-backend-hometag-lib.sh` | Shared per-installation home-tag derivation for zellij tab and cmux workspace titles |
 | `fm-composer-lib.sh`     | Single fleet-wide owner of composer shapes, capability-aware screen classification, and verdicts |
