@@ -468,13 +468,14 @@ cmd_rebalance() {
     window=${FM_ACCOUNT_SIGNIN_CONFIRM_SECS:-900}
     case "$window" in '' | *[!0-9]*) window=900 ;; esac
     # Quiet advice keeps the last fingerprint and notes when it went quiet, so
-    # the same advice returning inside the window is not a new wake.
+    # the same advice returning inside the window is not a new wake; a ready
+    # move returning after a quiet spell always wakes.
     if [ -z "$moves$adv" ]; then
       [ ! -f "$STATE/.account-check" ] || [ -n "$quiet" ] ||
         printf '%s|%s|%s\n' "$stamp" "$last" "$now" >"$STATE/.account-check" 2>/dev/null || true
       return 0
     fi
-    if [ "$fp" = "$last" ] && { [ -z "$quiet" ] || [ $((now - quiet)) -lt "$window" ]; } &&
+    if [ "$fp" = "$last" ] && { [ -z "$quiet" ] || { [ -z "$moves" ] && [ $((now - quiet)) -lt "$window" ]; }; } &&
       { [ -z "$moves" ] || [ $((now - stamp)) -lt 1800 ]; }; then
       [ -z "$quiet" ] || printf '%s|%s|\n' "$stamp" "$last" >"$STATE/.account-check" 2>/dev/null || true
       return 0

@@ -527,6 +527,18 @@ test_b_quiet_advice_returning_unchanged_does_not_wake_again() {
   printf '4 fresh\n' > "$C/gmail/fake-quota"
   out=$(FM_ACCOUNT_SIGNIN_CONFIRM_SECS=0 sweep)
   assert_contains "$out" "restart this main session on work" "advice back after a quiet spell past the window wakes again"
+
+  new_case quiet-move
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  add_mate sm2 ''
+  out=$(sweep)
+  assert_contains "$out" "sm2 gmail->work" "the first check wakes with the move"
+  printf '0 garbage\n' > "$C/gmail/fake-quota"
+  out=$(sweep)
+  assert_equals "" "$out" "a failed read that empties the move and advice is silent"
+  printf '4 fresh\n' > "$C/gmail/fake-quota"
+  out=$(sweep)
+  assert_contains "$out" "sm2 gmail->work" "a move returning after a quiet spell wakes at once"
   pass "advice that goes quiet and returns unchanged wakes again only after the confirmation window"
 }
 
