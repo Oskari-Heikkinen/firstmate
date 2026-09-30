@@ -11,7 +11,6 @@ On WSL the Linux disk is a non-sparse `ext4.vhdx` on the Windows drive, so `df /
 ## What runs by itself once the captain has installed it
 
 - At every Windows start, before anyone signs in, a scheduled task compacts the distro disk and Docker's data disk while WSL is not running, skipping any file in use.
-- Inside Linux, `fstrim.timer` runs weekly (WSL otherwise skips it).
 - In a home that registered the watcher check, `fm-disk-room.sh watch-line` stays silent until real room is under the margin (20 GiB by default), then produces one notification, repeated only after a further 5 GiB drop or 6 hours.
 
 Check the install with `fm-disk-room.sh status`: a `last compaction:` line means the task has run at least once.
@@ -27,6 +26,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line means
 ## What a low reading means and who acts
 
 - "a compaction would reclaim about N GiB" - the space is already free inside Linux; the captain runs the reclaim-now step in `docs/disk-room.md`, which also stops every WSL process, so firstmate parks the fleet first.
+- "reclaimable by compaction unknown" - the disk file or its fragmented free space could not be read; run `fm-disk-room.sh status`, fix the named reading, and do not promise the captain a compaction result until it reads.
 - "data must be freed or moved" - compaction cannot help (the slack is fragmented free space sharing 1 MiB disk blocks with live data); bring the captain the owning task's numbers and options, and delete nothing without the captain's word.
 - "cannot measure" - a reading failed; investigate the named reading before trusting any floor.
 
@@ -37,5 +37,5 @@ Firstmate relays only low readings, in the captain's terms; above the margin, di
 - Fixed C: floors such as "C: free >= 55 GB" or "45 GB": use `check`/`run` with the job's expected write.
 - Treating disk file size minus Linux used as reclaimable: fragmented free space is not, and `status` already subtracts it.
 - Proposing `wsl --manage <distro> --set-sparse true --allow-unsafe`: Microsoft gates it for potential data corruption, and it would not recover fragmented slack.
-- Hand-written diskpart sequences, `fstrim`, or `drop_caches` runs: the startup task, the weekly timer, and the reclaim-now step cover them.
+- Hand-written diskpart sequences, `fstrim`, or `drop_caches` runs: the startup task, online discard on `/`, and the reclaim-now step cover them.
 - Every Windows, root, elevation, or WSL-shutdown step still goes to the captain as the exact command from `docs/disk-room.md`; no agent runs one.

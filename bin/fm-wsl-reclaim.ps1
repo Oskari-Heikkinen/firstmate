@@ -12,16 +12,15 @@ Modes (run from an elevated Windows PowerShell except -Plan):
               whether the startup task is installed, and the last result.
   -Install    copy this script to C:\ProgramData\firstmate (Administrators and
               SYSTEM write, Users read), record the disk files, register the
-              "Firstmate WSL compact at startup" task (SYSTEM, at boot), and
-              enable the weekly fstrim timer inside the distro (wsl -u root).
+              "Firstmate WSL compact at startup" task (SYSTEM, at boot).
               Run it while the distro is running.
-  -Now        fstrim inside the distro, wsl --shutdown, compact every recorded
-              disk file, print before/after, and start the distro again
-              (-NoRestart leaves it stopped). Stops every WSL process.
+  -Now        wsl --shutdown, compact every recorded disk file, print
+              before/after, and start the distro again (-NoRestart leaves it
+              stopped). Stops every WSL process.
   -Startup    what the task runs at boot: compact every recorded disk file
               that nothing holds open; skips a file in use.
-  -Uninstall  remove the task, the ProgramData script and file list, and the
-              fstrim drop-ins. Logs are kept.
+  -Uninstall  remove the task and the ProgramData script and file list. Logs
+              are kept.
 
 Options: -Distro NAME (default: the WSL default distro), -NoDocker (leave
 docker_data.vhdx out of -Install's file list), -NoRestart (with -Now).
@@ -49,7 +48,6 @@ $Installed = Join-Path $Dir 'fm-wsl-reclaim.ps1'
 $Conf = Join-Path $Dir 'wsl-compact.conf'
 $Log = Join-Path $Dir 'wsl-compact.log'
 $Last = Join-Path $Dir 'wsl-compact-last.txt'
-$DropinUnits = @('fstrim.timer', 'fstrim.service')
 
 function Test-Admin {
   $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -100,7 +98,7 @@ function Get-DiskFiles {
 }
 
 function Test-Sparse([string]$path) {
-  ((& fsutil sparse queryflag "$path") -join ' ') -notmatch 'NOT set'
+  ((Get-Item $path).Attributes -band [IO.FileAttributes]::SparseFile) -ne 0
 }
 
 function Test-Free([string]$path) {
@@ -117,6 +115,7 @@ function Invoke-Compact([string]$path) {
   if (-not (Test-Path $path)) { return 'missing' }
   if (Test-Sparse $path) { return 'sparse-skipped' }
   if (-not (Test-Free $path)) { return 'in-use-skipped' }
+  $ErrorActionPreference = 'Continue'
   $script = [IO.Path]::GetTempFileName()
   Set-Content -Path $script -Encoding ASCII -Value @(
     "select vdisk file=`"$path`"",
@@ -166,25 +165,10 @@ function Invoke-CompactAll([string]$mode) {
 }
 
 function Invoke-Wsl([string[]]$argv) {
+  $ErrorActionPreference = 'Continue'
   $out = & wsl.exe @argv 2>&1
-  ($out | ForEach-Object { "$_" -replace "`0", '' }) -join "`n"
-}
-
-function Set-Dropins([bool]$enable, [string]$name) {
-  foreach ($u in $DropinUnits) {
-    $d = "/etc/systemd/system/$u.d"
-    if ($enable) {
-      Invoke-Wsl @('-d', $name, '-u', 'root', '--', 'sh', '-c', "mkdir -p $d && printf '[Unit]\nConditionVirtualization=\n' > $d/firstmate-wsl.conf") | Out-Null
-    } else {
-      Invoke-Wsl @('-d', $name, '-u', 'root', '--', 'rm', '-f', "$d/firstmate-wsl.conf") | Out-Null
-    }
-  }
-  Invoke-Wsl @('-d', $name, '-u', 'root', '--', 'systemctl', 'daemon-reload') | Out-Null
-  if ($enable) {
-    Invoke-Wsl @('-d', $name, '-u', 'root', '--', 'systemctl', 'enable', '--now', 'fstrim.timer') | Out-Null
-  } else {
-    Invoke-Wsl @('-d', $name, '-u', 'root', '--', 'systemctl', 'stop', 'fstrim.timer') | Out-Null
-  }
+  $text = ($out | ForEach-Object { "$_" -replace "`0", '' }) -join "`n"
+  "exit $LASTEXITCODE$(if ($text) { ": $text" })"
 }
 
 function Show-Plan {
@@ -217,14 +201,12 @@ switch ($PSCmdlet.ParameterSetName) {
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-    Set-Dropins $true $info.Name
-    Write-Log "installed: task '$TaskName', files: $($files -join ', '), weekly fstrim in $($info.Name)"
+    Write-Log "installed: task '$TaskName', files: $($files -join ', ')"
   }
   'Now' {
     Require-Admin
     $info = Get-DistroInfo $Distro
     New-Item -ItemType Directory -Path $Dir -Force | Out-Null
-    Write-Log "fstrim in $($info.Name): $(Invoke-Wsl @('-d', $info.Name, '-u', 'root', '--', 'fstrim', '-v', '/'))"
     Write-Log 'wsl --shutdown'
     & wsl.exe --shutdown
     $deadline = (Get-Date).AddMinutes(3)
@@ -233,17 +215,14 @@ switch ($PSCmdlet.ParameterSetName) {
     $cfg = Join-Path $env:USERPROFILE '.wslconfig'
     if (Test-Path $cfg) { Write-Log ".wslconfig now in effect: $((Select-String -Path $cfg -Pattern '^\s*memory\s*=' | Select-Object -First 1).Line)" }
     if (-not $NoRestart) {
-      Write-Log "starting $($info.Name)"
-      Invoke-Wsl @('-d', $info.Name, '--', 'true') | Out-Null
+      Write-Log "starting $($info.Name): $(Invoke-Wsl @('-d', $info.Name, '--', 'true'))"
     }
   }
   'Startup' { Invoke-CompactAll 'startup' }
   'Uninstall' {
     Require-Admin
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    $name = (Get-DistroInfo $Distro).Name
-    Set-Dropins $false $name
     Remove-Item -Path $Installed, $Conf -ErrorAction SilentlyContinue
-    Write-Log "uninstalled: task, script, file list, fstrim drop-ins in $name"
+    Write-Log 'uninstalled: task, script, file list'
   }
 }

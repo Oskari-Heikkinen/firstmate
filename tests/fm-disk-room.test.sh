@@ -133,6 +133,26 @@ test_low_advice() {
   pass "a low reading says whether compaction would help"
 }
 
+test_unknown_reclaim() {
+  reset_state
+  set_sizes 30 600 400
+  truncate -s $(( 470 * GIB )) "$VHDX"
+  rm -f "$TMP_ROOT/mb_groups"
+  local out
+  out=$(run_room status --json)
+  assert_equals null "$(json_field "$out" fragmented_free)" "no fragmented reading"
+  assert_equals null "$(json_field "$out" reclaimable)" "reclaimable is not guessed without the fragmented reading"
+  out=$(run_room status)
+  assert_contains "$out" "reclaimable by compaction unknown" "plain status says the estimate is unknown"
+  out=$(run_room check --expect-write 20G)
+  assert_contains "$out" "reclaimable by compaction unknown (fragmented free space unreadable)" "low advice names the missing reading"
+  assert_not_contains "$out" "a compaction would reclaim" "no compaction promise without the reading"
+  write_mb_groups 30
+  out=$(FM_DISK_ROOM_VHDX="$TMP_ROOT/missing.vhdx" run_room check --expect-write 20G)
+  assert_contains "$out" "reclaimable by compaction unknown (disk file not found)" "a missing disk file is unknown, not hopeless"
+  pass "an unreadable reclaim estimate is reported as unknown"
+}
+
 test_reservations() {
   reset_state
   set_sizes 60 600 400
@@ -261,6 +281,7 @@ test_arm_and_disarm() {
 test_status_real_room_and_reclaim
 test_check_margin
 test_low_advice
+test_unknown_reclaim
 test_reservations
 test_run
 test_watch_line

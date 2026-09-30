@@ -14,6 +14,7 @@ The slack is reported separately, together with how much of it the next compacti
 A compaction can drop a 1 MiB block of the disk file only when every ext4 block inside it is free.
 Free space scattered in holes smaller than 1 MiB between live data therefore stays allocated through any compaction, and through sparse mode too.
 The monitor reads that fragmented free space from `/proc/fs/ext4/<device>/mb_groups` and subtracts it, so "reclaimable" means what a compaction can really give back.
+When that table or the disk file cannot be read, the monitor reports reclaimable as unknown rather than guessing.
 
 The margin is the room that must remain after a job's expected write, 20 GiB by default (`FM_DISK_ROOM_MARGIN`).
 Sizes are binary (G = GiB), matching what Windows Explorer shows as GB.
@@ -47,8 +48,9 @@ The install:
 
 - copies the script to `C:\ProgramData\firstmate\`, restricted so only Administrators and SYSTEM can change it;
 - records the distro's disk file and Docker Desktop's `docker_data.vhdx` (leave Docker out with `-NoDocker`);
-- registers the "Firstmate WSL compact at startup" task, which runs as SYSTEM at every Windows start and compacts each recorded file that nothing holds open;
-- enables the weekly `fstrim.timer` inside the distro, which systemd otherwise skips under WSL.
+- registers the "Firstmate WSL compact at startup" task, which runs as SYSTEM at every Windows start and compacts each recorded file that nothing holds open.
+
+No trim step is needed: the distro root is mounted with online `discard`, so blocks Linux frees are already unmapped for compaction.
 
 A WSL or Docker start during the few minutes of startup compaction fails with the file in use and can simply be retried.
 Each run appends to `C:\ProgramData\firstmate\wsl-compact.log` and rewrites `wsl-compact-last.txt`, which `fm-disk-room.sh status` shows as `last compaction:`.
@@ -62,12 +64,12 @@ When the monitor says a compaction would help and a restart is not convenient, t
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\firstmate\fm-wsl-reclaim.ps1 -Now
 ```
 
-It trims inside the distro, runs `wsl --shutdown`, compacts every recorded file, prints the before and after sizes, and starts the distro again (`-NoRestart` leaves it stopped).
+It runs `wsl --shutdown`, compacts every recorded file, prints the before and after sizes, and starts the distro again (`-NoRestart` leaves it stopped).
 Because it shuts WSL down, any `.wslconfig` change waiting for a restart takes effect in the same step, and the script prints the memory line now in effect.
 
 ### Uninstall
 
-`fm-wsl-reclaim.ps1 -Uninstall`, elevated, removes the task, the ProgramData script and file list, and the trim drop-ins, and keeps the logs.
+`fm-wsl-reclaim.ps1 -Uninstall`, elevated, removes the task and the ProgramData script and file list, and keeps the logs.
 Compaction changes no data inside the disk, so there is nothing else to roll back.
 
 ## Limits

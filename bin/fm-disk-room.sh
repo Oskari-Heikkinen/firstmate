@@ -247,7 +247,7 @@ measure() {
   [ -n "$bs" ] && FRAG=$(fragmented_free "$bs") || FRAG=''
   if [ -n "$VHDX_SIZE" ]; then
     SLACK=$(( VHDX_SIZE - LINUX_USED )); [ "$SLACK" -lt 0 ] && SLACK=0
-    RECLAIM=$(( SLACK - ${FRAG:-0} )); [ "$RECLAIM" -lt 0 ] && RECLAIM=0
+    if [ -n "$FRAG" ]; then RECLAIM=$(( SLACK - FRAG )); [ "$RECLAIM" -lt 0 ] && RECLAIM=0; fi
   fi
   COMPACT=''
   result=${FM_DISK_ROOM_COMPACT_RESULT:-${HOST:+$HOST/ProgramData/firstmate/wsl-compact-last.txt}}
@@ -267,6 +267,9 @@ advice() {
     printf 'a compaction would reclaim about %s GiB (disk-room skill: reclaim now)' "$(gib "$RECLAIM")"
   elif [ -n "$RECLAIM" ]; then
     printf 'compaction would reclaim under 5 GiB; data must be freed or moved'
+  elif [ -n "$HOST" ]; then
+    printf 'reclaimable by compaction unknown (%s); run fm-disk-room.sh status' \
+      "$([ -n "$VHDX_SIZE" ] && echo 'fragmented free space unreadable' || echo 'disk file not found')"
   else
     printf 'data must be freed or moved'
   fi
@@ -289,8 +292,13 @@ cmd_status() {
   printf 'Linux free: %s GiB, used %s GiB\n' "$(gib "$LINUX_FREE")" "$(gib "$LINUX_USED")"
   printf 'reserved writes: %s GiB%s\n' "$(gib "$RESERVED")" "${RES_LIST:+ ($RES_LIST)}"
   if [ -n "$VHDX_SIZE" ]; then
-    printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s GiB; reclaimable by compaction about %s GiB\n' \
-      "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(gib "${FRAG:-0}")" "$(gib "$RECLAIM")"
+    if [ -n "$RECLAIM" ]; then
+      printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s GiB; reclaimable by compaction about %s GiB\n' \
+        "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(gib "$FRAG")" "$(gib "$RECLAIM")"
+    else
+      printf 'disk file: %s GiB (%s); slack %s GiB, fragmented unknown; reclaimable by compaction unknown\n' \
+        "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")"
+    fi
   elif [ -n "$HOST" ]; then
     printf 'disk file: not found (set FM_DISK_ROOM_VHDX)\n'
   fi
