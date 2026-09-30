@@ -1,0 +1,39 @@
+# setup fix: state dir made private (0700) as a real FM_HOME is; results/run1.json already exists since 13:52:42
+$ fm-procevent.sh reconcile   (what the watcher runs each cycle)
+reconciled: published=0 started=1 stopped=0 uncertain=0 failed=0
+exit=0
+13:54:45
+13:54:50
+$ ls procevent-inbox
+when-park-pk1.1.adapter
+when-park-pk1.1.result
+$ fm-procevent-when.sh classify home/state/procevent-inbox/when-park-pk1.1.result
+fired
+$ cat result
+when: when-park-pk1
+status: fired
+detail: the condition held and the action exited 0
+condition_polls: 1
+action_exit: 0
+output:
+resumed pk1: warning: /tmp/fm-park-live/home/data/pk1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched pk1 harness=claude from=claude model=default effort=default backend=tmux endpoint=parklab:fm-pk1 worktree=/tmp/fm-park-live/wt-pk1
+$ grep park_ state/pk1.meta
+park_state=resumed
+park_handoff=/tmp/fm-park-live/home/data/pk1/handoff.md
+park_when=file:/tmp/fm-park-live/results/run1.json
+park_deadline=2026-10-07T13:52:23Z
+park_at=1790776343
+park_resumed_at=1790776489
+$ tail -2 state/pk1.status
+paused [at=1790776343]: parked until 2026-10-07T13:52:23Z - waiting for file:/tmp/fm-park-live/results/run1.json; relaunches automatically with /tmp/fm-park-live/home/data/pk1/handoff.md
+working [at=1790776489]: resumed from park - file:/tmp/fm-park-live/results/run1.json held; fresh session started from /tmp/fm-park-live/home/data/pk1/handoff.md
+$ cat data/pk1/park-resume-note.md
+This task was parked while it waited on an external result, and the wait is over: the results are at /tmp/fm-park-live/results/run1.json.
+The condition was: file:/tmp/fm-park-live/results/run1.json
+Read the handoff at /tmp/fm-park-live/home/data/pk1/handoff.md first; it records the goal, what was already done, and the next steps.
+Continue from its next steps. If you must wait on something external again, park again rather than idling.
+$ wake queue
+1790776490	1	check	procevent:when-park-pk1:1	check: procevent when when-park-pk1 1
+$ pane command
+claude

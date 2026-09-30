@@ -1,0 +1,20 @@
+  actually supplied as `--intent`; never include Firstmate specification or other mixed Task content.
+  Preserve those words without adding speaker labels or direct address.
+  Firstmate-authored constraints, acceptance criteria, implementation details, decisions, and tradeoffs are specification, not captain intent.
+  The Definition of done's rule that `--intent` must be self-sufficient still governs the string you pass: resolve any report, decision, or PR the intent below refers to into its substance rather
+  than passing the pointer.
+  ## Captain intent authorized for --intent
+  Lab exercise of the park protocol. Do not edit any file unless an instruction below or a note tells you to.
+  Ran 1 shell command
+● Acknowledged — no inbox messages to handle, staying idle.
+✻ Churned for 5s · done 3:56 PM
+❯ : Firstmate instruction waiting: list '/tmp/fm-park-live/home/state/pk1.inbox'/*.msg and, in numeric order, read and act on each, then mv each handled file to
+  '/tmp/fm-park-live/home/state/pk1.inbox'/handled/.
+  Ran 2 shell commands
+● I handled message 001 and moved it to handled/; I'm staying idle without parking or a status line because I'm not waiting on anything external and the brief's latest note says to stay idle without a
+  status line.
+✻ Crunched for 8s · done 3:57 PM
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

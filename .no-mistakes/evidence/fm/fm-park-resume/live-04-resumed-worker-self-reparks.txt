@@ -1,0 +1,27 @@
+$ cat wt-pk1/report.txt  (next step 1 done by the fresh session)
+answer: 42
+$ grep park_ state/pk1.meta
+park_state=parked
+park_handoff=/tmp/fm-park-live/home/data/pk1/handoff.md
+park_when=file:/tmp/fm-park-live/results/run2.json
+park_deadline=2026-10-07T13:55:00Z
+park_at=1790776500
+$ tail -3 state/pk1.status
+paused [at=1790776343]: parked until 2026-10-07T13:52:23Z - waiting for file:/tmp/fm-park-live/results/run1.json; relaunches automatically with /tmp/fm-park-live/home/data/pk1/handoff.md
+working [at=1790776489]: resumed from park - file:/tmp/fm-park-live/results/run1.json held; fresh session started from /tmp/fm-park-live/home/data/pk1/handoff.md
+paused [at=1790776501]: parked until 2026-10-07T13:55:00Z - waiting for file:/tmp/fm-park-live/results/run2.json; relaunches automatically with /tmp/fm-park-live/home/data/pk1/handoff.md
+$ cat data/pk1/park-exit.log  (detached self-exit output)
+stopped pk1 harness=claude backend=tmux endpoint=parklab:fm-pk1 worktree=/tmp/fm-park-live/wt-pk1
+$ ls procevent-inbox  (earlier fired outcome acknowledged by the re-park)
+when-park-pk1.1.adapter
+when-park-pk1.1.handled
+when-park-pk1.1.result
+$ grep run2 state/when/when-park-pk1.spec
+file:/tmp/fm-park-live/results/run2.json
+$ ls state/procevent
+when-park-pk1.source
+$ pane command
+bash
+$ git -C wt-pk1 status --porcelain
+?? report.txt
+?? scratch.txt

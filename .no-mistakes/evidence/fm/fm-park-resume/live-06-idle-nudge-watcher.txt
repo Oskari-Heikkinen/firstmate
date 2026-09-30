@@ -1,0 +1,24 @@
+# Real bin/fm-watch.sh (FM_POLL=3 FM_WATCHER_STALE_GRACE=15 FM_IDLE_PARK_GRACE=60 FM_STALE_ESCALATE_SECS=10) against a real idle Claude worker in an isolated tmux server
+## run 2 (started 13:57:38): idle pane, last status 'working:', no declared wait
+idle-nudge marker after nudge: nudged 1790776664 (13:57:44)
+--- inbox record delivered to the worker by fm-send:
+schema=fm-task-inbox.v1
+at=2026-09-30T13:57:45Z
+--
+Firstmate: you have gone idle with no declared wait. If you are waiting on an external result, park as your brief's park rule says (details: FM_HOME=/tmp/fm-park-live/home /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3S83Y3QKZNNZNY95WHRQAW6/bin/fm-park.sh --help); otherwise finish the task, or append the status line your instructions define for where you are.
+--- worker pane after the nudge:
+  ● I handled message 001 and moved it to handled/; I'm staying idle without parking or a status line because I'm not waiting on anything external and the brief's latest note says to stay idle without a status line.
+--- watcher output:
+signal: /tmp/fm-park-live/home/state/pk1.turn-ended
+watcher exit=0 at 13:58:25
+## run 3 (started 13:58:53): same idle worker, past the grace
+stale: parklab:fm-pk1 (idle 78s after being told to park or finish, with no declared wait; inspect the worker)
+watcher exit=0 at 13:59:03
+marker now: escalated 1790776664; no second inbox message
+## run 4: adversarial - fresh 'nudged' marker, unchanged idle pane, wedge timer 10s < grace 60s
+marker set: nudged 1790776754 (13:59:14)
+.hash-parklab_fm-pk1
+.stale-parklab_fm-pk1
+stale: parklab:fm-pk1 (idle 63s after being told to park or finish, with no declared wait; inspect the worker)
+watcher exit=0 at 14:00:17 (elapsed 63s)
+no .stale-since (wedge timer) file was created

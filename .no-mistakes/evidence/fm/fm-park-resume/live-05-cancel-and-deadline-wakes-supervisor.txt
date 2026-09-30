@@ -1,0 +1,38 @@
+$ fm-park.sh cancel pk1
+cancelled park of pk1; nothing was relaunched
+exit=0
+$ grep park_state state/pk1.meta; ls state/procevent
+park_state=cancelled
+$ FM_PARK_INTERVAL=2 fm-park.sh pk1 --handoff handoff3.md --deadline 2026-09-30T13:56:07Z   (agent already stopped)
+parked pk1: waiting for file:/tmp/fm-park-live/results/run3-never.json until 2026-09-30T13:56:07Z; agent stopped (already-stopped pk1 harness=claude backend=tmux endpoint=parklab:fm-pk1 worktree=/tmp/fm-park-live/wt-pk1)
+exit=0
+$ fm-procevent.sh reconcile
+reconciled: published=0 started=1 stopped=0 uncertain=0 failed=0
+13:56:08
+$ classify home/state/procevent-inbox/when-park-pk1.2.result
+never-true
+when: when-park-pk1
+status: never-true
+detail: the condition never held for 2 consecutive polls within 15s of arming
+condition_polls: 8
+output:
+$ wake queue
+1790776490	1	check	procevent:when-park-pk1:1	check: procevent when when-park-pk1 1
+$ pane command (no relaunch)
+bash
+$ grep park_state state/pk1.meta
+park_state=parked
+$ adversarial: re-park while the deadline outcome is unhandled
+fm-park: could not arm the resume watch, so task pk1 was not parked and its agent keeps running: error: an unhandled captured result exists for when-park-pk1; handle it before re-arming
+exit=1
+$ ls procevent-inbox (deadline outcome still unhandled)
+when-park-pk1.1.adapter
+when-park-pk1.1.handled
+when-park-pk1.1.result
+when-park-pk1.2.adapter
+when-park-pk1.2.result
+$ (at 13:56:16) cat state/.wake-queue
+1790776490	1	check	procevent:when-park-pk1:1	check: procevent when when-park-pk1 1
+1790776568	2	check	procevent:when-park-pk1:2	check: procevent when when-park-pk1 2
+$ grep park_state state/pk1.meta
+park_state=cancelled

@@ -1,0 +1,34 @@
+$ (supervisor, outside the worktree) FM_PARK_INTERVAL=2 FM_PARK_STABLE=1 fm-park.sh pk1 --handoff handoff1.md
+parked pk1: waiting for file:/tmp/fm-park-live/results/run1.json until 2026-10-07T13:52:23Z; agent stopped (stopped pk1 harness=claude backend=tmux endpoint=parklab:fm-pk1 worktree=/tmp/fm-park-live/wt-pk1)
+
+real	0m4.866s
+user	0m0.850s
+sys	0m1.061s
+exit=0
+$ tmux list-panes -F pane_current_command   (agent gone, shell remains)
+bash
+$ pane tail
+oskari@OskuTETMET:/tmp/fm-park-live/wt-pk1$ . '/tmp/fm-pk1+4a8240a6ce534228ae783667984ae591fc957690362b9ab389a6d73b3ed3fbf9/launch.s1790776308.4409.12907.sh'
+Resume this session with:
+claude --resume 56134f6e-ecc2-43b8-9dce-6d5d65342c2c
+oskari@OskuTETMET:/tmp/fm-park-live/wt-pk1$
+$ grep park_ state/pk1.meta
+park_state=parked
+park_handoff=/tmp/fm-park-live/home/data/pk1/handoff.md
+park_when=file:/tmp/fm-park-live/results/run1.json
+park_deadline=2026-10-07T13:52:23Z
+park_at=1790776343
+$ tail -1 state/pk1.status
+paused [at=1790776343]: parked until 2026-10-07T13:52:23Z - waiting for file:/tmp/fm-park-live/results/run1.json; relaunches automatically with /tmp/fm-park-live/home/data/pk1/handoff.md
+$ ls state/procevent state/when
+home/state/procevent:
+when-park-pk1.source
+
+home/state/when:
+when-park-pk1.spec
+when-park-pk1.trust
+$ git status in worktree before/after park
+?? scratch.txt
+---
+?? scratch.txt
+uncommitted scratch work

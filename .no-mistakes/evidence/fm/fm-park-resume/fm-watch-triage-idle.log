@@ -1,0 +1,8 @@
+ok - a not-provably-working non-terminal stale is surfaced immediately (never left to wait out the timer)
+ok - an idle ship with no declared wait is steered to park or finish, then surfaced if still idle past the grace
+ok - an idle ship inside the park-or-finish grace is absorbed, never wedge-escalated
+ok - the park steer is limited to ship and scout workers
+
+real	0m38.525s
+user	0m10.378s
+sys	0m20.786s

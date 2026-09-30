@@ -1,0 +1,11 @@
+$ fm-park.sh pk1 --handoff bad-handoff.md   # incomplete handoff
+fm-park: handoff bad-handoff.md is incomplete:
+  - section "done" is missing or empty
+  - section "next steps" is missing or empty
+  - "Waiting for" names no condition (file:<path>, pr-merged:<url>, or cmd:<executable> [args])
+A handoff needs ## Goal, ## Done, ## Waiting for (with one machine-checkable condition), and ## Next steps.
+exit=1
+$ tmux list-panes (agent still running?)
+claude
+$ ls state/procevent (no watch armed?)
+ls: cannot access 'home/state/procevent': No such file or directory
