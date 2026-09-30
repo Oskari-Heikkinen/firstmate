@@ -109,7 +109,7 @@ state/               runtime records and signals; gitignored
   public-followup/   generated private transport for promised public replies: retained open-loop registrations, typed terminal-result inbox, results staged for an owning home on another machine, accepted/rejected ledgers, and retirement receipts (section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   accounts.check.sh  generated automatic account-rebalancing poll shim and its .check-trust binding; present only while config/accounts exists and config/account-auto is not off; bin/fm-account.sh auto owns it
-  account-moves.log .account-usage-<name> .account-check .account-panel  account move history, per-account usage cache, rebalancing-check fingerprint, and the running panel's pid; written only by bin/fm-account.sh and bin/fm-account-lib.sh
+  account-moves.log .account-usage-<name> .account-signin-<name> .account-check .account-panel  account move history, per-account usage cache, per-account sign-in streak, rebalancing-check fingerprint, and the running panel's pid; written only by bin/fm-account.sh and bin/fm-account-lib.sh
   .startup-network.*  status, report, per-step elapsed timings, inline-print claim, and lock for the deferred startup stage that runs network checks and the inactive-outcome scan off the digest's blocking path; bin/fm-startup-network.sh
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
