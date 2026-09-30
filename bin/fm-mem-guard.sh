@@ -69,7 +69,9 @@
 # ${FM_MEM_GUARD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fm-mem-guard}:
 #   level        `<level> <epoch> <below-count> <reasons>`
 #   windows      `<epoch> <total_kib> <free_kib> <avail_mib> <pages_in/s> <pages_out/s>`
-#   swapout      `<epoch> <pswpout>` from /proc/vmstat at the last tick
+#   swapout      `<epoch> <pswpout> [<epoch> <pswpout>]` from /proc/vmstat, newest
+#                first; a tick adds a pair only once the newest is 60s old, so
+#                the swap-out rate always spans at least 60s
 #   samples.log  one line per tick, trimmed to log_max_lines
 #   events.log   one line per level change, park action, or degraded sample, trimmed likewise
 #   lock/        mkdir lock around record writes; win.lock/ around the powershell call
@@ -121,6 +123,7 @@ R_park_interval_s=900
 R_critical_rewake_s=1800
 R_log_max_lines=5000
 R_linux_swapout_mibps_min=1
+SWAPOUT_WINDOW_S=60
 
 THRESHOLD_KEYS="win_available_mib win_paging_mibps linux_available_mib linux_swap_used_mib linux_psi_full_avg10"
 RULE_KEYS="win_timeout_s win_cache_s win_stale_max_s state_max_age_s clear_samples park_interval_s critical_rewake_s log_max_lines linux_swapout_mibps_min"
@@ -289,11 +292,12 @@ meminfo_kib() { # <field>
 }
 
 # linux_read: sets LINUX_* values; LINUX_SWAPOUT_MIBPS is the swap-out rate since
-# the last tick's swapout record, empty without one.
+# the newest swapout pair at least SWAPOUT_WINDOW_S old, empty without one.
+# SWAPOUT_NEWEST is the record's newest pair, for the tick to rotate.
 linux_read() {
-  local v c b st sf sc rec_epoch rec_out
+  local v c b st sf sc t e1 o1 e0 o0 base_e='' base_o=''
   LINUX_AVAIL_MIB='' LINUX_TOTAL_MIB='' LINUX_CACHE_MIB='' LINUX_SWAP_USED_MIB='' LINUX_PSI_SOME='' LINUX_PSI_FULL=''
-  LINUX_PSWPOUT='' LINUX_SWAPOUT_MIBPS=''
+  LINUX_PSWPOUT='' LINUX_SWAPOUT_MIBPS='' SWAPOUT_NEWEST=''
   v=$(meminfo_kib MemAvailable) && LINUX_AVAIL_MIB=$((v / 1024))
   v=$(meminfo_kib MemTotal) && LINUX_TOTAL_MIB=$((v / 1024))
   if c=$(meminfo_kib Cached) && b=$(meminfo_kib Buffers); then LINUX_CACHE_MIB=$(((c + b) / 1024)); fi
@@ -302,15 +306,22 @@ linux_read() {
     LINUX_SWAP_USED_MIB=$(((st - sf - sc) / 1024))
   fi
   LINUX_PSWPOUT=$(awk '$1 == "pswpout" && $2 ~ /^[0-9]+$/ { print $2; exit }' "$PROC/vmstat" 2>/dev/null)
-  if [ -n "$LINUX_PSWPOUT" ] && read -r rec_epoch rec_out 2>/dev/null <"$SWAPOUT_FILE"; then
-    case "$rec_epoch$rec_out" in
+  if [ -n "$LINUX_PSWPOUT" ] && read -r e1 o1 e0 o0 2>/dev/null <"$SWAPOUT_FILE"; then
+    t=$(now)
+    case "$e1$o1" in
     '' | *[!0-9]*) ;;
     *)
-      if [ "$(now)" -gt "$rec_epoch" ] && [ "$LINUX_PSWPOUT" -ge "$rec_out" ]; then
-        LINUX_SWAPOUT_MIBPS=$(awk -v d="$((LINUX_PSWPOUT - rec_out))" -v s="$(($(now) - rec_epoch))" 'BEGIN { printf "%.1f", d * 4 / 1024 / s }')
+      SWAPOUT_NEWEST="$e1 $o1"
+      if [ $((t - e1)) -ge "$SWAPOUT_WINDOW_S" ]; then
+        base_e=$e1 base_o=$o1
+      else
+        case "$e0$o0" in '' | *[!0-9]*) ;; *) [ $((t - e0)) -lt "$SWAPOUT_WINDOW_S" ] || base_e=$e0 base_o=$o0 ;; esac
       fi
       ;;
     esac
+    if [ -n "$base_e" ] && [ "$LINUX_PSWPOUT" -ge "$base_o" ]; then
+      LINUX_SWAPOUT_MIBPS=$(awk -v d="$((LINUX_PSWPOUT - base_o))" -v s="$((t - base_e))" 'BEGIN { printf "%.1f", d * 4 / 1024 / s }')
+    fi
   fi
   LINUX_PSI_SOME=$(awk '$1 == "some" { for (i = 2; i <= NF; i++) if ($i ~ /^avg10=/) { sub(/^avg10=/, "", $i); print $i } }' "$PROC/pressure/memory" 2>/dev/null)
   LINUX_PSI_FULL=$(awk '$1 == "full" { for (i = 2; i <= NF; i++) if ($i ~ /^avg10=/) { sub(/^avg10=/, "", $i); print $i } }' "$PROC/pressure/memory" 2>/dev/null)
@@ -539,8 +550,8 @@ cmd_tick() {
   printf '%s %s %s %s\n' "$(level_name "$new_i")" "$t" "$below" "$reasons" >"$LEVEL_FILE.tmp.$$" && mv -f "$LEVEL_FILE.tmp.$$" "$LEVEL_FILE"
   append_bounded "$SAMPLES_LOG" "$t level=$(level_name "$new_i") graded=$(level_name "$GRADE") win_avail_mib=${WIN_AVAIL_MIB:--} win_paging_mibps=${WIN_PAGING_MIBPS:--} linux_avail_mib=${LINUX_AVAIL_MIB:--} linux_cache_mib=${LINUX_CACHE_MIB:--} linux_swap_used_mib=${LINUX_SWAP_USED_MIB:--} swapout_mibps=${LINUX_SWAPOUT_MIBPS:--} psi_full=${LINUX_PSI_FULL:--} win_source=${WIN_SOURCE// /_}"
   [ "$new_i" = "$prev_i" ] || event "level $(level_name "$prev_i") -> $(level_name "$new_i"): $reasons"
-  if [ -n "$LINUX_PSWPOUT" ] && [ "$(awk '{ print $1 }' "$SWAPOUT_FILE" 2>/dev/null)" != "$t" ]; then
-    printf '%s %s\n' "$t" "$LINUX_PSWPOUT" >"$SWAPOUT_FILE.tmp.$$" && mv -f "$SWAPOUT_FILE.tmp.$$" "$SWAPOUT_FILE"
+  if [ -n "$LINUX_PSWPOUT" ] && { [ -z "$SWAPOUT_NEWEST" ] || [ $((t - ${SWAPOUT_NEWEST%% *})) -ge "$SWAPOUT_WINDOW_S" ] || [ "$t" -lt "${SWAPOUT_NEWEST%% *}" ]; }; then
+    printf '%s %s %s\n' "$t" "$LINUX_PSWPOUT" "$SWAPOUT_NEWEST" >"$SWAPOUT_FILE.tmp.$$" && mv -f "$SWAPOUT_FILE.tmp.$$" "$SWAPOUT_FILE"
   fi
   case "$WIN_SOURCE" in unavailable:*) event "sample degraded to Linux-only: Windows ${WIN_SOURCE}" ;; esac
   lock_release "$LOCK"

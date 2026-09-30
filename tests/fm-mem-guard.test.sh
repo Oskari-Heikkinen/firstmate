@@ -146,6 +146,9 @@ test_swap_grades_only_while_growing() {
   out=$(FM_MEM_GUARD_NOW=1000300 guard tick)
   assert_contains "$out" "level=ok" "residual swap after swapping stops clears the level"
   assert_grep "level refuse -> ok" "$C/guard/events.log" "the fall is logged"
+  write_proc 12582912 0.00 1048576 1048576 128768
+  out=$(FM_MEM_GUARD_NOW=1000302 guard tick)
+  assert_contains "$out" "level=ok" "a small swap-out batch two seconds after another home's tick is measured over at least 60s"
   write_proc 12582912 0.00 0 0 1000000
   out=$(FM_MEM_GUARD_NOW=1000400 guard tick)
   assert_contains "$out" "level=refuse" "swap alone never grades critical"

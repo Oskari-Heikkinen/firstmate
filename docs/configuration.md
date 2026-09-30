@@ -599,7 +599,7 @@ Each `memory_guard` threshold is four numbers, one per level from `warn` to `cri
 | `win_paging_mibps` | `[30, 60, 90, 120]` | Windows paging (pages in plus out) in MiB/s at or above each value |
 | `linux_available_mib` | `[4096, 3584, 3072, 1536]` | Linux `MemAvailable` at or below each value; the third is also the heavy-job refuse line after the job's cost |
 | `linux_swap_used_mib` | `[4096, 5120, 6144]` | Linux swap in use (`SwapTotal` minus `SwapFree` minus `SwapCached`) at or above each value, counted only on a tick where swap is growing; on any other tick swap grades `ok`, so swap left behind after pressure ends does not hold a level |
-| `linux_swapout_mibps_min` | 1 | whole MiB/s of swap-out (`pswpout` in `/proc/vmstat` since the previous tick) above which swap counts as growing |
+| `linux_swapout_mibps_min` | 1 | whole MiB/s of swap-out (`pswpout` in `/proc/vmstat`, measured over at least the last 60 s of ticks across every home) above which swap counts as growing |
 | `linux_psi_full_avg10` | `[2, 5, 10, 25]` | Linux memory pressure `full avg10` percent at or above each value |
 | `win_timeout_s` | 20 | bound on one `powershell.exe` reading |
 | `win_cache_s` | 60 | age under which the shared Windows reading is reused |
