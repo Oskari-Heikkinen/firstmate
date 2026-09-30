@@ -489,6 +489,50 @@ test_sync_ref_enabled_on_ahead_clone_waits() {
   pass "enabling fm.syncRef on a clone ahead of it waits without STUCK or moving backwards"
 }
 
+test_sync_ref_detached_ahead_waits_untouched() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" syncdetahead)
+  git -C "$clone" config fm.syncRef checks-approved
+  advance_origin "$home" syncdetahead C1
+  push_origin_ref "$home" syncdetahead checks-approved main
+  advance_origin "$home" syncdetahead C2
+  run_sync "$home" "$clone" >/dev/null
+  git -C "$clone" checkout --detach --quiet origin/main
+  before=$(head_sha "$clone")
+  [ "$before" != "$(git -C "$clone" rev-parse origin/checks-approved)" ] || fail "fixture vacuous: detached HEAD equals the sync base"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "syncdetahead: detached HEAD ahead of sync base origin/checks-approved; waiting for it to catch up" "detached HEAD past fm.syncRef reports a benign wait"
+  assert_not_contains "$out" "STUCK" "published detached HEAD past fm.syncRef is not STUCK"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "detached HEAD past fm.syncRef was moved"
+  git -C "$clone" symbolic-ref -q HEAD >/dev/null && fail "detached HEAD past fm.syncRef was re-attached"
+  pass "detached HEAD past fm.syncRef but within origin/<default> waits untouched"
+}
+
+test_sync_ref_detached_behind_with_ahead_default_recovers() {
+  local home clone out main_rev
+  home=$(new_home)
+  clone=$(build_pair "$home" syncdetmain)
+  advance_origin "$home" syncdetmain C1
+  push_origin_ref "$home" syncdetmain checks-approved main
+  advance_origin "$home" syncdetmain C2
+  git -C "$clone" checkout --detach --quiet
+  git -C "$clone" fetch -q origin
+  git -C "$clone" branch -q -f main origin/main
+  main_rev=$(git -C "$clone" rev-parse main)
+  git -C "$clone" config fm.syncRef checks-approved
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "syncdetmain: recovered: re-attached main; ahead of sync base origin/checks-approved; waiting for it to catch up" "detached HEAD with main past fm.syncRef re-attaches and waits"
+  assert_not_contains "$out" "STUCK" "main past fm.syncRef within origin/<default> is not STUCK"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD 2>/dev/null)" = "main" ] || fail "detached HEAD was not re-attached to main"
+  [ "$(head_sha "$clone")" = "$main_rev" ] || fail "main past fm.syncRef was moved"
+  pass "detached HEAD behind fm.syncRef re-attaches to a main already past it"
+}
+
 test_sync_ref_ahead_with_local_work_is_stuck() {
   local home clone out before
   home=$(new_home)
@@ -857,6 +901,8 @@ test_sync_ref_set_fast_forwards_to_that_ref
 test_sync_ref_missing_refuses_without_fallback
 test_sync_ref_global_config_ignored
 test_sync_ref_enabled_on_ahead_clone_waits
+test_sync_ref_detached_ahead_waits_untouched
+test_sync_ref_detached_behind_with_ahead_default_recovers
 test_sync_ref_ahead_with_local_work_is_stuck
 test_sync_ref_not_ancestor_is_stuck_untouched
 test_no_origin_skipped

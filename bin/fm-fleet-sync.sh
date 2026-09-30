@@ -7,9 +7,11 @@
 # `git config fm.syncRef <branch>` (off by default): then it is origin/<branch>
 # and the local <default> branch fast-forwards to that under the same guards
 # below; a missing origin/<branch> is skipped, never replaced by origin/<default>.
-# A clean <default> already past that base but holding nothing outside
-# origin/<default> is reported "ahead of sync base" and left in place, never moved
-# backwards. "origin/<default>" in the rest of this header means the sync base.
+# A clean <default> or detached HEAD already past that base but holding nothing
+# outside origin/<default> is reported "ahead of sync base" and left in place,
+# never moved backwards; a clean detached HEAD behind it whose <default> is such an
+# ahead branch is still re-attached. "origin/<default>" in the rest of this header
+# means the sync base.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -282,9 +284,22 @@ default_checked_out_elsewhere() {
     | grep -Fxq -- "$DEFAULT"
 }
 
+# ahead_of_base <rev>: <rev> is past the sync base but holds nothing outside
+# origin/<default>. Only possible with fm.syncRef set, when the two differ.
+ahead_of_base() {
+  git -C "$PROJ" merge-base --is-ancestor "$BASE" "$1" 2>/dev/null \
+    && git -C "$PROJ" merge-base --is-ancestor "$1" "origin/$DEFAULT" 2>/dev/null
+}
+
+report_ahead() {
+  SYNC_OUTCOME=ahead
+  echo "$label: $1ahead of sync base $BASE; waiting for it to catch up"
+}
+
 local_default_safe_for_recovery() {
   ! git -C "$PROJ" rev-parse --verify --quiet "$DEFAULT^{commit}" >/dev/null \
-    || git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE" 2>/dev/null
+    || git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE" 2>/dev/null \
+    || ahead_of_base "$DEFAULT"
 }
 
 # Human-readable name for the unsafe state the clone is in, used in the STUCK
@@ -410,6 +425,11 @@ sync_project_impl() {
       fi
       recovered=yes
       cur=$DEFAULT
+    elif [ -z "$cur" ] && [ "$dirty" = no ] \
+        && ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
+        && ahead_of_base HEAD; then
+      report_ahead "detached HEAD "
+      return 0
     else
       report_stuck "$(stuck_state)"
       return 0
@@ -444,10 +464,12 @@ sync_project_impl() {
     return 0
   fi
   if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
-    if git -C "$PROJ" merge-base --is-ancestor "$BASE" "$DEFAULT" \
-        && git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "origin/$DEFAULT" 2>/dev/null; then
-      SYNC_OUTCOME=ahead
-      echo "$label: ahead of sync base $BASE; waiting for it to catch up"
+    if ahead_of_base "$DEFAULT"; then
+      if [ "$recovered" = yes ]; then
+        report_ahead "recovered: re-attached $DEFAULT; "
+      else
+        report_ahead ""
+      fi
       return 0
     fi
     report_stuck "diverged $DEFAULT"
