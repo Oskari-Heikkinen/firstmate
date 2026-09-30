@@ -66,7 +66,9 @@
 # concurrency, not diagnostics or exit selection.
 # --partition 1of2/2of2 splits the entire canonical inventory across
 # two CI runners, each with those same bounded workers. Partitions are complete,
-# disjoint, and byte-weight balanced; --list-files exposes their actual roots.
+# disjoint, and balanced by expanded source bytes (see the packing notes below);
+# --list-files exposes their actual roots. Within any run, every heavy root
+# shares one worker, so two heavy ShellCheck analyses never overlap on a host.
 # Partition mode is always full source-aware analysis, never changed-only or
 # --fast, and does not accept explicit paths. Each partition also runs workflow
 # lint and backend-purity checks, keeping either invocation independently useful.
@@ -583,9 +585,24 @@ if [ "$FAST" -eq 0 ] && { [ "$CHANGED_MODE" -eq 1 ] || [ "$EXPLICIT_PATHS" -eq 1
 fi
 # Stable largest-first packing is shared by cross-runner partition selection
 # and the two local workers. Weights are a scheduling proxy, never a skip rule.
+# A root's weight is its expanded source bytes: its own bytes plus, recursively,
+# the bytes of every file ShellCheck follows from it, counted once per source
+# edge. That covers `# shellcheck source=<path>` directives and undirected
+# `. "$VAR/<path>"` or `source "$VAR/<path>"` commands, which ShellCheck resolves
+# as ./<path> from the repository root; source=/dev/null boundaries and missing
+# targets add nothing. Peak ShellCheck memory tracks this weight far better than
+# a root's own size, and one multi-root ShellCheck process peaks near its
+# single most expensive root rather than the sum of its roots.
 TAB=$(printf '\t')
+# Roots at or above this many expanded source bytes are heavy: measured under
+# the pinned ShellCheck, every root above about 3 GB peak RSS crosses it except
+# two self-contained tests near 3.5-3.8 GB (tests/fm-procevent.test.sh and
+# tests/fm-backend-herdr.test.sh, whose quoted sources ShellCheck never
+# follows). Heavy roots always share one worker, so two heavy analyses never run
+# concurrently on one host.
+HEAVY_SOURCE_BYTES=1000000
 fm_lint_root_weights() {
-  local index=1 path weight
+  local path
   for path in "${ROOTS[@]}"; do
     case "$path" in
       *"$TAB"*|*$'\n'*)
@@ -593,14 +610,133 @@ fm_lint_root_weights() {
         return 2
         ;;
     esac
-    weight=1
-    if [ -f "$path" ]; then
-      weight=$(wc -c < "$path" 2>/dev/null | tr -d '[:space:]')
-    fi
-    case "$weight" in ''|*[!0-9]*) weight=1 ;; esac
-    printf '%s\t%s\t%s\n' "$weight" "$index" "$path"
-    index=$((index + 1))
   done
+  [ "${#ROOTS[@]}" -gt 0 ] || return 0
+  printf '%s\n' "${ROOTS[@]}" | LC_ALL=C awk '
+    # Carries quote, command-substitution, arithmetic, and here-document state
+    # across physical lines, so source commands inside a multi-line string such as a
+    # bash -c body, which ShellCheck never follows, add nothing.
+    function scan(line,    i, j, c, top, rest, body) {
+      if (heredoc != "") {
+        body=line
+        if (heredoc_tabs) sub(/^\t+/, "", body)
+        if (body == heredoc) heredoc=""
+        return
+      }
+      i=1
+      while (1) {
+        top=depth ? stack[depth] : ""
+        rest=substr(line, i)
+        if (top == "\047") {
+          if (!(j=index(rest, "\047"))) return
+          depth--
+          i+=j
+          continue
+        }
+        if (!match(rest, /[\\\047"$()#<]/)) return
+        i+=RSTART
+        c=substr(line, i - 1, 1)
+        if (c == "\\") {
+          i++
+          continue
+        }
+        if (top == "$\047") {
+          if (c == "\047") depth--
+          continue
+        }
+        if (c == "$" && substr(line, i, 1) == "(") {
+          stack[++depth]=(substr(line, i + 1, 1) == "(") ? "((" : "("
+          parens[depth]=0
+          i+=length(stack[depth])
+          continue
+        }
+        if (top == "\"") {
+          if (c == "\"") depth--
+          continue
+        }
+        if (c == "\047") stack[++depth]="\047"
+        else if (c == "\"") stack[++depth]="\""
+        else if (c == "$" && substr(line, i, 1) == "\047") {
+          stack[++depth]="$\047"
+          i++
+        } else if (c == "(" && top != "((" && substr(line, i, 1) == "(") {
+          stack[++depth]="(("
+          parens[depth]=0
+          i++
+        } else if (top != "" && c == "(") parens[depth]++
+        else if (top != "" && c == ")") {
+          if (parens[depth]) parens[depth]--
+          else {
+            if (top == "((") i++
+            depth--
+          }
+        } else if (top == "((") continue
+        else if (c == "#" && (i == 2 || substr(line, i - 2, 1) ~ /[[:space:];&|()]/)) return
+        else if (c == "<" && substr(line, i - 1, 3) == "<<<") i+=2
+        else if (c == "<" && match(substr(line, i - 1), /^<<-?[[:space:]]*[\\\047"]?[A-Za-z_][A-Za-z0-9_]*[\047"]?/)) {
+          heredoc=substr(line, i + 1, RLENGTH - 2)
+          heredoc_tabs=(substr(heredoc, 1, 1) == "-")
+          gsub(/[-[:space:]\\\047"]/, "", heredoc)
+          i+=RLENGTH - 1
+        }
+      }
+    }
+    function parse(file,    line, target, pending, rc) {
+      parsed[file]=1
+      size[file]=0
+      ndeps[file]=0
+      pending=0
+      depth=0
+      heredoc=""
+      while ((rc=(getline line < file)) > 0) {
+        size[file]+=length(line) + 1
+        if (line ~ /^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]/) {
+          if (match(line, /[[:space:]]source=[^[:space:]]+/)) {
+            pending=1
+            target=substr(line, RSTART + 8, RLENGTH - 8)
+            if (target != "/dev/null") deps[file, ++ndeps[file]]=target
+          }
+          scan(line)
+          continue
+        }
+        if (heredoc == "" && (!depth || stack[depth] == "(")) {
+          if (line ~ /^[[:space:]]*(#|$)/) continue
+          if (!pending && match(line, /^[[:space:]]*(\.|source)[[:space:]]+"?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?\//)) {
+            target=substr(line, RSTART + RLENGTH)
+            sub(/[";[:space:]].*$/, "", target)
+            if (target != "") deps[file, ++ndeps[file]]=target
+          }
+        }
+        pending=0
+        scan(line)
+      }
+      if (rc >= 0) close(file)
+    }
+    # A source cycle adds nothing on its back edge. Totals that met a cycle
+    # are not memoized, so every root weight is independent of root order.
+    function expanded(file,    i, total, outer) {
+      if (file in memo) return memo[file]
+      if (file in active) {
+        cycle=1
+        return 0
+      }
+      if (!(file in parsed)) parse(file)
+      outer=cycle
+      cycle=0
+      active[file]=1
+      total=size[file]
+      for (i=1; i <= ndeps[file]; i++) total+=expanded(deps[file, i])
+      delete active[file]
+      if (!cycle) memo[file]=total
+      cycle=cycle || outer
+      return total
+    }
+    {
+      weight=expanded($0)
+      if (weight < 1) weight=1
+      printf "%d\t%d\t%s\n", weight, NR, $0
+    }
+  '
 }
 
 if [ -n "$PARTITION" ]; then
@@ -703,14 +839,15 @@ done
 
 fm_lint_root_weights > "$WEIGHTS" || exit $?
 
-# Largest-first deterministic greedy assignment keeps the two bounded workers
-# balanced without affecting replay order. Direct bytes are a stable portable
-# proxy after the expensive dynamic adapter source fan-out is cut.
+# Deterministic assignment without affecting replay order: every heavy root
+# goes to the first worker, whose one ShellCheck process then peaks near its
+# single heaviest root, and light roots fill both workers largest-first by
+# weight. The concurrent worker therefore never holds a heavy root.
 WORKER_LOADS=(0 0)
 LC_ALL=C sort -t "$TAB" -k1,1nr -k2,2n "$WEIGHTS" > "$WEIGHTS.sorted"
 while IFS="$TAB" read -r weight index path; do
   worker=0
-  if [ "${WORKER_LOADS[1]}" -lt "${WORKER_LOADS[0]}" ]; then
+  if [ "$weight" -lt "$HEAVY_SOURCE_BYTES" ] && [ "${WORKER_LOADS[1]}" -lt "${WORKER_LOADS[0]}" ]; then
     worker=1
   fi
   printf '%s\t%s\n' "$index" "$path" >> "$TMP_ROOT/manifest.$worker"
