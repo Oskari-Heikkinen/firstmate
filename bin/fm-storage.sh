@@ -18,11 +18,10 @@
 #       Run check now, then print status.
 #   fm-storage.sh status
 #       Print the published choice from the results-root file (no Windows call).
-#   fm-storage.sh root [--need SIZE] [TASK]
+#   fm-storage.sh root [TASK]
 #       Apply the reader rules and print the directory to use: the template
 #       with {task} replaced by TASK (kept as {task} when TASK is omitted).
-#       Falls back to the C: template on any doubt. With --need, the SSD must
-#       also have SIZE free (bytes or K/M/G/T, binary).
+#       Falls back to the C: template on any doubt.
 #   fm-storage.sh install-timer --fallback TEMPLATE [--notify FILE]
 #       Write storage.conf (fallback template and notification file), then
 #       write and enable the user-level fm-storage.timer (every 5 minutes,
@@ -46,12 +45,15 @@
 #   FM_STORAGE_MNT       WSL mount base (default /mnt)
 #   FM_STORAGE_MOUNTINFO mount table (default /proc/self/mountinfo)
 #   FM_STORAGE_SPEED_SIZE  write-speed test size (default 1G)
+#   FM_STORAGE_POWERSHELL  powershell.exe to use (default: the one on PATH, else
+#                        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)
 #   FM_STORAGE_NOW       epoch override for tests
 set -u
 
 GIB=1073741824
 FORMAT='lattice-storage-results-root/v1'
 PS_TIMEOUT=30
+PS_DIR=/mnt/c/Windows/System32/WindowsPowerShell/v1.0
 
 die() { printf 'fm-storage: %s\n' "$*" >&2; exit 2; }
 
@@ -114,11 +116,24 @@ write_atomic() {
   fi
 }
 
+powershell_bin() {
+  if [ -n "${FM_STORAGE_POWERSHELL:-}" ]; then
+    [ -x "$FM_STORAGE_POWERSHELL" ] || return 1
+    printf '%s' "$FM_STORAGE_POWERSHELL"
+    return 0
+  fi
+  command -v powershell.exe 2>/dev/null && return 0
+  [ -x "$PS_DIR/powershell.exe" ] && { printf '%s' "$PS_DIR/powershell.exe"; return 0; }
+  return 1
+}
+
 # windows_listing -> VOL|letter|fstype|fs|drivetype|size|free|uniqueid|label
 # and DISK|number|bus|partstyle|size|isboot|issystem lines, ending with END.
 windows_listing() {
+  local ps
+  ps=$(powershell_bin) || return 1
   # shellcheck disable=SC2016
-  timeout "$PS_TIMEOUT" powershell.exe -NoProfile -NonInteractive -Command '$ErrorActionPreference="Stop"; Get-Volume | ForEach-Object { "VOL|{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}" -f $_.DriveLetter,$_.FileSystemType,$_.FileSystem,$_.DriveType,$_.Size,$_.SizeRemaining,$_.UniqueId,$_.FileSystemLabel }; Get-Disk | ForEach-Object { "DISK|{0}|{1}|{2}|{3}|{4}|{5}" -f $_.Number,$_.BusType,$_.PartitionStyle,$_.Size,$_.IsBoot,$_.IsSystem }; "END"' 2>/dev/null \
+  timeout "$PS_TIMEOUT" "$ps" -NoProfile -NonInteractive -Command '$ErrorActionPreference="Stop"; Get-Volume | ForEach-Object { "VOL|{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}" -f $_.DriveLetter,$_.FileSystemType,$_.FileSystem,$_.DriveType,$_.Size,$_.SizeRemaining,$_.UniqueId,$_.FileSystemLabel }; Get-Disk | ForEach-Object { "DISK|{0}|{1}|{2}|{3}|{4}|{5}" -f $_.Number,$_.BusType,$_.PartitionStyle,$_.Size,$_.IsBoot,$_.IsSystem }; "END"' 2>/dev/null \
     | tr -d '\r'
 }
 
@@ -126,14 +141,14 @@ is_mounted() { awk -v mp="$1" '$5 == mp { found = 1 } END { exit !found }' "${FM
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# detect: sets STATE (empty when a usable candidate was found), REASON and the
-# SSD_* fields for the chosen volume.
+# detect: sets STATE (empty when a usable candidate was found), REASON, the
+# SSD_* fields for the chosen volume, and LISTING (the Windows answer).
 detect() {
-  local listing kind letter fstype fs dtype size free uid label num bus pstyle isboot issys
+  local kind letter fstype fs dtype size free uid label num bus pstyle isboot issys
   local cands=() c remembered pick='' bigdisk=''
   STATE='' REASON='' SSD_LETTER='' SSD_FS='' SSD_SIZE='' SSD_FREE='' SSD_ID='' SSD_LABEL=''
-  listing=$(windows_listing)
-  if ! printf '%s\n' "$listing" | grep -qx END; then
+  LISTING=$(windows_listing)
+  if ! printf '%s\n' "$LISTING" | grep -qx END; then
     STATE=unreadable REASON="could not list Windows volumes (powershell.exe failed or timed out)"
     return
   fi
@@ -147,7 +162,7 @@ detect() {
     c="$letter|$fstype|$fs|$size|$free|$uid|$label"
     cands+=("$c")
     [ -n "$remembered" ] && [ "$uid" = "$remembered" ] && pick=$c
-  done <<<"$listing"
+  done <<<"$LISTING"
   if [ -z "$pick" ]; then
     if [ "${#cands[@]}" -eq 1 ]; then
       pick=${cands[0]}
@@ -162,7 +177,7 @@ detect() {
       [ "$isboot" = True ] || [ "$issys" = True ] && continue
       case "$size" in ''|*[!0-9]*) continue ;; esac
       [ "$size" -ge "$MIN_SIZE" ] && bigdisk="disk $num ($bus, $(tib "$size"), partition style $pstyle)"
-    done <<<"$listing"
+    done <<<"$LISTING"
     if [ -n "$bigdisk" ]; then
       STATE=raw REASON="$bigdisk has no lettered NTFS or exFAT volume; formatting needs the captain; nothing written"
     else
@@ -200,7 +215,7 @@ mount_ssd() {
   l=$(lower "$SSD_LETTER")
   case "$l" in [d-h]) ;; *) REASON="SSD is $SSD_LETTER:, outside the mount rule's letters D to H"; return 1 ;; esac
   if ! sudo -n /usr/bin/mount -t drvfs "$SSD_LETTER:" "$mp" -o "uid=$(id -u),gid=$(id -g)" >/dev/null 2>&1 || ! is_mounted "$mp"; then
-    REASON="SSD $SSD_LETTER: is in Windows but not mounted in WSL; restart the laptop with the SSD plugged in, or install the captain mount step"
+    REASON="SSD $SSD_LETTER: is in Windows but not mounted in WSL; restart the laptop with the SSD plugged in, or see the mount rule section in docs/storage.md"
     return 1
   fi
 }
@@ -241,7 +256,7 @@ setup_and_probe() {
   if [ ! -e "$marker" ]; then
     printf '%s\n' "$SSD_ID" | write_atomic "$marker" || { STATE=unwritable REASON="could not write the marker on $SSD_LETTER:"; return 1; }
   fi
-  if [ "$(kv "$ident" uniqueid)" != "$SSD_ID" ] || [ -z "$(kv "$ident" write_mib_s)" ]; then
+  if [ "$(kv "$ident" uniqueid)" != "$SSD_ID" ] || case "$(kv "$ident" write_mib_s)" in ''|unknown) true ;; *) false ;; esac; then
     speed=$(speed_test "$data") || speed=unknown
     printf 'uniqueid=%s\nletter=%s\nfs=%s\nlabel=%s\nsetup_at=%s\nwrite_mib_s=%s\n' \
       "$SSD_ID" "$SSD_LETTER" "$SSD_FS" "$SSD_LABEL" "$(now)" "$speed" | write_atomic "$ident" \
@@ -314,12 +329,14 @@ run_check() {
 }
 
 # release_stale: the remembered SSD is gone from Windows but its WSL mount
-# remains; release it lazily when the rule allows.
+# remains; release it lazily when the rule allows, unless another Windows
+# volume now holds that letter.
 release_stale() {
   local l mp
   [ "$STATE" = absent ] || return 0
   l=$(lower "$(kv "$(config_dir)/ssd-identity" letter)")
   case "$l" in [d-h]) ;; *) return 0 ;; esac
+  printf '%s\n' "$LISTING" | awk -F'|' -v l="$l" '$1 == "VOL" && tolower($2) == l { found = 1 } END { exit !found }' && return 0
   mp="$(mnt_base)/$l"
   is_mounted "$mp" || return 0
   if sudo -n /usr/bin/umount -l "$mp" >/dev/null 2>&1 && ! is_mounted "$mp"; then
@@ -346,10 +363,9 @@ cmd_status() {
 }
 
 cmd_root() {
-  local need='' task='{task}' f line1 fb avail
+  local task='{task}' f line1 fb
   while [ $# -gt 0 ]; do
     case "$1" in
-      --need) need=$(to_bytes "${2:-}") || die "--need takes a size"; shift 2 ;;
       -*) die "unknown option $1" ;;
       *) task=$1; shift ;;
     esac
@@ -367,10 +383,6 @@ cmd_root() {
       if [ $(( $(now) - $(kv "$f" checked_at || echo 0) )) -le "${FM_STORAGE_MAX_AGE:-1800}" ] \
         && [ -e "$(kv "$f" ssd_marker)" ]; then
         line1=$cand
-        if [ -n "$need" ]; then
-          avail=$(df -B1 --output=avail -- "$(dirname "$(kv "$f" ssd_marker)")" 2>/dev/null | awk 'NR == 2 { gsub(/ /, ""); print }')
-          case "$avail" in ''|*[!0-9]*) line1=$fb ;; *) [ "$avail" -ge "$need" ] || line1=$fb ;; esac
-        fi
       fi
     elif valid_template "$cand"; then
       line1=$cand
@@ -402,7 +414,7 @@ cmd_install_timer() {
   self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
   dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   mkdir -p "$dir" || die "cannot create $dir"
-  printf '[Unit]\nDescription=Choose the fetched-results root (external SSD or C: fallback)\n\n[Service]\nType=oneshot\nNice=19\nIOSchedulingClass=idle\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin\nExecStart=%s check\n' "$self" \
+  printf '[Unit]\nDescription=Choose the fetched-results root (external SSD or C: fallback)\n\n[Service]\nType=oneshot\nNice=19\nIOSchedulingClass=idle\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin:%s\nExecStart=%s check\n' "$PS_DIR" "$self" \
     | write_atomic "$dir/$UNIT.service" || die "could not write $dir/$UNIT.service"
   printf '[Unit]\nDescription=Check the external SSD every 5 minutes\n\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=5min\nAccuracySec=30s\n\n[Install]\nWantedBy=timers.target\n' \
     | write_atomic "$dir/$UNIT.timer" || die "could not write $dir/$UNIT.timer"

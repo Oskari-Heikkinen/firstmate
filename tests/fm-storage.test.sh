@@ -15,6 +15,7 @@ unset FM_STORAGE_FALLBACK FM_STORAGE_NOTIFY FM_STORAGE_MIN_FREE FM_STORAGE_MIN_S
 TMP_ROOT=$(fm_test_tmproot fm-storage)
 STORAGE="$ROOT/bin/fm-storage.sh"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
+PSBIN="$TMP_ROOT/psbin"
 MNT="$TMP_ROOT/mnt"
 CFG="$TMP_ROOT/cfg"
 ST="$TMP_ROOT/state"
@@ -28,7 +29,8 @@ GIB=1073741824
 C_VOL='VOL|C|NTFS|NTFS|Fixed|1021821579264|40000000000|\\?\Volume{c}\|Windows-SSD'
 BOOT_DISK='DISK|0|NVMe|GPT|1024209543168|True|True'
 
-cat >"$FAKEBIN/powershell.exe" <<'SH'
+mkdir -p "$PSBIN"
+cat >"$PSBIN/powershell.exe" <<'SH'
 #!/usr/bin/env bash
 [ -n "${FAKE_PS_FAIL:-}" ] && exit 1
 sed 's/$/\r/' "$FAKE_PS"
@@ -44,7 +46,12 @@ case "$2" in
   *) exit 1 ;;
 esac
 SH
-chmod +x "$FAKEBIN/powershell.exe" "$FAKEBIN/sudo"
+cat >"$FAKEBIN/dd" <<SH
+#!/usr/bin/env bash
+[ -n "\${FAKE_DD_FAIL:-}" ] && exit 1
+exec $(command -v dd) "\$@"
+SH
+chmod +x "$PSBIN/powershell.exe" "$FAKEBIN/sudo" "$FAKEBIN/dd"
 
 reset() {
   rm -rf "$MNT" "$CFG" "$ST" "$NOTE" "$SUDOLOG"
@@ -58,7 +65,7 @@ listing() { printf '%s\n' "$C_VOL" "$@" "$BOOT_DISK" END >"$PSOUT"; }
 ssd_vol() { printf 'VOL|%s|%s|%s|Removable|%s|%s|\\\\?\\Volume{%s}\\|%s' "$1" "$2" "$2" "$TB" "${3:-1800000000000}" "${4:-ssd1}" "${5:-T7}"; }
 
 run() {
-  PATH="$FAKEBIN:$PATH" FAKE_PS="$PSOUT" FAKE_MOUNTS="$MOUNTS" FAKE_SUDO_LOG="$SUDOLOG" \
+  PATH="$FAKEBIN:$PSBIN:$PATH" FAKE_PS="$PSOUT" FAKE_MOUNTS="$MOUNTS" FAKE_SUDO_LOG="$SUDOLOG" \
     FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$ST" FM_STORAGE_MNT="$MNT" FM_STORAGE_MOUNTINFO="$MOUNTS" \
     FM_STORAGE_FALLBACK="$FB" FM_STORAGE_NOTIFY="$NOTE" FM_STORAGE_SPEED_SIZE=1M \
     "$STORAGE" "$@"
@@ -161,7 +168,7 @@ test_not_mounted() {
   listing "$(ssd_vol D NTFS)"
   run check >/dev/null || fail "check exits 0"
   assert_equals not-mounted "$(rr state)" "a sudo refusal is not-mounted"
-  assert_grep 'restart the laptop with the SSD plugged in' "$CFG/results-root" "the reason says what to do"
+  assert_grep 'restart the laptop with the SSD plugged in, or see the mount rule section in docs/storage.md' "$CFG/results-root" "the reason says what to do"
   assert_absent "$MNT/d/lattice-data" "nothing is written into an unmounted folder"
   assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "not-mounted uses the fallback"
   pass "without the mount rule the SSD is reported and C: stays active"
@@ -180,6 +187,43 @@ test_stale_mount() {
   assert_grep 'stale WSL mount was released' "$CFG/results-root" "the reason says so"
   assert_equals 3 "$(notes)" "ok, stale-mount and absent each notify once"
   pass "a removed SSD releases its stale mount"
+}
+
+test_other_volume_keeps_letter() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "setup exits 0"
+  : >"$SUDOLOG"
+  listing 'VOL|D|FAT32|FAT32|Removable|32000000000|30000000000|\\?\Volume{stick}\|STICK'
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "check exits 0"
+  assert_equals absent "$(rr state)" "a small stick on the old letter is absent"
+  assert_grep " $MNT/d " "$MOUNTS" "the mount on the reused letter stays"
+  [ -s "$SUDOLOG" ] && fail "nothing is unmounted while another volume holds the letter"
+  pass "a stale-mount release skips a letter another volume now holds"
+}
+
+test_speed_remeasured_after_failure() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_SUDO_OK=1 FAKE_DD_FAIL=1 run check >/dev/null || fail "check exits 0"
+  assert_equals unknown "$(rr write_mib_s)" "a failed speed test records unknown"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "re-run exits 0"
+  case "$(rr write_mib_s)" in ''|*[!0-9]*) fail "an unknown speed is measured again" ;; esac
+  pass "an unknown write speed is measured again on the next check"
+}
+
+test_timer_path_without_interop() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  local out
+  out=$(PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin" FM_STORAGE_POWERSHELL="$PSBIN/powershell.exe" \
+    FAKE_PS="$PSOUT" FAKE_MOUNTS="$MOUNTS" FAKE_SUDO_LOG="$SUDOLOG" FAKE_SUDO_OK=1 \
+    FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$ST" FM_STORAGE_MNT="$MNT" FM_STORAGE_MOUNTINFO="$MOUNTS" \
+    FM_STORAGE_FALLBACK="$FB" FM_STORAGE_NOTIFY="$NOTE" FM_STORAGE_SPEED_SIZE=1M \
+    "$STORAGE" check) || fail "check exits 0"
+  assert_contains "$out" "(ok: SSD D: NTFS" "check reads Windows without powershell.exe on PATH"
+  assert_equals ok "$(rr state)" "the timer's PATH still reaches ok"
+  pass "check finds powershell.exe outside PATH"
 }
 
 test_ambiguous_and_identity() {
@@ -208,7 +252,6 @@ test_reader_rules() {
   local c="$TMP_ROOT/c-home/data/t/tetjet-results"
   assert_equals "$MNT/d/lattice-data/tetjet-results/t" "$(FM_STORAGE_NOW=1000 run root t)" "fresh ok gives the SSD"
   assert_equals "$c" "$(FM_STORAGE_NOW=99999 run root t)" "an old check falls back"
-  assert_equals "$c" "$(FM_STORAGE_NOW=1000 run root --need 100000T t)" "too little room for --need falls back"
   mv "$MNT/d/lattice-data/.lattice-storage-id" "$TMP_ROOT/marker"
   assert_equals "$c" "$(FM_STORAGE_NOW=1000 run root t)" "a missing marker falls back"
   mv "$TMP_ROOT/marker" "$MNT/d/lattice-data/.lattice-storage-id"
@@ -223,7 +266,7 @@ test_no_fallback_refused() {
   reset
   listing
   local rc
-  PATH="$FAKEBIN:$PATH" FAKE_PS="$PSOUT" FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$ST" "$STORAGE" check >/dev/null 2>&1; rc=$?
+  PATH="$FAKEBIN:$PSBIN:$PATH" FAKE_PS="$PSOUT" FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$ST" "$STORAGE" check >/dev/null 2>&1; rc=$?
   expect_code 2 "$rc" "check refuses without a fallback template"
   assert_absent "$CFG/results-root" "nothing is published without a fallback"
   pass "check refuses to publish without a C: fallback"
@@ -237,6 +280,9 @@ test_full
 test_small_stick_ignored
 test_not_mounted
 test_stale_mount
+test_other_volume_keeps_letter
+test_speed_remeasured_after_failure
+test_timer_path_without_interop
 test_ambiguous_and_identity
 test_unreadable
 test_reader_rules
