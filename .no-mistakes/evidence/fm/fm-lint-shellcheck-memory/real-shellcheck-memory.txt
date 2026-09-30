@@ -1,0 +1,21 @@
+Real pinned ShellCheck 0.11.0 runs on this host (through the operator's machine guard: 1 ShellCheck slot machine-wide, 6G MemoryMax per run).
+
+1) CI=true bin/fm-lint.sh --telemetry real-shellcheck-telemetry.tsv \
+     bin/fm-promote.sh tests/fm-daemon.test.sh            # heavy (>=1,000,000 expanded bytes)
+     tests/fm-pending-reply.test.sh tests/fm-launch-prompt-signals-live-e2e.test.sh \
+     bin/fm-crew-state.sh bin/fm-pr-check.sh bin/fm-lint.sh tests/fm-lint.test.sh   # light
+   exit 0, no diagnostics (edited test files are lint-clean under the full source-aware pass)
+   per-ShellCheck-process peak RSS sampled from /proc every 1s:
+     peak_rss_kib=1857492 roots=tests/fm-pending-reply.test.sh tests/fm-launch-prompt-signals-live-e2e.test.sh bin/fm-crew-state.sh bin/fm-pr-check.sh bin/fm-lint.sh tests/fm-lint.test.sh 
+     peak_rss_kib=3291172 roots=bin/fm-promote.sh tests/fm-daemon.test.sh 
+   -> both heavy roots are in ONE ShellCheck process (peak 3.29 GB, not a sum); the other worker holds only light roots.
+   telemetry: max_worker_rss_kib=3291172 shard_1_weight_bytes=2082257 shard_2_weight_bytes=1745295
+
+2) Edited test file, before vs after (shellcheck --norc --external-sources <file>):
+   BASE b6cdd2a9 tests/fm-pending-reply.test.sh : rc=137, "killed at its 6G memory cap" after 78.8s
+   HEAD a0db8585 tests/fm-pending-reply.test.sh : rc=0, 0 findings, max_rss 260,224 KiB, 2.05s
+   HEAD a0db8585 tests/fm-launch-prompt-signals-live-e2e.test.sh : rc=0, 0 findings, max_rss 149,888 KiB, 0.95s
+
+3) Heaviest remaining root, bin/fm-teardown.sh (2,867,214 expanded bytes; unchanged by this PR):
+   killed at the host guard's 6G cap after 132s (peak sampled 6,281,664 KiB). Its true peak needs a 16 GB CI runner;
+   under the new packing it shares partition 1of2's single heavy worker process; the concurrent worker holds no heavy root.

@@ -1,0 +1,21 @@
+=== HEAD a0db8585: canonical CI partitions (real fm-lint.sh orchestration; ShellCheck replaced by a recording stub) ===
+heavy threshold 1,000,000 expanded source bytes; heavy roots in inventory: 16
+partition 1of2 rc=0
+  worker 1 (flags=[--norc --external-sources]): 123 roots, 0 heavy:
+  worker 2 (flags=[--norc --external-sources]): 102 roots, 8 heavy: fm-pending-reply-lib.sh fm-pr-merge.sh fm-procevent-remote-reply.sh fm-promote.sh fm-secondmate-report.sh fm-teardown.sh fm-watch.sh fm-send-remote-delivery.test.sh
+  telemetry shard_1_weight_bytes	19423286
+  telemetry shard_2_weight_bytes	19423220
+partition 2of2 rc=0
+  worker 1 (flags=[--norc --external-sources]): 101 roots, 8 heavy: fm-backlog-handoff.sh fm-remote-secondmate-control.sh fm-secondmate-restart.sh fm-send.sh fm-spawn.sh fm-daemon.test.sh fm-remote-reply.test.sh fm-stat-shadowing.test.sh
+  worker 2 (flags=[--norc --external-sources]): 125 roots, 0 heavy:
+  telemetry shard_1_weight_bytes	19423242
+  telemetry shard_2_weight_bytes	19423455
+union of partitions == canonical inventory: yes; duplicate roots: 0
+
+=== BASE b6cdd2a9 (before fix), same stub, same heavy list ===
+partition 1of2
+  worker 1 (flags=[--norc --external-sources]): 113 roots, 4 heavy: fm-secondmate-report.sh fm-secondmate-restart.sh fm-send.sh fm-watch.sh
+  worker 2 (flags=[--norc --external-sources]): 112 roots, 0 heavy:
+partition 2of2
+  worker 1 (flags=[--norc --external-sources]): 113 roots, 5 heavy: fm-pr-merge.sh fm-procevent-remote-reply.sh fm-teardown.sh fm-send-remote-delivery.test.sh fm-stat-shadowing.test.sh
+  worker 2 (flags=[--norc --external-sources]): 113 roots, 7 heavy: fm-backlog-handoff.sh fm-pending-reply-lib.sh fm-promote.sh fm-remote-secondmate-control.sh fm-spawn.sh fm-daemon.test.sh fm-remote-reply.test.sh

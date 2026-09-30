@@ -1,0 +1,13 @@
+ADVERSARIAL TREE partition 1of2 rc=0
+  worker 1: 98 roots, 9 heavy: fm-backlog-handoff.sh fm-pending-reply-lib.sh fm-procevent-remote-reply.sh fm-secondmate-report.sh fm-spawn.sh fm-watch.sh fm-daemon.test.sh fm-public-followup.test.sh zz-arith-then-source.test.sh
+  worker 2: 128 roots, 0 heavy:
+  telemetry shard_1_weight_bytes	20365108
+  telemetry shard_2_weight_bytes	20365234
+ADVERSARIAL TREE partition 2of2 rc=0
+  worker 1: 99 roots, 9 heavy: fm-pr-merge.sh fm-promote.sh fm-remote-secondmate-control.sh fm-secondmate-restart.sh fm-send.sh fm-teardown.sh fm-remote-reply.test.sh fm-send-remote-delivery.test.sh fm-stat-shadowing.test.sh
+  worker 2: 128 roots, 0 heavy:
+  telemetry shard_1_weight_bytes	20365153
+  telemetry shard_2_weight_bytes	20365252
+--- explicit-path telemetry weights (stub ShellCheck) ---
+tests/zz-arith-then-source.test.sh rc=0 shard_1_weight_bytes=2867359
+tests/zz-quoted-source.test.sh rc=0 shard_1_weight_bytes=184
