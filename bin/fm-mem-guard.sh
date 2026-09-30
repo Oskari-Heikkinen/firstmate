@@ -28,7 +28,8 @@
 #                      write that handoff and park itself with bin/fm-park.sh.
 #                      The pass ends inside the watcher's FM_CHECK_TIMEOUT
 #                      (default 30s), never starts a park with under 15s left,
-#                      and the next pass starts where an unfinished one stopped;
+#                      and the next pass starts where an unfinished one stopped,
+#                      past a worker whose park it could not afford;
 #                      without bin/fm-park.sh it logs that park acts as warn only;
 #             refuse   also makes every new agent spawn (bin/fm-admission.sh) and
 #                      heavy-job start (`admit`) refuse, naming the memory guard;
@@ -71,7 +72,7 @@
 #   events.log   one line per level change, park action, or degraded sample, trimmed likewise
 #   lock/        mkdir lock around record writes; win.lock/ around the powershell call
 # Per-home records, written only here: state/.mem-guard-park (`<last park epoch>
-# [<id where an unfinished pass stopped>]`),
+# [<id where the next pass starts after an unfinished one>]`),
 # state/.mem-guard-wake (last critical wake epoch), state/mem-guard.check.sh.
 #
 # Test seams: FM_PROC_ROOT_OVERRIDE (default /proc), FM_MEM_GUARD_POWERSHELL
@@ -445,7 +446,7 @@ park_idle() {
     handoff="$DATA/$id/handoff.md"
     if [ -f "$handoff" ] && handoff_current "$meta" "$handoff" && bounded "$SCRIPT_DIR/fm-park.sh" validate "$handoff" >/dev/null 2>&1; then
       if [ $((PARK_STOP - $(date +%s))) -lt 15 ]; then
-        stopped=$id
+        stopped=$(basename "${metas[(start + i + 1) % n]}" .meta)
         break
       fi
       out=$(bounded "$SCRIPT_DIR/fm-park.sh" "$id" --handoff "$handoff" 2>&1)
@@ -469,7 +470,7 @@ park_idle() {
   done
   if [ -n "$stopped" ]; then
     printf '%s %s\n' "$t" "$stopped" >"$STATE/.mem-guard-park" 2>/dev/null
-    event "park: $FM_HOME pass reached its time budget at $stopped; the next pass starts there"
+    event "park: $FM_HOME pass reached its time budget; the next pass starts at $stopped"
   fi
   [ "$parked" = 0 ] || event "park: $FM_HOME parked $parked idle worker(s)"
   [ "$steered" = 0 ] || event "park: $FM_HOME steered $steered idle worker(s) to park themselves"

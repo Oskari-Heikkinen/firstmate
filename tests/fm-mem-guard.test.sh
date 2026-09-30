@@ -219,11 +219,13 @@ test_park_pass_resumes_where_it_stopped_and_needs_time_to_park() {
   FM_CHECK_TIMEOUT=19 guard tick >/dev/null
   assert_absent "$C/park-calls" "no park starts with under 15s of the check timeout left"
   assert_equals "$C/home w-a" "$(cat "$C/send-calls")" "the pass handled the workers before its stop"
-  assert_grep "park: $C/home pass reached its time budget at w-b; the next pass starts there" "$C/guard/events.log" "the stop is logged with where it stopped"
-  FM_MEM_GUARD_NOW=1001000 guard tick >/dev/null
-  assert_equals "w-b --handoff $C/home/data/w-b/handoff.md" "$(cat "$C/park-calls")" "the next pass parks the worker it stopped at"
-  assert_equals "$C/home w-a"$'\n'"$C/home w-c"$'\n'"$C/home w-a" "$(cat "$C/send-calls")" "the next pass starts at the stop and wraps around"
-  pass "a park pass never starts a park it cannot finish, and the next pass starts where it stopped"
+  assert_grep "park: $C/home pass reached its time budget; the next pass starts at w-c" "$C/guard/events.log" "the stop is logged with where the next pass starts"
+  FM_MEM_GUARD_NOW=1001000 FM_CHECK_TIMEOUT=19 guard tick >/dev/null
+  assert_absent "$C/park-calls" "a pass that again cannot afford the park still starts none"
+  assert_equals "$C/home w-a"$'\n'"$C/home w-c"$'\n'"$C/home w-a" "$(cat "$C/send-calls")" "the next pass starts past the unaffordable park, so later workers still progress"
+  FM_MEM_GUARD_NOW=1002000 guard tick >/dev/null
+  assert_equals "w-b --handoff $C/home/data/w-b/handoff.md" "$(cat "$C/park-calls")" "a pass with time for it parks the skipped worker"
+  pass "a park pass never starts a park it cannot finish, and each pass progresses past where the last one stopped"
 }
 
 test_park_ignores_a_handoff_older_than_the_last_resume() {
