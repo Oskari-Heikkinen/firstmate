@@ -1,0 +1,62 @@
+
+=== S1 default: no fm.syncRef -> fast-forward to origin/main (unchanged behavior) ===
+$ FM_HOME=$H bin/fm-fleet-sync.sh plain
+plain: synced 7b49f16..7c909ec
+local main=7c909ec origin/main=7c909ec
+$ bin/fm-application-provenance.sh <receipt> | selected fields
+{"source_current": true, "application_state": "unknown"}
+receipt: {"outcome": "synced", "base": "origin/main", "after.source": "7c909ece", "after.remote_tip": "7c909ece"}
+
+=== S2 fm.syncRef=checks-approved on the lattice-research clone -> ff to origin/checks-approved, not main tip ===
+$ git config --local fm.syncRef checks-approved
+$ FM_HOME=$H bin/fm-fleet-sync.sh lattice-research
+lattice-research: synced 85f1bc8..342647d
+local main=342647d origin/checks-approved=342647d origin/main=ac3feb2
+$ bin/fm-application-provenance.sh <receipt> | selected fields
+{"source_current": true, "application_state": "unknown"}
+receipt: {"outcome": "synced", "base": "origin/checks-approved", "after.source": "342647d4", "after.remote_tip": "342647d4"}
+
+=== S2b approved pointer advances (green CI) -> next sync follows it ===
+$ FM_HOME=$H bin/fm-fleet-sync.sh lattice-research
+lattice-research: synced 342647d..b5efcef
+local main=b5efcef origin/checks-approved=b5efcef
+$ bin/fm-application-provenance.sh <receipt> | selected fields
+{"source_current": true, "application_state": "unknown"}
+receipt: {"outcome": "synced", "base": "origin/checks-approved", "after.source": "b5efcef5", "after.remote_tip": "b5efcef5"}
+
+=== S2c worker copy drawn from that clone starts at approved commit ===
+worker HEAD=b5efcef (approved=b5efcef)
+
+=== S3 whole-fleet run: other clone stays on its default branch while syncRef clone follows approved ===
+$ FM_HOME=$H bin/fm-fleet-sync.sh   (whole fleet)
+lattice-research: already current
+plain: synced 7c909ec..009b873
+plain main=009b873 origin/main=009b873; lattice main=b5efcef approved=b5efcef
+
+=== S4 adversarial: fm.syncRef names a missing branch -> skipped, no fallback to origin/main ===
+$ FM_HOME=$H bin/fm-fleet-sync.sh missing
+missing: skipped: origin/no-such-branch does not exist
+local main before=212cdb0 after=212cdb0 (origin/main=ca006cc)
+
+=== S5 adversarial: fm.syncRef only in GLOBAL config -> ignored, clone follows origin/main ===
+$ FM_HOME=$H bin/fm-fleet-sync.sh globalonly
+globalonly: synced d044ae0..70a591a
+local main=70a591a origin/main=70a591a
+
+=== S6 enabling syncRef on a clone already at origin/main tip -> benign 'ahead', not STUCK, never moved back ===
+$ FM_HOME=$H bin/fm-fleet-sync.sh ahead
+ahead: ahead of sync base origin/checks-approved; waiting for it to catch up
+local main before=dea8c8b after=dea8c8b approved=4f9356e
+$ bin/fm-application-provenance.sh <receipt> | selected fields
+{"source_current": false, "application_state": "unknown"}
+receipt: {"outcome": "ahead", "base": "origin/checks-approved", "after.source": "dea8c8b7", "after.remote_tip": "4f9356e1"}
+
+=== S7 adversarial: syncRef clone = approved + unpushed local commit -> STUCK, untouched ===
+$ FM_HOME=$H bin/fm-fleet-sync.sh localwork
+localwork: STUCK: on diverged main, 0 commits behind origin/checks-approved - needs attention
+local main before=6166bdd after=6166bdd
+
+=== S8 adversarial: syncRef clone diverged from approved -> STUCK, untouched ===
+$ FM_HOME=$H bin/fm-fleet-sync.sh div
+div: STUCK: on diverged main, 1 commits behind origin/checks-approved - needs attention
+local main before=ebb8900 after=ebb8900
