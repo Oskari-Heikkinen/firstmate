@@ -32,7 +32,16 @@ BOOT_DISK='DISK|0|NVMe|GPT|1024209543168|True|True'
 mkdir -p "$PSBIN"
 cat >"$PSBIN/powershell.exe" <<'SH'
 #!/usr/bin/env bash
+printf 'call\n' >>"$FAKE_PS.calls"
 [ -n "${FAKE_PS_FAIL:-}" ] && exit 1
+# FAKE_PS_FAILS names a file holding how many more calls fail (the first
+# prints a listing cut off before END, later ones exit 1).
+if [ -n "${FAKE_PS_FAILS:-}" ] && n=$(cat "$FAKE_PS_FAILS") && [ "$n" -gt 0 ]; then
+  echo $(( n - 1 )) >"$FAKE_PS_FAILS"
+  if [ "$n" -gt 1 ]; then exit 1; fi
+  grep -vx END "$FAKE_PS" | sed 's/$/\r/'
+  exit 0
+fi
 sed 's/$/\r/' "$FAKE_PS"
 SH
 cat >"$FAKEBIN/sudo" <<'SH'
@@ -54,7 +63,7 @@ SH
 chmod +x "$PSBIN/powershell.exe" "$FAKEBIN/sudo" "$FAKEBIN/dd"
 
 reset() {
-  rm -rf "$MNT" "$CFG" "$ST" "$NOTE" "$SUDOLOG"
+  rm -rf "$MNT" "$CFG" "$ST" "$NOTE" "$SUDOLOG" "$PSOUT.calls"
   mkdir -p "$MNT/d" "$MNT/e"
   : >"$MOUNTS"
 }
@@ -67,9 +76,10 @@ ssd_vol() { printf 'VOL|%s|%s|%s|Removable|%s|%s|\\\\?\\Volume{%s}\\|%s' "$1" "$
 run() {
   PATH="$FAKEBIN:$PSBIN:$PATH" FAKE_PS="$PSOUT" FAKE_MOUNTS="$MOUNTS" FAKE_SUDO_LOG="$SUDOLOG" \
     FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$ST" FM_STORAGE_MNT="$MNT" FM_STORAGE_MOUNTINFO="$MOUNTS" \
-    FM_STORAGE_FALLBACK="$FB" FM_STORAGE_NOTIFY="$NOTE" FM_STORAGE_SPEED_SIZE=1M \
+    FM_STORAGE_FALLBACK="$FB" FM_STORAGE_NOTIFY="$NOTE" FM_STORAGE_SPEED_SIZE=1M FM_STORAGE_PS_BACKOFF='0 0' \
     "$STORAGE" "$@"
 }
+calls() { [ -r "$PSOUT.calls" ] && wc -l <"$PSOUT.calls" | tr -d ' ' || echo 0; }
 
 rr() { sed -n "s/^$1=//p" "$CFG/results-root"; }
 notes() { [ -r "$NOTE" ] && wc -l <"$NOTE" | tr -d ' ' || echo 0; }
@@ -242,7 +252,50 @@ test_unreadable() {
   FAKE_PS_FAIL=1 run check >/dev/null || fail "check exits 0"
   assert_equals unreadable "$(rr state)" "a failed Windows listing is unreadable"
   assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "unreadable uses the fallback"
+  assert_equals 3 "$(calls)" "the listing is tried three times"
+  assert_grep 'SSD storage unreadable' "$NOTE" "with nothing published before, unreadable is published and notified at once"
   pass "a failed Windows call falls back to C:"
+}
+
+test_transient_listing_failure_retried() {
+  reset
+  listing
+  run check >/dev/null || fail "baseline exits 0"
+  echo 2 >"$TMP_ROOT/fails"
+  listing "$(ssd_vol D NTFS)"
+  FAKE_PS_FAILS="$TMP_ROOT/fails" FAKE_SUDO_OK=1 run check >/dev/null || fail "check exits 0"
+  assert_equals ok "$(rr state)" "a listing that succeeds on retry is used"
+  assert_equals 4 "$(calls)" "two failed attempts are retried within one check"
+  assert_equals 1 "$(notes)" "only the SSD appearing notifies"
+  if grep -q unreadable "$NOTE"; then fail "a retried failure never notifies unreadable"; fi
+  pass "a transient listing failure is retried within the check"
+}
+
+test_unreadable_threshold() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_SUDO_OK=1 FM_STORAGE_NOW=1000 run check >/dev/null || fail "setup exits 0"
+  local out
+  out=$(FAKE_PS_FAIL=1 FM_STORAGE_NOW=1300 run check) || fail "first failed check exits 0"
+  assert_contains "$out" "kept ok" "the first failed check keeps the published state"
+  assert_equals ok "$(rr state)" "state kept after one failed check"
+  assert_equals 1000 "$(rr checked_at)" "the published file is left untouched"
+  FAKE_PS_FAIL=1 run check >/dev/null || fail "second failed check exits 0"
+  assert_equals ok "$(rr state)" "state kept after two failed checks"
+  assert_equals 1 "$(notes)" "failed checks under the threshold never notify"
+  FAKE_PS_FAIL=1 run check >/dev/null || fail "third failed check exits 0"
+  assert_equals unreadable "$(rr state)" "three consecutive failed checks publish unreadable"
+  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "unreadable uses the fallback"
+  assert_equals 1 "$(grep -c 'SSD storage unreadable' "$NOTE")" "unreadable notifies once"
+  FAKE_PS_FAIL=1 run check >/dev/null || fail "fourth failed check exits 0"
+  assert_equals 1 "$(grep -c 'SSD storage unreadable' "$NOTE")" "a lasting failure never notifies twice"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "recovery exits 0"
+  assert_equals ok "$(rr state)" "a readable listing recovers"
+  assert_equals 3 "$(notes)" "recovery notifies the change back"
+  FAKE_PS_FAIL=1 run check >/dev/null || fail "failure after recovery exits 0"
+  FAKE_PS_FAIL=1 run check >/dev/null || fail "failure after recovery exits 0"
+  assert_equals ok "$(rr state)" "a readable listing resets the count"
+  pass "unreadable is published and notified only after three consecutive failed checks"
 }
 
 test_reader_rules() {
@@ -285,5 +338,7 @@ test_speed_remeasured_after_failure
 test_timer_path_without_interop
 test_ambiguous_and_identity
 test_unreadable
+test_transient_listing_failure_retried
+test_unreadable_threshold
 test_reader_rules
 test_no_fallback_refused

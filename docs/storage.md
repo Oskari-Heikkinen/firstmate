@@ -36,7 +36,7 @@ Undo it with `wsl -d <distro> -u root -- rm /etc/sudoers.d/lattice-storage`.
 
 ## What a check does
 
-1. List Windows volumes and disks with `powershell.exe Get-Volume` and `Get-Disk` (no admin, 30 s limit); `powershell.exe` comes from `FM_STORAGE_POWERSHELL`, else `PATH`, else `/mnt/c/Windows/System32/WindowsPowerShell/v1.0/`, so the timer finds it without WSL interop on its `PATH`.
+1. List Windows volumes and disks with `powershell.exe Get-Volume` and `Get-Disk` (no admin, 30 s limit per attempt, up to 3 attempts 5 s and 15 s apart, because WSL interop can fail briefly under load); `powershell.exe` comes from `FM_STORAGE_POWERSHELL`, else `PATH`, else `/mnt/c/Windows/System32/WindowsPowerShell/v1.0/`, so the timer finds it without WSL interop on its `PATH`.
 2. The SSD is a lettered volume other than C:, Fixed or Removable, of at least 1.5 TB; once set up, its remembered volume id wins, so a small USB stick is never picked.
 3. NTFS or exFAT is usable; a RAW, unformatted, or other filesystem is reported and nothing is ever written to it, because formatting needs the captain.
 4. Mount it through the rule with `sudo -n` when `/mnt/<l>` is not mounted; a refusal is `not-mounted`, never a password prompt.
@@ -64,7 +64,7 @@ Later lines are `key=value` facts: `active` (`ssd` or `c`), `state`, `reason`, `
 | `raw` | RAW, unformatted, or unsupported filesystem; nothing written |
 | `unwritable` | folders, marker, or the write probe failed |
 | `ambiguous` | several large volumes and none is the remembered SSD, or the marker names another volume |
-| `unreadable` | the Windows listing failed or timed out |
+| `unreadable` | the Windows listing failed or timed out on 3 consecutive checks; until then a failed check keeps the last published state and root and does not notify, and any readable listing resets the count |
 
 Every state except `ok` has `active=c` and line 1 equal to `fallback`.
 A format that changes line 1's meaning uses a new file name, never a new `format=` value in this file.

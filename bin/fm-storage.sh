@@ -13,7 +13,9 @@
 #       rule when needed (sudo -n only; a refusal is state not-mounted), set up
 #       the folder layout and measure write speed once, probe, then write the
 #       results-root file atomically and notify on a state change.
-#       Prints one line.
+#       The Windows listing is tried up to 3 times; a check that still cannot
+#       read it keeps the last readable published state until 3 consecutive
+#       checks have failed, then publishes unreadable. Prints one line.
 #   fm-storage.sh setup
 #       Run check now, then print status.
 #   fm-storage.sh status
@@ -33,7 +35,8 @@
 #   results-root   the published file (docs/storage.md)
 #   storage.conf   key=value: fallback, notify, min_free, min_size
 #   ssd-identity   key=value: uniqueid, letter, fs, label, setup_at, write_mib_s
-# State dir ${XDG_STATE_HOME:-~/.local/state}/fm-storage: last-state, lock.
+# State dir ${XDG_STATE_HOME:-~/.local/state}/fm-storage: last-state, lock,
+#   unreadable-runs (consecutive checks whose listing failed; removed on success).
 #
 # Environment (all optional; each overrides storage.conf):
 #   FM_STORAGE_FALLBACK  C: results template containing {task}
@@ -45,6 +48,7 @@
 #   FM_STORAGE_MNT       WSL mount base (default /mnt)
 #   FM_STORAGE_MOUNTINFO mount table (default /proc/self/mountinfo)
 #   FM_STORAGE_SPEED_SIZE  write-speed test size (default 1G)
+#   FM_STORAGE_PS_BACKOFF  seconds slept before each listing retry (default "5 15")
 #   FM_STORAGE_POWERSHELL  powershell.exe to use (default: the one on PATH, else
 #                        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)
 #   FM_STORAGE_NOW       epoch override for tests
@@ -53,6 +57,7 @@ set -u
 GIB=1073741824
 FORMAT='lattice-storage-results-root/v1'
 PS_TIMEOUT=30
+UNREADABLE_LIMIT=3
 PS_DIR=/mnt/c/Windows/System32/WindowsPowerShell/v1.0
 
 die() { printf 'fm-storage: %s\n' "$*" >&2; exit 2; }
@@ -129,7 +134,21 @@ powershell_bin() {
 
 # windows_listing -> VOL|letter|fstype|fs|drivetype|size|free|uniqueid|label
 # and DISK|number|bus|partstyle|size|isboot|issystem lines, ending with END.
+# WSL interop can fail transiently under load (UtilAcceptVsock timeouts), so a
+# call that errors, times out, or lacks the END sentinel is retried after each
+# FM_STORAGE_PS_BACKOFF delay; the last attempt's output is returned.
 windows_listing() {
+  local out delay
+  out=$(windows_listing_once)
+  for delay in ${FM_STORAGE_PS_BACKOFF-5 15}; do
+    printf '%s\n' "$out" | grep -qx END && break
+    sleep "$delay"
+    out=$(windows_listing_once)
+  done
+  printf '%s\n' "$out"
+}
+
+windows_listing_once() {
   local ps
   ps=$(powershell_bin) || return 1
   # shellcheck disable=SC2016
@@ -311,6 +330,11 @@ run_check() {
   exec 9>"$lock"
   flock -w 60 9 || die "another check holds $lock"
   detect
+  if [ "$STATE" = unreadable ]; then
+    keep_last_readable && return 0
+  else
+    rm -f "$(state_dir)/unreadable-runs"
+  fi
   if [ -z "$STATE" ]; then
     mp="$(mnt_base)/$(lower "$SSD_LETTER")"
     if [ "$SSD_FREE" -lt "$MIN_FREE" ] 2>/dev/null; then
@@ -326,6 +350,26 @@ run_check() {
   publish "$mp"
   notify
   printf 'results root: %s (%s: %s)\n' "$LINE1" "$STATE" "$REASON"
+}
+
+# keep_last_readable: count this unreadable check; while fewer than
+# UNREADABLE_LIMIT consecutive checks have failed and a readable state is
+# published, leave that state, its root and last-state untouched (no note).
+# Fails when unreadable should be published now.
+keep_last_readable() {
+  local f runs last
+  f="$(state_dir)/unreadable-runs"
+  runs=$(cat "$f" 2>/dev/null)
+  case "$runs" in ''|*[!0-9]*) runs=0 ;; esac
+  runs=$(( runs + 1 ))
+  printf '%s\n' "$runs" | write_atomic "$f" || true
+  [ "$runs" -lt "$UNREADABLE_LIMIT" ] || return 1
+  f="$(config_dir)/results-root"
+  [ "$(sed -n 2p "$f" 2>/dev/null)" = "format=$FORMAT" ] || return 1
+  last=$(kv "$f" state)
+  case "$last" in ''|unreadable) return 1 ;; esac
+  printf 'results root: %s (kept %s: Windows listing failed, %s of %s consecutive checks)\n' \
+    "$(head -n 1 "$f")" "$last" "$runs" "$UNREADABLE_LIMIT"
 }
 
 # release_stale: the remembered SSD is gone from Windows but its WSL mount
