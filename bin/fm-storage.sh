@@ -108,7 +108,10 @@ write_atomic() {
   local f=$1 tmp
   mkdir -p "$(dirname "$f")" || return 1
   tmp=$(mktemp "$f.tmp.XXXXXX") || return 1
-  cat >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+  if ! { cat >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$f"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 # windows_listing -> VOL|letter|fstype|fs|drivetype|size|free|uniqueid|label
@@ -126,7 +129,7 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # detect: sets STATE (empty when a usable candidate was found), REASON and the
 # SSD_* fields for the chosen volume.
 detect() {
-  local listing line letter fstype fs dtype size free uid label
+  local listing kind letter fstype fs dtype size free uid label num bus pstyle isboot issys
   local cands=() c remembered pick='' bigdisk=''
   STATE='' REASON='' SSD_LETTER='' SSD_FS='' SSD_SIZE='' SSD_FREE='' SSD_ID='' SSD_LABEL=''
   listing=$(windows_listing)
@@ -406,7 +409,9 @@ cmd_install_timer() {
   printf 'wrote %s/storage.conf, %s/%s.service and %s.timer\n' "$(config_dir)" "$dir" "$UNIT" "$UNIT"
   command -v systemctl >/dev/null 2>&1 \
     || die "systemctl not found; enable later with: systemctl --user daemon-reload && systemctl --user enable --now $UNIT.timer"
-  systemctl --user daemon-reload && systemctl --user enable --now "$UNIT.timer" || die "could not enable $UNIT.timer"
+  if ! { systemctl --user daemon-reload && systemctl --user enable --now "$UNIT.timer"; }; then
+    die "could not enable $UNIT.timer"
+  fi
   printf 'enabled %s.timer\n' "$UNIT"
 }
 

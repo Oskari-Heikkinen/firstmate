@@ -92,7 +92,7 @@ test_ntfs_mounted_and_idempotent() {
   assert_equals ssd "$(rr active)" "active is ssd"
   assert_present "$MNT/d/lattice-data/tetjet-results" "results folder exists"
   assert_present "$MNT/d/lattice-data/archive" "archive folder exists"
-  assert_equals '\\?\Volume{ssd1}\' "$(cat "$MNT/d/lattice-data/.lattice-storage-id")" "the marker holds the volume id"
+  assert_equals "\\\\?\\Volume{ssd1}\\" "$(cat "$MNT/d/lattice-data/.lattice-storage-id")" "the marker holds the volume id"
   case "$(rr write_mib_s)" in ''|*[!0-9]*) fail "write speed is measured" ;; esac
   [ -z "$(find "$MNT/d/lattice-data" -name '.speedtest*' -o -name '.probe*')" ] || fail "speed and probe files are removed"
   assert_equals 1 "$(notes)" "the SSD appearing notifies once"
