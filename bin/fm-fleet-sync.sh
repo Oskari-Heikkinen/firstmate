@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
+# its sync base when safe, and prune local branches whose upstream tracking
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
+# The sync base is origin/<default> unless the clone sets a clone-local
+# `git config fm.syncRef <branch>` (off by default): then it is origin/<branch>
+# and the local <default> branch fast-forwards to that under the same guards
+# below. A set fm.syncRef whose origin/<branch> is missing after the fetch is
+# refused as "skipped: fm.syncRef origin/<branch> does not exist" rather than
+# silently falling back to origin/<default>. "origin/<default>" in the rest of
+# this header means the sync base.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -369,6 +376,14 @@ sync_project_impl() {
     return 0
   }
   BASE="origin/$DEFAULT"
+  sync_ref=$(git -C "$PROJ" config --get fm.syncRef 2>/dev/null || true)
+  if [ -n "$sync_ref" ]; then
+    BASE="origin/$sync_ref"
+    if ! git -C "$PROJ" rev-parse --verify --quiet "refs/remotes/$BASE^{commit}" >/dev/null; then
+      echo "$label: skipped: fm.syncRef $BASE does not exist; not falling back to origin/$DEFAULT"
+      return 0
+    fi
+  fi
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
     echo "$label: skipped: $BASE does not exist"
     return 0
