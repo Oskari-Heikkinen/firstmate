@@ -207,6 +207,44 @@ test_park_level_parks_or_steers_idle_workers() {
   pass "the park level parks idle workers with a valid handoff, steers the rest once per interval, or logs warn-only without fm-park.sh"
 }
 
+test_park_pass_resumes_where_it_stopped_and_needs_time_to_park() {
+  local id
+  new_case parkresume
+  fake_ps 2500 10
+  fake_park_tools
+  fake_crew_state "w-a w-b w-c"
+  for id in w-a w-b w-c; do printf 'kind=ship\n' > "$C/home/state/$id.meta"; done
+  mkdir -p "$C/home/data/w-b"
+  printf '%b' "$HANDOFF" > "$C/home/data/w-b/handoff.md"
+  FM_CHECK_TIMEOUT=19 guard tick >/dev/null
+  assert_absent "$C/park-calls" "no park starts with under 15s of the check timeout left"
+  assert_equals "$C/home w-a" "$(cat "$C/send-calls")" "the pass handled the workers before its stop"
+  assert_grep "park: $C/home pass reached its time budget at w-b; the next pass starts there" "$C/guard/events.log" "the stop is logged with where it stopped"
+  FM_MEM_GUARD_NOW=1001000 guard tick >/dev/null
+  assert_equals "w-b --handoff $C/home/data/w-b/handoff.md" "$(cat "$C/park-calls")" "the next pass parks the worker it stopped at"
+  assert_equals "$C/home w-a"$'\n'"$C/home w-c"$'\n'"$C/home w-a" "$(cat "$C/send-calls")" "the next pass starts at the stop and wraps around"
+  pass "a park pass never starts a park it cannot finish, and the next pass starts where it stopped"
+}
+
+test_park_ignores_a_handoff_older_than_the_last_resume() {
+  local now
+  new_case parkstale
+  fake_ps 2500 10
+  fake_park_tools
+  fake_crew_state "w-old w-new"
+  now=$(date +%s)
+  for id in w-old w-new; do
+    printf 'kind=ship\npark_state=resumed\npark_at=%s\npark_resumed_at=%s\n' "$((now - 300))" "$((now - 100))" > "$C/home/state/$id.meta"
+    mkdir -p "$C/home/data/$id"
+    printf '%b' "$HANDOFF" > "$C/home/data/$id/handoff.md"
+  done
+  touch -d "@$((now - 400))" "$C/home/data/w-old/handoff.md"
+  guard tick >/dev/null
+  assert_equals "w-new --handoff $C/home/data/w-new/handoff.md" "$(cat "$C/park-calls")" "a handoff written after the resume is parked"
+  assert_equals "$C/home w-old" "$(cat "$C/send-calls")" "a handoff from before the resume is not reused; the worker is steered to write a fresh one"
+  pass "the park level never re-parks from a handoff that predates the task's last park or resume"
+}
+
 test_critical_wake_precedes_park_work() {
   local out rc
   new_case wakefirst
@@ -221,7 +259,6 @@ test_critical_wake_precedes_park_work() {
   out=$(FM_CHECK_TIMEOUT=9 timeout 15 "$GUARD" tick --check 2>/dev/null); rc=$?
   expect_code 0 "$rc" "a park pass bounded by the check timeout"
   assert_contains "$out" "memory guard critical" "the bounded tick still wakes"
-  assert_grep "park: $C/home pass reached its time budget at w-" "$C/guard/events.log" "a pass that runs out of time says who waits"
   pass "the critical wake is printed and recorded before park work, and the park pass ends inside the check timeout"
 }
 
@@ -309,6 +346,8 @@ test_grading_levels_and_hysteresis
 test_admit_refuses_heavy_jobs
 test_critical_wakes_only_main_once_per_window
 test_park_level_parks_or_steers_idle_workers
+test_park_pass_resumes_where_it_stopped_and_needs_time_to_park
+test_park_ignores_a_handoff_older_than_the_last_resume
 test_critical_wake_precedes_park_work
 test_rules_override_and_malformed_values_warn
 test_auto_sync_arms_and_retires_the_check

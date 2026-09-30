@@ -21,12 +21,14 @@
 #             park     also passes over this home's idle workers (ship or scout
 #                      tasks not already parked whose current state is a declared
 #                      wait), at most once per park_interval_s: one whose
-#                      data/<id>/handoff.md passes `fm-park.sh validate` is parked
+#                      data/<id>/handoff.md passes `fm-park.sh validate` and was
+#                      written after the task's last park or resume is parked
 #                      with `fm-park.sh <id> --handoff data/<id>/handoff.md`; any
 #                      other gets one steer through bin/fm-send.sh asking it to
 #                      write that handoff and park itself with bin/fm-park.sh.
 #                      The pass ends inside the watcher's FM_CHECK_TIMEOUT
-#                      (default 30s) and leaves the rest for the next pass;
+#                      (default 30s), never starts a park with under 15s left,
+#                      and the next pass starts where an unfinished one stopped;
 #                      without bin/fm-park.sh it logs that park acts as warn only;
 #             refuse   also makes every new agent spawn (bin/fm-admission.sh) and
 #                      heavy-job start (`admit`) refuse, naming the memory guard;
@@ -68,7 +70,8 @@
 #   samples.log  one line per tick, trimmed to log_max_lines
 #   events.log   one line per level change, park action, or degraded sample, trimmed likewise
 #   lock/        mkdir lock around record writes; win.lock/ around the powershell call
-# Per-home records, written only here: state/.mem-guard-park (last park epoch),
+# Per-home records, written only here: state/.mem-guard-park (`<last park epoch>
+# [<id where an unfinished pass stopped>]`),
 # state/.mem-guard-wake (last critical wake epoch), state/mem-guard.check.sh.
 #
 # Test seams: FM_PROC_ROOT_OVERRIDE (default /proc), FM_MEM_GUARD_POWERSHELL
@@ -397,11 +400,19 @@ bounded() {
   timeout "$left" "$@"
 }
 
+# handoff_current <meta> <handoff>: the handoff was written after the task's last park or resume.
+handoff_current() {
+  local since
+  since=$(awk -F= '($1 == "park_at" || $1 == "park_resumed_at") && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$1" 2>/dev/null)
+  [ "${since:-0}" = 0 ] || [ "$(date -r "$2" +%s 2>/dev/null || echo 0)" -gt "$since" ]
+}
+
 # park_idle <level>: park this home's idle workers, or steer them to park themselves.
 park_idle() {
-  local level=$1 t last meta id handoff st out rc parked=0 steered=0 budget
+  local level=$1 t last='' resume='' meta id handoff st out rc parked=0 steered=0 budget i n start=0 stopped=''
+  local -a metas
   t=$(now)
-  last=$(cat "$STATE/.mem-guard-park" 2>/dev/null) || last=0
+  { read -r last resume <"$STATE/.mem-guard-park"; } 2>/dev/null
   case "$last" in '' | *[!0-9]*) last=0 ;; esac
   [ $((t - last)) -ge "$R_park_interval_s" ] || return 0
   printf '%s\n' "$t" >"$STATE/.mem-guard-park" 2>/dev/null
@@ -412,19 +423,31 @@ park_idle() {
   budget=${FM_CHECK_TIMEOUT:-30}
   case "$budget" in '' | *[!0-9]*) budget=30 ;; esac
   PARK_STOP=$((TICK_START + budget - 5))
-  for meta in "$STATE"/*.meta; do
+  metas=("$STATE"/*.meta)
+  n=${#metas[@]}
+  if [ -n "$resume" ]; then
+    for ((i = 0; i < n; i++)); do
+      [[ "$(basename "${metas[i]}" .meta)" < "$resume" ]] || { start=$i; break; }
+    done
+  fi
+  for ((i = 0; i < n; i++)); do
+    meta=${metas[(start + i) % n]}
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
     ! grep -q '^kind=secondmate$' "$meta" 2>/dev/null || continue
     [ "$(sed -n 's/^park_state=//p' "$meta" 2>/dev/null | tail -1)" != parked ] || continue
     if [ $((PARK_STOP - $(date +%s))) -lt 2 ]; then
-      event "park: $FM_HOME pass reached its time budget at $id; the rest wait for the next pass"
+      stopped=$id
       break
     fi
     st=$(FM_CREW_STATE_NO_FORGE=1 bounded "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null | head -1)
     case "$st" in 'state: paused'*) ;; *) continue ;; esac
     handoff="$DATA/$id/handoff.md"
-    if [ -f "$handoff" ] && bounded "$SCRIPT_DIR/fm-park.sh" validate "$handoff" >/dev/null 2>&1; then
+    if [ -f "$handoff" ] && handoff_current "$meta" "$handoff" && bounded "$SCRIPT_DIR/fm-park.sh" validate "$handoff" >/dev/null 2>&1; then
+      if [ $((PARK_STOP - $(date +%s))) -lt 15 ]; then
+        stopped=$id
+        break
+      fi
       out=$(bounded "$SCRIPT_DIR/fm-park.sh" "$id" --handoff "$handoff" 2>&1)
       rc=$?
       if [ "$rc" = 0 ]; then
@@ -444,6 +467,10 @@ park_idle() {
       fi
     fi
   done
+  if [ -n "$stopped" ]; then
+    printf '%s %s\n' "$t" "$stopped" >"$STATE/.mem-guard-park" 2>/dev/null
+    event "park: $FM_HOME pass reached its time budget at $stopped; the next pass starts there"
+  fi
   [ "$parked" = 0 ] || event "park: $FM_HOME parked $parked idle worker(s)"
   [ "$steered" = 0 ] || event "park: $FM_HOME steered $steered idle worker(s) to park themselves"
 }
