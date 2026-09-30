@@ -1,0 +1,1 @@
+{"ts":"2026-09-30T16:53:53.889Z","harness":"claude","cwd":"~/Tools/firstmate","cmd":"find data -maxdepth 2 -name '*.csv'","verdict":"allow","would_block":true,"mode":"log","targets":[{"tool":"find","target":"~/Tools/firstmate/data","verdict":"block"}]}

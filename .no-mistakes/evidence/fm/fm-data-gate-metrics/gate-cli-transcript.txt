@@ -1,0 +1,30 @@
+## adapters (Pi / OpenCode / OMP Read tool)
+pi --cwd ~/Tools/firstmate --tool read --path data/big/table.jsonl exit=0 out='' rows+=1
+opencode --cwd ~/Tools/firstmate --tool read --path data/big/table.jsonl exit=0 out='' rows+=1
+omp --cwd ~/Tools/firstmate --tool read --path data/big/lines.txt --offset 5 --limit 20 exit=0 out='' rows+=1
+## adversarial shell reads
+pi --cwd ~/Tools/firstmate --command grep foo < data/big/table.jsonl | head exit=0 out='' rows+=1
+pi --cwd ~/Tools/firstmate --command tail -c +10 data/big/huge.csv exit=0 out='' rows+=1
+pi --cwd ~/Tools/firstmate --command head -n -5 data/big/lines.txt exit=0 out='' rows+=1
+pi --cwd ~/Tools/firstmate --command sort data/big/huge.csv | head exit=0 out='' rows+=1
+pi --cwd ~/Tools/firstmate --command cat data/big/*.csv exit=0 out='' rows+=0
+pi --cwd ~/Tools/firstmate --command cat $F data/big exit=0 out='' rows+=0
+pi --cwd ~/Tools/firstmate --command cat data/big/missing.txt exit=0 out='' rows+=0
+pi --cwd ~/Tools/firstmate --command python3 -c "print(len(open(\"data/big/huge.csv\").read()))" exit=0 out='' rows+=1
+pi --cwd ~/Tools/firstmate --command cd data/big && jq . DIGEST.md | head -n 2 exit=0 out='' rows+=1
+## enforce mode: read log never blocks
+pi --cwd ~/Tools/firstmate --command cat data/big/huge.csv exit=0 out='' rows+=1
+opencode --cwd ~/Tools/firstmate --tool read --path data/big/huge.csv exit=0 out='' rows+=1
+## off switch
+pi --cwd ~/Tools/firstmate --command cat data/big/lines.txt exit=0 out='' rows+=0
+pi Read data/big/table.jsonl bounded=false req=20971520 ret=51200 whole=true sizeblock=false
+opencode Read data/big/table.jsonl bounded=false req=20971520 ret=20971520 whole=true sizeblock=false
+omp Read data/big/lines.txt bounded=true req=78 ret=78 whole=false sizeblock=false
+pi redirect data/big/table.jsonl bounded=true req=655360 ret=655360 whole=false sizeblock=false
+pi tail data/big/huge.csv bounded=false req=314572800 ret=314572800 whole=true sizeblock=true
+pi head data/big/lines.txt bounded=false req=3893 ret=3893 whole=true sizeblock=false
+pi sort data/big/huge.csv bounded=false req=314572800 ret=314572800 whole=true sizeblock=true
+pi python3 data/big/huge.csv bounded=false req=314572800 ret=314572800 whole=true sizeblock=true
+pi jq data/big/DIGEST.md bounded=true req=48 ret=48 whole=false sizeblock=false
+pi cat data/big/huge.csv bounded=false req=314572800 ret=314572800 whole=true sizeblock=true
+opencode Read data/big/huge.csv bounded=false req=314572800 ret=131072000 whole=true sizeblock=true

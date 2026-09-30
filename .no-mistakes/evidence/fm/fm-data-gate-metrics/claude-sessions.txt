@@ -1,0 +1,8 @@
+# live Claude Code sessions (claude -p --model haiku, gate hook via --settings, HOME=fake)
+{"hooks":{"PreToolUse":[{"matcher":"Bash|Grep|Glob|Read","hooks":[{"type":"command","command":"env -u FM_HOME HOME=~ LATTICE_DATA_GATE=log FM_TASK_ID=live-task /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh --harness claude"}]}]}}
+
+session 1 output:
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+DONE
+session 2 output:
+DONE

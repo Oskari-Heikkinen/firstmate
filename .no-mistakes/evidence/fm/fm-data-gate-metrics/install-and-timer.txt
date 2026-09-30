@@ -1,0 +1,9 @@
+created   ~/.config/systemd/user/lattice-data-gate-report.service (+daily report service)
+created   ~/.config/systemd/user/lattice-data-gate-report.timer (+daily report timer)
+created   ~/.config/lattice-data-gate/mode (+gate mode (log))
+enabled lattice-data-gate-report.timer
+refreshed roots cache ~/.local/state/lattice-data-gate/roots.json (homes=0, bulk=0)
+gate /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SJFHJB9C8T2AXATYWSMJDA/bin/fm-data-gate.sh; mode after install: log unless ~/.config/lattice-data-gate/mode or LATTICE_DATA_GATE says otherwise
+
+systemd-analyze verify: exit 0 (no warnings)
+OnCalendar=*-*-* 00:40:00 -> next elapse Thu 2026-10-01 00:40:00 CEST
