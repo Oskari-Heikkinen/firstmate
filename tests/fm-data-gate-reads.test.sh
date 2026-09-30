@@ -94,6 +94,10 @@ EOF
   gate --harness pi --cwd "$MAIN" --command 'cat data/big/huge.csv'
   assert_equals "314572800|true|true" "$(field "$(last_row)" '[r.bytes_requested, r.whole_file, r.size_rule_would_block].join("|")')" \
     "a cat of a file over the limit is one the size rule refuses"
+  ln -sfn big "$MAIN/data/linked"
+  gate --harness pi --cwd "$MAIN/data/linked" --command 'cat huge.csv'
+  assert_equals "$MAIN/data/linked/huge.csv|true" "$(field "$(last_row)" '[r.path, r.size_rule_would_block].join("|")')" \
+    "a read through a symlink carries the size rule's verdict on the real file"
   gate --harness pi --cwd "$MAIN" --command 'nice -n 19 ionice -c3 cat data/big/huge.csv'
   assert_equals "true|false" "$(field "$(last_row)" '[r.whole_file, r.size_rule_would_block].join("|")')" \
     "a niced whole-file read is one the size rule lets through"
@@ -145,6 +149,8 @@ head -n 5 < data/big/lines.txt => redirect:big/lines.txt:19
 tail -n +2 < data/big/lines.txt => redirect:big/lines.txt:3893
 grep foo < data/big/lines.txt | head -n 5 => redirect:big/lines.txt:19
 sort < data/big/lines.txt | head -n 5 => redirect:big/lines.txt:3893
+head -n 5 data/big/DIGEST.md 3< data/big/lines.txt => redirect:big/lines.txt:3893,head:big/DIGEST.md:10
+grep x data/big/DIGEST.md 3< data/big/lines.txt | head -n 1 => redirect:big/lines.txt:3893,grep:big/DIGEST.md:10
 cd data/big && cat DIGEST.md => cat:big/DIGEST.md:10
 bash -c 'cat ~/Tools/firstmate/data/big/lines.txt' => cat:big/lines.txt:3893
 cat data/big/missing.txt =>

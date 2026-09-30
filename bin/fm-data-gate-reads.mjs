@@ -32,7 +32,7 @@
 // (bin/fm-data-gate-policy.mjs sizeVerdicts, at the gate's --size-limit).
 
 import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
-import { DEFAULT_SIZE_LIMIT, discover, recognizeReads, sizeVerdicts } from "./fm-data-gate-policy.mjs";
+import { DEFAULT_SIZE_LIMIT, discover, realish, recognizeReads, sizeVerdicts } from "./fm-data-gate-policy.mjs";
 import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -258,7 +258,7 @@ function nodeReads(tokens, state, depth, out) {
     if (tokens[i].type === "redir" && /^\d*<$/.test(tokens[i].value) && tokens[i + 1]?.type === "word") {
       const read = { tool: "redirect", word: tokens[i + 1], cwd: state.cwd, bound: null };
       out.push(read);
-      if (/^0?<$/.test(tokens[i].value)) stdin.push(read);
+      if (tokens[i].fd === 0) stdin.push(read);
     }
   }
   const position = commandPosition(tokens);
@@ -410,7 +410,7 @@ function runLog(argv) {
   const over = rows.filter((row) => row.size > args.sizeLimit);
   if (over.length) {
     const blocked = new Set(sizeVerdicts(recognizeReads(call), args.sizeLimit).filter((r) => r.verdict === "block").map((r) => r.target));
-    for (const row of over) row.size_rule_would_block = blocked.has(row.path);
+    for (const row of over) row.size_rule_would_block = blocked.has(realish(row.path));
   }
   mkdirSync(stateDir(), { recursive: true });
   appendFileSync(readsPath(localDate(new Date())), rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
