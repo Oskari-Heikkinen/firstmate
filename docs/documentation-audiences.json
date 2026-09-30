@@ -249,6 +249,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/disk-room/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/stow/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -326,6 +330,10 @@
     },
     {
       "path": "docs/data-gate.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/disk-room.md",
       "audience": "operator-current"
     },
     {
