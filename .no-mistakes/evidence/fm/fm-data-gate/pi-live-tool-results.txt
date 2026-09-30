@@ -1,0 +1,17 @@
+CALL  bash {"command":"rg foo data"}
+RESULT (isError): BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home/Tools/firstmate/data would scan bulk run data.
+        Use:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)
+              lattice-data grep <item-id> PATTERN                   (search inside one item)
+              ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)
+        See skill data-access. Override for a named small folder: search that folder directly.
+
+CALL  bash {"command":"rg foo data/task1/"}
+RESULT: data/task1/report.md:report foo
+
+CALL  bash {"command":"du -sh data/rolling-runs-v11"}
+RESULT (isError): BLOCKED (data gate): recursive du over /tmp/fm-dg-live/home/Tools/firstmate/data/rolling-runs-v11 would scan bulk run data.
+        Use:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)
+              lattice-data grep <item-id> PATTERN                   (search inside one item)
+              ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)
+        See skill data-access. Override for a named small folder: search that folder directly.
+

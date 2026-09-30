@@ -1,0 +1,2 @@
+{"ts":"2026-09-30T10:52:09.127Z","harness":"claude","cwd":"/tmp/fm-dg-live/projects/some-repo-wt","cmd":"rg foo /tmp/fm-dg-live/home/Tools/firstmate/data","verdict":"allow","would_block":true,"mode":"log","targets":[{"tool":"rg","target":"/tmp/fm-dg-live/home/Tools/firstmate/data","verdict":"block"}]}
+{"ts":"2026-09-30T10:52:13.147Z","harness":"claude","cwd":"/tmp/fm-dg-live/projects/some-repo-wt","cmd":"rg foo .","verdict":"allow","would_block":false,"mode":"log","targets":[{"tool":"rg","target":"/tmp/fm-dg-live/projects/some-repo-wt","verdict":"allow"}]}

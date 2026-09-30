@@ -1,0 +1,223 @@
+$ sha256sum ~/.claude/settings.json (before)
+f2716fbcd1b5ff993232bb07a6cb4c09ae64c7ca2ef5c8cbaf88c6cf9c5ea7db  .claude/settings.json
+
+$ fm-data-gate-install.sh install --dry-run
+dry run: nothing was written
+changed   /tmp/fm-dg-live/home/.claude/settings.json (+Claude PreToolUse Bash|Grep|Glob; backup /tmp/fm-dg-live/home/.local/state/lattice-data-gate/backups/2026-09-30T10-50-42-566Z/home/.claude/settings.json)
+created   /tmp/fm-dg-live/home/.claude-work/settings.json (+Claude PreToolUse Bash|Grep|Glob)
+created   /tmp/fm-dg-live/home/.claude-acct/settings.json (+Claude PreToolUse Bash|Grep|Glob)
+created   /tmp/fm-dg-live/home/.codex/hooks.json (+Codex PreToolUse Bash)
+changed   /tmp/fm-dg-live/home/.codex/config.toml (+Codex trust for the gate hook; backup /tmp/fm-dg-live/home/.local/state/lattice-data-gate/backups/2026-09-30T10-50-42-566Z/home/.codex/config.toml)
+created   /tmp/fm-dg-live/home/.grok/hooks/lattice-data-gate.json (+Grok global PreToolUse hook)
+created   /tmp/fm-dg-live/home/.config/opencode/plugins/lattice-data-gate.js (+OpenCode global plugin)
+created   /tmp/fm-dg-live/home/.pi/agent/extensions/lattice-data-gate.ts (+Pi global extension)
+created   /tmp/fm-dg-live/home/.omp/agent/extensions/lattice-data-gate.ts (+OMP global extension)
+created   /tmp/fm-dg-live/home/Tools/firstmate/data/bulk-paths.txt (+generated bulk paths)
+created   /tmp/fm-dg-live/home/Tools/firstmate/data/.ignore (+bulk ignore list)
+created   /tmp/fm-dg-live/home/Tools/firstmate/data/.rgignore (+bulk ignore list)
+created   /tmp/fm-dg-live/home/lattice-ledger/.ignore (+bulk ignore list)
+created   /tmp/fm-dg-live/home/lattice-ledger/.rgignore (+bulk ignore list)
+created   /tmp/fm-dg-live/home/.config/lattice-data-gate/mode (+gate mode (log))
+would refresh roots cache /tmp/fm-dg-live/home/.local/state/lattice-data-gate/roots.json (homes=1, bulk=0)
+gate /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh; mode after install: log unless ~/.config/lattice-data-gate/mode or LATTICE_DATA_GATE says otherwise
+exit=0
+
+$ find ~ -newer marker (dry run wrote nothing?)
+ls: cannot access '/tmp/fm-dg-live/home/.local': No such file or directory
+
+$ fm-data-gate-install.sh install
+changed   /tmp/fm-dg-live/home/.claude/settings.json (+Claude PreToolUse Bash|Grep|Glob; backup /tmp/fm-dg-live/home/.local/state/lattice-data-gate/backups/2026-09-30T10-50-42-649Z/home/.claude/settings.json)
+created   /tmp/fm-dg-live/home/.claude-work/settings.json (+Claude PreToolUse Bash|Grep|Glob)
+created   /tmp/fm-dg-live/home/.claude-acct/settings.json (+Claude PreToolUse Bash|Grep|Glob)
+created   /tmp/fm-dg-live/home/.codex/hooks.json (+Codex PreToolUse Bash)
+changed   /tmp/fm-dg-live/home/.codex/config.toml (+Codex trust for the gate hook; backup /tmp/fm-dg-live/home/.local/state/lattice-data-gate/backups/2026-09-30T10-50-42-649Z/home/.codex/config.toml)
+created   /tmp/fm-dg-live/home/.grok/hooks/lattice-data-gate.json (+Grok global PreToolUse hook)
+created   /tmp/fm-dg-live/home/.config/opencode/plugins/lattice-data-gate.js (+OpenCode global plugin)
+created   /tmp/fm-dg-live/home/.pi/agent/extensions/lattice-data-gate.ts (+Pi global extension)
+created   /tmp/fm-dg-live/home/.omp/agent/extensions/lattice-data-gate.ts (+OMP global extension)
+created   /tmp/fm-dg-live/home/Tools/firstmate/data/bulk-paths.txt (+generated bulk paths)
+created   /tmp/fm-dg-live/home/Tools/firstmate/data/.ignore (+bulk ignore list)
+created   /tmp/fm-dg-live/home/Tools/firstmate/data/.rgignore (+bulk ignore list)
+created   /tmp/fm-dg-live/home/lattice-ledger/.ignore (+bulk ignore list)
+created   /tmp/fm-dg-live/home/lattice-ledger/.rgignore (+bulk ignore list)
+created   /tmp/fm-dg-live/home/.config/lattice-data-gate/mode (+gate mode (log))
+refreshed roots cache /tmp/fm-dg-live/home/.local/state/lattice-data-gate/roots.json (homes=1, bulk=3)
+gate /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh; mode after install: log unless ~/.config/lattice-data-gate/mode or LATTICE_DATA_GATE says otherwise
+exit=0
+
+$ cat ~/.claude/settings.json
+{
+  "theme": "dark",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gh-axi"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"${GROK_AGENT:-}${GROK_HOOK_EVENT:-}\" ] || exit 0; [ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' --harness claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+
+$ cat ~/.claude-acct/settings.json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"${GROK_AGENT:-}${GROK_HOOK_EVENT:-}\" ] || exit 0; [ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' --harness claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+
+$ cat ~/.codex/hooks.json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' --harness codex",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+
+$ cat ~/.codex/config.toml
+model = "x"
+
+[hooks.state."/tmp/fm-dg-live/home/.codex/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:e77cf2985621bd00b2e78046ed6b34d8ac7a8eb0157399e611d0ce01299e6486"
+
+$ ls plugin/extension files
+/tmp/fm-dg-live/home/.config/opencode/plugins:
+total 12
+drwxrwxr-x 2 oskari oskari 4096 Sep 30 12:50 .
+drwxrwxr-x 3 oskari oskari 4096 Sep 30 12:50 ..
+-rw-rw-r-- 1 oskari oskari 1552 Sep 30 12:50 lattice-data-gate.js
+
+/tmp/fm-dg-live/home/.grok/hooks:
+total 12
+drwxrwxr-x 2 oskari oskari 4096 Sep 30 12:50 .
+drwxrwxr-x 3 oskari oskari 4096 Sep 30 12:50 ..
+-rw-rw-r-- 1 oskari oskari  474 Sep 30 12:50 lattice-data-gate.json
+
+/tmp/fm-dg-live/home/.omp/agent/extensions:
+total 12
+drwxrwxr-x 2 oskari oskari 4096 Sep 30 12:50 .
+drwxrwxr-x 3 oskari oskari 4096 Sep 30 12:50 ..
+-rw-rw-r-- 1 oskari oskari 1816 Sep 30 12:50 lattice-data-gate.ts
+
+/tmp/fm-dg-live/home/.pi/agent/extensions:
+total 12
+drwxrwxr-x 2 oskari oskari 4096 Sep 30 12:50 .
+drwxrwxr-x 3 oskari oskari 4096 Sep 30 12:50 ..
+-rw-rw-r-- 1 oskari oskari 1813 Sep 30 12:50 lattice-data-gate.ts
+
+$ cat data/bulk-paths.txt
+# lattice-data-gate BEGIN (generated by bin/fm-data-gate-install.sh; bulk dirs)
+rolling-runs-*/slices/
+*/tetjet-results/
+shell-contact-first-runs/runs*/
+# lattice-data-gate END
+
+$ cat data/.rgignore
+# lattice-data-gate BEGIN (generated by bin/fm-data-gate-install.sh; bulk dirs)
+rolling-runs-*/slices/
+*/tetjet-results/
+shell-contact-first-runs/runs*/
+# lattice-data-gate END
+
+$ cat ~/lattice-ledger/.ignore
+# lattice-data-gate BEGIN (generated by bin/fm-data-gate-install.sh; bulk dirs)
+search-recording/
+diagnostics/
+# lattice-data-gate END
+
+$ cat ~/.config/lattice-data-gate/mode
+log
+
+$ fm-data-gate-install.sh install   (second run: idempotent)
+unchanged /tmp/fm-dg-live/home/.claude/settings.json (Claude PreToolUse Bash|Grep|Glob already present)
+unchanged /tmp/fm-dg-live/home/.claude-work/settings.json (Claude PreToolUse Bash|Grep|Glob already present)
+unchanged /tmp/fm-dg-live/home/.claude-acct/settings.json (Claude PreToolUse Bash|Grep|Glob already present)
+unchanged /tmp/fm-dg-live/home/.codex/hooks.json (Codex PreToolUse Bash already present)
+unchanged /tmp/fm-dg-live/home/.codex/config.toml (Codex trust for the gate hook already present)
+unchanged /tmp/fm-dg-live/home/.grok/hooks/lattice-data-gate.json (Grok global PreToolUse hook already present)
+unchanged /tmp/fm-dg-live/home/.config/opencode/plugins/lattice-data-gate.js (OpenCode global plugin already present)
+unchanged /tmp/fm-dg-live/home/.pi/agent/extensions/lattice-data-gate.ts (Pi global extension already present)
+unchanged /tmp/fm-dg-live/home/.omp/agent/extensions/lattice-data-gate.ts (OMP global extension already present)
+unchanged /tmp/fm-dg-live/home/Tools/firstmate/data/bulk-paths.txt (generated bulk paths already present)
+unchanged /tmp/fm-dg-live/home/Tools/firstmate/data/.ignore (bulk ignore list already present)
+unchanged /tmp/fm-dg-live/home/Tools/firstmate/data/.rgignore (bulk ignore list already present)
+unchanged /tmp/fm-dg-live/home/lattice-ledger/.ignore (bulk ignore list already present)
+unchanged /tmp/fm-dg-live/home/lattice-ledger/.rgignore (bulk ignore list already present)
+refreshed roots cache /tmp/fm-dg-live/home/.local/state/lattice-data-gate/roots.json (homes=1, bulk=3)
+gate /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh; mode after install: log unless ~/.config/lattice-data-gate/mode or LATTICE_DATA_GATE says otherwise
+exit=0
+
+$ fm-data-gate-install.sh status
+mode      log
+gate      /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh
+log       /tmp/fm-dg-live/home/.local/state/lattice-data-gate/decisions.jsonl (0 records, 0 would-block)
+roots     homes=1 bulk=3 cache=/tmp/fm-dg-live/home/.local/state/lattice-data-gate/roots.json
+installed /tmp/fm-dg-live/home/.claude/settings.json (Claude PreToolUse Bash|Grep|Glob)
+installed /tmp/fm-dg-live/home/.claude-work/settings.json (Claude PreToolUse Bash|Grep|Glob)
+installed /tmp/fm-dg-live/home/.claude-acct/settings.json (Claude PreToolUse Bash|Grep|Glob)
+installed /tmp/fm-dg-live/home/.codex/hooks.json (Codex PreToolUse Bash)
+installed /tmp/fm-dg-live/home/.codex/config.toml (Codex trust for the gate hook)
+installed /tmp/fm-dg-live/home/.grok/hooks/lattice-data-gate.json (Grok global PreToolUse hook)
+installed /tmp/fm-dg-live/home/.config/opencode/plugins/lattice-data-gate.js (OpenCode global plugin)
+installed /tmp/fm-dg-live/home/.pi/agent/extensions/lattice-data-gate.ts (Pi global extension)
+installed /tmp/fm-dg-live/home/.omp/agent/extensions/lattice-data-gate.ts (OMP global extension)
+installed /tmp/fm-dg-live/home/Tools/firstmate/data/bulk-paths.txt (generated bulk paths)
+installed /tmp/fm-dg-live/home/Tools/firstmate/data/.ignore (bulk ignore list)
+installed /tmp/fm-dg-live/home/Tools/firstmate/data/.rgignore (bulk ignore list)
+installed /tmp/fm-dg-live/home/lattice-ledger/.ignore (bulk ignore list)
+installed /tmp/fm-dg-live/home/lattice-ledger/.rgignore (bulk ignore list)
+exit=0
+
+$ fm-data-gate.sh mode / roots
+log
+store /tmp/fm-dg-live/home/lattice-store
+root /
+root /tmp/fm-dg-live/home
+root /mnt/c
+root /tmp/fm-dg-live/home/.cache
+root /tmp/fm-dg-live/home/lattice-ledger/search-recording
+root /tmp/fm-dg-live/home/lattice-ledger/diagnostics
+root /tmp/fm-dg-live/home/Tools/firstmate
+root /tmp/fm-dg-live/home/Tools/firstmate/data
+root /tmp/fm-dg-live/home/Tools/firstmate/data/rolling-runs-v11/slices
+root /tmp/fm-dg-live/home/Tools/firstmate/data/exp2/tetjet-results
+bulk /tmp/fm-dg-live/home/Tools/firstmate/data/rolling-runs-*/slices
+bulk /tmp/fm-dg-live/home/Tools/firstmate/data/*/tetjet-results
+bulk /tmp/fm-dg-live/home/Tools/firstmate/data/shell-contact-first-runs/runs*

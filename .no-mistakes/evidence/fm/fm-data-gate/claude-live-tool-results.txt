@@ -1,0 +1,53 @@
+CALL  Bash {"command":"rg foo data","description":"Search for foo in data"}
+RESULT (is_error): PreToolUse:Bash hook error: [export HOME=/tmp/fm-dg-live/home; export LATTICE_DATA_GATE=enforce; [ -z "${GROK_AGENT:-}${GROK_HOOK_EVENT:-}" ] || exit 0; [ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' --harness claude]: BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home/Tools/firstmate/data would scan bulk run data.
+        Use:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)
+              lattice-data grep <item-id> PATTERN                   (search inside one item)
+              ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)
+        See skill data-access. Override for a named small folder: search that folder directly.
+        
+
+CALL  Bash {"command":"rg foo data/task1/","description":"Search for foo in data/task1"}
+RESULT: data/task1/report.md:report foo
+
+CALL  Grep {"pattern":"foo","path":"data"}
+RESULT (is_error): PreToolUse:Grep hook error: [export HOME=/tmp/fm-dg-live/home; export LATTICE_DATA_GATE=enforce; [ -z "${GROK_AGENT:-}${GROK_HOOK_EVENT:-}" ] || exit 0; [ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' --harness claude]: BLOCKED (data gate): recursive Grep over /tmp/fm-dg-live/home/Tools/firstmate/data would scan bulk run data.
+        Use:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)
+              lattice-data grep <item-id> PATTERN                   (search inside one item)
+              ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)
+        See skill data-access. Override for a named small folder: search that folder directly.
+        
+
+CALL  Grep {"pattern":"foo","path":"data/task1"}
+RESULT: Found 1 file
+        data/task1/report.md
+
+CALL  Glob {"pattern":"**/*.txt","path":"data"}
+RESULT (is_error): PreToolUse:Glob hook error: [export HOME=/tmp/fm-dg-live/home; export LATTICE_DATA_GATE=enforce; [ -z "${GROK_AGENT:-}${GROK_HOOK_EVENT:-}" ] || exit 0; [ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' --harness claude]: BLOCKED (data gate): recursive Glob over /tmp/fm-dg-live/home/Tools/firstmate/data would scan bulk run data.
+        Use:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)
+              lattice-data grep <item-id> PATTERN                   (search inside one item)
+              ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)
+        See skill data-access. Override for a named small folder: search that folder directly.
+        
+
+CALL  Bash {"command":"cd data/many7/tetjet-results && du -sh .","description":"Get size of data/many7/tetjet-results"}
+RESULT (is_error): PreToolUse:Bash hook error: [export HOME=/tmp/fm-dg-live/home; export LATTICE_DATA_GATE=enforce; [ -z "${GROK_AGENT:-}${GROK_HOOK_EVENT:-}" ] || exit 0; [ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' --harness claude]: BLOCKED (data gate): recursive du over /tmp/fm-dg-live/home/off/tr would scan bulk run data.
+        Use:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)
+              lattice-data grep <item-id> PATTERN                   (search inside one item)
+              ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)
+        See skill data-access. Override for a named small folder: search that folder directly.
+        
+
+CALL  Bash {"command":"find data/rolling-runs-v12/slices -name y.txt","description":"Find y.txt in data/rolling-runs-v12/slices"}
+RESULT (is_error): PreToolUse:Bash hook error: [export HOME=/tmp/fm-dg-live/home; export LATTICE_DATA_GATE=enforce; [ -z "${GROK_AGENT:-}${GROK_HOOK_EVENT:-}" ] || exit 0; [ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3RWZWZGJD9GCTKRSDHY14EH/bin/fm-data-gate.sh' --harness claude]: BLOCKED (data gate): recursive find over /tmp/fm-dg-live/home/Tools/firstmate/data/rolling-runs-v12/slices would scan bulk run data.
+        Use:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)
+              lattice-data grep <item-id> PATTERN                   (search inside one item)
+              ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)
+        See skill data-access. Override for a named small folder: search that folder directly.
+        
+
+CALL  Bash {"command":"cat data/task1/report.md","description":"Cat data/task1/report.md"}
+RESULT: report foo
+
+CALL  Bash {"command":"ls data/task1","description":"List data/task1"}
+RESULT: report.md
+

@@ -1,0 +1,13 @@
+ok - homes come from named registry and pool files
+ok - bash table: all 129 rows match (allow/block)
+ok - bulk dirs created after the roots cache or reached by symlink are protected
+ok - the glob cap never reduces bulk protection
+ok - Grep/Glob table: all 19 rows match
+ok - enforce transports render per harness
+ok - log mode allows and records decisions
+ok - an unknown mode behaves as log
+ok - internal errors allow and are logged
+
+real	0m26.129s
+user	0m7.721s
+sys	0m12.284s

@@ -1,0 +1,77 @@
+## Claude-shaped Bash payloads (enforce)
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"rg foo"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home/Tools/firstmate would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"grep -rn foo ~"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive grep over /tmp/fm-dg-live/home would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"du -sh ~"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive du over /tmp/fm-dg-live/home would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"find / -name x"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive find over / would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"ls -R /mnt/c"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive ls over /mnt/c would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"tree ~/.cache"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive tree over /tmp/fm-dg-live/home/.cache would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"rg foo ~/lattice-store"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home/lattice-store would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"rg foo ~/lattice-ledger/search-recording"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home/lattice-ledger/search-recording would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"rg foo ~/lattice-ledger/diagnostics"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home/lattice-ledger/diagnostics would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"ssh engineer@10.0.0.3 'find / -name x'"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive ssh find over remote:/ would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"ssh engineer@10.0.0.3 grep -r foo"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive ssh grep over remote:~ would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"bash -c 'cd ~ && rg foo'"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"git log | grep -r fix data"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive grep over /tmp/fm-dg-live/home/Tools/firstmate/data would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"du -sh data/*"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive du over /tmp/fm-dg-live/home/Tools/firstmate/data would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"rg foo"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate/data/many7/tetjet-results"} | cwd=/Tools/firstmate/data/many7/tetjet-results
+        stderr: BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home/off/tr would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"find . -name x"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate/data/many7/tetjet-results"} | cwd=/Tools/firstmate/data/many7/tetjet-results
+        stderr: BLOCKED (data gate): recursive find over /tmp/fm-dg-live/home/off/tr would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"du -sh /tmp/fm-dg-live/home/off/tr"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive du over /tmp/fm-dg-live/home/off/tr would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"ugrep foo data/rolling-runs-v11"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive ugrep over /tmp/fm-dg-live/home/Tools/firstmate/data/rolling-runs-v11 would scan bulk run data.
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"rg foo data/task1/"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"grep -r foo data/task1"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"cat data/tetjet-offload/results/r1/receipt.json"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"python3 -m lattice_batches report-due --receipts data/tetjet-offload/results"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"rg foo ~/lattice-store/items/tetjet-slice/s1"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"head -c 100 ~/lattice-ledger/runs/E1.md"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"ls data/"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"ls ~"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"echo \"grep -r foo ~\""},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"find ~ -maxdepth 1 -name x"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"git log | rg fix"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"rg foo"},"cwd":"/tmp/fm-dg-live/projects/some-repo-wt"} | cwd=/tmp/fm-dg-live/projects/some-repo-wt
+
+## Claude Grep/Glob tool payloads (enforce)
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Grep","tool_input":{"pattern":"foo"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive Grep over /tmp/fm-dg-live/home/Tools/firstmate would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Glob","tool_input":{"pattern":"~/**/*.md"},"cwd":"/tmp/fm-dg-live/projects/some-repo-wt"} | cwd=/tmp/fm-dg-live/projects/some-repo-wt
+        stderr: BLOCKED (data gate): recursive Glob over /tmp/fm-dg-live/home would scan bulk run data.
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Glob","tool_input":{"pattern":"/tmp/fm-dg-live/home/lattice-store/**/*.json"},"cwd":"/tmp/fm-dg-live/projects/some-repo-wt"} | cwd=/tmp/fm-dg-live/projects/some-repo-wt
+        stderr: BLOCKED (data gate): recursive Glob over /tmp/fm-dg-live/home/lattice-store would scan bulk run data.
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Glob","tool_input":{"pattern":"**/*.md"},"cwd":"/tmp/fm-dg-live/projects/some-repo-wt"} | cwd=/tmp/fm-dg-live/projects/some-repo-wt
+PASS  claude exp=allow got=allow rc=0 | {"tool_name":"Grep","tool_input":{"pattern":"foo","path":"/tmp/fm-dg-live/home/lattice-store/items/tetjet-slice/s1"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  claude exp=block got=block rc=2 | {"tool_name":"Grep","tool_input":{"pattern":"foo","path":"data/many7/tetjet-results"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive Grep over /tmp/fm-dg-live/home/off/tr would scan bulk run data.
+
+## Codex and Grok payloads (enforce)
+PASS  codex exp=block got=block rc=2 | {"tool_name":"Bash","tool_input":{"command":"rg foo data"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive rg over /tmp/fm-dg-live/home/Tools/firstmate/data would scan bulk run data.
+PASS  codex exp=allow got=allow rc=0 | {"tool_name":"Bash","tool_input":{"command":"rg foo data/task1"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+PASS  grok exp=block got=block rc=2 | {"hook_event_name":"PreToolUse","tool_name":"run_terminal_command","tool_input":{"command":"du -sh ~"},"cwd":"/tmp/fm-dg-live/home/Tools/firstmate"} | cwd=/Tools/firstmate
+        stderr: BLOCKED (data gate): recursive du over /tmp/fm-dg-live/home would scan bulk run data.
+        stdout: {"decision":"deny","reason":"BLOCKED (data gate): recursive du over /tmp/fm-dg-live/home would scan bulk run data.\nUse:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)\n      lattice-data grep <item-id> PATTERN                   (search inside one item)\n      ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)\nSee skill data-access. Override for a named small folder: search that folder directly."}
+
+## Plugin-style CLI (OpenCode / Pi / OMP adapters)
+PASS? opencode --command 'rg foo data' rc=2 (expect 2)
+PASS? opencode --tool grep --path data/task1 rc=0 (expect 0)
+PASS? pi --command 'rg foo data' rc=2 (expect 2)
+PASS? pi --tool grep --path data/task1 rc=0 (expect 0)
+PASS? omp --command 'rg foo data' rc=2 (expect 2)
+PASS? omp --tool grep --path data/task1 rc=0 (expect 0)

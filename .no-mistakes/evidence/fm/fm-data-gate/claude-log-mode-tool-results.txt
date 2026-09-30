@@ -1,0 +1,9 @@
+CALL  Bash {"command":"rg foo /tmp/fm-dg-live/home/Tools/firstmate/data","description":"Search for \"foo\" in firstmate data directory"}
+RESULT: /tmp/fm-dg-live/home/Tools/firstmate/data/task1/report.md:report foo
+
+CALL  Bash {"command":"echo hello","description":"Echo hello"}
+RESULT: hello
+
+CALL  Bash {"command":"rg foo .","description":"Search for \"foo\" in current directory"}
+RESULT: ./a.txt:foo
+
