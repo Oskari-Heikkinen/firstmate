@@ -224,6 +224,11 @@ block|H|glob|data|*.md
 block|H|glob||data/task1/**/*.md
 block|H|glob|~|*.md
 allow|W|glob||**/*.ts
+block|H|glob||~/**/*.md
+block|W|glob||~/**/*.md
+block|W|glob||/**/*.md
+block|W|glob|src|~/lattice-store/**/*.json
+allow|W|glob||~/lattice-ledger/runs/*.md
 block|L|grep|||
 block|L|glob||*.md
 EOF
@@ -363,6 +368,21 @@ test_log_mode_default() {
   pass "log mode allows and records decisions"
 }
 
+test_bulk_dir_created_after_cache() {
+  HOME="$FAKE_HOME" "$GATE" refresh >/dev/null || fail "refresh failed"
+  mkdir -p "$MAIN/data/rolling-runs-v12/slices/s1" "$MAIN/data/exp3/tetjet-results"
+  gate enforce --harness pi --cwd "$MAIN" --command 'du -sh data/rolling-runs-v12' >/dev/null 2>&1
+  expect_code 2 $? "a rolling-runs dir created after the cache is refused"
+  gate enforce --harness pi --cwd "$MAIN" --command 'find data/rolling-runs-v12/slices -name x' >/dev/null 2>&1
+  expect_code 2 $? "its slices dir is refused"
+  gate enforce --harness pi --cwd "$MAIN" --command 'rg foo data/exp3' >/dev/null 2>&1
+  expect_code 2 $? "a new tetjet-results parent is refused"
+  gate enforce --harness pi --cwd "$MAIN" --command 'rg foo data/rolling-runs-v12/slices/s1' >/dev/null 2>&1
+  expect_code 0 $? "one named slice inside it is allowed"
+  rm -rf "$MAIN/data/rolling-runs-v12" "$MAIN/data/exp3"
+  pass "bulk dirs created after the roots cache are protected"
+}
+
 test_unknown_mode_is_log() {
   local log="$FAKE_HOME/.local/state/lattice-data-gate/decisions.jsonl"
   assert_equals "log" "$(HOME="$FAKE_HOME" LATTICE_DATA_GATE=off "$GATE" mode)" "off is not a mode; it reads as log"
@@ -390,9 +410,8 @@ test_home_discovery() {
   roots=$(HOME="$FAKE_HOME" "$GATE" roots)
   assert_contains "$roots" "root $MAIN" "main home discovered"
   assert_contains "$roots" "root $SM/data" "secondmate home from the treehouse pool discovered"
-  assert_contains "$roots" "root $MAIN/data/rolling-runs-v11-2-1/slices" "globbed bulk path from bulk-paths.txt"
-  assert_contains "$roots" "root $MAIN/data/exp2/tetjet-results" "a */ bulk glob expands one level"
-  assert_not_contains "$roots" "root $MAIN/data/task1/tetjet-results" "a glob expansion keeps only existing dirs"
+  assert_contains "$roots" "bulk $MAIN/data/rolling-runs-*/slices" "bulk pattern from bulk-paths.txt"
+  assert_contains "$roots" "bulk $MAIN/data/*/tetjet-results" "a */ bulk pattern is kept as a pattern"
   assert_not_contains "$roots" "root $WT" "a task worktree in the pool is not a home"
   pass "homes come from named registry and pool files"
 }
@@ -400,6 +419,7 @@ test_home_discovery() {
 build_fixture
 test_home_discovery
 test_bash_table
+test_bulk_dir_created_after_cache
 test_tool_table
 test_enforce_transports
 test_log_mode_default

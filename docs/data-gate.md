@@ -14,14 +14,14 @@ In a shell command it recognizes `grep`, `egrep` and `fgrep` with `-r`, `-R`, `-
 It finds them inside pipelines, `&&`, `||` and `;` chains, subshells, command substitutions, `bash -c` and `sh -c` payloads, `xargs`, and wrappers such as `sudo`, `env`, `timeout`, `nice` and `ionice`.
 A `cd X` earlier in the same command moves the effective directory for the scans after it.
 A scan with no explicit path targets the effective directory, except that a pathless `rg`, `ag`, `ugrep` or `ug` reading a pipe or a `<` redirect searches its input and passes.
-The Grep and Glob tools always count as a scan of their `path`, or of the working directory when they have none.
+The Grep and Glob tools always count as a scan of their `path`, or of the working directory when they have none; a Glob pattern that is absolute or starts with `~` counts as a scan of its static prefix (the part before the first glob character) instead.
 
 Each target is resolved against the working directory (itself resolved through symlinks), with `~` and `$HOME` expanded, globs expanded one directory level at a time, and symlinks followed.
 A target is refused only when it is, or is an ancestor of, one of these protected roots:
 
 - `~/lattice-store` and its kind or bucket directories, but not one named item inside it (`items/<kind>/<item-id>/`, `quarantine/<item-id>/`);
 - any Firstmate home root, and that home's `data/` root;
-- any bulk directory listed in a home's `data/bulk-paths.txt`, with globs expanded;
+- any bulk directory matching a line of a home's `data/bulk-paths.txt`, matched at decision time so a bulk directory created after the roots cache was built is covered too;
 - `~/lattice-ledger/search-recording` and `~/lattice-ledger/diagnostics`;
 - `~`, `/`, `/mnt/c` (and so `/mnt`), and `~/.cache`.
 
@@ -36,7 +36,7 @@ The same file feeds both the gate's protected set and the `.ignore` and `.rgigno
 Firstmate homes are discovered without any recursive scan: the main home at `~/Tools/firstmate`, every treehouse pool worktree under `~/.treehouse/*/treehouse-state.json` that carries a `.fm-secondmate-home` marker, and every `home:` in a discovered home's `data/secondmates.md`.
 A task worktree in a pool is not a home, so a worker can still search its own worktree.
 The result is cached in `~/.local/state/lattice-data-gate/roots.json`, which the installer refreshes and the gate itself rediscovers when it is more than six hours old.
-Run `bin/fm-data-gate.sh roots` to print the effective protected roots, or `bin/fm-data-gate.sh refresh` to rediscover them now.
+Run `bin/fm-data-gate.sh roots` to print the effective protected roots and bulk patterns, or `bin/fm-data-gate.sh refresh` to rediscover them now.
 
 ## Modes
 

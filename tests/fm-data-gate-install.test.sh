@@ -125,7 +125,7 @@ test_generated_bulk_paths_feed_gate_and_ignores() {
     assert_grep "$entry" "$data/.rgignore" ".rgignore lists the generated $entry"
   done
   roots=$(HOME="$h" "$GATE" roots)
-  assert_contains "$roots" "root $data/exp/tetjet-results" "the gate protects a generated bulk glob's match"
+  assert_contains "$roots" "bulk $data/*/tetjet-results" "the gate protects the generated bulk patterns"
   HOME="$h" LATTICE_DATA_GATE=enforce "$GATE" --harness pi --cwd "$h/Tools/firstmate" --command 'du -sh data/exp' >/dev/null 2>&1
   expect_code 2 $? "a scan over a generated bulk dir's parent is refused"
   HOME="$h" LATTICE_DATA_GATE=enforce "$GATE" --harness pi --cwd "$h/Tools/firstmate" --command 'find data/rolling-runs-v9 -name x' >/dev/null 2>&1

@@ -159,15 +159,16 @@ export function bulkEntries(text) {
   return (text || "").split("\n").map((raw) => raw.replace(/#.*/, "").trim()).filter(Boolean);
 }
 
-function bulkPathsOf(home) {
+// Bulk patterns stay patterns (static prefix realpath'd), so a bulk directory
+// created after discovery is protected without waiting for a refresh.
+function bulkPatternsOf(home) {
   const data = join(home, "data");
-  const out = [];
-  for (const line of bulkEntries(readText(join(data, "bulk-paths.txt")))) {
-    const pattern = isAbsolute(line) ? line : join(data, line);
-    if (/[*?[]/.test(pattern)) out.push(...globExpand(pattern).filter((p) => existsSync(p)));
-    else out.push(pattern);
-  }
-  return out;
+  return bulkEntries(readText(join(data, "bulk-paths.txt"))).map((line) => {
+    const parts = (isAbsolute(line) ? line : join(data, line)).split("/").filter(Boolean);
+    const firstGlob = parts.findIndex((part) => /[*?[]/.test(part));
+    const cut = firstGlob === -1 ? parts.length : firstGlob;
+    return join(realish(`/${parts.slice(0, cut).join("/")}`), ...parts.slice(cut));
+  });
 }
 
 export function discover() {
@@ -185,8 +186,7 @@ export function discover() {
     homes.push(real);
     queue.push(...secondmateHomes(real));
   }
-  const bulk = [];
-  for (const h of homes) for (const path of bulkPathsOf(h)) bulk.push(realish(path));
+  const bulk = homes.flatMap((h) => bulkPatternsOf(h));
   return { generated_at: new Date().toISOString(), homes, bulk };
 }
 
@@ -227,8 +227,7 @@ export function protectedRoots(roots = loadRoots()) {
     exact.add(h);
     exact.add(realish(join(h, "data")));
   }
-  for (const b of roots.bulk) exact.add(b);
-  return { exact: [...exact], store: realish(join(home, "lattice-store")), home };
+  return { exact: [...exact], bulk: roots.bulk, store: realish(join(home, "lattice-store")), home };
 }
 
 function isAncestorOrSelf(target, root) {
@@ -248,12 +247,25 @@ function storeVerdict(target, store) {
   return "block";
 }
 
+// A target is a bulk directory, or an ancestor of an existing one, when its
+// segments match the pattern's leading segments and, if it stops short, the
+// rest of the pattern has a match below it (single-directory reads only).
+function bulkHit(target, pattern) {
+  const want = pattern.split("/").filter(Boolean);
+  const have = target.split("/").filter(Boolean);
+  if (have.length > want.length) return false;
+  for (let i = 0; i < have.length; i += 1) if (!segmentRegex(want[i]).test(have[i])) return false;
+  if (have.length === want.length) return true;
+  return globExpand(join(target, ...want.slice(have.length))).some((p) => existsSync(p));
+}
+
 export function classifyTarget(target, roots) {
   if (isFile(target)) return "allow";
   const store = storeVerdict(target, roots.store);
   if (store) return store;
   if (isAncestorOrSelf(target, roots.store)) return "block";
   for (const root of roots.exact) if (isAncestorOrSelf(target, root)) return "block";
+  for (const pattern of roots.bulk) if (bulkHit(target, pattern)) return "block";
   return "allow";
 }
 
@@ -632,9 +644,16 @@ export function analyze(command, cwd, depth = 0, remote = false) {
   return { scans };
 }
 
-// The Grep and Glob tools both walk their path, or the cwd when they have none.
-function toolTargets(path, cwd) {
-  return path ? (resolveTargets(path, cwd) || [resolve(cwd, path)]) : [cwd];
+// The Grep and Glob tools both walk their path, or the cwd when they have none;
+// an absolute or ~-rooted Glob pattern walks from its static prefix instead.
+function toolTargets(kind, path, pattern, cwd) {
+  let base = path;
+  if (kind === "glob" && typeof pattern === "string" && (isAbsolute(pattern) || pattern === "~" || pattern.startsWith("~/"))) {
+    const parts = pattern.split("/");
+    const firstGlob = parts.findIndex((part) => /[*?[{]/.test(part));
+    base = (firstGlob === -1 ? parts : parts.slice(0, firstGlob)).join("/") || "/";
+  }
+  return base ? (resolveTargets(base, cwd) || [resolve(cwd, base)]) : [cwd];
 }
 
 // Decide one call. Returns { verdict, scans, tool, target, note }.
@@ -648,7 +667,7 @@ export function decide(call, roots = protectedRoots()) {
     if (result.error) note = `unparsed: ${result.error}`;
   } else {
     const tool = call.kind === "glob" ? "Glob" : "Grep";
-    scans = toolTargets(call.path, cwd).map((target) => ({ tool, target, verdict: null }));
+    scans = toolTargets(call.kind, call.path, call.pattern, cwd).map((target) => ({ tool, target, verdict: null }));
   }
   for (const scan of scans) if (!scan.verdict) scan.verdict = classifyTarget(scan.target, roots);
   const blocked = scans.find((s) => s.verdict === "block");
@@ -763,6 +782,7 @@ if (invokedDirectly()) {
       const roots = protectedRoots();
       process.stdout.write(`store ${roots.store}\n`);
       for (const root of roots.exact) process.stdout.write(`root ${root}\n`);
+      for (const pattern of roots.bulk) process.stdout.write(`bulk ${pattern}\n`);
     } else throw new Error(`unknown subcommand: ${args.sub}`);
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
