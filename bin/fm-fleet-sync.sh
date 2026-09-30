@@ -6,10 +6,10 @@
 # The sync base is origin/<default> unless the clone sets a clone-local
 # `git config fm.syncRef <branch>` (off by default): then it is origin/<branch>
 # and the local <default> branch fast-forwards to that under the same guards
-# below. A set fm.syncRef whose origin/<branch> is missing after the fetch is
-# refused as "skipped: fm.syncRef origin/<branch> does not exist" rather than
-# silently falling back to origin/<default>. "origin/<default>" in the rest of
-# this header means the sync base.
+# below; a missing origin/<branch> is skipped, never replaced by origin/<default>.
+# A clean <default> already past that base but holding nothing outside
+# origin/<default> is reported "ahead of sync base" and left in place, never moved
+# backwards. "origin/<default>" in the rest of this header means the sync base.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -322,6 +322,7 @@ report_stuck() {
 sync_project_impl() {
   SYNC_OUTCOME=skipped
   SYNC_FETCH_SUCCEEDED=false
+  BASE=
   PROJ=$1
   label=$(project_label)
 
@@ -376,13 +377,9 @@ sync_project_impl() {
     return 0
   }
   BASE="origin/$DEFAULT"
-  sync_ref=$(git -C "$PROJ" config --get fm.syncRef 2>/dev/null || true)
+  sync_ref=$(git -C "$PROJ" config --local --get fm.syncRef 2>/dev/null || true)
   if [ -n "$sync_ref" ]; then
     BASE="origin/$sync_ref"
-    if ! git -C "$PROJ" rev-parse --verify --quiet "refs/remotes/$BASE^{commit}" >/dev/null; then
-      echo "$label: skipped: fm.syncRef $BASE does not exist; not falling back to origin/$DEFAULT"
-      return 0
-    fi
   fi
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
     echo "$label: skipped: $BASE does not exist"
@@ -447,6 +444,12 @@ sync_project_impl() {
     return 0
   fi
   if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
+    if git -C "$PROJ" merge-base --is-ancestor "$BASE" "$DEFAULT" \
+        && git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "origin/$DEFAULT" 2>/dev/null; then
+      SYNC_OUTCOME=ahead
+      echo "$label: ahead of sync base $BASE; waiting for it to catch up"
+      return 0
+    fi
     report_stuck "diverged $DEFAULT"
     return 0
   fi
@@ -488,7 +491,9 @@ sync_project() {
 
 if [ "$RECEIPT_CHILD" -eq 1 ]; then
   sync_project_impl "$1"
-  printf '{"outcome":"%s","fetch_succeeded":%s}\n' "$SYNC_OUTCOME" "$SYNC_FETCH_SUCCEEDED" > "$RECEIPT_RESULT"
+  base_json=${BASE//\\/\\\\}
+  base_json=${base_json//\"/\\\"}
+  printf '{"outcome":"%s","fetch_succeeded":%s,"base":"%s"}\n' "$SYNC_OUTCOME" "$SYNC_FETCH_SUCCEEDED" "$base_json" > "$RECEIPT_RESULT"
   exit 0
 fi
 

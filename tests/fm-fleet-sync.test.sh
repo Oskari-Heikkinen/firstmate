@@ -12,7 +12,9 @@
 # The pre-existing fast-forward / already-current / local-only / no-origin paths
 # must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
 # A clone-local `git config fm.syncRef <branch>` moves the sync base to
-# origin/<branch> under the same guards, and a missing origin/<branch> is refused.
+# origin/<branch> under the same guards, a missing origin/<branch> is skipped,
+# a clean default branch already past the sync base is reported ahead and left in
+# place, and the receipt's remote tip is the sync base the refresh used.
 #
 # It also pins the clone-root guard: a plain directory under projects/ resolves,
 # through git's upward repository discovery, to the ENCLOSING repository - in a
@@ -389,6 +391,15 @@ push_origin_ref() {
   git -C "$home/work-$name" push -q -f origin "$rev:refs/heads/$branch"
 }
 
+# source_current <home> <clone>: the application readout's source_current for the
+# clone's latest fleet-sync receipt.
+source_current() {
+  local home=$1 clone=$2 key
+  key=$(printf '%s' "$(cd "$clone" && pwd -P)" | sha256sum | cut -d' ' -f1)
+  "$ROOT/bin/fm-application-provenance.sh" "$home/data/fleet-sync/$key.json" \
+    | python3 -c 'import json, sys; print(str(json.load(sys.stdin)["source_current"]).lower())'
+}
+
 test_sync_ref_unset_follows_default_branch() {
   local home clone out
   home=$(new_home)
@@ -420,6 +431,7 @@ test_sync_ref_set_fast_forwards_to_that_ref() {
   [ "$(head_sha "$clone")" = "$approved" ] || fail "set fm.syncRef did not fast-forward to origin/checks-approved"
   [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "main" ] || fail "set fm.syncRef left the default branch"
   [ "$(git -C "$clone" rev-parse main)" != "$(git -C "$clone" rev-parse origin/main)" ] || fail "fixture vacuous: origin/main equals the approved ref"
+  [ "$(source_current "$home" "$clone")" = true ] || fail "clean sync to fm.syncRef behind origin/main did not read source_current=true"
 
   out=$(run_sync "$home" "$clone")
   assert_contains "$out" "syncset: already current" "at the approved ref the clone is current despite origin/main being ahead"
@@ -436,10 +448,45 @@ test_sync_ref_missing_refuses_without_fallback() {
 
   out=$(run_sync "$home" "$clone")
 
-  assert_contains "$out" "syncmissing: skipped: fm.syncRef origin/checks-approved does not exist" "missing fm.syncRef ref is refused by name"
+  assert_contains "$out" "syncmissing: skipped: origin/checks-approved does not exist" "missing fm.syncRef ref is refused by name"
   assert_not_contains "$out" "synced" "missing fm.syncRef ref never falls back to origin/main"
   [ "$(head_sha "$clone")" = "$before" ] || fail "missing fm.syncRef ref moved the clone"
   pass "set fm.syncRef naming a missing origin ref is refused and nothing moves"
+}
+
+test_sync_ref_global_config_ignored() {
+  local home clone out global
+  home=$(new_home)
+  clone=$(build_pair "$home" syncglobal)
+  global="$home/global.gitconfig"
+  git config --file "$global" fm.syncRef checks-approved
+  advance_origin "$home" syncglobal C1
+
+  out=$(GIT_CONFIG_GLOBAL="$global" run_sync "$home" "$clone")
+
+  assert_contains "$out" "syncglobal: synced" "global fm.syncRef does not move the sync base"
+  [ "$(head_sha "$clone")" = "$(git -C "$clone" rev-parse origin/main)" ] || fail "global fm.syncRef changed the sync base"
+  pass "only clone-local fm.syncRef applies"
+}
+
+test_sync_ref_enabled_on_ahead_clone_waits() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" syncahead)
+  advance_origin "$home" syncahead C1
+  push_origin_ref "$home" syncahead checks-approved main
+  advance_origin "$home" syncahead C2
+  run_sync "$home" "$clone" >/dev/null
+  before=$(head_sha "$clone")
+  [ "$before" = "$(git -C "$clone" rev-parse origin/main)" ] || fail "fixture: clone not at origin/main before enabling fm.syncRef"
+  git -C "$clone" config fm.syncRef checks-approved
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "syncahead: ahead of sync base origin/checks-approved; waiting for it to catch up" "ahead clone reports a benign wait"
+  assert_not_contains "$out" "STUCK" "ahead clone is not STUCK"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "ahead clone was moved"
+  pass "enabling fm.syncRef on a clone ahead of it waits without STUCK or moving backwards"
 }
 
 test_sync_ref_not_ancestor_is_stuck_untouched() {
@@ -786,6 +833,8 @@ test_already_current_unchanged
 test_sync_ref_unset_follows_default_branch
 test_sync_ref_set_fast_forwards_to_that_ref
 test_sync_ref_missing_refuses_without_fallback
+test_sync_ref_global_config_ignored
+test_sync_ref_enabled_on_ahead_clone_waits
 test_sync_ref_not_ancestor_is_stuck_untouched
 test_no_origin_skipped
 test_local_only_skipped
