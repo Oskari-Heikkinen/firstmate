@@ -68,6 +68,11 @@ unset FM_TASK_ID
 # against an ambient override sets TASKS_AXI_FILE itself.
 unset TASKS_AXI_FILE TASKS_AXI_BACKEND
 
+# The watcher's idle park nudge replaces the immediate wake for an idle ship or
+# scout pane with a steer first. Suites that pin the immediate wake predate it,
+# so it is off here; tests/fm-park.test.sh turns it on for the cases it covers.
+export FM_IDLE_PARK_NUDGE=off
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

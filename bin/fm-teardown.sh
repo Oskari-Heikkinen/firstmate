@@ -3767,6 +3767,10 @@ if [ -n "$LAUNCH_HOME_TOKEN" ]; then
   rm -rf "/tmp/fm-$ID+$LAUNCH_HOME_TOKEN"
 fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
+if [ "$(fm_meta_get "$META" park_state)" = parked ]; then
+  FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-procevent-when.sh" retire "park-$ID" >/dev/null \
+    || { echo "error: could not retire $ID's park watch (park-$ID); retry the teardown" >&2; exit 1; }
+fi
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Opt-in fleet activity ledger (docs/fleet-ledger.md), before the status log is
 # retired so its last lines are captured; off costs one file test.

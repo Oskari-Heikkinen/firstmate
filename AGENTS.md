@@ -274,6 +274,7 @@ No turn ends blind while work is under way, including turns described as holding
 - After any supervision-branch acknowledgement succeeds or reports that a sequence is already processed, never acknowledge that sequence again or retry the refusal.
 - A status line is a wake event, not current state; use `bin/fm-crew-state.sh` when current state matters, especially before re-escalating an old decision, blocker, or pause.
 - `bin/fm-classify-lib.sh` owns the distinction between declared `paused:` waits and `blocked:` events needing firstmate action; `bin/fm-brief.sh` owns worker declaration instructions.
+- A worker that only waits on an external result is parked through `bin/fm-park.sh` rather than left idle; its header owns the handoff, resume, and wake contract.
 
 Handle actionable wakes as follows:
 
