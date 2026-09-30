@@ -595,9 +595,11 @@ fi
 # single most expensive root rather than the sum of its roots.
 TAB=$(printf '\t')
 # Roots at or above this many expanded source bytes are heavy: measured under
-# the pinned ShellCheck, every root above about 3 GB peak RSS but one (a
-# self-contained test near 3.5 GB) crosses it. Heavy roots always share one
-# worker, so two heavy analyses never run concurrently on one host.
+# the pinned ShellCheck, every root above about 3 GB peak RSS crosses it except
+# two self-contained tests near 3.5-3.8 GB (tests/fm-procevent.test.sh and
+# tests/fm-backend-herdr.test.sh, whose quoted sources ShellCheck never
+# follows). Heavy roots always share one worker, so two heavy analyses never run
+# concurrently on one host.
 HEAVY_SOURCE_BYTES=1000000
 fm_lint_root_weights() {
   local path
@@ -611,8 +613,8 @@ fm_lint_root_weights() {
   done
   [ "${#ROOTS[@]}" -gt 0 ] || return 0
   printf '%s\n' "${ROOTS[@]}" | LC_ALL=C awk '
-    # Carries quote, command-substitution, and here-document state across
-    # physical lines, so source commands inside a multi-line string such as a
+    # Carries quote, command-substitution, arithmetic, and here-document state
+    # across physical lines, so source commands inside a multi-line string such as a
     # bash -c body, which ShellCheck never follows, add nothing.
     function scan(line,    i, j, c, top, rest, body) {
       if (heredoc != "") {
@@ -643,9 +645,9 @@ fm_lint_root_weights() {
           continue
         }
         if (c == "$" && substr(line, i, 1) == "(") {
-          stack[++depth]="("
+          stack[++depth]=(substr(line, i + 1, 1) == "(") ? "((" : "("
           parens[depth]=0
-          i++
+          i+=length(stack[depth])
           continue
         }
         if (top == "\"") {
@@ -657,11 +659,19 @@ fm_lint_root_weights() {
         else if (c == "$" && substr(line, i, 1) == "\047") {
           stack[++depth]="$\047"
           i++
-        } else if (top == "(" && c == "(") parens[depth]++
-        else if (top == "(" && c == ")") {
+        } else if (c == "(" && top != "((" && substr(line, i, 1) == "(") {
+          stack[++depth]="(("
+          parens[depth]=0
+          i++
+        } else if (top != "" && c == "(") parens[depth]++
+        else if (top != "" && c == ")") {
           if (parens[depth]) parens[depth]--
-          else depth--
-        } else if (c == "#" && (i == 2 || substr(line, i - 2, 1) ~ /[[:space:];&|()]/)) return
+          else {
+            if (top == "((") i++
+            depth--
+          }
+        } else if (top == "((") continue
+        else if (c == "#" && (i == 2 || substr(line, i - 2, 1) ~ /[[:space:];&|()]/)) return
         else if (c == "<" && substr(line, i - 1, 3) == "<<<") i+=2
         else if (c == "<" && match(substr(line, i - 1), /^<<-?[[:space:]]*[\\\047"]?[A-Za-z_][A-Za-z0-9_]*[\047"]?/)) {
           heredoc=substr(line, i + 1, RLENGTH - 2)

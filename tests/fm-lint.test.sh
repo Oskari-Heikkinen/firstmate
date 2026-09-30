@@ -1307,8 +1307,8 @@ SH
 # into both concurrent workers, and one CI runner summed two multi-GB analyses
 # until it was killed. Heavy roots must share one worker regardless of their own
 # size, counting directive and undirected sources, including those in command
-# substitutions, but not /dev/null boundaries or sources inside strings and
-# here-documents, which ShellCheck never follows.
+# substitutions and after arithmetic shifts, but not /dev/null boundaries or
+# sources inside strings and here-documents, which ShellCheck never follows.
 test_heavy_source_closures_share_one_worker() {
   local tmp rel fakebin call_log calls out lib root invocation heavy_hits light_hits
   local heavy_workers light_workers
@@ -1355,6 +1355,8 @@ SH
 SH
   cat > "$tmp/heavy-substitution.sh" <<SH
 #!/usr/bin/env bash
+n=\$(( 1 << n ))
+(( n = n << 1 ))
 out=\$(
   . "\$ROOT/$rel/big-lib.sh"
   . "\$ROOT/$rel/big-lib.sh"
