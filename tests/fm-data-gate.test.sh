@@ -455,6 +455,290 @@ test_home_discovery() {
   pass "homes come from named registry and pool files"
 }
 
+# --- Size rule (docs/data-gate.md "The size rule") ---------------------------
+# Sparse files (truncate -s, no disk use): ~/big holds 300 MiB copies of real
+# read targets, ~/small the same names at a few bytes.
+build_size_fixture() {
+  local d f
+  for d in big small; do
+    mkdir -p "$FAKE_HOME/$d/services" "$FAKE_HOME/$d/fetched/workspace/ledger"
+    for f in rolling.py tj_fill.py config.json sample.tsv final.json archive.tar review.txt entries.jsonl \
+      services/a.conf services/b.conf COMPLETE STORED.md result.json fetched/workspace/ledger/workspace.json; do
+      if [ "$d" = big ]; then truncate -s 300M "$FAKE_HOME/$d/$f"; else printf 'x\n' >"$FAKE_HOME/$d/$f"; fi
+    done
+  done
+  mkdir -p "$FAKE_HOME/lattice-batches/fixture-prototype" "$MAIN/data/move-relayout-fx" "$MAIN/data/shell-runs-fx"
+  printf '{"batch_id": "fixture-prototype"}\n' >"$FAKE_HOME/lattice-batches/fixture-prototype/lattice-batch.json"
+  printf 'relayout-verdict-fx accepted\n' >"$MAIN/data/move-relayout-fx/report.md"
+  printf 'relayout-verdict-fx accepted\n' >"$MAIN/data/shell-runs-fx/report.md"
+  printf 'x\n' >"$WT/src/fm-disk-room.test.sh"
+}
+
+# expect | cwd | bash command. Each shape is a real read: "log #N" is record N
+# of the gate's decision log (~/.local/state/lattice-data-gate/decisions.jsonl
+# on the operator's machine, 2026-09-30), "S1r <id>" a read in lattice-research
+# tests/fixtures/lattice-data/reads.jsonl; paths are mapped into ~/small or ~/big.
+SIZE_BASH_TABLE=$(cat <<'EOF'
+# log #52: windowed sed and grep through a variable set earlier in the command
+allow|H|D=~/small; sed -n 445,465p $D/rolling.py; sed -n 575,590p $D/rolling.py; grep -n "^import\|^from\|transfer" $D/rolling.py | head -12
+block|H|D=~/big; sed -n 445,465p $D/rolling.py
+block|H|D=~/big; grep -n "^import\|transfer" $D/rolling.py | head -12
+allow|H|D=~/big; sed -n '445,465p;465q' $D/rolling.py
+# log #119: cat -n of a named test file
+allow|W|cat -n src/fm-disk-room.test.sh
+# log #98: globbed config cat into head, grep over two named files
+allow|H|C=~/big; cat $C/services/*.conf 2>/dev/null | head -40
+block|H|C=~/big; cat $C/services/*.conf 2>/dev/null
+allow|H|C=~/small; grep -n -i -E 'floor|_gb|c_free' $C/tj_fill.py $C/config.json | head -50
+block|H|C=~/big; grep -n -i -E 'floor|_gb|c_free' $C/tj_fill.py $C/config.json | head -50
+# log #145, #65: checksums
+allow|H|R7=~/small; sha256sum $R7/review.txt 2>/dev/null
+block|H|sha256sum ~/big/archive.tar
+allow|H|nice -n 19 ionice -c3 sha256sum ~/big/archive.tar
+allow|H|nice -n19 ionice -c 3 bash -c 'sha256sum ~/big/archive.tar'
+block|H|nice -n 19 sha256sum ~/big/archive.tar
+allow|H|cd ~/big && find . -type f ! -name SHA256SUMS | sort | xargs sha256sum > SHA256SUMS.new
+# log #171: awk over a named tsv
+allow|H|cd ~/small; awk -F'\t' 'NR>1{print $2}' sample.tsv | sort | uniq -c
+block|H|cd ~/big; awk -F'\t' 'NR>1{print $2}' sample.tsv | sort | uniq -c
+# log #68, #103, #161: python heredocs and -c
+allow|H|python3 - ~/big/rolling.py <<'PY'
+import sys;p=sys.argv[1];s=open(p).read()
+PY
+block|H|python3 - <<'PY'
+import json
+d = json.load(open("REPLACED_BIG_FINAL"))
+PY
+allow|H|python3 - <<'PY'
+f = open("REPLACED_BIG_FINAL"); f.seek(1000); print(f.read(4096))
+PY
+block|H|python3 -c 'import json; print(len(json.load(open("REPLACED_BIG_FINAL"))))'
+allow|H|python3 -c 'import json; print(len(json.load(open("REPLACED_SMALL_FINAL"))))'
+allow|H|python3 -m lattice_ledger show E1
+# false blocks found in review: a Path stat and a write-mode open read nothing
+allow|H|python3 -c "from pathlib import Path; print(Path('REPLACED_BIG_FINAL').stat().st_size)"
+block|H|python3 -c "from pathlib import Path; print(len(Path('REPLACED_BIG_FINAL').read_text()))"
+allow|H|python3 -c "open('REPLACED_BIG_FINAL', 'a').write('x')"
+allow|H|python3 -c "open('REPLACED_BIG_FINAL', mode='wb').close()"
+block|H|python3 -c "print(len(open('REPLACED_BIG_FINAL', 'rb').read()))"
+# log #33, #76: virtual files
+allow|H|cat /proc/meminfo | head -8; cat /proc/sys/vm/swappiness
+# log #40, #159: head and tail always pass
+allow|H|tail -3 ~/big/entries.jsonl; head -30 ~/big/rolling.py; head -c 8192 ~/big/final.json
+allow|H|tail -n 50 < ~/big/entries.jsonl
+block|H|wc -l < ~/big/entries.jsonl
+# false blocks found in review: a byte count is a stat, not a read
+allow|H|wc -c ~/big/entries.jsonl; wc --bytes ~/big/final.json; wc -c < ~/big/entries.jsonl
+block|H|wc -lc ~/big/entries.jsonl
+block|H|wc ~/big/entries.jsonl
+block|H|while read -r line; do :; done < ~/big/entries.jsonl
+allow|H|dd if=~/big/archive.tar bs=1M skip=10 count=4 status=none | xxd | head
+block|H|dd if=~/big/archive.tar of=/dev/null bs=1M
+allow|H|xxd -l 256 ~/big/archive.tar
+allow|H|od -N 64 -c ~/big/archive.tar
+block|H|less ~/big/entries.jsonl
+block|H|jq '.rows | length' ~/big/final.json
+allow|H|jq '.rows | length' ~/small/final.json
+block|H|zcat ~/big/archive.tar
+allow|H|zcat ~/big/archive.tar | head -100
+block|H|export D=~/big; cut -f2 $D/sample.tsv
+allow|H|cp ~/big/archive.tar ~/big/archive.copy
+allow|H|echo "cat ~/big/final.json"
+# S1r: the fixture's run and read calls
+allow|H|lattice-data find-run R1
+allow|H|lattice-data grep tetjet-slice/s1 R1 fetched/workspace/ledger -l
+allow|H|python3 -m lattice_batches list --root ~/lattice-batches
+allow|H|python3 -m lattice_batches report-due --receipts data/tetjet-offload/results --root ~/lattice-batches
+allow|H|grep -rn relayout-verdict-fx data/move-relayout-fx/report.md data/shell-runs-fx/report.md
+allow|H|cat ~/lattice-batches/fixture-prototype/lattice-batch.json
+allow|H|cat ~/small/STORED.md; cat ~/small/COMPLETE; cat ~/small/result.json
+allow|H|cat ~/small/fetched/workspace/ledger/workspace.json
+allow|H|ls ~/big/fetched/workspace
+block|H|cat ~/big/fetched/workspace/ledger/workspace.json
+EOF
+)
+
+# expect | cwd | path | offset | limit: the Read tool (S1r read calls).
+SIZE_READ_TABLE=$(cat <<'EOF'
+allow|H|~/lattice-batches/fixture-prototype/lattice-batch.json||
+allow|H|~/lattice-ledger/runs/E1.md||
+allow|H|~/small/final.json||
+allow|H|~/small/COMPLETE||
+allow|H|~/small/STORED.md||
+allow|H|~/small/result.json||
+block|H|~/big/final.json||
+allow|H|~/big/final.json|1|200
+allow|H|~/big/final.json||50
+allow|H|~/big/final.json|4000|
+block|H|~/big/entries.jsonl||
+allow|H|~/big||
+allow|H|~/missing.json||
+EOF
+)
+
+size_gate() {  # <size-mode> <args...>
+  local mode=$1
+  shift
+  HOME="$FAKE_HOME" LATTICE_DATA_GATE=enforce LATTICE_DATA_GATE_SIZE="$mode" "$GATE" "$@"
+}
+
+test_size_bash_table() {
+  local failures=0 count=0 pending="" line
+  local big="$FAKE_HOME/big/final.json" small="$FAKE_HOME/small/final.json"
+  size_case() {
+    local row=$1 expect cwd cmd code want=0
+    expect=${row%%|*}
+    row=${row#*|}
+    cwd=$(cwd_of "${row%%|*}")
+    cmd=${row#*|}
+    cmd=${cmd//REPLACED_BIG_FINAL/$big}
+    cmd=${cmd//REPLACED_SMALL_FINAL/$small}
+    [ "$expect" = block ] && want=2
+    size_gate enforce --harness pi --cwd "$cwd" --command "$cmd" >/dev/null 2>&1
+    code=$?
+    [ "$code" = "$want" ] && return 0
+    printf 'not ok - expected %s (exit %s), got exit %s: cwd=%s cmd=%s\n' "$expect" "$want" "$code" "$cwd" "$cmd" >&2
+    return 1
+  }
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    if [[ "$line" =~ ^(allow|block)\|[HTSW~L]\| ]]; then
+      [ -n "$pending" ] && { size_case "$pending" || failures=$((failures + 1)); count=$((count + 1)); }
+      pending=$line
+    else
+      pending="$pending"$'\n'"$line"
+    fi
+  done <<<"$SIZE_BASH_TABLE"
+  [ -n "$pending" ] && { size_case "$pending" || failures=$((failures + 1)); count=$((count + 1)); }
+  [ "$failures" -eq 0 ] || fail "$failures of $count size bash table rows failed"
+  pass "size bash table: all $count rows match (allow/block)"
+}
+
+test_size_read_table() {
+  local expect key path offset limit cwd code code2 want args payload failures=0 count=0 abs
+  while IFS='|' read -r expect key path offset limit; do
+    case "$expect" in ''|'#'*) continue ;; esac
+    count=$((count + 1))
+    cwd=$(cwd_of "$key")
+    want=0
+    [ "$expect" = block ] && want=2
+    args=(--harness pi --cwd "$cwd" --tool read --path "$path")
+    [ -n "$offset" ] && args+=(--offset "$offset")
+    [ -n "$limit" ] && args+=(--limit "$limit")
+    size_gate enforce "${args[@]}" >/dev/null 2>&1
+    code=$?
+    abs=${path/#\~/$FAKE_HOME}
+    payload=$(node -e '
+      const [cwd, file_path, offset, limit] = process.argv.slice(1);
+      const input = { file_path };
+      if (offset) input.offset = Number(offset);
+      if (limit) input.limit = Number(limit);
+      process.stdout.write(JSON.stringify({ session_id: "s", transcript_path: "/x/transcript_path.jsonl", cwd, tool_name: "Read", tool_input: input }));
+    ' "$cwd" "$abs" "$offset" "$limit")
+    printf '%s' "$payload" | size_gate enforce --harness claude >/dev/null 2>&1
+    code2=$?
+    if [ "$code" != "$want" ] || [ "$code2" != "$want" ]; then
+      printf 'not ok - %s read path=%s offset=%s limit=%s\n' "$expect" "$path" "$offset" "$limit" >&2
+      failures=$((failures + 1))
+    fi
+  done <<<"$SIZE_READ_TABLE"
+  [ "$failures" -eq 0 ] || fail "$failures of $count Read table rows failed"
+  pass "size Read table: all $count rows match through --tool read and the Claude payload"
+}
+
+expected_size_refusal() {  # <tool> <file>
+  cat <<EOF
+BLOCKED (data gate): $1 would read all of $2 (300 MiB; the whole-file limit is 200 MiB).
+Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+      a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+      a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+See skill data-access, section "Blocked large read". If none of these fits, ask main.
+EOF
+}
+
+test_size_refusal_and_modes() {
+  local log="$FAKE_HOME/.local/state/lattice-data-gate/decisions.jsonl" conf="$FAKE_HOME/.config/lattice-data-gate/mode"
+  local big="$FAKE_HOME/big/final.json" err before
+  err=$(size_gate enforce --harness pi --cwd "$MAIN" --command "cat $big" 2>&1 >/dev/null)
+  assert_equals "$(expected_size_refusal cat "$big")" "$err" "the size refusal names the file, its size, the limit and the skill"
+
+  rm -f "$log"
+  size_gate log --harness pi --cwd "$MAIN" --command "cat $big" >/dev/null 2>&1
+  expect_code 0 $? "size log mode allows a whole read over the limit while the scan rule enforces"
+  tail -n 1 "$log" | node -e '
+    const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const t = r.targets[0];
+    if (r.verdict !== "allow" || r.would_block !== true || JSON.stringify(r.would_block_rules) !== "[\"size\"]") throw new Error(JSON.stringify(r));
+    if (r.mode !== "enforce" || r.size_mode !== "log" || r.size_limit !== 209715200) throw new Error(JSON.stringify(r));
+    if (t.rule !== "size" || t.tool !== "cat" || t.size !== 314572800 || t.verdict !== "block") throw new Error(JSON.stringify(t));
+  ' || fail "the would-block size read is recorded with its rule, size and modes"
+  size_gate log --harness pi --cwd "$MAIN" --command 'rg foo' >/dev/null 2>&1
+  expect_code 2 $? "the scan rule still enforces while the size rule logs"
+  tail -n 1 "$log" | grep -q '"would_block_rules":\["scan"\]' || fail "a scan block names the scan rule"
+  size_gate enforce --harness pi --cwd "$MAIN" --command "sed -n 1,5p\;5q $big" >/dev/null 2>&1
+  tail -n 1 "$log" | grep -q '"why":"bounded"' || fail "a bounded read of a big file is recorded as an allowed size target"
+  before=$(wc -l <"$log")
+  size_gate enforce --harness pi --cwd "$MAIN" --command 'cat ~/small/final.json' >/dev/null 2>&1
+  size_gate enforce --harness pi --cwd "$MAIN" --tool read --path "$FAKE_HOME/small/final.json" >/dev/null 2>&1
+  assert_equals "$before" "$(wc -l <"$log")" "reads within the limit are never logged"
+
+  mkdir -p "$(dirname "$conf")"
+  printf 'enforce\nsize log\n' >"$conf"
+  assert_equals "enforce" "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE "$GATE" mode)" "the first word stays the scan rule's mode"
+  assert_equals "log" "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE "$GATE" mode size)" "a size line sets the size rule's mode"
+  HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE -u LATTICE_DATA_GATE_SIZE "$GATE" --harness pi --cwd "$MAIN" --command "cat $big" >/dev/null 2>&1
+  expect_code 0 $? "size log from the file allows"
+  HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE -u LATTICE_DATA_GATE_SIZE "$GATE" --harness pi --cwd "$MAIN" --command 'rg foo' >/dev/null 2>&1
+  expect_code 2 $? "scan enforce from the same file refuses"
+  HOME="$FAKE_HOME" LATTICE_DATA_GATE_SIZE=enforce "$GATE" --harness pi --cwd "$MAIN" --command "cat $big" >/dev/null 2>&1
+  expect_code 2 $? "LATTICE_DATA_GATE_SIZE overrides the size line"
+
+  printf 'log\n' >"$conf"
+  assert_equals "enforce" "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE "$GATE" mode size)" "without a size line the size rule enforces by default"
+  HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE -u LATTICE_DATA_GATE_SIZE "$GATE" --harness pi --cwd "$MAIN" --command "cat $big" >/dev/null 2>&1
+  expect_code 2 $? "the default size mode refuses even when the scan rule logs"
+
+  printf 'enforce\nsize-limit 1G\nsize log' >"$conf"
+  assert_equals "log" "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE "$GATE" mode size)" "a last size line without a newline is read"
+  printf 'enforce\nsize-limit 1G' >"$conf"
+  assert_equals 1073741824 "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE_LIMIT "$GATE" size-limit)" "a last size-limit line without a newline is read"
+
+  printf 'log\nsize enforce\nsize-limit 1G\n' >"$conf"
+  assert_equals 1073741824 "$(HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE_LIMIT "$GATE" size-limit)" "a size-limit line sets the limit"
+  HOME="$FAKE_HOME" env -u LATTICE_DATA_GATE_SIZE "$GATE" --harness pi --cwd "$MAIN" --command "cat $big" >/dev/null 2>&1
+  expect_code 0 $? "a file under a raised limit passes"
+  HOME="$FAKE_HOME" LATTICE_DATA_GATE_SIZE_LIMIT=100M "$GATE" --harness pi --cwd "$MAIN" --command "cat $big" >/dev/null 2>&1
+  expect_code 2 $? "LATTICE_DATA_GATE_SIZE_LIMIT overrides the size-limit line"
+  assert_equals 209715200 "$(HOME="$FAKE_HOME" LATTICE_DATA_GATE_SIZE_LIMIT=lots "$GATE" size-limit)" "an invalid limit falls back to 200M"
+  assert_equals 4096 "$(HOME="$FAKE_HOME" LATTICE_DATA_GATE_SIZE_LIMIT=4096 "$GATE" size-limit)" "a bare limit is bytes"
+  rm -f "$conf"
+  pass "the size rule has its own mode and limit beside the scan rule"
+}
+
+test_size_read_payload_transports() {
+  local big="$FAKE_HOME/big/final.json" out
+  out=$(printf '{"cwd":"%s","toolName":"Read","toolInput":{"file_path":"%s"}}' "$MAIN" "$big" | size_gate enforce --harness grok 2>/dev/null)
+  assert_contains "$out" '"decision":"deny"' "a grok-shaped Read payload gets the deny object"
+  printf '{"cwd":"%s","tool_name":"Read","tool_input":{"file_path":"../../../big/final.json"}}' "$MAIN/data" | size_gate enforce --harness claude >/dev/null 2>&1
+  expect_code 2 $? "a relative Read path resolves against the payload cwd"
+  printf '{"cwd":"%s","tool_name":"Read","tool_input":{"file_path":"%s\\u002ejson"}}' "$MAIN" "${big%.json}" | size_gate enforce --harness claude >/dev/null 2>&1
+  expect_code 2 $? "an escaped Read path is decoded by the policy"
+  printf '{"cwd":"%s","tool_name":"Read","tool_input":{"file_path":"%s","offset":null}}' "$MAIN" "$big" | size_gate enforce --harness claude >/dev/null 2>&1
+  expect_code 2 $? "a null offset is not a bound"
+  pass "Read payloads reach the size rule in every transport"
+}
+
+test_size_internal_error_allows() {
+  local copy="$TMP_ROOT/brokenbin2" log="$FAKE_HOME/.local/state/lattice-data-gate/decisions.jsonl"
+  mkdir -p "$copy"
+  cp "$GATE" "$copy/fm-data-gate.sh"
+  printf 'throw new Error("boom");\n' >"$copy/fm-data-gate-policy.mjs"
+  HOME="$FAKE_HOME" LATTICE_DATA_GATE_SIZE=enforce "$copy/fm-data-gate.sh" --harness pi --cwd "$MAIN" --tool read --path "$FAKE_HOME/big/final.json" >/dev/null 2>&1
+  expect_code 0 $? "a broken policy lets a big read through even in enforce mode"
+  tail -n 1 "$log" | grep -q '"error":"policy failed' || fail "the size rule's internal error is logged"
+  pass "size rule internal errors allow and are logged"
+}
+
 build_fixture
 test_home_discovery
 test_bash_table
@@ -465,3 +749,9 @@ test_enforce_transports
 test_log_mode_default
 test_unknown_mode_is_log
 test_internal_error_allows_and_logs
+build_size_fixture
+test_size_bash_table
+test_size_read_table
+test_size_refusal_and_modes
+test_size_read_payload_transports
+test_size_internal_error_allows
