@@ -552,12 +552,12 @@ This section is the single owner of its keys; an absent file or key uses the def
 
 | Key | Default | Admits only while |
 | --- | --- | --- |
-| `mem_floor_mib` | 6144 | `MemAvailable` stays at or above this floor after the new unit's cost |
+| `mem_floor_mib` | 3072 | `MemAvailable` stays at or above this floor after the new unit's cost (the memory guard's refuse line) |
 | `agent_cost_mib` | 400 | (the memory charged for each new agent, and for each admitted in the last 60 s) |
 | `mem_full_avg10_max` | 5 | memory pressure `full avg10` is at or below this percent |
 | `cpu_some_avg10_max` | 40 | CPU pressure `some avg10` is at or below this percent |
 | `load1_per_core_max` | 1.5 | the 1-minute load divided by online CPUs is at or below this |
-| `max_agents` | 24 | live agent processes on the machine, across every home and counting the new one, stay within this cap |
+| `max_agents` | 40 | live agent processes on the machine, across every home and counting the new one, stay within this cap |
 | `relaunch_per_minute_per_home` | 2 | a home has made fewer restart-shaped launches (relaunches and secondmate respawns) in the last minute |
 | `wait_max_s` | 300 | (how long a launch waits for admission before it is refused) |
 | `secondmate_wait_max_s` | 60 | (how long a secondmate launch waits before it starts anyway) |
@@ -595,9 +595,10 @@ Each `memory_guard` threshold is four numbers, one per level from `warn` to `cri
 
 | `memory_guard` key | Default | Meaning |
 | --- | --- | --- |
-| `win_available_mib` | `[4096, 3072, 2048, 1024]` | Windows available memory at or below each value |
+| `win_available_mib` | unset | Windows available memory at or below each value; always sampled and logged, but graded only when set, because a capped WSL VM keeps its memory resident and low Windows available memory is then expected |
 | `win_paging_mibps` | `[30, 60, 90, 120]` | Windows paging (pages in plus out) in MiB/s at or above each value |
-| `linux_available_mib` | `[6144, 4096, 3072, 1536]` | Linux `MemAvailable` at or below each value; the third is also the heavy-job refuse line after the job's cost |
+| `linux_available_mib` | `[4096, 3584, 3072, 1536]` | Linux `MemAvailable` at or below each value; the third is also the heavy-job refuse line after the job's cost |
+| `linux_swap_used_mib` | `[4096, 5120, 6144, 10240]` | Linux swap in use (`SwapTotal` minus `SwapFree`) at or above each value |
 | `linux_psi_full_avg10` | `[2, 5, 10, 25]` | Linux memory pressure `full avg10` percent at or above each value |
 | `win_timeout_s` | 20 | bound on one `powershell.exe` reading |
 | `win_cache_s` | 60 | age under which the shared Windows reading is reused |

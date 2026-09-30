@@ -101,9 +101,13 @@ CHECK_ID=mem-guard
 LEVELS="ok warn park refuse critical"
 
 # Built-in defaults; thresholds are "warn park refuse critical".
-T_win_available_mib="4096 3072 2048 1024"      # Windows available memory at or below
+# Windows available memory is sampled and logged but graded only when the rules
+# file sets win_available_mib: with WSL capped, its memory is resident and low
+# Windows available memory is expected, so host paging is the Windows signal.
+T_win_available_mib=""                         # Windows available memory at or below
 T_win_paging_mibps="30 60 90 120"              # Windows paging (pages in + out) at or above
-T_linux_available_mib="6144 4096 3072 1536"    # Linux MemAvailable at or below
+T_linux_available_mib="4096 3584 3072 1536"    # Linux MemAvailable at or below
+T_linux_swap_used_mib="4096 5120 6144 10240"   # Linux swap in use at or above
 T_linux_psi_full_avg10="2 5 10 25"             # Linux memory pressure full avg10 at or above
 R_win_timeout_s=20
 R_win_cache_s=60
@@ -114,7 +118,7 @@ R_park_interval_s=900
 R_critical_rewake_s=1800
 R_log_max_lines=5000
 
-THRESHOLD_KEYS="win_available_mib win_paging_mibps linux_available_mib linux_psi_full_avg10"
+THRESHOLD_KEYS="win_available_mib win_paging_mibps linux_available_mib linux_swap_used_mib linux_psi_full_avg10"
 RULE_KEYS="win_timeout_s win_cache_s win_stale_max_s state_max_age_s clear_samples park_interval_s critical_rewake_s log_max_lines"
 
 now() { printf '%s' "${FM_MEM_GUARD_NOW:-$(date +%s)}"; }
@@ -308,7 +312,7 @@ print_sample() {
   printf 'linux_psi_full_avg10=%s\n' "$LINUX_PSI_FULL"
 }
 
-# grade_signal <value> <below|above> <thresholds> -> level index (0 when value empty)
+# grade_signal <value> <below|above> <thresholds> -> level index (0 when value or thresholds empty)
 grade_signal() {
   [ -n "$1" ] || { printf 0; return; }
   # shellcheck disable=SC2086 # thresholds are four space-separated numbers
@@ -330,6 +334,9 @@ grade() {
   [ "$g" -le "$GRADE" ] || GRADE=$g
   g=$(grade_signal "$LINUX_AVAIL_MIB" below "$T_linux_available_mib")
   [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Linux available ${LINUX_AVAIL_MIB} MiB ($(level_name "$g"))"
+  [ "$g" -le "$GRADE" ] || GRADE=$g
+  g=$(grade_signal "$LINUX_SWAP_USED_MIB" above "$T_linux_swap_used_mib")
+  [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Linux swap used ${LINUX_SWAP_USED_MIB} MiB ($(level_name "$g"))"
   [ "$g" -le "$GRADE" ] || GRADE=$g
   g=$(grade_signal "$LINUX_PSI_FULL" above "$T_linux_psi_full_avg10")
   [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Linux memory pressure full avg10 ${LINUX_PSI_FULL}% ($(level_name "$g"))"

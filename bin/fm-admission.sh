@@ -58,12 +58,12 @@ LOCK="$RUN_DIR/admitted.lock"
 RECENT_S=60
 
 # Built-in defaults (the budget design the rules file overrides key by key).
-R_mem_floor_mib=6144           # MemAvailable that must remain after the new agent
+R_mem_floor_mib=3072           # MemAvailable that must remain after the new agent (the memory guard's refuse line)
 R_agent_cost_mib=400           # memory one new agent is expected to take
 R_mem_full_avg10_max=5         # PSI memory `full avg10` ceiling, percent
 R_cpu_some_avg10_max=40        # PSI cpu `some avg10` ceiling, percent
 R_load1_per_core_max=1.5       # 1-minute load per online CPU ceiling
-R_max_agents=24                # live agent processes machine-wide, new one included
+R_max_agents=40                # live agent processes machine-wide, new one included
 R_relaunch_per_minute_per_home=2
 R_wait_max_s=300               # acquire's bound before refusing
 R_secondmate_wait_max_s=60     # acquire's bound before a secondmate admits with a warning

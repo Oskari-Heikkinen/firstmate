@@ -72,7 +72,7 @@ test_healthy_host_admits_and_records() {
 test_each_signal_holds_admission() {
   local out
   new_case signals
-  write_proc "$C/proc" 6000000 0.00 1.00 4.00
+  write_proc "$C/proc" 3000000 0.00 1.00 4.00
   out=$(adm check) && fail "low memory admitted"
   assert_contains "$out" "free memory" "low memory is named"
   write_proc "$C/proc" 16000000 9.50 1.00 4.00
@@ -114,7 +114,7 @@ test_fleet_cap_counts_agent_trees_machine_wide() {
 test_waits_then_admits_when_the_host_recovers() {
   local out rc
   new_case wait-admit
-  write_proc "$C/proc" 6000000 0.00 1.00 4.00
+  write_proc "$C/proc" 3000000 0.00 1.00 4.00
   cat > "$C/recover.sh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$1" >> "$C/sleeps.log"
@@ -132,7 +132,7 @@ SH
 test_refuses_after_the_bound_and_override_skips() {
   local out rc
   new_case refuse
-  write_proc "$C/proc" 6000000 0.00 1.00 4.00
+  write_proc "$C/proc" 3000000 0.00 1.00 4.00
   printf '{"wait_max_s": 0}\n' > "$C/rules.json"
   out=$(adm acquire --label "task t3"); rc=$?
   expect_code 3 "$rc" "acquire past the bound"
@@ -169,7 +169,7 @@ test_malformed_rules_and_disabled_gate() {
   printf 'not json\n' > "$C/rules.json"
   out=$(adm rules)
   assert_contains "$out" "is not a JSON object, so the built-in defaults apply" "a malformed file warns"
-  assert_contains "$out" "max_agents=24" "defaults apply"
+  assert_contains "$out" "max_agents=40" "defaults apply"
   write_proc "$C/proc" 1000 99 99 99
   out=$(FM_ADMISSION=off adm check) || fail "FM_ADMISSION=off still held admission: $out"
   pass "a malformed rules file warns and falls back, and FM_ADMISSION=off admits"
@@ -198,7 +198,7 @@ test_spawn_refuses_before_creating_anything() {
   fm_git_worktree "$C/project" "$C/wt" wt-adm
   fm_test_spawn_home "$C/home" claude
   fm_test_spawn_brief "$C/home" adm-s1
-  write_proc "$C/proc" 6000000 0.00 1.00 4.00
+  write_proc "$C/proc" 3000000 0.00 1.00 4.00
   printf '{"wait_max_s": 0}\n' > "$C/rules.json"
   out=$(fm_test_run_spawn "$C/home" "$C/wt" "$fakebin" adm-s1 "$C/project" --mode no-mistakes --yolo off); rc=$?
   expect_code 1 "$rc" "spawn under memory pressure"$'\n'"$out"

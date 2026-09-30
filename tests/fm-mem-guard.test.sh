@@ -15,10 +15,10 @@ TMP_ROOT=$(fm_test_tmproot fm-mem-guard)
 # tests/lib.sh disables the guard for every other suite; this one exercises it.
 unset FM_MEM_GUARD
 
-# write_proc <avail-kib> <full-avg10>
+# write_proc <avail-kib> <full-avg10> [swap-free-kib]
 write_proc() {
   mkdir -p "$C/proc/pressure"
-  printf 'MemTotal:       24000000 kB\nMemFree:          100000 kB\nMemAvailable:   %s kB\nBuffers:          524288 kB\nCached:          2097152 kB\nSwapTotal:       8388608 kB\nSwapFree:        4194304 kB\n' "$1" > "$C/proc/meminfo"
+  printf 'MemTotal:       24000000 kB\nMemFree:          100000 kB\nMemAvailable:   %s kB\nBuffers:          524288 kB\nCached:          2097152 kB\nSwapTotal:       8388608 kB\nSwapFree:        %s kB\n' "$1" "${3:-7340032}" > "$C/proc/meminfo"
   printf 'some avg10=1.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' "$2" > "$C/proc/pressure/memory"
 }
 
@@ -33,6 +33,10 @@ SH
   chmod +x "$C/powershell.exe"
 }
 
+# WIN_LADDER opts a case into grading Windows available memory, which the
+# defaults only sample, so Windows readings can drive a case's level.
+WIN_LADDER='{"memory_guard": {"win_available_mib": [4096, 3072, 2048, 1024]}}'
+
 # new_case <name>: a primary home with a copy of bin/ so fakes can sit beside the guard.
 new_case() {
   C="$TMP_ROOT/$1"
@@ -42,7 +46,7 @@ new_case() {
   export FM_ADMISSION_RULES="$C/rules.json" FM_MEM_GUARD_DIR="$C/guard" FM_HOME="$C/home"
   export FM_MEM_GUARD_NOW=1000000
   unset FM_STATE_OVERRIDE FM_CONFIG_OVERRIDE FM_DATA_OVERRIDE
-  printf '{}\n' > "$C/rules.json"
+  printf '%s\n' "$WIN_LADDER" > "$C/rules.json"
   write_proc 16000000 0.00
   fake_ps 12000 10
   GUARD="$C/home/bin/fm-mem-guard.sh"
@@ -59,7 +63,7 @@ test_sample_reads_both_sides_and_caches_windows() {
   assert_contains "$out" "win_source=powershell" "a fresh reading names powershell"
   assert_contains "$out" "linux_available_mib=15625" "Linux MemAvailable is read"
   assert_contains "$out" "linux_cache_mib=2560" "page cache counts Cached plus Buffers"
-  assert_contains "$out" "linux_swap_used_mib=4096" "swap use is read"
+  assert_contains "$out" "linux_swap_used_mib=1024" "swap use is read"
   assert_contains "$out" "linux_psi_full_avg10=0.00" "memory pressure is read"
   FM_MEM_GUARD_NOW=1000030 guard sample > "$C/out2"
   assert_grep "win_source=cache 30s" "$C/out2" "a reading inside win_cache_s comes from the cache"
@@ -107,6 +111,24 @@ test_grading_levels_and_hysteresis() {
   assert_equals 4 "$(wc -l < "$C/guard/samples.log" | tr -d ' ')" "each tick appends one sample line"
   assert_equals unknown "$(FM_MEM_GUARD_NOW=1009999 guard level)" "an old record reads unknown"
   pass "signals grade on their ladders, the level rises at once and falls after clear_samples"
+}
+
+test_defaults_grade_linux_and_only_sample_windows_available() {
+  local out
+  new_case defaults
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 900 10
+  out=$(guard tick)
+  assert_contains "$out" "level=ok" "low Windows available memory alone does not grade by default"
+  assert_grep "win_avail_mib=900" "$C/guard/samples.log" "Windows available memory is still logged"
+  write_proc 16000000 0.00 1048576
+  out=$(FM_MEM_GUARD_NOW=1000100 guard tick)
+  assert_contains "$out" "level=refuse" "7168 MiB of swap in use grades refuse"
+  assert_contains "$out" "Linux swap used 7168 MiB (refuse)" "the swap signal is named"
+  write_proc 3600000 0.00
+  out=$(FM_MEM_GUARD_NOW=1000200 guard tick)
+  assert_contains "$out" "Linux available 3515 MiB (park)" "Linux MemAvailable grades on its default ladder"
+  pass "defaults grade Linux memory and swap and only sample Windows available memory"
 }
 
 test_admit_refuses_heavy_jobs() {
@@ -345,6 +367,7 @@ SH
 test_sample_reads_both_sides_and_caches_windows
 test_sample_degrades_to_linux_only
 test_grading_levels_and_hysteresis
+test_defaults_grade_linux_and_only_sample_windows_available
 test_admit_refuses_heavy_jobs
 test_critical_wakes_only_main_once_per_window
 test_park_level_parks_or_steers_idle_workers
