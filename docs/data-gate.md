@@ -8,6 +8,7 @@ It is one layer of the data-storage plan: the bulk store's unlistable directorie
 
 `bin/fm-data-gate.sh` is the entry point every adapter calls, and its header owns the exit and output contract.
 `bin/fm-data-gate-policy.mjs` owns both decisions, and `bin/fm-data-gate-install.sh` owns installation.
+`bin/fm-data-gate-reads.mjs` owns the read log and the daily report that measure how well the data changes work.
 
 ## What the scan rule refuses and what it allows
 
@@ -122,6 +123,21 @@ Error records carry an `error` field instead of `targets`.
 While a rule runs in `log`, review its would-block lines before switching it to `enforce`, for example `grep '"would_block_rules":\["scan"' ~/.local/state/lattice-data-gate/decisions.jsonl` for the scan rule or `grep '"would_block_rules":\[[^]]*"size"' ~/.local/state/lattice-data-gate/decisions.jsonl` for the size rule.
 Each false block becomes an allow rule and a test row before that rule switches to `enforce`.
 
+## The read log and the daily report
+
+The same hooks also record every agent file read they see, in every mode, so bytes read before and after a data change can be compared.
+A read is the Read tool, or a shell command naming a file for `cat`, `head`, `tail`, `less`, `wc`, `sort`, `jq`, `sed`, `awk`, `grep`, `rg` and similar readers, a `< file` redirect, or `python -c` with `open('file')`.
+Each named regular file gets one row in `~/.local/state/lattice-data-gate/reads.jsonl` with `ts`, `harness`, `home`, `task`, `session`, `cwd`, `tool`, `path`, `size`, `bounded`, `bytes_requested`, `whole_file`, `size_rule_would_block` (an unbounded read of a file over 200 MB) and `is_digest` (the file is a `DIGEST.md`).
+`bytes_requested` is the whole file unless the call bounds it: `head -c` and `tail -c` count bytes, while a line bound (`head -n`, `tail -n`, a piped `| head`, or a Read `limit`) is converted with the file's bytes per line from one 64 KiB head sample and marked `bytes_estimated`.
+The task is `FM_TASK_ID`, else the `fm/<id>` branch of the working directory's worktree; the home is `FM_HOME`, else the discovered home containing the working directory, else the home holding that task's status file.
+Field names follow the transcript baseline in the main home's `data/fm-read-baseline/`, so its numbers stay comparable.
+The read path never blocks, never prints, stats each file once, and is bounded to three seconds; `LATTICE_DATA_GATE_READS=off` turns it off.
+Directories, missing files and glob or variable operands are not recorded.
+
+`bin/fm-data-gate-report.sh` summarizes one local day (default yesterday) in `~/.local/state/lattice-data-gate/reports/<date>.md` and prints one relay line: bytes read by agents, the largest reads, scan and size would-blocks and blocks from the decision log (grouped by a record's `rule`, absent meaning scan), whole-file reads over 200 MB, the `DIGEST.md` hit rate, disk growth and IO pressure from the `fm-io-sample` log `samples.jsonl`, and the baseline headline when that baseline report exists.
+A `DIGEST.md` read is a miss when the same session (else task, else working directory) reads a file over 10 MB in the same folder within 30 minutes, and a hit otherwise.
+Its header owns the options.
+
 ## Install, status and uninstall
 
 Run the installer from a durable Firstmate checkout, never a disposable task worktree, because every hook calls the gate by its absolute path.
@@ -152,6 +168,7 @@ Codex refuses a new or changed hook until it is trusted ("Hooks need review"), a
 So the installer, run by the operator, records the trust hash for exactly the gate hook as `[hooks.state."<hooks.json>:pre_tool_use:<group>:<handler>"]` in `~/.codex/config.toml`, the same entry an interactive approval writes, and `uninstall` removes it; `status` reports whether it is present.
 Known limit: Firstmate launches Codex workers and scouts with Codex's hook layer disabled, so the gate does not fire inside those sessions; the unlistable store directories still apply there.
 The Claude entry stands down under Grok, which can also load Claude settings, so a Grok session is gated only by its own hook.
+Codex and Grok reads are logged only when they go through the shell.
 Cursor, Kimi, Gemini, Muse, Rovo, Antigravity and Devin get no adapter from this installer.
 
 ## Adding an allow rule
@@ -167,7 +184,9 @@ For a one-off search, the refusal itself names the override: search the named sm
 ```sh
 tests/fm-data-gate.test.sh
 tests/fm-data-gate-install.test.sh
+tests/fm-data-gate-reads.test.sh
 ```
 
 The first suite drives both rules' decision tables through a fake home: the scan table includes every read in the data-storage plan's legitimate-reads table as allowed, and the size tables replay the shapes of real recorded reads (the gate's decision log and lattice-research's S1r replay fixture) against 300 MiB sparse files and small ones.
-The second runs the installer only against a temporary `HOME` and proves the dry run, idempotent re-install, byte-identical uninstall, and that each installed adapter calls the gate.
+The second runs the installer only against a temporary `HOME` and proves the dry run, idempotent re-install, byte-identical uninstall, and that each installed adapter calls the gate and logs reads.
+The third drives the read log and the daily report through a fake home.

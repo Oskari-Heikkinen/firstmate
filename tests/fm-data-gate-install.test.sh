@@ -8,7 +8,7 @@
 # a later edit (only gate entries removed, even across a re-install), an
 # unparseable settings file (left untouched), every registered Claude login
 # folder, the generated bulk paths, the Codex trust entry, and the installed
-# hooks, plugins and extensions actually calling the gate.
+# hooks, plugins and extensions actually calling the gate and logging reads.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -303,6 +303,57 @@ test_installed_adapters_call_the_gate() {
   pass "installed Claude, Codex, Grok, Pi and OpenCode adapters call the gate"
 }
 
+test_installed_adapters_log_reads() {
+  local h cmd payload reads cwd
+  h=$(new_home readlog)
+  cwd="$h/Tools/firstmate"
+  reads="$h/.local/state/lattice-data-gate/reads.jsonl"
+  inst "$h" install >/dev/null || fail "install failed"
+  printf 'enforce\n' >"$h/.config/lattice-data-gate/mode"
+  printf 'hello\n' >"$cwd/claude.txt"
+  cp "$cwd/claude.txt" "$cwd/opencode.txt"
+  cp "$cwd/claude.txt" "$cwd/pi.txt"
+
+  payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],session_id:"s1",tool_name:"Read",tool_input:{file_path:process.argv[1]+"/claude.txt"}}))' "$cwd")
+  cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse[0].hooks[0].command)' "$h/.claude/settings.json")
+  printf '%s' "$payload" | HOME="$h" env -u GROK_AGENT -u GROK_HOOK_EVENT sh -c "$cmd" >/dev/null 2>&1
+  expect_code 0 $? "the installed Claude hook allows a Read in enforce mode"
+  assert_grep "\"harness\":\"claude\",\"home\":\"$cwd\"" "$reads" "the installed Claude hook logs a Read"
+
+  HOME="$h" node --input-type=module -e '
+    const [plugin, cwd] = process.argv.slice(1);
+    const mod = await import(plugin);
+    const hooks = await mod.LatticeDataGate({ directory: cwd });
+    await hooks["tool.execute.before"]({ tool: "read" }, { args: { filePath: cwd + "/opencode.txt", limit: 1 } });
+  ' "$h/.config/opencode/plugins/lattice-data-gate.js" "$cwd" 2>&1 || fail "the installed OpenCode plugin passes a read"
+  grep -q '"harness":"opencode".*opencode.txt.*"lines":1' "$reads" || fail "the installed OpenCode plugin logs a bounded read"
+
+  if [ "$(node -p 'Boolean(process.features.typescript)' 2>/dev/null)" != true ]; then
+    pass "this node cannot load TypeScript; the Pi read check is skipped here"
+  else
+  HOME="$h" node --input-type=module -e '
+    const [ext, cwd] = process.argv.slice(1);
+    const mod = await import(ext);
+    const handlers = {};
+    mod.default({ on: (name, fn) => { handlers[name] = fn; } });
+    const result = await handlers.tool_call({ type: "tool_call", toolName: "read", input: { path: cwd + "/pi.txt" } }, { cwd });
+    if (result.block) throw new Error("pi blocked a read");
+  ' "$h/.pi/agent/extensions/lattice-data-gate.ts" "$cwd" 2>&1 || fail "the installed Pi extension passes a read"
+  grep -q '"harness":"pi".*pi.txt' "$reads" || fail "the installed Pi extension logs a read"
+  fi
+  pass "installed Claude, OpenCode and Pi adapters log reads without blocking them"
+}
+
+test_reinstall_upgrades_old_claude_matcher() {
+  local h matcher
+  h=$(new_home upgrade)
+  printf '{"hooks":{"PreToolUse":[{"matcher":"Bash|Grep|Glob","hooks":[{"type":"command","command":"exec /old/fm-data-gate.sh --harness claude","timeout":10}]},{"matcher":"Bash","hooks":[{"type":"command","command":"other"}]}]}}\n' >"$h/.claude/settings.json"
+  inst "$h" install >/dev/null || fail "install failed"
+  matcher=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse; process.stdout.write(p.map((g)=>g.matcher).join(","))' "$h/.claude/settings.json")
+  assert_equals "Bash|Grep|Glob|Read,Bash" "$matcher" "an earlier gate entry is upgraded to match Read in place"
+  pass "re-install upgrades an earlier Claude gate entry to include Read"
+}
+
 # Codex's hook trust contract (codex-rs hooks discovery): the key is
 # "<hooks.json>:pre_tool_use:<group>:<handler>" and the hash is sha256 over the
 # key-sorted compact JSON of {event_name, matcher, hooks:[normalized handler]}.
@@ -354,4 +405,6 @@ test_uninstall_after_edit_strips_only_gate
 test_unparseable_settings_left_untouched
 test_only_existing_harnesses
 test_installed_adapters_call_the_gate
+test_installed_adapters_log_reads
+test_reinstall_upgrades_old_claude_matcher
 test_codex_trust_and_status
