@@ -40,7 +40,7 @@
 # Read log: in every mode a read-shaped call (the Read tool, or a shell command
 # naming a reader such as cat, head, tail, jq, sed, grep or python -c open) is
 # also passed to bin/fm-data-gate-reads.mjs, which appends one row per named
-# file to ~/.local/state/lattice-data-gate/reads.jsonl. That path never blocks,
+# file to ~/.local/state/lattice-data-gate/reads-<date>.jsonl. That path never blocks,
 # never prints, and is bounded to three seconds. LATTICE_DATA_GATE_READS=off
 # turns it off.
 #
@@ -178,9 +178,9 @@ log_reads() {
   [ "${LATTICE_DATA_GATE_READS:-on}" != off ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   if command -v timeout >/dev/null 2>&1; then
-    timeout 3 node "$READS" log "$@" >/dev/null 2>&1 || true
+    timeout 3 node "$READS" log --size-limit "$SIZE_LIMIT" "$@" >/dev/null 2>&1 || true
   else
-    node "$READS" log "$@" >/dev/null 2>&1 || true
+    node "$READS" log --size-limit "$SIZE_LIMIT" "$@" >/dev/null 2>&1 || true
   fi
 }
 

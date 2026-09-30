@@ -7,27 +7,33 @@
 // hit/miss, and the report. docs/data-gate.md owns the operator contract.
 //
 // `log` never blocks and never prints: it stats each named file once (plus one
-// bounded head sample for a line-bounded read) and appends one JSONL row per
-// existing regular file to ~/.local/state/lattice-data-gate/reads.jsonl. It
-// never walks a directory, never expands a glob, and never runs any byte of
-// the submitted command; the shell lexing comes from
-// bin/fm-arm-command-policy.mjs, firstmate's sole shell lexer.
+// bounded head sample for a line-bounded read or a Read tool call) and appends
+// one JSONL row per existing regular file to the day's
+// ~/.local/state/lattice-data-gate/reads-YYYY-MM-DD.jsonl. It never walks a
+// directory, never expands a glob, and never runs any byte of the submitted
+// command; the shell lexing comes from bin/fm-arm-command-policy.mjs,
+// firstmate's sole shell lexer. `report` deletes read logs older than
+// LATTICE_DATA_GATE_READS_KEEP_DAYS days (default 60).
 //
 // CLI:
 //   fm-data-gate-reads.mjs log --harness H [--stdin | --command C |
 //       --tool read --path P [--offset N] [--limit N]] [--cwd DIR]
-//   fm-data-gate-reads.mjs report [--date YYYY-MM-DD | --today] [--no-write]
-//       [--baseline FILE] [--digest-window-min N]
+//       [--size-limit BYTES]
+//   fm-data-gate-reads.mjs report [--date YYYY-MM-DD] [--baseline FILE]
 //     (usage and output: bin/fm-data-gate-report.sh)
 //
 // Read row: {ts, harness, home, task, session, cwd, tool, path, size, bounded,
-// bytes_requested, whole_file, size_rule_would_block, is_digest} plus `lines`
-// and `bytes_estimated` on a line-bounded read. Field names follow the
-// transcript baseline (data/fm-read-baseline/) so before and after compare.
+// bytes_requested, bytes_returned_est, whole_file, size_rule_would_block,
+// is_digest} plus `lines` and `bytes_estimated` on a line-bounded read.
+// bytes_requested counts an unlimited Read as the whole file, as the
+// transcript baseline (data/fm-read-baseline/) does, so before and after
+// compare; bytes_returned_est applies the harness's own Read caps.
+// size_rule_would_block is the size rule's own verdict for the call
+// (bin/fm-data-gate-policy.mjs sizeVerdicts, at the gate's --size-limit).
 
 import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
-import { discover } from "./fm-data-gate-policy.mjs";
-import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { DEFAULT_SIZE_LIMIT, discover, recognizeReads, sizeVerdicts } from "./fm-data-gate-policy.mjs";
+import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -35,14 +41,24 @@ const MAX_PATHS = 32;
 const MAX_DEPTH = 4;
 const SAMPLE_BYTES = 64 * 1024;
 const DEFAULT_LINES = 10;
-const SIZE_RULE_BYTES = 200 * 1000 * 1000;
 const BIG_FILE_BYTES = 10 * 1000 * 1000;
+// A DIGEST.md read is a miss when a big file in its folder is read within this
+// many minutes by the same session (docs/data-gate.md).
 const DIGEST_WINDOW_MIN = 30;
 const TOP_READS = 5;
+const KEEP_DAYS = 60;
+// Read tool caps per harness: default line window, a hard line and byte cap,
+// and the size above which an unlimited Read is refused.
+const READ_CAPS = {
+  claude: { lines: 2000, refuseAbove: 256 * 1024 },
+  opencode: { lines: 2000 },
+  pi: { lines: 2000, maxLines: 2000, maxBytes: 50 * 1024 },
+  omp: { lines: 2000, maxLines: 2000, maxBytes: 50 * 1024 },
+};
 
 const gateHome = () => process.env.HOME || "/";
 export const stateDir = () => join(gateHome(), ".local", "state", "lattice-data-gate");
-export const readsPath = () => join(stateDir(), "reads.jsonl");
+export const readsPath = (date) => join(stateDir(), `reads-${date}.jsonl`);
 
 function readText(path) {
   try {
@@ -139,6 +155,9 @@ const READERS = {
   jq: { args: "f", pattern: true, patternFlags: "f", pairs: ["--arg", "--argjson", "--slurpfile", "--rawfile"] },
   head: { head: true }, tail: { head: true },
 };
+// Readers that stop reading when a downstream `| head` closes the pipe; the
+// rest (sort, tac, wc, checksums, diff) consume their whole input first.
+const STREAMING = new Set(["cat", "less", "more", "nl", "cut", "bat", "zcat", "xxd", "od", "strings", "grep", "egrep", "fgrep", "rg", "ugrep", "ag", "sed", "awk", "jq"]);
 const PATTERN_LONG = ["--regexp", "--file", "--expression", "--files"];
 const WRAPPERS = { nice: "n", ionice: "cnpt", stdbuf: "ioe", time: "fo", chrt: "", taskset: "", flock: "wEc", xargs: "adEeIiLlnPs" };
 const PYTHON_OPEN = /\b(?:open|read_csv|read_json|read_parquet|read_table|loadtxt|load)\(\s*(?:r|rb)?(['"])([^'"\n]+)\1/g;
@@ -150,19 +169,25 @@ function parseCount(text) {
   return Number(match[1]) * scale;
 }
 
-// head/tail bounds: {lines} or {bytes}; files are the non-option operands.
-function headArgs(words) {
+// head/tail bounds: {lines}, {bytes}, or null when the count reads to the end
+// (`tail -n +N`, `head -n -N`); files are the non-option operands.
+function headArgs(words, tail = false) {
   let bound = { lines: DEFAULT_LINES };
   const files = [];
+  const count = (unit, text) => {
+    const raw = String(text ?? "");
+    if (raw.startsWith(tail ? "+" : "-")) return null;
+    return { [unit]: parseCount(raw) ?? (unit === "lines" ? DEFAULT_LINES : 0) };
+  };
   for (let i = 0; i < words.length; i += 1) {
     const value = words[i].value;
     if (/^-\d+$/.test(value)) bound = { lines: Number(value.slice(1)) };
-    else if (value === "-n" || value === "--lines") bound = { lines: parseCount(words[(i += 1)]?.value) ?? DEFAULT_LINES };
-    else if (value === "-c" || value === "--bytes") bound = { bytes: parseCount(words[(i += 1)]?.value) ?? 0 };
-    else if (/^-n/.test(value)) bound = { lines: parseCount(value.slice(2)) ?? DEFAULT_LINES };
-    else if (/^-c/.test(value)) bound = { bytes: parseCount(value.slice(2)) ?? 0 };
-    else if (value.startsWith("--lines=")) bound = { lines: parseCount(value.slice(8)) ?? DEFAULT_LINES };
-    else if (value.startsWith("--bytes=")) bound = { bytes: parseCount(value.slice(8)) ?? 0 };
+    else if (value === "-n" || value === "--lines") bound = count("lines", words[(i += 1)]?.value);
+    else if (value === "-c" || value === "--bytes") bound = count("bytes", words[(i += 1)]?.value);
+    else if (/^-n/.test(value)) bound = count("lines", value.slice(2));
+    else if (/^-c/.test(value)) bound = count("bytes", value.slice(2));
+    else if (value.startsWith("--lines=")) bound = count("lines", value.slice(8));
+    else if (value.startsWith("--bytes=")) bound = count("bytes", value.slice(8));
     else if (value.startsWith("-") && value !== "-") continue;
     else files.push(words[i]);
   }
@@ -266,11 +291,11 @@ function nodeReads(tokens, state, depth, out) {
   const spec = READERS[name];
   if (!spec) return;
   if (spec.head) {
-    const parsed = headArgs(args);
+    const parsed = headArgs(args, name === "tail");
     for (const word of parsed.files) out.push({ tool: name, word, cwd: state.cwd, bound: parsed.bound });
     return;
   }
-  for (const word of readerOperands(spec, args)) out.push({ tool: name, word, cwd: state.cwd, bound: null, pipeable: true });
+  for (const word of readerOperands(spec, args)) out.push({ tool: name, word, cwd: state.cwd, bound: null, pipeable: STREAMING.has(name) });
 }
 
 function analyzeReads(command, cwd, depth, out) {
@@ -283,14 +308,14 @@ function analyzeReads(command, cwd, depth, out) {
     const start = out.length;
     nodeReads(node, state, depth, out);
     const bound = separators[i] === "|" && nodes[i + 1] ? pipeBound(nodes[i + 1]) : null;
-    if (bound) for (let j = start; j < out.length; j += 1) if (out[j].pipeable && out[j].tool !== "redirect") out[j].bound = bound;
+    if (bound) for (let j = start; j < out.length; j += 1) if (out[j].pipeable) out[j].bound = bound;
   });
 }
 
 export function extractReads(call) {
   if (call.kind === "read") {
     const bound = call.limit ? { lines: call.limit } : null;
-    return [{ tool: call.tool || "Read", word: { value: call.path, literal: true }, cwd: call.cwd, bound }];
+    return [{ tool: call.tool || "Read", word: { value: call.path, literal: true }, cwd: call.cwd, bound, readTool: true }];
   }
   const out = [];
   analyzeReads(call.command, call.cwd, 0, out);
@@ -302,6 +327,8 @@ function toRow(read, call, who) {
   if (!path) return null;
   const size = fileSize(path);
   if (size === null) return null;
+  let perLine;
+  const lineBytes = (lines) => Math.min(size, Math.round(lines * (perLine ??= bytesPerLine(path, size))));
   const row = {
     ts: new Date().toISOString(),
     harness: call.harness,
@@ -314,15 +341,22 @@ function toRow(read, call, who) {
     size,
     bounded: Boolean(read.bound),
     bytes_requested: size,
+    bytes_returned_est: size,
     whole_file: !read.bound,
-    size_rule_would_block: !read.bound && size > SIZE_RULE_BYTES,
+    size_rule_would_block: false,
     is_digest: /^digest\.md$/i.test(basename(path)),
   };
   if (read.bound?.bytes !== undefined) row.bytes_requested = Math.min(size, read.bound.bytes);
   else if (read.bound?.lines !== undefined) {
     row.lines = read.bound.lines;
-    row.bytes_requested = Math.min(size, Math.round(read.bound.lines * bytesPerLine(path, size)));
+    row.bytes_requested = lineBytes(read.bound.lines);
     row.bytes_estimated = true;
+  }
+  row.bytes_returned_est = row.bytes_requested;
+  if (read.readTool) {
+    const cap = READ_CAPS[call.harness] || READ_CAPS.opencode;
+    if (!read.bound && cap.refuseAbove && size > cap.refuseAbove) row.bytes_returned_est = 0;
+    else row.bytes_returned_est = Math.min(lineBytes(Math.min(read.bound?.lines ?? cap.lines, cap.maxLines ?? Infinity)), cap.maxBytes ?? Infinity);
   }
   return row;
 }
@@ -335,13 +369,13 @@ function payloadCall(raw) {
   const session = payload.session_id || payload.sessionId || null;
   if (typeof input.command === "string") return { kind: "bash", command: input.command, cwd, session };
   if (/^read$/i.test(toolName) && typeof (input.file_path || input.path) === "string") {
-    return { kind: "read", path: input.file_path || input.path, limit: Number(input.limit) || null, cwd, session };
+    return { kind: "read", path: input.file_path || input.path, offset: input.offset ?? null, limit: Number(input.limit) || null, cwd, session };
   }
   return null;
 }
 
 function runLog(argv) {
-  const args = { harness: "unknown" };
+  const args = { harness: "unknown", sizeLimit: DEFAULT_SIZE_LIMIT };
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i + 1];
     switch (argv[i]) {
@@ -349,25 +383,32 @@ function runLog(argv) {
       case "--command": args.command = value; i += 1; break;
       case "--tool": args.tool = value; i += 1; break;
       case "--path": args.path = value; i += 1; break;
-      case "--offset": i += 1; break;
+      case "--offset": args.offset = value; i += 1; break;
       case "--limit": args.limit = Number(value) || null; i += 1; break;
       case "--cwd": args.cwd = value; i += 1; break;
       case "--stdin": args.stdin = true; break;
+      case "--size-limit": args.sizeLimit = Number(value); i += 1; break;
       default: break;
     }
   }
   let call = null;
   if (args.stdin) call = payloadCall(readFileSync(0, "utf8"));
   else if (args.command !== undefined) call = { kind: "bash", command: args.command };
-  else if (args.tool === "read" && args.path) call = { kind: "read", path: args.path, limit: args.limit };
+  else if (args.tool === "read" && args.path) call = { kind: "read", path: args.path, offset: args.offset ?? null, limit: args.limit };
   if (!call) return;
   call.harness = args.harness;
   if (args.cwd || !call.cwd) call.cwd = args.cwd || process.cwd();
   const who = attribute(call.cwd);
   const rows = extractReads(call).slice(0, MAX_PATHS).map((read) => toRow(read, call, who)).filter(Boolean);
   if (!rows.length) return;
+  // Only a file over the limit can be refused, so only then ask the rule.
+  const over = rows.filter((row) => row.size > args.sizeLimit);
+  if (over.length) {
+    const blocked = new Set(sizeVerdicts(recognizeReads(call), args.sizeLimit).filter((r) => r.verdict === "block").map((r) => r.target));
+    for (const row of over) row.size_rule_would_block = blocked.has(row.path);
+  }
   mkdirSync(stateDir(), { recursive: true });
-  appendFileSync(readsPath(), rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
+  appendFileSync(readsPath(localDate(new Date())), rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
 }
 
 // ---------------------------------------------------------------------------
@@ -389,27 +430,34 @@ export function fmtBytes(bytes) {
 
 const signed = (bytes) => (bytes >= 0 ? `+${fmtBytes(bytes)}` : fmtBytes(bytes));
 
+// Streams one JSONL file; onRecord returning false stops the pass.
 async function eachJson(path, onRecord) {
   if (!existsSync(path)) return;
-  const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
-  for await (const line of lines) {
-    if (!line) continue;
-    let record;
-    try {
-      record = JSON.parse(line);
-    } catch {
-      continue;
+  const input = createReadStream(path);
+  try {
+    for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+      if (!line) continue;
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (onRecord(record) === false) break;
     }
-    onRecord(record);
+  } finally {
+    input.destroy();
   }
 }
 
 const tsMs = (ts) => (typeof ts === "number" ? ts * 1000 : Date.parse(ts));
 
-async function readStats(path, start, end, windowMs) {
-  const stats = { reads: 0, bytes: 0, whole: 0, big: 0, sizeWould: 0, byHarness: {}, top: [], digests: 0, misses: 0 };
+// The day's read log, then the next day's up to the digest window, so a
+// DIGEST.md read just before midnight can still turn into a miss.
+async function readStats(date, nextDate, start, end, windowMs) {
+  const stats = { reads: 0, bytes: 0, returned: 0, whole: 0, big: 0, sizeWould: 0, byHarness: {}, top: [], digests: 0, misses: 0 };
   const pending = new Map();
-  await eachJson(path, (row) => {
+  const onRow = (row) => {
     const t = tsMs(row.ts);
     if (!(t >= start && t < end + windowMs)) return;
     const key = `${row.harness}:${row.session || row.task || row.cwd}`;
@@ -422,6 +470,7 @@ async function readStats(path, start, end, windowMs) {
     const bytes = Number(row.bytes_requested) || 0;
     stats.reads += 1;
     stats.bytes += bytes;
+    stats.returned += Number(row.bytes_returned_est ?? bytes) || 0;
     if (row.whole_file) stats.whole += 1;
     if (row.size > BIG_FILE_BYTES) stats.big += 1;
     if (row.size_rule_would_block) stats.sizeWould += 1;
@@ -437,7 +486,9 @@ async function readStats(path, start, end, windowMs) {
       list.push({ dir: dirname(row.path), t, miss: false });
       pending.set(key, list);
     }
-  });
+  };
+  await eachJson(readsPath(date), onRow);
+  await eachJson(readsPath(nextDate), (row) => (tsMs(row.ts) < end + windowMs ? onRow(row) : false));
   for (const list of pending.values()) for (const digest of list) if (digest.miss) stats.misses += 1;
   return stats;
 }
@@ -452,11 +503,17 @@ async function decisionStats(path, start, end) {
       errors += 1;
       return;
     }
-    const rule = typeof record.rule === "string" && record.rule ? record.rule : "scan";
-    byRule[rule] ??= { seen: 0, would: 0, blocked: 0 };
-    byRule[rule].seen += 1;
-    if (record.would_block) byRule[rule].would += 1;
-    if (record.verdict === "block") byRule[rule].blocked += 1;
+    // A record from before the size rule has no would_block_rules and no
+    // target rule; it is the scan rule's.
+    const rules = Array.isArray(record.would_block_rules) ? record.would_block_rules : record.would_block ? ["scan"] : [];
+    const named = Array.isArray(record.targets) ? record.targets.map((t) => t.rule || "scan") : [];
+    for (const rule of new Set([...(named.length ? named : ["scan"]), ...rules])) {
+      byRule[rule] ??= { seen: 0, would: 0, blocked: 0 };
+      byRule[rule].seen += 1;
+      if (!rules.includes(rule)) continue;
+      byRule[rule].would += 1;
+      if (record.verdict === "block" && (rule === "size" ? record.size_mode : record.mode) === "enforce") byRule[rule].blocked += 1;
+    }
   });
   return { byRule, errors };
 }
@@ -501,8 +558,8 @@ export async function buildReport(options) {
   const [y, m, d] = options.date.split("-").map(Number);
   const start = new Date(y, m - 1, d).getTime();
   const end = new Date(y, m - 1, d + 1).getTime();
-  const windowMs = options.windowMin * 60 * 1000;
-  const reads = await readStats(readsPath(), start, end, windowMs);
+  const windowMs = DIGEST_WINDOW_MIN * 60 * 1000;
+  const reads = await readStats(options.date, localDate(new Date(end)), start, end, windowMs);
   const decisions = await decisionStats(join(stateDir(), "decisions.jsonl"), start, end);
   const samples = await sampleStats(join(stateDir(), "samples.jsonl"), start, end);
   const baseline = baselineHeadline(options.baseline);
@@ -515,7 +572,7 @@ export async function buildReport(options) {
     ? `disk root ${signed(samples.rootGrowth ?? 0)}, /mnt/c ${samples.mntcGrowth === null ? "n/a" : signed(samples.mntcGrowth)}, written ${fmtBytes(samples.written)}; IO PSI some ${pct(samples.mean("io_some_avg60"))} full ${pct(samples.mean("io_full_avg60"))}`
     : "no disk/PSI samples";
   const relay = [
-    `Data gate ${options.date}: agents read ${fmtBytes(reads.bytes)} in ${reads.reads} reads (${largest})`,
+    `Data gate ${options.date}: agents read ${fmtBytes(reads.bytes)} in ${reads.reads} reads (est. returned ${fmtBytes(reads.returned)}; ${largest})`,
     `scans would-block ${rule("scan").would}, blocked ${rule("scan").blocked}`,
     `size would-block ${rule("size").would}, blocked ${rule("size").blocked}; >200 MB whole-file reads ${reads.sizeWould}`,
     `digests ${reads.digests} read, hit rate ${rate}`,
@@ -528,11 +585,12 @@ export async function buildReport(options) {
     "| Measure | Value |",
     "|---|---:|",
     `| Bytes requested by agents | ${fmtBytes(reads.bytes)} in ${reads.reads} reads (${reads.whole} whole-file, ${reads.big} of files > 10 MB) |`,
+    `| Bytes returned (est., harness Read caps) | ${fmtBytes(reads.returned)} |`,
     `| By harness | ${Object.entries(reads.byHarness).sort((a, b) => b[1] - a[1]).map(([h, b]) => `${h} ${fmtBytes(b)}`).join(", ") || "none"} |`,
     `| Whole-file reads > 200 MB (size rule would block) | ${reads.sizeWould} |`,
     ...Object.entries(decisions.byRule).map(([name, r]) => `| Gate ${name} decisions | ${r.seen} logged, ${r.would} would-block, ${r.blocked} blocked |`),
     `| Gate errors (allowed) | ${decisions.errors} |`,
-    `| DIGEST.md reads | ${reads.digests}: ${hits} hit, ${reads.misses} miss (${rate}; miss = a > 10 MB file in the same folder read within ${options.windowMin} min) |`,
+    `| DIGEST.md reads | ${reads.digests}: ${hits} hit, ${reads.misses} miss (${rate}; miss = a > 10 MB file in the same folder read within ${DIGEST_WINDOW_MIN} min) |`,
     `| Disk growth | root ${samples.rootGrowth === null ? "n/a" : signed(samples.rootGrowth)}, /mnt/c ${samples.mntcGrowth === null ? "n/a" : signed(samples.mntcGrowth)} |`,
     `| Disk IO | ${fmtBytes(samples.readBytes)} read, ${fmtBytes(samples.written)} written (${samples.samples} samples) |`,
     `| PSI mean avg60 | io some ${pct(samples.mean("io_some_avg60"))} (peak ${pct(samples.samples ? samples.maxIoSome : null)}), io full ${pct(samples.mean("io_full_avg60"))}, memory some ${pct(samples.mean("memory_some_avg60"))}, memory full ${pct(samples.mean("memory_full_avg60"))} |`,
@@ -548,31 +606,44 @@ export async function buildReport(options) {
   return { relay, markdown: lines.join("\n") };
 }
 
+// Deletes read logs dated more than LATTICE_DATA_GATE_READS_KEEP_DAYS days ago.
+function pruneReads() {
+  const keep = Number(process.env.LATTICE_DATA_GATE_READS_KEEP_DAYS);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - (Number.isInteger(keep) && keep > 0 ? keep : KEEP_DAYS));
+  const oldest = localDate(cutoff);
+  let names = [];
+  try {
+    names = readdirSync(stateDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const date = name.match(/^reads-(\d{4}-\d{2}-\d{2})\.jsonl$/)?.[1];
+    if (date && date < oldest) unlinkSync(join(stateDir(), name));
+  }
+}
+
 async function runReport(argv) {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
-  const options = { date: localDate(yesterday), write: true, baseline: defaultBaseline(), windowMin: DIGEST_WINDOW_MIN };
+  const options = { date: localDate(yesterday), baseline: defaultBaseline() };
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i + 1];
     switch (argv[i]) {
       case "--date": options.date = value; i += 1; break;
-      case "--today": options.date = localDate(new Date()); break;
-      case "--no-write": options.write = false; break;
       case "--baseline": options.baseline = value; i += 1; break;
-      case "--digest-window-min": options.windowMin = Number(value); i += 1; break;
       default: throw new Error(`unknown argument: ${argv[i]}`);
     }
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(options.date || "")) throw new Error(`--date must be YYYY-MM-DD: ${options.date}`);
-  if (!(options.windowMin > 0)) throw new Error("--digest-window-min must be a positive number");
   const { relay, markdown } = await buildReport(options);
-  if (options.write) {
-    const dir = join(stateDir(), "reports");
-    mkdirSync(dir, { recursive: true });
-    const target = join(dir, `${options.date}.md`);
-    writeFileSync(`${target}.tmp.${process.pid}`, markdown);
-    renameSync(`${target}.tmp.${process.pid}`, target);
-  }
+  const dir = join(stateDir(), "reports");
+  mkdirSync(dir, { recursive: true });
+  const target = join(dir, `${options.date}.md`);
+  writeFileSync(`${target}.tmp.${process.pid}`, markdown);
+  renameSync(`${target}.tmp.${process.pid}`, target);
+  pruneReads();
   process.stdout.write(`${relay}\n`);
 }
 

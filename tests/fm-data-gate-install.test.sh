@@ -8,13 +8,23 @@
 # a later edit (only gate entries removed, even across a re-install), an
 # unparseable settings file (left untouched), every registered Claude login
 # folder, the generated bulk paths, the Codex trust entry, and the installed
-# hooks, plugins and extensions actually calling the gate and logging reads.
+# hooks, plugins and extensions actually calling the gate and logging reads,
+# and the daily report timer (with a fake systemctl, so no user manager is
+# touched).
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-data-gate-install)
+FAKEBIN=$(fm_fakebin "$TMP_ROOT")
+cat >"$FAKEBIN/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG:?}"
+EOF
+chmod +x "$FAKEBIN/systemctl"
+export FAKE_SYSTEMCTL_LOG="$TMP_ROOT/systemctl.log"
+export PATH="$FAKEBIN:$PATH"
 INSTALL="$ROOT/bin/fm-data-gate-install.sh"
 GATE="$ROOT/bin/fm-data-gate.sh"
 
@@ -307,7 +317,7 @@ test_installed_adapters_log_reads() {
   local h cmd payload reads cwd
   h=$(new_home readlog)
   cwd="$h/Tools/firstmate"
-  reads="$h/.local/state/lattice-data-gate/reads.jsonl"
+  reads="$h/.local/state/lattice-data-gate/reads-$(date +%F).jsonl"
   inst "$h" install >/dev/null || fail "install failed"
   printf 'enforce\n' >"$h/.config/lattice-data-gate/mode"
   printf 'hello\n' >"$cwd/claude.txt"
@@ -395,6 +405,55 @@ test_codex_trust_and_status() {
   pass "install records the Codex trust hash and status reports it"
 }
 
+unit_value() {  # <unit file> <section> <key>: the key's value, parsed as systemd reads it
+  node -e '
+    const [file, section, key] = process.argv.slice(1);
+    let current = "";
+    for (const raw of require("fs").readFileSync(file, "utf8").split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const header = line.match(/^\[(.+)\]$/);
+      if (header) current = header[1];
+      else if (current === section && line.slice(0, line.indexOf("=")) === key) process.stdout.write(line.slice(line.indexOf("=") + 1));
+    }' "$1" "$2" "$3"
+}
+
+test_report_timer() {
+  local h units service timer exec out
+  h=$(new_home timer)
+  units="$h/.config/systemd/user"
+  service="$units/lattice-data-gate-report.service"
+  timer="$units/lattice-data-gate-report.timer"
+  : >"$FAKE_SYSTEMCTL_LOG"
+  out=$(inst "$h" install --dry-run) || fail "dry-run install failed"
+  assert_contains "$out" "would enable lattice-data-gate-report.timer" "dry run names the timer"
+  assert_equals "" "$(cat "$FAKE_SYSTEMCTL_LOG")" "dry run calls no systemctl"
+  out=$(inst "$h" install) || fail "install failed"
+  assert_contains "$out" "enabled lattice-data-gate-report.timer" "install reports the timer enabled"
+  assert_equals "--user daemon-reload
+--user enable --now lattice-data-gate-report.timer" "$(cat "$FAKE_SYSTEMCTL_LOG")" "install reloads the user manager and enables the timer"
+  assert_equals "oneshot|19|idle" "$(unit_value "$service" Service Type)|$(unit_value "$service" Service Nice)|$(unit_value "$service" Service IOSchedulingClass)" \
+    "the report runs as a oneshot at nice 19 in the idle IO class"
+  assert_equals "*-*-* 00:40:00|true|timers.target" "$(unit_value "$timer" Timer OnCalendar)|$(unit_value "$timer" Timer Persistent)|$(unit_value "$timer" Install WantedBy)" \
+    "the timer fires daily shortly after midnight and catches up a missed run"
+  exec=$(unit_value "$service" Service ExecStart)
+  out=$(HOME="$h" sh -c "$exec") || fail "the service's ExecStart does not run the report: $out"
+  assert_contains "$out" "Data gate $(date -d yesterday +%F): agents read" "the service's ExecStart writes yesterday's report"
+  assert_present "$h/.local/state/lattice-data-gate/reports/$(date -d yesterday +%F).md" "and the report file"
+  out=$(inst "$h" status) || fail "status failed"
+  assert_contains "$out" "installed $timer" "status sees the timer unit"
+  : >"$FAKE_SYSTEMCTL_LOG"
+  inst "$h" uninstall >/dev/null || fail "uninstall failed"
+  assert_equals "--user disable --now lattice-data-gate-report.timer
+--user daemon-reload" "$(cat "$FAKE_SYSTEMCTL_LOG")" "uninstall disables the timer and reloads the user manager"
+  assert_absent "$units" "uninstall removes the units and the unit directory it created"
+  mkdir -p "$TMP_ROOT/no-systemctl"
+  out=$(PATH="$TMP_ROOT/no-systemctl" HOME="$h" "$(command -v node)" "$ROOT/bin/fm-data-gate-install.mjs" install) || fail "install without systemctl failed"
+  assert_contains "$out" "not enabled lattice-data-gate-report.timer (systemctl not found); run: systemctl --user daemon-reload" "install without systemctl says how to enable the timer"
+  assert_present "$timer" "and still writes the units"
+  pass "install writes and enables the daily report timer, and uninstall disables and removes it"
+}
+
 test_dry_run_writes_nothing
 test_install_merges_and_backs_up
 test_reinstall_is_idempotent
@@ -408,3 +467,4 @@ test_installed_adapters_call_the_gate
 test_installed_adapters_log_reads
 test_reinstall_upgrades_old_claude_matcher
 test_codex_trust_and_status
+test_report_timer

@@ -1,0 +1,13 @@
+# Installed by bin/fm-data-gate-install.sh into ~/.config/systemd/user with
+# @REPORT@ replaced by the checkout's bin/fm-data-gate-report.sh and @NODE_DIR@
+# by the directory of the node that ran the installer.
+[Unit]
+Description=Lattice data gate daily report (bin/fm-data-gate-report.sh)
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=15min
+Environment="PATH=@NODE_DIR@:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/env bash "@REPORT@"

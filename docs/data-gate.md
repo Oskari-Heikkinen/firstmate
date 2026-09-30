@@ -127,15 +127,19 @@ Each false block becomes an allow rule and a test row before that rule switches 
 
 The same hooks also record every agent file read they see, in every mode, so bytes read before and after a data change can be compared.
 A read is the Read tool, or a shell command naming a file for `cat`, `head`, `tail`, `less`, `wc`, `sort`, `jq`, `sed`, `awk`, `grep`, `rg` and similar readers, a `< file` redirect, or `python -c` with `open('file')`.
-Each named regular file gets one row in `~/.local/state/lattice-data-gate/reads.jsonl` with `ts`, `harness`, `home`, `task`, `session`, `cwd`, `tool`, `path`, `size`, `bounded`, `bytes_requested`, `whole_file`, `size_rule_would_block` (an unbounded read of a file over 200 MB) and `is_digest` (the file is a `DIGEST.md`).
-`bytes_requested` is the whole file unless the call bounds it: `head -c` and `tail -c` count bytes, while a line bound (`head -n`, `tail -n`, a piped `| head`, or a Read `limit`) is converted with the file's bytes per line from one 64 KiB head sample and marked `bytes_estimated`.
+Each named regular file gets one row in the day's `~/.local/state/lattice-data-gate/reads-YYYY-MM-DD.jsonl` with `ts`, `harness`, `home`, `task`, `session`, `cwd`, `tool`, `path`, `size`, `bounded`, `bytes_requested`, `bytes_returned_est`, `whole_file`, `size_rule_would_block` (the size rule's own verdict for the call from `bin/fm-data-gate-policy.mjs`, at the configured size limit, whatever that rule's mode) and `is_digest` (the file is a `DIGEST.md`).
+`bytes_requested` is the whole file unless the call bounds it: `head -c` and `tail -c` count bytes, while a line bound (`head -n`, `tail -n`, a Read `limit`, or a piped `| head` after a streaming reader such as `cat`, `grep`, `sed`, `awk` or `jq`) is converted with the file's bytes per line from one 64 KiB head sample and marked `bytes_estimated`.
+`tail -n +N`, `head -n -N`, and `sort`, `tac`, `wc`, `uniq`, checksums, `diff` or `cmp` piped to `head` read the whole file and count as unbounded.
+An unlimited Read counts as the whole file, as the transcript baseline counts it; `bytes_returned_est` applies the harness's Read caps instead (Claude 2000 lines and a refusal above 256 KB without a limit, Pi and OMP 2000 lines and 50 KB, OpenCode 2000 lines) and equals `bytes_requested` for shell reads.
 The task is `FM_TASK_ID`, else the `fm/<id>` branch of the working directory's worktree; the home is `FM_HOME`, else the discovered home containing the working directory, else the home holding that task's status file.
 Field names follow the transcript baseline in the main home's `data/fm-read-baseline/`, so its numbers stay comparable.
 The read path never blocks, never prints, stats each file once, and is bounded to three seconds; `LATTICE_DATA_GATE_READS=off` turns it off.
 Directories, missing files and glob or variable operands are not recorded.
 
-`bin/fm-data-gate-report.sh` summarizes one local day (default yesterday) in `~/.local/state/lattice-data-gate/reports/<date>.md` and prints one relay line: bytes read by agents, the largest reads, scan and size would-blocks and blocks from the decision log (grouped by a record's `rule`, absent meaning scan), whole-file reads over 200 MB, the `DIGEST.md` hit rate, disk growth and IO pressure from the `fm-io-sample` log `samples.jsonl`, and the baseline headline when that baseline report exists.
-A `DIGEST.md` read is a miss when the same session (else task, else working directory) reads a file over 10 MB in the same folder within 30 minutes, and a hit otherwise.
+`bin/fm-data-gate-report.sh` summarizes one local day (default yesterday) in `~/.local/state/lattice-data-gate/reports/<date>.md` and prints one relay line: bytes requested by agents (the headline, comparable with the baseline) and the estimated bytes returned, the largest reads, scan and size would-blocks and blocks from the decision log (by a record's `would_block_rules` and each rule's mode; a record without them is the scan rule's), the reads the size rule would refuse, the `DIGEST.md` hit rate, disk growth and IO pressure from the `fm-io-sample` log `samples.jsonl`, and the baseline headline when that baseline report exists.
+A `DIGEST.md` read is a miss when the same session (else task, else working directory) reads a file over 10 MB in the same folder within 30 minutes, a fixed window, and a hit otherwise.
+The installer's `lattice-data-gate-report.timer` runs it daily at 00:40 under `Nice=19` and the idle IO class, so the window past midnight is complete.
+After each report, read logs dated more than `LATTICE_DATA_GATE_READS_KEEP_DAYS` days ago (default 60) are deleted; the decision log and `samples.jsonl` are not rotated.
 Its header owns the options.
 
 ## Install, status and uninstall
@@ -151,9 +155,9 @@ bin/fm-data-gate-install.sh uninstall
 
 `install` touches only harnesses whose user config directory already exists, and merges one gate entry without disturbing existing entries.
 It copies every file it changes to `~/.local/state/lattice-data-gate/backups/<timestamp>/` first, records the original bytes in `install-manifest.json` there, and prints what it did per file.
-It also generates the bulk block in every discovered home's `data/bulk-paths.txt`, writes a marked block listing those bulk directories into `.ignore` and `.rgignore` in that `data/` and in `~/lattice-ledger`, writes `~/.config/lattice-data-gate/mode` as `log` plus `size log` when it is absent (an existing mode file is never edited), and refreshes the roots cache.
+It also generates the bulk block in every discovered home's `data/bulk-paths.txt`, writes a marked block listing those bulk directories into `.ignore` and `.rgignore` in that `data/` and in `~/lattice-ledger`, writes `~/.config/lattice-data-gate/mode` as `log` plus `size log` when it is absent (an existing mode file is never edited), writes the daily report's `lattice-data-gate-report.service` and `.timer` from `bin/systemd/` into `~/.config/systemd/user` and enables the timer with `systemctl --user`, and refreshes the roots cache.
 Re-running it changes nothing that is already current.
-`uninstall` puts back the exact pre-install bytes of each file that still holds what the first `install` wrote, deletes files and directories `install` created, and removes only the gate entries from a file that changed since, including a change made between two installs; the decision log stays.
+`uninstall` puts back the exact pre-install bytes of each file that still holds what the first `install` wrote, deletes files and directories `install` created, and removes only the gate entries from a file that changed since, including a change made between two installs; it disables the report timer first, and the decision log, read logs and reports stay.
 
 | Harness | Installed as | Covers |
 | --- | --- | --- |
