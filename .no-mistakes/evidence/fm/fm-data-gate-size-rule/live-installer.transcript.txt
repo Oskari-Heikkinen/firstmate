@@ -1,0 +1,28 @@
+$ fm-data-gate-install.sh install   (fresh HOME, no mode file)
+created   /tmp/fm-gate-inst.ra3BoJ/home/.claude/settings.json (+Claude PreToolUse Bash|Grep|Glob|Read)
+created   /tmp/fm-gate-inst.ra3BoJ/home/.config/lattice-data-gate/mode (+gate modes (scan log, size log))
+gate /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SHFWR3T2SVR3TGH66FYCMJ/bin/fm-data-gate.sh; mode after install: scan and size rules log unless ~/.config/lattice-data-gate/mode, LATTICE_DATA_GATE or LATTICE_DATA_GATE_SIZE says otherwise
+
+$ cat ~/.config/lattice-data-gate/mode
+log
+size log
+
+$ Claude settings PreToolUse matcher
+Bash|Grep|Glob|Read -> [ -z "${GROK_AGENT:-}${GROK_HOOK_EVENT:-}" ] || exit 0; [ -x '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SHFWR3T2SVR3TGH66FYCMJ/bin/fm-data-gate.sh' ] || exit 0; exec '/home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SHFWR3T2SVR3TGH66FYCMJ/bin/fm-data-gate.sh' --harness claude
+
+$ fm-data-gate-install.sh status
+mode      log
+size      log, limit 209715200 bytes
+gate      /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SHFWR3T2SVR3TGH66FYCMJ/bin/fm-data-gate.sh
+log       /tmp/fm-gate-inst.ra3BoJ/home/.local/state/lattice-data-gate/decisions.jsonl (0 records, 0 would-block)
+
+$ existing mode file (operator wrote "enforce") then re-install
+mode file after re-install:
+enforce
+$ status
+mode      enforce
+size      enforce, limit 209715200 bytes
+
+$ operator appends "size log" (the 48 h log-only step)
+mode      enforce
+size      log, limit 209715200 bytes

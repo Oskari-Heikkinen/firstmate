@@ -1,0 +1,11 @@
+ok - dry-run changes nothing
+ok - install merges without disturbing entries and backs up each touched file
+ok - re-install is idempotent
+ok - uninstall restores byte-identical pre-install content
+ok - one generated bulk definition feeds the gate and the ignore files
+ok - a re-install after edits never makes uninstall discard them
+ok - uninstall after later edits removes only the gate entries
+ok - unparseable settings are skipped, not clobbered
+ok - only harnesses with a user config dir are touched
+ok - installed Claude, Codex, Grok, Pi and OpenCode adapters call the gate
+ok - install records the Codex trust hash and status reports it

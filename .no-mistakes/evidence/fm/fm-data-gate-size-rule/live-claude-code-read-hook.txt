@@ -1,0 +1,25 @@
+TOOL_USE Read {"file_path":"/tmp/fm-gate-claude.6vSQha/work/big.jsonl"}
+TOOL_RESULT is_error=true: PreToolUse:Read hook error: [HOME=/tmp/fm-gate-claude.6vSQha/home LATTICE_DATA_GATE=enforce LATTICE_DATA_GATE_SIZE=enforce /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SHFWR3T2SVR3TGH66FYCMJ/bin/fm-data-gate.sh --harness claude]: BLOCKED (data gate): Read would read all of /tmp/fm-gate-claude.6vSQha/work/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+      a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+      a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+TOOL_USE Read {"file_path":"/tmp/fm-gate-claude.6vSQha/work/small.txt"}
+TOOL_RESULT is_error=false: 1	hello
+2	
+ASSISTANT: **Error from first read (verbatim):**
+```
+[HOME=/tmp/fm-gate-claude.6vSQha/home LATTICE_DATA_GATE=enforce LATTICE_DATA_GATE_SIZE=enforce /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3SHFWR3T2SVR3TGH66FYCMJ/bin/fm-data-gate.sh --harness claude]: BLOCKED (data gate): Read would read all of /tmp/fm-gate-claude.6vSQha/work/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+      a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+      a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+See skill data-access, section "Blocked large read". If none of these fits, ask main.
+```
+
+**Contents of small.txt:**
+```
+1	hello
+2	
+```
+RESULT subtype=success

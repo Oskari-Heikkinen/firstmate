@@ -1,0 +1,144 @@
+== default: no mode file (size rule enforce by default, scan log) ==
+mode scan=log size=enforce limit=209715200
+
+== Claude Read hook payloads ==
+$ Claude Read big.jsonl (300 MiB, no offset/limit)
+exit=2
+  | BLOCKED (data gate): Read would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+$ Claude Read big.jsonl offset=1 limit=200
+exit=0
+
+$ Claude Read small.jsonl
+exit=0
+
+== Claude Bash hook payloads ==
+$ Claude Bash: cat ~/data/big.jsonl
+exit=2
+  | BLOCKED (data gate): cat would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+$ Claude Bash: jq length ~/data/big.jsonl
+exit=2
+  | BLOCKED (data gate): jq would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+$ Claude Bash: python3 -c "import json; json.load(open('/tmp/fm-gate-live.BR7C69/home/data/big.jsonl'))"
+exit=2
+  | BLOCKED (data gate): python3 would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+$ Claude Bash: head -c 1048576 ~/data/big.jsonl | wc -l
+exit=0
+
+$ Claude Bash: tail -n 50 ~/data/big.jsonl
+exit=0
+
+$ Claude Bash: sed -n '1,20p;20q' ~/data/big.jsonl
+exit=0
+
+$ Claude Bash: wc -c ~/data/big.jsonl
+exit=0
+
+$ Claude Bash: dd if=~/data/big.jsonl bs=1M skip=2 count=1 status=none | xxd | head
+exit=0
+
+$ Claude Bash: zcat ~/data/big.jsonl | head -100
+exit=0
+
+$ Claude Bash: nice -n 19 ionice -c3 sha256sum ~/data/big.jsonl
+exit=0
+
+$ Claude Bash: sha256sum ~/data/big.jsonl
+exit=2
+  | BLOCKED (data gate): sha256sum would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+$ Claude Bash: python3 -c "from pathlib import Path; print(Path('/tmp/fm-gate-live.BR7C69/home/data/big.jsonl').stat().st_size)"
+exit=0
+
+$ Claude Bash: D=~/data; grep -c foo $D/big.jsonl
+exit=2
+  | BLOCKED (data gate): grep would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+$ Claude Bash: grep -c foo $SOMEVAR/big.jsonl
+exit=0
+
+$ Claude Bash: cat ~/data/small.jsonl
+exit=0
+
+== Codex/Pi/OpenCode transports ==
+$ codex stdin: cat big
+exit=2
+  | BLOCKED (data gate): cat would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+$ pi --tool read big
+exit=2
+  | BLOCKED (data gate): Read would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+$ opencode --command 'awk 1 big'
+exit=2
+  | BLOCKED (data gate): awk would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 200 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+
+== 48h log-only window: mode file 'enforce' + 'size log' (last line without newline) ==
+mode scan=enforce size=log
+$ Claude Bash: cat big (size log)
+exit=0
+
+$ Claude Bash: rg -n foo ~ (scan enforce)
+exit=2
+  | BLOCKED (data gate): recursive rg over /tmp/fm-gate-live.BR7C69/home would scan bulk run data.
+  | Use:  lattice-data find --task|--batch|--slice|--entry …   (catalog: ~/lattice-store/catalog.jsonl)
+  |       lattice-data grep <item-id> PATTERN                   (search inside one item)
+  |       ~/lattice-ledger/index.json and runs/<entry_id>.md    (run results)
+  | See skill data-access. Override for a named small folder: search that folder directly.
+
+would-block log lines:
+   {"verdict":"allow","would_block":true,"rules":["size"],"mode":"enforce","size_mode":"log","cmd":"cat ~/data/big.jsonl","targets":[{"rule":"size","tool":"cat","size":314572800,"verdict":"block"}]}
+   {"verdict":"block","would_block":true,"rules":["scan"],"mode":"enforce","size_mode":"log","cmd":"rg -n foo ~","targets":[{"rule":"scan","tool":"rg","verdict":"block"}]}
+
+== configurable limit: size-limit 1G ==
+limit=1073741824
+$ Claude Bash: cat big (300 MiB < 1G)
+exit=0
+
+$ env LATTICE_DATA_GATE_SIZE_LIMIT=100M: cat big
+exit=2
+  | BLOCKED (data gate): cat would read all of /tmp/fm-gate-live.BR7C69/home/data/big.jsonl (300 MiB; the whole-file limit is 100 MiB).
+  | Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find …)
+  |       a bounded window: Read with offset and limit, head -c, tail -c, sed -n 'A,Bp;Bq'
+  |       a niced one-off read: nice -n 19 ionice -c3 <command>, recorded in your report
+  | See skill data-access, section "Blocked large read". If none of these fits, ask main.
+

@@ -1,0 +1,14 @@
+{
+  "records": 248,
+  "replayed": 245,
+  "skipped_error_or_empty": 3,
+  "kinds": {
+    "bash": 239,
+    "grep": 2,
+    "glob": 4
+  },
+  "recognized_reads": 3677,
+  "reads_over_limit": 0,
+  "size_would_block": 0,
+  "max_decide_ms": 39.8
+}

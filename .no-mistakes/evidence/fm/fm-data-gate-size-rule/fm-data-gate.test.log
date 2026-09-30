@@ -1,0 +1,18 @@
+ok - homes come from named registry and pool files
+ok - bash table: all 129 rows match (allow/block)
+ok - bulk dirs created after the roots cache or reached by symlink are protected
+ok - the glob cap never reduces bulk protection
+ok - Grep/Glob table: all 19 rows match
+ok - enforce transports render per harness
+ok - log mode allows and records decisions
+ok - an unknown mode behaves as log
+ok - internal errors allow and are logged
+ok - size bash table: all 58 rows match (allow/block)
+ok - size Read table: all 13 rows match through --tool read and the Claude payload
+ok - the size rule has its own mode and limit beside the scan rule
+ok - Read payloads reach the size rule in every transport
+ok - size rule internal errors allow and are logged
+
+real	0m16.974s
+user	0m10.069s
+sys	0m8.586s
