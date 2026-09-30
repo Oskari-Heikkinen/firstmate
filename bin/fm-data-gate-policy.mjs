@@ -218,8 +218,9 @@ function loadRoots() {
 }
 
 // The protected set. `exact` roots are refused when the target is the root or
-// one of its ancestors; scanning inside one (below it) is allowed. Each bulk
-// pattern's existing matches join it realpath'd, so a symlinked bulk dir counts.
+// one of its ancestors; scanning inside one (below it) is allowed. Bulk
+// patterns are matched against each target by bulkHit, and their existing
+// matches (capped) also join `exact` realpath'd, so a symlinked bulk dir counts.
 export function protectedRoots(roots = loadRoots()) {
   const home = realish(gateHome());
   const exact = new Set(["/", home, "/mnt/c", join(home, ".cache")]);
@@ -252,12 +253,26 @@ function storeVerdict(target, store) {
   return "block";
 }
 
-export function classifyTarget(target, roots) {
+// A path is a bulk directory, or an ancestor of an existing one, when its
+// segments match the pattern's leading segments and, if it stops short, the
+// rest of the pattern has a match below it. No cap: a capped expansion of the
+// rest returns the path itself, which then counts as a match.
+function bulkHit(path, pattern) {
+  const want = pattern.split("/").filter(Boolean);
+  const have = path.split("/").filter(Boolean);
+  if (have.length > want.length) return false;
+  for (let i = 0; i < have.length; i += 1) if (!segmentRegex(want[i]).test(have[i])) return false;
+  if (have.length === want.length) return true;
+  return globExpand(join(path, ...want.slice(have.length))).some((p) => existsSync(p));
+}
+
+export function classifyTarget(target, roots, lexical = target) {
   if (isFile(target)) return "allow";
   const store = storeVerdict(target, roots.store);
   if (store) return store;
   if (isAncestorOrSelf(target, roots.store)) return "block";
   for (const root of roots.exact) if (isAncestorOrSelf(target, root)) return "block";
+  for (const pattern of roots.bulk) if (bulkHit(target, pattern) || bulkHit(lexical, pattern)) return "block";
   return "allow";
 }
 
@@ -344,7 +359,7 @@ function resolveTargets(word, cwd) {
   const absolute = isAbsolute(value) ? value : resolve(cwd, value);
   const globbed = typeof word === "string" ? /[*?[{]/.test(value) : word.unquotedExpansion;
   const candidates = globbed ? braceExpand(absolute).flatMap((p) => globExpand(p)) : [absolute];
-  return candidates.map((p) => realish(p));
+  return candidates.map((p) => ({ target: realish(p), lexical: p }));
 }
 
 // ---------------------------------------------------------------------------
@@ -617,7 +632,7 @@ function analyzeNode(tokens, state, depth, remote, pipedStdin) {
       scans.push({ tool: name, target: word.value, verdict: "allow", unresolved: true });
       continue;
     }
-    for (const target of targets) scans.push({ tool: name, target, verdict: null });
+    for (const resolved of targets) scans.push({ tool: name, ...resolved, verdict: null });
   }
   return scans;
 }
@@ -645,7 +660,7 @@ function toolTargets(kind, path, pattern, cwd) {
     const firstGlob = parts.findIndex((part) => /[*?[{]/.test(part));
     base = (firstGlob === -1 ? parts : parts.slice(0, firstGlob)).join("/") || "/";
   }
-  return base ? (resolveTargets(base, cwd) || [resolve(cwd, base)]) : [cwd];
+  return base ? (resolveTargets(base, cwd) || [{ target: resolve(cwd, base) }]) : [{ target: cwd }];
 }
 
 // Decide one call. Returns { verdict, scans, tool, target, note }.
@@ -659,9 +674,9 @@ export function decide(call, roots = protectedRoots()) {
     if (result.error) note = `unparsed: ${result.error}`;
   } else {
     const tool = call.kind === "glob" ? "Glob" : "Grep";
-    scans = toolTargets(call.kind, call.path, call.pattern, cwd).map((target) => ({ tool, target, verdict: null }));
+    scans = toolTargets(call.kind, call.path, call.pattern, cwd).map((resolved) => ({ tool, ...resolved, verdict: null }));
   }
-  for (const scan of scans) if (!scan.verdict) scan.verdict = classifyTarget(scan.target, roots);
+  for (const scan of scans) if (!scan.verdict) scan.verdict = classifyTarget(scan.target, roots, scan.lexical);
   const blocked = scans.find((s) => s.verdict === "block");
   if (blocked) return { verdict: "block", scans, tool: blocked.tool, target: blocked.target, note };
   return { verdict: "allow", scans, note };

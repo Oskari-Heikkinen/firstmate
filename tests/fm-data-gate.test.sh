@@ -391,6 +391,27 @@ test_bulk_dir_created_after_cache() {
   pass "bulk dirs created after the roots cache or reached by symlink are protected"
 }
 
+test_bulk_dirs_past_glob_cap() {
+  local i
+  for i in $(seq 1 300); do mkdir -p "$MAIN/data/many$i"; done
+  mkdir -p "$MAIN/data/many5/tetjet-results/t1" "$MAIN/data/rolling-runs-v14/slices/s1" "$TMP_ROOT/off2/tr"
+  ln -s "$TMP_ROOT/off2/tr" "$MAIN/data/many7/tetjet-results"
+  gate enforce --harness pi --cwd "$MAIN" --command 'find data/many5/tetjet-results -name x' >/dev/null 2>&1
+  expect_code 2 $? "a tetjet-results dir is refused past 256 data/ entries"
+  gate enforce --harness pi --cwd "$MAIN" --command 'rg foo data/many5' >/dev/null 2>&1
+  expect_code 2 $? "its parent is refused past 256 data/ entries"
+  gate enforce --harness pi --cwd "$MAIN" --command 'du -sh data/many7/tetjet-results' >/dev/null 2>&1
+  expect_code 2 $? "a symlinked tetjet-results dir is refused past 256 data/ entries"
+  gate enforce --harness pi --cwd "$MAIN" --command 'du -sh data/rolling-runs-v14' >/dev/null 2>&1
+  expect_code 2 $? "a rolling-runs dir is refused past 256 data/ entries"
+  gate enforce --harness pi --cwd "$MAIN" --command 'rg foo data/many9' >/dev/null 2>&1
+  expect_code 0 $? "a task folder without bulk dirs stays allowed"
+  gate enforce --harness pi --cwd "$MAIN" --command 'rg foo data/many5/tetjet-results/t1' >/dev/null 2>&1
+  expect_code 0 $? "one named folder inside a bulk dir stays allowed"
+  rm -rf "$MAIN"/data/many* "$MAIN/data/rolling-runs-v14" "$TMP_ROOT/off2"
+  pass "the glob cap never reduces bulk protection"
+}
+
 test_unknown_mode_is_log() {
   local log="$FAKE_HOME/.local/state/lattice-data-gate/decisions.jsonl"
   assert_equals "log" "$(HOME="$FAKE_HOME" LATTICE_DATA_GATE=off "$GATE" mode)" "off is not a mode; it reads as log"
@@ -428,6 +449,7 @@ build_fixture
 test_home_discovery
 test_bash_table
 test_bulk_dir_created_after_cache
+test_bulk_dirs_past_glob_cap
 test_tool_table
 test_enforce_transports
 test_log_mode_default
