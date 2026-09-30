@@ -8,7 +8,8 @@
 #        fm-mem-guard.sh auto sync|on|off
 #   sample  prints one sample as key=value lines: Windows available memory and
 #           paging rate (win_*), Linux MemAvailable, page cache, swap, swap-out
-#           rate since the last tick, and memory pressure (linux_*), and win_source, which is `powershell`,
+#           rate over at least the last 60s of ticks, and memory pressure
+#           (linux_*), and win_source, which is `powershell`,
 #           `cache <age>s`, or `unavailable: <reason>`. The Windows side comes
 #           from one bounded powershell.exe call shared machine-wide through a
 #           cache; when powershell.exe is missing, slow, or unreadable the
@@ -56,9 +57,9 @@
 # Levels, lowest first: ok warn park refuse critical. Each signal has four
 # thresholds, one per level from warn to critical, except swap, which has three
 # (warn park refuse) and grades only on a tick where swap is growing; the
-# machine level is the highest any signal reaches. A lower level is recorded only after clear_samples
-# consecutive samples grade below the recorded one; a higher level is recorded
-# at once.
+# machine level is the highest any signal reaches. A lower level is recorded
+# only after clear_samples consecutive samples grade below the recorded one; a
+# higher level is recorded at once.
 #
 # Thresholds and timings: the optional `memory_guard` object of the machine
 # admission rules file ${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json};
