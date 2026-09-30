@@ -29,14 +29,16 @@
 #           unhandled outcome still refuses the re-arm until the supervisor
 #           handles it. --when defaults to the one
 #           condition named in the handoff's "Waiting for" section; when given,
-#           it must appear verbatim there. --deadline is a UTC time,
+#           it must equal that condition exactly. --deadline is a UTC time,
 #           YYYY-MM-DDTHH:MM[:SS]Z, default seven days from now (FM_PARK_DEADLINE_SECS).
 #           When run by the worker parking itself (FM_TASK_ID is the task, or
 #           the current directory is inside its worktree), the exit is detached
 #           through `stop` so this command can return before its own session is
 #           stopped; its output goes to data/<id>/park-exit.log. A failed exit
 #           leaves the park armed: the watch still relaunches the task when the
-#           condition holds.
+#           condition holds. Park records the task's spawn_gen incarnation so
+#           resume can tell whether the session it would replace is still the
+#           parked one.
 # validate  Check a handoff file: it needs non-empty "Goal", "Done",
 #           "Waiting for", and "Next steps" sections (any Markdown heading
 #           level), and "Waiting for" must name a machine-checkable condition.
@@ -49,7 +51,11 @@
 #           appended so the new session is not mistaken for the declared wait.
 #           On failure the record reads park_state=resume-failed, everything
 #           else is left intact, and the nonzero exit becomes the watch's
-#           action-failed outcome, which wakes the supervisor.
+#           action-failed outcome, which wakes the supervisor. When the task was
+#           relaunched or respawned since it parked (its spawn_gen changed), the
+#           live session is left alone: nothing is relaunched, the park fields
+#           are cleared, and the nonzero exit wakes the supervisor with that
+#           reason; the watch fires once, so it is already spent.
 # cancel    Retire the watch and mark the record park_state=cancelled, without
 #           relaunching anything.
 # stop      The detached exit of a self-park: after FM_PARK_SELF_EXIT_DELAY
@@ -59,9 +65,12 @@
 #
 # Conditions (one line, no shell interpretation):
 #   file:<absolute-path>          true once the path exists (a fetched run, a results file)
-#   pr-merged:<pull-request-url>  true once the PR is merged; closed unmerged is an error
+#   pr-merged:<github-pr-url>     true once the PR is merged; closed unmerged is an error
 #   cmd:<executable> [args...]    run directly, arguments split on whitespace;
-#                                 exit 0 true, 1 not yet, anything else an error
+#                                 exit 0 true, 1 not yet, anything else an error;
+#                                 an executable path must be absolute
+# Written without backticks, a file: or pr-merged: condition ends at the first
+# whitespace, and trailing punctuation (.,;:)) is not part of it.
 #
 # Outcomes that need the supervisor come from the watch itself: the deadline
 # passing without the condition (never-true), repeated condition errors
@@ -75,6 +84,7 @@
 #   park_when=<condition>
 #   park_deadline=<UTC ISO time>
 #   park_at=<epoch>            when the latest park was recorded
+#   park_spawn_gen=<token>     the task's spawn_gen when it parked
 #   park_resumed_at=<epoch>    when the latest resume relaunched the task
 #
 # Environment knobs:
@@ -129,18 +139,23 @@ task_resolve() {  # <id>
 
 # --- task record -------------------------------------------------------------
 
-# park_record <key=value>...: atomically replace this script's park_* fields,
-# keeping every other line in order. The pr=/pr_head= pair stays the record's
-# tail, which bin/fm-pr-lib.sh requires, so the new lines go just before it.
+# park_record <key=value>...: atomically set the given park_* fields, keeping
+# every other line in order; with no arguments, remove every park_* field. The
+# pr=/pr_head= pair stays the record's tail, which bin/fm-pr-lib.sh requires, so
+# the new lines go just before it.
 park_record() {
-  local lock tmp line placed=0 kv
+  local lock tmp line placed=0 kv keys=' '
+  for kv in "$@"; do keys="$keys${kv%%=*} "; done
   lock=$(fm_meta_lock_path "$META") || return 1
   fm_lock_acquire_wait "$lock"
   tmp=$(mktemp "$STATE/.$ID.meta.park.XXXXXX") || { fm_lock_release "$lock"; return 1; }
   {
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
-        park_*=*) continue ;;
+        park_*=*)
+          [ "$#" -gt 0 ] || continue
+          case "$keys" in *" ${line%%=*} "*) continue ;; esac
+          ;;
         pr=*)
           if [ "$placed" -eq 0 ]; then
             for kv in "$@"; do printf '%s\n' "$kv"; done
@@ -183,13 +198,15 @@ condition_valid() {
     file:*) echo "file: needs an absolute path" >&2; return 1 ;;
     pr-merged:*)
       value=${cond#pr-merged:}
-      fm_pr_url_parse "$value" || { echo "pr-merged: needs a full pull request URL" >&2; return 1; }
+      fm_pr_url_parse "$value" && [ "$FM_PR_PROVIDER" = github ] \
+        || { echo "pr-merged: needs a full GitHub pull request URL" >&2; return 1; }
       ;;
     cmd:*)
       read -r exe _ <<< "${cond#cmd:}"
       [ -n "$exe" ] || { echo "cmd: needs an executable" >&2; return 1; }
       case "$exe" in
-        */*) [ -x "$exe" ] && [ -f "$exe" ] ;;
+        /*) [ -x "$exe" ] && [ -f "$exe" ] ;;
+        */*) echo "cmd: an executable path must be absolute: $exe" >&2; return 1 ;;
         *) command -v -- "$exe" >/dev/null 2>&1 ;;
       esac || { echo "cmd: executable is unavailable: $exe" >&2; return 1; }
       ;;
@@ -251,7 +268,8 @@ section_filled() {  # <body>: 0 when it holds any non-placeholder text
 
 # The one condition named in a "Waiting for" body: the first backticked token
 # starting with a known kind, else the first such word (at a line start or after
-# whitespace) taking the rest of its line.
+# whitespace): a cmd: takes the rest of its line, a file: or pr-merged: only its
+# first token without trailing punctuation.
 waiting_condition() {  # <body>
   printf '%s\n' "$1" | awk '
     { lines[NR] = $0 }
@@ -263,6 +281,7 @@ waiting_condition() {  # <body>
       for (i = 1; i <= NR; i++)
         if (match(lines[i], /(^|[ \t])(file|pr-merged|cmd):/)) {
           line = substr(lines[i], RSTART); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+          if (line !~ /^cmd:/) { sub(/[ \t].*/, "", line); sub(/[.,;:)]+$/, "", line) }
           print line; exit
         }
     }'
@@ -279,13 +298,10 @@ validate_handoff() {
   done
   waiting=$(section_body "$file" "waiting for")
   HANDOFF_CONDITION=$(waiting_condition "$waiting")
-  if [ -n "$want" ]; then
-    case "$waiting" in
-      *"$want"*) HANDOFF_CONDITION=$want ;;
-      *) problems="$problems"$'\n'"  - \"Waiting for\" does not name the --when condition: $want" ;;
-    esac
-  elif [ -z "$HANDOFF_CONDITION" ]; then
+  if [ -z "$HANDOFF_CONDITION" ]; then
     problems="$problems"$'\n'"  - \"Waiting for\" names no condition (file:<path>, pr-merged:<url>, or cmd:<executable> [args])"
+  elif [ -n "$want" ] && [ "$want" != "$HANDOFF_CONDITION" ]; then
+    problems="$problems"$'\n'"  - \"Waiting for\" does not name the --when condition: $want (it names $HANDOFF_CONDITION)"
   fi
   if [ -n "$HANDOFF_CONDITION" ] && ! err=$(condition_valid "$HANDOFF_CONDITION" 2>&1); then
     problems="$problems"$'\n'"  - $err"
@@ -348,15 +364,14 @@ cmd_park() {
   ack_own_fired
   "$WHEN" retire "park-$ID" >/dev/null 2>&1 || true
   park_record "park_state=parked" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
-    "park_deadline=$deadline_iso" "park_at=$now" \
+    "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
     || die "cannot record the park in task $ID's record"
   if ! out=$("$WHEN" arm "park-$ID" \
       --interval "${FM_PARK_INTERVAL:-300}" --stable "${FM_PARK_STABLE:-2}" \
       --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" --action-timeout 900 \
       --condition "$SCRIPT_DIR/fm-park.sh" check "$HANDOFF_CONDITION" \
       --action "$SCRIPT_DIR/fm-park.sh" resume "$ID" 2>&1); then
-    park_record "park_state=cancelled" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
-      "park_deadline=$deadline_iso" "park_at=$now" || true
+    park_record "park_state=cancelled" || true
     die "could not arm the resume watch, so task $ID was not parked and its agent keeps running: $out"
   fi
   status_append "$PAUSED_VERB: parked until $deadline_iso - waiting for $HANDOFF_CONDITION; relaunches automatically with $dest" \
@@ -419,6 +434,11 @@ cmd_resume() {
   task_resolve "${1-}"
   [ "$(meta_get park_state)" = parked ] \
     || die "task $ID is not parked (park_state=$(meta_get park_state)); nothing to resume"
+  if [ "$(meta_get spawn_gen)" != "$(meta_get park_spawn_gen)" ]; then
+    park_record || die "task $ID was relaunched or respawned since it parked, but its park record could not be cleared"
+    printf 'fm-park: task %s was relaunched or respawned since it parked, so its live session was left running and the park cleared; nothing was relaunched\n' "$ID" >&2
+    exit 1
+  fi
   cond=$(meta_get park_when)
   handoff=$(meta_get park_handoff)
   note="$DATA/$ID/park-resume-note.md"
@@ -429,13 +449,11 @@ cmd_resume() {
     echo "Continue from its next steps. If you must wait on something external again, park again rather than idling."
   } > "$note" || die "cannot write the resume note for task $ID"
   if ! out=$("$CONTROL" "$ID" relaunch --note-file "$note" 2>&1); then
-    park_record "park_state=resume-failed" "park_handoff=$handoff" "park_when=$cond" \
-      "park_deadline=$(meta_get park_deadline)" "park_at=$(meta_get park_at)" || true
+    park_record "park_state=resume-failed" || true
     printf 'fm-park: the condition held but task %s could not be relaunched; its record and local copy are unchanged: %s\n' "$ID" "$out" >&2
     exit 1
   fi
-  park_record "park_state=resumed" "park_handoff=$handoff" "park_when=$cond" \
-    "park_deadline=$(meta_get park_deadline)" "park_at=$(meta_get park_at)" "park_resumed_at=$(date +%s)" \
+  park_record "park_state=resumed" "park_resumed_at=$(date +%s)" \
     || printf 'fm-park: task %s was relaunched but its park record could not be updated\n' "$ID" >&2
   status_append "working: resumed from park - $cond held; fresh session started from $handoff" || true
   printf 'resumed %s: %s\n' "$ID" "$out"
@@ -444,8 +462,7 @@ cmd_resume() {
 cmd_cancel() {
   task_resolve "${1-}"
   "$WHEN" retire "park-$ID" >/dev/null || die "could not retire the watch for task $ID"
-  [ -z "$(meta_get park_state)" ] || park_record "park_state=cancelled" "park_handoff=$(meta_get park_handoff)" \
-    "park_when=$(meta_get park_when)" "park_deadline=$(meta_get park_deadline)" "park_at=$(meta_get park_at)" \
+  [ -z "$(meta_get park_state)" ] || park_record "park_state=cancelled" \
     || die "the watch is retired but task $ID's park record could not be updated"
   printf 'cancelled park of %s; nothing was relaunched\n' "$ID"
 }

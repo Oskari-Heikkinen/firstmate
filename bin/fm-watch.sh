@@ -1439,7 +1439,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
-  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" "$STATE/.idle-nudge-$key"
   clear_write_tracking "$key"
   statusf="$STATE/$task.status"
   mtime=$(stat_mtime "$statusf")
@@ -1969,7 +1969,8 @@ surface_nonterminal_stale() {  # <window> <hash>
 }
 
 # The idle park nudge (knobs above). Its one marker, .idle-nudge-<key>, holds
-# "nudged <epoch>" or "escalated <epoch>" for the latest nudge. Returns 0 when
+# "nudged <epoch>" or "escalated <epoch>" for the latest nudge; a declared wait
+# (handle_paused_stale, which every park produces) removes it. Returns 0 when
 # the stale is absorbed (just nudged, or still inside the grace), 1 when it must
 # surface, with IDLE_PARK_REASON naming an ignored nudge when there was one.
 idle_park_nudge() {  # <window> <key> <task>

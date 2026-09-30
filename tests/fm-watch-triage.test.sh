@@ -2648,6 +2648,34 @@ test_idle_secondmate_not_nudged() {
   pass "the park steer is limited to ship and scout workers"
 }
 
+# A worker that complied with the nudge by declaring its wait (every park does)
+# clears the marker, so a later idle session is steered afresh, not escalated.
+test_idle_park_nudge_cleared_by_declared_wait() {
+  local dir state fakebin out capture_file window key sig pid
+  dir=$(make_case idle-park-nudge-complied); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-parker"
+  printf 'parked, waiting' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/parker.meta"
+  printf 'paused: parked until 2099-01-01T00:00:00Z - waiting for file:/data/x\n' > "$state/parker.status"
+  sig=$(seen_sig "$state/parker.status"); printf '%s' "$sig" > "$state/.seen-parker_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text "parked, waiting")" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf 'nudged %s\n' "$(( $(date +%s) - 60 ))" > "$state/.idle-nudge-$key"
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · parked until 2099-01-01T00:00:00Z'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_IDLE_PARK_NUDGE=on "$WATCH" > "$out" &
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "watcher exited for a parked worker: $(cat "$out")"; }
+  reap "$pid"
+  [ -e "$state/.paused-$key" ] || fail "the declared wait was not absorbed as a pause"
+  [ ! -e "$state/.idle-nudge-$key" ] || fail "the nudge marker survived the worker declaring its wait"
+  pass "a declared wait clears the park-or-finish nudge marker"
+}
+
 # --- non-terminal stale, crew DECLARED a pause: absorbed, re-surfaced on a long
 #     cadence, never wedge-escalated ------------------------------------------
 # The live 2026-07-09/10 case: a crew intentionally held awaiting an upstream tool
@@ -6974,6 +7002,7 @@ test_nonterminal_stale_not_working_surfaced
 test_idle_ship_nudged_to_park_then_escalated
 test_idle_ship_nudge_grace_not_wedge_escalated
 test_idle_secondmate_not_nudged
+test_idle_park_nudge_cleared_by_declared_wait
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_declared_pause_is_absorbed_for_every_agent_liveness_verdict
 test_exited_declared_pause_is_bounded_and_live_gate_uses_pause_cadence

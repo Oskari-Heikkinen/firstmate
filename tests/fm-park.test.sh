@@ -33,7 +33,7 @@ new_task() {
   fm_test_track_procevent_home "$home"
   printf 'uncommitted work\n' > "$home/wt-$id/scratch.txt"
   fm_write_meta "$home/state/$id.meta" "window=fm:fm-$id" "worktree=$home/wt-$id" \
-    "kind=ship" "harness=claude" "pr=https://github.com/example/repo/pull/7"
+    "kind=ship" "harness=claude" "spawn_gen=g1" "pr=https://github.com/example/repo/pull/7"
   printf 'working [at=1]: started\n' > "$home/state/$id.status"
 }
 
@@ -102,6 +102,21 @@ if FM_HOME="$H" "$PARK" validate "$TMP_ROOT/good.md" --when file:/elsewhere 2>"$
   fail "a --when condition absent from the handoff was accepted"
 fi
 assert_grep "does not name the --when condition" "$TMP_ROOT/when.err" "validate ties --when to the handoff"
+if FM_HOME="$H" "$PARK" validate "$TMP_ROOT/good.md" --when file:/tmp/results 2>"$TMP_ROOT/prefix.err"; then
+  fail "a --when condition that is only a prefix of the handoff's was accepted"
+fi
+assert_grep "does not name the --when condition" "$TMP_ROOT/prefix.err" "validate matches --when exactly"
+for bad in "cmd:./scripts/batch-done.sh" "pr-merged:https://gitlab.example.com/group/repo/-/merge_requests/3"; do
+  handoff "$TMP_ROOT/bad-cond.md" "$bad"
+  if FM_HOME="$H" "$PARK" validate "$TMP_ROOT/bad-cond.md" 2>/dev/null; then
+    fail "an unwatchable condition was accepted: $bad"
+  fi
+done
+for prose in "Results land at file:/data/run/123/results.json." "file:/data/run/123/results.json (ETA 2h)"; do
+  printf '## Goal\ng\n## Done\nd\n## Waiting for\n%s\n## Next steps\nn\n' "$prose" > "$TMP_ROOT/prose.md"
+  out=$(FM_HOME="$H" "$PARK" validate "$TMP_ROOT/prose.md" 2>&1) || fail "an unbackticked condition was refused: $out"
+  assert_equals "handoff ok: waiting for file:/data/run/123/results.json" "$out" "an unbackticked file: condition ends at its path"
+done
 handoff "$TMP_ROOT/rel.md" "file:relative/path"
 if FM_HOME="$H" "$PARK" validate "$TMP_ROOT/rel.md" 2>"$TMP_ROOT/rel.err"; then
   fail "a relative file: condition was accepted"
@@ -183,6 +198,26 @@ assert_present "${res%.result}.handled" "re-park acknowledges the resume that st
 assert_grep "park_state=parked" "$H/state/t3.meta" "re-park records the new park"
 assert_grep "file:$TMP_ROOT/t3-next" "$H/state/when/when-park-t3.spec" "re-park arms the watch on the new condition"
 pass "a resumed task can park again without waiting for the supervisor"
+
+# --- a task relaunched since it parked is not relaunched again -----------------
+H="$TMP_ROOT/h-superseded"; new_task "$H" t9
+handoff "$TMP_ROOT/t9.md" "file:$TMP_ROOT/t9-results"
+FM_PARK_INTERVAL=0.1 FM_PARK_STABLE=1 park "$H" t9 --handoff "$TMP_ROOT/t9.md" >/dev/null || fail "park t9 failed"
+assert_grep "park_spawn_gen=g1" "$H/state/t9.meta" "park records the task's incarnation"
+awk '{ sub(/^spawn_gen=g1$/, "spawn_gen=g2") } 1' "$H/state/t9.meta" > "$H/t9.meta" && mv "$H/t9.meta" "$H/state/t9.meta"
+: > "$H/control.log"
+: > "$TMP_ROOT/t9-results"
+start_watch "$H"
+wait_for_result "$H" when-park-t9 || fail "the superseded resume produced no outcome"
+res=$(first_result "$H" when-park-t9)
+assert_equals action-failed "$("$ROOT/bin/fm-procevent-when.sh" classify "$res")" "a superseded resume wakes the supervisor"
+assert_grep "relaunched or respawned since it parked" "$res" "the outcome names why nothing was relaunched"
+assert_no_grep "relaunch" "$H/control.log" "a superseded resume never replaces the live session"
+assert_no_grep "^park_" "$H/state/t9.meta" "a superseded resume clears the park state"
+wait_for_wake "$H" when-park-t9 || fail "the superseded resume did not reach the wake queue"
+for _ in $(seq 1 100); do [ -e "$H/state/procevent/when-park-t9.source" ] || break; sleep 0.1; done
+assert_absent "$H/state/procevent/when-park-t9.source" "the spent watch is disarmed"
+pass "a task relaunched since it parked keeps its live session and the supervisor is told"
 
 # --- a failed relaunch wakes the supervisor and keeps the record --------------
 H="$TMP_ROOT/h-fail"; new_task "$H" t4
