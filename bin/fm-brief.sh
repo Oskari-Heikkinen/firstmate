@@ -274,7 +274,7 @@ INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 # header owns the handoff format, conditions, and resume semantics.
 PARK_RULE="   When that wait is on an external result that will take a while (a run, a merge, a review, another team),
    park instead of idling: write a handoff file outside tracked content with sections \`## Goal\`, \`## Done\`,
-   \`## Waiting for\` (one condition: \`file:<absolute-path>\`, \`pr-merged:<url>\`, or \`cmd:<executable> [args]\`),
+   \`## Waiting for\` (one condition: \`file:<absolute-path>\`, \`pr-merged:<github-pr-url>\`, or \`cmd:<absolute-executable-or-PATH-name> [args]\`),
    and \`## Next steps\`, then run \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-park.sh") $ID --handoff <file>\`.
    It stops this session and starts a fresh one with your handoff when the condition holds; its \`--help\` has the details."
 
