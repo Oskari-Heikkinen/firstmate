@@ -15,31 +15,51 @@ ACCOUNT="$ROOT/bin/fm-account.sh"
 TMP_ROOT=$(fm_test_tmproot fm-account)
 unset FM_ACCOUNT_USAGE_TTL FM_ACCOUNT_QUOTA_TIMEOUT FM_ACCOUNT_PANEL_RATIO FM_SPAWN_ACCOUNT
 
-# write_fake_quota <fakebin>: quota-axi that reads "<percent-left> <status>"
+# write_fake_quota <fakebin>: quota-axi that reads
+# "<percent-left> <status> [<auth-status> [<full-status> <full-auth-status>]]"
 # from <login-folder>/fake-quota (default "50 fresh") and logs each read to
-# FM_FAKE_QUOTA_LOG. Status "garbage" prints unparseable output; any status
-# other than fresh prints a row with no usage and exits nonzero, the way the
-# real tool reports a login that needs sign-in.
+# FM_FAKE_QUOTA_LOG as "<provider> <dir> <profile|full> <refresh|no-refresh>
+# <token|no-token>". A --profile-only read answers <status> and <auth-status>;
+# any other read is the classifier and answers <full-status> and
+# <full-auth-status> (default: the same two), and writes the quota cache under
+# XDG_CACHE_HOME the way the real tool does. "-" is an absent auth status.
+# Status "garbage" prints unparseable output; any status other than fresh
+# prints a row with no usage and exits nonzero, the way the real tool reports a
+# login that needs sign-in.
 write_fake_quota() {
   cat > "$1/quota-axi" <<'SH'
 #!/usr/bin/env bash
 set -u
-provider=
+provider= mode=full refresh=refresh
 while [ $# -gt 0 ]; do
-  case "$1" in --provider) provider=$2; shift ;; esac
+  case "$1" in
+    --provider) provider=$2; shift ;;
+    --profile-only) mode=profile ;;
+    --no-credential-refresh) refresh=no-refresh ;;
+  esac
   shift
 done
 if [ "$provider" = codex ]; then dir=${CODEX_HOME:-}; else dir=${CLAUDE_CONFIG_DIR:-}; fi
-[ -z "${FM_FAKE_QUOTA_LOG:-}" ] || printf '%s %s\n' "$provider" "$dir" >> "$FM_FAKE_QUOTA_LOG"
-left=50 status=fresh
-[ ! -f "$dir/fake-quota" ] || read -r left status < "$dir/fake-quota"
+[ -z "${FM_FAKE_QUOTA_LOG:-}" ] || printf '%s %s %s %s %s\n' "$provider" "$dir" "$mode" "$refresh" \
+  "$([ -n "${CLAUDE_CODE_OAUTH_TOKEN+x}" ] && echo token || echo no-token)" >> "$FM_FAKE_QUOTA_LOG"
+left=50 status=fresh auth=- fstatus= fauth=
+[ ! -f "$dir/fake-quota" ] || read -r left status auth fstatus fauth < "$dir/fake-quota"
+if [ "$mode" = full ]; then
+  status=${fstatus:-$status} auth=${fauth:-${auth:--}}
+  mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/quota-axi"
+  : > "${XDG_CACHE_HOME:-$HOME/.cache}/quota-axi/quotas.json"
+fi
 case "$status" in
   garbage) echo 'not json'; exit 0 ;;
   fresh)
     printf '{"providers":[{"provider":"%s","plan":"max","state":{"status":"fresh"},"windows":[{"id":"weekly","resetsAt":"2030-01-01T00:00:00.000+00:00"}],"quotaSemantics":{"effectiveAvailability":[{"scope":"all_models","effectivePercentRemaining":%s,"limitingWindowIds":["weekly"],"runway":{"status":"projected_exhaustion","usableRunwaySeconds":7200}}]}}]}\n' "$provider" "$left"
     ;;
   *)
-    printf '{"providers":[{"provider":"%s","state":{"status":"%s"}}]}\n' "$provider" "$status"
+    if [ "${auth:--}" = - ]; then
+      printf '{"providers":[{"provider":"%s","state":{"status":"%s"}}]}\n' "$provider" "$status"
+    else
+      printf '{"providers":[{"provider":"%s","state":{"status":"%s","authStatus":"%s"}}]}\n' "$provider" "$status" "$auth"
+    fi
     exit 1
     ;;
 esac
@@ -223,7 +243,7 @@ test_rebalance_dry_run_and_check_wake_only_on_change() {
   printf '80 fresh\n' > "$C/codex/fake-quota"
   out=$(FM_ACCOUNT_USAGE_TTL=0 run_account rebalance --check)
   assert_equals "" "$out" "nothing to do stays silent"
-  assert_absent "$H/state/.account-check" "a settled check clears its fingerprint"
+  assert_present "$H/state/.account-check" "quiet advice keeps its fingerprint"
   rm -f "$H/config/accounts"
   out=$(run_account rebalance --check); rc=$?
   expect_code 0 "$rc" "no registry"
@@ -396,11 +416,146 @@ test_spawn_refuses_an_unregistered_or_missing_login() {
   pass "a spawn refuses rather than launching on a login other than the one named"
 }
 
+# classify_case <name> <gmail-fixture>: a case whose gmail login answers
+# <gmail-fixture>, read once through status --json with an ambient env token.
+# Sets OUT to that JSON.
+classify_case() {
+  new_case "$1"
+  printf '%s\n' "$2" > "$C/gmail/fake-quota"
+  mkdir -p "$C/tmp"
+  OUT=$(CLAUDE_CODE_OAUTH_TOKEN=not-a-real-token XDG_CACHE_HOME="$C/user-home/.cache" TMPDIR="$C/tmp" run_account status --json)
+}
+
+gmail_status() {
+  json_get "$OUT" '.accounts[] | select(.name == "gmail") | .status'
+}
+
+test_a_lapsed_login_reads_expired_not_signed_out() {
+  local out
+  classify_case lapsed-401 "0 auth_required - unavailable expired_refreshable"
+  assert_equals expired "$(gmail_status)" "a 401 on a lapsed token that still renews is expired"
+  assert_not_contains "$(json_get "$OUT" '.advice | join("\n")')" "sign in to account gmail" "an expired login is not a sign-in"
+  assert_contains "$(cat "$C/quota.log")" "claude $C/gmail full no-refresh no-token" "the classifier read never refreshes and never sees an env token"
+  assert_not_contains "$(cat "$C/quota.log")" "codex $C/codex full" "only Claude logins are classified"
+  assert_absent "$C/user-home/.cache/quota-axi/quotas.json" "the classifier read never writes the shared quota cache"
+  assert_equals "" "$(ls -A "$C/tmp")" "the classifier's throwaway cache is removed"
+  out=$(run_account status)
+  assert_contains "$out" "[expired: renews on next use]" "the table says an expired login renews on next use"
+  classify_case lapsed-429 "0 rate_limited - unavailable expired_refreshable"
+  assert_equals expired "$(gmail_status)" "a 429 on a lapsed token that still renews is expired too"
+  classify_case no-refresh "0 auth_required - unavailable -"
+  assert_equals auth_required "$(gmail_status)" "a lapsed login with no refresh token still needs sign-in"
+  classify_case classifier-limited "0 auth_required - rate_limited -"
+  assert_equals auth_required "$(gmail_status)" "a rate-limited classifier read leaves the sign-in reading alone"
+  classify_case limited "0 rate_limited - rate_limited -"
+  assert_equals rate_limited "$(gmail_status)" "a genuine rate limit stays rate limited"
+  classify_case signed-out "0 auth_required - auth_required -"
+  assert_equals auth_required "$(gmail_status)" "a login the classifier also finds signed out still needs sign-in"
+  classify_case unclassified "0 auth_required - garbage -"
+  assert_equals auth_required "$(gmail_status)" "an unreadable classifier leaves the sign-in reading alone"
+  pass "a lapsed Claude login that still holds a refresh token reads expired, not signed out"
+}
+
+# sweep: one watcher sweep after the usage cache has aged out, so each login
+# is read exactly once, as a real sweep 5 minutes after the last one is.
+sweep() {
+  rm -f "$H"/state/.account-usage-*
+  run_account rebalance --check
+}
+
+test_b_signin_lines_wait_for_confirmation_and_come_from_main() {
+  local out i now
+  new_case signin
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  printf '0 auth_required - auth_required -\n' > "$C/gmail/fake-quota"
+  for i in 1 2 3; do
+    out=$(sweep)
+    assert_equals "" "$out" "read $i inside the confirmation window stays silent"
+  done
+  out=$(run_account status)
+  assert_contains "$out" "Needs the captain: sign in to account gmail" "status shows the current reading at once"
+  out=$(FM_ACCOUNT_SIGNIN_CONFIRM_SECS=0 sweep)
+  assert_contains "$out" "needs the captain: sign in to account gmail" "three reads across the window confirm the sign-in"
+  printf '0 rate_limited - rate_limited -\n' > "$C/gmail/fake-quota"
+  out=$(FM_ACCOUNT_SIGNIN_CONFIRM_SECS=0 sweep)
+  assert_equals "" "$out" "a rate-limited reading between sign-in readings changes nothing"
+  printf '0 auth_required - auth_required -\n' > "$C/gmail/fake-quota"
+  out=$(FM_ACCOUNT_SIGNIN_CONFIRM_SECS=0 sweep)
+  assert_equals "" "$out" "the confirmed sign-in does not wake twice"
+  printf '0 auth_required - unavailable expired_refreshable\n' > "$C/gmail/fake-quota"
+  out=$(sweep)
+  assert_equals "" "$out" "clearing the sign-in is silent"
+  printf '0 auth_required - auth_required -\n' > "$C/gmail/fake-quota"
+  out=$(FM_ACCOUNT_SIGNIN_CONFIRM_SECS=0 sweep)
+  assert_equals "" "$out" "a cleared login needs three new reads before it is confirmed again"
+
+  new_case signin-mate
+  printf 'mate1\n' > "$H/.fm-secondmate-home"
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  printf '0 auth_required - auth_required -\n' > "$C/gmail/fake-quota"
+  printf '99\n' > "$H/config/account-floor"
+  for i in 1 2 3 4; do
+    out=$(FM_ACCOUNT_SIGNIN_CONFIRM_SECS=0 sweep)
+    assert_equals "" "$out" "a second mate's check never carries a sign-in or no-room line (read $i)"
+  done
+  out=$(run_account rebalance --dry-run)
+  assert_not_contains "$out" "needs the captain" "a second mate's rebalance has nothing for the captain"
+  out=$(run_account status --json)
+  assert_contains "$(json_get "$out" '.advice | join("\n")')" "sign in to account gmail" "a second mate's status still shows the sign-in"
+  assert_contains "$(json_get "$out" '.advice | join("\n")')" "no Claude account has room" "and the no-room line"
+  new_case signin-span
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  printf '0 rate_limited - rate_limited -\n' > "$C/gmail/fake-quota"
+  now=$(date +%s)
+  printf '%s|%s|3\n' "$((now - 1000))" "$((now - 760))" > "$H/state/.account-signin-gmail"
+  out=$(sweep)
+  assert_equals "" "$out" "three reads spanning less than the window stay unconfirmed however long ago they began"
+  printf '%s|%s|3\n' "$((now - 1000))" "$((now - 100))" > "$H/state/.account-signin-gmail"
+  out=$(sweep)
+  assert_contains "$out" "needs the captain: sign in to account gmail" "three reads spanning the window confirm the sign-in"
+  pass "sign-in lines reach the captain only from main, once three reads over the window confirm them"
+}
+
+test_b_quiet_advice_returning_unchanged_does_not_wake_again() {
+  local out
+  new_case quiet
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  out=$(sweep)
+  assert_contains "$out" "restart this main session on work" "the first check wakes"
+  printf '0 garbage\n' > "$C/gmail/fake-quota"
+  out=$(sweep)
+  assert_equals "" "$out" "a failed read that empties the advice is silent"
+  printf '4 fresh\n' > "$C/gmail/fake-quota"
+  out=$(sweep)
+  assert_equals "" "$out" "the same advice back inside the window does not wake again"
+  printf '0 garbage\n' > "$C/gmail/fake-quota"
+  sweep >/dev/null
+  printf '4 fresh\n' > "$C/gmail/fake-quota"
+  out=$(FM_ACCOUNT_SIGNIN_CONFIRM_SECS=0 sweep)
+  assert_contains "$out" "restart this main session on work" "advice back after a quiet spell past the window wakes again"
+
+  new_case quiet-move
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  add_mate sm2 ''
+  out=$(sweep)
+  assert_contains "$out" "sm2 gmail->work" "the first check wakes with the move"
+  printf '0 garbage\n' > "$C/gmail/fake-quota"
+  out=$(sweep)
+  assert_equals "" "$out" "a failed read that empties the move and advice is silent"
+  printf '4 fresh\n' > "$C/gmail/fake-quota"
+  out=$(sweep)
+  assert_contains "$out" "sm2 gmail->work" "a move returning after a quiet spell wakes at once"
+  pass "advice that goes quiet and returns unchanged wakes again only after the confirmation window"
+}
+
 test_malformed_registry_refuses_and_the_check_says_so
 test_status_attributes_every_agent_and_plans_moves
 test_usage_is_cached_and_unknown_usage_never_moves_work
 test_floor_and_priority_choose_the_account
 test_rebalance_dry_run_and_check_wake_only_on_change
+test_a_lapsed_login_reads_expired_not_signed_out
+test_b_signin_lines_wait_for_confirmation_and_come_from_main
+test_b_quiet_advice_returning_unchanged_does_not_wake_again
 test_use_pins_a_second_mate_and_refuses_what_it_cannot_move
 test_default_sets_and_clears_the_new_spawn_account
 test_auto_arms_and_retires_the_watcher_check
