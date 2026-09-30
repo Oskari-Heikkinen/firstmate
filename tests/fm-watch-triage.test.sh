@@ -2562,8 +2562,8 @@ SH
   reap "$pid"
   [ ! -s "$state/.wake-queue" ] || fail "the nudged idle stale still queued a wake"
   [ "$(grep -c . "$sendlog" 2>/dev/null)" = 1 ] || fail "the idle ship was not steered exactly once"
-  grep -F "idler" "$sendlog" | grep -F "fm-park.sh idler --handoff" >/dev/null \
-    || fail "the steer does not tell the worker how to park: $(cat "$sendlog")"
+  grep -F "idler" "$sendlog" | grep -F "fm-park.sh --help" >/dev/null \
+    || fail "the steer does not point the worker at the park command: $(cat "$sendlog")"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
   # Phase B: past the grace with the same idle pane, firstmate is woken once,
@@ -2582,6 +2582,41 @@ SH
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the idle escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the idle escalation was not queued"
   pass "an idle ship with no declared wait is steered to park or finish, then surfaced if still idle past the grace"
+}
+
+# Inside the nudge grace an unchanged idle pane is absorbed on every poll: the
+# wedge timer must not wake firstmate before the steer has had its grace.
+test_idle_ship_nudge_grace_not_wedge_escalated() {
+  local dir state fakebin out capture_file window key pane_hash sig pid sendlog
+  dir=$(make_case idle-park-nudge-grace); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; sendlog="$dir/send.log"
+  window="test:fm-idler"
+  printf 'idle prompt, nothing running' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/idler.meta"
+  printf 'working: kicked off the long run\n' > "$state/idler.status"
+  sig=$(seen_sig "$state/idler.status"); printf '%s' "$sig" > "$state/.seen-idler_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle prompt, nothing running")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  printf 'nudged %s\n' "$(date +%s)" > "$state/.idle-nudge-$key"
+  printf '#!/usr/bin/env bash\necho "$1" >> %q\n' "$sendlog" > "$fakebin/fake-send.sh"
+  chmod +x "$fakebin/fake-send.sh"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_IDLE_PARK_NUDGE=on FM_IDLE_PARK_GRACE=999 \
+    FM_STALE_ESCALATE_SECS=1 FM_SEND_BIN="$fakebin/fake-send.sh" "$WATCH" > "$out" &
+  pid=$!
+  for _ in 1 2 3; do
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the wedge timer woke firstmate inside the nudge grace: $(cat "$out")"; }
+  done
+  reap "$pid"
+  [ ! -s "$state/.wake-queue" ] || fail "an idle stale inside the nudge grace queued a wake"
+  [ ! -e "$state/.stale-since-$key" ] || fail "an idle stale inside the nudge grace started the wedge timer"
+  [ ! -s "$sendlog" ] || fail "the worker was steered again inside the grace"
+  pass "an idle ship inside the park-or-finish grace is absorbed, never wedge-escalated"
 }
 
 # Only ship and scout workers are steered to park: a secondmate idles by design.
@@ -6935,6 +6970,7 @@ test_afk_busy_declared_pause_hands_off_plain_stale
 test_afk_busy_declared_pause_ticking_pane_hands_off_once
 test_nonterminal_stale_not_working_surfaced
 test_idle_ship_nudged_to_park_then_escalated
+test_idle_ship_nudge_grace_not_wedge_escalated
 test_idle_secondmate_not_nudged
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_declared_pause_is_absorbed_for_every_agent_liveness_verdict

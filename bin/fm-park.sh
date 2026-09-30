@@ -9,6 +9,7 @@
 #   fm-park.sh check <condition>
 #   fm-park.sh resume <task-id>
 #   fm-park.sh cancel <task-id>
+#   fm-park.sh stop <task-id>
 #
 # This CLI is stable: a worker, its supervisor, and other automation (a memory
 # guard parking idle agents) all call the park form above.
@@ -22,15 +23,20 @@
 #           the local copy and every uncommitted change stay exactly as they
 #           were. Idempotent: parking an already-parked task retires the old
 #           watch and re-arms it with the new handoff, condition, and deadline
-#           rather than adding a second watch. --when defaults to the one
+#           rather than adding a second watch. A resumed task parks again at
+#           once: park acknowledges its own watch's earlier `fired` outcome (the
+#           relaunch that started this session) before re-arming; any other
+#           unhandled outcome still refuses the re-arm until the supervisor
+#           handles it. --when defaults to the one
 #           condition named in the handoff's "Waiting for" section; when given,
 #           it must appear verbatim there. --deadline is a UTC time,
 #           YYYY-MM-DDTHH:MM[:SS]Z, default seven days from now (FM_PARK_DEADLINE_SECS).
-#           When run from inside the task's own worktree (the worker parking
-#           itself), the exit is detached so this command can return before
-#           its own session is stopped; its output goes to data/<id>/park-exit.log.
-#           A failed exit leaves the park armed: the watch still relaunches the
-#           task when the condition holds.
+#           When run by the worker parking itself (FM_TASK_ID is the task, or
+#           the current directory is inside its worktree), the exit is detached
+#           through `stop` so this command can return before its own session is
+#           stopped; its output goes to data/<id>/park-exit.log. A failed exit
+#           leaves the park armed: the watch still relaunches the task when the
+#           condition holds.
 # validate  Check a handoff file: it needs non-empty "Goal", "Done",
 #           "Waiting for", and "Next steps" sections (any Markdown heading
 #           level), and "Waiting for" must name a machine-checkable condition.
@@ -46,6 +52,10 @@
 #           action-failed outcome, which wakes the supervisor.
 # cancel    Retire the watch and mark the record park_state=cancelled, without
 #           relaunching anything.
+# stop      The detached exit of a self-park: after FM_PARK_SELF_EXIT_DELAY
+#           seconds (3) stop the agent through `bin/fm-control.sh <id> exit`; if
+#           that fails, append a blocked: status line naming park-exit.log so the
+#           supervisor is woken rather than an idle session holding memory.
 #
 # Conditions (one line, no shell interpretation):
 #   file:<absolute-path>          true once the path exists (a fetched run, a results file)
@@ -90,6 +100,8 @@ export FM_HOME
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# shellcheck source=bin/fm-procevent-lib.sh
+. "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 # Test seam: a fake control plane stands in for the harness endpoint.
 CONTROL="${FM_PARK_CONTROL_OVERRIDE:-$SCRIPT_DIR/fm-control.sh}"
@@ -237,18 +249,22 @@ section_filled() {  # <body>: 0 when it holds any non-placeholder text
     END { exit found ? 0 : 1 }'
 }
 
-# The one condition named in a "Waiting for" body: a token starting with a
-# known kind, optionally in backticks, taking the rest of its line.
+# The one condition named in a "Waiting for" body: the first backticked token
+# starting with a known kind, else the first such word (at a line start or after
+# whitespace) taking the rest of its line.
 waiting_condition() {  # <body>
   printf '%s\n' "$1" | awk '
-    {
-      line = $0
-      if (match(line, /`(file|pr-merged|cmd):[^`]*`/)) {
-        print substr(line, RSTART + 1, RLENGTH - 2); exit
-      }
-      if (match(line, /(file|pr-merged|cmd):/)) {
-        line = substr(line, RSTART); sub(/[ \t]+$/, "", line); print line; exit
-      }
+    { lines[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++)
+        if (match(lines[i], /`(file|pr-merged|cmd):[^`]*`/)) {
+          print substr(lines[i], RSTART + 1, RLENGTH - 2); exit
+        }
+      for (i = 1; i <= NR; i++)
+        if (match(lines[i], /(^|[ \t])(file|pr-merged|cmd):/)) {
+          line = substr(lines[i], RSTART); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+          print line; exit
+        }
     }'
 }
 
@@ -329,6 +345,7 @@ cmd_park() {
   fi
 
   # Re-park replaces the watch rather than adding one.
+  ack_own_fired
   "$WHEN" retire "park-$ID" >/dev/null 2>&1 || true
   park_record "park_state=parked" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
     "park_deadline=$deadline_iso" "park_at=$now" \
@@ -345,6 +362,7 @@ cmd_park() {
   status_append "$PAUSED_VERB: parked until $deadline_iso - waiting for $HANDOFF_CONDITION; relaunches automatically with $dest" \
     || die "task $ID is parked and its watch armed, but the status line could not be appended"
 
+  [ "${FM_TASK_ID-}" != "$ID" ] || detached=1
   wt=$(meta_get worktree)
   here=$(pwd -P 2>/dev/null || true)
   if [ -n "$wt" ] && wt=$(cd "$wt" 2>/dev/null && pwd -P); then
@@ -356,9 +374,7 @@ cmd_park() {
     # A new session keeps the exit alive when the agent's own process group
     # is interrupted; nohup is the fallback where setsid is absent.
     if command -v setsid >/dev/null 2>&1; then detach="setsid"; else detach="nohup"; fi
-    # shellcheck disable=SC2016
-    "$detach" bash -c 'sleep "$1"; exec "$2" "$3" exit' _ "${FM_PARK_SELF_EXIT_DELAY:-3}" "$CONTROL" "$ID" \
-      > "$DATA/$ID/park-exit.log" 2>&1 < /dev/null &
+    "$detach" "$SCRIPT_DIR/fm-park.sh" stop "$ID" > "$DATA/$ID/park-exit.log" 2>&1 < /dev/null &
     printf 'parked %s: waiting for %s until %s; this session stops in a few seconds and a fresh one starts with %s when the condition holds\n' \
       "$ID" "$HANDOFF_CONDITION" "$deadline_iso" "$dest"
     return 0
@@ -368,6 +384,32 @@ cmd_park() {
     exit 1
   fi
   printf 'parked %s: waiting for %s until %s; agent stopped (%s)\n' "$ID" "$HANDOFF_CONDITION" "$deadline_iso" "$out"
+}
+
+# The resume that started this session left its watch's fired outcome captured;
+# acknowledge it, and only it, so the re-arm below is not refused. Any other
+# unhandled outcome of this watch is the supervisor's and still blocks the arm.
+ack_own_fired() {
+  local sid="when-park-$ID" result base
+  while IFS= read -r result; do
+    base=${result%.result}
+    [ "${base%.*}" = "$(fm_procevent_inbox_dir "$STATE")/$sid" ] || continue
+    [ "$("$WHEN" classify "$result" 2>/dev/null)" = fired ] || continue
+    "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$(fm_procevent_result_sequence "$result")" >/dev/null \
+      || die "cannot acknowledge the earlier resume of task $ID ($result)"
+  done < <(fm_procevent_pending "$STATE")
+}
+
+cmd_stop() {
+  local out
+  task_resolve "${1-}"
+  sleep "${FM_PARK_SELF_EXIT_DELAY:-3}"
+  if ! out=$("$CONTROL" "$ID" exit 2>&1); then
+    printf '%s\n' "$out"
+    status_append "blocked: parked and its resume watch armed, but this session could not be stopped; see $DATA/$ID/park-exit.log" || true
+    exit 1
+  fi
+  printf '%s\n' "$out"
 }
 
 # --- resume and cancel -------------------------------------------------------
@@ -414,5 +456,6 @@ case "${1-}" in
   check) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_check "$1" ;;
   resume) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_resume "$1" ;;
   cancel) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_cancel "$1" ;;
+  stop) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_stop "$1" ;;
   *) cmd_park "$@" ;;
 esac

@@ -1992,21 +1992,25 @@ idle_park_nudge() {  # <window> <key> <task>
     return 1
   fi
   send=${FM_SEND_BIN:-$SCRIPT_DIR/fm-send.sh}
-  text="Firstmate: you have gone idle with no declared wait. If you are waiting on an external result (a run, a merge, a review, another team), park instead of idling: write a handoff with sections Goal, Done, Waiting for (one condition: file:<absolute-path>, pr-merged:<url>, or cmd:<executable> [args]), and Next steps, then run FM_HOME=$(printf %q "$FM_HOME") $(printf %q "$SCRIPT_DIR/fm-park.sh") $task --handoff <file>. Otherwise finish the task, or append the status line your instructions define for where you are."
+  text="Firstmate: you have gone idle with no declared wait. If you are waiting on an external result, park as your brief's park rule says (details: FM_HOME=$(printf %q "$FM_HOME") $(printf %q "$SCRIPT_DIR/fm-park.sh") --help); otherwise finish the task, or append the status line your instructions define for where you are."
   FM_HOME="$FM_HOME" "$send" "$task" "$text" >/dev/null 2>&1 || return 1
   printf 'nudged %s\n' "$now" > "$marker"
   triage_log "idle park nudge sent (no declared wait): $win"
   return 0
 }
 
-# 0 when this window's nudge is still unanswered past its grace, so an unchanged
-# idle pane surfaces through surface_nonterminal_stale. One marker read per poll.
-idle_park_nudge_due() {  # <window-key>
+# 0 when this window's nudge is still unanswered, with IDLE_PARK_NUDGE_AGE set to
+# its age: an unchanged idle pane is absorbed inside the grace and surfaces
+# through surface_nonterminal_stale after it, never through the wedge timer.
+# One marker read per poll.
+idle_park_nudge_open() {  # <window-key>
   local verdict='' at=''
+  IDLE_PARK_NUDGE_AGE=
   [ "$IDLE_PARK_NUDGE" != off ] || return 1
   [ -f "$STATE/.idle-nudge-$1" ] && read -r verdict at < "$STATE/.idle-nudge-$1" || return 1
   case "$at" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$verdict" = nudged ] && [ $(( $(date +%s) - at )) -ge "$IDLE_PARK_GRACE" ]
+  [ "$verdict" = nudged ] || return 1
+  IDLE_PARK_NUDGE_AGE=$(( $(date +%s) - at ))
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
@@ -3162,8 +3166,12 @@ EOF
                          triage_log "absorbed non-terminal stale (provably working): $w" ;;
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
-            elif idle_park_nudge_due "$key"; then
-              surface_nonterminal_stale "$w" "$h"
+            elif [ ! -e "$ssf" ] && idle_park_nudge_open "$key"; then
+              if [ "$IDLE_PARK_NUDGE_AGE" -ge "$IDLE_PARK_GRACE" ]; then
+                surface_nonterminal_stale "$w" "$h"
+              else
+                triage_log "absorbed non-terminal stale (park-or-finish nudge ${IDLE_PARK_NUDGE_AGE}s ago, inside the grace): $w"
+              fi
             else
               wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$task" "$h"
             fi
