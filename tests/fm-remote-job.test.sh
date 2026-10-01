@@ -48,6 +48,7 @@ cleanup_remote_job_fixture() {
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
   fi
+  fm_test_stop_remote_job_workers "$TMP_ROOT" || true
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup_remote_job_fixture EXIT
@@ -1223,5 +1224,38 @@ RESTART_SUPERVISOR_PID=
 assert_grep "remote job worker exited 3 times; stopping the supervisor" "$TMP_ROOT/restart-supervisor.err" \
   "the restart guard did not explain why it stopped"
 pass "barely healthy worker failures remain bounded by the restart guard"
+
+# The worker is started by whatever command first needs it and then outlives
+# that command. A caller holding a lock on an inherited descriptor - a
+# heavy-slot admission lock, say - must get the lock back the moment it exits,
+# not when the detached worker tree finally stops.
+if command -v flock >/dev/null 2>&1; then
+  FD_HOME="$TMP_ROOT/fd-account"
+  FD_STATE="$TMP_ROOT/fd-jobs"
+  FD_LOCK="$TMP_ROOT/fd-caller.lock"
+  mkdir -p "$FD_HOME"
+  chmod 700 "$FD_HOME"
+  : > "$FD_LOCK"
+  (
+    exec 9> "$FD_LOCK"
+    flock -n 9 || exit 3
+    FM_REMOTE_JOB_STATE_ROOT="$FD_STATE"
+    export FM_REMOTE_JOB_STATE_ROOT
+    fm_remote_job_ensure_worker "$REMOTE_ROOT" "$FD_HOME" || exit 4
+  ) > "$TMP_ROOT/fd-caller.out" 2>&1 || fail "the lock-holding caller could not start the worker: $(cat "$TMP_ROOT/fd-caller.out")"
+  for _ in $(seq 1 300); do
+    [ -f "$FD_STATE/worker.ready" ] && break
+    sleep 0.05
+  done
+  assert_present "$FD_STATE/worker.ready" "the worker started by a lock-holding caller did not become ready"
+  FD_WORKER_PID=$(cat "$FD_STATE/worker.pid")
+  kill -0 "$FD_WORKER_PID" 2>/dev/null || fail "the worker started by a lock-holding caller is not running"
+  flock -n "$FD_LOCK" true || fail "the detached worker kept its exited caller's lock"
+  kill -0 "$FD_WORKER_PID" 2>/dev/null || fail "the worker stopped before the caller's lock was checked"
+  fm_remote_job_stop_worker_tree "$FD_WORKER_PID" || fail "the lock-test worker tree did not stop"
+  pass "a detached worker never keeps its caller's inherited lock"
+else
+  echo "skip: flock absent; inherited-lock release not exercised on this host"
+fi
 
 echo "ALL TESTS PASSED"
