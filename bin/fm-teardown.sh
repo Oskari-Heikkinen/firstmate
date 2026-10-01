@@ -46,15 +46,21 @@
 # reachable from any remote-tracking branch (a fork counts as a remote, so
 # upstream-contribution PRs pushed to a fork satisfy this in any mode), OR - for a
 # normal ship task whose commits are not so reachable - when its PR is merged and
-# GitHub reports a PR head that contains the current local work, or its content is
-# already present in the up-to-date default branch. This recognizes the common
+# GitHub reports a PR head that contains the current local work, or every branch
+# commit was replayed onto the up-to-date default branch, or its content is
+# already present in that default branch. This recognizes the common
 # squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
-# on a remote yet the change is fully in main.
+# on a remote yet the change is fully in main, and the merge-train or rebase
+# landing that replays each commit under a new SHA and then deletes the branch.
+# That replay proof needs a clean worktree, a freshly fetched default branch, no
+# merge commits on the branch, and an exact stable patch id on the default branch
+# (since the merge-base) for EVERY branch commit; one unmatched commit refuses.
 # Squash merges collapse the branch's commits, so per-commit patch ids against main
 # no longer match, and a pipeline rebase can leave the local worktree diverged from
-# the PR head. A diverged copy is not treated as landed: path-set coverage, git
-# cherry, and merge-tree containment each fail to prove content landed without also
-# accepting unlanded edits to the same paths. Teardown still accepts a merged PR
+# the PR head. A diverged copy is not treated as landed: path-set coverage, a
+# partial git cherry match, and merge-tree containment each fail to prove content
+# landed without also accepting unlanded edits to the same paths, which is why the
+# replay proof above demands an exact match for every commit. Teardown still accepts a merged PR
 # whose head contains the current local work (ancestor or equivalent patch ids),
 # or a clean content-in-default tree match. Anything else refuses.
 # The PR itself is resolved from the task's recorded pr= when present, or - when
@@ -1555,6 +1561,62 @@ pr_is_merged() {
   return 0
 }
 
+# Resolve the up-to-date default branch ref: origin's freshly fetched default
+# branch when an origin remote exists, else the local default branch. Echoes the
+# ref; returns non-zero when no default ref exists or the fetch fails, so callers
+# refuse rather than judge against a stale ref.
+fresh_default_ref() {
+  local name
+  name=$(default_branch) || return 1
+  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
+    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
+    printf '%s' "refs/remotes/origin/$name"
+  elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
+    printf '%s' "refs/heads/$name"
+  else
+    return 1
+  fi
+}
+
+# Were the branch's commits replayed onto the up-to-date default branch, as a
+# merge train or rebase landing does before deleting the branch? True only when
+# the worktree is clean, the branch has at least one commit past its merge-base
+# with the freshly fetched default branch, none of those commits is a merge, and
+# EVERY one has a stable patch id equal to a non-merge commit the default branch
+# gained since that merge-base (what `git cherry` showing only '-' expresses).
+# One commit without an exact match - an extra local commit, or a different
+# patch to the same file - refuses; squash-collapsed content never matches here
+# and is left to content_in_default.
+commits_replayed_on_default() {
+  local ref current base dirty commits merges default_patch_ids commit patch_id
+  dirty=$(git -C "$WT" status --porcelain 2>/dev/null) || return 1
+  [ -z "$dirty" ] || return 1
+  ref=$(fresh_default_ref) || return 1
+  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  base=$(git -C "$WT" merge-base "$current" "$ref" 2>/dev/null) || return 1
+  merges=$(git -C "$WT" rev-list --merges "$base..$current" -- 2>/dev/null) || return 1
+  [ -z "$merges" ] || return 1
+  commits=$(git -C "$WT" rev-list "$base..$current" -- 2>/dev/null) || return 1
+  [ -n "$commits" ] || return 1
+  default_patch_ids=$(
+    git -C "$WT" rev-list --no-merges "$base..$ref" -- 2>/dev/null \
+      | while IFS= read -r commit; do
+          patch_id_for_commit "$commit"
+        done \
+      | sed '/^$/d' \
+      | sort -u
+  ) || return 1
+  [ -n "$default_patch_ids" ] || return 1
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    patch_id=$(patch_id_for_commit "$commit") || return 1
+    [ -n "$patch_id" ] || return 1
+    printf '%s\n' "$default_patch_ids" | grep -qxF "$patch_id" || return 1
+  done <<EOF
+$commits
+EOF
+}
+
 # Is the branch's content already present in the up-to-date default branch? Fetches
 # first, then 3-way merges the default branch with HEAD: when HEAD introduces nothing
 # the default branch does not already contain (e.g. its change landed via squash) the
@@ -1563,16 +1625,8 @@ pr_is_merged() {
 # "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
 # so the caller refuses rather than guesses.
 content_in_default() {
-  local name ref default_tree merged_tree
-  name=$(default_branch) || return 1
-  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
-    ref="refs/remotes/origin/$name"
-  elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
-    ref="refs/heads/$name"
-  else
-    return 1
-  fi
+  local ref default_tree merged_tree
+  ref=$(fresh_default_ref) || return 1
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
   merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
@@ -1582,12 +1636,14 @@ content_in_default() {
 
 # Has the worktree's committed work actually LANDED, though its commits are not
 # reachable from any remote-tracking branch? True when a merged PR proves the
-# current local work is contained in the PR head, OR the content is already in the
-# default branch (fallback, which also covers the no-PR and gh-error paths). False
-# only for genuinely unlanded work.
+# current local work is contained in the PR head, OR every branch commit was
+# replayed onto the default branch, OR the content is already in the default
+# branch (fallback, which also covers the no-PR and gh-error paths). False only
+# for genuinely unlanded work.
 work_is_landed() {
   local branch=$1
   pr_is_merged "$branch" && return 0
+  commits_replayed_on_default && return 0
   content_in_default
 }
 
