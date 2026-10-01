@@ -77,6 +77,17 @@ verified_adapter_contract() {  # <harness> -> exit command, interrupt key, repea
 #            last Escape was a moment ago) ->picker, and picker->idle unless
 #            FM_FAKE_DEVIN_PICKER_STUCK is set. Real sleeps apply while it
 #            exists, so key-times carry the true gap between presses.
+#   claude-dialog  optional Claude exit-dialog model: `offered` (the
+#            background option is listed), `absent` (only Exit and stop
+#            tasks and Stay), or `none` (no background work: the agent stops
+#            after a few more state reads, counted down in `claude-dying`).
+#            The Enter that submits /exit then opens the dialog instead of
+#            stopping the agent, `claude-focus` holds the
+#            focused option number, Down moves it unless FM_FAKE_CLAUDE_DOWN_IGNORED is set,
+#            Escape closes the dialog (Stay), and Enter answers the focused
+#            option, recording its label in `claude-choice`. Until the
+#            dialog opens the composer renders `❯ /exit`, and
+#            FM_FAKE_CLAUDE_SWALLOW_FIRST_ENTER makes the first Enter a no-op.
 # Two transitions make it a lifecycle model rather than a recorder: a literal
 # that is the harness's exit command flips `command` to a shell (the agent
 # stopped), and a literal carrying a launch brief flips it to the value in
@@ -89,6 +100,22 @@ make_tmux_stub() {  # <dir> -> echoes fakebin dir
 #!/usr/bin/env bash
 set -u
 D=$FM_FAKE_DIR
+# The rows Claude Code 2.1.286 renders for its exit dialog (live capture).
+claude_dialog_options() {
+  printf 'Exit and stop tasks\n'
+  [ "$(cat "$D/claude-dialog")" != offered ] || printf 'Move to background and exit\n'
+  printf 'Stay\n'
+}
+claude_dialog_screen() {
+  local focus n=0 label
+  focus=$(cat "$D/claude-focus")
+  printf '   Background work is running\n   The following will stop when you exit:\n   shell · sleep 900\n'
+  while IFS= read -r label; do
+    n=$((n + 1))
+    if [ "$n" = "$focus" ]; then printf '   ❯ %s. %s\n' "$n" "$label"; else printf '     %s. %s\n' "$n" "$label"; fi
+  done < <(claude_dialog_options)
+  printf '   Enter to confirm · Esc to cancel\n'
+}
 # The rows devin 3000.11.1 renders for each modelled screen (live capture).
 devin_screen() {  # <running|armed|cancelled|idle|picker>
   # The idle placeholder is dark truecolor text, as Devin draws it.
@@ -127,7 +154,9 @@ case "${1:-}" in
     payload=${1:-}
     if [ "$literal" = 1 ]; then
       printf '%s\n' "$payload" >> "$D/literal"
-      if [ -z "${FM_FAKE_NEVER_DIES:-}" ] \
+      if [ -f "$D/claude-dialog" ] && [ "$payload" = /exit ]; then
+        : > "$D/claude-exit-typed"
+      elif [ -z "${FM_FAKE_NEVER_DIES:-}" ] \
          && { [ "$payload" = /exit ] || [ "$payload" = /quit ]; }; then
         printf 'zsh' > "$D/command"
       fi
@@ -137,6 +166,33 @@ case "${1:-}" in
     else
       printf '%s\n' "$payload" >> "$D/keys"
       printf '%s %s\n' "$(perl -MTime::HiRes=time -e 'printf "%.3f", time')" "$payload" >> "$D/key-times"
+      if [ "$payload" = Enter ] && [ -f "$D/claude-exit-typed" ] \
+         && [ -n "${FM_FAKE_CLAUDE_SWALLOW_FIRST_ENTER:-}" ] && [ ! -f "$D/claude-swallowed" ]; then
+        : > "$D/claude-swallowed"
+      elif [ "$payload" = Enter ] && [ -f "$D/claude-exit-typed" ]; then
+        # The Enter that submits /exit opens the dialog; a later one answers it.
+        rm -f "$D/claude-exit-typed"
+        if [ "$(cat "$D/claude-dialog")" = none ]; then
+          printf '3' > "$D/claude-dying"
+        else
+          printf '1' > "$D/claude-focus"
+        fi
+      elif [ -f "$D/claude-focus" ]; then
+        case "$payload" in
+          Down)
+            if [ -z "${FM_FAKE_CLAUDE_DOWN_IGNORED:-}" ] \
+               && [ "$(cat "$D/claude-focus")" -lt "$(claude_dialog_options | wc -l)" ]; then
+              printf '%s' "$(( $(cat "$D/claude-focus") + 1 ))" > "$D/claude-focus"
+            fi
+            ;;
+          Escape) rm -f "$D/claude-focus" ;;
+          Enter)
+            claude_dialog_options | sed -n "$(cat "$D/claude-focus")p" > "$D/claude-choice"
+            rm -f "$D/claude-focus"
+            grep -qx Stay "$D/claude-choice" || printf 'zsh' > "$D/command"
+            ;;
+        esac
+      fi
       if [ "$payload" = Escape ] && [ -f "$D/devin" ]; then
         case "$(cat "$D/devin")" in
           running) printf armed > "$D/devin" ;;
@@ -162,20 +218,33 @@ case "${1:-}" in
     for a in "$@"; do
       case "$a" in
         *cursor_y*)
-          # A modelled Devin screen parks the cursor on its composer row.
-          if [ -f "$D/devin" ]; then
+          # A modelled Devin screen parks the cursor on its composer row, and
+          # Claude's exit dialog on its focused option, which is what makes
+          # that row read as pending composer text.
+          if [ -f "$D/claude-focus" ]; then
+            printf '%s\n' "$(( $(cat "$D/claude-focus") + 2 ))"
+          elif [ -f "$D/devin" ]; then
             devin_screen "$(cat "$D/devin")" | awk '/^❭ /{ print NR - 1; exit }'
           else
             printf '1\n'
           fi
           exit 0 ;;
-        *pane_current_command*) cat "$D/command"; printf '\n'; exit 0 ;;
+        *pane_current_command*)
+          if [ -f "$D/claude-dying" ]; then
+            if [ "$(cat "$D/claude-dying")" -gt 0 ]; then
+              printf '%s' "$(( $(cat "$D/claude-dying") - 1 ))" > "$D/claude-dying"
+            else
+              rm -f "$D/claude-dying"
+              printf 'zsh' > "$D/command"
+            fi
+          fi
+          cat "$D/command"; printf '\n'; exit 0 ;;
         *pane_current_path*) cat "$D/cwd"; printf '\n'; exit 0 ;;
       esac
     done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane)
-    if [ -f "$D/devin" ]; then devin_screen "$(cat "$D/devin")"; elif [ -f "$D/pane" ]; then cat "$D/pane"; else printf '╭────╮\n│    │\n╰────╯\n'; fi
+    if [ -f "$D/claude-focus" ]; then claude_dialog_screen; elif [ -f "$D/claude-exit-typed" ]; then printf '────\n❯ /exit\n────\n'; elif [ -f "$D/devin" ]; then devin_screen "$(cat "$D/devin")"; elif [ -f "$D/pane" ]; then cat "$D/pane"; else printf '╭────╮\n│    │\n╰────╯\n'; fi
     exit 0 ;;
   list-windows)
     if [ -f "$D/windows" ]; then cat "$D/windows"; fi
@@ -244,11 +313,14 @@ run_control() {
   local dir=$1; shift
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_SETTLE_WAIT=0.05 \
-    FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
+    FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_FAKE_MUSE_LOG="${FM_FAKE_MUSE_LOG:-}" \
     FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK="${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" \
     FM_FAKE_INTERRUPT_STOPS_AGENT="${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" \
     FM_FAKE_DEVIN_PICKER_STUCK="${FM_FAKE_DEVIN_PICKER_STUCK:-}" \
+    FM_FAKE_CLAUDE_DOWN_IGNORED="${FM_FAKE_CLAUDE_DOWN_IGNORED:-}" \
+    FM_FAKE_CLAUDE_SWALLOW_FIRST_ENTER="${FM_FAKE_CLAUDE_SWALLOW_FIRST_ENTER:-}" \
+    FM_CONTROL_EXIT_WAIT="${FM_CONTROL_EXIT_WAIT:-0.05}" \
     "$CONTROL" "$@" 2>&1
 }
 
@@ -403,6 +475,98 @@ test_devin_stuck_picker_refuses_and_exit_types_nothing() {
   [ -z "$(literals "$dir")" ] || fail "exit typed into the revert picker: $(literals "$dir")"
   ! grep -qx Enter "$dir/fake/keys" || fail "exit pressed Enter in the revert picker"
   pass "fm-control Devin: an open revert picker refuses every typed command"
+}
+
+# Claude's "Background work is running" exit dialog: the exit command opens it
+# instead of exiting while background shells or scheduled tasks are live, with
+# focus on the option that stops them.
+claude_dialog_case() {  # <name> <offered|absent|none> -> echoes case dir
+  local dir
+  dir=$(new_case "$1")
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  printf '%s' "$2" > "$dir/fake/claude-dialog"
+  printf '%s\n' "$dir"
+}
+
+claude_choice() {  # <case-dir>
+  cat "$1/fake/claude-choice" 2>/dev/null || true
+}
+
+test_claude_exit_dialog_moves_background_work_and_exits() {
+  local dir out rc
+  dir=$(claude_dialog_case claude-dialog-offered offered)
+  out=$(run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "exit through the offered background option should succeed"$'\n'"$out"
+  [ "$(claude_choice "$dir")" = "Move to background and exit" ] \
+    || fail "exit should answer the dialog with Move to background and exit, got: '$(claude_choice "$dir")'"$'\n'"$out"
+  [ "$(cat "$dir/fake/keys")" = $'Enter\nDown\nEnter' ] \
+    || fail "exit should submit /exit with one Enter, never retry it onto the dialog, then Down and Enter, got: $(cat "$dir/fake/keys")"
+  [ "$(cat "$dir/fake/command")" = zsh ] || fail "the agent should have stopped"
+  assert_contains "$out" "stopped background-work=kept t1 harness=claude" \
+    "exit should report the verified stop and the kept background work"
+  pass "fm-control exit: Claude's background-work dialog is answered with Move to background and exit, then the stop is verified"
+}
+
+assert_claude_dialog_refused() {  # <case-dir> <out> <rc> <reason-fragment> <label>
+  local dir=$1 out=$2 rc=$3
+  expect_code 1 "$rc" "$5 should refuse"$'\n'"$out"
+  assert_contains "$out" "Background work is running" "$5 should name the dialog"
+  assert_contains "$out" "$4" "$5 should say why it could not choose"
+  assert_contains "$out" "Chose Stay with Escape" "$5 should say the dialog was dismissed with Stay"
+  assert_not_contains "$out" "stopped t1" "$5 must not claim a stop"
+  [ -z "$(claude_choice "$dir")" ] \
+    || fail "$5 must never confirm a dialog option, got: '$(claude_choice "$dir")'"
+  [ ! -f "$dir/fake/claude-focus" ] || fail "$5 should leave the dialog closed"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "$5 must leave the agent running"
+}
+
+test_claude_exit_dialog_without_background_option_refuses() {
+  local dir out rc
+  dir=$(claude_dialog_case claude-dialog-absent absent)
+  out=$(run_control "$dir" t1 exit); rc=$?
+  assert_claude_dialog_refused "$dir" "$out" "$rc" "offers no 'Move to background and exit' option" \
+    "exit on a dialog without the background option"
+  [ "$(cat "$dir/fake/keys")" = $'Enter\nEscape' ] \
+    || fail "only the submitting Enter and Escape should be sent, got: $(cat "$dir/fake/keys")"
+  out=$(run_control "$dir" t1 relaunch --note "carry on"); rc=$?
+  assert_claude_dialog_refused "$dir" "$out" "$rc" "offers no 'Move to background and exit' option" \
+    "relaunch on a dialog without the background option"
+  assert_not_contains "$out" "relaunched t1" "the refused relaunch must not report a replacement"
+  pass "fm-control exit/relaunch: a background-work dialog with no preserving option is dismissed with Stay and refused by name"
+}
+
+test_claude_exit_ignores_a_transcript_quoting_the_dialog() {
+  local dir out rc
+  dir=$(claude_dialog_case claude-dialog-quoted none)
+  printf '╭────╮\n│    │\n╰────╯\n   Background work is running\n   The following will stop when you exit:\n   shell · sleep 900\n   ❯ 1. Exit and stop tasks\n     2. Move to background and exit\n     3. Stay\n' > "$dir/fake/pane"
+  out=$(FM_CONTROL_EXIT_WAIT=5 run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "a transcript quoting the dialog must not read as the dialog"$'\n'"$out"
+  assert_contains "$out" "stopped t1 harness=claude" "exit should report the ordinary stop"
+  [ -z "$(keys_sent "$dir")" ] || fail "no dialog key should be sent, got: $(keys_sent "$dir")"
+  pass "fm-control exit: a transcript quoting Claude's exit dialog is not mistaken for it"
+}
+
+test_claude_exit_retries_a_swallowed_enter_only_before_the_dialog() {
+  local dir out rc
+  dir=$(claude_dialog_case claude-dialog-swallow offered)
+  out=$(FM_FAKE_CLAUDE_SWALLOW_FIRST_ENTER=1 FM_CONTROL_EXIT_WAIT=5 run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "a swallowed first Enter should be retried"$'\n'"$out"
+  [ "$(cat "$dir/fake/keys")" = $'Enter\nEnter\nDown\nEnter' ] \
+    || fail "exit should retry Enter once while /exit is still in the composer, then answer the dialog, got: $(cat "$dir/fake/keys")"
+  [ "$(claude_choice "$dir")" = "Move to background and exit" ] \
+    || fail "the dialog should be answered with Move to background and exit, got: '$(claude_choice "$dir")'"
+  pass "fm-control exit: a swallowed /exit Enter is retried only while the composer still shows it"
+}
+
+test_claude_exit_dialog_unproven_focus_refuses() {
+  local dir out rc
+  dir=$(claude_dialog_case claude-dialog-stuck offered)
+  out=$(FM_FAKE_CLAUDE_DOWN_IGNORED=1 run_control "$dir" t1 exit); rc=$?
+  assert_claude_dialog_refused "$dir" "$out" "$rc" "focus did not render on 'Move to background and exit'" \
+    "exit when focus never reaches the background option"
+  [ "$(keys_sent "$dir")" = $'Down\nEscape' ] || fail "Down then Escape should be sent, got: $(keys_sent "$dir")"
+  pass "fm-control exit: Enter is never sent until focus is proven on Move to background and exit"
 }
 
 # A recorded harness can carry a raw launch command's basename, so the tables
@@ -1128,6 +1292,11 @@ test_muse_interrupt_confirms_adapter_acknowledgement
 test_interrupt_revalidates_agent_after_acknowledgement_wait
 test_exit_accepts_agent_stopped_by_busy_interrupt
 test_agent_that_does_not_stop_fails_closed
+test_claude_exit_dialog_moves_background_work_and_exits
+test_claude_exit_dialog_without_background_option_refuses
+test_claude_exit_dialog_unproven_focus_refuses
+test_claude_exit_retries_a_swallowed_enter_only_before_the_dialog
+test_claude_exit_ignores_a_transcript_quoting_the_dialog
 test_grok_interrupt_without_acknowledgement_reports_unconfirmed
 test_grok_idle_footer_does_not_confirm_cancellation
 test_secondmate_control_command_carries_no_marker

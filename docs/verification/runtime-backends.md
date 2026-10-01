@@ -1657,6 +1657,41 @@ ok - agent get distinguishes leftover-shell (dead/no-agent) from live idle Pi
 ok - pane get agent_status lag cannot keep an exited occupant classified alive
 ```
 
+### Claude background-work exit dialog
+
+Measured 2026-10-01 on Claude Code 2.1.286 in a private tmux server, with no model turn submitted.
+With a background shell running (bash mode `!sleep <n>`, then Ctrl+B twice), `/exit` and Enter open this dialog instead of exiting:
+
+```text
+   Background work is running
+   The following will stop when you exit:
+   shell · sleep 900
+   ❯ 1. Exit and stop tasks
+     2. Move to background and exit
+     3. Stay
+   Enter to confirm · Esc to cancel
+```
+
+Some sessions omit `Move to background and exit`, leaving `1. Exit and stop tasks` and `2. Stay`, so a digit cannot name the work-preserving option.
+Down moved the focus to `❯ 2. Move to background and exit`, and Enter then exited Claude while the backgrounded `sleep` kept running.
+Escape chose Stay and returned to an empty composer.
+While the dialog is open, `fm_tmux_composer_state` reads its focused row as `pending`, so a blind Enter retry after `/exit` confirms `Exit and stop tasks`; the first live run of the guard below stopped Claude that way before `bin/fm-control.sh` submitted its exit command with a single Enter.
+Herdr's `down` key name was not exercised live: the lab helper refused to provision because the host's `default` session was stopped.
+
+The guard that refreshes this record drives the real `bin/fm-control.sh exit` against the installed Claude Code:
+
+```sh
+FM_CLAUDE_EXIT_DIALOG_LIVE_E2E=1 tests/fm-control-claude-exit-dialog-live-e2e.test.sh
+```
+
+Observed 2026-10-01, three runs:
+
+```text
+ok - Claude Code 2.1.286 (Claude Code): fm-control exit answered the background-work dialog and kept the shell
+```
+
+`tests/fm-control.test.sh` and `tests/fm-control-relaunch.test.sh` pin the portable logic with a tmux stub that renders those rows.
+
 ### Endpoint recovery classification
 
 Measured 2026-09-10 on macOS aarch64 against Herdr 0.9.0 (protocol 22) in an isolated `fm-lab-` session.
