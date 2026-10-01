@@ -1,0 +1,108 @@
+lab home: /tmp/fm-lab.ndVbjS (marked: yes)
+
+=== S0 baseline: base 9d2d88a8daa279efb88953ac8608b50aa1d5a10b refuses a train-landed branch (reported symptom) ===
+  git cherry origin/main HEAD (in worker copy):
+    - 21d10b98ea3857e9b6a4c93bb615870d38f45cae
+    - 62410ab35e5a65feff7506d5c271f4eae5ab7071
+$ fm-teardown.sh s0   (cli: /tmp/fm-lab.ndVbjS/base-src)
+  stderr| REFUSED: worktree /tmp/fm-lab.ndVbjS/pool/.treehouse/s0-e2837e/1/s0 has work not on any remote and not landed.
+  stderr| unpushed commits:
+  stderr| 62410ab add second
+  stderr| 21d10b9 add feature
+  stderr| Push the branch, land its PR, or get the captain's explicit OK to discard, then --force.
+  exit=1
+  after: meta=present  worker_window=alive  wt_branch=fm/s0  wt_head=62410ab
+
+=== S1 fix: every commit replayed by train, branch deleted -> teardown succeeds ===
+  git cherry origin/main HEAD (in worker copy):
+    - 20423d4c4951fc0b4157de186b0e2c3b2fc7da17
+    - 56b6bf00c3613bfa1ea94017d72df389fd4d68e7
+$ fm-teardown.sh s1   (cli: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VZG5HD6TQ2PZGBH4PT5NKR)
+  stdout| A new version of treehouse is available: v2.3.0 → v3.1.0
+  stdout| Run "treehouse update" to update
+  stdout| 
+  stdout| 🌳 Worktree returned to pool.
+  stdout| s1: synced 763a841..6d7c641
+  stdout| teardown s1 complete (window firstmate:fm-s1, worktree /tmp/fm-lab.ndVbjS/pool/.treehouse/s1-a24ec3/1/s1)
+  stdout| Backlog: s1 just finished (this home keeps no markdown backlog at /tmp/fm-lab.ndVbjS/data/backlog.md). Update /tmp/fm-lab.ndVbjS/data/backlog.md - move s1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+  stderr| teardown: reaping leaked worktree process(es) for s1: 1703590
+  exit=0
+  after: meta=removed  worker_window=killed  wt_branch=HEAD  wt_head=6d7c641
+
+=== S2 guard: replayed branch plus one extra unlanded local commit -> refuse ===
+  git cherry origin/main HEAD (in worker copy):
+    - 7b43e5926566f8f1884825a512f31ddb18c0b52b
+    + 6b527b3016022e775e30719228caada68fc81f96
+$ fm-teardown.sh s2   (cli: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VZG5HD6TQ2PZGBH4PT5NKR)
+  stderr| REFUSED: worktree /tmp/fm-lab.ndVbjS/pool/.treehouse/s2-b5ab46/1/s2 has work not on any remote and not landed.
+  stderr| unpushed commits:
+  stderr| 6b527b3 unlanded follow-up
+  stderr| 7b43e59 add feature
+  stderr| Push the branch, land its PR, or get the captain's explicit OK to discard, then --force.
+  exit=1
+  after: meta=present  worker_window=alive  wt_branch=fm/s2  wt_head=6b527b3
+
+=== S3 guard: train replayed only the first of two commits -> refuse ===
+  git cherry origin/main HEAD (in worker copy):
+    - 169e744482136d56a6f7aedb8f8a6a7ce93b77df
+    + c27ad90d39b990d3ac274005656146d2144a1568
+$ fm-teardown.sh s3   (cli: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VZG5HD6TQ2PZGBH4PT5NKR)
+  stderr| REFUSED: worktree /tmp/fm-lab.ndVbjS/pool/.treehouse/s3-17667e/1/s3 has work not on any remote and not landed.
+  stderr| unpushed commits:
+  stderr| c27ad90 add second
+  stderr| 169e744 add feature
+  stderr| Push the branch, land its PR, or get the captain's explicit OK to discard, then --force.
+  exit=1
+  after: meta=present  worker_window=alive  wt_branch=fm/s3  wt_head=c27ad90
+
+=== S4 guard: main has same-message commit on same file with a different patch -> refuse ===
+  git cherry origin/main HEAD (in worker copy):
+    + cfc032bd4c03216864c3edc2309ba74be54b98f1
+$ fm-teardown.sh s4   (cli: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VZG5HD6TQ2PZGBH4PT5NKR)
+  stderr| REFUSED: worktree /tmp/fm-lab.ndVbjS/pool/.treehouse/s4-337c93/1/s4 has work not on any remote and not landed.
+  stderr| unpushed commits:
+  stderr| cfc032b add feature
+  stderr| Push the branch, land its PR, or get the captain's explicit OK to discard, then --force.
+  exit=1
+  after: meta=present  worker_window=alive  wt_branch=fm/s4  wt_head=cfc032b
+
+=== S5 guard: every commit replayed but tracked file has uncommitted edit -> refuse ===
+  git cherry origin/main HEAD (in worker copy):
+    - 535a4824c4fb01931c0c1f7de794b4ddd9a83b47
+$ fm-teardown.sh s5   (cli: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VZG5HD6TQ2PZGBH4PT5NKR)
+  stderr| REFUSED: worktree /tmp/fm-lab.ndVbjS/pool/.treehouse/s5-6bc8ff/1/s5 has uncommitted changes.
+  stderr| uncommitted changes present
+  stderr| Commit them (or get the captain's explicit OK to discard, then --force).
+  exit=1
+  after: meta=present  worker_window=alive  wt_branch=fm/s5  wt_head=535a482
+
+=== S6 every commit replayed, only untracked .claude/ scratch present -> teardown succeeds ===
+  git status --porcelain: ?? .claude/ 
+  git cherry origin/main HEAD (in worker copy):
+    - df9c4107283ca845cbae56530eb8bc1ab3656fcb
+$ fm-teardown.sh s6   (cli: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VZG5HD6TQ2PZGBH4PT5NKR)
+  stdout| A new version of treehouse is available: v2.3.0 → v3.1.0
+  stdout| Run "treehouse update" to update
+  stdout| 
+  stdout| 🌳 Worktree returned to pool.
+  stdout| s6: synced aa9693d..557c248
+  stdout| teardown s6 complete (window firstmate:fm-s6, worktree /tmp/fm-lab.ndVbjS/pool/.treehouse/s6-f3dadc/1/s6)
+  stdout| Backlog: s6 just finished (this home keeps no markdown backlog at /tmp/fm-lab.ndVbjS/data/backlog.md). Update /tmp/fm-lab.ndVbjS/data/backlog.md - move s6 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+  stderr| teardown: reaping leaked worktree process(es) for s6: 1730349
+  exit=0
+  after: meta=removed  worker_window=killed  wt_branch=HEAD  wt_head=557c248
+
+=== S7 stale local origin/main: train landed after the project's last fetch -> teardown fetches and succeeds ===
+  local origin/main before teardown: 76472bf origin baseline
+$ fm-teardown.sh s7   (cli: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VZG5HD6TQ2PZGBH4PT5NKR)
+  stdout| A new version of treehouse is available: v2.3.0 → v3.1.0
+  stdout| Run "treehouse update" to update
+  stdout| 
+  stdout| 🌳 Worktree returned to pool.
+  stdout| s7: synced 76472bf..507a7ee
+  stdout| teardown s7 complete (window firstmate:fm-s7, worktree /tmp/fm-lab.ndVbjS/pool/.treehouse/s7-903bae/1/s7)
+  stdout| Backlog: s7 just finished (this home keeps no markdown backlog at /tmp/fm-lab.ndVbjS/data/backlog.md). Update /tmp/fm-lab.ndVbjS/data/backlog.md - move s7 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+  stderr| teardown: reaping leaked worktree process(es) for s7: 1740211
+  exit=0
+  after: meta=removed  worker_window=killed  wt_branch=HEAD  wt_head=507a7ee
+
