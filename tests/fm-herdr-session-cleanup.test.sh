@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Focused safety tests for bin/fm-herdr-session-cleanup.sh.
 # Covers one exact cleanup, every title/journal/topology/agent/process refusal,
-# locked revalidation races, focus refusal, read errors, and repeat idempotence.
+# locked revalidation races, focus refusal, read errors, repeat idempotence,
+# bounded journal parsing at scale, and leftover-journal pruning safety.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -95,6 +96,7 @@ fixture_workspaces() {
   printf '[{"workspace_id":"w1","label":"firstmate","focused":%s,"active_tab_id":"w1:t1","tab_count":1,"pane_count":1},' \
     "$( [ "$(cat "$FIXTURE_DIR/active-tab")" = w1:t1 ] && printf true || printf false )"
   fixture_workspace_json "$title" "$tabs" "$panes"
+  [ ! -e "$FIXTURE_DIR/extra-workspaces" ] || cat "$FIXTURE_DIR/extra-workspaces"
   if [ -e "$FIXTURE_DIR/duplicate-token" ]; then
     printf ',{"workspace_id":"w3","label":"└ copy · p:%s","focused":false,"active_tab_id":"w3:t1","tab_count":1,"pane_count":1}' "$TOKEN"
   fi
@@ -281,6 +283,90 @@ reset_fixture; : > "$FIXTURE_DIR/error-workspace-get"; assert_preserved "unreada
 reset_fixture; : > "$FIXTURE_DIR/race"; assert_preserved "revalidation race"
 reset_fixture; printf '%s\n' "$TAB" > "$FIXTURE_DIR/active-tab"; assert_preserved "active target"
 reset_fixture; : > "$FIXTURE_DIR/focus-refuse"; assert_preserved "focus refusal"
+
+write_leftover_v2() { # <id> <token> <home> <workspace> <pane>
+  local id=$1 token=$2 home=$3 workspace=$4 pane=$5
+  {
+    printf 'version=2\n'
+    printf 'task_id=%s\n' "$id"
+    printf 'projection_id=%s\n' "$token"
+    printf 'home=%s\n' "$home"
+    printf 'session=test\nworkspace_id=%s\ntab_id=%s:t1\npane_id=%s\n' "$workspace" "$workspace" "$pane"
+    printf 'parent_workspace_id=w1\nparent_label=firstmate\nworkspace_label=└ %s · p:%s\ntask_label=fm-%s\n' "$id" "$token" "$id"
+  } > "$FM_STATE_OVERRIDE/$id.herdr-presentation"
+}
+
+leftover_token() { printf 'Lx%020d' "$1"; }
+
+# Count every journal parse so the scale regression measures work, not time.
+eval "fm_test_orig_$(declare -f fm_backend_herdr_projection_journal_snapshot)"
+PARSE_LOG="$TMP_ROOT/parses.log"
+fm_backend_herdr_projection_journal_snapshot() {
+  printf '%s\n' "$1" >> "$PARSE_LOG"
+  fm_test_orig_fm_backend_herdr_projection_journal_snapshot "$@"
+}
+
+LEFTOVERS=80
+CANDIDATES=40
+reset_fixture
+i=1
+while [ "$i" -le "$LEFTOVERS" ]; do
+  write_leftover_v2 "gone-$i" "$(leftover_token "$i")" "$FM_HOME" "w9$i" "w9$i:p1"
+  i=$((i + 1))
+done
+i=1
+while [ "$i" -le "$CANDIDATES" ]; do
+  printf ',{"workspace_id":"x%s","label":"└ other · p:Ox%020d","focused":false,"active_tab_id":"x%s:t1","tab_count":1,"pane_count":1}' \
+    "$i" "$i" "$i" >> "$FIXTURE_DIR/extra-workspaces"
+  i=$((i + 1))
+done
+: > "$PARSE_LOG"
+fm_herdr_session_cleanup >/dev/null 2>&1
+parses=$(wc -l < "$PARSE_LOG" | tr -d ' ')
+# One index pass over every journal, a constant number of rechecks for the one
+# real candidate, and one recheck per pruned leftover.
+[ "$parses" -le $((2 * (LEFTOVERS + 1) + 10)) ] \
+  || fail "cleanup parsed journals $parses times for $LEFTOVERS leftovers and $CANDIDATES candidates"
+[ ! -e "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] || fail "scale run kept the real stale candidate journal"
+[ "$(wc -l < "$CLOSE_LOG" | tr -d ' ')" = 1 ] || fail "scale run did not close exactly the one real candidate"
+remaining=$(find "$FM_STATE_OVERRIDE" -maxdepth 1 -name 'gone-*.herdr-presentation' | wc -l | tr -d ' ')
+[ "$remaining" = 0 ] || fail "scale run left $remaining provably dead leftover journals"
+pass "many leftovers and candidates index journals once ($parses parses) and prune every dead leftover"
+
+reset_fixture
+rm -f "$FM_STATE_OVERRIDE/$ID.herdr-presentation"
+write_leftover_v2 dead "$(leftover_token 1)" "$FM_HOME" w91 w91:p1
+write_leftover_v2 has-meta "$(leftover_token 2)" "$FM_HOME" w92 w92:p1
+: > "$FM_STATE_OVERRIDE/has-meta.meta"
+write_leftover_v2 live-token "$TOKEN" "$FM_HOME" w93 w93:p1
+write_leftover_v2 live-pane "$(leftover_token 4)" "$FM_HOME" w94 "$PANE"
+write_leftover_v2 live-workspace "$(leftover_token 5)" "$FM_HOME" "$WS" w95:p1
+mkdir -p "$TMP_ROOT/other-home"
+write_leftover_v2 cross-home "$(leftover_token 6)" "$TMP_ROOT/other-home" w96 w96:p1
+write_leftover_v2 locked "$(leftover_token 7)" "$FM_HOME" w97 w97:p1
+mkdir "$FM_STATE_OVERRIDE/.spawn-locked.lock"
+write_v1 attempt "$(leftover_token 8)"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ ! -e "$FM_STATE_OVERRIDE/dead.herdr-presentation" ] || fail "provably dead leftover journal was kept"
+for kept in has-meta live-token live-pane live-workspace cross-home locked attempt; do
+  [ -f "$FM_STATE_OVERRIDE/$kept.herdr-presentation" ] || fail "leftover pruning removed the $kept journal"
+done
+[ ! -s "$CLOSE_LOG" ] || fail "leftover pruning closed a pane"
+[ -d "$FM_STATE_OVERRIDE/.spawn-locked.lock" ] || fail "leftover pruning released a task lock it did not take"
+for released in dead has-meta live-token live-pane live-workspace; do
+  [ ! -e "$FM_STATE_OVERRIDE/.spawn-$released.lock" ] || fail "leftover pruning kept the $released task lock"
+done
+rm -rf "$FM_STATE_OVERRIDE/.spawn-locked.lock"
+pass "leftover pruning removes only journals whose task and pane are provably gone"
+
+reset_fixture
+rm -f "$FM_STATE_OVERRIDE/$ID.herdr-presentation"
+write_leftover_v2 dead "$(leftover_token 1)" "$FM_HOME" w91 w91:p1
+: > "$FIXTURE_DIR/error-api-snapshot"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ -f "$FM_STATE_OVERRIDE/dead.herdr-presentation" ] || fail "unreadable snapshot pruned a leftover journal"
+[ ! -e "$FM_STATE_OVERRIDE/.spawn-dead.lock" ] || fail "unreadable snapshot kept the leftover task lock"
+pass "leftover pruning preserves every journal when the session snapshot is unreadable"
 
 INTEGRATION_ROOT="$TMP_ROOT/bootstrap-integration"
 mkdir -p "$INTEGRATION_ROOT/home/state" "$INTEGRATION_ROOT/home/data" "$INTEGRATION_ROOT/home/config"
