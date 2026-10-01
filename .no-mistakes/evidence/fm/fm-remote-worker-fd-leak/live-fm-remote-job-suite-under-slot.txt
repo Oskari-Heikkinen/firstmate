@@ -1,0 +1,13 @@
+== tests/fm-remote-job.test.sh (rev 9d1f769b)
+remote-job workers before: 0
+suite exit status: 0  (59s)
+ok - the worker drains bounded output without changing command results
+ok - the worker refuses symlinked job fields before command execution
+ok - failed shutdown quarantines ownership against replacement workers
+ok - quarantine recovery refuses unverifiable supervisors and ignores reused pids
+ok - a repeatedly signalled shutdown still releases ownership for the next worker
+ok - barely healthy worker failures remain bounded by the restart guard
+ok - a detached worker never keeps its caller's inherited lock
+ALL TESTS PASSED
+slot lock after suite: FREE
+remote-job workers after: 0

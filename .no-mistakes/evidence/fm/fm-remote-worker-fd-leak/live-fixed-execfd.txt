@@ -1,0 +1,29 @@
+== [new-execfd] rev=9d1f769b variant=execfd
+caller pid 1059034 holds slot locks on fds 9, 200, 1000
+lab job ran: args=first-under-slot fm_home=/tmp/fdlab/new-execfd/fmhome active=1
+caller exit status: 0
+worker.pid (serving child) = 1059279
+-- worker processes left running after the caller exited:
+  pid=1059211 ppid=253 pgid=1059211 cmd=/bin/bash /tmp/fdlab/new-execfd/root/bin/fm-remote-job-worker.sh 
+      fd 0 -> /dev/null
+      fd 1 -> /tmp/fdlab/new-execfd/state/logs/dev.firstmate.remote-job.log
+      fd 10 -> /tmp/fdlab/new-execfd/state/logs/dev.firstmate.remote-job.log
+      fd 12 -> /tmp/fdlab/new-execfd/root/bin/fm-remote-job-worker.sh
+      fd 2 -> /dev/null
+  pid=1059279 ppid=1059211 pgid=1059211 cmd=/bin/bash /tmp/fdlab/new-execfd/root/bin/fm-remote-job-worker.sh --serve 
+      fd 0 -> /dev/null
+      fd 1 -> /tmp/fdlab/new-execfd/state/logs/dev.firstmate.remote-job.log
+      fd 12 -> /tmp/fdlab/new-execfd/root/bin/fm-remote-job-worker.sh
+      fd 2 -> /tmp/fdlab/new-execfd/state/logs/dev.firstmate.remote-job.log
+      fd 3 -> pipe:[137377726]
+-- slot lock state after caller exit (flock -n probe):
+  slot-1: FREE
+  slot-2: FREE
+  slot-3: FREE
+-- second job through the already-running worker:
+lab job ran: args=second-reuse fm_home=/tmp/fdlab/new-execfd/fmhome active=1
+second job exit status: 0
+worker.pid unchanged across jobs: yes
+-- teardown
+worker tree stopped
+lab workers remaining: none

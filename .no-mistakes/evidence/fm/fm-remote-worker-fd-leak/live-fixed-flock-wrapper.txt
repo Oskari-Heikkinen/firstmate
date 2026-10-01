@@ -1,0 +1,28 @@
+== [new-flockcmd2] rev=9d1f769b variant=flockcmd
+flock(1) holds slot-1 for job pid 1181182
+lab job ran: args=first-under-slot fm_home=/tmp/fdlab/new-flockcmd2/fmhome active=1
+caller exit status: 0
+worker.pid (serving child) = 1181769
+-- worker processes left running after the caller exited:
+  pid=1181638 ppid=253 pgid=1181638 cmd=/bin/bash /tmp/fdlab/new-flockcmd2/root/bin/fm-remote-job-worker.sh 
+      fd 0 -> /dev/null
+      fd 1 -> /tmp/fdlab/new-flockcmd2/state/logs/dev.firstmate.remote-job.log
+      fd 10 -> /tmp/fdlab/new-flockcmd2/state/logs/dev.firstmate.remote-job.log
+      fd 12 -> /tmp/fdlab/new-flockcmd2/root/bin/fm-remote-job-worker.sh
+      fd 2 -> /dev/null
+  pid=1181769 ppid=1181638 pgid=1181638 cmd=/bin/bash /tmp/fdlab/new-flockcmd2/root/bin/fm-remote-job-worker.sh --serve 
+      fd 0 -> /dev/null
+      fd 1 -> /tmp/fdlab/new-flockcmd2/state/logs/dev.firstmate.remote-job.log
+      fd 12 -> /tmp/fdlab/new-flockcmd2/root/bin/fm-remote-job-worker.sh
+      fd 2 -> /tmp/fdlab/new-flockcmd2/state/logs/dev.firstmate.remote-job.log
+-- slot lock state after caller exit (flock -n probe):
+  slot-1: FREE
+  slot-2: FREE
+  slot-3: FREE
+-- second job through the already-running worker:
+lab job ran: args=second-reuse fm_home=/tmp/fdlab/new-flockcmd2/fmhome active=1
+second job exit status: 0
+worker.pid unchanged across jobs: yes
+-- teardown
+worker tree stopped
+lab workers remaining: none

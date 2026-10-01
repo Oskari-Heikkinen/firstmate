@@ -1,0 +1,13 @@
+== tests/fm-remote-reply.test.sh (rev 9d1f769b)
+remote-job workers before: 0
+suite exit status: 0  (370s)
+ok - a mirrored reserved-key line cannot squat or clear the parent's own decision
+ok - a reply that arrives after escalation resolves it and clears the open decision
+ok - a preempted reply poll cannot publish channel freshness
+ok - a quiet reply window publishes the caught-up watermark the reply guard reads
+ok - a cursor-loss whole-log recapture is acknowledged quietly with no duplicate wake
+ok - truncation is detected, escalated once, and not silently rebased
+ok - remote reply retirement quiesces and refuses unhandled captured results
+ALL TESTS PASSED
+slot lock after suite: FREE
+remote-job workers after: 0
