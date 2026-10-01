@@ -895,16 +895,19 @@ Firstmate never reads, copies, or prints a credential: usage comes from quota-ax
 With no registry, every launch is unchanged and forwards the launching session's own login.
 A home's `config/claude-account` pin ("Worker account pin" above) outranks the registry: that home's Claude launches always use the pinned login, and moving one of its agents to another account refuses.
 
-`bin/fm-account.sh status` shows each account's percent left, runway, and reset time, and which sessions, second mates, and workers run on it, read from each task record's `account=`.
+`bin/fm-account.sh status` shows each account's percent left, runway, reset time, and whether it is low or on pace to run out before a reset, and which sessions, second mates, and workers run on it, read from each task record's `account=`.
 An agent launched before the registry existed is attributed to its launcher's account and marked `~` until it is moved or pinned.
 `bin/fm-account.sh panel` toggles the same view as a side pane when run inside Herdr, and `bin/fm-account.sh watch` runs it in any terminal.
 `bin/fm-account.sh use <task> <account>` moves one second mate or worker through the guarded relaunch path, and `bin/fm-account.sh default <account>` sets where new spawns start.
 The chosen account is recorded durably, in a worker's task record or in the second mate's own `config/account`, so a later relaunch or respawn does not revert it.
 
 `config/account-floor` holds the percent-left floor, default 10.
-While an account is below it, new ship and scout spawns start on the next registered Claude account with room, in priority order, and say so.
+Each of an account's limits, the 5-hour session and the weekly allowance, is also projected at its burn rate so far to tell whether it runs out before it resets.
+While an account is projected to run out before a reset, or is below the floor without a projection, new ship and scout spawns start on the next registered Claude account with room, in priority order, and say so.
+Second mates, workers, and this session move only once a limit is both below the floor and not projected to reset first, and an account below the floor whose limits all reset first is left alone.
+Work goes to an account not projected to run out first; when none is, an account still above the floor takes work off a low one, so work never stops while an account has room.
 Unknown usage is never treated as low, so a failed read never moves work, and a failed read is retried briefly before it reads as unknown.
-The no-room advice appears only when every Claude account has a successful reading below the floor or needs sign-in, never because a read failed.
+The no-room advice appears only when every Claude account has a successful reading low enough to move work off or needs sign-in, never because a read failed.
 Automatic rebalancing is on whenever the registry exists, unless `config/account-auto` says `off`.
 Session start then arms a watcher check that wakes firstmate only when a move is due or the advice changes, and firstmate runs `bin/fm-account.sh rebalance` without asking the captain.
 Rebalancing moves second mates and between-steps workers, never one mid-command or mid-validation run; a busy worker waits for a later run.

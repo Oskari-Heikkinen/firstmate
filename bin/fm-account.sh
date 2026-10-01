@@ -16,7 +16,8 @@
 # docs/configuration.md "Subscription accounts" is the operator reference.
 #
 # status     One table: each account's provider, plan, percent left, runway,
-#            reset, and the sessions and workers on it, then where new spawns
+#            reset, outlook (LOW, RUNNING OUT, or low, resets first; see the
+#            lib header), and the sessions and workers on it, then where new spawns
 #            go, suggested moves, sign-ins needed, and recent moves. Workers of
 #            this home's local second mates are read from their records too.
 #            An agent's account is its launch record (account= in its task
@@ -35,9 +36,12 @@
 #            records a second mate's pin only (for one already on that account
 #            or stopped). A remote second mate and a non-Claude worker refuse.
 # default    Set or clear config/spawn-account, this home's starting account for
-#            new ship and scout spawns (the floor still moves a spawn off it).
-# rebalance  Move every direct report on a Claude account below the floor to
-#            the first account with room, through `use`, skipping any that is
+#            new ship and scout spawns (a low or running-out outlook still
+#            moves a spawn off it).
+# rebalance  Move every direct report on a low Claude account (below the floor
+#            and not projected to reset before running out; the lib header owns
+#            the outlook) to the first account with room, through `use`,
+#            skipping any that is
 #            not between steps (retried by the next run), then print one line
 #            per move plus any restart or sign-in the captain must do. Only the
 #            captain can restart this home's own session or sign in to a login.
@@ -163,7 +167,7 @@ collect_agents() {
   done
 }
 
-# account_rows: "<name>|<provider>|<dir>|<status>|<left>|<reset>|<runway>|<plan>"
+# account_rows: "<name>|<provider>|<dir>|<status>|<left>|<reset>|<runway>|<plan>|<windows>"
 account_rows() {
   local ttl=$1 name provider dir priority
   while IFS=$'\t' read -r name provider dir _; do
@@ -171,6 +175,17 @@ account_rows() {
     printf '%s|%s|%s|%s\n' "$name" "$provider" "$dir" \
       "$(fm_account_usage "$CONFIG" "$STATE" "$name" "$ttl")"
   done <<<"$(fm_account_list "$CONFIG")"
+}
+
+# with_outlook <account-rows> <floor>: each row with "|<outlook>" appended as
+# its tenth field, a cache line from before the windows field included.
+with_outlook() {
+  local name provider dir status left reset runway plan windows
+  while IFS='|' read -r name provider dir status left reset runway plan windows; do
+    [ -n "$name" ] || continue
+    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$name" "$provider" "$dir" "$status" "$left" "$reset" "$runway" "$plan" "$windows" \
+      "$(fm_account_outlook_of "$2" "$status|$left|$reset|$runway|$plan|$windows")"
+  done <<<"$1"
 }
 
 # crew_movable <id>: 0 when a ship or scout is between steps; prints the reason
@@ -193,11 +208,11 @@ log_move() {  # <id> <from> <to> <result>
 # session, sign in), one per line. With captain (rebalance), sign-in and
 # no-room lines come from the main home only, and a sign-in line exactly while
 # the lib's sign-in streak confirms it. The no-room line needs proof for every
-# Claude account: a fresh reading below the floor, or a sign-in line of its
+# Claude account: a fresh reading with a low outlook, or a sign-in line of its
 # own; one unknown reading (error, unreadable, rate_limited, expired) withholds
 # it, so a failed read never counts as exhausted.
 advice() {
-  local agents=$1 accounts=$2 captain=${3:-} floor room self_acct name provider dir status left rest main=0
+  local agents=$1 accounts=$2 captain=${3:-} floor room self_acct name provider dir status rest main=0
   local proven=0 unproven=0
   [ "$(self_label)" = main ] && main=1
   floor=$(fm_account_floor "$CONFIG")
@@ -208,10 +223,10 @@ advice() {
     printf 'restart this main session on %s: exit it, then start it again with CLAUDE_CONFIG_DIR=%s (%s is below the %s%% floor)\n' \
       "$room" "$FM_ACCOUNT_DIR" "$self_acct" "$floor"
   fi
-  while IFS='|' read -r name provider dir status left rest; do
+  while IFS='|' read -r name provider dir status rest; do
     [ -n "$name" ] || continue
     if [ "$provider" = claude ]; then
-      if [ "$status" = fresh ] && [ -n "$left" ] && [ "$left" -lt "$floor" ]; then
+      if [ "$status" = fresh ] && [ "$(fm_account_outlook_of "$floor" "$status|$rest")" = low ]; then
         proven=1
       elif [ -n "$captain" ] && [ "$main" = 1 ] && fm_account_signin_confirmed "$STATE" "$name"; then
         :
@@ -250,7 +265,7 @@ plan_moves() {
 
 cmd_status() {
   local json=0 ttl='' agents accounts floor name provider dir status left reset runway
-  local now on others pref pick moves line pct
+  local now on others pref pick moves line pct outlook
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1 ;;
@@ -269,7 +284,7 @@ cmd_status() {
   moves=$(plan_moves "$agents")
   if [ "$json" = 1 ]; then
     jq -n --arg floor "$floor" --arg pref "$pref" --arg pick "$pick" \
-      --arg accounts "$accounts" --arg agents "$agents" --arg moves "$moves" \
+      --arg accounts "$(with_outlook "$accounts" "$floor")" --arg agents "$agents" --arg moves "$moves" \
       --arg advice "$(advice "$agents" "$accounts")" '
       def rows($s): $s | split("\n") | map(select(. != "") | split("|"));
       def num($v): if $v == "" or $v == null then null else ($v | tonumber) end;
@@ -279,7 +294,8 @@ cmd_status() {
         accounts: [ rows($accounts)[] | { name: .[0], provider: .[1], login_folder: .[2],
           status: .[3], percent_left: num(.[4]), resets_at: num(.[5]),
           runway_seconds: num(.[6]), plan: (if (.[7] // "") == "" then null else .[7] end),
-          low: (.[1] == "claude" and (.[4] // "") != "" and ((.[4] | tonumber) < ($floor | tonumber))) } ],
+          outlook: (if .[1] == "claude" and (.[9] // "") != "" then .[9] else null end),
+          low: (.[1] == "claude" and .[9] == "low") } ],
         agents: [ rows($agents)[] | { home: .[0], id: .[1], kind: .[2], harness: .[3],
           account: (if (.[4] // "") == "" then null else .[4] end), basis: .[5], direct: (.[6] == "1") } ],
         moves: [ rows($moves)[] | { id: .[0], kind: .[1], from: .[2], to: .[3] } ],
@@ -288,7 +304,7 @@ cmd_status() {
   fi
   now=$(date +%s)
   printf 'Accounts  (floor %s%%)\n' "$floor"
-  while IFS='|' read -r name provider _ status left reset runway _; do
+  while IFS='|' read -r name provider _ status left reset runway _ _ outlook; do
     [ -n "$name" ] || continue
     pct='?'
     [ -z "$left" ] || pct="$left%"
@@ -300,19 +316,26 @@ cmd_status() {
       expired) line="$line  [expired: renews on next use]" ;;
       *) line="$line  [$status]" ;;
     esac
-    if [ "$provider" = claude ] && [ -n "$left" ] && [ "$left" -lt "$floor" ]; then line="$line  LOW"; fi
+    if [ "$provider" = claude ]; then
+      case "$outlook" in
+        low) line="$line  LOW" ;;
+        draining) line="$line  RUNNING OUT" ;;
+        resets) line="$line  low, resets first" ;;
+      esac
+    fi
     printf '%s\n' "$line"
     on=$(printf '%s\n' "$agents" | awk -F'|' -v a="$name" '
       $5 == a && ($3 == "session" || $3 == "secondmate") { s = s (s ? ", " : "") $2 ($6 == "inferred" ? "~" : "") }
       $5 == a && $3 != "session" && $3 != "secondmate" { w++ }
       END { if (w) s = s (s ? " +" : "") w " worker" (w > 1 ? "s" : ""); print s }')
     [ -z "$on" ] || printf '    on it: %s\n' "$on"
-  done <<<"$accounts"
+  done <<<"$(with_outlook "$accounts" "$floor")"
   others=$(printf '%s\n' "$agents" | awk -F'|' '$6 == "other" { n++ } END { print n + 0 }')
   [ "$others" = 0 ] || printf '  other harnesses: %s worker(s)\n' "$others"
   if [ -n "$pick" ]; then
     if [ "$pick" = "$pref" ]; then printf 'New spawns: %s\n' "$pick"
-    else printf 'New spawns: %s (%s is below the floor)\n' "$pick" "$pref"; fi
+    elif fm_account_is_low "$CONFIG" "$STATE" "$pref"; then printf 'New spawns: %s (%s is below the floor)\n' "$pick" "$pref"
+    else printf 'New spawns: %s (%s is running out before its reset)\n' "$pick" "$pref"; fi
   fi
   if [ -n "$moves" ]; then
     printf 'Moving automatically:\n'

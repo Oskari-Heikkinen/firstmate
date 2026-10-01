@@ -24,9 +24,25 @@
 # access token that still holds a refresh token is status expired (it renews
 # on next use), not a sign-out.
 #
-# Floor: config/account-floor, one integer percent 0-100 (default 10). A Claude
-# account whose known effective percent left is below the floor is low; unknown
-# usage is never treated as low, so a failed read never moves work.
+# Floor: config/account-floor, one integer percent 0-100 (default 10).
+# Outlook (fm_account_outlook_of): each window bounding a Claude account's
+# all-models use (the 5-hour session and the weekly allowance) is projected on
+# its own: at the burn rate so far (percent used over the elapsed share of the
+# window), is it used up before it resets? The projection is unknown for a
+# window whose length, percent left, or reset is not reported, or less than 5%
+# of which has elapsed. The account's outlook is then, first match:
+#   low      a window below the floor runs out first, or its projection is
+#            unknown; with no window data, the effective percent left is below
+#            the floor (the plain floor rule)
+#   draining a window is projected to run out before it resets
+#   resets   below the floor, but every such window resets before running out
+#   ok       known room otherwise; nothing (unknown) when usage is unknown
+# New spawns steer away from low and draining accounts; live agents move, and
+# this main session is asked to restart, only off a low account. Work goes to an
+# ok account first; with none ok, a draining account still at or above the floor
+# receives work off a low account, so work never stops while one has room.
+# Unknown usage is never low, so a failed read never moves work, and a resets
+# account is left alone.
 #
 # Spawn choice (fm_account_resolve_spawn), Claude launches only, first match:
 #   1. FM_SPAWN_ACCOUNT=<name>, the explicit switch bin/fm-account.sh passes
@@ -36,8 +52,9 @@
 #   3. A ship or scout relaunch: the account= its task record already carries.
 #   4. A fresh ship or scout spawn: this home's config/spawn-account, else its
 #      config/account, else the registered account whose folder is the
-#      launcher's own CLAUDE_CONFIG_DIR - then, when that choice is low, the
-#      first registered Claude account with known room at or above the floor.
+#      launcher's own CLAUDE_CONFIG_DIR - then, when that choice is low or
+#      draining, the account with room (fm_account_room); a draining choice
+#      moves only to an ok account.
 # A named account that is not registered, or not Claude, or whose folder is
 # missing, refuses rather than silently launching on another login.
 # A launching home's config/claude-account pin (bin/fm-worker-account-lib.sh)
@@ -47,7 +64,9 @@
 # CLAUDE_CONFIG_DIR is forwarded exactly as before.
 #
 # Usage cache: state/.account-usage-<name>, one |-separated line written only
-# here: <epoch>|<status>|<percent-left>|<reset-epoch>|<runway-seconds>|<plan>.
+# here: <epoch>|<status>|<percent-left>|<reset-epoch>|<runway-seconds>|<plan>|<windows>,
+# <windows> being a comma-separated "<length-secs>:<percent-left>:<reset-epoch>"
+# per bounding window, any part empty when unknown.
 # FM_ACCOUNT_USAGE_TTL (seconds, default 120) bounds its age;
 # FM_ACCOUNT_QUOTA_TIMEOUT (seconds, default 20) bounds one quota-axi read.
 # A read that answers error or unreadable without timing out - quota-axi's
@@ -73,6 +92,7 @@
 FM_ACCOUNT_NAME_RE='^[a-z0-9][a-z0-9._-]*$'
 FM_ACCOUNT_DEFAULT_PRIORITY=100
 FM_ACCOUNT_DEFAULT_FLOOR=10
+FM_ACCOUNT_OUTLOOK_MIN_ELAPSED_PCT=5
 
 fm_account_registry() {  # <config-dir>
   printf '%s/accounts' "$1"
@@ -215,11 +235,11 @@ fm_account_iso_epoch() {
 
 # fm_account_fetch <provider> <dir>: a bounded quota-axi read, retried as the
 # header says, printed as
-# "<status>|<percent-left>|<reset-epoch>|<runway-seconds>|<plan>" with
-# empty fields for anything unknown. Never fails.
+# "<status>|<percent-left>|<reset-epoch>|<runway-seconds>|<plan>|<windows>"
+# with empty fields for anything unknown. Never fails.
 fm_account_fetch() {
   local provider=$1 dir=$2 row rc reset_iso reset='' timeout=${FM_ACCOUNT_QUOTA_TIMEOUT:-20}
-  local status left runway plan attempt=0
+  local status left runway plan windows attempt=0
   local attempts=${FM_ACCOUNT_QUOTA_ATTEMPTS:-3} delay=${FM_ACCOUNT_QUOTA_RETRY_DELAY:-1}
   if ! command -v quota-axi >/dev/null 2>&1; then
     printf 'no-quota-axi||||\n'
@@ -239,7 +259,7 @@ fm_account_fetch() {
     sleep "$delay"
     delay=$((delay * 2))
   done
-  IFS='|' read -r status left reset_iso runway plan <<<"$row"
+  IFS='|' read -r status left reset_iso runway plan windows <<<"$row"
   # A lapsed Claude access token draws 401 and 429 alternately from the
   # profile-only read; only the classifier's expired_refreshable, a login that
   # still holds a refresh token, turns either reading into expired.
@@ -252,11 +272,11 @@ fm_account_fetch() {
   [ -z "$reset_iso" ] || reset=$(fm_account_iso_epoch "$reset_iso")
   case "$left" in *[!0-9.]*) left= ;; esac
   left=${left%%.*}
-  printf '%s|%s|%s|%s|%s\n' "$status" "$left" "$reset" "$runway" "$plan"
+  printf '%s|%s|%s|%s|%s|%s\n' "$status" "$left" "$reset" "$runway" "$plan" "$windows"
 }
 
 # fm_account_fetch_once <provider> <dir> <timeout>: one quota-axi read, printed
-# as "<status>|<percent-left>|<reset-iso>|<runway-seconds>|<plan>"; returns the
+# as "<status>|<percent-left>|<reset-iso>|<runway-seconds>|<plan>|<windows>"; returns the
 # read's own exit status so a timeout is visible to the caller.
 fm_account_fetch_once() {
   local provider=$1 dir=$2 timeout=$3 json row rc=0
@@ -274,11 +294,20 @@ fm_account_fetch_once() {
       (([$e[] | select(.scope == "all_models")] | first) // ($e | first))) as $a |
     ($a.limitingWindowIds[0]? // null) as $lim |
     ([$r.windows[]? | select(.id == $lim)] | first | .resetsAt?) as $reset |
+    def len: if .id == "five_hour" then 18000
+      elif .id == "seven_day" then 604800 else "" end;
+    def epoch: try (sub("\\.[0-9]+"; "") | sub("[+]00:00$"; "Z") | fromdateiso8601) catch "";
+    [ ($a.boundedBy // [])[] as $id | ([$r.windows[]? | select(.id == $id)] | first) as $w |
+      if $w == null then "::" else
+      [ ($w | len), ($w.percentRemaining // "" | tostring | sub("[.].*"; "")),
+        (if $w.resetsAt then ($w.resetsAt | epoch) else "" end) ] | map(tostring) | join(":") end
+    ] as $windows |
     [ ($r.state.status // "unknown"),
       ($a.effectivePercentRemaining // "" | tostring),
       ($reset // ""),
       (if $a.runway.status? == "projected_exhaustion" then ($a.runway.usableRunwaySeconds // "" | tostring) else "" end),
-      ($r.plan // "") ] | join("|") end' 2>/dev/null) || row=
+      ($r.plan // ""),
+      ($windows | join(",")) ] | join("|") end' 2>/dev/null) || row=
   [ -n "$row" ] || row='unreadable||||'
   printf '%s\n' "$row"
   return "$rc"
@@ -328,7 +357,7 @@ fm_account_signin_confirmed() {
 }
 
 # fm_account_usage <config-dir> <state-dir> <name> [ttl]: cached usage line
-# "<status>|<percent-left>|<reset-epoch>|<runway-seconds>|<plan>".
+# "<status>|<percent-left>|<reset-epoch>|<runway-seconds>|<plan>|<windows>".
 fm_account_usage() {
   local config=$1 state=$2 name=$3 ttl=${4:-${FM_ACCOUNT_USAGE_TTL:-120}}
   local cache stamp rest now line tmp
@@ -364,40 +393,95 @@ fm_account_left() {
   printf '%s' "$left"
 }
 
-# fm_account_is_low <config-dir> <state-dir> <name>: 0 only when usage is known
-# and below the floor.
+# fm_account_window_runs_out <length> <percent-left> <reset-epoch> <now>: 0
+# when the window is projected to be used up before it resets, 1 when it resets
+# first, 2 when the projection is unknown (see the header).
+fm_account_window_runs_out() {
+  local len=$1 pct=$2 reset=$3 now=$4 remaining elapsed
+  case "$len$pct$reset" in '' | *[!0-9]*) return 2 ;; esac
+  [ -n "$len" ] && [ -n "$pct" ] && [ -n "$reset" ] && [ "$len" -gt 0 ] || return 2
+  remaining=$((reset - now))
+  [ "$remaining" -gt 0 ] || return 1
+  elapsed=$((len - remaining))
+  [ $((elapsed * 100)) -ge $((len * FM_ACCOUNT_OUTLOOK_MIN_ELAPSED_PCT)) ] || return 2
+  # Used at reset = used * len / elapsed; it runs out when that reaches 100.
+  [ $(((100 - pct) * len)) -ge $((100 * elapsed)) ]
+}
+
+# fm_account_outlook_of <floor> <usage-line> [now]: low, draining, resets, ok,
+# or nothing when usage is unknown (see the header).
+fm_account_outlook_of() {
+  local floor=$1 now=${3:-$(date +%s)} left windows w len pct reset rc
+  local low=0 draining=0 resets=0
+  IFS='|' read -r _ left _ _ _ windows <<<"$2"
+  [ -n "$left" ] || return 0
+  if [ -z "$windows" ]; then
+    if [ "$left" -lt "$floor" ]; then printf low; else printf ok; fi
+    return 0
+  fi
+  for w in ${windows//,/ }; do
+    IFS=: read -r len pct reset <<<"$w"
+    fm_account_window_runs_out "$len" "$pct" "$reset" "$now" && rc=0 || rc=$?
+    if [ -n "$pct" ] && [ "$pct" -lt "$floor" ]; then
+      if [ "$rc" = 1 ]; then resets=1; else low=1; fi
+    elif [ "$rc" = 0 ]; then
+      draining=1
+    fi
+  done
+  # An effective reading below the floor that no window accounts for keeps the
+  # plain floor rule.
+  [ "$resets" = 1 ] || [ "$left" -ge "$floor" ] || low=1
+  if [ "$low" = 1 ]; then printf low
+  elif [ "$draining" = 1 ]; then printf draining
+  elif [ "$resets" = 1 ]; then printf resets
+  else printf ok; fi
+}
+
+# fm_account_outlook <config-dir> <state-dir> <name>: the account's outlook.
+fm_account_outlook() {
+  fm_account_outlook_of "$(fm_account_floor "$1")" "$(fm_account_usage "$1" "$2" "$3")"
+}
+
+# fm_account_is_low <config-dir> <state-dir> <name>: 0 only when the outlook is
+# low, the one reading that moves live agents.
 fm_account_is_low() {
-  local left
-  left=$(fm_account_left "$(fm_account_usage "$1" "$2" "$3")")
-  [ -n "$left" ] && [ "$left" -lt "$(fm_account_floor "$1")" ]
+  [ "$(fm_account_outlook "$1" "$2" "$3")" = low ]
 }
 
 # fm_account_room <config-dir> <state-dir> [<exclude>]: print the first
-# registered Claude account, in choice order, whose known percent left is at or
-# above the floor, skipping <exclude>; print nothing when none has room.
+# registered Claude account, in choice order, whose outlook is ok, else the
+# first whose outlook is draining with its percent left at or above the floor,
+# skipping <exclude>; print nothing when none has room.
 fm_account_room() {
-  local config=$1 state=$2 exclude=${3:-} list name provider dir priority left floor
-  floor=$(fm_account_floor "$config")
+  local config=$1 state=$2 exclude=${3:-} list name provider dir priority floor usage fallback=''
   list=$(fm_account_list "$config") || return 0
+  floor=$(fm_account_floor "$config")
   while IFS=$'\t' read -r name provider dir priority; do
     [ "$provider" = claude ] && [ "$name" != "$exclude" ] || continue
-    left=$(fm_account_left "$(fm_account_usage "$config" "$state" "$name")")
-    if [ -n "$left" ] && [ "$left" -ge "$floor" ]; then
-      printf '%s' "$name"
-      return 0
-    fi
+    usage=$(fm_account_usage "$config" "$state" "$name")
+    case "$(fm_account_outlook_of "$floor" "$usage")" in
+      ok) printf '%s' "$name"; return 0 ;;
+      draining) [ -n "$fallback" ] || [ "$(fm_account_left "$usage")" -lt "$floor" ] || fallback=$name ;;
+    esac
   done <<<"$list"
+  printf '%s' "$fallback"
 }
 
 # fm_account_pick <config-dir> <state-dir> <preferred>: print the account a
 # new spawn should use - <preferred> unless it is low and another Claude account
-# has room.
+# has room, or it is draining and another Claude account is ok.
 fm_account_pick() {
-  local room
-  if fm_account_is_low "$1" "$2" "$3"; then
-    room=$(fm_account_room "$1" "$2" "$3")
-    [ -z "$room" ] || { printf '%s' "$room"; return 0; }
-  fi
+  local outlook room
+  outlook=$(fm_account_outlook "$1" "$2" "$3")
+  case "$outlook" in
+    low | draining)
+      room=$(fm_account_room "$1" "$2" "$3")
+      if [ -n "$room" ] && { [ "$outlook" = low ] || [ "$(fm_account_outlook "$1" "$2" "$room")" = ok ]; }; then
+        printf '%s' "$room"
+        return 0
+      fi
+      ;;
+  esac
   printf '%s' "$3"
 }
 
@@ -473,8 +557,13 @@ fm_account_resolve_spawn() {
     pick=$(fm_account_pick "$config" "$state" "$name")
     if [ "$pick" != "$name" ]; then
       left=$(fm_account_left "$(fm_account_usage "$config" "$state" "$name")")
-      # shellcheck disable=SC2034 # read by the sourcing caller
-      FM_ACCOUNT_NOTICE="account: $name has ${left}% left, below the $(fm_account_floor "$config")% floor; this spawn uses $pick"
+      if fm_account_is_low "$config" "$state" "$name"; then
+        # shellcheck disable=SC2034 # read by the sourcing caller
+        FM_ACCOUNT_NOTICE="account: $name has ${left}% left, below the $(fm_account_floor "$config")% floor; this spawn uses $pick"
+      else
+        # shellcheck disable=SC2034 # read by the sourcing caller
+        FM_ACCOUNT_NOTICE="account: $name is on pace to run out before its usage window resets; this spawn uses $pick"
+      fi
       name=$pick
       fm_account_get "$config" "$name" || return 1
     fi
