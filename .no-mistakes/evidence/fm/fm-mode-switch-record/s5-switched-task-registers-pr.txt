@@ -1,0 +1,16 @@
+$ bin/fm-pr-check.sh fm-watcher-beacon-stale-sync https://github.com/Oskari-Heikkinen/firstmate/pull/30
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+armed: state/fm-watcher-beacon-stale-sync.check.sh
+exit=0
+
+# record diff after registration:
+10a11,12
+> pr=https://github.com/Oskari-Heikkinen/firstmate/pull/30
+> pr_head=a06a11abb78246addd475df9ab591b65afa69ec3
+
+# lab checks registered:
+contributions.check-trust
+contributions.check.sh
+fm-watcher-beacon-stale-sync.check.sh
+fm-watcher-beacon-stale-sync.pr-poll
+fm-watcher-beacon-stale-sync.pr-poll-registration

@@ -1,0 +1,35 @@
+# real forge state (read-only): open PRs whose head is fm/fm-watcher-beacon-stale-sync
+count: 1 of 1 total
+pull_requests[1]{number,title,state,author,draft,review}:
+  30,"fix(bin): keep a healthy watcher's beacon fresh and recover a wedged one",open,Oskari-Heikkinen,no,none
+help[2]:
+  Run `gh-axi pr view <number>` to view details
+  Run `gh-axi pr create --title "..." --body-file <path>` to create
+
+# task record before teardown:
+window=fmlab:fm-fm-watcher-beacon-stale-sync
+endpoint_task_id=fm-watcher-beacon-stale-sync
+kind=ship
+mode=direct-push
+yolo=off
+branch=fm/fm-watcher-beacon-stale-sync
+project=/tmp/fm-lab.2Kriqo/projects/ghproj
+worktree=/tmp/fm-lab.2Kriqo/wt-fm-watcher-beacon-stale-sync
+harness=claude
+spawn_gen=lab-switch
+
+$ FM_HOME=$LAB bin/fm-teardown.sh fm-watcher-beacon-stale-sync
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.2Kriqo
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: task fm-watcher-beacon-stale-sync records mode=direct-push, but PR #30 is open and unmerged on its branch fm/fm-watcher-beacon-stale-sync.
+Cleanup would remove the only record tracking that PR. Record the switch with bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode <no-mistakes|direct-PR>, register the PR with bin/fm-pr-check.sh, and land it through the PR path; or close the PR first.
+exit=1
+--- task record still present & unchanged: yes
+--- worktree still present: yes
+--- lab tmux window still present: 1

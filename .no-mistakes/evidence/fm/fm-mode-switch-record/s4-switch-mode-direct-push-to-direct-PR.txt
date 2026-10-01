@@ -1,0 +1,50 @@
+$ bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode direct-PR
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+switched fm-watcher-beacon-stale-sync from mode=direct-push to mode=direct-PR (yolo=off and every other recorded field unchanged)
+superseded the delivery contract in /tmp/fm-lab.2Kriqo/data/fm-watcher-beacon-stale-sync/brief.md with mode=direct-PR for any relaunch
+note: the live worker has not received it; send it the brief's final '# Current delivery mode contract' section with bin/fm-send.sh
+exit=0
+
+# record diff (before -> after):
+4c4
+< mode=direct-push
+---
+> mode=direct-PR
+
+# original brief text kept verbatim as prefix: yes
+# Delivery contract lines in brief (last one is current):
+95:Delivery contract: mode=direct-push
+139:Delivery contract: mode=direct-PR
+
+# appended section:
+
+
+# Current delivery mode contract
+This task now ships mode=direct-PR: it was dispatched as mode=direct-push, and its delivery switched to a PR mid-flight.
+This section supersedes every earlier brief instruction about delivery mode, including the direct-push setup, safety rule, landing loop, and Definition of done above.
+The mode-specific Definition of done below is the current delivery contract.
+
+# Current ship safety rule
+1. Never push to the default branch (push only your `fm/fm-watcher-beacon-stale-sync` branch). Never merge a PR.
+
+# Definition of done
+Delivery contract: mode=direct-PR
+Ship branch: fm/fm-watcher-beacon-stale-sync
+This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+The task is complete only when committed on your branch.
+When it is implemented and committed, push your branch and open a PR with `gh-axi` that is ready for review, not a draft.
+Before you report done, read the PR back from the forge and confirm it is not a draft (`gh-axi pr view <number>` must print `draft: no`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with `gh-axi pr ready <number>`.
+A draft cannot be merged, so a done report on one leaves the merge unasked.
+Then append `done [at=<epoch>]: PR {url}` to the status file and stop.
+That `done:` is accepted only when this copy's HEAD - your latest commit - is pushed to your PR branch; the check tests that commit, not merely that a branch moved.
+If you deliberately keep the PR a draft, append `paused [at=<epoch>]: {why the draft is held}` instead of done.
+Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+
+# leftover temp files in data/state:
+none
+
+# repeat switch (source no longer direct-push):
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: task fm-watcher-beacon-stale-sync records mode=direct-PR; --switch-mode records only a direct-push task's switch to a PR, so nothing was changed
+exit=1
+    record unchanged: yes; brief unchanged: yes

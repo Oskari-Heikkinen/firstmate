@@ -1,0 +1,53 @@
+$ bin/fm-promote.sh lab-switch-relaunch --switch-mode no-mistakes
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+switched lab-switch-relaunch from mode=direct-push to mode=no-mistakes (yolo=off and every other recorded field unchanged)
+superseded the delivery contract in /tmp/fm-lab.2Kriqo/data/lab-switch-relaunch/brief.md with mode=no-mistakes for any relaunch
+note: the live worker has not received it; send it the brief's final '# Current delivery mode contract' section with bin/fm-send.sh
+exit=0
+# record diff:
+7c7
+< mode=direct-push
+---
+> mode=no-mistakes
+# brief Delivery contract lines:
+95:Delivery contract: mode=direct-push
+144:Delivery contract: mode=no-mistakes
+
+$ bin/fm-spawn.sh lab-switch-relaunch --relaunch
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.2Kriqo
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+spawned lab-switch-relaunch harness=claude kind=ship mode=no-mistakes yolo=off window=fmlab:fm-lab-switch-relaunch worktree=/tmp/fm-lab.2Kriqo/wt-lab-switch-relaunch
+exit=0
+
+# lab tmux window after relaunch:
+keep bash /tmp/fm-lab.2Kriqo
+fm-lab-switch-relaunch claude /tmp/fm-lab.2Kriqo/wt-lab-switch-relaunch
+
+# launch-brief.md delivered to the replacement worker:
+104:Delivery contract: mode=direct-push
+139:# Current delivery mode contract
+140:This task now ships mode=no-mistakes: it was dispatched as mode=direct-push, and its delivery switched to a PR mid-flight.
+147:Rule 6 also takes the no-mistakes ask-user escalation below.
+148:   For a no-mistakes ask-user gate specifically, escalate all ask-user findings as one event plus one snapshot file, using that same shape even when the gate holds only a single ask-user finding: write only the ask-user findings, verbatim and unparaphrased (id, severity, file, line, description, authority), to `/tmp/fm-lab.2Kriqo/data/lab-switch-relaunch/nm-<run>-findings.txt`, then report the gate with
+149:   `needs-decision [at=<epoch>] [key=nm-<run>-<step>]: ask-user findings=<id1>,<id2>,... file=/tmp/fm-lab.2Kriqo/data/lab-switch-relaunch/nm-<run>-findings.txt`
+150:   naming every ask-user finding id from that gate. The status line only points at the file; it never restates or summarizes a finding's content.
+153:Delivery contract: mode=no-mistakes
+182:- ask-user findings are never yours to answer: escalate to firstmate using rule 6's ask-user format and stop.
+183:  Firstmate applies `ask-user-authority` and obtains any required captain decision.
+186:  It auto-resolves every gate including ask-user findings with no escalation, and answering your own ask-user finding is a hard rule violation.
+
+# worker pane capture:
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Opus 5.5 with medium effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab.2Kriqo/wt-lab-switch-relaunch
+❯ : Firstmate operational input waiting: read
+  '/tmp/fm-lab.2Kriqo/state/operational-inbox/1790873132-137dddd997faeb8c.msg'
+  and handle its contents as Firstmate operational input.
+  Read 1 file
+● lab ok
+✻ Churned for 3s · done 6:45 PM
+  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

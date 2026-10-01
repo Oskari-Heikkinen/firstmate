@@ -1,0 +1,9 @@
+# adversarial: record hand-edited to mode=direct-PR, brief still direct-push (what a record-only switch would leave)
+$ bin/fm-spawn.sh lab-switch-relaunch --relaunch
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.2Kriqo
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: delivery mismatch for lab-switch-relaunch: the brief says mode=direct-push but this spawn passed --mode direct-PR; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree
+exit=1
+error: unknown option '-G'
+--- pane command after: 
+--- (re-read via tmux -L fm-lab) task window pane command after refusal: fm-lab-switch-relaunch bash  [nothing launched]

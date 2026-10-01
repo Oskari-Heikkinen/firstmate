@@ -1,0 +1,27 @@
+# BASE commit 712f38e8 scripts, same direct-push record, real open PR #30 on fm/fm-watcher-beacon-stale-sync
+$ (base) bin/fm-pr-check.sh fm-watcher-beacon-stale-sync https://github.com/Oskari-Heikkinen/firstmate/pull/30
+error: task fm-watcher-beacon-stale-sync ships mode=direct-push, which lands by a fast-forward push to the default branch with no PR; there is no PR merge to monitor
+exit=1
+$ (base) bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode direct-PR
+error: promotion requires --mode <no-mistakes|direct-PR|direct-push|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md
+exit=1
+
+$ (base) bin/fm-teardown.sh fm-watcher-beacon-stale-sync
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.KaMXBJ
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown: reaping leaked worktree process(es) for fm-watcher-beacon-stale-sync: 2973776
+teardown: force-killing leaked worktree process(es) for fm-watcher-beacon-stale-sync: 2973776
+A new version of treehouse is available: v2.3.0 → v3.1.0
+Run "treehouse update" to update
+
+worktree /tmp/fm-lab.KaMXBJ/wt-fm-watcher-beacon-stale-sync is not managed by treehouse
+error: treehouse return failed for worktree /tmp/fm-lab.KaMXBJ/wt-fm-watcher-beacon-stale-sync; teardown aborted
+exit=1
+# base teardown did NOT refuse for the open PR: it passed the landed check and proceeded into destructive cleanup (process reaping + treehouse return);
+# it stops here only because this lab worktree is not treehouse-managed - in the reported incident the record was removed.

@@ -1,0 +1,29 @@
+$ bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode direct-push
+error: --switch-mode records a direct-push task's switch to a PR, so its target must be no-mistakes or direct-PR (got 'direct-push'); nothing was changed
+exit=1
+    record unchanged: yes; brief unchanged: yes
+$ bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode local-only
+error: --switch-mode records a direct-push task's switch to a PR, so its target must be no-mistakes or direct-PR (got 'local-only'); nothing was changed
+exit=1
+    record unchanged: yes; brief unchanged: yes
+$ bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode no-mistakes-prod-only
+error: --switch-mode records a direct-push task's switch to a PR, so its target must be no-mistakes or direct-PR (got 'no-mistakes-prod-only'); nothing was changed
+exit=1
+    record unchanged: yes; brief unchanged: yes
+$ bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode direct-PR --yolo on
+error: --switch-mode changes only the recorded delivery mode of a live ship task and takes no --mode, --yolo, or --branch-prefix
+exit=1
+    record unchanged: yes; brief unchanged: yes
+$ bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode no-mistakes --mode direct-PR
+error: --switch-mode changes only the recorded delivery mode of a live ship task and takes no --mode, --yolo, or --branch-prefix
+exit=1
+    record unchanged: yes; brief unchanged: yes
+$ bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode
+error: --switch-mode requires a value
+exit=1
+    record unchanged: yes; brief unchanged: yes
+$ bin/fm-promote.sh scoutx --switch-mode direct-PR   # scout record
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: task scoutx is not a ship task (kind=ship not in meta); --switch-mode changes a live ship task's delivery mode, and a scout is promoted with --mode and --yolo instead
+exit=1
+    record unchanged: yes

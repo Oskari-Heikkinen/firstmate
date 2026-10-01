@@ -1,0 +1,26 @@
+# record:
+window=fmlab:fm-fm-watcher-beacon-stale-sync
+endpoint_task_id=fm-watcher-beacon-stale-sync
+kind=ship
+mode=direct-PR
+yolo=off
+branch=fm/fm-watcher-beacon-stale-sync
+project=/tmp/fm-lab.2Kriqo/projects/ghproj
+worktree=/tmp/fm-lab.2Kriqo/wt-fm-watcher-beacon-stale-sync
+harness=claude
+spawn_gen=lab-switch
+pr=https://github.com/Oskari-Heikkinen/firstmate/pull/30
+pr_head=a06a11abb78246addd475df9ab591b65afa69ec3
+
+$ bin/fm-teardown.sh fm-watcher-beacon-stale-sync
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.2Kriqo
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+teardown: reaping leaked worktree process(es) for fm-watcher-beacon-stale-sync: 2851381
+teardown: force-killing leaked worktree process(es) for fm-watcher-beacon-stale-sync: 2851381
+A new version of treehouse is available: v2.3.0 → v3.1.0
+Run "treehouse update" to update
+
+worktree /tmp/fm-lab.2Kriqo/wt-fm-watcher-beacon-stale-sync is not managed by treehouse
+error: treehouse return failed for worktree /tmp/fm-lab.2Kriqo/wt-fm-watcher-beacon-stale-sync; teardown aborted
+exit=1
+--- record present: yes

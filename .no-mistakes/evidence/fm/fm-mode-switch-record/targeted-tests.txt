@@ -1,0 +1,19 @@
+## tests/fm-teardown-endpoint-safety.test.sh :: test_reassigned_slot_skips_the_direct_push_open_pr_refusal (+ existing reassigned-slot baseline)
+ok - fm-teardown: a pool slot claimed by another task is left alone while the task's own cleanup finishes
+ok - fm-teardown: a direct-push task's open-PR refusal never inspects a slot reassigned to another task
+exit=0
+
+## tests/fm-teardown.test.sh :: open-PR refusal / fork boundary
+ok - direct-push worktree whose head landed on origin/main is torn down with no PR recorded
+ok - direct-push task whose pushed branch has an open PR is refused, keeping its record
+ok - PR-mode task pushed to a fork with an open PR is still torn down as landed
+exit=0
+
+## tests/fm-task-delivery.test.sh :: test_switch_mode_records_a_direct_push_switch_to_a_pr
+ok - fm-promote --switch-mode: only direct-push -> a PR mode is recorded, in both the record and the brief, and a refused switch changes nothing
+# all fm-task-delivery tests passed
+exit=0
+
+## tests/fm-control-relaunch.test.sh :: test_mode_switched_task_relaunch_receives_the_switched_delivery_contract
+ok - fm-promote --switch-mode/fm-spawn --relaunch: a switched direct-push task relaunches on its new PR contract
+exit=0

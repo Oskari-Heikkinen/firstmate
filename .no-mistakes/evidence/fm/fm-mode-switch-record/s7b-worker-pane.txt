@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Opus 5.5 with medium effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab.2Kriqo/wt-lab-switch-relaunch
+
+
+❯ : Firstmate operational input waiting: read
+  '/tmp/fm-lab.2Kriqo/state/operational-inbox/1790873132-137dddd997faeb8c.msg'
+  and handle its contents as Firstmate operational input.
+
+  Read 1 file
+
+● lab ok
+
+✻ Churned for 3s · done 6:45 PM
+
+
+
+
+  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -1,0 +1,4 @@
+$ FM_HOME=$LAB bin/fm-pr-check.sh fm-watcher-beacon-stale-sync https://github.com/Oskari-Heikkinen/firstmate/pull/30
+error: task fm-watcher-beacon-stale-sync ships mode=direct-push, which lands by a fast-forward push to the default branch with no PR; there is no PR merge to monitor; if this task now ships a PR, record the switch first with: bin/fm-promote.sh fm-watcher-beacon-stale-sync --switch-mode <no-mistakes|direct-PR>
+exit=1
+--- record unchanged: yes
