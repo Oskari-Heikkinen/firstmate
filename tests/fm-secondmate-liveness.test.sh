@@ -421,6 +421,40 @@ test_sweep_relaunches_every_dead_secondmate_despite_task_set_contention() {
   pass "sweep: parallel relaunches of three dead secondmates wait on each other and all succeed"
 }
 
+# Admission paces secondmate relaunches per home (two a minute by default) and
+# makes the rest wait up to secondmate_wait_max_s. That wait must happen before
+# a spawn takes the task-set lock: a spawn waiting on admission while holding it
+# outlasts its siblings' bounded lock wait and they refuse. The scaled-down
+# admission bound (25s) exceeds the lock wait (15s), as the defaults' 60s pacing
+# wait reaches the 60s lock wait; the empty proc root skips the host signals so
+# only the per-home pace holds the later three relaunches back.
+test_sweep_relaunches_five_dead_secondmates_under_admission_pacing() {
+  local w fb tmuxfb log out id n
+  w=$(new_world sweep-five-dead-paced)
+  for id in dead1 dead2 dead3 dead4 dead5; do
+    add_sm_home "$w" "$id" "firstmate:fm-$id"
+  done
+  mkdir -p "$w/proc"
+  printf '%s\n' '{"relaunch_per_minute_per_home": 2, "secondmate_wait_max_s": 25}' > "$w/admission-rules.json"
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" \
+    FM_ADMISSION=on FM_ADMISSION_RULES="$w/admission-rules.json" \
+    FM_ADMISSION_RUN_DIR="$w/admission" FM_PROC_ROOT_OVERRIDE="$w/proc" \
+    FM_MEM_GUARD_DIR="$w/mem-guard" FM_SPAWN_TASK_SET_WAIT=15)
+  assert_not_contains "$out" "SECONDMATE_LIVENESS" \
+    "every paced relaunch should succeed silently"
+  n=$(grep -c '^new-window' "$log" || true)
+  [ "$n" -eq 5 ] || fail "expected all five dead secondmates relaunched, saw $n new-window calls: $(cat "$log")"
+  for id in dead1 dead2 dead3 dead4 dead5; do
+    assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-$id" \
+      "secondmate $id has no durable relaunch record"
+  done
+  n=$(grep -c ' relaunch ' "$w/admission/admitted" || true)
+  [ "$n" -eq 5 ] || fail "expected five paced admissions in the ledger, saw $n"
+  pass "sweep: five dead secondmates all relaunch while admission paces them"
+}
+
 test_sweep_skips_mate_whose_liveness_lock_is_held() {
   local w fb tmuxfb log out holder i=0
   w=$(new_world sweep-lock-held)
@@ -765,6 +799,7 @@ test_sweep_noop_with_no_secondmate_meta
 test_sweep_skips_mate_whose_liveness_lock_is_held
 test_sweep_refuses_relaunch_on_ledger_errors
 test_sweep_relaunches_every_dead_secondmate_despite_task_set_contention
+test_sweep_relaunches_five_dead_secondmates_under_admission_pacing
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route
 

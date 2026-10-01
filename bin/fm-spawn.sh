@@ -1637,7 +1637,10 @@ spawn_require_relocated_queued_work() {
 # text): every local launch waits for free memory, pressure, load, and the
 # machine-wide agent cap before any lock, endpoint, or worktree exists, and a
 # relaunch or secondmate respawn is also paced per home so a restart staggers.
-# A remote secondmate runs elsewhere, so it is gated only once it proves local.
+# A secondmate the registry routes remote runs elsewhere, so it is gated only
+# once its spawn proves it local; one the registry already shows local is gated
+# here, before the task-set lock, so its admission wait never holds that lock
+# against the sibling relaunches of session start's dead-secondmate sweep.
 spawn_admission_gate() {
   local kind=$KIND
   local -a args=(acquire --home "$FM_HOME" --label "task $ID")
@@ -1648,8 +1651,13 @@ spawn_admission_gate() {
   [ "$kind" != secondmate ] || args+=(--secondmate)
   [ "$ADMISSION_OVERRIDE" -ne 1 ] || args+=(--override)
   "$SCRIPT_DIR/fm-admission.sh" "${args[@]}" || exit 1
+  SPAWN_ADMITTED=1
 }
-[ "$KIND" = secondmate ] || spawn_admission_gate
+SPAWN_ADMITTED=0
+if [ "$KIND" != secondmate ] ||
+  [ "$(secondmate_registry_field "$DATA/secondmates.md" "$ID" remote 2>/dev/null)" != 1 ]; then
+  spawn_admission_gate
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
@@ -1710,7 +1718,7 @@ if [ "$KIND" = secondmate ]; then
     remote_spawn_rc=$?
   fi
   [ "$remote_spawn_rc" -eq 3 ] || exit "$remote_spawn_rc"
-  spawn_admission_gate
+  [ "$SPAWN_ADMITTED" -eq 1 ] || spawn_admission_gate
 fi
 # Backend selection (data/fm-backend-design-d7): explicit --backend, else
 # FM_BACKEND env, else config/backend, else runtime auto-detection, else
