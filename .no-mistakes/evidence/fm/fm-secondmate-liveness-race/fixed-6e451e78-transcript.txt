@@ -1,0 +1,41 @@
+== [fixed-6e451e78] before sweep: windows and foreground commands on the lab tmux server
+primary bash
+fm-mate1 bash
+fm-mate2 bash
+fm-mate3 bash
+fm-mate4 bash
+fm-mate5 bash
+
+== [fixed-6e451e78] FM_BOOTSTRAP_NETWORK=only bin/fm-bootstrap.sh exited rc=0 after 67s; output:
+BOOTSTRAP_INFO: secondmate mate1 relaunched after confirmed agent absence on existing endpoint (backend=tmux)
+BOOTSTRAP_INFO: secondmate mate2 relaunched after confirmed agent absence on existing endpoint (backend=tmux)
+BOOTSTRAP_INFO: secondmate mate3 relaunched after confirmed agent absence on existing endpoint (backend=tmux)
+BOOTSTRAP_INFO: secondmate mate4 relaunched after confirmed agent absence on existing endpoint (backend=tmux)
+BOOTSTRAP_INFO: secondmate mate5 relaunched after confirmed agent absence on existing endpoint (backend=tmux)
+SECONDMATE_SYNC: secondmate mate1: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate mate2: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate mate3: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate mate4: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate mate5: skipped: primary default-branch commit cannot be resolved
+
+== [fixed-6e451e78] after sweep: windows and foreground commands
+primary bash
+fm-mate1 claude
+fm-mate3 claude
+fm-mate2 claude
+fm-mate5 claude
+fm-mate4 claude
+
+== [fixed-6e451e78] per-mate relaunch ledgers (state/.secondmate-relaunch-<id>)
+mate1: 1790856957	attempt 1790856960	relaunched 
+mate2: 1790856957	attempt 1790857020	relaunched 
+mate3: 1790856957	attempt 1790856961	relaunched 
+mate4: 1790856957	attempt 1790857022	relaunched 
+mate5: 1790856957	attempt 1790857021	relaunched 
+
+== [fixed-6e451e78] admission ledger
+1790856957 relaunch /tmp/fm-lab.m8HKKJ
+1790856957 relaunch /tmp/fm-lab.m8HKKJ
+1790857017 relaunch /tmp/fm-lab.m8HKKJ
+1790857017 relaunch /tmp/fm-lab.m8HKKJ
+1790857017 relaunch /tmp/fm-lab.m8HKKJ

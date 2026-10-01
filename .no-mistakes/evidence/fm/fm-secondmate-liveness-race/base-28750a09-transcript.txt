@@ -1,0 +1,35 @@
+== [base-28750a09] before sweep: windows and foreground commands on the lab tmux server
+primary bash
+fm-mate1 bash
+fm-mate2 bash
+fm-mate3 bash
+fm-mate4 bash
+fm-mate5 bash
+
+== [base-28750a09] FM_BOOTSTRAP_NETWORK=only bin/fm-bootstrap.sh exited rc=0 after 4s; output:
+BOOTSTRAP_INFO: secondmate mate1 relaunched after confirmed agent absence on existing endpoint (backend=tmux)
+SECONDMATE_LIVENESS: secondmate mate2: respawn failed after confirmed agent absence on existing endpoint: error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task mate2 rather than racing it
+SECONDMATE_LIVENESS: secondmate mate3: respawn failed after confirmed agent absence on existing endpoint: error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task mate3 rather than racing it
+SECONDMATE_LIVENESS: secondmate mate4: respawn failed after confirmed agent absence on existing endpoint: error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task mate4 rather than racing it
+SECONDMATE_LIVENESS: secondmate mate5: respawn failed after confirmed agent absence on existing endpoint: error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task mate5 rather than racing it
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+SECONDMATE_SYNC: secondmate mate1: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate mate2: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate mate3: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate mate4: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate mate5: skipped: primary default-branch commit cannot be resolved
+
+== [base-28750a09] after sweep: windows and foreground commands
+primary bash
+fm-mate1 claude
+
+== [base-28750a09] per-mate relaunch ledgers (state/.secondmate-relaunch-<id>)
+mate1: 1790856942	attempt 1790856945	relaunched 
+mate2: 1790856942	attempt 1790856943	failed 
+mate3: 1790856942	attempt 1790856943	failed 
+mate4: 1790856942	attempt 1790856943	failed 
+mate5: 1790856942	attempt 1790856943	failed 
+
+== [base-28750a09] admission ledger
+1790856943 relaunch /tmp/fm-lab.LpC68p

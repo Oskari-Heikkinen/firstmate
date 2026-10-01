@@ -1,0 +1,12 @@
+== adversarial A: a forced-teardown-tagged holder owns the task set; FM_SPAWN_TASK_SET_WAIT=60 (default)
+rc=1 after 1s:
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.NHz3FM
+error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task mate1 rather than racing it
+
+== adversarial B: one sibling-spawn-tagged holder keeps the task set past FM_SPAWN_TASK_SET_WAIT=3
+rc=1 after 3s:
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.NHz3FM
+error: this home's task set is locked by another operation (another spawn was still publishing its task after 3s); refusing to create task mate1 rather than racing it
+
+== windows after both refusals (no fm-mate1 window may exist)
+primary bash
