@@ -2935,9 +2935,15 @@ resurface_after_downtime() {
 # calls this at each step boundary instead of from a background timer, so a
 # single step that stays blocked still ages the beacon and still reads wedged.
 # The top of each cycle also records that cycle's sequence number as the
-# beacon's content, so a reader can tell a new cycle from a step beat.
+# beacon's content, so a reader can tell a new cycle from a step beat. The
+# beacon's mtime has one-second resolution, so a beat within the same second
+# as the previous one skips the touch; a per-record caller such as the
+# pending-reply scan then costs no process per record.
 WATCHER_CYCLE=0
+WATCHER_BEAT_AT=
 watcher_beat() {
+  [ "$SECONDS" != "$WATCHER_BEAT_AT" ] || return 0
+  WATCHER_BEAT_AT=$SECONDS
   touch "$STATE/.last-watcher-beat"
 }
 watcher_beat
