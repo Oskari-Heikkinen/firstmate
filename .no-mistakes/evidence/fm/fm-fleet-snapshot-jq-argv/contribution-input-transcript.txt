@@ -1,0 +1,27 @@
+fm-fleet-snapshot.sh --contribution-input — base 58beafb2 (old) vs target 6aaf8703 (new)
+Driver: drive-contribution-input.sh <bindir> <home> <bulk-count> (disposable FM_HOME, 1 delivery + N bulk backlog items)
+Host ARG_MAX=2097152; jq jq-1.7
+
+1) Large backlog (2000 bulk items, backlog.md 248118 bytes)
+  old: exit=0, stdout 0 bytes, stderr: "fm-fleet-snapshot.sh: line 2086: /usr/bin/jq: Argument list too long"
+  new: exit=0, stdout 2418239 bytes, records=2001 (bulk=2000 + delivery), tasks=array
+
+2) Byte-identity at sizes the old path handles
+  bulk=0 old sha256=affe414aa6578174 new sha256=affe414aa6578174 bytes=1335 cmp=identical
+  bulk=5 old sha256=fda0607613429c5a new sha256=fda0607613429c5a bytes=7365 cmp=identical
+  bulk=50 old sha256=5e6f4095c7413e58 new sha256=5e6f4095c7413e58 bytes=61677 cmp=identical
+  bulk=100 old sha256=19cf4f5d1b80fe60 new sha256=19cf4f5d1b80fe60 bytes=122029 cmp=identical
+  (bulk=300 already breaks the old path: old stdout 0 bytes)
+
+3) Downstream consumer: fm-contributions.sh snapshot <input> on the 2000-item home
+  via old input:  complete=false, proven_clear=false, unreadable_records=1
+  via new input: complete=true, proven_clear=true, unreadable_records=0
+  fm-bearings-snapshot.sh --json (default fleet view, already --slurpfile): known=1 checked=1 complete=true on both — unchanged
+
+4) Injected jq failure at the assembly call (PATH jq wrapper exits 5 for that filter only)
+  old: exit=0, stdout 0 bytes (silent success)
+  new: exit=1, stderr "fm-fleet-snapshot: contribution input assembly failed"
+
+5) Regression test test_large_backlog_contribution_input_is_complete (run in isolation)
+  new tree: ok - contribution input carries a backlog larger than one jq argument completely
+  base tree: "/usr/bin/jq: Argument list too long" / not ok - contribution input dropped backlog records
