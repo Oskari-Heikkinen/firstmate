@@ -1093,6 +1093,7 @@ test_tick_reports_progress_before_each_record() {
       printf 'done [corr=%s]: complete\n' "$corr" >> "$state/hibit.status"
       fm_pending_reply_try_resolve "$state" "$corr" || fail "resolved fixture should resolve"
     done
+    # shellcheck disable=SC2329 # Progress hook invoked by name from fm_pending_reply_tick.
     count_record() { count=$((count + 1)); }
     fm_pending_reply_tick "$state" count_record || fail "tick with a progress hook failed"
     [ "$count" -eq 3 ] || fail "tick reported progress $count times for 3 records"
