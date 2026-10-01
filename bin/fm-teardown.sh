@@ -3531,8 +3531,8 @@ fi
 # The refusal is confined to mode=direct-push: a PR-mode task's branch pushed to
 # a fork for an upstream contribution keeps tearing down as landed. A lookup
 # that cannot complete leaves cleanup as it was rather than refusing.
-if [ "$KIND" = ship ] && [ "$MODE" = direct-push ] && [ -d "$WT" ] && [ "$FORCE" != "--force" ] \
-    && command -v gh-axi >/dev/null 2>&1; then
+if [ "$KIND" = ship ] && [ "$MODE" = direct-push ] && teardown_owns_worktree && [ -d "$WT" ] \
+    && [ "$FORCE" != "--force" ] && command -v gh-axi >/dev/null 2>&1; then
   DIRECT_PUSH_BRANCH=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   [ -n "$DIRECT_PUSH_BRANCH" ] && [ "$DIRECT_PUSH_BRANCH" != HEAD ] \
     || DIRECT_PUSH_BRANCH=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)

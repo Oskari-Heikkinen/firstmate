@@ -120,7 +120,8 @@
 # contract below it, which that position-free deference already covers. An
 # absent or blank file changes nothing; a present path that is not a readable
 # regular file, or text carrying its own "Delivery contract: mode=" line (which
-# a later scout promotion could not outrank), stops the scaffold before
+# would outrank the brief's own contract, since bin/fm-spawn.sh reads the last
+# one), stops the scaffold before
 # anything is written. Secondmate charters never take it.
 # --role-packet FILE optionally appends validated receipt-derived role context
 # for ship/scout briefs; bin/fm-current-view.py owns the reference schema.

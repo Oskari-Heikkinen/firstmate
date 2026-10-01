@@ -1301,6 +1301,60 @@ test_promoted_scout_relaunch_receives_the_current_delivery_contract() {
   pass "fm-promote/fm-spawn --relaunch: the current ship contract supersedes stale scout delivery text"
 }
 
+# A direct-push task whose delivery switched to a PR mid-flight relaunches from
+# the switched record, so its brief must agree with that record's new mode
+# rather than tripping the spawn's brief/record delivery-mismatch refusal.
+test_mode_switched_task_relaunch_receives_the_switched_delivery_contract() {
+  local dir home id brief launch out mode
+  for mode in no-mistakes direct-PR; do
+    id="rl-switched-${mode}"
+    dir=$(new_case "mode-switched-$mode" "$id")
+    home="$dir/home"
+    fm_git_worktree "$dir/proj" "$dir/wt" "task-$id"
+    FM_HOME="$home" "$BRIEF" "$id" firstmate --mode direct-push >/dev/null \
+      || fail "$mode: could not scaffold the direct-push brief"
+    brief="$home/data/$id/brief.md"
+    sed 's/{TASK}/Fix the mode switch relaunch contract./; s/{FIRSTMATE_SPEC}/Ship it as a PR now./' \
+      "$brief" > "$brief.filled"
+    mv "$brief.filled" "$brief"
+    {
+      echo "window=fmses:fm-$id"
+      echo "endpoint_task_id=$id"
+      echo "worktree=$dir/wt"
+      echo "project=$dir/proj"
+      echo "harness=claude"
+      echo "kind=ship"
+      echo "mode=direct-push"
+      echo "yolo=off"
+      echo "branch=fm/$id"
+      echo "tasktmp=/tmp/fm-$id"
+      echo "model=default"
+      echo "effort=default"
+    } > "$home/state/$id.meta"
+    TASK_TMPS+=("/tmp/fm-$id")
+    printf '%s\n' "fm-$id" > "$dir/fake/windows"
+    printf '%s' "$dir/wt" > "$dir/fake/cwd"
+
+    out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+      "$PROMOTE" "$id" --switch-mode "$mode" 2>&1) \
+      || fail "$mode: the mode switch should succeed: $out"
+    [ "$(meta_field "$dir" "$id" mode)" = "$mode" ] || fail "$mode: the switch did not record the new mode"
+
+    printf 'zsh' > "$dir/fake/command"
+    out=$(run_spawn "$dir" "$id" --relaunch) \
+      || fail "$mode: the switched task's relaunch should succeed: $out"
+    assert_not_contains "$out" "delivery mismatch" "$mode: the relaunch refused the switched brief as a delivery mismatch"
+    launch="$home/data/$id/launch-brief.md"
+    assert_grep "This task now ships mode=$mode" "$launch" \
+      "$mode: the replacement launch did not receive the switched delivery mode"
+    assert_grep "Delivery contract: mode=$mode" "$launch" \
+      "$mode: the replacement launch did not receive the switched Definition of done"
+    assert_no_grep '^# Current landing authority$' "$launch" \
+      "$mode: the replacement launch still carried a direct-push landing authority"
+  done
+  pass "fm-promote --switch-mode/fm-spawn --relaunch: a switched direct-push task relaunches on its new PR contract"
+}
+
 # fm-spawn arms per-task wiring on harness PREFIXES, because a task launched
 # from a raw command records that command's basename rather than the exact
 # adapter name. Retirement must resolve the same way, or a task recorded as
@@ -2557,6 +2611,7 @@ test_ship_relaunch_ignores_the_crew_harness_config
 test_spawn_relaunch_without_a_harness_reuses_the_recorded_one
 test_spawn_relaunch_of_promoted_scout_uses_the_recorded_branch
 test_promoted_scout_relaunch_receives_the_current_delivery_contract
+test_mode_switched_task_relaunch_receives_the_switched_delivery_contract
 test_prefixed_prior_harness_wiring_is_still_retired
 test_muse_session_binding_is_retired_on_a_harness_switch
 test_cursor_session_binding_is_retired_on_a_harness_switch
