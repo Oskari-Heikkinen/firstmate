@@ -435,6 +435,18 @@ An unconfirmed close retains the journal.
 A confirmed close may retire it even when focus restoration reported an error after the close.
 A second run finds no matching title or journal and is a no-op.
 
+After the candidates, the same run retires leftover journals whose pane and task are provably gone, without closing anything.
+A leftover journal is removed only when all of these hold:
+
+- It is a version 2 journal bound to this exact physical home and named session.
+- The task's ordinary metadata is absent while its task-id spawn lock is held.
+- One snapshot of that session shows no workspace title carrying its token, and neither its bound workspace nor its bound pane.
+
+A version 1 journal records no session, so its absence cannot be proven and it is always preserved.
+A busy task lock, an unreadable snapshot, or a journal that changed since discovery preserves it.
+
+Discovery parses each home-local journal once per run, so startup cost grows with journals plus workspaces rather than their product.
+
 Any of these preserves the candidate and lets session startup continue with at most a concise warning:
 
 - A malformed or missing title or token.
@@ -472,7 +484,7 @@ Any of these preserves the candidate and lets session startup continue with at m
 | Test | What it covers |
 | --- | --- |
 | `tests/fm-backend-herdr-presentation-e2e.test.sh` | Multi-home ordering, concurrency, lock contention, legacy coexistence, focus preservation, exact same-identity restart replacement, ambiguous bindings and tokens, and exact-pane cleanup through the guarded lab path. |
-| `tests/fm-herdr-session-cleanup.test.sh` | Every discovery, ownership, topology, process, locking, revalidation, focus, retirement, and continue-on-error boundary. |
+| `tests/fm-herdr-session-cleanup.test.sh` | Every discovery, ownership, topology, process, locking, revalidation, focus, retirement, leftover-journal pruning, bounded journal parsing, and continue-on-error boundary. |
 | `tests/fm-herdr-session-cleanup-e2e.test.sh` | The restored-shell cleanup in a guarded non-default named lab. |
 | `tests/fm-backend-herdr-focus-flash-e2e.test.sh` | Reproduces the raw explicit-close focus steal on the installed release, and proves the focus-safe emptying-close plan removes a doomed workspace with no wrong-focus interval. |
 | `tests/fm-backend-herdr-stale-active-tab-e2e.test.sh` | Proves a persisted-focused tab still closes when no foreground client is attached. |

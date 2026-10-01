@@ -118,6 +118,10 @@ install_remote_herdr_fixture "$REMOTE_ROOT" "$HERDR_STATE" "$HERDR_LOG" \
 git -C "$REMOTE_ROOT" init -q -b main
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
+# The commit below writes hundreds of loose objects; without this, Git's detached
+# auto-maintenance can repack and delete them while the seed's local clone is
+# still copying them ("failed to copy file to .../objects/...").
+git -C "$REMOTE_ROOT" config maintenance.auto false
 git -C "$REMOTE_ROOT" add .
 git -C "$REMOTE_ROOT" commit -qm 'remote fixture root'
 REMOTE_ORIGIN="$TMP_ROOT/firstmate-origin.git"
