@@ -454,7 +454,7 @@ test_task_set_wait_bound_restarts_for_each_holder() {
   add_sm_home "$w" dead1 firstmate:fm-dead1
   fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
   log="$w/calls.log"; : > "$log"
-  lock=$( . "$ROOT/bin/fm-wake-lib.sh"; fm_task_set_lock_path "$w/home/state" ) \
+  lock=$(bash -c '. "$1" && fm_task_set_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state") \
     || fail "could not resolve the task-set lock"
   a=$(hold_spawn_task_set_lock "$lock" 4 "$log" a)
   while ! grep -qx 'holder a' "$log" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
@@ -471,7 +471,7 @@ test_task_set_wait_bound_restarts_for_each_holder() {
   add_sm_home "$w" dead1 firstmate:fm-dead1
   fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
   log="$w/calls.log"; : > "$log"
-  lock=$( . "$ROOT/bin/fm-wake-lib.sh"; fm_task_set_lock_path "$w/home/state" ) \
+  lock=$(bash -c '. "$1" && fm_task_set_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state") \
     || fail "could not resolve the task-set lock"
   a=$(hold_spawn_task_set_lock "$lock" 30 "$log" a)
   i=0
