@@ -78,6 +78,10 @@
 # for the common case where there is no remote at all.
 # A direct-push ship needs no PR record: its landed head is on origin's default
 # branch, a remote-tracking ref, so the first test above already accepts it.
+# A direct-push ship whose branch has an OPEN pull request is refused instead,
+# because that PR means the delivery switched mid-flight without the record
+# following (bin/fm-promote.sh --switch-mode records the switch); PR-mode tasks,
+# including fork-pushed upstream contributions, are untouched by that refusal.
 # Scout tasks (kind=scout in meta) carve out of that check: their worktree is
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
@@ -3518,6 +3522,29 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] &&
   fi
   require_orca_worktree_path_match "$ORCA_WORKTREE_ID" "$WT" || exit 1
   ORCA_PATH_MATCH_VERIFIED=1
+fi
+
+# A direct-push ship lands with no PR, so an open PR whose head is this task's
+# branch means its delivery switched to a PR mid-flight while the record still
+# says direct-push. Its pushed branch already counts as landed below, so without
+# this refusal cleanup would erase the only record tracking that unmerged PR.
+# The refusal is confined to mode=direct-push: a PR-mode task's branch pushed to
+# a fork for an upstream contribution keeps tearing down as landed. A lookup
+# that cannot complete leaves cleanup as it was rather than refusing.
+if [ "$KIND" = ship ] && [ "$MODE" = direct-push ] && teardown_owns_worktree && [ -d "$WT" ] \
+    && [ "$FORCE" != "--force" ] && command -v gh-axi >/dev/null 2>&1; then
+  DIRECT_PUSH_BRANCH=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  [ -n "$DIRECT_PUSH_BRANCH" ] && [ "$DIRECT_PUSH_BRANCH" != HEAD ] \
+    || DIRECT_PUSH_BRANCH=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
+  if [ -n "$DIRECT_PUSH_BRANCH" ] && [ "$DIRECT_PUSH_BRANCH" != HEAD ] \
+      && DIRECT_PUSH_OPEN_PRS=$(cd "$WT" && gh-axi pr list --state open --head "$DIRECT_PUSH_BRANCH" --limit 1 2>/dev/null); then
+    DIRECT_PUSH_OPEN_PR=$(printf '%s\n' "$DIRECT_PUSH_OPEN_PRS" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
+    if [ -n "$DIRECT_PUSH_OPEN_PR" ]; then
+      echo "REFUSED: task $ID records mode=direct-push, but PR #$DIRECT_PUSH_OPEN_PR is open and unmerged on its branch $DIRECT_PUSH_BRANCH." >&2
+      echo "Cleanup would remove the only record tracking that PR. Record the switch with bin/fm-promote.sh $ID --switch-mode <no-mistakes|direct-PR>, register the PR with bin/fm-pr-check.sh, and land it through the PR path; or close the PR first." >&2
+      exit 1
+    fi
+  fi
 fi
 
 if teardown_owns_worktree && [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then

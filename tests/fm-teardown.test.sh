@@ -872,6 +872,74 @@ test_direct_push_unlanded_refuses() {
   pass "direct-push worktree with work not on origin is refused"
 }
 
+# Override gh-axi so an OPEN PR is listed on the task branch only when the
+# lookup asks for open PRs, matching how the forge filters by state.
+add_gh_axi_open_pr_on_branch() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr list")
+    case " $* " in
+      *" --state open"*" --head fm/task-x1 "*)
+        printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  9,open" ; exit 0 ;;
+    esac
+    printf '%s\n' "count: 0 (showing first 0)" "pull_requests[]: []" ; exit 0 ;;
+  "pr view") echo "error: pull request not found" >&2 ; exit 1 ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi"
+}
+
+# A direct-push task switched to a PR mid-flight pushed its branch and opened a
+# PR, so the branch counts as landed; cleanup must still refuse while that PR is
+# open, because the record is the only thing tracking it.
+test_direct_push_with_open_pr_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case direct-push-open-pr)
+  write_meta "$case_dir" direct-push ship
+  wt_commit_file "$case_dir" feature.txt pr "work shipped as a PR"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_axi_open_pr_on_branch "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "direct-push-open-pr: teardown should refuse"
+  grep -q 'REFUSED: task task-x1 records mode=direct-push, but PR #9 is open' "$case_dir/stderr" \
+    || fail "direct-push-open-pr: refusal did not name the open PR: $(cat "$case_dir/stderr")"
+  grep -qF 'bin/fm-promote.sh task-x1 --switch-mode' "$case_dir/stderr" \
+    || fail "direct-push-open-pr: refusal did not name the mode switch"
+  assert_refusal_retained_task_state "$case_dir" direct-push-open-pr "$head"
+  pass "direct-push task whose pushed branch has an open PR is refused, keeping its record"
+}
+
+# The open-PR refusal is confined to direct-push: a PR-mode task whose branch
+# was pushed to a fork for an upstream contribution still tears down as landed
+# while that contribution PR is open.
+test_pr_mode_fork_branch_with_open_pr_allows() {
+  local case_dir rc
+  case_dir=$(make_case fork-open-pr)
+  write_meta "$case_dir" direct-PR ship
+  wt_commit "$case_dir" "upstream contribution"
+  add_fork_with_pushed_branch "$case_dir"
+  add_gh_axi_open_pr_on_branch "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "fork-open-pr: teardown should succeed for a fork-pushed PR-mode branch"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "fork-open-pr: teardown printed a REFUSED line"
+  pass "PR-mode task pushed to a fork with an open PR is still torn down as landed"
+}
+
 # Simulate a merge train landing the task branch: push it to origin, replay
 # (cherry-pick) every branch commit onto origin's default branch after one
 # unrelated main commit so the landed SHAs differ, then change the replayed
@@ -4258,6 +4326,8 @@ test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_direct_push_landed_on_origin_main_allows
 test_direct_push_unlanded_refuses
+test_direct_push_with_open_pr_refuses
+test_pr_mode_fork_branch_with_open_pr_allows
 test_local_only_force_overrides_unpushed
 test_secondmate_pr_registration_publishes_ready_line
 test_secondmate_home_teardown_delivers_final_line_or_refuses

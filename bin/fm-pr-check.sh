@@ -19,7 +19,9 @@
 # skips this refusal, because its own merge-time draft refusal is authoritative.
 # A mode=direct-push task is refused before anything is recorded: it lands by a
 # fast-forward push with no PR, so a merge poll would watch nothing
-# (bin/fm-dod-lib.sh owns that delivery contract).
+# (bin/fm-dod-lib.sh owns that delivery contract). The refusal names
+# bin/fm-promote.sh --switch-mode, which records a mid-flight switch to a PR mode
+# so this registration and bin/fm-pr-merge.sh can then proceed.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -60,7 +62,7 @@ if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" !=
   exit 1
 fi
 if [ "$(grep '^mode=' "$META" | tail -1 | cut -d= -f2- || true)" = direct-push ]; then
-  echo "error: task $ID ships mode=direct-push, which lands by a fast-forward push to the default branch with no PR; there is no PR merge to monitor" >&2
+  echo "error: task $ID ships mode=direct-push, which lands by a fast-forward push to the default branch with no PR; there is no PR merge to monitor; if this task now ships a PR, record the switch first with: bin/fm-promote.sh $ID --switch-mode <no-mistakes|direct-PR>" >&2
   exit 1
 fi
 

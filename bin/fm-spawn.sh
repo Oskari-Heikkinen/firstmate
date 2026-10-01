@@ -8,7 +8,7 @@
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
 #   standing posture as context, not as this task's answer, so a spawn never looks
-#   the mode up. A ship spawn additionally reads the brief's recorded
+#   the mode up. A ship spawn additionally reads the brief's last recorded
 #   "Delivery contract: mode=<mode>" line and REFUSES a mismatch, so the worker's
 #   instructions and the recorded task delivery cannot drift apart; a brief
 #   scaffolded before that line existed warns once and launches on the flag.
@@ -3163,7 +3163,9 @@ delivery_rigor_rank() { # <mode> -> 4 (most rigor) .. 1 (least); 0 = not a task 
 
 # Brief/spawn delivery agreement, checked before any endpoint exists.
 # fm-brief.sh records a ship brief's mode as a fixed "Delivery contract: mode=<mode>"
-# line, with " forge=<forge>" appended on a bound forge. A spawn that disagrees
+# line, with " forge=<forge>" appended on a bound forge. The last such line is
+# the current one, because a scout promotion or a direct-push task's mode switch
+# (bin/fm-promote.sh) appends a superseding contract. A spawn that disagrees
 # would launch a worker whose instructions and whose recorded task delivery
 # differ, which is the exact drift this contract prevents.
 if [ "$KIND" = ship ]; then
@@ -3180,8 +3182,9 @@ if [ "$KIND" = ship ]; then
   fi
   [ -n "$STANDING_FORGE" ] || STANDING_FORGE=none
   STANDING_MODE=$("$FM_ROOT/bin/fm-project-mode.sh" --raw "$PROJ_NAME" 2>/dev/null | cut -d' ' -f1) || STANDING_MODE=
-  BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
-  BRIEF_FORGE=$(sed -n 's/^Delivery contract: mode=[^ ]*.*[[:space:]]forge=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
+  BRIEF_CONTRACT=$(sed -n '/^Delivery contract: mode=/p' "$BRIEF" | tail -n 1)
+  BRIEF_MODE=$(printf '%s\n' "$BRIEF_CONTRACT" | sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p')
+  BRIEF_FORGE=$(printf '%s\n' "$BRIEF_CONTRACT" | sed -n 's/^Delivery contract: mode=[^ ]*.*[[:space:]]forge=\([^ ]*\).*$/\1/p')
   [ -n "$BRIEF_FORGE" ] || BRIEF_FORGE=none
   BRIEF_BRANCH=$(sed -n 's/^Ship branch: //p' "$BRIEF" | head -n 1)
   if [ -n "$BRIEF_BRANCH" ]; then
