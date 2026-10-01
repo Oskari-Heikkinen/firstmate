@@ -895,7 +895,7 @@ Firstmate never reads, copies, or prints a credential: usage comes from quota-ax
 With no registry, every launch is unchanged and forwards the launching session's own login.
 A home's `config/claude-account` pin ("Worker account pin" above) outranks the registry: that home's Claude launches always use the pinned login, and moving one of its agents to another account refuses.
 
-`bin/fm-account.sh status` shows each account's percent left, runway, and reset time, and which sessions, second mates, and workers run on it, read from each task record's `account=`.
+`bin/fm-account.sh status` shows each account's percent left, runway, reset time, and whether it is low or on pace to run out before a reset, and which sessions, second mates, and workers run on it, read from each task record's `account=`.
 An agent launched before the registry existed is attributed to its launcher's account and marked `~` until it is moved or pinned.
 `bin/fm-account.sh panel` toggles the same view as a side pane when run inside Herdr, and `bin/fm-account.sh watch` runs it in any terminal.
 `bin/fm-account.sh use <task> <account>` moves one second mate or worker through the guarded relaunch path, and `bin/fm-account.sh default <account>` sets where new spawns start.
