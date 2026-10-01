@@ -1,0 +1,94 @@
+== scenario B-relaunch-bg-shell  (claude 2.1.286 (Claude Code); background-shell=1 quoted-dialog-in-transcript=0 verb=relaunch)
+== pane before: current_command=claude  bg-sleep-running=yes
+== viewport before fm-control:
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.ceSf2i
+! sleep 81527404
+  ⎿  Command was manually backgrounded by user with ID: bn5v6skuc. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-ceSf2i/29768d2e-3e13-45bd-bbe0-373d57e15f4a/tasks/bn5v6skuc.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+                                                             tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ← for agents · ↓ to manage
+== $ FM_HOME=$LAB bin/fm-control.sh t1 relaunch   (took 15.6s)
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.TPD4ec
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.TPD4ec
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+warning: /tmp/fm-lab.TPD4ec/data/t1/launch-brief.md records no ship branch; defaulting to legacy branch fm/t1
+warning: /tmp/fm-lab.TPD4ec/data/t1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched t1 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmlive:fm-t1 worktree=/tmp/fm-lab-wt.ceSf2i
+rc=0
+== pane after: current_command=claude  bg-sleep-running=yes
+== dialog frames seen: 2
+== viewport after:
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · f9188912
+  claude agents             list sessions
+  claude attach f9188912    open in this terminal
+  claude logs f9188912      show recent output
+  claude stop f9188912      stop this session
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ cd -- '/tmp/fm-lab-wt.ceSf2i'
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export GOTMPDIR=/tmp/fm-t1/gotmp
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export COMPACT_ADVISER_DISABLE=1
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export FM_TASK_ID=t1
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ . '/tmp/fm-t1+d9374f7ea39e682581965a25906504789b4587f66d84c3f7b7e268cbbefc5c13/launch.s1790863111.1568073.20916.sh'
+== journal:
+v1
+task=t1
+phase=complete
+ts=2026-10-01T13:58:33Z
+backend=tmux
+endpoint=fmlive:fm-t1
+worktree=/tmp/fm-lab-wt.ceSf2i
+kind=ship
+from_harness=claude
+from_model=default
+from_effort=default
+to_harness=claude
+to_model=default
+to_effort=default
+worktree_head=82f6d72577915f8e06facc3a6163d3860bcb9793
+worktree_dirty=no
+note_file=/tmp/fm-lab.TPD4ec/state/t1.control-relaunch.note
+exit_result=stopped background-work=kept
+== meta after:
+window=fmlive:fm-t1
+endpoint_task_id=t1
+worktree=/tmp/fm-lab-wt.ceSf2i
+project=/tmp/fm-lab-wt.ceSf2i.proj
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+branch=fm/t1
+tasktmp=/tmp/fm-t1
+model=default
+effort=default
+claude_config_dir=/home/oskari/.claude-work
+busy_gen=g1790863111.1572791.32527
+spawn_gen=s1790863111.1568073.20916
+control_relaunch_tx=1545951.20261001T135829Z.11527
+home-summary.json
+operational-inbox
+spawn-starts.jsonl
+t1.busy-gen
+t1.busy-state
+t1.control-relaunch
+t1.control-relaunch.brief-prior
+t1.control-relaunch.meta-prior
+t1.control-relaunch.note
+t1.git-hooks
+t1.inbox
+t1.meta

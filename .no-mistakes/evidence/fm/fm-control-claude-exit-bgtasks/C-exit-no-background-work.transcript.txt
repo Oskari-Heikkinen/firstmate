@@ -1,0 +1,23 @@
+== scenario C-exit-no-background-work  (claude 2.1.286 (Claude Code); background-shell=0 quoted-dialog-in-transcript=0 verb=exit)
+== pane before: current_command=claude  bg-sleep-running=no
+== viewport before fm-control:
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.JJBZLh
+                                                             tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "how does <filepath> work?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+== $ FM_HOME=$LAB bin/fm-control.sh t1 exit   (took 2.4s)
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.PXaqN0
+stopped t1 harness=claude backend=tmux endpoint=fmlive:fm-t1 worktree=/tmp/fm-lab-wt.JJBZLh
+rc=0
+== pane after: current_command=bash  bg-sleep-running=no
+== dialog frames seen: 0
+== viewport after:
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.JJBZLh$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.JJBZLh$

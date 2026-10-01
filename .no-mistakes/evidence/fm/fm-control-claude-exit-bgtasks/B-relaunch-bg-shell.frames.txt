@@ -1,0 +1,149 @@
+
+----- frame 15:58:18.028 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.ceSf2i
+! sleep 81527404
+  ⎿  Command was manually backgrounded by user with ID: bn5v6skuc. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-ceSf2i/29768d2e-3e13-45bd-bbe0-373d57e15f4a/tasks/bn5v6skuc.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+                                                             tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ← for agents · ↓ to manage
+
+----- frame 15:58:18.566 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.ceSf2i
+! sleep 81527404
+  ⎿  Command was manually backgrounded by user with ID: bn5v6skuc. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-ceSf2i/29768d2e-3e13-45bd-bbe0-373d57e15f4a/tasks/bn5v6skuc.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+  /exit                         Exit the CLI
+  /context                      Visualize current context usage as a colored grid
+  /usage-credits                Configure usage credits or request them from your admin when you hit a limit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /exit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell
+
+----- frame 15:58:19.747 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.ceSf2i
+! sleep 81527404
+  ⎿  Command was manually backgrounded by user with ID: bn5v6skuc. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-ceSf2i/29768d2e-3e13-45bd-bbe0-373d57e15f4a/tasks/bn5v6skuc.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking ▔
+   Background work is running
+   The following will stop when you exit:
+   shell · sleep 81527404
+   ❯ 1. Exit and stop tasks
+     2. Move to background and exit
+     3. Stay
+   Enter to confirm · Esc to cancel
+
+----- frame 15:58:20.498 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.ceSf2i
+! sleep 81527404
+  ⎿  Command was manually backgrounded by user with ID: bn5v6skuc. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-ceSf2i/29768d2e-3e13-45bd-bbe0-373d57e15f4a/tasks/bn5v6skuc.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking ▔
+   Background work is running
+   The following will stop when you exit:
+   shell · sleep 81527404
+     1. Exit and stop tasks
+   ❯ 2. Move to background and exit
+     3. Stay
+   Enter to confirm · Esc to cancel
+
+----- frame 15:58:20.617 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.ceSf2i
+! sleep 81527404
+  ⎿  Command was manually backgrounded by user with ID: bn5v6skuc. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-ceSf2i/29768d2e-3e13-45bd-bbe0-373d57e15f4a/tasks/bn5v6skuc.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking ▔
+  Moving to background…
+
+----- frame 15:58:27.120 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.ceSf2i
+! sleep 81527404
+  ⎿  Command was manually backgrounded by user with ID: bn5v6skuc. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-ceSf2i/29768d2e-3e13-45bd-bbe0-373d57e15f4a/tasks/bn5v6skuc.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+  Moving to background…
+
+----- frame 15:58:29.356 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+
+----- frame 15:58:29.161 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · f9188912
+  claude agents             list sessions
+  claude attach f9188912    open in this terminal
+  claude logs f9188912      show recent output
+  claude stop f9188912      stop this session
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$
+
+----- frame 15:58:31.512 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · f9188912
+  claude agents             list sessions
+  claude attach f9188912    open in this terminal
+  claude logs f9188912      show recent output
+  claude stop f9188912      stop this session
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ cd -- '/tmp/fm-lab-wt.ceSf2i'
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$
+
+----- frame 15:58:32.921 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · f9188912
+  claude agents             list sessions
+  claude attach f9188912    open in this terminal
+  claude logs f9188912      show recent output
+  claude stop f9188912      stop this session
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ cd -- '/tmp/fm-lab-wt.ceSf2i'
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export GOTMPDIR=/tmp/fm-t1/gotmp
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export COMPACT_ADVISER_DISABLE=1
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export FM_TASK_ID=t1
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$
+
+----- frame 15:58:33.247 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · f9188912
+  claude agents             list sessions
+  claude attach f9188912    open in this terminal
+  claude logs f9188912      show recent output
+  claude stop f9188912      stop this session
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ cd -- '/tmp/fm-lab-wt.ceSf2i'
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export GOTMPDIR=/tmp/fm-t1/gotmp
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export COMPACT_ADVISER_DISABLE=1
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ export FM_TASK_ID=t1
+oskari@OskuTETMET:/tmp/fm-lab-wt.ceSf2i$ . '/tmp/fm-t1+d9374f7ea39e682581965a25906504789b4587f66d84c3f7b7e268cbbefc5c13/launch.s1790863111.1568073.20916.sh'

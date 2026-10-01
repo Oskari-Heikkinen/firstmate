@@ -1,0 +1,104 @@
+
+----- frame 15:49:34.593 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.TXD0Mh
+! sleep 82382067
+  ⎿  Command was manually backgrounded by user with ID: bgvk3kyvb. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-TXD0Mh/6f121470-fd38-4180-ab45-26b071ca7549/tasks/bgvk3kyvb.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+                                                             tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ← for agents · ↓ to manage
+
+----- frame 15:49:35.257 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.TXD0Mh
+! sleep 82382067
+  ⎿  Command was manually backgrounded by user with ID: bgvk3kyvb. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-TXD0Mh/6f121470-fd38-4180-ab45-26b071ca7549/tasks/bgvk3kyvb.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+  /exit                         Exit the CLI
+  /context                      Visualize current context usage as a colored grid
+  /usage-credits                Configure usage credits or request them from your admin when you hit a limit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /exit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell
+
+----- frame 15:49:36.480 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.TXD0Mh
+! sleep 82382067
+  ⎿  Command was manually backgrounded by user with ID: bgvk3kyvb. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-TXD0Mh/6f121470-fd38-4180-ab45-26b071ca7549/tasks/bgvk3kyvb.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking ▔
+   Background work is running
+   The following will stop when you exit:
+   shell · sleep 82382067
+   ❯ 1. Exit and stop tasks
+     2. Move to background and exit
+     3. Stay
+   Enter to confirm · Esc to cancel
+
+----- frame 15:49:37.169 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.TXD0Mh
+! sleep 82382067
+  ⎿  Command was manually backgrounded by user with ID: bgvk3kyvb. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-TXD0Mh/6f121470-fd38-4180-ab45-26b071ca7549/tasks/bgvk3kyvb.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking ▔
+   Background work is running
+   The following will stop when you exit:
+   shell · sleep 82382067
+     1. Exit and stop tasks
+   ❯ 2. Move to background and exit
+     3. Stay
+   Enter to confirm · Esc to cancel
+
+----- frame 15:49:37.304 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.TXD0Mh
+! sleep 82382067
+  ⎿  Command was manually backgrounded by user with ID: bgvk3kyvb. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-TXD0Mh/6f121470-fd38-4180-ab45-26b071ca7549/tasks/bgvk3kyvb.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking ▔
+  Moving to background…
+
+----- frame 15:49:37.424 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.TXD0Mh$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+
+----- frame 15:49:38.543 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.TXD0Mh$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · 7acb986a
+  claude agents             list sessions
+  claude attach 7acb986a    open in this terminal
+  claude logs 7acb986a      show recent output
+  claude stop 7acb986a      stop this session
+
+----- frame 15:49:38.663 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.TXD0Mh$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · 7acb986a
+  claude agents             list sessions
+  claude attach 7acb986a    open in this terminal
+  claude logs 7acb986a      show recent output
+  claude stop 7acb986a      stop this session
+oskari@OskuTETMET:/tmp/fm-lab-wt.TXD0Mh$

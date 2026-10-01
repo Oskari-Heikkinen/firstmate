@@ -1,0 +1,31 @@
+### A-exit-bg-shell
+== pane before: current_command=claude  bg-sleep-running=yes
+stopped background-work=kept t1 harness=claude backend=tmux endpoint=fmlive:fm-t1 worktree=/tmp/fm-lab-wt.TXD0Mh
+rc=0
+== pane after: current_command=bash  bg-sleep-running=yes
+== dialog frames seen: 2
+### B-relaunch-bg-shell
+== pane before: current_command=claude  bg-sleep-running=yes
+relaunched t1 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmlive:fm-t1 worktree=/tmp/fm-lab-wt.ceSf2i
+rc=0
+== pane after: current_command=claude  bg-sleep-running=yes
+== dialog frames seen: 2
+exit_result=stopped background-work=kept
+### C-exit-no-background-work
+== pane before: current_command=claude  bg-sleep-running=no
+stopped t1 harness=claude backend=tmux endpoint=fmlive:fm-t1 worktree=/tmp/fm-lab-wt.JJBZLh
+rc=0
+== pane after: current_command=bash  bg-sleep-running=no
+== dialog frames seen: 0
+### D-exit-quoted-dialog-no-background-work
+== pane before: current_command=claude  bg-sleep-running=no
+stopped t1 harness=claude backend=tmux endpoint=fmlive:fm-t1 worktree=/tmp/fm-lab-wt.3GjjH0
+rc=0
+== pane after: current_command=bash  bg-sleep-running=no
+== dialog frames seen: 8
+### E-exit-quoted-dialog-plus-background-shell
+== pane before: current_command=claude  bg-sleep-running=yes
+stopped background-work=kept t1 harness=claude backend=tmux endpoint=fmlive:fm-t1 worktree=/tmp/fm-lab-wt.uNtya2
+rc=0
+== pane after: current_command=bash  bg-sleep-running=yes
+== dialog frames seen: 5

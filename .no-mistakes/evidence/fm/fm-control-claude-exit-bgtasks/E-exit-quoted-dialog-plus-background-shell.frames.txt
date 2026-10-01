@@ -1,0 +1,137 @@
+
+----- frame 15:51:06.777 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.uNtya2
+! cat /tmp/fm-lab-wt.uNtya2.quote
+  ⎿     Background work is running
+        The following will stop when you exit:
+        shell · sleep 900
+     … +4 lines
+● I see you have a background process running (sleep 900). What would you like to do? Do you want to:
+  1. Exit and stop tasks — stop the sleep process and close
+  2. Move to background and exit — let it keep running after you close
+  3. Stay — keep the session open
+  Or did you have a question or task you wanted help with?
+✻ Sautéed for 3s · done 3:51 PM · 1 shell still running
+! sleep 83081846
+  ⎿  Command was manually backgrounded by user with ID: brzxzx6pl. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-uNtya2/93b183f8-2fd3-4bf7-880a-b83cc6c90499/tasks/brzxzx6pl.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+                                                          tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ← for agents · ↓ to manage
+
+----- frame 15:51:07.572 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.uNtya2
+! cat /tmp/fm-lab-wt.uNtya2.quote
+  ⎿     Background work is running
+        The following will stop when you exit:
+        shell · sleep 900
+     … +4 lines
+● I see you have a background process running (sleep 900). What would you like to do? Do you want to:
+  1. Exit and stop tasks — stop the sleep process and close
+  2. Move to background and exit — let it keep running after you close
+  3. Stay — keep the session open
+  Or did you have a question or task you wanted help with?
+✻ Sautéed for 3s · done 3:51 PM · 1 shell still running
+! sleep 83081846
+  ⎿  Command was manually backgrounded by user with ID: brzxzx6pl. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-uNtya2/93b183f8-2fd3-4bf7-880a-b83cc6c90499/tasks/brzxzx6pl.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+  /exit                         Exit the CLI
+  /context                      Visualize current context usage as a colored grid
+  /usage-credits                Configure usage credits or request them from your admin when you hit a limit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /exit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell
+
+----- frame 15:51:08.689 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.uNtya2
+! cat /tmp/fm-lab-wt.uNtya2.quote
+  ⎿     Background work is running
+        The following will stop when you exit:
+        shell · sleep 900
+     … +4 lines
+● I see you have a background process running (sleep 900). What would you like to do? Do you want to:
+  1. Exit and stop tasks — stop the sleep process and close
+  2. Move to background and exit — let it keep running after you close
+  3. Stay — keep the session open
+  Or did you have a question or task you wanted help with?
+✻ Sautéed for 3s · done 3:51 PM · 1 shell still running
+! sleep 83081846
+  ⎿  Command was manually backgrounded by user with ID: brzxzx6pl. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-uNtya2/93b183f8-2fd3-4bf7-880a-b83cc6c90499/tasks/brzxzx6pl.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+❯ /exit
+✻ Crystallizing…
+  ⎿  Tip: Use ctrl+v to paste images from your clipboard
+                                                          tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · esc to interrupt · ← for agents · ↓ to manage
+
+----- frame 15:51:08.808 -----
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-wt.uNtya2
+! cat /tmp/fm-lab-wt.uNtya2.quote
+  ⎿     Background work is running
+        The following will stop when you exit:
+        shell · sleep 900
+     … +4 lines
+● I see you have a background process running (sleep 900). What would you like to do? Do you want to:
+  1. Exit and stop tasks — stop the sleep process and close
+  2. Move to background and exit — let it keep running after you close
+  3. Stay — keep the session open
+  Or did you have a question or task you wanted help with?
+✻ Sautéed for 3s · done 3:51 PM · 1 shell still running
+! sleep 83081846
+  ⎿  Command was manually backgrounded by user with ID: brzxzx6pl. Output is being written to:
+     /tmp/claude-1000/-tmp-fm-lab-wt-uNtya2/93b183f8-2fd3-4bf7-880a-b83cc6c90499/tasks/brzxzx6pl.output. If it is still running after 30m in the background, it
+     will be stopped and you will be notified.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking ▔
+   Background work is running
+   The following will stop when you exit:
+   shell · sleep 83081846
+   ❯ 1. Exit and stop tasks
+     2. Move to background and exit
+     3. Stay
+   Enter to confirm · Esc to cancel
+
+----- frame 15:51:09.602 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.uNtya2$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+
+----- frame 15:51:10.829 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.uNtya2$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · 0ec6db27
+  claude agents             list sessions
+  claude attach 0ec6db27    open in this terminal
+  claude logs 0ec6db27      show recent output
+  claude stop 0ec6db27      stop this session
+
+----- frame 15:51:10.951 -----
+env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+-u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+oskari@OskuTETMET:/tmp/fm-lab-wt.uNtya2$ env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MESSAGI
+NG_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_SESSION_ID  claude --model haiku
+backgrounded · 0ec6db27
+  claude agents             list sessions
+  claude attach 0ec6db27    open in this terminal
+  claude logs 0ec6db27      show recent output
+  claude stop 0ec6db27      stop this session
+oskari@OskuTETMET:/tmp/fm-lab-wt.uNtya2$
