@@ -50,6 +50,14 @@
 # here: <epoch>|<status>|<percent-left>|<reset-epoch>|<runway-seconds>|<plan>.
 # FM_ACCOUNT_USAGE_TTL (seconds, default 120) bounds its age;
 # FM_ACCOUNT_QUOTA_TIMEOUT (seconds, default 20) bounds one quota-axi read.
+# A read that answers error or unreadable without timing out - quota-axi's
+# "fetch failed" is a request that never reached the host, which hits every
+# login at once during a network blip - is retried up to
+# FM_ACCOUNT_QUOTA_ATTEMPTS reads in all (default 3) after a backoff of
+# FM_ACCOUNT_QUOTA_RETRY_DELAY seconds (default 1), doubling each time; the
+# total stays inside the watcher's 30-second check bound. A rate_limited or
+# sign-in reading is a real answer and is never retried. A read that still
+# fails is unknown usage, never exhausted.
 #
 # Sign-in streak: state/.account-signin-<name>, one line
 # "<first-epoch>|<last-epoch>|<count>" written only here at each real read. A read of auth_required or
@@ -205,12 +213,14 @@ fm_account_iso_epoch() {
   jq -rn --arg t "$1" '$t | sub("\\.[0-9]+"; "") | sub("[+]00:00$"; "Z") | fromdateiso8601' 2>/dev/null
 }
 
-# fm_account_fetch <provider> <dir>: one bounded quota-axi read, printed as
+# fm_account_fetch <provider> <dir>: a bounded quota-axi read, retried as the
+# header says, printed as
 # "<status>|<percent-left>|<reset-epoch>|<runway-seconds>|<plan>" with
 # empty fields for anything unknown. Never fails.
 fm_account_fetch() {
-  local provider=$1 dir=$2 json row reset_iso reset='' timeout=${FM_ACCOUNT_QUOTA_TIMEOUT:-20}
-  local status left runway plan
+  local provider=$1 dir=$2 row rc reset_iso reset='' timeout=${FM_ACCOUNT_QUOTA_TIMEOUT:-20}
+  local status left runway plan attempt=0
+  local attempts=${FM_ACCOUNT_QUOTA_ATTEMPTS:-3} delay=${FM_ACCOUNT_QUOTA_RETRY_DELAY:-1}
   if ! command -v quota-axi >/dev/null 2>&1; then
     printf 'no-quota-axi||||\n'
     return 0
@@ -219,9 +229,40 @@ fm_account_fetch() {
     printf 'missing-folder||||\n'
     return 0
   fi
+  case "$attempts" in '' | *[!0-9]* | 0) attempts=3 ;; esac
+  case "$delay" in '' | *[!0-9]*) delay=1 ;; esac
+  while :; do
+    row=$(fm_account_fetch_once "$provider" "$dir" "$timeout") && rc=0 || rc=$?
+    case "${row%%|*}" in error | unreadable) ;; *) break ;; esac
+    attempt=$((attempt + 1))
+    { [ "$attempt" -lt "$attempts" ] && ! fm_timed_out "$rc"; } || break
+    sleep "$delay"
+    delay=$((delay * 2))
+  done
+  IFS='|' read -r status left reset_iso runway plan <<<"$row"
+  # A lapsed Claude access token draws 401 and 429 alternately from the
+  # profile-only read; only the classifier's expired_refreshable, a login that
+  # still holds a refresh token, turns either reading into expired.
+  if [ "$provider" = claude ]; then
+    case "$status" in auth_required | rate_limited)
+      [ "$(fm_account_classify_claude "$dir" "$timeout")" != expired_refreshable ] || status=expired
+      ;;
+    esac
+  fi
+  [ -z "$reset_iso" ] || reset=$(fm_account_iso_epoch "$reset_iso")
+  case "$left" in *[!0-9.]*) left= ;; esac
+  left=${left%%.*}
+  printf '%s|%s|%s|%s|%s\n' "$status" "$left" "$reset" "$runway" "$plan"
+}
+
+# fm_account_fetch_once <provider> <dir> <timeout>: one quota-axi read, printed
+# as "<status>|<percent-left>|<reset-iso>|<runway-seconds>|<plan>"; returns the
+# read's own exit status so a timeout is visible to the caller.
+fm_account_fetch_once() {
+  local provider=$1 dir=$2 timeout=$3 json row rc=0
   case "$provider" in
-    claude) json=$(fm_run_timed "$timeout" env CLAUDE_CONFIG_DIR="$dir" quota-axi --provider claude --profile-only --json 2>/dev/null </dev/null) || true ;;
-    codex) json=$(fm_run_timed "$timeout" env CODEX_HOME="$dir" quota-axi --provider codex --profile-only --json 2>/dev/null </dev/null) || true ;;
+    claude) json=$(fm_run_timed "$timeout" env CLAUDE_CONFIG_DIR="$dir" quota-axi --provider claude --profile-only --json 2>/dev/null </dev/null) || rc=$? ;;
+    codex) json=$(fm_run_timed "$timeout" env CODEX_HOME="$dir" quota-axi --provider codex --profile-only --json 2>/dev/null </dev/null) || rc=$? ;;
     *) json='' ;;
   esac
   # quota-axi exits nonzero for a login that needs sign-in but still prints the
@@ -239,20 +280,8 @@ fm_account_fetch() {
       (if $a.runway.status? == "projected_exhaustion" then ($a.runway.usableRunwaySeconds // "" | tostring) else "" end),
       ($r.plan // "") ] | join("|") end' 2>/dev/null) || row=
   [ -n "$row" ] || row='unreadable||||'
-  IFS='|' read -r status left reset_iso runway plan <<<"$row"
-  # A lapsed Claude access token draws 401 and 429 alternately from the
-  # profile-only read; only the classifier's expired_refreshable, a login that
-  # still holds a refresh token, turns either reading into expired.
-  if [ "$provider" = claude ]; then
-    case "$status" in auth_required | rate_limited)
-      [ "$(fm_account_classify_claude "$dir" "$timeout")" != expired_refreshable ] || status=expired
-      ;;
-    esac
-  fi
-  [ -z "$reset_iso" ] || reset=$(fm_account_iso_epoch "$reset_iso")
-  case "$left" in *[!0-9.]*) left= ;; esac
-  left=${left%%.*}
-  printf '%s|%s|%s|%s|%s\n' "$status" "$left" "$reset" "$runway" "$plan"
+  printf '%s\n' "$row"
+  return "$rc"
 }
 
 # fm_account_classify_claude <dir> <timeout>: the authStatus from quota-axi's

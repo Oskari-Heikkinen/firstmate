@@ -192,9 +192,13 @@ log_move() {  # <id> <from> <to> <result>
 # advice <agents> <accounts> [captain]: captain-facing lines (restart this
 # session, sign in), one per line. With captain (rebalance), sign-in and
 # no-room lines come from the main home only, and a sign-in line exactly while
-# the lib's sign-in streak confirms it.
+# the lib's sign-in streak confirms it. The no-room line needs proof for every
+# Claude account: a fresh reading below the floor, or a sign-in line of its
+# own; one unknown reading (error, unreadable, rate_limited, expired) withholds
+# it, so a failed read never counts as exhausted.
 advice() {
   local agents=$1 accounts=$2 captain=${3:-} floor room self_acct name provider dir status left rest main=0
+  local proven=0 unproven=0
   [ "$(self_label)" = main ] && main=1
   floor=$(fm_account_floor "$CONFIG")
   room=$(fm_account_room "$CONFIG" "$STATE")
@@ -206,6 +210,17 @@ advice() {
   fi
   while IFS='|' read -r name provider dir status left rest; do
     [ -n "$name" ] || continue
+    if [ "$provider" = claude ]; then
+      if [ "$status" = fresh ] && [ -n "$left" ] && [ "$left" -lt "$floor" ]; then
+        proven=1
+      elif [ -n "$captain" ] && [ "$main" = 1 ] && fm_account_signin_confirmed "$STATE" "$name"; then
+        :
+      elif [ -z "$captain" ] && { [ "$status" = auth_required ] || [ "$status" = missing-folder ]; }; then
+        :
+      else
+        unproven=1
+      fi
+    fi
     # The captain form follows the confirmed streak, not this one reading, so
     # an in-between rate_limited or error reading neither drops nor adds a line.
     if [ -n "$captain" ]; then
@@ -215,7 +230,7 @@ advice() {
       auth_required | missing-folder) printf 'sign in to account %s (%s login folder %s)\n' "$name" "$provider" "$dir" ;;
     esac
   done <<<"$accounts"
-  if [ -z "$room" ] && { [ -z "$captain" ] || [ "$main" = 1 ]; } && printf '%s\n' "$accounts" | awk -F'|' -v f="$floor" '$2 == "claude" && $5 != "" && $5 < f { found = 1 } END { exit !found }'; then
+  if [ -z "$room" ] && [ "$proven" = 1 ] && [ "$unproven" = 0 ] && { [ -z "$captain" ] || [ "$main" = 1 ]; }; then
     printf 'no Claude account has room above the %s%% floor; sign in to another login or wait for a reset\n' "$floor"
   fi
 }

@@ -903,7 +903,8 @@ The chosen account is recorded durably, in a worker's task record or in the seco
 
 `config/account-floor` holds the percent-left floor, default 10.
 While an account is below it, new ship and scout spawns start on the next registered Claude account with room, in priority order, and say so.
-Unknown usage is never treated as low, so a failed read never moves work.
+Unknown usage is never treated as low, so a failed read never moves work, and a failed read is retried briefly before it reads as unknown.
+The no-room advice appears only when every Claude account has a successful reading below the floor or needs sign-in, never because a read failed.
 Automatic rebalancing is on whenever the registry exists, unless `config/account-auto` says `off`.
 Session start then arms a watcher check that wakes firstmate only when a move is due or the advice changes, and firstmate runs `bin/fm-account.sh rebalance` without asking the captain.
 Rebalancing moves second mates and between-steps workers, never one mid-command or mid-validation run; a busy worker waits for a later run.

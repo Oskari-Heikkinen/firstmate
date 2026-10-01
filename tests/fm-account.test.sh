@@ -13,7 +13,9 @@ set -u
 
 ACCOUNT="$ROOT/bin/fm-account.sh"
 TMP_ROOT=$(fm_test_tmproot fm-account)
-unset FM_ACCOUNT_USAGE_TTL FM_ACCOUNT_QUOTA_TIMEOUT FM_ACCOUNT_PANEL_RATIO FM_SPAWN_ACCOUNT
+unset FM_ACCOUNT_USAGE_TTL FM_ACCOUNT_QUOTA_TIMEOUT FM_ACCOUNT_QUOTA_ATTEMPTS FM_ACCOUNT_PANEL_RATIO FM_SPAWN_ACCOUNT
+# Failed reads retry with no backoff here so the cases stay fast.
+export FM_ACCOUNT_QUOTA_RETRY_DELAY=0
 
 # write_fake_quota <fakebin>: quota-axi that reads
 # "<percent-left> <status> [<auth-status> [<full-status> <full-auth-status>]]"
@@ -23,6 +25,8 @@ unset FM_ACCOUNT_USAGE_TTL FM_ACCOUNT_QUOTA_TIMEOUT FM_ACCOUNT_PANEL_RATIO FM_SP
 # any other read is the classifier and answers <full-status> and
 # <full-auth-status> (default: the same two), and writes the quota cache under
 # XDG_CACHE_HOME the way the real tool does. "-" is an absent auth status.
+# A <login-folder>/fake-fail holding N makes the next N --profile-only reads
+# answer quota-axi's network failure (status error, "fetch failed") first.
 # Status "garbage" prints unparseable output; any status other than fresh
 # prints a row with no usage and exits nonzero, the way the real tool reports a
 # login that needs sign-in.
@@ -44,6 +48,11 @@ if [ "$provider" = codex ]; then dir=${CODEX_HOME:-}; else dir=${CLAUDE_CONFIG_D
   "$([ -n "${CLAUDE_CODE_OAUTH_TOKEN+x}" ] && echo token || echo no-token)" >> "$FM_FAKE_QUOTA_LOG"
 left=50 status=fresh auth=- fstatus= fauth=
 [ ! -f "$dir/fake-quota" ] || read -r left status auth fstatus fauth < "$dir/fake-quota"
+if [ "$mode" = profile ] && [ -f "$dir/fake-fail" ] && read -r fails < "$dir/fake-fail" && [ "${fails:-0}" -gt 0 ]; then
+  printf '%s\n' "$((fails - 1))" > "$dir/fake-fail"
+  printf '{"providers":[{"provider":"%s","state":{"status":"error","error":"fetch failed"}}]}\n' "$provider"
+  exit 1
+fi
 if [ "$mode" = full ]; then
   status=${fstatus:-$status} auth=${fauth:-${auth:--}}
   mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/quota-axi"
@@ -484,6 +493,31 @@ sweep() {
   run_account rebalance --check
 }
 
+test_failed_reads_retry_and_never_count_as_exhausted() {
+  local out
+  new_case fetch-retry
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  printf '2\n' > "$C/work/fake-fail"
+  out=$(run_account status --json)
+  assert_equals "fresh|98" "$(json_get "$out" '.accounts[] | select(.name == "work") | "\(.status)|\(.percent_left)"')" "a read that fails twice then answers reads the answer"
+  assert_equals 3 "$(grep -c "claude $C/work profile" "$C/quota.log")" "two failed reads are retried within the bound"
+
+  new_case fetch-down
+  printf '80 fresh\n' > "$C/codex/fake-quota"
+  printf '99\n' > "$H/config/account-floor"
+  printf '0 error\n' > "$C/work/fake-quota"
+  out=$(run_account status --json)
+  assert_equals "error|null|false" "$(json_get "$out" '.accounts[] | select(.name == "work") | "\(.status)|\(.percent_left)|\(.low)"')" "a read that keeps failing reports unknown usage"
+  assert_equals 3 "$(grep -c "claude $C/work profile" "$C/quota.log")" "a read that keeps failing stops after the bound"
+  assert_not_contains "$(json_get "$out" '.advice | join("\n")')" "no Claude account has room" "a failed read is not proof that a login is exhausted"
+  out=$(sweep)
+  assert_not_contains "$out" "no Claude account has room" "the watcher never wakes on no room while a read failed"
+  printf '1 fresh\n' > "$C/work/fake-quota"
+  out=$(sweep)
+  assert_contains "$out" "needs the captain: no Claude account has room above the 99% floor" "every login proven below the floor wakes the captain"
+  pass "failed usage reads retry within a bound, read as unknown, and never count as exhausted"
+}
+
 test_b_signin_lines_wait_for_confirmation_and_come_from_main() {
   local out i now
   new_case signin
@@ -570,6 +604,7 @@ test_b_quiet_advice_returning_unchanged_does_not_wake_again() {
 }
 
 test_malformed_registry_refuses_and_the_check_says_so
+test_failed_reads_retry_and_never_count_as_exhausted
 test_status_attributes_every_agent_and_plans_moves
 test_usage_is_cached_and_unknown_usage_never_moves_work
 test_floor_and_priority_choose_the_account
