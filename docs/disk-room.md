@@ -30,8 +30,8 @@ The monitor reserves that headroom, the cap minus what is already used, from the
 
 Reading the cap and the used size needs elevation, so the elevated task from the install below records both in `C:\ProgramData\firstmate\shadow-storage.txt` at every Windows start, install, and reclaim.
 The task runs the copy the install made in `C:\ProgramData\firstmate\`, so an install made before this record existed never writes it; re-run `fm-wsl-reclaim.ps1 -Install` elevated to update that copy.
-A record older than 7 days, or no record at all, leaves the used size unknown; the monitor then reserves the whole cap, taken from the record or from `FM_DISK_ROOM_SHADOW_MAX` (for example `10G`), because a too-large reservation only makes room read low.
-With neither a record nor `FM_DISK_ROOM_SHADOW_MAX`, nothing is reserved and room reads as before.
+A record older than 7 days, or no record at all, leaves the used size unknown; the monitor then reserves the whole cap, the larger of the record's cap and `FM_DISK_ROOM_SHADOW_MAX` (for example `10G`), because a too-large reservation only makes room read low.
+With neither a capped record nor `FM_DISK_ROOM_SHADOW_MAX`, nothing is reserved and room reads as before; a record of shadow storage without a cap reserves nothing unless `FM_DISK_ROOM_SHADOW_MAX` bounds it.
 Without a fresh record the monitor also counts `volsnap` System events 25, 33, and 36 of the last 7 days, which need no elevation, and warns that the shadow storage is cycling, deleting restore points at its cap, when any occurred.
 
 ## Admitting big writes
