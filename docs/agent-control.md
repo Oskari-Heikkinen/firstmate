@@ -41,6 +41,8 @@ Claude answers `/exit` with a "Background work is running" dialog while backgrou
 `exit` submits Claude's exit command with one Enter, because the dialog's focused row reads as pending composer text and a retried Enter would stop that work.
 When the dialog offers `Move to background and exit`, `exit` moves focus onto it, presses Enter only after that focus renders, and requires the agent to read dead, reporting `stopped background-work=kept`.
 Otherwise it chooses Stay with Escape and refuses by naming the dialog, leaving the agent and its background work running, so `relaunch` fails before anything is launched.
+Only dialog rows the viewport did not already show before `/exit` was typed count, so a transcript quoting the dialog is never answered as the dialog.
+The tmux Down key was verified live; herdr's `down` key is not yet live-verified, and is guarded by the same focus proof, so Enter follows only once focus renders on `Move to background and exit`, and otherwise `exit` chooses Stay and refuses by name.
 [`bin/fm-control-lib.sh`](../bin/fm-control-lib.sh) owns the dialog signals and keys.
 Interrupt never rewrites busy state as proof of its own success.
 Claude exposes no lifecycle acknowledgement for a manual interrupt, so delivery succeeds with `cancel=unconfirmed` and its adapter-owned busy state remains as observed.

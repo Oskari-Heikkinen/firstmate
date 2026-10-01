@@ -78,9 +78,11 @@ verified_adapter_contract() {  # <harness> -> exit command, interrupt key, repea
 #            FM_FAKE_DEVIN_PICKER_STUCK is set. Real sleeps apply while it
 #            exists, so key-times carry the true gap between presses.
 #   claude-dialog  optional Claude exit-dialog model: `offered` (the
-#            background option is listed) or `absent` (only Exit and stop
-#            tasks and Stay). The Enter that submits /exit then opens the
-#            dialog instead of stopping the agent, `claude-focus` holds the
+#            background option is listed), `absent` (only Exit and stop
+#            tasks and Stay), or `none` (no background work: the agent stops
+#            after a few more state reads, counted down in `claude-dying`).
+#            The Enter that submits /exit then opens the dialog instead of
+#            stopping the agent, `claude-focus` holds the
 #            focused option number, Down moves it unless FM_FAKE_CLAUDE_DOWN_IGNORED is set,
 #            Escape closes the dialog (Stay), and Enter answers the focused
 #            option, recording its label in `claude-choice`. Until the
@@ -170,7 +172,11 @@ case "${1:-}" in
       elif [ "$payload" = Enter ] && [ -f "$D/claude-exit-typed" ]; then
         # The Enter that submits /exit opens the dialog; a later one answers it.
         rm -f "$D/claude-exit-typed"
-        printf '1' > "$D/claude-focus"
+        if [ "$(cat "$D/claude-dialog")" = none ]; then
+          printf '3' > "$D/claude-dying"
+        else
+          printf '1' > "$D/claude-focus"
+        fi
       elif [ -f "$D/claude-focus" ]; then
         case "$payload" in
           Down)
@@ -223,7 +229,16 @@ case "${1:-}" in
             printf '1\n'
           fi
           exit 0 ;;
-        *pane_current_command*) cat "$D/command"; printf '\n'; exit 0 ;;
+        *pane_current_command*)
+          if [ -f "$D/claude-dying" ]; then
+            if [ "$(cat "$D/claude-dying")" -gt 0 ]; then
+              printf '%s' "$(( $(cat "$D/claude-dying") - 1 ))" > "$D/claude-dying"
+            else
+              rm -f "$D/claude-dying"
+              printf 'zsh' > "$D/command"
+            fi
+          fi
+          cat "$D/command"; printf '\n'; exit 0 ;;
         *pane_current_path*) cat "$D/cwd"; printf '\n'; exit 0 ;;
       esac
     done
@@ -465,7 +480,7 @@ test_devin_stuck_picker_refuses_and_exit_types_nothing() {
 # Claude's "Background work is running" exit dialog: the exit command opens it
 # instead of exiting while background shells or scheduled tasks are live, with
 # focus on the option that stops them.
-claude_dialog_case() {  # <name> <offered|absent> -> echoes case dir
+claude_dialog_case() {  # <name> <offered|absent|none> -> echoes case dir
   local dir
   dir=$(new_case "$1")
   add_task "$dir" t1 claude
@@ -523,11 +538,9 @@ test_claude_exit_dialog_without_background_option_refuses() {
 
 test_claude_exit_ignores_a_transcript_quoting_the_dialog() {
   local dir out rc
-  dir=$(new_case claude-dialog-quoted)
-  add_task "$dir" t1 claude
-  alive_as "$dir" claude
-  printf '╭────╮\n│    │\n╰────╯\n● Background work is running is the dialog title\n  ⎿  1. Exit and stop tasks was focused\n' > "$dir/fake/pane"
-  out=$(run_control "$dir" t1 exit); rc=$?
+  dir=$(claude_dialog_case claude-dialog-quoted none)
+  printf '╭────╮\n│    │\n╰────╯\n   Background work is running\n   The following will stop when you exit:\n   shell · sleep 900\n   ❯ 1. Exit and stop tasks\n     2. Move to background and exit\n     3. Stay\n' > "$dir/fake/pane"
+  out=$(FM_CONTROL_EXIT_WAIT=5 run_control "$dir" t1 exit); rc=$?
   expect_code 0 "$rc" "a transcript quoting the dialog must not read as the dialog"$'\n'"$out"
   assert_contains "$out" "stopped t1 harness=claude" "exit should report the ordinary stop"
   [ -z "$(keys_sent "$dir")" ] || fail "no dialog key should be sent, got: $(keys_sent "$dir")"

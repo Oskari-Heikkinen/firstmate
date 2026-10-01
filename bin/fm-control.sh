@@ -189,6 +189,7 @@ ARM_WAIT=${FM_CONTROL_ARM_WAIT:-1.5}
 EXIT_WAIT=${FM_CONTROL_EXIT_WAIT:-30}
 LAUNCH_WAIT=${FM_CONTROL_LAUNCH_WAIT:-90}
 EXIT_RETRIES=${FM_CONTROL_EXIT_RETRIES:-3}
+EXIT_BASELINE=
 
 die() {  # <message>
   echo "error: $1" >&2
@@ -404,12 +405,27 @@ rendered_matches() {  # <ere>
   printf '%s\n' "$screen" | grep -Eq -- "$1"
 }
 
-# wait_rendered <ere> <timeout>: poll the viewport until a row matches.
-wait_rendered() {  # <ere> <timeout>
-  local elapsed=0 step
+# fresh_rows: the stdin viewport rows that EXIT_BASELINE, the viewport read
+# before the exit command was typed, did not already show. A real exit dialog
+# cannot predate its exit command, so a transcript quoting the dialog stays out.
+fresh_rows() {
+  grep -vxF -f <(printf '%s\n' "$EXIT_BASELINE")
+}
+
+# dialog_rendered <ere>: whether any fresh viewport row (fresh_rows) matches.
+dialog_rendered() {  # <ere>
+  local screen
+  screen=$(fm_backend_visible_capture "$BACKEND" "$T" "$LABEL" 2>/dev/null) || return 1
+  printf '%s\n' "$screen" | fresh_rows | grep -Eq -- "$1"
+}
+
+# wait_rendered <ere> <timeout> [matcher]: poll the viewport until a row
+# matches, through rendered_matches unless another matcher is named.
+wait_rendered() {  # <ere> <timeout> [matcher]
+  local elapsed=0 step matcher=${3:-rendered_matches}
   step=$(awk -v p="$POLL" 'BEGIN{printf "%s", (p < 0.1 ? p : 0.1)}')
   while :; do
-    rendered_matches "$1" && return 0
+    "$matcher" "$1" && return 0
     awk -v e="$elapsed" -v t="$2" 'BEGIN{exit !(e < t)}' || return 1
     sleep "$step"
     elapsed=$(awk -v e="$elapsed" -v p="$step" 'BEGIN{printf "%.3f", e + p}')
@@ -580,7 +596,7 @@ wait_exit_or_dialog() {  # <dialog-ere> <exit-command>
     fi
     if [ -n "$dialog" ]; then
       screen=$(fm_backend_visible_capture "$BACKEND" "$T" "$LABEL" 2>/dev/null) || screen=
-      if printf '%s\n' "$screen" | grep -Eq -- "$dialog"; then
+      if printf '%s\n' "$screen" | fresh_rows | grep -Eq -- "$dialog"; then
         printf 'exit-dialog'
         return 1
       fi
@@ -620,7 +636,7 @@ dismiss_exit_dialog() {  # <dismiss-key> <dialog-ere> <why>
 
 wait_dialog_closed() {  # <dialog-ere>
   local elapsed=0
-  while rendered_matches "$1"; do
+  while dialog_rendered "$1"; do
     awk -v e="$elapsed" -v t="$ARM_WAIT" 'BEGIN{exit !(e < t)}' || return 1
     sleep "$POLL"
     elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
@@ -640,7 +656,7 @@ answer_exit_dialog() {  # <interrupt-result>
     || die "exit-delivered $ID exit=refused: the $cmd exit command opened a $HARNESS exit dialog that has no verified work-preserving answer; nothing more was sent. Answer it in the pane"
   fm_control_backend_supports_key "$BACKEND" "$dismiss" \
     || die "exit-delivered $ID exit=refused: the $cmd exit command opened $HARNESS's 'Background work is running' dialog, and the $BACKEND backend cannot deliver its $dismiss; nothing more was sent. Answer it in the pane, never with Enter, which stops the background work"
-  rendered_matches "$offered" \
+  dialog_rendered "$offered" \
     || dismiss_exit_dialog "$dismiss" "$dialog" "it offers no '$label' option, only choices that stop the background work or stay"
   if ! fm_control_backend_supports_key "$BACKEND" "$focus_key" \
      || ! fm_control_backend_supports_key "$BACKEND" Enter; then
@@ -648,7 +664,7 @@ answer_exit_dialog() {  # <interrupt-result>
   fi
   fm_backend_send_key "$BACKEND" "$T" "$focus_key" "$LABEL" \
     || dismiss_exit_dialog "$dismiss" "$dialog" "the $focus_key that moves focus onto '$label' was not delivered"
-  wait_rendered "$focused" "$ARM_WAIT" \
+  wait_rendered "$focused" "$ARM_WAIT" dialog_rendered \
     || dismiss_exit_dialog "$dismiss" "$dialog" "focus did not render on '$label' after $focus_key, so Enter could have confirmed an option that stops the background work"
   fm_backend_send_key "$BACKEND" "$T" Enter "$LABEL" \
     || dismiss_exit_dialog "$dismiss" "$dialog" "the Enter that confirms '$label' was not delivered"
@@ -748,7 +764,11 @@ do_exit() {
   # inside wait_exit_or_dialog.
   dialog=$(fm_control_exit_dialog_signal "$HARNESS")
   submit_retries=$EXIT_RETRIES
-  [ -z "$dialog" ] || submit_retries=1
+  if [ -n "$dialog" ]; then
+    submit_retries=1
+    EXIT_BASELINE=$(fm_backend_visible_capture "$BACKEND" "$T" "$LABEL" 2>/dev/null) \
+      || die "task $ID's viewport could not be read before the $cmd exit command, so its $HARNESS exit dialog could not be told apart from a transcript quoting it; nothing was typed"
+  fi
   verdict=$(fm_backend_send_text_submit "$BACKEND" "$T" "$cmd" "$submit_retries" "$POLL" 1.2 "$LABEL") \
     || die "the exit command could not be sent to task $ID on $BACKEND"
   [ "$verdict" != send-failed ] \

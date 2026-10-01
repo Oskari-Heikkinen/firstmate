@@ -242,10 +242,10 @@ fm_control_exit_command() {  # <harness>
 # options `Exit and stop tasks`, `Move to background and exit` (offered only
 # for some sessions), and `Stay`, focused on `Exit and stop tasks` with Escape
 # meaning Stay. Any one of three independent rows carries the verdict, so no
-# single rendered string is load-bearing, and each must fill its whole row, so
-# a transcript line quoting the dialog does not read as the dialog. Verified
-# live on Claude Code
-# 2.1.286 in tmux: Down then Enter on the focused background option exited the
+# single rendered string is load-bearing, and each must fill its whole row.
+# bin/fm-control.sh counts only rows the viewport did not show before the exit
+# command was typed, so a transcript quoting the dialog does not read as the
+# dialog. Verified live on Claude Code 2.1.286 in tmux: Down then Enter on the focused background option exited the
 # agent and left its background shell running, and Escape left the agent
 # running at an empty composer.
 fm_control_exit_dialog_signal() {  # <harness>
