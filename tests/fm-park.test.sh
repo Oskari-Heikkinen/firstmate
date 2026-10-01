@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Behavior tests for bin/fm-park.sh: the handoff validator, park idempotence,
 # automatic resume when the wait condition holds, the supervisor wake on a
-# deadline or failed relaunch, and the self-park detached exit. A fake control
+# deadline or failed relaunch, the self-park detached exit, and the Claude
+# self-park refusal while background shells still run. A fake control
 # plane stands in for the harness endpoint (FM_PARK_CONTROL_OVERRIDE) and logs
 # every lifecycle verb it receives, so no agent, terminal, or worktree is
 # touched; the condition watch is the real bin/fm-procevent-when.sh runner.
@@ -12,6 +13,9 @@ set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP_ROOT=$(fm_test_tmproot fm-park-tests)
+# A run from inside a Claude session must not see that session's own
+# background shells; the fake agent below sets its own CLAUDE_PID.
+unset CLAUDE_PID
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 PARK="$ROOT/bin/fm-park.sh"
 
@@ -286,3 +290,58 @@ assert_contains "$(last_line "$H/state/t8.status")" "$H/data/t8/park-exit.log" "
 assert_grep "fake exit failure" "$H/data/t8/park-exit.log" "the exit log keeps the failure"
 FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-t8 >/dev/null 2>&1 || true
 pass "a self-park whose exit fails wakes the supervisor instead of idling silently"
+
+# --- a Claude worker with live background shells is refused before parking ----
+# The fake agent stands in for the Claude process: it exports CLAUDE_PID as
+# Claude does, holds an optional background shell child (a background Bash
+# task or Monitor watch), and runs the park from a foreground tool shell child.
+AGENT="$TMP_ROOT/fake-agent.sh"
+cat > "$AGENT" <<'SH'
+#!/usr/bin/env bash
+# fake-agent.sh <with-background:0|1> <dir> <park args...>
+export CLAUDE_PID=$$
+bg=''
+if [ "$1" = 1 ]; then
+  bash -c 'sleep 60; :' &
+  bg=$!
+fi
+dir=$2; shift 2
+bash -c 'cd "$1" && shift && exec "$@"' tool-shell "$dir" "$@"
+rc=$?
+[ -z "$bg" ] || { kill "$bg"; wait "$bg"; } 2>/dev/null
+exit "$rc"
+SH
+chmod +x "$AGENT"
+self_park_as_agent() {  # <home> <id> <with-background> <handoff> [harness]
+  FM_HOME="$1" FAKE_CONTROL_LOG="$1/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FM_PARK_SELF_EXIT_DELAY=0 \
+    "$AGENT" "$3" "$1/wt-$2" "$PARK" "$2" --handoff "$4"
+}
+
+H="$TMP_ROOT/h-bg"; new_task "$H" t10
+handoff "$TMP_ROOT/t10.md" "file:$TMP_ROOT/t10-results"
+if self_park_as_agent "$H" t10 1 "$TMP_ROOT/t10.md" > "$TMP_ROOT/t10.out" 2>&1; then
+  fail "a Claude self-park with a live background shell was accepted: $(cat "$TMP_ROOT/t10.out")"
+fi
+assert_grep "Background work is running" "$TMP_ROOT/t10.out" "the refusal names Claude's exit prompt"
+assert_grep "sleep 60" "$TMP_ROOT/t10.out" "the refusal lists the live background shell"
+assert_grep "Stop every background shell and Monitor watch" "$TMP_ROOT/t10.out" "the refusal tells the worker what to do"
+assert_absent "$H/control.log" "a refused park never touched the agent"
+assert_absent "$H/state/procevent/when-park-t10.source" "a refused park armed no watch"
+assert_absent "$H/data/t10/handoff.md" "a refused park installed no handoff"
+assert_no_grep "^park_" "$H/state/t10.meta" "a refused park recorded nothing"
+out=$(self_park_as_agent "$H" t10 0 "$TMP_ROOT/t10.md" 2>&1) || fail "a Claude self-park with no background work failed: $out"
+assert_contains "$out" "this session stops in a few seconds" "the same park succeeds once the background work is gone"
+for _ in $(seq 1 100); do [ -s "$H/control.log" ] && break; sleep 0.1; done
+assert_equals "t10 exit" "$(cat "$H/control.log" 2>/dev/null)" "the detached exit stops the session"
+FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-t10 >/dev/null 2>&1 || true
+pass "a Claude self-park refuses while background shells run and parks once they stop"
+
+# --- other harnesses keep their park behavior ----------------------------------
+H="$TMP_ROOT/h-bg-codex"; new_task "$H" t11
+awk '{ sub(/^harness=claude$/, "harness=codex") } 1' "$H/state/t11.meta" > "$H/t11.meta" && mv "$H/t11.meta" "$H/state/t11.meta"
+handoff "$TMP_ROOT/t11.md" "file:$TMP_ROOT/t11-results"
+out=$(self_park_as_agent "$H" t11 1 "$TMP_ROOT/t11.md" 2>&1) || fail "a non-Claude self-park was refused: $out"
+assert_contains "$out" "this session stops in a few seconds" "a non-Claude self-park is unaffected by background shells"
+for _ in $(seq 1 100); do [ -s "$H/control.log" ] && break; sleep 0.1; done
+FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-t11 >/dev/null 2>&1 || true
+pass "the background-work refusal applies only to Claude workers"

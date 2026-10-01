@@ -34,7 +34,12 @@
 #           When run by the worker parking itself (FM_TASK_ID is the task, or
 #           the current directory is inside its worktree), the exit is detached
 #           through `stop` so this command can return before its own session is
-#           stopped; its output goes to data/<id>/park-exit.log. A failed exit
+#           stopped; its output goes to data/<id>/park-exit.log. A Claude
+#           worker parking itself is refused, before anything is installed,
+#           while its session still runs a background shell or Monitor watch,
+#           because Claude's exit would stop on its "Background work is
+#           running" prompt; the refusal lists them, and the worker stops them
+#           and parks again. A failed exit
 #           leaves the park armed: the watch still relaunches the task when the
 #           condition holds. Park records the task's spawn_gen incarnation so
 #           resume can tell whether the session it would replace is still the
@@ -340,6 +345,13 @@ cmd_park() {
   done
   [ -n "$handoff" ] || die "park needs --handoff <file> (sections: Goal, Done, Waiting for, Next steps)"
   validate_handoff "$handoff" "$want"
+  [ "${FM_TASK_ID-}" != "$ID" ] || detached=1
+  wt=$(meta_get worktree)
+  here=$(pwd -P 2>/dev/null || true)
+  if [ -n "$wt" ] && wt=$(cd "$wt" 2>/dev/null && pwd -P); then
+    case "$here/" in "$wt"/*) detached=1 ;; esac
+  fi
+  [ "$detached" -eq 0 ] || [ "$(meta_get harness)" != claude ] || refuse_claude_background_work
   now=$(date +%s)
   if [ -n "$deadline_iso" ]; then
     deadline_epoch=$(fm_utc_iso_to_epoch "$deadline_iso") \
@@ -378,12 +390,6 @@ cmd_park() {
   status_append "$PAUSED_VERB: parked until $deadline_iso - waiting for $HANDOFF_CONDITION; relaunches automatically with $dest" \
     || die "task $ID is parked and its watch armed, but the status line could not be appended"
 
-  [ "${FM_TASK_ID-}" != "$ID" ] || detached=1
-  wt=$(meta_get worktree)
-  here=$(pwd -P 2>/dev/null || true)
-  if [ -n "$wt" ] && wt=$(cd "$wt" 2>/dev/null && pwd -P); then
-    case "$here/" in "$wt"/*) detached=1 ;; esac
-  fi
   if [ "$detached" -eq 1 ]; then
     # The worker is parking itself: stopping the agent would kill this very
     # command, so return first and let a detached exit stop the session.
@@ -400,6 +406,51 @@ cmd_park() {
     exit 1
   fi
   printf 'parked %s: waiting for %s until %s; agent stopped (%s)\n' "$ID" "$HANDOFF_CONDITION" "$deadline_iso" "$out"
+}
+
+# refuse_claude_background_work: a Claude session asked to exit while one of
+# its own background shells or Monitor watches still runs stops on its
+# "Background work is running" prompt instead of exiting, so the detached exit
+# would leave it idle until someone intervenes by hand. Claude hands every tool
+# shell CLAUDE_PID, the process that owns those shells; it is trusted only when
+# it is an ancestor of this command, so a value inherited from elsewhere is
+# ignored. Each shell child of that process that is not this command's own tool
+# shell is background work, and park refuses before installing anything. An
+# unreadable process table steps aside; the detached exit's blocked line
+# remains the backstop.
+refuse_claude_background_work() {
+  local agent=${CLAUDE_PID-} pid=$$ hops=0 found=0 chain=' ' table list='' cpid cppid ccomm base what
+  case "$agent" in ''|*[!0-9]*) return 0 ;; esac
+  while [ "$hops" -lt 32 ]; do
+    case "$pid" in ''|*[!0-9]*) break ;; esac
+    [ "$pid" -gt 1 ] || break
+    [ "$pid" != "$agent" ] || { found=1; break; }
+    chain="$chain$pid "
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    hops=$((hops + 1))
+  done
+  [ "$found" -eq 1 ] || return 0
+  table=$(ps -A -o pid= -o ppid= -o comm= 2>/dev/null) || return 0
+  while read -r cpid cppid ccomm; do
+    [ "$cppid" = "$agent" ] || continue
+    case "$chain" in *" $cpid "*) continue ;; esac
+    base=${ccomm##*/}
+    case "${base#-}" in
+      bash|sh|zsh|dash|ash|ksh|mksh|fish|tcsh|csh)
+        # Claude wraps each command in a long shell preamble, so name what
+        # the shell is running (its children) when it runs anything.
+        what=$(awk -v p="$cpid" '$2 == p { printf "%s ", $1 }' <<< "$table")
+        if [ -n "$what" ]; then
+          # shellcheck disable=SC2086 # the pid list is whitespace-separated on purpose
+          what=$(ps -o args= -p "$(printf '%s' $what | tr ' ' ',')" 2>/dev/null | paste -sd ';' - | cut -c1-160)
+        fi
+        [ -n "$what" ] || what=$(ps -o args= -p "$cpid" 2>/dev/null | cut -c1-160)
+        list="$list"$'\n'"  - shell $cpid running: $what" ;;
+    esac
+  done <<< "$table"
+  [ -n "$list" ] || return 0
+  die "task $ID was not parked: this Claude session still runs background work, and exiting now would stop on Claude's \"Background work is running\" prompt and leave the session idle:$list
+Stop every background shell and Monitor watch this session started (or let them finish), then run the same park command again."
 }
 
 # The resume that started this session left its watch's fired outcome captured;
