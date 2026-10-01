@@ -1578,7 +1578,14 @@ fresh_default_ref() {
   fi
 }
 
-# Were the branch's commits replayed onto the up-to-date default branch, as a
+# Filter `git status --porcelain` output on stdin down to the entries that count
+# as uncommitted work: untracked .claude/ entries and harness turn-end markers
+# are scratch, not work.
+significant_worktree_changes() {
+  grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' || true
+}
+
+# Were the branch's commits replayed onto the up-to-date default branch $1, as a
 # merge train or rebase landing does before deleting the branch? True only when
 # the worktree is clean, the branch has at least one commit past its merge-base
 # with the freshly fetched default branch, none of those commits is a merge, and
@@ -1588,10 +1595,10 @@ fresh_default_ref() {
 # patch to the same file - refuses; squash-collapsed content never matches here
 # and is left to content_in_default.
 commits_replayed_on_default() {
-  local ref current base dirty commits merges default_patch_ids commit patch_id
-  dirty=$(git -C "$WT" status --porcelain 2>/dev/null) || return 1
+  local ref=$1 current base dirty_raw dirty commits merges default_patch_ids commit patch_id
+  dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null) || return 1
+  dirty=$(printf '%s\n' "$dirty_raw" | significant_worktree_changes | head -1 || true)
   [ -z "$dirty" ] || return 1
-  ref=$(fresh_default_ref) || return 1
   current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
   base=$(git -C "$WT" merge-base "$current" "$ref" 2>/dev/null) || return 1
   merges=$(git -C "$WT" rev-list --merges "$base..$current" -- 2>/dev/null) || return 1
@@ -1599,11 +1606,9 @@ commits_replayed_on_default() {
   commits=$(git -C "$WT" rev-list "$base..$current" -- 2>/dev/null) || return 1
   [ -n "$commits" ] || return 1
   default_patch_ids=$(
-    git -C "$WT" rev-list --no-merges "$base..$ref" -- 2>/dev/null \
-      | while IFS= read -r commit; do
-          patch_id_for_commit "$commit"
-        done \
-      | sed '/^$/d' \
+    git -C "$WT" log -p --no-merges --pretty=medium --no-ext-diff "$base..$ref" -- 2>/dev/null \
+      | git patch-id --stable 2>/dev/null \
+      | awk '{ print $1 }' \
       | sort -u
   ) || return 1
   [ -n "$default_patch_ids" ] || return 1
@@ -1617,16 +1622,15 @@ $commits
 EOF
 }
 
-# Is the branch's content already present in the up-to-date default branch? Fetches
-# first, then 3-way merges the default branch with HEAD: when HEAD introduces nothing
+# Is the branch's content already present in the up-to-date default branch $1?
+# 3-way merges the default branch with HEAD: when HEAD introduces nothing
 # the default branch does not already contain (e.g. its change landed via squash) the
 # merged tree equals the default branch's tree. This isolates branch-only changes, so
 # unrelated commits the default branch gained past the merge-base do not count as
 # "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
 # so the caller refuses rather than guesses.
 content_in_default() {
-  local ref default_tree merged_tree
-  ref=$(fresh_default_ref) || return 1
+  local ref=$1 default_tree merged_tree
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
   merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
@@ -1641,10 +1645,11 @@ content_in_default() {
 # branch (fallback, which also covers the no-PR and gh-error paths). False only
 # for genuinely unlanded work.
 work_is_landed() {
-  local branch=$1
+  local branch=$1 ref
   pr_is_merged "$branch" && return 0
-  commits_replayed_on_default && return 0
-  content_in_default
+  ref=$(fresh_default_ref) || return 1
+  commits_replayed_on_default "$ref" && return 0
+  content_in_default "$ref"
 }
 
 # The completion links this teardown already holds locally. A scout's
@@ -1928,7 +1933,7 @@ validate_worktree_teardown_safety() {
     echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
     return 1
   fi
-  dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
+  dirty=$(printf '%s\n' "$dirty_raw" | significant_worktree_changes | head -1 || true)
 
   if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then

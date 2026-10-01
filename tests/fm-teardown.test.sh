@@ -47,6 +47,7 @@
 #   (q7) train replay plus one extra local commit                    -> REFUSE
 #   (q8) same file as a main commit, different patch                 -> REFUSE
 #   (q9) every commit replayed but worktree dirty                    -> REFUSE
+#   (q10) every commit replayed, untracked .claude/ scratch present  -> ALLOW
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -963,6 +964,27 @@ test_train_same_file_different_patch_refuses() {
   grep -q REFUSED "$case_dir/stderr" || fail "train-same-file-diverged: no REFUSED line in stderr"
   assert_refusal_retained_task_state "$case_dir" train-same-file-diverged "$local_head"
   pass "local commit touching the same file as a main commit with a different patch refuses"
+}
+
+test_train_replayed_with_claude_scratch_allows() {
+  local case_dir rc
+  case_dir=$(make_case train-replayed-claude-scratch)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  train_land_branch_and_delete "$case_dir"
+  mkdir -p "$case_dir/wt/.claude"
+  printf '%s\n' '{}' > "$case_dir/wt/.claude/settings.local.json"
+  [ -n "$(git -C "$case_dir/wt" status --porcelain -- .claude)" ] \
+    || fail "train-replayed-claude-scratch: .claude/ scratch should be visible to git status"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "train-replayed-claude-scratch: teardown should succeed with only .claude/ scratch untracked"$'\n'"$(cat "$case_dir/stderr")"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "train-replayed-claude-scratch: teardown printed a REFUSED line"
+  pass "replayed branch with untracked .claude/ scratch is torn down"
 }
 
 test_train_replayed_dirty_worktree_refuses() {
@@ -4261,6 +4283,7 @@ test_squash_merged_same_file_different_content_refuses
 test_train_replayed_branch_deleted_allows
 test_train_replayed_plus_extra_local_commit_refuses
 test_train_same_file_different_patch_refuses
+test_train_replayed_with_claude_scratch_allows
 test_train_replayed_dirty_worktree_refuses
 test_squash_merged_rebased_local_with_unlanded_commit_refuses
 test_squash_merged_stale_local_refuses_when_forge_unreachable
