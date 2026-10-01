@@ -439,11 +439,8 @@ refuse_claude_background_work() {
       bash|sh|zsh|dash|ash|ksh|mksh|fish|tcsh|csh)
         # Claude wraps each command in a long shell preamble, so name what
         # the shell is running (its children) when it runs anything.
-        what=$(awk -v p="$cpid" '$2 == p { printf "%s ", $1 }' <<< "$table")
-        if [ -n "$what" ]; then
-          # shellcheck disable=SC2086 # the pid list is whitespace-separated on purpose
-          what=$(ps -o args= -p "$(printf '%s' $what | tr ' ' ',')" 2>/dev/null | paste -sd ';' - | cut -c1-160)
-        fi
+        what=$(awk -v p="$cpid" '$2 == p { printf "%s%s", sep, $1; sep = "," }' <<< "$table")
+        [ -z "$what" ] || what=$(ps -o args= -p "$what" 2>/dev/null | paste -sd ';' - | cut -c1-160)
         [ -n "$what" ] || what=$(ps -o args= -p "$cpid" 2>/dev/null | cut -c1-160)
         list="$list"$'\n'"  - shell $cpid running: $what" ;;
     esac

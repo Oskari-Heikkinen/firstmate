@@ -294,7 +294,10 @@ pass "a self-park whose exit fails wakes the supervisor instead of idling silent
 # --- a Claude worker with live background shells is refused before parking ----
 # The fake agent stands in for the Claude process: it exports CLAUDE_PID as
 # Claude does, holds an optional background shell child (a background Bash
-# task or Monitor watch), and runs the park from a foreground tool shell child.
+# task or Monitor watch running a two-process pipeline), and runs the park from
+# a foreground tool shell child. The background shell runs a script file so its
+# own command line never names the pipeline's commands.
+printf 'sleep 60 | sleep 61\n' > "$TMP_ROOT/fake-background.sh"
 AGENT="$TMP_ROOT/fake-agent.sh"
 cat > "$AGENT" <<'SH'
 #!/usr/bin/env bash
@@ -302,13 +305,13 @@ cat > "$AGENT" <<'SH'
 export CLAUDE_PID=$$
 bg=''
 if [ "$1" = 1 ]; then
-  bash -c 'sleep 60; :' &
+  bash "${0%/*}/fake-background.sh" &
   bg=$!
 fi
 dir=$2; shift 2
 bash -c 'cd "$1" && shift && exec "$@"' tool-shell "$dir" "$@"
 rc=$?
-[ -z "$bg" ] || { kill "$bg"; wait "$bg"; } 2>/dev/null
+[ -z "$bg" ] || { pkill -P "$bg"; kill "$bg"; wait "$bg"; } 2>/dev/null
 exit "$rc"
 SH
 chmod +x "$AGENT"
@@ -323,7 +326,8 @@ if self_park_as_agent "$H" t10 1 "$TMP_ROOT/t10.md" > "$TMP_ROOT/t10.out" 2>&1; 
   fail "a Claude self-park with a live background shell was accepted: $(cat "$TMP_ROOT/t10.out")"
 fi
 assert_grep "Background work is running" "$TMP_ROOT/t10.out" "the refusal names Claude's exit prompt"
-assert_grep "sleep 60" "$TMP_ROOT/t10.out" "the refusal lists the live background shell"
+assert_grep "sleep 60" "$TMP_ROOT/t10.out" "the refusal lists the background pipeline's first command"
+assert_grep "sleep 61" "$TMP_ROOT/t10.out" "the refusal lists the background pipeline's second command"
 assert_grep "Stop every background shell and Monitor watch" "$TMP_ROOT/t10.out" "the refusal tells the worker what to do"
 assert_absent "$H/control.log" "a refused park never touched the agent"
 assert_absent "$H/state/procevent/when-park-t10.source" "a refused park armed no watch"
