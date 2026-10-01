@@ -1,0 +1,6 @@
+warning: herdr session-start projection cleanup: alive skipped because the shared presentation lock is unavailable
+script=cleanup-new.sh leftovers=85 candidate-workspaces=40 exit=0 elapsed=24.0s
+dead leftover journals remaining: 0 / 85
+live (meta-bearing) journal preserved: yes
+leftover task locks left behind: 0
+herdr calls: 3 ( 1 api snapshot, 1 session list, 1 workspace list)

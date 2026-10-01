@@ -1,0 +1,4 @@
+fm-herdr-lab: fleet-state tripwire requires exactly one running default session
+{"id":"cli:workspace:create","error":{"code":"server_not_running","message":"no herdr server is running at /home/oskari/.config/herdr/sessions/fm-lab-fm-herdr-session-2603305-2799/herdr.sock; run `herdr session attach fm-lab-fm-herdr-session-2603305-2799` to start or attach it"}}
+not ok - could not create focus anchor
+fm-herdr-lab: missing fleet-state tripwire for 'fm-lab-fm-herdr-session-2603305-2799'; refusing destructive calls
