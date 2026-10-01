@@ -299,6 +299,7 @@ case "${1:-}" in
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
     [ "${1:-}" = kill-window ] && : > "${FM_TMUX_CALL_LOG}.killed"
     [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && [ "${1:-}" = new-window ] && exit 1
+    [ "${1:-}" = new-window ] && [ -n "${FM_TEST_NEW_WINDOW_SLEEP:-}" ] && sleep "$FM_TEST_NEW_WINDOW_SLEEP"
     [ "${1:-}" = new-window ] && rm -f "${FM_TMUX_CALL_LOG}.killed"
     exit 0
     ;;
@@ -374,6 +375,151 @@ test_sweep_respawns_confirmed_dead_secondmate() {
   assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-sm1" \
     "the shared library did not leave the durable per-mate relaunch record"
   pass "sweep: a confirmed-dead secondmate endpoint is killed and respawned"
+}
+
+# Session start relaunches dead secondmates in parallel, and every fresh spawn
+# takes the home's task-set lock. A sibling spawn holding it must make the
+# others wait rather than refuse. The slow fake new-window keeps each spawn
+# inside its lock window long enough that the relaunches genuinely overlap; the
+# zero-wait run proves that overlap happens, so the passing run cannot be
+# vacuous, and that the refusal names a sibling spawn rather than a teardown.
+# The fake tmux lists only fm-sm1, so these windows read authoritatively
+# missing and no shared kill marker couples one relaunch to another.
+three_dead_secondmates_world() {  # <name> -> echoes the world dir
+  local w id
+  w=$(new_world "$1")
+  for id in dead1 dead2 dead3; do
+    add_sm_home "$w" "$id" "firstmate:fm-$id"
+  done
+  printf '%s\n' "$w"
+}
+
+test_sweep_relaunches_every_dead_secondmate_despite_task_set_contention() {
+  local w fb tmuxfb log out id n
+  w=$(three_dead_secondmates_world sweep-three-dead-nowait)
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" \
+    FM_TEST_NEW_WINDOW_SLEEP=1 FM_SPAWN_TASK_SET_WAIT=0)
+  assert_contains "$out" "another spawn was still publishing its task" \
+    "with no wait allowed the parallel relaunches should collide on the task-set lock"
+  assert_not_contains "$out" "forced teardown" \
+    "a sibling spawn holding the task-set lock was mislabeled as a forced teardown"
+
+  w=$(three_dead_secondmates_world sweep-three-dead)
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" FM_TEST_NEW_WINDOW_SLEEP=1)
+  assert_not_contains "$out" "SECONDMATE_LIVENESS" \
+    "every relaunch should succeed silently"
+  n=$(grep -c '^new-window' "$log" || true)
+  [ "$n" -eq 3 ] || fail "expected all three dead secondmates relaunched, saw $n new-window calls: $(cat "$log")"
+  for id in dead1 dead2 dead3; do
+    assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-$id" \
+      "secondmate $id has no durable relaunch record"
+  done
+  pass "sweep: parallel relaunches of three dead secondmates wait on each other and all succeed"
+}
+
+# hold_spawn_task_set_lock <lock> <seconds> <log> <name>: a live stand-in for a
+# sibling fresh spawn. It takes the task-set lock as soon as it frees, tags it
+# `spawn`, logs that it holds it, keeps it for <seconds>, then releases it.
+hold_spawn_task_set_lock() {
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-wake-lib.sh"
+    until fm_lock_try_acquire "$1"; do :; done
+    fm_lock_set_role "$1" spawn || exit 1
+    printf 'holder %s\n' "$4" >> "$3"
+    sleep "$2"
+    fm_lock_release "$1"
+  ) >/dev/null 2>&1 &
+  printf '%s\n' "$!"
+}
+
+run_secondmate_spawn() {  # <fakebin> <home> <call-log> [extra env...]; stderr to stdout
+  local fb=$1 home=$2 log=$3; shift 3
+  PATH="$fb:$BASE_PATH" TMUX='' FM_BACKEND=tmux FM_HOME="$home" FM_SPAWN_NO_GUARD=1 \
+    FM_TEST_PANE_CMD=zsh FM_TMUX_CALL_LOG="$log" \
+    env "$@" "$ROOT/bin/fm-spawn.sh" dead1 --secondmate 2>&1
+}
+
+# FM_SPAWN_TASK_SET_WAIT bounds each sibling spawn's hold, not the whole queue:
+# two successive live holders that each keep the lock for most of the bound
+# outlast it together, and the queued relaunch must still go through once the
+# second releases. One holder that alone outlasts the bound is still refused.
+test_task_set_wait_bound_restarts_for_each_holder() {
+  local w fb tmuxfb log lock a b out rc i=0
+  w=$(new_world taskset-successive-holders)
+  add_sm_home "$w" dead1 firstmate:fm-dead1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  lock=$(bash -c '. "$1" && fm_task_set_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state") \
+    || fail "could not resolve the task-set lock"
+  a=$(hold_spawn_task_set_lock "$lock" 4 "$log" a)
+  while ! grep -qx 'holder a' "$log" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  grep -qx 'holder a' "$log" || fail "the first stand-in spawn never held the task-set lock"
+  b=$(hold_spawn_task_set_lock "$lock" 4 "$log" b)
+  rc=0
+  out=$(run_secondmate_spawn "$tmuxfb:$fb" "$w/home" "$log" FM_SPAWN_TASK_SET_WAIT=6) || rc=$?
+  wait "$a" "$b" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || fail "the queued relaunch refused behind two successive holders (rc=$rc): $out"
+  [ "$(grep -n -e '^holder b$' -e '^new-window' "$log" | head -1 | cut -d: -f2-)" = 'holder b' ] \
+    || fail "the relaunch did not queue behind both holders: $(cat "$log")"
+
+  w=$(new_world taskset-single-holder)
+  add_sm_home "$w" dead1 firstmate:fm-dead1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  lock=$(bash -c '. "$1" && fm_task_set_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state") \
+    || fail "could not resolve the task-set lock"
+  a=$(hold_spawn_task_set_lock "$lock" 30 "$log" a)
+  i=0
+  while ! grep -qx 'holder a' "$log" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  grep -qx 'holder a' "$log" || fail "the stand-in spawn never held the task-set lock"
+  rc=0
+  out=$(run_secondmate_spawn "$tmuxfb:$fb" "$w/home" "$log" FM_SPAWN_TASK_SET_WAIT=2) || rc=$?
+  kill "$a" 2>/dev/null || true
+  wait "$a" 2>/dev/null || true
+  [ "$rc" -ne 0 ] || fail "the relaunch published while one holder kept the task set past the bound"
+  assert_contains "$out" "another spawn was still publishing its task after 2s" \
+    "a single holder outlasting the bound should be refused as a sibling spawn"
+  grep -q '^new-window' "$log" && fail "a refused relaunch still opened a window: $(cat "$log")"
+  pass "task-set wait: the bound restarts for each successive holder and still refuses one that outlasts it"
+}
+
+# Admission paces secondmate relaunches per home (two a minute by default) and
+# makes the rest wait up to secondmate_wait_max_s. That wait must happen before
+# a spawn takes the task-set lock: a spawn waiting on admission while holding it
+# outlasts its siblings' bounded lock wait and they refuse. The scaled-down
+# admission bound (25s) exceeds the lock wait (15s), as the defaults' 60s pacing
+# wait reaches the 60s lock wait; the empty proc root skips the host signals so
+# only the per-home pace holds the later three relaunches back.
+test_sweep_relaunches_five_dead_secondmates_under_admission_pacing() {
+  local w fb tmuxfb log out id n
+  w=$(new_world sweep-five-dead-paced)
+  for id in dead1 dead2 dead3 dead4 dead5; do
+    add_sm_home "$w" "$id" "firstmate:fm-$id"
+  done
+  mkdir -p "$w/proc"
+  printf '%s\n' '{"relaunch_per_minute_per_home": 2, "secondmate_wait_max_s": 25}' > "$w/admission-rules.json"
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" \
+    FM_ADMISSION=on FM_ADMISSION_RULES="$w/admission-rules.json" \
+    FM_ADMISSION_RUN_DIR="$w/admission" FM_PROC_ROOT_OVERRIDE="$w/proc" \
+    FM_MEM_GUARD_DIR="$w/mem-guard" FM_SPAWN_TASK_SET_WAIT=15)
+  assert_not_contains "$out" "SECONDMATE_LIVENESS" \
+    "every paced relaunch should succeed silently"
+  n=$(grep -c '^new-window' "$log" || true)
+  [ "$n" -eq 5 ] || fail "expected all five dead secondmates relaunched, saw $n new-window calls: $(cat "$log")"
+  for id in dead1 dead2 dead3 dead4 dead5; do
+    assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-$id" \
+      "secondmate $id has no durable relaunch record"
+  done
+  n=$(grep -c ' relaunch ' "$w/admission/admitted" || true)
+  [ "$n" -eq 5 ] || fail "expected five paced admissions in the ledger, saw $n"
+  pass "sweep: five dead secondmates all relaunch while admission paces them"
 }
 
 test_sweep_skips_mate_whose_liveness_lock_is_held() {
@@ -719,6 +865,9 @@ test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
 test_sweep_skips_mate_whose_liveness_lock_is_held
 test_sweep_refuses_relaunch_on_ledger_errors
+test_sweep_relaunches_every_dead_secondmate_despite_task_set_contention
+test_sweep_relaunches_five_dead_secondmates_under_admission_pacing
+test_task_set_wait_bound_restarts_for_each_holder
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route
 

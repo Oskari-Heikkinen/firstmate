@@ -157,8 +157,10 @@
 #   Every single-task invocation holds one task-id-scoped lock across backend
 #   creation through metadata publication, so concurrent same-id spawns serialize
 #   even when they select different backends. A fresh spawn first takes the
-#   per-home task-set lock and refuses rather than waits when forced teardown owns
-#   it; relaunch is exempt because the existing task's control lock covers it.
+#   per-home task-set lock, refusing at once when a forced teardown owns it and
+#   waiting up to FM_SPAWN_TASK_SET_WAIT seconds (default 60) per sibling fresh
+#   spawn that holds it (spawn_acquire_task_set_lock owns the exact policy);
+#   relaunch is exempt because the existing task's control lock covers it.
 #   A fresh Treehouse-backed spawn also takes the project-identity lock in the local
 #   root Firstmate home's state directory before slot allocation and holds it through
 #   task metadata publication. Teardown holds that same lock while proving and
@@ -1543,6 +1545,55 @@ fi
 if [ "$RELAUNCH" -ne 1 ]; then
   fm_lease_forbid_branch "new-task spawn (fm-spawn)" --away-relocated
 fi
+# spawn_acquire_task_set_lock <lock>: take the per-home task-set lock for a
+# fresh spawn and tag it `spawn` (bin/fm-wake-lib.sh's fm_task_set_lock_path).
+# The holder's tag decides what contention means:
+#   teardown - refuse at once: the home may be moments from removal, so there
+#              is nothing worth waiting for.
+#   spawn    - a sibling fresh spawn holds the set only until its record is
+#              published, so wait up to FM_SPAWN_TASK_SET_WAIT seconds (default
+#              60) per holder: the bound restarts whenever the lock's owner
+#              changes, so only one holder keeping the set that long refuses.
+#              Parallel relaunches, such as session start's dead-secondmate
+#              sweep, then serialize instead of all but one failing.
+#   absent   - an untagged holder gets a two-second grace to tag itself (it tags
+#              right after acquiring), then is refused as unidentified.
+# On refusal SPAWN_TASK_SET_HOLDER names the holder for the caller's message.
+spawn_acquire_task_set_lock() {  # <lock>
+  local lock=$1 wait=${FM_SPAWN_TASK_SET_WAIT:-60} deadline role untagged_since='' holder=''
+  case "$wait" in ''|*[!0-9]*) wait=60 ;; esac
+  deadline=$((SECONDS + wait))
+  SPAWN_TASK_SET_HOLDER=
+  while ! fm_lock_try_acquire "$lock"; do
+    role=$(fm_lock_role "$lock" 2>/dev/null || true)
+    case "$role" in
+      teardown)
+        SPAWN_TASK_SET_HOLDER="a forced teardown is enumerating or removing its tasks"
+        return 1
+        ;;
+      spawn)
+        untagged_since=
+        if [ -n "$FM_LOCK_HELD_PID" ] && [ "$FM_LOCK_HELD_PID" != "$holder" ]; then
+          holder=$FM_LOCK_HELD_PID
+          deadline=$((SECONDS + wait))
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+          SPAWN_TASK_SET_HOLDER="another spawn was still publishing its task after ${wait}s"
+          return 1
+        fi
+        ;;
+      *)
+        [ -n "$untagged_since" ] || untagged_since=$SECONDS
+        if [ $((SECONDS - untagged_since)) -ge 2 ]; then
+          SPAWN_TASK_SET_HOLDER="its holder did not identify itself"
+          return 1
+        fi
+        ;;
+    esac
+    sleep 0.1
+  done
+  fm_lock_set_role "$lock" spawn || true
+}
 spawn_refuse_if_away_spend_cap() {
   local cap live meta
   [ "$RELAUNCH" -ne 1 ] || return 0
@@ -1592,7 +1643,10 @@ spawn_require_relocated_queued_work() {
 # text): every local launch waits for free memory, pressure, load, and the
 # machine-wide agent cap before any lock, endpoint, or worktree exists, and a
 # relaunch or secondmate respawn is also paced per home so a restart staggers.
-# A remote secondmate runs elsewhere, so it is gated only once it proves local.
+# A secondmate the registry routes remote runs elsewhere, so it is gated only
+# once its spawn proves it local; one the registry already shows local is gated
+# here, before the task-set lock, so its admission wait never holds that lock
+# against the sibling relaunches of session start's dead-secondmate sweep.
 spawn_admission_gate() {
   local kind=$KIND
   local -a args=(acquire --home "$FM_HOME" --label "task $ID")
@@ -1603,8 +1657,13 @@ spawn_admission_gate() {
   [ "$kind" != secondmate ] || args+=(--secondmate)
   [ "$ADMISSION_OVERRIDE" -ne 1 ] || args+=(--override)
   "$SCRIPT_DIR/fm-admission.sh" "${args[@]}" || exit 1
+  SPAWN_ADMITTED=1
 }
-[ "$KIND" = secondmate ] || spawn_admission_gate
+SPAWN_ADMITTED=0
+if [ "$KIND" != secondmate ] ||
+  [ "$(secondmate_registry_field "$DATA/secondmates.md" "$ID" remote 2>/dev/null)" != 1 ]; then
+  spawn_admission_gate
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
@@ -1645,14 +1704,13 @@ if [ "$RELAUNCH" -eq 0 ]; then
   # already covered by that task's control lock, which the teardown preflight
   # tests.
   #
-  # Refusing rather than waiting is the fail-closed direction: the home may be
-  # moments from removal, so there is nothing worth waiting for.
+  # spawn_acquire_task_set_lock owns which holders are worth waiting for.
   SPAWN_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
     echo "error: could not resolve the task-set lock for $STATE" >&2
     exit 1
   }
-  if ! fm_lock_try_acquire "$SPAWN_TASK_SET_LOCK"; then
-    echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
+  if ! spawn_acquire_task_set_lock "$SPAWN_TASK_SET_LOCK"; then
+    echo "error: this home's task set is locked by another operation ($SPAWN_TASK_SET_HOLDER); refusing to create task $ID rather than racing it" >&2
     exit 1
   fi
   SPAWN_TASK_SET_LOCK_HELD=1
@@ -1666,7 +1724,7 @@ if [ "$KIND" = secondmate ]; then
     remote_spawn_rc=$?
   fi
   [ "$remote_spawn_rc" -eq 3 ] || exit "$remote_spawn_rc"
-  spawn_admission_gate
+  [ "$SPAWN_ADMITTED" -eq 1 ] || spawn_admission_gate
 fi
 # Backend selection (data/fm-backend-design-d7): explicit --backend, else
 # FM_BACKEND env, else config/backend, else runtime auto-detection, else

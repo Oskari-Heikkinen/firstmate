@@ -2863,6 +2863,8 @@ collect_descendant_task_locks() {
     echo "REFUSED: secondmate home $home is publishing a task right now (task-set lock is held); forced teardown changed nothing" >&2
     return 1
   fi
+  # Tag the holder so a contending spawn refuses at once instead of waiting.
+  fm_lock_set_role "$task_set_lock" teardown || true
   DESCENDANT_LOCK_PATHS+=("$task_set_lock")
   child_ids=()
   for child_meta in "$sub_state"/*.meta; do

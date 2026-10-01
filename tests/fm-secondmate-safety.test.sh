@@ -2461,8 +2461,8 @@ task_set_lock_path() {  # <state-dir>
 # The holder must stay ALIVE: fm_lock_try_acquire reclaims a lock whose owning
 # pid is gone, so a lock taken in a subshell that then exits would be stolen and
 # the contention under test would never happen.
-hold_task_set_lock() {  # <state-dir> -> echoes "<holder-pid> <lock-path>"
-  local state=$1 lock holder i=0
+hold_task_set_lock() {  # <state-dir> [role] -> echoes "<holder-pid> <lock-path>"
+  local state=$1 role=${2:-} lock holder i=0
   lock=$(task_set_lock_path "$state") || return 1
   [ -n "$lock" ] || return 1
   # stdout/stderr are redirected so the long-lived holder does not inherit this
@@ -2473,11 +2473,12 @@ hold_task_set_lock() {  # <state-dir> -> echoes "<holder-pid> <lock-path>"
     # shellcheck source=/dev/null
     . "$ROOT/bin/fm-wake-lib.sh"
     fm_lock_try_acquire "$lock" || exit 1
+    [ -z "$role" ] || fm_lock_set_role "$lock" "$role" || exit 1
     sleep 30
   ) >/dev/null 2>&1 &
   # shellcheck disable=SC2031 # The background PID is captured immediately in this shell.
   holder=$!
-  while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
+  while { [ ! -e "$lock" ] || { [ -n "$role" ] && [ ! -e "$lock/role" ]; }; } && [ "$i" -lt 100 ]; do
     sleep 0.1
     i=$((i + 1))
   done
@@ -2605,6 +2606,8 @@ SH
     || fail "could not resolve the established descendant task-set lock"
   [ -d "$subhome/state" ] || fail "forced teardown did not establish the absent state directory"
   [ -e "$lock" ] || fail "forced teardown did not own the descendant task-set lock during preflight"
+  [ "$(cat "$lock/role" 2>/dev/null)" = teardown ] \
+    || fail "forced teardown did not tag its task-set lock so a contending spawn refuses at once"
   kill -0 "$pid" 2>/dev/null || fail "forced teardown exited before task-set ownership was observed"
   : > "$release"
   if wait "$pid"; then
@@ -2656,7 +2659,7 @@ $rec
 EOF
   err="$TMP_ROOT/taskset-spawn.err"
   # Stand in for a forced teardown that already enumerated this home's task set.
-  held=$(hold_task_set_lock "$subhome/state") \
+  held=$(hold_task_set_lock "$subhome/state" teardown) \
     || fail "could not stage a held task-set lock"
   holder=${held%% *}
   lock=${held#* }
@@ -2670,6 +2673,8 @@ EOF
   [ -e "$lock" ] || fail "a refused spawn removed the teardown's task-set lock"
   grep -F "task set is locked" "$err" >/dev/null \
     || fail "the spawn refusal did not name the task-set contention: $(cat "$err")"
+  grep -F "a forced teardown is enumerating" "$err" >/dev/null \
+    || fail "the spawn refusal did not name the teardown holding the set: $(cat "$err")"
   [ ! -e "$subhome/state/.spawn-newtask.lock" ] \
     || fail "a refused spawn left its own task lock behind"
   kill "$holder" 2>/dev/null || true
@@ -2698,6 +2703,10 @@ test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned() {
   [ -e "$lock" ] || fail "a refused remote secondmate spawn removed the owner's task-set lock"
   grep -F "task set is locked" "$err" >/dev/null \
     || fail "the remote spawn refusal did not name task-set contention: $(cat "$err")"
+  grep -F "its holder did not identify itself" "$err" >/dev/null \
+    || fail "an untagged holder was not reported neutrally: $(cat "$err")"
+  grep -F "forced teardown" "$err" >/dev/null \
+    && fail "an untagged holder was mislabeled as a forced teardown: $(cat "$err")"
   [ ! -e "$home/state/.spawn-remote-new.lock" ] \
     || fail "a refused remote secondmate spawn left its own task lock behind"
   kill "$holder" 2>/dev/null || true
