@@ -4,8 +4,9 @@
 # The check refuses to tear down a worktree whose work has not LANDED, because
 # treehouse return hard-resets the worktree. "Landed" means reachable from a remote
 # OR - for a normal ship task whose commits are not so reachable - its PR is merged
-# and GitHub reports a PR head that contains the current local work, or its content
-# is already in the up-to-date default branch.
+# and GitHub reports a PR head that contains the current local work, or every branch
+# commit was replayed onto the up-to-date default branch, or its content is already
+# in that default branch.
 #
 # Covers three fixes:
 #   - local-only fork-remote: a fork IS a remote, so fork-pushed upstream-
@@ -42,6 +43,11 @@
 #   (q3) no-mistakes + squash-merged, same file, different content   -> REFUSE
 #   (q4) no-mistakes + squash-merged rebased local plus extra commit -> REFUSE
 #   (q5) gh down + squash-merged stale local, content not in default -> REFUSE
+#   (q6) train replayed every commit onto main, branch deleted       -> ALLOW
+#   (q7) train replay plus one extra local commit                    -> REFUSE
+#   (q8) same file as a main commit, different patch                 -> REFUSE
+#   (q9) every commit replayed but worktree dirty                    -> REFUSE
+#   (q10) every commit replayed, untracked .claude/ scratch present  -> ALLOW
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -864,6 +870,141 @@ test_direct_push_unlanded_refuses() {
   expect_code 1 "$rc" "direct-push-unlanded: teardown should refuse"
   grep -q REFUSED "$case_dir/stderr" || fail "direct-push-unlanded: no REFUSED line in stderr"
   pass "direct-push worktree with work not on origin is refused"
+}
+
+# Simulate a merge train landing the task branch: push it to origin, replay
+# (cherry-pick) every branch commit onto origin's default branch after one
+# unrelated main commit so the landed SHAs differ, then change the replayed
+# file again on main so a 3-way content merge with the local head conflicts
+# (the content-in-default fallback alone cannot prove these landed), and finally
+# delete the branch from origin and prune it from the project. Args: case_dir
+train_land_branch_and_delete() {
+  local case_dir=$1 tmp base
+  tmp="$case_dir/_train"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git clone -q "$case_dir/origin.git" "$tmp"
+  printf '%s\n' unrelated > "$tmp/unrelated.txt"
+  git -C "$tmp" add -- unrelated.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "unrelated main work"
+  base=$(git -C "$tmp" merge-base HEAD origin/fm/task-x1)
+  git -C "$tmp" -c user.email=train@t -c user.name=train \
+    cherry-pick "$base..origin/fm/task-x1" >/dev/null
+  printf '%s\n' "later main edit" > "$tmp/feature.txt"
+  git -C "$tmp" add -- feature.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "later main edit"
+  git -C "$tmp" push -q origin HEAD:main
+  git -C "$tmp" push -q origin --delete fm/task-x1
+  rm -rf "$tmp"
+  git -C "$case_dir/project" fetch -q --prune origin
+}
+
+test_train_replayed_branch_deleted_allows() {
+  local case_dir rc
+  case_dir=$(make_case train-replayed)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  wt_commit_file "$case_dir" second.txt two "add second"
+  train_land_branch_and_delete "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "train-replayed: teardown should succeed when every commit was replayed onto main"$'\n'"$(cat "$case_dir/stderr")"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "train-replayed: teardown printed a REFUSED line"
+  pass "branch whose commits a merge train replayed onto main, then deleted, is torn down"
+}
+
+test_train_replayed_plus_extra_local_commit_refuses() {
+  local case_dir rc local_head
+  case_dir=$(make_case train-replayed-extra)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  train_land_branch_and_delete "$case_dir"
+  wt_commit_file "$case_dir" extra.txt extra "unlanded follow-up"
+  local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "train-replayed-extra: teardown should refuse an extra local commit not on main"
+  grep -q REFUSED "$case_dir/stderr" || fail "train-replayed-extra: no REFUSED line in stderr"
+  assert_refusal_retained_task_state "$case_dir" train-replayed-extra "$local_head"
+  pass "replayed branch plus one unlanded local commit still refuses"
+}
+
+test_train_same_file_different_patch_refuses() {
+  local case_dir rc local_head tmp
+  case_dir=$(make_case train-same-file-diverged)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt local-version "add feature"
+  local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  # Main carries a commit touching the same file with the same message but a
+  # different patch, then a later conflicting edit; the branch is deleted.
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  tmp="$case_dir/_diverge"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  printf '%s\n' main-version > "$tmp/feature.txt"
+  git -C "$tmp" add -- feature.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "add feature"
+  git -C "$tmp" push -q origin HEAD:main
+  git -C "$tmp" push -q origin --delete fm/task-x1
+  rm -rf "$tmp"
+  git -C "$case_dir/project" fetch -q --prune origin
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "train-same-file-diverged: teardown should refuse a different patch to the same file"
+  grep -q REFUSED "$case_dir/stderr" || fail "train-same-file-diverged: no REFUSED line in stderr"
+  assert_refusal_retained_task_state "$case_dir" train-same-file-diverged "$local_head"
+  pass "local commit touching the same file as a main commit with a different patch refuses"
+}
+
+test_train_replayed_with_claude_scratch_allows() {
+  local case_dir rc
+  case_dir=$(make_case train-replayed-claude-scratch)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  train_land_branch_and_delete "$case_dir"
+  mkdir -p "$case_dir/wt/.claude"
+  printf '%s\n' '{}' > "$case_dir/wt/.claude/settings.local.json"
+  [ -n "$(git -C "$case_dir/wt" status --porcelain -- .claude)" ] \
+    || fail "train-replayed-claude-scratch: .claude/ scratch should be visible to git status"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "train-replayed-claude-scratch: teardown should succeed with only .claude/ scratch untracked"$'\n'"$(cat "$case_dir/stderr")"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "train-replayed-claude-scratch: teardown printed a REFUSED line"
+  pass "replayed branch with untracked .claude/ scratch is torn down"
+}
+
+test_train_replayed_dirty_worktree_refuses() {
+  local case_dir rc local_head
+  case_dir=$(make_case train-replayed-dirty)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  train_land_branch_and_delete "$case_dir"
+  local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf '%s\n' uncommitted > "$case_dir/wt/feature.txt"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "train-replayed-dirty: teardown should refuse a dirty worktree"
+  grep -q REFUSED "$case_dir/stderr" || fail "train-replayed-dirty: no REFUSED line in stderr"
+  assert_refusal_retained_task_state "$case_dir" train-replayed-dirty "$local_head"
+  pass "dirty worktree refuses even when every commit was replayed onto main"
 }
 
 test_squash_merged_branch_deleted_allows() {
@@ -4139,6 +4280,11 @@ test_squash_merged_pr_allows_replayed_unpushed_patch
 test_merged_pr_with_later_local_commit_refuses
 test_squash_merged_rebased_branch_allows
 test_squash_merged_same_file_different_content_refuses
+test_train_replayed_branch_deleted_allows
+test_train_replayed_plus_extra_local_commit_refuses
+test_train_same_file_different_patch_refuses
+test_train_replayed_with_claude_scratch_allows
+test_train_replayed_dirty_worktree_refuses
 test_squash_merged_rebased_local_with_unlanded_commit_refuses
 test_squash_merged_stale_local_refuses_when_forge_unreachable
 test_pr_check_does_not_refresh_stale_pr_head
