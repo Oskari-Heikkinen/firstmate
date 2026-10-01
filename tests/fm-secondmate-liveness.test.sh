@@ -421,6 +421,73 @@ test_sweep_relaunches_every_dead_secondmate_despite_task_set_contention() {
   pass "sweep: parallel relaunches of three dead secondmates wait on each other and all succeed"
 }
 
+# hold_spawn_task_set_lock <lock> <seconds> <log> <name>: a live stand-in for a
+# sibling fresh spawn. It takes the task-set lock as soon as it frees, tags it
+# `spawn`, logs that it holds it, keeps it for <seconds>, then releases it.
+hold_spawn_task_set_lock() {
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-wake-lib.sh"
+    until fm_lock_try_acquire "$1"; do :; done
+    fm_lock_set_role "$1" spawn || exit 1
+    printf 'holder %s\n' "$4" >> "$3"
+    sleep "$2"
+    fm_lock_release "$1"
+  ) >/dev/null 2>&1 &
+  printf '%s\n' "$!"
+}
+
+run_secondmate_spawn() {  # <fakebin> <home> <call-log> [extra env...]; stderr to stdout
+  local fb=$1 home=$2 log=$3; shift 3
+  PATH="$fb:$BASE_PATH" TMUX='' FM_BACKEND=tmux FM_HOME="$home" FM_SPAWN_NO_GUARD=1 \
+    FM_TEST_PANE_CMD=zsh FM_TMUX_CALL_LOG="$log" \
+    env "$@" "$ROOT/bin/fm-spawn.sh" dead1 --secondmate 2>&1
+}
+
+# FM_SPAWN_TASK_SET_WAIT bounds each sibling spawn's hold, not the whole queue:
+# two successive live holders that each keep the lock for most of the bound
+# outlast it together, and the queued relaunch must still go through once the
+# second releases. One holder that alone outlasts the bound is still refused.
+test_task_set_wait_bound_restarts_for_each_holder() {
+  local w fb tmuxfb log lock a b out rc i=0
+  w=$(new_world taskset-successive-holders)
+  add_sm_home "$w" dead1 firstmate:fm-dead1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  lock=$( . "$ROOT/bin/fm-wake-lib.sh"; fm_task_set_lock_path "$w/home/state" ) \
+    || fail "could not resolve the task-set lock"
+  a=$(hold_spawn_task_set_lock "$lock" 4 "$log" a)
+  while ! grep -qx 'holder a' "$log" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  grep -qx 'holder a' "$log" || fail "the first stand-in spawn never held the task-set lock"
+  b=$(hold_spawn_task_set_lock "$lock" 4 "$log" b)
+  rc=0
+  out=$(run_secondmate_spawn "$tmuxfb:$fb" "$w/home" "$log" FM_SPAWN_TASK_SET_WAIT=6) || rc=$?
+  wait "$a" "$b" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || fail "the queued relaunch refused behind two successive holders (rc=$rc): $out"
+  [ "$(grep -n -e '^holder b$' -e '^new-window' "$log" | head -1 | cut -d: -f2-)" = 'holder b' ] \
+    || fail "the relaunch did not queue behind both holders: $(cat "$log")"
+
+  w=$(new_world taskset-single-holder)
+  add_sm_home "$w" dead1 firstmate:fm-dead1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  lock=$( . "$ROOT/bin/fm-wake-lib.sh"; fm_task_set_lock_path "$w/home/state" ) \
+    || fail "could not resolve the task-set lock"
+  a=$(hold_spawn_task_set_lock "$lock" 30 "$log" a)
+  i=0
+  while ! grep -qx 'holder a' "$log" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  grep -qx 'holder a' "$log" || fail "the stand-in spawn never held the task-set lock"
+  rc=0
+  out=$(run_secondmate_spawn "$tmuxfb:$fb" "$w/home" "$log" FM_SPAWN_TASK_SET_WAIT=2) || rc=$?
+  kill "$a" 2>/dev/null || true
+  wait "$a" 2>/dev/null || true
+  [ "$rc" -ne 0 ] || fail "the relaunch published while one holder kept the task set past the bound"
+  assert_contains "$out" "another spawn was still publishing its task after 2s" \
+    "a single holder outlasting the bound should be refused as a sibling spawn"
+  grep -q '^new-window' "$log" && fail "a refused relaunch still opened a window: $(cat "$log")"
+  pass "task-set wait: the bound restarts for each successive holder and still refuses one that outlasts it"
+}
+
 # Admission paces secondmate relaunches per home (two a minute by default) and
 # makes the rest wait up to secondmate_wait_max_s. That wait must happen before
 # a spawn takes the task-set lock: a spawn waiting on admission while holding it
@@ -800,6 +867,7 @@ test_sweep_skips_mate_whose_liveness_lock_is_held
 test_sweep_refuses_relaunch_on_ledger_errors
 test_sweep_relaunches_every_dead_secondmate_despite_task_set_contention
 test_sweep_relaunches_five_dead_secondmates_under_admission_pacing
+test_task_set_wait_bound_restarts_for_each_holder
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route
 

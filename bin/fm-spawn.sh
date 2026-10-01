@@ -1552,13 +1552,15 @@ fi
 #              is nothing worth waiting for.
 #   spawn    - a sibling fresh spawn holds the set only until its record is
 #              published, so wait up to FM_SPAWN_TASK_SET_WAIT seconds (default
-#              60). Parallel relaunches, such as session start's dead-secondmate
+#              60) per holder: the bound restarts whenever the lock's owner
+#              changes, so only one holder keeping the set that long refuses.
+#              Parallel relaunches, such as session start's dead-secondmate
 #              sweep, then serialize instead of all but one failing.
 #   absent   - an untagged holder gets a two-second grace to tag itself (it tags
 #              right after acquiring), then is refused as unidentified.
 # On refusal SPAWN_TASK_SET_HOLDER names the holder for the caller's message.
 spawn_acquire_task_set_lock() {  # <lock>
-  local lock=$1 wait=${FM_SPAWN_TASK_SET_WAIT:-60} deadline role untagged_since=
+  local lock=$1 wait=${FM_SPAWN_TASK_SET_WAIT:-60} deadline role untagged_since='' holder=''
   case "$wait" in ''|*[!0-9]*) wait=60 ;; esac
   deadline=$((SECONDS + wait))
   SPAWN_TASK_SET_HOLDER=
@@ -1571,6 +1573,10 @@ spawn_acquire_task_set_lock() {  # <lock>
         ;;
       spawn)
         untagged_since=
+        if [ -n "$FM_LOCK_HELD_PID" ] && [ "$FM_LOCK_HELD_PID" != "$holder" ]; then
+          holder=$FM_LOCK_HELD_PID
+          deadline=$((SECONDS + wait))
+        fi
         if [ "$SECONDS" -ge "$deadline" ]; then
           SPAWN_TASK_SET_HOLDER="another spawn was still publishing its task after ${wait}s"
           return 1
