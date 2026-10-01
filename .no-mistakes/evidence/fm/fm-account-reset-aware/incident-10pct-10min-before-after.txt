@@ -1,0 +1,75 @@
+# Incident replay (2026-09-30): tetmet's 5-hour window just under the floor, resetting in 10 minutes; weekly 49% left (51% used), resets in 3 days.
+# work: 5-hour 90% left (4h to reset), weekly 80% left (5d to reset). Five second mates sm1..sm5 run on tetmet beside this main session.
+# Run A: default 10% floor, 5-hour window at 9% left. Run B: 15% floor, 5-hour window at 10% left.
+
+################ floor 10%, tetmet windows: five_hour 9 600;seven_day 49 259200 ################
+======== BEFORE (base 2060914f) ========
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude   9%  runway 1h00m  resets in 10m  LOW
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  80%  runway 1h00m  resets in 5d0h
+New spawns: work (tetmet is below the floor)
+Moving automatically:
+  sm1  tetmet -> work
+  sm2  tetmet -> work
+  sm3  tetmet -> work
+  sm4  tetmet -> work
+  sm5  tetmet -> work
+Needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/tmp/fm-lab.Tafm1i/logins/work (tetmet is below the 10% floor)
+$ bin/fm-account.sh rebalance --dry-run
+would move: sm1 tetmet -> work
+would move: sm2 tetmet -> work
+would move: sm3 tetmet -> work
+would move: sm4 tetmet -> work
+would move: sm5 tetmet -> work
+needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/tmp/fm-lab.Tafm1i/logins/work (tetmet is below the 10% floor)
+======== AFTER (5159fd1c) ========
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude   9%  runway 1h00m  resets in 9m  low, resets first
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  80%  runway 1h00m  resets in 4d23h
+New spawns: tetmet
+$ bin/fm-account.sh status --json | jq tetmet outlook/low, moves, advice
+{"tetmet":{"percent_left":9,"outlook":"resets","low":false},"new_spawns":{"preferred":"tetmet","account":"tetmet"},"moves":[],"advice":[]}
+$ bin/fm-account.sh rebalance --dry-run
+balanced: no agent needs to move
+$ bin/fm-account.sh rebalance --check
+[exit 0]
+
+################ floor 15%, tetmet windows: five_hour 10 600;seven_day 49 259200 ################
+======== BEFORE (base 2060914f) ========
+$ bin/fm-account.sh status
+Accounts  (floor 15%)
+tetmet   claude  10%  runway 1h00m  resets in 10m  LOW
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  80%  runway 1h00m  resets in 5d0h
+New spawns: work (tetmet is below the floor)
+Moving automatically:
+  sm1  tetmet -> work
+  sm2  tetmet -> work
+  sm3  tetmet -> work
+  sm4  tetmet -> work
+  sm5  tetmet -> work
+Needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/tmp/fm-lab.Tafm1i/logins/work (tetmet is below the 15% floor)
+$ bin/fm-account.sh rebalance --dry-run
+would move: sm1 tetmet -> work
+would move: sm2 tetmet -> work
+would move: sm3 tetmet -> work
+would move: sm4 tetmet -> work
+would move: sm5 tetmet -> work
+needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/tmp/fm-lab.Tafm1i/logins/work (tetmet is below the 15% floor)
+======== AFTER (5159fd1c) ========
+$ bin/fm-account.sh status
+Accounts  (floor 15%)
+tetmet   claude  10%  runway 1h00m  resets in 10m  low, resets first
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  80%  runway 1h00m  resets in 5d0h
+New spawns: tetmet
+$ bin/fm-account.sh status --json | jq tetmet outlook/low, moves, advice
+{"tetmet":{"percent_left":10,"outlook":"resets","low":false},"new_spawns":{"preferred":"tetmet","account":"tetmet"},"moves":[],"advice":[]}
+$ bin/fm-account.sh rebalance --dry-run
+balanced: no agent needs to move
+$ bin/fm-account.sh rebalance --check
+[exit 0]

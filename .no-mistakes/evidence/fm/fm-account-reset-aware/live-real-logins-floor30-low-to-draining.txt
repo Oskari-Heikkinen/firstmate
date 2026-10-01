@@ -1,0 +1,33 @@
+== floor 10 (default): fresh ship spawn resolution on the real logins
+$ . bin/fm-account-lib.sh; fm_account_resolve_spawn $LAB/config $LAB/state ship 0 "" ""
+FM_ACCOUNT_NAME=tetmet FM_ACCOUNT_DIR=/home/oskari/.claude-tetmet
+FM_ACCOUNT_NOTICE=
+
+== floor raised to 30: tetmet's weekly window (27% left, projected to run out ~23h before its 4d8h reset) is now LOW; work is draining but above the floor
+$ bin/fm-account.sh status
+Accounts  (floor 30%)
+tetmet   claude  27%  runway 23h34m resets in 4d8h  LOW
+    on it: main, sm1 +1 worker
+work     claude  64%  runway 2d15h  resets in 5d12h  RUNNING OUT
+gmail    claude    ?  runway -      resets -  [expired: renews on next use]
+New spawns: work (tetmet is below the floor)
+Moving automatically:
+  a1  tetmet -> work
+  sm1  tetmet -> work
+Needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/home/oskari/.claude-work (tetmet is below the 30% floor)
+
+$ bin/fm-account.sh status --json | jq -c ...
+{"accounts":[{"name":"tetmet","percent_left":27,"outlook":"low","low":true},{"name":"work","percent_left":64,"outlook":"draining","low":false},{"name":"gmail","percent_left":null,"outlook":null,"low":false}],"new_spawns":{"preferred":"tetmet","account":"work"},"moves":[{"id":"a1","kind":"ship","from":"tetmet","to":"work"},{"id":"sm1","kind":"secondmate","from":"tetmet","to":"work"}],"advice":["restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/home/oskari/.claude-work (tetmet is below the 30% floor)"]}
+
+$ bin/fm-account.sh rebalance --dry-run
+would move: a1 tetmet -> work
+would move: sm1 tetmet -> work
+needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/home/oskari/.claude-work (tetmet is below the 30% floor)
+
+$ bin/fm-account.sh rebalance --check   (watcher form)
+accounts: sm1 tetmet->work - run bin/fm-account.sh rebalance (automatic, no captain approval); needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/home/oskari/.claude-work (tetmet is below the 30% floor)
+[exit 0]
+
+$ fm_account_resolve_spawn ... ship (fresh spawn)
+FM_ACCOUNT_NAME=work FM_ACCOUNT_DIR=/home/oskari/.claude-work
+FM_ACCOUNT_NOTICE=account: tetmet has 27% left, below the 30% floor; this spawn uses work

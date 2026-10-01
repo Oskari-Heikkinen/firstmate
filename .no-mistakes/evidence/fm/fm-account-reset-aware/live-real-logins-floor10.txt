@@ -1,0 +1,22 @@
+$ date -u   -> Thu Oct  1 14:44:31 UTC 2026
+$ FM_HOME=$LAB CLAUDE_CONFIG_DIR=~/.claude-tetmet bin/fm-account.sh status --refresh   # default floor 10%, real quota-axi reads of the real logins
+Accounts  (floor 10%)
+tetmet   claude  27%  runway 23h34m resets in 4d8h  RUNNING OUT
+    on it: main, sm1 +1 worker
+work     claude  64%  runway 2d15h  resets in 5d12h  RUNNING OUT
+gmail    claude    ?  runway -      resets -  [expired: renews on next use]
+New spawns: tetmet
+
+$ cat $LAB/state/.account-usage-*   (cache line now carries per-window <len>:<left>:<reset>)
+.account-usage-gmail: 1790865873|expired|||||
+.account-usage-tetmet: 1790865871|fresh|27|1791241200|84873|max|18000:85:1790866800,604800:27:1791241200
+.account-usage-work: 1790865872|fresh|64|1791342000|228753|max|18000:66:1790870400,604800:64:1791342000
+
+$ bin/fm-account.sh status --json | jq -c "{accounts:[...{name,status,percent_left,outlook,low}],new_spawns,moves,advice}"
+{"accounts":[{"name":"tetmet","status":"fresh","percent_left":27,"outlook":"draining","low":false},{"name":"work","status":"fresh","percent_left":64,"outlook":"draining","low":false},{"name":"gmail","status":"expired","percent_left":null,"outlook":null,"low":false}],"new_spawns":{"preferred":"tetmet","account":"tetmet"},"moves":[],"advice":[]}
+
+$ bin/fm-account.sh rebalance --dry-run
+balanced: no agent needs to move
+
+$ bin/fm-account.sh rebalance --check   (watcher form)
+[exit 0]

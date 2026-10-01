@@ -1,0 +1,38 @@
+################ adversarial: no account has room (both low) ################
+# tetmet 5-hour 4% left 1h to reset; work 5-hour 5% left 30m to reset, both below the 10% floor and projected to run out first.
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude   4%  runway 1h00m  resets in 59m  LOW
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude   5%  runway 1h00m  resets in 30m  LOW
+New spawns: tetmet
+Needs the captain: no Claude account has room above the 10% floor; sign in to another login or wait for a reset
+$ bin/fm-account.sh rebalance --dry-run
+balanced: no agent needs to move
+needs the captain: no Claude account has room above the 10% floor; sign in to another login or wait for a reset
+
+################ adversarial: the only other account's read fails (rate_limited) ################
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude   4%  runway 1h00m  resets in 59m  LOW
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude    ?  runway -      resets -  [rate_limited]
+New spawns: tetmet
+$ bin/fm-account.sh rebalance --dry-run
+balanced: no agent needs to move
+
+################ adversarial: both draining above the floor - spawns are not churned between two running-out accounts ################
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude  40%  runway 1h00m  resets in 3d11h  RUNNING OUT
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  50%  runway 1h00m  resets in 3h00m  RUNNING OUT
+New spawns: tetmet
+
+################ adversarial: window just reset (under 5% elapsed), 97% left - projection unknown, not treated as running out ################
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude  60%  runway 1h00m  resets in 2d23h
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  80%  runway 1h00m  resets in 4d23h
+New spawns: tetmet

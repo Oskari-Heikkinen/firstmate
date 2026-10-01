@@ -1,0 +1,84 @@
+################ 5-hour window burning fast (default floor 10%) ################
+# tetmet: 5-hour 35% left with 2h to reset (65% used in 3h -> on pace to run out ~1h15m before reset); work has headroom.
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude  35%  runway 1h00m  resets in 2h00m  RUNNING OUT
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  80%  runway 1h00m  resets in 5d0h
+New spawns: work (tetmet is running out before its reset)
+$ bin/fm-account.sh status --json
+{"accounts":[{"name":"tetmet","percent_left":35,"outlook":"draining","low":false},{"name":"work","percent_left":80,"outlook":"ok","low":false}],"new_spawns":{"preferred":"tetmet","account":"work"},"moves":[],"advice":[]}
+$ bin/fm-account.sh rebalance --dry-run
+balanced: no agent needs to move
+$ fm_account_resolve_spawn (fresh ship spawn)
+spawn account=work
+notice: account: tetmet is on pace to run out before its usage window resets; this spawn uses work
+
+################ weekly allowance running out before its reset ################
+# tetmet: weekly 40% left halfway through the week (60% used in 3.5d -> runs out before reset).
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude  40%  runway 1h00m  resets in 3d11h  RUNNING OUT
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  80%  runway 1h00m  resets in 4d23h
+New spawns: work (tetmet is running out before its reset)
+$ fm_account_resolve_spawn (fresh ship spawn)
+spawn account=work
+notice: account: tetmet is on pace to run out before its usage window resets; this spawn uses work
+
+################ 5-hour window closing in: tetmet 4% left with 1h to reset; work draining at 50% left 2h into its window ################
+$ bin/fm-account.sh status
+Accounts  (floor 10%)
+tetmet   claude   4%  runway 1h00m  resets in 1h00m  LOW
+    on it: main, sm1~, sm2~, sm3~, sm4~, sm5~
+work     claude  50%  runway 1h00m  resets in 3h00m  RUNNING OUT
+New spawns: work (tetmet is below the floor)
+Moving automatically:
+  sm1  tetmet -> work
+  sm2  tetmet -> work
+  sm3  tetmet -> work
+  sm4  tetmet -> work
+  sm5  tetmet -> work
+Needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/tmp/fm-lab.Tafm1i/logins/work (tetmet is below the 10% floor)
+$ bin/fm-account.sh status --json
+{"accounts":[{"name":"tetmet","percent_left":4,"outlook":"low","low":true},{"name":"work","percent_left":50,"outlook":"draining","low":false}],"new_spawns":{"preferred":"tetmet","account":"work"},"moves":[{"id":"sm1","kind":"secondmate","from":"tetmet","to":"work"},{"id":"sm2","kind":"secondmate","from":"tetmet","to":"work"},{"id":"sm3","kind":"secondmate","from":"tetmet","to":"work"},{"id":"sm4","kind":"secondmate","from":"tetmet","to":"work"},{"id":"sm5","kind":"secondmate","from":"tetmet","to":"work"}],"advice":["restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/tmp/fm-lab.Tafm1i/logins/work (tetmet is below the 10% floor)"]}
+$ fm_account_resolve_spawn (fresh ship spawn)
+spawn account=work
+notice: account: tetmet has 4% left, below the 10% floor; this spawn uses work
+$ bin/fm-account.sh rebalance   (real, not dry-run)
+unreached: sm1: the request to write down its open work could not be delivered: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git); the re-read message could not be delivered either: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git)
+unreached: sm2: the request to write down its open work could not be delivered: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git); the re-read message could not be delivered either: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git)
+unreached: sm3: the request to write down its open work could not be delivered: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git); the re-read message could not be delivered either: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git)
+unreached: sm4: the request to write down its open work could not be delivered: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git); the re-read message could not be delivered either: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git)
+unreached: sm5: the request to write down its open work could not be delivered: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git); the re-read message could not be delivered either: refusing fleet lifecycle from inside a no-mistakes gate worktree (/home/oskari/.no-mistakes/repos/ca1b14ddd4b9.git)
+summary: 0 of 5 restarted, 0 nudged, 5 unreached
+error: sm1 did not come back on work (exit 3); its record still reads unrecorded
+error: sm2 did not come back on work (exit 3); its record still reads unrecorded
+error: sm3 did not come back on work (exit 3); its record still reads unrecorded
+error: sm4 did not come back on work (exit 3); its record still reads unrecorded
+error: sm5 did not come back on work (exit 3); its record still reads unrecorded
+needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/tmp/fm-lab.Tafm1i/logins/work (tetmet is below the 10% floor)
+$ cat state/account-moves.log
+1790865990|sm1|-|work|failed
+1790865990|sm2|-|work|failed
+1790865990|sm3|-|work|failed
+1790865990|sm4|-|work|failed
+1790865990|sm5|-|work|failed
+$ for each mate: cat mate-smN/config/account
+sm1: work
+sm2: work
+sm3: work
+sm4: work
+sm5: work
+$ bin/fm-account.sh status   (after the move)
+Accounts  (floor 10%)
+tetmet   claude   4%  runway 1h00m  resets in 59m  LOW
+    on it: main
+work     claude  50%  runway 1h00m  resets in 2h59m  RUNNING OUT
+    on it: sm1, sm2, sm3, sm4, sm5
+New spawns: work (tetmet is below the floor)
+Needs the captain: restart this main session on work: exit it, then start it again with CLAUDE_CONFIG_DIR=/tmp/fm-lab.Tafm1i/logins/work (tetmet is below the 10% floor)
+Recent moves:
+  0m ago  sm3  - -> work  failed
+  0m ago  sm4  - -> work  failed
+  0m ago  sm5  - -> work  failed
