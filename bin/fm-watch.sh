@@ -2768,13 +2768,10 @@ pr_poll_publish_release() {
 # this watcher is stuck inside one step - for example blocked forever reading a
 # command substitution whose pipe a detached grandchild still holds open, with
 # no child left to time out. A small sibling process started once per watcher
-# observes the beacon. A different set of child processes of the watcher, or a
-# different pipe on the fd a command substitution reads (fd 3), than at its
-# previous sample is progress inside a long step of many short invocations, so
-# it refreshes the beacon itself; one child that never exits is not progress. Once it has
-# counted that same grace of its own intervals with neither a beat nor such
-# progress (so a host suspend that ages the beacon's wall-clock mtime never
-# reads as a wedge), it stops exactly this watcher: TERM so
+# observes the beacon and never touches it, so only the loop's own beats keep
+# it fresh. Once it has counted that same grace of its own intervals without a
+# beat (so a host suspend that ages the beacon's wall-clock mtime never reads
+# as a wedge), it stops exactly this watcher: TERM so
 # watcher_cleanup releases the lock and publishes downtime recovery, then KILL
 # if the step still holds it, which leaves a dead-pid lock the next arm
 # reclaims. It signals only while this home's lock still names this watcher
@@ -2789,22 +2786,16 @@ watcher_watchdog_owns() {
 }
 watcher_watchdog_start() {
   (
-    nap='' self=$BASHPID
+    nap=''
     trap - EXIT HUP INT
     trap '[ -z "$nap" ] || kill "$nap" 2>/dev/null; exit 0' TERM
-    seen='' still=0 pipe='' kids=''
+    seen='' still=0
     while :; do
       sleep "$WATCHDOG_INTERVAL" &
       nap=$!
       wait "$nap" || exit 0
       nap=
       watcher_watchdog_owns || exit 0
-      last_pipe=$pipe last_kids=$kids
-      pipe=$(readlink "/proc/$WATCHER_PID/fd/3" 2>/dev/null || true)
-      kids=$(pgrep -P "$WATCHER_PID" 2>/dev/null | grep -vx "$self" | sort | tr '\n' ' ')
-      if [ "$pipe" != "$last_pipe" ] || [ "$kids" != "$last_kids" ]; then
-        touch "$STATE/.last-watcher-beat"
-      fi
       mtime=$(fm_path_mtime "$STATE/.last-watcher-beat")
       if [ "$mtime" != "$seen" ]; then
         seen=$mtime

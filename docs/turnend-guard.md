@@ -211,9 +211,8 @@ A healthy watcher's beacon therefore ages by at most its longest single step or 
 The top-of-cycle touch also writes that cycle's sequence number into the file, so a reader can tell a new cycle from a step refresh.
 A step that walks many records refreshes it per record too: the pending-reply scan (`fm_pending_reply_tick`) revisits every durable record each poll, and a parent home with about 1200 resolved records spends minutes in that one step.
 A single step that stays blocked still ages the beacon, which is why the loop refreshes it itself rather than from a background timer: a genuinely wedged watcher still reads stale once that step passes grace.
-The watcher's own watchdog also counts progress it can see from outside the loop: a different set of child processes of the watcher, or a different pipe on fd 3 (where a command substitution reads), than at its previous sample refreshes the beacon.
-A step made of many short invocations is therefore never read as wedged, while a step blocked on one child that never exits (such as a hung `tmux capture-pane`) still ages the beacon.
-A watcher with neither is recovered without a manual kill: the watchdog stops it once it has counted that grace of its own check intervals without seeing the beacon change (TERM, then KILL if the blocked step holds on), so a host suspend that only ages the beacon's wall-clock mtime is not mistaken for a wedge.
+A wedged watcher is recovered without a manual kill: its own watchdog, which only reads the beacon and never touches it, stops it once it has counted that grace of its own check intervals without seeing the beacon change (TERM, then KILL if the blocked step holds on), so a host suspend that only ages the beacon's wall-clock mtime is not mistaken for a wedge.
+A step blocked on one child that never exits (such as a hung `tmux capture-pane`), on a pipe a detached process holds open, or spinning on a lock a live holder never releases is recovered the same way.
 The watchdog signals only the pid this home's lock records with a matching identity, never a pattern match across homes.
 If the watchdog is gone too, a re-arm evicts the holder once its beacon passes the hard stall bound described below.
 

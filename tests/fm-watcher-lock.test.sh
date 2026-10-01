@@ -356,8 +356,9 @@ test_long_pending_reply_scan_keeps_beacon_fresh() {
 }
 
 test_long_pending_reply_scan_survives_watchdog() {
-  # The same long step under a short watchdog interval is progress, not a
-  # wedge: the watcher finishes its scan and its cycle without being stopped.
+  # The same long step under a short watchdog interval beats per record, so it
+  # is not a wedge: the watcher finishes its scan and its cycle without being
+  # stopped.
   local dir state i
   dir=$(make_case long-pending-reply-watchdog)
   state="$dir/state"
@@ -377,8 +378,8 @@ test_long_pending_reply_scan_survives_watchdog() {
 
 test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
   # One child that never exits (a hung tmux capture-pane, here a check with no
-  # effective timeout) is not progress: the beacon ages past the grace and the
-  # watcher's own watchdog stops that watcher instead of vouching for it.
+  # effective timeout) ages the beacon past the grace, and the watcher's own
+  # watchdog stops that watcher.
   local dir state i
   dir=$(make_case live-child-wedge)
   state="$dir/state"
@@ -470,11 +471,11 @@ start_idle_watcher() {  # <dir> [env assignments...]
   sleep 1
 }
 
-test_arm_uses_poll_derived_grace_for_wedge_recovery() {
+test_arm_attaches_within_poll_derived_grace() {
   # A long-poll home's healthy watcher sits in its terminal wait with a beacon
   # older than the historical 300s but inside its own poll-derived grace. An
   # arm with no FM_GUARD_GRACE must judge it by that same grace and attach,
-  # not stop it as wedged.
+  # not refuse it as stale.
   local dir state armout armpid i
   dir=$(make_case arm-long-poll-grace)
   state="$dir/state"
@@ -485,11 +486,10 @@ test_arm_uses_poll_derived_grace_for_wedge_recovery() {
   PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=600 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=2 "$WATCH_ARM" > "$armout" 2>&1 &
   armpid=$!
   i=0
-  while [ "$i" -lt 100 ] && ! grep -qE 'watcher: (attached|stopping wedged)' "$armout" 2>/dev/null; do
+  while [ "$i" -lt 100 ] && ! grep -qE 'watcher: attached|heartbeat is stale|replaced stalled pid' "$armout" 2>/dev/null; do
     sleep 0.1
     i=$((i + 1))
   done
-  ! grep -qF 'watcher: stopping wedged' "$armout" || { reap_watcher "$SEED_PID"; fail "arm stopped a healthy long-poll watcher: $(cat "$armout")"; }
   grep -qF "watcher: attached pid=$SEED_PID" "$armout" || { reap_watcher "$SEED_PID"; fail "arm did not attach to the healthy long-poll watcher: $(cat "$armout")"; }
   reap_watcher "$SEED_PID"
   wait_for_exit "$armpid" 100 >/dev/null 2>&1 || kill -KILL "$armpid" 2>/dev/null || true
@@ -1833,7 +1833,7 @@ test_long_pending_reply_scan_keeps_beacon_fresh
 test_long_pending_reply_scan_survives_watchdog
 test_step_blocked_on_one_live_child_is_stopped_by_watchdog
 test_orphaned_pipe_read_is_stopped_by_watchdog
-test_arm_uses_poll_derived_grace_for_wedge_recovery
+test_arm_attaches_within_poll_derived_grace
 test_watchdog_ignores_wall_clock_jump
 test_guard_warnings
 test_lock_single_winner_under_concurrency
