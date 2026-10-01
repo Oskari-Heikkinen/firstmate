@@ -38,9 +38,11 @@
 #   resets   below the floor, but every such window resets before running out
 #   ok       known room otherwise; nothing (unknown) when usage is unknown
 # New spawns steer away from low and draining accounts; live agents move, and
-# this main session is asked to restart, only off a low account; only an ok
-# account receives either. Unknown usage is never low, so a failed read never
-# moves work, and a resets account is left alone.
+# this main session is asked to restart, only off a low account. Work goes to an
+# ok account first; with none ok, a draining account still at or above the floor
+# receives work off a low account, so work never stops while one has room.
+# Unknown usage is never low, so a failed read never moves work, and a resets
+# account is left alone.
 #
 # Spawn choice (fm_account_resolve_spawn), Claude launches only, first match:
 #   1. FM_SPAWN_ACCOUNT=<name>, the explicit switch bin/fm-account.sh passes
@@ -51,7 +53,8 @@
 #   4. A fresh ship or scout spawn: this home's config/spawn-account, else its
 #      config/account, else the registered account whose folder is the
 #      launcher's own CLAUDE_CONFIG_DIR - then, when that choice is low or
-#      draining, the first registered Claude account whose outlook is ok.
+#      draining, the account with room (fm_account_room); a draining choice
+#      moves only to an ok account.
 # A named account that is not registered, or not Claude, or whose folder is
 # missing, refuses rather than silently launching on another login.
 # A launching home's config/claude-account pin (bin/fm-worker-account-lib.sh)
@@ -291,8 +294,8 @@ fm_account_fetch_once() {
       (([$e[] | select(.scope == "all_models")] | first) // ($e | first))) as $a |
     ($a.limitingWindowIds[0]? // null) as $lim |
     ([$r.windows[]? | select(.id == $lim)] | first | .resetsAt?) as $reset |
-    def len: if .id == "five_hour" or .kind == "session" then 18000
-      elif .id == "seven_day" or .kind == "weekly" then 604800 else "" end;
+    def len: if .id == "five_hour" then 18000
+      elif .id == "seven_day" then 604800 else "" end;
     def epoch: try (sub("\\.[0-9]+"; "") | sub("[+]00:00$"; "Z") | fromdateiso8601) catch "";
     [ ($a.boundedBy // [])[] as $id | ([$r.windows[]? | select(.id == $id)] | first) as $w |
       if $w == null then "::" else
@@ -446,29 +449,39 @@ fm_account_is_low() {
 }
 
 # fm_account_room <config-dir> <state-dir> [<exclude>]: print the first
-# registered Claude account, in choice order, whose outlook is ok, skipping
-# <exclude>; print nothing when none has room.
+# registered Claude account, in choice order, whose outlook is ok, else the
+# first whose outlook is draining with its percent left at or above the floor,
+# skipping <exclude>; print nothing when none has room.
 fm_account_room() {
-  local config=$1 state=$2 exclude=${3:-} list name provider dir priority
+  local config=$1 state=$2 exclude=${3:-} list name provider dir priority floor usage fallback=''
   list=$(fm_account_list "$config") || return 0
+  floor=$(fm_account_floor "$config")
   while IFS=$'\t' read -r name provider dir priority; do
     [ "$provider" = claude ] && [ "$name" != "$exclude" ] || continue
-    if [ "$(fm_account_outlook "$config" "$state" "$name")" = ok ]; then
-      printf '%s' "$name"
-      return 0
-    fi
+    usage=$(fm_account_usage "$config" "$state" "$name")
+    case "$(fm_account_outlook_of "$floor" "$usage")" in
+      ok) printf '%s' "$name"; return 0 ;;
+      draining) [ -n "$fallback" ] || [ "$(fm_account_left "$usage")" -lt "$floor" ] || fallback=$name ;;
+    esac
   done <<<"$list"
+  printf '%s' "$fallback"
 }
 
 # fm_account_pick <config-dir> <state-dir> <preferred>: print the account a
-# new spawn should use - <preferred> unless it is low or draining and another
-# Claude account has room.
+# new spawn should use - <preferred> unless it is low and another Claude account
+# has room, or it is draining and another Claude account is ok.
 fm_account_pick() {
-  local room
-  if case "$(fm_account_outlook "$1" "$2" "$3")" in low | draining) true ;; *) false ;; esac; then
-    room=$(fm_account_room "$1" "$2" "$3")
-    [ -z "$room" ] || { printf '%s' "$room"; return 0; }
-  fi
+  local outlook room
+  outlook=$(fm_account_outlook "$1" "$2" "$3")
+  case "$outlook" in
+    low | draining)
+      room=$(fm_account_room "$1" "$2" "$3")
+      if [ -n "$room" ] && { [ "$outlook" = low ] || [ "$(fm_account_outlook "$1" "$2" "$room")" = ok ]; }; then
+        printf '%s' "$room"
+        return 0
+      fi
+      ;;
+  esac
   printf '%s' "$3"
 }
 

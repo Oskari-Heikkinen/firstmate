@@ -27,8 +27,8 @@ export FM_ACCOUNT_QUOTA_RETRY_DELAY=0
 # XDG_CACHE_HOME the way the real tool does. "-" is an absent auth status.
 # A <login-folder>/fake-fail holding N makes the next N --profile-only reads
 # answer quota-axi's network failure (status error, "fetch failed") first.
-# A <login-folder>/fake-windows holding "<id> <kind> <percent-left>
-# <seconds-to-reset>" lines makes a fresh read report those windows, as the
+# A <login-folder>/fake-windows holding "<id> <percent-left> <seconds-to-reset>"
+# lines makes a fresh read report those windows, as the
 # ones bounding all-models use, instead of its one weekly window with no usage;
 # "-" seconds reports no reset time.
 # Status "garbage" prints unparseable output; any status other than fresh
@@ -69,8 +69,8 @@ case "$status" in
       now=$(date +%s)
       jq -cn --arg p "$provider" --argjson left "$left" --arg now "$now" --rawfile w "$dir/fake-windows" '
         [ $w | split("\n")[] | select(. != "") | split(" ") |
-          { id: .[0], kind: .[1], percentRemaining: (.[2] | tonumber) } +
-          (if .[3] == "-" then {} else { resetsAt: (($now | tonumber) + (.[3] | tonumber) | todate) } end) ] as $ws |
+          { id: .[0], percentRemaining: (.[1] | tonumber) } +
+          (if .[2] == "-" then {} else { resetsAt: (($now | tonumber) + (.[2] | tonumber) | todate) } end) ] as $ws |
         { providers: [ { provider: $p, plan: "max", state: { status: "fresh" }, windows: $ws,
           quotaSemantics: { effectiveAvailability: [ { scope: "all_models", effectivePercentRemaining: $left,
             boundedBy: [ $ws[].id ], limitingWindowIds: [ $ws[0].id ] } ] } } ] }'
@@ -634,7 +634,7 @@ window_case() {
 
 test_a_window_that_resets_before_running_out_moves_nothing() {
   local out
-  window_case resets-first 10 "five_hour session 10 600" "seven_day weekly 49 259200"
+  window_case resets-first 10 "five_hour 10 600" "seven_day 49 259200"
   # A 15% floor puts the 10% reading below it, so only the projection keeps it.
   printf '15\n' > "$H/config/account-floor"
   out=$(run_account status --json)
@@ -653,7 +653,7 @@ test_a_fast_burning_5_hour_window_steers_new_spawns_away() {
   local out rc
   spawn_case burn-5h acct-s2
   printf '35 fresh\n' > "$C/gmail/fake-quota"
-  printf '%s\n' "five_hour session 35 7200" "seven_day weekly 80 259200" > "$C/gmail/fake-windows"
+  printf '%s\n' "five_hour 35 7200" "seven_day 80 259200" > "$C/gmail/fake-windows"
   out=$(run_account status --json)
   assert_equals "draining|false" "$(json_get "$out" '.accounts[] | select(.name == "gmail") | "\(.outlook)|\(.low)"')" "65% used in 3 of 5 hours runs out before the reset"
   assert_equals "gmail|work" "$(json_get "$out" '"\(.new_spawns.preferred)|\(.new_spawns.account)"')" "new spawns go to the login with room"
@@ -669,12 +669,12 @@ test_a_fast_burning_5_hour_window_steers_new_spawns_away() {
 
 test_a_weekly_allowance_running_out_before_its_reset_will_exhaust() {
   local out
-  window_case burn-week 40 "five_hour session 90 9000" "seven_day weekly 40 302400"
+  window_case burn-week 40 "five_hour 90 9000" "seven_day 40 302400"
   out=$(run_account status --json)
   assert_equals draining "$(json_get "$out" '.accounts[] | select(.name == "gmail") | .outlook')" "60% of the week used in half of it runs out before the reset"
   assert_equals work "$(json_get "$out" .new_spawns.account)" "new spawns leave it"
   assert_equals 0 "$(json_get "$out" '.moves | length')" "above the floor, live agents stay"
-  window_case burn-week-low 5 "five_hour session 90 9000" "seven_day weekly 5 86400"
+  window_case burn-week-low 5 "five_hour 90 9000" "seven_day 5 86400"
   out=$(run_account status --json)
   assert_equals "low|true" "$(json_get "$out" '.accounts[] | select(.name == "gmail") | "\(.outlook)|\(.low)"')" "below the floor and running out first"
   assert_equals "a2:gmail>work sm2:gmail>work" "$(json_get "$out" '[.moves[] | "\(.id):\(.from)>\(.to)"] | sort | join(" ")')" "live agents move once steering spawns is not enough"
@@ -684,16 +684,35 @@ test_a_weekly_allowance_running_out_before_its_reset_will_exhaust() {
 
 test_an_unknown_reset_falls_back_to_the_floor() {
   local out
-  window_case no-reset 4 "five_hour session 4 -" "seven_day weekly 60 259200"
+  window_case no-reset 4 "five_hour 4 -" "seven_day 60 259200"
   out=$(run_account status --json)
   assert_equals "low|true" "$(json_get "$out" '.accounts[] | select(.name == "gmail") | "\(.outlook)|\(.low)"')" "a window below the floor with no reset time is low"
   assert_equals "a2:gmail>work sm2:gmail>work" "$(json_get "$out" '[.moves[] | "\(.id):\(.from)>\(.to)"] | sort | join(" ")')" "the floor rule moves live agents"
   assert_equals work "$(json_get "$out" .new_spawns.account)" "and new spawns"
-  window_case no-reset-room 60 "five_hour session 60 -" "seven_day weekly 70 259200"
+  window_case no-reset-room 60 "five_hour 60 -" "seven_day 70 259200"
   out=$(run_account status --json)
   assert_equals ok "$(json_get "$out" '.accounts[] | select(.name == "gmail") | .outlook')" "above the floor with no reset time is room, as before"
   assert_equals gmail "$(json_get "$out" .new_spawns.account)" "new spawns stay"
   pass "a window whose reset time is unknown falls back to the floor rule"
+}
+
+test_low_login_moves_work_to_a_draining_login_above_the_floor() {
+  local out
+  window_case low-to-draining 4 "five_hour 4 3600" "seven_day 60 259200"
+  printf '50 fresh\n' > "$C/work/fake-quota"
+  printf '%s\n' "five_hour 50 10800" "seven_day 70 259200" > "$C/work/fake-windows"
+  out=$(run_account status --json)
+  assert_equals "low|draining" "$(json_get "$out" '[.accounts[] | select(.name == "gmail" or .name == "work") | .outlook] | join("|")')" "gmail runs out first, work is on pace to run out"
+  assert_equals work "$(json_get "$out" .new_spawns.account)" "new spawns go to the draining login above the floor"
+  assert_equals "a2:gmail>work sm2:gmail>work" "$(json_get "$out" '[.moves[] | "\(.id):\(.from)>\(.to)"] | sort | join(" ")')" "live agents move to it"
+  assert_contains "$(json_get "$out" '.advice | join("\n")')" "restart this main session on work" "the session restart is asked for"
+  assert_not_contains "$(json_get "$out" '.advice | join("\n")')" "no Claude account has room" "no no-room advice while work has room"
+  window_case draining-stays 40 "five_hour 90 9000" "seven_day 40 302400"
+  printf '50 fresh\n' > "$C/work/fake-quota"
+  printf '%s\n' "five_hour 50 10800" "seven_day 70 259200" > "$C/work/fake-windows"
+  out=$(run_account status --json)
+  assert_equals gmail "$(json_get "$out" .new_spawns.account)" "a draining login keeps its spawns when the other is draining too"
+  pass "a low login moves work to a draining login still above the floor when none is ok"
 }
 
 test_malformed_registry_refuses_and_the_check_says_so
@@ -716,5 +735,6 @@ test_a_window_that_resets_before_running_out_moves_nothing
 test_a_fast_burning_5_hour_window_steers_new_spawns_away
 test_a_weekly_allowance_running_out_before_its_reset_will_exhaust
 test_an_unknown_reset_falls_back_to_the_floor
+test_low_login_moves_work_to_a_draining_login_above_the_floor
 
 echo "# all fm-account tests passed"

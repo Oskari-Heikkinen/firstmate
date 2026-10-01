@@ -905,6 +905,7 @@ The chosen account is recorded durably, in a worker's task record or in the seco
 Each of an account's limits, the 5-hour session and the weekly allowance, is also projected at its burn rate so far to tell whether it runs out before it resets.
 While an account is projected to run out before a reset, or is below the floor without a projection, new ship and scout spawns start on the next registered Claude account with room, in priority order, and say so.
 Second mates, workers, and this session move only once a limit is both below the floor and not projected to reset first, and an account below the floor whose limits all reset first is left alone.
+Work goes to an account not projected to run out first; when none is, an account still above the floor takes work off a low one, so work never stops while an account has room.
 Unknown usage is never treated as low, so a failed read never moves work, and a failed read is retried briefly before it reads as unknown.
 The no-room advice appears only when every Claude account has a successful reading low enough to move work off or needs sign-in, never because a read failed.
 Automatic rebalancing is on whenever the registry exists, unless `config/account-auto` says `off`.
