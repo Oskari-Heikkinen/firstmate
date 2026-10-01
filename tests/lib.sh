@@ -176,35 +176,24 @@ fm_test_reap_procevent_homes() {
 # fm_test_stop_remote_job_workers <dir> stops every worker process whose
 # FM_REMOTE_JOB_STATE_ROOT is <dir> or lies below it, read from the process's own
 # environment, so it never reaches another fixture's or a real home's worker.
-# Where /proc is unavailable it falls back to the worker.pid files under <dir>.
+# Where /proc or pgrep is unavailable it finds and stops nothing.
 # It signals the worker's own process group when the worker leads one, TERM
 # first and KILL only for a survivor, and rescans so a respawned child is caught.
 # fm_test_cleanup runs it for every registered fixture root; a suite that
 # replaces that trap calls it from its own cleanup.
 
 fm_test_remote_job_worker_pids() {  # <dir>
-  local scope=$1 canonical pid env_root pid_file
+  local scope=$1 canonical pid env_root
+  [ -d /proc/self ] && command -v pgrep >/dev/null 2>&1 || return 0
   canonical=$(cd -P -- "$scope" 2>/dev/null && pwd -P) || canonical=$scope
-  if [ -d /proc/self ] && command -v pgrep >/dev/null 2>&1; then
-    for pid in $(pgrep -f '^[^ ]*bash [^ ]*/fm-remote-job-worker\.sh( |$)' 2>/dev/null); do
-      [ "$pid" != "$$" ] || continue
-      env_root=$({ tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null |
-        sed -n 's/^FM_REMOTE_JOB_STATE_ROOT=//p' | head -n 1)
-      [ -n "$env_root" ] || continue
-      case "$env_root" in
-        "$scope" | "$scope"/* | "$canonical" | "$canonical"/*) printf '%s\n' "$pid" ;;
-      esac
-    done
-    return 0
-  fi
-  [ -d "$scope" ] || return 0
-  for pid_file in "$scope"/worker.pid "$scope"/*/worker.pid; do
-    [ -f "$pid_file" ] || continue
-    pid=$(head -n 1 "$pid_file" 2>/dev/null) || continue
-    case "$pid" in '' | *[!0-9]*) continue ;; esac
-    printf '%s\n' "$pid"
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-    case "$pid" in '' | 1 | *[!0-9]*) ;; *) printf '%s\n' "$pid" ;; esac
+  for pid in $(pgrep -f '^[^ ]*bash [^ ]*/fm-remote-job-worker\.sh( |$)' 2>/dev/null); do
+    [ "$pid" != "$$" ] || continue
+    env_root=$({ tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null |
+      sed -n 's/^FM_REMOTE_JOB_STATE_ROOT=//p' | head -n 1)
+    [ -n "$env_root" ] || continue
+    case "$env_root" in
+      "$scope" | "$scope"/* | "$canonical" | "$canonical"/*) printf '%s\n' "$pid" ;;
+    esac
   done
 }
 

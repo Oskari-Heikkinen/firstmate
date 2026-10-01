@@ -59,10 +59,6 @@ worker_close_inherited_fds() {
     done
     break
   done
-  if [ -z "$fds" ] && [ ! -d /proc/self/fd ] && [ ! -d /dev/fd ]; then
-    fd=3
-    while [ "$fd" -lt 256 ]; do fds="$fds $fd"; fd=$((fd + 1)); done
-  fi
   # Bash moves its own script-reading descriptor aside when a redirection
   # targets it, so closing that one is safe too. The listing's own directory
   # descriptor is already gone and fails harmlessly.
