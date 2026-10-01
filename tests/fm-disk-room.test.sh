@@ -4,13 +4,15 @@
 #
 # Every case runs against a PATH-shimmed df that reports fixture sizes for a
 # fake Windows drive and a fake Linux root, a real sparse file standing in for
-# ext4.vhdx, and a fixture ext4 mb_groups table, so nothing reads the real disk.
+# ext4.vhdx, a fixture ext4 mb_groups table, and a stub wevtutil that prints
+# fixture volsnap events, so nothing reads the real disk or the Windows log.
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE
+unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
+  FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL
 TMP_ROOT=$(fm_test_tmproot fm-disk-room)
 DISK_ROOM="$ROOT/bin/fm-disk-room.sh"
 GIB=1073741824
@@ -39,6 +41,25 @@ cat "$f"
 SH
 chmod +x "$FAKEBIN/df"
 
+# wevtutil stub: prints $FAKE_EVENTS (an XML fixture) and counts its calls.
+cat >"$FAKEBIN/wevtutil-stub" <<'SH'
+#!/usr/bin/env bash
+printf 'x\n' >>"$FAKE_EVENTS.calls"
+[ -r "$FAKE_EVENTS" ] || exit 1
+cat "$FAKE_EVENTS"
+SH
+chmod +x "$FAKEBIN/wevtutil-stub"
+EVENTS="$TMP_ROOT/events.xml"
+
+# write_events ID...: one volsnap event per id, as wevtutil /f:xml prints them.
+write_events() {
+  local id
+  : >"$EVENTS"
+  for id in "$@"; do
+    printf '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="volsnap"/><EventID Qualifiers="49158">%s</EventID></System></Event>\r\n' "$id" >>"$EVENTS"
+  done
+}
+
 key() { printf '%s' "$1" | tr / _; }
 
 # set_sizes HOST_FREE_GIB LINUX_FREE_GIB LINUX_USED_GIB
@@ -65,12 +86,21 @@ run_room() {
   PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" \
     FM_DISK_ROOM_HOST="${TEST_HOST-$HOSTDIR}" FM_DISK_ROOM_ROOT="$LINUXDIR" \
     FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
+    FAKE_EVENTS="$EVENTS" FM_DISK_ROOM_WEVTUTIL="${FM_DISK_ROOM_WEVTUTIL-wevtutil-stub}" \
     "$DISK_ROOM" "$@"
 }
 
 json_field() { printf '%s\n' "$1" | sed -n "s/.*\"$2\":\([^,}]*\).*/\1/p"; }
 
-reset_state() { rm -rf "$TMP_ROOT/state"; }
+reset_state() { rm -rf "$TMP_ROOT/state" "$EVENTS" "$EVENTS.calls" "$HOSTDIR/ProgramData"; }
+
+# write_shadow_record MAX_GIB USED_GIB AGE_SECONDS: the file the elevated
+# fm-wsl-reclaim.ps1 task writes (tests/fm-wsl-reclaim.test.sh pins its format).
+write_shadow_record() {
+  mkdir -p "$HOSTDIR/ProgramData/firstmate"
+  printf 'recorded=2026-10-01T12:00:00Z\r\nrecorded_epoch=%s\r\nvolume=C:\r\nmax_bytes=%s\r\nused_bytes=%s\r\nallocated_bytes=%s\r\n' \
+    $(( $(date +%s) - $3 )) $(( $1 * GIB )) $(( $2 * GIB )) $(( $2 * GIB )) >"$HOSTDIR/ProgramData/firstmate/shadow-storage.txt"
+}
 
 # The host frame bytes have 4 KiB blocks here, so real stat reports the block
 # size of the temp filesystem; the fixture groups assume 4 KiB.
@@ -266,7 +296,7 @@ test_arm_and_disarm() {
   home="$TMP_ROOT/home"
   mkdir -p "$home/state"
   chmod 700 "$home/state"
-  out=$(FM_HOME="$home" FM_DISK_ROOM_MARGIN=20G FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" \
+  out=$(FM_HOME="$home" FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_MARGIN=20G FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" \
     FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" "$DISK_ROOM" arm) || fail "arm exits 0"
   assert_contains "$out" "armed: $home/state/disk-room.check.sh" "arm names the shim"
   assert_present "$home/state/disk-room.check-trust" "arm binds the shim's bytes"
@@ -298,7 +328,102 @@ test_results_root_in_status() {
   pass "status reports the SSD's room and the active results root"
 }
 
+test_shadow_record_reserves_headroom() {
+  reset_state
+  set_sizes 60 600 400
+  write_shadow_record 10 3 60
+  local out rc
+  out=$(run_room status --json)
+  assert_equals $(( 53 * GIB )) "$(json_field "$out" room)" "room drops by the cap minus what is used"
+  assert_equals $(( 7 * GIB )) "$(json_field "$out" shadow_reserved)" "the headroom is reported"
+  assert_equals '"record"' "$(json_field "$out" shadow_source)" "the elevated record is the source"
+  assert_equals null "$(json_field "$out" shadow_events)" "a fresh record needs no event count"
+  assert_absent "$EVENTS.calls" "a fresh record starts no Windows process"
+  out=$(run_room status)
+  assert_contains "$out" "shadow storage: 7.0 GiB headroom reserved (cap 10.0 GiB, used 3.0 GiB" "plain status explains the reservation"
+  out=$(run_room check --expect-write 34G); rc=$?
+  expect_code 1 "$rc" "admission counts the shadow storage headroom"
+  assert_contains "$out" "low: only 19.0 GiB would be left on $HOSTDIR" "the low line names the drive"
+  write_shadow_record 10 12 60
+  out=$(run_room status --json)
+  assert_equals $(( 60 * GIB )) "$(json_field "$out" room)" "used above the cap reserves nothing"
+  set_sizes 60 50 400
+  write_shadow_record 10 3 60
+  out=$(run_room status --json)
+  assert_equals $(( 50 * GIB )) "$(json_field "$out" room)" "the reservation applies to the Windows drive only"
+  pass "a fresh elevated record reserves the shadow storage headroom"
+}
+
+test_shadow_fallback_and_stale() {
+  reset_state
+  set_sizes 60 600 400
+  local out
+  out=$(FM_DISK_ROOM_SHADOW_MAX=10G run_room status --json)
+  assert_equals $(( 50 * GIB )) "$(json_field "$out" room)" "with used unknown the whole configured cap is reserved"
+  assert_equals '"config"' "$(json_field "$out" shadow_source)" "the configured cap is the source"
+  out=$(FM_DISK_ROOM_SHADOW_MAX=10G run_room status)
+  assert_contains "$out" "shadow storage: 10.0 GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap" "plain status names the fallback"
+  write_shadow_record 10 3 $(( 8 * 86400 ))
+  out=$(run_room status --json)
+  assert_equals $(( 50 * GIB )) "$(json_field "$out" room)" "a stale record keeps only its cap"
+  assert_equals '"stale-record"' "$(json_field "$out" shadow_source)" "the stale record is named"
+  printf 'garbage\n' >"$HOSTDIR/ProgramData/firstmate/shadow-storage.txt"
+  out=$(run_room status --json)
+  assert_equals $(( 60 * GIB )) "$(json_field "$out" room)" "an unreadable record never adds room and alone reserves nothing"
+  out=$(FM_DISK_ROOM_SHADOW_MAX=10G run_room status --json)
+  assert_equals $(( 50 * GIB )) "$(json_field "$out" room)" "an unreadable record falls back to the configured cap"
+  write_shadow_record 10 3 60
+  sed -i 's/^max_bytes=.*/max_bytes=unbounded\r/' "$HOSTDIR/ProgramData/firstmate/shadow-storage.txt"
+  out=$(run_room status)
+  assert_contains "$out" "shadow storage: not reserved (the recorded shadow storage has no cap" "an unbounded record is named"
+  out=$(FM_DISK_ROOM_SHADOW_MAX=10G run_room status --json)
+  assert_equals $(( 50 * GIB )) "$(json_field "$out" room)" "an unbounded record falls back to the configured cap"
+  out=$(FM_DISK_ROOM_SHADOW_MAX=lots run_room status 2>&1)
+  assert_contains "$out" "bad FM_DISK_ROOM_SHADOW_MAX" "a bad configured cap is reported"
+  pass "without a fresh record the configured cap is reserved whole"
+}
+
+test_shadow_no_data_unchanged() {
+  reset_state
+  set_sizes 60 600 400
+  local out
+  out=$(run_room status --json)
+  assert_equals $(( 60 * GIB )) "$(json_field "$out" room)" "no record and no cap leaves room as plain df"
+  assert_equals 0 "$(json_field "$out" shadow_reserved)" "nothing is reserved"
+  assert_equals '"none"' "$(json_field "$out" shadow_source)" "the source is none"
+  out=$(FM_DISK_ROOM_WEVTUTIL=/nonexistent/wevtutil run_room status --json) || fail "a missing wevtutil does not fail"
+  assert_equals null "$(json_field "$out" shadow_events)" "the event count is unknown without wevtutil"
+  pass "with no shadow storage data room is unchanged"
+}
+
+test_shadow_cycling_warning() {
+  reset_state
+  set_sizes 15 600 400
+  write_events 25 36 33
+  local out t0
+  t0=$(date +%s)
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room status)
+  assert_contains "$out" "shadow storage cycling: 3 volsnap event(s) 25/33/36 in the last 7 days" "recent events warn"
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "shadow storage cycling: 3 volsnap" "the low watcher line carries the warning"
+  assert_equals 1 "$(wc -l <"$EVENTS.calls" | tr -d ' ')" "the count is cached for an hour"
+  write_events 25
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 3600 )) run_room status --json)
+  assert_equals 1 "$(json_field "$out" shadow_events)" "an expired cache is refreshed"
+  write_events
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 7200 )) run_room status)
+  assert_not_contains "$out" "cycling" "no recent events, no warning"
+  rm -f "$EVENTS"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 10800 )) run_room status) || fail "a failed event read does not fail status"
+  assert_not_contains "$out" "cycling" "a failed event read gives no warning"
+  pass "recent volsnap 25/33/36 events warn that shadow storage is cycling"
+}
+
 test_status_real_room_and_reclaim
+test_shadow_record_reserves_headroom
+test_shadow_fallback_and_stale
+test_shadow_no_data_unchanged
+test_shadow_cycling_warning
 test_results_root_in_status
 test_check_margin
 test_low_advice

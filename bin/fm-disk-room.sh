@@ -8,12 +8,16 @@
 # drive's free space, taken together with Linux free space, minus the writes
 # that running jobs have declared. Slack inside the disk file is NOT room (ext4
 # happily grows the file while slack exists); it is reported separately as what
-# the next compaction would reclaim. docs/disk-room.md owns the contract and the
-# one-time Windows install (bin/fm-wsl-reclaim.ps1).
+# the next compaction would reclaim. The Windows restore-point shadow storage's
+# headroom (its cap minus what it already uses) is reserved too, because
+# copy-on-write after each restore point fills it from host free space while
+# Linux df and the disk file stay flat. docs/disk-room.md owns the contract and
+# the one-time Windows install (bin/fm-wsl-reclaim.ps1).
 #
 # Usage:
 #   fm-disk-room.sh status [--json]
-#       Print host free, Linux free, reservations, real room, the disk file's
+#       Print host free, Linux free, reservations, the shadow storage
+#       reservation and any cycling warning, real room, the disk file's
 #       slack and its reclaimable estimate, the last compaction result, and
 #       the external SSD's room with the active fetched-results root (read
 #       from the results-root file bin/fm-storage.sh publishes).
@@ -50,6 +54,18 @@
 #   FM_DISK_ROOM_MB_GROUPS  ext4 mb_groups file (default /proc/fs/ext4/<dev>/mb_groups)
 #   FM_DISK_ROOM_COMPACT_RESULT  last-result file written by fm-wsl-reclaim.ps1
 #                         (default <host>/ProgramData/firstmate/wsl-compact-last.txt)
+#   FM_DISK_ROOM_SHADOW_RECORD  shadow storage max/used written by the elevated
+#                         fm-wsl-reclaim.ps1 task (default
+#                         <host>/ProgramData/firstmate/shadow-storage.txt). A record
+#                         older than 7 days keeps only its max: used is then unknown.
+#   FM_DISK_ROOM_SHADOW_MAX  shadow storage cap (SIZE) used when no fresh record
+#                         gives one, e.g. 10G. With used unknown the whole cap is
+#                         reserved, the conservative choice. Unset and no record:
+#                         nothing is reserved.
+#   FM_DISK_ROOM_WEVTUTIL  wevtutil command used, only when no fresh record exists,
+#                         to count volsnap System events 25/33/36 of the last 7 days
+#                         (cached for an hour) for the cycling warning
+#                         (default wevtutil.exe; empty disables the count)
 #   FM_DISK_ROOM_RESULTS_ROOT  results-root file from bin/fm-storage.sh
 #                         (default ${XDG_CONFIG_HOME:-~/.config}/lattice-storage/results-root)
 #   FM_DISK_ROOM_STATE    reservations and alert record
@@ -62,6 +78,8 @@ GIB=1073741824
 REALERT_DROP=$((5 * GIB))
 REALERT_SECS=21600
 DEFAULT_TTL=43200
+SHADOW_STALE_SECS=604800
+SHADOW_EVENTS_CACHE_SECS=3600
 
 die() { printf 'fm-disk-room: %s\n' "$*" >&2; exit 2; }
 
@@ -156,6 +174,93 @@ fragmented_free() {
     END { if (!seen) exit 1; printf "%.0f\n", s * bs }'
 }
 
+# Shadow storage ---------------------------------------------------------------
+
+# shadow_events -> count of volsnap 25/33/36 System events in the last 7 days,
+# or nothing when unknown. Cached for an hour, failures included, because it
+# starts a Windows process.
+shadow_events() {
+  local cache t when='' n='' out cmd
+  cmd=${FM_DISK_ROOM_WEVTUTIL-wevtutil.exe}
+  [ -n "$cmd" ] && command -v -- "$cmd" >/dev/null 2>&1 || return 0
+  cache="$(state_dir)/shadow-events"
+  t=$(now)
+  [ -r "$cache" ] && read -r when n <"$cache"
+  case "$when" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$t" -ge "$when" ] && [ $(( t - when )) -lt "$SHADOW_EVENTS_CACHE_SECS" ]; then
+        case "$n" in ''|*[!0-9]*) ;; *) printf '%s\n' "$n" ;; esac
+        return 0
+      fi ;;
+  esac
+  if out=$(timeout 20 "$cmd" qe System /f:xml \
+    "/q:*[System[Provider[@Name='volsnap'] and (EventID=25 or EventID=33 or EventID=36) and TimeCreated[timediff(@SystemTime) <= 604800000]]]" \
+    2>/dev/null); then
+    n=$(printf '%s' "$out" | tr -d '\r' | grep -oE '<EventID[^>]*>(25|33|36)</EventID>' | wc -l | tr -d ' ')
+  else
+    n=-
+  fi
+  mkdir -p "$(state_dir)" 2>/dev/null && printf '%s %s\n' "$t" "$n" >"$cache" 2>/dev/null
+  [ "$n" = - ] || printf '%s\n' "$n"
+}
+
+# shadow_reservation: sets SHADOW_RES (bytes reserved), SHADOW_SRC (record,
+# stale-record, config, unbounded or none), SHADOW_MAX, SHADOW_USED, SHADOW_AT and
+# SHADOW_EVENTS. A reading only ever adds a reservation, so a stale or
+# unreadable record can never make room look larger than plain df.
+shadow_reservation() {
+  local f kv max='' used='' at='' cfg=''
+  SHADOW_RES=0; SHADOW_SRC=none; SHADOW_MAX=''; SHADOW_USED=''; SHADOW_AT=''; SHADOW_EVENTS=''
+  [ -n "$HOST" ] || return 0
+  if [ -n "${FM_DISK_ROOM_SHADOW_MAX:-}" ]; then
+    cfg=$(to_bytes "$FM_DISK_ROOM_SHADOW_MAX") || { ERR="bad FM_DISK_ROOM_SHADOW_MAX"; return 1; }
+  fi
+  f=${FM_DISK_ROOM_SHADOW_RECORD:-$HOST/ProgramData/firstmate/shadow-storage.txt}
+  if [ -r "$f" ]; then
+    kv=$(tr -d '\r' <"$f" 2>/dev/null)
+    max=$(printf '%s\n' "$kv" | sed -n 's/^max_bytes=//p' | head -n 1)
+    used=$(printf '%s\n' "$kv" | sed -n 's/^used_bytes=//p' | head -n 1)
+    at=$(printf '%s\n' "$kv" | sed -n 's/^recorded_epoch=//p' | head -n 1)
+    case "$max" in unbounded) SHADOW_SRC=unbounded; max='' ;; ''|*[!0-9]*) max='' ;; esac
+    case "$used" in ''|*[!0-9]*) used='' ;; esac
+    case "$at" in ''|*[!0-9]*) at='' ;; esac
+  fi
+  if [ -n "$max" ] && [ -n "$used" ] && [ -n "$at" ] && [ $(( $(now) - at )) -lt "$SHADOW_STALE_SECS" ]; then
+    SHADOW_SRC=record; SHADOW_MAX=$max; SHADOW_USED=$used; SHADOW_AT=$at
+    SHADOW_RES=$(( max - used )); [ "$SHADOW_RES" -lt 0 ] && SHADOW_RES=0
+    return 0
+  fi
+  # No fresh record: used is unknown, so reserve the whole cap.
+  if [ -n "$max" ] && [ -n "$at" ]; then
+    SHADOW_SRC=stale-record; SHADOW_MAX=$max; SHADOW_AT=$at
+    [ -n "$cfg" ] && [ "$cfg" -gt "$max" ] && SHADOW_MAX=$cfg
+  elif [ -n "$cfg" ]; then
+    SHADOW_SRC=config; SHADOW_MAX=$cfg
+  fi
+  [ -n "$SHADOW_MAX" ] && SHADOW_RES=$SHADOW_MAX
+  SHADOW_EVENTS=$(shadow_events)
+  return 0
+}
+
+shadow_line() {
+  case "$SHADOW_SRC" in
+    record) printf 'shadow storage: %s GiB headroom reserved (cap %s GiB, used %s GiB, recorded %s)\n' \
+      "$(gib "$SHADOW_RES")" "$(gib "$SHADOW_MAX")" "$(gib "$SHADOW_USED")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "$SHADOW_AT")" ;;
+    stale-record) printf 'shadow storage: %s GiB reserved (whole cap; the record from %s is over 7 days old, so used is unknown)\n' \
+      "$(gib "$SHADOW_RES")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d' 2>/dev/null || echo "$SHADOW_AT")" ;;
+    config) printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; used is unknown without the elevated record)\n' "$(gib "$SHADOW_RES")" ;;
+    unbounded) printf 'shadow storage: not reserved (the recorded shadow storage has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it)\n' ;;
+    *) printf 'shadow storage: not reserved (no record from the elevated task and FM_DISK_ROOM_SHADOW_MAX unset)\n' ;;
+  esac
+}
+
+# shadow_warning -> the cycling warning, or nothing.
+shadow_warning() {
+  case "$SHADOW_EVENTS" in ''|0) return 0 ;; esac
+  printf 'shadow storage cycling: %s volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap' "$SHADOW_EVENTS"
+}
+
 # Reservations ---------------------------------------------------------------
 
 pid_alive() {
@@ -238,9 +343,10 @@ measure() {
     RESERVED=$(( RESERVED + ${line##* } ))
     RES_LIST="$RES_LIST${RES_LIST:+, }${line% *} $(gib "${line##* }") GiB"
   done < <(live_reservations "${1:-}")
+  shadow_reservation || return 1
   ROOM=$(( LINUX_FREE - RESERVED ))
-  if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - RESERVED )) -lt "$ROOM" ]; then
-    ROOM=$(( HOST_FREE - RESERVED ))
+  if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - RESERVED )) -lt "$ROOM" ]; then
+    ROOM=$(( HOST_FREE - SHADOW_RES - RESERVED ))
   fi
   VHDX=''; VHDX_SIZE=''; FRAG=''; SLACK=''; RECLAIM=''
   if [ -n "$HOST" ] && vhdx=$(discover_vhdx); then
@@ -263,10 +369,13 @@ measure() {
   return 0
 }
 
-limit_name() { if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - RESERVED )) -le $(( LINUX_FREE - RESERVED )) ]; then printf '%s\n' "$HOST"; else printf 'Linux\n'; fi; }
+limit_name() { if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES )) -le "$LINUX_FREE" ]; then printf '%s\n' "$HOST"; else printf 'Linux\n'; fi; }
 
 # advice -> the next step when room is low.
 advice() {
+  local w
+  w=$(shadow_warning)
+  [ -n "$w" ] && printf '%s; ' "$w"
   if [ -n "$RECLAIM" ] && [ "$RECLAIM" -ge $((5 * GIB)) ]; then
     printf 'a compaction would reclaim about %s GiB (disk-room skill: reclaim now)' "$(gib "$RECLAIM")"
   elif [ -n "$RECLAIM" ]; then
@@ -298,10 +407,11 @@ cmd_status() {
   measure || die "$ERR"
   results_root
   if [ "$json" = 1 ]; then
-    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s}\n' \
+    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s}\n' \
       "$MARGIN" "$HOST" "${HOST_FREE:-null}" "$LINUX_FREE" "$LINUX_USED" "$RESERVED" "$ROOM" \
       "$([ "$ROOM" -lt "$MARGIN" ] && echo true || echo false)" "$VHDX" "${VHDX_SIZE:-null}" \
-      "${FRAG:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}"
+      "${FRAG:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}" \
+      "$SHADOW_RES" "$SHADOW_SRC" "${SHADOW_MAX:-null}" "${SHADOW_USED:-null}" "${SHADOW_EVENTS:-null}"
     return 0
   fi
   printf 'real room: %s GiB (limited by %s; margin %s GiB)%s\n' "$(gib "$ROOM")" "$(limit_name)" "$(gib "$MARGIN")" \
@@ -309,6 +419,10 @@ cmd_status() {
   [ -n "$HOST_FREE" ] && printf '%s free: %s GiB\n' "$HOST" "$(gib "$HOST_FREE")"
   printf 'Linux free: %s GiB, used %s GiB\n' "$(gib "$LINUX_FREE")" "$(gib "$LINUX_USED")"
   printf 'reserved writes: %s GiB%s\n' "$(gib "$RESERVED")" "${RES_LIST:+ ($RES_LIST)}"
+  if [ -n "$HOST" ]; then
+    shadow_line
+    [ -n "$(shadow_warning)" ] && printf '%s\n' "$(shadow_warning)"
+  fi
   if [ -n "$VHDX_SIZE" ]; then
     if [ -n "$RECLAIM" ]; then
       printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s GiB; reclaimable by compaction about %s GiB\n' \
@@ -411,7 +525,7 @@ cmd_watch_line() {
     kind=error; msg="disk room: cannot measure ($ERR)"; ROOM=0
   elif [ "$ROOM" -lt "$MARGIN" ]; then
     kind=low
-    msg="disk room low: $(gib "$ROOM") GiB real room on $(limit_name) after $(gib "$RESERVED") GiB of declared writes (margin $(gib "$MARGIN") GiB); $(advice)"
+    msg="disk room low: $(gib "$ROOM") GiB real room on $(limit_name) after $(gib "$RESERVED") GiB of declared writes and $(gib "$SHADOW_RES") GiB of shadow storage headroom (margin $(gib "$MARGIN") GiB); $(advice)"
   else
     rm -f -- "$rec"
     return 0
@@ -439,7 +553,7 @@ cmd_arm() {
   tmp=$(umask 077; mktemp "$state/.fm-disk-room-check.XXXXXX") || die "cannot write in $state"
   {
     printf '%s\n' '#!/usr/bin/env bash' '# Auto-generated by fm-disk-room.sh arm - real disk room watcher check.'
-    for v in MARGIN HOST ROOT VHDX MB_GROUPS COMPACT_RESULT STATE; do
+    for v in MARGIN HOST ROOT VHDX MB_GROUPS COMPACT_RESULT SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE; do
       name=FM_DISK_ROOM_$v
       [ -z "${!name+x}" ] || printf 'export %s=%q\n' "$name" "${!name}"
     done
