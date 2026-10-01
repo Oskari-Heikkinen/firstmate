@@ -247,11 +247,13 @@ assert_equals "Authorization: Bearer $KEY" "$(cat "$LOG/header")" "curl receives
 assert_equals $'curl:clean\nquota-axi:clean' "$(cat "$LOG/child-env")" "the API key is absent from every child environment"
 body=$(cat "$LOG/body")
 assert_equals 'jev-latest' "$(jq -r .model <<<"$body")" "default model is jev-latest"
-assert_equals '{"task":{"kind":"ship","mode":"no-mistakes","summary":"A simple bug fix with a stated root cause in the pager."}}' "$(jq -c .state <<<"$body")" "the state is exactly the allow-listed kind, mode, and summary"
+assert_equals '{"task":{"kind":null,"summary":"A simple bug fix with a stated root cause in the pager."}}' "$(jq -c .state <<<"$body")" "the state is exactly the allow-listed kind and summary"
 for sentinel in $BRIEF_SENTINELS; do
   assert_not_contains "$body" "$sentinel" "brief content outside the allow-list never reaches the request: $sentinel"
 done
-assert_contains "$out" '  sent: kind=ship mode=no-mistakes summary=A simple bug fix with a stated root cause in the pager.' "the output shows exactly what was sent"
+assert_contains "$out" '  sent: kind=- summary=A simple bug fix with a stated root cause in the pager.' "the output shows exactly what was sent"
+assert_not_contains "$body" 'mode=' "a ship brief's delivery mode is never sent"
+assert_not_contains "$body" 'no-mistakes' "a ship brief's delivery mode is never sent"
 assert_equals '["rule"]' "$(jq -c '.questions | keys' <<<"$body")" "only the rule Choice is asked"
 assert_equals '["default","rule_1","rule_2","rule_3","rule_4"]' "$(jq -c '.questions.rule.criteria | keys' <<<"$body")" "one option per rule plus default"
 assert_equals 'No listed rule applies to this task.' "$(jq -r '.questions.rule.criteria.default' <<<"$body")" "the fixed generic none criterion is the default option"
@@ -261,7 +263,87 @@ assert_not_contains "$body" 'spendPriority' "quota never leaves the machine"
 assert_not_contains "$body" 'cursor-grok' "use profiles never leave the machine"
 pass "clear: one rule Choice request, key on the fd header only, spendPriority argmax over every candidate"
 
-# --- allow-list: summary source, redaction, bounds, kind, and mode -----------
+# --- never-send list: a match or a bad list withholds the request -------------
+NEVER_SEND="$HOME_DIR/config/dispatch-never-send"
+PRIVATE_SUMMARY='Fix the pager for the Acme-Ledger account 4417-2290.'
+expect_withheld() {  # <label> <stderr fragment> [<value that must not print>...]
+  local label=$1 fragment=$2
+  shift 2
+  expect_code 0 "$code" "$label exits 0"
+  assert_equals '' "$out" "$label prints nothing on stdout, so firstmate uses its existing intake"
+  assert_contains "$err" "dispatch-resolve: off ($fragment" "$label names why on stderr"
+  assert_contains "$err" 'nothing sent)' "$label says nothing was sent"
+  assert_equals '1' "$(grep -c . <<<"$err")" "$label prints one diagnostic line"
+  assert_absent "$LOG/argv" "$label never calls curl"
+  assert_absent "$LOG/quota-axi.calls" "$label never reads quota"
+  local value
+  for value in "$@"; do
+    assert_not_contains "$err" "$value" "$label never prints the listed value"
+  done
+}
+
+printf '%s\n' '# private values' '' '   ' 'Unlisted-Value' > "$NEVER_SEND"
+reset_log
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$PRIVATE_SUMMARY"
+assert_contains "$out" '  status: clear' "a list with no match leaves resolution unchanged"
+assert_contains "$(jq -r .state.task.summary "$LOG/body")" 'Acme-Ledger' "a list with no match sends the summary"
+
+printf '%s\n' '# private values' '' '  acme-ledger  ' > "$NEVER_SEND"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$PRIVATE_SUMMARY"
+expect_withheld "a case-insensitive literal match" "brief text matches $NEVER_SEND line 3" 'acme-ledger' 'Acme-Ledger'
+
+WRAPPED_SUMMARY=$(printf 'Fix the pager for Example Client\nLtd before\tthe\xc2\xa0release.')
+printf '%s\n' 'example  client ltd' > "$NEVER_SEND"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$WRAPPED_SUMMARY"
+expect_withheld "a literal the summary wraps across lines" "brief text matches $NEVER_SEND line 1" 'example' 'Example'
+
+printf '%s\n' 'before the release' > "$NEVER_SEND"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$WRAPPED_SUMMARY"
+expect_withheld "a literal the summary spaces with a tab and a no-break space" "brief text matches $NEVER_SEND line 1" 'release'
+
+printf '%s\n' 'stated root cause' > "$NEVER_SEND"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+expect_withheld "a rule-criterion match" "brief text matches $NEVER_SEND line 1" 'stated root cause'
+
+SECOND_HOME="$TMP_ROOT/secondmate-home"
+mkdir -p "$SECOND_HOME/config"
+printf '%s\n' 'acme-ledger' > "$NEVER_SEND"
+# A child shell keeps the lib's own globals (such as out) out of this script
+# shellcheck disable=SC2016 # Expanded by the child shell
+bash -c '. "$1" && propagate_inheritable_config "$2" "$3"' _ \
+  "$ROOT/bin/fm-config-inherit-lib.sh" "$HOME_DIR/config" "$SECOND_HOME/config" \
+  || fail "inheritance into the secondmate home failed"
+PRIMARY_HOME=$HOME_DIR
+HOME_DIR=$SECOND_HOME
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$PRIVATE_SUMMARY"
+expect_withheld "an inherited list in a secondmate home" "brief text matches $SECOND_HOME/config/dispatch-never-send line 1" 'acme-ledger' 'Acme-Ledger'
+HOME_DIR=$PRIMARY_HOME
+
+rm -f "$NEVER_SEND"
+mkdir "$NEVER_SEND"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$PRIVATE_SUMMARY"
+expect_withheld "a directory at the list path" "$NEVER_SEND is not a readable regular file"
+rmdir "$NEVER_SEND"
+ln -s "$TMP_ROOT/missing-never-send" "$NEVER_SEND"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$PRIVATE_SUMMARY"
+expect_withheld "a broken symlink at the list path" "$NEVER_SEND is not a readable regular file"
+rm -f "$NEVER_SEND"
+
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$PRIVATE_SUMMARY"
+assert_contains "$out" '  status: clear' "no list resolves exactly as before"
+assert_contains "$(jq -r .state.task.summary "$LOG/body")" 'Acme-Ledger' "no list sends the summary as before"
+pass "never-send list withholds the request on a match or a bad list, and never prints the value"
+
+# --- allow-list: summary source, redaction, bounds, and kind ------------------
 request_state() {  # <brief> [args...]: run once; sets code, out, err, and state
   local brief=$1
   shift
@@ -271,11 +353,11 @@ request_state() {  # <brief> [args...]: run once; sets code, out, err, and state
   if [ -f "$LOG/body" ]; then state=$(jq -c .state "$LOG/body"); else state=no-request; fi
 }
 request_state "$BRIEF" --summary 'Small bug fix in the exporter.'
-assert_equals '{"task":{"kind":"ship","mode":"no-mistakes","summary":"Small bug fix in the exporter."}}' "$state" "--summary is sent, never a summary-like line in the brief"
+assert_equals '{"task":{"kind":null,"summary":"Small bug fix in the exporter."}}' "$state" "--summary is sent, never a summary-like line in the brief"
 # shellcheck disable=SC2016 # literal backticks are the code span under test
 LEAKY_SUMMARY='Fix `load_lattice()` per https://x.invalid/a and www.private.invalid, see ~/cad/part.step or C:\\cad\\part, mail a@b.invalid, KEY=abc, ghp_short sk-live-abc xoxb-1 AKIAABC eyJhbGci, id 0123456789abcdef, node CADPARTNUMBERWITHOUTDIGITSX, v1.2.3 done.'
 request_state "$BRIEF" --summary "$LEAKY_SUMMARY"
-assert_equals '{"task":{"kind":"ship","mode":"no-mistakes","summary":"Fix [redacted] per [redacted] and [redacted] see [redacted] or [redacted] mail [redacted] id [redacted] node [redacted] done."}}' "$state" "code spans, URLs, paths, emails, assignments, secret prefixes, opaque tokens, and dotted names are redacted"
+assert_equals '{"task":{"kind":null,"summary":"Fix [redacted] per [redacted] and [redacted] see [redacted] or [redacted] mail [redacted] id [redacted] node [redacted] done."}}' "$state" "code spans, URLs, paths, emails, assignments, secret prefixes, opaque tokens, and dotted names are redacted"
 for leak in load_lattice x.invalid private.invalid part.step 'cad' a@b KEY= abc ghp_ sk-live xoxb AKIA eyJ 0123456789abcdef CADPARTNUMBER 1.2.3; do
   assert_not_contains "$(cat "$LOG/body")" "$leak" "redacted summary token never reaches the request: $leak"
 done
@@ -293,19 +375,19 @@ assert_equals 'Bug fix in the pager' "$(jq -r .task.summary <<<"$state")" "contr
 SCOUT_BRIEF="$TMP_ROOT/scout-brief.md"
 printf '%s\n' '# Setup' 'This is a SCOUT task: the deliverable is a written report, not a PR.' > "$SCOUT_BRIEF"
 request_state "$SCOUT_BRIEF" --summary 'Investigate a flaky test.'
-assert_equals '{"task":{"kind":"scout","mode":null,"summary":"Investigate a flaky test."}}' "$state" "a scout brief sends kind scout and no mode"
+assert_equals '{"task":{"kind":"scout","summary":"Investigate a flaky test."}}' "$state" "a scout brief sends kind scout"
 DIRECT_PUSH_BRIEF="$TMP_ROOT/direct-push-brief.md"
 printf '%s\n' 'Delivery contract: mode=direct-push' > "$DIRECT_PUSH_BRIEF"
 request_state "$DIRECT_PUSH_BRIEF" --summary 'Bug fix.'
-assert_equals '{"task":{"kind":"ship","mode":"direct-push","summary":"Bug fix."}}' "$state" "a direct-push brief sends mode direct-push"
+assert_equals '{"task":{"kind":null,"summary":"Bug fix."}}' "$state" "a ship brief's delivery mode is never sent"
 ODD_BRIEF="$TMP_ROOT/odd-brief.md"
 printf '%s\n' 'Delivery contract: mode=private-mode-name extra' > "$ODD_BRIEF"
 request_state "$ODD_BRIEF" --summary 'Bug fix.'
-assert_equals '{"task":{"kind":"ship","mode":null,"summary":"Bug fix."}}' "$state" "an unknown delivery mode is never sent"
+assert_equals '{"task":{"kind":null,"summary":"Bug fix."}}' "$state" "an unknown delivery mode is never sent"
 PLAIN_BRIEF="$TMP_ROOT/plain-brief.md"
 printf '%s\n' '# Task' 'Fix a bug.' > "$PLAIN_BRIEF"
 request_state "$PLAIN_BRIEF" --summary 'Bug fix.'
-assert_equals '{"task":{"kind":null,"mode":null,"summary":"Bug fix."}}' "$state" "a brief with neither contract line sends null kind and mode"
+assert_equals '{"task":{"kind":null,"summary":"Bug fix."}}' "$state" "a brief with no scout contract line sends null kind"
 request_state "$BRIEF"
 expect_code 0 "$code" "no summary exits 0"
 assert_equals 'no-request' "$state" "no --summary never calls the API, even when the brief has a summary-like line"
@@ -314,7 +396,7 @@ assert_absent "$LOG/quota-axi.calls" "no summary never reads quota-axi"
 request_state "$BRIEF" --summary 'https://private.invalid/x /home/a/b ghp_abc'
 assert_equals 'no-request' "$state" "a summary left with no words after redaction never calls the API"
 assert_contains "$out" '  reason: no dispatch summary to match' "a fully redacted summary is a non-clear result"
-pass "only kind, mode, and a bounded redacted summary leave the machine; no summary means no request"
+pass "only the scout kind and a bounded redacted summary leave the machine; no summary means no request"
 
 # --- rules are snapshotted and line output is injection-safe -------------------
 MUTATED_RULES="$TMP_ROOT/mutated-rules.json"
@@ -411,6 +493,78 @@ assert_contains "$out" 'candidate: claude:sonnet  provider=claude  scope=all_mod
 assert_contains "$out" 'candidate: kimi:kimi-code/k3  provider=kimi  -> eligible, unranked: provider kimi unmeasured (unknown): disclosed uncertainty' "ambiguous preserves eligible unranked candidate evidence"
 assert_not_contains "$out" '  profile:' "ambiguous emits no profile line"
 pass "ambiguous: confidence below the fixed floor hands the decision back"
+
+# --- per-rule confidence floor ------------------------------------------------
+write_floor_response() {  # <path> <choice> <confidence> <rule_1> <rule_2> <rule_3> <rule_4> <default>
+  cat > "$1" <<JSON
+{ "model": "jev-1.13.0",
+  "answers": { "rule": { "type": "choice", "choice": "$2", "confidence": $3,
+    "probabilities": { "rule_1": $4, "rule_2": $5, "rule_3": $6, "rule_4": $7, "default": $8 } } },
+  "usage": { "input_tokens": 812, "output_tokens": 60 } }
+JSON
+}
+FLOOR_RULES="$TMP_ROOT/floor-rules.json"
+jq '.rules[1].min_confidence = 0.9 | .rules[3].min_confidence = 0.1' "$BASE_RULES" > "$FLOOR_RULES"
+cp "$FLOOR_RULES" "$RULES"
+reset_log
+write_floor_response "$RESPONSE" rule_2 0.76 0.02 0.76 0.02 0.18 0.02
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" '  status: clear' "a top rule below its own floor falls to a runner-up that clears its floor"
+assert_contains "$out" '  rule: rule_2 (The task generates images.)   confidence: 0.76' "the model's own pick stays visible"
+assert_contains "$out" '  fallback: rule_4 (A simple bug fix with a stated root cause.) probability 0.18 clears its floor 0.1; rule_2 probability 0.76 is below its floor 0.9' "the fallback names both floors"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "the runner-up rule's profiles are resolved"
+assert_not_contains "$(cat "$LOG/body")" 'min_confidence' "the model never sees confidence floors"
+
+reset_log
+write_floor_response "$RESPONSE" rule_2 0.76 0.02 0.76 0.02 0.08 0.12
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" '  status: ambiguous' "no runner-up clearing its own floor is ambiguous"
+assert_contains "$out" '  reason: rule_2 probability 0.76 below its floor 0.9; no other option clears its own floor' "the undeclared default keeps the global floor as a runner-up"
+assert_not_contains "$out" '  fallback:' "no fallback is reported when none is taken"
+assert_not_contains "$out" '  profile:' "ambiguous per-rule floor emits no profile"
+
+jq '.rules[0].min_confidence = 0.1' "$FLOOR_RULES" > "$RULES"
+reset_log
+write_floor_response "$RESPONSE" rule_2 0.76 0.12 0.76 0.0 0.12 0.0
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" '  status: ambiguous' "equally probable runner-ups never break by option order"
+assert_contains "$out" '  reason: rule_2 probability 0.76 below its floor 0.9; runner-up tie' "a runner-up tie is named"
+
+cp "$FLOOR_RULES" "$RULES"
+reset_log
+write_floor_response "$RESPONSE" rule_4 0.45 0.01 0.01 0.01 0.45 0.52
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "a declared floor below the global floor lets the picked rule resolve"
+
+# A declared floor needs the same support from a rule as the pick or as a runner-up
+jq '.rules[3].min_confidence = 0.3' "$FLOOR_RULES" > "$RULES"
+reset_log
+write_floor_response "$RESPONSE" rule_4 0.25 0.25 0.05 0.05 0.35 0.30
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" '  status: clear' "a picked rule clears its declared floor on its own probability, not the answer confidence"
+assert_not_contains "$out" '  fallback:' "a picked rule that clears its own floor takes no fallback"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "the picked rule resolves at probability 0.35 over floor 0.3"
+
+reset_log
+write_floor_response "$RESPONSE" rule_2 0.95 0.05 0.55 0.05 0.30 0.05
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" '  status: clear' "a high answer confidence does not lift a picked rule over its own floor"
+assert_contains "$out" '  fallback: rule_4 (A simple bug fix with a stated root cause.) probability 0.30 clears its floor 0.3; rule_2 probability 0.55 is below its floor 0.9' "the runner-up clears the same floor it would need as the pick"
+
+reset_log
+write_floor_response "$RESPONSE" rule_2 0.55 0.05 0.55 0.05 0.25 0.10
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" '  status: ambiguous' "a runner-up below its own floor is not taken"
+assert_contains "$out" '  reason: rule_2 probability 0.55 below its floor 0.9; no other option clears its own floor' "the missed runner-up floor is named"
+cp "$BASE_RULES" "$RULES"
+
+reset_log
+write_floor_response "$RESPONSE" rule_2 0.55 0.01 0.55 0.01 0.42 0.01
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" '  status: ambiguous' "without declared floors a low pick stays ambiguous"
+assert_contains "$out" '  reason: confidence 0.55 below floor 0.6' "without declared floors the global floor reason is unchanged"
+assert_not_contains "$out" '  fallback:' "without declared floors no runner-up is taken"
+pass "per-rule confidence floors fall to the most probable runner-up that clears its own floor"
 
 # --- escalate: captain approval ------------------------------------------------
 reset_log
@@ -712,7 +866,7 @@ TYPESAFE_API_KEY=$KEY FAKE_QUOTA_FAIL=1 run code out err "$BRIEF" --summary "$SU
 expect_code 0 "$code" "quota-axi failure exits 0"
 assert_contains "$out" '  status: error' "quota-axi failure is an error outcome"
 assert_contains "$out" '  reason: quota-axi --json failed' "quota-axi failure is named"
-assert_contains "$out" "  sent: kind=ship mode=no-mistakes summary=$SUMMARY" "an error after the request still shows what was sent"
+assert_contains "$out" "  sent: kind=- summary=$SUMMARY" "an error after the request still shows what was sent"
 pass "quota evidence comes from one quota-axi --json read, and its failure is an error outcome"
 
 # --- API and response failures are error outcomes, exit 0 ----------------------
@@ -729,17 +883,17 @@ expect_code 0 "$code" "http 429 exits 0"
 assert_contains "$out" '  status: error' "http 429 is an error outcome"
 assert_contains "$out" '  reason: http 429 after' "http status is reported"
 assert_contains "$err" 'dispatch-resolve: error (http 429' "error also goes to stderr"
-assert_equals "  sent: kind=ship mode=no-mistakes summary=$SUMMARY" "$(sed -n 3p <<<"$out")" "an http error shows what was sent before its reason"
+assert_equals "  sent: kind=- summary=$SUMMARY" "$(sed -n 3p <<<"$out")" "an http error shows what was sent before its reason"
 reset_log
 TYPESAFE_API_KEY=$KEY FAKE_CURL_FAIL=1 run code out err "$BRIEF" --summary "$SUMMARY"
 expect_code 0 "$code" "curl failure exits 0"
 assert_contains "$out" '  reason: http 000 after' "transport failure reads as http 000"
-assert_contains "$out" "  sent: kind=ship mode=no-mistakes summary=$SUMMARY" "a transport failure shows what may have been sent"
+assert_contains "$out" "  sent: kind=- summary=$SUMMARY" "a transport failure shows what may have been sent"
 reset_log
 printf '%s\n' '{"model":"jev","answers":{}}' > "$RESPONSE"
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
 assert_contains "$out" '  reason: response is not a rule Choice answer' "a malformed answer is an error outcome"
-assert_contains "$out" "  sent: kind=ship mode=no-mistakes summary=$SUMMARY" "a malformed answer shows what was sent"
+assert_contains "$out" "  sent: kind=- summary=$SUMMARY" "a malformed answer shows what was sent"
 reset_log
 write_response "$RESPONSE" rule_4 0.9
 jq '.usage = "bad"' "$RESPONSE" > "$TMP_ROOT/malformed-usage.json"
@@ -805,6 +959,8 @@ assert_contains "$err" 'not JSON' "non-JSON rules is named"
 for bad in \
   '{"rules":[{"when":"x","use":{"harness":"claude"},"approval":"firstmate"}]}|approval must be "captain" when present' \
   '{"rules":[{"when":"x","use":{"harness":"claude"},"select":"mystery"}]}|unknown select: mystery' \
+  '{"rules":[{"when":"x","use":{"harness":"claude"},"min_confidence":"high"}]}|min_confidence must be a number from 0 through 1 when present' \
+  '{"rules":[{"when":"x","use":{"harness":"claude"},"min_confidence":1.5}]}|min_confidence must be a number from 0 through 1 when present' \
   '{"rules":[{"when":"x","use":{"harness":"claude"},"floor":{"scope":"model:fable","min_percent":20}}]}|rule floor needs scope, min_percent 0..100, and provider matching ^[a-z0-9]+(-[a-z0-9]+)*\z' \
   '{"rules":[{"when":"x","use":{"harness":"claude"},"floor":{"scope":"model:fable","min_percent":20,"provider":"CLAUDE"}}]}|rule floor needs scope, min_percent 0..100, and provider matching ^[a-z0-9]+(-[a-z0-9]+)*\z' \
   '{"rules":[{"when":"x","use":{"harness":"claude","provider":""}}]}|each use profile needs harness; model, effort, and floor must be well formed, and provider must match ^[a-z0-9]+(-[a-z0-9]+)*\z when present' \

@@ -132,6 +132,10 @@ test_secondmate_launch_keeps_its_contract() {
   printf '# Firstmate\n' > "$sm/AGENTS.md"
   printf '%s\n' "$id" > "$sm/.fm-secondmate-home"
   printf 'charter for %s\n' "$id" > "$sm/data/charter.md"
+  # Real secondmate homes are firstmate clones, and a launch installs its
+  # AI-trailer strip hooks into a git worktree.
+  printf '%s\n' 'projects/' 'state/' 'data/' 'config/' '.no-mistakes/' > "$sm/.gitignore"
+  git -C "$sm" init -q -b main
   fm_test_spawn_brief "$HOME_DIR" "$id"
   out=$(FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" \
     "$id" "$sm" --secondmate) || fail "secondmate spawn failed: $out"

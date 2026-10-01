@@ -416,6 +416,27 @@ test_spawn_refuses_an_unregistered_or_missing_login() {
   pass "a spawn refuses rather than launching on a login other than the one named"
 }
 
+test_spawn_honors_the_home_login_pin_over_the_registry() {
+  local out rc
+  spawn_case spawn-pin acct-s3
+  mkdir -p "$C/pinned"
+  # The pin's sign-in check runs `claude auth status`; this fake says signed in.
+  fm_fake_exit0 "$SPAWN_FAKEBIN" claude
+  printf '%s\n' "$C/pinned" > "$H/config/claude-account"
+  out=$(FM_SPAWN_ACCOUNT=work FM_FAKE_LAUNCH_LOG="$C/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$C/gmail" \
+    fm_test_run_spawn "$H" "$C/wt" "$SPAWN_FAKEBIN" acct-s3 "$C/project" --mode no-mistakes --yolo off); rc=$?
+  expect_code 1 "$rc" "a registry account under a home pin"
+  assert_contains "$out" "config/claude-account pins this home's Claude login, so account 'work' cannot be honored" "the refusal names the pin"
+  assert_absent "$H/state/acct-s3.meta" "a refused spawn leaves no record"
+  out=$(FM_FAKE_LAUNCH_LOG="$C/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$C/gmail" \
+    fm_test_run_spawn "$H" "$C/wt" "$SPAWN_FAKEBIN" acct-s3 "$C/project" --mode no-mistakes --yolo off); rc=$?
+  expect_code 0 "$rc" "spawn under a pin"$'\n'"$out"
+  assert_not_contains "$out" "below the 10% floor" "the registry does not move a pinned home"
+  assert_contains "$(cat "$C/launch.log")" "CLAUDE_CONFIG_DIR='$C/pinned' " "the worker launches on the pinned login"
+  assert_grep "account=$C/pinned" "$H/state/acct-s3.meta" "the record carries the pin"
+  pass "a home login pin outranks the account registry"
+}
+
 # classify_case <name> <gmail-fixture>: a case whose gmail login answers
 # <gmail-fixture>, read once through status --json with an ambient env token.
 # Sets OUT to that JSON.
@@ -562,5 +583,6 @@ test_auto_arms_and_retires_the_watcher_check
 test_panel_toggles_a_herdr_side_pane
 test_spawn_leaves_a_low_login_and_records_the_account
 test_spawn_refuses_an_unregistered_or_missing_login
+test_spawn_honors_the_home_login_pin_over_the_registry
 
 echo "# all fm-account tests passed"

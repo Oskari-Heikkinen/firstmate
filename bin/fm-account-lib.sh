@@ -39,7 +39,10 @@
 #      launcher's own CLAUDE_CONFIG_DIR - then, when that choice is low, the
 #      first registered Claude account with known room at or above the floor.
 # A named account that is not registered, or not Claude, or whose folder is
-# missing, refuses rather than silently launching on another login. With no
+# missing, refuses rather than silently launching on another login.
+# A launching home's config/claude-account pin (bin/fm-worker-account-lib.sh)
+# outranks all of the above: with it present nothing is chosen here, and an
+# explicit FM_SPAWN_ACCOUNT refuses because the pin cannot be overridden. With no
 # registry and no FM_SPAWN_ACCOUNT the launch is unchanged: the launcher's own
 # CLAUDE_CONFIG_DIR is forwarded exactly as before.
 #
@@ -369,6 +372,19 @@ fm_account_pick() {
   printf '%s' "$3"
 }
 
+# fm_account_recorded_name <meta>: the registered account name a task record
+# carries in account=, or nothing. A config/claude-account pin also records
+# account=, as `ordinary` or an absolute root (bin/fm-worker-account-lib.sh);
+# neither is a registry name, so either reads as no recorded account.
+fm_account_recorded_name() {
+  local name
+  name=$(fm_account_meta_get "$1" account)
+  case "$name" in
+    ordinary|/*) return 0 ;;
+  esac
+  printf '%s' "$name"
+}
+
 # fm_account_new_spawn_preference <config-dir>: the account a fresh ship or
 # scout spawn from this home starts from before the floor check, or nothing.
 fm_account_new_spawn_preference() {
@@ -390,6 +406,13 @@ fm_account_resolve_spawn() {
   local name='' source='' recorded_dir pick left
   # shellcheck disable=SC2034 # results read by the sourcing caller
   FM_ACCOUNT_NAME='' FM_ACCOUNT_DIR='' FM_ACCOUNT_NOTICE='' FM_ACCOUNT_ERROR=''
+  if [ -e "$config/claude-account" ] || [ -L "$config/claude-account" ]; then
+    [ -z "${FM_SPAWN_ACCOUNT:-}" ] || {
+      FM_ACCOUNT_ERROR="config/claude-account pins this home's Claude login, so account '$FM_SPAWN_ACCOUNT' cannot be honored"
+      return 1
+    }
+    return 0
+  fi
   fm_account_list "$config" >/dev/null || return 1
   if [ -n "${FM_SPAWN_ACCOUNT:-}" ]; then
     name=$FM_SPAWN_ACCOUNT source='the requested switch'
@@ -397,7 +420,7 @@ fm_account_resolve_spawn() {
     name=$(fm_account_read_name "$smhome/config/account")
     source="$smhome/config/account"
   elif [ "$relaunch" = 1 ]; then
-    name=$(fm_account_meta_get "$meta" account)
+    name=$(fm_account_recorded_name "$meta")
     source='its task record'
     if [ -z "$name" ]; then
       recorded_dir=$(fm_account_meta_get "$meta" claude_config_dir)

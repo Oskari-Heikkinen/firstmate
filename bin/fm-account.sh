@@ -115,7 +115,7 @@ self_label() {
 # an empty field survives bash's read.
 agent_account() {
   local meta=$1 launcher=$2 acct home
-  acct=$(fm_account_meta_get "$meta" account)
+  acct=$(fm_account_recorded_name "$meta")
   [ -n "$acct" ] || acct=$(fm_account_name_for_dir "$CONFIG" "$(fm_account_meta_get "$meta" claude_config_dir)" claude)
   if [ -n "$acct" ]; then printf '%s|recorded' "$acct"; return; fi
   if [ "$(fm_account_meta_get "$meta" kind)" = secondmate ]; then
@@ -324,7 +324,7 @@ move_check() {
   MOVE_KIND=$(fm_account_meta_get "$MOVE_META" kind)
   harness=$(fm_account_meta_get "$MOVE_META" harness)
   [ "$harness" = claude ] || { echo "error: $id runs on $harness, not Claude; account switching covers Claude workers only" >&2; return 1; }
-  MOVE_FROM=$(fm_account_meta_get "$MOVE_META" account)
+  MOVE_FROM=$(fm_account_recorded_name "$MOVE_META")
   [ "$MOVE_KIND" = secondmate ] || return 0
   [ -z "$(fm_account_meta_get "$MOVE_META" remote_host)" ] || { echo "error: $id is a remote second mate; switch its account on its own host" >&2; return 1; }
   MOVE_HOME=$(fm_account_meta_get "$MOVE_META" home)
@@ -334,7 +334,7 @@ move_check() {
 # move_verify <id> <from> <account> <exit>: report and log whether the task
 # record now carries <account>.
 move_verify() {
-  if [ "$(fm_account_meta_get "$STATE/$1.meta" account)" = "$3" ]; then
+  if [ "$(fm_account_recorded_name "$STATE/$1.meta")" = "$3" ]; then
     echo "moved: $1 ${2:-unrecorded} -> $3"
     log_move "$1" "$2" "$3" moved
     return 0
