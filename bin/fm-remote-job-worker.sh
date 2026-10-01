@@ -39,7 +39,34 @@
 # consecutive-failure backoff, but not that total restart guard, so a child
 # that dies just past the healthy threshold cannot restart without bound
 # either. fm-on's ensure path restarts a worker that gave up.
+#
+# Every mode closes each inherited file descriptor above 2 before doing
+# anything else. The worker is a long-lived daemon started from whatever command
+# first needed it, and an inherited descriptor would otherwise live as long as
+# the worker tree: a caller's flock (a heavy-slot admission lock, say) would
+# stay held after that caller exited. Every descriptor the worker uses itself is
+# opened after this point.
 set -u
+
+worker_close_inherited_fds() {
+  local fd_dir entry fd fds=''
+  for fd_dir in /proc/self/fd /dev/fd; do
+    [ -d "$fd_dir" ] || continue
+    for entry in "$fd_dir"/*; do
+      fd=${entry##*/}
+      case "$fd" in ''|*[!0-9]*) continue ;; esac
+      [ "$fd" -gt 2 ] && fds="$fds $fd"
+    done
+    break
+  done
+  # Bash moves its own script-reading descriptor aside when a redirection
+  # targets it, so closing that one is safe too. The listing's own directory
+  # descriptor is already gone and fails harmlessly.
+  for fd in $fds; do
+    eval "exec $fd>&-" 2>/dev/null || true
+  done
+}
+worker_close_inherited_fds
 
 # A non-numeric override falls back to the default rather than crashing the
 # arithmetic that bounds these loops.

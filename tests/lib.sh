@@ -165,6 +165,67 @@ fm_test_reap_procevent_homes() {
   rm -f "$FM_TEST_PROCEVENT_REGISTRY"
 }
 
+# --- remote job worker reaping -----------------------------------------------
+#
+# A remote job worker started through fm-on's ensure path is a detached restart
+# supervisor plus its serving child, so it outlives the command that started it.
+# Killing only the pid in worker.pid (the serving child) makes the supervisor
+# respawn one, and removing the fixture directory does not stop either, so a
+# suite that did only that left the tree running reparented to init.
+#
+# fm_test_stop_remote_job_workers <dir> stops every worker process whose
+# FM_REMOTE_JOB_STATE_ROOT is <dir> or lies below it, read from the process's own
+# environment, so it never reaches another fixture's or a real home's worker.
+# Where /proc or pgrep is unavailable it finds and stops nothing.
+# It signals the worker's own process group when the worker leads one, TERM
+# first and KILL only for a survivor, and rescans so a respawned child is caught.
+# fm_test_cleanup runs it for every registered fixture root; a suite that
+# replaces that trap calls it from its own cleanup.
+
+fm_test_remote_job_worker_pids() {  # <dir>
+  local scope=$1 canonical pid env_root
+  [ -d /proc/self ] && command -v pgrep >/dev/null 2>&1 || return 0
+  canonical=$(cd -P -- "$scope" 2>/dev/null && pwd -P) || canonical=$scope
+  for pid in $(pgrep -f '^[^ ]*bash [^ ]*/fm-remote-job-worker\.sh( |$)' 2>/dev/null); do
+    [ "$pid" != "$$" ] || continue
+    env_root=$({ tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null |
+      sed -n 's/^FM_REMOTE_JOB_STATE_ROOT=//p' | head -n 1)
+    [ -n "$env_root" ] || continue
+    case "$env_root" in
+      "$scope" | "$scope"/* | "$canonical" | "$canonical"/*) printf '%s\n' "$pid" ;;
+    esac
+  done
+}
+
+fm_test_stop_remote_job_workers() {  # <dir>
+  local scope=${1:-} pids pid pgid own_pgid signal round=0 i
+  [ -n "$scope" ] || return 0
+  own_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  while [ "$round" -lt 3 ]; do
+    pids=$(fm_test_remote_job_worker_pids "$scope")
+    [ -n "$pids" ] || return 0
+    signal=TERM
+    [ "$round" -lt 2 ] || signal=KILL
+    for pid in $pids; do
+      pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+      if [ -n "$pgid" ] && [ "$pgid" = "$pid" ] && [ "$pgid" != "$own_pgid" ]; then
+        kill "-$signal" -- "-$pgid" 2>/dev/null || true
+      fi
+      kill "-$signal" "$pid" 2>/dev/null || true
+    done
+    # Rescan rather than probe each pid: a worker the suite started directly
+    # stays a zombie until the suite waits for it, and a zombie still answers a
+    # bare signal probe.
+    i=0
+    while [ "$i" -lt 50 ] && [ -n "$(fm_test_remote_job_worker_pids "$scope")" ]; do
+      i=$((i + 1))
+      sleep 0.1
+    done
+    round=$((round + 1))
+  done
+  [ -z "$(fm_test_remote_job_worker_pids "$scope")" ]
+}
+
 # Ceiling on how long a fixture's blocking stub may keep polling. A stub that
 # waits for a trigger file by re-running `sleep` is a high-frequency source of
 # process spawns, and one that outlives its test - because the test was killed
@@ -179,11 +240,15 @@ fm_test_cleanup() {
   local d
   fm_test_reap_procevent_homes
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
-    [ -n "$d" ] && rm -rf "$d"
+    [ -n "$d" ] || continue
+    fm_test_stop_remote_job_workers "$d" || true
+    rm -rf "$d"
   done
   if [ -f "$FM_TEST_CLEANUP_REGISTRY" ]; then
     while IFS= read -r d; do
-      [ -n "$d" ] && rm -rf "$d"
+      [ -n "$d" ] || continue
+      fm_test_stop_remote_job_workers "$d" < /dev/null || true
+      rm -rf "$d"
     done < "$FM_TEST_CLEANUP_REGISTRY"
     rm -f "$FM_TEST_CLEANUP_REGISTRY"
   fi

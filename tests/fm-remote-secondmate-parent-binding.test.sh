@@ -50,7 +50,6 @@ PUBLISH_PID=
 mkdir -p "$PARENT/data" "$PARENT/state" "$PARENT/config" "$PARENT/projects" "$REMOTE_ROOT" "$CLAIMS"
 
 cleanup() {
-  local worker_pid=''
   if [ -n "$PUBLISH_PID" ]; then
     touch "$PUBLISH_RELEASE" 2>/dev/null || true
     kill "$PUBLISH_PID" 2>/dev/null || true
@@ -58,10 +57,7 @@ cleanup() {
   fi
   FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" \
     "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true
-  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
-    worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
-    kill "$worker_pid" 2>/dev/null || true
-  fi
+  fm_test_stop_remote_job_workers "$TMP_ROOT" || true
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT

@@ -27,6 +27,7 @@ cleanup() {
     worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
     fm_remote_job_stop_worker_tree "$worker_pid" || true
   fi
+  fm_test_stop_remote_job_workers "$TMP_ROOT" || true
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT
