@@ -51,7 +51,10 @@ trap relaunch_cleanup EXIT
 
 # The same lifecycle-modelling tmux stub as tests/fm-control.test.sh: the
 # harness's exit command stops the agent, and a launch-brief literal starts the
-# harness named in `becomes`.
+# harness named in `becomes`. A `claude-dialog` file instead makes the Enter
+# that submits /exit open Claude's background-work exit dialog (rows from
+# Claude Code 2.1.286), where Down focuses Move to background and exit and
+# Enter answers the focused option into `claude-choice`.
 make_tmux_stub() {  # <dir>
   local fb="$1/fakebin"
   mkdir -p "$fb"
@@ -77,7 +80,15 @@ case "${1:-}" in
       esac
       printf '%s\n' "$payload" >> "$D/literal"
       case "$payload" in
-        /exit|/quit)
+        /exit)
+          if [ -f "$D/claude-dialog" ]; then
+            : > "$D/claude-exit-typed"
+            exit 0
+          fi
+          printf 'zsh' > "$D/command"
+          [ -z "${FM_FAKE_EXIT_TRANSPORT_FAIL_AFTER_STOP:-}" ] || exit 1
+          ;;
+        /quit)
           printf 'zsh' > "$D/command"
           [ -z "${FM_FAKE_EXIT_TRANSPORT_FAIL_AFTER_STOP:-}" ] || exit 1
           ;;
@@ -88,6 +99,24 @@ case "${1:-}" in
       esac
     else
       printf '%s\n' "$payload" >> "$D/keys"
+      if [ "$payload" = Enter ] && [ -f "$D/claude-exit-typed" ]; then
+        rm -f "$D/claude-exit-typed"
+        printf '1' > "$D/claude-focus"
+      elif [ -f "$D/claude-focus" ]; then
+        case "$payload" in
+          Down) printf '2' > "$D/claude-focus" ;;
+          Escape) rm -f "$D/claude-focus" ;;
+          Enter)
+            sed -n "$(cat "$D/claude-focus")p" <<'OPTS' > "$D/claude-choice"
+Exit and stop tasks
+Move to background and exit
+Stay
+OPTS
+            rm -f "$D/claude-focus"
+            printf 'zsh' > "$D/command"
+            ;;
+        esac
+      fi
       case "$payload" in
         'export GOTMPDIR='*)
           if [ -n "${FM_FAKE_TRACE_PREPARE:-}" ]; then
@@ -117,7 +146,15 @@ case "${1:-}" in
     printf 'fakepane\n'; exit 0 ;;
   capture-pane)
     [ -z "${FM_FAKE_COMPOSER_READ_FAIL:-}" ] || exit 1
-    if [ -s "$D/composer" ]; then
+    if [ -f "$D/claude-focus" ]; then
+      printf '   Background work is running\n   The following will stop when you exit:\n   shell · sleep 900\n'
+      if [ "$(cat "$D/claude-focus")" = 1 ]; then
+        printf '   ❯ 1. Exit and stop tasks\n     2. Move to background and exit\n'
+      else
+        printf '     1. Exit and stop tasks\n   ❯ 2. Move to background and exit\n'
+      fi
+      printf '     3. Stay\n   Enter to confirm · Esc to cancel\n'
+    elif [ -s "$D/composer" ]; then
       printf '╭────╮\n│ %s  │\n╰────╯\n' "$(cat "$D/composer")"
     else
       printf '╭────╮\n│    │\n╰────╯\n'
@@ -388,6 +425,23 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_grep "cd -- '$dir/wt'" "$dir/fake/keys" "the replacement launch must enter the recorded worktree"
   assert_grep "Firstmate operational input waiting: read" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
+}
+
+test_relaunch_answers_claude_background_work_exit_dialog() {
+  local dir out rc
+  dir=$(new_case bgwork rl90)
+  add_ship_task "$dir" rl90 claude
+  : > "$dir/fake/claude-dialog"
+  out=$(run_control "$dir" rl90 relaunch --note "background shell still running"); rc=$?
+  expect_code 0 "$rc" "a relaunch through Claude's background-work dialog should succeed"$'\n'"$out"
+  [ "$(cat "$dir/fake/claude-choice" 2>/dev/null)" = "Move to background and exit" ] \
+    || fail "the old agent should exit through Move to background and exit"$'\n'"$out"
+  assert_contains "$out" "relaunched rl90 harness=claude from=claude" "the outcome should name the transition"
+  [ "$(journal_field "$dir" rl90 exit_result)" = "stopped background-work=kept" ] \
+    || fail "the journal should record that background work was kept, got '$(journal_field "$dir" rl90 exit_result)'"
+  [ "$(journal_field "$dir" rl90 phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  pass "fm-control relaunch: Claude's background-work exit dialog is answered with Move to background and exit"
 }
 
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
@@ -2545,3 +2599,4 @@ test_herdr_reclaim_of_a_secondmate_names_its_own_owner
 test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight
+test_relaunch_answers_claude_background_work_exit_dialog

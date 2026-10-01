@@ -372,7 +372,7 @@ family_for_basename() {
     fm-send-inbox-doorbell-live-e2e.test.sh|\
     fm-calm-claude-mod-plugin.test.sh|fm-calm-claude-mod-live-e2e.test.sh|\
     fm-calm-pi-queue-retention-live-e2e.test.sh|\
-    fm-herdr-submit-confirm-live-e2e.test.sh)
+    fm-herdr-submit-confirm-live-e2e.test.sh|fm-control-claude-exit-dialog-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
@@ -724,6 +724,7 @@ tests/fm-codex-hook-layer-live-e2e.test.sh 47
 tests/fm-composer-codex-idle-live-e2e.test.sh 229
 tests/fm-composer-matrix-live-e2e.test.sh 47
 tests/fm-contributions.test.sh 35676
+tests/fm-control-claude-exit-dialog-live-e2e.test.sh 46
 tests/fm-control-relaunch.test.sh 137013
 tests/fm-control.test.sh 39524
 tests/fm-cursor-harness.test.sh 30212

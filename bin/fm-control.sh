@@ -50,7 +50,11 @@
 #              always REFUSES: a task record carries no socket identity for its
 #              endpoint, so this verb cannot tell a destroyed window from one on
 #              a tmux server it cannot address, and it will not claim a stop it
-#              cannot see.
+#              cannot see. An exit command that opens the harness's exit
+#              dialog (Claude's "Background work is running") is answered with
+#              its work-preserving option when offered and focus-proven, then
+#              must still read dead (`stopped background-work=kept`); otherwise
+#              the dialog is dismissed with its Stay key and exit refuses.
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME worktree - and the same endpoint whenever that endpoint
 #              still exists - on the same or a newly chosen
@@ -556,10 +560,108 @@ retire_busy_incarnation() {
   fi
 }
 
+# wait_exit_or_dialog <dialog-ere> <exit-command>: after the exit command, poll
+# until the agent reads dead or the adapter's exit dialog renders, within
+# EXIT_WAIT. Prints `dead` (returns 0), `exit-dialog` (returns 1), or the last
+# observed state (returns 1). An empty ERE waits for dead alone. With a dialog,
+# the exit command was submitted with one Enter, because the dialog's focused
+# row reads as pending composer text and a blind retry would confirm its
+# default option; a later Enter goes only to a viewport that, in one capture,
+# still shows the exit command in the composer and no dialog row, at most
+# EXIT_RETRIES - 1 times and no sooner than 1.2s apart.
+wait_exit_or_dialog() {  # <dialog-ere> <exit-command>
+  local dialog=$1 cmd=$2 state screen elapsed=0 since_enter=0 retries_left
+  retries_left=$((EXIT_RETRIES - 1))
+  while :; do
+    state=$(agent_state)
+    if [ "$state" = dead ]; then
+      printf 'dead'
+      return 0
+    fi
+    if [ -n "$dialog" ]; then
+      screen=$(fm_backend_visible_capture "$BACKEND" "$T" "$LABEL" 2>/dev/null) || screen=
+      if printf '%s\n' "$screen" | grep -Eq -- "$dialog"; then
+        printf 'exit-dialog'
+        return 1
+      fi
+      if [ "$retries_left" -gt 0 ] \
+         && awk -v e="$since_enter" 'BEGIN{exit !(e >= 1.2)}' \
+         && printf '%s\n' "$screen" | grep -Eq -- "❯[[:space:]]+${cmd}[[:space:]]*\$"; then
+        fm_backend_send_key "$BACKEND" "$T" Enter "$LABEL" || true
+        retries_left=$((retries_left - 1))
+        since_enter=0
+      fi
+    fi
+    awk -v e="$elapsed" -v t="$EXIT_WAIT" 'BEGIN{exit !(e < t)}' || break
+    sleep "$POLL"
+    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+    since_enter=$(awk -v e="$since_enter" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+  done
+  printf '%s' "$state"
+  return 1
+}
+
+# dismiss_exit_dialog <dismiss-key> <dialog-ere> <why>: close the exit dialog
+# with its own cancel key, which keeps the agent and its background work
+# running, then refuse naming the dialog. Enter is never sent here, because it
+# confirms the focused option and the default one stops the background work.
+dismiss_exit_dialog() {  # <dismiss-key> <dialog-ere> <why>
+  local key=$1 dialog=$2 why=$3 gap
+  gap=$(fm_control_interrupt_press_gap "$HARNESS")
+  if ! fm_backend_send_key "$BACKEND" "$T" "$key" "$LABEL"; then
+    die "exit-delivered $ID exit=refused: the $cmd exit command opened $HARNESS's 'Background work is running' dialog; $why. The $key that dismisses it was not delivered, so the dialog is still open; answer it in the pane, never with Enter, which stops the background work. Nothing was claimed stopped"
+  fi
+  sleep "$gap"
+  if ! wait_dialog_closed "$dialog"; then
+    die "exit-delivered $ID exit=refused: the $cmd exit command opened $HARNESS's 'Background work is running' dialog; $why. It still shows after $key, so answer it in the pane, never with Enter, which stops the background work. Nothing was claimed stopped"
+  fi
+  die "exit-delivered $ID exit=refused agent-state=$(agent_state): the $cmd exit command opened $HARNESS's 'Background work is running' dialog; $why. Chose Stay with $key, so the agent and its background work keep running. Let the background work finish or stop it inside the agent, then retry '$VERB'"
+}
+
+wait_dialog_closed() {  # <dialog-ere>
+  local elapsed=0
+  while rendered_matches "$1"; do
+    awk -v e="$elapsed" -v t="$ARM_WAIT" 'BEGIN{exit !(e < t)}' || return 1
+    sleep "$POLL"
+    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+  done
+}
+
+# answer_exit_dialog <interrupt-result>: the exit command opened the adapter's
+# exit dialog. Select its work-preserving option only when the dialog offers
+# it, the backend can deliver the focus and confirm keys, and the focus is
+# proven on that option; then require the agent to read dead. Every other
+# path dismisses the dialog and refuses (dismiss_exit_dialog).
+answer_exit_dialog() {  # <interrupt-result>
+  local dialog label offered focus_key focused dismiss state
+  dialog=$(fm_control_exit_dialog_signal "$HARNESS")
+  IFS=$'\t' read -r label offered focus_key focused dismiss <<< "$(fm_control_exit_dialog_preserve "$HARNESS")"
+  [ -n "$label" ] \
+    || die "exit-delivered $ID exit=refused: the $cmd exit command opened a $HARNESS exit dialog that has no verified work-preserving answer; nothing more was sent. Answer it in the pane"
+  fm_control_backend_supports_key "$BACKEND" "$dismiss" \
+    || die "exit-delivered $ID exit=refused: the $cmd exit command opened $HARNESS's 'Background work is running' dialog, and the $BACKEND backend cannot deliver its $dismiss; nothing more was sent. Answer it in the pane, never with Enter, which stops the background work"
+  rendered_matches "$offered" \
+    || dismiss_exit_dialog "$dismiss" "$dialog" "it offers no '$label' option, only choices that stop the background work or stay"
+  if ! fm_control_backend_supports_key "$BACKEND" "$focus_key" \
+     || ! fm_control_backend_supports_key "$BACKEND" Enter; then
+    dismiss_exit_dialog "$dismiss" "$dialog" "the $BACKEND backend cannot deliver the $focus_key and Enter that select '$label'"
+  fi
+  fm_backend_send_key "$BACKEND" "$T" "$focus_key" "$LABEL" \
+    || dismiss_exit_dialog "$dismiss" "$dialog" "the $focus_key that moves focus onto '$label' was not delivered"
+  wait_rendered "$focused" "$ARM_WAIT" \
+    || dismiss_exit_dialog "$dismiss" "$dialog" "focus did not render on '$label' after $focus_key, so Enter could have confirmed an option that stops the background work"
+  fm_backend_send_key "$BACKEND" "$T" Enter "$LABEL" \
+    || dismiss_exit_dialog "$dismiss" "$dialog" "the Enter that confirms '$label' was not delivered"
+  state=$(wait_agent_state "$EXIT_WAIT" dead) \
+    || die "exit-delivered $ID interrupt=$1 exit-command=delivered exit-dialog=answered choice='$label' agent-state=$state exit=unconfirmed; the agent did not stop within ${EXIT_WAIT}s"
+}
+
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
-# `already-stopped`, `endpoint-gone`, or `stopped`.
+# `already-stopped`, `endpoint-gone`, `stopped`, or `stopped
+# background-work=kept` when the adapter's exit dialog was answered with its
+# work-preserving option.
 do_exit() {
-  local state cmd hazard verdict composer_state cancel absence interrupt_result=not-needed
+  local state cmd hazard dialog submit_retries verdict composer_state cancel absence interrupt_result=not-needed
   require_state_verified_backend exit
   state=$(agent_state)
   case "$state" in
@@ -642,13 +744,22 @@ do_exit() {
   # legitimately report anything. Only a hard transport failure aborts; the
   # authoritative proof is the agent-state wait below. The retried Enter still
   # matters, because a slash command opens a completion popup on some TUIs that
-  # swallows the first Enter.
-  verdict=$(fm_backend_send_text_submit "$BACKEND" "$T" "$cmd" "$EXIT_RETRIES" "$POLL" 1.2 "$LABEL") \
+  # swallows the first Enter; an adapter with an exit dialog retries it only
+  # inside wait_exit_or_dialog.
+  dialog=$(fm_control_exit_dialog_signal "$HARNESS")
+  submit_retries=$EXIT_RETRIES
+  [ -z "$dialog" ] || submit_retries=1
+  verdict=$(fm_backend_send_text_submit "$BACKEND" "$T" "$cmd" "$submit_retries" "$POLL" 1.2 "$LABEL") \
     || die "the exit command could not be sent to task $ID on $BACKEND"
   [ "$verdict" != send-failed ] \
     || die "the exit command could not be sent to task $ID on $BACKEND"
-  state=$(wait_agent_state "$EXIT_WAIT" dead) || {
-    die "exit-delivered $ID interrupt=$interrupt_result exit-command=delivered agent-state=$state exit=unconfirmed; the agent did not stop within ${EXIT_WAIT}s"
+  state=$(wait_exit_or_dialog "$dialog" "$cmd") || {
+    [ "$state" = exit-dialog ] \
+      || die "exit-delivered $ID interrupt=$interrupt_result exit-command=delivered agent-state=$state exit=unconfirmed; the agent did not stop within ${EXIT_WAIT}s"
+    answer_exit_dialog "$interrupt_result"
+    retire_busy_incarnation
+    printf 'stopped background-work=kept'
+    return 0
   }
   # The incarnation is over: retire its busy wiring so no stale record or
   # orphaned generation survives the agent that produced it.

@@ -235,6 +235,44 @@ fm_control_exit_command() {  # <harness>
   esac
 }
 
+# The confirmation dialog an exit command can open instead of exiting, as an
+# ERE over the visible viewport; empty when the adapter has none. Claude opens
+# "Background work is running" when background shells or scheduled tasks are
+# live, listing them under "The following will stop when you exit:" above the
+# options `Exit and stop tasks`, `Move to background and exit` (offered only
+# for some sessions), and `Stay`, focused on `Exit and stop tasks` with Escape
+# meaning Stay. Any one of three independent rows carries the verdict, so no
+# single rendered string is load-bearing, and each must fill its whole row, so
+# a transcript line quoting the dialog does not read as the dialog. Verified
+# live on Claude Code
+# 2.1.286 in tmux: Down then Enter on the focused background option exited the
+# agent and left its background shell running, and Escape left the agent
+# running at an empty composer.
+fm_control_exit_dialog_signal() {  # <harness>
+  case "${1-}" in
+    claude) printf '%s' '^[[:space:]]*(Background work is running|The following will stop when you exit:|(❯[[:space:]]*)?([0-9]+\.[[:space:]]*)?Exit and stop tasks)[[:space:]]*$' ;;
+    codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|devin) ;;
+    *) return 1 ;;
+  esac
+}
+
+# The exit dialog's work-preserving option: its label, an ERE for the option
+# row that proves it is offered, the key that moves focus onto it from the
+# default option, an ERE proving that focus, and the key that dismisses the
+# dialog without exiting. Tab-separated; nothing when the adapter has no exit
+# dialog. The focus proof matters because Enter confirms whatever is focused,
+# and the default focus stops the background work; Enter is sent only after
+# that proof renders.
+fm_control_exit_dialog_preserve() {  # <harness> -> label, offered ERE, focus key, focused ERE, dismiss key
+  case "${1-}" in
+    claude) printf '%s\t%s\t%s\t%s\t%s\n' 'Move to background and exit' \
+      '^[[:space:]]*(❯[[:space:]]*)?([0-9]+\.[[:space:]]*)?Move to background and exit[[:space:]]*$' Down \
+      '^[[:space:]]*❯[[:space:]]*([0-9]+\.[[:space:]]*)?Move to background and exit[[:space:]]*$' Escape ;;
+    codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|devin) ;;
+    *) return 1 ;;
+  esac
+}
+
 # The launch argument that makes a RELAUNCH of <harness> RESUME an exact agent
 # session instead of starting a fresh one, printed only when <registered-agent>
 # is the label that session reference belongs to; nothing otherwise.
@@ -275,12 +313,17 @@ fm_control_relaunch_resume_flag() {  # <harness> <registered-agent>
 # Which named keys a backend adapter can deliver. Every session provider
 # normalizes Enter, Ctrl+C, and the Ctrl+U composer clear; Orca's terminal API
 # exposes only an interrupt and an Enter, so it can deliver neither Escape nor
-# Ctrl+U (bin/backends/orca.sh's fm_backend_orca_send_key).
+# Ctrl+U (bin/backends/orca.sh's fm_backend_orca_send_key). Down moves a
+# dialog's focus for fm_control_exit_dialog_preserve, so it is listed only on
+# the two backends that can prove an exit at all; tmux was verified live, and
+# herdr's `down` key name is unverified there but harmless, because Enter
+# waits for the focus to render.
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
     tmux|herdr|zellij|cmux)
       case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
+      case "$backend:$key" in tmux:Down|herdr:Down) return 0 ;; esac
       ;;
     orca)
       case "$key" in Enter|C-c) return 0 ;; esac
