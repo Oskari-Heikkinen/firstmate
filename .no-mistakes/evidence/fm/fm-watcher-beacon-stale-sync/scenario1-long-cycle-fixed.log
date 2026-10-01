@@ -1,0 +1,45 @@
+code root: /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VK07HY0W1SE5SA9CHJE8M4   (commit: 25212b2f)
+first arm: watcher: started pid=517441 (beacon fresh)  watcher pid=517441
+t=1s cycle_stamp=1 seconds_into_cycle=0 beacon_age=1s
+t=2s cycle_stamp=1 seconds_into_cycle=1 beacon_age=2s
+t=3s cycle_stamp=1 seconds_into_cycle=2 beacon_age=0s
+t=4s cycle_stamp=1 seconds_into_cycle=3 beacon_age=1s
+t=5s cycle_stamp=1 seconds_into_cycle=4 beacon_age=2s
+t=6s cycle_stamp=1 seconds_into_cycle=5 beacon_age=3s
+t=7s cycle_stamp=1 seconds_into_cycle=6 beacon_age=0s
+t=8s cycle_stamp=1 seconds_into_cycle=7 beacon_age=1s
+t=9s cycle_stamp=1 seconds_into_cycle=8 beacon_age=2s
+t=10s cycle_stamp=1 seconds_into_cycle=9 beacon_age=3s  RE-ARM -> watcher: attached pid=517441 (beacon 3s)
+t=11s cycle_stamp=2 seconds_into_cycle=0 beacon_age=1s
+t=12s cycle_stamp=2 seconds_into_cycle=1 beacon_age=2s
+t=13s cycle_stamp=2 seconds_into_cycle=2 beacon_age=3s
+t=14s cycle_stamp=2 seconds_into_cycle=3 beacon_age=4s
+t=15s cycle_stamp=2 seconds_into_cycle=4 beacon_age=1s
+t=16s cycle_stamp=2 seconds_into_cycle=5 beacon_age=2s
+t=17s cycle_stamp=2 seconds_into_cycle=6 beacon_age=3s
+t=18s cycle_stamp=2 seconds_into_cycle=7 beacon_age=4s
+t=19s cycle_stamp=2 seconds_into_cycle=8 beacon_age=1s
+t=20s cycle_stamp=2 seconds_into_cycle=9 beacon_age=2s  RE-ARM -> watcher: attached pid=517441 (beacon 2s)
+t=21s cycle_stamp=3 seconds_into_cycle=0 beacon_age=0s
+t=22s cycle_stamp=3 seconds_into_cycle=1 beacon_age=1s
+t=23s cycle_stamp=3 seconds_into_cycle=2 beacon_age=2s
+t=24s cycle_stamp=3 seconds_into_cycle=3 beacon_age=3s
+t=25s cycle_stamp=3 seconds_into_cycle=4 beacon_age=0s
+t=26s cycle_stamp=3 seconds_into_cycle=5 beacon_age=1s
+t=27s cycle_stamp=4 seconds_into_cycle=0 beacon_age=0s
+t=28s cycle_stamp=4 seconds_into_cycle=1 beacon_age=1s
+t=29s cycle_stamp=4 seconds_into_cycle=2 beacon_age=2s
+t=30s cycle_stamp=4 seconds_into_cycle=3 beacon_age=3s
+t=31s cycle_stamp=4 seconds_into_cycle=4 beacon_age=4s
+t=32s cycle_stamp=4 seconds_into_cycle=5 beacon_age=0s
+t=33s cycle_stamp=4 seconds_into_cycle=6 beacon_age=1s
+t=34s cycle_stamp=4 seconds_into_cycle=7 beacon_age=2s
+t=35s cycle_stamp=4 seconds_into_cycle=8 beacon_age=3s
+t=36s cycle_stamp=4 seconds_into_cycle=9 beacon_age=0s  RE-ARM -> watcher: attached pid=517441 (beacon 1s)
+t=37s cycle_stamp=5 seconds_into_cycle=0 beacon_age=3s
+t=38s cycle_stamp=5 seconds_into_cycle=1 beacon_age=0s
+t=39s cycle_stamp=5 seconds_into_cycle=3 beacon_age=2s
+t=40s cycle_stamp=5 seconds_into_cycle=4 beacon_age=3s
+RESULT: mid-cycle re-arms=3 attached=3 refused=0
+watcher pid 517441 still alive at end
+no watchdog stop logged

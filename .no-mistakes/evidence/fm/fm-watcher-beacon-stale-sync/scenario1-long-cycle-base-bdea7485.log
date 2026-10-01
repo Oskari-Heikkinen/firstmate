@@ -1,0 +1,45 @@
+code root: /tmp/fm-base-code   (commit: bdea7485)
+first arm: watcher: started pid=631727 (beacon fresh)  watcher pid=631727
+t=1s cycle_stamp=mtime:1790854618 seconds_into_cycle=0 beacon_age=3s
+t=2s cycle_stamp=mtime:1790854618 seconds_into_cycle=1 beacon_age=4s
+t=3s cycle_stamp=mtime:1790854618 seconds_into_cycle=2 beacon_age=5s
+t=4s cycle_stamp=mtime:1790854618 seconds_into_cycle=3 beacon_age=6s
+t=5s cycle_stamp=mtime:1790854618 seconds_into_cycle=4 beacon_age=7s
+t=6s cycle_stamp=mtime:1790854618 seconds_into_cycle=5 beacon_age=8s
+t=7s cycle_stamp=mtime:1790854618 seconds_into_cycle=6 beacon_age=9s
+t=8s cycle_stamp=mtime:1790854618 seconds_into_cycle=7 beacon_age=10s
+t=9s cycle_stamp=mtime:1790854618 seconds_into_cycle=8 beacon_age=11s
+t=10s cycle_stamp=mtime:1790854618 seconds_into_cycle=9 beacon_age=12s  RE-ARM -> watcher: lock held by live pid 631727 but heartbeat is stale for 12s (>8s); inspect or stop that watcher before re-arming.
+t=11s cycle_stamp=mtime:1790854618 seconds_into_cycle=10 beacon_age=13s  RE-ARM -> watcher: lock held by live pid 631727 but heartbeat is stale for 13s (>8s); inspect or stop that watcher before re-arming.
+t=12s cycle_stamp=mtime:1790854618 seconds_into_cycle=12 beacon_age=15s  RE-ARM -> watcher: already running pid 631727
+t=13s cycle_stamp=mtime:1790854633 seconds_into_cycle=0 beacon_age=1s
+t=14s cycle_stamp=mtime:1790854633 seconds_into_cycle=1 beacon_age=2s
+t=15s cycle_stamp=mtime:1790854633 seconds_into_cycle=2 beacon_age=3s
+t=16s cycle_stamp=mtime:1790854633 seconds_into_cycle=3 beacon_age=4s
+t=17s cycle_stamp=mtime:1790854633 seconds_into_cycle=4 beacon_age=5s
+t=18s cycle_stamp=mtime:1790854633 seconds_into_cycle=5 beacon_age=6s
+t=19s cycle_stamp=mtime:1790854633 seconds_into_cycle=4 beacon_age=5s
+t=20s cycle_stamp=mtime:1790854633 seconds_into_cycle=5 beacon_age=6s
+t=21s cycle_stamp=mtime:1790854633 seconds_into_cycle=6 beacon_age=7s
+t=22s cycle_stamp=mtime:1790854633 seconds_into_cycle=7 beacon_age=8s
+t=23s cycle_stamp=mtime:1790854633 seconds_into_cycle=8 beacon_age=9s
+t=24s cycle_stamp=mtime:1790854633 seconds_into_cycle=9 beacon_age=10s
+t=25s cycle_stamp=mtime:1790854633 seconds_into_cycle=10 beacon_age=11s
+t=26s cycle_stamp=mtime:1790854633 seconds_into_cycle=11 beacon_age=12s
+t=27s cycle_stamp=mtime:1790854646 seconds_into_cycle=0 beacon_age=0s
+t=28s cycle_stamp=mtime:1790854646 seconds_into_cycle=1 beacon_age=1s
+t=29s cycle_stamp=mtime:1790854646 seconds_into_cycle=2 beacon_age=2s
+t=30s cycle_stamp=mtime:1790854646 seconds_into_cycle=3 beacon_age=3s
+t=31s cycle_stamp=mtime:1790854646 seconds_into_cycle=4 beacon_age=4s
+t=32s cycle_stamp=mtime:1790854646 seconds_into_cycle=6 beacon_age=6s
+t=33s cycle_stamp=mtime:1790854646 seconds_into_cycle=7 beacon_age=7s
+t=34s cycle_stamp=mtime:1790854646 seconds_into_cycle=8 beacon_age=8s
+t=35s cycle_stamp=mtime:1790854646 seconds_into_cycle=9 beacon_age=9s
+t=36s cycle_stamp=mtime:1790854646 seconds_into_cycle=10 beacon_age=10s
+t=37s cycle_stamp=mtime:1790854646 seconds_into_cycle=11 beacon_age=11s
+t=38s cycle_stamp=mtime:1790854646 seconds_into_cycle=12 beacon_age=12s
+t=39s cycle_stamp=mtime:1790854646 seconds_into_cycle=13 beacon_age=13s
+t=40s cycle_stamp=mtime:1790854646 seconds_into_cycle=14 beacon_age=14s
+RESULT: mid-cycle re-arms=3 attached=0 refused=3
+watcher pid 631727 still alive at end
+no watchdog stop logged

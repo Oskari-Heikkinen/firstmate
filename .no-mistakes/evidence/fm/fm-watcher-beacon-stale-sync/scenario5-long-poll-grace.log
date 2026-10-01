@@ -1,0 +1,9 @@
+code: 25212b2f
+arm #1: watcher: started pid=963462 (beacon fresh)
+beacon age now 400s, watcher 963462 in its 600s terminal wait
+re-arm: watcher: attached pid=963462 (beacon 400s)
+
+code: bdea7485
+arm #1: watcher: started pid=989807 (beacon fresh)
+beacon age now 400s, watcher 989807 in its 600s terminal wait
+re-arm: Terminated

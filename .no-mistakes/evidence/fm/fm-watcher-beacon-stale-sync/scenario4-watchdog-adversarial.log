@@ -1,0 +1,58 @@
+home A watcher=809889 (watcher: started pid=809889 (beacon fresh));  home B watcher=805727 (watcher: started pid=805727 (beacon fresh))
+== A: wedge home A, home B healthy ==
+t=1s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=1s
+t=2s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=2s
+t=3s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=1s
+t=4s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=2s
+t=5s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=0s
+t=6s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=1s
+t=7s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=0s
+t=8s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=1s
+t=9s A alive=yes A_wchan=pipe_read | B alive=yes B_beacon_age=2s
+t=10s A alive=no A_wchan= | B alive=yes B_beacon_age=0s
+A triage: [2026-10-01T13:39:09+0200] watchdog: stopping wedged watcher pid 809889 (beacon unchanged for 8s >= 8s)
+B triage watchdog lines: 0
+RESULT A: home A stopped=yes, home B watcher 805727 still alive=yes
+== B: wall-clock jump on home B's beacon ==
+backdated B beacon: age now 1000s
+t=1s B alive=yes B_beacon_age=1000s
+t=2s B alive=yes B_beacon_age=1001s
+t=3s B alive=yes B_beacon_age=0s
+t=4s B alive=yes B_beacon_age=1s
+t=5s B alive=yes B_beacon_age=2s
+t=6s B alive=yes B_beacon_age=0s
+t=7s B alive=yes B_beacon_age=1s
+t=8s B alive=yes B_beacon_age=0s
+t=9s B alive=yes B_beacon_age=1s
+t=10s B alive=yes B_beacon_age=0s
+t=11s B alive=yes B_beacon_age=0s
+t=12s B alive=yes B_beacon_age=1s
+RESULT B: B watcher survived jump=yes; watchdog lines=0
+== C: SIGSTOP home B's watcher (live pid, never beats) ==
+t=1s B watcher state=T beacon_age=1s
+t=2s B watcher state=T beacon_age=2s
+t=3s B watcher state=T beacon_age=3s
+t=4s B watcher state=T beacon_age=4s
+t=5s B watcher state=T beacon_age=5s
+t=6s B watcher state=T beacon_age=6s
+t=7s B watcher state=T beacon_age=7s
+t=8s B watcher state=T beacon_age=8s
+t=9s B watcher state=T beacon_age=9s
+t=10s B watcher state=T beacon_age=10s
+t=11s B watcher state=T beacon_age=11s
+t=12s B watcher state=T beacon_age=12s
+t=13s B watcher state=T beacon_age=13s
+t=14s B watcher state=T beacon_age=14s
+t=15s B watcher state=T beacon_age=15s
+t=16s B watcher state=T beacon_age=16s
+t=17s B watcher state=T beacon_age=17s
+t=18s B watcher state=T beacon_age=18s
+t=19s B watcher state=T beacon_age=19s
+t=20s B watcher state=T beacon_age=20s
+B triage: [2026-10-01T13:39:30+0200] watchdog: stopping wedged watcher pid 805727 (beacon unchanged for 8s >= 8s) [2026-10-01T13:39:41+0200] watchdog: wedged watcher pid 805727 ignored TERM; killing it 
+B lock now: 805727  old watcher alive=no
+RESULT C: owner-path re-arm on B: watcher: started pid=908264 (beacon fresh)
+--- B cycle-exit ledger ---
+watcher_pid=805727	exit_code=137	signal=KILL	reason=signal-exit	beacon_age=21	lock_before=pid:805727|identity:linux-starttime=5632319 cmdline-hex=62617368002f686f6d652f6f736b6172692f2e6e6f2d6d697374616b65732f776f726b74726565732f6361316231346464643462392f30314d33564b3037485930573153453553413943484a45384d342f62696e2f666d2d77617463682e736800
+--- leftover processes referencing either lab home ---
+(none)

@@ -1,0 +1,36 @@
+seeded 1320 pending-reply records (1200 resolved, 120 open escalated)
+arm #1: watcher: started pid=768479 (beacon fresh)
+t=0s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=1s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=2s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=3s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=5s cycle_stamp=1 beacon_age=1s watcher_alive=yes
+t=6s cycle_stamp=1 beacon_age=1s watcher_alive=yes
+t=7s cycle_stamp=1 beacon_age=1s watcher_alive=yes
+   mid-scan re-arm at 7s into cycle 1 (grace 5s): watcher: attached pid=768479 (beacon 1s)
+t=12s cycle_stamp=1 beacon_age=1s watcher_alive=yes
+t=13s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=14s cycle_stamp=1 beacon_age=1s watcher_alive=yes
+t=15s cycle_stamp=1 beacon_age=1s watcher_alive=yes
+t=16s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=17s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=18s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=19s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=20s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=21s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=20s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=21s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=22s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=23s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=24s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=25s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=26s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=27s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=28s cycle_stamp=1 beacon_age=0s watcher_alive=yes
+t=29s cycle_stamp=1 beacon_age=1s watcher_alive=yes
+t=30s cycle_stamp=2 beacon_age=0s watcher_alive=yes
+RESULT: cycle 1 (pending-reply scan) took ~30s, > grace 5s; max beacon age seen=1s
+RESULT: watcher_beat 'touch' processes during cycle 1 ~= 32 for 1320 records (throttle: at most ~1 per second)
+RESULT: mid-scan re-arm said: watcher: attached pid=768479 (beacon 1s)
+watchdog lines: 0
+watcher 768479 alive after scan: yes

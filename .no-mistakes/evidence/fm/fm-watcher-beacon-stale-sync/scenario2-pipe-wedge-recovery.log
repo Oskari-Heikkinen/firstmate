@@ -1,0 +1,28 @@
+lab tmux window: primary:fm-hang  (pane capture shim leaves a detached 'sleep 600' holding the capture pipe)
+arm #1: watcher: started pid=703740 (beacon fresh)   watcher pid=703740  pipe holder pid=705348
+t=1s watcher 703740 alive wchan=pipe_read beacon_age=1s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=2s watcher 703740 alive wchan=pipe_read beacon_age=2s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=3s watcher 703740 alive wchan=pipe_read beacon_age=3s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=4s watcher 703740 alive wchan=pipe_read beacon_age=4s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=5s watcher 703740 alive wchan=pipe_read beacon_age=5s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=6s watcher 703740 alive wchan=pipe_read beacon_age=4s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=7s watcher 703740 alive wchan=pipe_read beacon_age=5s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=8s watcher 703740 alive wchan=pipe_read beacon_age=6s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=9s watcher 703740 alive wchan=pipe_read beacon_age=7s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=10s watcher 703740 alive wchan=pipe_read beacon_age=8s children=[704344 ] pipes=[pipe:[174524632] pipe:[174516102] ]
+t=11s watcher 703740 is GONE (no manual kill was sent)
+--- triage log (watchdog lines) ---
+[2026-10-01T13:37:53+0200] watchdog: stopping wedged watcher pid 703740 (beacon unchanged for 8s >= 8s)
+--- arm #1 output ---
+watcher: started pid=703740 (beacon fresh)
+watcher: FAILED - watcher cycle exited 143 without an actionable reason
+arm #1 exit=143
+pipe holder 705348 still alive: yes
+--- lock after stop: <no lock>
+--- owner-path recovery: fm-watch-arm.sh (no shim, as the Stop hook would run it) ---
+arm #2: watcher: started pid=712673 (beacon fresh)
+new watcher pid=712673 (old=703740)
+--- cycle-exit ledger ---
+arm_pid=703678	watcher_pid=703740	origin=started	started_at=1790854664	ended_at=1790854673	exit_code=143	signal=TERM	reason=signal-exit	beacon_age=8	lock_before=pid:703740|identity:linux-starttime=5624599 cmdline-hex=62617368002f686f6d652f6f736b6172692f2e6e6f2d6d697374616b65732f776f726b74726565732f6361316231346464643462392f30314d33564b3037485930573153453553413943484a45384d342f62696e2f666d2d77617463682e736800	lock_after=pid:none|identity:none	successor=none
+--- leftover processes referencing this lab home after teardown ---
+(none)

@@ -1,0 +1,4 @@
+code: bdea7485
+arm #1: watcher: started pid=1050131 (beacon fresh)
+beacon age now 400s, watcher 1050131 in its 600s terminal wait
+re-arm: watcher: already running pid 1050131
