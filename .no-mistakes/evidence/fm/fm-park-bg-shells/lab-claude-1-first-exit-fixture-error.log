@@ -1,0 +1,2 @@
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.GXSj94
+REFUSED: task t1 has a missing, empty, or ambiguous project identity; preserving task state.

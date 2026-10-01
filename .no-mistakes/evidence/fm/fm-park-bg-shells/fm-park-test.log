@@ -1,0 +1,13 @@
+ok - the handoff validator requires every section and one well-formed condition
+ok - park refuses a missing handoff without stopping anything
+ok - park records, arms, declares, and stops; a second park re-arms instead of duplicating
+ok - the condition relaunches the parked task as a fresh session with its handoff
+ok - a resumed task can park again without waiting for the supervisor
+ok - a task relaunched since it parked keeps its live session and the supervisor is told
+ok - a failed relaunch wakes the supervisor and leaves the park record intact
+ok - a deadline without the result wakes the supervisor instead of relaunching
+ok - a worker parking itself gets a detached exit
+ok - FM_TASK_ID marks a self-park wherever the worker's shell is
+ok - a self-park whose exit fails wakes the supervisor instead of idling silently
+ok - a Claude self-park refuses while background shells run and parks once they stop
+ok - the background-work refusal applies only to Claude workers

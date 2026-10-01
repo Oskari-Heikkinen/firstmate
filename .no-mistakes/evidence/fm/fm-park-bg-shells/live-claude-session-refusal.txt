@@ -1,0 +1,26 @@
+# Real Claude session (CLAUDE_PID=3901339, claude) with a background Bash pipeline and a Monitor watch running
+# Process children of the Claude process:
+    PID    PPID COMMAND
+3998457 3901339 /bin/bash -c source /home/oskari/.claude-work/shell-snapshots/snapshot-bash-1790854055446-ucr3r2.sh 2>/dev/null || true && s
+4003136 3901339 /bin/bash -c source /home/oskari/.claude-work/shell-snapshots/snapshot-bash-1790854055446-ucr3r2.sh 2>/dev/null || true && s
+4016688 3901339 /bin/bash -c source /home/oskari/.claude-work/shell-snapshots/snapshot-bash-1790854055446-ucr3r2.sh 2>/dev/null || true && s
+
+$ FM_TASK_ID=t1 bin/fm-park.sh t1 --handoff handoff.md   (from inside the worker worktree)
+fm-park: task t1 was not parked: this Claude session still runs background work, and exiting now would stop on Claude's "Background work is running" prompt and leave the session idle:
+  - shell 3998457 running: sleep 300;sleep 301
+  - shell 4003136 running: tail -f /dev/null;/bin/bash -c source /home/oskari/.claude-work/shell-snapshots/snapshot-bash-1790854055446-ucr3r2.sh 2>/dev/null || true && shopt -u extglob 2>
+Stop every background shell and Monitor watch this session started (or let them finish), then run the same park command again.
+exit=1
+
+# After the refusal:
+control.log: <absent - agent never touched>
+handoff installed: no
+park_ keys in meta: 0
+
+# --- after TaskStop of both background tasks ---
+    PID    PPID COMMAND
+4030155 3901339 /bin/bash -c source /home/oskari/.claude-work/shell-snapshots/snapshot-bash-17908540
+$ FM_TASK_ID=t1 bin/fm-park.sh t1 --handoff handoff.md   (same command again)
+parked t1: waiting for file:/tmp/fm-live-a/results until 2026-10-08T11:28:57Z; this session stops in a few seconds and a fresh one starts with /tmp/fm-live-a/data/t1/handoff.md when the condition holds
+exit=0
+control.log (detached exit, fake control plane): t1 exit

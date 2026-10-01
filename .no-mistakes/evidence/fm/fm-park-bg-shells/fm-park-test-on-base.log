@@ -1,0 +1,6 @@
+ok - a deadline without the result wakes the supervisor instead of relaunching
+ok - a worker parking itself gets a detached exit
+ok - FM_TASK_ID marks a self-park wherever the worker's shell is
+ok - a self-park whose exit fails wakes the supervisor instead of idling silently
+not ok - a Claude self-park with a live background shell was accepted: parked t10: waiting for file:/tmp/fm-park-tests.tVcoXE/t10-results until 2026-10-08T11:28:28Z; this session stops in a few seconds and a fresh one starts with /tmp/fm-park-tests.tVcoXE/h-bg/data/t10/handoff.md when the condition holds
+Terminated

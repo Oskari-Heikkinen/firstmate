@@ -1,0 +1,22 @@
+### Lab Claude worker (tmux -L fm-lab, window primary:fm-t1, FM_TASK_ID=t1) after starting a background pipeline and self-parking
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Opus 5.5 with medium effort · Claude Max
+ ▝▝   ▝▝   ~/.no-mistakes/worktrees/ca1b14ddd4b9/01M3VK9285NMANZE1MB47Y4Z20
+❯ This is a test harness exercise. Do exactly these two steps and nothing else. Step 1: start the command 'sleep 900 | sleep 901' as a BACKGROUND Bash task (run_in_background true). Step 2: in the
+  foreground run: bin/fm-park.sh t1 --handoff /tmp/fm-lab.GXSj94/handoff.md   and then print its full output verbatim and stop. Do not stop the background task and do not retry.
+  Ran 2 shell commands
+● Captain, here's the full output from bin/fm-park.sh t1 --handoff /tmp/fm-lab.GXSj94/handoff.md, verbatim:
+  fm-park: task t1 was not parked: this Claude session still runs background work, and exiting now would stop on Claude's "Background work is running" prompt and leave the session idle:
+    - shell 4109430 running: sleep 900;sleep 901
+  Stop every background shell and Monitor watch this session started (or let them finish), then run the same park command again.
+  It exited with code 1, so task t1 was not parked. The background sleep 900 | sleep 901 task is still running, and I didn't retry the park command.
+✻ Churned for 8s · done 1:30 PM · 1 shell still running
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ stop the background task and run park again
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on · 1 shell · ← for agents · ↓ to manage
+
+### lab state after refusal
+handoff installed: no
+park_ keys in meta: 0
+watch armed: 0

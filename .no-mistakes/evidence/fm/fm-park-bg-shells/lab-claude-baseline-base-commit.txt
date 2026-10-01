@@ -1,0 +1,7 @@
+Baseline attempt: base commit bdea7485 bin/fm-park.sh, driven by a real Claude Code 2.1.286 worker in the lab tmux
+(shell pane primary:fm-t1, FM_TASK_ID=t1, real bin/fm-control.sh exit = '/exit').
+Run A (auto mode, background Bash 'sleep 900 | sleep 901'): park accepted (exit=0); detached exit log: stopped t1 harness=claude backend=tmux ... - Claude exited, no prompt.
+Run B (auto mode, Monitor 'tail -f /dev/null | grep NEVERMATCH'): park accepted; Claude exited, no prompt.
+Run C (--dangerously-skip-permissions, background Bash): park accepted; Claude exited, no prompt.
+=> On this Claude version + tmux, the 'Background work is running' exit prompt did not appear, so the original hang was not reproduced live.
+   Transcripts: claude sessions edfff72e-..., de1b0889-..., 33f9b10b-... (lab worktree project dir).
