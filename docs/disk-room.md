@@ -7,7 +7,7 @@ The agent procedure is the `disk-room` skill; `bin/fm-disk-room.sh` and `bin/fm-
 
 ## Real room
 
-`bin/fm-disk-room.sh` treats real room as the smaller of the Windows drive's free space and Linux free space, each minus the writes running jobs have declared.
+`bin/fm-disk-room.sh` treats real room as the smaller of the Windows drive's free space and Linux free space, each minus the writes running jobs have declared, with the Windows drive's figure also minus the shadow storage headroom described below.
 Slack inside the disk file is not counted as room: ext4 does not prefer blocks the file already holds, so a large new file grows the file even while slack exists.
 The slack is reported separately, together with how much of it the next compaction would actually return.
 
@@ -19,6 +19,20 @@ When that table or the disk file cannot be read, the monitor reports reclaimable
 The margin is the room that must remain after a job's expected write, 20 GiB by default (`FM_DISK_ROOM_MARGIN`).
 Sizes are binary (G = GiB), matching what Windows Explorer shows as GB.
 `status` also reports an external SSD's room and which root fetched results use, read from the file [`docs/storage.md`](storage.md) describes.
+
+### Shadow storage headroom
+
+Windows restore points keep their copy-on-write data in the system drive's shadow storage (diff area).
+The part already used shows up in the drive's free space, but the headroom left up to its cap is not yet taken and would otherwise be counted as room.
+After each restore point, the first overwrite of any block inside the non-sparse `ext4.vhdx` makes `volsnap` copy the old block into the diff area.
+The diff area therefore grows in 224 MiB steps until its cap binds, while Linux `df` and the disk file's size stay flat.
+The monitor reserves that headroom, the cap minus what is already used, from the Windows drive's free space.
+
+Reading the cap and the used size needs elevation, so the elevated task from the install below records both in `C:\ProgramData\firstmate\shadow-storage.txt` at every Windows start, install, and reclaim.
+The task runs the copy the install made in `C:\ProgramData\firstmate\`, so an install made before this record existed never writes it; re-run `fm-wsl-reclaim.ps1 -Install` elevated to update that copy.
+A record older than 7 days, or no record at all, leaves the used size unknown; the monitor then reserves the whole cap, the larger of the record's cap and `FM_DISK_ROOM_SHADOW_MAX` (for example `10G`), because a too-large reservation only makes room read low.
+With neither a capped record nor `FM_DISK_ROOM_SHADOW_MAX`, nothing is reserved and room reads as before; a record of shadow storage without a cap reserves nothing unless `FM_DISK_ROOM_SHADOW_MAX` bounds it.
+Without a fresh record the monitor also counts `volsnap` System events 25, 33, and 36 of the last 7 days, which need no elevation, and warns that the shadow storage is cycling, deleting restore points at its cap, when any occurred.
 
 ## Admitting big writes
 
@@ -34,7 +48,8 @@ This replaces fixed floors on raw Windows free space, which either stop a job th
 A home that should hear about low room arms the standing watcher check with `bin/fm-disk-room.sh arm`, which writes `state/disk-room.check.sh` with the `FM_DISK_ROOM_*` settings in force and binds it with `bin/fm-check-register.sh`; `bin/fm-disk-room.sh disarm` retires it.
 `watch-line` prints nothing while real room is at or above the margin.
 Under the margin it prints one line with the real room, the declared writes, and the next step, and repeats only after a further 5 GiB drop or 6 hours; a failed reading prints a "cannot measure" line at most every 6 hours.
-It reads only `df`, one `stat` of the disk file through `/mnt/c`, and `mb_groups`, and never starts PowerShell, which times out when Windows is short of memory.
+It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, and the shadow storage record, and never starts PowerShell, which times out when Windows is short of memory.
+Without a fresh shadow storage record it runs `wevtutil.exe` for the event count at most once an hour, under a 20 second timeout.
 
 ## Automatic reclaim (one-time Windows install)
 
@@ -49,7 +64,8 @@ The install:
 
 - copies the script to `C:\ProgramData\firstmate\`, restricted so only Administrators and SYSTEM can change it;
 - records the distro's disk file and Docker Desktop's `docker_data.vhdx` (leave Docker out with `-NoDocker`);
-- registers the "Firstmate WSL compact at startup" task, which runs as SYSTEM at every Windows start and compacts each recorded file that nothing holds open.
+- registers the "Firstmate WSL compact at startup" task, which runs as SYSTEM at every Windows start, compacts each recorded file that nothing holds open, and records the shadow storage cap and used size;
+- records the shadow storage once right away.
 
 No trim step is needed: the distro root is mounted with online `discard`, so blocks Linux frees are already unmapped for compaction.
 
@@ -70,7 +86,7 @@ Because it shuts WSL down, any `.wslconfig` change waiting for a restart takes e
 
 ### Uninstall
 
-`fm-wsl-reclaim.ps1 -Uninstall`, elevated, removes the task and the ProgramData script and file list, and keeps the logs.
+`fm-wsl-reclaim.ps1 -Uninstall`, elevated, removes the task and the ProgramData script, file list, and shadow storage record, and keeps the logs.
 Compaction changes no data inside the disk, so there is nothing else to roll back.
 
 ## Limits

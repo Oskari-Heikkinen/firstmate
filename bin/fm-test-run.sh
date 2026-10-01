@@ -864,6 +864,7 @@ tests/fm-watch-checkpoint.test.sh 6076
 tests/fm-watch-recovery-loop.test.sh 58946
 tests/fm-watch-triage.test.sh 697969
 tests/fm-watcher-lock.test.sh 108940
+tests/fm-wsl-reclaim.test.sh 7234
 EOF
 }
 
