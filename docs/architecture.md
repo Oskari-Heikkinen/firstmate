@@ -368,6 +368,7 @@ The `data/secondmates.md` line contract is owned by the [`secondmate-provisionin
 A `direct-push` brief stays yolo-free, so the spawn appends the landing-authority section that says whether the worker lands at once or stops at a tested ready branch until approval is relayed; `bin/fm-dod-lib.sh` owns that section too.
 Each task's mode and `yolo` merge posture are firstmate's decision at intake.
 The mode is passed explicitly to `bin/fm-brief.sh`, and both values are passed explicitly to `bin/fm-spawn.sh` and `bin/fm-promote.sh`; each command refuses to guess the values it consumes.
+A mid-flight delivery change, such as a direct-push task that now ships a PR, is recorded with `bin/fm-promote.sh --switch-mode`, which rewrites only the task record's mode and keeps its `yolo` posture and every other field.
 A ship brief records its mode as a fixed machine-readable line and the spawn refuses to launch on a different one, so the worker's instructions and the recorded task delivery cannot diverge.
 `bin/fm-dod-lib.sh` is the one owner of that mode's definition of done, rendered into a generated ship brief, the ship instructions a promoted scout receives, and that scout's own `brief.md` so a later relaunch reads the same contract, so a promoted worker cannot be handed a weaker contract than a briefed one.
 It also owns the named-head reachability gate that refuses a ship `done:` while that head exists only in the worker's disposable copy, testing the named head rather than whether some branch moved.

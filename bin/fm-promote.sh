@@ -37,7 +37,19 @@
 # the refusal of a forge on local-only.
 # A direct-push promotion's instructions also carry the landing-authority section
 # for --yolo (bin/fm-dod-lib.sh).
+# --switch-mode is the one supported way to change a live ship task's recorded
+# delivery mode when the delivery path changes mid-flight (for example a
+# direct-push task that will now ship a PR). It rewrites only the mode= line of
+# state/<task-id>.meta under the same lifecycle and record locks promotion takes,
+# leaving every other field, including yolo= and branch=, exactly as recorded.
+# It refuses a non-ship record, an unknown mode, the no-mistakes-prod-only
+# registry policy, and a mode the project's forge binding cannot carry. It writes
+# no instructions and sends nothing: the worker and its brief keep their current
+# delivery contract, so steer the worker with bin/fm-send.sh when the change
+# affects what it must do. bin/fm-pr-check.sh names this command in its
+# direct-push refusal.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off> [--branch-prefix <prefix>]
+#        fm-promote.sh <task-id> --switch-mode <no-mistakes|direct-PR|direct-push|local-only>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,6 +80,9 @@ YOLO=
 BRANCH_PREFIX=fm/
 MODE_SET=0
 YOLO_SET=0
+BRANCH_PREFIX_SET=0
+SWITCH_MODE=
+SWITCH_MODE_SET=0
 FORGE=none
 POS=()
 want_value=
@@ -79,7 +94,8 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
-      branch-prefix) BRANCH_PREFIX=$a ;;
+      branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
+      switch-mode) SWITCH_MODE=$a; SWITCH_MODE_SET=1 ;;
     esac
     want_value=
     continue
@@ -90,17 +106,27 @@ for a in "$@"; do
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --branch-prefix) want_value="branch-prefix" ;;
-    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=} ;;
+    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=}; BRANCH_PREFIX_SET=1 ;;
+    --switch-mode) want_value="switch-mode" ;;
+    --switch-mode=*) SWITCH_MODE=${a#--switch-mode=}; SWITCH_MODE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off>" >&2; exit 1; }
+[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off>" >&2; echo "       fm-promote.sh <task-id> --switch-mode <no-mistakes|direct-PR|direct-push|local-only>" >&2; exit 1; }
+if [ "$SWITCH_MODE_SET" -eq 1 ]; then
+  if [ "$MODE_SET" -eq 1 ] || [ "$YOLO_SET" -eq 1 ] || [ "$BRANCH_PREFIX_SET" -eq 1 ]; then
+    echo "error: --switch-mode changes only the recorded delivery mode of a live ship task and takes no --mode, --yolo, or --branch-prefix" >&2
+    exit 1
+  fi
+  MODE=$SWITCH_MODE
+  MODE_SET=1
+fi
 [ "$MODE_SET" -eq 1 ] || {
   echo "error: promotion requires --mode <no-mistakes|direct-PR|direct-push|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md" >&2
   exit 1
 }
-[ "$YOLO_SET" -eq 1 ] || {
+[ "$YOLO_SET" -eq 1 ] || [ "$SWITCH_MODE_SET" -eq 1 ] || {
   echo "error: promotion requires --yolo <on|off>; it is this task's merge authority, not a project lookup" >&2
   exit 1
 }
@@ -111,7 +137,7 @@ case "$MODE" in
     exit 1 ;;
   *) echo "error: --mode must be one of no-mistakes, direct-PR, direct-push, local-only (got '$MODE')" >&2; exit 1 ;;
 esac
-case "$YOLO" in
+[ "$SWITCH_MODE_SET" -eq 1 ] || case "$YOLO" in
   on|off) ;;
   *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
 esac
@@ -181,6 +207,50 @@ META_LOCK_HELD=1
 if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
   echo "error: task record for $ID is unsafe or missing ($FM_BACKLOG_TRANSITION_ERROR)" >&2
   exit 1
+fi
+
+# The mode switch publishes only the mode= line, keeping the record's field
+# order and every other field, then stops: nothing below applies to it.
+if [ "$SWITCH_MODE_SET" -eq 1 ]; then
+  grep -qx 'kind=ship' "$META" || { echo "error: task $ID is not a ship task (kind=ship not in meta); --switch-mode changes a live ship task's delivery mode, and a scout is promoted with --mode and --yolo instead" >&2; exit 1; }
+  SWITCH_OLD_MODE=$(sed -n 's/^mode=//p' "$META" | tail -n 1)
+  [ -n "$SWITCH_OLD_MODE" ] || { echo "error: task record for $ID has no mode= line to switch" >&2; exit 1; }
+  YOLO=$(sed -n 's/^yolo=//p' "$META" | tail -n 1)
+  SWITCH_PROJECT=$(sed -n 's/^project=//p' "$META" | head -n 1)
+  if [ -n "$SWITCH_PROJECT" ]; then
+    if ! SWITCH_STANDING_FORGE=$("$FM_ROOT/bin/fm-project-mode.sh" --forge "$(basename "$SWITCH_PROJECT")"); then
+      echo "error: $ID cannot switch mode: the registry entry for $(basename "$SWITCH_PROJECT") does not resolve to a delivery posture (see the refusal above); correct data/projects.md and switch again" >&2
+      exit 1
+    fi
+    FORGE=${SWITCH_STANDING_FORGE:-none}
+    fm_forge_valid_for_mode "$FORGE" "$MODE" fm-promote.sh || exit 1
+  fi
+  if [ "$SWITCH_OLD_MODE" = "$MODE" ]; then
+    echo "task $ID already records mode=$MODE; nothing was changed"
+    exit 0
+  fi
+  TMP="$STATE/.$ID.meta.switch-mode.${BASHPID:-$$}"
+  SWITCH_REPLACED=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      mode=*)
+        [ "$SWITCH_REPLACED" = 0 ] || continue
+        printf 'mode=%s\n' "$MODE"
+        SWITCH_REPLACED=1 ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < "$META" > "$TMP" || { echo "error: could not render the task record for $ID" >&2; exit 1; }
+  chmod 0600 "$TMP" || exit 1
+  if ! fm_backlog_atomic_transition publish "$TMP" "$META" "task record" "$STATE"; then
+    rm -f -- "$TMP"
+    TMP=
+    echo "error: task record for $ID could not be published ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+    exit 1
+  fi
+  TMP=
+  echo "switched $ID from mode=$SWITCH_OLD_MODE to mode=$MODE (yolo=${YOLO:-unset} and every other recorded field unchanged)"
+  echo "note: the worker's instructions were not changed; steer it with bin/fm-send.sh if the new mode changes what it must do"
+  exit 0
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 

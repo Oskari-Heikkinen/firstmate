@@ -1669,6 +1669,80 @@ EOF
   pass "direct-push: the brief lands by fast-forward push, the spawn adds landing authority per yolo, and no PR poll is armed"
 }
 
+# A task dispatched direct-push that now ships a PR must be able to record the
+# switch: the PR registration refusal names the one command that does it, that
+# command rewrites only mode= and keeps every other field, and a bad switch
+# leaves the record untouched.
+test_switch_mode_updates_only_the_recorded_mode() {
+  local rec home proj fakebin id meta before expected out status label flags expect
+  rec=$(make_home switch-mode "- proj [direct-push] - fixture (added 2026-01-01)" \
+    "- gproj [no-mistakes forge=gerrit] - fixture (added 2026-01-01)")
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  id=delivery-switch-s1
+  meta="$home/state/$id.meta"
+  printf 'window=fm-%s\nkind=ship\nmode=direct-push\nyolo=on\nbranch=fm/%s\nproject=%s\nworktree=%s\nspawn_gen=switch-test\n' \
+    "$id" "$id" "$proj" "$proj" > "$meta"
+  before=$(cat "$meta")
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-pr-check.sh" "$id" https://github.com/o/r/pull/7 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "PR registration for a direct-push task should refuse"
+  assert_contains "$out" "bin/fm-promote.sh $id --switch-mode <no-mistakes|direct-PR>" \
+    "the direct-push refusal did not name the mode switch command"
+
+  while IFS='|' read -r label flags expect; do
+    [ -n "$label" ] || continue
+    # shellcheck disable=SC2086  # flags is an intentional word-split arg list
+    out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" $flags 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain itself"
+    [ "$(cat "$meta")" = "$before" ] || fail "$label: refused switch changed the task record"
+  done <<'ROWS'
+unknown mode|--switch-mode nope|must be one of no-mistakes, direct-PR, direct-push, local-only
+conditional policy|--switch-mode no-mistakes-prod-only|classify this task's surface
+missing value|--switch-mode|--switch-mode requires a value
+combined with yolo|--switch-mode direct-PR --yolo off|takes no --mode, --yolo, or --branch-prefix
+combined with mode|--switch-mode direct-PR --mode no-mistakes|takes no --mode, --yolo, or --branch-prefix
+ROWS
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --switch-mode direct-PR 2>&1)
+  status=$?
+  expect_code 0 "$status" "switching a live direct-push ship to direct-PR should succeed"
+  assert_contains "$out" "from mode=direct-push to mode=direct-PR" "the switch did not report the change"
+  expected=$(printf '%s\n' "$before" | sed 's/^mode=direct-push$/mode=direct-PR/')
+  [ "$(cat "$meta")" = "$expected" ] || fail "the switch changed more than the mode line: $(cat "$meta")"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-pr-check.sh" "$id" https://github.com/o/r/pull/7 2>&1)
+  assert_not_contains "$out" "ships mode=direct-push" "PR registration still refused the switched task as direct-push"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --switch-mode direct-PR 2>&1)
+  status=$?
+  expect_code 0 "$status" "repeating the same switch should succeed as a no-op"
+  assert_contains "$out" "nothing was changed" "a repeated switch did not report a no-op"
+  [ "$(cat "$meta")" = "$expected" ] || fail "a repeated switch changed the task record"
+
+  id=delivery-switch-scout
+  printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$home/state/$id.meta"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --switch-mode direct-PR 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "switching a scout's mode should refuse"
+  assert_contains "$out" "is not a ship task" "the scout switch refusal did not explain itself"
+  grep -q '^mode=' "$home/state/$id.meta" && fail "a refused scout switch recorded a mode"
+
+  id=delivery-switch-gerrit
+  mkdir -p "$home/projects/gproj"
+  printf 'window=fm-%s\nkind=ship\nmode=no-mistakes\nyolo=off\nproject=%s\n' "$id" "$home/projects/gproj" > "$home/state/$id.meta"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --switch-mode direct-push 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "switching a gerrit-bound task to direct-push should refuse"
+  assert_contains "$out" "cannot ship mode=direct-push" "the forge refusal did not explain itself"
+  grep -qx 'mode=no-mistakes' "$home/state/$id.meta" || fail "a forge-refused switch changed the recorded mode"
+  pass "fm-promote --switch-mode: the PR refusal names it, it changes only mode=, and a bad switch changes nothing"
+}
+
 test_authorized_intent_keeps_words_without_composed_address
 test_spawn_refreshes_legacy_worker_roles
 
@@ -1751,4 +1825,5 @@ test_promotion_carries_the_forge_binding
 test_spawn_and_promote_require_filled_task_subsections
 test_project_mode_resolves_branch_prefix
 test_direct_push_brief_spawn_and_pr_check
+test_switch_mode_updates_only_the_recorded_mode
 echo "# all fm-task-delivery tests passed"
