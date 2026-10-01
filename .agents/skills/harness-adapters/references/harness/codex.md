@@ -23,7 +23,7 @@ The decision persists for the repository, so later worktrees of the same project
 ## Hook trust
 
 A second dialog, "Hooks need review - N hooks are new or changed", appears whenever the machine's `~/.codex/hooks.json` or a project's own `.codex/hooks.json` carries a hook Codex has not persisted trust for.
-It is unanswerable rather than merely inconvenient: its selection starts on "Review hooks", which is neither trusting nor declining, and Firstmate's key plane carries Enter, Escape and Ctrl-C with no arrow navigation.
+It is unanswerable rather than merely inconvenient: its selection starts on "Review hooks", which is neither trusting nor declining, and Firstmate's steering key plane carries Enter, Escape and Ctrl-C with no arrow navigation.
 Writing Codex's own trust store to pre-accept it would manufacture an operator consent that was never given.
 The one exception is the user-level data gate hook: the operator runs its installer, which records the trust hash for exactly that hook (`../../../../../docs/data-gate.md`).
 So crewmate and scout launches disable Codex's hook layer outright (`bin/fm-spawn.sh`'s launch template owns the flag), which is the opposite of `--dangerously-bypass-hook-trust` - that flag RUNS the untrusted hooks.
