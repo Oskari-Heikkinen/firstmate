@@ -293,14 +293,15 @@ reap_watcher() {  # <pid>
   wait "$1" 2>/dev/null || true
 }
 
-# Seed <count> resolved pending-reply records, the durable history a busy
-# parent home accumulates and fm_pending_reply_tick revisits every poll.
-seed_resolved_pending_replies() {  # <state> <count>
+# Seed <count> escalated, still-open pending-reply records: open records are
+# never pruned and each costs fm_pending_reply_tick a resolve attempt
+# every poll, unlike resolved history, which is one cheap read or pruned.
+seed_open_pending_replies() {  # <state> <count>
   local state=$1 count=$2 i=0 corr
   mkdir -p "$state/pending-replies"
   while [ "$i" -lt "$count" ]; do
     corr=$(printf 'feed%012d' "$i")
-    printf 'schema=fm-pending-reply.v1\ncorr_id=%s\ntask_id=gone-mate\nphase=resolved\nresolved_epoch=1\nresolved_via=helper\n' "$corr" \
+    printf 'schema=fm-pending-reply.v1\ncorr_id=%s\ntask_id=gone-mate\nphase=escalated\ncreated_epoch=1\ndelivered_epoch=1\nescalated_epoch=1\n' "$corr" \
       > "$state/pending-replies/$corr"
     i=$((i + 1))
   done
@@ -308,18 +309,18 @@ seed_resolved_pending_replies() {  # <state> <count>
 
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
-# Milliseconds one pending-reply tick spends per resolved record on this host.
+# Milliseconds one pending-reply tick spends per open record on this host.
 pending_reply_ms_per_record() {  # <scratch-dir>
   local dir=$1 start end
   mkdir -p "$dir/state"
-  seed_resolved_pending_replies "$dir/state" 10
+  seed_open_pending_replies "$dir/state" 10
   start=$(now_ms)
   FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$STATE"' _ "$ROOT" >/dev/null 2>&1
   end=$(now_ms)
   echo $(( (end - start) / 10 + 1 ))
 }
 
-# Start a watcher behind <count> resolved pending-reply records, sized so its
+# Start a watcher behind open pending-reply records, sized so its
 # pending-reply scan outlasts the grace, and wait past the grace into that scan.
 start_watcher_in_long_pending_reply_scan() {  # <dir> [env assignments...]
   local dir=$1 per
@@ -328,7 +329,7 @@ start_watcher_in_long_pending_reply_scan() {  # <dir> [env assignments...]
   SCAN_RECORDS=$(( LONG_CYCLE_GRACE * 4000 / per + 1 ))
   [ "$SCAN_RECORDS" -le 2000 ] || SCAN_RECORDS=2000
   SCAN_WAIT_TICKS=$(( SCAN_RECORDS * per / 50 + 100 ))
-  seed_resolved_pending_replies "$dir/state" "$SCAN_RECORDS"
+  seed_open_pending_replies "$dir/state" "$SCAN_RECORDS"
   start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE=$LONG_CYCLE_GRACE "$@"
   sleep "$LONG_CYCLE_GRACE"
   [ "$(cat "$dir/state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan ($SCAN_RECORDS records) finished inside the grace"; }
@@ -336,8 +337,8 @@ start_watcher_in_long_pending_reply_scan() {  # <dir> [env assignments...]
 
 test_long_pending_reply_scan_keeps_beacon_fresh() {
   # The observed long cycle: one step, fm_pending_reply_tick walking a parent
-  # home's resolved pending-reply history (about 1200 records, 0.25s each),
-  # made of many short child invocations and outlasting the grace on its own.
+  # home's pending-reply records (about 1200, 0.25s each), made of many short
+  # child invocations and outlasting the grace on its own.
   # With the watchdog idle, only the scan's own per-record beat can keep the
   # beacon fresh, so a re-arm in the middle of that step must attach instead
   # of refusing a stale heartbeat.
