@@ -136,9 +136,11 @@
 #          overlaps the independent secondmate work. Per-secondmate remote
 #          liveness workers run concurrently and finish before per-secondmate
 #          remote convergence workers run concurrently, because convergence
-#          consumes respawned ids. Worker output is captured separately and
-#          replayed in spawn order; failure to create that private capture
-#          directory selects the sequential fallback.
+#          consumes respawned ids. Concurrent relaunches serialize on the home's
+#          task-set lock inside bin/fm-spawn.sh, which owns that bounded wait.
+#          Worker output is captured separately and replayed in spawn order;
+#          failure to create that private capture directory selects the
+#          sequential fallback.
 #          A relaunch that the liveness sweep performs during an `only` run is
 #          always reported, because a digest composed before that run already
 #          printed the superseded endpoint record.

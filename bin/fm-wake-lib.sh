@@ -465,7 +465,7 @@ fm_lock_clean_known_files() {
 fm_lock_set_role() {
   local lockdir=$1 role=$2 current pid back
   case "$role" in
-    autoarm|terminal-check) : ;;
+    autoarm|terminal-check|spawn|teardown) : ;;
     *) return 1 ;;
   esac
   fm_current_pid current || return 1
@@ -1336,6 +1336,10 @@ fm_meta_lock_path() {
 # serialize: either the spawn publishes first and the teardown's preflight
 # covers it, or the teardown owns the set and the spawn refuses. Both directions
 # fail closed.
+# Each holder tags the lock with fm_lock_set_role right after acquiring it -
+# `spawn` or `teardown` - so a contender can tell a sibling fresh spawn, which
+# releases the set within seconds and is worth a bounded wait, from a forced
+# teardown, which is not. bin/fm-spawn.sh owns how a spawn acts on the tag.
 fm_task_set_lock_path() {  # <state-dir>
   local state=$1
   [ -n "$state" ] || return 1
