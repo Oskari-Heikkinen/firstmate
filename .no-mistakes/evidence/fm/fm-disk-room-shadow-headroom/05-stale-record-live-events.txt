@@ -1,0 +1,15 @@
+### Stale record (8 days old), live wevtutil via drive fallback, fresh state dir
+real room: 88.8 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 98.8 GiB
+Linux free: 510.8 GiB, used 444.8 GiB
+reserved writes: 0.0 GiB
+shadow storage: 10.0 GiB reserved (whole cap; the record from 2026-09-23 is over 7 days old, so used is unknown)
+shadow storage cycling: 11 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap
+disk file: 518.3 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.5 GiB, of which fragmented 65.3 GiB; reclaimable by compaction about 8.1 GiB
+last compaction: 2026-09-30T20:22:33 startup ok reclaimed 92.9 GiB
+fetched results root: C: fallback (SSD absent)
+events cache: 1790863727 11
+
+### Interop-failure resilience (observed earlier this run): a failed wevtutil read is cached as "-" and status still prints, with no warning and shadow_events=null
+(earlier this run, WSL interop was down: `wevtutil.exe` printed "WSL ERROR: UtilAcceptVsock:271: accept4 failed 110", rc=1;
+ status took ~13 s under the 20 s timeout, printed normally, cache read "1790863609 -", JSON shadow_events null)

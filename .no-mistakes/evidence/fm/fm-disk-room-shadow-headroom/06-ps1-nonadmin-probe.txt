@@ -1,0 +1,12 @@
+### Non-elevated Windows PowerShell (powershell.exe via WSL interop) running the change's Format-ShadowRecord
+### against the real Win32_ShadowStorage on this host (temp copy of bin/fm-wsl-reclaim.ps1, nothing written to ProgramData)
+admin: False
+volume DeviceID read: True
+read failed: Initialization failure
+=> confirms the intent's premise: shadow storage max/used cannot be read without elevation,
+   so the monitor depends on the elevated task's record or the FM_DISK_ROOM_SHADOW_MAX fallback.
+
+### tests/fm-wsl-reclaim.test.sh with powershell.exe on PATH (formatter on fake Win32_ShadowStorage objects)
+ok - fm-wsl-reclaim.ps1 parses under powershell.exe
+ok - a capped shadow storage records its max and used bytes
+ok - an unbounded or absent shadow storage is recorded explicitly

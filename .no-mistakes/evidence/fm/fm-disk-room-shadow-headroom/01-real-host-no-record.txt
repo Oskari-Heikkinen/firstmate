@@ -1,0 +1,38 @@
+$ command -v wevtutil.exe  # PATH lacks /mnt/c
+(not on PATH)
+
+$ ls /mnt/c/ProgramData/firstmate/
+fm-wsl-reclaim.ps1
+wsl-compact-last.txt
+wsl-compact.conf
+wsl-compact.log
+
+### BASE (69e9bdad) status on real host
+real room: 99.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+Linux free: 511.0 GiB, used 444.6 GiB
+reserved writes: 0.0 GiB
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+last compaction: 2026-09-30T20:22:33 startup ok reclaimed 92.9 GiB
+fetched results root: C: fallback (SSD absent)
+
+### CHANGE: status on real host, no record, FM_DISK_ROOM_SHADOW_MAX unset
+real room: 99.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+Linux free: 511.0 GiB, used 444.6 GiB
+reserved writes: 0.0 GiB
+shadow storage: not reserved (no record from the elevated task, so run or re-run fm-wsl-reclaim.ps1 -Install elevated, and FM_DISK_ROOM_SHADOW_MAX unset)
+shadow storage cycling: 11 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+last compaction: 2026-09-30T20:22:33 startup ok reclaimed 92.9 GiB
+fetched results root: C: fallback (SSD absent)
+
+real	0m1.721s
+user	0m0.107s
+sys	0m0.240s
+
+### CHANGE: status --json
+{"margin":21474836480,"host":"/mnt/c","host_free":106650742784,"linux_free":548719730688,"linux_used":477389090816,"reserved":0,"room":106650742784,"low":false,"vhdx":"/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx","vhdx_size":556173099008,"fragmented_free":70026448896,"slack":78784008192,"reclaimable":8757559296,"results_active":"c","results_state":"absent","ssd_free":null,"ssd_total":null,"shadow_reserved":0,"shadow_source":"none","shadow_max":null,"shadow_used":null,"shadow_events":11}
+
+### events cache file
+1790863504 11

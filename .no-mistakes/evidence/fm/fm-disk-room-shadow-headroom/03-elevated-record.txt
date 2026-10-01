@@ -1,0 +1,68 @@
+### Fresh elevated record (CRLF, as Set-Content writes it): cap 10 GiB, used 3 GiB, recorded 1h ago
+recorded=x
+recorded_epoch=1790859945
+volume=C:
+max_bytes=10737418240
+used_bytes=3221225472
+allocated_bytes=0
+real room: 92.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+shadow storage: 7.0 GiB headroom reserved (cap 10.0 GiB, used 3.0 GiB, recorded 2026-10-01 13:05 UTC)
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+{'host_free': 106617188352, 'room': 99100995584, 'shadow_reserved': 7516192768, 'shadow_source': 'record', 'shadow_max': 10737418240, 'shadow_used': 3221225472, 'shadow_events': None}
+host_free - room = 7.00 GiB
+wevtutil ran (events cache exists)? no
+
+### Fresh record also overrides FM_DISK_ROOM_SHADOW_MAX=50G
+real room: 92.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+shadow storage: 7.0 GiB headroom reserved (cap 10.0 GiB, used 3.0 GiB, recorded 2026-10-01 13:05 UTC)
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+{'host_free': 106617188352, 'room': 99100995584, 'shadow_reserved': 7516192768, 'shadow_source': 'record', 'shadow_max': 10737418240, 'shadow_used': 3221225472, 'shadow_events': None}
+host_free - room = 7.00 GiB
+wevtutil ran (events cache exists)? no
+
+### Adversarial: used > max (record says 10 GiB cap, 12 GiB used) -> never negative
+real room: 99.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+shadow storage: 0.0 GiB headroom reserved (cap 10.0 GiB, used 12.0 GiB, recorded 2026-10-01 14:04 UTC)
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+{'host_free': 106617188352, 'room': 106617188352, 'shadow_reserved': 0, 'shadow_source': 'record', 'shadow_max': 10737418240, 'shadow_used': 12884901888, 'shadow_events': None}
+host_free - room = 0.00 GiB
+wevtutil ran (events cache exists)? no
+
+### Stale record (8 days old): whole cap reserved, used unknown, event count consulted
+real room: 89.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+shadow storage: 10.0 GiB reserved (whole cap; the record from 2026-09-23 is over 7 days old, so used is unknown)
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+{'host_free': 106617188352, 'room': 95879770112, 'shadow_reserved': 10737418240, 'shadow_source': 'stale-record', 'shadow_max': 10737418240, 'shadow_used': None, 'shadow_events': None}
+host_free - room = 10.00 GiB
+wevtutil ran (events cache exists)? yes
+
+### Unbounded record
+real room: 99.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+shadow storage: not reserved (the recorded shadow storage has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it)
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+{'host_free': 106617188352, 'room': 106617188352, 'shadow_reserved': 0, 'shadow_source': 'unbounded', 'shadow_max': None, 'shadow_used': None, 'shadow_events': None}
+host_free - room = 0.00 GiB
+wevtutil ran (events cache exists)? yes
+
+### Adversarial: garbage record, no config -> room no larger than plain df
+real room: 99.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+shadow storage: not reserved (no record from the elevated task, so run or re-run fm-wsl-reclaim.ps1 -Install elevated, and FM_DISK_ROOM_SHADOW_MAX unset)
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+{'host_free': 106617188352, 'room': 106617188352, 'shadow_reserved': 0, 'shadow_source': 'none', 'shadow_max': None, 'shadow_used': None, 'shadow_events': None}
+host_free - room = 0.00 GiB
+wevtutil ran (events cache exists)? yes
+
+### Adversarial: record dated in the future (clock skew), cap 10, used 3
+real room: 92.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+shadow storage: 7.0 GiB headroom reserved (cap 10.0 GiB, used 3.0 GiB, recorded 2026-10-02 14:05 UTC)
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+{'host_free': 106583633920, 'room': 99067441152, 'shadow_reserved': 7516192768, 'shadow_source': 'record', 'shadow_max': 10737418240, 'shadow_used': 3221225472, 'shadow_events': None}
+host_free - room = 7.00 GiB
+wevtutil ran (events cache exists)? no

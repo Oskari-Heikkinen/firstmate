@@ -1,0 +1,8 @@
+### watch-line, margin 95G, real /mnt/c (~99.3 GiB free). Events cache from the earlier live wevtutil read: 1790863504 11
+--- BASE (69e9bdad), no shadow accounting:
+(exit=0 ; empty output = room above margin, no alert)
+--- CHANGE, FM_DISK_ROOM_SHADOW_MAX unset, no record:
+(exit=0)
+--- CHANGE, FM_DISK_ROOM_SHADOW_MAX=10G (state dir holding the live event count):
+disk room low: 88.8 GiB real room on /mnt/c after 0.0 GiB of declared writes and 10.0 GiB of shadow storage headroom (margin 95.0 GiB); shadow storage cycling: 11 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; a compaction would reclaim about 8.2 GiB (disk-room skill: reclaim now)
+(exit=0)

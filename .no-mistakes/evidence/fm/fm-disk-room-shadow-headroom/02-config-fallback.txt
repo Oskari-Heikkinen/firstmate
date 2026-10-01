@@ -1,0 +1,31 @@
+### Independent cross-check: wevtutil qe System, volsnap 25/33/36 last 7 days, text format
+
+### CHANGE: FM_DISK_ROOM_SHADOW_MAX=10G (non-admin fallback)
+real room: 89.3 GiB (limited by /mnt/c; margin 20.0 GiB)
+/mnt/c free: 99.3 GiB
+Linux free: 511.0 GiB, used 444.6 GiB
+reserved writes: 0.0 GiB
+shadow storage: 10.0 GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; used is unknown without the elevated record)
+shadow storage cycling: 11 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap
+disk file: 518.0 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 73.4 GiB, of which fragmented 65.2 GiB; reclaimable by compaction about 8.2 GiB
+last compaction: 2026-09-30T20:22:33 startup ok reclaimed 92.9 GiB
+fetched results root: C: fallback (SSD absent)
+{'host_free': 106650742784, 'room': 95913324544, 'shadow_reserved': 10737418240, 'shadow_source': 'config', 'shadow_max': 10737418240, 'shadow_used': None, 'shadow_events': 11}
+host_free - room = 10.0 GiB
+
+### adversarial: FM_DISK_ROOM_SHADOW_MAX=bogus
+fm-disk-room: bad FM_DISK_ROOM_SHADOW_MAX
+exit=2
+### Independent cross-check with wevtutil /f:text (Date + Event ID of each matching volsnap event)
+  Date: 2026-09-25T10:33:27.4450000Z   Event ID: 33
+  Date: 2026-09-25T16:14:41.8030000Z   Event ID: 33
+  Date: 2026-09-26T04:24:44.5460000Z   Event ID: 33
+  Date: 2026-09-26T04:29:50.2830000Z   Event ID: 36
+  Date: 2026-09-28T11:09:13.2420000Z   Event ID: 25
+  Date: 2026-09-28T16:03:21.8340000Z   Event ID: 36
+  Date: 2026-09-30T09:42:40.4000000Z   Event ID: 33
+  Date: 2026-09-30T09:48:23.7830000Z   Event ID: 25
+  Date: 2026-09-30T21:07:10.4450000Z   Event ID: 36
+  Date: 2026-09-30T22:46:10.1610000Z   Event ID: 36
+  Date: 2026-10-01T14:27:13.3460000Z   Event ID: 36
+total: 11 events
