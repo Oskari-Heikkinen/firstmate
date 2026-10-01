@@ -65,7 +65,8 @@
 #   FM_DISK_ROOM_WEVTUTIL  wevtutil command used, only when no fresh record exists,
 #                         to count volsnap System events 25/33/36 of the last 7 days
 #                         (cached for an hour) for the cycling warning
-#                         (default wevtutil.exe; empty disables the count)
+#                         (default wevtutil.exe on PATH, else the drive's
+#                         Windows/System32/wevtutil.exe; empty disables the count)
 #   FM_DISK_ROOM_RESULTS_ROOT  results-root file from bin/fm-storage.sh
 #                         (default ${XDG_CONFIG_HOME:-~/.config}/lattice-storage/results-root)
 #   FM_DISK_ROOM_STATE    reservations and alert record
@@ -176,13 +177,23 @@ fragmented_free() {
 
 # Shadow storage ---------------------------------------------------------------
 
+# wevtutil_cmd -> the wevtutil command to run, or fails when there is none.
+# PATH often lacks the Windows directories, so fall back to the drive's copy.
+wevtutil_cmd() {
+  if [ -n "${FM_DISK_ROOM_WEVTUTIL+set}" ]; then
+    [ -n "$FM_DISK_ROOM_WEVTUTIL" ] && command -v -- "$FM_DISK_ROOM_WEVTUTIL" 2>/dev/null
+    return
+  fi
+  command -v wevtutil.exe 2>/dev/null && return 0
+  [ -x "$HOST/Windows/System32/wevtutil.exe" ] && printf '%s\n' "$HOST/Windows/System32/wevtutil.exe"
+}
+
 # shadow_events -> count of volsnap 25/33/36 System events in the last 7 days,
 # or nothing when unknown. Cached for an hour, failures included, because it
 # starts a Windows process.
 shadow_events() {
   local cache t when='' n='' out cmd
-  cmd=${FM_DISK_ROOM_WEVTUTIL-wevtutil.exe}
-  [ -n "$cmd" ] && command -v -- "$cmd" >/dev/null 2>&1 || return 0
+  cmd=$(wevtutil_cmd) && [ -n "$cmd" ] || return 0
   cache="$(state_dir)/shadow-events"
   t=$(now)
   [ -r "$cache" ] && read -r when n <"$cache"
@@ -251,7 +262,7 @@ shadow_line() {
       "$(gib "$SHADOW_RES")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d' 2>/dev/null || echo "$SHADOW_AT")" ;;
     config) printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; used is unknown without the elevated record)\n' "$(gib "$SHADOW_RES")" ;;
     unbounded) printf 'shadow storage: not reserved (the recorded shadow storage has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it)\n' ;;
-    *) printf 'shadow storage: not reserved (no record from the elevated task and FM_DISK_ROOM_SHADOW_MAX unset)\n' ;;
+    *) printf 'shadow storage: not reserved (no record from the elevated task, so run or re-run fm-wsl-reclaim.ps1 -Install elevated, and FM_DISK_ROOM_SHADOW_MAX unset)\n' ;;
   esac
 }
 

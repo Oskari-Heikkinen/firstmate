@@ -419,11 +419,28 @@ test_shadow_cycling_warning() {
   pass "recent volsnap 25/33/36 events warn that shadow storage is cycling"
 }
 
+test_shadow_wevtutil_from_drive() {
+  reset_state
+  set_sizes 15 600 400
+  write_events 33 36
+  mkdir -p "$HOSTDIR/Windows/System32"
+  cp "$FAKEBIN/wevtutil-stub" "$HOSTDIR/Windows/System32/wevtutil.exe"
+  local out
+  out=$(env -u FM_DISK_ROOM_WEVTUTIL PATH="$FAKEBIN:/usr/bin:/bin" FAKE_DF="$DFDIR" \
+    FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" \
+    FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
+    FAKE_EVENTS="$EVENTS" "$DISK_ROOM" status --json)
+  rm -rf "$HOSTDIR/Windows"
+  assert_equals 2 "$(json_field "$out" shadow_events)" "the drive's wevtutil.exe is used when PATH lacks it"
+  pass "without wevtutil.exe on PATH the drive's System32 copy counts the events"
+}
+
 test_status_real_room_and_reclaim
 test_shadow_record_reserves_headroom
 test_shadow_fallback_and_stale
 test_shadow_no_data_unchanged
 test_shadow_cycling_warning
+test_shadow_wevtutil_from_drive
 test_results_root_in_status
 test_check_margin
 test_low_advice
