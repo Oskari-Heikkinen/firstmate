@@ -158,9 +158,9 @@
 #   creation through metadata publication, so concurrent same-id spawns serialize
 #   even when they select different backends. A fresh spawn first takes the
 #   per-home task-set lock, refusing at once when a forced teardown owns it and
-#   waiting up to FM_SPAWN_TASK_SET_WAIT seconds (default 60) when a sibling fresh
-#   spawn does; relaunch is exempt because the existing task's control lock
-#   covers it.
+#   waiting up to FM_SPAWN_TASK_SET_WAIT seconds (default 60) per sibling fresh
+#   spawn that holds it (spawn_acquire_task_set_lock owns the exact policy);
+#   relaunch is exempt because the existing task's control lock covers it.
 #   A fresh Treehouse-backed spawn also takes the project-identity lock in the local
 #   root Firstmate home's state directory before slot allocation and holds it through
 #   task metadata publication. Teardown holds that same lock while proving and
