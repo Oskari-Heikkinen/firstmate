@@ -41,9 +41,13 @@
 #          check; repair still happens, but inside fm-spawn's launch gate only
 #          when a relaunch is actually authorized.
 #
-# Concurrency: fm_secondmate_liveness_lock serializes probe+kill+relaunch per
-# task across the bootstrap sweep and the watcher tick, so a concurrent
-# relaunch can never be observed mid-flight as a dead endpoint and killed.
+# Concurrency: fm_secondmate_liveness_lock is the per-mate ownership claim. It
+# serializes probe+kill+relaunch per task across the bootstrap sweep and the
+# watcher tick, and bin/fm-secondmate-restart.sh and bin/fm-teardown.sh hold it
+# across their own stop or retirement, so a deliberate stop or a concurrent
+# relaunch can never be observed mid-flight as a dead endpoint and killed or
+# relaunched a second time. The claim is bound to its holder's process, so one
+# whose holder died is reclaimed by the next taker rather than blocking forever.
 # The attempt ledger (.secondmate-relaunch-<id>, one line per attempt plus one
 # per outcome) is both the durable relaunch record and the input to the
 # watcher's relaunch bound; teardown removes it.
