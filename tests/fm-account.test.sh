@@ -21,7 +21,8 @@ export FM_ACCOUNT_QUOTA_RETRY_DELAY=0
 # "<percent-left> <status> [<auth-status> [<full-status> <full-auth-status>]]"
 # from <login-folder>/fake-quota (default "50 fresh") and logs each read to
 # FM_FAKE_QUOTA_LOG as "<provider> <dir> <profile|full> <refresh|no-refresh>
-# <token|no-token>". A --profile-only read answers <status> and <auth-status>;
+# <token|no-token>", and leaves the NODE_OPTIONS it ran with in
+# <login-folder>/node-options. A --profile-only read answers <status> and <auth-status>;
 # any other read is the classifier and answers <full-status> and
 # <full-auth-status> (default: the same two), and writes the quota cache under
 # XDG_CACHE_HOME the way the real tool does. "-" is an absent auth status.
@@ -48,6 +49,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 if [ "$provider" = codex ]; then dir=${CODEX_HOME:-}; else dir=${CLAUDE_CONFIG_DIR:-}; fi
+printf '%s\n' "${NODE_OPTIONS-<unset>}" > "$dir/node-options" 2>/dev/null || true
 [ -z "${FM_FAKE_QUOTA_LOG:-}" ] || printf '%s %s %s %s %s\n' "$provider" "$dir" "$mode" "$refresh" \
   "$([ -n "${CLAUDE_CODE_OAUTH_TOKEN+x}" ] && echo token || echo no-token)" >> "$FM_FAKE_QUOTA_LOG"
 left=50 status=fresh auth=- fstatus= fauth=
@@ -105,7 +107,7 @@ SH
 new_case() {
   C="$TMP_ROOT/$1"
   H="$C/home"
-  mkdir -p "$H/state" "$H/config" "$H/data" "$C/gmail" "$C/work" "$C/codex" "$C/user-home"
+  mkdir -p "$H/state" "$H/config" "$H/data" "$C/gmail" "$C/work" "$C/codex" "$C/user-home" "$C/proc"
   fm_fakebin "$C" >/dev/null
   write_fake_quota "$C/fakebin"
   write_dead_tmux "$C/fakebin"
@@ -121,13 +123,14 @@ new_case() {
 }
 
 # run_account <args...>: the command as this case's main session, which runs on
-# the gmail login unless FM_TEST_SESSION_DIR says otherwise.
+# the gmail login unless FM_TEST_SESSION_DIR says otherwise. Live logins are
+# read from the case's own fake process table, empty unless a case adds to it.
 run_account() {
   env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SESSION -u HERDR_BIN_PATH \
     -u FM_STATE_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_ROOT_OVERRIDE -u FM_SPAWN_ACCOUNT \
     PATH="$C/fakebin:$PATH" FM_HOME="$H" HOME="$C/user-home" \
     CLAUDE_CONFIG_DIR="${FM_TEST_SESSION_DIR-$C/gmail}" \
-    FM_FAKE_QUOTA_LOG="$C/quota.log" \
+    FM_FAKE_QUOTA_LOG="$C/quota.log" FM_PROC_ROOT_OVERRIDE="$C/proc" \
     "$ACCOUNT" "$@" 2>&1
 }
 
@@ -143,6 +146,17 @@ add_mate() {  # <id> <pinned-account-or-empty> [harness]
   mkdir -p "$home/state" "$home/config"
   fm_write_secondmate_meta "$H/state/$1.meta" "$home" "" alpha "${3:-claude}"
   [ -z "$2" ] || printf '%s\n' "$2" > "$home/config/account"
+}
+
+# add_proc <pid> <comm> <cwd> [<environ-entry>...]: a fake process. With no
+# entries its environ cannot be read.
+add_proc() {
+  local p="$C/proc/$1"
+  mkdir -p "$p"
+  printf '%s\n' "$2" > "$p/comm"
+  ln -s "$3" "$p/cwd"
+  shift 3
+  [ $# -eq 0 ] || printf '%s\0' "$@" > "$p/environ"
 }
 
 json_get() {  # <json> <jq filter>
@@ -715,6 +729,81 @@ test_low_login_moves_work_to_a_draining_login_above_the_floor() {
   pass "a low login moves work to a draining login still above the floor when none is ok"
 }
 
+test_quota_reads_carry_the_node_connect_timeout() {
+  new_case nodeopts
+  NODE_OPTIONS='--max-old-space-size=100' run_account status --refresh >/dev/null
+  assert_equals "--max-old-space-size=100 --network-family-autoselection-attempt-timeout=2000" \
+    "$(cat "$C/gmail/node-options")" "an existing NODE_OPTIONS is kept and the connect timeout added"
+  assert_equals "--max-old-space-size=100 --network-family-autoselection-attempt-timeout=2000" \
+    "$(cat "$C/codex/node-options")" "a Codex read and the sign-in classifier get it too"
+  FM_ACCOUNT_QUOTA_CONNECT_MS=5000 run_account status --refresh >/dev/null
+  assert_equals "--network-family-autoselection-attempt-timeout=5000" "$(cat "$C/work/node-options")" "the timeout is overridable"
+  NODE_OPTIONS='--max-old-space-size=100' FM_ACCOUNT_QUOTA_CONNECT_MS=0 run_account status --refresh >/dev/null
+  assert_equals "--max-old-space-size=100" "$(cat "$C/work/node-options")" "0 leaves NODE_OPTIONS alone"
+  pass "every usage read gives Node a connect attempt long enough for a slow link"
+}
+
+test_readings_blind_when_every_read_fails_never_balanced() {
+  local out
+  new_case blind
+  printf '0 garbage\n' > "$C/gmail/fake-quota"
+  printf '0 garbage\n' > "$C/work/fake-quota"
+  printf '3\n' > "$C/codex/fake-fail"
+  out=$(run_account rebalance)
+  assert_not_contains "$out" "balanced" "no reading must never read as balanced"
+  assert_contains "$out" "needs the captain: account readings blind: every account usage read failed (gmail unreadable, work unreadable, codex error)" "rebalance says the readings are blind"
+  out=$(run_account rebalance --check)
+  assert_contains "$out" "accounts: needs the captain: account readings blind" "the watcher wakes with the blind readings"
+  out=$(run_account rebalance --check)
+  assert_equals "" "$out" "an unchanged blind check stays silent"
+  out=$(run_account watch --once)
+  assert_contains "$out" "Needs the captain: account readings blind" "the panel shows the blind readings"
+  printf '1\n' > "$H/.fm-secondmate-home"
+  rm -f "$H/state/.account-check"
+  out=$(run_account rebalance --check)
+  assert_equals "" "$out" "a second mate's watcher leaves the captain line to the main home"
+  rm -f "$H/.fm-secondmate-home"
+  printf '98 fresh\n' > "$C/work/fake-quota"
+  out=$(FM_ACCOUNT_USAGE_TTL=0 run_account rebalance)
+  assert_contains "$out" "balanced: no agent needs to move" "one readable account keeps today's behavior"
+  assert_not_contains "$out" "blind" "a partial failure is not blind"
+  pass "a usage read that fails for every account says the readings are blind instead of balanced"
+}
+
+test_status_shows_each_agents_live_login_beside_its_record() {
+  local out rc wt1 wt2 wt3 mate
+  new_case live
+  add_ship a1 account=work
+  add_ship a2 account=work
+  add_ship a3 account=gmail
+  add_ship a4 account=gmail
+  add_mate sm1 work
+  mkdir -p "$C/wt-a1" "$C/wt-a2" "$C/wt-a3" "$C/wt-a4"
+  wt1=$(cd -P "$C/wt-a1" && pwd) wt2=$(cd -P "$C/wt-a2" && pwd)
+  wt3=$(cd -P "$C/wt-a3" && pwd) mate=$(cd -P "$C/mate-sm1" && pwd)
+  add_proc 101 claude "$wt1" "SECRET_TOKEN=do-not-print" "CLAUDE_CONFIG_DIR=$C/gmail" "OTHER=also-hidden"
+  add_proc 102 claude "$wt1/" "CLAUDE_CONFIG_DIR=$C/gmail/"
+  add_proc 103 bash "$wt2" "CLAUDE_CONFIG_DIR=$C/gmail"
+  add_proc 104 claude "$mate" "CLAUDE_CONFIG_DIR=$C/work"
+  add_proc 105 claude "$wt3" "CLAUDE_CONFIG_DIR=/nowhere/registered"
+  add_proc 106 claude "$(cd -P "$C/wt-a4" && pwd)"
+  out=$(run_account status --json)
+  assert_equals "gmail|true" "$(json_get "$out" '.agents[] | select(.id == "a1") | "\(.live_account)|\(.live_mismatch)"')" "a worker running on another login than its record"
+  assert_equals "null|false" "$(json_get "$out" '.agents[] | select(.id == "a2") | "\(.live_account)|\(.live_mismatch)"')" "only a claude process speaks for an agent"
+  assert_equals "work|false" "$(json_get "$out" '.agents[] | select(.id == "sm1") | "\(.live_account)|\(.live_mismatch)"')" "a second mate is read from its home"
+  assert_equals "unregistered|true" "$(json_get "$out" '.agents[] | select(.id == "a3") | "\(.live_account)|\(.live_mismatch)"')" "a login no account registers"
+  assert_equals "null|false" "$(json_get "$out" '.agents[] | select(.id == "a4") | "\(.live_account)|\(.live_mismatch)"')" "an unreadable process is unknown"
+  assert_equals "null" "$(json_get "$out" '.agents[] | select(.kind == "session") | .live_account')" "no process for this session is unknown"
+  out=$(run_account status); rc=$?
+  expect_code 0 "$rc" "status with unreadable processes"
+  assert_contains "$out" "a1                     recorded work       live gmail  MISMATCH" "the table marks the mismatch"
+  assert_contains "$out" "sm1                    recorded work       live work"$'\n' "a match is not marked"
+  assert_contains "$out" "live unknown" "an unreadable agent shows as unknown"
+  assert_not_contains "$out$(run_account status --json)" "do-not-print" "no other environment value is printed"
+  assert_not_contains "$out" "also-hidden" "no other environment value is printed"
+  pass "status shows each agent's live login beside its recorded account and marks a mismatch"
+}
+
 test_malformed_registry_refuses_and_the_check_says_so
 test_failed_reads_retry_and_never_count_as_exhausted
 test_status_attributes_every_agent_and_plans_moves
@@ -736,5 +825,8 @@ test_a_fast_burning_5_hour_window_steers_new_spawns_away
 test_a_weekly_allowance_running_out_before_its_reset_will_exhaust
 test_an_unknown_reset_falls_back_to_the_floor
 test_low_login_moves_work_to_a_draining_login_above_the_floor
+test_quota_reads_carry_the_node_connect_timeout
+test_readings_blind_when_every_read_fails_never_balanced
+test_status_shows_each_agents_live_login_beside_its_record
 
 echo "# all fm-account tests passed"
