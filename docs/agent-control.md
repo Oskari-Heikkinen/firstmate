@@ -173,6 +173,8 @@ The worktree and the task's records are unaffected either way.
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
+- A secondmate relaunch, local or through `bin/fm-remote-secondmate-relaunch.sh`, holds that mate's liveness claim from before the checkpoint until it exits, so the watcher's liveness tick and the session-start sweep never stop or respawn a mate this plane is relaunching.
+  A claim another recovery still holds after `FM_SECONDMATE_RESTART_CLAIM_WAIT` seconds refuses with status 75 before anything is stopped; `bin/fm-secondmate-liveness-lib.sh` owns the claim contract.
 - `exit`'s composer-empty check, above, is itself a fail-closed boundary that `relaunch` inherits by stopping the old agent through `exit`.
 - `fm-spawn --relaunch` independently refuses unless the endpoint is positively agent-free - either a `dead` endpoint that survives, or a Herdr endpoint proven gone by the absence proof above - so a replacement can never join a live agent.
   An `alive`, `ambiguous`, or `unreadable` verdict all refuse, and so does any endpoint whose absence is not provable, which on tmux is every `missing`; absence is claimed only from positive evidence of it.
