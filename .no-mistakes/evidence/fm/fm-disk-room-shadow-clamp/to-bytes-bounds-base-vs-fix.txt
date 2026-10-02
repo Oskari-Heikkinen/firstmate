@@ -1,0 +1,75 @@
+=== base: stale 2^63 record + FM_DISK_ROOM_SHADOW_MAX=10G: status (plain) ===
+real room: -8589934566.4 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: a compaction would reclaim about 9.6 GiB (disk-room skill: reclaim now)
+shadow storage: 8589934592.0 GiB reserved (whole cap; the record from 2026-09-24 is over 7 days old, so used is unknown)
+=== base: FM_DISK_ROOM_SHADOW_MAX=9000000000T (> 2^63 bytes), no record ===
+"room":-8149826448213241856
+"shadow_reserved":9895604649984000000000
+"shadow_source":"config"
+exit=0
+=== base: check --expect-write 999999999999999999999999999999...(400 chars) ===
+/tmp/fmdr.CPfh6X/base.sh: line 463: inf: unbound variable
+exit=1
+=== base: check --expect-write 1e30 ===
+fm-disk-room: bad size: 1e30
+exit=2
+=== base: check --expect-write 9999999999999999999 ===
+ok: 7866643463.4 GiB left after a 9313225746.2 GiB write (margin 20.0 GiB)
+exit=0
+=== base: check --expect-write 9000000000T ===
+low: only -7590117350.4 GiB would be left on /mnt/c after a 9216000000000.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.6 GiB (disk-room skill: reclaim now)
+exit=1
+=== base: check --expect-write 999999999999999999 ===
+low: only -931322549.0 GiB would be left on /mnt/c after a 931322574.6 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.6 GiB (disk-room skill: reclaim now)
+exit=1
+=== base: check --expect-write 500G ===
+low: only -474.4 GiB would be left on /mnt/c after a 500.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.6 GiB (disk-room skill: reclaim now)
+exit=1
+=== base: reserve big 9000000000T ===
+reserved big: 9216000000000.0 GiB
+exit=0
+bytes=9895604649984000000000
+expires=1790981147
+=== base: reserve ok 5G then status shows it ===
+reserved ok: 5.0 GiB
+exit=0
+bytes=5368709120
+=== base: FM_DISK_ROOM_MARGIN=9000000000T check ===
+/tmp/fmdr.CPfh6X/base.sh: line 464: [: 9895604649984000000000: integer expression expected
+low: only 24.6 GiB would be left on /mnt/c after a 1.0 GiB write (margin 9216000000000.0 GiB); a compaction would reclaim about 9.6 GiB (disk-room skill: reclaim now)
+exit=1
+
+=== new: stale 2^63 record + FM_DISK_ROOM_SHADOW_MAX=10G: status (plain) ===
+real room: 15.6 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: a compaction would reclaim about 9.6 GiB (disk-room skill: reclaim now)
+shadow storage: 10.0 GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; used is unknown without the elevated record)
+=== new: FM_DISK_ROOM_SHADOW_MAX=9000000000T (> 2^63 bytes), no record ===
+fm-disk-room: bad FM_DISK_ROOM_SHADOW_MAX
+exit=2
+=== new: check --expect-write 999999999999999999999999999999...(400 chars) ===
+fm-disk-room: bad size: 9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999
+exit=2
+=== new: check --expect-write 1e30 ===
+fm-disk-room: bad size: 1e30
+exit=2
+=== new: check --expect-write 9999999999999999999 ===
+fm-disk-room: bad size: 9999999999999999999
+exit=2
+=== new: check --expect-write 9000000000T ===
+fm-disk-room: bad size: 9000000000T
+exit=2
+=== new: check --expect-write 999999999999999999 ===
+fm-disk-room: bad size: 999999999999999999
+exit=2
+=== new: check --expect-write 500G ===
+low: only -474.4 GiB would be left on /mnt/c after a 500.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.6 GiB (disk-room skill: reclaim now)
+exit=1
+=== new: reserve big 9000000000T ===
+fm-disk-room: bad size: 9000000000T
+exit=2
+=== new: reserve ok 5G then status shows it ===
+reserved ok: 5.0 GiB
+exit=0
+bytes=5368709120
+=== new: FM_DISK_ROOM_MARGIN=9000000000T check ===
+cannot measure disk room: bad FM_DISK_ROOM_MARGIN
+exit=2
+

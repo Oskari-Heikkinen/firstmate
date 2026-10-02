@@ -1,0 +1,136 @@
+## Real host: 6.6.87.2-microsoft-standard-WSL2; df avail /mnt/c and /:
+Mounted on        Avail
+/mnt/c      27468271616
+/          482605875200
+
+=== stale max=2^63 (9223372036854775808) ===
+--- base: status --json
+"host_free":27468271616
+"linux_free":482605854720
+"room":-9223372009386504192
+"shadow_reserved":9223372036854775808
+"shadow_source":"stale-record"
+"shadow_max":9223372036854775808
+--- base: check --expect-write 1G
+low: only -8589934567.4 GiB would be left on /mnt/c after a 1.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.5 GiB (disk-room skill: reclaim now)
+exit=1
+--- new: status --json
+"host_free":27468271616
+"linux_free":482601689088
+"room":27468271616
+"shadow_reserved":0
+"shadow_source":"none"
+"shadow_max":null
+--- new: check --expect-write 1G
+ok: 24.6 GiB left after a 1.0 GiB write (margin 20.0 GiB)
+exit=0
+
+=== fresh max=2^63, used=3G ===
+--- base: status --json
+"host_free":27468271616
+"linux_free":482601127936
+"room":-9223372006165278720
+"shadow_reserved":9223372033633550336
+"shadow_source":"record"
+"shadow_max":9223372036854775808
+--- base: check --expect-write 1G
+low: only -8589934564.4 GiB would be left on /mnt/c after a 1.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.5 GiB (disk-room skill: reclaim now)
+exit=1
+--- new: status --json
+"host_free":27468271616
+"linux_free":482599305216
+"room":27468271616
+"shadow_reserved":0
+"shadow_source":"none"
+"shadow_max":null
+--- new: check --expect-write 1G
+ok: 24.6 GiB left after a 1.0 GiB write (margin 20.0 GiB)
+exit=0
+
+=== stale max=2^64 (18446744073709551616) ===
+--- base: status --json
+"host_free":27468271616
+"linux_free":482598428672
+"room":27468271616
+"shadow_reserved":18446744073709551616
+"shadow_source":"stale-record"
+"shadow_max":18446744073709551616
+--- base: check --expect-write 1G
+ok: 24.6 GiB left after a 1.0 GiB write (margin 20.0 GiB)
+exit=0
+--- new: status --json
+"host_free":27468271616
+"linux_free":482590801920
+"room":27468271616
+"shadow_reserved":0
+"shadow_source":"none"
+"shadow_max":null
+--- new: check --expect-write 1G
+ok: 24.6 GiB left after a 1.0 GiB write (margin 20.0 GiB)
+exit=0
+
+=== stale max=99999999999999999999 ===
+--- base: status --json
+"host_free":27468271616
+"linux_free":482592665600
+"room":-7766279603983970303
+"shadow_reserved":99999999999999999999
+"shadow_source":"stale-record"
+"shadow_max":99999999999999999999
+--- base: check --expect-write 1G
+low: only -7232911517.0 GiB would be left on /mnt/c after a 1.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.5 GiB (disk-room skill: reclaim now)
+exit=1
+--- new: status --json
+"host_free":27468271616
+"linux_free":482592337920
+"room":27468271616
+"shadow_reserved":0
+"shadow_source":"none"
+"shadow_max":null
+--- new: check --expect-write 1G
+ok: 24.6 GiB left after a 1.0 GiB write (margin 20.0 GiB)
+exit=0
+
+=== control: stale max=10G ===
+--- base: status --json
+"host_free":27468271616
+"linux_free":482587492352
+"room":16730853376
+"shadow_reserved":10737418240
+"shadow_source":"stale-record"
+"shadow_max":10737418240
+--- base: check --expect-write 1G
+low: only 14.6 GiB would be left on /mnt/c after a 1.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.5 GiB (disk-room skill: reclaim now)
+exit=1
+--- new: status --json
+"host_free":27468271616
+"linux_free":482588811264
+"room":16730853376
+"shadow_reserved":10737418240
+"shadow_source":"stale-record"
+"shadow_max":10737418240
+--- new: check --expect-write 1G
+low: only 14.6 GiB would be left on /mnt/c after a 1.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.5 GiB (disk-room skill: reclaim now)
+exit=1
+
+=== boundary: stale max=999999999999999999 (18 digits) ===
+--- base: status --json
+"host_free":27468271616
+"linux_free":482587996160
+"room":-999999972531728383
+"shadow_reserved":999999999999999999
+"shadow_source":"stale-record"
+"shadow_max":999999999999999999
+--- base: check --expect-write 1G
+low: only -931322550.0 GiB would be left on /mnt/c after a 1.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.5 GiB (disk-room skill: reclaim now)
+exit=1
+--- new: status --json
+"host_free":27468271616
+"linux_free":482587721728
+"room":-999999972531728383
+"shadow_reserved":999999999999999999
+"shadow_source":"stale-record"
+"shadow_max":999999999999999999
+--- new: check --expect-write 1G
+low: only -931322550.0 GiB would be left on /mnt/c after a 1.0 GiB write (margin 20.0 GiB); a compaction would reclaim about 9.5 GiB (disk-room skill: reclaim now)
+exit=1
