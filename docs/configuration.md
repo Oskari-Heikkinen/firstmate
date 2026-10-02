@@ -909,14 +909,14 @@ Second mates, workers, and this session move only once a limit is both below the
 Work goes to an account not projected to run out first; when none is, an account still above the floor takes work off a low one, so work never stops while an account has room.
 Unknown usage is never treated as low, so a failed read never moves work, and a failed read is retried briefly before it reads as unknown.
 Usage reads give each network connect attempt 2 seconds rather than Node's default 250 milliseconds, so a slow link does not fail every read.
-When every account's read fails, `status`, the panel, `rebalance`, and its watcher check say the account readings are blind as advice for the captain, never that the fleet is balanced.
+When every account's read fails, `status`, the panel, `rebalance`, and its watcher check say the account readings are blind as advice for the captain, naming a missing quota-axi when that is the cause, never that the fleet is balanced.
 The no-room advice appears only when every Claude account has a successful reading low enough to move work off or needs sign-in, never because a read failed.
 Automatic rebalancing is on whenever the registry exists, unless `config/account-auto` says `off`.
 Session start then arms a watcher check that wakes firstmate only when a move is due or the advice changes, and firstmate runs `bin/fm-account.sh rebalance` without asking the captain.
 Rebalancing moves second mates and between-steps workers, never one mid-command or mid-validation run; a busy worker waits for a later run.
 Only the captain can restart this home's own session or sign in to a login that does not exist yet, so those appear as one-line advice instead.
 A Claude login whose access token lapsed but can still renew shows as expired, not as needing sign-in, because it renews on next use.
-Rebalancing and its watcher check carry sign-in and no-room advice from the main home only, and a sign-in only after three reads over 15 minutes agree, while `status` and the panel show every home's current readings.
+Rebalancing and its watcher check carry sign-in, no-room, and blind-readings advice from the main home only, and a sign-in only after three reads over 15 minutes agree, while `status` and the panel show every home's current readings.
 The registry, floor, and auto setting are inherited into secondmate homes, while `config/account` and `config/spawn-account` stay per home.
 The headers of `bin/fm-account-lib.sh` and `bin/fm-account.sh` own the exact formats, the spawn account precedence, and the runtime records.
 
@@ -2402,7 +2402,7 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
-FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
+FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process reads (process identity, account live logins), mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_TASK_ID=             # internal task-worker marker fm-spawn.sh exports into ship and scout panes, never set by hand; bin/fm-test-run.sh refuses to execute in the repository primary checkout while it is set
