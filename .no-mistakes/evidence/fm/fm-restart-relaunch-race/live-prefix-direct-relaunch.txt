@@ -1,0 +1,47 @@
+# LIVE pre-fix (ce7c0678 bin/fm-control.sh) direct relaunch of a real claude second mate, real fm-watch.sh ticking every 1s
+## fm-control output
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.iG5VJx/home
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.iG5VJx/home
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+admission: task sm1 waiting (up to 60s): 2 relaunches in this home in the last minute reach the pace of 2 per minute
+admission: task sm1 admitted after 22s
+error: task sm1's endpoint reads 'alive'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh sm1 exit)
+error: the replacement agent for sm1 could not be launched on claude
+error: sm1's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at /tmp/fm-lab.iG5VJx/sm1
+
+real	0m25.376s
+user	0m1.158s
+sys	0m1.320s
+[rc=1]
+## timeline (pane command / liveness claim / watcher ledger rows)
+11:32:37.021 pane=claude claim=free watcher-ledger-rows=0 tick-mtime=1790933556
+11:32:38.339 pane=claude claim=HELD watcher-ledger-rows=0 tick-mtime=1790933558
+11:32:38.602 pane=claude claim=free watcher-ledger-rows=0 tick-mtime=1790933558
+11:32:39.923 pane=bash claim=free watcher-ledger-rows=0 tick-mtime=1790933559
+11:32:40.187 pane=bash claim=HELD watcher-ledger-rows=0 tick-mtime=1790933560
+11:32:40.453 pane=bash claim=HELD watcher-ledger-rows=1 tick-mtime=1790933560
+11:32:43.086 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933560
+11:32:43.350 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933560
+11:32:46.774 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933566
+11:32:47.038 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933566
+11:32:49.406 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933569
+11:32:49.670 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933569
+11:32:55.473 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933575
+11:32:55.738 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933575
+11:32:57.319 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933577
+11:32:57.582 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933577
+11:32:58.110 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933578
+11:32:58.374 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933578
+11:33:00.784 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933580
+11:33:01.048 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933580
+11:33:04.488 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933584
+11:33:04.752 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933584
+11:33:07.389 pane=claude claim=HELD watcher-ledger-rows=2 tick-mtime=1790933587
+11:33:07.652 pane=claude claim=free watcher-ledger-rows=2 tick-mtime=1790933587
+## state/.secondmate-relaunch-sm1 (watcher ledger)
+1790933560	attempt
+1790933563	relaunched
+## state/.wake-queue
+1790933544	1	signal	sm1.status	signal: /tmp/fm-lab.iG5VJx/home/state/sm1.status
+1790933544	2	signal	sm1.status	signal: /tmp/fm-lab.iG5VJx/home/state/sm1.status
+1790933563	3	check	secondmate-relaunch-sm1-1790933560	check: secondmate sm1 auto-relaunched after confirmed agent absence on existing endpoint (backend=tmux)

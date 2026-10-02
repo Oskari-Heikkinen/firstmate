@@ -1,0 +1,11 @@
+Pre-fix check: same new tests run against bin/ scripts at base ce7c0678 (fm-control.sh, fm-secondmate-restart.sh,
+fm-secondmate-liveness-lib.sh, fm-remote-secondmate-relaunch.sh reverted), real fm-watch.sh pass injected at the stop:
+
+T5b (fm-secondmate-restart.sh vs watcher):
+not ok - the watcher acted on a mate under a planned restart (ledger: 1790933396	attempt
+1790933396	failed)
+T5b2 (direct fm-control.sh sm1 relaunch vs watcher):
+not ok - the watcher acted on a mate under a direct relaunch (ledger: 1790933400	attempt
+1790933400	failed)
+
+At target e705dade both pass (see fm-secondmate-restart.test.log).

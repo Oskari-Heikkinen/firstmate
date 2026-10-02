@@ -1,0 +1,20 @@
+# LIVE fixed (e705dade) direct 'bin/fm-control.sh sm1 relaunch' of a real claude second mate, real fm-watch.sh ticking every 1s
+## fm-control output
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.iG5VJx/home
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.iG5VJx/home
+warning: secondmate sm1 sync skipped before launch: primary default-branch commit cannot be resolved
+relaunched sm1 harness=claude from=claude model=haiku effort=default backend=tmux endpoint=primary:fm-sm1 worktree=/tmp/fm-lab.iG5VJx/sm1
+
+real	0m4.699s
+user	0m1.677s
+sys	0m1.730s
+[rc=0]
+## timeline (pane command / liveness claim / watcher ledger rows; tick-mtime advancing = watcher passes)
+11:31:51.836 pane=claude claim=free watcher-ledger-rows=0 tick-mtime=1790933510
+11:31:53.139 pane=claude claim=HELD watcher-ledger-rows=0 tick-mtime=1790933512
+11:31:54.709 pane=bash claim=HELD watcher-ledger-rows=0 tick-mtime=1790933513
+  (raw samples while pane=bash: tick-mtime 1790933513 -> 1515 -> 1516 -> 1517, i.e. the watcher ran ~4 liveness passes over the stopped mate and acted on none)
+11:31:57.597 pane=claude claim=free watcher-ledger-rows=0 tick-mtime=1790933517
+## watcher log during run
+--- watcher start 1790933496 (no exits/wakes until 1790933544, after relaunch finished)
+## state/.secondmate-relaunch-sm1: absent (watcher took no action)

@@ -1,0 +1,12 @@
+# LIVE adversarial: claim held by a running recovery holder; bin/fm-control.sh sm1 relaunch with FM_SECONDMATE_RESTART_CLAIM_WAIT=3
+holder: holder pid 1317941
+## fm-control output
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.iG5VJx/home
+error: another recovery of second mate sm1 was still in progress after 3s, so it was not stopped; nothing was changed
+
+real	0m3.504s
+user	0m0.164s
+sys	0m0.116s
+[rc=75]
+## second-mate pane before/after: claude pane_pid 1155293 -> claude pane_pid 1155293; claude child pid 1157941 unchanged (agent never stopped)
+## sm1.control-relaunch journal unchanged (still the earlier run's phase=failed:launching; no new transaction opened)

@@ -1,0 +1,431 @@
+--- watcher start 1790933496.005151118
+signal: /tmp/fm-lab.iG5VJx/home/state/sm1.status
+--- watcher exit rc=0 1790933544.581579399
+--- watcher start 1790933544.784568435
+check: rearm-resurface
+--- watcher exit rc=0 1790933545.426530446
+--- watcher start 1790933545.629912145
+check: rearm-resurface
+--- watcher exit rc=0 1790933546.145202545
+--- watcher start 1790933546.347746602
+check: rearm-resurface
+--- watcher exit rc=0 1790933546.971628333
+--- watcher start 1790933547.174878905
+check: rearm-resurface
+--- watcher exit rc=0 1790933547.837222166
+--- watcher start 1790933548.040466375
+check: rearm-resurface
+--- watcher exit rc=0 1790933547.950489130
+--- watcher start 1790933548.153521461
+check: rearm-resurface
+--- watcher exit rc=0 1790933548.783293919
+--- watcher start 1790933548.986390004
+check: rearm-resurface
+--- watcher exit rc=0 1790933549.664636695
+--- watcher start 1790933549.868568836
+check: rearm-resurface
+--- watcher exit rc=0 1790933550.557261425
+--- watcher start 1790933550.759804794
+check: rearm-resurface
+--- watcher exit rc=0 1790933551.464000900
+--- watcher start 1790933551.666855686
+check: rearm-resurface
+--- watcher exit rc=0 1790933552.291294292
+--- watcher start 1790933552.495002651
+check: rearm-resurface
+--- watcher exit rc=0 1790933553.061398792
+--- watcher start 1790933553.264593860
+check: rearm-resurface
+--- watcher exit rc=0 1790933553.949758884
+--- watcher start 1790933554.153030488
+check: rearm-resurface
+--- watcher exit rc=0 1790933554.861816349
+--- watcher start 1790933555.064986159
+check: rearm-resurface
+--- watcher exit rc=0 1790933555.785087048
+--- watcher start 1790933555.988411842
+check: rearm-resurface
+--- watcher exit rc=0 1790933556.715520981
+--- watcher start 1790933556.919141799
+check: rearm-resurface
+--- watcher exit rc=0 1790933557.614611879
+--- watcher start 1790933557.818233334
+check: rearm-resurface
+--- watcher exit rc=0 1790933558.537483306
+--- watcher start 1790933558.741059748
+check: rearm-resurface
+--- watcher exit rc=0 1790933559.505826129
+--- watcher start 1790933559.709253734
+check: secondmate sm1 auto-relaunched after confirmed agent absence on existing endpoint (backend=tmux)
+--- watcher exit rc=0 1790933563.350045186
+--- watcher start 1790933563.553814201
+check: rearm-resurface
+--- watcher exit rc=0 1790933564.315474454
+--- watcher start 1790933564.521732868
+check: rearm-resurface
+--- watcher exit rc=0 1790933565.213094662
+--- watcher start 1790933565.416532733
+check: rearm-resurface
+--- watcher exit rc=0 1790933566.094691121
+--- watcher start 1790933566.298218573
+check: rearm-resurface
+--- watcher exit rc=0 1790933567.004620807
+--- watcher start 1790933567.207662992
+check: rearm-resurface
+--- watcher exit rc=0 1790933567.891998473
+--- watcher start 1790933568.095371471
+check: rearm-resurface
+--- watcher exit rc=0 1790933568.797817781
+--- watcher start 1790933569.000497029
+check: rearm-resurface
+--- watcher exit rc=0 1790933569.637911843
+--- watcher start 1790933569.840738254
+check: rearm-resurface
+--- watcher exit rc=0 1790933570.476956803
+--- watcher start 1790933570.679707702
+check: rearm-resurface
+--- watcher exit rc=0 1790933571.323374773
+--- watcher start 1790933571.526462748
+check: rearm-resurface
+--- watcher exit rc=0 1790933572.063462539
+--- watcher start 1790933572.266645587
+check: rearm-resurface
+--- watcher exit rc=0 1790933572.906368195
+--- watcher start 1790933573.109258102
+check: rearm-resurface
+--- watcher exit rc=0 1790933573.796135088
+--- watcher start 1790933573.999362031
+check: rearm-resurface
+--- watcher exit rc=0 1790933574.784959007
+--- watcher start 1790933574.988221427
+check: rearm-resurface
+--- watcher exit rc=0 1790933575.713334259
+--- watcher start 1790933575.917066453
+check: rearm-resurface
+--- watcher exit rc=0 1790933576.636493909
+--- watcher start 1790933576.840489059
+check: rearm-resurface
+--- watcher exit rc=0 1790933577.505410813
+--- watcher start 1790933577.708245950
+check: rearm-resurface
+--- watcher exit rc=0 1790933578.373408996
+--- watcher start 1790933578.576645300
+check: rearm-resurface
+--- watcher exit rc=0 1790933579.193163814
+--- watcher start 1790933579.397024825
+check: rearm-resurface
+--- watcher exit rc=0 1790933579.349442645
+--- watcher start 1790933579.552309003
+check: rearm-resurface
+--- watcher exit rc=0 1790933580.126270532
+--- watcher start 1790933580.329465188
+check: rearm-resurface
+--- watcher exit rc=0 1790933580.993280107
+--- watcher start 1790933581.196241140
+check: rearm-resurface
+--- watcher exit rc=0 1790933581.895372108
+--- watcher start 1790933582.098352053
+check: rearm-resurface
+--- watcher exit rc=0 1790933582.829756909
+--- watcher start 1790933583.033643788
+check: rearm-resurface
+--- watcher exit rc=0 1790933583.756319554
+--- watcher start 1790933583.959544143
+check: rearm-resurface
+--- watcher exit rc=0 1790933584.750890350
+--- watcher start 1790933584.954416968
+check: rearm-resurface
+--- watcher exit rc=0 1790933585.680974961
+--- watcher start 1790933585.884305028
+check: rearm-resurface
+--- watcher exit rc=0 1790933586.642627074
+--- watcher start 1790933586.845705714
+check: rearm-resurface
+--- watcher exit rc=0 1790933587.637144586
+--- watcher start 1790933587.840699061
+check: rearm-resurface
+--- watcher exit rc=0 1790933588.656594456
+--- watcher start 1790933588.862761480
+check: rearm-resurface
+--- watcher exit rc=0 1790933589.659228343
+--- watcher start 1790933589.863078279
+check: rearm-resurface
+--- watcher exit rc=0 1790933590.799241332
+--- watcher start 1790933591.003022303
+check: rearm-resurface
+--- watcher exit rc=0 1790933591.818260471
+--- watcher start 1790933592.021399283
+check: rearm-resurface
+--- watcher exit rc=0 1790933592.828402783
+--- watcher start 1790933593.031745183
+check: rearm-resurface
+--- watcher exit rc=0 1790933594.284195082
+--- watcher start 1790933594.487702587
+check: rearm-resurface
+--- watcher exit rc=0 1790933595.353797230
+--- watcher start 1790933595.557397289
+check: rearm-resurface
+--- watcher exit rc=0 1790933596.204766379
+--- watcher start 1790933596.407999196
+check: rearm-resurface
+--- watcher exit rc=0 1790933597.199545089
+--- watcher start 1790933597.402600085
+check: rearm-resurface
+--- watcher exit rc=0 1790933598.273724060
+--- watcher start 1790933598.477324987
+check: rearm-resurface
+--- watcher exit rc=0 1790933599.583589122
+--- watcher start 1790933599.786820523
+check: rearm-resurface
+--- watcher exit rc=0 1790933600.558376405
+--- watcher start 1790933600.761605145
+check: rearm-resurface
+--- watcher exit rc=0 1790933601.524377823
+--- watcher start 1790933601.727748352
+check: rearm-resurface
+--- watcher exit rc=0 1790933602.492990128
+--- watcher start 1790933602.697039124
+check: rearm-resurface
+--- watcher exit rc=0 1790933603.585170458
+--- watcher start 1790933603.788976278
+check: rearm-resurface
+--- watcher exit rc=0 1790933604.598427040
+--- watcher start 1790933604.802115688
+check: rearm-resurface
+--- watcher exit rc=0 1790933605.605205986
+--- watcher start 1790933605.808695274
+check: rearm-resurface
+--- watcher exit rc=0 1790933606.611256094
+--- watcher start 1790933606.814299505
+check: rearm-resurface
+--- watcher exit rc=0 1790933607.688787385
+--- watcher start 1790933607.893155732
+check: rearm-resurface
+--- watcher exit rc=0 1790933608.684624672
+--- watcher start 1790933608.889222986
+check: rearm-resurface
+--- watcher exit rc=0 1790933609.673406641
+--- watcher start 1790933609.876659319
+check: rearm-resurface
+--- watcher exit rc=0 1790933610.692861191
+--- watcher start 1790933610.896352919
+check: rearm-resurface
+--- watcher exit rc=0 1790933610.896835254
+--- watcher start 1790933611.100035539
+check: rearm-resurface
+--- watcher exit rc=0 1790933611.776475960
+--- watcher start 1790933611.982284495
+check: rearm-resurface
+--- watcher exit rc=0 1790933612.760136782
+--- watcher start 1790933612.963546228
+check: rearm-resurface
+--- watcher exit rc=0 1790933613.727952349
+--- watcher start 1790933613.931070357
+check: rearm-resurface
+--- watcher exit rc=0 1790933614.706734869
+--- watcher start 1790933614.910431775
+check: rearm-resurface
+--- watcher exit rc=0 1790933615.958800273
+--- watcher start 1790933616.162728553
+check: rearm-resurface
+--- watcher exit rc=0 1790933616.968471592
+--- watcher start 1790933617.172398134
+check: rearm-resurface
+--- watcher exit rc=0 1790933618.062438832
+--- watcher start 1790933618.266120912
+check: rearm-resurface
+--- watcher exit rc=0 1790933619.193203798
+--- watcher start 1790933619.396535482
+check: rearm-resurface
+--- watcher exit rc=0 1790933620.291804718
+--- watcher start 1790933620.498465415
+check: rearm-resurface
+--- watcher exit rc=0 1790933621.515637703
+--- watcher start 1790933621.719563218
+check: rearm-resurface
+--- watcher exit rc=0 1790933622.766329718
+--- watcher start 1790933622.971252486
+check: rearm-resurface
+--- watcher exit rc=0 1790933624.110976226
+--- watcher start 1790933624.314673572
+check: rearm-resurface
+--- watcher exit rc=0 1790933625.316298759
+--- watcher start 1790933625.522365123
+check: rearm-resurface
+--- watcher exit rc=0 1790933626.579413006
+--- watcher start 1790933626.783141634
+check: rearm-resurface
+--- watcher exit rc=0 1790933627.934160599
+--- watcher start 1790933628.143382242
+check: rearm-resurface
+--- watcher exit rc=0 1790933629.232675877
+--- watcher start 1790933629.437690245
+check: rearm-resurface
+--- watcher exit rc=0 1790933630.661041153
+--- watcher start 1790933630.867579031
+check: rearm-resurface
+--- watcher exit rc=0 1790933632.110284664
+--- watcher start 1790933632.314084637
+check: rearm-resurface
+--- watcher exit rc=0 1790933633.457383982
+--- watcher start 1790933633.661697975
+check: rearm-resurface
+--- watcher exit rc=0 1790933634.764797895
+--- watcher start 1790933634.972775267
+check: rearm-resurface
+--- watcher exit rc=0 1790933635.954033323
+--- watcher start 1790933636.159576504
+check: rearm-resurface
+--- watcher exit rc=0 1790933637.155716400
+--- watcher start 1790933637.359296167
+check: rearm-resurface
+--- watcher exit rc=0 1790933638.554596570
+--- watcher start 1790933638.758373778
+check: rearm-resurface
+--- watcher exit rc=0 1790933639.637096069
+--- watcher start 1790933639.840581166
+check: rearm-resurface
+--- watcher exit rc=0 1790933640.829683111
+--- watcher start 1790933641.034488941
+check: rearm-resurface
+--- watcher exit rc=0 1790933641.996579846
+--- watcher start 1790933642.200301953
+check: rearm-resurface
+--- watcher exit rc=0 1790933642.292142237
+--- watcher start 1790933642.496745578
+check: rearm-resurface
+--- watcher exit rc=0 1790933643.374791161
+--- watcher start 1790933643.578451046
+check: rearm-resurface
+--- watcher exit rc=0 1790933644.414519456
+--- watcher start 1790933644.618126952
+check: rearm-resurface
+--- watcher exit rc=0 1790933645.547576267
+--- watcher start 1790933645.751686429
+check: rearm-resurface
+--- watcher exit rc=0 1790933646.590492084
+--- watcher start 1790933646.793718108
+check: rearm-resurface
+--- watcher exit rc=0 1790933647.742748665
+--- watcher start 1790933647.947213501
+check: rearm-resurface
+--- watcher exit rc=0 1790933648.769535497
+--- watcher start 1790933648.973708108
+check: rearm-resurface
+--- watcher exit rc=0 1790933649.842017278
+--- watcher start 1790933650.046044838
+check: rearm-resurface
+--- watcher exit rc=0 1790933650.875597417
+--- watcher start 1790933651.079044198
+check: rearm-resurface
+--- watcher exit rc=0 1790933651.997604097
+--- watcher start 1790933652.201242697
+check: rearm-resurface
+--- watcher exit rc=0 1790933653.052976458
+--- watcher start 1790933653.256381156
+check: rearm-resurface
+--- watcher exit rc=0 1790933654.021874458
+--- watcher start 1790933654.226311580
+check: rearm-resurface
+--- watcher exit rc=0 1790933655.307663848
+--- watcher start 1790933655.518059728
+check: rearm-resurface
+--- watcher exit rc=0 1790933656.341823217
+--- watcher start 1790933656.545839906
+check: rearm-resurface
+--- watcher exit rc=0 1790933657.312905543
+--- watcher start 1790933657.517676890
+check: rearm-resurface
+--- watcher exit rc=0 1790933658.515591196
+--- watcher start 1790933658.720251450
+check: rearm-resurface
+--- watcher exit rc=0 1790933659.602015895
+--- watcher start 1790933659.806365385
+check: rearm-resurface
+--- watcher exit rc=0 1790933660.694512768
+--- watcher start 1790933660.898080205
+check: rearm-resurface
+--- watcher exit rc=0 1790933661.815597209
+--- watcher start 1790933662.018917839
+check: rearm-resurface
+--- watcher exit rc=0 1790933662.895346592
+--- watcher start 1790933663.099268314
+check: rearm-resurface
+--- watcher exit rc=0 1790933664.042971492
+--- watcher start 1790933664.245995786
+check: rearm-resurface
+--- watcher exit rc=0 1790933665.074809215
+--- watcher start 1790933665.278498666
+check: rearm-resurface
+--- watcher exit rc=0 1790933666.115548291
+--- watcher start 1790933666.318700260
+check: rearm-resurface
+--- watcher exit rc=0 1790933667.191951495
+--- watcher start 1790933667.395064279
+check: rearm-resurface
+--- watcher exit rc=0 1790933668.244771707
+--- watcher start 1790933668.448220389
+check: rearm-resurface
+--- watcher exit rc=0 1790933669.302050318
+--- watcher start 1790933669.505439141
+check: rearm-resurface
+--- watcher exit rc=0 1790933670.457876824
+--- watcher start 1790933670.661492040
+check: rearm-resurface
+--- watcher exit rc=0 1790933671.480356900
+--- watcher start 1790933671.684645627
+check: rearm-resurface
+--- watcher exit rc=0 1790933672.526761500
+--- watcher start 1790933672.730867964
+check: rearm-resurface
+--- watcher exit rc=0 1790933673.577663901
+--- watcher start 1790933673.781099487
+check: rearm-resurface
+--- watcher exit rc=0 1790933673.717230672
+--- watcher start 1790933673.921996648
+check: rearm-resurface
+--- watcher exit rc=0 1790933674.661438029
+--- watcher start 1790933674.866590330
+check: rearm-resurface
+--- watcher exit rc=0 1790933675.672748047
+--- watcher start 1790933675.875916106
+check: rearm-resurface
+--- watcher exit rc=0 1790933676.582481354
+--- watcher start 1790933676.786552843
+check: rearm-resurface
+--- watcher exit rc=0 1790933677.624207305
+--- watcher start 1790933677.830345507
+check: rearm-resurface
+--- watcher exit rc=0 1790933678.708288829
+--- watcher start 1790933678.911862791
+check: rearm-resurface
+--- watcher exit rc=0 1790933679.680363081
+--- watcher start 1790933679.883961145
+check: rearm-resurface
+--- watcher exit rc=0 1790933680.784745771
+--- watcher start 1790933680.989117519
+check: rearm-resurface
+--- watcher exit rc=0 1790933682.177408196
+--- watcher start 1790933682.381201976
+check: rearm-resurface
+--- watcher exit rc=0 1790933683.369166905
+--- watcher start 1790933683.572642443
+check: rearm-resurface
+--- watcher exit rc=0 1790933684.541333751
+--- watcher start 1790933684.744930950
+check: rearm-resurface
+--- watcher exit rc=0 1790933685.661995546
+--- watcher start 1790933685.867464448
+check: rearm-resurface
+--- watcher exit rc=0 1790933686.788628532
+--- watcher start 1790933686.992084470
+check: rearm-resurface
+--- watcher exit rc=0 1790933687.929826615
+--- watcher start 1790933688.133249182
+check: rearm-resurface
+--- watcher exit rc=0 1790933688.930157851
+--- watcher start 1790933689.134111479
+check: rearm-resurface
+--- watcher exit rc=0 1790933689.980763965
+--- watcher start 1790933690.184520740
+check: rearm-resurface
