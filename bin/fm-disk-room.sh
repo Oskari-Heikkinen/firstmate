@@ -86,8 +86,8 @@ die() { printf 'fm-disk-room: %s\n' "$*" >&2; exit 2; }
 
 usage() { sed -n '2,/^set -u$/{/^set -u$/d;s/^# \{0,1\}//;p}' "$0"; }
 
-# to_bytes SIZE -> bytes on stdout, or fail; a result past 18 digits fails so
-# bash arithmetic on it can never wrap.
+# to_bytes SIZE -> bytes on stdout, or fail; a result that is not a plain
+# integer of at most 18 digits fails so bash arithmetic on it can never wrap.
 to_bytes() {
   local v=$1 n unit mult
   case "$v" in
@@ -105,7 +105,7 @@ to_bytes() {
     *) return 1 ;;
   esac
   case "$n" in ''|.|*.*.*) return 1 ;; esac
-  awk -v n="$n" -v m="$mult" 'BEGIN { b = sprintf("%.0f", n * m); if (length(b) > 18) exit 1; print b }'
+  awk -v n="$n" -v m="$mult" 'BEGIN { b = sprintf("%.0f", n * m); if (b !~ /^[0-9]+$/ || length(b) > 18) exit 1; print b }'
 }
 
 gib() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824 }'; }

@@ -142,6 +142,9 @@ test_check_margin() {
   expect_code 0 "$rc" "the margin is configurable"
   run_room check --expect-write lots >/dev/null 2>&1; rc=$?
   expect_code 2 "$rc" "a bad size is misuse"
+  out=$(run_room check --expect-write "$(printf '9%.0s' $(seq 400))" 2>&1); rc=$?
+  expect_code 2 "$rc" "an over-long size is misuse"
+  assert_contains "$out" "bad size" "an over-long size is reported instead of overflowing"
   run_room check >/dev/null 2>&1; rc=$?
   expect_code 2 "$rc" "check needs --expect-write"
   pass "check admits down to the margin after the expected write"
