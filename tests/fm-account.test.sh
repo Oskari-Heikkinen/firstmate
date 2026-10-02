@@ -751,11 +751,15 @@ test_readings_blind_when_every_read_fails_never_balanced() {
   printf '3\n' > "$C/codex/fake-fail"
   out=$(run_account rebalance)
   assert_not_contains "$out" "balanced" "no reading must never read as balanced"
-  assert_contains "$out" "needs the captain: account readings blind: every account usage read failed (gmail unreadable, work unreadable, codex error)" "rebalance says the readings are blind"
+  assert_contains "$out" "needs the captain: account readings blind: every account usage read failed (gmail, work, codex)" "rebalance says the readings are blind"
   out=$(run_account rebalance --check)
   assert_contains "$out" "accounts: needs the captain: account readings blind" "the watcher wakes with the blind readings"
   out=$(run_account rebalance --check)
   assert_equals "" "$out" "an unchanged blind check stays silent"
+  printf '3\n' > "$C/gmail/fake-fail"
+  printf '0 garbage\n' > "$C/codex/fake-quota"
+  out=$(FM_ACCOUNT_USAGE_TTL=0 run_account rebalance --check)
+  assert_equals "" "$out" "blind reads failing a different way are the same blind readings"
   out=$(run_account watch --once)
   assert_contains "$out" "Needs the captain: account readings blind" "the panel shows the blind readings"
   printf '1\n' > "$H/.fm-secondmate-home"
@@ -777,8 +781,10 @@ test_status_shows_each_agents_live_login_beside_its_record() {
   add_ship a2 account=work
   add_ship a3 account=gmail
   add_ship a4 account=gmail
+  add_ship a5 account=default
   add_mate sm1 work
-  mkdir -p "$C/wt-a1" "$C/wt-a2" "$C/wt-a3" "$C/wt-a4"
+  echo "default claude ~/.claude 3" >> "$H/config/accounts"
+  mkdir -p "$C/wt-a1" "$C/wt-a2" "$C/wt-a3" "$C/wt-a4" "$C/wt-a5" "$C/user-home/.claude"
   wt1=$(cd -P "$C/wt-a1" && pwd) wt2=$(cd -P "$C/wt-a2" && pwd)
   wt3=$(cd -P "$C/wt-a3" && pwd) mate=$(cd -P "$C/mate-sm1" && pwd)
   add_proc 101 claude "$wt1" "SECRET_TOKEN=do-not-print" "CLAUDE_CONFIG_DIR=$C/gmail" "OTHER=also-hidden"
@@ -787,6 +793,7 @@ test_status_shows_each_agents_live_login_beside_its_record() {
   add_proc 104 claude "$mate" "CLAUDE_CONFIG_DIR=$C/work"
   add_proc 105 claude "$wt3" "CLAUDE_CONFIG_DIR=/nowhere/registered"
   add_proc 106 claude "$(cd -P "$C/wt-a4" && pwd)"
+  add_proc 107 claude "$(cd -P "$C/wt-a5" && pwd)" "PATH=/usr/bin"
   out=$(run_account status --json)
   assert_equals "gmail|true" "$(json_get "$out" '.agents[] | select(.id == "a1") | "\(.live_account)|\(.live_mismatch)"')" "a worker running on another login than its record"
   assert_equals "null|false" "$(json_get "$out" '.agents[] | select(.id == "a2") | "\(.live_account)|\(.live_mismatch)"')" "only a claude process speaks for an agent"
@@ -794,6 +801,7 @@ test_status_shows_each_agents_live_login_beside_its_record() {
   assert_equals "unregistered|true" "$(json_get "$out" '.agents[] | select(.id == "a3") | "\(.live_account)|\(.live_mismatch)"')" "a login no account registers"
   assert_equals "null|false" "$(json_get "$out" '.agents[] | select(.id == "a4") | "\(.live_account)|\(.live_mismatch)"')" "an unreadable process is unknown"
   assert_equals "null" "$(json_get "$out" '.agents[] | select(.kind == "session") | .live_account')" "no process for this session is unknown"
+  assert_equals "default|false" "$(json_get "$out" '.agents[] | select(.id == "a5") | "\(.live_account)|\(.live_mismatch)"')" "a process with no CLAUDE_CONFIG_DIR is on the default login"
   out=$(run_account status); rc=$?
   expect_code 0 "$rc" "status with unreadable processes"
   assert_contains "$out" "a1                     recorded work       live gmail  MISMATCH" "the table marks the mismatch"
@@ -801,6 +809,11 @@ test_status_shows_each_agents_live_login_beside_its_record() {
   assert_contains "$out" "live unknown" "an unreadable agent shows as unknown"
   assert_not_contains "$out$(run_account status --json)" "do-not-print" "no other environment value is printed"
   assert_not_contains "$out" "also-hidden" "no other environment value is printed"
+  add_proc 108 claude "$(cd -P "$H" && pwd)" "CLAUDE_CONFIG_DIR=/nowhere/registered"
+  out=$(FM_TEST_SESSION_DIR=/nowhere/registered run_account status --json)
+  assert_equals "unregistered|false" "$(json_get "$out" '.agents[] | select(.kind == "session") | "\(.live_account)|\(.live_mismatch)"')" "an unregistered session on its own unregistered login matches"
+  out=$(FM_TEST_SESSION_DIR=/nowhere/registered run_account status)
+  assert_contains "$out" "main                   recorded -          live unregistered"$'\n' "the table does not mark it either"
   pass "status shows each agent's live login beside its recorded account and marks a mismatch"
 }
 

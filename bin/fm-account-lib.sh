@@ -439,7 +439,7 @@ fm_account_live_index() {
     [ -d "$p" ] || continue
     comm=
     IFS= read -r comm <"$p/comm" 2>/dev/null || continue
-    case "$(basename -- "$comm")" in *claude*) ;; *) continue ;; esac
+    case "${comm##*/}" in *claude*) ;; *) continue ;; esac
     cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
     [ -n "$cwd" ] || continue
     if [ ! -r "$p/environ" ]; then
@@ -447,7 +447,8 @@ fm_account_live_index() {
       continue
     fi
     # grep -z prints only the matching entry; nothing else leaves the file.
-    if entry=$(grep -z -m1 '^CLAUDE_CONFIG_DIR=' "$p/environ" 2>/dev/null | tr -d '\0'); then
+    entry=$(grep -z -m1 '^CLAUDE_CONFIG_DIR=' "$p/environ" 2>/dev/null | tr -d '\0')
+    if [ -n "$entry" ]; then
       printf '%s\t%s\n' "$cwd" "${entry#CLAUDE_CONFIG_DIR=}"
     elif [ "$(head -c1 "$p/environ" 2>/dev/null | wc -c)" -gt 0 ]; then
       printf '%s\t~/.claude\n' "$cwd"

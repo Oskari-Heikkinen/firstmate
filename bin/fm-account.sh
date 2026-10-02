@@ -251,8 +251,12 @@ advice() {
   [ "$(self_label)" = main ] && main=1
   if readings_blind "$accounts"; then
     [ -n "$captain" ] && [ "$main" = 0 ] && return 0
+    if printf '%s\n' "$accounts" | awk -F'|' 'NF && $4 != "no-quota-axi" { exit 1 }'; then
+      printf 'account readings blind: quota-axi is not installed on this machine, so no account usage can be read; install quota-axi\n'
+      return 0
+    fi
     printf 'account readings blind: every account usage read failed (%s), so no move or room verdict can be made; check this machine'"'"'s connection to the usage service\n' \
-      "$(printf '%s\n' "$accounts" | awk -F'|' 'NF { s = s (s ? ", " : "") $1 " " $4 } END { print s }')"
+      "$(printf '%s\n' "$accounts" | awk -F'|' 'NF { s = s (s ? ", " : "") $1 } END { print s }')"
     return 0
   fi
   floor=$(fm_account_floor "$CONFIG")
@@ -339,7 +343,7 @@ cmd_status() {
         agents: [ rows($agents)[] | { home: .[0], id: .[1], kind: .[2], harness: .[3],
           account: (if (.[4] // "") == "" then null else .[4] end), basis: .[5], direct: (.[6] == "1"),
           live_account: (if (.[7] // "") == "" or .[7] == "unknown" then null else .[7] end),
-          live_mismatch: ((.[7] // "") != "" and .[7] != "unknown" and .[7] != (.[4] // "")) } ],
+          live_mismatch: ((.[7] // "") != "" and .[7] != "unknown" and .[7] != (if (.[4] // "") == "" then "unregistered" else .[4] end)) } ],
         moves: [ rows($moves)[] | { id: .[0], kind: .[1], from: .[2], to: .[3] } ],
         advice: ($advice | split("\n") | map(select(. != ""))) }'
     return
@@ -384,7 +388,7 @@ cmd_status() {
     printf '%s\n' "$moves" | awk -F'|' '{ printf "  %s  %s -> %s\n", $1, $3, $4 }'
   fi
   live=$(printf '%s\n' "$agents" | awk -F'|' '$4 == "claude" && $8 != "" {
-      tag = ($8 != "unknown" && $8 != $5) ? "  MISMATCH" : ""
+      tag = ($8 != "unknown" && $8 != ($5 == "" ? "unregistered" : $5)) ? "  MISMATCH" : ""
       printf "  %-22s recorded %-10s live %s%s\n", (($7 == "1" || $3 == "session") ? $2 : $1 "/" $2), ($5 == "" ? "-" : $5) ($6 == "inferred" ? "~" : ""), $8, tag }')
   [ -z "$live" ] || printf 'Agents (recorded / live login):\n%s\n' "$live"
   advice "$agents" "$accounts" | sed 's/^/Needs the captain: /'
