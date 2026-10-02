@@ -51,6 +51,20 @@
 # request text, the bound, the failure vocabulary, and this report are all
 # computed here in the primary and are identical for both.
 #
+# Exactly one actor owns a mate across its restart. The stop leaves the mate's
+# endpoint reading confirmed agent absence, the very verdict the watcher's
+# auto-relaunch and the session-start sweep recover from, so both relaunch
+# commands above hold that mate's per-mate liveness claim
+# (bin/fm-secondmate-liveness-lib.sh) from before the stop until their relaunch
+# has returned. Those recovery paths skip a mate whose claim is held, so neither
+# can kill the endpoint mid-restart or spawn a second replacement beside the
+# restart's own, and the outcome reported here is the restart's own. The claim
+# is bound to the relaunch command's process, so a crashed or killed restart
+# leaves a claim the next recovery pass reclaims rather than a mate that can
+# never be relaunched again. A mate whose claim another recovery still holds
+# after the bound below is not stopped at all and gets the ordinary re-read
+# nudge.
+#
 # Nothing here forces, stashes, or discards anything. bin/fm-control.sh owns the
 # restart transaction, its checkpoint, its journal, and its rollback; a refusal
 # before the agent is stopped leaves the mate running exactly as it was.
@@ -62,6 +76,9 @@
 # Environment knobs:
 #   FM_SECONDMATE_PERSIST_WAIT  seconds to wait for one mate's persist answer (900)
 #   FM_SECONDMATE_PERSIST_POLL  seconds between checks of that answer (5)
+#   FM_SECONDMATE_RESTART_CLAIM_WAIT
+#                               seconds to wait for another recovery of one
+#                               mate to release its liveness claim (180)
 #
 # Exit status: 0 every named mate restarted; 3 at least one was nudged or left
 # unreached and every mate was still accounted for; 1 the input itself is
@@ -72,7 +89,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 usage() {
-  sed -n '2,65{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,85{s/^# \{0,1\}//;p;}' "$0"
 }
 
 case "${1:-}" in
@@ -94,11 +111,14 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
+# shellcheck source=bin/fm-secondmate-liveness-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-liveness-lib.sh"
 
 PERSIST_WAIT=${FM_SECONDMATE_PERSIST_WAIT:-900}
 PERSIST_POLL=${FM_SECONDMATE_PERSIST_POLL:-5}
 case "$PERSIST_WAIT" in ''|*[!0-9]*) echo "error: FM_SECONDMATE_PERSIST_WAIT must be a non-negative integer: $PERSIST_WAIT" >&2; exit 2 ;; esac
 case "$PERSIST_POLL" in ''|*[!0-9]*|0) echo "error: FM_SECONDMATE_PERSIST_POLL must be a positive integer: $PERSIST_POLL" >&2; exit 2 ;; esac
+case "${FM_SECONDMATE_RESTART_CLAIM_WAIT:-180}" in ''|*[!0-9]*) echo "error: FM_SECONDMATE_RESTART_CLAIM_WAIT must be a non-negative integer: $FM_SECONDMATE_RESTART_CLAIM_WAIT" >&2; exit 2 ;; esac
 
 IDS=()
 for arg in "$@"; do
@@ -187,6 +207,10 @@ restart_mate() {  # <array-index>
   fi
 
   restart_reason=$(first_reported_line "$restart_out")
+  if [ "$restart_rc" -eq "$FM_SECONDMATE_CLAIM_BUSY_EXIT" ]; then
+    fall_back_to_nudge "$id" "$restart_reason"
+    return
+  fi
   [ -n "$restart_reason" ] || restart_reason="the restart failed without a reported reason"
   report_unreached "$id" "the restart outcome is unknown: $restart_reason"
 }

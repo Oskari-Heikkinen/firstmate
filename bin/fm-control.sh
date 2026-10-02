@@ -133,6 +133,11 @@
 #   FM_CONTROL_EXIT_WAIT         alive->dead wait after the exit command (30)
 #   FM_CONTROL_LAUNCH_WAIT       dead->alive wait after a relaunch (90)
 #   FM_CONTROL_EXIT_RETRIES      Enter retries for the exit command (3)
+#   FM_SECONDMATE_RESTART_CLAIM_WAIT
+#                                wait for another recovery of a secondmate to
+#                                release its liveness claim before relaunching
+#                                it (180); a claim still held then refuses the
+#                                relaunch with status 75, nothing touched
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -182,6 +187,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
 # shellcheck source=bin/fm-account-lib.sh
 . "$SCRIPT_DIR/fm-account-lib.sh"
+# shellcheck source=bin/fm-secondmate-liveness-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-liveness-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -198,6 +205,7 @@ die() {  # <message>
 
 CONTROL_LOCK=
 CONTROL_LOCK_HELD=0
+LIVENESS_CLAIM_HELD=0
 RELAUNCH_ACTIVE=0
 RELAUNCH_PHASE=start
 
@@ -206,6 +214,10 @@ control_cleanup() {
   if [ "$RELAUNCH_ACTIVE" = 1 ] \
      && declare -F relaunch_rollback >/dev/null 2>&1; then
     relaunch_rollback || true
+  fi
+  if [ "$LIVENESS_CLAIM_HELD" = 1 ]; then
+    LIVENESS_CLAIM_HELD=0
+    fm_secondmate_liveness_unlock "$ID"
   fi
   if [ "$CONTROL_LOCK_HELD" = 1 ]; then
     CONTROL_LOCK_HELD=0
@@ -1119,8 +1131,13 @@ do_relaunch() {
       ;;
     secondmate)
       # The charter in the secondmate's own home is its instruction source and
-      # stays untouched.
+      # stays untouched. The stop leaves the endpoint reading confirmed agent
+      # absence, the verdict the watcher's auto-relaunch and the session-start
+      # sweep recover from, so this relaunch owns the mate's liveness claim
+      # from before the stop until it exits and neither acts on it meanwhile.
       RELAUNCH_BRIEF=
+      fm_secondmate_restart_claim "$ID" || exit $?
+      LIVENESS_CLAIM_HELD=1
       ;;
     *)
       die "task $ID records kind '$KIND', which has no defined relaunch shape"
