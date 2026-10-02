@@ -156,7 +156,7 @@ agent_dir() {
 collect_agents() {
   local self self_acct meta id kind harness row home sm_acct m index
   self=$(self_label)
-  self_acct=$(fm_account_name_for_dir "$CONFIG" "${CLAUDE_CONFIG_DIR:-}" claude)
+  self_acct=$(fm_account_name_for_dir "$CONFIG" "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}" claude)
   index=$(fm_account_live_index)
   printf '%s|%s|session|claude|%s|session|0|%s\n' "$self" "$self" "$self_acct" \
     "$(fm_account_live_for "$CONFIG" "$index" "$FM_HOME")"

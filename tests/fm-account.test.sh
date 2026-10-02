@@ -814,6 +814,12 @@ test_status_shows_each_agents_live_login_beside_its_record() {
   assert_equals "unregistered|false" "$(json_get "$out" '.agents[] | select(.kind == "session") | "\(.live_account)|\(.live_mismatch)"')" "an unregistered session on its own unregistered login matches"
   out=$(FM_TEST_SESSION_DIR=/nowhere/registered run_account status)
   assert_contains "$out" "main                   recorded -          live unregistered"$'\n' "the table does not mark it either"
+  rm -rf "$C/proc/108"
+  add_proc 109 claude "$(cd -P "$H" && pwd)" "PATH=/usr/bin"
+  out=$(FM_TEST_SESSION_DIR='' run_account status --json)
+  assert_equals "default|default|false" "$(json_get "$out" '.agents[] | select(.kind == "session") | "\(.account)|\(.live_account)|\(.live_mismatch)"')" "a session with no CLAUDE_CONFIG_DIR is recorded and live on the default login"
+  out=$(FM_TEST_SESSION_DIR='' run_account status)
+  assert_contains "$out" "main                   recorded default    live default"$'\n' "the table does not mark the default login"
   pass "status shows each agent's live login beside its recorded account and marks a mismatch"
 }
 
