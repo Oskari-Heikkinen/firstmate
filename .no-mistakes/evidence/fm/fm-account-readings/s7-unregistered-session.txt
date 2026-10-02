@@ -1,0 +1,5 @@
+# Session on a login folder no account registers (session process and the command both on emptylogin)
+  pid 1763207 cwd /tmp/fm-lab.bCphHr CLAUDE_CONFIG_DIR=/tmp/fm-lab.bCphHr/emptylogin
+Agents (recorded / live login):
+  main                   recorded -          live unregistered
+{"id":"main","account":null,"live_account":"unregistered","live_mismatch":false}

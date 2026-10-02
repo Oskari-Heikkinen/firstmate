@@ -1,0 +1,24 @@
+# quota-axi removed from PATH (command -v quota-axi -> '')
+
+### status --refresh
+Accounts  (floor 10%)
+gmail    claude    ?  runway -      resets -  [no-quota-axi]
+    on it: main
+work     claude    ?  runway -      resets -  [no-quota-axi]
+tetmet   claude    ?  runway -      resets -  [no-quota-axi]
+New spawns: gmail
+Agents (recorded / live login):
+  main                   recorded gmail      live unknown
+Needs the captain: account readings blind: quota-axi is not installed on this machine, so no account usage can be read; install quota-axi
+
+### rebalance
+needs the captain: account readings blind: quota-axi is not installed on this machine, so no account usage can be read; install quota-axi
+
+### rebalance --check #1
+accounts: needs the captain: account readings blind: quota-axi is not installed on this machine, so no account usage can be read;  install quota-axi
+
+### rebalance --check #2
+<silent>
+
+### status --json advice
+{"statuses":["no-quota-axi","no-quota-axi","no-quota-axi"],"advice":["account readings blind: quota-axi is not installed on this machine, so no account usage can be read; install quota-axi"]}

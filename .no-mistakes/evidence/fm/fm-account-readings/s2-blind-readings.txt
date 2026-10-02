@@ -1,0 +1,42 @@
+# Registry: gmail, work, tetmet (real logins). Run inside `unshare -rn` (no network) so every real quota-axi read fails.
+
+### BASE dfd917e4: status --refresh, then rebalance, then rebalance --check (watcher)
+Accounts  (floor 10%)
+gmail    claude    ?  runway -      resets -  [error]
+    on it: main
+work     claude    ?  runway -      resets -  [error]
+tetmet   claude    ?  runway -      resets -  [error]
+New spawns: gmail
+balanced: no agent needs to move
+[exit 0]
+[check exit 0, output above if any]
+
+### AFTER: status --refresh
+Accounts  (floor 10%)
+gmail    claude    ?  runway -      resets -  [error]
+    on it: main
+work     claude    ?  runway -      resets -  [error]
+tetmet   claude    ?  runway -      resets -  [error]
+New spawns: gmail
+Agents (recorded / live login):
+  main                   recorded gmail      live unknown
+Needs the captain: account readings blind: every account usage read failed (gmail, work, tetmet), so no move or room verdict can be made; check this machine's connection to the usage service
+
+### AFTER: rebalance --dry-run
+needs the captain: account readings blind: every account usage read failed (gmail, work, tetmet), so no move or room verdict can be made; check this machine's connection to the usage service
+[exit 0]
+
+### AFTER: rebalance
+needs the captain: account readings blind: every account usage read failed (gmail, work, tetmet), so no move or room verdict can be made; check this machine's connection to the usage service
+[exit 0]
+
+### AFTER: rebalance --check #1
+accounts: needs the captain: account readings blind: every account usage read failed (gmail, work, tetmet), so no move or room verdict can be made;  check this machine's connection to the usage service
+[exit 0]
+
+### AFTER: rebalance --check #2
+[exit 0]
+
+### AFTER: rebalance --check #3
+[exit 0]
+

@@ -1,0 +1,74 @@
+===== pane session (cwd $LAB) =====
+Welcome to Claude Code v2.1.287
+ Let's get started.
+ Choose the text style that looks best with your terminal
+ To change this later, run /theme
+     Auto (match terminal)
+ ❯ ✔ Dark mode
+     Light mode
+     Dark mode (colorblind-friendly)
+     Light mode (colorblind-friendly)
+     Dark mode (ANSI colors only)
+     Light mode (ANSI colors only)
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+===== pane drift (cwd $LAB/wt/ship-drift) =====
+────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+ /tmp/fm-lab.bCphHr/wt/ship-drift
+ Quick safety check: Is this a project you created or one you trust? (Like your
+ own code, a well-known open source project, or work from your team). If not,
+ take a moment to review what's in this folder first.
+ Claude Code'll be able to read, edit, and execute files here.
+ Security guide
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel
+===== pane match (cwd $LAB/wt/ship-match) =====
+────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+ /tmp/fm-lab.bCphHr/wt/ship-match
+ Quick safety check: Is this a project you created or one you trust? (Like your
+ own code, a well-known open source project, or work from your team). If not,
+ take a moment to review what's in this folder first.
+ Claude Code'll be able to read, edit, and execute files here.
+ Security guide
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel
+===== pane default (cwd $LAB/wt/ship-default) =====
+────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+ /tmp/fm-lab.bCphHr/wt/ship-default
+ Quick safety check: Is this a project you created or one you trust? (Like your
+ own code, a well-known open source project, or work from your team). If not,
+ take a moment to review what's in this folder first.
+ Claude Code'll be able to read, edit, and execute files here.
+ Security guide
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel
+===== pane nocfg (cwd $LAB/wt/ship-nocfg) =====
+────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+ /tmp/fm-lab.bCphHr/wt/ship-nocfg
+ Quick safety check: Is this a project you created or one you trust? (Like your
+ own code, a well-known open source project, or work from your team). If not,
+ take a moment to review what's in this folder first.
+ Claude Code'll be able to read, edit, and execute files here.
+ Security guide
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel
+===== pane unreg (cwd $LAB/wt/ship-unreg) =====
+Welcome to Claude Code v2.1.287
+ Let's get started.
+ Choose the text style that looks best with your terminal
+ To change this later, run /theme
+     Auto (match terminal)
+ ❯ ✔ Dark mode
+     Light mode
+     Dark mode (colorblind-friendly)
+     Light mode (colorblind-friendly)
+     Dark mode (ANSI colors only)
+     Light mode (ANSI colors only)
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌

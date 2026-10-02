@@ -1,0 +1,20 @@
+# Session on Claude default login: this home's session process runs with no CLAUDE_CONFIG_DIR (Claude default ~/.claude, registered as "default").
+  pid 1714114 cwd /tmp/fm-lab.bCphHr <no CLAUDE_CONFIG_DIR>
+### status run with CLAUDE_CONFIG_DIR unset (env -u), agents section
+Agents (recorded / live login):
+  main                   recorded default    live default
+  ship-default           recorded default~   live gmail  MISMATCH
+  ship-drift             recorded gmail      live tetmet  MISMATCH
+  ship-gone              recorded work       live unknown
+  ship-match             recorded tetmet     live tetmet
+  ship-nocfg             recorded default    live default
+  ship-unreg             recorded work       live unregistered  MISMATCH
+### status --json with CLAUDE_CONFIG_DIR unset
+{"id":"main","account":"default","basis":"session","live_account":"default","live_mismatch":false}
+{"id":"ship-default","account":"default","basis":"inferred","live_account":"gmail","live_mismatch":true}
+### status --json with CLAUDE_CONFIG_DIR set but empty
+{"id":"main","account":"default","basis":"session","live_account":"default","live_mismatch":false}
+### BASE dfd917e4 status --json, CLAUDE_CONFIG_DIR unset (recorded account only; no live column)
+{"id":"main","account":null,"basis":"session"}
+{"id":"ship-default","account":null,"basis":"inferred"}
+# ship-default (no account= record, inferred from the session) runs through ~/.local/bin/claude, which put it on the ai-account active login gmail: live gmail MISMATCH is the real drift.

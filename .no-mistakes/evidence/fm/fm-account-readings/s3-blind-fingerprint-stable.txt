@@ -1,0 +1,14 @@
+# Mixed failure statuses across reads on the live slow link: FM_ACCOUNT_QUOTA_CONNECT_MS=0 (Node 250 ms attempts) and FM_ACCOUNT_QUOTA_TIMEOUT=1 (a read that does connect times out -> unreadable).
+# Each round: status --json fills the usage cache (statuses shown), then rebalance --check reads that cache.
+round 1 statuses: "gmail=error work=error tetmet=error"
+  check: accounts: needs the captain: account readings blind: every account usage read failed (gmail, work, tetmet), so no move or room verdict can be made;  check this machine's connection to the usage service
+round 2 statuses: "gmail=error work=error tetmet=error"
+  check: <silent>
+round 3 statuses: "gmail=unreadable work=fresh tetmet=unreadable"
+  check: <silent>
+round 4 statuses: "gmail=unreadable work=error tetmet=unreadable"
+  check: <silent>
+round 5 statuses: "gmail=unreadable work=unreadable tetmet=unreadable"
+  check: <silent>
+round 6 statuses: "gmail=fresh work=unreadable tetmet=error"
+  check: <silent>

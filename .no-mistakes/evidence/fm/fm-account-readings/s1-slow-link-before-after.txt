@@ -1,0 +1,25 @@
+### BEFORE (base dfd917e4): fm-account.sh status --refresh on the slow link
+Accounts  (floor 10%)
+default  claude    ?  runway -      resets -  [error]
+gmail    claude    ?  runway -      resets -  [error]
+    on it: main
+work     claude    ?  runway -      resets -  [error]
+tetmet   claude    ?  runway -      resets -  [error]
+New spawns: gmail
+
+### BEFORE (base dfd917e4): fm-account.sh rebalance --dry-run
+balanced: no agent needs to move
+
+### AFTER (target ec51ff9a): fm-account.sh status --refresh on the same link
+Accounts  (floor 10%)
+default  claude    ?  runway -      resets -  [expired: renews on next use]
+gmail    claude  72%  runway -      resets in 24m
+    on it: main
+work     claude  38%  runway 1d16h  resets in 4d5h  RUNNING OUT
+tetmet   claude   8%  runway 8h11m  resets in 3d1h  LOW
+New spawns: gmail
+Agents (recorded / live login):
+  main                   recorded gmail      live unknown
+
+### AFTER: fm-account.sh rebalance --dry-run
+balanced: no agent needs to move

@@ -1,0 +1,58 @@
+# Real claude processes on the lab tmux socket (fm-lab), from /proc:
+# Note: the Accounts table here reuses usage-cache entries from the earlier offline/no-quota-axi runs (within the 120 s TTL); this file is evidence for the Agents (recorded / live login) section.
+  pid 1620909 cwd /tmp/fm-lab.bCphHr CLAUDE_CONFIG_DIR=~/.claude-work
+  pid 1620957 cwd wt/ship-drift CLAUDE_CONFIG_DIR=~/.claude-tetmet
+  pid 1621026 cwd wt/ship-match CLAUDE_CONFIG_DIR=~/.claude-tetmet
+  pid 1621044 cwd wt/ship-default CLAUDE_CONFIG_DIR=~/.claude-gmail
+  pid 1621068 cwd wt/ship-unreg CLAUDE_CONFIG_DIR=/tmp/fm-lab.bCphHr/emptylogin
+  pid 1651747 cwd wt/ship-nocfg <no CLAUDE_CONFIG_DIR>
+# Task records (state/*.meta account=):
+  ship-default: account=
+  ship-drift: account=gmail
+  ship-gone: account=work
+  ship-match: account=tetmet
+  ship-nocfg: account=default
+  ship-unreg: account=work
+# ship-gone has no running process. The session runs the command with CLAUDE_CONFIG_DIR=~/.claude-gmail.
+
+### BASE dfd917e4: status
+Accounts  (floor 10%)
+default  claude    ?  runway -      resets -  [error]
+    on it: 1 worker
+gmail    claude    ?  runway -      resets -  [no-quota-axi]
+    on it: main +2 workers
+work     claude    ?  runway -      resets -  [no-quota-axi]
+    on it: 2 workers
+tetmet   claude    ?  runway -      resets -  [no-quota-axi]
+    on it: 1 worker
+New spawns: gmail
+
+### AFTER: status
+Accounts  (floor 10%)
+default  claude    ?  runway -      resets -  [error]
+    on it: 1 worker
+gmail    claude    ?  runway -      resets -  [no-quota-axi]
+    on it: main +2 workers
+work     claude    ?  runway -      resets -  [no-quota-axi]
+    on it: 2 workers
+tetmet   claude    ?  runway -      resets -  [no-quota-axi]
+    on it: 1 worker
+New spawns: gmail
+Agents (recorded / live login):
+  main                   recorded gmail      live work  MISMATCH
+  ship-default           recorded gmail~     live gmail
+  ship-drift             recorded gmail      live tetmet  MISMATCH
+  ship-gone              recorded work       live unknown
+  ship-match             recorded tetmet     live tetmet
+  ship-nocfg             recorded default    live default
+  ship-unreg             recorded work       live unregistered  MISMATCH
+Needs the captain: account readings blind: every account usage read failed (default, gmail, work, tetmet), so no move or room verdict can be made; check this machine's connection to the usage service
+
+### AFTER: status --json (agents)
+{"id":"main","account":"gmail","basis":"session","live_account":"work","live_mismatch":true}
+{"id":"ship-default","account":"gmail","basis":"inferred","live_account":"gmail","live_mismatch":false}
+{"id":"ship-drift","account":"gmail","basis":"recorded","live_account":"tetmet","live_mismatch":true}
+{"id":"ship-gone","account":"work","basis":"recorded","live_account":null,"live_mismatch":false}
+{"id":"ship-match","account":"tetmet","basis":"recorded","live_account":"tetmet","live_mismatch":false}
+{"id":"ship-nocfg","account":"default","basis":"recorded","live_account":"default","live_mismatch":false}
+{"id":"ship-unreg","account":"work","basis":"recorded","live_account":"unregistered","live_mismatch":true}

@@ -1,0 +1,7 @@
+# Same lab home marked as a second mate home (.fm-secondmate-home), offline (unshare -rn) so every read fails
+### rebalance --check
+<silent>
+### rebalance
+<silent: no balanced claim>
+### status (agents trimmed)
+Needs the captain: account readings blind: every account usage read failed (default, gmail, work, tetmet), so no move or room verdict can be made; check this machine's connection to the usage service

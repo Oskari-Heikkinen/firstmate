@@ -1,0 +1,9 @@
+# Operator NODE_OPTIONS=--no-deprecation already set; status --refresh on the slow link
+Accounts  (floor 10%)
+default  claude  37%  runway 1d14h  resets in 4d5h  RUNNING OUT
+    on it: 1 worker
+gmail    claude  71%  runway -      resets in 16m
+    on it: main +2 workers
+work     claude  37%  runway 1d14h  resets in 4d5h  RUNNING OUT
+    on it: 2 workers
+tetmet   claude   8%  runway 8h12m  resets in 3d1h  LOW
