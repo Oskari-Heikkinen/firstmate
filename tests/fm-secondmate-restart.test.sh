@@ -254,6 +254,14 @@ run_restart() {  # <case-dir> <args...>
     "$RESTART" "$@" 2>&1
 }
 
+run_control_relaunch() {  # <case-dir> <id>
+  local dir=$1 id=$2
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    FM_SPAWN_NO_GUARD=1 \
+    FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
+    "$ROOT/bin/fm-control.sh" "$id" relaunch 2>&1
+}
+
 # --- T1: the persist request is the task subset of /stow, and it gates --------
 test_persist_gates_and_asks_only_for_open_records() {
   local dir out rc request
@@ -485,6 +493,34 @@ test_watcher_stands_aside_during_planned_restart() {
   pass "T5b the watcher's auto-relaunch stands aside while a planned restart owns the mate"
 }
 
+# --- T5b2: the same race on a direct single-mate relaunch -------------------
+# The captain's documented way to move one live local mate is a bare
+# fm-control relaunch, with no restart pass around it. The same watcher pass
+# lands at its stop and must stand aside just the same.
+test_watcher_stands_aside_during_direct_relaunch() {
+  local dir out rc state
+  dir=$(new_case control-vs-watcher)
+  add_local_mate "$dir" sm1
+  arm_watcher_at_stop "$dir"
+  state="$dir/home/state"
+
+  out=$(run_control_relaunch "$dir" sm1); rc=$?
+
+  assert_present "$dir/fake/watcher-ran" "the watcher pass never ran inside the relaunch window"
+  [ -e "$state/.secondmate-liveness-tick" ] \
+    || fail "the watcher pass never reached its liveness tick: $(cat "$dir/fake/watch.err")"
+  assert_absent "$state/.secondmate-relaunch-sm1" \
+    "the watcher acted on a mate under a direct relaunch (ledger: $(cat "$state/.secondmate-relaunch-sm1" 2>/dev/null))"
+  assert_not_contains "$(cat "$state/.wake-queue" 2>/dev/null)" "secondmate-relaunch" \
+    "the watcher queued an auto-relaunch for a mate under a direct relaunch"
+  expect_code 0 "$rc" "the direct relaunch owned the mate, so it must succeed"$'\n'"$out"
+  assert_contains "$out" "relaunched sm1 harness=claude" "the direct relaunch must report its own outcome"
+  assert_absent "$state/.secondmate-liveness-sm1.lock" "the direct relaunch did not release its claim"
+  [ "$(cat "$dir/fake/command.fmses:fm-sm1" 2>/dev/null)" = claude ] \
+    || fail "the relaunched mate's endpoint does not read alive"
+  pass "T5b2 the watcher's auto-relaunch stands aside during a direct fm-control relaunch"
+}
+
 # hold_liveness_claim <case-dir> <id> <live|dead>: take the mate's liveness
 # claim through the real lock owner. `dead` leaves it behind a holder that has
 # already exited, the shape a crashed restart leaves; `live` keeps the holder
@@ -523,7 +559,7 @@ test_restart_stands_aside_for_a_live_recovery_claim() {
   wait "$HOLDER_PID" 2>/dev/null || true
 
   expect_code 3 "$rc" "a mate another recovery owns must not be reported restarted"$'\n'"$out"
-  assert_contains "$out" "nudged: sm1: another recovery of it was still in progress after 0s" \
+  assert_contains "$out" "nudged: sm1: another recovery of second mate sm1 was still in progress after 0s" \
     "the restart must say why it left the mate to the other recovery"
   assert_no_grep '^/exit$' "$dir/fake/literal" "the restart stopped a mate another recovery owned"
   assert_absent "$dir/home/state/sm1.control-relaunch" \
@@ -989,6 +1025,7 @@ test_unprovable_runtime_falls_back
 test_unknown_mate_is_accounted_for
 test_refused_restart_falls_back_without_claiming_a_reload
 test_watcher_stands_aside_during_planned_restart
+test_watcher_stands_aside_during_direct_relaunch
 test_restart_stands_aside_for_a_live_recovery_claim
 test_crashed_restart_claim_is_reclaimed
 test_local_restart_uses_the_home_pin_and_reports_what_ran

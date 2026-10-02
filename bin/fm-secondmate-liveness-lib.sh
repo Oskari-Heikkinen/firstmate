@@ -43,10 +43,11 @@
 #
 # Concurrency: fm_secondmate_liveness_lock is the per-mate ownership claim. It
 # serializes probe+kill+relaunch per task across the bootstrap sweep and the
-# watcher tick, and bin/fm-secondmate-restart.sh and bin/fm-teardown.sh hold it
-# across their own stop or retirement, so a deliberate stop or a concurrent
-# relaunch can never be observed mid-flight as a dead endpoint and killed or
-# relaunched a second time. The claim is bound to its holder's process, so one
+# watcher tick, and every planned relaunch (bin/fm-control.sh's secondmate
+# relaunch and bin/fm-remote-secondmate-relaunch.sh, whoever calls them) and
+# bin/fm-teardown.sh hold it across their own stop or retirement, so a
+# deliberate stop or a concurrent relaunch can never be observed mid-flight as
+# a dead endpoint and killed or relaunched a second time. The claim is bound to its holder's process, so one
 # whose holder died is reclaimed by the next taker rather than blocking forever.
 # The attempt ledger (.secondmate-relaunch-<id>, one line per attempt plus one
 # per outcome) is both the durable relaunch record and the input to the
@@ -83,6 +84,30 @@ fm_secondmate_liveness_lock() {  # <id>
 fm_secondmate_liveness_unlock() {  # <id>
   fm_sm_live_require_locks || return 0
   fm_lock_release "$STATE/.secondmate-liveness-$1.lock" 2>/dev/null || true
+}
+
+# A planned relaunch takes <id>'s claim before its stop and holds it until its
+# relaunch has returned, waiting up to FM_SECONDMATE_RESTART_CLAIM_WAIT seconds
+# (180) for an episode already holding it to finish. A claim still held after
+# that wait refuses with FM_SECONDMATE_CLAIM_BUSY_EXIT before anything is
+# touched. The caller must be the process that releases it.
+FM_SECONDMATE_CLAIM_BUSY_EXIT=75
+fm_secondmate_restart_claim() {  # <id>
+  local wait=${FM_SECONDMATE_RESTART_CLAIM_WAIT:-180} deadline
+  case "$wait" in
+    ''|*[!0-9]*)
+      echo "error: FM_SECONDMATE_RESTART_CLAIM_WAIT must be a non-negative integer: $wait" >&2
+      return 2
+      ;;
+  esac
+  deadline=$((SECONDS + wait))
+  until fm_secondmate_liveness_lock "$1"; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "error: another recovery of second mate $1 was still in progress after ${wait}s, so it was not stopped; nothing was changed" >&2
+      return "$FM_SECONDMATE_CLAIM_BUSY_EXIT"
+    fi
+    sleep 1
+  done
 }
 
 fm_sm_live_first_line() {
