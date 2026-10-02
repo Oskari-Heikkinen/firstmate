@@ -378,6 +378,14 @@ test_shadow_fallback_and_stale() {
   assert_contains "$out" "shadow storage: not reserved (the recorded shadow storage has no cap" "an unbounded record is named"
   out=$(FM_DISK_ROOM_SHADOW_MAX=10G run_room status --json)
   assert_equals $(( 50 * GIB )) "$(json_field "$out" room)" "an unbounded record falls back to the configured cap"
+  write_shadow_record 10 3 $(( 8 * 86400 ))
+  sed -i 's/^max_bytes=.*/max_bytes=9223372036854775808\r/' "$HOSTDIR/ProgramData/firstmate/shadow-storage.txt"
+  out=$(run_room status --json)
+  assert_equals $(( 60 * GIB )) "$(json_field "$out" room)" "a cap past signed 64 bits is unreadable and never wraps room past host free space"
+  out=$(FM_DISK_ROOM_SHADOW_MAX=10G run_room status --json)
+  assert_equals $(( 50 * GIB )) "$(json_field "$out" room)" "a cap past signed 64 bits falls back to the configured cap"
+  out=$(FM_DISK_ROOM_SHADOW_MAX=9000000000T run_room status 2>&1)
+  assert_contains "$out" "bad FM_DISK_ROOM_SHADOW_MAX" "a configured cap past signed 64 bits is reported"
   out=$(FM_DISK_ROOM_SHADOW_MAX=lots run_room status 2>&1)
   assert_contains "$out" "bad FM_DISK_ROOM_SHADOW_MAX" "a bad configured cap is reported"
   pass "without a fresh record the configured cap is reserved whole"

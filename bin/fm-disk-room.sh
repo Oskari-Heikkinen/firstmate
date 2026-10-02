@@ -86,7 +86,8 @@ die() { printf 'fm-disk-room: %s\n' "$*" >&2; exit 2; }
 
 usage() { sed -n '2,/^set -u$/{/^set -u$/d;s/^# \{0,1\}//;p}' "$0"; }
 
-# to_bytes SIZE -> bytes on stdout, or fail.
+# to_bytes SIZE -> bytes on stdout, or fail; a result past 18 digits fails so
+# bash arithmetic on it can never wrap.
 to_bytes() {
   local v=$1 n unit mult
   case "$v" in
@@ -104,7 +105,7 @@ to_bytes() {
     *) return 1 ;;
   esac
   case "$n" in ''|.|*.*.*) return 1 ;; esac
-  awk -v n="$n" -v m="$mult" 'BEGIN { printf "%.0f\n", n * m }'
+  awk -v n="$n" -v m="$mult" 'BEGIN { b = sprintf("%.0f", n * m); if (length(b) > 18) exit 1; print b }'
 }
 
 gib() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
@@ -233,9 +234,10 @@ shadow_reservation() {
     max=$(printf '%s\n' "$kv" | sed -n 's/^max_bytes=//p' | head -n 1)
     used=$(printf '%s\n' "$kv" | sed -n 's/^used_bytes=//p' | head -n 1)
     at=$(printf '%s\n' "$kv" | sed -n 's/^recorded_epoch=//p' | head -n 1)
-    case "$max" in unbounded) SHADOW_SRC=unbounded; max='' ;; ''|*[!0-9]*) max='' ;; esac
-    case "$used" in ''|*[!0-9]*) used='' ;; esac
-    case "$at" in ''|*[!0-9]*) at='' ;; esac
+    # Past 18 digits a value could wrap signed 64-bit arithmetic, so it is unreadable.
+    case "$max" in unbounded) SHADOW_SRC=unbounded; max='' ;; ''|*[!0-9]*|???????????????????*) max='' ;; esac
+    case "$used" in ''|*[!0-9]*|???????????????????*) used='' ;; esac
+    case "$at" in ''|*[!0-9]*|???????????????????*) at='' ;; esac
   fi
   if [ -n "$max" ] && [ -n "$used" ] && [ -n "$at" ] && [ $(( $(now) - at )) -lt "$SHADOW_STALE_SECS" ]; then
     SHADOW_SRC=record; SHADOW_MAX=$max; SHADOW_USED=$used; SHADOW_AT=$at
