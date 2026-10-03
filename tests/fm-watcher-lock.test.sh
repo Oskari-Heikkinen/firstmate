@@ -246,6 +246,279 @@ test_live_stalled_watch_lock_is_replaced_past_hard_bound() {
   pass "live watcher lock with a beacon past the hard bound is replaced, under it is still refused"
 }
 
+# Beacon grace for the long-cycle cases: wide enough that one step's own
+# overhead plus a second watcher's startup stays well inside it, and short
+# enough that a few steps together outlast it.
+LONG_CYCLE_GRACE=5
+
+# Register one silent custom check that logs its start and then takes <secs>.
+register_slow_check() {  # <dir> <id> <secs>
+  local dir=$1 id=$2 secs=$3
+  cat > "$dir/state/$id.check.sh" <<SH
+#!/usr/bin/env bash
+printf '%s %s\n' "\$(date +%s)" "$id" >> "$dir/check-starts.log"
+sleep $secs
+SH
+  chmod 0700 "$dir/state/$id.check.sh"
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" "$ROOT/bin/fm-check-register.sh" "$id" >/dev/null \
+    || fail "could not register slow check $id"
+}
+
+# Wait until check <id> has started under a running watcher <pid>.
+wait_for_check_start() {  # <dir> <id> <pid>
+  local dir=$1 id=$2 pid=$3 i=0
+  while [ "$i" -lt 200 ] && ! grep -qF " $id" "$dir/check-starts.log" 2>/dev/null; do
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF " $id" "$dir/check-starts.log" 2>/dev/null
+}
+
+# Wait until the beacon in <state> is at least <secs> old.
+wait_for_beacon_age() {  # <state> <secs>
+  local state=$1 secs=$2 i=0
+  while [ "$i" -lt 300 ]; do
+    [ "$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_age "$2"' _ "$LIB" "$state/.last-watcher-beat")" -ge "$secs" ] && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Stop a test watcher and reap it (it is a direct child of this shell).
+reap_watcher() {  # <pid>
+  kill -TERM "$1" 2>/dev/null || true
+  wait_for_exit "$1" 100 >/dev/null 2>&1 || kill -KILL "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+
+# Seed <count> escalated, still-open pending-reply records: open records are
+# never pruned and each costs fm_pending_reply_tick a resolve attempt
+# every poll, unlike resolved history, which is one cheap read or pruned.
+seed_open_pending_replies() {  # <state> <count>
+  local state=$1 count=$2 i=0 corr
+  mkdir -p "$state/pending-replies"
+  while [ "$i" -lt "$count" ]; do
+    corr=$(printf 'feed%012d' "$i")
+    printf 'schema=fm-pending-reply.v1\ncorr_id=%s\ntask_id=gone-mate\nphase=escalated\ncreated_epoch=1\ndelivered_epoch=1\nescalated_epoch=1\n' "$corr" \
+      > "$state/pending-replies/$corr"
+    i=$((i + 1))
+  done
+}
+
+now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+
+# Milliseconds one pending-reply tick spends per open record on this host.
+pending_reply_ms_per_record() {  # <scratch-dir>
+  local dir=$1 start end
+  mkdir -p "$dir/state"
+  seed_open_pending_replies "$dir/state" 10
+  start=$(now_ms)
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$STATE"' _ "$ROOT" >/dev/null 2>&1
+  end=$(now_ms)
+  echo $(( (end - start) / 10 + 1 ))
+}
+
+# Start a watcher behind open pending-reply records, sized so its
+# pending-reply scan outlasts the grace, and wait past the grace into that scan.
+start_watcher_in_long_pending_reply_scan() {  # <dir> [env assignments...]
+  local dir=$1 per
+  shift
+  per=$(pending_reply_ms_per_record "$dir/calibrate")
+  SCAN_RECORDS=$(( LONG_CYCLE_GRACE * 4000 / per + 1 ))
+  [ "$SCAN_RECORDS" -le 2000 ] || SCAN_RECORDS=2000
+  SCAN_WAIT_TICKS=$(( SCAN_RECORDS * per / 50 + 100 ))
+  seed_open_pending_replies "$dir/state" "$SCAN_RECORDS"
+  start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE=$LONG_CYCLE_GRACE "$@"
+  sleep "$LONG_CYCLE_GRACE"
+  [ "$(cat "$dir/state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan ($SCAN_RECORDS records) finished inside the grace"; }
+}
+
+test_long_pending_reply_scan_keeps_beacon_fresh() {
+  # The observed long cycle: one step, fm_pending_reply_tick walking a parent
+  # home's pending-reply records (about 1200, 0.25s each), made of many short
+  # child invocations and outlasting the grace on its own.
+  # With the watchdog idle, only the scan's own per-record beat can keep the
+  # beacon fresh, so a re-arm in the middle of that step must attach instead
+  # of refusing a stale heartbeat.
+  local dir state status out
+  dir=$(make_case long-pending-reply-scan)
+  state="$dir/state"
+  start_watcher_in_long_pending_reply_scan "$dir" FM_WATCHER_WATCHDOG_INTERVAL=3600
+  status=0
+  out=$(PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_POLL=1 "$WATCH" 2>&1) || status=$?
+  [ "$(cat "$state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the re-arm did not land inside the pending-reply scan"; }
+  reap_watcher "$SEED_PID"
+  expect_code 0 "$status" "re-arm inside a long pending-reply scan"
+  assert_contains "$out" "watcher: already running pid $SEED_PID" "re-arm did not attach to the watcher inside its pending-reply scan: $out"
+  pass "a pending-reply scan longer than the grace keeps the beacon fresh per record"
+}
+
+test_long_pending_reply_scan_survives_watchdog() {
+  # The same long step under a short watchdog interval beats per record, so it
+  # is not a wedge: the watcher finishes its scan and its cycle without being
+  # stopped.
+  local dir state i
+  dir=$(make_case long-pending-reply-watchdog)
+  state="$dir/state"
+  start_watcher_in_long_pending_reply_scan "$dir" FM_WATCHER_WATCHDOG_INTERVAL=1
+  i=0
+  while [ "$i" -lt "$SCAN_WAIT_TICKS" ] && [ "$(cat "$state/.last-watcher-beat" 2>/dev/null)" = 1 ]; do
+    is_live_non_zombie "$SEED_PID" || fail "the watchdog stopped a watcher inside its pending-reply scan"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$SEED_PID" || fail "the watcher did not survive its pending-reply scan"
+  ! grep -qF 'watchdog: stopping' "$state/.watch-triage.log" 2>/dev/null || { reap_watcher "$SEED_PID"; fail "the watchdog tried to stop a watcher inside its pending-reply scan"; }
+  [ "$(cat "$state/.last-watcher-beat")" != 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan never finished its cycle"; }
+  reap_watcher "$SEED_PID"
+  pass "the watchdog leaves a watcher in a long pending-reply scan running"
+}
+
+test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
+  # One child that never exits (a hung tmux capture-pane, here a check with no
+  # effective timeout) ages the beacon past the grace, and the watcher's own
+  # watchdog stops that watcher.
+  local dir state i
+  dir=$(make_case live-child-wedge)
+  state="$dir/state"
+  register_slow_check "$dir" wedge 120
+  start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_WATCHER_WATCHDOG_INTERVAL=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=600
+  wait_for_check_start "$dir" wedge "$SEED_PID" || { reap_watcher "$SEED_PID"; fail "watcher never reached the hung check"; }
+  wait_for_beacon_age "$state" "$LONG_CYCLE_GRACE" || { reap_watcher "$SEED_PID"; fail "a step blocked on one live child did not age the beacon"; }
+  i=0
+  while [ "$i" -lt 150 ] && is_live_non_zombie "$SEED_PID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$SEED_PID" && { reap_watcher "$SEED_PID"; fail "watchdog did not stop a watcher blocked on one live child"; }
+  wait "$SEED_PID" 2>/dev/null || true
+  assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log"
+  is_live_non_zombie "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" \
+    && fail "a live process still holds the lock after the watchdog stop"
+  pass "a step blocked on one child that never exits is stopped by the watcher's watchdog"
+}
+
+test_orphaned_pipe_read_is_stopped_by_watchdog() {
+  # The observed hang: a pane capture leaves a detached process holding the
+  # command substitution's pipe and exits, so the watcher blocks reading that
+  # pipe with no child left to time out. The watchdog still stops it.
+  local dir state fakebin pid holder i
+  dir=$(make_case orphaned-pipe-read)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  mv "$fakebin/tmux" "$fakebin/tmux.real"
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = capture-pane ]; then
+  sleep 600 &
+  printf '%s\n' "\$!" > "$dir/holder.pid"
+  exit 0
+fi
+exec "$fakebin/tmux.real" "\$@"
+SH
+  chmod +x "$fakebin/tmux"
+  printf 'window=%s\nkind=ship\n' 'test:fm-hang' > "$state/hang.meta"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW='test:fm-hang' FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_WATCHER_WATCHDOG_INTERVAL=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/holder.pid" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  holder=$(cat "$dir/holder.pid" 2>/dev/null || true)
+  [ -n "$holder" ] || { reap_watcher "$pid"; fail "the watcher never captured the hanging pane"; }
+  wait_for_beacon_age "$state" "$LONG_CYCLE_GRACE" || { kill "$holder" 2>/dev/null; reap_watcher "$pid"; fail "the orphaned pipe read did not block the watcher"; }
+  i=0
+  while [ "$i" -lt 150 ] && is_live_non_zombie "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if is_live_non_zombie "$pid"; then
+    kill "$holder" 2>/dev/null || true
+    reap_watcher "$pid"
+    fail "watchdog did not stop a watcher blocked on an orphaned pipe"
+  fi
+  wait "$pid" 2>/dev/null || true
+  is_live_non_zombie "$holder" || fail "the pipe holder exited early, so the case did not exercise the hang"
+  kill "$holder" 2>/dev/null || true
+  assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log"
+  pass "a watcher blocked on a pipe held by a detached process is stopped by its watchdog"
+}
+
+# Set <path>'s own mtime (a symlink's, not its target's) <secs> into the past.
+backdate() {  # <path> <secs>
+  local epoch stamp
+  epoch=$(( $(date +%s) - $2 ))
+  stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S 2>/dev/null || date -r "$epoch" +%Y%m%d%H%M.%S)
+  touch -h -t "$stamp" "$1"
+}
+
+# Start a quiet watcher with extra env and wait until it has stamped its first
+# cycle and settled into that cycle's terminal wait. Sets SEED_PID.
+start_idle_watcher() {  # <dir> [env assignments...]
+  local dir=$1 i=0
+  shift
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" &
+  SEED_PID=$!
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/state/.last-watcher-beat" ]; do
+    kill -0 "$SEED_PID" 2>/dev/null || fail "seed watcher exited before its first cycle: $(cat "$dir/watch.err")"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -s "$dir/state/.last-watcher-beat" ] || { reap_watcher "$SEED_PID"; fail "seed watcher never stamped a cycle"; }
+  sleep 1
+}
+
+test_arm_attaches_within_poll_derived_grace() {
+  # A long-poll home's healthy watcher sits in its terminal wait with a beacon
+  # older than the historical 300s but inside its own poll-derived grace. An
+  # arm with no FM_GUARD_GRACE must judge it by that same grace and attach,
+  # not refuse it as stale.
+  local dir state armout armpid i
+  dir=$(make_case arm-long-poll-grace)
+  state="$dir/state"
+  armout="$dir/arm.out"
+  start_idle_watcher "$dir" FM_POLL=600
+  backdate "$state/.last-watcher-beat" 400
+  backdate "$state/.watch.lock" 1000
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=600 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=2 "$WATCH_ARM" > "$armout" 2>&1 &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 100 ] && ! grep -qE 'watcher: attached|heartbeat is stale|replaced stalled pid' "$armout" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$SEED_PID" "$armout" || { reap_watcher "$SEED_PID"; fail "arm did not attach to the healthy long-poll watcher: $(cat "$armout")"; }
+  reap_watcher "$SEED_PID"
+  wait_for_exit "$armpid" 100 >/dev/null 2>&1 || kill -KILL "$armpid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  pass "arm judges a long-poll watcher's beacon by the watcher's own poll-derived grace"
+}
+
+test_watchdog_ignores_wall_clock_jump() {
+  # After a host suspend the beacon's wall-clock age jumps past the grace
+  # before the resumed watcher's next beat. The watchdog counts its own
+  # intervals without a beacon change, so that jump alone never stops a
+  # watcher that keeps beating.
+  local dir state
+  dir=$(make_case watchdog-wall-clock-jump)
+  state="$dir/state"
+  start_idle_watcher "$dir" FM_POLL=4 FM_GUARD_GRACE=8 FM_WATCHER_WATCHDOG_INTERVAL=1
+  backdate "$state/.last-watcher-beat" 1000
+  sleep 6
+  if grep -qF 'watchdog: stopping wedged watcher' "$state/.watch-triage.log" 2>/dev/null; then
+    reap_watcher "$SEED_PID"
+    fail "the watchdog stopped a beating watcher on a wall-clock jump alone"
+  fi
+  is_live_non_zombie "$SEED_PID" || fail "a beating watcher did not survive a wall-clock jump"
+  [ "$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_age "$2"' _ "$LIB" "$state/.last-watcher-beat")" -lt 8 ] \
+    || { reap_watcher "$SEED_PID"; fail "the watcher did not refresh its beacon after the wall-clock jump"; }
+  reap_watcher "$SEED_PID"
+  pass "the wedge watchdog does not mistake a wall-clock jump for a wedge"
+}
+
 test_guard_warnings() {
   # The guard's two operator-visible states, with resilient substrings instead of
   # four copy-coupled tests:
@@ -1556,6 +1829,12 @@ test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_live_stalled_watch_lock_is_replaced_past_hard_bound
+test_long_pending_reply_scan_keeps_beacon_fresh
+test_long_pending_reply_scan_survives_watchdog
+test_step_blocked_on_one_live_child_is_stopped_by_watchdog
+test_orphaned_pipe_read_is_stopped_by_watchdog
+test_arm_attaches_within_poll_derived_grace
+test_watchdog_ignores_wall_clock_jump
 test_guard_warnings
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock

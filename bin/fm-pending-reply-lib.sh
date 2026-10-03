@@ -1589,9 +1589,11 @@ fm_pending_reply_prune() {  # <state-dir> <corr_id>...
 
 # Scan every pending record for this parent state. Safe to call every poll.
 # Never scrapes secondmate conversation; uses only parent status, backend busy
-# state, and optional secondmate-home wrong-home path checks.
-fm_pending_reply_tick() {  # <state-dir>
-  local state=$1 dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host
+# state, and optional secondmate-home wrong-home path checks. An optional
+# <on-record> command runs before each record, so a caller can report progress
+# through a scan whose many records together take minutes.
+fm_pending_reply_tick() {  # <state-dir> [on-record]
+  local state=$1 on_record=${2:-} dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host
   local observation observation_task found i now retention
   local _fm_prs_corr_id _fm_prs_task_id _fm_prs_phase
   local _fm_prs_resolved _fm_prs_escalated _fm_prs_escalation_closed
@@ -1605,6 +1607,7 @@ fm_pending_reply_tick() {  # <state-dir>
     case "${rec##*/}" in
       .*) continue ;;
     esac
+    [ -z "$on_record" ] || "$on_record"
     _fm_pending_reply_read_summary "$rec" || continue
     corr=$_fm_prs_corr_id
     [ -n "$corr" ] || corr=${rec##*/}
