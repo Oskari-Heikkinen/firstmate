@@ -898,6 +898,8 @@ A home's `config/claude-account` pin ("Worker account pin" above) outranks the r
 `bin/fm-account.sh status` shows each account's percent left, runway, reset time, and whether it is low or on pace to run out before a reset, and which sessions, second mates, and workers run on it, read from each task record's `account=`.
 An agent launched before the registry existed is attributed to its launcher's account and marked `~` until it is moved or pinned.
 Beside that recorded account, `status` shows each running Claude agent's live account, read from the login its process actually runs on, and marks a mismatch, so a login switched outside these records or a session still on its old login is visible; an agent whose process cannot be read shows as unknown.
+A worker with no process of its own shows as not running, and a process in the same folder that belongs to another task does not count for it.
+An account's list of who runs on it follows the live login where one is known, so a worker that is not running, or runs on another login, is not counted on the account its record names.
 `bin/fm-account.sh panel` toggles the same view as a side pane when run inside Herdr, and `bin/fm-account.sh watch` runs it in any terminal.
 `bin/fm-account.sh use <task> <account>` moves one second mate or worker through the guarded relaunch path, and `bin/fm-account.sh default <account>` sets where new spawns start.
 The chosen account is recorded durably, in a worker's task record or in the second mate's own `config/account`, so a later relaunch or respawn does not revert it.
@@ -914,6 +916,7 @@ The no-room advice appears only when every Claude account has a successful readi
 Automatic rebalancing is on whenever the registry exists, unless `config/account-auto` says `off`.
 Session start then arms a watcher check that wakes firstmate only when a move is due or the advice changes, and firstmate runs `bin/fm-account.sh rebalance` without asking the captain.
 Rebalancing moves second mates and between-steps workers, never one mid-command or mid-validation run; a busy worker waits for a later run.
+A worker whose record alone is on a low account - it is not running, for example parked, or it already runs on another login - has only its record moved, without a relaunch, so its next start uses the account with room.
 Only the captain can restart this home's own session or sign in to a login that does not exist yet, so those appear as one-line advice instead.
 A Claude login whose access token lapsed but can still renew shows as expired, not as needing sign-in, because it renews on next use.
 Rebalancing and its watcher check carry sign-in, no-room, and blind-readings advice from the main home only, and a sign-in only after three reads over 15 minutes agree, while `status` and the panel show every home's current readings.

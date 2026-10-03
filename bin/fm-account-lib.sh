@@ -92,11 +92,15 @@
 # agent is actually on, from the CLAUDE_CONFIG_DIR of each process named claude
 # (the comm rule bin/fm-harness.sh applies) whose working folder is the agent's
 # own: a worker's worktree, a second mate's home, or this home for its session.
-# Only that one environment entry is read, by matching its name inside
-# /proc/<pid>/environ, and it is used only to look up the registered account; no
-# other environment value or credential is read, printed, or kept. An absent
-# entry is Claude's default ~/.claude. A process that cannot be read, or none
-# found, is unknown; a folder no account registers is unregistered.
+# A process carrying another task's FM_TASK_ID (the marker bin/fm-spawn.sh gives
+# every ship and scout) is that task's, not this one's, even in the same folder.
+# Only those two environment entries are read, by matching their names inside
+# /proc/<pid>/environ, and they are used only to look up the registered account
+# and the owning task; no other environment value or credential is read,
+# printed, or kept. An absent CLAUDE_CONFIG_DIR is Claude's default ~/.claude.
+# A process that cannot be read, or a missing process table, is unknown; no
+# process found in a readable table is none (the agent is not running); a
+# folder no account registers is unregistered.
 # FM_PROC_ROOT_OVERRIDE (default /proc) is the test seam.
 #
 # Sign-in streak: state/.account-signin-<name>, one line
@@ -430,11 +434,15 @@ fm_account_readings_blind() {
   return 0
 }
 
-# fm_account_live_index: one "<cwd>\t<login-folder>" line per readable process
-# named claude, <login-folder> being "~/.claude" when the entry is absent, and
-# "<cwd>\t?" for one whose environment cannot be read (see the header).
+# fm_account_live_index: an "@proc" line when the process table is readable,
+# then one "<cwd>\t<login-folder>\t<task-id>" line per readable process named
+# claude, <login-folder> being "~/.claude" when the entry is absent and
+# <task-id> its FM_TASK_ID or empty, and "<cwd>\t?\t" for one whose environment
+# cannot be read (see the header).
 fm_account_live_index() {
-  local proc=${FM_PROC_ROOT_OVERRIDE:-/proc} p comm cwd entry
+  local proc=${FM_PROC_ROOT_OVERRIDE:-/proc} p comm cwd entry task
+  [ -d "$proc" ] || return 0
+  printf '@proc\n'
   for p in "$proc"/[0-9]*; do
     [ -d "$p" ] || continue
     comm=
@@ -443,31 +451,37 @@ fm_account_live_index() {
     cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
     [ -n "$cwd" ] || continue
     if [ ! -r "$p/environ" ]; then
-      printf '%s\t?\n' "$cwd"
+      printf '%s\t?\t\n' "$cwd"
       continue
     fi
     # grep -z prints only the matching entry; nothing else leaves the file.
     entry=$(grep -z -m1 '^CLAUDE_CONFIG_DIR=' "$p/environ" 2>/dev/null | tr -d '\0')
+    task=$(grep -z -m1 '^FM_TASK_ID=' "$p/environ" 2>/dev/null | tr -d '\0')
+    task=${task#FM_TASK_ID=}
     if [ -n "$entry" ]; then
-      printf '%s\t%s\n' "$cwd" "${entry#CLAUDE_CONFIG_DIR=}"
+      printf '%s\t%s\t%s\n' "$cwd" "${entry#CLAUDE_CONFIG_DIR=}" "$task"
     elif [ "$(head -c1 "$p/environ" 2>/dev/null | wc -c)" -gt 0 ]; then
-      printf '%s\t~/.claude\n' "$cwd"
+      printf '%s\t~/.claude\t%s\n' "$cwd" "$task"
     else
-      printf '%s\t?\n' "$cwd"
+      printf '%s\t?\t\n' "$cwd"
     fi
   done
 }
 
-# fm_account_live_for <config-dir> <index> <dir>: the live account of the agent
-# whose working folder is <dir> - its account name, "unregistered", or
-# "unknown"; several processes on different logins join with "+".
+# fm_account_live_for <config-dir> <index> <dir> [<task-id>]: the live account
+# of the agent whose working folder is <dir> - its account name,
+# "unregistered", "none" (no process of its own in a readable table), or
+# "unknown"; several processes on different logins join with "+". With
+# <task-id>, a process marked for another task is skipped.
 fm_account_live_for() {
-  local config=$1 index=$2 want=$3 cwd folder name out='' seen='|'
+  local config=$1 index=$2 want=$3 own=${4:-} cwd folder task name out='' seen='|' table=0
   [ -n "$want" ] || { printf unknown; return 0; }
   [ ! -d "$want" ] || want=$(cd -P "$want" 2>/dev/null && pwd) || want=$3
   want=${want%/}
-  while IFS=$'\t' read -r cwd folder; do
+  while IFS=$'\t' read -r cwd folder task; do
+    [ "$cwd" != @proc ] || { table=1; continue; }
     [ "${cwd%/}" = "$want" ] || continue
+    [ -z "$own" ] || [ -z "$task" ] || [ "$task" = "$own" ] || continue
     if [ "$folder" = '?' ]; then
       name=unknown
     else
@@ -478,7 +492,8 @@ fm_account_live_for() {
     seen="$seen$name|"
     out="${out:+$out+}$name"
   done <<<"$index"
-  printf '%s' "${out:-unknown}"
+  [ -n "$out" ] || { [ "$table" = 1 ] && out=none || out=unknown; }
+  printf '%s' "$out"
 }
 
 # fm_account_left <usage-line>: the percent-left field, or nothing.

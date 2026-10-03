@@ -25,9 +25,13 @@
 #            of the session that launched it, since fm-spawn forwards that
 #            session's login. Beside it, each running Claude agent's live
 #            account (the lib header's live login; unknown when its process
-#            cannot be read, unregistered for a login no account names), marked
+#            cannot be read, unregistered for a login no account names, "not
+#            running" for a worker with no process of its own), marked
 #            MISMATCH when it differs from the recorded one; --json carries it as
-#            live_account and live_mismatch. When every account's read failed
+#            live_account, running, and live_mismatch. An account's "on it"
+#            list counts each agent on its effective account (effective_account
+#            below), so a worker not running, or running on another login, is
+#            not counted on its recorded one. When every account's read failed
 #            the advice is the one "account readings blind" line.
 #            --refresh ignores the usage cache.
 # use        Move one direct report onto <account> through the guarded path and
@@ -47,8 +51,13 @@
 # rebalance  Move every direct report on a low Claude account (below the floor
 #            and not projected to reset before running out; the lib header owns
 #            the outlook) to the first account with room, through `use`,
-#            skipping any that is
-#            not between steps (retried by the next run), then print one line
+#            skipping any that is not between steps (retried by the next run).
+#            A ship or scout whose record alone is on the low account - not
+#            running, or running on another login - has only its task record
+#            moved (account= and claude_config_dir=, under its record lock,
+#            logged as recorded), to the account with room or to the login it
+#            runs on, so its next launch starts there; that needs no
+#            between-steps wait. Then print one line
 #            per move plus any restart or sign-in the captain must do. Only the
 #            captain can restart this home's own session or sign in to a login.
 #            Only the main home prints sign-in and no-room lines here, and a
@@ -89,6 +98,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 # shellcheck source=bin/fm-account-lib.sh
 . "$SCRIPT_DIR/fm-account-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 MOVES_LOG="$STATE/account-moves.log"
 CHECK_ID=accounts
@@ -150,15 +161,36 @@ agent_dir() {
   fi
 }
 
+# effective_account <kind> <recorded> <live>: the account an agent is on now -
+# its live account when that is one registered login, nothing for a ship or
+# scout that is not running, and its recorded account otherwise.
+effective_account() {
+  case "$3" in
+    none) [ "$1" = session ] || [ "$1" = secondmate ] || return 0 ;;
+    '' | unknown | unregistered | *+*) ;;
+    *) printf '%s' "$3"; return 0 ;;
+  esac
+  printf '%s' "$2"
+}
+
+# claude_row <home-label> <id> <kind> <account|basis> <direct> <live>: one
+# collect_agents row for a Claude agent.
+claude_row() {
+  printf '%s|%s|%s|claude|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" "$6" \
+    "$(effective_account "$3" "${4%%|*}" "$6")"
+}
+
 # collect_agents: one row per agent this home can see, |-separated:
 # <home-label> <id> <kind> <harness> <account> <basis> <direct 0|1> <live>
-# <live> is the lib's live account for a Claude agent and empty otherwise.
+# <effective>
+# <account> is the recorded one; <live> is the lib's live account for a Claude
+# agent and empty otherwise; <effective> is effective_account's.
 collect_agents() {
   local self self_acct meta id kind harness row home sm_acct m index
   self=$(self_label)
   self_acct=$(fm_account_name_for_dir "$CONFIG" "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}" claude)
   index=$(fm_account_live_index)
-  printf '%s|%s|session|claude|%s|session|0|%s\n' "$self" "$self" "$self_acct" \
+  claude_row "$self" "$self" session "$self_acct|session" 0 \
     "$(fm_account_live_for "$CONFIG" "$index" "$FM_HOME")"
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
@@ -166,12 +198,12 @@ collect_agents() {
     kind=$(fm_account_meta_get "$meta" kind)
     harness=$(fm_account_meta_get "$meta" harness)
     if [ "$harness" != claude ]; then
-      printf '%s|%s|%s|%s||other|1|\n' "$self" "$id" "${kind:-ship}" "$harness"
+      printf '%s|%s|%s|%s||other|1||\n' "$self" "$id" "${kind:-ship}" "$harness"
       continue
     fi
     row=$(agent_account "$meta" "$self_acct")
-    printf '%s|%s|%s|claude|%s|1|%s\n' "$self" "$id" "${kind:-ship}" "$row" \
-      "$(fm_account_live_for "$CONFIG" "$index" "$(agent_dir "$meta")")"
+    claude_row "$self" "$id" "${kind:-ship}" "$row" 1 \
+      "$(fm_account_live_for "$CONFIG" "$index" "$(agent_dir "$meta")" "$id")"
     [ "$kind" = secondmate ] || continue
     [ -z "$(fm_account_meta_get "$meta" remote_host)" ] || continue
     home=$(fm_account_meta_get "$meta" home)
@@ -182,12 +214,12 @@ collect_agents() {
       [ "$(fm_account_meta_get "$m" kind)" != secondmate ] || continue
       harness=$(fm_account_meta_get "$m" harness)
       if [ "$harness" != claude ]; then
-        printf '%s|%s|%s|%s||other|0|\n' "$id" "$(basename "$m" .meta)" "$(fm_account_meta_get "$m" kind)" "$harness"
+        printf '%s|%s|%s|%s||other|0||\n' "$id" "$(basename "$m" .meta)" "$(fm_account_meta_get "$m" kind)" "$harness"
         continue
       fi
-      printf '%s|%s|%s|claude|%s|0|%s\n' "$id" "$(basename "$m" .meta)" \
-        "$(fm_account_meta_get "$m" kind)" "$(agent_account "$m" "$sm_acct")" \
-        "$(fm_account_live_for "$CONFIG" "$index" "$(agent_dir "$m")")"
+      claude_row "$id" "$(basename "$m" .meta)" "$(fm_account_meta_get "$m" kind)" \
+        "$(agent_account "$m" "$sm_acct")" 0 \
+        "$(fm_account_live_for "$CONFIG" "$index" "$(agent_dir "$m")" "$(basename "$m" .meta)")"
     done
   done
 }
@@ -261,7 +293,7 @@ advice() {
   fi
   floor=$(fm_account_floor "$CONFIG")
   room=$(fm_account_room "$CONFIG" "$STATE")
-  self_acct=$(printf '%s\n' "$agents" | awk -F'|' '$6 == "session" { print $5; exit }')
+  self_acct=$(printf '%s\n' "$agents" | awk -F'|' '$6 == "session" { print $9; exit }')
   if [ "$main" = 1 ] && [ -n "$self_acct" ] && fm_account_is_low "$CONFIG" "$STATE" "$self_acct" && [ -n "$room" ] && [ "$room" != "$self_acct" ]; then
     fm_account_get "$CONFIG" "$room"
     printf 'restart this main session on %s: exit it, then start it again with CLAUDE_CONFIG_DIR=%s (%s is below the %s%% floor)\n' \
@@ -294,16 +326,33 @@ advice() {
   fi
 }
 
-# plan_moves <agents>: "<id>|<kind>|<from>|<to>" for direct Claude reports on
-# a low account, when an account with room exists.
+# plan_moves <agents>: "<id>|<kind>|<from>|<to>|<how>" for direct Claude
+# reports on a low account, when an account with room exists. <how> is
+# relaunch for a running agent (and every second mate, whose pin governs its
+# next start), or record for a ship or scout whose record alone is on the low
+# account: one not running moves its record to the room account, and one
+# running on another login moves its record to that login.
 plan_moves() {
-  local agents=$1 id kind harness acct direct room
-  while IFS='|' read -r _ id kind harness acct _ direct _; do
-    [ "$direct" = 1 ] && [ "$harness" = claude ] && [ -n "$acct" ] || continue
-    fm_account_is_low "$CONFIG" "$STATE" "$acct" || continue
-    room=$(fm_account_room "$CONFIG" "$STATE" "$acct")
+  local agents=$1 id kind harness acct direct live eff room
+  while IFS='|' read -r _ id kind harness acct _ direct live eff; do
+    [ "$direct" = 1 ] && [ "$harness" = claude ] || continue
+    if [ "$kind" != secondmate ] && [ -n "$acct" ] && [ "$eff" != "$acct" ] &&
+      fm_account_is_low "$CONFIG" "$STATE" "$acct"; then
+      if [ -z "$eff" ]; then
+        room=$(fm_account_room "$CONFIG" "$STATE" "$acct")
+        [ -z "$room" ] || printf '%s|%s|%s|%s|record\n' "$id" "$kind" "$acct" "$room"
+        continue
+      fi
+      if ! fm_account_is_low "$CONFIG" "$STATE" "$eff"; then
+        printf '%s|%s|%s|%s|record\n' "$id" "$kind" "$acct" "$eff"
+        continue
+      fi
+    fi
+    [ -n "$eff" ] || continue
+    fm_account_is_low "$CONFIG" "$STATE" "$eff" || continue
+    room=$(fm_account_room "$CONFIG" "$STATE" "$eff")
     [ -n "$room" ] || continue
-    printf '%s|%s|%s|%s\n' "$id" "$kind" "$acct" "$room"
+    printf '%s|%s|%s|%s|relaunch\n' "$id" "$kind" "$eff" "$room"
   done <<<"$agents"
 }
 
@@ -342,9 +391,11 @@ cmd_status() {
           low: (.[1] == "claude" and .[9] == "low") } ],
         agents: [ rows($agents)[] | { home: .[0], id: .[1], kind: .[2], harness: .[3],
           account: (if (.[4] // "") == "" then null else .[4] end), basis: .[5], direct: (.[6] == "1"),
-          live_account: (if (.[7] // "") == "" or .[7] == "unknown" then null else .[7] end),
-          live_mismatch: ((.[7] // "") != "" and .[7] != "unknown" and .[7] != (if (.[4] // "") == "" then "unregistered" else .[4] end)) } ],
-        moves: [ rows($moves)[] | { id: .[0], kind: .[1], from: .[2], to: .[3] } ],
+          live_account: (if (.[7] // "") == "" or .[7] == "unknown" or .[7] == "none" then null else .[7] end),
+          running: (if (.[7] // "") == "" or .[7] == "unknown" then null else .[7] != "none" end),
+          live_mismatch: ((.[7] // "") != "" and .[7] != "unknown" and .[7] != "none" and .[7] != (if (.[4] // "") == "" then "unregistered" else .[4] end)),
+          effective_account: (if (.[8] // "") == "" then null else .[8] end) } ],
+        moves: [ rows($moves)[] | { id: .[0], kind: .[1], from: .[2], to: .[3], how: .[4] } ],
         advice: ($advice | split("\n") | map(select(. != ""))) }'
     return
   fi
@@ -371,8 +422,8 @@ cmd_status() {
     fi
     printf '%s\n' "$line"
     on=$(printf '%s\n' "$agents" | awk -F'|' -v a="$name" '
-      $5 == a && ($3 == "session" || $3 == "secondmate") { s = s (s ? ", " : "") $2 ($6 == "inferred" ? "~" : "") }
-      $5 == a && $3 != "session" && $3 != "secondmate" { w++ }
+      $9 == a && ($3 == "session" || $3 == "secondmate") { s = s (s ? ", " : "") $2 ($6 == "inferred" ? "~" : "") }
+      $9 == a && $3 != "session" && $3 != "secondmate" { w++ }
       END { if (w) s = s (s ? " +" : "") w " worker" (w > 1 ? "s" : ""); print s }')
     [ -z "$on" ] || printf '    on it: %s\n' "$on"
   done <<<"$(with_outlook "$accounts" "$floor")"
@@ -385,11 +436,11 @@ cmd_status() {
   fi
   if [ -n "$moves" ]; then
     printf 'Moving automatically:\n'
-    printf '%s\n' "$moves" | awk -F'|' '{ printf "  %s  %s -> %s\n", $1, $3, $4 }'
+    printf '%s\n' "$moves" | awk -F'|' '{ printf "  %s  %s -> %s%s\n", $1, $3, $4, ($5 == "record" ? "  (record only)" : "") }'
   fi
   live=$(printf '%s\n' "$agents" | awk -F'|' '$4 == "claude" && $8 != "" {
-      tag = ($8 != "unknown" && $8 != ($5 == "" ? "unregistered" : $5)) ? "  MISMATCH" : ""
-      printf "  %-22s recorded %-10s live %s%s\n", (($7 == "1" || $3 == "session") ? $2 : $1 "/" $2), ($5 == "" ? "-" : $5) ($6 == "inferred" ? "~" : ""), $8, tag }')
+      tag = ($8 != "unknown" && $8 != "none" && $8 != ($5 == "" ? "unregistered" : $5)) ? "  MISMATCH" : ""
+      printf "  %-22s recorded %-10s %s%s\n", (($7 == "1" || $3 == "session") ? $2 : $1 "/" $2), ($5 == "" ? "-" : $5) ($6 == "inferred" ? "~" : ""), ($8 == "none" ? "not running" : "live " $8), tag }')
   [ -z "$live" ] || printf 'Agents (recorded / live login):\n%s\n' "$live"
   advice "$agents" "$accounts" | sed 's/^/Needs the captain: /'
   if [ -s "$MOVES_LOG" ]; then
@@ -472,6 +523,58 @@ move_crew() {
   move_verify "$id" "$MOVE_FROM" "$acct" "$rc"
 }
 
+# record_crew <id> <from> <account>: move the task record of a ship or scout
+# that is not running, or is running on <account> already, onto <account>
+# without relaunching it, so its next launch (a park resume, a recovery) starts
+# there; 2 means not now.
+record_crew() {
+  local id=$1 from=$2 acct=$3 lock live tmp line set_acct=0 set_dir=0 rc=0
+  move_check "$id" "$acct" || return 1
+  if [ "$MOVE_FROM" = "$acct" ]; then
+    echo "unchanged: $id already runs on $acct"
+    return 0
+  fi
+  lock=$(fm_meta_lock_path "$MOVE_META") || { echo "error: $id has no lockable task record" >&2; return 1; }
+  if ! fm_lock_acquire_wait_max "$lock" 10; then
+    echo "waiting: $id's task record is busy; it moves on a later run" >&2
+    return 2
+  fi
+  live=$(fm_account_live_for "$CONFIG" "$(fm_account_live_index)" "$(agent_dir "$MOVE_META")" "$id")
+  case "$live" in
+    none | "$acct") ;;
+    *)
+      fm_lock_release "$lock"
+      echo "waiting: $id is running on $live now; it moves on a later run" >&2
+      return 2
+      ;;
+  esac
+  tmp="$MOVE_META.account.${BASHPID:-$$}"
+  {
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        account=*) [ "$set_acct" = 1 ] && continue; line="account=$acct" set_acct=1 ;;
+        claude_config_dir=*) [ "$set_dir" = 1 ] && continue; line="claude_config_dir=$FM_ACCOUNT_DIR" set_dir=1 ;;
+        pr=*)
+          [ "$set_acct" = 1 ] || { printf 'account=%s\n' "$acct"; set_acct=1; }
+          [ "$set_dir" = 1 ] || { printf 'claude_config_dir=%s\n' "$FM_ACCOUNT_DIR"; set_dir=1; }
+          ;;
+      esac
+      printf '%s\n' "$line"
+    done <"$MOVE_META"
+    [ "$set_acct" = 1 ] || printf 'account=%s\n' "$acct"
+    [ "$set_dir" = 1 ] || printf 'claude_config_dir=%s\n' "$FM_ACCOUNT_DIR"
+  } >"$tmp" && chmod 0600 "$tmp" && mv -f "$tmp" "$MOVE_META" || rc=1
+  rm -f "$tmp"
+  fm_lock_release "$lock"
+  if [ "$rc" != 0 ] || [ "$(fm_account_recorded_name "$MOVE_META")" != "$acct" ]; then
+    echo "error: could not record account $acct for $id; its record still reads ${from:-unrecorded}" >&2
+    log_move "$id" "$from" "$acct" failed
+    return 1
+  fi
+  echo "recorded: $id ${from:-unrecorded} -> $acct ($([ "$live" = none ] && printf 'not running' || printf 'already running there'); its next launch uses $acct)"
+  log_move "$id" "$from" "$acct" recorded
+}
+
 cmd_use() {
   local id='' acct='' norelaunch=0 note=''
   while [ $# -gt 0 ]; do
@@ -541,10 +644,10 @@ cmd_rebalance() {
   adv=$(advice "$agents" "$accounts" captain)
   if [ "$check" = 1 ]; then
     ready=
-    while IFS='|' read -r id kind from to; do
+    while IFS='|' read -r id kind from to how; do
       [ -n "$id" ] || continue
-      [ "$kind" = secondmate ] || crew_movable "$id" >/dev/null || continue
-      ready+="$id|$kind|$from|$to"$'\n'
+      [ "$kind" = secondmate ] || [ "$how" = record ] || crew_movable "$id" >/dev/null || continue
+      ready+="$id|$kind|$from|$to|$how"$'\n'
     done <<<"$moves"
     moves=${ready%$'\n'}
     fp=$(printf '%s\n%s' "$moves" "$adv" | cksum | awk '{ print $1 }')
@@ -579,12 +682,14 @@ cmd_rebalance() {
     echo "balanced: no agent needs to move"
   fi
   mates=()
-  while IFS='|' read -r id kind from to; do
+  while IFS='|' read -r id kind from to how; do
     [ -n "$id" ] || continue
     if [ "$dry" = 1 ]; then
-      echo "would move: $id $from -> $to"
+      echo "would move: $id $from -> $to$([ "$how" != record ] || printf ' (record only)')"
     elif [ "$kind" = secondmate ]; then
       mates+=("$id=$to")
+    elif [ "$how" = record ]; then
+      record_crew "$id" "$from" "$to" 2>&1 || true
     else
       move_crew "$id" "$to" "" 2>&1 || true
     fi

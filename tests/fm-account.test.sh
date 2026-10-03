@@ -262,12 +262,14 @@ test_rebalance_dry_run_and_check_wake_only_on_change() {
   local out rc
   new_case check
   add_ship a2
+  mkdir -p "$C/wt-a2"
+  add_proc 201 claude "$(cd -P "$C/wt-a2" && pwd)" "CLAUDE_CONFIG_DIR=$C/gmail" "FM_TASK_ID=a2"
   out=$(run_account rebalance --dry-run); rc=$?
   expect_code 0 "$rc" "dry run"
   assert_contains "$out" "would move: a2 gmail -> work" "the dry run names the move"
   assert_contains "$out" "needs the captain: restart this main session on work" "the dry run carries the advice"
   out=$(run_account rebalance --check)
-  assert_not_contains "$out" "a2 gmail->work" "a worker whose endpoint is gone is not between steps"
+  assert_not_contains "$out" "a2 gmail->work" "a running worker whose endpoint is gone is not between steps"
   assert_contains "$out" "needs the captain: restart this main session on work" "the first check wakes with the advice"
   out=$(run_account rebalance --check)
   assert_equals "" "$out" "an unchanged check must stay silent"
@@ -823,6 +825,51 @@ test_status_shows_each_agents_live_login_beside_its_record() {
   pass "status shows each agent's live login beside its recorded account and marks a mismatch"
 }
 
+test_a_record_only_agent_on_a_low_login_is_re_recorded_not_counted() {
+  local out wt
+  new_case record
+  add_ship idle account=gmail "pr=https://example.invalid/pr/1"
+  add_ship shared account=gmail
+  add_ship moved account=gmail
+  add_ship busy account=gmail
+  add_ship dironly "claude_config_dir=$C/gmail"
+  mkdir -p "$C/wt-shared" "$C/wt-moved" "$C/wt-busy"
+  wt=$(cd -P "$C/wt-shared" && pwd)
+  add_proc 301 claude "$wt" "CLAUDE_CONFIG_DIR=$C/work" "FM_TASK_ID=another-task"
+  add_proc 302 claude "$(cd -P "$C/wt-moved" && pwd)" "CLAUDE_CONFIG_DIR=$C/work" "FM_TASK_ID=moved"
+  add_proc 303 claude "$(cd -P "$C/wt-busy" && pwd)" "CLAUDE_CONFIG_DIR=$C/gmail" "FM_TASK_ID=busy"
+  out=$(run_account status --json)
+  assert_equals "false|null|false|null" "$(json_get "$out" '.agents[] | select(.id == "idle") | "\(.running)|\(.live_account)|\(.live_mismatch)|\(.effective_account)"')" "a worker with no process is not running and on no login"
+  assert_equals "false|null|false" "$(json_get "$out" '.agents[] | select(.id == "shared") | "\(.running)|\(.live_account)|\(.live_mismatch)"')" "another task's process in the same folder does not speak for it"
+  assert_equals "true|work|true|work" "$(json_get "$out" '.agents[] | select(.id == "moved") | "\(.running)|\(.live_account)|\(.live_mismatch)|\(.effective_account)"')" "a worker running on another login is on that login"
+  assert_equals "busy:gmail>work:relaunch dironly:gmail>work:record idle:gmail>work:record moved:gmail>work:record shared:gmail>work:record" \
+    "$(json_get "$out" '[.moves[] | "\(.id):\(.from)>\(.to):\(.how)"] | sort | join(" ")')" "only the running worker relaunches; the others move their records"
+  mv "$C/proc" "$C/proc.away"
+  out=$(run_account status --json)
+  mv "$C/proc.away" "$C/proc"
+  assert_equals "idle:relaunch" "$(json_get "$out" '[.moves[] | select(.id == "idle") | "\(.id):\(.how)"] | join(" ")')" "without a process table nothing is assumed stopped"
+  assert_equals "null" "$(json_get "$out" '.agents[] | select(.id == "busy") | .running')" "without a process table running is unknown"
+  out=$(run_account status)
+  assert_contains "$out" "idle                   recorded gmail      not running"$'\n' "the table says a stopped worker is not running, unmarked"
+  assert_contains "$out" "moved                  recorded gmail      live work  MISMATCH" "a real mismatch is still marked"
+  assert_contains "$(printf '%s\n' "$out" | sed -n '/^gmail/,/^work/p')" "on it: main +1 worker" "the low login counts only the worker running on it"
+  assert_contains "$out" "  idle  gmail -> work  (record only)" "the plan says the move touches the record only"
+  out=$(run_account rebalance --check)
+  assert_contains "$out" "idle gmail->work" "a record-only move is ready without the worker being between steps"
+  assert_not_contains "$out" "busy gmail->work" "a running worker still waits until it is between steps"
+  out=$(run_account rebalance)
+  assert_contains "$out" "recorded: idle gmail -> work (not running; its next launch uses work)" "the stopped worker's record moves"
+  assert_contains "$out" "recorded: moved gmail -> work (already running there; its next launch uses work)" "the live-elsewhere worker's record follows its login"
+  assert_contains "$out" "recorded: dironly gmail -> work" "a folder-only record moves too"
+  assert_equals "work|$C/work" "$(awk -F= '$1 == "account" { a = $2 } $1 == "claude_config_dir" { d = $2 } END { print a "|" d }' "$H/state/idle.meta")" "the record names the new login and its folder"
+  assert_equals "pr=https://example.invalid/pr/1" "$(tail -n 1 "$H/state/idle.meta")" "the pr= line stays the record's tail"
+  assert_equals "work" "$(awk -F= '$1 == "account" { print $2 }' "$H/state/dironly.meta")" "a folder-only record gains its account"
+  assert_contains "$(cat "$H/state/account-moves.log")" "|idle|gmail|work|recorded" "the record move is logged"
+  out=$(run_account status --json)
+  assert_equals "busy:relaunch" "$(json_get "$out" '[.moves[] | "\(.id):\(.how)"] | join(" ")')" "after the rebalance only the running worker is left to move"
+  pass "a worker whose record alone is on a low login is not counted there and rebalance moves its record"
+}
+
 test_malformed_registry_refuses_and_the_check_says_so
 test_failed_reads_retry_and_never_count_as_exhausted
 test_status_attributes_every_agent_and_plans_moves
@@ -847,5 +894,6 @@ test_low_login_moves_work_to_a_draining_login_above_the_floor
 test_quota_reads_carry_the_node_connect_timeout
 test_readings_blind_when_every_read_fails_never_balanced
 test_status_shows_each_agents_live_login_beside_its_record
+test_a_record_only_agent_on_a_low_login_is_re_recorded_not_counted
 
 echo "# all fm-account tests passed"
