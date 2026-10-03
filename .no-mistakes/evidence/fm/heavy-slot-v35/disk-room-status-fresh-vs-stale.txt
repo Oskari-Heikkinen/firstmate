@@ -1,0 +1,41 @@
+### 1. Live laptop, fresh record (now=1791042740, record epoch=1791020039)
+$ bin/fm-disk-room.sh status
+real room: 4.7 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: a compaction would reclaim about 11.5 GiB (disk-room skill: reclaim now)
+/mnt/c free: 22.6 GiB
+Linux free: 435.6 GiB, used 520.0 GiB
+reserved writes: 0.0 GiB
+shadow storage: 17.8 GiB headroom reserved (cap 19.0 GiB, used 1.2 GiB, recorded 2026-10-03 09:33 UTC)
+disk file: 615.7 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 95.7 GiB, of which fragmented 84.2 GiB; reclaimable by compaction about 11.5 GiB
+last compaction: 2026-10-03T11:33:55 startup ok reclaimed 7.3 GiB
+SSD D: 1574.2 GiB free of 1863.0 GiB (exFAT)
+fetched results root: SSD D:
+exit=0
+
+### 2. Same real host and record, clock moved to 8 days after the record (no -Install/-Now since)
+$ FM_DISK_ROOM_NOW=1791711239 bin/fm-disk-room.sh status
+real room: 3.5 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: a compaction would reclaim about 11.5 GiB (disk-room skill: reclaim now)
+/mnt/c free: 22.6 GiB
+Linux free: 435.6 GiB, used 520.0 GiB
+reserved writes: 0.0 GiB
+shadow storage: 19.0 GiB reserved (whole cap; the record from 2026-10-03 is over 7 days old, so used is unknown)
+disk file: 615.7 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 95.7 GiB, of which fragmented 84.2 GiB; reclaimable by compaction about 11.5 GiB
+last compaction: 2026-10-03T11:33:55 startup ok reclaimed 7.3 GiB
+SSD D: 1574.2 GiB free of 1863.0 GiB (exFAT)
+fetched results root: SSD D:
+exit=0
+
+### 3. Boundary: 1 minute before the 7-day mark the record is still fresh
+$ FM_DISK_ROOM_NOW=1791624779 bin/fm-disk-room.sh status | grep shadow
+real room: 4.7 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: a compaction would reclaim about 11.5 GiB (disk-room skill: reclaim now)
+shadow storage: 17.8 GiB headroom reserved (cap 19.0 GiB, used 1.2 GiB, recorded 2026-10-03 09:33 UTC)
+
+### 4. Adversarial: stale record with a smaller FM_DISK_ROOM_SHADOW_MAX=5G cannot shrink the reservation
+$ FM_DISK_ROOM_NOW=1791711239 FM_DISK_ROOM_SHADOW_MAX=5G bin/fm-disk-room.sh status | grep shadow
+real room: 3.5 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: a compaction would reclaim about 11.5 GiB (disk-room skill: reclaim now)
+shadow storage: 19.0 GiB reserved (whole cap; the record from 2026-10-03 is over 7 days old, so used is unknown)
+
+### 5. JSON fresh vs stale (room bytes)
+{"margin":21474836480,"host":"/mnt/c","host_free":24231731200,"linux_free":467767644160,"linux_used":558341177344,"reserved":0,"room":5072199680,"low":true,"vhdx":"/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx","vhdx_size":661139750912,"fragmented_free":90434109440,"slack":102798573568,"reclaimable":12364464128,"results_active":"ssd","results_state":"ok","ssd_free":1690252607488,"ssd_total":2000379969536,"shadow_reserved":19159531520,"shadow_source":"record","shadow_max":20435697664,"shadow_used":1276166144,"shadow_events":null}
+
+{"margin":21474836480,"host":"/mnt/c","host_free":24231665664,"linux_free":467767107584,"linux_used":558341713920,"reserved":0,"room":3795968000,"low":true,"vhdx":"/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx","vhdx_size":661139750912,"fragmented_free":90434105344,"slack":102798036992,"reclaimable":12363931648,"results_active":"ssd","results_state":"ok","ssd_free":1690252607488,"ssd_total":2000379969536,"shadow_reserved":20435697664,"shadow_source":"stale-record","shadow_max":20435697664,"shadow_used":null,"shadow_events":null}
+

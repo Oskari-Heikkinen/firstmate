@@ -1,0 +1,43 @@
+### reclaim-now result file (as Invoke-CompactAll 'now' writes it) is what 'last compaction:' shows
+finished=2026-10-05T18:02:11
+mode=now
+result=ok
+reclaimed_bytes=12364464128
+$ FM_DISK_ROOM_COMPACT_RESULT=<that file> bin/fm-disk-room.sh status | grep "last compaction"
+last compaction: 2026-10-05T18:02:11 now ok reclaimed 11.5 GiB
+
+### fm-wsl-reclaim.ps1 has no -Disable switch (PowerShell parameter binding, non-elevated)
+$ powershell.exe -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04\home\oskari\.no-mistakes\worktrees\ca1b14ddd4b9\01M417AQ4S6TAGFFBCQQA5RRMJ\bin\fm-wsl-reclaim.ps1 -Disable
+\\wsl.localhost\Ubuntu-24.04\home\oskari\.no-mistakes\worktrees\ca1b14ddd4b9\01M417AQ4S6TAGFFBCQQA5RRMJ\bin\fm-wsl-recl
+aim.ps1 : A parameter cannot be found that matches parameter name 'Disable'.
+    + CategoryInfo          : InvalidArgument: (:) [fm-wsl-reclaim.ps1], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : NamedParameterNotFound,fm-wsl-reclaim.ps1
+ 
+exit=1
+
+$ powershell.exe -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04\home\oskari\.no-mistakes\worktrees\ca1b14ddd4b9\01M417AQ4S6TAGFFBCQQA5RRMJ\bin\fm-wsl-reclaim.ps1 -Plan   (default, no elevation)
+task installed: False
+file list: C:\ProgramData\firstmate\wsl-compact.conf
+C:\Users\Oskari\AppData\Local\wsl\{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}\ext4.vhdx  615.7 GiB  sparse=False  in-use=True
+C:\Users\Oskari\AppData\Local\Docker\wsl\disk\docker_data.vhdx  3.8 GiB  sparse=False  in-use=False
+C: free: 22.6 GiB
+last result:
+finished=2026-10-03T11:33:55
+mode=startup
+result=ok
+reclaimed_bytes=7808745472
+c_free_bytes=35591032832
+file=C:\Users\Oskari\AppData\Local\wsl\{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}\ext4.vhdx|664720637952|656911892480|ok
+file=C:\Users\Oskari\AppData\Local\Docker\wsl\disk\docker_data.vhdx|4092592128|4092592128|ok
+shadow storage record:
+recorded=2026-10-03T09:33:58Z
+recorded_epoch=1791020039
+volume=C:
+max_bytes=20435697664
+used_bytes=1276166144
+allocated_bytes=1677717504
+exit=0
+
+### scripts unchanged between base and target
+$ git diff --stat 48ea3cc1 3992d881 -- bin/
+(empty = unchanged)
