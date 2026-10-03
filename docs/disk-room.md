@@ -78,6 +78,7 @@ Each compaction run appends to `C:\ProgramData\firstmate\wsl-compact.log` and re
 The startup task is optional.
 From an elevated Windows PowerShell, `Disable-ScheduledTask -TaskName 'Firstmate WSL compact at startup'` disables it and `Enable-ScheduledTask -TaskName 'Firstmate WSL compact at startup'` turns it back on.
 This laptop runs with the task installed but disabled.
+Re-running `-Install` re-registers the task enabled, so run `Disable-ScheduledTask` again after any reinstall.
 With it disabled:
 
 - freed space returns to the Windows drive only through the reclaim-now step below;
