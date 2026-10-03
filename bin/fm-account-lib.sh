@@ -69,6 +69,11 @@
 # per bounding window, any part empty when unknown.
 # FM_ACCOUNT_USAGE_TTL (seconds, default 120) bounds its age;
 # FM_ACCOUNT_QUOTA_TIMEOUT (seconds, default 20) bounds one quota-axi read.
+# Every quota-axi read runs with NODE_OPTIONS (any value already set kept)
+# carrying --network-family-autoselection-attempt-timeout of
+# FM_ACCOUNT_QUOTA_CONNECT_MS milliseconds (default 2000): Node's own 250 ms per
+# address attempt fails every read as "fetch failed" on a link whose TCP connect
+# takes longer, while 0 leaves NODE_OPTIONS untouched.
 # A read that answers error or unreadable without timing out - quota-axi's
 # "fetch failed" is a request that never reached the host, which hits every
 # login at once during a network blip - is retried up to
@@ -77,6 +82,22 @@
 # total stays inside the watcher's 30-second check bound. A rate_limited or
 # sign-in reading is a real answer and is never retried. A read that still
 # fails is unknown usage, never exhausted.
+#
+# Blind readings (fm_account_readings_blind): every registered account's read
+# came back error, unreadable, or no-quota-axi, so no reading says anything
+# about room; bin/fm-account.sh then reports the readings blind instead of
+# balanced.
+#
+# Live login (fm_account_live_index, fm_account_live_for): the account a running
+# agent is actually on, from the CLAUDE_CONFIG_DIR of each process named claude
+# (the comm rule bin/fm-harness.sh applies) whose working folder is the agent's
+# own: a worker's worktree, a second mate's home, or this home for its session.
+# Only that one environment entry is read, by matching its name inside
+# /proc/<pid>/environ, and it is used only to look up the registered account; no
+# other environment value or credential is read, printed, or kept. An absent
+# entry is Claude's default ~/.claude. A process that cannot be read, or none
+# found, is unknown; a folder no account registers is unregistered.
+# FM_PROC_ROOT_OVERRIDE (default /proc) is the test seam.
 #
 # Sign-in streak: state/.account-signin-<name>, one line
 # "<first-epoch>|<last-epoch>|<count>" written only here at each real read. A read of auth_required or
@@ -275,14 +296,26 @@ fm_account_fetch() {
   printf '%s|%s|%s|%s|%s|%s\n' "$status" "$left" "$reset" "$runway" "$plan" "$windows"
 }
 
+# fm_account_node_options: NODE_OPTIONS for one quota-axi read (see the header).
+fm_account_node_options() {
+  local ms=${FM_ACCOUNT_QUOTA_CONNECT_MS:-2000}
+  case "$ms" in '' | *[!0-9]*) ms=2000 ;; esac
+  if [ "$((10#$ms))" -eq 0 ]; then
+    printf '%s' "${NODE_OPTIONS:-}"
+    return 0
+  fi
+  printf '%s' "${NODE_OPTIONS:+$NODE_OPTIONS }--network-family-autoselection-attempt-timeout=$((10#$ms))"
+}
+
 # fm_account_fetch_once <provider> <dir> <timeout>: one quota-axi read, printed
 # as "<status>|<percent-left>|<reset-iso>|<runway-seconds>|<plan>|<windows>"; returns the
 # read's own exit status so a timeout is visible to the caller.
 fm_account_fetch_once() {
-  local provider=$1 dir=$2 timeout=$3 json row rc=0
+  local provider=$1 dir=$2 timeout=$3 json row rc=0 nodeopts
+  nodeopts=$(fm_account_node_options)
   case "$provider" in
-    claude) json=$(fm_run_timed "$timeout" env CLAUDE_CONFIG_DIR="$dir" quota-axi --provider claude --profile-only --json 2>/dev/null </dev/null) || rc=$? ;;
-    codex) json=$(fm_run_timed "$timeout" env CODEX_HOME="$dir" quota-axi --provider codex --profile-only --json 2>/dev/null </dev/null) || rc=$? ;;
+    claude) json=$(fm_run_timed "$timeout" env NODE_OPTIONS="$nodeopts" CLAUDE_CONFIG_DIR="$dir" quota-axi --provider claude --profile-only --json 2>/dev/null </dev/null) || rc=$? ;;
+    codex) json=$(fm_run_timed "$timeout" env NODE_OPTIONS="$nodeopts" CODEX_HOME="$dir" quota-axi --provider codex --profile-only --json 2>/dev/null </dev/null) || rc=$? ;;
     *) json='' ;;
   esac
   # quota-axi exits nonzero for a login that needs sign-in but still prints the
@@ -321,7 +354,7 @@ fm_account_fetch_once() {
 fm_account_classify_claude() {
   local json cache
   cache=$(mktemp -d "${TMPDIR:-/tmp}/fm-account-classify.XXXXXX" 2>/dev/null) || return 0
-  json=$(fm_run_timed "$2" env -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR="$1" XDG_CACHE_HOME="$cache" quota-axi --provider claude --no-credential-refresh --json 2>/dev/null </dev/null) || true
+  json=$(fm_run_timed "$2" env -u CLAUDE_CODE_OAUTH_TOKEN NODE_OPTIONS="$(fm_account_node_options)" CLAUDE_CONFIG_DIR="$1" XDG_CACHE_HOME="$cache" quota-axi --provider claude --no-credential-refresh --json 2>/dev/null </dev/null) || true
   rm -rf "$cache"
   printf '%s' "$json" | jq -r '([.providers[]? | select(.provider == "claude")] | first) as $r |
     if $r == null then empty else ($r.state.authStatus // "") end' 2>/dev/null || true
@@ -384,6 +417,68 @@ fm_account_usage() {
     fi
   fi
   printf '%s\n' "$rest"
+}
+
+# fm_account_readings_blind <status>...: 0 when there is at least one status and
+# every one is a failed read (see the header).
+fm_account_readings_blind() {
+  local s
+  [ $# -gt 0 ] || return 1
+  for s in "$@"; do
+    case "$s" in error | unreadable | no-quota-axi) ;; *) return 1 ;; esac
+  done
+  return 0
+}
+
+# fm_account_live_index: one "<cwd>\t<login-folder>" line per readable process
+# named claude, <login-folder> being "~/.claude" when the entry is absent, and
+# "<cwd>\t?" for one whose environment cannot be read (see the header).
+fm_account_live_index() {
+  local proc=${FM_PROC_ROOT_OVERRIDE:-/proc} p comm cwd entry
+  for p in "$proc"/[0-9]*; do
+    [ -d "$p" ] || continue
+    comm=
+    IFS= read -r comm <"$p/comm" 2>/dev/null || continue
+    case "${comm##*/}" in *claude*) ;; *) continue ;; esac
+    cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
+    [ -n "$cwd" ] || continue
+    if [ ! -r "$p/environ" ]; then
+      printf '%s\t?\n' "$cwd"
+      continue
+    fi
+    # grep -z prints only the matching entry; nothing else leaves the file.
+    entry=$(grep -z -m1 '^CLAUDE_CONFIG_DIR=' "$p/environ" 2>/dev/null | tr -d '\0')
+    if [ -n "$entry" ]; then
+      printf '%s\t%s\n' "$cwd" "${entry#CLAUDE_CONFIG_DIR=}"
+    elif [ "$(head -c1 "$p/environ" 2>/dev/null | wc -c)" -gt 0 ]; then
+      printf '%s\t~/.claude\n' "$cwd"
+    else
+      printf '%s\t?\n' "$cwd"
+    fi
+  done
+}
+
+# fm_account_live_for <config-dir> <index> <dir>: the live account of the agent
+# whose working folder is <dir> - its account name, "unregistered", or
+# "unknown"; several processes on different logins join with "+".
+fm_account_live_for() {
+  local config=$1 index=$2 want=$3 cwd folder name out='' seen='|'
+  [ -n "$want" ] || { printf unknown; return 0; }
+  [ ! -d "$want" ] || want=$(cd -P "$want" 2>/dev/null && pwd) || want=$3
+  want=${want%/}
+  while IFS=$'\t' read -r cwd folder; do
+    [ "${cwd%/}" = "$want" ] || continue
+    if [ "$folder" = '?' ]; then
+      name=unknown
+    else
+      name=$(fm_account_name_for_dir "$config" "$folder" claude)
+      [ -n "$name" ] || name=unregistered
+    fi
+    case "$seen" in *"|$name|"*) continue ;; esac
+    seen="$seen$name|"
+    out="${out:+$out+}$name"
+  done <<<"$index"
+  printf '%s' "${out:-unknown}"
 }
 
 # fm_account_left <usage-line>: the percent-left field, or nothing.

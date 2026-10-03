@@ -23,7 +23,13 @@
 #            An agent's account is its launch record (account= in its task
 #            record), else a second mate's pin, else - marked "~" - the account
 #            of the session that launched it, since fm-spawn forwards that
-#            session's login. --refresh ignores the usage cache.
+#            session's login. Beside it, each running Claude agent's live
+#            account (the lib header's live login; unknown when its process
+#            cannot be read, unregistered for a login no account names), marked
+#            MISMATCH when it differs from the recorded one; --json carries it as
+#            live_account and live_mismatch. When every account's read failed
+#            the advice is the one "account readings blind" line.
+#            --refresh ignores the usage cache.
 # use        Move one direct report onto <account> through the guarded path and
 #            record it durably. A second mate gets <home>/config/account (the
 #            pin every later relaunch and respawn honors), then the
@@ -48,6 +54,8 @@
 #            Only the main home prints sign-in and no-room lines here, and a
 #            sign-in only once the lib's sign-in streak confirms it; status and
 #            the panel still show every home's current readings.
+#            When every account's read failed it never prints "balanced"; the
+#            blind readings are its needs-the-captain line (main home only).
 #            --dry-run prints the plan only. --check is the watcher form: it
 #            prints one wake line only when a move is due or the advice changed
 #            (or 30 minutes after an unhandled move line) and nothing otherwise;
@@ -130,24 +138,40 @@ agent_account() {
   printf '%s|inferred' "$launcher"
 }
 
+# agent_dir <meta>: the folder the agent's process runs in - a second mate's
+# home, otherwise its worktree; nothing for a remote second mate, whose
+# processes this host cannot see.
+agent_dir() {
+  [ -z "$(fm_account_meta_get "$1" remote_host)" ] || return 0
+  if [ "$(fm_account_meta_get "$1" kind)" = secondmate ]; then
+    fm_account_meta_get "$1" home
+  else
+    fm_account_meta_get "$1" worktree
+  fi
+}
+
 # collect_agents: one row per agent this home can see, |-separated:
-# <home-label> <id> <kind> <harness> <account> <basis> <direct 0|1>
+# <home-label> <id> <kind> <harness> <account> <basis> <direct 0|1> <live>
+# <live> is the lib's live account for a Claude agent and empty otherwise.
 collect_agents() {
-  local self self_acct meta id kind harness row home sm_acct m
+  local self self_acct meta id kind harness row home sm_acct m index
   self=$(self_label)
-  self_acct=$(fm_account_name_for_dir "$CONFIG" "${CLAUDE_CONFIG_DIR:-}" claude)
-  printf '%s|%s|session|claude|%s|session|0\n' "$self" "$self" "$self_acct"
+  self_acct=$(fm_account_name_for_dir "$CONFIG" "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}" claude)
+  index=$(fm_account_live_index)
+  printf '%s|%s|session|claude|%s|session|0|%s\n' "$self" "$self" "$self_acct" \
+    "$(fm_account_live_for "$CONFIG" "$index" "$FM_HOME")"
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
     kind=$(fm_account_meta_get "$meta" kind)
     harness=$(fm_account_meta_get "$meta" harness)
     if [ "$harness" != claude ]; then
-      printf '%s|%s|%s|%s||other|1\n' "$self" "$id" "${kind:-ship}" "$harness"
+      printf '%s|%s|%s|%s||other|1|\n' "$self" "$id" "${kind:-ship}" "$harness"
       continue
     fi
     row=$(agent_account "$meta" "$self_acct")
-    printf '%s|%s|%s|claude|%s|1\n' "$self" "$id" "${kind:-ship}" "$row"
+    printf '%s|%s|%s|claude|%s|1|%s\n' "$self" "$id" "${kind:-ship}" "$row" \
+      "$(fm_account_live_for "$CONFIG" "$index" "$(agent_dir "$meta")")"
     [ "$kind" = secondmate ] || continue
     [ -z "$(fm_account_meta_get "$meta" remote_host)" ] || continue
     home=$(fm_account_meta_get "$meta" home)
@@ -158,11 +182,12 @@ collect_agents() {
       [ "$(fm_account_meta_get "$m" kind)" != secondmate ] || continue
       harness=$(fm_account_meta_get "$m" harness)
       if [ "$harness" != claude ]; then
-        printf '%s|%s|%s|%s||other|0\n' "$id" "$(basename "$m" .meta)" "$(fm_account_meta_get "$m" kind)" "$harness"
+        printf '%s|%s|%s|%s||other|0|\n' "$id" "$(basename "$m" .meta)" "$(fm_account_meta_get "$m" kind)" "$harness"
         continue
       fi
-      printf '%s|%s|%s|claude|%s|0\n' "$id" "$(basename "$m" .meta)" \
-        "$(fm_account_meta_get "$m" kind)" "$(agent_account "$m" "$sm_acct")"
+      printf '%s|%s|%s|claude|%s|0|%s\n' "$id" "$(basename "$m" .meta)" \
+        "$(fm_account_meta_get "$m" kind)" "$(agent_account "$m" "$sm_acct")" \
+        "$(fm_account_live_for "$CONFIG" "$index" "$(agent_dir "$m")")"
     done
   done
 }
@@ -175,6 +200,13 @@ account_rows() {
     printf '%s|%s|%s|%s\n' "$name" "$provider" "$dir" \
       "$(fm_account_usage "$CONFIG" "$STATE" "$name" "$ttl")"
   done <<<"$(fm_account_list "$CONFIG")"
+}
+
+# readings_blind <account-rows>: 0 when every account's read failed.
+readings_blind() {
+  local statuses
+  mapfile -t statuses < <(printf '%s\n' "$1" | awk -F'|' 'NF { print $4 }')
+  fm_account_readings_blind "${statuses[@]}"
 }
 
 # with_outlook <account-rows> <floor>: each row with "|<outlook>" appended as
@@ -210,11 +242,23 @@ log_move() {  # <id> <from> <to> <result>
 # the lib's sign-in streak confirms it. The no-room line needs proof for every
 # Claude account: a fresh reading with a low outlook, or a sign-in line of its
 # own; one unknown reading (error, unreadable, rate_limited, expired) withholds
-# it, so a failed read never counts as exhausted.
+# it, so a failed read never counts as exhausted. When every reading failed
+# (the lib's blind readings) the one line is that the readings are blind, in
+# the captain form from the main home only, like the sign-in lines.
 advice() {
   local agents=$1 accounts=$2 captain=${3:-} floor room self_acct name provider dir status rest main=0
   local proven=0 unproven=0
   [ "$(self_label)" = main ] && main=1
+  if readings_blind "$accounts"; then
+    [ -n "$captain" ] && [ "$main" = 0 ] && return 0
+    if printf '%s\n' "$accounts" | awk -F'|' 'NF && $4 != "no-quota-axi" { exit 1 }'; then
+      printf 'account readings blind: quota-axi is not installed on this machine, so no account usage can be read; install quota-axi\n'
+      return 0
+    fi
+    printf 'account readings blind: every account usage read failed (%s), so no move or room verdict can be made; check this machine'"'"'s connection to the usage service\n' \
+      "$(printf '%s\n' "$accounts" | awk -F'|' 'NF { s = s (s ? ", " : "") $1 } END { print s }')"
+    return 0
+  fi
   floor=$(fm_account_floor "$CONFIG")
   room=$(fm_account_room "$CONFIG" "$STATE")
   self_acct=$(printf '%s\n' "$agents" | awk -F'|' '$6 == "session" { print $5; exit }')
@@ -254,7 +298,7 @@ advice() {
 # a low account, when an account with room exists.
 plan_moves() {
   local agents=$1 id kind harness acct direct room
-  while IFS='|' read -r _ id kind harness acct _ direct; do
+  while IFS='|' read -r _ id kind harness acct _ direct _; do
     [ "$direct" = 1 ] && [ "$harness" = claude ] && [ -n "$acct" ] || continue
     fm_account_is_low "$CONFIG" "$STATE" "$acct" || continue
     room=$(fm_account_room "$CONFIG" "$STATE" "$acct")
@@ -265,7 +309,7 @@ plan_moves() {
 
 cmd_status() {
   local json=0 ttl='' agents accounts floor name provider dir status left reset runway
-  local now on others pref pick moves line pct outlook
+  local now on others pref pick moves line pct outlook live
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1 ;;
@@ -297,7 +341,9 @@ cmd_status() {
           outlook: (if .[1] == "claude" and (.[9] // "") != "" then .[9] else null end),
           low: (.[1] == "claude" and .[9] == "low") } ],
         agents: [ rows($agents)[] | { home: .[0], id: .[1], kind: .[2], harness: .[3],
-          account: (if (.[4] // "") == "" then null else .[4] end), basis: .[5], direct: (.[6] == "1") } ],
+          account: (if (.[4] // "") == "" then null else .[4] end), basis: .[5], direct: (.[6] == "1"),
+          live_account: (if (.[7] // "") == "" or .[7] == "unknown" then null else .[7] end),
+          live_mismatch: ((.[7] // "") != "" and .[7] != "unknown" and .[7] != (if (.[4] // "") == "" then "unregistered" else .[4] end)) } ],
         moves: [ rows($moves)[] | { id: .[0], kind: .[1], from: .[2], to: .[3] } ],
         advice: ($advice | split("\n") | map(select(. != ""))) }'
     return
@@ -341,6 +387,10 @@ cmd_status() {
     printf 'Moving automatically:\n'
     printf '%s\n' "$moves" | awk -F'|' '{ printf "  %s  %s -> %s\n", $1, $3, $4 }'
   fi
+  live=$(printf '%s\n' "$agents" | awk -F'|' '$4 == "claude" && $8 != "" {
+      tag = ($8 != "unknown" && $8 != ($5 == "" ? "unregistered" : $5)) ? "  MISMATCH" : ""
+      printf "  %-22s recorded %-10s live %s%s\n", (($7 == "1" || $3 == "session") ? $2 : $1 "/" $2), ($5 == "" ? "-" : $5) ($6 == "inferred" ? "~" : ""), $8, tag }')
+  [ -z "$live" ] || printf 'Agents (recorded / live login):\n%s\n' "$live"
   advice "$agents" "$accounts" | sed 's/^/Needs the captain: /'
   if [ -s "$MOVES_LOG" ]; then
     printf 'Recent moves:\n'
@@ -525,7 +575,7 @@ cmd_rebalance() {
     printf '%s\n' "${line%;}"
     return 0
   fi
-  if [ -z "$moves" ]; then
+  if [ -z "$moves" ] && ! readings_blind "$accounts"; then
     echo "balanced: no agent needs to move"
   fi
   mates=()

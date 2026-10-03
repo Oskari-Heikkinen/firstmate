@@ -897,6 +897,7 @@ A home's `config/claude-account` pin ("Worker account pin" above) outranks the r
 
 `bin/fm-account.sh status` shows each account's percent left, runway, reset time, and whether it is low or on pace to run out before a reset, and which sessions, second mates, and workers run on it, read from each task record's `account=`.
 An agent launched before the registry existed is attributed to its launcher's account and marked `~` until it is moved or pinned.
+Beside that recorded account, `status` shows each running Claude agent's live account, read from the login its process actually runs on, and marks a mismatch, so a login switched outside these records or a session still on its old login is visible; an agent whose process cannot be read shows as unknown.
 `bin/fm-account.sh panel` toggles the same view as a side pane when run inside Herdr, and `bin/fm-account.sh watch` runs it in any terminal.
 `bin/fm-account.sh use <task> <account>` moves one second mate or worker through the guarded relaunch path, and `bin/fm-account.sh default <account>` sets where new spawns start.
 The chosen account is recorded durably, in a worker's task record or in the second mate's own `config/account`, so a later relaunch or respawn does not revert it.
@@ -907,13 +908,15 @@ While an account is projected to run out before a reset, or is below the floor w
 Second mates, workers, and this session move only once a limit is both below the floor and not projected to reset first, and an account below the floor whose limits all reset first is left alone.
 Work goes to an account not projected to run out first; when none is, an account still above the floor takes work off a low one, so work never stops while an account has room.
 Unknown usage is never treated as low, so a failed read never moves work, and a failed read is retried briefly before it reads as unknown.
+Usage reads give each network connect attempt 2 seconds rather than Node's default 250 milliseconds, so a slow link does not fail every read.
+When every account's read fails, `status`, the panel, `rebalance`, and its watcher check say the account readings are blind as advice for the captain, naming a missing quota-axi when that is the cause, never that the fleet is balanced.
 The no-room advice appears only when every Claude account has a successful reading low enough to move work off or needs sign-in, never because a read failed.
 Automatic rebalancing is on whenever the registry exists, unless `config/account-auto` says `off`.
 Session start then arms a watcher check that wakes firstmate only when a move is due or the advice changes, and firstmate runs `bin/fm-account.sh rebalance` without asking the captain.
 Rebalancing moves second mates and between-steps workers, never one mid-command or mid-validation run; a busy worker waits for a later run.
 Only the captain can restart this home's own session or sign in to a login that does not exist yet, so those appear as one-line advice instead.
 A Claude login whose access token lapsed but can still renew shows as expired, not as needing sign-in, because it renews on next use.
-Rebalancing and its watcher check carry sign-in and no-room advice from the main home only, and a sign-in only after three reads over 15 minutes agree, while `status` and the panel show every home's current readings.
+Rebalancing and its watcher check carry sign-in, no-room, and blind-readings advice from the main home only, and a sign-in only after three reads over 15 minutes agree, while `status` and the panel show every home's current readings.
 The registry, floor, and auto setting are inherited into secondmate homes, while `config/account` and `config/spawn-account` stay per home.
 The headers of `bin/fm-account-lib.sh` and `bin/fm-account.sh` own the exact formats, the spawn account precedence, and the runtime records.
 
@@ -2399,7 +2402,7 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
-FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
+FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process reads (process identity, account live logins), mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_TASK_ID=             # internal task-worker marker fm-spawn.sh exports into ship and scout panes, never set by hand; bin/fm-test-run.sh refuses to execute in the repository primary checkout while it is set
@@ -2540,6 +2543,7 @@ FM_PENDING_REPLY_RETENTION_SECS=86400   # seconds a resolved pending-reply recor
 FM_SPAWN_ACCOUNT=       # one launch's explicit account name, set by bin/fm-account.sh for a switch relaunch; beats every recorded or configured account
 FM_ACCOUNT_USAGE_TTL=120   # seconds a cached per-account usage read stays fresh
 FM_ACCOUNT_QUOTA_TIMEOUT=20   # seconds bounding one quota-axi read of one login
+FM_ACCOUNT_QUOTA_CONNECT_MS=2000   # milliseconds Node gives each connect attempt of a quota-axi read; 0 leaves NODE_OPTIONS alone
 FM_ACCOUNT_SIGNIN_CONFIRM_SECS=900   # seconds a login's sign-in readings must span before rebalance advises a sign-in
 FM_ACCOUNT_PANEL_RATIO=    # optional Herdr split ratio for the accounts panel
 # sub-supervisor (bin/fm-supervise-daemon.sh); presence-gated via /afk
