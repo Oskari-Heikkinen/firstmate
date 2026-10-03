@@ -2,7 +2,7 @@
 
 On WSL the Linux root filesystem lives in a non-sparse `ext4.vhdx` file on the Windows drive.
 `df /` reports the virtual disk's own size (1 TiB by default), so it overstates room, and space Linux frees stays allocated on the Windows drive until the file is compacted while WSL is not running.
-This page covers the real-room monitor that reads the situation correctly and the one-time Windows install that returns freed space automatically.
+This page covers the real-room monitor that reads the situation correctly and the one-time Windows install that returns freed space, at Windows start while its optional startup task is enabled and on demand through the reclaim-now step.
 The agent procedure is the `disk-room` skill; `bin/fm-disk-room.sh` and `bin/fm-wsl-reclaim.ps1` own their exact commands in their headers.
 
 ## Real room
@@ -28,7 +28,7 @@ After each restore point, the first overwrite of any block inside the non-sparse
 The diff area therefore grows in 224 MiB steps until its cap binds, while Linux `df` and the disk file's size stay flat.
 The monitor reserves that headroom, the cap minus what is already used, from the Windows drive's free space.
 
-Reading the cap and the used size needs elevation, so the elevated task from the install below records both in `C:\ProgramData\firstmate\shadow-storage.txt` at every Windows start, install, and reclaim.
+Reading the cap and the used size needs elevation, so the elevated script from the install below records both in `C:\ProgramData\firstmate\shadow-storage.txt` at every `-Install` and reclaim-now run, and at every Windows start while the startup task is enabled.
 The task runs the copy the install made in `C:\ProgramData\firstmate\`, so an install made before this record existed never writes it; re-run `fm-wsl-reclaim.ps1 -Install` elevated to update that copy.
 A record older than 7 days, or no record at all, leaves the used size unknown; the monitor then reserves the whole cap, the larger of the record's cap and `FM_DISK_ROOM_SHADOW_MAX` (for example `10G`), because a too-large reservation only makes room read low.
 With neither a capped record nor `FM_DISK_ROOM_SHADOW_MAX`, nothing is reserved and room reads as before; a record of shadow storage without a cap reserves nothing unless `FM_DISK_ROOM_SHADOW_MAX` bounds it.
@@ -51,7 +51,7 @@ Under the margin it prints one line with the real room, the declared writes, and
 It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, and the shadow storage record, and never starts PowerShell, which times out when Windows is short of memory.
 Without a fresh shadow storage record it runs `wevtutil.exe` for the event count at most once an hour, under a 20 second timeout.
 
-## Automatic reclaim (one-time Windows install)
+## Reclaim (one-time Windows install)
 
 `bin/fm-wsl-reclaim.ps1` is run by a Windows administrator; nothing in this repo runs elevated or as root on its own.
 From an elevated Windows PowerShell, while the distro is running:
@@ -69,13 +69,24 @@ The install:
 
 No trim step is needed: the distro root is mounted with online `discard`, so blocks Linux frees are already unmapped for compaction.
 
-A WSL or Docker start during the few minutes of startup compaction fails with the file in use and can simply be retried.
-Each run appends to `C:\ProgramData\firstmate\wsl-compact.log` and rewrites `wsl-compact-last.txt`, which `fm-disk-room.sh status` shows as `last compaction:`.
+While the startup task is enabled, a WSL or Docker start during the few minutes of startup compaction fails with the file in use and can simply be retried.
+Each compaction run appends to `C:\ProgramData\firstmate\wsl-compact.log` and rewrites `wsl-compact-last.txt`, which `fm-disk-room.sh status` shows as `last compaction:`.
 `-Plan` (the default, no elevation needed) shows the resolved files, their sizes, sparse flags, whether they are in use, and the last result.
+
+### Disabling the startup task
+
+The startup task is optional.
+From an elevated Windows PowerShell, `Disable-ScheduledTask -TaskName 'Firstmate WSL compact at startup'` disables it and `Enable-ScheduledTask -TaskName 'Firstmate WSL compact at startup'` turns it back on.
+This laptop runs with the task installed but disabled.
+With it disabled:
+
+- freed space returns to the Windows drive only through the reclaim-now step below;
+- `last compaction:` advances only on reclaim-now runs;
+- the shadow storage record is refreshed only by `-Install` and `-Now`, so 7 days after the last one the monitor treats the record as stale and reserves the whole cap, which makes room read lower, never higher, until the next reclaim-now.
 
 ### Reclaim now
 
-When the monitor says a compaction would help and a restart is not convenient, the captain parks the work running in WSL and runs, elevated:
+When the monitor says a compaction would help and the startup task is disabled or a restart is not convenient, the captain parks the work running in WSL and runs, elevated:
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\firstmate\fm-wsl-reclaim.ps1 -Now
