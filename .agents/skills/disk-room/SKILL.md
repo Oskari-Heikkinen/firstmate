@@ -1,6 +1,6 @@
 ---
 name: disk-room
-description: Agent-only procedure for laptop disk space on WSL. Load before starting or admitting a job expected to write 1 GiB or more to the Linux disk (including /tmp), on a "disk room low" or "disk room: cannot measure" notification, when anyone reports the Windows drive filling, and before proposing a compaction, sparse mode, or deletion to free space. Owns how agents read real room, admit big writes, what the automatic reclaim does, and which manual steps are retired.
+description: Agent-only procedure for laptop disk space on WSL. Load before starting or admitting a job expected to write 1 GiB or more to the Linux disk (including /tmp), on a "disk room low" or "disk room: cannot measure" notification, when anyone reports the Windows drive filling, and before proposing a compaction, sparse mode, or deletion to free space. Owns how agents read real room, admit big writes, what the reclaim install does, and which manual steps are retired.
 ---
 
 # disk-room
@@ -10,10 +10,10 @@ On WSL the Linux disk is a non-sparse `ext4.vhdx` on the Windows drive, so `df /
 
 ## What runs by itself once the captain has installed it
 
-- At every Windows start, before anyone signs in, a scheduled task compacts the distro disk and Docker's data disk while WSL is not running, skipping any file in use.
+- The startup compaction task is installed but disabled on this laptop, so nothing compacts the disk files at Windows start; freed space comes back to C: only through the reclaim-now step in `docs/disk-room.md`. Re-running `fm-wsl-reclaim.ps1 -Install` re-enables the task, so disable it again afterwards.
 - In a home that registered the watcher check, `fm-disk-room.sh watch-line` stays silent until real room is under the margin (20 GiB by default), then produces one notification, repeated only after a further 5 GiB drop or 6 hours.
 
-Check the install with `fm-disk-room.sh status`: a `last compaction:` line means the task has run at least once.
+Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows the most recent compaction, which with the startup task disabled is the last reclaim-now run.
 
 ## How agents use it
 
@@ -38,5 +38,5 @@ Firstmate relays only low readings, in the captain's terms; above the margin, di
 - Fixed C: floors such as "C: free >= 55 GB" or "45 GB": use `check`/`run` with the job's expected write.
 - Treating disk file size minus Linux used as reclaimable: fragmented free space is not, and `status` already subtracts it.
 - Proposing `wsl --manage <distro> --set-sparse true --allow-unsafe`: Microsoft gates it for potential data corruption, and it would not recover fragmented slack.
-- Hand-written diskpart sequences, `fstrim`, or `drop_caches` runs: the startup task, online discard on `/`, and the reclaim-now step cover them.
+- Hand-written diskpart sequences, `fstrim`, or `drop_caches` runs: online discard on `/` and the reclaim-now step cover them.
 - Every Windows, root, elevation, or WSL-shutdown step still goes to the captain as the exact command from `docs/disk-room.md`; no agent runs one.
