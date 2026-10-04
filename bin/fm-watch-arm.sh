@@ -105,8 +105,9 @@ fi
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
 BEAT="$STATE/.last-watcher-beat"
-# "Fresh" reuses the guard's threshold so there is one definition of liveness.
-GRACE=${FM_GUARD_GRACE:-300}
+# "Fresh" reuses the guard's threshold so there is one definition of liveness,
+# with the same poll-derived default fm-watch.sh uses.
+GRACE=${FM_GUARD_GRACE:-$(fm_poll_derived_grace)}
 # How long to wait for a freshly forked watcher to acquire the lock and beat.
 # Git Bash/MSYS pays a much higher fork cost while the watcher completes its
 # required pre-lock migration, so its bounded default covers that cold start.

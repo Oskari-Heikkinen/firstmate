@@ -387,8 +387,8 @@ The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYC
 ### Grace, beacon, and stop signals
 
 The default 300-second grace is unchanged.
-Only the watcher process touches `state/.last-watcher-beat`.
-No helper process can make a wedged watcher appear healthy.
+Only the watcher loop touches `state/.last-watcher-beat`; its wedge watchdog only reads it, so no helper can make a wedged watcher appear healthy.
+[`turnend-guard.md`](turnend-guard.md#guard-grace-and-the-poll-cadence) owns the refresh and wedge-recovery rules.
 An arm whose own script path sits under a disposable no-mistakes validation checkout (`.no-mistakes/worktrees/`) refuses with the typed failure line before touching any state, because a watcher started there outlives the validation step and keeps writing the real home's state from a checkout about to be deleted.
 Once per poll the watcher checks that its home, its state directory, and its own code root still exist, and exits with a logged reason when one is gone, scoped to itself alone, so a torn-down temporary home or a discarded checkout never leaves an orphan watcher behind.
 The watcher uses bash's native fatal handling for HUP and TERM, including during a blocked poll, so both run its EXIT cleanup.
@@ -458,6 +458,8 @@ It checks that a newly appended keyed decision is classified without rereading e
 - Recovery publication before stale-lock removal.
 - The typed self-eviction failure.
 - Bounded and successor-linked lifecycle rows.
+- A pending-reply scan longer than the grace keeping its beacon fresh per record and surviving the watchdog.
+- The wedge watchdog stopping a watcher blocked on one child that never exits or on a pipe a detached process holds open.
 - A SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 
 ### Claude auto-arm and turn-end guard
