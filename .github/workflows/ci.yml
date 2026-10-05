@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # ci/** branches let scratch work be verified on GitHub before it lands on main.
+    branches: [main, 'ci/**']
   pull_request:
     branches: [main]
 
