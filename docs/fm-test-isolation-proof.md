@@ -230,60 +230,6 @@ One member needs a current Pi to pass at all.
 `tests/fm-pi-branch-extension.test.sh` compares firstmate's supervision-branch extension against the stock renderers of the installed `@earendil-works/pi-coding-agent`, and the proof host's global install was stale at 0.81.1 while the published release was 0.84.4.
 On the stale package the case fails serially as well as concurrently, so it is a prerequisite rather than a concurrency result; both runs above pinned the current package with `FM_PI_PACKAGE_DIR`, and on a host whose global install is current the plain command reproduces them.
 
-## CI runner (ubuntu-latest, 4 vCPU)
-
-The family proofs above were taken on a 14-core maintainer host; this section records the same proof on the GitHub runner that executes the CI serial shards.
-`bin/fm-test-run.sh`'s `list_ci_concurrent_families` admits a family to overlap on CI serial shards only from a passing result here.
-
-- Date: 2026-10-05
-- Command: `bin/fm-test-isolation-proof.sh --pool <family> --jobs 4`, one family per fresh `ubuntu-latest` runner (4 vCPU, 16 GB) with the tools CI installs.
-- Runs: GitHub Actions run IDs in `Oskari-Heikkinen/firstmate`, on scratch branches built from `fm/fm-test-suite-speedup` work-in-progress commits.
-
-| family | run | candidates | failed | duration_ms | result |
-|---|---|---:|---:|---:|---|
-| `session-bootstrap` | 37304270533 | 11 | 0 | 300980 | pass |
-| `session-bootstrap` | 37306964600 | 11 | 0 | 298338 | pass |
-| `pr-forge` | 37304270533 | 8 | 0 | 369100 | pass |
-| `pr-forge` | 37308387567 | 8 | 0 | 293334 | pass |
-| `pure-contract-unit` | 37306964600 | 43 | 0 | 656962 | pass |
-| `pure-contract-unit` | 37308387567 | 43 | 0 | 510001 | pass |
-| `standalone` | 37302406577 | 32 | 1 | 453438 | fail: `fm-dispatch-resolve` |
-| `standalone` | 37305167913 | 32 | 1 | 566200 | fail: `fm-dispatch-resolve` |
-| `standalone` | 37310295048 | 32 | 0 | 501272 | pass |
-| `standalone` | 37310295048 | 32 | 0 | 505692 | pass (second runner) |
-| `secondmate` | 37302406577 | 23 | 1 | 562252 | fail: `fm-remote-secondmate-lifecycle-e2e` |
-| `secondmate` | 37305167913 | 23 | 1 | 551859 | fail: `fm-remote-secondmate-lifecycle-e2e` |
-| `secondmate` | 37313563530 | 23 | 0 | 609854 | pass |
-| `secondmate` | 37313563530 | 23 | 0 | 393710 | pass (second runner) |
-| `watcher-wake-lock` | 37302406577 | 21 | 1 | 786817 | fail: `fm-watch-checkpoint` |
-| `watcher-wake-lock` | 37305167913 | 21 | 1 | 695525 | fail: `fm-watch-arm` |
-| `backend-dispatch` | 37311556250 | 24 | 0 | 213653 | pass |
-| `backend-dispatch` | 37312303894 | 24 | 0 | 213058 | pass |
-| `backend-dispatch` | 37312303894 | 24 | 0 | 211078 | pass (second runner) |
-| `snapshot-bearings` | 37310295048 | 5 | 0 | 182412 | pass |
-| `snapshot-bearings` | 37311556250 | 5 | 0 | 156772 | pass |
-| `snapshot-bearings` | 37312864584 | 5 | 0 | 197684 | pass |
-| `afk` | 37311556250 | 5 | 0 | 177316 | pass |
-| `afk` | 37312303894 | 5 | 0 | 213397 | pass |
-| `afk` | 37312864584 | 5 | 0 | 219065 | pass |
-| `afk` | 37312864584 | 5 | 0 | 168733 | pass (second runner) |
-
-`watcher-wake-lock` stays admitted for local `--jobs` but is not proven on the CI runner, so it runs in the serial tail on CI.
-Each of its two CI runs lost a different member to a real-watcher timing race, and each failing script passed when rerun alone on the same runner.
-`fm-watch-checkpoint` reported `watch lock pid survived quiet checkpoint timeout`, and `fm-watch-arm` reported `watcher pid ... outlived its deleted state directory`.
-
-`standalone` failed only on `tests/fm-dispatch-resolve.test.sh`, whose one-diagnostic-line assertion saw extra `printf: write error: Broken pipe` lines from `bin/fm-quota-axi-lib.sh`.
-`fm_quota_single_provider_for_harness` returned early while its process-substitution writer was still printing the provider table, and the runner starts processes with SIGPIPE ignored, so the writer reported the error instead of exiting silently.
-Under load from six concurrent test loops on the runner, that case failed in 50 of 50 runs; reading the table from a captured here-string instead dropped it to 0 of 45 (runs 37306964600 and 37308387567).
-`standalone` passed on both runners of run 37310295048 once that fix landed.
-
-`secondmate` failed both runs only on `tests/fm-remote-secondmate-lifecycle-e2e.test.sh`, at `the watcher did not exit on its auto-relaunch wake within the bound`, and that script passed when rerun alone.
-The other 22 `secondmate` members passed in both runs.
-That case now bounds the wait with a wall-clock deadline (`FM_E2E_WAIT_DEADLINE`) sized to catch only a wedged watcher, instead of 1500 polls of 0.02 seconds, and `secondmate` passed on both runners of run 37313563530 after that change.
-
-A proof run whose every candidate passed used to exit 1 when a candidate left read-only fixture directories in its private `TMPDIR`, because the harness cleanup could not remove them.
-The harness now restores owner write access before cleanup, so the exit status reflects only candidate and isolation results.
-
 ## Production runner effect of the 2026-09-03 admissions
 
 Each family measured with `bin/fm-test-run.sh --family <name> --jobs <n>` on the same host, back to back, every run reporting 0 failures.

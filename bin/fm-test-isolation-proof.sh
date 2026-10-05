@@ -392,11 +392,7 @@ PROOF_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-isolation-proof.XXXXXX")
 chmod 0700 "$PROOF_ROOT" || die "could not chmod 0700 proof root $PROOF_ROOT"
 RECORDS="$PROOF_ROOT/records.tsv"
 : >"$RECORDS"
-# Candidates may leave read-only fixture directories inside their private TMPDIR.
-# Restore owner write access first so cleanup never turns a passing proof into a
-# failing exit status under set -e.
-trap 'chmod -R u+w "$PROOF_ROOT" 2>/dev/null || true
-rm -rf "$PROOF_ROOT" 2>/dev/null || log "warning: could not fully remove proof root $PROOF_ROOT"' EXIT
+trap 'rm -rf "$PROOF_ROOT"' EXIT
 
 GIT_BEFORE=$(global_git_snapshot)
 RUN_STARTED_ISO=$(now_iso)

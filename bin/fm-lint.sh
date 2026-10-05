@@ -69,8 +69,8 @@
 # run holds at most JOBS concurrent ShellCheck processes. Diagnostics replay
 # in stable shard/root order. FM_LINT_JOBS=1 changes concurrency, not diagnostics
 # or exit selection.
-# --partition <k>of<n> (2 <= n <= 16) splits the entire canonical inventory
-# across n CI runners, each with those same concurrency-limited workers.
+# --partition 1of2/2of2 splits the entire canonical inventory across
+# two CI runners, each with those same concurrency-limited workers.
 # Partitions are complete, disjoint, and balanced by expanded source bytes (see
 # the packing notes below); --list-files exposes their actual roots. Within any
 # run, every heavy root shares one worker, so two heavy ShellCheck analyses never
@@ -118,7 +118,7 @@
 #   fm-lint.sh --fast [path]...       local lint with extended analysis disabled
 #   fm-lint.sh <path>...               lint explicit roots (local split mode outside CI)
 #   fm-lint.sh --jobs <1|2> [path]...  override concurrent worker count
-#   fm-lint.sh --partition <k>of<n>    lint one full-rigor canonical CI partition
+#   fm-lint.sh --partition <1of2|2of2> lint one full-rigor canonical CI partition
 #   fm-lint.sh --telemetry <path> ...  write a quiet metrics snapshot
 #   fm-lint.sh --required-version      print the ShellCheck pin
 #   fm-lint.sh --list-files            print the file set that would be linted
@@ -695,7 +695,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --partition)
-      [ "$#" -ge 2 ] || { printf 'fm-lint.sh: --partition requires <k>of<n>.\n' >&2; exit 2; }
+      [ "$#" -ge 2 ] || { printf 'fm-lint.sh: --partition requires 1of2 or 2of2.\n' >&2; exit 2; }
       PARTITION=$2
       PARTITION_REQUESTED=1
       shift 2
@@ -734,21 +734,17 @@ esac
 case "$PARTITION" in
   '')
     if [ "$PARTITION_REQUESTED" -eq 1 ]; then
-      printf 'fm-lint.sh: --partition requires <k>of<n>.\n' >&2
+      printf 'fm-lint.sh: --partition requires 1of2 or 2of2.\n' >&2
       exit 2
     fi
     ;;
-  [1-9]of[2-9]|[1-9]of1[0-6]|1[0-6]of1[0-6])
-    if [ "${PARTITION%%of*}" -gt "${PARTITION##*of}" ]; then
-      printf 'fm-lint.sh: --partition index must be within 1..n, got %s.\n' "$PARTITION" >&2
-      exit 2
-    fi
+  1of2|2of2)
     if [ "$FAST" -eq 1 ] || [ "$#" -gt 0 ]; then
       printf 'fm-lint.sh: --partition requires full canonical lint; omit --fast and explicit paths.\n' >&2
       exit 2
     fi
     ;;
-  *) printf 'fm-lint.sh: --partition must be <k>of<n> with 2 <= n <= 16, got %s.\n' "$PARTITION" >&2; exit 2 ;;
+  *) printf 'fm-lint.sh: --partition must be 1of2 or 2of2, got %s.\n' "$PARTITION" >&2; exit 2 ;;
 esac
 
 if [ "$FAST" -eq 1 ] && { [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]; }; then
@@ -988,9 +984,8 @@ if [ -n "$PARTITION" ]; then
   partition_weights=$(fm_lint_root_weights) || exit $?
   while IFS="$TAB" read -r index path; do
     PARTITION_ROOTS+=("$path")
-  # Each root goes to the least-loaded partition, the lowest index on a tie.
-  done < <(printf '%s\n' "$partition_weights" | LC_ALL=C sort -t "$TAB" -k1,1nr -k2,2n | awk -F '\t' -v want="${PARTITION%%of*}" -v n="${PARTITION##*of}" '
-    { shard=1; for (i=2; i <= n; i++) if (load[i] < load[shard]) shard=i; load[shard]+=$1; if (shard == want) print $2 "\t" $3 }
+  done < <(printf '%s\n' "$partition_weights" | LC_ALL=C sort -t "$TAB" -k1,1nr -k2,2n | awk -F '\t' -v want="${PARTITION%%of*}" '
+    { shard=(load[2] < load[1]) ? 2 : 1; load[shard]+=$1; if (shard == want) print $2 "\t" $3 }
   ' | LC_ALL=C sort -t "$TAB" -k1,1n)
   ROOTS=("${PARTITION_ROOTS[@]}")
 fi
@@ -1060,11 +1055,11 @@ ROOT_GRACE=${FM_LINT_ROOT_GRACE:-5}
 # demand for the heaviest roots is near 5.5-6 GiB: the 8 GiB address-space
 # cap's ~5.33 GiB wall caught bin/fm-spawn.sh, bin/fm-teardown.sh,
 # tests/fm-pending-reply.test.sh, and
-# tests/fm-launch-prompt-signals-live-e2e.test.sh. Two workers never hold two
-# heavy roots at once (see the packing notes below), so CI's two-worker
-# partitions stay near one heavy cap plus one light root, inside the 16 GiB
-# runner (measured peak worker RSS about 6 GiB). Local lint also defaults to
-# two workers; use FM_LINT_JOBS=1 on smaller local machines. A root that exceeds its cap fails by name.
+# tests/fm-launch-prompt-signals-live-e2e.test.sh. CI runs one root per
+# lint job, so worst-case resident demand is ~8 GiB plus runner overhead,
+# inside the 16 GiB runner. Local lint defaults to two workers; two such
+# caps allow ~16 GiB resident plus host overhead, so use FM_LINT_JOBS=1 on
+# smaller local machines. A root that exceeds its cap fails by name.
 # Never disable, narrow, or redirect source-following to fit a root under
 # the cap. The roots sidecar records each root's peak RSS; roots peaking
 # above about 3 GiB resident are reduction candidates,
