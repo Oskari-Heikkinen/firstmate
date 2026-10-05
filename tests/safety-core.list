@@ -1,0 +1,45 @@
+# Firstmate's safety core: agent-free behavior tests that cover the risky areas
+# named in tests/risky-areas.list. bin/fm-safety-guard.sh owns the rules:
+# every entry must exist and be selected by a CI shard, and a commit that drops
+# an entry fails CI unless its message carries a `safety-core-removal: <reason>`
+# line. One repo-relative test path per line; `#` starts a comment.
+
+# Watcher and supervision.
+tests/fm-watch-triage.test.sh
+tests/fm-watcher-lock.test.sh
+tests/fm-watch-arm.test.sh
+tests/fm-watch-recovery-loop.test.sh
+tests/fm-watch-checkpoint.test.sh
+tests/fm-supervision-host.test.sh
+
+# Cleanup.
+tests/fm-teardown.test.sh
+tests/fm-teardown-endpoint-safety.test.sh
+tests/fm-park.test.sh
+
+# Steering and control.
+tests/fm-send-inbox.test.sh
+tests/fm-task-inbox.test.sh
+tests/fm-send-resolve-key.test.sh
+tests/fm-send-remote-delivery.test.sh
+tests/fm-send-strict.test.sh
+tests/fm-send-settle.test.sh
+tests/fm-control.test.sh
+tests/fm-control-relaunch.test.sh
+
+# Fleet sync and self-update.
+tests/fm-fleet-sync.test.sh
+tests/fm-secondmate-sync.test.sh
+tests/fm-update.test.sh
+tests/fm-green-pointer.test.sh
+
+# Spawn and merge guards.
+tests/fm-spawn-orca-worktree.test.sh
+tests/fm-spawn-worktree-settle.test.sh
+tests/fm-spawn-nested-home-context.test.sh
+tests/fm-spawn-pool-base-freshen.test.sh
+tests/fm-spawn-dispatch-profile.test.sh
+tests/fm-pr-merge.test.sh
+
+# The guard's own regression.
+tests/fm-safety-guard.test.sh

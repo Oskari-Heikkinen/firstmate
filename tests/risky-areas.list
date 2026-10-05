@@ -1,0 +1,49 @@
+# Firstmate's risky areas: scripts whose change must come with a test change in
+# the same area, or a `no-test-needed: <reason>` line in the commit message.
+# bin/fm-safety-guard.sh owns the rule; the pre-push review reuses this list.
+# Each line is `<area> script|test <glob>`, where the glob is matched against
+# repo-relative paths and `*` also matches `/`; `#` starts a comment.
+# Every area needs at least one script line and one test line.
+
+watcher script bin/fm-watch*.sh
+watcher script bin/fm-wake-*.sh
+watcher script bin/fm-supervision-host.sh
+watcher script bin/fm-supervision-engine-lib.sh
+watcher script bin/fm-supervision-lib.sh
+watcher test tests/fm-watch*.test.sh
+watcher test tests/fm-watcher-*.test.sh
+watcher test tests/fm-wake-*.test.sh
+watcher test tests/fm-supervision-*.test.sh
+watcher test tests/fm-branch-supervision.test.sh
+
+cleanup script bin/fm-teardown.sh
+cleanup script bin/fm-park.sh
+cleanup test tests/fm-teardown*.test.sh
+cleanup test tests/fm-park*.test.sh
+
+steering script bin/fm-send.sh
+steering script bin/fm-task-inbox-lib.sh
+steering script bin/fm-control.sh
+steering script bin/fm-control-lib.sh
+steering test tests/fm-send*.test.sh
+steering test tests/fm-task-inbox*.test.sh
+steering test tests/fm-control*.test.sh
+
+fleet-sync script bin/fm-fleet-sync*.sh
+fleet-sync script bin/fm-secondmate-sync*.sh
+fleet-sync script bin/fm-update.sh
+fleet-sync script bin/fm-ff-lib.sh
+fleet-sync script bin/fm-green-pointer.sh
+fleet-sync test tests/fm-fleet-sync*.test.sh
+fleet-sync test tests/fm-secondmate-sync*.test.sh
+fleet-sync test tests/fm-update*.test.sh
+fleet-sync test tests/fm-ff-lib*.test.sh
+fleet-sync test tests/fm-green-pointer*.test.sh
+
+spawn-merge script bin/fm-spawn.sh
+spawn-merge script bin/fm-pr-merge.sh
+spawn-merge script bin/fm-merge-local.sh
+spawn-merge test tests/fm-spawn*.test.sh
+spawn-merge test tests/fm-pr-merge*.test.sh
+spawn-merge test tests/fm-merge-local*.test.sh
+spawn-merge test tests/fm-task-delivery.test.sh

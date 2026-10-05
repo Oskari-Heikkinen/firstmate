@@ -451,6 +451,8 @@ test_firstmate_verification_block_verifies_on_github() {
   assert_contains "$block" "git push origin HEAD:refs/heads/ci/fm-task" "the section does not push to the task's CI branch"
   assert_contains "$block" "gh run watch <run-id> --exit-status" "the section does not wait on the CI branch run"
   assert_contains "$block" "only a head whose ci/fm-task run passed" "the section lets an unverified head land"
+  assert_contains "$block" "no-test-needed: <reason>" "the section does not name the test-touch override line"
+  assert_contains "$block" "safety-core-removal: <reason>" "the section does not name the safety-core removal line"
   assert_not_contains "$block" "--force" "the section mentions a force push"
   pass "the Firstmate verification section lands only a head whose CI branch run passed"
 }

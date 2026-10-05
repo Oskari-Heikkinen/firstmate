@@ -79,6 +79,7 @@ jobs:
   # Deterministic proof that portable parallel shards + portable serial + Herdr
   # equal the complete tests/*.test.sh inventory with no missing or duplicates,
   # and that the portable serial CI shards partition that serial lane exactly.
+  # The safety guards sit beside it: bin/fm-safety-guard.sh owns their rules.
   test-coverage:
     name: Test coverage guard
     runs-on: ubuntu-latest
@@ -86,8 +87,18 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The commit guard reads every pushed commit and the merge base.
+          fetch-depth: 0
       - name: Prove complete regression partition
         run: bin/fm-test-run.sh --check-coverage
+      - name: Safety-core tests present and selected by CI
+        run: bin/fm-safety-guard.sh core
+      - name: Pushed commits keep risky-area tests and the safety core
+        env:
+          GUARD_BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          GUARD_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bin/fm-safety-guard.sh commits --before "$GUARD_BEFORE" --head "$GUARD_HEAD"
 
   # Two duration-balanced portable parallel shards of the Phase 2 proven-isolated
   # set only. Composition owner: bin/fm-test-run.sh (docs/fm-test-portable-shards.md).

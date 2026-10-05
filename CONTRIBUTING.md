@@ -129,6 +129,9 @@ Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
 Family selection is the ordinary local path; `--all` is deliberate full regression only.
 CI owns broad regression across required portable parallel shards, the portable serial lane's separate-runner shards, the Herdr lane, lint, invariants, the coverage guard, and stock macOS Bash compatibility in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 Pushing a new head to a pull request cancels that pull request's still-running CI so only the current head is validated; pushes to `main` are never cancelled, and the workflow owns that contract and its rationale.
+The coverage guard job also runs `bin/fm-safety-guard.sh`, whose header owns two agent-free rules judged on every pushed commit, for `ci/**` pushes, pushes to `main`, and pull requests alike.
+A commit that changes a risky-area script matched by `tests/risky-areas.list` must also add or change a test in that area; when the change truly needs none, such as a comment-only edit, give the reason in a `no-test-needed: <reason>` line of that commit's message.
+Every test in `tests/safety-core.list` must exist and be selected by a CI lane, and a commit that drops an entry from that list must give the reason in a `safety-core-removal: <reason>` line of its message.
 Use `bin/fm-test-run.sh --list-lanes` for exact lane names and `--help` for `--jobs` rules and required gate-skip flags when reproducing a lane locally.
 Leave the `sleep 0.1` cadence in the suites' bounded condition waits alone.
 Those sleeps look like recoverable overhead - `fm-watch-triage.test.sh` alone issues about 1,900 of them, each paying a flat ~100ms scheduler wake-up penalty on macOS - but they are not overhead added to the clock; they are how a test waits for a subject that only moves on `fm-watch.sh`'s own one-second `FM_POLL` cadence.
