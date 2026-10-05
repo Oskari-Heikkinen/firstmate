@@ -10,7 +10,7 @@
 #     .github/workflows/green-pointer.yml advances only to main commits whose CI
 #     passed, so a home never runs a main commit that has not gone green. A
 #     remote without that branch (another fork) falls back to origin/<default>,
-#     and the target's output says so. A checkout already past the pointer but
+#     and the target's one status line says so in a trailing bracketed note. A checkout already past the pointer but
 #     still within origin/<default> is left in place, never moved backward.
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
@@ -390,6 +390,11 @@ live_secondmate_meta_records() {
 # in this file's header.
 FF_STATUS=""
 FF_INSTR=""
+# Print ff_target's one status line for its target, carrying the origin-mode
+# fallback note when the remote has no green pointer. Reads ff_target's locals.
+ff_report() {
+  echo "$label: $1$base_note"
+}
 ff_target() {
   local dir=$1 label=$2 base_mode=$3 allow_detached=${4:-no} ignore_seed_marker=${5:-no}
   local secondmate_id=${6:-} reconciliation_state=${7:-}
@@ -405,7 +410,7 @@ ff_target() {
     return 0
   fi
 
-  local default base cur instr local_rev base_rev before after out main_base=""
+  local default base cur instr local_rev base_rev before after out main_base="" base_note=""
   default=$(default_branch "$dir") || {
     echo "$label: skipped: cannot determine default branch"
     return 0
@@ -426,44 +431,44 @@ ff_target() {
       main_base="origin/$default"
     else
       base="origin/$default"
-      echo "$label: note: origin has no $FF_GREEN_POINTER pointer branch; following origin/$default"
+      base_note=" [no origin/$FF_GREEN_POINTER pointer branch; sync base origin/$default]"
     fi
   else
     base="$base_mode"
   fi
 
   if ! git -C "$dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
-    echo "$label: skipped: $base does not exist"
+    ff_report "skipped: $base does not exist"
     return 0
   fi
 
   cur=$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
   if [ -z "$cur" ] && [ "$allow_detached" != yes ]; then
-    echo "$label: skipped: detached HEAD, expected $default"
+    ff_report "skipped: detached HEAD, expected $default"
     return 0
   fi
   if [ -n "$cur" ] && [ "$cur" != "$default" ]; then
-    echo "$label: skipped: on $cur, expected $default"
+    ff_report "skipped: on $cur, expected $default"
     return 0
   fi
 
   if [ -n "$(dirty_status "$dir" "$ignore_seed_marker")" ]; then
-    echo "$label: skipped: dirty working tree"
+    ff_report "skipped: dirty working tree"
     return 0
   fi
 
   local_rev=$(git -C "$dir" rev-parse HEAD 2>/dev/null) || {
-    echo "$label: skipped: cannot read HEAD"
+    ff_report "skipped: cannot read HEAD"
     return 0
   }
   base_rev=$(git -C "$dir" rev-parse "$base" 2>/dev/null) || {
-    echo "$label: skipped: cannot read $base"
+    ff_report "skipped: cannot read $base"
     return 0
   }
   if [ "$local_rev" = "$base_rev" ]; then
     FF_STATUS="current"
     [ -z "$reconciliation_state" ] || secondmate_update_reconcile_clear "$reconciliation_state" "$secondmate_id" || true
-    echo "$label: already current"
+    ff_report "already current"
     return 0
   fi
   if ! git -C "$dir" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then
@@ -472,7 +477,7 @@ ff_target() {
     if [ -n "$main_base" ] && git -C "$dir" merge-base --is-ancestor HEAD "$main_base" 2>/dev/null; then
       FF_STATUS="current"
       [ -z "$reconciliation_state" ] || secondmate_update_reconcile_clear "$reconciliation_state" "$secondmate_id" || true
-      echo "$label: already current (ahead of $base within $main_base; left in place)"
+      ff_report "already current (ahead of $base within $main_base; left in place)"
       return 0
     fi
     if [ -n "$secondmate_id" ] && [ -n "$reconciliation_state" ] \
@@ -485,24 +490,24 @@ ff_target() {
         FF_INSTR="$instr"
         secondmate_update_reconcile_clear "$reconciliation_state" "$secondmate_id" || true
         if [ -n "$instr" ]; then
-          echo "$label: reconciled redundant divergence $before..$after (instructions changed: $instr)"
+          ff_report "reconciled redundant divergence $before..$after (instructions changed: $instr)"
         else
-          echo "$label: reconciled redundant divergence $before..$after"
+          ff_report "reconciled redundant divergence $before..$after"
         fi
         return 0
       fi
-      echo "$label: skipped: redundant divergence could not be reconciled with reset --keep"
+      ff_report "skipped: redundant divergence could not be reconciled with reset --keep"
       return 0
     fi
     if [ -n "$secondmate_id" ] && [ -n "$reconciliation_state" ]; then
       local marker
       if marker=$(secondmate_update_reconcile_record "$reconciliation_state" "$secondmate_id" "$local_rev" "$base_rev" "$base"); then
-        echo "$label: skipped: diverged from $base; reconciliation required (record: $marker)"
+        ff_report "skipped: diverged from $base; reconciliation required (record: $marker)"
       else
-        echo "$label: skipped: diverged from $base; reconciliation required, but its durable record could not be written"
+        ff_report "skipped: diverged from $base; reconciliation required, but its durable record could not be written"
       fi
     else
-      echo "$label: skipped: diverged from $base"
+      ff_report "skipped: diverged from $base"
     fi
     return 0
   fi
@@ -510,7 +515,7 @@ ff_target() {
   instr=$(changed_instr "$dir" "$base")
   before=$(git -C "$dir" rev-parse --short HEAD)
   if ! out=$(git -C "$dir" merge --ff-only "$base" 2>&1); then
-    echo "$label: skipped: fast-forward failed: $(first_line "$out")"
+    ff_report "skipped: fast-forward failed: $(first_line "$out")"
     return 0
   fi
   after=$(git -C "$dir" rev-parse --short HEAD)
@@ -518,9 +523,9 @@ ff_target() {
   FF_INSTR="$instr"
   [ -z "$reconciliation_state" ] || secondmate_update_reconcile_clear "$reconciliation_state" "$secondmate_id" || true
   if [ -n "$instr" ]; then
-    echo "$label: updated $before..$after (instructions changed: $instr)"
+    ff_report "updated $before..$after (instructions changed: $instr)"
   else
-    echo "$label: updated $before..$after"
+    ff_report "updated $before..$after"
   fi
   return 0
 }

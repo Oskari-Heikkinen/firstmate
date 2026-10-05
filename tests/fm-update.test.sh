@@ -579,7 +579,7 @@ test_follows_green_pointer_not_main() {
 
   assert_contains "$out" "firstmate: updated " "firstmate advanced to the pointer"
   assert_contains "$out" "secondmate sm1: updated " "secondmate advanced to the pointer"
-  assert_not_contains "$out" "has no green pointer" "a remote with the pointer needs no fallback note"
+  assert_not_contains "$out" "no origin/green pointer branch" "a remote with the pointer needs no fallback note"
   assert_equals "$green" "$(git -C "$w/main" rev-parse HEAD)" "firstmate stops at the green commit, not main's newer tip"
   assert_equals "$green" "$(git -C "$w/sm1" rev-parse HEAD)" "secondmate stops at the green commit, not main's newer tip"
   pass "homes fast-forward to origin's green pointer, not past it to main"
@@ -609,9 +609,9 @@ test_missing_green_pointer_falls_back_to_main() {
 
   out=$(run_update "$w")
 
-  assert_contains "$out" "firstmate: note: origin has no green pointer branch; following origin/main" \
-    "a remote without the pointer says it falls back"
   assert_contains "$out" "firstmate: updated " "the fallback still fast-forwards"
+  assert_contains "$out" " [no origin/green pointer branch; sync base origin/main]" \
+    "a remote without the pointer says it falls back on the target's status line"
   assert_equals "$(git -C "$w/main" rev-parse origin/main)" "$(git -C "$w/main" rev-parse HEAD)" \
     "without the pointer the update follows origin/main"
   pass "a remote without the green pointer falls back to origin/main and says so"
