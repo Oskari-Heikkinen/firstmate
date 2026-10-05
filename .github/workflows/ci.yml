@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2]
+        partition: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v6
       - name: Install pinned ShellCheck
@@ -58,7 +58,9 @@ jobs:
           # Fail closed rather than lint uncapped when a configured per-root
           # bound (wall deadline or memory rlimit) cannot be enforced here.
           FM_LINT_REQUIRE_BOUNDS: '1'
-          FM_LINT_JOBS: '1'
+          # Two workers: heavy roots share one worker, so the 16 GiB runner
+          # holds at most one heavy analysis plus one light one at a time.
+          FM_LINT_JOBS: '2'
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-lint"
@@ -125,7 +127,7 @@ jobs:
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
-          bin/fm-test-run.sh --lane portable-parallel-1 \
+          bin/fm-test-run.sh --lane portable-parallel-1 --jobs 4 \
             --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
       - name: Upload shard 1 timing artifact
@@ -164,7 +166,7 @@ jobs:
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
-          bin/fm-test-run.sh --lane portable-parallel-2 \
+          bin/fm-test-run.sh --lane portable-parallel-2 --jobs 4 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
       - name: Upload shard 2 timing artifact
         if: always()
@@ -189,7 +191,7 @@ jobs:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -240,7 +242,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fm-test"
           # The Pi package is installed above and CI provides npm and tsc, so
           # any missing typecheck prerequisite is a broken lane, not a valid skip.
-          bin/fm-test-run.sh --lane "$FM_SERIAL_LANE" \
+          # --jobs must equal the runner's serial_ci_jobs (see --check-coverage),
+          # which its shard packing assumes; only proof-admitted scripts overlap.
+          bin/fm-test-run.sh --lane "$FM_SERIAL_LANE" --jobs 4 \
             --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-${FM_SERIAL_SHARD}.json"
       - name: Upload portable serial shard ${{ matrix.shard }} timing artifact
@@ -251,13 +255,20 @@ jobs:
           path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-serial-${{ matrix.shard }}.json
           if-no-files-found: warn
 
-  # Required real-Herdr lane: pinned install, serial real-herdr-gated family,
-  # hard-fail on "skip: herdr not found". Starts on Linux x86_64; if a genuine
+  # Required real-Herdr lane: pinned install, the real-herdr-gated family split
+  # across runners (each shard serial in itself), hard-fail on "skip: herdr not
+  # found". Starts on Linux x86_64; if a genuine
   # platform invariant fails (focus, cleanup, default-session tripwire), keep
   # the failure evidence and move the job to macOS rather than skip assertions.
   tests-herdr:
-    name: Behavior tests (Herdr)
+    name: Behavior tests (Herdr ${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The matrix size must equal bin/fm-test-run.sh's REAL_HERDR_SHARDS;
+        # the lane name below carries it, so a mismatch refuses to run.
+        shard: [1, 2]
     # Heavy tier (see the timeout policy above): the last-resort job backstop.
     # The family-run step below owns the hang tripwire, so a wedged suite fails
     # there with the always() cleanup and timing upload still running.
@@ -342,17 +353,19 @@ jobs:
           bin/fm-herdr-ci-cleanup.sh snapshot "$RUNNER_TEMP/fm-herdr/sessions-before.json"
       - name: Run real-Herdr family (serial, required)
         id: run-real-herdr-family
-        # Heavy tier step tripwire: above the healthy 7-10 minute wall and far
+        # Heavy tier step tripwire: above the healthy shard wall and far
         # below the job backstop, so a hang fails this step and cleanup runs.
         timeout-minutes: 20
+        env:
+          FM_HERDR_LANE: real-herdr-gated-${{ matrix.shard }}of${{ strategy.job-total }}
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           # Serial only. Fail if any script reports herdr not found. Live
           # harness credential tests stay outside this family (opt-in env only).
-          bin/fm-test-run.sh --family real-herdr-gated \
+          bin/fm-test-run.sh --lane "$FM_HERDR_LANE" \
             --fail-on-gate-skip 'herdr not found' \
-            --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr-${{ matrix.shard }}.json"
       - name: Cleanup job-owned Herdr lab sessions
         id: cleanup-herdr-lab-sessions
         if: always()
@@ -368,9 +381,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fm-test-timing-herdr
+          name: fm-test-timing-herdr-${{ matrix.shard }}
           path: |
-            ${{ runner.temp }}/fm-test/fm-test-timing-herdr.json
+            ${{ runner.temp }}/fm-test/fm-test-timing-herdr-${{ matrix.shard }}.json
             ${{ runner.temp }}/fm-herdr/sessions-before.json
             ${{ runner.temp }}/fm-herdr/default-server.log
           if-no-files-found: warn
