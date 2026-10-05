@@ -891,7 +891,10 @@ test_unmeasured_url_does_not_starve_the_tail() {
     mutate_record "$home" "$task" '.records[0].checked_at="2026-09-16T07:55:00Z"'
   done
   printf 'latency\n' > "$home/forge/fault"
-  for cycle in 0 1 2 3 4 5; do
+  # Each slow poll refreshes only its rotation head, and the rotation over these
+  # three live URLs repeats every three buckets: cycle 2 proves all three were
+  # refreshed and cycle 3 proves the rotation wraps back to the first head.
+  for cycle in 0 1 2 3; do
     at=$(jq -nr --arg now "$NOW" --argjson cycle "$cycle" '(($now | fromdateiso8601) + $cycle * 300) | todateiso8601')
     started=$(/bin/date +%s)
     out=$(with_home "$home" env FM_CONTRIBUTIONS_NOW="$at" FM_CONTRIBUTIONS_BUDGET=20 FORGE_LATENCY=3 "$ROOT/bin/fm-contributions.sh" poll) \

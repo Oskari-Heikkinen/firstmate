@@ -90,6 +90,12 @@ FM_REMOTE_JOB_SUPERVISOR_MAX_BACKOFF_SECONDS=$(worker_bounded_setting "${FM_REMO
 FM_REMOTE_JOB_SUPERVISOR_HEALTHY_SECONDS=$(worker_bounded_setting "${FM_REMOTE_JOB_SUPERVISOR_HEALTHY_SECONDS:-}" 10)
 WORKER_FAST_PASSES=20
 WORKER_IDLE_WAIT_SECONDS=1
+# Test seam: a positive decimal shortens the idle wait so a fixture's staged
+# jobs are not each held up to a second; anything else keeps the default.
+case "${FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS:-}" in
+  ''|*[!0-9.]*|.*|*.|*.*.*) ;;
+  *[1-9]*) WORKER_IDLE_WAIT_SECONDS=$FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS ;;
+esac
 WORKER_SWEEP_SECONDS=60
 
 SCRIPT_DIR=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)

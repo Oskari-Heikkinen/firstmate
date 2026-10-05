@@ -49,6 +49,23 @@ relaunch_cleanup() {
 }
 trap relaunch_cleanup EXIT
 
+# Every case needs its own project, local origin, and task worktree, but the
+# project's one-commit history is identical across cases. Build that repository
+# and its bare origin once, then copy them per case: each case still owns a
+# private repository whose origin points at its own copy, and still adds its
+# worktree on a fresh branch, without re-running init, commit, and clone.
+RELAUNCH_GIT_TEMPLATE="$TMP_ROOT/git-template"
+fm_git_init_commit "$RELAUNCH_GIT_TEMPLATE/proj"
+fm_git_add_origin "$RELAUNCH_GIT_TEMPLATE/proj" "$RELAUNCH_GIT_TEMPLATE/proj.origin.git"
+relaunch_git_worktree() {  # <repo> <worktree> <branch>
+  local repo=$1 worktree=$2 branch=$3 origin_abs
+  cp -a "$RELAUNCH_GIT_TEMPLATE/proj" "$repo"
+  cp -a "$RELAUNCH_GIT_TEMPLATE/proj.origin.git" "$repo.origin.git"
+  origin_abs=$(cd "$repo.origin.git" && pwd)
+  git -C "$repo" remote set-url origin "file://$origin_abs"
+  git -C "$repo" worktree add --quiet -b "$branch" "$worktree"
+}
+
 # The same lifecycle-modelling tmux stub as tests/fm-control.test.sh: the
 # harness's exit command stops the agent, and a launch-brief literal starts the
 # harness named in `becomes`. A `claude-dialog` file instead makes the Enter
@@ -136,7 +153,9 @@ OPTS
         *cursor_y*) printf '1\n'; exit 0 ;;
         *pane_current_command*) cat "$D/command"; printf '\n'; exit 0 ;;
         *pane_current_path*)
-          if [ -n "${FM_FAKE_CWD_RACE_READY:-}" ]; then
+          # The first read holds a one-second window open for the case's
+          # concurrent publication; later reads need no window of their own.
+          if [ -n "${FM_FAKE_CWD_RACE_READY:-}" ] && [ ! -e "$FM_FAKE_CWD_RACE_READY" ]; then
             : > "$FM_FAKE_CWD_RACE_READY"
             /bin/sleep 1
           fi
@@ -237,7 +256,7 @@ new_case() {
 add_ship_task() {
   local dir=$1 id=$2 harness=${3:-claude} ses=${4:-fmses}
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
-  fm_git_worktree "$proj" "$wt" "task-$id"
+  relaunch_git_worktree "$proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
@@ -1042,7 +1061,7 @@ test_secondmate_relaunch_picks_up_the_configured_harness_pin() {
   printf 'codex some-model high\n' > "$home/config/secondmate-harness"
   mkdir -p "$home/data/sm3"
   printf '# secondmate brief\n' > "$home/data/sm3/brief.md"
-  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
   printf 'sm3\n' > "$dir/smhome/.fm-secondmate-home"
   printf '# agents\n' > "$dir/smhome/AGENTS.md"
@@ -1081,7 +1100,7 @@ test_secondmate_relaunch_ignores_invalid_configured_effort_before_stop() {
   mkdir -p "$home/config" "$home/data/sm6"
   printf 'codex some-model impossible\n' > "$home/config/secondmate-harness"
   printf '# secondmate brief\n' > "$home/data/sm6/brief.md"
-  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
   printf 'sm6\n' > "$dir/smhome/.fm-secondmate-home"
   printf '# agents\n' > "$dir/smhome/AGENTS.md"
@@ -1122,7 +1141,7 @@ test_secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop() {
   home="$dir/home"
   mkdir -p "$home/config" "$home/data/sm7"
   printf '# secondmate brief\n' > "$home/data/sm7/brief.md"
-  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
   printf 'sm7\n' > "$dir/smhome/.fm-secondmate-home"
   printf '# agents\n' > "$dir/smhome/AGENTS.md"
@@ -1160,7 +1179,7 @@ test_explicit_secondmate_harness_ignores_configured_profile_axes() {
   printf 'claude opus high\n' > "$home/config/secondmate-harness"
   mkdir -p "$home/data/sm4"
   printf '# secondmate brief\n' > "$home/data/sm4/brief.md"
-  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
   printf 'sm4\n' > "$dir/smhome/.fm-secondmate-home"
   printf '# agents\n' > "$dir/smhome/AGENTS.md"
@@ -1242,7 +1261,7 @@ test_promoted_scout_relaunch_receives_the_current_delivery_contract() {
     id="rl-promoted-${mode}"
     dir=$(new_case "promoted-scout-$mode" "$id")
     home="$dir/home"
-    fm_git_worktree "$dir/proj" "$dir/wt" "task-$id"
+    relaunch_git_worktree "$dir/proj" "$dir/wt" "task-$id"
     FM_HOME="$home" "$BRIEF" "$id" firstmate --scout >/dev/null \
       || fail "$mode: could not scaffold the scout brief"
     brief="$home/data/$id/brief.md"
@@ -1310,7 +1329,7 @@ test_mode_switched_task_relaunch_receives_the_switched_delivery_contract() {
     id="rl-switched-${mode}"
     dir=$(new_case "mode-switched-$mode" "$id")
     home="$dir/home"
-    fm_git_worktree "$dir/proj" "$dir/wt" "task-$id"
+    relaunch_git_worktree "$dir/proj" "$dir/wt" "task-$id"
     FM_HOME="$home" "$BRIEF" "$id" firstmate --mode direct-push >/dev/null \
       || fail "$mode: could not scaffold the direct-push brief"
     brief="$home/data/$id/brief.md"
@@ -1638,7 +1657,7 @@ test_secondmate_relaunch_checkpoints_child_work_and_spares_the_charter() {
   home="$dir/home"
   mkdir -p "$home/config"
   printf 'claude\n' > "$home/config/secondmate-harness"
-  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
   printf 'sm1\n' > "$dir/smhome/.fm-secondmate-home"
   printf '# charter\n' > "$dir/smhome/data/charter.md"
@@ -1681,7 +1700,7 @@ test_secondmate_relaunch_refuses_an_unmarked_home() {
   home="$dir/home"
   mkdir -p "$home/config"
   printf 'claude\n' > "$home/config/secondmate-harness"
-  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state"
   printf 'someone-else\n' > "$dir/smhome/.fm-secondmate-home"
   {
@@ -1709,7 +1728,7 @@ test_secondmate_checkpoint_refuses_unreadable_child_state() {
   home="$dir/home"
   mkdir -p "$home/config"
   printf 'claude\n' > "$home/config/secondmate-harness"
-  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state/bad.meta"
   printf 'sm5\n' > "$dir/smhome/.fm-secondmate-home"
   {
@@ -1752,7 +1771,7 @@ test_secondmate_checkpoint_ignores_a_vanished_scratch_find_walk() {
   home="$dir/home"
   mkdir -p "$home/config"
   printf 'claude\n' > "$home/config/secondmate-harness"
-  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
   printf 'sm6\n' > "$dir/smhome/.fm-secondmate-home"
   printf '# charter\n' > "$dir/smhome/data/charter.md"
@@ -2257,7 +2276,7 @@ SH
 add_herdr_ship_task() {  # <case-dir> <id> [session] [surviving-pane]
   local dir=$1 id=$2 ses=${3:-fmlab} survivor=${4:-'%7'}
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
-  fm_git_worktree "$proj" "$wt" "task-$id"
+  relaunch_git_worktree "$proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task

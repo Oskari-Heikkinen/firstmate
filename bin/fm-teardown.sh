@@ -2219,7 +2219,9 @@ reap_task_backend_process_group() {  # <label>
   [ "$current_pgid" = "$pgid" ] || return 0
   echo "teardown: reaping leaked $label process group for $ID: $pgid" >&2
   kill -TERM -- "-$pgid" 2>/dev/null || true
-  sleep 1
+  # Test seam: FM_TEARDOWN_REAP_GRACE_SECS shortens the TERM-to-KILL grace here
+  # and in reap_task_worktree_processes; unset keeps 1s.
+  sleep "${FM_TEARDOWN_REAP_GRACE_SECS:-1}"
   if task_process_identity_matches "$leader" "$leader_start" \
      && [ "$(ps -o pgid= -p "$leader" 2>/dev/null | tr -d '[:space:]')" = "$pgid" ] \
      && kill -0 -- "-$pgid" 2>/dev/null; then
@@ -2287,7 +2289,7 @@ EOF
         kill -TERM "$pid" 2>/dev/null || true
       fi
     done
-    sleep 1
+    sleep "${FM_TEARDOWN_REAP_GRACE_SECS:-1}"
     if ! task_pids_under_roots "$@"; then
       echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
       return 1

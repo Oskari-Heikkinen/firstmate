@@ -1404,6 +1404,9 @@ unit_refresh_validates_record() {
   local st daemon_pid
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-refresh-record.XXXXXX")
   mkdir -p "$st/state/.supervise-daemon.lock"
+  # Without the posture record both entries stop at the record check, so the
+  # malformed terminal record would never be read.
+  enter_posture "$st" || fail "refresh record: could not enter fixture posture"
   printf 'tmux\tonly-two-fields\n' > "$st/state/.afk-daemon-terminal"
   sleep 30 &
   # shellcheck disable=SC2031 # The background PID is captured immediately in this shell.
@@ -1430,6 +1433,8 @@ unit_clear_failure_aborts_entry() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-clear-fail.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
+  # Without the posture record the entry stops before the clear is reached.
+  enter_posture "$st" || fail "clear failure: could not enter fixture posture"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     fm_afk_launch_reconcile() { return 0; }
@@ -1483,6 +1488,8 @@ unit_flag_write_failure_aborts() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-flag-fail.XXXXXX")
   mkdir -p "$st/state"
+  # Without the posture record the entry stops before the flag write is reached.
+  enter_posture "$st" || fail "flag failure: could not enter fixture posture"
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     fm_afk_launch_flag_write() { return 1; }

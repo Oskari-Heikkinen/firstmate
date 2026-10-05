@@ -31,6 +31,14 @@ trap fm_test_cleanup EXIT
 REQUESTED=0
 case "${FM_NESTED_HOME_CONTEXT_LIVE:-}${FM_LIVE:-}" in *1*) REQUESTED=1 ;; esac
 
+# Skip before building any fixture when no checked harness is installed and the
+# guard was not explicitly requested; a request still reaches harness_present,
+# which fails on the absent harness.
+if [ "$REQUESTED" -eq 0 ] && ! command -v claude >/dev/null 2>&1 && ! command -v pi >/dev/null 2>&1; then
+  printf 'skip: live: neither claude nor pi is installed\n'
+  exit 0
+fi
+
 CAPTURE_PY="$TMP_ROOT/capture.py"
 cat > "$CAPTURE_PY" <<'PY'
 import http.server, itertools, json, os, sys

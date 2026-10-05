@@ -22,6 +22,17 @@ export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 export LAVISH_AXI_STATE_DIR="$TMP_ROOT/lavish-state"
 mkdir -p "$LAVISH_AXI_STATE_DIR"
 
+# The cases run concurrently through fm_run_case_pool (the end of this file),
+# and the claim root and the Lavish session store are each shared by every home
+# that uses them, keyed only by source id or artifact. So every case gets a
+# claim root and a session store of its own, set here in its pool job before it
+# starts, and every home it registers a source in is swept against that root.
+procevent_case_roots() {  # <case-index>
+  export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/case-$1.claims"
+  export LAVISH_AXI_STATE_DIR="$TMP_ROOT/case-$1.lavish-state"
+  mkdir -p "$LAVISH_AXI_STATE_DIR"
+}
+
 # Lavish owns this persisted session contract. The fake CLI below only handles
 # poll delivery; each opened-board fixture supplies the same routing evidence
 # a real `lavish-axi <artifact>` writes, without starting a server.
@@ -81,7 +92,7 @@ pe() { FM_HOME="$1" "$ROOT/bin/fm-procevent.sh" "${@:2}"; }
 pe_register() {  # <home> <adapter> <source-id> -- <argv>...
   local home=$1 adapter=$2 id=$3
   shift 3
-  fm_test_track_procevent_home "$home"
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
   pe "$home" register "$adapter" "$id" "$@"
 }
 new_home() { mkdir -p "$1/state"; }
@@ -227,6 +238,7 @@ hold_source_lock_then_handle() {  # <home> <source-id> <sequence> <ready-file> <
   HOLDER_PID=$!
 }
 
+case_idle_and_first_completion() {
 # --- inert with nothing configured ------------------------------------------
 IDLE="$TMP_ROOT/idle"; mkdir -p "$IDLE"
 out=$(pe "$IDLE" list)
@@ -298,6 +310,8 @@ SYM_RESULT=$(first_result "$HSYM" symlinked-src || true)
 assert_grep 'symlinked payload' "$SYM_RESULT" \
   "the symlinked-ancestor home captures the source output verbatim"
 pass "a home reached through a symlinked ancestor runs its sources normally"
+}
+case_public_start_group() {
 
 # --- the public start boundary establishes generation group ownership -------
 HPG="$TMP_ROOT/hpg"; new_home "$HPG"
@@ -360,6 +374,8 @@ kill -0 "$shared_sibling" 2>/dev/null || fail "retirement signaled an unrelated 
 kill "$shared_sibling" 2>/dev/null || true
 wait "$shared_launcher" || fail "shared caller-group fixture did not exit cleanly"
 pass "public start never claims an inherited caller process group"
+}
+case_unhandled_result_ack() {
 
 # --- an unhandled result remains eligible for re-announcement on restart ----
 # A result is durable but nothing has ever acknowledged handling it. Every
@@ -448,6 +464,8 @@ private_mode=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -
   '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_mode "$2"' _ "$ROOT" "$HPRIVATE/state/procevent-inbox/private-src.1.handled")
 assert_contains "$private_mode" 600 "the handled marker is private under a permissive caller umask"
 pass "handled acknowledgement creation is private and fails safely"
+}
+case_terminal_adapter_verdict() {
 
 # --- a terminal result retires its source, on the adapter's verdict alone ----
 # The runner must carry no notion of its own about what "done" means for a
@@ -507,7 +525,7 @@ pe_adapter() {  # <home> <command>...: run the runner against the fixture adapte
 }
 
 HPUBLISH="$TMP_ROOT/hpublish"; new_home "$HPUBLISH"
-fm_test_track_procevent_home "$HPUBLISH"
+fm_test_track_procevent_home "$HPUBLISH" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_adapter "$HPUBLISH" register applying publish-src -- /bin/echo "apply after publish" >/dev/null
 mkdir "$HPUBLISH/state/.wake-queue"
 out=$(pe_adapter "$HPUBLISH" start publish-src 2>&1)
@@ -539,7 +557,7 @@ pass "automatic application waits for durable publication and failed publication
 # channel is the announcement. The declaration never silences a capture the
 # adapter could NOT apply - that one still publishes for the handler.
 HSELF="$TMP_ROOT/hself"; new_home "$HSELF"
-fm_test_track_procevent_home "$HSELF"
+fm_test_track_procevent_home "$HSELF" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_adapter "$HSELF" register selfann self-src -- /bin/echo "self announced" >/dev/null
 out=$(pe_adapter "$HSELF" start self-src 2>&1)
 assert_contains "$out" "autohandled: self-src" "the self-announcing adapter did not apply its own capture"
@@ -570,7 +588,7 @@ rm -f "$HSELF/state/selfann-fail"
 pass "a self-announcing adapter applies quietly and still publishes what it could not apply"
 
 HTERM="$TMP_ROOT/hterm"; new_home "$HTERM"
-fm_test_track_procevent_home "$HTERM"
+fm_test_track_procevent_home "$HTERM" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_adapter "$HTERM" register endnow ends-src -- /bin/echo "terminal payload" >/dev/null
 out=$(pe_adapter "$HTERM" start ends-src)
 assert_contains "$out" "captured:" "a terminal result is still captured durably"
@@ -594,7 +612,7 @@ assert_contains "$out" "published=0" "an acknowledged terminal result stops bein
 pass "an adapter-classified terminal result is captured once, announced, and retires its source automatically"
 
 HOPEN="$TMP_ROOT/hopen"; new_home "$HOPEN"
-fm_test_track_procevent_home "$HOPEN"
+fm_test_track_procevent_home "$HOPEN" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_adapter "$HOPEN" register openended open-src -- /bin/echo "open payload" >/dev/null
 out=$(pe_adapter "$HOPEN" start open-src)
 assert_contains "$out" "captured:" "a result from an adapter with no terminal verdict is captured"
@@ -604,7 +622,7 @@ pe_adapter "$HOPEN" retire open-src >/dev/null
 pass "a source stays armed unless its own adapter classifies the result terminal"
 
 HREPLACE="$TMP_ROOT/hreplace"; new_home "$HREPLACE"
-fm_test_track_procevent_home "$HREPLACE"
+fm_test_track_procevent_home "$HREPLACE" "$FM_PROCEVENT_CLAIM_ROOT"
 OLD_TRIGGER="$TMP_ROOT/replace-old-trigger"
 OLD_STARTED="$TMP_ROOT/replace-old-started"
 pe_adapter "$HREPLACE" register endnow replace-src -- \
@@ -629,7 +647,7 @@ pe_adapter "$HREPLACE" retire replace-src >/dev/null
 pass "terminal retirement preserves and releases a concurrently replaced registration"
 
 HRETFAIL="$TMP_ROOT/hretfail"; new_home "$HRETFAIL"
-fm_test_track_procevent_home "$HRETFAIL"
+fm_test_track_procevent_home "$HRETFAIL" "$FM_PROCEVENT_CLAIM_ROOT"
 FAIL_RM_BIN=$(fm_fakebin "$TMP_ROOT/retire-fail-bin")
 REAL_RM=$(command -v rm)
 export REAL_RM
@@ -660,6 +678,8 @@ assert_absent "$FM_PROCEVENT_CLAIM_ROOT/retire-fail-src.claim" \
 [ "$(count_results "$HRETFAIL" retire-fail-src)" = 1 ] \
   || fail "retirement recovery reran the terminal source"
 pass "failed terminal retirement is fail-closed and idempotently recoverable"
+}
+case_send_and_end() {
 
 # --- end-user-aligned regression: one Send & End, one captured result -------
 # The dogfood defect: a real armed Lavish source received one human `Send & End`
@@ -691,7 +711,7 @@ REVIEW_ART="$TMP_ROOT/review.html"
 printf '<h1>review</h1>\n' > "$REVIEW_ART"
 lavish_session "$REVIEW_ART"
 lavish_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REVIEW_ART")
-fm_test_track_procevent_home "$HLT"
+fm_test_track_procevent_home "$HLT" "$FM_PROCEVENT_CLAIM_ROOT"
 PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" arm "$REVIEW_ART" >/dev/null
 for _ in $(seq 1 6); do
   PATH="$LAVISH_BIN:$PATH" pe "$HLT" reconcile >/dev/null
@@ -732,7 +752,7 @@ QUIET_ART="$TMP_ROOT/quiet-board.html"
 printf '<h1>quiet</h1>\n' > "$QUIET_ART"
 lavish_session "$QUIET_ART"
 quiet_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$QUIET_ART")
-fm_test_track_procevent_home "$HEMPTY"
+fm_test_track_procevent_home "$HEMPTY" "$FM_PROCEVENT_CLAIM_ROOT"
 PATH="$EMPTY_BIN:$PATH" FM_HOME="$HEMPTY" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$QUIET_ART" >/dev/null
 quiet_out=$(PATH="$EMPTY_BIN:$PATH" pe "$HEMPTY" start "$quiet_id" 2>&1)
@@ -762,6 +782,8 @@ sleep 0.3
 assert_absent "$HEMPTY/state/procevent/$quiet_id.source" \
   "an empty board close still retires its ended source"
 pass "an empty board close is captured and recorded handled without ever waking the captain"
+}
+case_worker_board_rounds() {
 
 # --- end-user-aligned regression: worker-owned rounds stay open until re-arm -
 # One worker-owned board runs three rounds: feedback reaches only the worker's
@@ -809,7 +831,7 @@ MULTI_ART="$MULTI_ROOT/board.html"
 printf '<h1>multi-round</h1>\n' > "$MULTI_ART"
 lavish_session "$MULTI_ART"
 multi_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$MULTI_ART")
-fm_test_track_procevent_home "$HMULTI"
+fm_test_track_procevent_home "$HMULTI" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HMULTI" worker-1
 new_task_endpoint "$HMULTI" worker-2
 mkdir -p "$HMULTI/config"
@@ -961,6 +983,8 @@ PATH="$MULTI_BIN:$PATH" pe "$HMULTI" reconcile >/dev/null 2>&1 || true
 [ -z "$(wake_payloads "$HMULTI")" ] \
   || fail "worker-owned rounds produced a firstmate wake: $(wake_payloads "$HMULTI")"
 pass "worker-owned Lavish rounds deliver to the worker, acknowledge on re-arm, and stop at session end"
+}
+case_interrupted_capture() {
 
 # --- end-user-aligned regression: a half-written capture does not wedge -----
 # The result file is a capture's commit marker, so an owner sidecar left behind
@@ -981,7 +1005,7 @@ ORPHAN_ART="$TMP_ROOT/orphan-board.html"
 printf '<h1>orphan</h1>\n' > "$ORPHAN_ART"
 lavish_session "$ORPHAN_ART"
 orphan_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ORPHAN_ART")
-fm_test_track_procevent_home "$HORPHAN"
+fm_test_track_procevent_home "$HORPHAN" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HORPHAN" worker-4
 PATH="$ORPHAN_BIN:$PATH" FM_HOME="$HORPHAN" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$ORPHAN_ART" --for worker-4 >/dev/null
@@ -1000,6 +1024,8 @@ wait_for "$HORPHAN/state/worker-4.inbox/001.msg" \
 [ -f "$HORPHAN/state/worker-4.inbox/001.msg" ] \
   || fail "the recovered capture did not reach its owning worker's steering inbox"
 pass "a capture interrupted before its result commit does not wedge its source"
+}
+case_orphaned_capture_owner() {
 
 # --- end-user-aligned regression: an orphaned capture keeps its owner ---------
 # An unacknowledged capture belongs to whoever it was routed to. Retiring the
@@ -1017,7 +1043,7 @@ ADOPT_ART="$TMP_ROOT/adopt-board.html"
 printf '<h1>adopt</h1>\n' > "$ADOPT_ART"
 lavish_session "$ADOPT_ART"
 adopt_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ADOPT_ART")
-fm_test_track_procevent_home "$HADOPT"
+fm_test_track_procevent_home "$HADOPT" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HADOPT" worker-5
 PATH="$ADOPT_BIN:$PATH" FM_HOME="$HADOPT" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$ADOPT_ART" >/dev/null
@@ -1051,7 +1077,7 @@ NOMETA_ART="$TMP_ROOT/nometa-board.html"
 printf '<h1>no endpoint</h1>\n' > "$NOMETA_ART"
 lavish_session "$NOMETA_ART"
 nometa_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$NOMETA_ART")
-fm_test_track_procevent_home "$HNOMETA"
+fm_test_track_procevent_home "$HNOMETA" "$FM_PROCEVENT_CLAIM_ROOT"
 if PATH="$ADOPT_BIN:$PATH" FM_HOME="$HNOMETA" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$NOMETA_ART" --for worker-10 \
   >/dev/null 2>"$TMP_ROOT/nometa-arm.err"; then
@@ -1078,7 +1104,7 @@ REDELIVER_ART="$TMP_ROOT/redeliver-board.html"
 printf '<h1>redeliver</h1>\n' > "$REDELIVER_ART"
 lavish_session "$REDELIVER_ART"
 redeliver_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REDELIVER_ART")
-fm_test_track_procevent_home "$HREDELIVER"
+fm_test_track_procevent_home "$HREDELIVER" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HREDELIVER" worker-6
 PATH="$ADOPT_BIN:$PATH" FM_HOME="$HREDELIVER" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$REDELIVER_ART" --for worker-6 >/dev/null
@@ -1094,6 +1120,8 @@ PATH="$ADOPT_BIN:$PATH" pe "$HREDELIVER" reconcile >/dev/null 2>&1 || true
 [ ! -f "$HREDELIVER/state/procevent-inbox/$redeliver_id.1.handled" ] \
   || fail "re-delivering the note acknowledged the round it is still asking for"
 pass "an open worker-owned round is re-delivered after its note was filed away"
+}
+case_worker_round_conclude() {
 
 # --- end-user-aligned regression: a conclude only closes its own round --------
 # Acknowledging a terminal round retires the board it belongs to. The same
@@ -1110,7 +1138,7 @@ CONC_ART="$TMP_ROOT/conclude-board.html"
 printf '<h1>conclude</h1>\n' > "$CONC_ART"
 lavish_session "$CONC_ART"
 conc_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$CONC_ART")
-fm_test_track_procevent_home "$HCONC"
+fm_test_track_procevent_home "$HCONC" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HCONC" worker-7
 PATH="$CONC_BIN:$PATH" FM_HOME="$HCONC" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$CONC_ART" --for worker-7 >/dev/null
@@ -1165,7 +1193,7 @@ INTR_ART="$TMP_ROOT/interrupted-board.html"
 printf '<h1>interrupted</h1>\n' > "$INTR_ART"
 lavish_session "$INTR_ART"
 intr_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$INTR_ART")
-fm_test_track_procevent_home "$HINTR"
+fm_test_track_procevent_home "$HINTR" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HINTR" worker-12
 PATH="$INTR_BIN:$PATH" FM_HOME="$HINTR" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$INTR_ART" --for worker-12 >/dev/null
@@ -1209,7 +1237,7 @@ ROLL_ART="$TMP_ROOT/rollback-board.html"
 printf '<h1>rollback</h1>\n' > "$ROLL_ART"
 lavish_session "$ROLL_ART"
 roll_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ROLL_ART")
-fm_test_track_procevent_home "$HROLL"
+fm_test_track_procevent_home "$HROLL" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HROLL" worker-8
 printf 'reply from generation one\n' > "$ROLL_ROOT/reply1"
 printf 'reply from generation two\n' > "$ROLL_ROOT/reply2"
@@ -1267,7 +1295,7 @@ REARM_ART="$TMP_ROOT/rearm-board.html"
 printf '<h1>rearm</h1>\n' > "$REARM_ART"
 lavish_session "$REARM_ART"
 rearm_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REARM_ART")
-fm_test_track_procevent_home "$HREARM"
+fm_test_track_procevent_home "$HREARM" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HREARM" worker-11
 printf 'first generation reply\n' > "$REARM_ROOT/reply1"
 printf 'second generation reply\n' > "$REARM_ROOT/reply2"
@@ -1326,7 +1354,7 @@ ANSWER_ART="$TMP_ROOT/answered-board.html"
 printf '<h1>answered</h1>\n' > "$ANSWER_ART"
 lavish_session "$ANSWER_ART"
 answer_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ANSWER_ART")
-fm_test_track_procevent_home "$HANSWER"
+fm_test_track_procevent_home "$HANSWER" "$FM_PROCEVENT_CLAIM_ROOT"
 PATH="$ANSWER_BIN:$PATH" FM_HOME="$HANSWER" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$ANSWER_ART" >/dev/null
 PATH="$ANSWER_BIN:$PATH" pe "$HANSWER" reconcile >/dev/null
@@ -1337,6 +1365,8 @@ assert_contains "$(wake_payloads "$HANSWER")" "procevent lavish $answer_id 1" \
 [ ! -f "$HANSWER/state/procevent-inbox/$answer_id.1.handled" ] \
   || fail "a real board answer was recorded handled without ever being handled"
 pass "a board close carrying the captain's real answer is still announced"
+}
+case_poll_governor_and_retries() {
 
 # --- end-user-aligned regression: a transient poll interruption is not news ---
 # The dogfood defect: a live board listener can answer with exactly
@@ -1410,8 +1440,11 @@ default_rate_count=$(cat "$DEFAULT_RATE_COUNT" 2>/dev/null || echo 0)
 pass "the shipped poll governor bounds an instantly returning source"
 
 # A bounded test override keeps the retry policy's real bound under test without
-# making the suite wait out the production delay.
+# making the suite wait out the production delay. These cases count retries, not
+# their spacing (the shipped governor case above owns the spacing), so the
+# test-only seam shortens each validated 1s delay further.
 export FM_LAVISH_POLL_RETRY_DELAY=1
+export FM_TEST_LAVISH_POLL_RETRY_DELAY=0.05
 
 # Two interruptions, then the captain's real feedback: the retries are silent and
 # only the feedback becomes a captured result and a check wake.
@@ -1420,7 +1453,7 @@ RETRY_ART="$TMP_ROOT/retry-board.html"
 printf '<h1>retry</h1>\n' > "$RETRY_ART"
 lavish_session "$RETRY_ART"
 retry_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$RETRY_ART")
-fm_test_track_procevent_home "$HRETRY"
+fm_test_track_procevent_home "$HRETRY" "$FM_PROCEVENT_CLAIM_ROOT"
 LAVISH_COUNT="$TMP_ROOT/retry-count"; LAVISH_SCRIPT="interrupt interrupt feedback"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HRETRY" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$RETRY_ART" >/dev/null
@@ -1447,7 +1480,7 @@ HREPLY="$TMP_ROOT/hreply"; new_home "$HREPLY"
 REPLY_ART="$TMP_ROOT/reply-retry-board.html"
 printf '<h1>reply retry</h1>\n' > "$REPLY_ART"
 lavish_session "$REPLY_ART"
-fm_test_track_procevent_home "$HREPLY"
+fm_test_track_procevent_home "$HREPLY" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$HREPLY" worker-9
 printf 'applied round one\n' > "$TMP_ROOT/reply-retry.txt"
 LAVISH_REPLY_LOG="$TMP_ROOT/reply-retry-log"; export LAVISH_REPLY_LOG
@@ -1534,7 +1567,7 @@ EXH_ART="$TMP_ROOT/exhaust-board.html"
 printf '<h1>exhaust</h1>\n' > "$EXH_ART"
 lavish_session "$EXH_ART"
 exh_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$EXH_ART")
-fm_test_track_procevent_home "$HEXH"
+fm_test_track_procevent_home "$HEXH" "$FM_PROCEVENT_CLAIM_ROOT"
 LAVISH_COUNT="$TMP_ROOT/exhaust-count"; LAVISH_SCRIPT="interrupt"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HEXH" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$EXH_ART" >/dev/null
@@ -1561,7 +1594,7 @@ OTHER_ART="$TMP_ROOT/other-board.html"
 printf '<h1>other</h1>\n' > "$OTHER_ART"
 lavish_session "$OTHER_ART"
 other_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$OTHER_ART")
-fm_test_track_procevent_home "$HOTHER"
+fm_test_track_procevent_home "$HOTHER" "$FM_PROCEVENT_CLAIM_ROOT"
 LAVISH_COUNT="$TMP_ROOT/other-count"; LAVISH_SCRIPT="other-server-error"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HOTHER" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$OTHER_ART" >/dev/null
@@ -1574,7 +1607,7 @@ assert_contains "$(wake_payloads "$HOTHER")" "procevent lavish $other_id 1" \
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HOTHER" \
   "$ROOT/bin/fm-procevent-lavish.sh" retire "$OTHER_ART" >/dev/null
 pass "only the exact interruption is retried; an unrelated SERVER_ERROR still surfaces"
-unset FM_LAVISH_POLL_RETRY_DELAY
+unset FM_LAVISH_POLL_RETRY_DELAY FM_TEST_LAVISH_POLL_RETRY_DELAY
 
 # A whitespace variant is not the exact transient response and must surface on
 # the first poll instead of drifting into the quiet retry policy.
@@ -1583,7 +1616,7 @@ NEAR_ART="$TMP_ROOT/near-board.html"
 printf '<h1>near</h1>\n' > "$NEAR_ART"
 lavish_session "$NEAR_ART"
 near_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$NEAR_ART")
-fm_test_track_procevent_home "$HNEAR"
+fm_test_track_procevent_home "$HNEAR" "$FM_PROCEVENT_CLAIM_ROOT"
 LAVISH_COUNT="$TMP_ROOT/near-count"; LAVISH_SCRIPT="near-interrupt feedback"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HNEAR" FM_LAVISH_POLL_RETRY_DELAY=1 \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$NEAR_ART" >/dev/null
@@ -1638,7 +1671,7 @@ mkdir -p "$STREAM_TMPDIR"
 printf '<h1>stream</h1>\n' > "$STREAM_ART"
 lavish_session "$STREAM_ART"
 stream_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$STREAM_ART")
-fm_test_track_procevent_home "$HSTREAM"
+fm_test_track_procevent_home "$HSTREAM" "$FM_PROCEVENT_CLAIM_ROOT"
 LAVISH_COUNT="$TMP_ROOT/stream-count"; LAVISH_SCRIPT="stream"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HSTREAM" TMPDIR="$STREAM_TMPDIR" \
   LAVISH_STREAM_READY="$LAVISH_STREAM_READY" LAVISH_STREAM_RELEASE="$LAVISH_STREAM_RELEASE" \
@@ -1657,6 +1690,8 @@ stream_result=$(first_result "$HSTREAM" "$stream_id" || true)
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HSTREAM" \
   "$ROOT/bin/fm-procevent-lavish.sh" retire "$STREAM_ART" >/dev/null
 pass "Lavish classification staging stays bounded while nonmatches stream"
+}
+case_drain_restart_cut() {
 
 # --- end-user-aligned regression: the exact drain-before-handling restart cut
 # Reproduces the confirmed defect through the public interface end to end: a
@@ -1744,6 +1779,8 @@ expected=$(printf '%s\n' \
   'check: procevent lavish ordered-src 10')
 [ "$deduped" = "$expected" ] || fail "distinct result generations were coalesced or reordered: $deduped"
 pass "pending results preserve numeric order and distinct wake identity"
+}
+case_one_owner_across_homes() {
 
 # --- two homes cannot both own one canonical source -------------------------
 HA="$TMP_ROOT/ha"; HB="$TMP_ROOT/hb"; new_home "$HA"; new_home "$HB"
@@ -1768,6 +1805,8 @@ for _ in $(seq 1 40); do kill -0 "$runner_pid" 2>/dev/null || break; sleep 0.1; 
 kill -0 "$runner_pid" 2>/dev/null && fail "retire left the blocked runner alive"
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/shared-src.claim" "retire releases the claim"
 pass "retiring a never-completing source stops its runner and its blocked child"
+}
+case_stale_owner_recovery() {
 
 # reconcile must also stop a runner whose registration was removed out from under
 # it. The input is a runner already blocked inside its source command, so wait for
@@ -1821,6 +1860,7 @@ out=$(pe "$HC_NEW" start cross-home-src)
 assert_contains "$out" "captured:" "a second home can replace a stale source owner"
 assert_absent "$HC_OLD_STATE/procevent/.cross-home-src.cross-home-token.output" "cross-home reclaim removes the old generation's recorded staging file"
 pass "cross-home stale recovery removes abandoned output from the old state directory"
+}
 
 HR="$TMP_ROOT/hr"; new_home "$HR"
 RACE_TRIGGER="$TMP_ROOT/race-trigger"
@@ -1832,6 +1872,7 @@ printf 'started\n' >> "$1"
 while [ ! -e "$2" ]; do sleep 0.05; done
 printf 'race result\n'
 SH
+case_stale_claim_race() {
 chmod +x "$RACE_BLOCKER"
 pe_register "$HR" lavish race-src -- "$RACE_BLOCKER" "$RACE_LOG" "$RACE_TRIGGER" >/dev/null
 printf '%s\n%s\nold-token\nold-identity\n' "$TMP_ROOT/gone-home" 999999 > "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
@@ -1847,6 +1888,8 @@ sleep 0.5
 : > "$RACE_TRIGGER"
 for race_pid in "${race_pids[@]}"; do wait "$race_pid" 2>/dev/null || true; done
 pass "concurrent stale-claim replacement starts exactly one runner"
+}
+case_leaderless_group() {
 
 # --- a crashed runner leader must not make its live child group look stale ---
 # The runner is its own process group leader, so SIGKILL on the leader alone
@@ -1939,6 +1982,8 @@ for _ in $(seq 1 50); do kill -0 -"$orphan_leader" 2>/dev/null || break; sleep 0
 kill -0 -"$orphan_leader" 2>/dev/null && fail "could not clean up the leaderless fixture group"
 pe "$HG" retire orphan-src >/dev/null
 pass "an ambiguous leaderless group is preserved without replacement"
+}
+case_dead_generation() {
 
 # Counterexample: a genuinely dead generation - no leader and no surviving
 # group - must still be reclaimable, or crash recovery would deadlock.
@@ -2051,6 +2096,8 @@ assert_contains "$sr3_reconcile" "started=0" "reconcile started a second poller 
 : > "$SR3_TRIGGER"
 pe "$HSR3" retire live-drift-src >/dev/null
 pass "a live generation is never reclaimed, drifted state root or not"
+}
+case_reused_pid_group() {
 
 HSR4="$TMP_ROOT/hsr4"; new_home "$HSR4"
 SR4_TRIGGER="$TMP_ROOT/state-root-reused-trigger"
@@ -2190,6 +2237,9 @@ assert_contains "$(cat "$TMP_ROOT/reused-plain-start.out")" "captured:" \
 for _ in $(seq 1 50); do kill -0 -"$sr5_leader" 2>/dev/null || break; sleep 0.1; done
 pe "$HSR5" retire reused-plain-src >/dev/null 2>&1 || true
 pass "start reclaims a reused-pid claim whose leftovers can still be tidied"
+}
+case_launch_failure_episode() {
+set -e
 
 # --- a launch that cannot confirm is announced once per failure episode ------
 # `bin/fm-watch.sh` discards reconcile's `failed=` count and exit status, so a
@@ -2214,9 +2264,12 @@ awk '/^argv:$/ { print; exit } { print }' "$EP_SOURCE" > "$TMP_ROOT/episode-bad.
   || fail "could not prepare the damaged episode registration"
 ep_damage() { cat "$TMP_ROOT/episode-bad.source" > "$EP_SOURCE"; }
 ep_repair() { cat "$TMP_ROOT/episode-good.source" > "$EP_SOURCE"; }
+# A launch that cannot confirm always spends its whole window, so the failing
+# cycles use the shortest one; a launch expected to confirm keeps a wider window.
 ep_reconcile() {  # <expected-fragment> <expected-exit-nonzero:0|1> <msg>; sets ep_out
-  local rc=0
-  ep_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=2 pe "$HEP" reconcile) || rc=$?
+  local rc=0 window=2
+  [ "$2" -eq 0 ] || window=1
+  ep_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS="$window" pe "$HEP" reconcile) || rc=$?
   assert_contains "$ep_out" "$1" "$3: $ep_out"
   if [ "$2" -eq 1 ]; then
     [ "$rc" -ne 0 ] || fail "$3 (reconcile exited 0): $ep_out"
@@ -2301,7 +2354,7 @@ if ! { awk '/^argv:$/ { print; exit } { print }' "$LK_SOURCE" > "$LK_SOURCE.tmp"
   && cat "$LK_SOURCE.tmp" > "$LK_SOURCE" && rm -f -- "$LK_SOURCE.tmp"; }; then
   fail "could not damage the long-id registration"
 fi
-lk_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=2 pe "$HLK" reconcile) || true
+lk_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=1 pe "$HLK" reconcile) || true
 assert_contains "$lk_out" "failed=1" "the long-id launch was not reported failed: $lk_out"
 lk_key=$(launch_failed_wake_keys "$HLK" "$LK_ID")
 [ -n "$lk_key" ] || fail "the long-id launch failure was not announced: $lk_out"
@@ -2309,6 +2362,9 @@ lk_key=$(launch_failed_wake_keys "$HLK" "$LK_ID")
   || fail "a 64-char source id yields a ${#lk_key}-char launch-failed key, which the watcher cannot mark: $lk_key"
 pe "$HLK" retire "$LK_ID" >/dev/null 2>&1 || true
 pass "a 64-char source id keeps the launch-failed key within the watcher's marker bound"
+}
+case_launch_confirmation() {
+set -e
 
 # --- reconcile reports only launches it actually confirmed -------------------
 # The reported incident. A review board the captain had answered sat collecting
@@ -2332,7 +2388,7 @@ fi
 mv "$UF_SOURCE.tmp" "$UF_SOURCE" || fail "could not damage the unstartable registration"
 chmod 0600 "$UF_SOURCE"
 uf_rc=0
-uf_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=2 pe "$HUF" reconcile) || uf_rc=$?
+uf_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=1 pe "$HUF" reconcile) || uf_rc=$?
 assert_contains "$uf_out" "started=0" \
   "reconcile counted a runner that never started as a start: $uf_out"
 assert_contains "$uf_out" "failed=1" \
@@ -2356,7 +2412,7 @@ pass "reconcile reports a launch it could not confirm instead of counting it as 
 # runner has captured its result and let go of both its claim and its runner
 # record. Confirmation therefore starts strictly after the fast runner is gone.
 HFC="$TMP_ROOT/hfc"; new_home "$HFC"
-FC_FAST="$TMP_ROOT/fast-source.sh"
+FC_FAST="$TMP_ROOT/fast-confirm-source.sh"
 cat > "$FC_FAST" <<'SH'
 #!/usr/bin/env bash
 printf 'fast payload\n'
@@ -2447,6 +2503,9 @@ assert_contains "$iw_ok" "failed=0" \
 : > "$IW_TRIGGER"
 pe "$HIW" retire invalid-window-src >/dev/null 2>&1 || true
 pass "an unusable launch confirm window is refused by name instead of blamed on the sources"
+}
+case_untidyable_and_torn_claims() {
+set -e
 
 # --- a dead generation's untidyable leftovers never wedge ownership ----------
 # The same wedge as the state-root case above, reached through the sibling
@@ -2559,6 +2618,9 @@ kill "$innocent_pid" 2>/dev/null || true
 wait "$innocent_pid" 2>/dev/null || true
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/reused-src.claim" "retirement releases the exact reused-pid claim"
 pass "detected PID reuse is refused before signalling"
+}
+case_identity_and_home_sweep() {
+set -e
 
 HL="$TMP_ROOT/hl"; new_home "$HL"
 IDENTITY_TRIGGER="$TMP_ROOT/identity-trigger"
@@ -2654,6 +2716,9 @@ assert_present "$HU/state/procevent/sweep-uncertain.source" "uncertain home swee
 assert_present "$FM_PROCEVENT_CLAIM_ROOT/sweep-uncertain.claim" "uncertain home sweep preserves the claim"
 pe "$HU" sweep-home >/dev/null
 pass "home sweep refuses safely until runner identity is readable"
+}
+case_registration_and_output_bounds() {
+set -e
 
 HV="$TMP_ROOT/hv"; new_home "$HV"
 mkdir -p "$HV/state/procevent-inbox"
@@ -2732,6 +2797,9 @@ pe "$HG" retire noisy-src >/dev/null
 kill -0 "$noisy_child" 2>/dev/null && fail "TERM-resistant source child survived runner retirement"
 assert_absent "$staged" "retirement removes the tracked partial staging file"
 pass "live output stays bounded and retirement reaps the whole source group"
+}
+case_post_term_evidence() {
+set -e
 
 # When a fixture never records TERM, capture the claim, leader, group, and
 # retirement output to help distinguish a blocked stop from a refused signal.
@@ -2849,6 +2917,9 @@ bad_limit_out=$(FM_PROCEVENT_MAX_OUTPUT_BYTES=invalid pe "$HBAD" start bad-limit
 assert_contains "$bad_limit_out" "must be a nonnegative integer" "invalid output bound reports its contract"
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/bad-limit.claim" "invalid output bound leaves no source claim"
 pass "invalid output bounds fail closed"
+}
+case_lavish_adapter_surface() {
+set -e
 
 # --- the Lavish adapter uses the published poll shape -----------------------
 ART="$TMP_ROOT/artifact.html"
@@ -3329,6 +3400,9 @@ assert_contains "$runner_help" "Durability boundary" \
 assert_not_contains "$runner_help" "exactly-once" \
   "the runner's help claims no exactly-once delivery"
 pass "the published interfaces state the loss limitation and claim no lossless delivery"
+}
+case_launch_pacing() {
+set -e
 
 # --- launch pacing and guard startup ----------------------------------------
 
@@ -3360,7 +3434,7 @@ SH
 chmod +x "$STORM_SOURCE"
 
 HFLOOR="$TMP_ROOT/launch-floor"; new_home "$HFLOOR"
-fm_test_track_procevent_home "$HFLOOR"
+fm_test_track_procevent_home "$HFLOOR" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_register "$HFLOOR" lavish floor-src -- \
   "$STORM_SOURCE" "$TMP_ROOT/launch-times" "$HFLOOR" "$ROOT"
 # Three real launches can outlive a four-second lease on a loaded host. Give
@@ -3388,7 +3462,7 @@ perl -e 'exit($ARGV[0] >= ($ARGV[1] - 1) * 0.8 ? 0 : 1)' "$launch_span" "$launch
 pass "an orphaned source command obeys the launch floor during its grace window"
 
 HPACE="$TMP_ROOT/registration-pacing"; new_home "$HPACE"
-fm_test_track_procevent_home "$HPACE"
+fm_test_track_procevent_home "$HPACE" "$FM_PROCEVENT_CLAIM_ROOT"
 PACE_LOG="$TMP_ROOT/registration-pacing.log"
 pe_register "$HPACE" lavish pace-src -- "$FAST_SOURCE" "$PACE_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=3600 pe "$HPACE" start pace-src >/dev/null
@@ -3414,21 +3488,47 @@ PACE_STAMPS=$(find "$HPACE/state/procevent" -maxdepth 1 -type f \
 pass "a replacement registration starts with one fresh launch floor"
 
 HPACE_RACE="$TMP_ROOT/registration-pacing-race"; new_home "$HPACE_RACE"
-fm_test_track_procevent_home "$HPACE_RACE"
+fm_test_track_procevent_home "$HPACE_RACE" "$FM_PROCEVENT_CLAIM_ROOT"
 PACE_RACE_LOG="$TMP_ROOT/registration-pacing-race.log"
 pe_register "$HPACE_RACE" lavish pace-race-src -- "$FAST_SOURCE" "$PACE_RACE_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=3 pe "$HPACE_RACE" start pace-race-src >/dev/null
 # The superseded runner sleeps out its whole floor before it rechecks the
-# registration, so the floor must outlast the claim wait and re-registration
-# below even on a loaded machine; a 3s floor let the stale command launch.
-FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=15 \
+# registration, so the re-registration below must land while it is still inside
+# that sleep. Rather than sizing a real floor to outlast a loaded machine, the
+# floor's own sleep program is held open until the test releases it: the runner
+# reports that it is inside the sleep, the registration is replaced, and only
+# then does the sleep end and the runner recheck. The floor wait is the one perl
+# call handed a pacing stamp and this fixture's 3600-second floor as its last two
+# arguments; every other perl call is real.
+PACE_RACE_STATE="$TMP_ROOT/registration-pacing-race-state"; mkdir -p "$PACE_RACE_STATE"
+PACE_RACE_BIN=$(fm_fakebin "$TMP_ROOT/registration-pacing-race-bin")
+REAL_PERL=$(command -v perl) || fail "the pacing-race fixture requires perl"
+cat > "$PACE_RACE_BIN/perl" <<SH
+#!/usr/bin/env bash
+if [ "\$#" -ge 2 ] && [ "\${@: -1}" = 3600 ]; then
+  case "\${@: -2:1}" in
+    *.last-launch)
+      printf 'sleeping\\n' > "$PACE_RACE_STATE/sleeping"
+      while [ ! -e "$PACE_RACE_STATE/release" ]; do
+        [ "\$SECONDS" -lt "\${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 1
+        sleep 0.05
+      done
+      exit 0
+      ;;
+  esac
+fi
+exec "$REAL_PERL" "\$@"
+SH
+chmod +x "$PACE_RACE_BIN/perl"
+PATH="$PACE_RACE_BIN:$PATH" FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=3600 \
   pe "$HPACE_RACE" start pace-race-src > "$TMP_ROOT/registration-pacing-race.out" 2>&1 &
 PACE_RACE_PID=$!
-wait_for "$FM_PROCEVENT_CLAIM_ROOT/pace-race-src.claim" \
-  || fail "the superseded pacing fixture did not claim its registration"
+wait_for "$PACE_RACE_STATE/sleeping" 300 \
+  || fail "the superseded pacing fixture never reached its launch floor"
 [ "$(wc -l < "$PACE_RACE_LOG" | tr -d ' ')" = 1 ] \
   || fail "the superseded pacing fixture was not waiting on its launch floor"
 pe_register "$HPACE_RACE" lavish pace-race-src -- "$FAST_SOURCE" "$PACE_RACE_LOG" >/dev/null
+: > "$PACE_RACE_STATE/release"
 wait "$PACE_RACE_PID" || fail "the superseded paced runner failed"
 [ "$(wc -l < "$PACE_RACE_LOG" | tr -d ' ')" = 1 ] \
   || fail "the superseded paced runner invoked its stale command"
@@ -3446,7 +3546,7 @@ PACE_RACE_STAMPS=$(find "$HPACE_RACE/state/procevent" -maxdepth 1 -type f \
 pass "a superseded sleeping runner cannot recreate stale pacing state"
 
 HCOMMIT="$TMP_ROOT/registration-commit"; new_home "$HCOMMIT"
-fm_test_track_procevent_home "$HCOMMIT"
+fm_test_track_procevent_home "$HCOMMIT" "$FM_PROCEVENT_CLAIM_ROOT"
 COMMIT_LOG="$TMP_ROOT/registration-commit.log"
 mkdir -p "$HCOMMIT/state/procevent/commit-src.1-2.last-launch"
 pe_register "$HCOMMIT" lavish commit-src -- "$FAST_SOURCE" "$COMMIT_LOG" >/dev/null \
@@ -3458,7 +3558,7 @@ FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1 pe "$HCOMMIT" start commit-src >/dev/null \
 pass "post-commit pacing cleanup cannot veto registration publication"
 
 HROLLBACK="$TMP_ROOT/rollback-pacing"; new_home "$HROLLBACK"
-fm_test_track_procevent_home "$HROLLBACK"
+fm_test_track_procevent_home "$HROLLBACK" "$FM_PROCEVENT_CLAIM_ROOT"
 ROLLBACK_LOG="$TMP_ROOT/rollback-pacing.log"
 pe_register "$HROLLBACK" lavish rollback-src -- "$FAST_SOURCE" "$ROLLBACK_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1 pe "$HROLLBACK" start rollback-src >/dev/null
@@ -3496,7 +3596,7 @@ done
 pass "an expired owner lease stops a self-relaunching source generation"
 
 HRECREATED="$TMP_ROOT/recreated-owner"; new_home "$HRECREATED"
-fm_test_track_procevent_home "$HRECREATED"
+fm_test_track_procevent_home "$HRECREATED" "$FM_PROCEVENT_CLAIM_ROOT"
 RECREATED_TRIGGER="$TMP_ROOT/recreated-owner.trigger"
 pe_register "$HRECREATED" lavish recreated-src -- \
   "$BLOCKER" "$RECREATED_TRIGGER" "recreated payload" >/dev/null
@@ -3519,7 +3619,7 @@ done
 pass "a recreated state path does not preserve the old runner"
 
 HGUARDFAIL="$TMP_ROOT/guard-failure"; new_home "$HGUARDFAIL"
-fm_test_track_procevent_home "$HGUARDFAIL"
+fm_test_track_procevent_home "$HGUARDFAIL" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_register "$HGUARDFAIL" lavish guard-fail-src -- "$FAST_SOURCE" "$TMP_ROOT/unguarded-launches"
 guard_fail_status=0
 guard_fail_out=$(FM_PROCEVENT_OWNER_LEASE_SECONDS=invalid \
@@ -3530,9 +3630,12 @@ assert_contains "$guard_fail_out" "cannot start the runner's owner guard" \
 assert_absent "$TMP_ROOT/unguarded-launches" \
   "a source command ran without a successfully initialized owner guard"
 pass "a runner fails closed when its owner guard cannot initialize"
+}
+case_attached_owner_lease() {
+set -e
 
 HATTACHED="$TMP_ROOT/attached-owner"; new_home "$HATTACHED"
-fm_test_track_procevent_home "$HATTACHED"
+fm_test_track_procevent_home "$HATTACHED" "$FM_PROCEVENT_CLAIM_ROOT"
 ATTACHED_TRIGGER="$TMP_ROOT/attached.trigger"
 pe_register "$HATTACHED" lavish attached-src -- "$BLOCKER" "$ATTACHED_TRIGGER" "attached payload"
 FM_PROCEVENT_OWNER_LEASE_SECONDS=1 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
@@ -3550,7 +3653,7 @@ assert_contains "$(cat "$TMP_ROOT/attached.out")" "captured:" \
 pass "a foreground start refreshes its lease while its caller remains attached"
 
 HCLOCK="$TMP_ROOT/lease-clock"; new_home "$HCLOCK"
-fm_test_track_procevent_home "$HCLOCK"
+fm_test_track_procevent_home "$HCLOCK" "$FM_PROCEVENT_CLAIM_ROOT"
 CLOCK_TRIGGER="$TMP_ROOT/lease-clock.trigger"
 CLOCK_STATE="$TMP_ROOT/lease-clock-state"
 CLOCK_BIN=$(fm_fakebin "$TMP_ROOT/lease-clock-bin")
@@ -3583,9 +3686,12 @@ kill -0 "$CLOCK_START_PID" 2>/dev/null \
 touch "$CLOCK_TRIGGER"
 wait "$CLOCK_START_PID" || fail "the clock-shift fixture did not complete"
 pass "wall-clock corrections do not alter owner lease age"
+}
+case_detached_keeper_and_reused_group() {
+set -e
 
 HDETACHED="$TMP_ROOT/detached-attached-owner"; new_home "$HDETACHED"
-fm_test_track_procevent_home "$HDETACHED"
+fm_test_track_procevent_home "$HDETACHED" "$FM_PROCEVENT_CLAIM_ROOT"
 DETACHED_TRIGGER="$TMP_ROOT/detached-attached.trigger"
 pe_register "$HDETACHED" lavish detached-attached-src -- \
   "$BLOCKER" "$DETACHED_TRIGGER" "detached attached payload"
@@ -3610,7 +3716,7 @@ done
 pass "an attached-start keeper stops refreshing after its parent exits"
 
 HREUSED_GROUP="$TMP_ROOT/reused-runner-group"; new_home "$HREUSED_GROUP"
-fm_test_track_procevent_home "$HREUSED_GROUP"
+fm_test_track_procevent_home "$HREUSED_GROUP" "$FM_PROCEVENT_CLAIM_ROOT"
 REUSED_GROUP_MARKER="$TMP_ROOT/reused-runner-group.marker"
 REUSED_GROUP_TRIGGER="$TMP_ROOT/reused-runner-group.trigger"
 REUSED_GROUP_BIN=$(fm_fakebin "$TMP_ROOT/reused-runner-group-bin")
@@ -3651,6 +3757,7 @@ for _ in $(seq 1 50); do kill -0 -"$REUSED_GROUP_RUNNER" 2>/dev/null || break; s
 kill -0 -"$REUSED_GROUP_RUNNER" 2>/dev/null \
   && fail "retirement left the group alive once runner identity was unambiguous"
 pass "a detected ambiguous reused-PID group is not signalled"
+}
 
 # --- an accidentally orphaned runner is bounded by its owner ----------------
 #
@@ -3751,14 +3858,30 @@ wait_gone() {  # <pid-or-group-spec> [tries]
   return 1
 }
 
+case_orphaned_listener() {
+set -e
 HORPHAN="$TMP_ROOT/orphan-dead-owner"; new_home "$HORPHAN"
-fm_test_track_procevent_home "$HORPHAN"
+fm_test_track_procevent_home "$HORPHAN" "$FM_PROCEVENT_CLAIM_ROOT"
 HKEEP="$TMP_ROOT/orphan-live-owner"; new_home "$HKEEP"
-fm_test_track_procevent_home "$HKEEP"
+fm_test_track_procevent_home "$HKEEP" "$FM_PROCEVENT_CLAIM_ROOT"
 orphan_pe "$HORPHAN" register lavish orphan-src -- "$ORPHAN_STUB" "$TMP_ROOT/orphan-dead" >/dev/null
 orphan_pe "$HKEEP" register lavish keep-src -- "$QUIET_STUB" "$TMP_ROOT/orphan-live" >/dev/null
 orphan_pe "$HORPHAN" reconcile >/dev/null
 orphan_pe "$HKEEP" reconcile >/dev/null
+# Both owners are kept present until both fixtures are fully up, because the
+# input under test is an owner that GOES AWAY, not a runner that never finished
+# starting: on a loaded host the short lease here can otherwise expire while a
+# runner is still between fork and its first recorded state, and its guard then
+# refuses to start it.
+deadline=$((SECONDS + 60))
+until [ -s "$HORPHAN/state/procevent/orphan-src.runner" ] \
+  && [ -s "$HKEEP/state/procevent/keep-src.runner" ] \
+  && [ -s "$TMP_ROOT/orphan-dead.descendant" ]; do
+  [ "$SECONDS" -lt "$deadline" ] || break
+  orphan_pe "$HORPHAN" reconcile >/dev/null 2>&1 || true
+  orphan_pe "$HKEEP" reconcile >/dev/null 2>&1 || true
+  sleep 0.25
+done
 
 wait_for "$HORPHAN/state/procevent/orphan-src.runner" \
   || fail "the dead-owner listener never recorded its runner"
@@ -3833,6 +3956,9 @@ wait_gone "-$KEEP_PID" \
 wait_gone "$KEEP_DESCENDANT" \
   || fail "retiring a source left a descendant of its listener running"
 pass "retiring a source reaps its reparented listener and every descendant under it"
+}
+case_unproved_stop_retry() {
+set -e
 
 # --- an expired runner's guard retries unproved cleanup ---------------------
 #
@@ -3846,7 +3972,7 @@ pass "retiring a source reaps its reparented listener and every descendant under
 # Every other `ps` call, and every later one, is the real command.
 
 RETRY_HOME="$TMP_ROOT/stop-retry"; new_home "$RETRY_HOME"
-fm_test_track_procevent_home "$RETRY_HOME"
+fm_test_track_procevent_home "$RETRY_HOME" "$FM_PROCEVENT_CLAIM_ROOT"
 RETRY_STATE="$TMP_ROOT/stop-retry-state"; mkdir -p "$RETRY_STATE"
 RETRY_BIN=$(fm_fakebin "$TMP_ROOT/stop-retry-bin")
 REAL_PS=$(command -v ps) || fail "this host has no ps to build the retry fixture on"
@@ -3872,6 +3998,16 @@ retry_pe() {  # <command...>
 
 retry_pe register lavish retry-src -- "$ORPHAN_STUB" "$TMP_ROOT/stop-retry-marker" >/dev/null
 retry_pe reconcile >/dev/null
+# The owner is kept present until the runner is recorded, for the same reason
+# as the owner-loss fixtures above: the input under test is an expired runner,
+# not one whose short lease ran out before its guard finished starting. It stops
+# before the injection is armed, so no refresh can spend it.
+deadline=$((SECONDS + 60))
+until [ -s "$RETRY_HOME/state/procevent/retry-src.runner" ]; do
+  [ "$SECONDS" -lt "$deadline" ] || break
+  retry_pe reconcile >/dev/null 2>&1 || true
+  sleep 0.25
+done
 wait_for "$RETRY_HOME/state/procevent/retry-src.runner" \
   || fail "the retry listener never recorded its runner"
 RETRY_PID=$(cat "$RETRY_HOME/state/procevent/retry-src.runner")
@@ -3893,6 +4029,7 @@ done
 wait_gone "$RETRY_DESCENDANT" \
   || fail "the guard stopped retrying before the expired runner's descendant was reaped"
 pass "a stop the guard cannot prove is retried until the expired runner is reaped"
+}
 
 # --- a stop reaches a child that does not die on the ordinary signal ---------
 #
@@ -3914,7 +4051,7 @@ pass "a stop the guard cannot prove is retried until the expired runner is reape
 # Earlier fixtures include TERM-resistant children and deliberately kept-alive
 # leaders. The cases below also exercise escalation after TERM ends the leader.
 
-# Millisecond clock for supplementary retirement and stop-window measurements;
+# Millisecond clock for the supplementary retirement measurement;
 # the healthy-stop verdict below requires attached-start status 143 (TERM).
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
 
@@ -3939,7 +4076,11 @@ printf 'signal-proof payload\n'
 SH
 chmod +x "$SIGNAL_PROOF_STUB"
 
-trap '[ -z "${PROOF_RELEASE:-}" ] || touch "$PROOF_RELEASE"; fm_test_cleanup' EXIT
+case_signal_proof_retirement() {
+set -e
+# This case runs in a pool subshell of its own, whose exit must release the
+# zombie fixture's parent but never run the suite's cleanup under its siblings.
+trap '[ -z "${PROOF_RELEASE:-}" ] || touch "$PROOF_RELEASE"' EXIT
 for proof_state in absent zombie; do
   HPROOF="$TMP_ROOT/signal-proof-retire-$proof_state"; new_home "$HPROOF"
   PROOF_MARKER="$HPROOF/poll"
@@ -4007,8 +4148,11 @@ PL
   [ -s "$PROOF_MARKER.signals" ] || fail "the signal-proof child never received TERM"
   pass "retirement escalates after TERM leaves a surviving child ($proof_state leader)"
 done
-trap fm_test_cleanup EXIT
+trap - EXIT
+}
 
+case_signal_proof_guard() {
+set -e
 # --- the owner guard reaps a signal-proof child too --------------------------
 #
 # The guard is where the time bound on a leaked listener lives, so it is the half
@@ -4017,7 +4161,7 @@ trap fm_test_cleanup EXIT
 # no guard, because the leader it destroyed was the only proof of ownership left.
 
 HPGUARD="$TMP_ROOT/signal-proof-guard"; new_home "$HPGUARD"
-fm_test_track_procevent_home "$HPGUARD"
+fm_test_track_procevent_home "$HPGUARD" "$FM_PROCEVENT_CLAIM_ROOT"
 orphan_pe "$HPGUARD" register lavish proof-guard-src \
   -- "$SIGNAL_PROOF_STUB" "$TMP_ROOT/proof-guard" >/dev/null
 orphan_pe "$HPGUARD" reconcile >/dev/null
@@ -4060,6 +4204,9 @@ wait_gone "$GUARD_CHILD" \
 [ -s "$TMP_ROOT/proof-guard.signals" ] \
   || fail "the guarded child was never signalled, so nothing about escalation was exercised"
 pass "an expired runner's guard escalates past a signal-proof child"
+}
+case_guard_bound() {
+set -e
 
 # --- the guard's bound is one check interval, not two ------------------------
 #
@@ -4114,7 +4261,7 @@ mono_since() {  # <monotonic-reference>: seconds elapsed, one decimal
 }
 
 HBOUND="$TMP_ROOT/guard-bound"; new_home "$HBOUND"
-fm_test_track_procevent_home "$HBOUND"
+fm_test_track_procevent_home "$HBOUND" "$FM_PROCEVENT_CLAIM_ROOT"
 BOUND_STATE="$TMP_ROOT/guard-bound-state"; mkdir -p "$BOUND_STATE"
 BOUND_BIN=$(fm_fakebin "$TMP_ROOT/guard-bound-bin")
 REAL_PERL=$(command -v perl) || fail "this host has no perl to observe the guard's lease reads"
@@ -4213,6 +4360,9 @@ wait_gone "$BOUND_DESCENDANT" \
 printf 'guard bound: lease=%ss check=%ss reaped %ss after the last owner activity, documented bound %ss\n' \
   "$BOUND_LEASE_SECONDS" "$BOUND_CHECK_SECONDS" "$bound_elapsed" "$bound_total"
 pass "an orphaned runner is reaped within the lease plus ONE check interval"
+}
+case_decimal_interval() {
+set -e
 
 # --- a zero-prefixed interval still starts a listener, and halves correctly ---
 #
@@ -4258,6 +4408,9 @@ for interval in 08 010; do
   printf 'decimal interval: %s halves to %ss and its listener started\n' "$interval" "$expected_half"
 done
 pass "a zero-prefixed decimal interval starts its listener and halves as decimal"
+}
+case_lease_debounce() {
+set -e
 
 # --- one unreadable read still does not end a live runner --------------------
 #
@@ -4273,7 +4426,7 @@ pass "a zero-prefixed decimal interval starts its listener and halves as decimal
 # failed read is therefore the only thing wrong that the guard can see.
 
 DEBOUNCE_HOME="$TMP_ROOT/lease-debounce"; new_home "$DEBOUNCE_HOME"
-fm_test_track_procevent_home "$DEBOUNCE_HOME"
+fm_test_track_procevent_home "$DEBOUNCE_HOME" "$FM_PROCEVENT_CLAIM_ROOT"
 DEBOUNCE_STATE="$TMP_ROOT/lease-debounce-state"; mkdir -p "$DEBOUNCE_STATE"
 DEBOUNCE_BIN=$(fm_fakebin "$TMP_ROOT/lease-debounce-bin")
 REAL_PERL=$(command -v perl) || fail "this host has no perl to build the debounce fixture on"
@@ -4324,6 +4477,9 @@ debounce_pe retire debounce-src >/dev/null \
 wait_gone "-$DEBOUNCE_PID" \
   || fail "retiring the debounce fixture left its process group running"
 pass "one unreadable read does not end a live runner"
+}
+case_prompt_stop_and_crashed_leader() {
+set -e
 
 # --- the ordinary stop signal is what stops a runner ------------------------
 #
@@ -4340,25 +4496,15 @@ wait_for "$HPROMPT/state/procevent/prompt-src.runner" \
 PROMPT_PID=$(cat "$HPROMPT/state/procevent/prompt-src.runner")
 wait_for "$TMP_ROOT/prompt-stop.descendant" \
   || fail "the promptly-stopping listener's child never spawned its own descendant"
-stop_window_ms() {
-  local from to
-  from=$(now_ms)
-  for _ in $(seq 1 20); do sleep 0.1; done
-  to=$(now_ms)
-  printf '%s\n' "$((to - from))"
-}
-window_before=$(stop_window_ms)
 start=$(now_ms)
 pe "$HPROMPT" retire prompt-src >/dev/null || fail "retiring a healthy listener reported failure"
 elapsed=$(( $(now_ms) - start ))
-window_after=$(stop_window_ms)
 prompt_status=0
 wait "$PROMPT_START_PID" || prompt_status=$?
 wait_gone "-$PROMPT_PID" || fail "retiring a healthy listener left its process group running"
 [ "$prompt_status" -eq 143 ] \
-  || fail "the runner did not exit on TERM (start status=$prompt_status, retirement=${elapsed}ms, sampled windows=${window_before}/${window_after}ms)"
-printf 'ordinary stop: start status=%s retirement=%sms sampled windows=%s/%sms\n' \
-  "$prompt_status" "$elapsed" "$window_before" "$window_after"
+  || fail "the runner did not exit on TERM (start status=$prompt_status, retirement=${elapsed}ms)"
+printf 'ordinary stop: start status=%s retirement=%sms\n' "$prompt_status" "$elapsed"
 pass "a runner exits on the ordinary stop signal instead of outliving it"
 
 # --- a crashed leader's group is still refused -------------------------------
@@ -4395,7 +4541,10 @@ kill -0 -"$CRASH_PID" 2>/dev/null \
   || fail "a refused retirement signalled the leaderless group anyway"
 pass "a group whose leader died to something else is still refused, not signalled"
 kill -KILL -"$CRASH_PID" 2>/dev/null || true
+}
 
+case_arm_readiness() {
+set -e
 # --- arm reports ready only once this registration's listener is running ----
 # The public arm path used to print armed as soon as registration was stored.
 # A listener that has not claimed the source is not ready, so arm waits for the
@@ -4414,7 +4563,7 @@ ready_art="$READY/board.html"
 printf '<h1>ready</h1>\n' > "$ready_art"
 lavish_session "$ready_art"
 ready_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ready_art")
-fm_test_track_procevent_home "$READY/home"
+fm_test_track_procevent_home "$READY/home" "$FM_PROCEVENT_CLAIM_ROOT"
 export READY_MARK="$READY/mark" READY_RELEASE="$READY/release"
 : > "$READY_MARK"
 PATH="$READY/bin:$PATH" FM_HOME="$READY/home" \
@@ -4445,7 +4594,7 @@ delay_art="$DELAY/board.html"
 printf '<h1>delay</h1>\n' > "$delay_art"
 lavish_session "$delay_art"
 delay_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$delay_art")
-fm_test_track_procevent_home "$DELAY/home"
+fm_test_track_procevent_home "$DELAY/home" "$FM_PROCEVENT_CLAIM_ROOT"
 export READY_MARK="$DELAY/mark" READY_RELEASE="$DELAY/release"
 : > "$READY_MARK"
 delay_ready="$DELAY/lock-ready"
@@ -4494,7 +4643,7 @@ SH
   printf '<h1>blocked</h1>\n' > "$art"
   lavish_session "$art"
   id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$art")
-  fm_test_track_procevent_home "$dir/home"
+  fm_test_track_procevent_home "$dir/home" "$FM_PROCEVENT_CLAIM_ROOT"
   mkdir -p "$FM_PROCEVENT_CLAIM_ROOT/$id.claim"
   export READY_MARK="$dir/mark"
   : > "$READY_MARK"
@@ -4539,7 +4688,7 @@ live_art="$LIVE/board.html"
 printf '<h1>live</h1>\n' > "$live_art"
 lavish_session "$live_art"
 live_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$live_art")
-fm_test_track_procevent_home "$LIVE/home"
+fm_test_track_procevent_home "$LIVE/home" "$FM_PROCEVENT_CLAIM_ROOT"
 export READY_MARK="$LIVE/mark" READY_RELEASE="$LIVE/release"
 : > "$READY_MARK"
 PATH="$LIVE/bin:$PATH" FM_HOME="$LIVE/home" \
@@ -4595,7 +4744,7 @@ drain_art="$DRAIN/board.html"
 printf '<h1>drain</h1>\n' > "$drain_art"
 lavish_session "$drain_art"
 drain_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$drain_art")
-fm_test_track_procevent_home "$DRAIN/home"
+fm_test_track_procevent_home "$DRAIN/home" "$FM_PROCEVENT_CLAIM_ROOT"
 new_task_endpoint "$DRAIN/home" worker-drain
 printf 'first drain reply\n' > "$DRAIN/reply1"
 printf 'second drain reply\n' > "$DRAIN/reply2"
@@ -4663,7 +4812,7 @@ undisp_art="$UNDISP/board.html"
 printf '<h1>undisplaceable</h1>\n' > "$undisp_art"
 lavish_session "$undisp_art"
 undisp_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$undisp_art")
-fm_test_track_procevent_home "$UNDISP/home"
+fm_test_track_procevent_home "$UNDISP/home" "$FM_PROCEVENT_CLAIM_ROOT"
 export READY_MARK="$UNDISP/mark" READY_RELEASE="$UNDISP/release"
 : > "$READY_MARK"
 PATH="$UNDISP/bin:$PATH" FM_HOME="$UNDISP/home" \
@@ -4696,5 +4845,56 @@ touch "$READY_RELEASE"
 PATH="$UNDISP/bin:$PATH" FM_HOME="$UNDISP/home" \
   "$ROOT/bin/fm-procevent-lavish.sh" retire "$undisp_art" >/dev/null 2>&1 || true
 pass "arm does not launch beside a stale claim whose process group is alive"
+}
+
+# Every case builds its own homes and fixtures and signals only processes it
+# started itself, against a claim root and a Lavish session store of its own
+# (procevent_case_roots above), so no case depends on another or on their order;
+# they run through fm_run_case_pool (tests/lib.sh), longest first. The stub
+# scripts and helpers several cases share are built once above, at load time,
+# and the cases only read them. In file order, the reused-pid case turned on
+# errexit for every case after it, so each of those cases starts with set -e.
+# FM_PROCEVENT_CASE_JOBS overrides the concurrency, which defaults to the
+# host's processor count capped at four; 1 runs the cases serially.
+FM_CASE_POOL_SETUP=procevent_case_roots
+case_jobs=$(fm_case_pool_jobs "${FM_PROCEVENT_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  case_poll_governor_and_retries \
+  case_arm_readiness \
+  case_launch_pacing \
+  case_guard_bound \
+  case_terminal_adapter_verdict \
+  case_worker_round_conclude \
+  case_post_term_evidence \
+  case_attached_owner_lease \
+  case_launch_failure_episode \
+  case_detached_keeper_and_reused_group \
+  case_orphaned_listener \
+  case_stale_claim_race \
+  case_signal_proof_guard \
+  case_registration_and_output_bounds \
+  case_send_and_end \
+  case_launch_confirmation \
+  case_signal_proof_retirement \
+  case_reused_pid_group \
+  case_worker_board_rounds \
+  case_dead_generation \
+  case_lease_debounce \
+  case_identity_and_home_sweep \
+  case_unproved_stop_retry \
+  case_orphaned_capture_owner \
+  case_lavish_adapter_surface \
+  case_stale_owner_recovery \
+  case_idle_and_first_completion \
+  case_untidyable_and_torn_claims \
+  case_drain_restart_cut \
+  case_one_owner_across_homes \
+  case_leaderless_group \
+  case_decimal_interval \
+  case_prompt_stop_and_crashed_leader \
+  case_public_start_group \
+  case_unhandled_result_ack \
+  case_interrupted_capture \
+  || exit 1
 
 printf '\nall procevent tests passed\n'

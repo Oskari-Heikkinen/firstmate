@@ -140,6 +140,13 @@ export FM_SUPERVISION_ENGINE_CLAUDE_BIN="$STUB"
 export FM_SUPERVISION_HOST_PRIMARY=claude
 export FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999
 export FM_ARM_CONFIRM_TIMEOUT=30
+# The watchers these homes start would otherwise refresh the fleet snapshot
+# (its summary is missing, so it reads as stale) and run the inactive-outcome
+# scan on every poll; both cost CPU that every pooled case shares. No case here
+# asserts on the snapshot, and the one case that exercises the inactive-outcome
+# cadence restores the real scan for itself. fm-home-summary-refresh.test.sh
+# and fm-inactive-reconcile.test.sh own those paths.
+export FM_HOME_SUMMARY_INTERVAL=1000000 FM_INACTIVE_RECONCILE_BIN=true
 unset FM_SUPERVISION_ACTOR FM_BRANCH_REPORT_TURN FM_LEASE_HOLDER_PID PI_CODING_AGENT
 
 # Homes are registered in a file: make_home runs in a command substitution,
@@ -147,11 +154,18 @@ unset FM_SUPERVISION_ACTOR FM_BRANCH_REPORT_TURN FM_LEASE_HOLDER_PID PI_CODING_A
 HOMES_FILE="$TMP_ROOT/homes"
 # Stop whatever a case left running, by the exact pids its home recorded.
 stop_home_processes() {  # <home>
-  local home=$1 pid
+  local home=$1 pid i
+  { : > "$home/session.stop"; } 2>/dev/null || true
   if [ -f "$home/state/.supervision-host" ]; then
     pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
-    [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || true
-    sleep 1
+    # Give the host's own cleanup (its engine and arms) room to run first.
+    if [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null; then
+      i=0
+      while [ "$i" -lt 50 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+    fi
   fi
   pid=$(cat "$home/state/.watch.lock/pid" 2>/dev/null || true)
   [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || true
@@ -159,12 +173,44 @@ stop_home_processes() {  # <home>
     kill -TERM "$pid" 2>/dev/null || true
   done
 }
-suite_cleanup() {
-  local home
+# Stop the homes a case registered, once it finishes.
+HOMES_STOPPED=0
+stop_case_homes() {
+  local home n=0
   while IFS= read -r home; do
+    n=$((n + 1))
+    [ "$n" -gt "$HOMES_STOPPED" ] || continue
     [ -n "$home" ] && stop_home_processes "$home"
   done < <(cat "$HOMES_FILE" 2>/dev/null)
+  HOMES_STOPPED=$n
+}
+suite_cleanup() {
+  local file
+  for file in "$TMP_ROOT/homes" "$TMP_ROOT"/homes.*; do
+    [ -f "$file" ] || continue
+    HOMES_FILE=$file
+    HOMES_STOPPED=0
+    stop_case_homes
+  done
   fm_test_cleanup
+}
+
+# Case pool (fm_run_case_pool in tests/lib.sh). Every case builds its own homes
+# under their own names, and a home's host, watcher, engine stub, and session
+# act only on that home, so no case depends on another or on their order. Each
+# case records its homes in its own file and has them stopped as soon as it
+# finishes, pass or fail; the suite's own EXIT trap still stops every recorded
+# home. FM_SUPERVISION_HOST_CASE_JOBS=1 runs the cases serially.
+start_case_homes() {  # <case-index>
+  # The background-job scope of these assignments is the point: each case's
+  # cleanup stops only its own homes.
+  # shellcheck disable=SC2030
+  HOMES_FILE="$TMP_ROOT/homes.$1"
+  HOMES_STOPPED=0
+}
+run_case_pool() {  # <case-function>...
+  FM_CASE_POOL_SETUP=start_case_homes FM_CASE_POOL_TEARDOWN=stop_case_homes \
+    fm_run_case_pool "${FM_SUPERVISION_HOST_CASE_JOBS:-6}" "$TMP_ROOT/.case-logs" "$@"
 }
 trap suite_cleanup EXIT
 
@@ -187,6 +233,7 @@ make_home() {  # <name> <attended|away> [config line]
     FM_HOME="$home" "$CONTRACT" enter --words 'watch the fleet; merge nothing' >/dev/null 2>&1 \
       || fail "fixture: could not record the away posture"
   fi
+  # shellcheck disable=SC2031  # each pooled case sets its own HOMES_FILE
   printf '%s\n' "$home" >> "$HOMES_FILE"
   printf '%s\n' "$home"
 }
@@ -419,7 +466,7 @@ test_branch_outcomes_only_on_an_opted_in_home_off_pi() {
   assert_absent "$home/state/.branch-outcomes-cursor" "a home without config/supervision-host must keep the store's read cursor untouched"
 
   : > "$home/config/supervision-host"
-  fakepi="$TMP_ROOT/fakepi"
+  fakepi="$home/fakepi"
   mkdir -p "$fakepi"
   ln -sf /bin/bash "$fakepi/pi"
   drained=$(FM_HOME="$home" "$fakepi/pi" -c '"$0" 2>&1' "$ROOT/bin/fm-wake-drain.sh")
@@ -732,7 +779,7 @@ test_branch_outcomes_date_an_outcome_carried_across_a_switch_off_pi() {
   home="$TMP_ROOT/drain-switch-off-pi"
   mkdir -p "$home/state" "$home/config"
   : > "$home/config/supervision-host"
-  fakepi="$TMP_ROOT/fakepi"
+  fakepi="$home/fakepi"
   mkdir -p "$fakepi"
   ln -sf /bin/bash "$fakepi/pi"
   outcome_row 1 $(( $(date +%s) - 2 * 86400 )) gamma captain 'gamma needs your decision on the schema migration' \
@@ -904,22 +951,6 @@ test_captain_leaving_mid_turn_keeps_its_captain_outcome_for_the_return() {
   pass "host: a captain outcome recorded after the captain left waits for the return, then reaches main's drain"
 }
 
-test_attended_main_only_close_passes_straight_to_main() {
-  local home
-  home=$(make_home attended-main-only attended)
-  start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "main-only: the host never started a watcher cycle"
-  append_status "$home" 'which export format?' needs-decision
-  wait_until 250 host_exited "$home" || fail "main-only: the decision close did not reach main: $(cat "$home/state/.supervision-host.log")"
-  expect_code 0 "$(cat "$home/host.rc")" "a main-only close must exit 0"
-  assert_re '^signal: .*demo.status' "$home/host.out" "the close must carry the watcher's reason line"
-  assert_no_re '^supervision-host' "$home/host.out" "a main-only close must reach main exactly as the arm printed it"
-  [ "$(engine_calls "$home")" -eq 0 ] || fail "main-only: the engine ran for a decision close"
-  assert_grep 'demo.status' "$home/state/.wake-queue" "the decision wake must stay queued for main"
-  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "the ledger must record why the close went to main"
-  pass "host: an attended decision close stays main's exactly as the plain arm delivers it"
-}
-
 # The live failure this guards: a main-only pass-through used to exit without
 # a watcher, so nothing restarted short-lived listeners until the session
 # armed again. The close still reaches main unchanged, and the successor
@@ -935,6 +966,8 @@ test_main_only_pass_through_leaves_the_successor_watcher_running() {
   assert_re '^signal: .*demo.status' "$home/host.out" "the close must carry the watcher's reason line"
   assert_no_re '^supervision-host' "$home/host.out" "a main-only close must reach main exactly as the arm printed it"
   [ "$(engine_calls "$home")" -eq 0 ] || fail "successor: the engine ran for a decision close"
+  assert_grep 'demo.status' "$home/state/.wake-queue" "the decision wake must stay queued for main"
+  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "the ledger must record why the close went to main"
   watcher_live "$home" || fail "successor: the pass-through left no live watcher: $(cat "$home/state/.supervision-host.log")"
   [ "$(marker_kind "$home")" = downtime ] \
     || fail "successor: the pass-through claimed the close was being handled, so main's re-arm owner would not deliver it: $(cat "$home/state/.watcher-down")"
@@ -1082,25 +1115,6 @@ assert_rewoke_main() {  # <home> <label>
   assert_re '^epoch=[0-9]+ owner_pid=[0-9]+ outcome=rewake ' "$1/state/.claude-autoarm-epoch" "$2: the auto-arm ledger must record the rewake"
 }
 
-# The live failure (2026-09-27): a main-only pass-through confirmed a handling
-# handoff before the close reached main's re-arm owner, so the Stop hook's
-# rewake commit refused and it exited 0 in silence. An idle primary was never
-# woken, and the detached successor's own later close reached no reader.
-test_claude_stop_hook_delivers_a_main_only_pass_through() {
-  local home
-  home=$(make_primary_home hook-main-only)
-  start_hook_session "$home"
-  turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "hook main-only: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
-  append_status "$home" 'which export format?' needs-decision
-  wait_until 250 hook_exited "$home" || fail "hook main-only: the Stop hook never closed: $(cat "$home/state/.supervision-host.log")"
-  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "fixture: the close was not a main-only pass-through"
-  assert_rewoke_main "$home" "hook main-only"
-  assert_re '^signal: .*demo.status' "$home/hook.err" "the rewake must carry the close"
-  watcher_live "$home" || fail "hook main-only: the pass-through left no successor watcher"
-  pass "host+hook: an attended main-only pass-through rewakes main and keeps its successor watcher"
-}
-
 test_claude_stop_hook_delivers_a_close_that_turns_main_only_at_its_turn() {
   local home
   home=$(make_primary_home hook-turns-main-only)
@@ -1147,9 +1161,14 @@ SH
   pass "host+hook: failed at-turn downtime write notifies main despite a healthy successor"
 }
 
-# The successor a pass-through leaves closes while main's rewoken turn is still
-# running, so no arm is attached to read it: the next turn end must still
-# deliver that close instead of stranding it in the queue.
+# The live failure (2026-09-27): a main-only pass-through confirmed a handling
+# handoff before the close reached main's re-arm owner, so the Stop hook's
+# rewake commit refused and it exited 0 in silence. An idle primary was never
+# woken, and the detached successor's own later close reached no reader. So the
+# first close must rewake main and keep its successor watcher, and that
+# successor, closing while main's rewoken turn is still running with no arm
+# attached to read it, must still be delivered at the next turn end instead of
+# stranding in the queue.
 test_successor_close_during_main_turn_is_delivered_at_the_next_turn_end() {
   local home successor drained
   home=$(make_primary_home hook-successor-close)
@@ -1158,7 +1177,10 @@ test_successor_close_during_main_turn_is_delivered_at_the_next_turn_end() {
   wait_until 150 watcher_live "$home" || fail "successor close: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'which export format?' needs-decision
   wait_until 250 hook_exited "$home" || fail "successor close: the first close never reached the Stop hook: $(cat "$home/state/.supervision-host.log")"
+  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "fixture: the close was not a main-only pass-through"
   assert_rewoke_main "$home" "successor close (first)"
+  assert_re '^signal: .*demo.status' "$home/hook.err" "the rewake must carry the close"
+  watcher_live "$home" || fail "successor close: the pass-through left no successor watcher"
   successor=$(cat "$home/state/.watch.lock/pid")
   main_drain "$home" >/dev/null
   append_status "$home" 'which region?' needs-decision
@@ -1172,7 +1194,7 @@ test_successor_close_during_main_turn_is_delivered_at_the_next_turn_end() {
   drained=$(main_drain "$home")
   assert_contains "$drained" 'which region?' "the successor's close must reach main's drain"
   watcher_live "$home" || fail "successor close: the next turn end left no watcher"
-  pass "host+hook: a successor close that lands during main's turn is delivered at the next turn end"
+  pass "host+hook: an attended main-only pass-through rewakes main and keeps its successor, whose close during main's turn is delivered at the next turn end"
 }
 
 # The captain returns after the loop accepted a decision close away but before
@@ -1217,24 +1239,33 @@ SH
 # main as without the host, while the away posture, which needs no mirror,
 # still runs on the engine.
 test_primary_without_a_verified_mirror_runs_away_only() {
-  local home harness
-  for harness in grok opencode omp codex; do
+  local home harness harnesses='grok opencode omp codex'
+  # Every home is independent, so the hosts run side by side.
+  for harness in $harnesses; do
     home=$(make_home "attended-$harness" attended claude)
     FM_SUPERVISION_HOST_PRIMARY=$harness start_host "$home"
-    wait_until 150 watcher_live "$home" || fail "$harness: the host never started a watcher cycle"
+  done
+  home=$(make_home away-grok away claude)
+  FM_SUPERVISION_HOST_PRIMARY=grok start_host "$home"
+  for harness in $harnesses; do
+    home="$TMP_ROOT/attended-$harness"
+    wait_until 300 watcher_live "$home" || fail "$harness: the host never started a watcher cycle"
     append_status "$home" 'fixture finished' 'done'
-    wait_until 200 host_exited "$home" || fail "$harness: the host did not hand the attended close to main"
+  done
+  home="$TMP_ROOT/away-grok"
+  wait_until 300 watcher_live "$home" || fail "away grok: the host never started a watcher cycle"
+  append_status "$home" 'step one'
+  for harness in $harnesses; do
+    home="$TMP_ROOT/attended-$harness"
+    wait_until 400 host_exited "$home" || fail "$harness: the host did not hand the attended close to main"
     assert_re '^signal: .*demo.status' "$home/host.out" "the close must carry the watcher's reason line"
     assert_no_re '^supervision-host' "$home/host.out" "the close must reach main exactly as the arm printed it"
     [ "$(engine_calls "$home")" -eq 0 ] || fail "$harness: the engine ran an attended wake without a verified dialog mirror"
     assert_re "	pass-through	attended	no verified dialog mirror for $harness	" "$home/state/.supervision-host.log" \
       "the ledger must record that no verified mirror kept the close on main"
   done
-  home=$(make_home away-grok away claude)
-  FM_SUPERVISION_HOST_PRIMARY=grok start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "away grok: the host never started a watcher cycle"
-  append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 \
+  home="$TMP_ROOT/away-grok"
+  wait_until 400 handled_at_least "$home" 1 \
     || fail "away grok: the wake was not handled on the engine: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
   assert_re '^primary=grok$' "$home/engine-call.1" "the away engine must carry the grok primary pin"
   assert_re '^POSTURE: AWAY\.' "$home/engine-call.1" "the away wake must carry the away tail"
@@ -1356,12 +1387,16 @@ test_undelivered_dialog_is_fed_again_on_the_next_turn() {
   real_node=$(command -v node)
   cat > "$home/fakebin/node" <<SH
 #!/usr/bin/env bash
-if [ "\${2:-}" = wake-prompt ] && [ -e "\$FM_HOME/slow-render" ]; then sleep 25; fi
+if [ "\${2:-}" = wake-prompt ] && [ -e "\$FM_HOME/slow-render" ]; then printf '25\n' > "\$FM_TEST_SUPERVISION_HOST_CLOCK"; fi
 exec "$real_node" "\$@"
 SH
   chmod +x "$home/fakebin/node"
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"first ask"}' > "$home/mirror-seed.1"
-  FM_SUPERVISION_HOST_PARK_SECONDS=40 FM_SUPERVISION_HOST_TURN_TIMEOUT=20 FM_SUPERVISION_ENGINE_GRACE=1 start_session "$home"
+  # The park runs on the test clock, which stays at zero except while a slow
+  # render moves it 25 seconds on: past the point (40 - 20 - 1) where a turn
+  # would cross the park boundary.
+  FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" FM_SUPERVISION_HOST_PARK_SECONDS=40 \
+    FM_SUPERVISION_HOST_TURN_TIMEOUT=20 FM_SUPERVISION_ENGINE_GRACE=1 start_session "$home"
   park_again "$home"
   append_status "$home" 'first'
   wait_until 250 handled_at_least "$home" 1 || fail "mirror boundary: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
@@ -1378,7 +1413,7 @@ SH
   [ "$(engine_calls "$home")" -eq 1 ] || fail "fixture: an engine turn ran at the boundary"
   main_drain_and_ack "$home"
 
-  rm -f "$home/slow-render"
+  rm -f "$home/slow-render" "$home/park-clock"
   park_again "$home"
   append_status "$home" 'handled after the boundary'
   wait_until 250 handled_at_least "$home" 2 || fail "mirror boundary: the next wake was not handled: $(cat "$home/state/.supervision-host.log")"
@@ -2001,13 +2036,25 @@ test_park_test_clock_requires_the_marker() {
 # default is observable through the pre-turn margin: a turn bound plus grace of
 # 27000 seconds crosses a 27000-second park, so the close goes to main at the
 # boundary, while under a 28799-second park the same turn runs.
-park_outcome() {  # <name> <park-seconds>; sets PARK_OUTCOME to boundary or handled
+# Each case is its own home, so every case's host is started first and they run
+# side by side; park_outcome then reads one case's result.
+park_case_start() {  # <name> <park-seconds> [park-limit] [turn-seconds] [engine-grace]
   local home
   home=$(make_home "$1" away)
-  FM_SUPERVISION_HOST_PARK_SECONDS=$2 FM_SUPERVISION_HOST_TURN_TIMEOUT=26990 FM_SUPERVISION_ENGINE_GRACE=10 start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "$1: the host never started a watcher cycle"
-  append_status "$home" 'one close'
-  wait_until 250 sh -c '[ -s "$1/host.rc" ] || grep -q "	handled	" "$1/state/.supervision-host.log" 2>/dev/null' _ "$home" \
+  FM_SUPERVISION_HOST_PARK_SECONDS=$2 FM_SUPERVISION_HOST_PARK_LIMIT=${3:-} \
+    FM_SUPERVISION_HOST_TURN_TIMEOUT=${4:-26990} FM_SUPERVISION_ENGINE_GRACE=${5:-10} start_host "$home"
+}
+park_case_close() {  # <name>...: one close for each started case
+  local name home
+  for name in "$@"; do
+    home="$TMP_ROOT/$name"
+    wait_until 300 watcher_live "$home" || fail "$name: the host never started a watcher cycle"
+    append_status "$home" 'one close'
+  done
+}
+park_outcome() {  # <name>; sets PARK_OUTCOME to boundary or handled
+  local home="$TMP_ROOT/$1"
+  wait_until 450 sh -c '[ -s "$1/host.rc" ] || grep -q "	handled	" "$1/state/.supervision-host.log" 2>/dev/null' _ "$home" \
     || fail "$1: the close was neither handled nor handed to main: $(cat "$home/state/.supervision-host.log")"
   if host_exited "$home"; then
     grep -q '^supervision-host: cycle boundary - ' "$home/host.out" || fail "$1: the host exited without the boundary: $(cat "$home/host.out")"
@@ -2021,11 +2068,15 @@ park_outcome() {  # <name> <park-seconds>; sets PARK_OUTCOME to boundary or hand
 }
 
 test_park_seconds_at_or_beyond_the_hook_registration_fall_back_to_the_default() {
-  park_outcome park-28799 28799
+  park_case_start park-28799 28799
+  park_case_start park-28800 28800
+  park_case_start park-huge 100000000000000000000
+  park_case_close park-28799 park-28800 park-huge
+  park_outcome park-28799
   [ "$PARK_OUTCOME" = handled ] || fail "a park just under the registration must be honored"
-  park_outcome park-28800 28800
+  park_outcome park-28800
   [ "$PARK_OUTCOME" = boundary ] || fail "a park at the registration must fall back to the default"
-  park_outcome park-huge 100000000000000000000
+  park_outcome park-huge
   [ "$PARK_OUTCOME" = boundary ] || fail "a park far beyond the registration must fall back to the default"
   pass "host: a park at or beyond the Stop-hook registration falls back to the default boundary"
 }
@@ -2033,25 +2084,20 @@ test_park_seconds_at_or_beyond_the_hook_registration_fall_back_to_the_default() 
 # An owner whose own bound is the park lets a turn run past the boundary up to
 # its limit; a limit below the boundary or at the registration is the boundary.
 test_park_limit_lets_a_turn_outlive_the_boundary() {
-  local cases name limit want home
+  local cases name limit want
   cases='limit-later:28000:handled limit-earlier:50:boundary limit-registration:28800:boundary limit-absent::boundary'
   for c in $cases; do
-    name=${c%%:*}; limit=${c#*:}; want=${limit#*:}; limit=${limit%%:*}
-    home=$(make_home "$name" away)
-    FM_SUPERVISION_HOST_PARK_SECONDS=100 FM_SUPERVISION_HOST_PARK_LIMIT=$limit FM_SUPERVISION_HOST_TURN_TIMEOUT=200 \
-      FM_SUPERVISION_ENGINE_GRACE=10 start_host "$home"
-    wait_until 150 watcher_live "$home" || fail "$name: the host never started a watcher cycle"
-    append_status "$home" 'one close'
-    wait_until 250 sh -c '[ -s "$1/host.rc" ] || grep -q "	handled	" "$1/state/.supervision-host.log" 2>/dev/null' _ "$home" \
-      || fail "$name: the close was neither handled nor handed to main: $(cat "$home/state/.supervision-host.log")"
-    if host_exited "$home"; then
-      grep -q '^supervision-host: cycle boundary - ' "$home/host.out" || fail "$name: the host exited without the boundary: $(cat "$home/host.out")"
-      [ "$want" = boundary ] || fail "$name: a turn inside the owner's limit was refused at the boundary"
-    else
-      [ "$want" = handled ] || fail "$name: a turn past the boundary ran without a later limit"
-      kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-      wait_until 200 host_exited "$home" || fail "$name: the host did not stop on TERM"
-    fi
+    name=${c%%:*}; limit=${c#*:}; limit=${limit%%:*}
+    park_case_start "$name" 100 "$limit" 200 10
+  done
+  for c in $cases; do park_case_close "${c%%:*}"; done
+  for c in $cases; do
+    name=${c%%:*}; want=${c##*:}
+    park_outcome "$name"
+    case "$want:$PARK_OUTCOME" in
+      boundary:handled) fail "$name: a turn past the boundary ran without a later limit" ;;
+      handled:boundary) fail "$name: a turn inside the owner's limit was refused at the boundary" ;;
+    esac
   done
   pass "host: an owner's later park limit lets a turn outlive the boundary, and no other limit does"
 }
@@ -2311,6 +2357,8 @@ test_unchanged_held_outcome_reaches_the_captain_once_until_a_new_event() {
 
   export FM_FAKE_CREW_STATE_held='state: done · source: fake'
   export FM_INACTIVE_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" FM_INACTIVE_RECONCILE_SECS=60
+  # This case drives the real inactive-outcome scan the suite otherwise stubs.
+  unset FM_INACTIVE_RECONCILE_BIN
   start_host "$home"
   wait_until 250 captain_rows_at_least "$home" 1 \
     || fail "held: the first cadence never escalated the held outcome: $(cat "$home/state/.supervision-host.log" 2>/dev/null)"
@@ -2318,7 +2366,8 @@ test_unchanged_held_outcome_reaches_the_captain_once_until_a_new_event() {
   wait_until 150 handled_at_least "$home" 1 || fail "held: the escalating turn never finished"
   assert_no_grep '	inactive-outcome:' "$home/state/.wake-queue" "held: the branch acknowledgement left the presentation row queued"
 
-  for cycle in 1 2 3 4; do
+  # The flood re-escalated on every cadence, so two rescans prove it is gone.
+  for cycle in 1 2; do
     old=$(( $(date +%s) - 120 ))
     perl -e 'my $t = shift; utime $t, $t, @ARGV or exit 1' "$old" "$home/state/.inactive-outcome-reconcile" \
       || fail "held: could not age the scan marker before cadence $cycle"
@@ -2413,64 +2462,66 @@ test_superseded_host_leaves_the_owner_untouched() {
   pass "host: a host under a superseded auto-arm generation stands down without touching the owner"
 }
 
-test_report_surface_enforces_actor_turn_and_scope
-test_report_after_the_return_is_queued_for_main
-test_dispatch_entry_scopes_rows_and_renders_the_away_tail
-test_branch_outcomes_only_on_an_opted_in_home_off_pi
-test_branch_outcomes_put_captain_first_and_collapse_routine_overflow
-test_branch_outcomes_collapse_repeated_captain_outcomes_per_task
-test_branch_outcomes_present_a_long_away_window_once
-test_branch_outcomes_budgets_count_bytes
-test_branch_outcomes_stay_unread_when_a_projection_fails
-test_branch_outcomes_stay_unread_without_jq
-test_branch_outcomes_stay_unread_when_the_drain_cannot_print
-test_branch_outcomes_date_a_legacy_backlog_without_adopting_it
-test_branch_ack_keeps_older_keyed_decision_open
-test_branch_outcomes_date_an_outcome_carried_across_a_switch_off_pi
-test_branch_outcomes_keep_an_unshown_outcome_until_acknowledged
-test_branch_outcomes_keep_a_drain_presented_outcome_across_a_switch_to_pi
-test_branch_outcomes_keep_a_drain_presented_outcome_across_an_index_repair
-test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main
-test_attended_captain_outcome_reaches_main_through_branch_outcomes
-test_captain_leaving_mid_turn_keeps_its_captain_outcome_for_the_return
-test_attended_main_only_close_passes_straight_to_main
-test_main_only_pass_through_leaves_the_successor_watcher_running
-test_attended_close_with_unidentified_main_session_passes_to_main
-test_close_accepted_away_that_turns_attended_passes_to_main
-test_attended_close_that_turns_main_only_before_its_turn_passes_to_main
-test_claude_stop_hook_delivers_a_main_only_pass_through
-test_claude_stop_hook_delivers_a_close_that_turns_main_only_at_its_turn
-test_claude_stop_hook_notifies_when_at_turn_downtime_write_fails
-test_successor_close_during_main_turn_is_delivered_at_the_next_turn_end
-test_primary_without_a_verified_mirror_runs_away_only
-test_attended_wake_carries_the_dialog_mirror
-test_dialog_bearing_files_are_owner_only
-test_undelivered_dialog_is_fed_again_on_the_next_turn
-test_attended_wake_with_an_unreadable_mirror_reaches_main
-test_away_wake_is_handled_on_the_engine_and_never_reaches_main
-test_away_turn_without_a_report_hands_the_wake_to_main
-test_return_during_an_engine_turn_hands_its_outcomes_to_main
-test_silent_outcomes_are_not_relayed_when_the_captain_returns
-test_large_turn_relays_an_early_visible_outcome
-test_outcome_lookup_failure_is_not_treated_as_silence
-test_outcome_after_the_return_survives_a_host_killed_at_the_turn_end
-test_next_host_clears_a_turn_its_killed_predecessor_left
-test_report_without_acknowledgement_hands_the_wake_to_main
-test_return_during_a_failed_turn_still_hands_its_outcomes_to_main
-test_incomplete_engine_result_hands_the_wake_to_main
-test_latch_trips_after_two_engine_errors_then_probes_and_recovers
-test_latch_keeps_attended_closes_on_main_and_skips_unopted_homes
-test_attended_latch_keeps_closes_on_main_and_records_recovery_off_main
-test_engine_turn_is_bounded_and_its_descendants_reaped
-test_restarted_host_stops_what_a_killed_predecessor_left
-test_park_boundary_ends_the_park_before_the_hook_timeout
-test_park_boundary_holds_under_back_to_back_closes
-test_park_boundary_rechecked_just_before_the_engine_turn
-test_park_test_clock_requires_the_marker
-test_park_seconds_at_or_beyond_the_hook_registration_fall_back_to_the_default
-test_park_limit_lets_a_turn_outlive_the_boundary
-test_first_cycle_status_streams_and_owner_options_reach_it
-test_unchanged_held_outcome_reaches_the_captain_once_until_a_new_event
-test_unverified_engine_hands_every_away_wake_to_main
-test_host_outside_the_lock_owner_stands_down
-test_superseded_host_leaves_the_owner_untouched
+HOST_CASES=(
+  # The slowest cases start first so the pool drains evenly.
+  test_undelivered_dialog_is_fed_again_on_the_next_turn
+  test_attended_latch_keeps_closes_on_main_and_records_recovery_off_main
+  test_latch_trips_after_two_engine_errors_then_probes_and_recovers
+  test_attended_wake_with_an_unreadable_mirror_reaches_main
+  test_latch_keeps_attended_closes_on_main_and_skips_unopted_homes
+  test_unchanged_held_outcome_reaches_the_captain_once_until_a_new_event
+  test_first_cycle_status_streams_and_owner_options_reach_it
+  test_silent_outcomes_are_not_relayed_when_the_captain_returns
+  test_away_wake_is_handled_on_the_engine_and_never_reaches_main
+  test_engine_turn_is_bounded_and_its_descendants_reaped
+  test_attended_wake_carries_the_dialog_mirror
+  test_primary_without_a_verified_mirror_runs_away_only
+  test_park_seconds_at_or_beyond_the_hook_registration_fall_back_to_the_default
+  test_successor_close_during_main_turn_is_delivered_at_the_next_turn_end
+  test_attended_captain_outcome_reaches_main_through_branch_outcomes
+  test_outcome_after_the_return_survives_a_host_killed_at_the_turn_end
+  test_park_limit_lets_a_turn_outlive_the_boundary
+  test_next_host_clears_a_turn_its_killed_predecessor_left
+  test_captain_leaving_mid_turn_keeps_its_captain_outcome_for_the_return
+  test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main
+  test_dialog_bearing_files_are_owner_only
+  test_park_boundary_holds_under_back_to_back_closes
+  test_main_only_pass_through_leaves_the_successor_watcher_running
+  test_large_turn_relays_an_early_visible_outcome
+  test_report_surface_enforces_actor_turn_and_scope
+  test_report_after_the_return_is_queued_for_main
+  test_dispatch_entry_scopes_rows_and_renders_the_away_tail
+  test_branch_outcomes_only_on_an_opted_in_home_off_pi
+  test_branch_outcomes_put_captain_first_and_collapse_routine_overflow
+  test_branch_outcomes_collapse_repeated_captain_outcomes_per_task
+  test_branch_outcomes_present_a_long_away_window_once
+  test_branch_outcomes_budgets_count_bytes
+  test_branch_outcomes_stay_unread_when_a_projection_fails
+  test_branch_outcomes_stay_unread_without_jq
+  test_branch_outcomes_stay_unread_when_the_drain_cannot_print
+  test_branch_outcomes_date_a_legacy_backlog_without_adopting_it
+  test_branch_ack_keeps_older_keyed_decision_open
+  test_branch_outcomes_date_an_outcome_carried_across_a_switch_off_pi
+  test_branch_outcomes_keep_an_unshown_outcome_until_acknowledged
+  test_branch_outcomes_keep_a_drain_presented_outcome_across_a_switch_to_pi
+  test_branch_outcomes_keep_a_drain_presented_outcome_across_an_index_repair
+  test_attended_close_with_unidentified_main_session_passes_to_main
+  test_close_accepted_away_that_turns_attended_passes_to_main
+  test_attended_close_that_turns_main_only_before_its_turn_passes_to_main
+  test_claude_stop_hook_delivers_a_close_that_turns_main_only_at_its_turn
+  test_claude_stop_hook_notifies_when_at_turn_downtime_write_fails
+  test_away_turn_without_a_report_hands_the_wake_to_main
+  test_return_during_an_engine_turn_hands_its_outcomes_to_main
+  test_outcome_lookup_failure_is_not_treated_as_silence
+  test_report_without_acknowledgement_hands_the_wake_to_main
+  test_return_during_a_failed_turn_still_hands_its_outcomes_to_main
+  test_incomplete_engine_result_hands_the_wake_to_main
+  test_restarted_host_stops_what_a_killed_predecessor_left
+  test_park_boundary_ends_the_park_before_the_hook_timeout
+  test_park_boundary_rechecked_just_before_the_engine_turn
+  test_park_test_clock_requires_the_marker
+  test_unverified_engine_hands_every_away_wake_to_main
+  test_host_outside_the_lock_owner_stands_down
+  test_superseded_host_leaves_the_owner_untouched
+)
+run_case_pool "${HOST_CASES[@]}" || exit 1

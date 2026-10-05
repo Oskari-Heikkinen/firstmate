@@ -74,6 +74,34 @@ REAL_PS_FOR_TEST=$(command -v ps)
 export REAL_PS_FOR_TEST
 REAL_LSOF_FOR_TEST=$(command -v lsof)
 export REAL_LSOF_FOR_TEST
+# The leaked-process cases assert what is reaped, not how long TERM is given,
+# so a short grace keeps them from each waiting out a second per pass. The one
+# case that needs a TERM handler to run during the grace pins the default.
+export FM_TEARDOWN_REAP_GRACE_SECS=0.2
+
+GIT_WORLD_TEMPLATE="$TMP_ROOT/.git-world-template"
+
+# Build the shared git world under <dir>: a bare origin seeded with one commit,
+# a project clone of it with origin/HEAD, and a task worktree on fm/task-x1.
+build_git_world() {
+  local dir=$1
+  mkdir -p "$dir"
+  # Bare origin so the clone has an `origin` remote and origin/HEAD.
+  git init -q --bare "$dir/origin.git"
+  git -C "$dir/origin.git" symbolic-ref HEAD refs/heads/main
+  # Seed origin with one commit BEFORE cloning so the clone is not empty.
+  git clone -q "$dir/origin.git" "$dir/_seed" 2>/dev/null
+  git -C "$dir/_seed" -c user.email=t@t -c user.name=t \
+    commit -q --allow-empty -m "origin baseline"
+  git -C "$dir/_seed" push -q origin main
+  rm -rf "$dir/_seed"
+  # Clone as the project; give it a `main` branch and an origin/HEAD.
+  git clone -q "$dir/origin.git" "$dir/project"
+  git -C "$dir/project" remote set-head origin main 2>/dev/null || true
+  # Add a worktree on a fresh task branch; that branch is where the crewmate commits.
+  git -C "$dir/project" worktree add -q -b fm/task-x1 "$dir/wt" main
+}
+build_git_world "$GIT_WORLD_TEMPLATE"
 
 # Build a fresh sandbox for one test case. Sets up:
 #   $CASE/state/        - firstmate state dir (with a fresh watcher beacon)
@@ -173,20 +201,15 @@ exit 0
 SH
   chmod +x "$fakebin/treehouse" "$fakebin/tmux" "$fakebin/gh-axi" "$fakebin/gh" "$fakebin/no-mistakes"
 
-  # Bare origin so the clone has an `origin` remote and origin/HEAD.
-  git init -q --bare "$case_dir/origin.git"
-  git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
-  # Seed origin with one commit BEFORE cloning so the clone is not empty.
-  git clone -q "$case_dir/origin.git" "$case_dir/_seed" 2>/dev/null
-  git -C "$case_dir/_seed" -c user.email=t@t -c user.name=t \
-    commit -q --allow-empty -m "origin baseline"
-  git -C "$case_dir/_seed" push -q origin main
-  rm -rf "$case_dir/_seed"
-  # Clone as the project; give it a `main` branch and an origin/HEAD.
-  git clone -q "$case_dir/origin.git" "$case_dir/project"
-  git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
-  # Add a worktree on a fresh task branch; that branch is where the crewmate commits.
-  git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
+  # The git world is identical for every case, so it is built once, before the
+  # concurrent cases start, and copied; the copy is then re-pointed at its own
+  # origin and both worktree link files are rewritten to the copy's paths (git
+  # worktree repair would keep the links into the still-valid template), leaving
+  # every case with private repositories exactly as a fresh build would.
+  cp -a "$GIT_WORLD_TEMPLATE/origin.git" "$GIT_WORLD_TEMPLATE/project" "$GIT_WORLD_TEMPLATE/wt" "$case_dir/"
+  git -C "$case_dir/project" remote set-url origin "$case_dir/origin.git"
+  printf 'gitdir: %s\n' "$case_dir/project/.git/worktrees/wt" > "$case_dir/wt/.git"
+  printf '%s\n' "$case_dir/wt/.git" > "$case_dir/project/.git/worktrees/wt/gitdir"
 
   # Fresh watcher beacon so fm-guard stays quiet.
   touch "$case_dir/state/.last-watcher-beat"
@@ -630,6 +653,11 @@ run_teardown() {
   # FM_DATA_OVERRIDE is pinned to the case dir because teardown closes this
   # home's backlog item itself; without it $DATA would resolve to the real
   # repo's own home and a test could mutate live records.
+  # Teardown's advisory fm-guard pass (stale-watcher and tangle warnings, owned
+  # by the guard's own tests) is skipped through its existing knob, because it
+  # costs a harness-detection process walk per run and no case here asserts on
+  # it; test_local_only_fork_remote_allows sets 0 to keep one real pass.
+  FM_TEARDOWN_GUARD_DONE="${FM_TEARDOWN_GUARD_DONE:-1}" \
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_DATA_OVERRIDE="$case_dir/data" \
@@ -685,7 +713,7 @@ test_local_only_fork_remote_allows() {
     > "$case_dir/state/spawn-starts.jsonl"
 
   set +e
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  FM_TEARDOWN_GUARD_DONE=0 run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
@@ -4003,7 +4031,8 @@ test_process_spawned_during_grace_is_reaped_on_later_pass() {
   sleep 0.2
 
   rc=0
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  FM_TEARDOWN_REAP_GRACE_SECS=1 \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   if [ -f "$child_file" ]; then child_pid=$(cat "$child_file"); fi
   if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
@@ -4311,109 +4340,117 @@ test_retained_sources_still_reach_the_ordinary_refusal() {
   pass "present required sources still reach the ordinary teardown refusal"
 }
 
-test_missing_startup_source_refuses_before_cleanup
-test_unreadable_startup_source_refuses_before_cleanup
-test_missing_adapter_sibling_refuses_before_cleanup
-test_forced_child_missing_adapter_sibling_refuses_before_cleanup
-test_forced_secondmate_own_missing_adapter_sibling_refuses_before_child_cleanup
-test_retained_sources_still_reach_the_ordinary_refusal
-test_local_only_fork_remote_allows
-test_teardown_closes_the_backlog_item_itself
-test_teardown_manual_backend_leaves_the_backlog_to_the_operator
-test_local_only_truly_unpushed_refuses
-test_local_only_merged_to_local_main_allows
-test_no_mistakes_origin_remote_allows
-test_no_mistakes_truly_unpushed_refuses
-test_direct_push_landed_on_origin_main_allows
-test_direct_push_unlanded_refuses
-test_direct_push_with_open_pr_refuses
-test_pr_mode_fork_branch_with_open_pr_allows
-test_local_only_force_overrides_unpushed
-test_secondmate_pr_registration_publishes_ready_line
-test_secondmate_home_teardown_delivers_final_line_or_refuses
-test_teardown_missing_busy_sidecar_completes
-test_herdr_teardown_clears_escalation_marker
-test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
-test_herdr_flat_teardown_refuses_records_on_unparseable_presence
-test_herdr_flat_teardown_preflight_refuses_before_changes
-test_forced_secondmate_herdr_child_preflight_refuses_before_changes
-test_forced_secondmate_teardown_holds_descendant_lifecycle_locks
-test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
-test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
-test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
-test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
-test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
-test_squash_merged_branch_deleted_allows
-test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
-test_no_pr_recorded_discovers_merged_pr_by_branch_allows
-test_squash_merged_pr_allows_replayed_unpushed_patch
-test_merged_pr_with_later_local_commit_refuses
-test_squash_merged_rebased_branch_allows
-test_squash_merged_same_file_different_content_refuses
-test_train_replayed_branch_deleted_allows
-test_train_replayed_plus_extra_local_commit_refuses
-test_train_same_file_different_patch_refuses
-test_train_replayed_with_claude_scratch_allows
-test_train_replayed_dirty_worktree_refuses
-test_squash_merged_rebased_local_with_unlanded_commit_refuses
-test_squash_merged_stale_local_refuses_when_forge_unreachable
-test_pr_check_does_not_refresh_stale_pr_head
-test_pr_check_records_remote_head_when_local_lags
-test_content_in_default_fallback_allows
-test_content_fallback_refreshes_stale_origin_ref
-test_dirty_worktree_refuses
-test_gh_error_and_content_absent_refuses
-test_legacy_record_without_the_flag_refuses
-test_windowless_legacy_record_with_gone_worktree_tears_down
-test_windowless_legacy_record_tears_down_with_the_legacy_flag
-test_windowless_legacy_record_still_refuses_unlanded_work
-test_windowless_record_outside_the_leftover_class_still_refuses
-test_windowless_leftover_retries_its_retained_legacy_stamp_without_the_flag
-test_legacy_record_teardown_completes_when_landed_and_endpoint_dead
-test_legacy_record_teardown_refuses_unlanded_work
-test_legacy_record_teardown_refuses_an_ambiguous_endpoint
-test_legacy_record_rolls_the_stamp_back_when_the_marker_write_fails
-test_retained_legacy_stamp_still_faces_the_endpoint_gate
-test_legacy_record_never_accepts_a_corrupt_spawn_gen
-test_stale_index_lock_cleared_and_teardown_succeeds
-test_live_index_lock_is_never_removed_and_teardown_refuses
-test_lsof_error_never_clears_index_lock
-test_stale_index_lock_cleanup_rechecks_dirty_worktree
-test_non_linked_index_lock_path_is_checked_from_worktree
-test_index_lock_mtime_read_failure_refuses
-test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds
-test_persistent_index_lock_exhausts_retries_and_refuses_loudly
-test_empty_retry_wait_uses_default_without_aborting
-test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
-test_parked_own_run_is_aborted_before_teardown
-test_parked_own_run_concludes_on_passed_with_override_after_abort
-test_parked_own_run_concludes_on_passed_with_skips_after_abort
-test_parked_run_advanced_past_unfetched_head_is_still_aborted
-test_parked_run_with_mismatched_ledger_head_is_never_aborted
-test_parked_run_with_malformed_ledger_row_is_never_aborted
-test_parked_run_with_impossible_ledger_date_is_never_aborted
-test_terminal_status_with_gate_never_queries_or_aborts_ledger_fallback
-test_parked_run_advanced_head_locally_fetched_is_still_aborted
-test_parked_advanced_run_without_anchor_is_never_aborted
-test_parked_advanced_run_ancestor_anchor_is_never_aborted
-test_parked_terminal_unfetched_row_is_never_aborted
-test_parked_run_terminal_newest_row_at_own_head_is_never_aborted
-test_parked_run_behind_diverged_newer_row_is_never_aborted
-test_parked_advanced_run_ambiguous_rows_are_never_aborted
-test_ledger_proven_continuation_never_aborts_active_run
-test_parked_own_run_refuses_when_abort_is_unconfirmed
-test_mismatched_run_after_abort_refuses_unconfirmed
-test_empty_status_after_abort_refuses_unconfirmed
-test_not_found_status_after_abort_confirms_completion
-test_another_branchs_parked_run_is_never_touched
-test_own_autonomous_run_is_left_alone
-test_leaked_worktree_process_is_reaped
-test_leaked_tasktmp_process_is_reaped
-test_lsof_absent_reaps_tmux_process_group
-test_lsof_error_refuses_before_removal
-test_reused_pid_identity_is_not_force_killed
-test_exec_changed_process_is_still_reaped
-test_process_spawned_during_grace_is_reaped_on_later_pass
-test_persistent_scan_refuses_after_bounded_retries
-test_process_exit_during_identity_lookup_does_not_refuse
-test_run_abort_precedes_process_reap_precedes_worktree_removal
+# Every case builds its own sandbox under a name of its own from the shared
+# read-only git world template, and reaps or signals only processes rooted in
+# its own worktree or started by itself, so no case depends on another or on
+# their order; they run through fm_run_case_pool (tests/lib.sh), longest first.
+# FM_TEARDOWN_CASE_JOBS overrides the concurrency, which defaults to the host's
+# processor count capped at four; 1 runs the cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_TEARDOWN_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes \
+  test_windowless_record_outside_the_leftover_class_still_refuses \
+  test_process_spawned_during_grace_is_reaped_on_later_pass \
+  test_missing_startup_source_refuses_before_cleanup \
+  test_unreadable_startup_source_refuses_before_cleanup \
+  test_missing_adapter_sibling_refuses_before_cleanup \
+  test_forced_child_missing_adapter_sibling_refuses_before_cleanup \
+  test_forced_secondmate_own_missing_adapter_sibling_refuses_before_child_cleanup \
+  test_retained_sources_still_reach_the_ordinary_refusal \
+  test_local_only_fork_remote_allows \
+  test_teardown_closes_the_backlog_item_itself \
+  test_teardown_manual_backend_leaves_the_backlog_to_the_operator \
+  test_local_only_truly_unpushed_refuses \
+  test_local_only_merged_to_local_main_allows \
+  test_no_mistakes_origin_remote_allows \
+  test_no_mistakes_truly_unpushed_refuses \
+  test_direct_push_landed_on_origin_main_allows \
+  test_direct_push_unlanded_refuses \
+  test_direct_push_with_open_pr_refuses \
+  test_pr_mode_fork_branch_with_open_pr_allows \
+  test_local_only_force_overrides_unpushed \
+  test_secondmate_pr_registration_publishes_ready_line \
+  test_secondmate_home_teardown_delivers_final_line_or_refuses \
+  test_teardown_missing_busy_sidecar_completes \
+  test_herdr_teardown_clears_escalation_marker \
+  test_herdr_flat_teardown_refuses_records_on_unparseable_presence \
+  test_herdr_flat_teardown_preflight_refuses_before_changes \
+  test_forced_secondmate_herdr_child_preflight_refuses_before_changes \
+  test_forced_secondmate_teardown_holds_descendant_lifecycle_locks \
+  test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed \
+  test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed \
+  test_herdr_projection_teardown_retires_journal_only_after_confirmed_close \
+  test_herdr_projection_teardown_retains_journal_when_close_unconfirmed \
+  test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup \
+  test_squash_merged_branch_deleted_allows \
+  test_squash_merged_pr_allows_when_head_ancestor_of_pr_head \
+  test_no_pr_recorded_discovers_merged_pr_by_branch_allows \
+  test_squash_merged_pr_allows_replayed_unpushed_patch \
+  test_merged_pr_with_later_local_commit_refuses \
+  test_squash_merged_rebased_branch_allows \
+  test_squash_merged_same_file_different_content_refuses \
+  test_train_replayed_branch_deleted_allows \
+  test_train_replayed_plus_extra_local_commit_refuses \
+  test_train_same_file_different_patch_refuses \
+  test_train_replayed_with_claude_scratch_allows \
+  test_train_replayed_dirty_worktree_refuses \
+  test_squash_merged_rebased_local_with_unlanded_commit_refuses \
+  test_squash_merged_stale_local_refuses_when_forge_unreachable \
+  test_pr_check_does_not_refresh_stale_pr_head \
+  test_pr_check_records_remote_head_when_local_lags \
+  test_content_in_default_fallback_allows \
+  test_content_fallback_refreshes_stale_origin_ref \
+  test_dirty_worktree_refuses \
+  test_gh_error_and_content_absent_refuses \
+  test_legacy_record_without_the_flag_refuses \
+  test_windowless_legacy_record_with_gone_worktree_tears_down \
+  test_windowless_legacy_record_tears_down_with_the_legacy_flag \
+  test_windowless_legacy_record_still_refuses_unlanded_work \
+  test_windowless_leftover_retries_its_retained_legacy_stamp_without_the_flag \
+  test_legacy_record_teardown_completes_when_landed_and_endpoint_dead \
+  test_legacy_record_teardown_refuses_unlanded_work \
+  test_legacy_record_teardown_refuses_an_ambiguous_endpoint \
+  test_legacy_record_rolls_the_stamp_back_when_the_marker_write_fails \
+  test_retained_legacy_stamp_still_faces_the_endpoint_gate \
+  test_legacy_record_never_accepts_a_corrupt_spawn_gen \
+  test_stale_index_lock_cleared_and_teardown_succeeds \
+  test_live_index_lock_is_never_removed_and_teardown_refuses \
+  test_lsof_error_never_clears_index_lock \
+  test_stale_index_lock_cleanup_rechecks_dirty_worktree \
+  test_non_linked_index_lock_path_is_checked_from_worktree \
+  test_index_lock_mtime_read_failure_refuses \
+  test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds \
+  test_persistent_index_lock_exhausts_retries_and_refuses_loudly \
+  test_empty_retry_wait_uses_default_without_aborting \
+  test_fractional_legacy_retry_wait_refuses_without_arithmetic_error \
+  test_parked_own_run_is_aborted_before_teardown \
+  test_parked_own_run_concludes_on_passed_with_override_after_abort \
+  test_parked_own_run_concludes_on_passed_with_skips_after_abort \
+  test_parked_run_advanced_past_unfetched_head_is_still_aborted \
+  test_parked_run_with_mismatched_ledger_head_is_never_aborted \
+  test_parked_run_with_malformed_ledger_row_is_never_aborted \
+  test_parked_run_with_impossible_ledger_date_is_never_aborted \
+  test_terminal_status_with_gate_never_queries_or_aborts_ledger_fallback \
+  test_parked_run_advanced_head_locally_fetched_is_still_aborted \
+  test_parked_advanced_run_without_anchor_is_never_aborted \
+  test_parked_advanced_run_ancestor_anchor_is_never_aborted \
+  test_parked_terminal_unfetched_row_is_never_aborted \
+  test_parked_run_terminal_newest_row_at_own_head_is_never_aborted \
+  test_parked_run_behind_diverged_newer_row_is_never_aborted \
+  test_parked_advanced_run_ambiguous_rows_are_never_aborted \
+  test_ledger_proven_continuation_never_aborts_active_run \
+  test_parked_own_run_refuses_when_abort_is_unconfirmed \
+  test_mismatched_run_after_abort_refuses_unconfirmed \
+  test_empty_status_after_abort_refuses_unconfirmed \
+  test_not_found_status_after_abort_confirms_completion \
+  test_another_branchs_parked_run_is_never_touched \
+  test_own_autonomous_run_is_left_alone \
+  test_leaked_worktree_process_is_reaped \
+  test_leaked_tasktmp_process_is_reaped \
+  test_lsof_absent_reaps_tmux_process_group \
+  test_lsof_error_refuses_before_removal \
+  test_reused_pid_identity_is_not_force_killed \
+  test_exec_changed_process_is_still_reaped \
+  test_persistent_scan_refuses_after_bounded_retries \
+  test_process_exit_during_identity_lookup_does_not_refuse \
+  test_run_abort_precedes_process_reap_precedes_worktree_removal

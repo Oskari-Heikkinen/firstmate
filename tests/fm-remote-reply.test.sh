@@ -9,6 +9,10 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 TMP_ROOT=$(fm_test_tmproot fm-remote-reply)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+# The remote job worker this fixture starts inherits this, so each remote call
+# is picked up within a tenth of a second instead of up to a one-second idle
+# wait; tests/fm-remote-job.test.sh pins the production idle default.
+export FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS=0.1
 PARENT="$TMP_ROOT/parent"
 REMOTE="$TMP_ROOT/remote"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT/fake")

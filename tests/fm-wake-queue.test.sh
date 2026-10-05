@@ -2931,6 +2931,9 @@ SH
 run_liveness_leg() {
   local dir=$1 tag=$2
   shift 2
+  # Reset the beacon's cycle count so await_liveness_leg_quiet observes this
+  # leg's cycles, never a count a previous leg left behind.
+  printf '0\n' > "$dir/state/.last-watcher-beat"
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
     TMUX='' FM_BACKEND=tmux \
@@ -2938,6 +2941,24 @@ run_liveness_leg() {
     FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
     "$@" "$WATCH" > "$dir/watch-$tag.out" 2> "$dir/watch-$tag.err" &
   LIVENESS_PID=$!
+}
+
+# await_liveness_leg_quiet <dir> <pid>: block until a leg that must stay quiet
+# has finished its whole first poll cycle - liveness tick included - or exited.
+# The watcher writes its cycle number to the beacon at the top of each cycle, so
+# a count of 2 proves cycle 1 ran to completion without waking; a wake would have
+# exited the watcher before it reached cycle 2. The caller then asserts the
+# watcher is still live. The poll ceiling only bounds a hang.
+await_liveness_leg_quiet() {
+  local dir=$1 pid=$2 i=0 cycle
+  while [ "$i" -lt 600 ] && is_live_non_zombie "$pid"; do
+    cycle=$(cat "$dir/state/.last-watcher-beat" 2>/dev/null || true)
+    case "$cycle" in ''|*[!0-9]*) cycle=0 ;; esac
+    [ "$cycle" -lt 2 ] || return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 0
 }
 
 # kill_liveness_leg <pid>: end a leg that must have stayed quiet.
@@ -2992,7 +3013,7 @@ test_secondmate_liveness_tick_relaunches_dead_endpoint_once() {
   drain_liveness_wakes "$dir"
   rm -f "$state/.secondmate-liveness-tick"
   run_liveness_leg "$dir" dead-idle FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
-  sleep 4
+  await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
     || fail "the watcher exited against an alive relaunched secondmate: $(cat "$dir/watch-dead-idle.out" "$dir/watch-dead-idle.err")"
   kill_liveness_leg "$pid"
@@ -3054,7 +3075,7 @@ test_secondmate_liveness_tick_leaves_alive_and_inconclusive_untouched() {
 
   # A live endpoint probes every cadence and never acts.
   run_liveness_leg "$dir" alive FM_FAKE_TMUX_CURRENT_COMMAND=claude; pid=$LIVENESS_PID
-  sleep 4
+  await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
     || fail "the watcher exited against an alive secondmate: $(cat "$dir/watch-alive.out" "$dir/watch-alive.err")"
   kill_liveness_leg "$pid"
@@ -3068,7 +3089,7 @@ test_secondmate_liveness_tick_leaves_alive_and_inconclusive_untouched() {
   # next watcher does not resurface instead of exercising the tick.
   drain_liveness_wakes "$dir"
   run_liveness_leg "$dir" ambiguous FM_FAKE_TMUX_CURRENT_COMMAND=node; pid=$LIVENESS_PID
-  sleep 4
+  await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
     || fail "the watcher exited against an ambiguous secondmate endpoint: $(cat "$dir/watch-ambiguous.out" "$dir/watch-ambiguous.err")"
   kill_liveness_leg "$pid"
@@ -3088,7 +3109,7 @@ test_secondmate_liveness_tick_cadence_gates_the_probe() {
   # A fresh cadence marker holds the probe even over a dead endpoint.
   touch "$state/.secondmate-liveness-tick"
   run_liveness_leg "$dir" gated FM_SECONDMATE_LIVENESS_SECS=99999999 FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
-  sleep 4
+  await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
     || fail "the watcher woke inside the liveness cadence: $(cat "$dir/watch-gated.out" "$dir/watch-gated.err")"
   kill_liveness_leg "$pid"
@@ -3131,7 +3152,7 @@ test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive() {
   drain_liveness_wakes "$dir"
   rm -f "$state/.secondmate-liveness-tick"
   run_liveness_leg "$dir" parked FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
-  sleep 4
+  await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
     || fail "the watcher re-escalated a parked mate: $(cat "$dir/watch-parked.out" "$dir/watch-parked.err")"
   kill_liveness_leg "$pid"
@@ -3144,7 +3165,7 @@ test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive() {
   drain_liveness_wakes "$dir"
   rm -f "$state/.secondmate-liveness-tick"
   run_liveness_leg "$dir" rearm FM_FAKE_TMUX_CURRENT_COMMAND=claude; pid=$LIVENESS_PID
-  sleep 4
+  await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
     || fail "the watcher exited against a live rearmed mate: $(cat "$dir/watch-rearm.out" "$dir/watch-rearm.err")"
   kill_liveness_leg "$pid"
@@ -3296,7 +3317,7 @@ test_secondmate_liveness_tick_skips_mate_whose_lock_is_held() {
   [ -d "$state/.secondmate-liveness-sm1.lock" ] || fail "the fixture never acquired the liveness lock"
 
   run_liveness_leg "$dir" locked FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
-  sleep 4
+  await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
     || fail "the watcher exited against a locked secondmate: $(cat "$dir/watch-locked.out" "$dir/watch-locked.err")"
   kill_liveness_leg "$pid"
@@ -3335,7 +3356,7 @@ SH
   : > "$dir/ssh.log"
 
   run_liveness_leg "$dir" unreachable FM_SSH_BIN="$dir/fakebin/ssh" FM_FAKE_SSH_LOG="$dir/ssh.log"; pid=$LIVENESS_PID
-  sleep 4
+  await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
     || fail "the watcher exited against an unreachable remote secondmate: $(cat "$dir/watch-unreachable.out" "$dir/watch-unreachable.err")"
   kill_liveness_leg "$pid"
@@ -3350,68 +3371,80 @@ SH
   pass "watch liveness: an unreachable remote secondmate is probed, preserved, and never failed over"
 }
 
-test_self_held_lock_reclaims_instead_of_deadlocking
-test_subshell_lock_ownership_without_bashpid
-test_bounded_lock_handoff_after_contention
-test_live_presentation_holder_is_deadlined_without_weakening_ack
-test_malformed_presentation_lock_reports_acquire_failure
-test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
-test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
-test_secondmate_reprovisioned_queue_starts_a_fresh_interval
-test_secondmate_active_turn_defers_stall_until_the_turn_ends
-test_secondmate_long_lived_mate_mid_turn_is_not_a_stall
-test_secondmate_proven_idle_ring_lets_the_child_drain
-test_secondmate_busy_and_unknown_panes_are_not_rung
-test_secondmate_genuine_stall_after_idle_ring_still_alarms
-test_secondmate_stall_marker_rejects_symlink
-test_acknowledged_stall_publication_survives_pre_marker_crash
-test_empty_prefix_mate_preserves_other_mate_receipt
-test_self_announced_append_guards
-test_separate_self_announced_answers_after_fold_are_owned
-test_unreadable_status_is_not_owned
-test_folded_worker_resolved_is_not_owned_lag
-test_owned_growth_still_annotates_turn_ended
-test_historical_annotation_skips_announced_status
-test_concurrent_append_and_drain
-test_signal_catchup_without_running_watcher
-test_stale_enqueue_before_suppressor
-test_not_working_stale_enqueue_before_suppressor
-test_check_output_is_queued
-test_atomic_double_drain
-test_drain_dedupes_obvious_duplicates
-test_drain_asserts_watcher_liveness
-test_structural_signal_enrichment_preserves_raw_rows
-test_enrichment_preserves_all_unread_lines_and_status_file_failures
-test_slow_annotation_does_not_block_append_and_deleted_file_fails_open
-test_branch_actor_scoped_ack_never_swallows_a_main_owned_row
-test_main_drain_excludes_rows_already_granted_to_branch
-test_branch_ack_commits_secondmate_stall_receipts
-test_main_is_never_told_to_drain_rows_only_the_branch_owns
-test_uncountable_queue_still_raises_the_pending_alarm
-test_unconsumable_rows_are_retired_instead_of_wedging_the_queue
-test_branch_grant_refuses_rows_already_claimed_by_main
-test_main_ack_leaves_a_row_that_arrived_after_its_drain_unclaimed
-test_actor_filter_precedes_same_key_deduplication
-test_main_reclaims_a_grant_whose_branch_owner_exited
-test_branch_actor_without_eligible_snapshot_refuses
-test_wake_publish_requires_atomic_recovery_evidence
-test_recovery_mint_and_delivery_log_avoid_sibling_subst
-test_legacy_generationless_wake_is_adopted
-test_stale_recovery_generation_cannot_touch_a_newer_episode
-test_stale_ack_that_consumes_nothing_names_the_current_wake
-test_branch_stale_ack_that_consumes_nothing_names_its_granted_wake
-test_recovery_ack_failure_is_reported
-test_interruption_before_and_after_raw_commit
-test_wake_queue_prune_task
-test_secondmate_liveness_tick_relaunches_dead_endpoint_once
-test_secondmate_liveness_tick_relaunches_missing_endpoint
-test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking
-test_secondmate_liveness_tick_leaves_alive_and_inconclusive_untouched
-test_secondmate_liveness_tick_cadence_gates_the_probe
-test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive
-test_secondmate_liveness_tick_relaunch_failure_reports_once
-test_secondmate_liveness_tick_fails_closed_on_ledger_errors
-test_secondmate_liveness_tick_error_keeps_scanning_and_wakes
-test_secondmate_liveness_tick_unqueued_outcome_is_an_error_not_a_wake
-test_secondmate_liveness_tick_skips_mate_whose_lock_is_held
-test_secondmate_liveness_tick_preserves_unreachable_remote
+# Case pool (fm_run_case_pool in tests/lib.sh). Every case builds its own state
+# directory under its own name and drives only the watchers, drains, and lock
+# holders it started against it, so no case depends on another or on their
+# order. FM_WAKE_QUEUE_CASE_JOBS=1 runs the cases serially.
+run_case_pool() {  # <case-function>...
+  fm_run_case_pool "${FM_WAKE_QUEUE_CASE_JOBS:-4}" "$TMP_ROOT/.case-logs" "$@"
+}
+
+WAKE_QUEUE_CASES=(
+  # The slowest cases start first so the pool drains evenly.
+  test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive
+  test_concurrent_append_and_drain
+  test_interruption_before_and_after_raw_commit
+  test_secondmate_long_lived_mate_mid_turn_is_not_a_stall
+  test_live_presentation_holder_is_deadlined_without_weakening_ack
+  test_secondmate_liveness_tick_relaunches_dead_endpoint_once
+  test_signal_catchup_without_running_watcher
+  test_secondmate_liveness_tick_cadence_gates_the_probe
+  test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking
+  test_secondmate_liveness_tick_leaves_alive_and_inconclusive_untouched
+  test_slow_annotation_does_not_block_append_and_deleted_file_fails_open
+  test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
+  test_empty_prefix_mate_preserves_other_mate_receipt
+  test_secondmate_active_turn_defers_stall_until_the_turn_ends
+  test_secondmate_genuine_stall_after_idle_ring_still_alarms
+  test_secondmate_liveness_tick_error_keeps_scanning_and_wakes
+  test_secondmate_liveness_tick_relaunches_missing_endpoint
+  test_self_held_lock_reclaims_instead_of_deadlocking
+  test_subshell_lock_ownership_without_bashpid
+  test_bounded_lock_handoff_after_contention
+  test_malformed_presentation_lock_reports_acquire_failure
+  test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
+  test_secondmate_reprovisioned_queue_starts_a_fresh_interval
+  test_secondmate_proven_idle_ring_lets_the_child_drain
+  test_secondmate_busy_and_unknown_panes_are_not_rung
+  test_secondmate_stall_marker_rejects_symlink
+  test_acknowledged_stall_publication_survives_pre_marker_crash
+  test_self_announced_append_guards
+  test_separate_self_announced_answers_after_fold_are_owned
+  test_unreadable_status_is_not_owned
+  test_folded_worker_resolved_is_not_owned_lag
+  test_owned_growth_still_annotates_turn_ended
+  test_historical_annotation_skips_announced_status
+  test_stale_enqueue_before_suppressor
+  test_not_working_stale_enqueue_before_suppressor
+  test_check_output_is_queued
+  test_atomic_double_drain
+  test_drain_dedupes_obvious_duplicates
+  test_drain_asserts_watcher_liveness
+  test_structural_signal_enrichment_preserves_raw_rows
+  test_enrichment_preserves_all_unread_lines_and_status_file_failures
+  test_branch_actor_scoped_ack_never_swallows_a_main_owned_row
+  test_main_drain_excludes_rows_already_granted_to_branch
+  test_branch_ack_commits_secondmate_stall_receipts
+  test_main_is_never_told_to_drain_rows_only_the_branch_owns
+  test_uncountable_queue_still_raises_the_pending_alarm
+  test_unconsumable_rows_are_retired_instead_of_wedging_the_queue
+  test_branch_grant_refuses_rows_already_claimed_by_main
+  test_main_ack_leaves_a_row_that_arrived_after_its_drain_unclaimed
+  test_actor_filter_precedes_same_key_deduplication
+  test_main_reclaims_a_grant_whose_branch_owner_exited
+  test_branch_actor_without_eligible_snapshot_refuses
+  test_wake_publish_requires_atomic_recovery_evidence
+  test_recovery_mint_and_delivery_log_avoid_sibling_subst
+  test_legacy_generationless_wake_is_adopted
+  test_stale_recovery_generation_cannot_touch_a_newer_episode
+  test_stale_ack_that_consumes_nothing_names_the_current_wake
+  test_branch_stale_ack_that_consumes_nothing_names_its_granted_wake
+  test_recovery_ack_failure_is_reported
+  test_wake_queue_prune_task
+  test_secondmate_liveness_tick_relaunch_failure_reports_once
+  test_secondmate_liveness_tick_fails_closed_on_ledger_errors
+  test_secondmate_liveness_tick_unqueued_outcome_is_an_error_not_a_wake
+  test_secondmate_liveness_tick_skips_mate_whose_lock_is_held
+  test_secondmate_liveness_tick_preserves_unreachable_remote
+)
+run_case_pool "${WAKE_QUEUE_CASES[@]}" || exit 1

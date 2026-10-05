@@ -62,6 +62,13 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 fm_git_identity fmtest fmtest@example.com
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-harness)
 export FM_BACKEND=tmux
+# The fake tmux below answers every pane read at once, so fm-spawn's real-pane
+# settle waits only add wall time here; zero them (unset keeps production's).
+export FM_SPAWN_WORKTREE_POLL_SECS=0 FM_SPAWN_LAUNCH_SETTLE_SECS=0
+# For the same reason fm-send's per-Enter composer wait (FM_SEND_SLEEP, an
+# operator knob) is zeroed: the fake pane reads back an empty composer at once,
+# so each config-reread pointer send would otherwise just sleep it out.
+export FM_SEND_SLEEP=0
 
 # Every claude launch pre-registers workspace trust for the directory it starts
 # in, and for a secondmate that directory is the home (bin/fm-claude-trust.sh).
@@ -321,9 +328,11 @@ test_propagate_lib() {
   [ "$(cat "$dest/backend")" = tmux ] || fail "primary backend did not overwrite a divergent destination"
   [ -f "$dest/trace-context" ] || fail "trace-context not propagated by the default inheritable set"
 
-  # 2. idempotent: an unchanged re-run does not churn the mtime
+  # 2. idempotent: an unchanged re-run does not churn the mtime. Backdating the
+  # destination stands in for waiting out a clock tick: any rewrite would stamp
+  # it with the current time instead of this fixed past one.
+  touch -t 200101010000 "$dest/crew-harness"
   m1=$(date -r "$dest/crew-harness" +%s 2>/dev/null || stat -c %Y "$dest/crew-harness")
-  sleep 1
   stdout="$d/unchanged.out"
   stderr="$d/unchanged.err"
   propagate_inheritable_config "$src" "$dest" >"$stdout" 2>"$stderr"
@@ -2690,57 +2699,64 @@ SH
   pass "B25 spawn quarantines stale rereads without blocking relaunch"
 }
 
-test_harness_resolution
-test_cursor_marker_detection
-test_secondmate_model_effort_tokens
-test_pi_signed_detection_and_session_lock_identity
-test_dash_leading_process_names_are_basename_operands
-test_propagate_lib
-test_spawn_split_and_inherit
-test_spawn_backward_compat_crew_fallback
-test_spawn_bare_backward_compat
-test_spawn_explicit_harness_wins
-test_spawn_unverified_secondmate_harness_refused
-test_spawn_cursor_secondmate_launches_with_its_primary_contract
-test_spawn_backend_precedence_over_inherited_config
-test_spawn_explicit_backend_precedence_over_env_and_inherited_config
-test_spawn_bare_harness_no_model_effort_flag
-test_spawn_secondmate_harness_model_token
-test_spawn_secondmate_harness_model_and_effort_tokens
-test_spawn_explicit_model_overrides_secondmate_harness_token
-test_spawn_explicit_effort_overrides_secondmate_harness_token
-test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens
-test_spawn_explicit_harness_uses_explicit_profile_axes
-test_spawned_secondmate_uses_its_harness_supervision_model
-test_spawn_fallback_chain_and_crew_scout_unaffected
-test_bootstrap_sweep_propagates_and_reconverges
-test_bootstrap_sweep_propagates_when_tracked_current
-test_bootstrap_sweep_defers_dispatch_on_stale_unignored_home
-test_bootstrap_sweep_materializes_and_inherits_memory_default
-test_backend_inheritance_present_and_absent
-test_spawn_secondmate_claude_permission_mode_auto
-test_spawn_secondmate_claude_grants_parent_inbox_dir
-test_claude_permission_mode_inheritance_present_and_absent
-test_presentation_inheritance_default_on_and_opt_out
-test_bootstrap_sweep_surfaces_config_propagation_failure
-test_bootstrap_rereads_after_partial_propagation
-test_config_push_propagates_reports_without_ff_or_nudge
-test_config_push_reports_skips_dirty_and_invalid_home
-test_config_push_exits_nonzero_on_copy_error
-test_config_push_rereads_after_partial_propagation
-test_config_reread_per_home_changed_sets_and_exact_bytes
-test_config_reread_isolation_and_absent_and_send_failure
-test_config_reread_publication_failure_retries_exact_generation
-test_config_reread_write_failure_retains_exact_retry_generation
-test_config_reread_exact_temp_survives_adoption_failure
-test_config_reread_serializes_concurrent_pushes
-test_config_reread_full_retry_queue_drains_before_new_push
-test_config_reread_cleanup_runs_after_mixed_delivery_failure
-test_config_reread_stops_after_failed_generation
-test_config_reread_skips_when_unchanged_and_reads_after_push
-test_config_reread_bootstrap_path_and_spawn_flexibility
-test_bootstrap_respawns_before_config_reread
-test_spawn_quarantines_pending_rereads_on_cleanup_failure
-test_bootstrap_detect_only_does_not_create_state
+# Every case builds its own world under a name of its own, so no case depends
+# on another or on their order; they run through fm_run_case_pool
+# (tests/lib.sh), longest first. FM_SECONDMATE_HARNESS_CASE_JOBS overrides the
+# concurrency, which defaults to the host's processor count capped at four; 1
+# runs the cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_SECONDMATE_HARNESS_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_config_reread_full_retry_queue_drains_before_new_push \
+  test_config_reread_cleanup_runs_after_mixed_delivery_failure \
+  test_harness_resolution \
+  test_cursor_marker_detection \
+  test_secondmate_model_effort_tokens \
+  test_pi_signed_detection_and_session_lock_identity \
+  test_dash_leading_process_names_are_basename_operands \
+  test_propagate_lib \
+  test_spawn_split_and_inherit \
+  test_spawn_backward_compat_crew_fallback \
+  test_spawn_bare_backward_compat \
+  test_spawn_explicit_harness_wins \
+  test_spawn_unverified_secondmate_harness_refused \
+  test_spawn_cursor_secondmate_launches_with_its_primary_contract \
+  test_spawn_backend_precedence_over_inherited_config \
+  test_spawn_explicit_backend_precedence_over_env_and_inherited_config \
+  test_spawn_bare_harness_no_model_effort_flag \
+  test_spawn_secondmate_harness_model_token \
+  test_spawn_secondmate_harness_model_and_effort_tokens \
+  test_spawn_explicit_model_overrides_secondmate_harness_token \
+  test_spawn_explicit_effort_overrides_secondmate_harness_token \
+  test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens \
+  test_spawn_explicit_harness_uses_explicit_profile_axes \
+  test_spawned_secondmate_uses_its_harness_supervision_model \
+  test_spawn_fallback_chain_and_crew_scout_unaffected \
+  test_bootstrap_sweep_propagates_and_reconverges \
+  test_bootstrap_sweep_propagates_when_tracked_current \
+  test_bootstrap_sweep_defers_dispatch_on_stale_unignored_home \
+  test_bootstrap_sweep_materializes_and_inherits_memory_default \
+  test_backend_inheritance_present_and_absent \
+  test_spawn_secondmate_claude_permission_mode_auto \
+  test_spawn_secondmate_claude_grants_parent_inbox_dir \
+  test_claude_permission_mode_inheritance_present_and_absent \
+  test_presentation_inheritance_default_on_and_opt_out \
+  test_bootstrap_sweep_surfaces_config_propagation_failure \
+  test_bootstrap_rereads_after_partial_propagation \
+  test_config_push_propagates_reports_without_ff_or_nudge \
+  test_config_push_reports_skips_dirty_and_invalid_home \
+  test_config_push_exits_nonzero_on_copy_error \
+  test_config_push_rereads_after_partial_propagation \
+  test_config_reread_per_home_changed_sets_and_exact_bytes \
+  test_config_reread_isolation_and_absent_and_send_failure \
+  test_config_reread_publication_failure_retries_exact_generation \
+  test_config_reread_write_failure_retains_exact_retry_generation \
+  test_config_reread_exact_temp_survives_adoption_failure \
+  test_config_reread_serializes_concurrent_pushes \
+  test_config_reread_stops_after_failed_generation \
+  test_config_reread_skips_when_unchanged_and_reads_after_push \
+  test_config_reread_bootstrap_path_and_spawn_flexibility \
+  test_bootstrap_respawns_before_config_reread \
+  test_spawn_quarantines_pending_rereads_on_cleanup_failure \
+  test_bootstrap_detect_only_does_not_create_state || exit 1
 
 echo "# all fm-secondmate-harness tests passed"

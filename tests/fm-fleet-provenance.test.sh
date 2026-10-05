@@ -131,8 +131,16 @@ def overlap(late_requests):
         raise AssertionError('first fetch did not start')
     later = [subprocess.Popen(command, env=slow_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
              for _ in range(late_requests)]
-    # Later requests stamp arrival at entry; give a loaded machine time to get there.
-    time.sleep(5)
+    # Later requests stamp arrival at entry, before handing off to the receipt
+    # helper, so each one's waiting helper child proves its arrival is stamped.
+    for _ in range(3000):
+        listing = subprocess.run(['ps', '-A', '-o', 'ppid=,args='], text=True,
+                                 capture_output=True).stdout.splitlines()
+        waiting = {int(row.split(None, 1)[0]) for row in listing
+                   if 'fm-fleet-provenance.py' in row}
+        if all(process.pid in waiting for process in later):
+            break
+        time.sleep(.02)
     (home / 'release').write_text('')
     outputs = [process.communicate(timeout=180) for process in [first, *later]]
     assert all(process.returncode == 0 for process in [first, *later]), outputs

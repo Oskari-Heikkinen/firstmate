@@ -701,8 +701,8 @@ wait_for_network_stage() {
 wait_for_network_wake() {
   local home=$1 limit=${2:-30} waited=0
   while ! grep -Fq $'check\tstartup-network' "$home/state/.wake-queue" 2>/dev/null \
-    && [ "$waited" -lt "$limit" ]; do
-    sleep 1
+    && [ "$waited" -lt "$((limit * 10))" ]; do
+    sleep 0.1
     waited=$((waited + 1))
   done
   grep -Fq $'check\tstartup-network' "$home/state/.wake-queue" 2>/dev/null
@@ -984,8 +984,12 @@ SH
       harness_pid=$(sh -c 'printf "%s\n" "$PPID"')
       : > "$home/state/harness-$harness_pid"
       : > "$ready/$i"
-      while [ "$(find "$ready" -type f | wc -l | tr -d ' ')" -lt 40 ]; do
-        sleep 0.01
+      # Count the barrier with a glob, not find|wc: forty contenders spawning
+      # three processes every poll starved the very acquisitions they gate.
+      set -- "$ready"/*
+      while [ "$#" -lt 40 ]; do
+        sleep 0.02
+        set -- "$ready"/*
       done
       if FM_HOME="$home" FM_FAKE_LOCK_STATE="$home/state" \
         FM_FAKE_HARNESS_PID="$harness_pid" PATH="$fakebin:$BASE_PATH" \
@@ -993,8 +997,10 @@ SH
         printf '%s\n' "$harness_pid" >> "$winners"
       fi
       : > "$completed/$i"
-      while [ "$(find "$completed" -type f | wc -l | tr -d ' ')" -lt 40 ]; do
-        sleep 0.01
+      set -- "$completed"/*
+      while [ "$#" -lt 40 ]; do
+        sleep 0.02
+        set -- "$completed"/*
       done
     ) &
     pids="$pids $!"
@@ -1474,7 +1480,9 @@ EOF
   printf 'window=sess:p-slow\nkind=ship\nbackend=herdr\n' > "$home/state/task-a-slow.meta"
   printf 'window=sess:p-live\nkind=ship\nbackend=herdr\n' > "$home/state/task-z-live.meta"
 
-  out=$(FM_SESSION_START_ENDPOINT_TIMEOUT=2 run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  # The home-summary refresh reads the same hung pane under its own bound;
+  # keep that bound short so the case waits on the per-task bound alone.
+  out=$(FM_HOME_SUMMARY_TIMEOUT=1 FM_SESSION_START_ENDPOINT_TIMEOUT=2 run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
 
   expect_code 0 "$status" "a hung endpoint read must not fail the digest"
   assert_contains "$out" \
@@ -1506,7 +1514,9 @@ EOF
   printf 'window=sess:p-slow\nkind=ship\nbackend=herdr\n' > "$home/state/task-a-slow.meta"
   printf 'window=sess:p-live\nkind=ship\nbackend=herdr\n' > "$home/state/task-z-live.meta"
 
-  out=$(FM_SESSION_START_ENDPOINT_TIMEOUT=00 run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  # The home-summary refresh reads the same hung pane under its own bound;
+  # keep that bound short so the case waits on the per-task bound alone.
+  out=$(FM_HOME_SUMMARY_TIMEOUT=1 FM_SESSION_START_ENDPOINT_TIMEOUT=00 run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
 
   expect_code 0 "$status" "a padded-zero per-read bound must not fail the digest"
   assert_contains "$out" \
@@ -1714,16 +1724,22 @@ EOF
 
 # --- deferred network stage -------------------------------------------------
 
-# install_slow_gh <fakebin> <seconds>: one external-network call the digest used
-# to make directly. Making it pathologically slow is how a test stands in for an
-# unreachable host without touching one: if any part of the blocking path still
-# waits on the network, the digest cannot finish before this does.
+# install_slow_gh <fakebin> <release-file> [finished-marker]: one external-network
+# call the digest used to make directly. Holding it open until the case creates
+# <release-file> is how a test stands in for an unreachable host without
+# touching one: if any part of the blocking path still waits on the network, the
+# digest cannot finish before the case releases it. The tick bound only stops a
+# broken case hanging forever; it is far past any healthy digest's runtime.
 install_slow_gh() {
-  local fakebin=$1 seconds=$2 finished_marker=${3:-}
+  local fakebin=$1 release=$2 finished_marker=${3:-}
   cat > "$fakebin/gh" <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = auth ]; then
-  sleep $seconds
+  ticks=0
+  while [ ! -e '$release' ] && [ "\$ticks" -lt 600 ]; do
+    sleep 0.1
+    ticks=\$((ticks + 1))
+  done
   [ -z '$finished_marker' ] || : > '$finished_marker'
   exit 1
 fi
@@ -1825,24 +1841,25 @@ SH
 }
 
 # The headline guarantee: an unreachable host delays a reported CHECK, never the
-# startup. The fake host hangs for 12s; the digest must be done long before that,
-# must say so rather than implying the checks passed, and the sweeps must still
-# run and land afterwards.
+# startup. The fake host hangs until the digest has returned; the digest must not
+# wait for it, must say so rather than implying the checks passed, and the sweeps
+# must still run and land afterwards.
 test_unreachable_network_never_blocks_the_digest() {
-  local rec root home fakebin mate log spawned network_finished out started elapsed
+  local rec root home fakebin mate log spawned network_finished network_release out started elapsed
   rec=$(prepare_session_start_secondmate secondmate-slow-network)
   IFS='|' read -r root home fakebin mate log spawned <<EOF
 $rec
 EOF
   network_finished="${root%/root}/network-finished"
-  install_slow_gh "$fakebin" 12 "$network_finished"
+  network_release="${root%/root}/network-release"
+  install_slow_gh "$fakebin" "$network_release" "$network_finished"
 
   started=$(date +%s)
   out=$(run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing)
   elapsed=$(( $(date +%s) - started ))
 
   [ ! -e "$network_finished" ] \
-    || fail "the digest waited for the 12s unreachable-host probe instead of returning from local state (${elapsed}s)"
+    || fail "the digest waited for the unreleased unreachable-host probe instead of returning from local state (${elapsed}s)"
   assert_contains "$out" "SESSION START" "the digest did not complete"
   assert_contains "$out" "IN PROGRESS - the deferred network checks have not finished yet." \
     "the digest did not disclose that its network checks were still running"
@@ -1852,6 +1869,7 @@ EOF
     "the digest reported a GitHub-auth verdict it could not yet have"
 
   # ... and the work itself still happens, off the blocking path.
+  : > "$network_release"
   wait_for_network_stage "$home" "$root" 60 \
     || fail "the deferred stage never finished: $(network_stage_report "$home" "$root")"
   assert_contains "$(network_stage_report "$home" "$root")" "NEEDS_GH_AUTH" \
@@ -1866,15 +1884,19 @@ EOF
 # is asserted deterministically in tests/fm-startup-network.test.sh, where the
 # claim can be set up directly instead of raced against digest composition.
 test_deferred_result_reaches_the_agent_when_the_digest_cannot_print_it() {
-  local rec root home fakebin mate log spawned queue
+  local rec root home fakebin mate log spawned queue network_release
   rec=$(prepare_session_start_secondmate secondmate-wake-once)
   IFS='|' read -r root home fakebin mate log spawned <<EOF
 $rec
 EOF
-  install_slow_gh "$fakebin" 8
+  network_release="${root%/root}/network-release"
+  install_slow_gh "$fakebin" "$network_release"
   queue="$home/state/.wake-queue"
 
   run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing >/dev/null
+  # Release the held probe only after the digest returned, so the result is
+  # published strictly after the digest could have printed it.
+  : > "$network_release"
   wait_for_network_stage "$home" "$root" 60 || fail "the deferred stage never finished"
   wait_for_network_wake "$home" 60 || fail "the deferred stage never settled wake delivery"
   assert_grep 'check	startup-network' "$queue" \
@@ -2181,7 +2203,7 @@ SH
 }
 
 test_runtime_bound_truncates_loudly_and_exits_zero() {
-  local rec root home fakebin out status=0 stray mechanism
+  local rec root home fakebin out status=0 stray mechanism ticks
   rec=$(new_world runtime-bound)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -2216,10 +2238,16 @@ EOF
   # deferred network stage's own - because a truncated digest must not kill work
   # it was never waiting for. So the guarantee asserted here is the one that
   # actually matters: once BOTH deadlines have passed, nothing hung is left.
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_STARTUP_NETWORK_TIMEOUT=2 \
-    "$ROOT/bin/fm-startup-network.sh" wait 30 >/dev/null || true
-  sleep 1
-  stray=$(pgrep -f "$fakebin/git" 2>/dev/null | wc -l | tr -d ' ')
+  # The truncated digest may never have started the network stage, so rather
+  # than waiting out a stage wait that has nothing to finish, poll for the hung
+  # subprocesses to be gone within the same 31 seconds that wait plus settle gave.
+  ticks=0
+  while :; do
+    stray=$(pgrep -f "$fakebin/git" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$stray" -ne 0 ] && [ "$ticks" -lt 310 ] || break
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
   [ "$stray" -eq 0 ] || fail "the runtime bound left $stray hung subprocess(es) behind"
 
   status=0

@@ -19,7 +19,16 @@ evidence() {
   jq -n --slurpfile s "$TMP_ROOT/spec.json" --arg status "$1" --arg rev "${2:-1}" --argjson now "$(date +%s)" \
     '{schema:"fm-evidence-v1",identity:$s[0].identity,status:$status,revision:$rev,observed_at:$now,verified:true,terminal:true}' > "$H/$(jq -r .receipt "$TMP_ROOT/spec.json")"
 }
-round() { pe start "$SID" >/dev/null; }
+# Back-to-back rounds of one source land inside its one-second launch floor, which
+# tests/fm-procevent.test.sh owns. Each round here is a deliberate new poll, so
+# its pacing stamp is backdated to a stale monotonic reading instead of waited out.
+round() {
+  local stamp
+  for stamp in "$H/state/procevent/$SID".*.last-launch; do
+    [ ! -f "$stamp" ] || printf '0\n' > "$stamp"
+  done
+  pe start "$SID" >/dev/null
+}
 status() { obs snapshot "$SID" | jq -r .status; }
 refuse() { if "$@" >"$TMP_ROOT/refuse.out" 2>&1; then fail "expected refusal: $*"; fi; }
 

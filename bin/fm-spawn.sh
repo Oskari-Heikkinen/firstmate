@@ -1408,7 +1408,9 @@ spawn_herdr_presentation_order_lock_acquire() {
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  # FM_SPAWN_PRESENTATION_LOCK_ATTEMPTS is a test-only seam for the bounded
+  # wait (0.1 s per attempt); production keeps the five-second default.
+  while [ "$attempt" -lt "${FM_SPAWN_PRESENTATION_LOCK_ATTEMPTS:-50}" ]; do
     if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
       HERDR_PRESENTATION_ORDER_LOCK_HELD=1
       return 0
@@ -4375,7 +4377,8 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       candidate=""
       [ -z "$p" ] || last_reason=$SPAWN_WT_REASON
     fi
-    sleep 1
+    # Test seam: FM_SPAWN_WORKTREE_POLL_SECS shortens the inter-read wait; unset keeps 1s.
+    sleep "${FM_SPAWN_WORKTREE_POLL_SECS:-1}"
   done
   if [ -z "$WT" ]; then
     echo "error: treehouse get did not enter an isolated worktree within 60s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); inspect window $T" >&2
@@ -5533,10 +5536,11 @@ if ! (umask 077 && printf '%s\n' "$LAUNCH" >"$LAUNCH_STAGE" &&
   echo "error: could not stage the launch command at $LAUNCH_FILE" >&2
   exit 1
 fi
-sleep 0.3
+# Test seam: FM_SPAWN_LAUNCH_SETTLE_SECS shortens both settle waits; unset keeps 0.3s.
+sleep "${FM_SPAWN_LAUNCH_SETTLE_SECS:-0.3}"
 SPAWN_LAUNCH_SENT=1
 spawn_send_literal "$T" ". $(shell_quote "$LAUNCH_FILE")"
-sleep 0.3
+sleep "${FM_SPAWN_LAUNCH_SETTLE_SECS:-0.3}"
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
   spawn_herdr_presentation_order_lock_release

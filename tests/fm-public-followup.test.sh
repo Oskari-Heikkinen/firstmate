@@ -2418,6 +2418,9 @@ REMOTE_FIXTURE_JOBS=
 remote_fixture_prepare() {
   local fakebin
   [ -z "$REMOTE_FIXTURE_ROOT" ] || return 0
+  # The shared remote worker outlives each staged job and otherwise rescans an
+  # idle queue only once a second, holding up every later case's remote call.
+  export FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS=0.05
   # TMPDIR on macOS carries a trailing slash, and the route validation rejects an
   # empty path component, so physicalize both fixture paths before registering.
   REMOTE_FIXTURE_ROOT="$TMP_ROOT/remote-root"
@@ -3448,11 +3451,15 @@ pad_run() {
   printf '%s' "${out:0:$n}"
 }
 
-test_emit_rules_agree_with_tasks_axi() {
-  local home n=0 expected required outcome deliverables verdict mode
+# emit_agreement_shard <shard> <shards>: run every table row whose 1-based
+# number is congruent to <shard> modulo <shards>, in a home of the shard's own,
+# and record how many rows it ran. Rows are independent - each registers its own
+# obligation - so shards only split where they run, never what a row checks.
+emit_agreement_shard() {
+  local shard=$1 shards=$2 home n=0 ran=0 expected required outcome deliverables verdict mode
   local emit_verdict axi_verdict obligation out pair key pad staging registry
   local -a emit_args emit_destination
-  home=$(make_home emit-agreement)
+  home=$(make_home "emit-agreement-$shard")
   # A work home on the far side of a machine boundary, which is the only place
   # --stage-in is ever used from: it cannot read the obligation record at all.
   staging="$home/staged-work-home"
@@ -3461,6 +3468,8 @@ test_emit_rules_agree_with_tasks_axi() {
   while IFS='|' read -r expected required outcome deliverables verdict mode; do
     [ -n "$expected" ] || continue
     n=$((n + 1))
+    [ $((n % shards)) -eq "$shard" ] || continue
+    ran=$((ran + 1))
     obligation="pf-agree-$n"
     while :; do
       case "$deliverables" in
@@ -3523,7 +3532,15 @@ EOF
       || fail "case $n ($expected final, $outcome outcome, $deliverables): tasks-axi says $axi_verdict, the table says $verdict - re-pin the mirrored rule"
     [ "$emit_verdict" = "$axi_verdict" ] \
       || fail "case $n ($expected final, $outcome outcome, $deliverables, ${mode:-direct} emit): the emitter says $emit_verdict but tasks-axi says $axi_verdict"
-  done <<'CASES'
+  done < "$EMIT_AGREEMENT_TABLE"
+  printf '%s\n' "$ran" > "$TMP_ROOT/emit-agreement-$shard.ran"
+}
+
+test_emit_rules_agree_with_tasks_axi() {
+  local shards=4 shard n=0 ran
+  local -a pids
+  EMIT_AGREEMENT_TABLE="$TMP_ROOT/emit-agreement.table"
+  cat > "$EMIT_AGREEMENT_TABLE" <<'CASES'
 pr-merged|["pr_url"]|pr-merged|{"pr_url":"https://github.com/example/repo/pull/12"}|accept
 pr-merged|["pr_url"]|report-ready|{"report_path":"data/work-a/report.md"}|reject
 pr-merged|["pr_url"]|local-main|{"commit_sha":"0123abc"}|reject
@@ -3599,6 +3616,24 @@ report-ready|[]|report-ready|{}|accept|stage-in
 report-ready|["report_path"]|report-ready|{"report_path":"/abs/data/work-a/report.md"}|reject|stage-in
 failure-outcome|["error_code"]|failed|{}|reject|stage-in
 CASES
+  # Each row spends its time in real tasks-axi and emitter processes, so the
+  # shards run side by side; every shard still checks its rows exactly as one
+  # serial loop would, and any shard's failure fails the case with its output.
+  shard=0
+  while [ "$shard" -lt "$shards" ]; do
+    ( emit_agreement_shard "$shard" "$shards" ) > "$TMP_ROOT/emit-agreement-$shard.log" 2>&1 &
+    pids[shard]=$!
+    shard=$((shard + 1))
+  done
+  shard=0
+  while [ "$shard" -lt "$shards" ]; do
+    wait "${pids[shard]}" \
+      || fail "agreement shard $shard failed: $(cat "$TMP_ROOT/emit-agreement-$shard.log")"
+    ran=$(cat "$TMP_ROOT/emit-agreement-$shard.ran" 2>/dev/null) \
+      || fail "agreement shard $shard recorded no row count"
+    n=$((n + ran))
+    shard=$((shard + 1))
+  done
   [ "$n" -ge 74 ] || fail "the agreement table ran only $n cases"
   pass "the emitter's work-event rules agree with the real tasks-axi consumer on $n cases"
 }

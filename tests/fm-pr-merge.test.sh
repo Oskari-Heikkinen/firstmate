@@ -29,6 +29,12 @@ MR_STALE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
 
+# Every case's worktree is the same one-commit repository with origin/main at
+# that commit, so it is built once here and copied into each case.
+CASE_WT_TEMPLATE="$TMP_ROOT/.case-template/wt"
+fm_git_init_commit "$CASE_WT_TEMPLATE"
+git -C "$CASE_WT_TEMPLATE" update-ref refs/remotes/origin/main "$(git -C "$CASE_WT_TEMPLATE" rev-parse HEAD)"
+
 # Build a fresh sandbox for one test case: a state dir with task metadata and a
 # directory for its forge-command mocks. Echoes the case directory.
 make_case() {
@@ -36,8 +42,7 @@ make_case() {
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/home/data" "$case_dir/home/config" "$fakebin"
-  fm_git_init_commit "$case_dir/wt"
-  git -C "$case_dir/wt" update-ref refs/remotes/origin/main "$(git -C "$case_dir/wt" rev-parse HEAD)"
+  cp -a "$CASE_WT_TEMPLATE" "$case_dir/wt"
   cp "$ROOT/.tasks.toml" "$case_dir/home/.tasks.toml"
   printf '%s\n' '## In flight' '' '## Queued' '' '## Done' \
     > "$case_dir/home/data/backlog.md"
@@ -412,19 +417,23 @@ make_gitlab_case() {
 # would prove nothing. The named bindirs are mirrored ahead of the search path,
 # so the case's own mocks answer for every tool that is not the omitted one and
 # the refusal names that tool alone whatever the host happens to have installed.
+# Each bindir is linked by one ln call: ln leaves a name an earlier bindir already
+# supplied in place, so the first match still wins as it does on the real path.
 mirror_path_without() {
-  local dir=$1 omit=$2 search bindir entry name
+  local dir=$1 omit=$2 search bindir entry
+  local -a entries
   shift 2
   mkdir -p "$dir"
   search=$(printf '%s\n' "$@"; printf '%s\n' "$BASE_PATH" | tr ':' '\n')
   while IFS= read -r bindir; do
     [ -d "$bindir" ] || continue
+    entries=()
     for entry in "$bindir"/*; do
       [ -e "$entry" ] || continue
-      name=${entry##*/}
-      [ "$name" = "$omit" ] && continue
-      [ -e "$dir/$name" ] || ln -s "$entry" "$dir/$name" 2>/dev/null
+      [ "${entry##*/}" = "$omit" ] && continue
+      entries+=("$entry")
     done
+    [ "${#entries[@]}" -eq 0 ] || ln -s -- "${entries[@]}" "$dir/" 2>/dev/null || :
   done <<EOF
 $search
 EOF
@@ -2217,57 +2226,6 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
-test_github_zero_exit_queue_required_refuses_with_exact_retry
-test_github_closed_unqueued_outcome_omits_retry_flags
-test_github_agreeing_queue_rules_keep_retry_guidance
-test_github_conflicting_queue_rules_report_ambiguity
-test_verified_merge_records_pr_and_head
-test_pr_metadata_is_recorded_before_the_forge_call
-test_merge_failure_propagates_after_recording
-test_github_open_unqueued_outcome_refuses
-test_github_unreadable_outcome_keeps_pr_bookkeeping
-test_github_refusal_quotes_the_forge_output
-test_github_unreadable_outcome_refusal_quotes_the_forge_output
-test_github_accepted_queue_flags_do_not_echo_back_the_same_command
-test_github_mismatched_queue_flags_still_name_the_retry
-test_github_unrecognised_queue_method_still_names_the_queue
-test_github_unreadable_queue_rules_are_not_reported_as_no_queue
-test_github_plan_gated_403_reads_as_no_queue
-test_github_no_queue_rule_says_nothing_about_a_queue
-test_github_unmerged_fallback_cannot_replace_queue_aware_read
-test_github_auto_merge_without_queue_refuses_legibly
-test_github_failed_merge_never_claims_armed_auto_merge
-test_github_failed_merge_with_queue_flags_never_claims_acceptance
-test_github_failed_gh_read_falls_back_to_gh_axi
-test_github_failed_merge_names_an_observed_landed_state
-test_github_without_gh_still_uses_gh_axi_merge
-test_github_without_gh_failed_read_keeps_bookkeeping
-test_github_merged_outcome_is_verified
-test_github_verified_merge_requires_poll_recording
-test_github_queued_outcome_is_verified
-test_github_queue_required_refusal_names_retry_flags
-test_extra_merge_args_forwarded
-test_missing_meta_refuses_before_merge
-test_malformed_url_refuses_before_merge
-test_rejects_unsafe_url_segments_before_recording
-test_repo_override_args_refuse_before_recording
-test_bundled_repo_override_args_refuse_before_recording
-test_explicit_merge_method_not_overridden
-test_method_equals_merge_method_not_overridden
-test_parses_pr_url_for_gh_axi
-test_github_still_forwards_sha_arg
-test_gitlab_url_resolves_and_merges
-test_gitlab_host_comes_from_the_url
-test_gitlab_imposes_no_merge_method
-test_gitlab_extra_args_forwarded
-test_gitlab_merge_failure_propagates
-test_gitlab_each_condition_refuses_independently
-test_gitlab_reports_every_failing_condition
-test_gitlab_stale_recorded_head_is_reported
-test_gitlab_unreadable_state_refuses
-test_gitlab_invalid_head_refuses
-test_gitlab_missing_tool_refuses_before_recording
-
 # The merge gate asks whether the task is still held for the captain. A home
 # that carries no backlog records no captain calls at all, so nothing can be
 # held and the merge must proceed; a backlog that EXISTS but cannot be read may
@@ -3665,56 +3623,114 @@ test_allow_missing_follows_the_allow_red_rules() {
   pass "fm-pr-merge --allow-missing is single use, attended-only, and GitHub-only like --allow-red"
 }
 
-test_gitlab_head_override_args_refuse_before_recording
-test_secondmate_merge_reports_upward_once
-test_secondmate_merge_reports_on_the_local_route
-test_gitlab_merge_reports_upward
-test_queued_gitlab_merge_leaves_the_poll_armed
-test_failed_merge_reports_nothing
-test_gitlab_refusal_reports_nothing
-test_main_home_merge_leaves_a_durable_wake
-test_queued_github_merge_leaves_the_poll_armed
-test_distinct_merged_prs_keep_distinct_wakes
-test_uncommitted_marker_retry_is_never_silent
-test_secondmate_without_parent_binding_is_loud
-test_absent_backlog_still_merges
-test_unreadable_backlog_refuses_the_merge
-test_unreadable_backend_config_refuses_the_merge
-test_unreadable_user_backend_config_refuses_the_merge
-test_untraversable_user_backend_config_directory_refuses_the_merge
-test_absent_user_backend_config_directory_and_backlog_still_merge
-test_backend_override_bypasses_unreadable_user_config
-test_github_red_checks_refuse_and_allow_red_waives_named
-test_github_draft_or_unreadable_draft_state_refuses
-test_superseded_failed_check_run_no_longer_refuses
-test_check_runs_never_supersede_status_contexts
-test_current_failed_check_run_still_refuses
-test_late_finishing_old_success_does_not_hide_current_failure
-test_late_finishing_old_cancellation_is_superseded
-test_unfinished_rerun_keeps_a_check_red
-test_supersession_never_crosses_check_names
-test_undated_runs_never_supersede
-test_allow_red_still_waives_only_the_current_failure
-test_allow_red_is_refused_while_away
-test_allow_red_requires_one_separate_name
-test_away_record_permits_any_green_merge_under_away_authority
-test_away_branch_actor_merges_green_under_the_record
-test_away_branch_refuses_when_record_archived_during_preflight
-test_away_posture_refuses_asynchronous_merge_paths
-test_away_plan_gated_403_does_not_block_the_merge
-test_away_record_does_not_bypass_red_or_identity
-test_unreadable_away_record_refuses_merge
-test_away_record_cannot_change_between_the_authority_read_and_the_merge
-test_a_record_made_unreadable_before_the_merge_refuses_it
-test_merge_refuses_when_the_away_record_cannot_be_locked
-test_allow_red_refused_on_gitlab
-test_required_check_that_never_reported_refuses
-test_required_checks_reported_and_green_merge
-test_red_and_unreported_checks_are_reported_together
-test_unreadable_required_set_refuses
-test_allow_missing_waives_only_the_named_unreported_check
-test_allow_missing_follows_the_allow_red_rules
-
-test_required_producer_identity
-test_app_bound_required_status_context_matches_by_name
-test_required_partial_reads_report_all_failures
+# Every case builds its own sandbox under a name of its own from the shared
+# read-only worktree template and acts only on processes it started itself, so
+# no case depends on another or on their order; they run through
+# fm_run_case_pool (tests/lib.sh), longest first. FM_PR_MERGE_CASE_JOBS
+# overrides the concurrency, which defaults to the host's processor count capped
+# at four; 1 runs the cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_PR_MERGE_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_required_producer_identity \
+  test_unreadable_required_set_refuses \
+  test_gitlab_each_condition_refuses_independently \
+  test_away_record_permits_any_green_merge_under_away_authority \
+  test_app_bound_required_status_context_matches_by_name \
+  test_allow_missing_waives_only_the_named_unreported_check \
+  test_undated_runs_never_supersede \
+  test_away_record_cannot_change_between_the_authority_read_and_the_merge \
+  test_away_posture_refuses_asynchronous_merge_paths \
+  test_required_partial_reads_report_all_failures \
+  test_gitlab_unreadable_state_refuses \
+  test_allow_missing_follows_the_allow_red_rules \
+  test_away_branch_actor_merges_green_under_the_record \
+  test_distinct_merged_prs_keep_distinct_wakes \
+  test_github_auto_merge_without_queue_refuses_legibly \
+  test_uncommitted_marker_retry_is_never_silent \
+  test_allow_red_still_waives_only_the_current_failure \
+  test_github_red_checks_refuse_and_allow_red_waives_named \
+  test_secondmate_merge_reports_upward_once \
+  test_required_check_that_never_reported_refuses \
+  test_github_draft_or_unreadable_draft_state_refuses \
+  test_unfinished_rerun_keeps_a_check_red \
+  test_merge_refuses_when_the_away_record_cannot_be_locked \
+  test_away_plan_gated_403_does_not_block_the_merge \
+  test_allow_red_is_refused_while_away \
+  test_bundled_repo_override_args_refuse_before_recording \
+  test_extra_merge_args_forwarded \
+  test_away_record_does_not_bypass_red_or_identity \
+  test_github_failed_gh_read_falls_back_to_gh_axi \
+  test_gitlab_extra_args_forwarded \
+  test_verified_merge_records_pr_and_head \
+  test_late_finishing_old_cancellation_is_superseded \
+  test_required_checks_reported_and_green_merge \
+  test_github_plan_gated_403_reads_as_no_queue \
+  test_pr_metadata_is_recorded_before_the_forge_call \
+  test_a_record_made_unreadable_before_the_merge_refuses_it \
+  test_gitlab_imposes_no_merge_method \
+  test_method_equals_merge_method_not_overridden \
+  test_github_unreadable_queue_rules_are_not_reported_as_no_queue \
+  test_github_merged_outcome_is_verified \
+  test_gitlab_host_comes_from_the_url \
+  test_main_home_merge_leaves_a_durable_wake \
+  test_parses_pr_url_for_gh_axi \
+  test_gitlab_url_resolves_and_merges \
+  test_github_no_queue_rule_says_nothing_about_a_queue \
+  test_gitlab_stale_recorded_head_is_reported \
+  test_superseded_failed_check_run_no_longer_refuses \
+  test_explicit_merge_method_not_overridden \
+  test_github_zero_exit_queue_required_refuses_with_exact_retry \
+  test_github_unmerged_fallback_cannot_replace_queue_aware_read \
+  test_github_unrecognised_queue_method_still_names_the_queue \
+  test_gitlab_merge_reports_upward \
+  test_secondmate_merge_reports_on_the_local_route \
+  test_github_mismatched_queue_flags_still_name_the_retry \
+  test_github_conflicting_queue_rules_report_ambiguity \
+  test_github_refusal_quotes_the_forge_output \
+  test_github_closed_unqueued_outcome_omits_retry_flags \
+  test_github_accepted_queue_flags_do_not_echo_back_the_same_command \
+  test_github_open_unqueued_outcome_refuses \
+  test_secondmate_without_parent_binding_is_loud \
+  test_github_failed_merge_with_queue_flags_never_claims_acceptance \
+  test_github_queued_outcome_is_verified \
+  test_github_unreadable_outcome_keeps_pr_bookkeeping \
+  test_github_unreadable_outcome_refusal_quotes_the_forge_output \
+  test_queued_github_merge_leaves_the_poll_armed \
+  test_github_failed_merge_never_claims_armed_auto_merge \
+  test_queued_gitlab_merge_leaves_the_poll_armed \
+  test_github_agreeing_queue_rules_keep_retry_guidance \
+  test_merge_failure_propagates_after_recording \
+  test_github_failed_merge_names_an_observed_landed_state \
+  test_away_branch_refuses_when_record_archived_during_preflight \
+  test_gitlab_refusal_reports_nothing \
+  test_red_and_unreported_checks_are_reported_together \
+  test_supersession_never_crosses_check_names \
+  test_github_queue_required_refusal_names_retry_flags \
+  test_failed_merge_reports_nothing \
+  test_late_finishing_old_success_does_not_hide_current_failure \
+  test_current_failed_check_run_still_refuses \
+  test_gitlab_merge_failure_propagates \
+  test_check_runs_never_supersede_status_contexts \
+  test_gitlab_invalid_head_refuses \
+  test_gitlab_reports_every_failing_condition \
+  test_absent_user_backend_config_directory_and_backlog_still_merge \
+  test_unreadable_backlog_refuses_the_merge \
+  test_backend_override_bypasses_unreadable_user_config \
+  test_absent_backlog_still_merges \
+  test_unreadable_user_backend_config_refuses_the_merge \
+  test_untraversable_user_backend_config_directory_refuses_the_merge \
+  test_unreadable_backend_config_refuses_the_merge \
+  test_github_verified_merge_requires_poll_recording \
+  test_gitlab_missing_tool_refuses_before_recording \
+  test_github_without_gh_still_uses_gh_axi_merge \
+  test_github_without_gh_failed_read_keeps_bookkeeping \
+  test_unreadable_away_record_refuses_merge \
+  test_allow_red_requires_one_separate_name \
+  test_gitlab_head_override_args_refuse_before_recording \
+  test_allow_red_refused_on_gitlab \
+  test_missing_meta_refuses_before_merge \
+  test_malformed_url_refuses_before_merge \
+  test_rejects_unsafe_url_segments_before_recording \
+  test_repo_override_args_refuse_before_recording \
+  test_github_still_forwards_sha_arg \
+  || exit 1

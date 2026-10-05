@@ -485,10 +485,18 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("initial-arm", {}, undefined, undefined, {});
-await new Promise((resolve) => setTimeout(resolve, 1200));
-const rows = existsSync(process.env.FM_ARM_LOG)
+const readRows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
+// Poll for the delivery and the successor rather than a fixed span, then keep a
+// short window open so a duplicate delivery would still be caught below.
+for (let i = 0; i < 750; i += 1) {
+  const seen = readRows();
+  if (seen.includes("delivery") && seen.filter((row) => row.startsWith("arm=")).length >= 2) break;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+await new Promise((resolve) => setTimeout(resolve, 100));
+const rows = readRows();
 const armIndexes = rows.map((row, index) => row.startsWith("arm=") ? index : -1).filter((index) => index >= 0);
 const closeIndex = rows.indexOf("predecessor-closed");
 const deliveryIndex = rows.indexOf("delivery");

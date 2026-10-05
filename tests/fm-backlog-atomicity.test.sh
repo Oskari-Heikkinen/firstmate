@@ -36,11 +36,25 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 BOOTSTRAP="$ROOT/bin/fm-bootstrap.sh"
 TMP_ROOT=$(fm_test_tmproot fm-backlog-atomicity)
+# The fake tmux and treehouse below answer every pane read at once, so
+# fm-spawn's real-pane settle waits only add wall time here; zero them (unset
+# keeps production's). Two consecutive reads must still agree on the worktree.
+export FM_SPAWN_WORKTREE_POLL_SECS=0 FM_SPAWN_LAUNCH_SETTLE_SECS=0
 
 command -v tasks-axi >/dev/null 2>&1 || {
   printf 'ok - skipped (tasks-axi is not installed; the fused transitions are inert without it)\n'
   exit 0
 }
+
+# Every spawn, teardown, and bootstrap run re-probes tasks-axi compatibility
+# with three static introspection calls, each a node start, so they replay
+# through fm_tasks_axi_probe_shim (tests/lib.sh). The per-case wrappers below
+# sit in fakebin ahead of it, so make_tasks_axi_incompatible's failing --version
+# still reaches the scripts under test.
+TASKS_AXI_GENUINE=$(command -v tasks-axi)
+TASKS_AXI_SHIM="$TMP_ROOT/tasks-axi-shim"
+fm_tasks_axi_probe_shim "$TASKS_AXI_SHIM" "$TASKS_AXI_GENUINE" --version update,--help mv,--help
+export PATH="$TASKS_AXI_SHIM:$PATH"
 
 # --- fixture ----------------------------------------------------------------
 
@@ -615,7 +629,8 @@ run_ship_spawn() {  # <case-dir> <id>
 run_teardown() {  # <case-dir> <id> [args...]
   local case_dir=$1
   shift
-  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$(home_of "$case_dir")" \
+  # As spawn's guard is skipped above, so is teardown's advisory fm-guard pass.
+  FM_TEARDOWN_GUARD_DONE=1 FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$(home_of "$case_dir")" \
     PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" "$@" 2>&1
 }
@@ -2996,102 +3011,111 @@ test_a_persistent_secondmate_is_never_a_backlog_item() {
   pass "dispatching a persistent secondmate needs no backlog item"
 }
 
-test_backend_resolution_preserves_config_errors
-test_backend_resolution_preserves_precedence_and_defaults
-test_backlog_callers_refuse_unreadable_backend_config
-test_captain_hold_preserves_relocated_backlog_on_backend_error
-test_dispatch_moves_the_item_in_flight_in_the_same_run
-test_dispatch_omits_the_file_for_a_beads_show
-test_a_leftover_markdown_symlink_does_not_brick_a_beads_home
-test_completion_omits_the_file_for_a_beads_done
-test_dispatch_refuses_a_pending_authoritative_close
-test_dispatch_refuses_a_held_row_before_creating_resources
-test_dispatch_refuses_a_blocked_row_before_creating_resources
-test_dispatch_refuses_a_held_in_flight_row_before_relaunch
-test_dispatch_reads_the_row_from_the_backlog_root
-test_recovery_uses_the_parent_of_a_trailing_slash_data_record
-test_completion_targets_a_nested_relative_data_directory
-test_immediate_child_absolute_data_dispatches_and_completes
-test_bare_relative_data_dispatches_and_completes
-test_dispatch_refuses_a_symlinked_backlog_without_crossing_homes
-test_automatic_backend_refuses_incompatible_tasks_axi_before_mutation
-test_dispatch_refuses_an_unresolvable_data_directory
-test_completion_refuses_an_unresolvable_data_directory
-test_dispatch_refuses_an_id_this_home_has_no_item_for
-test_dispatch_reports_a_backlog_read_failure
-test_dispatch_refuses_a_closed_item
-test_dispatch_refuses_to_commit_without_a_published_record
-test_dispatch_leaves_no_record_when_the_transition_fails
-test_dispatch_reports_an_incomplete_record_rollback
-test_dispatch_reports_an_incomplete_busy_rollback
-test_dispatch_rolls_back_before_a_failed_launch_delivery
-test_dispatch_defers_interruption_across_backlog_commit
-test_deferred_signal_reads_back_preserved_state
-test_deferred_signal_never_claims_unverified_preservation
-test_deferred_signal_verification_outlives_an_unresponsive_tasks_axi
-test_fm_tasks_axi_fallback_bounds_the_call_without_a_timeout_binary
-test_fm_tasks_axi_fallback_passes_the_child_status_and_output_through
-test_fm_tasks_axi_fails_closed_when_nothing_can_bound_the_call
-test_fm_tasks_axi_gnu_timeout_forces_termination_of_a_sigterm_ignoring_child
-test_dispatch_interruption_during_kimi_readiness_fails_before_commit
-test_dispatch_does_not_resurrect_a_row_closed_after_preflight
-test_dispatch_fails_when_its_row_vanishes_after_preflight
-test_completion_closes_a_local_only_ship_before_reporting_success
-test_completion_closes_a_scout_with_its_report
-test_completion_refuses_a_legacy_record_without_an_incarnation
-test_completion_refuses_ambiguous_incarnation_metadata
-test_completion_records_a_relative_report_for_relocated_data
-test_space_containing_scout_report_marker_replays
-test_trailing_newline_data_path_fails_closed
-test_control_character_data_path_is_refused_before_cleanup
-test_completion_preserves_records_when_meta_removal_fails
-test_completion_fails_loudly_and_records_the_close_it_still_owes
-test_interrupted_destructive_cleanup_leaves_a_recoverable_close
-test_completion_refuses_a_close_target_symlinked_to_a_directory
-test_completion_fails_when_its_close_marker_cannot_be_removed
-test_recovery_retries_when_a_close_marker_cannot_be_removed
-test_recovery_reports_an_owned_row_read_failure
-test_orca_cleanup_recovery_never_transitions_the_backlog
-test_recovery_marks_an_owned_record_in_flight
-test_recovery_rejects_an_internal_worker_record_symlink
-test_recovery_ignores_a_symlinked_worker_record
-test_recovery_replays_a_close_an_interrupted_cleanup_left_open
-test_recovery_backfills_a_recorded_link_on_an_already_done_item
-test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
-test_recovery_retry_preserves_incomplete_cleanup_warning
-test_recovery_finishes_a_close_for_the_same_meta_incarnation
-test_recovery_preserves_a_close_for_ambiguous_incarnation_metadata
-test_recovery_preserves_both_records_when_meta_removal_fails
-test_recovery_preserves_a_close_beside_symlinked_metadata
-test_recovery_rejects_a_marker_for_another_task_identity
-test_recovery_rejects_a_foreign_data_directory
-test_recovery_rejects_an_unterminated_unknown_field
-test_recovery_rejects_lexical_data_traversal
-test_recovery_rejects_raw_control_bytes
-test_recovery_rejects_malformed_pr_urls
-test_failed_close_replay_is_not_started_as_live_work
-test_recovery_rejects_invalid_close_arguments
-test_recovery_rejects_a_symlinked_close_marker
-test_recovery_drops_a_close_for_a_newer_meta_incarnation
-test_recovery_rejects_a_legacy_close_without_an_incarnation
-test_bootstrap_rechecks_worker_record_boundary_after_locking
-test_lifecycle_refuses_ancestor_symlinks_outside_home_roots
-test_same_home_state_override_remains_supported
-test_bootstrap_refuses_a_symlinked_state_directory_before_reconciliation
-test_bootstrap_stops_when_data_disappears_before_reconciliation
-test_bootstrap_addressing_exemptions_remain_nonfatal
-test_recovery_leaves_a_captain_held_item_alone
-test_no_backlog_teardown_refuses_a_symlinked_task_record_at_entry
-test_teardown_rechecks_record_parent_after_lock_acquisition
-test_teardown_refuses_a_symlinked_state_directory_at_entry
-test_home_without_a_backlog_dispatches_and_completes
-test_spawn_refuses_a_special_file_tasks_config
-test_spawn_refuses_an_unsafe_tasks_config_before_exempting_a_missing_backlog
-test_spawn_refuses_a_data_directory_symlinked_outside_the_home
-test_configured_adapter_refuses_a_data_directory_outside_the_home
-test_dispatch_and_completion_are_structural
-test_refused_teardown_leaves_the_item_live
-test_environment_selected_adapter_is_not_forced_to_markdown
-test_manual_backend_home_dispatches_and_completes_without_touching_the_backlog
-test_a_secondmate_home_keeps_its_own_books
-test_a_persistent_secondmate_is_never_a_backlog_item
+# Every case builds its own home under a name of its own and dispatches task
+# ids no other case uses (fm-spawn keys a per-task /tmp directory by id), and
+# its interrupts and background work touch only processes it started, so no
+# case depends on another or on their order; they run through fm_run_case_pool
+# (tests/lib.sh). FM_BACKLOG_ATOMICITY_CASE_JOBS overrides the concurrency,
+# which defaults to the host's processor count capped at four; 1 runs the
+# cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_BACKLOG_ATOMICITY_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_backend_resolution_preserves_config_errors \
+  test_backend_resolution_preserves_precedence_and_defaults \
+  test_backlog_callers_refuse_unreadable_backend_config \
+  test_captain_hold_preserves_relocated_backlog_on_backend_error \
+  test_dispatch_moves_the_item_in_flight_in_the_same_run \
+  test_dispatch_omits_the_file_for_a_beads_show \
+  test_a_leftover_markdown_symlink_does_not_brick_a_beads_home \
+  test_completion_omits_the_file_for_a_beads_done \
+  test_dispatch_refuses_a_pending_authoritative_close \
+  test_dispatch_refuses_a_held_row_before_creating_resources \
+  test_dispatch_refuses_a_blocked_row_before_creating_resources \
+  test_dispatch_refuses_a_held_in_flight_row_before_relaunch \
+  test_dispatch_reads_the_row_from_the_backlog_root \
+  test_recovery_uses_the_parent_of_a_trailing_slash_data_record \
+  test_completion_targets_a_nested_relative_data_directory \
+  test_immediate_child_absolute_data_dispatches_and_completes \
+  test_bare_relative_data_dispatches_and_completes \
+  test_dispatch_refuses_a_symlinked_backlog_without_crossing_homes \
+  test_automatic_backend_refuses_incompatible_tasks_axi_before_mutation \
+  test_dispatch_refuses_an_unresolvable_data_directory \
+  test_completion_refuses_an_unresolvable_data_directory \
+  test_dispatch_refuses_an_id_this_home_has_no_item_for \
+  test_dispatch_reports_a_backlog_read_failure \
+  test_dispatch_refuses_a_closed_item \
+  test_dispatch_refuses_to_commit_without_a_published_record \
+  test_dispatch_leaves_no_record_when_the_transition_fails \
+  test_dispatch_reports_an_incomplete_record_rollback \
+  test_dispatch_reports_an_incomplete_busy_rollback \
+  test_dispatch_rolls_back_before_a_failed_launch_delivery \
+  test_dispatch_defers_interruption_across_backlog_commit \
+  test_deferred_signal_reads_back_preserved_state \
+  test_deferred_signal_never_claims_unverified_preservation \
+  test_deferred_signal_verification_outlives_an_unresponsive_tasks_axi \
+  test_fm_tasks_axi_fallback_bounds_the_call_without_a_timeout_binary \
+  test_fm_tasks_axi_fallback_passes_the_child_status_and_output_through \
+  test_fm_tasks_axi_fails_closed_when_nothing_can_bound_the_call \
+  test_fm_tasks_axi_gnu_timeout_forces_termination_of_a_sigterm_ignoring_child \
+  test_dispatch_interruption_during_kimi_readiness_fails_before_commit \
+  test_dispatch_does_not_resurrect_a_row_closed_after_preflight \
+  test_dispatch_fails_when_its_row_vanishes_after_preflight \
+  test_completion_closes_a_local_only_ship_before_reporting_success \
+  test_completion_closes_a_scout_with_its_report \
+  test_completion_refuses_a_legacy_record_without_an_incarnation \
+  test_completion_refuses_ambiguous_incarnation_metadata \
+  test_completion_records_a_relative_report_for_relocated_data \
+  test_space_containing_scout_report_marker_replays \
+  test_trailing_newline_data_path_fails_closed \
+  test_control_character_data_path_is_refused_before_cleanup \
+  test_completion_preserves_records_when_meta_removal_fails \
+  test_completion_fails_loudly_and_records_the_close_it_still_owes \
+  test_interrupted_destructive_cleanup_leaves_a_recoverable_close \
+  test_completion_refuses_a_close_target_symlinked_to_a_directory \
+  test_completion_fails_when_its_close_marker_cannot_be_removed \
+  test_recovery_retries_when_a_close_marker_cannot_be_removed \
+  test_recovery_reports_an_owned_row_read_failure \
+  test_orca_cleanup_recovery_never_transitions_the_backlog \
+  test_recovery_marks_an_owned_record_in_flight \
+  test_recovery_rejects_an_internal_worker_record_symlink \
+  test_recovery_ignores_a_symlinked_worker_record \
+  test_recovery_replays_a_close_an_interrupted_cleanup_left_open \
+  test_recovery_backfills_a_recorded_link_on_an_already_done_item \
+  test_recovery_preserves_a_close_when_the_backlog_cannot_be_read \
+  test_recovery_retry_preserves_incomplete_cleanup_warning \
+  test_recovery_finishes_a_close_for_the_same_meta_incarnation \
+  test_recovery_preserves_a_close_for_ambiguous_incarnation_metadata \
+  test_recovery_preserves_both_records_when_meta_removal_fails \
+  test_recovery_preserves_a_close_beside_symlinked_metadata \
+  test_recovery_rejects_a_marker_for_another_task_identity \
+  test_recovery_rejects_a_foreign_data_directory \
+  test_recovery_rejects_an_unterminated_unknown_field \
+  test_recovery_rejects_lexical_data_traversal \
+  test_recovery_rejects_raw_control_bytes \
+  test_recovery_rejects_malformed_pr_urls \
+  test_failed_close_replay_is_not_started_as_live_work \
+  test_recovery_rejects_invalid_close_arguments \
+  test_recovery_rejects_a_symlinked_close_marker \
+  test_recovery_drops_a_close_for_a_newer_meta_incarnation \
+  test_recovery_rejects_a_legacy_close_without_an_incarnation \
+  test_bootstrap_rechecks_worker_record_boundary_after_locking \
+  test_lifecycle_refuses_ancestor_symlinks_outside_home_roots \
+  test_same_home_state_override_remains_supported \
+  test_bootstrap_refuses_a_symlinked_state_directory_before_reconciliation \
+  test_bootstrap_stops_when_data_disappears_before_reconciliation \
+  test_bootstrap_addressing_exemptions_remain_nonfatal \
+  test_recovery_leaves_a_captain_held_item_alone \
+  test_no_backlog_teardown_refuses_a_symlinked_task_record_at_entry \
+  test_teardown_rechecks_record_parent_after_lock_acquisition \
+  test_teardown_refuses_a_symlinked_state_directory_at_entry \
+  test_home_without_a_backlog_dispatches_and_completes \
+  test_spawn_refuses_a_special_file_tasks_config \
+  test_spawn_refuses_an_unsafe_tasks_config_before_exempting_a_missing_backlog \
+  test_spawn_refuses_a_data_directory_symlinked_outside_the_home \
+  test_configured_adapter_refuses_a_data_directory_outside_the_home \
+  test_dispatch_and_completion_are_structural \
+  test_refused_teardown_leaves_the_item_live \
+  test_environment_selected_adapter_is_not_forced_to_markdown \
+  test_manual_backend_home_dispatches_and_completes_without_touching_the_backlog \
+  test_a_secondmate_home_keeps_its_own_books \
+  test_a_persistent_secondmate_is_never_a_backlog_item

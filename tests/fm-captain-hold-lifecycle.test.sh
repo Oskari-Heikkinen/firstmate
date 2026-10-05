@@ -19,6 +19,17 @@ TASKS_AXI_BIN=$(command -v tasks-axi || true)
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit 0; }
 
+# Every fm-captain-hold.sh run, including the ones nested under teardown, the
+# merge entrypoints, and the review adapters, re-probes tasks-axi with four
+# static introspection calls, which were most of this suite's wall time, so they
+# replay through fm_tasks_axi_probe_shim (tests/lib.sh). Per-case stubs in a
+# home's fakebin still precede it, and REAL_TASKS_AXI stays the genuine binary.
+# Teardown's advisory fm-guard pass, which no case here asserts on, is skipped
+# through FM_TEARDOWN_GUARD_DONE.
+TASKS_AXI_SHIM="$TMP_ROOT/tasks-axi-shim"
+fm_tasks_axi_probe_shim "$TASKS_AXI_SHIM" "$TASKS_AXI_BIN" --version update,--help mv,--help hold,--help
+export PATH="$TASKS_AXI_SHIM:$PATH" FM_TEARDOWN_GUARD_DONE=1
+
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
   mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
@@ -4034,56 +4045,63 @@ test_retained_body_keeps_its_utf8_bytes() {
   pass "cleanup preserves every byte of a retained body's non-ASCII characters"
 }
 
-test_uninventoried_report_decision_refuses_completion
-test_hold_decodes_a_bare_scalar_body_without_the_nonref_default
-test_retained_body_keeps_its_utf8_bytes
-test_completion_gate_attests_and_transfers
-test_answer_records_and_closes
-test_release_frees_held_work
-test_hold_stamp_precedes_hold_visibility
-test_interrupted_answer_preserves_hold_age
-test_deferral_leaves_captains_call_until_due
-test_out_of_band_close_is_recordable
-test_visual_review_uses_shared_completion_owner
-test_none_inventory_and_resolved_prose_do_not_create_holds
-test_terminal_single_owner_status_decision_does_not_block_empty_inventory
-test_secondmate_hold_stays_in_authoritative_home
-test_secondmate_home_publishes_holds_and_answers
-test_secondmate_reconcile_publishes_before_request_retirement
-test_bound_channel_answers_close_at_answer_time
-test_reconcile_never_closes_through_the_keyed_answer_intake
-test_normal_answers_retire_pending_reconcile_requests
-test_reconcile_closes_with_evidence_or_keeps_the_call_open
-test_reconcile_outcomes_retry_partial_failures_once
-test_unbound_source_closes_no_hold
-test_legacy_identities_keep_working
-test_board_answer_reaches_the_keyed_answer_intake
-test_chat_channel_feeds_the_same_keyed_answer_intake
-test_origin_slug_validation_precedes_path_construction
-test_status_resolution_over_an_open_hold_is_signalled
-test_legitimate_holds_produce_no_divergence_signal
-test_teardown_never_closes_a_captain_held_task
-test_retained_row_artifacts_survive_captain_answers
-test_interrupted_cleanup_keeps_the_captain_call_recoverable
-test_answer_before_cleanup_replay_preserves_the_retained_report
-test_unusable_pending_close_record_names_its_reason
-test_relocated_report_does_not_wedge_an_answer_before_replay
-test_teardown_retains_captain_calls_in_a_relocated_backlog
-test_merge_approval_releases_before_zero_done_retention
-test_pr_merge_entrypoint_refuses_a_captain_held_task
-test_local_merge_entrypoint_refuses_a_captain_held_task
-test_pr_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one
-test_local_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one
-test_merge_entrypoints_validate_identity_and_state_before_locking
-test_merge_entrypoints_refuse_a_reused_task_incarnation
-test_merge_entrypoints_serialize_forced_teardown_before_task_reads
-test_released_merge_passes_the_entrypoint_and_lands
-test_teardown_refuses_a_ship_when_the_captain_hold_cannot_be_read
-test_verify_resolves_a_hold_migrated_to_beads_notes
-test_verify_resolves_a_hold_migrated_under_the_configured_prefix
-test_marker_noted_row_wins_over_a_prefix_namesake
-test_complete_accepts_a_migrated_inventory_on_beads
-test_verify_names_the_unresolvable_legacy_id_once
-test_verify_resolves_a_pre_collapse_key_through_its_derived_marker
-test_captain_hold_mutations_address_the_beads_backend
-test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
+# Every case builds its own homes under a name of its own, and its background
+# races wait only on processes it started, so no case depends on another or on
+# their order; they run through fm_run_case_pool (tests/lib.sh), longest first.
+# FM_CAPTAIN_HOLD_CASE_JOBS overrides the concurrency, which defaults to the
+# host's processor count capped at four; 1 runs the cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_CAPTAIN_HOLD_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_retained_row_artifacts_survive_captain_answers \
+  test_bound_channel_answers_close_at_answer_time \
+  test_uninventoried_report_decision_refuses_completion \
+  test_hold_decodes_a_bare_scalar_body_without_the_nonref_default \
+  test_retained_body_keeps_its_utf8_bytes \
+  test_completion_gate_attests_and_transfers \
+  test_answer_records_and_closes \
+  test_release_frees_held_work \
+  test_hold_stamp_precedes_hold_visibility \
+  test_interrupted_answer_preserves_hold_age \
+  test_deferral_leaves_captains_call_until_due \
+  test_out_of_band_close_is_recordable \
+  test_visual_review_uses_shared_completion_owner \
+  test_none_inventory_and_resolved_prose_do_not_create_holds \
+  test_terminal_single_owner_status_decision_does_not_block_empty_inventory \
+  test_secondmate_hold_stays_in_authoritative_home \
+  test_secondmate_home_publishes_holds_and_answers \
+  test_secondmate_reconcile_publishes_before_request_retirement \
+  test_reconcile_never_closes_through_the_keyed_answer_intake \
+  test_normal_answers_retire_pending_reconcile_requests \
+  test_reconcile_closes_with_evidence_or_keeps_the_call_open \
+  test_reconcile_outcomes_retry_partial_failures_once \
+  test_unbound_source_closes_no_hold \
+  test_legacy_identities_keep_working \
+  test_board_answer_reaches_the_keyed_answer_intake \
+  test_chat_channel_feeds_the_same_keyed_answer_intake \
+  test_origin_slug_validation_precedes_path_construction \
+  test_status_resolution_over_an_open_hold_is_signalled \
+  test_legitimate_holds_produce_no_divergence_signal \
+  test_teardown_never_closes_a_captain_held_task \
+  test_interrupted_cleanup_keeps_the_captain_call_recoverable \
+  test_answer_before_cleanup_replay_preserves_the_retained_report \
+  test_unusable_pending_close_record_names_its_reason \
+  test_relocated_report_does_not_wedge_an_answer_before_replay \
+  test_teardown_retains_captain_calls_in_a_relocated_backlog \
+  test_merge_approval_releases_before_zero_done_retention \
+  test_pr_merge_entrypoint_refuses_a_captain_held_task \
+  test_local_merge_entrypoint_refuses_a_captain_held_task \
+  test_pr_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one \
+  test_local_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one \
+  test_merge_entrypoints_validate_identity_and_state_before_locking \
+  test_merge_entrypoints_refuse_a_reused_task_incarnation \
+  test_merge_entrypoints_serialize_forced_teardown_before_task_reads \
+  test_released_merge_passes_the_entrypoint_and_lands \
+  test_teardown_refuses_a_ship_when_the_captain_hold_cannot_be_read \
+  test_verify_resolves_a_hold_migrated_to_beads_notes \
+  test_verify_resolves_a_hold_migrated_under_the_configured_prefix \
+  test_marker_noted_row_wins_over_a_prefix_namesake \
+  test_complete_accepts_a_migrated_inventory_on_beads \
+  test_verify_names_the_unresolvable_legacy_id_once \
+  test_verify_resolves_a_pre_collapse_key_through_its_derived_marker \
+  test_captain_hold_mutations_address_the_beads_backend \
+  test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type

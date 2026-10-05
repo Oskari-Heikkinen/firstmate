@@ -83,7 +83,7 @@ SH
 cat > "$REMOTE_ROOT/bin/fm-shutdown-job.sh" <<'SH'
 #!/bin/bash
 trap '' HUP INT TERM
-printf 'started\n' > "$1"
+printf '%s\n' "$$" > "$1"
 sleep 3
 printf 'ran\n' > "$2"
 SH
@@ -135,6 +135,10 @@ export FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
 export FM_REMOTE_JOB_QUEUE_TIMEOUT=5
 # shellcheck disable=SC2031 # The sourced defaults above were confined to DEFAULT_BOUNDS.
 export FM_REMOTE_JOB_TIMEOUT=5
+# Every worker below inherits this, so a staged job is picked up within a tenth
+# of a second instead of waiting out the one-second idle bound. The idle-rate
+# section clears it, because that section measures the production default.
+export FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS=0.1
 # shellcheck source=bin/fm-remote-job-lib.sh
 . "$ROOT/bin/fm-remote-job-lib.sh"
 
@@ -212,6 +216,22 @@ for _ in $(seq 1 100); do
   sleep 0.05
 done
 assert_present "$STATE_ROOT/worker.ready" "the worker did not publish its readiness heartbeat"
+
+# fm-shutdown-job.sh records its own pid as its started marker. Once that
+# process is gone (or a zombie) it can never write its side effect, so waiting
+# for its exit proves what waiting out its 3-second sleep used to. The bound
+# outlasts that sleep, so a command that survives still writes its side effect
+# before the caller's absence assertion runs.
+wait_shutdown_job_gone() { # <started-file>
+  local pid
+  pid=$(cat "$1" 2>/dev/null || true)
+  case "$pid" in ''|*[!0-9]*) fail "the shutdown fixture did not record its pid" ;; esac
+  for _ in $(seq 1 100); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    [ "$(ps -o state= -p "$pid" 2>/dev/null | cut -c1)" != Z ] || return 0
+    sleep 0.05
+  done
+}
 
 file_mode() {
   if [ "$(uname)" = Darwin ]; then
@@ -493,7 +513,7 @@ done
 assert_present "$STATE_ROOT/worker.ready" "the replacement worker did not become ready"
 fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
 [ "$FM_REMOTE_JOB_EXIT" -eq 125 ] || fail "the interrupted job did not publish an unknown-completion result"
-sleep 3
+wait_shutdown_job_gone "$STARTED"
 assert_absent "$SHUTDOWN_SIDE_EFFECT" "the active command mutated after worker shutdown"
 fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the interrupted job could not be reaped"
 pass "worker shutdown terminates the active command tree before replacement"
@@ -520,7 +540,7 @@ done
   || fail "the Linux supervisor did not restart a crashed worker"
 fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
 [ "$FM_REMOTE_JOB_EXIT" -eq 125 ] || fail "worker crash recovery did not publish unknown completion"
-sleep 3
+wait_shutdown_job_gone "$CRASH_STARTED"
 assert_absent "$CRASH_SIDE_EFFECT" "an orphaned command mutated after worker crash recovery"
 fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the crash-recovered job could not be reaped"
 fm_remote_job_probe "$ACCOUNT_HOME" || fail "the restarted worker did not remain ready"
@@ -613,7 +633,7 @@ set -e
 [ "$REPLACEMENT_RC" -ne 0 ] || fail "a replacement worker ignored quarantined ownership"
 assert_present "$STATE_ROOT/worker.lock/quarantine" "a replacement removed quarantined ownership"
 kill -KILL -- "-$GROUP_PID" 2>/dev/null || true
-sleep 3
+wait_shutdown_job_gone "$QUARANTINE_STARTED"
 assert_absent "$QUARANTINE_SIDE_EFFECT" "the quarantined command mutated after explicit termination"
 pass "failed shutdown quarantines ownership against replacement workers"
 
@@ -1075,6 +1095,7 @@ SH
   chmod +x "$QUIET_SHIM/$QUIET_TOOL"
 done
 HOME="$QUIET_HOME" PATH="$QUIET_SHIM:/usr/bin:/bin:/usr/sbin:/sbin" FM_TEST_EXEC_LOG="$QUIET_EXEC_LOG" \
+  FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS='' \
   FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$QUIET_STATE" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_STAGE_REAP_SECONDS=2 \
   "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve > "$TMP_ROOT/quiet-worker.out" 2> "$TMP_ROOT/quiet-worker.err" &

@@ -848,3 +848,119 @@ fm_test_base_path_sans() {
   done
   printf '%s\n' "$dir"
 }
+
+# fm_run_case_pool <jobs> <log-dir> <case-function>...: run independent case
+# functions in a bounded pool of background subshells instead of one after
+# another, for suites whose cases spend their time waiting on real poll cycles.
+# Every case must build its own fixture and act only on processes it started.
+# Each subshell drops the caller's EXIT/INT/TERM/HUP/QUIT traps, so a failing
+# case exits alone and cannot remove a shared temp root or stop another case's
+# processes; the caller's own EXIT trap still reaps whatever it tracks. When
+# set, FM_CASE_POOL_SETUP names a function called with the case index before
+# the case, in the case's background job, and FM_CASE_POOL_TEARDOWN one called
+# in that job after it, pass or fail, with its output appended to the case log. Output is printed in
+# list order, each case's whole log at once, with a "# case <name> took Ns"
+# line, and the pool returns 1 when any case failed. A <jobs> of 1 runs the
+# cases serially; a non-numeric or zero <jobs> is refused.
+fm_run_case_pool() {
+  local jobs=$1 logs=$2 next=0 printed=0 running i status=0 start rc n
+  local -a names pids
+  shift 2
+  case "$jobs" in ''|*[!0-9]*|0) fail "fm_run_case_pool: invalid job count '$jobs'" ;; esac
+  [ "$#" -gt 0 ] || return 0
+  n=$#
+  names=("$@")
+  mkdir -p "$logs" || fail "could not create the case log directory $logs"
+  while [ "$printed" -lt "$n" ]; do
+    running=0
+    i=$printed
+    while [ "$i" -lt "$next" ]; do
+      [ -e "$logs/$i.rc" ] || running=$((running + 1))
+      i=$((i + 1))
+    done
+    while [ "$next" -lt "$n" ] && [ "$running" -lt "$jobs" ]; do
+      {
+        start=$(date +%s)
+        # Setup runs in this background job, outside the case's own subshell,
+        # so its state reaches the case and the teardown still runs after a
+        # case that exits through fail.
+        [ -z "${FM_CASE_POOL_SETUP:-}" ] || "$FM_CASE_POOL_SETUP" "$next"
+        ( trap - EXIT INT TERM HUP QUIT; "${names[$next]}" ) > "$logs/$next.out" 2>&1
+        rc=$?
+        [ -z "${FM_CASE_POOL_TEARDOWN:-}" ] || "$FM_CASE_POOL_TEARDOWN" >> "$logs/$next.out" 2>&1
+        printf '# case %s took %ss\n' "${names[$next]}" "$(( $(date +%s) - start ))" >> "$logs/$next.out"
+        printf '%s\n' "$rc" > "$logs/$next.rc.tmp" && mv -f "$logs/$next.rc.tmp" "$logs/$next.rc"
+      } &
+      pids[next]=$!
+      next=$((next + 1))
+      running=$((running + 1))
+    done
+    while [ "$printed" -lt "$next" ] && [ -e "$logs/$printed.rc" ]; do
+      cat "$logs/$printed.out"
+      if [ "$(cat "$logs/$printed.rc")" != 0 ]; then
+        printf 'not ok - case %s failed (see its output above)\n' "${names[$printed]}" >&2
+        status=1
+      fi
+      printed=$((printed + 1))
+    done
+    [ "$printed" -ge "$n" ] || sleep 0.1
+  done
+  wait "${pids[@]}" 2>/dev/null || true
+  return "$status"
+}
+
+# fm_case_pool_jobs [override]: the concurrency for fm_run_case_pool. Prints the
+# override when it is non-empty, otherwise the host's processor count capped at
+# four (two when the count cannot be read).
+fm_case_pool_jobs() {
+  local jobs=${1:-}
+  if [ -z "$jobs" ]; then
+    jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+    case "$jobs" in ''|*[!0-9]*|0) jobs=2 ;; esac
+    [ "$jobs" -le 4 ] || jobs=4
+  fi
+  printf '%s\n' "$jobs"
+}
+
+# fm_tasks_axi_probe_shim <dir> <genuine-tasks-axi> <args>...: run each
+# comma-joined argument list (for example "update,--help") once against the
+# genuine tasks-axi and write <dir>/tasks-axi, a shim that replays exactly those
+# captured stdout, stderr, and status bytes for an identical argument list and
+# execs the genuine binary for every other invocation. Suites that drive
+# fm-captain-hold.sh many times use it because every run re-probes tasks-axi's
+# static introspection at one node start per call; that probe and its verdict
+# are owned and tested by bin/fm-tasks-axi-lib.sh. Put <dir> first on PATH;
+# per-case stubs earlier on PATH still take precedence.
+fm_tasks_axi_probe_shim() {
+  local dir=$1 genuine=$2 spec i=0 rc
+  local -a args
+  shift 2
+  mkdir -p "$dir/cache"
+  for spec in "$@"; do
+    i=$((i + 1))
+    IFS=, read -r -a args <<<"$spec"
+    mkdir -p "$dir/cache/$i"
+    (IFS=$'\037'; printf '%s' "${args[*]}") >"$dir/cache/$i/args"
+    rc=0
+    "$genuine" "${args[@]}" >"$dir/cache/$i/out" 2>"$dir/cache/$i/err" || rc=$?
+    printf '%s\n' "$rc" >"$dir/cache/$i/rc"
+  done
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'cache=%q genuine=%q\n' "$dir/cache" "$genuine"
+    cat <<'SH'
+joined=$(IFS=$'\037'; printf '%s' "$*")
+for entry in "$cache"/*; do
+  want=
+  IFS= read -r -d '' want <"$entry/args" || true
+  [ "$want" = "$joined" ] || continue
+  cat "$entry/out"
+  cat "$entry/err" >&2
+  IFS= read -r rc <"$entry/rc"
+  exit "$rc"
+done
+exec "$genuine" "$@"
+SH
+  } >"$dir/tasks-axi"
+  chmod +x "$dir/tasks-axi"
+}

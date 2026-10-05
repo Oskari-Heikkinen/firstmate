@@ -314,8 +314,8 @@ SH
   printf '%s\n' "$fb"
 }
 
-run_remote_ledger_bearings() {  # <parent-home> <fakebin> <epoch>
-  local parent=$1 fakebin=$2 epoch=$3
+run_remote_ledger_bearings() {  # <parent-home> <fakebin> <epoch> [budget]
+  local parent=$1 fakebin=$2 epoch=$3 budget=${4:-15}
   # Allow process startup on loaded hosts; the 30-second fake reads still
   # exceed this shared deadline and must be cancelled.
   FM_HOME="$parent" FM_ROOT_OVERRIDE="$ROOT" FM_SSH_BIN="$fakebin/fake-ssh" \
@@ -323,7 +323,7 @@ run_remote_ledger_bearings() {  # <parent-home> <fakebin> <epoch>
     FM_TEST_LEDGER_PID_LOG="$parent/ledger-pids.log" \
     FM_TEST_LEDGER_ACTIVE_DIR="$parent/ledger-active" \
     FM_SNAPSHOT_CACHE_DIR="$parent/state/summary-cache" \
-    FM_SNAPSHOT_BUDGET=15 FM_SNAPSHOT_NOW_EPOCH="$epoch" \
+    FM_SNAPSHOT_BUDGET="$budget" FM_SNAPSHOT_NOW_EPOCH="$epoch" \
     FM_BEARINGS_NOW=2026-09-01T22:00:00Z "$BEARINGS" --json
 }
 
@@ -3092,8 +3092,7 @@ SH
 }
 
 test_large_local_snapshot_overlaps_local_reads_without_projection_drift() {
-  local home fakebin worktree serial parallel parallel_file snapshot_pid i
-  local serial_started serial_elapsed parallel_started parallel_elapsed saved
+  local home fakebin worktree serial parallel i active_dir
   home=$(make_home large-local-snapshot)
   worktree="$home/projects/shared-worktree"
   fm_git_init_commit "$worktree"
@@ -3101,9 +3100,24 @@ test_large_local_snapshot_overlaps_local_reads_without_projection_drift() {
   fakebin=$(make_fakebin "$home")
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
-if [ "$*" = "axi status" ] && [ "${FAKE_NM_DELAY:-0}" = 1 ]; then
-  [ -z "${FAKE_NM_SIGNAL:-}" ] || : > "$FAKE_NM_SIGNAL"
-  sleep 1
+# With FAKE_NM_ACTIVE_DIR set, each current-state read stays outstanding until a
+# second read is outstanding beside it, then records the proven overlap. Reads
+# that only ever run one at a time never meet, so each gives up after its
+# ceiling without the proof.
+if [ "$*" = "axi status" ] && [ -n "${FAKE_NM_ACTIVE_DIR:-}" ]; then
+  marker="$FAKE_NM_ACTIVE_DIR/read-$$"
+  : > "$marker"
+  ticks=0
+  while [ ! -e "$FAKE_NM_ACTIVE_DIR/overlap-proved" ] && [ "$ticks" -lt 100 ]; do
+    set -- "$FAKE_NM_ACTIVE_DIR"/read-*
+    if [ "$#" -ge 2 ]; then
+      : > "$FAKE_NM_ACTIVE_DIR/overlap-proved"
+      break
+    fi
+    sleep 0.05
+    ticks=$((ticks + 1))
+  done
+  rm -f "$marker"
 fi
 exit 0
 SH
@@ -3132,44 +3146,18 @@ SH
     i=$((i + 1))
   done
 
-  serial=$(FAKE_NM_DELAY=0 FM_SNAPSHOT_LOCAL_READ_CONCURRENCY=1 run "$home" "$fakebin" --json)
+  serial=$(FM_SNAPSHOT_LOCAL_READ_CONCURRENCY=1 run "$home" "$fakebin" --json)
 
-  # Serialized reads pay every worker's delay end to end while concurrent reads
-  # overlap them. Time both runs and compare, because the two pay the same
-  # composition overhead: the difference isolates the overlap this change
-  # delivers, where an absolute wall-clock budget would instead measure how
-  # loaded the host happens to be and flake on a busy runner.
-  serial_started=$(date +%s)
-  FAKE_NM_DELAY=1 FM_SNAPSHOT_LOCAL_READ_CONCURRENCY=1 \
-    run "$home" "$fakebin" --json >/dev/null \
-    || fail "serialized local snapshot failed"
-  serial_elapsed=$(( $(date +%s) - serial_started ))
-
-  parallel_started=$(date +%s)
-  parallel_file="$home/parallel-snapshot.json"
-  FAKE_NM_DELAY=1 FAKE_NM_SIGNAL="$home/nm-started" \
-    FM_SNAPSHOT_LOCAL_READ_CONCURRENCY=8 \
-    run "$home" "$fakebin" --json > "$parallel_file" &
-  snapshot_pid=$!
-  i=0
-  while [ ! -e "$home/nm-started" ] && [ "$i" -lt 100 ]; do
-    sleep 0.05
-    i=$((i + 1))
-  done
-  if [ ! -e "$home/nm-started" ]; then
-    kill "$snapshot_pid" 2>/dev/null || true
-    wait "$snapshot_pid" 2>/dev/null || true
-    fail "concurrent local snapshot never began a current-state read"
-  fi
-  wait "$snapshot_pid" || fail "concurrent local snapshot failed"
-  parallel=$(<"$parallel_file")
-  parallel_elapsed=$(( $(date +%s) - parallel_started ))
-  # Five one-second reads serialize into five seconds and overlap into about
-  # one, so at least two of those four seconds must show up as real savings.
-  # Serializing the reads again collapses that difference to roughly zero.
-  saved=$(( serial_elapsed - parallel_elapsed ))
-  [ "$saved" -ge 2 ] \
-    || fail "concurrent local reads saved no measurable time (serial ${serial_elapsed}s vs concurrent ${parallel_elapsed}s)"
+  # Concurrent reads must actually be outstanding together. The fake read only
+  # records the overlap when a second read is live beside it, so this decides
+  # concurrency by what the reads observed rather than by wall-clock savings a
+  # loaded host could erase or fake.
+  active_dir="$home/nm-active"
+  mkdir -p "$active_dir"
+  parallel=$(FAKE_NM_ACTIVE_DIR="$active_dir" FM_SNAPSHOT_LOCAL_READ_CONCURRENCY=8 \
+    run "$home" "$fakebin" --json) || fail "concurrent local snapshot failed"
+  [ -e "$active_dir/overlap-proved" ] \
+    || fail "concurrent local snapshot never had two current-state reads outstanding together"
   [ "$parallel" = "$serial" ] \
     || fail "concurrent local observation changed the fm-bearings.v1 projection"
   printf '%s' "$parallel" | jq -e '
@@ -3287,9 +3275,11 @@ EOF
   : > "$parent/ledger-calls.log"
   : > "$parent/ledger-pids.log"
   rm -f "$parent/ledger-active/overlap-proved" "$parent/ledger-active"/collector-*
-  json=$(run_remote_ledger_bearings "$parent" "$fakebin" 2000)
+  # Every read here is wedged, so no fresh row has to fit: a shorter shared
+  # budget still has to start all five reads together and cancel them.
+  json=$(run_remote_ledger_bearings "$parent" "$fakebin" 2000 8)
   [ -f "$parent/ledger-active/overlap-proved" ] \
-    || fail "five wedged remote reads never overlapped within the shared fifteen-second budget"
+    || fail "five wedged remote reads never overlapped within the shared eight-second budget"
   printf '%s' "$json" | jq -e '
     (.secondmates | length) == 5
       and all(.secondmates[]; .freshness == "cached" and .age_seconds == 1000
@@ -3354,63 +3344,81 @@ test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_co
   pass "a missing remote ledger stays explicitly unreadable without remote summary computation"
 }
 
-test_task_teardown_during_metadata_capture_does_not_abort_snapshot
-test_current_state_uses_captured_status_observation
-test_relaunched_task_does_not_inherit_reused_endpoint_state
+
+# run_cases_concurrently <case>...: run independent cases through
+# fm_run_case_pool (tests/lib.sh). FM_TEST_CASE_JOBS overrides the concurrency,
+# which defaults to the host's processor count capped at four.
+run_cases_concurrently() {
+  local jobs
+  jobs=$(fm_case_pool_jobs "${FM_TEST_CASE_JOBS:-}")
+  fm_run_case_pool "$jobs" "$TMP_ROOT/.concurrent-cases" "$@" || exit 1
+}
+
+# Every case below builds its own homes under a name of its own, so they run
+# concurrently.
+run_cases_concurrently \
+  test_mixed_secondmate_roles_partial_state_and_captain_readiness \
+  test_landed_accepts_only_kind_owned_delivery_artifacts \
+  test_registry_unavailability_and_bounds_are_explicit \
+  test_secondmate_and_child_bounds_are_disclosed \
+  test_working_captain_holds_keep_their_bucket_surfaces \
+  test_task_teardown_during_metadata_capture_does_not_abort_snapshot \
+  test_current_state_uses_captured_status_observation \
+  test_relaunched_task_does_not_inherit_reused_endpoint_state \
+  test_domain_alpha_stale_parent_event_does_not_become_current_work \
+  test_gnu_stat_uses_file_formats_without_bsd_fallback_pollution \
+  test_parent_activity_evidence_is_bounded_and_disclosed \
+  test_active_child_overrides_old_parent_event \
+  test_structured_child_decision_reaches_captains_call \
+  test_bad_secondmate_homes_never_revive_parent_work \
+  test_oversized_secondmate_summary_stays_strict_unknown \
+  test_parent_decision_is_untrusted_contradiction_only \
+  test_parent_evidence_reconciles_by_verb_and_key \
+  test_nonprogressing_child_states_are_explicit \
+  test_current_landed_baseline_is_repeatable_and_prior_report_independent \
+  test_default_is_bounded_and_local_only \
+  test_toon_json_parity \
+  test_landed_includes_secondmate_home_merges \
+  test_kind_fallback_matches_tasks_axi_word_boundaries \
+  test_landed_default_balances_dominant_and_sparse_homes \
+  test_landed_default_refills_capacity_after_sparse_homes_exhaust \
+  test_landed_default_uses_deterministic_home_order_when_homes_exceed_cap \
+  test_landed_default_preserves_internal_order_for_ties \
+  test_landed_default_handles_no_landed_items \
+  test_all_landed_keeps_complete_global_order \
+  test_landed_bounded_and_disclosed \
+  test_live_blocker_is_not_charted_queue_work \
+  test_captains_call_anti_leak \
+  test_main_orphan_in_flight_is_disclosed_not_invented \
+  test_main_unstructured_current_is_disclosed_with_structured_sibling \
+  test_main_orphan_counterfactual_meta_clears_inventory_warning \
+  test_active_children_project_independent_of_home_captain_hold \
+  test_newest_filed_gates_are_selected_before_snapshot_bounds \
+  test_underway_and_gate_rows_carry_the_durable_name_and_filed_date \
+  test_main_captain_readiness_matches_secondmate_projection \
+  test_completed_scout_report_not_pending \
+  test_open_decision_surfaces_end_to_end \
+  test_report_pointers_surface \
+  test_queued_item_prose_never_hides_it \
+  test_include_prs_is_the_only_fetch_path \
+  test_include_prs_maps_custom_branch_prefix_to_task \
+  test_partial_github_failure_degrades \
+  test_perl_fallback_bounds_github_call \
+  test_section_caps_and_expansion_flags \
+  test_collapsed_captain_call_deferral_and_landed \
+  test_undated_hold_phrasing_and_aging_projection \
+  test_blocked_deferred_hold_has_concrete_disclosure \
+  test_revealed_deferred_holds_show_their_deferral_reason \
+  test_pr_repository_cap_and_expansion \
+  test_per_repository_pr_cap_is_disclosed \
+  test_projection_and_toon_fail_closed
+
+# These run one at a time after the concurrent batch, alone on the host: the
+# first judges overlap by what concurrent reads observe, the second judges a
+# shared wall-clock budget, and the remaining three reuse the second's fixed
+# remote-ledger fixture home in this order.
 test_large_local_snapshot_overlaps_local_reads_without_projection_drift
 test_remote_ledgers_share_one_concurrent_budget_and_fall_back_to_cache
 test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_compute
-test_domain_alpha_stale_parent_event_does_not_become_current_work
-test_gnu_stat_uses_file_formats_without_bsd_fallback_pollution
-test_parent_activity_evidence_is_bounded_and_disclosed
-test_active_child_overrides_old_parent_event
-test_structured_child_decision_reaches_captains_call
-test_bad_secondmate_homes_never_revive_parent_work
-test_oversized_secondmate_summary_stays_strict_unknown
-test_secondmate_and_child_bounds_are_disclosed
-test_parent_decision_is_untrusted_contradiction_only
-test_parent_evidence_reconciles_by_verb_and_key
-test_nonprogressing_child_states_are_explicit
-test_registry_unavailability_and_bounds_are_explicit
-test_current_landed_baseline_is_repeatable_and_prior_report_independent
-test_default_is_bounded_and_local_only
-test_toon_json_parity
-test_landed_includes_secondmate_home_merges
-test_landed_accepts_only_kind_owned_delivery_artifacts
-test_kind_fallback_matches_tasks_axi_word_boundaries
 test_landed_preserves_kindless_v1_summary_reports
-test_landed_default_balances_dominant_and_sparse_homes
-test_landed_default_refills_capacity_after_sparse_homes_exhaust
-test_landed_default_uses_deterministic_home_order_when_homes_exceed_cap
-test_landed_default_preserves_internal_order_for_ties
-test_landed_default_handles_no_landed_items
-test_all_landed_keeps_complete_global_order
-test_landed_bounded_and_disclosed
-test_live_blocker_is_not_charted_queue_work
-test_captains_call_anti_leak
-test_main_orphan_in_flight_is_disclosed_not_invented
-test_main_unstructured_current_is_disclosed_with_structured_sibling
-test_main_orphan_counterfactual_meta_clears_inventory_warning
-test_working_captain_holds_keep_their_bucket_surfaces
-test_active_children_project_independent_of_home_captain_hold
 test_nameless_legacy_summary_uses_its_durable_identifier
-test_newest_filed_gates_are_selected_before_snapshot_bounds
-test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
-test_mixed_secondmate_roles_partial_state_and_captain_readiness
-test_main_captain_readiness_matches_secondmate_projection
-test_completed_scout_report_not_pending
-test_open_decision_surfaces_end_to_end
-test_report_pointers_surface
-test_queued_item_prose_never_hides_it
-test_include_prs_is_the_only_fetch_path
-test_include_prs_maps_custom_branch_prefix_to_task
-test_partial_github_failure_degrades
-test_perl_fallback_bounds_github_call
-test_section_caps_and_expansion_flags
-test_collapsed_captain_call_deferral_and_landed
-test_undated_hold_phrasing_and_aging_projection
-test_blocked_deferred_hold_has_concrete_disclosure
-test_revealed_deferred_holds_show_their_deferral_reason
-test_pr_repository_cap_and_expansion
-test_per_repository_pr_cap_is_disclosed
-test_projection_and_toon_fail_closed

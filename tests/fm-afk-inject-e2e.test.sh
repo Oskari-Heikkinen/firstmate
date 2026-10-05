@@ -268,6 +268,7 @@ selfcheck_pane_input_pending
 
 test_scenario_a() {
   reset_state
+  : > "$STATE_DIR/.supervise-daemon.log"
   afk_enter "$STATE_DIR"
   start_daemon
 
@@ -281,8 +282,17 @@ test_scenario_a() {
   # real watcher child.
   echo "done: PR https://example.test/pr/100" > "$STATE_DIR/fake-c1.status"
 
-  # Wait for the watcher to detect the change and the daemon to attempt inject.
-  sleep 6
+  # Wait until the daemon has actually attempted the inject and deferred on the
+  # pending composer, which positively proves the guard fired (a blind wait
+  # could pass before the daemon ever tried).
+  local i=0
+  while [ "$i" -lt 150 ]; do
+    grep -qF 'deferred: supervisor composer not confirmed-empty' "$STATE_DIR/.supervise-daemon.log" 2>/dev/null && break
+    sleep 0.2
+    i=$((i + 1))
+  done
+  grep -qF 'deferred: supervisor composer not confirmed-empty' "$STATE_DIR/.supervise-daemon.log" 2>/dev/null \
+    || fail "Scenario A: the daemon never deferred on the pending human draft within 30s"
 
   # Assert: the digest was NOT injected while the pane had pending input.
   if grep -q 'Supervisor escalate' "$LOG_FILE"; then
@@ -297,10 +307,14 @@ test_scenario_a() {
 
   # Now submit the human's text (Enter). The pane goes idle.
   "$REAL_TMUX" -L "$SOCKET" send-keys -t "$SUPERVISOR_PANE" Enter
-  sleep 0.5
 
   # Wait for the daemon to retry injection (housekeeping tick = 1s).
-  sleep 6
+  i=0
+  while [ "$i" -lt 150 ]; do
+    grep -q 'Supervisor escalate' "$LOG_FILE" && break
+    sleep 0.2
+    i=$((i + 1))
+  done
 
   # Assert: human text was submitted alone (as a user message).
   grep -q 'human draft text' "$LOG_FILE" \

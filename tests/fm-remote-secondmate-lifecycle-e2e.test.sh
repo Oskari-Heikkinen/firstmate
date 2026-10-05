@@ -14,6 +14,10 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 TMP_ROOT=$(fm_test_tmproot fm-remote-secondmate-e2e)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+# The remote job worker this fixture starts inherits this, so each remote call
+# is picked up within a tenth of a second instead of up to a one-second idle
+# wait; tests/fm-remote-job.test.sh pins the production idle default.
+export FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS=0.1
 PARENT="$TMP_ROOT/parent"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
@@ -285,21 +289,38 @@ remote_env() {
   "$@"
 }
 
+# Wall-clock bound for every condition wait below; see await_entered.
+FM_E2E_WAIT_DEADLINE=120
+
 reply_owner() {
   remote_env "$ROOT/bin/fm-procevent.sh" list 2>/dev/null \
     | awk -v id="$SID" 'NR > 1 && $1 == id { print $3; exit }'
 }
 
 await_reply_result() { # <result-path>
-  local result=$1 handled=${1%.result}.handled _
+  local result=$1 handled=${1%.result}.handled start=$SECONDS
   if [ "$(reply_owner)" != live ]; then
     remote_env "$ROOT/bin/fm-procevent.sh" start "$SID" >/dev/null 2>&1 &
   fi
-  for _ in $(seq 1 800); do
+  while [ "$SECONDS" -lt "$((start + FM_E2E_WAIT_DEADLINE))" ]; do
     [ -s "$result" ] && [ -f "$handled" ] && return 0
     sleep 0.05
   done
   return 1
+}
+
+# await_entered <path> <pid> <exited-message> <never-message>: wait until a
+# blocked fixture step publishes <path>, failing at once if <pid> exits first.
+# The wall-clock deadline only catches a wedge: the remote round trips before
+# these points are real work that a loaded runner slows down, so a poll count
+# would fail a correct run under concurrent load.
+await_entered() {
+  local path=$1 pid=$2 exited=$3 never=$4 start=$SECONDS
+  while [ ! -f "$path" ]; do
+    kill -0 "$pid" 2>/dev/null || fail "$exited"
+    [ "$SECONDS" -lt "$((start + FM_E2E_WAIT_DEADLINE))" ] || fail "$never"
+    sleep 0.02
+  done
 }
 
 sha256_file() {
@@ -382,13 +403,9 @@ PATH="$FAKEBIN:$PATH" FM_HOME="$TMP_ROOT/concurrent-home" FM_ROOT_OVERRIDE="$REM
   "$REMOTE_ROOT/bin/fm-remote-home-provision.sh" < "$TMP_ROOT/provision.manifest" \
   > "$TMP_ROOT/provision-one.out" 2>&1 &
 provision_one=$!
-provision_wait=0
-while [ ! -f "$TMP_ROOT/provision.entered" ]; do
-  kill -0 "$provision_one" 2>/dev/null || fail "first provisioning attempt exited before cloning"
-  provision_wait=$((provision_wait + 1))
-  [ "$provision_wait" -le 250 ] || fail "first provisioning attempt never reached cloning"
-  sleep 0.02
-done
+await_entered "$TMP_ROOT/provision.entered" "$provision_one" \
+  "first provisioning attempt exited before cloning" \
+  "first provisioning attempt never reached cloning"
 PATH="$FAKEBIN:$PATH" FM_HOME="$TMP_ROOT/concurrent-home" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
   "$REMOTE_ROOT/bin/fm-remote-home-provision.sh" < "$TMP_ROOT/provision.manifest" \
   > "$TMP_ROOT/provision-two.out" 2>&1 &
@@ -417,13 +434,9 @@ PATH="$FAKEBIN:$PATH" FM_HOME="$TMP_ROOT/raced-home" FM_ROOT_OVERRIDE="$REMOTE_R
   "$REMOTE_ROOT/bin/fm-remote-home-provision.sh" < "$TMP_ROOT/race.manifest" \
   > "$TMP_ROOT/race-provision.out" 2>&1 &
 race_provision=$!
-race_wait=0
-while [ ! -f "$TMP_ROOT/race-clone.held" ]; do
-  kill -0 "$race_provision" 2>/dev/null || fail "provision exited before its clone could be held"
-  race_wait=$((race_wait + 1))
-  [ "$race_wait" -le 250 ] || fail "provision clone never reached the held point"
-  sleep 0.02
-done
+await_entered "$TMP_ROOT/race-clone.held" "$race_provision" \
+  "provision exited before its clone could be held" \
+  "provision clone never reached the held point"
 rm -rf -- "$TMP_ROOT/raced-home"
 touch "$TMP_ROOT/race-clone.release"
 wait "$race_provision" \
@@ -452,13 +465,9 @@ PATH="$FAKEBIN:$PATH" FM_HOME="$TMP_ROOT/appeared-home" FM_ROOT_OVERRIDE="$REMOT
   "$REMOTE_ROOT/bin/fm-remote-home-provision.sh" < "$TMP_ROOT/race.manifest" \
   > "$TMP_ROOT/appeared-provision.out" 2>&1 &
 appeared_provision=$!
-race_wait=0
-while [ ! -f "$TMP_ROOT/race-clone.held" ]; do
-  kill -0 "$appeared_provision" 2>/dev/null || fail "appeared-home provision exited before its clone could be held"
-  race_wait=$((race_wait + 1))
-  [ "$race_wait" -le 250 ] || fail "appeared-home provision clone never reached the held point"
-  sleep 0.02
-done
+await_entered "$TMP_ROOT/race-clone.held" "$appeared_provision" \
+  "appeared-home provision exited before its clone could be held" \
+  "appeared-home provision clone never reached the held point"
 mkdir "$TMP_ROOT/appeared-home"
 printf 'foreign\n' > "$TMP_ROOT/appeared-home/foreign"
 touch "$TMP_ROOT/race-clone.release"
@@ -485,13 +494,9 @@ FM_SECONDMATE_CHARTER='Failing seed charter.' FM_SECONDMATE_SCOPE='failed seed' 
   seed-fail remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-fail-home" --no-projects \
   > "$TMP_ROOT/seed-fail.out" 2>&1 &
 seed_fail_pid=$!
-seed_wait=0
-while [ ! -f "$TMP_ROOT/seed.entered" ]; do
-  kill -0 "$seed_fail_pid" 2>/dev/null || fail "failing seed exited before remote provisioning"
-  seed_wait=$((seed_wait + 1))
-  [ "$seed_wait" -le 250 ] || fail "failing seed never reached remote provisioning"
-  sleep 0.02
-done
+await_entered "$TMP_ROOT/seed.entered" "$seed_fail_pid" \
+  "failing seed exited before remote provisioning" \
+  "failing seed never reached remote provisioning"
 FM_SECONDMATE_CHARTER='Successful seed charter.' FM_SECONDMATE_SCOPE='successful seed' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-keep remote-mac "$REMOTE_ROOT" \
   "$TMP_ROOT/seed-keep-home" --no-projects > "$TMP_ROOT/seed-keep.out" 2>&1 &
@@ -962,15 +967,11 @@ EOF
 FM_FAKE_SSH_MODE=inherit-block remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate \
   > "$TMP_ROOT/spawn-concurrent.out" 2>&1 &
 spawn_concurrent=$!
-spawn_inherit_wait=0
-# Earlier inherited files traverse the worker before captain-shared.md, so give
-# a loaded portable runner 30 seconds to reach this deliberately blocked write.
-while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
-  kill -0 "$spawn_concurrent" 2>/dev/null || fail "remote spawn exited before its blocked inheritance write"
-  spawn_inherit_wait=$((spawn_inherit_wait + 1))
-  [ "$spawn_inherit_wait" -le 1500 ] || fail "remote spawn never reached its blocked inheritance write"
-  sleep 0.02
-done
+# Earlier inherited files traverse the worker before captain-shared.md, so a
+# loaded portable runner can take a while to reach this deliberately blocked write.
+await_entered "$TMP_ROOT/inherit.entered" "$spawn_concurrent" \
+  "remote spawn exited before its blocked inheritance write" \
+  "remote spawn never reached its blocked inheritance write"
 cat > "$PARENT/data/captain-shared.md" <<'EOF'
 # Shared captain preferences
 This file is main-authoritative and maintained by the main firstmate.
@@ -1073,15 +1074,11 @@ EOF
 FM_FAKE_SSH_MODE=inherit-block remote_env "$ROOT/bin/fm-config-push.sh" \
   > "$TMP_ROOT/config-concurrent-first.out" 2>&1 &
 config_first=$!
-inherit_wait=0
-while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
-  kill -0 "$config_first" 2>/dev/null || fail "first inheritance transaction exited before its blocked write"
-  inherit_wait=$((inherit_wait + 1))
-  # Match the earlier spawn/inheritance wait: a loaded portable runner can
-  # spend several seconds in the remote entrypoint before reaching this write.
-  [ "$inherit_wait" -le 1500 ] || fail "first inheritance transaction never reached its blocked write"
-  sleep 0.02
-done
+# Match the earlier spawn/inheritance wait: a loaded portable runner can
+# spend several seconds in the remote entrypoint before reaching this write.
+await_entered "$TMP_ROOT/inherit.entered" "$config_first" \
+  "first inheritance transaction exited before its blocked write" \
+  "first inheritance transaction never reached its blocked write"
 cat > "$PARENT/data/captain-shared.md" <<'EOF'
 # Shared captain preferences
 This file is main-authoritative and maintained by the main firstmate.
@@ -1145,7 +1142,8 @@ resolve_ios_pending() {
       remote_env "$ROOT/bin/fm-procevent.sh" start "$SID" >/dev/null 2>&1 &
     fi
     pending_seen=0
-    for _ in $(seq 1 800); do
+    pending_start=$SECONDS
+    while [ "$SECONDS" -lt "$((pending_start + FM_E2E_WAIT_DEADLINE))" ]; do
       now_results=$(find "$PARENT/state/procevent-inbox" -name "$SID.*.result" 2>/dev/null | wc -l | tr -d ' ')
       pending_result=$(find "$PARENT/state/procevent-inbox" -name "$SID.*.result" -print 2>/dev/null | sort | tail -1)
       if [ "$now_results" -gt "$before_results" ] && [ -n "$pending_result" ] \
@@ -1281,10 +1279,12 @@ FM_STATE_OVERRIDE="$WATCH_STATE" FM_SECONDMATE_LIVENESS_SECS=1 FM_POLL=1 \
   remote_env exec "$ROOT/bin/fm-watch.sh" \
   > "$TMP_ROOT/watch-liveness.out" 2> "$TMP_ROOT/watch-liveness.err" &
 watch_pid=$!
-watch_wait=0
-while kill -0 "$watch_pid" 2>/dev/null && [ "$watch_wait" -lt 1500 ]; do
-  sleep 0.02
-  watch_wait=$((watch_wait + 1))
+# The relaunch it waits on is a full guarded remote spawn (readiness,
+# inheritance push, launch), so the wall-clock deadline only catches a wedged
+# watcher; the assertion is that it exits on the wake, not how quickly.
+watch_start=$SECONDS
+while kill -0 "$watch_pid" 2>/dev/null && [ "$SECONDS" -lt "$((watch_start + FM_E2E_WAIT_DEADLINE))" ]; do
+  sleep 0.05
 done
 if kill -0 "$watch_pid" 2>/dev/null; then
   kill "$watch_pid" 2>/dev/null || true
@@ -1333,6 +1333,14 @@ FM_FAKE_SSH_MODE=unreachable FM_STATE_OVERRIDE="$WATCH_STATE_UNREACHABLE" \
   remote_env exec "$ROOT/bin/fm-watch.sh" \
   > "$TMP_ROOT/watch-unreachable.out" 2> "$TMP_ROOT/watch-unreachable.err" &
 watch_pid=$!
+# Wait for the first probe of the unreachable host, then give the watcher four
+# more seconds of liveness cycles in which it must not exit.
+watch_start=$SECONDS
+while [ "$(cat "$SSH_COUNT" 2>/dev/null || printf '0')" -le "$ssh_before" ] \
+  && kill -0 "$watch_pid" 2>/dev/null \
+  && [ "$SECONDS" -lt "$((watch_start + FM_E2E_WAIT_DEADLINE))" ]; do
+  sleep 0.05
+done
 sleep 4
 kill -0 "$watch_pid" 2>/dev/null \
   || fail "the watcher exited against an unreachable remote secondmate: $(cat "$TMP_ROOT/watch-unreachable.out" "$TMP_ROOT/watch-unreachable.err")"
@@ -1507,13 +1515,9 @@ liveness_lock="$PARENT/state/.secondmate-liveness-ios.lock"
 ( STATE="$PARENT/state" exec bash -c '. "$1" && fm_lock_acquire_wait "$2" && touch "$3" && exec sleep 120' \
     _ "$ROOT/bin/fm-wake-lib.sh" "$liveness_lock" "$TMP_ROOT/liveness.entered" ) &
 liveness_holder_pid=$!
-liveness_wait=0
-while [ ! -f "$TMP_ROOT/liveness.entered" ]; do
-  kill -0 "$liveness_holder_pid" 2>/dev/null || fail "liveness lock holder exited before acquiring the lock"
-  liveness_wait=$((liveness_wait + 1))
-  [ "$liveness_wait" -le 250 ] || fail "liveness lock holder never acquired the lock"
-  sleep 0.02
-done
+await_entered "$TMP_ROOT/liveness.entered" "$liveness_holder_pid" \
+  "liveness lock holder exited before acquiring the lock" \
+  "liveness lock holder never acquired the lock"
 liveness_owner=$liveness_holder_pid
 [ "$(cat "$liveness_lock/pid" 2>/dev/null)" = "$liveness_owner" ] \
   || fail "liveness lock holder did not own its acquired lock"
@@ -1539,26 +1543,18 @@ FM_HOME="$PARENT" /bin/bash -c '
 ' _ "$ROOT/bin/fm-wake-lib.sh" "$handoff_lock" "$TMP_ROOT/handoff.entered" \
   "$TMP_ROOT/handoff.release" &
 handoff_holder_pid=$!
-handoff_wait=0
-while [ ! -f "$TMP_ROOT/handoff.entered" ]; do
-  kill -0 "$handoff_holder_pid" 2>/dev/null || fail "handoff lock holder exited before acquiring the route lock"
-  handoff_wait=$((handoff_wait + 1))
-  [ "$handoff_wait" -le 250 ] || fail "handoff lock holder never acquired the route lock"
-  sleep 0.02
-done
+await_entered "$TMP_ROOT/handoff.entered" "$handoff_holder_pid" \
+  "handoff lock holder exited before acquiring the route lock" \
+  "handoff lock holder never acquired the route lock"
 rm -f "$TMUX_STATE" "$TMP_ROOT/launch.entered" "$TMP_ROOT/launch.release"
 FM_FAKE_SSH_MODE=launch-block remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate \
   > "$TMP_ROOT/spawn-retirement.out" 2>&1 &
 spawn_retirement_pid=$!
-launch_wait=0
-# The respawn performs readiness and inheritance jobs before launch, so allow
-# the same 30-second loaded-runner bound as the earlier blocked worker path.
-while [ ! -f "$TMP_ROOT/launch.entered" ]; do
-  kill -0 "$spawn_retirement_pid" 2>/dev/null || fail "remote respawn exited before its blocked launch"
-  launch_wait=$((launch_wait + 1))
-  [ "$launch_wait" -le 1500 ] || fail "remote respawn never reached its blocked launch"
-  sleep 0.02
-done
+# The respawn performs readiness and inheritance jobs before launch, so a
+# loaded runner can take a while to reach this blocked launch.
+await_entered "$TMP_ROOT/launch.entered" "$spawn_retirement_pid" \
+  "remote respawn exited before its blocked launch" \
+  "remote respawn never reached its blocked launch"
 remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-serialized.out" 2>&1 &
 teardown_pid=$!
 sleep 0.2

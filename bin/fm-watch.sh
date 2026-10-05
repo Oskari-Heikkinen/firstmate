@@ -3045,10 +3045,17 @@ while :; do
   # The existing poll loop also owns the bounded inactive-outcome cadence.
   # This is mechanical and silent unless a durable terminal-outcome obligation
   # was created, so quiet cycles never wake firstmate or consume model tokens.
+  # Test seam, honored only under tests/lib.sh's FM_TEST_SEAM=1:
+  # FM_INACTIVE_RECONCILE_BIN lets a test that does not exercise this cadence
+  # stub the per-poll scan.
   watcher_beat
+  inactive_bin=$SCRIPT_DIR/fm-inactive-reconcile.sh
+  if [ "${FM_TEST_SEAM:-}" = 1 ] && [ -n "${FM_INACTIVE_RECONCILE_BIN:-}" ]; then
+    inactive_bin=$FM_INACTIVE_RECONCILE_BIN
+  fi
   inactive_out=
   if inactive_out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-    "$SCRIPT_DIR/fm-inactive-reconcile.sh" scan 2>/dev/null); then
+    "$inactive_bin" scan 2>/dev/null); then
     if [ -n "$inactive_out" ]; then
       wake "check: inactive-outcome"
     fi

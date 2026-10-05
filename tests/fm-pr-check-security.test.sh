@@ -107,30 +107,45 @@ assert_private_symlink_unchanged() {
   esac
 }
 
+# One mode read and one hash process cover every regular file, so a snapshot
+# stays cheap enough to take around each of the hundreds of refused calls below.
 state_snapshot() {
-  local state=$1 file
+  local state=$1
   (
     cd "$state" || exit 1
-    find . \( -type f -o -type l \) -print | LC_ALL=C sort | while IFS= read -r file; do
+    files=()
+    while IFS= read -r file; do
       if [ -L "$file" ]; then
         printf 'link %s %s\n' "$file" "$(readlink "$file")"
       else
-        printf 'file %s %s ' "$file" "$(file_mode "$file")"
-        shasum -a 256 "$file" | awk '{print $1}'
+        files+=("$file")
       fi
-    done
+    done < <(find . \( -type f -o -type l \) -print | LC_ALL=C sort)
+    [ "${#files[@]}" -gt 0 ] || exit 0
+    if [ "$(uname)" = Darwin ]; then
+      stat -f 'file %N %Lp' -- "${files[@]}"
+    else
+      stat -c 'file %n %a' -- "${files[@]}"
+    fi
+    shasum -a 256 -- "${files[@]}"
   )
 }
+
+# Every case's worktree is the same empty-commit repository with origin/main at
+# that commit, so it is built once here and copied into each case.
+CASE_WT_TEMPLATE="$TMP_ROOT/.case-template/wt"
+mkdir -p "$CASE_WT_TEMPLATE"
+git -C "$CASE_WT_TEMPLATE" init -q
+git -C "$CASE_WT_TEMPLATE" commit -q --allow-empty -m init
+git -C "$CASE_WT_TEMPLATE" update-ref refs/remotes/origin/main "$(git -C "$CASE_WT_TEMPLATE" rev-parse HEAD)"
 
 make_case() {
   local name=$1 dir fakebin fake_root
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
   fake_root="$dir/root"
-  mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
-  git -C "$dir/wt" init -q
-  git -C "$dir/wt" commit -q --allow-empty -m init
-  git -C "$dir/wt" update-ref refs/remotes/origin/main "$(git -C "$dir/wt" rev-parse HEAD)"
+  mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$fakebin" "$fake_root/bin"
+  cp -a "$CASE_WT_TEMPLATE" "$dir/wt"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
@@ -546,9 +561,10 @@ test_invalid_entrypoints_have_zero_side_effects() {
   printf 'existing-check\n' > "$dir/home/state/task-a.check.sh"
   printf 'existing-data\n' > "$dir/home/state/task-a.pr-poll"
   chmod 0600 "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll"
+  # Every refused call must leave this exact state, so one baseline serves them all.
+  before=$(state_snapshot "$dir/home/state")
 
   for value in "${INVALID_URLS[@]}"; do
-    before=$(state_snapshot "$dir/home/state")
     set +e
     run_check_entry "$dir" task-a "$value" > "$dir/stdout" 2> "$dir/stderr"
     rc=$?
@@ -560,7 +576,6 @@ test_invalid_entrypoints_have_zero_side_effects() {
   done
 
   for value in "${INVALID_IDS[@]}"; do
-    before=$(state_snapshot "$dir/home/state")
     set +e
     run_check_entry "$dir" "$value" https://github.com/o/r/pull/1 > "$dir/stdout" 2> "$dir/stderr"
     rc=$?
@@ -571,7 +586,6 @@ test_invalid_entrypoints_have_zero_side_effects() {
   done
 
   for value in "${INVALID_URLS[@]}"; do
-    before=$(state_snapshot "$dir/home/state")
     set +e
     run_merge_entry "$dir" task-a "$value" > "$dir/stdout" 2> "$dir/stderr"
     rc=$?
@@ -583,7 +597,6 @@ test_invalid_entrypoints_have_zero_side_effects() {
   done
 
   for value in "${INVALID_IDS[@]}"; do
-    before=$(state_snapshot "$dir/home/state")
     set +e
     run_merge_entry "$dir" "$value" https://github.com/o/r/pull/1 > "$dir/stdout" 2> "$dir/stderr"
     rc=$?
@@ -594,7 +607,6 @@ test_invalid_entrypoints_have_zero_side_effects() {
   done
 
   for value in "${UNSAFE_LIFECYCLE_IDS[@]}"; do
-    before=$(state_snapshot "$dir/home/state")
     set +e
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_TEST_GUARD_LOG="$dir/guard.log" \
       "$TEARDOWN" "$value" --force > "$dir/stdout" 2> "$dir/stderr"
@@ -1551,7 +1563,8 @@ SH
 # submittable change into a merge. Its evidence against a real change is in
 # docs/gerrit-change-watch.md; this exercises the same paths hermetically.
 test_gerrit_merge_watch() {
-  local dir state out rc url value notool entry bindir name tool
+  local dir state out rc url value notool entry bindir tool
+  local -a entries
   dir=$(make_case gerrit-merge-watch)
   state="$dir/home/state"
   url=https://gerrit.example/c/group/apps/console/+/4201
@@ -1646,14 +1659,17 @@ group/apps/console
     notool="$dir/no-$tool"
     rm -rf "$notool"
     mkdir -p "$notool"
+    # One ln per bindir: ln leaves a name an earlier bindir already supplied in
+    # place, so the first match still wins as it does on the real path.
     while IFS= read -r bindir; do
       [ -d "$bindir" ] || continue
+      entries=()
       for entry in "$bindir"/*; do
         [ -e "$entry" ] || continue
-        name=$(basename "$entry")
-        [ "$name" = "$tool" ] && continue
-        [ -e "$notool/$name" ] || ln -s "$entry" "$notool/$name" 2>/dev/null
+        [ "${entry##*/}" = "$tool" ] && continue
+        entries+=("$entry")
       done
+      [ "${#entries[@]}" -eq 0 ] || ln -s -- "${entries[@]}" "$notool/" 2>/dev/null || :
     done <<EOF
 $dir/fakebin
 $(printf '%s\n' "$BASE_PATH" | tr ':' '\n')
@@ -3439,48 +3455,57 @@ SH
   pass "device re-record publication waits without rewriting its registration"
 }
 
-test_parser_matrix
-test_gitlab_merge_watch
-test_gerrit_merge_watch
-test_gerrit_arming_records_no_patch_set_revision
-test_gerrit_ready_gate_reads_the_published_tree
-test_gerrit_nm_ready_gate_requires_recovered_custody
-test_merged_poll_retires_once
-test_merged_poll_reregistration_after_notification_is_absorbed
-test_merged_poll_retries_a_failed_upward_report
-test_self_merge_and_poll_publish_one_outcome
-test_merged_poll_row_carries_the_merge_authority
-test_merged_poll_row_names_no_authority_when_no_record_grants_one
-test_authority_persistence_refuses_rebound_metadata
-test_authority_persists_before_control_unlock
-test_teardown_cannot_race_authority_consumption
-test_authority_retirement_preserves_replacement
-test_merged_poll_reports_upward_from_a_secondmate_home_once
-test_different_merged_pr_for_same_task_is_not_absorbed
-test_persistent_secondmate_retirement_is_poll_only
-test_retirement_crash_recovery
-test_external_merge_transition_retires_only_terminal_poll
-test_retirement_refuses_replacement_and_nonterminal_results
-test_retirement_queue_failure_and_receipt_tampering
-test_gitlab_merged_poll_retires
-test_invalid_entrypoints_have_zero_side_effects
-test_draft_pull_request_is_not_armed
-test_secondmate_record_refuses_a_pr_watch
-test_unpushed_named_head_refuses_registration
-test_direct_pr_unpushed_commit_refuses_registration
-test_valid_recording_and_merge_derivation
-test_rejected_metacharacter_bytes_are_inert
-test_static_poll_contract
-test_atomic_interruption_leaves_no_partial_artifact
-test_concurrent_watcher_sees_only_complete_publication
-test_poll_publication_refuses_unsafe_destinations
-test_live_artifact_single_link_and_privacy_validation
-test_device_renumbered_poll_stays_armed
-test_device_rerecord_refuses_tampered_artifacts
-test_device_rerecord_serializes_direct_rearm
-test_device_rerecord_serializes_rerecord
-test_postrename_poll_validation_revokes_and_retries
-test_bootstrap_leaves_unauthenticated_checks
-test_custom_snapshot_cleanup_on_signal
-test_returned_custom_check_descendants_are_drained
-test_teardown_removes_poll_artifacts
+# Every case builds its own sandbox under a name of its own from the shared
+# read-only worktree template and signals only processes it started itself, so
+# no case depends on another or on their order; they run through
+# fm_run_case_pool (tests/lib.sh), longest first.
+# FM_PR_CHECK_SECURITY_CASE_JOBS overrides the concurrency, which defaults to
+# the host's processor count capped at four; 1 runs the cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_PR_CHECK_SECURITY_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_invalid_entrypoints_have_zero_side_effects \
+  test_valid_recording_and_merge_derivation \
+  test_retirement_crash_recovery \
+  test_gitlab_merge_watch \
+  test_device_rerecord_refuses_tampered_artifacts \
+  test_external_merge_transition_retires_only_terminal_poll \
+  test_postrename_poll_validation_revokes_and_retries \
+  test_self_merge_and_poll_publish_one_outcome \
+  test_merged_poll_row_carries_the_merge_authority \
+  test_authority_retirement_preserves_replacement \
+  test_concurrent_watcher_sees_only_complete_publication \
+  test_merged_poll_row_names_no_authority_when_no_record_grants_one \
+  test_device_renumbered_poll_stays_armed \
+  test_merged_poll_reports_upward_from_a_secondmate_home_once \
+  test_merged_poll_reregistration_after_notification_is_absorbed \
+  test_rejected_metacharacter_bytes_are_inert \
+  test_different_merged_pr_for_same_task_is_not_absorbed \
+  test_retirement_refuses_replacement_and_nonterminal_results \
+  test_teardown_removes_poll_artifacts \
+  test_teardown_cannot_race_authority_consumption \
+  test_merged_poll_retries_a_failed_upward_report \
+  test_merged_poll_retires_once \
+  test_device_rerecord_serializes_rerecord \
+  test_static_poll_contract \
+  test_retirement_queue_failure_and_receipt_tampering \
+  test_returned_custom_check_descendants_are_drained \
+  test_persistent_secondmate_retirement_is_poll_only \
+  test_live_artifact_single_link_and_privacy_validation \
+  test_gitlab_merged_poll_retires \
+  test_gerrit_nm_ready_gate_requires_recovered_custody \
+  test_authority_persistence_refuses_rebound_metadata \
+  test_device_rerecord_serializes_direct_rearm \
+  test_authority_persists_before_control_unlock \
+  test_poll_publication_refuses_unsafe_destinations \
+  test_draft_pull_request_is_not_armed \
+  test_gerrit_ready_gate_reads_the_published_tree \
+  test_gerrit_merge_watch \
+  test_custom_snapshot_cleanup_on_signal \
+  test_gerrit_arming_records_no_patch_set_revision \
+  test_bootstrap_leaves_unauthenticated_checks \
+  test_parser_matrix \
+  test_atomic_interruption_leaves_no_partial_artifact \
+  test_unpushed_named_head_refuses_registration \
+  test_direct_pr_unpushed_commit_refuses_registration \
+  test_secondmate_record_refuses_a_pr_watch \
+  || exit 1

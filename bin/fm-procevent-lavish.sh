@@ -346,6 +346,15 @@ poll_retry_delay() {
   esac
   [ "$delay" -ge "$POLL_RETRY_DELAY_MIN" ] && [ "$delay" -le "$POLL_RETRY_DELAY_MAX" ] \
     || die "FM_LAVISH_POLL_RETRY_DELAY must be whole seconds from $POLL_RETRY_DELAY_MIN to $POLL_RETRY_DELAY_MAX: $delay"
+  # Test-only seam, armed by tests/lib.sh's FM_TEST_SEAM=1: once the override
+  # above validated, FM_TEST_LAVISH_POLL_RETRY_DELAY may replace it with a
+  # sub-second delay, so a retry-count case need not wait out whole seconds.
+  if [ "${FM_TEST_SEAM:-}" = 1 ] && [ -n "${FM_TEST_LAVISH_POLL_RETRY_DELAY:-}" ]; then
+    case "$FM_TEST_LAVISH_POLL_RETRY_DELAY" in
+      *[!0-9.]*|*.*.*|.*|*.) die "FM_TEST_LAVISH_POLL_RETRY_DELAY must be decimal seconds: $FM_TEST_LAVISH_POLL_RETRY_DELAY" ;;
+    esac
+    delay=$FM_TEST_LAVISH_POLL_RETRY_DELAY
+  fi
   printf '%s\n' "$delay"
 }
 

@@ -2033,11 +2033,13 @@ test_busy_guard_defers_when_supervisor_busy() {
   fakebin="$dir/fakebin"
   sent="$dir/sent.log"; : > "$sent"
   capture="$dir/pane.txt"
-  printf 'esc to interrupt\n' > "$capture"
+  # The cursor row is a proven-empty claude composer, so only the busy guard can
+  # defer here; with a bare busy row the composer guard would defer on its own.
+  printf 'esc to interrupt\n\342\235\257 \n' > "$capture"
   escalate_add "$state" "done: PR 1"
   afk_enter "$state"
   if PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
-    FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state"; then
+    FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=1 FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state"; then
     fail "escalate_flush should defer when supervisor pane busy"
   fi
   [ -s "$sent" ] && fail "daemon injected into a busy pane"
