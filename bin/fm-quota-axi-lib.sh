@@ -147,12 +147,15 @@ fm_quota_single_provider_table() {
 
 fm_quota_single_provider_for_harness() {
   local harness provider
+  # The table is captured before the loop, not read from a live process
+  # substitution: an early return would leave that writer mid-table, and under
+  # an ignored SIGPIPE its next write prints a broken-pipe error.
   while read -r harness provider; do
     if [ "$harness" = "$1" ]; then
       printf '%s\n' "$provider"
       return 0
     fi
-  done < <(fm_quota_single_provider_table)
+  done <<<"$(fm_quota_single_provider_table)"
   return 1
 }
 
