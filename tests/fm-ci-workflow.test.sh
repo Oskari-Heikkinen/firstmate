@@ -219,6 +219,25 @@ puts steps[index].fetch("timeout-minutes", "none")
   pass "Herdr keeps a $step minute step tripwire under a $heavy minute job backstop"
 }
 
+# The serial shard packing assumes CI's worker count, so the workflow's
+# --jobs must be exactly the serial_ci_jobs the runner reports.
+test_serial_shards_use_the_packed_worker_count() {
+  local expected actual
+  expected=$("$ROOT/bin/fm-test-run.sh" --check-coverage 2>/dev/null \
+    | sed -n 's/.* serial_ci_jobs=\([0-9][0-9]*\).*/\1/p') || true
+  [ -n "$expected" ] || fail "the runner's coverage guard did not report serial_ci_jobs"
+  actual=$(ruby -ryaml -e '
+steps = YAML.load_file(ARGV[0]).fetch("jobs").fetch("tests-portable-serial").fetch("steps")
+run = steps.map { |s| s["run"].to_s }.find { |r| r.include?("FM_SERIAL_LANE") && r.include?("fm-test-run.sh") }
+raise "no serial shard run step" unless run
+m = run.match(/--jobs[ =](\d+)/)
+puts(m ? m[1] : "none")
+' "$CI_WORKFLOW") || fail "could not read the serial shard run step"
+  [ "$actual" = "$expected" ] \
+    || fail "serial shards run with --jobs $actual but the runner packs them for $expected workers"
+  pass "serial shards run with the worker count their packing assumes"
+}
+
 test_ci_matrices_match_executable_partitions() {
   ruby -ryaml -ropen3 - "$CI_WORKFLOW" "$ROOT" <<'RUBY' || fail "CI partition contract"
 jobs = YAML.load_file(ARGV[0]).fetch("jobs")
@@ -233,6 +252,14 @@ raise "cannot list runner lanes" unless status.success?
 actual = lanes.lines.map(&:strip).select { |l| l.match?(/\Aportable-serial-\d+of\d+\z/) }
 expected = shards.map { |s| "portable-serial-#{s}of#{shards.length}" }
 raise "CI matrix and runner disagree" unless actual.sort == expected.sort
+herdr = jobs.fetch("tests-herdr").fetch("strategy")
+raise "Herdr failures must not cancel another shard" unless herdr.fetch("fail-fast") == false
+matrix = herdr.fetch("matrix")
+raise "unexpected Herdr dimensions" unless matrix.keys == ["shard"]
+shards = matrix.fetch("shard")
+actual = lanes.lines.map(&:strip).select { |l| l.match?(/\Areal-herdr-gated-\d+of\d+\z/) }
+expected = shards.map { |s| "real-herdr-gated-#{s}of#{shards.length}" }
+raise "Herdr CI matrix and runner disagree" unless actual.sort == expected.sort
 lint = jobs.fetch("lint").fetch("strategy")
 raise "lint failures must not cancel another partition" unless lint.fetch("fail-fast") == false
 matrix = lint.fetch("matrix")
@@ -246,7 +273,7 @@ end
 canonical, result = Open3.capture2({"CI" => "true"}, File.join(root, "bin/fm-lint.sh"), "--list-files")
 raise "lint matrix loses or duplicates canonical roots" unless result.success? && roots.sort == canonical.lines.map(&:strip).sort
 RUBY
-  pass "CI matrices cover every executable serial lane and canonical lint root exactly once"
+  pass "CI matrices cover every executable serial and Herdr lane and canonical lint root exactly once"
 }
 
 test_ci_matrices_match_executable_partitions
@@ -258,3 +285,4 @@ test_every_job_belongs_to_exactly_one_timeout_tier
 test_fast_tier_shares_one_short_tripwire
 test_normal_tier_shares_one_budget
 test_heavy_tier_keeps_a_step_tripwire_under_a_job_backstop
+test_serial_shards_use_the_packed_worker_count

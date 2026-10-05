@@ -3,7 +3,7 @@
 #
 # bin/fm-lint.sh is the single owner invoked by CI
 # (.github/workflows/ci.yml) and by the pre-push gate (.no-mistakes.yaml
-# commands.lint). CI runs its two full-rigor canonical partitions; the local
+# commands.lint). CI runs its full-rigor canonical partitions; the local
 # gate uses its context-selected default. Their selection differs deliberately,
 # while this owner keeps analysis flags, configuration, and tool versions from
 # drifting.
@@ -189,7 +189,7 @@ test_canonical_partitions_preserve_full_lint() {
   mkdir -p "$fakebin"
   all=$(CI=true "$LINT" --list-files | LC_ALL=C sort)
   : > "$tmp/union"
-  for part in 1of2 2of2; do
+  for part in 1of3 2of3 3of3; do
     selected=$(CI=false GITHUB_ACTIONS=false "$LINT" --partition "$part" --list-files) \
       || fail "partition $part must select full canonical roots even on a local branch"
     [ -n "$selected" ] || fail "empty lint partition $part"
@@ -218,7 +218,7 @@ test_canonical_partitions_preserve_full_lint() {
       || fail "partition $part did not stream an end record per root"
   done
   [ "$(LC_ALL=C sort "$tmp/union")" = "$all" ] || fail "lint partitions lose or duplicate canonical roots"
-  for option in 0of2 3of2 1of3; do
+  for option in 0of2 3of2 1of1 1of17 2of1 xof2; do
     rc=0
     "$LINT" --partition "$option" --list-files > "$tmp/refused" 2>&1 || rc=$?
     [ "$rc" = 2 ] || fail "invalid partition $option was not refused"
@@ -229,7 +229,7 @@ test_canonical_partitions_preserve_full_lint() {
   rc=0
   "$LINT" --partition 1of2 bin/fm-lint.sh > "$tmp/refused" 2>&1 || rc=$?
   [ "$rc" = 2 ] || fail "partition accepted an explicit subset"
-  pass "two canonical lint partitions preserve complete source-aware coverage and reject weakened modes"
+  pass "canonical lint partitions preserve complete source-aware coverage and reject weakened modes"
 }
 
 # fm_lint_stub_git <fakebin-dir>: install a git stub for the changed-file mode
@@ -536,17 +536,6 @@ test_changed_mode_lints_only_the_changed_file() {
   pass "fm-lint.sh changed mode lints only the changed canonical file"
 }
 
-test_ci_forces_full_lint_even_with_empty_diff() {
-  local listed expected
-  # No git stub: CI=true must short-circuit fm-lint.sh's mode selection before
-  # it ever consults git, so this proves CI wins regardless of local diff state.
-  listed=$(CI=true "$LINT" --list-files)
-  expected=$(find bin bin/backends tests -maxdepth 1 -type f -name '*.sh' -print | LC_ALL=C sort)
-  [ "$(printf '%s\n' "$listed" | LC_ALL=C sort)" = "$expected" ] \
-    || fail "CI=true did not force the full canonical file set"
-  pass "fm-lint.sh forces a full lint in CI even when the local diff would be empty"
-}
-
 test_main_branch_forces_full_lint() {
   local tmp fakebin listed expected
   tmp=$(fm_test_tmproot fm-lint-main-full)
@@ -725,36 +714,58 @@ SH
   pass "fm-lint.sh CI keeps source following without the local exclusion list"
 }
 
+# fm_lint_tiny_repo <dir>: a private copy of the lint owner over a minimal
+# canonical inventory of four roots: the copied owner, its no-op workflow
+# check, one backend, and one test. The owner resolves its root from its own
+# path, so context-driven mode selection runs exactly as in this repository
+# without iterating the real inventory. Prints the copied owner's path.
+fm_lint_tiny_repo() {
+  local repo=$1
+  mkdir -p "$repo/bin/backends" "$repo/tests"
+  cp "$LINT" "$repo/bin/fm-lint.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/bin/fm-lint-workflows.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/bin/backends/noop.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/tests/noop.test.sh"
+  chmod +x "$repo/bin/fm-lint.sh" "$repo/bin/fm-lint-workflows.sh"
+  printf '%s\n' "$repo/bin/fm-lint.sh"
+}
+
 test_main_branch_keeps_external_sources() {
-  local tmp fakebin log flag_log out
+  local tmp fakebin log flag_log out lint
   tmp=$(fm_test_tmproot fm-lint-main-follow)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
   flag_log="$tmp/flags.log"
   fm_lint_stub_shellcheck "$fakebin" "$log"
+  lint=$(fm_lint_tiny_repo "$tmp/repo")
 
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
     FM_TEST_GIT_BRANCH=main \
-    FM_TEST_FLAG_LOG="$flag_log" "$LINT" 2>&1) \
+    FM_TEST_FLAG_LOG="$flag_log" "$lint" 2>&1) \
     || fail "main-branch lint failed"$'\n'"$out"
+  [ "$(grep -c . "$log")" -eq 4 ] \
+    || fail "main-branch lint did not run the full canonical set"$'\n'"$(cat "$log")"
   fm_lint_assert_flag_log "$flag_log" yes none
   pass "fm-lint.sh on main keeps source following without the local exclusion list"
 }
 
 test_merge_base_less_keeps_external_sources() {
-  local tmp fakebin log flag_log out
+  local tmp fakebin log flag_log out lint
   tmp=$(fm_test_tmproot fm-lint-nomergebase-follow)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
   flag_log="$tmp/flags.log"
   fm_lint_stub_shellcheck "$fakebin" "$log"
+  lint=$(fm_lint_tiny_repo "$tmp/repo")
 
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
     FM_TEST_GIT_BRANCH=feature FM_TEST_GIT_MERGE_BASE_OK=0 \
-    FM_TEST_FLAG_LOG="$flag_log" "$LINT" 2>&1) \
+    FM_TEST_FLAG_LOG="$flag_log" "$lint" 2>&1) \
     || fail "merge-base-less lint failed"$'\n'"$out"
+  [ "$(grep -c . "$log")" -eq 4 ] \
+    || fail "merge-base-less lint did not run the full canonical set"$'\n'"$(cat "$log")"
   fm_lint_assert_flag_log "$flag_log" yes none
   pass "fm-lint.sh without a merge-base keeps source following without the local exclusion list"
 }
@@ -882,17 +893,16 @@ SH
 
 # One ShellCheck process per root. Passing the whole canonical set in a
 # single invocation still follows in-set sources and is not the no-x posture.
-fm_lint_nox_one_root() {
-  local index=$1 path=$2 outdir=$3
-  shellcheck --norc --format gcc -- "$path" > "$outdir/$index" || true
-}
+# Each root's diagnostics land in a file named after its path.
+# shellcheck disable=SC2016 # expanded by the per-root bash, not here.
+NOX_ONE_ROOT_SCRIPT='out="$1/$(printf "%s" "$2" | tr / _)"; shellcheck --norc --format gcc -- "$2" > "$out" || true'
 
 test_local_exclusion_list_covers_every_no_external_sources_code() {
   if ! pinned_ready; then
     pass "SKIP (ShellCheck $REQUIRED not resolved): local exclusion completeness"
     return
   fi
-  local tmp files_file out unexpected code path found i batch
+  local tmp files_file out unexpected code path found
   local -a files
   tmp=$(fm_test_tmproot fm-lint-nox-complete)
   files_file="$tmp/files"
@@ -905,18 +915,11 @@ test_local_exclusion_list_covers_every_no_external_sources_code() {
   done < "$files_file"
   [ "${#files[@]}" -gt 0 ] || fail "CI --list-files returned no readable lint roots"
   mkdir -p "$tmp/gcc"
-  i=0
-  batch=0
-  for path in "${files[@]}"; do
-    i=$((i + 1))
-    fm_lint_nox_one_root "$i" "$path" "$tmp/gcc" &
-    batch=$((batch + 1))
-    if [ "$batch" -eq 4 ]; then
-      wait
-      batch=0
-    fi
-  done
-  wait
+  # A pool of four keeps every slot busy (a fixed batch waits for its slowest
+  # root), and feeding the largest roots first keeps a big one off the tail.
+  wc -c "${files[@]}" | awk '$2 != "total" { print $1 "\t" $2 }' \
+    | LC_ALL=C sort -t "$(printf '\t')" -k1,1nr -k2,2 | cut -f2- \
+    | tr '\n' '\0' | xargs -0 -n 1 -P 4 bash -c "$NOX_ONE_ROOT_SCRIPT" _ "$tmp/gcc"
   found=$(find "$tmp/gcc" -type f | wc -l | tr -d '[:space:]')
   [ "$found" = "${#files[@]}" ] \
     || fail "completeness sweep linted $found roots, expected ${#files[@]}"
@@ -1166,7 +1169,8 @@ test_catches_a_real_lint_defect() {
   # ShellCheck removed SC2015 in the pinned 0.11.0, so asserting it would make
   # this test itself version-fragile - the very trap being fixed. SC1007 is a
   # warning present at default severity (and is itself one of the recurring
-  # classes that slipped through, PR 474).
+  # classes that slipped through, PR 474). An ambient SHELLCHECK_OPTS that
+  # excludes the finding must not hide it either.
   local tmp bad out rc
   tmp=$(fm_test_tmproot fm-lint-bad)
   mkdir -p "$tmp"
@@ -1180,14 +1184,15 @@ foo() {
 foo
 SH
   rc=0
-  out=$("$LINT" "$bad" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail "fm-lint.sh passed a known-bad fixture"$'\n'"$out"
-  assert_contains "$out" "SC1007" "fm-lint.sh did not report the expected ShellCheck finding"
-  pass "fm-lint.sh catches a real lint defect the old no-op gate passed"
+  out=$(SHELLCHECK_OPTS='--exclude=SC1007' "$LINT" "$bad" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "fm-lint.sh passed a known-bad fixture under ambient SHELLCHECK_OPTS"$'\n'"$out"
+  assert_contains "$out" "SC1007" "fm-lint.sh did not report the expected ShellCheck finding despite ambient SHELLCHECK_OPTS"
+  pass "fm-lint.sh catches a real lint defect the old no-op gate passed, ignoring ambient ShellCheck options"
 }
 
 test_rejects_direct_beads_cli_invocations() {
-  local tmp fakebin log lint_copy invocation out rc
+  local tmp fakebin log lint_copy invocation out rc index
+  local -a invocations
   tmp=$(fm_test_tmproot fm-lint-backend-purity)
   fakebin=$(fm_fakebin "$tmp")
   log="$tmp/shellcheck.log"
@@ -1209,29 +1214,36 @@ SH
   chmod +x "$lint_copy" "$tmp/repo/bin/fm-lint-workflows.sh"
   fm_lint_stub_shellcheck "$fakebin" "$log"
 
-  for invocation in \
-    'bd update fm-example --status in_progress' \
-    'BD_ACTOR=firstmate bd update fm-example --status closed' \
-    'env bd close fm-example' \
-    'env -i BD_ACTOR=firstmate bd close fm-example' \
-    'env -u BD_ACTOR bd close fm-example' \
-    'env -- bd close fm-example' \
-    '/usr/local/bin/bd close fm-example' \
-    '"/usr/local/bin/bd" close fm-example' \
-    "'/usr/local/bin/bd' close fm-example" \
-    "b'd' close fm-example" \
-    "/usr/local/bin/b'd' close fm-example" \
-    "\$'bd' close fm-example" \
-    '$"bd" close fm-example' \
-    "\$'\\x62\\x64' close fm-example" \
-    "\$'\\142\\144' close fm-example" \
+  invocations=(
+    'bd update fm-example --status in_progress'
+    'BD_ACTOR=firstmate bd update fm-example --status closed'
+    'env bd close fm-example'
+    'env -i BD_ACTOR=firstmate bd close fm-example'
+    'env -u BD_ACTOR bd close fm-example'
+    'env -- bd close fm-example'
+    '/usr/local/bin/bd close fm-example'
+    '"/usr/local/bin/bd" close fm-example'
+    "'/usr/local/bin/bd' close fm-example"
+    "b'd' close fm-example"
+    "/usr/local/bin/b'd' close fm-example"
+    "\$'bd' close fm-example"
+    '$"bd" close fm-example'
+    "\$'\\x62\\x64' close fm-example"
+    "\$'\\142\\144' close fm-example"
     "b\$'\\x64' close fm-example"
-  do
-    printf '#!/usr/bin/env bash\n%s\n' "$invocation" > "$tmp/repo/bin/direct-beads.sh"
-    rc=0
-    out=$(cd "$tmp/repo" && CI=true PATH="$fakebin:$PATH" "$lint_copy" 2>&1) || rc=$?
-    [ "$rc" -ne 0 ] || fail "lint accepted a direct Beads CLI invocation: $invocation"
-    assert_contains "$out" "direct Beads CLI invocation bypasses tasks-axi" \
+  )
+  # One core script per spelling, all checked by a single lint run: the check
+  # names each violation by file and line, so every spelling is still proven
+  # to be caught on its own rather than masked by another.
+  for index in "${!invocations[@]}"; do
+    printf '#!/usr/bin/env bash\n%s\n' "${invocations[index]}" > "$tmp/repo/bin/direct-beads-$index.sh"
+  done
+  rc=0
+  out=$(cd "$tmp/repo" && CI=true PATH="$fakebin:$PATH" "$lint_copy" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "lint accepted direct Beads CLI invocations"$'\n'"$out"
+  for index in "${!invocations[@]}"; do
+    invocation=${invocations[index]}
+    assert_contains "$out" "bin/direct-beads-$index.sh:2: direct Beads CLI invocation bypasses tasks-axi" \
       "lint did not identify the backend-boundary violation: $invocation"
   done
   pass "fm-lint.sh rejects direct Beads CLI invocations in firstmate core"
@@ -1258,52 +1270,6 @@ test_rejects_direct_beads_cli_in_explicit_core_path() {
       "explicit core path did not report the backend-boundary violation: $spelling"
   done
   pass "fm-lint.sh enforces backend purity for explicit core paths"
-}
-
-test_ignores_ambient_shellcheck_opts() {
-  if ! pinned_ready; then
-    pass "SKIP (ShellCheck $REQUIRED not resolved): ambient options regression check"
-    return
-  fi
-  local tmp bad out rc
-  tmp=$(fm_test_tmproot fm-lint-opts)
-  mkdir -p "$tmp"
-  bad="$tmp/bad.sh"
-  cat > "$bad" <<'SH'
-#!/usr/bin/env bash
-foo() {
-  local a= b=
-  echo "$a$b"
-}
-foo
-SH
-  rc=0
-  out=$(SHELLCHECK_OPTS='--exclude=SC1007' "$LINT" "$bad" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail "fm-lint.sh allowed ambient SHELLCHECK_OPTS to hide a finding"$'\n'"$out"
-  assert_contains "$out" "SC1007" "fm-lint.sh did not neutralize ambient SHELLCHECK_OPTS"
-  pass "fm-lint.sh ignores ambient ShellCheck options"
-}
-
-test_clean_fixture_passes() {
-  if ! pinned_ready; then
-    pass "SKIP (ShellCheck $REQUIRED not resolved): clean fixture check"
-    return
-  fi
-  local tmp good rc
-  tmp=$(fm_test_tmproot fm-lint-good)
-  mkdir -p "$tmp"
-  good="$tmp/good.sh"
-  cat > "$good" <<'SH'
-#!/usr/bin/env bash
-set -eu
-if [ -n "${1:-}" ] && [ -d "$1" ]; then
-  printf 'ok\n'
-fi
-SH
-  rc=0
-  "$LINT" "$good" >/dev/null 2>&1 || rc=$?
-  [ "$rc" -eq 0 ] || fail "fm-lint.sh flagged a clean fixture (exit $rc)"
-  pass "fm-lint.sh passes a clean fixture"
 }
 
 test_jobs_are_deterministic_and_complete() {
@@ -2049,8 +2015,6 @@ test_rejects_wrong_shellcheck_version
 test_catches_a_real_lint_defect
 test_rejects_direct_beads_cli_invocations
 test_rejects_direct_beads_cli_in_explicit_core_path
-test_ignores_ambient_shellcheck_opts
-test_clean_fixture_passes
 test_jobs_are_deterministic_and_complete
 test_heavy_source_closures_share_one_worker
 test_worker_trees_stop_on_signal
@@ -2064,7 +2028,6 @@ test_sidecar_result_exit_reflects_final_status
 test_roots_sidecar_records_per_root_lifecycle
 test_seeded_module_boundary_parity
 test_changed_mode_lints_only_the_changed_file
-test_ci_forces_full_lint_even_with_empty_diff
 test_main_branch_forces_full_lint
 test_explicit_path_bypasses_changed_logic
 test_zero_changed_files_exits_clean

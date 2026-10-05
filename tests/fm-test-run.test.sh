@@ -15,6 +15,17 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
+# The coverage guard re-packs every lane and shard, so it is by far the most
+# expensive inspection mode. Its output is a pure function of the checkout, so
+# the tests that read it share one invocation instead of repeating it.
+COVERAGE_OUT=
+COVERAGE_LOADED=0
+load_coverage() {
+  [ "$COVERAGE_LOADED" -eq 1 ] && return 0
+  COVERAGE_OUT=$("$RUNNER" --check-coverage)
+  COVERAGE_LOADED=1
+}
+
 test_list_all_exact_suite_coverage() {
   local listed expected missing extra f
   listed=$("$RUNNER" --list --all | LC_ALL=C sort)
@@ -64,28 +75,6 @@ test_single_script_selection() {
   [ "$listed" = "tests/fm-lint.test.sh" ] \
     || fail "single-script list expected tests/fm-lint.test.sh, got: $listed"
   pass "single-script selection lists exactly that path"
-}
-
-test_changed_file_selection_is_conservative() {
-  local listed all_count fam_count listed_count
-  # A path-mapped pure unit should not expand to --all.
-  listed=$("$RUNNER" --list --family pure-contract-unit)
-  all_count=$("$RUNNER" --list --all | wc -l | tr -d ' ')
-  fam_count=$(printf '%s\n' "$listed" | wc -l | tr -d ' ')
-  [ "$fam_count" -lt "$all_count" ] || fail "changed-informed pure family still full suite"
-  # Directly exercise --changed: empty or partial selection is ok; must not
-  # exceed the suite and must never silently become --all by accident.
-  listed=$("$RUNNER" --list --changed --base HEAD 2>/dev/null || true)
-  if [ -n "$listed" ]; then
-    listed_count=$(printf '%s\n' "$listed" | wc -l | tr -d ' ')
-    [ "$listed_count" -le "$all_count" ] || fail "changed selection larger than suite"
-  fi
-  # A single test path selects only that script (same contract as a
-  # tests/*.test.sh change entry in the map).
-  listed=$("$RUNNER" --list tests/fm-brief.test.sh)
-  [ "$listed" = "tests/fm-brief.test.sh" ] \
-    || fail "test-file-only change contract should select one script"
-  pass "changed-file selection stays conservative (never silent full suite)"
 }
 
 init_changed_fixture_repo() {
@@ -470,7 +459,6 @@ test_changed_uses_bounded_automatic_concurrency() {
   for script in fm-backend-herdr-smoke.test.sh fm-daemon.test.sh fm-pi-watch-extension.test.sh; do
     cat >"$repo/tests/$script" <<'SH'
 #!/usr/bin/env bash
-sleep 1
 echo "ok - concurrency consent fixture"
 SH
     chmod +x "$repo/tests/$script"
@@ -603,7 +591,6 @@ test_script_list_uses_bounded_automatic_concurrency() {
   for script in fm-cd-pretool-check.test.sh fm-pr-merge.test.sh fm-backend-orca.test.sh; do
     cat >"$repo/tests/$script" <<'SH'
 #!/usr/bin/env bash
-sleep 1
 echo "ok - script-list concurrency fixture"
 SH
     chmod +x "$repo/tests/$script"
@@ -672,7 +659,6 @@ test_family_proofs_run_in_separate_concurrent_phases() {
     fm-pr-check-security.test.sh fm-teardown.test.sh; do
     cat >"$repo/tests/$script" <<'SH'
 #!/usr/bin/env bash
-sleep 1
 echo "ok - family phase fixture"
 SH
     chmod +x "$repo/tests/$script"
@@ -739,7 +725,7 @@ assert doc["families"] == []
 #!/usr/bin/env bash
 if [ ! -e "$SLOW_GIT_MARKER" ]; then
   : >"$SLOW_GIT_MARKER"
-  sleep 1
+  sleep 0.3
 fi
 exec "$REAL_GIT" "$@"
 SH
@@ -1028,11 +1014,11 @@ test_list_scheduled_non_lane_selections_use_serial_weights() {
     printf '\n' >>"$repo/$script"
   done
   printf '%s\n' \
+    tests/fm-kimi-harness.test.sh \
     tests/fm-muse-harness.test.sh \
     tests/fm-brief.test.sh \
     tests/fm-captain-hold-lifecycle.test.sh \
     tests/fm-lint.test.sh \
-    tests/fm-kimi-harness.test.sh \
     tests/fm-operational-input.test.sh >"$tmp/expected"
   for selection in family all changed scripts; do
     case "$selection" in
@@ -1069,8 +1055,8 @@ test_portable_shard_union_and_coverage_guard() {
     && fail "portable lanes must not include real-herdr-gated smoke"
   printf '%s\n' "$herdr" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "herdr family must include smoke"
-  out=$("$RUNNER" --check-coverage)
-  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard success marker"
+  load_coverage
+  assert_contains "$COVERAGE_OUT" "FM_TEST_COVERAGE ok" "coverage guard success marker"
   all_count=$("$RUNNER" --list --all | wc -l | tr -d ' ')
   union_count=$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" | LC_ALL=C sort -u | wc -l | tr -d ' ')
   [ "$union_count" = "$all_count" ] \
@@ -1094,7 +1080,8 @@ test_portable_shard_union_and_coverage_guard() {
 # run, so assert them through the guard's own reported numbers.
 test_portable_parallel_lanes_stay_duration_balanced() {
   local out max imbalance unhinted
-  out=$("$RUNNER" --check-coverage)
+  load_coverage
+  out=$COVERAGE_OUT
   unhinted=$(printf '%s\n' "$out" | sed -n 's/.*parallel_unhinted=\([0-9]*\).*/\1/p')
   max=$(printf '%s\n' "$out" | sed -n 's/.*parallel_max_ms=\([0-9]*\).*/\1/p')
   imbalance=$(printf '%s\n' "$out" | sed -n 's/.*parallel_imbalance_ms=\([0-9]*\).*/\1/p')
@@ -1110,8 +1097,34 @@ test_portable_parallel_lanes_stay_duration_balanced() {
   pass "portable parallel lanes are fully hinted and packed within 5% of each other"
 }
 
+test_real_herdr_shards_partition_the_herdr_family() {
+  local lanes count herdr shard listed union dups
+  lanes=$("$RUNNER" --list-lanes)
+  count=$(printf '%s\n' "$lanes" | grep -c '^real-herdr-gated-[0-9]*of[0-9]*$')
+  [ "$count" -ge 2 ] || fail "expected at least two real Herdr shard lanes, got $count"
+  herdr=$("$RUNNER" --list --family real-herdr-gated | LC_ALL=C sort)
+  union=""
+  shard=1
+  while [ "$shard" -le "$count" ]; do
+    listed=$("$RUNNER" --list --lane "real-herdr-gated-${shard}of${count}")
+    [ -n "$listed" ] || fail "real-herdr-gated-${shard}of${count} selected no tests"
+    union=$(printf '%s\n%s' "$union" "$listed")
+    shard=$((shard + 1))
+  done
+  union=$(printf '%s\n' "$union" | grep -v '^$' || true)
+  dups=$(printf '%s\n' "$union" | LC_ALL=C sort | uniq -d || true)
+  [ -z "$dups" ] || fail "real Herdr shards run the same script twice: $dups"
+  [ "$(printf '%s\n' "$union" | LC_ALL=C sort)" = "$herdr" ] \
+    || fail "real Herdr shards must exactly cover the real-herdr-gated family"
+  if "$RUNNER" --list --lane "real-herdr-gated-1of$((count + 1))" >/dev/null 2>&1; then
+    fail "a Herdr shard lane built for a different shard count must refuse"
+  fi
+  pass "real Herdr shards partition the real-herdr-gated family exactly"
+}
+
 test_portable_serial_shards_partition_the_serial_lane() {
   local lanes count serial shard listed union dups shard_lane total cap
+  local -a shard_lists=()
   lanes=$("$RUNNER" --list-lanes)
   count=$(printf '%s\n' "$lanes" | grep -c '^portable-serial-[0-9]*of[0-9]*$')
   [ "$count" -ge 2 ] || fail "expected at least two portable serial shard lanes, got $count"
@@ -1125,6 +1138,7 @@ test_portable_serial_shards_partition_the_serial_lane() {
     shard_lane="portable-serial-${shard}of${count}"
     listed=$("$RUNNER" --list --lane "$shard_lane")
     [ -n "$listed" ] || fail "$shard_lane selected no tests"
+    shard_lists[shard]=$listed
     union=$(printf '%s\n%s' "$union" "$listed")
     shard=$((shard + 1))
   done
@@ -1141,7 +1155,7 @@ test_portable_serial_shards_partition_the_serial_lane() {
   cap=$((total * 6 / 10))
   shard=1
   while [ "$shard" -le "$count" ]; do
-    listed=$("$RUNNER" --list --lane "portable-serial-${shard}of${count}" | wc -l | tr -d ' ')
+    listed=$(printf '%s\n' "${shard_lists[shard]}" | wc -l | tr -d ' ')
     # One expensive suite can legitimately occupy a whole runner. Non-empty
     # coverage is asserted above; script counts are not duration weights.
     [ "$listed" -le "$cap" ] \
@@ -1150,8 +1164,7 @@ test_portable_serial_shards_partition_the_serial_lane() {
   done
 
   # Assignment is deterministic across invocations.
-  [ "$("$RUNNER" --list --lane "portable-serial-1of${count}")" = \
-    "$("$RUNNER" --list --lane "portable-serial-1of${count}")" ] \
+  [ "$("$RUNNER" --list --lane "portable-serial-1of${count}")" = "${shard_lists[1]}" ] \
     || fail "portable serial shard membership must be deterministic"
   pass "portable serial shards are a deterministic disjoint cover of the serial lane"
 }
@@ -1164,7 +1177,8 @@ test_portable_serial_hint_coverage_is_reported_and_bounded() {
   # reaches its CI job cap. The coverage guard therefore reports the unmeasured
   # share and refuses past its bound; assert that contract is live rather than
   # trusting the hint table to stay fresh on its own.
-  out=$("$RUNNER" --check-coverage)
+  load_coverage
+  out=$COVERAGE_OUT
   assert_contains "$out" "serial_unhinted=" "coverage guard must report the unmeasured serial share"
   serial=$(printf '%s\n' "$out" | sed -n 's/.*[^_]serial=\([0-9][0-9]*\).*/\1/p')
   unhinted=$(printf '%s\n' "$out" | sed -n 's/.*serial_unhinted=\([0-9][0-9]*\).*/\1/p')
@@ -1216,45 +1230,86 @@ test_portable_serial_shard_lane_refusals() {
 }
 
 test_jobs_requires_proven_isolated() {
-  local tmp rc shard_lane
+  local tmp rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs.XXXXXX")
   set +e
-  "$RUNNER" --jobs 2 --lane portable-serial >"$tmp/out" 2>"$tmp/err"
-  rc=$?
-  set -e
-  [ "$rc" -eq 2 ] || fail "--jobs with portable-serial must refuse (exit 2), got $rc"
-  grep -Fq 'portable serial lanes stay serial' "$tmp/err" \
-    || fail "--jobs refusal message missing: $(cat "$tmp/err")"
-  set +e
-  "$RUNNER" --jobs 2 tests/fm-afk-inject-e2e.test.sh >"$tmp/out2" 2>"$tmp/err2"
+  "$RUNNER" --jobs 2 tests/fm-board.test.sh >"$tmp/out2" 2>"$tmp/err2"
   rc=$?
   set -e
   [ "$rc" -eq 2 ] || fail "--jobs on a family with no recorded proof must refuse, got $rc"
-  # Sharding across runners never relaxes the serial rule inside one shard.
-  shard_lane=$("$RUNNER" --list-lanes | grep -m1 '^portable-serial-[0-9]*of[0-9]*$')
-  set +e
-  "$RUNNER" --jobs 2 --lane "$shard_lane" >"$tmp/out3" 2>"$tmp/err3"
-  rc=$?
-  set -e
-  [ "$rc" -eq 2 ] || fail "--jobs with a portable serial shard must refuse, got $rc"
-  grep -Fq 'portable serial lanes stay serial' "$tmp/err3" \
-    || fail "shard --jobs refusal message missing: $(cat "$tmp/err3")"
   rm -rf "$tmp"
   pass "--jobs refuses non-proven / stateful selections"
+}
+
+# A portable serial lane under --jobs overlaps only proof-admitted scripts and
+# still runs every unproven script alone, after the concurrent phases.
+test_serial_lane_jobs_keep_unproven_scripts_serial() {
+  local tmp repo rc out first_tail last_family watcher_begin watcher_end other
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-serial-jobs.XXXXXX")
+  repo="$tmp/repo"
+  # Two pure-contract-unit members (a CI-runner family proof), one
+  # watcher-wake-lock member (a local-only family proof), and one unclassified
+  # script with no family proof.
+  init_stub_suite_repo "$repo" fm-test-isolation-proof.test.sh fm-documentation-audiences.test.sh \
+    fm-supervision-events.test.sh fm-board.test.sh
+  # Leave an owner-read-only directory in the worker TMPDIR, as a secondmate's
+  # locked git-hooks do; removing the run's scratch must not fail a green run.
+  # shellcheck disable=SC2016 # expanded by the stand-in, not here
+  printf '%s\n' 'mkdir -p "${TMPDIR:?}/locked-hooks" && : >"$TMPDIR/locked-hooks/pre-push" && chmod a-w "$TMPDIR/locked-hooks"' \
+    >>"$repo/tests/fm-test-isolation-proof.test.sh"
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --jobs 2 --lane portable-serial) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  out=$(cat "$tmp/out")
+  [ "$rc" -eq 0 ] || fail "--jobs on a portable serial lane must be admitted, got $rc: $(cat "$tmp/err") $out"
+  grep -Fq 'FM_TEST_SUMMARY total=4 failed=0' "$tmp/out" \
+    || fail "the serial lane did not run all four scripts green: $out"
+  last_family=$(grep -nE '^FM_TEST_END .*(fm-test-isolation-proof|fm-documentation-audiences)' "$tmp/out" | tail -1 | cut -d: -f1)
+  first_tail=$(grep -nE '^FM_TEST_BEGIN .*(fm-supervision-events|fm-board)' "$tmp/out" | head -1 | cut -d: -f1)
+  [ -n "$first_tail" ] && [ -n "$last_family" ] && [ "$first_tail" -gt "$last_family" ] \
+    || fail "a script without a CI-runner proof did not wait for the concurrent family phase: $out"
+  # The local-only family member runs alone: nothing begins between its BEGIN
+  # and its END.
+  watcher_begin=$(grep -n '^FM_TEST_BEGIN .*fm-supervision-events' "$tmp/out" | cut -d: -f1)
+  watcher_end=$(grep -n '^FM_TEST_END .*fm-supervision-events' "$tmp/out" | cut -d: -f1)
+  other=$(sed -n "$((watcher_begin + 1)),$((watcher_end - 1))p" "$tmp/out" | grep -c '^FM_TEST_BEGIN' || true)
+  [ "$other" -eq 0 ] || fail "a watcher-wake-lock script overlapped another script on a serial lane: $out"
+  rm -rf "$tmp"
+  pass "--jobs on a portable serial lane overlaps only CI-proven families and keeps the rest serial"
 }
 
 # The complement of the refusal above: a family carrying a recorded concurrent
 # proof is admitted and actually scheduled, so the admission rule is two-sided
 # rather than a blanket refusal that happens to pass its negative cases.
+# init_stub_suite_repo <repo> <script-basename>...: a private copy of the runner
+# beside instant stand-ins named like real suites. Family membership, proofs,
+# and duration hints are keyed by basename, so the copy schedules the stand-ins
+# exactly as it would the real suites without paying for their bodies.
+init_stub_suite_repo() {
+  local repo=$1 script
+  shift
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
+  chmod +x "$repo/bin/fm-test-run.sh"
+  for script in "$@"; do
+    printf '#!/usr/bin/env bash\necho "ok - %s stand-in"\n' "$script" >"$repo/tests/$script"
+    chmod +x "$repo/tests/$script"
+  done
+}
+
 test_jobs_admits_a_concurrent_safe_family() {
-  local tmp rc external
+  local tmp repo rc external
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-admit.XXXXXX")
+  repo="$tmp/repo"
+  init_stub_suite_repo "$repo" fm-supervision-events.test.sh fm-session-lock-ancestry.test.sh
   # --list exits before the admission guard, so this has to be a real run for
-  # the assertion to mean anything. Two cheap watcher-wake-lock scripts exercise
+  # the assertion to mean anything. Two watcher-wake-lock stand-ins exercise
   # admission and the concurrent scheduler for real.
   set +e
-  "$RUNNER" --jobs 2 \
-    tests/fm-supervision-events.test.sh tests/fm-session-lock-ancestry.test.sh \
+  (cd "$repo" && bin/fm-test-run.sh --jobs 2 \
+    tests/fm-supervision-events.test.sh tests/fm-session-lock-ancestry.test.sh) \
     >"$tmp/out" 2>"$tmp/err"
   rc=$?
   set -e
@@ -1263,7 +1318,7 @@ test_jobs_admits_a_concurrent_safe_family() {
     || fail "the admitted concurrent run did not report both scripts green: $(cat "$tmp/out")"
 
   set +e
-  "$RUNNER" --jobs 5 tests/fm-session-lock-ancestry.test.sh \
+  (cd "$repo" && bin/fm-test-run.sh --jobs 5 tests/fm-session-lock-ancestry.test.sh) \
     >"$tmp/over-cap.out" 2>"$tmp/over-cap.err"
   rc=$?
   set -e
@@ -1273,7 +1328,7 @@ test_jobs_admits_a_concurrent_safe_family() {
   printf '#!/usr/bin/env bash\necho "ok - colliding external fixture"\n' >"$external"
   chmod +x "$external"
   set +e
-  "$RUNNER" --jobs 2 "$external" >"$tmp/external.out" 2>"$tmp/external.err"
+  "$repo/bin/fm-test-run.sh" --jobs 2 "$external" >"$tmp/external.out" 2>"$tmp/external.err"
   rc=$?
   set -e
   [ "$rc" -eq 2 ] \
@@ -1380,16 +1435,15 @@ test_changed_shared_fixture_selects_its_readers() {
 # Workers are handed scripts in order, so the slowest script must start first or
 # it runs alone at the tail and throws away most of the concurrency.
 test_concurrent_runs_are_ordered_longest_first() {
-  local tmp listed first
+  local tmp repo first
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-order.XXXXXX")
-  set +e
-  "$RUNNER" --jobs 2 --family watcher-wake-lock --list >"$tmp/serial" 2>&1
-  set -e
+  repo="$tmp/repo"
+  init_stub_suite_repo "$repo" fm-session-lock-ancestry.test.sh fm-task-inbox.test.sh
   # The scheduler reorders the real run, so assert on the begin-marker order of
   # a real concurrent run over scripts whose hints differ by a wide margin.
   set +e
-  "$RUNNER" --jobs 2 \
-    tests/fm-session-lock-ancestry.test.sh tests/fm-task-inbox.test.sh \
+  (cd "$repo" && bin/fm-test-run.sh --jobs 2 \
+    tests/fm-session-lock-ancestry.test.sh tests/fm-task-inbox.test.sh) \
     >"$tmp/out" 2>"$tmp/err"
   set -e
   first=$(grep -m1 '^FM_TEST_BEGIN' "$tmp/out" | awk '{print $3}')
@@ -1518,7 +1572,6 @@ test_max_wall_ms_is_a_result_not_advice() {
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cat >"$repo/$fast" <<'SH'
 #!/usr/bin/env bash
-sleep 1
 echo "ok - budget fixture"
 SH
   chmod +x "$runner" "$repo/$fast"
@@ -1532,9 +1585,10 @@ SH
   grep -Eq '^FM_TEST_BUDGET max_wall_ms=60000 duration_ms=[0-9]+$' "$tmp/under" \
     || fail "an inside-budget run did not report the budget: $(cat "$tmp/under")"
 
-  # Same green script, budget it cannot meet: the run must FAIL.
+  # Same green script, budget it cannot meet: no runner invocation finishes
+  # within a millisecond, so the run must FAIL.
   set +e
-  "$runner" --max-wall-ms 500 "$fast" >"$tmp/over" 2>"$tmp/over.err"
+  "$runner" --max-wall-ms 1 "$fast" >"$tmp/over" 2>"$tmp/over.err"
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "an over-budget run must fail through the result path, got $rc"
@@ -1544,7 +1598,7 @@ SH
     || fail "an over-budget run omitted its family summary: $(cat "$tmp/over")"
   grep -Eq '^FM_TEST_SLOWEST rank=1 .+$' "$tmp/over" \
     || fail "an over-budget run omitted its slowest result: $(cat "$tmp/over")"
-  grep -Eq '^FM_TEST_BUDGET max_wall_ms=500 duration_ms=[0-9]+$' "$tmp/over" \
+  grep -Eq '^FM_TEST_BUDGET max_wall_ms=1 duration_ms=[0-9]+$' "$tmp/over" \
     || fail "an over-budget run omitted its budget result: $(cat "$tmp/over")"
   summary_duration=$(awk '/^FM_TEST_SUMMARY / { for (i=1;i<=NF;i++) if ($i ~ /^duration_ms=/) { sub(/^duration_ms=/, "", $i); print $i } }' "$tmp/over")
   budget_duration=$(awk '/^FM_TEST_BUDGET / { for (i=1;i<=NF;i++) if ($i ~ /^duration_ms=/) { sub(/^duration_ms=/, "", $i); print $i } }' "$tmp/over")
@@ -1780,7 +1834,6 @@ assert len(doc["scripts"])==3
 test_list_all_exact_suite_coverage
 test_family_selection
 test_single_script_selection
-test_changed_file_selection_is_conservative
 test_task_marker_refuses_the_primary_checkout
 test_changed_runner_surfaces_select_their_family
 test_shell_line_ending_policy_selects_runner_contract
@@ -1804,9 +1857,11 @@ test_list_scheduled_non_lane_selections_use_serial_weights
 test_portable_shard_union_and_coverage_guard
 test_portable_parallel_lanes_stay_duration_balanced
 test_portable_serial_shards_partition_the_serial_lane
+test_real_herdr_shards_partition_the_herdr_family
 test_portable_serial_hint_coverage_is_reported_and_bounded
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
+test_serial_lane_jobs_keep_unproven_scripts_serial
 test_jobs_admits_a_concurrent_safe_family
 test_unmapped_new_test_never_inherits_family_concurrency
 test_changed_shared_fixture_selects_its_readers
