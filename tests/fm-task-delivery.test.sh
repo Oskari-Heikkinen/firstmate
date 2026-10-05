@@ -410,6 +410,26 @@ STUB
     "promoted direct-push worker under yolo off was not held for landing approval"
   assert_no_grep "no-mistakes axi respond" "$payload" \
     "promoted direct-push worker received the pipeline gate contract"
+  assert_no_grep "# Firstmate repository verification" "$payload" \
+    "a direct-push project other than Firstmate received Firstmate's GitHub verification"
+
+  # A direct-push promotion on Firstmate's own repository (this checkout, read
+  # only) verifies on GitHub instead of a local suite, ahead of its landing authority.
+  id=promote-dod-firstmate
+  printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\nproject=%s\n' "$id" "$ROOT" > "$home/state/$id.meta"
+  FM_HOME="$home" "$BRIEF" "$id" firstmate --scout >/dev/null 2>&1 \
+    || fail "firstmate: scout brief generation should succeed"
+  fill_brief_subsections "$home/data/$id/brief.md" \
+    "Ship the delivery-contract change." "Preserve the selected delivery mode."
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode direct-push --yolo on >/dev/null 2>&1 \
+    || fail "firstmate: direct-push promotion should succeed"
+  payload="$home/data/$id/ship-instructions.md"
+  assert_grep "git push origin HEAD:refs/heads/ci/$id" "$payload" \
+    "a Firstmate direct-push promotion was not told to verify on its CI branch"
+  assert_grep "Run no local Firstmate test suite" "$payload" \
+    "a Firstmate direct-push promotion was not told to skip the local suite"
+  [ "$(awk '/^# Firstmate repository verification$/ { v=NR } /^# Current landing authority$/ { l=NR } END { print (v && l && v < l) ? "ordered" : "no" }' "$payload")" = ordered ] \
+    || fail "a Firstmate direct-push promotion lacks its verification section ahead of the landing authority"
   pass "fm-promote: a promoted worker receives the same mode-specific delivery contract a briefed one does"
 }
 
@@ -1648,6 +1668,8 @@ EOF
     assert_present "$launch" "direct-push spawn with yolo $yolo rendered no launch brief"
     [ "$(grep -c '^# Current landing authority$' "$launch")" = 1 ] \
       || fail "direct-push launch brief with yolo $yolo lacks exactly one landing authority"
+    assert_no_grep "# Firstmate repository verification" "$launch" \
+      "a direct-push project other than Firstmate received Firstmate's GitHub verification"
     case "$yolo" in
       on)
         assert_grep "Landing is pre-authorized" "$launch" "yolo on did not pre-authorize the landing"

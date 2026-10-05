@@ -6,6 +6,12 @@
 # clean fast-forward, never forcing, merging, or stashing" used by every sync
 # path:
 #   - /updatefirstmate (bin/fm-update.sh) pulls from origin: base_mode "origin".
+#     That base is origin's green pointer branch (FF_GREEN_POINTER), which
+#     .github/workflows/green-pointer.yml advances only to main commits whose CI
+#     passed, so a home never runs a main commit that has not gone green. A
+#     remote without that branch (another fork) falls back to origin/<default>,
+#     and the target's output says so. A checkout already past the pointer but
+#     still within origin/<default> is left in place, never moved backward.
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
 #     base_mode is that local commit, with NO fetch and no origin dependency.
@@ -207,6 +213,7 @@ validate_secondmate_home() {
 # each distinct git-common-dir at most once. Used ONLY by the origin base mode;
 # the local-HEAD sync never fetches.
 FETCHED=""
+FF_GREEN_POINTER=green
 fetch_once() {
   local dir=$1 common
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
@@ -368,8 +375,10 @@ live_secondmate_meta_records() {
 #   FF_INSTR  = comma list of changed instruction paths (only when updated)
 #
 # base_mode selects where the fast-forward base comes from:
-#   origin       - fetch origin and advance to origin/<default> (the /updatefirstmate
-#                  path); requires an origin remote and network reachability.
+#   origin       - fetch origin and advance to origin/$FF_GREEN_POINTER, or to
+#                  origin/<default> when origin has no such branch (the
+#                  /updatefirstmate path, see this file's header); requires an
+#                  origin remote and network reachability.
 #   <commit-ish> - advance to that LOCAL commit with NO fetch and no origin
 #                  dependency (the local-HEAD secondmate sync). The commit must
 #                  already exist in the target's object store, which it always does
@@ -396,7 +405,7 @@ ff_target() {
     return 0
   fi
 
-  local default base cur instr local_rev base_rev before after out
+  local default base cur instr local_rev base_rev before after out main_base=""
   default=$(default_branch "$dir") || {
     echo "$label: skipped: cannot determine default branch"
     return 0
@@ -412,7 +421,13 @@ ff_target() {
       echo "$label: skipped: fetch failed"
       return 0
     fi
-    base="origin/$default"
+    if git -C "$dir" rev-parse --verify --quiet "refs/remotes/origin/$FF_GREEN_POINTER^{commit}" >/dev/null; then
+      base="origin/$FF_GREEN_POINTER"
+      main_base="origin/$default"
+    else
+      base="origin/$default"
+      echo "$label: note: origin has no $FF_GREEN_POINTER pointer branch; following origin/$default"
+    fi
   else
     base="$base_mode"
   fi
@@ -452,6 +467,14 @@ ff_target() {
     return 0
   fi
   if ! git -C "$dir" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then
+    # Past the green pointer but holding nothing outside origin/<default>: the
+    # pointer has not caught up yet, so stay put rather than move backward.
+    if [ -n "$main_base" ] && git -C "$dir" merge-base --is-ancestor HEAD "$main_base" 2>/dev/null; then
+      FF_STATUS="current"
+      [ -z "$reconciliation_state" ] || secondmate_update_reconcile_clear "$reconciliation_state" "$secondmate_id" || true
+      echo "$label: already current (ahead of $base within $main_base; left in place)"
+      return 0
+    fi
     if [ -n "$secondmate_id" ] && [ -n "$reconciliation_state" ] \
       && divergence_is_redundant "$dir" "$local_rev" "$base_rev"; then
       instr=$(changed_instr "$dir" "$base")

@@ -22,6 +22,9 @@
 #     restart is also what re-resolves launch-time harness wiring; a live mate
 #     whose runtime cannot prove a restart falls to nudge-secondmates; and a mate
 #     whose home was skipped or whose endpoint is stopped gets no action at all.
+#   - Homes follow origin's green pointer rather than raw main, never move back
+#     from a commit past it, and fall back to origin/main, saying so, when the
+#     remote has no pointer.
 #   - Secondmate homes resolve from both state/<id>.meta and the
 #     data/secondmates.md registry, deduped, and the firstmate repo is never
 #     re-processed as one of its own secondmates.
@@ -556,8 +559,69 @@ test_primary_update_rebinds_local_watch() {
   pass "T12 a self-update rebinds a locally armed watch on the primary"
 }
 
+# --- Green pointer: homes follow origin/green, never raw main ----------------
+# Publish origin's green pointer at <rev> of the seed clone.
+set_green() {
+  local w=$1 rev=$2
+  git -C "$w/seed" push -q origin "$(git -C "$w/seed" rev-parse "$rev"):refs/heads/green"
+}
+
+test_follows_green_pointer_not_main() {
+  local w out green
+  w=$(new_world green-follow)
+  add_sm "$w" sm1
+  bump_origin "$w" instr
+  set_green "$w" main
+  green=$(git -C "$w/seed" rev-parse main)
+  bump_origin "$w" readme
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "firstmate advanced to the pointer"
+  assert_contains "$out" "secondmate sm1: updated " "secondmate advanced to the pointer"
+  assert_not_contains "$out" "has no green pointer" "a remote with the pointer needs no fallback note"
+  assert_equals "$green" "$(git -C "$w/main" rev-parse HEAD)" "firstmate stops at the green commit, not main's newer tip"
+  assert_equals "$green" "$(git -C "$w/sm1" rev-parse HEAD)" "secondmate stops at the green commit, not main's newer tip"
+  pass "homes fast-forward to origin's green pointer, not past it to main"
+}
+
+test_ahead_of_green_within_main_is_left_in_place() {
+  local w out tip
+  w=$(new_world green-ahead)
+  set_green "$w" main
+  bump_origin "$w" readme
+  git -C "$w/main" pull -q --ff-only origin main
+  tip=$(git -C "$w/main" rev-parse HEAD)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: already current (ahead of origin/green within origin/main" \
+    "a checkout past the pointer but within main is reported current"
+  assert_not_contains "$out" "diverged" "a checkout ahead of the pointer is not a divergence"
+  assert_equals "$tip" "$(git -C "$w/main" rev-parse HEAD)" "a checkout ahead of the pointer is never moved backward"
+  pass "a checkout ahead of the green pointer within main is left in place"
+}
+
+test_missing_green_pointer_falls_back_to_main() {
+  local w out
+  w=$(new_world green-absent)
+  bump_origin "$w" readme
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: note: origin has no green pointer branch; following origin/main" \
+    "a remote without the pointer says it falls back"
+  assert_contains "$out" "firstmate: updated " "the fallback still fast-forwards"
+  assert_equals "$(git -C "$w/main" rev-parse origin/main)" "$(git -C "$w/main" rev-parse HEAD)" \
+    "without the pointer the update follows origin/main"
+  pass "a remote without the green pointer falls back to origin/main and says so"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
+test_follows_green_pointer_not_main
+test_ahead_of_green_within_main_is_left_in_place
+test_missing_green_pointer_falls_back_to_main
 test_bin_only_advance_restarts
 test_unprovable_runtime_gets_fallback_nudge
 test_dead_secondmate_gets_no_action

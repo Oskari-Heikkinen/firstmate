@@ -36,7 +36,8 @@
 # binding and bin/fm-dod-lib.sh owns what it changes for the worker, including
 # the refusal of a forge on local-only.
 # A direct-push promotion's instructions also carry the landing-authority section
-# for --yolo (bin/fm-dod-lib.sh).
+# for --yolo, preceded on Firstmate's own repo by its GitHub verification section
+# (bin/fm-dod-lib.sh).
 # --switch-mode records the one supported mid-flight delivery change: a live
 # direct-push ship task that now ships a PR, through no-mistakes or direct-PR.
 # Every other source mode or target is refused with nothing changed. Under the
@@ -395,6 +396,10 @@ EOF
   # The current worker never re-reads a launch brief, so it receives the
   # yolo-dependent landing section here; a relaunch gets it from bin/fm-spawn.sh.
   if [ "$MODE" = direct-push ]; then
+    if [ -n "$PROMOTE_PROJECT" ] && fm_dod_project_is_firstmate_repo "$PROMOTE_PROJECT" "$FM_ROOT"; then
+      printf '\n'
+      fm_firstmate_verification_block "$ID"
+    fi
     printf '\n'
     fm_landing_authority_block "$YOLO"
   fi

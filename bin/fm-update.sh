@@ -2,7 +2,9 @@
 # Self-update a running firstmate and its secondmates to the latest origin.
 #
 # Mechanical half of the /updatefirstmate skill. Fast-forwards the running
-# firstmate repo's default branch from origin, then fast-forwards every
+# firstmate repo's default branch to origin's green pointer - the newest main
+# commit whose CI passed, or origin/<default> on a remote without that pointer,
+# which the output then names (bin/fm-ff-lib.sh owns that choice) - then fast-forwards every
 # registered secondmate home. Local homes are treehouse worktrees or standalone
 # clones; remote routes update their configured code root on that host and then
 # fast-forward the persistent home to that root. FAST-FORWARD ONLY, exactly like
@@ -28,7 +30,7 @@
 #   - one status line per target (updated/already current/skipped)
 #   - reread-firstmate: yes|no    (did the running firstmate's instructions change)
 #   - restart-secondmates: fm-<id>...|none (every live secondmate this pass left
-#     on origin's tip - advanced OR already there - whose recorded runtime can
+#     on origin's sync target - advanced OR already there - whose recorded runtime can
 #     prove a restart)
 #   - nudge-secondmates: fm-<id>...|none   (the residual: live secondmates on
 #     that same tip whose runtime CANNOT prove a restart, so the older re-read
@@ -105,7 +107,7 @@ if [ "$FF_STATUS" = "updated" ]; then
 fi
 
 # --- secondmates -----------------------------------------------------------
-# Every live secondmate this pass leaves on origin's tip is restarted, whether it
+# Every live secondmate this pass leaves on origin's sync target is restarted, whether it
 # advanced or was already there. The header above owns why the git diff does not
 # gate that, and which two conditions - a skipped home, an unprovable runtime -
 # are the only ways a live mate stays out of the restart set.

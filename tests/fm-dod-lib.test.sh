@@ -420,6 +420,43 @@ test_direct_push_landed_and_ready_heads() {
   pass "direct-push: an unpushed head is refused, a ready head is accepted but not landed, a pushed head is landed"
 }
 
+# Firstmate's GitHub-verified direct-push section is selected only for a project
+# that shares the Firstmate code root's git object store: the root itself and its
+# pooled worktrees, never an unrelated clone of anything.
+test_firstmate_repo_detection_uses_the_object_store() {
+  local root wt other
+  root="$TMP_ROOT/fm-root"
+  wt="$TMP_ROOT/fm-root-wt"
+  other="$TMP_ROOT/other-project"
+  fm_git_worktree "$root" "$wt" fm/pooled
+  fm_git_init_commit "$other"
+  fm_dod_project_is_firstmate_repo "$root" "$root" \
+    || fail "the Firstmate code root was not recognized as its own repository"
+  fm_dod_project_is_firstmate_repo "$wt" "$root" \
+    || fail "a pooled worktree of the Firstmate repository was not recognized"
+  fm_dod_project_is_firstmate_repo "$root" "$wt" \
+    || fail "the Firstmate repository was not recognized from a worktree code root"
+  ! fm_dod_project_is_firstmate_repo "$other" "$root" \
+    || fail "an unrelated project was treated as the Firstmate repository"
+  ! fm_dod_project_is_firstmate_repo "$TMP_ROOT/missing" "$root" \
+    || fail "a missing project directory was treated as the Firstmate repository"
+  pass "Firstmate repository detection follows the shared git object store"
+}
+
+test_firstmate_verification_block_verifies_on_github() {
+  local block
+  block=$(fm_firstmate_verification_block fm-task)
+  assert_contains "$block" "# Firstmate repository verification" "the section lacks its heading"
+  assert_contains "$block" "Run no local Firstmate test suite" "the section does not forbid the local suite"
+  assert_contains "$block" "git push origin HEAD:refs/heads/ci/fm-task" "the section does not push to the task's CI branch"
+  assert_contains "$block" "gh run watch <run-id> --exit-status" "the section does not wait on the CI branch run"
+  assert_contains "$block" "only a head whose ci/fm-task run passed" "the section lets an unverified head land"
+  assert_not_contains "$block" "--force" "the section mentions a force push"
+  pass "the Firstmate verification section lands only a head whose CI branch run passed"
+}
+
+test_firstmate_repo_detection_uses_the_object_store
+test_firstmate_verification_block_verifies_on_github
 test_scout_done_is_not_gated
 test_unpushed_ship_done_is_refused
 test_no_mistakes_prevalidation_done_is_not_gated

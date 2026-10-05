@@ -366,6 +366,7 @@ The `data/secondmates.md` line contract is owned by the [`secondmate-provisionin
 
 `no-mistakes` tasks run the full validation pipeline, `direct-PR` tasks open PRs without that pipeline, `direct-push` tasks land their own locally tested commit on the remote default branch as a fast-forward push with no PR, and `local-only` tasks stay local until firstmate performs an approved fast-forward merge.
 A `direct-push` brief stays yolo-free, so the spawn appends the landing-authority section that says whether the worker lands at once or stops at a tested ready branch until approval is relayed; `bin/fm-dod-lib.sh` owns that section too.
+For a direct-push task on Firstmate's own repository, the spawn and promotion also append a verification section that replaces the full local suite with a CI run on the task's `ci/<task-id>` branch before the fast-forward push, because that suite is too long to run locally; `bin/fm-dod-lib.sh` owns it and how the repository is recognized.
 Each task's mode and `yolo` merge posture are firstmate's decision at intake.
 The mode is passed explicitly to `bin/fm-brief.sh`, and both values are passed explicitly to `bin/fm-spawn.sh` and `bin/fm-promote.sh`; each command refuses to guess the values it consumes.
 A ship brief records its mode as a fixed machine-readable line and the spawn refuses to launch on a different one, so the worker's instructions and the recorded task delivery cannot diverge.
@@ -494,6 +495,8 @@ The refresh also prunes local branches whose remote is gone and that no worktree
 ## Self-updates stay safe
 
 `/updatefirstmate` fast-forwards the running firstmate repo and registered secondmate homes from `origin` without touching project clones.
+Its target is origin's `green` branch rather than raw `main`: after the CI workflow passes on a push to `main`, `.github/workflows/green-pointer.yml` fast-forwards `green` to that exact commit, never backward and never onto a commit whose CI did not pass, so a red `main` reaches no home.
+A remote without a `green` branch, such as another fork, falls back to `origin/<default>` and the update output says so; a home already past `green` but still within `origin/<default>` is left in place.
 It restarts every live second mate whose home the pass left on the target commit through a persist-gated replacement, including a home that needed no advance, because a restart is also the only thing that re-resolves launch-time harness wiring; the re-read nudge is retained only as the fallback for live agents whose runtime cannot prove a restart.
 For a remote route, the configured code root updates from its own origin on that host before the persistent home fast-forwards to the code-root commit.
 The primary update is fast-forward only, while a clean secondmate divergence may reconcile with `reset --keep` only when a three-way temporary-index proof shows its complete local tree result is already present at the target, including after a squash merge.

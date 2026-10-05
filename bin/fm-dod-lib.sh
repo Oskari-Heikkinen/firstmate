@@ -104,6 +104,15 @@
 # appends to a promoted worker's ship instructions. The named-head gate needs
 # nothing mode-specific for it: a landed head is on origin's default branch and
 # a ready head on origin's ship branch, both remote-tracking refs.
+# A direct-push task on Firstmate's own repository verifies on GitHub instead of
+# a local suite: fm_firstmate_verification_block owns that section, and the same
+# two callers append it, ahead of the landing authority, exactly when
+# fm_dod_project_is_firstmate_repo proves the task's project shares this Firstmate
+# code root's git object store. It is selected there rather than by a registry
+# token or a brief flag because Firstmate's own repo is never a registered
+# project and bin/fm-brief.sh's repo string cannot identify it, while the spawn
+# and promotion both hold the project path; every other project's direct-push
+# brief is unchanged.
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-pr-lib.sh"
@@ -529,6 +538,40 @@ EOF
       return 1
       ;;
   esac
+}
+
+# 0 when <project-dir> is a checkout of this Firstmate code root's own repository:
+# both resolve to the same git common directory, which holds for the home itself
+# and for every pooled worktree of it, and never for an unrelated clone.
+fm_dod_project_is_firstmate_repo() {  # <project-dir> <fm-root>
+  local project=$1 root=$2 project_common root_common
+  [ -n "$project" ] && [ -d "$project" ] && [ -n "$root" ] && [ -d "$root" ] || return 1
+  project_common=$(git -C "$project" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  root_common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  project_common=$(cd "$project_common" 2>/dev/null && pwd -P) || return 1
+  root_common=$(cd "$root_common" 2>/dev/null && pwd -P) || return 1
+  [ "$project_common" = "$root_common" ]
+}
+
+# The GitHub-verified replacement for a direct-push Definition of done's local
+# suite, appended for Firstmate's own repository only (see this file's header).
+# Its CI runs on ci/** pushes (.github/workflows/ci.yml), and homes follow the
+# green pointer that main's passing CI advances (bin/fm-green-pointer.sh), so
+# a landed commit reaches no home until main's CI has passed on it.
+fm_firstmate_verification_block() {  # <task-id>
+  local ci_branch="ci/$1"
+  cat <<EOF
+# Firstmate repository verification
+This task changes Firstmate's own repository, whose suite runs on GitHub rather than on this machine.
+This section supersedes the Definition of done wherever it says to run the project's full suite locally: before landing, in landing-loop step 2, in the rule against pushing an untested head, and when stopping at ready or refreshing a ready branch. Everything else there still holds.
+- Run no local Firstmate test suite: no \`tests/*.test.sh\` script and no \`bin/fm-test-run.sh\`. Locally run only the seconds-long checks on the files you touched: \`bash -n\`, \`shellcheck\` on one file at a time, and \`bin/fm-lint.sh\` on those files.
+- In place of the full local suite, once those checks pass, push the rebased head to your CI branch with \`git push origin HEAD:refs/heads/$ci_branch\`. If that plain push is refused because an earlier attempt left a head there that yours does not contain, delete your own CI branch with \`git push origin --delete $ci_branch\` and push again; never force it.
+- Then append \`paused [at=<epoch>]: waiting on $ci_branch checks for {sha} until <YYYY-MM-DDTHH:MMZ>\` and wait for the CI workflow's run on that exact commit within the same bound as the Definition of done's post-landing wait: re-list with \`gh run list --branch $ci_branch --commit <sha>\` until it appears, then \`gh run watch <run-id> --exit-status\`.
+- A red run means fix, commit, and go back to landing-loop step 1. Push to \`<default-branch>\` only a head whose $ci_branch run passed on top of the current \`origin/<default-branch>\`, so a lost push race that makes you rebase also means a new $ci_branch run.
+- To stop at ready, or to refresh a ready branch, push to your task branch only a head whose $ci_branch run passed.
+- After landing, wait on the default branch's own checks exactly as the Definition of done says. Running homes follow the \`green\` branch, which advances to your commit only once that main run passes, so a red main reaches no home; still fix it forward or revert it at once as the Definition of done says.
+- Once landed, also delete your CI branch: \`git push origin --delete $ci_branch\`.
+EOF
 }
 
 # 0 when <sha> is contained in a ref under <namespace> in <repo>.

@@ -25,7 +25,8 @@
 #   Every ship or scout spawn renders `launch-brief.md`; for a no-mistakes ship
 #   it also carries the current `--intent` contract and the extracted captain
 #   intent, and for a direct-push ship the landing-authority section
-#   bin/fm-dod-lib.sh renders from this task's yolo. A legacy mixed Task is accepted there only under bin/fm-dod-lib.sh's
+#   bin/fm-dod-lib.sh renders from this task's yolo, preceded on Firstmate's own
+#   repo by that library's GitHub verification section. A legacy mixed Task is accepted there only under bin/fm-dod-lib.sh's
 #   provenance-marking rules; unmarked legacy Tasks stop for migration rather
 #   than becoming intent. That library owns the parsing and intent rules. When
 #   the explicit mode carries less rigor than the project's standing posture, a
@@ -3137,6 +3138,10 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
         fm_brief_intent_overlay "$CAPTAIN_INTENT"
       fi &&
       if [ "$KIND" = ship ] && [ "$MODE" = direct-push ]; then
+        # Firstmate's own repo verifies on GitHub (bin/fm-dod-lib.sh's header).
+        if fm_dod_project_is_firstmate_repo "$PROJ_ABS" "$FM_ROOT"; then
+          printf '\n' && fm_firstmate_verification_block "$ID"
+        fi &&
         printf '\n' && fm_landing_authority_block "$YOLO"
       fi
   } >"$BRIEF_TMP" || {

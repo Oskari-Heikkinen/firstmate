@@ -1,0 +1,34 @@
+name: Green pointer
+
+# Running homes follow the green branch, never raw main (bin/fm-ff-lib.sh), so
+# green may only ever name a main commit whose CI concluded success.
+# bin/fm-green-pointer.sh owns the fast-forward-only advance and its refusals,
+# including an older run that completes after a newer green one.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  advance:
+    name: Advance green pointer
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Fast-forward green to the passing commit
+        env:
+          GREEN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: bin/fm-green-pointer.sh "$GREEN_SHA"

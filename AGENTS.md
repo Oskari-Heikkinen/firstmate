@@ -229,14 +229,14 @@ The path's worker, automated gates, and captain approval remain authoritative:
 
 - **no-mistakes** runs the full pipeline through a PR, then waits for the configured merge authority.
 - **direct-PR** has the worker push and open a PR without the no-mistakes pipeline, then waits for the configured merge authority.
-- **direct-push** has the worker rebase onto the current default branch, pass the project's full local suite as thorough as its CI, and land with a plain fast-forward push to the default branch, no PR; with `yolo` off it stops at a pushed, tested ready branch and lands only after firstmate relays approval.
+- **direct-push** has the worker rebase onto the current default branch, pass the project's full local suite as thorough as its CI (on Firstmate's own repo, that suite's CI run on a `ci/` branch), and land with a plain fast-forward push to the default branch, no PR; with `yolo` off it stops at a pushed, tested ready branch and lands only after firstmate relays approval.
   PR modes remain the choice for code that will run on shared servers, which needs an independent review first, and for large or risky changes.
 - **local-only** has the worker stop with a clean ready branch, then waits for the configured merge authority before firstmate uses the guarded fast-forward merge path.
 
 Delivery mode and `yolo` are orthogonal.
 `yolo` governs merge authority only: with it off, the captain approves every PR merge, direct-push landing, and local-only landing; with it on, firstmate merges green, in-scope work itself and a direct-push worker lands its own tested work.
 Never merge a red PR, or one with a required check that has not reported, under either setting unless a current explicit captain instruction names the GitHub check to waive; `bin/fm-pr-merge.sh`'s header owns the attended-only waiver mechanics and remaining guards.
-A direct push is a landing too: it never lands a head whose full local suite did not pass on the current default branch, and a default branch that goes red after one is fixed forward or reverted at once; the direct-push definition of done in `bin/fm-dod-lib.sh` owns the bounded post-landing check wait and reports a revert as blocked, never landed.
+A direct push is a landing too: it never lands a head whose full suite did not pass on the current default branch, and a default branch that goes red after one is fixed forward or reverted at once; the direct-push definition of done in `bin/fm-dod-lib.sh` owns the bounded post-landing check wait and reports a revert as blocked, never landed.
 Destructive, irreversible, and security-sensitive merges still escalate.
 Without a current explicit captain instruction that states the concrete merge, the green default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Load `ask-user-authority` and `validation-supervision` before deciding or answering any ask-user finding; the implementation worker never answers its own finding.
