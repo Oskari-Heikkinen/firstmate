@@ -3792,12 +3792,31 @@ orphan_pe "$HKEEP" register lavish keep-src -- "$QUIET_STUB" "$TMP_ROOT/orphan-l
 orphan_pe "$HORPHAN" reconcile >/dev/null
 orphan_pe "$HKEEP" reconcile >/dev/null
 
-wait_for "$HORPHAN/state/procevent/orphan-src.runner" \
+# Both owners stay present until the reparenting check: on a loaded host these
+# setup waits can outlast the short lease, and the guard would then reap the
+# dead-owner listener before it is inspected. The dead owner renews last, just
+# before the check, and goes still only after it, so the reaping deadline below
+# still starts later than its final renewal.
+orphan_owners_present() {
+  orphan_pe "$HKEEP" reconcile >/dev/null 2>&1 || true
+  orphan_pe "$HORPHAN" reconcile >/dev/null 2>&1 || true
+}
+wait_for_owners_present() {  # <file>
+  local f=$1
+  for _ in $(seq 1 100); do
+    orphan_owners_present
+    [ -s "$f" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+wait_for_owners_present "$HORPHAN/state/procevent/orphan-src.runner" \
   || fail "the dead-owner listener never recorded its runner"
-wait_for "$HKEEP/state/procevent/keep-src.runner" \
+wait_for_owners_present "$HKEEP/state/procevent/keep-src.runner" \
   || fail "the live-owner listener never recorded its runner"
-wait_for "$TMP_ROOT/orphan-dead.descendant" \
+wait_for_owners_present "$TMP_ROOT/orphan-dead.descendant" \
   || fail "the dead-owner listener's child never spawned its own descendant"
+orphan_owners_present
 ORPHAN_PID=$(cat "$HORPHAN/state/procevent/orphan-src.runner")
 KEEP_PID=$(cat "$HKEEP/state/procevent/keep-src.runner")
 ORPHAN_DESCENDANT=$(cat "$TMP_ROOT/orphan-dead.descendant")
