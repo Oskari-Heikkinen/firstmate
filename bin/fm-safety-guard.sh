@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fm-safety-guard.sh - Firstmate's two agent-free CI guards around its risky
+# fm-safety-guard.sh - Firstmate's agent-free CI guards around its risky
 # areas, run by the "Test coverage guard" job in .github/workflows/ci.yml.
 #
 # Two committed lists drive it:
@@ -7,7 +7,8 @@
 #                            risky areas, one repo-relative test path per line.
 #   tests/risky-areas.list   each risky area's script globs and test globs, as
 #                            `<area> script|test <glob>` lines; `*` in a glob
-#                            also matches `/`. The pre-push review reuses it.
+#                            also matches `/`. The lean pre-push review
+#                            (bin/fm-lean-review.sh) reuses it.
 # Both accept `#` comments and blank lines.
 #
 # Usage:
@@ -36,10 +37,26 @@
 #     reason. The risky areas come from the list at the range base, so a push
 #     cannot weaken the rule it is judged by; the head's list is used only
 #     when the base has none.
+#   fm-safety-guard.sh receipts --before <sha> --head <sha> [--default-ref <ref>]
+#     Judges the same range, with the same risky areas, for lean-review
+#     receipts: every non-merge commit that changes a risky-area script must
+#     carry a `Lean-Review: <receipt id>` commit trailer whose id matches that
+#     commit's own diff. A missing trailer, or one naming a different diff,
+#     fails, and there is no override line. Other commits need nothing.
+#   fm-safety-guard.sh receipt-id <commit>
+#     Prints <commit>'s receipt id, judged by the risky-area list at its parent
+#     (or at the commit when the parent has none), and exits 1 printing nothing
+#     when the commit changes no risky-area script. The id hashes only the part
+#     of the diff whose files match an area glob, scripts and tests alike: each
+#     file's modes, status, and path plus `git patch-id --stable` of that
+#     partial patch. It ignores line numbers, blob ids, the parent, and the
+#     message, so it survives a plain rebase and the amend that adds the
+#     trailer, while any change to that part of the diff changes it.
+#     bin/fm-lean-review.sh writes the trailer only after a passing review.
 #
 # Run it from inside the repository being judged. Exit status: 0 clean, 1 a
-# rule violated (each violation is printed with its commit and remedy), 2 a
-# usage or setup error.
+# rule violated (each violation is printed with its commit and remedy) or, for
+# receipt-id, no risky script changed, 2 a usage or setup error.
 set -u
 
 SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -47,6 +64,7 @@ TEST_RUN="$SELF_DIR/fm-test-run.sh"
 CORE_LIST=tests/safety-core.list
 AREAS_LIST=tests/risky-areas.list
 ZERO_SHA=0000000000000000000000000000000000000000
+RECEIPT_KEY=Lean-Review
 
 usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" >&2
@@ -150,17 +168,11 @@ core_at() { # <commit>
   git show "$1:$CORE_LIST" | list_entries | LC_ALL=C sort -u
 }
 
-run_commits() {
-  local before='' head='' default_ref=origin/main base areas_src areas c subject bad=0
-  local changed scripts tests area script_globs test_globs touched removed has_test f area_names count=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --before) [ $# -ge 2 ] || die "--before needs a sha"; before=$2; shift 2 ;;
-      --head) [ $# -ge 2 ] || die "--head needs a sha"; head=$2; shift 2 ;;
-      --default-ref) [ $# -ge 2 ] || die "--default-ref needs a ref"; default_ref=$2; shift 2 ;;
-      *) usage; exit 2 ;;
-    esac
-  done
+# Resolve a pushed range into RANGE_HEAD, RANGE_BASE, and RANGE_AREAS (the
+# validated risky-area entries at the base, or at the head when the base has
+# none), as the header describes for `commits`; prints the judged range.
+resolve_range() { # <before> <head> <default-ref>
+  local before=$1 head=$2 default_ref=$3 base areas_src
   [ -n "$head" ] || die "--head is required"
   head=$(git rev-parse --verify --quiet "$head^{commit}") || die "head $head is not a known commit"
 
@@ -183,8 +195,107 @@ run_commits() {
   else
     die "$AREAS_LIST exists at neither $base nor $head"
   fi
-  areas=$(git show "$areas_src:$AREAS_LIST" | list_entries)
-  validate_areas "$areas" || die "$AREAS_LIST at $areas_src is invalid"
+  RANGE_AREAS=$(git show "$areas_src:$AREAS_LIST" | list_entries)
+  validate_areas "$RANGE_AREAS" || die "$AREAS_LIST at $areas_src is invalid"
+  RANGE_HEAD=$head RANGE_BASE=$base
+}
+
+# Print the receipt id of <commit> judged by <areas> (the header's receipt-id
+# owns what it covers), or nothing when the commit changes no risky script.
+receipt_id() { # <commit> <areas>
+  local c=$1 areas=$2 globs script_globs f risky=0
+  local -a files=()
+  globs=$(awk '{ print $3 }' <<<"$areas")
+  script_globs=$(awk '$2 == "script" { print $3 }' <<<"$areas")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    path_matches "$f" "$globs" || continue
+    files+=("$f")
+    if path_matches "$f" "$script_globs"; then risky=1; fi
+  done < <(git diff-tree --root --no-commit-id -r --no-renames --name-only "$c")
+  [ "$risky" -eq 1 ] || return 0
+  {
+    printf 'fm-lean-review receipt v1\n'
+    git --literal-pathspecs diff-tree --root --no-commit-id -r --no-renames --raw "$c" -- "${files[@]}" \
+      | awk -F '\t' '{ split($1, m, " "); print m[1], m[2], m[5], $2 }'
+    git --literal-pathspecs diff-tree --root --no-commit-id -r --no-renames -p "$c" -- "${files[@]}" \
+      | git patch-id --stable | awk '{ print $1 }'
+  } | git hash-object --stdin
+}
+
+# Print the risky-area entries a review of <commit> is judged by: the list at
+# its parent, or at the commit itself when the parent has none or it is a root.
+areas_for_commit() { # <commit>
+  local src
+  if git cat-file -e "$1^:$AREAS_LIST" 2>/dev/null; then
+    src="$1^"
+  elif git cat-file -e "$1:$AREAS_LIST" 2>/dev/null; then
+    src=$1
+  else
+    die "$AREAS_LIST exists at neither $1 nor its parent"
+  fi
+  git show "$src:$AREAS_LIST" | list_entries
+}
+
+run_receipt_id() {
+  local c areas id
+  [ $# -eq 1 ] || { usage; exit 2; }
+  c=$(git rev-parse --verify --quiet "$1^{commit}") || die "$1 is not a known commit"
+  areas=$(areas_for_commit "$c") || exit 2
+  validate_areas "$areas" || die "$AREAS_LIST for $c is invalid"
+  id=$(receipt_id "$c" "$areas") || die "could not hash $c"
+  [ -n "$id" ] || return 1
+  printf '%s\n' "$id"
+}
+
+run_receipts() {
+  local before='' head='' default_ref=origin/main c subject want have bad=0 count=0 reviewed=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --before) [ $# -ge 2 ] || die "--before needs a sha"; before=$2; shift 2 ;;
+      --head) [ $# -ge 2 ] || die "--head needs a sha"; head=$2; shift 2 ;;
+      --default-ref) [ $# -ge 2 ] || die "--default-ref needs a ref"; default_ref=$2; shift 2 ;;
+      *) usage; exit 2 ;;
+    esac
+  done
+  resolve_range "$before" "$head" "$default_ref"
+
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    count=$((count + 1))
+    want=$(receipt_id "$c" "$RANGE_AREAS") || die "could not hash $c"
+    [ -n "$want" ] || continue
+    reviewed=$((reviewed + 1))
+    have=$(git log -1 --format="%(trailers:key=$RECEIPT_KEY,valueonly)" "$c")
+    if ! grep -Fxq -- "$want" <<<"$have"; then
+      subject=$(git log -1 --format='%h %s' "$c")
+      if [ -n "$(tr -d '[:space:]' <<<"$have")" ]; then
+        printf 'fm-safety-guard: %s carries a %s receipt for a different diff (want %s)\n' "$subject" "$RECEIPT_KEY" "$want" >&2
+      else
+        printf 'fm-safety-guard: %s changes a risky script without a %s receipt\n' "$subject" "$RECEIPT_KEY" >&2
+      fi
+      printf '  run bin/fm-lean-review.sh on that commit and push only after it passes\n' >&2
+      bad=1
+    fi
+  done < <(git rev-list --reverse --no-merges "$RANGE_BASE..$RANGE_HEAD")
+
+  [ "$bad" -eq 0 ] || return 1
+  printf 'fm-safety-guard: %s commit(s) judged, %s risky one(s) carry a matching lean-review receipt\n' "$count" "$reviewed"
+}
+
+run_commits() {
+  local before='' head='' default_ref=origin/main base areas c subject bad=0
+  local changed scripts tests area script_globs test_globs touched removed has_test f area_names count=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --before) [ $# -ge 2 ] || die "--before needs a sha"; before=$2; shift 2 ;;
+      --head) [ $# -ge 2 ] || die "--head needs a sha"; head=$2; shift 2 ;;
+      --default-ref) [ $# -ge 2 ] || die "--default-ref needs a ref"; default_ref=$2; shift 2 ;;
+      *) usage; exit 2 ;;
+    esac
+  done
+  resolve_range "$before" "$head" "$default_ref"
+  head=$RANGE_HEAD base=$RANGE_BASE areas=$RANGE_AREAS
   area_names=$(awk '{ print $1 }' <<<"$areas" | LC_ALL=C sort -u)
 
   while IFS= read -r c; do
@@ -236,6 +347,8 @@ run_commits() {
 case "${1:-}" in
   core) shift; run_core "$@" ;;
   commits) shift; run_commits "$@" ;;
+  receipts) shift; run_receipts "$@" ;;
+  receipt-id) shift; run_receipt_id "$@" ;;
   -h|--help) usage; exit 0 ;;
   *) usage; exit 2 ;;
 esac

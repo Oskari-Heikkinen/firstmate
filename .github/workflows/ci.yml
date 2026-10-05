@@ -99,6 +99,11 @@ jobs:
           GUARD_BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           GUARD_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: bin/fm-safety-guard.sh commits --before "$GUARD_BEFORE" --head "$GUARD_HEAD"
+      - name: Pushed risky-area commits carry a lean-review receipt
+        env:
+          GUARD_BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          GUARD_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bin/fm-safety-guard.sh receipts --before "$GUARD_BEFORE" --head "$GUARD_HEAD"
 
   # Two duration-balanced portable parallel shards of the Phase 2 proven-isolated
   # set only. Composition owner: bin/fm-test-run.sh (docs/fm-test-portable-shards.md).

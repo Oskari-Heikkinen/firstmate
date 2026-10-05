@@ -15,6 +15,10 @@
 #   - A new or rewritten branch is judged from its merge base with the default
 #     ref, and the risky areas come from the range base, so a push cannot
 #     weaken the rule it is judged by.
+#   - receipts passes a risky commit whose Lean-Review trailer matches its own
+#     diff and a commit that changes no risky script, fails a missing receipt
+#     and a receipt for a different diff, and keeps passing after a plain
+#     rebase moves the reviewed hunks.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -230,6 +234,79 @@ test_range_fallback_and_base_areas() {
   pass "new and rewritten branches use the merge base, and areas come from the base"
 }
 
+run_receipts() { # <repo> <before>
+  (cd "$1" && "$GUARD" receipts --before "$2" --head "$(git rev-parse HEAD)")
+}
+
+# Amend HEAD with the trailer naming <id>, default HEAD's own receipt id.
+add_receipt() { # <repo> [id]
+  local r=$1 id=${2:-}
+  [ -n "$id" ] || id=$(cd "$r" && "$GUARD" receipt-id HEAD) || fail "receipt-id must print an id for a risky commit"
+  git -C "$r" commit -q --amend --no-edit --trailer "Lean-Review: $id"
+}
+
+test_receipts() {
+  local r base out rc id other
+  r=$(new_repo receipts)
+  base=$(sha "$r" HEAD)
+  change "$r" "docs only" README
+  out=$(cd "$r" && "$GUARD" receipt-id HEAD 2>&1); rc=$?
+  expect_code 1 "$rc" "receipt-id refuses a commit with no risky script change"
+  assert_equals "" "$out" "receipt-id prints nothing for a commit with no risky script change"
+  change "$r" "watch with test" bin/fm-watch.sh tests/fm-watch-a.test.sh
+  add_receipt "$r"
+  out=$(run_receipts "$r" "$base" 2>&1) || fail "a matching receipt and a non-risky commit must pass: $out"
+  assert_contains "$out" "2 commit(s) judged, 1 risky one(s) carry a matching lean-review receipt" "only the risky commit needs a receipt"
+
+  change "$r" "park unreviewed" bin/fm-park.sh tests/fm-park-a.test.sh
+  out=$(run_receipts "$r" "$base" 2>&1); rc=$?
+  expect_code 1 "$rc" "a risky commit without a receipt fails"
+  assert_contains "$out" "park unreviewed changes a risky script without a Lean-Review receipt" "the unreviewed commit is named"
+  assert_contains "$out" "bin/fm-lean-review.sh" "the remedy names the review"
+
+  other=$(cd "$r" && "$GUARD" receipt-id HEAD~1)
+  git -C "$r" commit -q --amend --no-edit --trailer "Lean-Review: $other"
+  out=$(run_receipts "$r" "$base" 2>&1); rc=$?
+  expect_code 1 "$rc" "a receipt for another diff fails"
+  assert_contains "$out" "carries a Lean-Review receipt for a different diff" "the mismatch is named"
+
+  id=$(cd "$r" && "$GUARD" receipt-id HEAD)
+  git -C "$r" commit -q --amend --no-edit --trailer "Lean-Review: $id"
+  out=$(run_receipts "$r" "$base" 2>&1) || fail "a commit carrying its own receipt beside a stale one must pass: $out"
+
+  printf 'more\n' >>"$r/tests/fm-park-a.test.sh"
+  git -C "$r" commit -q -a --amend --no-edit
+  out=$(run_receipts "$r" "$base" 2>&1); rc=$?
+  expect_code 1 "$rc" "editing a risky-area test after the review invalidates the receipt"
+  pass "receipts require a Lean-Review trailer matching each risky commit's own diff"
+}
+
+test_receipt_survives_plain_rebase() {
+  local r out
+  r=$(new_repo rebase)
+  printf 'w%s\n' 2 3 4 5 6 7 8 9 >>"$r/bin/fm-watch.sh"
+  git -C "$r" commit -qam "longer script
+
+no-test-needed: fixture"
+  git -C "$r" update-ref refs/remotes/origin/main main
+  git -C "$r" checkout -q -b ci/x
+  printf 'w9 changed\n' >>"$r/bin/fm-watch.sh"
+  printf 'more\n' >>"$r/tests/fm-watch-a.test.sh"
+  git -C "$r" commit -qam "watch tail with test"
+  add_receipt "$r"
+  git -C "$r" checkout -q main
+  { printf 'w0\n'; cat "$r/bin/fm-watch.sh"; } >"$r/head.tmp" && mv "$r/head.tmp" "$r/bin/fm-watch.sh"
+  git -C "$r" commit -qam "watch head line
+
+no-test-needed: fixture"
+  git -C "$r" update-ref refs/remotes/origin/main main
+  git -C "$r" checkout -q ci/x
+  git -C "$r" rebase -q main || fail "the fixture rebase must apply cleanly"
+  out=$(run_receipts "$r" "$ZERO" 2>&1) || fail "a receipt must survive a plain rebase that moves the hunk: $out"
+  assert_contains "$out" "1 risky one(s) carry a matching lean-review receipt" "the rebased commit keeps its receipt"
+  pass "a lean-review receipt survives a plain rebase"
+}
+
 test_core_passes_and_fails
 test_risky_change_needs_a_test
 test_each_commit_is_judged_not_the_tip
@@ -237,5 +314,7 @@ test_deleting_a_test_does_not_count
 test_no_test_needed_override
 test_safety_core_removal
 test_range_fallback_and_base_areas
+test_receipts
+test_receipt_survives_plain_rebase
 
 echo "# all fm-safety-guard tests passed"
