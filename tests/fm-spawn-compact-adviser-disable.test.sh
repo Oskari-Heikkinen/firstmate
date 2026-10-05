@@ -286,6 +286,7 @@ test_relaunch_rebuilds_the_switch() {
       echo "tasktmp=$dir/tasktmp"
       echo "model=default"
       echo "effort=default"
+      echo "compact_at=200000"
     } > "$home/state/$id.meta"
 
     mkdir -p "$dir/user-home"
@@ -295,6 +296,8 @@ test_relaunch_rebuilds_the_switch() {
       "$CONTROL" "$id" relaunch --note 'replacement continues the same task' 2>&1)
     status=$?
     expect_code 0 "$status" "relaunch with allowlist=$setting should succeed: $out"
+    assert_grep 'compact_at=200000' "$home/state/$id.meta" "relaunch lost compact_at"
+    assert_contains "$out" 'compact_at=200000 recorded but not applied for harness=codex' "relaunch did not carry compact_at to the launch owner"
 
     grep -qx 'export COMPACT_ADVISER_DISABLE=1' "$dir/fake/keys" \
       || fail "relaunch with allowlist=$setting did not re-export the compact-adviser switch into the pane"

@@ -1102,7 +1102,7 @@ Cursor Agent CLI and Oh My Pi also walk above the git root but offer no per-path
 
 `config/crew-dispatch.json` is an optional local, gitignored file containing natural-language rules that firstmate reads before dispatching a crewmate or scout.
 Firstmate chooses the best matching rule with judgment; shell scripts do not match the natural-language rules.
-Firstmate resolves the rule's profile object or array under `AGENTS.md` section 4 and `quota-array-dispatch`, then passes only concrete `--harness`, `--model`, and `--effort` flags to `fm-spawn.sh`.
+Firstmate resolves the rule's profile object or array under `AGENTS.md` section 4 and `quota-array-dispatch`, then passes concrete `--harness`, `--model`, and `--effort` flags plus the matched rule's optional `--compact-at` to `fm-spawn.sh`.
 
 **Spawn requirements**
 
@@ -1122,6 +1122,7 @@ This section is the single owner of the canonical schema and its per-field seman
       "when": "<natural-language condition describing a kind of task>",
       "approval": "captain",
       "min_confidence": 0.85,
+      "compact_at": 200000,
       "floor": { "scope": "<quota-axi scope>", "min_percent": 20, "provider": "<quota-axi provider>" },
       "use": [
         { "harness": "<adapter>", "model": "<optional model>", "effort": "<low|medium|high|xhigh|max|ultra, optional>", "provider": "<optional quota-axi provider>", "floor": { "scope": "<quota-axi scope>", "min_percent": 50 } }
@@ -1144,6 +1145,20 @@ This section is the single owner of the canonical schema and its per-field seman
 | `use` and optional top-level `default` | Accept one profile object or a non-empty array of profile objects; the single-object form remains fully backward-compatible. |
 | Profile `harness` | Required in every profile. |
 | Profile `model` and `effort`; rule `why` | Optional. |
+| Rule `compact_at` | Optional integer tokens, 100000 through 1000000 (Claude's supported native range). |
+
+**Optional worker compaction**
+
+A matched rule's `compact_at` applies to any selected candidate in that rule, not to the top-level default or a rule bypassed by its quota floor.
+Firstmate passes it as `--compact-at <tokens>` when resolving manually too; an explicit per-task override wins.
+A rule without it changes nothing: the worker keeps its tool's current compaction point.
+Claude gets a worker-launch-scoped `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, overriding an inherited value for that launch only.
+Pi and pi-signed (including Sol) request native compaction only above the threshold at a settled, confirmed-idle boundary; a long active run may still reach Pi's unchanged normal hard-window protection first.
+The spawn script's header owns the bounded retry mechanics, metadata and relaunch behavior.
+Other tools record the requested value and report that it is not applied, without refusing the spawn.
+Secondmate spawns ignore the option, and the first mate's own session is never changed.
+Owners leave independent reviewers and pinned roles on rules without this field; this launch option does not classify or enforce routing.
+Each home owns activation on its routine rules; this setting does not reconfigure existing workers or account defaults.
 
 **Fields applied only by typed resolution**
 

@@ -993,4 +993,31 @@ expect_code 0 "$code" "--help exits 0"
 assert_contains "$out" 'Usage:' "--help prints usage"
 pass "configuration errors exit 2 before any network call"
 
+# Worker threshold follows the rule actually selected, including confidence
+# fallback, and is never inherited by quota-floor fall-through to default.
+write_quota "$QUOTA" 0.7597
+jq '.rules[1].compact_at = 200000 | .rules[3].compact_at = 300000 | .rules[0].compact_at = 400000' "$BASE_RULES" > "$RULES"
+write_response "$RESPONSE" rule_2 0.99
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+expect_code 0 "$code" "compact rule resolution should succeed"
+assert_contains "$out" "  profile: --harness 'pi' --model 'openai-codex/gpt-5.6-sol' --compact-at 200000" "compact_at not forwarded to selected Pi profile"
+write_response "$RESPONSE" rule_1 0.97
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" '  status: clear' "quota floor should resolve default"
+assert_not_contains "$out" '--compact-at' "quota-floor default inherited bypassed rule threshold"
+jq '.rules[1].min_confidence = 0.9 | .rules[3].min_confidence = 0.1' "$RULES" > "$TMP_ROOT/compact-fallback.json"
+cp "$TMP_ROOT/compact-fallback.json" "$RULES"
+write_floor_response "$RESPONSE" rule_2 0.96 0.01 0.76 0.01 0.20 0.02
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium' --compact-at 300000" "confidence fallback lost its own rule threshold"
+for bad_compact in null '"200000"' 0 99999 200000.5 1000001; do
+  jq --argjson value "$bad_compact" '.rules[0].compact_at = $value' "$BASE_RULES" > "$RULES"
+  reset_log
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+  expect_code 2 "$code" "invalid compact_at must refuse: $bad_compact"
+  assert_contains "$err" 'compact_at must be an integer from 100000 through 1000000' "invalid compaction diagnostic missing"
+  assert_absent "$LOG/argv" "invalid compaction reached network"
+done
+pass "worker compaction follows only the selected rule and validates before requests"
+
 printf '# all fm-dispatch-resolve tests passed\n'

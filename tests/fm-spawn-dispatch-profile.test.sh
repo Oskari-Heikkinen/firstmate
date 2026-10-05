@@ -1032,9 +1032,11 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   cp "$ROOT/AGENTS.md" "$sm/AGENTS.md"
   cp "$sm/data/charter.md" "$CASE_DIR/charter-before"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate --compact-at 200000)
   status=$?
   expect_code 0 "$status" "pi-signed persistent secondmate spawn should succeed"
+  if grep -q '^compact_at=' "$HOME_DIR/state/$id.meta"; then fail "Pi secondmate recorded a worker threshold"; fi
+  assert_absent "$HOME_DIR/state/$id.pi-ext.ts" "Pi secondmate received a worker compaction extension"
   assert_contains "$out" "spawned $id harness=pi-signed kind=secondmate" \
     "pi-signed secondmate spawn did not preserve its runtime identity"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed default default
@@ -1063,13 +1065,15 @@ test_batch_forwards_shared_profile_flags() {
   enable_dispatch_profile "$HOME_DIR"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-    "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high)
+    "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high --compact-at 200000)
   status=$?
   expect_code 0 "$status" "batch spawn with shared profile flags should succeed"
   assert_contains "$out" "spawned $id1 harness=codex" "first batch task did not use shared harness"
   assert_contains "$out" "spawned $id2 harness=codex" "second batch task did not use shared harness"
   assert_meta_profile "$HOME_DIR/state/$id1.meta" codex gpt-5 high
   assert_meta_profile "$HOME_DIR/state/$id2.meta" codex gpt-5 high
+  assert_grep 'compact_at=200000' "$HOME_DIR/state/$id1.meta" "first batch task lost compact_at"
+  assert_grep 'compact_at=200000' "$HOME_DIR/state/$id2.meta" "second batch task lost compact_at"
   pass "batch dispatch forwards shared --harness, --model, and --effort to every pair"
 }
 
@@ -1806,6 +1810,217 @@ test_non_claude_harness_ignores_claude_permission_mode() {
   pass "config/claude-permission-mode changes claude launches only"
 }
 
+# Execute the emitted launch instead of inspecting source or extension bytes.
+test_compact_at_claude_and_secondmate_environment() {
+  local kind setting rec id out result sm target
+  for kind in ship secondmate; do
+    for setting in absent enabled; do
+      id="compact-$kind-$setting"
+      rec=$(make_spawn_case "$id" claude "$id")
+      read_case_record "$rec"
+      [ "$setting" = absent ] || : > "$HOME_DIR/config/launch-env-allowlist"
+      target=$PROJ_DIR
+      if [ "$kind" = secondmate ]; then
+        sm="$CASE_DIR/secondmate-home"
+        make_seeded_secondmate_home "$sm" "$id"
+        target=$sm
+        out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$target" --secondmate --compact-at 200000)
+      else
+        out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$target" --compact-at=200000)
+      fi
+      expect_code 0 $? "compact_at $kind spawn failed: $out"
+      cat > "$FAKEBIN_DIR/claude" <<'SH'
+#!/bin/sh
+printf '%s' "${CLAUDE_CODE_AUTO_COMPACT_WINDOW-unset}"
+SH
+      chmod +x "$FAKEBIN_DIR/claude"
+      result=$(env -i HOME="$HOME_DIR" PATH="$FAKEBIN_DIR:$PATH" CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000 bash -c "$(cat "$LAUNCH_LOG")") || fail "compact launch failed"
+      if [ "$kind" = ship ]; then
+        [ "$result" = 200000 ] || fail "worker compact_at missing from Claude env: $result"
+        assert_grep 'compact_at=200000' "$HOME_DIR/state/$id.meta" "compact_at not recorded"
+      else
+        if [ "$setting" = absent ]; then
+          [ "$result" = 500000 ] || fail "secondmate's existing threshold changed: $result"
+        else
+          [ "$result" = unset ] || fail "secondmate received a worker threshold: $result"
+        fi
+        if grep -q '^compact_at=' "$HOME_DIR/state/$id.meta"; then fail "secondmate recorded worker compact_at"; fi
+      fi
+    done
+  done
+  pass "Claude gets worker-only compaction even with env filtering; secondmates keep their existing settings"
+}
+
+# The generated extension is the public artifact. Drive its lifecycle API with
+# native compact callbacks, including concurrent settles and stale/null usage.
+test_compact_at_pi_settled_and_retry_limit() {
+  local harness rec id out ext
+  for harness in pi pi-signed; do
+    id="compact-$harness"
+    rec=$(make_spawn_case "$id" "$harness" "$id")
+    read_case_record "$rec"
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --compact-at 200000 --model openai-codex/gpt-6.1-sol)
+    expect_code 0 $? "compact_at $harness spawn failed: $out"
+    assert_grep 'compact_at=200000' "$HOME_DIR/state/$id.meta" "Pi compact_at not recorded"
+    ext="$HOME_DIR/state/$id.pi-ext.ts"
+    EXT_PATH="$ext" node --input-type=module <<'JS' || fail "Pi compaction behavior failed"
+import { pathToFileURL } from "node:url";
+import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+const record = process.env.EXT_PATH.replace(/\.pi-ext\.ts$/, ".busy-state");
+const turnMarker = process.env.EXT_PATH.replace(/\.pi-ext\.ts$/, ".turn-ended");
+const stateIs = (state) => assert.match(readFileSync(record, "utf8"), new RegExp("state=" + state + " "));
+const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
+const handlers = {};
+mod.default({ on: (name, fn) => { handlers[name] = fn; }, events: { on() {} } });
+let tokens = 200001, idle = true, calls = 0, callbacks, now = 100000;
+Date.now = () => now;
+const timers = new Map();
+let timerId = 0;
+globalThis.setTimeout = (fn, ms) => {
+  assert.equal(ms, 600000, "task-local callback recovery bound");
+  timers.set(++timerId, fn);
+  return timerId;
+};
+globalThis.clearTimeout = (id) => timers.delete(id);
+const fireTimer = async () => {
+  assert.equal(timers.size, 1, "one callback-recovery timer per early compaction");
+  const [id, fn] = [...timers][0]; timers.delete(id); await fn();
+};
+const ctx = {
+  isIdle: () => idle,
+  getContextUsage: () => tokens === undefined ? undefined : { tokens },
+  compact: (options) => { calls++; callbacks = options; },
+};
+const settle = () => handlers.agent_settled({}, ctx);
+await handlers.turn_end({}, ctx);
+assert.equal(calls, 0, "inner turn must never compact");
+idle = false; await settle(); assert.equal(calls, 0);
+idle = true;
+for (const value of [undefined, null, NaN, -1, 200000]) {
+  tokens = value; await settle(); assert.equal(calls, 0, "invalid/below usage must skip");
+}
+tokens = 200001; await settle(); assert.equal(calls, 1);
+stateIs("busy");
+assert.equal(timers.size, 1);
+assert.equal(existsSync(turnMarker), false, "compaction clears previous turn marker");
+await handlers.turn_end({}, ctx);
+await settle(); assert.equal(calls, 1, "one compaction in flight");
+stateIs("busy");
+assert.equal(existsSync(turnMarker), false, "no turn-ended while compacting");
+await callbacks.onError(new Error("synthetic"));
+assert.equal(timers.size, 0, "error clears recovery timer");
+stateIs("idle");
+assert.equal(existsSync(turnMarker), true, "settled failure may notify");
+await settle(); assert.equal(calls, 1, "failure cooldown");
+now += 60001; await settle(); assert.equal(calls, 2);
+stateIs("busy");
+await callbacks.onComplete({});
+assert.equal(timers.size, 0, "completion clears recovery timer");
+stateIs("idle");
+now += 60001; await settle(); assert.equal(calls, 2, "still-large success must not loop");
+tokens = null; await settle(); assert.equal(calls, 2, "unknown usage cannot rearm");
+tokens = 100000; await settle();
+tokens = 210000; await settle(); assert.equal(calls, 3, "new threshold excursion rearms");
+// A continuation or newer agent run must win over a late callback.
+idle = false;
+await handlers.agent_start({}, ctx);
+await callbacks.onComplete({});
+stateIs("busy");
+assert.equal(existsSync(turnMarker), false, "continuing completion cannot notify");
+idle = true;
+// A synchronous API refusal follows the same bounded error path.
+now += 60001;
+ctx.compact = () => { calls++; throw new Error("synthetic refusal"); };
+await settle(); assert.equal(calls, 4);
+now += 60001; await settle(); assert.equal(calls, 4);
+stateIs("idle");
+// No settled event from the new run means even an idle-looking ctx cannot
+// authorize the old callback to publish a settlement.
+tokens = 100000; await settle();
+tokens = 210000; ctx.compact = (options) => { calls++; callbacks = options; };
+await settle(); stateIs("busy");
+await handlers.agent_start({}, ctx);
+await callbacks.onComplete({});
+stateIs("busy");
+assert.equal(existsSync(turnMarker), false, "late completion from old run cannot notify");
+await settle(); stateIs("idle");
+// Conversely, a new run that settles DURING compaction must not lose its idle
+// edge or notification: both wait for the native compaction to finish.
+for (const outcome of ["onComplete", "onError"]) {
+  tokens = 100000; await settle();
+  tokens = 210000; await settle(); stateIs("busy");
+  await handlers.agent_start({}, ctx);
+  await handlers.turn_end({}, ctx);
+  await settle();
+  stateIs("busy");
+  assert.equal(existsSync(turnMarker), false, "new settlement must defer while compacting");
+  await callbacks[outcome]({});
+  stateIs("idle");
+  assert.equal(existsSync(turnMarker), true, "new settlement must notify after compaction");
+}
+// Timer recovery never declares an active native compaction idle; no second
+// recovery path is installed when the one-shot finds native work still active.
+tokens = 100000; await settle();
+tokens = 210000; await settle(); stateIs("busy");
+now += 600001;
+idle = false; await fireTimer(); stateIs("busy");
+assert.equal(timers.size, 0, "callback recovery is one-shot");
+await settle(); stateIs("busy");
+assert.equal(existsSync(turnMarker), false, "timeout alone cannot declare native work idle");
+idle = true; await settle(); stateIs("busy");
+await callbacks.onComplete({}); stateIs("idle");
+// No further prompt/event is needed when the timer finds native idle.
+mod.default({ on: (name, fn) => { handlers[name] = fn; }, events: { on() {} } });
+await settle(); stateIs("busy");
+const beforeIdleTimer = calls;
+const lateCallback = callbacks.onComplete;
+await fireTimer(); stateIs("idle");
+assert.equal(existsSync(turnMarker), true, "timer alone restores the normal turn notification");
+await settle(); assert.equal(calls, beforeIdleTimer, "timer never starts a new compaction");
+now += 60001; await settle(); assert.equal(calls, beforeIdleTimer + 1);
+await lateCallback({}); stateIs("busy");
+assert.equal(timers.size, 1, "late callback cannot clear a newer request's timer");
+await fireTimer(); stateIs("idle");
+now += 60001; await settle(); assert.equal(calls, beforeIdleTimer + 1, "normal retry budget remains bounded");
+tokens = 100000; await settle(); tokens = 210000; await settle();
+assert.equal(calls, beforeIdleTimer + 2, "new excursion still rearms normal retries");
+await callbacks.onComplete({});
+// Session end clears the timer and makes late timers/callbacks harmless.
+mod.default({ on: (name, fn) => { handlers[name] = fn; }, events: { on() {} } });
+await settle(); stateIs("busy");
+const staleTimer = [...timers.values()][0];
+await handlers.session_shutdown({}, ctx);
+assert.equal(timers.size, 0, "session end clears recovery timer");
+await staleTimer(); await callbacks.onComplete({});
+stateIs("busy");
+assert.equal(existsSync(turnMarker), false, "session end prevents late notifications");
+JS
+  done
+  pass "Pi compacts only settled idle workers with one request in flight and bounded retries"
+}
+
+test_compact_at_validation_and_unsupported_tool() {
+  local rec id out value
+  id=compact-invalid
+  rec=$(make_spawn_case "$id" codex "$id")
+  read_case_record "$rec"
+  for value in '' 0 99999 200000.5 1000001 '200000;false'; do
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" "--compact-at=$value" 2>&1)
+    expect_code 1 $? "invalid compact_at should refuse: $value $out"
+    [ ! -s "$LAUNCH_LOG" ] || fail "invalid compact_at launched"
+    [ ! -f "$HOME_DIR/state/$id.meta" ] || fail "invalid compact_at published metadata"
+  done
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --compact-at 200000 2>&1)
+  expect_code 0 $? "unsupported tool should still launch: $out"
+  assert_contains "$out" 'compact_at=200000 recorded but not applied for harness=codex' "missing unsupported-tool warning"
+  assert_grep 'compact_at=200000' "$HOME_DIR/state/$id.meta" "unsupported tool lost compact_at"
+  pass "compact_at rejects malformed values before launch and records unsupported-tool requests"
+}
+
+test_compact_at_claude_and_secondmate_environment
+test_compact_at_pi_settled_and_retry_limit
+test_compact_at_validation_and_unsupported_tool
 test_worker_launch_delivers_role_scope
 test_no_profile_keeps_claude_profile_defaults
 test_claude_launch_brief_publishes_record_doorbell

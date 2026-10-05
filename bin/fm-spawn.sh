@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--compact-at <tokens>] [--backend <name>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--compact-at <tokens>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -44,7 +44,7 @@
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
 #   secondmate's charter.
-#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
+#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>] [--compact-at <tokens>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded worktree, reusing its recorded endpoint when that
 #   endpoint still exists, instead of creating either from scratch. It is
@@ -92,6 +92,18 @@
 #   from that harness's launch rather than guessed. Ultra is the explicit
 #   exception: bin/fm-harness.sh validate-native-effort owns its model scope;
 #   supported Pi launches receive --codex-effort ultra, never --thinking ultra.
+#   --compact-at <tokens> optionally sets worker-only early native compaction
+#   (integer 100000..1000000). Claude receives a launch-scoped
+#   CLAUDE_CODE_AUTO_COMPACT_WINDOW; Pi/pi-signed use their task extension at
+#   agent_settled + isIdle, with at most two attempts per above-threshold
+#   excursion and a 60-second cooldown. Early compaction holds semantic busy
+#   state and suppresses turn-end notifications until completion/error confirms
+#   the latest settled run is still idle. A task-local one-shot ten-minute
+#   timer recovers a missing callback only on positive native idle, without
+#   starting another compaction. Completion, error and session end clear it. Hard-window protection
+#   stays unchanged. Other harnesses record it and warn without refusing the spawn.
+#   Secondmates ignore it. Absent means no change; relaunch preserves it unless
+#   explicitly overridden, and batch dispatch forwards it to each worker.
 #   OpenCode has no interactive effort flag, so its effort is written as the
 #   build agent's variant, keyed to the resolved model, inside the
 #   OPENCODE_CONFIG_CONTENT JSON its launch already carries (config schema
@@ -658,6 +670,8 @@ KIND_SET=0
 HARNESS_ARG=
 MODEL=
 EFFORT=
+COMPACT_AT=
+COMPACT_AT_SET=0
 BACKEND_ARG=
 MODE=
 YOLO=
@@ -695,6 +709,10 @@ for a in "$@"; do
     effort)
       EFFORT=$a
       EFFORT_SET=1
+      ;;
+    compact-at)
+      COMPACT_AT=$a
+      COMPACT_AT_SET=1
       ;;
     backend)
       BACKEND_ARG=$a
@@ -749,6 +767,11 @@ for a in "$@"; do
   --effort=*)
     EFFORT=${a#--effort=}
     EFFORT_SET=1
+    ;;
+  --compact-at) want_value=compact-at ;;
+  --compact-at=*)
+    COMPACT_AT=${a#--compact-at=}
+    COMPACT_AT_SET=1
     ;;
   --backend) want_value=backend ;;
   --backend=*)
@@ -823,6 +846,13 @@ if [ "$TRACEPARENT_SET" -eq 1 ]; then
     exit 1
   }
 fi
+validate_compact_at() {
+  [[ "$1" =~ ^[1-9][0-9]{5,6}$ ]] && [ "$1" -ge 100000 ] && [ "$1" -le 1000000 ] || {
+    echo "error: --compact-at must be an integer from 100000 through 1000000" >&2
+    return 1
+  }
+}
+[ "$COMPACT_AT_SET" -eq 0 ] || validate_compact_at "$COMPACT_AT" || exit 1
 case "$EFFORT" in
 '' | low | medium | high | xhigh | max | ultra) ;;
 *)
@@ -1477,6 +1507,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ -z "$HARNESS_ARG" ] || shared_args+=(--harness "$HARNESS_ARG")
   [ -z "$MODEL" ] || shared_args+=(--model "$MODEL")
   [ -z "$EFFORT" ] || shared_args+=(--effort "$EFFORT")
+  [ -z "$COMPACT_AT" ] || shared_args+=(--compact-at "$COMPACT_AT")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
   # One delivery contract applies to every pair in a batch, exactly like the shared
   # harness. Each pair still re-validates it against its own brief, so a batch
@@ -1862,6 +1893,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
+  if [ "$COMPACT_AT_SET" -eq 0 ] && [ "$KIND" != secondmate ]; then
+    COMPACT_AT=$(fm_meta_get "$RELAUNCH_META" compact_at)
+    [ -z "$COMPACT_AT" ] || validate_compact_at "$COMPACT_AT" || exit 1
+  fi
   # A secondmate whose endpoint is gone already has ONE owner for that
   # recovery: the session-start liveness sweep respawns it with
   # `fm-spawn.sh <id> --secondmate`, which stands its home's own workspace back
@@ -2450,6 +2485,15 @@ if [ "$KIND" = secondmate ] && [ -z "$ARG3" ]; then
       esac
     fi
   fi
+fi
+# Early compaction is an opt-in worker axis, never a supervisor setting.
+if [ "$KIND" = secondmate ]; then
+  COMPACT_AT=
+elif [ -n "$COMPACT_AT" ]; then
+  case "$HARNESS" in
+    claude|pi|pi-signed) ;;
+    *) echo "warning: compact_at=$COMPACT_AT recorded but not applied for harness=$HARNESS" >&2 ;;
+  esac
 fi
 # Ultra is an explicit native capability, never a Pi thinking-level alias.
 # Validate the fully resolved profile before worktree or endpoint provisioning.
@@ -4791,6 +4835,9 @@ EOF
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
 import { execFile } from "node:child_process";
+EOF
+    if [ -z "$COMPACT_AT" ]; then
+      cat >>"$STATE/$ID.pi-ext.ts" <<EOF
 import { realpathSync } from "node:fs";
 import { dirname } from "node:path";
 const busyEvent = (state: string, event: string) =>
@@ -4807,6 +4854,121 @@ export default function (pi: any) {
     return busyEvent("idle", "agent-settled");
   });
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+EOF
+    else
+      cat >>"$STATE/$ID.pi-ext.ts" <<EOF
+import { realpathSync, unlinkSync } from "node:fs";
+import { dirname } from "node:path";
+let busyWrites = Promise.resolve();
+const busyEvent = (state: string, event: string, current = () => true) => {
+  busyWrites = busyWrites.then(() => new Promise<void>((resolve) => {
+    if (!current()) { resolve(); return; }
+    execFile("$FM_ROOT/bin/fm-busy-event.sh", [
+      "apply", "$STATE_REAL", "$ID", state,
+      "--gen", "$BUSY_GEN", "--source", "pi-ext", "--event", event,
+    ], () => resolve());
+  }));
+  return busyWrites;
+};
+export default function (pi: any) {
+  const compactAt = ${COMPACT_AT:-0};
+  let compactInFlight = false;
+  let compactAttempts = 0;
+  let compactRetryAfter = 0;
+  let compactSerial = 0;
+  let compactTimer: ReturnType<typeof setTimeout> | undefined;
+  let sessionEnded = false;
+  const clearCompactTimer = () => {
+    if (compactTimer !== undefined) clearTimeout(compactTimer);
+    compactTimer = undefined;
+  };
+  pi.on("session_shutdown", () => {
+    sessionEnded = true;
+    clearCompactTimer();
+  });
+  let runEpoch = 0;
+  let settledEpoch = -1;
+  let settledCtx: any;
+  const turnEnded = () => new Promise<void>((resolve) => {
+    execFile("touch", ["$TURNEND"], () => resolve());
+  });
+  const publishSettlement = async () => {
+    const ctx = settledCtx;
+    const epoch = settledEpoch;
+    const settled = () => !sessionEnded && ctx && !compactInFlight && runEpoch === epoch && settledCtx === ctx && ctx.isIdle();
+    if (!settled()) return;
+    await busyEvent("idle", "early-compact-finished", settled);
+    if (settled() && !compactInFlight) await turnEnded();
+  };
+  const recoverMissingCallback = async (ctx: any) => {
+    if (sessionEnded || !compactInFlight || !ctx.isIdle()) return;
+    clearCompactTimer();
+    compactInFlight = false;
+    compactRetryAfter = Date.now() + 60000;
+    settledEpoch = runEpoch;
+    settledCtx = ctx;
+    await publishSettlement();
+  };
+  const maybeCompact = async (ctx: any) => {
+    if (sessionEnded || typeof ctx?.isIdle !== "function" || !ctx.isIdle()) return false;
+    if (typeof ctx.getContextUsage !== "function" || typeof ctx.compact !== "function") return false;
+    const tokens = ctx.getContextUsage()?.tokens;
+    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens < 0) return false;
+    if (tokens <= compactAt) {
+      compactAttempts = 0;
+      compactRetryAfter = 0;
+      return false;
+    }
+    if (compactAttempts >= 2 || Date.now() < compactRetryAfter) return false;
+    compactInFlight = true;
+    const epoch = runEpoch;
+    const settled = () => !sessionEnded && runEpoch === epoch && ctx.isIdle();
+    // Keep semantic state busy and remove the previous turn notification until
+    // native compaction finishes. A newer settled run is remembered, not lost.
+    await busyEvent("busy", "early-compact");
+    if (!settled()) {
+      compactInFlight = false;
+      await publishSettlement();
+      return true;
+    }
+    try { unlinkSync("$TURNEND"); } catch { /* An absent notification is fine. */ }
+    compactAttempts++;
+    const attempt = ++compactSerial;
+    const finished = async () => {
+      // A missing-callback recovery must not accept a delayed old callback.
+      if (sessionEnded || !compactInFlight || compactSerial !== attempt) return;
+      clearCompactTimer();
+      compactInFlight = false;
+      compactRetryAfter = Date.now() + 60000;
+      // Only a later below-threshold observation rearms the attempt budget.
+      await publishSettlement();
+    };
+    compactTimer = setTimeout(async () => {
+      compactTimer = undefined;
+      await recoverMissingCallback(ctx);
+    }, 600000);
+    try { ctx.compact({ onComplete: finished, onError: finished }); }
+    catch { await finished(); }
+    return true;
+  };
+  pi.on("agent_start", () => {
+    runEpoch++;
+    settledCtx = undefined;
+    return busyEvent("busy", "agent-start");
+  });
+  pi.on("agent_settled", async (_event: any, ctx: any) => {
+    if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
+    const epoch = runEpoch;
+    settledEpoch = epoch;
+    settledCtx = ctx;
+    if (compactInFlight || await maybeCompact(ctx)) return;
+    await busyEvent("idle", "agent-settled", () =>
+      runEpoch === epoch && !compactInFlight && (typeof ctx?.isIdle !== "function" || ctx.isIdle()));
+  });
+  pi.on("turn_end", () => compactInFlight ? undefined : turnEnded());
+EOF
+    fi
+    cat >>"$STATE/$ID.pi-ext.ts" <<EOF
   // A native harness can make progress inside one Pi turn. This separate
   // marker prevents false wedge alarms without fabricating a completed turn.
   let lastProgress = 0;
@@ -5066,7 +5228,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp model effort account account_provider claude_config_dir busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp model effort compact_at account account_provider claude_config_dir busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -5085,6 +5247,7 @@ preserve_relaunch_meta() {
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  [ -z "$COMPACT_AT" ] || echo "compact_at=$COMPACT_AT"
   # The worker account pin, only when this home declares one, so an unpinned
   # task record stays byte-identical; otherwise the subscription account
   # bin/fm-account-lib.sh chose, when it chose one.
@@ -5387,6 +5550,11 @@ fi
 # `/bin/sh` starts rather than only inside the command that shell runs.
 if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
   LAUNCH="export LAVISH_AXI_HOST=$(shell_quote "$LAVISH_AXI_HOST"); $LAUNCH"
+fi
+if [ "$HARNESS" = claude ] && [ "$KIND" != secondmate ] && [ -n "$COMPACT_AT" ]; then
+  # Export inside the generated shell, including env -i and compound launches,
+  # never into the supervising process or another worker's environment.
+  LAUNCH="export CLAUDE_CODE_AUTO_COMPACT_WINDOW=$COMPACT_AT; $LAUNCH"
 fi
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
