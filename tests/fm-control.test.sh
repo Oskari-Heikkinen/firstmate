@@ -15,8 +15,8 @@
 #   5. Lifecycle states: busy interrupts first, idle does not, already-stopped
 #      is idempotent success, and an agent that does not stop fails closed.
 #   6. Marker non-regression: a control command to a kind=secondmate task
-#      carries NO from-firstmate marker and opens no pending-reply expectation,
-#      while fm-send's marking of the same task is untouched.
+#      carries NO from-firstmate marker and opens no pending-reply expectation
+#      (fm-send's marking of the same task: tests/fm-send-secondmate-marker.test.sh).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -27,7 +27,6 @@ set -u
 . "$ROOT/bin/fm-marker-lib.sh"
 
 CONTROL="$ROOT/bin/fm-control.sh"
-SEND="$ROOT/bin/fm-send.sh"
 # fm_test_tmproot's own cleanup trap fires when its command substitution exits,
 # so recreate the root before resolving it and clean it up from this file's trap.
 TMP_ROOT=$(fm_test_tmproot fm-control)
@@ -1197,26 +1196,6 @@ test_secondmate_control_command_carries_no_marker() {
   pass "fm-control: a lifecycle command to a secondmate is unmarked and opens no reply expectation"
 }
 
-test_fm_send_still_marks_the_same_secondmate_task() {
-  local dir log out rc
-  dir=$(new_case sm-send)
-  add_task "$dir" domain claude secondmate
-  log="$dir/fake/sendlog"
-  : > "$log"
-  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
-    FM_SEND_SETTLE=0 FM_ROOT_OVERRIDE="$dir/home" \
-    "$SEND" domain "audit the build" 2>&1); rc=$?
-  expect_code 0 "$rc" "fm-send to a secondmate should still succeed"$'\n'"$out"
-  # The marked steer rides fm-send's durable inbox plane; only the doorbell is
-  # typed, so the marker is asserted on the recorded body.
-  case "$(bash -c '. "$1"; fm_task_inbox_body "$2"' _ "$ROOT/bin/fm-task-inbox-lib.sh" \
-    "$dir/home/state/domain.inbox/001.msg")" in
-    "$FM_FROMFIRST_MARK"*) : ;;
-    *) fail "fm-send must still mark a kind=secondmate target: $(literals "$dir")" ;;
-  esac
-  pass "fm-control's arrival leaves fm-send's from-firstmate marking untouched"
-}
-
 # Only an adapter whose runtime records an exact per-pane agent session has a
 # relaunch resume form, and only a reference its OWN agent reported may be
 # handed to it: resuming another adapter's reference would inject that agent's
@@ -1300,4 +1279,3 @@ test_claude_exit_ignores_a_transcript_quoting_the_dialog
 test_grok_interrupt_without_acknowledgement_reports_unconfirmed
 test_grok_idle_footer_does_not_confirm_cancellation
 test_secondmate_control_command_carries_no_marker
-test_fm_send_still_marks_the_same_secondmate_task

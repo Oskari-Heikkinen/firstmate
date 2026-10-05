@@ -1,30 +1,18 @@
 #!/usr/bin/env bash
-# tests/fm-backend.test.sh - P1 runtime-backend extraction conformance
-# (data/fm-backend-design-d7/report.md, herdr-addendum.md "events as the core
-# abstraction"). bin/fm-backend.sh and bin/backends/tmux.sh move the tmux
-# command sequences that fm-send.sh, fm-peek.sh, fm-spawn.sh, and
-# fm-teardown.sh used to run inline into named adapter functions. This suite:
+# tests/fm-backend.test.sh - runtime-backend selection, meta, and dispatch
+# behavior (data/fm-backend-design-d7/report.md, herdr-addendum.md "events as
+# the core abstraction"). bin/fm-backend.sh and bin/backends/tmux.sh own the tmux
+# command sequences that fm-send.sh, fm-peek.sh, fm-spawn.sh, and fm-teardown.sh
+# run through named adapter functions. This suite:
 #
 #   1. Unit-tests bin/fm-backend.sh's selection, meta, and dispatch helpers.
-#   2. Runs the PRE-REFACTOR versions of fm-send.sh, fm-peek.sh, fm-spawn.sh,
-#      and fm-teardown.sh (checked out from the merge-base with `main`, the
-#      commit this branch started from) against the SAME fake tmux/treehouse
-#      binaries and fixtures as the REFACTORED versions in this checkout, then
-#      diffs the two command logs byte-for-byte - the report's P1 checklist
-#      item "run current main scripts and refactored scripts against the same
-#      fake tools and compare command logs". The teardown old-vs-new case also
-#      overlays a content-historical permissive tmux kill fixture: after the
-#      exact-selector change lands on the default branch, merge-base with main
-#      collapses to HEAD and can no longer supply that baseline.
+#   2. Runs fm-send.sh, fm-peek.sh, fm-spawn.sh, and fm-teardown.sh against fake
+#      tmux/treehouse binaries and asserts the exact command sequences they log.
 #   3. Asserts the `--backend`/`FM_BACKEND` selection refuses unknown backends
 #      and the blocked `codex-app` backend loudly.
 #
-# fm-watch.sh's signal/stale/check/heartbeat wake-string contract is already
-# exercised end-to-end against this refactor by tests/fm-watch-triage.test.sh
-# and tests/wake-helpers.sh (same fake-tmux convention, run against the
-# now-refactored bin/fm-watch.sh); this suite adds one direct old-vs-new
-# diff for the stale-pane path specifically, since that is the one wake path
-# that now calls through fm_backend_capture instead of tmux directly.
+# fm-watch.sh's signal/stale/check/heartbeat wake-string contract is exercised
+# end-to-end by tests/fm-watch-triage.test.sh and tests/wake-helpers.sh.
 # The real tmux smoke test (create session, send text + Enter, capture, list,
 # kill) lives in tests/fm-backend-tmux-smoke.test.sh.
 set -u
@@ -98,83 +86,6 @@ exit 1
 SH
   chmod +x "$fb/uname" "$fb/lsappinfo" "$fb/ps"
   printf '%s\n' "$fb"
-}
-
-# The commit this branch started from - the P1 "current main" baseline.
-# Suitable for byte-identical old-vs-new checks while a branch still diverges
-# from main. After a squash lands, merge-base(HEAD, main) collapses to HEAD, so
-# callers that need a true pre-change fixture must not rely on this alone.
-resolve_base_ref() {
-  local ref base
-  for ref in main refs/heads/main origin/main refs/remotes/origin/main origin/HEAD refs/remotes/origin/HEAD; do
-    if git -C "$ROOT" rev-parse --verify -q "$ref^{commit}" >/dev/null; then
-      base=$(git -C "$ROOT" merge-base HEAD "$ref" 2>/dev/null) || continue
-      [ -n "$base" ] || continue
-      printf '%s\n' "$base"
-      return 0
-    fi
-  done
-  return 1
-}
-BASE_REF=
-
-backend_base_ref() {
-  if [ -z "${BASE_REF:-}" ]; then
-    BASE_REF=$(resolve_base_ref) \
-      || fail "fm-backend baseline requires local main or origin/main; fetch the default branch before running this test"
-  fi
-  printf '%s\n' "$BASE_REF"
-}
-
-# Newest first-parent revision whose bin/backends/tmux.sh still uses the
-# pre-exact permissive kill-window target. Content-addressed from history so the
-# fixture stays historical on default-branch CI and on branches cut after the
-# exact-selector change, where merge-base with main is self-referential.
-resolve_permissive_tmux_kill_ref() {
-  local commit body
-  while IFS= read -r commit; do
-    [ -n "$commit" ] || continue
-    body=$(git -C "$ROOT" show "$commit:bin/backends/tmux.sh" 2>/dev/null) || continue
-    # shellcheck disable=SC2016
-    case "$body" in
-      *'tmux kill-window -t "=$session:=$window"'*) continue ;;
-    esac
-    # shellcheck disable=SC2016
-    case "$body" in
-      *'tmux kill-window -t "$1"'*|*'tmux kill-window -t "$target"'*)
-        printf '%s\n' "$commit"
-        return 0
-        ;;
-    esac
-  done < <(git -C "$ROOT" log --first-parent --format='%H' HEAD -- bin/backends/tmux.sh)
-  return 1
-}
-
-# --- shared: a pre-refactor bin/ shim --------------------------------------
-#
-# build_old_bin echoes a directory whose bin/ subdir is the complete bin/ tree
-# from BASE_REF.
-# Materializing the whole historical tree keeps every entrypoint and sourced
-# sibling on the same revision, while avoiding a hand-maintained dependency
-# list that can omit a newly sourced helper and make the old process abort
-# before it reaches the behavior under test.
-# FM_ROOT_OVERRIDE pointed at this dir's root makes
-# "$FM_ROOT/bin/fm-project-mode.sh" (etc.) resolve correctly.
-# The teardown conformance case applies its explicitly historical tmux adapter
-# after this complete baseline has been materialized.
-
-build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry point)
-  local name=$1 root archive base_ref
-  root="$TMP_ROOT/$name"
-  archive="$root/bin.tar"
-  mkdir -p "$root"
-  base_ref=$(backend_base_ref)
-  git -C "$ROOT" archive --format=tar "$base_ref" bin > "$archive" \
-    || fail "old-bin shim: could not archive bin/ from $base_ref"
-  tar -xf "$archive" -C "$root" \
-    || fail "old-bin shim: could not extract bin/ from $base_ref"
-  rm -f "$archive"
-  printf '%s\n' "$root"
 }
 
 # --- fm-backend.sh unit tests ------------------------------------------------
@@ -683,7 +594,7 @@ test_backend_of_selector_matches_explicit_target_meta() {
   pass "fm_backend_of_selector: exact task ids, legacy fm-<id> labels, and matching explicit targets inherit metadata backend"
 }
 
-# --- old vs new: fm-send.sh --------------------------------------------------
+# --- fm-send.sh tmux contract ------------------------------------------------
 
 make_send_fakebin() {  # <dir> -> echoes fakebin dir; logs every tmux call to $FM_TMUX_LOG
   local dir=$1 fb="$1/fakebin"
@@ -735,13 +646,9 @@ strip_send_preflight() {  # <log>
   awk -v preflight="$preflight" '$0 != preflight { print }' "$1"
 }
 
-# The byte-identical old-vs-new tmux log comparison this test used to run
-# covered the P1 backend extraction, which promised an unchanged command
-# sequence. The composer consolidation (fm-composer-thin-adapter-refactor-r1)
-# deliberately changed that sequence - the submit core reads a busy baseline
-# before typing (its idle-to-busy turn-started confirmation) and the composer
-# verdict comes from one full styled capture instead of a second band capture -
-# so the current contract is asserted directly instead.
+# The submit core reads a busy baseline before typing (its idle-to-busy
+# turn-started confirmation) and the composer verdict comes from one full styled
+# capture, so the current command sequence is asserted directly.
 test_send_tmux_contract() {
   local fb log home rc
   fb=$(make_send_fakebin "$TMP_ROOT/send-fake")
@@ -782,7 +689,7 @@ test_send_tmux_contract() {
   pass "fm-send.sh: explicit tmux targets are verified; text types once and submits with Enter"
 }
 
-# --- old vs new: fm-peek.sh --------------------------------------------------
+# --- fm-peek.sh capture contract ----------------------------------------------
 
 make_peek_fakebin() {  # <dir> <capture-output> -> echoes fakebin dir
   local dir=$1 payload=$2 fb="$1/fakebin"
@@ -801,36 +708,28 @@ SH
   printf '%s\n' "$fb"
 }
 
-test_peek_conformance_old_vs_new() {
-  local old_bin fb log_old log_new home out_old out_new payload neutral_root
+test_peek_capture_contract() {
+  local fb log home out payload neutral_root
   payload=$'line one\nline two\ncaptain on deck'
-  old_bin=$(build_old_bin peek-old)
   fb=$(make_peek_fakebin "$TMP_ROOT/peek-fake" "$payload")
   home="$TMP_ROOT/peek-home"; mkdir -p "$home/state"
-  log_old="$TMP_ROOT/peek-old.log"; log_new="$TMP_ROOT/peek-new.log"
+  log="$TMP_ROOT/peek.log"
   # A fresh non-git dir keeps fm-guard.sh's worktree-tangle check inert (it warns
-  # to stderr, discarded below) - neither run needs FM_ROOT for anything beyond
-  # that guard, since STATE/HOME are already overridden directly.
+  # to stderr, discarded below); STATE/HOME are already overridden directly.
   neutral_root="$TMP_ROOT/peek-neutral-root"; mkdir -p "$neutral_root"
 
-  : > "$log_old"
-  out_old=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral_root" FM_HOME="$home" FM_TMUX_LOG="$log_old" \
-    "$old_bin/bin/fm-peek.sh" "sess:win" 25 2>/dev/null)
-  : > "$log_new"
-  out_new=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral_root" FM_HOME="$home" FM_TMUX_LOG="$log_new" \
+  : > "$log"
+  out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral_root" FM_HOME="$home" FM_TMUX_LOG="$log" \
     "$ROOT/bin/fm-peek.sh" "sess:win" 25 2>/dev/null)
 
-  [ "$out_old" = "$out_new" ] || fail "fm-peek output differs old vs new"$'\n'"--- old ---"$'\n'"$out_old"$'\n'"--- new ---"$'\n'"$out_new"
-  [ "$out_new" = "$payload" ] || fail "fm-peek did not pass through the fake capture-pane output exactly"
-  diff -u "$log_old" "$log_new" > "$TMP_ROOT/peek-diff.txt" 2>&1 \
-    || fail "fm-peek: tmux command log differs old vs new"$'\n'"$(cat "$TMP_ROOT/peek-diff.txt")"
-  assert_contains "$(cat "$log_new")" $'\x1f''capture-pane'$'\x1f''-p'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''-S'$'\x1f''-25' \
+  [ "$out" = "$payload" ] || fail "fm-peek did not pass through the fake capture-pane output exactly"
+  assert_contains "$(cat "$log")" $'\x1f''capture-pane'$'\x1f''-p'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''-S'$'\x1f''-25' \
     "fm-peek did not call capture-pane -p -t <target> -S -<lines> exactly"
 
-  pass "fm-peek.sh: capture-pane invocation and output are byte-identical old vs new"
+  pass "fm-peek.sh: capture-pane -p -t <target> -S -<lines> output passes through exactly"
 }
 
-# --- old vs new: fm-spawn.sh --------------------------------------------------
+# --- fm-spawn.sh fixtures ----------------------------------------------------
 
 make_spawn_fakebin() {  # <dir> <fake-worktree-path> -> echoes fakebin dir
   local dir=$1 wt=$2 fb="$1/fakebin"
@@ -865,21 +764,12 @@ run_spawn_case() {  # <bin-root> <fakebin> <log> <state> <data> <config> <proj> 
     "$bin/bin/fm-spawn.sh" "$@"
 }
 
-# NOTE: the old-vs-new spawn command-log conformance test that used to live here
-# was retired. It asserted the P1 backend refactor was a byte-for-byte pure
-# extraction of the spawn window-creation/targeting sequence, but that sequence
-# is now DELIBERATELY changed: fm-spawn drives the tmux backend to capture a
-# stable window id, pin the window name (automatic-rename/allow-rename off), and
-# target that id for the rename-critical spawn steps (robustness under a
-# captain's non-default tmux config). A byte-identical old-vs-new diff can no
-# longer hold there by design. That intended sequence is now authoritatively and
-# comprehensively verified - via a recording fake-tmux - by
+# The spawn window-creation/targeting sequence is verified by
 # tests/fm-tangle-guard.test.sh ("fm-spawn: appends windows by session-colon,
 # pins the name, and targets the window id"), and the real tmux create/kill path
-# by tests/fm-backend-tmux-smoke.test.sh. The send/peek/teardown conformance
-# tests below remain pure extractions and stay. (make_spawn_fakebin and
-# run_spawn_case are retained: test_spawn_default_backend_writes_no_meta_field
-# uses make_spawn_fakebin, and #294's run_spawn_symlink_case uses run_spawn_case.)
+# by tests/fm-backend-tmux-smoke.test.sh. make_spawn_fakebin and run_spawn_case
+# serve test_spawn_default_backend_writes_no_meta_field and
+# run_spawn_symlink_case.
 
 # --- symlinked project prefix must not false-refuse the isolation guard -----
 #
@@ -967,7 +857,7 @@ test_spawn_symlinked_project_prefix_avoids_false_refusal() {
   pass "fm-spawn.sh: a project reached through a symlinked prefix (e.g. macOS /tmp -> /private/tmp) does not trip the isolation guard's false refusal"
 }
 
-# --- old vs new: fm-teardown.sh ----------------------------------------------
+# --- fm-teardown.sh tmux and treehouse contract -------------------------------
 
 make_teardown_fakebin() {  # <dir> -> echoes fakebin dir; logs tmux+treehouse calls
   local dir=$1 fb="$1/fakebin"
@@ -1000,11 +890,9 @@ SH
 }
 
 # run_teardown_case <script> <fm-root-override> <fakebin> <log> <state> <data> <config> <id>
-# FM_ROOT_OVERRIDE is passed separately from <script> so both the old and new
-# runs can point it at the SAME neutral (non-git) shim root - that root's
-# bin/fm-guard.sh is a symlink to the real, unchanged script, so the
-# worktree-tangle check runs identically (and silently) for both, regardless
-# of which fm-teardown.sh (old or new) is actually being invoked.
+# FM_ROOT_OVERRIDE points at a neutral (non-git) root whose bin/ is the real
+# bin/, so "$FM_ROOT/bin/..." helpers resolve while the worktree-tangle check
+# stays inert.
 run_teardown_case() {
   local script=$1 fmroot=$2 fb=$3 log=$4 state=$5 data=$6 config=$7 id=$8
   : > "$log"
@@ -1014,21 +902,10 @@ run_teardown_case() {
     "$script" "$id"
 }
 
-test_teardown_conformance_old_vs_new() {
-  local old_bin fb proj wt id old_tmux_ref saved_base_ref
-  local state_old state_new config_old config_new data log_old log_new out_old out_new rc_old rc_new
-  # Force the post-squash topology inside this case: merge-base with main may
-  # equal HEAD on default-branch CI, and that must not make the legacy kill
-  # fixture self-referential. build_old_bin still uses BASE_REF for entrypoints;
-  # only the tmux kill adapter is pinned to the content-historical permissive ref.
-  saved_base_ref=$BASE_REF
-  BASE_REF=$(git -C "$ROOT" rev-parse HEAD)
-  old_tmux_ref=$(resolve_permissive_tmux_kill_ref) \
-    || { BASE_REF=$saved_base_ref; fail "unable to locate a historical bin/backends/tmux.sh with permissive kill-window selectors"; }
-  old_bin=$(build_old_bin teardown-old)
-  git -C "$ROOT" show "$old_tmux_ref:bin/backends/tmux.sh" > "$old_bin/bin/backends/tmux.sh" \
-    || { BASE_REF=$saved_base_ref; fail "could not materialize historical tmux adapter from $old_tmux_ref"; }
-  BASE_REF=$saved_base_ref
+test_teardown_tmux_and_treehouse_contract() {
+  local fb proj wt id neutral_root state config data log out rc
+  neutral_root="$TMP_ROOT/teardown-neutral-root"; mkdir -p "$neutral_root"
+  ln -s "$ROOT/bin" "$neutral_root/bin"
   proj="$TMP_ROOT/teardown-project"; wt="$TMP_ROOT/teardown-wt"
   id="teardownconform1"
   fm_git_worktree "$proj" "$wt" "fm/$id"
@@ -1038,41 +915,24 @@ test_teardown_conformance_old_vs_new() {
   mkdir -p "$data/$id"
   printf 'scout findings\n' > "$data/$id/report.md"
 
-  state_old="$TMP_ROOT/teardown-state-old"; state_new="$TMP_ROOT/teardown-state-new"
-  config_old="$TMP_ROOT/teardown-config-old"; config_new="$TMP_ROOT/teardown-config-new"
-  mkdir -p "$state_old" "$state_new" "$config_old" "$config_new"
-
-  fm_write_meta "$state_old/$id.meta" \
+  state="$TMP_ROOT/teardown-state"; config="$TMP_ROOT/teardown-config"
+  mkdir -p "$state" "$config"
+  fm_write_meta "$state/$id.meta" \
     "window=firstmate:fm-$id" "worktree=$wt" "project=$proj" "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" \
     "decisions_reviewed=1" "decision_keys="
-  fm_write_meta "$state_new/$id.meta" \
-    "window=firstmate:fm-$id" "worktree=$wt" "project=$proj" "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" \
-    "decisions_reviewed=1" "decision_keys="
-  touch "$state_old/.last-watcher-beat" "$state_new/.last-watcher-beat"
+  touch "$state/.last-watcher-beat"
 
-  log_old="$TMP_ROOT/teardown-old.log"; log_new="$TMP_ROOT/teardown-new.log"
-  out_old=$(run_teardown_case "$old_bin/bin/fm-teardown.sh" "$old_bin" "$fb" "$log_old" "$state_old" "$data" "$config_old" "$id" 2>&1)
-  rc_old=$?
-  out_new=$(run_teardown_case "$ROOT/bin/fm-teardown.sh" "$old_bin" "$fb" "$log_new" "$state_new" "$data" "$config_new" "$id" 2>&1)
-  rc_new=$?
+  log="$TMP_ROOT/teardown.log"
+  out=$(run_teardown_case "$ROOT/bin/fm-teardown.sh" "$neutral_root" "$fb" "$log" "$state" "$data" "$config" "$id" 2>&1)
+  rc=$?
 
-  expect_code 0 "$rc_old" "old fm-teardown.sh (scout, report present) should succeed"$'\n'"$out_old"
-  expect_code 0 "$rc_new" "new fm-teardown.sh (scout, report present) should succeed"$'\n'"$out_new"
-  assert_contains "$(cat "$log_new")" "treehouse"$'\x1f''return'$'\x1f''--force'$'\x1f'"$wt" \
+  expect_code 0 "$rc" "fm-teardown.sh (scout, report present) should succeed"$'\n'"$out"
+  assert_contains "$(cat "$log")" "treehouse"$'\x1f''return'$'\x1f''--force'$'\x1f'"$wt" \
     "teardown did not call treehouse return --force <worktree>"
-  # The legacy fixture's adapter comes from BASE_REF, so its selector form is
-  # whatever the merge-base carried: permissive while the exact-selector change
-  # was still on a branch, exact for every branch cut after it landed on main.
-  # Pinning the old form here would make this case pass once and then fail
-  # forever, so the '=' exactness markers are normalized away and the legacy run
-  # is only required to have reached tmux window cleanup for this task. The
-  # exact-selector contract belongs to the current script, asserted below.
-  assert_contains "$(tr -d '=' < "$log_old")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"firstmate:fm-$id" \
-    "legacy teardown fixture did not exercise tmux window cleanup for the task"
-  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"=firstmate:=fm-$id" \
+  assert_contains "$(cat "$log")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"=firstmate:=fm-$id" \
     "teardown did not call tmux kill-window with exact session and window selectors"
 
-  pass "fm-teardown.sh: treehouse return remains compatible while tmux cleanup uses exact selectors"
+  pass "fm-teardown.sh: treehouse return --force and tmux cleanup with exact selectors"
 }
 
 # --- backend selection loudly refuses an unknown backend --------------------
@@ -1194,8 +1054,6 @@ if [ -n "${FM_TEST_ONLY:-}" ]; then
   exit 0
 fi
 
-backend_base_ref >/dev/null
-
 test_backend_name_precedence
 test_backend_detect_precedence
 test_backend_detect_cmux_fallback_bundle_id
@@ -1215,9 +1073,9 @@ test_meta_get_and_backend_of_meta
 test_resolve_selector_three_forms
 test_backend_of_selector_matches_explicit_target_meta
 test_send_tmux_contract
-test_peek_conformance_old_vs_new
+test_peek_capture_contract
 test_spawn_symlinked_project_prefix_avoids_false_refusal
-test_teardown_conformance_old_vs_new
+test_teardown_tmux_and_treehouse_contract
 test_spawn_refuses_unknown_backend_flag
 test_spawn_refuses_codex_app_backend_flag
 test_spawn_refuses_unknown_fm_backend_env

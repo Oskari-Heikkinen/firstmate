@@ -4,23 +4,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD_SH="$SCRIPT_DIR/../bin/fm-jev-mem-guard.sh"
-GUARD_PY="$SCRIPT_DIR/../bin/fm-jev-mem-guard.py"
 
 echo "Running Pattern 46 regression tests..."
 
-# 1. ShellCheck
-shellcheck "$GUARD_SH"
-echo "ok - shellcheck clean"
+# Lint is owned by bin/fm-lint.sh (canonical bin/*.sh set), and every case
+# below executes the Python, so a syntax error fails here without a compile step.
 
-# 2. Python syntax check
-python3 -m py_compile "$GUARD_PY"
-echo "ok - python syntax clean"
-
-# 3. Help works
+# 1. Help works
 "$GUARD_SH" --help >/dev/null
 echo "ok - --help works"
 
-# 4. JSON schema validation on audit; stdout is streamed to the parser as data
+# 2. JSON schema validation on audit; stdout is streamed to the parser as data
 json_out="$("$GUARD_SH" --json)"
 printf '%s\n' "$json_out" | python3 -c '
 import json, sys
@@ -43,7 +37,7 @@ for p in data["top_processes"]:
 '
 echo "ok - json audit schema valid"
 
-# 5. --check exit-code contract, forced BOTH ways without consulting host state.
+# 3. --check exit-code contract, forced BOTH ways without consulting host state.
 #    Utilization can never exceed 100%, so pass-forcing thresholds (1000%) must
 #    classify OK and exit 0 on any host.
 if ! "$GUARD_SH" --check --warn-mem-pct 1000 --crit-mem-pct 1000 --warn-swap-pct 1000 --crit-swap-pct 1000; then
@@ -79,7 +73,7 @@ else
   echo "ok - --check exits 1 with fail-forcing thresholds"
 fi
 
-# 6. Text output carries the documented contract fields
+# 4. Text output carries the documented contract fields
 if ! text_out="$("$GUARD_SH")"; then
   echo "FAIL: text mode did not run cleanly" >&2
   exit 1

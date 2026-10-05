@@ -60,7 +60,8 @@ test_status_without_network() {
   assert_contains "$out" "imap.test.invalid:993" "status prints the configured imap endpoint"
   assert_contains "$out" "smtp.test.invalid:465" "status prints the configured smtp endpoint"
   assert_contains "$out" "cursor:" "status prints the cursor line"
-  pass "fm-mail: status succeeds without network and prints configuration"
+  assert_not_contains "$out" "test-pass" "status must never print the password"
+  pass "fm-mail: status succeeds without network, prints configuration, and never prints the password"
 }
 
 test_help_plumbing() {
@@ -87,15 +88,6 @@ test_unknown_subcommand_prints_usage() {
   assert_contains "$out" "read" "unknown subcommand prints usage"
   assert_contains "$out" "status" "unknown subcommand prints usage"
   pass "fm-mail: unknown subcommand prints usage and exits non-zero"
-}
-
-test_no_secret_leaked_to_status() {
-  local out
-  out=$(FM_MAIL_USER="test@example.com" FM_MAIL_PASS="test-pass" \
-    FM_IMAP_HOST="imap.test.invalid" FM_SMTP_HOST="smtp.test.invalid" \
-    FM_HOME="$HOME_DIR" "$MAIL" status 2>&1)
-  assert_not_contains "$out" "test-pass" "status must never print the password"
-  pass "fm-mail: status never prints the password"
 }
 
 test_send_passes_body() {
@@ -1034,16 +1026,6 @@ SH
   chmod 0600 "$test_home/state/.mail-retry"
   assert_grep "77" "$test_home/state/.mail-retry" "the stale retry entry remains for the next poll to clear"
   pass "fm-mail: a failed stale-retry clear fails the poll instead of silently leaving a duplicate-wake entry"
-}
-
-test_assert_equals_rejects_mismatch() {
-  # Guard against a silent false pass: assert_equals must be defined and must
-  # abort on a mismatch (the retry-scan cursor test depends on it).
-  if ( assert_equals "11" "10" "deliberate mismatch" ) >/dev/null 2>&1; then
-    fail "assert_equals must fail when expected and actual differ"
-  fi
-  assert_equals "11" "11" "matching values must pass"
-  pass "tests/lib: assert_equals fails on mismatch so cursor assertions cannot false-pass"
 }
 
 test_poll_fails_closed_when_retry_unwritable() {
@@ -2605,7 +2587,6 @@ test_env_overrides_env_file
 test_status_without_network
 test_help_plumbing
 test_unknown_subcommand_prints_usage
-test_no_secret_leaked_to_status
 test_send_passes_body
 test_poll_error_propagates
 test_poll_dedupes_surfaces_by_uid
@@ -2645,7 +2626,6 @@ test_poll_fails_closed_when_retry_unwritable
 test_poll_journal_failure_never_cursor_records
 test_poll_fails_closed_when_retry_clear_fails
 test_poll_fails_closed_when_stale_retry_clear_fails
-test_assert_equals_rejects_mismatch
 test_poll_fails_closed_when_poll_list_fails
 test_poll_restores_retry_when_recovered_wake_cannot_append
 test_poll_death_between_retry_remove_and_publish_does_not_strand

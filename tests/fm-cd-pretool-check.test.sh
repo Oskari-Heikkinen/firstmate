@@ -371,20 +371,6 @@ test_policy_cli_direct() {
   pass "cd-guard: fm-cd-command-policy.mjs CLI honors the deny/allow output contract"
 }
 
-# --- per-harness wiring -----------------------------------------------------
-
-# Delegated to bin/fm-lint.sh, the single owner of the lint definition including
-# --external-sources; calling the linter directly here would be a second copy of
-# that definition, and would disagree the moment this checker sourced a shared
-# library.
-test_scripts_are_shellcheck_clean() {
-  local out
-  command -v shellcheck >/dev/null 2>&1 || { pass "shellcheck not installed, skipping"; return; }
-  out=$("$ROOT/bin/fm-lint.sh" "$ROOT/bin/fm-cd-pretool-check.sh" 2>&1) \
-    || fail "bin/fm-cd-pretool-check.sh is not lint-clean under the pinned definition: $out"
-  pass "bin/fm-cd-pretool-check.sh is clean under bin/fm-lint.sh"
-}
-
 test_full_acceptance_matrix
 test_fires_in_secondmate_home
 test_inert_in_child_worktree
@@ -397,4 +383,3 @@ test_fail_open_missing_node
 test_fail_open_missing_jq_on_stdin
 test_prefilter_skips_node_without_cd_substring
 test_policy_cli_direct
-test_scripts_are_shellcheck_clean

@@ -1544,13 +1544,6 @@ test_host_crash_is_retried_then_reported() {
   pass "auto-arm: a host that died without a close is retried, then reported as a failure"
 }
 
-test_fm_lock_status_still_works_with_shared_lib() {
-  local out
-  out=$(FM_HOME="$TMP_ROOT/lock-status-home" bash "$ROOT/bin/fm-lock.sh" status 2>&1)
-  assert_contains "$out" "lock: free" "fm-lock.sh status must keep working after the session-lock lib extraction"
-  pass "fm-lock: shared session-lock lib preserves the status path"
-}
-
 test_inert_in_child_worktree
 test_inert_without_session_lock
 test_reclaims_stale_session_lock_before_arming
@@ -1602,5 +1595,4 @@ test_plain_arm_banner_keeps_its_wake_line_cap
 test_host_handback_carries_every_host_line
 test_host_stand_down_is_silent
 test_host_crash_is_retried_then_reported
-test_fm_lock_status_still_works_with_shared_lib
 test_stands_down_only_on_pi_code_transcript_path

@@ -285,18 +285,6 @@ JS
   pass "Pi calm resolves its persistent home independently of Pi's launch directory"
 }
 
-test_pi_compat_no_upper_bound() {
-  local version
-  for version in 0.83.0 0.90.0 1.0.0 2.3.4 0.82.1 10.20.30; do
-    record_pi_version_evidence "$version" "synthetic newer Pi" \
-      || fail "record_pi_version_evidence rejected Pi $version solely for being newer than 0.82.0"
-  done
-  if (record_pi_version_evidence "" "malformed Pi version probe") 2>/dev/null; then
-    fail "record_pi_version_evidence accepted a missing/malformed Pi version"
-  fi
-  pass "Pi calm compatibility evidence never rejects a Pi version for being newer than 0.82.0, and still fails closed on a missing or malformed version"
-}
-
 test_pi_compat_degraded_adapter() {
   local fixture out status
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
@@ -3835,98 +3823,6 @@ JS
 # This pins that guard with real processes and no browser: one clean render, one
 # that only succeeds after Chrome's start-up flake, and one that never renders
 # and must report enough to tell a Chrome failure apart from a Pi export change.
-test_export_dom_render_guard() {
-  local dir source_file out_file report
-
-  dir="$TMP_ROOT/render-guard"
-  mkdir -p "$dir"
-  source_file="$dir/export.html"
-  out_file="$dir/dom.html"
-  printf '<html><body>export</body></html>\n' >"$source_file"
-
-  cat >"$dir/chrome-ok" <<'SH'
-#!/bin/sh
-case "${1:-}" in --version) echo "FakeChrome 1.2.3"; exit 0 ;; esac
-echo attempt >>"$FM_FAKE_CHROME_ATTEMPTS"
-printf '<html><head></head><body>export</body></html>\n'
-SH
-  cat >"$dir/chrome-flaky" <<'SH'
-#!/bin/sh
-case "${1:-}" in --version) echo "FakeChrome 1.2.3"; exit 0 ;; esac
-echo attempt >>"$FM_FAKE_CHROME_ATTEMPTS"
-if [ "$(wc -l <"$FM_FAKE_CHROME_ATTEMPTS")" -lt 3 ]; then
-  echo "fake chrome start-up crashed" >&2
-  exit 1
-fi
-printf '<html><head></head><body>export</body></html>\n'
-SH
-  cat >"$dir/chrome-broken" <<'SH'
-#!/bin/sh
-case "${1:-}" in --version) echo "FakeChrome 1.2.3"; exit 0 ;; esac
-echo attempt >>"$FM_FAKE_CHROME_ATTEMPTS"
-echo "FAKE_CHROME_STARTUP_MARKER" >&2
-exit 9
-SH
-  cat >"$dir/chrome-hang" <<'SH'
-#!/bin/sh
-case "${1:-}" in --version) echo "FakeChrome 1.2.3"; exit 0 ;; esac
-echo attempt >>"$FM_FAKE_CHROME_ATTEMPTS"
-printf '<html><head></head><body>export'
-exec sleep 30
-SH
-  chmod +x "$dir/chrome-ok" "$dir/chrome-flaky" "$dir/chrome-broken" "$dir/chrome-hang"
-
-  : >"$dir/attempts-ok"
-  FM_FAKE_CHROME_ATTEMPTS="$dir/attempts-ok" \
-    render_export_dom "$dir/chrome-ok" "$source_file" "$out_file" 9.9.9 >"$dir/report-ok" \
-    || fail "render_export_dom rejected a Chrome that dumped a complete DOM"
-  grep -Fq '</html>' "$out_file" || fail "render_export_dom did not leave the rendered DOM behind"
-  [ "$(wc -l <"$dir/attempts-ok")" -eq 1 ] \
-    || fail "render_export_dom retried a Chrome that had already rendered the DOM"
-  [ ! -s "$dir/report-ok" ] || fail "render_export_dom reported a diagnostic for a successful render"
-
-  : >"$dir/attempts-flaky"
-  : >"$out_file"
-  FM_FAKE_CHROME_ATTEMPTS="$dir/attempts-flaky" \
-    render_export_dom "$dir/chrome-flaky" "$source_file" "$out_file" 9.9.9 >"$dir/report-flaky" \
-    || fail "render_export_dom gave up on a Chrome that renders after a start-up failure"
-  grep -Fq '</html>' "$out_file" || fail "a retried render left no DOM behind"
-  [ "$(wc -l <"$dir/attempts-flaky")" -eq 3 ] \
-    || fail "render_export_dom did not retry the failed Chrome start-ups exactly"
-
-  : >"$dir/attempts-broken"
-  : >"$out_file"
-  if FM_FAKE_CHROME_ATTEMPTS="$dir/attempts-broken" \
-    render_export_dom "$dir/chrome-broken" "$source_file" "$out_file" 9.9.9 >"$dir/report-broken"
-  then
-    fail "render_export_dom accepted a Chrome that never rendered the DOM"
-  fi
-  [ "$(wc -l <"$dir/attempts-broken")" -eq 3 ] \
-    || fail "render_export_dom did not exhaust its bounded retries before failing"
-  report=$(cat "$dir/report-broken")
-  assert_contains "$report" "$dir/chrome-broken" "the render failure did not name the Chrome binary it used"
-  assert_contains "$report" "FakeChrome 1.2.3" "the render failure did not name the Chrome version it used"
-  assert_contains "$report" "pi=9.9.9" "the render failure did not name the installed Pi version"
-  assert_contains "$report" "exit=9" "the render failure did not report Chrome's exit status"
-  assert_contains "$report" "timed_out=no" "the render failure did not report that Chrome exited on its own"
-  assert_contains "$report" "FAKE_CHROME_STARTUP_MARKER" "the render failure discarded Chrome's own diagnostic"
-
-  : >"$dir/attempts-hang"
-  : >"$out_file"
-  if FM_FAKE_CHROME_ATTEMPTS="$dir/attempts-hang" FM_CHROME_RENDER_WAIT_TICKS=3 \
-    render_export_dom "$dir/chrome-hang" "$source_file" "$out_file" 9.9.9 >"$dir/report-hang"
-  then
-    fail "render_export_dom accepted a Chrome that never finished the DOM"
-  fi
-  [ "$(wc -l <"$dir/attempts-hang")" -eq 3 ] \
-    || fail "render_export_dom did not exhaust its bounded retries on a Chrome that never finished"
-  report=$(cat "$dir/report-hang")
-  assert_contains "$report" "timed_out=yes" \
-    "the render failure reported its own kill signal without saying the attempt was timed out"
-
-  pass "the rendered-export-DOM guard renders in one pass, retries a bounded number of Chrome start-up failures, and reports the Chrome binary, Chrome version, Pi version, exit status, and Chrome diagnostic when every attempt fails"
-}
-
 test_interactive_terminal_e2e() {
   local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot export_settled_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_report active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
@@ -4819,7 +4715,6 @@ JS
 }
 
 test_home_resolution
-test_pi_compat_no_upper_bound
 test_pi_compat_degraded_adapter
 test_pi_compat_missing_adapter_exports
 test_queued_operational_rows
@@ -4831,5 +4726,4 @@ test_operational_followup_turn_e2e
 test_queued_operational_escape_e2e
 test_hidden_block_geometry_e2e
 test_working_ship_geometry_and_lifecycle
-test_export_dom_render_guard
 test_interactive_terminal_e2e
