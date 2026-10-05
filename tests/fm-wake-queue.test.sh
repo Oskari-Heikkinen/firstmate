@@ -2861,6 +2861,7 @@ test_wake_queue_prune_task() {
 # guarded spawn's window lifecycle (kill-window, a window id from new-window).
 # FM_FAKE_TMUX_CURRENT_COMMAND selects the pane's foreground command per leg;
 # FM_FAKE_WINDOW_GONE=1 makes the session inventory omit fm-sm1 (missing);
+# FM_FAKE_NEW_WINDOW_DELAY=<secs> makes each relaunch take that long;
 # after a logged new-window the probe reads alive, matching a real respawn.
 make_secondmate_liveness_case() {
   local name=$1 dir fakebin home
@@ -2906,6 +2907,7 @@ case "${1:-}" in
   capture-pane) [ -z "${FM_FAKE_TMUX_CAPTURE:-}" ] || cat "$FM_FAKE_TMUX_CAPTURE"; exit 0 ;;
   new-window)
     printf '%s\n' "$*" >> "$log"
+    [ -z "${FM_FAKE_NEW_WINDOW_DELAY:-}" ] || sleep "$FM_FAKE_NEW_WINDOW_DELAY"
     [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && exit 1
     : > "$probe.spawned"
     printf '@1\n'
@@ -3066,6 +3068,42 @@ test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking() {
       || fail "$id's relaunch did not queue its own check row: $(cat "$state/.wake-queue")"
   done
   pass "watch liveness: one tick relaunches every dead mate, queues a row each, and wakes once"
+}
+
+test_secondmate_liveness_tick_beats_per_mate_under_watchdog() {
+  # Each relaunch alone stays well inside the watcher's grace, but three in one
+  # pass outlast it. The pass beats once per mate, so the wedge watchdog must
+  # not read it as one stuck step and stop the watcher mid-pass.
+  local dir state pid out home id start elapsed grace=12 delay=4
+  dir=$(make_secondmate_liveness_case liveness-watchdog)
+  state="$dir/state"
+  for id in sm2 sm3; do
+    home="$TMP_ROOT/liveness-watchdog-$id"
+    mkdir -p "$home/bin" "$home/data" "$home/state" "$home/config" "$home/projects"
+    git init -q -b main "$home"
+    printf '%s\n' "$id" > "$home/.fm-secondmate-home"
+    printf '# Firstmate\n' > "$home/AGENTS.md"
+    printf 'charter\n' > "$home/data/charter.md"
+    printf 'window=firstmate:fm-%s\nkind=secondmate\nharness=claude\nbackend=tmux\nhome=%s\n' \
+      "$id" "$home" > "$state/$id.meta"
+  done
+
+  start=$SECONDS
+  run_liveness_leg "$dir" watchdog FM_FAKE_WINDOW_GONE=1 FM_FAKE_NEW_WINDOW_DELAY="$delay" \
+    FM_WATCHER_STALE_GRACE="$grace" FM_WATCHER_WATCHDOG_INTERVAL=1; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 600 \
+    || fail "the watcher did not exit cleanly on its auto-relaunch wake: $(cat "$dir/watch-watchdog.err" "$state/.watch-triage.log" 2>/dev/null)"
+  elapsed=$((SECONDS - start))
+  out="$dir/watch-watchdog.out"
+  [ "$(grep -c 'new-window' "$dir/tmux.log")" -eq 3 ] \
+    || fail "the pass did not relaunch all three mates: $(cat "$dir/tmux.log" "$dir/watch-watchdog.err")"
+  [ "$elapsed" -gt "$grace" ] \
+    || fail "the relaunch pass (${elapsed}s) did not outlast the ${grace}s grace, so the case proves nothing"
+  ! grep -F 'watchdog: stopping' "$state/.watch-triage.log" >/dev/null 2>&1 \
+    || fail "the watchdog stopped a watcher inside a bounded relaunch pass: $(cat "$state/.watch-triage.log")"
+  [ "$(grep -c 'check: secondmate sm[123] auto-relaunched' "$out")" -eq 1 ] \
+    || fail "the watcher did not finish its pass and wake once: $(cat "$out" "$dir/watch-watchdog.err")"
+  pass "watch liveness: a relaunch pass longer than the grace beats per mate and survives the watchdog"
 }
 
 test_secondmate_liveness_tick_leaves_alive_and_inconclusive_untouched() {
@@ -3381,6 +3419,7 @@ run_case_pool() {  # <case-function>...
 
 WAKE_QUEUE_CASES=(
   # The slowest cases start first so the pool drains evenly.
+  test_secondmate_liveness_tick_beats_per_mate_under_watchdog
   test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive
   test_concurrent_append_and_drain
   test_interruption_before_and_after_raw_commit

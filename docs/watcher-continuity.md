@@ -460,7 +460,11 @@ It checks that a newly appended keyed decision is classified without rereading e
 - Bounded and successor-linked lifecycle rows.
 - A pending-reply scan longer than the grace keeping its beacon fresh per record and surviving the watchdog.
 - The wedge watchdog stopping a watcher blocked on one child that never exits or on a pipe a detached process holds open.
+- The wedge watchdog retrying an unproven identity read and still stopping a later wedge.
 - A SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
+
+`tests/fm-wake-queue.test.sh` proves a secondmate liveness pass whose bounded relaunches together outlast the grace refreshes the beacon per mate and survives the watchdog.
+`tests/fm-supervision-events.test.sh` proves a failed event wait sleeps only what is left of the `FM_POLL` budget.
 
 ### Claude auto-arm and turn-end guard
 

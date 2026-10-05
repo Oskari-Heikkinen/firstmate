@@ -1067,8 +1067,11 @@ EOF
 # the marker so a manually recovered mate rejoins the guarantee with a full
 # budget. The per-mate liveness lock serializes this tick against a concurrent
 # session-start sweep, so neither side can kill or re-probe an endpoint the
-# other is mid-relaunch on.
-secondmate_liveness_tick() {
+# other is mid-relaunch on. An optional <on-mate> command runs before each mate,
+# so a caller can report progress through a pass whose bounded relaunches
+# together outlast the watcher's grace.
+secondmate_liveness_tick() {  # [on-mate]
+  local on_mate=${1:-}
   local tick_marker="$STATE/.secondmate-liveness-tick"
   [ "$(age_of "$tick_marker")" -ge "$SECONDMATE_LIVENESS_SECS" ] || return 0
   touch "$tick_marker" || return 1
@@ -1081,6 +1084,7 @@ secondmate_liveness_tick() {
     id=${meta##*/}
     id=${id%.meta}
     case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    [ -z "$on_mate" ] || "$on_mate"
     fm_secondmate_liveness_lock "$id" || continue
     fm_secondmate_liveness_probe "$meta" "$id" poll
     bound_marker="$STATE/.secondmate-relaunch-bound-$id"
@@ -2576,6 +2580,7 @@ event_wait_or_sleep() {
     return
   fi
 
+  local waited_from=$SECONDS left
   rec=$(FM_BACKEND_EVENTS_CAPABILITY_CONFIRMED=1 fm_backend_wait_transition "$first_backend" "$first_session" "$POLL" "$STATE" "${windows[@]}")
   rc=$?
   case "$rc" in
@@ -2584,12 +2589,14 @@ event_wait_or_sleep() {
       handle_push_transition "$first_backend" "$first_session" "$rec"
       ;;
     2)
-      # Event path unusable this cycle (connect/subscribe failure). Sleep the
-      # budget and count toward the runtime-disable threshold; past it, drop to
+      # Event path unusable this cycle (connect/subscribe failure). Sleep what
+      # the failed wait left of the budget, so the cycle still beats once per
+      # POLL, and count toward the runtime-disable threshold; past it, drop to
       # pure polling for the rest of this watcher process.
       _event_cap_fails=$((_event_cap_fails + 1))
       [ "$_event_cap_fails" -ge "$EVENT_CAP_FAIL_MAX" ] && _event_cap_ok=0
-      sleep "$POLL"
+      left=$((POLL - (SECONDS - waited_from)))
+      [ "$left" -le 0 ] || sleep "$left"
       ;;
     *)
       # 1: a clean full-budget wait with no actionable edge - the reader already
@@ -2776,7 +2783,10 @@ pr_poll_publish_release() {
 # if the step still holds it, which leaves a dead-pid lock the next arm
 # reclaims. It signals only while this home's lock still names this watcher
 # with its recorded identity, so it can never touch a successor or another
-# home's watcher, and it exits as soon as this watcher is gone.
+# home's watcher, and it exits as soon as this watcher is gone or the lock names
+# another pid. An identity read that fails while the lock still names this live
+# watcher (a fork refused under memory pressure) is retried next interval rather
+# than ending the watchdog for the watcher's whole life.
 WATCHDOG_PID=
 WATCHDOG_INTERVAL=${FM_WATCHER_WATCHDOG_INTERVAL:-15}
 case "$WATCHDOG_INTERVAL" in ''|*[!0-9]*|0) WATCHDOG_INTERVAL=15 ;; esac
@@ -2789,13 +2799,22 @@ watcher_watchdog_start() {
     nap=''
     trap - EXIT HUP INT
     trap '[ -z "$nap" ] || kill "$nap" 2>/dev/null; exit 0' TERM
-    seen='' still=0
+    seen='' still=0 unproven=''
     while :; do
       sleep "$WATCHDOG_INTERVAL" &
       nap=$!
       wait "$nap" || exit 0
       nap=
-      watcher_watchdog_owns || exit 0
+      kill -0 "$WATCHER_PID" 2>/dev/null || exit 0
+      lock_pid=
+      read -r lock_pid < "$WATCH_LOCK/pid" 2>/dev/null || true
+      [ "$lock_pid" = "$WATCHER_PID" ] || exit 0
+      if ! watcher_watchdog_owns; then
+        [ -n "$unproven" ] || triage_log "watchdog: could not confirm watcher pid $WATCHER_PID owns the lock; retrying next interval"
+        unproven=1
+        continue
+      fi
+      unproven=''
       mtime=$(fm_path_mtime "$STATE/.last-watcher-beat")
       if [ "$mtime" != "$seen" ]; then
         seen=$mtime
@@ -3012,7 +3031,7 @@ while :; do
   # is also what unsticks that mate's foreign wake queue. The tick's single
   # wake exits the cycle like every other wake, so its marker is stamped before
   # any relaunch and the restarted watcher will not re-probe early.
-  secondmate_liveness_tick || {
+  secondmate_liveness_tick watcher_beat || {
     echo "watcher: secondmate liveness check failed" >&2
     exit 1
   }

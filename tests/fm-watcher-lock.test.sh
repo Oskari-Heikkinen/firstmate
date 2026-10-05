@@ -330,7 +330,7 @@ start_watcher_in_long_pending_reply_scan() {  # <dir> [env assignments...]
   [ "$SCAN_RECORDS" -le 2000 ] || SCAN_RECORDS=2000
   SCAN_WAIT_TICKS=$(( SCAN_RECORDS * per / 50 + 100 ))
   seed_open_pending_replies "$dir/state" "$SCAN_RECORDS"
-  start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE=$LONG_CYCLE_GRACE "$@"
+  start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" "$@"
   sleep "$LONG_CYCLE_GRACE"
   [ "$(cat "$dir/state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan ($SCAN_RECORDS records) finished inside the grace"; }
 }
@@ -384,7 +384,7 @@ test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
   dir=$(make_case live-child-wedge)
   state="$dir/state"
   register_slow_check "$dir" wedge 120
-  start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_WATCHER_WATCHDOG_INTERVAL=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=600
+  start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" FM_WATCHER_WATCHDOG_INTERVAL=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=600
   wait_for_check_start "$dir" wedge "$SEED_PID" || { reap_watcher "$SEED_PID"; fail "watcher never reached the hung check"; }
   wait_for_beacon_age "$state" "$LONG_CYCLE_GRACE" || { reap_watcher "$SEED_PID"; fail "a step blocked on one live child did not age the beacon"; }
   i=0
@@ -398,6 +398,43 @@ test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
   is_live_non_zombie "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" \
     && fail "a live process still holds the lock after the watchdog stop"
   pass "a step blocked on one child that never exits is stopped by the watcher's watchdog"
+}
+
+test_watchdog_retries_unproven_identity_then_stops_wedge() {
+  # An identity read that cannot prove ownership while the lock still names this
+  # live watcher (a fork refused under memory pressure; here, a recorded
+  # identity that does not match) must not end the watchdog for the watcher's
+  # whole life: it never signals while unproven, and once the read recovers it
+  # still stops a later wedge.
+  local dir state identity i
+  dir=$(make_case watchdog-identity-retry)
+  state="$dir/state"
+  start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" FM_WATCHER_WATCHDOG_INTERVAL=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=600
+  identity=$(cat "$state/.watch.lock/pid-identity")
+  [ -n "$identity" ] || { reap_watcher "$SEED_PID"; fail "the watcher recorded no lock identity"; }
+  printf 'unprovable\n' > "$state/.watch.lock/pid-identity"
+  i=0
+  while [ "$i" -lt 100 ] && ! grep -qF 'watchdog: could not confirm' "$state/.watch-triage.log" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watchdog: could not confirm' "$state/.watch-triage.log" 2>/dev/null \
+    || { reap_watcher "$SEED_PID"; fail "the watchdog did not report an unproven identity read"; }
+  sleep 2
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+  is_live_non_zombie "$SEED_PID" || fail "the watcher did not survive an unproven identity read"
+  register_slow_check "$dir" wedge 120
+  wait_for_check_start "$dir" wedge "$SEED_PID" || { reap_watcher "$SEED_PID"; fail "watcher never reached the hung check"; }
+  wait_for_beacon_age "$state" "$LONG_CYCLE_GRACE" || { reap_watcher "$SEED_PID"; fail "the hung check did not age the beacon"; }
+  i=0
+  while [ "$i" -lt 150 ] && is_live_non_zombie "$SEED_PID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$SEED_PID" && { reap_watcher "$SEED_PID"; fail "the watchdog ended on an unproven identity read and never stopped the later wedge"; }
+  wait "$SEED_PID" 2>/dev/null || true
+  assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log"
+  pass "the watchdog retries an unproven identity read and still stops a later wedge"
 }
 
 test_orphaned_pipe_read_is_stopped_by_watchdog() {
@@ -1832,6 +1869,7 @@ test_live_stalled_watch_lock_is_replaced_past_hard_bound
 test_long_pending_reply_scan_keeps_beacon_fresh
 test_long_pending_reply_scan_survives_watchdog
 test_step_blocked_on_one_live_child_is_stopped_by_watchdog
+test_watchdog_retries_unproven_identity_then_stops_wedge
 test_orphaned_pipe_read_is_stopped_by_watchdog
 test_arm_attaches_within_poll_derived_grace
 test_watchdog_ignores_wall_clock_jump

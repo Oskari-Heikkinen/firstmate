@@ -29,7 +29,7 @@ export FM_ROOT_OVERRIDE="$ROOT"
 WAKE_LOG="$TMP/wakes"
 SLEEP_LOG="$TMP/sleeps"
 wake() { printf '%s\n' "$1" >> "$WAKE_LOG"; return 0; }
-sleep() { printf 'SLEEP\n' >> "$SLEEP_LOG"; }
+sleep() { printf 'SLEEP %s\n' "$*" >> "$SLEEP_LOG"; }
 
 reset_state() {
   rm -f "$STATE_DIR"/*.meta "$STATE_DIR"/*.status "$STATE_DIR"/.wake-queue \
@@ -152,5 +152,27 @@ event_wait_or_sleep   # disabled: sleeps without calling wait_transition
 WTN=$(wc -l < "$TMP/wtcalls" | tr -d '[:space:]')
 [ "$WTN" = 2 ] || fail "after EVENT_CAP_FAIL_MAX connect failures the event path must be disabled for the process (expected 2 wait_transition calls, got $WTN)"
 pass "event_wait_or_sleep: consecutive event-path failures disable the fast-path and revert to pure polling (fail-closed)"
+
+# --- event_wait_or_sleep: a failed wait sleeps only what is left of POLL -----
+
+reset_state
+fm_write_meta "$STATE_DIR/tk6.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship"
+SAVED_POLL=$POLL
+POLL=3
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
+fm_backend_events_capable() { return 0; }
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
+fm_backend_wait_transition() { command sleep 2; return 2; }
+event_wait_or_sleep
+SLEPT=$(sed -n 's/^SLEEP //p' "$SLEEP_LOG")
+case "$SLEPT" in ''|1) : ;; *) fail "a wait that failed after spending most of POLL must sleep only the rest (at most 1s of 3s), slept '$SLEPT'" ;; esac
+: > "$SLEEP_LOG"
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
+fm_backend_wait_transition() { return 2; }
+event_wait_or_sleep
+SLEPT=$(sed -n 's/^SLEEP //p' "$SLEEP_LOG")
+case "$SLEPT" in 2|3) : ;; *) fail "a wait that failed at once must still sleep about POLL (3s), slept '$SLEPT'" ;; esac
+POLL=$SAVED_POLL
+pass "event_wait_or_sleep: a failed event wait sleeps only the rest of the POLL budget"
 
 echo "# fm-supervision-events.test.sh: all assertions passed"
