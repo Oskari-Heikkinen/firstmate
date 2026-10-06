@@ -20,7 +20,7 @@ git -C "$T/main" remote set-head origin main
 mkdir -p "$T/main/state" "$T/main/data/task-a" "$T/main/data/housekeeping"
 
 POOL=$T/pool/repo-abc
-for n in 1 2 3 4 5 6 7 8; do
+for n in 1 2 3 4 5 6 7 8 9; do
   mkdir -p "$POOL/$n"
   git -C "$T/main" worktree add -q --detach "$POOL/$n/repo" main
 done
@@ -38,6 +38,7 @@ git -C "$POOL/5/repo" commit -q -am two
 printf '{"worktrees":[{"name":"6","path":"%s","leased":true,"lease_holder":"mate-x"}]}\n' \
   "$POOL/6/repo" > "$POOL/treehouse-state.json"
 printf 'task=gone-task\nhome=%s\n' "$T/main" > "$POOL/8/.fm-slot-owner"
+echo unique > "$POOL/9/.hidden-evidence"
 (cd "$POOL/7/repo" && exec sleep 300) &
 LIVE=$!
 
@@ -55,6 +56,16 @@ done
 echo x > "$T/tmp/fm-c/f"
 echo "see $T/tmp/fm-d for evidence" > "$T/main/data/task-a/report.md"
 
+# A configured Git fsmonitor hook must never execute during a read-only scan.
+cat > "$T/fsmonitor-hook" <<'SH'
+#!/bin/sh
+: > "$FM_TEST_FSMONITOR_MARKER"
+printf 'token\n'
+SH
+chmod +x "$T/fsmonitor-hook"
+export FM_TEST_FSMONITOR_MARKER="$T/fsmonitor-called"
+git -C "$T/main" config core.fsmonitor "$T/fsmonitor-hook"
+
 snapshot() {
   (cd "$T" && find . -path ./main/data/housekeeping -prune -o -print0 | LC_ALL=C sort -z |
     xargs -0 stat -c '%n %s %Y %a' && find . -type f ! -path './main/data/housekeeping/*' -print0 |
@@ -67,6 +78,7 @@ run() {
     --nm-root "$T/nm" --tmp-root "$T/tmp" --date 2026-01-02 "$@"
 }
 out=$(run)
+[ ! -e "$T/fsmonitor-called" ] || { echo 'FAIL: scan executed fsmonitor hook'; exit 1; }
 kill "$LIVE" 2>/dev/null || true
 wait "$LIVE" 2>/dev/null || true
 [ "$out" = "$T/main/data/housekeeping/inventory-2026-01-02.md" ] || { echo "FAIL: output path $out"; exit 1; }
@@ -83,13 +95,21 @@ def row(section, path):
     assert len(m) == 1, (path, section)
     return m[0]
 pool = T + '/pool/repo-abc/'
-assert 'on origin/main; ignored content goes too: cache/' in row(remove, pool + '1')
+incomplete = 'live-process scan incomplete' in text
+if incomplete:
+    assert 'safety scan incomplete' in row(keep, pool + '1')
+    assert 'None.' in remove
+else:
+    assert 'on origin/main; ignored content goes too: cache/' in row(remove, pool + '1')
 for n, why in [('2', 'task-a.meta (worktree=)'), ('3', 'uncommitted tracked'),
                ('4', 'untracked files: new'), ('5', 'is not on origin/main'),
                ('6', 'leased to mate-x'), ('7', 'live process'),
-               ('8', 'gone-task')]:
+               ('8', 'gone-task'), ('9', 'content outside the git copy: .hidden-evidence')]:
     assert why in row(keep, pool + n), (n, row(keep, pool + n))
-assert 'idle' in row(remove, T + '/tmp/fm-b')
+if incomplete:
+    assert 'safety scan incomplete' in row(keep, T + '/tmp/fm-b')
+else:
+    assert 'idle' in row(remove, T + '/tmp/fm-b')
 assert 'tasktmp=' in row(keep, T + '/tmp/fm-a')
 assert 'changed within' in row(keep, T + '/tmp/fm-c')
 assert 'cited by' in row(keep, T + '/tmp/fm-d')
@@ -105,3 +125,28 @@ out2=$(run)
 [ "$out2" != "$out" ] && [ -f "$out2" ] || { echo "FAIL: second run reused $out2"; exit 1; }
 if run --out "$out" 2>/dev/null; then echo 'FAIL: overwrote an existing --out'; exit 1; fi
 echo 'PASS: read-only scan, no overwrite'
+
+# A citation too large to inspect cannot silently turn an idle folder into REMOVE.
+head -c 4194305 /dev/zero > "$T/main/data/task-a/large.md"
+run --stdout > "$T/limited.md"
+python3 - "$T/limited.md" "$T" <<'PY'
+import sys
+text, T = open(sys.argv[1]).read(), sys.argv[2]
+assert 'report citation scan exceeds read limit' in text
+keep = text.split('## KEEP')[1].split('## REMOVE')[0]
+remove = text.split('## REMOVE')[1].split('## Other homes')[0]
+assert T + '/tmp/fm-b' in keep
+assert 'None.' in remove
+print('PASS: incomplete citations invalidate all REMOVE proposals')
+PY
+
+# A broken task-record link is an unreadable reference, not proof of no owner.
+ln -s "$T/missing-record" "$T/main/state/broken.meta"
+run --stdout > "$T/unreadable.md"
+python3 - "$T/unreadable.md" <<'PY'
+import sys
+text = open(sys.argv[1]).read()
+assert 'unreadable meta' in text
+assert 'None.' in text.split('## REMOVE')[1].split('## Other homes')[0]
+print('PASS: unreadable task references invalidate REMOVE proposals')
+PY

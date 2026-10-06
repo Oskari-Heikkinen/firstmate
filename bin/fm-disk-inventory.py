@@ -35,14 +35,18 @@ already recorded locally (no fetch); ignored content that would go with it
 REMOVE only when it is unreferenced, has no live process, nothing inside changed
 for --idle-hours (default 24), and its path is cited by no home's data/**/*.md. Any check that
 errors, times out or cannot be read keeps the item in KEEP with the reason.
+An incomplete reference, process, citation or size scan conservatively keeps
+all provisional REMOVE candidates; /proc permission gaps are not ignored.
 
 Read-only by construction: the only subprocesses are an allowlist of read-only
-`du` and `git` invocations run with GIT_OPTIONAL_LOCKS=0; the module never
+`du` and `git` invocations run with GIT_OPTIONAL_LOCKS=0 and filesystem
+monitor hooks disabled; the module never
 deletes, renames or modifies anything. The wrapper runs everything at nice 19
 and ionice -c3; each du/git call has its own timeout.
 """
 import argparse
 import datetime
+import errno
 import json
 import os
 import re
@@ -78,7 +82,11 @@ class Inventory:
                 raise AssertionError('refused merge-base form: %r' % argv)
         else:
             raise AssertionError('refused command: %r' % argv)
-        env = dict(os.environ, GIT_OPTIONAL_LOCKS='0', LC_ALL='C')
+        # Ambient Git index/worktree/config overrides must not hide changes or
+        # redirect a read into another copy. Disable executable fsmonitor hooks.
+        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+        env.update(GIT_OPTIONAL_LOCKS='0', LC_ALL='C', GIT_CONFIG_COUNT='1',
+                   GIT_CONFIG_KEY_0='core.fsmonitor', GIT_CONFIG_VALUE_0='false')
         try:
             p = subprocess.run(argv, capture_output=True, text=True,
                                timeout=timeout, env=env, stdin=subprocess.DEVNULL)
@@ -90,7 +98,7 @@ class Inventory:
 
     def du_kb(self, path):
         p, err = self.run_ro(['du', '-sxk', str(path)], self.args.du_timeout)
-        if err or p.returncode not in (0, 1) or not p.stdout.strip():
+        if err or p.returncode != 0 or not p.stdout.strip():
             self.limits.append('size of %s unknown (%s)' % (path, err or p.stderr.strip()[:120]))
             return None
         return int(p.stdout.split()[0])
@@ -117,24 +125,32 @@ class Inventory:
         for r in pool_roots:
             if r.is_dir():
                 roots.append(r.resolve())
-        # Slots that are homes, then the git common-dir parent of every slot.
-        slots = []
-        for r in list(roots):
-            slots.extend(self.slots_of(r))
-        for slot, wts in slots:
-            for wt in wts:
-                if self.is_home(wt):
-                    homes.add(wt.resolve())
-        for slot, wts in slots:
-            for wt in wts:
-                main = self.common_parent(wt)
-                if main and self.is_home(main):
-                    homes.add(main)
-        for h in sorted(homes):
-            for proj_pool in sorted((h / 'projects').glob('*/.treehouse')):
-                rp = proj_pool.resolve()
-                if proj_pool.is_dir() and rp not in roots:
-                    roots.append(rp)
+        # Project pools may reveal more homes and hence more project pools.
+        scanned = set()
+        while True:
+            for r in list(roots):
+                if r in scanned:
+                    continue
+                scanned.add(r)
+                for _slot, wts in self.slots_of(r):
+                    for wt in wts:
+                        if self.is_home(wt):
+                            homes.add(wt.resolve())
+                        main = self.common_parent(wt)
+                        if main and self.is_home(main):
+                            homes.add(main)
+            for h in sorted(homes):
+                projects = h / 'projects'
+                try:
+                    children = list(projects.iterdir())
+                except FileNotFoundError:
+                    continue
+                for child in children:
+                    proj_pool = child / '.treehouse'
+                    if proj_pool.is_dir() and proj_pool.resolve() not in roots:
+                        roots.append(proj_pool.resolve())
+            if all(r in scanned for r in roots):
+                break
         self.homes = sorted(homes)
         self.pool_roots = roots
 
@@ -160,7 +176,15 @@ class Inventory:
         self.refs = []  # (path, where)
         self.meta_tasks = set()  # (home, task)
         for h in self.homes:
-            for meta in sorted((h / 'state').glob('*.meta')):
+            state = h / 'state'
+            try:
+                metas = sorted(p for p in state.iterdir() if p.name.endswith('.meta'))
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                self.limits.append('task references unreadable in %s (%s)' % (state, e))
+                continue
+            for meta in metas:
                 self.meta_tasks.add((h, meta.name[:-5]))
                 try:
                     text = meta.read_text(errors='replace')
@@ -180,33 +204,43 @@ class Inventory:
             return
         me = os.getpid()
         live = []
+        incomplete = False
         for pid in proc.iterdir():
             if not pid.name.isdigit() or int(pid.name) == me:
                 continue
             for link in ('cwd', 'root'):
                 try:
                     t = os.readlink(pid / link)
-                except OSError:
+                except OSError as e:
+                    if e.errno not in (errno.ENOENT, errno.ESRCH):
+                        incomplete = True
                     continue
                 if t != '/':
                     live.append((t, int(pid.name)))
             try:
                 fds = list((pid / 'fd').iterdir())
-            except OSError:
+            except OSError as e:
+                if e.errno not in (errno.ENOENT, errno.ESRCH):
+                    incomplete = True
                 continue
             for fd in fds:
                 try:
                     t = os.readlink(fd)
-                except OSError:
+                except OSError as e:
+                    if e.errno not in (errno.ENOENT, errno.ESRCH):
+                        incomplete = True
                     continue
                 if t.startswith('/'):
                     live.append((t, int(pid.name)))
         self.live = live
+        if incomplete:
+            self.limits.append('live-process scan incomplete (permission or read error); nothing is REMOVE')
 
     # ---- checks --------------------------------------------------------
     def refs_for(self, path):
         rp = os.path.realpath(path)
-        return sorted({w for p, w in self.refs if p == rp or p.startswith(rp + '/')})
+        return sorted({w for p, w in self.refs
+                       if p == rp or p.startswith(rp + '/') or rp.startswith(p + '/')})
 
     def live_pids(self, path):
         if self.live is None:
@@ -299,6 +333,11 @@ class Inventory:
         size = self.du_kb(slot)
         item = str(slot)
         why = []
+        if slot.is_symlink() or any(w.is_symlink() for w in wts):
+            why.append('symlinked slot or copy; target ownership uncertain')
+        extras = [p.name for p in slot.iterdir() if p not in wts and p.name != '.fm-slot-owner']
+        if extras:
+            why.append('content outside the git copy: ' + ', '.join(extras[:5]))
         if leases is None:
             why.append('pool lease state unreadable')
         else:
@@ -326,6 +365,8 @@ class Inventory:
         else:
             main = self.common_parent(wts[0])
             owner = str(main) if main else '?'
+            if main is None:
+                why.append('git common-dir owner unknown')
             if not why:
                 ok, reason = self.git_verdict(wts[0])
                 if not ok:
@@ -395,8 +436,9 @@ class Inventory:
                 for n in dirs + files:
                     try:
                         newest = max(newest, os.lstat(os.path.join(base, n)).st_mtime)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        self.limits.append('age of %s unreadable (%s)' % (d, e))
+                        return None
         except _WalkError:
             return None
         except OSError:
@@ -411,25 +453,36 @@ class Inventory:
         """Map path -> first home report citing it; None when the scan is incomplete."""
         deadline = time.monotonic() + self.args.du_timeout
         found = {}
-        for h in self.homes:
-            for base, _dirs, files in os.walk(h / 'data'):
-                if time.monotonic() > deadline:
-                    self.limits.append('report citation scan timed out')
-                    return None
-                for n in files:
-                    if not n.endswith('.md'):
-                        continue
-                    f = os.path.join(base, n)
-                    try:
-                        if os.path.getsize(f) > MD_READ_LIMIT:
+        try:
+            for h in self.homes:
+                data = h / 'data'
+                if not data.exists():
+                    continue
+                for base, dirs, files in os.walk(data, onerror=self._walk_error):
+                    if time.monotonic() > deadline:
+                        self.limits.append('report citation scan timed out')
+                        return None
+                    if any(Path(base, n).is_symlink() for n in dirs):
+                        self.limits.append('report citation scan contains an unscanned directory symlink')
+                        return None
+                    for n in files:
+                        if not n.endswith('.md'):
                             continue
+                        f = os.path.join(base, n)
+                        if os.path.getsize(f) > MD_READ_LIMIT:
+                            self.limits.append('report citation scan exceeds read limit: %s' % f)
+                            return None
                         with open(f, errors='replace') as fh:
-                            text = fh.read()
-                    except OSError:
-                        continue
-                    for p in paths:
-                        if p not in found and p in text:
-                            found[p] = f
+                            text = fh.read(MD_READ_LIMIT + 1)
+                        if len(text) > MD_READ_LIMIT:
+                            self.limits.append('report grew past citation read limit: %s' % f)
+                            return None
+                        for p in paths:
+                            if p not in found and p in text:
+                                found[p] = f
+        except (OSError, _WalkError) as e:
+            self.limits.append('report citation scan unreadable (%s)' % e)
+            return None
         return found
 
     def home_tables(self):
@@ -550,6 +603,12 @@ def main():
     inv.nm_worktrees()
     inv.scratch_dirs()
     inv.home_tables()
+    # A later scan failure must also invalidate earlier provisional proposals.
+    # Visibility gaps can hide an owner or a live process anywhere in the scan.
+    if inv.limits:
+        for item, size, _scope, _owner, _why in inv.remove:
+            inv.keep.append((item, size, 'safety scan incomplete; see Scan limits'))
+        inv.remove.clear()
     text = inv.render(date)
     if a.stdout:
         sys.stdout.write(text)

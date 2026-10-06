@@ -27,7 +27,7 @@ Its header and `--help` own every check, flag, and the output path rule; do not 
 
 - One new Markdown file, by default `data/housekeeping/inventory-<date>.md` in the selected home; it never overwrites an earlier inventory.
 - The path it wrote is its only stdout line; `--stdout` prints the report instead of writing it.
-- Its `Scan limits` section names every check that timed out or could not be read; the affected items are already in KEEP.
+- Its `Scan limits` section names checks that timed out or could not be read; incomplete safety scans leave no REMOVE proposals.
 
 ## What agents no longer do by hand
 
