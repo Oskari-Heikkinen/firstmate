@@ -10,10 +10,8 @@ For a profile array, load `quota-array-dispatch` after establishing harness and 
 When the opt-in `bin/fm-dispatch-resolve.sh` is on, its `clear` answer already names the concrete axes; `docs/configuration.md` "Typed dispatch resolution" owns that contract.
 
 `../secondmate-provisioning/SKILL.md` owns inherited local material.
-Its harness consequence is that a secondmate's workers receive literal `config/crew-harness` and `config/crew-dispatch.json`, while the primary-only `config/secondmate-harness` is never inherited because secondmates do not spawn secondmates.
-A concrete crew value such as `codex` carries that runtime into the secondmate home.
-Unset or `default` carries no concrete value, so its workers use that home's own or detected harness rather than the primary's effective crew harness.
-The inherited dispatch file applies the same best-fit profiles there.
+Its harness consequence follows the home-owned, seed-only routing declaration in [`fm-config-inherit-lib.sh`](../../../../../bin/fm-config-inherit-lib.sh); the primary-only `config/secondmate-harness` is never inherited because secondmates do not spawn secondmates.
+Each home's routing files select its workers' runtime and best-fit profiles; unset or `default` static routing uses that home's own or detected harness.
 
 ## Owners
 

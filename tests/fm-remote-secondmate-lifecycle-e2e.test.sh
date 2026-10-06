@@ -157,7 +157,7 @@ IFS=$'\t' read -r command_name _command_action command_rel <<EOF
 $command_fields
 EOF
 case "${FM_FAKE_SSH_MODE:-normal}:$command_name:$command_rel" in
-  inherit-partial:fm-remote-inherit.sh:config/crew-harness) exit 255 ;;
+  inherit-partial:fm-remote-inherit.sh:config/dispatch-never-send) exit 255 ;;
   inherit-block:fm-remote-inherit.sh:data/captain-shared.md)
     cat > "$FM_FAKE_INHERIT_PAYLOAD"
     touch "$FM_FAKE_INHERIT_ENTERED"
@@ -820,6 +820,53 @@ cmp -s "$TMP_ROOT/inherit-complete" "$PROTOCOL_HOME/config/crew-harness" \
   || fail "superseded inheritance replaced the current payload"
 pass "remote inheritance rejects incomplete and superseded payload generations"
 
+# Exercise the real sender/receiver pair on an isolated route, without adding
+# reread correlations to the lifecycle cases below.
+ROUTING_SOURCE="$TMP_ROOT/routing-source"
+ROUTING_DEST="$TMP_ROOT/routing-dest"
+mkdir -p "$ROUTING_SOURCE/config" "$ROUTING_SOURCE/data" "$ROUTING_DEST/config"
+printf -- '- routing - Routing fixture (home: %s; host: remote-mac; root: %s; scope: routing; projects: alpha; added 2026-08-02)\n' \
+  "$ROUTING_DEST" "$REMOTE_ROOT" > "$ROUTING_SOURCE/data/secondmates.md"
+printf '{"default":{"harness":"codex"}}\n' > "$ROUTING_SOURCE/config/crew-dispatch.json"
+printf 'codex\n' > "$ROUTING_SOURCE/config/crew-harness"
+printf 'manual\n' > "$ROUTING_SOURCE/config/backlog-backend"
+for routing_generation in 1 2 3; do
+  case "$routing_generation" in
+    2)
+      printf '{"default":{"harness":"pi"}}\n' > "$ROUTING_DEST/config/crew-dispatch.json"
+      printf 'pi\n' > "$ROUTING_DEST/config/crew-harness"
+      cp "$ROUTING_DEST/config/crew-dispatch.json" "$TMP_ROOT/expected-routing-dispatch"
+      cp "$ROUTING_DEST/config/crew-harness" "$TMP_ROOT/expected-routing-harness"
+      chmod 400 "$ROUTING_DEST/config/crew-dispatch.json" "$ROUTING_DEST/config/crew-harness"
+      printf '{"default":{"harness":"claude"}}\n' > "$ROUTING_SOURCE/config/crew-dispatch.json"
+      printf 'claude\n' > "$ROUTING_SOURCE/config/crew-harness"
+      printf 'tasks-axi\n' > "$ROUTING_SOURCE/config/backlog-backend"
+      ;;
+    3) rm "$ROUTING_SOURCE/config/crew-dispatch.json" "$ROUTING_SOURCE/config/crew-harness" "$ROUTING_SOURCE/config/backlog-backend" ;;
+  esac
+  FM_CONFIG_OVERRIDE="$ROUTING_SOURCE/config" FM_DATA_OVERRIDE="$ROUTING_SOURCE/data" \
+    FM_INHERITABLE_CONFIG='crew-dispatch.json crew-harness backlog-backend' \
+    remote_env "$ROOT/bin/fm-remote-inherit-push.sh" routing "$routing_generation" > "$TMP_ROOT/routing-transfer.out"
+  if [ "$routing_generation" = 1 ]; then
+    for routing_item in crew-dispatch.json crew-harness backlog-backend; do
+      cmp -s "$ROUTING_SOURCE/config/$routing_item" "$ROUTING_DEST/config/$routing_item" \
+        || fail "remote pair did not seed $routing_item"
+    done
+  else
+    cmp -s "$TMP_ROOT/expected-routing-dispatch" "$ROUTING_DEST/config/crew-dispatch.json" || fail "remote pair changed home dispatch"
+    cmp -s "$TMP_ROOT/expected-routing-harness" "$ROUTING_DEST/config/crew-harness" || fail "remote pair changed home harness"
+    if [ "$(uname)" = Darwin ]; then routing_mode=$(stat -f %Lp "$ROUTING_DEST/config/crew-harness"); else routing_mode=$(stat -c %a "$ROUTING_DEST/config/crew-harness"); fi
+    [ "$routing_mode" = 400 ] || fail "remote pair changed routing permissions"
+    assert_grep 'unchanged: config/crew-dispatch.json' "$TMP_ROOT/routing-transfer.out" "preserved routing was reported as pushed"
+    if [ "$routing_generation" = 2 ]; then
+      [ "$(cat "$ROUTING_DEST/config/backlog-backend")" = tasks-axi ] || fail "remote pair stopped ordinary convergence"
+    else
+      assert_absent "$ROUTING_DEST/config/backlog-backend" "remote pair stopped ordinary absence convergence"
+    fi
+  fi
+done
+pass "remote sender/receiver seed missing routing, preserve home routing, and still converge backlog"
+
 # Add one local route to prove mixed fleets remain parseable and projected.
 mkdir -p "$LOCAL_HOME/data" "$LOCAL_HOME/state" "$LOCAL_HOME/config" "$LOCAL_HOME/projects" "$LOCAL_HOME/bin"
 printf 'local\n' > "$LOCAL_HOME/.fm-secondmate-home"
@@ -833,7 +880,7 @@ pass "mixed local and remote routes validate without migration"
 
 # Launch on the remote home's own configured backend. Parent metadata records
 # host placement separately from that backend and arms the reply source.
-printf 'pi\n' > "$PARENT/config/crew-harness"
+printf 'pi\n' > "$PARENT/config/dispatch-never-send"
 launches_before_inherit=0
 [ ! -f "$HERDR_LOG" ] || launches_before_inherit=$(grep -c '^tab create' "$HERDR_LOG" || true)
 if FM_FAKE_SSH_MODE=inherit-partial remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate \
@@ -1035,7 +1082,7 @@ pass "marked send and routed reply complete through the existing parent correlat
 rm -f "$PARENT/state/.wake-queue"
 
 printf '{"revision":2}\n' > "$PARENT/config/crew-dispatch.json"
-printf 'grok\n' > "$PARENT/config/crew-harness"
+printf 'grok\n' > "$PARENT/config/dispatch-never-send"
 set +e
 FM_FAKE_SSH_MODE=inherit-partial remote_env "$ROOT/bin/fm-config-push.sh" \
   > "$TMP_ROOT/config-partial.out" 2>&1
@@ -1043,14 +1090,14 @@ config_partial_rc=$?
 set -e
 [ "$config_partial_rc" -ne 0 ] || fail "partial remote inheritance claimed complete convergence"
 assert_grep '"revision":2' "$REMOTE_HOME/config/crew-dispatch.json" "partial inheritance did not apply its first file"
-[ "$(cat "$REMOTE_HOME/config/crew-harness")" != grok ] \
+[ "$(cat "$REMOTE_HOME/config/dispatch-never-send")" != grok ] \
   || fail "partial inheritance unexpectedly applied the failed file"
 NUDGE_MARKER="$PARENT/state/.secondmate-nudge-pending/ios.pending"
 assert_grep 'remote=1' "$NUDGE_MARKER" "partial inheritance left no durable remote reread marker"
 publish_healthy_watcher_identity "$PARENT/state" "$PARENT" "$REMOTE_ROOT/bin/fm-watch.sh"
 remote_env "$ROOT/bin/fm-bootstrap.sh" > "$TMP_ROOT/config-partial-retry.out" \
   || fail "bootstrap did not converge partial remote inheritance"
-[ "$(cat "$REMOTE_HOME/config/crew-harness")" = grok ] \
+[ "$(cat "$REMOTE_HOME/config/dispatch-never-send")" = grok ] \
   || fail "bootstrap did not apply the remaining inherited file"
 assert_absent "$NUDGE_MARKER" "bootstrap cleared no remote reread marker after convergence"
 PARTIAL_CONFIG_CORR=$(newest_remote_inbox_corr)
@@ -1098,7 +1145,7 @@ wait "$config_second" || fail "bootstrap inheritance transaction failed after wa
   || fail "later bootstrap convergence was overwritten by stale inherited bytes"
 pass "config push and bootstrap serialize remote inheritance convergence"
 
-printf 'codex\n' > "$PARENT/config/crew-harness"
+printf 'codex\n' > "$PARENT/config/dispatch-never-send"
 # A failed reread nudge now means the durable remote inbox RECORD could not be
 # written (a swallowed doorbell alone no longer fails a recorded steer), so
 # the failure is induced by making the remote steering inbox unwritable.
