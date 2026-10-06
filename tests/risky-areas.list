@@ -25,9 +25,11 @@ steering script bin/fm-send.sh
 steering script bin/fm-task-inbox-lib.sh
 steering script bin/fm-control.sh
 steering script bin/fm-control-lib.sh
+steering script bin/fm-land-after.sh
 steering test tests/fm-send*.test.sh
 steering test tests/fm-task-inbox*.test.sh
 steering test tests/fm-control*.test.sh
+steering test tests/fm-land-after.test.sh
 
 fleet-sync script bin/fm-fleet-sync*.sh
 fleet-sync script bin/fm-secondmate-sync*.sh
