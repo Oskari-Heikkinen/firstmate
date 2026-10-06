@@ -775,8 +775,8 @@ An explicit `--model` or `--effort` overrides the matching token from `config/se
 Remote secondmate routes accept verified harness adapters only and reject raw launch commands.
 When `config/crew-dispatch.json` exists, crewmate and scout spawns require an explicit resolved harness instead of automatically falling back to `config/crew-harness`.
 
-The inherited-local-material contract is owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); its harness-relevant consequence is that a secondmate's own crewmates use the primary's dispatch profiles and static harness value.
-Those inherited values are defaults and rules only; `fm-spawn` still permits a consciously chosen explicit runtime outside the config.
+The inherited-local-material contract is owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); [`fm-config-inherit-lib.sh`](../bin/fm-config-inherit-lib.sh) declares dispatch profiles and the static harness as home-owned, seed-only routing.
+Those routing values are defaults and rules only; `fm-spawn` still permits a consciously chosen explicit runtime outside the config.
 
 `config/secondmate-harness` is not inherited because secondmates do not launch secondmates.
 
@@ -1224,7 +1224,7 @@ See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a star
 
 **Inheritance**
 
-Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
+Secondmate routing follows the home-owned, seed-only declaration in [`fm-config-inherit-lib.sh`](../bin/fm-config-inherit-lib.sh), not primary-authoritative replacement.
 
 ## Typed dispatch resolution (.env TYPESAFE_API_KEY)
 
@@ -1268,7 +1268,7 @@ The tool asks one Choice question whose options are every rule's `when` plus the
 
 The optional local, gitignored `config/dispatch-never-send` keeps values you name from ever leaving the machine in a resolver request.
 It has no default entries, and an absent file changes nothing.
-Like `config/crew-dispatch.json`, it is inherited into secondmate homes, so a secondmate's resolver withholds the same values.
+It is primary-authoritatively inherited into secondmate homes under [`fm-config-inherit-lib.sh`](../bin/fm-config-inherit-lib.sh), so a secondmate's resolver withholds the same values.
 
 Each non-blank line not beginning with `#` is one literal value, matched case-insensitively.
 Every entry is trimmed of surrounding whitespace, and any run of whitespace, in the entry or in the checked text, counts as one space, so a value the brief wraps across lines still matches.

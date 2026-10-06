@@ -1,11 +1,11 @@
 # shellcheck shell=bash
 # Inheritance propagation: the PRIMARY firstmate pushes a declared, extensible
 # set of LOCAL (gitignored) config items down into each secondmate home's
-# config/, so a secondmate's OWN crewmates inherit the primary's settings
-# (e.g. primary config/crew-dispatch.json makes a secondmate use the same dispatch
-# profile rules and primary config/dispatch-never-send keeps the same values
-# out of its dispatch resolver requests, primary config/crew-harness=codex makes a secondmate's crewmates
-# spawn on codex too, primary config/backlog-backend=manual makes that home
+# config/. Home-owned routing (crew-dispatch.json and crew-harness) is seeded
+# only when absent: convergence never overwrites or deletes an existing routing
+# path, including links and nonregular artifacts. Other items remain
+# primary-authoritative (e.g. primary config/dispatch-never-send keeps the same
+# values out of dispatch resolver requests, config/backlog-backend=manual makes that home
 # hand-edit backlog files too, primary config/backend pins that home's local
 # runtime-backend default for future spawns, primary config/startup-memory-budget
 # bounds that home's startup-memory curation, and primary
@@ -49,9 +49,9 @@
 # is an explicit copy run at the convergence points the primary owns - a
 # secondmate spawn (bin/fm-spawn.sh), the bootstrap secondmate sweep
 # (bin/fm-bootstrap.sh), and the focused mid-session config push
-# (bin/fm-config-push.sh). It is PRIMARY-AUTHORITATIVE: the primary's value wins
-# and is re-pushed on every convergence, so the fleet stays converged on the
-# primary; an item the primary does not set is mirrored as absence downstream.
+# (bin/fm-config-push.sh). Except for the declared seed-only routing set below,
+# it is PRIMARY-AUTHORITATIVE: the primary's value wins on every convergence,
+# and an item the primary does not set is mirrored as absence downstream.
 # After successful config/* changes under an already-running secondmate, callers
 # invoke fm_config_send_reread_nudge so the live agent re-reads exact post-write
 # bytes (spawn/respawn already re-reads at launch and needs no redundant nudge).
@@ -85,6 +85,18 @@ FM_SHARED_CAPTAIN_MODE="444"
 # Extend here to inherit more of the primary's local config; override via the
 # environment only in tests. Items must not contain whitespace.
 FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-never-send crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context launch-env-allowlist claude-permission-mode lavish-axi-host keep-ai-trailers accounts account-floor account-auto}"
+
+# Home-owned routing: seed from the primary only while the destination is absent.
+# Local propagation and remote receivers derive the exception from this set.
+FM_SEED_ONLY_INHERITABLE_CONFIG="crew-dispatch.json crew-harness"
+
+fm_config_inherit_item_seed_only() {  # <config-dir-relative-item>
+  local item=$1 candidate
+  for candidate in $FM_SEED_ONLY_INHERITABLE_CONFIG; do
+    [ "$candidate" = "$item" ] && return 0
+  done
+  return 1
+}
 
 # Items whose value is a home-SESSION enablement decision rather than durable
 # local configuration. They are inherited at the launch convergence point, where
@@ -183,6 +195,28 @@ copy_inheritable_file() {
   return 1
 }
 
+# Atomic no-replace publication, including when a directory or link appears.
+# Return 2 when a destination already exists, 0 when seeded, 1 on other errors.
+fm_config_inherit_publish_seed() {
+  perl -MErrno=EEXIST -e '
+    exit 0 if link $ARGV[0], $ARGV[1];
+    exit($! == EEXIST ? 2 : 1);
+  ' -- "$1" "$2"
+}
+
+copy_seed_only_inheritable_file() {
+  local src=$1 dest=$2 parent tmp rc=1
+  parent=${dest%/*}
+  mkdir -p "$parent" 2>/dev/null || return 1
+  tmp=$(mktemp "$parent/.fm-inherit.XXXXXX" 2>/dev/null) || return 1
+  if cp "$src" "$tmp" 2>/dev/null; then
+    rc=0
+    fm_config_inherit_publish_seed "$tmp" "$dest" || rc=$?
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return "$rc"
+}
+
 destination_allows_inherited_item() {
   local dest_config=$1 item=$2 dest_parent dest_name dest_parent_abs top dest_path rel_path
   dest_parent=${dest_config%/*}
@@ -208,8 +242,9 @@ destination_allows_inherited_item() {
 # notable events: a guard skip or a copy/remove error. A source item that is
 # present is copied only when its content differs (idempotent: a re-run never
 # churns mtimes). A source item proven absent is mirrored as a missing
-# destination item, so clearing the primary's value clears it downstream too
-# (primary-authoritative). Inspection errors or existing nonregular sources
+# destination item, so clearing the primary's value clears it downstream too,
+# except seed-only items whose existing destination is always preserved.
+# Inspection errors or existing nonregular sources
 # leave that destination item unchanged and report an error; inaccessible paths
 # and dangling source links must never silently remove an inherited grant.
 # The destination dir is created lazily, only when there is something to copy;
@@ -555,7 +590,7 @@ propagate_secondmate_inheritance() {
 }
 
 propagate_inheritable_config() {
-  local src_config=$1 dest_config=$2 item src dest source_present reason rc
+  local src_config=$1 dest_config=$2 item src dest source_present reason rc copy_rc
   [ -n "$src_config" ] || return 1
   [ -n "$dest_config" ] || return 1
   rc=0
@@ -569,6 +604,10 @@ propagate_inheritable_config() {
     fi
     src="$src_config/$item"
     dest="$dest_config/$item"
+    if fm_config_inherit_item_seed_only "$item" && { [ -e "$dest" ] || [ -L "$dest" ]; }; then
+      record_inheritable_config_result "$item" unchanged "home-owned routing"
+      continue
+    fi
     if ! source_present=$(fm_config_source_present "$src"); then
       reason="cannot inspect primary source"
       warn_inheritable_config_error "$item" "$src" "$reason"
@@ -625,8 +664,16 @@ propagate_inheritable_config() {
         continue
       fi
       if [ -L "$dest" ] || [ ! -f "$dest" ] || ! cmp -s "$src" "$dest"; then
-        if copy_inheritable_file "$src" "$dest"; then
+        copy_rc=0
+        if fm_config_inherit_item_seed_only "$item"; then
+          copy_seed_only_inheritable_file "$src" "$dest" || copy_rc=$?
+        else
+          copy_inheritable_file "$src" "$dest" || copy_rc=$?
+        fi
+        if [ "$copy_rc" = 0 ]; then
           record_inheritable_config_result "$item" pushed ""
+        elif [ "$copy_rc" = 2 ]; then
+          record_inheritable_config_result "$item" unchanged "home-owned routing"
         else
           reason="failed to copy"
           warn_inheritable_config_error "$item" "$dest" "$reason"
@@ -641,6 +688,8 @@ propagate_inheritable_config() {
       warn_inheritable_config_error "$item" "$src" "$reason"
       record_inheritable_config_result "$item" error "$reason"
       rc=1
+    elif fm_config_inherit_item_seed_only "$item"; then
+      record_inheritable_config_result "$item" unchanged "home-owned routing"
     elif [ -e "$dest" ] || [ -L "$dest" ]; then
       if ! destination_allows_inherited_item "$dest_config" "$item"; then
         reason=$(inheritable_config_skip_reason)

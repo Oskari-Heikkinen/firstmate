@@ -8,7 +8,9 @@
 # one code revision cannot drift silently. Different local and remote revisions
 # fail closed as documented by that owner. FM_CONFIG_INHERIT_LIVE=1 marks a live
 # convergence push into an already-running home and skips session-scoped items,
-# exactly as the local propagation path does.
+# exactly as the local propagation path does. The receiver applies the same
+# owner's seed-only routing policy; sending a put or absent never grants
+# permission to replace or delete existing home-owned routing.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
