@@ -91,6 +91,7 @@ test_fills_brief_from_report_and_commit() {
   assert_no_grep 'Rollback copy first' "$brief" "sections after findings are not copied"
   assert_grep 'The live adapter is still sha256 abc.' "$brief" "context is appended to the intent"
   assert_grep 'Never touch ~/.cache/queue.' "$brief" "extra spec line is kept"
+  # shellcheck disable=SC2016 # Literal Markdown code span, not command substitution.
   assert_grep 'nice 19 and ionice -c3 through `/opt/heavy-slot.sh --validate`' "$brief" "heavy-slot rule names the helper"
   assert_grep 'safe to cut over / safe with named fixes / not safe' "$brief" "report shape asks for the verdict"
   assert_grep 'rollback copy' "$brief" "report shape asks for rollback"
