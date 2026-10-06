@@ -835,6 +835,7 @@ tests/fm-inactive-reconcile.test.sh 60936
 tests/fm-inbox.test.sh 6050
 tests/fm-jev-mem-guard.test.sh 291
 tests/fm-kimi-harness.test.sh 73263
+tests/fm-landed-sync.test.sh 13000
 tests/fm-land-after.test.sh 28692
 tests/fm-launch-prompt-signals-live-e2e.test.sh 98
 tests/fm-lint-workflows.test.sh 1502
@@ -866,6 +867,7 @@ tests/fm-pr-check-security.test.sh 161293
 tests/fm-pr-reviewers.test.sh 191
 tests/fm-pr-state-live-e2e.test.sh 49
 tests/fm-pr-state.test.sh 2267
+tests/fm-procevent-merge-queue.test.sh 18000
 tests/fm-procevent-observe.test.sh 211540
 tests/fm-procevent-quota.test.sh 4283
 tests/fm-procevent-when.test.sh 63385

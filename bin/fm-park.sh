@@ -5,6 +5,15 @@
 #
 # Usage:
 #   fm-park.sh <task-id> --handoff <file> [--when <condition>] [--deadline <iso>]
+#              [--adopt-merge-queue <head40>]
+#
+# --adopt-merge-queue adopts only the exact built-in queue source already
+# registered for this task/head. Its condition must be the queue adapter's
+# result-ready command. It records park_source and emits [wait=merge-result:head]
+# but arms no resume watch: the queue adapter alone settles results. Cancel and
+# cleanup retire that source through ordinary guarded retirement. The queue
+# runner retires its durably captured terminal source before its landing action
+# only for this proven park incarnation, preserving evidence and acknowledgement.
 #   fm-park.sh validate <handoff-file> [--when <condition>]
 #   fm-park.sh check <condition>
 #   fm-park.sh resume <task-id>
@@ -92,6 +101,7 @@
 #   park_at=<epoch>            when the latest park was recorded
 #   park_spawn_gen=<token>     the task's spawn_gen when it parked
 #   park_resumed_at=<epoch>    when the latest resume relaunched the task
+#   park_source=<source-id>    adopted queue source, empty for ordinary parks
 #
 # Environment knobs:
 #   FM_PARK_INTERVAL       condition poll cadence in seconds (300)
@@ -332,7 +342,7 @@ cmd_validate() {
 # --- park --------------------------------------------------------------------
 
 cmd_park() {
-  local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out
+  local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
@@ -340,11 +350,21 @@ cmd_park() {
       --handoff) handoff=${2-}; shift 2 || die "--handoff needs a file" ;;
       --when) want=${2-}; shift 2 || die "--when needs a condition" ;;
       --deadline) deadline_iso=${2-}; shift 2 || die "--deadline needs a UTC time" ;;
+      --adopt-merge-queue) adopted=${2-}; [ -n "$adopted" ] || die "--adopt-merge-queue needs a head"; shift 2 ;;
       *) die "unknown park argument: $1" ;;
     esac
   done
   [ -n "$handoff" ] || die "park needs --handoff <file> (sections: Goal, Done, Waiting for, Next steps)"
   validate_handoff "$handoff" "$want"
+  if [ -n "$adopted" ]; then
+    fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
+      || die "no matching registered queue source for task $ID head $adopted"
+    [ "$HANDOFF_CONDITION" = "cmd:$SCRIPT_DIR/fm-procevent-merge-queue.sh result-ready $adopted" ] \
+      || die "adopted queue condition must be its result-ready command"
+    [ -n "$(meta_get spawn_gen)" ] || die "adopting a queue source requires a task incarnation"
+    sid="merge-queue-$ID-${adopted:0:8}"
+    tag=" [key=merge-queue] [wait=merge-result:$adopted]"
+  fi
   [ "${FM_TASK_ID-}" != "$ID" ] || detached=1
   wt=$(meta_get worktree)
   here=$(pwd -P 2>/dev/null || true)
@@ -375,11 +395,15 @@ cmd_park() {
 
   # Re-park replaces the watch rather than adding one.
   ack_own_fired
+  if [ -n "$(meta_get park_source)" ] && [ "$(meta_get park_source)" != "$sid" ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" retire "$(meta_get park_source)" >/dev/null \
+      || die "cannot retire the earlier adopted source"
+  fi
   "$WHEN" retire "park-$ID" >/dev/null 2>&1 || true
   park_record "park_state=parked" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
-    "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
+    "park_source=$sid" "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
     || die "cannot record the park in task $ID's record"
-  if ! out=$("$WHEN" arm "park-$ID" \
+  if [ -z "$sid" ] && ! out=$("$WHEN" arm "park-$ID" \
       --interval "${FM_PARK_INTERVAL:-300}" --stable "${FM_PARK_STABLE:-2}" \
       --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" --action-timeout 900 \
       --condition "$SCRIPT_DIR/fm-park.sh" check "$HANDOFF_CONDITION" \
@@ -387,7 +411,7 @@ cmd_park() {
     park_record "park_state=cancelled" || true
     die "could not arm the resume watch, so task $ID was not parked and its agent keeps running: $out"
   fi
-  status_append "$PAUSED_VERB: parked until $deadline_iso - waiting for $HANDOFF_CONDITION; relaunches automatically with $dest" \
+  status_append "$PAUSED_VERB$tag: parked until $deadline_iso - waiting for $HANDOFF_CONDITION; result action owned by ${sid:-park-$ID} with $dest" \
     || die "task $ID is parked and its watch armed, but the status line could not be appended"
 
   if [ "$detached" -eq 1 ]; then
@@ -488,6 +512,7 @@ cmd_resume() {
     printf 'fm-park: task %s was relaunched or respawned since it parked, so its live session was left running and the park cleared; nothing was relaunched\n' "$ID" >&2
     exit 1
   fi
+  [ -z "$(meta_get park_source)" ] || die "the adopted queue source owns this task's result action; park resume does not relaunch it"
   cond=$(meta_get park_when)
   handoff=$(meta_get park_handoff)
   note="$DATA/$ID/park-resume-note.md"
@@ -510,7 +535,12 @@ cmd_resume() {
 
 cmd_cancel() {
   task_resolve "${1-}"
-  "$WHEN" retire "park-$ID" >/dev/null || die "could not retire the watch for task $ID"
+  if [ -n "$(meta_get park_source)" ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" retire "$(meta_get park_source)" >/dev/null \
+      || die "could not retire the adopted queue watch for task $ID"
+  else
+    "$WHEN" retire "park-$ID" >/dev/null || die "could not retire the watch for task $ID"
+  fi
   [ -z "$(meta_get park_state)" ] || park_record "park_state=cancelled" \
     || die "the watch is retired but task $ID's park record could not be updated"
   printf 'cancelled park of %s; nothing was relaunched\n' "$ID"

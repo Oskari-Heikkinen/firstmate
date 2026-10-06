@@ -456,10 +456,12 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 #                       still a live process. The job manager appends the tagged
 #                       paused line and its closing `resolved [key=heavy-<id>]`.
 #   until:<UTC>         the time <YYYY-MM-DDTHH:MM[:SS]Z> has not passed yet.
-#   merge-result:<sha>  the merge-queue log ($FM_MERGE_QUEUE_LOG, default
-#                       ~/.cache/lattice-merge-queue/queue.log) holds no RESULT
-#                       line for that head (7-40 hex, prefix match) other than
-#                       `outcome=taken`, which only means a car claimed it.
+#   merge-result:<sha>  the configured queue adapter's result-ready check
+#                       returns pending for a full head (uses result.sh when
+#                       available). Legacy 7-39 hex prefixes or an explicit
+#                       FM_MERGE_QUEUE_LOG read the configured log directly:
+#                       no RESULT except taken for that prefix. An unconfigured or
+#                       unreadable queue cannot prove a holding wait.
 #   receipt:<abs-path>  the receipt file does not exist yet while its parent
 #                       directory does.
 # A new kind is one more arm in _fm_wait_condition_holds. Without a tag, the
@@ -496,7 +498,7 @@ status_wait_untagged() {  # <status-line>
 
 # 0 when one "<kind>:<arg>" condition holds at <now>; 1 otherwise.
 _fm_wait_condition_holds() {  # <kind:arg> <now>
-  local kind=${1%%:*} arg=${1#*:} now=$2 dir rec fields state pid until log dirpart
+  local kind=${1%%:*} arg=${1#*:} now=$2 dir rec fields state pid until log dirpart checker rc config
   case "$kind" in
     heavy)
       case "$arg" in [A-Za-z0-9]*) ;; *) return 1 ;; esac
@@ -527,7 +529,22 @@ _fm_wait_condition_holds() {  # <kind:arg> <now>
     merge-result)
       case "$arg" in *[!0-9a-f]*) return 1 ;; esac
       [ "${#arg}" -ge 7 ] && [ "${#arg}" -le 40 ] || return 1
-      log=${FM_MERGE_QUEUE_LOG:-$HOME/.cache/lattice-merge-queue/queue.log}
+      if [ "${#arg}" -eq 40 ] && [ -z "${FM_MERGE_QUEUE_LOG:-}" ]; then
+        checker="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-procevent-merge-queue.sh"
+        rc=0
+        "$checker" result-ready "$arg" >/dev/null 2>&1 || rc=$?
+        [ "$rc" -eq 1 ]
+        return
+      fi
+      log=${FM_MERGE_QUEUE_LOG:-}
+      if [ -z "$log" ]; then
+        config="${FM_CONFIG_OVERRIDE:-${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}/config}/merge-queue"
+        [ -f "$config" ] && [ ! -L "$config" ] || return 1
+        dir=${FM_MERGE_QUEUE_DIR:-$(sed -n 's/^dir=//p' "$config" | tail -1)}
+        case "$dir" in \~/*) dir=$HOME/${dir#\~/} ;; esac
+        [ -n "$dir" ] || return 1
+        log="$dir/queue.log"
+      fi
       [ -f "$log" ] && [ -r "$log" ] || return 1
       fields=$(grep -E "^RESULT [^ ]+ head=${arg}[0-9a-f]* outcome=" "$log" 2>/dev/null)
       case "$?" in 0|1) ;; *) return 1 ;; esac

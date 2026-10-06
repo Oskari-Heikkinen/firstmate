@@ -151,6 +151,25 @@ assert_absent "$H/control.log" "a refused park never touched the agent"
 assert_absent "$H/state/procevent/when-park-t1.source" "a refused park armed no watch"
 pass "park refuses a missing handoff without stopping anything"
 
+# Queue adoption may not fabricate a source or accept an unrelated condition.
+H="$TMP_ROOT/h-adopt-refuse"; new_task "$H" tqueue
+head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+handoff "$TMP_ROOT/queue.md" "cmd:$ROOT/bin/fm-procevent-merge-queue.sh result-ready $head"
+if park "$H" tqueue --handoff "$TMP_ROOT/queue.md" --adopt-merge-queue "$head" 2>"$TMP_ROOT/adopt.err"; then
+  fail "queue adoption accepted an absent source"
+fi
+assert_absent "$H/control.log" "refused adoption leaves the worker running"
+assert_no_grep "park_state=" "$H/state/tqueue.meta" "refused adoption records no park"
+FM_HOME="$H" "$ROOT/bin/fm-procevent.sh" register merge-queue "merge-queue-tqueue-aaaaaaaa" \
+  -- "$ROOT/bin/fm-procevent-merge-queue.sh" watch tqueue "$head" >/dev/null || fail "could not seed the queue source"
+handoff "$TMP_ROOT/queue.md" "file:$TMP_ROOT/unrelated"
+if park "$H" tqueue --handoff "$TMP_ROOT/queue.md" --adopt-merge-queue "$head" 2>"$TMP_ROOT/adopt.err"; then
+  fail "queue adoption accepted an unrelated condition"
+fi
+assert_absent "$H/control.log" "wrong condition cannot stop the worker"
+assert_present "$H/state/procevent/merge-queue-tqueue-aaaaaaaa.source" "refused adoption preserves the existing source"
+pass "queue park adoption requires its exact registered source and result condition"
+
 # --- park records, arms, declares the wait, and stops the agent; re-park re-arms
 H="$TMP_ROOT/h-park"; new_task "$H" t2
 handoff "$TMP_ROOT/t2.md" "file:$TMP_ROOT/t2-results"

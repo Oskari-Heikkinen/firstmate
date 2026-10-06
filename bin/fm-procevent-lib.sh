@@ -360,6 +360,34 @@ fm_procevent_source_lock_release() {
   fm_lock_release "$(fm_procevent_source_lock_path "$1")"
 }
 
+# Exact built-in queue registration and park incarnation proof. This is not a
+# generic exemption for stopped workers or an extension adapter opt-in.
+fm_procevent_merge_queue_registration_matches() {  # <state> <task> <head> <script>
+  local state=$1 task=$2 head=$3 script=$4 file
+  fm_task_id_path_safe "$task" || return 1
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+  file="$(fm_procevent_registry_dir "$state")/merge-queue-$task-${head:0:8}.source"
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  cmp -s "$file" <(printf 'adapter=merge-queue\nargc=4\nargv:\n%s\nwatch\n%s\n%s\n' "$script" "$task" "$head")
+}
+
+fm_procevent_merge_queue_park_matches() {  # <state> <task> <head> <script>
+  local state=$1 task=$2 head=$3 script=$4 meta gen parked condition source
+  fm_task_id_path_safe "$task" || return 1
+  meta="$state/$task.meta"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  [ "$(awk -F= '$1 == "park_state" {v=$2} END {print v}' "$meta")" = parked ] || return 1
+  gen=$(awk -F= '$1 == "spawn_gen" {v=$2} END {print v}' "$meta")
+  parked=$(awk -F= '$1 == "park_spawn_gen" {v=$2} END {print v}' "$meta")
+  [ -n "$gen" ] && [ "$gen" = "$parked" ] || return 1
+  condition=$(sed -n 's/^park_when=//p' "$meta" | tail -1)
+  source=$(sed -n 's/^park_source=//p' "$meta" | tail -1)
+  [ "$condition" = "cmd:$script result-ready $head" ] || return 1
+  [ "$source" = "merge-queue-$task-${head:0:8}" ] || return 1
+  [ "$(status_wait_tag "$(status_declared_wait_line "$state/$task.status")")" = "merge-result:$head" ] || return 1
+  fm_procevent_merge_queue_registration_matches "$state" "$task" "$head" "$script"
+}
+
 fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <argv...>
   local state=$1 adapter=$2 id=$3 reg dest tmp arg identity
   shift 3

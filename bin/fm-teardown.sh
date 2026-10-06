@@ -3891,8 +3891,16 @@ if [ -n "$LAUNCH_HOME_TOKEN" ]; then
 fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 if [ "$(fm_meta_get "$META" park_state)" = parked ]; then
-  FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-procevent-when.sh" retire "park-$ID" >/dev/null \
-    || { echo "error: could not retire $ID's park watch (park-$ID); retry the teardown" >&2; exit 1; }
+  # We already hold the task meta lock and remove that record below; invoking
+  # park cancel here would deadlock on its record update. Retire only its watch.
+  PARK_SOURCE=$(fm_meta_get "$META" park_source)
+  if [ -n "$PARK_SOURCE" ]; then
+    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-procevent.sh" retire "$PARK_SOURCE" >/dev/null \
+      || { echo "error: could not retire $ID's adopted park watch; retry the teardown" >&2; exit 1; }
+  else
+    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-procevent-when.sh" retire "park-$ID" >/dev/null \
+      || { echo "error: could not retire $ID's park watch (park-$ID); retry the teardown" >&2; exit 1; }
+  fi
 fi
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Opt-in fleet activity ledger (docs/fleet-ledger.md), before the status log is
@@ -3951,7 +3959,9 @@ fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
-  "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
+  # Refreshes this home's clone and, through the guarded fleet-sync path, the
+  # main home's clone, reporting a stuck clone or a stale lock there once.
+  "$FM_ROOT/bin/fm-landed-sync.sh" "$PROJ" || true
 fi
 # A secondmate retirement may remove the home containing an overridden control
 # state directory. Do not let the side-band refresh recreate that retired home.

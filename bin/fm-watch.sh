@@ -1646,9 +1646,23 @@ quiet_wait_lane_check() {  # <window> <window-key> <task> <declaration>
   QUIET_WAIT_AGENT_STATE=$(fm_backend_agent_state "$(window_backend "$1")" "$1" 2>/dev/null) \
     || QUIET_WAIT_AGENT_STATE=unreadable
   [ -n "$QUIET_WAIT_AGENT_STATE" ] || QUIET_WAIT_AGENT_STATE=unreadable
+  if [ "$QUIET_WAIT_AGENT_STATE" = dead ] && queue_park_proven "$3"; then
+    return 0
+  fi
   [ "$QUIET_WAIT_AGENT_STATE" = alive ] || return 2
   recheck_baseline "$2" "$3" "$4" once
   declared_wait_compare "$STATE" "$2" "$3" "$4"
+}
+
+# A stopped queue worker is intentional only with this incarnation's park,
+# its merge-result tag and the exact still-registered adopted queue source.
+# No other dead or unreadable endpoint receives an exemption.
+queue_park_proven() {  # <task>
+  local cond line
+  line=$(status_declared_wait_line "$STATE/$1.status")
+  status_wait_tag "$line" cond || return 1
+  case "$cond" in merge-result:*) ;; *) return 1 ;; esac
+  fm_procevent_merge_queue_park_matches "$STATE" "$1" "${cond#merge-result:}" "$SCRIPT_DIR/fm-procevent-merge-queue.sh"
 }
 
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
@@ -1702,6 +1716,14 @@ handle_paused_stale() {  # <window> <task> <hash>
       quiet_wait_lane_check "$win" "$key" "$task" "$base" || compare_rc=$?
       agent_state=$QUIET_WAIT_AGENT_STATE
     fi
+  fi
+  if [ "$wait_rc" -eq 0 ] && [ "$agent_state" = dead ] && queue_park_proven "$task"; then
+    if [ "$(cat "$STATE/.quiet-wait-seen-$key" 2>/dev/null || true)" != "$declaration" ]; then
+      quiet_wait_record "$task" stale "$wait_cond"
+      printf '%s' "$declaration" > "$STATE/.quiet-wait-seen-$key" 2>/dev/null || true
+    fi
+    triage_log "acknowledged stale (parked queue wait holds: $wait_cond): $win"
+    return 0
   fi
   if [ "$wait_rc" -eq 0 ] && [ "$agent_state" = alive ]; then
     # Quiet only the periodic reminder, never a changed or unreadable lane.

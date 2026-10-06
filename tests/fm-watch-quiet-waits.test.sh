@@ -194,6 +194,27 @@ test_wait_conditions_hold_only_while_checkable() {
   pass "wait tags hold only while their condition is checkable and true, and an explicit tag governs the prose ETA"
 }
 
+test_configured_merge_result_checker() {
+  local dir head line now
+  dir="$TMP_ROOT/configured-result"
+  head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  mkdir -p "$dir/config" "$dir/queue"
+  printf 'dir=%s\n' "$dir/queue" > "$dir/config/merge-queue"
+  printf 'RESULT t head=%s outcome=taken\n' "$head" > "$dir/queue/queue.log"
+  now=$(date +%s)
+  line="paused [wait=merge-result:$head]: queued"
+  assert_equals 0 "$(FM_HOME="$dir" wait_rc "$line" "$now")" "configured log pending head holds"
+  cat > "$dir/queue/result.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'RESULT t head=%s outcome=conflict main=- note=helper\n' "$1"
+SH
+  chmod +x "$dir/queue/result.sh"
+  assert_equals 1 "$(FM_HOME="$dir" wait_rc "$line" "$now")" "configured helper final result overrides pending log"
+  rm -f "$dir/queue/result.sh" "$dir/queue/queue.log"
+  assert_equals 1 "$(FM_HOME="$dir" wait_rc "$line" "$now")" "unreadable configured source cannot hold a wait"
+  pass "merge-result checks reuse the configured queue helper and log"
+}
+
 test_wait_tag_survives_stamping() {
   local line stamped
   line='paused [key=heavy-q1] [wait=heavy:q1]: heavy job q1 queued'
@@ -404,6 +425,75 @@ test_stale_with_dead_endpoint_wakes() {
   pass "a holding wait whose endpoint has no running agent still wakes"
 }
 
+test_hanging_queue_helper_cannot_stall_supervision() {
+  local dir state pid head started elapsed
+  head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  dir=$(stale_case hanging-queue-helper "paused [wait=merge-result:$head]: queued")
+  state="$dir/state"
+  mkdir -p "$dir/config" "$dir/queue"
+  printf 'dir=%s\n' "$dir/queue" > "$dir/config/merge-queue"
+  cat > "$dir/queue/result.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'started\n' > "$FM_TEST_HELPER_STARTED"
+sleep 60
+SH
+  chmod +x "$dir/queue/result.sh"
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · queued'
+  started=$(date +%s)
+  stale_watch_bg "$dir" grok FM_HOME="$dir" FM_CONFIG_OVERRIDE="$dir/config" FM_TEST_HELPER_STARTED="$dir/helper-started"
+  pid=$WATCH_PID
+  if ! wait_for_exit "$pid" 250; then
+    reap "$pid"; fail "hanging result helper stalled supervision beyond its five-second read bound"
+  fi
+  elapsed=$(( $(date +%s) - started ))
+  assert_present "$dir/helper-started" "supervision actually entered the hanging queue helper"
+  [ "$elapsed" -lt 25 ] || fail "supervision took ${elapsed}s with the hanging helper"
+  assert_contains "$(cat "$dir/watch.out")" "no longer holds" "helper timeout uses existing unreadable-wait notification"
+  [ ! -s "$state/.quiet-wait-acks" ] || fail "timed-out queue helper was treated as a holding wait"
+  pass "a hung external result helper cannot stall supervision and uses the existing unreadable-result notification"
+}
+
+test_stopped_queue_wait_requires_exact_park_proof() {
+  local dir state pid head mode
+  head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  for mode in valid generation source tag; do
+    dir=$(stale_case "queue-park-$mode" "paused: preparing queue")
+    state="$dir/state"
+    mkdir -p "$dir/config" "$dir/queue"
+    printf 'spawn_gen=g1\n' >> "$state/held.meta"
+    printf 'dir=%s\n' "$dir/queue" > "$dir/config/merge-queue"
+    : > "$dir/queue/queue.log"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/queue/handoff.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/control"
+    chmod +x "$dir/queue/handoff.sh" "$dir/control"
+    fm_test_track_procevent_home "$dir"
+    FM_HOME="$dir" FM_PARK_CONTROL_OVERRIDE="$dir/control" \
+      "$ROOT/bin/fm-procevent-merge-queue.sh" handoff held fm/held "$head" -- test >/dev/null \
+      || fail "queue handoff could not park"
+    case "$mode" in
+      generation) sed 's/^spawn_gen=g1/spawn_gen=g2/' "$state/held.meta" > "$dir/new-meta"; mv "$dir/new-meta" "$state/held.meta" ;;
+      source) FM_HOME="$dir" "$ROOT/bin/fm-procevent-merge-queue.sh" retire held "$head" >/dev/null ;;
+      tag) printf 'paused [wait=until:2099-01-01T00:00Z]: not the queue wait\n' >> "$state/held.status" ;;
+    esac
+    prime_seen "$state/held.status"
+    backdate 500 "$state/held.status"
+    export FM_FAKE_CREW_STATE='state: paused · source: status-log · queued'
+    stale_watch_bg "$dir" zsh FM_HOME="$dir" FM_CONFIG_OVERRIDE="$dir/config"
+    pid=$WATCH_PID
+    if [ "$mode" = valid ]; then
+      if ! wait_quiet_ack "$state" "$pid" held stale "merge-result:$head" || ! wait_poll_cycle "$state" "$pid"; then
+        reap "$pid"; fail "a proven stopped queue worker raised a stuck alarm: $(cat "$dir/watch.out")"
+      fi
+      reap "$pid"
+      [ ! -s "$state/.wake-queue" ] || fail "proven queue park queued a wake"
+    else
+      wait_for_exit "$pid" 100 || fail "mismatched $mode proof silenced the dead endpoint"
+      assert_contains "$(cat "$dir/watch.out")" "no running agent" "invalid $mode proof must still report missing agent"
+    fi
+  done
+  pass "only the matching queue park incarnation, wait tag and adopted source silence a stopped worker alarm"
+}
+
 test_stale_with_unreadable_liveness_wakes() {
   local dir pid
   heavy_record unreadable running "$$"
@@ -506,6 +596,7 @@ test_drain_presents_supersede_evidence() {
 
 test_wait_conditions_hold_only_while_checkable
 test_wait_tag_survives_stamping
+test_configured_merge_result_checker
 test_supersedes_note_closes_blockers_not_decisions
 test_supersede_writer_records_evidence_once
 test_turn_end_under_holding_wait_is_acknowledged
@@ -515,6 +606,8 @@ test_stale_under_holding_wait_is_acknowledged
 test_stale_after_wait_lapses_wakes
 test_stale_with_dead_endpoint_wakes
 test_stale_with_unreadable_liveness_wakes
+test_stopped_queue_wait_requires_exact_park_proof
+test_hanging_queue_helper_cannot_stall_supervision
 test_prose_until_keeps_the_periodic_bound
 test_changed_lane_wakes_before_the_periodic_bound stale
 test_changed_lane_wakes_before_the_periodic_bound turn-end

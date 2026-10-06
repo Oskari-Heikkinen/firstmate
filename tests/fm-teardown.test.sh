@@ -880,13 +880,21 @@ test_direct_push_landed_on_origin_main_allows() {
   # The worker landed by fast-forwarding origin's default branch itself: no PR
   # exists and none is recorded, and the push updates the shared origin/main.
   git -C "$case_dir/wt" push -q origin HEAD:main
+  # Exercise the real post-landing hook for an explicitly passed clone outside
+  # projects/, preserving the old cleanup path's registered-location support.
+  local landed_head
+  landed_head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
   set +e
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  FM_HOME="$case_dir" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 0 "$rc" "direct-push-landed: teardown should succeed when HEAD is on origin/main with no PR"
+  assert_equals "$landed_head" "$(git -C "$case_dir/project" rev-parse HEAD)" \
+    "direct-push-landed: cleanup refreshes the main home's clone"
+  assert_absent "$case_dir/state/landed-sync/project.reported" \
+    "direct-push-landed: a successful refresh needs no report"
   ! grep -q REFUSED "$case_dir/stderr" || fail "direct-push-landed: teardown printed a REFUSED line"
   [ "$(backlog_row_state "$case_dir")" = "done" ] \
     || fail "direct-push-landed: backlog item was not closed: $(backlog_row_state "$case_dir")"
@@ -4670,6 +4678,76 @@ test_retried_cleanup_keeps_a_verified_earlier_evidence_copy() {
   pass "a retried cleanup whose declared source is already gone keeps the earlier copy only while it still verifies"
 }
 
+test_teardown_retires_park_without_relocking_meta() {
+  local case_dir mode sid rc head
+  # Both real paths execute while teardown holds the task's meta lock. Bound
+  # the command so accidentally calling park cancel cannot hang the CI lane.
+  # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  for mode in ordinary queue; do
+    case_dir=$(make_case "park-retirement-$mode")
+    write_meta "$case_dir" local-only ship
+    printf 'manual\n' > "$case_dir/config/backlog-backend"
+    printf 'park_state=parked\n' >> "$case_dir/state/task-x1.meta"
+    head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    if [ "$mode" = queue ]; then
+      sid=merge-queue-task-x1-aaaaaaaa
+      printf 'park_source=%s\n' "$sid" >> "$case_dir/state/task-x1.meta"
+      FM_HOME="$case_dir" FM_PROCEVENT_CLAIM_ROOT="$case_dir/claims" \
+        "$ROOT/bin/fm-procevent.sh" register merge-queue "$sid" -- \
+        "$ROOT/bin/fm-procevent-merge-queue.sh" watch task-x1 "$head" >/dev/null \
+        || fail "could not seed adopted queue source"
+    else
+      sid=when-park-task-x1
+      FM_HOME="$case_dir" FM_PROCEVENT_CLAIM_ROOT="$case_dir/claims" \
+        "$ROOT/bin/fm-procevent.sh" register when "$sid" -- /usr/bin/true >/dev/null \
+        || fail "could not seed ordinary park source"
+    fi
+    rc=0
+    fm_run_timed 30 env FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+      FM_CONFIG_OVERRIDE="$case_dir/config" FM_TEARDOWN_GUARD_DONE=1 \
+      FM_PROCEVENT_CLAIM_ROOT="$case_dir/claims" PATH="$case_dir/fakebin:$PATH" \
+      "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    expect_code 0 "$rc" "park-$mode: real teardown must complete without a recursive meta lock"
+    assert_absent "$case_dir/state/task-x1.meta" "park-$mode: task record cleaned up"
+    assert_absent "$case_dir/state/procevent/$sid.source" "park-$mode: registered park source retired"
+  done
+  pass "real cleanup retires ordinary and adopted park watches without re-locking its task record"
+}
+
+test_queue_settlement_real_cleanup_leaves_no_orphan_status() {
+  local case_dir head rc queue adapter
+  case_dir=$(make_case queue-real-settlement)
+  write_meta "$case_dir" direct-push ship
+  seed_backlog_in_flight "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  queue="$case_dir/queue"
+  adapter="$ROOT/bin/fm-procevent-merge-queue.sh"
+  mkdir -p "$queue"
+  printf 'dir=%s\n' "$queue" > "$case_dir/config/merge-queue"
+  printf 'RESULT t head=%s outcome=landed main=%s files=1 identical=1 differ=- dropped=- evidence=/evidence/real-cleanup\n' \
+    "$head" "$head" > "$queue/queue.log"
+  FM_HOME="$case_dir" "$adapter" watch task-x1 "$head" > "$case_dir/result" \
+    || fail "could not capture the fake queue result through the public watch"
+  # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  rc=0
+  fm_run_timed 30 env FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    FM_CONFIG_OVERRIDE="$case_dir/config" FM_TEARDOWN_GUARD_DONE=1 \
+    FM_MERGE_QUEUE_TEARDOWN_BIN="$TEARDOWN" PATH="$case_dir/fakebin:$PATH" \
+    "$adapter" settle "$case_dir/result" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "queue-real-settlement: real guarded cleanup succeeds"
+  assert_absent "$case_dir/state/task-x1.meta" "queue-real-settlement: task record cleaned up"
+  assert_absent "$case_dir/state/task-x1.status" "queue-real-settlement: no post-cleanup orphan status log"
+  assert_equals "done" "$(backlog_row_state "$case_dir")" "queue-real-settlement: cleanup closes the backlog itself"
+  FM_HOME="$case_dir" "$ROOT/bin/fm-tasks-axi.sh" show task-x1 --full > "$case_dir/task-note"
+  assert_grep 'files=1 identical=1, evidence /evidence/real-cleanup' "$case_dir/task-note" \
+    "queue-real-settlement: per-file proof remains in the completed task note"
+  pass "real queue settlement leaves its proof in the task note but never recreates a cleaned-up status log"
+}
+
 # Every case builds its own sandbox under a name of its own from the shared
 # read-only git world template, and reaps or signals only processes rooted in
 # its own worktree or started by itself, so no case depends on another or on
@@ -4690,6 +4768,8 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_local_only_fork_remote_allows \
   test_teardown_closes_the_backlog_item_itself \
   test_teardown_manual_backend_leaves_the_backlog_to_the_operator \
+  test_teardown_retires_park_without_relocking_meta \
+  test_queue_settlement_real_cleanup_leaves_no_orphan_status \
   test_local_only_truly_unpushed_refuses \
   test_local_only_merged_to_local_main_allows \
   test_no_mistakes_origin_remote_allows \

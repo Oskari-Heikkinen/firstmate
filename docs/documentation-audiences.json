@@ -233,6 +233,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/landed-sync/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/merge-queue/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/process-event-sources/SKILL.md",
       "audience": "agent-runtime"
     },

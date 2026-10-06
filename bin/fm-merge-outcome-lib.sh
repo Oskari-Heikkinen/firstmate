@@ -34,6 +34,21 @@ _FM_MERGE_OUTCOME_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034 # Public result consumed by sourcing callers.
 FM_MERGE_OUTCOME_ALREADY_RECORDED=false
 
+# fm_merge_outcome_refresh_main_clone <home> <state> <task-id>
+# After a newly recorded merge, refresh the main home's clone of the task's
+# project through bin/fm-landed-sync.sh, detached so neither the merge command
+# nor the watcher waits on a fetch. A task record without a project is skipped.
+# The landed-sync owner resolves main and refreshes the caller's explicit clone
+# even when it is outside projects/ or the main home holds no matching clone.
+fm_merge_outcome_refresh_main_clone() {  # <home> <state> <task-id>
+  local home=$1 state=$2 id=$3 project
+  project=$(sed -n 's/^project=//p' "$state/$id.meta" 2>/dev/null | tail -1)
+  [ -n "$project" ] || return 0
+  ( FM_HOME=$home "$_FM_MERGE_OUTCOME_LIB_DIR/fm-landed-sync.sh" "$project" \
+      </dev/null >/dev/null 2>&1 & )
+  return 0
+}
+
 # fm_merge_outcome_report <home> <state> <task-id> <pr-url> <origin> [authority]
 #
 # <origin> says who observed the merge, because that decides whether the
@@ -109,6 +124,7 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin> [autho
       "$provider" "$host" "$path" "$number" || status=1
   fi
   fm_lock_release "$lock"
+  [ "$status" -ne 0 ] || fm_merge_outcome_refresh_main_clone "$home" "$state" "$id"
   # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
   [ ! -e "${FM_CONFIG_OVERRIDE:-$home/config}/fleet-ledger" ] || [ "$status" -ne 0 ] || FM_HOME=$home FM_STATE_OVERRIDE=$state "$_FM_MERGE_OUTCOME_LIB_DIR/fm-fleet-ledger.sh" merged "$id" pr "$FM_PR_URL" || true
   return "$status"

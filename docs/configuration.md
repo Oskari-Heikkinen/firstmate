@@ -562,6 +562,19 @@ A Secondmate on a remote route is covered the same way: the primary resolves and
 The presence flag is session-scoped enablement, so it transfers at launch and is left unchanged by live convergence into a running home.
 See [`trace-context.md`](trace-context.md) for carrier semantics, supported routes, the manual fleet-restart requirement, the session boundary, and safety limits; `bin/fm-trace-context-lib.sh`'s header owns the exact mechanics, and [`verification/trace-context.md`](verification/trace-context.md) records repeatable evidence.
 
+## Merge queue (config/merge-queue)
+
+A project can land through an external merge queue: a merge train that alone lands to its main, fed by `HANDOFF` lines and answering with one final `RESULT` per handed-over head.
+`bin/fm-procevent-merge-queue.sh` is the owner side of that queue and its header owns the handoff, watch, and settle behavior; the `merge-queue` agent skill owns when agents use it.
+The optional gitignored `config/merge-queue` file holds one `key=value` per line, is local to each home, and is not inherited by secondmate homes:
+
+- `dir=<path>` is the queue directory holding `queue.log` and `handoff.sh`, plus the train's `result.sh <head40>` read helper when it provides one; a leading `~/` expands to the home directory, and `FM_MERGE_QUEUE_DIR` overrides it.
+- `home=<name>` is this home's name on the queue's `HANDOFF` lines; it defaults to the secondmate id, else `main`.
+- `interval=<seconds>` is the watch's poll cadence; it defaults to 60, and `FM_MERGE_QUEUE_INTERVAL` overrides it.
+
+Without a `dir`, every handoff and arm refuses.
+The watch reads `result.sh` when it is executable and parses `queue.log` otherwise; `STALL` lines are always read from `queue.log`, and the `home=`, `task=`, and `evidence=` result fields are used when present and tolerated when absent.
+
 ## Fleet activity ledger (config/fleet-ledger)
 
 See [`fleet-ledger.md`](fleet-ledger.md) for the opt-in setup, record contract, and limits.
@@ -2096,6 +2109,8 @@ The (condition, action) spec is stored privately under `state/when/` and hash-bo
 A repo update that fast-forwards an in-repo action's bytes in place would otherwise desync every already-armed watch's trust binding with no tampering involved; `bin/fm-procevent-when.sh rebind-all` re-hashes and republishes the binding for every registered watch whose action lives under `FM_ROOT`, including one already polling, so it keeps firing across such an update instead of being refused on its next fire.
 
 Every failure path - a mutated spec or action executable, a condition error past its budget, an expired deadline, a failed action, or an earlier fire whose outcome was never captured - produces a terminal captured outcome that wakes firstmate rather than a silent retry, and a durable single-fire marker claimed before the action makes restarts and re-polls unable to fire it twice.
+The `merge-queue` adapter (`bin/fm-procevent-merge-queue.sh`) watches one handed-over head in an external merge queue and settles its routine outcomes itself as a self-announcing adapter; this doc's "Merge queue" section owns its configuration.
+
 The adapter automates only the exact deterministic subset: anything needing judgment, and anything destructive, irreversible, or security-sensitive, keeps the ordinary check-fires-then-firstmate-decides flow, and the adapter's header and `--help` own its commands, flags, and outcome document.
 Dependency-ordered landings (`bin/fm-land-after.sh`) are built on this primitive: a blocker's landing is the condition and a prepared steer to each live waiting task is the action, and that script's header owns its verdicts, records, and exactly-once delivery.
 
@@ -2179,6 +2194,7 @@ The built-in `bin/fm-procevent-<adapter>.sh self-announcing` command declares an
 | Any other response | Keep strict publish-before-apply ordering; autohandle runs only after this capture's own wake was successfully appended to the durable queue. |
 
 The remote-secondmate reply adapter declares itself self-announcing: a captured reply reaches its local status mirror and settles its correlated pending-reply expectation without any handler step, the mirrored status bytes are the single wake for one remote note through the same signal classification a local secondmate's append gets, and only a capture the adapter could not fully apply is published as a `check` wake, whose adapter handling remains idempotent.
+The merge-queue adapter also declares itself self-announcing: every outcome it fully settles is announced by the task status or parent-channel line it writes, a result that needs no announcement at all (a relaunch after `culprit` or `conflict`, or a superseded head) stays silent by design, and any outcome it cannot settle is published as a `check` wake.
 The [remote-secondmate channel contract](remote-secondmates.md#normal-operation) owns replay suppression and its bounded upgrade exception; a replay that adds no mirror bytes stays quiet.
 
 **Feed keyed captain answers**

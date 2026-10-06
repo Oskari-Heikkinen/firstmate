@@ -160,6 +160,10 @@
 # a failure of capture: the result stays unacknowledged and therefore eligible
 # for re-announcement, so the handler still receives it exactly as before. This
 # runner still inspects nothing and still names no adapter-specific condition.
+# For the built-in merge queue only, an exact adopted park incarnation permits
+# this runner to retire its durably captured terminal source before autohandle,
+# preserving the result and pending acknowledgement. Cleanup can then cancel the
+# park without killing its own runner. No other source changes retirement order.
 # External bindings deliberately receive no autohandle operation.
 #
 # Built-in announcement is adapter-owned through one more seam of the same kind. An
@@ -1342,6 +1346,26 @@ EOF
     printf 'answers-fed: %s\n' "$id"
   fi
 
+  # Queue cleanup cancels its adopted park source. Retire this finished source
+  # under our own claim before that action, or ordinary cancellation would kill
+  # this runner's process group mid-handler. The capture above remains pending.
+  local queue_task queue_head queue_retired=0
+  if [ "$extension_owner" -eq 0 ] && [ "$adapter" = merge-queue ] \
+    && adapter_result_is_terminal "$adapter" "$durable"; then
+    queue_task=$(sed -n 's/^task: //p' "$durable" | head -1)
+    queue_head=$(sed -n 's/^head: //p' "$durable" | head -1)
+    if [ "$id" = "merge-queue-$queue_task-${queue_head:0:8}" ] \
+      && fm_procevent_merge_queue_park_matches "$STATE" "$queue_task" "$queue_head" "$SCRIPT_DIR/fm-procevent-merge-queue.sh"; then
+      if retire_owned_terminal_source "$id"; then
+        queue_retired=1
+      else
+        publish_result "$durable" || true
+        publish_pending "$durable" >/dev/null
+        die "cannot retire adopted queue source before its result action; captured result remains pending"
+      fi
+    fi
+  fi
+
   # A self-announcing adapter's autohandle announces through its own durable
   # downstream channel, so publication waits until after application and covers
   # only what remains unhandled; every other adapter keeps the strict
@@ -1381,7 +1405,7 @@ EOF
   else
     printf 'not-autohandled: %s (left for the handler; still unacknowledged)\n' "$id" >&2
   fi
-  if adapter_result_is_terminal "$adapter" "$durable"; then
+  if [ "$queue_retired" -eq 0 ] && adapter_result_is_terminal "$adapter" "$durable"; then
     retire_owned_terminal_source "$id"
     case "$?" in
       0) printf 'retired: %s (adapter classified the captured result terminal)\n' "$id" ;;

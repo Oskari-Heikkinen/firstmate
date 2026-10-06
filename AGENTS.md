@@ -289,7 +289,7 @@ Handle actionable wakes as follows:
 
 Load `bearings` on a contributions check wake or when filing work linked to an upstream issue; its contribution-follow-up section owns triage and exact signal acknowledgement.
 
-When any wake reports a merged PR for a project cloned in this home, refresh that clone through the guarded fleet-sync path.
+A landing refreshes the main home's clone of its project on its own through the guarded fleet-sync path; load `landed-sync` for its report.
 When Relay-linked work reaches a milestone or terminal state, load `fmx-respond`; before terminal teardown, use its promised-final reconciliation when a typed public commitment exists, otherwise post the final completion follow-up so the link clears even if earlier follow-ups were spent.
 
 A secondmate's idle endpoint is healthy, and parent supervision relies on its routed status rather than treating a quiet pane as stale.
