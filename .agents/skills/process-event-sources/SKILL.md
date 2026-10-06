@@ -3,7 +3,8 @@ name: process-event-sources
 description: >-
   Agent-only procedure for registered process-to-event sources and their wakes.
   Use before arming a long-polling source firstmate owns, before registering a
-  deterministic condition->action watch, on any
+  deterministic condition->action watch or ordering one task's landing after
+  another's, on any
   `procevent <adapter> <source-id> <sequence>` check wake, and on any
   `process-event source stranded` or `process-event source failed to start`
   check wake.
@@ -19,7 +20,7 @@ metadata:
 
 # process-event-sources
 
-Load this before arming a long-polling source, before registering a deterministic condition->action watch, whenever a `check:` wake carries `procevent <adapter> <source-id> <sequence>`, and whenever the watcher headlines a `process-event source stranded` or `process-event source failed to start` wake.
+Load this before arming a long-polling source, before registering a deterministic condition->action watch or ordering one task's landing after another's, whenever a `check:` wake carries `procevent <adapter> <source-id> <sequence>`, and whenever the watcher headlines a `process-event source stranded` or `process-event source failed to start` wake.
 
 The runner exists so a blocking external process never holds firstmate's conversational turn.
 Firstmate registers a source, keeps working, and is woken when that process completes.
@@ -84,12 +85,28 @@ Eligibility is a firstmate judgment made BEFORE arming, because the scripts cann
 Never bind an action that is destructive, irreversible, or security-sensitive, an action needing captain approval or any gate decision, or an action whose right form depends on what the condition finds - those keep the existing check-fires-then-firstmate-decides flow, for which a plain custom check or another adapter stays correct.
 When in doubt, arm only the condition half as an ordinary check and keep the action as a wake-time decision.
 
+When a live task must land only after another task lands, register the order once instead of telling the later worker to poll for the earlier landing:
+
+```sh
+bin/fm-land-after.sh register <waiting-task> --after <blocker-task> [--steer <text>]
+```
+
+It records the blocked-by edge in the backlog, records the steer the waiting task will get (by default: fetch, rebase onto the default branch, re-run what the landing path requires, and continue the landing), and arms one `when` watch named `land-after-<blocker>` shared by every task waiting on that blocker.
+Its header owns the landed verdict, the records, and exactly-once delivery.
+Tell the waiting worker to finish everything that does not need the blocker, then append a `paused:` line naming the blocker and idle until its steer arrives; it no longer fetches or polls by hand.
+When the blocker lands, each live waiter receives its steer once through `bin/fm-send.sh`, and the watch's `fired` wake lists who was steered; nothing further is needed beyond the generic acknowledgement and `retire` below.
+A waiter registered after the blocker already landed is steered at once by `register`.
+Its wakes follow the `when` rules below.
+A `condition-error` there means the blocker failed, its PR closed unmerged, or its record vanished with no landed evidence, so nobody was steered and the waiting tasks need your decision.
+An `action-failed` names the waiters whose send failed, and `bin/fm-land-after.sh deliver <blocker>` re-sends only those after you fix the cause.
+`bin/fm-land-after.sh status <blocker>` shows each waiter's delivery state.
+
 For a dependency shared by multiple consumers, use `bin/fm-procevent-observe.sh`; its header owns the evidence schema, exact identity, subscription cursors and bounded observation lifecycle.
 Project code remains the authority for required-check selection and verified receipt joins; observation alone grants no action authority.
 For already commissioned read-only analysis after a long wait, use `bin/fm-procevent-ready.sh` only after resolving the saved handoff, privacy scope and concrete profile through normal intake.
 Its header owns preauthorization, fresh-scout dispatch or generation-bound delivery, and crash reconciliation; a failed or ambiguous dispatch requires inspecting the known task, never commissioning another analyst from the same receipt.
 
-`bin/fm-procevent.sh --help`, `bin/fm-procevent-lavish.sh --help`, `bin/fm-procevent-when.sh --help`, `bin/fm-procevent-observe.sh --help`, `bin/fm-procevent-ready.sh --help`, `bin/fm-procevent-quota.sh --help`, and `bin/fm-procevent-remote-reply.sh --help` own the exact commands and flags.
+`bin/fm-procevent.sh --help`, `bin/fm-procevent-lavish.sh --help`, `bin/fm-procevent-when.sh --help`, `bin/fm-land-after.sh --help`, `bin/fm-procevent-observe.sh --help`, `bin/fm-procevent-ready.sh --help`, `bin/fm-procevent-quota.sh --help`, and `bin/fm-procevent-remote-reply.sh --help` own the exact commands and flags.
 
 An explicitly enabled external adapter registers through `bin/fm-procevent.sh register-extension`, never through a package-discovered script or package-supplied argv.
 [`docs/configuration.md`](../../../docs/configuration.md#trusted-external-process-event-adapters-configextensionsd) owns setup and [`docs/extension-bindings.md`](../../../docs/extension-bindings.md) owns the narrow trusted-code and untrusted-evidence boundary.

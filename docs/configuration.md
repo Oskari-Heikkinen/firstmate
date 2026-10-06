@@ -2085,6 +2085,7 @@ A repo update that fast-forwards an in-repo action's bytes in place would otherw
 
 Every failure path - a mutated spec or action executable, a condition error past its budget, an expired deadline, a failed action, or an earlier fire whose outcome was never captured - produces a terminal captured outcome that wakes firstmate rather than a silent retry, and a durable single-fire marker claimed before the action makes restarts and re-polls unable to fire it twice.
 The adapter automates only the exact deterministic subset: anything needing judgment, and anything destructive, irreversible, or security-sensitive, keeps the ordinary check-fires-then-firstmate-decides flow, and the adapter's header and `--help` own its commands, flags, and outcome document.
+Dependency-ordered landings (`bin/fm-land-after.sh`) are built on this primitive: a blocker's landing is the condition and a prepared steer to each live waiting task is the action, and that script's header owns its verdicts, records, and exactly-once delivery.
 
 **Capture and publish results**
 

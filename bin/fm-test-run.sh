@@ -834,6 +834,7 @@ tests/fm-inactive-reconcile.test.sh 60936
 tests/fm-inbox.test.sh 6050
 tests/fm-jev-mem-guard.test.sh 291
 tests/fm-kimi-harness.test.sh 73263
+tests/fm-land-after.test.sh 28692
 tests/fm-launch-prompt-signals-live-e2e.test.sh 98
 tests/fm-lint-workflows.test.sh 1502
 tests/fm-live-gate.test.sh 3511
