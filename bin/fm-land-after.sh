@@ -19,9 +19,14 @@
 #           explicit --home. Several waiting tasks may register behind one
 #           blocker; they share its watch. Re-registering an unsent waiter
 #           replaces its steer; a waiter already steered is refused. A provably
-#           ended watch is retired and re-armed, with the outcome recorded in
-#           watch-rearmed. An ambiguous or unreadable watch refuses registration
-#           for supervisor handling instead of claiming to be armed. The waiting
+#           ended watch's captured outcome is saved in watch-rearmed, then the
+#           watch is retired and re-armed. Only benign endings (fired or expired)
+#           are acknowledged automatically; a failure stays unacknowledged and
+#           registration refuses until the supervisor handles its alert, since
+#           the watch adapter will not re-arm over a pending capture. The original
+#           result is retained. An ambiguous or unreadable watch refuses
+#           registration for supervisor handling instead of claiming to be armed.
+#           The waiting
 #           task must be live (state/<id>.meta present). When the blocker's
 #           steers were already delivered, register delivers the new waiter's
 #           steer at once instead of arming again. Nothing blocks on the
@@ -395,7 +400,7 @@ existing_watch_state() {  # <blocker> <name>
 }
 
 cmd_register() {
-  local waiter=${1-} blocker='' steer='' dir name out watch_state
+  local waiter=${1-} blocker='' steer='' dir name out watch_state seq result captured
   valid_id "$waiter" || die "invalid waiting task id: ${waiter-}"
   shift
   while [ "$#" -gt 0 ]; do
@@ -444,9 +449,27 @@ cmd_register() {
         unlock_blocker
         exit 0 ;;
       1)
+        seq=$(last_watch_result "when-$name")
+        result="$STATE/procevent-inbox/when-$name.$seq.result"
+        captured=$(cat "$result") || die "cannot read ended watch outcome"
+        # Re-arm must never consume a failure alert on the supervisor's behalf.
+        # The adapter refuses pending captures, so preserve its guard and wait
+        # for explicit handling rather than bypassing it to re-arm a failure.
+        case "$out" in
+          fired|never-true) ;;
+          *)
+            fm_procevent_is_handled "$STATE" "when-$name" "$seq" \
+              || die "watch when-$name ended with $out; failure alert sequence $seq remains unacknowledged; supervisor must handle it before re-arming" ;;
+        esac
+        write_atomic "$dir/watch-rearmed" "$(date +%s) $out sequence=$seq
+$captured" || die "cannot record ended watch outcome"
+        case "$out" in
+          fired|never-true)
+            "$SCRIPT_DIR/fm-procevent.sh" handled "when-$name" "$seq" \
+              || die "cannot acknowledge benign ended watch when-$name sequence $seq" ;;
+        esac
         "$SCRIPT_DIR/fm-procevent-when.sh" retire "$name" \
           || die "cannot retire ended watch when-$name"
-        write_atomic "$dir/watch-rearmed" "$(date +%s) $out" || die "cannot record watch retirement"
         printf 're-arming ended watch when-%s (%s)\n' "$name" "$out" ;;
       *) die "cannot reuse watch when-$name: ${out:-watch state unreadable}; supervisor handling required" ;;
     esac

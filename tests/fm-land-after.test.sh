@@ -348,16 +348,79 @@ if [ "$HAVE_TASKS_AXI" -eq 1 ]; then
 
   FM_HOME="$H" "$ROOT/bin/fm-tasks-axi.sh" add fw2 "new waiter" >/dev/null
   live_waiter "$H" fw2
+  out=$(la "$H" register fw2 --after fb 2>&1); rc=$?
+  expect_code 2 "$rc" "a failure alert must be handled by the supervisor before safe re-arm"
+  assert_contains "$out" "failure alert sequence" "registration names the pending failure alert"
+  assert_absent "${result%.result}.handled" "registration never acknowledges a condition-error"
+  assert_absent "$H/state/land-after/fb/watch-rearmed" "failure refusal does not claim a re-arm"
+  seq=${result%.result}; seq=${seq##*.}
+  pe "$H" handled when-land-after-fb "$seq" >/dev/null || fail "supervisor acknowledgement failed"
   out=$(la "$H" register fw2 --after fb); rc=$?
-  expect_code 0 "$rc" "a new waiter after a proven terminal outcome re-arms the watch"
+  expect_code 0 "$rc" "a new waiter after supervisor handling re-arms the ended watch"
   assert_contains "$out" "re-arming ended watch" "automatic re-arm is announced"
   assert_grep 'condition-error' "$H/state/land-after/fb/watch-rearmed" "re-arm records the retired outcome"
+  assert_grep 'gave up' "$H/state/land-after/fb/watch-rearmed" "re-arm preserves the captured failure detail"
+  assert_present "$result" "re-arm retains the original captured outcome"
+  assert_present "${result%.result}.handled" "re-arm acknowledges the exact ended generation before arming"
+  seq=${result%.result}; seq=${seq##*.}
+  out=$(pe "$H" handled when-land-after-fb "$seq")
+  assert_contains "$out" 'already-handled:' "the exact ended generation was durably acknowledged"
   out=$(la "$H" register fw2 --after fb); rc=$?
   expect_code 0 "$rc" "the old terminal result cannot retire a fresh generation"
   assert_contains "$out" "already armed" "the re-armed generation shares its fresh watch"
   assert_equals 0 "$(inbox_count "$H" fw2)" "a failed blocker never steers the new waiter"
   FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire land-after-fb >/dev/null
-  pass "register: proven terminal watch is re-armed with a result cursor"
+  pass "register: failure alert remains pending until the supervisor handles it"
+
+  # Benign endings re-arm; action failures must retain their notification.
+  for ending in fired never-true action-failed; do
+    H="$TMP_ROOT/h-ending-$ending"; new_home "$H"
+    FM_HOME="$H" "$ROOT/bin/fm-tasks-axi.sh" add blk "blocker" >/dev/null
+    FM_HOME="$H" "$ROOT/bin/fm-tasks-axi.sh" add w "waiter" >/dev/null
+    live_waiter "$H" w
+    la "$H" register w --after blk >/dev/null || fail "$ending initial register failed"
+    FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire land-after-blk >/dev/null
+    # Non-expiry cases need room for runner startup and two stable polls on CI.
+    # Only the never-true case intentionally exercises the arming deadline.
+    case "$ending" in
+      fired) cond=true; act=true; deadline=30 ;;
+      never-true) cond=false; act=true; deadline=5 ;;
+      action-failed) cond=true; act=false; deadline=30 ;;
+    esac
+    FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm land-after-blk \
+      --interval 0.1 --deadline "$deadline" --condition "$cond" --action "$act" >/dev/null \
+      || fail "$ending watch arm failed"
+    pe "$H" reconcile >/dev/null
+    for _ in $(seq 1 600); do
+      first_result "$H" when-land-after-blk >/dev/null && break
+      sleep 0.1
+    done
+    result=$(first_result "$H" when-land-after-blk)
+    [ -n "$result" ] || fail "$ending watch produced no outcome"
+    assert_equals "$ending" "$(FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" classify "$result")" \
+      "the real watch captured $ending"
+    out=$(la "$H" register w --after blk 2>&1); rc=$?
+    case "$ending" in
+      fired|never-true)
+        expect_code 0 "$rc" "a benign $ending watch automatically re-arms"
+        assert_present "${result%.result}.handled" "$ending is acknowledged before re-arm"
+        assert_grep "$ending" "$H/state/land-after/blk/watch-rearmed" "$ending outcome is recorded"
+        out=$(la "$H" register w --after blk); rc=$?
+        expect_code 0 "$rc" "the $ending capture does not retire the new generation"
+        assert_contains "$out" 'already armed' "the fresh generation remains shared" ;;
+      action-failed)
+        expect_code 2 "$rc" "an action failure refuses unsafe re-arm over a pending capture"
+        assert_absent "${result%.result}.handled" "action failure remains unacknowledged"
+        assert_absent "$H/state/land-after/blk/watch-rearmed" "action failure is not hidden by re-arm"
+        pe "$H" reconcile >/dev/null
+        assert_grep 'procevent when when-land-after-blk' "$H/state/.wake-queue" \
+          "the supervisor still receives the action-failed alert" ;;
+    esac
+    assert_present "$result" "registration retains the original $ending capture"
+    assert_equals 0 "$(inbox_count "$H" w)" "$ending never steers the waiter"
+    FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire land-after-blk >/dev/null
+  done
+  pass "register: benign endings re-arm, but an action failure stays pending"
 else
   printf 'SKIP: tasks-axi is not installed; register and end-to-end cases skipped\n'
 fi
