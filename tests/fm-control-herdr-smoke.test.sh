@@ -23,7 +23,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
+fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
@@ -37,8 +37,12 @@ SESSION="fm-lab-control-smoke-$$"
 export HERDR_SESSION="$SESSION"
 SCRATCH=
 cleanup_all() {
-  [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
-  herdr_safe_stop_and_delete "$SESSION"
+  herdr_safe_stop_and_delete "$SESSION" || return 1
+  if [ -n "$SCRATCH" ]; then
+    # Spawn's immutable hook directory must be writable before removing the lab.
+    chmod -R u+w "$SCRATCH"
+    rm -rf "$SCRATCH"
+  fi
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
@@ -311,8 +315,16 @@ pass "real herdr: a stale registration no longer blocks relaunch, and the endpoi
 #
 # After a reboot the pane survives as a bare shell and the worker's agent is
 # gone. The session-start step must prove that through the real registry and
-# relaunch the worker in place, exactly once per boot. The inert `codex` on the
-# pane PATH stands in for the harness, so no model is launched.
+# relaunch the worker in place, exactly once per boot. A real agent-named sleep
+# process stands in for the harness so guarded relaunch can confirm it alive
+# without launching a model. The earlier spawn-only cases needed just delivery.
+ln -s "$SLEEP_BIN" "$AGENT_BIN/codex"
+printf -v CODEX_Q '%q' "$AGENT_BIN/codex"
+cat > "$FAKEBIN/codex" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' "\$\$" > "$SCRATCH/codex-launched"
+exec $CODEX_Q 900
+EOF
 awk -F= '$1 == "harness" {$0="harness=codex"} {print}' "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"
 mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
@@ -327,6 +339,15 @@ run_reboot() {
     "$ROOT/bin/fm-reboot-relaunch.sh" run --lock-pid "$$" 2>&1
 }
 rm -f "$SCRATCH/codex-launched"
+# The earlier exit calls deliberately stopped this task. Recovery must respect
+# that intent before we remove it to construct the unintentional reboot case.
+OUT=$(run_reboot) || fail "recovery should leave a deliberately stopped worker alone: $OUT"
+case "$OUT" in
+  *"left hsmoke stopped: firstmate stopped this worker deliberately"*) : ;;
+  *) fail "recovery did not respect the deliberate exit from the earlier case: $OUT" ;;
+esac
+[ ! -e "$SCRATCH/codex-launched" ] || fail "recovery relaunched a deliberately stopped worker"
+rm -f "$HOME_DIR/state/hsmoke.control-exit"
 OUT=$(run_reboot) || fail "the session-start relaunch should succeed on a real agent-free pane: $OUT"
 case "$OUT" in
   *"BOOTSTRAP_INFO: reboot relaunch: relaunched hsmoke"*) : ;;
@@ -341,6 +362,12 @@ done
   || fail "the session-start relaunch replaced its endpoint instead of reusing it"
 grep -F "Read your resume note first" "$HOME_DIR/data/hsmoke/brief.md" >/dev/null \
   || fail "the session-start relaunch did not leave its note in the instructions"
+[ "$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")" = alive ] \
+  || version_fail "the guarded session-start relaunch did not leave a confirmed live replacement"
+kill "$(cat "$SCRATCH/codex-launched")" 2>/dev/null \
+  || fail "could not stop the lab replacement to exercise same-boot idempotency"
+wait_process_state shell 50 \
+  || version_fail "the lab replacement did not return to a shell before the second session start"
 rm -f "$SCRATCH/codex-launched"
 OUT=$(run_reboot) || fail "a second session-start relaunch in the same boot should not fail: $OUT"
 case "$OUT" in
