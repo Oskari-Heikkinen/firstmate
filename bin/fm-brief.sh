@@ -157,6 +157,10 @@ IFS= read -r -d '' CREWMATE_PAUSE_INSTRUCTIONS <<EOF || true
    Do not declare active implementation or reasoning as a wait.
    Firstmate may still raise one first-sight alert; the declared wait then uses the existing long recheck cadence instead of repeated possible-wedge alarms.
    When you know when the wait clears, include \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) for a recheck at that time.
+   When a machine can check the wait, add one \`[wait=<kind>:<arg>]\` tag before the colon
+   (\`heavy:<job-id>\`, \`until:<YYYY-MM-DDTHH:MMZ>\`, \`merge-result:<head-sha>\`, or
+   \`receipt:<absolute-path>\`): firstmate's monitoring then stays silent while it holds and
+   wakes when it stops holding, and the tag outranks any prose ETA.
    Follow the resolution rule below when the wait clears, then resume the task.
 EOF
 
@@ -456,7 +460,7 @@ Report only true captain-relevant outcomes or a declared external wait by append
    \`$STATUS_APPEND\`
 States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
 Substitute \`<epoch>\` with the current Unix time in seconds - run \`date +%s\` and write the number it printed; a stamp that is not plain digits records no time at all.
-Use \`$PAUSED_VERB: {why}\` (distinct from \`blocked:\`) only when your domain is deliberately idling on a known external wait you expect to clear on its own, naming when it clears with \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) when you know; use \`blocked:\` when you are stuck and need firstmate to act.
+Use \`$PAUSED_VERB: {why}\` (distinct from \`blocked:\`) only when your domain is deliberately idling on a known external wait you expect to clear on its own, naming when it clears with \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) when you know, or with one machine-checkable \`[wait=<kind>:<arg>]\` tag before the colon (\`heavy:<job-id>\`, \`until:<UTC>\`, \`merge-result:<head-sha>\`, \`receipt:<absolute-path>\`) so the wait stays silent while it holds; use \`blocked:\` when you are stuck and need firstmate to act.
 Use this only for material phase changes, a captain decision, a real blocker, a failure, work ready for review, or work you landed.
 Work you landed includes a merge you performed yourself under standing merge authority and one the captain merged on the forge: under that authority nothing is ever \"ready for review\", so a landed merge that goes unreported reaches the captain as silence.
 This is also how you return the answer to a marked from-firstmate request above.
@@ -603,6 +607,7 @@ $CREWMATE_PAUSE_INSTRUCTIONS$PARK_RULE
    append \`needs-decision [at=<epoch>]: {summary of options}\` and stop. Firstmate will reply with the decision.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
+   When you resume after a reboot or restart with your own blockers still open, one \`note [supersedes=resume] [at=<epoch>]: {evidence}\` line closes all of them at once (never a needs-decision).
 $SHARED_INFRA_RULE
 
 $INBOX_SECTION
@@ -687,6 +692,7 @@ $CREWMATE_PAUSE_INSTRUCTIONS$PARK_RULE
 $ASK_USER_BLOCK
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
+   When you resume after a reboot or restart with your own blockers still open, one \`note [supersedes=resume] [at=<epoch>]: {evidence}\` line closes all of them at once (never a needs-decision).
 $SHARED_INFRA_RULE
 
 $INBOX_SECTION

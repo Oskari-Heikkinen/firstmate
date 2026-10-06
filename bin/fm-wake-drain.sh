@@ -761,6 +761,32 @@ print_status_sections() {
   rm -f -- "$prepared"
 }
 
+# Print the CONFIG REREAD section once: each inherited-config generation the
+# parent delivered into this home's quiet intake queue since the last drain
+# (bin/fm-config-inherit-lib.sh's fm_config_reread_send_pointer owns the
+# delivery and its parent-side receipt, so no chat turn was spent on it). A
+# marker is retired only after its line reached stdout, so an interrupted
+# presentation is shown again. Main-only and silent when nothing is queued.
+print_config_reread_section() {
+  local dir="$STATE/.fm-inherited-config-reread-intake" marker instruction shown=0
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  for marker in "$dir"/.fm-inherited-config-reread.*; do
+    [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+    instruction=$(head -n 1 "$marker" 2>/dev/null) || continue
+    if [ "$shown" -eq 0 ]; then
+      printf 'CONFIG REREAD (inherited config changed; read each file and apply its exact contents at this and every future intake):\n' || return 1
+    fi
+    if [ -f "$instruction" ] && [ ! -L "$instruction" ]; then
+      printf '%s\n' "$instruction" || return 1
+    else
+      printf '%s (generation no longer retained; re-read the inherited config files directly)\n' "$instruction" || return 1
+    fi
+    shown=$((shown + 1))
+    rm -f -- "$marker" 2>/dev/null || true
+  done
+  return 0
+}
+
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
   local lock_rc holder_pid
@@ -789,6 +815,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
+  if [ "$ACTOR" = main ]; then print_config_reread_section || rc=1; fi
   fm_lock_release "$lock"
   return "$rc"
 }

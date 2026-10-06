@@ -241,6 +241,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/quiet-waits/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/quota-array-dispatch/SKILL.md",
       "audience": "agent-runtime"
     },

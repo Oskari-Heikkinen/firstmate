@@ -1122,6 +1122,13 @@ case "$*" in
   *capture-pane*) printf '❯\n'; exit 0 ;;
   *'send-keys'*' -l '*)
     [ "${FM_FAKE_TMUX_FAIL_LITERAL:-0}" = 1 ] && exit 1
+    if [ -n "${FM_CONFIG_RECEIPT_ORDER_LOG:-}" ]; then
+      if grep -qF '[receipt=config-reread]' "$FM_CONFIG_RECEIPT_ORDER_STATUS" 2>/dev/null; then
+        printf 'receipt-before-doorbell\n' >> "$FM_CONFIG_RECEIPT_ORDER_LOG"
+      elif grep -qF 'config-reread-' "$FM_CONFIG_RECEIPT_ORDER_QUEUE"; then
+        printf 'wake-before-doorbell-before-receipt\n' >> "$FM_CONFIG_RECEIPT_ORDER_LOG"
+      fi
+    fi
     exit 0
     ;;
   *send-keys*)
@@ -1203,17 +1210,17 @@ run_config_push() {
   fi
 }
 
-# Config-reread pointers now ride fm-send's durable steering inbox: the typed
-# channel carries only the constant doorbell, while each pointer message is a
-# sequenced record under the parent state's <task>.inbox/. Print every recorded
-# steer body in sequence order (one line per pointer-only message), read
-# through the production owner so no format knowledge is duplicated here.
-inbox_stream() {  # <parent-state-dir> <task-id>
-  local rec
-  for rec in "$1/$2.inbox"/*.msg; do
-    [ -e "$rec" ] || continue
-    bash -c '. "$1"; fm_task_inbox_body "$2"' _ "$ROOT/bin/fm-task-inbox-lib.sh" "$rec"
-    printf '\n'
+# Config-reread pointers ride the destination home's quiet intake queue
+# (state/.fm-inherited-config-reread-intake/, one marker per generation) rather
+# than a chat turn. Print one "CONFIG_REREAD: <instruction>" line per queued
+# marker in generation order, from the second mate home named by <task-id>
+# beside the parent home.
+intake_stream() {  # <parent-state-dir> <task-id>
+  local marker dest
+  dest="${1%/home/state}/$2"
+  for marker in "$dest/state/.fm-inherited-config-reread-intake"/.fm-inherited-config-reread.*; do
+    [ -f "$marker" ] || continue
+    printf 'CONFIG_REREAD: %s\n' "$(head -n 1 "$marker")"
   done
 }
 
@@ -1650,13 +1657,13 @@ test_bootstrap_rereads_after_partial_propagation() {
   instruction=$(reread_instruction_path "$w/sm") || fail "partial bootstrap reread instruction missing"
   assert_present "$instruction" "partial bootstrap propagation did not write a reread instruction"
   pointer="CONFIG_REREAD: $(reread_instruction_path "$w/sm")"
-  assert_contains "$(inbox_stream "$w/home/state" sm)" "$pointer" \
+  assert_contains "$(intake_stream "$w/home/state" sm)" "$pointer" \
     "partial bootstrap propagation did not route the instruction pointer"
   pass "B11 bootstrap rereads completed config writes after partial propagation"
 }
 
 test_config_push_propagates_reports_without_ff_or_nudge() {
-  local w c1 sm_real old_head out err status out2 tmp log instruction
+  local drain_out w c1 sm_real old_head out err status out2 tmp log instruction
   w=$(new_world config-push-basic)
   c1=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$c1"
@@ -1677,9 +1684,14 @@ test_config_push_propagates_reports_without_ff_or_nudge() {
   printf 'tmux\n' > "$w/home/config/backend"
   record_live_watcher_fixture "$w/home"
   : > "$w/home/config/trace-context"
+  : > "$w/home/state/sm.status"
   err="$w/config-push-basic.err"
   log="$w/config-push-basic.tmux.log"
+  export FM_CONFIG_RECEIPT_ORDER_LOG="$w/receipt-order.log"
+  export FM_CONFIG_RECEIPT_ORDER_STATUS="$w/home/state/sm.status"
+  export FM_CONFIG_RECEIPT_ORDER_QUEUE="$w/sm/state/.wake-queue"
   out=$(run_config_push "$w" "$log" 2>"$err"); status=$?
+  unset FM_CONFIG_RECEIPT_ORDER_LOG FM_CONFIG_RECEIPT_ORDER_STATUS FM_CONFIG_RECEIPT_ORDER_QUEUE
 
   expect_code 0 "$status" "config push should succeed"
   assert_contains "$out" "config-push: $w/home -> live secondmate homes" \
@@ -1709,8 +1721,36 @@ test_config_push_propagates_reports_without_ff_or_nudge() {
   assert_contains "$(cat "$instruction")" $'-----BEGIN config/backend-----\ntmux\n-----END config/backend-----' \
     "config-push reread must include exact backend bytes"
   [ ! -s "$err" ] || fail "clean config push wrote unexpected stderr: $(cat "$err")"
-  assert_contains "$(inbox_stream "$w/home/state" sm)" "[fm-from-firstmate]" \
-    "config reread must use the marked routed secondmate path"
+  assert_contains "$(intake_stream "$w/home/state" sm)" "CONFIG_REREAD: $instruction" \
+    "config reread must queue the generation in the second mate's quiet intake"
+  assert_contains "$(cat "$w/home/state/sm.status")" "note [receipt=config-reread] [at=" \
+    "config reread delivery must leave a typed receipt the parent can see"
+  assert_contains "$(cat "$w/home/state/sm.status")" "${instruction##*/}" \
+    "config reread receipt must name the delivered generation"
+  assert_contains "$(cat "$log")" "Firstmate instruction waiting" \
+    "config reread did not ring the idle second mate's doorbell"
+  [ "$(cat "$w/receipt-order.log")" = wake-before-doorbell-before-receipt ] \
+    || fail "config receipt preceded its wake or doorbell"
+  [ -z "$(ls "$w/home/state/pending-replies"/* 2>/dev/null)" ] \
+    || fail "config delivery required a chat acknowledgement"
+  # The second mate's next intake presents the queued generation once, with no
+  # chat turn spent on delivery, and retires the marker after presenting it.
+  drain_out=$(FM_HOME="$w/sm" "$ROOT/bin/fm-wake-drain.sh" 2>/dev/null) \
+    || fail "second mate wake drain failed after a config reread delivery"
+  assert_contains "$drain_out" "CONFIG REREAD" \
+    "second mate intake did not present the config reread section"
+  assert_contains "$drain_out" "$instruction" \
+    "second mate intake did not name the instruction file"
+  [ -z "$(intake_stream "$w/home/state" sm)" ] \
+    || fail "second mate intake did not retire the presented marker"
+  drain_out=$(FM_HOME="$w/sm" "$ROOT/bin/fm-wake-drain.sh" 2>/dev/null) \
+    || fail "second mate repeat wake drain failed"
+  # The durable wake remains visible until acknowledged; only the intake
+  # section (and its generation path) must not be presented twice.
+  assert_not_contains "$drain_out" "CONFIG REREAD (inherited config changed;" \
+    "second mate intake presented a config reread twice"
+  assert_not_contains "$drain_out" "$instruction" \
+    "second mate repeat intake presented the retired instruction path"
 
   : > "$log"
   out2=$(run_config_push "$w" "$log" 2>"$err"); status=$?
@@ -1822,7 +1862,7 @@ test_config_push_rereads_after_partial_propagation() {
   instruction=$(reread_instruction_path "$w/sm") || fail "partial propagation reread instruction missing"
   assert_present "$instruction" "partial propagation did not write a reread instruction"
   pointer="CONFIG_REREAD: $(reread_instruction_path "$w/sm")"
-  assert_contains "$(inbox_stream "$w/home/state" sm)" "$pointer" \
+  assert_contains "$(intake_stream "$w/home/state" sm)" "$pointer" \
     "partial propagation did not route the instruction pointer"
   pass "B14 config-push rereads completed config writes after partial propagation"
 }
@@ -1941,15 +1981,12 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
   assert_not_contains "$(cat "$instr_b")" $'pi\n' \
     "beta instruction must not leak alpha-only stale harness bytes as a standalone scalar block incorrectly"
 
-  # Routed send used the from-firstmate marker and carried only the pointer,
-  # read from alpha's durable steer records (the typed channel now carries only
-  # the constant doorbell, which never inlines message content).
+  # The quiet intake queue carries only the pointer, never inlined content.
   pointer="CONFIG_REREAD: $(reread_instruction_path "$w/alpha")"
-  assert_contains "$(inbox_stream "$w/home/state" alpha)" "[fm-from-firstmate]" "reread send must be marked"
-  assert_contains "$(inbox_stream "$w/home/state" alpha)" "$pointer" "reread send must point to the durable instruction file"
-  assert_not_contains "$(inbox_stream "$w/home/state" alpha)" '"harness": "grok"' "sent message must not inline multiline JSON"
-  assert_not_contains "$(inbox_stream "$w/home/state" alpha)" "Default worker" "sent message must not summarize"
-  assert_not_contains "$(cat "$log")" '"harness": "grok"' "the typed doorbell must not inline multiline JSON"
+  assert_contains "$(intake_stream "$w/home/state" alpha)" "$pointer" "reread send must point to the durable instruction file"
+  assert_not_contains "$(intake_stream "$w/home/state" alpha)" '"harness": "grok"' "sent message must not inline multiline JSON"
+  assert_not_contains "$(intake_stream "$w/home/state" alpha)" "Default worker" "sent message must not summarize"
+  assert_contains "$(cat "$log" 2>/dev/null)" "Firstmate instruction waiting" "a config reread delivery must ring the doorbell"
   pass "B15 config reread is per-home, exact-byte, ordered, and pointer-only"
 }
 
@@ -2017,13 +2054,12 @@ test_config_reread_isolation_and_absent_and_send_failure() {
   assert_not_contains "$(cat "$w/beta/state/.fm-inherited-config-reread-absent")" "config/crew-harness" \
     "helper must omit unchanged items"
 
-  # Send failure becomes a retryable diagnostic and non-zero exit. On the
-  # inbox plane the real local failure is an unwritable steer record (a
-  # keystroke failure alone no longer fails a durably enqueued pointer), so
-  # replace each inbox dir with a plain file that blocks the enqueue.
-  rm -rf "$w/home/state/alpha.inbox" "$w/home/state/beta.inbox"
-  : > "$w/home/state/alpha.inbox"
-  : > "$w/home/state/beta.inbox"
+  # Send failure becomes a retryable diagnostic and non-zero exit. The real
+  # local failure is an unwritable intake queue, so replace each second mate's
+  # intake dir with a plain file that blocks the enqueue.
+  rm -rf "$w/alpha/state/.fm-inherited-config-reread-intake" "$w/beta/state/.fm-inherited-config-reread-intake"
+  : > "$w/alpha/state/.fm-inherited-config-reread-intake"
+  : > "$w/beta/state/.fm-inherited-config-reread-intake"
   printf 'claude\n' > "$w/home/config/crew-harness"
   err="$w/config-reread-send-fail.err"
   out=$(PATH="$(make_fake_toolchain "$w"):$BASE_PATH" \
@@ -2061,18 +2097,18 @@ test_config_reread_isolation_and_absent_and_send_failure() {
 
   # A normal later push retries the durable pointers even though propagation is
   # unchanged, then clears every marker after delivery succeeds.
-  rm -f "$w/home/state/alpha.inbox" "$w/home/state/beta.inbox"
+  rm -f "$w/alpha/state/.fm-inherited-config-reread-intake" "$w/beta/state/.fm-inherited-config-reread-intake"
   retry_log="$w/config-reread-send-retry.tmux.log"
   retry_out=$(run_config_push "$w" "$retry_log" 2>"$err"); retry_status=$?
   expect_code 0 "$retry_status" "send failure should be retryable"
   assert_contains "$retry_out" "config-reread: sent" \
     "retry should report the reread as sent"
   retry_pointer="CONFIG_REREAD: $(reread_instruction_path "$w/beta")"
-  assert_contains "$(inbox_stream "$w/home/state" beta)" "$retry_pointer" \
+  assert_contains "$(intake_stream "$w/home/state" beta)" "$retry_pointer" \
     "retry did not resend the durable pointer"
-  assert_contains "$(inbox_stream "$w/home/state" alpha)" "CONFIG_REREAD: $first_instr" \
+  assert_contains "$(intake_stream "$w/home/state" alpha)" "CONFIG_REREAD: $first_instr" \
     "retry did not resend the first pending generation"
-  assert_contains "$(inbox_stream "$w/home/state" alpha)" "$second_pointer" \
+  assert_contains "$(intake_stream "$w/home/state" alpha)" "$second_pointer" \
     "retry did not resend the second pending generation"
   assert_no_reread_pending "$w/alpha"
   assert_no_reread_pending "$w/beta"
@@ -2122,7 +2158,7 @@ SH
     "successful publication retry should report delivery"
   instr=$(reread_instruction_path "$w/alpha") \
     || fail "publication retry did not publish an instruction"
-  assert_contains "$(inbox_stream "$w/home/state" alpha)" "CONFIG_REREAD: $instr" \
+  assert_contains "$(intake_stream "$w/home/state" alpha)" "CONFIG_REREAD: $instr" \
     "publication retry did not send the durable pointer"
   assert_no_reread_retry_stages "$w/home" alpha
   pass "B20 config reread publication failures retain exact generations for retry"
@@ -2173,8 +2209,8 @@ SH
   expect_code 0 "$retry_status" "a later changed push should retry an instruction-write failure"
   assert_contains "$retry_out" "config-reread: sent" \
     "later changed push did not deliver the retained exact generation"
-  old_instr=$(inbox_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | head -n 1 | sed 's/.*CONFIG_REREAD: //')
-  new_instr=$(inbox_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
+  old_instr=$(intake_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | head -n 1 | sed 's/.*CONFIG_REREAD: //')
+  new_instr=$(intake_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
   [ -n "$old_instr" ] && [ -n "$new_instr" ] && [ "$old_instr" != "$new_instr" ] \
     || fail "later changed push did not deliver both generations"
   instr="$old_instr"
@@ -2242,8 +2278,8 @@ SH
   log="$w/config-reread-exact-temp-fallback.tmux.log"
   retry_out=$(run_config_push "$w" "$log" 2>/dev/null); retry_status=$?
   expect_code 0 "$retry_status" "later push should deliver retained exact temporary bytes"
-  old_instr=$(inbox_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | head -n 1 | sed 's/.*CONFIG_REREAD: //')
-  new_instr=$(inbox_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
+  old_instr=$(intake_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | head -n 1 | sed 's/.*CONFIG_REREAD: //')
+  new_instr=$(intake_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
   [ -n "$old_instr" ] && [ -n "$new_instr" ] && [ "$old_instr" != "$new_instr" ] \
     || fail "later push did not deliver both exact generations"
   assert_contains "$(cat "$old_instr")" \
@@ -2266,23 +2302,24 @@ test_config_reread_serializes_concurrent_pushes() {
   printf 'one\n' > "$w/home/config/crew-harness"
 
   fakebin=$(make_fake_toolchain "$w")
-  mv "$fakebin/tmux" "$fakebin/tmux.real"
   marker="$w/first-send.marker"
   entered="$w/first-send.entered"
   log="$w/config-reread-serialized.tmux.log"
-  cat > "$fakebin/tmux" <<SH
+  # Hold the first pointer delivery (the move into the intake queue) open so a
+  # second push must serialize behind it.
+  cat > "$fakebin/mv" <<SH
 #!/usr/bin/env bash
 case "\$*" in
-  *send-keys*)
+  *.fm-inherited-config-reread-intake/*)
     if (set -o noclobber; : > "$marker") 2>/dev/null; then
       : > "$entered"
-      sleep 1
+      sleep 3
     fi
     ;;
 esac
-exec "$fakebin/tmux.real" "\$@"
+exec "$(command -v mv)" "\$@"
 SH
-  chmod +x "$fakebin/tmux"
+  chmod +x "$fakebin/mv"
 
   first_out="$w/first-push.out"
   (
@@ -2291,10 +2328,11 @@ SH
       "$ROOT/bin/fm-config-push.sh" > "$first_out" 2>&1
   ) &
   first_pid=$!
-  # The loop leaves as soon as the push reaches its first send, so a generous
-  # bound costs nothing on a fast host; a slow one needs several seconds.
+  # A generous budget only removes a false negative on a loaded machine: the
+  # push propagates config before it reaches delivery.
   for _ in $(seq 1 1500); do
     [ -e "$entered" ] && break
+    kill -0 "$first_pid" 2>/dev/null || break
     sleep 0.02
   done
   [ -e "$entered" ] || fail "first config push did not reach pointer delivery"
@@ -2314,10 +2352,9 @@ SH
   [ "$first_instr" != "$second_instr" ] || fail "concurrent pushes reused a generation"
   [ "$(cat "$w/sm/config/crew-harness")" = two ] \
     || fail "concurrent pushes did not converge the latest config bytes"
-  # Delivery order is now the durable enqueue order: the steering-inbox
-  # sequence numbers are the serialization evidence the typed log used to be.
-  first_line=$(inbox_stream "$w/home/state" sm | grep -n -F "CONFIG_REREAD: $first_instr" | head -n 1 | cut -d: -f1)
-  second_line=$(inbox_stream "$w/home/state" sm | grep -n -F "CONFIG_REREAD: $second_instr" | head -n 1 | cut -d: -f1)
+  # Delivery order is the generation order the intake queue presents.
+  first_line=$(intake_stream "$w/home/state" sm | grep -n -F "CONFIG_REREAD: $first_instr" | head -n 1 | cut -d: -f1)
+  second_line=$(intake_stream "$w/home/state" sm | grep -n -F "CONFIG_REREAD: $second_instr" | head -n 1 | cut -d: -f1)
   [ -n "$first_line" ] && [ -n "$second_line" ] && [ "$first_line" -lt "$second_line" ] \
     || fail "concurrent pushes delivered generations out of order"
   pass "B21 config reread serializes concurrent propagation and delivery"
@@ -2349,7 +2386,7 @@ test_config_reread_full_retry_queue_drains_before_new_push() {
   [ "$(cat "$w/sm/config/crew-harness")" = new ] \
     || fail "the new config generation did not propagate after retry draining"
   assert_no_reread_retry_stages "$w/home" sm
-  pointer_count=$(inbox_stream "$w/home/state" sm | grep -c 'CONFIG_REREAD:' || true)
+  pointer_count=$(intake_stream "$w/home/state" sm | grep -c 'CONFIG_REREAD:' || true)
   [ "$pointer_count" -ge 17 ] \
     || fail "full retry queue did not deliver all pending generations before the new one"
   pass "B22 full config reread retry queues drain before new publication"
@@ -2375,16 +2412,14 @@ test_config_reread_cleanup_runs_after_mixed_delivery_failure() {
       || fail "could not mark mixed-delivery generation pending"
   done
   fakebin=$(make_fake_toolchain "$w")
-  # Fail only the .9999-fail generation's delivery, at the layer that can now
-  # fail: the durable inbox enqueue. The staged steer record carries that
-  # generation's pointer path in its body, so a content-matching mv wrapper
-  # rejects exactly that one atomic publish and nothing else.
+  # Fail only the .9999-fail generation's delivery, at the layer that can
+  # fail: the atomic move of its marker into the intake queue, and nothing else.
   real_mv=$(command -v mv)
   cat > "$fakebin/mv" <<SH
 #!/usr/bin/env bash
-if [ -f "\${1:-}" ] && grep -q '\.9999-fail' "\${1:-}" 2>/dev/null; then
-  exit 1
-fi
+case "\$*" in
+  *'.fm-inherited-config-reread-intake/.fm-inherited-config-reread.9999-fail') exit 1 ;;
+esac
 exec "$real_mv" "\$@"
 SH
   chmod +x "$fakebin/mv"
@@ -2410,7 +2445,7 @@ SH
 }
 
 test_config_reread_stops_after_failed_generation() {
-  local w fakebin state_real old new report log out status
+  local w fakebin state_real old new report log out status real_mv
   w=$(new_world config-reread-order)
   mkdir -p "$w/sm/state"
   state_real=$(cd "$w/sm/state" && pwd -P)
@@ -2424,15 +2459,16 @@ test_config_reread_stops_after_failed_generation() {
   fm_config_reread_mark_pending "$new" "$new.pending" \
     || fail "could not mark newer generation pending"
   fakebin=$(make_fake_toolchain "$w")
-  mv "$fakebin/tmux" "$fakebin/tmux.real"
-  cat > "$fakebin/tmux" <<SH
+  # Fail the older generation's move into the intake queue only.
+  real_mv=$(command -v mv)
+  cat > "$fakebin/mv" <<SH
 #!/usr/bin/env bash
 case "\$*" in
-  *send-keys*'.0000-fail'*) exit 1 ;;
+  *'.fm-inherited-config-reread-intake/.fm-inherited-config-reread.0000-fail') exit 1 ;;
 esac
-exec "$fakebin/tmux.real" "\$@"
+exec "$real_mv" "\$@"
 SH
-  chmod +x "$fakebin/tmux"
+  chmod +x "$fakebin/mv"
   report="$w/empty-reread.report"
   : > "$report"
   log="$w/config-reread-order.tmux.log"
@@ -2442,7 +2478,7 @@ SH
   expect_code 1 "$status" "an older failed generation should remain diagnostic"
   assert_contains "$out" "CONFIG_REREAD: secondmate sm: send failed" \
     "older generation failure diagnostic missing"
-  assert_not_contains "$(cat "$log" 2>/dev/null || true)" ".0001-new" \
+  assert_not_contains "$(intake_stream "$w/home/state" sm)" ".0001-new" \
     "newer generation was delivered after an older failure"
   assert_present "$old.pending" "older failed generation lost its retry marker"
   assert_present "$new.pending" "newer generation was sent after an older failure"
@@ -2543,8 +2579,8 @@ test_config_reread_bootstrap_path_and_spawn_flexibility() {
   [ "$(cat "$w/sm/config/crew-harness")" = codex ] || fail "bootstrap did not push harness"
   instr=$(reread_instruction_path "$w/sm") || fail "bootstrap reread instruction missing"
   assert_present "$instr" "bootstrap must write a config reread instruction when config changed"
-  assert_contains "$(inbox_stream "$w/home/state" sm)" "[fm-from-firstmate]" \
-    "bootstrap config reread must use routed secondmate send"
+  assert_contains "$(intake_stream "$w/home/state" sm)" "CONFIG_REREAD: $instr" \
+    "bootstrap config reread must queue the generation in the quiet intake"
   assert_contains "$(cat "$instr")" \
     $'-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----' \
     "bootstrap instruction must carry exact post-write harness bytes"

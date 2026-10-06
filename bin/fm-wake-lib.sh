@@ -2507,6 +2507,34 @@ EOF
   return 0
 }
 
+# Record supersession evidence for a task's still-open blockers: when the
+# task's status fold holds at least one `blocked` record, append one
+#   note [supersedes=<kind>] [at=<epoch>]: <evidence>; superseded open blockers: <keys>
+# event through fm_wake_status_append_self_announced, which the decision fold
+# (status_supersedes_kind in bin/fm-classify-lib.sh owns the grammar and the
+# closing rule) reads as closing every one of them, and which the next drain
+# presents once under UNREAD STATUS. No open blocker means nothing is written.
+# needs-decision records are never named or closed. Returns 0 written or
+# nothing to write, 1 when the append failed.
+fm_status_supersede_blockers() {  # <state> <status-file> <relaunch|resume|validation-run> <evidence>
+  local state=$1 file=$2 kind=$3 evidence=$4 open key verb rest keys='' rc=0
+  _fm_wake_require_classify || return 1
+  case "$kind" in relaunch|resume|validation-run) ;; *) return 1 ;; esac
+  open=$(status_open_decisions "$file")
+  while IFS=$'\t' read -r key verb rest; do
+    [ "$verb" = blocked ] || continue
+    [ "$key" != default ] || key=unkeyed
+    keys="${keys:+$keys, }$key"
+  done <<EOF
+$open
+EOF
+  [ -n "$keys" ] || return 0
+  evidence=${evidence//$'\n'/ }
+  fm_wake_status_append_self_announced "$state" "$file" \
+    "note [supersedes=$kind]: $evidence; superseded open blockers: $keys" || rc=$?
+  [ "$rc" -ne 2 ]
+}
+
 # Map one structurally valid signal key to its home-local status filename.
 # Queue payload text is intentionally ignored: it is display data, not a path
 # authority. The caller still verifies the resulting regular file immediately

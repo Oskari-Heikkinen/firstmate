@@ -443,6 +443,131 @@ status_paused_until() {  # <status-line> -> epoch on stdout
   fm_utc_iso_to_epoch "$token"
 }
 
+# --- machine-checkable declared-wait conditions ------------------------------
+# A `paused:` line may name the condition its wait is on with ONE tag before its
+# first colon, alongside key and at tags in any order:
+#   paused [key=heavy-J1] [wait=heavy:J1] [at=<epoch>]: heavy job J1 queued ...
+# The grammar is `[wait=<kind>:<arg>]`; <arg> holds no whitespace and no `]`.
+# This section is the one owner of the kinds and what "holds" means for each:
+#   heavy:<job-id>      a heavy-slot job record (schema heavy-slot-job/v1) at
+#                       $HEAVY_SLOT_STATE_DIR/jobs/<job-id>.json (default state
+#                       dir ~/.cache/heavy-slot) whose state is queued or
+#                       running and whose recorded pid, when it names one, is
+#                       still a live process. The job manager appends the tagged
+#                       paused line and its closing `resolved [key=heavy-<id>]`.
+#   until:<UTC>         the time <YYYY-MM-DDTHH:MM[:SS]Z> has not passed yet.
+#   merge-result:<sha>  the merge-queue log ($FM_MERGE_QUEUE_LOG, default
+#                       ~/.cache/lattice-merge-queue/queue.log) holds no RESULT
+#                       line for that head (7-40 hex, prefix match) other than
+#                       `outcome=taken`, which only means a car claimed it.
+#   receipt:<abs-path>  the receipt file does not exist yet while its parent
+#                       directory does.
+# A new kind is one more arm in _fm_wait_condition_holds. Without a tag, the
+# prose `until <UTC>` clause status_paused_until reads is the line's condition;
+# with a tag, the tag alone is the condition, so a guessed ETA written as prose
+# never outranks the machine-checkable source. A tag with an unknown kind, a
+# malformed argument, a checker that is not installed, or a source that cannot
+# be read counts as NOT holding: a wait nothing can verify wakes its supervisor.
+
+# Print "<kind>:<arg>" of the head's wait tag; 1 when the line has none, and 2
+# when it has more than one or the tag is not well-formed.
+status_wait_tag() {  # <status-line> [<out-var>]
+  local __fm_wt_head __fm_wt_rest __fm_wt_tag
+  _fm_status_head "$1" __fm_wt_head
+  case "$__fm_wt_head" in *\[wait=*) ;; *) return 1 ;; esac
+  __fm_wt_rest=${__fm_wt_head#*\[wait=}
+  case "$__fm_wt_rest" in *\[wait=*) return 2 ;; esac
+  case "$__fm_wt_rest" in *\]*) __fm_wt_tag=${__fm_wt_rest%%\]*} ;; *) return 2 ;; esac
+  case "$__fm_wt_tag" in
+    *[[:space:]]*|'') return 2 ;;
+    [a-z]*:?*) ;;
+    *) return 2 ;;
+  esac
+  if [ "$#" -gt 1 ]; then printf -v "$2" '%s' "$__fm_wt_tag"; else printf '%s' "$__fm_wt_tag"; fi
+}
+
+# 0 when the line carries no wait tag at all (a malformed one still counts as a
+# tag), so its prose `until` clause is the condition.
+status_wait_untagged() {  # <status-line>
+  local rc=0
+  status_wait_tag "$1" >/dev/null || rc=$?
+  [ "$rc" -eq 1 ]
+}
+
+# 0 when one "<kind>:<arg>" condition holds at <now>; 1 otherwise.
+_fm_wait_condition_holds() {  # <kind:arg> <now>
+  local kind=${1%%:*} arg=${1#*:} now=$2 dir rec fields state pid until log dirpart
+  case "$kind" in
+    heavy)
+      case "$arg" in [A-Za-z0-9]*) ;; *) return 1 ;; esac
+      case "$arg" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+      [ "${#arg}" -le 96 ] || return 1
+      command -v jq >/dev/null 2>&1 || return 1
+      dir=${HEAVY_SLOT_STATE_DIR:-$HOME/.cache/heavy-slot}
+      case "$dir" in \~/*) dir=$HOME/${dir#\~/} ;; esac
+      rec="$dir/jobs/$arg.json"
+      [ -f "$rec" ] && [ -r "$rec" ] || return 1
+      fields=$(jq -r --arg id "$arg" \
+        'select(.schema == "heavy-slot-job/v1" and .id == $id) | "\(.state) \(.pid // "")"' \
+        "$rec" 2>/dev/null) || return 1
+      state=${fields%% *}
+      pid=${fields#* }
+      case "$state" in queued|running) ;; *) return 1 ;; esac
+      case "$pid" in
+        ''|null) ;;
+        *[!0-9]*|0) return 1 ;;
+        *) kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1 || return 1 ;;
+      esac
+      return 0
+      ;;
+    until)
+      until=$(fm_utc_iso_to_epoch "$arg") || return 1
+      [ "$now" -lt "$until" ]
+      ;;
+    merge-result)
+      case "$arg" in *[!0-9a-f]*) return 1 ;; esac
+      [ "${#arg}" -ge 7 ] && [ "${#arg}" -le 40 ] || return 1
+      log=${FM_MERGE_QUEUE_LOG:-$HOME/.cache/lattice-merge-queue/queue.log}
+      [ -f "$log" ] && [ -r "$log" ] || return 1
+      fields=$(grep -E "^RESULT [^ ]+ head=${arg}[0-9a-f]* outcome=" "$log" 2>/dev/null)
+      case "$?" in 0|1) ;; *) return 1 ;; esac
+      [ -z "$fields" ] && return 0
+      printf '%s\n' "$fields" | grep -qv ' outcome=taken\( \|$\)' && return 1
+      return 0
+      ;;
+    receipt)
+      case "$arg" in /*) ;; *) return 1 ;; esac
+      case "/$arg/" in */../*|*/./*) return 1 ;; esac
+      [ ! -e "$arg" ] && [ ! -L "$arg" ] || return 1
+      dirpart=${arg%/*}
+      [ -n "$dirpart" ] || dirpart=/
+      [ -d "$dirpart" ] && [ -x "$dirpart" ]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# 0 when <status-line> is a `paused:` wait whose machine-checkable condition
+# still holds, 1 when it declares one that does not (or cannot be verified),
+# and 2 when it is not a pause or declares no machine-checkable condition.
+# With a tag and `<cond-var>`, the condition is also assigned there.
+status_declared_wait_check() {  # <status-line> [<now>] [<cond-var>]
+  local __fm_dw_now=${2:-} __fm_dw_cond='' __fm_dw_until __fm_dw_rc=0
+  status_is_paused "$1" || return 2
+  [ -n "$__fm_dw_now" ] || __fm_dw_now=$(date +%s)
+  status_wait_tag "$1" __fm_dw_cond || __fm_dw_rc=$?
+  case "$__fm_dw_rc" in
+    0) [ "$#" -lt 3 ] || printf -v "$3" '%s' "$__fm_dw_cond"
+       _fm_wait_condition_holds "$__fm_dw_cond" "$__fm_dw_now" && return 0
+       return 1 ;;
+    2) return 1 ;;
+  esac
+  __fm_dw_until=$(status_paused_until "$1") || return 2
+  [ "$#" -lt 3 ] || printf -v "$3" '%s' "until:$__fm_dw_until"
+  [ "$__fm_dw_now" -lt "$__fm_dw_until" ] && return 0
+  return 1
+}
+
 # --- optional event emission time -------------------------------------------
 # New writers may append "[at=<epoch>]" before the first colon, alongside key
 # and corr tags in any order. Epoch is UTC Unix seconds: canonical unsigned
@@ -460,7 +585,7 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 _fm_status_at_epoch() {  # <status-line> <out-var> -> 0 and the epoch when known
   local __fm_at_head __fm_at_value __fm_at_rest
   printf -v "$2" '%s' ''
-  case "$1" in *:*) __fm_at_head=${1%%:*} ;; *) return 1 ;; esac
+  case "$1" in *:*) _fm_status_head "$1" __fm_at_head ;; *) return 1 ;; esac
   case "$__fm_at_head" in *\[at=*\]*) ;; *) return 1 ;; esac
   __fm_at_rest=${__fm_at_head#*\[at=}
   __fm_at_value=${__fm_at_rest%%\]*}
@@ -482,12 +607,12 @@ status_line_at_epoch() {  # <status-line> -> epoch; nonzero when unknown
 status_stamp_line() {  # <new-status-line> -> line (without newline)
   local head epoch
   case "$1" in
-    *:*) head=${1%%:*} ;;
+    *:*) _fm_status_head "$1" head ;;
     *) printf '%s' "$1"; return 0 ;;
   esac
   case "$head" in *\[at=*) printf '%s' "$1"; return 0 ;; esac
   if epoch=$(date +%s); then
-    printf '%s [at=%s]:%s' "$head" "$epoch" "${1#*:}"
+    printf '%s [at=%s]%s' "$head" "$epoch" "${1#"$head"}"
   else
     printf '%s' "$1"
   fi
@@ -519,13 +644,13 @@ status_stamp_width() {  # -> characters a stamp adds to a line
 # single parser rather than a second spelling of it, and a sweep that normalizes
 # a line at a time never pays a fork for the match it prepares.
 _fm_status_untimed() {  # <status-line> <out-var> -> line without a time tag
-  local __fm_untimed_epoch __fm_untimed_head __fm_untimed_tag __fm_untimed_before
+  local __fm_untimed_epoch __fm_untimed_tag __fm_untimed_before
   if _fm_status_at_epoch "$1" __fm_untimed_epoch; then
-    __fm_untimed_head=${1%%:*}
+    # The parser above found this tag inside the head, so its first occurrence
+    # in the line is the stamp itself.
     __fm_untimed_tag="[at=$__fm_untimed_epoch]"
-    __fm_untimed_before=${__fm_untimed_head%%"$__fm_untimed_tag"*}
-    printf -v "$2" '%s%s:%s' "${__fm_untimed_before% }" \
-      "${__fm_untimed_head#*"$__fm_untimed_tag"}" "${1#*:}"
+    __fm_untimed_before=${1%%"$__fm_untimed_tag"*}
+    printf -v "$2" '%s%s' "${__fm_untimed_before% }" "${1#*"$__fm_untimed_tag"}"
     return 0
   fi
   printf -v "$2" '%s' "$1"
@@ -545,16 +670,41 @@ _fm_status_untimed() {  # <status-line> <out-var> -> line without a time tag
 # legitimately match on, so scanning stops there. The caller's own bytes are
 # untouched: this writes a throwaway copy used for matching only.
 _fm_status_unstamped() {  # <status-line> <out-var> -> line with its stamp removed
-  local __fm_unstamped_rest=$1 __fm_unstamped_keep='' __fm_unstamped_before
+  local __fm_unstamped_rest=$1 __fm_unstamped_keep='' __fm_unstamped_before __fm_unstamped_wait
   while :; do
-    case "$__fm_unstamped_rest" in *\[at=*\]*) ;; *) break ;; esac
+    case "$__fm_unstamped_rest" in *\[at=*\]*|*\[wait=*\]*) ;; *) break ;; esac
+    # A declared-wait tag (status_wait_tag below) carries a colon of its own
+    # grammar, so it is stripped exactly like the stamp: whichever of the two
+    # comes first is the next run.
     __fm_unstamped_before=${__fm_unstamped_rest%%\[at=*}
+    __fm_unstamped_wait=${__fm_unstamped_rest%%\[wait=*}
+    [ "${#__fm_unstamped_wait}" -ge "${#__fm_unstamped_before}" ] \
+      || __fm_unstamped_before=$__fm_unstamped_wait
     case "$__fm_unstamped_before" in *:*) break ;; esac
     __fm_unstamped_keep=$__fm_unstamped_keep${__fm_unstamped_before% }
-    __fm_unstamped_rest=${__fm_unstamped_rest#*\[at=}
+    __fm_unstamped_rest=${__fm_unstamped_rest#"$__fm_unstamped_before"}
     __fm_unstamped_rest=${__fm_unstamped_rest#*\]}
   done
   printf -v "$2" '%s' "$__fm_unstamped_keep$__fm_unstamped_rest"
+}
+
+# The line's head: everything before its first colon, except that a complete
+# declared-wait tag ("[wait=<kind>:<arg>]") is read whole, because its grammar
+# carries a colon (the heavy-slot job manager's shared interface fixes that
+# spelling). Only that one tag is read through; every other colon ends the head
+# exactly as before, so a line without a wait tag keeps its historical head.
+_fm_status_head() {  # <status-line> <out-var>
+  local __fm_head_rest=$1 __fm_head_out='' __fm_head_before __fm_head_after
+  while :; do
+    __fm_head_before=${__fm_head_rest%%\[wait=*}
+    [ "$__fm_head_before" != "$__fm_head_rest" ] || break
+    case "$__fm_head_before" in *:*) break ;; esac
+    __fm_head_after=${__fm_head_rest#"$__fm_head_before"}
+    case "$__fm_head_after" in *\]*) ;; *) break ;; esac
+    __fm_head_out=$__fm_head_out$__fm_head_before${__fm_head_after%%\]*}]
+    __fm_head_rest=${__fm_head_after#*\]}
+  done
+  printf -v "$2" '%s' "$__fm_head_out${__fm_head_rest%%:*}"
 }
 
 # Retry deduplication ignores only a well-formed optional numeric time tag;
@@ -774,6 +924,45 @@ $set
 EOF
   printf '%s' "$out"
 }
+# Drop every record whose verb is `blocked` from an open set, keeping order.
+_fm_decision_drop_blocked() {  # <open-set>
+  local line out='' rest
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    rest=${line#*$'\t'}
+    case "$rest" in blocked$'\t'*) continue ;; esac
+    out="${out}${line}"$'\n'
+  done <<EOF
+$1
+EOF
+  printf '%s' "$out"
+}
+
+# --- superseded blockers -----------------------------------------------------
+# A blocker is an obstacle the worker reported, and later work can make it moot
+# without anyone writing its `resolved` line: the task was relaunched, the
+# worker resumed from a reboot or relaunch note, or a new validation run
+# started. Such work is recorded as one typed evidence event:
+#   note [supersedes=<relaunch|resume|validation-run>] [at=<epoch>]: <evidence>
+# and the decision fold closes every `blocked` record (keyed or unkeyed) opened
+# before it. A `needs-decision` record is never closed this way: a question
+# still needs its answer. The event is a `note:`, so the drain's UNREAD STATUS
+# presents it once as the closing evidence (status_line_is_unread_surface).
+# bin/fm-wake-lib.sh's fm_status_supersede_blockers is the writer the relaunch
+# and validation-trigger paths use; a worker may append the same event itself.
+# Prints the kind; 1 when the line carries no well-formed supersession tag.
+status_supersedes_kind() {  # <status-line>
+  local head kind
+  _fm_status_head "$1" head
+  case "$head" in *\[supersedes=*\]*) ;; *) return 1 ;; esac
+  kind=${head#*\[supersedes=}
+  kind=${kind%%\]*}
+  case "$kind" in
+    relaunch|resume|validation-run) printf '%s' "$kind" ;;
+    *) return 1 ;;
+  esac
+}
+
 # Fold ONE status line into an existing "<key>\t<verb>\t<note>\n"-per-line open
 # set, applying the same needs-decision/blocked-opens, resolved/captain-held-closes
 # rule status_open_decisions documents above. Pure text transform, no file I/O.
@@ -862,6 +1051,14 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
   case "$unstamped" in
     *:*) case "$verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) return 0 ;; esac ;;
   esac
+  if [ "$verb" = note ]; then
+    case "$unstamped" in
+      *:*) status_supersedes_kind "$line" >/dev/null && open=$(_fm_decision_drop_blocked "$open") ;;
+    esac
+    [ -n "$open" ] && open="${open}"$'\n'
+    printf '%s' "$open"
+    return 0
+  fi
   case "$verb" in
     needs-decision|blocked|"$resolve"|"$held") ;;
     *) printf '%s' "$open"; return 0 ;;
@@ -907,7 +1104,7 @@ status_open_decisions() {  # <status-file> [<kind>]
   while IFS= read -r line || [ -n "$line" ]; do
     status_line_verb "$line" verb
     case "$verb" in
-      needs-decision|blocked|done|failed|"$resolve"|"$held")
+      needs-decision|blocked|done|failed|note|"$resolve"|"$held")
         open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind")
         ;;
     esac
@@ -1047,12 +1244,13 @@ status_key_closing_verb() {  # <status-file> <key>
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   candidates=$(grep -E \
-    "^[[:space:]]*(needs-decision|blocked|done|failed|$resolve|$held)[[:space:]:[]" \
+    "^[[:space:]]*(needs-decision|blocked|done|failed|note|$resolve|$held)[[:space:]:[]" \
     "$f") || [ "$?" -eq 1 ] || candidates=$(cat "$f")
   while IFS= read -r line || [ -n "$line" ]; do
     status_line_verb "$line" event
     case "$event:$kind" in
       done:ship|done:scout|failed:ship|failed:scout) ;;
+      note:*) status_supersedes_kind "$line" >/dev/null || continue ;;
       *)
         case "$event" in
           needs-decision|blocked|"$resolve"|"$held") ;;
@@ -1187,7 +1385,9 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # Version 4 was already spent on the bracketed-tag parser change above, and a
 # cursor persisted under that reading predates this one, so it must still be
 # discarded and rebuilt from byte 0 under the new reading.
-FM_OPEN_DECISIONS_FOLD_VERSION=9
+# 10: a `note [supersedes=...]` evidence event closes every open blocked
+# record, so cursors folded before that rule are discarded.
+FM_OPEN_DECISIONS_FOLD_VERSION=10
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
@@ -2370,6 +2570,12 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
       "$resolve"|"$held")
         _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
         ;;
+      note)
+        # A supersession event closes blockers recorded under other keys.
+        for key in $(printf '%s\n' "$origins" | cut -f1); do
+          _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
+        done
+        ;;
     esac
     open=$after
   done < "$f"
@@ -3015,6 +3221,35 @@ signal_crew_provably_working() {  # <file> ...
   done
   [ -n "$seen" ] || return 1
   return 0
+}
+
+# Quiet-wait proof for a no-verb signal batch: 0 when EVERY listed file is a
+# `.turn-ended` marker whose task's newest status event is a declared wait
+# whose machine-checkable condition still holds (status_declared_wait_check).
+# A `.status` file in the batch means a new status line, which always reaches
+# the supervisor, so it returns 1. Prints one "<task>\t<condition>" line per
+# task so the caller can record what it acknowledged. An empty list returns 1.
+signal_declared_wait_holds() {  # <file> ...
+  local f base dir task seen="" cond out="" last
+  for f in "$@"; do
+    base=${f##*/}
+    dir=${f%/*}
+    [ "$dir" != "$f" ] || dir=.
+    case "$base" in
+      *.turn-ended) task=${base%.turn-ended} ;;
+      *) return 1 ;;
+    esac
+    [ -n "$task" ] || return 1
+    case " $seen " in *" $task "*) continue ;; esac
+    seen="$seen $task"
+    cond=''
+    last=$(last_status_line "$dir/$task.status")
+    status_wait_untagged "$last" && return 1
+    status_declared_wait_check "$last" '' cond || return 1
+    out="$out$task"$'\t'"$cond"$'\n'
+  done
+  [ -n "$seen" ] || return 1
+  printf '%s' "$out"
 }
 
 # 0 (terminal/actionable) if a stale window's latest recognized status event is

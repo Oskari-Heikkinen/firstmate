@@ -1201,6 +1201,12 @@ do_relaunch() {
 
   journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
   RELAUNCH_ACTIVE=0
+  # A confirmed replacement supersedes every blocker the previous agent left
+  # open (fm_status_supersede_blockers owns the evidence event). Best-effort:
+  # the relaunch itself already succeeded, so a failed append only warns.
+  fm_status_supersede_blockers "$STATE" "$STATE/$ID.status" relaunch \
+    "relaunched on $TARGET_HARNESS (from $PRIOR_RECORDED_HARNESS)" \
+    || echo "warning: could not record that the relaunch of $ID superseded its open blockers" >&2
   echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
 }
 

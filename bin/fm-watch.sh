@@ -16,6 +16,14 @@
 # beyond FM_PAUSE_RESURFACE_SECS cannot extend the ordinary recheck cadence, and
 # while the away-posture record (state/.afk-contract) exists an
 # item held for the captain is never rechecked at all, in either posture.
+# Quiet waits: in normal mode, while a task's newest status is a `paused:` wait
+# whose machine-checkable condition still holds (status_declared_wait_check in
+# bin/fm-classify-lib.sh owns the [wait=...] vocabulary), a bare turn-end or a
+# stale pane for that task is acknowledged here and recorded in
+# state/.quiet-wait-acks instead of waking the supervisor. A new status line, a
+# condition that stops holding, an endpoint with no agent, the standing-waits
+# ceiling, and heartbeats still wake it; captain-relevant and check wakes are
+# never touched.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
@@ -1309,7 +1317,7 @@ wait_record() {  # <kind> <subject> <whom> <action> <age-record>
 # `needs-decision` at all, and only in the at-threshold branch - at most once per
 # window per STALE_ESCALATE_SECS, never on an ordinary poll.
 wedge_wait_evidence() {  # <task> -> one wait_record on stdout
-  local task=$1 last until statusf run
+  local task=$1 last statusf run wait_rc
   [ -n "$task" ] || return 1
   statusf="$STATE/$task.status"
   last=$(status_declared_wait_line "$statusf")
@@ -1319,9 +1327,11 @@ wedge_wait_evidence() {  # <task> -> one wait_record on stdout
     return 0
   fi
   if status_is_paused "$last"; then
-    if until=$(status_paused_until "$last"); then
-      [ "$(date +%s)" -lt "$until" ] || return 1
-    fi
+    # A declared condition that stopped holding (a passed until, a finished
+    # heavy job) no longer explains the quiet; a plain pause still does.
+    wait_rc=0
+    status_declared_wait_check "$last" || wait_rc=$?
+    [ "$wait_rc" -ne 1 ] || return 1
     wait_record 'declared wait' 'awaiting external' \
       external 'confirm the wait still holds' "$statusf"
     return 0
@@ -1583,6 +1593,64 @@ busy_turn_over_age() {  # <task>
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
 }
 
+# Record one wake the watcher acknowledged itself because the task's declared
+# wait still holds (status_declared_wait_check in fm-classify-lib.sh owns what
+# holds). state/.quiet-wait-acks is the durable, bounded audit of those
+# self-acknowledgements, one "<epoch>\t<task>\t<turn-ended|stale>\t<condition>"
+# row each; nothing reads it back to decide anything.
+QUIET_WAIT_ACKS_MAX_LINES=${FM_QUIET_WAIT_ACKS_MAX_LINES:-1000}
+quiet_wait_record() {  # <task> <turn-ended|stale> <condition>
+  local log="$STATE/.quiet-wait-acks" lines
+  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" >> "$log" 2>/dev/null || return 0
+  lines=$(wc -l < "$log" 2>/dev/null | tr -d '[:space:]')
+  case "$lines" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$lines" -gt "$QUIET_WAIT_ACKS_MAX_LINES" ]; then
+    tail -n $(( QUIET_WAIT_ACKS_MAX_LINES / 2 )) "$log" > "$log.tmp" 2>/dev/null && mv -f "$log.tmp" "$log" 2>/dev/null
+    rm -f "$log.tmp" 2>/dev/null || true
+  fi
+}
+
+# Quiet-wait proof for a no-verb signal batch (signal_declared_wait_holds): 0
+# after recording each acknowledged turn-end, 1 when the batch must surface.
+signal_quiet_wait_ack() {  # <file> ...
+  local held task cond win key base
+  held=$(signal_declared_wait_holds "$@") || return 1
+  # Prove every lane before recording any acknowledgement in a mixed batch.
+  while IFS=$'\t' read -r task cond; do
+    [ -n "$task" ] || continue
+    [ -f "$STATE/$task.meta" ] || return 1
+    win=$(fm_backend_target_of_meta "$STATE/$task.meta") || return 1
+    [ -n "$win" ] || return 1
+    key=$(window_key "$win")
+    base="declared:$(fm_wake_signal_sig "$STATE/$task.status" || true)"
+    quiet_wait_lane_check "$win" "$key" "$task" "$base" || return 1
+  done <<EOF
+$held
+EOF
+  while IFS=$'\t' read -r task cond; do
+    [ -n "$task" ] || continue
+    quiet_wait_record "$task" turn-ended "$cond"
+  done <<EOF
+$held
+EOF
+  return 0
+}
+
+# Both new quiet acknowledgement paths require this same fresh proof: a live
+# agent and a readable unchanged lane. Never cache liveness across turn ends.
+# First sight initializes the baseline; later changed or unreadable fingerprints
+# return nonzero. The caller decides how to surface the wake, and can use the
+# shared fingerprint outputs and QUIET_WAIT_AGENT_STATE to explain it.
+QUIET_WAIT_AGENT_STATE=
+quiet_wait_lane_check() {  # <window> <window-key> <task> <declaration>
+  QUIET_WAIT_AGENT_STATE=$(fm_backend_agent_state "$(window_backend "$1")" "$1" 2>/dev/null) \
+    || QUIET_WAIT_AGENT_STATE=unreadable
+  [ -n "$QUIET_WAIT_AGENT_STATE" ] || QUIET_WAIT_AGENT_STATE=unreadable
+  [ "$QUIET_WAIT_AGENT_STATE" = alive ] || return 2
+  recheck_baseline "$2" "$3" "$4" once
+  declared_wait_compare "$STATE" "$2" "$3" "$4"
+}
+
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
 # captain-held transfer, and queue a recheck once every
 # PAUSE_RESURFACE_SECS so it cannot rot invisibly. Called on any
@@ -1607,6 +1675,7 @@ busy_turn_over_age() {  # <task>
 # recheck that waited for a warm supervisor still reports how old the wait is.
 handle_paused_stale() {  # <window> <task> <hash>
   local win=$1 task=$2 h=$3 key statusf mtime age detail reason declaration last until now min_age kind=due base
+  local wait_rc=2 wait_cond='' agent_state='' compare_rc=0
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -1621,7 +1690,55 @@ handle_paused_stale() {  # <window> <task> <hash>
   min_age=$PAUSE_RESURFACE_SECS
   declaration="declared:$(fm_wake_signal_sig "$statusf" || true)"
   base=$declaration
-  if status_is_captain_held "$last"; then
+  # Quiet waits. While the away-mode daemon owns triage it classifies declared
+  # waits itself, so this is normal-mode only. A holding machine-checkable
+  # condition acknowledges the stale wake here unless the endpoint has no agent
+  # or the lane reached the standing-waits ceiling; a tagged condition that
+  # stopped holding, or a holding one whose agent is gone, is due at once.
+  if ! afk_present && status_is_paused "$last" && ! status_wait_untagged "$last"; then
+    wait_rc=0
+    status_declared_wait_check "$last" "$now" wait_cond || wait_rc=$?
+    if [ "$wait_rc" -eq 0 ]; then
+      quiet_wait_lane_check "$win" "$key" "$task" "$base" || compare_rc=$?
+      agent_state=$QUIET_WAIT_AGENT_STATE
+    fi
+  fi
+  if [ "$wait_rc" -eq 0 ] && [ "$agent_state" = alive ]; then
+    # Quiet only the periodic reminder, never a changed or unreadable lane.
+    if [ "$compare_rc" -eq 0 ] \
+      && [ "$(recheck_unseen_age "$key" "$task")" -lt "$STANDING_WAITS_CEILING_SECS" ]; then
+      if [ "$(cat "$STATE/.quiet-wait-seen-$key" 2>/dev/null || true)" != "$declaration" ]; then
+        quiet_wait_record "$task" stale "$wait_cond"
+        printf '%s' "$declaration" > "$STATE/.quiet-wait-seen-$key" 2>/dev/null || true
+      fi
+      triage_log "acknowledged stale (declared wait holds: $wait_cond): $win"
+      return 0
+    fi
+    if [ "$compare_rc" -ne 0 ]; then
+      recheck_baseline "$key" "$task" "$base" set "$DECLARED_WAIT_FP"
+      reason="paused @AGE@s, awaiting external - the lane changed since its wait was last shown (${DECLARED_WAIT_CHANGES:-unreadable lane}); confirm the wait still holds"
+      recheck_queue "$win" "$key" "$age" "$mtime" urgent "stale: $win ($reason)" "$declaration"
+      return 0
+    fi
+  fi
+  if [ "$wait_rc" -eq 0 ] && [ "$agent_state" != alive ]; then
+    detail="paused, declared wait holds but endpoint liveness is not proven ($agent_state)"
+    reason="paused @AGE@s, awaiting external ($wait_cond) - the wait still holds but the endpoint has no running agent proven ($agent_state); reconcile the worker, and check for unlanded work before any cleanup"
+    declaration="$declaration:$agent_state"
+    if [ "$(cat "$STATE/.paused-resurfaced-$key" 2>/dev/null || true)" != "$declaration" ]; then
+      kind=until
+      min_age=0
+    fi
+  elif [ "$wait_rc" -eq 1 ] && ! status_wait_untagged "$last"; then
+    status_wait_tag "$last" wait_cond || wait_cond='malformed wait tag'
+    detail="paused, declared wait condition no longer holds"
+    reason="paused @AGE@s, awaiting external - its declared wait condition ($wait_cond) no longer holds; confirm the wait cleared"
+    declaration="$declaration:lapsed"
+    if [ "$(cat "$STATE/.paused-resurfaced-$key" 2>/dev/null || true)" != "$declaration" ]; then
+      kind=until
+      min_age=0
+    fi
+  elif status_is_captain_held "$last"; then
     if afk_record_present; then
       triage_log "absorbed stale (captain-held, never rechecked while the away-posture record exists): $win"
       return 0
@@ -1629,12 +1746,15 @@ handle_paused_stale() {  # <window> <task> <hash>
     kind=held
     detail="captain-held, awaiting the captain"
     reason="captain-held @AGE@s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
-  elif until=$(status_paused_until "$last"); then
+  elif status_wait_untagged "$last" && until=$(status_paused_until "$last"); then
     if [ "$now" -lt "$until" ] && [ "$age" -lt "$PAUSE_RESURFACE_SECS" ]; then
       recheck_baseline "$key" "$task" "$base" once
       triage_log "absorbed stale (paused until $(( until - now ))s from now, declared time not reached): $win"
       return 0
     elif [ "$now" -lt "$until" ]; then
+      # A prose ETA is not positive machine-checkable evidence. Do not let an
+      # unchanged fingerprint extend its periodic four-hour bound.
+      kind=until
       detail="paused, declared time beyond recheck cadence"
       reason="paused @AGE@s, awaiting external - the declared time is beyond the recheck cadence; confirm the wait still holds"
     else
@@ -1949,7 +2069,8 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 
 clear_pause_state() {  # <window-key>
   local key=$1
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key" \
+    "$STATE/.quiet-wait-seen-$key" "$STATE/.quiet-wait-probe-$key"
 }
 
 clear_pause_tracking() {  # <window-key>
@@ -3298,7 +3419,7 @@ EOF
     # bin/fm-supervise-daemon.sh).
     # shellcheck disable=SC2086  # same space-separated status-path list
     if afk_present || [ "$signal_actionable" -eq 0 ] \
-      || { [ -n "$signal_rest" ] \
+      || { [ -n "$signal_rest" ] && ! signal_quiet_wait_ack $signal_rest \
         && ! signal_crew_provably_working $signal_rest && ! signal_turnend_panes_churned $signal_rest; }; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue

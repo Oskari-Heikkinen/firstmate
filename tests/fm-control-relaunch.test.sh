@@ -424,10 +424,19 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   local dir out rc gen_before gen_after
   dir=$(new_case same rl1)
   add_ship_task "$dir" rl1 claude
+  printf 'blocked: old unkeyed blocker\nblocked [key=old-run]: old validation stopped\nneeds-decision [key=api]: choose API\n' > "$dir/home/state/rl1.status"
   gen_before=$("$ROOT/bin/fm-busy-event.sh" arm "$dir/home/state" rl1)
   printf 'busy_gen=%s\n' "$gen_before" >> "$dir/home/state/rl1.meta"
   out=$(run_control "$dir" rl1 relaunch --note "stopped mid-refactor"); rc=$?
   expect_code 0 "$rc" "a same-harness relaunch should succeed"$'\n'"$out"
+  local open
+  open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
+    "$ROOT/bin/fm-classify-lib.sh" "$dir/home/state/rl1.status")
+  assert_not_contains "$open" "old-run" "verified relaunch did not supersede the keyed blocker"
+  assert_not_contains "$open" "old unkeyed blocker" "verified relaunch did not supersede the unkeyed blocker"
+  assert_contains "$open" "api" "verified relaunch closed a needs-decision"
+  assert_grep 'note [supersedes=relaunch] [at=' "$dir/home/state/rl1.status" \
+    "verified relaunch did not record typed closing evidence"
   assert_contains "$out" "relaunched rl1 harness=claude from=claude" "the outcome should name the transition"
   [ "$(meta_field "$dir" rl1 window)" = "fmses:fm-rl1" ] \
     || fail "the endpoint must be reused, not recreated"

@@ -204,7 +204,15 @@ test_harness_invocations_stay_typed() {
   # A slash command must reach the harness's own parser, on any harness.
   dir=$(setup_case slash)
   err="$dir/send.err"
+  printf 'blocked [key=old-run]: earlier validation failed\nneeds-decision [key=api]: choose API\n' > "$dir/home/state/t1.status"
   run_send "$dir" "$err" -- t1 "/no-mistakes" || fail "a slash send should succeed"
+  local open
+  open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
+    "$ROOT/bin/fm-classify-lib.sh" "$dir/home/state/t1.status")
+  assert_not_contains "$open" "old-run" "a delivered validation invocation did not supersede the earlier blocker"
+  assert_contains "$open" "api" "a delivered validation invocation closed a needs-decision"
+  assert_contains "$(cat "$dir/home/state/t1.status")" "[supersedes=validation-run]" \
+    "the validation invocation did not record supersession evidence"
   typed=$(cat "$dir/send.log")
   assert_contains "$typed" "/no-mistakes" "the slash command should be typed literally"
   [ ! -d "$dir/home/state/t1.inbox" ] || fail "a slash command must not be routed to the inbox"

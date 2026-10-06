@@ -130,6 +130,9 @@ state/               runtime records and signals; gitignored
   .hash-* .count-* .stale-* .stale-since-* .churn-since-* .paused-* .wedge-escalations-* .dead-reported-* .writing-* .waiting-* .seen-* .hb-surfaced-* .idle-nudge-* .last-* .heartbeat-streak .secondmate-liveness-tick .secondmate-liveness-*.lock*   watcher internals; never touch
   .secondmate-relaunch-<id> .secondmate-relaunch-bound-<id>   durable relaunch history and parked-bound state; never touch (bin/fm-secondmate-liveness-lib.sh owns the ledger contract)
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
+  .quiet-wait-acks   bounded audit of wakes the watcher acknowledged itself because the task's declared [wait=...] condition still held (epoch, task, turn-ended|stale, condition); written only by bin/fm-watch.sh, never read back to decide anything, safe to delete
+  .quiet-wait-seen-*  watcher internals for quiet waits (per-declaration audit marker); liveness is checked fresh before each quiet acknowledgement; never touch
+  .fm-inherited-config-reread-intake/  a second mate home's quiet config-reread intake queue, one marker per delivered generation; written by the parent's bin/fm-config-inherit-lib.sh, presented once and retired by this home's bin/fm-wake-drain.sh
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
 .no-mistakes/        local validation state and evidence; gitignored

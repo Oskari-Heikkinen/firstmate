@@ -1250,6 +1250,21 @@ else
     fm_send_close_resolved_keys "$RESOLVE_ANSWER_TEXT" || exit 1
     fm_send_feed_resolved_holds "$RESOLVE_ANSWER_TEXT" || exit 1
   fi
+  # A confirmed no-mistakes invocation to a recorded task starts a new
+  # validation run, which supersedes the blockers the task still has open
+  # (fm_status_supersede_blockers in bin/fm-wake-lib.sh owns the evidence
+  # event). Best-effort: the steer itself is delivered, so a failed append
+  # only warns and never invites a resend.
+  if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ]; then
+    case "$RESOLVE_ANSWER_TEXT" in
+    /no-mistakes | "/no-mistakes "* | \$no-mistakes | "\$no-mistakes "*)
+      supersede_id=$(fm_send_id_from_meta "$TARGET_META")
+      fm_status_supersede_blockers "$STATE" "$STATE/$supersede_id.status" validation-run \
+        "validation run requested (${RESOLVE_ANSWER_TEXT%% *})" \
+        || echo "warning: the validation request reached $T, but recording that it superseded $supersede_id's open blockers failed; do not resend" >&2
+      ;;
+    esac
+  fi
   # Submit landed with exact empty. Confirmation only proves the text was
   # accepted; the harness still needs a beat to spin up the
   # turn before its busy footer shows. Pause so an immediate peek catches the

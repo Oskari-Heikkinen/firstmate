@@ -672,6 +672,9 @@ FM_CONFIG_REREAD_MAX_SENT=16
 FM_CONFIG_REREAD_RETRY_ROOT_REL="state/.fm-inherited-config-reread-retry"
 FM_CONFIG_REREAD_MAX_PENDING=16
 FM_CONFIG_REREAD_MAX_QUARANTINE=16
+# The destination home's quiet intake queue (under its state/), read by that
+# home's wake drain; see fm_config_reread_send_pointer.
+FM_CONFIG_REREAD_INTAKE_DIR_NAME=".fm-inherited-config-reread-intake"
 FM_CONFIG_INHERIT_LOCK_REL="state/.fm-inherited-config.lock"
 
 # Framing lines for the config-reread instruction. Defaults/rules only - never
@@ -981,8 +984,22 @@ fm_config_reread_send_failure() {
 }
 
 # fm_config_reread_send_pointer <id> <instruction-path>
+# Deliver one published generation without a chat acknowledgement: queue its
+# path in the destination home's quiet intake queue
+# (state/.fm-inherited-config-reread-intake/, one marker per generation, named
+# by the generation), queue a check wake there, and ring its ordinary fm-send
+# doorbell with an idempotent fire-and-forget instruction. The home's next
+# wake drain presents CONFIG REREAD (bin/fm-wake-drain.sh). Only after the
+# durable wake and delivery, record a typed receipt the parent can see:
+#   note [receipt=config-reread] [at=<epoch>]: config-reread delivered ...
+# appended to this home's status file for the secondmate through the
+# self-announced append (bin/fm-wake-lib.sh), so it wakes nobody and rides
+# along in the parent's next UNREAD STATUS. A failed queue write, wake, or
+# delivery leaves the generation pending for retry; a receipt that cannot be
+# recorded is reported, not retried, because the delivery itself happened.
 fm_config_reread_send_pointer() {
-  local id=$1 instruction_path=$2 pending_path selector out rc send_bin message pending_pointer
+  local id=$1 instruction_path=$2 pending_path pending_pointer intake marker tmp status_file rc
+  local lib_dir dest_state delivery_id out
   pending_path="$instruction_path.pending"
   if [ ! -f "$instruction_path" ] || [ -L "$instruction_path" ]; then
     printf 'CONFIG_REREAD: secondmate %s: send failed: pending instruction file is missing\n' "$id"
@@ -993,30 +1010,61 @@ fm_config_reread_send_pointer() {
     printf 'CONFIG_REREAD: secondmate %s: send failed: pending instruction file is mismatched\n' "$id"
     return 1
   fi
-  selector="fm-$id"
-  send_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-send.sh"
-  if [ ! -x "$send_bin" ]; then
-    fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "fm-send.sh not executable at $send_bin"
-    return 1
-  fi
   if [ -z "${FM_HOME:-}" ]; then
     fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "FM_HOME is not set"
     return 1
   fi
-  message="CONFIG_REREAD: $instruction_path"
-  out=$(FM_HOME="$FM_HOME" \
-    FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-}" \
-    FM_STATE_OVERRIDE="${FM_STATE_OVERRIDE:-}" \
-    FM_SEND_SETTLE="${FM_SEND_SETTLE:-0}" \
-    "$send_bin" "$selector" "$message" 2>&1) && rc=0 || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    rm -f "$pending_path"
+  intake="${instruction_path%/*}/$FM_CONFIG_REREAD_INTAKE_DIR_NAME"
+  marker="$intake/${instruction_path##*/}"
+  if [ -L "$intake" ] || ! mkdir -p "$intake" 2>/dev/null || [ -L "$marker" ] \
+    || ! tmp=$(umask 077; mktemp "$intake/.queue.XXXXXX" 2>/dev/null); then
+    fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "could not open the intake queue at $intake"
+    return 1
+  fi
+  if ! printf '%s\n' "$instruction_path" > "$tmp" || ! mv -f "$tmp" "$marker" 2>/dev/null; then
+    rm -f "$tmp"
+    fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "could not queue the generation at $marker"
+    return 1
+  fi
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  dest_state=${instruction_path%/*}
+  delivery_id=$(fm_inherit_sha256 "$pending_path") || {
+    fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "could not identify the generation"
+    return 1
+  }
+  delivery_id=${delivery_id:0:16}
+  # Make the intake actionable even if a busy or pending composer delays the
+  # doorbell. A receipt must never precede this durable wake.
+  if ! FM_HOME="${dest_state%/*}" FM_STATE_OVERRIDE="$dest_state" \
+    FM_WAKE_QUEUE="$dest_state/.wake-queue" FM_WAKE_QUEUE_LOCK="$dest_state/.wake-queue.lock" \
+    bash -c '. "$1"; fm_wake_append check "$2" "$3"' _ "$lib_dir/fm-wake-lib.sh" \
+      "config-reread-$delivery_id" "config-reread: read the CONFIG REREAD section at this intake"; then
+    fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "could not queue the config reread wake"
+    return 1
+  fi
+  out=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-}" \
+    FM_STATE_OVERRIDE="${FM_STATE_OVERRIDE:-}" FM_SEND_SETTLE="${FM_SEND_SETTLE:-0}" \
+    "$lib_dir/fm-send.sh" "fm-$id" --fire-and-forget "$delivery_id" \
+      "CONFIG_REREAD: $instruction_path; drain the CONFIG REREAD section and apply it; delivery is already acknowledged, so send no chat acknowledgement" 2>&1) || {
+    fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "${out%%$'\n'*}"
+    return 1
+  }
+  rm -f "$pending_path"
+  status_file="${FM_STATE_OVERRIDE:-$FM_HOME/state}/$id.status"
+  # A second mate that has not reported yet has no status file; the receipt
+  # starts it, as any status append would. Only a non-regular file is refused.
+  if [ -L "$status_file" ] || { [ -e "$status_file" ] && [ ! -f "$status_file" ]; }; then
+    printf 'CONFIG_REREAD: secondmate %s: delivered to the intake queue, but no receipt was recorded: %s is not a status file\n' "$id" "$status_file"
     return 0
   fi
-  out=${out%%$'\n'*}
-  [ -n "$out" ] || out="fm-send exited $rc"
-  fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "$out"
-  return 1
+  rc=0
+  ( . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-wake-lib.sh" \
+      && fm_wake_status_append_self_announced "${FM_STATE_OVERRIDE:-$FM_HOME/state}" "$status_file" \
+        "note [receipt=config-reread]: config-reread delivered without a chat turn: ${instruction_path##*/}; the second mate applies it at its next intake" ) || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    printf 'CONFIG_REREAD: secondmate %s: delivered to the intake queue, but the receipt could not be appended to %s\n' "$id" "$status_file"
+  fi
+  return 0
 }
 
 # fm_config_reread_discard_pending <dest-home>

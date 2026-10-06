@@ -323,7 +323,7 @@ family_for_basename() {
     fm-mail.test.sh|fm-mail-check.test.sh|\
     fm-turnend-foreign-owner-arm-fix.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-recovery-loop.test.sh|\
-    fm-watch-triage.test.sh|fm-task-inbox.test.sh|\
+    fm-watch-triage.test.sh|fm-task-inbox.test.sh|fm-watch-quiet-waits.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
       printf '%s\n' watcher-wake-lock
       ;;
@@ -870,6 +870,7 @@ tests/fm-procevent-when.test.sh 63385
 tests/fm-procevent.test.sh 317975
 tests/fm-project-origin.test.sh 264
 tests/fm-public-followup.test.sh 330351
+tests/fm-watch-quiet-waits.test.sh 40000
 tests/fm-quota-array-dispatch-live-e2e.test.sh 49
 tests/fm-quota-choose.test.sh 3258
 tests/fm-remote-backlog-handoff.test.sh 134416
