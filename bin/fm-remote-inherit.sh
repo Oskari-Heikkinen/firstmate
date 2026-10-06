@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Apply one primary-authoritative inherited item inside the selected remote home.
+# Apply one declared inherited item inside the selected remote home.
+# Home-owned routing is seed-only under bin/fm-config-inherit-lib.sh.
 #
 # Usage:
 #   fm-remote-inherit.sh put <allowlisted-relative-path> <bytes> <sha256> <generation> < stdin
 #   fm-remote-inherit.sh absent <allowlisted-relative-path> 0 <empty-sha256> <generation>
 #
 # Only the inherited-material allowlist is writable or removable. Writes are
-# atomic ordinary-file replacements. data/captain-shared.md is read-only and is
+# atomic ordinary-file replacements, except seed-only items never replace or
+# delete an existing destination. data/captain-shared.md is read-only and is
 # quarantined before removal or before replacing bytes not last published here.
 set -eu
 
@@ -160,6 +162,17 @@ case "$COMMAND" in
     ACTUAL_HASH=$(sha256_file "$TMP") || die "cannot hash inherited material"
     [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ] || die "inherited material digest does not match its commitment"
     commit_generation
+    if fm_config_inherit_item_seed_only "${REL#config/}"; then
+      chmod 600 "$TMP" || die "cannot secure inherited material"
+      SEED_RC=0
+      fm_config_inherit_publish_seed "$TMP" "$DEST" || SEED_RC=$?
+      case "$SEED_RC" in
+        0) printf 'pushed: %s\n' "$REL" ;;
+        2) printf 'unchanged: %s\n' "$REL" ;;
+        *) die "cannot seed inherited material" ;;
+      esac
+      exit 0
+    fi
     if [ -f "$DEST" ] && cmp -s "$TMP" "$DEST"; then
       [ "$REL" != data/captain-shared.md ] || chmod 444 "$DEST"
       printf 'unchanged: %s\n' "$REL"
@@ -180,7 +193,7 @@ case "$COMMAND" in
     rm -f -- "$EMPTY"
     [ "$EMPTY_HASH" = "$EXPECTED_HASH" ] || die "absent inheritance digest is not the empty payload"
     commit_generation
-    if [ ! -e "$DEST" ]; then
+    if fm_config_inherit_item_seed_only "${REL#config/}" || [ ! -e "$DEST" ]; then
       printf 'unchanged: %s\n' "$REL"
       exit 0
     fi
