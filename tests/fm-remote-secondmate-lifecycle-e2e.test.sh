@@ -825,8 +825,8 @@ pass "remote inheritance rejects incomplete and superseded payload generations"
 ROUTING_SOURCE="$TMP_ROOT/routing-source"
 ROUTING_DEST="$TMP_ROOT/routing-dest"
 mkdir -p "$ROUTING_SOURCE/config" "$ROUTING_SOURCE/data" "$ROUTING_DEST/config"
-printf -- '- routing - Routing fixture (home: %s; host: remote-mac; root: %s; scope: routing; projects: alpha; added 2026-08-02)\n' \
-  "$ROUTING_DEST" "$REMOTE_ROOT" > "$ROUTING_SOURCE/data/secondmates.md"
+printf -- '- routing - Routing fixture (host: remote-mac; root: %s; home: %s; scope: routing; projects: alpha; added 2026-08-02)\n' \
+  "$REMOTE_ROOT" "$ROUTING_DEST" > "$ROUTING_SOURCE/data/secondmates.md"
 printf '{"default":{"harness":"codex"}}\n' > "$ROUTING_SOURCE/config/crew-dispatch.json"
 printf 'codex\n' > "$ROUTING_SOURCE/config/crew-harness"
 printf 'manual\n' > "$ROUTING_SOURCE/config/backlog-backend"
@@ -846,7 +846,8 @@ for routing_generation in 1 2 3; do
   esac
   FM_CONFIG_OVERRIDE="$ROUTING_SOURCE/config" FM_DATA_OVERRIDE="$ROUTING_SOURCE/data" \
     FM_INHERITABLE_CONFIG='crew-dispatch.json crew-harness backlog-backend' \
-    remote_env "$ROOT/bin/fm-remote-inherit-push.sh" routing "$routing_generation" > "$TMP_ROOT/routing-transfer.out"
+    remote_env "$ROOT/bin/fm-remote-inherit-push.sh" routing "$routing_generation" > "$TMP_ROOT/routing-transfer.out" \
+    || fail "remote routing transfer failed at generation $routing_generation"
   if [ "$routing_generation" = 1 ]; then
     for routing_item in crew-dispatch.json crew-harness backlog-backend; do
       cmp -s "$ROUTING_SOURCE/config/$routing_item" "$ROUTING_DEST/config/$routing_item" \
