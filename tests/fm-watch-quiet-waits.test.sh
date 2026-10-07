@@ -456,6 +456,9 @@ SH
 test_stopped_queue_wait_requires_exact_park_proof() {
   local dir state pid head mode
   head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  # wake-helpers uses an empty code-root fixture to avoid host tangle checks.
+  # This scenario registers a real adapter, so expose it and its libraries.
+  ln -s "$ROOT/bin" "$FM_ROOT_OVERRIDE/bin"
   for mode in valid generation source tag; do
     dir=$(stale_case "queue-park-$mode" "paused: preparing queue")
     state="$dir/state"

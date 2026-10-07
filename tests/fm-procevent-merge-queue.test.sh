@@ -35,6 +35,13 @@ if [ -e "$TMP_ROOT/refuse-teardown" ]; then
   echo "error: teardown refused: worktree has uncommitted changes" >&2
   exit 1
 fi
+# The runner must prove the park incarnation and retire before cleanup,
+# including when its classifier has not been loaded by any status presenter.
+sid=\$(sed -n 's/^park_source=//p' "\$FM_HOME/state/\$1.meta" | tail -1)
+if [ -e "\$FM_HOME/state/procevent/\$sid.source" ]; then
+  echo "error: adopted queue source was still registered at cleanup" >&2
+  exit 1
+fi
 # Real park cancellation inside cleanup must not kill this runner mid-action.
 "$ROOT/bin/fm-park.sh" cancel "\$1" >/dev/null || exit 1
 cp "\$FM_HOME/state/\$1.status" "$TMP_ROOT/status-at-cleanup"
@@ -181,7 +188,10 @@ sid=$(mq "$H" source-id t1 "$HEAD_A")
 pe "$H" reconcile >/dev/null
 printf 'RESULT 2026-09-27T18:02:00Z head=%s outcome=taken main=- note=car-9\n' "$HEAD_A" >> "$Q/queue.log"
 printf 'RESULT 2026-09-27T18:05:00Z head=%s outcome=landed main=%s files=15 identical=15 differ=- dropped=- note=car-9; gate green; evidence .merge-agent/evidence/fbd6f77b\n' "$HEAD_A" "$MAIN" >> "$Q/queue.log"
-wait_for source_gone "$H" "$sid" || fail "the landed watch did not end"
+wait_for source_gone "$H" "$sid" || {
+  pe "$H" list >&2
+  fail "the landed watch did not end"
+}
 wait_for handled_is "$H" 1 || fail "cleanup killed its runner before acknowledgement"
 assert_grep "cleanup-returned t1" "$CALLS" "cancelling the adopted watch during cleanup returns without killing its own runner"
 assert_present "$(compgen -G "$H/state/procevent-inbox/$sid.*.result" | head -1)" "terminal retirement preserves captured evidence"

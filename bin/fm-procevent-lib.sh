@@ -384,6 +384,8 @@ fm_procevent_merge_queue_park_matches() {  # <state> <task> <head> <script>
   source=$(sed -n 's/^park_source=//p' "$meta" | tail -1)
   [ "$condition" = "cmd:$script result-ready $head" ] || return 1
   [ "$source" = "merge-queue-$task-${head:0:8}" ] || return 1
+  # The generic runner loads only wake primitives until it needs this proof.
+  _fm_wake_require_classify || return 1
   [ "$(status_wait_tag "$(status_declared_wait_line "$state/$task.status")")" = "merge-result:$head" ] || return 1
   fm_procevent_merge_queue_registration_matches "$state" "$task" "$head" "$script"
 }
