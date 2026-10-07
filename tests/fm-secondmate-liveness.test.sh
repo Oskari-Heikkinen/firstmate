@@ -421,20 +421,59 @@ test_sweep_relaunches_every_dead_secondmate_despite_task_set_contention() {
   pass "sweep: parallel relaunches of three dead secondmates wait on each other and all succeed"
 }
 
-# hold_spawn_task_set_lock <lock> <seconds> <log> <name>: a live stand-in for a
-# sibling fresh spawn. It takes the task-set lock as soon as it frees, tags it
-# `spawn`, logs that it holds it, keeps it for <seconds>, then releases it.
-hold_spawn_task_set_lock() {
+# Fixture events are iteration-bounded, not tied to the simulated deadlines.
+wait_fixture_file() {  # <file>
+  local i
+  for ((i = 0; i < 300; i++)); do
+    [ ! -f "$1" ] || return 0
+    sleep 0.1
+  done
+  fail "fixture event never arrived: $1"
+}
+
+# A real sibling spawn owns the real lock until the test explicitly releases
+# it. Start it directly (not in command substitution) so $! remains waitable.
+hold_spawn_task_set_lock() {  # <lock> <events> <log> <name>
   (
     # shellcheck source=/dev/null
     . "$ROOT/bin/fm-wake-lib.sh"
-    until fm_lock_try_acquire "$1"; do :; done
+    fm_lock_acquire_wait "$1" || exit 1
+    trap 'fm_lock_release "$1"' EXIT
     fm_lock_set_role "$1" spawn || exit 1
     printf 'holder %s\n' "$4" >> "$3"
-    sleep "$2"
-    fm_lock_release "$1"
+    : > "$2/$4.held"
+    wait_fixture_file "$2/$4.release"
   ) >/dev/null 2>&1 &
-  printf '%s\n' "$!"
+}
+
+# Control only fm-spawn's task-set clock/poll, leaving every lock operation and
+# all other sleeps real. Unsetting Bash's special SECONDS makes it an ordinary
+# variable: loaded runners cannot use up the assertion's logical wait budget.
+# Each poll reports the actual holder; the test chooses the next clock value
+# only after arranging that holder's release or the next holder's acquisition.
+make_task_set_clock() {  # <world>
+  mkdir -p "$1/events"
+  mkfifo "$1/events/poll" "$1/events/continue"
+  cat > "$1/task-set-clock.sh" <<'SH'
+if [ "$0" = "$FM_TEST_SPAWN_SCRIPT" ]; then
+  unset SECONDS
+  SECONDS=0
+  sleep() {
+    if [ "${FUNCNAME[1]:-}" = spawn_acquire_task_set_lock ]; then
+      printf '%s %s\n' "$FM_LOCK_HELD_PID" "$SECONDS" > "$FM_TEST_EVENTS/poll"
+      IFS= read -r -t 30 SECONDS < "$FM_TEST_EVENTS/continue" || exit 1
+    else
+      command sleep "$@"
+    fi
+  }
+fi
+SH
+}
+
+assert_task_set_poll() {  # <fd> <holder-pid> <seconds>
+  local holder tick
+  IFS=' ' read -r -t 30 holder tick <&"$1" || fail "spawn never polled the task-set holder"
+  [ "$holder $tick" = "$2 $3" ] || fail "expected holder/clock '$2 $3', got '$holder $tick'"
 }
 
 run_secondmate_spawn() {  # <fakebin> <home> <call-log> [extra env...]; stderr to stdout
@@ -445,27 +484,48 @@ run_secondmate_spawn() {  # <fakebin> <home> <call-log> [extra env...]; stderr t
 }
 
 # FM_SPAWN_TASK_SET_WAIT bounds each sibling spawn's hold, not the whole queue:
-# two successive live holders that each keep the lock for most of the bound
-# outlast it together, and the queued relaunch must still go through once the
-# second releases. One holder that alone outlasts the bound is still refused.
+# the logical clock spends four seconds behind each real holder (eight total,
+# against a six-second bound). The second holder must be acquired AND observed
+# before its four seconds elapse. One unchanged holder reaching its bound is
+# still refused, without ever releasing the lock to the queued relaunch.
 test_task_set_wait_bound_restarts_for_each_holder() {
-  local w fb tmuxfb log lock a b out rc i=0
+  local w fb tmuxfb log lock a b child out rc poll_fd continue_fd
   w=$(new_world taskset-successive-holders)
   add_sm_home "$w" dead1 firstmate:fm-dead1
   fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
   log="$w/calls.log"; : > "$log"
   lock=$(bash -c '. "$1" && fm_task_set_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state") \
     || fail "could not resolve the task-set lock"
-  a=$(hold_spawn_task_set_lock "$lock" 4 "$log" a)
-  while ! grep -qx 'holder a' "$log" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-  grep -qx 'holder a' "$log" || fail "the first stand-in spawn never held the task-set lock"
-  b=$(hold_spawn_task_set_lock "$lock" 4 "$log" b)
-  rc=0
-  out=$(run_secondmate_spawn "$tmuxfb:$fb" "$w/home" "$log" FM_SPAWN_TASK_SET_WAIT=6) || rc=$?
-  wait "$a" "$b" 2>/dev/null || true
+  make_task_set_clock "$w"
+  exec {poll_fd}<> "$w/events/poll"
+  exec {continue_fd}<> "$w/events/continue"
+  hold_spawn_task_set_lock "$lock" "$w/events" "$log" a; a=$!
+  wait_fixture_file "$w/events/a.held"
+  run_secondmate_spawn "$tmuxfb:$fb" "$w/home" "$log" FM_SPAWN_TASK_SET_WAIT=6 \
+    BASH_ENV="$w/task-set-clock.sh" FM_TEST_EVENTS="$w/events" \
+    FM_TEST_SPAWN_SCRIPT="$ROOT/bin/fm-spawn.sh" > "$w/spawn.out" &
+  child=$!
+  assert_task_set_poll "$poll_fd" "$a" 0
+  printf '4\n' >&"$continue_fd"
+  assert_task_set_poll "$poll_fd" "$a" 4
+  : > "$w/events/a.release"
+  wait "$a" || fail "first holder failed"
+  hold_spawn_task_set_lock "$lock" "$w/events" "$log" b; b=$!
+  wait_fixture_file "$w/events/b.held"
+  printf '4\n' >&"$continue_fd"
+  assert_task_set_poll "$poll_fd" "$b" 4
+  printf '8\n' >&"$continue_fd"
+  assert_task_set_poll "$poll_fd" "$b" 8
+  : > "$w/events/b.release"
+  wait "$b" || fail "second holder failed"
+  printf '8\n' >&"$continue_fd"
+  rc=0; wait "$child" || rc=$?
+  exec {poll_fd}>&- {continue_fd}>&-
+  out=$(cat "$w/spawn.out")
   [ "$rc" -eq 0 ] || fail "the queued relaunch refused behind two successive holders (rc=$rc): $out"
   [ "$(grep -n -e '^holder b$' -e '^new-window' "$log" | head -1 | cut -d: -f2-)" = 'holder b' ] \
     || fail "the relaunch did not queue behind both holders: $(cat "$log")"
+  assert_contains "$(cat "$log")" 'new-window' "the queued relaunch must actually publish after both holders"
 
   w=$(new_world taskset-single-holder)
   add_sm_home "$w" dead1 firstmate:fm-dead1
@@ -473,14 +533,22 @@ test_task_set_wait_bound_restarts_for_each_holder() {
   log="$w/calls.log"; : > "$log"
   lock=$(bash -c '. "$1" && fm_task_set_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state") \
     || fail "could not resolve the task-set lock"
-  a=$(hold_spawn_task_set_lock "$lock" 30 "$log" a)
-  i=0
-  while ! grep -qx 'holder a' "$log" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-  grep -qx 'holder a' "$log" || fail "the stand-in spawn never held the task-set lock"
-  rc=0
-  out=$(run_secondmate_spawn "$tmuxfb:$fb" "$w/home" "$log" FM_SPAWN_TASK_SET_WAIT=2) || rc=$?
-  kill "$a" 2>/dev/null || true
-  wait "$a" 2>/dev/null || true
+  make_task_set_clock "$w"
+  exec {poll_fd}<> "$w/events/poll"
+  exec {continue_fd}<> "$w/events/continue"
+  hold_spawn_task_set_lock "$lock" "$w/events" "$log" a; a=$!
+  wait_fixture_file "$w/events/a.held"
+  run_secondmate_spawn "$tmuxfb:$fb" "$w/home" "$log" FM_SPAWN_TASK_SET_WAIT=2 \
+    BASH_ENV="$w/task-set-clock.sh" FM_TEST_EVENTS="$w/events" \
+    FM_TEST_SPAWN_SCRIPT="$ROOT/bin/fm-spawn.sh" > "$w/spawn.out" &
+  child=$!
+  assert_task_set_poll "$poll_fd" "$a" 0
+  printf '2\n' >&"$continue_fd"
+  rc=0; wait "$child" || rc=$?
+  : > "$w/events/a.release"
+  wait "$a" || fail "single holder failed"
+  exec {poll_fd}>&- {continue_fd}>&-
+  out=$(cat "$w/spawn.out")
   [ "$rc" -ne 0 ] || fail "the relaunch published while one holder kept the task set past the bound"
   assert_contains "$out" "another spawn was still publishing its task after 2s" \
     "a single holder outlasting the bound should be refused as a sibling spawn"
@@ -488,15 +556,46 @@ test_task_set_wait_bound_restarts_for_each_holder() {
   pass "task-set wait: the bound restarts for each successive holder and still refuses one that outlasts it"
 }
 
-# Admission paces secondmate relaunches per home (two a minute by default) and
-# makes the rest wait up to secondmate_wait_max_s. That wait must happen before
-# a spawn takes the task-set lock: a spawn waiting on admission while holding it
-# outlasts its siblings' bounded lock wait and they refuse. The scaled-down
-# admission bound (25s) exceeds the lock wait (15s), as the defaults' 60s pacing
-# wait reaches the 60s lock wait; the empty proc root skips the host signals so
-# only the per-home pace holds the later three relaunches back.
+# Freeze only each admission process's clock. Its existing sleep seam reports
+# a paced wait and blocks until the test advances that process to its 25s
+# bound. All five admissions stay within the same simulated minute, so the
+# later three really hit pacing and the secondmate-only deadline exception.
+make_admission_clock() {  # <world>
+  mkdir -p "$1/events"
+  cat > "$1/admission-clock.sh" <<'SH'
+if [ "$0" = "$FM_TEST_ADMISSION_SCRIPT" ]; then
+  FM_TEST_ADMISSION_NOW=1000
+  date() {
+    if [ "$*" = +%s ]; then
+      printf '%s\n' "$FM_TEST_ADMISSION_NOW"
+    else
+      command date "$@"
+    fi
+  }
+  fm_test_admission_sleep() {
+    : > "$FM_TEST_EVENTS/$BASHPID.waiting"
+    for ((i = 0; i < 300; i++)); do
+      if [ -f "$FM_TEST_EVENTS/advance" ]; then
+        FM_TEST_ADMISSION_NOW=1025
+        return 0
+      fi
+      command sleep 0.1
+    done
+    echo 'fixture admission clock was never advanced' >&2
+    exit 1
+  }
+fi
+SH
+}
+
+# Admission must wait BEFORE acquiring the task-set lock. Wait for the first
+# two relaunches to finish and all three paced admissions to stop in the sleep
+# seam, then prove no task-set lock is held. Advancing to 25s (greater than
+# the 15s lock wait) must still let all five relaunch. Real clocks and jitter
+# used to make the admission deadline and sibling lock holds compete under
+# runner load; this checks their ordering directly instead of betting on it.
 test_sweep_relaunches_five_dead_secondmates_under_admission_pacing() {
-  local w fb tmuxfb log out id n
+  local w fb tmuxfb log out id n child lock i ready
   w=$(new_world sweep-five-dead-paced)
   for id in dead1 dead2 dead3 dead4 dead5; do
     add_sm_home "$w" "$id" "firstmate:fm-$id"
@@ -505,10 +604,33 @@ test_sweep_relaunches_five_dead_secondmates_under_admission_pacing() {
   printf '%s\n' '{"relaunch_per_minute_per_home": 2, "secondmate_wait_max_s": 25}' > "$w/admission-rules.json"
   fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
   log="$w/calls.log"; : > "$log"
-  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" \
+  make_admission_clock "$w"
+  run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" \
     FM_ADMISSION=on FM_ADMISSION_RULES="$w/admission-rules.json" \
     FM_ADMISSION_RUN_DIR="$w/admission" FM_PROC_ROOT_OVERRIDE="$w/proc" \
-    FM_MEM_GUARD_DIR="$w/mem-guard" FM_SPAWN_TASK_SET_WAIT=15)
+    FM_MEM_GUARD_DIR="$w/mem-guard" FM_SPAWN_TASK_SET_WAIT=15 \
+    BASH_ENV="$w/admission-clock.sh" FM_TEST_EVENTS="$w/events" \
+    FM_TEST_ADMISSION_SCRIPT="$ROOT/bin/fm-admission.sh" \
+    FM_ADMISSION_SLEEP=fm_test_admission_sleep > "$w/bootstrap.out" &
+  child=$!
+  ready=0
+  for ((i = 0; i < 300; i++)); do
+    n=0
+    for id in "$w/events/"*.waiting; do [ ! -f "$id" ] || n=$((n + 1)); done
+    if [ "$n" -eq 3 ]; then
+      n=$(grep -l relaunched "$w/home/state/".secondmate-relaunch-* | wc -l | tr -d ' ')
+      if [ "$n" -eq 2 ]; then ready=1; break; fi
+    fi
+    sleep 0.1
+  done
+  [ "$ready" -eq 1 ] || fail "two relaunches and three paced waits never settled: $(cat "$w/bootstrap.out")"
+  [ "$(grep -c '^new-window' "$log")" -eq 2 ] || fail "a paced relaunch published before admission: $(cat "$log")"
+  lock=$(bash -c '. "$1" && fm_task_set_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state") \
+    || fail "could not resolve the task-set lock"
+  [ ! -e "$lock" ] && [ ! -L "$lock" ] || fail "a spawn held the task-set lock while waiting on admission"
+  : > "$w/events/advance"
+  wait "$child" || fail "paced bootstrap failed: $(cat "$w/bootstrap.out")"
+  out=$(cat "$w/bootstrap.out")
   assert_not_contains "$out" "SECONDMATE_LIVENESS" \
     "every paced relaunch should succeed silently"
   n=$(grep -c '^new-window' "$log" || true)
@@ -519,6 +641,10 @@ test_sweep_relaunches_five_dead_secondmates_under_admission_pacing() {
   done
   n=$(grep -c ' relaunch ' "$w/admission/admitted" || true)
   [ "$n" -eq 5 ] || fail "expected five paced admissions in the ledger, saw $n"
+  [ "$(grep -c '^1000 relaunch ' "$w/admission/admitted")" -eq 2 ] \
+    || fail "expected exactly two immediate admissions: $(cat "$w/admission/admitted")"
+  [ "$(grep -c '^1025 relaunch ' "$w/admission/admitted")" -eq 3 ] \
+    || fail "expected three admissions at the secondmate deadline: $(cat "$w/admission/admitted")"
   pass "sweep: five dead secondmates all relaunch while admission paces them"
 }
 
