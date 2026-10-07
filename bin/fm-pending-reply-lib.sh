@@ -292,12 +292,16 @@ fm_pending_reply_set() {  # <record-path> <key> <value>
 # Embed or replace a correlation token after the from-firstmate marker.
 # Idempotent for the same corr; replaces a different leading corr token.
 # Result is assigned to <result-var>.
+# An ack expectation is made visible to the mate as a following expect=ack
+# token, so even a remote mate that cannot read the parent's record knows an
+# uptake receipt (bin/fm-secondmate-report.sh --receipt) is the whole reply.
 # Trailing newlines in the request body are preserved: never strip via bare
 # $(...) on the body (command substitution removes trailing newlines).
-fm_pending_reply_embed_corr() {  # <message> <corr_id> <result-var>
-  local message=$1 corr=$2 result_var=$3 body token marked existing
+fm_pending_reply_embed_corr() {  # <message> <corr_id> <result-var> [expect=answer]
+  local message=$1 corr=$2 result_var=$3 expect=${4:-answer} body token marked existing
   [ -n "$result_var" ] || return 2
   token=$(fm_pending_reply_corr_token "$corr")
+  [ "$expect" != ack ] || token="$token expect=ack"
   fm_message_mark_from_firstmate "$message" marked
   body=${marked#"$FM_FROMFIRST_MARK"}
   # Strip a leading corr=<16hex> plus following blanks (space/tab only).
@@ -308,6 +312,9 @@ fm_pending_reply_embed_corr() {  # <message> <corr_id> <result-var>
       while [ "${body# }" != "$body" ]; do body=${body# }; done
       while [ "${body#$'\t'}" != "$body" ]; do body=${body#$'\t'}; done
       ;;
+  esac
+  case "$body" in
+    'expect=ack '*) body=${body#expect=ack }; while [ "${body# }" != "$body" ]; do body=${body# }; done ;;
   esac
   printf -v "$result_var" '%s' "${FM_FROMFIRST_MARK}${token} ${body}"
 }
@@ -601,13 +608,25 @@ fm_pending_reply_discard_undelivered() {  # <state-dir> <corr_id>
   rm -f "$rec"
 }
 
-# 0 if a status line is a correlated acknowledgement for <corr_id>.
-# Accepts short status replies and status lines that point at a document.
-# Unrelated verbs without the token never match. Stale/wrong corr never match.
-# The parent's own pending-reply-missed escalation line must not self-resolve:
-# it names the request with pending-reply-id= rather than corr=.
-fm_pending_reply_line_resolves() {  # <line> <corr_id>
-  local line=$1 corr=$2
+# Explicit receipts have a fixed payload, never free-form judgement. They
+# acknowledge uptake only, and cannot discharge an answer expectation even
+# when emitted on a remote home that cannot read the parent's pending record.
+fm_pending_reply_is_receipt() {  # <line>
+  local untimed re='^note \[receipt=ack\]( \[corr=[a-f0-9]{16}\])+: request received \(via-helper\)$'
+  _fm_status_untimed "$1" untimed
+  [[ "$untimed" =~ $re ]]
+}
+
+# 0 if a line acknowledges this correlation and expectation. Ordinary replies
+# retain the existing status/document contract; typed uptake receipts require
+# expect=ack. The parent's pending-reply-missed escalation must not self-resolve.
+fm_pending_reply_line_resolves() {  # <line> <corr_id> [expect=answer]
+  local line=$1 corr=$2 expect=${3:-answer}
+  case "$line" in
+    *'[receipt='*)
+      fm_pending_reply_is_receipt "$line" && [ "$expect" = ack ] || return 1
+      ;;
+  esac
   [ -n "$line" ] && [ -n "$corr" ] || return 1
   case "$line" in
     *pending-reply-missed*) return 1 ;;
@@ -627,10 +646,11 @@ fm_pending_reply_line_acks() {  # <state-dir> <task_id> <line>
   [ -n "$task_id" ] && [ -n "$line" ] || return 1
   status_line_verb "$line" verb
   [ "$verb" = note ] || return 1
+  case "$line" in *'[receipt='*) fm_pending_reply_is_receipt "$line" || return 1 ;; esac
   corrs=$(printf '%s' "$line" | grep -oE "$FM_PENDING_REPLY_CORR_RE" 2>/dev/null | cut -d= -f2- | tr 'A-F' 'a-f')
   [ -n "$corrs" ] || return 1
   for corr in $corrs; do
-    fm_pending_reply_line_resolves "$line" "$corr" || return 1
+    fm_pending_reply_line_resolves "$line" "$corr" ack || return 1
     rec=$(fm_pending_reply_path "$state" "$corr")
     [ -f "$rec" ] && [ ! -L "$rec" ] || return 1
     [ "$(fm_pending_reply_get "$rec" task_id)" = "$task_id" ] || return 1
@@ -639,12 +659,12 @@ fm_pending_reply_line_acks() {  # <state-dir> <task_id> <line>
 }
 
 # Scan a status file for a correlated resolve. Prints the matching line or empty.
-fm_pending_reply_find_resolve_line() {  # <status-file> <corr_id>
-  local status_file=$1 corr=$2 line
+fm_pending_reply_find_resolve_line() {  # <status-file> <corr_id> [expect=answer]
+  local status_file=$1 corr=$2 expect=${3:-answer} line
   [ -f "$status_file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
-    if fm_pending_reply_line_resolves "$line" "$corr"; then
+    if fm_pending_reply_line_resolves "$line" "$corr" "$expect"; then
       printf '%s' "$line"
       return 0
     fi
@@ -737,7 +757,7 @@ _fm_pending_reply_try_resolve_locked() {  # <state-dir> <corr_id> [status-file-o
     previous=$(fm_pending_reply_get "$rec" parent_status_scan_signature)
     [ "$signature" != "$previous" ] || return 1
   fi
-  line=$(fm_pending_reply_find_resolve_line "$status_file" "$corr")
+  line=$(fm_pending_reply_find_resolve_line "$status_file" "$corr" "$(fm_pending_reply_expect_of "$rec")")
   if [ -z "$line" ]; then
     if [ -z "$status_override" ] && [ "$unconfirmed" = 0 ]; then
       fm_pending_reply_set "$rec" parent_status_scan_signature "$signature" || return 1
@@ -975,7 +995,7 @@ fm_pending_reply_recovery_message() {  # <record-path>
   summary=$(fm_pending_reply_get "$rec" request_summary)
   token=$(fm_pending_reply_corr_token "$corr")
   msg="REPOST REQUIRED: previous marked request had no correlated parent report. Reply on the parent status channel including ${token}. Original request: ${summary}"
-  fm_pending_reply_embed_corr "$msg" "$corr" msg
+  fm_pending_reply_embed_corr "$msg" "$corr" msg "$(fm_pending_reply_expect_of "$rec")"
   printf '%s' "$msg"
 }
 
@@ -1376,7 +1396,7 @@ fm_pending_reply_detect_wrong_home() {  # <state-dir> <corr_id> <secondmate-home
     line_no=0
     while IFS= read -r line || [ -n "$line" ]; do
       line_no=$((line_no + 1))
-      fm_pending_reply_line_resolves "$line" "$corr" || continue
+      fm_pending_reply_line_resolves "$line" "$corr" "$(fm_pending_reply_expect_of "$rec")" || continue
       sighting_id="$sighting_base:$line_no"
       [ -n "$first" ] || first=$sighting_id
       case ",$sightings," in
@@ -1417,7 +1437,7 @@ fm_pending_reply_restatement_copy_same_basename() {  # <state-dir> <corr_id> <se
   stranded="$sm_home/state/${task_id}.status"
   [ -f "$stranded" ] && [ ! -L "$stranded" ] || return 1
   [ "$stranded" != "$parent_status" ] || return 1
-  line=$(fm_pending_reply_find_resolve_line "$stranded" "$corr")
+  line=$(fm_pending_reply_find_resolve_line "$stranded" "$corr" "$(fm_pending_reply_expect_of "$rec")")
   [ -n "$line" ] || return 1
   # Deliberately undirected: bin/fm-parent-channel-lib.sh is expanded once at
   # the fm_pending_reply_detect_wrong_home site; each directed site would

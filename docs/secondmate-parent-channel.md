@@ -30,12 +30,15 @@ Every captain-facing outcome that leaves durable evidence in the mate home is pu
 | Child leaving the home | its final ledger line | `bin/fm-teardown.sh`, which refuses to remove the child while that line is undelivered |
 | Child ended silently | terminal current state with a silent ledger | the existing inactive-outcome scan in `bin/fm-inactive-reconcile.sh` |
 | Answer to a marked request | a correlated line guarded by the pending-reply record | `bin/fm-secondmate-report.sh`, which resolves the parent channel from the mate home; the pending-reply guard repairs a line stranded in the local mate's same-basename status file before recovery or escalation |
+| Typed milestone quarantined after its consumer relaunched | the record in the task inbox's `quarantine/` | `fm_task_inbox_quarantine_stale` in `bin/fm-task-inbox-lib.sh`, as one keyed `failed:` line; a failed notice is named in the mate's local wake instead of blocking the quarantine |
 | An outcome that exists only in the mate's reasoning | none | the charter and the `AGENTS.md` carve-outs only |
 
 The ledger delivery reads files, plus a local git reachability check on a ship `done:` with no delivery record yet (`bin/fm-dod-lib.sh`): it calls no harness, no forge, and no current-state reader, so it is identical for every harness and runtime backend.
 Each delivery is keyed with the first eight hexadecimal characters of its receipt fingerprint and uses the shared append contract above, and the ledger path reuses the inactive scan's per-fingerprint receipts, so a replayed poll or restart cannot deliver an event twice while a genuinely new terminal event is delivered again.
 A duplicate line is harmless and a missed one is not, so the mate may still append its own judgement about a delivered outcome, and the parent reads the script's line as the fact and the mate's line as commentary.
-For marked replies, the report helper accepts no caller-selected destination and uses the channel resolver for both local and remote homes; its script header owns the exact invocation contract.
+For marked replies, the report helper accepts no caller-selected destination and uses the channel resolver for both local and remote homes; its script header owns the exact invocation contract, including the explicit receipt operation for acknowledgement-only requests.
+An acknowledgement-only request shows the mate an `expect=ack` token after its correlation token, so a remote mate knows a receipt suffices without reading the parent's records.
+Typed uptake receipts cannot settle an answer expectation; the parent still needs the substantive reply.
 The pending-reply guard may restate only the correlated line from a local mate's `state/<mate-id>.status` onto the parent channel, which repairs the common parent-home versus mate-home mixup without accepting arbitrary mate-home sightings as acknowledgement.
 Other correlated mate-home status lines remain wrong-home evidence, while a remote home's routed `state/parent-replies.status` is already the parent channel and is not classified as wrong-home.
 A missed-reply escalation includes the complete first sighting path and line number in readable shell-escaped form.
@@ -59,6 +62,13 @@ A span that mixes any of these with anything else wakes the parent, so an uncorr
 `bin/fm-classify-lib.sh` owns which lines are routine and which outcome lines repeat, `bin/fm-pending-reply-lib.sh` owns what an acknowledgement is, and `bin/fm-watch.sh` applies both on every poll.
 The rule reads only the parent's own status log and pending-reply records, so it is identical for every harness and runtime backend.
 
+## Direct milestone delivery
+
+`bin/fm-task-inbox.sh` owns registration, event schemas, identity checks and receipts for direct batch-readiness and result-receipt delivery to commissioned local consumers.
+It extends the existing steering inbox rather than introducing another status bus or courier turn, and the ordinary watcher retains responsibility for unread-message escalation.
+Owner emitters supply evidence with all limitations and refusals intact; delivery never produces a review verdict or grants new authority.
+Its header and `--help` describe supported routes, independent-consumer exclusions, retry and home-move boundaries.
+
 ## What is deliberately not built
 
 - No mirror of the mate's chat: chat can mix outcomes with other conversation, so choosing which sentence is an outcome would itself be model behavior, and every harness exposes turn text differently.
@@ -73,7 +83,8 @@ The rule reads only the parent's own status log and pending-reply records, so it
 `tests/fm-pr-merge.test.sh` covers the PR-ready line at registration and the merge outcome's upward report.
 `tests/fm-teardown.test.sh` covers teardown delivering a child's final line and refusing when the channel cannot be written.
 `tests/fm-brief.test.sh` pins the charter's channel rule.
-`tests/fm-pending-reply.test.sh` covers helper-selected local routing, remote-channel classification, same-basename restatement before false escalation, readable wrong-home diagnostics, and the rule that arbitrary mate-home sightings never acknowledge a reply.
+`tests/fm-pending-reply.test.sh` covers helper-selected local routing, explicit multi-correlation receipts, answer/ack separation, remote-channel classification, same-basename restatement before false escalation, readable wrong-home diagnostics, and the rule that arbitrary mate-home sightings never acknowledge a reply.
+`tests/fm-task-inbox.test.sh` covers direct milestone delivery, evidence integrity, generation checks, reviewer claims and exclusions, retries, home moves and consumption receipts.
 `tests/fm-watch-triage.test.sh` covers the routine lines above against a real watcher: an absorbed `working:` line that rides along at the next wake, an absorbed acknowledgement, the answer, `done:`, and mixed spans that still wake, and a repeated outcome absorbed only when nothing intervened.
 `tests/fm-pending-reply.test.sh` and `tests/fm-send-secondmate-marker.test.sh` cover the recorded acknowledgement kind, and `tests/fm-wake-drain-unread-status.test.sh` covers the ride-along presentation.
 

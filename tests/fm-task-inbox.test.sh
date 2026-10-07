@@ -798,6 +798,232 @@ test_watcher_dead_pane_ignores_stale_busy_state() {
   pass "watcher: dead-pane recovery overrides stale busy state"
 }
 
+test_watcher_refuses_stale_milestone_generation() {
+  local dir state rec steer log out pid
+  dir=$(setup_watch_case stale-milestone); state="$dir/state"
+  printf 'spawn_gen=current\n' >> "$state/t1.meta"
+  log="$dir/send.log"; out="$dir/watch.out"; : > "$log"
+  rec=$(inbox_lib "$state" fm_task_inbox_write_idempotent "$state" t1 'old milestone' '' old)
+  [ "$(inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" = "stale-generation $rec" ] \
+    || fail 'stale generation waited for grace or retried delivery'
+  watch_bg "$state" "$dir/fakebin" "$out" FM_SEND_LOG="$log"
+  pid=$!
+  wait_watcher_gone "$pid" || { kill "$pid" 2>/dev/null; fail 'stale milestone did not wake supervisor'; }
+  [ ! -s "$log" ] || fail 'stale milestone rang replacement worker'
+  [ "$(grep -c "quarantined in $state/t1.inbox/quarantine/" "$state/.wake-queue")" = 1 ] \
+    || fail 'generation failure did not wake supervision exactly once naming the quarantine'
+  [ ! -e "$rec" ] && [ ! -e "$state/t1.inbox/handled/${rec##*/}" ] || fail 'stale milestone stayed live or was handled'
+  [ -f "$state/t1.inbox/quarantine/${rec##*/}" ] || fail 'stale milestone evidence was discarded'
+  steer=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 'ordinary steer')
+  [ "${steer##*/}" != "${rec##*/}" ] || fail 'a quarantined sequence was reissued'
+  age_path "$steer"
+  [ "$(inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" = "ring $steer" ] \
+    || fail 'a quarantined milestone silenced the ladder for a later steer'
+  pass 'a queued milestone from an old generation is quarantined with one wake and leaves later steers on the ladder'
+}
+
+test_milestone_relaunch_quarantine_and_takeover() {
+  local home cli reg event key out base
+  home="$TMP_ROOT/milestone-relaunch"; cli="$ROOT/bin/fm-task-inbox.sh"
+  mkdir -p "$home/state" "$home/data"
+  printf 'spawn_gen=author-v1\n' > "$home/state/author.meta"
+  printf 'spawn_gen=review-v1\n' > "$home/state/reviewer.meta"
+  printf 'spawn_gen=other-v1\n' > "$home/state/other.meta"
+  reg="$home/v1.json"; event="$home/event.json"
+  jq -n '{schema:"fm-task-milestone-route.v1",kind:"result-receipt",request:"request-1",batch:"batch-1",
+    producer:{home:"main",task:"author",generation:"author-v1"},
+    consumer:{home:"main",task:"reviewer",generation:"review-v1"},
+    independent:true,exclusions:[]}' > "$reg"
+  key=$(printf 'PASS with limitation\n' | shasum -a 256 | awk '{print $1}')
+  jq -n --arg key "$key" '{schema:"fm-task-milestone.v1",kind:"result-receipt",request:"request-1",batch:"batch-1",
+    producer:{home:"main",task:"author",generation:"author-v1"}, evidence_sha256:$key,
+    payload:"PASS with limitation\n"}' > "$event"
+  FM_HOME="$home" "$cli" register v1 "$reg" >/dev/null || fail 'v1 registration failed'
+  out=$(FM_HOME="$home" "$cli" deliver v1 "$event") || fail 'v1 delivery failed'
+  base=$(printf '%s' "$out" | jq -r .record)
+  FM_HOME="$home" "$cli" register same-gen "$reg" >/dev/null || fail 'same-generation registration failed'
+  if FM_HOME="$home" "$cli" deliver same-gen "$event" >/dev/null 2>&1; then
+    fail 'a second route took over while the claiming generation was still current'
+  fi
+  printf 'spawn_gen=review-v2\n' > "$home/state/reviewer.meta"
+  inbox_lib "$home/state" fm_task_inbox_quarantine_stale "$home/state" reviewer sess:fm-reviewer >/dev/null \
+    || fail 'relaunch quarantine failed'
+  [ ! -e "$home/state/reviewer.inbox/$base" ] || fail 'relaunched worker can still see the stale receipt'
+  out=$(FM_HOME="$home" "$cli" receipt v1 "$key") || fail 'quarantined receipt lookup failed'
+  [ "$(printf '%s' "$out" | jq -r .outcome)" = quarantined ] || fail 'stale receipt reported as consumed or enqueued'
+  if FM_HOME="$home" "$cli" deliver v1 "$event" >/dev/null 2>&1; then fail 'stale route replayed approval'; fi
+  jq '.consumer={home:"main",task:"other",generation:"other-v1"}' "$reg" > "$home/other.json"
+  FM_HOME="$home" "$cli" register other "$home/other.json" >/dev/null || fail 'other registration failed'
+  if FM_HOME="$home" "$cli" deliver other "$event" >/dev/null 2>&1; then fail 'a different reviewer took over the claim'; fi
+  jq '.consumer.generation="review-v2"' "$reg" > "$home/v2.json"
+  FM_HOME="$home" "$cli" register v2 "$home/v2.json" >/dev/null || fail 'v2 registration failed'
+  out=$(FM_HOME="$home" "$cli" deliver v2 "$event") || fail 'relaunched reviewer could not re-receive its evidence'
+  [ "$(printf '%s' "$out" | jq -Sc .takeover)" = \
+    '{"from_generation":"review-v1","from_route":"v1","to_generation":"review-v2","to_route":"v2"}' ] \
+    || fail "takeover was not recorded in the receipt: $out"
+  [ "$(printf '%s' "$out" | jq -r .outcome)" = enqueued ] || fail 'takeover delivery was not enqueued'
+  out=$(FM_HOME="$home" "$cli" deliver v2 "$event") || fail 'takeover retry failed'
+  [ "$(printf '%s' "$out" | jq -r .takeover.from_route)" = v1 ] || fail 'takeover record lost on retry'
+  if FM_HOME="$home" "$cli" deliver other "$event" >/dev/null 2>&1; then fail 'a different reviewer claimed after takeover'; fi
+  pass 'relaunch quarantines stale receipts; only the same reviewer task takes over its claim after its generation retires'
+}
+
+test_milestone_cli_requires_explicit_home() {
+  local scratch="$TMP_ROOT/implicit-home" err
+  mkdir -p "$scratch"
+  cp -R "$ROOT/bin" "$scratch/bin"
+  if err=$(env -u FM_HOME -u FM_ROOT -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u STATE \
+      "$scratch/bin/fm-task-inbox.sh" receipt r1 abc 2>&1); then
+    fail 'receipt ran without an explicit FM_HOME'
+  fi
+  printf '%s\n' "$err" | grep -Fq 'FM_HOME with an existing state directory is required' \
+    || fail "missing FM_HOME was not refused explicitly: $err"
+  [ ! -e "$scratch/state" ] || fail 'missing FM_HOME wrote routing state into the checkout home'
+  mkdir -p "$scratch/empty-home"
+  if FM_HOME="$scratch/empty-home" "$scratch/bin/fm-task-inbox.sh" receipt r1 abc >/dev/null 2>&1; then
+    fail 'receipt ran against a home without a state directory'
+  fi
+  [ ! -e "$scratch/empty-home/state" ] || fail 'a home without state was silently initialized'
+  pass 'milestone CLI refuses an implicit or uninitialized FM_HOME before writing anything'
+}
+
+test_secondmate_quarantine_wakes_registering_parent() {
+  local home mate cli key out base line
+  home="$TMP_ROOT/milestone-mate-relaunch"; mate="$home/mate"; cli="$ROOT/bin/fm-task-inbox.sh"
+  mkdir -p "$home/state" "$home/data" "$mate/state"
+  printf 'research\n' > "$mate/.fm-secondmate-home"
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$home" > "$mate/.fm-secondmate-parent"
+  printf -- '- research - research (home: %s; scope: research; projects: test; added 2026-09-27)\n' "$mate" > "$home/data/secondmates.md"
+  printf 'spawn_gen=author-v1\n' > "$home/state/author.meta"
+  printf 'spawn_gen=review-v1\n' > "$mate/state/reviewer.meta"
+  jq -n '{schema:"fm-task-milestone-route.v1",kind:"result-receipt",request:"request-1",batch:"batch-1",
+    producer:{home:"main",task:"author",generation:"author-v1"},
+    consumer:{home:"secondmate:research",task:"reviewer",generation:"review-v1"},
+    independent:true,exclusions:[]}' > "$home/route.json"
+  key=$(printf 'PASS with limitation\n' | shasum -a 256 | awk '{print $1}')
+  jq -n --arg key "$key" '{schema:"fm-task-milestone.v1",kind:"result-receipt",request:"request-1",batch:"batch-1",
+    producer:{home:"main",task:"author",generation:"author-v1"}, evidence_sha256:$key,
+    payload:"PASS with limitation\n"}' > "$home/event.json"
+  FM_HOME="$home" "$cli" register v1 "$home/route.json" >/dev/null || fail 'cross-home registration failed'
+  out=$(FM_HOME="$home" "$cli" deliver v1 "$home/event.json") || fail 'cross-home delivery failed'
+  base=$(printf '%s' "$out" | jq -r .record)
+  printf 'spawn_gen=review-v2\n' > "$mate/state/reviewer.meta"
+  FM_HOME="$mate" inbox_lib "$mate/state" fm_task_inbox_quarantine_stale "$mate/state" reviewer sess:fm-reviewer >/dev/null \
+    || fail 'secondmate relaunch quarantine failed'
+  [ -f "$mate/state/reviewer.inbox/quarantine/$base" ] || fail 'stale cross-home receipt was not quarantined'
+  [ -s "$mate/state/.wake-queue" ] || fail 'the local stale-generation wake was dropped'
+  [ -f "$home/state/research.status" ] || fail 'the registering parent received no quarantine notice'
+  [ "$(wc -l < "$home/state/research.status")" -eq 1 ] || fail 'the parent received more than one quarantine notice'
+  line=$(cat "$home/state/research.status")
+  case "$line" in *"$base"*"re-register or redeliver explicitly"*) ;; *) fail "parent notice omits the record or the action: $line" ;; esac
+  bash -c '. "$1/bin/fm-classify-lib.sh"; status_is_captain_relevant "$2" && status_span_has_actionable "$3" 0' \
+    _ "$ROOT" "$line" "$home/state/research.status" || fail "parent notice would not wake the parent: $line"
+  jq '.consumer.generation="review-v2"' "$home/route.json" > "$home/v2.json"
+  FM_HOME="$home" "$cli" register v2 "$home/v2.json" >/dev/null || fail 'v2 registration failed'
+  out=$(FM_HOME="$home" "$cli" deliver v2 "$home/event.json") || fail 'v2 delivery failed'
+  base=$(printf '%s' "$out" | jq -r .record)
+  printf 'spawn_gen=review-v3\n' > "$mate/state/reviewer.meta"
+  rm "$mate/.fm-secondmate-parent"
+  : > "$mate/state/.wake-queue"
+  out=$(FM_HOME="$mate" inbox_lib "$mate/state" fm_task_inbox_quarantine_stale "$mate/state" reviewer sess:fm-reviewer) \
+    || fail 'a missing parent binding blocked the quarantine'
+  [ -f "$mate/state/reviewer.inbox/quarantine/$base" ] || fail 'a missing parent binding left the stale receipt live'
+  case "$out" in *"$base"*"did not reach the parent channel (rc=3)"*) ;; *) fail "local reason omits the failed parent notice: $out" ;; esac
+  grep -Fq 'did not reach the parent channel (rc=3)' "$mate/state/.wake-queue" \
+    || fail 'the local wake does not name the failed parent notice'
+  pass 'a secondmate relaunch quarantine of a cross-home milestone wakes the registering parent once, and a broken parent binding never blocks it'
+}
+
+test_typed_milestone_delivery() {
+  local home mate moved cli reg event key out base body p1 p2
+  home="$TMP_ROOT/milestones"; mate="$home/mate"; moved="$home/moved"
+  cli="$ROOT/bin/fm-task-inbox.sh"
+  "$cli" --help | grep -Fq 'fm-task-milestone.v1' || fail 'help omitted the event schema'
+  if "$cli" --help | grep -Fq 'shellcheck'; then fail 'help leaked body comments beyond the header'; fi
+  mkdir -p "$home/state" "$home/data" "$mate/state"
+  printf 'research\n' > "$mate/.fm-secondmate-home"
+  printf -- '- research - research (home: %s; scope: research; projects: test; added 2026-09-27)\n' "$mate" > "$home/data/secondmates.md"
+  printf 'spawn_gen=author-v1\n' > "$home/state/author.meta"
+  printf 'spawn_gen=review-v1\n' > "$mate/state/reviewer.meta"
+  printf 'spawn_gen=other-v1\n' > "$mate/state/other.meta"
+  reg="$home/route.json"; event="$home/event.json"
+  jq -n '{schema:"fm-task-milestone-route.v1",kind:"batch-ready",request:"request-1",batch:"batch-1",
+    producer:{home:"main",task:"author",generation:"author-v1"},
+    consumer:{home:"secondmate:research",task:"reviewer",generation:"review-v1"},
+    independent:true,exclusions:[{home:"main",task:"author"}]}' > "$reg"
+  key=$(printf 'verified subset only\nREFUSED: missing geometry\n' | shasum -a 256 | awk '{print $1}')
+  jq -n --arg key "$key" '{schema:"fm-task-milestone.v1",kind:"batch-ready",request:"request-1",batch:"batch-1",
+    producer:{home:"main",task:"author",generation:"author-v1"}, evidence_sha256:$key,
+    payload:"verified subset only\nREFUSED: missing geometry\n"}' > "$event"
+  FM_HOME="$home" "$cli" register ready "$reg" >/dev/null || fail 'milestone registration failed'
+  FM_HOME="$home" "$cli" register ready "$reg" >/dev/null || fail 'registration retry failed'
+  out=$(FM_HOME="$home" "$cli" deliver ready "$event") || fail 'milestone delivery failed'
+  [ "$(printf '%s' "$out" | jq -r .outcome)" = enqueued ] || fail 'delivery claimed acceptance or consumption'
+  base=$(printf '%s' "$out" | jq -r .record)
+  [ "$(inbox_lib "$mate/state" fm_task_inbox_generation "$mate/state/reviewer.inbox/$base")" = review-v1 ] \
+    || fail 'milestone inbox record lost generation binding'
+  body=$(inbox_lib "$mate/state" fm_task_inbox_body "$mate/state/reviewer.inbox/$base")
+  [ "$(printf '%s' "$body" | jq -Sc .payload)" = "$(jq -Sc .payload "$event")" ] || fail 'receipt lost limitations/refusals'
+  [ ! -e "$home/state/.wake-queue" ] || fail 'routine delivery woke the supervisor'
+  FM_HOME="$home" "$cli" deliver ready "$event" >/dev/null || fail 'delivery retry failed'
+  [ "$(find "$mate/state/reviewer.inbox" -name '*.msg' | wc -l | tr -d ' ')" = 1 ] || fail 'replay duplicated the payload'
+  # Simulate the exact crash boundary: enqueue succeeded, sequence publication
+  # did not. Recovery uses the existing inbox dedup, including handled records.
+  rm "$home/state/task-inbox-routes/ready/$key.sequence"
+  mv "$mate/state/reviewer.inbox/$base" "$mate/state/reviewer.inbox/handled/"
+  out=$(FM_HOME="$home" "$cli" deliver ready "$event") || fail 'post-enqueue crash recovery failed'
+  [ "$(printf '%s' "$out" | jq -r .outcome)" = consumed ] || fail 'handled move was not recorded as consumption'
+  # Resolve the role at its current home, not a captured path; carry the inbox
+  # and metadata just as a home move must, with no new worker or duplicate.
+  mv "$mate" "$moved"
+  printf -- '- research - research (home: %s; scope: research; projects: test; added 2026-09-27)\n' "$moved" > "$home/data/secondmates.md"
+  out=$(FM_HOME="$home" "$cli" deliver ready "$event") || fail 'delivery did not follow registered home move'
+  [ "$(printf '%s' "$out" | jq -r .outcome)" = consumed ] || fail 'home move replayed the payload'
+  [ ! -e "$mate" ] || fail 'delivery recreated the old home'
+
+  jq '.consumer={home:"secondmate:research",task:"other",generation:"other-v1"}' "$reg" > "$home/other.json"
+  FM_HOME="$home" "$cli" register competing "$home/other.json" >/dev/null || fail 'other registration failed'
+  if FM_HOME="$home" "$cli" deliver competing "$event" >/dev/null 2>&1; then fail 'two reviewers claimed the same evidence'; fi
+  jq '.consumer=.producer' "$reg" > "$home/self.json"
+  if FM_HOME="$home" "$cli" register self "$home/self.json" >/dev/null 2>&1; then fail 'author became independent reviewer'; fi
+  jq '.independent=false | .exclusions=[(.consumer|{home,task})]' "$reg" > "$home/excluded.json"
+  if FM_HOME="$home" "$cli" register excluded "$home/excluded.json" >/dev/null 2>&1; then fail 'excluded reviewer registered'; fi
+  jq '.batch="wrong-batch"' "$event" > "$home/bad.json"
+  if FM_HOME="$home" "$cli" deliver ready "$home/bad.json" >/dev/null 2>&1; then fail 'wrong batch was routed'; fi
+  jq '.payload="silently lost refusal"' "$event" > "$home/bad.json"
+  if FM_HOME="$home" "$cli" deliver ready "$home/bad.json" >/dev/null 2>&1; then fail 'bad digest was routed'; fi
+  printf 'spawn_gen=review-v2\n' > "$moved/state/reviewer.meta"
+  if FM_HOME="$home" "$cli" deliver ready "$event" >/dev/null 2>&1; then fail 'stale generation replayed approval'; fi
+  printf 'spawn_gen=review-v1\n' > "$moved/state/reviewer.meta"
+
+  # Result receipts use the same direct inbox path and independent delivery keys.
+  jq '.kind="result-receipt" | .independent=false' "$reg" > "$home/result-route.json"
+  jq '.kind="result-receipt"' "$event" > "$home/result.json"
+  FM_HOME="$home" "$cli" register result "$home/result-route.json" >/dev/null || fail 'result registration failed'
+  FM_HOME="$home" "$cli" deliver result "$home/result.json" > "$home/a.out" 2>"$home/a.err" & p1=$!
+  FM_HOME="$home" "$cli" deliver result "$home/result.json" > "$home/b.out" 2>"$home/b.err" & p2=$!
+  # Contending callers may refuse without mutation; a retry must converge.
+  wait "$p1" || true; wait "$p2" || true
+  out=$(FM_HOME="$home" "$cli" deliver result "$home/result.json") || fail 'concurrent delivery retry failed'
+  [ "$(find "$moved/state/reviewer.inbox" -name '*.msg' | wc -l | tr -d ' ')" = 2 ] || fail 'concurrent delivery duplicated payload'
+  base=$(printf '%s' "$out" | jq -r .record)
+  rm "$moved/state/reviewer.inbox/$base"
+  if FM_HOME="$home" "$cli" deliver result "$home/result.json" >/dev/null 2>&1; then fail 'lost confirmed delivery was blindly replayed'; fi
+  # A recorded consumption remains evidence even after task/inbox cleanup.
+  rm -r "$moved/state/reviewer.inbox"
+  out=$(FM_HOME="$home" "$cli" receipt ready "$key") || fail 'durable consumption receipt lost after cleanup'
+  [ "$(printf '%s' "$out" | jq -r .outcome)" = consumed ] || fail 'consumption history changed'
+  # Remote paths are never reinterpreted on this machine.
+  printf -- '- research - research (host: example; root: /remote/code; home: %s; scope: research; projects: test; added 2026-09-27)\n' "$moved" > "$home/data/secondmates.md"
+  if FM_HOME="$home" "$cli" deliver ready "$event" >/dev/null 2>&1; then fail 'remote route was treated as a local path'; fi
+  pass 'typed milestones bind identity and evidence, preserve limitations, claim once, follow home moves, and record consumption'
+}
+
+test_milestone_cli_requires_explicit_home
+test_typed_milestone_delivery
+test_watcher_refuses_stale_milestone_generation
+test_milestone_relaunch_quarantine_and_takeover
+test_secondmate_quarantine_wakes_registering_parent
 test_write_is_durable_and_exact
 test_doorbell_is_a_shell_noop
 test_doorbell_rejects_terminal_controls

@@ -221,11 +221,18 @@ test_expect_kind_is_recorded_and_refused_where_no_reply_is_expected() {
   rec=$(fm_pending_reply_path "$home/state" "$corr")
   [ "$(fm_pending_reply_get "$rec" expect)" = ack ] \
     || fail "--expect ack was not recorded on the pending-reply expectation"
+  case "$got" in
+    *"corr=$corr expect=ack standing note: prefer small PRs") ;;
+    *) fail "an ack-typed request did not show the mate its expect=ack marker: $got" ;;
+  esac
   run_send "$fb" "$home" "$log" "domain" "what did the audit find"; rc=$?
   expect_code 0 "$rc" "a default secondmate send should succeed"
   corr=$(fm_pending_reply_extract_corr "$(record_body "$home/state/domain.inbox/002.msg")")
   [ "$(fm_pending_reply_get "$(fm_pending_reply_path "$home/state" "$corr")" expect)" = answer ] \
     || fail "a send without --expect did not record an answer expectation"
+  case "$(record_body "$home/state/domain.inbox/002.msg")" in
+    *expect=ack*) fail "an answer request told the mate an uptake receipt suffices" ;;
+  esac
 
   run_send "$fb" "$home" "$log" "build" --expect ack "fix the test"; rc=$?
   [ "$rc" -ne 0 ] || fail "--expect was accepted for a crewmate target, which carries no reply expectation"
@@ -237,7 +244,7 @@ test_expect_kind_is_recorded_and_refused_where_no_reply_is_expected() {
   run_send "$fb" "$home" "$log" "domain" --expect ack --key Escape; rc=$?
   [ "$rc" -ne 0 ] || fail "--expect was accepted together with --key"
   [ ! -e "$home/state/domain.inbox/003.msg" ] || fail "a refused --expect still enqueued a secondmate steer"
-  pass "fm-send: --expect records the reply kind and is refused where no reply is expected"
+  pass "fm-send: --expect records the reply kind, shows ack to the mate, and is refused where no reply is expected"
 }
 
 test_key_path_is_not_marked() {

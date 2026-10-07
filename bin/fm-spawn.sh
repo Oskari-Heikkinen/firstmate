@@ -637,6 +637,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-task-inbox-lib.sh
+. "$SCRIPT_DIR/fm-task-inbox-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
@@ -5365,6 +5367,12 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_PENDING=0
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
+  if ! fm_task_inbox_quarantine_stale "$STATE" "$ID" "$META_WINDOW" >/dev/null; then
+    # The quarantine judges against the new generation, so it can only run
+    # after the publish; a failure here leaves a recoverable, retryable state.
+    echo "error: task $ID's inbox holds typed milestones from a retired generation that could not be quarantined; refusing to launch a replacement that would read them. Left state: the previous agent is stopped, the new generation is recorded, and no replacement was launched; fix the inbox and re-run fm-control.sh $ID relaunch to retry" >&2
+    exit 1
+  fi
 fi
 # A dispatch or relaunch keeps the per-task meta lock through launch delivery.
 # The backlog mutation is deliberately the final fallible commit below, so

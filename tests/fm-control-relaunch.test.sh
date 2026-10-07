@@ -848,6 +848,59 @@ test_relaunch_refuses_oversized_original_before_stopping() {
   pass "fm-control relaunch: original-only overflow refuses before stopping the old worker"
 }
 
+test_relaunch_quarantines_retired_generation_milestones() {
+  local dir out rc inbox typed steer
+  dir=$(new_case quarantine rl40)
+  add_ship_task "$dir" rl40 claude
+  printf 'spawn_gen=retired-gen\n' >> "$dir/home/state/rl40.meta"
+  inbox="$dir/home/state/rl40.inbox"
+  typed=$(bash -c '. "$1"; fm_task_inbox_write_idempotent "$2" rl40 "PASS receipt" "" retired-gen' \
+    _ "$ROOT/bin/fm-task-inbox-lib.sh" "$dir/home/state") || fail "could not seed the typed milestone"
+  steer=$(bash -c '. "$1"; fm_task_inbox_write "$2" rl40 "ordinary steer"' \
+    _ "$ROOT/bin/fm-task-inbox-lib.sh" "$dir/home/state") || fail "could not seed the ordinary steer"
+  out=$(run_control "$dir" rl40 relaunch --note "resume review"); rc=$?
+  expect_code 0 "$rc" "relaunch should succeed"$'\n'"$out"
+  [ "$(meta_field "$dir" rl40 spawn_gen)" != retired-gen ] || fail "the relaunch did not record a new generation"
+  [ ! -e "$typed" ] || fail "the replacement's live inbox still holds the retired generation's milestone"
+  [ ! -e "$inbox/handled/${typed##*/}" ] || fail "the retired milestone was marked handled"
+  [ -f "$inbox/quarantine/${typed##*/}" ] || fail "the retired milestone was not preserved in quarantine"
+  [ -f "$steer" ] || fail "an ordinary steer did not survive the relaunch"
+  assert_grep "quarantined in $inbox/quarantine/" "$dir/home/state/.wake-queue" \
+    "the supervisor was not woken about the quarantined milestone"
+  pass "fm-control relaunch: retired-generation milestones are quarantined before the replacement reads its inbox"
+}
+
+test_relaunch_quarantine_failure_leaves_a_retryable_state() {
+  local dir out rc inbox typed gen
+  dir=$(new_case quarantine-fail rl43)
+  add_ship_task "$dir" rl43 claude
+  printf 'spawn_gen=retired-gen\n' >> "$dir/home/state/rl43.meta"
+  inbox="$dir/home/state/rl43.inbox"
+  typed=$(bash -c '. "$1"; fm_task_inbox_write_idempotent "$2" rl43 "PASS receipt" "" retired-gen' \
+    _ "$ROOT/bin/fm-task-inbox-lib.sh" "$dir/home/state") || fail "could not seed the typed milestone"
+  # A file where the quarantine directory belongs makes the quarantine fail.
+  : > "$inbox/quarantine"
+  out=$(run_control "$dir" rl43 relaunch --note "resume review"); rc=$?
+  [ "$rc" -ne 0 ] || fail "a failed quarantine must refuse the relaunch"$'\n'"$out"
+  assert_contains "$out" "the previous agent is stopped, the new generation is recorded, and no replacement was launched" \
+    "the refusal should name the state it left"
+  assert_contains "$out" "re-run fm-control.sh rl43 relaunch to retry" "the refusal should name the retry"
+  assert_grep "/exit" "$dir/fake/literal" "the previous agent should have been stopped"
+  assert_no_grep "Firstmate operational input waiting: read" "$dir/fake/literal" \
+    "no replacement may be launched while the retired milestone is live"
+  gen=$(meta_field "$dir" rl43 spawn_gen)
+  [ -n "$gen" ] && [ "$gen" != retired-gen ] || fail "the new generation was not recorded, got '$gen'"
+  [ -f "$typed" ] || fail "the retired milestone must stay in place after a failed quarantine"
+  rm -f "$inbox/quarantine"
+  out=$(run_control "$dir" rl43 relaunch --note "resume review"); rc=$?
+  expect_code 0 "$rc" "a retry after fixing the inbox should succeed"$'\n'"$out"
+  [ ! -e "$typed" ] || fail "the retry left the retired milestone live"
+  [ -f "$inbox/quarantine/${typed##*/}" ] || fail "the retry did not quarantine the retired milestone"
+  assert_grep "Firstmate operational input waiting: read" "$dir/fake/literal" "the retry should launch the replacement"
+  [ "$(journal_field "$dir" rl43 phase)" = complete ] || fail "the retry's journal should end complete"
+  pass "fm-control relaunch: a failed quarantine leaves a stopped, recorded, retryable state"
+}
+
 # add_accounts <case-dir>: register gmail and work logins for this home.
 add_accounts() {
   mkdir -p "$1/home/config" "$1/gmail" "$1/work"
@@ -2734,6 +2787,8 @@ test_traced_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions
+test_relaunch_quarantines_retired_generation_milestones
+test_relaunch_quarantine_failure_leaves_a_retryable_state
 test_relaunch_requires_a_note_for_a_ship_task
 test_account_switch_relaunch_records_and_keeps_the_new_login
 test_account_switch_to_an_unusable_login_refuses_before_stop

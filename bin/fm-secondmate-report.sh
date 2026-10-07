@@ -17,6 +17,14 @@
 # Usage:
 #   fm-secondmate-report.sh <verb> <corr_id> <note...>
 #   fm-secondmate-report.sh --doc <verb> <corr_id> <doc-path> <note...>
+#   fm-secondmate-report.sh --receipt <corr_id> [<corr_id>...]
+#
+# --receipt explicitly acknowledges request uptake, not acceptance or an answer.
+# It emits one canonical note with all correlations and no caller-supplied text.
+# Local requests must all belong to this mate and expect ack; remote receipts
+# are validated by the parent's pending-reply owner when mirrored. An answer
+# expectation is never settled by a typed receipt and still needs a real reply.
+# Raw ack verbs and free-form/mixed reports are not normalized or suppressed.
 #
 # Examples:
 #   fm-secondmate-report.sh done abcdef0123456789 "audit clean"
@@ -35,9 +43,38 @@ usage() {
 Usage:
   fm-secondmate-report.sh <verb> <corr_id> <note...>
   fm-secondmate-report.sh --doc <verb> <corr_id> <doc-path> <note...>
+  fm-secondmate-report.sh --receipt <corr_id> [<corr_id>...]
 EOF
   exit 2
 }
+
+# A receipt has no prose argument: a producer cannot accidentally hide a
+# limitation or refusal behind a routine acknowledgement.
+if [ "${1:-}" = --receipt ]; then
+  shift
+  [ "$#" -gt 0 ] && [ -n "$CALLER_FM_HOME" ] || usage
+  receipt_destination=$(fm_parent_channel_destination "$CALLER_FM_HOME" "${FM_STATE_OVERRIDE:-$CALLER_FM_HOME/state}") || exit 1
+  receipt_id=$(fm_parent_channel_home_id "$CALLER_FM_HOME") || exit 1
+  fm_secondmate_parent_record_parse "$CALLER_FM_HOME/.fm-secondmate-parent" || exit 1
+  receipt_line='note [receipt=ack]'
+  for receipt_corr in "$@"; do
+    receipt_corr=${receipt_corr#corr=}
+    [[ "$receipt_corr" =~ ^[a-f0-9]{16}$ ]] || usage
+    if [ "$FM_SECONDMATE_PARENT_ROUTE" = local ]; then
+      receipt_record=$(fm_pending_reply_path "${receipt_destination%/*}" "$receipt_corr")
+      if [ ! -f "$receipt_record" ] || [ -L "$receipt_record" ] \
+        || [ "$(fm_pending_reply_get "$receipt_record" task_id)" != "$receipt_id" ] \
+        || [ "$(fm_pending_reply_expect_of "$receipt_record")" != ack ]; then
+        echo "error: receipt requires this mate's known ack expectation: $receipt_corr" >&2
+        exit 1
+      fi
+    fi
+    receipt_line="$receipt_line [corr=$receipt_corr]"
+  done
+  receipt_line="$receipt_line: request received (via-helper)"
+  fm_parent_channel_append_once "$receipt_destination" "$(status_stamp_line "$receipt_line")"
+  exit $?
+fi
 
 DOC_MODE=0
 if [ "${1:-}" = "--doc" ]; then

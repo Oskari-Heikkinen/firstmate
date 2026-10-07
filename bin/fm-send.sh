@@ -123,7 +123,9 @@
 # when confirmation that the mate took the request up is enough - an FYI, a
 # standing instruction, a nudge - so a correlated note: acknowledgement is
 # absorbed by the watcher and presented at the next real wake instead
-# (bin/fm-classify-lib.sh's status_span_secondmate_routine). Either way a
+# (bin/fm-classify-lib.sh's status_span_secondmate_routine); the delivered
+# marker then carries a visible expect=ack token so the mate can answer with
+# its typed uptake receipt (bin/fm-secondmate-report.sh --receipt). Either way a
 # captain-relevant reply (done, needs-decision, blocked, failed) still wakes
 # immediately, and the missed-report recovery and escalation are unchanged.
 # A resend under FM_PENDING_REPLY_EXISTING_CORR keeps the recorded kind and
@@ -901,7 +903,8 @@ else
         }
       PENDING_REPLY_CREATED=1
     fi
-    fm_pending_reply_embed_corr "$MESSAGE" "$PENDING_REPLY_CORR" MESSAGE
+    fm_pending_reply_embed_corr "$MESSAGE" "$PENDING_REPLY_CORR" MESSAGE \
+      "$(fm_pending_reply_expect_of "$(fm_pending_reply_path "$STATE" "$PENDING_REPLY_CORR")")"
     if [ "$PENDING_REPLY_CREATED" != 1 ] &&
       fm_pending_reply_delivery_attempt_unresolved "$STATE" "$PENDING_REPLY_CORR"; then
       if [ "$TARGET_BACKEND" = remote ]; then

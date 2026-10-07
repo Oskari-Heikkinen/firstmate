@@ -7,7 +7,9 @@
 # the self-describing doorbell line, and the watcher's re-ring ladder policy.
 # bin/fm-send.sh writes and rings locally, the host-local remote steer leg
 # (bin/fm-remote-secondmate-control.sh cmd_send) writes idempotently and rings
-# on the remote host, bin/fm-watch.sh polls and re-rings, and the brief
+# on the remote host, bin/fm-task-inbox.sh enqueues registered identity-bound
+# milestones through the same idempotent primitive, bin/fm-watch.sh polls and
+# re-rings, and the brief
 # scaffold (bin/fm-brief.sh) tells the worker how to read and acknowledge;
 # none of them restates the format.
 #
@@ -35,12 +37,14 @@
 #   schema=fm-task-inbox.v1
 #   at=<utc timestamp>
 #   delivery=fire-and-forget   present only when the re-ring ladder must ignore it
+#   task_generation=<spawn_gen> optional binding for typed milestone delivery;
+#                               a mismatch quarantines instead of ringing a new task
 #   --
 #   <exact message text; newlines are legal; a marked secondmate request keeps
 #    its from-firstmate marker and corr token verbatim in this body>
 #
-# Sequence numbers are never reused within a task: allocation scans both the
-# inbox root and handled/, so a message is processed at most once per worker
+# Sequence numbers are never reused within a task: allocation scans the inbox
+# root, handled/ and quarantine/, so a message is processed at most once per worker
 # lifetime even if every doorbell is duplicated. Concurrent writers serialize
 # on .seq.lock; the worst racing outcome is ordering, never loss.
 #
@@ -64,7 +68,7 @@
 #
 # fm_task_inbox_ring requires bin/fm-backend.sh's dispatch (sourced below); the
 # other helpers are dependency-light. Sourced by bin/fm-send.sh, bin/fm-watch.sh,
-# and tests. No side effects on source beyond its sourced libraries.
+# bin/fm-spawn.sh (relaunch quarantine), and tests. No side effects on source beyond its sourced libraries.
 #
 # Tunables (env):
 #   FM_TASK_INBOX_GRACE_SECS   default 90; delivery-attempt grace and spacing
@@ -112,11 +116,11 @@ fm_task_inbox_seq_of() {  # <basename>
   printf '%s' "$((10#$n))"
 }
 
-# Next unused sequence, scanning the inbox root AND handled/ so an
-# acknowledged sequence is never reissued. Caller must hold .seq.lock.
+# Next unused sequence, scanning the inbox root, handled/ and quarantine/ so an
+# acknowledged or quarantined sequence is never reissued. Caller must hold .seq.lock.
 fm_task_inbox_next_seq() {  # <inbox-dir>
   local dir=$1 max=0 d f n
-  for d in "$dir" "$dir/handled"; do
+  for d in "$dir" "$dir/handled" "$dir/quarantine"; do
     for f in "$d"/*.msg; do
       [ -e "$f" ] || continue
       n=$(fm_task_inbox_seq_of "${f##*/}") || continue
@@ -144,8 +148,8 @@ fm_task_inbox_lock_acquire() {  # <lock-path>
 
 # Write one record into the next sequence slot: temp-write, then atomic
 # rename. Prints the record path. Caller must hold .seq.lock.
-_fm_task_inbox_write_record_locked() {  # <inbox-dir> <text> [delivery-mode]
-  local dir=$1 text=$2 delivery_mode=${3:-} seq tmp rec status=0
+_fm_task_inbox_write_record_locked() {  # <inbox-dir> <text> [delivery-mode] [generation]
+  local dir=$1 text=$2 delivery_mode=${3:-} generation=${4:-} seq tmp rec status=0
   seq=$(fm_task_inbox_next_seq "$dir")
   rec="$dir/$seq.msg"
   tmp=$(mktemp "$dir/.staging.XXXXXX") || return 1
@@ -153,6 +157,7 @@ _fm_task_inbox_write_record_locked() {  # <inbox-dir> <text> [delivery-mode]
     printf 'schema=%s\n' "$FM_TASK_INBOX_SCHEMA"
     printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     [ "$delivery_mode" != fire-and-forget ] || printf 'delivery=fire-and-forget\n'
+    [ -z "$generation" ] || printf 'task_generation=%s\n' "$generation"
     printf -- '--\n'
     printf '%s' "$text"
   } > "$tmp" && mv "$tmp" "$rec" || status=1
@@ -185,8 +190,9 @@ fm_task_inbox_write() {  # <state-dir> <task-id> <text> [delivery-mode]
 # secondmate request embeds a per-request correlation token in its body. The
 # local plane keeps plain fm_task_inbox_write: its outcome is synchronous, so
 # a repeated identical local steer is a deliberate new instruction.
-fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mode]
-  local state=$1 task=$2 text=$3 delivery_mode=${4:-} dir lock want have f rec='' status=0
+fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mode] [generation]
+  local state=$1 task=$2 text=$3 delivery_mode=${4:-} generation=${5:-} dir lock want have f record_generation rec='' status=0
+  case "$generation" in .*|*[!A-Za-z0-9._-]*) return 1 ;; esac
   dir=$(fm_task_inbox_dir "$state" "$task")
   mkdir -p "$dir/handled" || return 1
   lock="$dir/.seq.lock"
@@ -203,6 +209,8 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
             *) continue ;;
           esac
         fi
+        record_generation=$(fm_task_inbox_generation "$f") || { status=1; break; }
+        [ "$record_generation" = "$generation" ] || continue
         if [ "$delivery_mode" = fire-and-forget ]; then
           fm_task_inbox_is_fire_and_forget "$f" || continue
         elif fm_task_inbox_is_fire_and_forget "$f"; then
@@ -231,11 +239,84 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
     status=1
   fi
   if [ "$status" -eq 0 ] && [ -z "$rec" ]; then
-    rec=$(_fm_task_inbox_write_record_locked "$dir" "$text" "$delivery_mode") || status=1
+    rec=$(_fm_task_inbox_write_record_locked "$dir" "$text" "$delivery_mode" "$generation") || status=1
   fi
   fm_lock_release "$lock"
   [ "$status" -eq 0 ] || return 1
   printf '%s' "$rec"
+}
+
+# A typed record's generation, empty for a legacy steer; malformed bindings
+# refuse. Follow the ordinary concurrent handled/ move when reading headers.
+fm_task_inbox_generation() {  # <record-path>
+  local rec=$1 line gen='' count=0
+  [ -f "$rec" ] || rec="${rec%/*}/handled/${rec##*/}"
+  [ -f "$rec" ] || return 1
+  while IFS= read -r line; do
+    [ "$line" != -- ] || break
+    case "$line" in task_generation=*) gen=${line#*=}; count=$((count + 1)) ;; esac
+  done < "$rec"
+  [ "$count" -ne 0 ] || return 0
+  [ "$count" = 1 ] || return 1
+  case "$gen" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s' "$gen"
+}
+
+fm_task_inbox_generation_current() {  # <state-dir> <task-id> <record-path>
+  local gen meta=$1/$2.meta count
+  gen=$(fm_task_inbox_generation "$3") || return 1
+  [ -n "$gen" ] || return 0
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  count=$(grep -c '^spawn_gen=' "$meta") || return 1
+  [ "$count" = 1 ] && [ "$(fm_meta_get "$meta" spawn_gen)" = "$gen" ]
+}
+
+# Move every live record whose generation binding is not current into
+# quarantine/ beside handled/, after queueing one supervisor wake naming them.
+# Quarantined records are never handled, deleted or rung, and leave the ladder
+# to later steers; legacy unbound steers stay live. A relaunch runs this before
+# the replacement reads its inbox; the watcher runs it for any it still finds.
+# A route to a secondmate consumer is registered by that mate's parent, so a
+# record not addressed to home main also sends one failure line to the parent;
+# a failed notice never blocks the quarantine and is named in the local wake.
+# Prints the wake reason when records moved. Callers define STATE for the wake.
+fm_task_inbox_quarantine_stale() {  # <state-dir> <task-id> <wake-key>
+  local dir lock f stale=() reason='' status=0 parent_line='' seqs rc
+  dir=$(fm_task_inbox_dir "$1" "$2")
+  [ -d "$dir" ] || return 0
+  lock="$dir/.seq.lock"
+  fm_task_inbox_lock_acquire "$lock" || return 1
+  for f in "$dir"/*.msg; do
+    [ -f "$f" ] || continue
+    fm_task_inbox_generation_current "$1" "$2" "$f" && continue
+    stale+=("$f")
+    [ "$(fm_task_inbox_body "$f" | jq -r .consumer.home 2>/dev/null)" = main ] || parent_line=1
+  done
+  if [ "${#stale[@]}" -gt 0 ]; then
+    reason="stale: $3 (typed milestone $(printf '%s ' "${stale[@]##*/}")for $2 belongs to a different or unknown task generation; quarantined in $dir/quarantine/, never handled - re-register or redeliver it explicitly)"
+    if [ -n "$parent_line" ]; then
+      seqs=$(printf '%s-' "${stale[@]##*/}")
+      seqs=${seqs//.msg/}
+      parent_line="failed [key=milestone-quarantine-$2-${seqs%-}]: typed milestone $(printf '%s ' "${stale[@]##*/}")for task $2 was quarantined in $dir/quarantine/ because its consumer generation is no longer current; never handled - re-register or redeliver explicitly"
+      if ! command -v fm_parent_channel_report >/dev/null 2>&1; then
+        # shellcheck source=/dev/null
+        . "$_FM_TASK_INBOX_LIB_DIR/fm-parent-channel-lib.sh"
+      fi
+    fi
+    rc=0
+    [ -z "$parent_line" ] || fm_parent_channel_report "$FM_HOME" "$1" "$parent_line" || rc=$?
+    [ "$rc" -le 1 ] || reason="$reason; the parent notice did not reach the parent channel (rc=$rc) - relay it to the parent"
+    if fm_wake_append stale "$3" "$reason" && mkdir -p "$dir/quarantine"; then
+      for f in "${stale[@]}"; do
+        mv "$f" "$dir/quarantine/" 2>/dev/null || [ ! -e "$f" ] || status=1
+      done
+    else
+      status=1
+    fi
+  fi
+  fm_lock_release "$lock"
+  [ "$status" -eq 0 ] || return 1
+  printf '%s' "$reason"
 }
 
 # The exact enqueued text back out of a record.
@@ -366,6 +447,7 @@ fm_task_inbox_oldest_unhandled() {  # <state-dir> <task-id>
 #                             or already escalated for the current oldest)
 #   ring <record-path>        one doorbell re-ring is due
 #   escalate <record-path> <count>   attempt budget spent; surface as stale
+#   stale-generation <record-path>  typed binding no longer current; quarantine
 # An empty inbox also resets the ladder bookkeeping so the next message starts
 # a fresh ladder.
 fm_task_inbox_due_action() {  # <state-dir> <task-id>
@@ -377,6 +459,10 @@ fm_task_inbox_due_action() {  # <state-dir> <task-id>
     return 0
   fi
   base=${oldest##*/}
+  if ! fm_task_inbox_generation_current "$1" "$2" "$oldest"; then
+    printf 'stale-generation %s' "$oldest"
+    return 0
+  fi
   grace=$(fm_task_inbox_grace_secs)
   if [ "$(fm_path_age "$oldest")" -lt "$grace" ]; then
     printf 'quiet'

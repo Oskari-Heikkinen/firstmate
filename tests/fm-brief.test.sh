@@ -685,6 +685,10 @@ test_secondmate_marked_request_reporting_contract() {
 
   assert_grep 'A marked request requires one correlated answer after the work' "$brief" \
     "secondmate charter did not require the correlated answer after the work"
+  assert_grep 'bin/fm-secondmate-report.sh --receipt <corr_id>' "$brief" \
+    "secondmate charter did not expose the explicit uptake receipt operation"
+  assert_grep 'substantive replies and failures still use their ordinary report, never a receipt' "$brief" \
+    "secondmate charter hid substantive reports behind receipt delivery"
   assert_grep 'does not require a separate receipt or start acknowledgement' "$brief" \
     "secondmate charter did not reject a separate receipt/start acknowledgement"
   assert_grep "Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started." "$brief" \

@@ -1822,12 +1822,14 @@ mate_expectation_phase() {  # <state> <corr>
 }
 
 test_secondmate_ack_resolves_silently_and_is_presented() {
-  local dir state out drain_out pid corr i=0
-  dir=$(make_case mate-ack-resolves); state="$dir/state"
+  local variant=${1:-legacy} dir state out drain_out pid corr line i=0
+  dir=$(make_case "mate-ack-resolves-$variant"); state="$dir/state"
   corr=$(mate_expectation "$dir" ack) || fail "could not create the ack expectation"
   bash -c '. "$1"; fm_pending_reply_mark_delivered "$2" "$3"' \
     _ "$ROOT/bin/fm-pending-reply-lib.sh" "$state" "$corr" || fail "could not mark the ack request delivered"
-  dir=$(mate_routine_case mate-ack-resolves 'note: bootstrap' "note [corr=$corr]: taken up, will follow the standing note")
+  line="note [corr=$corr]: taken up, will follow the standing note"
+  [ "$variant" != typed ] || line="note [receipt=ack] [corr=$corr]: request received (via-helper)"
+  dir=$(mate_routine_case "mate-ack-resolves-$variant" 'note: bootstrap' "$line")
   out="$dir/watch.out"; drain_out="$dir/drain.out"
   export FM_FAKE_CREW_STATE='state: unknown · source: none · idle worker'
   watch_bg "$state" "$dir/fakebin" "$out"
@@ -1849,9 +1851,9 @@ test_secondmate_ack_resolves_silently_and_is_presented() {
   append_wake "$state" signal other.status "signal: $state/other.status" \
     || fail "queueing the next real wake failed"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "the next drain failed"
-  grep -F "mate note [corr=$corr]: taken up, will follow the standing note" "$drain_out" >/dev/null \
+  grep -F "mate $line" "$drain_out" >/dev/null \
     || fail "the absorbed acknowledgement did not ride along at the next wake: $(cat "$drain_out")"
-  pass "an acknowledgement resolves its ack-typed request silently and rides along at the next real wake"
+  pass "a $variant acknowledgement resolves its ack-typed request silently and rides along at the next real wake"
 }
 
 test_secondmate_working_ack_keeps_unclassified_outcome_annotation() {
@@ -7345,6 +7347,10 @@ test_away_mode_declared_wait_change_reaches_the_daemon() {
   pass "in away mode a changed declared wait still reaches the captain through the daemon, whatever the watcher saw first"
 }
 
+test_secondmate_typed_ack_resolves_silently_and_is_presented() {
+  test_secondmate_ack_resolves_silently_and_is_presented typed
+}
+
 # CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the bash-3.2
 # churn-deferral regression. The rest of this file is not a 3.2 snapshot suite.
 # Case pool (fm_run_case_pool in tests/lib.sh). Every case builds its own
@@ -7439,6 +7445,7 @@ TRIAGE_CASES=(
   test_status_done_identity_classifier
   test_secondmate_working_line_absorbed_and_presented
   test_secondmate_ack_resolves_silently_and_is_presented
+  test_secondmate_typed_ack_resolves_silently_and_is_presented
   test_secondmate_working_ack_keeps_unclassified_outcome_annotation
   test_secondmate_ack_note_keeps_unclassified_outcome_annotation
   test_crewmate_duplicate_done_still_wakes

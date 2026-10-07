@@ -1510,6 +1510,64 @@ test_child_status_wrong_home_is_not_copied() {
   pass "a child-file mate-home sighting is not copied and still escalates"
 }
 
+test_explicit_receipt_operation() {
+  local home state sm_home ack other answer foreign line before remote
+  home=$(setup_parent typed-receipts)
+  state="$home/state"
+  sm_home=$(bind_local_mate "$home" mate)
+  ack=$(fm_pending_reply_create "$home" "$state" mate "take up first" ack)
+  other=$(fm_pending_reply_create "$home" "$state" mate "take up second" ack)
+  answer=$(fm_pending_reply_create "$home" "$state" mate "need findings" answer)
+  foreign=$(fm_pending_reply_create "$home" "$state" elsewhere "other mate" ack)
+  fm_pending_reply_mark_delivered "$state" "$ack"
+  fm_pending_reply_mark_delivered "$state" "$other"
+  fm_pending_reply_mark_delivered "$state" "$answer"
+  case "$(fm_pending_reply_recovery_message "$(fm_pending_reply_path "$state" "$ack")")" in
+    *"corr=$ack expect=ack "*) ;;
+    *) fail 'recovery of an ack request hid its expect=ack marker from the mate' ;;
+  esac
+  case "$(fm_pending_reply_recovery_message "$(fm_pending_reply_path "$state" "$answer")")" in
+    *expect=ack*) fail 'recovery of an answer request offered an uptake receipt' ;;
+  esac
+  FM_HOME="$sm_home" "$REPORT" --receipt "$ack" "$other" || fail 'receipt operation failed'
+  line=$(tail -1 "$state/mate.status")
+  fm_pending_reply_line_acks "$state" mate "$line" || fail 'typed receipt was not routine'
+  fm_pending_reply_try_resolve "$state" "$ack" || fail 'first receipt correlation not resolved'
+  fm_pending_reply_try_resolve "$state" "$other" || fail 'second receipt correlation not resolved'
+  before=$(wc -l < "$state/mate.status")
+  FM_HOME="$sm_home" "$REPORT" --receipt "$ack" "$other" || fail 'receipt retry failed'
+  [ "$(wc -l < "$state/mate.status")" = "$before" ] || fail 'receipt retry duplicated payload'
+  if FM_HOME="$sm_home" "$REPORT" --receipt "$ack" "$answer" 2>/dev/null; then
+    fail 'receipt accepted a mixed answer expectation'
+  fi
+  if FM_HOME="$sm_home" "$REPORT" --receipt "$foreign" 2>/dev/null; then fail 'receipt accepted foreign request'; fi
+  if FM_HOME="$sm_home" "$REPORT" --receipt "$ack" 'but a failure occurred' 2>/dev/null; then
+    fail 'receipt accepted free-form mixed content'
+  fi
+  [ "$(wc -l < "$state/mate.status")" = "$before" ] || fail 'rejected receipt partially published'
+
+  # A remote producer cannot read the parent expectation. Its fixed receipt is
+  # typed at the edge and checked against expectations after ordinary mirroring.
+  remote="$home/remote"
+  mkdir -p "$remote/state"
+  printf 'mate\n' > "$remote/.fm-secondmate-home"
+  printf 'schema=fm-secondmate-parent.v1\nroute=remote\nparent_host=remote.example\n' > "$remote/.fm-secondmate-parent"
+  FM_HOME="$remote" "$REPORT" --receipt "$answer" || fail 'remote receipt failed'
+  line=$(tail -1 "$remote/state/parent-replies.status")
+  printf '%s\n' "$line" >> "$state/mate.status"
+  if fm_pending_reply_try_resolve "$state" "$answer"; then fail 'uptake receipt silently settled an answer'; fi
+  if fm_pending_reply_line_acks "$state" mate "$line"; then fail 'answer receipt was suppressed'; fi
+  if fm_pending_reply_line_acks "$state" mate "note [receipt=ack] [corr=$ack]: failure: refused"; then
+    fail 'malformed typed receipt suppressed substantive content'
+  fi
+  if fm_pending_reply_line_acks "$state" mate "ack [corr=$ack]: arbitrary old prose"; then
+    fail 'untyped ack became routine'
+  fi
+  printf 'done [corr=%s]: actual findings\n' "$answer" >> "$state/mate.status"
+  fm_pending_reply_try_resolve "$state" "$answer" || fail 'real answer could not resolve after receipt'
+  pass 'explicit typed receipts batch correlations, stay quiet only for ack, and never stand in for answers'
+}
+
 test_mechanical_helper_writes_parent_channel() {
   local home state sm_home corr empty_corr rc
   home=$(setup_parent mechanical-helper)
@@ -1820,6 +1878,7 @@ test_mirrored_remote_reply_never_triggers_a_repost
 test_same_basename_self_home_corr_resolves_on_tick
 test_same_basename_reply_resolves_after_recovery_failure
 test_child_status_wrong_home_is_not_copied
+test_explicit_receipt_operation
 test_mechanical_helper_writes_parent_channel
 test_remote_parent_replies_is_not_wrong_home
 test_local_parent_replies_is_wrong_home_evidence

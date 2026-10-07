@@ -581,6 +581,11 @@ inbox_steer_check() {  # <window> <task>
       rec=${rec% *}
       ;;
   esac
+  if [ "$verb" = stale-generation ]; then
+    reason=$(fm_task_inbox_quarantine_stale "$STATE" "$task" "$w") || exit 1
+    [ -z "$reason" ] || wake "$reason"
+    return 0
+  fi
   backend=$(window_backend "$w")
   agent_state=$(fm_backend_agent_state "$backend" "$w" 2>/dev/null || true)
   case "$agent_state" in
