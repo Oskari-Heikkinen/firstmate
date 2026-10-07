@@ -732,6 +732,122 @@ test_relaunch_appends_the_progress_note_to_the_instructions() {
   pass "fm-control relaunch: progress and the Firstmate-worktree worker identity reach the replacement"
 }
 
+append_historic_progress_notes() { # <brief>
+  local i
+  for ((i=0; i<140; i++)); do
+    {
+      printf '\n## Progress note (2026-09-13T00:00:00Z)\n\n'
+      printf 'This task was relaunched. Continue from here; the local copy and every\n'
+      printf 'uncommitted change are exactly as the previous worker left them.\n\n'
+      printf 'historic-note-%03d ' "$i"
+      printf '%01000d\n' "$i"
+    } >> "$1"
+  done
+}
+
+test_relaunch_rotates_accumulated_notes_without_losing_bytes() {
+  local dir out rc brief archive base_size old_size total
+  dir=$(new_case note-cap rl-note-cap)
+  add_ship_task "$dir" rl-note-cap claude
+  brief="$dir/home/data/rl-note-cap/brief.md"
+  archive="$dir/home/data/rl-note-cap/brief-progress-archive.md"
+  # Generated-looking examples are original instructions, not managed notes.
+  cat >> "$brief" <<'EOF'
+
+```markdown
+## Progress note (2026-09-13T00:00:00Z)
+
+This task was relaunched. Continue from here; the local copy and every
+Example that must remain in the original brief: café 'quoted'.
+```
+
+~~~markdown
+## Progress note (2026-09-13T00:00:00Z)
+
+This task was relaunched. Continue from here; the local copy and every
+Another example that must remain in the original brief.
+~~~
+EOF
+  cp "$brief" "$dir/original"
+  base_size=$(wc -c < "$brief")
+  # Historic notes use the deployed heading and opening, not a new marker.
+  append_historic_progress_notes "$brief"
+  dd if="$brief" bs=1 skip="$base_size" > "$dir/old-notes" 2>/dev/null
+  old_size=$(wc -c < "$dir/old-notes")
+  [ "$(wc -c < "$brief")" -gt 131072 ] || fail "fixture must exceed the single-argument launch limit"
+  out=$(run_control "$dir" rl-note-cap relaunch --note 'newest-note-one'); rc=$?
+  expect_code 0 "$rc" "oversized accumulated instructions should relaunch"$'\n'"$out"
+  [ "$(wc -c < "$brief")" -le 49152 ] || fail "inline instructions exceeded the safe bound"
+  total=$(wc -c < "$dir/home/data/rl-note-cap/launch-brief.md")
+  [ "$total" -lt 131072 ] || fail "actual launch instructions exceeded the argument limit"
+  # Exercise the actual operational envelope through exec, rather than only a
+  # file-size check. These bytes are the prompt argument in spawn templates.
+  "$ROOT/bin/fm-operational-input.sh" encode launch-brief < "$dir/home/data/rl-note-cap/launch-brief.md" > "$dir/prompt"
+  /bin/bash -c '[ "${#1}" -lt 131072 ]' bash "$(cat "$dir/prompt")" || fail "encoded prompt could not be delivered as one argument"
+  dd if="$brief" bs=1 count="$base_size" > "$dir/base-after" 2>/dev/null
+  cmp -s "$dir/original" "$dir/base-after" || fail "original instructions changed"
+  cat "$archive" > "$dir/all-notes"
+  dd if="$brief" bs=1 skip="$base_size" >> "$dir/all-notes" 2>/dev/null
+  dd if="$dir/all-notes" bs=1 count="$old_size" > "$dir/old-after" 2>/dev/null
+  cmp -s "$dir/old-notes" "$dir/old-after" || fail "historic notes were lost, reordered, or rewritten"
+  assert_grep 'newest-note-one' "$brief" "newest note should stay inline"
+  assert_grep "$archive" "$brief" "instructions must point at the archive"
+  # Force a second rotation and verify prior archive content is preserved too.
+  cp "$archive" "$dir/archive-before"
+  awk 'BEGIN { for (i=0; i<70000; i++) printf "z"; print " newest-note-two" }' > "$dir/large-note"
+  out=$(run_control "$dir" rl-note-cap relaunch --note-file "$dir/large-note"); rc=$?
+  expect_code 0 "$rc" "an oversized newest note should be archived with a pointer"$'\n'"$out"
+  [ "$(wc -c < "$brief")" -le 49152 ] || fail "oversized newest note escaped the bound"
+  dd if="$archive" bs=1 count="$(wc -c < "$dir/archive-before")" > "$dir/archive-prefix" 2>/dev/null
+  cmp -s "$dir/archive-before" "$dir/archive-prefix" || fail "second rotation replaced earlier archived notes"
+  assert_grep 'newest-note-one' "$archive" "previous newest note must survive rotation"
+  assert_grep 'newest-note-two' "$archive" "oversized newest note must survive rotation"
+  pass "fm-control relaunch: accumulated notes stay under the launch limit with byte-exact preservation"
+}
+
+test_relaunch_rotation_rollback_restores_brief_and_archive() {
+  local dir out rc brief archive existing
+  for existing in no yes; do
+    dir=$(new_case rotation-rollback "rl-rollback-$existing")
+    add_ship_task "$dir" "rl-rollback-$existing" claude
+    brief="$dir/home/data/rl-rollback-$existing/brief.md"
+    archive="$dir/home/data/rl-rollback-$existing/brief-progress-archive.md"
+    append_historic_progress_notes "$brief"
+    cp "$brief" "$dir/brief-before"
+    if [ "$existing" = yes ]; then
+      printf 'previous archived bytes without newline' > "$archive"
+      cp "$archive" "$dir/archive-before"
+    fi
+    printf 'pending input' > "$dir/fake/composer"
+    out=$(run_control "$dir" "rl-rollback-$existing" relaunch --note 'must roll back'); rc=$?
+    expect_code 1 "$rc" "pending input should refuse after preparing rotation"$'\n'"$out"
+    cmp -s "$brief" "$dir/brief-before" || fail "rollback failed to restore inline notes"
+    if [ "$existing" = yes ]; then
+      cmp -s "$archive" "$dir/archive-before" || fail "rollback failed to restore existing archive"
+    else
+      [ ! -e "$archive" ] || fail "rollback left a newly created archive"
+    fi
+    [ "$(cat "$dir/fake/command")" = claude ] || fail "rotation rollback stopped the original worker"
+  done
+  pass "fm-control relaunch: refusal restores instructions and archive byte-for-byte"
+}
+
+test_relaunch_refuses_oversized_original_before_stopping() {
+  local dir out rc brief
+  dir=$(new_case original-cap rl-original-cap)
+  add_ship_task "$dir" rl-original-cap claude
+  brief="$dir/home/data/rl-original-cap/brief.md"
+  awk 'BEGIN { for (i=0; i<50000; i++) printf "x"; print "" }' >> "$brief"
+  cp "$brief" "$dir/original"
+  out=$(run_control "$dir" rl-original-cap relaunch --note 'continue'); rc=$?
+  expect_code 1 "$rc" "oversized original instructions must refuse"$'\n'"$out"
+  assert_contains "$out" 'original brief plus archive pointer exceeds' "refusal should explain the bound"
+  cmp -s "$brief" "$dir/original" || fail "refusal rewrote original instructions"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "refusal stopped the old agent"
+  [ ! -e "$dir/home/data/rl-original-cap/brief-progress-archive.md" ] || fail "refusal left an archive"
+  pass "fm-control relaunch: original-only overflow refuses before stopping the old worker"
+}
+
 # add_accounts <case-dir>: register gmail and work logins for this home.
 add_accounts() {
   mkdir -p "$1/home/config" "$1/gmail" "$1/work"
@@ -2605,6 +2721,9 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
   pass "relaunch heals an item that drifted out of In flight while the task stayed live"
 }
 
+test_relaunch_rotates_accumulated_notes_without_losing_bytes
+test_relaunch_refuses_oversized_original_before_stopping
+test_relaunch_rotation_rollback_restores_brief_and_archive
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven

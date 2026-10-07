@@ -87,6 +87,16 @@
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
+#              Ship/scout instructions stay within 48 KiB: retain the original
+#              brief and the newest complete notes that fit, rotating older
+#              notes byte-for-byte into data/<id>/brief-progress-archive.md.
+#              Each new note points there; an oversized newest note is archived
+#              too, with a small inline pointer instead. A brief whose original
+#              content plus that pointer exceeds the bound refuses BEFORE exit.
+#              This reserves room for the worker-role and intent overlays and
+#              operational envelope below the 128 KiB single-argument limit;
+#              unrelated launch-size causes are not covered.
+#              Park resume and reboot recovery use this same relaunch owner.
 #              Records a durable checkpoint and that note, exits the old agent,
 #              then delegates the launch to its single owner,
 #              bin/fm-spawn.sh --relaunch. A failure before publication keeps
@@ -217,6 +227,9 @@ control_cleanup() {
   if [ "$RELAUNCH_ACTIVE" = 1 ] \
      && declare -F relaunch_rollback >/dev/null 2>&1; then
     relaunch_rollback || true
+  fi
+  if [ -n "${JOURNAL:-}" ]; then
+    rm -f "$JOURNAL.offsets" "$JOURNAL.brief-stage" "$JOURNAL.archive-stage" "$JOURNAL.pointer" "$JOURNAL.archive-prior"
   fi
   if [ "$LIVENESS_CLAIM_HELD" = 1 ]; then
     LIVENESS_CLAIM_HELD=0
@@ -814,6 +827,10 @@ do_exit() {
 JOURNAL="$STATE/$ID.control-relaunch"
 META_PRIOR="$JOURNAL.meta-prior"
 BRIEF_PRIOR="$JOURNAL.brief-prior"
+ARCHIVE_PRIOR="$JOURNAL.archive-prior"
+RELAUNCH_ARCHIVE=
+ARCHIVE_TOUCHED=0
+ARCHIVE_EXISTED=0
 NOTE_FILE="$JOURNAL.note"
 RELAUNCH_META_PUBLISHED=0
 RELAUNCH_AGENT_CONFIRMED=0
@@ -859,6 +876,19 @@ journal_write() {  # <phase> [extra-line]...
   return 1
 }
 
+restore_relaunch_instructions() {
+  if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
+    cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
+  fi
+  if [ "$ARCHIVE_TOUCHED" = 1 ]; then
+    if [ "$ARCHIVE_EXISTED" = 1 ]; then
+      cp -p "$ARCHIVE_PRIOR" "$RELAUNCH_ARCHIVE" 2>/dev/null || true
+    else
+      rm -f "$RELAUNCH_ARCHIVE" 2>/dev/null || true
+    fi
+  fi
+}
+
 relaunch_rollback() {
   local state
   [ "$RELAUNCH_ACTIVE" = 1 ] || return 0
@@ -868,9 +898,7 @@ relaunch_rollback() {
     checkpoint|noted)
       # The old agent was never touched. Restore the instructions byte-exact so
       # a refused relaunch leaves nothing behind.
-      if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
-        cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
-      fi
+      restore_relaunch_instructions
       journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored" || true
       echo "error: relaunch of $ID was refused before its agent was touched; nothing changed" >&2
       ;;
@@ -878,9 +906,7 @@ relaunch_rollback() {
       state=$(agent_state 2>/dev/null || printf unknown)
       case "$state" in
         alive)
-          if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
-            cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
-          fi
+          restore_relaunch_instructions
           journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored-agent-alive" || true
           echo "error: relaunch of $ID failed while stopping the old agent, which is still running; its original instructions were restored" >&2
           ;;
@@ -894,9 +920,7 @@ relaunch_rollback() {
           # original one. The note exists to brief a replacement; leaving it in
           # a possibly-live agent's brief would be an unrequested edit to a
           # running task. Restore byte-exact, exactly as the alive case does.
-          if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
-            cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
-          fi
+          restore_relaunch_instructions
           journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored-agent-state-$state" || true
           echo "error: relaunch of $ID failed while stopping the old agent and its state is '$state', so it was not proven stopped; its original instructions were restored and the durable record was retained for recovery" >&2
           ;;
@@ -1084,6 +1108,91 @@ safe_checkpoint() {
   fi
 }
 
+# Rotate only generated note blocks (dated heading plus the generated opening),
+# never headings in fenced examples. Byte offsets and dd preserve every byte,
+# including a note's missing final newline. The archive participates in rollback.
+rotate_progress_notes() {
+  local limit=49152 total base cut start pointer_size
+  local -a offsets=()
+  total=$(wc -c < "$RELAUNCH_BRIEF") || return 1
+  [ "$total" -gt "$limit" ] || return 0
+  LC_ALL=C awk '
+    {
+      here = pos
+      pos += length($0) + 1
+      if (pending && NR == line + 2 && $0 == "This task was relaunched. Continue from here; the local copy and every") {
+        print begin
+        managed = 1
+        pending = 0
+      }
+      if ($0 ~ /^(```|~~~)/) {
+        marker = substr($0, 1, 3)
+        if (!fence) fence = marker
+        else if (fence == marker) fence = ""
+      }
+      if ((!fence || managed) && $0 ~ /^## Progress note \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z\)$/) {
+        begin = (previous == "" ? prior : here)
+        line = NR
+        pending = 1
+      }
+      previous = $0
+      prior = here
+    }
+  ' "$RELAUNCH_BRIEF" > "$JOURNAL.offsets" || return 1
+  while IFS= read -r start; do offsets+=("$start"); done < "$JOURNAL.offsets"
+  [ "${#offsets[@]}" -gt 0 ] || return 1
+  base=${offsets[0]}
+  progress_note_block "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "The newest progress note is also in the archive; read it before continuing." > "$JOURNAL.pointer" || return 1
+  pointer_size=$(wc -c < "$JOURNAL.pointer") || return 1
+  if [ "$((base + pointer_size))" -gt "$limit" ]; then
+    echo "error: task $ID's original brief plus archive pointer exceeds the safe 48 KiB relaunch bound; shorten the original instructions before retrying (old agent was not stopped)" >&2
+    return 1
+  fi
+  # Keep the longest suffix of complete notes that fits, always newest first.
+  cut=$total
+  for start in "${offsets[@]}"; do
+    if [ "$((base + total - start))" -le "$limit" ]; then
+      cut=$start
+      break
+    fi
+  done
+  dd if="$RELAUNCH_BRIEF" bs=1 count="$base" > "$JOURNAL.brief-stage" 2>/dev/null || return 1
+  if [ "$cut" -lt "$total" ]; then
+    dd if="$RELAUNCH_BRIEF" bs=1 skip="$cut" >> "$JOURNAL.brief-stage" 2>/dev/null || return 1
+  else
+    cat "$JOURNAL.pointer" >> "$JOURNAL.brief-stage" || return 1
+  fi
+  if [ -e "$RELAUNCH_ARCHIVE" ]; then
+    cp -p "$RELAUNCH_ARCHIVE" "$ARCHIVE_PRIOR" || return 1
+    ARCHIVE_EXISTED=1
+    cp -p "$RELAUNCH_ARCHIVE" "$JOURNAL.archive-stage" || return 1
+  else
+    : > "$JOURNAL.archive-stage" || return 1
+  fi
+  dd if="$RELAUNCH_BRIEF" bs=1 skip="$base" count="$((cut - base))" >> "$JOURNAL.archive-stage" 2>/dev/null || return 1
+  ARCHIVE_TOUCHED=1
+  mv -f "$JOURNAL.archive-stage" "$RELAUNCH_ARCHIVE" &&
+    mv -f "$JOURNAL.brief-stage" "$RELAUNCH_BRIEF"
+}
+
+progress_note_block() { # <timestamp> <note>
+  echo
+  echo "## Progress note ($1)"
+  echo
+  echo "This task was relaunched. Continue from here; the local copy and every"
+  echo "uncommitted change are exactly as the previous worker left them."
+  echo
+  echo "First, check your instruction inbox: list $STATE/$ID.inbox/*.msg, act on"
+  echo "each message in numeric order, then mv each handled file into"
+  echo "$STATE/$ID.inbox/handled/. A steer sent before the relaunch survives there."
+  echo
+  echo "Older progress notes, if rotated, are preserved at $RELAUNCH_ARCHIVE."
+  echo "Read that archive when earlier context is needed."
+  echo
+  printf '%s\n' "$2"
+}
+
 # record_note: put the required progress note somewhere durable, and - for a
 # ship or scout, whose only record of the interrupted reasoning is the
 # conversation about to be discarded - into the instructions the replacement
@@ -1099,20 +1208,9 @@ record_note() {
     ship|scout)
       cp -p "$RELAUNCH_BRIEF" "$BRIEF_PRIOR" \
         || die "could not preserve task $ID's instructions before recording the progress note"
-      {
-        echo
-        echo "## Progress note ($stamp)"
-        echo
-        echo "This task was relaunched. Continue from here; the local copy and every"
-        echo "uncommitted change are exactly as the previous worker left them."
-        echo
-        echo "First, check your instruction inbox: list $STATE/$ID.inbox/*.msg, act on"
-        echo "each message in numeric order, then mv each handled file into"
-        echo "$STATE/$ID.inbox/handled/. A steer sent before the relaunch survives there."
-        echo
-        printf '%s\n' "$NOTE"
-      } >> "$RELAUNCH_BRIEF" \
+      progress_note_block "$stamp" "$NOTE" >> "$RELAUNCH_BRIEF" \
         || die "could not append the progress note to task $ID's instructions"
+      rotate_progress_notes || die "could not bound task $ID's relaunch instructions; old agent was not stopped"
       ;;
   esac
 }
@@ -1127,6 +1225,7 @@ do_relaunch() {
   case "$KIND" in
     ship|scout)
       RELAUNCH_BRIEF="$DATA/$ID/brief.md"
+      RELAUNCH_ARCHIVE="$DATA/$ID/brief-progress-archive.md"
       [ -f "$RELAUNCH_BRIEF" ] \
         || die "task $ID has no instructions at $RELAUNCH_BRIEF; refusing to relaunch a worker with nothing to work from"
       [ "$NOTE_SET" = 1 ] && [ -n "$NOTE" ] \
