@@ -332,7 +332,26 @@ fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_J
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 pass "worker identity binds the canonical configured code root"
 
-CRASHED_WORKER_PID=$NEW_WORKER_PID
+# This fixture injects a reused pid into a dead worker's retained lock. A Linux
+# restart supervisor would concurrently remove that lock and start a new child
+# after KILL; wait on its serving child is not synchronization because that
+# child is not ours. Stop the supervised tree first, then own an unsupervised
+# serving child so wait confirms the crash before any stale records are edited.
+# Automatic supervised crash recovery is exercised separately below.
+fm_remote_job_stop_worker_tree "$NEW_WORKER_PID" \
+  || fail "the supervised worker did not stop before stale ownership injection"
+assert_absent "$STATE_ROOT/worker.ready" "the stopped worker retained its readiness heartbeat"
+HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  >> "$TMP_ROOT/worker.out" 2>> "$TMP_ROOT/worker.err" &
+CRASHED_WORKER_PID=$!
+for _ in $(seq 1 100); do
+  [ -f "$STATE_ROOT/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$STATE_ROOT/worker.ready" "the stale ownership fixture worker did not become ready"
+[ "$(cat "$STATE_ROOT/worker.lock/pid")" = "$CRASHED_WORKER_PID" ] \
+  || fail "the stale ownership fixture did not own the serving worker"
 kill -KILL "$CRASHED_WORKER_PID"
 wait "$CRASHED_WORKER_PID" 2>/dev/null || true
 assert_present "$STATE_ROOT/worker.lock" "an unclean exit did not retain the worker ownership lock"
