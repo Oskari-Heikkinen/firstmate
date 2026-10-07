@@ -914,12 +914,15 @@ fm_write_meta "$RESTART_HOME/state/restart-task.meta" \
   "mode=no-mistakes" \
   "spawn_gen=fm.restart123456"
 RESTART_LOCK_MARKER="$TMP_ROOT/restart-lock-held"
+RESTART_LOCK_RELEASE="$TMP_ROOT/restart-lock-release"
+mkfifo "$RESTART_LOCK_RELEASE"
 FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$RESTART_HOME" bash -c '
   . "$1/bin/fm-wake-lib.sh"
   fm_lock_acquire_wait "$2/state/.home-summary-refresh.lock"
   : > "$3"
-  sleep 30
-' _ "$ROOT" "$RESTART_HOME" "$RESTART_LOCK_MARKER" &
+  # Hold until explicitly killed, not until a wall-clock sleep expires.
+  read -r release < "$4"
+' _ "$ROOT" "$RESTART_HOME" "$RESTART_LOCK_MARKER" "$RESTART_LOCK_RELEASE" &
 LOCK_HOLDER_PID=$!
 i=0
 while [ ! -e "$RESTART_LOCK_MARKER" ] && [ "$i" -lt 100 ]; do
@@ -986,22 +989,36 @@ if ! kill -0 "$WATCH_PID" 2>/dev/null; then
   [ -e "$RESTART_HOME/state/.last-watcher-beat" ] \
     || fail "the recovery replacement watcher did not begin polling"
 fi
-kill -KILL "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
+# End watcher scheduling while the holder is still live. Its detached publisher
+# can outlive it, so an if-idle recovery may legitimately skip that contender.
+# Retry admission explicitly instead of relying on a 2-second watcher publisher
+# to finish real production during a passive wait. Recovery uses the writer's
+# normal deadline; the short deadline above tests only live-lock admission.
+kill "$WATCH_PID" >/dev/null 2>&1 || true
+wait "$WATCH_PID" >/dev/null 2>&1 || true
+WATCH_PID=
+[ "$(cat "$RESTART_HOME/state/.home-summary-refresh.lock/pid")" = "$LOCK_HOLDER_PID" ] \
+  || fail "the controlled publication lock lost its live owner"
+[ ! -e "$RESTART_HOME/state/home-summary.json" ] \
+  || fail "publication bypassed the live lock across watcher restart"
+kill -KILL "$LOCK_HOLDER_PID" >/dev/null 2>&1 \
+  || fail "could not terminate the publication lock owner"
 wait "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
 LOCK_HOLDER_PID=
-PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$RESTART_HOME" \
-  FM_HOME_SUMMARY_IF_IDLE=1 "$WRITER" --best-effort \
-  || fail "stale-lock recovery changed the best-effort caller result"
 i=0
 while [ ! -e "$RESTART_HOME/state/home-summary.json" ] && [ "$i" -lt 200 ]; do
+  PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$RESTART_HOME" \
+    FM_HOME_SUMMARY_IF_IDLE=1 "$WRITER" --best-effort \
+    || fail "stale-lock recovery changed the best-effort caller result"
+  [ ! -e "$RESTART_HOME/state/home-summary.json" ] || break
   sleep 0.05
   i=$((i + 1))
 done
 [ -e "$RESTART_HOME/state/home-summary.json" ] \
   || fail "a dead publication lock wedged publication"
-kill "$WATCH_PID" >/dev/null 2>&1 || true
-wait "$WATCH_PID" >/dev/null 2>&1 || true
-WATCH_PID=
+jq -e '.schema == "fm-secondmate-home-summary.v1"' \
+  "$RESTART_HOME/state/home-summary.json" >/dev/null \
+  || fail "stale-lock recovery published an invalid ledger"
 pass "publication remains single-flight across watcher restart"
 
 # A publication that keeps failing is deliberately non-fatal to its caller, so
