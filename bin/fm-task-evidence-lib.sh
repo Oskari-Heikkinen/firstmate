@@ -245,11 +245,12 @@ fm_task_evidence_preserve() {
   for root in "$copy_root" "$tmp_root"; do
     [ -n "$root" ] || continue
     escaped=$(fm_task_evidence_ere_escape "$root")
-    pattern="$escaped/[^][[:space:]'\"\`<>(){}|;,*]+"
+    # Include a terminating semicolon only to recognise a complete HTML entity.
+    pattern="$escaped/[^][[:space:]'\"\`<>(){}|;,*]+;?"
     refs=$(find "$dir" \( -path "$dir/evidence" -o -path "$dir/.evidence.*" \) -prune \
         -o -type f -print0 2>/dev/null \
       | xargs -0 grep -IhoE -- "$pattern" /dev/null 2>/dev/null \
-      | sed -E 's/[.:!?]*$//; s/:[0-9]+(:[0-9]+)?$//' | sort -u || true)
+      | sed -E 's/&([[:alpha:]][[:alnum:]]*|#[0-9]+|#[xX][[:xdigit:]]+);$//; s/;$//; s/[.:!?]*$//; s/:[0-9]+(:[0-9]+)?$//' | sort -u || true)
     [ -n "$refs" ] || continue
     while IFS= read -r ref; do
       fm_task_evidence_classify "$ref" "$copy_root" "$tmp_root" || continue

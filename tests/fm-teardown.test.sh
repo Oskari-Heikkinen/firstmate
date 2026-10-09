@@ -4449,6 +4449,66 @@ test_undeclared_reference_into_the_copy_refuses_then_declaring_it_proceeds() {
   pass "a record referencing an undeclared path inside the copy or temp folder refuses cleanup (even with --force) until it is declared"
 }
 
+test_html_entities_delimit_declared_evidence_references() {
+  local case_dir rc entity path
+  case_dir=$(make_case evidence-html-declared)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/wt/workspace" "$case_dir/data/task-x1"
+  printf 'html evidence\n' > "$case_dir/wt/workspace/x"
+  printf '%s\n' workspace/x > "$case_dir/data/task-x1/evidence.list"
+  for entity in '&quot;' '&amp;' '&lt;' '&gt;' '&apos;' '&#34;' '&#x22;' '&#X2A;'; do
+    printf '<pre>H=%s%s/workspace/x%s</pre>\n' "$entity" "$case_dir/wt" "$entity"
+    printf '<pre>%s%s/workspace/x:42:5%s</pre>\n' "$entity" "$case_dir/wt" "$entity"
+  done > "$case_dir/data/task-x1/report.html"
+  # A literal ampersand or an incomplete/invalid entity remains part of a path.
+  for path in 'x&literal' 'x&quot' 'x&#xZZ'; do
+    printf 'literal evidence\n' > "$case_dir/wt/workspace/$path"
+    printf 'workspace/%s\n' "$path" >> "$case_dir/data/task-x1/evidence.list"
+    printf '<pre>H=&quot;%s/workspace/%s&quot;</pre>\n' "$case_dir/wt" "$path" \
+      >> "$case_dir/data/task-x1/report.html"
+  done
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "html-declared: escaped references should be covered: $(cat "$case_dir/stderr")"
+  [ "$(cat "$case_dir/data/task-x1/evidence/copy/workspace/x")" = 'html evidence' ] \
+    || fail "html-declared: referenced evidence was not preserved"
+  evidence_manifest_verifies "$case_dir/data/task-x1/evidence" \
+    || fail "html-declared: preserved evidence does not verify"
+  assert_absent "$case_dir/state/task-x1.meta" "html-declared: teardown left the task record"
+  pass "named and numeric HTML entities delimit declared paths without truncating literal ampersands"
+}
+
+test_html_entities_do_not_hide_undeclared_evidence_references() {
+  local case_dir rc entity flag n=0
+  case_dir=$(make_case evidence-html-undeclared)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/wt/workspace" "$case_dir/data/task-x1"
+  printf 'declared\n' > "$case_dir/wt/workspace/x"
+  printf '%s\n' workspace/x > "$case_dir/data/task-x1/evidence.list"
+  for entity in '&quot;' '&amp;' '&lt;' '&gt;' '&apos;' '&#34;' '&#x22;' '&#X2A;'; do
+    n=$((n + 1))
+    printf 'uncovered\n' > "$case_dir/wt/workspace/uncovered-$n"
+    printf '<pre>H=%s%s/workspace/uncovered-%s%s</pre>\n' "$entity" "$case_dir/wt" "$n" "$entity"
+  done > "$case_dir/data/task-x1/report.html"
+  for flag in '' --force; do
+    rc=0
+    run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "html-undeclared: escaped dangling references allowed cleanup ${flag:-without --force}"
+    for n in 1 2 3 4 5 6 7 8; do
+      assert_grep "references $case_dir/wt/workspace/uncovered-$n," "$case_dir/stderr" \
+        "html-undeclared: refusal did not name the path without its entity suffix"
+      assert_present "$case_dir/wt/workspace/uncovered-$n" "html-undeclared: refusal touched evidence"
+    done
+    assert_present "$case_dir/state/task-x1.meta" "html-undeclared: refusal removed the task record"
+    assert_absent "$case_dir/data/task-x1/evidence" "html-undeclared: refusal installed a partial snapshot"
+  done
+  pass "HTML-escaped uncovered paths still refuse cleanup, including with --force"
+}
+
 test_clean_tracked_source_citations_need_no_evidence_declaration() {
   local case_dir rc
   case_dir=$(make_case evidence-tracked-clean)
@@ -4866,6 +4926,8 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_run_abort_precedes_process_reap_precedes_worktree_removal \
   test_declared_evidence_is_copied_out_with_a_verified_manifest \
   test_undeclared_reference_into_the_copy_refuses_then_declaring_it_proceeds \
+  test_html_entities_delimit_declared_evidence_references \
+  test_html_entities_do_not_hide_undeclared_evidence_references \
   test_clean_tracked_source_citations_need_no_evidence_declaration \
   test_unrecoverable_copy_citations_still_refuse_even_with_force \
   test_evidence_declaration_outside_the_task_roots_refuses \
