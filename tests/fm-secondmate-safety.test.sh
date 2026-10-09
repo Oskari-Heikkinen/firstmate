@@ -2004,6 +2004,74 @@ EOF
   pass "secondmate force teardown discards child work"
 }
 
+test_secondmate_force_teardown_binds_child_lease_and_preserves_on_refusal() {
+  local variant home subhome childproj childwt fakebin log err rc state claim before head
+  for variant in success refusal; do
+    home="$TMP_ROOT/child-lease-$variant-home"
+    subhome="$TMP_ROOT/child-lease-$variant-subhome"
+    childproj="$subhome/projects/alpha"
+    childwt="$TMP_ROOT/child-lease-$variant-pool/1/alpha"
+    state="$(dirname "$(dirname "$childwt")")/treehouse-state.json"
+    claim="$(dirname "$childwt")/.fm-slot-owner"
+    err="$TMP_ROOT/child-lease-$variant.err"
+    mkdir -p "$home/state" "$home/data" "$subhome/state" "$(dirname "$childwt")"
+    fm_git_worktree "$childproj" "$childwt" "child-lease-$variant"
+    printf '{"worktrees":[{"name":"1","path":"%s","leased":true,"lease_holder":"child-holder","lease_id":"child-acquisition"}]}\n' "$childwt" > "$state"
+    printf 'task=child\nhome=%s\n' "$subhome" > "$claim"
+    printf 'domain\n' > "$subhome/.fm-secondmate-home"
+    printf 'window=firstmate:fm-domain\nworktree=%s\nproject=%s\nharness=echo\nkind=secondmate\nmode=secondmate\nyolo=off\nhome=%s\nprojects=alpha\n' \
+      "$subhome" "$subhome" "$subhome" > "$home/state/domain.meta"
+    printf -- '- domain - design domain (home: %s; scope: design domain; projects: alpha; added 2026-06-22)\n' "$subhome" > "$home/data/secondmates.md"
+    printf 'window=firstmate:fm-child\nworktree=%s\nproject=%s\nharness=echo\nkind=ship\nmode=no-mistakes\nyolo=off\ntreehouse_lease_holder=child-holder\ntreehouse_lease_id=child-acquisition\n' \
+      "$childwt" "$childproj" > "$subhome/state/child.meta"
+    printf 'uncommitted retained work\n' >> "$childwt/README.md"
+    printf 'ignored-evidence\n' > "$childwt/private-evidence"
+    printf 'private-evidence\n' >> "$(git -C "$childwt" rev-parse --git-path info/exclude)"
+    head=$(git -C "$childwt" rev-parse HEAD)
+    before=$(cat "$state")
+    fakebin=$(make_fake_tmux "$TMP_ROOT/child-lease-$variant-fake")
+    log="$TMP_ROOT/child-lease-$variant-fake/tmux.log"
+    cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -eu
+printf 'treehouse %s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+[ "$1" = return ] && [ "$2" = --force ] && [ "$3" = --if-lease-holder ] && \
+  [ "$4" = child-holder ] && [ "$5" = --if-lease-id ] && [ "$6" = child-acquisition ] || exit 81
+if [ "$CHILD_LEASE_RESULT" = refusal ]; then
+  echo 'lease precondition failed: injected refusal' >&2
+  exit 1
+fi
+# Native return retains the pooled directory, so claim release can read it.
+exit 0
+SH
+    chmod +x "$fakebin/treehouse"
+    set +e
+    PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+      FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/child-lease-$variant-fake/pane.txt" CHILD_LEASE_RESULT="$variant" \
+      "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err"
+    rc=$?
+    set -e
+    grep -F "treehouse return --force --if-lease-holder child-holder --if-lease-id child-acquisition $childwt" "$log" >/dev/null \
+      || fail "child $variant did not condition return on its recorded incarnation: $(cat "$err")"
+    if [ "$variant" = success ]; then
+      [ "$rc" -eq 0 ] || fail "successful child lease return failed: $(cat "$err")"
+      [ ! -e "$home/state/domain.meta" ] || fail 'successful child return did not finish retirement'
+      [ ! -e "$claim" ] || fail 'successful return did not release child claim'
+    else
+      [ "$rc" -ne 0 ] || fail 'failed leased child return was reported successful'
+      [ -d "$childwt" ] && [ -d "$subhome" ] || fail 'return refusal fell back to deleting the child/home'
+      [ -e "$subhome/state/child.meta" ] && [ -e "$home/state/domain.meta" ] || fail 'return refusal removed task records'
+      [ "$head" = "$(git -C "$childwt" rev-parse HEAD)" ] || fail 'return refusal moved child HEAD'
+      assert_grep 'uncommitted retained work' "$childwt/README.md" 'return refusal discarded work'
+      assert_grep 'ignored-evidence' "$childwt/private-evidence" 'return refusal discarded ignored evidence'
+      assert_grep 'task=child' "$claim" 'return refusal released child claim'
+      [ "$before" = "$(cat "$state")" ] || fail 'return refusal changed child lease'
+      assert_grep 'lease precondition failed' "$err" 'return refusal was not explained'
+    fi
+  done
+  pass 'descendant returns bind holder/acquisition and never raw-delete a leased child on refusal'
+}
+
 test_secondmate_force_teardown_refuses_duplicated_child_slot() {
   local home subhome childproj childwt fakebin log err rc
   home="$TMP_ROOT/force-duplicate-slot-home"
@@ -3089,6 +3157,7 @@ test_secondmate_force_teardown_preserves_nested_restore_status
 test_secondmate_teardown_refuses_failed_leased_home_return
 test_secondmate_teardown_removes_plain_clone_home_without_treehouse_return
 test_secondmate_force_teardown_discards_child_work
+test_secondmate_force_teardown_binds_child_lease_and_preserves_on_refusal
 test_secondmate_force_teardown_refuses_duplicated_child_slot
 test_secondmate_force_teardown_preserves_child_on_unproven_lock
 test_secondmate_force_teardown_allows_non_state_operational_dir_symlinks_inside_home

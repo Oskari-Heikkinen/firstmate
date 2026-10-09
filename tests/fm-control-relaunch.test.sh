@@ -2774,6 +2774,72 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
   pass "relaunch heals an item that drifted out of In flight while the task stayed live"
 }
 
+test_pooled_spawn_relaunch_keeps_acquisition_identity() {
+  local dir id=rlpool43 wt holder lease=immutable-acquisition out rc before lock
+  dir=$(new_case pooled-reservation "$id")
+  add_ship_task "$dir" "$id" claude
+  wt="$dir/pool/1/proj"
+  mkdir -p "$(dirname "$wt")"
+  git -C "$dir/proj" worktree move "$dir/wt" "$wt"
+  holder=$(FM_HOME="$dir/home" bash -c '. "$1"; fm_treehouse_lease_holder "$2" "$3"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$dir/home" "$id") || fail "could not name fixture holder"
+  printf '{"worktrees":[{"name":"1","path":"%s","leased":true,"lease_holder":"%s","lease_id":"%s"}]}\n' \
+    "$wt" "$holder" "$lease" > "$dir/pool/treehouse-state.json"
+  printf 'task=%s\nhome=%s\n' "$id" "$dir/home" > "$dir/pool/1/.fm-slot-owner"
+  sed "s|^worktree=.*|worktree=$wt|" "$dir/home/state/$id.meta" > "$dir/meta.new"
+  mv "$dir/meta.new" "$dir/home/state/$id.meta"
+  printf 'treehouse_lease_holder=%s\ntreehouse_lease_id=%s\n' "$holder" "$lease" >> "$dir/home/state/$id.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  printf zsh > "$dir/fake/command"
+  printf 'unfinished work\n' > "$wt/unfinished.txt"
+  before=$(git -C "$wt" rev-parse HEAD)
+  cat > "$dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_DIR/treehouse-calls"
+exit 1
+SH
+  chmod +x "$dir/fakebin/treehouse"
+  out=$(run_spawn "$dir" "$id" --relaunch); rc=$?
+  expect_code 0 "$rc" "a stopped pooled task should relaunch on its reservation: $out"
+  assert_contains "$out" "spawned $id" "pooled relaunch never completed"
+  [ "$(meta_field "$dir" "$id" worktree)" = "$wt" ] || fail "relaunch moved the reserved copy"
+  [ "$(meta_field "$dir" "$id" treehouse_lease_holder)" = "$holder" ] || fail "relaunch lost the durable holder"
+  [ "$(meta_field "$dir" "$id" treehouse_lease_id)" = "$lease" ] || fail "relaunch lost the immutable acquisition id"
+  [ "$(grep -c '^treehouse_lease_holder=' "$dir/home/state/$id.meta")" = 1 ] || fail "relaunch duplicated holder metadata"
+  [ "$(grep -c '^treehouse_lease_id=' "$dir/home/state/$id.meta")" = 1 ] || fail "relaunch duplicated acquisition metadata"
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$before" ] || fail "relaunch refreshed the retained HEAD"
+  assert_grep 'unfinished work' "$wt/unfinished.txt" "relaunch discarded unfinished work"
+  assert_absent "$dir/fake/treehouse-calls" "relaunch allocated or returned a copy"
+  cp "$dir/home/state/$id.meta" "$dir/meta.before"
+  : > "$dir/fake/literal"
+  printf zsh > "$dir/fake/command"
+  # Prove the executable path participates in the project allocation lock,
+  # with the lock owner's shell alive throughout the attempted relaunch.
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-wake-lib.sh"
+    export FM_HOME="$dir/home"
+    lock=$(fm_treehouse_project_lock_path "$dir/proj") || fail "could not resolve project lock"
+    fm_lock_try_acquire "$lock" || fail "could not acquire fixture project lock"
+    out=$(run_spawn "$dir" "$id" --relaunch); rc=$?
+    fm_lock_release "$lock"
+    [ "$rc" -ne 0 ] || fail "pooled relaunch ignored the live allocation lock"
+    assert_contains "$out" "project" "lock refusal did not identify contention"
+  ) || fail "pooled relaunch lock proof failed"
+  cmp -s "$dir/meta.before" "$dir/home/state/$id.meta" || fail "lock refusal rewrote metadata"
+  jq '.worktrees[0].lease_id="replacement-acquisition"' "$dir/pool/treehouse-state.json" > "$dir/state.new"
+  mv "$dir/state.new" "$dir/pool/treehouse-state.json"
+  out=$(run_spawn "$dir" "$id" --relaunch); rc=$?
+  [ "$rc" -ne 0 ] || fail "pooled relaunch adopted a replaced acquisition"
+  assert_contains "$out" "owner reconciliation is required before relaunch" "replacement lease refusal missing"
+  cmp -s "$dir/meta.before" "$dir/home/state/$id.meta" || fail "replacement refusal rewrote metadata"
+  assert_grep 'unfinished work' "$wt/unfinished.txt" "replacement refusal touched work"
+  [ ! -s "$dir/fake/literal" ] || fail "refused relaunch delivered replacement launch text"
+  assert_absent "$dir/fake/treehouse-calls" "refused relaunch touched allocator state"
+  pass "pooled relaunch executes under the allocation lock, preserves lease metadata and work, and refuses another incarnation"
+}
+
+test_pooled_spawn_relaunch_keeps_acquisition_identity
 test_relaunch_rotates_accumulated_notes_without_losing_bytes
 test_relaunch_refuses_oversized_original_before_stopping
 test_relaunch_rotation_rollback_restores_brief_and_archive

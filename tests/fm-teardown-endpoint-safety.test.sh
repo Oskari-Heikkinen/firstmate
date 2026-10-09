@@ -2,8 +2,8 @@
 # Regression tests for cleanup endpoint and worktree-slot identity validation.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-endpoint-safety)
@@ -983,6 +983,49 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
   pass "fm-teardown: a pool slot claimed by another task is left alone while the task's own cleanup finishes"
 }
 
+test_legacy_record_under_leased_successor_cleans_only_its_record() {
+  local dir id=legacy-stale other=durable-successor holder=successor-home-task lease=successor-acquisition force rc head
+  for force in normal forced; do
+    dir=$(make_case "legacy-leased-successor-$force")
+    mark_case_as_treehouse_pool "$dir"
+    claim_pool_slot "$dir" "$other"
+    jq --arg h "$holder" --arg l "$lease" '.worktrees[0] += {leased:true,lease_holder:$h,lease_id:$l}' \
+      "$dir/pool/treehouse-state.json" > "$dir/state.new"
+    mv "$dir/state.new" "$dir/pool/treehouse-state.json"
+    fm_write_meta "$dir/home/state/$id.meta" "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+      "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+    fm_write_meta "$dir/home/state/$other.meta" "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+      "worktree=$dir/worktree" "project=$dir/project" "kind=scout" \
+      "treehouse_lease_holder=$holder" "treehouse_lease_id=$lease"
+    mkdir -p "$dir/worktree/workspace/study"
+    printf 'successor evidence\n' > "$dir/worktree/workspace/study/result"
+    printf 'workspace/\n' >> "$(git -C "$dir/project" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+    cp "$dir/home/state/$other.meta" "$dir/successor.before"
+    cp "$dir/pool/treehouse-state.json" "$dir/pool.before"
+    cp "$dir/pool/1/.fm-slot-owner" "$dir/claim.before"
+    head=$(git -C "$dir/worktree" rev-parse HEAD)
+    set +e
+    if [ "$force" = forced ]; then
+      run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+    else
+      FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_RUNTIME_LOG="$dir/runtime.log" PATH="$dir/fakebin:$PATH" \
+        "$TEARDOWN" "$id" > "$dir/stdout" 2> "$dir/stderr"
+    fi
+    rc=$?
+    set -e
+    expect_code 0 "$rc" "legacy cleanup should skip the leased successor ($force): $(cat "$dir/stderr")"
+    assert_reassigned_slot_left_alone "$dir" "$id" "$other" "leased successor ($force)"
+    cmp -s "$dir/successor.before" "$dir/home/state/$other.meta" || fail "successor record changed"
+    cmp -s "$dir/pool.before" "$dir/pool/treehouse-state.json" || fail "successor lease changed"
+    cmp -s "$dir/claim.before" "$dir/pool/1/.fm-slot-owner" || fail "successor claim changed"
+    [ "$(git -C "$dir/worktree" rev-parse HEAD)" = "$head" ] || fail "successor HEAD changed"
+    assert_grep 'successor evidence' "$dir/worktree/workspace/study/result" "successor evidence lost"
+    assert_present "$dir/worktree/sentinel" "successor uncommitted work lost"
+    assert_no_grep "fm-$other" "$dir/runtime.log" "cleanup acted on successor endpoint"
+  done
+  pass "legacy records under leased successors finish only their own cleanup, with or without force"
+}
+
 test_reassigned_slot_evidence_keeps_only_the_verified_prior_snapshot() {
   local dir id=stale-evidence other=new-owner ev hash rc
   dir=$(make_case slot-reassigned-evidence)
@@ -1667,8 +1710,55 @@ test_reused_pool_slot_refuses_before_touching_the_other_task
 test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
+test_legacy_record_under_leased_successor_cleans_only_its_record
 test_reassigned_slot_evidence_keeps_only_the_verified_prior_snapshot
 test_reassigned_slot_skips_the_direct_push_open_pr_refusal
+test_durable_lease_cleanup_preserves_evidence_before_exact_return() {
+  local dir id=leased-owner holder=firstmate:fixture:leased-owner lease=acquisition-one kind rc
+  for kind in holder incarnation missing-record; do
+    dir=$(make_case "lease-refuse-$kind")
+    mark_case_as_treehouse_pool "$dir"
+    claim_pool_slot "$dir" "$id"
+    jq --arg h "$holder" --arg l "$lease" '.worktrees[0] += {leased:true,lease_holder:$h,lease_id:$l}' \
+      "$dir/pool/treehouse-state.json" > "$dir/state.new"
+    mv "$dir/state.new" "$dir/pool/treehouse-state.json"
+    fm_write_meta "$dir/home/state/$id.meta" "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+      "worktree=$dir/worktree" "project=$dir/project" "kind=scout" \
+      "treehouse_lease_holder=$holder" "treehouse_lease_id=$lease"
+    case "$kind" in
+      holder) printf 'treehouse_lease_holder=foreign-home\n' >> "$dir/home/state/$id.meta" ;;
+      incarnation) printf 'treehouse_lease_id=new-acquisition\n' >> "$dir/home/state/$id.meta" ;;
+      missing-record) sed '/^treehouse_lease_/d' "$dir/home/state/$id.meta" > "$dir/meta.new"; mv "$dir/meta.new" "$dir/home/state/$id.meta" ;;
+    esac
+    assert_refused_without_mutation "$dir" "$id" "durable $kind mismatch"
+    jq -e '.worktrees[0].leased==true' "$dir/pool/treehouse-state.json" >/dev/null || fail "foreign lease released"
+  done
+  dir=$(make_case lease-preserved-return)
+  mark_case_as_treehouse_pool "$dir"
+  claim_pool_slot "$dir" "$id"
+  jq --arg h "$holder" --arg l "$lease" '.worktrees[0] += {leased:true,lease_holder:$h,lease_id:$l}' \
+    "$dir/pool/treehouse-state.json" > "$dir/state.new"
+  mv "$dir/state.new" "$dir/pool/treehouse-state.json"
+  fm_write_meta "$dir/home/state/$id.meta" "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout" \
+    "treehouse_lease_holder=$holder" "treehouse_lease_id=$lease" "decisions_reviewed=1" "decision_keys="
+  mkdir -p "$dir/worktree/workspace/study" "$dir/home/data/$id"
+  printf 'must survive\n' > "$dir/worktree/workspace/study/result"
+  printf '# Study\nEvidence: %s/workspace/study/result\n' "$dir/worktree" > "$dir/home/data/$id/report.md"
+  printf 'workspace/study\n' > "$dir/home/data/$id/evidence.list"
+  fm_test_fake_treehouse_lease "$dir/fakebin"
+  FM_FAKE_TREEHOUSE_LOG="$dir/return.log" run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  expect_code 0 "$rc" "durable cleanup should preserve before releasing: $(cat "$dir/stderr")"
+  assert_grep 'must survive' "$dir/home/data/$id/evidence/copy/workspace/study/result" "declared evidence not preserved"
+  (cd "$dir/home/data/$id/evidence" && sha256sum -c MANIFEST.sha256) || fail "preservation manifest does not verify"
+  assert_contains "$(cat "$dir/return.log")" "--if-lease-holder $holder --if-lease-id $lease" "conditional release lost its acquisition binding"
+  jq -e '.worktrees[0] | (.leased // false) == false' "$dir/pool/treehouse-state.json" >/dev/null || fail "exact lease was not released"
+  assert_absent "$dir/pool/1/.fm-slot-owner" "successful return kept the spent marker"
+  pass "durable cleanup rejects mismatches and preserves evidence before returning only its exact acquisition"
+}
+
+test_durable_lease_cleanup_preserves_evidence_before_exact_return
 test_own_and_absent_slot_claims_still_tear_down
 test_owner_claim_resolves_a_stale_record_on_the_same_slot
 test_forced_secondmate_keeps_a_stale_child_off_its_claimed_sibling_slot

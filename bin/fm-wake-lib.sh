@@ -1433,45 +1433,43 @@ fm_treehouse_pool_slot() {  # <project-dir> <worktree>
   [ "$project_common" = "$slot_common" ]
 }
 
-# Slot-owner claim: which task a Treehouse pool slot currently belongs to.
+# Ordinary task reservations have two identities: a durable Treehouse lease
+# (holder bound to physical home/task, plus the acquisition's immutable lease
+# id), and a .fm-slot-owner claim naming the task/home. Spawn owns publication;
+# teardown owns release. Park/exit never release either identity. A fresh spawn
+# checks the registered local homes and pool claims before calling Treehouse:
+# any retained reservation without a matching durable lease refuses intake,
+# including markerless legacy records. Reconciliation is owner-only, never an
+# automatic record edit or lease migration. Relaunch proves the same lease and
+# exclusive record before using its old path. All checks/publication/return run
+# under the project's shared allocation lock.
 #
-# Treehouse can record ownership durably: `treehouse get --lease --lease-holder`
-# reserves a slot under a label until `treehouse return --if-lease-holder`
-# releases it, and Firstmate uses exactly that for secondmate homes
-# (bin/fm-home-seed.sh). Crewmate spawns do not take that path: they acquire
-# their slot through the interactive pane-driven `treehouse get`, whose state
-# entry is a live process lease (owner_pid plus owner_started_at, and `treehouse
-# status` reports in-use from the processes actually running under the path).
-# That answers "is anything running here", never "which task owns this", and it
-# is released by the very event that makes a task record stale - the worker
-# exiting - so a slot whose lease has lapsed reads identical whether it is still
-# this task's or has since been handed to another one. Firstmate therefore keeps
-# its own claim on top: one file naming the task that took the slot, written by
-# bin/fm-spawn.sh under the same project lock that allocates the slot and
-# released by bin/fm-teardown.sh when the slot goes back to the pool. Moving
-# crewmate spawns onto the durable lease is separate follow-up work.
-#
-# The claim lives at <pool>/<slot>/.fm-slot-owner - a sibling of the repo
-# checkout rather than a file inside it - so claiming a slot can never dirty the
-# copy teardown's landed-work checks inspect, and a returned slot carries no
-# untracked leftover from it.
+# The claim lives at <pool>/<slot>/.fm-slot-owner, outside the repository, so it
+# cannot dirty landed-work checks. A new claim never replaces a conflicting or
+# unreadable claim. The older cleanup claim-reader's legacy compatibility stays
+# unchanged; a durable lease additionally requires the exact recorded holder/id.
 fm_treehouse_slot_owner_marker() {  # <worktree>
   local worktree=$1 slot
   slot=$(CDPATH='' cd -- "$worktree" 2>/dev/null && pwd -P) || return 1
   printf '%s/.fm-slot-owner\n' "$(dirname "$slot")"
 }
 
-# Claim a pool slot for a task, replacing whatever the previous holder left.
-# The rename is atomic, so a reader either sees the old claim or the new one.
+# Claim only an unclaimed slot or this exact task/home's existing claim.
+# Callers hold the allocation lock and prove recorded-holder exclusivity first.
+# The rename is atomic, so readers never observe a half-written claim.
 fm_treehouse_slot_owner_claim() {  # <worktree> <task-id> <home>
-  local worktree=$1 id=$2 home=$3 marker tmp
+  local worktree=$1 id=$2 home=$3 marker tmp home_real
   [ -n "$id" ] || return 1
+  home_real=$(CDPATH='' cd -- "$home" 2>/dev/null && pwd -P) || return 1
   marker=$(fm_treehouse_slot_owner_marker "$worktree") || return 1
   # Only a plain claim file may be replaced: renaming onto a directory would
   # move the new claim inside it and leave the slot reading as unclaimable.
   if { [ -e "$marker" ] || [ -L "$marker" ]; } \
      && { [ ! -f "$marker" ] || [ -L "$marker" ]; }; then
     return 1
+  fi
+  if [ -f "$marker" ]; then
+    fm_treehouse_slot_claim_matches "$worktree" "$id" "$home_real" || return 1
   fi
   tmp="$marker.tmp.${BASHPID:-$$}"
   rm -f "$tmp" || return 1
@@ -1520,6 +1518,23 @@ fm_treehouse_slot_owner_state() {  # <worktree> <task-id>
   fi
 }
 
+# Strict allocation/relaunch identity, separate from cleanup's legacy reader.
+fm_treehouse_slot_claim_matches() {  # <worktree> <task> <home>
+  local marker home owner
+  marker=$(fm_treehouse_slot_owner_marker "$1") || return 1
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  awk -v id="$2" '
+    /^task=/ {t++; if (substr($0,6)!=id) bad=1; next}
+    /^home=/ {h++; if (length($0)==5) bad=1; next}
+    {bad=1}
+    END {exit (bad || t!=1 || h!=1)}' "$marker" || return 1
+  fm_treehouse_slot_owner_state "$1" "$2"
+  [ "$FM_TREEHOUSE_SLOT_OWNER" = mine ] || return 1
+  home=$(CDPATH='' cd -- "$3" 2>/dev/null && pwd -P) || return 1
+  owner=$(CDPATH='' cd -- "$FM_TREEHOUSE_SLOT_OWNER_HOME" 2>/dev/null && pwd -P) || return 1
+  [ "$home" = "$owner" ]
+}
+
 # Drop a task's own claim once its slot is back in the pool. Never removes
 # another task's claim, so a misdirected release cannot strip the evidence that
 # protects the slot's real owner.
@@ -1529,6 +1544,201 @@ fm_treehouse_slot_owner_release() {  # <worktree> <task-id>
   [ "$FM_TREEHOUSE_SLOT_OWNER" = mine ] || return 0
   marker=$(fm_treehouse_slot_owner_marker "$worktree") || return 0
   rm -f "$marker" 2>/dev/null || true
+}
+
+# The bounded local-home inventory shared by spawn and teardown. Remote routes
+# are not filesystem authority. Preserve the existing teardown output global.
+fm_treehouse_collect_states() {  # <record-state>
+  local record_state=$1 root home reg line child known existing i=0
+  local -a homes
+  TREEHOUSE_OWNER_STATES=("$record_state")
+  root=$(fm_firstmate_root_home "$FM_HOME") || return 1
+  homes=("$root")
+  # shellcheck source=bin/fm-secondmate-registry-lib.sh
+  . "$FM_WAKE_LIB_DIR/fm-secondmate-registry-lib.sh"
+  while [ "$i" -lt "${#homes[@]}" ]; do
+    home=${homes[$i]}
+    i=$((i + 1))
+    known=0
+    for existing in "${TREEHOUSE_OWNER_STATES[@]}"; do
+      [ "$existing" != "$home/state" ] || known=1
+    done
+    [ "$known" = 1 ] || TREEHOUSE_OWNER_STATES+=("$home/state")
+    reg="$home/data/secondmates.md"
+    [ ! -e "$reg" ] && [ ! -L "$reg" ] && continue
+    [ -f "$reg" ] && [ ! -L "$reg" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        "- "*)
+          secondmate_registry_parse_line "$line" || return 1
+          [ "$SECONDMATE_REGISTRY_REMOTE" -eq 0 ] || continue
+          child=$(CDPATH='' cd -- "$SECONDMATE_REGISTRY_HOME" 2>/dev/null && pwd -P) || return 1
+          known=0
+          for existing in "${homes[@]}"; do
+            [ "$existing" != "$child" ] || known=1
+          done
+          [ "$known" = 1 ] || homes+=("$child")
+          ;;
+      esac
+    done < "$reg"
+  done
+}
+
+fm_treehouse_record_field() {  # <meta> <key>
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  awk -v k="$2=" 'index($0,k)==1 {v=substr($0,length(k)+1)} END {print v}' "$1"
+}
+
+fm_treehouse_lease_holder() {  # <home> <task>
+  local home hash
+  home=$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P) || return 1
+  [ -n "$2" ] || return 1
+  hash=$(printf '%s' "$home" | git hash-object --stdin) || return 1
+  printf 'firstmate:%s:%s\n' "$hash" "$2"
+}
+
+# Read one pool row; never recover or rewrite corrupt/missing state. Treehouse
+# v2.3's state schema supplies leased, lease_holder and immutable lease_id.
+fm_treehouse_slot_lease_read() {  # <worktree>
+  local wt state row
+  FM_TREEHOUSE_LEASED=0 FM_TREEHOUSE_LEASE_HOLDER='' FM_TREEHOUSE_LEASE_ID=''
+  wt=$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P) || return 1
+  state="$(dirname "$(dirname "$wt")")/treehouse-state.json"
+  [ -f "$state" ] && [ ! -L "$state" ] || return 1
+  row=$(jq -er --arg wt "$wt" '
+    [.worktrees[] | select(.path == $wt)] |
+    if length != 1 then error("ambiguous pool row") else .[0] end |
+    if (.leased // false) == false then "0\t-\t-"
+    elif .leased == true and (.lease_holder | type) == "string"
+      and (.lease_id | type) == "string" and (.lease_holder | length) > 0
+      and (.lease_id | length) > 0
+      and ([.lease_holder,.lease_id] | all(test("[\\r\\n\\t]") | not))
+    then "1\t" + .lease_holder + "\t" + .lease_id
+    else error("unsafe lease") end' "$state" 2>/dev/null) || return 1
+  IFS=$'\t' read -r FM_TREEHOUSE_LEASED FM_TREEHOUSE_LEASE_HOLDER FM_TREEHOUSE_LEASE_ID <<< "$row"
+  if [ "$FM_TREEHOUSE_LEASED" = 0 ]; then
+    FM_TREEHOUSE_LEASE_HOLDER='' FM_TREEHOUSE_LEASE_ID=''
+  fi
+}
+
+fm_treehouse_slot_lease_matches() {  # <worktree> <holder> <lease-id>
+  [ -n "$2" ] && [ -n "$3" ] || return 1
+  fm_treehouse_slot_lease_read "$1" || return 1
+  [ "$FM_TREEHOUSE_LEASED" = 1 ] && [ "$FM_TREEHOUSE_LEASE_HOLDER" = "$2" ] && \
+    [ "$FM_TREEHOUSE_LEASE_ID" = "$3" ]
+}
+
+# Unlike cleanup's legacy stale-record exception, allocation never infers a
+# dead worker abandoned its evidence. Any different record still reserves it.
+fm_treehouse_slot_records_exclusive() {  # <worktree> <own-meta>
+  local wt own=$2 state meta field path other
+  wt=$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P) || return 1
+  for state in "${TREEHOUSE_OWNER_STATES[@]}"; do
+    for meta in "$state"/*.meta; do
+      [ -e "$meta" ] || [ -L "$meta" ] || continue
+      [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+      [ "${meta##*/}" != "${own##*/}" ] || [ ! "$meta" -ef "$own" ] || continue
+      for field in worktree home; do
+        path=$(fm_treehouse_record_field "$meta" "$field") || return 1
+        [ -n "$path" ] || continue
+        other=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || continue
+        if [ "$other" = "$wt" ]; then
+          echo "error: Treehouse slot $wt is still recorded by $meta ($field); owner reconciliation is required" >&2
+          return 1
+        fi
+      done
+    done
+  done
+}
+
+fm_treehouse_relaunch_reservation() {  # <project> <state> <meta> <id> <home>
+  local wt holder lease
+  wt=$(fm_treehouse_record_field "$3" worktree) || return 1
+  fm_treehouse_pool_slot "$1" "$wt" || return 0
+  holder=$(fm_treehouse_record_field "$3" treehouse_lease_holder) || return 1
+  lease=$(fm_treehouse_record_field "$3" treehouse_lease_id) || return 1
+  fm_treehouse_collect_states "$2" || return 1
+  fm_treehouse_slot_lease_matches "$wt" "$holder" "$lease" && \
+    fm_treehouse_slot_claim_matches "$wt" "$4" "$5" && \
+    fm_treehouse_slot_records_exclusive "$wt" "$3"
+}
+
+# Before get can prepare/reset any copy, prove every discoverable reservation
+# in this repository's pools is durably protected. Enumerate Git's registered
+# worktrees and the registered local homes only, never a filesystem-wide scan.
+fm_treehouse_intake_preflight() {  # <project> <record-state>
+  local project=$1 state=$2 list line wt marker home id meta path holder lease field rec owner_state known
+  fm_treehouse_collect_states "$state" || {
+    echo "error: cannot inspect the registered local Treehouse owners; refusing intake" >&2
+    return 1
+  }
+  list=$(git -C "$project" worktree list --porcelain) || return 1
+  while IFS= read -r line; do
+    case "$line" in worktree\ *) wt=${line#worktree } ;; *) continue ;; esac
+    fm_treehouse_pool_slot "$project" "$wt" || continue
+    wt=$(CDPATH='' cd -- "$wt" && pwd -P) || return 1
+    fm_treehouse_slot_lease_read "$wt" || {
+      echo "error: cannot prove Treehouse lease state for $wt; refusing intake before allocation" >&2
+      return 1
+    }
+    marker=$(fm_treehouse_slot_owner_marker "$wt") || return 1
+    if [ -e "$marker" ] || [ -L "$marker" ]; then
+      fm_treehouse_slot_owner_state "$wt" ''
+      home=$FM_TREEHOUSE_SLOT_OWNER_HOME id=$FM_TREEHOUSE_SLOT_OWNER_ID
+      case "$id" in ''|.|..|*[!A-Za-z0-9._-]*)
+        echo "error: unsafe Treehouse owner claim at $marker; refusing intake" >&2
+        return 1 ;;
+      esac
+      fm_treehouse_slot_claim_matches "$wt" "$id" "$home" || {
+        echo "error: conflicting legacy reservation at $wt ($marker); refusing intake before allocation" >&2
+        return 1
+      }
+      owner_state=$(CDPATH='' cd -- "$home/state" 2>/dev/null && pwd -P) || return 1
+      known=0
+      for state in "${TREEHOUSE_OWNER_STATES[@]}"; do
+        [ "$(CDPATH='' cd -- "$state" 2>/dev/null && pwd -P)" != "$owner_state" ] || known=1
+      done
+      if [ "$known" != 1 ]; then
+        echo "error: slot $wt has an owner outside the registered local homes; refusing intake without inspecting that home's records" >&2
+        return 1
+      fi
+      meta="$home/state/$id.meta"
+      path=$(fm_treehouse_record_field "$meta" worktree) || path=''
+      if [ -n "$path" ]; then
+        path=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || path=''
+      fi
+      holder=$(fm_treehouse_record_field "$meta" treehouse_lease_holder) || holder=''
+      lease=$(fm_treehouse_record_field "$meta" treehouse_lease_id) || lease=''
+      if [ "$FM_TREEHOUSE_SLOT_OWNER" = unsafe ] || [ -z "$home" ] || [ -z "$id" ] || \
+        [ "$path" != "$wt" ] || ! fm_treehouse_slot_lease_matches "$wt" "$holder" "$lease"; then
+        echo "error: conflicting legacy reservation at $wt ($marker); refusing intake before any copy is prepared; home owner must reconcile it" >&2
+        return 1
+      fi
+    fi
+    for state in "${TREEHOUSE_OWNER_STATES[@]}"; do
+      for rec in "$state"/*.meta; do
+        [ -e "$rec" ] || [ -L "$rec" ] || continue
+        [ -f "$rec" ] && [ ! -L "$rec" ] || return 1
+        for field in worktree home; do
+          path=$(fm_treehouse_record_field "$rec" "$field") || return 1
+          [ -n "$path" ] || continue
+          path=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || continue
+          [ "$path" = "$wt" ] || continue
+          if [ "$(fm_treehouse_record_field "$rec" kind)" = secondmate ]; then
+            [ "$FM_TREEHOUSE_LEASED" = 1 ] && \
+              [ "$FM_TREEHOUSE_LEASE_HOLDER" = "$(basename "$rec" .meta)" ] && continue
+          fi
+          holder=$(fm_treehouse_record_field "$rec" treehouse_lease_holder) || return 1
+          lease=$(fm_treehouse_record_field "$rec" treehouse_lease_id) || return 1
+          if ! fm_treehouse_slot_lease_matches "$wt" "$holder" "$lease"; then
+            echo "error: conflicting legacy reservation at $wt ($rec); refusing intake before any copy is prepared; home owner must reconcile it" >&2
+            return 1
+          fi
+          fm_treehouse_slot_records_exclusive "$wt" "$rec" || return 1
+        done
+      done
+    done
+  done <<< "$list"
 }
 
 fm_failure_episode_reset() {

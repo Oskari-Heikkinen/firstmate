@@ -59,6 +59,8 @@ Do not work around either refusal by respawning - it means a live agent may stil
 That reclaim is the owning home's operation only, and a secondmate is the one exception: recover it through `bin/fm-spawn.sh <id> --secondmate` as above.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
+For an unleased legacy pool reservation, the affected home owner can manually run [`fm-treehouse-adopt.sh`](../../../bin/fm-treehouse-adopt.sh); its header owns in-place adoption, conflict reporting and the accepted native Treehouse tidying/concurrency limits.
+This is never an automatic recovery step: conflicting records or claims require owner reconciliation without discarding work, and the command never changes another home's records.
 
 ## A live crewmate claiming the pipeline is dead
 

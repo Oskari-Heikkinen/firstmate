@@ -149,9 +149,9 @@ test_linked_spawning_home_rejects_primary_before_refresh() {
       # own project comparison, and the repository primary (named directly or
       # through a symlink) fails the isolation screen the poll shares with the
       # guard. The refusal names the last path the pane reported.
-      assert_contains "$out" "did not enter an isolated worktree" \
+      assert_contains "$out" "did not yield an isolated worktree" \
         "spawn did not explain its isolation refusal"
-      assert_contains "$out" "last seen" "refusal did not name the path the pane reported"
+      assert_contains "$out" "resolved" "refusal did not name the acquired path"
       [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
       [ ! -e "$primary/.git/FETCH_HEAD" ] || fail "refused spawn fetched before proving isolation"
     fi
@@ -691,8 +691,8 @@ lay_out_as_pool_slot() {
 
 # The spawn side of the slot-owner claim that bin/fm-teardown.sh later reads:
 # a launched task's claim names it, a slot that cannot be claimed refuses before
-# anything is published, and an abort while the allocation lock is still held
-# leaves no claim naming a task with no record.
+# anything is published; a clean abort returns its exact reservation, while a
+# dirty abort retains the reservation and reports the evidence to its owner.
 test_pool_slot_claim_follows_the_spawn_outcome() {
   local rec id out status before
 
@@ -720,8 +720,8 @@ test_pool_slot_claim_follows_the_spawn_outcome() {
   out=$(run_spawn "$id" --scout)
   status=$?
   [ "$status" -ne 0 ] || fail "spawn launched a worker on a slot it could not claim"
-  assert_contains "$out" "could not claim Treehouse pool slot" \
-    "spawn did not name the unclaimable slot as the reason"
+  assert_contains "$out" "refusing intake" \
+    "spawn did not refuse the unsafe reservation before allocation"
   [ -d "$SLOT_CLAIM" ] || fail "spawn replaced the directory blocking its slot claim"
   [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "spawn published a record for an unclaimable slot"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
@@ -740,10 +740,308 @@ test_pool_slot_claim_follows_the_spawn_outcome() {
   [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "the aborted spawn published task metadata"
   [ ! -e "$SLOT_CLAIM" ] && [ ! -L "$SLOT_CLAIM" ] \
     || fail "the aborted spawn left a slot claim naming a task with no record: $(cat "$SLOT_CLAIM")"
-  pass "a Treehouse slot claim names the launched task, refuses when unclaimable, and is dropped by a locked abort"
+  jq -e '.worktrees[0] | (.leased // false) == false' "$CASE_DIR/slots/treehouse-state.json" >/dev/null \
+    || fail "unpublished clean spawn did not return its exact durable lease"
+  id=claimabortevidence1
+  rec=$(make_case claim-abort-retained-evidence "$id")
+  read_case_record "$rec"
+  lay_out_as_pool_slot
+  mkdir -p "$POOL_DIR/workspace/study"
+  printf 'ignored evidence\n' > "$POOL_DIR/workspace/study/result"
+  printf 'workspace/\n' >> "$(git -C "$POOL_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  printf 'uncommitted work\n' > "$POOL_DIR/uncommitted"
+  out=$(run_spawn "$id"); status=$?
+  [ "$status" -ne 0 ] || fail "spawn accepted an uncommitted slot"
+  assert_absent "$HOME_DIR/state/$id.meta" "dirty aborted spawn published metadata"
+  assert_grep "task=$id" "$CASE_DIR/slots/1/.fm-slot-owner" "dirty rollback removed retained claim"
+  jq -e '.worktrees[0].leased == true' "$CASE_DIR/slots/treehouse-state.json" >/dev/null || fail "dirty abort released its reservation"
+  assert_grep 'ignored evidence' "$POOL_DIR/workspace/study/result" "dirty abort lost evidence"
+  assert_grep 'uncommitted work' "$POOL_DIR/uncommitted" "dirty abort lost work"
+  assert_grep 'lease_id=fixture-1' "$HOME_DIR/state/$id.status" "dirty abort omitted its durable acquisition identity"
+  pass "claims refuse conflicts; clean unpublished leases roll back, while dirty copies retain their evidence and reservation"
 }
 
+test_legacy_reservations_refuse_before_get() {
+  local rec id out status marker_before head_before case_kind old=retained-study
+  for case_kind in marker markerless unlanded; do
+    id="legacy-$case_kind"
+    rec=$(make_case "$id" "$id")
+    read_case_record "$rec"
+    lay_out_as_pool_slot
+    mkdir -p "$POOL_DIR/workspace/$old"
+    printf 'irreplaceable experiment\n' > "$POOL_DIR/workspace/$old/result.json"
+    printf 'workspace/\n' >> "$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+    fm_write_meta "$HOME_DIR/state/$old.meta" "kind=scout" "worktree=$POOL_DIR" \
+      "project=$PROJECT_DIR" "park_state=parked"
+    if [ "$case_kind" != markerless ]; then
+      printf 'task=%s\nhome=%s\n' "$old" "$HOME_DIR" > "$SLOT_CLAIM"
+    fi
+    if [ "$case_kind" = unlanded ]; then
+      printf 'unlanded implementation\n' > "$POOL_DIR/unlanded.txt"
+      git -C "$POOL_DIR" add unlanded.txt
+      git -C "$POOL_DIR" -c user.name=test -c user.email=test@example.invalid commit -qm unlanded
+    fi
+    marker_before=$(cat "$SLOT_CLAIM" 2>/dev/null || true)
+    head_before=$(git -C "$POOL_DIR" rev-parse HEAD)
+    out=$(FM_FAKE_TREEHOUSE_LOG="$CASE_DIR/get.log" run_spawn "$id" --scout)
+    status=$?
+    [ "$status" -ne 0 ] || fail "legacy $case_kind reservation was allocated"
+    assert_contains "$out" "conflicting legacy reservation" "legacy refusal omitted its owner"
+    [ ! -s "$CASE_DIR/get.log" ] || fail "legacy refusal occurred after get prepared the copy"
+    [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$head_before" ] || fail "legacy HEAD moved"
+    [ "$(cat "$SLOT_CLAIM" 2>/dev/null || true)" = "$marker_before" ] || fail "legacy claim changed"
+    assert_grep 'irreplaceable experiment' "$POOL_DIR/workspace/$old/result.json" "ignored evidence was lost"
+    assert_present "$HOME_DIR/state/$old.meta" "legacy record was edited/removed"
+    assert_absent "$HOME_DIR/state/$id.meta" "new record published despite refusal"
+  done
+  pass "retained legacy claims, markerless records and clean unlanded heads refuse before get"
+}
+
+test_preclaim_acquisition_rollback_and_preservation() {
+  local rec id case_kind out rc head_before real_mv
+  for case_kind in write-failure foreign-marker ambiguous-marker distinct-record foreign-holder; do
+    id="preclaim-$case_kind"
+    rec=$(make_case "$id" "$id")
+    read_case_record "$rec"
+    lay_out_as_pool_slot
+    head_before=$(git -C "$POOL_DIR" rev-parse HEAD)
+    cat > "$CASE_DIR/after-get" <<'SH'
+#!/usr/bin/env bash
+set -eu
+wt=$1 holder=$2
+marker="$(dirname "$wt")/.fm-slot-owner"
+case "$FM_TREEHOUSE_TEST_CASE" in
+  foreign-marker) printf 'task=retained\nhome=%s\n' "$FM_TREEHOUSE_TEST_HOME" > "$marker" ;;
+  ambiguous-marker) printf 'task=retained\ntask=another\nhome=%s\n' "$FM_TREEHOUSE_TEST_HOME" > "$marker" ;;
+  distinct-record) printf 'kind=scout\nworktree=%s\n' "$wt" > "$FM_TREEHOUSE_TEST_HOME/state/retained.meta" ;;
+  foreign-holder)
+    state="$(dirname "$(dirname "$wt")")/treehouse-state.json"
+    jq '.worktrees[0].lease_holder="foreign-owner"' "$state" > "$state.new"
+    mv "$state.new" "$state" ;;
+esac
+SH
+    chmod +x "$CASE_DIR/after-get"
+    if [ "$case_kind" = write-failure ]; then
+      real_mv=$(command -v mv)
+      cat > "$FAKEBIN_DIR/mv" <<SH
+#!/usr/bin/env bash
+case "\$*" in *'/.fm-slot-owner') exit 1 ;; esac
+exec '$real_mv' "\$@"
+SH
+      chmod +x "$FAKEBIN_DIR/mv"
+    fi
+    out=$(FM_FAKE_TREEHOUSE_AFTER_GET="$CASE_DIR/after-get" FM_TREEHOUSE_TEST_CASE="$case_kind" \
+      FM_TREEHOUSE_TEST_HOME="$HOME_DIR" FM_FAKE_TREEHOUSE_LOG="$CASE_DIR/get.log" run_spawn "$id" --scout)
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "preclaim $case_kind was accepted"
+    assert_absent "$HOME_DIR/state/$id.meta" "preclaim $case_kind published task metadata"
+    assert_grep 'get --lease --lease-holder firstmate:' "$CASE_DIR/get.log" "test never acquired a durable lease"
+    [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$head_before" ] || fail "preclaim refusal changed HEAD"
+    if [ "$case_kind" = write-failure ]; then
+      assert_grep 'return --force --if-lease-holder firstmate:' "$CASE_DIR/get.log" "unclaimed clean acquisition was not rolled back"
+      assert_grep '--if-lease-id fixture-1' "$CASE_DIR/get.log" "rollback did not bind its acquisition id"
+      jq -e '.worktrees[0] | (.leased // false) == false' "$CASE_DIR/slots/treehouse-state.json" >/dev/null || fail "clean lease leaked before claim publication"
+      assert_absent "$SLOT_CLAIM" "failed publication left a claim"
+    else
+      assert_no_grep 'return ' "$CASE_DIR/get.log" "conflicting acquisition was returned"
+      jq -e '.worktrees[0].leased == true' "$CASE_DIR/slots/treehouse-state.json" >/dev/null || fail "conflicting lease was released"
+      assert_grep 'lease_id=fixture-1' "$HOME_DIR/state/$id.status" "preserved acquisition has no durable identity report"
+      assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/$id.status" "preserved acquisition has no recorded path"
+      case "$case_kind" in
+        foreign-marker) assert_grep 'task=retained' "$SLOT_CLAIM" "foreign marker changed" ;;
+        ambiguous-marker) [ "$(grep -c '^task=' "$SLOT_CLAIM")" = 2 ] || fail "ambiguous marker changed" ;;
+        distinct-record) assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/retained.meta" "distinct record changed" ;;
+        foreign-holder) assert_grep 'observed_holder=foreign-owner' "$HOME_DIR/state/$id.status" "foreign holder identity lost" ;;
+      esac
+    fi
+  done
+  pass "preclaim acquisition failures return only clean exclusive own leases, otherwise preserve and durably report identity"
+}
+
+test_task_duration_lease_and_relaunch() {
+  local rec id=duration-owner next=duration-next out status holder lease marker head slot2
+  rec=$(make_case duration "$id")
+  read_case_record "$rec"
+  lay_out_as_pool_slot
+  out=$(run_spawn "$id" --scout); status=$?
+  expect_code 0 "$status" "durable owner spawn failed: $out"
+  holder=$(sed -n 's/^treehouse_lease_holder=//p' "$HOME_DIR/state/$id.meta")
+  lease=$(sed -n 's/^treehouse_lease_id=//p' "$HOME_DIR/state/$id.meta")
+  [ -n "$holder" ] && [ -n "$lease" ] || fail "spawn omitted durable lease identity"
+  jq -e --arg h "$holder" --arg l "$lease" '.worktrees[0] | .leased==true and .lease_holder==$h and .lease_id==$l' \
+    "$CASE_DIR/slots/treehouse-state.json" >/dev/null || fail "task has no durable lease"
+  mkdir -p "$POOL_DIR/workspace/$id"
+  printf 'retained\n' > "$POOL_DIR/workspace/$id/evidence"
+  printf 'workspace/\n' >> "$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  printf 'park_state=parked\n' >> "$HOME_DIR/state/$id.meta"
+  marker=$(cat "$SLOT_CLAIM")
+  head=$(git -C "$POOL_DIR" rev-parse HEAD)
+  # A process-independent reservation survives a stopped/parked worker.
+  slot2="$CASE_DIR/slots/2/project"
+  mkdir -p "$(dirname "$slot2")"
+  git -C "$PROJECT_DIR" worktree add --quiet --detach "$slot2" "$INITIAL_SHA"
+  jq --arg p "$slot2" '.worktrees += [{name:"2",path:$p}]' "$CASE_DIR/slots/treehouse-state.json" > "$CASE_DIR/state.new"
+  mv "$CASE_DIR/state.new" "$CASE_DIR/slots/treehouse-state.json"
+  fm_test_spawn_brief "$HOME_DIR" "$next"
+  POOL_DIR=$slot2
+  out=$(run_spawn "$next" --scout); status=$?
+  expect_code 0 "$status" "another task should get a different leased copy: $out"
+  [ "$(cat "$SLOT_CLAIM")" = "$marker" ] || fail "parked task marker overwritten"
+  [ "$(git -C "$CASE_DIR/slots/1/project" rev-parse HEAD)" = "$head" ] || fail "parked HEAD changed"
+  assert_grep retained "$CASE_DIR/slots/1/project/workspace/$id/evidence" "parked evidence removed"
+  POOL_DIR="$CASE_DIR/slots/1/project"
+  FM_HOME="$HOME_DIR" bash -c '. "$1"; fm_treehouse_relaunch_reservation "$2" "$3" "$4" "$5" "$6"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$PROJECT_DIR" "$HOME_DIR/state" "$HOME_DIR/state/$id.meta" "$id" "$HOME_DIR" \
+    || fail "own same-lease relaunch proof should succeed"
+  assert_grep "treehouse_lease_id=$lease" "$HOME_DIR/state/$id.meta" "relaunch proof changed acquisition identity"
+  # A reused path must not be adopted just because the old endpoint is dead.
+  jq '.worktrees[0].lease_id="replacement"' "$CASE_DIR/slots/treehouse-state.json" > "$CASE_DIR/state.new"
+  mv "$CASE_DIR/state.new" "$CASE_DIR/slots/treehouse-state.json"
+  if FM_HOME="$HOME_DIR" bash -c '. "$1"; fm_treehouse_relaunch_reservation "$2" "$3" "$4" "$5" "$6"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$PROJECT_DIR" "$HOME_DIR/state" "$HOME_DIR/state/$id.meta" "$id" "$HOME_DIR"; then
+    fail "relaunch accepted a different acquisition"
+  fi
+  assert_grep "treehouse_lease_id=$lease" "$HOME_DIR/state/$id.meta" "refused relaunch rewrote its reservation"
+  pass "park/exit occupancy cannot free a task-duration lease and relaunch requires its exact identity"
+}
+
+test_claim_publication_keeps_foreign_identity() {
+  local rec id=claim-identity other home rc before
+  rec=$(make_case claim-identity "$id")
+  read_case_record "$rec"
+  lay_out_as_pool_slot
+  mkdir -p "$CASE_DIR/other-home"
+  for other in another-task "$id"; do
+    home=$HOME_DIR
+    [ "$other" != "$id" ] || home="$CASE_DIR/other-home"
+    printf 'task=%s\nhome=%s\n' "$other" "$home" > "$SLOT_CLAIM"
+    before=$(cat "$SLOT_CLAIM")
+    bash -c '. "$1"; fm_treehouse_slot_owner_claim "$2" "$3" "$4"' _ \
+      "$ROOT/bin/fm-wake-lib.sh" "$POOL_DIR" "$id" "$HOME_DIR"
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "claim replaced distinct task/home"
+    [ "$(cat "$SLOT_CLAIM")" = "$before" ] || fail "conflicting marker changed"
+  done
+  printf 'task=%s\nhome=%s\n' "$id" "$HOME_DIR" > "$SLOT_CLAIM"
+  bash -c '. "$1"; fm_treehouse_slot_owner_claim "$2" "$3" "$4"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$POOL_DIR" "$id" "$HOME_DIR" || fail "identical claim was not idempotent"
+  printf 'task=%s\ntask=%s\nhome=%s\n' "$id" "$id" "$HOME_DIR" > "$SLOT_CLAIM"
+  if bash -c '. "$1"; fm_treehouse_slot_owner_claim "$2" "$3" "$4"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$POOL_DIR" "$id" "$HOME_DIR"; then
+    fail "ambiguous marker was overwritten"
+  fi
+  pass "claim publication refuses another task, same id in another home, and ambiguous markers"
+}
+
+# Exercise the owner-run command through its CLI, with native-tool responses.
+make_adoption_case() {
+  local rec id=$1 root
+  rec=$(make_case "adopt-$id" "$id")
+  read_case_record "$rec"
+  root="$CASE_DIR/.treehouse/project-fixture"
+  mkdir -p "$root/1"
+  git -C "$PROJECT_DIR" worktree move "$POOL_DIR" "$root/1/project"
+  POOL_DIR="$root/1/project"
+  SLOT_CLAIM="$root/1/.fm-slot-owner"
+  printf '{"worktrees":[{"name":"1","path":"%s","owner_pid":0}]}\n' "$POOL_DIR" > "$root/treehouse-state.json"
+  printf 'kind=scout\nproject=%s\nworktree=%s\nwindow=retained\n' "$PROJECT_DIR" "$POOL_DIR" > "$HOME_DIR/state/$id.meta"
+  cat > "$FAKEBIN_DIR/treehouse" <<'STUB'
+#!/usr/bin/env bash
+set -eu
+case "$*" in 'lease --help') exit 0 ;; esac
+printf '%s\n' "$*" >> "$ADOPT_LOG"
+[ "$1" = --root ] && shift 2
+case "$1" in
+  status)
+    jq --arg status "${ADOPT_STATUS:-dirty}" --arg wt "${ADOPT_WRONG_PATH:-}" '
+      [.worktrees[] | {name,path:(if $wt=="" then .path else $wt end),status:$status,processes:[]}]' "$ADOPT_STATE" ;;
+  lease)
+    [ "$3" = --lease-holder ]
+    jq --arg h "$4" '.worktrees[0] |= (. + {leased:true,lease_holder:$h,lease_id:"adopt-acquisition",owner_pid:0})' "$ADOPT_STATE" > "$ADOPT_STATE.new"
+    mv "$ADOPT_STATE.new" "$ADOPT_STATE"
+    jq '.worktrees[0] | {path,lease_holder,lease_id}' "$ADOPT_STATE" ;;
+  *) exit 70 ;;
+esac
+STUB
+  chmod +x "$FAKEBIN_DIR/treehouse"
+}
+
+run_adoption() {
+  env PATH="$FAKEBIN_DIR:$PATH" FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    ADOPT_LOG="$CASE_DIR/adopt.log" ADOPT_STATE="$(dirname "$(dirname "$POOL_DIR")")/treehouse-state.json" \
+    "$ROOT/bin/fm-treehouse-adopt.sh" 2>&1
+}
+
+test_owner_adoption_preserves_work_and_is_idempotent() {
+  local id=owner-adopt out status before head state meta claim sibling
+  make_adoption_case "$id"
+  state="$(dirname "$(dirname "$POOL_DIR")")/treehouse-state.json"
+  printf 'retained uncommitted work\n' >> "$POOL_DIR/README.md"
+  printf 'untracked evidence\n' > "$POOL_DIR/evidence.txt"
+  head=$(git -C "$POOL_DIR" rev-parse HEAD)
+  before=$(git -C "$POOL_DIR" diff)
+  sibling="$CASE_DIR/other-home"
+  mkdir -p "$sibling/state" "$sibling/data"
+  printf -- '- other - Other domain (home: %s; scope: other; projects: ; added 2026-10-12)\n' "$sibling" > "$HOME_DIR/data/secondmates.md"
+  printf 'kind=scout\nproject=%s\nworktree=%s\n' "$PROJECT_DIR" "$CASE_DIR/not-this-copy" > "$sibling/state/foreign.meta"
+  cp "$sibling/state/foreign.meta" "$CASE_DIR/foreign.before"
+  out=$(run_adoption); status=$?
+  expect_code 0 "$status" "owner adoption failed: $out"
+  assert_contains "$out" 'adopted:' 'owner command did not publish reservation'
+  assert_grep 'treehouse_lease_id=adopt-acquisition' "$HOME_DIR/state/$id.meta" 'adoption omitted exact acquisition'
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$head" ] || fail 'adoption moved HEAD'
+  [ "$(git -C "$POOL_DIR" diff)" = "$before" ] || fail 'adoption reset uncommitted work'
+  assert_grep 'untracked evidence' "$POOL_DIR/evidence.txt" 'adoption cleaned evidence'
+  cmp "$sibling/state/foreign.meta" "$CASE_DIR/foreign.before" || fail 'adoption changed foreign home'
+  meta=$(cat "$HOME_DIR/state/$id.meta"); claim=$(cat "$SLOT_CLAIM"); before=$(cat "$state")
+  out=$(run_adoption); status=$?
+  expect_code 0 "$status" "adoption rerun failed: $out"
+  assert_contains "$out" 'already protected:' 'rerun was not a no-op'
+  [ "$meta" = "$(cat "$HOME_DIR/state/$id.meta")" ] && [ "$claim" = "$(cat "$SLOT_CLAIM")" ] && \
+    [ "$before" = "$(cat "$state")" ] || fail 'idempotent rerun changed reservation'
+  [ "$(grep -c ' lease ' "$CASE_DIR/adopt.log")" -eq 1 ] || fail 'rerun leased again'
+  pass 'owner CLI adopts in place, preserves contents/foreign records and reruns without mutation'
+}
+
+test_owner_adoption_lists_conflicts_without_leasing() {
+  local variant id out status state before meta
+  for variant in duplicate foreign-home foreign-marker ambiguous-marker live-pid in-use unverified wrong-path replaced-lease; do
+    id="owner-$variant"
+    make_adoption_case "$id"
+    state="$(dirname "$(dirname "$POOL_DIR")")/treehouse-state.json"
+    case "$variant" in
+      duplicate) cp "$HOME_DIR/state/$id.meta" "$HOME_DIR/state/other.meta" ;;
+      foreign-home)
+        mkdir -p "$CASE_DIR/foreign/state" "$CASE_DIR/foreign/data"
+        printf -- '- other - Other domain (home: %s; scope: other; projects: ; added 2026-10-12)\n' "$CASE_DIR/foreign" > "$HOME_DIR/data/secondmates.md"
+        cp "$HOME_DIR/state/$id.meta" "$CASE_DIR/foreign/state/other.meta" ;;
+      foreign-marker) printf 'task=other\nhome=%s\n' "$HOME_DIR" > "$SLOT_CLAIM" ;;
+      ambiguous-marker) printf 'task=%s\ntask=%s\nhome=%s\n' "$id" "$id" "$HOME_DIR" > "$SLOT_CLAIM" ;;
+      live-pid) jq --argjson p "$$" '.worktrees[0].owner_pid=$p' "$state" > "$state.new"; mv "$state.new" "$state" ;;
+      replaced-lease) printf 'treehouse_lease_holder=old\ntreehouse_lease_id=lost\n' >> "$HOME_DIR/state/$id.meta" ;;
+    esac
+    before=$(cat "$state"); meta=$(cat "$HOME_DIR/state/$id.meta")
+    case "$variant" in
+      in-use|unverified) out=$(ADOPT_STATUS="$variant" run_adoption) ;;
+      wrong-path) out=$(ADOPT_WRONG_PATH="$CASE_DIR/not-this-slot" run_adoption) ;;
+      *) out=$(run_adoption) ;;
+    esac
+    status=$?
+    [ "$status" -ne 0 ] || fail "owner command accepted $variant"
+    assert_contains "$out" 'refused:' "owner command did not list $variant conflict"
+    [ "$before" = "$(cat "$state")" ] && [ "$meta" = "$(cat "$HOME_DIR/state/$id.meta")" ] || fail "$variant changed protected records"
+    if [ -f "$CASE_DIR/adopt.log" ] && grep -q ' lease ' "$CASE_DIR/adopt.log"; then fail "$variant called lease"; fi
+  done
+  pass 'owner CLI refuses duplicate/foreign records, conflicting markers, live holders and uncertain native identity'
+}
+
+test_owner_adoption_preserves_work_and_is_idempotent
+test_owner_adoption_lists_conflicts_without_leasing
 test_remote_seeded_home_spawns_from_treehouse_pool
+test_legacy_reservations_refuse_before_get
+test_preclaim_acquisition_rollback_and_preservation
+test_task_duration_lease_and_relaunch
+test_claim_publication_keeps_foreign_identity
 test_pool_slot_claim_follows_the_spawn_outcome
 test_linked_spawning_home_rejects_primary_before_refresh
 test_stale_pool_base_refreshes_before_branching

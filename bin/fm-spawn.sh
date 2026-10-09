@@ -174,18 +174,15 @@
 #   waiting up to FM_SPAWN_TASK_SET_WAIT seconds (default 60) per sibling fresh
 #   spawn that holds it (spawn_acquire_task_set_lock owns the exact policy);
 #   relaunch is exempt because the existing task's control lock covers it.
-#   A fresh Treehouse-backed spawn also takes the project-identity lock in the local
-#   root Firstmate home's state directory before slot allocation and holds it through
-#   task metadata publication. Teardown holds that same lock while proving and
-#   returning a slot, so allocation cannot reuse a slot before its owner record
-#   is published. Under that same lock it writes the slot's owner claim, which is
-#   what lets teardown leave a slot reassigned since untouched; bin/fm-wake-lib.sh
-#   owns the claim and bin/fm-teardown.sh owns what it protects. A slot that
-#   cannot be claimed refuses the spawn rather than launching a worker whose slot
-#   could later be released out from under its successor. A spawn that aborts
-#   while it still holds the allocation lock drops its own claim; an abort after
-#   metadata publication has released that lock leaves the claim in place, and
-#   the next spawn's claim replaces it.
+#   Treehouse allocation and relaunch hold the project-identity lock through task
+#   metadata publication. bin/fm-wake-lib.sh owns task-duration reservations,
+#   pre-allocation legacy refusal, and claim identity. Spawn records the exact
+#   treehouse_lease_holder and immutable treehouse_lease_id in state/<id>.meta;
+#   relaunch retains those fields. Acquisition is tracked before claim publication.
+#   An unpublished spawn rolls back only its exact lease while holding that lock,
+#   with exclusive records, no foreign/ambiguous claim and inspectably clean,
+#   isolated contents (including ignored files); otherwise its status records the
+#   retained identity for the home owner. bin/fm-teardown.sh owns guarded release.
 #   The local root is whatever bin/fm-wake-lib.sh's
 #   fm_firstmate_root_home resolves, so a home seeded from another machine anchors
 #   that lock itself rather than failing to resolve one;
@@ -1246,7 +1243,11 @@ SPAWN_TASK_SET_LOCK=
 SPAWN_TASK_SET_LOCK_HELD=0
 SPAWN_TREEHOUSE_PROJECT_LOCK=
 SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
-SPAWN_SLOT_CLAIMED=0
+SPAWN_LEASE_ACQUIRED=0
+SPAWN_TREEHOUSE_LEASE_HOLDER=
+SPAWN_TREEHOUSE_LEASE_ID=
+SPAWN_OBSERVED_LEASE_HOLDER=
+SPAWN_LEASE_WT=
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -1286,7 +1287,7 @@ parse_orca_worktree_result() {
 }
 
 spawn_abort_cleanup() {
-  local status=$?
+  local status=$? rollback_status rollback_marker reservation_identity
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] &&
     [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] &&
     [ -n "$SPAWN_META_TMP" ] &&
@@ -1382,21 +1383,32 @@ spawn_abort_cleanup() {
     SPAWN_META_LOCK_HELD=0
     fm_lock_release "$SPAWN_META_LOCK" || true
   fi
-  # A spawn that aborts after claiming its slot but before its record survives
-  # must not leave a claim naming a task no record describes. The release is a
-  # read-then-remove, so it runs only while the project lock that wrote the
-  # claim is still held (aborts before metadata publication); a later abort has
-  # already released that lock and leaves the claim for the next spawn's
-  # atomic replacement rather than racing it. The release itself never removes
-  # another task's claim.
-  if [ "$SPAWN_SLOT_CLAIMED" = 1 ] && [ -n "${WT:-}" ] &&
-    [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ] &&
-    fm_treehouse_pool_slot "$PROJ_ABS" "$WT"; then
-    SPAWN_SLOT_CLAIMED=0
-    if [ "$SPAWN_TREEHOUSE_PROJECT_LOCK_HELD" = 1 ]; then
+  # Roll back only an unpublished, exclusive, clean reservation while its
+  # allocation lock is still held. A failed claim or a later abort never returns
+  # another task's copy, and an unproved rollback leaves evidence for its owner.
+  [ "$SPAWN_LEASE_ACQUIRED" != 1 ] || WT=$SPAWN_LEASE_WT
+  if [ "$SPAWN_LEASE_ACQUIRED" = 1 ] &&
+    [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
+    SPAWN_LEASE_ACQUIRED=0
+    # Claim publication is not acquisition: even an earlier failure needs an
+    # exact rollback proof, or a durable identity report for its home owner.
+    if [ "$SPAWN_TREEHOUSE_PROJECT_LOCK_HELD" = 1 ] && [ -n "$SPAWN_TREEHOUSE_LEASE_ID" ] && \
+      spawn_worktree_isolated "$WT" && fm_treehouse_pool_slot "$PROJ_ABS" "$WT" && \
+      fm_treehouse_slot_lease_matches "$WT" "$SPAWN_TREEHOUSE_LEASE_HOLDER" "$SPAWN_TREEHOUSE_LEASE_ID" && \
+      fm_treehouse_slot_records_exclusive "$WT" "$STATE/$ID.meta" && \
+      rollback_marker=$(fm_treehouse_slot_owner_marker "$WT") && \
+      { { [ ! -e "$rollback_marker" ] && [ ! -L "$rollback_marker" ]; } || \
+        fm_treehouse_slot_claim_matches "$WT" "$ID" "$FM_HOME"; } && \
+      rollback_status=$(git -C "$WT" status --porcelain --ignored) && [ -z "$rollback_status" ] && \
+      (cd "$PROJ_ABS" && treehouse return --force \
+        --if-lease-holder "$SPAWN_TREEHOUSE_LEASE_HOLDER" --if-lease-id "$SPAWN_TREEHOUSE_LEASE_ID" "$WT"); then
       fm_treehouse_slot_owner_release "$WT" "$ID" || true
     else
-      echo "warning: leaving task $ID's slot claim on $WT in place; the Treehouse project lock is no longer held, so the next spawn's claim replaces it" >&2
+      printf -v reservation_identity 'worktree=%q requested_holder=%q observed_holder=%q lease_id=%q' \
+        "$WT" "$SPAWN_TREEHOUSE_LEASE_HOLDER" "${SPAWN_OBSERVED_LEASE_HOLDER:-unknown}" "${SPAWN_TREEHOUSE_LEASE_ID:-unknown}"
+      echo "warning: preserving unpublished task $ID's reservation ($reservation_identity); owner reconciliation is required" >&2
+      printf '%s\n' "$(status_stamp_line "blocked [key=treehouse-reservation]: preserved unpublished reservation ($reservation_identity); guarded rollback could not prove safe release; owner reconciliation is required")" \
+        >> "$STATE/$ID.status" || echo "error: could not record preserved reservation identity for $ID" >&2
     fi
   fi
   if [ "$SPAWN_TREEHOUSE_PROJECT_LOCK_HELD" = 1 ]; then
@@ -3131,7 +3143,7 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
     exit 1
@@ -3141,6 +3153,17 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ];
     exit 1
   fi
   SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=1
+  if [ "$RELAUNCH" -eq 0 ]; then
+    fm_treehouse_intake_preflight "$PROJ_ABS" "$STATE" || exit 1
+    SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_treehouse_lease_holder "$FM_HOME" "$ID") || exit 1
+  else
+    SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_meta_get "$RELAUNCH_META" treehouse_lease_holder)
+    SPAWN_TREEHOUSE_LEASE_ID=$(fm_meta_get "$RELAUNCH_META" treehouse_lease_id)
+    if ! fm_treehouse_relaunch_reservation "$PROJ_ABS" "$STATE" "$RELAUNCH_META" "$ID" "$FM_HOME"; then
+      echo "error: task $ID's recorded Treehouse copy has no exclusive matching durable reservation; owner reconciliation is required before relaunch" >&2
+      exit 1
+    fi
+  fi
 fi
 [ -f "$BRIEF" ] || {
   echo "error: task $ID has no brief at inaccessible data path $BRIEF" >&2
@@ -4376,9 +4399,41 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  # Noninteractive get holds the task-duration lease even when this pane exits.
+  SPAWN_LEASE_WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$SPAWN_TREEHOUSE_LEASE_HOLDER") || {
+    echo "error: durable Treehouse acquisition failed for $ID; no worker was launched" >&2
+    exit 1
+  }
+  SPAWN_LEASE_ACQUIRED=1
+  WT=$SPAWN_LEASE_WT
+  # Capture the observed incarnation before any claim/isolation refusal. The
+  # requested holder remains separate, so a foreign lease can never be returned.
+  if fm_treehouse_pool_slot "$PROJ_ABS" "$WT"; then
+    if fm_treehouse_slot_lease_read "$WT" && [ "$FM_TREEHOUSE_LEASED" = 1 ]; then
+      SPAWN_TREEHOUSE_LEASE_ID=$FM_TREEHOUSE_LEASE_ID
+      SPAWN_OBSERVED_LEASE_HOLDER=$FM_TREEHOUSE_LEASE_HOLDER
+    else
+      echo "error: Treehouse did not publish a readable durable lease for $WT; leaving the copy untouched" >&2
+      exit 1
+    fi
+    if [ "$SPAWN_OBSERVED_LEASE_HOLDER" != "$SPAWN_TREEHOUSE_LEASE_HOLDER" ]; then
+      echo "error: Treehouse did not publish the requested durable lease for $WT; leaving the copy untouched" >&2
+      exit 1
+    fi
+  fi
+  validate_spawn_worktree "treehouse get --lease" "$T"
+  if fm_treehouse_pool_slot "$PROJ_ABS" "$WT"; then
+    if ! fm_treehouse_slot_records_exclusive "$WT" "$STATE/$ID.meta" || \
+      ! fm_treehouse_slot_owner_claim "$WT" "$ID" "$FM_HOME"; then
+      echo "error: could not claim Treehouse pool slot $WT exclusively for $ID; preserving the conflicting copy for its home owner" >&2
+      exit 1
+    fi
+  fi
+  leased_wt_real=$(real_path_or_raw "$WT")
+  leased_cd_path=${WT//\'/\'\\\'\'}
+  spawn_send_text_line "$WT_TARGET" "cd -- '$leased_cd_path'" || exit 1
 
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
+  # Wait for the pane to settle in the exact leased copy, not another isolated cwd.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
   # automatic-rename slips through), display-message -t <bad-name> falls back to the
   # active client's window, which would misread firstmate's OWN pane path as the
@@ -4411,12 +4466,14 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # refusal has to be self-explaining instead: carry the last path seen and the
   # reason it was rejected, and report both at the deadline.
   candidate=""
+  WT=""
   last_seen=""
   last_reason="the pane reported no path"
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$p" ] || last_seen="$p"
-    if [ -n "$p" ] && spawn_worktree_isolated "$p"; then
+    if [ -n "$p" ] && spawn_worktree_isolated "$p" && \
+      [ "$(real_path_or_raw "$p")" = "$leased_wt_real" ]; then
       p_real=$(real_path_or_raw "$p")
       last_reason="it is an isolated worktree, but no second read agreed with it"
       if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
@@ -4438,25 +4495,8 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 
-  # Claim the pool slot for this task. The interactive `treehouse get` sent to
-  # the pane above records only a process lease (Treehouse's durable
-  # `get --lease --lease-holder`, which bin/fm-home-seed.sh uses for secondmate
-  # homes, is not this path), so Treehouse cannot say which task a slot belongs
-  # to once that task's worker exits - and that is exactly when the slot is
-  # handed on and this task's worktree= line goes stale. The claim is what lets
-  # bin/fm-teardown.sh leave a slot that has since been reassigned untouched, so
-  # a slot that cannot be claimed is refused here, at the cheapest point, rather
-  # than launching a worker whose slot teardown could later release out from
-  # under its successor.
-  # Written under the Treehouse project lock held from before slot allocation
-  # through metadata publication, so no other spawn or return sees a half-claim.
-  if fm_treehouse_pool_slot "$PROJ_ABS" "$WT"; then
-    if ! fm_treehouse_slot_owner_claim "$WT" "$ID" "$FM_HOME"; then
-      echo "error: could not claim Treehouse pool slot $WT for task $ID; refusing to launch a worker whose slot cannot later be proved to be its own; inspect window $T" >&2
-      exit 1
-    fi
-    SPAWN_SLOT_CLAIMED=1
-  fi
+  # The matching claim and lease were proved before entering this pane.
+  # The allocation lock still covers metadata publication below.
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
@@ -5230,7 +5270,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp model effort compact_at account account_provider claude_config_dir busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree treehouse_lease_holder treehouse_lease_id project harness kind mode yolo branch tasktmp model effort compact_at account account_provider claude_config_dir busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -5240,6 +5280,10 @@ preserve_relaunch_meta() {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
+  if [ -n "$SPAWN_TREEHOUSE_LEASE_ID" ]; then
+    echo "treehouse_lease_holder=$SPAWN_TREEHOUSE_LEASE_HOLDER"
+    echo "treehouse_lease_id=$SPAWN_TREEHOUSE_LEASE_ID"
+  fi
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"

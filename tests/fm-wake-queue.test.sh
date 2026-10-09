@@ -3409,6 +3409,36 @@ SH
   pass "watch liveness: an unreachable remote secondmate is probed, preserved, and never failed over"
 }
 
+test_pool_reservation_identity_and_markerless_conflict() {
+  local dir="$TMP_ROOT/pool-reservation" rc
+  mkdir -p "$dir/state" "$dir/pool/1/repo"
+  printf '{"worktrees":[{"path":"%s","leased":true,"lease_holder":"holder","lease_id":"acquisition"}]}\n' \
+    "$dir/pool/1/repo" > "$dir/pool/treehouse-state.json"
+  printf 'worktree=%s\n' "$dir/pool/1/repo" > "$dir/state/own.meta"
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    TREEHOUSE_OWNER_STATES=("$2/state")
+    fm_treehouse_slot_lease_matches "$2/pool/1/repo" holder acquisition &&
+      fm_treehouse_slot_records_exclusive "$2/pool/1/repo" "$2/state/own.meta"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$dir" || fail 'exclusive exact lease did not match'
+  cp "$dir/state/own.meta" "$dir/state/other.meta"
+  rc=0
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    TREEHOUSE_OWNER_STATES=("$2/state")
+    fm_treehouse_slot_records_exclusive "$2/pool/1/repo" "$2/state/own.meta"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$dir" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail 'markerless duplicate reservation was accepted'
+  rc=0
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_treehouse_slot_lease_matches "$2/pool/1/repo" holder replaced
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$dir" || rc=$?
+  [ "$rc" -ne 0 ] || fail 'replaced acquisition matched retained holder'
+  assert_grep 'worktree=' "$dir/state/other.meta" 'conflict check removed evidence'
+  pass 'reservation helpers require exact incarnation and refuse markerless duplicate records'
+}
+
 # Case pool (fm_run_case_pool in tests/lib.sh). Every case builds its own state
 # directory under its own name and drives only the watchers, drains, and lock
 # holders it started against it, so no case depends on another or on their
@@ -3418,6 +3448,7 @@ run_case_pool() {  # <case-function>...
 }
 
 WAKE_QUEUE_CASES=(
+  test_pool_reservation_identity_and_markerless_conflict
   # The slowest cases start first so the pool drains evenly.
   test_secondmate_liveness_tick_beats_per_mate_under_watchdog
   test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive

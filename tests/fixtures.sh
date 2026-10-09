@@ -291,15 +291,57 @@ Exercise the spawn behavior under test.
 EOF
 }
 
+# A fixture-only durable allocator: never reaches the installed pool tool.
+# Managed fixtures retain the same holder/id state until conditional return.
+fm_test_fake_treehouse_lease() {
+  local fakebin=$1
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'default_path=%q\n' "${2:-}"
+    cat <<'SH'
+set -u
+[ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+verb=${1:-}; shift
+holder='' lease='' path=${FM_FAKE_PANE_PATH:-$default_path}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --lease-holder|--if-lease-holder) holder=$2; shift 2 ;;
+    --if-lease-id) lease=$2; shift 2 ;;
+    --lease|--force) shift ;;
+    *) path=$1; shift ;;
+  esac
+done
+if [ -d "$path" ]; then path=$(cd -- "$path" && pwd -P) || exit 1; fi
+state="$(dirname "$(dirname "$path")")/treehouse-state.json"
+if [ "$verb" = get ]; then
+  [ -n "$holder" ] && [ -n "$path" ] || exit 1
+  if [ -f "$state" ]; then
+    jq -e --arg p "$path" '.worktrees[] | select(.path==$p) | (.leased // false) == false' "$state" >/dev/null || exit 1
+    jq --arg p "$path" --arg h "$holder" '.worktrees |= map(if .path==$p then . + {leased:true,lease_holder:$h,lease_id:("fixture-" + .name)} else . end)' "$state" > "$state.new" || exit 1
+    mv "$state.new" "$state"
+  fi
+  [ -z "${FM_FAKE_TREEHOUSE_AFTER_GET:-}" ] || "$FM_FAKE_TREEHOUSE_AFTER_GET" "$path" "$holder" || exit 1
+  printf '%s\n' "$path"
+elif [ "$verb" = return ] && [ -f "$state" ] && [ -n "$holder$lease" ]; then
+  jq -e --arg p "$path" --arg h "$holder" --arg l "$lease" '.worktrees[] | select(.path==$p) | .leased==true and .lease_holder==$h and .lease_id==$l' "$state" >/dev/null || exit 1
+  jq --arg p "$path" '.worktrees |= map(if .path==$p then del(.leased,.lease_holder,.lease_id) else . end)' "$state" > "$state.new" || exit 1
+  mv "$state.new" "$state"
+fi
+SH
+  } > "$fakebin/treehouse"
+  chmod +x "$fakebin/treehouse"
+}
+
 # fm_test_make_spawn_fakebin <dir> [extra-exit0-tool...]
-# Creates <dir>/fakebin with the spawn tmux stub, a no-op treehouse, and any
+# Creates <dir>/fakebin with the spawn tmux stub, a leased treehouse, and any
 # extra exit-0 tools. Echoes the fakebin path.
 fm_test_make_spawn_fakebin() {
   local dir=$1 fakebin
   shift
   fakebin=$(fm_fakebin "$dir")
   fm_test_fake_tmux_spawn "$fakebin"
-  fm_fake_exit0 "$fakebin" treehouse "$@"
+  fm_test_fake_treehouse_lease "$fakebin"
+  fm_fake_exit0 "$fakebin" "$@"
   printf '%s\n' "$fakebin"
 }
 

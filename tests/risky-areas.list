@@ -43,6 +43,7 @@ fleet-sync test tests/fm-ff-lib*.test.sh
 fleet-sync test tests/fm-green-pointer*.test.sh
 
 spawn-merge script bin/fm-spawn.sh
+spawn-merge script bin/fm-treehouse-adopt.sh
 spawn-merge script bin/fm-pr-merge.sh
 spawn-merge script bin/fm-merge-local.sh
 spawn-merge test tests/fm-spawn*.test.sh
