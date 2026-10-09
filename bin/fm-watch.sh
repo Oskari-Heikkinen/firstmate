@@ -2572,7 +2572,7 @@ signal_files_actionable() {  # <status-file> ...
     task=$(basename "$f"); task="${task%.status}"
     record=''; needs_decision=0
     status_span_first_actionable_record "$f" \
-      "$(fm_wake_signal_seen_size "$STATE" "$f")" record needs_decision
+      "$(fm_wake_signal_seen_size "$STATE" "$f")" record needs_decision watcher_beat
     rc=$?
     [ "$rc" -eq 1 ] && [ -z "$record" ] && continue
     if [ "$rc" -eq 2 ]; then
@@ -2612,7 +2612,7 @@ signal_secondmate_routine_files() {
     [ "$(_fm_status_kind "$f")" = secondmate ] || continue
     task=$(basename "$f"); task="${task%.status}"
     status_span_secondmate_routine "$f" "$(fm_wake_signal_seen_size "$STATE" "$f")" \
-      "$endpoint" "$ident" fm_pending_reply_line_acks "$STATE" "$task" || continue
+      "$endpoint" "$ident" fm_pending_reply_line_acks --on-record watcher_beat "$STATE" "$task" || continue
     out="$out $f"
   done <<EOF
 $FM_SIGNAL_SURFACE_ENDPOINTS
@@ -2656,7 +2656,7 @@ heartbeat_scan_finds_actionable() {
   for f in "$STATE"/*.status; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
-    record=$(status_span_first_actionable_record "$f" "$(hb_surfaced_offset "$task")")
+    record=$(status_span_first_actionable_record "$f" "$(hb_surfaced_offset "$task")" '' '' watcher_beat)
     rc=$?
     [ "$rc" -eq 1 ] && [ -z "$record" ] && continue
     if [ "$rc" -eq 2 ]; then
@@ -3099,8 +3099,9 @@ resurface_after_downtime() {
 # triage, one pane capture per window), and a busy home's steps together can
 # outlast the guard grace, so touching only at the top of the cycle made a
 # healthy watcher read stale mid-cycle and refused concurrent re-arms. The loop
-# calls this at each step boundary instead of from a background timer, so a
-# single step that stays blocked still ages the beacon and still reads wedged.
+# calls this at each step boundary and after completed classification batches
+# (fm-classify-lib.sh owns that callback contract), never from a background
+# timer, so a blocked read or parser still ages the beacon and reads wedged.
 # The top of each cycle also records that cycle's sequence number as the
 # beacon's content, so a reader can tell a new cycle from a step beat. The
 # beacon's mtime has one-second resolution, so a beat within the same second
@@ -3617,7 +3618,7 @@ EOF
               rm -f "$ssf"
               clear_write_tracking "$key"
               stale_status="$STATE/$(window_to_task "$w" "$STATE").status"
-              stale_record=$(status_span_first_actionable_record "$stale_status" 0)
+              stale_record=$(status_span_first_actionable_record "$stale_status" 0 '' '' watcher_beat)
               case $? in
                 0|1) stale_end=${stale_record%%$'\t'*}; stale_rest=${stale_record#*$'\t'}; stale_ident=${stale_rest%%$'\t'*} ;;
                 *) stale_end=''; stale_ident='' ;;
