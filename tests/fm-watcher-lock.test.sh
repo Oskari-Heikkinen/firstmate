@@ -376,6 +376,161 @@ test_long_pending_reply_scan_survives_watchdog() {
   pass "the watchdog leaves a watcher in a long pending-reply scan running"
 }
 
+# Instrument only the fixture's classifier, keeping the watcher and watchdog
+# real. Both parser passes take longer than the grace; a stuck parser instead
+# waits on one owned child before it can complete even one record.
+make_classification_case() {  # <name>
+  local dir f i=0 bytes
+  dir=$(make_case "$1")
+  mkdir -p "$dir/code/bin"
+  for f in "$ROOT"/bin/*; do
+    ln -s "$f" "$dir/code/bin/${f##*/}"
+  done
+  rm "$dir/code/bin/fm-classify-lib.sh" "$dir/code/bin/fm-home-summary-refresh.sh"
+  cp "$ROOT/bin/fm-classify-lib.sh" "$dir/code/bin/fm-classify-lib.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/code/bin/fm-home-summary-refresh.sh"
+  chmod +x "$dir/code/bin/fm-home-summary-refresh.sh"
+  cat >> "$dir/code/bin/fm-classify-lib.sh" <<'SH'
+eval "$(declare -f status_is_captain_relevant | sed '1s/status_is_captain_relevant/_test_real_relevant/')"
+eval "$(declare -f _fm_decision_fold_line | sed '1s/_fm_decision_fold_line/_test_real_fold/')"
+status_is_captain_relevant() {
+  if [ "${FM_CLASSIFY_TEST_STALL:-0}" = 1 ]; then
+    sleep 120 &
+    printf '%s\n' "$!" > "$FM_CLASSIFY_TEST_DIR/parser.pid"
+    wait "$!"
+  else
+    sleep 0.05
+  fi
+  printf '.' >> "$FM_CLASSIFY_TEST_DIR/outer-records"
+  _test_real_relevant "$@"
+}
+_fm_decision_fold_line() {
+  sleep 0.05
+  _test_real_fold "$@"
+  printf '.' >> "$FM_CLASSIFY_TEST_DIR/origin-records"
+}
+SH
+  printf 'kind=secondmate\n' > "$dir/state/mate.meta"
+  printf 'blocked [key=old]: historical blocker\n' > "$dir/state/mate.status"
+  while [ "$i" -lt 160 ]; do
+    printf 'working: history %s\n' "$i" >> "$dir/state/mate.status"
+    i=$((i + 1))
+  done
+  printf 'resolved [key=old]: cleared\nneeds-decision [key=current]: current question\n' >> "$dir/state/mate.status"
+  bytes=$(wc -c < "$dir/state/mate.status" | tr -d '[:space:]')
+  # A valid cached endpoint under a different file identity must still reread
+  # from zero. Do not prime a matching endpoint and accidentally skip history.
+  printf 'v2\tunverifiable\t%s@old-device' "$bytes" > "$dir/state/.seen-mate_status"
+  cp "$dir/state/.seen-mate_status" "$dir/seen-before"
+  printf '%s\n' "$dir"
+}
+
+start_classifying_watcher() {  # <dir> [stall]
+  local dir=$1
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+    FM_CLASSIFY_TEST_DIR="$dir" FM_CLASSIFY_TEST_STALL="${2:-0}" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_GUARD_GRACE="$LONG_CYCLE_GRACE" FM_WATCHER_WATCHDOG_INTERVAL=1 \
+    "$dir/code/bin/fm-watch.sh" > "$dir/watch.out" 2> "$dir/watch.err" &
+  SEED_PID=$!
+}
+
+test_slow_status_classification_survives_watchdog() {
+  local dir state i=0 records age start end offset
+  dir=$(make_classification_case slow-status-classification)
+  state="$dir/state"
+  start=$(date +%s)
+  start_classifying_watcher "$dir"
+  while [ "$i" -lt 800 ]; do
+    records=0
+    [ ! -f "$dir/origin-records" ] || records=$(wc -c < "$dir/origin-records" | tr -d '[:space:]')
+    [ "$records" -lt 64 ] || break
+    is_live_non_zombie "$SEED_PID" || fail "watcher died before its long origin fold made progress"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$records" -ge 64 ] || { reap_watcher "$SEED_PID"; fail "watcher never reached the long origin fold"; }
+  cmp -s "$dir/seen-before" "$state/.seen-mate_status" \
+    || { reap_watcher "$SEED_PID"; fail "classification committed an endpoint before finishing"; }
+  age=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_age "$2"' _ "$LIB" "$state/.last-watcher-beat")
+  [ "$age" -lt "$LONG_CYCLE_GRACE" ] \
+    || { reap_watcher "$SEED_PID"; fail "origin fold progress did not refresh the beacon"; }
+  wait_for_exit "$SEED_PID" 800 || { reap_watcher "$SEED_PID"; fail "slow classification never delivered its signal"; }
+  end=$(date +%s)
+  [ "$((end - start))" -gt "$LONG_CYCLE_GRACE" ] || fail "classification finished inside the grace, so the case was vacuous"
+  ! grep -qF 'watchdog: stopping' "$state/.watch-triage.log" 2>/dev/null \
+    || fail "watchdog stopped a progressing status classifier"
+  assert_grep 'signal:' "$dir/watch.out"
+  assert_grep 'needs-decision:' "$state/.wake-queue"
+  ! grep -q 'historical blocker' "$dir/watch.out" || fail "a resolved historical blocker was surfaced"
+  offset=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_wake_signal_seen_size "$2" "$3"' _ \
+    "$LIB" "$state" "$state/mate.status")
+  [ "$offset" = "$(wc -c < "$state/mate.status" | tr -d '[:space:]')" ] \
+    || fail "completed classification did not commit its captured endpoint"
+  pass "slow span and nested origin classification beat on progress, preserve decisions, and finish under the watchdog"
+}
+
+test_nonprogressing_status_parser_still_goes_stale() {
+  local dir state i=0 parser
+  dir=$(make_classification_case stuck-status-parser)
+  state="$dir/state"
+  start_classifying_watcher "$dir" 1
+  while [ "$i" -lt 300 ] && [ ! -s "$dir/parser.pid" ]; do
+    is_live_non_zombie "$SEED_PID" || fail "watcher died before entering the stuck parser"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  parser=$(cat "$dir/parser.pid" 2>/dev/null || true)
+  [ -n "$parser" ] || { reap_watcher "$SEED_PID"; fail "watcher did not enter the stuck parser"; }
+  i=0
+  while [ "$i" -lt 300 ] && is_live_non_zombie "$SEED_PID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -TERM "$parser" 2>/dev/null || true
+  is_live_non_zombie "$SEED_PID" && { reap_watcher "$SEED_PID"; fail "nonprogressing parser kept the watcher fresh"; }
+  wait "$SEED_PID" 2>/dev/null || true
+  assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log"
+  cmp -s "$dir/seen-before" "$state/.seen-mate_status" || fail "stuck classification advanced its endpoint"
+  [ ! -s "$state/.wake-queue" ] || fail "stuck classification published an unclassified signal"
+  pass "a parser completing no records still goes stale and is stopped without checkpointing"
+}
+
+test_classification_history_progress_is_optional_and_sideband() {
+  local dir state i=0 offset
+  dir=$(make_case history-progress-callback)
+  state="$dir/state"
+  printf 'kind=secondmate\n' > "$state/mate.meta"
+  printf 'done [key=child-pr-task]: child task PR ready: https://example.test/org/repo/pull/1\n' > "$state/mate.status"
+  while [ "$i" -lt 48 ]; do printf 'continuation prose\n' >> "$state/mate.status"; i=$((i + 1)); done
+  offset=$(wc -c < "$state/mate.status" | tr -d '[:space:]')
+  printf 'done [key=child-pr-task]: child task PR ready: https://example.test/org/repo/pull/1\n' >> "$state/mate.status"
+  bash -c '
+    . "$1"
+    ticks=$4
+    sideband() { printf x >> "$ticks"; printf "must not leak"; return 1; }
+    plain=$(status_span_first_actionable_record "$2" "$3"); plain_rc=$?
+    progress=$(status_span_first_actionable_record "$2" "$3" "" "" sideband); progress_rc=$?
+    [ "$plain_rc" = 1 ] && [ "$progress_rc" = "$plain_rc" ] && [ "$progress" = "$plain" ] && [ "$(wc -c < "$ticks" | tr -d "[:space:]")" = 3 ]
+  ' _ "$ROOT/bin/fm-classify-lib.sh" "$state/mate.status" "$offset" "$dir/ticks" \
+    || fail "duplicate-history progress changed the verdict, leaked output, or never ran"
+  i=0
+  while [ "$i" -lt 64 ]; do printf 'working: routine\n' >> "$state/routine.status"; i=$((i + 1)); done
+  printf 'note: ack\n' >> "$state/routine.status"
+  bash -c '
+    . "$1"
+    ticks=$3
+    sideband() { printf x >> "$ticks"; printf "must not leak"; return 1; }
+    ack() { [ "$1" = expected ] && [ "$2" = "note: ack" ]; }
+    ident=$(_fm_open_decisions_file_ident "$2")
+    end=$(_fm_status_file_size "$2")
+    out=$(status_span_secondmate_routine "$2" 0 "$end" "$ident" ack --on-record sideband expected); rc=$?
+    [ "$rc" = 0 ] && [ -z "$out" ] && [ "$(wc -c < "$ticks" | tr -d "[:space:]")" = 4 ]
+  ' _ "$ROOT/bin/fm-classify-lib.sh" "$state/routine.status" "$dir/routine-ticks" \
+    || fail "routine-span progress changed the verdict, lost predicate arguments, or leaked output"
+  pass "optional history and routine-span progress is bounded side-band output even when its callback fails"
+}
+
 test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
   # One child that never exits (a hung tmux capture-pane, here a check with no
   # effective timeout) ages the beacon past the grace, and the watcher's own
@@ -1868,6 +2023,9 @@ test_live_stale_watch_lock_is_actionable
 test_live_stalled_watch_lock_is_replaced_past_hard_bound
 test_long_pending_reply_scan_keeps_beacon_fresh
 test_long_pending_reply_scan_survives_watchdog
+test_slow_status_classification_survives_watchdog
+test_nonprogressing_status_parser_still_goes_stale
+test_classification_history_progress_is_optional_and_sideband
 test_step_blocked_on_one_live_child_is_stopped_by_watchdog
 test_watchdog_retries_unproven_identity_then_stops_wedge
 test_orphaned_pipe_read_is_stopped_by_watchdog

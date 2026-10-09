@@ -2558,13 +2558,24 @@ $1
 EOF
 }
 
-_fm_status_open_decision_origins() {  # <status-file> [<kind>]
-  local f=$1 line open='' after key verb note number=0 origins=''
+# Optional classification progress is side-band, never decision output or a
+# checkpoint: notify only after each 16 completed records. The loop heads below
+# report the PREVIOUS iteration, so a stuck read or parser cannot generate beats.
+# Callback output and failure cannot change the classifier's result. No callback
+# means the existing pure-read contract is unchanged.
+_fm_status_classification_progress() {  # <on-record> <completed-records>
+  [ -n "$1" ] && [ "$2" -gt 0 ] && [ "$(( $2 % 16 ))" -eq 0 ] || return 0
+  "$1" >/dev/null 2>&1 || true
+}
+
+_fm_status_open_decision_origins() {  # <status-file> [<kind>] [<on-record>]
+  local f=$1 on_record=${3:-} line open='' after key verb note number=0 origins=''
   local resolve held kind
   kind=$(_fm_status_kind "$f" "${2:-}")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
+    _fm_status_classification_progress "$on_record" "$number"
     number=$((number + 1))
     after=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind")
     [ -n "$after" ] || origins=''
@@ -2596,6 +2607,7 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
     esac
     open=$after
   done < "$f"
+  _fm_status_classification_progress "$on_record" "$number"
   printf '%s' "$origins"
 }
 
@@ -2625,9 +2637,14 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
 #    acknowledgement is still presented once, riding along at the next real
 #    drain through status_line_is_unread_surface's UNREAD STATUS rows; a
 #    repeated outcome was already presented with its first copy.
-status_span_secondmate_routine() {  # <status-file> <start> <end> <ident> <note-predicate> [<predicate-args>...]
-  local f=$1 start=$2 end=$3 ident=$4 predicate=$5 cur_ident chunk_file rc
+status_span_secondmate_routine() {  # <file> <start> <end> <ident> <predicate> [--on-record <callback>] [<predicate-args>...]
+  local f=$1 start=$2 end=$3 ident=$4 predicate=$5 on_record='' cur_ident chunk_file rc
   shift 5
+  if [ "${1:-}" = --on-record ]; then
+    [ "$#" -ge 2 ] || return 1
+    on_record=$2
+    shift 2
+  fi
   case "$start" in ''|*[!0-9]*) return 1 ;; esac
   case "$end" in ''|*[!0-9]*) return 1 ;; esac
   [ "$start" -lt "$end" ] || return 1
@@ -2640,7 +2657,7 @@ status_span_secondmate_routine() {  # <status-file> <start> <end> <ident> <note-
   cur_ident=$(_fm_open_decisions_file_ident "$f") || { rm -f "$chunk_file"; return 1; }
   [ "$cur_ident" = "$ident" ] || { rm -f "$chunk_file"; return 1; }
   rc=0
-  _fm_status_secondmate_routine_chunk "$f" "$start" "$chunk_file" "$predicate" "$@" || rc=1
+  _fm_status_secondmate_routine_chunk "$f" "$start" "$chunk_file" "$predicate" "$on_record" "$@" || rc=1
   rm -f "$chunk_file"
   return "$rc"
 }
@@ -2650,22 +2667,24 @@ _fm_status_line_has_corr() {  # <status-line>
   return 1
 }
 
-_fm_status_secondmate_routine_chunk() {  # <status-file> <start> <chunk-file> <note-predicate> [<predicate-args>...]
-  local f=$1 start=$2 chunk_file=$3 predicate=$4 line verb number=0 any=0
-  shift 4
+_fm_status_secondmate_routine_chunk() {  # <file> <start> <chunk> <predicate> <on-record> [<predicate-args>...]
+  local f=$1 start=$2 chunk_file=$3 predicate=$4 on_record=$5 line verb number=0 any=0
+  shift 5
   # shellcheck disable=SC2094 # The loop and the duplicate check below only read the span scratch.
   while IFS= read -r line || [ -n "$line" ]; do
+    _fm_status_classification_progress "$on_record" "$number"
     number=$((number + 1))
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
     case "$line" in *:*) status_line_verb "$line" verb ;; *) return 1 ;; esac
     case "$verb" in
       working) ! _fm_status_line_has_corr "$line" || return 1 ;;
       note) "$predicate" "$@" "$line" || return 1 ;;
-      "done") _fm_status_secondmate_duplicate_done "$f" "$start" "$chunk_file" "$number" "$line" || return 1 ;;
+      "done") _fm_status_secondmate_duplicate_done "$f" "$start" "$chunk_file" "$number" "$line" "$on_record" || return 1 ;;
       *) return 1 ;;
     esac
     any=1
   done < "$chunk_file"
+  _fm_status_classification_progress "$on_record" "$number"
   [ "$any" -eq 1 ]
 }
 
@@ -2737,13 +2756,15 @@ status_done_identity() {  # <status-line> [<out-var>]
 # resolution, or declared wait - means the outcome may carry news again, so
 # the line wakes. The earlier copy was itself actionable when classified,
 # because classification only ever advances past bytes it has decided.
-_fm_status_secondmate_duplicate_done() {  # <status-file> <start-offset> <chunk-file> <line-number> <line>
-  local f=$1 start=$2 chunk=$3 number=$4 line=$5 fact earlier prior verb
+_fm_status_secondmate_duplicate_done() {  # <file> <start> <chunk> <line-number> <line> [<on-record>]
+  local f=$1 start=$2 chunk=$3 number=$4 line=$5 on_record=${6:-} completed=0 fact earlier prior verb
   _fm_key_before_colon "$line" || return 1
   status_done_identity "$line" fact || return 1
   case "$line" in *" report="[![:space:]]*) return 1 ;; esac
   [ "$(_fm_status_kind "$f")" = secondmate ] || return 1
   while IFS= read -r earlier || [ -n "$earlier" ]; do
+    _fm_status_classification_progress "$on_record" "$completed"
+    completed=$((completed + 1))
     case "$earlier" in *[![:space:]]*) ;; *) continue ;; esac
     case "$earlier" in *:*) status_line_verb "$earlier" verb ;; *) continue ;; esac
     if [ "$verb" = "done" ]; then
@@ -2762,11 +2783,12 @@ _fm_status_secondmate_duplicate_done() {  # <status-file> <start-offset> <chunk-
     if [ "$start" -gt 0 ]; then _fm_status_read_span "$f" 0 "$start" 2>/dev/null; printf '\n'; fi
     if [ "$number" -gt 1 ]; then sed -n "1,$((number - 1))p" "$chunk" 2>/dev/null; fi
   } | awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }')
+  _fm_status_classification_progress "$on_record" "$completed"
   return 1
 }
 
-status_span_first_actionable_record() {  # <status-file> <start-offset> [record-var] [needs-decision-var]
-  local f=$1 start=${2:-0} output_var=${3-} needs_var=${4-} size ident cur_ident scratch chunk_file result
+status_span_first_actionable_record() {  # <file> <start> [record-var] [needs-decision-var] [on-record]
+  local f=$1 start=${2:-0} output_var=${3-} needs_var=${4-} on_record=${5:-} size ident cur_ident scratch chunk_file result
   local line verb key origins='' folded=0 rc=1 failed=0 line_number=0 live_line='' events='' _line _key _fm_span_needs_decision=0
   [ -e "$f" ] || { [ -L "$f" ] && return 2; return 1; }
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 2
@@ -2796,6 +2818,7 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
   [ "$cur_ident" = "$ident" ] || { rm -f "$chunk_file"; return 2; }
   # shellcheck disable=SC2094 # The loop and the origin fold below only read the span scratch.
   while IFS= read -r line || [ -n "$line" ]; do
+    _fm_status_classification_progress "$on_record" "$line_number"
     line_number=$((line_number + 1))
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
     if status_is_captain_held "$line"; then
@@ -2824,7 +2847,7 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
           continue
         }
         if [ "$folded" -eq 0 ]; then
-          origins=$(_fm_status_open_decision_origins "$chunk_file" "$(_fm_status_kind "$f")") || { failed=1; break; }
+          origins=$(_fm_status_open_decision_origins "$chunk_file" "$(_fm_status_kind "$f")" "$on_record") || { failed=1; break; }
           folded=1
         fi
         live_line=$(while IFS=$(printf '\t') read -r _key _line; do
@@ -2845,7 +2868,7 @@ EOF
       *)
         # A secondmate's repeated script-published outcome (section above).
         if [ "$verb" = "done" ] \
-          && _fm_status_secondmate_duplicate_done "$f" "$start" "$chunk_file" "$line_number" "$line"; then
+          && _fm_status_secondmate_duplicate_done "$f" "$start" "$chunk_file" "$line_number" "$line" "$on_record"; then
           continue
         fi
         [ -n "$events" ] && events="${events} ; "
@@ -2854,6 +2877,7 @@ EOF
         ;;
     esac
   done < "$chunk_file"
+  [ "$failed" -ne 0 ] || _fm_status_classification_progress "$on_record" "$line_number"
   rm -f "$chunk_file"
   [ "$failed" -eq 0 ] || return 2
   if [ "$rc" -eq 0 ]; then result="${size}"$'\t'"${ident}"$'\t'"${events}"; else result="${size}"$'\t'"${ident}"; fi
