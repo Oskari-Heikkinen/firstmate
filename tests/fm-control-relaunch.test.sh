@@ -2818,13 +2818,12 @@ SH
   (
     # shellcheck source=/dev/null
     . "$ROOT/bin/fm-wake-lib.sh"
-    export FM_HOME="$dir/home"
-    lock=$(fm_treehouse_project_lock_path "$dir/proj") || fail "could not resolve project lock"
+    lock=$(FM_HOME="$dir/home" fm_treehouse_project_lock_path "$dir/proj") || fail "could not resolve project lock"
     fm_lock_try_acquire "$lock" || fail "could not acquire fixture project lock"
     out=$(run_spawn "$dir" "$id" --relaunch); rc=$?
     fm_lock_release "$lock"
     [ "$rc" -ne 0 ] || fail "pooled relaunch ignored the live allocation lock"
-    assert_contains "$out" "project" "lock refusal did not identify contention"
+    assert_contains "$out" "allocation or return is in progress for $dir/proj" "lock refusal did not identify contention"
   ) || fail "pooled relaunch lock proof failed"
   cmp -s "$dir/meta.before" "$dir/home/state/$id.meta" || fail "lock refusal rewrote metadata"
   jq '.worktrees[0].lease_id="replacement-acquisition"' "$dir/pool/treehouse-state.json" > "$dir/state.new"

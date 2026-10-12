@@ -750,8 +750,9 @@ test_pool_slot_claim_follows_the_spawn_outcome() {
   printf 'ignored evidence\n' > "$POOL_DIR/workspace/study/result"
   printf 'workspace/\n' >> "$(git -C "$POOL_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   printf 'uncommitted work\n' > "$POOL_DIR/uncommitted"
-  out=$(run_spawn "$id"); status=$?
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off); status=$?
   [ "$status" -ne 0 ] || fail "spawn accepted an uncommitted slot"
+  assert_contains "$out" "is not clean" "dirty abort did not reach the content guard"
   assert_absent "$HOME_DIR/state/$id.meta" "dirty aborted spawn published metadata"
   assert_grep "task=$id" "$CASE_DIR/slots/1/.fm-slot-owner" "dirty rollback removed retained claim"
   jq -e '.worktrees[0].leased == true' "$CASE_DIR/slots/treehouse-state.json" >/dev/null || fail "dirty abort released its reservation"

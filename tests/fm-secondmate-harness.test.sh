@@ -1016,6 +1016,7 @@ test_spawn_fallback_chain_and_crew_scout_unaffected() {
   proj="$w/crew-project"
   wt="$w/crew-wt"
   fakebin=$(make_launch_capturing_tmux "$w/tmux-crew")
+  fm_test_fake_treehouse_lease "$fakebin" "$wt"
   fm_git_worktree "$proj" "$wt" "wt-crew"
   mkdir -p "$home/data/$id" "$home/projects" "$home/state"
   cat > "$home/data/$id/brief.md" <<'EOF'

@@ -993,7 +993,9 @@ test_legacy_record_under_leased_successor_cleans_only_its_record() {
       "$dir/pool/treehouse-state.json" > "$dir/state.new"
     mv "$dir/state.new" "$dir/pool/treehouse-state.json"
     fm_write_meta "$dir/home/state/$id.meta" "window=firstmate:fm-$id" "endpoint_task_id=$id" \
-      "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+      "worktree=$dir/worktree" "project=$dir/project" "kind=scout" "decisions_reviewed=1" "decision_keys="
+    mkdir -p "$dir/home/data/$id"
+    printf '# Finished study\nNo unresolved decisions.\n' > "$dir/home/data/$id/report.md"
     fm_write_meta "$dir/home/state/$other.meta" "window=firstmate:fm-$other" "endpoint_task_id=$other" \
       "worktree=$dir/worktree" "project=$dir/project" "kind=scout" \
       "treehouse_lease_holder=$holder" "treehouse_lease_id=$lease"
