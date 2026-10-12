@@ -569,7 +569,7 @@ spelling = str(alias_home) + "/."
 
 def produced_summary(selected_home):
     env = dict(os.environ, FM_HOME=selected_home, FM_ROOT_OVERRIDE=str(root),
-               FM_SNAPSHOT_NOW=iso(NOW), FM_SNAPSHOT_NOW_EPOCH=str(NOW),
+               FM_SNAPSHOT_NOW=iso(NOW).replace(".000Z", "Z"), FM_SNAPSHOT_NOW_EPOCH=str(NOW),
                FM_SNAPSHOT_SUPERVISION_TIMEOUT="1")
     for name in ("FM_STATE_OVERRIDE", "FM_DATA_OVERRIDE", "FM_CONFIG_OVERRIDE", "FM_PROJECTS_OVERRIDE"):
         env.pop(name, None)
