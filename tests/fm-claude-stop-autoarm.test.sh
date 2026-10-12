@@ -902,7 +902,7 @@ test_abandoned_owner_claim_is_reclaimed_and_rearms() {
 # owner. The next reclaim must reap it directly, never by nesting another
 # .steal.steal mutex around it.
 test_abandoned_claim_reclaim_reaps_dead_steal_without_nesting() {
-  local dir out status pid holder lnbin lnlog i
+  local dir status pid holder lnbin lnlog i hooklog holderlog
   dir=$(make_primary_dir "$TMP_ROOT/abandoned-claim-dead-steal")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
@@ -910,17 +910,33 @@ test_abandoned_claim_reclaim_reaps_dead_steal_without_nesting() {
   pid=$!
   record_autoarm_owner "$dir" "$pid"
   record_autoarm_epoch "$dir" 464 "$pid" rewake
+  holderlog="$dir/dead-steal-holder.log"
   FM_STATE_OVERRIDE="$dir/state" bash -c '
     . "$1"
     fm_lock_try_create "$2" || exit 7
+    printf "%s\n" "$BASHPID" > "$2.ready"
     exec sleep 30
-  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state/.claude-autoarm.lock.steal" >/dev/null 2>&1 &
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state/.claude-autoarm.lock.steal" >"$holderlog" 2>&1 &
   holder=$!
   i=0
-  while [ "$i" -lt 50 ] && [ ! -s "$dir/state/.claude-autoarm.lock.steal/pid" ]; do
-    sleep 0.02
+  while [ "$i" -lt 100 ]; do
+    if [ "$(cat "$dir/state/.claude-autoarm.lock.steal.ready" 2>/dev/null)" = "$holder" ] \
+       && [ "$(cat "$dir/state/.claude-autoarm.lock.steal/pid" 2>/dev/null)" = "$holder" ] \
+       && kill -0 "$holder" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
     i=$((i + 1))
   done
+  if [ "$i" -eq 100 ]; then
+    cat "$holderlog" >&2
+    printf 'dead-steal fixture: holder=%s recorded=%s ready=%s\n' "$holder" \
+      "$(cat "$dir/state/.claude-autoarm.lock.steal/pid" 2>/dev/null)" \
+      "$(cat "$dir/state/.claude-autoarm.lock.steal.ready" 2>/dev/null)" >&2
+    kill "$holder" "$pid" 2>/dev/null || true
+    wait "$holder" "$pid" 2>/dev/null || true
+    fail "fixture did not establish explicit live steal-mutex ownership before killing its holder"
+  fi
   kill -KILL "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   assert_present "$dir/state/.claude-autoarm.lock.steal" "fixture did not leave a dead-owner steal mutex"
@@ -936,9 +952,16 @@ exec /bin/ln "$@"
 SH
   chmod +x "$lnbin/ln"
   : > "$lnlog"
-  out=$(PATH="$lnbin:$PATH" FM_TEST_LN_LOG="$lnlog" run_autoarm "$dir" 2>/dev/null); status=$?
+  hooklog="$dir/dead-steal-hook.log"
+  PATH="$lnbin:$PATH" FM_TEST_LN_LOG="$lnlog" run_autoarm "$dir" >"$hooklog" 2>&1; status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
+  if [ "$status" -ne 2 ]; then
+    printf 'dead-steal hook diagnostics (exit %s):\n' "$status" >&2
+    cat "$hooklog" "$holderlog" >&2
+    printf 'dead-steal link attempts:\n' >&2
+    cat "$lnlog" >&2
+  fi
   expect_code 2 "$status" "a dead-owner steal mutex must not keep an abandoned claim unrecoverable"
   [ -e "$dir/state/arm-ran" ] || fail "dead-owner steal mutex left the home unarmed with work in flight"
   ! grep -q '\.steal\.steal$' "$lnlog" \
