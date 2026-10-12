@@ -35,6 +35,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fm_board_tokens  # noqa: E402
+from fm_receipt_io import atomic_text as atomic_write, iso_epoch, load  # noqa: E402
 
 SCHEMA = "fm-board.v1"
 SUMMARY_SCHEMA = "fm-secondmate-home-summary.v1"
@@ -42,11 +43,10 @@ PANELS = ["decisions", "health", "work", "pipeline", "waste", "tokens"]
 STATES = {"ok", "bad", "warn", "blind", "idle", "info"}
 SOURCE_TIMEOUT = 5.0
 DEFAULTS = {"summary_max_age": 7200, "verdict_max_age": 900, "merge_stall_seconds": 3600}
-FEED_VERSIONS = ("fm-board-items.v1", "tetjet-queue-snapshot.v1", "merge-queue-log.v1",
-                 "hypotheses-overview.v1")
 HYPOTHESES_HEADER = ["Running", "Ready to test", "Open after a result", "Want to test",
                      "Settled", "Dropped"]
 TAIL_BYTES = 4 * 1024 * 1024
+SUMMARY_MAX_BYTES = 262144  # fm-fleet-snapshot.sh's default summary byte bound
 
 
 class SourceError(Exception):
@@ -105,19 +105,6 @@ def read_text(path, tail=None):
 
 def read_json(path):
     return json.loads(read_text(path))
-
-
-def iso_epoch(value):
-    if isinstance(value, (int, float)):
-        return int(value)
-    if not isinstance(value, str):
-        return None
-    if re.fullmatch(r"\d{9,11}", value):
-        return int(value)
-    try:
-        return int(datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
-    except ValueError:
-        return None
 
 
 def ago(seconds):
@@ -199,6 +186,14 @@ class Board:
 
 # ---------------------------------------------------------------- home summaries
 
+def read_summary(path):
+    if os.path.islink(path):
+        raise SourceError("error", "symlink refused")
+    if not os.path.exists(path):
+        raise SourceError("missing", "not found")
+    return load(path, limit=SUMMARY_MAX_BYTES)
+
+
 def load_summaries(board, homes, thresholds):
     out = {}
     for area, home, remote in homes:
@@ -209,7 +204,7 @@ def load_summaries(board, homes, thresholds):
             continue
         path = os.path.join(home, "state", "home-summary.json")
         try:
-            data = timed(lambda p=path: read_json(p))
+            data = timed(lambda p=path: read_summary(p))
         except SourceError as err:
             board.source(name, "home-summary", area, err.status,
                          "%s (%s)." % (err.detail.capitalize(), "state/home-summary.json"))
@@ -217,6 +212,16 @@ def load_summaries(board, homes, thresholds):
         if not isinstance(data, dict) or data.get("schema") != SUMMARY_SCHEMA:
             board.source(name, "home-summary", area, "unknown-version",
                          "Expected %s." % SUMMARY_SCHEMA)
+            continue
+        published_home = data.get("home")
+        try:
+            bound = (isinstance(published_home, str) and os.path.isabs(published_home)
+                     and os.path.realpath(published_home) == os.path.realpath(home))
+        except (OSError, ValueError):
+            bound = False
+        if not bound or data.get("hold_classifier_schema") != "fm-captain-hold-buckets.v1":
+            board.source(name, "home-summary", area, "error",
+                         "Home binding or hold classifier schema mismatch.")
             continue
         gen = data.get("generated_epoch") if isinstance(data.get("generated_epoch"), int) else None
         age = board.now - gen if gen is not None else None
@@ -407,7 +412,7 @@ def feed_items_v1(board, feed, data):
         board.add(it["panel"], trunc(it.get("group") or feed["name"], 80), trunc(it.get("title"), 160),
                   state, since=since, owner=trunc(it.get("owner") or feed["owner"], 40), link=link,
                   detail=trunc(it.get("detail"), 240) if it.get("detail") else None, value=value, view=view)
-    return iso_epoch(data.get("generated_epoch") or data.get("generated_at"))
+    return iso_epoch(data.get("generated_epoch") or data.get("generated_at"), numeric=True)
 
 
 def feed_tetjet(board, feed, data):
@@ -426,7 +431,7 @@ def feed_tetjet(board, feed, data):
     for word, n in sorted(counts.items(), key=lambda kv: -kv[1]):
         board.add("pipeline", group, trunc(word.replace("_", " "), 60), "info", owner=feed["owner"],
                   link=feed["link"], value=n, view="bar")
-    return iso_epoch(data.get("generated_at"))
+    return iso_epoch(data.get("generated_at"), numeric=True)
 
 
 LOG_RE = re.compile(r"^(HANDOFF|RESULT)\s+(\S+)\s*(.*)$")
@@ -445,7 +450,7 @@ def feed_merge_log(board, feed, text):
         if not m:
             continue
         parsed += 1
-        at = iso_epoch(m.group(2))
+        at = iso_epoch(m.group(2), numeric=True)
         fields = dict(kv.split("=", 1) for kv in m.group(3).split() if "=" in kv)
         head = fields.get("head") or ""
         if m.group(1) == "HANDOFF":
@@ -851,13 +856,6 @@ def render(board, tok, table):
 
 
 # ---------------------------------------------------------------- main
-
-def atomic_write(path, text):
-    tmp = "%s.tmp.%d" % (path, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
-
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Build the fleet board (use bin/fm-board.sh).")

@@ -23,6 +23,7 @@ The board reads published summaries only, never raw status logs, watcher interna
 - Project feeds, detector thresholds, session roots and scheduled units listed in `config/board-feeds` (docs/configuration.md "Fleet board feeds").
 - Claude Code session records in the named session roots, one folder level at a time, never recursively.
 
+Home summaries must be regular non-symlink files within the board's byte bound and match the selected physical home and hold classifier schema; [`bin/fm-board.py`](../bin/fm-board.py) owns those checks.
 Each source has a five-second limit.
 A source that is missing, stale, unreadable or of an unknown version becomes a blind-spot line on the Health panel naming the source and its owner.
 Facts no owner publishes yet (why a spawn was refused, which heavy job holds the shared slot, status text volume) are listed as blind spots rather than guessed.
@@ -45,7 +46,7 @@ The reader keeps a byte cursor per session file and reads only lines appended si
 Usage is counted once per message, because the parts of one multi-part turn repeat the same usage.
 It stores and shows only counts, tool names, rule labels and hashes: never transcript content, command text, prompts, hosts or secrets.
 It shows token counts only, never money, spend, remaining allowance, quota or run-out.
-Each new message also becomes an `fm-usage.v1` row under `state/board/usage/`, which `bin/fm-usage-audit.sh --usage` reads.
+Each new message also becomes an `fm-usage.v1` row under `state/board/usage/`, which `bin/fm-usage-audit.py --usage` reads.
 
 Sessions are credited to a task in this order: a home root is that area's supervisor, then the latest spawn record for the same working copy that started before the session, then an `fm/<task>` branch, then the home the folder sits in, then the validation pipeline.
 Sessions of tasks spawned before spawn records existed are credited to their area only.

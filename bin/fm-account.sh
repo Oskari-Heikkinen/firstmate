@@ -139,10 +139,10 @@ self_label() {
 agent_account() {
   local meta=$1 launcher=$2 acct home
   acct=$(fm_account_recorded_name "$meta")
-  [ -n "$acct" ] || acct=$(fm_account_name_for_dir "$CONFIG" "$(fm_account_meta_get "$meta" claude_config_dir)" claude)
+  [ -n "$acct" ] || acct=$(fm_account_name_for_dir "$CONFIG" "$(fm_meta_get "$meta" claude_config_dir)" claude)
   if [ -n "$acct" ]; then printf '%s|recorded' "$acct"; return; fi
-  if [ "$(fm_account_meta_get "$meta" kind)" = secondmate ]; then
-    home=$(fm_account_meta_get "$meta" home)
+  if [ "$(fm_meta_get "$meta" kind)" = secondmate ]; then
+    home=$(fm_meta_get "$meta" home)
     acct=$(fm_account_read_name "$home/config/account")
     if [ -n "$acct" ]; then printf '%s|pinned' "$acct"; return; fi
   fi
@@ -153,11 +153,11 @@ agent_account() {
 # home, otherwise its worktree; nothing for a remote second mate, whose
 # processes this host cannot see.
 agent_dir() {
-  [ -z "$(fm_account_meta_get "$1" remote_host)" ] || return 0
-  if [ "$(fm_account_meta_get "$1" kind)" = secondmate ]; then
-    fm_account_meta_get "$1" home
+  [ -z "$(fm_meta_get "$1" remote_host)" ] || return 0
+  if [ "$(fm_meta_get "$1" kind)" = secondmate ]; then
+    fm_meta_get "$1" home
   else
-    fm_account_meta_get "$1" worktree
+    fm_meta_get "$1" worktree
   fi
 }
 
@@ -195,8 +195,8 @@ collect_agents() {
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
-    kind=$(fm_account_meta_get "$meta" kind)
-    harness=$(fm_account_meta_get "$meta" harness)
+    kind=$(fm_meta_get "$meta" kind)
+    harness=$(fm_meta_get "$meta" harness)
     if [ "$harness" != claude ]; then
       printf '%s|%s|%s|%s||other|1||\n' "$self" "$id" "${kind:-ship}" "$harness"
       continue
@@ -205,19 +205,19 @@ collect_agents() {
     claude_row "$self" "$id" "${kind:-ship}" "$row" 1 \
       "$(fm_account_live_for "$CONFIG" "$index" "$(agent_dir "$meta")" "$id")"
     [ "$kind" = secondmate ] || continue
-    [ -z "$(fm_account_meta_get "$meta" remote_host)" ] || continue
-    home=$(fm_account_meta_get "$meta" home)
+    [ -z "$(fm_meta_get "$meta" remote_host)" ] || continue
+    home=$(fm_meta_get "$meta" home)
     [ -n "$home" ] && [ -d "$home/state" ] || continue
     sm_acct=${row%%|*}
     for m in "$home"/state/*.meta; do
       [ -f "$m" ] || continue
-      [ "$(fm_account_meta_get "$m" kind)" != secondmate ] || continue
-      harness=$(fm_account_meta_get "$m" harness)
+      [ "$(fm_meta_get "$m" kind)" != secondmate ] || continue
+      harness=$(fm_meta_get "$m" harness)
       if [ "$harness" != claude ]; then
-        printf '%s|%s|%s|%s||other|0||\n' "$id" "$(basename "$m" .meta)" "$(fm_account_meta_get "$m" kind)" "$harness"
+        printf '%s|%s|%s|%s||other|0||\n' "$id" "$(basename "$m" .meta)" "$(fm_meta_get "$m" kind)" "$harness"
         continue
       fi
-      claude_row "$id" "$(basename "$m" .meta)" "$(fm_account_meta_get "$m" kind)" \
+      claude_row "$id" "$(basename "$m" .meta)" "$(fm_meta_get "$m" kind)" \
         "$(agent_account "$m" "$sm_acct")" 0 \
         "$(fm_account_live_for "$CONFIG" "$index" "$(agent_dir "$m")" "$(basename "$m" .meta)")"
     done
@@ -460,13 +460,13 @@ move_check() {
   fm_account_get "$CONFIG" "$acct" || { echo "error: $FM_ACCOUNT_ERROR" >&2; return 1; }
   [ "$FM_ACCOUNT_PROVIDER" = claude ] || { echo "error: account $acct is a $FM_ACCOUNT_PROVIDER login; only Claude accounts can be switched" >&2; return 1; }
   [ -d "$FM_ACCOUNT_DIR" ] || { echo "error: sign in to account $acct first: login folder $FM_ACCOUNT_DIR does not exist" >&2; return 1; }
-  MOVE_KIND=$(fm_account_meta_get "$MOVE_META" kind)
-  harness=$(fm_account_meta_get "$MOVE_META" harness)
+  MOVE_KIND=$(fm_meta_get "$MOVE_META" kind)
+  harness=$(fm_meta_get "$MOVE_META" harness)
   [ "$harness" = claude ] || { echo "error: $id runs on $harness, not Claude; account switching covers Claude workers only" >&2; return 1; }
   MOVE_FROM=$(fm_account_recorded_name "$MOVE_META")
   [ "$MOVE_KIND" = secondmate ] || return 0
-  [ -z "$(fm_account_meta_get "$MOVE_META" remote_host)" ] || { echo "error: $id is a remote second mate; switch its account on its own host" >&2; return 1; }
-  MOVE_HOME=$(fm_account_meta_get "$MOVE_META" home)
+  [ -z "$(fm_meta_get "$MOVE_META" remote_host)" ] || { echo "error: $id is a remote second mate; switch its account on its own host" >&2; return 1; }
+  MOVE_HOME=$(fm_meta_get "$MOVE_META" home)
   [ -n "$MOVE_HOME" ] && [ -d "$MOVE_HOME" ] || { echo "error: $id has no local home recorded" >&2; return 1; }
 }
 

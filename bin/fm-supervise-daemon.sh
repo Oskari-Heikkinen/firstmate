@@ -561,24 +561,8 @@ pause_marker_record() {  # <window> <state> - create if absent
   _now > "$marker"
   if status_is_paused "$(last_status_line "$state/$task.status")"; then
     declared_wait_baseline_record "$state" "$(_stale_key "$win")" "$task" \
-      "$(pause_declaration "$state" "$task")" once || true
+      "$(declared_wait_scope "$state" "$task")" once || true
   fi
-}
-
-# The declaration a paused: wait's fingerprint baseline is bound to, the same
-# scope string the watcher binds its own to, so the two share one baseline.
-pause_declaration() {  # <state> <task>
-  printf 'declared:%s' "$(status_observed_signature "$1/$2.status" || true)"
-}
-
-# Seconds a lane under a declared wait has gone unseen by the supervisor
-# (FM_STANDING_WAITS_CEILING_SECS_DEFAULT in fm-classify-lib.sh owns the rule).
-pause_unseen_age() {  # <state> <window> <task>
-  local seen status
-  seen=$(_file_age "$1/.recheck-surfaced-$(_stale_key "$2")")
-  status=$(_file_age "$1/$3.status")
-  [ "$status" -lt "$seen" ] && seen=$status
-  printf '%s' "$seen"
 }
 
 pause_marker_remove() {  # <window> <state>
@@ -1219,7 +1203,7 @@ standing_waits_digest() {  # <state> <due> <ceiling-secs>
     if [ -z "$task" ] || ! status_is_paused "$last"; then
       rm -f "$f"; continue
     fi
-    [ "$(pause_unseen_age "$state" "$win" "$task")" -lt "$ceiling" ] || due=1
+    [ "$(declared_wait_unseen_age "$state" "$(_stale_key "$win")" "$task" _file_age)" -lt "$ceiling" ] || due=1
     wins+=("$win"); tasks+=("$task"); keys+=("$key")
   done
   [ "$due" -eq 1 ] || return 0
@@ -1388,7 +1372,7 @@ housekeeping() {  # <state>
           fi
         elif [ -n "$last" ] && status_is_paused "$last"; then
           watcher_key=$(_stale_key "$win")
-          declaration=$(pause_declaration "$state" "$task")
+          declaration=$(declared_wait_scope "$state" "$task")
           if [ "$bounded_until" -eq 1 ]; then
             pause_reason="paused ${age}s (awaiting external, the declared time is beyond the recheck cadence; confirm the wait still holds): $win"
           else
@@ -1404,7 +1388,7 @@ housekeeping() {  # <state>
             # gone the standing-waits ceiling unseen.
             fp_rc=0
             declared_wait_compare "$state" "$watcher_key" "$task" "$declaration" || fp_rc=$?
-            if [ "$fp_rc" -eq 0 ] && [ "$(pause_unseen_age "$state" "$win" "$task")" -lt "$standing_secs" ]; then
+            if [ "$fp_rc" -eq 0 ] && [ "$(declared_wait_unseen_age "$state" "$(_stale_key "$win")" "$task" _file_age)" -lt "$standing_secs" ]; then
               _now > "$marker"
               : > "$state/.subsuper-pause-absorbed-$key"
               log "self-handle (paused recheck, fingerprint unchanged): $win"

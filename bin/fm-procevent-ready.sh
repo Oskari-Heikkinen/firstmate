@@ -96,7 +96,7 @@ row() {
   case "$FM_BACKLOG_ROW_STATE" in 'queued no no'|'in_flight no no') ;; *) die 'task is not queued/active unheld unblocked work' ;; esac
   fm_backlog_row_show "$DATA" "$TASK"
 }
-sha_text() { local tmp hash; tmp=$(mktemp); printf '%s' "$1" > "$tmp"; hash=$(fm_pr_sha256 "$tmp"); rm -f "$tmp"; printf '%s' "$hash"; }
+sha_text() { printf '%s' "$1" | fm_pr_sha256 -; }
 check_material() {
   local handoff brief
   handoff="$FM_HOME/$(jq -r .spec.handoff "$RECORD")"

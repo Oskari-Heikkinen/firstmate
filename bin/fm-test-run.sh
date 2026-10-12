@@ -791,7 +791,6 @@ tests/fm-contributions.test.sh 197581
 tests/fm-control-claude-exit-dialog-live-e2e.test.sh 48
 tests/fm-control-relaunch.test.sh 162024
 tests/fm-control.test.sh 75908
-tests/fm-current-view.test.sh 2894
 tests/fm-cursor-harness.test.sh 2226
 tests/fm-cursor-primary-live-e2e.test.sh 79
 tests/fm-cursor-primary.test.sh 64573

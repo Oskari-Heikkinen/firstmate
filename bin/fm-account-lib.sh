@@ -113,6 +113,8 @@
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-backend.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-backend.sh"
 
 FM_ACCOUNT_NAME_RE='^[a-z0-9][a-z0-9._-]*$'
 FM_ACCOUNT_DEFAULT_PRIORITY=100
@@ -246,11 +248,6 @@ fm_account_write_name() {
     rm -f "$tmp"
     return 1
   fi
-}
-
-# fm_account_meta_get <meta-file> <key>: the last value recorded for <key>.
-fm_account_meta_get() {
-  awk -v k="$2" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { print v }' "$1" 2>/dev/null
 }
 
 # fm_account_iso_epoch <iso-8601>: epoch seconds, portable across GNU and BSD.
@@ -601,7 +598,7 @@ fm_account_pick() {
 # neither is a registry name, so either reads as no recorded account.
 fm_account_recorded_name() {
   local name
-  name=$(fm_account_meta_get "$1" account)
+  name=$(fm_meta_get "$1" account)
   case "$name" in
     ordinary|/*) return 0 ;;
   esac
@@ -646,7 +643,7 @@ fm_account_resolve_spawn() {
     name=$(fm_account_recorded_name "$meta")
     source='its task record'
     if [ -z "$name" ]; then
-      recorded_dir=$(fm_account_meta_get "$meta" claude_config_dir)
+      recorded_dir=$(fm_meta_get "$meta" claude_config_dir)
       [ -n "$recorded_dir" ] && FM_ACCOUNT_DIR=$recorded_dir
       return 0
     fi

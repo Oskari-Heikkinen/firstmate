@@ -391,13 +391,15 @@ push_origin_ref() {
   git -C "$home/work-$name" push -q -f origin "$rev:refs/heads/$branch"
 }
 
-# source_current <home> <clone>: the application readout's source_current for the
-# clone's latest fleet-sync receipt.
-source_current() {
+# receipt_matches_sync_base <home> <clone>: inspect the writer's receipt,
+# including the selected base rather than assuming origin/main is its target.
+receipt_matches_sync_base() {
   local home=$1 clone=$2 key
   key=$(printf '%s' "$(cd "$clone" && pwd -P)" | sha256sum | cut -d' ' -f1)
-  "$ROOT/bin/fm-application-provenance.sh" "$home/data/fleet-sync/$key.json" \
-    | python3 -c 'import json, sys; print(str(json.load(sys.stdin)["source_current"]).lower())'
+  jq -e '.schema == "fm-fleet-sync.v1" and .base == "origin/checks-approved"
+    and .fetch_succeeded == true and .outcome == "synced"
+    and .after.dirty == false and .after.source == .after.remote_tip' \
+    "$home/data/fleet-sync/$key.json" >/dev/null
 }
 
 test_sync_ref_unset_follows_default_branch() {
@@ -431,7 +433,7 @@ test_sync_ref_set_fast_forwards_to_that_ref() {
   [ "$(head_sha "$clone")" = "$approved" ] || fail "set fm.syncRef did not fast-forward to origin/checks-approved"
   [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "main" ] || fail "set fm.syncRef left the default branch"
   [ "$(git -C "$clone" rev-parse main)" != "$(git -C "$clone" rev-parse origin/main)" ] || fail "fixture vacuous: origin/main equals the approved ref"
-  [ "$(source_current "$home" "$clone")" = true ] || fail "clean sync to fm.syncRef behind origin/main did not read source_current=true"
+  receipt_matches_sync_base "$home" "$clone" || fail "clean sync receipt did not match fm.syncRef behind origin/main"
 
   out=$(run_sync "$home" "$clone")
   assert_contains "$out" "syncset: already current" "at the approved ref the clone is current despite origin/main being ahead"

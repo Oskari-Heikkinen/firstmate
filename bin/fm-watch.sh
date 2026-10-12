@@ -1627,7 +1627,7 @@ signal_quiet_wait_ack() {  # <file> ...
     win=$(fm_backend_target_of_meta "$STATE/$task.meta") || return 1
     [ -n "$win" ] || return 1
     key=$(window_key "$win")
-    base="declared:$(fm_wake_signal_sig "$STATE/$task.status" || true)"
+    base=$(declared_wait_scope "$STATE" "$task")
     quiet_wait_lane_check "$win" "$key" "$task" "$base" || return 1
   done <<EOF
 $held
@@ -1707,7 +1707,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   age=$(( now - mtime ))
   last=$(status_declared_wait_line "$statusf")
   min_age=$PAUSE_RESURFACE_SECS
-  declaration="declared:$(fm_wake_signal_sig "$statusf" || true)"
+  declaration=$(declared_wait_scope "$STATE" "$task")
   base=$declaration
   # Quiet waits. While the away-mode daemon owns triage it classifies declared
   # waits itself, so this is normal-mode only. A holding machine-checkable
@@ -1733,7 +1733,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   if [ "$wait_rc" -eq 0 ] && [ "$agent_state" = alive ]; then
     # Quiet only the periodic reminder, never a changed or unreadable lane.
     if [ "$compare_rc" -eq 0 ] \
-      && [ "$(recheck_unseen_age "$key" "$task")" -lt "$STANDING_WAITS_CEILING_SECS" ]; then
+      && [ "$(declared_wait_unseen_age "$STATE" "$key" "$task" age_of)" -lt "$STANDING_WAITS_CEILING_SECS" ]; then
       if [ "$(cat "$STATE/.quiet-wait-seen-$key" 2>/dev/null || true)" != "$declaration" ]; then
         quiet_wait_record "$task" stale "$wait_cond"
         printf '%s' "$declaration" > "$STATE/.quiet-wait-seen-$key" 2>/dev/null || true
@@ -1854,7 +1854,7 @@ recheck_fingerprint_due() {  # <window> <key> <task> <age> <anchor> <reason> <sc
   declared_wait_compare "$STATE" "$key" "$task" "$base" || rc=$?
   case "$rc" in
     0)
-      if [ "$(recheck_unseen_age "$key" "$task")" -lt "$STANDING_WAITS_CEILING_SECS" ]; then
+      if [ "$(declared_wait_unseen_age "$STATE" "$key" "$task" age_of)" -lt "$STANDING_WAITS_CEILING_SECS" ]; then
         printf '%s\n%s\n%s\n%s\n' absorbed "$win" "$anchor" "stale: $win ($standing)" > "$STATE/.recheck-absorbed-$key" || exit 1
         printf '%s' "$scope" > "$STATE/.paused-resurfaced-$key"
         triage_log "absorbed paused recheck (fingerprint unchanged, age ${age}s): $win"
@@ -1901,17 +1901,6 @@ supervisor_turn_age() {
   printf '%s' "$age"
 }
 
-# Seconds a lane under a declared wait has gone unseen by the supervisor: since
-# the later of its last delivered recheck and its latest status line, whose own
-# signal already reached the supervisor.
-recheck_unseen_age() {  # <key> <task>
-  local seen status
-  seen=$(age_of "$STATE/.recheck-surfaced-$1")
-  status=$(age_of "$STATE/$2.status")
-  [ "$status" -lt "$seen" ] && seen=$status
-  printf '%s' "$seen"
-}
-
 # Deliver the queued declared-wait rechecks together (see RECHECK_WARM_SECS
 # above for the schedule). `poll` runs once per poll after the pane scan and
 # raises one wake for the whole set when any queued recheck is urgent, any lane
@@ -1956,7 +1945,7 @@ recheck_flush() {  # <poll|ride>
     case "$anchor" in ''|*[!0-9]*) anchor=$now ;; esac
     reason=${reason//@AGE@/$(( now - anchor ))}
     [ "$kind" = standing ] && standing=1
-    [ "$(recheck_unseen_age "$key" "$task")" -ge "$STANDING_WAITS_CEILING_SECS" ] && standing=1
+    [ "$(declared_wait_unseen_age "$STATE" "$key" "$task" age_of)" -ge "$STANDING_WAITS_CEILING_SECS" ] && standing=1
     if [ "$kind" = absorbed ]; then
       held_keys+=("$key"); held_wins+=("$win"); held_reasons+=("$reason")
       continue
@@ -2074,7 +2063,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
       key=$(window_key "$win")
       rm -f "$since_file" "$escalation_file"
       clear_write_tracking "$key"
-      declared="declared:$(fm_wake_signal_sig "$statusf" || true)"
+      declared=$(declared_wait_scope "$STATE" "$task")
       if captain_held_silenced "$(status_declared_wait_line "$statusf")"; then
         printf '%s' "$declared" > "$STATE/.stale-$key"
         triage_log "absorbed busy over-age pane (captain-held, never rechecked while the away-posture record exists): $win"

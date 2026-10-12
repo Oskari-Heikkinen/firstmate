@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Repeatable home-local metadata-only usage/repetition audit (classifier v1).
 
-Usage: fm-usage-audit.sh --home DIR [--also-root DIR] [--usage JSONL] [--events JSONL]
+Usage: fm-usage-audit.py --home DIR [--also-root DIR] [--usage JSONL] [--events JSONL]
        [--status FILE] [--scripts DIR] [--inventory DIR] [--queue-log FILE]
        [--since EPOCH] [--until EPOCH] [--line-limit N]
 Flags selecting inputs repeat; no implicit scans, remote IO or transcript export.
@@ -20,11 +20,8 @@ IDs are excluded and reported. Role is a metadata label [A-Za-z0-9_.-]+.
 Cycle kinds are exporter assertions, not proof of wasted calls. Missing metrics
 are rejected rather than invented. No usage input means actual use is unknown.
 
-Event inputs accept the existing fleet-ledger v1 and fm-audit-event.v1 receipts.
-Audit receipts: id, task, spawn_gen, correlation, event (produced/consumed), ts,
-consumer (required for consumed). Latency joins exact task/generation/correlation,
-not status prose, and excludes ambiguous multiple production/consumption records
-or negative durations. Fleet-ledger records have no durable IDs/gap detection:
+Event inputs accept the existing fleet-ledger v1.
+Fleet-ledger records have no durable IDs/gap detection:
 exact duplicate fingerprints are a LOWER-BOUND projection only; raw counts are
 also reported. Truncated tails, invalid rows, duplicates and unknown event kinds
 are counted. A valid unterminated last row is treated as an incomplete tail.
@@ -119,8 +116,7 @@ def main():
         raise ValueError("input outside selected roots")
     counts = Counter()
     inputs, samples = [], []
-    usages, conflicts, events, event_conflicts = {}, set(), {}, set()
-    poisoned_correlations = set()
+    usages, conflicts = {}, set()
     ledger_raw, ledger_unique = Counter(), {}
     status_counts = Counter()
     status_characters = 0
@@ -249,21 +245,6 @@ def main():
                                 conflicts.add(rid)
                         else:
                             usages[rid] = clean
-                    elif row.get("schema") == "fm-audit-event.v1":
-                        rid = text(row["id"])
-                        clean = {k: text(row[k]) for k in ("task", "spawn_gen", "correlation", "event")}
-                        if clean["event"] not in ("produced", "consumed"):
-                            raise ValueError("unknown audit event")
-                        clean["ts"] = row["ts"]
-                        clean["consumer"] = text(row["consumer"]) if clean["event"] == "consumed" else None
-                        if rid in events:
-                            counts["duplicate_event_ids"] += 1
-                            if events[rid] != clean:
-                                event_conflicts.add(rid)
-                                for conflicting in (events[rid], clean):
-                                    poisoned_correlations.add(tuple(conflicting[k] for k in ("task", "spawn_gen", "correlation")))
-                        else:
-                            events[rid] = clean
                     elif row.get("v") == 1:
                         event = row.get("event")
                         if event not in {"task.dispatched", "task.status", "task.pr_ready", "task.merged", "task.cleaned_up"}:
@@ -294,33 +275,7 @@ def main():
         role["exporter_cycle_kinds"][row["cycle_kind"]] += 1
     for role in roles.values():
         role["mean_context_tokens"] = role["context_tokens"] / role["calls"]
-    groups = defaultdict(list)
-    for rid, event in events.items():
-        if rid not in event_conflicts:
-            groups[tuple(event[k] for k in ("task", "spawn_gen", "correlation"))].append(event)
-    latencies = []
-    for key, group in groups.items():
-        if key in poisoned_correlations:
-            counts["conflicted_latency_correlations"] += 1
-            continue
-        producers = [r for r in group if r["event"] == "produced"]
-        consumers = defaultdict(list)
-        for row in group:
-            if row["event"] == "consumed":
-                consumers[row["consumer"]].append(row)
-        if len(producers) != 1:
-            counts["ambiguous_or_missing_production"] += 1
-            continue
-        if not consumers:
-            counts["unconsumed_production"] += 1
-        for consumer, rows in consumers.items():
-            if len(rows) != 1 or rows[0]["ts"] < producers[0]["ts"]:
-                counts["ambiguous_or_negative_latency"] += 1
-                continue
-            latencies.append({"identity_digest": digest(canonical([*key, consumer])),
-                              "seconds": rows[0]["ts"] - producers[0]["ts"]})
     counts["conflicting_usage_ids"] = len(conflicts)
-    counts["conflicting_event_ids"] = len(event_conflicts)
     emit({"schema": "fm-usage-audit.v1", "classifier": "local-metadata-v1",
           "window": {"since": args.since, "until": args.until, "line_limit": args.line_limit}, "inputs": inputs,
           "actual_usage": {"available": bool(usages.keys() - conflicts), "by_role": roles},
@@ -333,7 +288,6 @@ def main():
                         "distinct_landed_main_commits": len(landed_commits)},
           "fleet_ledger": {"raw_counts": ledger_raw, "exact_unique_lower_bound": Counter(ledger_unique.values()),
                            "coverage": "unknown; ledger has no gap/rotation identity"},
-          "event_to_consumer_latency": latencies,
           "identical_scripts": [{"sha256": sha, "copies": copies} for sha, copies in sorted(scripts.items()) if len(copies) > 1],
           "quality": counts, "review_samples": samples,
           "limitations": ["No status line count is a measured call/token count.",

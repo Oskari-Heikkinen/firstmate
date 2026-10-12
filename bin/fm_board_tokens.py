@@ -16,7 +16,7 @@ Outputs, both written atomically under ``state/board/``:
 - ``tokens.json`` (fm-board-tokens.v1): token counts per area, task, kind and
   session, plus the seven detector rules' counts.
 - ``usage/<YYYY-MM-DD>.jsonl``: one fm-usage.v1 row per newly seen message for
-  bin/fm-usage-audit.sh (kept 7 days), stamped with that message's own time. A
+  bin/fm-usage-audit.py (kept 7 days), stamped with that message's own time. A
   file read again after a reset repeats its earlier rows byte for byte.
 
 Nothing here stores or emits transcript content, command text, prompts, hosts
@@ -33,6 +33,8 @@ import os
 import re
 import shlex
 import time
+
+from fm_receipt_io import atomic_text as _atomic_write, iso_epoch as _iso_epoch
 
 SCHEMA = "fm-board-tokens.v1"
 CURSOR_SCHEMA = "fm-board-token-cursor.v1"
@@ -71,13 +73,6 @@ SEEN_TOOL_IDS_MAX = 512
 
 def _h(text, n=16):
     return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:n]
-
-
-def _iso_epoch(ts):
-    try:
-        return int(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
-    except (ValueError, AttributeError):
-        return None
 
 
 def day_window(now):
@@ -424,13 +419,6 @@ def attribute(cwd, branch, first_epoch, areas, starts, task_index):
 
 
 # ---------------------------------------------------------------- main entry
-
-def _atomic_write(path, data):
-    tmp = "%s.tmp.%d" % (path, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(data)
-    os.replace(tmp, path)
-
 
 def _load_cursor(path, day):
     try:

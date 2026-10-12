@@ -36,7 +36,7 @@
 # it is retried with a bounded wait and removed only when provably stale; see
 # fetch_with_packed_refs_lock_guard and the FM_FLEET_SYNC_PACKED_REFS_LOCK_* knobs.
 # Structured per-clone receipts and overlapping-request coalescing are owned by
-# bin/fm-fleet-provenance.py (see its --help for the application readout).
+# bin/fm-fleet-provenance.py (see its header and --help).
 # Receipts live under $FM_HOME/data/fleet-sync; they never restart an application.
 # Usage: fm-fleet-sync.sh [<project-dir-or-name>]
 # The single-project form accepts either a path (absolute, or relative to the

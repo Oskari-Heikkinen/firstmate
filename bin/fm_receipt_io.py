@@ -1,21 +1,22 @@
-"""Bounded local JSON/reference IO shared by observational receipt tools."""
+"""Local IO shared by fleet-sync receipts, the fleet board and usage audit."""
+import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
-import time
 
 LIMIT = 2 * 1024 * 1024
 
 
-def load(path):
+def load(path, limit=LIMIT):
     if not Path(path).is_file():
         raise ValueError("JSON input must be a regular file")
     with open(path, "rb") as stream:
-        data = stream.read(LIMIT + 1)
-    if len(data) > LIMIT:
-        raise ValueError("JSON input exceeds 2 MiB")
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("JSON input exceeds byte bound")
     return json.loads(data)
 
 
@@ -51,21 +52,25 @@ def local_path(home, value):
     return path
 
 
-def reference(home, ref):
-    path = local_path(home, text(ref["path"]))
-    if not path.is_file():
-        raise ValueError("reference must be a regular file")
-    with path.open("rb") as stream:
-        data = stream.read(LIMIT + 1)
-    if len(data) > LIMIT or digest(data) != ref["sha256"]:
-        raise ValueError("reference too large or digest mismatch")
-    return path, data
+def iso_epoch(value, *, numeric=False):
+    if numeric and isinstance(value, (int, float)):
+        return int(value)
+    if not isinstance(value, str):
+        return None
+    if numeric and re.fullmatch(r"\d{9,11}", value):
+        return int(value)
+    try:
+        return int(datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
 
 
-def freshness(observed_at, max_age):
-    age = time.time() - number(observed_at)
-    return {"observed_at": observed_at, "age_seconds": age,
-            "state": "fresh" if 0 <= age <= max_age else "stale"}
+def atomic_text(path, value):
+    # Board outputs retain their existing UTF-8, PID-temp, non-fsync semantics.
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as stream:
+        stream.write(value)
+    os.replace(tmp, path)
 
 
 def atomic(path, value):

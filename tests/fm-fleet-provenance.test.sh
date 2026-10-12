@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Structured fleet-sync receipts, coalesced overlapping refresh and application
-# provenance join, without restart or speculative repair.
+# Structured fleet-sync receipts and coalesced overlapping refresh,
+# without restart or speculative repair.
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -62,46 +62,10 @@ assert (clone / 'file').read_text() == 'uncommitted'
 (clone / 'file').write_text('two')
 sync()
 p, r = receipt()
-evidence = home / 'app-evidence.json'
-evidence.write_text('{"owner":"application"}')
-ref = {'path': str(evidence.relative_to(home)), 'sha256': hashlib.sha256(evidence.read_bytes()).hexdigest()}
-app = {'schema': 'fm-application-observations.v1', 'clone': str(clone), 'stages': {
-    name: {'revision': new, 'identity': name + '-instance', 'observed_at': time.time(), 'evidence': ref}
-    for name in ('build', 'server', 'browser')}}
-app_path = home / 'application.json'
-
-def readout(with_app=True, ok=True):
-    app_path.write_text(json.dumps(app))
-    command = [str(root / 'bin/fm-application-provenance.sh'), str(p)]
-    if with_app:
-        command += ['--application', str(app_path)]
-    run = subprocess.run(command, env=env, text=True, capture_output=True)
-    assert (run.returncode == 0) == ok, run.stderr
-    return json.loads(run.stdout) if ok else None
-
-assert readout(False)['application_state'] == 'unknown'
-assert readout()['application_state'] == 'owner-reported-match'
-app['stages']['browser']['revision'] = old
-assert readout()['application_state'] == 'source-updated-app-not-updated'
-# A stage running code outside the synced history is not merely behind.
-app['stages']['browser']['revision'] = '0' * 40
-assert readout()['application_state'] == 'app-revision-outside-source-history'
-app['stages']['browser']['revision'] = old
-app['stages']['browser']['observed_at'] = 1
-assert readout()['application_state'] == 'unknown'
-app['stages']['browser']['observed_at'] = time.time() + 999
-assert readout()['stages']['browser']['state'] == 'unknown'
-app['clone'] = str(work)
-readout(ok=False)
-app['clone'] = str(clone)
-app['stages']['browser']['observed_at'] = time.time()
-evidence.write_text('changed')
-assert readout()['stages']['build']['state'] == 'unknown'
 # Fetch failure retains observed tracking/source commits but never current-remote proof.
 git('-C', clone, 'remote', 'set-url', 'origin', home / 'absent.git')
 sync()
 assert receipt()[1]['fetch_succeeded'] is False
-assert readout(False)['source_current'] is False, readout(False)
 git('-C', clone, 'remote', 'set-url', 'origin', remote)
 # Real git work is preserved, but a bounded fetch delay makes overlap deterministic.
 tools = home / 'tools'
@@ -155,8 +119,6 @@ fetches, outputs = overlap(2)
 assert fetches == 2, (fetches, outputs)
 assert sum('coalesced refresh' in out for out in outputs[1:]) == 1, outputs
 assert receipt()[1]['after']['source'] == new
-# No application evidence file was rewritten by a source refresh.
-assert evidence.read_text() == 'changed'
 # A corrupt prior receipt is replaced, never trusted for coalescing or fatal.
 receipt()[0].write_text('{not json')
 sync()
@@ -174,5 +136,5 @@ assert unstored.returncode == 0 and 'receipt unavailable' in unstored.stderr, un
 assert git('-C', clone, 'rev-parse', 'HEAD') == newest
 store.unlink()
 (home / 'data/fleet-sync.aside').rename(store)
-print('PASS: sync receipts, concurrent coalescing, dirty/fetch refusal and explicit application provenance')
+print('PASS: sync receipts, concurrent coalescing and dirty/fetch refusal')
 PY

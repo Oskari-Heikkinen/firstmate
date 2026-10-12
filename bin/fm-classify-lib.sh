@@ -1129,6 +1129,10 @@ status_open_decisions() {  # <status-file> [<kind>]
   printf '%s' "$open"
 }
 
+_fm_status_reverse_lines() {
+  awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }'
+}
+
 # Emission time of a decision the fold above still holds open: the optional
 # [at=<epoch>] of the newest needs-decision or blocked line stating <key>, which
 # is the line that (re)opened it, because every opening line replaces the key's
@@ -1154,7 +1158,7 @@ status_decision_opened_at() {  # <status-file> <key> -> epoch; nonzero when unkn
     printf '%s\n' "$epoch"
     return 0
   done <<EOF
-$(printf '%s\n' "$candidates" | awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }')
+$(printf '%s\n' "$candidates" | _fm_status_reverse_lines)
 EOF
   return 1
 }
@@ -2782,7 +2786,7 @@ _fm_status_secondmate_duplicate_done() {  # <file> <start> <chunk> <line-number>
   done < <({
     if [ "$start" -gt 0 ]; then _fm_status_read_span "$f" 0 "$start" 2>/dev/null; printf '\n'; fi
     if [ "$number" -gt 1 ]; then sed -n "1,$((number - 1))p" "$chunk" 2>/dev/null; fi
-  } | awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }')
+  } | _fm_status_reverse_lines)
   _fm_status_classification_progress "$on_record" "$completed"
   return 1
 }
@@ -2933,6 +2937,20 @@ crew_absorb_class() {  # <id>
     case "$src" in run-step|pane) printf 'working'; return ;; esac
   fi
   printf 'none'
+}
+
+declared_wait_scope() {  # <state-dir> <task-id>
+  printf 'declared:%s' "$(status_observed_signature "$1/$2.status" || true)"
+}
+
+# Seconds unseen since the newer of the delivered recheck and status signal.
+# Each supervisor supplies its existing file-age reader to retain its clock policy.
+declared_wait_unseen_age() {  # <state-dir> <window-key> <task-id> <age-reader>
+  local seen status
+  seen=$("$4" "$1/.recheck-surfaced-$2")
+  status=$("$4" "$1/$3.status")
+  [ "$status" -lt "$seen" ] && seen=$status
+  printf '%s' "$seen"
 }
 
 # The "nothing changed" fingerprint of a lane under a declared external wait

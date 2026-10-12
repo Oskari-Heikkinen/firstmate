@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fleet-sync receipt coordinator and read-only application provenance join.
+"""Fleet-sync receipt coordinator.
 
 Internal: sync SCRIPT HOME CLONE [REQUESTED_AT] serializes overlapping requests
 per physical clone using an OS lock under HOME/data/fleet-sync. A request queued
@@ -15,39 +15,19 @@ these are observations, not a second project registry. Interrupted writes leave
 the prior dated receipt; interruption never becomes success. Lock files remain
 as stable OS-lock anchors. No application commands, installs or reloads run.
 
-Public: read RECEIPT [--application FILE] [--max-age SECONDS]
-Outputs fm-application-provenance.v1 JSON for workbench consumers. Sync receipts
-bind clone, requested/start/completed times, outcome, before/after source,
-the sync base the refresh used (origin/<default>, or origin/<fm.syncRef>) with
-its remote-tracking tip, and whether fetch succeeded. A tracking tip after failed
-fetch is explicitly NOT a current remote tip. Git dirty/ahead/diverged state is
-reported, never repaired here. The sync script remains sole safety owner.
-
-Optional fm-application-observations.v1 input: clone (physical absolute path),
-stages object with optional build/server/browser members, each {revision,
-observed_at, identity, evidence:{path,sha256}}. Evidence is home-local, exact
-SHA-256 bound and supplied by the application owner, not inferred from Git or
-PID presence. Stage revision is a full 40/64-digit hex commit. Missing, stale,
-future, malformed or unbound stages stay unknown. Fresh stages that are strict
-ancestors of the synced source mean source-updated-app-not-updated; a stage
-revision outside that history (unlanded, newer or unknown to the clone) means
-app-revision-outside-source-history; equal stages mean owner-reported-match,
-not a new running-process proof. max-age defaults to 300 seconds and applies
-to source and all stage observations. Never choose a newer prose as authority.
 """
 import argparse
 import fcntl
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
 import time
 
 sys.dont_write_bytecode = True
-from fm_receipt_io import atomic, digest, emit, freshness, load, reference, text
+from fm_receipt_io import atomic, digest, load
 
 
 def git(clone, *args):
@@ -135,69 +115,15 @@ def sync(script, home, clone, requested=None):
         return code
 
 
-def readout(args):
-    receipt = load(args.receipt)
-    if receipt["schema"] != "fm-fleet-sync.v1":
-        raise ValueError("unsupported sync receipt")
-    home = Path(receipt["home"]).resolve()
-    source_freshness = freshness(receipt["completed_at"], args.max_age)
-    after = receipt["after"]
-    source_current = (source_freshness["state"] == "fresh" and receipt["fetch_succeeded"] is True
-                      and receipt["outcome"] in ("current", "synced", "recovered")
-                      and after["dirty"] is False and bool(after["source"])
-                      and after["source"] == after["remote_tip"])
-    stages = {}
-    app = load(args.application) if args.application else None
-    if app and (app["schema"] != "fm-application-observations.v1" or app["clone"] != receipt["clone"]):
-        raise ValueError("application clone/schema mismatch")
-    for name in ("build", "server", "browser"):
-        stage = {"state": "unknown", "reason": "no owner observation"}
-        try:
-            if app and name in app["stages"]:
-                supplied = app["stages"][name]
-                revision = text(supplied["revision"])
-                if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision):
-                    raise ValueError("stage revision must be a full commit")
-                reference(home, supplied["evidence"])
-                fresh = freshness(supplied["observed_at"], args.max_age)
-                stage = {"state": "observed" if fresh["state"] == "fresh" else "unknown",
-                         "revision": revision, "identity": text(supplied["identity"]),
-                         "freshness": fresh, "evidence": supplied["evidence"]}
-        except (OSError, ValueError, KeyError, TypeError):
-            stage = {"state": "unknown", "reason": "invalid or unavailable owner evidence"}
-        stages[name] = stage
-    known = [s for s in stages.values() if s["state"] == "observed"]
-    differing = [s for s in known if s["revision"] != after["source"]]
-    state = "unknown"
-    if source_current and differing:
-        # Only an ancestor of the synced source is "behind"; anything else runs other code.
-        behind = all(subprocess.run(["git", "-C", receipt["clone"], "merge-base", "--is-ancestor",
-                                     s["revision"], after["source"]],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    check=False).returncode == 0 for s in differing)
-        state = "source-updated-app-not-updated" if behind else "app-revision-outside-source-history"
-    elif source_current and len(known) == 3:
-        state = "owner-reported-match"
-    emit({"schema": "fm-application-provenance.v1", "authority": "observation-only",
-          "clone": receipt["clone"], "sync_receipt": str(Path(args.receipt).resolve()),
-          "sync_id": receipt["id"], "outcome": receipt["outcome"], "source": after,
-          "source_freshness": source_freshness, "source_current": source_current,
-          "stages": stages, "application_state": state})
-
-
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "sync":
-        return sync(*sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["read"])
-    parser.add_argument("receipt")
-    parser.add_argument("--application")
-    parser.add_argument("--max-age", type=float, default=300)
+    parser.add_argument("command", choices=["sync"])
+    parser.add_argument("script")
+    parser.add_argument("home")
+    parser.add_argument("clone")
+    parser.add_argument("requested_at", nargs="?")
     args = parser.parse_args()
-    if not 0 < args.max_age < 1e9:
-        raise ValueError("max-age must be positive and finite")
-    readout(args)
-    return 0
+    return sync(args.script, args.home, args.clone, args.requested_at)
 
 
 if __name__ == "__main__":

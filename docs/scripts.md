@@ -15,6 +15,14 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-startup-network.sh`  | Run session start's network checks and inactive-outcome scan off its blocking path, retaining reports and durable findings |
 | `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards (to `origin/<default>`, or a clone-local `fm.syncRef` branch), self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
 | `fm-fleet-snapshot.sh`   | Print structured fleet snapshot JSON and refresh only its parent-side remote-ledger cache (schema `fm-fleet-snapshot.v1`) |
+| `fm-fleet-provenance.py` | Coordinate per-clone fleet-sync receipts and coalesce overlapping refresh requests |
+| `fm_receipt_io.py`      | Shared local IO for fleet-sync receipts, the fleet board and usage audit |
+| `fm-account.sh`         | Inspect subscription accounts and select or rebalance Claude logins |
+| `fm-account-lib.sh`     | Shared account registry, quota-read and spawn account-selection contract |
+| `fm-board.sh`           | Build the local read-only fleet board and install or remove its user timer |
+| `fm-board.py`           | Project published summaries and configured feeds into fleet board JSON and HTML |
+| `fm_board_tokens.py`    | Incrementally count metadata-only session usage and repetition candidates |
+| `fm-usage-audit.py`      | Audit explicitly selected local usage, status, ledger and inventory inputs |
 | `fm-home-summary-refresh.sh` | Atomically publish this home's structured summary ledger                         |
 | `fm-fleet-ledger.sh`     | Append the opt-in fleet activity ledger's records ([contract](fleet-ledger.md))      |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |

@@ -50,6 +50,8 @@ def iso(epoch):
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
+    if value.get("schema") == "fm-secondmate-home-summary.v1":
+        value.setdefault("home", str(path.parent.parent.resolve()))
     path.write_text(json.dumps(value))
 
 
@@ -71,7 +73,9 @@ for h in (main, mate_a, mate_b, mate_c, mate_d):
 
 
 def summary(**kw):
-    base = {"schema": "fm-secondmate-home-summary.v1", "generated_epoch": NOW - 60, "valid": True,
+    base = {"schema": "fm-secondmate-home-summary.v1",
+            "hold_classifier_schema": "fm-captain-hold-buckets.v1",
+            "generated_epoch": NOW - 60, "valid": True,
             "reason": None, "decisions_open": [], "queued": [], "endpoints": [], "omitted": [],
             "counts": {"queued": 0}}
     base.update(kw)
@@ -292,7 +296,7 @@ def sid(stem):
 
 
 def audit_usage(day):
-    p = subprocess.run([str(root / "bin/fm-usage-audit.sh"), "--home", str(main), "--usage",
+    p = subprocess.run([str(root / "bin/fm-usage-audit.py"), "--home", str(main), "--usage",
                         "state/board/usage/%s.jsonl" % day], text=True, capture_output=True, timeout=60)
     assert p.returncode == 0, p.stderr
     return json.loads(p.stdout)
@@ -509,6 +513,99 @@ _, tokens = build()
 row = {r["session"]: r for r in tokens["sessions"]}[sid("s-cursor")]
 assert (row["input"], tokens["files"]["bytes_read"]) == (7, 0), (row, tokens["files"])
 ok("a replaced file (new inode) resets its cursor, and an unchanged file reads nothing")
+
+# Summary hardening through the public board builder: invalid input is a visible
+# blind spot, and its decisions and tasks must not leak into the projection.
+summary_path = main / "state/home-summary.json"
+original = summary_path.read_bytes()
+valid = json.loads(original)
+
+def rejected_summary():
+    hardened, _ = build()
+    source = next(s for s in hardened["sources"] if s["name"] == "main summary")
+    assert source["status"] == "error", source
+    assert any(i["group"] == "Blind spots" and i["title"].startswith("main summary:")
+               for i in hardened["items"]), hardened
+    assert not any(i["title"] == "main own call" for i in hardened["items"])
+    assert "main" not in hardened["work"]
+
+try:
+    write_json(summary_path, dict(valid, home=str(mate_a)))
+    rejected_summary()
+    write_json(summary_path, dict(valid, hold_classifier_schema="unsupported.v1"))
+    rejected_summary()
+    unbound = dict(valid)
+    del unbound["home"]
+    summary_path.write_text(json.dumps(unbound))
+    rejected_summary()
+    summary_path.write_bytes(original + b" " * (262145 - len(original)))
+    rejected_summary()
+    summary_path.write_bytes(original + b" " * (262144 - len(original)))
+    boundary, _ = build()
+    assert next(s for s in boundary["sources"] if s["name"] == "main summary")["status"] == "ok"
+    target = tmp / "summary-target.json"
+    target.write_bytes(original)
+    summary_path.unlink()
+    summary_path.symlink_to(target)
+    rejected_summary()
+finally:
+    if summary_path.is_symlink():
+        summary_path.unlink()
+    summary_path.write_bytes(original)
+ok("foreign, unbound, wrong-classifier, oversized and symlink summaries become visible blind spots")
+
+# Real producer interoperability: FM_HOME is not canonicalized by the snapshot
+# producer, while the consumer must bind physical homes, not path spellings.
+producer_home, other_home = tmp / "producer-home", tmp / "other-producer-home"
+alias_home = tmp / "producer-alias"
+for h in (producer_home, other_home):
+    for directory in ("state", "data", "config"):
+        (h / directory).mkdir(parents=True)
+    (h / "data/backlog.md").write_text("## In flight\n\n## Queued\n\n## Done\n")
+    (h / "config/backlog-backend").write_text("manual\n")
+    (h / "config/board-feeds").write_text("session_root %s\n" % (tmp / "no-sessions"))
+alias_home.symlink_to(producer_home, target_is_directory=True)
+spelling = str(alias_home) + "/."
+
+def produced_summary(selected_home):
+    env = dict(os.environ, FM_HOME=selected_home, FM_ROOT_OVERRIDE=str(root),
+               FM_SNAPSHOT_NOW=iso(NOW), FM_SNAPSHOT_NOW_EPOCH=str(NOW),
+               FM_SNAPSHOT_SUPERVISION_TIMEOUT="1")
+    for name in ("FM_STATE_OVERRIDE", "FM_DATA_OVERRIDE", "FM_CONFIG_OVERRIDE", "FM_PROJECTS_OVERRIDE"):
+        env.pop(name, None)
+    produced = subprocess.run([str(root / "bin/fm-fleet-snapshot.sh"), "--secondmate-home-summary"],
+                              env=env, text=True, capture_output=True, timeout=120)
+    assert produced.returncode == 0, (produced.stdout, produced.stderr)
+    value = json.loads(produced.stdout)
+    assert value["home"] == selected_home, value
+    assert value["schema"] == "fm-secondmate-home-summary.v1", value
+    assert value["hold_classifier_schema"] == "fm-captain-hold-buckets.v1", value
+    return produced.stdout
+
+homes_file = tmp / "producer-homes.tsv"
+homes_file.write_text("main\t%s\t0\n" % spelling)
+
+def consume_produced():
+    built = subprocess.run([sys.executable, str(root / "bin/fm-board.py"), "--home", str(producer_home),
+                            "--homes", str(homes_file), "--now", str(NOW)],
+                           text=True, capture_output=True, timeout=120)
+    assert built.returncode == 0, built.stderr
+    result = json.loads((producer_home / "state/board/board.json").read_text())
+    source = next(s for s in result["sources"] if s["name"] == "main summary")
+    return source, result
+
+published_path = producer_home / "state/home-summary.json"
+published_path.write_text(produced_summary(spelling))
+source, accepted = consume_produced()
+assert source["status"] == "ok" and "main" in accepted["work"], (source, accepted)
+# The expected home's alias and the published spelling both resolve to the same
+# physical directory, but a genuinely different producer must never be accepted.
+published_path.write_text(produced_summary(str(other_home)))
+source, rejected = consume_produced()
+assert source["status"] == "error" and "main" not in rejected["work"], (source, rejected)
+assert any(i["group"] == "Blind spots" and i["title"].startswith("main summary:")
+           for i in rejected["items"]), rejected
+ok("real-producer summaries accept symlinked/non-canonical homes and reject a different physical home")
 PY
 
 # ---------------------------------------------------------------- scheduled job

@@ -102,8 +102,7 @@ arm() {
   local spec=$1 canonical digest tmp
   valid_spec "$spec" || die 'invalid observation spec'
   canonical=$(jq -cS '.identity' "$spec")
-  tmp=$(mktemp); printf '%s\n' "$canonical" > "$tmp"
-  digest=$(fm_pr_sha256 "$tmp"); rm -f "$tmp"
+  digest=$(printf '%s\n' "$canonical" | fm_pr_sha256 -)
   SID="obs-${digest:0:60}"
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || die 'state unavailable'
   (umask 077; mkdir -p "$STORE")

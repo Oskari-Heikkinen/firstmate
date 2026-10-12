@@ -59,6 +59,50 @@ backdate() {  # <seconds-ago> <file>
   else touch -m -d "@$back" "$2"; fi
 }
 
+test_wait_file_age() {  # real file mtimes under a fixed sampled clock
+  local m
+  m=$(file_mtime "$1") || { printf '999999'; return; }
+  printf '%s' "$((TEST_WAIT_NOW - m))"
+}
+
+test_shared_declared_wait_helpers() {
+  local state marker before age expected status_age marker_age
+  state="$TMP_ROOT/shared-declaration"; mkdir -p "$state"
+  marker="$state/.recheck-surfaced-window"
+  printf 'paused [at=100]: external result\n' > "$state/task.status"
+  before=$(declared_wait_scope "$state" task)
+  case "$before" in declared:?*) ;; *) fail "declaration scope was not status-bound" ;; esac
+  [ "$before" = "$(declared_wait_scope "$state" task)" ] || fail "unchanged declaration scope moved"
+  printf 'note [at=101]: changed\n' >> "$state/task.status"
+  [ "$before" != "$(declared_wait_scope "$state" task)" ] || fail "scope did not follow the status change"
+  : > "$marker"
+  backdate 120 "$marker"; backdate 30 "$state/task.status"
+  TEST_WAIT_NOW=$(date +%s)
+  expected=$(test_wait_file_age "$state/task.status")
+  age=$(declared_wait_unseen_age "$state" window task test_wait_file_age)
+  [ "$age" = "$expected" ] || fail "newer status did not reset unseen age"
+  backdate 10 "$marker"
+  TEST_WAIT_NOW=$(date +%s)
+  expected=$(test_wait_file_age "$marker")
+  [ "$(declared_wait_unseen_age "$state" window task test_wait_file_age)" = "$expected" ] \
+    || fail "newer delivered recheck did not reset unseen age"
+  rm "$marker"
+  expected=$(test_wait_file_age "$state/task.status")
+  [ "$(declared_wait_unseen_age "$state" window task test_wait_file_age)" = "$expected" ] \
+    || fail "absent recheck ignored the status clock"
+  rm "$state/task.status"
+  [ "$(declared_wait_unseen_age "$state" window task test_wait_file_age)" = 999999 ] \
+    || fail "both absent clocks did not become due immediately"
+  # The supervisor's supplied clock policy is retained, including negative ages.
+  : > "$marker"; TEST_WAIT_NOW=0
+  marker_age=$(test_wait_file_age "$marker")
+  status_age=$(test_wait_file_age "$state/task.status")
+  [ "$marker_age" -lt "$status_age" ] || fail "future-mtime fixture was not divergent"
+  [ "$(declared_wait_unseen_age "$state" window task test_wait_file_age)" = "$marker_age" ] \
+    || fail "the caller's negative-age policy changed"
+  pass "shared wait scope and unseen age preserve signature and caller clock semantics"
+}
+
 # 0 once <pid>'s watcher completed a whole poll cycle while alive, 1 if it exited.
 wait_poll_cycle() {  # <state> <pid> [limit-ticks]
   local state=$1 pid=$2 limit=${3:-300} beat first now i=0
@@ -597,6 +641,7 @@ test_drain_presents_supersede_evidence() {
   pass "the drain shows a superseded blocker closed with its evidence"
 }
 
+test_shared_declared_wait_helpers
 test_wait_conditions_hold_only_while_checkable
 test_wait_tag_survives_stamping
 test_configured_merge_result_checker

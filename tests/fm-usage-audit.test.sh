@@ -23,11 +23,7 @@ jsonl('usage.jsonl', [usage, usage, {**usage, 'id': 'conflict'},
                      {**usage, 'id': 'conflict', 'input_tokens': 2000},
                      {**usage, 'id': 'out-of-window', 'ts': 99}])
 ledger = {'v': 1, 'ts': 100, 'event': 'task.status', 'task': 'one', 'state': 'paused', 'text': secret}
-event = {'schema': 'fm-audit-event.v1', 'id': 'e1', 'ts': 100, 'task': 'one',
-         'spawn_gen': 'new', 'correlation': 'request', 'event': 'produced'}
-jsonl('events.jsonl', [ledger, ledger, event, event,
-                      {**event, 'id': 'e2', 'ts': 107, 'event': 'consumed', 'consumer': 'analysis'},
-                      {**event, 'id': 'e3', 'ts': 101, 'spawn_gen': 'old', 'event': 'consumed', 'consumer': 'analysis'}])
+jsonl('events.jsonl', [ledger, ledger])
 with (home / 'events.jsonl').open('a') as out:
     out.write('{"v":1')
 (home / 'status').write_text(f'paused [at=100]: {secret}\nack [at=101]: {secret}\n'
@@ -37,7 +33,7 @@ with (home / 'events.jsonl').open('a') as out:
 (home / 'scripts/b.py').write_text(secret)
 
 def run(*args, ok=True):
-    p = subprocess.run([str(root / 'bin/fm-usage-audit.sh'), '--home', str(home), *map(str, args)],
+    p = subprocess.run([str(root / 'bin/fm-usage-audit.py'), '--home', str(home), *map(str, args)],
                        text=True, capture_output=True, timeout=30)
     assert (p.returncode == 0) == ok, p.stderr
     assert secret not in p.stdout + p.stderr
@@ -57,8 +53,6 @@ assert a['quality']['conflicting_usage_ids'] == 1
 assert a['quality']['incomplete_tails'] == 1
 assert a['fleet_ledger']['raw_counts'] == {'task.status': 2}
 assert a['fleet_ledger']['exact_unique_lower_bound'] == {'task.status': 1}
-assert a['event_to_consumer_latency'][0]['seconds'] == 7
-assert len(a['event_to_consumer_latency']) == 1
 assert a['status_observations']['lines'] == 2
 assert a['status_observations']['by_verb'] == {'paused': 1, 'ack': 1}
 assert len(a['identical_scripts'][0]['copies']) == 2
@@ -88,12 +82,7 @@ run('--status', 'escape', ok=False)
 jsonl('invalid.jsonl', [{**usage, 'cached_input_tokens': 9999}, {**usage, 'input_tokens': -1},
                         {**usage, 'context_tokens': True}, {**usage, 'role': secret + ' space'}])
 assert run('--usage', 'invalid.jsonl')['quality']['invalid_usage_rows'] == 4
-# Contradictory productions cannot manufacture one unambiguous latency.
-jsonl('ambiguous.jsonl', [event, {**event, 'id': 'other'},
-                        {**event, 'id': 'end', 'ts': 120, 'event': 'consumed', 'consumer': 'a'}])
-assert run('--events', 'ambiguous.jsonl')['event_to_consumer_latency'] == []
-jsonl('conflict-events.jsonl', [event, {**event, 'ts': 101}, {**event, 'id': 'alternative'},
-                              {**event, 'id': 'end', 'ts': 120, 'event': 'consumed', 'consumer': 'a'}])
-assert run('--events', 'conflict-events.jsonl')['event_to_consumer_latency'] == []
-print('PASS: deterministic private audit, measured calls, inferred candidates, identity/latency and coverage uncertainty')
+jsonl('unknown-events.jsonl', [{'schema': 'unsupported-event.v1', 'ts': 100}])
+assert run('--events', 'unknown-events.jsonl')['quality']['invalid_events_rows'] == 1
+print('PASS: deterministic private audit, measured calls, inferred candidates and coverage uncertainty')
 PY
