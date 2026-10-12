@@ -3251,6 +3251,9 @@ teardown_herdr_close_endpoint() {
     fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" || true
   fi
   if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+    if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
+      echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
+    fi
     echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining the copy and every durable task record - rerun teardown once the close can run under the session lock" >&2
     return 1
   fi

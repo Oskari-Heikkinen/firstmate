@@ -3123,6 +3123,21 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
   write_meta "$case_dir" local-only ship
   configure_herdr_projection_teardown_case "$case_dir"
   log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+  cp "$case_dir/state/task-x1.meta" "$case_dir/meta.before"
+  cp "$case_dir/state/task-x1.herdr-presentation" "$case_dir/journal.before"
+  local head_before
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  cat > "$case_dir/fakebin/lsof" <<SH
+#!/usr/bin/env bash
+printf '%s\n' reap >> "$case_dir/lifecycle.log"
+exit 0
+SH
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' return >> "$case_dir/lifecycle.log"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/lsof" "$case_dir/fakebin/treehouse"
 
   local rc=0
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" FM_FAKE_HERDR_PRESENCE_UNKNOWN=1 \
@@ -3135,6 +3150,16 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
     || fail "unconfirmed task-pane close incorrectly retired the presentation journal"
   [ -e "$case_dir/state/task-x1.meta" ] \
     || fail "unconfirmed task-pane close erased the durable endpoint metadata"
+  if ! cmp -s "$case_dir/meta.before" "$case_dir/state/task-x1.meta" \
+     || ! cmp -s "$case_dir/journal.before" "$case_dir/state/task-x1.herdr-presentation"; then
+    fail "unconfirmed task-pane close changed its retained metadata or journal"
+  fi
+  [ -d "$case_dir/wt" ] \
+    && [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    && [ "$(git -C "$case_dir/wt" branch --show-current)" = fm/task-x1 ] \
+    || fail "unconfirmed task-pane close removed or reset its retained copy"
+  [ ! -e "$case_dir/lifecycle.log" ] \
+    || fail "unconfirmed task-pane close reached process reap or native return"
   assert_grep "close could not be confirmed" "$case_dir/stderr" \
     "unconfirmed projected close did not explain why the journal was retained"
   assert_grep "not confirmed gone" "$case_dir/stderr" \

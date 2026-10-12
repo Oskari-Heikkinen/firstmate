@@ -1266,8 +1266,10 @@ pass "real Herdr lab: session lock contention from a secondmate home falls back 
 # Treehouse pool so those intentionally retained records cannot claim a slot
 # that a recovery fixture legitimately acquires after their processes stop.
 # Exercise both the leading fm- identity style seen in Hi Bit work and the
-# project-name identity style used by Wheelhouse work.
-for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
+# project-name identity style used by Wheelhouse work. A separate third task
+# tests delivery abort: its replacement endpoint is already gone before
+# teardown, so it must not share the successful-reclaim retirement assertion.
+for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1 recovery-abort-r1; do
   spawn_task "$RESTART_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/$RESTART_ID-first.out" 2> "$TMP_ROOT/$RESTART_ID-first.err" \
     || fail "$RESTART_ID fixture's projected spawn failed: $(cat "$TMP_ROOT/$RESTART_ID-first.err")"
   RESTART_META="$HOME_DIR/state/$RESTART_ID.meta"
@@ -1389,12 +1391,14 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
   fi
 
   # A delivery failure after reclaim/publication must not apply fresh-spawn
-  # rollback to the retained task record or reservation.
-  if [ "$RESTART_ID" = fm-hibit-resume-r1 ]; then
+  # rollback to the retained task record or reservation. Keep both successful
+  # identity/repeated-reclaim cases above on the normal cleanup path.
+  if [ "$RESTART_ID" = recovery-abort-r1 ]; then
     PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null \
       || fail "could not stop the isolated session for recovery delivery failure"
     PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
       || fail "could not reprovision the isolated session for recovery delivery failure"
+    ABORT_FOCUS=$(focus_snapshot)
     BEFORE_FAILED_PANE=$(grep '^herdr_pane_id=' "$RESTART_META" | cut -d= -f2-)
     cp "$TREEHOUSE_CALL_LOG" "$TMP_ROOT/$RESTART_ID-failed-treehouse.before"
     printf '%s\n' "$RESTART_ID" > "$RECOVERY_DELIVERY_ABORT_CONTROL"
@@ -1431,13 +1435,45 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
        || ! cmp -s "$TMP_ROOT/$RESTART_ID-evidence.before" "$OLD_RESTART_WT/retained-evidence.txt"; then
       fail "failed recovery changed retained unlanded work or ignored evidence"
     fi
+    ABORT_JOURNAL="$HOME_DIR/state/$RESTART_ID.herdr-presentation"
+    cp "$ABORT_JOURNAL" "$TMP_ROOT/$RESTART_ID-journal.aborted"
+    ABORT_PANE=$(grep '^herdr_pane_id=' "$RESTART_META" | cut -d= -f2-)
+    ABORT_TOKEN=$(grep '^projection_id=' "$ABORT_JOURNAL" | cut -d= -f2-)
+    ABORT_PRESENCE_RC=0
+    lab pane get "$ABORT_PANE" > "$TMP_ROOT/$RESTART_ID-abort-pane.json" 2>&1 || ABORT_PRESENCE_RC=$?
+    lab workspace list > "$TMP_ROOT/$RESTART_ID-abort-workspaces.json" \
+      || fail "could not inspect post-abort workspace correlation"
+    if [ "$ABORT_PRESENCE_RC" -eq 0 ] \
+       || ! jq -e '.error.code == "pane_not_found"' "$TMP_ROOT/$RESTART_ID-abort-pane.json" >/dev/null \
+       || ! jq -e --arg suffix " · p:$ABORT_TOKEN" \
+         '(.result.workspaces | type) == "array" and
+          ([.result.workspaces[]? | select((.label | type) == "string" and (.label | endswith($suffix)))] | length) == 0' \
+         "$TMP_ROOT/$RESTART_ID-abort-workspaces.json" >/dev/null; then
+      cat "$RESTART_META" "$ABORT_JOURNAL" "$TMP_ROOT/$RESTART_ID-abort-pane.json" \
+        "$TMP_ROOT/$RESTART_ID-abort-workspaces.json" "$TMP_ROOT/$RESTART_ID-failed-delivery.err" >&2
+      fail "delivery-abort correlation-loss hypothesis disproved: expected exact pane absence and no token workspace"
+    fi
+    assert_focus_is "$ABORT_FOCUS" "$RESTART_ID delivery abort"
     pass "real Herdr lab: failed post-reclaim delivery preserves the task record, exact lease, claim and unfinished work"
   fi
 
+  RESTART_TEARDOWN_FOCUS=$(focus_snapshot)
   teardown_task "$RESTART_ID" "$HOME_DIR" > "$TMP_ROOT/$RESTART_ID-teardown.out" 2> "$TMP_ROOT/$RESTART_ID-teardown.err" \
     || fail "$RESTART_ID teardown after reclaim failed: $(cat "$TMP_ROOT/$RESTART_ID-teardown.err")"
-  [ ! -e "$HOME_DIR/state/$RESTART_ID.herdr-presentation" ] \
-    || fail "$RESTART_ID exact reclaimed teardown did not retire its journal"
+  if [ "$RESTART_ID" = recovery-abort-r1 ]; then
+    if ! cmp -s "$TMP_ROOT/$RESTART_ID-journal.aborted" "$ABORT_JOURNAL" \
+       || ! grep -F 'remains quarantined; no workspace cleanup was attempted' "$TMP_ROOT/$RESTART_ID-teardown.err" >/dev/null; then
+      lab workspace list >&2 || true
+      cat "$TMP_ROOT/$RESTART_ID-journal.aborted" "$TMP_ROOT/$RESTART_ID-teardown.err" >&2
+      [ ! -f "$ABORT_JOURNAL" ] || cat "$ABORT_JOURNAL" >&2
+      fail "$RESTART_ID abort cleanup did not retain its uncorrelated journal unchanged"
+    fi
+    pass "real Herdr lab: delivery-abort cleanup quarantines its journal without expanding retirement authority"
+  else
+    [ ! -e "$HOME_DIR/state/$RESTART_ID.herdr-presentation" ] \
+      || fail "$RESTART_ID exact reclaimed teardown did not retire its journal: $(cat "$TMP_ROOT/$RESTART_ID-teardown.err")"
+  fi
+  assert_focus_is "$RESTART_TEARDOWN_FOCUS" "$RESTART_ID reclaimed teardown"
   "$REAL_TREEHOUSE" return --force "$OLD_RESTART_WT" >/dev/null 2>&1 || true
   "$REAL_TREEHOUSE" return --force "$NEW_RESTART_WT" >/dev/null 2>&1 || true
 done
