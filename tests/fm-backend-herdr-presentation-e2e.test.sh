@@ -367,9 +367,18 @@ focus_snapshot() {
 }
 
 assert_focus_is() {  # <expected> <case-name>
-  local expected=$1 case_name=$2 actual
+  local expected=$1 case_name=$2 diagnostic=${3:-} actual
   actual=$(focus_snapshot)
-  [ "$actual" = "$expected" ] || fail "$case_name changed active workspace/tab from $expected to $actual"
+  if [ "$actual" != "$expected" ]; then
+    # Keep the strict verdict and expose the earliest divergence on CI, where
+    # the real backend runs; cleanup otherwise destroys these private logs.
+    printf 'focus failure diagnostics for %s\n' "$case_name" >&2
+    tail -n 80 "$FOCUS_AUDIT_LOG" >&2
+    tail -n 100 "$HERDR_CALL_LOG" >&2
+    tail -n 20 "$TREEHOUSE_CALL_LOG" >&2
+    [ -z "$diagnostic" ] || tail -n 80 "$diagnostic" >&2
+    fail "$case_name changed active workspace/tab from $expected to $actual"
+  fi
 }
 
 focus_audit_line_count() { wc -l < "$FOCUS_AUDIT_LOG" | tr -d '[:space:]'; }
@@ -947,7 +956,7 @@ pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with
 SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" \
   || fail "projected teardown failed: $(cat "$TMP_ROOT/on-teardown.err")"
-assert_focus_is "$CAPTAIN_FOCUS" "projected teardown"
+assert_focus_is "$CAPTAIN_FOCUS" "projected teardown" "$TMP_ROOT/on-teardown.err"
 assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$CAPTAIN_FOCUS"
 pass "real Herdr lab: Treehouse commands and metadata shape are byte-identical except for endpoint IDs and spawn/acquisition incarnations"
 if lab workspace get "$PROJECTED_WSID" >/dev/null 2>&1; then
