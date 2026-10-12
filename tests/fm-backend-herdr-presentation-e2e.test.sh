@@ -468,6 +468,7 @@ normalize_meta() {  # <meta>
     -e 's|^herdr_tab_id=.*$|herdr_tab_id=<herdr-container-id>|' \
     -e 's|^herdr_pane_id=.*$|herdr_pane_id=<herdr-container-id>|' \
     -e 's|^spawn_gen=.*$|spawn_gen=<spawn-incarnation>|' \
+    -e 's|^treehouse_lease_id=.*$|treehouse_lease_id=<acquisition-incarnation>|' \
     "$1"
 }
 
@@ -549,7 +550,7 @@ FIRSTMATE_WSID=$(grep '^herdr_workspace_id=' "$ANCHOR_META" | cut -d= -f2-)
 
 # The same task id and project run once opted out and once projected, so
 # Treehouse commands and metadata can be compared after normalizing endpoint
-# IDs and the deliberately fresh per-spawn incarnation.
+# IDs and the deliberately fresh spawn and lease-acquisition incarnations.
 : > "$TREEHOUSE_CALL_LOG"
 OFF_HERDR_START=$(log_line_count)
 OFF_MOVE_START=$(wc -l < "$MOVE_CALL_LOG" | tr -d '[:space:]')
@@ -760,6 +761,12 @@ pass "real Herdr lab: bounded lock contention warns and falls back flat without 
 PROJECTION_ORDER_START=$(log_line_count)
 
 [ "$OFF_WT" = "$ON_WT" ] || fail "Treehouse did not reuse the same fixture worktree, so byte comparison is inconclusive"
+OFF_LEASE_ID=$(grep '^treehouse_lease_id=' "$OFF_META" | cut -d= -f2-)
+ON_LEASE_ID=$(grep '^treehouse_lease_id=' "$ON_META" | cut -d= -f2-)
+[ -n "$OFF_LEASE_ID" ] && [ -n "$ON_LEASE_ID" ] && [ "$OFF_LEASE_ID" != "$ON_LEASE_ID" ] \
+  || fail "a returned and reacquired fixture slot did not receive a fresh lease identity"
+[ "$(grep '^treehouse_lease_holder=' "$OFF_META")" = "$(grep '^treehouse_lease_holder=' "$ON_META")" ] \
+  || fail "presentation changed the same task's lease holder"
 normalize_meta "$OFF_META" > "$TMP_ROOT/off.meta.normalized"
 normalize_meta "$ON_META" > "$TMP_ROOT/on.meta.normalized"
 cmp -s "$TMP_ROOT/off.meta.normalized" "$TMP_ROOT/on.meta.normalized" \
@@ -904,7 +911,7 @@ teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-t
   || fail "projected teardown failed: $(cat "$TMP_ROOT/on-teardown.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "projected teardown"
 assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$CAPTAIN_FOCUS"
-pass "real Herdr lab: Treehouse commands and metadata shape are byte-identical except for endpoint IDs and spawn incarnation"
+pass "real Herdr lab: Treehouse commands and metadata shape are byte-identical except for endpoint IDs and spawn/acquisition incarnations"
 if lab workspace get "$PROJECTED_WSID" >/dev/null 2>&1; then
   fail "closing the exact projected task pane did not remove its last-tab workspace"
 fi
@@ -982,6 +989,12 @@ mkdir -p "$SECOND_HOME_A/state" "$SECOND_HOME_A/config" "$SECOND_HOME_A/data" \
   "$SECOND_HOME_B/state" "$SECOND_HOME_B/config" "$SECOND_HOME_B/data"
 printf 'alpha\n' > "$SECOND_HOME_A/.fm-secondmate-home"
 printf 'bravo\n' > "$SECOND_HOME_B/.fm-secondmate-home"
+for home in "$SECOND_HOME_A" "$SECOND_HOME_B"; do
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$HOME_DIR" \
+    > "$home/.fm-secondmate-parent"
+done
+printf -- '- %s - Presentation fixture (home: %s; scope: presentation; projects: ; added 2026-10-12)\n' \
+  alpha "$SECOND_HOME_A" bravo "$SECOND_HOME_B" > "$HOME_DIR/data/secondmates.md"
 touch "$SECOND_HOME_A/state/.last-watcher-beat" "$SECOND_HOME_B/state/.last-watcher-beat"
 # Ensure the secondmate homes look like gitignored firstmate homes so inheritance
 # may write config/herdr-presentation-spaces.
@@ -1210,10 +1223,8 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
   PATH="$HERDR_ORIGINAL_PATH" \
     "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
     || fail "could not reprovision the isolated session for $RESTART_ID validation"
-  # Stopping the whole Herdr session also ends the anchor's agent. Its restored
-  # shell remains useful as the durable layout anchor, but its task record no
-  # longer represents a live slot owner and must not poison later slot reuse.
-  rm -f "$ANCHOR_META"
+  # Stopping the session ends the anchor's agent, not its task-duration lease.
+  # Keep its record and reservation intact until guarded task cleanup.
   lab pane get "$OLD_RESTART_PANE" >/dev/null 2>&1 \
     || fail "$RESTART_ID restart did not preserve the projected pane structurally"
   if lab agent get "$OLD_RESTART_PANE" >/dev/null 2>&1; then

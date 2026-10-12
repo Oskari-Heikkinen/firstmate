@@ -207,6 +207,16 @@ done
 mkdir -p "$PRIMARY_HOME/data/$SM2_ID"
 printf 'trivial secondmate charter brief: nothing to do.\n' > "$PRIMARY_HOME/data/$SM2_ID/brief.md"
 
+# These homes share a pool, so model their registered local topology rather
+# than presenting valid sibling claims as unknown-home reservations.
+for home in "$SM_HOME" "$SM2_HOME" "$PRES_HOME"; do
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$PRIMARY_HOME" \
+    > "$home/.fm-secondmate-parent"
+done
+printf -- '- %s - Launcher fixture (home: %s; scope: launcher; projects: ; added 2026-10-12)\n' \
+  "$SM_ID" "$SM_HOME" "$SM2_ID" "$SM2_HOME" presentation "$PRES_HOME" \
+  > "$PRIMARY_HOME/data/secondmates.md"
+
 PROJ="$TMP_ROOT/scratch-project"; make_scratch_project "$PROJ"
 
 # One unrelated workspace, kept FOCUSED throughout, so every placement result
@@ -429,7 +439,7 @@ pass "real herdr E2E: a --secondmate launch still stands up that secondmate's ow
 
 # --- 8. teardown closes only the worker's own pane --------------------------
 
-FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$PRIMARY_HOME/state" FM_DATA_OVERRIDE="$PRIMARY_HOME/data" \
+FM_HOME="$PRIMARY_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$PRIMARY_HOME/state" FM_DATA_OVERRIDE="$PRIMARY_HOME/data" \
   FM_CONFIG_OVERRIDE="$PRIMARY_HOME/config" \
   "$ROOT/bin/fm-teardown.sh" dupC >"$TMP_ROOT/teardown.out" 2>&1
 status=$?
