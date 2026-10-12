@@ -174,6 +174,9 @@
 #   waiting up to FM_SPAWN_TASK_SET_WAIT seconds (default 60) per sibling fresh
 #   spawn that holds it (spawn_acquire_task_set_lock owns the exact policy);
 #   relaunch is exempt because the existing task's control lock covers it.
+#   Fresh same-task Herdr recovery reclaims only an agent-free endpoint and reuses
+#   its exact exclusive recorded lease/copy without any fresh-copy preparation.
+#   After endpoint reclaim it follows replacement publication and rollback rules.
 #   Treehouse allocation and relaunch hold the project-identity lock through task
 #   metadata publication. bin/fm-wake-lib.sh owns task-duration reservations,
 #   pre-allocation legacy refusal, and claim identity. Spawn records the exact
@@ -1244,6 +1247,7 @@ SPAWN_TASK_SET_LOCK_HELD=0
 SPAWN_TREEHOUSE_PROJECT_LOCK=
 SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
 SPAWN_LEASE_ACQUIRED=0
+SPAWN_HERDR_RESERVATION_REUSE=0
 SPAWN_TREEHOUSE_LEASE_HOLDER=
 SPAWN_TREEHOUSE_LEASE_ID=
 SPAWN_OBSERVED_LEASE_HOLDER=
@@ -3667,6 +3671,35 @@ if [ -e "$STATE/$ID.backlog-close" ] || [ -L "$STATE/$ID.backlog-close" ]; then
   exit 1
 fi
 
+# Fresh Herdr recovery may replace an agent-free husk endpoint, but it still
+# belongs to the recorded task. Prove and retain that task's exact reservation
+# under the project and metadata locks before any endpoint is created.
+if [ "$RELAUNCH" -eq 0 ] && [ "$BACKEND" = herdr ] && [ "$KIND" != secondmate ] && \
+  { [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; }; then
+  RELAUNCH_META="$STATE/$ID.meta"
+  fm_backend_validate_task_endpoint "$RELAUNCH_META" "$ID" || exit 1
+  recovery_project=$(herdr_projection_meta_field_exact "$RELAUNCH_META" project) || exit 1
+  recovery_wt=$(herdr_projection_meta_field_exact "$RELAUNCH_META" worktree) || exit 1
+  recovery_holder=$(herdr_projection_meta_field_exact "$RELAUNCH_META" treehouse_lease_holder) || exit 1
+  recovery_lease=$(herdr_projection_meta_field_exact "$RELAUNCH_META" treehouse_lease_id) || exit 1
+  if [ "$(fm_backend_of_meta "$RELAUNCH_META")" != herdr ] || \
+    [ "$(real_path_or_raw "$recovery_project")" != "$(real_path_or_raw "$PROJ_ABS")" ] || \
+    [ "$(fm_meta_get "$RELAUNCH_META" kind)" != "$KIND" ] || \
+    [ "$(fm_meta_get "$RELAUNCH_META" mode)" != "$MODE" ] || \
+    [ "$(fm_meta_get "$RELAUNCH_META" yolo)" != "$YOLO" ] || \
+    [ "$(fm_meta_get "$RELAUNCH_META" branch)" != "${BRANCH:-}" ] || \
+    [ "$recovery_holder" != "$SPAWN_TREEHOUSE_LEASE_HOLDER" ] || \
+    ! fm_treehouse_pool_slot "$PROJ_ABS" "$recovery_wt" || \
+    ! fm_treehouse_relaunch_reservation "$PROJ_ABS" "$STATE" "$RELAUNCH_META" "$ID" "$FM_HOME"; then
+    echo "error: fresh Herdr recovery of $ID does not match its recorded task and exclusive reservation; refusing before endpoint creation or copy preparation" >&2
+    exit 1
+  fi
+  herdr_projection_existing_meta_allows_flat "$RELAUNCH_META" || exit 1
+  RELAUNCH_PRIOR_HARNESS=$(herdr_projection_meta_field_exact "$RELAUNCH_META" harness) || exit 1
+  WT=$recovery_wt
+  SPAWN_TREEHOUSE_LEASE_ID=$recovery_lease
+  SPAWN_HERDR_RESERVATION_REUSE=1
+fi
 W="fm-$ID"
 if [ "$RELAUNCH" -eq 1 ]; then
   # A secondmate's home already resolved WT above through the same validation a
@@ -4363,6 +4396,13 @@ agy_spawn_fail() {  # <detail>
   rovo_endpoint_cleanup
 }
 
+if [ "$SPAWN_HERDR_RESERVATION_REUSE" = 1 ]; then
+  # Endpoint reclaim above remains the fresh Herdr presentation path. From this
+  # point it is a replacement of an existing task: reuse the reservation with
+  # no get/reset, preserve durable metadata, and never fresh-dispatch rollback
+  # the old record or release its lease if delivery fails.
+  RELAUNCH=1
+fi
 if [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = orca ]; then
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$RELAUNCH" -eq 1 ]; then

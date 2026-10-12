@@ -860,7 +860,7 @@ SH
 }
 
 test_task_duration_lease_and_relaunch() {
-  local rec id=duration-owner next=duration-next out status holder lease marker head slot2
+  local rec id=duration-owner next=duration-next out status holder lease marker head slot2 mismatch
   rec=$(make_case duration "$id")
   read_case_record "$rec"
   lay_out_as_pool_slot
@@ -895,14 +895,23 @@ test_task_duration_lease_and_relaunch() {
     "$ROOT/bin/fm-wake-lib.sh" "$PROJECT_DIR" "$HOME_DIR/state" "$HOME_DIR/state/$id.meta" "$id" "$HOME_DIR" \
     || fail "own same-lease relaunch proof should succeed"
   assert_grep "treehouse_lease_id=$lease" "$HOME_DIR/state/$id.meta" "relaunch proof changed acquisition identity"
-  # A reused path must not be adopted just because the old endpoint is dead.
-  jq '.worktrees[0].lease_id="replacement"' "$CASE_DIR/slots/treehouse-state.json" > "$CASE_DIR/state.new"
-  mv "$CASE_DIR/state.new" "$CASE_DIR/slots/treehouse-state.json"
-  if FM_HOME="$HOME_DIR" bash -c '. "$1"; fm_treehouse_relaunch_reservation "$2" "$3" "$4" "$5" "$6"' _ \
-    "$ROOT/bin/fm-wake-lib.sh" "$PROJECT_DIR" "$HOME_DIR/state" "$HOME_DIR/state/$id.meta" "$id" "$HOME_DIR"; then
-    fail "relaunch accepted a different acquisition"
-  fi
-  assert_grep "treehouse_lease_id=$lease" "$HOME_DIR/state/$id.meta" "refused relaunch rewrote its reservation"
+  # Recovery must prove BOTH home/task holder and acquisition, even when the
+  # other identity axis still matches and the parked endpoint is dead.
+  cp "$CASE_DIR/slots/treehouse-state.json" "$CASE_DIR/lease.before"
+  cp "$HOME_DIR/state/$id.meta" "$CASE_DIR/meta.before"
+  for mismatch in lease_holder lease_id; do
+    jq --arg key "$mismatch" '.worktrees[0][$key]="replacement"' "$CASE_DIR/lease.before" > "$CASE_DIR/slots/treehouse-state.json"
+    cp "$CASE_DIR/slots/treehouse-state.json" "$CASE_DIR/conflict.before"
+    if FM_HOME="$HOME_DIR" bash -c '. "$1"; fm_treehouse_relaunch_reservation "$2" "$3" "$4" "$5" "$6"' _ \
+      "$ROOT/bin/fm-wake-lib.sh" "$PROJECT_DIR" "$HOME_DIR/state" "$HOME_DIR/state/$id.meta" "$id" "$HOME_DIR"; then
+      fail "relaunch accepted a different $mismatch"
+    fi
+    cmp -s "$CASE_DIR/meta.before" "$HOME_DIR/state/$id.meta" || fail "refused recovery rewrote its record"
+    cmp -s "$CASE_DIR/conflict.before" "$CASE_DIR/slots/treehouse-state.json" || fail "refused recovery changed the conflicting lease"
+    [ "$(cat "$SLOT_CLAIM")" = "$marker" ] || fail "refused recovery changed its claim"
+    [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$head" ] || fail "refused recovery reset unfinished work"
+    assert_grep retained "$POOL_DIR/workspace/$id/evidence" "refused recovery removed ignored evidence"
+  done
   pass "park/exit occupancy cannot free a task-duration lease and relaunch requires its exact identity"
 }
 

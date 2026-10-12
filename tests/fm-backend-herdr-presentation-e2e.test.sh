@@ -29,6 +29,7 @@ MOVE_CALL_LOG="$TMP_ROOT/workspace-move-calls.log"
 FOCUS_AUDIT_LOG="$TMP_ROOT/focus-audit.log"
 ACTIVE_SEEDED_CONTROL="$TMP_ROOT/active-seeded-control"
 POST_CREATE_ABORT_CONTROL="$TMP_ROOT/post-create-abort-control"
+RECOVERY_DELIVERY_ABORT_CONTROL="$TMP_ROOT/recovery-delivery-abort-control"
 mkdir -p "$FAKEBIN"
 : > "$HERDR_CALL_LOG"
 : > "$TREEHOUSE_CALL_LOG"
@@ -36,7 +37,7 @@ mkdir -p "$FAKEBIN"
 : > "$FOCUS_AUDIT_LOG"
 REAL_MOVER="$ROOT/bin/backends/herdr-workspace-move.py"
 export REAL_HERDR REAL_TREEHOUSE REAL_MOVER HERDR_CALL_LOG TREEHOUSE_CALL_LOG TREEHOUSE_LOCK_DIR MOVE_CALL_LOG FOCUS_AUDIT_LOG HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
-export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL TMP_ROOT
+export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL RECOVERY_DELIVERY_ABORT_CONTROL TMP_ROOT
 
 # Log every production-adapter call, remove its already-validated trailing
 # session flag, and send the operation through the lab helper so that helper
@@ -111,6 +112,18 @@ arg_value() {
   return 1
 }
 
+# Refuse only the selected task's staged launch input, after its replacement
+# endpoint and record have been published. Every prior handoff/read stays real.
+if [ "${1:-} ${2:-}" = "pane send-text" ] && [ -f "$RECOVERY_DELIVERY_ABORT_CONTROL" ]; then
+  abort_id=$(cat "$RECOVERY_DELIVERY_ABORT_CONTROL")
+  case "${4:-}" in
+    *"/tmp/fm-$abort_id+"*"/launch."*)
+      printf 'fixture: refused recovery launch delivery for %s\n' "$abort_id" >&2
+      : > "$RECOVERY_DELIVERY_ABORT_CONTROL.fired"
+      exit 23
+      ;;
+  esac
+fi
 label=$(arg_value --label "$@" || true)
 if [ "${1:-} ${2:-}" = "workspace list" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ]; then
   stage=$(cat "$ACTIVE_SEEDED_CONTROL/stage" 2>/dev/null || true)
@@ -141,9 +154,28 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ] \
   refusal_probe=1
   refusal_before=$(focus_snapshot || printf ambiguous/ambiguous)
 fi
+# Observe a structured absence on the exact abort pane as well as explicit
+# closes: the focus-safe lone-shell death path legitimately has no pane.close.
+abort_presence_probe=0
+if [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
+  for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
+    [ -d "$task_dir" ] || continue
+    if [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ]; then
+      abort_presence_probe=1
+      break
+    fi
+  done
+fi
 before=
-[ -z "$mutation" ] || before=$(focus_snapshot || printf ambiguous/ambiguous)
-if out=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"); then
+if [ -n "$mutation" ] || [ "$abort_presence_probe" -eq 1 ]; then
+  before=$(focus_snapshot || printf ambiguous/ambiguous)
+fi
+if [ "$abort_presence_probe" -eq 1 ]; then
+  # Herdr's structured error body may be on stderr; only this observed read
+  # combines streams, exactly as the production presence classifier does.
+  out=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@" 2>&1)
+  status=$?
+elif out=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"); then
   status=0
 else
   status=$?
@@ -184,6 +216,11 @@ if [ "$status" -eq 0 ] && [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE
     break
   done
 fi
+if [ "$abort_presence_probe" -eq 1 ] &&
+   printf '%s' "$out" | jq -e '.error.code == "pane_not_found"' >/dev/null 2>&1; then
+  after=$(focus_snapshot || printf ambiguous/ambiguous)
+  printf 'pane-absent\t%s\t%s\t%s\n' "$before" "$after" "${3:-}" >> "$FOCUS_AUDIT_LOG"
+fi
 if [ -n "$mutation" ]; then
   after=$(focus_snapshot || printf ambiguous/ambiguous)
   printf '%s\t%s\t%s\t%s\n' "$mutation" "$before" "$after" "$mutation_target" >> "$FOCUS_AUDIT_LOG"
@@ -208,9 +245,6 @@ set -u
   done
   printf '\n'
 } >> "$TREEHOUSE_CALL_LOG"
-if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
-  exit 0
-fi
 # Treehouse's pool allocator is outside the Herdr concurrency contract under
 # test. Serialize its calls so simultaneous recovery spawns cannot race for
 # one pool slot before reaching the Herdr session lock exercised below.
@@ -357,6 +391,7 @@ assert_raw_presentation_mutations_preserved_since() {  # <line-count> <case-name
 assert_cleanup_focus_preserved() {  # <line-count> <pane-id> <expected-focus>
   local start=$1 pane_id=$2 expected=$3
   sed -n "$((start + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v pane="$pane_id" -v expected="$expected" '
+    $1 == "pane-absent" && $4 == pane && ($2 != expected || $3 != expected) { bad = 1 }
     $1 == "pane-close" && $4 == pane {
       saw_close = 1
       if ($2 != expected) { bad = 1 }
@@ -415,19 +450,22 @@ spawn_task() {  # <id> <home> <project>
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'while :; do sleep 60; done'" --mode no-mistakes --yolo off --backend herdr
 }
 
-finish_concurrent_spawn() {  # <id> <status> <stdout> <stderr>
-  local id=$1 status=$2 out=$3 err=$4
+finish_concurrent_spawn() {  # <id> <status> <stdout> <stderr> [home] [project]
+  local id=$1 status=$2 out=$3 err=$4 home=${5:-$HOME_DIR} project=${6:-$PROJECT_DIR}
   [ "$status" -ne 0 ] || return 0
-  grep -F "task set is locked" "$err" >/dev/null 2>&1 \
-    || fail "concurrent projected spawn $id failed unexpectedly: $(cat "$err")"
-  spawn_task "$id" "$HOME_DIR" "$PROJECT_DIR" > "$out" 2> "$err" \
-    || fail "projected spawn $id retry failed after task-set publication completed: $(cat "$err")"
+  if ! grep -F "task set is locked" "$err" >/dev/null 2>&1 \
+     && ! grep -F "another Treehouse slot allocation or return is in progress" "$err" >/dev/null 2>&1; then
+    fail "concurrent projected spawn $id failed unexpectedly: $(cat "$err")"
+  fi
+  spawn_task "$id" "$home" "$project" > "$out" 2> "$err" \
+    || fail "projected spawn $id retry failed after concurrent publication completed: $(cat "$err")"
 }
 
 finish_concurrent_expected_abort() {  # <id> <status> <stdout> <stderr>
   local id=$1 status=$2 out=$3 err=$4
   [ "$status" -ne 0 ] || fail "post-create abort fixture $id unexpectedly succeeded"
-  if grep -F "task set is locked" "$err" >/dev/null 2>&1; then
+  if grep -F "task set is locked" "$err" >/dev/null 2>&1 \
+     || grep -F "another Treehouse slot allocation or return is in progress" "$err" >/dev/null 2>&1; then
     if spawn_task "$id" "$HOME_DIR" "$PROJECT_DIR" > "$out" 2> "$err"; then
       fail "post-create abort fixture $id unexpectedly succeeded after task-set publication completed"
     fi
@@ -879,8 +917,8 @@ ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
 ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
   $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { print "create-a" }
   $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { print "create-b" }
-  $1 == "pane-close" && $4 == a { print "close-a" }
-  $1 == "pane-close" && $4 == b { print "close-b" }
+  ($1 == "pane-close" || $1 == "pane-absent") && $4 == a && !closed_a++ { print "close-a" }
+  ($1 == "pane-close" || $1 == "pane-absent") && $4 == b && !closed_b++ { print "close-b" }
 ')
 case "$ABORT_SEQUENCE" in
   $'create-a\nclose-a\ncreate-b\nclose-b'|$'create-b\nclose-b\ncreate-a\nclose-a') ;;
@@ -1130,9 +1168,12 @@ spawn_task acw "$SECOND_HOME_A" "$PROJECT_DIR" > "$TMP_ROOT/acw.out" 2> "$TMP_RO
 ACW_PID=$!
 spawn_task bcw "$SECOND_HOME_B" "$PROJECT_DIR" > "$TMP_ROOT/bcw.out" 2> "$TMP_ROOT/bcw.err" &
 BCW_PID=$!
-wait "$PCW_PID" || fail "cross-home concurrent primary failed: $(cat "$TMP_ROOT/pcw.err")"
-wait "$ACW_PID" || fail "cross-home concurrent A failed: $(cat "$TMP_ROOT/acw.err")"
-wait "$BCW_PID" || fail "cross-home concurrent B failed: $(cat "$TMP_ROOT/bcw.err")"
+if wait "$PCW_PID"; then PCW_STATUS=0; else PCW_STATUS=$?; fi
+if wait "$ACW_PID"; then ACW_STATUS=0; else ACW_STATUS=$?; fi
+if wait "$BCW_PID"; then BCW_STATUS=0; else BCW_STATUS=$?; fi
+finish_concurrent_spawn pcw "$PCW_STATUS" "$TMP_ROOT/pcw.out" "$TMP_ROOT/pcw.err" "$HOME_DIR" "$PROJECT_DIR"
+finish_concurrent_spawn acw "$ACW_STATUS" "$TMP_ROOT/acw.out" "$TMP_ROOT/acw.err" "$SECOND_HOME_A" "$PROJECT_DIR"
+finish_concurrent_spawn bcw "$BCW_STATUS" "$TMP_ROOT/bcw.out" "$TMP_ROOT/bcw.err" "$SECOND_HOME_B" "$PROJECT_DIR"
 remember_meta_worktree "$HOME_DIR/state/pcw.meta" >/dev/null
 remember_meta_worktree "$SECOND_HOME_A/state/acw.meta" >/dev/null
 remember_meta_worktree "$SECOND_HOME_B/state/bcw.meta" >/dev/null
@@ -1209,6 +1250,21 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
   OLD_RESTART_WT=$(remember_meta_worktree "$RESTART_META")
   OLD_RESTART_WSID=$(grep '^herdr_workspace_id=' "$RESTART_META" | cut -d= -f2-)
   OLD_RESTART_PANE=$(grep '^herdr_pane_id=' "$RESTART_META" | cut -d= -f2-)
+  cp "$(dirname "$OLD_RESTART_WT")/.fm-slot-owner" "$TMP_ROOT/$RESTART_ID-owner.before"
+  grep '^treehouse_lease_' "$RESTART_META" > "$TMP_ROOT/$RESTART_ID-lease.before"
+  printf 'evidence_note=retained-recovery-proof\n' >> "$RESTART_META"
+  git -C "$OLD_RESTART_WT" checkout -qb "retained-$RESTART_ID"
+  printf 'unlanded recovery commit\n' > "$OLD_RESTART_WT/retained-commit.txt"
+  git -C "$OLD_RESTART_WT" add retained-commit.txt
+  git -C "$OLD_RESTART_WT" -c core.hooksPath=/dev/null -c user.name='Firstmate Tests' \
+    -c user.email='tests@example.invalid' commit -qm retained-recovery
+  printf 'uncommitted recovery work\n' >> "$OLD_RESTART_WT/README.md"
+  printf 'retained-evidence.txt\n' >> "$(git -C "$OLD_RESTART_WT" rev-parse --git-path info/exclude)"
+  printf 'ignored recovery evidence\n' > "$OLD_RESTART_WT/retained-evidence.txt"
+  OLD_RESTART_HEAD=$(git -C "$OLD_RESTART_WT" rev-parse HEAD)
+  git -C "$OLD_RESTART_WT" status --porcelain --ignored > "$TMP_ROOT/$RESTART_ID-status.before"
+  cp "$OLD_RESTART_WT/README.md" "$TMP_ROOT/$RESTART_ID-readme.before"
+  cp "$OLD_RESTART_WT/retained-evidence.txt" "$TMP_ROOT/$RESTART_ID-evidence.before"
   OLD_RESTART_LABEL=$(lab workspace get "$OLD_RESTART_WSID" | jq -r '.result.workspace.label')
   [ "$(grep '^version=' "$HOME_DIR/state/$RESTART_ID.herdr-presentation")" = version=2 ] \
     || fail "$RESTART_ID fresh projection did not publish an exact restart binding"
@@ -1231,11 +1287,45 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
     fail "$RESTART_ID restart fixture unexpectedly retained a registered agent"
   fi
   RECLAIM_FOCUS=$(focus_snapshot)
+  cp "$TREEHOUSE_CALL_LOG" "$TMP_ROOT/$RESTART_ID-treehouse.before"
+  cp "$RESTART_META" "$TMP_ROOT/$RESTART_ID-meta.before"
+  if spawn_task "$RESTART_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/$RESTART_ID-wrong-project.out" 2> "$TMP_ROOT/$RESTART_ID-wrong-project.err"; then
+    fail "$RESTART_ID fresh recovery accepted a different project"
+  fi
+  grep -F 'does not match its recorded task and exclusive reservation' "$TMP_ROOT/$RESTART_ID-wrong-project.err" >/dev/null \
+    || fail "$RESTART_ID wrong-project recovery did not reach reservation identity refusal"
+  if ! cmp -s "$TMP_ROOT/$RESTART_ID-meta.before" "$RESTART_META" \
+     || ! cmp -s "$TMP_ROOT/$RESTART_ID-owner.before" "$(dirname "$OLD_RESTART_WT")/.fm-slot-owner" \
+     || ! cmp -s "$TMP_ROOT/$RESTART_ID-treehouse.before" "$TREEHOUSE_CALL_LOG"; then
+    fail "$RESTART_ID refused recovery changed its record/claim or invoked Treehouse"
+  fi
+  lab pane get "$OLD_RESTART_PANE" >/dev/null 2>&1 \
+    || fail "$RESTART_ID refused recovery closed its husk endpoint"
   spawn_task "$RESTART_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/$RESTART_ID-reclaim.out" 2> "$TMP_ROOT/$RESTART_ID-reclaim.err" \
     || fail "$RESTART_ID same-identity reclaim failed: $(cat "$TMP_ROOT/$RESTART_ID-reclaim.err")"
   NEW_RESTART_WT=$(remember_meta_worktree "$RESTART_META")
   NEW_RESTART_WSID=$(grep '^herdr_workspace_id=' "$RESTART_META" | cut -d= -f2-)
   NEW_RESTART_PANE=$(grep '^herdr_pane_id=' "$RESTART_META" | cut -d= -f2-)
+  [ "$NEW_RESTART_WT" = "$OLD_RESTART_WT" ] \
+    || fail "$RESTART_ID fresh husk reclaim acquired a different copy"
+  cmp -s "$TMP_ROOT/$RESTART_ID-treehouse.before" "$TREEHOUSE_CALL_LOG" \
+    || fail "$RESTART_ID fresh husk reclaim invoked Treehouse instead of reusing its reservation"
+  grep '^treehouse_lease_' "$RESTART_META" > "$TMP_ROOT/$RESTART_ID-lease.after"
+  cmp -s "$TMP_ROOT/$RESTART_ID-lease.before" "$TMP_ROOT/$RESTART_ID-lease.after" \
+    || fail "$RESTART_ID fresh husk reclaim changed its reservation identity"
+  cmp -s "$TMP_ROOT/$RESTART_ID-owner.before" "$(dirname "$NEW_RESTART_WT")/.fm-slot-owner" \
+    || fail "$RESTART_ID fresh husk reclaim changed its owner claim"
+  [ "$(git -C "$NEW_RESTART_WT" rev-parse HEAD)" = "$OLD_RESTART_HEAD" ] \
+    && [ "$(git -C "$NEW_RESTART_WT" branch --show-current)" = "retained-$RESTART_ID" ] \
+    || fail "$RESTART_ID fresh husk reclaim reset its unlanded branch/commit"
+  git -C "$NEW_RESTART_WT" status --porcelain --ignored > "$TMP_ROOT/$RESTART_ID-status.after"
+  if ! cmp -s "$TMP_ROOT/$RESTART_ID-status.before" "$TMP_ROOT/$RESTART_ID-status.after" \
+     || ! cmp -s "$TMP_ROOT/$RESTART_ID-readme.before" "$NEW_RESTART_WT/README.md" \
+     || ! cmp -s "$TMP_ROOT/$RESTART_ID-evidence.before" "$NEW_RESTART_WT/retained-evidence.txt"; then
+    fail "$RESTART_ID fresh husk reclaim changed uncommitted work or ignored evidence"
+  fi
+  grep -qx 'evidence_note=retained-recovery-proof' "$RESTART_META" \
+    || fail "$RESTART_ID fresh husk reclaim lost durable record evidence"
   [ "$NEW_RESTART_WSID" = "$OLD_RESTART_WSID" ] \
     || fail "$RESTART_ID reclaim flattened into a different workspace"
   [ "$NEW_RESTART_PANE" != "$OLD_RESTART_PANE" ] \
@@ -1265,9 +1355,59 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
       || fail "$RESTART_ID repeated reclaim changed workspace identity"
     [ "$NEW_RESTART_PANE" != "$PRIOR_RESTART_PANE" ] \
       || fail "$RESTART_ID repeated reclaim reused the prior husk pane"
-    if [ "$PRIOR_RESTART_WT" != "$NEW_RESTART_WT" ]; then
-      "$REAL_TREEHOUSE" return --force "$PRIOR_RESTART_WT" >/dev/null 2>&1 || true
+    [ "$PRIOR_RESTART_WT" = "$NEW_RESTART_WT" ] \
+      || fail "$RESTART_ID repeated reclaim acquired another copy"
+    cmp -s "$TMP_ROOT/$RESTART_ID-treehouse.before" "$TREEHOUSE_CALL_LOG" \
+      || fail "$RESTART_ID repeated reclaim invoked Treehouse"
+    grep '^treehouse_lease_' "$RESTART_META" > "$TMP_ROOT/$RESTART_ID-lease.repeated"
+    cmp -s "$TMP_ROOT/$RESTART_ID-lease.before" "$TMP_ROOT/$RESTART_ID-lease.repeated" \
+      || fail "$RESTART_ID repeated reclaim replaced its lease"
+  fi
+
+  # A delivery failure after reclaim/publication must not apply fresh-spawn
+  # rollback to the retained task record or reservation.
+  if [ "$RESTART_ID" = fm-hibit-resume-r1 ]; then
+    PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null \
+      || fail "could not stop the isolated session for recovery delivery failure"
+    PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
+      || fail "could not reprovision the isolated session for recovery delivery failure"
+    BEFORE_FAILED_PANE=$(grep '^herdr_pane_id=' "$RESTART_META" | cut -d= -f2-)
+    cp "$TREEHOUSE_CALL_LOG" "$TMP_ROOT/$RESTART_ID-failed-treehouse.before"
+    printf '%s\n' "$RESTART_ID" > "$RECOVERY_DELIVERY_ABORT_CONTROL"
+    if spawn_task "$RESTART_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/$RESTART_ID-failed-delivery.out" 2> "$TMP_ROOT/$RESTART_ID-failed-delivery.err"; then
+      fail "recovery unexpectedly succeeded despite the armed launch-delivery failure"
     fi
+    if [ ! -f "$RECOVERY_DELIVERY_ABORT_CONTROL.fired" ] \
+       || ! grep -F 'fixture: refused recovery launch delivery' "$TMP_ROOT/$RESTART_ID-failed-delivery.err" >/dev/null; then
+      fail "recovery failed before the armed post-publication launch delivery"
+    fi
+    rm -f "$RECOVERY_DELIVERY_ABORT_CONTROL" "$RECOVERY_DELIVERY_ABORT_CONTROL.fired"
+    [ -f "$RESTART_META" ] || fail "failed replacement delivery removed the existing task record"
+    [ "$(grep '^herdr_pane_id=' "$RESTART_META" | cut -d= -f2-)" != "$BEFORE_FAILED_PANE" ] \
+      || fail "failed recovery did not publish the reclaimed endpoint before delivery"
+    if ! grep -qx "worktree=$OLD_RESTART_WT" "$RESTART_META" \
+       || ! grep -qx 'evidence_note=retained-recovery-proof' "$RESTART_META"; then
+      fail "failed recovery lost the retained copy pointer or durable record evidence"
+    fi
+    grep '^treehouse_lease_' "$RESTART_META" > "$TMP_ROOT/$RESTART_ID-lease.failed"
+    if ! cmp -s "$TMP_ROOT/$RESTART_ID-lease.before" "$TMP_ROOT/$RESTART_ID-lease.failed" \
+       || ! cmp -s "$TMP_ROOT/$RESTART_ID-owner.before" "$(dirname "$OLD_RESTART_WT")/.fm-slot-owner" \
+       || ! cmp -s "$TMP_ROOT/$RESTART_ID-failed-treehouse.before" "$TREEHOUSE_CALL_LOG"; then
+      fail "failed recovery released/reacquired a lease or changed its claim"
+    fi
+    jq -e --arg wt "$OLD_RESTART_WT" --arg h "$(sed -n 's/^treehouse_lease_holder=//p' "$RESTART_META")" \
+      --arg l "$(sed -n 's/^treehouse_lease_id=//p' "$RESTART_META")" \
+      '.worktrees[] | select(.path==$wt) | .leased == true and .lease_holder == $h and .lease_id == $l' \
+      "$(dirname "$(dirname "$OLD_RESTART_WT")")/treehouse-state.json" >/dev/null \
+      || fail "failed recovery no longer has its exact native durable lease"
+    git -C "$OLD_RESTART_WT" status --porcelain --ignored > "$TMP_ROOT/$RESTART_ID-status.failed"
+    if [ "$(git -C "$OLD_RESTART_WT" rev-parse HEAD)" != "$OLD_RESTART_HEAD" ] \
+       || ! cmp -s "$TMP_ROOT/$RESTART_ID-status.before" "$TMP_ROOT/$RESTART_ID-status.failed" \
+       || ! cmp -s "$TMP_ROOT/$RESTART_ID-readme.before" "$OLD_RESTART_WT/README.md" \
+       || ! cmp -s "$TMP_ROOT/$RESTART_ID-evidence.before" "$OLD_RESTART_WT/retained-evidence.txt"; then
+      fail "failed recovery changed retained unlanded work or ignored evidence"
+    fi
+    pass "real Herdr lab: failed post-reclaim delivery preserves the task record, exact lease, claim and unfinished work"
   fi
 
   teardown_task "$RESTART_ID" "$HOME_DIR" > "$TMP_ROOT/$RESTART_ID-teardown.out" 2> "$TMP_ROOT/$RESTART_ID-teardown.err" \
@@ -1278,6 +1418,105 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
   "$REAL_TREEHOUSE" return --force "$NEW_RESTART_WT" >/dev/null 2>&1 || true
 done
 pass "real Herdr lab: Hi Bit and Wheelhouse-style same-identity restarts reclaim one nested space with exact focus and idempotence"
+
+# Flat recovery is still a replacement of the same task, whether projection is
+# explicitly disabled or enabled with no journal. Use real pool/backend paths
+# and retain unfinished work rather than silently making another leased copy.
+for FLAT_SETTING in off no-journal; do
+  FLAT_ID="flat-resume-$FLAT_SETTING"
+  mkdir -p "$HOME_DIR/data/$FLAT_ID"
+  write_ship_brief "$HOME_DIR" "$FLAT_ID" 'Flat same-task recovery fixture.'
+  printf 'off\n' > "$HOME_DIR/config/herdr-presentation-spaces"
+  spawn_task "$FLAT_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/$FLAT_ID-first.out" 2> "$TMP_ROOT/$FLAT_ID-first.err" \
+    || fail "flat recovery initial spawn failed: $(cat "$TMP_ROOT/$FLAT_ID-first.err")"
+  FLAT_META="$HOME_DIR/state/$FLAT_ID.meta"
+  FLAT_WT=$(remember_meta_worktree "$FLAT_META")
+  FLAT_OLD_PANE=$(grep '^herdr_pane_id=' "$FLAT_META" | cut -d= -f2-)
+  FLAT_WSID=$(grep '^herdr_workspace_id=' "$FLAT_META" | cut -d= -f2-)
+  [ ! -e "$HOME_DIR/state/$FLAT_ID.herdr-presentation" ] || fail "flat initial spawn published a journal"
+  grep '^treehouse_lease_' "$FLAT_META" > "$TMP_ROOT/$FLAT_ID-lease.before"
+  cp "$(dirname "$FLAT_WT")/.fm-slot-owner" "$TMP_ROOT/$FLAT_ID-owner.before"
+  printf 'evidence_note=flat-retained-proof\n' >> "$FLAT_META"
+  git -C "$FLAT_WT" checkout -qb "retained-$FLAT_ID"
+  printf 'unlanded flat recovery commit\n' > "$FLAT_WT/retained-commit.txt"
+  git -C "$FLAT_WT" add retained-commit.txt
+  git -C "$FLAT_WT" -c core.hooksPath=/dev/null -c user.name='Firstmate Tests' \
+    -c user.email='tests@example.invalid' commit -qm retained-flat-recovery
+  printf 'uncommitted flat recovery work\n' >> "$FLAT_WT/README.md"
+  printf 'flat-ignored-evidence.txt\n' >> "$(git -C "$FLAT_WT" rev-parse --git-path info/exclude)"
+  printf 'ignored flat recovery evidence\n' > "$FLAT_WT/flat-ignored-evidence.txt"
+  FLAT_HEAD=$(git -C "$FLAT_WT" rev-parse HEAD)
+  git -C "$FLAT_WT" status --porcelain --ignored > "$TMP_ROOT/$FLAT_ID-status.before"
+  cp "$FLAT_WT/README.md" "$TMP_ROOT/$FLAT_ID-readme.before"
+  cp "$FLAT_WT/flat-ignored-evidence.txt" "$TMP_ROOT/$FLAT_ID-evidence.before"
+  PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null \
+    || fail "could not stop isolated session for flat recovery"
+  PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
+    || fail "could not reprovision isolated session for flat recovery"
+  [ "$FLAT_SETTING" != no-journal ] || : > "$HOME_DIR/config/herdr-presentation-spaces"
+  cp "$TREEHOUSE_CALL_LOG" "$TMP_ROOT/$FLAT_ID-treehouse.before"
+  spawn_task "$FLAT_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/$FLAT_ID-resume.out" 2> "$TMP_ROOT/$FLAT_ID-resume.err" \
+    || fail "$FLAT_SETTING flat recovery failed: $(cat "$TMP_ROOT/$FLAT_ID-resume.err")"
+  FLAT_NEW_PANE=$(grep '^herdr_pane_id=' "$FLAT_META" | cut -d= -f2-)
+  if [ "$FLAT_NEW_PANE" = "$FLAT_OLD_PANE" ] \
+     || [ "$(grep '^herdr_workspace_id=' "$FLAT_META" | cut -d= -f2-)" != "$FLAT_WSID" ] \
+     || [ -e "$HOME_DIR/state/$FLAT_ID.herdr-presentation" ]; then
+    fail "$FLAT_SETTING recovery did not replace its flat husk in the owning workspace"
+  fi
+  if lab pane get "$FLAT_OLD_PANE" >/dev/null 2>&1; then
+    fail "$FLAT_SETTING recovery retained its old flat husk"
+  fi
+  lab pane get "$FLAT_NEW_PANE" >/dev/null 2>&1 || fail "flat recovery replacement pane absent"
+  grep -qx "worktree=$FLAT_WT" "$FLAT_META" || fail "flat recovery acquired a different copy"
+  grep -qx 'evidence_note=flat-retained-proof' "$FLAT_META" || fail "flat recovery lost durable record evidence"
+  grep '^treehouse_lease_' "$FLAT_META" > "$TMP_ROOT/$FLAT_ID-lease.after"
+  git -C "$FLAT_WT" status --porcelain --ignored > "$TMP_ROOT/$FLAT_ID-status.after"
+  if ! cmp -s "$TMP_ROOT/$FLAT_ID-lease.before" "$TMP_ROOT/$FLAT_ID-lease.after" \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-owner.before" "$(dirname "$FLAT_WT")/.fm-slot-owner" \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-treehouse.before" "$TREEHOUSE_CALL_LOG" \
+     || [ "$(git -C "$FLAT_WT" rev-parse HEAD)" != "$FLAT_HEAD" ] \
+     || [ "$(git -C "$FLAT_WT" branch --show-current)" != "retained-$FLAT_ID" ] \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-status.before" "$TMP_ROOT/$FLAT_ID-status.after" \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-readme.before" "$FLAT_WT/README.md" \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-evidence.before" "$FLAT_WT/flat-ignored-evidence.txt"; then
+    fail "$FLAT_SETTING recovery changed the reservation, unlanded work or ignored evidence"
+  fi
+  # Exercise the same replacement publication rule on a subsequent failed flat
+  # recovery, not just on the journal-backed path above.
+  PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null \
+    || fail "could not stop isolated session for flat recovery delivery failure"
+  PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
+    || fail "could not reprovision isolated session for flat recovery delivery failure"
+  printf '%s\n' "$FLAT_ID" > "$RECOVERY_DELIVERY_ABORT_CONTROL"
+  if spawn_task "$FLAT_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/$FLAT_ID-failed.out" 2> "$TMP_ROOT/$FLAT_ID-failed.err"; then
+    fail "flat recovery succeeded despite the armed delivery failure"
+  fi
+  if [ ! -f "$RECOVERY_DELIVERY_ABORT_CONTROL.fired" ] \
+     || ! grep -F 'fixture: refused recovery launch delivery' "$TMP_ROOT/$FLAT_ID-failed.err" >/dev/null; then
+    fail "flat recovery failed before the armed post-publication delivery"
+  fi
+  rm -f "$RECOVERY_DELIVERY_ABORT_CONTROL" "$RECOVERY_DELIVERY_ABORT_CONTROL.fired"
+  if [ ! -f "$FLAT_META" ] || ! grep -qx "worktree=$FLAT_WT" "$FLAT_META" \
+     || ! grep -qx 'evidence_note=flat-retained-proof' "$FLAT_META" \
+     || [ "$(grep '^herdr_pane_id=' "$FLAT_META" | cut -d= -f2-)" = "$FLAT_NEW_PANE" ]; then
+    fail "failed flat delivery lost the existing task or never published its replacement"
+  fi
+  grep '^treehouse_lease_' "$FLAT_META" > "$TMP_ROOT/$FLAT_ID-lease.failed"
+  git -C "$FLAT_WT" status --porcelain --ignored > "$TMP_ROOT/$FLAT_ID-status.failed"
+  if ! cmp -s "$TMP_ROOT/$FLAT_ID-lease.before" "$TMP_ROOT/$FLAT_ID-lease.failed" \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-owner.before" "$(dirname "$FLAT_WT")/.fm-slot-owner" \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-treehouse.before" "$TREEHOUSE_CALL_LOG" \
+     || [ "$(git -C "$FLAT_WT" rev-parse HEAD)" != "$FLAT_HEAD" ] \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-status.before" "$TMP_ROOT/$FLAT_ID-status.failed" \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-readme.before" "$FLAT_WT/README.md" \
+     || ! cmp -s "$TMP_ROOT/$FLAT_ID-evidence.before" "$FLAT_WT/flat-ignored-evidence.txt"; then
+    fail "failed flat delivery released/reacquired a lease or changed unfinished work"
+  fi
+  teardown_task "$FLAT_ID" "$HOME_DIR" > "$TMP_ROOT/$FLAT_ID-teardown.out" 2> "$TMP_ROOT/$FLAT_ID-teardown.err" \
+    || fail "flat recovery cleanup failed: $(cat "$TMP_ROOT/$FLAT_ID-teardown.err")"
+  pass "real Herdr lab: $FLAT_SETTING flat recovery keeps the exact reservation and unfinished work on success and failed delivery"
+done
+: > "$HOME_DIR/config/herdr-presentation-spaces"
 
 # A secondmate child binds and reclaims only inside its own home and parent.
 CROSS_RESTART_ID=wheel-child-resume
@@ -1342,8 +1581,10 @@ spawn_task "$PRIMARY_WAVE_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/p
 PRIMARY_WAVE_PID=$!
 spawn_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/bravo-wave-resume.out" 2> "$TMP_ROOT/bravo-wave-resume.err" &
 BRAVO_WAVE_PID=$!
-wait "$PRIMARY_WAVE_PID" || fail "concurrent primary recovery failed: $(cat "$TMP_ROOT/primary-wave-resume.err")"
-wait "$BRAVO_WAVE_PID" || fail "concurrent secondmate recovery failed: $(cat "$TMP_ROOT/bravo-wave-resume.err")"
+if wait "$PRIMARY_WAVE_PID"; then PRIMARY_WAVE_STATUS=0; else PRIMARY_WAVE_STATUS=$?; fi
+if wait "$BRAVO_WAVE_PID"; then BRAVO_WAVE_STATUS=0; else BRAVO_WAVE_STATUS=$?; fi
+finish_concurrent_spawn "$PRIMARY_WAVE_ID" "$PRIMARY_WAVE_STATUS" "$TMP_ROOT/primary-wave-resume.out" "$TMP_ROOT/primary-wave-resume.err" "$HOME_DIR" "$RECOVERY_PROJECT_DIR"
+finish_concurrent_spawn "$BRAVO_WAVE_ID" "$BRAVO_WAVE_STATUS" "$TMP_ROOT/bravo-wave-resume.out" "$TMP_ROOT/bravo-wave-resume.err" "$SECOND_HOME_B" "$RECOVERY_PROJECT_DIR"
 PRIMARY_WAVE_NEW_WT=$(remember_meta_worktree "$PRIMARY_WAVE_META")
 BRAVO_WAVE_NEW_WT=$(remember_meta_worktree "$BRAVO_WAVE_META")
 PRIMARY_WAVE_NEW_PANE=$(grep '^herdr_pane_id=' "$PRIMARY_WAVE_META" | cut -d= -f2-)

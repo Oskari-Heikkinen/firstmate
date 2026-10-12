@@ -47,6 +47,7 @@ spawn-merge script bin/fm-treehouse-adopt.sh
 spawn-merge script bin/fm-pr-merge.sh
 spawn-merge script bin/fm-merge-local.sh
 spawn-merge test tests/fm-spawn*.test.sh
+spawn-merge test tests/fm-backend-herdr-presentation-e2e.test.sh
 spawn-merge test tests/fm-pr-merge*.test.sh
 spawn-merge test tests/fm-merge-local*.test.sh
 spawn-merge test tests/fm-task-delivery.test.sh
