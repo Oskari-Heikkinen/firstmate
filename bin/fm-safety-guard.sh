@@ -41,8 +41,12 @@
 #     Judges the same range, with the same risky areas, for lean-review
 #     receipts: every non-merge commit that changes a risky-area script must
 #     carry a `Lean-Review: <receipt id>` commit trailer whose id matches that
-#     commit's own diff. A missing trailer, or one naming a different diff,
-#     fails, and there is no override line. Other commits need nothing.
+#     commit's own diff under its parent mapping, as receipt-id computes it.
+#     Every changed path covered by the range-base mapping must still be
+#     covered by that parent mapping, and a baseline risky script must retain
+#     script coverage. Mapping additions can widen the reviewed diff; removals
+#     cannot evade the baseline protection. A missing trailer, or one naming
+#     a different diff, fails, with no override. Other commits need nothing.
 #   fm-safety-guard.sh receipt-id <commit>
 #     Prints <commit>'s receipt id, judged by the risky-area list at its parent
 #     (or at the commit when the parent has none), and exits 1 printing nothing
@@ -248,8 +252,28 @@ run_receipt_id() {
   printf '%s\n' "$id"
 }
 
+# Parent-mapped receipts may include more files, never omit a changed file
+# protected by the range baseline or demote a baseline risky script to a test.
+receipt_coverage_retained() { # <commit> <baseline areas> <parent areas>
+  local c=$1 baseline=$2 parent=$3 base_globs parent_globs base_scripts parent_scripts f bad=0
+  base_globs=$(awk '{ print $3 }' <<<"$baseline")
+  parent_globs=$(awk '{ print $3 }' <<<"$parent")
+  base_scripts=$(awk '$2 == "script" { print $3 }' <<<"$baseline")
+  parent_scripts=$(awk '$2 == "script" { print $3 }' <<<"$parent")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    path_matches "$f" "$base_globs" || continue
+    if ! path_matches "$f" "$parent_globs" \
+      || { path_matches "$f" "$base_scripts" && ! path_matches "$f" "$parent_scripts"; }; then
+      printf 'fm-safety-guard: %s parent mapping removes baseline receipt coverage for %s\n' "$(git rev-parse --short "$c")" "$f" >&2
+      bad=1
+    fi
+  done < <(git diff-tree --root --no-commit-id -r --no-renames --name-only "$c")
+  return "$bad"
+}
+
 run_receipts() {
-  local before='' head='' default_ref=origin/main c subject want have bad=0 count=0 reviewed=0
+  local before='' head='' default_ref=origin/main c subject want have parent_areas bad=0 count=0 reviewed=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --before) [ $# -ge 2 ] || die "--before needs a sha"; before=$2; shift 2 ;;
@@ -266,6 +290,14 @@ run_receipts() {
     want=$(receipt_id "$c" "$RANGE_AREAS") || die "could not hash $c"
     [ -n "$want" ] || continue
     reviewed=$((reviewed + 1))
+    parent_areas=$(areas_for_commit "$c") || die "could not read the receipt mapping for $c"
+    validate_areas "$parent_areas" || die "$AREAS_LIST for $c is invalid"
+    if ! receipt_coverage_retained "$c" "$RANGE_AREAS" "$parent_areas"; then
+      bad=1
+      continue
+    fi
+    want=$(receipt_id "$c" "$parent_areas") || die "could not hash $c"
+    [ -n "$want" ] || die "baseline risky commit $c has no parent-mapped receipt id"
     have=$(git log -1 --format="%(trailers:key=$RECEIPT_KEY,valueonly)" "$c")
     if ! grep -Fxq -- "$want" <<<"$have"; then
       subject=$(git log -1 --format='%h %s' "$c")

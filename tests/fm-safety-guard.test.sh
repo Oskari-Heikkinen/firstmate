@@ -18,7 +18,9 @@
 #   - receipts passes a risky commit whose Lean-Review trailer matches its own
 #     diff and a commit that changes no risky script, fails a missing receipt
 #     and a receipt for a different diff, and keeps passing after a plain
-#     rebase moves the reviewed hunks.
+#     rebase moves the reviewed hunks. Parent-mapped receipts with added test
+#     coverage pass an older push baseline; removed baseline coverage, script
+#     demotion and post-review edits still fail.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -281,6 +283,59 @@ test_receipts() {
   pass "receipts require a Lean-Review trailer matching each risky commit's own diff"
 }
 
+test_receipts_with_widened_parent_mapping() {
+  local r base out rc
+  r=$(new_repo receipt-widened)
+  base=$(sha "$r" HEAD)
+  printf 'watcher test tests/extra.test.sh\n' >>"$r/tests/risky-areas.list"
+  change "$r" "register extra test"
+  change "$r" "watch with wider review" bin/fm-watch.sh tests/fm-watch-a.test.sh tests/extra.test.sh
+  add_receipt "$r"
+  out=$(run_receipts "$r" "$base" 2>&1) || fail "a wider parent-mapped review must pass the old baseline: $out"
+  assert_contains "$out" "2 commit(s) judged, 1 risky one(s)" "mapping addition is not a risky script commit"
+
+  printf 'edited after review\n' >>"$r/tests/extra.test.sh"
+  git -C "$r" commit -q -a --amend --no-edit
+  out=$(run_receipts "$r" "$base" 2>&1); rc=$?
+  expect_code 1 "$rc" "editing the newly mapped test invalidates the wider receipt"
+  assert_contains "$out" "receipt for a different diff" "a wider mapping still requires the exact reviewed diff"
+  pass "parent mapping additions pass but changed wider diffs fail"
+}
+
+test_receipts_refuse_removed_baseline_coverage() {
+  local r base out rc kind
+  for kind in script test demotion; do
+    r=$(new_repo "receipt-removed-$kind")
+    base=$(sha "$r" HEAD)
+    case "$kind" in
+      script)
+        printf 'watcher script bin/other.sh\nwatcher test tests/fm-watch*.test.sh\n' >"$r/tests/risky-areas.list"
+        ;;
+      test)
+        printf 'watcher script bin/fm-watch*.sh\nwatcher test tests/fm-watch-a.test.sh\n' >"$r/tests/risky-areas.list"
+        ;;
+      demotion)
+        printf 'watcher script bin/other.sh\nwatcher test tests/fm-watch*.test.sh\nwatcher test bin/fm-watch.sh\n' >"$r/tests/risky-areas.list"
+        ;;
+    esac
+    printf 'cleanup script bin/fm-park.sh\ncleanup test tests/fm-park*.test.sh\n' >>"$r/tests/risky-areas.list"
+    change "$r" "remove baseline $kind coverage"
+    # Cleanup stays risky under both mappings: a valid parent-mapped receipt
+    # must not hide the watcher script/test removed from its reviewed subset.
+    change "$r" "change protected files" bin/fm-park.sh tests/fm-park-a.test.sh bin/fm-watch.sh tests/fm-watch-b.test.sh
+    add_receipt "$r"
+    out=$(run_receipts "$r" "$base" 2>&1); rc=$?
+    expect_code 1 "$rc" "a matching parent receipt cannot hide removed $kind coverage"
+    assert_contains "$out" "parent mapping removes baseline receipt coverage" "the coverage refusal is actionable"
+    if [ "$kind" = test ]; then
+      assert_contains "$out" "tests/fm-watch-b.test.sh" "the missing baseline test is named"
+    else
+      assert_contains "$out" "bin/fm-watch.sh" "the removed or demoted baseline script is named"
+    fi
+  done
+  pass "receipts refuse removed baseline scripts/tests and demoted scripts"
+}
+
 test_receipt_survives_plain_rebase() {
   local r out
   r=$(new_repo rebase)
@@ -315,6 +370,8 @@ test_no_test_needed_override
 test_safety_core_removal
 test_range_fallback_and_base_areas
 test_receipts
+test_receipts_with_widened_parent_mapping
+test_receipts_refuse_removed_baseline_coverage
 test_receipt_survives_plain_rebase
 
 echo "# all fm-safety-guard tests passed"
