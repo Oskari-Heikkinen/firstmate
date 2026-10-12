@@ -30,6 +30,7 @@ FOCUS_AUDIT_LOG="$TMP_ROOT/focus-audit.log"
 ACTIVE_SEEDED_CONTROL="$TMP_ROOT/active-seeded-control"
 POST_CREATE_ABORT_CONTROL="$TMP_ROOT/post-create-abort-control"
 RECOVERY_DELIVERY_ABORT_CONTROL="$TMP_ROOT/recovery-delivery-abort-control"
+TEARDOWN_ORDER_CONTROL="$TMP_ROOT/teardown-order-control"
 mkdir -p "$FAKEBIN"
 : > "$HERDR_CALL_LOG"
 : > "$TREEHOUSE_CALL_LOG"
@@ -37,7 +38,7 @@ mkdir -p "$FAKEBIN"
 : > "$FOCUS_AUDIT_LOG"
 REAL_MOVER="$ROOT/bin/backends/herdr-workspace-move.py"
 export REAL_HERDR REAL_TREEHOUSE REAL_MOVER HERDR_CALL_LOG TREEHOUSE_CALL_LOG TREEHOUSE_LOCK_DIR MOVE_CALL_LOG FOCUS_AUDIT_LOG HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
-export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL RECOVERY_DELIVERY_ABORT_CONTROL TMP_ROOT
+export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL RECOVERY_DELIVERY_ABORT_CONTROL TEARDOWN_ORDER_CONTROL TMP_ROOT
 
 # Log every production-adapter call, remove its already-validated trailing
 # session flag, and send the operation through the lab helper so that helper
@@ -254,6 +255,16 @@ done
 release_treehouse_lock() { rmdir "$TREEHOUSE_LOCK_DIR" 2>/dev/null || true; }
 trap release_treehouse_lock EXIT
 trap 'exit 1' HUP INT TERM
+if [ "${1:-}" = return ] && [ -f "$TEARDOWN_ORDER_CONTROL" ]; then
+  pane=$(cat "$TEARDOWN_ORDER_CONTROL")
+  status=0
+  presence=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane get "$pane" 2>&1) || status=$?
+  if [ "$status" -eq 0 ] || ! printf '%s' "$presence" | jq -e '.error.code == "pane_not_found"' >/dev/null 2>&1; then
+    printf 'fixture: native return preceded confirmed exact-pane closure for %s\n' "$pane" >&2
+    exit 1
+  fi
+  : > "$TEARDOWN_ORDER_CONTROL.confirmed"
+fi
 "$REAL_TREEHOUSE" "$@"
 exit $?
 SH
@@ -954,9 +965,13 @@ rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herd
 pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
 
 SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
+lab pane get "$PROJECTED_PANE" >/dev/null 2>&1 || fail "direct-cd shape endpoint disappeared before teardown"
+printf '%s\n' "$PROJECTED_PANE" > "$TEARDOWN_ORDER_CONTROL"
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" \
   || fail "projected teardown failed: $(cat "$TMP_ROOT/on-teardown.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "projected teardown" "$TMP_ROOT/on-teardown.err"
+[ -e "$TEARDOWN_ORDER_CONTROL.confirmed" ] || fail "projected cleanup never proved endpoint closure before native return"
+rm -f "$TEARDOWN_ORDER_CONTROL" "$TEARDOWN_ORDER_CONTROL.confirmed"
 assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$CAPTAIN_FOCUS"
 pass "real Herdr lab: Treehouse commands and metadata shape are byte-identical except for endpoint IDs and spawn/acquisition incarnations"
 if lab workspace get "$PROJECTED_WSID" >/dev/null 2>&1; then

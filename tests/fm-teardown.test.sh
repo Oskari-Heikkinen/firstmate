@@ -2507,6 +2507,7 @@ case "\${1:-} \${2:-}" in
     fi
     ;;
   "pane close")
+    [ "\${FM_FAKE_HERDR_CLOSE_REFUSE:-0}" != 1 ] || exit 1
     : > "\${FM_FAKE_HERDR_CLOSED:?}"
     ;;
   "pane get")
@@ -2602,6 +2603,61 @@ SH
   grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
     || fail "herdr-orphan-refusal: the successful retry did not report completion"
   pass "herdr flat teardown refuses before returning the isolated copy under lock contention and the retry completes cleanly"
+}
+
+test_herdr_close_precedes_reap_and_return() {
+  local case_dir log closed rc
+  case_dir=$(make_case herdr-close-before-reap)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; : > "$log"
+  closed="$case_dir/closed"
+  # Observe the production cwd-rooted reap interface, not source ordering.
+  # Returning no matching PIDs is safe; an attempted scan before confirmed
+  # endpoint closure fails and records the exact regression.
+  cat > "$case_dir/fakebin/lsof" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  '-a -d cwd -Fpn')
+    printf '%s\n' reap >> "$case_dir/lifecycle.log"
+    [ -e "$closed" ] || { : > "$case_dir/reap-before-close"; exit 1; }
+    ;;
+esac
+exit 0
+SH
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' return >> "$case_dir/lifecycle.log"
+[ -e "$closed" ] || exit 1
+[ ! -e "$case_dir/reap-before-close" ] || exit 1
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/lsof" "$case_dir/fakebin/treehouse"
+  cp "$case_dir/state/task-x1.meta" "$case_dir/meta.before"
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_CLOSE_REFUSE=1 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "herdr-close-before-reap: refused endpoint close still completed cleanup"
+  assert_grep 'not confirmed gone' "$case_dir/refused.err" \
+    "herdr-close-before-reap: refusal did not explain the retained endpoint"
+  cmp -s "$case_dir/meta.before" "$case_dir/state/task-x1.meta" \
+    || fail "herdr-close-before-reap: failed close changed endpoint metadata"
+  [ -d "$case_dir/wt" ] || fail "herdr-close-before-reap: failed close removed the copy"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD)" = fm/task-x1 ] \
+    || fail "herdr-close-before-reap: failed close dropped the branch"
+  [ ! -e "$case_dir/lifecycle.log" ] \
+    || fail "herdr-close-before-reap: refused close reached reap or native return"
+
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-close-before-reap: retry failed: $(cat "$case_dir/stderr")"
+  [ -e "$closed" ] && [ ! -e "$case_dir/reap-before-close" ] \
+    || fail "herdr-close-before-reap: cleanup reached reap before exact endpoint closure"
+  awk 'NR == 1 && $0 != "reap" { bad=1 } $0 == "return" { returned=1 } END { exit(bad || !returned) }' \
+    "$case_dir/lifecycle.log" || fail "herdr-close-before-reap: missing reap-before-return sequence"
+  assert_absent "$case_dir/state/task-x1.meta" "herdr-close-before-reap: successful cleanup retained metadata"
+  pass "herdr closes the exact endpoint before cwd-rooted reap/return; a refused close preserves the copy and records"
 }
 
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
@@ -4843,6 +4899,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_secondmate_home_teardown_delivers_final_line_or_refuses \
   test_teardown_missing_busy_sidecar_completes \
   test_herdr_teardown_clears_escalation_marker \
+  test_herdr_close_precedes_reap_and_return \
   test_herdr_flat_teardown_refuses_records_on_unparseable_presence \
   test_herdr_flat_teardown_preflight_refuses_before_changes \
   test_forced_secondmate_herdr_child_preflight_refuses_before_changes \
