@@ -984,7 +984,7 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
 }
 
 test_legacy_record_under_leased_successor_cleans_only_its_record() {
-  local dir id=legacy-stale other=durable-successor holder=successor-home-task lease=successor-acquisition force rc head
+  local dir id=legacy-stale other=durable-successor holder=successor-home-task lease=successor-acquisition force rc head call
   for force in normal forced; do
     dir=$(make_case "legacy-leased-successor-$force")
     mark_case_as_treehouse_pool "$dir"
@@ -1023,7 +1023,18 @@ test_legacy_record_under_leased_successor_cleans_only_its_record() {
     [ "$(git -C "$dir/worktree" rev-parse HEAD)" = "$head" ] || fail "successor HEAD changed"
     assert_grep 'successor evidence' "$dir/worktree/workspace/study/result" "successor evidence lost"
     assert_present "$dir/worktree/sentinel" "successor uncommitted work lost"
-    assert_no_grep "fm-$other" "$dir/runtime.log" "cleanup acted on successor endpoint"
+    # The final home-summary refresh inspects remaining endpoints. Permit only
+    # read-only calls naming the successor, never kill, send, or any other verb.
+    while IFS= read -r call; do
+      case "$call" in
+        *"fm-$other"*)
+          case "$call" in
+            'tmux <display-message> '*|'tmux <capture-pane> '*|'tmux <list-panes> '*|'tmux <has-session> '*) ;;
+            *) fail "cleanup acted on successor endpoint: $call" ;;
+          esac
+          ;;
+      esac
+    done < "$dir/runtime.log"
   done
   pass "legacy records under leased successors finish only their own cleanup, with or without force"
 }
