@@ -89,7 +89,9 @@
 # Scout tasks (kind=scout in meta) carve out of that check: their worktree is
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
-# unresolved-decision completion gate verifies its captain-held inventory.
+# unresolved-decision completion gate verifies its captain-held inventory,
+# including recorded answers retired into the configured backlog archive;
+# bin/fm-captain-hold.sh owns that read-only evidence check.
 # Before any destructive step, and for every kind but a secondmate, teardown
 # copies the evidence a task declares inside its copy or its own temp folder
 # out to data/<id>/evidence/ and refuses while a record under data/<id>/ still

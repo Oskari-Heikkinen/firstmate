@@ -150,7 +150,12 @@
 # `verify` is read-only and is called by scout teardown, so teardown cannot
 # erase a source before this gate has succeeded: every recorded inventory
 # entry must still satisfy the same durability and origin checks as `complete`,
-# and no keyed status decision may be open.
+# and no keyed status decision may be open. For completion inventory reads only,
+# a NOT_FOUND live markdown row falls back to the configured done archive (local
+# .tasks.toml, then ~/.tasks-axi/config.toml, then <data>/done-archive.md).
+# Exactly one closed archived row with a recorded resolution is required;
+# missing, unreadable, ambiguous, or unresolved archive evidence still refuses.
+# Live rows always win, and answer/open/channel intake never reads the archive.
 # Metadata compatibility: the attestation keeps the historical
 # `decisions_reviewed=1` and `decision_keys=` keys, and an inventory entry that
 # names no existing task resolves through the legacy `<origin>-decision-<entry>`
@@ -376,7 +381,7 @@ require_tasks_axi() {
 # inside a command substitution can still tell a wedged backend from a
 # genuinely unknown id.
 TASK_SHOW_OUTPUT=
-task_show() {  # <id>; sets TASK_SHOW_OUTPUT
+task_show() {  # <id> [inventory: 0|1]; sets TASK_SHOW_OUTPUT
   local data status=0 reason
   data=$(fm_backlog_data_absolute "$DATA") || fail "data directory cannot be resolved: $DATA"
   TASK_SHOW_OUTPUT=$(fm_backlog_row_show "$data" "$1" --full 2>/dev/null) || status=$?
@@ -386,7 +391,98 @@ task_show() {  # <id>; sets TASK_SHOW_OUTPUT
       "${reason:-tasks-axi show $1 exceeded its backlog read bound}" >&2
     exit 124
   fi
+  if [ "$status" -ne 0 ] && [ "${2:-0}" = 1 ]; then
+    printf '%s\n' "$TASK_SHOW_OUTPUT" | grep -q '^code: NOT_FOUND$' \
+      || fail "cannot establish the live captain-call row $1: $TASK_SHOW_OUTPUT"
+    status=0
+    task_archive_show "$data" "$1" || status=$?
+    case "$status" in
+      0|1) return "$status" ;;
+      *) fail "cannot establish archived captain-call evidence for $1" ;;
+    esac
+  fi
   return "$status"
+}
+
+# Read archived inventory evidence, never a mutation target. The tasks-axi
+# archive uses `## Archived YYYY-MM-DD`, which `show --file` does not parse as
+# Done. Read only the configured file and emit the scalar fields verification
+# consumes, retaining the exact body rather than scraping report/status prose.
+task_archive_show() {  # <resolved-data-dir> <id>
+  local data=$1 id=$2 root backend archive
+  root=$(fm_backlog_root "$data") || return 2
+  backend=$(fm_tasks_axi_backend "$root") || return 2
+  [ "$backend" = markdown ] || return 1
+  archive=$(perl -e '
+    use strict; use warnings;
+    my ($root, $home, $data) = @ARGV;
+    sub configured_archive {
+      my ($path) = @_;
+      return undef unless -e $path;
+      open(my $f, "<", $path) or die "cannot read archive config $path: $!\n";
+      my ($section, $value) = ("", undef);
+      while (my $line = <$f>) {
+        # tasks-axi strips comments outside single/double quotes, without
+        # interpreting string escapes; mirror that small TOML contract.
+        $line =~ s/((?:"[^"]*"|\x27[^\x27]*\x27|[^#"\x27])*)#.*/$1/;
+        $line =~ s/^\s+|\s+$//g;
+        if ($line =~ /^\[([^]]+)\]$/) { $section = $1; $section =~ s/^\s+|\s+$//g; next; }
+        next unless $section eq "markdown" && $line =~ /^archive\s*=\s*(.*)$/;
+        my $raw = $1;
+        $raw =~ /^("|\x27)(.*)\1$/
+          or die "invalid markdown.archive in $path\n";
+        # A second successful match clears Perl captures, so retain the path
+        # before validating its content rather than assigning $2 afterwards.
+        $value = $2;
+        $value =~ /\S/ or die "invalid markdown.archive in $path\n";
+      }
+      return $value;
+    }
+    my $value = configured_archive("$root/.tasks.toml");
+    $value = configured_archive("$home/.tasks-axi/config.toml") unless defined $value;
+    $value = "$data/done-archive.md" unless defined $value;
+    die "invalid control byte in archive path\n" if $value =~ /[\x00-\x1f\x7f]/;
+    print $value =~ m{^/} ? $value : "$root/$value";
+  ' -- "$root" "$HOME" "$data") || return 2
+  [ -e "$archive" ] || [ -L "$archive" ] || return 1
+  fm_backlog_record_present "$archive" "captain-call archive" "$root" || {
+    printf 'fm-captain-hold: %s\n' "$FM_BACKLOG_TRANSITION_ERROR" >&2
+    return 2
+  }
+  TASK_SHOW_OUTPUT=$(perl -MJSON::PP -e '
+    use strict; use warnings;
+    my ($path, $id) = @ARGV;
+    open(my $f, "<:encoding(UTF-8)", $path) or die "cannot read captain-call archive $path: $!\n";
+    my ($archived, $selected, $count, $closed, @body) = (0, 0, 0, 0);
+    while (my $line = <$f>) {
+      $line =~ s/\r?\n$//;
+      if ($line =~ /^## /) {
+        $selected = 0;
+        $archived = $line =~ /^## Archived \d{4}-\d{2}-\d{2}$/;
+        next;
+      }
+      if ($line =~ /^- \[([^]]*)\] (\S+) - /) {
+        $selected = $2 eq $id;
+        if ($selected) {
+          ++$count;
+          $closed = $archived && $1 eq "x" && $line =~ /\(done \d{4}-\d{2}-\d{2}\)/;
+          @body = ();
+        }
+        next;
+      }
+      if ($selected) {
+        if ($line =~ /^  (.*)$/) { push @body, $1; }
+        elsif ($line eq "") { push @body, ""; }
+        else { die "malformed archived body for $id\n"; }
+      }
+    }
+    exit 1 unless $count;
+    die "ambiguous or non-closed archived captain call $id\n" unless $count == 1 && $closed;
+    my $body = join("\n", @body);
+    $body =~ s/\n+$//;
+    my $json = JSON::PP->new->allow_nonref;
+    print "  id: $id\n  state: done\n  hold_kind: -\n  body: ", $json->encode($body), "\n";
+  ' -- "$archive" "$id") || return $?
 }
 
 # Read one row into `show`, failing with <absence-message> only when the read
@@ -525,7 +621,7 @@ resolution_block() {  # <mode>
 # surviving even when a date gate has expired) or a recorded captain answer.
 verify_hold_durable() {  # <task-id>
   local id=$1 show state hold_kind body
-  task_show "$id" || fail "captain-held task $id is absent from this home's configured backlog (data directory $DATA)"
+  task_show "$id" 1 || fail "captain-held task $id is absent or unprovable in this home's configured backlog and archive (data directory $DATA)"
   show=$TASK_SHOW_OUTPUT
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
@@ -737,14 +833,14 @@ resolve_migrated_entry() {  # <origin-or-empty> <entry>
 # Prints "<resolved id> <how>", where <how> is exact, legacy, migrated-note or
 # migrated-prefix, so a caller can record which evidence carried the attestation.
 resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
-  local origin=$1 entry=$2 legacy migrated rc
-  if task_show "$entry"; then
+  local origin=$1 entry=$2 inventory=${3:-0} legacy migrated rc
+  if task_show "$entry" "$inventory"; then
     printf '%s exact' "$entry"
     return 0
   fi
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
     legacy=$(legacy_hold_id "$origin" "$entry")
-    if task_show "$legacy"; then
+    if task_show "$legacy" "$inventory"; then
       printf '%s legacy' "$legacy"
       return 0
     fi
@@ -871,7 +967,7 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origi
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ] && [ "$entry" = "$origin" ]; then
     refuse_self_inventory "$origin" "$entry"
   fi
-  resolved=$(resolve_entry "$origin" "$entry") || resolve_status=$?
+  resolved=$(resolve_entry "$origin" "$entry" 1) || resolve_status=$?
   if [ "$resolve_status" -ne 0 ]; then
     [ "$resolve_status" -ne 124 ] \
       || fail "the backlog backend exceeded its read bound resolving $entry"

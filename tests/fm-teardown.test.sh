@@ -1774,6 +1774,46 @@ move_case_to_pool_slot() {
   printf '%s\n' "$dest"
 }
 
+test_scout_archived_decision_requires_recorded_answer() {
+  local case_dir rc before
+  case_dir=$(make_case scout-archived-decision)
+  write_meta "$case_dir" no-mistakes scout
+  prepare_scout_teardown "$case_dir"
+  seed_backlog_in_flight "$case_dir" scout
+  printf 'decision_keys=scratch-call\n' >> "$case_dir/state/task-x1.meta"
+  cat > "$case_dir/data/done-archive.md" <<'EOF'
+## Archived 2026-10-13
+- [x] scratch-call - Decide scratch cleanup (kind: captain) (done 2026-10-05)
+  No recorded answer.
+EOF
+  before=$(cksum "$case_dir/data/done-archive.md")
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" 'archived decision without an answer must refuse'
+  assert_present "$case_dir/state/task-x1.meta" 'refusal removed scout metadata'
+  [ "$before" = "$(cksum "$case_dir/data/done-archive.md")" ] \
+    || fail 'refusal mutated archived decision'
+  cat > "$case_dir/data/done-archive.md" <<'EOF'
+## Archived 2026-10-13
+- [x] scratch-call - Decide scratch cleanup (kind: captain) (done 2026-10-05)
+  Resolution recorded by fm-captain-hold.
+  Decision digest: 22364d0a8d619c9e28cb5f2d82753a0e1e8187f8aa07a6382b53e37283842e0c
+  Resolution mode: released
+
+  Captain decision:
+  Delete only the approved scratch.
+
+  Captain hold origin: task-x1
+EOF
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "archived answered decision should allow cleanup: $(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/state/task-x1.meta" 'answered archive did not permit cleanup'
+  assert_grep 'Delete only the approved scratch' "$case_dir/data/done-archive.md" \
+    'cleanup lost the archived answer'
+  pass 'scout cleanup requires recorded resolution even when its decision is archived'
+}
+
 test_scout_nested_clone_returns_with_no_untracked_entries() {
   local case_dir wt rc
   case_dir=$(make_case scout-nested-clean)
@@ -6017,6 +6057,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_untracked_only_refusal_diagnostic \
   test_tracked_edit_refusal_diagnostic \
   test_mixed_refusal_diagnostic \
+  test_scout_archived_decision_requires_recorded_answer \
   test_scout_nested_clone_returns_with_no_untracked_entries \
   test_ship_nested_clone_is_refused_and_bytes_stay \
   test_dirty_return_warns_which_slot_was_lost \

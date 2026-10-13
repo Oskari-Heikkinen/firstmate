@@ -1241,6 +1241,117 @@ test_out_of_band_close_is_recordable() {
   pass "an out-of-band close is recordable with the captain's word and nothing else"
 }
 
+# Pruning an answered decision must not strand its originating scout. Archive
+# evidence is inventory-only, exact-id, closed, and subordinate to live rows.
+test_archived_answer_inventory() {
+  local home id call layout archive before original
+  for layout in relative absolute default relocated; do
+    home=$(make_home "archive-answer-$layout")
+    id=sample-archive-scout
+    call=sample-archive-call
+    archive="$home/data/done-archive.md"
+    case "$layout" in
+      relative) archive="$home/data/answered # calls.md" ;;
+      absolute) archive="$home/answered calls.md" ;;
+      relocated)
+        mkdir -p "$home/relocated/data" "$home/relocated/config"
+        mv "$home/data/backlog.md" "$home/relocated/data/backlog.md"
+        home="$home/relocated"
+        archive="$home/data/done-archive.md"
+        ;;
+    esac
+    if [ "$layout" = default ]; then
+      printf 'backend = "markdown"\n[markdown]\npath = "data/backlog.md"\n' > "$home/.tasks.toml"
+    else
+      fm_test_tasks_toml "$home/.tasks.toml"
+      if [ "$layout" = relative ]; then
+        perl -pi -e 's{archive = .*}{archive = "data/answered # calls.md" # comment}' "$home/.tasks.toml"
+      else
+        printf '\n[markdown]\narchive = "%s"\n' "$archive" >> "$home/.tasks.toml"
+      fi
+    fi
+    mkdir -p "$home/state" "$home/config" "$home/fakebin" "$home/data/$id"
+    fm_fake_exit0 "$home/fakebin" tmux treehouse no-mistakes gh gh-axi
+    tasks_in "$home" add "$id" "Investigate archive cleanup" --repo sample --kind scout --start >/dev/null
+    write_origin_meta "$home" "$id"
+    printf 'done: report complete\n' > "$home/state/$id.status"
+    printf '# Completed investigation\n' > "$home/data/$id/report.md"
+    run_captain "$home" hold "$call" --title 'Choose scratch cleanup' --reason 'scratch choice' \
+      --repo sample --origin "$id" >/dev/null || fail "$layout: could not hold archive call"
+    run_captain "$home" complete "$id" "$call" >/dev/null || fail "$layout: initial complete failed"
+    printf 'Erase only the approved scratch.\n' > "$home/answer.txt"
+    run_captain "$home" answer "$call" --release --decision-file "$home/answer.txt" >/dev/null \
+      || fail "$layout: could not record released answer"
+    tasks_in "$home" "done" "$call" >/dev/null
+    tasks_in "$home" prune --keep 0 >/dev/null || fail "$layout: could not prune answer"
+    if tasks_in "$home" show "$call" --full >/dev/null 2>&1; then
+      fail "$layout: pruning left the answered call live"
+    fi
+    assert_grep 'Erase only the approved scratch' "$archive" "$layout: archive lost answer"
+    before=$(cksum "$archive")
+    run_captain "$home" verify "$id" >/dev/null || fail "$layout: archived answer refused"
+    run_captain "$home" complete "$id" "$call" >/dev/null || fail "$layout: archived complete refused"
+    [ "$before" = "$(cksum "$archive")" ] || fail "$layout: verification mutated archive"
+    original="$home/archive-original"
+    cp "$archive" "$original"
+    if run_captain "$home" answer "$call" --decision-file "$home/answer.txt" >/dev/null 2>&1; then
+      fail "$layout: archived row became an answer mutation target"
+    fi
+    cat > "$home/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = show ] && [ "${2:-}" = sample-archive-call ]; then
+  printf 'error: temporary backlog read failure\n' >&2
+  exit 1
+fi
+exec "$REAL_TASKS_AXI" "$@"
+SH
+    chmod +x "$home/fakebin/tasks-axi"
+    if run_captain "$home" verify "$id" >/dev/null 2>&1; then
+      fail "$layout: archived answer overrode a live backend read error"
+    fi
+    rm "$home/fakebin/tasks-axi"
+
+    # Same identifier in the live backlog wins even over proven old evidence.
+    tasks_in "$home" add "$call" 'Unanswered replacement' --repo sample >/dev/null
+    tasks_in "$home" "done" "$call" >/dev/null
+    if run_captain "$home" verify "$id" >/dev/null 2>&1; then
+      fail "$layout: archive overrode an unresolved live row"
+    fi
+    tasks_in "$home" rm "$call" >/dev/null
+    for defect in missing absent-file non-file unanswered open duplicate wrong-origin legacy; do
+      cp "$original" "$archive"
+      case "$defect" in
+        missing) : > "$archive" ;;
+        absent-file) rm "$archive" ;;
+        non-file) rm "$archive"; mkdir "$archive" ;;
+        unanswered) perl -pi -e 's/Resolution recorded by fm-captain-hold\./No recorded answer./' "$archive" ;;
+        open) perl -pi -e 's/^- \[x\]/- [ ]/' "$archive" ;;
+        duplicate) cat "$original" >> "$archive" ;;
+        wrong-origin) perl -pi -e 's/Captain hold origin: .*/Captain hold origin: other-origin/' "$archive" ;;
+        legacy)
+          # Historical metadata keys and resolution leaders still work.
+          perl -pi -e 's/sample-archive-call/sample-archive-scout-decision-choice/g; s/fm-captain-hold\./fm-decision-hold./g' "$archive"
+          printf 'decision_keys=choice\n' >> "$home/state/$id.meta"
+          run_captain "$home" verify "$id" >/dev/null || fail "$layout: legacy archived answer refused"
+          printf 'decision_keys=%s\n' "$call" >> "$home/state/$id.meta"
+          continue
+          ;;
+      esac
+      if run_captain "$home" verify "$id" >/dev/null 2>&1; then
+        fail "$layout: $defect archive satisfied verification"
+      fi
+      assert_present "$home/state/$id.meta" "$layout: refusal removed origin"
+      [ "$defect" != non-file ] || rmdir "$archive"
+    done
+    cp "$original" "$archive"
+    run_teardown "$home" "$id" >/dev/null 2> "$home/archive-teardown.err" \
+      || fail "$layout: archived answer still blocked cleanup: $(cat "$home/archive-teardown.err")"
+    assert_absent "$home/state/$id.meta" "$layout: cleanup retained origin metadata"
+    assert_grep 'Erase only the approved scratch' "$archive" "$layout: cleanup erased archived answer"
+  done
+  pass 'closed archived answers allow completion and cleanup; missing, unanswered, open, duplicate, and wrong-origin evidence refuses'
+}
+
 # A post-teardown visual review completes against the surviving report and
 # durable tasks, with no volatile task metadata and no second decision database.
 test_visual_review_uses_shared_completion_owner() {
@@ -4660,6 +4771,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_interrupted_answer_preserves_hold_age \
   test_deferral_leaves_captains_call_until_due \
   test_out_of_band_close_is_recordable \
+  test_archived_answer_inventory \
   test_visual_review_uses_shared_completion_owner \
   test_none_inventory_and_resolved_prose_do_not_create_holds \
   test_terminal_single_owner_status_decision_does_not_block_empty_inventory \

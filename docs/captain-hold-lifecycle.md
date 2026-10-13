@@ -126,6 +126,7 @@ Scout teardown calls the read-only `verify` subcommand after checking for the re
 - Every recorded inventory entry still passes the [completion inventory checks](#recording-a-reviewed-inventory-complete).
 - No keyed status decision opened after the last `complete`.
 
+Completion inventory reads use the archive-evidence contract in [`bin/fm-captain-hold.sh --help`](../bin/fm-captain-hold.sh), so pruning an answered call does not strand its originating scout.
 A keyed status decision opened after the last `complete` makes `verify` fail, and re-running `complete` is the repair.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
@@ -477,7 +478,7 @@ That name-only guess is accepted solely for a single row still held for the capt
 Two such rows refuse rather than attest.
 Because that acceptance rests on a name rather than on evidence, `complete` names the resolved row beside each prefix-attested legacy id in its completion line, so the guess is auditable after the fact.
 
-A markdown home keeps its legacy rows verbatim, so its resolution is unchanged.
+A markdown home keeps its legacy identities verbatim, including in its configured done archive.
 
 ### The `fm-decision-hold.sh` shim
 
@@ -525,6 +526,9 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
 - A report-only unresolved captain call refuses `--none` completion before teardown can erase the source.
 - Non-forced scout teardown always requires the durable inventory verification.
 - The recorded-answer guard holds: a bare `tasks-axi done` close fails `verify` until `answer` records the captain's word, and an ordinary finished task cannot be dressed up as an answered call.
+- Archived released answers satisfy `complete`, `verify`, and scout cleanup under relative, absolute, default, and relocated archive configurations, including legacy identities and resolution leaders.
+  Missing, unanswered, non-closed, duplicate, and wrong-origin archive records refuse, and a live unresolved row takes precedence over an archived answer.
+  `tests/fm-teardown.test.sh` also pins refusal before source removal and successful cleanup after the archived resolution is recorded.
 
 ### Answers, stamps, and deferral
 
