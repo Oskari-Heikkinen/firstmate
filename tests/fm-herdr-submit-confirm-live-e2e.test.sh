@@ -26,7 +26,7 @@ LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
-fm_live_gate opt-in FM_HERDR_SUBMIT_CONFIRM_LIVE herdr jq claude
+fm_live_gate opt-in FM_HERDR_SUBMIT_CONFIRM_LIVE herdr jq claude treehouse
 
 [ -x "$LAB_HELPER" ] || fail "FM_HERDR_SUBMIT_CONFIRM_LIVE=1 but the Herdr lab helper is not executable at $LAB_HELPER"
 
@@ -205,5 +205,81 @@ done
 [ "$exited" = 1 ] \
   || fail "Claude Code ($VERSION) on $HERDR_VER: the /exit submission reported '$verdict' but the agent never exited"
 pass "live Herdr submit confirm: Claude Code ($VERSION) on $HERDR_VER proves and submits a typed /exit behind its command popup"
+
+# Copy-free restoration needs an actual shell cd and actual harness start.
+# Keep this in the opt-in live-harness family; portable control/spawn tests
+# exercise the same transaction without credentials. The pool is lab-private.
+if command -v treehouse >/dev/null 2>&1; then
+  N_TREEHOUSE_BIN=$(command -v treehouse); N_ROOT="$TMP_ROOT/native-root"
+  N_HOME="$TMP_ROOT/saved-home"; N_PROJECT="$TMP_ROOT/saved-project"; N_ID=saved-live-claude
+  export N_TREEHOUSE_BIN N_ROOT
+  cat > "$FAKEBIN/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1-}" = --root ]; then
+  [ "${2-}" = "$N_ROOT" ] || exit 97
+  shift 2
+fi
+exec "$N_TREEHOUSE_BIN" --root "$N_ROOT" "$@"
+SH
+  chmod +x "$FAKEBIN/treehouse"
+  mkdir -p "$N_HOME/state" "$N_HOME/data/$N_ID" "$N_HOME/config" "$N_PROJECT" "$N_ROOT"
+  git init -qb main "$N_PROJECT"
+  printf 'base\n' > "$N_PROJECT/file"
+  git -C "$N_PROJECT" add file
+  git -C "$N_PROJECT" -c user.name=Tests -c user.email=tests@example.invalid commit -qm base
+  N_HOLDER=$(FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_lease_holder "$2" "$3"' _ "$ROOT" "$N_HOME" "$N_ID") || fail 'native holder failed'
+  N_WT=$(cd "$N_PROJECT" && treehouse get --lease --lease-holder "$N_HOLDER") || fail 'private native get failed'
+  git -C "$N_WT" checkout -qb "fm/$N_ID"
+  printf 'unpublished live restoration work\n' > "$N_WT/file"
+  git -C "$N_WT" add file
+  git -C "$N_WT" -c user.name=Tests -c user.email=tests@example.invalid commit -qm saved
+  N_HEAD=$(git -C "$N_WT" rev-parse HEAD)
+  N_LEASE=$(FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_lease_read "$2" || exit 1; printf "%s" "$FM_TREEHOUSE_LEASE_ID"' _ "$ROOT" "$N_WT") || fail 'native lease failed'
+  N_TAB=$(lab tab create --workspace "$(printf '%s' "$WS_JSON" | jq -er .result.workspace.workspace_id)" --cwd "$N_HOME" --label "fm-$N_ID" --no-focus) || fail 'saved tab failed'
+  N_TAB_ID=$(printf '%s' "$N_TAB" | jq -er .result.tab.tab_id) || fail 'saved tab id missing'
+  N_PANE=$(printf '%s' "$N_TAB" | jq -er '.result.root_pane.pane_id // .result.pane.pane_id') || fail 'saved pane id missing'
+  N_WS=$(printf '%s' "$WS_JSON" | jq -er .result.workspace.workspace_id)
+  fm_write_meta "$N_HOME/state/$N_ID.meta" "window=$SESSION:$N_PANE" "endpoint_task_id=$N_ID" \
+    "worktree=$N_WT" "project=$N_PROJECT" 'harness=claude' 'kind=ship' 'mode=direct-push' 'yolo=off' "branch=fm/$N_ID" \
+    'model=haiku' 'effort=default' 'spawn_gen=g1' 'park_spawn_gen=g1' 'park_state=parked' "park_when=inbox:$N_ID" \
+    'park_token=p1' 'wait_started_at=1' 'park_relocation_safe=1' "park_handoff=$N_HOME/data/$N_ID/handoff.md" \
+    'backend=herdr' "herdr_session=$SESSION" "herdr_workspace_id=$N_WS" "herdr_tab_id=$N_TAB_ID" "herdr_pane_id=$N_PANE" \
+    "treehouse_lease_holder=$N_HOLDER" "treehouse_lease_id=$N_LEASE"
+  printf 'paused [at=1]: awaiting authorized restoration\n' > "$N_HOME/state/$N_ID.status"
+  # shellcheck disable=SC2016 # Literal Markdown condition, not command substitution.
+  printf '## Goal\nProbe saved restoration.\n## Done\nCommitted unpublished work.\n## Waiting for\n`inbox:%s`\n## Next steps\nReply to the restoration probe only.\n' "$N_ID" > "$N_HOME/data/$N_ID/handoff.md"
+  N_TOKEN="FMSAVEDPONG$$_$RANDOM"
+  printf 'After reading these launch instructions, use no further tools, change no files, commit/push nothing and contact nobody. Reply with exactly %s, then remain idle until stopped.\n' "$N_TOKEN" > "$N_HOME/data/$N_ID/brief.md"
+  printf 'on\n' > "$N_HOME/config/park-release"
+  FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" "$3" "$4"' _ "$ROOT" "$N_WT" "$N_ID" "$N_HOME" || fail 'native owner claim failed'
+  FM_HOME="$N_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$N_HOME/state" FM_DATA_OVERRIDE="$N_HOME/data" FM_CONFIG_OVERRIDE="$N_HOME/config" \
+    "$ROOT/bin/fm-park.sh" "$N_ID" --handoff "$N_HOME/data/$N_ID/handoff.md" --relocation-safe || fail 'live park/verified stop failed'
+  fm_test_track_procevent_home "$N_HOME"
+  N_SOURCE=$(sed -n 's/^park_release_source=//p' "$N_HOME/state/$N_ID.meta")
+  [ -n "$N_SOURCE" ] || fail 'live park did not register bounded release'
+  FM_HOME="$N_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$N_HOME/state" FM_DATA_OVERRIDE="$N_HOME/data" FM_CONFIG_OVERRIDE="$N_HOME/config" \
+    "$ROOT/bin/fm-procevent.sh" start "$N_SOURCE" || fail 'registered live release action failed'
+  assert_grep '^copy_state=released$' "$N_HOME/state/$N_ID.meta" 'live release never returned its private copy'
+  FM_HOME="$N_HOME" FM_SPAWN_NO_GUARD=1 "$ROOT/bin/fm-control.sh" "$N_ID" relaunch --note 'This is the explicit owner restoration probe, not approval resolution. Follow the original probe instructions only.' || fail "saved control/spawn restoration failed for Claude $VERSION on $HERDR_VER"
+  assert_grep '^copy_state=retained$' "$N_HOME/state/$N_ID.meta" 'successful live spawn did not republish retained custody'
+  N_NEW_WT=$(sed -n 's/^worktree=//p' "$N_HOME/state/$N_ID.meta")
+  N_NEW_LEASE=$(sed -n 's/^treehouse_lease_id=//p' "$N_HOME/state/$N_ID.meta")
+  N_NEW_PANE=$(sed -n 's/^herdr_pane_id=//p' "$N_HOME/state/$N_ID.meta")
+  [ "$N_NEW_LEASE" != "$N_LEASE" ] && [ "$N_NEW_PANE" != "$N_PANE" ] || fail 'live restore reused a retired acquisition/endpoint identity'
+  [ "$(git -C "$N_NEW_WT" rev-parse HEAD)" = "$N_HEAD" ] || fail 'live restore changed the unpublished saved head'
+  [ "$(fm_backend_herdr_current_path "$SESSION:$N_NEW_PANE")" = "$N_NEW_WT" ] || fail 'live replacement did not enter its acquired copy'
+  landed=0
+  for _ in $(seq 1 90); do
+    screen=$(lab pane read "$N_NEW_PANE" --source visible 2>/dev/null || true)
+    if printf '%s\n' "$screen" | grep -Fq "$N_TOKEN"; then landed=1; break; fi
+    sleep 1
+  done
+  [ "$landed" = 1 ] || fail "restored Claude $VERSION never processed its launch probe"
+  FM_HOME="$N_HOME" "$ROOT/bin/fm-control.sh" "$N_ID" exit || fail 'restored live agent did not exit'
+  pass "live saved control→spawn restoration: Claude $VERSION on $HERDR_VER confirms fresh endpoint/cd/lease, exact head and delivered instructions"
+else
+  echo 'skip: live saved control/spawn restoration requires treehouse'
+fi
 
 [ "$CHECKED" -gt 0 ] || fail "FM_HERDR_SUBMIT_CONFIRM_LIVE=1 checked no harness"

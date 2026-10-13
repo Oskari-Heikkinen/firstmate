@@ -285,7 +285,8 @@ Codex App support is recorded in `docs/codex-app-backend.md`; it is not selectab
 
 Crewmates never intentionally touch your project clone; [treehouse](https://github.com/kunchenguid/treehouse) pools clean worktrees for tmux, herdr, zellij, and cmux tasks, while Orca creates its own worktrees for `backend=orca`.
 The [`fm-spawn.sh` header](../bin/fm-spawn.sh) owns ship/scout worktree isolation and fresh-base refusal rules, including spawns from linked homes.
-Portable regressions live in [`tests/fm-spawn-pool-base-freshen.test.sh`](../tests/fm-spawn-pool-base-freshen.test.sh) for isolation, base freshness, task-duration reservations and legacy intake refusal, and [`tests/fm-control-relaunch.test.sh`](../tests/fm-control-relaunch.test.sh) for preserving the recorded copy on relaunch.
+Portable regressions live in [`tests/fm-spawn-pool-base-freshen.test.sh`](../tests/fm-spawn-pool-base-freshen.test.sh) for isolation, base freshness, task-duration reservations and legacy intake refusal, and [`tests/fm-control-relaunch.test.sh`](../tests/fm-control-relaunch.test.sh) for retained-copy relaunch and saved-copy restoration.
+Optional nonterminal parked-work custody is owned by [`fm-suspend-lib.sh`](../bin/fm-suspend-lib.sh), with policy and continuation owned by [`fm-park.sh`](../bin/fm-park.sh); it is not terminal cleanup or a relaxation of landing/evidence/decision checks.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
 Its operating checkout (`FM_ROOT`) and the disposable crewmate worktrees are all linked git worktrees of the same repository, so the valid discriminator is branch state, not whether the checkout is linked.
@@ -421,7 +422,8 @@ A later merged poll consumes only that matching persisted value; with no match i
 [`bin/fm-merge-authority-lib.sh`](../bin/fm-merge-authority-lib.sh)'s header owns resolution, private atomic persistence, identity-checked consumption, and retirement, while only the merge path gates on the answer.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 A pool worktree is only returned after teardown passes the slot-ownership proof: a contradictory task record the slot's owner claim cannot prove stale, or a supported live endpoint, refuses without touching either task, and no discard authority relaxes that.
-Ordinary pooled workers retain a durable reservation through park, exit and relaunch, so ending a process never abandons the task's unlanded work or unpreserved evidence.
+Ordinary pooled workers retain a durable reservation through exit and copy-retaining park/relaunch, so ending a process never abandons the task's unlanded work or unpreserved evidence.
+The explicitly enabled saved-copy exception follows the nonterminal custody owner above; ordinary teardown refuses saved or interrupted custody even with `--force` rather than treating it as terminal or discard authority.
 [`bin/fm-wake-lib.sh`](../bin/fm-wake-lib.sh) owns reservation identity, ownership-preserving claim publication and pre-allocation legacy refusal; reconciliation belongs to the affected home owner, not the next spawn.
 Cleanup's legacy claim compatibility remains unchanged, and a recorded durable lease additionally binds return to its exact holder and acquisition identity.
 Allocation and return serialize on one project lock per machine-local Firstmate tree: every home reachable through local parent links shares that lock, and a home seeded from another machine anchors its own, because a lock taken on this filesystem is neither held nor observable across that boundary.

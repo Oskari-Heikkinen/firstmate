@@ -516,3 +516,56 @@ test_post_enqueue_bookkeeping_failure_is_not_retryable
 test_meta_lock_contention_fails_bounded
 test_unwritable_inbox_fails_loudly
 test_empty_message_refused
+
+# shellcheck source=tests/suspend-helpers.sh
+. "$ROOT/tests/suspend-helpers.sh"
+dir=$(suspend_case "$TMP_ROOT" custody-send) || fail 'saved fixture failed'
+suspend_saved "$dir" custody-send || fail 'save fixture failed'
+cat > "$dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf 'unexpected terminal call\n' >> "$SUSPEND_DIR/terminal-calls"
+exit 9
+SH
+chmod +x "$dir/fakebin/tmux"
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send 'reminder, not pickup' > "$dir/send.out" 2>&1 || fail "dormant enqueue failed: $(cat "$dir/send.out")"
+assert_present "$dir/home/state/custody-send.inbox/001.msg" 'dormant steer was lost'
+assert_absent "$dir/terminal-calls" 'dormant enqueue inspected or rang a terminal'
+FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" check inbox:custody-send && fail 'ordinary text authorized pickup'
+if SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send --key C-c > "$dir/send.out" 2>&1; then
+  fail 'a suspended task accepted a terminal key'
+fi
+assert_absent "$dir/terminal-calls" 'key refusal still called the backend'
+for parser_message in '/help' '/no-mistakes'; do
+  if SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send "$parser_message" > "$dir/send.out" 2>&1; then
+    fail 'a suspended task accepted a slash command'
+  fi
+  assert_grep 'suspended work has no terminal' "$dir/send.out" 'slash refusal did not explain dormant terminal absence'
+done
+assert_absent "$dir/terminal-calls" 'slash refusal still called the backend'
+assert_absent "$dir/home/state/custody-send.inbox/002.msg" 'refused parser command was silently rerouted as chat'
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send '$ordinary-pi-text' > "$dir/send.out" 2>&1 || fail 'non-Codex dollar text lost its existing inbox behavior'
+assert_present "$dir/home/state/custody-send.inbox/002.msg" 'non-Codex dollar text was not durable'
+assert_absent "$dir/terminal-calls" 'non-Codex inbox text called a backend'
+pass 'ordinary dormant text stays durable without a terminal; keys/slash commands refuse before backend submission'
+
+dir=$(suspend_case "$TMP_ROOT" custody-send-codex) || fail 'Codex saved fixture failed'
+suspend_lib "$dir" fm_suspend_record "$dir/home/state/custody-send-codex.meta" 'harness=codex' || fail 'Codex profile fixture failed'
+suspend_saved "$dir" custody-send-codex || fail 'Codex save fixture failed'
+cat > "$dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf 'unexpected terminal call\n' >> "$SUSPEND_DIR/terminal-calls"
+exit 9
+SH
+chmod +x "$dir/fakebin/tmux"
+for parser_message in '$skill' '/help'; do
+  if SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send-codex "$parser_message" > "$dir/send.out" 2>&1; then
+    fail 'a suspended Codex task accepted a terminal parser invocation'
+  fi
+  assert_grep 'suspended work has no terminal' "$dir/send.out" 'Codex refusal did not explain terminal absence'
+  assert_absent "$dir/terminal-calls" 'Codex refusal still called an unchecked backend'
+  assert_absent "$dir/home/state/custody-send-codex.inbox/001.msg" 'Codex parser invocation was silently rerouted as chat'
+done
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send-codex 'plain reminder' > "$dir/send.out" 2>&1 || fail 'Codex ordinary dormant enqueue failed'
+assert_present "$dir/home/state/custody-send-codex.inbox/001.msg" 'ordinary Codex text was not durable'
+assert_absent "$dir/terminal-calls" 'ordinary dormant Codex text called a terminal'
+pass 'dormant Codex dollar/slash commands refuse while ordinary durable inbox delivery is unchanged'

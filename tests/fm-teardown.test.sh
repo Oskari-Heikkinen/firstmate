@@ -5847,13 +5847,14 @@ test_retried_cleanup_keeps_a_verified_earlier_evidence_copy() {
 }
 
 test_teardown_retires_park_without_relocking_meta() {
-  local case_dir mode sid rc head
+  local case_dir mode sid rc head release_name
   # Both real paths execute while teardown holds the task's meta lock. Bound
   # the command so accidentally calling park cancel cannot hang the CI lane.
   # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
   . "$ROOT/bin/fm-timeout-lib.sh"
   for mode in ordinary queue; do
     case_dir=$(make_case "park-retirement-$mode")
+    release_name=
     write_meta "$case_dir" local-only ship
     printf 'manual\n' > "$case_dir/config/backlog-backend"
     printf 'park_state=parked\n' >> "$case_dir/state/task-x1.meta"
@@ -5870,6 +5871,10 @@ test_teardown_retires_park_without_relocking_meta() {
       FM_HOME="$case_dir" FM_PROCEVENT_CLAIM_ROOT="$case_dir/claims" \
         "$ROOT/bin/fm-procevent.sh" register when "$sid" -- /usr/bin/true >/dev/null \
         || fail "could not seed ordinary park source"
+      release_name=$(bash -c '. "$1/bin/fm-pr-lib.sh"; . "$1/bin/fm-suspend-lib.sh"; fm_suspend_release_source_name "$2" task-x1 p1' _ "$ROOT" "$case_dir") || fail 'release source name failed'
+      printf 'park_token=p1\npark_release_source=when-%s\n' "$release_name" >> "$case_dir/state/task-x1.meta"
+      FM_HOME="$case_dir" FM_PROCEVENT_CLAIM_ROOT="$case_dir/claims" \
+        "$ROOT/bin/fm-procevent-when.sh" arm "$release_name" --condition /usr/bin/false --action /usr/bin/true >/dev/null || fail 'release source registration failed'
     fi
     rc=0
     fm_run_timed 30 env FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" \
@@ -5880,6 +5885,7 @@ test_teardown_retires_park_without_relocking_meta() {
     expect_code 0 "$rc" "park-$mode: real teardown must complete without a recursive meta lock"
     assert_absent "$case_dir/state/task-x1.meta" "park-$mode: task record cleaned up"
     assert_absent "$case_dir/state/procevent/$sid.source" "park-$mode: registered park source retired"
+    [ -z "$release_name" ] || assert_absent "$case_dir/state/procevent/when-$release_name.source" 'terminal cleanup orphaned its registered release action'
   done
   pass "real cleanup retires ordinary and adopted park watches without re-locking its task record"
 }
@@ -5916,6 +5922,28 @@ test_queue_settlement_real_cleanup_leaves_no_orphan_status() {
   pass "real queue settlement leaves its proof in the task note but never recreates a cleaned-up status log"
 }
 
+test_saved_copy_custody_never_runs_terminal_cleanup() {
+  local case_dir phase rc before
+  for phase in released release-prepared restore-prepared; do
+    case_dir=$(make_case "saved-$phase")
+    write_meta "$case_dir" direct-push ship
+    printf 'copy_state=%s\n' "$phase" >> "$case_dir/state/task-x1.meta"
+    printf 'other task work\n' > "$case_dir/wt/other-work"
+    mkdir -p "$case_dir/state/task-x1.inbox"
+    printf 'pending answer\n' > "$case_dir/state/task-x1.inbox/001.msg"
+    before=$(git -C "$case_dir/wt" rev-parse HEAD)
+    rc=0; run_teardown "$case_dir" --force > "$case_dir/out" 2>&1 || rc=$?
+    expect_code 1 "$rc" 'saved/interrupted custody was treated as discard/terminal authority'
+    assert_grep 'restore/reconcile it before terminal cleanup' "$case_dir/out" 'cleanup lost its concrete saved-custody refusal'
+    assert_present "$case_dir/state/task-x1.meta" 'cleanup erased saved task identity'
+    assert_present "$case_dir/state/task-x1.inbox/001.msg" 'cleanup erased pending instructions'
+    assert_equals 'other task work' "$(cat "$case_dir/wt/other-work")" 'cleanup touched a historical returned slot'
+    assert_equals "$before" "$(git -C "$case_dir/wt" rev-parse HEAD)" 'cleanup changed the historical head'
+    [ ! -s "$case_dir/treehouse.log" ] || fail 'saved-custody cleanup called native return'
+  done
+  pass 'terminal cleanup never treats saved custody as landing/discard authority or touches historical slots'
+}
+
 # Every case builds its own sandbox under a name of its own from the shared
 # read-only git world template, and reaps or signals only processes rooted in
 # its own worktree or started by itself, so no case depends on another or on
@@ -5924,6 +5952,7 @@ test_queue_settlement_real_cleanup_leaves_no_orphan_status() {
 # processor count capped at four; 1 runs the cases serially.
 case_jobs=$(fm_case_pool_jobs "${FM_TEARDOWN_CASE_JOBS:-}")
 fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_saved_copy_custody_never_runs_terminal_cleanup \
   test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes \
   test_windowless_record_outside_the_leftover_class_still_refuses \
   test_process_spawned_during_grace_is_reaped_on_later_pass \

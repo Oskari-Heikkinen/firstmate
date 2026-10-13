@@ -8,6 +8,7 @@ description: >-
   no agent, when an OPEN DECISIONS or UNREAD STATUS line shows a
   `note [supersedes=...]` or `note [receipt=config-reread]` record, and before
   closing a blocker or acknowledging a config push by hand.
+  Also use before authorizing pickup or resumption of saved copy-free work.
   Owns when each automation runs, how agents declare and wait on it, which
   records and receipts it emits, and which hand steps it retires.
 user-invocable: false
@@ -49,6 +50,17 @@ How agents use it:
 - `state/.quiet-wait-acks` is an audit trail for "why was I not woken", never an input to any decision.
 
 Hand steps retired: acknowledging a no-op turn-end or stale wake for a lane whose tagged wait still holds, and re-checking a heavy job, merge-queue result, or receipt by hand while it is pending.
+
+## Saved copy-free waits
+
+Before interpreting an absent endpoint or copy as failed work, read the targeted current state with `bin/fm-crew-state.sh <id>`.
+A positively validated saved wait is still the same commissioned task, not a missing worker to respawn or a completed item to clean up.
+[`bin/fm-park.sh`](../../../bin/fm-park.sh)'s header owns the per-home canary, qualification, continuous-wait policy, explicit inbox pickup, cancellation and resume commands; [`bin/fm-suspend-lib.sh`](../../../bin/fm-suspend-lib.sh) owns saved-custody proof and interrupted transactions.
+Ordinary text, reminders, timer expiry and results that still need a captain decision never grant pickup authority.
+Resolve the actual decision through its existing owner before authorizing continuation; suspension and cancellation do not resolve approvals or obligations.
+Use the normal owner control/park continuation, never a generic fresh spawn, a worker-chosen pickup, an old-path inspection or ordinary teardown.
+The ordinary wait condition stays cheap; the separate incarnation-bound release source owns expensive saving/return and its own bounded outcome, as described by the park owner.
+An interrupted or invalid saved transaction remains blocked with its evidence intact: reconcile only its exact acquisition, never re-run allocation blindly or edit records to manufacture a valid proof.
 
 ## Superseded blockers close themselves
 

@@ -1021,6 +1021,47 @@ test_owner_adoption_preserves_work_and_is_idempotent() {
   pass 'owner CLI adopts in place, preserves contents/foreign records and reruns without mutation'
 }
 
+test_owner_adoption_saved_custody_is_never_authority() {
+  local phase id out rc meta state head before
+  for phase in released release-prepared restore-prepared; do
+    id="saved-adopt-$phase"
+    make_adoption_case "$id"
+    meta="$HOME_DIR/state/$id.meta"
+    state="$(dirname "$(dirname "$POOL_DIR")")/treehouse-state.json"
+    printf 'copy_state=%s\n' "$phase" >> "$meta"
+    printf 'task=%s\nhome=%s\n' "$id" "$CASE_DIR/foreign-home" > "$SLOT_CLAIM"
+    printf 'foreign uncommitted contents\n' >> "$POOL_DIR/README.md"
+    printf 'keep untracked contents\n' > "$POOL_DIR/foreign-evidence"
+    head=$(git -C "$POOL_DIR" rev-parse HEAD); before=$(git -C "$POOL_DIR" diff)
+    cp "$meta" "$CASE_DIR/meta.before"; cp "$state" "$CASE_DIR/pool.before"
+    cp "$SLOT_CLAIM" "$CASE_DIR/claim.before"
+    # Neither saved state may inspect the historical Git copy. The native
+    # dependency's help probe is harmless; status/lease mutations are not.
+    cat > "$FAKEBIN_DIR/git" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ADOPT_LOG.git"
+exit 9
+SH
+    chmod +x "$FAKEBIN_DIR/git"
+    rc=0; out=$(run_adoption) || rc=$?
+    if [ "$phase" = released ]; then
+      expect_code 0 "$rc" "released record was not skipped: $out"
+    else
+      expect_code 1 "$rc" "interrupted record was not refused: $out"
+      assert_contains "$out" 'interrupted copy custody' 'interrupted refusal lost its reason'
+    fi
+    assert_absent "$CASE_DIR/adopt.log" 'saved adoption inspected/leased a native slot'
+    assert_absent "$CASE_DIR/adopt.log.git" 'saved adoption inspected the historical Git copy'
+    cmp "$meta" "$CASE_DIR/meta.before" || fail 'saved adoption mutated task metadata'
+    cmp "$state" "$CASE_DIR/pool.before" || fail 'saved adoption mutated native custody'
+    cmp "$SLOT_CLAIM" "$CASE_DIR/claim.before" || fail 'saved adoption replaced a foreign claim'
+    assert_equals "$head" "$(git -C "$POOL_DIR" rev-parse HEAD)" 'saved adoption moved HEAD'
+    assert_equals "$before" "$(git -C "$POOL_DIR" diff)" 'saved adoption changed foreign working files'
+    assert_grep 'keep untracked contents' "$POOL_DIR/foreign-evidence" 'saved adoption removed foreign evidence'
+    pass "owner adoption preserves $phase records and never adopts their historical slot"
+  done
+}
+
 test_owner_adoption_lists_conflicts_without_leasing() {
   local variant id out status state before meta
   for variant in duplicate foreign-home foreign-marker ambiguous-marker live-pid in-use unverified wrong-path replaced-lease; do
@@ -1303,6 +1344,7 @@ SH
 test_direct_spawn_relaunch_adopts_legacy_record
 test_owner_adoption_real_idle_shell
 test_owner_adoption_preserves_work_and_is_idempotent
+test_owner_adoption_saved_custody_is_never_authority
 test_owner_adoption_lists_conflicts_without_leasing
 test_remote_seeded_home_spawns_from_treehouse_pool
 test_legacy_reservations_refuse_before_get
@@ -1332,5 +1374,51 @@ test_unpushed_submodule_commit_is_still_uncommitted_work
 test_work_inside_submodule_is_still_uncommitted_work
 test_stale_pin_carrying_real_work_is_not_called_stale
 test_stale_pin_beside_other_dirt_reports_one_verdict
+
+# shellcheck source=tests/suspend-helpers.sh
+. "$ROOT/tests/suspend-helpers.sh"
+dir=$(suspend_case "$TMP_ROOT" restore-fresh) || fail 'saved fixture failed'
+suspend_saved "$dir" restore-fresh || fail 'save fixture failed'
+meta="$dir/home/state/restore-fresh.meta"
+head=$(git -C "$dir/project" rev-parse fm/restore-fresh)
+suspend_lib "$dir" fm_suspend_allocate "$meta" restore-fresh "$dir/home" "$dir/home/data" "$dir/home/state" || fail 'fresh restore allocation failed'
+wt="$dir/.treehouse/pool/1/project"
+assert_equals "$head" "$(git -C "$wt" rev-parse HEAD)" 'restoration rebased/reset the saved head'
+assert_grep '^treehouse_lease_id=new-lease$' "$meta" 'restoration reused the historical acquisition'
+assert_grep '^copy_state=restore-prepared$' "$meta" 'allocation was not durably claimed'
+assert_present "$dir/.treehouse/pool/1/.fm-slot-owner" 'restoration is unclaimed'
+assert_present "$dir/home/data/restore-fresh/suspension.bundle" 'restoration consumed the bundle'
+assert_equals "$head" "$(git -C "$dir/project" rev-parse fm/restore-fresh)" 'restoration rewrote the kept branch'
+count=$(wc -l < "$dir/calls" | tr -d ' ')
+suspend_lib "$dir" fm_suspend_allocate "$meta" restore-fresh "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'duplicate restore allocated a second copy'
+assert_equals "$count" "$(wc -l < "$dir/calls" | tr -d ' ')" 'duplicate restore invoked the allocator'
+pass 'saved head restores under a fresh exclusive lease, including same-path reuse, without rebase or duplicate allocation'
+
+dir=$(suspend_case "$TMP_ROOT" restore-other-slot) || fail 'different-slot fixture failed'
+suspend_saved "$dir" restore-other-slot || fail 'different-slot save failed'
+meta="$dir/home/state/restore-other-slot.meta"
+head=$(git -C "$dir/project" rev-parse fm/restore-other-slot)
+old="$dir/.treehouse/pool/1/project"
+printf 'not this task any more\n' > "$old/file"
+: > "$dir/different-slot"
+suspend_lib "$dir" fm_suspend_allocate "$meta" restore-other-slot "$dir/home" "$dir/home/data" "$dir/home/state" || fail 'a different selected physical slot could not restore the kept branch'
+new=$(sed -n 's/^worktree=//p' "$meta")
+[ "$new" != "$old" ] || fail 'fixture did not select a different physical slot'
+assert_equals "$head" "$(git -C "$new" rev-parse HEAD)" 'different-slot restoration lost the exact saved head'
+assert_equals 'not this task any more' "$(cat "$old/file")" 'different-slot restoration used historical working files'
+assert_equals false "$(jq -r .worktrees[0].leased "$dir/.treehouse/pool/treehouse-state.json")" 'restore re-reserved the historical slot'
+pass 'an allocator-selected different physical slot restores the kept branch without historical-path authority or re-reservation'
+
+dir=$(suspend_case "$TMP_ROOT" restore-crash) || fail 'saved fixture failed'
+suspend_saved "$dir" restore-crash || fail 'save fixture failed'
+meta="$dir/home/state/restore-crash.meta"
+: > "$dir/fail-get"
+suspend_lib "$dir" fm_suspend_allocate "$meta" restore-crash "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'failed allocation reported success'
+assert_grep '^copy_state=restore-prepared$' "$meta" 'failed attempt lost its durable claim'
+assert_present "$dir/home/data/restore-crash/suspension.bundle" 'failed attempt lost saved commits'
+rm "$dir/fail-get"
+suspend_lib "$dir" fm_suspend_allocate "$meta" restore-crash "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'interrupted attempt blindly reacquired'
+assert_equals 1 "$(grep -c '^get ' "$dir/calls")" 'interrupted allocation replayed get'
+pass 'allocation failure preserves saved custody and refuses blind retry'
 
 echo "# all fm-spawn-pool-base-freshen tests passed"

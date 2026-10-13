@@ -531,3 +531,16 @@ test_only_the_lock_holder_relaunches
 test_opt_out_and_unknown_switch_values_relaunch_nothing
 test_plan_is_read_only_and_the_deadline_defers_starts
 test_herdr_pane_that_survived_a_server_restart_is_relaunched_in_place
+
+# shellcheck source=tests/suspend-helpers.sh
+. "$ROOT/tests/suspend-helpers.sh"
+dir=$(suspend_case "$TMP_ROOT" custody-reboot) || fail 'saved fixture failed'
+suspend_saved "$dir" custody-reboot || fail 'save fixture failed'
+out=$(FM_HOME="$dir/home" "$RELAUNCH" plan) || fail 'saved reboot plan failed'
+[ -z "$out" ] || fail "saved wait was treated as missing/dead work: $out"
+assert_absent "$dir/calls" 'reboot allocated a saved waiter'
+rm "$dir/home/data/custody-reboot/suspension.bundle"
+out=$(FM_HOME="$dir/home" "$RELAUNCH" plan) || fail 'broken-custody reboot plan failed'
+assert_contains "$out" 'manifest or branch/bundle custody is invalid' 'reboot silently accepted missing saved evidence'
+assert_absent "$dir/calls" 'broken saved evidence caused allocation'
+pass 'reboot leaves validated copy-free work waiting and reports invalid saved custody without launching'

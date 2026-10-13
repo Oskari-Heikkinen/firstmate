@@ -46,6 +46,7 @@ config/brief-include.md  optional standing worker instructions appended verbatim
 config/merge-queue  optional external merge-queue location and this home's name in it, read by bin/fm-procevent-merge-queue.sh; LOCAL, gitignored, and not inherited; see docs/configuration.md "Merge queue"
 config/fleet-ledger  optional presence flag opting this home in to the default-off fleet activity ledger state/fleet-ledger.jsonl that outside tools can follow; LOCAL, gitignored, and not inherited; see docs/fleet-ledger.md
 config/reboot-relaunch  optional `off` opting this home out of the default-on session-start relaunch of dead ordinary workers; LOCAL, gitignored, and not inherited; bin/fm-reboot-relaunch.sh owns it
+config/park-release  optional per-home copy-free parked-work canary; LOCAL, gitignored, not inherited; see docs/configuration.md "Copy-free parked work" and bin/fm-park.sh
 config/wait-no-turns  optional presence flag opting this home into default-off waiting-worker behavior (brief waiting section, foreground pipeline drive, pending-reply hold, one fire-and-forget retry ring); LOCAL, gitignored, and not inherited; see docs/configuration.md "Waiting worker spends no turns"
 config/pipeline-spend  optional presence flag opting this home in to default-off per-task no-mistakes spend recording in data/pipeline-spend.jsonl; LOCAL, gitignored, and not inherited; see docs/configuration.md "No-mistakes pipeline spend"
 config/turnend-churn-absorb  optional presence flag opting this home into the default-off absorb of bare turn-end wakes on pane churn; LOCAL, gitignored, and not inherited; see docs/configuration.md "Turn-end pane-churn absorb"
@@ -64,6 +65,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
+  <id>/suspension.json <id>/suspension.bundle  private nonterminal saved-work proof, not terminal cleanup authority; bin/fm-suspend-lib.sh owns format and custody; copy-restore-note.md is the owner control continuation
   <id>/handoff.md    a parked task's handoff (goal, done, waiting for, next steps), plus park-resume-note.md and park-exit.log beside it; written only by bin/fm-park.sh
   fleet-sync/        atomic per-clone source-refresh receipts and OS-lock anchors, written only by bin/fm-fleet-provenance.py through fm-fleet-sync.sh; observations, not application-update authority
   housekeeping/      dated read-only disk inventories written only by bin/fm-disk-inventory.sh; proposals, never deletion authority

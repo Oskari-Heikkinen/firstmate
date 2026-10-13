@@ -54,6 +54,11 @@ adopt_record() (
   lock=$(fm_meta_lock_path "$meta") && fm_lock_try_acquire "$lock" || return 1
   meta_lock=$lock
   project=$(fm_treehouse_record_field "$meta" project) || return 1
+  case "$(fm_treehouse_record_field "$meta" copy_state)" in
+    ''|retained) ;;
+    released) return 0 ;;
+    *) echo "refused: interrupted copy custody for $id; no historical slot adoption" >&2; return 1 ;;
+  esac
   wt=$(fm_treehouse_record_field "$meta" worktree) || return 1
   [ -n "$wt" ] || return 0
   if ! fm_treehouse_pool_slot "$project" "$wt"; then

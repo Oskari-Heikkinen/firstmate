@@ -54,6 +54,12 @@
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
 #   secondmate's charter.
+#        fm-spawn.sh <task-id> --restore
+#   --restore is the control-owned saved-task continuation, not fresh dispatch.
+#   It requires validated released custody, preserves the recorded launch pins,
+#   claims restore-prepared before fresh leased allocation, and never reuses an
+#   old acquisition. Failures preserve the exact new reservation for recovery.
+#   bin/fm-suspend-lib.sh owns this record and saved-work proof.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>] [--compact-at <tokens>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded worktree, reusing its recorded endpoint when that
@@ -764,6 +770,7 @@ BASE_BRANCH=
 BASE_BRANCH_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
+RESTORE=0
 ADMISSION_OVERRIDE=0
 # Opt-in only: exact-resume presentation-order lock waits instead of refusing.
 # Absent/unset keeps upstream refuse-on-contention. See header.
@@ -836,6 +843,7 @@ for a in "$@"; do
     KIND=secondmate
     KIND_SET=1
     ;;
+  --restore) RELAUNCH=1; RESTORE=1 ;;
   --relaunch) RELAUNCH=1 ;;
   --admission-override) ADMISSION_OVERRIDE=1 ;;
   --herdr-resume-lock-wait) HERDR_RESUME_LOCK_WAIT=1 ;;
@@ -1965,6 +1973,21 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: --relaunch refused after locking: $FM_BACKLOG_TRANSITION_ERROR" >&2
     exit 1
   }
+  # shellcheck source=bin/fm-suspend-lib.sh
+  . "$SCRIPT_DIR/fm-suspend-lib.sh"
+  if [ "$RESTORE" = 1 ]; then
+    [ "$SPAWN_CONTROL_PARENT" = 1 ] || { echo 'error: saved-task restoration is owned by fm-control' >&2; exit 1; }
+    if ! { [ "$(fm_suspend_field "$RELAUNCH_META" copy_state)" = released ] &&
+      fm_suspend_validate "$RELAUNCH_META" "$ID" "$FM_HOME" "$DATA"; }; then
+      echo 'error: missing/invalid saved custody; no new acquisition permitted' >&2; exit 1
+    fi
+    [ -z "$HARNESS_ARG$MODEL$EFFORT" ] || { echo 'error: restoration preserves recorded launch pins' >&2; exit 1; }
+    BACKEND=$FM_SUSPEND_BACKEND
+    MODEL=$(fm_suspend_field "$RELAUNCH_META" model); [ "$MODEL" != default ] || MODEL=
+    EFFORT=$(fm_suspend_field "$RELAUNCH_META" effort); [ "$EFFORT" != default ] || EFFORT=
+    fm_backend_validate_spawn "$BACKEND" && fm_backend_source "$BACKEND" || exit 1
+    if [ "$BACKEND" = herdr ]; then export HERDR_SESSION="$FM_SUSPEND_SESSION"; fi
+  else
   fm_backend_validate_task_endpoint "$RELAUNCH_META" "$ID" || exit 1
   BACKEND=$FM_BACKEND_VALIDATED_BACKEND
   RELAUNCH_TARGET=$FM_BACKEND_VALIDATED_TARGET
@@ -2027,6 +2050,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
       exit 1
       ;;
   esac
+  fi
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
@@ -2055,7 +2079,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     fi
   fi
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
-  [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
+  [ "$RESTORE" = 1 ] || { [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ]; } || {
     echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
     exit 1
   }
@@ -3339,7 +3363,7 @@ if [ "$KIND" != secondmate ] &&
   fi
   SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=1
   if [ "$BACKEND" != orca ]; then
-    if [ "$RELAUNCH" -eq 0 ]; then
+    if [ "$RELAUNCH" -eq 0 ] || [ "$RESTORE" = 1 ]; then
       fm_treehouse_intake_preflight "$PROJ_ABS" "$STATE" || exit 1
       SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_treehouse_lease_holder "$FM_HOME" "$ID") || exit 1
     else
@@ -3425,6 +3449,11 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
     fm_brief_worker_role "$STATE" "$ID" "$FM_ROOT" &&
       printf '\n' &&
       cat "$SOURCE_BRIEF" &&
+      if [ "$RESTORE" = 1 ]; then
+        printf '\n# Saved-task continuation\n'
+        printf '%s\n' 'Original branch/setup steps are already complete. Do not recreate the branch or automatically rebase it. Read this restoration note and the handoff before continuing:'
+        cat "$DATA/$ID/copy-restore-note.md"
+      fi &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
         fm_brief_intent_overlay "$CAPTAIN_INTENT"
       fi &&
@@ -3927,7 +3956,17 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$BACKEND" = herdr ] && [ "$KIND" != secondmate ] 
   SPAWN_HERDR_RESERVATION_REUSE=1
 fi
 W="fm-$ID"
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$RESTORE" = 1 ]; then
+  if ! fm_suspend_allocate "$RELAUNCH_META" "$ID" "$FM_HOME" "$DATA" "$STATE"; then
+    echo 'error: saved-work restoration did not complete; preserve its transaction and reservation, do not allocate again' >&2
+    exit 1
+  fi
+  WT=$FM_SUSPEND_NEW_WT
+  SPAWN_TREEHOUSE_LEASE_HOLDER=$FM_SUSPEND_NEW_HOLDER
+  SPAWN_TREEHOUSE_LEASE_ID=$FM_SUSPEND_NEW_LEASE
+fi
+
+if [ "$RELAUNCH" -eq 1 ] && [ "$RESTORE" = 0 ]; then
   # A secondmate's home already resolved WT above through the same validation a
   # fresh secondmate spawn uses; every other kind takes the recorded worktree.
   # Either way the worktree is REUSED, never re-created: its branch, commits and
@@ -4257,6 +4296,15 @@ EOF
     T="$ORCA_TERMINAL"
     ;;
   esac
+fi
+if [ "$RESTORE" = 1 ]; then
+  # Publish fresh endpoint custody immediately, before trust/wiring/launch can
+  # fail. A retry must reconcile this one acquisition, never mint another pane.
+  fm_suspend_record "$RELAUNCH_META" "window=$T" "endpoint_task_id=$ID" || exit 1
+  if [ "$BACKEND" = herdr ]; then
+    fm_suspend_record "$RELAUNCH_META" "herdr_session=$HERDR_SES" "herdr_workspace_id=$HERDR_WORKSPACE_ID" \
+      "herdr_tab_id=$HERDR_TAB_ID" "herdr_pane_id=$HERDR_PANE_ID" || exit 1
+  fi
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
@@ -4640,6 +4688,17 @@ if [ "$SPAWN_HERDR_RESERVATION_REUSE" = 1 ]; then
 fi
 if [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = orca ]; then
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+elif [ "$RESTORE" = 1 ]; then
+  restore_cd_path=${WT//\'/\'\\\'\'}
+  spawn_send_text_line "$WT_TARGET" "cd -- '$restore_cd_path'" || exit 1
+  restore_seen=
+  for _ in $(seq 1 60); do
+    restore_seen=$(spawn_current_path "$WT_TARGET" || true)
+    [ "$restore_seen" != "$WT" ] || break
+    sleep 0.5
+  done
+  [ "$restore_seen" = "$WT" ] || { echo 'error: fresh endpoint did not enter the restored copy; custody retained' >&2; exit 1; }
+  validate_spawn_worktree "saved-task restoration" "$T"
 elif [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
   # proven instead is that the adopted endpoint's shell is actually sitting in
@@ -5725,7 +5784,12 @@ preserve_relaunch_meta() {
   # Preserved durable lines go last, in their recorded order, so a recorded
   # pr=/pr_head= pair stays the record's tail that bin/fm-pr-lib.sh requires.
   if [ "$RELAUNCH" -eq 1 ]; then
-    preserve_relaunch_meta
+    if [ "$RESTORE" = 1 ]; then
+      echo 'copy_state=retained'
+      preserve_relaunch_meta | grep -v '^copy_state='
+    else
+      preserve_relaunch_meta
+    fi
   fi
 } >"$SPAWN_META_PATH" || {
   echo "error: task record for $ID could not be prepared at $SPAWN_META_PATH" >&2

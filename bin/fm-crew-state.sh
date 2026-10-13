@@ -219,6 +219,17 @@ meta_value() {  # <key>
   grep "^$1=" "$META" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
+case "$(meta_value copy_state)" in
+  ''|retained) ;;
+  released)
+    # shellcheck source=bin/fm-suspend-lib.sh
+    . "$SCRIPT_DIR/fm-suspend-lib.sh"
+    if fm_suspend_validate "$META" "$ID" "$FM_HOME" "${FM_DATA_OVERRIDE:-$FM_HOME/data}"; then
+      emit paused park 'waiting; no worker or copy reserved'
+    fi
+    emit blocked park 'saved branch/bundle custody does not validate' ;;
+  *) emit blocked park 'copy release/restore transaction needs reconciliation' ;;
+esac
 WT=$(meta_value worktree)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)

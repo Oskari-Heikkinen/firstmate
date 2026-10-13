@@ -368,3 +368,265 @@ assert_contains "$out" "this session stops in a few seconds" "a non-Claude self-
 for _ in $(seq 1 100); do [ -s "$H/control.log" ] && break; sleep 0.1; done
 FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-t11 >/dev/null 2>&1 || true
 pass "the background-work refusal applies only to Claude workers"
+
+# Saved work uses real Git objects, not a stubbed preservation verdict.
+# shellcheck source=tests/suspend-helpers.sh
+. "$ROOT/tests/suspend-helpers.sh"
+dir=$(suspend_case "$TMP_ROOT" saved-park) || fail 'saved fixture failed'
+id=saved-park; home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+[ ! -e "$home/config/park-release" ] || fail 'fixture unexpectedly enabled release'
+suspend_lib "$dir" fm_suspend_enabled "$home/config" && fail 'release must default off'
+printf 'o\nn\n' > "$home/config/park-release"
+suspend_lib "$dir" fm_suspend_enabled "$home/config" && fail 'malformed multi-line switch enabled release'
+printf 'on\n' > "$home/config/park-release"
+suspend_lib "$dir" fm_suspend_enabled "$home/config" || fail 'per-home canary switch did not enable release'
+suspend_lib "$dir" fm_suspend_record "$meta" 'park_when=file:/durable/result' 'wait_started_at=1000' || fail 'record update failed'
+suspend_lib "$dir" fm_suspend_qualified "$meta" 87399 && fail 'release qualified before 24h'
+suspend_lib "$dir" fm_suspend_qualified "$meta" 87400 || fail 'release failed to qualify at 24h'
+suspend_lib "$dir" fm_suspend_record "$meta" 'park_open_ended=1' || fail 'record update failed'
+suspend_lib "$dir" fm_suspend_qualified "$meta" 1000 || fail 'open-ended wait was not immediate'
+suspend_lib "$dir" fm_suspend_record "$meta" 'park_open_ended=0' "park_when=inbox:$id" || fail 'record update failed'
+suspend_lib "$dir" fm_suspend_qualified "$meta" 1000 || fail 'inbox wait was not immediate'
+suspend_lib "$dir" fm_suspend_record "$meta" 'park_relocation_safe=0' || fail 'record update failed'
+suspend_lib "$dir" fm_suspend_qualified "$meta" 999999 && fail 'age overrode missing relocation proof'
+suspend_lib "$dir" fm_suspend_record "$meta" 'park_relocation_safe=1' || fail 'record update failed'
+printf 'dirty\n' >> "$wt/file"
+suspend_lib "$dir" fm_suspend_save "$meta" "$id" "$home" "$home/data" "$wt" && fail 'dirty work was saved for release'
+assert_absent "$home/data/$id/suspension.json" 'dirty refusal created saved custody'
+git -C "$wt" checkout -- file
+printf 'cache\n' > "$wt/unknown"
+printf 'unknown\n' >> "$(git -C "$wt" rev-parse --git-path info/exclude)"
+suspend_lib "$dir" fm_suspend_clean_copy "$wt" && fail 'unknown ignored artifact qualified for return'
+rm "$wt/unknown"
+suspend_saved "$dir" "$id" || fail 'clean committed work did not save'
+suspend_lib "$dir" fm_suspend_validate "$meta" "$id" "$home" "$home/data" || fail 'saved proof did not validate'
+assert_present "$home/data/$id/suspension.bundle" 'unpublished head has no bundle'
+head=$(git -C "$dir/project" rev-parse "fm/$id")
+[ "$head" = "$(jq -r .head "$home/data/$id/suspension.json")" ] || fail 'saved branch head drifted'
+FM_HOME="$home" "$PARK" check "inbox:$id" >/dev/null && fail 'ordinary inbox wait picked itself up'
+mkdir -p "$home/state/$id.inbox/handled"
+printf 'reminder, not authority\n' > "$home/state/$id.inbox/001.msg"
+FM_HOME="$home" "$PARK" check "inbox:$id" >/dev/null && fail 'a reminder authorized pickup'
+FM_HOME="$home" "$PARK" pickup "$id" || fail 'explicit pickup failed'
+FM_HOME="$home" "$PARK" check "inbox:$id" || fail 'explicit pickup did not clear the wait'
+assert_present "$home/state/$id.inbox/001.msg" 'condition consumed an ordinary inbox message'
+printf 'tamper\n' >> "$home/data/$id/suspension.bundle"
+suspend_lib "$dir" fm_suspend_validate "$meta" "$id" "$home" "$home/data" && fail 'bundle corruption validated'
+pass 'copy-free qualification is off by default, uses continuous 24h/immediate policy, refuses dirty/unknown work and proves its saved head'
+
+# Re-arm preserves continuous age, but genuine new work resets it.
+H="$TMP_ROOT/h-age"; new_task "$H" age
+handoff "$TMP_ROOT/age.md" "file:$TMP_ROOT/age-result"
+park "$H" age --handoff "$TMP_ROOT/age.md" >/dev/null || fail 'age park failed'
+awk '{sub(/^wait_started_at=.*/, "wait_started_at=1000")} 1' "$H/state/age.meta" > "$H/age-meta"
+mv "$H/age-meta" "$H/state/age.meta"
+park "$H" age --handoff "$TMP_ROOT/age.md" >/dev/null || fail 'age repark failed'
+assert_grep '^wait_started_at=1000$' "$H/state/age.meta" 're-arming reset the continuous clock'
+park "$H" resume age >/dev/null || fail 'retained age resume failed'
+# Preserve existing captured-result acknowledgement rules; this manual resume
+# did not generate a process-event result.
+park "$H" age --handoff "$TMP_ROOT/age.md" >/dev/null || fail 'new work repark failed'
+assert_no_grep '^wait_started_at=1000$' "$H/state/age.meta" 'a completed wait retained its old age'
+FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-age >/dev/null 2>&1 || true
+assert_equals 1 "$(grep -c '^wait_started_at=' "$H/state/age.meta")" 'continuous clock was duplicated on re-arm'
+pass 'only the same uninterrupted condition retains its wait age'
+
+# Portable end-to-end release: fake terminals/native leases, real preservation,
+# locks and policy checks. No local test run is needed to exercise it in CI.
+for scenario in off true nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll; do
+  id="release-$scenario"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'release fixture failed'
+  home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+  suspend_idle_terminal "$dir" "$id"
+  [ "$scenario" = off ] || printf 'on\n' > "$home/config/park-release"
+  case "$scenario" in
+    true) : > "$dir/result"; suspend_lib "$dir" fm_suspend_record "$meta" "park_when=file:$dir/result" ;;
+    nm) suspend_lib "$dir" fm_suspend_record "$meta" 'mode=no-mistakes' ;;
+    raw) suspend_lib "$dir" fm_suspend_record "$meta" 'harness=custom-launch' ;;
+    reuse) : > "$dir/reuse-after-return" ;;
+    dependency) printf 'local input %s\n' "$wt/file" >> "$home/data/$id/handoff.md" ;;
+    symlink)
+      ln -s "$wt" "$home/apparently-durable-results"
+      suspend_lib "$dir" fm_suspend_record "$meta" "park_when=file:$home/apparently-durable-results/missing-result" ;;
+    route)
+      mkdir -p "$home/state/task-inbox-routes"
+      jq -n --arg id "$id" '{schema:"fm-task-milestone-route.v1",producer:{task:$id,generation:"g1"},consumer:{task:"other",generation:"g2"}}' > "$home/state/task-inbox-routes/route.json" ;;
+    job) printf '[{"pid":12345678}]\n' > "$dir/processes.json" ;;
+    bad-endpoint) suspend_lib "$dir" fm_suspend_record "$meta" 'window=malformed' ;;
+    lease) printf '%s\n' "$$" > "$home/state/.lock"; printf 'branch\t%s\t1\n' "$$" > "$home/state/.lease-$id" ;;
+    kill) : > "$dir/fail-kill" ;;
+    return) : > "$dir/fail-return" ;;
+  esac
+  rc=0
+  case "$scenario" in
+    off|park)
+      FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" suspend_park "$dir" "$id" --handoff "$home/data/$id/handoff.md" --relocation-safe > "$dir/out" 2>&1 || rc=$?
+      fm_test_track_procevent_home "$home" ;;
+    stop)
+      FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FM_PARK_SELF_EXIT_DELAY=0 suspend_park "$dir" stop "$id" > "$dir/out" 2>&1 || rc=$? ;;
+    poll) suspend_park "$dir" poll "$id" p1 > "$dir/out" 2>&1 || rc=$? ;;
+    *)
+      suspend_register_release "$dir" "$id" || fail 'could not register release policy action'
+      suspend_run_release "$dir" "$id" || fail "registered release runner failed: $(cat "$dir/runner.out")"
+      rc=$(sed -n 's/^action_exit: //p' "$dir/action-result")
+      rc=${rc:-0}; cp "$dir/action-result" "$dir/out" ;;
+  esac
+  case "$scenario" in
+    reuse)
+      expect_code 0 "$rc" "fresh successor prevented logical suspension: $(cat "$dir/out")"
+      assert_grep '^copy_state=released$' "$meta" 'immediate reuse lost saved custody'
+      assert_grep '^treehouse_lease_id=$' "$meta" 'historical lease remained active authority'
+      assert_grep "home=$dir/foreign-home" "${wt%/*}/.fm-slot-owner" 'release erased a same-slug successor claim after returning its lease'
+      assert_equals 'foreign uncommitted work' "$(cat "$wt/file")" 'release touched successor work'
+      assert_equals successor-lease "$(jq -r .worktrees[0].lease_id "$dir/.treehouse/pool/treehouse-state.json")" 'release altered the successor native lease' ;;
+    park)
+      expect_code 0 "$rc" "park registration failed: $(cat "$dir/out")"
+      assert_grep '^copy_state=retained$' "$meta" 'park performed expensive release before its action ran'
+      assert_absent "$dir/calls" 'park/stop ran release inline'
+      sid=$(sed -n 's/^park_release_source=//p' "$meta")
+      [ -n "$sid" ] || fail 'park did not register its separate release source'
+      suspend_run_release "$dir" "$id" || fail "release action runner failed: $(cat "$dir/runner.out")"
+      assert_equals fired "$(FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" classify "$dir/action-result")" "release action did not complete: $(cat "$dir/action-result")"
+      assert_grep '^copy_state=released$' "$meta" "bounded action did not release"
+      assert_grep 'return --if-lease-holder' "$dir/calls" 'release bypassed exact native return'
+      suspend_lib "$dir" fm_suspend_validate "$meta" "$id" "$home" "$home/data" || fail 'released proof did not validate'
+      assert_present "$home/data/$id/suspension.bundle" 'release discarded unlanded commits'
+      rc=0; suspend_park "$dir" poll "$id" retired > "$dir/retired" 2>&1 || rc=$?
+      expect_code 2 "$rc" 'retired poll token became authority'
+      suspend_park "$dir" resume "$id" retired > "$dir/retired" 2>&1 && fail 'retired resume token became authority' ;;
+    kill|return)
+      expect_code 1 "$rc" 'failed close/return claimed success'
+      assert_grep '^copy_state=release-prepared$' "$meta" 'interrupted release lost its transaction'
+      assert_grep 'blocked.*copy-custody' "$home/state/$id.status" 'failed transaction did not wake its owner'
+      rc=0; suspend_park "$dir" poll "$id" p1 > "$dir/interrupted" 2>&1 || rc=$?
+      expect_code 1 "$rc" 'unfinished custody consumed the resume condition error budget'
+      suspend_park "$dir" resume "$id" p1 > "$dir/interrupted" 2>&1 && fail 'unfinished custody resumed'
+      assert_present "$home/data/$id/suspension.bundle" 'failed transaction lost saved work' ;;
+    *)
+      case "$scenario" in
+        bad-endpoint) expect_code 1 "$rc" 'invalid endpoint was accepted for release' ;;
+        lease) expect_code 6 "$rc" 'other supervision actor lease was ignored' ;;
+        poll) expect_code 1 "$rc" 'ordinary inbox polling became an error/authority' ;;
+        *) expect_code 0 "$rc" "qualification/stop was treated as failure: $(cat "$dir/out")" ;;
+      esac
+      if [ "$scenario" = bad-endpoint ] || [ "$scenario" = lease ]; then
+        rc=0; suspend_park "$dir" poll "$id" p1 > "$dir/check-only" 2>&1 || rc=$?
+        expect_code 1 "$rc" 'release refusal consumed the unrelated condition error budget'
+      fi
+      assert_grep '^copy_state=retained$' "$meta" 'unsafe/default-off park changed copy custody'
+      assert_absent "$home/data/$id/suspension.json" 'failed qualification began a saved transaction'
+      assert_absent "$dir/terminal-calls" 'failed qualification closed its endpoint'
+      [ ! -e "$dir/calls" ] || assert_no_grep '^return ' "$dir/calls" 'failed qualification returned a copy' ;;
+  esac
+  pass "portable park release: $scenario"
+done
+
+# Manual/tokenless entry cannot bypass the registered bounded action.
+id=release-entrypoint; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'entrypoint fixture failed'
+home="$dir/home"; meta="$home/state/$id.meta"
+printf 'on\n' > "$home/config/park-release"
+suspend_idle_terminal "$dir" "$id"
+for entry in missing empty tokened; do
+  rc=0
+  case "$entry" in
+    missing) suspend_park "$dir" release "$id" > "$dir/out" 2>&1 || rc=$? ;;
+    empty) suspend_park "$dir" release "$id" '' > "$dir/out" 2>&1 || rc=$? ;;
+    tokened) suspend_park "$dir" release "$id" p1 > "$dir/out" 2>&1 || rc=$? ;;
+  esac
+  [ "$rc" -ne 0 ] || fail 'manual/tokenless release bypassed action custody'
+  assert_absent "$dir/calls" 'manual entry touched the native copy'
+  assert_grep '^copy_state=retained$' "$meta" 'manual entry changed custody'
+done
+suspend_register_release "$dir" "$id" || fail 'entrypoint source registration failed'
+suspend_lib "$dir" fm_suspend_record "$meta" 'park_exit_confirmed=' || fail 'could not model an unconfirmed stop'
+rc=0; suspend_park "$dir" release-ready "$id" p1 || rc=$?
+expect_code 1 "$rc" 'unconfirmed stop licensed a release action'
+assert_absent "$dir/calls" 'missing stop receipt touched the copy'
+# A stale callback remains inert even in the existing runner context, before
+# the attempt claim; forging that context alone cannot bypass incarnation proof.
+FM_PROCEVENT_IN_RUNNER=1 suspend_park "$dir" release "$id" retired > "$dir/out" 2>&1 || fail 'stale action was not inert'
+assert_no_grep '^park_release_attempt=p1$' "$meta" 'stale/unconfirmed action claimed current custody'
+assert_absent "$dir/calls" 'stale/unconfirmed callback touched native custody'
+suspend_park "$dir" cancel "$id" >/dev/null || fail 'could not retire entrypoint fixture'
+pass 'every release needs a bounded runner, current token, verified stop and one-attempt claim'
+
+# A short, relocation-safe wait resolves before the 24-hour release threshold.
+# Resuming it must retire the optional release source even if it never fired.
+id=resume-before-release; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'short resume fixture failed'
+home="$dir/home"; meta="$home/state/$id.meta"
+suspend_idle_terminal "$dir" "$id"; printf 'on\n' > "$home/config/park-release"
+handoff "$dir/handoff.md" "file:$dir/result"
+FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" suspend_park "$dir" "$id" --handoff "$dir/handoff.md" --relocation-safe > "$dir/out" 2>&1 || fail 'short park failed'
+fm_test_track_procevent_home "$home"
+sid=$(sed -n 's/^park_release_source=//p' "$meta"); token=$(sed -n 's/^park_token=//p' "$meta")
+[ -n "$sid" ] || fail 'short qualified park had no release source'
+rc=0; suspend_park "$dir" release-ready "$id" "$token" || rc=$?
+expect_code 1 "$rc" 'short wait released before qualification'
+: > "$dir/result"
+FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" suspend_park "$dir" resume "$id" "$token" > "$dir/out" 2>&1 || fail 'short park did not resume'
+assert_grep '^park_state=resumed$' "$meta" 'short wait did not record resumption'
+assert_grep '^park_release_source=$' "$meta" 'resumption retained an obsolete source pointer'
+assert_absent "$home/state/procevent/$sid.source" 'resumption orphaned an unqualified release source until its deadline'
+assert_absent "$home/state/when/$sid.spec" 'resumption left the release condition runnable'
+assert_absent "$dir/calls" 'short resumption unnecessarily touched native copy custody'
+rc=0; suspend_park "$dir" release-ready "$id" "$token" || rc=$?
+expect_code 2 "$rc" 'a retired release incarnation kept answering not-yet'
+pass 'resumption before release qualification retires the optional source and rejects its stale incarnation'
+
+# Timeout belongs to the action, not the cheap condition. An injected slow
+# native close occurs after real saved-custody preparation; the standard when
+# runner must immediately capture failure and the release must clean its locks.
+id=release-timeout; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'timeout fixture failed'
+home="$dir/home"; meta="$home/state/$id.meta"
+suspend_idle_terminal "$dir" "$id"
+printf 'on\n' > "$home/config/park-release"; : > "$dir/slow-kill"
+FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FM_PARK_RELEASE_TIMEOUT=5 suspend_park "$dir" "$id" --handoff "$home/data/$id/handoff.md" --relocation-safe > "$dir/out" 2>&1 || fail 'timeout park registration failed'
+fm_test_track_procevent_home "$home"
+sid=$(sed -n 's/^park_release_source=//p' "$meta"); token=$(sed -n 's/^park_token=//p' "$meta")
+# Readiness and ordinary condition checks must not invoke even one native call.
+suspend_park "$dir" release-ready "$id" "$token" || fail 'stopped long wait was not action-ready'
+rc=0; suspend_park "$dir" poll "$id" "$token" || rc=$?
+expect_code 1 "$rc" 'cheap poll ignored its unresolved condition'
+assert_absent "$dir/calls" 'cheap condition executed expensive custody'
+suspend_run_release "$dir" "$id" || fail "bounded action did not capture its outcome: $(cat "$dir/runner.out")"
+assert_equals action-failed "$(FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" classify "$dir/action-result")" 'timeout poisoned the condition budget instead of producing an action failure'
+assert_grep '^copy_state=release-prepared$' "$meta" "injected native timeout did not preserve prepared custody: $(cat "$dir/action-result")"
+assert_grep 'blocked.*copy-custody' "$home/state/$id.status" 'prepared interruption did not immediately notify the owner'
+assert_absent "$home/state/.control-$id.lock" 'interrupted action left its control lock held'
+meta_lock=$(suspend_lib "$dir" fm_meta_lock_path "$meta")
+project_lock=$(suspend_lib "$dir" fm_treehouse_project_lock_path "$dir/project")
+assert_absent "$meta_lock" 'interrupted action left its metadata lock held'
+assert_absent "$project_lock" 'interrupted action left its allocation lock held'
+count=$(wc -l < "$dir/calls")
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" run "$sid" > "$dir/retry-result" || fail 'claimed-action read failed'
+assert_equals ambiguous "$(FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" classify "$dir/retry-result")" 'the same action was executed twice'
+assert_equals "$count" "$(wc -l < "$dir/calls")" 'a claimed release repeated native custody'
+rc=0; suspend_park "$dir" poll "$id" "$token" || rc=$?
+expect_code 1 "$rc" 'prepared custody interruption poisoned resume polling'
+suspend_park "$dir" resume "$id" "$token" > "$dir/resume" 2>&1 && fail 'interrupted custody resumed automatically'
+suspend_park "$dir" cancel "$id" || fail 'could not retire interrupted copy release'
+assert_absent "$home/state/procevent/$sid.source" 'cancellation orphaned its release source'
+pass 'release is separately bounded/claimed and interruption is immediate, lock-clean and isolated from the wait condition budget'
+
+id=pickup-authority; dir=$(suspend_case "$TMP_ROOT" "$id"); home="$dir/home"; meta="$home/state/$id.meta"
+suspend_saved "$dir" "$id" || fail 'authority save fixture failed'
+for actor in "$id" another-worker; do
+  FM_TASK_ID="$actor" suspend_park "$dir" pickup "$id" > "$dir/out" 2>&1 && fail 'task-worker authorized pickup'
+done
+FM_SUPERVISION_ACTOR=unknown suspend_park "$dir" pickup "$id" > "$dir/out" 2>&1 && fail 'unknown actor authorized pickup'
+printf '%s\n' "$$" > "$home/state/.lock"; printf 'branch\t%s\t1\n' "$$" > "$home/state/.lease-$id"
+suspend_park "$dir" pickup "$id" > "$dir/out" 2>&1 && fail 'another actor lease authorized pickup'
+rm "$home/state/.lease-$id"
+suspend_park "$dir" pickup "$id" || fail 'unmarked owner shell was refused'
+
+FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FAKE_CONTROL_FAIL=relaunch suspend_park "$dir" resume "$id" > "$dir/out" 2>&1 && fail 'failed admission reported resumed'
+assert_grep '^park_state=parked$' "$meta" 'pre-allocation failure stranded the wait'
+assert_grep '^copy_state=released$' "$meta" 'pre-allocation failure changed saved custody'
+# Cancellation stops automation, not obligations; only the tokenless owner can
+# reinstate it, and the resume note must not falsely say the wait was resolved.
+printf 'needs-decision [key=approval]: pending approval\n' >> "$home/state/$id.status"
+suspend_park "$dir" cancel "$id" || fail 'saved cancel failed'
+suspend_park "$dir" resume "$id" p1 > "$dir/out" 2>&1 && fail 'cancelled listener resumed work'
+FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" suspend_park "$dir" resume "$id" || fail 'explicit owner could not resume cancellation'
+assert_grep 'does not resolve or waive any approval' "$home/data/$id/park-resume-note.md" 'cancellation resumption falsely waived an obligation'
+assert_grep 'needs-decision.*approval' "$home/state/$id.status" 'resumption erased the existing approval'
+pass 'pickup rejects task workers and competing leases; failed admission is retryable; cancellation preserves explicit owner restoration and approvals'

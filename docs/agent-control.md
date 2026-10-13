@@ -71,9 +71,17 @@ It is not deterministic across the verified adapters: codex, grok, gemini, and d
 `relaunch` uses the brief on disk - not a harness-private session - as the durable instruction when the backend can prove the old agent stopped and the composer is empty; Devin on Herdr currently fails that composer check and refuses.
 A relaunch does take one session reference when the endpoint's own runtime recorded it - see [the relaunch transaction](#transactional-relaunch) - but that is a relaunch input, not a caller-facing verb.
 
+## Saved-work restoration
+
+A positively validated copy-free parked task has no active endpoint or copy to inspect.
+Its owner `relaunch` follows the separate nonterminal custody contract in [`bin/fm-suspend-lib.sh`](../bin/fm-suspend-lib.sh), preserving the recorded profile rather than adopting the historical location or permitting profile overrides.
+[`bin/fm-park.sh`](../bin/fm-park.sh) owns automatic versus explicit resumption and cancellation; restoration never resolves a pending approval.
+Incomplete or corrupt custody refuses before lifecycle control and cannot be bypassed with a generic fresh spawn.
+Portable release and restoration coverage is in [`tests/fm-park.test.sh`](../tests/fm-park.test.sh) and [`tests/fm-control-relaunch.test.sh`](../tests/fm-control-relaunch.test.sh); the prompt-submitting live control-to-spawn proof is the existing opt-in [`Herdr guard`](../tests/fm-herdr-submit-confirm-live-e2e.test.sh).
+
 ## Transactional relaunch
 
-`relaunch` is the only verb that changes durable records, so it runs as a transaction with a journal at `state/<id>.control-relaunch`, the prior record preserved beside it, and a ship or scout's prior instructions preserved when a progress note is appended.
+For copy-retaining tasks, `relaunch` is the only verb that changes durable records, so it runs as a transaction with a journal at `state/<id>.control-relaunch`, the prior record preserved beside it, and a ship or scout's prior instructions preserved when a progress note is appended.
 
 1. **Resolve the profile.**
    An explicit `--harness`, `--model`, or `--effort` wins.

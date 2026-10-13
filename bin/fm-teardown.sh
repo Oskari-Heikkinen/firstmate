@@ -470,6 +470,24 @@ fi
 fm_lease_guard "$ID" "teardown (fm-teardown)"
 
 META="$STATE/$ID.meta"
+# Suspension is not terminal authority. In this first bounded rollout cleanup
+# requires ordinary restoration before applying all existing landed/scout,
+# evidence and decision gates; never inspect/return a historical released slot
+# or delete its only saved branch, even under --force.
+case "$(fm_meta_get "$META" copy_state)" in
+  ''|retained) ;;
+  *) echo "REFUSED: task $ID has saved or interrupted copy custody; restore/reconcile it before terminal cleanup; saved work and obligations remain intact." >&2; exit 1 ;;
+esac
+teardown_read_release_source() {
+  PARK_RELEASE_SOURCE=$(fm_meta_get "$META" park_release_source)
+  PARK_RELEASE_NAME=
+  [ -n "$PARK_RELEASE_SOURCE" ] || return 0
+  # shellcheck source=bin/fm-suspend-lib.sh
+  . "$SCRIPT_DIR/fm-suspend-lib.sh"
+  PARK_RELEASE_NAME=$(fm_suspend_release_source_name "$FM_HOME" "$ID" "$(fm_meta_get "$META" park_token)") || return 1
+  [ "$PARK_RELEASE_SOURCE" = "when-$PARK_RELEASE_NAME" ] || { echo 'error: copy-release source does not match this task incarnation' >&2; return 1; }
+}
+teardown_read_release_source || exit 1
 TREEHOUSE_PROJECT_LOCK=
 TREEHOUSE_PROJECT_LOCK_HELD=0
 TREEHOUSE_SLOT_LOCK_REQUIRED=0
@@ -569,6 +587,13 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
   echo "error: teardown refused after locking: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
 }
+# Re-read under lifecycle/metadata custody; a release/re-arm could have won
+# between the early read-only screen and this acquisition.
+case "$(fm_meta_get "$META" copy_state)" in
+  ''|retained) ;;
+  *) echo 'REFUSED: saved or interrupted custody appeared before cleanup acquired the task; nothing changed.' >&2; exit 1 ;;
+esac
+teardown_read_release_source || exit 1
 TEARDOWN_META_KIND=$(fm_meta_get "$META" kind)
 [ -n "$TEARDOWN_META_KIND" ] || TEARDOWN_META_KIND=ship
 # Retiring a persistent secondmate is main's alone in both postures; the kind
@@ -4073,6 +4098,10 @@ if [ "$(fm_meta_get "$META" park_state)" = parked ]; then
     FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-procevent-when.sh" retire "park-$ID" >/dev/null \
       || { echo "error: could not retire $ID's park watch (park-$ID); retry the teardown" >&2; exit 1; }
   fi
+fi
+if [ -n "$PARK_RELEASE_NAME" ]; then
+  FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-procevent-when.sh" retire "$PARK_RELEASE_NAME" >/dev/null \
+    || { echo "error: could not retire $ID's copy-release action; retry cleanup" >&2; exit 1; }
 fi
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Opt-in fleet activity ledger (docs/fleet-ledger.md), before the status log is

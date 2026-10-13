@@ -352,6 +352,7 @@ fm_send_resolve_target() { # <raw-target>
   local raw=$1 meta pane_meta target backend assumed colons id session hint
 
   RESOLVED_TARGET=""
+  TARGET_DORMANT=0
   TARGET_BACKEND=""
   TARGET_HARNESS=""
   EXPECTED_LABEL=""
@@ -377,6 +378,20 @@ fm_send_resolve_target() { # <raw-target>
       return 0
     fi
     RESOLUTION_TRIED="meta=$meta; backend=from-meta"
+    if [ "$(fm_meta_get "$meta" copy_state)" = released ]; then
+      # shellcheck source=bin/fm-suspend-lib.sh
+      . "$SCRIPT_DIR/fm-suspend-lib.sh"
+      id=$(fm_send_id_from_meta "$meta")
+      fm_suspend_validate "$meta" "$id" "$FM_HOME" "${FM_DATA_OVERRIDE:-$FM_HOME/data}" || {
+        echo 'error: saved-task custody does not validate; steer not sent' >&2; return 1;
+      }
+      TARGET_DORMANT=1
+      RESOLVED_TARGET="suspended:$id"
+      TARGET_BACKEND=$(fm_backend_of_meta "$meta")
+      TARGET_META=$meta; TARGET_HARNESS=$(fm_meta_get "$meta" harness)
+      EXPECTED_LABEL="fm-$id"; TARGET_SELECTOR=1
+      return 0
+    fi
     target=$(fm_backend_target_of_meta "$meta")
     if [ -z "$target" ]; then
       echo "error: no backend target recorded in $meta (tried $RESOLUTION_TRIED)" >&2
@@ -554,7 +569,9 @@ while :; do
   esac
 done
 
-if [ "$TARGET_BACKEND" != remote ]; then
+if [ "${TARGET_DORMANT:-0}" = 1 ]; then
+  [ "${1-}" != --key ] || { echo 'error: suspended work has no terminal for keys' >&2; exit 1; }
+elif [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
 fi
 
@@ -947,6 +964,10 @@ else
       esac
     fi
   fi
+  if [ "${TARGET_DORMANT:-0}" = 1 ] && [ "$INBOX_PLANE" != 1 ]; then
+    echo 'error: suspended work has no terminal for parser commands or terminal submission; send ordinary inbox text or restore it first' >&2
+    exit 1
+  fi
   if [ "$INBOX_PLANE" = 1 ] && [ "$TARGET_BACKEND" = remote ]; then
     # Remote inbox leg: the message becomes a durable record in the remote
     # home's steering inbox, written idempotently by the host-local leg, then
@@ -1080,6 +1101,10 @@ else
       CURRENT_INBOX_TARGET=$(fm_backend_target_of_meta "$TARGET_META")
       CURRENT_INBOX_BACKEND=$(fm_backend_of_meta "$TARGET_META")
       CURRENT_INBOX_SPAWN_GEN=$(fm_meta_get "$TARGET_META" spawn_gen)
+      if [ "${TARGET_DORMANT:-0}" = 1 ] &&
+        fm_suspend_validate "$TARGET_META" "$INBOX_TASK_ID" "$FM_HOME" "${FM_DATA_OVERRIDE:-$FM_HOME/data}"; then
+        CURRENT_INBOX_TARGET="suspended:$INBOX_TASK_ID"
+      fi
     fi
     if [ "$CURRENT_INBOX_TARGET" != "$T" ] ||
       [ "$CURRENT_INBOX_BACKEND" != "$TARGET_BACKEND" ] ||
@@ -1137,6 +1162,10 @@ else
     if [ -n "$RESOLVE_KEYS" ]; then
       fm_send_close_resolved_keys "$RESOLVE_ANSWER_TEXT" || exit 1
       fm_send_feed_resolved_holds "$RESOLVE_ANSWER_TEXT" || exit 1
+    fi
+    if [ "${TARGET_DORMANT:-0}" = 1 ]; then
+      echo "recorded for suspended task at $INBOX_RECORD; text is not pickup authority"
+      exit 0
     fi
     # Ring the doorbell, best-effort: no ring outcome changes the exit status,
     # because the watcher owns loss detection from here, either through its

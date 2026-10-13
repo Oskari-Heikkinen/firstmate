@@ -593,6 +593,13 @@ With it present, ship and scout briefs gain the `# Waiting` section and the fore
 With the file absent, generated briefs omit the waiting section and the no-poll inbox line, the drive text backgrounds the call, recovery sends during an open decision, and a fire-and-forget steer is not owed a retry ring.
 The flag is a home-local preference and is not inherited by secondmate homes.
 
+## Copy-free parked work (config/park-release)
+
+The local, gitignored `config/park-release` file is a per-home canary, not inherited by secondmate homes.
+Only the exact value `on` enables optional release; absent, `off` or malformed content keeps the existing copy-retaining park.
+Enable one home first by writing `on` there; do not propagate it fleet-wide, and keep existing saved-work records when disabling future release.
+[`bin/fm-park.sh`](../bin/fm-park.sh)'s header and `--help` own qualification, wait age, pickup and resume; [`bin/fm-suspend-lib.sh`](../bin/fm-suspend-lib.sh) owns saved-custody safety and current exclusions.
+
 ## No-mistakes pipeline spend (config/pipeline-spend)
 
 The optional local, gitignored `config/pipeline-spend` presence flag opts this home into recording per-task no-mistakes pipeline spend in `data/pipeline-spend.jsonl` during teardown.

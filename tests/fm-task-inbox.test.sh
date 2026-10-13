@@ -1454,3 +1454,16 @@ test_watcher_retry_keeps_a_newer_mark
 test_watcher_escalates_once_after_budget
 test_watcher_dead_pane_escalates_once_without_ringing
 test_watcher_dead_pane_ignores_stale_busy_state
+
+home="$TMP_ROOT/saved-route"; mkdir -p "$home/state" "$home/data"
+printf 'spawn_gen=p1\n' > "$home/state/producer.meta"
+printf 'spawn_gen=c1\ncopy_state=released\n' > "$home/state/consumer.meta"
+jq -n '{schema:"fm-task-milestone-route.v1",kind:"result-receipt",request:"r",batch:"b",
+  producer:{home:"main",task:"producer",generation:"p1"}, consumer:{home:"main",task:"consumer",generation:"c1"},
+  independent:true,exclusions:[]}' > "$home/route.json"
+if FM_HOME="$home" "$ROOT/bin/fm-task-inbox.sh" register saved "$home/route.json" > "$home/out" 2>&1; then
+  fail 'typed route registered against a suspended generation'
+fi
+assert_grep 'saved/interrupted copy custody' "$home/out" 'typed registration did not explain its custody refusal'
+assert_absent "$home/state/task-inbox-routes/saved.json" 'refused typed route was published'
+pass 'typed routes cannot attach to saved/interrupted generations'

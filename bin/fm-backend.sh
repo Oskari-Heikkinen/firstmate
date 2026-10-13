@@ -417,6 +417,10 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     echo "REFUSED: task endpoint identity has an invalid task id; preserving task state." >&2
     return 1
   esac
+  case "$(awk -F= '$1=="copy_state" {v=$2} END {print v}' "$meta")" in
+    ''|retained) ;;
+    *) echo "REFUSED: task $id has nonterminal saved copy custody, not active endpoint authority; use its restoration owner." >&2; return 1 ;;
+  esac
   window=$(fm_backend_meta_exact_value "$meta" window) || {
     echo "REFUSED: task $id has a missing, empty, or ambiguous window endpoint; preserving task state." >&2
     return 1

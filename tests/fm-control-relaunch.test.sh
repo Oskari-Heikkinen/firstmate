@@ -135,6 +135,9 @@ OPTS
         esac
       fi
       case "$payload" in
+        "cd -- '"*"'")
+          cwd=${payload#"cd -- '"}; cwd=${cwd%"'"}
+          printf '%s' "$cwd" > "$D/cwd" ;;
         'export GOTMPDIR='*)
           if [ -n "${FM_FAKE_TRACE_PREPARE:-}" ]; then
             : > "$FM_FAKE_TRACE_PREPARE"
@@ -218,7 +221,8 @@ OPTS
     while [ $# -gt 0 ]; do
       case "$1" in
         -n) name=${2:-}; shift 2 ;;
-        -c|-t) shift 2 ;;
+        -c) printf '%s' "${2:-}" > "$D/cwd"; shift 2 ;;
+        -t) shift 2 ;;
         *) shift ;;
       esac
     done
@@ -296,7 +300,7 @@ run_control() {  # <case-dir> <args...>
     PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
-    FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
+    SUSPEND_DIR="$dir" FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
     FM_REAL_MV="${FM_REAL_MV:-}" FM_FAKE_COMPLETE_JOURNAL_MV_FAIL="${FM_FAKE_COMPLETE_JOURNAL_MV_FAIL:-}" \
     FM_FAKE_META_PUBLISH_MV_FAIL="${FM_FAKE_META_PUBLISH_MV_FAIL:-}" \
@@ -3069,4 +3073,84 @@ test_herdr_reclaim_of_a_secondmate_names_its_own_owner
 test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight
+
+# shellcheck source=tests/suspend-helpers.sh
+. "$ROOT/tests/suspend-helpers.sh"
+dir=$(suspend_case "$TMP_ROOT" custody-control) || fail 'saved fixture failed'
+suspend_saved "$dir" custody-control || fail 'save fixture failed'
+meta="$dir/home/state/custody-control.meta"
+wt="$dir/.treehouse/pool/1/project"
+git -C "$wt" checkout -qb successor main
+printf 'other task uncommitted work\n' > "$wt/file"
+out=$(FM_HOME="$dir/home" "$ROOT/bin/fm-crew-state.sh" custody-control) || fail 'saved current-state read failed'
+assert_contains "$out" 'waiting; no worker or copy reserved' 'released work became a missing-copy failure'
+for verb in exit interrupt; do
+  if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control "$verb" > "$dir/out" 2>&1; then
+    fail 'a suspended endpoint accepted lifecycle keys'
+  fi
+  assert_grep 'no agent' "$dir/out" 'control did not distinguish saved custody'
+done
+assert_equals 'other task uncommitted work' "$(cat "$wt/file")" 'saved-task control touched its historical slot'
+suspend_lib "$dir" fm_suspend_record "$meta" 'copy_state=restore-prepared' || fail 'could not inject interrupted transaction'
+if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control relaunch --note 'continue' > "$dir/out" 2>&1; then
+  fail 'interrupted restoration launched another worker'
+fi
+assert_grep 'unfinished or invalid copy custody' "$dir/out" 'interrupted restore lost its concrete refusal'
+assert_absent "$dir/calls" 'interrupted restore invoked the allocator'
+pass 'saved-task current state and control never inspect or type into the historical slot; interrupted custody refuses duplication'
+
+for through in control park cancel; do
+  id="saved-success-$through"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'saved launch fixture failed'
+  meta="$dir/home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+  suspend_lib "$dir" fm_suspend_record "$meta" 'harness=claude' || fail 'could not bind canonical runtime'
+  suspend_saved "$dir" "$id" || fail 'could not save committed work'
+  mkdir -p "$dir/fake"; : > "$dir/fake/windows"; : > "$dir/fake/literal"; : > "$dir/fake/keys"
+  printf zsh > "$dir/fake/command"; printf claude > "$dir/fake/becomes"
+  printf fmses > "$dir/fake/session-name"; printf '%s' "$dir/project" > "$dir/fake/cwd"
+  make_tmux_stub "$dir"
+  TASK_TMPS+=("/tmp/fm-$id")
+  head=$(git -C "$dir/project" rev-parse "fm/$id")
+  for overrides in harness model effort note; do
+    case "$overrides" in
+      harness) args=(--harness codex --note continue) ;;
+      model) args=(--model different --note continue) ;;
+      effort) args=(--effort low --note continue) ;;
+      note) args=() ;;
+    esac
+    out=$(run_control "$dir" "$id" relaunch "${args[@]}"); rc=$?
+    [ "$rc" -ne 0 ] || fail 'saved restore accepted a changed pin or missing note'
+    assert_absent "$dir/calls" 'pre-launch refusal allocated a copy'
+  done
+  if [ "$through" = cancel ]; then
+    FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" cancel "$id" >/dev/null || fail 'could not cancel automatic pickup'
+  fi
+  if [ "$through" = park ]; then
+    # Use the real control/spawn beneath the real park resume, not the fake
+    # park-control plane used by the release-policy subject.
+    mkdir -p "$dir/user-home"
+    out=$(env -u HERDR_ENV -u HERDR_SESSION -u HERDR_PANE_ID -u HERDR_SOCKET_PATH -u TMUX \
+      SUSPEND_DIR="$dir" FM_FAKE_DIR="$dir/fake" FM_HOME="$dir/home" PATH="$dir/fakebin:$PATH" \
+      HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' FM_SPAWN_NO_GUARD=1 FM_CONTROL_LAUNCH_WAIT=0.05 \
+      "$ROOT/bin/fm-park.sh" resume "$id" p1 2>&1); rc=$?
+    expect_code 0 "$rc" "real saved park resume failed: $out"
+    assert_grep '^park_state=resumed$' "$meta" 'saved park did not record successful resume'
+  else
+    out=$(run_control "$dir" "$id" relaunch --note 'Restore saved work; do not waive any pending approval.'); rc=$?
+    expect_code 0 "$rc" "real saved control restoration failed: $out"
+  fi
+  assert_grep '^copy_state=retained$' "$meta" 'restore never published retained custody'
+  assert_grep '^treehouse_lease_id=new-lease$' "$meta" 'restore reused the historical lease identity'
+  assert_equals "$head" "$(git -C "$wt" rev-parse HEAD)" 'restore changed the saved head'
+  assert_no_grep '^spawn_gen=g1$' "$meta" 'restore reused the retired generation'
+  assert_equals 1 "$(grep -c '^get ' "$dir/calls")" 'restore acquired more than once'
+  assert_present "$dir/fake/created-windows" 'restore adopted the historical terminal'
+  assert_grep 'cd --' "$dir/fake/keys" 'restore never entered the fresh acquired copy'
+  assert_present "$dir/home/data/$id/copy-restore-note.md" 'restore lost the continuation note'
+  assert_equals claude "$(cat "$dir/fake/command")" 'restore did not confirm a running replacement'
+  assert_present "$dir/home/data/$id/suspension.bundle" 'restore consumed saved custody evidence'
+  # Endpoint publication is exercised by the launch read: normal spawn refuses
+  # an unrecorded/mismatched endpoint before sending its operational brief.
+  assert_grep 'Firstmate operational input waiting: read' "$dir/fake/literal" 'fresh worker never received saved instructions'
+  pass "successful saved restoration through $through preserves branch/profile, new lease/generation, endpoint and alive proof"
+done
 test_relaunch_answers_claude_background_work_exit_dialog

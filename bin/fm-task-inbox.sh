@@ -179,6 +179,10 @@ check_parties() {
     for actual in "${LOCKS[@]}"; do [ "$actual" != "$lock_path" ] || held=1; done
     [ "$held" = 1 ] || lock "$lock_path"
     [ -f "$meta" ] && [ ! -L "$meta" ] || fail "task unavailable: $role $task"
+    case "$(fm_meta_get "$meta" copy_state)" in
+      ''|retained) ;;
+      *) fail "task $role $task has saved/interrupted copy custody; typed routes require its active generation" ;;
+    esac
     count=$(grep -c '^spawn_gen=' "$meta" || true)
     actual=$(fm_meta_get "$meta" spawn_gen)
     [ "$count" = 1 ] && [ "$actual" = "$gen" ] || fail "stale or ambiguous task generation: $role $task"

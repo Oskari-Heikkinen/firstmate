@@ -388,7 +388,8 @@ PARK_RULE="   When that wait is on an external result that will take a while (a 
    park instead of idling: write a handoff file outside tracked content with sections \`## Goal\`, \`## Done\`,
    \`## Waiting for\` (one condition: \`file:<absolute-path>\`, \`pr-merged:<github-pr-url>\`, or \`cmd:<absolute-executable-or-PATH-name> [args]\`),
    and \`## Next steps\`, then run \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-park.sh") $ID --handoff <file>\`.
-   It stops this session and starts a fresh one with your handoff when the condition holds; its \`--help\` has the details."
+   It stops this session and starts a fresh one with your handoff when the condition holds; its \`--help\` has the details.
+   Read that help before asserting optional relocation safety for copy-free suspension; never return or allocate your copy by hand."
 
 # The receive-and-ack half of the steering-inbox contract, included in every
 # scaffold kind. The record format, doorbell line, and re-ring ladder are

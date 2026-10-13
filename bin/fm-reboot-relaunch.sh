@@ -218,6 +218,20 @@ classify() {  # <meta> <plan|run>
   case "$kind" in ship|scout) ;; *) return 0 ;; esac
   [ -z "$(fm_meta_get "$meta" remote_host)" ] || return 0
 
+  case "$(fm_meta_get "$meta" copy_state)" in
+    ''|retained) ;;
+    released)
+      # The registered condition listener owns pickup, including reboot recovery.
+      # shellcheck source=bin/fm-suspend-lib.sh
+      . "$SCRIPT_DIR/fm-suspend-lib.sh"
+      if fm_suspend_validate "$meta" "$id" "$FM_HOME" "$DATA"; then
+        CLASS=skip REASON='saved task waits without an agent or reserved copy'
+      else
+        CLASS=attention REASON='saved-task manifest or branch/bundle custody is invalid'
+      fi
+      return 0 ;;
+    *) CLASS=attention REASON='interrupted copy release/restore requires exact-acquisition reconciliation'; return 0 ;;
+  esac
   window=$(fm_meta_get "$meta" window)
   if [ -z "$window" ]; then
     CLASS=attention REASON="its record names no endpoint, so there is no agent to prove gone"

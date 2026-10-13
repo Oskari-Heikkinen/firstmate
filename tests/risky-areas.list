@@ -20,6 +20,7 @@ watcher test tests/fm-afk-launch.test.sh
 
 cleanup script bin/fm-teardown.sh
 cleanup script bin/fm-park.sh
+cleanup script bin/fm-suspend-lib.sh
 cleanup test tests/fm-teardown*.test.sh
 cleanup test tests/fm-park*.test.sh
 

@@ -58,7 +58,10 @@
 #              its work-preserving option when offered and focus-proven, then
 #              must still read dead (`stopped background-work=kept`); otherwise
 #              the dialog is dismissed with its Stay key and exit refuses.
-#   relaunch   Transactionally replace the running agent with a new one, in the
+#   relaunch   Released parked work is validated through fm-suspend-lib.sh and
+#              restored by fm-spawn --restore under fresh custody; incomplete
+#              release/restore transactions refuse before historical endpoints.
+#              Transactionally replace the running agent with a new one, in the
 #              SAME worktree - and the same endpoint whenever that endpoint
 #              still exists - on the same or a newly chosen
 #              harness/model/effort - so switching harness is one ordinary use
@@ -388,6 +391,58 @@ if [ -n "$(fm_meta_get "$META" remote_host)" ]; then
   die "task $ID is a remotely placed secondmate on $(fm_meta_get "$META" remote_host); its agent runs outside this home, so no lifecycle action here could verify that it interrupted, stopped, or came back. Drive its lifecycle on that host, and reconcile it through the secondmate recovery path rather than this plane"
 fi
 
+agent_state() { fm_backend_agent_state "$BACKEND" "$T"; }
+
+# Shared retained/saved agent confirmation; supports the existing fractional
+# test/poll bounds rather than a separate integer-only restoration timeout.
+wait_agent_state() { # <timeout> <wanted>...
+  local timeout=$1 state want elapsed=0
+  shift
+  while :; do
+    state=$(agent_state)
+    for want in "$@"; do
+      if [ "$state" = "$want" ]; then printf '%s' "$state"; return 0; fi
+    done
+    awk -v e="$elapsed" -v t="$timeout" 'BEGIN{exit !(e < t)}' || break
+    sleep "$POLL"
+    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+  done
+  printf '%s' "$state"
+  return 1
+}
+
+# Copy-free work has no endpoint authority. Only positively validated saved
+# custody selects restoration; a missing ordinary path never selects it.
+# shellcheck source=bin/fm-suspend-lib.sh
+. "$SCRIPT_DIR/fm-suspend-lib.sh"
+case "$(fm_suspend_field "$META" copy_state)" in
+  ''|retained) ;;
+  released)
+    [ "$VERB" = relaunch ] || die "suspended task has no agent to $VERB"
+    [ "$HARNESS_SET$MODEL_SET$EFFORT_SET" = 000 ] || die "saved task restoration preserves its recorded runtime/profile"
+    fm_suspend_validate "$META" "$ID" "$FM_HOME" "$DATA" || die "saved-task custody does not validate; nothing allocated"
+    [ "$NOTE_SET" = 1 ] && [ -n "$NOTE" ] || die "saved-task restoration needs a continuation note"
+    [ -z "${FM_TASK_ID-}" ] || die "only the supervisor authorizes saved-task restoration"
+    case "$(fm_suspend_field "$META" park_state)" in
+      parked|resume-failed|cancelled) ;; # Explicit owner resumption, not approval resolution.
+      *) die "saved task has no resumable park record; owner reconciliation is required" ;;
+    esac
+    restore_brief="$DATA/$ID/brief.md"
+    [ -f "$restore_brief" ] && [ ! -L "$restore_brief" ] || die "saved task has no original instructions"
+    [ "$(( $(wc -c < "$restore_brief") + ${#NOTE} ))" -le 48000 ] || die "saved instructions plus continuation exceed the safe launch bound"
+    restore_note="$DATA/$ID/copy-restore-note.md"
+    printf '%s\n' "$NOTE" > "$restore_note" || die "cannot record restoration instructions"
+    restore_args=("$ID" --restore)
+    "$SCRIPT_DIR/fm-spawn.sh" "${restore_args[@]}" || die "saved work remains protected; restoration failed, reconcile its exact acquisition"
+    fm_backend_validate_task_endpoint "$META" "$ID" || die "restored endpoint does not validate"
+    BACKEND=$FM_BACKEND_VALIDATED_BACKEND; T=$FM_BACKEND_VALIDATED_TARGET
+    wait_agent_state "$LAUNCH_WAIT" alive >/dev/null || die "restored copy is recorded but no running replacement was confirmed"
+    rm -f "$STATE/$ID.control-exit"
+    fm_status_supersede_blockers "$STATE" "$STATE/$ID.status" relaunch 'saved task restored under fresh acquisition; agent confirmed' || true
+    echo "restored $ID: fresh reserved copy and agent confirmed"
+    exit 0 ;;
+  *) die "unfinished or invalid copy custody; reconcile before lifecycle control" ;;
+esac
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
@@ -406,33 +461,8 @@ fm_backend_validate "$BACKEND" || exit 1
 
 # --- shared helpers ---------------------------------------------------------
 
-agent_state() {
-  fm_backend_agent_state "$BACKEND" "$T"
-}
-
 busy_verdict() {
   fm_busy_classify_meta "$META" "$ID" "$STATE"
-}
-
-# wait_agent_state <wanted...> <timeout>: poll until agent_state prints one of
-# the wanted values. Prints the final observed state; returns 0 on a match.
-wait_agent_state() {  # <timeout> <wanted>...
-  local timeout=$1 state want elapsed=0
-  shift
-  while :; do
-    state=$(agent_state)
-    for want in "$@"; do
-      if [ "$state" = "$want" ]; then
-        printf '%s' "$state"
-        return 0
-      fi
-    done
-    awk -v e="$elapsed" -v t="$timeout" 'BEGIN{exit !(e < t)}' || break
-    sleep "$POLL"
-    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
-  done
-  printf '%s' "$state"
-  return 1
 }
 
 require_state_verified_backend() {  # <verb>

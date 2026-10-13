@@ -211,3 +211,67 @@ assert_live_idle "$P_LIVE" 'sibling live-idle after exits'
 
 pass 'agent get distinguishes leftover-shell (dead/no-agent) from live idle Pi'
 pass 'pane get agent_status lag cannot keep an exited occupant classified alive'
+
+# Native copy-custody acceptance, in the same guarded non-default Herdr lab.
+# No model prompt is submitted: release closes an agent-free lab pane, and
+# restoration exercises native leased allocation and exact Git head recovery.
+if command -v treehouse >/dev/null 2>&1; then
+  N_HOME="$TMP_ROOT/suspend-home"; N_PROJECT="$TMP_ROOT/suspend-project"
+  N_ROOT="$TMP_ROOT/native-pool"; N_ID=suspend-native-shell
+  N_TREEHOUSE_BIN=$(command -v treehouse)
+  export N_ROOT N_TREEHOUSE_BIN
+  cat > "$FAKEBIN/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1-}" = --root ]; then
+  [ "${2-}" = "$N_ROOT" ] || exit 97
+  shift 2
+fi
+exec "$N_TREEHOUSE_BIN" --root "$N_ROOT" "$@"
+SH
+  chmod +x "$FAKEBIN/treehouse"
+  mkdir -p "$N_HOME/state" "$N_HOME/config" "$N_HOME/data/$N_ID" "$N_PROJECT" "$N_ROOT"
+  git init -q -b main "$N_PROJECT"
+  printf 'base\n' > "$N_PROJECT/file"
+  git -C "$N_PROJECT" add file
+  git -C "$N_PROJECT" -c user.name=Tests -c user.email=tests@example.invalid commit -qm base
+  N_HOLDER=$(FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_lease_holder "$2" "$3"' _ "$ROOT" "$N_HOME" "$N_ID") || fail 'native holder failed'
+  N_WT=$(cd "$N_PROJECT" && treehouse --root "$N_ROOT" get --lease --lease-holder "$N_HOLDER") || fail 'native lease acquisition failed'
+  git -C "$N_WT" checkout -qb "fm/$N_ID"
+  printf 'saved native work\n' > "$N_WT/file"
+  git -C "$N_WT" add file
+  git -C "$N_WT" -c user.name=Tests -c user.email=tests@example.invalid commit -qm saved
+  N_HEAD=$(git -C "$N_WT" rev-parse HEAD)
+  N_LEASE=$(FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_lease_read "$2"; printf "%s" "$FM_TREEHOUSE_LEASE_ID"' _ "$ROOT" "$N_WT") || fail 'native lease unreadable'
+  N_TAB=$(lab tab create --workspace "$WS" --cwd "$N_HOME" --label "fm-$N_ID" --no-focus) || fail 'native custody tab failed'
+  N_TAB_ID=$(printf '%s' "$N_TAB" | jq -er .result.tab.tab_id)
+  N_PANE=$(printf '%s' "$N_TAB" | jq -er '.result.root_pane.pane_id // .result.pane.pane_id')
+  fm_write_meta "$N_HOME/state/$N_ID.meta" "window=$HERDR_LAB_SESSION:$N_PANE" "endpoint_task_id=$N_ID" \
+    "worktree=$N_WT" "project=$N_PROJECT" 'harness=pi' 'kind=ship' 'mode=direct-push' 'yolo=off' "branch=fm/$N_ID" \
+    'model=default' 'effort=default' 'spawn_gen=g1' 'park_spawn_gen=g1' 'park_state=parked' "park_when=inbox:$N_ID" \
+    'park_token=p1' 'wait_started_at=1' 'park_relocation_safe=1' "park_handoff=$N_HOME/data/$N_ID/handoff.md" \
+    'backend=herdr' "herdr_session=$HERDR_LAB_SESSION" "herdr_workspace_id=$WS" "herdr_tab_id=$N_TAB_ID" "herdr_pane_id=$N_PANE" \
+    "treehouse_lease_holder=$N_HOLDER" "treehouse_lease_id=$N_LEASE"
+  # shellcheck disable=SC2016 # Literal Markdown condition, not command substitution.
+  printf '## Goal\ng\n## Done\nd\n## Waiting for\n`inbox:%s`\n## Next steps\nn\n' "$N_ID" > "$N_HOME/data/$N_ID/handoff.md"
+  printf 'on\n' > "$N_HOME/config/park-release"
+  FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" "$3" "$4"' _ "$ROOT" "$N_WT" "$N_ID" "$N_HOME" || fail 'native claim failed'
+  PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_HOME="$N_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$N_HOME/state" FM_DATA_OVERRIDE="$N_HOME/data" FM_CONFIG_OVERRIDE="$N_HOME/config" \
+    "$ROOT/bin/fm-park.sh" "$N_ID" --handoff "$N_HOME/data/$N_ID/handoff.md" --relocation-safe || fail 'native park/verified stop failed'
+  fm_test_track_procevent_home "$N_HOME"
+  N_SOURCE=$(sed -n 's/^park_release_source=//p' "$N_HOME/state/$N_ID.meta")
+  [ -n "$N_SOURCE" ] || fail 'native park did not register bounded release'
+  PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_HOME="$N_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$N_HOME/state" FM_DATA_OVERRIDE="$N_HOME/data" FM_CONFIG_OVERRIDE="$N_HOME/config" \
+    "$ROOT/bin/fm-procevent.sh" start "$N_SOURCE" || fail 'registered native release action failed'
+  assert_grep '^copy_state=released$' "$N_HOME/state/$N_ID.meta" 'native return never completed saved custody'
+  [ "$(git -C "$N_PROJECT" rev-parse "fm/$N_ID")" = "$N_HEAD" ] || fail 'native return deleted/rewrote the saved branch'
+  [ "$(classify_recovery "$P_LIVE")" = alive ] || fail 'release disturbed the sibling live agent'
+  PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_HOME="$N_HOME" bash -c '
+    . "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-suspend-lib.sh"
+    fm_suspend_allocate "$2/state/$3.meta" "$3" "$2" "$2/data" "$2/state" || exit 1
+    [ "$(git -C "$FM_SUSPEND_NEW_WT" rev-parse HEAD)" = "$4" ] && [ "$FM_SUSPEND_NEW_LEASE" != "$5" ]
+  ' _ "$ROOT" "$N_HOME" "$N_ID" "$N_HEAD" "$N_LEASE" || fail 'native fresh allocation did not restore exact saved head'
+  pass 'native return preserves the saved branch/bundle, closes only its lab pane, and fresh allocation restores the exact head'
+else
+  echo 'skip: native copy-custody acceptance requires treehouse'
+fi

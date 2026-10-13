@@ -5,7 +5,28 @@
 #
 # Usage:
 #   fm-park.sh <task-id> --handoff <file> [--when <condition>] [--deadline <iso>]
-#              [--adopt-merge-queue <head40>]
+#              [--adopt-merge-queue <head40>] [--open-ended] [--relocation-safe]
+#   fm-park.sh release <task-id> <park-token>  bounded registered copy-return action
+#   fm-park.sh release-ready <task-id> <park-token>  cheap release condition
+#   fm-park.sh pickup <task-id>        explicit authority for an inbox-only wait
+#   fm-park.sh poll <task-id> <park-token>  incarnation-bound listener condition
+#
+# config/park-release=on enables a per-home canary; absent/off retains copies.
+# --relocation-safe attests that no job, external producer, future result or
+# continuation input depends on this copy or its temp folder. Unknown/dirty
+# artifacts still refuse release; this is not discard authority. --open-ended
+# and inbox:<task-id> waits qualify immediately, other waits after 24 continuous
+# hours. Re-arming the same uninterrupted condition does not restart its clock.
+# Release runs only after verified exit, through its own incarnation-bound
+# process-event action source. The ordinary wait checker never saves/releases.
+# release is callback-only: a current token, verified-stop receipt, recorded
+# source and existing generic-runner context are mandatory before its one claim.
+# An owner runs the registered source, never invokes release manually.
+# The action is claimed once, bounded separately, and interruption preserves
+# custody and reports the failure without consuming the resume error budget.
+# bin/fm-suspend-lib.sh owns saved-work custody, exclusions and crash phases.
+# A failed qualification retains today's park; a prepared transaction failure
+# wakes the supervisor and requires reconciliation before any further action.
 #
 # --adopt-merge-queue adopts only the exact built-in queue source already
 # registered for this task/head. Its condition must be the queue adapter's
@@ -28,9 +49,9 @@
 #           deterministic condition->action watch named park-<id> through
 #           bin/fm-procevent-when.sh, appends a declared-wait status line, and
 #           finally stops the agent through `bin/fm-control.sh <id> exit`.
-#           It never tears down, discards, or touches the worktree or branch:
-#           the local copy and every uncommitted change stay exactly as they
-#           were. Idempotent: parking an already-parked task retires the old
+#           Default park retains the local copy and every uncommitted change.
+#           Enabled copy-free suspension uses the separate saved-custody path
+#           described above; it never calls terminal cleanup or discards work. Idempotent: parking an already-parked task retires the old
 #           watch and re-arms it with the new handoff, condition, and deadline
 #           rather than adding a second watch. A resumed task parks again at
 #           once: park acknowledges its own watch's earlier `fired` outcome (the
@@ -63,15 +84,19 @@
 #           carrying the handoff path and a pointer to the results. On success
 #           the record reads park_state=resumed and a working: status line is
 #           appended so the new session is not mistaken for the declared wait.
-#           On failure the record reads park_state=resume-failed, everything
-#           else is left intact, and the nonzero exit becomes the watch's
+#           On failure retained-copy work reads park_state=resume-failed; saved
+#           work keeps its resumable wait so pre-allocation failures are retryable.
+#           Everything else is intact, and the nonzero exit becomes the watch's
 #           action-failed outcome, which wakes the supervisor. When the task was
 #           relaunched or respawned since it parked (its spawn_gen changed), the
 #           live session is left alone: nothing is relaunched, the park fields
 #           are cleared, and the nonzero exit wakes the supervisor with that
 #           reason; the watch fires once, so it is already spent.
-# cancel    Retire the watch and mark the record park_state=cancelled, without
-#           relaunching anything. Tearing down a parked task
+# cancel    Retire automatic pickup and mark park_state=cancelled, without
+#           relaunching or resolving an approval. Saved work remains intact;
+#           an explicit owner `resume <id>` (no listener token) or control
+#           relaunch can restore it later. A retired listener cannot do so.
+#           Tearing down a parked task
 #           (bin/fm-teardown.sh) retires its watch the same way.
 # stop      The detached exit of a self-park: after FM_PARK_SELF_EXIT_DELAY
 #           seconds (3) stop the agent through `bin/fm-control.sh <id> exit`; if
@@ -81,6 +106,8 @@
 # Conditions (one line, no shell interpretation):
 #   file:<absolute-path>          true once the path exists (a fetched run, a results file)
 #   pr-merged:<github-pr-url>     true once the PR is merged; closed unmerged is an error
+#   inbox:<task-id>              true only after explicit `pickup <task-id>`;
+#                                 ordinary text/reminders never authorize pickup
 #   cmd:<executable> [args...]    run directly, arguments split on whitespace;
 #                                 exit 0 true, 1 not yet, anything else an error;
 #                                 an executable path must be absolute
@@ -98,6 +125,14 @@
 #   park_handoff=<absolute path of data/<id>/handoff.md>
 #   park_when=<condition>
 #   park_deadline=<UTC ISO time>
+#   park_token=<token>         binds the listener to one park incarnation
+#   park_pickup=<park-token>   explicit supervisor pickup of an inbox-only wait
+#   park_exit_confirmed=<park-token>  verified stop receipt for release readiness
+#   park_release_source=<when-source-id>  separate bounded copy-release action
+#   park_release_attempt=<park-token>  claimed one attempt for this incarnation
+#   wait_started_at=<epoch>    continuous unresolved-condition start
+#   park_open_ended=0|1        explicit open-ended wait classification
+#   park_relocation_safe=0|1   attestation, never a bypass of safety checks
 #   park_at=<epoch>            when the latest park was recorded
 #   park_spawn_gen=<token>     the task's spawn_gen when it parked
 #   park_resumed_at=<epoch>    when the latest resume relaunched the task
@@ -108,6 +143,7 @@
 #   FM_PARK_STABLE         consecutive true polls required (2)
 #   FM_PARK_ERROR_BUDGET   consecutive condition errors before waking (5)
 #   FM_PARK_DEADLINE_SECS  default deadline from now (604800)
+#   FM_PARK_RELEASE_TIMEOUT  separate copy-release action bound (1800 seconds)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -128,6 +164,10 @@ export FM_HOME
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
+# shellcheck source=bin/fm-suspend-lib.sh
+. "$SCRIPT_DIR/fm-suspend-lib.sh"
+# shellcheck source=bin/fm-backend.sh
+. "$SCRIPT_DIR/fm-backend.sh"
 
 # Test seam: a fake control plane stands in for the harness endpoint.
 CONTROL="${FM_PARK_CONTROL_OVERRIDE:-$SCRIPT_DIR/fm-control.sh}"
@@ -167,10 +207,10 @@ park_record() {
   tmp=$(mktemp "$STATE/.$ID.meta.park.XXXXXX") || { fm_lock_release "$lock"; return 1; }
   {
     while IFS= read -r line || [ -n "$line" ]; do
+      case "$keys" in *" ${line%%=*} "*) continue ;; esac
       case "$line" in
-        park_*=*)
+        park_*=*|wait_started_at=*)
           [ "$#" -gt 0 ] || continue
-          case "$keys" in *" ${line%%=*} "*) continue ;; esac
           ;;
         pr=*)
           if [ "$placed" -eq 0 ]; then
@@ -210,6 +250,7 @@ condition_valid() {
   local cond=${1-} value exe
   case "$cond" in
     *$'\n'*) echo "a condition is one line" >&2; return 1 ;;
+    inbox:*) fm_task_id_path_safe "${cond#inbox:}" || return 1; return 0 ;;
     file:/*) return 0 ;;
     file:*) echo "file: needs an absolute path" >&2; return 1 ;;
     pr-merged:*)
@@ -235,6 +276,10 @@ cmd_check() {
   local -a argv
   condition_valid "$cond" || exit 2
   case "$cond" in
+    inbox:*)
+      task_resolve "${cond#inbox:}"
+      [ -n "$(meta_get park_token)" ] && [ "$(meta_get park_pickup)" = "$(meta_get park_token)" ] && exit 0
+      exit 1 ;;
     file:*) [ -e "${cond#file:}" ] && exit 0; exit 1 ;;
     pr-merged:*)
       state=$(gh pr view "${cond#pr-merged:}" --json state --jq .state 2>&1) || {
@@ -257,6 +302,7 @@ cmd_check() {
 results_pointer() {  # <condition>
   local cond=$1
   case "$cond" in
+    inbox:*) printf 'the supervisor explicitly authorized pickup; read ordinary inbox messages in sequence' ;;
     file:*) printf 'the results are at %s' "${cond#file:}" ;;
     pr-merged:*) printf 'the pull request %s is merged' "${cond#pr-merged:}" ;;
     cmd:*) printf 'the check "%s" now succeeds; run it to read the result' "${cond#cmd:}" ;;
@@ -291,11 +337,11 @@ waiting_condition() {  # <body>
     { lines[NR] = $0 }
     END {
       for (i = 1; i <= NR; i++)
-        if (match(lines[i], /`(file|pr-merged|cmd):[^`]*`/)) {
+        if (match(lines[i], /`(file|pr-merged|cmd|inbox):[^`]*`/)) {
           print substr(lines[i], RSTART + 1, RLENGTH - 2); exit
         }
       for (i = 1; i <= NR; i++)
-        if (match(lines[i], /(^|[ \t])(file|pr-merged|cmd):/)) {
+        if (match(lines[i], /(^|[ \t])(file|pr-merged|cmd|inbox):/)) {
           line = substr(lines[i], RSTART); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
           if (line !~ /^cmd:/) { sub(/[ \t].*/, "", line); sub(/[.,;:)]+$/, "", line) }
           print line; exit
@@ -343,10 +389,13 @@ cmd_validate() {
 
 cmd_park() {
   local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
+  local open_ended=0 relocation_safe=0 started token release_name
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --open-ended) open_ended=1; shift ;;
+      --relocation-safe) relocation_safe=1; shift ;;
       --handoff) handoff=${2-}; shift 2 || die "--handoff needs a file" ;;
       --when) want=${2-}; shift 2 || die "--when needs a condition" ;;
       --deadline) deadline_iso=${2-}; shift 2 || die "--deadline needs a UTC time" ;;
@@ -356,6 +405,8 @@ cmd_park() {
   done
   [ -n "$handoff" ] || die "park needs --handoff <file> (sections: Goal, Done, Waiting for, Next steps)"
   validate_handoff "$handoff" "$want"
+  case "$(meta_get copy_state)" in ''|retained) ;; *) die "saved copy custody requires reconciliation or restoration, not re-park" ;; esac
+  case "$HANDOFF_CONDITION" in inbox:*) [ "$HANDOFF_CONDITION" = "inbox:$ID" ] || die "inbox condition must name this task" ;; esac
   if [ -n "$adopted" ]; then
     fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
       || die "no matching registered queue source for task $ID head $adopted"
@@ -394,22 +445,46 @@ cmd_park() {
   fi
 
   # Re-park replaces the watch rather than adding one.
+  retire_release_source || die "cannot retire the earlier copy-release source"
   ack_own_fired
   if [ -n "$(meta_get park_source)" ] && [ "$(meta_get park_source)" != "$sid" ]; then
     "$SCRIPT_DIR/fm-procevent.sh" retire "$(meta_get park_source)" >/dev/null \
       || die "cannot retire the earlier adopted source"
   fi
   "$WHEN" retire "park-$ID" >/dev/null 2>&1 || true
+  started=$now
+  if [ "$(meta_get park_state)" = parked ] && [ "$(meta_get park_when)" = "$HANDOFF_CONDITION" ] &&
+     [ "$(meta_get park_spawn_gen)" = "$(meta_get spawn_gen)" ]; then
+    started=$(meta_get wait_started_at)
+    case "$started" in ''|*[!0-9]*) started=$(meta_get park_at) ;; esac
+    case "$started" in ''|*[!0-9]*) started=$now ;; esac
+  fi
+  token="park.$now.${BASHPID:-$$}.$RANDOM"
   park_record "park_state=parked" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
+    "park_token=$token" "park_pickup=" 'park_exit_confirmed=' 'park_release_source=' 'park_release_attempt=' \
+    "wait_started_at=$started" "park_open_ended=$open_ended" "park_relocation_safe=$relocation_safe" \
     "park_source=$sid" "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
     || die "cannot record the park in task $ID's record"
   if [ -z "$sid" ] && ! out=$("$WHEN" arm "park-$ID" \
       --interval "${FM_PARK_INTERVAL:-300}" --stable "${FM_PARK_STABLE:-2}" \
       --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" --action-timeout 900 \
-      --condition "$SCRIPT_DIR/fm-park.sh" check "$HANDOFF_CONDITION" \
-      --action "$SCRIPT_DIR/fm-park.sh" resume "$ID" 2>&1); then
+      --condition "$SCRIPT_DIR/fm-park.sh" poll "$ID" "$token" \
+      --action "$SCRIPT_DIR/fm-park.sh" resume "$ID" "$token" 2>&1); then
     park_record "park_state=cancelled" || true
     die "could not arm the resume watch, so task $ID was not parked and its agent keeps running: $out"
+  fi
+  if [ -z "$sid" ] && fm_suspend_enabled "$CONFIG" && [ "$relocation_safe" = 1 ]; then
+    release_name=$(release_source_name) || die "cannot name the copy-release source"
+    if ! out=$("$WHEN" arm "$release_name" --interval "${FM_PARK_INTERVAL:-300}" --stable 1 \
+        --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" \
+        --action-timeout "${FM_PARK_RELEASE_TIMEOUT:-1800}" \
+        --condition "$SCRIPT_DIR/fm-park.sh" release-ready "$ID" "$token" \
+        --action "$SCRIPT_DIR/fm-park.sh" release "$ID" "$token" 2>&1); then
+      "$WHEN" retire "park-$ID" >/dev/null 2>&1 || true
+      park_record 'park_state=cancelled' || true
+      die "could not arm copy release; agent left running: $out"
+    fi
+    park_record "park_release_source=when-$release_name" || die "cannot record the copy-release source"
   fi
   status_append "$PAUSED_VERB$tag: parked until $deadline_iso - waiting for $HANDOFF_CONDITION; result action owned by ${sid:-park-$ID} with $dest" \
     || die "task $ID is parked and its watch armed, but the status line could not be appended"
@@ -420,7 +495,7 @@ cmd_park() {
     # A new session keeps the exit alive when the agent's own process group
     # is interrupted; nohup is the fallback where setsid is absent.
     if command -v setsid >/dev/null 2>&1; then detach="setsid"; else detach="nohup"; fi
-    "$detach" "$SCRIPT_DIR/fm-park.sh" stop "$ID" > "$DATA/$ID/park-exit.log" 2>&1 < /dev/null &
+    "$detach" "$SCRIPT_DIR/fm-park.sh" stop "$ID" "$token" > "$DATA/$ID/park-exit.log" 2>&1 < /dev/null &
     printf 'parked %s: waiting for %s until %s; this session stops in a few seconds and a fresh one starts with %s when the condition holds\n' \
       "$ID" "$HANDOFF_CONDITION" "$deadline_iso" "$dest"
     return 0
@@ -429,6 +504,7 @@ cmd_park() {
     printf 'fm-park: task %s is parked and its watch armed, but its agent could not be stopped: %s\n' "$ID" "$out" >&2
     exit 1
   fi
+  park_record "park_exit_confirmed=$token" || die "verified exit could not be recorded"
   printf 'parked %s: waiting for %s until %s; agent stopped (%s)\n' "$ID" "$HANDOFF_CONDITION" "$deadline_iso" "$out"
 }
 
@@ -489,45 +565,76 @@ ack_own_fired() {
 }
 
 cmd_stop() {
-  local out
+  local out token
   task_resolve "${1-}"
+  token=${2:-$(meta_get park_token)}
   sleep "${FM_PARK_SELF_EXIT_DELAY:-3}"
+  [ "$(meta_get park_token)" = "$token" ] && [ "$(meta_get park_state)" = parked ] || die "retired park incarnation cannot stop an agent"
   if ! out=$("$CONTROL" "$ID" exit 2>&1); then
     printf '%s\n' "$out"
     status_append "blocked: parked and its resume watch armed, but this session could not be stopped; see $DATA/$ID/park-exit.log" || true
     exit 1
   fi
   printf '%s\n' "$out"
+  park_record "park_exit_confirmed=$token" || die "verified exit could not be recorded"
 }
 
 # --- resume and cancel -------------------------------------------------------
 
 cmd_resume() {
-  local cond handoff note out
+  local cond handoff note out release_source
   task_resolve "${1-}"
-  [ "$(meta_get park_state)" = parked ] \
-    || die "task $ID is not parked (park_state=$(meta_get park_state)); nothing to resume"
+  [ -z "${2-}" ] || [ "$(meta_get park_token)" = "$2" ] || die "retired park incarnation cannot resume"
+  case "$(meta_get copy_state)" in ''|retained|released) ;; *) die "unfinished copy transaction; reconcile before resume" ;; esac
+  case "$(meta_get park_state):$(meta_get copy_state):${2-}" in
+    parked:*) ;;
+    cancelled:released:|resume-failed:released:)
+      [ -z "${FM_TASK_ID-}" ] || die "only the supervisor authorizes explicit saved-task resumption" ;;
+    *) die "task $ID is not parked (park_state=$(meta_get park_state)); nothing to resume" ;;
+  esac
   if [ "$(meta_get spawn_gen)" != "$(meta_get park_spawn_gen)" ]; then
+    retire_release_source || die "superseded task's copy-release source could not be retired"
     park_record || die "task $ID was relaunched or respawned since it parked, but its park record could not be cleared"
     printf 'fm-park: task %s was relaunched or respawned since it parked, so its live session was left running and the park cleared; nothing was relaunched\n' "$ID" >&2
     exit 1
   fi
   [ -z "$(meta_get park_source)" ] || die "the adopted queue source owns this task's result action; park resume does not relaunch it"
   cond=$(meta_get park_when)
+  if [ "$(meta_get copy_state)" = released ]; then
+    fm_suspend_validate "$META" "$ID" "$FM_HOME" "$DATA" || die "saved-task proof is missing or invalid"
+  fi
   handoff=$(meta_get park_handoff)
   note="$DATA/$ID/park-resume-note.md"
   {
-    echo "This task was parked while it waited on an external result, and the wait is over: $(results_pointer "$cond")."
+    if [ "$(meta_get park_state)" = cancelled ]; then
+      echo 'The owner explicitly resumed this cancelled wait. The waiting condition may still be unresolved; this does not resolve or waive any approval or obligation.'
+    else
+      echo "This task was parked while it waited on an external result, and the wait is over: $(results_pointer "$cond")."
+    fi
     echo "The condition was: $cond"
+    if [ "$(meta_get copy_state)" = released ]; then
+      echo "This is a different copy under a fresh acquisition, even if its physical path is reused. Uncommitted state is not inherited; only the saved committed head verified by the bundle is restored."
+    fi
     echo "Read the handoff at $handoff first; it records the goal, what was already done, and the next steps."
     echo "Continue from its next steps. If you must wait on something external again, park again rather than idling."
   } > "$note" || die "cannot write the resume note for task $ID"
   if ! out=$("$CONTROL" "$ID" relaunch --note-file "$note" 2>&1); then
-    park_record "park_state=resume-failed" || true
-    printf 'fm-park: the condition held but task %s could not be relaunched; its record and local copy are unchanged: %s\n' "$ID" "$out" >&2
+    # A pre-allocation failure must remain directly retryable. Interrupted copy
+    # transactions still refuse, but never erase the saved wait/owner authority.
+    case "$(meta_get copy_state)" in
+      released|restore-prepared) ;;
+      *) park_record 'park_state=resume-failed' || true ;;
+    esac
+    printf 'fm-park: the condition held but task %s could not be relaunched; saved work and task records remain; reconcile any interrupted copy transaction: %s\n' "$ID" "$out" >&2
     exit 1
   fi
-  park_record "park_state=resumed" "park_resumed_at=$(date +%s)" \
+  release_source=$(meta_get park_release_source)
+  if retire_release_source; then
+    release_source=
+  else
+    status_append 'blocked [key=copy-release-source]: task resumed, but its obsolete copy-release source could not be retired; reconcile that source without relaunching the running task' || true
+  fi
+  park_record "park_state=resumed" "park_resumed_at=$(date +%s)" "park_release_source=$release_source" \
     || printf 'fm-park: task %s was relaunched but its park record could not be updated\n' "$ID" >&2
   status_append "working: resumed from park - $cond held; fresh session started from $handoff" || true
   printf 'resumed %s: %s\n' "$ID" "$out"
@@ -535,6 +642,7 @@ cmd_resume() {
 
 cmd_cancel() {
   task_resolve "${1-}"
+  retire_release_source || die "cannot retire the copy-release source"
   if [ -n "$(meta_get park_source)" ]; then
     "$SCRIPT_DIR/fm-procevent.sh" retire "$(meta_get park_source)" >/dev/null \
       || die "could not retire the adopted queue watch for task $ID"
@@ -546,12 +654,175 @@ cmd_cancel() {
   printf 'cancelled park of %s; nothing was relaunched\n' "$ID"
 }
 
+# Stable short source name, including home/task/incarnation without exceeding
+# the existing when adapter's name bound. The bound argv still carries the full
+# task/token; a name collision cannot confer task or acquisition authority.
+release_source_name() {
+  fm_suspend_release_source_name "$FM_HOME" "$ID" "$(meta_get park_token)"
+}
+
+retire_release_source() {
+  local source name
+  source=$(meta_get park_release_source)
+  [ -n "$source" ] || return 0
+  name=$(release_source_name) || return 1
+  [ "$source" = "when-$name" ] || return 1
+  "$WHEN" retire "$name" >/dev/null
+}
+
+cmd_release_ready() {
+  task_resolve "${1-}"
+  [ "$(meta_get park_token)" = "${2-}" ] && [ "$(meta_get park_state)" = parked ] &&
+    [ "$(meta_get spawn_gen)" = "$(meta_get park_spawn_gen)" ] || return 2
+  [ "$(meta_get park_exit_confirmed)" = "${2-}" ] &&
+    [ "$(meta_get park_release_attempt)" != "${2-}" ] || return 1
+  case "$(meta_get copy_state)" in ''|retained) ;; *) return 1 ;; esac
+  fm_suspend_enabled "$CONFIG" && fm_suspend_qualified "$META" "$(date +%s)"
+}
+
+# EXIT/TERM cleanup is shared by every bounded release outcome. Even SIGKILL
+# leaves dead-owner locks and a durable action-failed/ambiguous source outcome;
+# neither outcome authorizes retry of a prepared acquisition.
+release_cleanup() {
+  local rc=$1
+  if [ "$rc" -ne 0 ] && [ "$(meta_get copy_state)" = release-prepared ]; then
+    status_append 'blocked [key=copy-custody]: saved copy release interrupted or failed; exact acquisition and saved evidence retained; reconcile before retry' || true
+  fi
+  [ -z "$project_lock" ] || fm_lock_release "$project_lock"
+  [ -z "$meta_lock" ] || fm_lock_release "$meta_lock"
+  [ -z "$control_lock" ] || fm_lock_release "$control_lock"
+  if declare -F fm_lease_guard_release >/dev/null; then fm_lease_guard_release; fi
+}
+
+# Release is the separate registered action, never part of condition polling.
+cmd_release() (
+  [ -z "${FM_TASK_ID-}" ] && [ "${FM_PROCEVENT_IN_RUNNER:-0}" = 1 ] || die "copy release is only a registered process-event action, never a manual or worker entrypoint"
+  task_resolve "${1-}"
+  printf 'copy release task=%s incarnation=%s\n' "$ID" "$2"
+  local control_lock='' meta_lock='' project_lock='' lock wt project holder lease backend target status
+  trap 'release_cleanup "$?"' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
+  fm_suspend_enabled "$CONFIG" || return 0
+  # shellcheck source=bin/fm-lease-lib.sh
+  . "$SCRIPT_DIR/fm-lease-lib.sh"
+  fm_lease_guard "$ID" 'park copy release' || return 1
+  lock="$STATE/.control-$ID.lock"; fm_lock_try_acquire "$lock" || return 0; control_lock=$lock
+  lock=$(fm_meta_lock_path "$META") && fm_lock_try_acquire "$lock" || return 0; meta_lock=$lock
+  [ "$(meta_get park_state)" = parked ] && [ "$(meta_get spawn_gen)" = "$(meta_get park_spawn_gen)" ] || return 0
+  [ "$(meta_get park_token)" = "$2" ] && [ "$(meta_get park_exit_confirmed)" = "$2" ] || return 0
+  [ "$(meta_get park_release_source)" = "when-$(release_source_name)" ] || return 1
+  [ "$(meta_get park_release_attempt)" != "$2" ] || return 0
+  fm_suspend_record "$META" "park_release_attempt=$2" || return 1
+  case "$(meta_get copy_state)" in released) return 0 ;; ''|retained) ;; *) return 1 ;; esac
+  if ! fm_suspend_qualified "$META" "$(date +%s)"; then
+    fm_suspend_record "$META" 'copy_retain_reason=short wait or missing relocation-safety attestation' || return 1
+    return 0
+  fi
+  # Never release when the wait already cleared: its sole listener owns resume.
+  "$SCRIPT_DIR/fm-park.sh" check "$(meta_get park_when)" >/dev/null 2>&1; status=$?
+  [ "$status" = 1 ] || return 0
+  wt=$(meta_get worktree); project=$(meta_get project)
+  if ! fm_suspend_dependencies_clear "$META" "$(meta_get park_handoff)" "$wt" "$(meta_get tasktmp)"; then
+    fm_suspend_record "$META" 'copy_retain_reason=condition, handoff, temp artifacts or queue custody requires this copy' || return 1
+    return 0
+  fi
+  # Unknown pipeline custody remains retained in this bounded first rollout.
+  if [ "$(meta_get mode)" = no-mistakes ]; then
+    fm_suspend_record "$META" 'copy_retain_reason=pipeline custody not relocation-qualified' || return 1
+    return 0
+  fi
+  fm_backend_validate_task_endpoint "$META" "$ID" || return 1
+  backend=$FM_BACKEND_VALIDATED_BACKEND; target=$FM_BACKEND_VALIDATED_TARGET
+  case "$backend" in tmux|herdr) ;; *) return 0 ;; esac
+  fm_backend_source "$backend" || return 1
+  [ "$(fm_backend_agent_state "$backend" "$target")" = dead ] || return 0
+  lock=$(fm_treehouse_project_lock_path "$project") && fm_lock_try_acquire "$lock" || return 0; project_lock=$lock
+  fm_treehouse_pool_slot "$project" "$wt" || return 0
+  # Existing repair owns retained legacy protection. No parallel adopter.
+  # shellcheck source=bin/fm-treehouse-adopt-lib.sh
+  . "$SCRIPT_DIR/fm-treehouse-adopt-lib.sh"
+  fm_treehouse_adopt_locked "$META" "$ID" "$project" "$FM_HOME" || return 0
+  fm_treehouse_relaunch_reservation "$project" "$STATE" "$META" "$ID" "$FM_HOME" || return 0
+  if ! fm_suspend_routes_clear "$STATE" "$META" "$ID" "$FM_HOME" ||
+     ! fm_suspend_clean_copy "$wt" || ! fm_suspend_quiet_copy "$project" "$wt" "$META" 1; then
+    fm_suspend_record "$META" 'copy_retain_reason=typed route, dirty/unknown artifacts or live/unverified job' || return 1
+    return 0
+  fi
+  # Preserve declared evidence using the existing owner; dependencies still
+  # must be relocation-independent, and unknown artifacts never get discarded.
+  # shellcheck source=bin/fm-task-evidence-lib.sh
+  . "$SCRIPT_DIR/fm-task-evidence-lib.sh"
+  fm_task_evidence_preserve "$ID" "$DATA" "$wt" 1 "$(meta_get tasktmp)" || return 0
+  fm_suspend_save "$META" "$ID" "$FM_HOME" "$DATA" "$wt" || return 0
+  holder=$(meta_get treehouse_lease_holder); lease=$(meta_get treehouse_lease_id)
+  if ! fm_backend_kill "$backend" "$target" '' "fm-$ID" ||
+     { [ "$backend" = herdr ] && ! fm_backend_herdr_endpoint_confirmed_gone "$target"; } ||
+     ! fm_suspend_quiet_copy "$project" "$wt" "$META" 0 ||
+     ! fm_suspend_clean_copy "$wt" ||
+     ! fm_treehouse_relaunch_reservation "$project" "$STATE" "$META" "$ID" "$FM_HOME" ||
+     ! fm_suspend_validate "$META" "$ID" "$FM_HOME" "$DATA"; then
+    return 1 # EXIT reports prepared custody and releases every owned lock.
+  fi
+  # Unbind the clean physical worktree from the kept logical branch BEFORE
+  # retirement. A different selected slot must not find that branch occupied
+  # by the released slot, and advancing the restored branch must not turn the
+  # idle historical slot into apparently dirty work. Preserve the exact head.
+  git -C "$wt" checkout --detach --no-overwrite-ignore "$FM_SUSPEND_HEAD" || return 1
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$FM_SUSPEND_HEAD" ] &&
+    fm_suspend_clean_copy "$wt" && fm_suspend_quiet_copy "$project" "$wt" "$META" 0 &&
+    fm_treehouse_relaunch_reservation "$project" "$STATE" "$META" "$ID" "$FM_HOME" || return 1
+  # Remove the private claim while the exact native lease still authorizes
+  # this copy. After native return, not even claim cleanup may inspect the
+  # historical slot: it could already belong to a fresh acquisition.
+  fm_treehouse_slot_owner_release "$wt" "$ID" || return 1
+  (cd "$project" && treehouse return --if-lease-holder "$holder" --if-lease-id "$lease" "$wt" < /dev/null) || return 1
+  fm_suspend_record "$META" 'copy_state=released' 'worktree=' 'window=' 'treehouse_lease_holder=' 'treehouse_lease_id=' \
+    'herdr_workspace_id=' 'herdr_tab_id=' 'herdr_pane_id=' 'copy_retain_reason=' || return 1
+  fm_suspend_validate "$META" "$ID" "$FM_HOME" "$DATA" || {
+    status_append 'blocked [key=copy-custody]: copy returned but saved-task proof no longer validates; records retained' || true; return 1;
+  }
+  printf 'suspended %s: saved branch and verified bundle; no copy reserved\n' "$ID"
+)
+
+cmd_poll() {
+  task_resolve "${1-}"
+  [ "$(meta_get park_token)" = "${2-}" ] && [ "$(meta_get park_state)" = parked ] || exit 2
+  # The separate release action owns expensive custody and its own failures.
+  # Never consume this listener's error budget while a transaction is preparing;
+  # it can resume only once custody is settled, regardless of condition changes.
+  case "$(meta_get copy_state)" in
+    ''|retained|released) ;;
+    release-prepared|restore-prepared) exit 1 ;;
+    *) exit 2 ;;
+  esac
+  cmd_check "$(meta_get park_when)"
+}
+
+cmd_pickup() (
+  task_resolve "${1-}"
+  [ -z "${FM_TASK_ID-}" ] || die "only the supervisor authorizes pickup"
+  # Same confused-agent-grade role/lease boundary as the existing owner tools;
+  # an unmarked owner shell remains authorized, never an ordinary inbox message.
+  # shellcheck source=bin/fm-lease-lib.sh
+  . "$SCRIPT_DIR/fm-lease-lib.sh"
+  trap 'fm_lease_guard_release' EXIT
+  fm_lease_guard "$ID" 'explicit inbox pickup' || die "supervisor lease refused pickup"
+  [ "$(meta_get park_state)" = parked ] && [ "$(meta_get park_when)" = "inbox:$ID" ] || die "not an inbox-only wait"
+  park_record "park_pickup=$(meta_get park_token)" || die "cannot record explicit pickup authority"
+)
+
 case "${1-}" in
+  release) shift; [ "$#" = 2 ] && [ -n "$2" ] || exit 2; cmd_release "$@" ;;
+  release-ready) shift; [ "$#" = 2 ] || exit 2; cmd_release_ready "$@" ;;
+  poll) shift; [ "$#" = 2 ] || exit 2; cmd_poll "$@" ;;
+  pickup) shift; [ "$#" = 1 ] || exit 2; cmd_pickup "$1" ;;
   ''|-h|--help|help) usage; [ -n "${1-}" ] || exit 2 ;;
   validate) shift; cmd_validate "$@" ;;
   check) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_check "$1" ;;
-  resume) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_resume "$1" ;;
+  resume) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }; cmd_resume "$@" ;;
   cancel) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_cancel "$1" ;;
-  stop) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_stop "$1" ;;
+  stop) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }; cmd_stop "$@" ;;
   *) cmd_park "$@" ;;
 esac
