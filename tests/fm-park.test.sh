@@ -62,7 +62,7 @@ last_line() { tail -n 1 "$1"; }
 first_result() {  # <home> <source-id>
   local g
   for g in "$1/state/procevent-inbox/$2".*.result; do
-    [ -e "$g" ] && { printf '%s\n' "$g"; return 0; }
+    [ -e "$g" ] && [ ! -e "${g%.result}.handled" ] && { printf '%s\n' "$g"; return 0; }
   done
   return 1
 }
@@ -221,10 +221,21 @@ pass "the condition relaunches the parked task as a fresh session with its hando
 # --- the resumed session parks again at once ------------------------------------
 wait_for_wake "$H" when-park-t3 || fail "the resume did not reach the wake queue"
 handoff "$TMP_ROOT/t3b.md" "file:$TMP_ROOT/t3-next"
-out=$(park "$H" t3 --handoff "$TMP_ROOT/t3b.md" 2>&1) || fail "re-parking a resumed task failed: $out"
+out=$(FM_PARK_INTERVAL=0.1 FM_PARK_STABLE=1 park "$H" t3 --handoff "$TMP_ROOT/t3b.md" 2>&1) || fail "re-parking a resumed task failed: $out"
 assert_present "${res%.result}.handled" "re-park acknowledges the resume that started this session"
 assert_grep "park_state=parked" "$H/state/t3.meta" "re-park records the new park"
-assert_grep "file:$TMP_ROOT/t3-next" "$H/state/when/when-park-t3.spec" "re-park arms the watch on the new condition"
+token=$(sed -n 's/^park_token=//p' "$H/state/t3.meta")
+rc=0; park "$H" poll t3 "$token" || rc=$?
+expect_code 1 "$rc" 'the completed earlier result satisfied the resumed task replacement wait'
+: > "$H/control.log"
+: > "$TMP_ROOT/t3-next"
+start_watch "$H"
+wait_for_result "$H" when-park-t3 || fail 'the replacement resume watch produced no new outcome'
+next_res=$(first_result "$H" when-park-t3)
+[ "$next_res" != "$res" ] || fail 'the earlier handled outcome masked the replacement resume'
+assert_equals fired "$("$ROOT/bin/fm-procevent-when.sh" classify "$next_res")" 'the replacement condition did not fire its re-armed watch'
+assert_equals 1 "$(grep -c '^t3 relaunch' "$H/control.log")" 'the replacement watch did not relaunch exactly once'
+assert_grep "the results are at $TMP_ROOT/t3-next" "$H/data/t3/park-resume-note.md" 'the replacement resume used the earlier result'
 pass "a resumed task can park again without waiting for the supervisor"
 
 # --- a task relaunched since it parked is not relaunched again -----------------
