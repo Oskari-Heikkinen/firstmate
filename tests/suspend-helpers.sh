@@ -4,6 +4,11 @@
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# The shared assert_grep/assert_no_grep APIs are fixed-string checks. Saved
+# custody tests need anchored whole-field and event-order regular expressions.
+suspend_assert_matches() { grep -E -- "$1" "$2" >/dev/null || fail "$3"; }
+suspend_assert_no_match() { ! grep -E -- "$1" "$2" >/dev/null || fail "$3"; }
+
 suspend_case() { # <temp-root> <id>
   local root=$1 id=$2 wt project home dir
   dir="$root/$id"; home="$dir/home"; project="$dir/project"; wt="$dir/.treehouse/pool/1/project"

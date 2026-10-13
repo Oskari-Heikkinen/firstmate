@@ -1384,8 +1384,8 @@ head=$(git -C "$dir/project" rev-parse fm/restore-fresh)
 suspend_lib "$dir" fm_suspend_allocate "$meta" restore-fresh "$dir/home" "$dir/home/data" "$dir/home/state" || fail 'fresh restore allocation failed'
 wt="$dir/.treehouse/pool/1/project"
 assert_equals "$head" "$(git -C "$wt" rev-parse HEAD)" 'restoration rebased/reset the saved head'
-assert_grep '^treehouse_lease_id=new-lease$' "$meta" 'restoration reused the historical acquisition'
-assert_grep '^copy_state=restore-prepared$' "$meta" 'allocation was not durably claimed'
+suspend_assert_matches '^treehouse_lease_id=new-lease$' "$meta" 'restoration reused the historical acquisition'
+suspend_assert_matches '^copy_state=restore-prepared$' "$meta" 'allocation was not durably claimed'
 assert_present "$dir/.treehouse/pool/1/.fm-slot-owner" 'restoration is unclaimed'
 assert_present "$dir/home/data/restore-fresh/suspension.bundle" 'restoration consumed the bundle'
 assert_equals "$head" "$(git -C "$dir/project" rev-parse fm/restore-fresh)" 'restoration rewrote the kept branch'
@@ -1414,7 +1414,7 @@ suspend_saved "$dir" restore-crash || fail 'save fixture failed'
 meta="$dir/home/state/restore-crash.meta"
 : > "$dir/fail-get"
 suspend_lib "$dir" fm_suspend_allocate "$meta" restore-crash "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'failed allocation reported success'
-assert_grep '^copy_state=restore-prepared$' "$meta" 'failed attempt lost its durable claim'
+suspend_assert_matches '^copy_state=restore-prepared$' "$meta" 'failed attempt lost its durable claim'
 assert_present "$dir/home/data/restore-crash/suspension.bundle" 'failed attempt lost saved commits'
 rm "$dir/fail-get"
 suspend_lib "$dir" fm_suspend_allocate "$meta" restore-crash "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'interrupted attempt blindly reacquired'

@@ -699,7 +699,7 @@ cmd_release() (
   [ -z "${FM_TASK_ID-}" ] && [ "${FM_PROCEVENT_IN_RUNNER:-0}" = 1 ] || die "copy release is only a registered process-event action, never a manual or worker entrypoint"
   task_resolve "${1-}"
   printf 'copy release task=%s incarnation=%s\n' "$ID" "$2"
-  local control_lock='' meta_lock='' project_lock='' lock wt project holder lease backend target status
+  local control_lock='' meta_lock='' project_lock='' lock release_wt release_project holder lease backend target status
   trap 'release_cleanup "$?"' EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
@@ -723,8 +723,8 @@ cmd_release() (
   # Never release when the wait already cleared: its sole listener owns resume.
   "$SCRIPT_DIR/fm-park.sh" check "$(meta_get park_when)" >/dev/null 2>&1; status=$?
   [ "$status" = 1 ] || return 0
-  wt=$(meta_get worktree); project=$(meta_get project)
-  if ! fm_suspend_dependencies_clear "$META" "$(meta_get park_handoff)" "$wt" "$(meta_get tasktmp)"; then
+  release_wt=$(meta_get worktree); release_project=$(meta_get project)
+  if ! fm_suspend_dependencies_clear "$META" "$(meta_get park_handoff)" "$release_wt" "$(meta_get tasktmp)"; then
     fm_suspend_record "$META" 'copy_retain_reason=condition, handoff, temp artifacts or queue custody requires this copy' || return 1
     return 0
   fi
@@ -738,15 +738,15 @@ cmd_release() (
   case "$backend" in tmux|herdr) ;; *) return 0 ;; esac
   fm_backend_source "$backend" || return 1
   [ "$(fm_backend_agent_state "$backend" "$target")" = dead ] || return 0
-  lock=$(fm_treehouse_project_lock_path "$project") && fm_lock_try_acquire "$lock" || return 0; project_lock=$lock
-  fm_treehouse_pool_slot "$project" "$wt" || return 0
+  lock=$(fm_treehouse_project_lock_path "$release_project") && fm_lock_try_acquire "$lock" || return 0; project_lock=$lock
+  fm_treehouse_pool_slot "$release_project" "$release_wt" || return 0
   # Existing repair owns retained legacy protection. No parallel adopter.
   # shellcheck source=bin/fm-treehouse-adopt-lib.sh
   . "$SCRIPT_DIR/fm-treehouse-adopt-lib.sh"
-  fm_treehouse_adopt_locked "$META" "$ID" "$project" "$FM_HOME" || return 0
-  fm_treehouse_relaunch_reservation "$project" "$STATE" "$META" "$ID" "$FM_HOME" || return 0
+  fm_treehouse_adopt_locked "$META" "$ID" "$release_project" "$FM_HOME" || return 0
+  fm_treehouse_relaunch_reservation "$release_project" "$STATE" "$META" "$ID" "$FM_HOME" || return 0
   if ! fm_suspend_routes_clear "$STATE" "$META" "$ID" "$FM_HOME" ||
-     ! fm_suspend_clean_copy "$wt" || ! fm_suspend_quiet_copy "$project" "$wt" "$META" 1; then
+     ! fm_suspend_clean_copy "$release_wt" || ! fm_suspend_quiet_copy "$release_project" "$release_wt" "$META" 1; then
     fm_suspend_record "$META" 'copy_retain_reason=typed route, dirty/unknown artifacts or live/unverified job' || return 1
     return 0
   fi
@@ -754,14 +754,14 @@ cmd_release() (
   # must be relocation-independent, and unknown artifacts never get discarded.
   # shellcheck source=bin/fm-task-evidence-lib.sh
   . "$SCRIPT_DIR/fm-task-evidence-lib.sh"
-  fm_task_evidence_preserve "$ID" "$DATA" "$wt" 1 "$(meta_get tasktmp)" || return 0
-  fm_suspend_save "$META" "$ID" "$FM_HOME" "$DATA" "$wt" || return 0
+  fm_task_evidence_preserve "$ID" "$DATA" "$release_wt" 1 "$(meta_get tasktmp)" || return 0
+  fm_suspend_save "$META" "$ID" "$FM_HOME" "$DATA" "$release_wt" || return 0
   holder=$(meta_get treehouse_lease_holder); lease=$(meta_get treehouse_lease_id)
   if ! fm_backend_kill "$backend" "$target" '' "fm-$ID" ||
      { [ "$backend" = herdr ] && ! fm_backend_herdr_endpoint_confirmed_gone "$target"; } ||
-     ! fm_suspend_quiet_copy "$project" "$wt" "$META" 0 ||
-     ! fm_suspend_clean_copy "$wt" ||
-     ! fm_treehouse_relaunch_reservation "$project" "$STATE" "$META" "$ID" "$FM_HOME" ||
+     ! fm_suspend_quiet_copy "$release_project" "$release_wt" "$META" 0 ||
+     ! fm_suspend_clean_copy "$release_wt" ||
+     ! fm_treehouse_relaunch_reservation "$release_project" "$STATE" "$META" "$ID" "$FM_HOME" ||
      ! fm_suspend_validate "$META" "$ID" "$FM_HOME" "$DATA"; then
     return 1 # EXIT reports prepared custody and releases every owned lock.
   fi
@@ -769,15 +769,15 @@ cmd_release() (
   # retirement. A different selected slot must not find that branch occupied
   # by the released slot, and advancing the restored branch must not turn the
   # idle historical slot into apparently dirty work. Preserve the exact head.
-  git -C "$wt" checkout --detach --no-overwrite-ignore "$FM_SUSPEND_HEAD" || return 1
-  [ "$(git -C "$wt" rev-parse HEAD)" = "$FM_SUSPEND_HEAD" ] &&
-    fm_suspend_clean_copy "$wt" && fm_suspend_quiet_copy "$project" "$wt" "$META" 0 &&
-    fm_treehouse_relaunch_reservation "$project" "$STATE" "$META" "$ID" "$FM_HOME" || return 1
+  git -C "$release_wt" checkout --detach --no-overwrite-ignore "$FM_SUSPEND_HEAD" || return 1
+  [ "$(git -C "$release_wt" rev-parse HEAD)" = "$FM_SUSPEND_HEAD" ] &&
+    fm_suspend_clean_copy "$release_wt" && fm_suspend_quiet_copy "$release_project" "$release_wt" "$META" 0 &&
+    fm_treehouse_relaunch_reservation "$release_project" "$STATE" "$META" "$ID" "$FM_HOME" || return 1
   # Remove the private claim while the exact native lease still authorizes
   # this copy. After native return, not even claim cleanup may inspect the
   # historical slot: it could already belong to a fresh acquisition.
-  fm_treehouse_slot_owner_release "$wt" "$ID" || return 1
-  (cd "$project" && treehouse return --if-lease-holder "$holder" --if-lease-id "$lease" "$wt" < /dev/null) || return 1
+  fm_treehouse_slot_owner_release "$release_wt" "$ID" || return 1
+  (cd "$release_project" && treehouse return --if-lease-holder "$holder" --if-lease-id "$lease" "$release_wt" < /dev/null) || return 1
   fm_suspend_record "$META" 'copy_state=released' 'worktree=' 'window=' 'treehouse_lease_holder=' 'treehouse_lease_id=' \
     'herdr_workspace_id=' 'herdr_tab_id=' 'herdr_pane_id=' 'copy_retain_reason=' || return 1
   fm_suspend_validate "$META" "$ID" "$FM_HOME" "$DATA" || {

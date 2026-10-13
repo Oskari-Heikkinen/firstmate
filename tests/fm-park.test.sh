@@ -189,7 +189,12 @@ park "$H" t2 --handoff "$TMP_ROOT/t2b.md" >/dev/null || fail "re-parking an alre
 assert_equals 1 "$(meta_count "$H/state/t2.meta" park_state)" "re-park keeps one park record"
 assert_grep "park_when=file:$TMP_ROOT/t2-other" "$H/state/t2.meta" "re-park records the new condition"
 assert_equals 1 "$(find "$H/state/procevent" -name 'when-park-t2*.source' | wc -l | tr -d ' ')" "re-park keeps one watch"
-assert_grep "file:$TMP_ROOT/t2-other" "$H/state/when/when-park-t2.spec" "re-park re-arms the watch on the new condition"
+token=$(sed -n 's/^park_token=//p' "$H/state/t2.meta")
+: > "$TMP_ROOT/t2-results"
+rc=0; park "$H" poll t2 "$token" || rc=$?
+expect_code 1 "$rc" 'the old result satisfied the replacement wait'
+: > "$TMP_ROOT/t2-other"
+park "$H" poll t2 "$token" || fail 'the replacement result did not satisfy the re-armed wait'
 out=$(park "$H" cancel t2) || fail "cancel failed: $out"
 assert_grep "park_state=cancelled" "$H/state/t2.meta" "cancel marks the record"
 assert_absent "$H/state/procevent/when-park-t2.source" "cancel retires the watch"
@@ -421,12 +426,12 @@ park "$H" age --handoff "$TMP_ROOT/age.md" >/dev/null || fail 'age park failed'
 awk '{sub(/^wait_started_at=.*/, "wait_started_at=1000")} 1' "$H/state/age.meta" > "$H/age-meta"
 mv "$H/age-meta" "$H/state/age.meta"
 park "$H" age --handoff "$TMP_ROOT/age.md" >/dev/null || fail 'age repark failed'
-assert_grep '^wait_started_at=1000$' "$H/state/age.meta" 're-arming reset the continuous clock'
+suspend_assert_matches '^wait_started_at=1000$' "$H/state/age.meta" 're-arming reset the continuous clock'
 park "$H" resume age >/dev/null || fail 'retained age resume failed'
 # Preserve existing captured-result acknowledgement rules; this manual resume
 # did not generate a process-event result.
 park "$H" age --handoff "$TMP_ROOT/age.md" >/dev/null || fail 'new work repark failed'
-assert_no_grep '^wait_started_at=1000$' "$H/state/age.meta" 'a completed wait retained its old age'
+suspend_assert_no_match '^wait_started_at=1000$' "$H/state/age.meta" 'a completed wait retained its old age'
 FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-age >/dev/null 2>&1 || true
 assert_equals 1 "$(grep -c '^wait_started_at=' "$H/state/age.meta")" 'continuous clock was duplicated on re-arm'
 pass 'only the same uninterrupted condition retains its wait age'
@@ -473,20 +478,20 @@ for scenario in off true nm raw dependency symlink route job bad-endpoint lease 
   case "$scenario" in
     reuse)
       expect_code 0 "$rc" "fresh successor prevented logical suspension: $(cat "$dir/out")"
-      assert_grep '^copy_state=released$' "$meta" 'immediate reuse lost saved custody'
-      assert_grep '^treehouse_lease_id=$' "$meta" 'historical lease remained active authority'
+      suspend_assert_matches '^copy_state=released$' "$meta" 'immediate reuse lost saved custody'
+      suspend_assert_matches '^treehouse_lease_id=$' "$meta" 'historical lease remained active authority'
       assert_grep "home=$dir/foreign-home" "${wt%/*}/.fm-slot-owner" 'release erased a same-slug successor claim after returning its lease'
       assert_equals 'foreign uncommitted work' "$(cat "$wt/file")" 'release touched successor work'
       assert_equals successor-lease "$(jq -r .worktrees[0].lease_id "$dir/.treehouse/pool/treehouse-state.json")" 'release altered the successor native lease' ;;
     park)
       expect_code 0 "$rc" "park registration failed: $(cat "$dir/out")"
-      assert_grep '^copy_state=retained$' "$meta" 'park performed expensive release before its action ran'
+      suspend_assert_matches '^copy_state=retained$' "$meta" 'park performed expensive release before its action ran'
       assert_absent "$dir/calls" 'park/stop ran release inline'
       sid=$(sed -n 's/^park_release_source=//p' "$meta")
       [ -n "$sid" ] || fail 'park did not register its separate release source'
       suspend_run_release "$dir" "$id" || fail "release action runner failed: $(cat "$dir/runner.out")"
       assert_equals fired "$(FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" classify "$dir/action-result")" "release action did not complete: $(cat "$dir/action-result")"
-      assert_grep '^copy_state=released$' "$meta" "bounded action did not release"
+      suspend_assert_matches '^copy_state=released$' "$meta" "bounded action did not release"
       assert_grep 'return --if-lease-holder' "$dir/calls" 'release bypassed exact native return'
       suspend_lib "$dir" fm_suspend_validate "$meta" "$id" "$home" "$home/data" || fail 'released proof did not validate'
       assert_present "$home/data/$id/suspension.bundle" 'release discarded unlanded commits'
@@ -495,8 +500,8 @@ for scenario in off true nm raw dependency symlink route job bad-endpoint lease 
       suspend_park "$dir" resume "$id" retired > "$dir/retired" 2>&1 && fail 'retired resume token became authority' ;;
     kill|return)
       expect_code 1 "$rc" 'failed close/return claimed success'
-      assert_grep '^copy_state=release-prepared$' "$meta" 'interrupted release lost its transaction'
-      assert_grep 'blocked.*copy-custody' "$home/state/$id.status" 'failed transaction did not wake its owner'
+      suspend_assert_matches '^copy_state=release-prepared$' "$meta" 'interrupted release lost its transaction'
+      suspend_assert_matches 'blocked.*copy-custody' "$home/state/$id.status" 'failed transaction did not wake its owner'
       rc=0; suspend_park "$dir" poll "$id" p1 > "$dir/interrupted" 2>&1 || rc=$?
       expect_code 1 "$rc" 'unfinished custody consumed the resume condition error budget'
       suspend_park "$dir" resume "$id" p1 > "$dir/interrupted" 2>&1 && fail 'unfinished custody resumed'
@@ -512,10 +517,10 @@ for scenario in off true nm raw dependency symlink route job bad-endpoint lease 
         rc=0; suspend_park "$dir" poll "$id" p1 > "$dir/check-only" 2>&1 || rc=$?
         expect_code 1 "$rc" 'release refusal consumed the unrelated condition error budget'
       fi
-      assert_grep '^copy_state=retained$' "$meta" 'unsafe/default-off park changed copy custody'
+      suspend_assert_matches '^copy_state=retained$' "$meta" 'unsafe/default-off park changed copy custody'
       assert_absent "$home/data/$id/suspension.json" 'failed qualification began a saved transaction'
       assert_absent "$dir/terminal-calls" 'failed qualification closed its endpoint'
-      [ ! -e "$dir/calls" ] || assert_no_grep '^return ' "$dir/calls" 'failed qualification returned a copy' ;;
+      [ ! -e "$dir/calls" ] || suspend_assert_no_match '^return ' "$dir/calls" 'failed qualification returned a copy' ;;
   esac
   pass "portable park release: $scenario"
 done
@@ -534,7 +539,7 @@ for entry in missing empty tokened; do
   esac
   [ "$rc" -ne 0 ] || fail 'manual/tokenless release bypassed action custody'
   assert_absent "$dir/calls" 'manual entry touched the native copy'
-  assert_grep '^copy_state=retained$' "$meta" 'manual entry changed custody'
+  suspend_assert_matches '^copy_state=retained$' "$meta" 'manual entry changed custody'
 done
 suspend_register_release "$dir" "$id" || fail 'entrypoint source registration failed'
 suspend_lib "$dir" fm_suspend_record "$meta" 'park_exit_confirmed=' || fail 'could not model an unconfirmed stop'
@@ -544,7 +549,7 @@ assert_absent "$dir/calls" 'missing stop receipt touched the copy'
 # A stale callback remains inert even in the existing runner context, before
 # the attempt claim; forging that context alone cannot bypass incarnation proof.
 FM_PROCEVENT_IN_RUNNER=1 suspend_park "$dir" release "$id" retired > "$dir/out" 2>&1 || fail 'stale action was not inert'
-assert_no_grep '^park_release_attempt=p1$' "$meta" 'stale/unconfirmed action claimed current custody'
+suspend_assert_no_match '^park_release_attempt=p1$' "$meta" 'stale/unconfirmed action claimed current custody'
 assert_absent "$dir/calls" 'stale/unconfirmed callback touched native custody'
 suspend_park "$dir" cancel "$id" >/dev/null || fail 'could not retire entrypoint fixture'
 pass 'every release needs a bounded runner, current token, verified stop and one-attempt claim'
@@ -563,8 +568,8 @@ rc=0; suspend_park "$dir" release-ready "$id" "$token" || rc=$?
 expect_code 1 "$rc" 'short wait released before qualification'
 : > "$dir/result"
 FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" suspend_park "$dir" resume "$id" "$token" > "$dir/out" 2>&1 || fail 'short park did not resume'
-assert_grep '^park_state=resumed$' "$meta" 'short wait did not record resumption'
-assert_grep '^park_release_source=$' "$meta" 'resumption retained an obsolete source pointer'
+suspend_assert_matches '^park_state=resumed$' "$meta" 'short wait did not record resumption'
+suspend_assert_matches '^park_release_source=$' "$meta" 'resumption retained an obsolete source pointer'
 assert_absent "$home/state/procevent/$sid.source" 'resumption orphaned an unqualified release source until its deadline'
 assert_absent "$home/state/when/$sid.spec" 'resumption left the release condition runnable'
 assert_absent "$dir/calls" 'short resumption unnecessarily touched native copy custody'
@@ -589,8 +594,8 @@ expect_code 1 "$rc" 'cheap poll ignored its unresolved condition'
 assert_absent "$dir/calls" 'cheap condition executed expensive custody'
 suspend_run_release "$dir" "$id" || fail "bounded action did not capture its outcome: $(cat "$dir/runner.out")"
 assert_equals action-failed "$(FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" classify "$dir/action-result")" 'timeout poisoned the condition budget instead of producing an action failure'
-assert_grep '^copy_state=release-prepared$' "$meta" "injected native timeout did not preserve prepared custody: $(cat "$dir/action-result")"
-assert_grep 'blocked.*copy-custody' "$home/state/$id.status" 'prepared interruption did not immediately notify the owner'
+suspend_assert_matches '^copy_state=release-prepared$' "$meta" "injected native timeout did not preserve prepared custody: $(cat "$dir/action-result")"
+suspend_assert_matches 'blocked.*copy-custody' "$home/state/$id.status" 'prepared interruption did not immediately notify the owner'
 assert_absent "$home/state/.control-$id.lock" 'interrupted action left its control lock held'
 meta_lock=$(suspend_lib "$dir" fm_meta_lock_path "$meta")
 project_lock=$(suspend_lib "$dir" fm_treehouse_project_lock_path "$dir/project")
@@ -619,8 +624,8 @@ rm "$home/state/.lease-$id"
 suspend_park "$dir" pickup "$id" || fail 'unmarked owner shell was refused'
 
 FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FAKE_CONTROL_FAIL=relaunch suspend_park "$dir" resume "$id" > "$dir/out" 2>&1 && fail 'failed admission reported resumed'
-assert_grep '^park_state=parked$' "$meta" 'pre-allocation failure stranded the wait'
-assert_grep '^copy_state=released$' "$meta" 'pre-allocation failure changed saved custody'
+suspend_assert_matches '^park_state=parked$' "$meta" 'pre-allocation failure stranded the wait'
+suspend_assert_matches '^copy_state=released$' "$meta" 'pre-allocation failure changed saved custody'
 # Cancellation stops automation, not obligations; only the tokenless owner can
 # reinstate it, and the resume note must not falsely say the wait was resolved.
 printf 'needs-decision [key=approval]: pending approval\n' >> "$home/state/$id.status"
@@ -628,5 +633,5 @@ suspend_park "$dir" cancel "$id" || fail 'saved cancel failed'
 suspend_park "$dir" resume "$id" p1 > "$dir/out" 2>&1 && fail 'cancelled listener resumed work'
 FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" suspend_park "$dir" resume "$id" || fail 'explicit owner could not resume cancellation'
 assert_grep 'does not resolve or waive any approval' "$home/data/$id/park-resume-note.md" 'cancellation resumption falsely waived an obligation'
-assert_grep 'needs-decision.*approval' "$home/state/$id.status" 'resumption erased the existing approval'
+suspend_assert_matches 'needs-decision.*approval' "$home/state/$id.status" 'resumption erased the existing approval'
 pass 'pickup rejects task workers and competing leases; failed admission is retryable; cancellation preserves explicit owner restoration and approvals'

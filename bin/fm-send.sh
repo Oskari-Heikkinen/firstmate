@@ -1098,12 +1098,14 @@ else
     CURRENT_INBOX_BACKEND=
     CURRENT_INBOX_SPAWN_GEN=
     if [ -f "$TARGET_META" ]; then
-      CURRENT_INBOX_TARGET=$(fm_backend_target_of_meta "$TARGET_META")
       CURRENT_INBOX_BACKEND=$(fm_backend_of_meta "$TARGET_META")
       CURRENT_INBOX_SPAWN_GEN=$(fm_meta_get "$TARGET_META" spawn_gen)
-      if [ "${TARGET_DORMANT:-0}" = 1 ] &&
-        fm_suspend_validate "$TARGET_META" "$INBOX_TASK_ID" "$FM_HOME" "${FM_DATA_OVERRIDE:-$FM_HOME/data}"; then
-        CURRENT_INBOX_TARGET="suspended:$INBOX_TASK_ID"
+      if [ "${TARGET_DORMANT:-0}" = 1 ]; then
+        if fm_suspend_validate "$TARGET_META" "$INBOX_TASK_ID" "$FM_HOME" "${FM_DATA_OVERRIDE:-$FM_HOME/data}"; then
+          CURRENT_INBOX_TARGET="suspended:$INBOX_TASK_ID"
+        fi
+      else
+        CURRENT_INBOX_TARGET=$(fm_backend_target_of_meta "$TARGET_META")
       fi
     fi
     if [ "$CURRENT_INBOX_TARGET" != "$T" ] ||

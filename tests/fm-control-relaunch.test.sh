@@ -3133,15 +3133,15 @@ for through in control park cancel; do
       HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' FM_SPAWN_NO_GUARD=1 FM_CONTROL_LAUNCH_WAIT=0.05 \
       "$ROOT/bin/fm-park.sh" resume "$id" p1 2>&1); rc=$?
     expect_code 0 "$rc" "real saved park resume failed: $out"
-    assert_grep '^park_state=resumed$' "$meta" 'saved park did not record successful resume'
+    suspend_assert_matches '^park_state=resumed$' "$meta" 'saved park did not record successful resume'
   else
     out=$(run_control "$dir" "$id" relaunch --note 'Restore saved work; do not waive any pending approval.'); rc=$?
     expect_code 0 "$rc" "real saved control restoration failed: $out"
   fi
-  assert_grep '^copy_state=retained$' "$meta" 'restore never published retained custody'
-  assert_grep '^treehouse_lease_id=new-lease$' "$meta" 'restore reused the historical lease identity'
+  suspend_assert_matches '^copy_state=retained$' "$meta" 'restore never published retained custody'
+  suspend_assert_matches '^treehouse_lease_id=new-lease$' "$meta" 'restore reused the historical lease identity'
   assert_equals "$head" "$(git -C "$wt" rev-parse HEAD)" 'restore changed the saved head'
-  assert_no_grep '^spawn_gen=g1$' "$meta" 'restore reused the retired generation'
+  suspend_assert_no_match '^spawn_gen=g1$' "$meta" 'restore reused the retired generation'
   assert_equals 1 "$(grep -c '^get ' "$dir/calls")" 'restore acquired more than once'
   assert_present "$dir/fake/created-windows" 'restore adopted the historical terminal'
   assert_grep 'cd --' "$dir/fake/keys" 'restore never entered the fresh acquired copy'
