@@ -181,6 +181,26 @@ test_bad_answers_record_nothing() {
   pass "an answer outside the strict form, a failed call, or a timeout records nothing"
 }
 
+test_merge_reviews_the_complete_first_parent_diff() {
+  local r tree out
+  r=$(new_repo merge "fork documentation" README)
+  git -C "$r" checkout -q -b upstream HEAD~1
+  printf 'imported-risky-change\n' >>"$r/bin/fm-park.sh"
+  printf 'imported-test-change\n' >>"$r/tests/fm-park.test.sh"
+  git -C "$r" commit -qam 'upstream changes'
+  git -C "$r" checkout -q main
+  git -C "$r" merge -q --no-ff upstream -m 'merge upstream'
+  tree=$(git -C "$r" rev-parse 'HEAD^{tree}')
+  answer 'VERDICT: PASS\n'
+  out=$(review "$r" 2>&1) || fail "a merge's first-parent diff must receive review: $out"
+  assert_contains "$(cat "$FAKE_DIR/prompt")" '+imported-risky-change' "review includes imported non-conflicting script content"
+  assert_contains "$(cat "$FAKE_DIR/prompt")" '+imported-test-change' "review includes imported non-conflicting test content"
+  assert_contains "$(git -C "$r" log -1 --format=%B)" "Lean-Review: $(cd "$r" && "$GUARD" receipt-id HEAD)" "merge receives its own matching receipt"
+  assert_equals "$tree" "$(git -C "$r" rev-parse 'HEAD^{tree}')" "review does not change merged content"
+  pass "a merge independently reviews the complete first-parent diff and records its own receipt"
+}
+
+test_merge_reviews_the_complete_first_parent_diff
 test_no_review_needed
 test_pass_amends_head_with_a_receipt
 test_pass_prints_without_amending

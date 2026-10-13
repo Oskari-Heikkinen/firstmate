@@ -64,9 +64,14 @@ spawn_ship() {
     "$id" "$PROJ_DIR" --mode no-mistakes --yolo off
 }
 
-# The single-quoted JSON word after --settings in the captured claude launch.
+# Claude --settings accepts either inline JSON or a generated settings file.
 claude_settings() {
-  sed -n "s/.* --settings '\([^']*\)'.*/\1/p" "$LAUNCH_LOG" | head -n 1
+  local value
+  value=$(sed -n "s/.* --settings '\([^']*\)'.*/\1/p" "$LAUNCH_LOG" | head -n 1)
+  case "$value" in
+    /*) cat "$value" ;;
+    *) printf '%s\n' "$value" ;;
+  esac
 }
 
 canonical() {

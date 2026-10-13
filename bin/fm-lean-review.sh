@@ -138,7 +138,7 @@ EOF
     cat "$intent_file"
   fi
   printf '\n## The commit diff\n'
-  git show --no-color --no-ext-diff --no-renames --format='commit %H' --stat -p "$sha"
+  git show --first-parent --diff-merges=first-parent --no-color --no-ext-diff --no-renames --format='commit %H' --stat -p "$sha"
 } >"$tmp/prompt" || die "could not build the review prompt"
 
 cmd=${FM_LEAN_REVIEW_CMD:-}

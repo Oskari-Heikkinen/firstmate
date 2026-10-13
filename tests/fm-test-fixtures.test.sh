@@ -167,5 +167,246 @@ test_touch_epoch_preserves_repeated_dst_hour() {
   pass "fm_touch_epoch preserves both epochs in the repeated DST hour"
 }
 
+test_no_mistakes_version_constant() {
+  local fakebin out
+  fakebin=$(fm_fakebin "$TMP_ROOT/nm")
+  fm_test_fake_no_mistakes "$fakebin"
+  out=$("$fakebin/no-mistakes" --version)
+  [ "$out" = "$FM_TEST_NO_MISTAKES_FAKE_VERSION" ] || \
+    fail "fake no-mistakes --version should be the shared constant, got '$out'"
+  out=$(FM_FAKE_NO_MISTAKES_VERSION="$FM_TEST_NO_MISTAKES_FAKE_VERSION_TS" \
+    "$fakebin/no-mistakes" --version)
+  [ "$out" = "$FM_TEST_NO_MISTAKES_FAKE_VERSION_TS" ] || \
+    fail "timestamped banner override should round-trip, got '$out'"
+  case "$out" in
+    "$FM_TEST_NO_MISTAKES_FAKE_VERSION "*) ;;
+    *) fail "timestamped banner '$out' is not the shared constant plus a suffix" ;;
+  esac
+  out=$(FM_FAKE_NO_MISTAKES_VERSION='no-mistakes version v9.9.9 (fake)' \
+    "$fakebin/no-mistakes" --version)
+  [ "$out" = 'no-mistakes version v9.9.9 (fake)' ] || \
+    fail "FM_FAKE_NO_MISTAKES_VERSION should override the default banner, got '$out'"
+  "$fakebin/no-mistakes" doctor
+  expect_code 0 $? "fake no-mistakes non-version verbs should exit 0"
+  pass "fake no-mistakes --version is the shared constant and overridable"
+}
+
+test_no_mistakes_init_doctor_markers() {
+  local fakebin dir rc
+  dir="$TMP_ROOT/nm-init"
+  mkdir -p "$dir"
+  fakebin=$(fm_fakebin "$dir")
+  fm_test_fake_no_mistakes_init_doctor "$fakebin"
+  ( cd "$dir" && "$fakebin/no-mistakes" init )
+  assert_present "$dir/.no-mistakes-init" "init did not touch the marker"
+  ( cd "$dir" && "$fakebin/no-mistakes" doctor )
+  assert_present "$dir/.no-mistakes-doctor" "doctor did not touch the marker"
+  rc=0
+  ( cd "$dir" && "$fakebin/no-mistakes" axi ) || rc=$?
+  expect_code 2 "$rc" "unknown no-mistakes verb should exit 2"
+  pass "init/doctor no-mistakes stub touches markers and refuses other verbs"
+}
+
+test_fake_gh_and_gh_axi() {
+  local fakebin out
+  fakebin=$(fm_fakebin "$TMP_ROOT/gh")
+  fm_test_fake_gh "$fakebin"
+  fm_test_fake_gh_axi "$fakebin"
+  "$fakebin/gh" auth status
+  expect_code 0 $? "fake gh auth status should succeed"
+  "$fakebin/gh" pr list
+  expect_code 0 $? "fake gh other verbs should exit 0"
+  out=$("$fakebin/gh-axi" --version)
+  [ "$out" = "$FM_TEST_GH_AXI_VERSION" ] || \
+    fail "fake gh-axi --version should be $FM_TEST_GH_AXI_VERSION, got '$out'"
+  out=$(FM_FAKE_GH_AXI_VERSION=0.9.9 "$fakebin/gh-axi" --version)
+  [ "$out" = 0.9.9 ] || fail "FM_FAKE_GH_AXI_VERSION should override, got '$out'"
+  pass "fake gh authenticates and fake gh-axi reports the shared version"
+}
+
+test_spawn_tmux_and_fakebin() {
+  local fakebin out log pane state rc=0
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn" gh-axi)
+  log="$TMP_ROOT/spawn/launch.log"
+  : > "$log"
+  out=$(FM_FAKE_PANE_PATH=/tmp/wt "$fakebin/tmux" display-message -p '#{pane_current_path}')
+  [ "$out" = /tmp/wt ] || fail "spawn tmux pane path should be FM_FAKE_PANE_PATH, got '$out'"
+  out=$(unset FM_FAKE_PANE_PATH; "$fakebin/tmux" display-message -p '#{pane_current_path}')
+  [ -z "$out" ] || fail "spawn tmux pane path should default to empty, got '$out'"
+  out=$("$fakebin/tmux" display-message -p '#S')
+  [ "$out" = firstmate ] || fail "spawn tmux session name should be firstmate, got '$out'"
+  FM_FAKE_LAUNCH_LOG="$log" "$fakebin/tmux" send-keys -t @w -l 'codex --yolo'
+  assert_grep 'codex --yolo' "$log" "send-keys -l payload was not logged"
+  [ -x "$fakebin/treehouse" ] || fail "spawn fakebin should include treehouse"
+  [ -x "$fakebin/gh-axi" ] || fail "extra exit-0 tools should land in the spawn fakebin"
+  pane="$TMP_ROOT/spawn/pool/1/project"
+  mkdir -p "$pane"
+  pane=$(cd "$pane" && pwd -P)
+  state="$(dirname "$(dirname "$pane")")/treehouse-state.json"
+  printf '{"worktrees":[{"name":"1","path":"%s"}]}\n' "$pane" > "$state"
+  out=$(FM_FAKE_PANE_PATH="$pane" "$fakebin/treehouse" get --lease --lease-holder fixture-owner) || rc=$?
+  expect_code 0 "$rc" "fake treehouse should acquire a requested durable lease"
+  [ "$out" = "$pane" ] || fail "fake allocator did not return the isolated path"
+  jq -e --arg p "$pane" '.worktrees[] | select(.path==$p) | .leased==true and .lease_holder=="fixture-owner" and .lease_id=="fixture-1"' "$state" >/dev/null \
+    || fail "fake allocator did not publish the holder/acquisition"
+  rc=0
+  FM_FAKE_PANE_PATH="$pane" "$fakebin/treehouse" get --lease --lease-holder another-owner >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "fake allocator handed an already leased copy to another owner"
+  pass "spawn fakebin answers pane path, logs -l payloads, and installs extra tools"
+}
+
+test_send_stubs_and_ssh() {
+  local fakebin log ssh_log out
+  fakebin=$(make_stubs "$TMP_ROOT/send")
+  log="$TMP_ROOT/send/send.log"
+  ssh_log="$TMP_ROOT/send/ssh.log"
+  : > "$log"
+  fm_test_fake_ssh "$fakebin"
+  FM_SEND_LOG="$log" "$fakebin/tmux" send-keys -t sess:w -l 'hello steer'
+  assert_grep 'hello steer' "$log" "send stubs did not log the -l payload"
+  out=$("$fakebin/tmux" display-message -p '#{cursor_y}')
+  [ "$out" = 1 ] || fail "send tmux cursor_y should be 1, got '$out'"
+  out=$("$fakebin/tmux" capture-pane -p)
+  case "$out" in
+    *'╭────╮'*) ;;
+    *) fail "send tmux capture-pane should render an empty composer, got '$out'" ;;
+  esac
+  printf 'ignored\n' | FM_SSH_LOG="$ssh_log" "$fakebin/fake-ssh" host -- cmd
+  assert_grep 'host -- cmd' "$ssh_log" "fake ssh did not record argv"
+  FM_FAKE_SSH_RC=7 "$fakebin/fake-ssh" x < /dev/null
+  expect_code 7 $? "fake ssh should honor FM_FAKE_SSH_RC"
+  pass "send stubs log typed text and fake ssh records argv with a controllable exit"
+}
+
+test_spawn_home_layout() {
+  local home="$TMP_ROOT/home"
+  fm_test_spawn_home "$home" claude
+  fm_test_spawn_brief "$home" t1 'do the thing'
+  assert_present "$home/data" "spawn home missing data/"
+  assert_present "$home/state/.last-watcher-beat" "spawn home missing watcher beat"
+  assert_grep claude "$home/config/crew-harness" "crew-harness was not pinned"
+  assert_grep 'do the thing' "$home/data/t1/brief.md" "brief text was not written"
+  pass "spawn-home layout writes harness pin, beat, and brief"
+}
+
+# A host whose `sleep` is a multicall coreutils (uutils on Ubuntu 26.04) refuses
+# to run under a foreign name, so a harness-named symlink to it never becomes a
+# live process. The fake `sleep` below models that refusal on any host, which
+# keeps this case meaningful where CI's own `sleep` is single-purpose.
+test_agent_standin_survives_a_multicall_sleep() (
+  local dir="$TMP_ROOT/standin" fakebin real_sleep standin pid
+  real_sleep=$(command -v sleep) || fail "sleep not found"
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/sleep" <<SH
+#!/usr/bin/env bash
+case "\${0##*/}" in
+  sleep) exec "$real_sleep" "\$@" ;;
+  *) echo "Requested utility \${0##*/} does not match executable name" >&2; exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/sleep"
+  ln -s "$fakebin/sleep" "$dir/pi"
+  "$fakebin/sleep" 0 || fail "the fake multicall sleep must run under its own name"
+  if "$dir/pi" 0 2>/dev/null; then
+    fail "the fake multicall sleep must refuse a harness name, or this case proves nothing"
+  fi
+
+  if standin=$(PATH="$fakebin:$(fm_test_base_path_sans "$PATH" cc gcc)" fm_agent_standin "$dir/nocc"); then
+    fail "without a compiler, a multicall sleep must not be offered as a stand-in, got '$standin'"
+  fi
+  assert_absent "$dir/nocc/standin" "a refused stand-in must not be left behind"
+
+  if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+    echo "skip: no C compiler, so the compiled stand-in half of the multicall case cannot run"
+    pass "agent stand-in: a multicall sleep is refused rather than offered as a stand-in"
+    exit 0
+  fi
+  standin=$(PATH="$fakebin:$PATH" fm_agent_standin "$dir/cc") \
+    || fail "with a compiler, a multicall host sleep must still yield a stand-in"
+  ln -s "$standin" "$dir/cc/pi"
+  "$dir/cc/pi" 60 &
+  pid=$!
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "the stand-in must stay alive under a harness name"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pass "agent stand-in: a multicall sleep is refused, and the compiled stand-in survives a harness name"
+)
+
+# An inherited absolute GIT_DIR (a linked-worktree hook exports one) overrides
+# `git -C`, so fixture setup would commit, move refs, and register worktrees in
+# the caller's repository; GIT_INDEX_FILE and GIT_COMMON_DIR redirect the index
+# and refs the same way, and GIT_WORK_TREE breaks the setup outright. Each entry
+# point runs fm-teardown.test.sh's Git setup with each variable aimed in turn at
+# a disposable ambient clone, which must come through unchanged.
+test_inherited_git_location_isolation() (
+  local dir="$TMP_ROOT/git-location" before after var value helper rc
+  mkdir -p "$dir/runner/bin" "$dir/runner/tests"
+  fm_git_init_commit "$dir/ambient"
+  git -C "$dir/ambient" worktree add -q --detach "$dir/linked" main
+  cp "$ROOT/bin/fm-test-run.sh" "$ROOT/bin/fm-timeout-lib.sh" "$dir/runner/bin/"
+  cp "$ROOT/tests/git-config-helpers.sh" "$dir/runner/tests/"
+  cat > "$dir/setup.sh" <<'SH'
+case_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-git-location.XXXXXX")
+git init -q --bare "$case_dir/origin.git"
+git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
+git clone -q "$case_dir/origin.git" "$case_dir/_seed" 2>/dev/null
+echo seed > "$case_dir/_seed/seed.txt"
+git -C "$case_dir/_seed" add seed.txt
+git -C "$case_dir/_seed" -c user.email=t@t -c user.name=t commit -q -m "origin baseline"
+git -C "$case_dir/_seed" push -q origin main
+git clone -q "$case_dir/origin.git" "$case_dir/project"
+git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
+[ "$(git -C "$case_dir/wt" log -1 --format=%s)" = "origin baseline" ]
+SH
+  { printf '#!/usr/bin/env bash\nset -eu\n'; cat "$dir/setup.sh"; } > "$dir/runner/tests/fm-test-run.test.sh"
+  chmod +x "$dir/runner/tests/fm-test-run.test.sh"
+
+  ambient_state() {
+    git -C "$dir/ambient" for-each-ref --format='%(refname) %(objectname)'
+    git -C "$dir/ambient" worktree list --porcelain
+    git -C "$dir/ambient" ls-files --stage
+    git -C "$dir/linked" ls-files --stage
+  }
+
+  before=$(ambient_state)
+  for var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR; do
+    case $var in
+      GIT_DIR) value=$(git -C "$dir/linked" rev-parse --absolute-git-dir) ;;
+      GIT_WORK_TREE) value="$dir/linked" ;;
+      GIT_INDEX_FILE) value=$(git -C "$dir/linked" rev-parse --path-format=absolute --git-path index) ;;
+      GIT_COMMON_DIR) value=$(git -C "$dir/linked" rev-parse --path-format=absolute --git-common-dir) ;;
+    esac
+    for helper in lib herdr-test-safety runner-1 runner-2; do
+      rc=0
+      case $helper in
+        runner-*)
+          env "$var=$value" TMPDIR="$dir" "$dir/runner/bin/fm-test-run.sh" --jobs "${helper#runner-}" \
+            tests/fm-test-run.test.sh > "$dir/out.log" 2>&1 || rc=$?
+          [ "$rc" != 0 ] || assert_grep 'FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0' "$dir/out.log" \
+            "$helper did not execute the Git fixture under $var" ;;
+        *)
+          # shellcheck disable=SC2016 # expanded by the child bash
+          env "$var=$value" TMPDIR="$dir" bash -eu -c '. "$1"; . "$2"' _ "$ROOT/tests/$helper.sh" "$dir/setup.sh" \
+            > "$dir/out.log" 2>&1 || rc=$? ;;
+      esac
+      # The ambient check comes first: it is the escape this case exists to catch.
+      after=$(ambient_state)
+      [ "$before" = "$after" ] \
+        || fail "$helper fixture setup under $var changed the ambient repository: $(diff <(echo "$before") <(echo "$after"))"
+      [ "$rc" = 0 ] || fail "$helper fixture setup failed under $var: $(cat "$dir/out.log")"
+    done
+  done
+  pass "shared helpers and runner keep fixture Git off an inherited repository location"
+)
+
 test_git_config_isolation || fail "Git fixture config isolation"
+test_inherited_git_location_isolation || fail "Git fixture location isolation"
+test_agent_standin_survives_a_multicall_sleep || fail "agent stand-in multicall case"
 test_touch_epoch_preserves_repeated_dst_hour
+test_no_mistakes_version_constant
+test_no_mistakes_init_doctor_markers
+test_fake_gh_and_gh_axi
+test_spawn_tmux_and_fakebin
+test_send_stubs_and_ssh
+test_spawn_home_layout

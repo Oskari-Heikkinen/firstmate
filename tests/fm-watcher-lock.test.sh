@@ -593,10 +593,11 @@ test_watchdog_retries_unproven_identity_then_stops_wedge() {
 }
 
 test_orphaned_pipe_read_is_stopped_by_watchdog() {
-  # The observed hang: a pane capture leaves a detached process holding the
-  # command substitution's pipe and exits, so the watcher blocks reading that
-  # pipe with no child left to time out. The watchdog still stops it.
-  local dir state fakebin pid holder i
+  # The pane capture now writes to a file in an owned background group.
+  # Make the capture itself read a substitution whose producer exits with a
+  # detached holder keeping the pipe open; the watcher waits on that blocked
+  # capture, and its watchdog must still stop it.
+  local dir state fakebin pid holder sid pgid i
   dir=$(make_case orphaned-pipe-read)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -604,8 +605,34 @@ test_orphaned_pipe_read_is_stopped_by_watchdog() {
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = capture-pane ]; then
-  sleep 600 &
-  printf '%s\n' "\$!" > "$dir/holder.pid"
+  # Holding the capture's file descriptor alone no longer wedges a read.
+  # Put a real pipe inside the capture, without changing production capture.
+  captured=\$(
+  # A genuinely detached orphan must hold the pipe outside the producer's
+  # process group; otherwise the producer's timeout kills it and there is no
+  # orphaned-pipe hang left for the watchdog to detect.
+  perl -MPOSIX -e '
+    my \$sid = POSIX::setsid();
+    die "setsid failed: \$!" unless \$sid == \$\$ && getpgrp(0) == \$\$;
+    open my \$ready, ">", \$ARGV[0] or die \$!;
+    print \$ready "\$\$ \$sid ", getpgrp(0), "\\n";
+    close \$ready or die \$!;
+    sleep 600;
+  ' "$dir/holder.ready" 2> "$dir/holder.err" &
+  holder=\$!
+  # Do not let the producer exit (and its timeout reap the original group)
+  # until the child itself proves it has escaped into its own session/group.
+  i=0
+  while [ ! -s "$dir/holder.ready" ] && kill -0 "\$holder" 2>/dev/null; do
+    i=\$((i + 1))
+    [ "\$i" -lt 200 ] || { kill "\$holder" 2>/dev/null || true; exit 1; }
+    sleep 0.01
+  done
+  [ -s "$dir/holder.ready" ] || exit 1
+  : > "$dir/producer-exited"
+  exit 0
+  )
+  printf '%s' "\$captured"
   exit 0
 fi
 exec "$fakebin/tmux.real" "\$@"
@@ -615,12 +642,28 @@ SH
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW='test:fm-hang' FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_WATCHER_WATCHDOG_INTERVAL=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" &
   pid=$!
   i=0
-  while [ "$i" -lt 100 ] && [ ! -s "$dir/holder.pid" ]; do
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/holder.ready" ]; do
     sleep 0.1
     i=$((i + 1))
   done
-  holder=$(cat "$dir/holder.pid" 2>/dev/null || true)
-  [ -n "$holder" ] || { reap_watcher "$pid"; fail "the watcher never captured the hanging pane"; }
+  holder='' sid='' pgid=''
+  read -r holder sid pgid < "$dir/holder.ready" 2>/dev/null || true
+  case "$holder" in
+    ''|*[!0-9]*) reap_watcher "$pid"; fail "the detached holder never became ready: $(cat "$dir/holder.err" 2>/dev/null)" ;;
+  esac
+  [ "$holder" = "$sid" ] && [ "$holder" = "$pgid" ] \
+    || { kill "$holder" 2>/dev/null || true; reap_watcher "$pid"; fail "holder readiness did not prove an independent session/group"; }
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/producer-exited" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$dir/producer-exited" ] \
+    || { kill "$holder" 2>/dev/null || true; reap_watcher "$pid"; fail "the pipe producer never reached exit after holder readiness"; }
+  # Prove the holder live before the watchdog stops the blocked watcher;
+  # correct descendant cleanup need not leave it alive after that stop.
+  is_live_non_zombie "$holder" \
+    || { reap_watcher "$pid"; fail "the pipe holder exited before the watchdog stop, so the case did not exercise the hang"; }
   wait_for_beacon_age "$state" "$LONG_CYCLE_GRACE" || { kill "$holder" 2>/dev/null; reap_watcher "$pid"; fail "the orphaned pipe read did not block the watcher"; }
   i=0
   while [ "$i" -lt 150 ] && is_live_non_zombie "$pid"; do
@@ -633,9 +676,13 @@ SH
     fail "watchdog did not stop a watcher blocked on an orphaned pipe"
   fi
   wait "$pid" 2>/dev/null || true
-  is_live_non_zombie "$holder" || fail "the pipe holder exited early, so the case did not exercise the hang"
   kill "$holder" 2>/dev/null || true
-  assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log"
+  if ! grep -qF 'watchdog: stopping wedged watcher' "$state/.watch-triage.log" 2>/dev/null; then
+    printf '%s\n' 'orphaned-pipe watcher diagnostics:' >&2
+    cat "$dir/watch.out" "$dir/watch.err" "$dir/holder.ready" "$dir/holder.err" >&2
+  fi
+  assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log" \
+    "the orphaned-pipe watcher exited without an independent watchdog-stop receipt"
   pass "a watcher blocked on a pipe held by a detached process is stopped by its watchdog"
 }
 
@@ -981,6 +1028,9 @@ test_lock_steal_reap_cannot_remove_successor() {
   fakebin="$dir/fakebin"
   out="$dir/competitor"
   leave_dead_link_locks "$state" "$steal"
+  # The killed fixture owner may have its PID reused during a loaded serial
+  # shard. Pin a verified-dead PID so the race exercises reaping, not liveness.
+  printf '%s\n' "$(dead_pid)" > "$steal/pid"
   cat > "$fakebin/rm" <<'SH'
 #!/usr/bin/env bash
 last=
@@ -1027,32 +1077,51 @@ SH
 }
 
 test_lock_stale_steal_single_winner_under_concurrency() {
-  local dir state lockdir dead marker i pids pid wins
+  local dir state lockdir dead marker gate hold i pids pid waiter winner wins
   dir=$(make_case lock-stale-concurrency)
   state="$dir/state"
   lockdir="$state/.contend.lock"
   marker="$dir/wins"
+  gate="$dir/first-winner"
+  hold="$dir/winner-release"
   dead=$(dead_pid)
   mkdir "$lockdir"
   printf '%s\n' "$dead" > "$lockdir/pid"
   : > "$marker"
+  mkfifo "$gate" "$hold"
+  # try_acquire is nonblocking: all one-shot candidates may lose to a transient
+  # steal mutex. A waiting contender guarantees eventual acquisition, and the
+  # FIFO keeps the winner alive until every other contender has finished.
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    printf "%s\n" "${BASHPID:-$$}" >> "$3"
+    printf "%s\n" "${BASHPID:-$$}" > "$4"
+    IFS= read -r _ < "$5"
+  ' _ "$LIB" "$lockdir" "$marker" "$gate" "$hold" &
+  waiter=$!
   pids=
   i=1
-  while [ "$i" -le 40 ]; do
+  while [ "$i" -le 39 ]; do
     FM_STATE_OVERRIDE="$state" bash -c '
       . "$1"
       if fm_lock_try_acquire "$2"; then
         printf "%s\n" "${BASHPID:-$$}" >> "$3"
-        sleep 1
+        printf "%s\n" "${BASHPID:-$$}" > "$4"
+        IFS= read -r _ < "$5"
       fi
-    ' _ "$LIB" "$lockdir" "$marker" &
+    ' _ "$LIB" "$lockdir" "$marker" "$gate" "$hold" &
     pids="$pids $!"
     i=$((i + 1))
   done
+  IFS= read -r winner < "$gate"
+  [ "$winner" = "$waiter" ] || { kill "$waiter" 2>/dev/null || true; wait "$waiter" 2>/dev/null || true; }
   for pid in $pids; do
-    wait "$pid" 2>/dev/null || true
+    [ "$pid" = "$winner" ] || wait "$pid" 2>/dev/null || true
   done
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
+  printf 'release\n' > "$hold"
+  wait "$winner" 2>/dev/null || true
   [ "$wins" -eq 1 ] || fail "expected exactly one stale-lock stealer, got $wins"
   pass "concurrent stale-lock steal yields exactly one winner"
 }

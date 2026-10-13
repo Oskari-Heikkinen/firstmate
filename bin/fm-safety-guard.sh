@@ -20,7 +20,7 @@
 #     validates tests/risky-areas.list: every area needs a script line and a
 #     test line, and kind must be script or test.
 #   fm-safety-guard.sh commits --before <sha> --head <sha> [--default-ref <ref>]
-#     Judges every non-merge commit in <before>..<head>, oldest first, so a
+#     Judges every commit in <before>..<head>, oldest first, so a
 #     push is judged commit by commit rather than by its tip. ci/** pushes,
 #     pushes to main, and pull requests are handled the same way. When <before>
 #     is empty, all zeros (a new branch), not a known commit, or not an
@@ -39,7 +39,7 @@
 #     when the base has none.
 #   fm-safety-guard.sh receipts --before <sha> --head <sha> [--default-ref <ref>]
 #     Judges the same range, with the same risky areas, for lean-review
-#     receipts: every non-merge commit that changes a risky-area script must
+#     receipts: every commit that changes a risky-area script must
 #     carry a `Lean-Review: <receipt id>` commit trailer whose id matches that
 #     commit's own diff under its parent mapping, as receipt-id computes it.
 #     Every changed path covered by the range-base mapping must still be
@@ -57,6 +57,15 @@
 #     message, so it survives a plain rebase and the amend that adds the
 #     trailer, while any change to that part of the diff changes it.
 #     bin/fm-lean-review.sh writes the trailer only after a passing review.
+#
+# Imported upstream history: a two-parent merge may carry exactly one
+# `Upstream-Merge: kunchenguid/firstmate@<40 lowercase hex SHA>` trailer,
+# naming its second parent. The range checks fetch only that fixed repository's
+# main read-only and verify the named SHA is reachable from it. Only ancestors
+# of that verified SHA are exempt; fork commits and the merge itself retain
+# every rule. A malformed declaration, wrong parent, or failed remote proof
+# refuses the range. Merge diffs, test-touch, core removal, and review receipts
+# use the entire first-parent diff, not Git's combined-conflict view.
 #
 # Run it from inside the repository being judged. Exit status: 0 clean, 1 a
 # rule violated (each violation is printed with its commit and remedy) or, for
@@ -204,6 +213,57 @@ resolve_range() { # <before> <head> <default-ref>
   RANGE_HEAD=$head RANGE_BASE=$base
 }
 
+# Resolve import declarations before applying any ancestry exemption. Each
+# merge binds one exact second parent, and the fixed network source is never
+# selected from a trailer, remote configuration, or environment variable.
+verify_upstream_imports() {
+  local c declaration sha parents fetched='' ref
+  RANGE_IMPORTS=''
+  while IFS= read -r c; do
+    declaration=$(git log -1 --format='%(trailers:key=Upstream-Merge,valueonly)' "$c")
+    [ -n "$declaration" ] || continue
+    [[ "$declaration" =~ ^kunchenguid/firstmate@([a-f0-9]{40})$ ]] \
+      || die "malformed Upstream-Merge declaration on $c"
+    sha=${BASH_REMATCH[1]}
+    parents=$(git log -1 --format=%P "$c")
+    [[ "$parents" =~ ^[a-f0-9]{40}\ $sha$ ]] \
+      || die "Upstream-Merge on $c must name its exact second parent in a two-parent merge"
+    if [ -z "$fetched" ]; then
+      ref="refs/fm-safety-upstream/$$"
+      git show-ref --verify --quiet "$ref" && die "temporary upstream proof ref already exists: $ref"
+      # shellcheck disable=SC2064 # Bind only this invocation's private ref.
+      trap "git update-ref -d '$ref' >/dev/null 2>&1 || true" EXIT
+      git fetch --quiet --no-tags --no-write-fetch-head -- \
+        https://github.com/kunchenguid/firstmate.git "refs/heads/main:$ref" \
+        || die "cannot fetch kunchenguid/firstmate main to verify Upstream-Merge"
+      fetched=$(git rev-parse --verify "$ref^{commit}") \
+        || die "cannot resolve fetched upstream main"
+    fi
+    git merge-base --is-ancestor "$sha" "$fetched" \
+      || die "Upstream-Merge SHA $sha is not reachable from kunchenguid/firstmate main"
+    RANGE_IMPORTS="$RANGE_IMPORTS $sha"
+  done < <(git rev-list --reverse "$RANGE_BASE..$RANGE_HEAD")
+}
+
+imported_ancestor() { # <commit>
+  local sha
+  for sha in $RANGE_IMPORTS; do
+    git merge-base --is-ancestor "$1" "$sha" && return 0
+  done
+  return 1
+}
+
+# One diff against the first parent even for a merge; a root has no parent.
+commit_diff() { # <commit> [diff-tree options] [-- paths...]
+  local c=$1
+  local -a refs=("$c")
+  shift
+  if git rev-parse --verify --quiet "$c^" >/dev/null; then
+    refs=("$c^" "$c")
+  fi
+  git --literal-pathspecs diff-tree --root --no-commit-id -r --no-renames "${refs[@]}" "$@"
+}
+
 # Print the receipt id of <commit> judged by <areas> (the header's receipt-id
 # owns what it covers), or nothing when the commit changes no risky script.
 receipt_id() { # <commit> <areas>
@@ -216,13 +276,13 @@ receipt_id() { # <commit> <areas>
     path_matches "$f" "$globs" || continue
     files+=("$f")
     if path_matches "$f" "$script_globs"; then risky=1; fi
-  done < <(git diff-tree --root --no-commit-id -r --no-renames --name-only "$c")
+  done < <(commit_diff "$c" --name-only)
   [ "$risky" -eq 1 ] || return 0
   {
     printf 'fm-lean-review receipt v1\n'
-    git --literal-pathspecs diff-tree --root --no-commit-id -r --no-renames --raw "$c" -- "${files[@]}" \
+    commit_diff "$c" --raw -- "${files[@]}" \
       | awk -F '\t' '{ split($1, m, " "); print m[1], m[2], m[5], $2 }'
-    git --literal-pathspecs diff-tree --root --no-commit-id -r --no-renames -p "$c" -- "${files[@]}" \
+    commit_diff "$c" -p -- "${files[@]}" \
       | git patch-id --stable | awk '{ print $1 }'
   } | git hash-object --stdin
 }
@@ -268,7 +328,7 @@ receipt_coverage_retained() { # <commit> <baseline areas> <parent areas>
       printf 'fm-safety-guard: %s parent mapping removes baseline receipt coverage for %s\n' "$(git rev-parse --short "$c")" "$f" >&2
       bad=1
     fi
-  done < <(git diff-tree --root --no-commit-id -r --no-renames --name-only "$c")
+  done < <(commit_diff "$c" --name-only)
   return "$bad"
 }
 
@@ -283,9 +343,11 @@ run_receipts() {
     esac
   done
   resolve_range "$before" "$head" "$default_ref"
+  verify_upstream_imports
 
   while IFS= read -r c; do
     [ -n "$c" ] || continue
+    imported_ancestor "$c" && continue
     count=$((count + 1))
     want=$(receipt_id "$c" "$RANGE_AREAS") || die "could not hash $c"
     [ -n "$want" ] || continue
@@ -309,7 +371,7 @@ run_receipts() {
       printf '  run bin/fm-lean-review.sh on that commit and push only after it passes\n' >&2
       bad=1
     fi
-  done < <(git rev-list --reverse --no-merges "$RANGE_BASE..$RANGE_HEAD")
+  done < <(git rev-list --reverse "$RANGE_BASE..$RANGE_HEAD")
 
   [ "$bad" -eq 0 ] || return 1
   printf 'fm-safety-guard: %s commit(s) judged, %s risky one(s) carry a matching lean-review receipt\n' "$count" "$reviewed"
@@ -328,13 +390,15 @@ run_commits() {
   done
   resolve_range "$before" "$head" "$default_ref"
   head=$RANGE_HEAD base=$RANGE_BASE areas=$RANGE_AREAS
+  verify_upstream_imports
   area_names=$(awk '{ print $1 }' <<<"$areas" | LC_ALL=C sort -u)
 
   while IFS= read -r c; do
     [ -n "$c" ] || continue
+    imported_ancestor "$c" && continue
     count=$((count + 1))
     subject=$(git log -1 --format='%h %s' "$c")
-    changed=$(git diff-tree --root --no-commit-id -r --no-renames --name-status "$c")
+    changed=$(commit_diff "$c" --name-status)
     # Any change counts for a script; only an added or modified file counts as
     # touching a test, so deleting a test never satisfies the rule.
     scripts=$(awk -F '\t' '{ print $2 }' <<<"$changed")
@@ -370,7 +434,7 @@ run_commits() {
       printf '  restore them, or explain in the commit message: safety-core-removal: <reason>\n' >&2
       bad=1
     fi
-  done < <(git rev-list --reverse --no-merges "$base..$head")
+  done < <(git rev-list --reverse "$base..$head")
 
   [ "$bad" -eq 0 ] || return 1
   printf 'fm-safety-guard: %s commit(s) keep risky-area tests and the safety core\n' "$count"

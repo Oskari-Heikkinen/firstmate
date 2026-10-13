@@ -336,6 +336,28 @@ test_receipts_refuse_removed_baseline_coverage() {
   pass "receipts refuse removed baseline scripts/tests and demoted scripts"
 }
 
+test_merge_receipt_refuses_removed_baseline_coverage() {
+  local r base out rc merge_short
+  r=$(new_repo receipt-merge-removed)
+  base=$(sha "$r" HEAD)
+  printf 'watcher script bin/fm-watch*.sh\nwatcher test tests/fm-watch-a.test.sh\ncleanup script bin/fm-park.sh\ncleanup test tests/fm-park*.test.sh\n' >"$r/tests/risky-areas.list"
+  change "$r" "narrow parent test mapping"
+  git -C "$r" checkout -q -b topic
+  change "$r" "protected topic change" bin/fm-park.sh tests/fm-park-a.test.sh tests/fm-watch-b.test.sh
+  add_receipt "$r"
+  git -C "$r" checkout -q main
+  change "$r" "fork documentation" README
+  git -C "$r" merge -q --no-ff topic -m 'merge protected changes' \
+    || fail "coverage fixture must merge cleanly"
+  add_receipt "$r"
+  merge_short=$(git -C "$r" rev-parse --short HEAD)
+  out=$(run_receipts "$r" "$base" 2>&1); rc=$?
+  expect_code 1 "$rc" "a merge must retain its full first-parent baseline coverage"
+  assert_contains "$out" "$merge_short parent mapping removes baseline receipt coverage for tests/fm-watch-b.test.sh" \
+    "the merge itself, not only its topic commit, must name the dropped coverage"
+  pass "merge receipts retain baseline protection across the full first-parent diff"
+}
+
 test_receipt_survives_plain_rebase() {
   local r out
   r=$(new_repo rebase)
@@ -362,6 +384,120 @@ no-test-needed: fixture"
   pass "a lean-review receipt survives a plain rebase"
 }
 
+# Intercept only the guard's fixed read-only upstream fetch, redirecting it to
+# this test's bare repo. All graph proofs and diff/receipt checks remain real.
+import_fetch_fixture() { # <repo> <upstream-sha>
+  local r=$1 upstream=$2
+  git clone -q --bare "$r" "$r.upstream.git"
+  git --git-dir="$r.upstream.git" update-ref refs/heads/main "$upstream"
+  mkdir -p "$r.fakebin"
+  cat >"$r.fakebin/git" <<'SH'
+#!/usr/bin/env bash
+args=()
+for arg in "$@"; do
+  if [ "$arg" = https://github.com/kunchenguid/firstmate.git ]; then
+    args+=("$FM_TEST_UPSTREAM")
+  else
+    args+=("$arg")
+  fi
+done
+exec "$FM_TEST_REAL_GIT" "${args[@]}"
+SH
+  chmod +x "$r.fakebin/git"
+}
+
+run_import_guard() { # <repo> <before> <commits|receipts>
+  local r=$1 before=$2 kind=$3 real_git
+  real_git=$(command -v git)
+  (cd "$r" && PATH="$r.fakebin:$PATH" FM_TEST_REAL_GIT="$real_git" \
+    FM_TEST_UPSTREAM="$r.upstream.git" "$GUARD" "$kind" --before "$before" --head HEAD)
+}
+
+import_merge_fixture() { # <name>; returns repo, before/upstream refs are stable
+  local r upstream
+  r=$(new_repo "$1")
+  git -C "$r" branch before
+  git -C "$r" checkout -q -b imported
+  change "$r" "upstream unreviewed and untested" bin/fm-watch.sh
+  upstream=$(sha "$r" HEAD)
+  git -C "$r" checkout -q main
+  change "$r" "ordinary fork documentation" README
+  git -C "$r" merge -q --no-ff --no-commit imported >/dev/null 2>&1 \
+    || fail "import fixture must merge cleanly"
+  printf 'merge regression\n' >>"$r/tests/fm-watch-a.test.sh"
+  git -C "$r" add tests/fm-watch-a.test.sh
+  git -C "$r" commit -qm "merge upstream
+
+Upstream-Merge: kunchenguid/firstmate@$upstream"
+  import_fetch_fixture "$r" "$upstream"
+  printf '%s\n' "$r"
+}
+
+test_verified_import_keeps_merge_and_fork_guards() {
+  local r before out rc id
+  r=$(import_merge_fixture import-verified)
+  before=$(sha "$r" before)
+  out=$(run_import_guard "$r" "$before" commits 2>&1) \
+    || fail "verified imported ancestor must be exempt from test-touch: $out"
+  assert_contains "$out" '2 commit(s) keep risky-area tests' "only the fork commit and merge are judged"
+  out=$(run_import_guard "$r" "$before" receipts 2>&1); rc=$?
+  expect_code 1 "$rc" "the merge itself still requires independent review"
+  assert_contains "$out" 'merge upstream changes a risky script without a Lean-Review receipt' "merge missing receipt is named"
+  add_receipt "$r"
+  out=$(run_import_guard "$r" "$before" receipts 2>&1) \
+    || fail "an independently receipted import merge must pass: $out"
+  assert_contains "$out" '2 commit(s) judged, 1 risky one(s)' "merge first-parent diff is reviewed"
+  id=$(cd "$r" && "$GUARD" receipt-id HEAD)
+  printf 'changed merge resolution\n' >>"$r/bin/fm-watch.sh"
+  git -C "$r" commit -qa --amend --no-edit
+  out=$(run_import_guard "$r" "$before" receipts 2>&1); rc=$?
+  expect_code 1 "$rc" "editing an import merge invalidates its receipt"
+  assert_contains "$out" 'receipt for a different diff' "merge resolution is bound by the receipt"
+  add_receipt "$r"
+  change "$r" "fork unreviewed" bin/fm-park.sh tests/fm-park-new.test.sh
+  out=$(run_import_guard "$r" "$before" receipts 2>&1); rc=$?
+  expect_code 1 "$rc" "a fork commit beside an import is never exempt"
+  assert_contains "$out" 'fork unreviewed changes a risky script without a Lean-Review receipt' "ordinary fork commit keeps review guard"
+  change "$r" "fork untested" bin/fm-watch.sh
+  out=$(run_import_guard "$r" "$before" commits 2>&1); rc=$?
+  expect_code 1 "$rc" "a fork commit beside an import keeps test-touch"
+  assert_contains "$out" 'fork untested changes watcher' "ordinary fork commit keeps test guard"
+  pass "verified upstream ancestors are exempt, but merges and ordinary fork changes keep full guards"
+}
+
+test_import_declaration_rejects_forgery_and_unreachable_sha() {
+  local r before out rc mode upstream side
+  for mode in malformed wrong-parent wrong-repo duplicate unreachable unavailable; do
+    r=$(import_merge_fixture "import-$mode")
+    before=$(sha "$r" before)
+    upstream=$(sha "$r" imported)
+    case "$mode" in
+      malformed) git -C "$r" commit -q --amend -m 'merge upstream' --trailer 'Upstream-Merge: kunchenguid/firstmate@bad' ;;
+      wrong-parent) git -C "$r" commit -q --amend -m 'merge upstream' --trailer "Upstream-Merge: kunchenguid/firstmate@$before" ;;
+      wrong-repo) git -C "$r" commit -q --amend -m 'merge upstream' --trailer "Upstream-Merge: someone/firstmate@$upstream" ;;
+      duplicate) git -C "$r" commit -q --amend -m 'merge upstream' --trailer "Upstream-Merge: kunchenguid/firstmate@$upstream" --trailer "Upstream-Merge: kunchenguid/firstmate@$before" ;;
+      unreachable)
+        # A valid local SHA/second parent does not prove membership of upstream main.
+        git --git-dir="$r.upstream.git" update-ref refs/heads/main "$before"
+        ;;
+      unavailable) rm -rf "$r.upstream.git" ;;
+    esac
+    for side in commits receipts; do
+      out=$(run_import_guard "$r" "$before" "$side" 2>&1); rc=$?
+      expect_code 2 "$rc" "$side refuses $mode upstream declaration"
+      case "$mode" in
+        malformed|wrong-repo|duplicate) assert_contains "$out" 'malformed Upstream-Merge' "$mode is named" ;;
+        wrong-parent) assert_contains "$out" 'exact second parent' "wrong parent is named" ;;
+        unreachable) assert_contains "$out" 'not reachable from kunchenguid/firstmate main' "unreachable SHA is named" ;;
+        unavailable) assert_contains "$out" 'cannot fetch kunchenguid/firstmate main' "failed source verification is named" ;;
+      esac
+    done
+  done
+  pass "malformed, forged, wrong-parent, duplicate, unreachable, and unavailable imports are refused"
+}
+
+test_verified_import_keeps_merge_and_fork_guards
+test_import_declaration_rejects_forgery_and_unreachable_sha
 test_core_passes_and_fails
 test_risky_change_needs_a_test
 test_each_commit_is_judged_not_the_tip
@@ -372,6 +508,7 @@ test_range_fallback_and_base_areas
 test_receipts
 test_receipts_with_widened_parent_mapping
 test_receipts_refuse_removed_baseline_coverage
+test_merge_receipt_refuses_removed_baseline_coverage
 test_receipt_survives_plain_rebase
 
 echo "# all fm-safety-guard tests passed"

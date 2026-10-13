@@ -61,6 +61,10 @@ jobs:
           # Two workers: heavy roots share one worker, so the 16 GiB runner
           # holds at most one heavy analysis plus one light one at a time.
           FM_LINT_JOBS: '2'
+          # The merged source closures outgrow the default 12 GiB virtual
+          # cap (~8 GiB GHC heap). This is address space, not resident memory;
+          # keep heavy roots serialized and retain full source/dataflow lint.
+          FM_LINT_ROOT_MEMORY_KIB: '16777216'
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-lint"
