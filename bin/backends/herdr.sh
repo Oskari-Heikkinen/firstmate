@@ -3219,9 +3219,10 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # Claude, text is typed only into an empty composer and Enter is sent only
 # after the composer shows the payload (fm_backend_herdr_composer_payload_shown).
 # A missing read, a shorter suffix, or a paste placeholder followed by a
-# literal remainder does not press Enter: the composer is cleared back to
-# empty and the verdict is send-failed, or unknown when the clear cannot be
-# verified. Other harnesses skip this proof. Verified hazard
+# literal remainder does not press Enter: after bounded proof polling, an
+# observed leftover is cleared back to empty and the verdict is send-failed.
+# When no text ever rendered, no keys are pressed and the verdict is unknown;
+# an unverified clear is also unknown. Other harnesses skip this proof. Verified hazard
 # (herdr-verification-p2.md "slash/$ autocomplete popup"): a `/`- or
 # `$`-prefixed send opens a completion popup within ~0.1s, exactly like tmux's
 # claude/codex popups, so the caller's <settle> before the first Enter matters
@@ -3401,6 +3402,34 @@ fm_backend_herdr_composer_clear() {  # <target> <text>
   return 1
 }
 
+# Poll through delayed renders before refusing the payload. The wait budget
+# bounds the number of interval sleeps (reads add their transport latency).
+# Zero permits one read for sequenced fixtures; a zero settle uses 0.1s polls.
+# PROOF_SEEN records rendered text, not transport acceptance: clearing a draft
+# never observed would let a stale empty read falsely verify a blind Ctrl+U.
+FM_BACKEND_HERDR_PROOF_WAIT=${FM_BACKEND_HERDR_PROOF_WAIT:-5}
+fm_backend_herdr_composer_await_payload() {  # <target> <text> <interval>
+  local target=$1 text=$2 interval=$3 content polls i=0
+  FM_BACKEND_HERDR_PROOF_SEEN=0
+  interval=$(awk -v s="$interval" 'BEGIN {
+    if (s !~ /^[0-9]+([.][0-9]+)?$/) exit 1
+    print (s > 0 ? s : 0.1)
+  }') || return 1
+  polls=$(awk -v w="$FM_BACKEND_HERDR_PROOF_WAIT" -v s="$interval" 'BEGIN {
+    if (w !~ /^[0-9]+([.][0-9]+)?$/) exit 1
+    n = w / s; printf "%d", int(n) + (n > int(n))
+  }') || return 1
+  while :; do
+    if content=$(fm_backend_herdr_composer_content "$target"); then
+      [ -z "${content//[$' \t\r\n\v\f']/}" ] || FM_BACKEND_HERDR_PROOF_SEEN=1
+      fm_backend_herdr_composer_payload_shown "$text" "$content" && return 0
+    fi
+    [ "$i" -lt "$polls" ] || return 1
+    i=$((i + 1))
+    sleep "$interval"
+  done
+}
+
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   local raw_status footer_baseline='' allow_rendered=0 enter_sent=0 identity proof=0 content
@@ -3419,9 +3448,8 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   if [ "$proof" = 1 ]; then
-    if ! content=$(fm_backend_herdr_composer_content "$target") \
-      || ! fm_backend_herdr_composer_payload_shown "$text" "$content"; then
-      if fm_backend_herdr_composer_clear "$target" "$text"; then
+    if ! fm_backend_herdr_composer_await_payload "$target" "$text" "$settle"; then
+      if [ "$FM_BACKEND_HERDR_PROOF_SEEN" = 1 ] && fm_backend_herdr_composer_clear "$target" "$text"; then
         printf 'send-failed'
       else
         printf 'unknown'

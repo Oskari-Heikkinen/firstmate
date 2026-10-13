@@ -553,7 +553,8 @@ Typed-plane text is typed once; only Enter is retried.
 
 When native `agent get` identity is Claude, the adapter types only into an empty composer.
 A Claude composer that already holds text, or cannot be read, before the send is refused with nothing typed.
-Before that Enter, the adapter continues only when the selected composer shows the typed payload, or only Claude paste placeholders with no literal remainder.
+Before that Enter, the adapter polls through delayed renders and continues only when the selected composer shows the typed payload, or only Claude paste placeholders with no literal remainder.
+`bin/backends/herdr.sh` owns the proof polling budget and its override; `tests/fm-backend-herdr.test.sh` pins delayed-render and never-rendered refusal behaviour.
 Every herdr adapter composer read (`fm_backend_herdr_composer_state`, `fm_backend_herdr_composer_content`) captures the full visible viewport, never a bounded tail, while the shared inbox pending-line confirmation read (bin/fm-task-inbox-lib.sh) stays a bounded tail on every backend: an overlay Claude renders between the composer and the pane bottom - the slash-command popup is the verified shape - pushes the composer outside a tail window, and the composer is by definition inside the viewport.
 Dated measurement: docs/verification/runtime-backends.md "Claude exit behind the slash-command popup".
 
@@ -568,6 +569,7 @@ Instead:
 
 Ctrl+C is not used for this, because Claude documents it as interrupting a running operation.
 If the composer cannot be verified empty again, the submit reports `unknown` instead, because text may still be in the composer.
+If no composer text ever rendered during proof polling, it also reports `unknown` without pressing Ctrl+U or Enter: a stale empty read cannot verify that queued input was cleared.
 
 Other harnesses, and panes with no native identity, skip this proof and keep the type-then-Enter path.
 They skip it because their paste placeholders and composer shapes are not live-verified.
@@ -813,7 +815,9 @@ On stop:
 2. The recorded terminal is closed.
 3. The AFK flag is removed last.
 
-A fresh entry clears stale transient escalation caches, while durable queue and task records remain authoritative.
+A fresh entry clears proven prior-session delivery artifacts, while a restart within the live posture record keeps undelivered alerts, their original age, wedge evidence, and unknown-wake acknowledgements.
+`bin/fm-afk-launch.sh` owns the session-age comparison; an undated nonempty buffer is preserved rather than silently discarded.
+The successor daemon retries that buffer, and `tests/fm-afk-launch.test.sh` pins preservation, prior-session cleanup, and redelivery.
 
 ## Destructive lab safety
 

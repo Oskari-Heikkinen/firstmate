@@ -714,6 +714,32 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
 }
 
+# A dead daemon does not imply a new away session. The buffer age owns its
+# session comparison; after a successful flush removes that age, the existing
+# flag's refresh epoch still identifies a continuation and keeps delivered
+# unknown-wake acknowledgements. Never discard an undated nonempty buffer.
+# The successor daemon retries preserved alerts with their original age.
+fm_afk_launch_clear_prior_artifacts() {
+  local since entered refreshed
+  since=$(head -n 1 "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.since" 2>/dev/null || true)
+  entered=$(fm_afk_contract_read_field "$(fm_afk_contract_path "$FM_AFK_LAUNCH_STATE")" entered_epoch 2>/dev/null || true)
+  case "$since:$entered" in
+    *[!0-9:]*|:*|*:) ;;
+    *)
+      [ "$since" -lt "$entered" ] || return 0
+      fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"
+      return $?
+      ;;
+  esac
+  [ ! -s "$FM_AFK_LAUNCH_STATE/.subsuper-escalations" ] || return 0
+  refreshed=$(sed -n '2p' "$FM_AFK_LAUNCH_STATE/.afk" 2>/dev/null || true)
+  case "$refreshed:$entered" in
+    *[!0-9:]*|:*|*:) ;;
+    *) [ "$refreshed" -lt "$entered" ] || return 0 ;;
+  esac
+  fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"
+}
+
 fm_afk_launch_start() {
   local captain_target captain_backend backup artifact had_afk=0 result
   fm_afk_launch_catchup_pending && return 1
@@ -752,7 +778,7 @@ fm_afk_launch_start() {
   if ! fm_afk_launch_reconcile; then
     result=1
   else
-    if fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
+    if fm_afk_launch_clear_prior_artifacts; then
       result=0
     else
       fm_afk_launch_log "failed to clear stale away-mode artifacts"
@@ -808,7 +834,7 @@ fm_afk_launch_start_native() {
   done
   fm_afk_launch_reconcile || result=1
   if [ "$result" -eq 0 ]; then
-    if ! fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
+    if ! fm_afk_launch_clear_prior_artifacts; then
       fm_afk_launch_log "failed to clear stale away-mode artifacts"
       result=1
     elif ! fm_afk_launch_flag_write; then

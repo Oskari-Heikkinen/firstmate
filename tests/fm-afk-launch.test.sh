@@ -278,6 +278,83 @@ unit_clear_stale() {
   rm -rf "$st"
 }
 
+# Relaunch is a continuation even after the daemon lock and native job died.
+# Exercise both entry paths without creating any real terminal.
+unit_relaunch_preserves_current_session_delivery() {
+  local st entered since age path artifact expected
+  for age in current equal prior missing malformed flushed fresh-empty old-flag; do
+    st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-relaunch.XXXXXX")
+    mkdir -p "$st/state"
+    enter_posture "$st" || fail "relaunch: could not enter fixture posture"
+    entered=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$CONTRACT" field entered_epoch)
+    case "$age" in
+      current) since=$((entered + 1)) ;;
+      equal) since=$entered ;;
+      prior) since=$((entered - 60)) ;;
+      missing) since= ;;
+      malformed) since=invalid ;;
+      flushed|fresh-empty|old-flag) since= ;;
+    esac
+    expected='undelivered captain decision'
+    if [ "$age" = flushed ]; then
+      # A prior successful delivery left an empty buffer and no age, but the
+      # session flag and delivered-unknown acknowledgements remain current.
+      FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
+        || fail "relaunch: could not prepare initial native lifecycle"
+      expected=
+    elif [ "$age" = fresh-empty ] || [ "$age" = old-flag ]; then
+      expected=
+      if [ "$age" = old-flag ]; then
+        printf 'away\n%s\n' "$((entered - 60))" > "$st/state/.afk"
+      fi
+    fi
+    printf '%s' "$expected" > "$st/state/.subsuper-escalations"
+    [ -z "$since" ] || printf '%s\n' "$since" > "$st/state/.subsuper-escalations.since"
+    printf 'original wedge evidence\n' > "$st/state/.subsuper-inject-wedged"
+    printf 'already delivered unknown wake\n' > "$st/state/.subsuper-unknown-acked"
+    for path in start-native start; do
+      if ! FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+        . "$1"
+        discover_supervisor_target() { printf "fixture:0"; }
+        discover_supervisor_backend() { printf tmux; }
+        fm_afk_launch_create_tmux() { return 0; }
+        fm_afk_launch_main "$2"
+      ' _ "$LAUNCH" "$path" >/dev/null 2>&1; then
+        fail "relaunch $path ($age): preparation failed"
+      elif [ "$age" = prior ] || [ "$age" = fresh-empty ] || [ "$age" = old-flag ]; then
+        for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .subsuper-unknown-acked; do
+          [ ! -e "$st/state/$artifact" ] || fail "relaunch $path ($age): prior-session $artifact survived"
+        done
+        pass "relaunch $path ($age): prior-session delivery artifacts are cleared"
+      elif [ ! -f "$st/state/.subsuper-escalations" ] \
+        || [ "$(cat "$st/state/.subsuper-escalations" 2>/dev/null)" != "$expected" ] \
+        || [ "$(cat "$st/state/.subsuper-escalations.since" 2>/dev/null)" != "$since" ] \
+        || [ "$(cat "$st/state/.subsuper-inject-wedged" 2>/dev/null)" != 'original wedge evidence' ] \
+        || [ "$(cat "$st/state/.subsuper-unknown-acked" 2>/dev/null)" != 'already delivered unknown wake' ]; then
+        fail "relaunch $path ($age): delivery buffer, original age, wedge or acknowledgement changed"
+      else
+        pass "relaunch $path ($age): undelivered alerts and their original age survive a dead daemon"
+      fi
+    done
+    if [ "$age" = current ]; then
+      if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+        . "$1"
+        inject_msg() { printf "%s\n" "$1" > "$2/delivered"; }
+        escalate_flush "$2"
+      ' _ "$ROOT/bin/fm-supervise-daemon.sh" "$st/state" \
+        && grep -Fq 'undelivered captain decision' "$st/state/delivered" \
+        && [ ! -s "$st/state/.subsuper-escalations" ] \
+        && [ ! -e "$st/state/.subsuper-escalations.since" ] \
+        && [ ! -e "$st/state/.subsuper-inject-wedged" ]; then
+        pass "relaunch: successor redelivers the original buffer and clears its age only after delivery"
+      else
+        fail "relaunch: preserved buffer was not redelivered"
+      fi
+    fi
+    rm -rf "$st"
+  done
+}
+
 unit_relative_paths_are_absolute_before_daemon_launch() {
   local root home state out status linked_home
   root=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-relative-home.XXXXXX")
@@ -1604,6 +1681,7 @@ e2e_tmux() {
 }
 
 unit_clear_stale
+unit_relaunch_preserves_current_session_delivery
 unit_enter_records_the_posture_in_one_step_without_a_daemon
 unit_retired_two_step_entry_is_refused
 unit_pi_never_launches_the_daemon

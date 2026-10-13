@@ -34,6 +34,8 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
 mkdir -p "$TMP_ROOT/ambient-home"
 export FM_HOME="$TMP_ROOT/ambient-home"
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
+# Sequenced fixtures script one proof read; lag tests enable polling.
+export FM_BACKEND_HERDR_PROOF_WAIT=0
 
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,
 # unit-separated args, to $FM_HERDR_LOG) and returns the canned response for
@@ -4931,6 +4933,48 @@ test_send_text_submit_claude_refuses_to_type_into_a_nonempty_composer() {
   pass "fm_backend_herdr_send_text_submit: a Claude composer holding leftover text is refused before anything is typed"
 }
 
+# A loaded Claude can render typed input seconds after herdr accepted it
+# (2026-10-03: the away doorbell's proof read and the post-Ctrl+U read both
+# saw the pre-input composer, so the clear "succeeded" while the doorbell
+# landed later, minus the row the blind Ctrl+U deleted, and wedged every
+# later injection). The proof must wait for the payload to render.
+test_send_text_submit_claude_waits_for_a_lagging_composer_to_show_the_payload() {
+  local dir log resp fb out enter_count text
+  dir="$TMP_ROOT/submit-claude-lagging-render"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text=": Firstmate operational input waiting: read '/tmp/x/operational-inbox/1-abc.msg' and handle its contents as Firstmate operational input."
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/1.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/2.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/4.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf %s\n' "$text" > "$resp/6.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/7.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/9.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 FM_BACKEND_HERDR_PROOF_WAIT=2 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" )
+  [ "$out" = empty ] || fail "a payload that renders late should still be proven and submitted, got '$out'"
+  [ "$(herdr_ctrl_u_count "$log")" -eq 0 ] || fail "no Ctrl+U may be pressed while the typed payload has not rendered yet"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a late-rendered payload should be submitted once, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: a Claude composer that renders the payload late is waited for, not cleared"
+}
+
+test_send_text_submit_claude_never_presses_keys_into_an_unrendered_composer() {
+  local dir log resp fb out text
+  dir="$TMP_ROOT/submit-claude-never-rendered"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text=": Firstmate operational input waiting: read '/tmp/x/operational-inbox/1-abc.msg' and handle its contents as Firstmate operational input."
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/1.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/2.out"
+  for n in $(seq 4 40); do printf '  \xe2\x9d\xaf\n' > "$resp/$n.out"; done
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 FM_BACKEND_HERDR_PROOF_WAIT=0.2 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" )
+  [ "$out" = unknown ] || fail "a payload never seen in the composer must not be reported as cleanly refused, got '$out'"
+  [ "$(herdr_ctrl_u_count "$log")" -eq 0 ] || fail "an empty read before the payload ever rendered cannot prove a clear, so no Ctrl+U may be sent"
+  [ "$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")" -eq 0 ] || fail "an unproven payload must not be submitted"
+  pass "fm_backend_herdr_send_text_submit: no blind Ctrl+U or Enter while the typed payload has never rendered"
+}
+
 test_send_text_submit_refuses_suffix_when_transcript_still_shows_the_head() {
   local dir log resp fb out enter_count text suffix
   dir="$TMP_ROOT/submit-stale-head"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -5940,6 +5984,8 @@ test_send_text_submit_refused_suffix_that_will_not_clear_is_unknown
 test_send_text_submit_clears_a_wrapped_suffix_one_row_per_press
 test_send_text_submit_refused_suffix_then_clean_retry_submits_only_the_message
 test_send_text_submit_claude_refuses_to_type_into_a_nonempty_composer
+test_send_text_submit_claude_waits_for_a_lagging_composer_to_show_the_payload
+test_send_text_submit_claude_never_presses_keys_into_an_unrendered_composer
 test_send_text_submit_refuses_suffix_when_transcript_still_shows_the_head
 test_send_text_submit_accepts_marked_payloads_whose_read_back_drops_u2063
 test_send_text_submit_refuses_marked_digest_missing_its_head

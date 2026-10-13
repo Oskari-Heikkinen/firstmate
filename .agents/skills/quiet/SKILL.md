@@ -44,6 +44,7 @@ exits it.
    On a home with `config/supervision-host`, launch the daemon on the path
    this harness uses without the host; `start` and `start-native` take quiet
    mode from the record `enter` wrote.
+   The `afk` skill's native-tool timeout and daemon re-arm rule also applies here; a daemon stop notification does not exit quiet mode.
    Leaving `FM_AFK_MODE` unset on a bare refresh of an already-running quiet
    daemon is also correct and does nothing wrong: `fm_afk_flag_write`
    preserves the on-disk mode when no explicit mode is given, so a plain
