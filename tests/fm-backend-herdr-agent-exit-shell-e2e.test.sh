@@ -263,7 +263,7 @@ SH
   [ -n "$N_SOURCE" ] || fail 'native park did not register bounded release'
   PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_HOME="$N_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$N_HOME/state" FM_DATA_OVERRIDE="$N_HOME/data" FM_CONFIG_OVERRIDE="$N_HOME/config" \
     "$ROOT/bin/fm-procevent.sh" start "$N_SOURCE" || fail 'registered native release action failed'
-  assert_grep '^copy_state=released$' "$N_HOME/state/$N_ID.meta" 'native return never completed saved custody'
+  assert_equals released "$(sed -n 's/^copy_state=//p' "$N_HOME/state/$N_ID.meta")" 'native return never completed saved custody'
   [ "$(git -C "$N_PROJECT" rev-parse "fm/$N_ID")" = "$N_HEAD" ] || fail 'native return deleted/rewrote the saved branch'
   [ "$(classify_recovery "$P_LIVE")" = alive ] || fail 'release disturbed the sibling live agent'
   PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_HOME="$N_HOME" bash -c '

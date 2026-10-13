@@ -24,6 +24,14 @@
 # An owner runs the registered source, never invokes release manually.
 # The action is claimed once, bounded separately, and interruption preserves
 # custody and reports the failure without consuming the resume error budget.
+# Release budgets expensive children to an internal deadline, reserving at least
+# two seconds (up to 30 seconds) for notification/lock cleanup before its outer
+# action envelope. A later listener poll or restore entry only notifies uncertain
+# hard-kill custody; it never reaps locks, edits custody records or retries native
+# work. The supervisor must reconcile that rare interrupted transaction.
+# Missing/invalid attempt evidence stays not-yet (poll exit 1) with an error on
+# stderr. Only notification append failure uses poll exit 2, so the existing
+# condition-error outcome wakes the supervisor after its ordinary error budget.
 # bin/fm-suspend-lib.sh owns saved-work custody, exclusions and crash phases.
 # A failed qualification retains today's park; a prepared transaction failure
 # wakes the supervisor and requires reconciliation before any further action.
@@ -130,6 +138,10 @@
 #   park_exit_confirmed=<park-token>  verified stop receipt for release readiness
 #   park_release_source=<when-source-id>  separate bounded copy-release action
 #   park_release_attempt=<park-token>  claimed one attempt for this incarnation
+#   park_release_timeout=<seconds>  recorded outer action bound (minimum 5)
+#   park_release_pid=<pid>      release lock owner; live/unknown never reclaimed
+#   park_release_pid_identity=<fm_pid_identity>  parent-only PID reuse evidence
+#   park_release_notified=<park-token>  idempotent interrupted-custody notification
 #   wait_started_at=<epoch>    continuous unresolved-condition start
 #   park_open_ended=0|1        explicit open-ended wait classification
 #   park_relocation_safe=0|1   attestation, never a bypass of safety checks
@@ -143,7 +155,7 @@
 #   FM_PARK_STABLE         consecutive true polls required (2)
 #   FM_PARK_ERROR_BUDGET   consecutive condition errors before waking (5)
 #   FM_PARK_DEADLINE_SECS  default deadline from now (604800)
-#   FM_PARK_RELEASE_TIMEOUT  separate copy-release action bound (1800 seconds)
+#   FM_PARK_RELEASE_TIMEOUT  separate copy-release action bound (1800 seconds, minimum 5)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -389,7 +401,7 @@ cmd_validate() {
 
 cmd_park() {
   local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
-  local open_ended=0 relocation_safe=0 started token release_name
+  local open_ended=0 relocation_safe=0 started token release_name release_timeout
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
@@ -403,6 +415,9 @@ cmd_park() {
       *) die "unknown park argument: $1" ;;
     esac
   done
+  release_timeout=${FM_PARK_RELEASE_TIMEOUT:-1800}
+  case "$release_timeout" in ''|0*|*[!0-9]*) die "copy-release action bound must be an integer of at least 5 seconds" ;; esac
+  [ "${#release_timeout}" -le 6 ] && [ "$release_timeout" -ge 5 ] || die "copy-release action bound must be 5..999999 seconds"
   [ -n "$handoff" ] || die "park needs --handoff <file> (sections: Goal, Done, Waiting for, Next steps)"
   validate_handoff "$handoff" "$want"
   case "$(meta_get copy_state)" in ''|retained) ;; *) die "saved copy custody requires reconciliation or restoration, not re-park" ;; esac
@@ -462,6 +477,7 @@ cmd_park() {
   token="park.$now.${BASHPID:-$$}.$RANDOM"
   park_record "park_state=parked" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
     "park_token=$token" "park_pickup=" 'park_exit_confirmed=' 'park_release_source=' 'park_release_attempt=' \
+    "park_release_timeout=$release_timeout" 'park_release_pid=' 'park_release_pid_identity=' 'park_release_notified=' \
     "wait_started_at=$started" "park_open_ended=$open_ended" "park_relocation_safe=$relocation_safe" \
     "park_source=$sid" "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
     || die "cannot record the park in task $ID's record"
@@ -477,7 +493,7 @@ cmd_park() {
     release_name=$(release_source_name) || die "cannot name the copy-release source"
     if ! out=$("$WHEN" arm "$release_name" --interval "${FM_PARK_INTERVAL:-300}" --stable 1 \
         --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" \
-        --action-timeout "${FM_PARK_RELEASE_TIMEOUT:-1800}" \
+        --action-timeout "$release_timeout" \
         --condition "$SCRIPT_DIR/fm-park.sh" release-ready "$ID" "$token" \
         --action "$SCRIPT_DIR/fm-park.sh" release "$ID" "$token" 2>&1); then
       "$WHEN" retire "park-$ID" >/dev/null 2>&1 || true
@@ -585,6 +601,7 @@ cmd_resume() {
   local cond handoff note out release_source
   task_resolve "${1-}"
   [ -z "${2-}" ] || [ "$(meta_get park_token)" = "$2" ] || die "retired park incarnation cannot resume"
+  fm_suspend_reconcile_release "$META" "$ID" "$STATE" "$CONFIG" || die "cannot reconcile interrupted release notification"
   case "$(meta_get copy_state)" in ''|retained|released) ;; *) die "unfinished copy transaction; reconcile before resume" ;; esac
   case "$(meta_get park_state):$(meta_get copy_state):${2-}" in
     parked:*) ;;
@@ -680,18 +697,28 @@ cmd_release_ready() {
   fm_suspend_enabled "$CONFIG" && fm_suspend_qualified "$META" "$(date +%s)"
 }
 
-# EXIT/TERM cleanup is shared by every bounded release outcome. Even SIGKILL
-# leaves dead-owner locks and a durable action-failed/ambiguous source outcome;
-# neither outcome authorizes retry of a prepared acquisition.
+# The custody owner survives its internally timed children. EXIT/TERM cleanup
+# shares every ordinary outcome; a hard kill is reconciled by poll/restore from
+# dead-attempt evidence, never by replaying the native acquisition.
 release_cleanup() {
   local rc=$1
   if [ "$rc" -ne 0 ] && [ "$(meta_get copy_state)" = release-prepared ]; then
-    status_append 'blocked [key=copy-custody]: saved copy release interrupted or failed; exact acquisition and saved evidence retained; reconcile before retry' || true
+    fm_suspend_notify_release "$META" "$ID" "$STATE" "$CONFIG" || true
+  elif [ "${FM_SUSPEND_DEADLINE:-0}" -gt 0 ] && [ "$SECONDS" -ge "$FM_SUSPEND_DEADLINE" ] &&
+       [ "$(meta_get copy_state)" = retained ]; then
+    status_append 'blocked [key=copy-release-timeout]: internal release deadline expired before saved custody completed; work copy retained, reconcile before retry' || true
   fi
   [ -z "$project_lock" ] || fm_lock_release "$project_lock"
   [ -z "$meta_lock" ] || fm_lock_release "$meta_lock"
   [ -z "$control_lock" ] || fm_lock_release "$control_lock"
   if declare -F fm_lease_guard_release >/dev/null; then fm_lease_guard_release; fi
+}
+
+# One retained-refusal owner for the deadline-bound preparation steps. Expiry
+# must remain an action failure, never a dirty/job/evidence qualification reason.
+release_retain() { # <reason>; called with the metadata lock and local deadline
+  [ "$SECONDS" -lt "$FM_SUSPEND_DEADLINE" ] || return 1
+  fm_suspend_record "$META" "copy_retain_reason=$1"
 }
 
 # Release is the separate registered action, never part of condition polling.
@@ -700,6 +727,15 @@ cmd_release() (
   task_resolve "${1-}"
   printf 'copy release task=%s incarnation=%s\n' "$ID" "$2"
   local control_lock='' meta_lock='' project_lock='' lock release_wt release_project holder lease backend target status
+  local bound headroom release_pid release_identity
+  bound=$(meta_get park_release_timeout)
+  case "$bound" in ''|0*|*[!0-9]*) die "missing or invalid registered release bound" ;; esac
+  [ "${#bound}" -le 6 ] && [ "$bound" -ge 5 ] || die "registered release bound must be 5..999999 seconds"
+  headroom=$((bound / 10)); [ "$headroom" -ge 2 ] || headroom=2
+  [ "$headroom" -le 30 ] || headroom=30
+  # Do not export to callers/restoration: this deadline belongs to this action.
+  # shellcheck disable=SC2034 # Read dynamically by fm_suspend_run in the library.
+  local FM_SUSPEND_DEADLINE=$((SECONDS + bound - headroom))
   trap 'release_cleanup "$?"' EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
@@ -714,7 +750,10 @@ cmd_release() (
   [ "$(meta_get park_token)" = "$2" ] && [ "$(meta_get park_exit_confirmed)" = "$2" ] || return 0
   [ "$(meta_get park_release_source)" = "when-$(release_source_name)" ] || return 1
   [ "$(meta_get park_release_attempt)" != "$2" ] || return 0
-  fm_suspend_record "$META" "park_release_attempt=$2" || return 1
+  fm_current_pid release_pid || return 1
+  release_identity=$(fm_pid_identity "$release_pid") && [ -n "$release_identity" ] || return 1
+  fm_suspend_record "$META" "park_release_attempt=$2" "park_release_pid=$release_pid" \
+    "park_release_pid_identity=$release_identity" || return 1
   case "$(meta_get copy_state)" in released) return 0 ;; ''|retained) ;; *) return 1 ;; esac
   if ! fm_suspend_qualified "$META" "$(date +%s)"; then
     fm_suspend_record "$META" 'copy_retain_reason=short wait or missing relocation-safety attestation' || return 1
@@ -747,18 +786,31 @@ cmd_release() (
   fm_treehouse_relaunch_reservation "$release_project" "$STATE" "$META" "$ID" "$FM_HOME" || return 0
   if ! fm_suspend_routes_clear "$STATE" "$META" "$ID" "$FM_HOME" ||
      ! fm_suspend_clean_copy "$release_wt" || ! fm_suspend_quiet_copy "$release_project" "$release_wt" "$META" 1; then
-    fm_suspend_record "$META" 'copy_retain_reason=typed route, dirty/unknown artifacts or live/unverified job' || return 1
+    release_retain 'typed route, dirty/unknown artifacts or live/unverified job' || return 1
     return 0
   fi
   # Preserve declared evidence using the existing owner; dependencies still
   # must be relocation-independent, and unknown artifacts never get discarded.
-  # shellcheck source=bin/fm-task-evidence-lib.sh
-  . "$SCRIPT_DIR/fm-task-evidence-lib.sh"
-  fm_task_evidence_preserve "$ID" "$DATA" "$release_wt" 1 "$(meta_get tasktmp)" || return 0
-  fm_suspend_save "$META" "$ID" "$FM_HOME" "$DATA" "$release_wt" || return 0
+  # shellcheck disable=SC2016 # Arguments expand only in the bounded child.
+  if ! fm_suspend_run bash -c '. "$1"; shift; fm_task_evidence_preserve "$@"' _ \
+      "$SCRIPT_DIR/fm-task-evidence-lib.sh" "$ID" "$DATA" "$release_wt" 1 "$(meta_get tasktmp)"; then
+    release_retain 'declared evidence preservation refused; work copy and lease retained' || return 1
+    return 0
+  fi
+  if ! fm_suspend_save "$META" "$ID" "$FM_HOME" "$DATA" "$release_wt"; then
+    # Ordinary pre-preparation refusals keep today's park. Only an expired
+    # internal budget changes that refusal into the retained-copy timeout.
+    [ "$(meta_get copy_state)" != release-prepared ] || return 1
+    release_retain 'saved-work proof unavailable before preparation; work copy and lease retained' || return 1
+    return 0
+  fi
   holder=$(meta_get treehouse_lease_holder); lease=$(meta_get treehouse_lease_id)
-  if ! fm_backend_kill "$backend" "$target" '' "fm-$ID" ||
-     { [ "$backend" = herdr ] && ! fm_backend_herdr_endpoint_confirmed_gone "$target"; } ||
+  # shellcheck disable=SC2016 # Arguments expand only in the bounded child.
+  if ! fm_suspend_run bash -c '
+       . "$1/fm-backend.sh"
+       fm_backend_kill "$2" "$3" "" "fm-$4" || exit 1
+       [ "$2" != herdr ] || fm_backend_herdr_endpoint_confirmed_gone "$3"
+     ' _ "$SCRIPT_DIR" "$backend" "$target" "$ID" ||
      ! fm_suspend_quiet_copy "$release_project" "$release_wt" "$META" 0 ||
      ! fm_suspend_clean_copy "$release_wt" ||
      ! fm_treehouse_relaunch_reservation "$release_project" "$STATE" "$META" "$ID" "$FM_HOME" ||
@@ -769,7 +821,7 @@ cmd_release() (
   # retirement. A different selected slot must not find that branch occupied
   # by the released slot, and advancing the restored branch must not turn the
   # idle historical slot into apparently dirty work. Preserve the exact head.
-  git -C "$release_wt" checkout --detach --no-overwrite-ignore "$FM_SUSPEND_HEAD" || return 1
+  fm_suspend_run git -C "$release_wt" checkout --detach --no-overwrite-ignore "$FM_SUSPEND_HEAD" || return 1
   [ "$(git -C "$release_wt" rev-parse HEAD)" = "$FM_SUSPEND_HEAD" ] &&
     fm_suspend_clean_copy "$release_wt" && fm_suspend_quiet_copy "$release_project" "$release_wt" "$META" 0 &&
     fm_treehouse_relaunch_reservation "$release_project" "$STATE" "$META" "$ID" "$FM_HOME" || return 1
@@ -777,7 +829,9 @@ cmd_release() (
   # this copy. After native return, not even claim cleanup may inspect the
   # historical slot: it could already belong to a fresh acquisition.
   fm_treehouse_slot_owner_release "$release_wt" "$ID" || return 1
-  (cd "$release_project" && treehouse return --if-lease-holder "$holder" --if-lease-id "$lease" "$release_wt" < /dev/null) || return 1
+  # shellcheck disable=SC2016 # Arguments expand only in the bounded child.
+  fm_suspend_run bash -c 'cd "$1" && exec treehouse return --if-lease-holder "$2" --if-lease-id "$3" "$4"' _ \
+    "$release_project" "$holder" "$lease" "$release_wt" < /dev/null || return 1
   fm_suspend_record "$META" 'copy_state=released' 'worktree=' 'window=' 'treehouse_lease_holder=' 'treehouse_lease_id=' \
     'herdr_workspace_id=' 'herdr_tab_id=' 'herdr_pane_id=' 'copy_retain_reason=' || return 1
   fm_suspend_validate "$META" "$ID" "$FM_HOME" "$DATA" || {
@@ -787,8 +841,15 @@ cmd_release() (
 )
 
 cmd_poll() {
+  local reconcile_rc=0
   task_resolve "${1-}"
   [ "$(meta_get park_token)" = "${2-}" ] && [ "$(meta_get park_state)" = parked ] || exit 2
+  fm_suspend_reconcile_release "$META" "$ID" "$STATE" "$CONFIG" || reconcile_rc=$?
+  case "$reconcile_rc" in
+    0) ;;
+    1) exit 1 ;; # Uncertain attempt custody is not a condition error.
+    *) exit 2 ;; # Notification-write failure uses the existing escalation.
+  esac
   # The separate release action owns expensive custody and its own failures.
   # Never consume this listener's error budget while a transaction is preparing;
   # it can resume only once custody is settled, regardless of condition changes.

@@ -591,6 +591,8 @@ pass 'resumption before release qualification retires the optional source and re
 # Timeout belongs to the action, not the cheap condition. An injected slow
 # native close occurs after real saved-custody preparation; the standard when
 # runner must immediately capture failure and the release must clean its locks.
+# Keep the same five-second envelope/assertion: the release's own shorter work
+# deadline, not an outer TERM trap or an extra test delay, must provide cleanup.
 id=release-timeout; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'timeout fixture failed'
 home="$dir/home"; meta="$home/state/$id.meta"
 suspend_idle_terminal "$dir" "$id"
@@ -616,12 +618,277 @@ count=$(wc -l < "$dir/calls")
 SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" run "$sid" > "$dir/retry-result" || fail 'claimed-action read failed'
 assert_equals ambiguous "$(FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" classify "$dir/retry-result")" 'the same action was executed twice'
 assert_equals "$count" "$(wc -l < "$dir/calls")" 'a claimed release repeated native custody'
+suspend_assert_matches "^park_release_notified=$token$" "$meta" 'ordinary cleanup did not publish its notification receipt'
+cp "$meta" "$dir/meta-notified"
 rc=0; suspend_park "$dir" poll "$id" "$token" || rc=$?
 expect_code 1 "$rc" 'prepared custody interruption poisoned resume polling'
 suspend_park "$dir" resume "$id" "$token" > "$dir/resume" 2>&1 && fail 'interrupted custody resumed automatically'
+FM_HOME="$home" "$ROOT/bin/fm-control.sh" "$id" relaunch --note continue > "$dir/control" 2>&1 && fail 'ordinary notified failure restored uncertain custody'
+assert_equals 1 "$(grep -c 'blocked.*copy-custody' "$home/state/$id.status")" 'ordinary notification receipt did not suppress contradictory backstop alerts'
+suspend_assert_no_match 'release attempt interrupted; custody uncertain' "$home/state/$id.status" 'ordinary live-parent cleanup was relabeled as a hard kill'
+cmp -s "$meta" "$dir/meta-notified" || fail 'receipt deduplication changed prepared custody'
+assert_equals "$count" "$(wc -l < "$dir/calls")" 'receipt deduplication retried native custody'
 suspend_park "$dir" cancel "$id" || fail 'could not retire interrupted copy release'
 assert_absent "$home/state/procevent/$sid.source" 'cancellation orphaned its release source'
 pass 'release is separately bounded/claimed and interruption is immediate, lock-clean and isolated from the wait condition budget'
+
+# Ordinary save refusals are not action failures. Inject only the save step;
+# qualification/ownership must still run, and original custody stays retained.
+for refusal in profile branch mktemp jq rev-parse; do
+  id="release-save-refusal-$refusal"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'save refusal fixture failed'
+  home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+  suspend_idle_terminal "$dir" "$id"
+  printf 'on\n' > "$home/config/park-release"
+  printf '%s\n' "$refusal" > "$dir/save-refusal"
+  case "$refusal" in
+    profile) suspend_lib "$dir" fm_suspend_record "$meta" 'harness=pi-custom-wrapper' || fail 'unsupported profile injection failed' ;;
+    branch) suspend_lib "$dir" fm_suspend_record "$meta" 'branch=fm/not-the-saved-branch' || fail 'branch mismatch injection failed' ;;
+  esac
+  command -v git > "$dir/real-git"
+  command -v mktemp > "$dir/real-mktemp"
+  command -v jq > "$dir/real-jq"
+  cat > "$dir/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+if [ "$(cat "$SUSPEND_DIR/save-refusal")" = rev-parse ]; then
+  case "$*" in *'rev-parse --verify HEAD') exit 1 ;; esac
+fi
+exec "$(cat "$SUSPEND_DIR/real-git")" "$@"
+SH
+  cat > "$dir/fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+if [ "$(cat "$SUSPEND_DIR/save-refusal")" = mktemp ]; then
+  case "$*" in *'.suspend-save.'*) exit 1 ;; esac
+fi
+exec "$(cat "$SUSPEND_DIR/real-mktemp")" "$@"
+SH
+  cat > "$dir/fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+if [ "$(cat "$SUSPEND_DIR/save-refusal")" = jq ]; then
+  case "$*" in *'--arg k project'*) exit 1 ;; esac
+fi
+exec "$(cat "$SUSPEND_DIR/real-jq")" "$@"
+SH
+  chmod +x "$dir/fakebin/git" "$dir/fakebin/mktemp" "$dir/fakebin/jq"
+  suspend_register_release "$dir" "$id" || fail 'ordinary refusal registration failed'
+  suspend_run_release "$dir" "$id" || fail 'ordinary refusal result was not captured'
+  assert_equals fired "$(FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" classify "$dir/action-result")" "ordinary $refusal save refusal escalated as action-failed"
+  suspend_assert_matches '^copy_retain_reason=saved-work proof unavailable before preparation;' "$meta" 'ordinary save refusal lost its durable reason'
+  suspend_assert_matches '^copy_state=retained$' "$meta" 'ordinary refusal invented prepared custody'
+  suspend_assert_matches '^park_state=parked$' "$meta" 'ordinary refusal changed its wait'
+  suspend_assert_matches '^treehouse_lease_id=old-lease$' "$meta" 'ordinary refusal lost native acquisition'
+  assert_equals "fm/$id" "$(git -C "$wt" symbolic-ref --short HEAD)" 'ordinary refusal detached/changed the work branch'
+  assert_equals 'unlanded saved work' "$(cat "$wt/file")" 'ordinary refusal changed work'
+  assert_present "${wt%/*}/.fm-slot-owner" 'ordinary refusal erased its reservation'
+  assert_absent "$dir/terminal-calls" 'ordinary refusal closed its endpoint'
+  suspend_assert_no_match '^return ' "$dir/calls" 'ordinary refusal returned the copy'
+  suspend_assert_no_match 'blocked.*copy-release-timeout' "$home/state/$id.status" 'ordinary refusal was mislabeled a deadline'
+  assert_absent "$home/state/.control-$id.lock" 'ordinary refusal stranded lifecycle control'
+  assert_absent "$home/state/.meta-$id.lock" 'ordinary refusal stranded metadata'
+  assert_absent "$(suspend_lib "$dir" fm_treehouse_project_lock_path "$dir/project")" 'ordinary refusal stranded allocation'
+  pass "ordinary $refusal save refusal records why the same wait/copy/lease/work remain intact"
+done
+
+# Every timed preparation step can consume the budget, not only bundle/import.
+# Expiry must fail the action, retain custody and clean locks, never masquerade
+# as dirty/job/evidence qualification or reach return/endpoint close.
+for step in bundle import clean quiet evidence; do
+  id="release-save-timeout-$step"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'save deadline fixture failed'
+  home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+  suspend_idle_terminal "$dir" "$id"; printf 'on\n' > "$home/config/park-release"
+  command -v git > "$dir/real-git"
+  printf '%s\n' "$step" > "$dir/slow-git-kind"
+  cat > "$dir/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+case "$(cat "$SUSPEND_DIR/slow-git-kind"): $* " in
+  bundle:*' bundle create '*|import:*' fetch -q '*|clean:*' status --porcelain '*) /bin/sleep 8 ;;
+esac
+exec "$(cat "$SUSPEND_DIR/real-git")" "$@"
+SH
+  chmod +x "$dir/fakebin/git"
+  if [ "$step" = quiet ]; then
+    mv "$dir/fakebin/treehouse" "$dir/quick-treehouse"
+    cat > "$dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+case " $* " in *' status --json '*) /bin/sleep 8 ;; esac
+exec "$SUSPEND_DIR/quick-treehouse" "$@"
+SH
+    chmod +x "$dir/fakebin/treehouse"
+  fi
+  if [ "$step" = evidence ]; then
+    command -v find > "$dir/real-find"
+    cat > "$dir/fakebin/find" <<'SH'
+#!/usr/bin/env bash
+case "${1-}" in "$SUSPEND_DIR"/home/data/*) /bin/sleep 8 ;; esac
+exec "$(cat "$SUSPEND_DIR/real-find")" "$@"
+SH
+    chmod +x "$dir/fakebin/find"
+  fi
+  FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FM_PARK_RELEASE_TIMEOUT=5 suspend_park "$dir" "$id" --handoff "$home/data/$id/handoff.md" --relocation-safe > "$dir/out" 2>&1 || fail 'save deadline park failed'
+  fm_test_track_procevent_home "$home"
+  suspend_run_release "$dir" "$id" || fail 'save deadline result was not captured'
+  assert_equals action-failed "$(FM_HOME="$home" "$ROOT/bin/fm-procevent-when.sh" classify "$dir/action-result")" 'save timeout was reported as a completed release'
+  suspend_assert_matches 'blocked.*copy-release-timeout' "$home/state/$id.status" 'save timeout missed its immediate retained-work notification'
+  suspend_assert_matches '^copy_state=retained$' "$meta" 'partial saved proof became release-prepared custody'
+  assert_equals 'unlanded saved work' "$(cat "$wt/file")" 'save timeout changed committed work'
+  assert_present "${wt%/*}/.fm-slot-owner" 'save timeout lost the old protected acquisition'
+  assert_absent "$dir/terminal-calls" 'save timeout closed the protected endpoint'
+  if [ -e "$dir/calls" ]; then
+    suspend_assert_no_match '^return ' "$dir/calls" 'preparation timeout returned incomplete saved custody'
+  fi
+  suspend_assert_no_match '^copy_retain_reason=(typed route|declared evidence)' "$meta" 'deadline was mislabeled as unsafe work/job/evidence'
+  assert_absent "$home/state/.control-$id.lock" 'save deadline stranded the control lock'
+  assert_absent "$home/state/.meta-$id.lock" 'save deadline stranded the metadata lock'
+  assert_absent "$(suspend_lib "$dir" fm_treehouse_project_lock_path "$dir/project")" 'save deadline stranded the project lock'
+  pass "internal $step deadline retains unsaved copy and cleans locks before the outer action envelope"
+done
+
+# A hard kill cannot run traps, and a separately grouped child may survive.
+# The next listener/restore entry only notifies uncertainty: it must preserve
+# every lock/record/lease/copy without cleanup or native retry.
+for entry in poll resume control; do
+  id="release-hard-kill-$entry"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'hard-kill fixture failed'
+  home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+  suspend_lib "$dir" fm_suspend_save "$meta" "$id" "$home" "$home/data" "$wt" || fail 'could not prepare saved custody'
+  rc=0
+  FM_HOME="$home" bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    . "$1/bin/fm-suspend-lib.sh"
+    fm_current_pid attempt
+    fm_lock_try_acquire "$STATE/.fm-lease-command.lock" || exit 2
+    fm_lock_try_acquire "$STATE/.control-$2.lock" || exit 2
+    fm_lock_try_acquire "$(fm_meta_lock_path "$STATE/$2.meta")" || exit 2
+    fm_lock_try_acquire "$(fm_treehouse_project_lock_path "$3")" || exit 2
+    identity=$(fm_pid_identity "$attempt") || exit 2
+    fm_suspend_record "$STATE/$2.meta" "park_release_pid=$attempt" "park_release_pid_identity=$identity" "park_release_attempt=p1" || exit 2
+    kill -KILL "$attempt"
+  ' _ "$ROOT" "$id" "$dir/project" > "$dir/killed" 2>&1 || rc=$?
+  expect_code 137 "$rc" 'hard-kill fixture did not leave its locks via an actual SIGKILL'
+  assert_present "$home/state/.control-$id.lock" 'fixture did not retain interrupted control custody'
+  cp "$meta" "$dir/meta-before"
+  attempt=$(sed -n 's/^park_release_pid=//p' "$meta")
+  suspend_assert_no_match 'blocked.*copy-custody' "$home/state/$id.status" 'fixture unexpectedly ran cleanup on KILL'
+  rc=0
+  case "$entry" in
+    poll) suspend_park "$dir" poll "$id" p1 > "$dir/reconcile" 2>&1 || rc=$?; expect_code 1 "$rc" 'hard-killed prepared poll poisoned the wait error budget' ;;
+    resume) suspend_park "$dir" resume "$id" p1 > "$dir/reconcile" 2>&1 || rc=$?; expect_code 1 "$rc" 'prepared park resume allocated another copy' ;;
+    control) FM_HOME="$home" "$ROOT/bin/fm-control.sh" "$id" relaunch --note continue > "$dir/reconcile" 2>&1 || rc=$?; expect_code 1 "$rc" 'prepared control restore allocated another copy' ;;
+  esac
+  assert_grep 'release attempt interrupted; custody uncertain; supervisor must reconcile' "$home/state/$id.status" 'hard kill was not notified without a native custody claim'
+  for lock in "$home/state/.control-$id.lock" "$home/state/.meta-$id.lock" "$home/state/.fm-lease-command.lock" "$(suspend_lib "$dir" fm_treehouse_project_lock_path "$dir/project")"; do
+    assert_present "$lock" 'hard-kill backstop freed a custody lock'
+    assert_equals "$attempt" "$(cat "$lock/pid")" 'hard-kill backstop reassigned a custody lock'
+  done
+  cmp -s "$meta" "$dir/meta-before" || fail 'notification-only backstop changed custody records'
+  assert_equals old-lease "$(jq -r .worktrees[0].lease_id "$dir/.treehouse/pool/treehouse-state.json")" 'hard-kill backstop changed native acquisition'
+  assert_equals 'unlanded saved work' "$(cat "$wt/file")" 'hard-kill backstop changed work'
+  assert_absent "$dir/calls" 'hard-kill backstop touched native custody'
+  suspend_assert_matches '^copy_state=release-prepared$' "$meta" 'hard-kill reconciliation manufactured returned/restored custody'
+  suspend_lib "$dir" fm_suspend_validate "$meta" "$id" "$home" "$home/data" || fail 'hard-kill reconciliation lost saved proof'
+  suspend_park "$dir" poll "$id" p1 >/dev/null 2>&1 && fail 'interrupted custody became resumable on a second notification'
+  assert_equals 1 "$(grep -c 'blocked.*copy-custody' "$home/state/$id.status")" 'later polls repeated the same interrupted-custody notification'
+  pass "hard-killed release is notified once by $entry without freeing locks or changing/retrying uncertain custody"
+done
+
+id=release-live-attempt; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'live attempt fixture failed'
+home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+suspend_lib "$dir" fm_suspend_save "$meta" "$id" "$home" "$home/data" "$wt" || fail 'could not prepare live custody'
+identity=$(suspend_lib "$dir" fm_pid_identity "$$") || fail 'could not read live parent identity'
+suspend_lib "$dir" fm_suspend_record "$meta" "park_release_pid=$$" "park_release_pid_identity=$identity" || fail 'could not bind live attempt'
+# An unrelated live project-lock owner must also stay untouched on dead-attempt
+# reconciliation. Its actual ownership is acquired through the public primitive.
+FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_lock_try_acquire "$2"; printf "%s\n" "$3" > "$2/pid"' _ \
+  "$ROOT" "$(suspend_lib "$dir" fm_treehouse_project_lock_path "$dir/project")" "$$" || fail 'could not hold project lock'
+rc=0; suspend_park "$dir" poll "$id" p1 || rc=$?
+expect_code 1 "$rc" 'live prepared attempt became resumable'
+suspend_assert_no_match 'blocked.*copy-custody' "$home/state/$id.status" 'a live release was falsely reported interrupted'
+# Rebind to a proven dead PID while preserving the live unrelated project lock.
+FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-suspend-lib.sh"; fm_current_pid pid; fm_suspend_record "$2" "park_release_pid=$pid"' _ \
+  "$ROOT" "$meta" || fail 'could not bind dead attempt'
+rc=0; suspend_park "$dir" poll "$id" p1 || rc=$?
+expect_code 1 "$rc" 'dead prepared attempt became resumable'
+suspend_assert_matches 'blocked.*copy-custody' "$home/state/$id.status" 'dead attempt was not notified beside a foreign live project holder'
+assert_equals "$$" "$(cat "$(suspend_lib "$dir" fm_treehouse_project_lock_path "$dir/project")/pid")" 'backstop removed a live successor project lock'
+assert_absent "$dir/calls" 'live/dead backstop used native operations'
+pass 'interruption backstop refuses live attempts and preserves other live lock holders'
+
+# A bare live PID is not proof of this release parent. Exercise missing,
+# mismatched (PID reuse), and unreadable identity without touching custody.
+for uncertainty in identity-missing identity-mismatch identity-unreadable stale-receipt; do
+  id="release-$uncertainty"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'identity fixture failed'
+  home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+  suspend_lib "$dir" fm_suspend_save "$meta" "$id" "$home" "$home/data" "$wt" || fail 'could not prepare identity custody'
+  identity=$(suspend_lib "$dir" fm_pid_identity "$$") || fail 'could not read actual live parent identity'
+  case "$uncertainty" in
+    identity-missing) identity='' ;;
+    identity-mismatch|stale-receipt) identity="different-parent:$identity" ;;
+    identity-unreadable)
+      mkdir -p "$dir/proc/$$"
+      printf 'invalid stat\n' > "$dir/proc/$$/stat"
+      printf 'nonempty cmdline\n' > "$dir/proc/$$/cmdline" ;;
+  esac
+  suspend_lib "$dir" fm_suspend_record "$meta" "park_release_pid=$$" "park_release_pid_identity=$identity" || fail 'could not bind identity evidence'
+  [ "$uncertainty" != stale-receipt ] || suspend_lib "$dir" fm_suspend_record "$meta" 'park_release_notified=previous-token' || fail 'could not bind stale receipt'
+  cp "$meta" "$dir/meta-before"
+  rc=0
+  if [ "$uncertainty" = identity-unreadable ]; then
+    FM_PROC_ROOT_OVERRIDE="$dir/proc" suspend_park "$dir" poll "$id" p1 > "$dir/out" 2>&1 || rc=$?
+  else
+    suspend_park "$dir" poll "$id" p1 > "$dir/out" 2>&1 || rc=$?
+  fi
+  expect_code 1 "$rc" 'uncertain parent identity consumed the condition error budget'
+  assert_grep 'parent identity is missing, unreadable or mismatched' "$dir/out" 'identity uncertainty lost its diagnostic'
+  assert_grep 'release attempt interrupted; custody uncertain; supervisor must reconcile' "$home/state/$id.status" 'live reused/unprovable PID suppressed notification'
+  suspend_park "$dir" resume "$id" p1 > "$dir/resume" 2>&1 && fail 'uncertain identity restored custody'
+  FM_HOME="$home" "$ROOT/bin/fm-control.sh" "$id" relaunch --note continue > "$dir/control" 2>&1 && fail 'direct control restored uncertain identity'
+  assert_equals 1 "$(grep -c 'blocked.*copy-custody' "$home/state/$id.status")" 'identity uncertainty repeated the notification'
+  cmp -s "$meta" "$dir/meta-before" || fail 'identity backstop changed custody records'
+  assert_equals old-lease "$(jq -r .worktrees[0].lease_id "$dir/.treehouse/pool/treehouse-state.json")" 'identity backstop changed native lease'
+  assert_equals 'unlanded saved work' "$(cat "$wt/file")" 'identity backstop changed work'
+  assert_present "${wt%/*}/.fm-slot-owner" 'identity backstop freed protected work'
+  assert_absent "$dir/calls" 'identity backstop touched native custody'
+  pass "$uncertainty notifies once without cleanup, retry or restoration"
+done
+
+for uncertainty in missing malformed; do
+  id="release-pid-$uncertainty"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'uncertain PID fixture failed'
+  home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+  suspend_lib "$dir" fm_suspend_save "$meta" "$id" "$home" "$home/data" "$wt" || fail 'could not prepare uncertain custody'
+  [ "$uncertainty" != malformed ] || suspend_lib "$dir" fm_suspend_record "$meta" 'park_release_pid=not-a-pid' || fail 'could not inject invalid PID'
+  cp "$meta" "$dir/meta-before"
+  rc=0; suspend_park "$dir" poll "$id" p1 > "$dir/out" 2>&1 || rc=$?
+  expect_code 1 "$rc" 'uncertain prepared PID consumed the condition error budget'
+  assert_grep 'attempt PID is missing or invalid' "$dir/out" 'uncertain PID lost its concrete stderr diagnostic'
+  cmp -s "$meta" "$dir/meta-before" || fail 'uncertain PID changed custody records'
+  assert_grep 'release attempt interrupted; custody uncertain; supervisor must reconcile' "$home/state/$id.status" 'unprovable parent death did not raise its uncertainty notification'
+  suspend_park "$dir" resume "$id" p1 > "$dir/resume" 2>&1 && fail 'uncertain PID restored work'
+  assert_absent "$dir/calls" 'uncertain PID touched native custody'
+  assert_present "${wt%/*}/.fm-slot-owner" 'uncertain PID released slot custody'
+  pass "$uncertainty attempt PID stays not-yet, notifies uncertainty and leaves all custody unchanged"
+done
+
+id=release-notification-failure; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'notification failure fixture failed'
+home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
+suspend_lib "$dir" fm_suspend_save "$meta" "$id" "$home" "$home/data" "$wt" || fail 'could not prepare failed notification custody'
+FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-suspend-lib.sh"; fm_current_pid pid; fm_suspend_record "$2" "park_release_pid=$pid"' _ \
+  "$ROOT" "$meta" || fail 'could not bind dead attempt for notification failure'
+rm "$home/state/$id.status"; mkdir "$home/state/$id.status"
+cp "$meta" "$dir/meta-before"
+rc=0; suspend_park "$dir" poll "$id" p1 > "$dir/out" 2>&1 || rc=$?
+expect_code 2 "$rc" 'notification-write failure silently consumed its owner-visible fallback'
+assert_grep 'cannot append copy-custody notification' "$dir/out" 'notification failure did not identify the concrete append error'
+cmp -s "$meta" "$dir/meta-before" || fail 'failed append was marked notified or changed saved custody'
+assert_absent "$dir/calls" 'notification failure touched native custody'
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$home" "$WHEN" arm "notification-$id" \
+  --stable 1 --interval 1 --deadline 20 --error-budget 2 \
+  --condition "$PARK" poll "$id" p1 --action /bin/true >/dev/null || fail 'could not arm notification-failure fallback'
+fm_test_track_procevent_home "$home"
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" start "when-notification-$id" \
+  > "$dir/fallback" 2>&1 || fail 'notification failure fallback was not durably captured'
+result=$(first_result "$home" "when-notification-$id") || fail 'no owner-visible condition-error result was published'
+assert_equals condition-error "$(FM_HOME="$home" "$WHEN" classify "$result")" 'notification failure did not wake through the existing error-budget outcome'
+suspend_park "$dir" resume "$id" p1 > "$dir/resume" 2>&1 && fail 'notification failure restored work'
+assert_present "${wt%/*}/.fm-slot-owner" 'notification failure returned protected work'
+pass 'failed custody notification uses the existing condition-error outcome without new channels or restore'
 
 id=pickup-authority; dir=$(suspend_case "$TMP_ROOT" "$id"); home="$dir/home"; meta="$home/state/$id.meta"
 suspend_saved "$dir" "$id" || fail 'authority save fixture failed'

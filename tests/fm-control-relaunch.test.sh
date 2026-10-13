@@ -3099,6 +3099,24 @@ assert_grep 'unfinished or invalid copy custody' "$dir/out" 'interrupted restore
 assert_absent "$dir/calls" 'interrupted restore invoked the allocator'
 pass 'saved-task current state and control never inspect or type into the historical slot; interrupted custody refuses duplication'
 
+# Direct owner restoration also discovers a hard-killed release, not only the
+# listener. Keep the historical successor's dirty bytes/native lease untouched.
+FM_HOME="$dir/home" bash -c '
+  . "$1/bin/fm-wake-lib.sh"
+  . "$1/bin/fm-suspend-lib.sh"
+  fm_current_pid attempt
+  fm_suspend_record "$2" copy_state=release-prepared "park_release_pid=$attempt"
+' _ "$ROOT" "$meta" || fail 'could not record a dead release attempt'
+if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control relaunch --note continue > "$dir/out" 2>&1; then
+  fail 'hard-killed release was restored without reconciliation'
+fi
+suspend_assert_matches 'blocked.*copy-custody' "$dir/home/state/custody-control.status" 'direct restoration missed a hard-killed release notification'
+assert_absent "$dir/home/state/.meta-custody-control.lock" 'direct restoration left reconciliation metadata locked'
+assert_absent "$dir/home/state/.control-custody-control.lock" 'direct restoration left its control lock held'
+assert_equals 'other task uncommitted work' "$(cat "$wt/file")" 'interruption reconciliation read/changed historical work'
+assert_absent "$dir/calls" 'direct restoration interruption backstop invoked native custody'
+pass 'direct owner restoration notifies interrupted release and leaves historical custody untouched'
+
 for through in control park cancel; do
   id="saved-success-$through"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'saved launch fixture failed'
   meta="$dir/home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"

@@ -260,9 +260,9 @@ SH
   [ -n "$N_SOURCE" ] || fail 'live park did not register bounded release'
   FM_HOME="$N_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$N_HOME/state" FM_DATA_OVERRIDE="$N_HOME/data" FM_CONFIG_OVERRIDE="$N_HOME/config" \
     "$ROOT/bin/fm-procevent.sh" start "$N_SOURCE" || fail 'registered live release action failed'
-  assert_grep '^copy_state=released$' "$N_HOME/state/$N_ID.meta" 'live release never returned its private copy'
+  assert_equals released "$(sed -n 's/^copy_state=//p' "$N_HOME/state/$N_ID.meta")" 'live release never returned its private copy'
   FM_HOME="$N_HOME" FM_SPAWN_NO_GUARD=1 "$ROOT/bin/fm-control.sh" "$N_ID" relaunch --note 'This is the explicit owner restoration probe, not approval resolution. Follow the original probe instructions only.' || fail "saved control/spawn restoration failed for Claude $VERSION on $HERDR_VER"
-  assert_grep '^copy_state=retained$' "$N_HOME/state/$N_ID.meta" 'successful live spawn did not republish retained custody'
+  assert_equals retained "$(sed -n 's/^copy_state=//p' "$N_HOME/state/$N_ID.meta")" 'successful live spawn did not republish retained custody'
   N_NEW_WT=$(sed -n 's/^worktree=//p' "$N_HOME/state/$N_ID.meta")
   N_NEW_LEASE=$(sed -n 's/^treehouse_lease_id=//p' "$N_HOME/state/$N_ID.meta")
   N_NEW_PANE=$(sed -n 's/^herdr_pane_id=//p' "$N_HOME/state/$N_ID.meta")

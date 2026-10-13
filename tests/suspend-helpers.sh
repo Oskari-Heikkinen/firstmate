@@ -137,7 +137,7 @@ suspend_register_release() { # <case-dir> <id>
   meta="$dir/home/state/$id.meta"
   token=$(sed -n 's/^park_token=//p' "$meta")
   name=$(bash -c '. "$1/bin/fm-pr-lib.sh"; . "$1/bin/fm-suspend-lib.sh"; fm_suspend_release_source_name "$2" "$3" "$4"' _ "$ROOT" "$dir/home" "$id" "$token") || return 1
-  suspend_lib "$dir" fm_suspend_record "$meta" "park_release_source=when-$name" || return 1
+  suspend_lib "$dir" fm_suspend_record "$meta" "park_release_source=when-$name" 'park_release_timeout=20' || return 1
   SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" \
     "$ROOT/bin/fm-procevent-when.sh" arm "$name" --stable 1 --interval 1 --deadline 30 --action-timeout 20 \
     --condition "$ROOT/bin/fm-park.sh" release-ready "$id" "$token" \

@@ -350,6 +350,15 @@ if ! fm_task_id_creation_valid "$RAW_ID"; then
   die "'$RAW_ID' is not a valid task id"
 fi
 ID=$RAW_ID
+META="$STATE/$ID.meta"
+# Prepared release must refuse BEFORE any lifecycle/lease lock acquisition:
+# stale-owner reclaim would free protection while a timed child may still run.
+# shellcheck source=bin/fm-suspend-lib.sh
+. "$SCRIPT_DIR/fm-suspend-lib.sh"
+if [ "$(fm_suspend_field "$META" copy_state)" = release-prepared ]; then
+  fm_suspend_reconcile_release "$META" "$ID" "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" || true
+  die "unfinished or invalid copy custody; supervisor must reconcile before lifecycle control"
+fi
 # Supervision lease guard: lifecycle control is overlap territory between the
 # two Pi supervision actors; refuse while the OTHER actor holds this task's
 # live lease (contract: bin/fm-lease-lib.sh; no-op in homes without leases).
@@ -413,8 +422,6 @@ wait_agent_state() { # <timeout> <wanted>...
 
 # Copy-free work has no endpoint authority. Only positively validated saved
 # custody selects restoration; a missing ordinary path never selects it.
-# shellcheck source=bin/fm-suspend-lib.sh
-. "$SCRIPT_DIR/fm-suspend-lib.sh"
 case "$(fm_suspend_field "$META" copy_state)" in
   ''|retained) ;;
   released)

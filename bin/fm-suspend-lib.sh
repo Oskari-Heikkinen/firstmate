@@ -26,6 +26,90 @@
 # authoritative for retained tasks; this library validates only saved logical work.
 
 FM_SUSPEND_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$FM_SUSPEND_LIB_DIR/fm-timeout-lib.sh"
+
+# Release alone sets this in-process deadline. Each expensive child gets only
+# the remaining work budget in its own timed group; the custody/lock owner is
+# outside that group and retains cleanup headroom inside the outer action.
+fm_suspend_run() {
+  local remaining
+  if [ -z "${FM_SUSPEND_DEADLINE-}" ]; then "$@"; return $?; fi
+  remaining=$((FM_SUSPEND_DEADLINE - SECONDS))
+  [ "$remaining" -gt 0 ] || return 124
+  fm_run_timed "$remaining" "$@"
+}
+
+# Caller holds the metadata lock. Record notification only after its append;
+# an interrupted append may duplicate an event, never silently consume it.
+fm_suspend_notify_release() { # <meta> <id> <state> <config>
+  local meta=$1 id=$2 state=$3 config=$4 token
+  token=$(fm_suspend_field "$meta" park_token) || { echo 'fm-suspend: cannot read interrupted release token' >&2; return 1; }
+  [ -n "$token" ] || { echo 'fm-suspend: interrupted release token is missing' >&2; return 1; }
+  [ "$(fm_suspend_field "$meta" park_release_notified)" != "$token" ] || return 0
+  if ! printf '%s\n' "$(status_stamp_line 'blocked [key=copy-custody]: saved copy release interrupted or failed; exact acquisition and saved evidence retained; reconcile before retry')" >> "$state/$id.status"; then
+    printf 'fm-suspend: cannot append copy-custody notification to %s\n' "$state/$id.status" >&2
+    return 2
+  fi
+  if [ -e "$config/fleet-ledger" ]; then
+    "$FM_SUSPEND_LIB_DIR/fm-fleet-ledger.sh" appended "$config" "$state/$id.status" >/dev/null 2>&1 || true
+  fi
+  fm_suspend_record "$meta" "park_release_notified=$token" || {
+    echo 'fm-suspend: notification appended but its deduplication record could not be published' >&2
+    return 1
+  }
+}
+
+# Hard-kill backstop is notification-only: a dead/unknown parent is not proof
+# its separately grouped children stopped. Never take/reap custody locks, edit
+# task records, or claim native custody here; only the supervisor reconciles it.
+# Parent fm_pid_identity evidence distinguishes a live attempt from PID reuse;
+# missing/unreadable/mismatched identity is uncertainty, not cleanup authority.
+# Honor the live parent's current-token notification receipt first; otherwise
+# existing status-event retry deduplication binds the alert to this park token.
+# Returns 1 for uncertain PID evidence, 2 only for notification append failure
+# (the existing listener condition-error outcome escalates that failure).
+fm_suspend_reconcile_release() { # <meta> <id> <state> <config>
+  local meta=$1 id=$2 state=$3 config=$4 pid token event recorded actual uncertain=0
+  [ "$(fm_suspend_field "$meta" copy_state)" = release-prepared ] || return 0
+  token=$(fm_suspend_field "$meta" park_token) || token=''
+  if [ -n "$token" ] && [ "$(fm_suspend_field "$meta" park_release_notified)" = "$token" ]; then
+    return 0 # Ordinary live-parent cleanup already notified; custody still refuses.
+  fi
+  pid=$(fm_suspend_field "$meta" park_release_pid) || uncertain=1
+  case "$pid" in ''|*[!0-9]*|0|1) uncertain=1 ;; esac
+  if [ "$uncertain" = 0 ]; then
+    recorded=$(fm_suspend_field "$meta" park_release_pid_identity) || recorded=''
+    if [ -n "$recorded" ] && actual=$(fm_pid_identity "$pid" 2>/dev/null); then
+      if [ -n "$actual" ] && [ "$actual" = "$recorded" ]; then
+        fm_pid_alive "$pid" && return 0
+      else
+        uncertain=1
+      fi
+    else
+      uncertain=1
+    fi
+    [ "$uncertain" = 0 ] || echo 'fm-suspend: release attempt parent identity is missing, unreadable or mismatched; custody uncertain; supervisor must reconcile' >&2
+  else
+    echo 'fm-suspend: interrupted release attempt PID is missing or invalid; custody uncertain; supervisor must reconcile' >&2
+  fi
+  [ -n "$token" ] || token=unknown
+  if ! declare -F status_event_recorded >/dev/null; then
+    # shellcheck source=bin/fm-classify-lib.sh
+    . "$FM_SUSPEND_LIB_DIR/fm-classify-lib.sh"
+  fi
+  event="blocked [key=copy-custody] [release=$token]: release attempt interrupted; custody uncertain; supervisor must reconcile"
+  if ! status_event_recorded "$state/$id.status" "$event"; then
+    if ! printf '%s\n' "$(status_stamp_line "$event")" >> "$state/$id.status"; then
+      printf 'fm-suspend: cannot append copy-custody notification to %s\n' "$state/$id.status" >&2
+      return 2
+    fi
+    if [ -e "$config/fleet-ledger" ]; then
+      "$FM_SUSPEND_LIB_DIR/fm-fleet-ledger.sh" appended "$config" "$state/$id.status" >/dev/null 2>&1 || true
+    fi
+  fi
+  [ "$uncertain" = 0 ]
+}
 
 fm_suspend_field() { # <meta> <key>; reject duplicate or malformed fields
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
@@ -123,7 +207,7 @@ fm_suspend_validate() { # <meta> <id> <home> <data>
   FM_SUSPEND_SESSION=$(jq -r '.old_record.herdr_session // ""' "$manifest") || return 1
   [ "$FM_SUSPEND_BUNDLE" = "$data/$id/suspension.bundle" ] || return 1
   [ -f "$FM_SUSPEND_BUNDLE" ] && [ ! -L "$FM_SUSPEND_BUNDLE" ] || return 1
-  digest=$(git hash-object -- "$FM_SUSPEND_BUNDLE") || return 1
+  digest=$(fm_suspend_run git hash-object -- "$FM_SUSPEND_BUNDLE") || return 1
   [ "$digest" = "$(jq -r .bundle_hash "$manifest")" ] || return 1
   common=$(git -C "$FM_SUSPEND_PROJECT" rev-parse --path-format=absolute --git-common-dir) || return 1
   [ "$common" = "$(jq -r .common "$manifest")" ] || return 1
@@ -132,7 +216,7 @@ fm_suspend_validate() { # <meta> <id> <home> <data>
   [ "$head" = "$FM_SUSPEND_HEAD" ] || return 1
   branch=$(git -C "$FM_SUSPEND_PROJECT" bundle list-heads "$FM_SUSPEND_BUNDLE" "refs/heads/$FM_SUSPEND_BRANCH") || return 1
   [ "$branch" = "$FM_SUSPEND_HEAD refs/heads/$FM_SUSPEND_BRANCH" ] || return 1
-  git -C "$FM_SUSPEND_PROJECT" bundle verify "$FM_SUSPEND_BUNDLE" >/dev/null 2>&1 || return 1
+  fm_suspend_run git -C "$FM_SUSPEND_PROJECT" bundle verify "$FM_SUSPEND_BUNDLE" >/dev/null 2>&1 || return 1
   if [ "$state" = released ]; then
     for key in window worktree treehouse_lease_holder treehouse_lease_id herdr_pane_id herdr_tab_id herdr_workspace_id; do
       [ -z "$(fm_suspend_field "$meta" "$key")" ] || return 1
@@ -198,7 +282,8 @@ PY
 fm_suspend_quiet_copy() { # <project> <copy> <meta> <allow-idle 0|1>
   local project=$1 wt=$2 meta=$3 allow=$4 root status pids pid table
   root=$(fm_treehouse_native_root "$wt") || return 1
-  status=$(cd "$project" && treehouse --root "$root" status --json) || return 1
+  # shellcheck disable=SC2016 # Arguments expand only in the bounded child.
+  status=$(fm_suspend_run bash -c 'cd "$1" && exec treehouse --root "$2" status --json' _ "$project" "$root") || return 1
   pids=$(printf '%s\n' "$status" | jq -er --arg wt "$wt" '
     [.[] | select(.path==$wt)] | select(length==1) | .[0].processes |
     select(type=="array") | if all(.[]; (.pid|type)=="number" and .pid>0)
@@ -214,12 +299,12 @@ fm_suspend_quiet_copy() { # <project> <copy> <meta> <allow-idle 0|1>
 
 fm_suspend_clean_copy() { # <copy>; reject hidden index changes as well
   local wt=$1 status flags
-  status=$(git -C "$wt" status --porcelain --untracked-files=all --ignored) || return 1
+  status=$(fm_suspend_run git -C "$wt" status --porcelain --untracked-files=all --ignored) || return 1
   [ -z "$status" ] || return 1
-  flags=$(git -C "$wt" ls-files -v) || return 1
+  flags=$(fm_suspend_run git -C "$wt" ls-files -v) || return 1
   ! printf '%s\n' "$flags" | grep -E '^[a-zS] ' >/dev/null || return 1
   [ ! -f "$wt/.gitmodules" ] || return 1
-  git -C "$wt" diff --quiet && git -C "$wt" diff --cached --quiet
+  fm_suspend_run git -C "$wt" diff --quiet && fm_suspend_run git -C "$wt" diff --cached --quiet
 }
 
 # Save only after verified stop, under custody locks. The bundle contains all
@@ -242,10 +327,10 @@ fm_suspend_save() { # <meta> <id> <home> <data> <copy>
   token="suspend.$(date +%s).${BASHPID:-$$}.$RANDOM"
   tmp=$(mktemp -d "$dir/.suspend-save.XXXXXX") || return 1
   chmod 0700 "$tmp" || return 1
-  if ! git -C "$wt" bundle create "$tmp/suspension.bundle" "refs/heads/$branch" ||
-     ! git init --bare -q "$tmp/proof.git" ||
-     ! git -C "$tmp/proof.git" bundle verify "$tmp/suspension.bundle" >/dev/null 2>&1 ||
-     ! git -C "$tmp/proof.git" fetch -q "$tmp/suspension.bundle" "refs/heads/$branch:refs/heads/proof" ||
+  if ! fm_suspend_run git -C "$wt" bundle create "$tmp/suspension.bundle" "refs/heads/$branch" ||
+     ! fm_suspend_run git init --bare -q "$tmp/proof.git" ||
+     ! fm_suspend_run git -C "$tmp/proof.git" bundle verify "$tmp/suspension.bundle" >/dev/null 2>&1 ||
+     ! fm_suspend_run git -C "$tmp/proof.git" fetch -q "$tmp/suspension.bundle" "refs/heads/$branch:refs/heads/proof" ||
      [ "$(git -C "$tmp/proof.git" rev-parse refs/heads/proof)" != "$head" ]; then
     rm -rf -- "$tmp"; return 1
   fi
@@ -259,7 +344,7 @@ fm_suspend_save() { # <meta> <id> <home> <data> <copy>
     value=$(fm_suspend_field "$meta" "$key") || return 1
     old=$(printf '%s' "$old" | jq --arg k "$key" --arg v "$value" '. + {($k):$v}') || return 1
   done
-  digest=$(git hash-object "$tmp/suspension.bundle") || return 1
+  digest=$(fm_suspend_run git hash-object "$tmp/suspension.bundle") || return 1
   jq -n --arg id "$id" --arg home "$home" --arg token "$token" --arg head "$head" --arg branch "$branch" \
     --arg project "$(fm_suspend_field "$meta" project)" --arg common "$common" \
     --arg bundle "$dir/suspension.bundle" --arg digest "$digest" --argjson identity "$identity" --argjson old "$old" \

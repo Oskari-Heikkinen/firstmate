@@ -599,6 +599,8 @@ The local, gitignored `config/park-release` file is a per-home canary, not inher
 Only the exact value `on` enables optional release; absent, `off` or malformed content keeps the existing copy-retaining park.
 Enable one home first by writing `on` there; do not propagate it fleet-wide, and keep existing saved-work records when disabling future release.
 [`bin/fm-park.sh`](../bin/fm-park.sh)'s header and `--help` own qualification, wait age, pickup and resume; [`bin/fm-suspend-lib.sh`](../bin/fm-suspend-lib.sh) owns saved-custody safety and current exclusions.
+Known limitations: a hard-killed release needs supervisor reconciliation, not automatic cleanup or retry; the notification-only backstop in that custody owner deliberately leaves uncertain acquisitions untouched.
+A native return that completes near the internal release deadline can exhaust the subsequent saved-proof validation budget and report a custody failure even though the returned acquisition is already recorded as released; verify the saved proof before treating that alert as lost work.
 
 ## No-mistakes pipeline spend (config/pipeline-spend)
 

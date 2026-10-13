@@ -52,6 +52,8 @@ LAB_PREPARED=0
 cleanup_all() {
   local status=$? cleanup_status=0
   trap - EXIT
+  # Retire only this test's recorded sources while their homes still exist.
+  fm_test_reap_procevent_homes
   if [ -n "$SCRATCH" ]; then
     if [ -d "$SCRATCH/home/state/hsmoke.git-hooks" ]; then
       chmod u+w "$SCRATCH/home/state/hsmoke.git-hooks" || {
@@ -509,3 +511,106 @@ esac
 pass "real herdr: exit refuses an unproven or pending composer without typing an exit command"
 
 fm_backend_herdr_kill "$SESSION:$PANE_ID" 2>/dev/null || true
+
+# Credential-free native suspension acceptance runs in ordinary Herdr CI.
+# It needs neither Pi nor Claude: the task endpoint is an agent-free shell,
+# and restoration proves exact saved-head/fresh-lease custody, not a model reply.
+if command -v treehouse >/dev/null 2>&1; then
+  N_HOME="$SCRATCH/saved-home"; N_PROJECT="$SCRATCH/saved-project"
+  N_ROOT="$SCRATCH/saved-native-pool"; N_ID=saved-native-smoke
+  N_BIN="$SCRATCH/saved-bin"; N_TREEHOUSE_BIN=$(command -v treehouse)
+  N_HERDR_PATH=$PATH; N_LAB_HELPER="$ROOT/bin/fm-herdr-lab.sh"; N_SESSION=$SESSION
+  export N_ROOT N_TREEHOUSE_BIN N_HERDR_PATH N_LAB_HELPER N_SESSION
+  mkdir -p "$N_HOME/state" "$N_HOME/config" "$N_HOME/data/$N_ID" "$N_PROJECT" "$N_ROOT" "$N_BIN"
+  cat > "$N_BIN/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1-}" = --root ]; then
+  [ "${2-}" = "$N_ROOT" ] || exit 97
+  shift 2
+fi
+exec "$N_TREEHOUSE_BIN" --root "$N_ROOT" "$@"
+SH
+  cat > "$N_BIN/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+# Check explicit endpoint sessions before stripping them. The client-only
+# status probe is also routed through the helper's explicit lab session.
+# No operation ever reaches an ambient/default session.
+args=("$@"); found=0
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[i]}" in
+    --session)
+      [ "${args[i+1]-}" = "$N_SESSION" ] && [ "$found" = 0 ] || exit 97
+      unset 'args[i]' 'args[i+1]'; found=1; break ;;
+    --session=*) exit 97 ;;
+  esac
+done
+if [ "$found" != 1 ]; then
+  [ "$*" = 'status --json' ] || exit 97
+fi
+for arg in "${args[@]}"; do case "$arg" in --session|--session=*) exit 97 ;; esac; done
+exec env PATH="$N_HERDR_PATH" "$N_LAB_HELPER" run "$N_SESSION" "${args[@]}"
+SH
+  chmod +x "$N_BIN/treehouse" "$N_BIN/herdr"
+  native_lab() { env PATH="$N_HERDR_PATH" "$N_LAB_HELPER" run "$N_SESSION" "$@"; }
+  git init -qb main "$N_PROJECT" || fail 'native suspension project init failed'
+  printf 'base\n' > "$N_PROJECT/file"
+  git -C "$N_PROJECT" add file
+  git -C "$N_PROJECT" -c user.name=Tests -c user.email=tests@example.invalid commit -qm base || fail 'native base commit failed'
+  N_HOLDER=$(FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_lease_holder "$2" "$3"' _ "$ROOT" "$N_HOME" "$N_ID") || fail 'native holder failed'
+  N_WT=$(cd "$N_PROJECT" && "$N_TREEHOUSE_BIN" --root "$N_ROOT" get --lease --lease-holder "$N_HOLDER") || fail 'native lease acquisition failed'
+  git -C "$N_WT" checkout -qb "fm/$N_ID" || fail 'native task branch failed'
+  printf 'unpublished saved native work\n' > "$N_WT/file"
+  git -C "$N_WT" add file
+  git -C "$N_WT" -c user.name=Tests -c user.email=tests@example.invalid commit -qm saved || fail 'native saved commit failed'
+  N_HEAD=$(git -C "$N_WT" rev-parse HEAD)
+  N_LEASE=$(FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_lease_read "$2" || exit 1; printf "%s" "$FM_TREEHOUSE_LEASE_ID"' _ "$ROOT" "$N_WT") || fail 'native lease unreadable'
+  N_WS_JSON=$(native_lab workspace create --cwd "$N_HOME") || fail 'native suspension workspace failed'
+  N_WS=$(printf '%s' "$N_WS_JSON" | jq -er .result.workspace.workspace_id) || fail 'native workspace identity missing'
+  N_TAB=$(native_lab tab create --workspace "$N_WS" --cwd "$N_HOME" --label "fm-$N_ID" --no-focus) || fail 'native suspension tab failed'
+  N_TAB_ID=$(printf '%s' "$N_TAB" | jq -er .result.tab.tab_id) || fail 'native tab identity missing'
+  N_PANE=$(printf '%s' "$N_TAB" | jq -er '.result.root_pane.pane_id // .result.pane.pane_id') || fail 'native pane identity missing'
+  N_SIBLING_JSON=$(native_lab tab create --workspace "$N_WS" --cwd "$N_HOME" --label native-sibling --no-focus) || fail 'native sibling tab failed'
+  N_SIBLING=$(printf '%s' "$N_SIBLING_JSON" | jq -er '.result.root_pane.pane_id // .result.pane.pane_id') || fail 'native sibling identity missing'
+  fm_write_meta "$N_HOME/state/$N_ID.meta" "window=$SESSION:$N_PANE" "endpoint_task_id=$N_ID" \
+    "worktree=$N_WT" "project=$N_PROJECT" 'harness=codex' 'kind=ship' 'mode=direct-push' 'yolo=off' "branch=fm/$N_ID" \
+    'model=default' 'effort=default' 'spawn_gen=g1' 'backend=herdr' "herdr_session=$SESSION" \
+    "herdr_workspace_id=$N_WS" "herdr_tab_id=$N_TAB_ID" "herdr_pane_id=$N_PANE" \
+    "treehouse_lease_holder=$N_HOLDER" "treehouse_lease_id=$N_LEASE"
+  printf 'paused [at=1]: awaiting explicit pickup\n' > "$N_HOME/state/$N_ID.status"
+  # shellcheck disable=SC2016 # Literal Markdown condition, not a shell command.
+  printf '## Goal\nSave native work.\n## Done\nCommitted unpublished work.\n## Waiting for\n`inbox:%s`\n## Next steps\nRead the owner instructions.\n' "$N_ID" > "$N_HOME/data/$N_ID/handoff.md"
+  printf 'Keep the saved work and obligations.\n' > "$N_HOME/data/$N_ID/brief.md"
+  printf 'on\n' > "$N_HOME/config/park-release"
+  FM_HOME="$N_HOME" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" "$3" "$4"' _ \
+    "$ROOT" "$N_WT" "$N_ID" "$N_HOME" || fail 'native slot claim failed'
+  export FM_PROCEVENT_CLAIM_ROOT="$SCRATCH/native-claims"
+  PATH="$N_BIN:$N_HERDR_PATH" FM_HOME="$N_HOME" "$ROOT/bin/fm-park.sh" "$N_ID" \
+    --handoff "$N_HOME/data/$N_ID/handoff.md" --relocation-safe || fail 'native agent-free park/verified stop failed'
+  fm_test_track_procevent_home "$N_HOME" "$FM_PROCEVENT_CLAIM_ROOT"
+  N_SOURCE=$(sed -n 's/^park_release_source=//p' "$N_HOME/state/$N_ID.meta")
+  [ -n "$N_SOURCE" ] || fail 'native park did not register its bounded release'
+  PATH="$N_BIN:$N_HERDR_PATH" FM_HOME="$N_HOME" "$ROOT/bin/fm-procevent.sh" start "$N_SOURCE" \
+    > "$SCRATCH/native-release-result" 2>&1 || fail "native release result not captured: $(cat "$SCRATCH/native-release-result")"
+  assert_equals released "$(sed -n 's/^copy_state=//p' "$N_HOME/state/$N_ID.meta")" "timed native close/return did not complete: $(cat "$SCRATCH/native-release-result")"
+  assert_equals "$N_HEAD" "$(git -C "$N_PROJECT" rev-parse "fm/$N_ID")" 'native return deleted or rewrote the saved branch'
+  assert_present "$N_HOME/data/$N_ID/suspension.bundle" 'native return discarded saved proof'
+  N_GONE=$(native_lab pane get "$N_PANE" 2>&1) || true
+  assert_equals pane_not_found "$(printf '%s' "$N_GONE" | jq -r '.error.code // empty')" 'timed release did not remove exactly its task pane'
+  native_lab pane get "$N_SIBLING" >/dev/null || fail 'timed release disturbed a sibling pane'
+  PATH="$N_BIN:$N_HERDR_PATH" FM_HOME="$N_HOME" bash -c '
+    . "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-suspend-lib.sh"
+    control="$STATE/.control-$3.lock"; meta_lock=$(fm_meta_lock_path "$2/state/$3.meta")
+    project_lock=$(fm_treehouse_project_lock_path "$5")
+    trap '\''fm_lock_release "$project_lock"; fm_lock_release "$meta_lock"; fm_lock_release "$control"'\'' EXIT
+    fm_lock_try_acquire "$control" && fm_lock_try_acquire "$meta_lock" && fm_lock_try_acquire "$project_lock" || exit 1
+    fm_suspend_allocate "$2/state/$3.meta" "$3" "$2" "$2/data" "$2/state" || exit 1
+    [ "$(git -C "$FM_SUSPEND_NEW_WT" rev-parse HEAD)" = "$4" ] && [ "$FM_SUSPEND_NEW_LEASE" != "$6" ] || exit 1
+    fm_treehouse_relaunch_reservation "$5" "$STATE" "$2/state/$3.meta" "$3" "$2" || exit 1
+  ' _ "$ROOT" "$N_HOME" "$N_ID" "$N_HEAD" "$N_PROJECT" "$N_LEASE" || fail 'native restoration lost exact head or exclusive fresh acquisition'
+  native_lab pane get "$N_SIBLING" >/dev/null || fail 'native restoration disturbed its sibling'
+  pass 'credential-free real Herdr/Treehouse: registered timed release closes only its lab pane, preserves unpublished work, and restores exact head under a fresh exclusive lease'
+else
+  echo 'skip: credential-free native suspension acceptance requires treehouse'
+fi
