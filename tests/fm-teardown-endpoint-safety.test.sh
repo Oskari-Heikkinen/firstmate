@@ -1806,6 +1806,49 @@ test_durable_lease_cleanup_preserves_evidence_before_exact_return() {
   pass "durable cleanup rejects mismatches and preserves evidence before returning only its exact acquisition"
 }
 
+test_intake_protected_legacy_cleanup_finishes_own_adoption() {
+  local dir id=intake-cleanup variant holder rc wt
+  for variant in landed dirty foreign; do
+    dir=$(make_case "intake-cleanup-$variant")
+    mark_case_as_treehouse_pool "$dir"
+    wt="$dir/pool/1/project"
+    rm -f "$wt/sentinel"
+    claim_pool_slot "$dir" "$id"
+    holder=$(FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" bash -c '. "$1"; fm_treehouse_lease_holder "$2" "$3"' _ "$ROOT/bin/fm-wake-lib.sh" "$dir/home" "$id")
+    [ "$variant" != foreign ] || holder=another-holder
+    jq --arg h "$holder" '.worktrees[0] += {leased:true,lease_holder:$h,lease_id:"intake-acquisition",owner_pid:0}' "$dir/pool/treehouse-state.json" > "$dir/state.new"
+    mv "$dir/state.new" "$dir/pool/treehouse-state.json"
+    fm_write_meta "$dir/home/state/$id.meta" "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+      "worktree=$wt" "project=$dir/project" "kind=ship" "mode=local-only"
+    fm_test_fake_treehouse_lease "$dir/fakebin" "$wt"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/fakebin/lsof"
+    chmod +x "$dir/fakebin/lsof"
+    [ "$variant" != dirty ] || printf 'retained uncommitted work\n' > "$wt/retained"
+    rc=0
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_RUNTIME_LOG="$dir/runtime.log" \
+      FM_FAKE_TREEHOUSE_LOG="$dir/native.log" PATH="$dir/fakebin:$PATH" \
+      "$TEARDOWN" "$id" > "$dir/stdout" 2> "$dir/stderr" || rc=$?
+    if [ "$variant" = landed ]; then
+      expect_code 0 "$rc" "matching intake-protected cleanup needed manual adoption: $(cat "$dir/stderr")"
+      assert_absent "$dir/home/state/$id.meta" 'matching cleanup left legacy metadata'
+      assert_contains "$(cat "$dir/native.log")" "--if-lease-holder $holder --if-lease-id intake-acquisition" 'cleanup did not bind the adopted acquisition'
+      jq -e '.worktrees[0] | (.leased // false)==false' "$dir/pool/treehouse-state.json" >/dev/null || fail 'matching cleanup did not return its exact lease'
+    else
+      [ "$rc" -ne 0 ] || fail "$variant cleanup bypassed its existing refusal"
+      assert_present "$dir/home/state/$id.meta" "$variant refusal lost metadata"
+      jq -e '.worktrees[0].leased==true' "$dir/pool/treehouse-state.json" >/dev/null || fail "$variant refusal released the retained lease"
+      if [ "$variant" = dirty ]; then
+        assert_grep 'treehouse_lease_id=intake-acquisition' "$dir/home/state/$id.meta" 'dirty refusal did not preserve the completed adoption'
+        assert_grep 'retained uncommitted work' "$wt/retained" 'dirty refusal lost unfinished work'
+      else
+        assert_no_grep 'treehouse_lease_id=' "$dir/home/state/$id.meta" 'foreign lease was adopted'
+      fi
+    fi
+  done
+  pass 'cleanup finishes only the owning intake lease before landed-work checks, retaining dirty and foreign-lease refusals without force'
+}
+
+test_intake_protected_legacy_cleanup_finishes_own_adoption
 test_durable_lease_cleanup_preserves_evidence_before_exact_return
 test_own_and_absent_slot_claims_still_tear_down
 test_owner_claim_resolves_a_stale_record_on_the_same_slot

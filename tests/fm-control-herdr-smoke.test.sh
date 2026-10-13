@@ -358,6 +358,75 @@ EOF
 awk -F= '$1 == "harness" {$0="harness=codex"} {print}' "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"
 mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
+# Exercise both retained-holder shapes with the real Treehouse and real Herdr
+# pane, in this named lab only. The first pool row models pre-lease saved state;
+# the second comes from native interactive get and is adopted by reboot control.
+if command -v treehouse >/dev/null 2>&1; then
+  TREEHOUSE_BIN=$(command -v treehouse)
+  POOL_WT=$(cd "$PROJ" && "$TREEHOUSE_BIN" --root "$SCRATCH" get --lease) || fail 'could not create lab pool fixture'
+  POOL_STATE="$(dirname "$(dirname "$POOL_WT")")/treehouse-state.json"
+  # Lab-only saved-state fixture: no return/reset/clean is used to simulate an
+  # older, unleased record. The native lease command must protect this in place.
+  jq --arg wt "$POOL_WT" '(.worktrees[] | select(.path==$wt)) |= (del(.leased,.lease_holder,.lease_id,.leased_at) + {owner_pid:0})' "$POOL_STATE" > "$POOL_STATE.new"
+  mv "$POOL_STATE.new" "$POOL_STATE"
+  awk -v wt="$POOL_WT" '/^worktree=/ {$0="worktree=" wt} !/^treehouse_lease_holder=/ && !/^treehouse_lease_id=/' "$HOME_DIR/state/hsmoke.meta" > "$HOME_DIR/state/hsmoke.meta.tmp"
+  mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
+  printf 'uncommitted bare-shell evidence\n' > "$POOL_WT/retained"
+  printf -v POOL_Q '%q' "$POOL_WT"
+  # Earlier relaunches export this marker into the pane. A restored pre-lease
+  # shell has no task marker; otherwise its sleep child is an authorized own job
+  # and cannot exercise the unrelated-child refusal.
+  fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" "unset FM_TASK_ID; exec /bin/bash -i -l" || fail 'could not establish lab login shell'
+  sleep 1
+  fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" "cd -- $POOL_Q" || fail 'could not enter lab retained slot'
+  for _ in $(seq 1 50); do
+    NATIVE_STATUS=$(cd "$PROJ" && "$TREEHOUSE_BIN" --root "$SCRATCH" status --json) || fail 'could not inspect the idle-shell fixture'
+    printf '%s\n' "$NATIVE_STATUS" | jq -e --arg wt "$POOL_WT" '.[] | select(.path==$wt) | .status=="in-use" and (.processes|length)>0' >/dev/null && break
+    sleep 0.1
+  done
+  printf '%s\n' "$NATIVE_STATUS" | jq -e --arg wt "$POOL_WT" '.[] | select(.path==$wt) | (.processes|length)>0' >/dev/null || fail 'bare-shell case has no real holder and would be vacuous'
+  cp "$HOME_DIR/state/hsmoke.meta" "$SCRATCH/own-pane.meta"
+  sed 's/^herdr_pane_id=.*/herdr_pane_id=other-pane/' "$SCRATCH/own-pane.meta" > "$HOME_DIR/state/hsmoke.meta"
+  if OUT=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-treehouse-adopt.sh" hsmoke 2>&1); then fail 'adoption accepted a shell from a different pane'; fi
+  cp "$SCRATCH/own-pane.meta" "$HOME_DIR/state/hsmoke.meta"
+  fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" 'sleep 900' || fail 'could not start the lab child-process refusal case'
+  CHILD_PID=''
+  for _ in $(seq 1 50); do
+    NATIVE_STATUS=$(cd "$PROJ" && "$TREEHOUSE_BIN" --root "$SCRATCH" status --json) || fail 'could not inspect child-process fixture'
+    CHILD_PID=$(printf '%s\n' "$NATIVE_STATUS" | jq -r --arg wt "$POOL_WT" '.[] | select(.path==$wt) | .processes[] | select(.name=="sleep") | .pid')
+    [ -z "$CHILD_PID" ] || break
+    sleep 0.1
+  done
+  case "$CHILD_PID" in ''|*[!0-9]*) fail 'lab child-process case never established exactly one child' ;; esac
+  if OUT=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-treehouse-adopt.sh" hsmoke 2>&1); then fail 'adoption ignored a shell with a live child'; fi
+  kill "$CHILD_PID" || fail 'could not stop the lab child'
+  for _ in $(seq 1 50); do
+    OUT=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-treehouse-adopt.sh" hsmoke 2>&1) && break
+    sleep 0.1
+  done
+  grep '^treehouse_lease_id=' "$HOME_DIR/state/hsmoke.meta" >/dev/null || fail "own idle Herdr shell prevented native adoption: $OUT"
+  grep 'uncommitted bare-shell evidence' "$POOL_WT/retained" >/dev/null || fail 'bare-shell adoption discarded contents'
+  pass 'real Herdr and Treehouse: an own idle login shell is adopted without moving or exiting it'
+
+  printf -v SCRATCH_Q '%q' "$SCRATCH"
+  printf -v TREEHOUSE_Q '%q' "$TREEHOUSE_BIN"
+  fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" "export TREEHOUSE_ROOT=$SCRATCH_Q; cd -- $PROJ_Q; $TREEHOUSE_Q get" || fail 'could not enter native interactive get in lab'
+  NEXT_POOL_WT=''
+  for _ in $(seq 1 100); do
+    NATIVE_STATUS=$(cd "$PROJ" && "$TREEHOUSE_BIN" --root "$SCRATCH" status --json) || fail 'could not inspect lab pool'
+    NEXT_POOL_WT=$(printf '%s\n' "$NATIVE_STATUS" | jq -r --arg old "$POOL_WT" '.[] | select(.path!=$old and .status=="in-use" and (.processes|length)>0) | .path')
+    [ -z "$NEXT_POOL_WT" ] || break
+    sleep 0.1
+  done
+  [ -n "$NEXT_POOL_WT" ] || fail 'native interactive get never established its idle child shell'
+  WT=$NEXT_POOL_WT
+  awk -v wt="$WT" '/^worktree=/ {$0="worktree=" wt} !/^treehouse_lease_holder=/ && !/^treehouse_lease_id=/' "$HOME_DIR/state/hsmoke.meta" > "$HOME_DIR/state/hsmoke.meta.tmp"
+  mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
+  printf 'uncommitted native-get evidence\n' > "$WT/retained"
+  # Recovery below must natively lease this live get before doing any exit.
+else
+  printf 'skip: real Treehouse legacy-holder cases require treehouse\n'
+fi
 printf 'paused [key=reboot]: reboot-safe; resume note written\n' >> "$HOME_DIR/state/hsmoke.status"
 printf 'Continue from step 2.\n' > "$HOME_DIR/data/hsmoke/resume.md"
 printf '%s\n' "$$" > "$HOME_DIR/state/.lock"
@@ -408,7 +477,12 @@ esac
 awk -F= '$1 == "harness" {$0="harness=claude"} {print}' "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"
 mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
-pass "real herdr: the session-start relaunch revives an agent-free pane in place, once per boot"
+if command -v treehouse >/dev/null 2>&1; then
+  grep '^treehouse_lease_id=' "$HOME_DIR/state/hsmoke.meta" >/dev/null || fail 'session-start relaunch did not automatically adopt native get'
+  grep 'uncommitted native-get evidence' "$WT/retained" >/dev/null || fail 'session-start adoption lost unfinished work'
+  jq -e --arg wt "$WT" '.worktrees[] | select(.path==$wt) | .leased==true' "$POOL_STATE" >/dev/null || fail 'native get is not durably protected'
+fi
+pass "real herdr: the session-start relaunch adopts legacy holders and revives an agent-free pane in place, once per boot"
 
 # Last: the foreground process is a plain `sleep`, so the pane never draws any
 # recognized composer chrome. exit's composer-empty guard (bin/fm-control.sh)

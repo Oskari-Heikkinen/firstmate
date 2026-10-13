@@ -1586,10 +1586,10 @@ fm_treehouse_pool_slot() {  # <project-dir> <worktree>
 # id), and a .fm-slot-owner claim naming the task/home. Spawn owns publication;
 # teardown owns release. Park/exit never release either identity. A fresh spawn
 # checks the registered local homes and pool claims before calling Treehouse:
-# any retained reservation without a matching durable lease refuses intake,
-# including markerless legacy records. Reconciliation is owner-only, never an
-# automatic record edit or lease migration. Relaunch proves the same lease and
-# exclusive record before using its old path. All checks/publication/return run
+# retained unleased slots are protected in place before get can prepare them,
+# including markerless legacy records. Intake never edits owner records.
+# Relaunch adopts only its own exclusive legacy record, then proves the same
+# lease and exclusive record before using its old path. All checks/publication/return run
 # under the project's shared allocation lock.
 #
 # The claim lives at <pool>/<slot>/.fm-slot-owner, outside the repository, so it
@@ -1811,11 +1811,18 @@ fm_treehouse_relaunch_reservation() {  # <project> <state> <meta> <id> <home>
     fm_treehouse_slot_records_exclusive "$wt" "$3"
 }
 
-# Before get can prepare/reset any copy, prove every discoverable reservation
-# in this repository's pools is durably protected. Enumerate Git's registered
-# worktrees and the registered local homes only, never a filesystem-wide scan.
+# Treehouse --root selects <root>/.treehouse/<pool>; native exact-path status
+# verification must succeed before any lease, including nonstandard layouts.
+fm_treehouse_native_root() { # <worktree>
+  dirname "$(dirname "$(dirname "$(dirname "$1")")")"
+}
+
+# State-only exclusion: a retained slot is leased before get can prepare it.
+# A unique ordinary record uses its native task label so its owner can finish
+# adoption later; ambiguous/claim-only slots remain quarantined for their owner.
+# No task record or existing lease is changed, and no holder is exited.
 fm_treehouse_intake_preflight() {  # <project> <record-state>
-  local project=$1 state=$2 list line wt marker home id meta path holder lease field rec owner_state known
+  local project=$1 state=$2 list line wt marker home id path holder field rec count candidate pool root name status result
   fm_treehouse_collect_states "$state" || {
     echo "error: cannot inspect the registered local Treehouse owners; refusing intake" >&2
     return 1
@@ -1829,40 +1836,10 @@ fm_treehouse_intake_preflight() {  # <project> <record-state>
       echo "error: cannot prove Treehouse lease state for $wt; refusing intake before allocation" >&2
       return 1
     }
+    # Already leased slots cannot be allocated, even if owner records conflict.
+    [ "$FM_TREEHOUSE_LEASED" != 1 ] || continue
     marker=$(fm_treehouse_slot_owner_marker "$wt") || return 1
-    if [ -e "$marker" ] || [ -L "$marker" ]; then
-      fm_treehouse_slot_owner_state "$wt" ''
-      home=$FM_TREEHOUSE_SLOT_OWNER_HOME id=$FM_TREEHOUSE_SLOT_OWNER_ID
-      case "$id" in ''|.|..|*[!A-Za-z0-9._-]*)
-        echo "error: unsafe Treehouse owner claim at $marker; refusing intake" >&2
-        return 1 ;;
-      esac
-      fm_treehouse_slot_claim_matches "$wt" "$id" "$home" || {
-        echo "error: conflicting legacy reservation at $wt ($marker); refusing intake before allocation" >&2
-        return 1
-      }
-      owner_state=$(CDPATH='' cd -- "$home/state" 2>/dev/null && pwd -P) || return 1
-      known=0
-      for state in "${TREEHOUSE_OWNER_STATES[@]}"; do
-        [ "$(CDPATH='' cd -- "$state" 2>/dev/null && pwd -P)" != "$owner_state" ] || known=1
-      done
-      if [ "$known" != 1 ]; then
-        echo "error: slot $wt has an owner outside the registered local homes; refusing intake without inspecting that home's records" >&2
-        return 1
-      fi
-      meta="$home/state/$id.meta"
-      path=$(fm_treehouse_record_field "$meta" worktree) || path=''
-      if [ -n "$path" ]; then
-        path=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || path=''
-      fi
-      holder=$(fm_treehouse_record_field "$meta" treehouse_lease_holder) || holder=''
-      lease=$(fm_treehouse_record_field "$meta" treehouse_lease_id) || lease=''
-      if [ "$FM_TREEHOUSE_SLOT_OWNER" = unsafe ] || [ -z "$home" ] || [ -z "$id" ] || \
-        [ "$path" != "$wt" ] || ! fm_treehouse_slot_lease_matches "$wt" "$holder" "$lease"; then
-        echo "error: conflicting legacy reservation at $wt ($marker); refusing intake before any copy is prepared; home owner must reconcile it" >&2
-        return 1
-      fi
-    fi
+    count=0 candidate=''
     for state in "${TREEHOUSE_OWNER_STATES[@]}"; do
       for rec in "$state"/*.meta; do
         [ -e "$rec" ] || [ -L "$rec" ] || continue
@@ -1872,20 +1849,31 @@ fm_treehouse_intake_preflight() {  # <project> <record-state>
           [ -n "$path" ] || continue
           path=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || continue
           [ "$path" = "$wt" ] || continue
-          if [ "$(fm_treehouse_record_field "$rec" kind)" = secondmate ]; then
-            [ "$FM_TREEHOUSE_LEASED" = 1 ] && \
-              [ "$FM_TREEHOUSE_LEASE_HOLDER" = "$(basename "$rec" .meta)" ] && continue
-          fi
-          holder=$(fm_treehouse_record_field "$rec" treehouse_lease_holder) || return 1
-          lease=$(fm_treehouse_record_field "$rec" treehouse_lease_id) || return 1
-          if ! fm_treehouse_slot_lease_matches "$wt" "$holder" "$lease"; then
-            echo "error: conflicting legacy reservation at $wt ($rec); refusing intake before any copy is prepared; home owner must reconcile it" >&2
-            return 1
-          fi
-          fm_treehouse_slot_records_exclusive "$wt" "$rec" || return 1
+          count=$((count + 1)); candidate=$rec
+          break
         done
       done
     done
+    if [ "$count" = 0 ] && [ ! -e "$marker" ] && [ ! -L "$marker" ]; then continue; fi
+    holder="firstmate:retained:$(printf '%s' "$wt" | git hash-object --stdin)" || return 1
+    if [ "$count" = 1 ]; then
+      id=${candidate##*/}; id=${id%.meta}; home=${candidate%/state/*}
+      case "$id" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac
+      case "$(fm_treehouse_record_field "$candidate" kind)" in
+        ship|scout)
+          if { [ ! -e "$marker" ] && [ ! -L "$marker" ]; } || fm_treehouse_slot_claim_matches "$wt" "$id" "$home"; then
+            holder=$(fm_treehouse_lease_holder "$home" "$id") || return 1
+          fi ;;
+      esac
+    fi
+    pool=$(dirname "$(dirname "$wt")"); root=$(fm_treehouse_native_root "$wt") || return 1
+    name=$(jq -er --arg wt "$wt" '[.worktrees[] | select(.path==$wt)] | select(length==1) | .[0].name | select(type=="string" and test("^[A-Za-z0-9._-]+$") and .!="." and .!="..")' "$pool/treehouse-state.json") || return 1
+    status=$(cd "$project" && treehouse --root "$root" status --json) || return 1
+    printf '%s\n' "$status" | jq -e --arg wt "$wt" --arg n "$name" '[.[] | select(.path==$wt and .name==$n)] | length==1' >/dev/null || return 1
+    result=$(cd "$project" && treehouse --root "$root" lease "$name" --lease-holder "$holder" --json) || return 1
+    printf '%s\n' "$result" | jq -e --arg wt "$wt" --arg h "$holder" 'select(.path==$wt and .lease_holder==$h and (.lease_id|type)=="string" and (.lease_id|length)>0)' >/dev/null || return 1
+    fm_treehouse_slot_lease_read "$wt" && [ "$FM_TREEHOUSE_LEASED" = 1 ] && [ "$FM_TREEHOUSE_LEASE_HOLDER" = "$holder" ] || return 1
+    echo "skipped retained Treehouse slot $wt; durably reserved without changing its owner's records" >&2
   done <<< "$list"
 }
 

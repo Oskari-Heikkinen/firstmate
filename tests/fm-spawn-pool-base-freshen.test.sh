@@ -720,8 +720,8 @@ test_pool_slot_claim_follows_the_spawn_outcome() {
   out=$(run_spawn "$id" --scout)
   status=$?
   [ "$status" -ne 0 ] || fail "spawn launched a worker on a slot it could not claim"
-  assert_contains "$out" "refusing intake" \
-    "spawn did not refuse the unsafe reservation before allocation"
+  assert_contains "$out" "durably reserved" \
+    "spawn did not protect the unsafe reservation before allocation"
   [ -d "$SLOT_CLAIM" ] || fail "spawn replaced the directory blocking its slot claim"
   [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "spawn published a record for an unclaimable slot"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
@@ -763,7 +763,7 @@ test_pool_slot_claim_follows_the_spawn_outcome() {
 }
 
 test_legacy_reservations_refuse_before_get() {
-  local rec id out status marker_before head_before case_kind old=retained-study
+  local rec id out status marker_before head_before old_wt case_kind old=retained-study
   for case_kind in marker markerless unlanded; do
     id="legacy-$case_kind"
     rec=$(make_case "$id" "$id")
@@ -784,18 +784,26 @@ test_legacy_reservations_refuse_before_get() {
     fi
     marker_before=$(cat "$SLOT_CLAIM" 2>/dev/null || true)
     head_before=$(git -C "$POOL_DIR" rev-parse HEAD)
+    old_wt=$POOL_DIR
+    mkdir -p "$CASE_DIR/slots/2"
+    git -C "$PROJECT_DIR" worktree add --quiet --detach "$CASE_DIR/slots/2/project" "$INITIAL_SHA"
+    jq --arg p "$CASE_DIR/slots/2/project" '.worktrees += [{name:"2",path:$p}]' "$CASE_DIR/slots/treehouse-state.json" > "$CASE_DIR/state.new"
+    mv "$CASE_DIR/state.new" "$CASE_DIR/slots/treehouse-state.json"
+    POOL_DIR="$CASE_DIR/slots/2/project"
     out=$(FM_FAKE_TREEHOUSE_LOG="$CASE_DIR/get.log" run_spawn "$id" --scout)
     status=$?
-    [ "$status" -ne 0 ] || fail "legacy $case_kind reservation was allocated"
-    assert_contains "$out" "conflicting legacy reservation" "legacy refusal omitted its owner"
-    [ ! -s "$CASE_DIR/get.log" ] || fail "legacy refusal occurred after get prepared the copy"
+    expect_code 0 "$status" "legacy $case_kind slot should not block the free slot: $out"
+    assert_contains "$out" "durably reserved" "legacy slot was not excluded"
+    assert_grep ' lease ' "$CASE_DIR/get.log" "intake did not reserve before get"
+    assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/$id.meta" "spawn allocated the retained slot"
+    POOL_DIR=$old_wt
+    jq -e '.worktrees[0].leased==true' "$CASE_DIR/slots/treehouse-state.json" >/dev/null || fail "legacy slot lost its exclusion"
     [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$head_before" ] || fail "legacy HEAD moved"
     [ "$(cat "$SLOT_CLAIM" 2>/dev/null || true)" = "$marker_before" ] || fail "legacy claim changed"
     assert_grep 'irreplaceable experiment' "$POOL_DIR/workspace/$old/result.json" "ignored evidence was lost"
     assert_present "$HOME_DIR/state/$old.meta" "legacy record was edited/removed"
-    assert_absent "$HOME_DIR/state/$id.meta" "new record published despite refusal"
   done
-  pass "retained legacy claims, markerless records and clean unlanded heads refuse before get"
+  pass "retained legacy claims, markerless records and clean unlanded heads are excluded while a free slot launches"
 }
 
 test_preclaim_acquisition_rollback_and_preservation() {
@@ -963,8 +971,8 @@ printf '%s\n' "$*" >> "$ADOPT_LOG"
 [ "$1" = --root ] && shift 2
 case "$1" in
   status)
-    jq --arg status "${ADOPT_STATUS:-dirty}" --arg wt "${ADOPT_WRONG_PATH:-}" '
-      [.worktrees[] | {name,path:(if $wt=="" then .path else $wt end),status:$status,processes:[]}]' "$ADOPT_STATE" ;;
+    jq --arg status "${ADOPT_STATUS:-dirty}" --arg wt "${ADOPT_WRONG_PATH:-}" --argjson p "${ADOPT_PROCESS_PID:-0}" '
+      [.worktrees[] | {name,path:(if $wt=="" then .path else $wt end),status:$status,processes:(if $p==0 then [] else [{pid:$p,name:"bash"}] end)}]' "$ADOPT_STATE" ;;
   lease)
     [ "$3" = --lease-holder ]
     jq --arg h "$4" '.worktrees[0] |= (. + {leased:true,lease_holder:$h,lease_id:"adopt-acquisition",owner_pid:0})' "$ADOPT_STATE" > "$ADOPT_STATE.new"
@@ -1176,6 +1184,124 @@ test_scout_base_branch_refused_on_gerrit_forge() {
   pass "a based scout on a forge=gerrit project is refused at spawn"
 }
 
+test_owner_adoption_real_idle_shell() {
+  local id=owner-idle-shell pid keeper out status variant backend
+  command -v python3 >/dev/null 2>&1 || { skip 'idle-shell process regression requires python3'; return; }
+  for variant in own other-pane child own-job tmux-own-job tmux-other-pane zellij-own-job zellij-other-pane cmux-own-job cmux-other-pane; do
+    make_adoption_case "$id-$variant"
+    backend=herdr
+    case "$variant" in tmux-*) backend=tmux ;; zellij-*) backend=zellij ;; cmux-*) backend=cmux ;; esac
+    printf 'backend=%s\nherdr_pane_id=task-pane\nzellij_pane_id=task-pane\ncmux_surface_id=task-pane\n' "$backend" >> "$HOME_DIR/state/$id-$variant.meta"
+    if [ "$backend" = tmux ]; then
+      cat > "$FAKEBIN_DIR/tmux" <<'SH'
+#!/usr/bin/env bash
+[ "$*" = 'list-panes -t retained -F #{pane_id}' ] || exit 1
+printf 'task-pane\n'
+SH
+      chmod +x "$FAKEBIN_DIR/tmux"
+    fi
+    cat > "$CASE_DIR/shell.py" <<'PY'
+import os, pty, select, signal, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(sys.argv[1])
+    env = dict(os.environ, HERDR_PANE_ID=sys.argv[3], TMUX_PANE=sys.argv[3],
+               ZELLIJ_PANE_ID=sys.argv[3], CMUX_SURFACE_ID=sys.argv[3])
+    if sys.argv[4] == 'own-job' or sys.argv[4].startswith(('tmux-', 'zellij-', 'cmux-')):
+        env['FM_TASK_ID'] = sys.argv[5]
+    else:
+        env.pop('FM_TASK_ID', None)
+    os.execve('/bin/bash', ['/bin/bash', '-i', '-l'], env)
+try:
+    # A bash comm alone can still mean login startup is running a profile child.
+    # Read a builtin's output (not its echoed command) before publishing the PID.
+    os.write(fd, b"printf '\\136fixture-ready\\136\\n'\n")
+    output = b''
+    deadline = time.monotonic() + 10
+    while b'^fixture-ready^' not in output:
+        if time.monotonic() >= deadline:
+            raise RuntimeError('login shell did not finish startup')
+        if select.select([fd], [], [], .1)[0]:
+            output += os.read(fd, 4096)
+    if sys.argv[4] == 'child' or sys.argv[4].endswith('own-job'):
+        os.write(fd, b'sleep 300\n')
+    with open(sys.argv[2], 'w') as f:
+        f.write(str(pid))
+    while os.path.exists(sys.argv[2]):
+        time.sleep(.1)
+finally:
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+PY
+    local pane=task-pane
+    case "$variant" in *other-pane) pane=foreign-pane ;; esac
+    python3 "$CASE_DIR/shell.py" "$POOL_DIR" "$CASE_DIR/shell.pid" "$pane" "$variant" "$id-$variant" &
+    keeper=$!
+    for _ in $(seq 1 100); do [ -s "$CASE_DIR/shell.pid" ] && break; sleep 0.1; done
+    pid=$(cat "$CASE_DIR/shell.pid")
+    local child=''
+    if [ "$variant" = child ] || [[ "$variant" = *own-job ]]; then
+      for _ in $(seq 1 100); do
+        child=$(ps -e -o pid= -o ppid= | awk -v p="$pid" '$2==p {print $1}')
+        [ -z "$child" ] || break
+        sleep 0.1
+      done
+      [ -n "$child" ] || fail 'child-bearing-shell regression would be vacuous'
+    fi
+    for _ in $(seq 1 50); do
+      [ "$(ps -p "$pid" -o comm= | tr -d '[:space:]')" = bash ] && break
+      sleep 0.1
+    done
+    out=$(ADOPT_PROCESS_PID="$pid" ADOPT_STATUS=in-use run_adoption); status=$?
+    [ -z "$child" ] || kill "$child"
+    rm -f "$CASE_DIR/shell.pid"
+    wait "$keeper" || fail 'could not clean up portable shell fixture'
+    if [ "$variant" = own ] || [[ "$variant" = *own-job ]]; then
+      expect_code 0 "$status" "own idle shell prevented adoption: $out"
+      assert_grep 'treehouse_lease_id=adopt-acquisition' "$HOME_DIR/state/$id-$variant.meta" 'idle-shell lease not published'
+    else
+      [ "$status" -ne 0 ] || fail "adoption ignored $variant holder"
+      assert_no_grep 'treehouse_lease_id=' "$HOME_DIR/state/$id-$variant.meta" 'refused holder was adopted'
+    fi
+  done
+  pass 'real process evidence adopts own idle Herdr panes and live Herdr/tmux/zellij/cmux task jobs, never another pane or unrelated children'
+}
+
+test_direct_spawn_relaunch_adopts_legacy_record() {
+  local rec id=spawn-legacy-relaunch out rc state head
+  rec=$(make_case spawn-legacy-relaunch "$id")
+  read_case_record "$rec"
+  lay_out_as_pool_slot
+  out=$(run_spawn "$id" --scout); rc=$?
+  expect_code 0 "$rc" "initial spawn fixture failed: $out"
+  state="$CASE_DIR/slots/treehouse-state.json"
+  jq '.worktrees[0] |= (del(.leased,.lease_holder,.lease_id) + {owner_pid:0})' "$state" > "$state.new"
+  mv "$state.new" "$state"
+  awk '!/^treehouse_lease_holder=/ && !/^treehouse_lease_id=/' "$HOME_DIR/state/$id.meta" > "$HOME_DIR/state/$id.meta.new"
+  mv "$HOME_DIR/state/$id.meta.new" "$HOME_DIR/state/$id.meta"
+  mv "$FAKEBIN_DIR/tmux" "$FAKEBIN_DIR/tmux-original"
+  cat > "$FAKEBIN_DIR/tmux" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'#{pane_current_command}'*) printf 'bash\n'; exit 0 ;;
+esac
+case "\$1" in list-windows) printf 'fm-%s\n' '$id'; exit 0 ;; esac
+exec '$FAKEBIN_DIR/tmux-original' "\$@"
+SH
+  chmod +x "$FAKEBIN_DIR/tmux"
+  head=$(git -C "$POOL_DIR" rev-parse HEAD)
+  printf 'retained relaunch work\n' > "$POOL_DIR/retained"
+  out=$(fm_test_run_spawn "$HOME_DIR" "$POOL_DIR" "$FAKEBIN_DIR" "$id" --relaunch --harness codex); rc=$?
+  expect_code 0 "$rc" "direct --relaunch failed to adopt legacy reservation under its held locks: $out"
+  assert_grep 'treehouse_lease_id=fixture-1' "$HOME_DIR/state/$id.meta" 'direct relaunch did not publish the adopted acquisition'
+  jq -e '.worktrees[0].leased==true' "$state" >/dev/null || fail 'direct relaunch left its retained slot allocatable'
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$head" ] || fail 'direct relaunch reset HEAD'
+  assert_grep 'retained relaunch work' "$POOL_DIR/retained" 'direct relaunch lost uncommitted contents'
+  pass 'direct spawn --relaunch adopts an exclusive legacy record while both locks are held and preserves unfinished work'
+}
+
+test_direct_spawn_relaunch_adopts_legacy_record
+test_owner_adoption_real_idle_shell
 test_owner_adoption_preserves_work_and_is_idempotent
 test_owner_adoption_lists_conflicts_without_leasing
 test_remote_seeded_home_spawns_from_treehouse_pool

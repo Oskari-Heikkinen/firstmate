@@ -1343,6 +1343,14 @@ do_relaunch() {
   else
     note_line="note=none"
   fi
+  # Protect legacy interactive Treehouse acquisitions before do_exit can let
+  # their native get process release the slot. Park/reboot both call this owner.
+  if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+    # shellcheck source=bin/fm-treehouse-adopt-lib.sh
+    . "$SCRIPT_DIR/fm-treehouse-adopt-lib.sh"
+    fm_treehouse_adopt_for_relaunch "$META" "$ID" "$(fm_meta_get "$META" project)" "$FM_HOME" \
+      || die "task $ID's legacy Treehouse reservation could not be adopted; its holder was not stopped; owner reconciliation is required"
+  fi
   safe_checkpoint
   cp -p "$META" "$META_PRIOR" || die "could not preserve task $ID's durable record before relaunching"
   RELAUNCH_ACTIVE=1

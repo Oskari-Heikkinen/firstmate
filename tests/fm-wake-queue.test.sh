@@ -3588,6 +3588,38 @@ test_pool_reservation_identity_and_markerless_conflict() {
   [ "$rc" -ne 0 ] || fail 'replaced acquisition matched retained holder'
   assert_grep 'worktree=' "$dir/state/other.meta" 'conflict check removed evidence'
   pass 'reservation helpers require exact incarnation and refuse markerless duplicate records'
+  fm_git_worktree "$dir/project" "$dir/new-slot" task-intake
+  rmdir "$dir/pool/1/repo"
+  git -C "$dir/project" worktree move "$dir/new-slot" "$dir/pool/1/repo"
+  printf '{"worktrees":[{"name":"1","path":"%s","owner_pid":0}]}\n' "$dir/pool/1/repo" > "$dir/pool/treehouse-state.json"
+  printf 'kind=scout\nproject=%s\nworktree=%s\n' "$dir/project" "$dir/pool/1/repo" > "$dir/state/own.meta"
+  cp "$dir/state/own.meta" "$dir/state/other.meta"
+  cp "$dir/state/own.meta" "$dir/record.before"
+  printf 'retained uncommitted work\n' > "$dir/pool/1/repo/retained"
+  mkdir -p "$dir/fakebin"
+  cat > "$dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -eu
+shift 2
+case "$1" in
+  status) jq '[.worktrees[] | {name,path,status:"dirty",processes:[]}]' "$POOL_STATE" ;;
+  lease)
+    jq --arg h "$4" '.worktrees[0] += {leased:true,lease_holder:$h,lease_id:"quarantine-lease"}' "$POOL_STATE" > "$POOL_STATE.new"
+    mv "$POOL_STATE.new" "$POOL_STATE"
+    jq '.worktrees[0] | {path,lease_holder,lease_id}' "$POOL_STATE" ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$dir/fakebin/treehouse"
+  PATH="$dir/fakebin:$PATH" POOL_STATE="$dir/pool/treehouse-state.json" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_treehouse_intake_preflight "$2/project" "$2/state"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$dir" || fail 'duplicate legacy slot stopped intake rather than excluding that slot'
+  jq -e '.worktrees[0] | .leased==true and (.lease_holder | startswith("firstmate:retained:"))' "$dir/pool/treehouse-state.json" >/dev/null || fail 'ambiguous slot was not quarantined'
+  cmp "$dir/record.before" "$dir/state/own.meta" || fail 'intake changed the first owner record'
+  cmp "$dir/record.before" "$dir/state/other.meta" || fail 'intake changed the second owner record'
+  assert_grep 'retained uncommitted work' "$dir/pool/1/repo/retained" 'intake reset the ambiguous slot'
+  pass 'intake excludes a duplicate legacy slot state-only without changing either owner record or work'
 }
 
 # Case pool (fm_run_case_pool in tests/lib.sh). Every case builds its own state

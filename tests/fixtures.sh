@@ -301,19 +301,26 @@ fm_test_fake_treehouse_lease() {
     cat <<'SH'
 set -u
 [ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+[ "${1:-}" != --root ] || shift 2
 verb=${1:-}; shift
 holder='' lease='' path=${FM_FAKE_PANE_PATH:-$default_path}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --lease-holder|--if-lease-holder) holder=$2; shift 2 ;;
     --if-lease-id) lease=$2; shift 2 ;;
-    --lease|--force) shift ;;
-    *) path=$1; shift ;;
+    --lease|--force|--json) shift ;;
+    *) [ "$verb" = lease ] || path=$1; shift ;;
   esac
 done
 if [ -d "$path" ]; then path=$(cd -- "$path" && pwd -P) || exit 1; fi
 state="$(dirname "$(dirname "$path")")/treehouse-state.json"
-if [ "$verb" = get ]; then
+if [ "$verb" = status ]; then
+  jq '[.worktrees[] | {name,path,status:"dirty",processes:[]}]' "$state"
+elif [ "$verb" = lease ]; then
+  jq --arg h "$holder" '.worktrees[0] |= (. + {leased:true,lease_holder:$h,lease_id:("fixture-" + .name)})' "$state" > "$state.new" || exit 1
+  mv "$state.new" "$state"
+  jq '.worktrees[0] | {path,lease_holder,lease_id}' "$state"
+elif [ "$verb" = get ]; then
   [ -n "$holder" ] && [ -n "$path" ] || exit 1
   if [ -f "$state" ]; then
     jq -e --arg p "$path" '.worktrees[] | select(.path==$p) | (.leased // false) == false' "$state" >/dev/null || exit 1

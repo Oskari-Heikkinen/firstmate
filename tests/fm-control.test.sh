@@ -1349,6 +1349,83 @@ test_opencode_interrupts_twice_and_others_once
 test_unverified_harness_is_refused
 test_harness_supported_is_silent_on_early_match
 test_harness_family_resolution
+test_legacy_relaunch_refuses_duplicate_before_exit() {
+  local dir wt out rc before
+  dir=$(new_case legacy-duplicate)
+  add_task "$dir" t1 claude
+  wt="$dir/.treehouse/pool/1/proj"
+  mkdir -p "$(dirname "$wt")"
+  git -C "$dir/proj-t1" worktree move "$dir/wt-t1" "$wt"
+  printf '{"worktrees":[{"name":"1","path":"%s","owner_pid":0}]}\n' "$wt" > "$dir/.treehouse/pool/treehouse-state.json"
+  sed "s#worktree=$dir/wt-t1#worktree=$wt#" "$dir/home/state/t1.meta" > "$dir/meta.new"
+  mv "$dir/meta.new" "$dir/home/state/t1.meta"
+  cp "$dir/home/state/t1.meta" "$dir/home/state/other.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  alive_as "$dir" claude
+  printf 'retained uncommitted work\n' > "$wt/retained"
+  before=$(cat "$dir/home/state/t1.meta")
+  out=$(run_control "$dir" t1 relaunch --note 'Resume retained work'); rc=$?
+  [ "$rc" -ne 0 ] || fail 'duplicate legacy relaunch succeeded'
+  assert_contains "$out" 'holder was not stopped' 'adoption refusal came after exit'
+  [ -z "$(literals "$dir")$(keys_sent "$dir")" ] || fail 'refused adoption touched the agent'
+  [ "$(cat "$dir/home/state/t1.meta")" = "$before" ] || fail 'refusal rewrote metadata'
+  assert_grep 'retained uncommitted work' "$wt/retained" 'refusal lost contents'
+  pass 'legacy relaunch refuses duplicate ownership before exiting any holder'
+}
+
+test_legacy_control_adopts_before_exit() {
+  local dir wt out rc head
+  dir=$(new_case legacy-adopts-before-exit)
+  add_task "$dir" t1 claude
+  wt="$dir/.treehouse/pool/1/proj"
+  mkdir -p "$(dirname "$wt")"
+  git -C "$dir/proj-t1" worktree move "$dir/wt-t1" "$wt"
+  printf '{"worktrees":[{"name":"1","path":"%s","owner_pid":0}]}\n' "$wt" > "$dir/.treehouse/pool/treehouse-state.json"
+  sed "s#worktree=$dir/wt-t1#worktree=$wt#" "$dir/home/state/t1.meta" > "$dir/meta.new"
+  mv "$dir/meta.new" "$dir/home/state/t1.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  alive_as "$dir" claude
+  head=$(git -C "$wt" rev-parse HEAD)
+  printf 'retained control work\n' > "$wt/retained"
+  mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-original"
+  cat > "$dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = send-keys ]; then
+  grep -q '^treehouse_lease_id=control-acquisition\$' '$dir/home/state/t1.meta' || exit 93
+  jq -e '.worktrees[0].leased==true' '$dir/.treehouse/pool/treehouse-state.json' >/dev/null || exit 94
+  printf 'lease-before-exit\n' >> '$dir/adoption-order'
+fi
+exec '$dir/fakebin/tmux-original' "\$@"
+SH
+  cat > "$dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+set -eu
+shift 2
+state='$dir/.treehouse/pool/treehouse-state.json'
+case "\$1" in
+  status) jq '[.worktrees[] | {name,path,status:"dirty",processes:[]}]' "\$state" ;;
+  lease)
+    jq --arg h "\$4" '.worktrees[0] += {leased:true,lease_holder:\$h,lease_id:"control-acquisition"}' "\$state" > "\$state.new"
+    mv "\$state.new" "\$state"
+    jq '.worktrees[0] | {path,lease_holder,lease_id}' "\$state" ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$dir/fakebin/tmux" "$dir/fakebin/treehouse"
+  out=$(run_control "$dir" t1 relaunch --note 'Resume retained work'); rc=$?
+  # Deliberately incomplete launch instructions stop the later spawn; the
+  # contract under test is the successful adoption before the prior agent exits.
+  [ "$rc" -ne 0 ] || fail 'incomplete launch instructions unexpectedly spawned'
+  assert_grep 'lease-before-exit' "$dir/adoption-order" "adoption was not published before do_exit: $out"
+  assert_contains "$(literals "$dir")" '/exit' 'control never reached the prior agent exit'
+  assert_grep 'treehouse_lease_id=control-acquisition' "$dir/home/state/t1.meta" 'failed replacement rolled back the protected acquisition'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$head" ] || fail 'control adoption moved retained HEAD'
+  assert_grep 'retained control work' "$wt/retained" 'control adoption discarded unfinished contents'
+  pass 'portable control relaunch publishes the native acquisition before any exit and retains it even if replacement launch refuses'
+}
+
+test_legacy_control_adopts_before_exit
+test_legacy_relaunch_refuses_duplicate_before_exit
 test_relaunch_resume_flag_is_per_adapter_and_reference_owner
 test_prefixed_recorded_harness_reaches_each_control_verb
 test_backend_key_capability_matrix

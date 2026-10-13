@@ -59,8 +59,13 @@ Do not work around either refusal by respawning - it means a live agent may stil
 That reclaim is the owning home's operation only, and a secondmate is the one exception: recover it through `bin/fm-spawn.sh <id> --secondmate` as above.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
-For an unleased legacy pool reservation, the affected home owner can manually run [`fm-treehouse-adopt.sh`](../../../bin/fm-treehouse-adopt.sh); its header owns in-place adoption, conflict reporting and the accepted native Treehouse tidying/concurrency limits.
-This is never an automatic recovery step: conflicting records or claims require owner reconciliation without discarding work, and the command never changes another home's records.
+Legacy pooled tasks are adopted automatically by the ordinary relaunch path, including park resume and session-start recovery; [`fm-treehouse-adopt.sh`](../../../bin/fm-treehouse-adopt.sh)'s header owns the shared in-place adoption and conflict contract.
+Do not type `cd ~` or exit into a retained pane to make adoption succeed; unresolved ownership conflicts still require the affected home owner to reconcile them without discarding work.
+Intake protects ambiguous, claim-only and secondmate copies under a `firstmate:retained:` reservation without editing any owner record.
+That reservation remains after records are reconciled: this landing intentionally has no automatic transfer to a task holder.
+Only the owning home's explicit ordinary reservation handling can release or re-adopt the copy after records cease naming it or establish exclusive ownership; the same landed-work and discard-authorization boundaries still apply, and nothing else frees it.
+The matching task-holder reservation is finished automatically by owner cleanup before its unchanged landed-work checks.
+Live-worker adoption coverage proves the kernel task/pane environment with real PTY jobs across pooled backends and real Herdr/native Treehouse idle/get cases, but has not exercised a real Claude or Codex worker.
 
 ## A live crewmate claiming the pipeline is dead
 

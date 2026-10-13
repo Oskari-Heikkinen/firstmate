@@ -3595,6 +3595,25 @@ remove_secondmate_registry_entry() {
 }
 
 require_exclusive_task_worktree_slot || exit 1
+# Intake may have protected a legacy slot without editing this owner's record.
+# Finish only that exact task/home lease under the already-held locks, before
+# landed-work checks; foreign/reassigned slots retain their original handling.
+if [ "$TREEHOUSE_PROJECT_LOCK_HELD" = 1 ] && \
+   [ -z "$(fm_meta_get "$META" treehouse_lease_holder)$(fm_meta_get "$META" treehouse_lease_id)" ]; then
+  fm_treehouse_slot_owner_state "$WT" "$ID"
+  if [ "$FM_TREEHOUSE_SLOT_OWNER" = mine ] || [ "$FM_TREEHOUSE_SLOT_OWNER" = absent ]; then
+    CLEANUP_EXPECTED_HOLDER=$(fm_treehouse_lease_holder "$FM_HOME" "$ID") || exit 1
+    fm_treehouse_slot_lease_read "$WT" || exit 1
+    if [ "$FM_TREEHOUSE_LEASED" = 1 ] && [ "$FM_TREEHOUSE_LEASE_HOLDER" = "$CLEANUP_EXPECTED_HOLDER" ]; then
+      # shellcheck source=bin/fm-treehouse-adopt-lib.sh
+      . "$SCRIPT_DIR/fm-treehouse-adopt-lib.sh"
+      fm_treehouse_adopt_locked "$META" "$ID" "$PROJ" "$FM_HOME" || {
+        echo "REFUSED: cannot finish task $ID's matching intake reservation; preserving its copy and record" >&2
+        exit 1
+      }
+    fi
+  fi
+fi
 require_owned_task_worktree_slot || exit 1
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1

@@ -3343,6 +3343,14 @@ if [ "$KIND" != secondmate ] &&
       fm_treehouse_intake_preflight "$PROJ_ABS" "$STATE" || exit 1
       SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_treehouse_lease_holder "$FM_HOME" "$ID") || exit 1
     else
+      if [ -z "$(fm_meta_get "$RELAUNCH_META" treehouse_lease_holder)$(fm_meta_get "$RELAUNCH_META" treehouse_lease_id)" ] && \
+        fm_treehouse_pool_slot "$PROJ_ABS" "$(fm_meta_get "$RELAUNCH_META" worktree)"; then
+        # Both locks are already held. Direct --relaunch shares control's repair,
+        # without acquiring either lock twice or touching any other record.
+        # shellcheck source=bin/fm-treehouse-adopt-lib.sh
+        . "$SCRIPT_DIR/fm-treehouse-adopt-lib.sh"
+        fm_treehouse_adopt_locked "$RELAUNCH_META" "$ID" "$PROJ_ABS" "$FM_HOME" || exit 1
+      fi
       SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_meta_get "$RELAUNCH_META" treehouse_lease_holder)
       SPAWN_TREEHOUSE_LEASE_ID=$(fm_meta_get "$RELAUNCH_META" treehouse_lease_id)
       if ! fm_treehouse_relaunch_reservation "$PROJ_ABS" "$STATE" "$RELAUNCH_META" "$ID" "$FM_HOME"; then
