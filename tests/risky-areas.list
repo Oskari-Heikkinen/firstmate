@@ -10,11 +10,13 @@ watcher script bin/fm-wake-*.sh
 watcher script bin/fm-supervision-host.sh
 watcher script bin/fm-supervision-engine-lib.sh
 watcher script bin/fm-supervision-lib.sh
+watcher script bin/fm-afk-launch.sh
 watcher test tests/fm-watch*.test.sh
 watcher test tests/fm-watcher-*.test.sh
 watcher test tests/fm-wake-*.test.sh
 watcher test tests/fm-supervision-*.test.sh
 watcher test tests/fm-branch-supervision.test.sh
+watcher test tests/fm-afk-launch.test.sh
 
 cleanup script bin/fm-teardown.sh
 cleanup script bin/fm-park.sh
@@ -26,10 +28,12 @@ steering script bin/fm-task-inbox-lib.sh
 steering script bin/fm-control.sh
 steering script bin/fm-control-lib.sh
 steering script bin/fm-land-after.sh
+steering script bin/backends/herdr.sh
 steering test tests/fm-send*.test.sh
 steering test tests/fm-task-inbox*.test.sh
 steering test tests/fm-control*.test.sh
 steering test tests/fm-land-after.test.sh
+steering test tests/fm-backend-herdr.test.sh
 
 fleet-sync script bin/fm-fleet-sync*.sh
 fleet-sync script bin/fm-secondmate-sync*.sh
