@@ -210,16 +210,13 @@ repair_line() {
   esac
 }
 
+# Claude and the Pi family state their ordinary-wake continuation in their own
+# protocol file, so they get no separate line here.
 ordinary_wake_line() {
   case "$HARNESS" in
-    claude)
-      printf '%s\n' '- Ordinary wake: the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
-      ;;
+    claude|pi|pi-signed) ;;
     codex)
       printf '%s\n' '- Ordinary wake: take the next foreground bin/fm-watch-checkpoint.sh checkpoint as directed below.'
-      ;;
-    pi|pi-signed)
-      printf '%s\n' '- Ordinary wake: the Pi extension already owns watcher continuity; do not arm another cycle.'
       ;;
     omp)
       printf '%s\n' '- Ordinary wake: the omp extension already owns watcher continuity; do not arm another cycle.'
@@ -260,16 +257,12 @@ if [ "$AFK" -eq 1 ]; then
   else
     printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
   fi
-else
-  printf '%s\n' '- Away/quiet mode: inactive.'
 fi
 if [ "$X_MODE" -eq 1 ]; then
   printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
-else
-  printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
 fi
 if [ -n "$HOST_SNIPPET" ]; then
-  printf '%s\n' '- Supervision host: on; it takes away-posture wakes and, where the dialog mirror is verified, eligible attended wakes itself, and hands the rest to you (protocol at the end of this block).'
+  printf '%s\n' '- Supervision host: on (protocol at the end of this block).'
 fi
 ordinary_wake_line
 printf '\n'

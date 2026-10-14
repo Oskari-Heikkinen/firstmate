@@ -53,7 +53,7 @@ The primary watcher protocol also requires `.pi/extensions/fm-primary-pi-watch.t
 The Pi engine auto-discovers both tracked project-local extensions once the project is trusted.
 The model arms through the `fm_watch_arm_pi` tool, never through a foreground shell arm.
 Native-harness adapters can discover the same guarded FirstMate tools and operational message allowlist through the public Pi event-bus contract in `.pi/extensions/lib/fm-native-contract.ts`; no Pi built-in tools cross that contract.
-The tool result and clean-exit fallback are owned by `../../../docs/supervision-protocols/pi.md`.
+The tool result and clean-exit fallback are owned by `.pi/extensions/fm-primary-pi-watch.ts` and `../../../docs/watcher-continuity.md`.
 `../../../bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both extensions and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
 
 When a secondmate is launched on Pi or Pi-signed, `../../../bin/fm-spawn.sh --secondmate` launches the selected executable with `-e .pi/extensions/fm-primary-turnend-guard.ts`, `-e .pi/extensions/fm-primary-pi-watch.ts`, and `-e` of the parent home's `state/<id>.pi-ext.ts` busy extension.

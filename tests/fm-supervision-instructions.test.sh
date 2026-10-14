@@ -34,11 +34,11 @@ test_supervision_host_protocol_on_an_opted_in_claude_home() {
     "a Claude home without config/supervision-host must render the plain protocol"
   : > "$config/supervision-host"
   hosted=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness claude)
-  assert_contains "$hosted" "- Supervision host: on;" "an opted-in claude home did not render the host state line"
+  assert_contains "$hosted" "- Supervision host: on (protocol at the end of this block)." "an opted-in claude home did not render the host state line"
   assert_contains "$hosted" "Mode: Claude Stop-hook-owned supervision." "the host protocol replaced the claude protocol instead of adding to it"
-  assert_contains "$hosted" "supervision-host: cycle boundary" "the host protocol did not tell main how to handle a park boundary"
-  assert_contains "$hosted" "never run the return from it" "the host protocol did not say a handed-back wake is not the captain's return"
-  [ "$(printf '%s\n' "$hosted" | grep -vF -e '- Supervision host: on;' | head -n "$(printf '%s\n' "$plain" | wc -l)")" = "$plain" ] \
+  assert_contains "$hosted" "each \`supervision-host:\` line it adds says what that wake needs from you" "the host protocol did not point main at the host's own lines"
+  assert_contains "$hosted" "never the captain's return" "the host protocol did not say a handed-back wake is not the captain's return"
+  [ "$(printf '%s\n' "$hosted" | grep -vF -e '- Supervision host: on (' | head -n "$(printf '%s\n' "$plain" | wc -l)")" = "$plain" ] \
     || fail "the host protocol changed the claude block it should only append to"
   other=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness pi)
   assert_not_contains "$other" "Supervision host" "a pi primary rendered the host protocol"
@@ -70,18 +70,31 @@ test_supervision_host_protocol_on_every_arm_owner() {
     rm -f "$config/supervision-host-off"
     : > "$config/supervision-host"
     hosted=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness "$harness")
-    assert_contains "$hosted" "- Supervision host: on; it takes away-posture wakes and, where the dialog mirror is verified, eligible attended wakes itself, and hands the rest to you (protocol at the end of this block)." \
-      "$harness: an opted-in home did not render the host state line naming both postures it takes"
+    assert_contains "$hosted" "- Supervision host: on (protocol at the end of this block)." \
+      "$harness: an opted-in home did not render the host state line"
     body=$(printf '%s\n' "$hosted" | sed -n '/^Supervision host: on for this home/,$p')
     [ -n "$body" ] || fail "$harness: the host protocol is missing"
     printf '%s\n' "$body" | grep -E '^\{[a-z,]+\} ' >/dev/null && fail "$harness: a harness tag leaked into the rendered protocol: $body"
-    [ "$(printf '%s\n' "$body" | grep -c 'runs the supervision host')" -eq 1 ] \
-      || fail "$harness: the protocol must name exactly one arm owner: $body"
-    [ "$(printf '%s\n' "$body" | grep -c '^ *Only a wake the host hands back reaches you')" -eq 1 ] \
-      || fail "$harness: the protocol must name exactly one wake path: $body"
-    [ "$(printf '%s\n' "$body" | grep -c '^3\. ')" -eq 1 ] || fail "$harness: the protocol must say once how the park boundary arrives: $body"
-    [ "$(printf '%s\n' "$body" | grep -c '^6\. ./afk. writes only the record here')" -eq 1 ] \
-      || fail "$harness: the protocol must say once what /afk does here: $body"
+    [ "$(printf '%s\n' "$body" | grep -c '^Attended, ')" -eq 1 ] \
+      || fail "$harness: the protocol must say exactly once what happens attended: $body"
+    [ "$(printf '%s\n' "$body" | grep -c "never the captain's return; the \`afk\` skill owns that posture")" -eq 1 ] \
+      || fail "$harness: the protocol must say once that a handed-back away wake is not the return and that afk owns it: $body"
+    case "$harness" in
+      claude|cursor)
+        assert_contains "$body" "Attended, a headless supervision session takes the wakes the supervision branch may take" \
+          "$harness: the attended line did not say the branch takes eligible wakes"
+        assert_contains "$body" "process each entry of its \`BRANCH OUTCOMES\` section from the task's current state" \
+          "$harness: the branch-outcome line lost its current-state processing rule"
+        assert_contains "$body" "your reply covers only entries still open" \
+          "$harness: the branch-outcome line lost its still-open-only rule"
+        assert_contains "$body" "then run the \`mark-processed\` acknowledgement it prints" \
+          "$harness: the branch-outcome line lost its acknowledgement"
+        ;;
+      *)
+        assert_contains "$body" "Attended, every wake reaches you exactly as above." "$harness: the attended line did not say every wake reaches main"
+        assert_not_contains "$body" "BRANCH OUTCOMES" "$harness: a harness with no attended branch rendered the branch-outcome rule"
+        ;;
+    esac
   done
   rm -f "$config/supervision-host"
   plain=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness grok)
@@ -146,7 +159,9 @@ test_quiet_mode_stanzas() {
   assert_contains "$out" "- Away mode: active" "unrecognized --afk-mode value did not fall back to away"
 
   out=$(FM_HOME="$home" "$RENDER" --harness codex --afk 0)
-  assert_contains "$out" "- Away/quiet mode: inactive" "inactive stanza missing"
+  assert_not_contains "$out" "Away mode" "an inactive away posture still rendered an away line"
+  assert_not_contains "$out" "Quiet mode" "an inactive quiet posture still rendered a quiet line"
+  assert_not_contains "$out" "X mode" "an inactive X mode still rendered an X-mode line"
   pass "renderer's away/quiet stanzas are mode-aware, default to away, and fall back safely on garbage input"
 }
 
@@ -187,11 +202,9 @@ test_cross_harness_ordinary_continuation_and_repair_matrix() {
   local ordinary out
 
   out=$("$RENDER" --harness pi)
-  assert_contains "$out" "task-level routine outcome that says the worker is still busy" "Pi instructions omitted task-level silent no-change behavior"
-  assert_contains "$out" "captain outcomes are never silent" "Pi instructions allowed silent captain outcomes"
-  ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
-  assert_contains "$ordinary" "Pi extension already owns watcher continuity" "pi ordinary-wake line does not leave continuity to the extension"
-  assert_not_contains "$ordinary" "fm_watch_arm_pi" "pi ordinary-wake line incorrectly calls the recovery tool"
+  assert_not_contains "$out" "- Ordinary wake:" "pi rendered a separate ordinary-wake line its protocol already states"
+  assert_contains "$out" "the extension owns every cycle: do not call \`fm_watch_arm_pi\` again for ordinary work or ordinary wakes" \
+    "pi protocol does not leave ordinary-wake continuity to the extension"
   out=$("$RENDER" --harness pi --repair-line)
   assert_contains "$out" "fm_watch_arm_pi" "pi recovery line lost the extension-owned repair tool"
 
@@ -214,11 +227,11 @@ test_cross_harness_ordinary_continuation_and_repair_matrix() {
   assert_contains "$out" "manual recovery probe" "opencode recovery line lost its manual probe"
 
   out=$("$RENDER" --harness claude)
-  ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
-  assert_contains "$ordinary" "Stop-owned auto-arm" "claude ordinary-wake line does not leave continuity to the Stop hook"
-  assert_contains "$ordinary" "bin/fm-claude-stop-autoarm.sh" "claude ordinary-wake line lost the auto-arm script name"
-  assert_contains "$ordinary" "do not arm another cycle" "claude ordinary-wake line does not forbid a model re-arm"
-  assert_not_contains "$ordinary" "bin/fm-watch-arm.sh" "claude ordinary-wake line incorrectly calls the manual arm"
+  assert_not_contains "$out" "- Ordinary wake:" "claude rendered a separate ordinary-wake line its protocol already states"
+  assert_contains "$out" "The Stop hook (\`bin/fm-claude-stop-autoarm.sh\`) arms or attaches the one home-scoped watcher cycle at every turn end" \
+    "claude protocol does not leave continuity to the Stop hook"
+  assert_contains "$out" "never arm it yourself, and never run \`bin/fm-watch-arm.sh\` after an ordinary wake" \
+    "claude protocol does not forbid a model arm after an ordinary wake"
   out=$("$RENDER" --harness claude --repair-line)
   assert_contains "$out" "watcher supervision needs Stop-owned automatic recovery" "claude recovery line lost its neutral automatic-recovery guidance"
   assert_not_contains "$out" "is broken" "claude recovery line claimed failure before verification"
@@ -246,15 +259,14 @@ test_cross_harness_ordinary_continuation_and_repair_matrix() {
 }
 
 test_pi_signed_preserves_identity_with_pi_supervision_protocol() {
-  local out ordinary
+  local out
   out=$("$RENDER" --harness pi-signed)
   assert_contains "$out" "primary harness: pi-signed" \
     "pi-signed supervision normalized the visible runtime identity to pi"
   assert_contains "$out" "Mode: Pi extension background wake." \
     "pi-signed did not reuse Pi's authoritative supervision protocol"
-  ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
-  assert_contains "$ordinary" "Pi extension already owns watcher continuity" \
-    "pi-signed ordinary-wake semantics diverged from Pi"
+  [ "$out" = "$("$RENDER" --harness pi | sed 's/primary harness: pi$/primary harness: pi-signed/')" ] \
+    || fail "pi-signed supervision semantics diverged from Pi"
   out=$("$RENDER" --harness pi-signed --repair-line)
   assert_contains "$out" "Pi tool fm_watch_arm_pi" \
     "pi-signed repair semantics diverged from Pi"
@@ -285,22 +297,48 @@ test_grok_command_sources_effective_config() {
   pass "grok rendered command sources the effective x-mode config"
 }
 
-test_pi_snippet_uses_effective_extension_path() {
+test_pi_repair_line_uses_effective_extension_path() {
   local home out turnend watch
   home="$TMP_ROOT/pi-home"
   turnend="$ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
   watch="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
   mkdir -p "$home/state" "$home/config"
+  out=$(FM_HOME="$home" "$RENDER" --harness pi --repair-line)
+  assert_contains "$out" "-e $turnend -e $watch" "pi repair line did not render both effective extension launch paths"
   out=$(FM_HOME="$home" "$RENDER" --harness pi)
-  assert_contains "$out" "-e $turnend -e $watch" "pi snippet did not render both effective extension launch paths"
-  assert_contains "$out" "The turn-end guard extension lives at \`$turnend\`" "pi snippet did not render the turn-end guard extension path"
-  assert_contains "$out" "The watcher extension lives at \`$watch\`" "pi snippet did not render the watcher extension path"
-  assert_contains "$out" "MAIN must not re-drain, re-run, or acknowledge it" "pi snippet lost merged-event ownership"
-  assert_contains "$out" "MAIN applies judgment about whether and how to surface, summarize, reference, or incorporate a merged sailboat outcome" "pi snippet imposed a mechanical sailboat treatment"
   assert_not_contains "$out" "__FM_PI_EXT__" "renderer leaked the Pi extension path placeholder"
   assert_not_contains "$out" "__FM_PI_TURNEND_EXT__" "renderer leaked the Pi turn-end extension path placeholder"
-  assert_not_contains "$out" "state/fm-primary-pi-watch.ts" "pi snippet kept the old generated state-relative extension path"
-  pass "pi supervision snippet renders the effective extension path"
+  pass "pi repair line renders the effective extension paths"
+}
+
+# The kept per-harness lines are each the fix for an observed mistake: a model
+# re-arming the Claude watcher, a Pi foreground arm that wedged the agent, and a
+# finished worker answered with a bare no-op reply. Each must survive verbatim.
+test_claude_protocol_keeps_its_mistake_lines() {
+  local out
+  out=$("$RENDER" --harness claude)
+  assert_contains "$out" "A wake arrives as a \`Stop hook feedback\` message" "claude protocol lost how a wake arrives"
+  assert_contains "$out" "run \`bin/fm-wake-drain.sh\` first and handle it" "claude protocol lost drain-first on a wake"
+  assert_contains "$out" "Do not invent a wake from an attach-status line alone" "claude protocol lost the no-invented-wake rule"
+  assert_contains "$out" "\`firstmate watcher auto-arm FAILED ...\` or \`INTERRUPTED ...\` notice" "claude protocol lost the auto-arm failure pointer"
+  assert_contains "$out" "never turn it into a manual-arm loop" "claude protocol lost the no-manual-arm-loop rule"
+  pass "claude protocol keeps its arm-ownership, wake, and failure-notice lines"
+}
+
+test_pi_protocol_keeps_its_mistake_lines() {
+  local out
+  out=$("$RENDER" --harness pi)
+  assert_contains "$out" "make the one required \`fm_watch_arm_pi\` call" "pi protocol lost the one initial arm call"
+  assert_contains "$out" "Use \`/fm-watch-arm-pi\` only as a human-entered fallback." "pi protocol lost the human-only slash fallback"
+  assert_contains "$out" "never run \`bin/fm-watch-arm.sh\` through Pi's bash tool" "pi protocol lost the no-foreground-arm rule"
+  assert_contains "$out" "Regression example - keep verbatim and never condense away: \`[seq 41] claude-mod: implementation complete, ready for review\` requires relaying a captain-facing outcome response, not just \`Captain, shipshape.\`." \
+    "pi protocol lost its verbatim regression example"
+  assert_contains "$out" "call the \`fm_branch_processed\` tool with the highest sequence the request listed, exactly once" \
+    "pi protocol lost the single processed acknowledgement"
+  assert_contains "$out" "The reply covers only the still-open outcomes" "pi protocol lost the still-open-only rule"
+  assert_contains "$out" "A merge ask with no URL that leans on the dim anchor violates \`AGENTS.md\` section 9." "pi protocol lost the merge-ask URL rule"
+  assert_contains "$out" "claim its lease with \`bin/fm-lease.sh claim <task>\` and release it afterwards" "pi protocol lost the lease claim"
+  pass "pi protocol keeps its one-arm, processing-request, and lease lines"
 }
 
 test_supervision_host_protocol_on_an_opted_in_claude_home
@@ -314,4 +352,6 @@ test_cross_harness_ordinary_continuation_and_repair_matrix
 test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify
 test_grok_command_sources_effective_config
-test_pi_snippet_uses_effective_extension_path
+test_pi_repair_line_uses_effective_extension_path
+test_claude_protocol_keeps_its_mistake_lines
+test_pi_protocol_keeps_its_mistake_lines

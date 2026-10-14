@@ -1646,6 +1646,8 @@ assert_host_lost_handback_notifies_once_per_episode() {
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   expect_code 2 "$status" "a lost hand-back must reach main"
   assert_contains "$out" "auto-arm FAILED - the supervision host returned an actionable wake" "a lost hand-back must deliver the failure notice"
+  assert_contains "$out" "Drain first with bin/fm-wake-drain.sh" "a lost hand-back notice must tell main to drain first"
+  assert_contains "$out" "do not launch a manual background arm" "a lost hand-back notice must forbid a manual-arm loop"
   assert_present "$dir/state/.claude-autoarm-failure-notified" "a lost hand-back did not record its failure episode"
   [ "$(epoch_outcome "$dir")" = failed ] || fail "a lost hand-back must record outcome=failed, got: $(epoch_outcome "$dir")"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
@@ -1682,6 +1684,8 @@ test_host_crash_is_retried_then_reported() {
   assert_contains "$out" "auto-arm FAILED" "an exhausted host crash must deliver the failure notice"
   assert_contains "$out" "The supervision host (docs/supervision-host.md) ran these cycles; its last one exited 137 without a wake." \
     "the failure notice must name the host and its exit"
+  assert_contains "$out" "Drain first with bin/fm-wake-drain.sh" "the failure notice must tell main to drain first"
+  assert_contains "$out" "do not launch a manual background arm" "the failure notice must forbid a manual-arm loop"
   pass "auto-arm: a host that died without a close is retried, then reported as a failure"
 }
 

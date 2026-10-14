@@ -310,7 +310,7 @@ handle_autoarm_signal() {
   fi
   if [ ! -e "$FAILURE_NOTICE" ]; then
     printf 'firstmate watcher auto-arm INTERRUPTED by %s - the Stop-owned automatic supervision mechanism did not reach a terminal watcher outcome.\n' "$signal" >&2
-    printf 'Do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.\n' >&2
+    printf 'Drain first with bin/fm-wake-drain.sh and handle what it presents; do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.\n' >&2
     autoarm_commit failed "$FAILURE_NOTICE" && exit 2
     exit 0
   fi
@@ -542,7 +542,7 @@ if [ "$ACTIONABLE" -eq 1 ]; then
     && ! fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME"; then
     LOST_HANDBACK_COMMITTED=0
     if [ ! -e "$FAILURE_NOTICE" ]; then
-      printf 'firstmate watcher auto-arm FAILED - the supervision host returned an actionable wake, but its rewake could not be committed.\n' >&2
+      printf 'firstmate watcher auto-arm FAILED - the supervision host returned an actionable wake, but its rewake could not be committed.\nDrain first with bin/fm-wake-drain.sh and handle what it presents; do not launch a manual background arm from this notice.\n' >&2
       autoarm_commit failed "$FAILURE_NOTICE" && LOST_HANDBACK_COMMITTED=1
     else
       autoarm_commit failed-suppressed && LOST_HANDBACK_COMMITTED=1
@@ -570,7 +570,7 @@ if [ ! -e "$FAILURE_NOTICE" ]; then
     printf 'firstmate watcher auto-arm FAILED - the Stop-owned automatic supervision mechanism is broken after %s bounded attempts, and no live watcher with a fresh beacon was verified.\n' "$attempt"
     [ -n "$OUT" ] && grep -E '^(watcher:|signal:|stale:|check:|heartbeat|supervision-host)' "$OUT" 2>/dev/null | head -8
     [ "$HOST_MODE" -eq 0 ] || printf 'The supervision host (docs/supervision-host.md) ran these cycles; its last one exited %s without a wake.\n' "$HOST_RC"
-    printf 'Do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.\n'
+    printf 'Drain first with bin/fm-wake-drain.sh and handle what it presents; do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.\n'
   } >&2
   if autoarm_commit failed "$FAILURE_NOTICE"; then
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
