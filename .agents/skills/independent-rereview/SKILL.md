@@ -1,8 +1,6 @@
 ---
 name: independent-rereview
-description: >-
-  Agent-only procedure for commissioning the short independent re-review after a builder landed fixes for an earlier independent review's findings.
-  Load before briefing that re-review scout.
+description: Load before briefing the re-review of fixes a builder landed for an earlier independent review's findings.
 user-invocable: false
 metadata:
   internal: true

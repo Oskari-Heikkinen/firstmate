@@ -133,10 +133,6 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/decision-hold-lifecycle/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": ".agents/skills/diagnostic-reasoning/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -615,10 +611,6 @@
     {
       "path": "tests/captures/no-mistakes-v1.70.1/README.md",
       "audience": "maintainer-verification"
-    },
-    {
-      "path": ".agents/skills/agent-skill-trigger-index/SKILL.md",
-      "audience": "agent-runtime"
     },
     {
       "path": ".agents/skills/away-quiet-supervision/SKILL.md",

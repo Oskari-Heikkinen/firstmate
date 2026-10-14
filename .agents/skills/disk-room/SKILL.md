@@ -1,6 +1,6 @@
 ---
 name: disk-room
-description: Agent-only procedure for laptop disk space on WSL. Load before starting or admitting a job expected to write 1 GiB or more to the Linux disk (including /tmp), on a "disk room low", "disk room: cannot measure", or "storage alert" notification, when anyone reports the Windows drive filling, and before proposing a compaction, sparse mode, or deletion to free space. Owns how agents read real room, admit big writes, what the reclaim install does, and which manual steps are retired.
+description: Load before a 1 GiB+ write to the WSL Linux disk, on a disk-room or storage alert or the Windows drive filling, and before proposing space reclaim.
 ---
 
 # disk-room

@@ -1,11 +1,6 @@
 ---
 name: landed-sync
-description: >-
-  Agent-only procedure for the automatic refresh of the main home's project
-  clone after every landing on a project's default branch. Use on any
-  `check: landed-sync <project>` wake. Owns what triggers the refresh, what it
-  reports, and what an agent may and may not do about a stuck clone or a stale
-  git lock.
+description: "Load on any `check: landed-sync <project>` wake."
 user-invocable: false
 metadata:
   internal: true

@@ -1,8 +1,6 @@
 ---
 name: task-evidence
-description: >-
-  Agent-only guide to keeping task evidence that lives inside a disposable task copy or its /tmp/fm-<id> temp folder.
-  Load before writing a report, note, or other record under data/<id>/ that cites a file inside a task copy or its temp folder, and on any cleanup refusal that names declared evidence, evidence.list, or a record referencing a path cleanup would destroy.
+description: Load before writing a data/<id>/ record that cites a file in a task copy or its temp folder, and on a cleanup refusal that names task evidence.
 user-invocable: false
 metadata:
   internal: true

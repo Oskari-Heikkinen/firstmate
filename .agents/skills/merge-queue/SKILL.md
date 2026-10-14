@@ -1,13 +1,6 @@
 ---
 name: merge-queue
-description: >-
-  Agent-only procedure for tasks that land through an external merge queue
-  (a merge train that alone lands to a project's main) instead of landing
-  themselves. Use before briefing or dispatching such a task, before handing a
-  head to the queue, and on any `procevent merge-queue <source-id> <sequence>`
-  check wake. Owns when the owner-side glue runs, how a worker hands off and
-  waits, which lines and receipts the glue writes, and which hand steps agents
-  no longer do.
+description: Load before briefing, dispatching, or handing a head off for a task that lands through an external merge queue, and on any `procevent merge-queue` wake.
 user-invocable: false
 metadata:
   internal: true

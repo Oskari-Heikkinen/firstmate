@@ -1,10 +1,6 @@
 ---
 name: disk-inventory
-description: >-
-  Agent-only procedure for machine disk housekeeping through the read-only
-  bin/fm-disk-inventory.sh scan and its KEEP / REMOVE / other-homes tables.
-  Load before any disk-space, housekeeping, or leftover-copy inventory, and when
-  relaying or acting on a data/housekeeping/inventory-*.md file.
+description: Load before any disk-space, housekeeping, or leftover-copy inventory, and when relaying or acting on a data/housekeeping/inventory-*.md file.
 user-invocable: false
 metadata:
   internal: true

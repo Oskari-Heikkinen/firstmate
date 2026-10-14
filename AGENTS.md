@@ -412,7 +412,6 @@ The skill owns the guarded fleet update and restart procedure; it never touches 
 ## 13. Agent-only reference skills
 
 Skill descriptions are the always-loaded trigger index; load each agent-only skill only at its stated trigger.
-Load `agent-skill-trigger-index` only when auditing or maintaining the complete trigger index.
 
 ## 14. Relay
 

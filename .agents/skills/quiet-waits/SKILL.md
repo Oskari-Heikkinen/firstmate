@@ -1,16 +1,6 @@
 ---
 name: quiet-waits
-description: >-
-  Agent-only reference for the automation that keeps declared waits, superseded
-  blockers, and config pushes out of the supervisor's chat.
-  Use before briefing or steering a worker onto a machine-checkable wait, on a
-  wake saying a declared wait condition no longer holds or that its endpoint has
-  no agent, when an OPEN DECISIONS or UNREAD STATUS line shows a
-  `note [supersedes=...]` or `note [receipt=config-reread]` record, and before
-  closing a blocker or acknowledging a config push by hand.
-  Also use before authorizing pickup or resumption of saved copy-free work.
-  Owns when each automation runs, how agents declare and wait on it, which
-  records and receipts it emits, and which hand steps it retires.
+description: Load before putting a worker on a machine-checkable wait or resuming saved copy-free work, on a wait-condition, no-agent, supersedes, or config-reread wake, and before hand-closing a blocker.
 user-invocable: false
 metadata:
   internal: true
