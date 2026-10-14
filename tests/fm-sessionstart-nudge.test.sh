@@ -251,7 +251,7 @@ test_run_startup_runs_the_full_digest() {
     "the portable startup fixture did not supply a real harness process"
   assert_not_contains "$out" "$REEMIT_BANNER" "startup was misrouted to a context re-emit"
   assert_not_contains "$out" "FIRSTMATE_OP" "a run-tier open also emitted the nudge instruction"
-  assert_contains "$out" "NEXT STEP" "the run wrapper did not deliver a complete digest"
+  assert_contains "$out" "END OF SESSION START DIGEST" "the run wrapper did not deliver a complete digest"
   pass "run wrapper: startup runs the full digest and never also nudges"
 }
 
@@ -1053,7 +1053,7 @@ test_run_creates_missing_state_on_a_fresh_primary() {
     "creating the state dir did not let a fresh primary take the fleet lock"
   assert_not_contains "$out" "$REEMIT_BANNER" \
     "a fresh primary's first session was misrouted to a context re-emit"
-  assert_contains "$out" "NEXT STEP" "a fresh primary did not receive the complete digest"
+  assert_contains "$out" "END OF SESSION START DIGEST" "a fresh primary did not receive the complete digest"
 
   # An unmarked linked task worktree stays ineligible: it must not have a state
   # dir manufactured for it, so the existing scope refusal is unchanged.
