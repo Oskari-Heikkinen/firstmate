@@ -169,6 +169,12 @@
 # absent claim - a slot taken before claims existed, or already returned - keeps
 # exactly the record-scan protection it had before, because refusing it would
 # strand every task in flight across that change on no evidence at all.
+# A leased record whose slot now carries no lease, under an absent or own claim,
+# was already returned - a cleanup interrupted after its return. When the work
+# on the record's branch (its local branch, else origin's copy) passes the
+# landed-work test in the project clone, teardown skips every slot step exactly
+# as for a reassigned slot and closes only the record; a live lease, another
+# task's claim, or unproven landing still refuses.
 # Why Treehouse's own state cannot answer this for crewmate slots, and why the
 # claim file sits on top of it, is owned by bin/fm-wake-lib.sh's slot-owner
 # claim comment.
@@ -1582,7 +1588,7 @@ patch_id_for_commit() {
 
 unpushed_patches_are_in_pr_head() {
   local pr_head=$1 current base pr_patch_ids commit patch_id unpushed
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  current=$(git -C "$WT" rev-parse --verify "$LANDED_HEAD" 2>/dev/null) || return 1
   base=$(git -C "$WT" merge-base "$current" "$pr_head" 2>/dev/null) || return 1
   pr_patch_ids=$(
     git -C "$WT" log --format=%H "$base..$pr_head" -- 2>/dev/null \
@@ -1593,7 +1599,7 @@ unpushed_patches_are_in_pr_head() {
       | sort -u
   ) || return 1
   [ -n "$pr_patch_ids" ] || return 1
-  unpushed=$(git -C "$WT" log --format=%H HEAD --not --remotes -- 2>/dev/null) || return 1
+  unpushed=$(git -C "$WT" log --format=%H "$LANDED_HEAD" --not --remotes -- 2>/dev/null) || return 1
   [ -n "$unpushed" ] || return 1
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
@@ -1641,7 +1647,7 @@ pr_is_merged() {
   fi
   [ -n "$head" ] || return 1
   ensure_commit_object "$target" "$head" || return 1
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  current=$(git -C "$WT" rev-parse --verify "$LANDED_HEAD" 2>/dev/null) || return 1
   if git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null; then
     landed=1
   elif unpushed_patches_are_in_pr_head "$head"; then
@@ -1691,10 +1697,12 @@ significant_worktree_changes() {
 # and is left to content_in_default.
 commits_replayed_on_default() {
   local ref=$1 current base dirty_raw dirty commits merges default_patch_ids commit patch_id
-  dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null) || return 1
-  dirty=$(printf '%s\n' "$dirty_raw" | significant_worktree_changes | head -1 || true)
-  [ -z "$dirty" ] || return 1
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  if [ "$LANDED_HEAD" = HEAD ]; then
+    dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null) || return 1
+    dirty=$(printf '%s\n' "$dirty_raw" | significant_worktree_changes | head -1 || true)
+    [ -z "$dirty" ] || return 1
+  fi
+  current=$(git -C "$WT" rev-parse --verify "$LANDED_HEAD" 2>/dev/null) || return 1
   base=$(git -C "$WT" merge-base "$current" "$ref" 2>/dev/null) || return 1
   merges=$(git -C "$WT" rev-list --merges "$base..$current" -- 2>/dev/null) || return 1
   [ -z "$merges" ] || return 1
@@ -1728,7 +1736,7 @@ content_in_default() {
   local ref=$1 default_tree merged_tree
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
-  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
+  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" "$LANDED_HEAD" 2>/dev/null) || return 1
   merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
   [ "$merged_tree" = "$default_tree" ]
 }
@@ -1739,6 +1747,10 @@ content_in_default() {
 # replayed onto the default branch, OR the content is already in the default
 # branch (fallback, which also covers the no-PR and gh-error paths). False only
 # for genuinely unlanded work.
+# The landed-work tests below judge LANDED_HEAD in $WT. Only the released-slot
+# proof (released_slot_work_is_landed) points them at a recorded branch head in
+# the project clone instead of a copy's HEAD.
+LANDED_HEAD=HEAD
 work_is_landed() {
   local branch=$1 ref
   pr_is_merged "$branch" && return 0
@@ -2614,7 +2626,13 @@ require_exclusive_task_worktree_slot() {
 # existed, or already returned to the pool, carries none, and refusing those
 # would strand every task in flight across the change for no evidence at all.
 # Those keep exactly the record-scan protection they had before.
+#
+# A leased record whose slot now carries no lease at all, under an absent or own
+# claim, was already returned (a cleanup interrupted after its return).
+# That returns TEARDOWN_SLOT_RELEASED_RC; only the task's own caller may accept
+# it, and only once released_slot_work_is_landed proves the work landed.
 TEARDOWN_SLOT_REASSIGNED_RC=3
+TEARDOWN_SLOT_RELEASED_RC=4
 require_owned_worktree_slot_record() {  # <task-id> <worktree> [meta]
   local record_id=$1 worktree=$2 marker meta=${3:-$STATE/$1.meta} holder lease
   holder=$(fm_meta_get "$meta" treehouse_lease_holder)
@@ -2627,6 +2645,10 @@ require_owned_worktree_slot_record() {  # <task-id> <worktree> [meta]
     if ! fm_treehouse_slot_lease_read "$worktree"; then
       echo "REFUSED: cannot prove pool lease state for $worktree; nothing was changed" >&2
       return 1
+    fi
+    if [ -n "$holder$lease" ] && [ "$FM_TREEHOUSE_LEASED" = 0 ] \
+      && { [ "$FM_TREEHOUSE_SLOT_OWNER" = mine ] || [ "$FM_TREEHOUSE_SLOT_OWNER" = absent ]; }; then
+      return "$TEARDOWN_SLOT_RELEASED_RC"
     fi
     if [ -n "$holder$lease" ] || [ "$FM_TREEHOUSE_LEASED" = 1 ]; then
       if ! fm_treehouse_slot_lease_matches "$worktree" "$holder" "$lease"; then
@@ -2654,6 +2676,7 @@ require_owned_worktree_slot_record() {  # <task-id> <worktree> [meta]
 TEARDOWN_SLOT_REASSIGNED=0
 TEARDOWN_SLOT_REASSIGNED_TO=
 TEARDOWN_SLOT_REASSIGNED_HOME=
+TEARDOWN_SLOT_RELEASED=0
 require_owned_task_worktree_slot() {
   local slot rc=0
   slot=$(teardown_live_slot_path) || return 0
@@ -2666,12 +2689,43 @@ require_owned_task_worktree_slot() {
       TEARDOWN_SLOT_REASSIGNED_HOME=$FM_TREEHOUSE_SLOT_OWNER_HOME
       return 0
       ;;
+    "$TEARDOWN_SLOT_RELEASED_RC")
+      if released_slot_work_is_landed; then
+        echo "warning: task $ID's recorded pool lease on $slot was already released and nothing holds that slot now, and its work is proven landed; that slot is no longer $ID's, so its processes, copy, and claim are left untouched and only $ID's own cleanup runs." >&2
+        TEARDOWN_SLOT_RELEASED=1
+        return 0
+      fi
+      echo "REFUSED: task $ID's pool lease no longer matches its recorded holder/id: it was released, and $ID's work on its recorded branch is not proven landed; preserving $slot and its task record" >&2
+      ;;
   esac
   return 1
 }
 
+# The task's recorded branch head stands in for its released copy: the local
+# branch when it survives, else origin's copy of it. The existing landed-work
+# test then judges that head in the project clone; a missing branch refuses.
+# A scout's copy is declared scratch, exactly as the worktree safety check says.
+released_slot_work_is_landed() {
+  local branch head saved_wt=$WT rc=0
+  [ "$KIND" != scout ] || return 0
+  branch=$(fm_meta_get "$META" branch)
+  [ -n "$branch" ] && [ -d "$PROJ" ] || return 1
+  if head=$(git -C "$PROJ" rev-parse --quiet --verify "refs/heads/$branch^{commit}" 2>/dev/null); then
+    :
+  elif git -C "$PROJ" fetch --quiet origin "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 \
+    && head=$(git -C "$PROJ" rev-parse --quiet --verify "refs/remotes/origin/$branch^{commit}" 2>/dev/null); then
+    :
+  else
+    return 1
+  fi
+  WT=$PROJ LANDED_HEAD=$head
+  work_is_landed "$branch" || rc=$?
+  WT=$saved_wt LANDED_HEAD=HEAD
+  return "$rc"
+}
+
 teardown_owns_worktree() {
-  [ "$TEARDOWN_SLOT_REASSIGNED" != 1 ]
+  [ "$TEARDOWN_SLOT_REASSIGNED" != 1 ] && [ "$TEARDOWN_SLOT_RELEASED" != 1 ]
 }
 
 firstmate_home_has_treehouse_slot() {
@@ -3202,6 +3256,10 @@ preflight_descendant_treehouse_slots() {
     case "$owner_rc" in
       0) ;;
       "$TEARDOWN_SLOT_REASSIGNED_RC") DESCENDANT_REASSIGNED_SLOTS+=("$state/$task_id") ;;
+      "$TEARDOWN_SLOT_RELEASED_RC")
+        echo "REFUSED: task $task_id's pool lease no longer matches its recorded holder/id; preserving $worktree and its task record" >&2
+        return 1
+        ;;
       *) return 1 ;;
     esac
   done
@@ -4171,6 +4229,8 @@ elif [ "$TEARDOWN_LEGACY_ACCEPTED" = 1 ]; then
   echo "teardown $ID complete (window ${T:-none}, worktree $WT, legacy record accepted without spawn_gen: endpoint $TEARDOWN_LEGACY_ENDPOINT, incarnation $TEARDOWN_META_SPAWN_GEN)"
 elif teardown_owns_worktree; then
   echo "teardown $ID complete (window ${T:-none}, worktree $WT)"
+elif [ "$TEARDOWN_SLOT_RELEASED" = 1 ]; then
+  echo "teardown $ID complete (window ${T:-none}; pool slot $WT was already released, so it was left alone)"
 else
   echo "teardown $ID complete (window ${T:-none}; pool slot $WT left to task $TEARDOWN_SLOT_REASSIGNED_TO${TEARDOWN_SLOT_REASSIGNED_HOME:+ (home $TEARDOWN_SLOT_REASSIGNED_HOME)}, which it was reassigned to)"
 fi

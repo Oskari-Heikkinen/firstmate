@@ -1848,6 +1848,83 @@ test_intake_protected_legacy_cleanup_finishes_own_adoption() {
   pass 'cleanup finishes only the owning intake lease before landed-work checks, retaining dirty and foreign-lease refusals without force'
 }
 
+# A cleanup interrupted after it returned the slot leaves a record whose lease
+# is gone. With no lease or foreign claim on the slot and the recorded branch
+# proven landed, only the record closes; anything else keeps refusing.
+test_released_lease_closes_only_a_landed_record() {
+  local dir id=released-lease holder=firstmate:fixture:released-lease lease=spent-acquisition
+  local variant rc worker main g kind
+  for variant in landed landed-origin scout unlanded foreign-lease foreign-claim; do
+    dir=$(make_case "released-lease-$variant")
+    mark_case_as_treehouse_pool "$dir"
+    rm -f "$dir/worktree/sentinel"
+    g=(git -C "$dir/project" -c user.name=test -c user.email=test@example.invalid)
+    "${g[@]}" branch -M main
+    "${g[@]}" checkout -q -b fm/released
+    printf 'task work\n' > "$dir/project/work.txt"
+    "${g[@]}" add work.txt
+    "${g[@]}" commit -qm 'task work'
+    "${g[@]}" checkout -q main
+    "${g[@]}" commit --allow-empty -qm 'later main work'
+    [ "$variant" = unlanded ] || "${g[@]}" cherry-pick fm/released >/dev/null
+    kind=ship
+    case "$variant" in
+      landed-origin)
+        # A real slot's local branch is usually gone after a return, so the
+        # proof must fall back to origin's copy of the recorded branch.
+        git init -q --bare "$dir/origin.git"
+        "${g[@]}" remote add origin "$dir/origin.git"
+        "${g[@]}" push -q origin main fm/released
+        "${g[@]}" branch -q -D fm/released
+        ;;
+      scout)
+        # A scout's copy is declared scratch: its released slot closes on the
+        # report alone, with no branch to prove.
+        kind=scout
+        "${g[@]}" branch -q -D fm/released
+        mkdir -p "$dir/home/data/$id"
+        printf '# Finished study\nNo unresolved decisions.\n' > "$dir/home/data/$id/report.md"
+        ;;
+      foreign-lease)
+        jq '.worktrees[0] += {leased:true,lease_holder:"another-holder",lease_id:"another-acquisition"}' \
+          "$dir/pool/treehouse-state.json" > "$dir/state.new"
+        mv "$dir/state.new" "$dir/pool/treehouse-state.json"
+        ;;
+      foreign-claim) claim_pool_slot "$dir" another-task "$dir/other-home" ;;
+    esac
+    fm_write_meta "$dir/home/state/$id.meta" "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+      "worktree=$dir/worktree" "project=$dir/project" "kind=$kind" "mode=direct-push" "branch=fm/released" \
+      "treehouse_lease_holder=$holder" "treehouse_lease_id=$lease" "decisions_reviewed=1" "decision_keys="
+    cp "$dir/pool/treehouse-state.json" "$dir/pool.before"
+    ( cd "$dir/worktree" && exec sleep 30 ) &
+    worker=$!
+    main=$("${g[@]}" rev-parse main)
+    rc=0
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_RUNTIME_LOG="$dir/runtime.log" PATH="$dir/fakebin:$PATH" \
+      "$TEARDOWN" "$id" > "$dir/stdout" 2> "$dir/stderr" || rc=$?
+    kill -0 "$worker" 2>/dev/null || fail "$variant: cleanup killed a process working in the released slot"
+    kill "$worker" 2>/dev/null || true
+    wait "$worker" 2>/dev/null || true
+    ! grep -Fq "treehouse <return>" "$dir/runtime.log" \
+      || fail "$variant: cleanup returned a slot that was no longer the task's: $(cat "$dir/runtime.log")"
+    cmp -s "$dir/pool.before" "$dir/pool/treehouse-state.json" || fail "$variant: cleanup changed the pool state"
+    assert_present "$dir/pool/1/project/.git" "$variant: cleanup removed the released slot's checkout"
+    [ "$("${g[@]}" rev-parse main)" = "$main" ] || fail "$variant: cleanup moved the default branch"
+    if [ "$variant" != unlanded ] && [ "${variant#foreign-}" = "$variant" ]; then
+      expect_code 0 "$rc" "$variant: a released lease with landed work should close its record: $(cat "$dir/stderr")"
+      assert_absent "$dir/home/state/$id.meta" "$variant: the task record was not closed"
+      assert_contains "$(cat "$dir/stderr")" "already released" "$variant: the warning should name the released lease"
+      assert_contains "$(cat "$dir/stdout")" "already released" "$variant: completion should say the slot was left alone"
+    else
+      [ "$rc" -ne 0 ] || fail "$variant: a released lease without every safety proof was closed"
+      assert_present "$dir/home/state/$id.meta" "$variant: refusal removed the task record"
+      assert_contains "$(cat "$dir/stderr")" "REFUSED" "$variant: the refusal should be reported"
+    fi
+  done
+  pass "a released pool lease closes only a landed task's own record, and every other mismatch still refuses"
+}
+
+test_released_lease_closes_only_a_landed_record
 test_intake_protected_legacy_cleanup_finishes_own_adoption
 test_durable_lease_cleanup_preserves_evidence_before_exact_return
 test_own_and_absent_slot_claims_still_tear_down

@@ -211,6 +211,26 @@ wait_for handled_is "$H" 1 || fail "the settled result was not acknowledged"
 assert_not_contains "$(wake_payloads "$H")" "procevent merge-queue" "a settled landing wakes no firstmate turn"
 pass "a clean landing refreshes the clone, writes done, and cleans up without a wake"
 
+# --- a resolved blocker after the queue wait: cleanup still keeps its runner ---
+# Park could not stop the worker, so the status log gained a blocked line and its
+# resolution after the merge-result pause. The runner must still retire its own
+# source before cleanup, or cleanup's park retirement kills the runner after the
+# copy's return and before the task record closes.
+Q="$TMP_ROOT/q-masked"; new_queue "$Q"
+H="$TMP_ROOT/h-masked"; new_home "$H" "$Q" t1
+: > "$CALLS"
+mq "$H" handoff t1 fm/t1 "$HEAD_A" -- masked >/dev/null
+sid=$(mq "$H" source-id t1 "$HEAD_A")
+printf 'blocked [at=%s]: parked and its resume watch armed, but this session could not be stopped\n' "$(date +%s)" >> "$H/state/t1.status"
+printf 'resolved [at=%s]: the session was stopped; the merge-queue watch owns the result\n' "$(date +%s)" >> "$H/state/t1.status"
+pe "$H" reconcile >/dev/null
+printf 'RESULT 2026-09-27T18:05:00Z head=%s outcome=landed main=%s files=2 identical=2 differ=- dropped=- note=car-3\n' "$HEAD_A" "$MAIN" >> "$Q/queue.log"
+wait_for source_gone "$H" "$sid" || fail "the landed watch did not end behind a resolved blocker"
+wait_for handled_is "$H" 1 || fail "cleanup behind a resolved blocker was not acknowledged"
+assert_grep "cleanup-returned t1" "$CALLS" "a resolved blocker after the queue wait still retires the source before cleanup"
+assert_equals 1 "$(compgen -G "$H/state/procevent-inbox/$sid.*.result" | wc -l | tr -d ' ')" "the landed result is captured and settled once"
+pass "a resolved blocker after the queue wait does not let cleanup kill its own runner"
+
 # --- cleanup refusal: stop, report why, and wake firstmate ---------------------
 Q="$TMP_ROOT/q-refuse"; new_queue "$Q"
 H="$TMP_ROOT/h-refuse"; new_home "$H" "$Q" t1

@@ -371,7 +371,10 @@ fm_procevent_merge_queue_registration_matches() {  # <state> <task> <head> <scri
   cmp -s "$file" <(printf 'adapter=merge-queue\nargc=4\nargv:\n%s\nwatch\n%s\n%s\n' "$script" "$task" "$head")
 }
 
-fm_procevent_merge_queue_park_matches() {  # <state> <task> <head> <script>
+# The task's park record and the exact registration prove its adopted queue park
+# incarnation. The status log is no part of this proof: a later blocked line and
+# its resolution there change nothing about which park owns the queue watch.
+fm_procevent_merge_queue_park_record_matches() {  # <state> <task> <head> <script>
   local state=$1 task=$2 head=$3 script=$4 meta gen parked condition source
   fm_task_id_path_safe "$task" || return 1
   meta="$state/$task.meta"
@@ -384,10 +387,16 @@ fm_procevent_merge_queue_park_matches() {  # <state> <task> <head> <script>
   source=$(sed -n 's/^park_source=//p' "$meta" | tail -1)
   [ "$condition" = "cmd:$script result-ready $head" ] || return 1
   [ "$source" = "merge-queue-$task-${head:0:8}" ] || return 1
+  fm_procevent_merge_queue_registration_matches "$state" "$task" "$head" "$script"
+}
+
+# The park record proof plus the task's still-declared merge-result wait.
+fm_procevent_merge_queue_park_matches() {  # <state> <task> <head> <script>
+  local state=$1 task=$2 head=$3 script=$4
+  fm_procevent_merge_queue_park_record_matches "$state" "$task" "$head" "$script" || return 1
   # The generic runner loads only wake primitives until it needs this proof.
   _fm_wake_require_classify || return 1
-  [ "$(status_wait_tag "$(status_declared_wait_line "$state/$task.status")")" = "merge-result:$head" ] || return 1
-  fm_procevent_merge_queue_registration_matches "$state" "$task" "$head" "$script"
+  [ "$(status_wait_tag "$(status_declared_wait_line "$state/$task.status")")" = "merge-result:$head" ]
 }
 
 fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <argv...>

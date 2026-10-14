@@ -1131,7 +1131,7 @@ EOF
     queue_task=$(sed -n 's/^task: //p' "$durable" | head -1)
     queue_head=$(sed -n 's/^head: //p' "$durable" | head -1)
     if [ "$id" = "merge-queue-$queue_task-${queue_head:0:8}" ] \
-      && fm_procevent_merge_queue_park_matches "$STATE" "$queue_task" "$queue_head" "$SCRIPT_DIR/fm-procevent-merge-queue.sh"; then
+      && fm_procevent_merge_queue_park_record_matches "$STATE" "$queue_task" "$queue_head" "$SCRIPT_DIR/fm-procevent-merge-queue.sh"; then
       if retire_owned_terminal_source "$id"; then
         queue_retired=1
       else
