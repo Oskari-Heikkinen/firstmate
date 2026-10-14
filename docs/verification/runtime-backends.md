@@ -579,7 +579,7 @@ The nested worktree's request carried the project's `AGENTS.md` and neither the 
 
 ### Firstmate-repo worktrees
 
-Verified 2026-10-14 on Claude Code 2.1.299 and Pi 0.85.1.
+Verified 2026-10-14 on Claude Code 2.1.299, Pi 0.85.1, and Pi 0.87.1.
 A ship or scout worktree of Firstmate's own repository carries that repository's root `AGENTS.md`, imported by its `CLAUDE.md`, as project content, and it is the supervisor contract the worker's launch brief tells it not to follow.
 The same per-launch exclusions drop it: the real `bin/fm-spawn.sh`, run through a fake pane against a worktree of a fixture code root whose `bin/` is this checkout's, emitted `claudeMdExcludes` for the worktree's five root patterns and a Pi extension whose `dropDirs` held the worktree.
 Each harness then ran against the capture server described above, first in that fixture worktree and then in a real pooled worktree of this repository with the emitted paths rewritten to it:
@@ -595,6 +595,9 @@ claude real worktree:    first request 168,394 bytes with the supervisor contrac
 pi fixture worktree:     contract marker 1 without the extension, 0 with it
 pi real worktree:        first request 58,166 bytes with the supervisor contract, 6,765 bytes without it
 ```
+
+Pi 0.87.1 renders its system prompt from live options, so the rendered block of a context file that comes last no longer ends in a blank line and a string cut misses it: the first extension still leaked the contract there (marker 1 with it on 0.87.1, the CI failure).
+The extension now filters those live `contextFiles` in place when Pi exposes the prompt as a getter over them, and cuts the rendered block only on older Pi; regenerated from the edited `bin/fm-spawn.sh`, it gave marker 0 on both versions for the fixture worktree, and for a nested home it dropped the home's file while the project's still loaded.
 
 `tests/fm-nested-home-context-live-e2e.test.sh` carries the same Firstmate-repo arm for both harnesses and refreshes this record.
 Codex loads the worktree's root `AGENTS.md` as the project root file and was left unchanged, as was every harness that has no per-file exclusion.

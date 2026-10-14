@@ -142,6 +142,39 @@ console.log(result && typeof result.systemPrompt === "string" ? result.systemPro
 EOF
 }
 
+# drive_pi_filter_live <ext> <first-dir> <last-dir> drives the extension with
+# Pi 0.87's event shape, where systemPrompt is a getter rendered from the live
+# systemPromptOptions and the last file's block ends without a blank line. It
+# prints the context file paths left after before_agent_start, then FORCED or
+# NOT-FORCED for whether the handler returned a replacement prompt.
+drive_pi_filter_live() {
+  EXT_PATH=$1 FIRST_FILE="$2/AGENTS.md" LAST_FILE="$3/AGENTS.md" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
+const handlers = {};
+mod.default({ on: (name, fn) => { handlers[name] = fn; }, events: { on: () => {} } });
+const handler = handlers["before_agent_start"];
+if (!handler) { console.log("NO-HANDLER"); process.exit(0); }
+const options = { contextFiles: [
+  { path: process.env.FIRST_FILE, content: "first rules" },
+  { path: process.env.LAST_FILE, content: "last rules" },
+] };
+const event = {
+  type: "before_agent_start",
+  prompt: "hi",
+  get systemPrompt() {
+    return "base prompt\n\n<project_context>\nProject-specific instructions and guidelines:\n\n"
+      + options.contextFiles.map((f) => `<project_instructions path="${f.path}">\n${f.content}\n</project_instructions>`).join("\n\n")
+      + "\n</project_context>";
+  },
+  systemPromptOptions: options,
+};
+const result = await handler(event, {});
+for (const f of options.contextFiles) console.log(f.path);
+console.log(result && result.systemPrompt !== undefined ? "FORCED" : "NOT-FORCED");
+EOF
+}
+
 test_nested_claude_worker_excludes_home_instruction_files() {
   local out settings home
   new_case claude-nested claude nested
@@ -250,6 +283,21 @@ test_firstmate_repo_pi_worker_drops_its_own_contract() {
   pass "a Firstmate-repo pi worker's extension drops only its worktree's own contract"
 }
 
+test_firstmate_repo_pi_worker_drops_its_contract_from_live_options() {
+  local out ext result other
+  new_firstmate_case pi-firstmate-live pi
+  out=$(spawn_firstmate_ship firstmate-pi-z8) || fail "firstmate-repo pi spawn failed: $out"
+  ext="$HOME_DIR/state/firstmate-pi-z8.pi-ext.ts"
+  assert_present "$ext" "pi spawn did not write the per-task extension"
+  other="$CASE_DIR/elsewhere"
+  mkdir -p "$other"
+  result=$(drive_pi_filter_live "$ext" "$other" "$WT_DIR") || fail "pi extension drive failed: $result"
+  assert_not_contains "$result" "$WT_DIR/AGENTS.md" "Pi 0.87 live options still carry the worktree AGENTS.md when it is the last context file"
+  assert_contains "$result" "$other/AGENTS.md" "Pi 0.87 live options lost a file outside the worktree root"
+  assert_contains "$result" "NOT-FORCED" "the extension forced a replacement prompt instead of editing Pi 0.87's live options"
+  pass "on Pi 0.87 a Firstmate-repo pi worker's extension drops its contract from the live context files, even when it comes last"
+}
+
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
 test_nested_claude_worker_excludes_home_instruction_files
@@ -259,4 +307,5 @@ test_nested_pi_worker_drops_only_the_home_context_file
 test_outside_pi_worker_extension_adds_no_filter
 test_firstmate_repo_claude_worker_excludes_its_own_contract
 test_firstmate_repo_pi_worker_drops_its_own_contract
+test_firstmate_repo_pi_worker_drops_its_contract_from_live_options
 printf '# all fm-spawn-nested-home-context tests passed\n'

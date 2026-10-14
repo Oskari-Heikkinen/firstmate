@@ -5252,7 +5252,7 @@ EOF
     # Firstmate's own repo (OWN_CONTRACT_WT above) gets a before_agent_start
     # handler instead: Pi hands it the structured context files it loaded, and
     # it removes exactly the rendered block of each file that sits directly in
-    # one of those directories, every turn (verified on Pi 0.85.1).
+    # one of those directories, every turn (verified on Pi 0.85.1 and 0.87.1).
     pi_context_filter=
     if [ -n "$NESTED_HOME$OWN_CONTRACT_WT" ]; then
       pi_context_filter="  // Drop the instruction files that sit directly in these directories from
@@ -5262,13 +5262,21 @@ EOF
   const canonicalDir = (file: string) => {
     try { return realpathSync(dirname(file)); } catch { return dirname(file); }
   };
+  const dropped = (file: any) => !!file && typeof file.path === \"string\" && dropDirs.includes(canonicalDir(file.path));
   pi.on(\"before_agent_start\", (event: any) => {
     const files = event?.systemPromptOptions?.contextFiles;
     if (!Array.isArray(files) || typeof event.systemPrompt !== \"string\") return;
+    // Pi 0.87+ renders the prompt from these live options (systemPrompt is a
+    // getter over them), so filtering the files in place drops their blocks.
+    if (Object.getOwnPropertyDescriptor(event, \"systemPrompt\")?.get) {
+      const kept = files.filter((file: any) => !dropped(file));
+      if (kept.length !== files.length) files.splice(0, files.length, ...kept);
+      return;
+    }
+    // Older Pi hands over the rendered prompt, so cut each file's block out of it.
     let prompt: string = event.systemPrompt;
     for (const file of files) {
-      if (!file || typeof file.path !== \"string\") continue;
-      if (!dropDirs.includes(canonicalDir(file.path))) continue;
+      if (!dropped(file)) continue;
       const block = \"<project_instructions path=\\\"\" + file.path + \"\\\">\\n\" + file.content + \"\\n</project_instructions>\\n\\n\";
       const at = prompt.indexOf(block);
       if (at !== -1) prompt = prompt.slice(0, at) + prompt.slice(at + block.length);
