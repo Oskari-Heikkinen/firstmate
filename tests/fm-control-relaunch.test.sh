@@ -795,6 +795,7 @@ EOF
   dd if="$dir/all-notes" bs=1 count="$old_size" > "$dir/old-after" 2>/dev/null
   cmp -s "$dir/old-notes" "$dir/old-after" || fail "historic notes were lost, reordered, or rewritten"
   assert_grep 'newest-note-one' "$brief" "newest note should stay inline"
+  assert_no_grep 'historic-note-139' "$brief" "older notes should leave the inline instructions"
   assert_grep "$archive" "$brief" "instructions must point at the archive"
   # Force a second rotation and verify prior archive content is preserved too.
   cp "$archive" "$dir/archive-before"
@@ -807,6 +808,49 @@ EOF
   assert_grep 'newest-note-one' "$archive" "previous newest note must survive rotation"
   assert_grep 'newest-note-two' "$archive" "oversized newest note must survive rotation"
   pass "fm-control relaunch: accumulated notes stay under the launch limit with byte-exact preservation"
+}
+
+test_relaunch_keeps_only_the_newest_note_inline_below_the_bound() {
+  local dir out rc brief archive base_size first_note
+  dir=$(new_case note-newest rl-note-newest)
+  add_ship_task "$dir" rl-note-newest claude
+  brief="$dir/home/data/rl-note-newest/brief.md"
+  archive="$dir/home/data/rl-note-newest/brief-progress-archive.md"
+  cp "$brief" "$dir/original"
+  base_size=$(wc -c < "$brief")
+  out=$(run_control "$dir" rl-note-newest relaunch --note 'first-small-note'); rc=$?
+  expect_code 0 "$rc" "first relaunch should succeed"$'\n'"$out"
+  [ ! -e "$archive" ] || fail "a lone note must not create an archive"
+  dd if="$brief" bs=1 skip="$base_size" > "$dir/first-note" 2>/dev/null
+  first_note=$(wc -c < "$dir/first-note")
+  [ "$first_note" -gt 0 ] || fail "the first note did not reach the instructions"
+  out=$(run_control "$dir" rl-note-newest relaunch --note 'second-small-note'); rc=$?
+  expect_code 0 "$rc" "second relaunch should succeed"$'\n'"$out"
+  [ "$(wc -c < "$brief")" -lt 49152 ] || fail "fixture must stay below the size bound"
+  dd if="$brief" bs=1 count="$base_size" > "$dir/base-after" 2>/dev/null
+  cmp -s "$dir/original" "$dir/base-after" || fail "original instructions changed"
+  cmp -s "$dir/first-note" "$archive" || fail "the older note was not archived byte-for-byte"
+  assert_no_grep 'first-small-note' "$brief" "the older note stayed inline below the bound"
+  assert_grep 'second-small-note' "$brief" "the newest note should stay inline"
+  assert_grep "$archive" "$brief" "the newest note must point at the archive"
+  pass "fm-control relaunch: below the bound only the newest note stays inline, older ones archived"
+}
+
+test_relaunch_below_the_bound_tolerates_an_unbalanced_fence() {
+  local dir out rc brief
+  dir=$(new_case note-fence rl-note-fence)
+  add_ship_task "$dir" rl-note-fence claude
+  brief="$dir/home/data/rl-note-fence/brief.md"
+  printf '\n```text\nan example whose fence never closes\n' >> "$brief"
+  out=$(run_control "$dir" rl-note-fence relaunch --note 'fence-note-one'); rc=$?
+  expect_code 0 "$rc" "an unbalanced fence must not fail a small relaunch"$'\n'"$out"
+  out=$(run_control "$dir" rl-note-fence relaunch --note 'fence-note-two'); rc=$?
+  expect_code 0 "$rc" "a second small relaunch past an unbalanced fence should succeed"$'\n'"$out"
+  assert_grep 'fence-note-one' "$brief" "a note past an unbalanced fence must not be lost"
+  assert_grep 'fence-note-two' "$brief" "the newest note should reach the instructions"
+  assert_absent "$dir/home/data/rl-note-fence/brief-progress-archive.md" \
+    "notes after an unbalanced fence are not recognized as managed blocks, so nothing is archived"
+  pass "fm-control relaunch: an unbalanced fence below the bound keeps every note inline"
 }
 
 test_relaunch_rotation_rollback_restores_brief_and_archive() {
@@ -2939,6 +2983,8 @@ SH
 test_pooled_spawn_relaunch_keeps_acquisition_identity
 test_relaunch_rotates_accumulated_notes_without_losing_bytes
 test_relaunch_refuses_oversized_original_before_stopping
+test_relaunch_keeps_only_the_newest_note_inline_below_the_bound
+test_relaunch_below_the_bound_tolerates_an_unbalanced_fence
 test_relaunch_rotation_rollback_restores_brief_and_archive
 test_exit_and_relaunch_remove_the_dialog_file() {
   local dir out rc

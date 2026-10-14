@@ -93,11 +93,12 @@
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
-#              Ship/scout instructions stay within 48 KiB: retain the original
-#              brief and the newest complete notes that fit, rotating older
-#              notes byte-for-byte into data/<id>/brief-progress-archive.md.
-#              Each new note points there; an oversized newest note is archived
-#              too, with a small inline pointer instead. A brief whose original
+#              Ship/scout instructions keep the original brief and only the
+#              newest note inline, rotating every older note byte-for-byte
+#              into data/<id>/brief-progress-archive.md on each relaunch, and
+#              stay within 48 KiB. Each new note points there; a newest note
+#              that would exceed the bound is archived too, with a small
+#              inline pointer instead. A brief whose original
 #              content plus that pointer exceeds the bound refuses BEFORE exit.
 #              This reserves room for the worker-role and intent overlays and
 #              operational envelope below the 128 KiB single-argument limit;
@@ -1240,11 +1241,12 @@ safe_checkpoint() {
 # Rotate only generated note blocks (dated heading plus the generated opening),
 # never headings in fenced examples. Byte offsets and dd preserve every byte,
 # including a note's missing final newline. The archive participates in rollback.
+# Only the newest note stays inline, so a replacement does not re-read every
+# earlier note; it reads the archive on demand.
 rotate_progress_notes() {
-  local limit=49152 total base cut start pointer_size
+  local limit=49152 total base cut newest pointer_size
   local -a offsets=()
   total=$(wc -c < "$RELAUNCH_BRIEF") || return 1
-  [ "$total" -gt "$limit" ] || return 0
   LC_ALL=C awk '
     {
       here = pos
@@ -1268,7 +1270,12 @@ rotate_progress_notes() {
       prior = here
     }
   ' "$RELAUNCH_BRIEF" > "$JOURNAL.offsets" || return 1
-  while IFS= read -r start; do offsets+=("$start"); done < "$JOURNAL.offsets"
+  while IFS= read -r newest; do offsets+=("$newest"); done < "$JOURNAL.offsets"
+  # Below the bound, a lone note, or none found past an unbalanced fence in
+  # the original brief, stays inline as is.
+  if [ "${#offsets[@]}" -le 1 ] && [ "$total" -le "$limit" ]; then
+    return 0
+  fi
   [ "${#offsets[@]}" -gt 0 ] || return 1
   base=${offsets[0]}
   progress_note_block "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -1278,14 +1285,12 @@ rotate_progress_notes() {
     echo "error: task $ID's original brief plus archive pointer exceeds the safe 48 KiB relaunch bound; shorten the original instructions before retrying (old agent was not stopped)" >&2
     return 1
   fi
-  # Keep the longest suffix of complete notes that fits, always newest first.
+  # Keep the newest note inline when it fits; otherwise archive it as well.
+  newest=${offsets[${#offsets[@]}-1]}
   cut=$total
-  for start in "${offsets[@]}"; do
-    if [ "$((base + total - start))" -le "$limit" ]; then
-      cut=$start
-      break
-    fi
-  done
+  if [ "$((base + total - newest))" -le "$limit" ]; then
+    cut=$newest
+  fi
   dd if="$RELAUNCH_BRIEF" bs=1 count="$base" > "$JOURNAL.brief-stage" 2>/dev/null || return 1
   if [ "$cut" -lt "$total" ]; then
     dd if="$RELAUNCH_BRIEF" bs=1 skip="$cut" >> "$JOURNAL.brief-stage" 2>/dev/null || return 1
@@ -1316,7 +1321,7 @@ progress_note_block() { # <timestamp> <note>
   echo "each message in numeric order, then mv each handled file into"
   echo "$STATE/$ID.inbox/handled/. A steer sent before the relaunch survives there."
   echo
-  echo "Older progress notes, if rotated, are preserved at $RELAUNCH_ARCHIVE."
+  echo "Older progress notes, if any, are preserved at $RELAUNCH_ARCHIVE."
   echo "Read that archive when earlier context is needed."
   echo
   printf '%s\n' "$2"
