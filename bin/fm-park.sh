@@ -687,6 +687,29 @@ retire_release_source() {
   "$WHEN" retire "$name" >/dev/null
 }
 
+# Internal cleanup integration, invoked as a child so teardown does not load
+# the release source graph. These checks grant no terminal/discard authority:
+# saved custody must be restored before teardown applies its unchanged gates.
+# Teardown screens before and after locking, then retires under those locks.
+# Do not use task_resolve: cleanup also supports secondmates and remote records.
+cmd_cleanup_release() { # <id> <screen|retire>
+  local id=$1 mode=$2 meta source name
+  fm_task_id_path_safe "$id" || return 1
+  meta="$STATE/$id.meta"
+  case "$(fm_meta_get "$meta" copy_state)" in
+    ''|retained) ;;
+    *) echo "REFUSED: task $id has saved or interrupted copy custody; restore/reconcile it before terminal cleanup; saved work and obligations remain intact." >&2; return 1 ;;
+  esac
+  source=$(fm_meta_get "$meta" park_release_source)
+  [ -n "$source" ] || return 0
+  name=$(fm_suspend_release_source_name "$FM_HOME" "$id" "$(fm_meta_get "$meta" park_token)") || return 1
+  [ "$source" = "when-$name" ] || { echo 'error: copy-release source does not match this task incarnation' >&2; return 1; }
+  if [ "$mode" = retire ]; then
+    "$WHEN" retire "$name" >/dev/null \
+      || { echo "error: could not retire $id's copy-release action; retry cleanup" >&2; return 1; }
+  fi
+}
+
 cmd_release_ready() {
   task_resolve "${1-}"
   [ "$(meta_get park_token)" = "${2-}" ] && [ "$(meta_get park_state)" = parked ] &&
@@ -875,6 +898,10 @@ cmd_pickup() (
 )
 
 case "${1-}" in
+  cleanup-release)
+    shift; [ "$#" = 2 ] || exit 2
+    case "$2" in screen|retire) ;; *) exit 2 ;; esac
+    cmd_cleanup_release "$@" ;;
   release) shift; [ "$#" = 2 ] && [ -n "$2" ] || exit 2; cmd_release "$@" ;;
   release-ready) shift; [ "$#" = 2 ] || exit 2; cmd_release_ready "$@" ;;
   poll) shift; [ "$#" = 2 ] || exit 2; cmd_poll "$@" ;;

@@ -867,6 +867,7 @@ for uncertainty in missing malformed; do
 done
 
 id=release-notification-failure; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'notification failure fixture failed'
+WHEN="$ROOT/bin/fm-procevent-when.sh"
 home="$dir/home"; meta="$home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
 suspend_lib "$dir" fm_suspend_save "$meta" "$id" "$home" "$home/data" "$wt" || fail 'could not prepare failed notification custody'
 FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-suspend-lib.sh"; fm_current_pid pid; fm_suspend_record "$2" "park_release_pid=$pid"' _ \
