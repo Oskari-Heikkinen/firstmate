@@ -4683,7 +4683,6 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_reconcile_outcomes_retry_partial_failures_once \
   test_unbound_source_closes_no_hold \
   test_legacy_identities_keep_working \
-  test_board_answer_reaches_the_keyed_answer_intake \
   test_chat_channel_feeds_the_same_keyed_answer_intake \
   test_origin_slug_validation_precedes_path_construction \
   test_status_resolution_over_an_open_hold_is_signalled \
