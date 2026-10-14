@@ -298,7 +298,6 @@ cpu_count() {
 family_for_basename() {
   case "$1" in
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
-    fm-bearings-board.test.sh|\
     fm-brief.test.sh|fm-dod-lib.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-classify-decision-key.test.sh|\
@@ -366,7 +365,6 @@ family_for_basename() {
       printf '%s\n' session-bootstrap
       ;;
     fm-afk-pi-herdr-return-e2e.test.sh|\
-    fm-bearings-board-lavish-live-e2e.test.sh|\
     fm-claude-stop-autoarm-live-e2e.test.sh|\
     fm-cmux-claude-composer-live-e2e.test.sh|\
     fm-composer-matrix-live-e2e.test.sh|\
@@ -423,7 +421,7 @@ family_for_basename() {
     fm-supervision-host.test.sh|fm-host-mirror.test.sh)
       printf '%s\n' afk
       ;;
-    fm-bearings-board-render.test.sh|fm-bearings-snapshot.test.sh|fm-contributions.test.sh|\
+    fm-bearings-snapshot.test.sh|fm-contributions.test.sh|\
     fm-fleet-snapshot-view.test.sh|fm-home-summary-refresh.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
@@ -771,9 +769,6 @@ tests/fm-backend.test.sh 28270
 tests/fm-backlog-atomicity.test.sh 128349
 tests/fm-backlog-handoff.test.sh 80053
 tests/fm-backlog-read-bound.test.sh 24613
-tests/fm-bearings-board-lavish-live-e2e.test.sh 38
-tests/fm-bearings-board-render.test.sh 37123
-tests/fm-bearings-board.test.sh 46819
 tests/fm-bearings-snapshot.test.sh 153697
 tests/fm-board.test.sh 728
 tests/fm-bootstrap-network-parallel.test.sh 38936

@@ -1086,40 +1086,22 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
-# A scout brief offers the Lavish review loop for every compatible board version,
-# including older builds that use the legacy reply path.
-test_scout_lavish_line_follows_presentation_floor() {
-  local base label version expect case_dir fakebin brief n=0
-  local hosting='use the lavish-axi rule'
-  local text_only='deliver your findings as a text report without Lavish'
-  base=$(fm_test_base_path_sans "${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" lavish-axi)
-  while IFS='^' read -r label version expect; do
-    [ -n "$label" ] || continue
-    n=$((n + 1))
-    case_dir="$TMP_ROOT/scout-lavish-$n"
-    mkdir -p "$case_dir/home/data"
-    fakebin=$(fm_fakebin "$case_dir")
-    [ "$version" = absent ] || fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION "$version"
-    PATH="$fakebin:$base" FM_HOME="$case_dir/home" \
-      "$ROOT/bin/fm-brief.sh" scout-lavish alpha --scout >/dev/null \
-      || fail "$label: scout scaffold failed"
-    brief="$case_dir/home/data/scout-lavish/brief.md"
-    if [ "$expect" = hosting ]; then
-      assert_grep "$hosting" "$brief" "$label: scout brief did not offer the Lavish review loop"
-      assert_no_grep "$text_only" "$brief" "$label: scout brief withheld Lavish from a compatible build"
-    else
-      assert_grep "$text_only" "$brief" "$label: scout brief did not ask for a text report"
-      assert_no_grep "$hosting" "$brief" "$label: scout brief offered a below-floor Lavish"
-    fi
-  done <<'ROWS'
-lavish-axi at the board compatibility floor^0.1.77^hosting
-lavish-axi below the reply feature floor^0.1.79^hosting
-lavish-axi at the reply feature floor^0.1.80^hosting
-lavish-axi above the reply feature floor^0.2.0^hosting
-lavish-axi below the board compatibility floor^0.1.76^text
-absent lavish-axi^absent^text
-ROWS
-  pass "fm-brief.sh: scout Lavish hosting follows the bootstrap lavish-axi floor"
+# A scout's visual deliverable is a static file beside its report, whatever
+# presentation tools happen to be installed.
+test_scout_visual_deliverable_is_a_file_beside_the_report() {
+  local case_dir fakebin brief
+  case_dir="$TMP_ROOT/scout-visual"
+  mkdir -p "$case_dir/home/data"
+  fakebin=$(fm_fakebin "$case_dir")
+  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.2.0
+  PATH="$fakebin:$PATH" FM_HOME="$case_dir/home" \
+    "$ROOT/bin/fm-brief.sh" scout-visual alpha --scout >/dev/null \
+    || fail "scout scaffold failed"
+  brief="$case_dir/home/data/scout-visual/brief.md"
+  assert_grep 'A visual deliverable is a static HTML file beside the report' "$brief" \
+    "scout brief did not route a visual deliverable to a file beside the report"
+  ! grep -qi 'lavish' "$brief" || fail "scout brief still offers a hosted review loop"
+  pass "fm-brief.sh: a scout's visual deliverable is a static file beside its report"
 }
 
 # Scout and secondmate paths still scaffold well-formed briefs.
@@ -1623,7 +1605,7 @@ test_ship_and_scout_teach_validation_round_pause
 test_ship_and_scout_point_at_the_task_evidence_skill
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
-test_scout_lavish_line_follows_presentation_floor
+test_scout_visual_deliverable_is_a_file_beside_the_report
 test_workers_wait_without_spending_turns
 test_wait_no_turns_absent_keeps_the_previous_brief
 test_home_brief_include_is_appended_last

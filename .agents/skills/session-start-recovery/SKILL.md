@@ -41,8 +41,8 @@ An `ABSENT` captain, shared-captain, secondmate, or learnings file means the bui
 While the digest's `NETWORK CHECKS` section reports checks in progress, treat none of them as passed until `bin/fm-startup-network.sh report` returns the finished result; a failed or actionable result also arrives as a `check: startup-network` wake.
 
 Bootstrap detects first, asks for consent, and installs only after the captain approves in the current session.
-Do not dispatch until the essential launch tools are present and GitHub authentication is good; presentation availability follows `bootstrap-diagnostics` and does not block nonvisual work.
-Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.
+Do not dispatch until the essential launch tools are present and GitHub authentication is good.
+Use `gh-axi` for GitHub and `chrome-devtools-axi` for browser work; consult current help rather than memorizing flags.
 A silent bootstrap section needs no action; for any printed actionable diagnostic line, load `bootstrap-diagnostics` and follow its owner procedure.
 `BOOTSTRAP_INFO:` lines are completed no-action facts and do not require loading a skill.
 `secondmate-provisioning` owns startup secondmate sync, liveness, and inherited local-material convergence.
