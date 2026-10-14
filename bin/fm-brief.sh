@@ -17,6 +17,7 @@
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|direct-push|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo> [--shape squash]] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#        fm-brief.sh <task-id> --secondmate --render-charter <stored-charter> [--dropped-lines]
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -30,6 +31,12 @@
 #   omitting both still fails loudly so an accidental omission is never silent.
 #   Set FM_SECONDMATE_CHARTER='<charter>' to fill the charter text.
 #   Set FM_SECONDMATE_SCOPE='<scope>' to write a routing scope distinct from the charter text.
+#   --render-charter prints the current charter template to stdout around the
+#   stored charter's Charter, Routing scope, and Project clones sections and any
+#   section the template does not own, writing nothing. With --dropped-lines it
+#   prints instead each nonblank line of the stored copy's template-owned text
+#   that the render would not carry. bin/fm-home-seed.sh --refresh-charter owns
+#   applying a render to a seeded home.
 #   --herdr-lab is mandatory when the task will issue Herdr lifecycle commands.
 #   It adds the hard isolation contract backed by bin/fm-herdr-lab.sh.
 #   The flag must be explicit because {TASK} and {FIRSTMATE_SPEC} are filled
@@ -207,6 +214,8 @@ FORGE=none
 FORGE_SET=0
 SHAPE=
 SHAPE_SET=0
+RENDER_CHARTER=
+DROPPED_LINES=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -220,6 +229,7 @@ for a in "$@"; do
       base-branch) BASE_BRANCH=$a; BASE_BRANCH_SET=1 ;;
       forge) FORGE=$a; FORGE_SET=1 ;;
       shape) SHAPE=$a; SHAPE_SET=1 ;;
+      render-charter) RENDER_CHARTER=$a ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -240,6 +250,8 @@ for a in "$@"; do
     --forge=*) FORGE=${a#--forge=}; FORGE_SET=1 ;;
     --shape) want_value=shape ;;
     --shape=*) SHAPE=${a#--shape=}; SHAPE_SET=1 ;;
+    --render-charter) want_value=render-charter ;;
+    --dropped-lines) DROPPED_LINES=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -326,6 +338,21 @@ if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   exit 1
 fi
 
+if [ "$DROPPED_LINES" -eq 1 ] && [ -z "$RENDER_CHARTER" ]; then
+  echo "error: --dropped-lines applies only with --render-charter" >&2
+  exit 1
+fi
+if [ -n "$RENDER_CHARTER" ]; then
+  [ "$KIND" = secondmate ] && [ "$NO_PROJECTS" -eq 0 ] && [ "${#POS[@]}" -eq 1 ] || {
+    echo "error: --render-charter takes only <task-id> --secondmate; the stored charter supplies the domain sections" >&2
+    exit 1
+  }
+  [ -f "$RENDER_CHARTER" ] && [ -r "$RENDER_CHARTER" ] || {
+    echo "error: --render-charter needs a readable charter file: $RENDER_CHARTER" >&2
+    exit 1
+  }
+fi
+
 if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   echo "error: --no-projects applies only to --secondmate charters" >&2
   exit 1
@@ -357,8 +384,10 @@ append_brief_include() {
 }
 
 BRIEF="$DATA/$ID/brief.md"
-[ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
-mkdir -p "$DATA/$ID"
+if [ -z "$RENDER_CHARTER" ]; then
+  [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
+  mkdir -p "$DATA/$ID"
+fi
 
 ASK_USER_BLOCK=
 if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
@@ -434,27 +463,61 @@ if [ -e "$CONFIG/wait-no-turns" ]; then
 fi
 
 if [ "$KIND" = secondmate ]; then
-SECONDMATE_PROJECTS=""
-idx=1
-while [ "$idx" -lt "${#POS[@]}" ]; do
-  SECONDMATE_PROJECTS="${SECONDMATE_PROJECTS}${SECONDMATE_PROJECTS:+ }${POS[$idx]}"
-  idx=$((idx + 1))
-done
-if [ "$NO_PROJECTS" -eq 1 ]; then
-  [ -z "$SECONDMATE_PROJECTS" ] || { echo "error: --no-projects cannot be combined with a project list" >&2; exit 1; }
+# A charter is the current template around three domain sections: Charter,
+# Routing scope, and Project clones. --render-charter <stored> re-renders that
+# template to stdout around the stored copy's domain sections, plus any section
+# the template does not own, so a seeded copy can be refreshed to the current
+# contract; everything else in the stored copy is template-owned text.
+CHARTER_DOMAIN_HEADINGS='|Charter|Routing scope|Project clones|'
+CHARTER_TEMPLATE_HEADINGS="${CHARTER_DOMAIN_HEADINGS}Operating model|The captain and the parent channel|Requests from the main firstmate|Firstmate instruction inbox|Escalation to main firstmate|Definition of done|"
+stored_section() {  # <heading>: the section body, trailing blank lines trimmed
+  awk -v heading="# $1" '
+    $0 == heading { on=1; next }
+    on && /^# / { exit }
+    on { buf = buf $0 "\n"; if ($0 != "") { printf "%s", buf; buf = "" } }
+  ' "$RENDER_CHARTER"
+}
+SECONDMATE_EXTRA=
+if [ -n "$RENDER_CHARTER" ]; then
+  SECONDMATE_CHARTER=$(stored_section Charter)
+  SECONDMATE_SCOPE=$(stored_section "Routing scope")
+  PROJECT_CLONES_BODY=$(stored_section "Project clones")
+  [ -n "$(printf '%s' "$SECONDMATE_CHARTER" | tr -d '[:space:]')" ] && [ -n "$PROJECT_CLONES_BODY" ] || {
+    echo "error: $RENDER_CHARTER has no filled Charter or Project clones section to render" >&2
+    exit 1
+  }
+  case "$SECONDMATE_CHARTER" in *'{TASK}'*) echo "error: $RENDER_CHARTER still contains {TASK}" >&2; exit 1 ;; esac
+  [ -n "$SECONDMATE_SCOPE" ] || SECONDMATE_SCOPE=$SECONDMATE_CHARTER
+  case "$PROJECT_CLONES_BODY" in None.*) NO_PROJECTS=1 ;; esac
+  SECONDMATE_EXTRA=$(awk -v known="$CHARTER_TEMPLATE_HEADINGS" '
+    /^# / { keep = index(known, "|" substr($0, 3) "|") == 0 }
+    keep { print }
+  ' "$RENDER_CHARTER")
 else
-  [ -n "$SECONDMATE_PROJECTS" ] || { echo "error: --secondmate requires at least one project, or --no-projects for a project-less home" >&2; exit 1; }
+  SECONDMATE_PROJECTS=""
+  idx=1
+  while [ "$idx" -lt "${#POS[@]}" ]; do
+    SECONDMATE_PROJECTS="${SECONDMATE_PROJECTS}${SECONDMATE_PROJECTS:+ }${POS[$idx]}"
+    idx=$((idx + 1))
+  done
+  if [ "$NO_PROJECTS" -eq 1 ]; then
+    [ -z "$SECONDMATE_PROJECTS" ] || { echo "error: --no-projects cannot be combined with a project list" >&2; exit 1; }
+    PROJECT_CLONES_BODY="None. This is a project-less domain: its subject is the firstmate repo this home lives in, so it needs no separate clones under \`projects/\`; its crews take pooled worktrees of that repo."
+  else
+    [ -n "$SECONDMATE_PROJECTS" ] || { echo "error: --secondmate requires at least one project, or --no-projects for a project-less home" >&2; exit 1; }
+    PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
+  fi
+  SECONDMATE_CHARTER=${FM_SECONDMATE_CHARTER:-"{TASK}"}
+  SECONDMATE_SCOPE=${FM_SECONDMATE_SCOPE:-${FM_SECONDMATE_CHARTER:-"{TASK}"}}
 fi
-SECONDMATE_CHARTER=${FM_SECONDMATE_CHARTER:-"{TASK}"}
-SECONDMATE_SCOPE=${FM_SECONDMATE_SCOPE:-${FM_SECONDMATE_CHARTER:-"{TASK}"}}
-if [ "$NO_PROJECTS" -eq 1 ]; then
-  PROJECT_CLONES_BODY="None. This is a project-less domain: its subject is the firstmate repo this home lives in, so it needs no separate clones under \`projects/\`; its crews take pooled worktrees of that firstmate repo."
-  PROJECT_CLONES_NOTE="This domain has no separate project clones: its subject is the firstmate repo this home lives in, and its crews take pooled worktrees of that repo."
-else
-  PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
-  PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
+if [ "$NO_PROJECTS" -eq 0 ]; then
+  PROJECT_CLONES_NOTE="These are local clones for work you supervise, not an exclusive ownership claim."
+  case "$PROJECT_CLONES_BODY" in *"$PROJECT_CLONES_NOTE"*) ;; *) PROJECT_CLONES_BODY+=$'\n'"$PROJECT_CLONES_NOTE" ;; esac
 fi
-cat > "$BRIEF" <<EOF
+[ -z "$SECONDMATE_EXTRA" ] || SECONDMATE_EXTRA=$'\n'"$SECONDMATE_EXTRA"$'\n'
+SECONDMATE_STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+emit_charter() {
+cat <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
 
 # Charter
@@ -465,65 +528,71 @@ $SECONDMATE_SCOPE
 
 # Project clones
 $PROJECT_CLONES_BODY
-
+$SECONDMATE_EXTRA
 # Operating model
-You are in an isolated firstmate home. The local \`AGENTS.md\` is your job description, and your local \`data/\`, \`state/\`, \`config/\`, and \`projects/\` dirs are yours to operate.
-$PROJECT_CLONES_NOTE
-Delegate project work to your own crewmates with the normal firstmate lifecycle: brief, spawn, status, watcher, steer, teardown, and recovery.
-Do not invent a second delegation system.
-You do not generate your own work.
-Act only on tasks the main firstmate routes to you.
-Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.
+You are in an isolated firstmate home. The local \`AGENTS.md\` is your job description, and this home's \`data/\`, \`state/\`, \`config/\`, and \`projects/\` are yours to operate.
+Delegate project work to your own crewmates through the normal firstmate lifecycle; do not invent a second delegation system.
+You do not generate your own work. Act only on tasks the main firstmate routes to you, and never start a survey, audit, or "find improvements" sweep on your own initiative.
 
 # The captain and the parent channel
-Nobody reads this chat: the captain and the main firstmate see only what is appended to $STATUS_FILE, and a captain-facing sentence that is not appended there has not been sent.
+Nobody reads this chat: the captain and the main firstmate see only what is appended to $SECONDMATE_STATUS_FILE, and a captain-facing sentence that is not appended there has not been sent.
 That file is your parent channel, and in this home it IS the captain: every sentence you would say to the captain, and every outcome the local AGENTS.md tells a firstmate to bring to the captain, is one appended line there, never chat.
-Your own machinery publishes the durable facts about your crew's work for you (\`bin/fm-parent-channel-lib.sh\`): a child's terminal done or failed line with its note and PR on every supervision poll, a PR-ready line when you register a PR, a task you hold for the captain and its answer, a merge, and a child's final line at cleanup all reach the parent channel from the scripts that record them, whether or not you append anything.
-What only you can append is judgement: the answer to a marked request below, a recommendation or caveat on a delivered outcome, a blocker or failure of your own, and anything else you would otherwise say to the captain.
+Your scripts publish routine outcomes of your crew's work there for you (\`docs/secondmate-parent-channel.md\`); you append only judgement: a marked-request answer, a recommendation or caveat on a delivered outcome, a blocker or failure of your own, and anything else you would say to the captain.
 
 # Requests from the main firstmate
-You are a firstmate in your own home, so an incoming message reaches you in your own chat.
-You must distinguish who it is from, because the answer goes to a different place.
-A request relayed to you by the main firstmate is tagged with a leading \`$FM_FROMFIRST_LABEL\` marker followed by an invisible system separator; this marker is untypable, so a human never produces it.
-When a message carries that marker, do the work, then respond via the STATUS/ESCALATION path below, never only in this chat: the main firstmate does not read your chat, so a chat-only reply is lost.
-Marked requests also carry a privacy-safe \`corr=<id>\` token after the marker; include that exact token in your parent status reply (or in the status pointer to a detailed doc) so the parent can correlate the answer.
-Optional helper: \`bin/fm-secondmate-report.sh <verb> <corr_id> <note>\` appends that correlated line to the parent channel itself - do not pass a status path, and do not write a hand path under this home.
-When the marker carries \`expect=ack\` after the \`corr=<id>\` token, the parent needs only confirmation of uptake: reply with \`bin/fm-secondmate-report.sh --receipt <corr_id>\` (its header owns validation); substantive replies and failures still use their ordinary report, never a receipt.
-A plain \`echo\` that includes the same \`corr=<id>\` on this parent channel is equally valid; do not depend on the helper being present.
+A request relayed by the main firstmate is tagged with a leading \`$FM_FROMFIRST_LABEL\` marker followed by an invisible system separator; this marker is untypable, so a human never produces it.
+When a message carries that marker, do the work, then answer on the parent channel, never only in this chat.
+Marked requests also carry a \`corr=<id>\` token after the marker; include that exact token in your parent status reply (or in the status pointer to a detailed doc) so the parent can correlate the answer.
+\`bin/fm-secondmate-report.sh <verb> <corr_id> <note>\` appends that correlated line for you - do not pass a status path; a plain \`echo\` carrying the same \`corr=<id>\` is equally valid.
+When the marker carries \`expect=ack\` after the token, reply with \`bin/fm-secondmate-report.sh --receipt <corr_id>\`; substantive replies and failures still use their ordinary report, never a receipt.
 For a terse result, a status line is the whole answer.
-For a detailed answer (an investigation, a plan, an audit), write it to a doc under your home's \`data/\` and append a status line that points to that doc - the scout-report pattern - so the main firstmate is woken and can read it.
-Before treating an investigation or visual review as complete, load \`captain-hold-lifecycle\` from this home's \`.agents/skills/\` and pass its shared completion gate.
-A message with NO marker is the captain typing directly into your pane: treat it as authoritative captain intervention and stay conversational exactly as you would for any captain message; do not force it onto the status path.
+For a detailed answer, write a doc under this home's \`data/\` and append a status line that points to that doc.
+Before treating an investigation or visual review as complete, load \`captain-hold-lifecycle\` and pass its completion gate.
+A message with NO marker is the captain typing directly into your pane: treat it as authoritative captain intervention and answer conversationally, not on the status path.
 A request arriving through the instruction inbox below follows the same marker and reply rules.
 
 $INBOX_SECTION
 
 # Escalation to main firstmate
 Handle routine work yourself.
-Report only true captain-relevant outcomes or a declared external wait by appending one line:
-   \`$STATUS_APPEND\`
+Report only true captain-relevant outcomes or a declared external wait by appending one line with \`bin/fm-secondmate-report.sh --state <state> [--key <slug>] [--wait <kind>:<arg>] <note>\`, which stamps and records it, or by hand:
+   \`echo "{state} [at=<epoch>]: {one short line}" >> $SECONDMATE_STATUS_FILE\`
+By hand, replace \`<epoch>\` with the number \`date +%s\` prints.
 States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
-Substitute \`<epoch>\` with the current Unix time in seconds - run \`date +%s\` and write the number it printed; a stamp that is not plain digits records no time at all.
-Use \`$PAUSED_VERB: {why}\` (distinct from \`blocked:\`) only when your domain is deliberately idling on a known external wait you expect to clear on its own, naming when it clears with \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) when you know, or with one machine-checkable \`[wait=<kind>:<arg>]\` tag before the colon (\`heavy:<job-id>\`, \`until:<UTC>\`, \`merge-result:<head-sha>\`, \`receipt:<absolute-path>\`) so the wait stays silent while it holds; use \`blocked:\` when you are stuck and need firstmate to act.
+Use \`$PAUSED_VERB: {why}\` (distinct from \`blocked:\`) only when your domain is deliberately idling on a known external wait you expect to clear on its own, naming when it clears with \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) or one machine-checkable \`[wait=<kind>:<arg>]\` tag (\`bin/fm-classify-lib.sh\` owns the kinds); use \`blocked:\` when you are stuck and need firstmate to act.
 Use this only for material phase changes, a captain decision, a real blocker, a failure, work ready for review, or work you landed.
 Work you landed includes a merge you performed yourself under standing merge authority and one the captain merged on the forge: under that authority nothing is ever "ready for review", so a landed merge that goes unreported reaches the captain as silence.
-This is also how you return the answer to a marked from-firstmate request above.
 A marked request requires one correlated answer after the work (for an \`expect=ack\` marker that answer is the uptake receipt above); it does not require a separate receipt or start acknowledgement.
 Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
 When a routed-work phase has a supervisor-actionable material change worth reporting under the rule above, give that reported phase a stable key.
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>] [at=<epoch>]: {why it is no longer active}\`.
-\`resolved\` separately closes an escalated decision or blocker, and only a \`resolved\` line carrying that decision's exact key closes it: a later \`done\` or \`working\` event never does, even when the answer is what started that work.
-The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one) as your domain resumes.
+Only a \`resolved\` line carrying an escalated decision's or blocker's exact key closes it: a later \`done\` or \`working\` event never does, even when the answer is what started that work.
+The main firstmate's answer normally writes that closing line; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one) as your domain resumes.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
 
 # Definition of done
-You are persistent by default. Do not exit just because your queue is empty.
+You are persistent: do not exit just because your queue is empty.
 On startup and restart, run normal firstmate bootstrap and recovery through \`bin/fm-session-start.sh\` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.
-When you have no assigned or in-flight work after that reconciliation, go idle and wait silently for the main firstmate to route you a task.
-An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
-If this charter cannot be carried out, append \`blocked [at=<epoch>]: {why}\` or \`failed [at=<epoch>]: {why}\` to the main status file and stop.
+With no assigned or in-flight work after that, go idle and wait silently for the main firstmate to route you a task; an empty queue is a healthy resting state, so never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
+If this charter cannot be carried out, append \`blocked [at=<epoch>]: {why}\` or \`failed [at=<epoch>]: {why}\` to the parent channel and stop.
 EOF
+}
+if [ -n "$RENDER_CHARTER" ]; then
+  if [ "$DROPPED_LINES" -eq 1 ]; then
+    # Template-owned text is the preamble before the first heading plus every
+    # template section other than the domain ones.
+    emit_charter | awk -v domain="$CHARTER_DOMAIN_HEADINGS" -v known="$CHARTER_TEMPLATE_HEADINGS" '
+      NR == FNR { have[$0] = 1; next }
+      /^# / { name = "|" substr($0, 3) "|"; owned = index(known, name) > 0 && index(domain, name) == 0; started = 1; next }
+      (owned || !started) && $0 !~ /^[[:space:]]*$/ && !($0 in have) { print }
+    ' - "$RENDER_CHARTER"
+  else
+    emit_charter
+  fi
+  exit 0
+fi
+emit_charter > "$BRIEF"
 if [ "$SECONDMATE_CHARTER" = "{TASK}" ]; then
   echo "scaffolded: $BRIEF (secondmate charter; replace {TASK})"
 else

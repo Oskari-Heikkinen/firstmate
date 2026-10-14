@@ -502,6 +502,56 @@ test_home_seed_refuses_empty_charter_fields() {
   pass "home seeding refuses empty normalized charter fields"
 }
 
+test_home_seed_refresh_charter_lists_drops_before_writing() {
+  local home sub charter before err status
+  home="$TMP_ROOT/refresh-charter-home"
+  sub="$TMP_ROOT/refresh-charter-subhome"
+  err="$TMP_ROOT/refresh-charter.err"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='firstmate self-development' \
+    "$ROOT/bin/fm-home-seed.sh" fdev "$sub" --no-projects >/dev/null || fail "seed failed"
+  charter="$sub/data/charter.md"
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" --refresh-charter fdev | grep -F 'unchanged:' >/dev/null \
+    || fail "refreshing a current charter did not report it unchanged"
+
+  # A stored copy from an older template, with a rule hand-added inside a
+  # template-owned section and one in its own section.
+  sed -e 's/^Nobody reads this chat.*/STALE TEMPLATE LINE/' \
+    -e '/^# Operating model$/a\
+Never deploy on Fridays.' "$charter" > "$charter.new"
+  mv "$charter.new" "$charter"
+  printf '\n# Domain hard rule\nNever touch production.\n' >> "$charter"
+  before="$TMP_ROOT/refresh-charter.before"
+  cp "$charter" "$before"
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" --refresh-charter fdev >/dev/null 2>"$err" || status=$?
+  expect_code 1 "$status" "refresh must refuse while template-section lines would be dropped"
+  assert_grep 'Never deploy on Fridays.' "$err" "refusal did not list the hand-added template-section rule"
+  assert_grep 'STALE TEMPLATE LINE' "$err" "refusal did not list the drifted template line"
+  assert_no_grep 'Never touch production.' "$err" "refusal listed a rule kept in its own section"
+  cmp -s "$before" "$charter" || fail "a refused refresh changed the charter"
+
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" --refresh-charter fdev --accept-drop >/dev/null \
+    || fail "refresh with --accept-drop failed"
+  assert_grep 'Nobody reads this chat' "$charter" "refresh did not restore the current template"
+  assert_no_grep 'STALE TEMPLATE LINE' "$charter" "refresh kept the drifted template line"
+  assert_no_grep 'Never deploy on Fridays.' "$charter" "an accepted drop was not dropped"
+  assert_grep 'Never touch production.' "$charter" "refresh lost a domain section"
+  assert_grep 'firstmate self-development' "$charter" "refresh lost the Charter section"
+
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" --refresh-charter missing >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "refresh of an unregistered id must fail"
+  # A copy that names another home's parent channel is never re-rendered here.
+  sed "s#$home/state/fdev.status#/elsewhere/state/parent-replies.status#g" "$charter" > "$before"
+  cp "$before" "$charter"
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" --refresh-charter fdev --accept-drop >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "refresh of a foreign-channel charter must fail"
+  cmp -s "$before" "$charter" || fail "a refused foreign-channel refresh changed the charter"
+  pass "home seeding refreshes a charter only after its template-section drops are listed and accepted"
+}
+
 test_home_seed_no_projects_end_to_end() {
   # A domain whose subject is the firstmate repo itself needs no project clones:
   # the deliberate --no-projects signal scaffolds, seeds, registers, and spawns a
@@ -656,7 +706,7 @@ test_home_seed_refuses_projectful_reused_charter_for_projectless_home() {
 
   scaffold_secondmate_charter "$home" stale 'firstmate self-development. None. This is a project-less domain.' alpha \
     || fail "projectful charter scaffold failed"
-  sed 's/The projects above are local clones for work you supervise; they are not an exclusive ownership claim./Project clone details are customized for this domain./' \
+  sed 's/These are local clones for work you supervise, not an exclusive ownership claim./Project clone details are customized for this domain./' \
     "$stale_brief" > "$stale_brief_before"
   mv "$stale_brief_before" "$stale_brief"
   cp "$stale_brief" "$stale_brief_before"
@@ -3183,6 +3233,7 @@ test_home_seed_rolls_back_failed_clone
 test_home_seed_refuses_missing_filled_charter
 test_home_seed_refuses_placeholder_charter
 test_home_seed_refuses_empty_charter_fields
+test_home_seed_refresh_charter_lists_drops_before_writing
 test_home_seed_no_projects_end_to_end
 test_secondmate_spawn_resolves_punctuated_registry_projects
 test_secondmate_spawn_refuses_ambiguous_and_mismatched_registry_bindings

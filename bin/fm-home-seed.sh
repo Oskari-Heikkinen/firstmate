@@ -26,6 +26,16 @@
 #       when no filled charter brief exists. Set FM_SECONDMATE_SCOPE='<scope>'
 #       to override the registry routing scope. Otherwise the registry summary
 #       and scope are derived from the filled charter brief.
+#   fm-home-seed.sh --refresh-charter <id> [--accept-drop]
+#       Rewrite a registered local secondmate's data/charter.md from the current
+#       template around its own domain sections (bin/fm-brief.sh
+#       --render-charter). Launches use the stored copy, so this is the only way
+#       a seeded charter picks up template changes, and the main firstmate runs
+#       it per home after review. Before writing, it lists every line of the
+#       stored copy's template-owned text the render would drop and refuses
+#       unless those lines were moved into their own section or --accept-drop
+#       accepts the drop. A remote route, or a copy that does not name this
+#       home's parent channel, is refused. An unchanged render writes nothing.
 #   fm-home-seed.sh validate
 #       Refuse records that operational consumers cannot parse, unavailable or
 #       unsafe registry files when present, non-absolute or unresolvable homes,
@@ -52,7 +62,48 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
+  echo "       fm-home-seed.sh --refresh-charter <id> [--accept-drop]" >&2
   echo "       fm-home-seed.sh validate" >&2
+}
+
+refresh_charter() {
+  local id=$1 accept=$2 home charter rendered dropped tmp
+  [ -f "$REG" ] || { echo "error: no secondmate registry at $REG" >&2; return 1; }
+  if [ "$(secondmate_registry_field "$REG" "$id" remote 2>/dev/null || true)" = 1 ]; then
+    echo "error: $id is a remote route; its host-local charter is published at seed and is not refreshed here" >&2
+    return 1
+  fi
+  home=$(secondmate_registry_field "$REG" "$id" home 2>/dev/null) && [ -n "$home" ] || {
+    echo "error: $id has no single registered home in $REG" >&2
+    return 1
+  }
+  charter="$home/data/charter.md"
+  [ -f "$charter" ] && [ ! -L "$charter" ] || { echo "error: no regular charter at $charter" >&2; return 1; }
+  grep -F -- "$STATE/$id.status" "$charter" >/dev/null 2>&1 || {
+    echo "error: $charter does not name this home's parent channel $STATE/$id.status; refusing to re-render it here" >&2
+    return 1
+  }
+  rendered=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-brief.sh" "$id" --secondmate --render-charter "$charter") || return 1
+  dropped=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-brief.sh" "$id" --secondmate --render-charter "$charter" --dropped-lines) || return 1
+  if [ -n "$dropped" ] && [ "$accept" -ne 1 ]; then
+    echo "error: refreshing $charter would drop these template-section lines:" >&2
+    printf '%s\n' "$dropped" | sed 's/^/  /' >&2
+    echo "error: move any domain rule among them into its own # section, or rerun with --accept-drop" >&2
+    return 1
+  fi
+  if [ "$rendered" = "$(cat "$charter")" ]; then
+    echo "unchanged: $charter"
+    return 0
+  fi
+  tmp="$charter.tmp.$$"
+  if ! { printf '%s\n' "$rendered" > "$tmp" && mv -f -- "$tmp" "$charter"; }; then
+    rm -f -- "$tmp"
+    echo "error: could not write $charter" >&2
+    return 1
+  fi
+  echo "refreshed: $charter"
 }
 
 validate_registry_home_text() {
@@ -1011,6 +1062,13 @@ case "${1:-}" in
   validate)
     [ $# -eq 1 ] || { usage; exit 1; }
     validate_registry
+    ;;
+  --refresh-charter)
+    case "$#:${3:-}" in
+      2:) refresh_charter "$2" 0 ;;
+      3:--accept-drop) refresh_charter "$2" 1 ;;
+      *) usage; exit 1 ;;
+    esac
     ;;
   -h|--help|'')
     usage

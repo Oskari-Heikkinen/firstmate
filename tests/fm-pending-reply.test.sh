@@ -2032,6 +2032,52 @@ test_mechanical_helper_writes_parent_channel() {
   pass "mechanical helper writes the parent channel from verb, corr, and note"
 }
 
+test_state_helper_writes_uncorrelated_parent_lines() {
+  local home state sm_home remote line wait_tag rc
+  home=$(setup_parent state-helper)
+  state="$home/state"
+  sm_home=$(bind_local_mate "$home" mate)
+  FM_HOME="$sm_home" "$REPORT" --state working --key ui-fix "started the
+UI fix" || fail "--state helper should succeed from a seeded mate home"
+  FM_HOME="$sm_home" "$REPORT" --state paused --key heavy-J1 --wait heavy:J1 "heavy job queued" \
+    || fail "--state helper should accept a declared wait"
+  [ "$(wc -l < "$state/mate.status")" -eq 2 ] || fail "--state helper must append exactly one line per report"
+  line=$(sed -n 1p "$state/mate.status")
+  case "$line" in
+    'working [key=ui-fix] [at='[0-9]*']: started the UI fix') ;;
+    *) fail "--state helper wrote an unkeyed, unstamped, or multi-line report: $line" ;;
+  esac
+  wait_tag=$(bash -c '. "$1"; status_wait_tag "$2"' _ "$ROOT/bin/fm-classify-lib.sh" "$(sed -n 2p "$state/mate.status")") \
+    || fail "--state helper wrote no readable wait tag"
+  [ "$wait_tag" = heavy:J1 ] || fail "--state helper wrote the wrong wait tag: $wait_tag"
+  for bad in '--key bad/key note' '--wait nocolon note' '--wait heavy:J1'; do
+    rc=0
+    # shellcheck disable=SC2086 # Each case is a deliberate word list.
+    FM_HOME="$sm_home" "$REPORT" --state "done" $bad 2>/dev/null || rc=$?
+    [ "$rc" -ne 0 ] || fail "--state helper accepted a malformed report: $bad"
+  done
+  rc=0
+  FM_HOME="$sm_home" "$REPORT" --state bogus "x" 2>/dev/null || rc=$?
+  [ "$rc" -ne 0 ] || fail "--state helper accepted an unknown state"
+  [ "$(wc -l < "$state/mate.status")" -eq 2 ] || fail "a refused --state report still wrote the parent channel"
+  # On a local route the parent's opt-in fleet ledger records the line at once.
+  mkdir -p "$home/config"
+  : > "$home/config/fleet-ledger"
+  FM_HOME="$sm_home" "$REPORT" --state "done" "ledgered outcome" \
+    || fail "--state helper should succeed with the parent's ledger on"
+  grep -Fq 'ledgered outcome' "$state/fleet-ledger.jsonl" 2>/dev/null \
+    || fail "--state helper did not record the line in the parent's fleet ledger"
+  remote="$TMP_ROOT/state-helper-remote-$RANDOM"
+  mkdir -p "$remote/state"
+  printf '%s\n' mate > "$remote/.fm-secondmate-home"
+  printf 'schema=fm-secondmate-parent.v1\nroute=remote\nparent_host=remote.example\n' > "$remote/.fm-secondmate-parent"
+  FM_HOME="$remote" "$REPORT" --state blocked "credential needed" \
+    || fail "--state helper should write a remote mate's relay log"
+  grep -Fq 'credential needed' "$remote/state/parent-replies.status" \
+    || fail "--state helper did not write the remote parent channel"
+  pass "--state helper appends stamped, keyed, uncorrelated lines to the parent channel"
+}
+
 test_remote_parent_replies_is_not_wrong_home() {
   local home state sm_home corr rec hits
   home=$(setup_parent remote-parent-replies)
@@ -2392,6 +2438,7 @@ test_same_basename_reply_resolves_after_recovery_failure
 test_child_status_wrong_home_is_not_copied
 test_explicit_receipt_operation
 test_mechanical_helper_writes_parent_channel
+test_state_helper_writes_uncorrelated_parent_lines
 test_remote_parent_replies_is_not_wrong_home
 test_local_parent_replies_is_wrong_home_evidence
 test_escalated_undelivered_correlation_stays_retryable

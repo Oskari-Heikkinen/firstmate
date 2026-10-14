@@ -759,7 +759,7 @@ For `no-mistakes` projects, seeding initializes only projects newly cloned into 
 After creating a secondmate, move existing main-backlog queued items that you have judged in-scope with `fm-backlog-handoff.sh <secondmate-id> <item-key>...`; it refuses In flight, Done, or non-secondmate homes, and its [script header](../bin/fm-backlog-handoff.sh) owns route-specific wake outcomes and retries.
 Set `FM_SECONDMATE_CHARTER` to seed from inline charter text when no filled charter brief exists; set `FM_SECONDMATE_SCOPE` when the routing scope should differ from the charter text.
 
-The seeded home's `data/charter.md` owns the standard secondmate lifecycle and escalation contract; the route file points to it through the existing `home:` field instead of adding another pointer.
+The seeded home's `data/charter.md` owns the standard secondmate lifecycle and escalation contract, rendered from the `bin/fm-brief.sh` template at seed and updated only by an explicit `bin/fm-home-seed.sh --refresh-charter <id>`; the route file points to it through the existing `home:` field instead of adding another pointer.
 
 ### Identity markers and upgrades
 

@@ -510,6 +510,7 @@ Marked requests keep the existing correlation contract.
 The remote charter appends replies to `state/parent-replies.status` in the remote home.
 The remote home's own outcome publishers append there too, through the channel contract in `bin/fm-parent-channel-lib.sh` ([secondmate-parent-channel.md](secondmate-parent-channel.md)).
 The remote charter also names its steering inbox as `state/parent-route/<id>.inbox` in the remote home.
+Because its paths are host-local, `bin/fm-home-seed.sh --refresh-charter` refuses a remote route.
 That inbox is the record surface the routed transport writes to, so a steer never lands on a parent-home path the remote host cannot reach.
 
 ### How remote lines are mirrored

@@ -75,7 +75,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-storage.sh`          | Detect and prepare an external SSD for fetched results and publish the results root with a C: fallback, on a user timer (docs/storage.md) |
 | `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
-| `fm-home-seed.sh`        | Transactionally provision a local secondmate home and maintain `data/secondmates.md` |
+| `fm-home-seed.sh`        | Transactionally provision a local secondmate home, maintain `data/secondmates.md`, and refresh a seeded charter from the current template |
 | `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host              |
 | `fm-remote-readiness-lib.sh` | Shared remote second-mate readiness gate: check and, when needed, repair then re-check through `fm-remote-doctor.sh` |
 | [`fm-project-origin-lib.sh`](../bin/fm-project-origin-lib.sh) | Accepted origin-form owner shared by both remote provisioning boundaries |
@@ -101,7 +101,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-marker-lib.sh`       | Compatibility entry point for the from-firstmate carrier owned by `fm-operational-input.sh` |
 | `fm-task-inbox-lib.sh`   | Single owner of durable steering-inbox records, acknowledgement, doorbells, and the delivery-attempt ladder |
 | `fm-pending-reply-lib.sh` | Parent-owned secondmate pending-reply expectations, recovery, and keyed escalation lifecycle |
-| `fm-secondmate-report.sh` | Optional helper that resolves the parent channel itself and appends a correlated status or document-pointer report |
+| `fm-secondmate-report.sh` | Optional helper that resolves the parent channel itself and appends a correlated, receipt, or uncorrelated `--state` report |
 | `fm-extension.mjs`       | Bind, inspect, verify, and strictly invoke trusted external process-event adapter packages |
 | `fm-extension-launch-barrier.mjs` | Publish one exact static core-owned invocation group before package code runs |
 | `fm-extension.sh`        | Expose extension binding commands through the tracked shell and remote-home command boundary |

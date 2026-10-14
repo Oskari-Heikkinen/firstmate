@@ -814,6 +814,57 @@ test_secondmate_marked_request_reporting_contract() {
   pass "fm-brief.sh: marked requests avoid generic acknowledgements and preserve material reporting"
 }
 
+test_secondmate_render_charter_uses_current_template() {
+  local home stored rendered status
+  home="$TMP_ROOT/render-charter-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Handle alpha work.' FM_SECONDMATE_SCOPE='alpha routing' \
+    "$ROOT/bin/fm-brief.sh" rc --secondmate alpha >/dev/null 2>&1 || fail "charter scaffold failed"
+  # A seeded copy made from an older template: one template line drifted and
+  # the domain added its own hard-rule section.
+  stored="$TMP_ROOT/render-charter-stored.md"
+  sed 's/^Nobody reads this chat.*/STALE TEMPLATE LINE/' "$home/data/rc/brief.md" > "$stored"
+  printf '\n# Domain hard rule\nNever touch production.\n' >> "$stored"
+  rendered=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --secondmate --render-charter "$stored") \
+    || fail "rendering a stored charter failed"
+  assert_contains "$rendered" 'Nobody reads this chat' "render did not restore the current template"
+  assert_not_contains "$rendered" 'STALE TEMPLATE LINE' "render kept the stored copy's template text"
+  assert_contains "$rendered" 'Handle alpha work.' "render lost the stored Charter section"
+  assert_contains "$rendered" 'alpha routing' "render lost the stored Routing scope section"
+  assert_contains "$rendered" '- alpha' "render lost the stored Project clones section"
+  assert_contains "$rendered" $'# Domain hard rule\nNever touch production.' "render dropped a domain section the template does not own"
+  [ "$(printf '%s\n' "$rendered" | grep -c '^# Charter$')" -eq 1 ] || fail "render duplicated the Charter section"
+  # Rendering a stored copy that never drifted reproduces the scaffold exactly.
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --secondmate --render-charter "$home/data/rc/brief.md")" = "$(cat "$home/data/rc/brief.md")" ] \
+    || fail "rendering an undrifted charter changed it"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --secondmate --render-charter "$stored" --dropped-lines)" = 'STALE TEMPLATE LINE' ] \
+    || fail "--dropped-lines did not list exactly the stored template text the render drops"
+  [ -z "$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --secondmate --render-charter "$home/data/rc/brief.md" --dropped-lines)" ] \
+    || fail "--dropped-lines listed lines for an undrifted charter"
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --secondmate alpha --dropped-lines >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "--dropped-lines without --render-charter must fail"
+  assert_absent "$home/data/other/brief.md" "render wrote a brief"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" other --secondmate --render-charter "$stored" >/dev/null 2>&1 \
+    || fail "render under a fresh id failed"
+  assert_absent "$home/data/other" "render created a task directory"
+
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --secondmate alpha --render-charter "$stored" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "render with a project list must fail"
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --render-charter "$stored" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "render without --secondmate must fail"
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --secondmate --render-charter "$TMP_ROOT/absent.md" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "render of a missing charter must fail"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" unfilled --secondmate alpha >/dev/null 2>&1 || fail "unfilled scaffold failed"
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" unfilled --secondmate --render-charter "$home/data/unfilled/brief.md" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "render of an unfilled charter must fail"
+  pass "fm-brief.sh: --render-charter re-renders the current template around a stored charter's domain sections"
+}
+
 test_secondmate_directory_paths_are_absolute_and_output_is_stable() {
   local root home data_override state_override brief baseline err status
   root="$TMP_ROOT/relative-directory-inputs"
@@ -1599,6 +1650,7 @@ test_documented_global_replace_leaves_the_herdr_gate_intact
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
+test_secondmate_render_charter_uses_current_template
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_ship_and_scout_teach_validation_round_pause

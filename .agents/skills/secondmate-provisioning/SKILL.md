@@ -34,7 +34,7 @@ For a remote route, `host:` is an OpenSSH config alias and `root:` is that host'
 A remote second-mate agent always runs on the Herdr backend and every seed, launch, and liveness relaunch first gates its host on `bin/fm-remote-doctor.sh` readiness, so an unready host refuses with that doctor's own gap text rather than half-creating a route; the workers that second mate supervises keep the home's ordinary backend selection.
 This release places whole secondmate homes remotely and never individual workers.
 [`docs/remote-secondmates.md`](../../../docs/remote-secondmates.md) owns current operator setup and transport behavior.
-The home-seeded `data/charter.md` is the sole owner of boilerplate idle-by-default behavior, the normal delegation lifecycle, and standard escalation contracts, so point to that charter rather than restating those contracts in the registry entry.
+The charter template in `bin/fm-brief.sh` is the sole owner of boilerplate idle-by-default behavior, the normal delegation lifecycle, and standard escalation contracts, so point to the charter rather than restating those contracts in the registry entry.
 The `scope:` field is used during intake.
 The `projects:` field is a non-exclusive clone list, not ownership.
 
@@ -54,8 +54,10 @@ Pass `--no-projects` instead of a project list to scaffold a project-less charte
 Re-seeding a populated home as project-less is refused non-destructively when the home contains project clones or `data/projects.md` entries.
 Retire or clean that home first, and re-scaffold a stale project-bearing charter with `--no-projects` before seeding.
 Keep custom charter text focused on the persistent responsibility, available project clones, and genuinely domain-specific hard rules.
-The scaffolded charter, later copied to `data/charter.md`, owns the standard lifecycle and escalation wording.
-Preserve the generated charter sections unless the domain genuinely needs a hard rule.
+Put a domain hard rule in its own `#` section: the template owns every other section.
+Launches use the stored `data/charter.md`, so a seeded charter picks up template changes only when the main firstmate runs `bin/fm-home-seed.sh --refresh-charter <id>` for that home after review; it lists any template-section line the refresh would drop and refuses until each is moved into its own section or `--accept-drop` is passed.
+A remote home's charter is published at seed with host-local paths and is not refreshed that way.
+The charter's escalation lines go through `bin/fm-secondmate-report.sh`, whose header owns the correlated, receipt, and uncorrelated `--state` forms.
 
 Provision a local persistent home and registry entry after the charter is filled:
 
