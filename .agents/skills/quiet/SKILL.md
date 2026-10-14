@@ -49,7 +49,7 @@ For captain-held rechecks under quiet, see [architecture](../../../docs/architec
 ## How to exit quiet mode
 
 Unlike `/afk`, ordinary chat is never the exit signal - that is the entire
-point of this mode (AGENTS.md section 8's away-mode stub, quiet branch).
+point of this mode.
 
 - Only an explicit `/quiet off` (or the captain plainly asking to leave quiet
   mode / resume normal supervision) exits it: run `bin/fm-afk-return.sh`

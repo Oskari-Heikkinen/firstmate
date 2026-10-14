@@ -35,6 +35,11 @@ The locked startup inactive-outcome scan joins that worker so a slow local curre
 7. **Context digest** - last of the bulk sections, the full contents of `data/projects.md`, `data/secondmates.md`, `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, each clearly delimited, followed by one `END OF SESSION START DIGEST` line.
    A file that does not exist prints an explicit `ABSENT` marker, never confused with an empty-but-present file: absence is meaningful (`captain.md` absent means use the firstmate repo's built-in defaults, `projects.md` absent means rebuild it from the clones under `projects/`, etc.).
 
+Read the complete digest once and trust it as this turn's startup and recovery input.
+Do not separately re-read the context, backlog, metadata, or bulk status inputs it printed unless a source was reported absent or corrupt, older history is specifically needed, or a targeted workflow must inspect before writing.
+An `ABSENT` captain, shared-captain, secondmate, or learnings file means the built-in defaults, no shared captain preferences, no registered secondmates, or no captured learnings; rebuild an absent or stale project registry from the clones before dispatch.
+While the digest's `NETWORK CHECKS` section reports checks in progress, treat none of them as passed until `bin/fm-startup-network.sh report` returns the finished result; a failed or actionable result also arrives as a `check: startup-network` wake.
+
 Bootstrap detects first, asks for consent, and installs only after the captain approves in the current session.
 Do not dispatch until the essential launch tools are present and GitHub authentication is good; presentation availability follows `bootstrap-diagnostics` and does not block nonvisual work.
 Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.

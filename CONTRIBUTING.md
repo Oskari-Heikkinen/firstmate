@@ -115,7 +115,6 @@ bin/fm-test-isolation-proof.sh --list   # proven portable parallel candidate set
 bin/fm-test-isolation-proof.sh --jobs 4 --json /tmp/fm-isolation-proof.json   # re-run the portable candidate proof
 bin/fm-test-isolation-proof.sh --pool watcher-wake-lock --jobs 4   # re-run an admitted family proof
 [ ! -L CLAUDE.md ] && cmp -s CLAUDE.md - <<'EOF'
-<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
 @AGENTS.md
 EOF
 [ "$(readlink .claude/skills)" = "../.agents/skills" ]

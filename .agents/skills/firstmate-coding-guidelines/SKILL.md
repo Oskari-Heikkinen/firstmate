@@ -50,11 +50,12 @@ That is the trigger condition for loading the skill, plus any safety-critical fa
 Everything else - the procedure, the mechanism, the surrounding detail - moves out completely.
 Do not leave a partial restatement behind "just in case".
 A partial copy is exactly the duplication the one-owner rule forbids.
-The model to copy is `AGENTS.md` section 8's "Away-mode and quiet-mode stub": it keeps only the skill-invocation triggers inline and points everything else at the `/afk`, `/quiet`, and `away-quiet-supervision` skills.
+Usually nothing stays: the skill's own description is its trigger, so `AGENTS.md` keeps a line only for a safety rule or a recorded-mistake fix that must hold with no skill loaded.
 
 ## Size discipline
 
-Apply the decision tree above to every line you are about to add to `AGENTS.md`.
+`AGENTS.md` keeps only safety-critical rules and rules that fix a mistake agents actually made; everything else moves to a skill loaded at its trigger, a script, or a doc, or is cut.
+Apply the decision tree above to every line you are about to add to `AGENTS.md`, prefer rewriting or pruning existing entries over appending, and preserve every safety boundary.
 If an addition needs more than a few lines of conditional detail (detail that matters only in a specific situation) or reference detail (a wire format, an exact schema, historical rationale), you are almost certainly adding it to the wrong file.
 `AGENTS.md`'s token cost is paid by every session of every fleet member, every time, whether or not that session ever hits the situation the new lines describe.
 A skill's cost is paid only by the sessions that actually load it.

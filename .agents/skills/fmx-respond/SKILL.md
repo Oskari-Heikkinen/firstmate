@@ -12,7 +12,7 @@ Relay lets a firstmate instance answer and act on public mentions routed through
 A mention arrives through the watcher as a `check:` wake whose payload is `x-mention <request_id>`.
 The full mention is stashed locally; this skill acts on any request it carries and turns it into one public reply, or deliberately skips it when there is nothing to answer.
 
-This runs only when Relay is on (the user dropped `FMX_PAIRING_TOKEN` into `.env`; see AGENTS.md "Relay").
+This runs only when Relay is on (the user dropped `FMX_PAIRING_TOKEN` into `.env`).
 If you ever see an `x-mention` wake without Relay configured, do nothing.
 A `check:` wake can also carry `x-mode-error ...` instead of `x-mention <request_id>` - that is a poll or relay configuration problem, not a mention to answer.
 Report it directly to the captain as a Relay configuration blocker and do not treat it as a mention to answer.
@@ -127,7 +127,7 @@ Fetch narrowly and inspect it only to understand the thread or fulfill an author
 
 Reply in firstmate's own voice - the crisp, lightly nautical first-mate persona - but **public-facing**:
 
-- Apply the address and optional-flavor rules in [`AGENTS.md`](../../../AGENTS.md#firstmate) to these captain-directed public replies, within the public-safety limits above.
+- Apply the captain's address and optional-flavor preferences in `data/captain-shared.md` to these captain-directed public replies, within the public-safety limits above.
 - **Be concise by default: aim for a single message, two at the very most.** A short, sharp answer beats a wall of text. Write tight on purpose - one or two sentences.
 
 You do not hand-format threads or add "(1/n)" numbering yourself.
@@ -225,7 +225,7 @@ A non-final dry-run follow-up increments `x_followups` and keeps the link while 
 ## Completion follow-up (posted on milestone and done wakes, not this turn)
 
 When an actionable request spawned a task and you linked it (step 2c), progress and the **outcome** are delivered later as follow-up replies, not in this turn.
-This skill is the sole owner of the completion-follow-up procedure below; AGENTS.md §13 declares the load trigger for Relay-linked milestone or terminal wakes, and AGENTS.md §8 reinforces the terminal final-follow-up step before teardown.
+This skill is the sole owner of the completion-follow-up procedure below and of its load trigger for Relay-linked milestone or terminal wakes, including the terminal final-follow-up step before teardown.
 This skill's own responsibility during the mention-handling turn is linking the task in step 2c; the full completion path is:
 
 - Firstmate has **up to three** follow-ups per mention, within a 7-day window, chained in the same thread - it spends them only on genuine milestones the captain would want surfaced (e.g. investigation done and a build started, work shipped or ready, or the task failing), never on routine internal churn.
