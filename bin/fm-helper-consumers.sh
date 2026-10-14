@@ -387,13 +387,11 @@ file_note() {  # <record-dir> <request-id> <text>
   local dir=$1 request=$2 text=$3 home root
   home=${FM_HOME:-}
   [ -n "$home" ] || { printf 'helper-pending: note not filed: FM_HOME is not set\n'; return 1; }
-  root=$(
-    unset FM_STATE_OVERRIDE STATE
-    FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$home"
-    # shellcheck source=bin/fm-wake-lib.sh
-    . "$SCRIPT_DIR/fm-wake-lib.sh" >/dev/null 2>&1 || exit 1
-    fm_firstmate_root_home "$home"
-  ) || { printf 'helper-pending: note not filed: cannot resolve the root home of %s\n' "$home"; return 1; }
+  # A separate shell keeps the wake library's globals out of this script.
+  # shellcheck disable=SC2016 # The inner shell expands its own arguments.
+  root=$(env -u FM_STATE_OVERRIDE -u STATE FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$home" \
+    bash -c '. "$1/fm-wake-lib.sh" >/dev/null 2>&1 || exit 1; fm_firstmate_root_home "$2"' \
+    fm-helper-consumers "$SCRIPT_DIR" "$home") || { printf 'helper-pending: note not filed: cannot resolve the root home of %s\n' "$home"; return 1; }
   if env -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE FM_HOME="$root" \
       "$SCRIPT_DIR/fm-inbox.sh" note --request-id "$request" -- "$text" >/dev/null 2>&1; then
     : > "$dir/note-filed"
