@@ -151,7 +151,11 @@
 #   park_source=<source-id>    adopted queue source, empty for ordinary parks
 #
 # Environment knobs:
-#   FM_PARK_INTERVAL       condition poll cadence in seconds (300)
+#   FM_PARK_INTERVAL       condition poll cadence in seconds (default by kind:
+#                          30 for file:, inbox: and cmd:, 300 for pr-merged:,
+#                          which calls GitHub). With FM_PARK_STABLE the watch
+#                          fires one to two intervals after the condition holds,
+#                          so a local wait resumes within about a minute.
 #   FM_PARK_STABLE         consecutive true polls required (2)
 #   FM_PARK_ERROR_BUDGET   consecutive condition errors before waking (5)
 #   FM_PARK_DEADLINE_SECS  default deadline from now (604800)
@@ -280,6 +284,17 @@ condition_valid() {
       esac || { echo "cmd: executable is unavailable: $exe" >&2; return 1; }
       ;;
     *) echo "unknown condition kind (use file:, pr-merged:, or cmd:): $cond" >&2; return 1 ;;
+  esac
+}
+
+# park_interval <condition>: the resume watch's default poll cadence. Local
+# conditions are cheap, so they poll often enough that the stable-count fire
+# lands within about a minute of the condition holding; pr-merged: spends a
+# GitHub API call per poll and keeps the slower cadence.
+park_interval() {
+  case "$1" in
+    pr-merged:*) printf '300\n' ;;
+    *) printf '30\n' ;;
   esac
 }
 
@@ -482,7 +497,7 @@ cmd_park() {
     "park_source=$sid" "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
     || die "cannot record the park in task $ID's record"
   if [ -z "$sid" ] && ! out=$("$WHEN" arm "park-$ID" \
-      --interval "${FM_PARK_INTERVAL:-300}" --stable "${FM_PARK_STABLE:-2}" \
+      --interval "${FM_PARK_INTERVAL:-$(park_interval "$HANDOFF_CONDITION")}" --stable "${FM_PARK_STABLE:-2}" \
       --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" --action-timeout 900 \
       --condition "$SCRIPT_DIR/fm-park.sh" poll "$ID" "$token" \
       --action "$SCRIPT_DIR/fm-park.sh" resume "$ID" "$token" 2>&1); then

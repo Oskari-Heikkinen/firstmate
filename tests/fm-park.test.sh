@@ -180,6 +180,7 @@ assert_grep "park_when=file:$TMP_ROOT/t2-results" "$H/state/t2.meta" "park recor
 assert_grep "park_deadline=2099-01-01T00:00:00Z" "$H/state/t2.meta" "park records the deadline"
 assert_equals "pr=https://github.com/example/repo/pull/7" "$(last_line "$H/state/t2.meta")" "the PR stays the record's tail"
 assert_present "$H/state/procevent/when-park-t2.source" "park arms the resume watch"
+assert_grep '^interval=30$' "$H/state/when/when-park-t2.spec" "a local wait is polled every 30 seconds, so it resumes within about a minute"
 assert_contains "$(last_line "$H/state/t2.status")" "paused [at=" "park declares the wait"
 assert_contains "$(last_line "$H/state/t2.status")" "until 2099-01-01T00:00:00Z" "the declared wait carries the deadline"
 assert_equals "t2 exit" "$(cat "$H/control.log")" "park stops the agent through the control plane exit"
@@ -199,6 +200,18 @@ out=$(park "$H" cancel t2) || fail "cancel failed: $out"
 assert_grep "park_state=cancelled" "$H/state/t2.meta" "cancel marks the record"
 assert_absent "$H/state/procevent/when-park-t2.source" "cancel retires the watch"
 pass "park records, arms, declares, and stops; a second park re-arms instead of duplicating"
+
+# --- the default poll cadence follows the condition kind ----------------------
+H="$TMP_ROOT/h-cadence"; new_task "$H" tcmd; new_task "$H" tpr
+handoff "$TMP_ROOT/tcmd.md" "cmd:true"
+park "$H" tcmd --handoff "$TMP_ROOT/tcmd.md" >/dev/null || fail "park tcmd failed"
+assert_grep '^interval=30$' "$H/state/when/when-park-tcmd.spec" "a cmd: wait is polled every 30 seconds"
+handoff "$TMP_ROOT/tpr.md" "pr-merged:https://github.com/example/repo/pull/7"
+park "$H" tpr --handoff "$TMP_ROOT/tpr.md" >/dev/null || fail "park tpr failed"
+assert_grep '^interval=300$' "$H/state/when/when-park-tpr.spec" "a pr-merged: wait keeps the slower GitHub-friendly cadence"
+FM_PARK_INTERVAL=7 park "$H" tcmd --handoff "$TMP_ROOT/tcmd.md" >/dev/null || fail "re-park tcmd failed"
+assert_grep '^interval=7$' "$H/state/when/when-park-tcmd.spec" "FM_PARK_INTERVAL still overrides the default cadence"
+pass "the resume watch polls local waits often enough to resume within about a minute"
 
 # --- the condition relaunches the task with the handoff and a results pointer --
 H="$TMP_ROOT/h-resume"; new_task "$H" t3
