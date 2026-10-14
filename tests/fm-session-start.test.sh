@@ -1205,7 +1205,7 @@ EOF
   } > "$home/state/task-cap.status"
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  status_part=$(printf '%s\n' "$out" | grep '^task-cap \[' | sed 's/^[^|]*| //')
+  status_part=$(printf '%s\n' "$out" | grep '^task-cap \[ship\]' | sed 's/^[^|]*| //')
   case "$status_part" in
     "$lede"*' [truncated]') : ;;
     *) fail "an over-long newest status line was not capped with its lede intact: $status_part" ;;
@@ -1215,7 +1215,7 @@ EOF
   printf 'working: short line kept whole\n' >> "$home/state/task-cap.status"
   out=$(FM_SESSION_START_STATUS_TAIL=2 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "| working: short line kept whole" "the cap mangled a status line already under it"
-  older=$(printf '%s\n' "$out" | grep "^    $lede")
+  older=$(printf '%s\n' "$out" | grep -F "    $lede")
   case "$older" in
     *' [truncated]') : ;;
     *) fail "an over-long older status line was not capped: $older" ;;
