@@ -202,7 +202,7 @@ test_over_long_decision_note_is_capped_with_a_marker() {
     *) fail "an over-long decision note was not capped with its lede intact: $line" ;;
   esac
   longest=${#line}
-  [ "$longest" -le 219 ] || fail "a capped decision item ran $longest characters past its per-item budget"
+  [ "$longest" -le 159 ] || fail "a capped decision item ran $longest characters past its per-item budget"
 
   printf 'needs-decision [key=short]: brief enough to keep whole\n' > "$state/task-short.status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a short decision note"
@@ -215,7 +215,45 @@ test_over_long_decision_note_is_capped_with_a_marker() {
   pass "an over-long open decision is cut to its per-item budget with the shared truncation marker"
 }
 
+# Past the section's global budget an item's text is dropped, but its task and
+# key still print on the omitted line, so recovery can find every open decision.
+test_omitted_decisions_stay_named() {
+  local dir state out i shown omitted n=120
+  dir=$(make_case global-cap)
+  state="$dir/state"
+  out="$dir/drain.out"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    i=$((i + 1))
+    {
+      printf 'needs-decision [key=k%s]: decide item %s' "$i" "$i"
+      awk 'BEGIN { while (j++ < 30) printf " padding" }'
+      printf '\n'
+    } > "$state/task-cap-$i.status"
+  done
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed with many open decisions"
+
+  shown=$(grep -c '^task-cap-[0-9]* \[key=k[0-9]*\] needs-decision:' "$out")
+  omitted=$(grep -F 'OPEN DECISIONS: ' "$out" | grep -F 'more omitted (byte cap): ')
+  [ -n "$omitted" ] || fail "$n long decisions fit the global budget, so the cap was never exercised: $(cat "$out")"
+  [ "$shown" -lt "$n" ] || fail "every decision printed in full despite the global budget"
+  [ "$(printf '%s\n' "$omitted" | grep -o 'task-cap-[0-9]* \[key=k[0-9]*\]' | wc -l | tr -d ' ')" -eq $((n - shown)) ] \
+    || fail "the omitted line did not name every omitted decision by task and key: $omitted"
+  # Enough omitted names to pass any line cap, so a cut tail would be caught.
+  [ "${#omitted}" -gt 2000 ] || fail "too few omitted names to prove the line is never cut: ${#omitted} chars"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    i=$((i + 1))
+    grep -F "task-cap-$i [key=k$i]" "$out" >/dev/null || fail "open decision task-cap-$i [key=k$i] is not findable in the drain output"
+  done
+  grep -F "OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'" "$out" >/dev/null \
+    || fail "the capped section lost the answerer-closes hint"
+  pass "decisions past the global budget are still named by task and key on the omitted line"
+}
+
 test_buried_decision_still_surfaces
+test_omitted_decisions_stay_named
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it

@@ -466,10 +466,11 @@ EOF
 # lifetime, while still never dropping an old buried decision (see
 # fm-classify-lib.sh's "incremental (cursor-backed) open-decisions fold").
 # Bounded and silent: prints nothing when no decision is open, which is the
-# common case.
+# common case. An item past the global budget is not printed, but the omitted
+# line still names its task and key so no open decision becomes unfindable.
 print_open_decisions_section() {
-  local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
-  local output='' used=0 shown=0 omitted=0 bytes
+  local snapshot=${1:-} open task key verb note line item_bytes=160 global_bytes=2400
+  local output='' used=0 shown=0 omitted=0 bytes omitted_ids='' id
 
   if [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
@@ -491,6 +492,9 @@ print_open_decisions_section() {
     bytes=$(( ${#line} + 1 ))
     if [ $((used + bytes)) -gt "$global_bytes" ]; then
       omitted=$((omitted + 1))
+      id=$task
+      [ "$key" = default ] || id="$id [key=$key]"
+      omitted_ids="${omitted_ids:+$omitted_ids, }$id"
       continue
     fi
     output="$output$line
@@ -505,7 +509,8 @@ EOF
   printf 'OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):\n' || return 1
   printf '%s' "$output" || return 1
   if [ "$omitted" -gt 0 ]; then
-    printf 'OPEN DECISIONS: %d more omitted (byte cap)\n' "$omitted" || return 1
+    # Never capped: a name is short, and a cut name is a decision recovery cannot find.
+    printf 'OPEN DECISIONS: %d more omitted (byte cap): %s\n' "$omitted" "$omitted_ids" || return 1
   fi
   # Answerer-closes hint, printed at exactly the moment an answer gets written:
   # the send that answers a listed decision also closes it, so closure never
