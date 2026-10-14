@@ -668,7 +668,7 @@ glab_merge_line() {
 
 run_pr_merge() {
   local case_dir=$1 rc; shift
-  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_ROOT_OVERRIDE="${FM_TEST_ROOT_OVERRIDE:-$ROOT}" \
   FM_HOME="${FM_TEST_HOME:-$case_dir/home}" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
@@ -747,6 +747,53 @@ test_verified_merge_records_pr_and_head() {
     "records-before-merge: pr_head= was not recorded"
   assert_logged_gh_merge "$case_dir" 9 example/repo --squash
   pass "fm-pr-merge records pr= and pr_head= for a verified GitHub merge"
+}
+
+# A merged change to a Firstmate helper another home runs under a pin is recorded
+# for its declared consumers' review (docs/helper-consumers.md). The code root
+# here is a fixture whose origin is the merged PR's repository, redirected to a
+# local bare repository that already holds the merged helper change.
+test_merged_helper_change_is_recorded_for_its_consumers() {
+  local case_dir rc root bare accepted merged record before
+  case_dir=$(make_case helper-pending)
+  add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
+  root="$case_dir/code-root"
+  fm_git_init_commit "$root"
+  mkdir -p "$root/bin"
+  printf 'echo v1\n' > "$root/bin/helper.sh"
+  git -C "$root" add -A
+  git -C "$root" commit -qm helper-v1
+  bare="$case_dir/origin.git"
+  git clone -q --bare "$root" "$bare"
+  git -C "$root" remote add origin https://github.com/example/repo
+  git -C "$root" config "url.file://$bare.insteadOf" https://github.com/example/repo
+  git clone -q "$bare" "$case_dir/landing"
+  printf 'echo v2\n' > "$case_dir/landing/bin/helper.sh"
+  git -C "$case_dir/landing" commit -qam helper-v2
+  git -C "$case_dir/landing" push -q origin HEAD:main
+  accepted=$(git -C "$root" cat-file blob HEAD:bin/helper.sh | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+  merged=$(git -C "$case_dir/landing" cat-file blob HEAD:bin/helper.sh | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+  mkdir -p "$case_dir/helper-consumers.d"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned' 'owner=other-mate' \
+    "helper=$root/bin/helper.sh" "accept=$accepted" > "$case_dir/helper-consumers.d/pinned.conf"
+  before=$(git -C "$root" rev-parse HEAD)
+
+  set +e
+  FM_TEST_ROOT_OVERRIDE="$root" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
+    FM_HELPER_VERSIONS="$case_dir/helper-versions" \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "helper-pending: fm-pr-merge should succeed"
+  record="$case_dir/helper-versions/helper.sh/$merged"
+  [ -f "$record/pending.json" ] || fail "helper-pending: the merged helper version has no pending record ($(cat "$case_dir/stderr"))"
+  [ -f "$record/helper.sh" ] || fail "helper-pending: the merged helper version has no review artefact"
+  assert_grep "helper-pending: bin/helper.sh version ${merged:0:12} recorded" "$case_dir/stderr" \
+    "helper-pending: the record is reported"
+  assert_equals "$before" "$(git -C "$root" rev-parse HEAD)" "helper-pending: recording moved the code root's checkout"
+  pass "a merged change to a declared helper is recorded for its consumers' review"
 }
 
 # The forge call is the point of no return: once gh-axi has merged, nothing this
@@ -4431,6 +4478,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_github_failed_gh_read_falls_back_to_gh_axi \
   test_gitlab_extra_args_forwarded \
   test_verified_merge_records_pr_and_head \
+  test_merged_helper_change_is_recorded_for_its_consumers \
   test_late_finishing_old_cancellation_is_superseded \
   test_required_checks_reported_and_green_merge \
   test_github_plan_gated_403_reads_as_no_queue \

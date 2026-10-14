@@ -22,6 +22,13 @@
 # THIS ff_target with it as the base, so the guards below stay the only copy of the
 # ancestry rules.
 #
+# A declared helper consumer (docs/helper-consumers.md) can hold any target:
+# before either byte-changing step, ff_helper_gate below asks
+# bin/fm-helper-consumers.sh check-advance whether a helper another home runs
+# under a pin would change to a version that consumer has not accepted, and
+# skips the target with that reason when it would. With no declarations the
+# gate is inert, so every path that moves a checkout keeps its old behavior.
+#
 # A linked-worktree secondmate home already holds the primary's commit in the
 # shared object store, so its local-HEAD sync is a purely local fast-forward that
 # never touches the network. A local standalone clone moves through that path
@@ -44,6 +51,7 @@
 # its checked-out default branch under the same guard.
 
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
+FF_HELPER_CONSUMERS_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-helper-consumers.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
 
@@ -373,6 +381,11 @@ live_secondmate_meta_records() {
 # caller:
 #   FF_STATUS = updated|current|skipped
 #   FF_INSTR  = comma list of changed instruction paths (only when updated)
+#   FF_HELD   = "<helper>@<sha12> awaiting <consumer>,..." entries joined by
+#               "; ", only when the helper gate held this target
+#   FF_BASE_COMMIT = the resolved base commit, once it could be read
+# The caller may set FF_HELPER_ALLOW_BREAK to a space list of consumer ids that
+# the captain explicitly let deploy an unaccepted helper version.
 #
 # base_mode selects where the fast-forward base comes from:
 #   origin       - fetch origin and advance to origin/$FF_GREEN_POINTER, or to
@@ -390,6 +403,53 @@ live_secondmate_meta_records() {
 # in this file's header.
 FF_STATUS=""
 FF_INSTR=""
+FF_HELD=""
+FF_BASE_COMMIT=""
+FF_HELPER_ALLOW_BREAK=""
+FF_HELPER_NOTES=""
+# Run the helper-consumer gate for one target about to move to <base-rev>.
+# Returns 1 after printing the target's held status line; otherwise 0, leaving
+# in FF_HELPER_NOTES the lines to print once the target has advanced. Any check
+# failure holds, because a gate that cannot read its declarations cannot prove
+# the advance is safe. Reads ff_target's locals through ff_report.
+ff_helper_gate() {  # <dir> <base-rev>
+  local out rc=0 kind a b c held="" c12
+  local -a args=()
+  FF_HELPER_NOTES=""
+  [ -x "$FF_HELPER_CONSUMERS_BIN" ] || return 0
+  for c in $FF_HELPER_ALLOW_BREAK; do args+=(--allow-break "$c"); done
+  out=$("$FF_HELPER_CONSUMERS_BIN" check-advance ${args[@]+"${args[@]}"} "$1" "$2" 2>&1) || rc=$?
+  case "$rc" in
+    0|3) ;;
+    *)
+      FF_HELD="helper consumer check failed"
+      ff_report "skipped: helper consumer check failed: $(first_line "$out")"
+      return 1
+      ;;
+  esac
+  while IFS=$'\t' read -r kind a b c; do
+    c12=$(printf '%s' "$b" | cut -c1-12)
+    case "$kind" in
+      hold)
+        held="$held${held:+; }helper $a version $c12 not yet accepted by $c"
+        FF_HELD="$FF_HELD${FF_HELD:+; }$a@$c12 awaiting $c"
+        ;;
+      break) FF_HELPER_NOTES="$FF_HELPER_NOTES${FF_HELPER_NOTES:+$'\n'}helper-consumers: $label: helper $a version $c12 deployed unaccepted by $c (--allow-helper-break)" ;;
+      waiting) FF_HELPER_NOTES="$FF_HELPER_NOTES${FF_HELPER_NOTES:+$'\n'}helper-consumers: $label: helper $a version $c12 deployed while $c already waits (accepts neither the old nor the new version)" ;;
+      unproven)
+        held="$held${held:+; }helper $a version $c12 would change while declaration $c is malformed or unreadable"
+        FF_HELD="$FF_HELD${FF_HELD:+; }$a@$c12 awaiting malformed declaration $c"
+        ;;
+      malformed) FF_HELPER_NOTES="$FF_HELPER_NOTES${FF_HELPER_NOTES:+$'\n'}helper-consumers: malformed declaration $a: $b (accepts nothing)" ;;
+    esac
+  done <<< "$out"
+  if [ "$rc" = 3 ]; then
+    [ -n "$held" ] || { held="helper consumer check held without naming a helper"; FF_HELD=$held; }
+    ff_report "skipped: $held"
+    return 1
+  fi
+  return 0
+}
 # Print ff_target's one status line for its target, carrying the origin-mode
 # fallback note when the remote has no green pointer. Reads ff_target's locals.
 ff_report() {
@@ -400,6 +460,9 @@ ff_target() {
   local secondmate_id=${6:-} reconciliation_state=${7:-}
   FF_STATUS="skipped"
   FF_INSTR=""
+  FF_HELD=""
+  FF_BASE_COMMIT=""
+  FF_HELPER_NOTES=""
 
   if [ ! -d "$dir" ]; then
     echo "$label: skipped: not a directory"
@@ -465,6 +528,8 @@ ff_target() {
     ff_report "skipped: cannot read $base"
     return 0
   }
+  # shellcheck disable=SC2034 # read by bin/fm-update.sh
+  FF_BASE_COMMIT=$base_rev
   if [ "$local_rev" = "$base_rev" ]; then
     FF_STATUS="current"
     [ -z "$reconciliation_state" ] || secondmate_update_reconcile_clear "$reconciliation_state" "$secondmate_id" || true
@@ -482,6 +547,7 @@ ff_target() {
     fi
     if [ -n "$secondmate_id" ] && [ -n "$reconciliation_state" ] \
       && divergence_is_redundant "$dir" "$local_rev" "$base_rev"; then
+      ff_helper_gate "$dir" "$base_rev" || return 0
       instr=$(changed_instr "$dir" "$base")
       before=$(git -C "$dir" rev-parse --short HEAD)
       if git -C "$dir" reset --keep "$base" >/dev/null 2>&1; then
@@ -494,6 +560,7 @@ ff_target() {
         else
           ff_report "reconciled redundant divergence $before..$after"
         fi
+        [ -z "$FF_HELPER_NOTES" ] || printf '%s\n' "$FF_HELPER_NOTES"
         return 0
       fi
       ff_report "skipped: redundant divergence could not be reconciled with reset --keep"
@@ -512,6 +579,7 @@ ff_target() {
     return 0
   fi
 
+  ff_helper_gate "$dir" "$base_rev" || return 0
   instr=$(changed_instr "$dir" "$base")
   before=$(git -C "$dir" rev-parse --short HEAD)
   if ! out=$(git -C "$dir" merge --ff-only "$base" 2>&1); then
@@ -527,6 +595,7 @@ ff_target() {
   else
     ff_report "updated $before..$after"
   fi
+  [ -z "$FF_HELPER_NOTES" ] || printf '%s\n' "$FF_HELPER_NOTES"
   return 0
 }
 

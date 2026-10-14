@@ -4,6 +4,7 @@ On WSL the Linux root filesystem lives in a non-sparse `ext4.vhdx` file on the W
 `df /` reports the virtual disk's own size (1 TiB by default), so it overstates room, and space Linux frees stays allocated on the Windows drive until the file is compacted while WSL is not running.
 This page covers the real-room monitor that reads the situation correctly and the one-time Windows install that returns freed space, at Windows start while its optional startup task is enabled and on demand through the reclaim-now step.
 The agent procedure is the `disk-room` skill; `bin/fm-disk-room.sh` and `bin/fm-wsl-reclaim.ps1` own their exact commands in their headers.
+A home that runs `bin/fm-disk-room.sh` under a pin declares itself as described in [`helper-consumers.md`](helper-consumers.md), so a Firstmate update waits for it to accept a new version.
 
 ## Real room
 

@@ -456,6 +456,9 @@ test_firstmate_verification_block_verifies_on_github() {
   assert_contains "$block" "bin/fm-lean-review.sh --intent-file" "the section does not run the lean pre-push review"
   assert_contains "$block" "Lean-Review:" "the section does not name the lean-review receipt"
   assert_not_contains "$block" "--force" "the section mentions a force push"
+  block=$(fm_firstmate_verification_block fm-task /fixture/home)
+  assert_contains "$block" "FM_HOME='/fixture/home' bin/fm-helper-consumers.sh pending HEAD" \
+    "the section does not record a landed helper change for its declared consumers"
   pass "the Firstmate verification section lands only a head whose CI branch run passed"
 }
 

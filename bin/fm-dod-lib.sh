@@ -655,8 +655,12 @@ fm_dod_project_is_firstmate_repo() {  # <project-dir> <fm-root>
 # Its CI runs on ci/** pushes (.github/workflows/ci.yml), and homes follow the
 # green pointer that main's passing CI advances (bin/fm-green-pointer.sh), so
 # a landed commit reaches no home until main's CI has passed on it.
-fm_firstmate_verification_block() {  # <task-id>
-  local ci_branch="ci/$1"
+# Its helper-consumer line runs bin/fm-helper-consumers.sh pending right after a
+# landing, against the supervising home (the caller's FM_HOME, or the optional
+# second argument) so the note reaches that home's root.
+fm_firstmate_verification_block() {  # <task-id> [<fm-home>]
+  local ci_branch="ci/$1" home=${2:-${FM_HOME:-}} pending_env=""
+  [ -z "$home" ] || pending_env="FM_HOME='$home' "
   cat <<EOF
 # Firstmate repository verification
 This task changes Firstmate's own repository, whose suite runs on GitHub rather than on this machine.
@@ -670,6 +674,7 @@ This section supersedes the Definition of done wherever it says to run the proje
 - To stop at ready, or to refresh a ready branch, push to your task branch only a head whose $ci_branch run passed.
 - After landing, wait on the default branch's own checks exactly as the Definition of done says. Running homes follow the \`green\` branch, which advances to your commit only once that main run passes, so a red main reaches no home; still fix it forward or revert it at once as the Definition of done says.
 - Once landed, also delete your CI branch: \`git push origin --delete $ci_branch\`.
+- Right after a landing push succeeds, run \`${pending_env}bin/fm-helper-consumers.sh pending HEAD\` from this worktree. It records any Firstmate helper version another home runs under a pin that its consumers have not accepted yet and notes it for their review (\`docs/helper-consumers.md\`); it is quiet when nothing is declared, and its output never changes whether the task landed.
 EOF
 }
 

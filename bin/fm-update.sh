@@ -64,7 +64,27 @@
 # fm-procevent-when.sh rebind-all to republish those bindings against the new
 # bytes; a failure there is swallowed rather than failing the update.
 #
-# Usage: fm-update.sh [--help]
+# A helper another home runs under a pin is held by its declared consumers
+# (docs/helper-consumers.md): when the primary's advance would deploy a helper
+# version some consumer has not accepted, bin/fm-ff-lib.sh skips it, and this
+# script then holds the WHOLE pass - no secondmate moves either, so every home
+# stays on one version - and prints
+#   held-for-helper: <helper>@<sha12> awaiting <consumer>,...[; ...]
+# (`awaiting malformed declaration <name>,...` when a declaration file is
+# malformed or unreadable) before the three action lines, which then all report
+# nothing to do. --allow-helper-break <consumer> (repeatable, also a malformed
+# declaration's file name without .conf) carries the captain's explicit
+# "update anyway" for that consumer: the pass proceeds, and each target that
+# deploys the unaccepted version prints a `helper-consumers:` line recording
+# the override. The override stays on this machine: a remote secondmate's
+# update checks that machine's own declarations without it, so a held remote
+# home reports its hold and converges once its own consumer accepts. After its fetch, the pass also runs
+# `bin/fm-helper-consumers.sh pending` on the sync target, so a helper version
+# no consumer has accepted yet is recorded and noted even when nothing else
+# noticed its landing; its `helper-pending:` lines are reported as they come.
+# With no declarations none of this prints anything.
+#
+# Usage: fm-update.sh [--allow-helper-break <consumer>]... [--help]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,13 +99,25 @@ SECONDMATES_MD="$FM_HOME/data/secondmates.md"
 
 "$SCRIPT_DIR/fm-guard.sh" || true
 
-usage() { echo "usage: fm-update.sh [--help]" >&2; }
+usage() { echo "usage: fm-update.sh [--allow-helper-break <consumer>]... [--help]" >&2; }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
 fi
-[ $# -eq 0 ] || { usage; exit 1; }
+FF_HELPER_ALLOW_BREAK=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --allow-helper-break)
+      case "${2:-}" in
+        ''|.*|*[!A-Za-z0-9._-]*) usage; exit 1 ;;
+      esac
+      FF_HELPER_ALLOW_BREAK="$FF_HELPER_ALLOW_BREAK $2"
+      shift 2
+      ;;
+    *) usage; exit 1 ;;
+  esac
+done
 
 # --- main firstmate repo ---------------------------------------------------
 
@@ -104,6 +136,21 @@ if [ "$FF_STATUS" = "updated" ]; then
   # always where this very script file happens to live (FM_ROOT_OVERRIDE, as
   # this test suite uses to point fm-update.sh at a fixture checkout).
   FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" "$SCRIPT_DIR/fm-procevent-when.sh" rebind-all || true
+fi
+
+# Record any declared helper version at the sync target that a consumer has not
+# accepted yet; the header owns why this runs here, after the fetch.
+if [ -n "$FF_BASE_COMMIT" ]; then
+  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-helper-consumers.sh" pending --repo "$FM_ROOT" "$FF_BASE_COMMIT" || true
+fi
+
+# A held primary holds the whole pass (see the header).
+if [ -n "$FF_HELD" ]; then
+  echo "held-for-helper: $FF_HELD"
+  echo "reread-firstmate: no"
+  echo "restart-secondmates: none"
+  echo "nudge-secondmates: none"
+  exit 0
 fi
 
 # --- secondmates -----------------------------------------------------------

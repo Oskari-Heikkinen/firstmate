@@ -49,6 +49,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
    `restart-secondmates:` carries every live mate the pass left on the latest commit, whether it advanced or was already there.
    A mate reaches neither set only because its home was skipped, because it has no live endpoint recorded here, or because its endpoint was positively classified as dead or missing.
    A skipped genuine divergence still requires attention through its durable reconciliation record; the other two cases need no update action from you.
+   When it also printed `held-for-helper: <helper>@<version> awaiting <consumer>...`, nothing moved because a home that runs that helper under a pin has not accepted the new version yet, or its declaration is malformed (`awaiting malformed declaration <name>`) and must be fixed first ([`docs/helper-consumers.md`](../../../docs/helper-consumers.md)); relay it to the captain as a plain choice - wait for that consumer's review (typically about an hour), or update now and that consumer's work waits until it accepts - and rerun with `--allow-helper-break <consumer>` only on the captain's explicit word to update anyway.
 
 2. **Re-read AGENTS.md if your own instructions changed.**
    When the updater printed `reread-firstmate: yes`, the tracked instruction surface (`AGENTS.md`, `bin/`, or `.agents/skills/`) just advanced under you.

@@ -381,6 +381,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/helper-consumers.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/captain-hold-lifecycle.md",
       "audience": "maintainer-architecture"
     },

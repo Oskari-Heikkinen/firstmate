@@ -617,6 +617,154 @@ test_missing_green_pointer_falls_back_to_main() {
   pass "a remote without the green pointer falls back to origin/main and says so"
 }
 
+# --- Helper consumers: a pinned helper deploys only once its consumers accept it -
+# docs/helper-consumers.md owns the rule. The fixture's consumer runs the
+# primary's bin/tool.sh, which bump_origin instr changes from "echo a" to "echo b".
+sha_of() { printf '%s' "$1" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}'; }
+
+# declare_consumer <w> <id> <helper> [<accepted-sha>...]
+declare_consumer() {
+  local w=$1 id=$2 helper=$3 sha
+  shift 3
+  mkdir -p "$w/helper-consumers.d"
+  {
+    printf '%s\n' 'schema=fm-helper-consumer/v1' "consumer=$id" 'owner=other-mate' "helper=$helper"
+    for sha in "$@"; do printf 'accept=%s\n' "$sha"; done
+  } > "$w/helper-consumers.d/$id.conf"
+}
+
+run_update_helpers() {
+  local w=$1
+  shift
+  PATH="$w/fakebin:$PATH" FM_FAKE_DIR="$w/fake" \
+    FM_HELPER_CONSUMERS="$w/helper-consumers.d" FM_HELPER_VERSIONS="$w/helper-versions" \
+    FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" "$@" 2>/dev/null
+}
+
+test_helper_no_declarations_is_unchanged() {
+  local w out
+  w=$(new_world helper-none)
+  add_sm "$w" sm1
+  mkdir -p "$w/helper-consumers.d"
+  bump_origin "$w" instr
+
+  out=$(run_update_helpers "$w")
+
+  assert_contains "$out" "firstmate: updated " "an empty declaration directory leaves the primary update as before"
+  assert_contains "$out" "secondmate sm1: updated " "an empty declaration directory leaves the secondmate update as before"
+  assert_contains "$out" "restart-secondmates: fm-sm1" "an empty declaration directory keeps the restart set"
+  assert_not_contains "$out" "held-for-helper" "nothing is held without declarations"
+  assert_not_contains "$out" "helper-" "nothing helper-related prints without declarations"
+  [ ! -e "$w/helper-versions" ] || fail "a pending record was written without declarations"
+  pass "with no helper consumer declarations the update behaves exactly as before"
+}
+
+test_helper_accepted_target_advances() {
+  local w out
+  w=$(new_world helper-accepted)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')" "$(sha_of $'echo b\n')"
+  bump_origin "$w" instr
+
+  out=$(run_update_helpers "$w")
+
+  assert_contains "$out" "firstmate: updated " "a target every consumer accepts advances"
+  assert_not_contains "$out" "held-for-helper" "an accepted target is not held"
+  assert_not_contains "$out" "helper-pending" "an accepted version needs no pending record"
+  assert_equals "$(git -C "$w/main" rev-parse origin/main)" "$(git -C "$w/main" rev-parse HEAD)" \
+    "the primary reached the accepted target"
+  pass "a helper version its consumer accepts deploys normally"
+}
+
+test_helper_unaccepted_target_holds_the_whole_pass() {
+  local w out before sm_before record
+  w=$(new_world helper-held)
+  add_sm "$w" sm1
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  before=$(git -C "$w/main" rev-parse HEAD)
+  sm_before=$(git -C "$w/sm1" rev-parse HEAD)
+
+  out=$(run_update_helpers "$w")
+
+  assert_contains "$out" "firstmate: skipped: helper $w/main/bin/tool.sh version " "the primary is skipped naming the helper"
+  assert_contains "$out" "not yet accepted by pinned" "the skip names the consumer"
+  assert_contains "$out" "held-for-helper: $w/main/bin/tool.sh@" "the pass reports the hold"
+  assert_contains "$out" "awaiting pinned" "the hold line names the consumer"
+  assert_not_contains "$out" "secondmate sm1:" "a held pass moves no secondmate"
+  assert_contains "$out" "reread-firstmate: no" "a held pass asks for no reread"
+  assert_contains "$out" "restart-secondmates: none" "a held pass restarts no secondmate"
+  assert_contains "$out" "nudge-secondmates: none" "a held pass nudges no secondmate"
+  assert_equals "$before" "$(git -C "$w/main" rev-parse HEAD)" "the held primary did not move"
+  assert_equals "$sm_before" "$(git -C "$w/sm1" rev-parse HEAD)" "the secondmate did not move"
+  record="$w/helper-versions/tool.sh/$(sha_of $'echo b\n')"
+  [ -f "$record/pending.json" ] || fail "the held version has no pending record"
+  [ -f "$record/tool.sh" ] && [ ! -w "$record/tool.sh" ] || fail "the review artefact is missing or writable"
+  assert_contains "$out" "helper-pending: bin/tool.sh version " "the pending record is reported"
+  pass "an unaccepted helper version holds the whole update pass and is recorded for review"
+}
+
+test_helper_allow_break_advances_and_records() {
+  local w out
+  w=$(new_world helper-break)
+  add_sm "$w" sm1
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+
+  out=$(run_update_helpers "$w" --allow-helper-break pinned)
+
+  assert_contains "$out" "firstmate: updated " "the captain's override lets the primary advance"
+  assert_contains "$out" "secondmate sm1: updated " "the override lets the pass continue to secondmates"
+  assert_contains "$out" "helper-consumers: firstmate: helper $w/main/bin/tool.sh version " "the override is recorded"
+  assert_contains "$out" "deployed unaccepted by pinned (--allow-helper-break)" "the record names the consumer and the override"
+  assert_not_contains "$out" "held-for-helper" "an overridden pass is not held"
+  pass "--allow-helper-break deploys the unaccepted version and records the override"
+}
+
+test_helper_consumer_already_waiting_advances_and_reports() {
+  local w out
+  w=$(new_world helper-waiting)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of 'an older version')"
+  bump_origin "$w" instr
+
+  out=$(run_update_helpers "$w")
+
+  assert_contains "$out" "firstmate: updated " "holding cannot help a consumer that already waits"
+  assert_contains "$out" "deployed while pinned already waits" "the advance reports the waiting consumer"
+  assert_not_contains "$out" "held-for-helper" "a consumer that already waits does not hold the pass"
+  pass "a consumer already waiting does not hold the update and is reported"
+}
+
+# The redundant-divergence path moves bytes with reset --keep rather than a
+# fast-forward, so the gate must hold it too.
+test_helper_gate_holds_redundant_divergence_reconcile() {
+  local w branch_base local_tip out
+  w=$(new_world helper-reconcile)
+  add_sm "$w" sm1
+  branch_base=$(git -C "$w/sm1" rev-parse HEAD)
+  printf 'v2\n' > "$w/sm1/AGENTS.md"
+  git -C "$w/sm1" commit -qam local-instructions
+  local_tip=$(git -C "$w/sm1" rev-parse HEAD)
+  git -C "$w/sm1" diff "$branch_base" "$local_tip" | git -C "$w/seed" apply
+  printf 'echo b\n' > "$w/seed/bin/tool.sh"
+  git -C "$w/seed" add -A
+  git -C "$w/seed" commit -qm squash-local-contribution-and-helper-change
+  git -C "$w/seed" push -q origin main
+  declare_consumer "$w" pinned "$w/sm1/bin/tool.sh" "$(sha_of $'echo a\n')"
+
+  out=$(run_update_helpers "$w")
+
+  assert_contains "$out" "firstmate: updated " "the primary, which runs no declared helper, still advances"
+  assert_contains "$out" "secondmate sm1: skipped: helper $w/sm1/bin/tool.sh version " \
+    "a redundant divergence that would deploy an unaccepted helper is held"
+  assert_not_contains "$out" "reconciled redundant divergence" "the held home was reconciled anyway"
+  assert_equals "$local_tip" "$(git -C "$w/sm1" rev-parse HEAD)" "the held home moved"
+
+  declare_consumer "$w" pinned "$w/sm1/bin/tool.sh" "$(sha_of $'echo a\n')" "$(sha_of $'echo b\n')"
+  out=$(run_update_helpers "$w")
+  assert_contains "$out" "secondmate sm1: reconciled redundant divergence" "once accepted, the home reconciles as before"
+  pass "the helper gate also holds the redundant-divergence reconcile"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_follows_green_pointer_not_main
@@ -636,5 +784,11 @@ test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
 test_primary_update_rebinds_local_watch
+test_helper_no_declarations_is_unchanged
+test_helper_accepted_target_advances
+test_helper_unaccepted_target_holds_the_whole_pass
+test_helper_allow_break_advances_and_records
+test_helper_consumer_already_waiting_advances_and_reports
+test_helper_gate_holds_redundant_divergence_reconcile
 
 echo "# all fm-update tests passed"

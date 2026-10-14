@@ -1788,3 +1788,10 @@ case "$outcome_rc" in
     printf 'actionable: merged %s but could not record the outcome for supervision\n' "$URL" >&2
     ;;
 esac
+
+# A merged change to a Firstmate helper another home runs under a pin is
+# recorded for its declared consumers' review before any home deploys it
+# (docs/helper-consumers.md); the call is quiet for any other repository and
+# when nothing is declared, and the merge has landed whatever it reports.
+FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-helper-consumers.sh" pending --repo "$FM_ROOT" \
+  --if-repo "$PR_HOST/$PR_PATH" --fetch >&2 || true

@@ -179,6 +179,105 @@ test_ff_current() {
   pass "T2 current: an already-current home is a no-op and reports no instruction change"
 }
 
+# --- T2b: a declared helper in a home is not advanced to an unaccepted version -
+# A consumer that runs <home>/bin/tool.sh under a pin and accepts only its
+# current bytes holds the home in place (docs/helper-consumers.md).
+test_ff_holds_unaccepted_declared_helper() {
+  local w c1 base accepted decl
+  w=$(new_world ff-helper-hold)
+  c1=$(head_of "$w/main")
+  git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
+  bump_primary "$w" instr
+  base=$(primary_head_commit "$w/main")
+  accepted=$(git -C "$w/sm" cat-file blob HEAD:bin/tool.sh | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+  decl="$w/helper-consumers.d"
+  mkdir -p "$decl"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned-svc' 'owner=other-mate' \
+    "helper=$w/sm/bin/tool.sh" "accept=$accepted" > "$decl/pinned-svc.conf"
+
+  export FM_HELPER_CONSUMERS="$decl"
+  run_ff "$w/sm" "$base"
+  unset FM_HELPER_CONSUMERS
+
+  [ "$FF_STATUS" = skipped ] || fail "FF_STATUS: expected skipped, got '$FF_STATUS'"
+  assert_contains "$FF_OUT" "secondmate sm: skipped: helper $w/sm/bin/tool.sh version " \
+    "a held home names the helper it is waiting on"
+  assert_contains "$FF_OUT" "not yet accepted by pinned-svc" "a held home names the consumer"
+  assert_contains "$FF_HELD" "awaiting pinned-svc" "the hold is published to the caller"
+  [ "$(head_of "$w/sm")" = "$c1" ] || fail "a held home was advanced to an unaccepted helper version"
+
+  run_ff "$w/sm" "$base"
+  [ "$FF_STATUS" = updated ] || fail "without the declaration the same home must advance as before, got '$FF_STATUS'"
+  pass "T2b a declared helper in a secondmate home is not advanced to an unaccepted version"
+}
+
+# --- T2b2: a malformed declaration holds the helper it names ----------------
+# A declaration with a typo cannot prove what its consumer accepts, so the home
+# stays put until the file is fixed or the override names it.
+test_ff_holds_helper_named_by_malformed_declaration() {
+  local w c1 base decl
+  w=$(new_world ff-helper-malformed)
+  c1=$(head_of "$w/main")
+  git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
+  bump_primary "$w" instr
+  base=$(primary_head_commit "$w/main")
+  decl="$w/helper-consumers.d"
+  mkdir -p "$decl"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned-svc' 'owner=other-mate' \
+    "helper=$w/sm/bin/tool.sh" 'acept=typo' > "$decl/pinned-svc.conf"
+
+  export FM_HELPER_CONSUMERS="$decl"
+  run_ff "$w/sm" "$base"
+  [ "$FF_STATUS" = skipped ] || fail "FF_STATUS: expected skipped, got '$FF_STATUS'"
+  assert_contains "$FF_OUT" "secondmate sm: skipped: helper $w/sm/bin/tool.sh version " \
+    "a home held by a malformed declaration names the helper"
+  assert_contains "$FF_OUT" "while declaration pinned-svc is malformed or unreadable" \
+    "a home held by a malformed declaration names the file"
+  assert_contains "$FF_HELD" "awaiting malformed declaration pinned-svc" "the hold is published to the caller"
+  [ "$(head_of "$w/sm")" = "$c1" ] || fail "a home was advanced past a malformed declaration"
+
+  FF_HELPER_ALLOW_BREAK=" pinned-svc"
+  run_ff "$w/sm" "$base"
+  FF_HELPER_ALLOW_BREAK=""
+  unset FM_HELPER_CONSUMERS
+  [ "$FF_STATUS" = updated ] || fail "the override naming the malformed declaration must release it, got '$FF_STATUS'"
+  pass "T2b2 a malformed declaration holds the helper it names until the override names it"
+}
+
+# --- T2c: a helper check that cannot complete holds rather than advancing ----
+# With hashing unavailable, check-advance cannot prove the advance is accepted.
+test_ff_holds_when_helper_check_fails() {
+  local w c1 base decl fakebin
+  w=$(new_world ff-helper-check-fails)
+  c1=$(head_of "$w/main")
+  git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
+  bump_primary "$w" instr
+  base=$(primary_head_commit "$w/main")
+  decl="$w/helper-consumers.d"
+  mkdir -p "$decl"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned-svc' 'owner=other-mate' \
+    "helper=$w/sm/bin/tool.sh" > "$decl/pinned-svc.conf"
+  fakebin="$w/no-hash-bin"
+  mkdir -p "$fakebin"
+  printf '#!/bin/sh\nexit 1\n' > "$fakebin/sha256sum"
+  cp "$fakebin/sha256sum" "$fakebin/shasum"
+  chmod +x "$fakebin/sha256sum" "$fakebin/shasum"
+
+  local saved_path=$PATH
+  export FM_HELPER_CONSUMERS="$decl"
+  export PATH="$fakebin:$PATH"
+  run_ff "$w/sm" "$base"
+  export PATH="$saved_path"
+  unset FM_HELPER_CONSUMERS
+
+  [ "$FF_STATUS" = skipped ] || fail "FF_STATUS: expected skipped, got '$FF_STATUS'"
+  assert_contains "$FF_OUT" "secondmate sm: skipped: helper consumer check failed: " \
+    "a failed helper check is reported as the reason"
+  assert_contains "$FF_HELD" "helper consumer check failed" "a failed helper check is published as a hold"
+  [ "$(head_of "$w/sm")" = "$c1" ] || fail "a home was advanced although its helper check failed"
+  pass "T2c a helper consumer check that cannot complete holds the home"
+}
+
 # --- T3: dirty - a home with uncommitted edits is skipped, edit preserved ----
 test_ff_dirty() {
   local w c1 base before
@@ -1343,6 +1442,9 @@ test_remote_launch_does_not_retarget_host_copy() {
 
 test_ff_updated
 test_ff_current
+test_ff_holds_unaccepted_declared_helper
+test_ff_holds_helper_named_by_malformed_declaration
+test_ff_holds_when_helper_check_fails
 test_ff_dirty
 test_scratchpad2_does_not_dirty_home
 test_ff_diverged

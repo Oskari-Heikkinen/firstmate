@@ -586,6 +586,10 @@ The watch reads `result.sh` when it is executable and parses `queue.log` otherwi
 
 See [`fleet-ledger.md`](fleet-ledger.md) for the opt-in setup, record contract, and limits.
 
+## Helper consumers (helper-consumers.d)
+
+See [`helper-consumers.md`](helper-consumers.md) for the machine-level declarations through which a service that runs a Firstmate helper under a pin makes updates wait for its acceptance.
+
 ## Waiting worker spends no turns (config/wait-no-turns)
 
 The optional local, gitignored `config/wait-no-turns` presence flag opts this home into keeping a waiting worker from spending turns until it is answered.
