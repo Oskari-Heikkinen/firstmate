@@ -285,6 +285,7 @@ live tests/fm-launch-prompt-signals-live-e2e.test.sh
 live tests/fm-muse-signals-live-e2e.test.sh
 live tests/fm-nested-home-context-live-e2e.test.sh
 live tests/fm-omp-primary-live-e2e.test.sh
+live tests/fm-opencode-abs-cwd-rail-live-e2e.test.sh
 live tests/fm-opencode-primary-live-e2e.test.sh
 live tests/fm-pi-branch-live-e2e.test.sh
 live tests/fm-pi-codex-native.test.sh
