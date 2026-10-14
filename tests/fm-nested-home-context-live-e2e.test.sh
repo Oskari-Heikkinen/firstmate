@@ -3,6 +3,8 @@
 # carry that home's instruction files into the installed harness's first model
 # request, while the project's own files and a home-cwd session's contract
 # still load.
+# A ship or scout worktree of Firstmate's own repository must likewise not carry
+# that worktree's own root contract.
 #
 # It spends no model tokens. Each harness is pointed at a local server that
 # records the request body and answers with an error, so the assertion reads
@@ -84,6 +86,21 @@ fm_git_add_origin "$PROJ_DIR" "$PROJ_DIR.origin.git"
 mkdir -p "$(dirname "$NESTED_WT")" "$(dirname "$OUTSIDE_WT")"
 git -C "$PROJ_DIR" worktree add --quiet -b wt-nested "$NESTED_WT"
 git -C "$PROJ_DIR" worktree add --quiet -b wt-outside "$OUTSIDE_WT"
+# A worktree of Firstmate's own repository: the fixture code root runs this
+# checkout's bin/ through a symlink, so fm-spawn sees the worktree as a checkout
+# of its own repository, and the root AGENTS.md stands in for its contract.
+FM_CODE_ROOT="$TMP_ROOT/firstmate"
+FM_WT="$TMP_ROOT/pool/2/firstmate"
+fm_git_init_commit "$FM_CODE_ROOT"
+ln -s "$ROOT/bin" "$FM_CODE_ROOT/bin"
+mkdir -p "$FM_CODE_ROOT/.agents"
+ln -s "$ROOT/.agents/skills" "$FM_CODE_ROOT/.agents/skills"
+printf '@AGENTS.md\n' > "$FM_CODE_ROOT/CLAUDE.md"
+printf 'HOME_CONTRACT_MARKER firstmate supervisor contract\n' > "$FM_CODE_ROOT/AGENTS.md"
+git -C "$FM_CODE_ROOT" add -A && git -C "$FM_CODE_ROOT" -c user.name=t -c user.email=t@t commit -qm firstmate
+fm_git_add_origin "$FM_CODE_ROOT" "$FM_CODE_ROOT.origin.git"
+mkdir -p "$(dirname "$FM_WT")"
+git -C "$FM_CODE_ROOT" worktree add --quiet -b wt-firstmate "$FM_WT"
 FAKEBIN_DIR=$(fm_test_make_spawn_fakebin "$TMP_ROOT/fake")
 
 # spawn_nested <id> <harness> writes the brief, runs the real fm-spawn against
@@ -96,6 +113,18 @@ spawn_nested() {
   out=$(FM_FAKE_LAUNCH_LOG="$log" PATH="$FAKEBIN_DIR:$PATH" fm_test_run_spawn "$HOME_DIR" "$NESTED_WT" "$FAKEBIN_DIR" \
     "$id" "$PROJ_DIR" --harness "$harness" --mode no-mistakes --yolo off) \
     || fail "fm-spawn $harness nested launch failed: $out"
+  cat "$log"
+}
+
+# spawn_firstmate <id> <harness> does the same for the Firstmate-repo worktree.
+spawn_firstmate() {
+  local id=$1 harness=$2 log="$TMP_ROOT/$1.launch" out
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  printf '%s\n' "$harness" > "$HOME_DIR/config/crew-harness"
+  : > "$log"
+  out=$(FM_FAKE_LAUNCH_LOG="$log" PATH="$FAKEBIN_DIR:$PATH" ROOT=$FM_CODE_ROOT fm_test_run_spawn "$HOME_DIR" "$FM_WT" "$FAKEBIN_DIR" \
+    "$id" "$FM_CODE_ROOT" --harness "$harness" --mode direct-push --yolo off) \
+    || fail "fm-spawn $harness Firstmate-repo launch failed: $out"
   cat "$log"
 }
 
@@ -142,9 +171,9 @@ run_claude() {
   version=$(claude --version 2>/dev/null | head -n 1)
   CLAUDE_CAPTURE_CONFIG_DIR="$TMP_ROOT/claude-config"
   mkdir -p "$CLAUDE_CAPTURE_CONFIG_DIR"
-  jq -n --arg p "$(cd "$PROJ_DIR" && pwd -P)" --arg n "$(cd "$NESTED_WT" && pwd -P)" --arg h "$(cd "$HOME_DIR" && pwd -P)" '
+  jq -n --arg p "$(cd "$PROJ_DIR" && pwd -P)" --arg n "$(cd "$NESTED_WT" && pwd -P)" --arg h "$(cd "$HOME_DIR" && pwd -P)" --arg f "$(cd "$FM_WT" && pwd -P)" '
     {hasTrustDialogAccepted: true, hasClaudeMdExternalIncludesApproved: true, hasClaudeMdExternalIncludesWarningShown: true} as $e
-    | {projects: {($p): $e, ($n): $e, ($h): $e}}' > "$CLAUDE_CAPTURE_CONFIG_DIR/.claude.json"
+    | {projects: {($p): $e, ($n): $e, ($h): $e, ($f): $e}}' > "$CLAUDE_CAPTURE_CONFIG_DIR/.claude.json"
   launch=$(spawn_nested live-claude-nested claude)
   settings=$(printf '%s\n' "$launch" | sed -n "s/.* --settings '\([^']*\)'.*/\1/p" | head -n 1)
   printf '%s' "$settings" | jq -e '.claudeMdExcludes | length > 0' >/dev/null \
@@ -166,6 +195,13 @@ run_claude() {
   body=$(capture claude-home "$HOME_DIR" bash -c 'claude_run "$@"' _)
   expect_markers "claude $version session whose cwd is the home" "$body" yes no
   pass "claude $version: a nested worker's first request drops the home contract, keeps the project's, and a home session keeps its own"
+  launch=$(spawn_firstmate live-claude-firstmate claude)
+  settings=$(printf '%s\n' "$launch" | sed -n "s/.* --settings '\([^']*\)'.*/\1/p" | head -n 1)
+  body=$(capture claude-firstmate-baseline "$FM_WT" bash -c 'claude_run "$@"' _)
+  expect_markers "claude $version Firstmate-repo worktree without the spawn settings" "$body" yes no
+  body=$(capture claude-firstmate-spawn "$FM_WT" bash -c 'claude_run "$@"' _ --settings "$settings")
+  expect_markers "claude $version Firstmate-repo worktree with the spawn settings" "$body" no no
+  pass "claude $version: a Firstmate-repo worker's first request drops its worktree's own contract"
   CHECKED=$((CHECKED + 1))
 }
 
@@ -194,6 +230,14 @@ run_pi() {
   body=$(capture pi-home "$HOME_DIR" bash -c 'pi_run "$@"' _)
   expect_markers "pi $version session whose cwd is the home" "$body" yes no
   pass "pi $version: a nested worker's first request drops the home contract, keeps the project's, and a home session keeps its own"
+  spawn_firstmate live-pi-firstmate pi >/dev/null
+  ext="$HOME_DIR/state/live-pi-firstmate.pi-ext.ts"
+  [ -f "$ext" ] || fail "pi $version: fm-spawn wrote no per-task extension for the Firstmate-repo worktree"
+  body=$(capture pi-firstmate-baseline "$FM_WT" bash -c 'pi_run "$@"' _)
+  expect_markers "pi $version Firstmate-repo worktree without the spawn extension" "$body" yes no
+  body=$(capture pi-firstmate-spawn "$FM_WT" bash -c 'pi_run "$@"' _ -e "$ext")
+  expect_markers "pi $version Firstmate-repo worktree with the spawn extension" "$body" no no
+  pass "pi $version: a Firstmate-repo worker's first request drops its worktree's own contract"
   CHECKED=$((CHECKED + 1))
 }
 

@@ -103,7 +103,10 @@
 # Its sentences about working on Firstmate itself are omitted only when the
 # optional project argument is provably not Firstmate
 # (fm_dod_project_is_not_firstmate); no project, a separate Firstmate clone, or
-# an unresolvable checkout keeps them.
+# an unresolvable checkout keeps them. For a worktree of this Firstmate
+# repository (fm_dod_project_is_firstmate_repo), bin/fm-spawn.sh drops that
+# worktree's root AGENTS.md wherever the harness can, so the role carries the
+# two rules from it that bind a worker too.
 # The code root argument is the Firstmate checkout that holds
 # .agents/skills/firstmate-coding-guidelines/SKILL.md. A worker in a Firstmate
 # worktree loads that skill by name from its own checkout. A worker whose
@@ -168,6 +171,10 @@ When this task works on Firstmate itself, the repository root `AGENTS.md` (also 
 Project instructions still govern the work wherever they do not conflict with this worker identity, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
 EOF
   printf "If the \`firstmate-coding-guidelines\` skill name does not resolve in this session, read \`%s/.agents/skills/firstmate-coding-guidelines/SKILL.md\` instead.\n" "$root"
+  fm_dod_project_is_firstmate_repo "$project" "$root" || return 0
+  cat <<'EOF'
+Never add an agent name as a commit co-author, and never put "captain" or any other direct address into a non-chat artifact such as a commit message, PR or issue description, brief, code, or comment.
+EOF
 }
 
 # 0 only when <project-dir> is a resolvable git checkout that is provably not

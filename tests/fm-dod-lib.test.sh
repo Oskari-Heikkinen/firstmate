@@ -539,6 +539,11 @@ test_worker_role_names_skill_and_fallback_file() {
     "worker role did not name the skill file as the fallback"
   assert_no_grep "Skill tool cannot resolve" "$role_file" \
     "worker role claims the Skill tool never resolves the skill"
+  assert_no_grep "commit co-author" "$role_file" \
+    "worker role for another project carried the Firstmate worker bans"
+  fm_brief_worker_role "$TMP_ROOT/state" upstream-4751 "$ROOT" "$ROOT" >"$role_file"
+  assert_grep 'Never add an agent name as a commit co-author, and never put "captain" or any other direct address into a non-chat artifact' "$role_file" \
+    "worker role for Firstmate's own repo lost the bans its excluded contract carried"
   pass "worker role names the skill and its fallback skill file"
 }
 
@@ -577,6 +582,8 @@ test_worker_role_gates_firstmate_only_sentences() {
     "a separate Firstmate clone lost the supervisor-contract exception"
   assert_grep "skill name does not resolve in this session" "$clone_role" \
     "a separate Firstmate clone lost the coding-guidelines fallback"
+  assert_no_grep "commit co-author" "$clone_role" \
+    "a separate Firstmate clone, whose AGENTS.md stays loaded, received the copied bans"
   unresolved="$TMP_ROOT/role-not-a-checkout"
   mkdir -p "$unresolved"
   unresolved_role="$TMP_ROOT/role-unresolved.txt"

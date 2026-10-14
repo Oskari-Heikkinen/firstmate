@@ -1199,7 +1199,10 @@ A Claude launch gets a `claudeMdExcludes` list in its inline `--settings` JSON, 
 The project's own instruction files still load from the worktree, and a secondmate or a worker whose worktree is outside that home launches unchanged.
 Codex stops its instruction walk at the worktree's git root and needs nothing.
 Cursor Agent CLI and Oh My Pi also walk above the git root but offer no per-path exclusion, so a nested worker on either still loads the home's `AGENTS.md`; keep their worktrees outside every home.
+A ship or scout working on Firstmate's own repository does not load that worktree's root `AGENTS.md` or `CLAUDE.md` on Claude or Pi either, because that file is the supervisor contract its launch brief tells it not to follow; the launch brief instead carries the two of its rules that bind a worker, no agent co-author and no direct address in a non-chat artifact.
+A secondmate keeps loading it, and Codex and every other harness without a per-file exclusion still load it.
 [`fm-spawn.sh`](../bin/fm-spawn.sh) owns the mechanics, and [runtime backend verification](verification/runtime-backends.md#nested-worktree-instruction-isolation) records the per-harness evidence, including the harnesses not verified.
+
 ## Project capacity (config/project-capacity)
 
 The optional local, gitignored `config/project-capacity` tells Firstmate how many workers a project can run at once on this machine, for a project whose machine-local resource - a heavy test suite, a local editor stack, a device - only serves a few workers at a time.

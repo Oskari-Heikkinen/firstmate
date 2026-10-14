@@ -9,6 +9,8 @@
 # worktrees, then check the two public outputs that carry the exclusion: the
 # Claude launch's --settings JSON, and the per-task Pi extension executed
 # against a fake Pi host with a system prompt in Pi's own context-file shape.
+# A worktree of Firstmate's own repository drops its own root contract the
+# same way, and its launch brief carries the worker bans instead.
 # tests/fm-nested-home-context-live-e2e.test.sh proves the same launches
 # against the installed harnesses.
 set -u
@@ -56,6 +58,44 @@ new_case() {
   LAUNCH_LOG="$CASE_DIR/launch.log"
   : > "$LAUNCH_LOG"
 }
+
+# new_firstmate_case <name> <harness> sets the same variables for a worktree of
+# Firstmate's own repository: FM_CODE_ROOT is a fixture code root that runs this
+# checkout's bin/ through a symlink, so fm-spawn sees the worktree as a checkout
+# of its own repository, and its root files stand in for the supervisor contract.
+new_firstmate_case() {
+  local name=$1 harness=$2
+  CASE_DIR="$TMP_ROOT/$name"
+  HOME_DIR="$CASE_DIR/home"
+  fm_test_spawn_home "$HOME_DIR" "$harness"
+  FM_CODE_ROOT="$CASE_DIR/firstmate"
+  fm_git_init_commit "$FM_CODE_ROOT"
+  ln -s "$ROOT/bin" "$FM_CODE_ROOT/bin"
+  mkdir -p "$FM_CODE_ROOT/.agents"
+  ln -s "$ROOT/.agents/skills" "$FM_CODE_ROOT/.agents/skills"
+  printf '@AGENTS.md\n' > "$FM_CODE_ROOT/CLAUDE.md"
+  printf 'firstmate supervisor contract\n' > "$FM_CODE_ROOT/AGENTS.md"
+  git -C "$FM_CODE_ROOT" add -A
+  git -C "$FM_CODE_ROOT" -c user.name=t -c user.email=t@t commit -qm firstmate
+  fm_git_add_origin "$FM_CODE_ROOT" "$FM_CODE_ROOT.origin.git"
+  PROJ_DIR=$FM_CODE_ROOT
+  WT_DIR="$CASE_DIR/pool/1/firstmate"
+  mkdir -p "$(dirname "$WT_DIR")"
+  git -C "$FM_CODE_ROOT" worktree add --quiet -b "wt-$name" "$WT_DIR"
+  FAKEBIN_DIR=$(fm_test_make_spawn_fakebin "$CASE_DIR/fake")
+  make_pi_probe "$FAKEBIN_DIR"
+  LAUNCH_LOG="$CASE_DIR/launch.log"
+  : > "$LAUNCH_LOG"
+}
+
+spawn_firstmate_ship() {
+  local id=$1
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" ROOT=$FM_CODE_ROOT fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" \
+    "$id" "$FM_CODE_ROOT" --mode direct-push --yolo off
+}
+
+WORKER_BANS='Never add an agent name as a commit co-author, and never put "captain" or any other direct address into a non-chat artifact'
 
 spawn_ship() {
   local id=$1
@@ -126,6 +166,8 @@ test_outside_claude_worker_launch_is_unchanged() {
   settings=$(claude_settings)
   [ "$settings" = '{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}' ] \
     || fail "a worktree outside the home changed the claude settings: $settings"
+  assert_no_grep "$WORKER_BANS" "$HOME_DIR/data/outside-claude-z2/launch-brief.md" \
+    "a project other than Firstmate received the Firstmate worker bans"
   pass "a claude worker whose worktree is outside the home launches unchanged"
 }
 
@@ -178,6 +220,36 @@ test_outside_pi_worker_extension_adds_no_filter() {
   pass "a pi worker whose worktree is outside the home registers no context filter"
 }
 
+test_firstmate_repo_claude_worker_excludes_its_own_contract() {
+  local out settings wt
+  new_firstmate_case claude-firstmate claude
+  out=$(spawn_firstmate_ship firstmate-claude-z6) || fail "firstmate-repo claude spawn failed: $out"
+  settings=$(claude_settings)
+  wt=$(canonical "$WT_DIR")
+  printf '%s' "$settings" | jq -e --arg w "$wt" '
+    .feedbackDrafts == "off"
+    and .claudeMdExcludes == [($w + "/CLAUDE.md"), ($w + "/CLAUDE.local.md"), ($w + "/AGENTS.md"), ($w + "/.claude/CLAUDE.md"), ($w + "/.claude/rules/**")]
+  ' >/dev/null || fail "a Firstmate-repo claude worker did not exclude exactly its worktree's root instruction files: $settings"
+  assert_grep "$WORKER_BANS" "$HOME_DIR/data/firstmate-claude-z6/launch-brief.md" \
+    "a Firstmate-repo worker's launch brief lost the bans its excluded contract carried"
+  pass "a Firstmate-repo claude worker excludes its worktree's own contract and carries the worker bans"
+}
+
+test_firstmate_repo_pi_worker_drops_its_own_contract() {
+  local out ext result other
+  new_firstmate_case pi-firstmate pi
+  out=$(spawn_firstmate_ship firstmate-pi-z7) || fail "firstmate-repo pi spawn failed: $out"
+  ext="$HOME_DIR/state/firstmate-pi-z7.pi-ext.ts"
+  assert_present "$ext" "pi spawn did not write the per-task extension"
+  other="$CASE_DIR/elsewhere"
+  mkdir -p "$other"
+  result=$(drive_pi_filter "$ext" "$WT_DIR" "$other") || fail "pi extension drive failed: $result"
+  case "$result" in NO-HANDLER | UNCHANGED) fail "a Firstmate-repo pi extension left the prompt alone: $result" ;; esac
+  assert_not_contains "$result" "<project_instructions path=\"$WT_DIR/AGENTS.md\">" "a Firstmate-repo pi prompt still carries the worktree AGENTS.md"
+  assert_contains "$result" "<project_instructions path=\"$other/AGENTS.md\">" "a Firstmate-repo pi prompt lost a file outside the worktree root"
+  pass "a Firstmate-repo pi worker's extension drops only its worktree's own contract"
+}
+
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
 test_nested_claude_worker_excludes_home_instruction_files
@@ -185,4 +257,6 @@ test_outside_claude_worker_launch_is_unchanged
 test_secondmate_launch_keeps_its_contract
 test_nested_pi_worker_drops_only_the_home_context_file
 test_outside_pi_worker_extension_adds_no_filter
+test_firstmate_repo_claude_worker_excludes_its_own_contract
+test_firstmate_repo_pi_worker_drops_its_own_contract
 printf '# all fm-spawn-nested-home-context tests passed\n'

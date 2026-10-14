@@ -577,6 +577,28 @@ codex exec --skip-git-repo-check -c 'model_providers.cap={name="cap",base_url="h
 
 The nested worktree's request carried the project's `AGENTS.md` and neither the home's `AGENTS.md` nor its `.agents/skills`, while a session whose cwd is the home carried both.
 
+### Firstmate-repo worktrees
+
+Verified 2026-10-14 on Claude Code 2.1.299 and Pi 0.85.1.
+A ship or scout worktree of Firstmate's own repository carries that repository's root `AGENTS.md`, imported by its `CLAUDE.md`, as project content, and it is the supervisor contract the worker's launch brief tells it not to follow.
+The same per-launch exclusions drop it: the real `bin/fm-spawn.sh`, run through a fake pane against a worktree of a fixture code root whose `bin/` is this checkout's, emitted `claudeMdExcludes` for the worktree's five root patterns and a Pi extension whose `dropDirs` held the worktree.
+Each harness then ran against the capture server described above, first in that fixture worktree and then in a real pooled worktree of this repository with the emitted paths rewritten to it:
+
+```sh
+claude -p hi --max-turns 1 --model claude-haiku-4-5 [--settings '<the spawn JSON>']
+pi -p --no-session --provider cap --model m [-e <the spawn extension>] hi
+```
+
+```
+claude fixture worktree: contract marker 1 without the settings, 0 with them
+claude real worktree:    first request 168,394 bytes with the supervisor contract, 115,971 bytes without it
+pi fixture worktree:     contract marker 1 without the extension, 0 with it
+pi real worktree:        first request 58,166 bytes with the supervisor contract, 6,765 bytes without it
+```
+
+`tests/fm-nested-home-context-live-e2e.test.sh` carries the same Firstmate-repo arm for both harnesses and refreshes this record.
+Codex loads the worktree's root `AGENTS.md` as the project root file and was left unchanged, as was every harness that has no per-file exclusion.
+
 ### Other harnesses
 
 None of the remaining adapters is installed on this host, so each verdict comes from reading the named published package or its bundled documentation on 2026-09-23 rather than from a live capture.

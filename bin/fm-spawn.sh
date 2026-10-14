@@ -416,7 +416,8 @@
 #                  Firstmate channel directories (claude_add_dirs_flag below;
 #                  supplies its own trailing space, empty never used)
 #     __CLAUDEMDEXCLUDES__ the claudeMdExcludes member of claude's --settings JSON for a
-#                  worktree nested in a firstmate home, or empty (claude_md_excludes_setting)
+#                  worktree nested in a firstmate home or of Firstmate's own
+#                  repo, or empty (claude_md_excludes_setting)
 #     __CLAUDESETTINGS__ the single claude --settings value: a quoted inline
 #                  JSON object for a crewmate or scout, or a quoted path to
 #                  state/<task-id>.claude-settings.json for a secondmate
@@ -2254,8 +2255,9 @@ launch_template() {
   # otherwise run with attribution back on; carrying it per launch keeps the
   # policy in force regardless of which settings scopes end up loaded.
   # __CLAUDEMDEXCLUDES__ closes that same JSON object with a claudeMdExcludes
-  # entry for a ship or scout whose worktree lies inside a firstmate home, and
-  # is empty otherwise; claude_md_excludes_setting() below owns why.
+  # entry for a ship or scout whose worktree lies inside a firstmate home or is
+  # a worktree of Firstmate's own repo, and is empty otherwise;
+  # claude_md_excludes_setting() below owns why.
   # Claude Code's --settings flag takes one value, a file path or an inline
   # JSON string (https://code.claude.com/docs/en/cli-reference). A secondmate's
   # busy hooks share that value, in state/<id>.claude-settings.json, and the
@@ -4955,25 +4957,43 @@ if [ "$KIND" != secondmate ]; then
     NESTED_HOME=$nested_home
   fi
 fi
+# A ship or scout worktree of Firstmate's own repository carries that repo's
+# root AGENTS.md (imported by its CLAUDE.md) as project content, yet it is the
+# supervisor contract the launch brief tells the worker not to follow, so it is
+# dropped exactly like a nested home's files. OWN_CONTRACT_WT is that worktree,
+# canonical, when fm_dod_project_is_firstmate_repo proves it shares this code
+# root's repository; fm_brief_worker_role carries the two of its rules a worker
+# still needs. It stays empty for a secondmate, whose contract must keep loading,
+# and for every other project. Harnesses without a per-file exclusion keep
+# loading the file; docs/verification/runtime-backends.md records which.
+OWN_CONTRACT_WT=
+if [ "$KIND" != secondmate ] && fm_dod_project_is_firstmate_repo "$WT" "$FM_ROOT"; then
+  OWN_CONTRACT_WT=$(resolve_path "$WT")
+fi
 # Claude's claudeMdExcludes setting (verified on 2.1.280) takes absolute paths
 # or picomatch globs, matched against every User, Project, and Local memory
 # file it would load, @-imports included, so excluding a home's CLAUDE.md also
 # drops its @AGENTS.md import and the external-import consent prompt that
 # import raised. It rides the per-launch --settings JSON, never a settings file.
-# A home whose path contains a glob metacharacter cannot be written as a
+# The same directory-level patterns drop a Firstmate-repo worktree's own root
+# files (OWN_CONTRACT_WT above); files in its subdirectories still load.
+# A directory whose path contains a glob metacharacter cannot be written as a
 # literal pattern, so it is reported and left loading rather than guessed at.
 claude_md_excludes_setting() {
-  local home=$NESTED_HOME pattern list=
-  [ -n "$home" ] || return 0
-  case "$home" in
-  *[][*?{}\(\)!+@\\]*)
-    echo "warning: firstmate home $home contains a glob character, so this nested claude worker still loads its instruction files" >&2
-    return 0
-    ;;
-  esac
-  for pattern in "$home/CLAUDE.md" "$home/CLAUDE.local.md" "$home/AGENTS.md" "$home/.claude/CLAUDE.md" "$home/.claude/rules/**"; do
-    list+="${list:+,}\"$(json_escape "$pattern")\""
+  local dir pattern list=
+  for dir in "$NESTED_HOME" "$OWN_CONTRACT_WT"; do
+    [ -n "$dir" ] || continue
+    case "$dir" in
+    *[][*?{}\(\)!+@\\]*)
+      echo "warning: $dir contains a glob character, so this claude worker still loads its instruction files" >&2
+      continue
+      ;;
+    esac
+    for pattern in "$dir/CLAUDE.md" "$dir/CLAUDE.local.md" "$dir/AGENTS.md" "$dir/.claude/CLAUDE.md" "$dir/.claude/rules/**"; do
+      list+="${list:+,}\"$(json_escape "$pattern")\""
+    done
   done
+  [ -n "$list" ] || return 0
   printf ',"claudeMdExcludes":[%s]' "$list"
 }
 if [ "$RELAUNCH" -eq 1 ]; then
@@ -5228,16 +5248,17 @@ EOF
     # elsewhere loads without a dialog. Lives in state/, cleaned by teardown.
     # Pi has no per-file context exclude, only the all-or-nothing
     # --no-context-files that would also drop the project's own AGENTS.md, so
-    # a worktree nested in a firstmate home (NESTED_HOME above) gets a
-    # before_agent_start handler instead: Pi hands it the structured context
-    # files it loaded, and it removes exactly the rendered block of each file
-    # that sits directly in the nested home, every turn (verified on Pi 0.85.1).
+    # a worktree nested in a firstmate home (NESTED_HOME above) or of
+    # Firstmate's own repo (OWN_CONTRACT_WT above) gets a before_agent_start
+    # handler instead: Pi hands it the structured context files it loaded, and
+    # it removes exactly the rendered block of each file that sits directly in
+    # one of those directories, every turn (verified on Pi 0.85.1).
     pi_context_filter=
-    if [ -n "$NESTED_HOME" ]; then
-      pi_context_filter="  // This worktree lies inside a firstmate home; drop that home's own
-  // instruction files from the system prompt so the worker never carries the
-  // supervisor contract its launch brief tells it not to follow.
-  const nestedHome = \"$(json_escape "$NESTED_HOME")\";
+    if [ -n "$NESTED_HOME$OWN_CONTRACT_WT" ]; then
+      pi_context_filter="  // Drop the instruction files that sit directly in these directories from
+  // the system prompt so the worker never carries the supervisor contract its
+  // launch brief tells it not to follow.
+  const dropDirs = [\"$(json_escape "$NESTED_HOME")\", \"$(json_escape "$OWN_CONTRACT_WT")\"].filter(Boolean);
   const canonicalDir = (file: string) => {
     try { return realpathSync(dirname(file)); } catch { return dirname(file); }
   };
@@ -5247,7 +5268,7 @@ EOF
     let prompt: string = event.systemPrompt;
     for (const file of files) {
       if (!file || typeof file.path !== \"string\") continue;
-      if (canonicalDir(file.path) !== nestedHome) continue;
+      if (!dropDirs.includes(canonicalDir(file.path))) continue;
       const block = \"<project_instructions path=\\\"\" + file.path + \"\\\">\\n\" + file.content + \"\\n</project_instructions>\\n\\n\";
       const at = prompt.indexOf(block);
       if (at !== -1) prompt = prompt.slice(0, at) + prompt.slice(at + block.length);
