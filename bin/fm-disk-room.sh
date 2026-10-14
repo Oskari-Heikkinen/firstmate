@@ -445,11 +445,11 @@ results_root() {
 
 # Growth and runway ------------------------------------------------------------
 
-# threshold VAR DEFAULT -> bytes, or "off"; fails on a bad value.
+# threshold VAR DEFAULT -> bytes, or "off"; fails on a bad value (the caller sets ERR).
 threshold() {
   local v=${!1:-$2}
   case "$v" in off) printf 'off\n'; return 0 ;; esac
-  to_bytes "$v" || { ERR="bad $1"; return 1; }
+  to_bytes "$v"
 }
 
 # sample_growth: reads the tail of the data-gate sampler (fm-io-sample) and
@@ -574,9 +574,9 @@ signed_gib() { awk -v b="$1" 'BEGIN { printf "%+.1f", b / 1073741824 }'; }
 # shellcheck disable=SC2034
 storage_alerts() {
   local gmax cmin dmin rate
-  gmax=$(threshold FM_DISK_ROOM_GROWTH_MAX 0.5G) || return 1
-  cmin=$(threshold FM_DISK_ROOM_C_FREE_MIN 100G) || return 1
-  dmin=$(threshold FM_DISK_ROOM_D_FREE_MIN 50G) || return 1
+  gmax=$(threshold FM_DISK_ROOM_GROWTH_MAX 0.5G) || { ERR="bad FM_DISK_ROOM_GROWTH_MAX"; return 1; }
+  cmin=$(threshold FM_DISK_ROOM_C_FREE_MIN 100G) || { ERR="bad FM_DISK_ROOM_C_FREE_MIN"; return 1; }
+  dmin=$(threshold FM_DISK_ROOM_D_FREE_MIN 50G) || { ERR="bad FM_DISK_ROOM_D_FREE_MIN"; return 1; }
   GROWTH_MAX=$gmax C_FREE_MIN=$cmin D_FREE_MIN=$dmin
   sample_growth; d_runway; substitution
   AL_growth='' AL_c_runway='' AL_d_runway='' AL_d_substitution=''
