@@ -1025,7 +1025,7 @@ Usage reads give each network connect attempt 2 seconds rather than Node's defau
 When every account's read fails, `status`, the panel, `rebalance`, and its watcher check say the account readings are blind as advice for the captain, naming a missing quota-axi when that is the cause, never that the fleet is balanced.
 The no-room advice appears only when every Claude account has a successful reading low enough to move work off or needs sign-in, never because a read failed.
 Automatic rebalancing is on whenever the registry exists, unless `config/account-auto` says `off`.
-Session start then arms a watcher check that wakes firstmate only when a move is due or the advice changes, and firstmate runs `bin/fm-account.sh rebalance` without asking the captain.
+Session start then arms a watcher check that runs `bin/fm-account.sh rebalance` itself when a move is due, without asking the captain, and wakes firstmate only when the advice for the captain changes.
 Rebalancing moves second mates and between-steps workers, never one mid-command or mid-validation run; a busy worker waits for a later run.
 A worker whose record alone is on a low account - it is not running, for example parked, or it already runs on another login - has only its record moved, without a relaunch, so its next start uses the account with room.
 Only the captain can restart this home's own session or sign in to a login that does not exist yet, so those appear as one-line advice instead.

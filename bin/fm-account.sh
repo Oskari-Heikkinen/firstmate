@@ -65,12 +65,17 @@
 #            the panel still show every home's current readings.
 #            When every account's read failed it never prints "balanced"; the
 #            blind readings are its needs-the-captain line (main home only).
-#            --dry-run prints the plan only. --check is the watcher form: it
-#            prints one wake line only when a move is due or the advice changed
-#            (or 30 minutes after an unhandled move line) and nothing otherwise;
-#            advice that goes quiet and returns unchanged within the sign-in
-#            confirmation window (FM_ACCOUNT_SIGNIN_CONFIRM_SECS, default 900)
-#            does not wake again.
+#            One rebalance runs at a time; another one started meanwhile says
+#            so and moves nothing. --dry-run prints the plan only.
+#            --check is the watcher form: when a move is due it starts this
+#            rebalance itself, detached so a relaunch can outlast the
+#            watcher's per-check timeout (again for the same moves only after
+#            30 minutes, or at once after a spell with none), and it prints
+#            one wake line only when the captain advice changed, nothing
+#            otherwise; advice that goes quiet and returns unchanged within
+#            the sign-in confirmation window (FM_ACCOUNT_SIGNIN_CONFIRM_SECS,
+#            default 900) does not wake again. It never touches a
+#            config/claude-account or config/pi-account pin.
 # auto       on/off writes config/account-auto; sync makes state/accounts.check.sh
 #            match it: installed and registered (bin/fm-check-register.sh) while
 #            config/accounts exists and auto is not off, retired otherwise.
@@ -87,7 +92,10 @@
 # state/.account-signin-<name> (lib sign-in streak), state/account-moves.log
 # (<epoch>|<id>|<from>|<to>|<result>),
 # state/.account-check (<epoch>|<fingerprint>|<quiet-since-epoch>, the --check
-# fingerprint), state/.account-panel (the running panel's pid).
+# advice fingerprint), state/.account-rebalance (<epoch>|<fingerprint>, the
+# moves --check last started), state/.account-rebalance.log (that run's
+# output), state/.account-rebalance.lock (the running rebalance),
+# state/.account-panel (the running panel's pid).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -623,7 +631,7 @@ cmd_default() {
 }
 
 cmd_rebalance() {
-  local check=0 dry=0 agents accounts moves adv id kind from to fp last stamp quiet now line ready mates window
+  local check=0 dry=0 agents accounts moves adv id kind from to fp last stamp quiet now ready mates window mfp
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check=1 ;;
@@ -637,6 +645,13 @@ cmd_rebalance() {
     [ -f "$(fm_account_registry "$CONFIG")" ] || return 0
   else
     need_registry
+    if [ "$dry" = 0 ]; then
+      if ! fm_lock_try_acquire "$STATE/.account-rebalance.lock"; then
+        echo "rebalance: another rebalance is running; nothing moved"
+        return 0
+      fi
+      trap 'fm_lock_release "$STATE/.account-rebalance.lock"' EXIT
+    fi
   fi
   agents=$(collect_agents)
   accounts=$(account_rows "${FM_ACCOUNT_USAGE_TTL:-120}")
@@ -650,8 +665,20 @@ cmd_rebalance() {
       ready+="$id|$kind|$from|$to|$how"$'\n'
     done <<<"$moves"
     moves=${ready%$'\n'}
-    fp=$(printf '%s\n%s' "$moves" "$adv" | cksum | awk '{ print $1 }')
     now=$(date +%s)
+    if [ -n "$moves" ]; then
+      mfp=$(printf '%s\n' "$moves" | cksum | awk '{ print $1 }')
+      last='' stamp=0
+      [ -f "$STATE/.account-rebalance" ] && IFS='|' read -r stamp last <"$STATE/.account-rebalance"
+      case "$stamp" in '' | *[!0-9]*) stamp=0 ;; esac
+      if [ "$mfp" != "$last" ] || [ $((now - stamp)) -ge 1800 ]; then
+        printf '%s|%s\n' "$now" "$mfp" >"$STATE/.account-rebalance" 2>/dev/null || true
+        launch_rebalance
+      fi
+    else
+      rm -f "$STATE/.account-rebalance"
+    fi
+    fp=$(printf '%s' "$adv" | cksum | awk '{ print $1 }')
     last='' stamp=0 quiet=''
     [ -f "$STATE/.account-check" ] && IFS='|' read -r stamp last quiet <"$STATE/.account-check"
     case "$stamp" in '' | *[!0-9]*) stamp=0 ;; esac
@@ -659,23 +686,18 @@ cmd_rebalance() {
     window=${FM_ACCOUNT_SIGNIN_CONFIRM_SECS:-900}
     case "$window" in '' | *[!0-9]*) window=900 ;; esac
     # Quiet advice keeps the last fingerprint and notes when it went quiet, so
-    # the same advice returning inside the window is not a new wake; a ready
-    # move returning after a quiet spell always wakes.
-    if [ -z "$moves$adv" ]; then
+    # the same advice returning inside the window is not a new wake.
+    if [ -z "$adv" ]; then
       [ ! -f "$STATE/.account-check" ] || [ -n "$quiet" ] ||
         printf '%s|%s|%s\n' "$stamp" "$last" "$now" >"$STATE/.account-check" 2>/dev/null || true
       return 0
     fi
-    if [ "$fp" = "$last" ] && { [ -z "$quiet" ] || { [ -z "$moves" ] && [ $((now - quiet)) -lt "$window" ]; }; } &&
-      { [ -z "$moves" ] || [ $((now - stamp)) -lt 1800 ]; }; then
+    if [ "$fp" = "$last" ] && { [ -z "$quiet" ] || [ $((now - quiet)) -lt "$window" ]; }; then
       [ -z "$quiet" ] || printf '%s|%s|\n' "$stamp" "$last" >"$STATE/.account-check" 2>/dev/null || true
       return 0
     fi
     printf '%s|%s|\n' "$now" "$fp" >"$STATE/.account-check" 2>/dev/null || true
-    line='accounts:'
-    [ -z "$moves" ] || line="$line $(printf '%s\n' "$moves" | awk -F'|' '{ s = s (s ? ", " : "") $1 " " $3 "->" $4 } END { print s }') - run bin/fm-account.sh rebalance (automatic, no captain approval);"
-    [ -z "$adv" ] || line="$line needs the captain: $(printf '%s\n' "$adv" | paste -sd';' - | sed 's/;/; /g')"
-    printf '%s\n' "${line%;}"
+    printf 'accounts: needs the captain: %s\n' "$(printf '%s\n' "$adv" | paste -sd';' - | sed 's/;/; /g')"
     return 0
   fi
   if [ -z "$moves" ] && ! readings_blind "$accounts"; then
@@ -699,6 +721,19 @@ cmd_rebalance() {
   fi
   [ -z "$adv" ] || printf '%s\n' "$adv" | sed 's/^/needs the captain: /'
   return 0
+}
+
+# launch_rebalance: start the moves the watcher form found as a plain rebalance
+# in its own process group with stdio off the watcher's pipe, because a
+# relaunch can outlast the per-check timeout, which ends the check's group.
+# FM_ACCOUNT_REBALANCE_RUNNER replaces this script (tests only).
+launch_rebalance() {
+  local monitor_was_on=0
+  case $- in *m*) monitor_was_on=1 ;; esac
+  set -m 2>/dev/null || true
+  nohup "${FM_ACCOUNT_REBALANCE_RUNNER:-$SCRIPT_DIR/fm-account.sh}" rebalance \
+    >"$STATE/.account-rebalance.log" 2>&1 </dev/null &
+  [ "$monitor_was_on" = 1 ] || set +m 2>/dev/null || true
 }
 
 check_body() {

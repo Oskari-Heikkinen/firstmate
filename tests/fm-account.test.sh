@@ -111,6 +111,8 @@ new_case() {
   fm_fakebin "$C" >/dev/null
   write_fake_quota "$C/fakebin"
   write_dead_tmux "$C/fakebin"
+  printf '#!/bin/sh\necho "$*" >> %q\n' "$C/rebalance-runs" > "$C/fakebin/fake-rebalance"
+  chmod +x "$C/fakebin/fake-rebalance"
   printf '4 fresh\n' > "$C/gmail/fake-quota"
   printf '98 fresh\n' > "$C/work/fake-quota"
   printf '0 auth_required\n' > "$C/codex/fake-quota"
@@ -125,13 +127,27 @@ new_case() {
 # run_account <args...>: the command as this case's main session, which runs on
 # the gmail login unless FM_TEST_SESSION_DIR says otherwise. Live logins are
 # read from the case's own fake process table, empty unless a case adds to it.
+# The rebalance the watcher form starts is the case's fake, which logs each run
+# to $C/rebalance-runs, unless FM_TEST_REBALANCE_RUNNER is set ('' is the real one).
 run_account() {
   env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SESSION -u HERDR_BIN_PATH \
     -u FM_STATE_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_ROOT_OVERRIDE -u FM_SPAWN_ACCOUNT \
+    FM_ACCOUNT_REBALANCE_RUNNER="${FM_TEST_REBALANCE_RUNNER-$C/fakebin/fake-rebalance}" \
     PATH="$C/fakebin:$PATH" FM_HOME="$H" HOME="$C/user-home" \
     CLAUDE_CONFIG_DIR="${FM_TEST_SESSION_DIR-$C/gmail}" \
     FM_FAKE_QUOTA_LOG="$C/quota.log" FM_PROC_ROOT_OVERRIDE="$C/proc" \
     "$ACCOUNT" "$@" 2>&1
+}
+
+# rebalance_runs: how many rebalances the watcher form has started, once the
+# detached fake had up to five seconds to log them.
+rebalance_runs() {
+  local i=0 want=${1:-0}
+  while [ "$i" -lt 50 ] && [ "$(cat "$C/rebalance-runs" 2>/dev/null | wc -l | tr -d ' ')" -lt "$want" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  cat "$C/rebalance-runs" 2>/dev/null | wc -l | tr -d ' '
 }
 
 add_ship() {  # <id> [key=value...]
@@ -275,9 +291,12 @@ test_rebalance_dry_run_and_check_wake_only_on_change() {
   assert_equals "" "$out" "an unchanged check must stay silent"
   add_mate sm2 ''
   out=$(run_account rebalance --check)
-  assert_contains "$out" "accounts: sm2 gmail->work - run bin/fm-account.sh rebalance (automatic, no captain approval);" "a second mate on the low login wakes firstmate to move it"
+  assert_equals "" "$out" "a due move wakes no one"
+  assert_equals 1 "$(rebalance_runs 1)" "a second mate on the low login starts a rebalance"
+  assert_equals rebalance "$(cat "$C/rebalance-runs")" "the started run is a plain rebalance"
   out=$(run_account rebalance --check)
-  assert_equals "" "$out" "the same pending move stays quiet inside its repeat window"
+  assert_equals "" "$out" "the same pending move stays quiet"
+  assert_equals 1 "$(rebalance_runs)" "the same pending move is not started again inside its repeat window"
   rm -f "$H/state/sm2.meta" "$H/state/a2.meta"
   printf '80 fresh\n' > "$C/gmail/fake-quota"
   printf '80 fresh\n' > "$C/codex/fake-quota"
@@ -288,7 +307,7 @@ test_rebalance_dry_run_and_check_wake_only_on_change() {
   out=$(run_account rebalance --check); rc=$?
   expect_code 0 "$rc" "no registry"
   assert_equals "" "$out" "a home without a registry never wakes"
-  pass "rebalance --dry-run plans, and the watcher form wakes only when a move or advice changes"
+  pass "rebalance --dry-run plans, and the watcher form starts due moves itself and wakes only when the advice changes"
 }
 
 test_use_pins_a_second_mate_and_refuses_what_it_cannot_move() {
@@ -623,14 +642,14 @@ test_b_quiet_advice_returning_unchanged_does_not_wake_again() {
   new_case quiet-move
   printf '80 fresh\n' > "$C/codex/fake-quota"
   add_mate sm2 ''
-  out=$(sweep)
-  assert_contains "$out" "sm2 gmail->work" "the first check wakes with the move"
+  sweep >/dev/null
+  assert_equals 1 "$(rebalance_runs 1)" "the first check starts the move"
   printf '0 garbage\n' > "$C/gmail/fake-quota"
   out=$(sweep)
   assert_equals "" "$out" "a failed read that empties the move and advice is silent"
   printf '4 fresh\n' > "$C/gmail/fake-quota"
-  out=$(sweep)
-  assert_contains "$out" "sm2 gmail->work" "a move returning after a quiet spell wakes at once"
+  sweep >/dev/null
+  assert_equals 2 "$(rebalance_runs 2)" "a move returning after a quiet spell starts at once"
   pass "advice that goes quiet and returns unchanged wakes again only after the confirmation window"
 }
 
@@ -826,7 +845,7 @@ test_status_shows_each_agents_live_login_beside_its_record() {
 }
 
 test_a_record_only_agent_on_a_low_login_is_re_recorded_not_counted() {
-  local out wt
+  local out wt i
   new_case record
   add_ship idle account=gmail "pr=https://example.invalid/pr/1"
   add_ship shared account=gmail
@@ -854,10 +873,16 @@ test_a_record_only_agent_on_a_low_login_is_re_recorded_not_counted() {
   assert_contains "$out" "moved                  recorded gmail      live work  MISMATCH" "a real mismatch is still marked"
   assert_contains "$(printf '%s\n' "$out" | sed -n '/^gmail/,/^work/p')" "on it: main +1 worker" "the low login counts only the worker running on it"
   assert_contains "$out" "  idle  gmail -> work  (record only)" "the plan says the move touches the record only"
-  out=$(run_account rebalance --check)
-  assert_contains "$out" "idle gmail->work" "a record-only move is ready without the worker being between steps"
-  assert_not_contains "$out" "busy gmail->work" "a running worker still waits until it is between steps"
-  out=$(run_account rebalance)
+  out=$(FM_TEST_REBALANCE_RUNNER='' run_account rebalance --check)
+  assert_not_contains "$out" "gmail->work" "the watcher form wakes no one for a move"
+  i=0
+  until [ -s "$H/state/.account-rebalance.log" ] && [ ! -e "$H/state/.account-rebalance.lock" ]; do
+    [ "$i" -lt 100 ] || fail "the rebalance the watcher form started never finished"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  out=$(cat "$H/state/.account-rebalance.log")
+  assert_contains "$out" "waiting: busy" "a running worker still waits until it is between steps"
   assert_contains "$out" "recorded: idle gmail -> work (not running; its next launch uses work)" "the stopped worker's record moves"
   assert_contains "$out" "recorded: moved gmail -> work (already running there; its next launch uses work)" "the live-elsewhere worker's record follows its login"
   assert_contains "$out" "recorded: dironly gmail -> work" "a folder-only record moves too"
