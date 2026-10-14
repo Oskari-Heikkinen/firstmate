@@ -95,8 +95,9 @@
 # breaks parsing of the whole file on Bash 3.2 (tests/fm-brief.test.sh).
 # fm_brief_worker_role owns the ship/scout role scope. bin/fm-spawn.sh is its one
 # emitter, supplying it first in every ship/scout launch brief and never to a
-# secondmate charter. It names the one task-owned steering inbox without
-# relaxing isolation from every other home's endpoint namespace. Like
+# secondmate charter. It names the one task-owned steering inbox, the only
+# statement of that path in a launch brief, without relaxing isolation from
+# every other home's endpoint namespace. Like
 # fm_brief_intent_overlay it is a distinctly titled launch section that states
 # its own precedence, so a brief or project instruction that authors a
 # conflicting role is superseded rather than duplicated.
@@ -152,29 +153,25 @@ FM_DIRECT_PUSH_CHECK_WAIT_MINUTES=90
 
 fm_brief_worker_role() {  # <state-dir> <task-id> <code-root> [<project-dir>]
   local state=$1 task_id=$2 root=$3 project=${4-}
+  # The one statement of the steering inbox path in a launch brief; the
+  # scaffold's inbox section refers back to it.
   cat <<'EOF'
 # Current worker role contract
-You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
-This section establishes your current identity before every project or task instruction below and supersedes any conflicting role identity in those instructions.
-Do the assigned work yourself and report only to firstmate; do not adopt a firstmate or secondmate supervisor identity, delegate the task, run fleet supervision, or address the captain.
+You are a crewmate worker for firstmate, and this overrides any other role text: do the task yourself without waiting for a human, and report only to firstmate; never act as firstmate or a second mate, delegate, run fleet supervision, or address the captain.
 EOF
-  printf "Your steering inbox is \`%s/%s.inbox\`; this exact path belongs to your current task even when it is outside the worktree or under the supervising firstmate home, so read and acknowledge its messages and do not reject it as another home's state.\n" "$state" "$task_id"
-  cat <<'EOF'
-Never inspect or change any other home's endpoint namespace; this authorization is limited to the exact task paths named by this brief.
+  printf "Your steering inbox is \`%s/%s.inbox\`; it and the status and task data paths this brief names are yours even under the supervising firstmate home, but never inspect or change any other home's endpoint namespace.\n" "$state" "$task_id"
+  if [ -z "$project" ] || ! fm_dod_project_is_not_firstmate "$project" "$root"; then
+    cat <<'EOF'
+When this task works on Firstmate itself, the root `AGENTS.md` (also imported by `CLAUDE.md`) is your supervisor's contract, not yours: follow this brief, plus `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
 EOF
-  if [ -n "$project" ] && fm_dod_project_is_not_firstmate "$project" "$root"; then
-    printf '%s\n' "Project instructions still govern the work wherever they do not conflict with this worker identity."
-    return 0
+    printf "If the \`firstmate-coding-guidelines\` skill name does not resolve in this session, read \`%s/.agents/skills/firstmate-coding-guidelines/SKILL.md\` instead.\n" "$root"
   fi
-  cat <<'EOF'
-When this task works on Firstmate itself, the repository root `AGENTS.md` (also imported by `CLAUDE.md`) is project content and the supervisor contract for the firstmate managing you: follow this brief instead of that supervisor contract.
-Project instructions still govern the work wherever they do not conflict with this worker identity, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
-EOF
-  printf "If the \`firstmate-coding-guidelines\` skill name does not resolve in this session, read \`%s/.agents/skills/firstmate-coding-guidelines/SKILL.md\` instead.\n" "$root"
-  fm_dod_project_is_firstmate_repo "$project" "$root" || return 0
-  cat <<'EOF'
+  if fm_dod_project_is_firstmate_repo "$project" "$root"; then
+    cat <<'EOF'
 Never add an agent name as a commit co-author, and never put "captain" or any other direct address into a non-chat artifact such as a commit message, PR or issue description, brief, code, or comment.
 EOF
+  fi
+  printf '%s\n' "Project instructions govern wherever they do not conflict with this role."
 }
 
 # 0 only when <project-dir> is a resolvable git checkout that is provably not
@@ -418,10 +415,9 @@ fm_nm_driving_block() {
   fi
   cat <<EOF
 You drive no-mistakes by responding to its gates, not by implementing fixes.
-Before you start no-mistakes, read \`$ref\`: it owns what \`--intent\` may carry, how to drive the run, and when a pipeline block is real, and it replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs.
+Before you start no-mistakes, read \`$ref\`: it owns setup, what \`--intent\` may carry, how to drive the run, and when a pipeline block is real, and it replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs.
 Pass as \`--intent\` only this brief's \`## Captain's intent\` body plus later words the captain actually said, never \`## Firstmate spec\` or your own decisions.
 This home's drive shape is $shape.
-Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 A killed or timed-out drive call is never evidence the daemon died: reattach, and apply that file's daemon check before you report the pipeline blocked.
 
 Two firstmate-specific rules layer on top of no-mistakes' own guidance:
@@ -553,9 +549,8 @@ Landing loop:
 1. \`git fetch origin\`, then \`git rebase origin/<default-branch>\`, resolving any conflict in keeping with the task.
 2. Run the full local suite on the rebased head. If anything fails, fix it, commit, and go back to step 1.
 3. \`git push origin HEAD:<default-branch>\` - a plain push. Never add \`--force\`, \`--force-with-lease\`, or a \`+\` refspec.
-4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1.
-   Lost push races are governed by this bound instead of the general rule to stop after hitting the same obstacle twice: after 5 refused pushes, append \`blocked [at=<epoch>]: lost the push race 5 times; {what keeps landing}\` and stop instead of looping.
-5. After the push succeeds, read \`$landing_ref\` and follow it to wait for the default branch's checks on your pushed commit, within one bounded blocking wait of at most $FM_DIRECT_PUSH_CHECK_WAIT_MINUTES minutes.
+4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1 within the push-race bound in \`$landing_ref\`.
+5. After the push succeeds, follow that file to wait for the default branch's checks on your pushed commit, within one bounded blocking wait of at most $FM_DIRECT_PUSH_CHECK_WAIT_MINUTES minutes.
 6. If a check on your change goes red because of your change, fix it forward at once through this same landing loop from step 1 and wait again on the new pushed commit, or revert your commit at once through the same loop.
    A revert ends the task with \`blocked [at=<epoch>]: reverted {sha} on {default-branch} because {red check}\`, never a landed \`done:\`.
    If you cannot get those checks green, or the wait's bound elapses first, append \`blocked [at=<epoch>]: {the red or pending check} on {default-branch} at {sha}\` and stop.
@@ -659,22 +654,16 @@ fm_dod_project_is_firstmate_repo() {  # <project-dir> <fm-root>
 # landing, against the supervising home (the caller's FM_HOME, or the optional
 # second argument) so the note reaches that home's root.
 fm_firstmate_verification_block() {  # <task-id> [<fm-home>]
-  local ci_branch="ci/$1" home=${2:-${FM_HOME:-}} pending_env=""
+  local ci_branch="ci/$1" home=${2:-${FM_HOME:-}} pending_env="" ref
   [ -z "$home" ] || pending_env="FM_HOME='$home' "
+  ref=$(fm_worker_guide_ref firstmate-verification)
   cat <<EOF
 # Firstmate repository verification
-This task changes Firstmate's own repository, whose suite runs on GitHub rather than on this machine.
-This section supersedes the Definition of done wherever it says to run the project's full suite locally: before landing, in landing-loop step 2, in the rule against pushing an untested head, and when stopping at ready or refreshing a ready branch. Everything else there still holds.
-- Run no local Firstmate test suite: no \`tests/*.test.sh\` script and no \`bin/fm-test-run.sh\`. Locally run only the seconds-long checks on the files you touched: \`bash -n\`, \`shellcheck\` on one file at a time, and \`bin/fm-lint.sh\` on those files.
-- Before you push any commit that changes a script matched by \`tests/risky-areas.list\`, it must pass the lean pre-push review, a separate read-only reviewer call whose header in \`bin/fm-lean-review.sh\` owns the four questions, the verdict, and the receipt. Right after making each such commit, write your Captain's intent text to a file outside this worktree and run \`bin/fm-lean-review.sh --intent-file <that file>\`; a pass adds the \`Lean-Review:\` receipt trailer to that commit, and other commits need no review. On FIX findings, amend the fix into that same commit and review again; if the review itself errors, run it once more and treat a second error as a blocker; on a DECIDE finding, append a \`needs-decision\` status line naming it and stop, then re-run with firstmate's answer added to the intent file. Never judge your own finding or write the trailer by hand. A plain rebase keeps a receipt valid, but a conflict resolution or any later edit to a reviewed commit's risky-area files needs a fresh review.
-- In place of the full local suite, once those checks pass, push the rebased head to your CI branch with \`git push origin HEAD:refs/heads/$ci_branch\`. If that plain push is refused because an earlier attempt left a head there that yours does not contain, delete your own CI branch with \`git push origin --delete $ci_branch\` and push again; never force it.
-- Then append \`paused [at=<epoch>]: waiting on $ci_branch checks for {sha} until <YYYY-MM-DDTHH:MMZ>\` and wait for the CI workflow's run on that exact commit within the same bound as the Definition of done's post-landing wait: re-list with \`gh run list --branch $ci_branch --commit <sha>\` until it appears, then \`gh run watch <run-id> --exit-status\`.
-- CI judges every commit you push, not only the tip, through \`bin/fm-safety-guard.sh\`, whose header owns the rules: a commit that changes a script matched by \`tests/risky-areas.list\` must also add or change a test in that area, or carry a \`no-test-needed: <reason>\` line in its message when the change truly needs none; a commit that drops an entry from \`tests/safety-core.list\` must carry a \`safety-core-removal: <reason>\` line; and a commit that changes such a risky-area script must carry the lean review's matching \`Lean-Review:\` receipt, which has no override. Add the line to that commit before you push it.
-- A red run means fix, commit, and go back to landing-loop step 1. Push to \`<default-branch>\` only a head whose $ci_branch run passed on top of the current \`origin/<default-branch>\`, so a lost push race that makes you rebase also means a new $ci_branch run.
-- To stop at ready, or to refresh a ready branch, push to your task branch only a head whose $ci_branch run passed.
-- After landing, wait on the default branch's own checks exactly as the Definition of done says. Running homes follow the \`green\` branch, which advances to your commit only once that main run passes, so a red main reaches no home; still fix it forward or revert it at once as the Definition of done says.
-- Once landed, also delete your CI branch: \`git push origin --delete $ci_branch\`.
-- Right after a landing push succeeds, run \`${pending_env}bin/fm-helper-consumers.sh pending HEAD\` from this worktree. It records any Firstmate helper version another home runs under a pin that its consumers have not accepted yet and notes it for their review (\`docs/helper-consumers.md\`); it is quiet when nothing is declared, and its output never changes whether the task landed.
+This task changes Firstmate's own repository, whose suite runs on GitHub, so this section replaces every Definition of done instruction to run the full suite locally; everything else there still holds.
+- Run no local Firstmate test suite (no \`tests/*.test.sh\`, no \`bin/fm-test-run.sh\`); locally run only \`bash -n\`, single-file \`shellcheck\`, and \`bin/fm-lint.sh\` on the files you touched.
+- Before your first push, read \`$ref\`: it owns the lean pre-push review, the commit-message lines CI requires, and waiting on your CI branch. Never write a \`Lean-Review:\` trailer by hand.
+- Verify a head with \`git push origin HEAD:refs/heads/$ci_branch\`, never forced, and land or mark ready only a head whose $ci_branch run passed on top of the current \`origin/<default-branch>\`.
+- Right after a landing push succeeds, run \`${pending_env}bin/fm-helper-consumers.sh pending HEAD\` from this worktree; its output never changes whether the task landed.
 EOF
 }
 

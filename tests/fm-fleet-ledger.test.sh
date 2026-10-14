@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/fm-fleet-ledger.test.sh - the opt-in fleet activity ledger, driven
 # through the real producers: bin/fm-spawn.sh (fake tmux, real git worktree),
+# the worker status command bin/fm-worker-status.sh,
 # the real watcher through bin/fm-watch-checkpoint.sh, bin/fm-pr-check.sh,
 # bin/fm-merge-local.sh, the shared PR merge outcome in bin/fm-merge-outcome-lib.sh, and
 # bin/fm-teardown.sh. docs/fleet-ledger.md owns the record contract.
@@ -173,7 +174,7 @@ worker_status_command() {  # <state> <note> [<state-dir> [<config-dir>]]
     "$ROOT/bin/fm-brief.sh" "$TASK" sample --mode no-mistakes >/dev/null) \
     || fail "brief scaffold failed"
   # shellcheck disable=SC2016 # Match literal backticks in the generated brief.
-  cmd=$(sed -n '/`echo "{state}/s/.*`\(echo .*\)`.*/\1/p' "$HOME_DIR/data/$TASK/brief.md" | head -1)
+  cmd=$(sed -n "s/.*\`\('[^\`]*\/bin\/fm-worker-status.sh'[^\`]*\)\`.*/\1/p" "$HOME_DIR/data/$TASK/brief.md" | head -1)
   [ -n "$cmd" ] || fail "the brief carries no status command"
   cmd=${cmd//\{state\}/$1}
   cmd=${cmd//<epoch>/1790000000}
@@ -267,6 +268,30 @@ test_worker_status_line_with_the_flag_absent() {
   pass "flag off: the worker's status command is a plain append and leaves no ledger file, offset, or lock"
 }
 
+# The worker status helper fills a literal <epoch> itself, keeps a supplied
+# time, and refuses a line a supervisor could not classify without appending.
+test_worker_status_helper_stamps_and_refuses_malformed_lines() {
+  local status before epoch out rc line
+  make_case helper-direct off
+  status="$HOME_DIR/state/$TASK.status"
+  before=$(date +%s)
+  run_worker_command "$(printf '%q ' "$ROOT/bin/fm-worker-status.sh" "$status" "$HOME_DIR/config" \
+    'note [supersedes=resume] [at=<epoch>]: blockers cleared')" || fail "the helper refused a filled template"
+  epoch=$(bash -c '. "$1"; status_line_at_epoch "$(tail -1 "$2")"' _ "$ROOT/bin/fm-classify-lib.sh" "$status")
+  [ "$epoch" -ge "$before" ] && [ "$epoch" -le "$(date +%s)" ] || fail "the helper did not fill in the time: $epoch"
+  assert_contains "$(cat "$status")" "note [supersedes=resume] [at=$epoch]: blockers cleared" "helper line"
+  "$ROOT/bin/fm-worker-status.sh" "$status" "$HOME_DIR/config" 'done [at=1790000000]: kept' \
+    || fail "the helper refused a line with its own time"
+  assert_equals "done [at=1790000000]: kept" "$(tail -1 "$status")" "a supplied time"
+  for line in 'bogus [at=<epoch>]: x' 'working without a colon' $'working: two\nlines'; do
+    rc=0
+    out=$("$ROOT/bin/fm-worker-status.sh" "$status" "$HOME_DIR/config" "$line" 2>&1) || rc=$?
+    expect_code 2 "$rc" "the helper accepted a malformed line: $line ($out)"
+  done
+  assert_equals 2 "$(wc -l < "$status" | tr -d ' ')" "status lines after the refusals"
+  pass "the worker status helper fills in the time and refuses malformed lines without appending"
+}
+
 test_flag_off_writes_nothing() {
   local leftovers
   make_case off-lifecycle off
@@ -285,4 +310,5 @@ test_worker_status_line_is_recorded_under_a_relative_config_override
 test_worker_status_command_fails_when_the_append_fails
 test_worker_status_line_lands_when_the_ledger_fails
 test_worker_status_line_with_the_flag_absent
+test_worker_status_helper_stamps_and_refuses_malformed_lines
 test_flag_off_writes_nothing

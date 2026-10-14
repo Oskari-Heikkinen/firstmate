@@ -4,6 +4,10 @@ Read this before you start no-mistakes for a Firstmate-dispatched ship.
 Your Definition of done keeps the rules that stay inline: the ask-user escalation, the `--yes` ban, and the ready report.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
 
+## Setup
+
+Run `no-mistakes doctor` in your worktree first; if it reports the repo is not initialized there, run `no-mistakes init`.
+
 ## What `--intent` may carry
 
 When starting no-mistakes, pass `--intent` as only your brief's `## Captain's intent` subsection body, not its heading, plus any later words the captain actually said.
@@ -20,6 +24,7 @@ A `# Current no-mistakes intent contract` section in your launch instructions na
 
 Your Definition of done names this home's drive shape: foreground or backgrounded.
 Declare the wait using the brief's status-reporting rule before the drive call you wait on.
+Do not hand-edit, commit, or fix findings yourself while a run is active: the pipeline applies every fix.
 
 Foreground: drive the run with ONE foreground `no-mistakes axi run` and let it block.
 It bounds its own hold for you: `--wait` (default 8m) exists precisely so a harness with a ten-minute command cap gets a structured return instead of being killed mid-hold.

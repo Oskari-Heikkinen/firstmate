@@ -1957,19 +1957,19 @@ SH
     role_line=$(grep -n '^# Current worker role contract$' "$prompt" | cut -d: -f1)
     task_line=$(grep -n '^# Task$' "$prompt" | head -1 | cut -d: -f1)
     [ "$role_line" -lt "$task_line" ] || fail "$brief_kind $kind put the worker identity after the task"
-    assert_grep 'Do the assigned work yourself and report only to firstmate' "$prompt" "$kind command did not deliver the worker boundary"
-    assert_grep 'You are a crewmate: an autonomous worker agent managed by firstmate' "$prompt" "$kind command did not establish the worker identity directly"
+    assert_grep 'do the task yourself without waiting for a human, and report only to firstmate' "$prompt" "$kind command did not deliver the worker boundary"
+    assert_grep 'You are a crewmate worker for firstmate' "$prompt" "$kind command did not establish the worker identity directly"
     inbox="$HOME_DIR/state/$id.inbox"
     assert_grep "$inbox" "$prompt" "$kind command did not name the worker's own steering inbox"
-    assert_grep "do not reject it as another home's state" "$prompt" "$kind command did not distinguish its inbox from another home's namespace"
-    assert_grep "Never inspect or change any other home's endpoint namespace" "$prompt" "$kind command weakened cross-home isolation"
+    assert_grep "are yours even under the supervising firstmate home" "$prompt" "$kind command did not distinguish its inbox from another home's namespace"
+    assert_grep "never inspect or change any other home's endpoint namespace" "$prompt" "$kind command weakened cross-home isolation"
     # The fixture project is not Firstmate's own repository, so the
     # Firstmate-only role sentences stay out of its prompt.
-    assert_no_grep 'follow this brief instead of that supervisor contract' "$prompt" \
+    assert_no_grep 'When this task works on Firstmate itself' "$prompt" \
       "$kind command delivered the Firstmate-only supervisor exception to another project"
     assert_no_grep 'firstmate-coding-guidelines' "$prompt" \
       "$kind command delivered the Firstmate-only skill fallback to another project"
-    assert_grep 'Project instructions still govern the work wherever they do not conflict with this worker identity' "$prompt" \
+    assert_grep 'Project instructions govern wherever they do not conflict with this role' "$prompt" \
       "$kind command dropped the project-instruction precedence"
     assert_grep 'brief for' "$prompt" "$kind command lost the task"
     [ "$(grep -c '^# Current worker role contract$' "$prompt")" -eq 1 ] ||

@@ -81,9 +81,8 @@
 # script never infers a forge and never looks the binding up, and bin/fm-spawn.sh
 # refuses a brief whose forge disagrees with the registry. bin/fm-project-mode.sh's
 # header owns what the binding means, and bin/fm-dod-lib.sh owns what `gerrit`
-# and `forgejo` change in the Definition of done. On `forgejo` this script also
-# names tea instead of gh-axi in the ship brief's forge-CLI rule. A forge on
-# --mode local-only is refused, because that mode publishes nothing.
+# and `forgejo` change in the Definition of done. A forge on --mode local-only
+# is refused, because that mode publishes nothing.
 # --shape names how a forge=gerrit task is published, and only `squash` - one
 # change - is accepted: `stack` is refused until a stack can be watched by its
 # membership pinned when its watch is armed, because the merge watch follows one
@@ -115,8 +114,9 @@
 # in the worker-guide waits-and-parking reference the scaffold names by path.
 # Emission-time syntax and legacy unknown-time handling are owned by
 # bin/fm-classify-lib.sh; each scaffold renders the stamp as a literal <epoch>
-# placeholder the worker replaces with a numeric Unix time as it appends, so a
-# scaffold never emits a substitution a file-write tool would copy through.
+# placeholder that bin/fm-worker-status.sh, the ship and scout status command,
+# fills in (a hand append replaces it with a numeric Unix time), so a scaffold
+# never emits a substitution a file-write tool would copy through.
 # Every scaffold also carries the steering-inbox receive-and-ack section:
 # process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
 # handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
@@ -168,11 +168,9 @@ esac
 . "$SCRIPT_DIR/fm-dod-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 IFS= read -r -d '' CREWMATE_PAUSE_INSTRUCTIONS <<EOF || true
-   Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - when deliberately waiting for work or an external condition expected to clear on its own, including your own validation round.
-   Before ending your turn with your own background shell or monitor still running, or before waiting on your own pipeline run or a long foreground command, append \`$PAUSED_VERB [at=<epoch>]: {job and completion condition}\` to the status file.
-   Name what you are waiting for and what will let you resume; do not repeat the declaration on every poll.
+4. Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - for a wait expected to clear on its own, including your own validation round.
+   Before ending your turn with your own background shell or monitor still running, or before waiting on your own pipeline run or a long foreground command, append \`$PAUSED_VERB [at=<epoch>]: {what you wait for and what resumes you}\` once, not on every poll.
    Do not declare active implementation or reasoning as a wait.
-   Follow the resolution rule below when the wait clears, then resume the task.
 EOF
 
 resolve_directory_input() {
@@ -307,13 +305,6 @@ if [ "$KIND" = ship ]; then
     echo "error: --shape applies only with --forge gerrit, where the worker publishes the change itself" >&2
     exit 1
   fi
-  # A Forgejo project's pull requests are handled with tea, so the ship brief's
-  # forge-CLI rule names it instead of gh-axi; every other forge keeps gh-axi.
-  if [ "$FORGE" = forgejo ]; then
-    FORGE_RULE_LINE="Use tea for Forgejo operations and chrome-devtools-axi for browser operations."
-  else
-    FORGE_RULE_LINE="Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations."
-  fi
 elif [ "$FORGE_SET" -eq 1 ] || [ "$SHAPE_SET" -eq 1 ]; then
   echo "error: --forge and --shape apply only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
@@ -401,11 +392,16 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
-# The worker's status command: the plain append always carries the line, then
-# the opt-in fleet ledger (docs/fleet-ledger.md) records it at once, costing one
-# file test when the flag is absent. A host without that flag, such as a remote
-# second mate's, runs only the append; the watcher capture is the backstop.
-STATUS_APPEND="echo \"{state} [at=<epoch>]: {one short line}\" >> $STATUS_FILE && { [ ! -e $(shell_quote "$CONFIG/fleet-ledger") ] || $(shell_quote "$FM_ROOT/bin/fm-fleet-ledger.sh") appended $(shell_quote "$CONFIG") $STATUS_FILE >/dev/null 2>&1 || true; }"
+# The worker's one status command: bin/fm-worker-status.sh owns the stamp, the
+# append, and the opt-in fleet ledger record (docs/fleet-ledger.md).
+STATUS_CMD="$(shell_quote "$FM_ROOT/bin/fm-worker-status.sh") $STATUS_FILE $(shell_quote "$CONFIG")"
+IFS= read -r -d '' STATUS_RULE <<EOF || true
+3. Append every status line this brief names with \`$STATUS_CMD '{state} [at=<epoch>]: {one short line}'\`, which fills in the time; if it fails, append the line to $STATUS_FILE yourself with \`<epoch>\` replaced by what \`date +%s\` prints.
+   States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
+   Each line wakes firstmate: report only phase changes a supervisor would act on (setup done, bug reproduced, fix implemented, validation passed) and the needs-decision, blocked, $PAUSED_VERB, done, and failed states, never step-by-step progress.
+   Name a PR anywhere only by its full https:// URL exactly as the forge printed it, never a bare number such as "PR 108".
+EOF
+STATUS_RULE=${STATUS_RULE%$'\n'}
 INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 # The park-when-waiting rule every ship and scout scaffold carries: the task's
 # exact park command stays inline, while the worker-guide waits-and-parking
@@ -418,17 +414,22 @@ PARK_RULE="   Before a wait longer than a few minutes, read \`$(fm_worker_guide_
 # scaffold kind. The record format, doorbell line, and re-ring ladder are
 # owned by bin/fm-task-inbox-lib.sh. The doorbell carries the absolute inbox
 # path and does not depend on a worker's tool shell inheriting FM_TASK_INBOX.
-# The full path here reinforces that self-contained instruction.
 # The doorbell itself is self-describing, so this section is reinforcement
 # for the natural-checkpoint habit, not the only carrier of the instruction.
 # config/wait-no-turns (docs/configuration.md) adds the line that a waiting
 # worker does not poll the inbox: checkpoint checks happen during active work,
 # so waiting still spends no turns.
+# A ship or scout launch states the inbox path once, in its worker role
+# contract (fm_brief_worker_role); a charter has no role contract, so it names it.
+if [ "$KIND" = secondmate ]; then
+  INBOX_WHERE="in $INBOX_DIR"
+else
+  INBOX_WHERE="in your steering inbox, which your worker role contract names"
+fi
 IFS= read -r -d '' INBOX_SECTION <<EOF || true
 # Firstmate instruction inbox
-Firstmate steers you through durable message files in $INBOX_DIR.
-When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list $INBOX_DIR/*.msg, read and act on each message in numeric order, then acknowledge each handled message by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`.
-The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
+Firstmate steers you through message files $INBOX_WHERE.
+When a terminal message says one is waiting, and at any natural checkpoint when you are unsure, act on each \`*.msg\` there in numeric order, then acknowledge it by moving it into that inbox's \`handled/\`; without the move firstmate rings again and eventually treats you as stuck.
 EOF
 if [ -e "$CONFIG/wait-no-turns" ]; then
   INBOX_SECTION+="Do not poll or list the inbox while waiting; a waiting instruction rings."$'\n'
@@ -531,50 +532,39 @@ $PROJECT_CLONES_BODY
 $SECONDMATE_EXTRA
 # Operating model
 You are in an isolated firstmate home. The local \`AGENTS.md\` is your job description, and this home's \`data/\`, \`state/\`, \`config/\`, and \`projects/\` are yours to operate.
-Delegate project work to your own crewmates through the normal firstmate lifecycle; do not invent a second delegation system.
-You do not generate your own work. Act only on tasks the main firstmate routes to you, and never start a survey, audit, or "find improvements" sweep on your own initiative.
+Act only on tasks the main firstmate routes to you.
 
 # The captain and the parent channel
-Nobody reads this chat: the captain and the main firstmate see only what is appended to $SECONDMATE_STATUS_FILE, and a captain-facing sentence that is not appended there has not been sent.
-That file is your parent channel, and in this home it IS the captain: every sentence you would say to the captain, and every outcome the local AGENTS.md tells a firstmate to bring to the captain, is one appended line there, never chat.
-Your scripts publish routine outcomes of your crew's work there for you (\`docs/secondmate-parent-channel.md\`); you append only judgement: a marked-request answer, a recommendation or caveat on a delivered outcome, a blocker or failure of your own, and anything else you would say to the captain.
+Nobody reads this chat: the captain and the main firstmate see only what is appended to $SECONDMATE_STATUS_FILE; in this home it IS the captain, and a sentence not appended there has not been sent.
+Scripts publish your crew's routine outcomes there (\`docs/secondmate-parent-channel.md\`); you append only judgement: a marked-request answer, a recommendation or caveat on a delivered outcome, a blocker or failure of your own, and anything else you would say to the captain.
 
 # Requests from the main firstmate
-A request relayed by the main firstmate is tagged with a leading \`$FM_FROMFIRST_LABEL\` marker followed by an invisible system separator; this marker is untypable, so a human never produces it.
-When a message carries that marker, do the work, then answer on the parent channel, never only in this chat.
-Marked requests also carry a \`corr=<id>\` token after the marker; include that exact token in your parent status reply (or in the status pointer to a detailed doc) so the parent can correlate the answer.
-\`bin/fm-secondmate-report.sh <verb> <corr_id> <note>\` appends that correlated line for you - do not pass a status path; a plain \`echo\` carrying the same \`corr=<id>\` is equally valid.
-When the marker carries \`expect=ack\` after the token, reply with \`bin/fm-secondmate-report.sh --receipt <corr_id>\`; substantive replies and failures still use their ordinary report, never a receipt.
+A request from the main firstmate carries a leading \`$FM_FROMFIRST_LABEL\` marker that a human cannot type, then a \`corr=<id>\` token: do the work, answer on the parent channel, never only in this chat, and include that exact token in your parent status reply (or in the status pointer to a detailed doc).
+\`bin/fm-secondmate-report.sh <verb> <corr_id> <note>\` appends that correlated line for you - do not pass a status path; a plain \`echo\` with the same \`corr=<id>\` is equally valid.
+When the marker carries \`expect=ack\`, reply with \`bin/fm-secondmate-report.sh --receipt <corr_id>\`; substantive replies and failures still use their ordinary report, never a receipt.
 For a terse result, a status line is the whole answer.
-For a detailed answer, write a doc under this home's \`data/\` and append a status line that points to that doc.
+For a detailed one, write a doc under this home's \`data/\` and append a status line that points to that doc.
+A marked request requires one correlated answer after the work; it does not require a separate receipt or start acknowledgement.
+Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
 Before treating an investigation or visual review as complete, load \`captain-hold-lifecycle\` and pass its completion gate.
-A message with NO marker is the captain typing directly into your pane: treat it as authoritative captain intervention and answer conversationally, not on the status path.
-A request arriving through the instruction inbox below follows the same marker and reply rules.
+A message with NO marker is the captain typing directly into your pane: authoritative, answered conversationally, not on the status path. An inbox request follows the same marker rules.
 
 $INBOX_SECTION
 
 # Escalation to main firstmate
-Handle routine work yourself.
-Report only true captain-relevant outcomes or a declared external wait by appending one line with \`bin/fm-secondmate-report.sh --state <state> [--key <slug>] [--wait <kind>:<arg>] <note>\`, which stamps and records it, or by hand:
+Report only true captain-relevant outcomes or a declared external wait, with \`bin/fm-secondmate-report.sh --state <state> [--key <slug>] [--wait <kind>:<arg>] <note>\`, which stamps and records it, or by hand, replacing \`<epoch>\` with what \`date +%s\` prints:
    \`echo "{state} [at=<epoch>]: {one short line}" >> $SECONDMATE_STATUS_FILE\`
-By hand, replace \`<epoch>\` with the number \`date +%s\` prints.
 States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
-Use \`$PAUSED_VERB: {why}\` (distinct from \`blocked:\`) only when your domain is deliberately idling on a known external wait you expect to clear on its own, naming when it clears with \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) or one machine-checkable \`[wait=<kind>:<arg>]\` tag (\`bin/fm-classify-lib.sh\` owns the kinds); use \`blocked:\` when you are stuck and need firstmate to act.
-Use this only for material phase changes, a captain decision, a real blocker, a failure, work ready for review, or work you landed.
-Work you landed includes a merge you performed yourself under standing merge authority and one the captain merged on the forge: under that authority nothing is ever "ready for review", so a landed merge that goes unreported reaches the captain as silence.
-A marked request requires one correlated answer after the work (for an \`expect=ack\` marker that answer is the uptake receipt above); it does not require a separate receipt or start acknowledgement.
-Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
+Use \`$PAUSED_VERB: {why}\` only while your domain idles on a known external wait, naming when it clears with \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) or one \`[wait=<kind>:<arg>]\` tag; use \`blocked:\` when you need firstmate to act.
+Report only material phase changes, a captain decision, a real blocker, a failure, work ready for review, or work you landed.
 When a routed-work phase has a supervisor-actionable material change worth reporting under the rule above, give that reported phase a stable key.
-If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
-When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>] [at=<epoch>]: {why it is no longer active}\`.
-Only a \`resolved\` line carrying an escalated decision's or blocker's exact key closes it: a later \`done\` or \`working\` event never does, even when the answer is what started that work.
-The main firstmate's answer normally writes that closing line; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one) as your domain resumes.
-Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
+If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event, and when it ends without another reportable state, append \`resolved [key=<work-slug>] [at=<epoch>]: {why it is no longer active}\`.
+Only a \`resolved\` line carrying an escalated decision's or blocker's exact key closes it, never a later \`done\` or \`working\`, even when the answer is what started that work; the main firstmate's answer normally writes it, and when a blocker or wait clears without one, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one).
 
 # Definition of done
-You are persistent: do not exit just because your queue is empty.
+You are persistent: an empty queue is a healthy resting state, never a reason to exit.
 On startup and restart, run normal firstmate bootstrap and recovery through \`bin/fm-session-start.sh\` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.
-With no assigned or in-flight work after that, go idle and wait silently for the main firstmate to route you a task; an empty queue is a healthy resting state, so never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
+Then, with nothing assigned, go idle and wait silently for the main firstmate to route you a task; never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
 If this charter cannot be carried out, append \`blocked [at=<epoch>]: {why}\` or \`failed [at=<epoch>]: {why}\` to the parent channel and stop.
 EOF
 }
@@ -654,21 +644,14 @@ TASK_SECTION=${TASK_SECTION%$'\n'}
 # The secondmate charter deliberately omits this rule because a secondmate
 # legitimately allocates and returns slots for crewmates in its own home.
 IFS= read -r -d '' SHARED_INFRA_RULE <<'EOF' || true
-7. Never administer infrastructure that every lane shares. Two things are shared:
-   - The `no-mistakes` daemon - one instance serving every lane/home: never stop, restart, or
-     update it, because that kills other lanes' in-flight pipeline runs; only firstmate manages it.
-   - The worktree pool your own worktree came from, and the repository every lane's worktree
-     shares. Never create, remove, return, prune, move, or reassign a worktree or pool slot, and
-     never write into a sibling slot's directory. Rule 2 does not cover this: removing a worktree
-     is administration rather than an edit outside your directory, and it lands on lanes that are
-     running right now. The act is the rule and commands are only examples of it - `treehouse`
-     get/return/remove/prune, the equivalent operations on any other worktree provider or runtime
-     backend, and `git worktree add|remove|move|prune`. A slot that looks unused is not evidence
-     that it is free, and returning your own worktree is firstmate's job at cleanup, not yours.
-   If you genuinely need a second checkout, another slot, or the daemon touched, append
-   `blocked [at=<epoch>]: {what you need}` and stop; firstmate arranges it.
+7. Never administer infrastructure every lane shares, because running lanes depend on it:
+   - the `no-mistakes` daemon: never stop, restart, or update it; only firstmate manages it.
+   - the worktree pool and its repository: never create, remove, return, prune, move, or reassign any worktree or pool slot - not even your own or one that looks unused - whether by `treehouse`, `git worktree add|remove|move|prune`, or any other worktree provider, and never write into a sibling slot.
+   If you need a second checkout, another slot, or the daemon touched, append `blocked [at=<epoch>]: {what you need}` and stop.
 EOF
 SHARED_INFRA_RULE=${SHARED_INFRA_RULE%$'\n'}
+OBSTACLE_RULE="5. If you are stuck and need help, or hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop."
+RESOLVE_RULE="   Only a \`resolved\` line with an opened decision's or blocker's exact key closes it, never a later \`done:\` or \`working:\`, even when the answer is what started that work; firstmate's reply normally writes it, and when a blocker or wait clears without one, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one)."
 
 if [ -n "$BASE_BRANCH" ]; then
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean copy of its base branch.
@@ -693,25 +676,11 @@ The report is the only thing that survives, so anything worth keeping must be in
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
    Search only inside this worktree: never grep or find over a firstmate home's \`data/\` or \`state/\`, \`/\`, or \`/mnt/c\`, and bound any wider search with \`-xdev\` and \`--exclude-dir\`.
-3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
-4. Report status by appending one line:
-   \`$STATUS_APPEND\`
-   States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
-   Substitute \`<epoch>\` with the current Unix time in seconds - run \`date +%s\` and write the number it printed; a stamp that is not plain digits records no time at all.
-   Each append wakes firstmate, so report sparingly: only phase changes a supervisor
-   would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
-   FYI progress lines; firstmate reads your pane for that.
-   Whenever you mention a PR anywhere - a status line, your terminal, a summary - write its full
-   https:// URL exactly as the forge printed it, never a bare number such as "PR 108"; firstmate
-   copies that URL from your line rather than assembling one.
+$STATUS_RULE
 $CREWMATE_PAUSE_INSTRUCTIONS$PARK_RULE
-   Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop; firstmate will help.
-6. If a decision belongs to a human (product choices, destructive actions),
-   append \`needs-decision [at=<epoch>]: {summary of options}\` and stop. Firstmate will reply with the decision.
-   A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
-   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
-   When you resume after a reboot or restart with your own blockers still open, one \`note [supersedes=resume] [at=<epoch>]: {evidence}\` line closes all of them at once (never a needs-decision).
+$OBSTACLE_RULE
+6. If a decision belongs to a human (product choices, destructive actions), append \`needs-decision [at=<epoch>]: {options}\` and stop; firstmate replies with the decision.
+$RESOLVE_RULE
 $SHARED_INFRA_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
@@ -723,7 +692,7 @@ $EVIDENCE_LINE
 A visual deliverable is a static HTML file beside the report, named by path in it.
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report.
 When the report is complete, append \`done [at=<epoch>]: {one-line conclusion}\` to the status file and stop.
-If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
+If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report.
 EOF
 append_brief_include
 echo "scaffolded: $BRIEF (scout; replace {TASK} and {FIRSTMATE_SPEC})"
@@ -736,22 +705,13 @@ fi
 # The block opens with the fixed "Delivery contract: mode=<mode>" line that
 # bin/fm-spawn.sh checks against its own explicit --mode and the project's
 # registered forge before launching.
-case "$MODE" in
-  direct-PR)
-    SETUP2=""
-    ;;
-  direct-push)
-    SETUP2="
+# Only direct-push adds a setup step; the no-mistakes drive reference owns the
+# pipeline's doctor/init step.
+SETUP2=""
+if [ "$MODE" = direct-push ]; then
+  SETUP2="
 2. Start from the latest origin default branch: run \`git fetch origin\`, then \`git rebase origin/<default-branch>\` (the Definition of done says how to name it)."
-    ;;
-  local-only)
-    SETUP2=""
-    ;;
-  *)  # no-mistakes
-    SETUP2="
-2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
-    ;;
-esac
+fi
 RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
 DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
 
@@ -763,9 +723,9 @@ $HERDR_SECTION
 # Setup
 $SETUP_BASE
 
-**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
-The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
-If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked [at=<epoch>]: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+**Verify isolation before anything else.** \`pwd -P\` and \`git rev-parse --show-toplevel\` must both resolve to the disposable worktree you were launched in, not firstmate's primary checkout.
+The path check is authoritative; git-dir checks do not prove it.
+If either fails, do not branch or commit here: append \`blocked [at=<epoch>]: launched in primary checkout, not an isolated worktree\` and stop.
 
 1. First action: create your branch: \`git checkout -b $BRANCH_Q --\`$SETUP2
 
@@ -775,29 +735,13 @@ $RULE1
    Outside the worktree, write only that task material and the status and steering-inbox records authorized below.
    Leave the worktree clean before reporting done.
    Search only inside this worktree: never grep or find over a firstmate home's \`data/\` or \`state/\`, \`/\`, or \`/mnt/c\`, and bound any wider search with \`-xdev\` and \`--exclude-dir\`.
-3. $FORGE_RULE_LINE
-4. Report status by appending one line:
-   \`$STATUS_APPEND\`
-   States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
-   Substitute \`<epoch>\` with the current Unix time in seconds - run \`date +%s\` and write the number it printed; a stamp that is not plain digits records no time at all.
-   Each append wakes firstmate, so report sparingly: only phase changes a supervisor
-   would act on (setup done, bug reproduced, fix implemented, validation passed) and the
-   needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
-   firstmate reads your pane for that.
-   Whenever you mention a PR anywhere - a status line, your terminal, a summary - write its full
-   https:// URL exactly as the forge printed it, never a bare number such as "PR 108"; firstmate
-   copies that URL from your line rather than assembling one.
-   A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
-   turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
+$STATUS_RULE
+   A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the turn after it; continue until a \`done:\` gate under Definition of done.
 $CREWMATE_PAUSE_INSTRUCTIONS$PARK_RULE
-   Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop; firstmate will help.
-6. If a decision belongs above the implementation worker (product choices, destructive actions),
-   append \`needs-decision [at=<epoch>]: {summary of options}\` and stop. Firstmate will reply with the decision.
+$OBSTACLE_RULE
+6. If a decision belongs above you (product choices, destructive actions), append \`needs-decision [at=<epoch>]: {options}\` and stop; firstmate replies with the decision.
 $ASK_USER_BLOCK
-   A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
-   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
-   When you resume after a reboot or restart with your own blockers still open, one \`note [supersedes=resume] [at=<epoch>]: {evidence}\` line closes all of them at once (never a needs-decision).
+$RESOLVE_RULE
 $SHARED_INFRA_RULE
 
 $WAIT_BLOCK$INBOX_SECTION

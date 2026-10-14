@@ -13,5 +13,6 @@ A ship or scout brief names one of these files by absolute path at the point a w
 The brief stays the worker's safety contract and wins on any conflict.
 
 - [`references/waits-and-parking.md`](references/waits-and-parking.md) - before a wait longer than a few minutes: wait tags that keep monitoring quiet, and parking.
-- [`references/no-mistakes-drive.md`](references/no-mistakes-drive.md) - before starting no-mistakes: what `--intent` may carry, how to drive the run, and when a pipeline block is real.
-- [`references/direct-push-landing.md`](references/direct-push-landing.md) - after a direct-push landing push: waiting for the default branch's checks.
+- [`references/no-mistakes-drive.md`](references/no-mistakes-drive.md) - before starting no-mistakes: setup, what `--intent` may carry, how to drive the run, and when a pipeline block is real.
+- [`references/direct-push-landing.md`](references/direct-push-landing.md) - when a direct-push landing push is refused or succeeds: the push-race bound and waiting for the default branch's checks.
+- [`references/firstmate-verification.md`](references/firstmate-verification.md) - before the first push of a direct-push task on Firstmate's own repository: the lean pre-push review, the commit-message lines CI requires, and waiting on the CI branch.

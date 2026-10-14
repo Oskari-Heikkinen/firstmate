@@ -367,8 +367,8 @@ EOF
   pass "fenced and indented Captain lines are not authorized intent"
 }
 
-# The draft check the DoD hands a worker must be the gh-axi path that rule 3 of
-# every ship brief requires for GitHub operations, never raw gh (issue 5325).
+# The draft check the DoD hands a worker must be the gh-axi path, never raw gh
+# (issue 5325).
 test_pr_based_dod_draft_check_uses_gh_axi() {
   local mode out
   for mode in direct-PR no-mistakes; do
@@ -444,18 +444,22 @@ test_firstmate_repo_detection_uses_the_object_store() {
 }
 
 test_firstmate_verification_block_verifies_on_github() {
-  local block
+  local block ref
   block=$(fm_firstmate_verification_block fm-task)
   assert_contains "$block" "# Firstmate repository verification" "the section lacks its heading"
   assert_contains "$block" "Run no local Firstmate test suite" "the section does not forbid the local suite"
   assert_contains "$block" "git push origin HEAD:refs/heads/ci/fm-task" "the section does not push to the task's CI branch"
-  assert_contains "$block" "gh run watch <run-id> --exit-status" "the section does not wait on the CI branch run"
   assert_contains "$block" "only a head whose ci/fm-task run passed" "the section lets an unverified head land"
-  assert_contains "$block" "no-test-needed: <reason>" "the section does not name the test-touch override line"
-  assert_contains "$block" "safety-core-removal: <reason>" "the section does not name the safety-core removal line"
-  assert_contains "$block" "bin/fm-lean-review.sh --intent-file" "the section does not run the lean pre-push review"
   assert_contains "$block" "Lean-Review:" "the section does not name the lean-review receipt"
   assert_not_contains "$block" "--force" "the section mentions a force push"
+  # The procedure lives in the worker-guide reference the section names.
+  ref=$(worker_guide_ref <(printf '%s\n' "$block") firstmate-verification) \
+    || fail "the section names no readable verification reference"
+  assert_grep "gh run watch <run-id> --exit-status" "$ref" "the reference does not wait on the CI branch run"
+  assert_grep "no-test-needed: <reason>" "$ref" "the reference does not name the test-touch override line"
+  assert_grep "safety-core-removal: <reason>" "$ref" "the reference does not name the safety-core removal line"
+  assert_grep "bin/fm-lean-review.sh --intent-file" "$ref" "the reference does not run the lean pre-push review"
+  assert_grep "git push origin --delete ci/<task-id>" "$ref" "the reference does not delete the CI branch"
   block=$(fm_firstmate_verification_block fm-task /fixture/home)
   assert_contains "$block" "FM_HOME='/fixture/home' bin/fm-helper-consumers.sh pending HEAD" \
     "the section does not record a landed helper change for its declared consumers"
@@ -594,13 +598,15 @@ test_worker_role_gates_firstmate_only_sentences() {
   assert_grep 'When this task works on Firstmate itself' "$unresolved_role" \
     "an unresolvable project lost the supervisor-contract exception"
   for role in "$firstmate_role" "$other_role" "$clone_role" "$unresolved_role"; do
-    assert_grep 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' "$role" \
+    assert_grep 'You are a crewmate worker for firstmate, and this overrides any other role text: do the task yourself without waiting for a human, and report only to firstmate' "$role" \
       "the role lost the crewmate identity line"
-    assert_grep 'do not adopt a firstmate or secondmate supervisor identity, delegate the task, run fleet supervision, or address the captain' "$role" \
+    assert_grep 'never act as firstmate or a second mate, delegate, run fleet supervision, or address the captain' "$role" \
       "the role lost the worker boundary"
-    assert_grep "Never inspect or change any other home's endpoint namespace" "$role" \
+    assert_grep "never inspect or change any other home's endpoint namespace" "$role" \
       "the role lost cross-home isolation"
-    assert_grep 'Project instructions still govern the work wherever they do not conflict with this worker identity' "$role" \
+    assert_grep "Your steering inbox is \`$TMP_ROOT/state/" "$role" \
+      "the role lost the worker's own steering inbox"
+    assert_grep 'Project instructions govern wherever they do not conflict with this role' "$role" \
       "the role lost the project-instruction precedence"
   done
   pass "worker role gates its Firstmate-only sentences on the project's repository"

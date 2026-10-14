@@ -236,8 +236,9 @@ test_forge_selection_renders_correct_cli() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-forge-default some-proj --mode direct-PR >/dev/null 2>&1 \
     || fail "a ship brief with no --forge should still scaffold"
   brief="$home/data/brief-forge-default/brief.md"
-  assert_grep "3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations." "$brief" \
-    "a brief with no --forge must render the exact pre-existing gh-axi Rule 3 line"
+  # The ambient forge and browser CLI names belong to the harness, not the brief.
+  assert_no_grep 'chrome-devtools-axi' "$brief" \
+    "a brief with no --forge still names the browser CLI as a rule"
   # shellcheck disable=SC2016 # Backticks are literal generated brief text.
   assert_grep 'open a PR with `gh-axi`' "$brief" \
     "a direct-PR brief with no --forge must still tell the worker to open the PR with gh-axi"
@@ -247,8 +248,6 @@ test_forge_selection_renders_correct_cli() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-forge-forgejo some-proj --mode direct-PR --forge forgejo >/dev/null 2>&1 \
     || fail "--forge forgejo should scaffold a direct-PR ship brief"
   brief="$home/data/brief-forge-forgejo/brief.md"
-  assert_grep "3. Use tea for Forgejo operations and chrome-devtools-axi for browser operations." "$brief" \
-    "--forge forgejo must render the tea Rule 3 line"
   # shellcheck disable=SC2016 # Backticks are literal generated brief text.
   assert_grep 'open a PR with `tea`' "$brief" \
     "--forge forgejo's direct-PR DOD must tell the worker to open the PR with tea"
@@ -268,8 +267,6 @@ test_forge_selection_renders_correct_cli() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-forge-nm some-proj --mode no-mistakes --forge forgejo >/dev/null 2>&1 \
     || fail "--forge forgejo should scaffold a no-mistakes ship brief"
   brief="$home/data/brief-forge-nm/brief.md"
-  assert_grep "3. Use tea for Forgejo operations and chrome-devtools-axi for browser operations." "$brief" \
-    "a no-mistakes --forge forgejo brief must render the tea Rule 3 line"
   grep -qx "Delivery contract: mode=no-mistakes forge=forgejo" "$brief" \
     || fail "a no-mistakes --forge forgejo brief must mark the delivery contract line"
   # shellcheck disable=SC2016 # Backticks and braces are literal generated brief text.
@@ -295,7 +292,7 @@ a shape on forgejo|--mode direct-PR --forge forgejo --shape squash|--shape appli
 forgejo on a scout|--scout --forge forgejo|apply only to ship briefs
 ROWS
 
-  pass "fm-brief.sh: --forge forgejo names tea in Rule 3, the direct-PR DOD, and the draft read-back, marks the delivery contract, and the closed set refuses everything else"
+  pass "fm-brief.sh: --forge forgejo names tea in the direct-PR DOD, and the draft read-back, marks the delivery contract, and the closed set refuses everything else"
 }
 
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
@@ -803,12 +800,6 @@ test_secondmate_marked_request_reporting_contract() {
     "secondmate charter lost declared external waits"
   assert_grep 'a captain decision, a real blocker, a failure, work ready for review, or work you landed' "$brief" \
     "secondmate charter lost decisions, blockers, failures, ready outcomes, or landed work"
-  # Under standing merge authority nothing is ever "ready for review", so the
-  # landed merge is the trigger a charter without this line silently omits.
-  assert_grep 'a merge you performed yourself under standing merge authority and one the captain merged on the forge' "$brief" \
-    "secondmate charter did not name a landed merge as a reporting trigger"
-  assert_grep 'nothing is ever "ready for review", so a landed merge' "$brief" \
-    "secondmate charter rendered escaped quotes around ready for review"
   assert_grep 'States: working, needs-decision, blocked, paused, done, failed.' "$brief" \
     "secondmate charter changed the preserved status vocabulary"
   pass "fm-brief.sh: marked requests avoid generic acknowledgements and preserve material reporting"
@@ -973,7 +964,7 @@ test_herdr_lab_contract_applies_to_scouts_but_not_secondmates() {
 }
 
 test_pause_verb_override_renders_all_brief_scaffolds() {
-  local home kind id brief append now epoch templates template line signals
+  local home kind id brief append now epoch templates template line signals before
   home="$TMP_ROOT/pause-verb-home"
   mkdir -p "$home/data"
 
@@ -994,12 +985,27 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
         ;;
     esac
     brief="$home/data/$id/brief.md"
-    # Fill the scaffold's generated status-append command the way a worker does
-    # and run it. The stamp must be a value the worker supplies, so the command
-    # may not carry an unevaluated substitution that a file-write tool would
-    # copy through verbatim.
-    # shellcheck disable=SC2016 # Match literal backticks in the generated interface.
-    append=$(sed -n '/`echo "{state}/s/.*`\(echo .*\)`.*/\1/p' "$brief")
+    # Fill the scaffold's generated status command the way a worker does and
+    # run it: a ship or scout runs bin/fm-worker-status.sh, a charter appends
+    # by hand. The command may not carry an unevaluated substitution that a
+    # file-write tool would copy through verbatim.
+    if [ "$kind" = secondmate ]; then
+      # shellcheck disable=SC2016 # Match literal backticks in the generated interface.
+      append=$(sed -n '/`echo "{state}/s/.*`\(echo .*\)`.*/\1/p' "$brief")
+    else
+      append=$(sed -n "s/.*\`\('[^\`]*\/bin\/fm-worker-status.sh'[^\`]*\)\`.*/\1/p" "$brief" | head -1)
+      [ -n "$append" ] || fail "$kind scaffold names no worker status command"
+      # Left unfilled, the helper writes the time itself.
+      line=${append//\{state\}/working}
+      line=${line//\{one short line\}/helper stamp}
+      before=$(date +%s)
+      mkdir -p "$home/state"
+      FM_CLASSIFY_PAUSED_VERB=awaiting bash -c "$line" || fail "$kind status helper refused its own template"
+      epoch=$(bash -c '. "$1"; status_line_at_epoch "$(tail -1 "$2")"' _ \
+        "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
+      [ "$epoch" -ge "$before" ] && [ "$epoch" -le "$(date +%s)" ] \
+        || fail "$kind status helper did not fill in the time: $epoch"
+    fi
     now=$(date +%s)
     append=${append//\{state\}/done}
     append=${append//\{one short line\}/test event}
@@ -1009,12 +1015,12 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
     esac
     mkdir -p "$home/state"
     bash -c "$append" || fail "generated status command failed"
-    epoch=$(bash -c '. "$1"; status_line_at_epoch "$(cat "$2")"' _ \
+    epoch=$(bash -c '. "$1"; status_line_at_epoch "$(tail -1 "$2")"' _ \
       "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
     [ "$epoch" = "$now" ] || fail "$kind scaffold did not record the worker's event time"
     # Every status signal the brief instructs a worker to append is a template
     # the worker fills in and writes verbatim, with or without a shell, not only
-    # rule 4's echo: substitute each one's named placeholders and read the stamp
+    # rule 3's command: substitute each one's named placeholders and read the stamp
     # back. Extracting by "append" as well as by the stamp means dropping a stamp
     # from any instruction fails here rather than shrinking the set.
     templates=$(grep -o -e "append \`[^\`]*: [^\`]*\`" \
@@ -1025,6 +1031,7 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
       [ -n "$template" ] || continue
       case "$template" in
         'echo "'*) template=${template#echo \"}; template=${template%%\" >>*} ;;
+        *"/bin/fm-worker-status.sh' "*) template=${template##*\' \'}; template=${template%\'} ;;
       esac
       case "$template" in
         *"\$("*) fail "$kind signal embeds an unevaluated command: $template" ;;
@@ -1267,7 +1274,7 @@ test_worker_role_scope() {
   assert_no_grep '# Current worker role contract' "$brief" "secondmate received the worker exception"
   assert_no_grep 'do not adopt the supervisor identity' "$brief" "secondmate received the worker exception"
   assert_grep "The local \`AGENTS.md\` is your job description" "$brief" "secondmate lost its supervisor contract"
-  assert_grep 'That file is your parent channel' "$brief" "secondmate lost its parent channel"
+  assert_grep 'a sentence not appended there has not been sent' "$brief" "secondmate lost its parent channel"
   assert_grep 'You are a persistent second mate managed by the main firstmate' "$brief" "secondmate lost its identity line"
   pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"
 }

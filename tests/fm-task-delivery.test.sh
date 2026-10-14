@@ -1037,13 +1037,13 @@ EOF
       first_line=$(sed -n '1p' "$brief")
       [ "$first_line" = '# Current worker role contract' ] ||
         fail "$project_kind $kind did not put worker identity first"
-      assert_grep 'Do the assigned work yourself and report only to firstmate' "$brief" "$project_kind $kind omitted worker authority"
+      assert_grep 'do the task yourself without waiting for a human, and report only to firstmate' "$brief" "$project_kind $kind omitted worker authority"
       assert_grep "$home/state/$id.inbox" "$brief" "$project_kind $kind omitted its exact steering inbox"
       # Neither fixture project shares this Firstmate repository's git store, so
       # the Firstmate-only sentences stay out even where AGENTS.md was copied in.
       assert_no_grep 'When this task works on Firstmate itself' "$brief" "$project_kind $kind received the Firstmate-only role sentences"
       assert_no_grep 'firstmate-coding-guidelines' "$brief" "$project_kind $kind received the Firstmate-only skill fallback"
-      assert_grep 'Project instructions still govern the work wherever they do not conflict with this worker identity' "$brief" "$project_kind $kind displaced project guidance"
+      assert_grep 'Project instructions govern wherever they do not conflict with this role' "$brief" "$project_kind $kind displaced project guidance"
       ! grep -q '^This section supersedes every earlier brief instruction about your role' "$brief" ||
         fail "$project_kind $kind revoked the brief's own role for a task that is not Firstmate"
       assert_no_grep '# Current worker role contract' "$home/data/$id/brief.md" "spawn rewrote the source brief"
@@ -1285,8 +1285,9 @@ test_forge_gerrit_changes_what_no_mistakes_means() {
   # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   assert_grep 'Never run `gerrit-axi submit`, never vote or review a change by any path' "$brief" \
     "the gerrit worker was not kept from submitting or voting"
+  ref=$(worker_guide_ref "$brief" no-mistakes-drive) || fail "the gerrit brief names no readable no-mistakes reference"
   # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-  assert_grep 'Run `no-mistakes doctor`' "$brief" \
+  assert_grep 'Run `no-mistakes doctor`' "$ref" \
     "the gerrit worker lost the pipeline initialization step no-mistakes still needs"
 
   # The forge changes the contract's head and tail only: how the pipeline is
@@ -1693,15 +1694,17 @@ EOF
     assert_grep "git push origin HEAD:<default-branch>" "$brief" "direct-push brief lacks the fast-forward landing push"
     assert_grep "Never add \`--force\`" "$brief" "direct-push brief does not forbid a force push"
     assert_grep "Never force-push anything" "$brief" "direct-push rule one does not forbid a force push"
-    assert_grep "after 5 refused pushes" "$brief" "direct-push brief does not bound the push race at 5"
-    assert_grep "governed by this bound instead of the general rule to stop after hitting the same obstacle twice" "$brief" \
-      "direct-push push-race bound does not supersede the same-obstacle rule"
     assert_grep "sed 's#^origin/##'" "$brief" "direct-push brief does not strip origin/ from the default-branch name"
     assert_grep "without re-running step 1; only the landing loop rebases" "$brief" \
       "direct-push ready refresh does not skip the rebase"
     ref=$(worker_guide_ref "$brief" direct-push-landing) || fail "direct-push brief names no readable landing reference"
-    assert_grep "After the push succeeds, read \`$ref\` and follow it to wait for the default branch's checks" "$brief" \
+    assert_grep "After the push succeeds, follow that file to wait for the default branch's checks" "$brief" \
       "direct-push brief does not send the worker to its landing reference after the push"
+    assert_grep "after 5 refused pushes" "$ref" "direct-push landing reference does not bound the push race at 5"
+    assert_grep "governed by this bound instead of the general rule to stop after hitting the same obstacle twice" "$ref" \
+      "direct-push push-race bound does not supersede the same-obstacle rule"
+    assert_grep "within the push-race bound in \`$ref\`" "$brief" \
+      "direct-push landing loop does not send a lost push race to its bound"
     assert_grep "wait for those checks on your pushed commit in one bounded blocking wait within that bound" "$ref" \
       "direct-push brief does not wait for the default branch's checks after landing"
     assert_grep "Decide from the push triggers in the workflow files you already inspected" "$ref" \

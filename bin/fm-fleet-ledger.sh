@@ -9,8 +9,8 @@
 # never run. It repeats that test so a direct invocation writes nothing.
 #
 # Producers:
-#   bin/fm-brief.sh              appended (in every worker's status command,
-#                                right after its unchanged plain append)
+#   bin/fm-worker-status.sh      appended (every worker's status command,
+#                                right after its plain append)
 #   bin/fm-spawn.sh              dispatched (fresh spawns only, never relaunch)
 #   bin/fm-watch.sh              capture, once per poll cycle
 #   bin/fm-pr-check.sh           pr_ready (a PR registered for review, not the

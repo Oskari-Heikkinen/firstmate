@@ -293,6 +293,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/worker-guide/references/firstmate-verification.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/worker-guide/references/no-mistakes-drive.md",
       "audience": "agent-runtime"
     },
