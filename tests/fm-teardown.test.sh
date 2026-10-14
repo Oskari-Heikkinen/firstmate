@@ -5922,6 +5922,39 @@ test_queue_settlement_real_cleanup_leaves_no_orphan_status() {
   pass "real queue settlement leaves its proof in the task note but never recreates a cleaned-up status log"
 }
 
+test_cleanup_without_release_record_needs_no_release_owner() {
+  local case_dir phase setting rc combination
+  for combination in absent-off retained-off absent-on retained-on; do
+    phase=${combination%-*}; setting=${combination##*-}
+    case_dir=$(make_case "no-release-$combination")
+    write_meta "$case_dir" local-only ship
+    prepare_teardown_source_copy "$case_dir"
+    rm -f "$case_dir/test-root/bin/fm-park.sh"
+    [ "$phase" != retained ] || printf 'copy_state=retained\n' >> "$case_dir/state/task-x1.meta"
+    printf '%s\n' "$setting" > "$case_dir/config/park-release"
+    rc=0
+    run_copied_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    expect_code 0 "$rc" 'ordinary cleanup depended on the absent release owner'
+    assert_absent "$case_dir/state/task-x1.meta" 'ordinary cleanup did not retire its task'
+    assert_grep 'teardown task-x1 complete' "$case_dir/stdout" 'ordinary cleanup did not complete'
+  done
+  pass 'cleanup without release custody or a release source needs no release owner'
+}
+
+test_cleanup_release_record_still_requires_owner_when_disabled() {
+  local case_dir rc
+  case_dir=$(make_case release-owner-required)
+  write_meta "$case_dir" local-only ship
+  prepare_teardown_source_copy "$case_dir"
+  rm -f "$case_dir/test-root/bin/fm-park.sh"
+  printf 'copy_state=retained\npark_release_source=when-pending-release\n' >> "$case_dir/state/task-x1.meta"
+  printf 'off\n' > "$case_dir/config/park-release"
+  rc=0
+  run_copied_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  assert_source_refusal_preserved_state "$case_dir" 'release-owner-required' 'fm-park.sh'
+  pass 'disabling release never bypasses cleanup of an existing release source'
+}
+
 test_saved_copy_custody_never_runs_terminal_cleanup() {
   local case_dir phase rc before
   for phase in released release-prepared restore-prepared; do
@@ -5952,6 +5985,8 @@ test_saved_copy_custody_never_runs_terminal_cleanup() {
 # processor count capped at four; 1 runs the cases serially.
 case_jobs=$(fm_case_pool_jobs "${FM_TEARDOWN_CASE_JOBS:-}")
 fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_cleanup_without_release_record_needs_no_release_owner \
+  test_cleanup_release_record_still_requires_owner_when_disabled \
   test_saved_copy_custody_never_runs_terminal_cleanup \
   test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes \
   test_windowless_record_outside_the_leftover_class_still_refuses \

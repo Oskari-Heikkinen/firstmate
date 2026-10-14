@@ -470,7 +470,16 @@ fi
 fm_lease_guard "$ID" "teardown (fm-teardown)"
 
 META="$STATE/$ID.meta"
-FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-park.sh" cleanup-release "$ID" screen || exit 1
+# Ordinary cleanup needs no release owner. Saved/interrupted custody and an
+# armed release source still require its guard, even after release is disabled.
+teardown_cleanup_release() {
+  case "$(fm_meta_get "$META" copy_state)" in
+    ''|retained)
+      [ -n "$(fm_meta_get "$META" park_release_source)" ] || return 0 ;;
+  esac
+  FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-park.sh" cleanup-release "$ID" "$1"
+}
+teardown_cleanup_release screen || exit 1
 TREEHOUSE_PROJECT_LOCK=
 TREEHOUSE_PROJECT_LOCK_HELD=0
 TREEHOUSE_SLOT_LOCK_REQUIRED=0
@@ -571,7 +580,7 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
   exit 1
 }
 # Re-read the release guard under lifecycle/metadata custody.
-FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-park.sh" cleanup-release "$ID" screen || exit 1
+teardown_cleanup_release screen || exit 1
 TEARDOWN_META_KIND=$(fm_meta_get "$META" kind)
 [ -n "$TEARDOWN_META_KIND" ] || TEARDOWN_META_KIND=ship
 # Retiring a persistent secondmate is main's alone in both postures; the kind
@@ -4077,7 +4086,7 @@ if [ "$(fm_meta_get "$META" park_state)" = parked ]; then
       || { echo "error: could not retire $ID's park watch (park-$ID); retry the teardown" >&2; exit 1; }
   fi
 fi
-FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-park.sh" cleanup-release "$ID" retire || exit 1
+teardown_cleanup_release retire || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Opt-in fleet activity ledger (docs/fleet-ledger.md), before the status log is
 # retired so its last lines are captured; off costs one file test.
