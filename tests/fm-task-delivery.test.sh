@@ -721,7 +721,7 @@ EOF
   assert_grep "plus any later words the captain actually supplied" \
     "$home/data/$id/launch-brief.md" \
     "migrated launch contract excluded later captain clarifications"
-  assert_grep "The Definition of done's rule that \`--intent\` must be self-sufficient still governs" \
+  assert_grep "The self-sufficiency rule for \`--intent\` in the no-mistakes reference your Definition of done names still governs" \
     "$home/data/$id/launch-brief.md" \
     "migrated launch contract's overlay dropped the self-sufficiency pointer"
 
@@ -1037,9 +1037,12 @@ EOF
       first_line=$(sed -n '1p' "$brief")
       [ "$first_line" = '# Current worker role contract' ] ||
         fail "$project_kind $kind did not put worker identity first"
-      assert_grep 'follow this brief instead of that supervisor contract' "$brief" "$project_kind $kind omitted worker authority"
+      assert_grep 'Do the assigned work yourself and report only to firstmate' "$brief" "$project_kind $kind omitted worker authority"
       assert_grep "$home/state/$id.inbox" "$brief" "$project_kind $kind omitted its exact steering inbox"
-      assert_grep 'When this task works on Firstmate itself' "$brief" "$project_kind $kind made the exception unconditional"
+      # Neither fixture project shares this Firstmate repository's git store, so
+      # the Firstmate-only sentences stay out even where AGENTS.md was copied in.
+      assert_no_grep 'When this task works on Firstmate itself' "$brief" "$project_kind $kind received the Firstmate-only role sentences"
+      assert_no_grep 'firstmate-coding-guidelines' "$brief" "$project_kind $kind received the Firstmate-only skill fallback"
       assert_grep 'Project instructions still govern the work wherever they do not conflict with this worker identity' "$brief" "$project_kind $kind displaced project guidance"
       ! grep -q '^This section supersedes every earlier brief instruction about your role' "$brief" ||
         fail "$project_kind $kind revoked the brief's own role for a task that is not Firstmate"
@@ -1244,7 +1247,7 @@ EOF
 # report ready, and must end at a ready branch instead of a PR with green checks -
 # while the forge-independent half of the pipeline contract is unchanged.
 test_forge_gerrit_changes_what_no_mistakes_means() {
-  local home brief plain
+  local home brief plain ref
   home="$TMP_ROOT/forge-dod/home"
   mkdir -p "$home/data" "$home/state"
   FM_HOME="$home" "$BRIEF" forge-dod-g1 review-server-project --mode no-mistakes --forge gerrit >/dev/null \
@@ -1303,18 +1306,16 @@ test_forge_gerrit_changes_what_no_mistakes_means() {
        emit { print }
        emit && /hard rule violation\.$/ { exit }' "$plain" > "$TMP_ROOT/forge-dod/plain-middle"
   [ -s "$TMP_ROOT/forge-dod/gerrit-middle" ] || fail "the gerrit brief carries no pipeline-driving section to compare"
-  # Only the two statements about a green PR differ: the ci step is skipped on
-  # this forge, so there is no checks-passed return to wait for.
-  grep -q "reports the green PR" "$TMP_ROOT/forge-dod/plain-middle" \
-    || fail "the default contract lost the green-PR return statement the comparison removes"
-  assert_no_grep "checks-passed" "$TMP_ROOT/forge-dod/gerrit-middle" \
-    "the gerrit worker was told to wait for a checks-passed return its skipped ci step never gives"
-  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-  grep -v "reports the green PR" "$TMP_ROOT/forge-dod/plain-middle" \
-    | sed 's/; once checks are green it returns `checks-passed` immediately, and if it refuses/; if it refuses/' \
-    > "$TMP_ROOT/forge-dod/plain-middle-no-pr"
-  cmp -s "$TMP_ROOT/forge-dod/gerrit-middle" "$TMP_ROOT/forge-dod/plain-middle-no-pr" \
+  # The inline pipeline-driving section is forge-independent; the green-PR
+  # return lives in the drive reference, conditioned on the ci step running,
+  # so a gerrit worker whose ci step is skipped is never told to wait for it.
+  cmp -s "$TMP_ROOT/forge-dod/gerrit-middle" "$TMP_ROOT/forge-dod/plain-middle" \
     || fail "the forge changed the forge-independent half of the pipeline contract"
+  assert_no_grep "checks-passed" "$TMP_ROOT/forge-dod/gerrit-middle" \
+    "the gerrit worker was told inline to wait for a checks-passed return its skipped ci step never gives"
+  ref=$(worker_guide_ref "$brief" no-mistakes-drive) || fail "the gerrit brief names no readable drive reference"
+  assert_grep "Where the pipeline's ci step runs (every forge except a Gerrit task that skips it), only a drive call's return reports the green PR" "$ref" \
+    "the drive reference does not condition the green-PR return on the ci step running"
   pass "forge=gerrit: no-mistakes runs with its forge steps skipped, recovers its fixes, then publishes one change"
 }
 
@@ -1677,7 +1678,7 @@ test_forge_gerrit_direct_pr_publishes_one_change() {
 # spawn's recorded yolo in the launch brief. A PR merge poll has nothing to
 # watch for it, so arming one is refused.
 test_direct_push_brief_spawn_and_pr_check() {
-  local rec home proj fakebin id brief out status yolo launch
+  local rec home proj fakebin id brief out status yolo launch ref
   rec=$(make_home direct-push "- proj [direct-push] - fixture (added 2026-01-01)")
   IFS='|' read -r home proj fakebin <<EOF
 $rec
@@ -1698,21 +1699,24 @@ EOF
     assert_grep "sed 's#^origin/##'" "$brief" "direct-push brief does not strip origin/ from the default-branch name"
     assert_grep "without re-running step 1; only the landing loop rebases" "$brief" \
       "direct-push ready refresh does not skip the rebase"
-    assert_grep "wait for those checks on your pushed commit in one bounded blocking wait" "$brief" \
+    ref=$(worker_guide_ref "$brief" direct-push-landing) || fail "direct-push brief names no readable landing reference"
+    assert_grep "After the push succeeds, read \`$ref\` and follow it to wait for the default branch's checks" "$brief" \
+      "direct-push brief does not send the worker to its landing reference after the push"
+    assert_grep "wait for those checks on your pushed commit in one bounded blocking wait within that bound" "$ref" \
       "direct-push brief does not wait for the default branch's checks after landing"
-    assert_grep "decide from the push triggers in the workflow files you already inspected" "$brief" \
+    assert_grep "Decide from the push triggers in the workflow files you already inspected" "$ref" \
       "direct-push brief decides whether checks exist from a run listing instead of workflow triggers"
-    assert_grep "until the runs for that commit appear" "$brief" \
+    assert_grep "until the runs for that commit appear" "$ref" \
       "direct-push brief does not re-list until the pushed commit's runs appear"
-    assert_grep "counting their \`paths\` and \`paths-ignore\` filters" "$brief" \
+    assert_grep "counting their \`paths\` and \`paths-ignore\` filters" "$ref" \
       "direct-push brief ignores path filters when deciding whether the push runs checks"
-    assert_grep "Judge each workflow your push triggered on its own: one that completed on your own commit counts from that run." "$brief" \
+    assert_grep "Judge each workflow your push triggered on its own: one that completed on your own commit counts from that run." "$ref" \
       "direct-push brief requires one commit to complete every workflow"
-    assert_grep "follow within the same bound the newest \`origin/<default-branch>\` commit containing yours that has a completed, not cancelled, run of that same workflow" "$brief" \
+    assert_grep "follow within the same bound the newest \`origin/<default-branch>\` commit containing yours that has a completed, not cancelled, run of that same workflow" "$ref" \
       "direct-push brief does not follow a superseded run to a completed run of the same workflow"
-    assert_grep "first append \`paused [at=<epoch>]: waiting on {default-branch} checks for {sha} until <YYYY-MM-DDTHH:MMZ>\`" "$brief" \
+    assert_grep "first append \`paused [at=<epoch>]: waiting on {default-branch} checks for {sha} until <YYYY-MM-DDTHH:MMZ>\`" "$ref" \
       "direct-push brief does not declare a paused wait before the post-landing check wait"
-    assert_grep "Count a workflow green only from such a completed run of that same workflow" "$brief" \
+    assert_grep "Count a workflow green only from such a completed run of that same workflow" "$ref" \
       "direct-push brief counts a workflow green from a commit that never ran it"
     assert_grep "one bounded blocking wait of at most 90 minutes" "$brief" \
       "direct-push brief does not render the 90-minute post-landing wait bound"

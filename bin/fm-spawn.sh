@@ -3446,7 +3446,7 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   BRIEF="$DATA/$ID/launch-brief.md"
   BRIEF_TMP="$DATA/$ID/.launch-brief.md.${BASHPID:-$$}"
   {
-    fm_brief_worker_role "$STATE" "$ID" "$FM_ROOT" &&
+    fm_brief_worker_role "$STATE" "$ID" "$FM_ROOT" "$PROJ_ABS" &&
       printf '\n' &&
       cat "$SOURCE_BRIEF" &&
       if [ "$RESTORE" = 1 ]; then

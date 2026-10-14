@@ -431,7 +431,7 @@ test_pr_based_dod_requires_non_draft() {
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
 # reference must render as plain prose with no dangling apostrophe artifact.
 test_no_mistakes_dod_wording() {
-  local home id brief spelling
+  local home id brief spelling ref
   home="$TMP_ROOT/wording-home"
   mkdir -p "$home/data"
   id="brief-wording-b1"
@@ -441,32 +441,39 @@ test_no_mistakes_dod_wording() {
   for spelling in 'Captain:' "Captain's words:" "Captain's ask:" "Captain's intent:" 'Captain,'; do
     assert_no_grep "$spelling" "$brief" "rendered intent contract still teaches operator-address labels"
   done
-  assert_grep '[captain]' "$brief" "rendered intent contract must explain the neutral legacy provenance marker"
-  assert_grep "no-mistakes itself provides for the mechanics" "$brief" \
-    "no-mistakes DOD lost its guidance-reference sentence"
-  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
-  assert_grep '`no-mistakes axi run --help`' "$brief" \
-    "no-mistakes DOD must render literal backticks around the help command"
-  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
-  assert_grep '`help`' "$brief" \
-    "no-mistakes DOD must render literal backticks around help"
-  assert_grep "pass \`--intent\` as only this brief's \`## Captain's intent\`" "$brief" \
-    "no-mistakes DOD must require --intent to be the Captain's intent subsection"
-  assert_grep "plus any later words the captain actually said" "$brief" \
-    "no-mistakes DOD must allow later captain words in --intent"
-  assert_grep "Do not include \`## Firstmate spec\`" "$brief" \
-    "no-mistakes DOD must keep Firstmate spec out of --intent"
-  assert_grep "or your own decisions and tradeoffs" "$brief" \
-    "no-mistakes DOD must keep worker tradeoffs out of --intent"
-  assert_grep "This replaces the no-mistakes skill's advice to enrich \`--intent\`" "$brief" \
+  # The DOD keeps the core --intent boundary inline and names the reference that
+  # owns the full worker-facing rule, read before no-mistakes starts.
+  assert_grep "Pass as \`--intent\` only this brief's \`## Captain's intent\` body plus later words the captain actually said, never \`## Firstmate spec\`" "$brief" \
+    "no-mistakes DOD lost its inline --intent boundary"
+  assert_grep "replaces the no-mistakes skill's advice to enrich \`--intent\`" "$brief" \
     "no-mistakes DOD must override the external skill's enrich-with-decisions guidance"
-  # A bare reference cannot preserve the captain's ask, so the rendered DOD states
+  ref=$(worker_guide_ref "$brief" no-mistakes-drive) || fail "no-mistakes DOD names no readable drive reference"
+  for spelling in 'Captain:' "Captain's words:" "Captain's ask:" "Captain's intent:" 'Captain,'; do
+    assert_no_grep "$spelling" "$ref" "the drive reference still teaches operator-address labels"
+  done
+  assert_grep '[captain]' "$ref" "the drive reference must explain the neutral legacy provenance marker"
+  assert_grep "no-mistakes itself provides for the mechanics" "$ref" \
+    "the drive reference lost its guidance-reference sentence"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`no-mistakes axi run --help`' "$ref" \
+    "the drive reference must render literal backticks around the help command"
+  assert_grep "pass \`--intent\` as only your brief's \`## Captain's intent\`" "$ref" \
+    "the drive reference must require --intent to be the Captain's intent subsection"
+  assert_grep "plus any later words the captain actually said" "$ref" \
+    "the drive reference must allow later captain words in --intent"
+  assert_grep "Do not include \`## Firstmate spec\`" "$ref" \
+    "the drive reference must keep Firstmate spec out of --intent"
+  assert_grep "or your own decisions and tradeoffs" "$ref" \
+    "the drive reference must keep worker tradeoffs out of --intent"
+  assert_grep "This replaces the no-mistakes skill's advice to enrich \`--intent\`" "$ref" \
+    "the drive reference must override the external skill's enrich-with-decisions guidance"
+  # A bare reference cannot preserve the captain's ask, so the reference states
   # the self-sufficiency rule and requires referenced material to be resolved into
   # its substance.
-  assert_grep "The \`--intent\` string you pass must be self-sufficient" "$brief" \
-    "no-mistakes DOD must require a self-sufficient --intent string"
-  assert_grep "write the substance of the referenced items into \`--intent\`" "$brief" \
-    "no-mistakes DOD must tell the worker to resolve report, decision, and PR references into substance"
+  assert_grep "The \`--intent\` string you pass must be self-sufficient" "$ref" \
+    "the drive reference must require a self-sufficient --intent string"
+  assert_grep "write the substance of the referenced items into \`--intent\`" "$ref" \
+    "the drive reference must tell the worker to resolve report, decision, and PR references into substance"
 
   # The --yes ban is a fleet-wide prohibition, not a preference, and it must not
   # claim an enforcement the tool does not provide: this is instruction only.
@@ -487,25 +494,26 @@ test_no_mistakes_dod_wording() {
 # went green (2026-09-22, PR #5317). The rendered DOD must make the drive
 # call's own return the green signal and reattach after a bounded return.
 test_no_mistakes_dod_green_detection() {
-  local home id brief
+  local home id brief ref
   home="$TMP_ROOT/green-detection-home"
   mkdir -p "$home/data"
   id="brief-green-b1"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
-  assert_grep "Only a drive call's return reports the green PR" "$brief" \
-    "no-mistakes DOD must make the drive call's return the green signal"
-  assert_grep "never reports \`checks-passed\` while the ci step is still monitoring the PR for merge" "$brief" \
-    "no-mistakes DOD must say axi status cannot show a green PR in merge monitoring"
-  assert_grep "never wait on a status poll for the next gate or outcome" "$brief" \
-    "no-mistakes DOD must forbid waiting on a status poll"
-  assert_grep "reattach at once by re-running \`no-mistakes axi run\` without flags" "$brief" \
-    "no-mistakes DOD must reattach the drive call after a bounded return"
-  assert_grep "once checks are green it returns \`checks-passed\` immediately" "$brief" \
-    "no-mistakes DOD must say a reattach reports an already-green PR"
-  assert_no_grep "poll \`no-mistakes axi status\` from a separate call" "$brief" \
-    "no-mistakes DOD still makes a status poll the wait for the next gate or outcome"
+  ref=$(worker_guide_ref "$brief" no-mistakes-drive) || fail "no-mistakes DOD names no readable drive reference"
+  assert_grep "only a drive call's return reports the green PR" "$ref" \
+    "the drive reference must make the drive call's return the green signal"
+  assert_grep "never reports \`checks-passed\` while the ci step is still monitoring the PR for merge" "$ref" \
+    "the drive reference must say axi status cannot show a green PR in merge monitoring"
+  assert_grep "never wait on a status poll for the next gate or outcome" "$ref" \
+    "the drive reference must forbid waiting on a status poll"
+  assert_grep "reattach at once by re-running \`no-mistakes axi run\` without flags" "$ref" \
+    "the drive reference must reattach the drive call after a bounded return"
+  assert_grep "once checks are green a reattach returns \`checks-passed\` immediately" "$ref" \
+    "the drive reference must say a reattach reports an already-green PR"
+  assert_no_grep "poll \`no-mistakes axi status\` from a separate call" "$ref" \
+    "the drive reference still makes a status poll the wait for the next gate or outcome"
   pass "fm-brief.sh: no-mistakes DOD detects a green PR from the drive call, not a status poll"
 }
 
@@ -799,6 +807,8 @@ test_secondmate_marked_request_reporting_contract() {
   # landed merge is the trigger a charter without this line silently omits.
   assert_grep 'a merge you performed yourself under standing merge authority and one the captain merged on the forge' "$brief" \
     "secondmate charter did not name a landed merge as a reporting trigger"
+  assert_grep 'nothing is ever "ready for review", so a landed merge' "$brief" \
+    "secondmate charter rendered escaped quotes around ready for review"
   assert_grep 'States: working, needs-decision, blocked, paused, done, failed.' "$brief" \
     "secondmate charter changed the preserved status vocabulary"
   pass "fm-brief.sh: marked requests avoid generic acknowledgements and preserve material reporting"
@@ -999,7 +1009,7 @@ SIGNALS
 }
 
 test_ship_and_scout_teach_validation_round_pause() {
-  local home kind id brief
+  local home kind id brief ref
   home="$TMP_ROOT/validation-round-pause-home"
   mkdir -p "$home/data" "$home/config"
   : > "$home/config/wait-no-turns"
@@ -1024,8 +1034,13 @@ test_ship_and_scout_teach_validation_round_pause() {
       "$kind brief did not require declaring a background-work wait"
     assert_grep 'before waiting on your own pipeline run or a long foreground command' "$brief" \
       "$kind brief did not require declaring a pipeline or foreground wait"
-    assert_grep 'Firstmate may still raise one first-sight alert' "$brief" \
-      "$kind brief incorrectly promised to suppress the first alert"
+    ref=$(worker_guide_ref "$brief" waits-and-parking) || fail "$kind brief names no readable waits reference"
+    assert_grep 'Firstmate may still raise one first-sight alert' "$ref" \
+      "$kind brief's waits reference incorrectly promised to suppress the first alert"
+    # shellcheck disable=SC2016 # Literal backticks and placeholders must remain unexpanded.
+    assert_grep '`[wait=<kind>:<arg>]`' "$ref" "$kind brief's waits reference lost the machine-checkable wait tag"
+    assert_grep "park instead of idling with \`FM_HOME=" "$brief" "$kind brief lost its task's exact park command"
+    assert_grep "/bin/fm-park.sh' $id --handoff <file>" "$brief" "$kind brief's park command does not name its own task"
     assert_grep 'Do not declare active implementation or reasoning as a wait' "$brief" \
       "$kind brief did not limit the declaration to actual waits"
   done
@@ -1138,7 +1153,7 @@ test_scout_and_secondmate_scaffold() {
 # external wait sleeps in one bounded blocking shell command sized per harness,
 # and a waiting worker neither polls its inbox nor polls a pipeline between holds.
 test_workers_wait_without_spending_turns() {
-  local home id brief
+  local home id brief ref
   home="$TMP_ROOT/wait-home"
   mkdir -p "$home/data" "$home/config"
   : > "$home/config/wait-no-turns"
@@ -1164,9 +1179,12 @@ test_workers_wait_without_spending_turns() {
     assert_grep "natural checkpoint" "$brief" "$id: the flag dropped the natural-checkpoint inbox check"
   done
   brief="$home/data/brief-wait-ship/brief.md"
-  assert_grep "issue the same foreground call again" "$brief" \
-    "the no-mistakes DOD must reattach with the same foreground call"
-  assert_no_grep "background the drive call" "$brief" "the no-mistakes DOD still backgrounds the drive call"
+  assert_grep "This home's drive shape is foreground" "$brief" \
+    "the no-mistakes DOD must select the foreground drive shape"
+  assert_no_grep "drive shape is backgrounded" "$brief" "the no-mistakes DOD still backgrounds the drive call"
+  ref=$(worker_guide_ref "$brief" no-mistakes-drive) || fail "the no-mistakes DOD names no readable drive reference"
+  assert_grep "issue the same foreground call again" "$ref" \
+    "the drive reference must reattach the foreground shape with the same foreground call"
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-wait-sm --secondmate --no-projects >/dev/null 2>&1 \
@@ -1190,9 +1208,9 @@ test_wait_no_turns_absent_keeps_the_previous_brief() {
   assert_no_grep "end your turn at once" "$brief" "an absent flag still added the waiting section"
   assert_grep "natural checkpoint" "$brief" "an absent flag dropped the unprompted inbox check"
   assert_no_grep "Do not poll or list the inbox while waiting" "$brief" "an absent flag still added the no-poll inbox line"
-  assert_grep "background the drive call" "$brief" "an absent flag replaced the backgrounded drive text"
-  assert_no_grep "issue the same foreground call again" "$brief" \
-    "an absent flag still asked for the foreground reattach"
+  assert_grep "This home's drive shape is backgrounded" "$brief" "an absent flag replaced the backgrounded drive shape"
+  assert_no_grep "drive shape is foreground" "$brief" \
+    "an absent flag still asked for the foreground drive"
   pass "fm-brief: without config/wait-no-turns the brief and drive text stay as they were"
 }
 
@@ -1207,6 +1225,8 @@ test_worker_role_scope() {
     fi
     brief="$home/data/$kind/brief.md"
     assert_no_grep '# Current worker role contract' "$brief" "$kind scaffolded a second owner of the role scope fm-spawn.sh delivers"
+    assert_no_grep 'You are a crewmate' "$brief" "$kind scaffold repeated the identity line the launch role contract delivers"
+    [ "$(sed -n '1p' "$brief")" = '# Task' ] || fail "$kind scaffold does not open with its task"
   done
   FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise assigned work.' \
     "$ROOT/bin/fm-brief.sh" supervisor --secondmate --no-projects >/dev/null || fail "secondmate scaffold failed"
@@ -1215,6 +1235,7 @@ test_worker_role_scope() {
   assert_no_grep 'do not adopt the supervisor identity' "$brief" "secondmate received the worker exception"
   assert_grep "The local \`AGENTS.md\` is your job description" "$brief" "secondmate lost its supervisor contract"
   assert_grep 'That file is your parent channel' "$brief" "secondmate lost its parent channel"
+  assert_grep 'You are a persistent second mate managed by the main firstmate' "$brief" "secondmate lost its identity line"
   pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"
 }
 
@@ -1505,7 +1526,7 @@ test_worker_role_scope
 # scaffold must prohibit the administrative act itself. The rule is emitted from
 # one shared string so the ship and scout copies cannot drift apart.
 test_crewmate_scaffolds_forbid_pool_administration() {
-  local home id brief mode ship_rule scout_rule
+  local home id brief mode ship_rule scout_rule ref
   home="$TMP_ROOT/pool-admin-home"
   mkdir -p "$home/data"
 
@@ -1548,11 +1569,20 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   [ "$ship_rule" = "$scout_rule" ] \
     || fail "ship and scout shared-infrastructure rules have drifted apart"
 
-  # The daemon half of the rule survived the fold.
-  assert_grep "no-mistakes" "$brief" "scout brief lost the shared no-mistakes daemon rule"
+  # The daemon half of the rule survived the fold as a one-line ban in every
+  # kind, while the check for when a pipeline block is real reaches only a
+  # no-mistakes ship, through the drive reference its Definition of done names.
+  assert_grep "never stop, restart, or" "$brief" "scout brief lost the shared no-mistakes daemon ban"
   # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-  assert_grep 'blocked [at=<epoch>]: {the daemon error}' "$brief" \
-    "scout brief lost the daemon-error reporting instruction"
+  assert_no_grep 'blocked [at=<epoch>]: {the daemon error}' "$brief" \
+    "scout brief still carries the no-mistakes-only daemon diagnosis"
+  ref=$(worker_guide_ref "$home/data/brief-pool-no-mistakes/brief.md" no-mistakes-drive) ||
+    fail "no-mistakes ship brief names no readable drive reference"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'blocked [at=<epoch>]: {the daemon error}' "$ref" \
+    "the no-mistakes drive reference lost the daemon-error reporting instruction"
+  assert_grep "Only after ruling out socket refusal" "$ref" \
+    "the no-mistakes drive reference lost the socket-refusal check"
 
   # A secondmate runs its own home and legitimately allocates and returns slots
   # for its own crewmates, so the crewmate prohibition must NOT reach its charter.

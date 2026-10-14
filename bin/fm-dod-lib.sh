@@ -70,9 +70,12 @@
 # report, read back from the forge; a lane that deliberately holds a draft
 # declares a paused wait instead. bin/fm-pr-check.sh refuses to arm merge
 # monitoring on a draft through the same reading bin/fm-pr-merge.sh uses.
-# This file is the one owner of the no-mistakes `--intent` contract: only the
-# brief's `## Captain's intent` subsection plus later captain words, never
-# `## Firstmate spec` and never the worker's own tradeoffs.
+# What a worker may pass as no-mistakes `--intent` - only the brief's
+# `## Captain's intent` subsection plus later captain words, never
+# `## Firstmate spec` and never the worker's own tradeoffs, as a self-sufficient
+# string - is owned by .agents/skills/worker-guide/references/no-mistakes-drive.md,
+# which the rendered Definition of done names; this file owns the authoring side
+# and the gates below.
 # Author the subsection body and later relays as the actual words, without
 # adding speaker labels or direct address: the heading supplies provenance and
 # is not part of --intent. A legacy mixed Task instead marks each captain line
@@ -81,9 +84,8 @@
 # reader, so a quoted `Captain:` sample is never authorized intent.
 # Previously stored speaker labels remain readable for compatibility only.
 # Never scrub literal examples or other content the captain actually supplied.
-# The string passed must be self-sufficient - it plus the codebase reconstructs
-# roughly the same specification - so a report, decision, or PR the intent
-# refers to is written into it as substance, never left as a pointer.
+# Because the passed string must be self-sufficient, author a report, decision,
+# or PR the intent refers to into the subsection as substance, never a pointer.
 # bin/fm-brief.sh scaffolds those two `# Task` subsections; bin/fm-spawn.sh and
 # bin/fm-promote.sh refuse leftover `{TASK}` / `{FIRSTMATE_SPEC}` placeholders
 # and a `## Captain's intent` line opening with a Captain label or address
@@ -98,6 +100,10 @@
 # fm_brief_intent_overlay it is a distinctly titled launch section that states
 # its own precedence, so a brief or project instruction that authors a
 # conflicting role is superseded rather than duplicated.
+# Its sentences about working on Firstmate itself are omitted only when the
+# optional project argument is provably not Firstmate
+# (fm_dod_project_is_not_firstmate); no project, a separate Firstmate clone, or
+# an unresolvable checkout keeps them.
 # The code root argument is the Firstmate checkout that holds
 # .agents/skills/firstmate-coding-guidelines/SKILL.md. A worker in a Firstmate
 # worktree loads that skill by name from its own checkout. A worker whose
@@ -141,21 +147,48 @@
 # back-to-back full default-branch CI runs, since a superseded run waits behind one.
 FM_DIRECT_PUSH_CHECK_WAIT_MINUTES=90
 
-fm_brief_worker_role() {  # <state-dir> <task-id> <code-root>
-  local state=$1 task_id=$2 root=$3
+fm_brief_worker_role() {  # <state-dir> <task-id> <code-root> [<project-dir>]
+  local state=$1 task_id=$2 root=$3 project=${4-}
   cat <<'EOF'
 # Current worker role contract
-You are a crewmate: an autonomous worker agent managed by firstmate.
+You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 This section establishes your current identity before every project or task instruction below and supersedes any conflicting role identity in those instructions.
 Do the assigned work yourself and report only to firstmate; do not adopt a firstmate or secondmate supervisor identity, delegate the task, run fleet supervision, or address the captain.
 EOF
   printf "Your steering inbox is \`%s/%s.inbox\`; this exact path belongs to your current task even when it is outside the worktree or under the supervising firstmate home, so read and acknowledge its messages and do not reject it as another home's state.\n" "$state" "$task_id"
   cat <<'EOF'
 Never inspect or change any other home's endpoint namespace; this authorization is limited to the exact task paths named by this brief.
+EOF
+  if [ -n "$project" ] && fm_dod_project_is_not_firstmate "$project" "$root"; then
+    printf '%s\n' "Project instructions still govern the work wherever they do not conflict with this worker identity."
+    return 0
+  fi
+  cat <<'EOF'
 When this task works on Firstmate itself, the repository root `AGENTS.md` (also imported by `CLAUDE.md`) is project content and the supervisor contract for the firstmate managing you: follow this brief instead of that supervisor contract.
 Project instructions still govern the work wherever they do not conflict with this worker identity, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
 EOF
   printf "If the \`firstmate-coding-guidelines\` skill name does not resolve in this session, read \`%s/.agents/skills/firstmate-coding-guidelines/SKILL.md\` instead.\n" "$root"
+}
+
+# 0 only when <project-dir> is a resolvable git checkout that is provably not
+# Firstmate: it does not share this code root's store and its root lacks the
+# Firstmate markers (bin/fm-spawn.sh and AGENTS.md). A separate clone of
+# Firstmate, or a checkout the probe cannot resolve, returns 1 so the worker
+# keeps the Firstmate-only role sentences.
+fm_dod_project_is_not_firstmate() {  # <project-dir> <fm-root>
+  local project=$1 root=$2 top
+  top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ] || return 1
+  fm_dod_project_is_firstmate_repo "$project" "$root" && return 1
+  [ -f "$top/bin/fm-spawn.sh" ] && [ -f "$top/AGENTS.md" ] && return 1
+  return 0
+}
+
+# Absolute path of a worker-guide reference a brief names at its trigger; the
+# skill under .agents/skills/worker-guide/ owns that reference text.
+fm_worker_guide_ref() {  # <name>
+  local root=${FM_ROOT:-}
+  [ -n "$root" ] || root=$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}/.." && pwd)
+  printf '%s/.agents/skills/worker-guide/references/%s.md' "$root" "$1"
 }
 
 # Closed-set gate shared by every forge-aware renderer and bin/fm-brief.sh, so a
@@ -310,7 +343,7 @@ This section supersedes every earlier brief instruction about constructing `--in
 Use everything under `## Captain intent authorized for --intent` through the end of this brief, including any nested subheadings but excluding that heading, plus any later words the captain actually supplied as `--intent`; never include Firstmate specification or other mixed Task content.
 Preserve those words without adding speaker labels or direct address.
 Firstmate-authored constraints, acceptance criteria, implementation details, decisions, and tradeoffs are specification, not captain intent.
-The Definition of done's rule that `--intent` must be self-sufficient still governs the string you pass: resolve any report, decision, or PR the intent below refers to into its substance rather than passing the pointer.
+The self-sufficiency rule for `--intent` in the no-mistakes reference your Definition of done names still governs the string you pass: resolve any report, decision, or PR the intent below refers to into its substance rather than passing the pointer.
 
 ## Captain intent authorized for --intent
 EOF
@@ -362,51 +395,29 @@ fm_ask_user_escalation_block() {  # <data-dir> <task-id>
 EOF
 }
 
-# The forge-independent middle of the no-mistakes contract: how a worker drives
-# the pipeline, what `--intent` may carry, and the two firstmate-specific rules.
-# Written once; only the two sentences about a green PR depend on the forge,
-# because on gerrit the ci step is skipped and there is no PR to report.
-fm_nm_driving_block() {  # <forge>
-  local pr_return_line='' pr_reattach_clause=';' drive_block wait_cfg
-  if [ "$1" != gerrit ]; then
-    pr_return_line="Only a drive call's return reports the green PR: \`no-mistakes axi status\` shows progress but never reports \`checks-passed\` while the ci step is still monitoring the PR for merge, so never wait on a status poll for the next gate or outcome.
-"
-    pr_reattach_clause="; once checks are green it returns \`checks-passed\` immediately, and"
-  fi
-  # config/wait-no-turns selects the foreground drive. Absent, the text matches
-  # the backgrounded drive a home had before that flag.
+# The forge-independent middle of the no-mistakes contract. The worker-guide
+# no-mistakes-drive reference owns the worker-facing --intent text, both drive
+# shapes, and the daemon check; this block keeps inline only the rules that must
+# hold before that file is read, plus the drive shape config/wait-no-turns
+# selects (present: foreground; absent: backgrounded).
+fm_nm_driving_block() {
+  local ref shape wait_cfg
+  ref=$(fm_worker_guide_ref no-mistakes-drive)
   wait_cfg=${CONFIG:-${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}}
   if [ -e "$wait_cfg/wait-no-turns" ]; then
-    drive_block="Drive the run with ONE foreground \`no-mistakes axi run\` and let it block.
-It bounds its own hold for you: \`--wait\` (default 8m) exists precisely so a harness with a ten-minute command cap gets a structured return instead of being killed mid-hold.
-Declare that wait using the brief's status-reporting rule before the foreground drive call.
-Never background a wait, and never arm a timer to stand in for one: a backgrounded call returns in milliseconds, so it does not wait at all, and every timer left behind fires later as a paid wake for nothing.
-${pr_return_line}Whenever a drive call returns without a gate or an outcome - its own wait elapsed, or it was killed or timed out - that is not a failure: reattach at once by re-running \`no-mistakes axi run\` without flags, and issue the same foreground call again, one at a time, until a gate or outcome comes back${pr_reattach_clause} if it refuses because no run is active, read the finished outcome from \`no-mistakes axi status\`."
+    shape="foreground: one blocking \`no-mistakes axi run\` at a time, never backgrounded"
   else
-    drive_block="One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
-So background the drive call instead of sitting in one blocking hold your harness will kill, and read its return when it finishes.
-Declare that wait using the brief's status-reporting rule before waiting on the backgrounded drive call.
-Where a harness's own command limit is not established, assume it bounds commands and use that same backgrounded shape.
-${pr_return_line}Whenever a drive call returns without a gate or an outcome - its own wait elapsed, or it was killed or timed out - reattach at once by re-running \`no-mistakes axi run\` without flags, backgrounded the same way${pr_reattach_clause} if it refuses because no run is active, read the finished outcome from \`no-mistakes axi status\`."
+    shape="backgrounded: background each drive call and read its return when it finishes"
   fi
   cat <<EOF
 You drive no-mistakes by responding to its gates, not by implementing fixes.
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
-When starting no-mistakes, pass \`--intent\` as only this brief's \`## Captain's intent\` subsection body, not its heading, plus any later words the captain actually said.
-Preserve the actual words without adding speaker labels or direct address; the subsection heading supplies provenance outside the pipeline input.
-For a legacy brief with no such subsection, include only words on lines marked \`[captain] \`, excluding that metadata prefix; never copy its mixed \`# Task\` wholesale.
-If it has no provenance-marked captain words, stop and ask firstmate instead of starting no-mistakes.
-Do not include \`## Firstmate spec\`, later Firstmate build constraints, or your own decisions and tradeoffs.
-The \`--intent\` string you pass must be self-sufficient: that string plus the codebase must let a reader reconstruct roughly the same specification, without depending on a separate report, a PR, or context that lives only in this conversation.
-When the captain's intent refers to a report, decision, or PR ("do items 1, 2, 3, and 7 of the report"), write the substance of the referenced items into \`--intent\` in the captain's terms, not only the pointer; that substance is the captain's ask by reference, while Firstmate's build instructions and your own decisions still stay out.
-This replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
+Before you start no-mistakes, read \`$ref\`: it owns what \`--intent\` may carry, how to drive the run, and when a pipeline block is real, and it replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs.
+Pass as \`--intent\` only this brief's \`## Captain's intent\` body plus later words the captain actually said, never \`## Firstmate spec\` or your own decisions.
+This home's drive shape is $shape.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+A killed or timed-out drive call is never evidence the daemon died: reattach, and apply that file's daemon check before you report the pipeline blocked.
 
-$drive_block
-A killed or timed-out call is never evidence the daemon died: the daemon accepts your response immediately and runs the round in the background, so the call was only ever waiting for a read while the run kept working.
-Reattach and keep going rather than reporting the pipeline blocked; rule 7 owns the checks that decide when a pipeline block is real.
-
-Two firstmate-specific rules layer on top of that guidance:
+Two firstmate-specific rules layer on top of no-mistakes' own guidance:
 - ask-user findings are never yours to answer: escalate to firstmate using rule 6's ask-user format and stop.
   Firstmate applies \`ask-user-authority\` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
@@ -439,7 +450,7 @@ EOF
 
 fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-}
-  local branch=${3:-fm/$id} pr_base='' nm_base='' base_q contract_forge='' forge_cli=gh-axi draft_check
+  local branch=${3:-fm/$id} pr_base='' nm_base='' base_q contract_forge='' forge_cli=gh-axi draft_check landing_ref
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
   fm_base_branch_valid "$base" "$mode" "$forge" fm_dod_block || return 1
   draft_check="(\`gh-axi pr view <number>\` must print \`draft: no\`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with \`gh-axi pr ready <number>\`."
@@ -484,7 +495,7 @@ Firstmate will then instruct you to run /no-mistakes to validate.
 That first \`done:\` is the handoff that starts the pipeline; it is not a request to publish.
 
 EOF
-      fm_nm_driving_block "$forge"
+      fm_nm_driving_block
       cat <<EOF
 
 Because \`push\` is skipped, the pipeline's fixes DO NOT arrive in your checkout: each fix round commits onto a branch inside no-mistakes' own local gate repository, and with no push nothing carries those commits back to you.
@@ -519,6 +530,7 @@ Do NOT run /no-mistakes. The configured merge authority decides whether to merge
 EOF
       ;;
     direct-push:*)
+      landing_ref=$(fm_worker_guide_ref direct-push-landing)
       cat <<EOF
 # Definition of done
 Delivery contract: mode=direct-push
@@ -536,12 +548,7 @@ Landing loop:
 3. \`git push origin HEAD:<default-branch>\` - a plain push. Never add \`--force\`, \`--force-with-lease\`, or a \`+\` refspec.
 4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1.
    Lost push races are governed by this bound instead of the general rule to stop after hitting the same obstacle twice: after 5 refused pushes, append \`blocked [at=<epoch>]: lost the push race 5 times; {what keeps landing}\` and stop instead of looping.
-5. After the push succeeds, decide from the push triggers in the workflow files you already inspected, counting their \`paths\` and \`paths-ignore\` filters against the files your change touched, whether your push runs checks; an empty first run listing is not evidence of none, and only when no workflow triggers on that push is there nothing to wait for.
-   Otherwise, first append \`paused [at=<epoch>]: waiting on {default-branch} checks for {sha} until <YYYY-MM-DDTHH:MMZ>\`, with the UTC deadline set to now plus the wait bound, so the long wait is not mistaken for a wedge; the landed \`done:\` or \`blocked:\` you append after the wait ends that pause.
-   Then wait for those checks on your pushed commit in one bounded blocking wait of at most $FM_DIRECT_PUSH_CHECK_WAIT_MINUTES minutes: re-list with \`gh run list --commit <sha>\` until the runs for that commit appear, then watch each with \`gh run watch <run-id> --exit-status\`, all within the same bound.
-   Judge each workflow your push triggered on its own: one that completed on your own commit counts from that run.
-   For each workflow whose run on your commit was cancelled or never created because a later push to the default branch superseded it, follow within the same bound the newest \`origin/<default-branch>\` commit containing yours that has a completed, not cancelled, run of that same workflow, and treat that run as its check on your change.
-   Count a workflow green only from such a completed run of that same workflow, never from other workflows' runs or from a commit that did not run it.
+5. After the push succeeds, read \`$landing_ref\` and follow it to wait for the default branch's checks on your pushed commit, within one bounded blocking wait of at most $FM_DIRECT_PUSH_CHECK_WAIT_MINUTES minutes.
 6. If a check on your change goes red because of your change, fix it forward at once through this same landing loop from step 1 and wait again on the new pushed commit, or revert your commit at once through the same loop.
    A revert ends the task with \`blocked [at=<epoch>]: reverted {sha} on {default-branch} because {red check}\`, never a landed \`done:\`.
    If you cannot get those checks green, or the wait's bound elapses first, append \`blocked [at=<epoch>]: {the red or pending check} on {default-branch} at {sha}\` and stop.
@@ -580,7 +587,7 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 That first \`done:\` is the handoff that starts the pipeline, which owns the push; it is not a request to push from this copy.
 ${nm_base}
 EOF
-      fm_nm_driving_block "$forge"
+      fm_nm_driving_block
       cat <<EOF
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR back from the forge and confirm it is not a draft $draft_check

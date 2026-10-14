@@ -544,6 +544,80 @@ test_worker_role_names_skill_and_fallback_file() {
 
 test_worker_role_names_skill_and_fallback_file
 
+# The Firstmate-only role sentences reach a worker only when its project is a
+# checkout of this Firstmate repository; another project's worker keeps the
+# identity, inbox, isolation, and project-instruction lines without them.
+test_worker_role_gates_firstmate_only_sentences() {
+  local other firstmate_role other_role role clone clone_role unresolved unresolved_role
+  other="$TMP_ROOT/role-other-project"
+  fm_git_init_commit "$other"
+  firstmate_role="$TMP_ROOT/role-firstmate.txt"
+  other_role="$TMP_ROOT/role-other.txt"
+  fm_brief_worker_role "$TMP_ROOT/state" role-fm "$ROOT" "$ROOT" >"$firstmate_role"
+  fm_brief_worker_role "$TMP_ROOT/state" role-other "$ROOT" "$other" >"$other_role"
+  assert_grep 'When this task works on Firstmate itself' "$firstmate_role" \
+    "a Firstmate-repo worker lost the supervisor-contract exception"
+  assert_grep "skill name does not resolve in this session" "$firstmate_role" \
+    "a Firstmate-repo worker lost the coding-guidelines fallback"
+  assert_no_grep 'When this task works on Firstmate itself' "$other_role" \
+    "another project's worker received the Firstmate-only exception"
+  assert_no_grep 'firstmate-coding-guidelines' "$other_role" \
+    "another project's worker received the Firstmate-only skill pointer"
+  # Fail safe: a separate clone of Firstmate (its own store, Firstmate markers
+  # at its root) and a directory the git probe cannot resolve both keep the
+  # Firstmate-only sentences.
+  clone="$TMP_ROOT/role-separate-clone"
+  fm_git_init_commit "$clone"
+  mkdir -p "$clone/bin"
+  printf '#!/usr/bin/env bash\n' > "$clone/bin/fm-spawn.sh"
+  printf '# Firstmate\n' > "$clone/AGENTS.md"
+  clone_role="$TMP_ROOT/role-clone.txt"
+  fm_brief_worker_role "$TMP_ROOT/state" role-clone "$ROOT" "$clone" >"$clone_role"
+  assert_grep 'When this task works on Firstmate itself' "$clone_role" \
+    "a separate Firstmate clone lost the supervisor-contract exception"
+  assert_grep "skill name does not resolve in this session" "$clone_role" \
+    "a separate Firstmate clone lost the coding-guidelines fallback"
+  unresolved="$TMP_ROOT/role-not-a-checkout"
+  mkdir -p "$unresolved"
+  unresolved_role="$TMP_ROOT/role-unresolved.txt"
+  GIT_CEILING_DIRECTORIES="$TMP_ROOT" fm_brief_worker_role "$TMP_ROOT/state" role-unresolved "$ROOT" "$unresolved" >"$unresolved_role"
+  assert_grep 'When this task works on Firstmate itself' "$unresolved_role" \
+    "an unresolvable project lost the supervisor-contract exception"
+  for role in "$firstmate_role" "$other_role" "$clone_role" "$unresolved_role"; do
+    assert_grep 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' "$role" \
+      "the role lost the crewmate identity line"
+    assert_grep 'do not adopt a firstmate or secondmate supervisor identity, delegate the task, run fleet supervision, or address the captain' "$role" \
+      "the role lost the worker boundary"
+    assert_grep "Never inspect or change any other home's endpoint namespace" "$role" \
+      "the role lost cross-home isolation"
+    assert_grep 'Project instructions still govern the work wherever they do not conflict with this worker identity' "$role" \
+      "the role lost the project-instruction precedence"
+  done
+  pass "worker role gates its Firstmate-only sentences on the project's repository"
+}
+
+# Every worker-guide reference a rendered Definition of done names must exist,
+# so a worker following the pointer always finds the text it moved to.
+test_dod_reference_paths_exist() {
+  local mode out
+  for mode in no-mistakes direct-PR direct-push local-only; do
+    out="$TMP_ROOT/dod-refs-$mode.md"
+    fm_dod_block "$mode" dod-refs-task > "$out"
+    case "$mode" in
+      no-mistakes) worker_guide_ref "$out" no-mistakes-drive >/dev/null || fail "$mode: drive reference missing" ;;
+      direct-push) worker_guide_ref "$out" direct-push-landing >/dev/null || fail "$mode: landing reference missing" ;;
+      *) assert_no_grep '/worker-guide/references/' "$out" "$mode: DoD names a reference it has no trigger for" ;;
+    esac
+  done
+  out="$TMP_ROOT/dod-refs-gerrit.md"
+  fm_dod_block no-mistakes dod-refs-task fm/dod-refs-task gerrit > "$out"
+  worker_guide_ref "$out" no-mistakes-drive >/dev/null || fail "gerrit no-mistakes: drive reference missing"
+  pass "every worker-guide reference a Definition of done names exists"
+}
+
+test_worker_role_gates_firstmate_only_sentences
+test_dod_reference_paths_exist
+
 test_direct_push_landed_and_ready_heads
 
 echo "all fm-dod-lib tests passed"

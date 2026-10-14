@@ -900,6 +900,18 @@ assert_no_grep() {
   ! grep -F -- "$1" "$2" >/dev/null || fail "$3"
 }
 
+# worker_guide_ref <file> <name>: print the absolute worker-guide reference path
+# a generated brief or contract names for <name>, failing unless it names
+# exactly one such path and that file exists.
+worker_guide_ref() {
+  local refs
+  refs=$(grep -o "[^\`]*/\.agents/skills/worker-guide/references/$2\.md" "$1" | sort -u)
+  [ -n "$refs" ] || fail "$1 names no worker-guide $2 reference"
+  [ "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')" -eq 1 ] || fail "$1 names more than one worker-guide $2 reference: $refs"
+  [ -f "$refs" ] || fail "$1 names a worker-guide $2 reference that does not exist: $refs"
+  printf '%s\n' "$refs"
+}
+
 # assert_absent <path> <msg>: path must not exist.
 assert_absent() {
   [ ! -e "$1" ] || fail "$2"

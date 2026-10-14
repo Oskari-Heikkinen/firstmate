@@ -93,7 +93,9 @@
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Both crewmate scaffolds carry one shared rule against administering the
 # infrastructure every lane shares - the no-mistakes daemon and the worktree pool
-# their own slot came from - so ship and scout cannot drift apart. A secondmate
+# their own slot came from - so ship and scout cannot drift apart. The check for
+# when a pipeline block is real belongs to no-mistakes ships only, in the
+# worker-guide no-mistakes-drive reference their Definition of done names. A secondmate
 # charter omits it: that home allocates and returns slots for its own crewmates.
 # --mode, --forge, and --shape are refused on scout and secondmate scaffolds: a
 # scout's deliverable is a report rather than a merge, and a charter is not a
@@ -104,7 +106,8 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known wait expected to clear on its own, including
 # the worker's own background work, pipeline or long command; blocked when
-# firstmate must act. The first-sight alert remains; repeats use the long cadence.
+# firstmate must act. The wait tags, first-sight alert cadence, and parking live
+# in the worker-guide waits-and-parking reference the scaffold names by path.
 # Emission-time syntax and legacy unknown-time handling are owned by
 # bin/fm-classify-lib.sh; each scaffold renders the stamp as a literal <epoch>
 # placeholder the worker replaces with a numeric Unix time as it appends, so a
@@ -118,7 +121,8 @@
 # additions of missing knowledge. A correction edits only the wrong text and
 # never runs fm-ensure-agents-md.sh, whose inserted sections and created
 # pointer file are themselves additions.
-# Scaffolds carry no role scope: fm-spawn.sh supplies fm_brief_worker_role from
+# Scaffolds carry no role scope, not even the crewmate identity line:
+# fm-spawn.sh supplies fm_brief_worker_role from
 # fm-dod-lib.sh to every ship/scout launch brief, so this file never becomes a
 # second owner of a contract that must stay current across relaunches.
 # A home may carry standing worker instructions without editing this tracked
@@ -163,12 +167,6 @@ IFS= read -r -d '' CREWMATE_PAUSE_INSTRUCTIONS <<EOF || true
    Before ending your turn with your own background shell or monitor still running, or before waiting on your own pipeline run or a long foreground command, append \`$PAUSED_VERB [at=<epoch>]: {job and completion condition}\` to the status file.
    Name what you are waiting for and what will let you resume; do not repeat the declaration on every poll.
    Do not declare active implementation or reasoning as a wait.
-   Firstmate may still raise one first-sight alert; the declared wait then uses the existing long recheck cadence instead of repeated possible-wedge alarms.
-   When you know when the wait clears, include \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) for a recheck at that time.
-   When a machine can check the wait, add one \`[wait=<kind>:<arg>]\` tag before the colon
-   (\`heavy:<job-id>\`, \`until:<YYYY-MM-DDTHH:MMZ>\`, \`merge-result:<head-sha>\`, or
-   \`receipt:<absolute-path>\`): firstmate's monitoring then stays silent while it holds and
-   wakes when it stops holding, and the tag outranks any prose ETA.
    Follow the resolution rule below when the wait clears, then resume the task.
 EOF
 
@@ -382,14 +380,12 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 # second mate's, runs only the append; the watcher capture is the backstop.
 STATUS_APPEND="echo \"{state} [at=<epoch>]: {one short line}\" >> $STATUS_FILE && { [ ! -e $(shell_quote "$CONFIG/fleet-ledger") ] || $(shell_quote "$FM_ROOT/bin/fm-fleet-ledger.sh") appended $(shell_quote "$CONFIG") $STATUS_FILE >/dev/null 2>&1 || true; }"
 INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
-# The park-when-waiting rule every ship and scout scaffold carries; fm-park.sh's
-# header owns the handoff format, conditions, and resume semantics.
-PARK_RULE="   When that wait is on an external result that will take a while (a run, a merge, a review, another team),
-   park instead of idling: write a handoff file outside tracked content with sections \`## Goal\`, \`## Done\`,
-   \`## Waiting for\` (one condition: \`file:<absolute-path>\`, \`pr-merged:<github-pr-url>\`, or \`cmd:<absolute-executable-or-PATH-name> [args]\`),
-   and \`## Next steps\`, then run \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-park.sh") $ID --handoff <file>\`.
-   It stops this session and starts a fresh one with your handoff when the condition holds; its \`--help\` has the details.
-   Read that help before asserting optional relocation safety for copy-free suspension; never return or allocate your copy by hand."
+# The park-when-waiting rule every ship and scout scaffold carries: the task's
+# exact park command stays inline, while the worker-guide waits-and-parking
+# reference owns the wait tags and handoff format, and fm-park.sh's header owns
+# the conditions and resume semantics.
+PARK_RULE="   Before a wait longer than a few minutes, read \`$(fm_worker_guide_ref waits-and-parking)\` for the tags that keep monitoring quiet while a declared wait holds, and for parking:
+   when the wait is on an external result that will take a while, park instead of idling with \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-park.sh") $ID --handoff <file>\`."
 
 # The receive-and-ack half of the steering-inbox contract, included in every
 # scaffold kind. The record format, doorbell line, and re-ring ladder are
@@ -512,7 +508,7 @@ States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
 Substitute \`<epoch>\` with the current Unix time in seconds - run \`date +%s\` and write the number it printed; a stamp that is not plain digits records no time at all.
 Use \`$PAUSED_VERB: {why}\` (distinct from \`blocked:\`) only when your domain is deliberately idling on a known external wait you expect to clear on its own, naming when it clears with \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) when you know, or with one machine-checkable \`[wait=<kind>:<arg>]\` tag before the colon (\`heavy:<job-id>\`, \`until:<UTC>\`, \`merge-result:<head-sha>\`, \`receipt:<absolute-path>\`) so the wait stays silent while it holds; use \`blocked:\` when you are stuck and need firstmate to act.
 Use this only for material phase changes, a captain decision, a real blocker, a failure, work ready for review, or work you landed.
-Work you landed includes a merge you performed yourself under standing merge authority and one the captain merged on the forge: under that authority nothing is ever \"ready for review\", so a landed merge that goes unreported reaches the captain as silence.
+Work you landed includes a merge you performed yourself under standing merge authority and one the captain merged on the forge: under that authority nothing is ever "ready for review", so a landed merge that goes unreported reaches the captain as silence.
 This is also how you return the answer to a marked from-firstmate request above.
 A marked request requires one correlated answer after the work (for an \`expect=ack\` marker that answer is the uptake receipt above); it does not require a separate receipt or start acknowledgement.
 Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
@@ -592,17 +588,8 @@ TASK_SECTION=${TASK_SECTION%$'\n'}
 # legitimately allocates and returns slots for crewmates in its own home.
 IFS= read -r -d '' SHARED_INFRA_RULE <<'EOF' || true
 7. Never administer infrastructure that every lane shares. Two things are shared:
-   - The `no-mistakes` daemon - one instance serving every lane/home, so stopping, restarting, or
-     updating it kills other lanes' in-flight pipeline runs; only firstmate manages the daemon.
-     Before you append `blocked:` about the pipeline, run `no-mistakes daemon status` and
-     `no-mistakes axi status`. If the daemon socket refuses connections or is missing, append
-     `blocked [at=<epoch>]: {the daemon error}` and stop even when the local run record still says running or
-     fixing, because that record can be stale after the daemon exits. A run record failed with a
-     daemon error is also a real block.
-     Only after ruling out socket refusal, if the run is still running or fixing, reattach and keep
-     going. A drive-call error, timeout, slow read, or generic unreachability is NOT a daemon error:
-     the daemon accepts `respond` immediately and runs the round in the background, so a killed or
-     timed-out call was only waiting for a read while the run kept working.
+   - The `no-mistakes` daemon - one instance serving every lane/home: never stop, restart, or
+     update it, because that kills other lanes' in-flight pipeline runs; only firstmate manages it.
    - The worktree pool your own worktree came from, and the repository every lane's worktree
      shares. Never create, remove, return, prune, move, or reassign a worktree or pool slot, and
      never write into a sibling slot's directory. Rule 2 does not cover this: removing a worktree
@@ -630,8 +617,6 @@ else
   LAVISH_LINE='Lavish is unavailable (lavish-axi is missing or below its supported version floor), so deliver your findings as a text report without Lavish, even for a visual deliverable.'
 fi
 cat > "$BRIEF" <<EOF
-You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
-
 $TASK_SECTION
 
 $HERDR_SECTION
@@ -709,8 +694,6 @@ RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exi
 DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
 
 cat > "$BRIEF" <<EOF
-You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
-
 $TASK_SECTION
 
 $HERDR_SECTION
