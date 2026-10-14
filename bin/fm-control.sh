@@ -1321,6 +1321,10 @@ progress_note_block() { # <timestamp> <note>
   echo "each message in numeric order, then mv each handled file into"
   echo "$STATE/$ID.inbox/handled/. A steer sent before the relaunch survives there."
   echo
+  echo "If blockers you opened before the relaunch are still open, one"
+  echo "\`note [supersedes=resume] [at=<epoch>]: {evidence}\` status line closes"
+  echo "all of them at once (never a needs-decision)."
+  echo
   echo "Older progress notes, if any, are preserved at $RELAUNCH_ARCHIVE."
   echo "Read that archive when earlier context is needed."
   echo
