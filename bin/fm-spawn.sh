@@ -672,25 +672,6 @@ case "$CLAUDE_PERMISSION_MODE" in
 auto) CLAUDE_PERM_FLAG='--permission-mode auto' ;;
 *) CLAUDE_PERM_FLAG='--dangerously-skip-permissions' ;;
 esac
-# config/lavish-axi-host is the primary-owned per-machine address for the
-# shared Lavish server. Read it once per launch and refuse malformed values so
-# every worker reaches the same server instead of starting a second one.
-if ! LAVISH_AXI_HOST_CONFIG_PRESENT=$(fm_config_source_present "$CONFIG/lavish-axi-host"); then
-  exit 1
-fi
-if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
-  if [ ! -f "$CONFIG/lavish-axi-host" ] || [ ! -r "$CONFIG/lavish-axi-host" ]; then
-    echo "error: config/lavish-axi-host must be a readable regular file" >&2
-    exit 1
-  fi
-  LAVISH_AXI_HOST=$(cat "$CONFIG/lavish-axi-host") || exit 1
-  case "$LAVISH_AXI_HOST" in
-    ''|*[[:space:][:cntrl:]]*)
-      echo "error: config/lavish-axi-host must contain one non-empty address without whitespace" >&2
-      exit 1
-      ;;
-  esac
-fi
 if ! KEEP_AI_TRAILERS=$(fm_config_source_present "$CONFIG/keep-ai-trailers"); then
   exit 1
 fi
@@ -6059,9 +6040,6 @@ fi
 # LAUNCH_ENV_PREFIX construction below sets it again at the `env -i` boundary,
 # so under an enabled allowlist the switch is established before the wrapping
 # `/bin/sh` starts rather than only inside the command that shell runs.
-if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
-  LAUNCH="export LAVISH_AXI_HOST=$(shell_quote "$LAVISH_AXI_HOST"); $LAUNCH"
-fi
 if [ "$HARNESS" = claude ] && [ "$KIND" != secondmate ] && [ -n "$COMPACT_AT" ]; then
   # Export inside the generated shell, including env -i and compound launches,
   # never into the supervising process or another worker's environment.
@@ -6128,9 +6106,6 @@ spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # pre-launch channel, so later commands in that shell inherit it too. The launch
 # command independently establishes the value for the agent process itself.
 spawn_send_text_line "$T" "export COMPACT_ADVISER_DISABLE=1"
-if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
-  spawn_send_text_line "$T" "export LAVISH_AXI_HOST=$(shell_quote "$LAVISH_AXI_HOST")"
-fi
 # Mark the pane as a task worker so bin/fm-test-run.sh can refuse to run the
 # suite in the repository's primary checkout. Ship and scout workers are the
 # ones assigned an isolated worktree; a secondmate runs its own home instead.
@@ -6165,7 +6140,7 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
     TMPDIR TMP TEMP GOTMPDIR TMUX TMUX_PANE HERDR_ENV HERDR_SESSION HERDR_SOCKET_PATH \
     HERDR_PANE_ID CMUX_WORKSPACE_ID CMUX_SURFACE_ID CMUX_TAB_ID CMUX_PANEL_ID \
     CMUX_SOCKET_PATH ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_ID FM_ZELLIJ_SESSION \
-    FM_TASK_ID COMPACT_ADVISER_DISABLE LAVISH_AXI_HOST \
+    FM_TASK_ID COMPACT_ADVISER_DISABLE \
     $LAUNCH_ENV_NAMES; do
     # Only validated names enter shell syntax. Values expand once, quoted, in
     # the pane shell and never become source text or spawn-process snapshots.
