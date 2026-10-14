@@ -1,6 +1,7 @@
 # External SSD for fetched results
 
-On a WSL laptop whose Windows drive is nearly full, fetched results belong on an external SSD when one is plugged in, with the Windows drive as the fallback.
+On a WSL laptop whose Windows drive is nearly full, new large fetched results must explicitly request mandatory D: admission.
+Legacy small/control callers retain the external SSD preference with the Windows drive as fallback.
 `bin/fm-storage.sh` detects the SSD, prepares it, and publishes the choice in one machine-local file that every fetcher reads; its header owns the exact commands and environment settings.
 Plugging the SSD in is the only step anyone takes after the one-time setup below.
 
@@ -52,7 +53,7 @@ Path: `~/.config/lattice-storage/results-root`, written only by `fm-storage.sh c
 
 Line 1 is the only line a fetcher needs: the absolute directory template for fetched results, containing `{task}`.
 Line 2 is exactly `format=lattice-storage-results-root/v1`.
-Later lines are `key=value` facts: `active` (`ssd` or `c`), `state`, `reason`, `checked_at`, `fallback`, and for a found SSD `ssd_letter`, `ssd_id`, `ssd_fs`, `ssd_free_bytes`, `ssd_total_bytes`, `write_mib_s`, plus `ssd_marker` and `archive` when active.
+Later lines are `key=value` facts: `active` (`ssd` or `c`), `state`, `reason`, `checked_at`, `fallback`, and for a found SSD `ssd_letter`, `ssd_id`, `ssd_fs`, `ssd_free_bytes`, `ssd_total_bytes`, `write_mib_s`, plus `ssd_marker`, `archive`, and `ssd_device` (the Linux filesystem device number) when active.
 
 | state | meaning |
 |---|---|
@@ -78,4 +79,58 @@ On every fetch, before choosing the destination, a reader either runs `bin/fm-st
 3. When `active=ssd`, also require `checked_at` no older than 30 minutes and the `ssd_marker` file present (so an empty `/mnt/<l>` folder on the Linux disk is never mistaken for the SSD); otherwise use the C: path.
 4. Never move what is already on either side; a fetch finishes where it started.
 
-On any doubt, use the C: path: it is always correct, just fuller.
+These legacy rules, including the C: fallback on doubt, remain unchanged for callers that have not opted into mandatory bulk.
+They are not admission for a new D:-required delivery.
+
+## Mandatory bulk admission
+
+For a **new** large delivery, use the publisher's integrated interface:
+
+```sh
+bin/fm-storage.sh bulk-root TASK --name DELIVERY --download 4G --expanded 20G --packaging 8G --pid "$$"
+```
+
+The command prints only the verified D: destination on success and holds a reservation through the existing disk-room owner.
+All three sizes are required, can be zero, and describe bytes that coexist at the peak: downloaded bytes, expanded **allocated** bytes (including exFAT allocation inflation), and the packaging duplicate.
+Do not supply compressed or logical tree size as the expanded allocation estimate.
+Use a unique delivery name and persist the successful root in the existing delivery pin before writing payloads.
+Keep incomplete payloads beside the destination on D:, not in a Linux temporary directory.
+Additional Linux scratch must have its own ordinary disk-room reservation.
+The default D: margin is 50 GiB after all outstanding D: reservations; `FM_DISK_ROOM_BULK_MARGIN` overrides it.
+Reserve any other simultaneous allowance, such as a recovery archive, in that same pool.
+
+| exit | result |
+|---|---|
+| `0` | stdout contains exactly the D: root, with the complete peak reserved |
+| `75` | no root on stdout and one `wait:` reason on stderr; do not start or substitute C: |
+| `2` | invalid command/options/size or inability to write admission records; no delivery should start |
+
+Waiting callers may retry when the concrete unavailable condition clears.
+Storage refusal reason tokens are `missing-publication`, `invalid-publication`, `storage-unavailable: <state>: <published reason>`, `wrong-volume`, `wrong-filesystem`, `stale-publication`, `wrong-root`, `missing-marker`, `wrong-volume-identity`, `wrong-mount-identity`, and `wrong-filesystem-identity`.
+Capacity refusals use `cannot-measure-D`, `insufficient-space: <room details>`, or `reservation-exists: <name>`.
+A live reservation name is never silently replaced by a new bulk admission.
+
+Mandatory verification requires a fresh non-future v1 publication, active/ok D:, NTFS or exFAT, the expected non-symlink results directory, matching publication/marker/remembered volume IDs, a live D: DrvFS/9p mount, and the current device matching the published `ssd_device` while differing from Linux root and C:.
+An old publication without `ssd_device` must be refreshed with the existing `check` command before mandatory admission.
+The legacy publication's line 1, fallback and state/reason meanings do not change; unavailable state/reason remains published even when line 1 selects C: for legacy callers.
+Mandatory callers do not interpret that C: line as permission to write.
+Verification is read-only and does not mount, initialize, probe, or create D: directories.
+A copied marker in an empty Linux-backed `/mnt/d` cannot authorize bulk.
+This is admission, not protection against unplug during a write: the writer must preserve its root and handle I/O errors without fallback.
+
+`bin/fm-storage.sh verify-bulk-root TASK` exposes the same read-only verification without a reservation, with exits 0/75/2 as above; its output alone does not admit a write.
+`bin/fm-disk-room.sh reserve-bulk DELIVERY --task TASK --download SIZE --expanded SIZE --packaging SIZE [--pid PID] [--ttl SECONDS]` is the underlying admission interface and prints the same root.
+Both use the publisher configuration; `FM_STORAGE_RESULTS_ROOT` overrides its publication, and disk-room's existing `FM_DISK_ROOM_RESULTS_ROOT` takes precedence for disk-room admission.
+The integrated `bulk-root` options must start with `TASK --name DELIVERY`.
+
+PID reservations lapse when that exact process exits; without a PID they expire after `--ttl` (default 43200 seconds).
+Choose an owner process that remains alive for the entire delivery, or explicitly maintain an adequate TTL across multi-process jobs.
+After completion or abandonment, release with `bin/fm-disk-room.sh release-bulk DELIVERY`, which works even with D: unplugged.
+The existing reservation owner stores D: pools under `reservations-d/<filesystem-device>` in its existing state directory, apart from the unchanged Linux/C: `reservations` pool.
+Every admission is serialized by the existing owner lock, reads actual D: free space, and subtracts only that filesystem's live D: reservations.
+The full reservation remains charged even as written bytes reduce free space, conservatively counting those bytes twice until release.
+No new index or service is involved.
+
+Already-started deliveries must use their recorded root, including C: pins, without reselecting or rewriting them through this interface.
+This change does not automatically classify existing callers as bulk or deploy consumer changes.
+Regression coverage is in `tests/fm-storage.test.sh` and `tests/fm-disk-room.test.sh`.

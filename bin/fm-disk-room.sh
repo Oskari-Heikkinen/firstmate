@@ -31,6 +31,15 @@
 #   fm-disk-room.sh reserve NAME SIZE [--pid PID] [--ttl SECONDS]
 #       Declare an in-flight write. With --pid it lapses when that process
 #       exits; otherwise after --ttl (default 43200 s).
+#   fm-disk-room.sh reserve-bulk NAME --task TASK --download SIZE
+#                               --expanded SIZE --packaging SIZE
+#                               [--pid PID] [--ttl SECONDS]
+#       Verify mandatory D: storage via fm-storage.sh, then atomically admit
+#       download + expanded allocation + packaging duplicate on its actual
+#       filesystem. Print only the root; exit 75 with one stderr reason when
+#       unavailable or low, 2 on misuse. Refuse an already-live NAME on D:.
+#   fm-disk-room.sh release-bulk NAME
+#       Release this name from the D: pools without needing the drive present.
 #   fm-disk-room.sh release NAME
 #   fm-disk-room.sh watch-line
 #       For a firstmate custom watcher check: print one line only when real
@@ -46,6 +55,7 @@
 #
 # Environment (all optional):
 #   FM_DISK_ROOM_MARGIN   margin kept after the expected write (default 20G)
+#   FM_DISK_ROOM_BULK_MARGIN  D: margin after all peak reservations (default 50G)
 #   FM_DISK_ROOM_HOST     Windows drive mount (default /mnt/c; absent => Linux-only)
 #   FM_DISK_ROOM_ROOT     Linux path whose filesystem is measured (default /)
 #   FM_DISK_ROOM_VHDX     the distro's ext4.vhdx as a Linux path (default: the
@@ -290,7 +300,7 @@ proc_start() { awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/nul
 # live_reservations [EXCLUDE] -> "name bytes" lines; prunes lapsed ones.
 live_reservations() {
   local dir exclude=${1:-} f name bytes pid start expires t
-  dir="$(state_dir)/reservations"
+  dir=${2:-$(state_dir)/reservations}
   [ -d "$dir" ] || return 0
   t=$(now)
   for f in "$dir"/*; do
@@ -311,7 +321,7 @@ live_reservations() {
 
 write_reservation() {
   local name=$1 bytes=$2 pid=$3 ttl=$4 dir tmp start=''
-  dir="$(state_dir)/reservations"
+  dir=${5:-$(state_dir)/reservations}
   mkdir -p "$dir" || die "cannot create $dir"
   [ -n "$pid" ] && start=$(proc_start "$pid")
   tmp=$(mktemp "$dir/.tmp.XXXXXX") || die "cannot write a reservation"
@@ -524,6 +534,70 @@ cmd_reserve() {
   printf 'reserved %s: %s GiB\n' "$name" "$(gib "$bytes")"
 }
 
+cmd_reserve_bulk() {
+  local name=${1:-} task='' download='' expanded='' packaging='' pid='' ttl=$DEFAULT_TTL
+  local root device dir bytes free reserved=0 line margin after mp rc
+  valid_name "$name" || die "reserve-bulk needs NAME"
+  shift
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || die "$1 needs a value"
+    case "$1" in
+      --task) task=$2 ;;
+      --download) download=$(to_bytes "$2") || die "bad download size" ;;
+      --expanded) expanded=$(to_bytes "$2") || die "bad expanded size" ;;
+      --packaging) packaging=$(to_bytes "$2") || die "bad packaging size" ;;
+      --pid) case "$2" in ''|*[!0-9]*) die "--pid needs a live pid" ;; esac
+        [ -r "/proc/$2/stat" ] || die "--pid needs a live pid"; pid=$2 ;;
+      --ttl) case "$2" in ''|*[!0-9]*|??????????*) die "--ttl needs seconds (at most 9 digits)" ;; esac
+        ttl=$((10#$2)) ;;
+      *) die "unknown reserve-bulk argument: $1" ;;
+    esac
+    shift 2
+  done
+  [ -n "$task" ] && [ -n "$download" ] && [ -n "$expanded" ] && [ -n "$packaging" ] ||
+    die "reserve-bulk needs --task, --download, --expanded and --packaging"
+  bytes=$(( download + expanded + packaging ))
+  margin=$(to_bytes "${FM_DISK_ROOM_BULK_MARGIN:-50G}") || die "bad FM_DISK_ROOM_BULK_MARGIN"
+  with_lock
+  root=$(FM_STORAGE_RESULTS_ROOT="${FM_DISK_ROOM_RESULTS_ROOT:-${FM_STORAGE_RESULTS_ROOT:-}}" \
+    "$SCRIPT_DIR/fm-storage.sh" verify-bulk-root "$task"); rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  mp="${FM_STORAGE_MNT:-/mnt}/d"
+  device=$(stat -c %d -- "$mp/lattice-data/tetjet-results" 2>/dev/null)
+  case "$device" in ''|*[!0-9]*) printf 'fm-disk-room: wait: wrong-filesystem-identity\n' >&2; return 75 ;; esac
+  dir="$(state_dir)/reservations-d/$device"
+  while read -r line; do
+    [ -n "$line" ] && reserved=$(( reserved + ${line##* } ))
+  done < <(live_reservations '' "$dir")
+  [ ! -e "$dir/$name" ] || { printf 'fm-disk-room: wait: reservation-exists: %s\n' "$name" >&2; return 75; }
+  free=$(df_field "$mp/lattice-data/tetjet-results" avail)
+  case "$free" in ''|*[!0-9]*|???????????????????*) printf 'fm-disk-room: wait: cannot-measure-D\n' >&2; return 75 ;; esac
+  after=$(( free - reserved - bytes ))
+  if [ "$after" -lt "$margin" ]; then
+    printf 'fm-disk-room: wait: insufficient-space: D: would have %s GiB after %s GiB peak and %s GiB reservations (margin %s GiB)\n' \
+      "$(gib "$after")" "$(gib "$bytes")" "$(gib "$reserved")" "$(gib "$margin")" >&2
+    return 75
+  fi
+  # Recheck identity immediately before recording admission; never rewrite pins.
+  FM_STORAGE_RESULTS_ROOT="${FM_DISK_ROOM_RESULTS_ROOT:-${FM_STORAGE_RESULTS_ROOT:-}}" \
+    "$SCRIPT_DIR/fm-storage.sh" verify-bulk-root "$task" >/dev/null || return "$?"
+  [ "$(stat -c %d -- "$mp/lattice-data/tetjet-results" 2>/dev/null)" = "$device" ] || {
+    printf 'fm-disk-room: wait: wrong-filesystem-identity\n' >&2; return 75;
+  }
+  write_reservation "$name" "$bytes" "$pid" "$ttl" "$dir" || die "cannot record D: reservation"
+  printf '%s\n' "$root"
+}
+
+cmd_release_bulk() {
+  local dir
+  valid_name "${1:-}" && [ "$#" -eq 1 ] || die "release-bulk needs NAME"
+  with_lock
+  for dir in "$(state_dir)/reservations-d/"*; do
+    [ -d "$dir" ] && rm -f -- "$dir/$1"
+  done
+  return 0
+}
+
 cmd_release() {
   valid_name "${1:-}" || die "release needs a NAME"
   rm -f -- "$(state_dir)/reservations/$1"
@@ -594,6 +668,8 @@ case "${1:-}" in
   check) shift; cmd_check "$@" ;;
   run) shift; cmd_run "$@" ;;
   reserve) shift; cmd_reserve "$@" ;;
+  reserve-bulk) shift; cmd_reserve_bulk "$@" ;;
+  release-bulk) shift; cmd_release_bulk "$@" ;;
   release) shift; cmd_release "$@" ;;
   watch-line) shift; cmd_watch_line ;;
   arm) cmd_arm ;;

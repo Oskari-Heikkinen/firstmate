@@ -40,6 +40,7 @@ A job that writes 1 GiB or more runs through `fm-disk-room.sh run --name <job> -
 It is admitted only when the room left after its write stays at or above the margin, and it holds a reservation for its lifetime so other admissions and the watcher see its pending write.
 A refusal exits 75 with one line naming the room and whether a compaction would help.
 `check --expect-write`, `reserve`, and `release` cover jobs that span several processes.
+Mandatory D: bulk uses the separate per-filesystem admission interface documented in [storage.md](storage.md#mandatory-bulk-admission), leaving this Linux/C: admission unchanged.
 
 This replaces fixed floors on raw Windows free space, which either stop a job that still has room or admit one whose own write breaks the margin.
 

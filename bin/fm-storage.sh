@@ -24,6 +24,14 @@
 #       Apply the reader rules and print the directory to use: the template
 #       with {task} replaced by TASK (kept as {task} when TASK is omitted).
 #       Falls back to the C: template on any doubt.
+#   fm-storage.sh verify-bulk-root [TASK]
+#       Verify the published D: root and live volume identity, without reserving.
+#       Exit 75 with one stderr reason on unavailable storage; never return C:.
+#   fm-storage.sh bulk-root TASK --name NAME --download SIZE --expanded SIZE
+#                         --packaging SIZE [--pid PID] [--ttl SECONDS]
+#       Verify and admit the whole allocation peak via fm-disk-room reserve-bulk.
+#       Print only the D: root on success (0); unavailable/low room exits 75,
+#       misuse exits 2. No pin files are read or rewritten by either command.
 #   fm-storage.sh install-timer --fallback TEMPLATE [--notify FILE]
 #       Write storage.conf (fallback template and notification file), then
 #       write and enable the user-level fm-storage.timer (every 5 minutes,
@@ -45,6 +53,7 @@
 #   FM_STORAGE_MIN_SIZE  smallest volume taken as the SSD (default 1500000000000)
 #   FM_STORAGE_MAX_AGE   oldest check a reader trusts, seconds (default 1800)
 #   FM_STORAGE_CONFIG    config dir;  FM_STORAGE_STATE  state dir
+#   FM_STORAGE_RESULTS_ROOT  publication override for mandatory-bulk readers
 #   FM_STORAGE_MNT       WSL mount base (default /mnt)
 #   FM_STORAGE_MOUNTINFO mount table (default /proc/self/mountinfo)
 #   FM_STORAGE_SPEED_SIZE  write-speed test size (default 1G)
@@ -298,6 +307,7 @@ publish() {
         "$SSD_LETTER" "$SSD_ID" "$SSD_FS" "$SSD_FREE" "$SSD_SIZE"
       if [ "$STATE" = ok ]; then
         printf 'ssd_marker=%s\narchive=%s\n' "$mp/lattice-data/.lattice-storage-id" "$mp/lattice-data/archive"
+        printf 'ssd_device=%s\n' "$(stat -c %d -- "$mp" 2>/dev/null)"
       fi
     fi
     printf 'fallback=%s\n' "$FALLBACK"
@@ -435,6 +445,65 @@ cmd_root() {
   printf '%s\n' "${line1//\{task\}/$task}"
 }
 
+# Bulk verification is read-only: no mount, setup, probe, or fallback writes.
+bulk_wait() { printf 'fm-storage: wait: %s\n' "$*" >&2; return 75; }
+
+cmd_verify_bulk_root() {
+  local task=${1:-'{task}'} f mp marker uid checked age device actual rootdev hostdev cand mount
+  [ "$#" -le 1 ] || die "verify-bulk-root takes one TASK"
+  case "$task" in '{task}') ;; ''|.|..|*[!A-Za-z0-9._-]*) die "invalid TASK" ;; esac
+  f=${FM_STORAGE_RESULTS_ROOT:-$(config_dir)/results-root}
+  [ -r "$f" ] || { bulk_wait missing-publication; return 75; }
+  [ "$(sed -n 2p "$f")" = "format=$FORMAT" ] || { bulk_wait invalid-publication; return 75; }
+  [ "$(kv "$f" active)" = ssd ] && [ "$(kv "$f" state)" = ok ] || {
+    bulk_wait "storage-unavailable: $(kv "$f" state): $(kv "$f" reason)"; return 75;
+  }
+  [ "$(kv "$f" ssd_letter)" = D ] || { bulk_wait wrong-volume; return 75; }
+  case "$(kv "$f" ssd_fs)" in NTFS|exFAT) ;; *) bulk_wait wrong-filesystem; return 75 ;; esac
+  checked=$(kv "$f" checked_at); age=${FM_STORAGE_MAX_AGE:-1800}
+  case "$checked:$age" in *[!0-9:]*|:*|*:) bulk_wait stale-publication; return 75 ;; esac
+  [ "${#checked}" -le 10 ] && [ "${#age}" -le 10 ] || { bulk_wait stale-publication; return 75; }
+  checked=$((10#$checked)); age=$((10#$age))
+  [ "$(now)" -ge "$checked" ] && [ $(( $(now) - checked )) -le "$age" ] || {
+    bulk_wait stale-publication; return 75;
+  }
+  mp="$(mnt_base)/d"
+  cand=$(head -n 1 "$f")
+  [ "$cand" = "$mp/lattice-data/tetjet-results/{task}" ] &&
+    [ "$(realpath -e -- "$mp/lattice-data/tetjet-results" 2>/dev/null)" = "$mp/lattice-data/tetjet-results" ] || {
+    bulk_wait wrong-root; return 75;
+  }
+  marker=$(kv "$f" ssd_marker); uid=$(kv "$f" ssd_id)
+  [ "$marker" = "$mp/lattice-data/.lattice-storage-id" ] && [ -r "$marker" ] || {
+    bulk_wait missing-marker; return 75;
+  }
+  [ -n "$uid" ] && [ "$(head -n 1 "$marker" 2>/dev/null)" = "$uid" ] &&
+    [ "$(kv "$(config_dir)/ssd-identity" uniqueid)" = "$uid" ] || {
+    bulk_wait wrong-volume-identity; return 75;
+  }
+  # A letter-shaped directory or a copied marker on Linux is not a volume.
+  mount=$(awk -v mp="$mp" '$5 == mp { for (i=7; i<=NF; i++) if ($i == "-") print $(i+1) "|" $(i+2) }' \
+    "${FM_STORAGE_MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null)
+  case "$mount" in '9p|D:'|'9p|D:\134'|'drvfs|D:'|'drvfs|D:\134') ;;
+    *) bulk_wait wrong-mount-identity; return 75 ;; esac
+  device=$(kv "$f" ssd_device)
+  actual=$(stat -c %d -- "$mp/lattice-data/tetjet-results" 2>/dev/null)
+  rootdev=$(stat -c %d -- / 2>/dev/null)
+  hostdev=$(stat -c %d -- "${FM_DISK_ROOM_HOST:-/mnt/c}" 2>/dev/null || true)
+  [ -n "$device" ] && [ "$actual" = "$device" ] && [ "$actual" != "$rootdev" ] &&
+    [ "$actual" != "$hostdev" ] || { bulk_wait wrong-filesystem-identity; return 75; }
+  printf '%s\n' "${cand//\{task\}/$task}"
+}
+
+cmd_bulk_root() {
+  local task=${1:-} name=''
+  [ "$#" -gt 0 ] || die "bulk-root needs TASK"
+  shift
+  [ "${1:-}" = --name ] && [ "$#" -ge 2 ] || die "bulk-root needs --name NAME"
+  name=$2; shift 2
+  "$(dirname "${BASH_SOURCE[0]}")/fm-disk-room.sh" reserve-bulk "$name" --task "$task" "$@"
+}
+
 UNIT=fm-storage
 
 cmd_install_timer() {
@@ -485,6 +554,8 @@ case "${1:-}" in
   setup) run_check && cmd_status ;;
   status) cmd_status ;;
   root) shift; cmd_root "$@" ;;
+  verify-bulk-root) shift; cmd_verify_bulk_root "$@" ;;
+  bulk-root) shift; cmd_bulk_root "$@" ;;
   install-timer) shift; cmd_install_timer "$@" ;;
   uninstall-timer) cmd_uninstall_timer ;;
   -h|--help|help) usage ;;

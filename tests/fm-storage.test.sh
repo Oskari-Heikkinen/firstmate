@@ -60,7 +60,14 @@ cat >"$FAKEBIN/dd" <<SH
 [ -n "\${FAKE_DD_FAIL:-}" ] && exit 1
 exec $(command -v dd) "\$@"
 SH
-chmod +x "$PSBIN/powershell.exe" "$FAKEBIN/sudo" "$FAKEBIN/dd"
+cat >"$FAKEBIN/stat" <<SH
+#!/usr/bin/env bash
+if [ -n "\${FAKE_BULK_DEVICE:-}" ] && [ "\$1 \$2" = '-c %d' ]; then
+  case "\${!#}" in "\$FAKE_BULK_MNT/d"|"\$FAKE_BULK_MNT/d/"*) printf '%s\\n' "\$FAKE_BULK_DEVICE"; exit ;; esac
+fi
+exec $(command -v stat) "\$@"
+SH
+chmod +x "$PSBIN/powershell.exe" "$FAKEBIN/sudo" "$FAKEBIN/dd" "$FAKEBIN/stat"
 
 reset() {
   rm -rf "$MNT" "$CFG" "$ST" "$NOTE" "$SUDOLOG" "$PSOUT.calls"
@@ -74,7 +81,7 @@ listing() { printf '%s\n' "$C_VOL" "$@" "$BOOT_DISK" END >"$PSOUT"; }
 ssd_vol() { printf 'VOL|%s|%s|%s|Removable|%s|%s|\\\\?\\Volume{%s}\\|%s' "$1" "$2" "$2" "$TB" "${3:-1800000000000}" "${4:-ssd1}" "${5:-T7}"; }
 
 run() {
-  PATH="$FAKEBIN:$PSBIN:$PATH" FAKE_PS="$PSOUT" FAKE_MOUNTS="$MOUNTS" FAKE_SUDO_LOG="$SUDOLOG" \
+  PATH="$FAKEBIN:$PSBIN:$PATH" FAKE_PS="$PSOUT" FAKE_MOUNTS="$MOUNTS" FAKE_SUDO_LOG="$SUDOLOG" FAKE_BULK_MNT="$MNT" \
     FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$ST" FM_STORAGE_MNT="$MNT" FM_STORAGE_MOUNTINFO="$MOUNTS" \
     FM_STORAGE_FALLBACK="$FB" FM_STORAGE_NOTIFY="$NOTE" FM_STORAGE_SPEED_SIZE=1M FM_STORAGE_PS_BACKOFF='0 0' \
     "$STORAGE" "$@"
@@ -325,6 +332,88 @@ test_no_fallback_refused() {
   pass "check refuses to publish without a C: fallback"
 }
 
+test_mandatory_bulk() {
+  reset
+  listing "$(ssd_vol D exFAT)"
+  FAKE_BULK_DEVICE=999 FAKE_SUDO_OK=1 FM_STORAGE_NOW=1000 run check >/dev/null || fail "bulk publication"
+  local out rc
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job); rc=$?
+  expect_code 0 "$rc" "fresh verified D root"
+  assert_equals "$MNT/d/lattice-data/tetjet-results/job" "$out" "verified D path"
+  # Observed WSL mountinfo source spelling (backslash is octal-escaped).
+  printf '1 2 0:1 / %s rw - 9p D:\\134 rw,aname=drvfs;path=D:\\;uid=1000\n' "$MNT/d" >"$MOUNTS"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job); rc=$?
+  expect_code 0 "$rc" "actual WSL escaped source spelling is accepted"
+  cp "$CFG/results-root" "$TMP_ROOT/publication"
+  sed -i 2s/v1/v2/ "$CFG/results-root"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "unknown format refuses"
+  assert_contains "$out" invalid-publication "format reason"
+  cp "$TMP_ROOT/publication" "$CFG/results-root"
+  sed -i 's/ssd_letter=D/ssd_letter=E/' "$CFG/results-root"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "other SSD letter never satisfies D required"
+  cp "$TMP_ROOT/publication" "$CFG/results-root"
+  sed -i 's/ssd_fs=exFAT/ssd_fs=RAW/' "$CFG/results-root"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "unsupported filesystem refuses"
+  cp "$TMP_ROOT/publication" "$CFG/results-root"
+  sed -i 's/checked_at=1000/checked_at=malformed/' "$CFG/results-root"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "malformed date is a wait, not an arithmetic crash"
+  cp "$TMP_ROOT/publication" "$CFG/results-root"
+  mv "$CFG/ssd-identity" "$TMP_ROOT/identity"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "missing remembered configuration refuses"
+  mv "$TMP_ROOT/identity" "$CFG/ssd-identity"
+  mv "$MNT/d/lattice-data/tetjet-results" "$MNT/d/lattice-data/real-results"
+  ln -s real-results "$MNT/d/lattice-data/tetjet-results"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "symlinked bulk root refuses"
+  assert_contains "$out" wrong-root "root reason"
+  rm "$MNT/d/lattice-data/tetjet-results"
+  mv "$MNT/d/lattice-data/real-results" "$MNT/d/lattice-data/tetjet-results"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=99999 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "stale publication refuses"
+  assert_contains "$out" stale-publication "stale reason"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=999 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "future publication refuses"
+  out=$(FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "Linux-backed D-shaped folder refuses despite marker"
+  assert_contains "$out" wrong-filesystem-identity "filesystem reason"
+  : >"$MOUNTS"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "missing mount refuses"
+  assert_contains "$out" wrong-mount-identity "mount reason"
+  printf '1 2 0:1 / %s rw - 9p E: rw\n' "$MNT/d" >"$MOUNTS"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "wrong letter mount refuses"
+  printf '1 2 0:1 / %s rw - 9p D: rw\n' "$MNT/d" >"$MOUNTS"
+  printf 'wrong-volume\n' >"$MNT/d/lattice-data/.lattice-storage-id"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "wrong marker contents refuse"
+  assert_contains "$out" wrong-volume-identity "marker identity reason"
+  rm "$MNT/d/lattice-data/.lattice-storage-id"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "missing marker refuses"
+  assert_contains "$out" missing-marker "missing marker reason"
+  assert_equals "$TMP_ROOT/c-home/data/job/tetjet-results" "$(FM_STORAGE_NOW=1100 run root job)" "legacy fallback unchanged"
+  rm "$CFG/results-root"
+  out=$(run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "missing config refuses"
+  assert_contains "$out" missing-publication "publication reason"
+  reset
+  listing
+  run check >/dev/null
+  out=$(run verify-bulk-root job 2>&1); rc=$?
+  expect_code 75 "$rc" "absent SSD refuses rather than C"
+  assert_contains "$out" 'storage-unavailable: absent' "publisher reason remains available"
+  out=$(run verify-bulk-root ../job 2>&1); rc=$?
+  expect_code 2 "$rc" "task traversal is misuse"
+  pass "mandatory bulk rejects unavailable, stale, mismatched and Linux-backed storage"
+}
+
+test_mandatory_bulk
 test_absent
 test_ntfs_mounted_and_idempotent
 test_exfat

@@ -40,6 +40,14 @@ printf '%s\n' "$field"
 cat "$f"
 SH
 chmod +x "$FAKEBIN/df"
+cat >"$FAKEBIN/stat" <<SH
+#!/usr/bin/env bash
+if [ "\$1 \$2" = '-c %d' ]; then
+  case "\${!#}" in "\$FAKE_BULK_MNT/d"|"\$FAKE_BULK_MNT/d/"*) printf '%s\\n' "\${FAKE_BULK_DEVICE:-999}"; exit ;; esac
+fi
+exec $(command -v stat) "\$@"
+SH
+chmod +x "$FAKEBIN/stat"
 
 # wevtutil stub: prints $FAKE_EVENTS (an XML fixture) and counts its calls.
 cat >"$FAKEBIN/wevtutil-stub" <<'SH'
@@ -83,7 +91,9 @@ write_mb_groups() {
 }
 
 run_room() {
-  PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" \
+  PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
+    FM_STORAGE_CONFIG="$TMP_ROOT/storage" FM_STORAGE_MNT="$TMP_ROOT/mnt" \
+    FM_STORAGE_MOUNTINFO="$TMP_ROOT/mountinfo" \
     FM_DISK_ROOM_HOST="${TEST_HOST-$HOSTDIR}" FM_DISK_ROOM_ROOT="$LINUXDIR" \
     FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
     FAKE_EVENTS="$EVENTS" FM_DISK_ROOM_WEVTUTIL="${FM_DISK_ROOM_WEVTUTIL-wevtutil-stub}" \
@@ -446,6 +456,56 @@ test_shadow_wevtutil_from_drive() {
   pass "without wevtutil.exe on PATH the drive's System32 copy counts the events"
 }
 
+test_bulk_reservations() {
+  reset_state
+  set_sizes 60 600 400
+  local cfg="$TMP_ROOT/storage" mp="$TMP_ROOT/mnt/d" out rc
+  mkdir -p "$cfg" "$mp/lattice-data/tetjet-results"
+  printf 'volume-d\n' >"$mp/lattice-data/.lattice-storage-id"
+  printf 'uniqueid=volume-d\n' >"$cfg/ssd-identity"
+  printf '1 2 0:1 / %s rw - 9p D: rw\n' "$mp" >"$TMP_ROOT/mountinfo"
+  printf '%s/lattice-data/tetjet-results/{task}\nformat=lattice-storage-results-root/v1\nactive=ssd\nstate=ok\nssd_letter=D\nssd_fs=exFAT\nssd_id=volume-d\nssd_marker=%s/lattice-data/.lattice-storage-id\nssd_device=999\nchecked_at=%s\n' \
+    "$mp" "$mp" "$(date +%s)" >"$cfg/results-root"
+  printf '%s\n' $((100 * GIB)) >"$DFDIR/$(key "$mp/lattice-data/tetjet-results").avail"
+  run_room reserve c-job 30G >/dev/null
+  out=$(run_room reserve-bulk d-job --task job --download 10G --expanded 20G --packaging 20G); rc=$?
+  expect_code 0 "$rc" "whole 50G peak leaves exact D margin despite C reservation"
+  assert_equals "$mp/lattice-data/tetjet-results/job" "$out" "admission prints only D root"
+  out=$(run_room check --expect-write 10G); rc=$?
+  expect_code 0 "$rc" "D reservation never consumes C room"
+  out=$(run_room reserve-bulk another --task job2 --download 1 --expanded 0 --packaging 0 2>&1); rc=$?
+  expect_code 75 "$rc" "concurrent D reservation counts against D room"
+  assert_contains "$out" insufficient-space "capacity reason"
+  out=$(run_room reserve-bulk d-job --task job --download 0 --expanded 0 --packaging 0 2>&1); rc=$?
+  expect_code 75 "$rc" "live reservation not overwritten"
+  assert_contains "$out" reservation-exists "reuse reason"
+  run_room release-bulk d-job
+  out=$(FM_DISK_ROOM_NOW=$(( $(date +%s) + 10 )) run_room reserve-bulk expiring --task job --download 1G --expanded 1G --packaging 1G --ttl 1); rc=$?
+  expect_code 0 "$rc" "ttl admission"
+  out=$(FM_DISK_ROOM_NOW=$(( $(date +%s) + 12 )) run_room reserve-bulk replacement --task job --download 10G --expanded 20G --packaging 20G); rc=$?
+  expect_code 0 "$rc" "expired D reservations lapse"
+  run_room release-bulk replacement
+  out=$(run_room reserve-bulk missing --task job --download 10G --expanded 20G 2>&1); rc=$?
+  expect_code 2 "$rc" "all peak components required"
+  out=$(run_room reserve-bulk too-big --task job --download 10G --expanded 21G --packaging 20G 2>&1); rc=$?
+  expect_code 75 "$rc" "expanded allocation included in peak"
+  # Exercise publisher's integrated entry point and shared reservation owner.
+  out=$(PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
+    FM_STORAGE_CONFIG="$cfg" FM_STORAGE_MNT="$TMP_ROOT/mnt" FM_STORAGE_MOUNTINFO="$TMP_ROOT/mountinfo" \
+    FM_DISK_ROOM_STATE="$TMP_ROOT/state" "$ROOT/bin/fm-storage.sh" bulk-root job --name integrated \
+    --download 10G --expanded 20G --packaging 20G --pid "$$"); rc=$?
+  expect_code 0 "$rc" "storage bulk-root reserves before answering"
+  assert_equals "$mp/lattice-data/tetjet-results/job" "$out" "integrated root"
+  rm "$cfg/results-root"
+  out=$(run_room reserve-bulk no-volume --task job --download 0 --expanded 0 --packaging 0 2>&1); rc=$?
+  expect_code 75 "$rc" "no publication never creates C reservation"
+  run_room release-bulk integrated || fail "release works with D absent"
+  out=$(run_room check --expect-write 10G); rc=$?
+  expect_code 0 "$rc" "small/control admission remains unchanged"
+  pass "D and C reservations are independent and full allocation peak is admitted"
+}
+
+test_bulk_reservations
 test_status_real_room_and_reclaim
 test_shadow_record_reserves_headroom
 test_shadow_fallback_and_stale
