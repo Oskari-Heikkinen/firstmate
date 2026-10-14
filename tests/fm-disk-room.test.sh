@@ -12,7 +12,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
-  FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL
+  FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_RESULTS_ROOT \
+  FM_DISK_ROOM_SAMPLES FM_DISK_ROOM_GROWTH_MAX FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_STORAGE_MNT
 TMP_ROOT=$(fm_test_tmproot fm-disk-room)
 DISK_ROOM="$ROOT/bin/fm-disk-room.sh"
 GIB=1073741824
@@ -97,6 +98,9 @@ run_room() {
     FM_DISK_ROOM_HOST="${TEST_HOST-$HOSTDIR}" FM_DISK_ROOM_ROOT="$LINUXDIR" \
     FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
     FAKE_EVENTS="$EVENTS" FM_DISK_ROOM_WEVTUTIL="${FM_DISK_ROOM_WEVTUTIL-wevtutil-stub}" \
+    FM_DISK_ROOM_RESULTS_ROOT="${FM_DISK_ROOM_RESULTS_ROOT-$TMP_ROOT/storage/results-root}" \
+    FM_DISK_ROOM_SAMPLES="${TEST_SAMPLES-$TMP_ROOT/no-samples}" \
+    FM_DISK_ROOM_C_FREE_MIN="${FM_DISK_ROOM_C_FREE_MIN-off}" \
     "$DISK_ROOM" "$@"
 }
 
@@ -310,11 +314,14 @@ test_arm_and_disarm() {
   mkdir -p "$home/state"
   chmod 700 "$home/state"
   out=$(FM_HOME="$home" FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_MARGIN=20G FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" \
-    FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" "$DISK_ROOM" arm) || fail "arm exits 0"
+    FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
+    FM_DISK_ROOM_RESULTS_ROOT="$TMP_ROOT/missing-results-root" FM_DISK_ROOM_SAMPLES="$TMP_ROOT/no-samples" \
+    FM_DISK_ROOM_C_FREE_MIN=40G "$DISK_ROOM" arm) || fail "arm exits 0"
   assert_contains "$out" "armed: $home/state/disk-room.check.sh" "arm names the shim"
   assert_present "$home/state/disk-room.check-trust" "arm binds the shim's bytes"
-  out=$(env -u FM_DISK_ROOM_HOST PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" "$home/state/disk-room.check.sh")
+  out=$(env -u FM_DISK_ROOM_HOST PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" FM_STORAGE_MNT="$TMP_ROOT/mnt" "$home/state/disk-room.check.sh")
   assert_contains "$out" "disk room low: 15.0 GiB real room on $HOSTDIR" "the shim carries the arm-time settings"
+  assert_contains "$out" " | storage alert: $HOSTDIR has 15.0 GiB actually free (floor 40.0 GiB)" "the shim carries the alert thresholds"
   FM_HOME="$home" "$DISK_ROOM" disarm >/dev/null || fail "disarm exits 0"
   assert_absent "$home/state/disk-room.check.sh" "disarm removes the shim"
   assert_absent "$home/state/disk-room.check-trust" "disarm removes the trust binding"
@@ -505,6 +512,103 @@ test_bulk_reservations() {
   pass "D and C reservations are independent and full allocation peak is admitted"
 }
 
+# write_samples END_EPOCH DAYS STEP_SECONDS GIB_PER_DAY: fm-io-sample lines whose
+# Linux and C: used bytes grow at the given rate, ending at END_EPOCH.
+write_samples() {
+  awk -v end="$1" -v days="$2" -v step="$3" -v rate="$4" -v g="$GIB" 'BEGIN {
+    for (t = end - days * 86400; t <= end; t += step) {
+      u = 400 * g + (t - (end - days * 86400)) * rate * g / 86400
+      printf "{\"ts\":%d,\"io_some_avg10\":1.00,\"root_used\":%.0f,\"mntc_used\":%.0f,\"disk\":\"sdd\"}\n", t, u, u + 100 * g
+    }
+    print "{\"ts\":" end ",\"broken"
+  }' >"$TMP_ROOT/samples.jsonl"
+}
+
+test_growth_alerts() {
+  reset_state
+  set_sizes 60 600 400
+  local out t0
+  t0=$(date +%s)
+  write_samples "$t0" 8 21600 2
+  export TEST_SAMPLES="$TMP_ROOT/samples.jsonl" FM_DISK_ROOM_C_FREE_MIN=100G
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "storage alert: Linux used grew 2.00 GiB/day over the last 7.0 days (limit 0.5 GiB/day" "fast weekly growth alerts"
+  assert_contains "$out" "; $HOSTDIR has 60.0 GiB actually free (floor 100.0 GiB)" "C: under its floor alerts in the same line"
+  assert_not_contains "$out" "disk room low" "room above the margin stays quiet"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room watch-line)
+  assert_equals "" "$out" "standing alerts are not repeated"
+  set_sizes 150 600 400
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 600 )) run_room watch-line)
+  assert_equals "storage alert cleared: c runway" "$out" "a recovered C: reports once"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 900 )) run_room growth) || fail "growth exits 0"
+  assert_contains "$out" "last week +14.0 GiB over 7.0 days (2.00 GiB/day)" "weekly Linux change is reported"
+  assert_contains "$out" "last day +2.0 GiB over 1.0 days (2.00 GiB/day)" "daily Linux change is reported"
+  assert_contains "$out" "ALERT growth: Linux used grew 2.00 GiB/day" "the report shows the alert"
+  assert_contains "$out" "ok c runway" "the report shows clear alerts"
+  assert_contains "$out" "thresholds: growth 0.5 GiB/day, C: free 100.0 GiB, D: free after reservations 50.0 GiB" "the report names the thresholds"
+  out=$(FM_DISK_ROOM_GROWTH_MAX=3G FM_DISK_ROOM_NOW=$(( t0 + 1200 )) run_room watch-line)
+  assert_equals "storage alert cleared: growth" "$out" "a raised growth limit clears the alert"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 3 * 3600 )) run_room watch-line)
+  assert_equals "" "$out" "stale samples leave the growth alert unchanged"
+  write_samples "$t0" 3 21600 2
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room growth)
+  assert_contains "$out" "unknown growth" "under six days of samples gives no weekly verdict"
+  set_sizes 15 600 400
+  out=$(FM_DISK_ROOM_C_FREE_MIN=bogus FM_DISK_ROOM_NOW=$(( t0 + 1500 )) run_room watch-line)
+  assert_contains "$out" "disk room low: 15.0 GiB" "the room alert still speaks"
+  assert_contains "$out" " | storage alerts: cannot evaluate (bad FM_DISK_ROOM_C_FREE_MIN)" "a bad threshold is reported"
+  out=$(FM_DISK_ROOM_C_FREE_MIN=bogus FM_DISK_ROOM_NOW=$(( t0 + 1800 )) run_room watch-line)
+  assert_equals "" "$out" "the same bad threshold is reported once"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 2100 )) run_room watch-line)
+  assert_contains "$out" "storage alert: $HOSTDIR has 15.0 GiB actually free (floor 100.0 GiB)" "C: alert after the threshold is fixed"
+  unset TEST_SAMPLES FM_DISK_ROOM_C_FREE_MIN
+  pass "growth and C: runway alerts speak once per change and growth reports daily and weekly values"
+}
+
+test_d_runway_and_substitution() {
+  reset_state
+  rm -rf "${TMP_ROOT:?}/storage" "${TMP_ROOT:?}/mnt"
+  set_sizes 60 600 400
+  truncate -s $(( 470 * GIB )) "$VHDX"
+  local cfg="$TMP_ROOT/storage" mp="$TMP_ROOT/mnt/d" out t0 rootdev
+  t0=$(date +%s)
+  mkdir -p "$cfg" "$mp/lattice-data/tetjet-results"
+  printf 'volume-d\n' >"$mp/lattice-data/.lattice-storage-id"
+  printf 'uniqueid=volume-d\n' >"$cfg/ssd-identity"
+  printf '1 2 0:1 / %s rw - 9p D: rw\n' "$mp" >"$TMP_ROOT/mountinfo"
+  printf '%s/lattice-data/tetjet-results/{task}\nformat=lattice-storage-results-root/v1\nactive=ssd\nstate=ok\nssd_letter=D\nssd_fs=exFAT\nssd_id=volume-d\nssd_marker=%s/lattice-data/.lattice-storage-id\nssd_device=999\nssd_free_bytes=%s\nchecked_at=%s\n' \
+    "$mp" "$mp" $(( 500 * GIB )) "$t0" >"$cfg/results-root"
+  printf '%s\n' $(( 100 * GIB )) >"$DFDIR/$(key "$mp/lattice-data/tetjet-results").avail"
+  run_room reserve-bulk d-job --task job --download 10G --expanded 20G --packaging 20G >/dev/null || fail "bulk admission"
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_equals "" "$out" "D: at its floor after reservations is not an alert"
+  out=$(FM_DISK_ROOM_D_FREE_MIN=60G FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room watch-line)
+  assert_equals "storage alert: D: has 50.0 GiB after 50.0 GiB of reservations (floor 60.0 GiB)" "$out" "live D: free minus reservations under the floor alerts"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 600 )) run_room growth)
+  assert_contains "$out" "D: free 100.0 GiB (live), reserved 50.0 GiB, after reservations 50.0 GiB" "the report shows D: room and reservations"
+  run_room release-bulk d-job
+  rootdev=$(stat -c %d -- "$LINUXDIR")
+  out=$(FAKE_BULK_DEVICE=$rootdev FM_DISK_ROOM_NOW=$(( t0 + 900 )) run_room watch-line)
+  assert_contains "$out" "mandatory D: bulk substituted Linux storage: $mp/lattice-data is on the Linux disk" "a D: path on the Linux disk alerts"
+  assert_contains "$out" "cleared: d runway" "the released reservation clears the D: alert in the same line"
+  out=$(FAKE_BULK_DEVICE=$rootdev FM_DISK_ROOM_NOW=$(( t0 + 1200 )) run_room growth)
+  assert_contains "$out" "D: free 500.0 GiB (published)" "an unverified D: falls back to the published reading"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 1500 )) run_room watch-line)
+  assert_equals "storage alert cleared: d substitution" "$out" "the substitution clears once D: is back"
+  mkdir -p "$TMP_ROOT/state/reservations-d/$rootdev"
+  printf 'bytes=1\nexpires=%s\n' $(( t0 + 99999 )) >"$TMP_ROOT/state/reservations-d/$rootdev/stray"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 1800 )) run_room watch-line)
+  assert_contains "$out" "live D: reservations are charged to filesystem $rootdev, which is the Linux disk" "a D: pool on the Linux disk alerts"
+  truncate -s $(( 473 * GIB )) "$VHDX"
+  printf '%s\n' $(( 90 * GIB )) >"$DFDIR/$(key "$mp/lattice-data/tetjet-results").avail"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 86400 )) run_room watch-line)
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 86400 )) run_room growth)
+  assert_contains "$out" "disk file: 473.0 GiB; last day +3.0 GiB over 1.0 days" "the disk file's daily change comes from the hourly history"
+  assert_contains "$out" "free last day -10.0 GiB over 1.0 days" "D: free's daily change comes from the hourly history"
+  rm -rf "$TMP_ROOT/state/reservations-d/$rootdev" "$cfg/results-root"
+  pass "D: runway and Linux substitution alerts, with disk file and D: history"
+}
+
 test_bulk_reservations
 test_status_real_room_and_reclaim
 test_shadow_record_reserves_headroom
@@ -522,3 +626,5 @@ test_watch_line
 test_linux_only
 test_vhdx_discovery_cached
 test_arm_and_disarm
+test_growth_alerts
+test_d_runway_and_substitution

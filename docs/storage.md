@@ -126,6 +126,7 @@ The integrated `bulk-root` options must start with `TASK --name DELIVERY`.
 PID reservations lapse when that exact process exits; without a PID they expire after `--ttl` (default 43200 seconds).
 Choose an owner process that remains alive for the entire delivery, or explicitly maintain an adequate TTL across multi-process jobs.
 After completion or abandonment, release with `bin/fm-disk-room.sh release-bulk DELIVERY`, which works even with D: unplugged.
+The disk-room watcher check alerts when D: runway after these reservations falls under its floor or when mandatory bulk substituted Linux storage; [disk-room.md](disk-room.md#growth-and-runway-alerts) owns those alerts.
 The existing reservation owner stores D: pools under `reservations-d/<filesystem-device>` in its existing state directory, apart from the unchanged Linux/C: `reservations` pool.
 Every admission is serialized by the existing owner lock, reads actual D: free space, and subtracts only that filesystem's live D: reservations.
 The full reservation remains charged even as written bytes reduce free space, conservatively counting those bytes twice until release.

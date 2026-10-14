@@ -52,6 +52,25 @@ Under the margin it prints one line with the real room, the declared writes, and
 It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, and the shadow storage record, and never starts PowerShell, which times out when Windows is short of memory.
 Without a fresh shadow storage record it runs `wevtutil.exe` for the event count at most once an hour, under a 20 second timeout.
 
+## Growth and runway alerts
+
+The same watcher check also reports storage growth and runway, from readings that already exist: the data-gate sampler's `samples.jsonl` (Linux and C: used bytes every 5 minutes, read only from its tail), `df` of the Windows drive and the verified D: results directory, the disk file's length, and the live reservations.
+It raises an alert when any of these holds:
+
+- Linux used grew faster than 0.5 GiB/day over the last week (`FM_DISK_ROOM_GROWTH_MAX`), judged only from at least six days of samples whose newest is under 2 hours old;
+- the Windows drive has under 100 GiB actually free (`FM_DISK_ROOM_C_FREE_MIN`), before reservations and shadow storage headroom;
+- D: has under 50 GiB free after its live bulk reservations (`FM_DISK_ROOM_D_FREE_MIN`), measured live when the publication's D: device is mounted and otherwise from the last published reading;
+- mandatory D: bulk substituted Linux storage: a D: reservation pool sits on the Linux disk or C:, or the D: mount path's `lattice-data` folder sits on the Linux disk, where writes to a pinned D: root land once D: is not mounted.
+
+Each threshold takes a size or `off`.
+`watch-line` prints one `storage alert:` line when an alert starts or clears, joined to the low-room line with ` | ` when both speak, and never repeats a standing alert; a bad threshold is reported once.
+An unknown reading, such as too few or stale samples, leaves the last state in place.
+The C: alert may say how much a compaction could return, but nothing here schedules, triggers, or runs a compaction or a WSL shutdown; the captain runs the reclaim-now step.
+The growth figure includes approved software installs and intentionally kept datasets, so a jump is attributed from the owners' records, never from a recursive scan.
+
+`bin/fm-disk-room.sh growth` is the read-only report: Linux used and C: used change over the last day and week, C: free, the disk file's length and D: free with their daily and weekly change, D: and Linux/C: reservations, each alert's state, and the thresholds in force.
+The disk file and D: changes come from a history of at most 200 hourly entries that `watch-line` keeps in its state directory, so they read unknown until the armed check has run for a day.
+
 ## Reclaim (one-time Windows install)
 
 `bin/fm-wsl-reclaim.ps1` is run by a Windows administrator; nothing in this repo runs elevated or as root on its own.

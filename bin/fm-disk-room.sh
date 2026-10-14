@@ -45,6 +45,14 @@
 #       For a firstmate custom watcher check: print one line only when real
 #       room is under the margin (repeated only after a further 5 GiB drop or
 #       6 hours), or when a reading fails (at most every 6 hours); else nothing.
+#       Also prints one "storage alert:" line when a growth or runway alert
+#       starts or clears (see growth); a standing alert is not repeated.
+#   fm-disk-room.sh growth
+#       Read-only report: Linux used and C: used change over the last day and
+#       week from the data-gate sampler, C: free, the disk file's length and
+#       D: free (with their daily and weekly change from the watcher's hourly
+#       history), D: and Linux/C: reservations, and each alert's state.
+#       Never runs, schedules or triggers a compaction.
 #   fm-disk-room.sh arm | disarm
 #       Write FM_HOME's state/disk-room.check.sh shim (running watch-line with
 #       this script's environment settings) and bind it with
@@ -79,7 +87,16 @@
 #                         Windows/System32/wevtutil.exe; empty disables the count)
 #   FM_DISK_ROOM_RESULTS_ROOT  results-root file from bin/fm-storage.sh
 #                         (default ${XDG_CONFIG_HOME:-~/.config}/lattice-storage/results-root)
-#   FM_DISK_ROOM_STATE    reservations and alert record
+#   FM_DISK_ROOM_SAMPLES  data-gate sampler log read for Linux and C: growth
+#                         (default ~/.local/state/lattice-data-gate/samples.jsonl;
+#                         only its last 3500 lines are read)
+#   FM_DISK_ROOM_GROWTH_MAX  alert when Linux used grew faster than this per day
+#                         over the last week (SIZE, default 0.5G; off disables)
+#   FM_DISK_ROOM_C_FREE_MIN  alert when the Windows drive's actual free space is
+#                         under this (SIZE, default 100G; off disables)
+#   FM_DISK_ROOM_D_FREE_MIN  alert when D: free space minus live D: reservations
+#                         is under this (SIZE, default 50G; off disables)
+#   FM_DISK_ROOM_STATE    reservations, alert records and the hourly history
 #                         (default ${XDG_STATE_HOME:-~/.local/state}/fm-disk-room)
 #   FM_DISK_ROOM_NOW      epoch override for tests
 set -u
@@ -412,16 +429,259 @@ advice() {
 }
 
 # results_root: sets RR_ACTIVE (ssd, c, or empty when no file), RR_STATE,
-# RR_LETTER, RR_FS, RR_FREE and RR_TOTAL from fm-storage.sh's results-root file.
+# RR_LETTER, RR_FS, RR_FREE, RR_TOTAL and RR_DEVICE from fm-storage.sh's
+# results-root file.
 results_root() {
   local f v
   f=${FM_DISK_ROOM_RESULTS_ROOT:-${XDG_CONFIG_HOME:-${HOME:-/tmp}/.config}/lattice-storage/results-root}
-  RR_ACTIVE='' RR_STATE='' RR_LETTER='' RR_FS='' RR_FREE='' RR_TOTAL=''
+  RR_ACTIVE='' RR_STATE='' RR_LETTER='' RR_FS='' RR_FREE='' RR_TOTAL='' RR_DEVICE=''
   [ -r "$f" ] || return 0
   rr() { sed -n "2,\${s/^$1=//p}" "$f" | head -n 1 | tr -cd 'A-Za-z0-9._ -'; }
   RR_ACTIVE=$(rr active); RR_STATE=$(rr state); RR_LETTER=$(rr ssd_letter); RR_FS=$(rr ssd_fs)
+  v=$(rr ssd_device); case "$v" in ''|*[!0-9]*) ;; *) RR_DEVICE=$v ;; esac
   v=$(rr ssd_free_bytes); case "$v" in ''|*[!0-9]*) ;; *) RR_FREE=$v ;; esac
   v=$(rr ssd_total_bytes); case "$v" in ''|*[!0-9]*) ;; *) RR_TOTAL=$v ;; esac
+}
+
+# Growth and runway ------------------------------------------------------------
+
+# threshold VAR DEFAULT -> bytes, or "off"; fails on a bad value.
+threshold() {
+  local v=${!1:-$2}
+  case "$v" in off) printf 'off\n'; return 0 ;; esac
+  to_bytes "$v" || { ERR="bad $1"; return 1; }
+}
+
+# sample_growth: reads the tail of the data-gate sampler (fm-io-sample) and
+# sets SAMPLE_AT, SAMPLE_USED and, per window, the span in seconds and the
+# change in Linux used bytes and C: used bytes (LG_DAY_SPAN LG_DAY CG_DAY,
+# LG_WEEK_SPAN LG_WEEK CG_WEEK); a value it cannot compute stays empty.
+sample_growth() {
+  local f out
+  SAMPLE_AT='' SAMPLE_USED='' LG_DAY_SPAN='' LG_DAY='' CG_DAY='' LG_WEEK_SPAN='' LG_WEEK='' CG_WEEK=''
+  f=${FM_DISK_ROOM_SAMPLES:-${HOME:-/tmp}/.local/state/lattice-data-gate/samples.jsonl}
+  [ -r "$f" ] || return 0
+  # Only the tail is read: 3500 lines cover over 12 days at the 5-minute cadence.
+  out=$(tail -n 3500 -- "$f" 2>/dev/null | awk '
+    function num(k,  m) {
+      if (!match($0, "\"" k "\":[0-9]+")) return ""
+      return substr($0, RSTART + length(k) + 3, RLENGTH - length(k) - 3)
+    }
+    function win(w,  i, dc) {
+      for (i = 1; i < n && T[i] < T[n] - w; i++) ;
+      dc = (C[n] != "" && C[i] != "") ? sprintf("%.0f", C[n] - C[i]) : "-"
+      printf " %.0f %.0f %s", T[n] - T[i], U[n] - U[i], dc
+    }
+    { t = num("ts"); u = num("root_used"); if (t == "" || u == "") next
+      if (n && t + 0 < T[n]) next
+      n++; T[n] = t + 0; U[n] = u + 0; C[n] = num("mntc_used") }
+    END { if (!n) exit; printf "%.0f %.0f", T[n], U[n]; win(86400); win(604800); print "" }')
+  [ -n "$out" ] || return 0
+  read -r SAMPLE_AT SAMPLE_USED LG_DAY_SPAN LG_DAY CG_DAY LG_WEEK_SPAN LG_WEEK CG_WEEK <<<"$out"
+  [ "$CG_DAY" = - ] && CG_DAY=''
+  [ "$CG_WEEK" = - ] && CG_WEEK=''
+  return 0
+}
+
+# history_record: append "epoch disk-file-bytes host-free-bytes D-free-bytes
+# D-reserved-bytes" to the small history at most once an hour, keeping the
+# last 200 entries, so disk-file and D: changes have daily and weekly values.
+history_record() {
+  local f t last=''
+  f="$(state_dir)/history"
+  t=$(now)
+  [ -r "$f" ] && last=$(tail -n 1 -- "$f" | awk '{ print $1 }')
+  case "$last" in ''|*[!0-9]*) ;; *) [ $(( t - last )) -lt 3600 ] && [ "$t" -ge "$last" ] && return 0 ;; esac
+  printf '%s %s %s %s %s\n' "$t" "${VHDX_SIZE:--}" "${HOST_FREE:--}" "${D_FREE:--}" "${D_RES:--}" >>"$f" 2>/dev/null || return 0
+  if [ "$(wc -l <"$f")" -gt 200 ]; then
+    tail -n 200 -- "$f" >"$f.tmp" 2>/dev/null && mv -f -- "$f.tmp" "$f"
+  fi
+  return 0
+}
+
+# history_change COLUMN WINDOW -> "span change" between the newest entry and the
+# oldest within WINDOW seconds of it that both have the column, or nothing.
+history_change() {
+  local f
+  f="$(state_dir)/history"
+  [ -r "$f" ] || return 0
+  awk -v c="$1" -v w="$2" '$c ~ /^[0-9]+$/ { n++; T[n] = $1; V[n] = $c }
+    END { if (n < 2) exit; for (i = 1; i < n && T[i] < T[n] - w; i++) ;
+      if (i < n) printf "%.0f %.0f\n", T[n] - T[i], V[n] - V[i] }' "$f"
+}
+
+# d_runway: sets D_FREE (live df of the verified D: results directory, else the
+# publication's last ssd_free_bytes), D_SRC (live, published or empty), D_RES
+# (live D: reservations) and D_AFTER.
+d_runway() {
+  local mp dev rootdev line dir
+  D_FREE='' D_SRC='' D_RES=0 D_AFTER=''
+  results_root
+  mp="${FM_STORAGE_MNT:-/mnt}/d/lattice-data/tetjet-results"
+  rootdev=$(stat -c %d -- "${FM_DISK_ROOM_ROOT:-/}" 2>/dev/null)
+  if [ "$RR_ACTIVE" = ssd ] && [ "$RR_LETTER" = D ] && [ -n "$RR_DEVICE" ] &&
+    dev=$(stat -c %d -- "$mp" 2>/dev/null) && [ "$dev" = "$RR_DEVICE" ] && [ "$dev" != "$rootdev" ]; then
+    D_FREE=$(df_field "$mp" avail)
+    case "$D_FREE" in ''|*[!0-9]*|???????????????????*) D_FREE='' ;; *) D_SRC=live ;; esac
+  fi
+  if [ -z "$D_FREE" ] && [ "$RR_LETTER" = D ] && [ -n "$RR_FREE" ]; then
+    D_FREE=$RR_FREE; D_SRC=published
+  fi
+  for dir in "$(state_dir)/reservations-d/"*; do
+    [ -d "$dir" ] || continue
+    while read -r line; do
+      [ -n "$line" ] && D_RES=$(( D_RES + ${line##* } ))
+    done < <(live_reservations '' "$dir")
+  done
+  [ -n "$D_FREE" ] && D_AFTER=$(( D_FREE - D_RES ))
+  return 0
+}
+
+# substitution: sets SUBST to why mandatory D: bulk is landing on Linux
+# storage, or empty. Two signs: a D: reservation pool whose filesystem is the
+# Linux root or C:, or a lattice-data folder under the D: mount path that sits
+# on the Linux root, which is where writes to a pinned D: root go once D: is
+# not mounted there.
+substitution() {
+  local rootdev hostdev='' dir dev mp
+  SUBST=''
+  rootdev=$(stat -c %d -- "${FM_DISK_ROOM_ROOT:-/}" 2>/dev/null) || return 0
+  [ -n "$HOST" ] && hostdev=$(stat -c %d -- "$HOST" 2>/dev/null)
+  for dir in "$(state_dir)/reservations-d/"*; do
+    [ -d "$dir" ] || continue
+    dev=${dir##*/}
+    if [ "$dev" = "$rootdev" ] || { [ -n "$hostdev" ] && [ "$dev" = "$hostdev" ]; }; then
+      [ -n "$(live_reservations '' "$dir")" ] &&
+        SUBST="live D: reservations are charged to filesystem $dev, which is $([ "$dev" = "$rootdev" ] && echo the Linux disk || echo C:)"
+    fi
+  done
+  mp="${FM_STORAGE_MNT:-/mnt}/d/lattice-data"
+  if [ -z "$SUBST" ] && [ -e "$mp" ] && [ "$(stat -c %d -- "$mp" 2>/dev/null)" = "$rootdev" ]; then
+    SUBST="$mp is on the Linux disk, so writes to the D: results path land on Linux"
+  fi
+  return 0
+}
+
+# per_day BYTES SPAN -> GiB per day with two decimals.
+per_day() { awk -v b="$1" -v s="$2" 'BEGIN { printf "%.2f", (s > 0 ? b * 86400 / s : 0) / 1073741824 }'; }
+days() { awk -v s="$1" 'BEGIN { printf "%.1f", s / 86400 }'; }
+signed_gib() { awk -v b="$1" 'BEGIN { printf "%+.1f", b / 1073741824 }'; }
+
+# storage_alerts: evaluates the growth and runway alerts after measure. Sets
+# AL_<key> to 1 (alerting), 0 (clear) or empty (unknown, so the last state
+# holds) and AL_TEXT_<key> to the alert's words, for the keys growth,
+# c_runway, d_runway and d_substitution; they are read through indirection.
+# shellcheck disable=SC2034
+storage_alerts() {
+  local gmax cmin dmin rate
+  gmax=$(threshold FM_DISK_ROOM_GROWTH_MAX 0.5G) || return 1
+  cmin=$(threshold FM_DISK_ROOM_C_FREE_MIN 100G) || return 1
+  dmin=$(threshold FM_DISK_ROOM_D_FREE_MIN 50G) || return 1
+  GROWTH_MAX=$gmax C_FREE_MIN=$cmin D_FREE_MIN=$dmin
+  sample_growth; d_runway; substitution
+  AL_growth='' AL_c_runway='' AL_d_runway='' AL_d_substitution=''
+  # A week's rate needs at least six days of samples and a sample under 2 hours old.
+  if [ "$gmax" != off ] && [ -n "$LG_WEEK_SPAN" ] && [ "$LG_WEEK_SPAN" -ge 518400 ] &&
+    [ $(( $(now) - SAMPLE_AT )) -lt 7200 ]; then
+    rate=$(awk -v b="$LG_WEEK" -v s="$LG_WEEK_SPAN" 'BEGIN { printf "%.0f", b * 86400 / s }')
+    if [ "$rate" -gt "$gmax" ]; then AL_growth=1; else AL_growth=0; fi
+    AL_TEXT_growth="Linux used grew $(per_day "$LG_WEEK" "$LG_WEEK_SPAN") GiB/day over the last $(days "$LG_WEEK_SPAN") days (limit $(gib "$gmax") GiB/day, approved installs and kept datasets included)"
+  fi
+  if [ "$cmin" != off ] && [ -n "$HOST_FREE" ]; then
+    if [ "$HOST_FREE" -lt "$cmin" ]; then AL_c_runway=1; else AL_c_runway=0; fi
+    AL_TEXT_c_runway="$HOST has $(gib "$HOST_FREE") GiB actually free (floor $(gib "$cmin") GiB)"
+    if [ -n "$RECLAIM" ] && [ "$RECLAIM" -ge $((5 * GIB)) ]; then
+      AL_TEXT_c_runway="$AL_TEXT_c_runway; a compaction could return about $(gib "$RECLAIM") GiB when the captain runs one"
+    fi
+  fi
+  if [ "$dmin" != off ] && [ -n "$D_AFTER" ]; then
+    if [ "$D_AFTER" -lt "$dmin" ]; then AL_d_runway=1; else AL_d_runway=0; fi
+    AL_TEXT_d_runway="D: has $(gib "$D_AFTER") GiB after $(gib "$D_RES") GiB of reservations (floor $(gib "$dmin") GiB$([ "$D_SRC" = published ] && echo ', from the last published reading'))"
+  fi
+  if [ -n "$SUBST" ]; then AL_d_substitution=1; else AL_d_substitution=0; fi
+  AL_TEXT_d_substitution="mandatory D: bulk substituted Linux storage: ${SUBST:-none}"
+  return 0
+}
+
+ALERT_KEYS='growth c_runway d_runway d_substitution'
+
+# storage_alert_line: compares the evaluated alerts with the recorded ones and
+# prints one line naming each alert that started or cleared; an unchanged
+# state prints nothing, so a standing alert is reported once.
+storage_alert_line() {
+  local rec k v old raised='' cleared='' tmp line
+  rec="$(state_dir)/storage-alerts"
+  tmp=$(mktemp "$(state_dir)/.storage-alerts.XXXXXX") || return 0
+  for k in $ALERT_KEYS; do
+    v="AL_$k"; v=${!v}
+    old=$( [ -r "$rec" ] && sed -n "s/^$k=//p" "$rec" | head -n 1)
+    [ -n "$v" ] || v=${old:-0}
+    if [ "$v" = 1 ] && [ "$old" != 1 ]; then
+      line="AL_TEXT_$k"; raised="$raised${raised:+; }${!line}"
+    elif [ "$v" = 0 ] && [ "$old" = 1 ]; then
+      cleared="$cleared${cleared:+, }${k//_/ }"
+    fi
+    printf '%s=%s\n' "$k" "$v" >>"$tmp"
+  done
+  mv -f -- "$tmp" "$rec" 2>/dev/null || rm -f -- "$tmp"
+  if [ -n "$raised" ]; then
+    printf 'storage alert: %s%s' "$raised" "${cleared:+; cleared: $cleared}"
+  elif [ -n "$cleared" ]; then
+    printf 'storage alert cleared: %s' "$cleared"
+  fi
+}
+
+# window_line LABEL SPAN CHANGE -> "LABEL +X GiB over D days", or "LABEL unknown".
+window_line() {
+  if [ -n "$2" ] && [ -n "$3" ]; then
+    printf '%s %s GiB over %s days (%s GiB/day)' "$1" "$(signed_gib "$3")" "$(days "$2")" "$(per_day "$3" "$2")"
+  else
+    printf '%s unknown' "$1"
+  fi
+}
+
+cmd_growth() {
+  local h k v t
+  [ "$#" -eq 0 ] || die "growth takes no arguments"
+  measure || die "$ERR"
+  storage_alerts || die "$ERR"
+  if [ -n "$SAMPLE_AT" ]; then
+    printf 'Linux used: %s GiB at %s; %s; %s\n' "$(gib "$SAMPLE_USED")" \
+      "$(date -u -d "@$SAMPLE_AT" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "$SAMPLE_AT")" \
+      "$(window_line 'last day' "$LG_DAY_SPAN" "$LG_DAY")" "$(window_line 'last week' "$LG_WEEK_SPAN" "$LG_WEEK")"
+  else
+    printf 'Linux used: no sampler readings\n'
+  fi
+  if [ -n "$HOST_FREE" ]; then
+    printf '%s free: %s GiB; used %s, %s\n' "$HOST" "$(gib "$HOST_FREE")" \
+      "$(window_line 'last day' "$LG_DAY_SPAN" "$CG_DAY")" "$(window_line 'last week' "$LG_WEEK_SPAN" "$CG_WEEK")"
+  fi
+  if [ -n "$VHDX_SIZE" ]; then
+    h=$(history_change 2 86400); k=$(history_change 2 604800)
+    printf 'disk file: %s GiB; %s; %s\n' "$(gib "$VHDX_SIZE")" \
+      "$(window_line 'last day' "${h% *}" "${h#* }")" "$(window_line 'last week' "${k% *}" "${k#* }")"
+  fi
+  if [ -n "$D_FREE" ]; then
+    h=$(history_change 4 86400); k=$(history_change 4 604800)
+    printf 'D: free %s GiB (%s), reserved %s GiB, after reservations %s GiB; free %s; %s\n' \
+      "$(gib "$D_FREE")" "$D_SRC" "$(gib "$D_RES")" "$(gib "$D_AFTER")" \
+      "$(window_line 'last day' "${h% *}" "${h#* }")" "$(window_line 'last week' "${k% *}" "${k#* }")"
+  else
+    printf 'D: not measured (%s); reserved %s GiB\n' "${RR_STATE:-no publication}" "$(gib "$D_RES")"
+  fi
+  printf 'reserved writes (Linux/C:): %s GiB%s\n' "$(gib "$RESERVED")" "${RES_LIST:+ ($RES_LIST)}"
+  for k in $ALERT_KEYS; do
+    v="AL_$k"; t="AL_TEXT_$k"
+    case "${!v}" in
+      1) printf 'ALERT %s: %s\n' "${k//_/ }" "${!t}" ;;
+      0) printf 'ok %s\n' "${k//_/ }" ;;
+      *) printf 'unknown %s (not enough readings, or turned off)\n' "${k//_/ }" ;;
+    esac
+  done
+  printf 'thresholds: growth %s, C: free %s, D: free after reservations %s\n' \
+    "$([ "$GROWTH_MAX" = off ] && echo off || echo "$(gib "$GROWTH_MAX") GiB/day")" \
+    "$([ "$C_FREE_MIN" = off ] && echo off || echo "$(gib "$C_FREE_MIN") GiB")" \
+    "$([ "$D_FREE_MIN" = off ] && echo off || echo "$(gib "$D_FREE_MIN") GiB")"
 }
 
 cmd_status() {
@@ -604,28 +864,42 @@ cmd_release() {
 }
 
 cmd_watch_line() {
-  local rec t last_kind last_t last_room msg kind
+  local rec t last_kind last_t last_room msg='' kind='' measured=1 storage=''
   rec="$(state_dir)/alert"
   t=$(now)
   mkdir -p "$(state_dir)" 2>/dev/null || return 0
   if ! measure; then
-    kind=error; msg="disk room: cannot measure ($ERR)"; ROOM=0
+    kind=error; msg="disk room: cannot measure ($ERR)"; ROOM=0; measured=0
   elif [ "$ROOM" -lt "$MARGIN" ]; then
     kind=low
     msg="disk room low: $(gib "$ROOM") GiB real room on $(limit_name) after $(gib "$RESERVED") GiB of declared writes and $(gib "$SHADOW_RES") GiB of shadow storage headroom (margin $(gib "$MARGIN") GiB); $(advice)"
   else
     rm -f -- "$rec"
-    return 0
   fi
-  if [ -r "$rec" ]; then
+  if [ -n "$kind" ] && [ -r "$rec" ]; then
     read -r last_kind last_t last_room <"$rec" || true
     if [ "${last_kind:-}" = "$kind" ] && [ $(( t - ${last_t:-0} )) -lt "$REALERT_SECS" ] \
       && { [ "$kind" = error ] || [ "$ROOM" -gt $(( ${last_room:-0} - REALERT_DROP )) ]; }; then
-      return 0
+      msg=''
     fi
   fi
-  printf '%s %s %s\n' "$kind" "$t" "$ROOM" >"$rec" 2>/dev/null || true
-  printf '%s\n' "$msg"
+  [ -n "$msg" ] && { printf '%s %s %s\n' "$kind" "$t" "$ROOM" >"$rec" 2>/dev/null || true; }
+  if [ "$measured" = 1 ]; then
+    if storage_alerts; then
+      history_record
+      storage=$(storage_alert_line)
+      rm -f -- "$(state_dir)/storage-alerts-error"
+    elif [ "$(cat "$(state_dir)/storage-alerts-error" 2>/dev/null)" != "$ERR" ]; then
+      printf '%s\n' "$ERR" >"$(state_dir)/storage-alerts-error" 2>/dev/null || true
+      storage="storage alerts: cannot evaluate ($ERR)"
+    fi
+  fi
+  if [ -n "$msg" ] && [ -n "$storage" ]; then
+    printf '%s | %s\n' "$msg" "$storage"
+  elif [ -n "$msg$storage" ]; then
+    printf '%s\n' "$msg$storage"
+  fi
+  return 0
 }
 
 # The shim embeds the resolved home and every FM_DISK_ROOM_* setting in force
@@ -640,7 +914,8 @@ cmd_arm() {
   tmp=$(umask 077; mktemp "$state/.fm-disk-room-check.XXXXXX") || die "cannot write in $state"
   {
     printf '%s\n' '#!/usr/bin/env bash' '# Auto-generated by fm-disk-room.sh arm - real disk room watcher check.'
-    for v in MARGIN HOST ROOT VHDX MB_GROUPS COMPACT_RESULT SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE; do
+    for v in MARGIN HOST ROOT VHDX MB_GROUPS COMPACT_RESULT SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE \
+      RESULTS_ROOT SAMPLES GROWTH_MAX C_FREE_MIN D_FREE_MIN; do
       name=FM_DISK_ROOM_$v
       [ -z "${!name+x}" ] || printf 'export %s=%q\n' "$name" "${!name}"
     done
@@ -672,6 +947,7 @@ case "${1:-}" in
   release-bulk) shift; cmd_release_bulk "$@" ;;
   release) shift; cmd_release "$@" ;;
   watch-line) shift; cmd_watch_line ;;
+  growth) shift; cmd_growth "$@" ;;
   arm) cmd_arm ;;
   disarm) cmd_disarm ;;
   -h|--help|help) usage ;;

@@ -1,6 +1,6 @@
 ---
 name: disk-room
-description: Agent-only procedure for laptop disk space on WSL. Load before starting or admitting a job expected to write 1 GiB or more to the Linux disk (including /tmp), on a "disk room low" or "disk room: cannot measure" notification, when anyone reports the Windows drive filling, and before proposing a compaction, sparse mode, or deletion to free space. Owns how agents read real room, admit big writes, what the reclaim install does, and which manual steps are retired.
+description: Agent-only procedure for laptop disk space on WSL. Load before starting or admitting a job expected to write 1 GiB or more to the Linux disk (including /tmp), on a "disk room low", "disk room: cannot measure", or "storage alert" notification, when anyone reports the Windows drive filling, and before proposing a compaction, sparse mode, or deletion to free space. Owns how agents read real room, admit big writes, what the reclaim install does, and which manual steps are retired.
 ---
 
 # disk-room
@@ -12,6 +12,7 @@ On WSL the Linux disk is a non-sparse `ext4.vhdx` on the Windows drive, so `df /
 
 - The startup compaction task is installed but disabled on this laptop, so nothing compacts the disk files at Windows start; freed space comes back to C: only through the reclaim-now step in `docs/disk-room.md`. Re-running `fm-wsl-reclaim.ps1 -Install` re-enables the task, so disable it again afterwards.
 - In a home that registered the watcher check, `fm-disk-room.sh watch-line` stays silent until real room is under the margin (20 GiB by default), then produces one notification, repeated only after a further 5 GiB drop or 6 hours.
+  The same check prints one "storage alert" line when a growth or runway alert starts or clears; `docs/disk-room.md` owns the thresholds.
 
 Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows the most recent compaction, which with the startup task disabled is the last reclaim-now run.
 
@@ -30,6 +31,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - "data must be freed or moved" - compaction cannot help (the slack is fragmented free space sharing 1 MiB disk blocks with live data); bring the captain the owning task's numbers and options, and delete nothing without the captain's word.
 - "shadow storage cycling" - Windows restore points are filling the shadow storage up to its cap and deleting older ones; report it to the captain with the rest of the reading, and change no restore-point or shadow storage setting.
 - "cannot measure" - a reading failed; investigate the named reading before trusting any floor.
+- "storage alert" - Linux growth, C: or D: runway, or a mandatory D: substitution crossed its threshold; read `fm-disk-room.sh growth` and relay the alert with that reading to the captain, who decides any retention, move, or compaction, and run none of them.
 
 Firstmate relays only low readings, in the captain's terms; above the margin, disk is not news.
 
