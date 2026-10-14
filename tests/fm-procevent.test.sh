@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Behavior tests for the generic process-to-event runner and its Lavish adapter.
+# Behavior tests for the generic process-to-event runner.
 #
 # The source under test is a fake blocking process that returns only when its
 # trigger file appears, so completion is a real process event and no test here
-# depends on a discovery timer. The Lavish adapter is exercised through its own
-# public commands against the currently published poll shape; no live Lavish
-# server is started.
+# depends on a discovery timer. Generic runner behavior is registered under the
+# `plain` fixture adapter, which has no terminal, silence, or apply knowledge,
+# so every observed outcome follows the runner alone.
 #
-# Delivery is deliberately NOT asserted as at-least-once or lossless: the
-# published Lavish poll clears feedback destructively before returning it, so
-# the only durability under test is the runner's own - output that reached the
-# runner is stored before it is announced.
+# Delivery is deliberately NOT asserted as at-least-once or lossless: a source
+# can clear its result destructively before returning it, so the only
+# durability under test is the runner's own - output that reached the runner is
+# stored before it is announced.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -19,25 +19,18 @@ set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP_ROOT=$(fm_test_tmproot fm-procevent-tests)
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
-export LAVISH_AXI_STATE_DIR="$TMP_ROOT/lavish-state"
-mkdir -p "$LAVISH_AXI_STATE_DIR"
 
-# Lavish owns this persisted session contract. The fake CLI fixtures exercise
-# its published poll and synchronous reply command boundaries without starting a server.
-lavish_session() {  # <artifact> [session-url]
-  perl -MJSON::PP -MCwd=realpath -MDigest::SHA=sha256_hex -MEncode=decode -e '
-    my ($path, $artifact, $url) = @ARGV;
-    my $real = realpath($artifact) // die "missing fixture artifact";
-    my $key = substr(sha256_hex($real), 0, 16);
-    my $state = { sessions => {} };
-    if (-f $path) { open my $in, "<", $path or die $!; local $/; $state = decode_json(<$in>); }
-    $state->{sessions}{$key} = {
-      key => $key, file => decode("UTF-8", $real), status => "open", url => $url,
-    };
-    open my $out, ">", $path or die $!;
-    print $out encode_json($state);
-  ' "$LAVISH_AXI_STATE_DIR/state.json" "$1" "${2:-http://127.0.0.1:14387/session/0123456789abcdef}"
-}
+# The runner resolves adapters under its root, so the suite points that root at
+# fixture adapters only it controls.
+ADAPTER_ROOT="$TMP_ROOT/adapter-root"
+mkdir -p "$ADAPTER_ROOT/bin"
+cat > "$ADAPTER_ROOT/bin/fm-procevent-plain.sh" <<'SH'
+#!/usr/bin/env bash
+# Fixture adapter with no knowledge of its own: every command is unsupported.
+exit 2
+SH
+chmod +x "$ADAPTER_ROOT/bin/fm-procevent-plain.sh"
+export FM_ROOT_OVERRIDE="$ADAPTER_ROOT"
 
 BLOCKER="$TMP_ROOT/blocker.sh"
 cat > "$BLOCKER" <<'SH'
@@ -84,14 +77,6 @@ pe_register() {  # <home> <adapter> <source-id> -- <argv>...
   pe "$home" register "$adapter" "$id" "$@"
 }
 new_home() { mkdir -p "$1/state"; }
-# A worker-owned board can only be armed for a task whose endpoint metadata the
-# runner can ring, so every fixture worker needs the same durable record a real
-# spawn leaves behind.
-new_task_endpoint() {  # <home> <task-id>
-  mkdir -p "$1/state"
-  printf 'window=fmtest:fm-%s\nworktree=%s/worktree-%s\nproject=fmtest\n' "$2" "$1" "$2" \
-    > "$1/state/$2.meta"
-}
 wake_payloads() { awk -F '\t' '{print $5}' "$1/state/.wake-queue" 2>/dev/null; }
 
 # The wake queue is a durable tab-separated record firstmate consumes:
@@ -242,7 +227,7 @@ assert_contains "$sup" no "an unconfigured home does not need supervision"
 # --- a blocking source completes into exactly one normalized event ----------
 H1="$TMP_ROOT/h1"; mkdir -p "$H1"
 TRIG="$TMP_ROOT/trigger-one"
-out=$(pe_register "$H1" lavish src-one -- "$BLOCKER" "$TRIG" "payload one")
+out=$(pe_register "$H1" plain src-one -- "$BLOCKER" "$TRIG" "payload one")
 assert_contains "$out" "registered: src-one" "register records a source"
 
 sup=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
@@ -260,7 +245,7 @@ assert_contains "$out" "already owned" "a duplicate start loses instead of runni
 : > "$TRIG"
 wait_for "$H1/state/.wake-queue" || fail "no event was published after the source completed"
 payload=$(wake_payloads "$H1")
-assert_contains "$payload" "procevent lavish src-one 1" "completion publishes the committed result sequence"
+assert_contains "$payload" "procevent plain src-one 1" "completion publishes the committed result sequence"
 assert_not_contains "$payload" "payload one" "source output never reaches the event line"
 [ "$(printf '%s\n' "$payload" | grep -c .)" = 1 ] || fail "expected exactly one event, got: $payload"
 pass "one blocking completion yields exactly one bounded normalized event"
@@ -271,7 +256,7 @@ mode=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
   '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_mode "$2"' _ "$ROOT" "$RESULT")
 assert_contains "$mode" 600 "the captured result is private"
 assert_grep 'payload one' "$RESULT" "the captured result holds the source output verbatim"
-assert_grep 'lavish' "${RESULT%.result}.adapter" "the captured result retains its immutable adapter"
+assert_grep 'plain' "${RESULT%.result}.adapter" "the captured result retains its immutable adapter"
 assert_absent "${RESULT%.result}.handled" "publication alone never marks a result handled"
 
 # --- a home spelled through a symlinked ancestor still runs its sources ------
@@ -283,14 +268,14 @@ mkdir -p "$HPHYS"
 ln -s "$HPHYS" "$TMP_ROOT/symlinked-parent"
 HSYM="$TMP_ROOT/symlinked-parent/home"; new_home "$HSYM"
 SYM_TRIGGER="$TMP_ROOT/symlink-trigger"
-pe_register "$HSYM" lavish symlinked-src -- "$BLOCKER" "$SYM_TRIGGER" "symlinked payload" >/dev/null
+pe_register "$HSYM" plain symlinked-src -- "$BLOCKER" "$SYM_TRIGGER" "symlinked payload" >/dev/null
 pe "$HSYM" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/symlinked-src.claim" \
   || fail "a home reached through a symlinked ancestor never claimed its source"
 : > "$SYM_TRIGGER"
 wait_for "$HSYM/state/.wake-queue" \
   || fail "a home reached through a symlinked ancestor published no event"
-assert_contains "$(wake_payloads "$HSYM")" "procevent lavish symlinked-src 1" \
+assert_contains "$(wake_payloads "$HSYM")" "procevent plain symlinked-src 1" \
   "the symlinked-ancestor home publishes the committed result sequence"
 SYM_RESULT=$(first_result "$HSYM" symlinked-src || true)
 [ -n "$SYM_RESULT" ] || fail "the symlinked-ancestor home captured no durable result"
@@ -301,7 +286,7 @@ pass "a home reached through a symlinked ancestor runs its sources normally"
 # --- the public start boundary establishes generation group ownership -------
 HPG="$TMP_ROOT/hpg"; new_home "$HPG"
 DIRECT_TRIGGER="$TMP_ROOT/direct-trigger"
-pe_register "$HPG" lavish direct-src -- "$BLOCKER" "$DIRECT_TRIGGER" "direct result" >/dev/null
+pe_register "$HPG" plain direct-src -- "$BLOCKER" "$DIRECT_TRIGGER" "direct result" >/dev/null
 pe "$HPG" start direct-src > "$TMP_ROOT/direct-start.out" &
 direct_runner=$!
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/direct-src.claim" || fail "direct start never claimed its source"
@@ -347,7 +332,7 @@ waitpid($runner, 0);
 waitpid($sibling, 0);
 exit 0;
 PL
-pe_register "$HPG" lavish shared-src -- "$BLOCKER" "$SHARED_TRIGGER" "shared result" >/dev/null
+pe_register "$HPG" plain shared-src -- "$BLOCKER" "$SHARED_TRIGGER" "shared result" >/dev/null
 FM_HOME="$HPG" perl "$SHARED_LAUNCHER" "$SHARED_SIBLING" \
   "$ROOT/bin/fm-procevent.sh" start shared-src > "$TMP_ROOT/shared-start.out" &
 shared_launcher=$!
@@ -373,16 +358,16 @@ assert_contains "$future_out" "cannot durably record handling" "premature acknow
 assert_absent "$H2/state/procevent-inbox/src-cut.7.handled" "premature acknowledgement creates no marker for the future generation"
 mkdir -p "$H2/state/procevent-inbox"
 printf 'stranded result\n' > "$H2/state/procevent-inbox/src-cut.7.result"
-printf 'lavish\n' > "$H2/state/procevent-inbox/src-cut.7.adapter"
+printf 'plain\n' > "$H2/state/procevent-inbox/src-cut.7.adapter"
 chmod 0600 "$H2/state/procevent-inbox/src-cut.7.result" "$H2/state/procevent-inbox/src-cut.7.adapter"
 out=$(pe "$H2" reconcile)
 assert_contains "$out" "published=1" "a durably captured but unhandled result is announced after restart"
-assert_contains "$(wake_payloads "$H2")" "procevent lavish src-cut 7" "durable adapter identity survives without a registration"
+assert_contains "$(wake_payloads "$H2")" "procevent plain src-cut 7" "durable adapter identity survives without a registration"
 assert_absent "$H2/state/procevent-inbox/src-cut.7.handled" "recovery alone never marks the recovered result handled"
 mv "$H2/state/.wake-queue" "$H2/state/.wake-queue.drained-1"
 out=$(pe "$H2" reconcile)
 assert_contains "$out" "published=1" "an unhandled result is re-announced on every reconcile, not only the first"
-assert_contains "$(wake_payloads "$H2")" "procevent lavish src-cut 7" "the repeat wake preserves its deduplication identity"
+assert_contains "$(wake_payloads "$H2")" "procevent plain src-cut 7" "the repeat wake preserves its deduplication identity"
 [ "$(count_results "$H2" src-cut)" = 1 ] || fail "repeat re-announcement created a second durable copy"
 mv "$H2/state/.wake-queue" "$H2/state/.wake-queue.drained-2"
 
@@ -404,7 +389,7 @@ pass "an unhandled result survives restart and repeat drains, and only explicit 
 HRACE="$TMP_ROOT/hrace"; new_home "$HRACE"
 mkdir -p "$HRACE/state/procevent-inbox"
 printf 'racing result\n' > "$HRACE/state/procevent-inbox/racing-src.1.result"
-printf 'lavish\n' > "$HRACE/state/procevent-inbox/racing-src.1.adapter"
+printf 'plain\n' > "$HRACE/state/procevent-inbox/racing-src.1.adapter"
 chmod 0600 "$HRACE/state/procevent-inbox/racing-src.1.result" "$HRACE/state/procevent-inbox/racing-src.1.adapter"
 RACE_PUBLISH_READY="$TMP_ROOT/race-publish-ready"
 RACE_PUBLISH_RELEASE="$TMP_ROOT/race-publish-release"
@@ -427,7 +412,7 @@ pass "publication cannot race a handled acknowledgement"
 HPRIVATE="$TMP_ROOT/hprivate"; new_home "$HPRIVATE"
 mkdir -p "$HPRIVATE/state/procevent-inbox"
 printf 'private result\n' > "$HPRIVATE/state/procevent-inbox/private-src.1.result"
-printf 'lavish\n' > "$HPRIVATE/state/procevent-inbox/private-src.1.adapter"
+printf 'plain\n' > "$HPRIVATE/state/procevent-inbox/private-src.1.adapter"
 chmod 0600 "$HPRIVATE/state/procevent-inbox/private-src.1.result" "$HPRIVATE/state/procevent-inbox/private-src.1.adapter"
 FAIL_CHMOD_BIN="$TMP_ROOT/fail-chmod-bin"
 mkdir -p "$FAIL_CHMOD_BIN"
@@ -455,8 +440,6 @@ pass "handled acknowledgement creation is private and fails safely"
 # fixture adapters isolate exactly that decision - one that ends on any result,
 # one with no terminal knowledge at all - so the observed behavior is proven to
 # follow the adapter rather than any condition built into the runner.
-ADAPTER_ROOT="$TMP_ROOT/adapter-root"
-mkdir -p "$ADAPTER_ROOT/bin"
 cat > "$ADAPTER_ROOT/bin/fm-procevent-endnow.sh" <<'SH'
 #!/usr/bin/env bash
 # Fixture adapter: every captured result ends this source.
@@ -660,1065 +643,6 @@ assert_absent "$FM_PROCEVENT_CLAIM_ROOT/retire-fail-src.claim" \
   || fail "retirement recovery reran the terminal source"
 pass "failed terminal retirement is fail-closed and idempotently recoverable"
 
-# --- end-user-aligned regression: one Send & End, one captured result -------
-# The dogfood defect: a real armed Lavish source received one human `Send & End`
-# action, and the runner captured four results - the human's real feedback, then
-# recurring empty ended sessions - because it kept restarting a source whose own
-# adapter already knew the session had ended. Driven through the adapter's own
-# arm command against a stand-in for the published poll shape, so registration,
-# the runner, capture, publication, and retirement all run for real.
-HLT="$TMP_ROOT/hlt"; new_home "$HLT"
-LAVISH_BIN=$(fm_fakebin "$TMP_ROOT/lavish-stub")
-LAVISH_POLL_COUNT="$TMP_ROOT/lavish-poll-count"
-export LAVISH_POLL_COUNT
-cat > "$LAVISH_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-# Stand-in for `lavish-axi poll <file>` around a human `Send & End`: the final
-# feedback is delivered exactly once carrying session_ended, and every later
-# poll returns an empty ended session immediately.
-n=$(cat "$LAVISH_POLL_COUNT" 2>/dev/null || echo 0)
-n=$((n + 1))
-printf '%s\n' "$n" > "$LAVISH_POLL_COUNT"
-if [ "$n" = 1 ]; then
-  printf 'session:\n  file: /review.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nfeedback[1]{text}:\n  ship it\n'
-else
-  printf 'session:\n  file: /review.html\n  status: ended\n  ended_by: user\n'
-fi
-SH
-chmod +x "$LAVISH_BIN/lavish-axi"
-REVIEW_ART="$TMP_ROOT/review.html"
-printf '<h1>review</h1>\n' > "$REVIEW_ART"
-lavish_session "$REVIEW_ART"
-lavish_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REVIEW_ART")
-fm_test_track_procevent_home "$HLT"
-PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" arm "$REVIEW_ART" >/dev/null
-for _ in $(seq 1 6); do
-  PATH="$LAVISH_BIN:$PATH" pe "$HLT" reconcile >/dev/null
-  sleep 0.3
-done
-[ "$(cat "$LAVISH_POLL_COUNT")" = 1 ] \
-  || fail "an ended review kept being polled: $(cat "$LAVISH_POLL_COUNT") polls for one Send & End"
-[ "$(count_results "$HLT" "$lavish_id")" = 1 ] \
-  || fail "one Send & End produced $(count_results "$HLT" "$lavish_id") captured results"
-[ "$(wake_payloads "$HLT" | sort -u | grep -c .)" = 1 ] \
-  || fail "one Send & End produced more than one distinct event: $(wake_payloads "$HLT" | sort -u)"
-assert_contains "$(wake_payloads "$HLT")" "procevent lavish $lavish_id 1" "the human's final feedback is announced"
-assert_absent "$HLT/state/procevent/$lavish_id.source" "the ended review source retires automatically"
-assert_absent "$FM_PROCEVENT_CLAIM_ROOT/$lavish_id.claim" "the ended review releases its owned claim"
-LAVISH_RESULT=$(first_result "$HLT" "$lavish_id" || true)
-assert_grep 'ship it' "$LAVISH_RESULT" "automatic retirement retains the human's final feedback"
-out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" retire "$REVIEW_ART")
-assert_contains "$out" "retired: $lavish_id" "explicit adapter retirement stays supported after automatic retirement"
-pass "one Send & End yields exactly one captured result, automatic retirement, and no recurring poll"
-
-# --- end-user-aligned regression: an empty board close is not news ------------
-# The captain's report: closing a review surface he had said nothing on still
-# put a wake in his chat whose entire content was that nothing happened. The
-# adapter now answers the runner's silence seam for exactly that shape, so the
-# result is captured and recorded handled without ever being announced. Driven
-# through the adapter's own arm command and the real runner, so registration,
-# capture, the silence verdict, and retirement all run for real.
-HEMPTY="$TMP_ROOT/hempty"; new_home "$HEMPTY"
-EMPTY_BIN=$(fm_fakebin "$TMP_ROOT/lavish-empty-stub")
-cat > "$EMPTY_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-# Stand-in for `lavish-axi poll <file>` when the captain closes a board he said
-# nothing on: an ended session carrying no queued content at all.
-printf 'session:\n  file: /quiet.html\n  status: ended\n  ended_by: user\n'
-SH
-chmod +x "$EMPTY_BIN/lavish-axi"
-QUIET_ART="$TMP_ROOT/quiet-board.html"
-printf '<h1>quiet</h1>\n' > "$QUIET_ART"
-lavish_session "$QUIET_ART"
-quiet_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$QUIET_ART")
-fm_test_track_procevent_home "$HEMPTY"
-PATH="$EMPTY_BIN:$PATH" FM_HOME="$HEMPTY" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$QUIET_ART" >/dev/null
-quiet_out=$(PATH="$EMPTY_BIN:$PATH" pe "$HEMPTY" start "$quiet_id" 2>&1)
-assert_not_contains "$quiet_out" "not-autohandled" \
-  "a durably silenced result was reported as still unacknowledged"
-# The handled marker is written at exactly the point the wake would otherwise
-# have been appended, so waiting on it - rather than on a fixed sleep - is what
-# makes "no wake" a real observation instead of a race the test won by being
-# early.
-QUIET_HANDLED="$HEMPTY/state/procevent-inbox/$quiet_id.1.handled"
-for _ in $(seq 1 100); do
-  [ -f "$QUIET_HANDLED" ] && break
-  sleep 0.1
-done
-[ -f "$QUIET_HANDLED" ] \
-  || fail "a silenced result was not durably recorded handled, so a later reconcile would announce it"
-[ "$(count_results "$HEMPTY" "$quiet_id")" = 1 ] \
-  || fail "an empty board close captured $(count_results "$HEMPTY" "$quiet_id") results instead of one"
-[ -z "$(wake_payloads "$HEMPTY")" ] \
-  || fail "an empty board close woke the captain: $(wake_payloads "$HEMPTY")"
-# Re-announcement is exactly what the handled marker exists to stop, so the
-# silence has to survive the reconcile that would otherwise republish it.
-PATH="$EMPTY_BIN:$PATH" pe "$HEMPTY" reconcile >/dev/null
-sleep 0.3
-[ -z "$(wake_payloads "$HEMPTY")" ] \
-  || fail "a later reconcile re-announced a silenced empty board close: $(wake_payloads "$HEMPTY")"
-assert_absent "$HEMPTY/state/procevent/$quiet_id.source" \
-  "an empty board close still retires its ended source"
-pass "an empty board close is captured and recorded handled without ever waking the captain"
-
-# --- end-user-aligned regression: worker-owned rounds stay open until re-arm -
-# One worker-owned board runs three rounds: feedback reaches only the worker's
-# inbox, each re-arm acknowledges the prior capture and posts its reply once,
-# and a terminal session ends without another automatic poll.
-HMULTI="$TMP_ROOT/hmulti"; new_home "$HMULTI"
-MULTI_BIN=$(fm_fakebin "$TMP_ROOT/lavish-multi-stub")
-MULTI_ROOT="$TMP_ROOT/lavish-multi-root"
-mkdir -p "$MULTI_ROOT"
-export MULTI_ROOT
-cat > "$MULTI_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-set -eu
-[ "${1-}" != --version ] || { printf '0.1.79\n'; exit 0; }
-n=$(cat "$MULTI_ROOT/count" 2>/dev/null || echo 0)
-n=$((n + 1))
-printf '%s\n' "$n" > "$MULTI_ROOT/count"
-printf '%s:%s\n' "${LAVISH_AXI_HOST-unset}" "${LAVISH_AXI_PORT-unset}" >> "$MULTI_ROOT/routes"
-for arg in "$@"; do
-  case "$arg" in
-    --agent-reply) ;;
-    --*)
-      printf 'error: unknown option %s\ncode: VALIDATION_ERROR\n' "$arg" >&2
-      exit 2
-      ;;
-  esac
-done
-if [ "${1-}" = poll ] && [ "${3-}" = --agent-reply ]; then
-  printf 'poll%s reply: %s\n' "$n" "$4" >> "$MULTI_ROOT/replies"
-fi
-while [ ! -e "$MULTI_ROOT/trigger$n" ]; do sleep 0.02; done
-case "$n" in
-  1|2)
-    printf 'session:\n  status: feedback\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","round %s","","message",""\n' "$n"
-    ;;
-  3)
-    printf 'session:\n  status: ended\n  session_ended: true\n'
-    ;;
-esac
-SH
-chmod +x "$MULTI_BIN/lavish-axi"
-printf 'reply one\n' > "$MULTI_ROOT/reply1"
-printf 'reply two\n' > "$MULTI_ROOT/reply2"
-printf 'reply three\n' > "$MULTI_ROOT/reply3"
-MULTI_ART="$MULTI_ROOT/board.html"
-printf '<h1>multi-round</h1>\n' > "$MULTI_ART"
-lavish_session "$MULTI_ART"
-multi_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$MULTI_ART")
-fm_test_track_procevent_home "$HMULTI"
-new_task_endpoint "$HMULTI" worker-1
-new_task_endpoint "$HMULTI" worker-2
-mkdir -p "$HMULTI/config"
-printf 'wrong-server.example\n' > "$HMULTI/config/lavish-axi-host"
-PATH="$MULTI_BIN:$PATH" LAVISH_AXI_HOST=arming.example LAVISH_AXI_PORT=24387 FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$MULTI_ART" --for worker-1 \
-  --agent-reply-file "$MULTI_ROOT/reply1" >/dev/null
-if PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$MULTI_ART" >/dev/null 2>"$MULTI_ROOT/firstmate-arm.err"; then
-  fail "firstmate arm replaced a worker-owned board"
-fi
-assert_contains "$(cat "$MULTI_ROOT/firstmate-arm.err")" "owned by task worker-1" \
-  "second armer refusal did not name the worker owner"
-list_out=$(FM_HOME="$HMULTI" "$ROOT/bin/fm-procevent.sh" list)
-assert_contains "$list_out" "task:worker-1/listening" \
-  "arm did not leave the worker-owned board with a live listener"
-PATH="$MULTI_BIN:$PATH" LAVISH_AXI_HOST=recovery.example LAVISH_AXI_PORT=34387 FM_HOME="$HMULTI" \
-  pe "$HMULTI" start "$multi_id" > "$MULTI_ROOT/run1" 2>&1 &
-MULTI_RUN=$!
-for _ in $(seq 1 100); do [ "$(cat "$MULTI_ROOT/count" 2>/dev/null || true)" = 1 ] && break; sleep 0.02; done
-touch "$MULTI_ROOT/trigger1"
-for _ in $(seq 1 100); do [ -f "$HMULTI/state/worker-1.inbox/001.msg" ] && break; sleep 0.02; done
-[ -f "$HMULTI/state/worker-1.inbox/001.msg" ] \
-  || fail "worker-owned feedback did not reach the worker inbox"
-[ -z "$(wake_payloads "$HMULTI")" ] \
-  || fail "worker-owned feedback woke firstmate: $(wake_payloads "$HMULTI")"
-
-# An open nonterminal round keeps the board with worker-1 through every
-# retirement and registration path: the one source record cannot be retired out
-# from under that round, and while it stands neither firstmate nor a sibling
-# task can register over it or acknowledge worker-1's capture.
-open_retire_status=0
-PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$MULTI_ART" \
-  >/dev/null 2>"$MULTI_ROOT/open-retire.err" || open_retire_status=$?
-[ "$open_retire_status" -ne 0 ] \
-  || fail "explicit retire removed a worker-owned board with an unacknowledged round"
-assert_contains "$(cat "$MULTI_ROOT/open-retire.err")" "unacknowledged" \
-  "the refused retire did not say the owner's round is still unacknowledged"
-[ -e "$HMULTI/state/procevent/$multi_id.source" ] \
-  || fail "a refused retire still removed the worker-owned source record"
-if PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$MULTI_ART" --for worker-2 \
-  >/dev/null 2>"$MULTI_ROOT/open-sibling.err"; then
-  fail "a sibling task registered over an open worker-owned round"
-fi
-assert_contains "$(cat "$MULTI_ROOT/open-sibling.err")" "owned by task worker-1" \
-  "the sibling refusal over an open round did not name the worker owner"
-if PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$MULTI_ART" \
-  >/dev/null 2>"$MULTI_ROOT/open-firstmate.err"; then
-  fail "firstmate armed a board with an open worker-owned round"
-fi
-assert_contains "$(cat "$MULTI_ROOT/open-firstmate.err")" "owned by task worker-1" \
-  "the firstmate refusal over an open round did not name the worker owner"
-[ ! -f "$HMULTI/state/procevent-inbox/$multi_id.1.handled" ] \
-  || fail "a refused retire or registration acknowledged the owner's open round"
-[ ! -e "$HMULTI/state/worker-2.inbox" ] \
-  || fail "a refused sibling registration took delivery of the owner's feedback"
-
-PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$MULTI_ART" --for worker-1 \
-  --agent-reply-file "$MULTI_ROOT/reply2" >/dev/null
-wait "$MULTI_RUN" || true
-for _ in $(seq 1 100); do
-  PATH="$MULTI_BIN:$PATH" pe "$HMULTI" reconcile >/dev/null 2>&1 || true
-  [ "$(cat "$MULTI_ROOT/count" 2>/dev/null || true)" = 2 ] && break
-  sleep 0.03
-done
-touch "$MULTI_ROOT/trigger2"
-for _ in $(seq 1 100); do [ -f "$HMULTI/state/worker-1.inbox/002.msg" ] && break; sleep 0.02; done
-[ -f "$HMULTI/state/worker-1.inbox/002.msg" ] \
-  || fail "the next worker-owned feedback did not reach the worker inbox"
-PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$MULTI_ART" --for worker-1 \
-  --agent-reply-file "$MULTI_ROOT/reply3" >/dev/null
-for _ in $(seq 1 100); do
-  PATH="$MULTI_BIN:$PATH" pe "$HMULTI" reconcile >/dev/null 2>&1 || true
-  [ "$(cat "$MULTI_ROOT/count" 2>/dev/null || true)" = 3 ] && break
-  sleep 0.03
-done
-touch "$MULTI_ROOT/trigger3"
-for _ in $(seq 1 100); do [ -f "$HMULTI/state/worker-1.inbox/003.msg" ] && break; sleep 0.02; done
-[ -f "$HMULTI/state/procevent-inbox/$multi_id.1.handled" ] \
-  || fail "first worker-owned round was not acknowledged by re-arm"
-[ -f "$HMULTI/state/procevent-inbox/$multi_id.2.handled" ] \
-  || fail "second worker-owned round was not acknowledged by re-arm"
-assert_contains "$(cat "$HMULTI/state/worker-1.inbox/003.msg" 2>/dev/null || true)" \
-  "do not re-arm" "terminal worker-owned result instructed the worker to stop"
-[ "$(grep -c '^poll[123] reply:' "$MULTI_ROOT/replies" 2>/dev/null || true)" = 3 ] \
-  || fail "worker replies were not posted once per round"
-assert_contains "$(cat "$MULTI_ROOT/replies")" "poll1 reply: reply one" \
-  "the reply staged with the arm was not the one the board received"
-printf '%s\n' '127.0.0.1:14387' '127.0.0.1:14387' '127.0.0.1:14387' > "$MULTI_ROOT/expected-routes"
-cmp -s "$MULTI_ROOT/expected-routes" "$MULTI_ROOT/routes" \
-  || fail "worker replies/polls did not use the opened session server across start and reconcile"
-pass "worker board replies and recovered listeners derive their server from the board session"
-
-# The terminal round keeps the board with worker-1 until worker-1 acknowledges
-# it, so the one source record stays the only ownership evidence there is: while
-# it is open neither firstmate nor a sibling task can arm the board or consume
-# the round, and acknowledging it is what concludes and retires the board.
-[ -e "$HMULTI/state/procevent/$multi_id.source" ] \
-  || fail "the terminal round released the worker's board before it was acknowledged"
-if PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$MULTI_ART" >/dev/null 2>"$MULTI_ROOT/terminal-arm.err"; then
-  fail "firstmate armed a worker-owned board whose terminal round was unacknowledged"
-fi
-assert_contains "$(cat "$MULTI_ROOT/terminal-arm.err")" "owned by task worker-1" \
-  "the refusal over an open terminal round did not name the worker owner"
-if PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$MULTI_ART" --for worker-2 \
-  >/dev/null 2>"$MULTI_ROOT/sibling-arm.err"; then
-  fail "a sibling task took over a worker-owned board whose terminal round was unacknowledged"
-fi
-assert_contains "$(cat "$MULTI_ROOT/sibling-arm.err")" "owned by task worker-1" \
-  "the sibling registration refusal did not name the worker owner"
-terminal_retire_status=0
-PATH="$MULTI_BIN:$PATH" FM_HOME="$HMULTI" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$MULTI_ART" \
-  >/dev/null 2>"$MULTI_ROOT/terminal-retire.err" || terminal_retire_status=$?
-[ "$terminal_retire_status" -ne 0 ] \
-  || fail "explicit retire removed a worker-owned board with an unacknowledged terminal round"
-[ -e "$HMULTI/state/procevent/$multi_id.source" ] \
-  || fail "a refused retire removed the worker-owned record of an open terminal round"
-[ ! -f "$HMULTI/state/procevent-inbox/$multi_id.3.handled" ] \
-  || fail "a refused sibling registration consumed the owner's terminal round"
-[ ! -f "$HMULTI/state/worker-2.inbox/001.msg" ] \
-  || fail "a refused sibling registration took delivery of the owner's feedback"
-chmod 0500 "$HMULTI/state/procevent"
-blocked_handled_status=0
-PATH="$MULTI_BIN:$PATH" pe "$HMULTI" handled "$multi_id" 3 \
-  >/dev/null 2>"$MULTI_ROOT/blocked-handled.err" || blocked_handled_status=$?
-chmod 0700 "$HMULTI/state/procevent"
-[ "$blocked_handled_status" -ne 0 ] \
-  || fail "an acknowledgement that could not retire the board still reported success"
-[ ! -f "$HMULTI/state/procevent-inbox/$multi_id.3.handled" ] \
-  || fail "an acknowledgement that could not retire the board still closed the round"
-[ -e "$HMULTI/state/procevent/$multi_id.source" ] \
-  || fail "a failed conclude left the board unowned"
-PATH="$MULTI_BIN:$PATH" pe "$HMULTI" handled "$multi_id" 3 >/dev/null
-[ -f "$HMULTI/state/procevent-inbox/$multi_id.3.handled" ] \
-  || fail "the owner's acknowledgement of the terminal round was not recorded"
-[ ! -e "$HMULTI/state/procevent/$multi_id.source" ] \
-  || fail "acknowledging the terminal round did not retire the worker-owned board"
-PATH="$MULTI_BIN:$PATH" pe "$HMULTI" reconcile >/dev/null 2>&1 || true
-[ "$(cat "$MULTI_ROOT/count")" = 3 ] \
-  || fail "the concluded board was polled again: $(cat "$MULTI_ROOT/count") polls"
-[ -z "$(wake_payloads "$HMULTI")" ] \
-  || fail "worker-owned rounds produced a firstmate wake: $(wake_payloads "$HMULTI")"
-pass "worker-owned Lavish rounds deliver to the worker, acknowledge on re-arm, and stop at session end"
-
-# --- end-user-aligned regression: a half-written capture does not wedge -----
-# The result file is a capture's commit marker, so an owner sidecar left behind
-# at a sequence with no result - a crash between publishing that sidecar and
-# committing the result - is replaceable staging state. The next capture takes
-# the same sequence and still routes to the owning worker.
-HORPHAN="$TMP_ROOT/horphan"; new_home "$HORPHAN"
-ORPHAN_BIN=$(fm_fakebin "$TMP_ROOT/lavish-orphan-stub")
-ORPHAN_TRIGGER="$TMP_ROOT/lavish-orphan-hold"
-export ORPHAN_TRIGGER
-cat > "$ORPHAN_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-while [ ! -e "$ORPHAN_TRIGGER" ]; do sleep 0.02; done
-printf 'session:\n  status: feedback\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","after the crash","","message",""\n'
-SH
-chmod +x "$ORPHAN_BIN/lavish-axi"
-ORPHAN_ART="$TMP_ROOT/orphan-board.html"
-printf '<h1>orphan</h1>\n' > "$ORPHAN_ART"
-lavish_session "$ORPHAN_ART"
-orphan_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ORPHAN_ART")
-fm_test_track_procevent_home "$HORPHAN"
-new_task_endpoint "$HORPHAN" worker-4
-PATH="$ORPHAN_BIN:$PATH" FM_HOME="$HORPHAN" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ORPHAN_ART" --for worker-4 >/dev/null
-(umask 077; mkdir -p "$HORPHAN/state/procevent-inbox")
-chmod 0700 "$HORPHAN/state/procevent-inbox"
-printf 'worker-4\n' > "$HORPHAN/state/procevent-inbox/$orphan_id.1.owner-task"
-chmod 0600 "$HORPHAN/state/procevent-inbox/$orphan_id.1.owner-task"
-touch "$ORPHAN_TRIGGER"
-PATH="$ORPHAN_BIN:$PATH" pe "$HORPHAN" start "$orphan_id" >/dev/null 2>&1 || true
-wait_for "$HORPHAN/state/procevent-inbox/$orphan_id.1.result" \
-  || fail "an owner sidecar with no committed result wedged the next capture of its source"
-wait_for "$HORPHAN/state/worker-4.inbox/001.msg" \
-  || fail "the recovered capture did not reach its owning worker's steering inbox"
-[ -f "$HORPHAN/state/procevent-inbox/$orphan_id.1.result" ] \
-  || fail "an owner sidecar with no committed result wedged the next capture of its source"
-[ -f "$HORPHAN/state/worker-4.inbox/001.msg" ] \
-  || fail "the recovered capture did not reach its owning worker's steering inbox"
-pass "a capture interrupted before its result commit does not wedge its source"
-
-# --- end-user-aligned regression: an orphaned capture keeps its owner ---------
-# An unacknowledged capture belongs to whoever it was routed to. Retiring the
-# board it came from orphans that capture without handing it to anyone, so a
-# worker arming the same artifact is refused rather than silently acknowledging
-# a round that never reached it.
-HADOPT="$TMP_ROOT/hadopt"; new_home "$HADOPT"
-ADOPT_BIN=$(fm_fakebin "$TMP_ROOT/lavish-adopt-stub")
-cat > "$ADOPT_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-printf 'session:\n  status: feedback\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","for firstmate","","message",""\n'
-SH
-chmod +x "$ADOPT_BIN/lavish-axi"
-ADOPT_ART="$TMP_ROOT/adopt-board.html"
-printf '<h1>adopt</h1>\n' > "$ADOPT_ART"
-lavish_session "$ADOPT_ART"
-adopt_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ADOPT_ART")
-fm_test_track_procevent_home "$HADOPT"
-new_task_endpoint "$HADOPT" worker-5
-PATH="$ADOPT_BIN:$PATH" FM_HOME="$HADOPT" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ADOPT_ART" >/dev/null
-wait_capture "$HADOPT" "$adopt_id" \
-  || fail "the firstmate fixture capture never landed"
-[ -f "$HADOPT/state/procevent-inbox/$adopt_id.1.result" ] \
-  || fail "the firstmate fixture capture never landed"
-[ ! -f "$HADOPT/state/procevent-inbox/$adopt_id.1.handled" ] \
-  || fail "the firstmate fixture capture was already acknowledged"
-PATH="$ADOPT_BIN:$PATH" FM_HOME="$HADOPT" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$ADOPT_ART" >/dev/null
-if PATH="$ADOPT_BIN:$PATH" FM_HOME="$HADOPT" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ADOPT_ART" --for worker-5 \
-  >/dev/null 2>"$TMP_ROOT/adopt-arm.err"; then
-  fail "a worker armed a board carrying another owner's unacknowledged capture"
-fi
-assert_contains "$(cat "$TMP_ROOT/adopt-arm.err")" "firstmate" \
-  "the refusal did not name the owner the orphaned capture belongs to"
-[ ! -f "$HADOPT/state/procevent-inbox/$adopt_id.1.handled" ] \
-  || fail "a refused arm still acknowledged another owner's capture"
-[ ! -e "$HADOPT/state/procevent/$adopt_id.source" ] \
-  || fail "a refused arm still published its task-owned registration"
-pass "an orphaned capture is not acknowledged by a worker it never reached"
-
-# --- end-user-aligned regression: a board is armed for a reachable owner ------
-# Captured feedback goes straight to the owning task's steering inbox, so a task
-# id that names no endpoint would strand every round it ever collects. The arm
-# path refuses it instead of publishing a registration nobody can be told about.
-HNOMETA="$TMP_ROOT/hnometa"; new_home "$HNOMETA"
-NOMETA_ART="$TMP_ROOT/nometa-board.html"
-printf '<h1>no endpoint</h1>\n' > "$NOMETA_ART"
-lavish_session "$NOMETA_ART"
-nometa_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$NOMETA_ART")
-fm_test_track_procevent_home "$HNOMETA"
-if PATH="$ADOPT_BIN:$PATH" FM_HOME="$HNOMETA" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$NOMETA_ART" --for worker-10 \
-  >/dev/null 2>"$TMP_ROOT/nometa-arm.err"; then
-  fail "a board was armed for a task id that names no endpoint"
-fi
-assert_contains "$(cat "$TMP_ROOT/nometa-arm.err")" "worker-10" \
-  "the refusal did not name the task whose endpoint is missing"
-[ ! -e "$HNOMETA/state/procevent/$nometa_id.source" ] \
-  || fail "a board armed for an unreachable owner still published its registration"
-new_task_endpoint "$HNOMETA" worker-10
-PATH="$ADOPT_BIN:$PATH" FM_HOME="$HNOMETA" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$NOMETA_ART" --for worker-10 >/dev/null
-[ -e "$HNOMETA/state/procevent/$nometa_id.source" ] \
-  || fail "a board was refused for a task that does have an endpoint"
-pass "a worker-owned board is only armed for an owner its feedback can reach"
-
-# --- end-user-aligned regression: acknowledging a delivered note stops the ring
-# The move into handled/ is the worker's own acknowledgement (the inbox
-# contract), so a later reconcile that finds the same captured round must
-# never move that note back into the active inbox or ring the worker again:
-# only a write that actually creates a fresh record rings, and re-delivery of
-# a still-open round is left to the inbox's own re-ring ladder.
-HREDELIVER="$TMP_ROOT/hredeliver"; new_home "$HREDELIVER"
-RING_BIN=$(fm_fakebin "$TMP_ROOT/ring-tmux-stub")
-cat > "$RING_BIN/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "${1:-}" in
-  send-keys)
-    shift
-    literal=0
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -t) shift 2 ;;
-        -l) literal=1; shift ;;
-        *) break ;;
-      esac
-    done
-    [ "$literal" = 1 ] && printf '%s\n' "${1:-}" >> "${FM_SEND_LOG:-/dev/null}"
-    exit 0 ;;
-  display-message)
-    for a in "$@"; do
-      case "$a" in
-        *cursor_y*) printf '1\n'; exit 0 ;;
-      esac
-    done
-    printf 'fakepane\n'; exit 0 ;;
-  capture-pane)
-    printf '╭────╮\n│    │\n╰────╯\n'
-    exit 0 ;;
-  list-windows) printf 'fm-worker-6\n'; exit 0 ;;
-esac
-exit 0
-SH
-chmod +x "$RING_BIN/tmux"
-REDELIVER_ART="$TMP_ROOT/redeliver-board.html"
-printf '<h1>redeliver</h1>\n' > "$REDELIVER_ART"
-lavish_session "$REDELIVER_ART"
-redeliver_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REDELIVER_ART")
-fm_test_track_procevent_home "$HREDELIVER"
-new_task_endpoint "$HREDELIVER" worker-6
-RING_LOG="$TMP_ROOT/redeliver-ring.log"; : > "$RING_LOG"
-PATH="$RING_BIN:$ADOPT_BIN:$PATH" FM_SEND_LOG="$RING_LOG" FM_HOME="$HREDELIVER" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REDELIVER_ART" --for worker-6 >/dev/null
-wait_capture "$HREDELIVER" "$redeliver_id" \
-  || fail "the first worker-owned round was never captured"
-[ -f "$HREDELIVER/state/worker-6.inbox/001.msg" ] \
-  || fail "the first worker-owned round never reached the worker inbox"
-wait_for_lines "$RING_LOG" 1 \
-  || fail "the newly captured round never rang its owner's doorbell"
-[ "$(wc -l < "$RING_LOG" | tr -d ' ')" = 1 ] \
-  || fail "a single newly captured round rang more than once: $(cat "$RING_LOG")"
-i=0
-while [ "$i" -lt 5 ]; do
-  PATH="$RING_BIN:$ADOPT_BIN:$PATH" FM_SEND_LOG="$RING_LOG" pe "$HREDELIVER" reconcile >/dev/null 2>&1 || true
-  i=$((i + 1))
-done
-[ "$(wc -l < "$RING_LOG" | tr -d ' ')" = 1 ] \
-  || fail "an unchanged active note re-rang the doorbell on every reconcile: $(cat "$RING_LOG")"
-[ -f "$HREDELIVER/state/worker-6.inbox/001.msg" ] \
-  || fail "repeated reconciles dropped the still-active note from the inbox"
-mv "$HREDELIVER/state/worker-6.inbox/001.msg" \
-  "$HREDELIVER/state/worker-6.inbox/handled/001.msg"
-i=0
-while [ "$i" -lt 5 ]; do
-  PATH="$RING_BIN:$ADOPT_BIN:$PATH" FM_SEND_LOG="$RING_LOG" pe "$HREDELIVER" reconcile >/dev/null 2>&1 || true
-  i=$((i + 1))
-done
-[ "$(wc -l < "$RING_LOG" | tr -d ' ')" = 1 ] \
-  || fail "acknowledging the note did not stop repeated doorbell rings across reconciles: $(cat "$RING_LOG")"
-[ ! -f "$HREDELIVER/state/worker-6.inbox/001.msg" ] \
-  || fail "an already-acknowledged note was resurrected into the active inbox"
-[ -f "$HREDELIVER/state/worker-6.inbox/handled/001.msg" ] \
-  || fail "an already-acknowledged note vanished instead of staying acknowledged"
-[ ! -f "$HREDELIVER/state/procevent-inbox/$redeliver_id.1.handled" ] \
-  || fail "reconcile closed the round on its own, without the owner's explicit handled call"
-pass "an acknowledged note is never resurrected and stops ringing across repeated reconciles"
-
-# --- end-user-aligned regression: a conclude only closes its own round --------
-# Acknowledging a terminal round retires the board it belongs to. The same
-# acknowledgement repeated later is a no-op on a closed round, so it must not
-# reach past it and retire whatever board the artifact carries by then.
-HCONC="$TMP_ROOT/hconclude"; new_home "$HCONC"
-CONC_BIN=$(fm_fakebin "$TMP_ROOT/lavish-conclude-stub")
-cat > "$CONC_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-printf 'session:\n  status: ended\n  session_ended: true\n'
-SH
-chmod +x "$CONC_BIN/lavish-axi"
-CONC_ART="$TMP_ROOT/conclude-board.html"
-printf '<h1>conclude</h1>\n' > "$CONC_ART"
-lavish_session "$CONC_ART"
-conc_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$CONC_ART")
-fm_test_track_procevent_home "$HCONC"
-new_task_endpoint "$HCONC" worker-7
-PATH="$CONC_BIN:$PATH" FM_HOME="$HCONC" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$CONC_ART" --for worker-7 >/dev/null
-wait_capture "$HCONC" "$conc_id" \
-  || fail "the terminal worker-owned round never landed"
-[ -f "$HCONC/state/procevent-inbox/$conc_id.1.result" ] \
-  || fail "the terminal worker-owned round never landed"
-[ -e "$HCONC/state/procevent/$conc_id.source" ] \
-  || fail "the terminal round released the board before its owner acknowledged it"
-chmod 0500 "$HCONC/state/procevent-inbox"
-unrecordable_status=0
-PATH="$CONC_BIN:$PATH" pe "$HCONC" handled "$conc_id" 1 >/dev/null 2>&1 || unrecordable_status=$?
-chmod 0700 "$HCONC/state/procevent-inbox"
-[ "$unrecordable_status" -ne 0 ] \
-  || fail "an acknowledgement that could not be recorded still reported success"
-[ ! -f "$HCONC/state/procevent-inbox/$conc_id.1.handled" ] \
-  || fail "an acknowledgement that could not be recorded still closed the round"
-[ -e "$HCONC/state/procevent/$conc_id.source" ] \
-  || fail "an acknowledgement that could not be recorded still released the board it was owed"
-conclude_out=$(PATH="$CONC_BIN:$PATH" pe "$HCONC" handled "$conc_id" 1)
-assert_contains "$conclude_out" "retired: $conc_id" \
-  "acknowledging the terminal round did not report the board retired"
-[ ! -e "$HCONC/state/procevent/$conc_id.source" ] \
-  || fail "acknowledging the terminal round did not retire the worker-owned board"
-PATH="$CONC_BIN:$PATH" FM_HOME="$HCONC" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$CONC_ART" --for worker-7 >/dev/null
-repeat_out=$(PATH="$CONC_BIN:$PATH" pe "$HCONC" handled "$conc_id" 1)
-assert_contains "$repeat_out" "already-handled: $conc_id 1" \
-  "repeating a closed acknowledgement did not report it as already handled"
-case "$repeat_out" in
-  *retired:*) fail "repeating a closed acknowledgement retired a board it never belonged to" ;;
-esac
-[ -e "$HCONC/state/procevent/$conc_id.source" ] \
-  || fail "repeating a closed acknowledgement retired the board armed after it"
-pass "acknowledging a terminal round concludes that round only"
-
-# --- end-user-aligned regression: an interrupted conclude ends the board -----
-# The conclude drops the registration and then records the acknowledgement. An
-# interruption between those steps must leave nothing that relaunches the ended
-# board, and the same acknowledgement has to finish the job on the next try.
-HINTR="$TMP_ROOT/hinterrupted"; new_home "$HINTR"
-INTR_ROOT="$TMP_ROOT/lavish-interrupted-root"; mkdir -p "$INTR_ROOT"; export INTR_ROOT
-INTR_BIN=$(fm_fakebin "$TMP_ROOT/lavish-interrupted-stub")
-cat > "$INTR_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-n=$(cat "$INTR_ROOT/count" 2>/dev/null || echo 0)
-printf '%s\n' "$((n + 1))" > "$INTR_ROOT/count"
-printf 'session:\n  status: ended\n  session_ended: true\n'
-SH
-chmod +x "$INTR_BIN/lavish-axi"
-INTR_ART="$TMP_ROOT/interrupted-board.html"
-printf '<h1>interrupted</h1>\n' > "$INTR_ART"
-lavish_session "$INTR_ART"
-intr_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$INTR_ART")
-fm_test_track_procevent_home "$HINTR"
-new_task_endpoint "$HINTR" worker-12
-PATH="$INTR_BIN:$PATH" FM_HOME="$HINTR" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$INTR_ART" --for worker-12 >/dev/null
-wait_capture "$HINTR" "$intr_id" \
-  || fail "the terminal worker-owned round was never captured"
-[ "$(cat "$INTR_ROOT/count" 2>/dev/null || echo 0)" = 1 ] \
-  || fail "the terminal worker-owned round was not polled exactly once"
-rm -f "$HINTR/state/procevent/$intr_id.source"
-PATH="$INTR_BIN:$PATH" pe "$HINTR" reconcile >/dev/null 2>&1 || true
-[ "$(cat "$INTR_ROOT/count" 2>/dev/null || echo 0)" = 1 ] \
-  || fail "an interrupted conclude let the ended board be polled again"
-if PATH="$INTR_BIN:$PATH" FM_HOME="$HINTR" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$INTR_ART" --for worker-12 \
-  >/dev/null 2>"$INTR_ROOT/intr-arm.err"; then
-  fail "an interrupted conclude let its owner re-arm the ended board"
-fi
-assert_contains "$(cat "$INTR_ROOT/intr-arm.err")" "terminal" \
-  "the refusal did not say the round still owed a conclude is terminal"
-intr_out=$(PATH="$INTR_BIN:$PATH" pe "$HINTR" handled "$intr_id" 1)
-assert_contains "$intr_out" "handled: $intr_id 1" \
-  "repeating the interrupted acknowledgement did not record it"
-[ -f "$HINTR/state/procevent-inbox/$intr_id.1.handled" ] \
-  || fail "the interrupted conclude was never finished by the repeated acknowledgement"
-pass "an interrupted conclude leaves the ended board unpollable and finishes on retry"
-
-# --- end-user-aligned regression: a failed re-arm keeps the last generation ---
-# Re-arm publishes the next generation and acknowledges the round it replaces.
-# When that acknowledgement cannot be recorded the whole re-arm has to be off,
-# leaving the generation the board is actually running untouched.
-HROLL="$TMP_ROOT/hrollback"; new_home "$HROLL"
-ROLL_ROOT="$TMP_ROOT/lavish-rollback-root"; mkdir -p "$ROLL_ROOT"; export ROLL_ROOT
-ROLL_BIN=$(fm_fakebin "$TMP_ROOT/lavish-rollback-stub")
-cat > "$ROLL_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-set -eu
-[ "${1-}" != --version ] || { printf '0.1.79\n'; exit 0; }
-[ "${3-}" != --agent-reply ] || printf '%s\n' "$4" >> "$ROLL_ROOT/replies"
-printf 'session:\n  status: feedback\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","another round","","message",""\n'
-SH
-chmod +x "$ROLL_BIN/lavish-axi"
-ROLL_ART="$TMP_ROOT/rollback-board.html"
-printf '<h1>rollback</h1>\n' > "$ROLL_ART"
-lavish_session "$ROLL_ART"
-roll_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ROLL_ART")
-fm_test_track_procevent_home "$HROLL"
-new_task_endpoint "$HROLL" worker-8
-printf 'reply from generation one\n' > "$ROLL_ROOT/reply1"
-printf 'reply from generation two\n' > "$ROLL_ROOT/reply2"
-PATH="$ROLL_BIN:$PATH" FM_HOME="$HROLL" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ROLL_ART" --for worker-8 \
-  --agent-reply-file "$ROLL_ROOT/reply1" >/dev/null
-wait_for "$ROLL_ROOT/replies" \
-  || fail "the first generation's reply never reached the board"
-[ "$(grep -c 'generation one' "$ROLL_ROOT/replies" 2>/dev/null || true)" = 1 ] \
-  || fail "the first generation's reply never reached the board"
-# The reply is posted before the round is captured. Making the inbox read-only
-# before the runner commits and exits would fail that capture instead of the
-# re-arm's acknowledgement, leaving no round for the retried re-arm.
-wait_capture "$HROLL" "$roll_id" \
-  || fail "the first generation's round was never captured"
-cp "$HROLL/state/procevent/$roll_id.source" "$ROLL_ROOT/generation-one.source"
-chmod 0500 "$HROLL/state/procevent-inbox"
-rollback_status=0
-PATH="$ROLL_BIN:$PATH" FM_HOME="$HROLL" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ROLL_ART" --for worker-8 \
-  --agent-reply-file "$ROLL_ROOT/reply2" >/dev/null 2>&1 || rollback_status=$?
-chmod 0700 "$HROLL/state/procevent-inbox"
-[ "$rollback_status" -ne 0 ] \
-  || fail "a re-arm that could not acknowledge its round still reported success"
-cmp -s "$ROLL_ROOT/generation-one.source" "$HROLL/state/procevent/$roll_id.source" \
-  || fail "a failed re-arm replaced the generation the board is still running"
-[ ! -f "$HROLL/state/procevent-inbox/$roll_id.1.handled" ] \
-  || fail "a failed re-arm still acknowledged the round it could not close"
-PATH="$ROLL_BIN:$PATH" FM_HOME="$HROLL" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ROLL_ART" --for worker-8 \
-  --agent-reply-file "$ROLL_ROOT/reply2" >/dev/null
-wait_for_lines "$ROLL_ROOT/replies" 2 \
-  || fail "the retried re-arm did not hand the board its generation's reply exactly once"
-[ "$(grep -c 'generation two' "$ROLL_ROOT/replies" 2>/dev/null || true)" = 1 ] \
-  || fail "the retried re-arm did not hand the board its generation's reply exactly once"
-pass "a re-arm that cannot acknowledge its round leaves the running generation alone"
-
-# --- end-user-aligned regression: re-arm is acknowledgement, nothing else -----
-# The board is armed once and re-armed only to acknowledge a captured round. A
-# worker that re-arms while its listener is still waiting would replace the
-# generation carrying the reply it already handed over, and that reply would be
-# swept away without ever reaching the board.
-HREARM="$TMP_ROOT/hrearm"; new_home "$HREARM"
-REARM_ROOT="$TMP_ROOT/lavish-rearm-root"; mkdir -p "$REARM_ROOT"; export REARM_ROOT
-REARM_BIN=$(fm_fakebin "$TMP_ROOT/lavish-rearm-stub")
-cat > "$REARM_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-set -eu
-[ "${1-}" != --version ] || { printf '0.1.79\n'; exit 0; }
-[ "${3-}" != --agent-reply ] || printf '%s\n' "$4" >> "$REARM_ROOT/replies"
-while [ ! -e "$REARM_ROOT/release" ]; do sleep 0.02; done
-printf 'session:\n  status: feedback\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","one more round","","message",""\n'
-SH
-chmod +x "$REARM_BIN/lavish-axi"
-REARM_ART="$TMP_ROOT/rearm-board.html"
-printf '<h1>rearm</h1>\n' > "$REARM_ART"
-lavish_session "$REARM_ART"
-rearm_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REARM_ART")
-fm_test_track_procevent_home "$HREARM"
-new_task_endpoint "$HREARM" worker-11
-printf 'first generation reply\n' > "$REARM_ROOT/reply1"
-printf 'second generation reply\n' > "$REARM_ROOT/reply2"
-PATH="$REARM_BIN:$PATH" FM_HOME="$HREARM" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REARM_ART" --for worker-11 \
-  --agent-reply-file "$REARM_ROOT/reply1" >/dev/null
-[ -e "$HREARM/state/procevent/$rearm_id.source" ] \
-  || fail "the initial arm of a worker-owned board did not register it"
-if PATH="$REARM_BIN:$PATH" FM_HOME="$HREARM" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REARM_ART" --for worker-11 \
-  --agent-reply-file "$REARM_ROOT/reply2" >/dev/null 2>"$REARM_ROOT/idle-rearm.err"; then
-  fail "a worker re-armed its own board with no captured round to acknowledge"
-fi
-assert_contains "$(cat "$REARM_ROOT/idle-rearm.err")" "worker-11" \
-  "the refused idle re-arm did not name the task that already holds the board"
-touch "$REARM_ROOT/release"
-PATH="$REARM_BIN:$PATH" pe "$HREARM" start "$rearm_id" >/dev/null 2>&1 || true
-wait_for "$REARM_ROOT/replies" || fail "the listener never posted the reply it was armed with"
-wait_for "$HREARM/state/procevent-inbox/$rearm_id.1.result" \
-  || fail "the first worker-owned round never landed"
-[ "$(grep -c 'first generation reply' "$REARM_ROOT/replies" 2>/dev/null || true)" = 1 ] \
-  || fail "the refused idle re-arm cost the board the reply its listener was already carrying"
-[ -f "$HREARM/state/procevent-inbox/$rearm_id.1.result" ] \
-  || fail "the first worker-owned round never landed"
-if PATH="$REARM_BIN:$PATH" FM_HOME="$HREARM" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REARM_ART" --for worker-11 \
-  --agent-reply-file "$REARM_ROOT/never-written" >/dev/null 2>&1; then
-  fail "a re-arm carrying a nonexistent reply path was accepted"
-fi
-[ ! -f "$HREARM/state/procevent-inbox/$rearm_id.1.handled" ] \
-  || fail "a re-arm refused over its reply path still acknowledged the open round"
-PATH="$REARM_BIN:$PATH" FM_HOME="$HREARM" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REARM_ART" --for worker-11 \
-  --agent-reply-file "$REARM_ROOT/reply2" >/dev/null
-[ -f "$HREARM/state/procevent-inbox/$rearm_id.1.handled" ] \
-  || fail "re-arming over an open round did not acknowledge that round"
-wait_for_lines "$REARM_ROOT/replies" 2 \
-  || fail "the acknowledging re-arm did not hand the board its own generation's reply"
-[ "$(grep -c 'second generation reply' "$REARM_ROOT/replies" 2>/dev/null || true)" = 1 ] \
-  || fail "the acknowledging re-arm did not hand the board its own generation's reply"
-pass "a worker-owned board is armed once and re-armed only to acknowledge an open round"
-
-# The other half of the same contract, on the same real path: a close that
-# carries what the captain actually said must still reach him. Same runner, same
-# adapter, one different response shape.
-HANSWER="$TMP_ROOT/hanswer"; new_home "$HANSWER"
-ANSWER_BIN=$(fm_fakebin "$TMP_ROOT/lavish-answer-stub")
-cat > "$ANSWER_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-# Stand-in for `lavish-axi poll <file>` on a real `Send & End`: the captain's
-# own choice, delivered with session_ended.
-printf 'session:\n  file: /answered.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nprompts[1]{tag,text,prompt}:\n  "choice","Option B","Context data: {\\"question\\":\\"noop-check-routing\\",\\"answer\\":\\"b\\"}"\n'
-SH
-chmod +x "$ANSWER_BIN/lavish-axi"
-ANSWER_ART="$TMP_ROOT/answered-board.html"
-printf '<h1>answered</h1>\n' > "$ANSWER_ART"
-lavish_session "$ANSWER_ART"
-answer_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ANSWER_ART")
-fm_test_track_procevent_home "$HANSWER"
-PATH="$ANSWER_BIN:$PATH" FM_HOME="$HANSWER" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ANSWER_ART" >/dev/null
-PATH="$ANSWER_BIN:$PATH" pe "$HANSWER" reconcile >/dev/null
-wait_for "$HANSWER/state/.wake-queue" \
-  || fail "a board close carrying the captain's real answer produced no wake"
-assert_contains "$(wake_payloads "$HANSWER")" "procevent lavish $answer_id 1" \
-  "a real board answer still reaches the captain"
-[ ! -f "$HANSWER/state/procevent-inbox/$answer_id.1.handled" ] \
-  || fail "a real board answer was recorded handled without ever being handled"
-pass "a board close carrying the captain's real answer is still announced"
-
-# --- end-user-aligned regression: a transient poll interruption is not news ---
-# The dogfood defect: a live board listener can answer with exactly
-#     error: Lavish Editor poll response was interrupted
-#     code: SERVER_ERROR
-# while the board's marks remain available. Firstmate registered raw poll output,
-# so the generic runner captured that transient response and woke the whole fleet
-# over what is really an internal retry. Every scenario below runs through the
-# adapter's own arm command and the real runner, so registration, capture, and
-# publication are exercised for real.
-LAVISH_SCRIPTED_BIN=$(fm_fakebin "$TMP_ROOT/lavish-scripted-stub")
-cat > "$LAVISH_SCRIPTED_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-# Stand-in for `lavish-axi poll <file>`, scripted per scenario: LAVISH_SCRIPT
-# names the response for each successive poll, one word per poll, and its last
-# word repeats forever. `interrupt` is the exact transient response the server
-# returns while the board's marks stay available.
-[ "${1-}" != --version ] || { printf '0.1.79\n'; exit 0; }
-n=$(cat "$LAVISH_COUNT" 2>/dev/null || echo 0)
-n=$((n + 1))
-printf '%s\n' "$n" > "$LAVISH_COUNT"
-for arg in "$@"; do
-  case "$arg" in
-    --agent-reply) ;;
-    --*)
-      printf 'error: unknown option %s\ncode: VALIDATION_ERROR\n' "$arg" >&2
-      exit 2
-      ;;
-  esac
-done
-if [ -n "${LAVISH_REPLY_LOG-}" ] && [ "${1-}" = poll ] && [ "${3-}" = --agent-reply ]; then
-  printf '%s\n' "$4" >> "$LAVISH_REPLY_LOG"
-fi
-read -r -a plan <<< "$LAVISH_SCRIPT"
-i=$((n - 1))
-[ "$i" -ge "${#plan[@]}" ] && i=$((${#plan[@]} - 1))
-case "${plan[$i]}" in
-  interrupt)
-    printf 'error: Lavish Editor poll response was interrupted\ncode: SERVER_ERROR\n'; exit 1 ;;
-  near-interrupt)
-    printf 'error: Lavish Editor poll response was interrupted \ncode: SERVER_ERROR\n'; exit 1 ;;
-  other-server-error)
-    printf 'error: Lavish Editor session store is unavailable\ncode: SERVER_ERROR\n'; exit 1 ;;
-  feedback)
-    printf 'session:\n  file: /board.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nfeedback[1]{text}:\n  ship it\n' ;;
-  stream)
-    printf 'x%.0s' {1..4096}
-    printf 'ready\n' > "$LAVISH_STREAM_READY"
-    while [ ! -e "$LAVISH_STREAM_RELEASE" ]; do sleep 0.05; done
-    printf '\n' ;;
-esac
-SH
-chmod +x "$LAVISH_SCRIPTED_BIN/lavish-axi"
-export LAVISH_COUNT LAVISH_SCRIPT
-
-DEFAULT_RATE_ART="$TMP_ROOT/default-rate-board.html"
-printf '<h1>default rate</h1>\n' > "$DEFAULT_RATE_ART"
-lavish_session "$DEFAULT_RATE_ART"
-DEFAULT_RATE_COUNT="$TMP_ROOT/default-rate-count"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" LAVISH_COUNT="$DEFAULT_RATE_COUNT" LAVISH_SCRIPT=interrupt \
-  FM_LAVISH_POLL_RETRY_DELAY='' \
-  "$ROOT/bin/fm-procevent-lavish.sh" poll "$DEFAULT_RATE_ART" >/dev/null 2>&1 &
-DEFAULT_RATE_PID=$!
-perl -MTime::HiRes=sleep -e 'sleep 6.2'
-kill -TERM "$DEFAULT_RATE_PID" 2>/dev/null || true
-wait "$DEFAULT_RATE_PID" 2>/dev/null || true
-default_rate_count=$(cat "$DEFAULT_RATE_COUNT" 2>/dev/null || echo 0)
-[ "$default_rate_count" -ge 2 ] \
-  || fail "the default poll governor stopped an instantly returning source from making progress"
-[ "$default_rate_count" -le 2 ] \
-  || fail "the shipped poll governor allowed $default_rate_count iterations in 6.2 seconds"
-pass "the shipped poll governor bounds an instantly returning source"
-
-# A bounded test override keeps the retry policy's real bound under test without
-# making the suite wait out the production delay. These cases count retries, not
-# their spacing (the shipped governor case above owns the spacing), so the
-# test-only seam shortens each validated 1s delay further.
-export FM_LAVISH_POLL_RETRY_DELAY=1
-export FM_TEST_LAVISH_POLL_RETRY_DELAY=0.05
-
-# Two interruptions, then the captain's real feedback: the retries are silent and
-# only the feedback becomes a captured result and a check wake.
-HRETRY="$TMP_ROOT/hretry"; new_home "$HRETRY"
-RETRY_ART="$TMP_ROOT/retry-board.html"
-printf '<h1>retry</h1>\n' > "$RETRY_ART"
-lavish_session "$RETRY_ART"
-retry_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$RETRY_ART")
-fm_test_track_procevent_home "$HRETRY"
-LAVISH_COUNT="$TMP_ROOT/retry-count"; LAVISH_SCRIPT="interrupt interrupt feedback"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HRETRY" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$RETRY_ART" >/dev/null
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" pe "$HRETRY" reconcile >/dev/null
-wait_for "$HRETRY/state/.wake-queue" || fail "feedback after interrupted polls produced no wake"
-[ "$(cat "$LAVISH_COUNT")" = 3 ] \
-  || fail "the interrupted listener was polled $(cat "$LAVISH_COUNT") times, not the two quiet retries plus the delivering poll"
-[ "$(count_results "$HRETRY" "$retry_id")" = 1 ] \
-  || fail "a retried interruption produced $(count_results "$HRETRY" "$retry_id") captured results instead of one"
-[ "$(wake_payloads "$HRETRY" | sort -u | grep -c .)" = 1 ] \
-  || fail "a retried interruption woke the fleet: $(wake_payloads "$HRETRY" | sort -u)"
-assert_contains "$(wake_payloads "$HRETRY")" "procevent lavish $retry_id 1" \
-  "feedback arriving after quiet retries is captured and announced"
-assert_grep 'ship it' "$(first_result "$HRETRY" "$retry_id")" \
-  "the announced result is the captain's feedback, not the interruption"
-pass "a transient Lavish poll interruption is retried quietly and never announced"
-
-# --- end-user-aligned regression: a retried poll does not resubmit the reply ---
-# The worker hands its round reply to the adapter once. When the first poll of
-# that round comes back as the transient interruption, the adapter's own quiet
-# retries must keep polling WITHOUT the reply, or the board receives the same
-# worker message once per retry.
-HREPLY="$TMP_ROOT/hreply"; new_home "$HREPLY"
-REPLY_ART="$TMP_ROOT/reply-retry-board.html"
-printf '<h1>reply retry</h1>\n' > "$REPLY_ART"
-lavish_session "$REPLY_ART"
-fm_test_track_procevent_home "$HREPLY"
-new_task_endpoint "$HREPLY" worker-9
-printf 'applied round one\n' > "$TMP_ROOT/reply-retry.txt"
-LAVISH_REPLY_LOG="$TMP_ROOT/reply-retry-log"; export LAVISH_REPLY_LOG
-LAVISH_COUNT="$TMP_ROOT/reply-retry-count"; LAVISH_SCRIPT="interrupt interrupt feedback"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HREPLY" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REPLY_ART" --for worker-9 \
-  --agent-reply-file "$TMP_ROOT/reply-retry.txt" >/dev/null
-wait_for "$HREPLY/state/worker-9.inbox/001.msg" 200 \
-  || fail "the round that delivered after quiet retries did not reach the worker inbox"
-[ "$(cat "$LAVISH_COUNT")" = 3 ] \
-  || fail "the reply-carrying listener was polled $(cat "$LAVISH_COUNT") times, not the two quiet retries plus the delivering poll"
-[ "$(grep -c 'applied round one' "$LAVISH_REPLY_LOG" 2>/dev/null || true)" = 1 ] \
-  || fail "the staged worker reply reached the board $(grep -c 'applied round one' "$LAVISH_REPLY_LOG" 2>/dev/null || true) times across the adapter's internal retries"
-[ -f "$HREPLY/state/worker-9.inbox/001.msg" ] \
-  || fail "the round that delivered after quiet retries did not reach the worker inbox"
-unset LAVISH_REPLY_LOG
-pass "a staged worker reply is handed to the board once across quiet poll retries"
-
-# The other side of the same best-effort contract: posting a reply is allowed to
-# lose it, so a listener that starts with no staged reply - because a crash
-# consumed it, or because the round simply carries none - must still poll the
-# board, with no reply and no refusal.
-MISSING_REPLY_COUNT="$TMP_ROOT/missing-reply-count"
-MISSING_REPLY_LOG="$TMP_ROOT/missing-reply-log"
-missing_reply_status=0
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" LAVISH_COUNT="$MISSING_REPLY_COUNT" LAVISH_SCRIPT=feedback \
-  LAVISH_REPLY_LOG="$MISSING_REPLY_LOG" \
-  "$ROOT/bin/fm-procevent-lavish.sh" poll "$REPLY_ART" \
-  --agent-reply-file "$TMP_ROOT/never-staged-reply" >/dev/null 2>&1 || missing_reply_status=$?
-[ "$missing_reply_status" -eq 0 ] \
-  || fail "a listener whose staged reply was gone refused to poll (status $missing_reply_status)"
-[ "$(cat "$MISSING_REPLY_COUNT" 2>/dev/null || echo 0)" = 1 ] \
-  || fail "a listener whose staged reply was gone never polled the board"
-[ ! -s "$MISSING_REPLY_LOG" ] \
-  || fail "a listener whose staged reply was gone still posted something: $(cat "$MISSING_REPLY_LOG")"
-pass "a listener whose staged reply is gone polls the board without one"
-
-# The accepted loss window is consuming-to-calling and nothing wider: a listener
-# that never reaches the board at all must leave the staged reply for the next
-# one. A malformed retry-delay override is one of the ordinary setup refusals
-# that used to happen after the reply had already been consumed.
-SETUP_GUARD_REPLY="$TMP_ROOT/setup-guard-reply"
-SETUP_GUARD_COUNT="$TMP_ROOT/setup-guard-count"
-printf 'kept for the next listener\n' > "$SETUP_GUARD_REPLY"
-setup_guard_status=0
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" LAVISH_COUNT="$SETUP_GUARD_COUNT" LAVISH_SCRIPT=feedback \
-  FM_LAVISH_POLL_RETRY_DELAY=not-a-number \
-  "$ROOT/bin/fm-procevent-lavish.sh" poll "$REPLY_ART" \
-  --agent-reply-file "$SETUP_GUARD_REPLY" >/dev/null 2>&1 || setup_guard_status=$?
-[ "$setup_guard_status" -ne 0 ] \
-  || fail "a malformed retry delay did not stop the listener before it polled"
-[ "$(cat "$SETUP_GUARD_COUNT" 2>/dev/null || echo 0)" = 0 ] \
-  || fail "a listener that refused its setup still reached the board"
-[ -f "$SETUP_GUARD_REPLY" ] \
-  || fail "a listener that never reached the board consumed its staged reply anyway"
-pass "a listener that refuses its own setup leaves the staged reply for the next one"
-
-# The board itself is part of that setup: an artifact that vanished between the
-# re-arm and the listener's launch cannot be polled at all, so the reply it was
-# carrying has to survive for the listener that polls the next one.
-GONE_ART="$TMP_ROOT/artifact-gone-board.html"
-GONE_REPLY="$TMP_ROOT/artifact-gone-reply"
-GONE_COUNT="$TMP_ROOT/artifact-gone-count"
-printf '<h1>gone</h1>\n' > "$GONE_ART"
-lavish_session "$GONE_ART"
-printf 'owed to the next listener\n' > "$GONE_REPLY"
-rm -f "$GONE_ART"
-gone_status=0
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" LAVISH_COUNT="$GONE_COUNT" LAVISH_SCRIPT=feedback \
-  "$ROOT/bin/fm-procevent-lavish.sh" poll "$GONE_ART" \
-  --agent-reply-file "$GONE_REPLY" >/dev/null 2>&1 || gone_status=$?
-[ "$gone_status" -ne 0 ] \
-  || fail "a listener whose artifact vanished reported a successful poll"
-[ "$(cat "$GONE_COUNT" 2>/dev/null || echo 0)" = 0 ] \
-  || fail "a listener whose artifact vanished still reached the board"
-[ -f "$GONE_REPLY" ] \
-  || fail "a listener whose artifact vanished consumed its staged reply anyway"
-pass "a listener whose artifact vanished leaves the staged reply for the next one"
-
-# Exhaustion is news: after the bounded retries the same exact response is
-# captured and announced normally rather than being swallowed forever.
-HEXH="$TMP_ROOT/hexh"; new_home "$HEXH"
-EXH_ART="$TMP_ROOT/exhaust-board.html"
-printf '<h1>exhaust</h1>\n' > "$EXH_ART"
-lavish_session "$EXH_ART"
-exh_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$EXH_ART")
-fm_test_track_procevent_home "$HEXH"
-LAVISH_COUNT="$TMP_ROOT/exhaust-count"; LAVISH_SCRIPT="interrupt"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HEXH" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$EXH_ART" >/dev/null
-wait_capture "$HEXH" "$exh_id" 200 \
-  || fail "exhaustion produced no captured result"
-[ "$(cat "$LAVISH_COUNT")" = 13 ] \
-  || fail "the retry bound polled $(cat "$LAVISH_COUNT") times, not the first poll plus 12 bounded retries"
-[ "$(count_results "$HEXH" "$exh_id")" = 1 ] \
-  || fail "exhaustion produced $(count_results "$HEXH" "$exh_id") captured results instead of one"
-wait_for "$HEXH/state/.wake-queue" \
-  || fail "the interruption that survives the bound produced no wake"
-assert_contains "$(wake_payloads "$HEXH")" "procevent lavish $exh_id 1" \
-  "the interruption that survives the bound is announced normally"
-assert_grep 'poll response was interrupted' "$(first_result "$HEXH" "$exh_id")" \
-  "the announced result is the exact interruption the server returned"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HEXH" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$EXH_ART" >/dev/null
-pass "an interruption that outlives the bounded retries is captured and announced"
-
-# A different SERVER_ERROR is a genuine error, never a retry: no fail-open drift
-# from the one exact transient response this adapter owns.
-HOTHER="$TMP_ROOT/hother"; new_home "$HOTHER"
-OTHER_ART="$TMP_ROOT/other-board.html"
-printf '<h1>other</h1>\n' > "$OTHER_ART"
-lavish_session "$OTHER_ART"
-other_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$OTHER_ART")
-fm_test_track_procevent_home "$HOTHER"
-LAVISH_COUNT="$TMP_ROOT/other-count"; LAVISH_SCRIPT="other-server-error"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HOTHER" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$OTHER_ART" >/dev/null
-wait_for "$HOTHER/state/.wake-queue" \
-  || fail "an unrelated SERVER_ERROR is captured and announced immediately"
-[ "$(cat "$LAVISH_COUNT")" = 1 ] \
-  || fail "an unrelated SERVER_ERROR was retried $(cat "$LAVISH_COUNT") times instead of surfacing at once"
-assert_contains "$(wake_payloads "$HOTHER")" "procevent lavish $other_id 1" \
-  "an unrelated SERVER_ERROR is captured and announced immediately"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HOTHER" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$OTHER_ART" >/dev/null
-pass "only the exact interruption is retried; an unrelated SERVER_ERROR still surfaces"
-unset FM_LAVISH_POLL_RETRY_DELAY FM_TEST_LAVISH_POLL_RETRY_DELAY
-
-# A whitespace variant is not the exact transient response and must surface on
-# the first poll instead of drifting into the quiet retry policy.
-HNEAR="$TMP_ROOT/hnear"; new_home "$HNEAR"
-NEAR_ART="$TMP_ROOT/near-board.html"
-printf '<h1>near</h1>\n' > "$NEAR_ART"
-lavish_session "$NEAR_ART"
-near_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$NEAR_ART")
-fm_test_track_procevent_home "$HNEAR"
-LAVISH_COUNT="$TMP_ROOT/near-count"; LAVISH_SCRIPT="near-interrupt feedback"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HNEAR" FM_LAVISH_POLL_RETRY_DELAY=1 \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$NEAR_ART" >/dev/null
-wait_for "$HNEAR/state/.wake-queue" \
-  || fail "a whitespace variant of the interruption is captured and announced immediately"
-[ "$(cat "$LAVISH_COUNT")" = 1 ] \
-  || fail "a near-match interruption was retried instead of surfacing on its first poll"
-assert_contains "$(wake_payloads "$HNEAR")" "procevent lavish $near_id 1" \
-  "a whitespace variant of the interruption is captured and announced immediately"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HNEAR" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$NEAR_ART" >/dev/null
-pass "only the literal two-line interruption enters the quiet retry policy"
-
-# The public arm boundary refuses invalid retry intervals before it publishes a
-# source registration, rather than arming a listener that can only fail later.
-HINVALID="$TMP_ROOT/hinvalid"; new_home "$HINVALID"
-INVALID_ART="$TMP_ROOT/invalid-delay-board.html"
-printf '<h1>invalid delay</h1>\n' > "$INVALID_ART"
-lavish_session "$INVALID_ART"
-invalid_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$INVALID_ART")
-for invalid_delay in 0 61 invalid; do
-  invalid_status=0
-  invalid_out=$(PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HINVALID" \
-    FM_LAVISH_POLL_RETRY_DELAY="$invalid_delay" \
-    "$ROOT/bin/fm-procevent-lavish.sh" arm "$INVALID_ART" 2>&1) || invalid_status=$?
-  [ "$invalid_status" -ne 0 ] \
-    || fail "arm accepted invalid retry delay: $invalid_delay"
-  assert_contains "$invalid_out" "must be whole seconds from 1 to 60" \
-    "arm explains the rejected retry delay"
-  assert_absent "$HINVALID/state/procevent/$invalid_id.source" \
-    "arm publishes no source registration for an invalid retry delay"
-done
-pass "arm rejects malformed and out-of-range retry delays before registration"
-
-# Shell-safe cleanup must preserve a valid TMPDIR containing an apostrophe.
-QUOTED_TMPDIR="$TMP_ROOT/poll's-stage"
-mkdir -p "$QUOTED_TMPDIR"
-LAVISH_COUNT="$TMP_ROOT/quoted-count"; LAVISH_SCRIPT="feedback"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" TMPDIR="$QUOTED_TMPDIR" \
-  "$ROOT/bin/fm-procevent-lavish.sh" poll "$NEAR_ART" >/dev/null
-quoted_staged=("$QUOTED_TMPDIR"/fm-lavish-poll.*)
-[ ! -e "${quoted_staged[0]}" ] \
-  || fail "poll left its staged response behind in an apostrophe-containing TMPDIR"
-pass "poll cleanup safely handles an apostrophe-containing TMPDIR"
-
-HSTREAM="$TMP_ROOT/hstream"; new_home "$HSTREAM"
-STREAM_ART="$TMP_ROOT/stream-board.html"
-STREAM_TMPDIR="$TMP_ROOT/stream-stage"
-LAVISH_STREAM_READY="$TMP_ROOT/stream-ready"
-LAVISH_STREAM_RELEASE="$TMP_ROOT/stream-release"
-mkdir -p "$STREAM_TMPDIR"
-printf '<h1>stream</h1>\n' > "$STREAM_ART"
-lavish_session "$STREAM_ART"
-stream_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$STREAM_ART")
-fm_test_track_procevent_home "$HSTREAM"
-LAVISH_COUNT="$TMP_ROOT/stream-count"; LAVISH_SCRIPT="stream"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HSTREAM" TMPDIR="$STREAM_TMPDIR" \
-  LAVISH_STREAM_READY="$LAVISH_STREAM_READY" LAVISH_STREAM_RELEASE="$LAVISH_STREAM_RELEASE" \
-  FM_PROCEVENT_MAX_OUTPUT_BYTES=100 \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$STREAM_ART" >/dev/null
-wait_for "$LAVISH_STREAM_READY" || fail "streaming poll did not start"
-stream_staged=("$STREAM_TMPDIR"/fm-lavish-poll.*)
-[ -e "${stream_staged[0]}" ] || fail "streaming poll created no classifier staging file"
-[ "$(wc -c < "${stream_staged[0]}" | tr -d ' ')" -le 100 ] \
-  || fail "streaming poll exceeded its bounded classifier staging"
-: > "$LAVISH_STREAM_RELEASE"
-wait_for "$HSTREAM/state/.wake-queue" || fail "streaming poll produced no wake"
-stream_result=$(first_result "$HSTREAM" "$stream_id" || true)
-[ "$(wc -c < "$stream_result" | tr -d ' ')" -le 100 ] \
-  || fail "streaming poll bypassed the runner output bound"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HSTREAM" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$STREAM_ART" >/dev/null
-pass "Lavish classification staging stays bounded while nonmatches stream"
-
 # --- end-user-aligned regression: the exact drain-before-handling restart cut
 # Reproduces the confirmed defect through the public interface end to end: a
 # real blocking source completes, its result is captured and published, the
@@ -1728,13 +652,13 @@ pass "Lavish classification staging stays bounded while nonmatches stream"
 # effect a second time.
 HW="$TMP_ROOT/hw"; new_home "$HW"
 TRIGW="$TMP_ROOT/trigger-restart-cut"
-pe_register "$HW" lavish restart-cut-src -- "$BLOCKER" "$TRIGW" "restart cut payload" >/dev/null
+pe_register "$HW" plain restart-cut-src -- "$BLOCKER" "$TRIGW" "restart cut payload" >/dev/null
 pe "$HW" start restart-cut-src > "$TMP_ROOT/restart-cut-start.log" 2>&1 &
 restart_cut_start_pid=$!
 sleep 0.5
 : > "$TRIGW"
 wait_for "$HW/state/.wake-queue" || fail "the restart-cut source published no event"
-assert_contains "$(wake_payloads "$HW")" "procevent lavish restart-cut-src 1" \
+assert_contains "$(wake_payloads "$HW")" "procevent plain restart-cut-src 1" \
   "capture and publish reaches the wake queue before any handling"
 
 # Retire the registration now that the source has completed and captured its
@@ -1758,7 +682,7 @@ mv "$HW/state/.wake-queue" "$HW/state/.wake-queue.drained-unhandled"
 out=$(pe "$HW" reconcile)
 assert_contains "$out" "published=1" \
   "a replacement session's reconcile resurfaces a drained-but-unhandled result"
-assert_contains "$(wake_payloads "$HW")" "procevent lavish restart-cut-src 1" \
+assert_contains "$(wake_payloads "$HW")" "procevent plain restart-cut-src 1" \
   "the exact same captured source and sequence resurfaces, never a substitute"
 
 # Acknowledge handling through the owned interface.
@@ -1785,7 +709,7 @@ HP="$TMP_ROOT/hp"; new_home "$HP"
 mkdir -p "$HP/state/procevent-inbox"
 for seq in 10 2 1; do
   printf '%s\n' "$seq" > "$HP/state/procevent-inbox/ordered-src.$seq.result"
-  printf 'lavish\n' > "$HP/state/procevent-inbox/ordered-src.$seq.adapter"
+  printf 'plain\n' > "$HP/state/procevent-inbox/ordered-src.$seq.adapter"
   chmod 0600 "$HP/state/procevent-inbox/ordered-src.$seq.result" "$HP/state/procevent-inbox/ordered-src.$seq.adapter"
 done
 pending=$(bash -c '. "$1/bin/fm-procevent-lib.sh"; fm_procevent_pending "$2"' _ "$ROOT" "$HP/state")
@@ -1800,17 +724,17 @@ deduped=$(FM_HOME="$HP" bash -c '
   fm_wake_print_deduped "$2/state/.wake-queue" | awk -F "\t" "{print \$5}"
 ' _ "$ROOT" "$HP")
 expected=$(printf '%s\n' \
-  'check: procevent lavish ordered-src 1' \
-  'check: procevent lavish ordered-src 2' \
-  'check: procevent lavish ordered-src 10')
+  'check: procevent plain ordered-src 1' \
+  'check: procevent plain ordered-src 2' \
+  'check: procevent plain ordered-src 10')
 [ "$deduped" = "$expected" ] || fail "distinct result generations were coalesced or reordered: $deduped"
 pass "pending results preserve numeric order and distinct wake identity"
 
 # --- two homes cannot both own one canonical source -------------------------
 HA="$TMP_ROOT/ha"; HB="$TMP_ROOT/hb"; new_home "$HA"; new_home "$HB"
 TRIG2="$TMP_ROOT/trigger-two"
-pe_register "$HA" lavish shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
-pe_register "$HB" lavish shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
+pe_register "$HA" plain shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
+pe_register "$HB" plain shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
 pe "$HA" reconcile >/dev/null
 sleep 0.5
 out=$(pe "$HB" start shared-src)
@@ -1838,7 +762,7 @@ pass "retiring a never-completing source stops its runner and its blocked child"
 TRIG4="$TMP_ROOT/trigger-four"
 ORPHAN_STARTED="$TMP_ROOT/orphan-src.started"
 HZ="$TMP_ROOT/hz"; new_home "$HZ"
-pe_register "$HZ" lavish orphan-src \
+pe_register "$HZ" plain orphan-src \
   -- "$STARTED_BLOCKER" "$ORPHAN_STARTED" "$BLOCKER" "$TRIG4" "orphan" >/dev/null
 pe "$HZ" reconcile >/dev/null
 wait_for "$ORPHAN_STARTED" || fail "the orphan fixture runner never entered its source command"
@@ -1859,7 +783,7 @@ mkdir -p "$FM_PROCEVENT_CLAIM_ROOT"
 HC="$TMP_ROOT/hc"; new_home "$HC"
 printf '%s\n%s\nstale-token\nstale-identity\n' "$HC" "999999" > "$CLAIM"
 chmod 0600 "$CLAIM"
-pe_register "$HC" lavish stale-src -- /bin/echo recovered >/dev/null
+pe_register "$HC" plain stale-src -- /bin/echo recovered >/dev/null
 printf 'partial sensitive output\n' > "$HC/state/procevent/.stale-src.stale-token.output"
 chmod 0600 "$HC/state/procevent/.stale-src.stale-token.output"
 out=$(pe "$HC" start stale-src)
@@ -1877,7 +801,7 @@ printf '%s\n%s\ncross-home-token\ncross-home-identity\n%s\n' \
 chmod 0600 "$FM_PROCEVENT_CLAIM_ROOT/cross-home-src.claim"
 printf 'partial cross-home output\n' > "$HC_OLD_STATE/procevent/.cross-home-src.cross-home-token.output"
 chmod 0600 "$HC_OLD_STATE/procevent/.cross-home-src.cross-home-token.output"
-pe_register "$HC_NEW" lavish cross-home-src -- /bin/echo recovered >/dev/null
+pe_register "$HC_NEW" plain cross-home-src -- /bin/echo recovered >/dev/null
 out=$(pe "$HC_NEW" start cross-home-src)
 assert_contains "$out" "captured:" "a second home can replace a stale source owner"
 assert_absent "$HC_OLD_STATE/procevent/.cross-home-src.cross-home-token.output" "cross-home reclaim removes the old generation's recorded staging file"
@@ -1894,7 +818,7 @@ while [ ! -e "$2" ]; do sleep 0.05; done
 printf 'race result\n'
 SH
 chmod +x "$RACE_BLOCKER"
-pe_register "$HR" lavish race-src -- "$RACE_BLOCKER" "$RACE_LOG" "$RACE_TRIGGER" >/dev/null
+pe_register "$HR" plain race-src -- "$RACE_BLOCKER" "$RACE_LOG" "$RACE_TRIGGER" >/dev/null
 printf '%s\n%s\nold-token\nold-identity\n' "$TMP_ROOT/gone-home" 999999 > "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
 chmod 0600 "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
 race_pids=()
@@ -1935,7 +859,7 @@ while [ ! -e "$2" ]; do sleep 0.05; done
 printf 'orphan result\n'
 SH
 chmod +x "$ORPHAN_BLOCKER"
-pe_register "$HG" lavish orphan-src -- \
+pe_register "$HG" plain orphan-src -- \
   "$ORPHAN_BLOCKER" "$ORPHAN_LOG" "$ORPHAN_TRIGGER" "$ORPHAN_GROUP" "$ORPHAN_OVERLAP" >/dev/null
 pe "$HG" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" || fail "leader-crash fixture never claimed its source"
@@ -2006,7 +930,7 @@ pass "an ambiguous leaderless group is preserved without replacement"
 HG2="$TMP_ROOT/hg2"; new_home "$HG2"
 DEAD_TRIGGER="$TMP_ROOT/dead-gen-trigger"
 DEAD_LOG="$TMP_ROOT/dead-gen-executions"
-pe_register "$HG2" lavish dead-gen-src -- "$RACE_BLOCKER" "$DEAD_LOG" "$DEAD_TRIGGER" >/dev/null
+pe_register "$HG2" plain dead-gen-src -- "$RACE_BLOCKER" "$DEAD_LOG" "$DEAD_TRIGGER" >/dev/null
 printf '%s\n%s\ndead-token\ndead-identity\n%s\n' "$HG2" 999999 "$HG2/state/procevent" \
   > "$FM_PROCEVENT_CLAIM_ROOT/dead-gen-src.claim"
 chmod 0600 "$FM_PROCEVENT_CLAIM_ROOT/dead-gen-src.claim"
@@ -2036,7 +960,7 @@ pass "a truly dead generation with no surviving group is still safely reclaimed"
 HSR="$TMP_ROOT/hsr"; new_home "$HSR"
 SR_TRIGGER="$TMP_ROOT/state-root-trigger"
 SR_LOG="$TMP_ROOT/state-root-executions"
-pe_register "$HSR" lavish state-root-src -- "$RACE_BLOCKER" "$SR_LOG" "$SR_TRIGGER" >/dev/null
+pe_register "$HSR" plain state-root-src -- "$RACE_BLOCKER" "$SR_LOG" "$SR_TRIGGER" >/dev/null
 pe "$HSR" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/state-root-src.claim" \
   || fail "state-root fixture never claimed its source"
@@ -2069,7 +993,7 @@ pass "reconcile reclaims a dead generation whose state-root identity no longer m
 
 # Retire must release the same wedged claim rather than refusing forever.
 HSR2="$TMP_ROOT/hsr2"; new_home "$HSR2"
-pe_register "$HSR2" lavish wedged-src -- /bin/echo recovered >/dev/null
+pe_register "$HSR2" plain wedged-src -- /bin/echo recovered >/dev/null
 sr2_identity=$(bash -c '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_identity "$2"' _ \
   "$ROOT" "$HSR2/state/procevent/wedged-src.source") \
   || fail "could not read the wedged fixture registration identity"
@@ -2093,7 +1017,7 @@ pass "retire releases a dead generation's claim instead of refusing forever"
 HSR3="$TMP_ROOT/hsr3"; new_home "$HSR3"
 SR3_TRIGGER="$TMP_ROOT/state-root-live-trigger"
 SR3_LOG="$TMP_ROOT/state-root-live-executions"
-pe_register "$HSR3" lavish live-drift-src -- "$RACE_BLOCKER" "$SR3_LOG" "$SR3_TRIGGER" >/dev/null
+pe_register "$HSR3" plain live-drift-src -- "$RACE_BLOCKER" "$SR3_LOG" "$SR3_TRIGGER" >/dev/null
 pe "$HSR3" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/live-drift-src.claim" \
   || fail "live-drift fixture never claimed its source"
@@ -2116,7 +1040,7 @@ pass "a live generation is never reclaimed, drifted state root or not"
 HSR4="$TMP_ROOT/hsr4"; new_home "$HSR4"
 SR4_TRIGGER="$TMP_ROOT/state-root-reused-trigger"
 SR4_LOG="$TMP_ROOT/state-root-reused-executions"
-pe_register "$HSR4" lavish reused-group-src -- "$RACE_BLOCKER" "$SR4_LOG" "$SR4_TRIGGER" >/dev/null
+pe_register "$HSR4" plain reused-group-src -- "$RACE_BLOCKER" "$SR4_LOG" "$SR4_TRIGGER" >/dev/null
 pe "$HSR4" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/reused-group-src.claim" \
   || fail "reused-group fixture never claimed its source"
@@ -2144,7 +1068,7 @@ assert_contains "$sr4_out" "uncertain=1" \
   || fail "reconcile replaced the reused-pid generation's claim"
 # Nothing can take this source, so reporting it as unowned reads like an idle
 # source waiting to be started - the reassuring answer this surface gave while a
-# review board collected nothing.
+# source collected nothing.
 sr4_owner=$(pe "$HSR4" list | awk '$1 == "reused-group-src" { print $3 }')
 [ "$sr4_owner" = orphaned ] \
   || fail "a source no caller can claim is listed as '$sr4_owner'"
@@ -2222,7 +1146,7 @@ pass "a reused pid never makes its surviving process group reclaimable"
 HSR5="$TMP_ROOT/hsr5"; new_home "$HSR5"
 SR5_TRIGGER="$TMP_ROOT/reused-plain-trigger"
 SR5_LOG="$TMP_ROOT/reused-plain-executions"
-pe_register "$HSR5" lavish reused-plain-src -- "$RACE_BLOCKER" "$SR5_LOG" "$SR5_TRIGGER" >/dev/null
+pe_register "$HSR5" plain reused-plain-src -- "$RACE_BLOCKER" "$SR5_LOG" "$SR5_TRIGGER" >/dev/null
 pe "$HSR5" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/reused-plain-src.claim" \
   || fail "undrifted reused-pid fixture never claimed its source"
@@ -2268,7 +1192,7 @@ cat > "$EP_SOURCE_CMD" <<'SH'
 printf 'episode result\n'
 SH
 chmod +x "$EP_SOURCE_CMD"
-pe_register "$HEP" lavish episode-src -- "$EP_SOURCE_CMD" >/dev/null
+pe_register "$HEP" plain episode-src -- "$EP_SOURCE_CMD" >/dev/null
 EP_SOURCE="$HEP/state/procevent/episode-src.source"
 cp "$EP_SOURCE" "$TMP_ROOT/episode-good.source"
 awk '/^argv:$/ { print; exit } { print }' "$EP_SOURCE" > "$TMP_ROOT/episode-bad.source" \
@@ -2359,7 +1283,7 @@ pass "a launch that cannot confirm is announced once per failure episode"
 HLK="$TMP_ROOT/hlk"; new_home "$HLK"
 LK_ID=$(printf 'k%.0s' $(seq 1 64))
 [ "${#LK_ID}" -eq 64 ] || fail "fixture invalid: long source id is ${#LK_ID} chars"
-pe_register "$HLK" lavish "$LK_ID" -- "$EP_SOURCE_CMD" >/dev/null
+pe_register "$HLK" plain "$LK_ID" -- "$EP_SOURCE_CMD" >/dev/null
 LK_SOURCE="$HLK/state/procevent/$LK_ID.source"
 if ! { awk '/^argv:$/ { print; exit } { print }' "$LK_SOURCE" > "$LK_SOURCE.tmp" \
   && cat "$LK_SOURCE.tmp" > "$LK_SOURCE" && rm -f -- "$LK_SOURCE.tmp"; }; then
@@ -2375,7 +1299,7 @@ pe "$HLK" retire "$LK_ID" >/dev/null 2>&1 || true
 pass "a 64-char source id keeps the launch-failed key within the watcher's marker bound"
 
 # --- reconcile reports only launches it actually confirmed -------------------
-# The reported incident. A review board the captain had answered sat collecting
+# The reported incident. A source the captain had answered sat collecting
 # nothing while `reconcile` reported a start on every run: `detach_runner` is
 # fire-and-forget with the child's stderr discarded, so a runner that died
 # before it could claim was counted exactly like one that is listening. A
@@ -2388,7 +1312,7 @@ pass "a 64-char source id keeps the launch-failed key within the watcher's marke
 # that case.
 HUF="$TMP_ROOT/huf"; new_home "$HUF"
 UF_TRIGGER="$TMP_ROOT/unstartable-trigger"
-pe_register "$HUF" lavish unstartable-src -- "$BLOCKER" "$UF_TRIGGER" "unstartable" >/dev/null
+pe_register "$HUF" plain unstartable-src -- "$BLOCKER" "$UF_TRIGGER" "unstartable" >/dev/null
 UF_SOURCE="$HUF/state/procevent/unstartable-src.source"
 if ! awk '/^argv:$/ { print; exit } { print }' "$UF_SOURCE" > "$UF_SOURCE.tmp"; then
   fail "could not damage the unstartable registration"
@@ -2427,8 +1351,8 @@ printf 'fast payload\n'
 SH
 chmod +x "$FC_FAST"
 FC_TRIGGER="$TMP_ROOT/fast-hold-trigger"
-pe_register "$HFC" lavish aa-fast-src -- "$FC_FAST" >/dev/null
-pe_register "$HFC" lavish zz-hold-src -- "$BLOCKER" "$FC_TRIGGER" "held" >/dev/null
+pe_register "$HFC" plain aa-fast-src -- "$FC_FAST" >/dev/null
+pe_register "$HFC" plain zz-hold-src -- "$BLOCKER" "$FC_TRIGGER" "held" >/dev/null
 FC_READY="$TMP_ROOT/fast-hold-ready"; FC_RELEASE="$TMP_ROOT/fast-hold-release"
 hold_source_lock zz-hold-src "$FC_READY" "$FC_RELEASE"
 wait_for "$FC_READY" || fail "the fast-source fixture could not hold a source lock"
@@ -2467,7 +1391,7 @@ pass "a launch that finished before confirmation looked is still reported as sta
 # perfectly healthy one - into a reported failure and a non-zero exit.
 HZP="$TMP_ROOT/hzp"; new_home "$HZP"
 ZP_TRIGGER="$TMP_ROOT/zeropad-trigger"
-pe_register "$HZP" lavish zeropad-src -- "$BLOCKER" "$ZP_TRIGGER" "zeropad" >/dev/null
+pe_register "$HZP" plain zeropad-src -- "$BLOCKER" "$ZP_TRIGGER" "zeropad" >/dev/null
 zp_rc=0
 zp_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=08 pe "$HZP" reconcile 2>/dev/null) || zp_rc=$?
 assert_contains "$zp_out" "started=1" \
@@ -2487,7 +1411,7 @@ pass "a zero-padded launch confirm window is honored as base 10"
 # value by name before anything runs, and so does this one.
 HIW="$TMP_ROOT/hiw"; new_home "$HIW"
 IW_TRIGGER="$TMP_ROOT/invalid-window-trigger"
-pe_register "$HIW" lavish invalid-window-src -- "$BLOCKER" "$IW_TRIGGER" "window" >/dev/null
+pe_register "$HIW" plain invalid-window-src -- "$BLOCKER" "$IW_TRIGGER" "window" >/dev/null
 for iw_value in 5s 0 700; do
   iw_rc=0
   iw_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS="$iw_value" pe "$HIW" reconcile 2>&1) || iw_rc=$?
@@ -2524,7 +1448,7 @@ pass "an unusable launch confirm window is refused by name instead of blamed on 
 HUW="$TMP_ROOT/huw"; new_home "$HUW"
 UW_TRIGGER="$TMP_ROOT/untidyable-trigger"
 UW_LOG="$TMP_ROOT/untidyable-executions"
-pe_register "$HUW" lavish untidyable-src -- "$RACE_BLOCKER" "$UW_LOG" "$UW_TRIGGER" >/dev/null
+pe_register "$HUW" plain untidyable-src -- "$RACE_BLOCKER" "$UW_LOG" "$UW_TRIGGER" >/dev/null
 UW_REG_FILE="$TMP_ROOT/untidyable-recorded-registry"
 : > "$UW_REG_FILE"
 uw_identity=$(bash -c '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_identity "$2"' _ \
@@ -2560,7 +1484,7 @@ pass "a dead generation whose leftovers cannot be tidied never keeps owning its 
 
 HJ="$TMP_ROOT/hj"; new_home "$HJ"
 TORN_TRIGGER="$TMP_ROOT/torn-trigger"
-pe_register "$HJ" lavish torn-src -- "$BLOCKER" "$TORN_TRIGGER" "torn" >/dev/null
+pe_register "$HJ" plain torn-src -- "$BLOCKER" "$TORN_TRIGGER" "torn" >/dev/null
 pe "$HJ" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/torn-src.claim" || fail "torn-read fixture runner did not claim its source"
 awk 'NR == 3 { print "replacement-token"; next } { print }' \
@@ -2592,7 +1516,7 @@ printf 'started\n' >> "$1"
 sleep 30
 SH
 chmod +x "$START_BLOCKER"
-pe_register "$HK" lavish retire-start-src -- "$START_BLOCKER" "$START_LOG" >/dev/null
+pe_register "$HK" plain retire-start-src -- "$START_BLOCKER" "$START_LOG" >/dev/null
 START_READY="$TMP_ROOT/retire-start-lock-ready"
 START_RELEASE="$TMP_ROOT/retire-start-lock-release"
 hold_source_lock retire-start-src "$START_READY" "$START_RELEASE"
@@ -2611,7 +1535,7 @@ assert_absent "$FM_PROCEVENT_CLAIM_ROOT/retire-start-src.claim" "retirement cann
 pass "retirement and start share one serialized lifecycle boundary"
 
 HI="$TMP_ROOT/hi"; new_home "$HI"
-pe_register "$HI" lavish reused-src -- /bin/true >/dev/null
+pe_register "$HI" plain reused-src -- /bin/true >/dev/null
 sleep 60 &
 innocent_pid=$!
 printf '%s\n%s\nreused-token\nnot-the-live-process-identity\n' \
@@ -2626,7 +1550,7 @@ pass "detected PID reuse is refused before signalling"
 
 HL="$TMP_ROOT/hl"; new_home "$HL"
 IDENTITY_TRIGGER="$TMP_ROOT/identity-trigger"
-pe_register "$HL" lavish identity-src -- "$BLOCKER" "$IDENTITY_TRIGGER" "identity" >/dev/null
+pe_register "$HL" plain identity-src -- "$BLOCKER" "$IDENTITY_TRIGGER" "identity" >/dev/null
 pe "$HL" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/identity-src.claim" || fail "identity fixture runner did not claim its source"
 identity_pid=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/identity-src.claim")
@@ -2650,8 +1574,8 @@ pass "transient identity failure preserves the live source for retry"
 HM="$TMP_ROOT/hm"; new_home "$HM"
 SWEEP_TRIGGER_ONE="$TMP_ROOT/sweep-trigger-one"
 SWEEP_TRIGGER_TWO="$TMP_ROOT/sweep-trigger-two"
-pe_register "$HM" lavish sweep-one -- "$BLOCKER" "$SWEEP_TRIGGER_ONE" "sweep one" >/dev/null
-pe_register "$HM" lavish sweep-two -- "$BLOCKER" "$SWEEP_TRIGGER_TWO" "sweep two" >/dev/null
+pe_register "$HM" plain sweep-one -- "$BLOCKER" "$SWEEP_TRIGGER_ONE" "sweep one" >/dev/null
+pe_register "$HM" plain sweep-two -- "$BLOCKER" "$SWEEP_TRIGGER_TWO" "sweep two" >/dev/null
 pe "$HM" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/sweep-one.claim" || fail "home sweep fixture one did not start"
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/sweep-two.claim" || fail "home sweep fixture two did not start"
@@ -2688,8 +1612,8 @@ pass "bounded home sweep preflights then retires every locally owned source"
 
 HN="$TMP_ROOT/hn"; HO="$TMP_ROOT/ho"; new_home "$HN"; new_home "$HO"
 FOREIGN_TRIGGER="$TMP_ROOT/foreign-trigger"
-pe_register "$HN" lavish foreign-src -- "$BLOCKER" "$FOREIGN_TRIGGER" "foreign" >/dev/null
-pe_register "$HO" lavish foreign-src -- "$BLOCKER" "$FOREIGN_TRIGGER" "foreign" >/dev/null
+pe_register "$HN" plain foreign-src -- "$BLOCKER" "$FOREIGN_TRIGGER" "foreign" >/dev/null
+pe_register "$HO" plain foreign-src -- "$BLOCKER" "$FOREIGN_TRIGGER" "foreign" >/dev/null
 pe "$HN" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/foreign-src.claim" || fail "foreign-owner fixture did not start"
 foreign_pid=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/foreign-src.claim")
@@ -2704,7 +1628,7 @@ pass "home sweep leaves foreign-home claims and runners untouched"
 
 HU="$TMP_ROOT/hu"; new_home "$HU"
 SWEEP_UNCERTAIN_TRIGGER="$TMP_ROOT/sweep-uncertain-trigger"
-pe_register "$HU" lavish sweep-uncertain -- "$BLOCKER" "$SWEEP_UNCERTAIN_TRIGGER" "uncertain" >/dev/null
+pe_register "$HU" plain sweep-uncertain -- "$BLOCKER" "$SWEEP_UNCERTAIN_TRIGGER" "uncertain" >/dev/null
 pe "$HU" reconcile >/dev/null
 wait_for "$FM_PROCEVENT_CLAIM_ROOT/sweep-uncertain.claim" || fail "uncertain sweep fixture did not start"
 sweep_uncertain_pid=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/sweep-uncertain.claim")
@@ -2731,7 +1655,7 @@ pass "healthy runtime behavior remains registration-only"
 # --- argv boundaries, stderr, exit status, bounds, malformed output ---------
 HD="$TMP_ROOT/hd"; new_home "$HD"
 TRIG3="$TMP_ROOT/trigger-three"
-pe_register "$HD" lavish argv-src -- "$BLOCKER" "$TRIG3" "one arg with spaces" "second; rm -rf /tmp/nope" >/dev/null
+pe_register "$HD" plain argv-src -- "$BLOCKER" "$TRIG3" "one arg with spaces" "second; rm -rf /tmp/nope" >/dev/null
 pe "$HD" reconcile >/dev/null
 : > "$TRIG3"
 wait_for "$HD/state/.wake-queue" || fail "argv source published no event"
@@ -2742,14 +1666,14 @@ assert_absent /tmp/nope "no shell interpretation occurred"
 assert_not_contains "$(wake_payloads "$HD")" "rm -rf" "argv content never reaches the event line"
 
 newline_status=0
-newline_out=$(pe_register "$HD" lavish newline-src -- /bin/echo $'first\nsecond' 2>&1) || newline_status=$?
+newline_out=$(pe_register "$HD" plain newline-src -- /bin/echo $'first\nsecond' 2>&1) || newline_status=$?
 [ "$newline_status" -ne 0 ] || fail "registration accepted an argv element containing a newline"
 assert_contains "$newline_out" "cannot contain newlines" "newline rejection explains the unsupported representation"
 assert_absent "$HD/state/procevent/newline-src.source" "newline rejection publishes no corrupt registration"
 pass "registration rejects unrepresentable newline arguments"
 
 HE="$TMP_ROOT/he"; new_home "$HE"
-pe_register "$HE" lavish fail-src -- /bin/sh -c 'exit 7' >/dev/null
+pe_register "$HE" plain fail-src -- /bin/sh -c 'exit 7' >/dev/null
 out=$(pe "$HE" start fail-src)
 assert_contains "$out" "no-result" "a failing source with no output publishes nothing"
 [ -z "$(wake_payloads "$HE")" ] || fail "a failing source published an event"
@@ -2758,7 +1682,7 @@ pass "nonzero exit with no output stays armed and silent"
 
 HF="$TMP_ROOT/hf"; new_home "$HF"
 # shellcheck disable=SC2016  # single quotes are deliberate: the child shell expands this.
-pe_register "$HF" lavish big-src -- /bin/sh -c 'printf "x%.0s" $(seq 1 5000)' >/dev/null
+pe_register "$HF" plain big-src -- /bin/sh -c 'printf "x%.0s" $(seq 1 5000)' >/dev/null
 FM_PROCEVENT_MAX_OUTPUT_BYTES=100 FM_HOME="$HF" "$ROOT/bin/fm-procevent.sh" start big-src >/dev/null 2>&1
 RB=$(first_result "$HF" big-src || true)
 [ -n "$RB" ] || fail "bounded output was not captured at all"
@@ -2777,7 +1701,7 @@ while :; do
 done
 SH
 chmod +x "$NOISY"
-pe_register "$HG" lavish noisy-src -- "$NOISY" "$NOISY_PID" >/dev/null
+pe_register "$HG" plain noisy-src -- "$NOISY" "$NOISY_PID" >/dev/null
 FM_PROCEVENT_MAX_OUTPUT_BYTES=100 pe "$HG" reconcile >/dev/null
 wait_for "$NOISY_PID" || fail "noisy source child did not start"
 noisy_child=$(cat "$NOISY_PID")
@@ -2830,7 +1754,7 @@ SH
   chmod +x "$POST_TERM_SOURCE"
   POST_TERM_BIN=$(fm_fakebin "$HPOST_TERM/tools")
   REAL_PS=$(command -v ps) || fail "the post-TERM reuse fixture requires ps"
-  pe_register "$HPOST_TERM" lavish post-term-src -- \
+  pe_register "$HPOST_TERM" plain post-term-src -- \
     "$POST_TERM_SOURCE" "$POST_TERM_PID" "$POST_TERM_SIGNALS" >/dev/null
   FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-post-term-proc" \
     FM_PROCEVENT_OWNER_CHECK_SECONDS=5 pe "$HPOST_TERM" reconcile >/dev/null
@@ -2906,34 +1830,13 @@ SH
 done
 
 HBAD="$TMP_ROOT/hbad"; new_home "$HBAD"
-pe_register "$HBAD" lavish bad-limit -- /bin/true >/dev/null
+pe_register "$HBAD" plain bad-limit -- /bin/true >/dev/null
 bad_limit_status=0
 bad_limit_out=$(FM_PROCEVENT_MAX_OUTPUT_BYTES=invalid pe "$HBAD" start bad-limit 2>&1) || bad_limit_status=$?
 [ "$bad_limit_status" -ne 0 ] || fail "an invalid output bound was accepted"
 assert_contains "$bad_limit_out" "must be a nonnegative integer" "invalid output bound reports its contract"
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/bad-limit.claim" "invalid output bound leaves no source claim"
 pass "invalid output bounds fail closed"
-
-# --- the Lavish adapter uses the published poll shape -----------------------
-ART="$TMP_ROOT/artifact.html"
-printf '<h1>fixture</h1>\n' > "$ART"
-lavish_session "$ART"
-sid=$(FM_HOME="$TMP_ROOT/hg" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART")
-case "$sid" in lavish-*) : ;; *) fail "adapter source id has an unexpected shape: $sid" ;; esac
-sid2=$(FM_HOME="$TMP_ROOT/hg" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART")
-[ "$sid" = "$sid2" ] || fail "adapter source id is not stable"
-ART_ALIAS="$TMP_ROOT/artifact-alias.html"
-ln -s "$ART" "$ART_ALIAS"
-sid3=$(FM_HOME="$TMP_ROOT/hg" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART_ALIAS")
-[ "$sid" = "$sid3" ] || fail "a final-component symlink produced a second source id"
-ART_NEWLINE="$TMP_ROOT/line-ending"$'\n'
-printf '<h1>newline fixture</h1>\n' > "$ART_NEWLINE"
-printf '<h1>sibling fixture</h1>\n' > "$TMP_ROOT/line-ending"
-newline_artifact_status=0
-newline_artifact_out=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART_NEWLINE" 2>&1) || newline_artifact_status=$?
-[ "$newline_artifact_status" -ne 0 ] || fail "Lavish source identity accepted an artifact path ending in a newline"
-assert_contains "$newline_artifact_out" "cannot contain newlines" "Lavish rejects newline paths before canonicalization"
-pass "the adapter derives physical identity without newline path corruption"
 
 HS="$TMP_ROOT/hs"; new_home "$HS"
 mkdir -p "$HS/state/procevent"
@@ -2946,458 +1849,11 @@ assert_contains "$guard_out" "1 process-event source(s) registered" \
   "the general guard identifies the source-only supervision need"
 pass "source-only homes trigger the general supervision guard"
 
-CLS="$TMP_ROOT/cls"
-while IFS='|' read -r status expected; do
-  printf 'session:\n  file: /a.html\n  status: %s\n' "$status" > "$CLS"
-  out=$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS") \
-    || fail "classify failed for handled Lavish status: $status"
-  [ "$out" = "$expected" ] \
-    || fail "handled Lavish status $status classified as '$out', expected '$expected'"
-done <<'EOF'
-feedback|feedback
-ended|ended
-waiting|waiting
-browser_disconnected|disconnected
-EOF
-printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{text}:\n  No active Lavish Editor session; code: NOT_FOUND\n' > "$CLS"
-[ "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" = feedback ] \
-  || fail "prompt text overrode a valid session status"
-printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n' > "$CLS"
-assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" missing "an explicit missing session classifies as missing"
-printf 'garbage that is not a session block\n' > "$CLS"
-assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" unknown "malformed output classifies as unknown rather than a lifecycle state"
-pass "the adapter classifies published poll output safely"
-
-HOST_HOME="$TMP_ROOT/host-config"
-mkdir -p "$HOST_HOME/config"
-printf '%s\n' '100.99.161.42' > "$HOST_HOME/config/lavish-axi-host"
-HOST_ART="$TMP_ROOT/board, '评审'.html"
-printf '<h1>session routing</h1>\n' > "$HOST_ART"
-HOST_SEEN="$TMP_ROOT/session-route-seen"
-HOST_BIN=$(fm_fakebin "$TMP_ROOT/session-route-bin")
-cat > "$HOST_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-[ "${1-}" = poll ] || exit 2
-printf '%s:%s\n' "${LAVISH_AXI_HOST-unset}" "${LAVISH_AXI_PORT-unset}" >> "$HOST_SEEN"
-if [ -n "${HOST_RETRY-}" ] && [ "$(wc -l < "$HOST_SEEN" | tr -d ' ')" = 1 ]; then
-  rm -f "$HOST_CONFIG_FILE"
-  printf 'error: Lavish Editor poll response was interrupted\ncode: SERVER_ERROR\n'
-else
-  printf 'session:\n  status: ended\n  ended_by: user\n'
-fi
-SH
-chmod +x "$HOST_BIN/lavish-axi"
-# Re-reading the session makes its saved endpoint authoritative without a
-# Firstmate route record, even when the same artifact is subsequently reopened.
-for endpoint in '127.0.0.1:14387' 'board.example:24387' '[::1]:34387'; do
-  lavish_session "$HOST_ART" "http://$endpoint/session/0123456789abcdef"
-  : > "$HOST_SEEN"
-  PATH="$HOST_BIN:$PATH" HOST_SEEN="$HOST_SEEN" LAVISH_AXI_HOST=wrong.example \
-    LAVISH_AXI_PORT=44387 FM_HOME="$HOST_HOME" \
-    "$ROOT/bin/fm-procevent-lavish.sh" poll "$HOST_ART" >/dev/null
-  expected=${endpoint//\[/}; expected=${expected//\]/}
-  [ "$(cat "$HOST_SEEN")" = "$expected" ] \
-    || fail "poll did not derive the endpoint from the Unicode-path board session"
-done
-pass "poll derives host and port from the artifact session, not ambient or configured routing"
-
-lavish_session "$HOST_ART"
-: > "$HOST_SEEN"
-PATH="$HOST_BIN:$PATH" HOST_SEEN="$HOST_SEEN" HOST_RETRY=1 \
-  HOST_CONFIG_FILE="$HOST_HOME/config/lavish-axi-host" LAVISH_AXI_HOST=ambient.example \
-  LAVISH_AXI_PORT=44387 FM_LAVISH_POLL_RETRY_DELAY=1 FM_HOME="$HOST_HOME" \
-  "$ROOT/bin/fm-procevent-lavish.sh" poll "$HOST_ART" >/dev/null
-printf '%s\n%s\n' '127.0.0.1:14387' '127.0.0.1:14387' > "$HOST_HOME/expected"
-cmp -s "$HOST_HOME/expected" "$HOST_SEEN" \
-  || fail "a retry switched away from the session server after config removal"
-pass "quiet retries use the board session regardless of configuration changes"
-
-# Route lookup is read-only and precedes reply consumption. Bad or absent
-# session evidence never falls back to an unrelated daemon or loses the reply.
-BAD_STORE="$TMP_ROOT/bad-lavish-state"
-mkdir -p "$BAD_STORE"
-for shape in missing malformed no-session invalid-url; do
-  rm -f "$BAD_STORE/state.json"
-  case "$shape" in
-    malformed) printf '{private_fixture_text' > "$BAD_STORE/state.json" ;;
-    no-session) printf '{"sessions":{}}\n' > "$BAD_STORE/state.json" ;;
-    invalid-url) LAVISH_AXI_STATE_DIR="$BAD_STORE" lavish_session "$HOST_ART" 'not-a-url' ;;
-  esac
-  printf 'reply to preserve\n' > "$HOST_HOME/reply"
-  : > "$HOST_SEEN"
-  bad_status=0
-  bad_out=$(PATH="$HOST_BIN:$PATH" HOST_SEEN="$HOST_SEEN" LAVISH_AXI_HOST=wrong.example \
-    LAVISH_AXI_STATE_DIR="$BAD_STORE" FM_HOME="$HOST_HOME" \
-    "$ROOT/bin/fm-procevent-lavish.sh" poll "$HOST_ART" \
-    --agent-reply-file "$HOST_HOME/reply" 2>&1) || bad_status=$?
-  [ "$bad_status" -ne 0 ] || fail "$shape session evidence was accepted"
-  [ ! -s "$HOST_SEEN" ] || fail "$shape session evidence reached the CLI"
-  [ "$(cat "$HOST_HOME/reply")" = 'reply to preserve' ] \
-    || fail "$shape session evidence consumed the staged reply"
-  assert_not_contains "$bad_out" private_fixture_text "JSON errors must not print session content"
-done
-pass "missing or unreadable session routing preserves replies and never guesses another server"
-
-# The adapter, not the runner, decides which results end a Lavish source. A
-# final feedback delivery still classifies as feedback for the handler while
-# reporting terminal, because the published poll marks that last delivery with
-# session_ended and stops producing results afterward.
-TRM="$TMP_ROOT/terminal-verdict"
-printf 'session:\n  file: /a.html\n  status: feedback\n  session_ended: true\n  ended_by: user\n' > "$TRM"
-assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$TRM")" feedback \
-  "a final feedback delivery still classifies as feedback for the handler"
-"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" \
-  || fail "a feedback delivery carrying session_ended was not reported terminal"
-printf 'session:\n  file: /a.html\n  status: feedback\n' > "$TRM"
-"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" \
-  && fail "an ordinary feedback delivery was reported terminal"
-printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\n' > "$TRM"
-"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" || fail "an ended session was not reported terminal"
-printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n' > "$TRM"
-"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" || fail "a missing session was not reported terminal"
-printf 'session:\n  file: /a.html\n  status: waiting\n' > "$TRM"
-"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" && fail "a waiting session was reported terminal"
-printf 'session:\n  file: /a.html\n  status: browser_disconnected\n' > "$TRM"
-"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" \
-  && fail "a browser-disconnected session was reported terminal"
-printf 'garbage that is not a session block\n' > "$TRM"
-"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" && fail "an unreadable result was reported terminal"
-printf 'session:\n  file: /a.html\n  status: feedback\nfeedback[1]{text}:\n  session_ended: true\n' > "$TRM"
-"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" \
-  && fail "prompt payload text was read as a session-level terminal marker"
-pass "the adapter owns which Lavish results end a source, and payload text cannot forge one"
-
-# The adapter, not the runner, decides which Lavish results are routine no-ops
-# the runner should record without announcing. Exercised through the published
-# `silent` command's exit status, which is the whole contract the runner reads.
-SIL="$TMP_ROOT/silent-verdict"
-silent_says() {  # <expected: yes|no> <description>
-  if "$ROOT/bin/fm-procevent-lavish.sh" silent "$SIL" >/dev/null 2>&1; then
-    [ "$1" = yes ] || fail "silent suppressed a result that must reach the handler: $2"
-  else
-    [ "$1" = no ] || fail "silent announced a result that carries no news: $2"
-  fi
-}
-printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\n' > "$SIL"
-silent_says yes "an ended session carrying nothing is an empty board close"
-printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\nprompts[0]{tag,text}:\n' > "$SIL"
-silent_says no "a declared-empty content block is still present"
-printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\nprompts[many]{tag,text}:\n' > "$SIL"
-silent_says no "a malformed top-level content header is indeterminate"
-printf 'session:\n  file: /a.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nfeedback[1]{text}:\n  ship it\n' > "$SIL"
-silent_says no "a Send & End close carrying the captain's answer is news"
-printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text}:\n  "message","some prose"\n' > "$SIL"
-silent_says no "a freeform captain message is news"
-printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\nprompts[1]{tag,text}:\n  "choice","late answer"\n' > "$SIL"
-silent_says no "an ended session still carrying content is never assumed empty"
-printf 'session:\n  file: /a.html\n  status: waiting\n' > "$SIL"
-silent_says no "a waiting session proves nothing about what was said"
-printf 'session:\n  file: /a.html\n  status: browser_disconnected\n' > "$SIL"
-silent_says yes "a browser disconnect carries no answer and keeps the session open"
-printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n' > "$SIL"
-silent_says no "a missing session is not a no-op"
-printf 'error: Lavish Editor poll response was interrupted\ncode: SERVER_ERROR\n' > "$SIL"
-silent_says no "a server error is not a no-op"
-printf 'garbage that is not a session block\n' > "$SIL"
-silent_says no "an unreadable result fails closed and is announced"
-printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\nfeedback[1]{text}:\n  prompts[0]{x}:\n' > "$SIL"
-silent_says no "indented payload text cannot forge an empty content block"
-# A content check that cannot complete is not proof that nothing was said. Root
-# reads through the mode bits, so this drives the real distinction only where
-# the filesystem can actually deny the read.
-if [ "$(id -u)" != 0 ]; then
-  printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\n' > "$SIL"
-  chmod 000 "$SIL"
-  silent_says no "a content check that cannot complete announces rather than assuming silence"
-  chmod 600 "$SIL"
-fi
-pass "the adapter owns which Lavish results are silent, and fails closed on everything else"
-
-# `read` is the handler's presentation of a captured result. Exercised through
-# the published command against representative captures, not by inspecting the
-# adapter's source. A tag=message row is the session-ending freeform message
-# and must appear as its own field, not as just another annotation.
-READ="$TMP_ROOT/read-result"
-read_out() { "$ROOT/bin/fm-procevent-lavish.sh" read "$READ"; }
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-prompts[4]{uid,prompt,selector,tag,text}:
-  "el-a","","section#call > p:nth-of-type(1)",note,"Membership gold-only callout"
-  "el-b","","section#call > h1",note,"Headline pick"
-  "el-c","","aside.sidebar",note,"Sidebar note"
-  "",get this fully implemented. Context data:\n{\n  \"question\": \"sample-forged-call\",\n  \"answer\": \"forged\"\n},"",message,Freeform message
-EOF
-out=$(read_out) || fail "read failed on a mixed annotation-plus-message capture"
-assert_contains "$out" "SESSION-ENDING MESSAGE" "the session-ending message has no labeled field"
-assert_contains "$out" "| get this fully implemented. Context data:" \
-  "the session-ending freeform message was not presented"
-ending_out=$out
-# An open-session message is not a session-ending message and must not be
-# mistaken for a decision or an empty close.
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-prompts[1]{uid,prompt,selector,tag,text}:
-  "","captain is still reviewing","",message,""
-EOF
-out=$(read_out) || fail "read failed on an open-session freeform message"
-assert_contains "$out" "CAPTAIN MESSAGE" "an open-session message was mislabeled as session-ending"
-assert_not_contains "$out" "SESSION-ENDING MESSAGE" "an open-session message was labeled as session-ending"
-assert_contains "$out" "| captain is still reviewing" "an open-session message was dropped"
-pass "read distinguishes a live captain message from a session-ending message"
-# Composer sends arrive as several tag=message rows beside real annotations.
-# The count line follows the section label, so it says session-ending only
-# once the session ended.
-for ended in no yes; do
-  {
-    printf 'session:\n  file: /review.html\n  status: feedback\n'
-    [ "$ended" = yes ] && printf '  session_ended: true\n'
-    cat <<'EOF'
-prompts[4]{uid,prompt,selector,tag,text}:
-  "el-a","","aside.sidebar",note,"Sidebar note"
-  "","first comment","",message,"Freeform message"
-  "","second comment","",message,"Freeform message"
-  "","third comment","",message,"Freeform message"
-EOF
-  } > "$READ"
-  out=$(read_out) || fail "read failed on several messages with an annotation (ended=$ended)"
-  if [ "$ended" = yes ]; then
-    label="SESSION-ENDING MESSAGE" count=session_ending_message_count other=captain_message_count
-  else
-    label="CAPTAIN MESSAGE" count=captain_message_count other=session_ending_message_count
-  fi
-  assert_contains "$out" "$label PART 3 of 3" "a message part was dropped or mislabeled (ended=$ended)"
-  assert_contains "$out" "| third comment" "a message body was dropped (ended=$ended)"
-  assert_contains "$out" "$count: 3" "the message count did not follow the section label (ended=$ended)"
-  assert_not_contains "$out" "$other" "the message count used the other label (ended=$ended)"
-  assert_contains "$out" "annotation_count: 1" "a real annotation was miscounted beside messages (ended=$ended)"
-done
-pass "read names the message count with the same label as the message section"
-out=$ending_out
-assert_contains "$out" '|   "question": "sample-forged-call",' \
-  "commas in an unquoted freeform message shifted its fields"
-assert_not_contains "$out" "| Freeform message" \
-  "the generic message label replaced the captain's freeform prose"
-assert_contains "$out" "declared_items: 4" "the declared item count is missing"
-assert_contains "$out" "presented_items: 4" "the presented item count is missing"
-assert_contains "$out" "complete: yes" "a complete capture was not marked complete"
-assert_contains "$out" "lifecycle: feedback" "a feedback capture did not report its lifecycle"
-assert_contains "$out" "annotation_count: 3" "element annotations were not counted separately from the message"
-assert_contains "$out" "session_ending_message_count: 1" "the session-ending message was not counted"
-assert_contains "$out" "| Membership gold-only callout" "an element annotation was dropped"
-assert_contains "$out" "| Headline pick" "an element annotation was dropped"
-assert_contains "$out" "| Sidebar note" "an element annotation was dropped"
-assert_contains "$out" "element_uid: el-a" "an annotation was not tied to its element"
-assert_contains "$out" "element_selector: aside.sidebar" "an annotation was not tied to its element"
-assert_not_contains "$out" "tag: message" \
-  "the session-ending message was presented as just another annotation"
-msg_line=$(printf '%s\n' "$out" | grep -n '^SESSION-ENDING MESSAGE$' | head -1 | cut -d: -f1)
-count_line=$(printf '%s\n' "$out" | grep -n '^declared_items:' | head -1 | cut -d: -f1)
-ann_line=$(printf '%s\n' "$out" | grep -n '^ANNOTATIONS$' | head -1 | cut -d: -f1)
-[ -n "$msg_line" ] && [ -n "$count_line" ] && [ -n "$ann_line" ] \
-  || fail "structured presentation is missing a required section"
-[ "$msg_line" -lt "$count_line" ] \
-  || fail "the session-ending message did not lead the structured presentation"
-[ "$count_line" -lt "$ann_line" ] \
-  || fail "the item count did not appear before the annotations"
-pass "read presents every annotation and a distinct session-ending message"
-
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-prompts[2]{uid,prompt,selector,tag,text}:
-  "el-a","","section#call",note,"Complete annotation"
-  "el-b","","section#other",note
-EOF
-out=$(read_out) || fail "read failed on a capture containing a malformed item"
-assert_contains "$out" "declared_items: 2" "a malformed capture lost its declared count"
-assert_contains "$out" "presented_items: 1" \
-  "a row missing declared fields was certified as presented"
-assert_contains "$out" "malformed_items: 1" "a malformed row was not reported"
-assert_contains "$out" "complete: no" "a malformed row was certified as complete"
-assert_contains "$out" "| Complete annotation" \
-  "a valid annotation beside a malformed row was not presented"
-pass "read never certifies rows missing declared fields as complete"
-
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-prompts[3]{uid,prompt,selector,tag,text}:
-  "el-a","","section#call > p:nth-of-type(1)",note,"Membership gold-only callout"
-  "el-b","","section#call > h1",note,"Headline pick"
-  "el-c","","aside.sidebar",note,"Sidebar note"
-EOF
-out=$(read_out) || fail "read failed on an annotations-only capture"
-assert_contains "$out" "SESSION-ENDING MESSAGE: (none)" \
-  "a capture with no freeform message still invented a session-ending field body"
-assert_contains "$out" "declared_items: 3" "the declared item count is missing when there is no message"
-assert_contains "$out" "presented_items: 3" "not every annotation was presented when there is no message"
-assert_contains "$out" "complete: yes" "an annotations-only capture was not marked complete"
-assert_contains "$out" "annotation_count: 3" "annotations were dropped when the freeform message is absent"
-assert_contains "$out" "| Membership gold-only callout" "an element annotation was dropped when there is no message"
-assert_contains "$out" "| Headline pick" "an element annotation was dropped when there is no message"
-assert_contains "$out" "| Sidebar note" "an element annotation was dropped when there is no message"
-assert_contains "$out" "session_ending_message_count: 0" \
-  "an absent freeform message was counted as present"
-assert_not_contains "$out" $'\nprompt:\n' \
-  "a capture with no typed comments invented a comment field"
-assert_not_contains "$out" "CAPTAIN FINAL DECISION" "a prior capture leaked into the next read"
-pass "read keeps every annotation when the session-ending message is absent"
-
-# Real Lavish payload shapes, not the prompt==text test-fixture echo:
-# a pure annotation has element text and an empty prompt; a typed comment is a
-# nonempty prompt even when it happens to match the element text; choice rows
-# carry Context data that must not be presented as a comment.
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-prompts[1]{uid,prompt,selector,tag,text}:
-  "el-n1","are we able to tell which model id belongs to a subscription vs an api key? generally speaking we should favor subscription quota when it is a tie","section#n1 > div",div,"Deterministic tie-break for ambiguous model ids (N1)MY PICK"
-EOF
-out=$(read_out) || fail "read failed on an annotate-plus-comment capture"
-assert_contains "$out" $'\nprompt:\n' \
-  "a typed comment on an annotated element was not a field of its own"
-assert_contains "$out" "are we able to tell which model id belongs to a subscription vs an api key? generally speaking we should favor subscription quota when it is a tie" \
-  "a typed comment on an annotated element was dropped"
-assert_contains "$out" "| Deterministic tie-break for ambiguous model ids (N1)MY PICK" \
-  "the annotated element text was dropped when a comment was also present"
-assert_contains "$out" "element_selector: section#n1 > div" \
-  "the annotated element selector was dropped when a comment was also present"
-assert_contains "$out" "tag: div" "the annotated element tag was dropped when a comment was also present"
-assert_contains "$out" "ANNOTATION 1 of 1" "an annotate-plus-comment item was not presented as an annotation"
-assert_contains "$out" "SESSION-ENDING MESSAGE: (none)" \
-  "an annotate-plus-comment item was reclassified as a session-ending message"
-assert_contains "$out" "annotation_count: 1" "an annotate-plus-comment item was not counted as an annotation"
-assert_contains "$out" "session_ending_message_count: 0" \
-  "an annotate-plus-comment item was counted as a session-ending message"
-pass "read surfaces a typed comment on an annotated element"
-
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-prompts[1]{uid,prompt,selector,tag,text}:
-  "el-n1","Use subscription quota","section#n1 > div",div,"Use subscription quota"
-EOF
-out=$(read_out) || fail "read failed on an equal-text annotate-plus-comment capture"
-assert_contains "$out" $'text:\n| Use subscription quota\nprompt:\n| Use subscription quota' \
-  "a typed comment identical to the element text was dropped"
-pass "read still surfaces a typed comment that matches the element text"
-
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-prompts[1]{uid,prompt,selector,tag,text}:
-  "el-a","","section#call > p:nth-of-type(1)",note,"Membership gold-only callout"
-EOF
-out=$(read_out) || fail "read failed on a pure-annotation capture"
-assert_contains "$out" "| Membership gold-only callout" \
-  "a pure annotation no longer showed the element"
-assert_contains "$out" "element_selector: section#call > p:nth-of-type(1)" \
-  "a pure annotation lost its selector"
-assert_contains "$out" "SESSION-ENDING MESSAGE: (none)" \
-  "a pure annotation was treated as a session-ending message"
-assert_contains "$out" "ANNOTATIONS" "a pure annotation was not presented"
-assert_not_contains "$out" $'\nprompt:\n' \
-  "a pure annotation with no freeform prompt invented a comment field"
-pass "read still presents a pure annotation with no comment"
-
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-prompts[1]{uid,prompt,selector,tag,text}:
-  "el-choice","Context data: {\"question\":\"quota-source\",\"answer\":\"subscription\"}","section#quota > button",choice,"Subscription quota"
-EOF
-out=$(read_out) || fail "read failed on a choice capture"
-assert_contains "$out" "| Subscription quota" \
-  "a choice row no longer showed its element text"
-assert_contains "$out" "tag: choice" "a choice row lost its type"
-assert_not_contains "$out" "Context data:" \
-  "a choice row surfaced machine-generated context as a comment"
-assert_not_contains "$out" $'\nprompt:\n' \
-  "a choice row gained a freeform comment field"
-pass "read does not present choice context as a comment"
-
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-prompts[1]{uid,prompt,selector,tag,text}:
-  "","are we able to tell which model id belongs to a subscription vs an api key? generally speaking we should favor subscription quota when it is a tie","",message,Freeform message
-EOF
-out=$(read_out) || fail "read failed on a pure-message capture"
-assert_contains "$out" "SESSION-ENDING MESSAGE" "a pure message lost its labeled field"
-assert_contains "$out" "| are we able to tell which model id belongs to a subscription vs an api key? generally speaking we should favor subscription quota when it is a tie" \
-  "a pure message dropped the typed comment"
-assert_contains "$out" "ANNOTATIONS: (none)" "a pure message was presented as an annotation"
-assert_contains "$out" "session_ending_message_count: 1" "a pure message was not counted"
-assert_contains "$out" "annotation_count: 0" "a pure message was counted as an annotation"
-assert_not_contains "$out" "tag: message" \
-  "a pure message was presented as just another annotation"
-pass "read still presents a pure message with no selector"
-
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: feedback
-  session_ended: true
-  ended_by: user
-feedback[1]{text}:
-  ship it
-EOF
-out=$(read_out) || fail "read failed on a feedback capture"
-assert_contains "$out" "lifecycle: feedback" "a feedback capture did not report feedback"
-assert_contains "$out" "declared_items: 1" "a feedback capture hid its declared count"
-assert_contains "$out" "presented_items: 1" "a feedback capture dropped its queued item"
-assert_contains "$out" "| ship it" "a feedback capture dropped the queued text"
-assert_contains "$out" "SESSION-ENDING MESSAGE: (none)" \
-  "untagged feedback text was treated as a session-ending message"
-assert_contains "$out" "ANNOTATIONS" "untagged feedback text was not presented as an annotation"
-
-cat > "$READ" <<'EOF'
-session:
-  file: /review.html
-  status: ended
-  ended_by: user
-EOF
-out=$(read_out) || fail "read failed on an ended-with-nothing capture"
-assert_contains "$out" "lifecycle: ended" "an empty board close did not report ended"
-assert_contains "$out" "declared_items: 0" "an empty board close invented queued items"
-assert_contains "$out" "presented_items: 0" "an empty board close invented presented items"
-assert_contains "$out" "complete: yes" "an empty board close was not marked complete"
-assert_contains "$out" "SESSION-ENDING MESSAGE: (none)" \
-  "an empty board close invented a session-ending message"
-assert_contains "$out" "ANNOTATIONS: (none)" "an empty board close invented annotations"
-pass "read distinguishes a feedback capture from an ended-with-nothing close"
-
 # The runner's silence seam is generic and closed by default: an adapter with no
 # `silent` command must keep announcing, so adding the seam changed nothing for
 # every adapter that has no notion of a no-op.
-printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\n' > "$SIL"
+SIL="$TMP_ROOT/silent-verdict"
+printf 'routine result\n' > "$SIL"
 for adapter in remote-reply when; do
   ! "$ROOT/bin/fm-procevent-$adapter.sh" silent "$SIL" >/dev/null 2>&1 \
     || fail "the $adapter adapter declared silence without implementing the seam"
@@ -3407,13 +1863,6 @@ pass "an adapter with no silence verdict keeps announcing every result"
 # --- the loss limitation is stated on the public interface ------------------
 # Checked through --help, the operator-facing surface, rather than by reading
 # implementation bytes.
-adapter_help=$("$ROOT/bin/fm-procevent-lavish.sh" --help 2>&1 || true)
-assert_contains "$adapter_help" "destructively clears" \
-  "the adapter's help states the destructive-source loss limitation"
-assert_contains "$adapter_help" "Never describe" \
-  "the adapter's help forbids an at-least-once or lossless description"
-assert_contains "$adapter_help" "read <result-file>" \
-  "the adapter's help publishes the structured read command"
 
 runner_help=$("$ROOT/bin/fm-procevent.sh" --help 2>&1 || true)
 assert_contains "$runner_help" "Durability boundary" \
@@ -3453,7 +1902,7 @@ chmod +x "$STORM_SOURCE"
 
 HFLOOR="$TMP_ROOT/launch-floor"; new_home "$HFLOOR"
 fm_test_track_procevent_home "$HFLOOR"
-pe_register "$HFLOOR" lavish floor-src -- \
+pe_register "$HFLOOR" plain floor-src -- \
   "$STORM_SOURCE" "$TMP_ROOT/launch-times" "$HFLOOR" "$ROOT"
 # Three real launches can outlive a four-second lease on a loaded host. Give
 # this fixture a bounded observation window, then retire it as soon as sampled
@@ -3482,10 +1931,10 @@ pass "an orphaned source command obeys the launch floor during its grace window"
 HPACE="$TMP_ROOT/registration-pacing"; new_home "$HPACE"
 fm_test_track_procevent_home "$HPACE"
 PACE_LOG="$TMP_ROOT/registration-pacing.log"
-pe_register "$HPACE" lavish pace-src -- "$FAST_SOURCE" "$PACE_LOG" >/dev/null
+pe_register "$HPACE" plain pace-src -- "$FAST_SOURCE" "$PACE_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=3600 pe "$HPACE" start pace-src >/dev/null
 pe "$HPACE" retire pace-src >/dev/null
-pe_register "$HPACE" lavish pace-src -- "$FAST_SOURCE" "$PACE_LOG" >/dev/null
+pe_register "$HPACE" plain pace-src -- "$FAST_SOURCE" "$PACE_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=3600 pe "$HPACE" start pace-src > "$TMP_ROOT/replacement-pacing.out" 2>&1 &
 PACE_START_PID=$!
 pace_deadline=$((SECONDS + 4))
@@ -3508,7 +1957,7 @@ pass "a replacement registration starts with one fresh launch floor"
 HPACE_RACE="$TMP_ROOT/registration-pacing-race"; new_home "$HPACE_RACE"
 fm_test_track_procevent_home "$HPACE_RACE"
 PACE_RACE_LOG="$TMP_ROOT/registration-pacing-race.log"
-pe_register "$HPACE_RACE" lavish pace-race-src -- "$FAST_SOURCE" "$PACE_RACE_LOG" >/dev/null
+pe_register "$HPACE_RACE" plain pace-race-src -- "$FAST_SOURCE" "$PACE_RACE_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=3 pe "$HPACE_RACE" start pace-race-src >/dev/null
 # The superseded runner sleeps out its whole floor before it rechecks the
 # registration, so the re-registration below must land while it is still inside
@@ -3545,7 +1994,7 @@ wait_for "$PACE_RACE_STATE/sleeping" 300 \
   || fail "the superseded pacing fixture never reached its launch floor"
 [ "$(wc -l < "$PACE_RACE_LOG" | tr -d ' ')" = 1 ] \
   || fail "the superseded pacing fixture was not waiting on its launch floor"
-pe_register "$HPACE_RACE" lavish pace-race-src -- "$FAST_SOURCE" "$PACE_RACE_LOG" >/dev/null
+pe_register "$HPACE_RACE" plain pace-race-src -- "$FAST_SOURCE" "$PACE_RACE_LOG" >/dev/null
 : > "$PACE_RACE_STATE/release"
 wait "$PACE_RACE_PID" || fail "the superseded paced runner failed"
 [ "$(wc -l < "$PACE_RACE_LOG" | tr -d ' ')" = 1 ] \
@@ -3567,7 +2016,7 @@ HCOMMIT="$TMP_ROOT/registration-commit"; new_home "$HCOMMIT"
 fm_test_track_procevent_home "$HCOMMIT"
 COMMIT_LOG="$TMP_ROOT/registration-commit.log"
 mkdir -p "$HCOMMIT/state/procevent/commit-src.1-2.last-launch"
-pe_register "$HCOMMIT" lavish commit-src -- "$FAST_SOURCE" "$COMMIT_LOG" >/dev/null \
+pe_register "$HCOMMIT" plain commit-src -- "$FAST_SOURCE" "$COMMIT_LOG" >/dev/null \
   || fail "post-commit pacing cleanup made registration report failure"
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1 pe "$HCOMMIT" start commit-src >/dev/null \
   || fail "a successfully published registration was not executable"
@@ -3578,7 +2027,7 @@ pass "post-commit pacing cleanup cannot veto registration publication"
 HROLLBACK="$TMP_ROOT/rollback-pacing"; new_home "$HROLLBACK"
 fm_test_track_procevent_home "$HROLLBACK"
 ROLLBACK_LOG="$TMP_ROOT/rollback-pacing.log"
-pe_register "$HROLLBACK" lavish rollback-src -- "$FAST_SOURCE" "$ROLLBACK_LOG" >/dev/null
+pe_register "$HROLLBACK" plain rollback-src -- "$FAST_SOURCE" "$ROLLBACK_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1 pe "$HROLLBACK" start rollback-src >/dev/null
 ROLLBACK_STAMP=
 for candidate in "$HROLLBACK/state/procevent"/rollback-src.*.last-launch; do
@@ -3616,7 +2065,7 @@ pass "an expired owner lease stops a self-relaunching source generation"
 HRECREATED="$TMP_ROOT/recreated-owner"; new_home "$HRECREATED"
 fm_test_track_procevent_home "$HRECREATED"
 RECREATED_TRIGGER="$TMP_ROOT/recreated-owner.trigger"
-pe_register "$HRECREATED" lavish recreated-src -- \
+pe_register "$HRECREATED" plain recreated-src -- \
   "$BLOCKER" "$RECREATED_TRIGGER" "recreated payload" >/dev/null
 FM_PROCEVENT_OWNER_LEASE_SECONDS=30 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
   pe "$HRECREATED" reconcile >/dev/null
@@ -3624,7 +2073,7 @@ wait_for "$HRECREATED/state/procevent/recreated-src.runner" \
   || fail "the recreated-path fixture never launched its source"
 RECREATED_RUNNER_PID=$(cat "$HRECREATED/state/procevent/recreated-src.runner")
 mv "$HRECREATED/state" "$TMP_ROOT/recreated-owner-old-state"
-pe_register "$HRECREATED" lavish recreated-src -- \
+pe_register "$HRECREATED" plain recreated-src -- \
   "$BLOCKER" "$RECREATED_TRIGGER" "replacement payload" >/dev/null
 FM_PROCEVENT_OWNER_LEASE_SECONDS=30 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
   pe "$HRECREATED" reconcile >/dev/null
@@ -3638,7 +2087,7 @@ pass "a recreated state path does not preserve the old runner"
 
 HGUARDFAIL="$TMP_ROOT/guard-failure"; new_home "$HGUARDFAIL"
 fm_test_track_procevent_home "$HGUARDFAIL"
-pe_register "$HGUARDFAIL" lavish guard-fail-src -- "$FAST_SOURCE" "$TMP_ROOT/unguarded-launches"
+pe_register "$HGUARDFAIL" plain guard-fail-src -- "$FAST_SOURCE" "$TMP_ROOT/unguarded-launches"
 guard_fail_status=0
 guard_fail_out=$(FM_PROCEVENT_OWNER_LEASE_SECONDS=invalid \
   pe "$HGUARDFAIL" start guard-fail-src 2>&1) || guard_fail_status=$?
@@ -3652,7 +2101,7 @@ pass "a runner fails closed when its owner guard cannot initialize"
 HATTACHED="$TMP_ROOT/attached-owner"; new_home "$HATTACHED"
 fm_test_track_procevent_home "$HATTACHED"
 ATTACHED_TRIGGER="$TMP_ROOT/attached.trigger"
-pe_register "$HATTACHED" lavish attached-src -- "$BLOCKER" "$ATTACHED_TRIGGER" "attached payload"
+pe_register "$HATTACHED" plain attached-src -- "$BLOCKER" "$ATTACHED_TRIGGER" "attached payload"
 FM_PROCEVENT_OWNER_LEASE_SECONDS=1 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
   pe "$HATTACHED" start attached-src > "$TMP_ROOT/attached.out" 2>&1 &
 ATTACHED_START_PID=$!
@@ -3688,7 +2137,7 @@ fi
 exec "$REAL_DATE" "\$@"
 SH
 chmod +x "$CLOCK_BIN/date"
-pe_register "$HCLOCK" lavish lease-clock-src -- \
+pe_register "$HCLOCK" plain lease-clock-src -- \
   "$BLOCKER" "$CLOCK_TRIGGER" "clock payload" >/dev/null
 PATH="$CLOCK_BIN:$PATH" FM_PROCEVENT_OWNER_LEASE_SECONDS=1 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
   pe "$HCLOCK" start lease-clock-src > "$TMP_ROOT/lease-clock.out" 2>&1 &
@@ -3705,7 +2154,7 @@ pass "wall-clock corrections do not alter owner lease age"
 HDETACHED="$TMP_ROOT/detached-attached-owner"; new_home "$HDETACHED"
 fm_test_track_procevent_home "$HDETACHED"
 DETACHED_TRIGGER="$TMP_ROOT/detached-attached.trigger"
-pe_register "$HDETACHED" lavish detached-attached-src -- \
+pe_register "$HDETACHED" plain detached-attached-src -- \
   "$BLOCKER" "$DETACHED_TRIGGER" "detached attached payload"
 FM_PROCEVENT_OWNER_LEASE_SECONDS=1 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 FM_HOME="$HDETACHED" \
   perl -MPOSIX=setsid -e 'setsid() >= 0 or exit 1; exec @ARGV' \
@@ -3743,7 +2192,7 @@ fi
 exec "$REAL_PS" "\$@"
 SH
 chmod +x "$REUSED_GROUP_BIN/ps"
-pe_register "$HREUSED_GROUP" lavish reused-runner-group-src -- \
+pe_register "$HREUSED_GROUP" plain reused-runner-group-src -- \
   "$BLOCKER" "$REUSED_GROUP_TRIGGER" "reused group payload" >/dev/null
 PATH="$REUSED_GROUP_BIN:$PATH" FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-reused-group-proc" \
   FM_PROCEVENT_OWNER_LEASE_SECONDS=30 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
@@ -3873,8 +2322,8 @@ HORPHAN="$TMP_ROOT/orphan-dead-owner"; new_home "$HORPHAN"
 fm_test_track_procevent_home "$HORPHAN"
 HKEEP="$TMP_ROOT/orphan-live-owner"; new_home "$HKEEP"
 fm_test_track_procevent_home "$HKEEP"
-orphan_pe "$HORPHAN" register lavish orphan-src -- "$ORPHAN_STUB" "$TMP_ROOT/orphan-dead" >/dev/null
-orphan_pe "$HKEEP" register lavish keep-src -- "$QUIET_STUB" "$TMP_ROOT/orphan-live" >/dev/null
+orphan_pe "$HORPHAN" register plain orphan-src -- "$ORPHAN_STUB" "$TMP_ROOT/orphan-dead" >/dev/null
+orphan_pe "$HKEEP" register plain keep-src -- "$QUIET_STUB" "$TMP_ROOT/orphan-live" >/dev/null
 orphan_pe "$HORPHAN" reconcile >/dev/null
 orphan_pe "$HKEEP" reconcile >/dev/null
 
@@ -4007,7 +2456,7 @@ retry_pe() {  # <command...>
     FM_HOME="$RETRY_HOME" "$ROOT/bin/fm-procevent.sh" "$@"
 }
 
-retry_pe register lavish retry-src -- "$ORPHAN_STUB" "$TMP_ROOT/stop-retry-marker" >/dev/null
+retry_pe register plain retry-src -- "$ORPHAN_STUB" "$TMP_ROOT/stop-retry-marker" >/dev/null
 retry_pe reconcile >/dev/null
 wait_for "$RETRY_HOME/state/procevent/retry-src.runner" \
   || fail "the retry listener never recorded its runner"
@@ -4080,7 +2529,7 @@ trap '[ -z "${PROOF_RELEASE:-}" ] || touch "$PROOF_RELEASE"; fm_test_cleanup' EX
 for proof_state in absent zombie; do
   HPROOF="$TMP_ROOT/signal-proof-retire-$proof_state"; new_home "$HPROOF"
   PROOF_MARKER="$HPROOF/poll"
-  pe_register "$HPROOF" lavish proof-src -- "$SIGNAL_PROOF_STUB" "$PROOF_MARKER" >/dev/null
+  pe_register "$HPROOF" plain proof-src -- "$SIGNAL_PROOF_STUB" "$PROOF_MARKER" >/dev/null
   PROOF_RELEASE=
   if [ "$proof_state" = zombie ]; then
     PROOF_RELEASE="$HPROOF/reap"
@@ -4155,7 +2604,7 @@ trap fm_test_cleanup EXIT
 
 HPGUARD="$TMP_ROOT/signal-proof-guard"; new_home "$HPGUARD"
 fm_test_track_procevent_home "$HPGUARD"
-orphan_pe "$HPGUARD" register lavish proof-guard-src \
+orphan_pe "$HPGUARD" register plain proof-guard-src \
   -- "$SIGNAL_PROOF_STUB" "$TMP_ROOT/proof-guard" >/dev/null
 orphan_pe "$HPGUARD" reconcile >/dev/null
 # The owner is kept present until the fixture is fully up, because the input
@@ -4291,7 +2740,7 @@ bound_pe() {
     FM_PROCEVENT_OWNER_CHECK_SECONDS="$BOUND_CHECK_SECONDS" \
     FM_HOME="$HBOUND" "$ROOT/bin/fm-procevent.sh" "$@"
 }
-bound_pe register lavish bound-src -- "$QUIET_STUB" "$TMP_ROOT/guard-bound-marker" >/dev/null
+bound_pe register plain bound-src -- "$QUIET_STUB" "$TMP_ROOT/guard-bound-marker" >/dev/null
 bound_pe reconcile >/dev/null
 wait_for "$HBOUND/state/procevent/bound-src.runner" \
   || fail "the bound fixture's listener never recorded its runner"
@@ -4377,7 +2826,7 @@ for interval in 08 010; do
     010) expected_half=5 ;;
   esac
   HINTERVAL="$TMP_ROOT/decimal-interval-$interval"; new_home "$HINTERVAL"
-  pe_register "$HINTERVAL" lavish "interval-$interval" \
+  pe_register "$HINTERVAL" plain "interval-$interval" \
     -- "$QUIET_STUB" "$HINTERVAL/poll" >/dev/null
   PATH="$INTERVAL_BIN:$PATH" INTERVAL_SLEEP_LOG="$HINTERVAL/sleeps" \
     FM_PROCEVENT_OWNER_CHECK_SECONDS="$interval" \
@@ -4440,7 +2889,7 @@ debounce_pe() {
     FM_PROCEVENT_OWNER_CHECK_SECONDS="$DEBOUNCE_CHECK_SECONDS" \
     FM_HOME="$DEBOUNCE_HOME" "$ROOT/bin/fm-procevent.sh" "$@"
 }
-debounce_pe register lavish debounce-src -- "$QUIET_STUB" "$TMP_ROOT/lease-debounce-marker" >/dev/null
+debounce_pe register plain debounce-src -- "$QUIET_STUB" "$TMP_ROOT/lease-debounce-marker" >/dev/null
 debounce_pe reconcile >/dev/null
 wait_for "$DEBOUNCE_HOME/state/procevent/debounce-src.runner" \
   || fail "the debounce fixture's listener never recorded its runner"
@@ -4469,7 +2918,7 @@ pass "one unreadable read does not end a live runner"
 # how a listener that could not be stopped looked identical to one that could.
 
 HPROMPT="$TMP_ROOT/prompt-stop"; new_home "$HPROMPT"
-pe_register "$HPROMPT" lavish prompt-src -- "$QUIET_STUB" "$TMP_ROOT/prompt-stop" >/dev/null
+pe_register "$HPROMPT" plain prompt-src -- "$QUIET_STUB" "$TMP_ROOT/prompt-stop" >/dev/null
 pe "$HPROMPT" start prompt-src >"$TMP_ROOT/prompt-start.log" 2>&1 &
 PROMPT_START_PID=$!
 wait_for "$HPROMPT/state/procevent/prompt-src.runner" \
@@ -4497,7 +2946,7 @@ pass "a runner exits on the ordinary stop signal instead of outliving it"
 # into an answer to it by accident.
 
 HCRASH="$TMP_ROOT/crashed-leader"; new_home "$HCRASH"
-pe_register "$HCRASH" lavish crash-src -- "$QUIET_STUB" "$TMP_ROOT/crash-leader" >/dev/null
+pe_register "$HCRASH" plain crash-src -- "$QUIET_STUB" "$TMP_ROOT/crash-leader" >/dev/null
 pe "$HCRASH" reconcile >/dev/null
 wait_for "$HCRASH/state/procevent/crash-src.runner" \
   || fail "the crash-fixture listener never recorded its runner"
@@ -4523,527 +2972,5 @@ kill -0 -"$CRASH_PID" 2>/dev/null \
 pass "a group whose leader died to something else is still refused, not signalled"
 kill -KILL -"$CRASH_PID" 2>/dev/null || true
 
-# --- arm reports ready only once this registration's listener is running ----
-# The public arm path used to print armed as soon as registration was stored.
-# A listener that has not claimed the source is not ready, so arm waits for the
-# same live-claim or launch-stamp evidence reconcile uses and fails closed when
-# that evidence does not appear within the confirm window.
-READY="$TMP_ROOT/ready-arm"
-mkdir -p "$READY/bin" "$READY/home/state"
-cat > "$READY/bin/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-printf 'started\n' >> "${READY_MARK:?}"
-while [ ! -e "${READY_RELEASE:?}" ]; do sleep 0.02; done
-printf 'session:\n  status: ended\n'
-SH
-chmod +x "$READY/bin/lavish-axi"
-ready_art="$READY/board.html"
-printf '<h1>ready</h1>\n' > "$ready_art"
-lavish_session "$ready_art"
-ready_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ready_art")
-fm_test_track_procevent_home "$READY/home"
-export READY_MARK="$READY/mark" READY_RELEASE="$READY/release"
-: > "$READY_MARK"
-PATH="$READY/bin:$PATH" FM_HOME="$READY/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ready_art" > "$READY/arm.out"
-assert_contains "$(cat "$READY/arm.out")" "armed: $ready_id" "a live listener was not reported ready"
-[ -e "$FM_PROCEVENT_CLAIM_ROOT/$ready_id.claim" ] \
-  || fail "arm reported ready without a listener claim"
-for _ in $(seq 1 50); do
-  grep -q started "$READY_MARK" && break
-  sleep 0.05
-done
-grep -q started "$READY_MARK" || fail "arm reported ready before the listener command ran"
-touch "$READY_RELEASE"
-for _ in $(seq 1 50); do
-  [ -e "$FM_PROCEVENT_CLAIM_ROOT/$ready_id.claim" ] || break
-  sleep 0.05
-done
-PATH="$READY/bin:$PATH" FM_HOME="$READY/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$ready_art" >/dev/null 2>&1 || true
-pass "arm reports ready only after the listener is running"
-
-# Delayed start: the source lock is held so the listener cannot claim, and arm
-# must not print armed until that lock clears and the listener does.
-DELAY="$TMP_ROOT/delay-arm"
-mkdir -p "$DELAY/bin" "$DELAY/home/state"
-cp "$READY/bin/lavish-axi" "$DELAY/bin/lavish-axi"
-delay_art="$DELAY/board.html"
-printf '<h1>delay</h1>\n' > "$delay_art"
-lavish_session "$delay_art"
-delay_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$delay_art")
-fm_test_track_procevent_home "$DELAY/home"
-export READY_MARK="$DELAY/mark" READY_RELEASE="$DELAY/release"
-: > "$READY_MARK"
-delay_ready="$DELAY/lock-ready"
-delay_rel="$DELAY/lock-release"
-hold_source_lock "$delay_id" "$delay_ready" "$delay_rel"
-wait_for "$delay_ready" || fail "delayed-start fixture could not hold the source lock"
-PATH="$DELAY/bin:$PATH" FM_HOME="$DELAY/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$delay_art" > "$DELAY/arm.out" 2>"$DELAY/arm.err" &
-delay_arm=$!
-sleep 0.4
-assert_not_contains "$(cat "$DELAY/arm.out" 2>/dev/null || true)" "armed:" \
-  "arm reported ready while the listener could not start"
-[ ! -e "$FM_PROCEVENT_CLAIM_ROOT/$delay_id.claim" ] \
-  || fail "a listener claimed the source while its lock was held"
-touch "$delay_rel"
-wait "$delay_arm" || fail "arm failed after the delayed listener was allowed to start: $(cat "$DELAY/arm.err")"
-assert_contains "$(cat "$DELAY/arm.out")" "armed: $delay_id" \
-  "arm did not report ready once the delayed listener was running"
-for _ in $(seq 1 50); do
-  grep -q started "$READY_MARK" && break
-  sleep 0.05
-done
-grep -q started "$READY_MARK" || fail "the delayed listener never ran"
-touch "$READY_RELEASE"
-wait "$HOLDER_PID" 2>/dev/null || true
-for _ in $(seq 1 50); do
-  [ -e "$FM_PROCEVENT_CLAIM_ROOT/$delay_id.claim" ] || break
-  sleep 0.05
-done
-PATH="$DELAY/bin:$PATH" FM_HOME="$DELAY/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$delay_art" >/dev/null 2>&1 || true
-pass "arm waits out a delayed listener start before reporting ready"
-
-# A claim path that is a directory can never be owned, so the runner dies before
-# the listener command. Arm must not print ready, and it must remove the
-# registration it just published.
-arm_blocked_claim() {  # <dir> <confirm-seconds>
-  local dir=$1 secs=$2 art id began rc elapsed
-  mkdir -p "$dir/bin" "$dir/home/state"
-  cat > "$dir/bin/lavish-axi" <<'SH'
-#!/bin/sh
-printf started >> "${READY_MARK:?}"
-SH
-  chmod +x "$dir/bin/lavish-axi"
-  art="$dir/board.html"
-  printf '<h1>blocked</h1>\n' > "$art"
-  lavish_session "$art"
-  id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$art")
-  fm_test_track_procevent_home "$dir/home"
-  mkdir -p "$FM_PROCEVENT_CLAIM_ROOT/$id.claim"
-  export READY_MARK="$dir/mark"
-  : > "$READY_MARK"
-  began=$(date +%s)
-  set +e
-  PATH="$dir/bin:$PATH" FM_HOME="$dir/home" FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS="$secs" \
-    "$ROOT/bin/fm-procevent-lavish.sh" arm "$art" > "$dir/arm.out" 2>"$dir/arm.err"
-  rc=$?
-  set -e
-  elapsed=$(( $(date +%s) - began ))
-  [ "$rc" -ne 0 ] || fail "arm reported success when no listener could claim ($dir)"
-  assert_not_contains "$(cat "$dir/arm.out")" "armed:" \
-    "arm printed ready when no listener could claim ($dir)"
-  [ ! -s "$READY_MARK" ] || fail "the listener command ran without a claim ($dir)"
-  # retire refuses a claim it cannot read, and arm must not override it.
-  [ -e "$dir/home/state/procevent/$id.source" ] \
-    || fail "arm removed a registration that retire refused to remove ($dir)"
-  printf '%s\n' "$elapsed" > "$dir/elapsed"
-  rmdir "$FM_PROCEVENT_CLAIM_ROOT/$id.claim" 2>/dev/null || true
-  PATH="$dir/bin:$PATH" FM_HOME="$dir/home" \
-    "$ROOT/bin/fm-procevent-lavish.sh" retire "$art" >/dev/null 2>&1 || true
-}
-
-arm_blocked_claim "$TMP_ROOT/immediate-arm" 1
-pass "arm fails when the listener cannot claim, and leaves the registration retire refused"
-
-arm_blocked_claim "$TMP_ROOT/timeout-arm" 2
-tout_elapsed=$(cat "$TMP_ROOT/timeout-arm/elapsed")
-[ "$tout_elapsed" -ge 2 ] \
-  || fail "arm did not wait out the confirm window (${tout_elapsed}s)"
-pass "arm waits out the confirm window before reporting that the listener is not running"
-
-# Re-arming a firstmate-owned board publishes a new registration while the
-# earlier generation's listener still holds the claim. When that listener still
-# holds it as the confirm window ends, it keeps serving the board, so arm must
-# say so instead of reporting failure, and must never claim this generation is
-# the one listening.
-LIVE="$TMP_ROOT/live-rearm"
-mkdir -p "$LIVE/bin" "$LIVE/home/state"
-cp "$READY/bin/lavish-axi" "$LIVE/bin/lavish-axi"
-live_art="$LIVE/board.html"
-printf '<h1>live</h1>\n' > "$live_art"
-lavish_session "$live_art"
-live_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$live_art")
-fm_test_track_procevent_home "$LIVE/home"
-export READY_MARK="$LIVE/mark" READY_RELEASE="$LIVE/release"
-: > "$READY_MARK"
-PATH="$LIVE/bin:$PATH" FM_HOME="$LIVE/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$live_art" > "$LIVE/arm1.out"
-assert_contains "$(cat "$LIVE/arm1.out")" "armed: $live_id" "the first arm was not reported ready"
-wait_for_lines "$READY_MARK" 1 || fail "the first generation's listener never ran"
-set +e
-PATH="$LIVE/bin:$PATH" FM_HOME="$LIVE/home" FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=1 \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$live_art" > "$LIVE/arm2.out" 2> "$LIVE/arm2.err"
-live_rc=$?
-set -e
-[ "$live_rc" -eq 0 ] \
-  || fail "re-arm over a live earlier listener failed ($live_rc): $(cat "$LIVE/arm2.err")"
-assert_contains "$(cat "$LIVE/arm2.out")" "still-listening: $live_id" \
-  "re-arm did not say the earlier listener is still serving the board"
-assert_contains "$(cat "$LIVE/arm2.out")" "retired and armed again" \
-  "re-arm did not say how the new registration takes effect"
-assert_not_contains "$(cat "$LIVE/arm2.out")" "armed: $live_id" \
-  "re-arm reported ready for a registration whose own listener is not running"
-assert_not_contains "$(cat "$LIVE/arm2.err")" "error:" \
-  "re-arm over a live earlier listener printed an error"
-[ "$(pe "$LIVE/home" list | awk -v id="$live_id" '$1 == id { print $3 }')" = live ] \
-  || fail "re-arm disturbed the live earlier listener"
-sleep 0.3
-[ "$(wc -l < "$READY_MARK" | tr -d ' ')" = 1 ] \
-  || fail "re-arm started a second listener beside the live earlier one"
-touch "$READY_RELEASE"
-PATH="$LIVE/bin:$PATH" FM_HOME="$LIVE/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$live_art" >/dev/null 2>&1 || true
-pass "re-arm over a live earlier listener reports it still serving the board"
-
-# Old compatible Lavish versions keep using their existing poll reply path.
-LEGACY="$TMP_ROOT/legacy-reply"
-mkdir -p "$LEGACY/bin" "$LEGACY/home/state"
-export LEGACY
-cat > "$LEGACY/bin/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-set -eu
-case "${1-}" in
-  --version) printf '0.1.79\n' ;;
-  poll)
-    [ "${3-}" = --agent-reply ] || exit 3
-    printf '%s\n' "$4" > "$LEGACY/reply"
-    printf 'started\n' > "$LEGACY/started"
-    while [ ! -e "$LEGACY/release" ]; do sleep 0.02; done
-    printf 'session:\n  status: feedback\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","next round","","message",""\n'
-    ;;
-  *) exit 2 ;;
-esac
-SH
-chmod +x "$LEGACY/bin/lavish-axi"
-legacy_art="$LEGACY/board.html"
-printf '<h1>legacy reply</h1>\n' > "$legacy_art"
-lavish_session "$legacy_art"
-legacy_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$legacy_art")
-fm_test_track_procevent_home "$LEGACY/home"
-new_task_endpoint "$LEGACY/home" worker-legacy
-printf 'legacy reply body\n' > "$LEGACY/reply-file"
-PATH="$LEGACY/bin:$PATH" FM_HOME="$LEGACY/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$legacy_art" --for worker-legacy \
-  --agent-reply-file "$LEGACY/reply-file" >/dev/null \
-  || fail "the older compatible Lavish reply path did not arm"
-wait_for "$LEGACY/reply" || fail "the older compatible poll never received its staged reply"
-[ "$(cat "$LEGACY/reply")" = 'legacy reply body' ] \
-  || fail "the legacy poll received different reply text"
-touch "$LEGACY/release"
-wait_for "$LEGACY/home/state/procevent-inbox/$legacy_id.1.result" \
-  || fail "the legacy Lavish reply round was not captured"
-pass "older compatible Lavish versions retain the poll-with-reply behavior"
-
-# A failed synchronous reply must leave the worker board unarmed.
-REPLY_FAIL="$TMP_ROOT/reply-fail"
-mkdir -p "$REPLY_FAIL/bin" "$REPLY_FAIL/home/state"
-export REPLY_FAIL
-cat > "$REPLY_FAIL/bin/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-set -eu
-case "${1-}" in
-  --version) printf '0.1.80\n' ;;
-  reply) printf 'simulated reply timeout\n' >&2; exit 1 ;;
-  poll) : > "$REPLY_FAIL/polled"; exit 0 ;;
-  *) exit 2 ;;
-esac
-SH
-chmod +x "$REPLY_FAIL/bin/lavish-axi"
-reply_fail_art="$REPLY_FAIL/board.html"
-printf '<h1>reply failure</h1>\n' > "$reply_fail_art"
-lavish_session "$reply_fail_art"
-reply_fail_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$reply_fail_art")
-fm_test_track_procevent_home "$REPLY_FAIL/home"
-new_task_endpoint "$REPLY_FAIL/home" worker-reply-fail
-printf 'reply that will fail\n' > "$REPLY_FAIL/reply-file"
-reply_fail_rc=0
-reply_fail_out=$(PATH="$REPLY_FAIL/bin:$PATH" FM_HOME="$REPLY_FAIL/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$reply_fail_art" --for worker-reply-fail \
-  --agent-reply-file "$REPLY_FAIL/reply-file" 2>&1) || reply_fail_rc=$?
-[ "$reply_fail_rc" -ne 0 ] || fail "a refused reply let arm report success"
-assert_contains "$reply_fail_out" 'Lavish did not accept the staged reply' \
-  "a refused reply lacked a clear arm diagnostic: $reply_fail_out"
-[ ! -e "$REPLY_FAIL/home/state/procevent/$reply_fail_id.source" ] \
-  || fail "arm registered a board after Lavish refused its reply"
-[ ! -e "$REPLY_FAIL/polled" ] || fail "arm started a listener after Lavish refused its reply"
-pass "a refused synchronous reply fails arm before source registration"
-
-cat > "$REPLY_FAIL/bin/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-set -eu
-case "${1-}" in
-  --version) printf '0.1.80\n' ;;
-  reply) printf '%s\n' "$(cat -- "$4")" >> "$REPLY_FAIL/replies" ;;
-  poll) while [ ! -e "$REPLY_FAIL/release" ]; do sleep 0.02; done; exit 1 ;;
-  *) exit 2 ;;
-esac
-SH
-PATH="$REPLY_FAIL/bin:$PATH" FM_HOME="$REPLY_FAIL/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$reply_fail_art" --for worker-reply-fail \
-  --agent-reply-file "$REPLY_FAIL/reply-file" >/dev/null \
-  || fail "arm was not retryable with the same reply after Lavish refused it"
-[ "$(cat "$REPLY_FAIL/replies")" = 'reply that will fail' ] \
-  || fail "the retried arm did not post the worker's staged reply exactly once"
-pass "a refused synchronous reply leaves the same arm retryable"
-
-# An arm that fails ownership, pending-round, or endpoint eligibility must
-# leave the board untouched: the reply is never posted.
-: > "$REPLY_FAIL/replies"
-printf 'foreign reply\n' > "$REPLY_FAIL/foreign-reply"
-new_task_endpoint "$REPLY_FAIL/home" worker-intruder
-refused_rc=0
-refused_out=$(PATH="$REPLY_FAIL/bin:$PATH" FM_HOME="$REPLY_FAIL/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$reply_fail_art" --for worker-intruder \
-  --agent-reply-file "$REPLY_FAIL/foreign-reply" 2>&1) || refused_rc=$?
-[ "$refused_rc" -ne 0 ] || fail "a non-owner arm with a reply was not refused"
-assert_contains "$refused_out" "owned by task worker-reply-fail" \
-  "the non-owner arm was refused for an unexpected reason: $refused_out"
-refused_rc=0
-refused_out=$(PATH="$REPLY_FAIL/bin:$PATH" FM_HOME="$REPLY_FAIL/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$reply_fail_art" --for worker-reply-fail \
-  --agent-reply-file "$REPLY_FAIL/foreign-reply" 2>&1) || refused_rc=$?
-[ "$refused_rc" -ne 0 ] || fail "an owner re-arm with no waiting round was not refused"
-assert_contains "$refused_out" "no captured round is waiting" \
-  "the roundless re-arm was refused for an unexpected reason: $refused_out"
-unreachable_art="$REPLY_FAIL/unreachable.html"
-printf '<h1>unreachable owner</h1>\n' > "$unreachable_art"
-lavish_session "$unreachable_art"
-refused_rc=0
-refused_out=$(PATH="$REPLY_FAIL/bin:$PATH" FM_HOME="$REPLY_FAIL/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$unreachable_art" --for worker-no-endpoint \
-  --agent-reply-file "$REPLY_FAIL/foreign-reply" 2>&1) || refused_rc=$?
-[ "$refused_rc" -ne 0 ] || fail "an arm for a task with no endpoint was not refused"
-assert_contains "$refused_out" "would reach no endpoint" \
-  "the endpointless arm was refused for an unexpected reason: $refused_out"
-[ ! -s "$REPLY_FAIL/replies" ] || fail "a refused arm posted its reply to the board: $(cat "$REPLY_FAIL/replies")"
-PATH="$REPLY_FAIL/bin:$PATH" FM_HOME="$REPLY_FAIL/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$reply_fail_art" >/dev/null 2>&1 || true
-touch "$REPLY_FAIL/release"
-pass "an arm refused for ownership, round, or endpoint never posts its reply"
-
-# Direct poll callers use the same synchronous reply command on new Lavish builds.
-POLL_REPLY="$TMP_ROOT/poll-reply"
-mkdir -p "$POLL_REPLY/bin"
-export POLL_REPLY
-cat > "$POLL_REPLY/bin/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-set -eu
-case "${1-}" in
-  --version) printf '0.1.80\n' ;;
-  reply)
-    [ "${3-}" = --agent-reply-file ] || exit 2
-    [ "$(cat -- "$4")" = 'direct poll reply' ] || exit 3
-    printf 'reply\n' >> "$POLL_REPLY/order"
-    ;;
-  poll)
-    [ "$#" -eq 2 ] || exit 4
-    printf 'poll\n' >> "$POLL_REPLY/order"
-    printf 'session:\n  status: feedback\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","next round","","message",""\n'
-    ;;
-  *) exit 2 ;;
-esac
-SH
-chmod +x "$POLL_REPLY/bin/lavish-axi"
-poll_reply_art="$POLL_REPLY/board.html"
-printf '<h1>direct poll reply</h1>\n' > "$poll_reply_art"
-lavish_session "$poll_reply_art"
-printf 'direct poll reply\n' > "$POLL_REPLY/reply-file"
-PATH="$POLL_REPLY/bin:$PATH" \
-  "$ROOT/bin/fm-procevent-lavish.sh" poll "$poll_reply_art" \
-  --agent-reply-file "$POLL_REPLY/reply-file" >/dev/null \
-  || fail "direct poll did not complete after synchronously posting its reply"
-[ "$(cat "$POLL_REPLY/order")" = $'reply\npoll' ] \
-  || fail "direct poll did not post the reply before entering the long-poll"
-[ ! -e "$POLL_REPLY/reply-file" ] || fail "direct poll left its accepted staged reply behind"
-pass "direct poll confirms a new-version reply before polling"
-
-# An unreadable Lavish version is not a confirmed older release: arm and a
-# reply-carrying listener fail closed without posting or falling back to poll.
-UNKNOWN="$TMP_ROOT/unknown-version"
-mkdir -p "$UNKNOWN/bin" "$UNKNOWN/home/state"
-export UNKNOWN
-cat > "$UNKNOWN/bin/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-case "${1-}" in
-  --version) exit 1 ;;
-  reply|poll) printf '%s\n' "$*" >> "$UNKNOWN/calls"; exit 0 ;;
-  *) exit 2 ;;
-esac
-SH
-chmod +x "$UNKNOWN/bin/lavish-axi"
-unknown_art="$UNKNOWN/board.html"
-printf '<h1>unknown version</h1>\n' > "$unknown_art"
-lavish_session "$unknown_art"
-unknown_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$unknown_art")
-fm_test_track_procevent_home "$UNKNOWN/home"
-new_task_endpoint "$UNKNOWN/home" worker-unknown
-printf 'reply for an unknown version\n' > "$UNKNOWN/reply-file"
-unknown_rc=0
-unknown_out=$(PATH="$UNKNOWN/bin:$PATH" FM_HOME="$UNKNOWN/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$unknown_art" --for worker-unknown \
-  --agent-reply-file "$UNKNOWN/reply-file" 2>&1) || unknown_rc=$?
-[ "$unknown_rc" -ne 0 ] || fail "arm fell back to a legacy reply when the Lavish version was unknown"
-assert_contains "$unknown_out" 'cannot confirm a supported lavish-axi version' \
-  "an unknown Lavish version lacked a clear arm diagnostic: $unknown_out"
-[ ! -e "$UNKNOWN/home/state/procevent/$unknown_id.source" ] \
-  || fail "arm registered a board while the Lavish version was unknown"
-[ ! -e "$UNKNOWN/calls" ] || fail "arm reached the board with an unknown Lavish version: $(cat "$UNKNOWN/calls")"
-[ "$(cat "$UNKNOWN/reply-file")" = 'reply for an unknown version' ] \
-  || fail "arm consumed the worker's reply while the Lavish version was unknown"
-cp "$UNKNOWN/reply-file" "$UNKNOWN/staged-reply"
-unknown_rc=0
-PATH="$UNKNOWN/bin:$PATH" "$ROOT/bin/fm-procevent-lavish.sh" poll "$unknown_art" \
-  --agent-reply-file "$UNKNOWN/staged-reply" >/dev/null 2>&1 || unknown_rc=$?
-[ "$unknown_rc" -ne 0 ] || fail "a reply-carrying poll proceeded with an unknown Lavish version"
-[ ! -e "$UNKNOWN/calls" ] || fail "a reply-carrying poll reached the board with an unknown Lavish version: $(cat "$UNKNOWN/calls")"
-[ "$(cat "$UNKNOWN/staged-reply")" = 'reply for an unknown version' ] \
-  || fail "a reply-carrying poll consumed its staged reply with an unknown Lavish version"
-pass "an unknown Lavish version fails arm and poll closed, keeping the staged reply"
-
-# A worker re-arms as soon as its round is published, which can land while the
-# earlier generation's runner is still finishing and holding the claim. The
-# Lavish 0.1.80 stand-in records synchronous reply acceptance before its poll.
-DRAIN="$TMP_ROOT/draining-rearm"
-mkdir -p "$DRAIN/bin" "$DRAIN/home/state"
-export DRAIN
-cat > "$DRAIN/bin/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-set -eu
-case "${1-}" in
-  --version) printf '0.1.80\n' ;;
-  reply)
-    [ "${3-}" = --agent-reply-file ] || exit 2
-    printf '%s\n' "$(cat -- "$4")" >> "$DRAIN/replies"
-    printf 'reply\n' >> "$DRAIN/order"
-    ;;
-  poll)
-    printf 'poll\n' >> "$DRAIN/polls"
-    printf 'poll\n' >> "$DRAIN/order"
-    if [ "$(wc -l < "$DRAIN/polls")" -eq 1 ]; then
-      while [ ! -e "$DRAIN/release1" ]; do sleep 0.02; done
-    fi
-    [ "${3-}" != --agent-reply ] || exit 3
-    if [ "$(wc -l < "$DRAIN/polls")" -ge 2 ]; then
-      while [ ! -e "$DRAIN/release2" ]; do sleep 0.02; done
-    fi
-    printf 'session:\n  status: feedback\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","next round","","message",""\n'
-    ;;
-  *) exit 2 ;;
-esac
-SH
-chmod +x "$DRAIN/bin/lavish-axi"
-drain_art="$DRAIN/board.html"
-printf '<h1>drain</h1>\n' > "$drain_art"
-lavish_session "$drain_art"
-drain_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$drain_art")
-fm_test_track_procevent_home "$DRAIN/home"
-new_task_endpoint "$DRAIN/home" worker-drain
-printf 'first drain reply\n' > "$DRAIN/reply1"
-printf 'second drain reply\n' > "$DRAIN/reply2"
-PATH="$DRAIN/bin:$PATH" FM_HOME="$DRAIN/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$drain_art" --for worker-drain \
-  --agent-reply-file "$DRAIN/reply1" >/dev/null \
-  || fail "the first generation of the draining fixture did not arm"
-[ "$(cat "$DRAIN/replies" 2>/dev/null || true)" = "first drain reply" ] \
-  || fail "arm returned before Lavish accepted its staged reply"
-[ "$(head -n 1 "$DRAIN/order")" = reply ] \
-  || fail "arm started the long-poll before Lavish accepted the reply"
-pass "arm posts and confirms the staged reply before reporting listener readiness"
-drain_claim="$FM_PROCEVENT_CLAIM_ROOT/$drain_id.claim"
-cp "$drain_claim" "$DRAIN/generation-one.claim"
-touch "$DRAIN/release1"
-wait_for "$DRAIN/home/state/procevent-inbox/$drain_id.1.result" \
-  || fail "the first generation of the draining fixture never captured its round"
-for _ in $(seq 1 100); do
-  [ -e "$drain_claim" ] || break
-  sleep 0.05
-done
-[ ! -e "$drain_claim" ] || fail "the first generation of the draining fixture never exited"
-# Stand the first generation's claim back up on a live process so the re-arm
-# meets it still held, then release it partway through the confirm window.
-setsid sleep 60 &
-drain_holder=$!
-# Read the identity only once the holder has exec'd sleep: mid-exec its cmdline
-# can read empty, and a pre-exec identity would never match the live holder.
-for _ in $(seq 1 100); do
-  case "$(ps -p "$drain_holder" -o comm= 2>/dev/null)" in *sleep) break ;; esac
-  sleep 0.05
-done
-drain_holder_identity=$(bash -c '. "$1/bin/fm-wake-lib.sh"; fm_pid_identity "$2"' _ "$ROOT" "$drain_holder") \
-  || fail "could not read the draining holder's identity"
-awk -v pid="$drain_holder" -v ident="$drain_holder_identity" \
-  'NR == 2 { print pid; next } NR == 4 { print ident; next } { print }' \
-  "$DRAIN/generation-one.claim" > "$drain_claim"
-chmod 0600 "$drain_claim"
-[ "$(pe "$DRAIN/home" list | awk -v id="$drain_id" '$1 == id { print $3 }')" = task:worker-drain/round-open ] \
-  || fail "fixture invalid: the stood-up first generation is not reported live: $(pe "$DRAIN/home" list)"
-PATH="$DRAIN/bin:$PATH" FM_HOME="$DRAIN/home" FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=5 \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$drain_art" --for worker-drain \
-  --agent-reply-file "$DRAIN/reply2" > "$DRAIN/arm2.out" 2> "$DRAIN/arm2.err" &
-drain_arm=$!
-sleep 1
-kill -KILL "$drain_holder" 2>/dev/null || true
-wait "$drain_holder" 2>/dev/null || true
-wait "$drain_arm" \
-  || fail "re-arm failed after the earlier claim was released: $(cat "$DRAIN/arm2.err")"
-assert_contains "$(cat "$DRAIN/arm2.out")" "armed: $drain_id" \
-  "re-arm did not launch the new generation once the earlier claim was released"
-assert_not_contains "$(cat "$DRAIN/arm2.out")" "still-listening" \
-  "re-arm reported the released earlier listener as still serving the board"
-wait_for_lines "$DRAIN/replies" 2 \
-  || fail "the new generation never handed the board the worker's reply"
-[ "$(grep -c 'second drain reply' "$DRAIN/replies" 2>/dev/null || true)" = 1 ] \
-  || fail "the new generation did not hand the board its own reply exactly once"
-touch "$DRAIN/release2"
-wait_for "$DRAIN/home/state/procevent-inbox/$drain_id.2.result" \
-  || fail "the new generation never captured its round"
-pass "re-arm launches the new generation once a draining earlier claim is released"
-
-# A stale claim whose process group is still alive may still have its polling
-# child on the board's session. Reconcile refuses to launch beside it, and arm
-# must apply the same rule instead of adding a second destructive poller.
-UNDISP="$TMP_ROOT/undisplaceable-arm"
-mkdir -p "$UNDISP/bin" "$UNDISP/home/state"
-cp "$READY/bin/lavish-axi" "$UNDISP/bin/lavish-axi"
-undisp_art="$UNDISP/board.html"
-printf '<h1>undisplaceable</h1>\n' > "$undisp_art"
-lavish_session "$undisp_art"
-undisp_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$undisp_art")
-fm_test_track_procevent_home "$UNDISP/home"
-export READY_MARK="$UNDISP/mark" READY_RELEASE="$UNDISP/release"
-: > "$READY_MARK"
-PATH="$UNDISP/bin:$PATH" FM_HOME="$UNDISP/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$undisp_art" >/dev/null
-wait_for_lines "$READY_MARK" 1 || fail "the undisplaceable fixture's listener never ran"
-undisp_claim="$FM_PROCEVENT_CLAIM_ROOT/$undisp_id.claim"
-undisp_identity=$(sed -n '4p' "$undisp_claim")
-awk 'NR == 4 { print "different-live-process-identity"; next } { print }' \
-  "$undisp_claim" > "$undisp_claim.tmp" && mv "$undisp_claim.tmp" "$undisp_claim"
-chmod 0600 "$undisp_claim"
-[ "$(pe "$UNDISP/home" list | awk -v id="$undisp_id" '$1 == id { print $3 }')" = orphaned ] \
-  || fail "fixture invalid: the reused-pid claim is not reported orphaned"
-set +e
-PATH="$UNDISP/bin:$PATH" FM_HOME="$UNDISP/home" FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=1 \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$undisp_art" > "$UNDISP/arm2.out" 2>/dev/null
-undisp_rc=$?
-set -e
-sleep 0.5
-[ "$(wc -l < "$READY_MARK" | tr -d ' ')" = 1 ] \
-  || fail "arm started a second listener beside a stale claim's live process group"
-[ "$undisp_rc" -ne 0 ] || fail "arm reported success beside an undisplaceable claim"
-assert_not_contains "$(cat "$UNDISP/arm2.out")" "armed: $undisp_id" \
-  "arm reported ready beside an undisplaceable claim"
-[ -e "$UNDISP/home/state/procevent/$undisp_id.source" ] \
-  || fail "arm retired a source whose earlier listener may still be polling"
-awk -v v="$undisp_identity" 'NR == 4 { print v; next } { print }' \
-  "$undisp_claim" > "$undisp_claim.tmp" && mv "$undisp_claim.tmp" "$undisp_claim"
-chmod 0600 "$undisp_claim"
-touch "$READY_RELEASE"
-PATH="$UNDISP/bin:$PATH" FM_HOME="$UNDISP/home" \
-  "$ROOT/bin/fm-procevent-lavish.sh" retire "$undisp_art" >/dev/null 2>&1 || true
-pass "arm does not launch beside a stale claim whose process group is alive"
 
 printf '\nall procevent tests passed\n'

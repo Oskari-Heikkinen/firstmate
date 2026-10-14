@@ -450,7 +450,7 @@ They also prove that a legacy or handoff-phase watcher marker from an absent rep
 - Interrupted handling replay.
 - Generation-bound acknowledgement.
 - A persistent live successor after recovery.
-- An idle live Lavish source that stays quiet until its real result wakes promptly.
+- An idle live process-event source that stays quiet until its real result wakes promptly.
 - An append that reopens an announced empty recovery.
 - A watcher close inside the handling window that must leave the printed acknowledgement valid.
 - A re-arm whose recovery cycle is slowed after confirmation and must still surface rather than read as a watcher that stayed live.

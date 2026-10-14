@@ -805,7 +805,7 @@ EOF
 # Every check the main session alone can act on stays on main, even when an
 # unrelated task-local row in the same queue is perfectly branch-eligible. The
 # no-op checks the branch never sees are suppressed at their source instead
-# (bin/fm-procevent-lavish.sh "silent"), so what remains under a `check:`
+# (each process-event adapter's `silent` verdict), so what remains under a `check:`
 # trigger is exactly the main-only set, and each named class is driven here
 # through the real dispatcher.
 test_pi_main_only_check_classes_stay_on_main() {
@@ -898,7 +898,7 @@ EOF
 relay-mention|check: x-mention 1234567890
 credential-failure|check: gh auth check failed; re-authenticate before dispatch
 merge-confirmation|check: task-a.check.sh: PR merged
-real-board-answer|check: procevent lavish lavish-abcdef0123456789 1
+real-source-result|check: procevent observe observe-abcdef0123456789 1
 CLASSES
   pass "every main-only check class still reaches main, never the supervision branch"
 }
