@@ -138,6 +138,7 @@ full tests/fm-quota-choose.test.sh
 full tests/fm-reboot-relaunch.test.sh
 full tests/fm-rereview-brief.test.sh
 full tests/fm-review-diff.test.sh
+full tests/fm-schedule.test.sh
 full tests/fm-secondmate-busy-contract-live-e2e.test.sh
 full tests/fm-secondmate-harness.test.sh
 full tests/fm-secondmate-liveness.test.sh
