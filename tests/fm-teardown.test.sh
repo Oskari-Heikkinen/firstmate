@@ -3317,7 +3317,7 @@ SH
       ;;
   esac
   rc=0
-  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_TEARDOWN_GUARD_DONE=1 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
     FM_CONFIG_OVERRIDE="$case_dir/config" FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
     FM_FAKE_HERDR_SESSION_LIST_GARBAGE="$([ "$mode" = unresolvable-lock ] && printf 1 || printf 0)" \
     PATH="$case_dir/fakebin:$PATH" \
@@ -5291,23 +5291,35 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
-# Copy the public teardown script tree, then drop or blank one required file.
-# Symlinks keep the copy cheap; an unreadable case replaces one link with a
-# real mode-000 file so the probe is of the file itself.
-prepare_teardown_source_copy() {  # <case-dir>
-  local case_dir=$1 f base dest="$1/test-root/bin" s
+# A symlink mirror of the public teardown script tree, built once before the
+# concurrent cases start: linking each of bin/'s couple of hundred entries is
+# hundreds of process starts, so each case copies the mirror's links in one
+# step instead and then edits only its own copy.
+TEARDOWN_SOURCE_TEMPLATE="$TMP_ROOT/.teardown-source-template"
+build_teardown_source_template() {  # <dest>
+  local dest=$1 f base s
   mkdir -p "$dest/backends"
   for f in "$ROOT"/bin/*; do
-    base=$(basename "$f")
+    base=${f##*/}
     if [ -d "$f" ]; then
       mkdir -p "$dest/$base"
       for s in "$f"/*; do
-        ln -s "$s" "$dest/$base/$(basename "$s")"
+        ln -s "$s" "$dest/$base/${s##*/}"
       done
     else
       ln -s "$f" "$dest/$base"
     fi
   done
+}
+build_teardown_source_template "$TEARDOWN_SOURCE_TEMPLATE/bin"
+
+# Copy the public teardown script tree, then drop or blank one required file.
+# Symlinks keep the copy cheap; an unreadable case replaces one link with a
+# real mode-000 file so the probe is of the file itself.
+prepare_teardown_source_copy() {  # <case-dir>
+  local case_dir=$1
+  mkdir -p "$case_dir/test-root"
+  cp -a "$TEARDOWN_SOURCE_TEMPLATE/bin" "$case_dir/test-root/bin"
   printf 'manual\n' > "$case_dir/config/backlog-backend"
   cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
@@ -5322,6 +5334,7 @@ SH
 run_copied_teardown() {  # <case-dir> [args...]
   local case_dir=$1
   shift
+  FM_TEARDOWN_GUARD_DONE=1 \
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_DATA_OVERRIDE="$case_dir/data" \
@@ -5453,6 +5466,7 @@ test_retained_sources_still_reach_the_ordinary_refusal() {
   case_dir=$(make_case retained-sources)
   prepare_teardown_source_copy "$case_dir"
   rc=0
+  FM_TEARDOWN_GUARD_DONE=1 \
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_DATA_OVERRIDE="$case_dir/data" \
@@ -5709,7 +5723,7 @@ test_own_task_temp_folder_is_removed_and_nothing_else() {
     "project=$case_dir/project" "kind=ship" "mode=no-mistakes" \
     "spawn_gen=teardown-test-$id" "tasktmp=$own"
   rc=0
-  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_TEARDOWN_GUARD_DONE=1 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
     FM_CONFIG_OVERRIDE="$case_dir/config" PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" "$id" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   if [ -e "$own" ]; then rm -rf "$own"; fail "evidence-own-tmp: the task's own temp folder survived cleanup (rc=$rc): $(cat "$case_dir/stderr")"; fi
@@ -5744,7 +5758,7 @@ test_symlinked_own_task_temp_folder_is_left_in_place() {
     "project=$case_dir/project" "kind=ship" "mode=no-mistakes" \
     "spawn_gen=teardown-test-$id" "tasktmp=$own"
   rc=0
-  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_TEARDOWN_GUARD_DONE=1 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
     FM_CONFIG_OVERRIDE="$case_dir/config" PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" "$id" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   if [ ! -L "$own" ]; then fail "cleanup removed the symlinked task temp path"; fi
