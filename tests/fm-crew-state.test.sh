@@ -59,15 +59,39 @@ fm_git_identity fmtest fmtest@example.invalid
 # Stamp origin/main at the current HEAD so a later ship done: is not refused
 # solely for being a fixture with no remote-tracking refs; tests that need an
 # unpreserved named head point those refs at a different commit.
+#
+# Every case gets its own copy, because many cases commit, reset, or rename
+# branches in it. The init commit and origin/main stamp are built once into a
+# read-only template (build_repo_template, before the case pool); each copy
+# then points HEAD at a fresh <branch> ref on that commit, which is exactly the
+# ref state `git checkout -b <branch>` leaves, without a git process per case.
+REPO_TEMPLATE="$TMP_ROOT/.repo-template"
+REPO_TEMPLATE_HEAD=
+
+build_repo_template() {
+  mkdir -p "$REPO_TEMPLATE"
+  git -C "$REPO_TEMPLATE" init -q
+  git -C "$REPO_TEMPLATE" commit -q --allow-empty -m init
+  REPO_TEMPLATE_HEAD=$(git -C "$REPO_TEMPLATE" rev-parse HEAD)
+  git -C "$REPO_TEMPLATE" update-ref refs/remotes/origin/main "$REPO_TEMPLATE_HEAD"
+  [ -n "$REPO_TEMPLATE_HEAD" ] || fail "could not build the template repository"
+  # make_repo_on_branch writes loose refs, so the copy must use the files backend.
+  [ -d "$REPO_TEMPLATE/.git/refs/heads" ] && [ ! -e "$REPO_TEMPLATE/.git/reftable" ] \
+    || fail "the template repository does not use the files ref backend"
+  # Nearly every fixture branch is fm/<name>; its ref directory comes with the copy.
+  mkdir -p "$REPO_TEMPLATE/.git/refs/heads/fm"
+}
+
 make_repo_on_branch() {  # <dir> <branch>
-  local dir=$1 branch=$2
-  mkdir -p "$dir"
-  git -C "$dir" init -q
-  git -C "$dir" commit -q --allow-empty -m init
-  git -C "$dir" checkout -q -b "$branch"
-  git -C "$dir" update-ref refs/remotes/origin/main "$(git -C "$dir" rev-parse HEAD)"
+  local dir=$1 branch=$2 refdir
+  cp -R "$REPO_TEMPLATE/." "$dir" || fail "could not copy the template repository to $dir"
+  refdir="$dir/.git/refs/heads/$branch"
+  refdir=${refdir%/*}
+  [ -d "$refdir" ] || mkdir -p "$refdir"
+  printf '%s\n' "$REPO_TEMPLATE_HEAD" > "$dir/.git/refs/heads/$branch"
+  printf 'ref: refs/heads/%s\n' "$branch" > "$dir/.git/HEAD"
   # Real worktree HEAD for run head-binding (fixtures read FM_FAKE_RUN_HEAD).
-  FM_FAKE_RUN_HEAD=$(git -C "$dir" rev-parse HEAD)
+  FM_FAKE_RUN_HEAD=$REPO_TEMPLATE_HEAD
   export FM_FAKE_RUN_HEAD
 }
 
@@ -79,8 +103,24 @@ make_repo_on_branch() {  # <dir> <branch>
 # the real CLI), and the actual top-level run-listing command, `no-mistakes
 # runs --limit N`, which is plain text - no run id, no quoting - serving
 # FM_FAKE_RUNS_LIST verbatim.
+# The fakes carry no per-case content, so they are written once into
+# FAKEBIN_TEMPLATE (build_fakebin_template, before the case pool) and
+# make_fakebin copies them as regular files: a case that replaces one of them
+# (a hanging no-mistakes or python3, a failing herdr) edits only its own copy.
+FAKEBIN_TEMPLATE="$TMP_ROOT/.fakebin-template"
+
 make_fakebin() {  # <dir> -> echoes fakebin path
-  local dir=$1 fb="$1/fakebin"
+  local fb="$1/fakebin"
+  if [ -d "$fb" ]; then
+    cp "$FAKEBIN_TEMPLATE"/* "$fb/" || fail "could not copy the fake binaries to $fb"
+  else
+    cp -R "$FAKEBIN_TEMPLATE" "$fb" || fail "could not copy the fake binaries to $fb"
+  fi
+  printf '%s\n' "$fb"
+}
+
+build_fakebin_template() {
+  local fb=$FAKEBIN_TEMPLATE
   mkdir -p "$fb"
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
@@ -271,7 +311,7 @@ case "${1:-}" in
       process-info)
         # The process-level view a registration is verified against (#4115):
         # `agent` puts a live claude in the foreground, `shell` a bare zsh whose
-        # pid is the test script itself (a real, long-lived process with no
+        # pid is the case's own test shell (a real, long-lived process with no
         # harness descendant, so the adapter's real process-table walk finds
         # it), and anything else answers nothing (unreadable).
         pane=""; args=("$@"); for ((i=0; i<${#args[@]}; i++)); do [ "${args[$i]}" = --pane ] && pane=${args[$((i+1))]:-}; done
@@ -296,7 +336,6 @@ esac
 exit 0
 SH
   chmod +x "$fb/no-mistakes" "$fb/gh" "$fb/gh-axi" "$fb/glab" "$fb/tea" "$fb/gerrit-axi" "$fb/tmux" "$fb/herdr"
-  printf '%s\n' "$fb"
 }
 
 make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
@@ -352,7 +391,10 @@ reset_fakes() {
   FM_FAKE_HERDR_HUSK=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_HERDR_PROCESS=agent
-  FM_FAKE_HERDR_SHELL_PID=$$
+  # The shell pid is this case's own shell (the pooled case's subshell, or the
+  # script itself where BASHPID is unavailable): a real, live process whose
+  # descendants are only this case's processes, never another pooled case's.
+  FM_FAKE_HERDR_SHELL_PID=${BASHPID:-$$}
   FM_FAKE_CI_LOGS=""
   FM_FAKE_DAEMON_DOWN=0
   FM_FAKE_DAEMON_TIMEOUT=0
@@ -1782,86 +1824,98 @@ test_cancelled_delivery_and_skipped_rebase() {
   [ "$failures" -eq 0 ] || fail "$failures cancelled delivery regressions"
 }
 
-test_terminal_green_delivery_disposition() {
-  local route provider disposition failures=0
-  for route in failed-outcome failed-status cancelled-outcome cancelled-status; do
-    for provider in github gitlab gerrit; do
-      for disposition in open merged closed unreadable skipped no-identity; do
-        (
-          reset_fakes
-          local d out url expected
-          d=$(new_case "disposition-$route-$provider-$disposition")
-          make_repo_on_branch "$d/wt" fm/disposition
-          make_fakebin "$d" >/dev/null
-          fm_write_meta "$d/state/delivery.meta" "window=fm:fm-delivery" "worktree=$d/wt" "kind=ship"
-          FM_FAKE_AXI_STATUS="$(run_failed_ci_orphan fm/disposition)"
-          case "$route" in
-            cancelled-*) FM_FAKE_AXI_STATUS=${FM_FAKE_AXI_STATUS//failed/cancelled} ;;
-          esac
-          case "$route" in
-            *-status) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed '/^outcome:/d') ;;
-          esac
-          case "$provider" in
-            github) url=https://github.com/o/r/pull/203 ;;
-            gitlab) url=https://gitlab.com/o/r/-/merge_requests/203 ;;
-            gerrit) url=https://review.example.com/c/r/+/203 ;;
-          esac
-          FM_FAKE_AXI_STATUS=${FM_FAKE_AXI_STATUS//https:\/\/github.com\/o\/r\/pull\/203/$url}
-          FM_FAKE_PR_STATE=OPEN
-          FM_FAKE_PR_MERGED=false
-          FM_FAKE_PR_STATE_AXI=open
-          FM_FAKE_GLAB_STATE=opened
-          FM_FAKE_GERRIT_STATUS=NEW
-          case "$disposition" in
-            no-identity) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed '/^[[:space:]]*pr:/d') ;;
-            merged)
-              FM_FAKE_PR_STATE=MERGED
-              FM_FAKE_PR_MERGED=true
-              FM_FAKE_PR_STATE_AXI=merged
-              FM_FAKE_GLAB_STATE=merged
-              FM_FAKE_GERRIT_STATUS=MERGED ;;
-            closed)
-              FM_FAKE_PR_STATE=CLOSED
-              FM_FAKE_PR_STATE_AXI=closed
-              FM_FAKE_GLAB_STATE=closed
-              FM_FAKE_GERRIT_STATUS=ABANDONED ;;
-            unreadable)
-              FM_FAKE_PR_READ_FAIL=1
-              FM_FAKE_GLAB_READ_FAIL=1
-              FM_FAKE_GERRIT_READ_FAIL=1 ;;
-          esac
-          FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
-          if [ "$disposition" = skipped ]; then
-            out=$(FM_CREW_STATE_NO_FORGE=1 FM_HOME="$d" run_crew_state "$d" delivery)
+# One route/provider row of the disposition table: every disposition for it.
+# The table is split into one pooled case per row (the wrappers below) so the
+# 72 readings spread across the case pool instead of running as one case.
+terminal_green_delivery_disposition_row() {  # <route> <provider>
+  local route=$1 provider=$2 disposition failures=0
+  for disposition in open merged closed unreadable skipped no-identity; do
+    (
+      reset_fakes
+      local d out url expected
+      d=$(new_case "disposition-$route-$provider-$disposition")
+      make_repo_on_branch "$d/wt" fm/disposition
+      make_fakebin "$d" >/dev/null
+      fm_write_meta "$d/state/delivery.meta" "window=fm:fm-delivery" "worktree=$d/wt" "kind=ship"
+      FM_FAKE_AXI_STATUS="$(run_failed_ci_orphan fm/disposition)"
+      case "$route" in
+        cancelled-*) FM_FAKE_AXI_STATUS=${FM_FAKE_AXI_STATUS//failed/cancelled} ;;
+      esac
+      case "$route" in
+        *-status) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed '/^outcome:/d') ;;
+      esac
+      case "$provider" in
+        github) url=https://github.com/o/r/pull/203 ;;
+        gitlab) url=https://gitlab.com/o/r/-/merge_requests/203 ;;
+        gerrit) url=https://review.example.com/c/r/+/203 ;;
+      esac
+      FM_FAKE_AXI_STATUS=${FM_FAKE_AXI_STATUS//https:\/\/github.com\/o\/r\/pull\/203/$url}
+      FM_FAKE_PR_STATE=OPEN
+      FM_FAKE_PR_MERGED=false
+      FM_FAKE_PR_STATE_AXI=open
+      FM_FAKE_GLAB_STATE=opened
+      FM_FAKE_GERRIT_STATUS=NEW
+      case "$disposition" in
+        no-identity) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed '/^[[:space:]]*pr:/d') ;;
+        merged)
+          FM_FAKE_PR_STATE=MERGED
+          FM_FAKE_PR_MERGED=true
+          FM_FAKE_PR_STATE_AXI=merged
+          FM_FAKE_GLAB_STATE=merged
+          FM_FAKE_GERRIT_STATUS=MERGED ;;
+        closed)
+          FM_FAKE_PR_STATE=CLOSED
+          FM_FAKE_PR_STATE_AXI=closed
+          FM_FAKE_GLAB_STATE=closed
+          FM_FAKE_GERRIT_STATUS=ABANDONED ;;
+        unreadable)
+          FM_FAKE_PR_READ_FAIL=1
+          FM_FAKE_GLAB_READ_FAIL=1
+          FM_FAKE_GERRIT_READ_FAIL=1 ;;
+      esac
+      FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+      if [ "$disposition" = skipped ]; then
+        out=$(FM_CREW_STATE_NO_FORGE=1 FM_HOME="$d" run_crew_state "$d" delivery)
+      else
+        out=$(FM_HOME="$d" run_crew_state "$d" delivery)
+      fi
+      case "$disposition" in
+        open|merged)
+          assert_contains "$out" "state: done" "$route/$provider/$disposition: delivered work: $out"
+          if [ "$disposition" = open ]; then
+            assert_contains "$out" "held for merge" "open delivery awaits merge"
           else
-            out=$(FM_HOME="$d" run_crew_state "$d" delivery)
-          fi
-          case "$disposition" in
-            open|merged)
-              assert_contains "$out" "state: done" "$route/$provider/$disposition: delivered work: $out"
-              if [ "$disposition" = open ]; then
-                assert_contains "$out" "held for merge" "open delivery awaits merge"
-              else
-                assert_contains "$out" "PR merged" "merged delivery has current evidence"
-                assert_not_contains "$out" "held for merge" "merged delivery is no longer held"
-              fi ;;
-            *)
-              expected=failed
-              case "$route" in
-                cancelled-*) expected=unknown
-                  assert_contains "$out" "run cancelled: no verdict" "cancellation retains no verdict" ;;
-              esac
-              assert_contains "$out" "state: $expected" "$route/$provider/$disposition: no unsupported delivery: $out"
-              assert_not_contains "$out" "held for merge" "unproven open delivery cannot await merge"
-              assert_not_contains "$out" "PR merged" "unproven merge cannot be claimed" ;;
+            assert_contains "$out" "PR merged" "merged delivery has current evidence"
+            assert_not_contains "$out" "held for merge" "merged delivery is no longer held"
+          fi ;;
+        *)
+          expected=failed
+          case "$route" in
+            cancelled-*) expected=unknown
+              assert_contains "$out" "run cancelled: no verdict" "cancellation retains no verdict" ;;
           esac
-          pass "$route/$provider/$disposition: terminal delivery uses current disposition"
-        ) || failures=$((failures + 1))
-      done
-    done
+          assert_contains "$out" "state: $expected" "$route/$provider/$disposition: no unsupported delivery: $out"
+          assert_not_contains "$out" "held for merge" "unproven open delivery cannot await merge"
+          assert_not_contains "$out" "PR merged" "unproven merge cannot be claimed" ;;
+      esac
+      pass "$route/$provider/$disposition: terminal delivery uses current disposition"
+    ) || failures=$((failures + 1))
   done
   [ "$failures" -eq 0 ] || fail "$failures terminal delivery disposition regressions"
 }
+
+test_terminal_green_delivery_disposition_failed_outcome_github() { terminal_green_delivery_disposition_row failed-outcome github; }
+test_terminal_green_delivery_disposition_failed_outcome_gitlab() { terminal_green_delivery_disposition_row failed-outcome gitlab; }
+test_terminal_green_delivery_disposition_failed_outcome_gerrit() { terminal_green_delivery_disposition_row failed-outcome gerrit; }
+test_terminal_green_delivery_disposition_failed_status_github() { terminal_green_delivery_disposition_row failed-status github; }
+test_terminal_green_delivery_disposition_failed_status_gitlab() { terminal_green_delivery_disposition_row failed-status gitlab; }
+test_terminal_green_delivery_disposition_failed_status_gerrit() { terminal_green_delivery_disposition_row failed-status gerrit; }
+test_terminal_green_delivery_disposition_cancelled_outcome_github() { terminal_green_delivery_disposition_row cancelled-outcome github; }
+test_terminal_green_delivery_disposition_cancelled_outcome_gitlab() { terminal_green_delivery_disposition_row cancelled-outcome gitlab; }
+test_terminal_green_delivery_disposition_cancelled_outcome_gerrit() { terminal_green_delivery_disposition_row cancelled-outcome gerrit; }
+test_terminal_green_delivery_disposition_cancelled_status_github() { terminal_green_delivery_disposition_row cancelled-status github; }
+test_terminal_green_delivery_disposition_cancelled_status_gitlab() { terminal_green_delivery_disposition_row cancelled-status gitlab; }
+test_terminal_green_delivery_disposition_cancelled_status_gerrit() { terminal_green_delivery_disposition_row cancelled-status gerrit; }
 
 # Cancellation carries no verdict without the positive delivery safeguard.
 # Exercise both detailed routes, selected-run attribution, and the coarse ledger.
@@ -5588,195 +5642,211 @@ test_captured_completed_history() {
   pass 'captured completed status yields to synthetic subsequent development'
 }
 
-test_captured_axi_status_shapes
-test_captured_inventory_replay
-test_captured_authority_transition
-test_captured_completed_history
-cancellation_failures=0
-for cancellation_test in test_captured_cancelled_review_has_no_verdict \
-  test_terminal_green_delivery_disposition \
+# Every case builds its own case directory, repository copy, fakebin copy, and
+# task id, and sets its fake-driver variables inside its own subshell, so no
+# case depends on another or on their order; they run through fm_run_case_pool
+# (tests/lib.sh), longest first. FM_CREW_STATE_CASE_JOBS overrides the
+# concurrency (1 runs them serially).
+build_repo_template
+build_fakebin_template
+reset_fakes
+case_jobs=$(fm_case_pool_jobs "${FM_CREW_STATE_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_terminal_green_delivery_disposition_failed_outcome_github \
+  test_terminal_green_delivery_disposition_failed_outcome_gitlab \
+  test_terminal_green_delivery_disposition_failed_outcome_gerrit \
+  test_terminal_green_delivery_disposition_failed_status_github \
+  test_terminal_green_delivery_disposition_failed_status_gitlab \
+  test_terminal_green_delivery_disposition_failed_status_gerrit \
+  test_terminal_green_delivery_disposition_cancelled_outcome_github \
+  test_terminal_green_delivery_disposition_cancelled_outcome_gitlab \
+  test_terminal_green_delivery_disposition_cancelled_outcome_gerrit \
+  test_terminal_green_delivery_disposition_cancelled_status_github \
+  test_terminal_green_delivery_disposition_cancelled_status_gitlab \
+  test_terminal_green_delivery_disposition_cancelled_status_gerrit \
   test_cancelled_without_delivery_has_no_verdict \
+  test_unverifiable_run_selection_reports_unknown \
+  test_capped_inventory_failures_report_unknown \
+  test_cancelled_delivery_and_skipped_rebase \
   test_cancelled_fleet_inventory_is_unverified_not_contradictory \
-  test_cancelled_delivery_and_skipped_rebase; do
-  ("$cancellation_test") || cancellation_failures=$((cancellation_failures + 1))
-done
-[ "$cancellation_failures" -eq 0 ] || fail "$cancellation_failures cancellation test groups failed"
-
-test_active_run_is_authoritative
-test_stale_needs_decision_superseded
-test_stale_blocked_superseded
-test_daemon_claim_over_live_run_reads_run_alive
-test_socket_refusal_over_stale_fixing_run_reports_blocked
-test_socket_refusal_over_terminal_run_reports_blocked
-test_socket_refusal_override_expires_when_the_crew_moves_on
-test_ordinary_blocked_over_live_run_keeps_plain_superseded
-test_genuine_daemon_down_reports_blocked
-test_secondmate_open_block_survives_unrelated_append
-test_newest_open_decision_supplies_the_reported_detail
-test_single_owner_terminal_declaration_supersedes_stale_decision
-test_latest_status_preserves_legacy_completions
-test_latest_status_subshell_work_does_not_grow_with_history
-test_genuine_parked_not_superseded
-test_parked_human_decision_comes_from_the_action_column
-test_scalar_gate_parked_not_superseded
-test_gate_block_parked_not_superseded
-test_ci_ready_done_log_beats_monitoring_run
-test_ci_monitoring_checks_green_surfaces_done
-test_top_level_ci_checks_green_surfaces_done
-test_ci_monitoring_no_checks_terminal_surfaces_done
-test_ci_monitoring_green_then_rearm_stays_green
-test_ci_monitoring_green_before_log_tail_stays_green
-test_ci_monitoring_no_checks_yet_stays_working
-test_ci_monitoring_still_waiting_stays_working
-test_ci_monitoring_green_then_new_issue_stays_working
-test_ci_ready_done_log_relapse_stays_working
-test_ci_fixing_after_green_stays_working
-test_top_level_fixing_ci_running_after_green_stays_working
-test_top_level_fixing_done_log_stays_working
-test_terminal_passed
-test_terminal_passed_with_override
-test_terminal_passed_with_skips
-test_terminal_passed_uses_matching_retirement_receipt_without_forge
-test_terminal_passed_no_forge_switch_skips_read_but_keeps_receipt
-test_terminal_passed_with_open_pr_does_not_claim_merged
-test_terminal_passed_run_pr_overrides_stale_metadata
-test_terminal_passed_without_readable_pr_identity_reports_unknown
-test_terminal_passed_with_open_gitlab_mr_does_not_claim_merged
-test_terminal_passed_with_forgejo_pull_reports_its_state
-test_terminal_passed_with_merged_gitlab_mr_reports_merged
-test_terminal_passed_with_failed_gitlab_read_reports_unknown
-test_terminal_passed_with_open_gerrit_change_does_not_claim_merged
-test_terminal_passed_with_merged_gerrit_change_reports_merged
-test_terminal_passed_with_unreadable_gerrit_change_reports_unknown
-test_terminal_failed
-test_terminal_failed_ci_orphan_after_green_reads_done
-test_terminal_failed_ci_orphan_status_only_reads_done
-test_terminal_failed_ci_genuine_red_stays_failed
-test_terminal_failed_ci_orphan_second_failed_step_stays_failed
-test_cross_branch_attribution_via_runs_list
-test_coarse_socket_refusal_reports_blocked
-test_coarse_failed_ledger_with_daemon_down_reports_unknown
-test_cross_branch_attribution_picks_most_recent_row
-test_terminal_run_keeps_newer_failure_over_live_sibling
-test_runs_list_newer_failure_outranks_older_live_row
-test_unfetched_older_live_sibling_does_not_hide_failure
-test_only_terminal_rows_keep_newest_first_precedence
-test_unknown_status_row_keeps_newest_first_precedence
-test_terminal_run_without_live_sibling_is_unchanged
-test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
-test_other_branch_run_ignored
-test_unpushed_ship_done_is_blocked
-test_direct_push_done_reports_landing
-test_merged_pr_reads_done_under_captured_meta
-test_no_mistakes_prevalidation_done_stays_done
-test_moved_remote_branch_without_named_head_is_blocked
-test_no_run_busy_pane
-test_no_run_launch_prompt_parked_is_not_working
-test_no_run_footer_text_alone_is_not_working
-test_no_run_grok_uses_isolated_fallback
-test_no_run_herdr_unknown_uses_backend_capture
-test_no_run_herdr_cli_failure_reads_unreachable_not_gone
-test_no_run_herdr_alive_with_failed_read_stays_live
-test_no_run_herdr_husk_dead_still_reads_gone
-test_no_run_herdr_idle_agent_status_outranked_by_record
-test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
-test_no_run_idle_pane_uses_log
-test_no_run_idle_pane_uses_keyed_log
-test_no_run_idle_pane_paused
-test_no_run_idle_pane_custom_paused_verb
-test_no_run_idle_secondmate_resolved_event_not_state
-test_dead_window_ignores_stale_status_log
-test_no_run_tmux_unreadable_reads_unreachable_not_gone
-test_dead_window_still_reports_terminal_run_step
-test_dead_window_still_reports_active_run_step
-test_no_timeout_uses_perl_bound
-test_scout_skips_run_lookup
-test_torn_down_worktree
-test_remote_alive_with_log_uses_status_log
-test_remote_alive_idle_is_healthy_not_gone
-test_remote_unreachable_is_unknown_remote_not_dead
-test_remote_dead_reports_remote_verdict
-test_missing_meta
-test_provably_working_via_runs_list_fallback
-test_not_provably_working_when_stopped
-test_usage_error
-test_historical_same_branch_rewritten_head_not_current
-test_active_run_descendant_fix_head_remains_current
-test_local_advanced_past_run_head_invalidates
-test_pipeline_owned_active_run_beats_superseded_failed_row
-test_failed_run_with_no_later_run_still_surfaces
-test_coarse_unresolvable_active_row_never_falls_to_older_row
-test_coarse_mismatched_anchor_falls_to_pane_not_older_row
-test_coarse_terminal_row_at_foreign_head_not_attributed
-test_executing_run_binds_without_pipeline_owned_sync
-test_non_pipeline_owned_parked_unresolvable_head_not_attributed
-test_gate_parked_run_with_live_status_word_not_attributed
-test_pipeline_owned_terminal_run_not_exempt
-test_missing_run_head_falls_back_to_current_state
-test_active_fix_round_unfetched_pipeline_head_reports_current
-test_unanchored_unfetched_active_row_still_binds
-test_unresolved_terminal_row_is_history_not_current
-test_runs_list_continuation_found_when_axi_answers_other_branch
-test_no_run_herdr_stale_registration_over_shell_reads_agent_gone
-test_no_run_herdr_stale_working_record_is_never_busy
-test_capped_competing_live_runs_report_both_ids
-test_capped_overview_without_branch_rows_reports_both_ids
-test_capped_overview_with_no_branch_runs_reports_absent
-test_no_branch_run_beside_a_live_run_elsewhere_reads_absent
-test_capped_inventory_reader_is_time_bounded
-test_capped_inventory_requires_exact_repo_path
-test_linked_worktree_green_merge_monitoring_reads_held_for_merge
-test_capped_replacement_keeps_gate_and_inventory_unchanged
-test_capped_inventory_failures_report_unknown
-test_complete_inventory_ignores_unrelated_semantics
-test_requested_branch_has_no_character_whitelist
-test_capped_inventory_ignores_unrelated_semantics
-test_capped_requested_semantics_do_not_hide_ids
-test_capped_requested_branch_with_comma_names_both_ids
-test_inventory_structure_and_requested_semantics_remain_checked
-test_complete_inventory_without_python_keeps_gate
-test_complete_ambiguity_without_python_names_both_ids
-test_capped_without_python_preserves_available_ids
-test_capped_without_sqlite_preserves_available_ids
-test_live_to_terminal_inventory_disagreement_is_unknown
-test_uninitialized_busy_worker_uses_pane
-test_uninitialized_idle_worker_uses_status
-test_historical_inventory_uses_current_pane
-test_historical_inventory_uses_current_status
-test_superseded_cancelled_run_preserves_replacement_gate
-test_live_rebased_run_beats_older_failed_run_at_local_head
-test_live_rebased_run_reads_working_for_every_executing_status
-test_legacy_live_rebased_run_is_authoritative
-test_legacy_surface_binds_fixing_and_ci_at_a_rebased_head
-test_live_record_at_diverged_head_does_not_bind_an_unproven_record
-test_unproven_record_with_dead_daemon_does_not_override_a_busy_pane
-test_coarse_live_row_over_ordinary_blocked_keeps_superseded_reading
-test_socket_refused_log_survives_the_dead_daemon_verdict
-test_ordinary_blocked_tip_survives_the_dead_daemon_verdict
-test_parked_gate_survives_a_dead_daemon
-test_selected_run_diverged_head_does_not_bind_an_unproven_record
-test_live_record_at_diverged_head_binds_while_daemon_answers
-test_anchored_continuation_binds_while_daemon_answers
-test_unverified_coarse_record_makes_no_supersede_claim
-test_coarse_failed_record_with_dead_daemon_reads_unknown
-test_selected_run_anchored_continuation_needs_a_live_daemon
-test_selected_run_anchored_continuation_binds_while_daemon_answers
-test_selected_run_anchored_parked_keeps_its_gate_with_a_dead_daemon
-test_selected_run_dead_daemon_leaves_the_open_decision_open
-test_coarse_pending_ledger_word_reads_unknown
-test_unanswered_probe_does_not_turn_a_failed_coarse_record_into_a_gate
-test_selected_route_dead_daemon_names_the_run_once
-test_head_tied_row_reads_the_same_whichever_run_axi_names
-test_coarse_head_tied_row_is_exempt_even_when_the_record_head_diverged
-test_unrecognised_ledger_word_keeps_the_ordinary_supersede_note
-test_unanswered_daemon_probe_does_not_suppress_live_run
-test_coarse_live_row_is_exempt_from_the_dead_daemon_verdict
-test_coarse_live_row_keeps_the_original_supersede_note
-test_coarse_live_rebased_row_is_not_attributed
-test_terminal_rebased_run_is_not_attributed
-test_competing_live_runs_report_unknown_with_both_ids
-test_newer_failed_run_is_not_hidden_by_older_live_run
-test_unverifiable_run_selection_reports_unknown
-test_legacy_conflicting_run_records_report_unknown
+  test_captured_cancelled_review_has_no_verdict \
+  test_single_owner_terminal_declaration_supersedes_stale_decision \
+  test_secondmate_open_block_survives_unrelated_append \
+  test_captured_inventory_replay \
+  test_captured_axi_status_shapes \
+  test_terminal_passed_with_forgejo_pull_reports_its_state \
+  test_no_timeout_uses_perl_bound \
+  test_capped_inventory_reader_is_time_bounded \
+  test_parked_human_decision_comes_from_the_action_column \
+  test_complete_inventory_ignores_unrelated_semantics \
+  test_captured_completed_history \
+  test_captured_authority_transition \
+  test_active_run_is_authoritative \
+  test_stale_needs_decision_superseded \
+  test_stale_blocked_superseded \
+  test_daemon_claim_over_live_run_reads_run_alive \
+  test_socket_refusal_over_stale_fixing_run_reports_blocked \
+  test_socket_refusal_over_terminal_run_reports_blocked \
+  test_socket_refusal_override_expires_when_the_crew_moves_on \
+  test_ordinary_blocked_over_live_run_keeps_plain_superseded \
+  test_genuine_daemon_down_reports_blocked \
+  test_newest_open_decision_supplies_the_reported_detail \
+  test_latest_status_preserves_legacy_completions \
+  test_latest_status_subshell_work_does_not_grow_with_history \
+  test_genuine_parked_not_superseded \
+  test_scalar_gate_parked_not_superseded \
+  test_gate_block_parked_not_superseded \
+  test_ci_ready_done_log_beats_monitoring_run \
+  test_ci_monitoring_checks_green_surfaces_done \
+  test_top_level_ci_checks_green_surfaces_done \
+  test_ci_monitoring_no_checks_terminal_surfaces_done \
+  test_ci_monitoring_green_then_rearm_stays_green \
+  test_ci_monitoring_green_before_log_tail_stays_green \
+  test_ci_monitoring_no_checks_yet_stays_working \
+  test_ci_monitoring_still_waiting_stays_working \
+  test_ci_monitoring_green_then_new_issue_stays_working \
+  test_ci_ready_done_log_relapse_stays_working \
+  test_ci_fixing_after_green_stays_working \
+  test_top_level_fixing_ci_running_after_green_stays_working \
+  test_top_level_fixing_done_log_stays_working \
+  test_terminal_passed \
+  test_terminal_passed_with_override \
+  test_terminal_passed_with_skips \
+  test_terminal_passed_uses_matching_retirement_receipt_without_forge \
+  test_terminal_passed_no_forge_switch_skips_read_but_keeps_receipt \
+  test_terminal_passed_with_open_pr_does_not_claim_merged \
+  test_terminal_passed_run_pr_overrides_stale_metadata \
+  test_terminal_passed_without_readable_pr_identity_reports_unknown \
+  test_terminal_passed_with_open_gitlab_mr_does_not_claim_merged \
+  test_terminal_passed_with_merged_gitlab_mr_reports_merged \
+  test_terminal_passed_with_failed_gitlab_read_reports_unknown \
+  test_terminal_passed_with_open_gerrit_change_does_not_claim_merged \
+  test_terminal_passed_with_merged_gerrit_change_reports_merged \
+  test_terminal_passed_with_unreadable_gerrit_change_reports_unknown \
+  test_terminal_failed \
+  test_terminal_failed_ci_orphan_after_green_reads_done \
+  test_terminal_failed_ci_orphan_status_only_reads_done \
+  test_terminal_failed_ci_genuine_red_stays_failed \
+  test_terminal_failed_ci_orphan_second_failed_step_stays_failed \
+  test_cross_branch_attribution_via_runs_list \
+  test_coarse_socket_refusal_reports_blocked \
+  test_coarse_failed_ledger_with_daemon_down_reports_unknown \
+  test_cross_branch_attribution_picks_most_recent_row \
+  test_terminal_run_keeps_newer_failure_over_live_sibling \
+  test_runs_list_newer_failure_outranks_older_live_row \
+  test_unfetched_older_live_sibling_does_not_hide_failure \
+  test_only_terminal_rows_keep_newest_first_precedence \
+  test_unknown_status_row_keeps_newest_first_precedence \
+  test_terminal_run_without_live_sibling_is_unchanged \
+  test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status \
+  test_other_branch_run_ignored \
+  test_unpushed_ship_done_is_blocked \
+  test_direct_push_done_reports_landing \
+  test_merged_pr_reads_done_under_captured_meta \
+  test_no_mistakes_prevalidation_done_stays_done \
+  test_moved_remote_branch_without_named_head_is_blocked \
+  test_no_run_busy_pane \
+  test_no_run_launch_prompt_parked_is_not_working \
+  test_no_run_footer_text_alone_is_not_working \
+  test_no_run_grok_uses_isolated_fallback \
+  test_no_run_herdr_unknown_uses_backend_capture \
+  test_no_run_herdr_cli_failure_reads_unreachable_not_gone \
+  test_no_run_herdr_alive_with_failed_read_stays_live \
+  test_no_run_herdr_husk_dead_still_reads_gone \
+  test_no_run_herdr_idle_agent_status_outranked_by_record \
+  test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle \
+  test_no_run_idle_pane_uses_log \
+  test_no_run_idle_pane_uses_keyed_log \
+  test_no_run_idle_pane_paused \
+  test_no_run_idle_pane_custom_paused_verb \
+  test_no_run_idle_secondmate_resolved_event_not_state \
+  test_dead_window_ignores_stale_status_log \
+  test_no_run_tmux_unreadable_reads_unreachable_not_gone \
+  test_dead_window_still_reports_terminal_run_step \
+  test_dead_window_still_reports_active_run_step \
+  test_scout_skips_run_lookup \
+  test_torn_down_worktree \
+  test_remote_alive_with_log_uses_status_log \
+  test_remote_alive_idle_is_healthy_not_gone \
+  test_remote_unreachable_is_unknown_remote_not_dead \
+  test_remote_dead_reports_remote_verdict \
+  test_missing_meta \
+  test_provably_working_via_runs_list_fallback \
+  test_not_provably_working_when_stopped \
+  test_usage_error \
+  test_historical_same_branch_rewritten_head_not_current \
+  test_active_run_descendant_fix_head_remains_current \
+  test_local_advanced_past_run_head_invalidates \
+  test_pipeline_owned_active_run_beats_superseded_failed_row \
+  test_failed_run_with_no_later_run_still_surfaces \
+  test_coarse_unresolvable_active_row_never_falls_to_older_row \
+  test_coarse_mismatched_anchor_falls_to_pane_not_older_row \
+  test_coarse_terminal_row_at_foreign_head_not_attributed \
+  test_executing_run_binds_without_pipeline_owned_sync \
+  test_non_pipeline_owned_parked_unresolvable_head_not_attributed \
+  test_gate_parked_run_with_live_status_word_not_attributed \
+  test_pipeline_owned_terminal_run_not_exempt \
+  test_missing_run_head_falls_back_to_current_state \
+  test_active_fix_round_unfetched_pipeline_head_reports_current \
+  test_unanchored_unfetched_active_row_still_binds \
+  test_unresolved_terminal_row_is_history_not_current \
+  test_runs_list_continuation_found_when_axi_answers_other_branch \
+  test_no_run_herdr_stale_registration_over_shell_reads_agent_gone \
+  test_no_run_herdr_stale_working_record_is_never_busy \
+  test_capped_competing_live_runs_report_both_ids \
+  test_capped_overview_without_branch_rows_reports_both_ids \
+  test_capped_overview_with_no_branch_runs_reports_absent \
+  test_no_branch_run_beside_a_live_run_elsewhere_reads_absent \
+  test_capped_inventory_requires_exact_repo_path \
+  test_linked_worktree_green_merge_monitoring_reads_held_for_merge \
+  test_capped_replacement_keeps_gate_and_inventory_unchanged \
+  test_requested_branch_has_no_character_whitelist \
+  test_capped_inventory_ignores_unrelated_semantics \
+  test_capped_requested_semantics_do_not_hide_ids \
+  test_capped_requested_branch_with_comma_names_both_ids \
+  test_inventory_structure_and_requested_semantics_remain_checked \
+  test_complete_inventory_without_python_keeps_gate \
+  test_complete_ambiguity_without_python_names_both_ids \
+  test_capped_without_python_preserves_available_ids \
+  test_capped_without_sqlite_preserves_available_ids \
+  test_live_to_terminal_inventory_disagreement_is_unknown \
+  test_uninitialized_busy_worker_uses_pane \
+  test_uninitialized_idle_worker_uses_status \
+  test_historical_inventory_uses_current_pane \
+  test_historical_inventory_uses_current_status \
+  test_superseded_cancelled_run_preserves_replacement_gate \
+  test_live_rebased_run_beats_older_failed_run_at_local_head \
+  test_live_rebased_run_reads_working_for_every_executing_status \
+  test_legacy_live_rebased_run_is_authoritative \
+  test_legacy_surface_binds_fixing_and_ci_at_a_rebased_head \
+  test_live_record_at_diverged_head_does_not_bind_an_unproven_record \
+  test_unproven_record_with_dead_daemon_does_not_override_a_busy_pane \
+  test_coarse_live_row_over_ordinary_blocked_keeps_superseded_reading \
+  test_socket_refused_log_survives_the_dead_daemon_verdict \
+  test_ordinary_blocked_tip_survives_the_dead_daemon_verdict \
+  test_parked_gate_survives_a_dead_daemon \
+  test_selected_run_diverged_head_does_not_bind_an_unproven_record \
+  test_live_record_at_diverged_head_binds_while_daemon_answers \
+  test_anchored_continuation_binds_while_daemon_answers \
+  test_unverified_coarse_record_makes_no_supersede_claim \
+  test_coarse_failed_record_with_dead_daemon_reads_unknown \
+  test_selected_run_anchored_continuation_needs_a_live_daemon \
+  test_selected_run_anchored_continuation_binds_while_daemon_answers \
+  test_selected_run_anchored_parked_keeps_its_gate_with_a_dead_daemon \
+  test_selected_run_dead_daemon_leaves_the_open_decision_open \
+  test_coarse_pending_ledger_word_reads_unknown \
+  test_unanswered_probe_does_not_turn_a_failed_coarse_record_into_a_gate \
+  test_selected_route_dead_daemon_names_the_run_once \
+  test_head_tied_row_reads_the_same_whichever_run_axi_names \
+  test_coarse_head_tied_row_is_exempt_even_when_the_record_head_diverged \
+  test_unrecognised_ledger_word_keeps_the_ordinary_supersede_note \
+  test_unanswered_daemon_probe_does_not_suppress_live_run \
+  test_coarse_live_row_is_exempt_from_the_dead_daemon_verdict \
+  test_coarse_live_row_keeps_the_original_supersede_note \
+  test_coarse_live_rebased_row_is_not_attributed \
+  test_terminal_rebased_run_is_not_attributed \
+  test_competing_live_runs_report_unknown_with_both_ids \
+  test_newer_failed_run_is_not_hidden_by_older_live_run \
+  test_legacy_conflicting_run_records_report_unknown || exit 1
 
 echo "all fm-crew-state tests passed"
