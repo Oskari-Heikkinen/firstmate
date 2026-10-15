@@ -716,19 +716,20 @@ test_branch_outcomes_stay_unread_when_a_projection_fails() {
 # Without jq the drain cannot present the store, so it marks nothing read and
 # exits nonzero for the return's gate.
 test_branch_outcomes_stay_unread_without_jq() {
-  local home drained rc dir entry path=''
+  local home drained rc dir path=''
   home="$TMP_ROOT/drain-no-jq"
   mkdir -p "$home/state" "$home/config"
   : > "$home/config/supervision-host"
   FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append --task demo --verdict routine --summary 'merged the docs fix' >/dev/null \
     || fail "fixture: could not record the routine outcome"
+  # One ln per directory, not one per entry: a runner's /usr/bin holds
+  # thousands of tools, and a fork for each one cost this case most of its time.
   while IFS= read -r dir; do
     [ -n "$dir" ] || continue
     if [ -e "$dir/jq" ]; then
       mkdir -p "$home/no-jq$dir"
-      for entry in "$dir"/*; do
-        [ "${entry##*/}" = jq ] || ln -s "$entry" "$home/no-jq$dir/" 2>/dev/null || true
-      done
+      ln -s "$dir"/* "$home/no-jq$dir/" 2>/dev/null || true
+      rm -f "$home/no-jq$dir/jq"
       dir="$home/no-jq$dir"
     fi
     path="${path:+$path:}$dir"
