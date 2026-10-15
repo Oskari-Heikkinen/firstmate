@@ -3725,8 +3725,35 @@ test_live_paused_until_controls_recheck_time() {
 # drives it elsewhere with FM_TEST_PANE_COMMAND (the pane's foreground command)
 # and FM_TEST_TMUX_WINDOWS (the session inventory the recorded window must appear
 # in), which is how the dead-endpoint cases below reach `dead` and `missing`.
+#
+# Time seam: a round under the default 1s threshold whose pane still shows the
+# recorded hash and whose lane already carries a running timer (a fixture
+# pre-arm, or the reset a previous round's deferral or gone-endpoint record
+# wrote) has that timer backdated to exactly the threshold before the watcher
+# starts, the same epoch rewrite wedge_threshold_fixture's pre-arm uses, so the
+# FIRST whole cycle is already at the threshold instead of the round spending a
+# wall-clock second waiting for a timer the previous round just re-armed. A
+# timer older than the threshold is left byte-identical (cases assert it is
+# never restarted), and a lane with NO timer keeps the real-time path below:
+# its first cycle arms the timer on the real clock and the round waits that real
+# second out, as does every round under a raised FM_TEST_STALE_ESCALATE.
 wedge_threshold_round() {  # <state> <fakebin> <out> <capture> <window> <verdict> <exit|absorb>
   local state=$1 fakebin=$2 out=$3 capture=$4 window=$5 verdict=$6 mode=$7 pid cycles=0 started
+  local key since_file armed now aged=0
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  since_file="$state/.stale-since-$key"
+  if [ -z "${FM_TEST_STALE_ESCALATE:-}" ] \
+    && [ "$(cat "$state/.hash-$key" 2>/dev/null || true)" = "$(hash_text "$(cat "$capture")")" ]; then
+    armed=$(cat "$since_file" 2>/dev/null || true)
+    case "$armed" in
+      ''|*[!0-9]*) ;;
+      *)
+        now=$(date +%s)
+        [ $(( now - armed )) -ge 1 ] || printf '%s\n' "$(( now - 1 ))" > "$since_file"
+        aged=1
+        ;;
+    esac
+  fi
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
     FM_CONFIG_OVERRIDE="$(dirname "$state")/config" \
     FM_FAKE_TMUX_CURRENT_COMMAND="${FM_TEST_PANE_COMMAND-grok}" \
@@ -3745,8 +3772,15 @@ wedge_threshold_round() {  # <state> <fakebin> <out> <capture> <window> <verdict
   # second a wedge timer this round starts in, before it reaches the 1s
   # threshold. The first whole cycle has armed any timer, so once the clock has
   # left the second that cycle ended in, the timer is at the threshold; one more
-  # whole cycle after that is where a due escalation fires.
+  # whole cycle after that is where a due escalation fires. A timer the seam
+  # above already put at the threshold is due in that first whole cycle, so one
+  # more whole cycle after it is the same margin without the wall-clock second.
   wait_poll_cycle "$state" "$pid" 300 || { reap "$pid"; return 1; }
+  if [ "$aged" -eq 1 ]; then
+    wait_poll_cycle "$state" "$pid" 300 || { reap "$pid"; return 1; }
+    reap "$pid"
+    return 0
+  fi
   started=$(date +%s)
   cycles=1
   while [ "$cycles" -lt 2 ] || [ "$(date +%s)" -le "$started" ]; do
@@ -7723,6 +7757,19 @@ run_case_pool() {  # <case-function>...
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
   exit 0
+fi
+
+# Every bin/fm-captain-hold.sh run - each `hold`/`answer` a hold fixture makes and
+# each `open` read the watcher spends on a held lane's new stale hash - re-probes
+# tasks-axi with up to four static introspection calls, each a node start, so they
+# replay through fm_tasks_axi_probe_shim (tests/lib.sh), as the captain-hold
+# lifecycle suite does. Built once before the pool and only ever read after, so
+# concurrent cases share it safely; every other tasks-axi call (add, hold, show,
+# list) still reaches the genuine binary.
+if TASKS_AXI_GENUINE=$(command -v tasks-axi); then
+  fm_tasks_axi_probe_shim "$TMP_ROOT/tasks-axi-shim" "$TASKS_AXI_GENUINE" \
+    --version update,--help mv,--help hold,--help
+  export PATH="$TMP_ROOT/tasks-axi-shim:$PATH"
 fi
 
 
