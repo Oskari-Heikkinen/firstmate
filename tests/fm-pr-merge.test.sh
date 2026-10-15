@@ -15,6 +15,22 @@ fm_git_identity fmtest fmtest@example.invalid
 
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-merge-tests)
+
+# Two fixed costs ride on every fm-pr-merge.sh run and no case asserts on
+# either. The arming re-record runs fm-guard.sh, whose supervision verdict
+# otherwise detects the harness through bin/fm-harness.sh's walk up the whole
+# process ancestry, a ps call per level; FM_SUPERVISION_MODEL pins the
+# persistent model a host with no agent harness detects anyway. The captain-hold
+# read re-probes tasks-axi compatibility with three static introspection calls,
+# each a node start, so they replay through fm_tasks_axi_probe_shim
+# (tests/lib.sh) while the backlog read itself still runs the genuine binary.
+# The shim goes on PATH before BASE_PATH is taken, so mirrored search paths keep
+# it too.
+export FM_SUPERVISION_MODEL=persistent
+if TASKS_AXI_GENUINE=$(command -v tasks-axi); then
+  fm_tasks_axi_probe_shim "$TMP_ROOT/.tasks-axi-shim" "$TASKS_AXI_GENUINE" --version update,--help mv,--help
+  export PATH="$TMP_ROOT/.tasks-axi-shim:$PATH"
+fi
 BASE_PATH=$PATH
 
 # The GitLab fixture. A placeholder host that resolves nowhere, and a namespace
