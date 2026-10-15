@@ -10,8 +10,16 @@ set -u
 
 # shellcheck source=tests/fixtures.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
+# shellcheck source=tests/suspend-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/suspend-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-base-freshen)
+
+# The fake pane reports its path at once, so the worktree poll's one-second
+# confirmation wait and the launch settle waits only add wall time here. Every
+# case reads them at zero except test_stale_pool_base_refreshes_before_branching,
+# which keeps fm-spawn's own real timers.
+export FM_SPAWN_WORKTREE_POLL_SECS=0 FM_SPAWN_LAUNCH_SETTLE_SECS=0
 
 make_case() {
   local name=$1 id=$2 default=${3:-main} case_dir home project origin pool publisher fakebin initial
@@ -94,77 +102,85 @@ REC
   pass "a remote-seeded secondmate home allocates and launches from its Treehouse pool"
 }
 
-test_linked_spawning_home_rejects_primary_before_refresh() {
-  local rec id out status returned primary spawning before_reflog
-  for returned in primary primary-alias spawning scout; do
-    id="pool-linked-${returned}-r12"
-    rec=$(make_case "linked-$returned" "$id")
-    read_case_record "$rec"
-    primary=$PROJECT_DIR
-    spawning="$CASE_DIR/secondmate"
-    git -C "$primary" worktree add --quiet --detach "$spawning" HEAD
-    PROJECT_DIR=$spawning
-    case "$returned" in
-      primary) POOL_DIR=$primary ;;
-      primary-alias)
-        ln -s "$primary" "$CASE_DIR/primary-alias"
-        POOL_DIR="$CASE_DIR/primary-alias"
-        ;;
-      spawning) POOL_DIR=$spawning ;;
-    esac
-    before_reflog=$(git -C "$primary" reflog)
-    # The assertion concerns identity, not how long an unchanged cwd is polled.
-    fm_test_fake_sleep_noop "$FAKEBIN_DIR"
+# One case per returned path, so the three refusals that poll the whole
+# worktree window run beside each other in the case pool.
+linked_spawning_home_case() {  # <returned>
+  local rec id out status returned=$1 primary spawning before_reflog
+  id="pool-linked-${returned}-r12"
+  rec=$(make_case "linked-$returned" "$id")
+  read_case_record "$rec"
+  primary=$PROJECT_DIR
+  spawning="$CASE_DIR/secondmate"
+  git -C "$primary" worktree add --quiet --detach "$spawning" HEAD
+  PROJECT_DIR=$spawning
+  case "$returned" in
+    primary) POOL_DIR=$primary ;;
+    primary-alias)
+      ln -s "$primary" "$CASE_DIR/primary-alias"
+      POOL_DIR="$CASE_DIR/primary-alias"
+      ;;
+    spawning) POOL_DIR=$spawning ;;
+  esac
+  before_reflog=$(git -C "$primary" reflog)
+  # The assertion concerns identity, not how long an unchanged cwd is polled.
+  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
 
-    out=$(run_spawn "$id" --scout)
-    status=$?
-    if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
-      printf '# evidence begin: linked-home spawn, returned=%s\n' "$returned"
-      printf '$ bin/fm-spawn.sh %s %s --scout\n%s\nexit=%s\n' "$id" "$PROJECT_DIR" "$out" "$status"
-      printf 'primary HEAD before=%s after=%s\n' "$INITIAL_SHA" "$(git -C "$primary" rev-parse HEAD)"
-      printf 'primary reflog before:\n%s\nprimary reflog after:\n%s\n' "$before_reflog" "$(git -C "$primary" reflog)"
-      if [ -e "$primary/.git/FETCH_HEAD" ]; then
-        printf 'FETCH_HEAD:\n'; cat "$primary/.git/FETCH_HEAD"
-      else
-        printf 'FETCH_HEAD absent\n'
-      fi
-      if [ -e "$HOME_DIR/state/$id.meta" ]; then
-        printf 'saved task metadata:\n'; cat "$HOME_DIR/state/$id.meta"
-        printf 'worker HEAD=%s origin/main=%s\n' "$(git -C "$POOL_DIR" rev-parse HEAD)" "$(git -C "$POOL_DIR" rev-parse origin/main)"
-      else
-        printf 'task metadata absent\n'
-      fi
-      printf '# evidence end\n'
-    fi
-    if [ "$returned" = scout ]; then
-      expect_code 0 "$status" "a genuine scout copy from a linked home should launch"$'\n'"$out"
-      assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/$id.meta" \
-        "spawn did not record the genuine scout copy"
-      [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$(git -C "$POOL_DIR" rev-parse origin/main)" ] \
-        || fail "spawn did not refresh the genuine scout copy"
+  out=$(run_spawn "$id" --scout)
+  status=$?
+  if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    printf '# evidence begin: linked-home spawn, returned=%s\n' "$returned"
+    printf '$ bin/fm-spawn.sh %s %s --scout\n%s\nexit=%s\n' "$id" "$PROJECT_DIR" "$out" "$status"
+    printf 'primary HEAD before=%s after=%s\n' "$INITIAL_SHA" "$(git -C "$primary" rev-parse HEAD)"
+    printf 'primary reflog before:\n%s\nprimary reflog after:\n%s\n' "$before_reflog" "$(git -C "$primary" reflog)"
+    if [ -e "$primary/.git/FETCH_HEAD" ]; then
+      printf 'FETCH_HEAD:\n'; cat "$primary/.git/FETCH_HEAD"
     else
-      [ "$status" -ne 0 ] || fail "linked spawning home accepted $returned as a disposable copy"
-      # None of these is an isolated copy, so the worktree poll never adopts one
-      # and the wait runs out instead: the spawning directory fails the poll's
-      # own project comparison, and the repository primary (named directly or
-      # through a symlink) fails the isolation screen the poll shares with the
-      # guard. The refusal names the last path the pane reported.
-      assert_contains "$out" "did not yield an isolated worktree" \
-        "spawn did not explain its isolation refusal"
-      assert_contains "$out" "resolved" "refusal did not name the acquired path"
-      [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
-      [ ! -e "$primary/.git/FETCH_HEAD" ] || fail "refused spawn fetched before proving isolation"
+      printf 'FETCH_HEAD absent\n'
     fi
-    [ "$(git -C "$primary" rev-parse HEAD)" = "$INITIAL_SHA" ] \
-      || fail "spawn reset the repository primary from a linked home"
-    [ "$(git -C "$primary" reflog)" = "$before_reflog" ] \
-      || fail "spawn touched the primary reflog from a linked home"
-    pass "linked spawning home: $returned preserves the primary before any refresh"
-  done
+    if [ -e "$HOME_DIR/state/$id.meta" ]; then
+      printf 'saved task metadata:\n'; cat "$HOME_DIR/state/$id.meta"
+      printf 'worker HEAD=%s origin/main=%s\n' "$(git -C "$POOL_DIR" rev-parse HEAD)" "$(git -C "$POOL_DIR" rev-parse origin/main)"
+    else
+      printf 'task metadata absent\n'
+    fi
+    printf '# evidence end\n'
+  fi
+  if [ "$returned" = scout ]; then
+    expect_code 0 "$status" "a genuine scout copy from a linked home should launch"$'\n'"$out"
+    assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/$id.meta" \
+      "spawn did not record the genuine scout copy"
+    [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$(git -C "$POOL_DIR" rev-parse origin/main)" ] \
+      || fail "spawn did not refresh the genuine scout copy"
+  else
+    [ "$status" -ne 0 ] || fail "linked spawning home accepted $returned as a disposable copy"
+    # None of these is an isolated copy, so the worktree poll never adopts one
+    # and the wait runs out instead: the spawning directory fails the poll's
+    # own project comparison, and the repository primary (named directly or
+    # through a symlink) fails the isolation screen the poll shares with the
+    # guard. The refusal names the last path the pane reported.
+    assert_contains "$out" "did not yield an isolated worktree" \
+      "spawn did not explain its isolation refusal"
+    assert_contains "$out" "resolved" "refusal did not name the acquired path"
+    [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
+    [ ! -e "$primary/.git/FETCH_HEAD" ] || fail "refused spawn fetched before proving isolation"
+  fi
+  [ "$(git -C "$primary" rev-parse HEAD)" = "$INITIAL_SHA" ] \
+    || fail "spawn reset the repository primary from a linked home"
+  [ "$(git -C "$primary" reflog)" = "$before_reflog" ] \
+    || fail "spawn touched the primary reflog from a linked home"
+  pass "linked spawning home: $returned preserves the primary before any refresh"
 }
+
+test_linked_spawning_home_returns_primary() { linked_spawning_home_case primary; }
+test_linked_spawning_home_returns_primary_alias() { linked_spawning_home_case primary-alias; }
+test_linked_spawning_home_returns_spawning() { linked_spawning_home_case spawning; }
+test_linked_spawning_home_returns_scout() { linked_spawning_home_case scout; }
 
 test_stale_pool_base_refreshes_before_branching() {
   local rec id out status current branch_head
+  # The real-time case: both spawns run on fm-spawn's default poll and settle
+  # waits. The pool runs each case in its own subshell, so this stays local.
+  unset FM_SPAWN_WORKTREE_POLL_SECS FM_SPAWN_LAUNCH_SETTLE_SECS
   id='pool-current-base-r1'
   rec=$(make_case current-base "$id")
   read_case_record "$rec"
@@ -1341,84 +1357,106 @@ SH
   pass 'direct spawn --relaunch adopts an exclusive legacy record while both locks are held and preserves unfinished work'
 }
 
-test_direct_spawn_relaunch_adopts_legacy_record
-test_owner_adoption_real_idle_shell
-test_owner_adoption_preserves_work_and_is_idempotent
-test_owner_adoption_saved_custody_is_never_authority
-test_owner_adoption_lists_conflicts_without_leasing
-test_remote_seeded_home_spawns_from_treehouse_pool
-test_legacy_reservations_refuse_before_get
-test_preclaim_acquisition_rollback_and_preservation
-test_task_duration_lease_and_relaunch
-test_claim_publication_keeps_foreign_identity
-test_pool_slot_claim_follows_the_spawn_outcome
-test_linked_spawning_home_rejects_primary_before_refresh
-test_stale_pool_base_refreshes_before_branching
-test_named_base_branch_starts_from_that_branch
-test_base_branch_must_agree_with_the_brief
-test_prose_base_branch_line_is_ignored
-test_scout_base_branch_refused_on_gerrit_forge
-test_non_main_default_branch_refreshes_before_branching
-test_direct_pr_and_scout_refresh_before_launch
-test_dirty_pool_refuses_without_discarding_work
-test_unresolved_remote_default_refuses_pool
-test_unreachable_origin_refuses_stale_pool_base
-test_originless_pool_launches_without_a_freshness_fetch
-test_originless_dirty_pool_refuses_without_discarding_work
-test_origin_config_without_url_refuses_pool
-test_empty_origin_config_section_refuses_pool
-test_empty_only_included_origin_config_section_launches_pool
-test_inactive_conditional_origin_include_launches_pool
-test_stale_submodule_pin_explains_itself
-test_unpushed_submodule_commit_is_still_uncommitted_work
-test_work_inside_submodule_is_still_uncommitted_work
-test_stale_pin_carrying_real_work_is_not_called_stale
-test_stale_pin_beside_other_dirt_reports_one_verdict
+test_saved_head_restores_under_a_fresh_lease() {
+  local dir meta head wt count
+  dir=$(suspend_case "$TMP_ROOT" restore-fresh) || fail 'saved fixture failed'
+  suspend_saved "$dir" restore-fresh || fail 'save fixture failed'
+  meta="$dir/home/state/restore-fresh.meta"
+  head=$(git -C "$dir/project" rev-parse fm/restore-fresh)
+  suspend_lib "$dir" fm_suspend_allocate "$meta" restore-fresh "$dir/home" "$dir/home/data" "$dir/home/state" || fail 'fresh restore allocation failed'
+  wt="$dir/.treehouse/pool/1/project"
+  assert_equals "$head" "$(git -C "$wt" rev-parse HEAD)" 'restoration rebased/reset the saved head'
+  suspend_assert_matches '^treehouse_lease_id=new-lease$' "$meta" 'restoration reused the historical acquisition'
+  suspend_assert_matches '^copy_state=restore-prepared$' "$meta" 'allocation was not durably claimed'
+  assert_present "$dir/.treehouse/pool/1/.fm-slot-owner" 'restoration is unclaimed'
+  assert_present "$dir/home/data/restore-fresh/suspension.bundle" 'restoration consumed the bundle'
+  assert_equals "$head" "$(git -C "$dir/project" rev-parse fm/restore-fresh)" 'restoration rewrote the kept branch'
+  count=$(wc -l < "$dir/calls" | tr -d ' ')
+  suspend_lib "$dir" fm_suspend_allocate "$meta" restore-fresh "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'duplicate restore allocated a second copy'
+  assert_equals "$count" "$(wc -l < "$dir/calls" | tr -d ' ')" 'duplicate restore invoked the allocator'
+  pass 'saved head restores under a fresh exclusive lease, including same-path reuse, without rebase or duplicate allocation'
+}
 
-# shellcheck source=tests/suspend-helpers.sh
-. "$ROOT/tests/suspend-helpers.sh"
-dir=$(suspend_case "$TMP_ROOT" restore-fresh) || fail 'saved fixture failed'
-suspend_saved "$dir" restore-fresh || fail 'save fixture failed'
-meta="$dir/home/state/restore-fresh.meta"
-head=$(git -C "$dir/project" rev-parse fm/restore-fresh)
-suspend_lib "$dir" fm_suspend_allocate "$meta" restore-fresh "$dir/home" "$dir/home/data" "$dir/home/state" || fail 'fresh restore allocation failed'
-wt="$dir/.treehouse/pool/1/project"
-assert_equals "$head" "$(git -C "$wt" rev-parse HEAD)" 'restoration rebased/reset the saved head'
-suspend_assert_matches '^treehouse_lease_id=new-lease$' "$meta" 'restoration reused the historical acquisition'
-suspend_assert_matches '^copy_state=restore-prepared$' "$meta" 'allocation was not durably claimed'
-assert_present "$dir/.treehouse/pool/1/.fm-slot-owner" 'restoration is unclaimed'
-assert_present "$dir/home/data/restore-fresh/suspension.bundle" 'restoration consumed the bundle'
-assert_equals "$head" "$(git -C "$dir/project" rev-parse fm/restore-fresh)" 'restoration rewrote the kept branch'
-count=$(wc -l < "$dir/calls" | tr -d ' ')
-suspend_lib "$dir" fm_suspend_allocate "$meta" restore-fresh "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'duplicate restore allocated a second copy'
-assert_equals "$count" "$(wc -l < "$dir/calls" | tr -d ' ')" 'duplicate restore invoked the allocator'
-pass 'saved head restores under a fresh exclusive lease, including same-path reuse, without rebase or duplicate allocation'
+test_saved_head_restores_in_a_different_slot() {
+  local dir meta head old new
+  dir=$(suspend_case "$TMP_ROOT" restore-other-slot) || fail 'different-slot fixture failed'
+  suspend_saved "$dir" restore-other-slot || fail 'different-slot save failed'
+  meta="$dir/home/state/restore-other-slot.meta"
+  head=$(git -C "$dir/project" rev-parse fm/restore-other-slot)
+  old="$dir/.treehouse/pool/1/project"
+  printf 'not this task any more\n' > "$old/file"
+  : > "$dir/different-slot"
+  suspend_lib "$dir" fm_suspend_allocate "$meta" restore-other-slot "$dir/home" "$dir/home/data" "$dir/home/state" || fail 'a different selected physical slot could not restore the kept branch'
+  new=$(sed -n 's/^worktree=//p' "$meta")
+  [ "$new" != "$old" ] || fail 'fixture did not select a different physical slot'
+  assert_equals "$head" "$(git -C "$new" rev-parse HEAD)" 'different-slot restoration lost the exact saved head'
+  assert_equals 'not this task any more' "$(cat "$old/file")" 'different-slot restoration used historical working files'
+  assert_equals false "$(jq -r .worktrees[0].leased "$dir/.treehouse/pool/treehouse-state.json")" 'restore re-reserved the historical slot'
+  pass 'an allocator-selected different physical slot restores the kept branch without historical-path authority or re-reservation'
+}
 
-dir=$(suspend_case "$TMP_ROOT" restore-other-slot) || fail 'different-slot fixture failed'
-suspend_saved "$dir" restore-other-slot || fail 'different-slot save failed'
-meta="$dir/home/state/restore-other-slot.meta"
-head=$(git -C "$dir/project" rev-parse fm/restore-other-slot)
-old="$dir/.treehouse/pool/1/project"
-printf 'not this task any more\n' > "$old/file"
-: > "$dir/different-slot"
-suspend_lib "$dir" fm_suspend_allocate "$meta" restore-other-slot "$dir/home" "$dir/home/data" "$dir/home/state" || fail 'a different selected physical slot could not restore the kept branch'
-new=$(sed -n 's/^worktree=//p' "$meta")
-[ "$new" != "$old" ] || fail 'fixture did not select a different physical slot'
-assert_equals "$head" "$(git -C "$new" rev-parse HEAD)" 'different-slot restoration lost the exact saved head'
-assert_equals 'not this task any more' "$(cat "$old/file")" 'different-slot restoration used historical working files'
-assert_equals false "$(jq -r .worktrees[0].leased "$dir/.treehouse/pool/treehouse-state.json")" 'restore re-reserved the historical slot'
-pass 'an allocator-selected different physical slot restores the kept branch without historical-path authority or re-reservation'
+test_failed_restore_allocation_refuses_blind_retry() {
+  local dir meta
+  dir=$(suspend_case "$TMP_ROOT" restore-crash) || fail 'saved fixture failed'
+  suspend_saved "$dir" restore-crash || fail 'save fixture failed'
+  meta="$dir/home/state/restore-crash.meta"
+  : > "$dir/fail-get"
+  suspend_lib "$dir" fm_suspend_allocate "$meta" restore-crash "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'failed allocation reported success'
+  suspend_assert_matches '^copy_state=restore-prepared$' "$meta" 'failed attempt lost its durable claim'
+  assert_present "$dir/home/data/restore-crash/suspension.bundle" 'failed attempt lost saved commits'
+  rm "$dir/fail-get"
+  suspend_lib "$dir" fm_suspend_allocate "$meta" restore-crash "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'interrupted attempt blindly reacquired'
+  assert_equals 1 "$(grep -c '^get ' "$dir/calls")" 'interrupted allocation replayed get'
+  pass 'allocation failure preserves saved custody and refuses blind retry'
+}
 
-dir=$(suspend_case "$TMP_ROOT" restore-crash) || fail 'saved fixture failed'
-suspend_saved "$dir" restore-crash || fail 'save fixture failed'
-meta="$dir/home/state/restore-crash.meta"
-: > "$dir/fail-get"
-suspend_lib "$dir" fm_suspend_allocate "$meta" restore-crash "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'failed allocation reported success'
-suspend_assert_matches '^copy_state=restore-prepared$' "$meta" 'failed attempt lost its durable claim'
-assert_present "$dir/home/data/restore-crash/suspension.bundle" 'failed attempt lost saved commits'
-rm "$dir/fail-get"
-suspend_lib "$dir" fm_suspend_allocate "$meta" restore-crash "$dir/home" "$dir/home/data" "$dir/home/state" && fail 'interrupted attempt blindly reacquired'
-assert_equals 1 "$(grep -c '^get ' "$dir/calls")" 'interrupted allocation replayed get'
-pass 'allocation failure preserves saved custody and refuses blind retry'
+# Every case builds its own fixture under its own TMP_ROOT subdirectory and uses
+# task ids no other case uses (fm-spawn keys a per-task /tmp directory by id),
+# so the cases run through fm_run_case_pool (tests/lib.sh). The longest cases
+# are listed first so they start first. FM_SPAWN_POOL_BASE_FRESHEN_CASE_JOBS
+# overrides the concurrency, which defaults to the host's processor count capped
+# at four; 1 runs the cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_SPAWN_POOL_BASE_FRESHEN_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_owner_adoption_real_idle_shell \
+  test_owner_adoption_lists_conflicts_without_leasing \
+  test_preclaim_acquisition_rollback_and_preservation \
+  test_linked_spawning_home_returns_primary \
+  test_linked_spawning_home_returns_primary_alias \
+  test_linked_spawning_home_returns_spawning \
+  test_pool_slot_claim_follows_the_spawn_outcome \
+  test_named_base_branch_starts_from_that_branch \
+  test_legacy_reservations_refuse_before_get \
+  test_base_branch_must_agree_with_the_brief \
+  test_stale_pool_base_refreshes_before_branching \
+  test_task_duration_lease_and_relaunch \
+  test_owner_adoption_saved_custody_is_never_authority \
+  test_direct_spawn_relaunch_adopts_legacy_record \
+  test_owner_adoption_preserves_work_and_is_idempotent \
+  test_remote_seeded_home_spawns_from_treehouse_pool \
+  test_claim_publication_keeps_foreign_identity \
+  test_linked_spawning_home_returns_scout \
+  test_prose_base_branch_line_is_ignored \
+  test_scout_base_branch_refused_on_gerrit_forge \
+  test_non_main_default_branch_refreshes_before_branching \
+  test_direct_pr_and_scout_refresh_before_launch \
+  test_dirty_pool_refuses_without_discarding_work \
+  test_unresolved_remote_default_refuses_pool \
+  test_unreachable_origin_refuses_stale_pool_base \
+  test_originless_pool_launches_without_a_freshness_fetch \
+  test_originless_dirty_pool_refuses_without_discarding_work \
+  test_origin_config_without_url_refuses_pool \
+  test_empty_origin_config_section_refuses_pool \
+  test_empty_only_included_origin_config_section_launches_pool \
+  test_inactive_conditional_origin_include_launches_pool \
+  test_stale_submodule_pin_explains_itself \
+  test_unpushed_submodule_commit_is_still_uncommitted_work \
+  test_work_inside_submodule_is_still_uncommitted_work \
+  test_stale_pin_carrying_real_work_is_not_called_stale \
+  test_stale_pin_beside_other_dirt_reports_one_verdict \
+  test_saved_head_restores_under_a_fresh_lease \
+  test_saved_head_restores_in_a_different_slot \
+  test_failed_restore_allocation_refuses_blind_retry \
+  || fail 'one or more fm-spawn-pool-base-freshen cases failed'
 
 echo "# all fm-spawn-pool-base-freshen tests passed"
