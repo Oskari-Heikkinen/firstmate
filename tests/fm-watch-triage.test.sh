@@ -933,6 +933,304 @@ test_turn_ended_not_working_surfaced() {
   pass "a bare turn-end whose crew is not provably working is surfaced (the swallowed-finish fix)"
 }
 
+# --- urgent-bypass wake batching (FM_WAKE_BATCH_SECS) --------------------------
+# tests/lib.sh turns batching off for every other case; these opt back in.
+
+test_wake_batch_coalesces_routine_lines() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case wake-batch-routine); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  printf 'working: step one\n' > "$state/a.status"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=8
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "watcher woke on a routine line inside the batch window: $(cat "$out")"; }
+  [ ! -s "$out" ] || fail "a held routine line printed a wake reason"
+  [ ! -s "$state/.wake-queue" ] || fail "a held routine line was queued before the batch woke"
+  wait_numeric_file "$state/.wake-batch-since" || fail "holding a routine line did not open the wake batch"
+  printf 'done: shipped b\n' > "$state/b.status"
+  printf 'working: step two\n' >> "$state/a.status"
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "watcher woke on a routine done: inside the batch window: $(cat "$out")"; }
+  wait_for_exit "$pid" 200 || fail "the wake batch never woke"
+  [ "$(grep -c '^signal:' "$out")" -eq 1 ] || fail "the batch did not wake exactly once: $(cat "$out")"
+  grep -F "$state/a.status" "$out" | grep -F "$state/b.status" >/dev/null \
+    || fail "the batch wake did not carry every held file: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the batch wake failed"
+  grep -F 'a.status' "$drain_out" >/dev/null || fail "the batch wake did not queue the first held line"
+  grep -F 'b.status' "$drain_out" >/dev/null || fail "the batch wake did not queue the later held line"
+  [ ! -e "$state/.wake-batch-since" ] || fail "the batch wake left its batch open"
+  pass "routine working:/done: lines are held and woken together once per batch window"
+}
+
+test_wake_batch_urgent_line_bypasses_an_open_batch() {
+  local dir state fakebin out pid
+  dir=$(make_case wake-batch-urgent); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  printf 'working: step one\n' > "$state/a.status"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "watcher woke on a routine line inside a 600s batch: $(cat "$out")"; }
+  wait_numeric_file "$state/.wake-batch-since" || fail "holding a routine line did not open the wake batch"
+  printf 'blocked: need the staging credentials\n' > "$state/b.status"
+  wait_for_exit "$pid" 100 || fail "a blocked: line waited behind the open wake batch"
+  grep -F "$state/b.status" "$out" >/dev/null || fail "the urgent wake did not name the blocked file: $(cat "$out")"
+  grep -F "$state/a.status" "$out" >/dev/null || fail "the urgent wake did not carry the held routine line: $(cat "$out")"
+  [ -s "$state/.seen-a_status" ] || fail "the held routine line was not classified with the urgent wake"
+  pass "a blocked: line wakes at once while a batch is open and carries the held lines"
+}
+
+# Each urgent class wakes at once over an open batch, not only blocked:.
+test_wake_batch_every_urgent_class_bypasses_an_open_batch() {
+  local dir state fakebin out pid line n=0
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  for line in 'needs-decision: pick A or B' 'failed: the migration aborted' 'parked: waiting on nobody knows' \
+    'captain-held [key=route]: awaiting the captain' '@unreadable'; do
+    n=$((n + 1))
+    dir=$(make_case "wake-batch-urgent-class-$n"); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+    printf 'working: step one\n' > "$state/a.status"
+    watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+    pid=$!
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "watcher woke on a routine line inside a 600s batch: $(cat "$out")"; }
+    case "$line" in
+      @unreadable) ln -s "$dir/missing-status-target" "$state/b.status" ;;
+      *) printf '%s\n' "$line" > "$state/b.status" ;;
+    esac
+    wait_for_exit "$pid" 100 || fail "'$line' waited behind the open wake batch"
+    grep -F "$state/b.status" "$out" >/dev/null || fail "the wake for '$line' did not name its file: $(cat "$out")"
+  done
+  pass "needs-decision:, failed:, an unrecognized prefix, captain-held, and an unreadable log each wake at once while a batch is open"
+}
+
+# The window's other sources: the home's config/wake-batch-secs when the
+# environment leaves it unset, a value that is not a whole number turning
+# batching off, and the away-mode daemon owning every wake.
+test_wake_batch_config_invalid_value_and_afk() {
+  local dir state fakebin out pid
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  dir=$(make_case wake-batch-config); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  mkdir -p "$dir/config"
+  printf '600\n' > "$dir/config/wake-batch-secs"
+  printf 'working: step one\n' > "$state/a.status"
+  watch_bg "$state" "$fakebin" "$out" env -u FM_WAKE_BATCH_SECS FM_CONFIG_OVERRIDE="$dir/config"
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "config/wake-batch-secs did not hold a routine line: $(cat "$out")"; }
+  wait_numeric_file "$state/.wake-batch-since" || fail "config/wake-batch-secs did not open the wake batch"
+  reap "$pid"
+  dir=$(make_case wake-batch-invalid); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'working: step one\n' > "$state/a.status"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=3m
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a non-numeric window held a routine line instead of turning batching off"
+  grep -F "signal: $state/a.status" "$out" >/dev/null || fail "a non-numeric window did not wake at once: $(cat "$out")"
+  dir=$(make_case wake-batch-afk); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  date '+%s' > "$state/.afk"
+  printf 'working: step one\n' > "$state/a.status"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "batching held a routine line while the away-mode daemon owns triage"
+  grep -F "signal: $state/a.status" "$out" >/dev/null || fail "the afk watcher did not hand the line over at once: $(cat "$out")"
+  [ ! -e "$state/.wake-batch-since" ] || fail "the afk watcher opened a wake batch"
+  pass "config/wake-batch-secs sets the window, a non-numeric value turns batching off, and afk never batches"
+}
+
+test_wake_batch_zero_keeps_the_immediate_wake() {
+  local dir state fakebin out pid
+  dir=$(make_case wake-batch-zero); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  printf 'working: step one\n' > "$state/a.status"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=0
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "window 0 held a routine line"
+  grep -F "signal: $state/a.status" "$out" >/dev/null || fail "window 0 did not surface the routine line: $(cat "$out")"
+  [ ! -e "$state/.wake-batch-since" ] || fail "window 0 opened a wake batch"
+  pass "FM_WAKE_BATCH_SECS=0 keeps the immediate signal wake"
+}
+
+test_wake_batch_survives_a_watcher_restart() {
+  local dir state fakebin out pid
+  dir=$(make_case wake-batch-restart); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  printf 'done: shipped a\n' > "$state/a.status"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "watcher woke on a routine done: inside a 600s batch: $(cat "$out")"; }
+  wait_numeric_file "$state/.wake-batch-since" || fail "holding a routine line did not open the wake batch"
+  reap "$pid"
+  [ ! -s "$out" ] && [ ! -s "$state/.wake-queue" ] || fail "the held line was reported before the restart"
+  [ ! -s "$state/.seen-a_status" ] || fail "the held line was marked seen before any wake carried it"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the stopped watcher's recovery episode"
+  # The restarted watcher inherits the durable batch start; past the window it
+  # must wake with the line the stopped watcher held.
+  printf '%s\n' "$(( $(date +%s) - 700 ))" > "$state/.wake-batch-since"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the restarted watcher did not wake the expired batch"
+  grep -F "signal: $state/a.status" "$out" >/dev/null || fail "the held line was lost across the restart: $(cat "$out")"
+  pass "a held line survives a watcher restart and wakes when the durable batch expires"
+}
+
+test_wake_batch_holds_rearm_resurface_unless_a_queued_row_is_urgent() {
+  local dir state fakebin out pid
+  dir=$(make_case wake-batch-rearm); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  # A stopped watcher leaves a recovery episode the next one re-announces.
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the first watcher woke on an empty home: $(cat "$out")"; }
+  reap "$pid"
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid" || ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a rearm-resurface over an empty queue woke inside the wake batch: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a held rearm-resurface printed a wake reason"
+  wait_numeric_file "$state/.wake-batch-since" || fail "holding the rearm-resurface did not open the wake batch"
+  reap "$pid"
+  # A queued row whose task has a blocked: line the supervisor never saw must
+  # not wait for the batch.
+  : > "$out"
+  printf 'blocked: need the staging credentials\n' > "$state/t.status"
+  printf '%s\t1\tsignal\tt.status\tsignal: %s\n' "$(date +%s)" "$state/t.status" >> "$state/.wake-queue"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a rearm-resurface over an unshown blocked: line waited for the wake batch"
+  grep -Fx 'check: rearm-resurface' "$out" >/dev/null || fail "the urgent re-announcement did not wake: $(cat "$out")"
+  pass "a rearm-resurface joins the wake batch unless a queued row's task has an unshown urgent line"
+}
+
+# The rearm-resurface bypass for queued rows other than a routine signal row:
+# a check row, a stale row that is not a declared-wait recheck, and a
+# needs-decision payload each re-announce at once over a fresh episode.
+test_wake_batch_rearm_resurface_bypass_rows() {
+  local dir state fakebin out pid row n=0
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  for row in 'check\tpr-poll-7\tcheck: pr-poll merged' 'stale\ttest:fm-x\tstale: test:fm-x' \
+    'signal\tq.status\tneeds-decision: q.status'; do
+    n=$((n + 1))
+    dir=$(make_case "wake-batch-rearm-row-$n"); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+    watch_bg "$state" "$fakebin" "$out"
+    pid=$!
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the first watcher woke on an empty home: $(cat "$out")"; }
+    reap "$pid"
+    : > "$out"
+    # shellcheck disable=SC2059 # the row literal carries the tab escapes
+    printf "%s\t1\t$row\n" "$(date +%s)" >> "$state/.wake-queue"
+    watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+    pid=$!
+    wait_for_exit "$pid" 100 || fail "a rearm-resurface over queued row '$row' waited for the wake batch"
+    grep -Fx 'check: rearm-resurface' "$out" >/dev/null || fail "row '$row' did not re-announce at once: $(cat "$out")"
+  done
+  pass "check rows, non-recheck stale rows, and needs-decision rows re-announce at once over the wake batch"
+}
+
+test_wake_batch_held_rearm_resurface_survives_a_restart() {
+  local dir state fakebin out pid
+  dir=$(make_case wake-batch-rearm-restart); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the first watcher woke on an empty home: $(cat "$out")"; }
+  reap "$pid"
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid" || ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a rearm-resurface over an empty queue woke inside the wake batch: $(cat "$out")"
+  fi
+  wait_numeric_file "$state/.wake-batch-since" || fail "holding the rearm-resurface did not open the wake batch"
+  reap "$pid"
+  [ -e "$state/.wake-batch-resurface" ] || fail "the held rearm-resurface left no durable record"
+  # The stopped watcher's held re-announcement is not lost: over an empty queue
+  # the announced episode does not reopen, so its successor delivers it from
+  # the durable record once the batch start is a window old.
+  : > "$out"
+  printf '%s\n' "$(( $(date +%s) - 700 ))" > "$state/.wake-batch-since"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the restarted watcher did not deliver the held rearm-resurface"
+  grep -Fx 'check: rearm-resurface' "$out" >/dev/null || fail "the held rearm-resurface was lost across the restart: $(cat "$out")"
+  [ ! -e "$state/.wake-batch-resurface" ] || fail "the delivered rearm-resurface left its durable record"
+  pass "a held rearm-resurface survives a watcher restart and wakes when the batch expires"
+}
+
+test_wake_batch_holds_a_warm_declared_recheck() {
+  local dir state
+  dir=$(make_case wake-batch-recheck); state="$dir/state"
+  recheck_lane "$dir" a 500
+  recheck_watch "$dir" fm-a FM_WAKE_BATCH_SECS=600
+  if ! wait_poll_cycle "$state" "$RECHECK_PID" || ! wait_poll_cycle "$state" "$RECHECK_PID"; then
+    reap "$RECHECK_PID"; fail "a warm due recheck woke inside the wake batch: $(cat "$dir/watch.out")"
+  fi
+  [ ! -s "$state/.wake-queue" ] || fail "a held recheck was queued before the batch woke"
+  [ -e "$state/.recheck-due-test_fm-a" ] || fail "the due recheck was not held for the batch"
+  wait_numeric_file "$state/.wake-batch-since" || fail "holding the recheck did not open the wake batch"
+  printf '%s\n' "$(( $(date +%s) - 700 ))" > "$state/.wake-batch-since"
+  wait_for_exit "$RECHECK_PID" 100 || fail "the expired batch did not deliver the held recheck"
+  grep -F 'stale: test:fm-a (paused' "$dir/watch.out" >/dev/null || fail "the batch wake was not the recheck: $(cat "$dir/watch.out")"
+  [ "$(queued_stale_rows "$state" test:fm-a)" -eq 1 ] || fail "the held recheck was not queued exactly once"
+  pass "a due declared-wait recheck joins the wake batch and is delivered when it expires"
+}
+
+# Signals absorbed when the batch expires must not push a recheck held in the
+# same batch into a second window.
+test_wake_batch_expiry_delivers_a_recheck_beside_absorbed_signals() {
+  local dir state
+  dir=$(make_case wake-batch-recheck-absorbed); state="$dir/state"
+  recheck_lane "$dir" a 500
+  printf 'working: compiling step 2\n' > "$state/w.status"
+  recheck_watch "$dir" fm-a FM_WAKE_BATCH_SECS=600 \
+    FM_FAKE_CREW_STATE_w='state: working · source: run-step · validating (running)'
+  if ! wait_poll_cycle "$state" "$RECHECK_PID" || ! wait_poll_cycle "$state" "$RECHECK_PID"; then
+    reap "$RECHECK_PID"; fail "the held batch woke inside its window: $(cat "$dir/watch.out")"
+  fi
+  [ -e "$state/.recheck-due-test_fm-a" ] || fail "the due recheck was not held for the batch"
+  [ ! -s "$state/.seen-w_status" ] || fail "the routine signal was classified before the batch expired"
+  printf '%s\n' "$(( $(date +%s) - 700 ))" > "$state/.wake-batch-since"
+  wait_for_exit "$RECHECK_PID" 100 || fail "the recheck waited a second window after the signals were absorbed"
+  grep -F 'stale: test:fm-a (paused' "$dir/watch.out" >/dev/null || fail "the batch wake was not the recheck: $(cat "$dir/watch.out")"
+  [ -s "$state/.seen-w_status" ] || fail "the provably-working signal was not absorbed at expiry"
+  pass "an expired batch delivers its held recheck even when its signals are absorbed"
+}
+
+# An urgent recheck wakes over an open batch without classifying its held
+# signal, and without resetting the deadline that signal is owed.
+test_wake_batch_urgent_recheck_keeps_the_held_deadline() {
+  local dir state since
+  dir=$(make_case wake-batch-urgent-recheck-deadline); state="$dir/state"
+  recheck_lane "$dir" a 500 "paused: vendor reply, until $(iso_utc_at "$(( $(date +%s) - 60 ))")"
+  printf 'working: step one\n' > "$state/w.status"
+  recheck_watch "$dir" fm-a FM_WAKE_BATCH_SECS=600
+  wait_for_exit "$RECHECK_PID" 100 || fail "a passed until time waited for the wake batch"
+  grep -F 'declared clearing time has passed' "$dir/watch.out" >/dev/null \
+    || fail "the urgent recheck did not wake: $(cat "$dir/watch.out")"
+  since=$(cat "$state/.wake-batch-since" 2>/dev/null || true)
+  [ -n "$since" ] || fail "the urgent recheck closed the batch holding the routine signal"
+  [ ! -s "$state/.seen-w_status" ] || fail "the urgent recheck classified the held signal without carrying it"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the urgent recheck"
+  printf '%s\n' "$(( since - 700 ))" > "$state/.wake-batch-since"
+  recheck_watch "$dir" fm-a FM_WAKE_BATCH_SECS=600
+  wait_for_exit "$RECHECK_PID" 100 || fail "the held signal was not delivered once its original deadline passed"
+  grep -F "signal: $state/w.status" "$dir/watch.out" >/dev/null || fail "the held signal was lost after the urgent wake: $(cat "$dir/watch.out")"
+  pass "an urgent recheck wakes over an open batch and the held signal keeps its deadline"
+}
+
+test_wake_batch_urgent_and_standing_rechecks_bypass_the_batch() {
+  local dir
+  dir=$(make_case wake-batch-recheck-until)
+  recheck_lane "$dir" a 500 "paused: vendor reply, until $(iso_utc_at "$(( $(date +%s) - 60 ))")"
+  recheck_watch "$dir" fm-a FM_WAKE_BATCH_SECS=600
+  wait_for_exit "$RECHECK_PID" 100 || fail "a passed until time waited for the wake batch"
+  grep -F 'declared clearing time has passed' "$dir/watch.out" >/dev/null \
+    || fail "the urgent recheck did not wake: $(cat "$dir/watch.out")"
+  dir=$(make_case wake-batch-recheck-ceiling)
+  recheck_lane "$dir" a 700
+  recheck_watch "$dir" fm-a FM_WAKE_BATCH_SECS=600 FM_STANDING_WAITS_CEILING_SECS=600
+  wait_for_exit "$RECHECK_PID" 100 || fail "a wait at the standing-waits ceiling waited for the wake batch"
+  grep -F 'stale: test:fm-a (paused' "$dir/watch.out" >/dev/null || fail "the ceiling wake was not the recheck: $(cat "$dir/watch.out")"
+  pass "urgent and standing-ceiling declared-wait rechecks still wake at once while batching is on"
+}
+
 # --- bare turn-end, unverifiable harness: pane churn is the third proof --------
 # A harness whose semantic busy state has no verified source (codex) can never
 # report working, so the two proofs above are unreachable for it and EVERY worker
@@ -7480,6 +7778,19 @@ TRIAGE_CASES=(
   test_provably_working_signal_absorbed
   test_turn_ended_provably_working_absorbed
   test_turn_ended_not_working_surfaced
+  test_wake_batch_coalesces_routine_lines
+  test_wake_batch_urgent_line_bypasses_an_open_batch
+  test_wake_batch_every_urgent_class_bypasses_an_open_batch
+  test_wake_batch_zero_keeps_the_immediate_wake
+  test_wake_batch_config_invalid_value_and_afk
+  test_wake_batch_survives_a_watcher_restart
+  test_wake_batch_holds_rearm_resurface_unless_a_queued_row_is_urgent
+  test_wake_batch_rearm_resurface_bypass_rows
+  test_wake_batch_held_rearm_resurface_survives_a_restart
+  test_wake_batch_holds_a_warm_declared_recheck
+  test_wake_batch_expiry_delivers_a_recheck_beside_absorbed_signals
+  test_wake_batch_urgent_recheck_keeps_the_held_deadline
+  test_wake_batch_urgent_and_standing_rechecks_bypass_the_batch
   test_turn_ended_churning_pane_absorbed
   test_turn_ended_churn_resets_prior_stale_classification
   test_turn_ended_churn_resets_wedge_state_before_stale_poll

@@ -81,6 +81,10 @@ unset TASKS_AXI_FILE TASKS_AXI_BACKEND
 # scout pane with a steer first. Suites that pin the immediate wake predate it,
 # so it is off here; tests/fm-park.test.sh turns it on for the cases it covers.
 export FM_IDLE_PARK_NUDGE=off
+# The watcher's wake batch holds routine signals for minutes before waking.
+# Suites that pin the immediate wake predate it, so it is off here;
+# tests/fm-watch-triage.test.sh turns it on for the cases it covers.
+export FM_WAKE_BATCH_SECS=0
 # Write the tracked default backlog configuration into a fixture home. Never copy
 # "$ROOT/.tasks.toml": an operator's primary checkout keeps a gitignored override
 # there (for example a beads backend at its live backlog), so a copy points the

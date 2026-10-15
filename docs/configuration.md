@@ -628,6 +628,18 @@ The bound is required rather than cosmetic because churn and pane staleness read
 The flag is a home-local supervision-noise preference and is not inherited by secondmate homes, which run their own crew mix.
 [`architecture.md`](architecture.md) owns the triage contract and `bin/fm-watch.sh`'s `signal_turnend_panes_churned` owns the exact evidence and fail-closed boundaries.
 
+## Wake batching (config/wake-batch-secs)
+
+The watcher holds routine wakes in one batch and wakes the supervisor once per batch window instead of once per event.
+The window is `FM_WAKE_BATCH_SECS`, else the number in the optional local `config/wake-batch-secs`, else `180` seconds; `0` restores the immediate wake, and a value that is not a whole number fails to `0`.
+Routine status lines (`working:`, `done:`, `paused:`, `note:`, `resolved:`), bare turn-ends, declared-wait rechecks, and `check: rearm-resurface` join the batch, which opens with the first held item and wakes when it is a window old.
+A `needs-decision:`, `blocked:`, or `failed:` line, a captain-held declaration, a pending-reply escalation, any other captain-relevant line except a plain `done:`, and an unreadable status log wake at once, and that wake classifies every held signal line with it.
+A declared-wait recheck for a changed or unreadable lane, for a declared time that has passed, or for a wait at the standing-waits ceiling still wakes at once.
+A rearm-resurface wakes at once when a queued row's task has such a line the supervisor has not been shown yet, or the queue holds anything other than signal rows and declared-wait rechecks.
+Held signals keep their seen markers unmoved, the batch start is kept in `state/.wake-batch-since`, and a held rearm-resurface in `state/.wake-batch-resurface`, so a restarted watcher holds the same items to the same deadline and never loses one.
+Batching is off while the away-mode daemon owns triage.
+`bin/fm-watch.sh`'s `wake_batch_due` and `signal_span_urgent` own the exact rules.
+
 ## Parked-gate wait deferral (config/wedge-defer-parked-gate)
 
 The optional local, gitignored `config/wedge-defer-parked-gate` presence flag opts this home into a default-off second form of wait evidence in the watcher's wedge timer.
@@ -2586,6 +2598,7 @@ FM_WATCHER_WATCHDOG_INTERVAL=15   # seconds between the watcher's wedge-watchdog
 FM_WATCHER_STALL_BOUND=       # defaults to 3x FM_WATCHER_STALE_GRACE; a live holder whose beacon is stale past this hard bound is evicted with TERM and replaced by the re-arm rather than refused (docs/turnend-guard.md, bin/fm-watch.sh header)
 FM_WATCH_EXTENSION_LOG_KEEP_LINES=0   # opt-in Pi extension diagnostic log (state/.watch-extension.log); unset, empty, non-numeric, zero, or negative disables logging, a positive value keeps that many newest rows; logging never changes supervision behavior
 FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals into one wake
+FM_WAKE_BATCH_SECS=180  # seconds the watcher holds routine signals, declared-wait rechecks, and rearm-resurface wakes in one batch before waking; urgent lines still wake at once; 0 keeps the immediate wake; overrides config/wake-batch-secs (see "Wake batching")
 FM_WATCHER_CLEANUP_LOCK_BOUND=   # optional watcher EXIT marker-lock wait; default and validation: docs/watcher-continuity.md
 FM_TURNEND_CHURN_ABSORB_SECS=900   # longest one endpoint's bare turn-ends may be deferred on pane-churn evidence alone; only consulted when config/turnend-churn-absorb is present
 FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # captain-relevant status regex; nonterminal progress verbs remain excluded even when their prose matches

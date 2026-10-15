@@ -24,6 +24,9 @@
 # condition that stops holding, an endpoint with no agent, the standing-waits
 # ceiling, and heartbeats still wake it; captain-relevant and check wakes are
 # never touched.
+# Outside afk, routine signals, declared-wait rechecks, and rearm-resurface are
+# held in one wake batch (FM_WAKE_BATCH_SECS, wake_batch_due) while urgent
+# status lines still wake at once.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
@@ -300,6 +303,25 @@ esac
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
+# Urgent-bypass wake batching (wake_batch_due below). A routine signal batch, a
+# declared-wait recheck, and a rearm-resurface are held for up to this many
+# seconds from the first held item, then woken together. needs-decision,
+# blocked, failed, captain-held, and every other captain-relevant line except
+# a plain done: still wake at once, carrying the held signal lines with them.
+# FM_WAKE_BATCH_SECS wins over the home's config/wake-batch-secs; unset means
+# 180, 0 keeps the immediate wake, and an unreadable value fails to 0.
+WAKE_BATCH_SECS=${FM_WAKE_BATCH_SECS-$(cat "$CONFIG/wake-batch-secs" 2>/dev/null || true)}
+WAKE_BATCH_SECS=${WAKE_BATCH_SECS//[[:space:]]/}
+case "$WAKE_BATCH_SECS" in
+  '') WAKE_BATCH_SECS=180 ;;
+  *[!0-9]*) WAKE_BATCH_SECS=0 ;;
+  *) WAKE_BATCH_SECS=$((10#$WAKE_BATCH_SECS)) ;;
+esac
+WAKE_BATCH_MARKER="$STATE/.wake-batch-since"
+# A held rearm-resurface, kept on disk so a restarted watcher still owes it.
+WAKE_BATCH_RESURFACE="$STATE/.wake-batch-resurface"
+WAKE_BATCH_HELD=0
+WATCHER_RESURFACE_HELD=0
 CLEANUP_LOCK_BOUND=${FM_WATCHER_CLEANUP_LOCK_BOUND:-2}  # seconds EXIT cleanup may
                                       # wait on the downtime-marker lock; a live
                                       # foreign holder must not strand a TERM'd
@@ -1947,7 +1969,7 @@ supervisor_turn_age() {
 RECHECK_FLUSHING=0
 WAKE_QUEUE_LOCK_HELD=0
 recheck_flush() {  # <poll|ride>
-  local mode=$1 append f key kind win anchor reason task last now fire=0 standing=0 i n=0 first=''
+  local mode=$1 append f key kind win anchor reason task last now fire=0 standing=0 urgent=0 i n=0 first=''
   local -a keys=() wins=() reasons=() held_keys=() held_wins=() held_reasons=()
   [ "$RECHECK_FLUSHING" -eq 0 ] || return 0
   now=$(date +%s)
@@ -1979,7 +2001,7 @@ recheck_flush() {  # <poll|ride>
       continue
     fi
     keys+=("$key"); wins+=("$win"); reasons+=("$reason")
-    [ "$kind" = urgent ] && fire=1
+    [ "$kind" = urgent ] && fire=1 && urgent=1
   done
   if [ "$standing" -eq 1 ]; then
     fire=1
@@ -1994,6 +2016,20 @@ recheck_flush() {  # <poll|ride>
     else
       return 0
     fi
+  fi
+  # A recheck that would fire on its own joins the wake batch instead, unless
+  # one is urgent (a changed or unreadable lane, a declared time reached) or a
+  # lane reached the standing-waits ceiling; the .recheck-due-* records stay
+  # queued, so the batch wake carries them.
+  # Signals run earlier in the cycle, so a due batch has already classified
+  # them and this wake may close it; an urgent or standing recheck wakes
+  # without touching the open batch's deadline.
+  if [ "$mode" = poll ] && [ "$urgent" -eq 0 ] && [ "$standing" -eq 0 ]; then
+    if ! wake_batch_due "declared-wait recheck: ${wins[0]}"; then
+      WAKE_BATCH_HELD=1
+      return 0
+    fi
+    wake_batch_close
   fi
   append=fm_wake_append
   [ "$WAKE_QUEUE_LOCK_HELD" -eq 0 ] || append=fm_wake_append_locked
@@ -2022,10 +2058,122 @@ recheck_flush() {  # <poll|ride>
 }
 
 recheck_ride_along() {  # <reason>
+  # Any wake carries a held rearm-resurface, as it does in this process.
+  rm -f "$WAKE_BATCH_RESURFACE"
   recheck_flush ride
 }
+
 # shellcheck disable=SC2034 # Consumed by wake() in the separately linted transition owner.
 FM_WAKE_PRE_OUTPUT_ACTION=recheck_ride_along
+
+# 0 when routine wakes may be held in a batch: a window is configured and the
+# away-mode daemon, which wants every wake, does not own triage.
+wake_batch_on() {
+  [ "$WAKE_BATCH_SECS" -gt 0 ] && ! afk_present
+}
+
+# 0 when a held item should wake now: batching is off or the open batch is
+# WAKE_BATCH_SECS old. Otherwise it opens the batch if none is open and returns
+# 1, and the caller holds its item and sets WAKE_BATCH_HELD. The batch start is
+# durable state, so a restarted watcher, or one re-armed after an unrelated
+# wake, keeps the same deadline. The batch closes when its own wake goes out
+# (wake_batch_close) or a cycle holds nothing (main loop).
+wake_batch_due() {  # <what-is-held>
+  local since now
+  wake_batch_on || return 0
+  now=$(date +%s)
+  since=$(cat "$WAKE_BATCH_MARKER" 2>/dev/null || true)
+  case "$since" in
+    ''|*[!0-9]*)
+      printf '%s\n' "$now" > "$WAKE_BATCH_MARKER" || return 0
+      triage_log "opened ${WAKE_BATCH_SECS}s wake batch: $1"
+      return 1
+      ;;
+  esac
+  [ "$since" -le "$now" ] && [ $((now - since)) -lt "$WAKE_BATCH_SECS" ] && return 1
+  return 0
+}
+
+wake_batch_close() {
+  rm -f "$WAKE_BATCH_MARKER"
+}
+
+# 0 when the not yet classified span of <status-file> must wake at once:
+# needs-decision, blocked, failed, a captain-held declaration, a pending-reply
+# escalation, any other captain-relevant event except a plain done:, or a span
+# that cannot be classified. working:, paused:, note:, resolved:, and done:
+# lines are routine.
+signal_span_urgent() {  # <status-file>
+  local f=$1 record='' needs=0 rc events event
+  status_span_first_actionable_record "$f" \
+    "$(fm_wake_signal_seen_size "$STATE" "$f")" record needs watcher_beat
+  rc=$?
+  [ "$rc" -ne 2 ] && [ "$needs" != 1 ] || return 0
+  [ "$rc" -eq 0 ] || return 1
+  events=${record#*$'\t'}; events=${events#*$'\t'}
+  while :; do
+    event=${events%% ; *}
+    [ "$(status_line_verb "$event")" = "done" ] || return 0
+    case "$events" in *' ; '*) events=${events#* ; } ;; *) return 1 ;; esac
+  done
+}
+
+# 0 when this cycle's changed signals (scan_signals rows) are all routine and
+# the wake batch still holds them. A held file's seen markers do not move, so
+# it is rescanned every cycle, by a restarted watcher too, and the batch wake,
+# or an urgent line's wake before it, classifies and queues every held line.
+signal_batch_hold() {  # <scan-signals-rows>
+  local sf sig f files=''
+  wake_batch_on || return 1
+  while IFS=$(printf '\t') read -r sf sig f; do
+    [ -n "$sf" ] || continue
+    files="$files $(basename "$f")"
+    case "$f" in *.status) ;; *) continue ;; esac
+    if signal_span_urgent "$f"; then
+      triage_log "urgent signal bypasses the wake batch: $f"
+      return 1
+    fi
+  done <<EOF
+$1
+EOF
+  wake_batch_due "signal:$files" && return 1
+  WAKE_BATCH_HELD=1
+  return 0
+}
+
+# 0 when the durable wake queue a rearm-resurface re-announces holds a row that
+# must not wait for the wake batch: any row other than a signal row or a
+# declared-wait recheck (a stale row whose reason starts with paused), a
+# needs-decision row, or a row whose task's status log has a line the
+# supervisor has not been shown yet that is needs-decision, blocked, failed,
+# captain-held, or any other captain-relevant line except a plain done:. A log
+# whose unshown lines cannot be read counts as urgent.
+wake_queue_rows_urgent() {
+  local kind key payload task lines line
+  [ -s "$FM_WAKE_QUEUE" ] || return 1
+  while IFS=$(printf '\t') read -r _ _ kind key payload; do
+    case "$payload" in needs-decision:*) return 0 ;; esac
+    case "$kind" in
+      signal) task=${key%.status}; task=${task%.turn-ended} ;;
+      stale)
+        case "$payload" in "stale: $key (paused "*) ;; *) return 0 ;; esac
+        task=$(window_to_task "$key" "$STATE") ;;
+      *) return 0 ;;
+    esac
+    [ -n "$task" ] || continue
+    lines=$(status_new_lines_since_cursor "$STATE/$task.status") || return 0
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      status_is_captain_held "$line" && return 0
+      if status_is_captain_relevant "$line" && [ "$(status_line_verb "$line")" != "done" ]; then
+        return 0
+      fi
+    done <<EOF
+$lines
+EOF
+  done < "$FM_WAKE_QUEUE"
+  return 1
+}
 
 # Retire every per-window recheck record whose window no longer declares a wait
 # on this poll, so a lane that resumed, finished, or was torn down cannot leave
@@ -2921,6 +3069,13 @@ if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
 elif [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
   WATCHER_RECOVERY_PENDING=1
 fi
+# The announced episode reopens only over a non-empty queue, so a stopped
+# watcher's held rearm-resurface is inherited from its durable record.
+if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ] \
+  && [ "${FM_WATCH_FOREGROUND_CHECKPOINT:-0}" != 1 ] \
+  && [ -e "$WAKE_BATCH_RESURFACE" ]; then
+  WATCHER_RESURFACE_HELD=1
+fi
 # Side-band ledger publication, detached from the poll loop.
 #
 # The poll loop owns the liveness beacon below, and fm-guard.sh reads that
@@ -3157,12 +3312,23 @@ resurface_after_downtime() {
   if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
     return 0
   fi
-  if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
+  if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ] && [ "$WATCHER_RESURFACE_HELD" -ne 1 ]; then
     if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
       echo "watcher: recovery state could not be consumed safely" >&2
       exit 1
     fi
     [ "$FM_RECOVERY_MARKER_ACTION" = recover ] || return 0
+  fi
+  # The re-announcement joins the wake batch unless a queued row is urgent. A
+  # consumed recovery marker is remembered here, since arm_check will not
+  # report it again, and in WAKE_BATCH_RESURFACE for a restarted watcher.
+  # This wake leaves the batch open: it runs before the signal scan, so the
+  # next watcher still owes held signals their original deadline.
+  if wake_batch_on && ! wake_queue_rows_urgent && ! wake_batch_due "check: rearm-resurface" \
+    && : > "$WAKE_BATCH_RESURFACE"; then
+    WATCHER_RESURFACE_HELD=1
+    WAKE_BATCH_HELD=1
+    return 0
   fi
   wake "check: rearm-resurface"
 }
@@ -3227,6 +3393,7 @@ while :; do
 
   WATCHER_CYCLE=$((WATCHER_CYCLE + 1))
   printf '%s\n' "$WATCHER_CYCLE" > "$STATE/.last-watcher-beat"
+  WAKE_BATCH_HELD=0
 
   # Opt-in fleet activity ledger (docs/fleet-ledger.md): pick up newly appended
   # status lines before this cycle can exit on a wake. Off costs one file test.
@@ -3448,6 +3615,9 @@ EOF
   # signature for an already-pending file (last write wins below).
   watcher_beat
   pending=$(scan_signals)
+  if [ -n "$pending" ] && signal_batch_hold "$pending"; then
+    pending=''
+  fi
   if [ -n "$pending" ]; then
     sleep "$SIGNAL_GRACE"
     watcher_beat
@@ -3555,6 +3725,7 @@ EOF
       done <<EOF
 $FM_SIGNAL_SURFACE_ENDPOINTS
 EOF
+      wake_batch_close
       wake "$reason"
     else
       while IFS=$(printf '\t') read -r sf sig f; do
@@ -3578,6 +3749,7 @@ EOF
         done <<EOF
 $pending
 EOF
+        wake_batch_close
         wake "$reason"
       fi
       triage_log "absorbed benign $reason"
@@ -3849,6 +4021,10 @@ EOF
       triage_log "absorbed heartbeat (no captain-relevant change)"
     fi
   fi
+
+  # A cycle that held nothing closes the wake batch, so the next routine item
+  # opens a full window rather than inheriting an old deadline.
+  [ "$WAKE_BATCH_HELD" -eq 1 ] || rm -f "$WAKE_BATCH_MARKER"
 
   # Terminal wait: a bounded native-event wait for push-capable homes (herdr),
   # else the blind poll sleep. See event_wait_or_sleep.
