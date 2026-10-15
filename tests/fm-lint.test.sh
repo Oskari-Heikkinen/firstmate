@@ -176,10 +176,10 @@ test_list_files_reports_the_shell_inventory() {
   # working-tree diff a local test run happens to have, so this stays a pure
   # inventory check independent of fm-lint.sh's own changed-file mode below.
   listed=$(CI=true "$LINT" --list-files)
-  expected=$(find bin bin/backends tests -maxdepth 1 -type f -name '*.sh' -print | LC_ALL=C sort)
+  expected=$(find bin bin/backends -maxdepth 1 -type f -name '*.sh' -print | LC_ALL=C sort)
   [ "$(printf '%s\n' "$listed" | LC_ALL=C sort)" = "$expected" ] \
-    || fail "fm-lint.sh --list-files did not return the complete shell inventory"
-  pass "fm-lint.sh --list-files reports the complete shell inventory"
+    || fail "fm-lint.sh --list-files did not return the complete bin/ shell inventory"
+  pass "fm-lint.sh --list-files reports the complete bin/ shell inventory"
 }
 
 test_canonical_partitions_preserve_full_lint() {
@@ -229,6 +229,9 @@ test_canonical_partitions_preserve_full_lint() {
   rc=0
   "$LINT" --partition 1of2 bin/fm-lint.sh > "$tmp/refused" 2>&1 || rc=$?
   [ "$rc" = 2 ] || fail "partition accepted an explicit subset"
+  rc=0
+  "$LINT" --partition 1of2 --changed > "$tmp/refused" 2>&1 || rc=$?
+  [ "$rc" = 2 ] || fail "partition accepted --changed"
   pass "canonical lint partitions preserve complete source-aware coverage and reject weakened modes"
 }
 
@@ -536,6 +539,36 @@ test_changed_mode_lints_only_the_changed_file() {
   pass "fm-lint.sh changed mode lints only the changed canonical file"
 }
 
+test_ci_changed_mode_lints_changed_files_with_full_analysis() {
+  local tmp fakebin log mode_log flags diff_file out rc
+  tmp=$(fm_test_tmproot fm-lint-ci-changed)
+  fakebin=$(fm_fakebin "$tmp")
+  fm_lint_stub_git "$fakebin"
+  log="$tmp/shellcheck.log"
+  mode_log="$tmp/mode.log"
+  flags="$tmp/flags.log"
+  fm_lint_stub_shellcheck "$fakebin" "$log"
+  diff_file="$tmp/diff.nul"
+  fm_lint_write_diff_file "$diff_file" \
+    "bin/fm-install-shellcheck.sh" "tests/fm-lint.test.sh" "README.md"
+
+  out=$(PATH="$fakebin:$PATH" CI=true GITHUB_ACTIONS=true FM_LINT_JOBS=1 \
+    FM_TEST_GIT_BRANCH=ci/feature FM_TEST_GIT_DIFF_FILE="$diff_file" \
+    FM_TEST_MODE_LOG="$mode_log" FM_TEST_FLAG_LOG="$flags" "$LINT" --changed 2>&1) \
+    || fail "CI --changed lint run failed"$'\n'"$out"
+  [ "$(LC_ALL=C sort -u "$log")" = "$(printf 'bin/fm-install-shellcheck.sh\ntests/fm-lint.test.sh')" ] \
+    || fail "CI --changed did not lint exactly the changed bin and test files"$'\n'"logged: $(cat "$log")"
+  [ "$(LC_ALL=C sort -u "$mode_log")" = on ] \
+    || fail "CI --changed did not keep full ShellCheck analysis"
+  [ "$(LC_ALL=C sort -u "$flags")" = "$(printf 'exclude=none\nexternal-sources=yes')" ] \
+    || fail "CI --changed weakened source-aware analysis"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" CI=true GITHUB_ACTIONS=true "$LINT" --changed bin/fm-lint.sh 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "--changed accepted explicit paths (exit $rc)"$'\n'"$out"
+  pass "fm-lint.sh --changed lints only changed files with full analysis in CI"
+}
+
 test_main_branch_forces_full_lint() {
   local tmp fakebin listed expected
   tmp=$(fm_test_tmproot fm-lint-main-full)
@@ -546,7 +579,7 @@ test_main_branch_forces_full_lint() {
   # not the ambient CI signal a real CI run would otherwise supply.
   listed=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' \
     FM_TEST_GIT_BRANCH=main "$LINT" --list-files)
-  expected=$(find bin bin/backends tests -maxdepth 1 -type f -name '*.sh' -print | LC_ALL=C sort)
+  expected=$(find bin bin/backends -maxdepth 1 -type f -name '*.sh' -print | LC_ALL=C sort)
   [ "$(printf '%s\n' "$listed" | LC_ALL=C sort)" = "$expected" ] \
     || fail "fm-lint.sh did not force a full lint when HEAD is on main"
   pass "fm-lint.sh forces a full lint when HEAD is on main"
@@ -715,8 +748,8 @@ SH
 }
 
 # fm_lint_tiny_repo <dir>: a private copy of the lint owner over a minimal
-# canonical inventory of four roots: the copied owner, its no-op workflow
-# check, one backend, and one test. The owner resolves its root from its own
+# inventory: the copied owner, its no-op workflow check, and one backend form
+# the full bin/ set, plus one test that set leaves out. The owner resolves its root from its own
 # path, so context-driven mode selection runs exactly as in this repository
 # without iterating the real inventory. Prints the copied owner's path.
 fm_lint_tiny_repo() {
@@ -744,8 +777,8 @@ test_main_branch_keeps_external_sources() {
     FM_TEST_GIT_BRANCH=main \
     FM_TEST_FLAG_LOG="$flag_log" "$lint" 2>&1) \
     || fail "main-branch lint failed"$'\n'"$out"
-  [ "$(grep -c . "$log")" -eq 4 ] \
-    || fail "main-branch lint did not run the full canonical set"$'\n'"$(cat "$log")"
+  [ "$(LC_ALL=C sort "$log")" = "$(printf 'bin/backends/noop.sh\nbin/fm-lint-workflows.sh\nbin/fm-lint.sh')" ] \
+    || fail "main-branch lint did not run exactly the full bin/ canonical set"$'\n'"$(cat "$log")"
   fm_lint_assert_flag_log "$flag_log" yes none
   pass "fm-lint.sh on main keeps source following without the local exclusion list"
 }
@@ -764,8 +797,8 @@ test_merge_base_less_keeps_external_sources() {
     FM_TEST_GIT_BRANCH=feature FM_TEST_GIT_MERGE_BASE_OK=0 \
     FM_TEST_FLAG_LOG="$flag_log" "$lint" 2>&1) \
     || fail "merge-base-less lint failed"$'\n'"$out"
-  [ "$(grep -c . "$log")" -eq 4 ] \
-    || fail "merge-base-less lint did not run the full canonical set"$'\n'"$(cat "$log")"
+  [ "$(LC_ALL=C sort "$log")" = "$(printf 'bin/backends/noop.sh\nbin/fm-lint-workflows.sh\nbin/fm-lint.sh')" ] \
+    || fail "merge-base-less lint did not run exactly the full bin/ canonical set"$'\n'"$(cat "$log")"
   fm_lint_assert_flag_log "$flag_log" yes none
   pass "fm-lint.sh without a merge-base keeps source following without the local exclusion list"
 }
@@ -907,6 +940,8 @@ test_local_exclusion_list_covers_every_no_external_sources_code() {
   tmp=$(fm_test_tmproot fm-lint-nox-complete)
   files_file="$tmp/files"
   CI=true "$LINT" --list-files > "$files_file"
+  # Test files reach the local split when changed, so they belong in the sweep.
+  printf '%s\n' tests/*.sh >> "$files_file"
   [ -s "$files_file" ] || fail "CI --list-files returned no canonical lint roots"
   files=()
   while IFS= read -r path; do
@@ -2028,6 +2063,7 @@ test_sidecar_result_exit_reflects_final_status
 test_roots_sidecar_records_per_root_lifecycle
 test_seeded_module_boundary_parity
 test_changed_mode_lints_only_the_changed_file
+test_ci_changed_mode_lints_changed_files_with_full_analysis
 test_main_branch_forces_full_lint
 test_explicit_path_bypasses_changed_logic
 test_zero_changed_files_exits_clean

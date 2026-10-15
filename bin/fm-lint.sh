@@ -2,14 +2,16 @@
 # fm-lint.sh - the single owner of firstmate's lint definition.
 #
 # Runs its file set with ShellCheck's default severity, extended analysis,
-# ambient configuration disabled, and one exact ShellCheck version. CI selects
-# canonical partitions; no-mistakes invokes the context-selected default, so
-# both use this owner without duplicating lint configuration.
+# ambient configuration disabled, and one exact ShellCheck version. CI lints
+# the changed files on every ci/** push (--changed), all of bin/ in canonical
+# partitions on main, and every test file weekly (explicit tests/*.sh);
+# no-mistakes invokes the context-selected default, so all of them use this
+# owner without duplicating lint configuration.
 # The explicit --fast mode is local-only and disables ShellCheck's extended
 # dataflow analysis while preserving ordinary shell lint checks and source
 # following. CI, main, and merge-base-less runs keep --norc --external-sources
-# with full dataflow over the whole canonical set; explicit paths in CI get
-# that same full pass over just the given paths.
+# with full dataflow over the whole canonical set; explicit paths and --changed
+# in CI get that same full pass over just the selected paths.
 #
 # Local split mode. Outside CI, changed-file mode (including the no-mistakes
 # lint step) and explicit paths never run ShellCheck with --external-sources
@@ -45,17 +47,20 @@
 #
 # With no explicit paths, the file set and source-following posture depend
 # on context:
-#   - In CI (GITHUB_ACTIONS=true or CI=true), on the main branch, or when no
-#     merge-base against origin/main (or local main) can be found, it lints
-#     the full canonical set: bin/*.sh bin/backends/*.sh tests/*.sh, with
-#     --external-sources and full dataflow. This is what CI always runs, so
-#     CI coverage never depends on a local diff.
-#   - Otherwise (an ordinary local branch with a real merge-base) it lints
-#     only the canonical-set files changed since that merge-base, including
-#     uncommitted local edits, via plain local `git diff` (no network, no
-#     `gh`), in local split mode. A branch with zero matching changed files
-#     skips ShellCheck and prints a "no changed lint targets" note, then
+#   - In CI (GITHUB_ACTIONS=true or CI=true) without --changed, on the main
+#     branch, or when no merge-base against origin/main (or local main) can be
+#     found, it lints the full canonical set: bin/*.sh bin/backends/*.sh, with
+#     --external-sources and full dataflow. Test files are not in the full
+#     set; CI lints them when they change and all of them weekly.
+#   - Otherwise (an ordinary local branch with a real merge-base, or --changed
+#     in CI) it lints only the bin/*.sh, bin/backends/*.sh, and tests/*.sh
+#     files changed since that merge-base, including uncommitted local edits,
+#     via plain local `git diff` (no network, no `gh`), in local split mode
+#     outside CI and full mode in CI. A branch with zero matching changed
+#     files skips ShellCheck and prints a "no changed lint targets" note, then
 #     still runs the backend-purity check and validates workflows.
+#     A changed library can raise findings in an unchanged script that sources
+#     it; the full bin/ lint on main catches those.
 # Explicit paths always bypass this file-set selection and lint exactly the
 # given paths, in local split mode outside CI and full mode in CI, without the
 # workflow YAML check.
@@ -75,7 +80,7 @@
 # the packing notes below); --list-files exposes their actual roots. Within any
 # run, every heavy root shares one worker, so two heavy ShellCheck analyses never
 # overlap on a host.
-# Partition mode is always full source-aware analysis, never changed-only or
+# Partition mode is always full source-aware analysis, never --changed or
 # --fast, and does not accept explicit paths. Each partition also runs workflow
 # lint and backend-purity checks, keeping either invocation independently useful.
 #
@@ -119,6 +124,7 @@
 #   fm-lint.sh <path>...               lint explicit roots (local split mode outside CI)
 #   fm-lint.sh --jobs <1|2> [path]...  override concurrent worker count
 #   fm-lint.sh --partition <k>of<n>    lint one full-rigor canonical CI partition
+#   fm-lint.sh --changed               lint only changed files, also in CI
 #   fm-lint.sh --telemetry <path> ...  write a quiet metrics snapshot
 #   fm-lint.sh --required-version      print the ShellCheck pin
 #   fm-lint.sh --list-files            print the file set that would be linted
@@ -673,6 +679,7 @@ FAST=0
 ANALYSIS_MODE=full
 PARTITION=
 PARTITION_REQUESTED=0
+CHANGED_REQUESTED=0
 LIST_FILES=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -703,6 +710,10 @@ while [ "$#" -gt 0 ]; do
     --partition=*)
       PARTITION=${1#*=}
       PARTITION_REQUESTED=1
+      shift
+      ;;
+    --changed)
+      CHANGED_REQUESTED=1
       shift
       ;;
     --fast)
@@ -743,13 +754,18 @@ case "$PARTITION" in
       printf 'fm-lint.sh: --partition index must be within 1..n, got %s.\n' "$PARTITION" >&2
       exit 2
     fi
-    if [ "$FAST" -eq 1 ] || [ "$#" -gt 0 ]; then
-      printf 'fm-lint.sh: --partition requires full canonical lint; omit --fast and explicit paths.\n' >&2
+    if [ "$FAST" -eq 1 ] || [ "$CHANGED_REQUESTED" -eq 1 ] || [ "$#" -gt 0 ]; then
+      printf 'fm-lint.sh: --partition requires full canonical lint; omit --fast, --changed, and explicit paths.\n' >&2
       exit 2
     fi
     ;;
   *) printf 'fm-lint.sh: --partition must be <k>of<n> with 2 <= n <= 16, got %s.\n' "$PARTITION" >&2; exit 2 ;;
 esac
+
+if [ "$CHANGED_REQUESTED" -eq 1 ] && [ "$#" -gt 0 ]; then
+  printf 'fm-lint.sh: --changed selects its own files; omit explicit paths.\n' >&2
+  exit 2
+fi
 
 if [ "$FAST" -eq 1 ] && { [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]; }; then
   printf 'fm-lint.sh: --fast is local-only; CI uses full ShellCheck analysis.\n' >&2
@@ -772,10 +788,10 @@ fm_lint_changed_base_ref() {
   return 1
 }
 
-# fm_lint_is_canonical_root tests membership in the canonical set (a direct
-# *.sh child of bin/, bin/backends/, or tests/) without the shell case
+# fm_lint_is_changed_root tests membership in the changed-file roots (a
+# direct *.sh child of bin/, bin/backends/, or tests/) without the shell case
 # statement's non-pathname wildcard matching a path separator by accident.
-fm_lint_is_canonical_root() {
+fm_lint_is_changed_root() {
   local path=$1 dir base
   case "$path" in
     */*) dir=${path%/*}; base=${path##*/} ;;
@@ -800,7 +816,8 @@ if [ "$#" -gt 0 ]; then
   ROOTS=("$@")
 else
   full_lint=1
-  if [ -z "$PARTITION" ] && [ "${GITHUB_ACTIONS:-}" != true ] && [ "${CI:-}" != true ] \
+  if [ -z "$PARTITION" ] \
+    && { [ "$CHANGED_REQUESTED" -eq 1 ] || { [ "${GITHUB_ACTIONS:-}" != true ] && [ "${CI:-}" != true ]; }; } \
     && command -v git >/dev/null 2>&1 \
     && git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     && [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" != main ]; then
@@ -811,12 +828,14 @@ else
   fi
 
   if [ "$full_lint" -eq 1 ]; then
-    ROOTS=(bin/*.sh bin/backends/*.sh tests/*.sh)
+    [ "$CHANGED_REQUESTED" -eq 0 ] \
+      || printf 'fm-lint.sh: --changed found no merge-base off main; linting the full canonical set\n' >&2
+    ROOTS=(bin/*.sh bin/backends/*.sh)
   else
     CHANGED_MODE=1
     ROOTS=()
     while IFS= read -r -d '' changed_path; do
-      fm_lint_is_canonical_root "$changed_path" || continue
+      fm_lint_is_changed_root "$changed_path" || continue
       [ -f "$changed_path" ] || continue
       ROOTS+=("$changed_path")
     done < <(git diff --name-only --diff-filter=ACMR -z "$merge_base" -- 2>/dev/null | LC_ALL=C sort -z)

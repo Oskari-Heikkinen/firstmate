@@ -34,6 +34,7 @@ jobs:
       layout: ${{ steps.layout.outputs.layout }}
       tiers: ${{ steps.layout.outputs.tiers }}
       shards: ${{ steps.layout.outputs.shards }}
+      lint: ${{ steps.layout.outputs.lint }}
       changed: ${{ steps.layout.outputs.changed }}
       herdr_paths: ${{ steps.layout.outputs.herdr_paths }}
       baseline: ${{ steps.baseline.outputs.found }}
@@ -119,10 +120,20 @@ jobs:
             full) tiers=gate,full; shards='[1,2,3,4,5,6,7]' ;;
             weekly) tiers=weekly,live; shards='[1,2,3,4,5]' ;;
           esac
+          # Lint scopes: the changed files on every ci/** push, all of bin/ in
+          # three partitions on the main layout; the weekly test-lint job
+          # covers every test file.
+          lint='[]'
+          case "$layout:$REF" in
+            ci:*) lint='["changed"]' ;;
+            full:refs/heads/main) lint='["1of3","2of3","3of3"]' ;;
+            full:*) lint='["changed","1of3","2of3","3of3"]' ;;
+          esac
           summary "Layout: $layout (event $EVENT, ref $REF)"
           out layout "$layout"
           out tiers "$tiers"
           out shards "$shards"
+          out lint "$lint"
           out changed "$changed"
           out herdr_paths "$herdr_paths"
       # Shards pack by measured durations: the aggregate timing artifact of the
@@ -242,7 +253,7 @@ jobs:
           if-no-files-found: warn
 
   lint:
-    name: Lint ${{ matrix.partition }}
+    name: Lint ${{ matrix.scope }}
     needs: plan
     if: needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full'
     runs-on: ubuntu-latest
@@ -251,9 +262,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3, 4]
+        scope: ${{ fromJSON(needs.plan.outputs.lint) }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # --changed diffs against origin/main.
+          fetch-depth: 0
       - name: Install pinned ShellCheck
         run: |
           set -eu
@@ -268,7 +282,7 @@ jobs:
       # and GitHub workflow lint). Do not re-spell the checks here; keep CI
       # and the pre-push gate on this script so a self-broken ci.yml still
       # fails locally before merge.
-      - name: Lint canonical partition
+      - name: Lint ${{ matrix.scope }}
         env:
           # Fail closed rather than lint uncapped when a configured per-root
           # bound (wall deadline or memory rlimit) cannot be enforced here.
@@ -280,19 +294,23 @@ jobs:
           # cap (~8 GiB GHC heap). This is address space, not resident memory;
           # keep heavy roots serialized and retain full source/dataflow lint.
           FM_LINT_ROOT_MEMORY_KIB: '16777216'
+          SCOPE: ${{ matrix.scope }}
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-lint"
-          bin/fm-lint.sh --partition "${{ matrix.partition }}of${{ strategy.job-total }}" \
-            --telemetry "$RUNNER_TEMP/fm-lint/partition-${{ matrix.partition }}.tsv"
+          case "$SCOPE" in
+            changed) scope_args=(--changed) ;;
+            *) scope_args=(--partition "$SCOPE") ;;
+          esac
+          bin/fm-lint.sh "${scope_args[@]}" --telemetry "$RUNNER_TEMP/fm-lint/lint-$SCOPE.tsv"
       - name: Upload lint telemetry
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fm-lint-telemetry-${{ matrix.partition }}
+          name: fm-lint-telemetry-${{ matrix.scope }}
           path: |
-            ${{ runner.temp }}/fm-lint/partition-${{ matrix.partition }}.tsv
-            ${{ runner.temp }}/fm-lint/partition-${{ matrix.partition }}.roots.tsv
+            ${{ runner.temp }}/fm-lint/lint-${{ matrix.scope }}.tsv
+            ${{ runner.temp }}/fm-lint/lint-${{ matrix.scope }}.roots.tsv
           if-no-files-found: warn
 
   # The plan's tiers, packed into duration-balanced shards by bin/fm-test-run.sh
@@ -642,6 +660,7 @@ jobs:
 
           shell_inventory="$RUNNER_TEMP/fm-shell-inventory"
           bin/fm-lint.sh --list-files > "$shell_inventory"
+          printf '%s\n' tests/*.sh >> "$shell_inventory"
           parse_fail=0
           while IFS= read -r f; do
             /bin/bash -n "$f" || { echo "::error::stock macOS Bash 3.2 failed to parse $f"; parse_fail=1; }
@@ -714,7 +733,7 @@ jobs:
             exit 1
           }
 
-  # Weekly full lint of the test files, which the per-push lint will leave out.
+  # Weekly full lint of every test file; per-push lint covers only changed ones.
   test-lint:
     name: Test-file lint
     needs: plan

@@ -69,10 +69,12 @@ Observed maxima are packing weights, not future upper bounds, and a timed-out sh
 
 ## Lint partitions
 
-`bin/fm-lint.sh` owns the canonical CI partitions (`--partition <k>of<n>`; the ci.yml matrix sets `n`), each running full source-aware ShellCheck analysis with two workers, workflow validation, and backend-purity checks.
+Every ci/** push lints only its changed `bin/` and `tests/` shell files with `bin/fm-lint.sh --changed`, a full source-aware pass over just those files.
+The main layout lints all of `bin/` in the canonical partitions `bin/fm-lint.sh` owns (`--partition <k>of<n>`; the plan job sets the scopes), each running full source-aware ShellCheck analysis with two workers, workflow validation, and backend-purity checks.
+A changed library's findings in unchanged scripts that source it surface on that main-layout lint.
 CI requires its per-root bounds, so an unenforceable deadline or address-space limit refuses lint rather than running uncapped; the script header owns the envelope and per-root execution contract.
 Its `--list-files` interface exposes partition membership; `tests/fm-lint.test.sh` verifies complete/disjoint executed roots and unchanged analysis flags.
-The workflow uploads each partition's telemetry plus its per-root lifecycle sidecar to distinguish analysis cost, memory use, and host contention.
+The workflow uploads each lint scope's telemetry plus its per-root lifecycle sidecar to distinguish analysis cost, memory use, and host contention.
 The weekly test-file lint runs `bin/fm-lint.sh tests/*.sh`, which is a full pass over those paths in CI.
 
 ## Local entry points
