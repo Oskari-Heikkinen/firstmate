@@ -14,8 +14,10 @@ The slack is reported separately, together with how much of it the next compacti
 
 A compaction can drop a 1 MiB block of the disk file only when every ext4 block inside it is free.
 Free space scattered in holes smaller than 1 MiB between live data therefore stays allocated through any compaction, and through sparse mode too.
-The monitor reads that fragmented free space from `/proc/fs/ext4/<device>/mb_groups` and subtracts it, so "reclaimable" means what a compaction can really give back.
-When that table or the disk file cannot be read, the monitor reports reclaimable as unknown rather than guessing.
+The monitor reads that fragmented free space from `/proc/fs/ext4/<device>/mb_groups` and subtracts it.
+ext4's own metadata (inode tables, journal, bitmaps) also sits in the disk file's slack, because `df` counts it neither as used nor in its total, and no compaction returns it.
+The monitor takes it as the root block device's size minus the `df` total and subtracts it too, so "reclaimable" means what a compaction can really give back, never more.
+When that table, the device size, or the disk file cannot be read, the monitor reports reclaimable as unknown rather than guessing.
 
 The margin is the room that must remain after a job's expected write, 20 GiB by default (`FM_DISK_ROOM_MARGIN`).
 Sizes are binary (G = GiB), matching what Windows Explorer shows as GB.

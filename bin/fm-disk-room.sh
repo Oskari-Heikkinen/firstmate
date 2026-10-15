@@ -70,6 +70,9 @@
 #                         single match of /mnt/c/Users/*/AppData/Local/wsl/*/ext4.vhdx
 #                         or .../Packages/*/LocalState/ext4.vhdx)
 #   FM_DISK_ROOM_MB_GROUPS  ext4 mb_groups file (default /proc/fs/ext4/<dev>/mb_groups)
+#   FM_DISK_ROOM_DEV_SIZE  byte size of the root's block device (default: lsblk
+#                         on the findmnt source); with df's total it gives the
+#                         ext4 metadata size. Not a number: unreadable.
 #   FM_DISK_ROOM_COMPACT_RESULT  last-result file written by fm-wsl-reclaim.ps1
 #                         (default <host>/ProgramData/firstmate/wsl-compact-last.txt)
 #   FM_DISK_ROOM_SHADOW_RECORD  shadow storage max/used written by the elevated
@@ -188,6 +191,20 @@ mb_groups_path() {
   src=$(findmnt -no SOURCE --target "${FM_DISK_ROOM_ROOT:-/}" 2>/dev/null | head -1) || return 1
   dev=${src##*/}
   [ -n "$dev" ] && printf '/proc/fs/ext4/%s/mb_groups\n' "$dev"
+}
+
+# dev_size -> bytes of the block device under the measured root.
+dev_size() {
+  local src size
+  if [ -n "${FM_DISK_ROOM_DEV_SIZE:-}" ]; then
+    size=$FM_DISK_ROOM_DEV_SIZE
+  else
+    src=$(findmnt -no SOURCE --target "${FM_DISK_ROOM_ROOT:-/}" 2>/dev/null | head -1)
+    [ -n "$src" ] && [ -b "$src" ] || return 1
+    size=$(lsblk -bdno SIZE -- "$src" 2>/dev/null | tr -d ' ')
+  fi
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$size"
 }
 
 # fragmented_free BLOCKSIZE -> bytes of ext4 free space in buddies smaller than
@@ -362,7 +379,7 @@ with_lock() {
 
 # measure [EXCLUDE]: sets globals; returns 1 when a required reading fails.
 measure() {
-  local host root line bs vhdx result
+  local host root line bs vhdx result fs_size dev
   ERR=''
   root=${FM_DISK_ROOM_ROOT:-/}
   host=$(host_mount)
@@ -388,7 +405,7 @@ measure() {
   if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - RESERVED )) -lt "$ROOM" ]; then
     ROOM=$(( HOST_FREE - SHADOW_RES - RESERVED ))
   fi
-  VHDX=''; VHDX_SIZE=''; FRAG=''; SLACK=''; RECLAIM=''
+  VHDX=''; VHDX_SIZE=''; FRAG=''; OVERHEAD=''; SLACK=''; RECLAIM=''
   if [ -n "$HOST" ] && vhdx=$(discover_vhdx); then
     VHDX=$vhdx
     VHDX_SIZE=$(stat -c %s -- "$vhdx" 2>/dev/null) || VHDX_SIZE=''
@@ -397,7 +414,11 @@ measure() {
   [ -n "$bs" ] && FRAG=$(fragmented_free "$bs") || FRAG=''
   if [ -n "$VHDX_SIZE" ]; then
     SLACK=$(( VHDX_SIZE - LINUX_USED )); [ "$SLACK" -lt 0 ] && SLACK=0
-    if [ -n "$FRAG" ]; then RECLAIM=$(( SLACK - FRAG )); [ "$RECLAIM" -lt 0 ] && RECLAIM=0; fi
+    # ext4's own metadata (inode tables, journal, bitmaps) sits in the disk
+    # file's slack but is neither df used nor df total, and compaction keeps it.
+    fs_size=$(df_field "$root" size)
+    if [ -n "$fs_size" ] && dev=$(dev_size) && [ "$dev" -ge "$fs_size" ]; then OVERHEAD=$(( dev - fs_size )); fi
+    if [ -n "$FRAG" ] && [ -n "$OVERHEAD" ]; then RECLAIM=$(( SLACK - FRAG - OVERHEAD )); [ "$RECLAIM" -lt 0 ] && RECLAIM=0; fi
   fi
   COMPACT=''
   result=${FM_DISK_ROOM_COMPACT_RESULT:-${HOST:+$HOST/ProgramData/firstmate/wsl-compact-last.txt}}
@@ -422,7 +443,7 @@ advice() {
     printf 'compaction would reclaim under 5 GiB; data must be freed or moved'
   elif [ -n "$HOST" ]; then
     printf 'reclaimable by compaction unknown (%s); run fm-disk-room.sh status' \
-      "$([ -n "$VHDX_SIZE" ] && echo 'fragmented free space unreadable' || echo 'disk file not found')"
+      "$(if [ -z "$VHDX_SIZE" ]; then echo 'disk file not found'; elif [ -z "$FRAG" ]; then echo 'fragmented free space unreadable'; else echo 'ext4 metadata size unreadable'; fi)"
   else
     printf 'data must be freed or moved'
   fi
@@ -690,10 +711,10 @@ cmd_status() {
   measure || die "$ERR"
   results_root
   if [ "$json" = 1 ]; then
-    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s}\n' \
+    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s}\n' \
       "$MARGIN" "$HOST" "${HOST_FREE:-null}" "$LINUX_FREE" "$LINUX_USED" "$RESERVED" "$ROOM" \
       "$([ "$ROOM" -lt "$MARGIN" ] && echo true || echo false)" "$VHDX" "${VHDX_SIZE:-null}" \
-      "${FRAG:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}" \
+      "${FRAG:-null}" "${OVERHEAD:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}" \
       "$SHADOW_RES" "$SHADOW_SRC" "${SHADOW_MAX:-null}" "${SHADOW_USED:-null}" "${SHADOW_EVENTS:-null}"
     return 0
   fi
@@ -708,8 +729,11 @@ cmd_status() {
   fi
   if [ -n "$VHDX_SIZE" ]; then
     if [ -n "$RECLAIM" ]; then
-      printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s GiB; reclaimable by compaction about %s GiB\n' \
-        "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(gib "$FRAG")" "$(gib "$RECLAIM")"
+      printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s GiB and ext4 metadata %s GiB; reclaimable by compaction about %s GiB\n' \
+        "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(gib "$FRAG")" "$(gib "$OVERHEAD")" "$(gib "$RECLAIM")"
+    elif [ -n "$FRAG" ]; then
+      printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s GiB, ext4 metadata unknown; reclaimable by compaction unknown\n' \
+        "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(gib "$FRAG")"
     else
       printf 'disk file: %s GiB (%s); slack %s GiB, fragmented unknown; reclaimable by compaction unknown\n' \
         "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")"
@@ -914,7 +938,7 @@ cmd_arm() {
   tmp=$(umask 077; mktemp "$state/.fm-disk-room-check.XXXXXX") || die "cannot write in $state"
   {
     printf '%s\n' '#!/usr/bin/env bash' '# Auto-generated by fm-disk-room.sh arm - real disk room watcher check.'
-    for v in MARGIN HOST ROOT VHDX MB_GROUPS COMPACT_RESULT SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE \
+    for v in MARGIN HOST ROOT VHDX MB_GROUPS DEV_SIZE COMPACT_RESULT SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE \
       RESULTS_ROOT SAMPLES GROWTH_MAX C_FREE_MIN D_FREE_MIN; do
       name=FM_DISK_ROOM_$v
       [ -z "${!name+x}" ] || printf 'export %s=%q\n' "$name" "${!name}"

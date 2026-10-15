@@ -11,12 +11,13 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
+unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
   FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_RESULTS_ROOT \
   FM_DISK_ROOM_SAMPLES FM_DISK_ROOM_GROWTH_MAX FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_STORAGE_MNT
 TMP_ROOT=$(fm_test_tmproot fm-disk-room)
 DISK_ROOM="$ROOT/bin/fm-disk-room.sh"
 GIB=1073741824
+LINUX_SIZE=0
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 DFDIR="$TMP_ROOT/df"
 HOSTDIR="$TMP_ROOT/c"
@@ -71,11 +72,14 @@ write_events() {
 
 key() { printf '%s' "$1" | tr / _; }
 
-# set_sizes HOST_FREE_GIB LINUX_FREE_GIB LINUX_USED_GIB
+# set_sizes HOST_FREE_GIB LINUX_FREE_GIB LINUX_USED_GIB: the Linux df total is
+# free plus used, and the block device defaults to that size (no ext4 metadata).
 set_sizes() {
   printf '%s\n' $(( $1 * GIB )) >"$DFDIR/$(key "$HOSTDIR").avail"
   printf '%s\n' $(( $2 * GIB )) >"$DFDIR/$(key "$LINUXDIR").avail"
   printf '%s\n' $(( $3 * GIB )) >"$DFDIR/$(key "$LINUXDIR").used"
+  LINUX_SIZE=$(( ($2 + $3) * GIB ))
+  printf '%s\n' "$LINUX_SIZE" >"$DFDIR/$(key "$LINUXDIR").size"
 }
 
 # mb_groups FRAG_GIB: one group per GiB of free 4 KiB blocks in 2^0 buddies
@@ -97,6 +101,7 @@ run_room() {
     FM_STORAGE_MOUNTINFO="$TMP_ROOT/mountinfo" \
     FM_DISK_ROOM_HOST="${TEST_HOST-$HOSTDIR}" FM_DISK_ROOM_ROOT="$LINUXDIR" \
     FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
+    FM_DISK_ROOM_DEV_SIZE="${TEST_DEV_SIZE-$LINUX_SIZE}" \
     FAKE_EVENTS="$EVENTS" FM_DISK_ROOM_WEVTUTIL="${FM_DISK_ROOM_WEVTUTIL-wevtutil-stub}" \
     FM_DISK_ROOM_RESULTS_ROOT="${FM_DISK_ROOM_RESULTS_ROOT-$TMP_ROOT/storage/results-root}" \
     FM_DISK_ROOM_SAMPLES="${TEST_SAMPLES-$TMP_ROOT/no-samples}" \
@@ -277,6 +282,35 @@ test_watch_line() {
   out=$(TEST_HOST="$TMP_ROOT/missing" FM_DISK_ROOM_NOW=$(( t0 + 30120 )) run_room watch-line)
   assert_contains "$out" "disk room: cannot measure" "an unreadable drive is reported"
   pass "watch-line speaks only when room is low, without repeating itself"
+}
+
+test_fs_overhead() {
+  reset_state
+  set_sizes 30 600 400
+  truncate -s $(( 470 * GIB )) "$VHDX"
+  write_mb_groups 30
+  local out
+  out=$(TEST_DEV_SIZE=$(( 1017 * GIB )) run_room status --json)
+  assert_equals $(( 17 * GIB )) "$(json_field "$out" fs_overhead)" "ext4 metadata is the block device size minus the df total"
+  if [ "$BS" = 4096 ]; then
+    assert_equals $(( 23 * GIB )) "$(json_field "$out" reclaimable)" "reclaimable is slack minus fragmented free minus ext4 metadata"
+    out=$(TEST_DEV_SIZE=$(( 1017 * GIB )) run_room status)
+    assert_contains "$out" "slack 70.0 GiB, of which fragmented 30.0 GiB and ext4 metadata 17.0 GiB; reclaimable by compaction about 23.0 GiB" "status names the metadata"
+  fi
+  truncate -s $(( 410 * GIB )) "$VHDX"
+  out=$(TEST_DEV_SIZE=$(( 1017 * GIB )) run_room status --json)
+  assert_equals 0 "$(json_field "$out" reclaimable)" "metadata past the slack floors reclaimable at 0"
+  out=$(TEST_DEV_SIZE=$(( 1017 * GIB )) run_room check --expect-write 20G)
+  assert_not_contains "$out" "a compaction would reclaim" "no compaction promise for slack that is all metadata"
+  assert_contains "$out" "data must be freed or moved" "low advice says compaction cannot help"
+  truncate -s $(( 470 * GIB )) "$VHDX"
+  out=$(TEST_DEV_SIZE=unreadable run_room status --json)
+  assert_equals null "$(json_field "$out" fs_overhead)" "no metadata reading"
+  assert_equals null "$(json_field "$out" reclaimable)" "reclaimable is not guessed without the device size"
+  out=$(TEST_DEV_SIZE=unreadable run_room check --expect-write 20G)
+  assert_contains "$out" "reclaimable by compaction unknown (ext4 metadata size unreadable)" "low advice names the missing device size"
+  assert_not_contains "$out" "a compaction would reclaim" "no fallback to the estimate without metadata"
+  pass "ext4 metadata is subtracted from the reclaimable estimate"
 }
 
 test_linux_only() {
@@ -620,6 +654,7 @@ test_results_root_in_status
 test_check_margin
 test_low_advice
 test_unknown_reclaim
+test_fs_overhead
 test_reservations
 test_run
 test_watch_line
