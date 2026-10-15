@@ -231,21 +231,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo ok
-  zero:
-    runs-on: ubuntu-latest
-    timeout-minutes: 0
-    steps:
-      - run: echo ok
 YAML
 ) || rc=$?
   [ "$rc" -eq 1 ] || fail "a push job without a timeout expected exit 1, got $rc"$'\n'"$out"
   assert_contains "$out" "job unbounded needs timeout-minutes" \
     "a push job without timeout-minutes was not named"
-  assert_contains "$out" "job zero needs timeout-minutes" \
-    "a push job with timeout-minutes 0 was not named"
   assert_not_contains "$out" "job bounded" \
-    "a push job with a positive timeout was reported"
-  pass "every job of a push workflow needs a positive integer timeout"
+    "a push job with a timeout was reported"
+  pass "every job of a push workflow needs a timeout (actionlint refuses a zero one)"
 }
 
 test_push_runs_are_never_cancelled_or_replaced() {
