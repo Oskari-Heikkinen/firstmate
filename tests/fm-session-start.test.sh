@@ -2344,7 +2344,9 @@ EOF
     _ "$ROOT/bin/fm-timeout-lib.sh")
   [ "$mechanism" = bash ] || fail "the forced pure-Bash timeout fixture selected '$mechanism'"
 
-  out=$(FM_TIMEOUT_MECHANISM_OVERRIDE=bash FM_SESSION_START_TIMEOUT=3 FM_STARTUP_NETWORK_TIMEOUT=2 \
+  # The bound must outlast the lock stage even on a loaded pooled runner (3s
+  # did not), and still expire inside the hung bootstrap stage.
+  out=$(FM_TIMEOUT_MECHANISM_OVERRIDE=bash FM_SESSION_START_TIMEOUT=8 FM_STARTUP_NETWORK_TIMEOUT=2 \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
 
   expect_code 0 "$status" "a truncated session start must still exit 0 so the session can open"
@@ -2741,6 +2743,10 @@ EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_harness "$fakebin" codex
   printf '%s\n' 'CODEX_TEST_INSTRUCTION=original' > "$root/AGENTS.md"
+  # Codex is found only by the eight-hop ancestry walk, and the case pool adds
+  # two process levels above this case: name this case's own subshell as the
+  # harness so the walk sees the same depth a serial run gives.
+  SESSION_START_TEST_HARNESS_PID=$BASHPID
 
   startup=$(run_named_harness_session_start codex "$home" "$root" "$fakebin:$BASE_PATH" --source startup)
   assert_contains "$startup" "primary harness: codex" "codex fixture did not select the codex run tier"
