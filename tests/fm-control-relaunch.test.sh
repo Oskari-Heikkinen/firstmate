@@ -38,13 +38,21 @@ X_LINK="$ROOT/bin/fm-x-link.sh"
 TMP_ROOT=$(fm_test_tmproot fm-control-relaunch)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
-TASK_TMPS=()
+# A spawn creates its task temp root at the fixed /tmp/fm-<id>, outside the
+# tmproot. Cases run in pooled subshells, so they register those roots in a
+# file the parent's EXIT trap reads, not in an array a subshell would discard.
+TASK_TMP_LIST="$TMP_ROOT/.task-tmps"
+register_task_tmp() {  # <path>
+  printf '%s\n' "$1" >> "$TASK_TMP_LIST"
+}
 
 relaunch_cleanup() {
   local d
-  for d in "${TASK_TMPS[@]:-}"; do
-    [ -n "$d" ] && rm -rf "$d"
-  done
+  if [ -f "$TASK_TMP_LIST" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && rm -rf "$d"
+    done < "$TASK_TMP_LIST"
+  fi
   rm -rf "$TMP_ROOT"
 }
 trap relaunch_cleanup EXIT
@@ -291,7 +299,7 @@ EOF
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   printf '%s' "$ses" > "$dir/fake/session-name"
   printf '%s' "$wt" > "$dir/fake/cwd"
-  TASK_TMPS+=("/tmp/fm-$id")
+  register_task_tmp "/tmp/fm-$id"
 }
 
 run_control() {  # <case-dir> <args...>
@@ -306,6 +314,7 @@ run_control() {  # <case-dir> <args...>
     HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
     SUSPEND_DIR="$dir" FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
+    FM_SPAWN_LAUNCH_SETTLE_SECS=0.05 \
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
     FM_REAL_MV="${FM_REAL_MV:-}" FM_FAKE_COMPLETE_JOURNAL_MV_FAIL="${FM_FAKE_COMPLETE_JOURNAL_MV_FAIL:-}" \
     FM_FAKE_META_PUBLISH_MV_FAIL="${FM_FAKE_META_PUBLISH_MV_FAIL:-}" \
@@ -326,7 +335,7 @@ run_spawn() {  # <case-dir> <args...>
     -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
     PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
-    FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
+    FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" FM_SPAWN_LAUNCH_SETTLE_SECS=0.05 \
     "$SPAWN" "$@" 2>&1
 }
 
@@ -927,32 +936,32 @@ test_relaunch_quarantines_retired_generation_milestones() {
 
 test_relaunch_quarantine_failure_leaves_a_retryable_state() {
   local dir out rc inbox typed gen
-  dir=$(new_case quarantine-fail rl43)
-  add_ship_task "$dir" rl43 claude
-  printf 'spawn_gen=retired-gen\n' >> "$dir/home/state/rl43.meta"
-  inbox="$dir/home/state/rl43.inbox"
-  typed=$(bash -c '. "$1"; fm_task_inbox_write_idempotent "$2" rl43 "PASS receipt" "" retired-gen' \
+  dir=$(new_case quarantine-fail rl43b)
+  add_ship_task "$dir" rl43b claude
+  printf 'spawn_gen=retired-gen\n' >> "$dir/home/state/rl43b.meta"
+  inbox="$dir/home/state/rl43b.inbox"
+  typed=$(bash -c '. "$1"; fm_task_inbox_write_idempotent "$2" rl43b "PASS receipt" "" retired-gen' \
     _ "$ROOT/bin/fm-task-inbox-lib.sh" "$dir/home/state") || fail "could not seed the typed milestone"
   # A file where the quarantine directory belongs makes the quarantine fail.
   : > "$inbox/quarantine"
-  out=$(run_control "$dir" rl43 relaunch --note "resume review"); rc=$?
+  out=$(run_control "$dir" rl43b relaunch --note "resume review"); rc=$?
   [ "$rc" -ne 0 ] || fail "a failed quarantine must refuse the relaunch"$'\n'"$out"
   assert_contains "$out" "the previous agent is stopped, the new generation is recorded, and no replacement was launched" \
     "the refusal should name the state it left"
-  assert_contains "$out" "re-run fm-control.sh rl43 relaunch to retry" "the refusal should name the retry"
+  assert_contains "$out" "re-run fm-control.sh rl43b relaunch to retry" "the refusal should name the retry"
   assert_grep "/exit" "$dir/fake/literal" "the previous agent should have been stopped"
   assert_no_grep "Firstmate operational input waiting: read" "$dir/fake/literal" \
     "no replacement may be launched while the retired milestone is live"
-  gen=$(meta_field "$dir" rl43 spawn_gen)
+  gen=$(meta_field "$dir" rl43b spawn_gen)
   [ -n "$gen" ] && [ "$gen" != retired-gen ] || fail "the new generation was not recorded, got '$gen'"
   [ -f "$typed" ] || fail "the retired milestone must stay in place after a failed quarantine"
   rm -f "$inbox/quarantine"
-  out=$(run_control "$dir" rl43 relaunch --note "resume review"); rc=$?
+  out=$(run_control "$dir" rl43b relaunch --note "resume review"); rc=$?
   expect_code 0 "$rc" "a retry after fixing the inbox should succeed"$'\n'"$out"
   [ ! -e "$typed" ] || fail "the retry left the retired milestone live"
   [ -f "$inbox/quarantine/${typed##*/}" ] || fail "the retry did not quarantine the retired milestone"
   assert_grep "Firstmate operational input waiting: read" "$dir/fake/literal" "the retry should launch the replacement"
-  [ "$(journal_field "$dir" rl43 phase)" = complete ] || fail "the retry's journal should end complete"
+  [ "$(journal_field "$dir" rl43b phase)" = complete ] || fail "the retry's journal should end complete"
   pass "fm-control relaunch: a failed quarantine leaves a stopped, recorded, retryable state"
 }
 
@@ -1181,7 +1190,7 @@ test_signed_out_worker_account_pin_refuses_before_stop() {
 }
 
 test_worker_account_pin_follows_the_relaunch() {
-  local dir out rc id=rl-acct
+  local dir out rc id=rl-acct-pin
   dir=$(new_case acct "$id")
   add_ship_task "$dir" "$id" claude
   make_claude_auth_stub "$dir"
@@ -1566,15 +1575,15 @@ test_spawn_relaunch_without_a_harness_reuses_the_recorded_one() {
 # recorded branch is authoritative, so the relaunch must proceed on it.
 test_spawn_relaunch_of_promoted_scout_uses_the_recorded_branch() {
   local dir out
-  dir=$(new_case promotebranch rl42)
-  add_ship_task "$dir" rl42 claude
-  printf 'branch=fix/rl42\n' >> "$dir/home/state/rl42.meta"
+  dir=$(new_case promotebranch rl42b)
+  add_ship_task "$dir" rl42b claude
+  printf 'branch=fix/rl42b\n' >> "$dir/home/state/rl42b.meta"
   printf 'zsh' > "$dir/fake/command"
-  out=$(run_spawn "$dir" rl42 --relaunch)
-  assert_contains "$out" "spawned rl42" "the relaunch should complete on the recorded branch"
+  out=$(run_spawn "$dir" rl42b --relaunch)
+  assert_contains "$out" "spawned rl42b" "the relaunch should complete on the recorded branch"
   assert_contains "$out" "records no ship branch" "the brief gap should be reported, not silent"
-  assert_contains "$out" "recorded branch fix/rl42" "the relaunch should name the branch it adopted"
-  [ "$(meta_field "$dir" rl42 branch)" = "fix/rl42" ] \
+  assert_contains "$out" "recorded branch fix/rl42b" "the relaunch should name the branch it adopted"
+  [ "$(meta_field "$dir" rl42b branch)" = "fix/rl42b" ] \
     || fail "the recorded branch must survive the relaunch"
   pass "fm-spawn --relaunch: a promoted scout with a recorded custom branch relaunches on it instead of being refused"
 }
@@ -1674,7 +1683,7 @@ test_mode_switched_task_relaunch_receives_the_switched_delivery_contract() {
       echo "model=default"
       echo "effort=default"
     } > "$home/state/$id.meta"
-    TASK_TMPS+=("/tmp/fm-$id")
+    register_task_tmp "/tmp/fm-$id"
     printf '%s\n' "fm-$id" > "$dir/fake/windows"
     printf '%s' "$dir/wt" > "$dir/fake/cwd"
 
@@ -1846,11 +1855,11 @@ test_launch_failure_keeps_the_prior_record_and_reports_it() {
 
 test_prepublication_failure_keeps_concurrent_durable_metadata() {
   local dir control_pid link_out rc i=0
-  dir=$(new_case rollback-race rl30)
-  add_ship_task "$dir" rl30 claude
+  dir=$(new_case rollback-race rl30b)
+  add_ship_task "$dir" rl30b claude
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
   FM_FAKE_CWD_RACE_READY="$dir/cwd-race-ready" \
-    run_control "$dir" rl30 relaunch --harness codex --note "preserve concurrent metadata" \
+    run_control "$dir" rl30b relaunch --harness codex --note "preserve concurrent metadata" \
       > "$dir/control.out" &
   control_pid=$!
   while [ ! -e "$dir/cwd-race-ready" ] && [ "$i" -lt 6000 ] && kill -0 "$control_pid" 2>/dev/null; do
@@ -1863,17 +1872,17 @@ test_prepublication_failure_keeps_concurrent_durable_metadata() {
     fail "relaunch did not reach its pre-publication endpoint check: $(cat "$dir/control.out")"
   }
   link_out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$X_LINK" rl30 request-30 --carry-count 2 --carry-ts 1700000000 \
+    "$X_LINK" rl30b request-30 --carry-count 2 --carry-ts 1700000000 \
       --carry-platform x --carry-max 280 2>&1); rc=$?
   : > "$dir/cwd-race-ready.release"
   expect_code 0 "$rc" "concurrent durable metadata publication should succeed"$'\n'"$link_out"
   wait "$control_pid"; rc=$?
   expect_code 1 "$rc" "the staged pre-publication launch failure should fail closed"
-  [ "$(meta_field "$dir" rl30 x_request)" = request-30 ] \
+  [ "$(meta_field "$dir" rl30b x_request)" = request-30 ] \
     || fail "rollback erased the concurrent X request"
-  [ "$(meta_field "$dir" rl30 x_followups)" = 2 ] \
+  [ "$(meta_field "$dir" rl30b x_followups)" = 2 ] \
     || fail "rollback erased the concurrent follow-up count"
-  [ "$(journal_field "$dir" rl30 rollback)" = prior-record-kept ] \
+  [ "$(journal_field "$dir" rl30b rollback)" = prior-record-kept ] \
     || fail "pre-publication rollback should leave the live record untouched"
   pass "fm-control relaunch: unpublished rollback keeps concurrent durable metadata"
 }
@@ -1938,23 +1947,23 @@ test_complete_journal_failure_rolls_back_from_durable_phase() {
 
 test_prepublication_abort_retires_replacement_wiring_and_busy_state() {
   local dir out rc real_mv meta
-  dir=$(new_case prepublishcleanup rl28)
-  add_ship_task "$dir" rl28 claude
-  meta="$dir/home/state/rl28.meta"
+  dir=$(new_case prepublishcleanup rl28b)
+  add_ship_task "$dir" rl28b claude
+  meta="$dir/home/state/rl28b.meta"
   real_mv=$(command -v mv)
   make_mv_failure_stub "$dir"
   out=$(FM_REAL_MV="$real_mv" FM_FAKE_META_PUBLISH_MV_FAIL="$meta" \
-    run_control "$dir" rl28 relaunch --note "clean partial replacement state"); rc=$?
+    run_control "$dir" rl28b relaunch --note "clean partial replacement state"); rc=$?
   expect_code 1 "$rc" "a failed metadata publication should fail closed"$'\n'"$out"
-  [ "$(meta_field "$dir" rl28 harness)" = claude ] \
+  [ "$(meta_field "$dir" rl28b harness)" = claude ] \
     || fail "a failed publication should retain the prior durable record"
   [ ! -e "$dir/wt/.claude/settings.local.json" ] \
     || fail "an aborted replacement should remove its harness wiring"
-  [ ! -e "$dir/home/state/rl28.busy-gen" ] \
+  [ ! -e "$dir/home/state/rl28b.busy-gen" ] \
     || fail "an aborted replacement should retire its busy generation"
-  [ ! -e "$dir/home/state/rl28.busy-state" ] \
+  [ ! -e "$dir/home/state/rl28b.busy-state" ] \
     || fail "an aborted replacement should remove its seeded busy record"
-  [ "$(journal_field "$dir" rl28 rollback)" = prior-record-kept ] \
+  [ "$(journal_field "$dir" rl28b rollback)" = prior-record-kept ] \
     || fail "the journal should record the unpublished replacement rollback"
   pass "fm-spawn relaunch: prepublication abort removes replacement state"
 }
@@ -2092,13 +2101,13 @@ test_secondmate_checkpoint_refuses_unreadable_child_state() {
 
 test_secondmate_checkpoint_ignores_a_vanished_scratch_find_walk() {
   local dir home out rc real_find
-  dir=$(new_case smfindrace sm6)
+  dir=$(new_case smfindrace sm6b)
   home="$dir/home"
   mkdir -p "$home/config"
   printf 'claude\n' > "$home/config/secondmate-harness"
   relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-branch
   mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
-  printf 'sm6\n' > "$dir/smhome/.fm-secondmate-home"
+  printf 'sm6b\n' > "$dir/smhome/.fm-secondmate-home"
   printf '# charter\n' > "$dir/smhome/data/charter.md"
   printf '# agents\n' > "$dir/smhome/AGENTS.md"
   printf 'window=x:fm-c1\n' > "$dir/smhome/state/c1.meta"
@@ -2108,7 +2117,7 @@ test_secondmate_checkpoint_ignores_a_vanished_scratch_find_walk() {
   : > "$dir/smhome/state/.last-0"
   {
     echo "window=fmses:fm-sm6"
-    echo "endpoint_task_id=sm6"
+    echo "endpoint_task_id=sm6b"
     echo "worktree=$dir/smhome"
     echo "project=$dir/smhome"
     echo "harness=claude"
@@ -2119,7 +2128,7 @@ test_secondmate_checkpoint_ignores_a_vanished_scratch_find_walk() {
     echo "effort=default"
     echo "home=$dir/smhome"
     echo "projects="
-  } > "$home/state/sm6.meta"
+  } > "$home/state/sm6b.meta"
   printf '%s\n' "fm-sm6" > "$dir/fake/windows"
   printf '%s' "$dir/smhome" > "$dir/fake/cwd"
   real_find=$(command -v find)
@@ -2134,19 +2143,19 @@ done
 exec "$real_find" "\$@"
 SH
   chmod +x "$dir/fakebin/find"
-  out=$(run_control "$dir" sm6 relaunch); rc=$?
+  out=$(run_control "$dir" sm6b relaunch); rc=$?
   expect_code 0 "$rc" "a vanished watcher scratch file must not refuse relaunch"$'\n'"$out"
-  assert_contains "$out" "relaunched sm6" "readable child metas must still allow the replacement launch"
-  [ "$(journal_field "$dir" sm6 children)" = 2 ] \
-    || fail "readable child metas must still be counted, got '$(journal_field "$dir" sm6 children)'"
+  assert_contains "$out" "relaunched sm6b" "readable child metas must still allow the replacement launch"
+  [ "$(journal_field "$dir" sm6b children)" = 2 ] \
+    || fail "readable child metas must still be counted, got '$(journal_field "$dir" sm6b children)'"
   pass "fm-control relaunch: a vanished watcher scratch file does not fail the child-record checkpoint"
 }
 
 test_concurrent_relaunch_is_refused() {
   local dir out rc lock holder i
-  dir=$(new_case lock rl19)
-  add_ship_task "$dir" rl19 claude
-  lock="$dir/home/state/.control-rl19.lock"
+  dir=$(new_case lock rl19b)
+  add_ship_task "$dir" rl19b claude
+  lock="$dir/home/state/.control-rl19b.lock"
   # A live holder of this task's control lock, taken through the same lock
   # library fm-control uses.
   (
@@ -2162,8 +2171,8 @@ test_concurrent_relaunch_is_refused() {
     i=$((i + 1))
   done
   [ -e "$lock" ] || { kill "$holder" 2>/dev/null; fail "could not stage a held control lock"; }
-  printf 'held\n' > "$dir/home/state/rl19.composer-dialog"
-  out=$(run_control "$dir" rl19 relaunch --note "concurrent"); rc=$?
+  printf 'held\n' > "$dir/home/state/rl19b.composer-dialog"
+  out=$(run_control "$dir" rl19b relaunch --note "concurrent"); rc=$?
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   expect_code 1 "$rc" "a second concurrent control action should refuse"
@@ -2171,7 +2180,7 @@ test_concurrent_relaunch_is_refused() {
     "the refusal should name the concurrent action"
   [ "$(cat "$dir/fake/command")" = claude ] \
     || fail "a refused concurrent relaunch must not stop the agent"
-  [ "$(cat "$dir/home/state/rl19.composer-dialog" 2>/dev/null)" = held ] \
+  [ "$(cat "$dir/home/state/rl19b.composer-dialog" 2>/dev/null)" = held ] \
     || fail "a refused concurrent relaunch must not remove the lock holder's dialog file"
   pass "fm-control relaunch: two control actions on one task serialize instead of interleaving"
 }
@@ -2207,9 +2216,9 @@ test_direct_spawn_relaunch_participates_in_the_lifecycle_lock() {
 # shellcheck disable=SC2031
 test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution() {
   local dir out rc lock holder i=0
-  dir=$(new_case promotelock rl29)
-  add_ship_task "$dir" rl29 claude
-  lock="$dir/home/state/.control-rl29.lock"
+  dir=$(new_case promotelock rl29b)
+  add_ship_task "$dir" rl29b claude
+  lock="$dir/home/state/.control-rl29b.lock"
   (
     . "$ROOT/bin/fm-wake-lib.sh"
     fm_lock_try_acquire "$lock" || exit 1
@@ -2221,13 +2230,13 @@ test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution() {
     i=$((i + 1))
   done
   [ -e "$lock" ] || fail "could not stage the promotion lifecycle lock"
-  out=$(FM_HOME="$dir/home" "$PROMOTE" rl29 --mode direct-PR --yolo on 2>&1); rc=$?
+  out=$(FM_HOME="$dir/home" "$PROMOTE" rl29b --mode direct-PR --yolo on 2>&1); rc=$?
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   expect_code 1 "$rc" "promotion should refuse a concurrent lifecycle action"
   assert_contains "$out" "another lifecycle action is already running" \
     "promotion should lock before interpreting the task metadata"
-  [ "$(meta_field "$dir" rl29 kind)" = ship ] \
+  [ "$(meta_field "$dir" rl29b kind)" = ship ] \
     || fail "a contended promotion must leave task metadata unchanged"
   pass "fm-promote: promotion participates in lifecycle serialization"
 }
@@ -2274,8 +2283,8 @@ SH
 
 test_spawn_relaunch_keeps_its_early_meta_lock_continuous() {
   local dir lock out rc
-  dir=$(new_case continuous-meta-lock rl38)
-  add_ship_task "$dir" rl38 claude
+  dir=$(new_case continuous-meta-lock rl38b)
+  add_ship_task "$dir" rl38b claude
   printf 'zsh' > "$dir/fake/command"
   lock="$dir/home/state/.meta-rl38.lock"
   mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-real"
@@ -2293,7 +2302,7 @@ exec "$dir/fakebin/tmux-real" "\$@"
 SH
   chmod +x "$dir/fakebin/tmux"
 
-  out=$(run_spawn "$dir" rl38 --relaunch --harness claude); rc=$?
+  out=$(run_spawn "$dir" rl38b --relaunch --harness claude); rc=$?
   expect_code 0 "$rc" "relaunch with one continuous meta lock should succeed"$'\n'"$out"
   assert_present "$dir/lock-observation-started" \
     "test did not observe the relaunch-held meta lock"
@@ -2636,14 +2645,11 @@ EOF
   printf '%s' "$survivor" > "$dir/fake/herdr-pane"
   : > "$dir/fake/herdr-log"
   : > "$dir/fake/herdr-stopped"
-  TASK_TMPS+=("/tmp/fm-$id")
+  register_task_tmp "/tmp/fm-$id"
 }
 
 # Sets HERDR_CASE_DIR rather than echoing it, so callers invoke it as a plain
-# statement. A `dir=$(herdr_case_or_skip ...)` would run add_herdr_ship_task in
-# a command-substitution subshell, where its TASK_TMPS registration would
-# mutate a discarded copy and the EXIT trap would never remove the
-# out-of-tmproot /tmp/fm-<id> root the spawn creates.
+# statement and branch on its jq-skip status directly.
 HERDR_CASE_DIR=
 herdr_case_or_skip() {  # <name> <id> [session] [surviving-pane]
   HERDR_CASE_DIR=
@@ -2891,15 +2897,15 @@ test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it() {
     pass "skipped: installed tasks-axi predates ${FM_TASKS_AXI_MIN}, so dispatch refuses automatic backlog transitions"
     return 0
   }
-  dir=$(new_case reverify rl40)
-  add_ship_task "$dir" rl40 claude
-  seed_backlog "$dir" rl40 in_flight
+  dir=$(new_case reverify rl40b)
+  add_ship_task "$dir" rl40b claude
+  seed_backlog "$dir" rl40b in_flight
   break_tasks_axi_start "$dir"
 
-  out=$(run_control "$dir" rl40 relaunch --note "picking the work back up") || rc=$?
+  out=$(run_control "$dir" rl40b relaunch --note "picking the work back up") || rc=$?
   expect_code 0 "$rc" "a relaunch must not re-run a transition the row already reflects"$'\n'"$out"
-  [ "$(backlog_state "$dir" rl40)" = in_flight ] \
-    || fail "a relaunch changed an already In-flight item to $(backlog_state "$dir" rl40)"
+  [ "$(backlog_state "$dir" rl40b)" = in_flight ] \
+    || fail "a relaunch changed an already In-flight item to $(backlog_state "$dir" rl40b)"
   pass "relaunch re-reads the backlog item instead of blindly re-running the transition"
 }
 
@@ -2988,12 +2994,6 @@ SH
   pass "pooled relaunch executes under the allocation lock, preserves lease metadata and work, and refuses another incarnation"
 }
 
-test_pooled_spawn_relaunch_keeps_acquisition_identity
-test_relaunch_rotates_accumulated_notes_without_losing_bytes
-test_relaunch_refuses_oversized_original_before_stopping
-test_relaunch_keeps_only_the_newest_note_inline_below_the_bound
-test_relaunch_below_the_bound_tolerates_an_unbalanced_fence
-test_relaunch_rotation_rollback_restores_brief_and_archive
 test_exit_and_relaunch_remove_the_dialog_file() {
   local dir out rc
   dir=$(new_case dialog-file-exit rl70)
@@ -3017,10 +3017,10 @@ test_exit_and_relaunch_remove_the_dialog_file() {
 # second overlapping command.
 test_exit_removes_the_dialog_file_before_releasing_the_lock() {
   local dir out rc lock sink trace
-  dir=$(new_case dialog-file-order rl72)
-  add_ship_task "$dir" rl72 claude
-  lock="$dir/home/state/.control-rl72.lock"
-  sink="$dir/home/state/rl72.composer-dialog"
+  dir=$(new_case dialog-file-order rl72b)
+  add_ship_task "$dir" rl72b claude
+  lock="$dir/home/state/.control-rl72b.lock"
+  sink="$dir/home/state/rl72b.composer-dialog"
   trace="$dir/fake/rm-trace"
   cat > "$dir/fakebin/rm" <<SH
 #!/usr/bin/env bash
@@ -3035,7 +3035,7 @@ done
 exec "$(command -v rm)" "\$@"
 SH
   chmod +x "$dir/fakebin/rm"
-  out=$(run_control "$dir" rl72 exit); rc=$?
+  out=$(run_control "$dir" rl72b exit); rc=$?
   expect_code 0 "$rc" "exit should stop the agent"$'\n'"$out"
   [ ! -e "$lock" ] || fail "exit should release the control lock"
   [ "$(tail -n 1 "$trace" 2>/dev/null)" = absent ] \
@@ -3043,135 +3043,58 @@ SH
   pass "fm-control exit removes the dialog file before it releases the control lock"
 }
 
-test_exit_and_relaunch_remove_the_dialog_file
-test_exit_removes_the_dialog_file_before_releasing_the_lock
-test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
-test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
-test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
-test_relaunch_from_linked_home_preserves_recorded_worktree
-test_relaunch_preserves_durable_task_metadata
-test_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail
-test_traced_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail
-test_relaunch_serializes_concurrent_durable_metadata_publication
-test_disabled_relaunch_clears_prior_trace_context
-test_relaunch_appends_the_progress_note_to_the_instructions
-test_relaunch_quarantines_retired_generation_milestones
-test_relaunch_quarantine_failure_leaves_a_retryable_state
-test_relaunch_requires_a_note_for_a_ship_task
-test_account_switch_relaunch_records_and_keeps_the_new_login
-test_account_switch_to_an_unusable_login_refuses_before_stop
-test_harness_switch_moves_the_record_and_clears_prior_wiring
-test_harness_switch_does_not_carry_the_old_profile_axes
-test_harness_switch_resolves_a_prefixed_recorded_harness
-test_prefixed_recorded_harness_requires_explicit_replacement
-test_same_harness_relaunch_keeps_the_profile_axes
-test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop
-test_signed_out_worker_account_pin_refuses_before_stop
-test_worker_account_pin_follows_the_relaunch
-test_pi_exclude_tools_follow_the_relaunch
-test_exclude_tools_refusals_happen_before_the_agent_stops
-test_explicit_model_wins_over_the_recorded_one
-test_relaunch_onto_an_unverified_harness_is_refused
-test_prior_harness_turnend_registry_entry_is_cleared
-test_wiring_removal_failure_refuses_before_replacement_arm
-test_turnend_auth_paths_are_owned_by_the_control_adapter
-test_secondmate_relaunch_picks_up_the_configured_harness_pin
-test_secondmate_claude_relaunch_keeps_local_settings
-test_secondmate_relaunch_ignores_invalid_configured_effort_before_stop
-test_secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop
-test_explicit_secondmate_harness_ignores_configured_profile_axes
-test_ship_relaunch_ignores_the_crew_harness_config
-test_spawn_relaunch_without_a_harness_reuses_the_recorded_one
-test_spawn_relaunch_of_promoted_scout_uses_the_recorded_branch
-test_promoted_scout_relaunch_receives_the_current_delivery_contract
-test_mode_switched_task_relaunch_receives_the_switched_delivery_contract
-test_prefixed_prior_harness_wiring_is_still_retired
-test_muse_session_binding_is_retired_on_a_harness_switch
-test_cursor_session_binding_is_retired_on_a_harness_switch
-test_missing_worktree_refuses_before_stopping_anything
-test_missing_instructions_refuse_before_stopping_anything
-test_checkpoint_refusal_leaves_the_record_byte_identical
-test_checkpoint_refuses_uninspectable_head_and_status
-test_launch_failure_keeps_the_prior_record_and_reports_it
-test_prepublication_failure_keeps_concurrent_durable_metadata
-test_post_publication_launch_failure_keeps_the_new_record
-test_stop_transport_failure_reconciles_a_dead_agent
-test_complete_journal_failure_rolls_back_from_durable_phase
-test_prepublication_abort_retires_replacement_wiring_and_busy_state
-test_journal_records_the_checkpoint_it_proved
-test_secondmate_relaunch_checkpoints_child_work_and_spares_the_charter
-test_secondmate_relaunch_refuses_an_unmarked_home
-test_secondmate_checkpoint_refuses_unreadable_child_state
-test_secondmate_checkpoint_ignores_a_vanished_scratch_find_walk
-test_concurrent_relaunch_is_refused
-test_direct_spawn_relaunch_participates_in_the_lifecycle_lock
-test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution
-test_spawn_relaunch_refuses_a_live_agent
-test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection
-test_spawn_relaunch_keeps_its_early_meta_lock_continuous
-test_spawn_relaunch_refuses_a_pending_authoritative_close
-test_spawn_relaunch_refuses_contradicting_flags
-test_spawn_relaunch_refuses_an_unrecorded_task
-test_spawn_relaunch_refuses_a_pane_outside_the_worktree
-test_tmux_refuses_a_window_missing_from_its_session
-test_tmux_refuses_a_session_that_cannot_be_found
-test_tmux_refuses_when_the_server_is_gone
-test_reclaim_refuses_an_unreadable_endpoint
-test_herdr_relaunch_resumes_only_the_registered_pi_session
-test_herdr_reclaim_adopts_a_pane_that_outlived_its_server
-test_herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server
-test_herdr_rebind_stays_in_the_recorded_session
-test_herdr_reclaim_refuses_an_agent_that_came_back
-test_herdr_reclaim_keeps_the_task_whole
-test_herdr_reclaim_of_a_secondmate_names_its_own_owner
-test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause
-test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
-test_relaunch_moves_a_drifted_item_back_in_flight
-
 # shellcheck source=tests/suspend-helpers.sh
 . "$ROOT/tests/suspend-helpers.sh"
-dir=$(suspend_case "$TMP_ROOT" custody-control) || fail 'saved fixture failed'
-suspend_saved "$dir" custody-control || fail 'save fixture failed'
-meta="$dir/home/state/custody-control.meta"
-wt="$dir/.treehouse/pool/1/project"
-git -C "$wt" checkout -qb successor main
-printf 'other task uncommitted work\n' > "$wt/file"
-out=$(FM_HOME="$dir/home" "$ROOT/bin/fm-crew-state.sh" custody-control) || fail 'saved current-state read failed'
-assert_contains "$out" 'waiting; no worker or copy reserved' 'released work became a missing-copy failure'
-for verb in exit interrupt; do
-  if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control "$verb" > "$dir/out" 2>&1; then
-    fail 'a suspended endpoint accepted lifecycle keys'
+
+test_saved_task_control_never_touches_the_historical_slot() {
+  local dir meta wt out verb
+  dir=$(suspend_case "$TMP_ROOT" custody-control) || fail 'saved fixture failed'
+  suspend_saved "$dir" custody-control || fail 'save fixture failed'
+  meta="$dir/home/state/custody-control.meta"
+  wt="$dir/.treehouse/pool/1/project"
+  git -C "$wt" checkout -qb successor main
+  printf 'other task uncommitted work\n' > "$wt/file"
+  out=$(FM_HOME="$dir/home" "$ROOT/bin/fm-crew-state.sh" custody-control) || fail 'saved current-state read failed'
+  assert_contains "$out" 'waiting; no worker or copy reserved' 'released work became a missing-copy failure'
+  for verb in exit interrupt; do
+    if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control "$verb" > "$dir/out" 2>&1; then
+      fail 'a suspended endpoint accepted lifecycle keys'
+    fi
+    assert_grep 'no agent' "$dir/out" 'control did not distinguish saved custody'
+  done
+  assert_equals 'other task uncommitted work' "$(cat "$wt/file")" 'saved-task control touched its historical slot'
+  suspend_lib "$dir" fm_suspend_record "$meta" 'copy_state=restore-prepared' || fail 'could not inject interrupted transaction'
+  if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control relaunch --note 'continue' > "$dir/out" 2>&1; then
+    fail 'interrupted restoration launched another worker'
   fi
-  assert_grep 'no agent' "$dir/out" 'control did not distinguish saved custody'
-done
-assert_equals 'other task uncommitted work' "$(cat "$wt/file")" 'saved-task control touched its historical slot'
-suspend_lib "$dir" fm_suspend_record "$meta" 'copy_state=restore-prepared' || fail 'could not inject interrupted transaction'
-if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control relaunch --note 'continue' > "$dir/out" 2>&1; then
-  fail 'interrupted restoration launched another worker'
-fi
-assert_grep 'unfinished or invalid copy custody' "$dir/out" 'interrupted restore lost its concrete refusal'
-assert_absent "$dir/calls" 'interrupted restore invoked the allocator'
-pass 'saved-task current state and control never inspect or type into the historical slot; interrupted custody refuses duplication'
+  assert_grep 'unfinished or invalid copy custody' "$dir/out" 'interrupted restore lost its concrete refusal'
+  assert_absent "$dir/calls" 'interrupted restore invoked the allocator'
+  pass 'saved-task current state and control never inspect or type into the historical slot; interrupted custody refuses duplication'
 
-# Direct owner restoration also discovers a hard-killed release, not only the
-# listener. Keep the historical successor's dirty bytes/native lease untouched.
-FM_HOME="$dir/home" bash -c '
-  . "$1/bin/fm-wake-lib.sh"
-  . "$1/bin/fm-suspend-lib.sh"
-  fm_current_pid attempt
-  fm_suspend_record "$2" copy_state=release-prepared "park_release_pid=$attempt"
-' _ "$ROOT" "$meta" || fail 'could not record a dead release attempt'
-if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control relaunch --note continue > "$dir/out" 2>&1; then
-  fail 'hard-killed release was restored without reconciliation'
-fi
-suspend_assert_matches 'blocked.*copy-custody' "$dir/home/state/custody-control.status" 'direct restoration missed a hard-killed release notification'
-assert_absent "$dir/home/state/.meta-custody-control.lock" 'direct restoration left reconciliation metadata locked'
-assert_absent "$dir/home/state/.control-custody-control.lock" 'direct restoration left its control lock held'
-assert_equals 'other task uncommitted work' "$(cat "$wt/file")" 'interruption reconciliation read/changed historical work'
-assert_absent "$dir/calls" 'direct restoration interruption backstop invoked native custody'
-pass 'direct owner restoration notifies interrupted release and leaves historical custody untouched'
+  # Direct owner restoration also discovers a hard-killed release, not only the
+  # listener. Keep the historical successor's dirty bytes/native lease untouched.
+  FM_HOME="$dir/home" bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    . "$1/bin/fm-suspend-lib.sh"
+    fm_current_pid attempt
+    fm_suspend_record "$2" copy_state=release-prepared "park_release_pid=$attempt"
+  ' _ "$ROOT" "$meta" || fail 'could not record a dead release attempt'
+  if FM_HOME="$dir/home" "$ROOT/bin/fm-control.sh" custody-control relaunch --note continue > "$dir/out" 2>&1; then
+    fail 'hard-killed release was restored without reconciliation'
+  fi
+  suspend_assert_matches 'blocked.*copy-custody' "$dir/home/state/custody-control.status" 'direct restoration missed a hard-killed release notification'
+  assert_absent "$dir/home/state/.meta-custody-control.lock" 'direct restoration left reconciliation metadata locked'
+  assert_absent "$dir/home/state/.control-custody-control.lock" 'direct restoration left its control lock held'
+  assert_equals 'other task uncommitted work' "$(cat "$wt/file")" 'interruption reconciliation read/changed historical work'
+  assert_absent "$dir/calls" 'direct restoration interruption backstop invoked native custody'
+  pass 'direct owner restoration notifies interrupted release and leaves historical custody untouched'
+}
 
-for through in control park cancel; do
+# saved_restoration_succeeds_through <control|park|cancel>: restore a saved
+# task through one entry point and prove the replacement on a fresh copy.
+saved_restoration_succeeds_through() {
+  local through=$1 id dir meta wt head overrides out rc
+  local -a args
   id="saved-success-$through"; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'saved launch fixture failed'
   meta="$dir/home/state/$id.meta"; wt="$dir/.treehouse/pool/1/project"
   suspend_lib "$dir" fm_suspend_record "$meta" 'harness=claude' || fail 'could not bind canonical runtime'
@@ -3180,7 +3103,7 @@ for through in control park cancel; do
   printf zsh > "$dir/fake/command"; printf claude > "$dir/fake/becomes"
   printf fmses > "$dir/fake/session-name"; printf '%s' "$dir/project" > "$dir/fake/cwd"
   make_tmux_stub "$dir"
-  TASK_TMPS+=("/tmp/fm-$id")
+  register_task_tmp "/tmp/fm-$id"
   head=$(git -C "$dir/project" rev-parse "fm/$id")
   for overrides in harness model effort note; do
     case "$overrides" in
@@ -3224,5 +3147,114 @@ for through in control park cancel; do
   # an unrecorded/mismatched endpoint before sending its operational brief.
   assert_grep 'Firstmate operational input waiting: read' "$dir/fake/literal" 'fresh worker never received saved instructions'
   pass "successful saved restoration through $through preserves branch/profile, new lease/generation, endpoint and alive proof"
-done
-test_relaunch_answers_claude_background_work_exit_dialog
+}
+
+test_saved_restoration_succeeds_through_control() { saved_restoration_succeeds_through control; }
+test_saved_restoration_succeeds_through_park() { saved_restoration_succeeds_through park; }
+test_saved_restoration_succeeds_through_cancel() { saved_restoration_succeeds_through cancel; }
+
+# Every case builds its own home, fake endpoint, project copy, and worktree
+# under a directory of its own, and stops or signals only processes it started,
+# so no case depends on another or on their order; they run through
+# fm_run_case_pool (tests/lib.sh), longest first. Two cases that share a task
+# id also share only the spawn's /tmp/fm-<id> root, which a spawn reuses when
+# it already exists as this user's private directory. FM_CONTROL_RELAUNCH_CASE_JOBS
+# overrides the concurrency, which defaults to the host's processor count
+# capped at four; 1 runs the cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_CONTROL_RELAUNCH_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_saved_restoration_succeeds_through_park \
+  test_saved_restoration_succeeds_through_control \
+  test_saved_restoration_succeeds_through_cancel \
+  test_promoted_scout_relaunch_receives_the_current_delivery_contract \
+  test_mode_switched_task_relaunch_receives_the_switched_delivery_contract \
+  test_herdr_relaunch_resumes_only_the_registered_pi_session \
+  test_pooled_spawn_relaunch_keeps_acquisition_identity \
+  test_relaunch_rotation_rollback_restores_brief_and_archive \
+  test_saved_task_control_never_touches_the_historical_slot \
+  test_relaunch_rotates_accumulated_notes_without_losing_bytes \
+  test_relaunch_refuses_oversized_original_before_stopping \
+  test_relaunch_keeps_only_the_newest_note_inline_below_the_bound \
+  test_relaunch_below_the_bound_tolerates_an_unbalanced_fence \
+  test_exit_and_relaunch_remove_the_dialog_file \
+  test_exit_removes_the_dialog_file_before_releasing_the_lock \
+  test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint \
+  test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text \
+  test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven \
+  test_relaunch_from_linked_home_preserves_recorded_worktree \
+  test_relaunch_preserves_durable_task_metadata \
+  test_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail \
+  test_traced_relaunch_keeps_the_recorded_pr_lines_as_the_record_tail \
+  test_relaunch_serializes_concurrent_durable_metadata_publication \
+  test_disabled_relaunch_clears_prior_trace_context \
+  test_relaunch_appends_the_progress_note_to_the_instructions \
+  test_relaunch_quarantines_retired_generation_milestones \
+  test_relaunch_quarantine_failure_leaves_a_retryable_state \
+  test_relaunch_requires_a_note_for_a_ship_task \
+  test_account_switch_relaunch_records_and_keeps_the_new_login \
+  test_account_switch_to_an_unusable_login_refuses_before_stop \
+  test_harness_switch_moves_the_record_and_clears_prior_wiring \
+  test_harness_switch_does_not_carry_the_old_profile_axes \
+  test_harness_switch_resolves_a_prefixed_recorded_harness \
+  test_prefixed_recorded_harness_requires_explicit_replacement \
+  test_same_harness_relaunch_keeps_the_profile_axes \
+  test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop \
+  test_signed_out_worker_account_pin_refuses_before_stop \
+  test_worker_account_pin_follows_the_relaunch \
+  test_pi_exclude_tools_follow_the_relaunch \
+  test_exclude_tools_refusals_happen_before_the_agent_stops \
+  test_explicit_model_wins_over_the_recorded_one \
+  test_relaunch_onto_an_unverified_harness_is_refused \
+  test_prior_harness_turnend_registry_entry_is_cleared \
+  test_wiring_removal_failure_refuses_before_replacement_arm \
+  test_turnend_auth_paths_are_owned_by_the_control_adapter \
+  test_secondmate_relaunch_picks_up_the_configured_harness_pin \
+  test_secondmate_claude_relaunch_keeps_local_settings \
+  test_secondmate_relaunch_ignores_invalid_configured_effort_before_stop \
+  test_secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop \
+  test_explicit_secondmate_harness_ignores_configured_profile_axes \
+  test_ship_relaunch_ignores_the_crew_harness_config \
+  test_spawn_relaunch_without_a_harness_reuses_the_recorded_one \
+  test_spawn_relaunch_of_promoted_scout_uses_the_recorded_branch \
+  test_prefixed_prior_harness_wiring_is_still_retired \
+  test_muse_session_binding_is_retired_on_a_harness_switch \
+  test_cursor_session_binding_is_retired_on_a_harness_switch \
+  test_missing_worktree_refuses_before_stopping_anything \
+  test_missing_instructions_refuse_before_stopping_anything \
+  test_checkpoint_refusal_leaves_the_record_byte_identical \
+  test_checkpoint_refuses_uninspectable_head_and_status \
+  test_launch_failure_keeps_the_prior_record_and_reports_it \
+  test_prepublication_failure_keeps_concurrent_durable_metadata \
+  test_post_publication_launch_failure_keeps_the_new_record \
+  test_stop_transport_failure_reconciles_a_dead_agent \
+  test_complete_journal_failure_rolls_back_from_durable_phase \
+  test_prepublication_abort_retires_replacement_wiring_and_busy_state \
+  test_journal_records_the_checkpoint_it_proved \
+  test_secondmate_relaunch_checkpoints_child_work_and_spares_the_charter \
+  test_secondmate_relaunch_refuses_an_unmarked_home \
+  test_secondmate_checkpoint_refuses_unreadable_child_state \
+  test_secondmate_checkpoint_ignores_a_vanished_scratch_find_walk \
+  test_concurrent_relaunch_is_refused \
+  test_direct_spawn_relaunch_participates_in_the_lifecycle_lock \
+  test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution \
+  test_spawn_relaunch_refuses_a_live_agent \
+  test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection \
+  test_spawn_relaunch_keeps_its_early_meta_lock_continuous \
+  test_spawn_relaunch_refuses_a_pending_authoritative_close \
+  test_spawn_relaunch_refuses_contradicting_flags \
+  test_spawn_relaunch_refuses_an_unrecorded_task \
+  test_spawn_relaunch_refuses_a_pane_outside_the_worktree \
+  test_tmux_refuses_a_window_missing_from_its_session \
+  test_tmux_refuses_a_session_that_cannot_be_found \
+  test_tmux_refuses_when_the_server_is_gone \
+  test_reclaim_refuses_an_unreadable_endpoint \
+  test_herdr_reclaim_adopts_a_pane_that_outlived_its_server \
+  test_herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server \
+  test_herdr_rebind_stays_in_the_recorded_session \
+  test_herdr_reclaim_refuses_an_agent_that_came_back \
+  test_herdr_reclaim_keeps_the_task_whole \
+  test_herdr_reclaim_of_a_secondmate_names_its_own_owner \
+  test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause \
+  test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it \
+  test_relaunch_moves_a_drifted_item_back_in_flight \
+  test_relaunch_answers_claude_background_work_exit_dialog
