@@ -23,11 +23,15 @@ command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit
 # merge entrypoints, and the review adapters, re-probes tasks-axi with four
 # static introspection calls, which were most of this suite's wall time, so they
 # replay through fm_tasks_axi_probe_shim (tests/lib.sh). Per-case stubs in a
-# home's fakebin still precede it, and REAL_TASKS_AXI stays the genuine binary.
-# Teardown's advisory fm-guard pass, which no case here asserts on, is skipped
-# through FM_TEARDOWN_GUARD_DONE.
+# home's fakebin still precede it. REAL_TASKS_AXI, which those stubs exec for
+# every call they do not fake, is the shim too: a home with a stub would
+# otherwise send all four probes of every run to the genuine binary, and the
+# shim passes everything but those identical probe argument lists through to
+# it unchanged. Teardown's advisory fm-guard pass, which no case here asserts
+# on, is skipped through FM_TEARDOWN_GUARD_DONE.
 TASKS_AXI_SHIM="$TMP_ROOT/tasks-axi-shim"
 fm_tasks_axi_probe_shim "$TASKS_AXI_SHIM" "$TASKS_AXI_BIN" --version update,--help mv,--help hold,--help
+TASKS_AXI_REPLAY="$TASKS_AXI_SHIM/tasks-axi"
 export PATH="$TASKS_AXI_SHIM:$PATH" FM_TEARDOWN_GUARD_DONE=1
 
 make_home() {  # <name>
@@ -44,6 +48,25 @@ EOF
   fakebin=$(fm_fakebin "$home")
   fm_fake_exit0 "$fakebin" tmux treehouse no-mistakes gh gh-axi
   printf '%s\n' "$home"
+}
+
+# Runs <function> once per argument, each in a background subshell of its own,
+# and waits for every one; returns 1 when any of them failed, its own fail
+# message already printed. The few cases that loop over independent homes use
+# it so their homes run side by side instead of one after another, which kept
+# them the pool's longest tail. Each part must build its own home.
+run_case_parts() {  # <function> <arg>...
+  local fn=$1 arg pid rc=0
+  local -a pids=()
+  shift
+  for arg in "$@"; do
+    "$fn" "$arg" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || rc=1
+  done
+  return "$rc"
 }
 
 # A fixture captured-answer channel that knows nothing about captain holds: its
@@ -67,7 +90,7 @@ SH
 run_fixture_procevent() {  # <home> <command args...>
   local home=$1
   shift
-  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" \
     FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" \
@@ -98,7 +121,7 @@ tasks_in() {  # <home> <tasks-axi args...>
 run_captain() {  # <home> <command args...>
   local home=$1
   shift
-  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-captain-hold.sh" "$@"
 }
@@ -214,7 +237,7 @@ SH
 run_shim() {  # <home> <command args...>
   local home=$1
   shift
-  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-decision-hold.sh" "$@"
 }
@@ -633,7 +656,7 @@ SH
   rm -f "$fb/tasks-axi.bak"
   chmod +x "$fb/tasks-axi"
 
-  PATH="$fb:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+  PATH="$fb:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" hold "$id" --reason "captain must decide" >/dev/null \
@@ -643,7 +666,7 @@ SH
 
   decision="$home/captain-decision.txt"
   printf 'Ship the gold-only plan.\n' > "$decision"
-  PATH="$fb:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+  PATH="$fb:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" answer "$id" --decision-file "$decision" >/dev/null \
@@ -1247,61 +1270,62 @@ test_out_of_band_close_is_recordable() {
 
 # Pruning an answered decision must not strand its originating scout. Archive
 # evidence is inventory-only, exact-id, closed, and subordinate to live rows.
-test_archived_answer_inventory() {
-  local home id call layout archive before original
-  for layout in relative absolute default relocated; do
-    home=$(make_home "archive-answer-$layout")
-    id=sample-archive-scout
-    call=sample-archive-call
-    archive="$home/data/done-archive.md"
-    case "$layout" in
-      relative) archive="$home/data/answered # calls.md" ;;
-      absolute) archive="$home/answered calls.md" ;;
-      relocated)
-        mkdir -p "$home/relocated/data" "$home/relocated/config"
-        mv "$home/data/backlog.md" "$home/relocated/data/backlog.md"
-        home="$home/relocated"
-        archive="$home/data/done-archive.md"
-        ;;
-    esac
-    if [ "$layout" = default ]; then
-      printf 'backend = "markdown"\n[markdown]\npath = "data/backlog.md"\n' > "$home/.tasks.toml"
+# One archive layout of test_archived_answer_inventory, in a home of its own,
+# so the four layouts run side by side through run_case_parts.
+archived_answer_layout() {  # <layout>
+  local layout=$1 home id call archive before original defect
+  home=$(make_home "archive-answer-$layout")
+  id=sample-archive-scout
+  call=sample-archive-call
+  archive="$home/data/done-archive.md"
+  case "$layout" in
+    relative) archive="$home/data/answered # calls.md" ;;
+    absolute) archive="$home/answered calls.md" ;;
+    relocated)
+      mkdir -p "$home/relocated/data" "$home/relocated/config"
+      mv "$home/data/backlog.md" "$home/relocated/data/backlog.md"
+      home="$home/relocated"
+      archive="$home/data/done-archive.md"
+      ;;
+  esac
+  if [ "$layout" = default ]; then
+    printf 'backend = "markdown"\n[markdown]\npath = "data/backlog.md"\n' > "$home/.tasks.toml"
+  else
+    fm_test_tasks_toml "$home/.tasks.toml"
+    if [ "$layout" = relative ]; then
+      perl -pi -e 's{archive = .*}{archive = "data/answered # calls.md" # comment}' "$home/.tasks.toml"
     else
-      fm_test_tasks_toml "$home/.tasks.toml"
-      if [ "$layout" = relative ]; then
-        perl -pi -e 's{archive = .*}{archive = "data/answered # calls.md" # comment}' "$home/.tasks.toml"
-      else
-        printf '\n[markdown]\narchive = "%s"\n' "$archive" >> "$home/.tasks.toml"
-      fi
+      printf '\n[markdown]\narchive = "%s"\n' "$archive" >> "$home/.tasks.toml"
     fi
-    mkdir -p "$home/state" "$home/config" "$home/fakebin" "$home/data/$id"
-    fm_fake_exit0 "$home/fakebin" tmux treehouse no-mistakes gh gh-axi
-    tasks_in "$home" add "$id" "Investigate archive cleanup" --repo sample --kind scout --start >/dev/null
-    write_origin_meta "$home" "$id"
-    printf 'done: report complete\n' > "$home/state/$id.status"
-    printf '# Completed investigation\n' > "$home/data/$id/report.md"
-    run_captain "$home" hold "$call" --title 'Choose scratch cleanup' --reason 'scratch choice' \
-      --repo sample --origin "$id" >/dev/null || fail "$layout: could not hold archive call"
-    run_captain "$home" complete "$id" "$call" >/dev/null || fail "$layout: initial complete failed"
-    printf 'Erase only the approved scratch.\n' > "$home/answer.txt"
-    run_captain "$home" answer "$call" --release --decision-file "$home/answer.txt" >/dev/null \
-      || fail "$layout: could not record released answer"
-    tasks_in "$home" "done" "$call" >/dev/null
-    tasks_in "$home" prune --keep 0 >/dev/null || fail "$layout: could not prune answer"
-    if tasks_in "$home" show "$call" --full >/dev/null 2>&1; then
-      fail "$layout: pruning left the answered call live"
-    fi
-    assert_grep 'Erase only the approved scratch' "$archive" "$layout: archive lost answer"
-    before=$(cksum "$archive")
-    run_captain "$home" verify "$id" >/dev/null || fail "$layout: archived answer refused"
-    run_captain "$home" complete "$id" "$call" >/dev/null || fail "$layout: archived complete refused"
-    [ "$before" = "$(cksum "$archive")" ] || fail "$layout: verification mutated archive"
-    original="$home/archive-original"
-    cp "$archive" "$original"
-    if run_captain "$home" answer "$call" --decision-file "$home/answer.txt" >/dev/null 2>&1; then
-      fail "$layout: archived row became an answer mutation target"
-    fi
-    cat > "$home/fakebin/tasks-axi" <<'SH'
+  fi
+  mkdir -p "$home/state" "$home/config" "$home/fakebin" "$home/data/$id"
+  fm_fake_exit0 "$home/fakebin" tmux treehouse no-mistakes gh gh-axi
+  tasks_in "$home" add "$id" "Investigate archive cleanup" --repo sample --kind scout --start >/dev/null
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Completed investigation\n' > "$home/data/$id/report.md"
+  run_captain "$home" hold "$call" --title 'Choose scratch cleanup' --reason 'scratch choice' \
+    --repo sample --origin "$id" >/dev/null || fail "$layout: could not hold archive call"
+  run_captain "$home" complete "$id" "$call" >/dev/null || fail "$layout: initial complete failed"
+  printf 'Erase only the approved scratch.\n' > "$home/answer.txt"
+  run_captain "$home" answer "$call" --release --decision-file "$home/answer.txt" >/dev/null \
+    || fail "$layout: could not record released answer"
+  tasks_in "$home" "done" "$call" >/dev/null
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "$layout: could not prune answer"
+  if tasks_in "$home" show "$call" --full >/dev/null 2>&1; then
+    fail "$layout: pruning left the answered call live"
+  fi
+  assert_grep 'Erase only the approved scratch' "$archive" "$layout: archive lost answer"
+  before=$(cksum "$archive")
+  run_captain "$home" verify "$id" >/dev/null || fail "$layout: archived answer refused"
+  run_captain "$home" complete "$id" "$call" >/dev/null || fail "$layout: archived complete refused"
+  [ "$before" = "$(cksum "$archive")" ] || fail "$layout: verification mutated archive"
+  original="$home/archive-original"
+  cp "$archive" "$original"
+  if run_captain "$home" answer "$call" --decision-file "$home/answer.txt" >/dev/null 2>&1; then
+    fail "$layout: archived row became an answer mutation target"
+  fi
+  cat > "$home/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = show ] && [ "${2:-}" = sample-archive-call ]; then
   printf 'error: temporary backlog read failure\n' >&2
@@ -1309,50 +1333,54 @@ if [ "${1:-}" = show ] && [ "${2:-}" = sample-archive-call ]; then
 fi
 exec "$REAL_TASKS_AXI" "$@"
 SH
-    chmod +x "$home/fakebin/tasks-axi"
-    if run_captain "$home" verify "$id" >/dev/null 2>&1; then
-      fail "$layout: archived answer overrode a live backend read error"
-    fi
-    rm "$home/fakebin/tasks-axi"
+  chmod +x "$home/fakebin/tasks-axi"
+  if run_captain "$home" verify "$id" >/dev/null 2>&1; then
+    fail "$layout: archived answer overrode a live backend read error"
+  fi
+  rm "$home/fakebin/tasks-axi"
 
-    # Same identifier in the live backlog wins even over proven old evidence.
-    tasks_in "$home" add "$call" 'Unanswered replacement' --repo sample >/dev/null
-    tasks_in "$home" "done" "$call" >/dev/null
-    if run_captain "$home" verify "$id" >/dev/null 2>&1; then
-      fail "$layout: archive overrode an unresolved live row"
-    fi
-    tasks_in "$home" rm "$call" >/dev/null
-    for defect in missing absent-file non-file unanswered open duplicate wrong-origin legacy; do
-      cp "$original" "$archive"
-      case "$defect" in
-        missing) : > "$archive" ;;
-        absent-file) rm "$archive" ;;
-        non-file) rm "$archive"; mkdir "$archive" ;;
-        unanswered) perl -pi -e 's/Resolution recorded by fm-captain-hold\./No recorded answer./' "$archive" ;;
-        open) perl -pi -e 's/^- \[x\]/- [ ]/' "$archive" ;;
-        duplicate) cat "$original" >> "$archive" ;;
-        wrong-origin) perl -pi -e 's/Captain hold origin: .*/Captain hold origin: other-origin/' "$archive" ;;
-        legacy)
-          # Historical metadata keys and resolution leaders still work.
-          perl -pi -e 's/sample-archive-call/sample-archive-scout-decision-choice/g; s/fm-captain-hold\./fm-decision-hold./g' "$archive"
-          printf 'decision_keys=choice\n' >> "$home/state/$id.meta"
-          run_captain "$home" verify "$id" >/dev/null || fail "$layout: legacy archived answer refused"
-          printf 'decision_keys=%s\n' "$call" >> "$home/state/$id.meta"
-          continue
-          ;;
-      esac
-      if run_captain "$home" verify "$id" >/dev/null 2>&1; then
-        fail "$layout: $defect archive satisfied verification"
-      fi
-      assert_present "$home/state/$id.meta" "$layout: refusal removed origin"
-      [ "$defect" != non-file ] || rmdir "$archive"
-    done
+  # Same identifier in the live backlog wins even over proven old evidence.
+  tasks_in "$home" add "$call" 'Unanswered replacement' --repo sample >/dev/null
+  tasks_in "$home" "done" "$call" >/dev/null
+  if run_captain "$home" verify "$id" >/dev/null 2>&1; then
+    fail "$layout: archive overrode an unresolved live row"
+  fi
+  tasks_in "$home" rm "$call" >/dev/null
+  for defect in missing absent-file non-file unanswered open duplicate wrong-origin legacy; do
     cp "$original" "$archive"
-    run_teardown "$home" "$id" >/dev/null 2> "$home/archive-teardown.err" \
-      || fail "$layout: archived answer still blocked cleanup: $(cat "$home/archive-teardown.err")"
-    assert_absent "$home/state/$id.meta" "$layout: cleanup retained origin metadata"
-    assert_grep 'Erase only the approved scratch' "$archive" "$layout: cleanup erased archived answer"
+    case "$defect" in
+      missing) : > "$archive" ;;
+      absent-file) rm "$archive" ;;
+      non-file) rm "$archive"; mkdir "$archive" ;;
+      unanswered) perl -pi -e 's/Resolution recorded by fm-captain-hold\./No recorded answer./' "$archive" ;;
+      open) perl -pi -e 's/^- \[x\]/- [ ]/' "$archive" ;;
+      duplicate) cat "$original" >> "$archive" ;;
+      wrong-origin) perl -pi -e 's/Captain hold origin: .*/Captain hold origin: other-origin/' "$archive" ;;
+      legacy)
+        # Historical metadata keys and resolution leaders still work.
+        perl -pi -e 's/sample-archive-call/sample-archive-scout-decision-choice/g; s/fm-captain-hold\./fm-decision-hold./g' "$archive"
+        printf 'decision_keys=choice\n' >> "$home/state/$id.meta"
+        run_captain "$home" verify "$id" >/dev/null || fail "$layout: legacy archived answer refused"
+        printf 'decision_keys=%s\n' "$call" >> "$home/state/$id.meta"
+        continue
+        ;;
+    esac
+    if run_captain "$home" verify "$id" >/dev/null 2>&1; then
+      fail "$layout: $defect archive satisfied verification"
+    fi
+    assert_present "$home/state/$id.meta" "$layout: refusal removed origin"
+    [ "$defect" != non-file ] || rmdir "$archive"
   done
+  cp "$original" "$archive"
+  run_teardown "$home" "$id" >/dev/null 2> "$home/archive-teardown.err" \
+    || fail "$layout: archived answer still blocked cleanup: $(cat "$home/archive-teardown.err")"
+  assert_absent "$home/state/$id.meta" "$layout: cleanup retained origin metadata"
+  assert_grep 'Erase only the approved scratch' "$archive" "$layout: cleanup erased archived answer"
+}
+
+test_archived_answer_inventory() {
+  run_case_parts archived_answer_layout relative absolute default relocated \
+    || fail "an archived-answer layout failed (see its message above)"
   pass 'closed archived answers allow completion and cleanup; missing, unanswered, open, duplicate, and wrong-origin evidence refuses'
 }
 
@@ -2452,7 +2480,7 @@ test_origin_slug_validation_precedes_path_construction() {
 
 run_drain() {  # <home>
   local home=$1
-  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" \
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-wake-drain.sh" 2>/dev/null
@@ -4029,7 +4057,7 @@ SH
   chmod +x "$home/fakebin/tasks-axi"
 
   set +e
-  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" \
     TASKS_AXI_FAIL_SHOW_ID="$id" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
@@ -4255,27 +4283,27 @@ test_complete_refuses_an_entry_held_for_another_origin() {
   pass "complete refuses an entry held for another origin and flags one with none recorded"
 }
 
-test_hold_origins_precede_backend_holds() {
-  local home phase timing failure id shown origin until_args=()
-  for phase in new active released; do
-    for timing in plain dated; do
-      home=$(make_home "origin-failure-$phase-$timing")
-      id=sample-call
-      for origin in origin-a origin-b; do
-        tasks_in "$home" add "$origin" "Review $origin" --kind scout --repo sample >/dev/null \
-          || fail "could not create $origin"
-        write_origin_meta "$home" "$origin"
-      done
-      if [ "$phase" != new ]; then
-        run_captain "$home" hold "$id" --title "Separate call" --reason "Choose for A" \
-          --origin origin-a >/dev/null || fail "could not establish the original association"
-      fi
-      if [ "$phase" = released ]; then
-        printf 'Release this work.\n' > "$home/answer.txt"
-        run_captain "$home" answer "$id" --release --decision-file "$home/answer.txt" >/dev/null \
-          || fail "could not release the original hold"
-      fi
-      cat > "$home/fakebin/tasks-axi" <<'SH'
+# One phase/timing cell of test_hold_origins_precede_backend_holds, in a home
+# of its own, so the six cells run side by side through run_case_parts.
+hold_origin_failure_cell() {  # <phase>:<timing>
+  local phase=${1%%:*} timing=${1#*:} home failure id shown origin until_args=()
+  home=$(make_home "origin-failure-$phase-$timing")
+  id=sample-call
+  for origin in origin-a origin-b; do
+    tasks_in "$home" add "$origin" "Review $origin" --kind scout --repo sample >/dev/null \
+      || fail "could not create $origin"
+    write_origin_meta "$home" "$origin"
+  done
+  if [ "$phase" != new ]; then
+    run_captain "$home" hold "$id" --title "Separate call" --reason "Choose for A" \
+      --origin origin-a >/dev/null || fail "could not establish the original association"
+  fi
+  if [ "$phase" = released ]; then
+    printf 'Release this work.\n' > "$home/answer.txt"
+    run_captain "$home" answer "$id" --release --decision-file "$home/answer.txt" >/dev/null \
+      || fail "could not release the original hold"
+  fi
+  cat > "$home/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = show ] && [ "${2:-}" = origin-b ] && [ -f "$FM_HOME/fail-lookup" ]; then
   : > "$FM_HOME/lookup-refused"
@@ -4301,73 +4329,76 @@ if [ "${1:-}" = hold ] && [ "${2:-}" != --help ]; then
 fi
 exec "$REAL_TASKS_AXI" "$@"
 SH
-      chmod +x "$home/fakebin/tasks-axi"
-      until_args=()
-      [ "$timing" != dated ] || until_args=(--until 2099-01-01)
-      for failure in lookup write hold; do
-        : > "$home/fail-$failure"
-        if run_captain "$home" hold "$id" --title "Separate call" --reason "Choose for B" \
-          --origin origin-b ${until_args[@]+"${until_args[@]}"} > "$home/hold.out" 2> "$home/hold.err"; then
-          fail "$phase $timing hold succeeded despite an origin $failure failure"
-        fi
-        assert_present "$home/$failure-refused" "the failure did not reach the origin $failure"
-        if [ "$failure" = hold ]; then
-          assert_present "$home/before-backend-hold" "$phase $timing failure never reached the backend hold"
-          assert_grep 'Captain hold origin: origin-b' "$home/before-backend-hold" \
-            "the failed backend hold did not see the new association"
-          rm "$home/before-backend-hold"
-        else
-          assert_absent "$home/before-backend-hold" "$phase $timing origin $failure failure reached the backend hold"
-        fi
-        shown=$(tasks_in "$home" show "$id" --full)
-        assert_not_contains "$shown" 'Captain hold origin: origin-b' \
-          "$phase $timing origin $failure failure published the new association"
-        if [ "$phase" = active ]; then
-          assert_contains "$shown" 'held: yes' "an origin $failure failure lifted an existing hold"
-        else
-          assert_contains "$shown" 'held: no' "$phase $timing origin $failure failure left the task held"
-        fi
-        if [ "$phase" != new ]; then
-          assert_contains "$shown" 'Captain hold origin: origin-a' \
-            "$phase $timing origin $failure failure lost the original association"
-        fi
-        rm "$home/fail-$failure"
-        if [ "$phase" = new ] && run_captain "$home" complete origin-a "$id" \
-          > "$home/unrelated.out" 2> "$home/unrelated.err"; then
-          fail "$timing origin $failure failure satisfied an unrelated inventory"
-        fi
-        if run_captain "$home" complete origin-b "$id" > "$home/complete.out" 2> "$home/complete.err"; then
-          fail "$phase $timing origin $failure failure satisfied completion for B"
-        fi
-        printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$id" >> "$home/state/origin-b.meta"
-        if run_captain "$home" verify origin-b > "$home/verify.out" 2> "$home/verify.err"; then
-          fail "$phase $timing origin $failure failure verified an inventory for B"
-        fi
-        if [ "$phase" != new ]; then
-          run_captain "$home" complete origin-a "$id" >/dev/null \
-            || fail "$phase $timing origin $failure failure invalidated completion for A"
-          run_captain "$home" verify origin-a >/dev/null \
-            || fail "$phase $timing origin $failure failure invalidated verification for A"
-        fi
-      done
-      run_captain "$home" hold "$id" --reason "Choose for B" --origin origin-b \
-        ${until_args[@]+"${until_args[@]}"} >/dev/null || fail "$phase $timing successful retry failed"
-      assert_present "$home/before-backend-hold" "the successful retry did not reach the backend hold"
-      shown=$(cat "$home/before-backend-hold")
-      assert_contains "$shown" 'Captain hold origin: origin-b' "the backend hold ran before the new origin was recorded"
-      assert_not_contains "$shown" 'Captain hold origin: origin-a' "the backend hold ran with the old association"
-      shown=$(tasks_in "$home" show "$id" --full)
-      assert_contains "$shown" 'held: yes' "the successful retry did not hold the task"
-      assert_contains "$shown" 'Captain hold origin: origin-b' "a successful hold lost its association"
-      assert_not_contains "$shown" 'Captain hold origin: origin-a' "a successful hold retained the old association"
-      run_captain "$home" complete origin-b "$id" >/dev/null \
-        || fail "a successful hold could not complete B"
-      run_captain "$home" verify origin-b >/dev/null || fail "a successful hold could not verify B"
-      if run_captain "$home" complete origin-a "$id" >/dev/null 2> "$home/old-origin.err"; then
-        fail "a successful reassociation still certified A"
-      fi
-    done
+  chmod +x "$home/fakebin/tasks-axi"
+  until_args=()
+  [ "$timing" != dated ] || until_args=(--until 2099-01-01)
+  for failure in lookup write hold; do
+    : > "$home/fail-$failure"
+    if run_captain "$home" hold "$id" --title "Separate call" --reason "Choose for B" \
+      --origin origin-b ${until_args[@]+"${until_args[@]}"} > "$home/hold.out" 2> "$home/hold.err"; then
+      fail "$phase $timing hold succeeded despite an origin $failure failure"
+    fi
+    assert_present "$home/$failure-refused" "the failure did not reach the origin $failure"
+    if [ "$failure" = hold ]; then
+      assert_present "$home/before-backend-hold" "$phase $timing failure never reached the backend hold"
+      assert_grep 'Captain hold origin: origin-b' "$home/before-backend-hold" \
+        "the failed backend hold did not see the new association"
+      rm "$home/before-backend-hold"
+    else
+      assert_absent "$home/before-backend-hold" "$phase $timing origin $failure failure reached the backend hold"
+    fi
+    shown=$(tasks_in "$home" show "$id" --full)
+    assert_not_contains "$shown" 'Captain hold origin: origin-b' \
+      "$phase $timing origin $failure failure published the new association"
+    if [ "$phase" = active ]; then
+      assert_contains "$shown" 'held: yes' "an origin $failure failure lifted an existing hold"
+    else
+      assert_contains "$shown" 'held: no' "$phase $timing origin $failure failure left the task held"
+    fi
+    if [ "$phase" != new ]; then
+      assert_contains "$shown" 'Captain hold origin: origin-a' \
+        "$phase $timing origin $failure failure lost the original association"
+    fi
+    rm "$home/fail-$failure"
+    if [ "$phase" = new ] && run_captain "$home" complete origin-a "$id" \
+      > "$home/unrelated.out" 2> "$home/unrelated.err"; then
+      fail "$timing origin $failure failure satisfied an unrelated inventory"
+    fi
+    if run_captain "$home" complete origin-b "$id" > "$home/complete.out" 2> "$home/complete.err"; then
+      fail "$phase $timing origin $failure failure satisfied completion for B"
+    fi
+    printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$id" >> "$home/state/origin-b.meta"
+    if run_captain "$home" verify origin-b > "$home/verify.out" 2> "$home/verify.err"; then
+      fail "$phase $timing origin $failure failure verified an inventory for B"
+    fi
+    if [ "$phase" != new ]; then
+      run_captain "$home" complete origin-a "$id" >/dev/null \
+        || fail "$phase $timing origin $failure failure invalidated completion for A"
+      run_captain "$home" verify origin-a >/dev/null \
+        || fail "$phase $timing origin $failure failure invalidated verification for A"
+    fi
   done
+  run_captain "$home" hold "$id" --reason "Choose for B" --origin origin-b \
+    ${until_args[@]+"${until_args[@]}"} >/dev/null || fail "$phase $timing successful retry failed"
+  assert_present "$home/before-backend-hold" "the successful retry did not reach the backend hold"
+  shown=$(cat "$home/before-backend-hold")
+  assert_contains "$shown" 'Captain hold origin: origin-b' "the backend hold ran before the new origin was recorded"
+  assert_not_contains "$shown" 'Captain hold origin: origin-a' "the backend hold ran with the old association"
+  shown=$(tasks_in "$home" show "$id" --full)
+  assert_contains "$shown" 'held: yes' "the successful retry did not hold the task"
+  assert_contains "$shown" 'Captain hold origin: origin-b' "a successful hold lost its association"
+  assert_not_contains "$shown" 'Captain hold origin: origin-a' "a successful hold retained the old association"
+  run_captain "$home" complete origin-b "$id" >/dev/null \
+    || fail "a successful hold could not complete B"
+  run_captain "$home" verify origin-b >/dev/null || fail "a successful hold could not verify B"
+  if run_captain "$home" complete origin-a "$id" >/dev/null 2> "$home/old-origin.err"; then
+    fail "a successful reassociation still certified A"
+  fi
+}
+
+test_hold_origins_precede_backend_holds() {
+  run_case_parts hold_origin_failure_cell new:plain new:dated active:plain active:dated \
+    released:plain released:dated || fail "an origin-first hold cell failed (see its message above)"
   pass "new, active, and released holds require the origin first with and without deferral"
 }
 
@@ -4622,7 +4653,7 @@ SH
         chmod +x "$home/fakebin/tasks-axi"
         ;;
     esac
-    start=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" \
+    start=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" FM_HOME="$home" \
       FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
       FM_BOOTSTRAP_NETWORK=skip "$ROOT/bin/fm-session-start.sh" 2>&1 || true)
     assert_contains "$start" "$quoted_reason" "startup $mode changed the encoded reason"
@@ -4653,69 +4684,71 @@ SH
 
 # Every case builds its own homes under a name of its own, and its background
 # races wait only on processes it started, so no case depends on another or on
-# their order; they run through fm_run_case_pool (tests/lib.sh), longest first.
+# their order; they run through fm_run_case_pool (tests/lib.sh), longest first
+# by CI per-case time, with the two cases that fan their homes out through
+# run_case_parts at the front, since together they carry the most work.
 # FM_CAPTAIN_HOLD_CASE_JOBS overrides the concurrency, which defaults to the
 # host's processor count capped at four; 1 runs the cases serially.
 case_jobs=$(fm_case_pool_jobs "${FM_CAPTAIN_HOLD_CASE_JOBS:-}")
 fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_hold_origins_precede_backend_holds \
+  test_archived_answer_inventory \
   test_retained_row_artifacts_survive_captain_answers \
   test_bound_channel_answers_close_at_answer_time \
-  test_uninventoried_report_decision_refuses_completion \
-  test_hold_decodes_a_bare_scalar_body_without_the_nonref_default \
-  test_retained_body_keeps_its_utf8_bytes \
-  test_completion_gate_attests_and_transfers \
-  test_answer_records_and_closes \
-  test_release_frees_held_work \
-  test_hold_stamp_precedes_hold_visibility \
-  test_interrupted_answer_preserves_hold_age \
-  test_deferral_leaves_captains_call_until_due \
-  test_out_of_band_close_is_recordable \
-  test_archived_answer_inventory \
-  test_visual_review_uses_shared_completion_owner \
-  test_none_inventory_and_resolved_prose_do_not_create_holds \
-  test_terminal_single_owner_status_decision_does_not_block_empty_inventory \
-  test_secondmate_hold_stays_in_authoritative_home \
-  test_secondmate_home_publishes_holds_and_answers \
-  test_secondmate_reconcile_publishes_before_request_retirement \
-  test_reconcile_never_closes_through_the_keyed_answer_intake \
-  test_normal_answers_retire_pending_reconcile_requests \
-  test_reconcile_closes_with_evidence_or_keeps_the_call_open \
-  test_reconcile_outcomes_retry_partial_failures_once \
-  test_unbound_source_closes_no_hold \
+  test_inventory_compares_backend_identities \
   test_legacy_identities_keep_working \
+  test_reconcile_outcomes_retry_partial_failures_once \
+  test_hold_reason_round_trips_awkward_characters \
+  test_retained_body_keeps_its_utf8_bytes \
   test_chat_channel_feeds_the_same_keyed_answer_intake \
-  test_origin_slug_validation_precedes_path_construction \
-  test_status_resolution_over_an_open_hold_is_signalled \
-  test_legitimate_holds_produce_no_divergence_signal \
   test_teardown_never_closes_a_captain_held_task \
-  test_interrupted_cleanup_keeps_the_captain_call_recoverable \
-  test_answer_before_cleanup_replay_preserves_the_retained_report \
-  test_unusable_pending_close_record_names_its_reason \
-  test_relocated_report_does_not_wedge_an_answer_before_replay \
-  test_teardown_retains_captain_calls_in_a_relocated_backlog \
-  test_merge_approval_releases_before_zero_done_retention \
-  test_pr_merge_entrypoint_refuses_a_captain_held_task \
-  test_local_merge_entrypoint_refuses_a_captain_held_task \
-  test_pr_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one \
-  test_local_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one \
-  test_merge_entrypoints_validate_identity_and_state_before_locking \
-  test_merge_entrypoints_refuse_a_reused_task_incarnation \
+  test_secondmate_home_publishes_holds_and_answers \
+  test_hold_decodes_a_bare_scalar_body_without_the_nonref_default \
+  test_reconcile_closes_with_evidence_or_keeps_the_call_open \
+  test_out_of_band_close_is_recordable \
+  test_normal_answers_retire_pending_reconcile_requests \
+  test_historical_self_inventory_has_workable_repair \
+  test_completion_gate_attests_and_transfers \
+  test_release_frees_held_work \
   test_merge_entrypoints_serialize_forced_teardown_before_task_reads \
   test_released_merge_passes_the_entrypoint_and_lands \
+  test_secondmate_reconcile_publishes_before_request_retirement \
+  test_legitimate_holds_produce_no_divergence_signal \
+  test_answer_before_cleanup_replay_preserves_the_retained_report \
+  test_relocated_report_does_not_wedge_an_answer_before_replay \
+  test_merge_entrypoints_refuse_a_reused_task_incarnation \
+  test_deferral_leaves_captains_call_until_due \
+  test_secondmate_hold_stays_in_authoritative_home \
+  test_interrupted_cleanup_keeps_the_captain_call_recoverable \
+  test_answer_records_and_closes \
+  test_teardown_retains_captain_calls_in_a_relocated_backlog \
+  test_visual_review_uses_shared_completion_owner \
+  test_status_resolution_over_an_open_hold_is_signalled \
+  test_unusable_pending_close_record_names_its_reason \
+  test_merge_approval_releases_before_zero_done_retention \
+  test_interrupted_answer_preserves_hold_age \
+  test_reconcile_never_closes_through_the_keyed_answer_intake \
+  test_complete_refuses_an_entry_held_for_another_origin \
+  test_terminal_single_owner_status_decision_does_not_block_empty_inventory \
+  test_pr_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one \
+  test_unbound_source_closes_no_hold \
+  test_pr_merge_entrypoint_refuses_a_captain_held_task \
+  test_answer_before_cleanup_replay_notes_a_retained_gerrit_change \
+  test_teardown_retains_a_gerrit_captain_call_with_its_change_url \
+  test_hold_stamp_precedes_hold_visibility \
+  test_local_merge_entrypoint_refuses_a_captain_held_task \
   test_teardown_refuses_a_ship_when_the_captain_hold_cannot_be_read \
+  test_uninventoried_report_decision_refuses_completion \
+  test_local_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one \
+  test_origin_is_never_its_own_inventory_entry \
+  test_none_inventory_and_resolved_prose_do_not_create_holds \
+  test_captain_hold_mutations_address_the_beads_backend \
+  test_origin_slug_validation_precedes_path_construction \
+  test_merge_entrypoints_validate_identity_and_state_before_locking \
   test_verify_resolves_a_hold_migrated_to_beads_notes \
   test_verify_resolves_a_hold_migrated_under_the_configured_prefix \
   test_marker_noted_row_wins_over_a_prefix_namesake \
   test_complete_accepts_a_migrated_inventory_on_beads \
   test_verify_names_the_unresolvable_legacy_id_once \
   test_verify_resolves_a_pre_collapse_key_through_its_derived_marker \
-  test_captain_hold_mutations_address_the_beads_backend \
-  test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type \
-  test_hold_reason_round_trips_awkward_characters \
-  test_hold_origins_precede_backend_holds \
-  test_historical_self_inventory_has_workable_repair \
-  test_inventory_compares_backend_identities \
-  test_origin_is_never_its_own_inventory_entry \
-  test_complete_refuses_an_entry_held_for_another_origin \
-  test_answer_before_cleanup_replay_notes_a_retained_gerrit_change \
-  test_teardown_retains_a_gerrit_captain_call_with_its_change_url
+  test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
