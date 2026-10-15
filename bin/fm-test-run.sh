@@ -297,11 +297,10 @@ cpu_count() {
 # lands in `unclassified` and stays serial until someone proves it.
 family_for_basename() {
   case "$1" in
-    fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
+    fm-arm-pretool-check.test.sh|\
     fm-brief.test.sh|fm-dod-lib.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
-    fm-classify-decision-key.test.sh|\
-    fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
+    fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-forge-detect.test.sh|fm-grok-harness.test.sh|\
     fm-fork-free-helpers.test.sh|\
@@ -311,7 +310,7 @@ family_for_basename() {
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
     fm-calm-claude-mod.test.sh|\
     fm-harness-adapter-references.test.sh|fm-project-mode.test.sh|\
-    fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
+    fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-timeout-lib.test.sh|\
@@ -324,7 +323,6 @@ family_for_basename() {
     fm-session-lock-ancestry.test.sh|fm-cursor-primary.test.sh|\
     fm-parent-channel-scan-exclusion.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
-    fm-wake-drain-unread-status.test.sh|\
     fm-tool-update-check.test.sh|\
     fm-mail.test.sh|fm-mail-check.test.sh|\
     fm-turnend-foreign-owner-arm-fix.test.sh|\
@@ -447,9 +445,8 @@ family_for_basename() {
     fm-rereview-brief.test.sh|\
     fm-remote-entrypoint.test.sh|fm-remote-secondmate-parent-binding.test.sh|\
     fm-send-remote-delivery.test.sh|fm-spawn-pool-base-freshen.test.sh|\
-    fm-test-fixture-cleanup.test.sh|fm-test-fixtures.test.sh|\
-    fm-voice-relay.test.sh|fm-wake-drain-open-decisions-cursor.test.sh|\
-    fm-wake-drain-open-decisions.test.sh|fm-wake-drain-outcome-backstop.test.sh)
+    fm-test-fixtures.test.sh|\
+    fm-voice-relay.test.sh|fm-wake-drain-open-decisions.test.sh)
       printf '%s\n' standalone
       ;;
     *)
@@ -516,7 +513,6 @@ tests/fm-backend-herdr.test.sh
 tests/fm-brief.test.sh
 tests/fm-captain-hold-lifecycle.test.sh
 tests/fm-cd-pretool-check.test.sh
-tests/fm-composer-ghost.test.sh
 tests/fm-composer-lib.test.sh
 tests/fm-crew-state.test.sh
 tests/fm-ensure-agents-md.test.sh
@@ -526,7 +522,6 @@ tests/fm-lint.test.sh
 tests/fm-pi-primary-types.test.sh
 tests/fm-pr-merge.test.sh
 tests/fm-review-diff.test.sh
-tests/fm-send-popup-settle.test.sh
 tests/fm-send-settle.test.sh
 tests/fm-send-strict.test.sh
 tests/fm-spawn-batch.test.sh
@@ -545,11 +540,10 @@ portable_parallel_weight_hints() {
   cat <<'EOF'
 tests/fm-arm-pretool-check.test.sh 53185
 tests/fm-backend-herdr.test.sh 61672
-tests/fm-brief.test.sh 18770
+tests/fm-brief.test.sh 19134
 tests/fm-captain-hold-lifecycle.test.sh 258147
 tests/fm-cd-pretool-check.test.sh 53666
-tests/fm-composer-ghost.test.sh 3743
-tests/fm-composer-lib.test.sh 15852
+tests/fm-composer-lib.test.sh 19595
 tests/fm-crew-state.test.sh 165189
 tests/fm-ensure-agents-md.test.sh 1526
 tests/fm-grok-harness.test.sh 17819
@@ -558,8 +552,7 @@ tests/fm-lint.test.sh 215760
 tests/fm-pi-primary-types.test.sh 8419
 tests/fm-pr-merge.test.sh 254163
 tests/fm-review-diff.test.sh 7070
-tests/fm-send-popup-settle.test.sh 25898
-tests/fm-send-settle.test.sh 3742
+tests/fm-send-settle.test.sh 29640
 tests/fm-send-strict.test.sh 6263
 tests/fm-spawn-batch.test.sh 15304
 tests/fm-supervision-instructions.test.sh 3232
@@ -593,12 +586,11 @@ tests/fm-captain-hold-lifecycle.test.sh
 tests/fm-test-run.test.sh
 tests/fm-crew-state.test.sh
 tests/fm-x-mode.test.sh
-tests/fm-send-popup-settle.test.sh
+tests/fm-send-settle.test.sh
 tests/fm-grok-harness.test.sh
 tests/fm-spawn-batch.test.sh
 tests/fm-pi-primary-types.test.sh
 tests/fm-send-strict.test.sh
-tests/fm-send-settle.test.sh
 tests/fm-ensure-agents-md.test.sh
 EOF
 }
@@ -612,11 +604,10 @@ tests/fm-backend-herdr.test.sh
 tests/fm-cd-pretool-check.test.sh
 tests/fm-arm-pretool-check.test.sh
 tests/fm-herdr-lab.test.sh
-tests/fm-brief.test.sh
 tests/fm-composer-lib.test.sh
+tests/fm-brief.test.sh
 tests/fm-tmux-submit-busy.test.sh
 tests/fm-review-diff.test.sh
-tests/fm-composer-ghost.test.sh
 tests/fm-supervision-instructions.test.sh
 tests/fm-transition-lib.test.sh
 EOF
@@ -758,7 +749,6 @@ tests/fm-afk-pi-herdr-return-e2e.test.sh 50
 tests/fm-afk-return.test.sh 88218
 tests/fm-agy-harness.test.sh 59690
 tests/fm-agy-signals-live-e2e.test.sh 84
-tests/fm-ask-user-authority.test.sh 364
 tests/fm-backend-cmux-smoke.test.sh 30
 tests/fm-backend-cmux.test.sh 2961
 tests/fm-backend-orca.test.sh 26497
@@ -783,8 +773,7 @@ tests/fm-calm-pi-extension.test.sh 58500
 tests/fm-calm-pi-queue-retention-live-e2e.test.sh 1215
 tests/fm-check-unregister.test.sh 1789
 tests/fm-ci-workflow.test.sh 21714
-tests/fm-classify-corr-token.test.sh 79325
-tests/fm-classify-decision-key.test.sh 7234
+tests/fm-classify-corr-token.test.sh 86559
 tests/fm-claude-stop-autoarm-live-e2e.test.sh 36
 tests/fm-claude-stop-autoarm.test.sh 42980
 tests/fm-claude-trust.test.sh 16776
@@ -801,9 +790,7 @@ tests/fm-cursor-harness.test.sh 2226
 tests/fm-cursor-primary-live-e2e.test.sh 79
 tests/fm-cursor-primary.test.sh 64573
 tests/fm-daemon.test.sh 37927
-tests/fm-data-gate-install.test.sh 4902
-tests/fm-data-gate-reads.test.sh 6217
-tests/fm-data-gate.test.sh 23178
+tests/fm-data-gate.test.sh 34297
 tests/fm-devin-harness.test.sh 4911
 tests/fm-devin-signals-live-e2e.test.sh 76
 tests/fm-disk-room.test.sh 4184
@@ -939,8 +926,7 @@ tests/fm-task-inbox.test.sh 32776
 tests/fm-tasks-axi.test.sh 2379
 tests/fm-teardown-endpoint-safety.test.sh 69362
 tests/fm-teardown.test.sh 126521
-tests/fm-test-fixture-cleanup.test.sh 1444
-tests/fm-test-fixtures.test.sh 3162
+tests/fm-test-fixtures.test.sh 4606
 tests/fm-test-isolation-proof.test.sh 3966
 tests/fm-timeout-lib.test.sh 10144
 tests/fm-tmux-agent-liveness.test.sh 4220
@@ -954,10 +940,7 @@ tests/fm-usage-audit.test.sh 814
 tests/fm-vendor-auth-probe.test.sh 43964
 tests/fm-voice-relay.test.sh 35353
 tests/fm-wake-daemon-lifecycle-e2e.test.sh 8110
-tests/fm-wake-drain-open-decisions-cursor.test.sh 61923
-tests/fm-wake-drain-open-decisions.test.sh 12622
-tests/fm-wake-drain-outcome-backstop.test.sh 73936
-tests/fm-wake-drain-unread-status.test.sh 23459
+tests/fm-wake-drain-open-decisions.test.sh 171940
 tests/fm-wake-queue.test.sh 58827
 tests/fm-watch-arm.test.sh 90498
 tests/fm-watch-checkpoint.test.sh 10968

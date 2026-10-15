@@ -691,7 +691,7 @@ test_send_tmux_contract() {
   assert_contains "$(cat "$log")" $'\x1f''Enter' "fm-send did not submit with Enter"
 
   # Case 3: a slash command still opens the popup-settle path (verified in
-  # tests/fm-send-popup-settle.test.sh) and ends in the same command shape:
+  # tests/fm-send-settle.test.sh) and ends in the same command shape:
   # one literal type, then Enter.
   run_send_case "$ROOT" "$fb" "$log" "$home" -- "sess:win" /some-skill
   rc=$?

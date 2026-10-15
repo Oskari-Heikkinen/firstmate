@@ -799,7 +799,12 @@ assert_grep "$REMOTE_HOME/state/parent-replies.status" "$REMOTE_HOME/data/charte
 assert_no_grep "$PARENT/state/ios.status" "$REMOTE_HOME/data/charter.md" "remote charter retained the inaccessible local status path"
 assert_grep "$PARENT_ROUTE_INBOX" "$REMOTE_HOME/data/charter.md" "remote charter did not name its host-local steering inbox"
 assert_no_grep "$PARENT/state/ios.inbox" "$REMOTE_HOME/data/charter.md" "remote charter retained the inaccessible local steering inbox path"
-assert_grep "message files in '$PARENT_ROUTE_INBOX'." "$REMOTE_HOME/data/charter.md" "remote charter did not render the inbox acknowledgement move host-local"
+# The inbox section names the host-local inbox shell-quoted, and its handled/
+# acknowledgement move is relative to that inbox, so it lands host-local too.
+remote_inbox_section=$(awk '$0 == "# Firstmate instruction inbox" { on = 1; next } on && /^# / { exit } on { print }' \
+  "$REMOTE_HOME/data/charter.md")
+assert_contains "$remote_inbox_section" "'$PARENT_ROUTE_INBOX'" "remote charter did not render the inbox acknowledgement move host-local"
+assert_contains "$remote_inbox_section" 'handled/' "remote charter did not render the inbox acknowledgement move host-local"
 if FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
   remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$TMP_ROOT/other-home" alpha \

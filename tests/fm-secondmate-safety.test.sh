@@ -21,6 +21,27 @@ file_mode() {
   fi
 }
 
+# assert_line_has <file> <msg> <needle>...: one line of <file> holds every
+# fixed-string needle, so a contract ties its parts together without pinning
+# the sentence around them.
+assert_line_has() {
+  local file=$1 msg=$2 line needle ok
+  shift 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    ok=1
+    for needle in "$@"; do
+      case "$line" in *"$needle"*) ;; *) ok=0; break ;; esac
+    done
+    [ "$ok" -eq 0 ] || return 0
+  done < "$file"
+  fail "$msg"
+}
+
+# md_section <file> <heading>: the body of the top-level "# <heading>" section.
+md_section() {
+  awk -v heading="# $2" '$0 == heading { on = 1; next } on && /^# / { exit } on { print }' "$1"
+}
+
 install_fake_process_event_sweep() {
   local home=$1 log=$2
   mkdir -p "$home/bin"
@@ -62,11 +83,13 @@ test_fm_home_parameterization() {
   FM_HOME="$home_one" "$ROOT/bin/fm-brief.sh" task-a app --mode no-mistakes >/dev/null || fail "brief scaffold failed under FM_HOME"
   brief="$home_one/data/task-a/brief.md"
   [ -f "$brief" ] || fail "brief was not written under FM_HOME/data"
-  grep -F "fm-worker-status.sh' '$home_one/state/task-a.status'" "$brief" >/dev/null || fail "brief did not shell-quote FM_HOME state path"
+  assert_line_has "$brief" "brief did not shell-quote FM_HOME state path" \
+    "bin/fm-worker-status.sh'" "'$home_one/state/task-a.status'"
 
   FM_HOME="$home_one" "$ROOT/bin/fm-brief.sh" task-b app --scout >/dev/null || fail "scout brief scaffold failed under FM_HOME"
   brief="$home_one/data/task-b/brief.md"
-  grep -F "fm-worker-status.sh' '$home_one/state/task-b.status'" "$brief" >/dev/null || fail "scout brief did not shell-quote FM_HOME state path"
+  assert_line_has "$brief" "scout brief did not shell-quote FM_HOME state path" \
+    "bin/fm-worker-status.sh'" "'$home_one/state/task-b.status'"
 
   FM_HOME="$home_one" FM_SECONDMATE_CHARTER='ops domain' "$ROOT/bin/fm-brief.sh" task-c --secondmate app >/dev/null \
     || fail "secondmate brief scaffold failed under FM_HOME"
@@ -503,7 +526,7 @@ test_home_seed_refuses_empty_charter_fields() {
 }
 
 test_home_seed_refresh_charter_lists_drops_before_writing() {
-  local home sub charter before err status
+  local home sub charter before err status template_line
   home="$TMP_ROOT/refresh-charter-home"
   sub="$TMP_ROOT/refresh-charter-subhome"
   err="$TMP_ROOT/refresh-charter.err"
@@ -515,10 +538,16 @@ test_home_seed_refresh_charter_lists_drops_before_writing() {
     || fail "refreshing a current charter did not report it unchanged"
 
   # A stored copy from an older template, with a rule hand-added inside a
-  # template-owned section and one in its own section.
-  sed -e 's/^Nobody reads this chat.*/STALE TEMPLATE LINE/' \
-    -e '/^# Operating model$/a\
-Never deploy on Fridays.' "$charter" > "$charter.new"
+  # template-owned section and one in its own section. The drifted line is the
+  # first one under a template-owned heading, whatever its current wording.
+  template_line=$(md_section "$charter" 'The captain and the parent channel' | head -n 1)
+  [ -n "$template_line" ] || fail "charter has no template-owned parent-channel line to drift"
+  awk '
+    drift { print "STALE TEMPLATE LINE"; drift = 0; next }
+    { print }
+    $0 == "# The captain and the parent channel" { drift = 1 }
+    $0 == "# Operating model" { print "Never deploy on Fridays." }
+  ' "$charter" > "$charter.new"
   mv "$charter.new" "$charter"
   printf '\n# Domain hard rule\nNever touch production.\n' >> "$charter"
   before="$TMP_ROOT/refresh-charter.before"
@@ -533,7 +562,7 @@ Never deploy on Fridays.' "$charter" > "$charter.new"
 
   FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" --refresh-charter fdev --accept-drop >/dev/null \
     || fail "refresh with --accept-drop failed"
-  assert_grep 'Nobody reads this chat' "$charter" "refresh did not restore the current template"
+  grep -Fx -- "$template_line" "$charter" >/dev/null || fail "refresh did not restore the current template"
   assert_no_grep 'STALE TEMPLATE LINE' "$charter" "refresh kept the drifted template line"
   assert_no_grep 'Never deploy on Fridays.' "$charter" "an accepted drop was not dropped"
   assert_grep 'Never touch production.' "$charter" "refresh lost a domain section"
@@ -3072,24 +3101,27 @@ EOF
 }
 
 test_secondmate_charter_brief_is_idle_by_default() {
-  local home brief
+  local home brief operating done_section
   home="$TMP_ROOT/idle-charter-home"
   mkdir -p "$home/data" "$home/state"
   scaffold_secondmate_charter "$home" idle-sm 'feature work for alpha' alpha
   brief="$home/data/idle-sm/brief.md"
   [ -f "$brief" ] || fail "secondmate charter brief was not scaffolded"
+  operating=$(md_section "$brief" 'Operating model')
+  done_section=$(md_section "$brief" 'Definition of done')
+  [ -n "$operating" ] || fail "charter brief has no Operating model section"
+  [ -n "$done_section" ] || fail "charter brief has no Definition of done section"
   # Idle contract: waits for routed work, never self-initiates.
-  grep -F 'go idle and wait silently for the main firstmate' "$brief" >/dev/null \
-    || fail "charter brief does not tell the secondmate to go idle and wait for routed work"
-  grep -F 'Act only on tasks the main firstmate routes to you' "$brief" >/dev/null \
-    || fail "charter brief does not restrict work to routed tasks"
-  grep -F 'never spawn a survey, audit, or any self-directed' "$brief" >/dev/null \
-    || fail "charter brief does not forbid self-initiated survey/audit work"
+  assert_contains "$done_section" "idle" \
+    "charter brief does not tell the secondmate to go idle and wait for routed work"
+  assert_contains "$operating" "routes" "charter brief does not restrict work to routed tasks"
+  assert_contains "$done_section" "survey" "charter brief does not forbid self-initiated survey/audit work"
+  assert_contains "$done_section" "audit" "charter brief does not forbid self-initiated survey/audit work"
   # Reconcile-on-startup must remain: bootstrap and recovery still run, scoped to own work.
-  grep -F 'run normal firstmate bootstrap and recovery' "$brief" >/dev/null \
-    || fail "charter brief dropped the bootstrap/recovery reconciliation step"
-  grep -F 'only to RECONCILE work that is already yours' "$brief" >/dev/null \
-    || fail "charter brief does not scope startup work to reconciling existing work"
+  assert_contains "$done_section" "bin/fm-session-start.sh" \
+    "charter brief dropped the bootstrap/recovery reconciliation step"
+  assert_contains "$done_section" "RECONCILE" \
+    "charter brief does not scope startup work to reconciling existing work"
   # Regression guard: the over-broad phrasing that got misread as "go find work" is gone.
   if grep -F 'then supervise work that matches your scope' "$brief" >/dev/null; then
     fail "charter brief still uses the over-broad 'supervise work that matches your scope' phrasing"

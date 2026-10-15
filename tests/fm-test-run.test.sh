@@ -85,7 +85,7 @@ init_changed_fixture_repo() {
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
-    fm-ask-user-authority.test.sh \
+    fm-dod-lib.test.sh \
     fm-documentation-audiences.test.sh \
     fm-test-isolation-proof.test.sh \
     fm-test-run.test.sh \
@@ -252,7 +252,7 @@ test_changed_runner_surfaces_select_their_family() {
     *) fail "runner change did not select its pure-contract-unit family: $listed" ;;
   esac
   case "$listed" in
-    *tests/fm-ask-user-authority.test.sh*) ;;
+    *tests/fm-dod-lib.test.sh*) ;;
     *) fail "runner change did not select its pure-contract-unit family: $listed" ;;
   esac
   # The suite that proves the runner's per-suite fixture Git isolation lives in
@@ -335,7 +335,7 @@ test_changed_dependency_selection_and_unmapped_failure() {
   printf '\n' >>"$repo/.pi/extensions/fm-primary-pi-watch.ts"
   printf '\n' >>"$repo/.pi/extensions/fm-primary-turnend-guard.ts"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
-  assert_contains "$listed" "tests/fm-ask-user-authority.test.sh" "skill source selects pure contract coverage"
+  assert_contains "$listed" "tests/fm-dod-lib.test.sh" "skill source selects pure contract coverage"
   assert_contains "$listed" "tests/fm-cd-pretool-check.test.sh" "Claude and Pi source selects hook coverage"
   assert_contains "$listed" "tests/fm-pi-watch-extension.test.sh" "Pi source selects watcher coverage"
   assert_contains "$listed" "tests/fm-pi-windows-shell-invocation.test.sh" \
@@ -555,7 +555,7 @@ SH
   set +e
   out=$(cd "$repo" && PATH="$fakebin:$PATH" REAL_STAT="$real_stat" \
     bin/fm-test-run.sh --jobs 2 \
-      tests/fm-cd-pretool-check.test.sh tests/fm-ask-user-authority.test.sh 2>&1)
+      tests/fm-cd-pretool-check.test.sh tests/fm-dod-lib.test.sh 2>&1)
   rc=$?
   set -e
   expect_code 0 "$rc" "native-Windows POSIX-mode emulation"
@@ -565,7 +565,7 @@ SH
   set +e
   out=$(cd "$repo" && PATH="$fakebin:$PATH" REAL_STAT="$real_stat" FAKE_UNAME=CYGWIN_NT-10.0 \
     bin/fm-test-run.sh --jobs 2 \
-      tests/fm-cd-pretool-check.test.sh tests/fm-ask-user-authority.test.sh 2>&1)
+      tests/fm-cd-pretool-check.test.sh tests/fm-dod-lib.test.sh 2>&1)
   rc=$?
   set -e
   expect_code 1 "$rc" "Cygwin POSIX-mode enforcement"

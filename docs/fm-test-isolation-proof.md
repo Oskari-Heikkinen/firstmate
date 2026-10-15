@@ -22,6 +22,9 @@ This record owns concurrent isolation evidence for the portable parallel candida
 
 ## Candidate set
 
+This is the set the dated run above proved.
+On 2026-10-15 `tests/fm-composer-ghost.test.sh` merged into `tests/fm-composer-lib.test.sh` and `tests/fm-send-popup-settle.test.sh` merged into `tests/fm-send-settle.test.sh`, so the current candidate set is these paths without the two merged-away files.
+
 - `tests/fm-arm-pretool-check.test.sh`
 - `tests/fm-backend-herdr.test.sh`
 - `tests/fm-brief.test.sh`

@@ -559,7 +559,7 @@ The captured-source coverage proves:
 
 ### Classifier and projection suites
 
-`tests/fm-classify-decision-key.test.sh` pins `status_key_closing_verb` itself.
+The decision-key cases in `tests/fm-classify-corr-token.test.sh` pin `status_key_closing_verb` itself.
 It separates a resolution from the durable-transfer close and from a still-open key.
 It reports the last real transition across re-openings and both key positions, and treats a prose mention as no transition.
 
@@ -575,6 +575,6 @@ Projection regressions live in two suites:
 The exact commands and their summarized outputs are recorded in the shipping PR's evidence.
 To refresh this record, run:
 
-- The four suites above: `tests/fm-captain-hold-lifecycle.test.sh`, `tests/fm-classify-decision-key.test.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-bearings-snapshot.test.sh`.
+- The four suites above: `tests/fm-captain-hold-lifecycle.test.sh`, `tests/fm-classify-corr-token.test.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-bearings-snapshot.test.sh`.
 - `tests/fm-send-resolve-key.test.sh` and `tests/fm-procevent.test.sh`.
 - `bin/fm-lint.sh`.

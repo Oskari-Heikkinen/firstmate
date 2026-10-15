@@ -187,8 +187,6 @@ For a one-off search, the refusal itself names the override: search the named sm
 
 ```sh
 tests/fm-data-gate.test.sh
-tests/fm-data-gate-install.test.sh
-tests/fm-data-gate-reads.test.sh
 ```
 
 The first suite drives both rules' decision tables through a fake home: the scan table includes every read in the data-storage plan's legitimate-reads table as allowed, and the size tables replay the shapes of real recorded reads (the gate's decision log and lattice-research's S1r replay fixture) against 300 MiB sparse files and small ones.

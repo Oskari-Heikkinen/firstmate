@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091,SC2016
-# Behavior tests for the user-level data gate (docs/data-gate.md).
+# Behavior tests for the user-level data gate (docs/data-gate.md): the policy,
+# its installer, and its read log and daily report.
 #
 # bin/fm-data-gate-policy.mjs owns the decision and bin/fm-data-gate.sh is the
-# harness entry point. Every case runs against a fake HOME holding a fake main
-# home, a treehouse pool with one secondmate home and one task worktree, a bulk
-# store, a ledger, and symlinks, so nothing here reads or writes the real ~.
+# harness entry point. Every policy case runs against a fake HOME holding a fake
+# main home, a treehouse pool with one secondmate home and one task worktree, a
+# bulk store, a ledger, and symlinks, so nothing here reads or writes the real ~.
 # The table covers every read in the data-storage plan's "Legitimate reads
 # today" table as ALLOW, the protected roots as BLOCK, and the parsing edges.
+#
+# Installer cases (under $TMP_ROOT/install) run bin/fm-data-gate-install.sh with
+# HOME pointed at a fresh temporary directory, never the real one: install,
+# re-install (idempotent), uninstall (byte-identical restore), dry-run (writes
+# nothing), uninstall after a later edit (only gate entries removed, even across
+# a re-install), an unparseable settings file (left untouched), every registered
+# Claude login folder, the generated bulk paths, the Codex trust entry, and the
+# installed hooks, plugins and extensions actually calling the gate and logging
+# reads, and the daily report timer (with a fake systemctl, so no user manager
+# is touched). The fake systemctl is on PATH only inside the installer section.
+#
+# Read log cases (under $TMP_ROOT/reads): bin/fm-data-gate.sh passes every
+# read-shaped call to bin/fm-data-gate-reads.mjs, which appends rows to
+# reads-<date>.jsonl; bin/fm-data-gate-report.sh summarizes one day. They run
+# against their own fake HOME, so nothing here reads or writes the real ~.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -739,6 +755,717 @@ test_size_internal_error_allows() {
   pass "size rule internal errors allow and are logged"
 }
 
+# --- Installer (bin/fm-data-gate-install.sh) --------------------------------
+INSTALL_ROOT="$TMP_ROOT/install"
+INSTALL_FAKEBIN=$(fm_fakebin "$INSTALL_ROOT")
+cat >"$INSTALL_FAKEBIN/systemctl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG:?}"
+SH
+chmod +x "$INSTALL_FAKEBIN/systemctl"
+INSTALL="$ROOT/bin/fm-data-gate-install.sh"
+
+AXI_HOOKS='{
+  "hooks": {
+    "SessionStart": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "gh-axi", "timeout": 10}]},
+      {"matcher": "", "hooks": [{"type": "command", "command": "chrome-devtools-axi", "timeout": 10}]},
+      {"matcher": "", "hooks": [{"type": "command", "command": "lavish-axi", "timeout": 10}]}
+    ]
+  },
+  "theme": "dark"
+}'
+
+new_home() {  # <name>
+  local h="$INSTALL_ROOT/$1"
+  mkdir -p "$h/.claude" "$h/.claude-work" "$h/.claude-gmail" "$h/.claude-tetmet" "$h/.codex" "$h/.codex-alt" \
+    "$h/.grok" "$h/.config/opencode" "$h/.pi/agent" "$h/.omp/agent/extensions" "$h/Tools/firstmate/bin" \
+    "$h/Tools/firstmate/config" "$h/Tools/firstmate/data/rolling-runs-v9/slices" \
+    "$h/Tools/firstmate/data/exp/tetjet-results" "$h/lattice-ledger"
+  : >"$h/Tools/firstmate/AGENTS.md"
+  printf 'gmail claude ~/.claude-gmail 1\ntetmet claude %s/.claude-tetmet 2\nwork claude ~/.claude-work 3\nalt codex ~/.codex-alt\n' "$h" \
+    >"$h/Tools/firstmate/config/accounts"
+  printf 'rolling-runs-v9/slices\n' >"$h/Tools/firstmate/data/bulk-paths.txt"
+  printf '%s\n' "$AXI_HOOKS" >"$h/.claude/settings.json"
+  printf '%s' "$AXI_HOOKS" >"$h/.codex/hooks.json"
+  printf 'scratch/\n' >"$h/lattice-ledger/.ignore"
+  printf 'model = "x"\n' >"$h/.codex/config.toml"
+  printf '%s\n' "$h"
+}
+
+snapshot() {  # <home>: hash every file outside the installer's own state dir
+  (cd "$1" && find . -path ./.local -prune -o \( -type f -o -type l \) -print | LC_ALL=C sort | while IFS= read -r f; do
+    printf '%s %s\n' "$(sha256sum <"$f" | cut -d' ' -f1)" "$f"
+  done
+  find . -path ./.local -prune -o -type d -print | LC_ALL=C sort)
+}
+
+inst() {  # <home> <args...>
+  local h=$1
+  shift
+  HOME="$h" "$INSTALL" "$@"
+}
+
+test_dry_run_writes_nothing() {
+  local h before out
+  h=$(new_home dry)
+  before=$(snapshot "$h")
+  out=$(inst "$h" install --dry-run) || fail "dry-run install failed: $out"
+  assert_contains "$out" "dry run: nothing was written" "dry run says so"
+  assert_contains "$out" "changed   $h/.claude/settings.json" "dry run still prints the per-file summary"
+  assert_equals "$before" "$(snapshot "$h")" "dry-run install changes no file"
+  assert_absent "$h/.local/state/lattice-data-gate" "dry-run install writes no state"
+  inst "$h" install >/dev/null || fail "install failed"
+  before=$(snapshot "$h")
+  inst "$h" uninstall --dry-run >/dev/null || fail "dry-run uninstall failed"
+  assert_equals "$before" "$(snapshot "$h")" "dry-run uninstall changes no file"
+  pass "dry-run changes nothing"
+}
+
+test_install_merges_and_backs_up() {
+  local h out backups
+  h=$(new_home merge)
+  out=$(inst "$h" install) || fail "install failed: $out"
+  for f in .claude/settings.json .claude-work/settings.json .claude-gmail/settings.json .claude-tetmet/settings.json \
+    .codex/hooks.json .codex/config.toml .grok/hooks/lattice-data-gate.json \
+    .config/opencode/plugins/lattice-data-gate.js .pi/agent/extensions/lattice-data-gate.ts \
+    .omp/agent/extensions/lattice-data-gate.ts Tools/firstmate/data/bulk-paths.txt \
+    Tools/firstmate/data/.ignore Tools/firstmate/data/.rgignore \
+    lattice-ledger/.ignore lattice-ledger/.rgignore .config/lattice-data-gate/mode; do
+    assert_present "$h/$f" "install writes $f"
+    assert_contains "$out" "$h/$f" "summary names $f"
+  done
+  node -e '
+    const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const cmds = s.hooks.SessionStart.map((g) => g.hooks[0].command).join(",");
+    if (cmds !== "gh-axi,chrome-devtools-axi,lavish-axi") throw new Error("SessionStart disturbed: " + cmds);
+    if (s.theme !== "dark") throw new Error("other keys disturbed");
+    const pre = s.hooks.PreToolUse;
+    if (pre.length !== 1 || pre[0].matcher !== "Bash|Grep|Glob|Read" || !pre[0].hooks[0].command.includes("fm-data-gate.sh")) throw new Error(JSON.stringify(pre));
+  ' "$h/.claude/settings.json" || fail "claude settings keep existing entries and gain one gate entry"
+  node -e '
+    const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    if (s.hooks.SessionStart.length !== 3 || s.hooks.PreToolUse[0].matcher !== "Bash") throw new Error("codex merge wrong");
+  ' "$h/.codex/hooks.json" || fail "codex hooks keep axi entries and gain a Bash gate entry"
+  assert_absent "$h/.codex-alt/settings.json" "a Codex account folder gets no Claude settings"
+  assert_equals "log"$'\n'"size log" "$(cat "$h/.config/lattice-data-gate/mode")" "a fresh mode file puts both rules in log"
+  assert_equals "log" "$(HOME="$h" env -u LATTICE_DATA_GATE "$GATE" mode)" "the gate reads mode log"
+  assert_equals "log" "$(HOME="$h" env -u LATTICE_DATA_GATE_SIZE "$GATE" mode size)" "the gate reads the size rule's mode log"
+  assert_grep "rolling-runs-v9/slices/" "$h/Tools/firstmate/data/.rgignore" "home ignore lists its bulk paths"
+  assert_grep "search-recording/" "$h/lattice-ledger/.ignore" "ledger ignore lists search-recording"
+  assert_grep "scratch/" "$h/lattice-ledger/.ignore" "an existing ignore entry is kept"
+  backups=$(find "$h/.local/state/lattice-data-gate/backups" -type f | wc -l)
+  assert_equals 5 "$((backups))" "every pre-existing file touched is backed up (claude, codex hooks and config, bulk paths, ledger .ignore)"
+  cmp -s "$(find "$h/.local/state/lattice-data-gate/backups" -path '*/.claude/settings.json')" <(printf '%s\n' "$AXI_HOOKS") \
+    || fail "the claude backup holds the exact pre-install bytes"
+  assert_grep 'model = "x"' "$h/.codex/config.toml" "the Codex config keeps its own settings"
+  pass "install merges without disturbing entries and backs up each touched file"
+}
+
+test_generated_bulk_paths_feed_gate_and_ignores() {
+  local h roots data
+  h=$(new_home bulk)
+  data="$h/Tools/firstmate/data"
+  inst "$h" install >/dev/null || fail "install failed"
+  assert_grep 'rolling-runs-v9/slices' "$data/bulk-paths.txt" "the home's own bulk line is kept"
+  for entry in 'rolling-runs-*/slices/' '*/tetjet-results/' 'shell-contact-first-runs/runs*/'; do
+    assert_grep "$entry" "$data/bulk-paths.txt" "bulk-paths.txt is generated with $entry"
+    assert_grep "$entry" "$data/.rgignore" ".rgignore lists the generated $entry"
+  done
+  roots=$(HOME="$h" "$GATE" roots)
+  assert_contains "$roots" "bulk $data/*/tetjet-results" "the gate protects the generated bulk patterns"
+  HOME="$h" LATTICE_DATA_GATE=enforce "$GATE" --harness pi --cwd "$h/Tools/firstmate" --command 'du -sh data/exp' >/dev/null 2>&1
+  expect_code 2 $? "a scan over a generated bulk dir's parent is refused"
+  HOME="$h" LATTICE_DATA_GATE=enforce "$GATE" --harness pi --cwd "$h/Tools/firstmate" --command 'find data/rolling-runs-v9 -name x' >/dev/null 2>&1
+  expect_code 2 $? "a scan over a rolling-runs dir is refused"
+  pass "one generated bulk definition feeds the gate and the ignore files"
+}
+
+test_reinstall_is_idempotent() {
+  local h first out backups_before backups_after
+  h=$(new_home idem)
+  inst "$h" install >/dev/null || fail "install failed"
+  first=$(snapshot "$h")
+  backups_before=$(find "$h/.local/state/lattice-data-gate/backups" -type f | wc -l)
+  out=$(inst "$h" install) || fail "re-install failed"
+  assert_equals "$first" "$(snapshot "$h")" "re-install changes no file"
+  if printf '%s\n' "$out" | grep -qE '^(changed|created) '; then fail "re-install reports a change: $out"; fi
+  backups_after=$(find "$h/.local/state/lattice-data-gate/backups" -type f | wc -l)
+  assert_equals "$backups_before" "$backups_after" "re-install takes no new backup"
+  pass "re-install is idempotent"
+}
+
+test_uninstall_restores_bytes() {
+  local h before out
+  h=$(new_home restore)
+  before=$(snapshot "$h")
+  inst "$h" install >/dev/null || fail "install failed"
+  inst "$h" install >/dev/null || fail "re-install failed"
+  out=$(inst "$h" uninstall) || fail "uninstall failed: $out"
+  assert_equals "$before" "$(snapshot "$h")" "uninstall restores every file and directory byte-identically"
+  assert_contains "$out" "restored  $h/.claude/settings.json" "summary names the restore"
+  assert_absent "$h/.local/state/lattice-data-gate/install-manifest.json" "uninstall clears the manifest"
+  pass "uninstall restores byte-identical pre-install content"
+}
+
+test_reinstall_after_edit_keeps_edits() {
+  local h data
+  h=$(new_home reedit)
+  data="$h/Tools/firstmate/data"
+  inst "$h" install >/dev/null || fail "install failed"
+  node -e '
+    const fs = require("fs");
+    const p = process.argv[1];
+    const s = JSON.parse(fs.readFileSync(p, "utf8"));
+    s.model = "opus";
+    s.permissions = { allow: ["Bash(ls)"] };
+    fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n");
+  ' "$h/.claude/settings.json"
+  printf 'mine/\n' >>"$data/.ignore"
+  printf 'extra-bulk/\n' >>"$data/bulk-paths.txt"
+  inst "$h" install --gate "$INSTALL_ROOT/elsewhere/fm-data-gate.sh" >/dev/null || fail "re-install failed"
+  inst "$h" uninstall >/dev/null || fail "uninstall failed"
+  node -e '
+    const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const text = JSON.stringify(s);
+    if (text.includes("fm-data-gate.sh")) throw new Error("gate entry left behind");
+    if (s.model !== "opus" || s.permissions?.allow?.[0] !== "Bash(ls)" || s.theme !== "dark") throw new Error("edits lost: " + text);
+  ' "$h/.claude/settings.json" || fail "edits made between two installs survive uninstall"
+  assert_equals "mine/" "$(cat "$data/.ignore")" "an ignore line added between installs survives uninstall"
+  assert_equals "$(printf 'rolling-runs-v9/slices\nextra-bulk/')" "$(cat "$data/bulk-paths.txt")" "bulk lines added between installs survive uninstall"
+  assert_no_grep 'pre_tool_use' "$h/.codex/config.toml" "no Codex trust entry is left behind"
+  pass "a re-install after edits never makes uninstall discard them"
+}
+
+test_uninstall_after_edit_strips_only_gate() {
+  local h
+  h=$(new_home edited)
+  inst "$h" install >/dev/null || fail "install failed"
+  node -e '
+    const fs = require("fs");
+    const p = process.argv[1];
+    const s = JSON.parse(fs.readFileSync(p, "utf8"));
+    s.hooks.PreToolUse.push({ matcher: "Edit", hooks: [{ type: "command", command: "my-own-hook" }] });
+    s.model = "opus";
+    fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n");
+  ' "$h/.claude/settings.json"
+  printf 'mine/\n' >>"$h/Tools/firstmate/data/.ignore"
+  inst "$h" uninstall >/dev/null || fail "uninstall failed"
+  node -e '
+    const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const text = JSON.stringify(s);
+    if (text.includes("fm-data-gate.sh")) throw new Error("gate entry left behind");
+    if (!text.includes("my-own-hook") || s.model !== "opus" || s.hooks.SessionStart.length !== 3) throw new Error("later edits lost: " + text);
+  ' "$h/.claude/settings.json" || fail "uninstall after an edit removes only the gate entry"
+  assert_equals "mine/" "$(cat "$h/Tools/firstmate/data/.ignore")" "uninstall keeps a later ignore line and drops only the gate block"
+  pass "uninstall after later edits removes only the gate entries"
+}
+
+test_unparseable_settings_left_untouched() {
+  local h out
+  h=$(new_home broken)
+  printf '{ not json\n' >"$h/.claude/settings.json"
+  out=$(inst "$h" install) || fail "install failed"
+  assert_contains "$out" "skipped   $h/.claude/settings.json" "an unparseable file is reported"
+  assert_equals '{ not json' "$(cat "$h/.claude/settings.json")" "an unparseable file is left untouched"
+  pass "unparseable settings are skipped, not clobbered"
+}
+
+test_only_existing_harnesses() {
+  local h out
+  h="$INSTALL_ROOT/bare"
+  mkdir -p "$h/.claude"
+  out=$(inst "$h" install) || fail "install failed"
+  assert_absent "$h/.codex" "no codex dir is created"
+  assert_absent "$h/.pi" "no pi dir is created"
+  assert_present "$h/.claude/settings.json" "claude settings created where ~/.claude exists"
+  inst "$h" uninstall >/dev/null || fail "uninstall failed"
+  assert_absent "$h/.claude/settings.json" "uninstall removes a settings file install created"
+  pass "only harnesses with a user config dir are touched"
+}
+
+test_installed_adapters_call_the_gate() {
+  local h cmd payload cwd="$INSTALL_ROOT/adapters/Tools/firstmate"
+  h=$(new_home adapters)
+  inst "$h" install >/dev/null || fail "install failed"
+  printf 'enforce\nsize enforce\n' >"$h/.config/lattice-data-gate/mode"
+  truncate -s 300M "$cwd/big.bin"
+  payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],tool_name:"Bash",tool_input:{command:"rg foo"}}))' "$cwd")
+
+  cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse[0].hooks[0].command)' "$h/.claude/settings.json")
+  printf '%s' "$payload" | HOME="$h" env -u GROK_AGENT -u GROK_HOOK_EVENT sh -c "$cmd" >/dev/null 2>&1
+  expect_code 2 $? "the installed Claude hook command refuses a home-root scan"
+  printf '%s' "$payload" | HOME="$h" GROK_AGENT=1 sh -c "$cmd" >/dev/null 2>&1
+  expect_code 0 $? "the Claude hook stands down under Grok"
+  printf '{"cwd":"%s","tool_name":"Read","tool_input":{"file_path":"%s/big.bin"}}' "$cwd" "$cwd" \
+    | HOME="$h" env -u GROK_AGENT -u GROK_HOOK_EVENT sh -c "$cmd" >/dev/null 2>&1
+  expect_code 2 $? "the installed Claude hook refuses a whole Read of a file over the limit"
+  printf '{"cwd":"%s","tool_name":"Read","tool_input":{"file_path":"%s/big.bin","offset":1,"limit":50}}' "$cwd" "$cwd" \
+    | HOME="$h" env -u GROK_AGENT -u GROK_HOOK_EVENT sh -c "$cmd" >/dev/null 2>&1
+  expect_code 0 $? "the installed Claude hook allows a Read with offset and limit"
+
+  cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse[0].hooks[0].command)' "$h/.codex/hooks.json")
+  printf '%s' "$payload" | HOME="$h" sh -c "$cmd" >/dev/null 2>&1
+  expect_code 2 $? "the installed Codex hook command refuses a home-root scan"
+
+  cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse[0].hooks[0].command)' "$h/.grok/hooks/lattice-data-gate.json")
+  payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],toolName:"Bash",toolInput:{command:"rg foo"}}))' "$cwd")
+  printf '%s' "$payload" | HOME="$h" sh -c "$cmd" 2>/dev/null | grep -q '"decision":"deny"' || fail "the installed Grok hook prints a deny decision"
+
+  if [ "$(node -p 'Boolean(process.features.typescript)' 2>/dev/null)" != true ]; then
+    pass "this node cannot load TypeScript; the Pi extension check is skipped here"
+  else
+  HOME="$h" node --input-type=module -e '
+    const [ext, cwd] = process.argv.slice(1);
+    const mod = await import(ext);
+    const handlers = {};
+    mod.default({ on: (name, fn) => { handlers[name] = fn; } });
+    const blocked = await handlers.tool_call({ type: "tool_call", toolName: "bash", input: { command: "rg foo" } }, { cwd });
+    if (!blocked.block || !blocked.reason.startsWith("BLOCKED (data gate)")) throw new Error("pi did not block: " + JSON.stringify(blocked));
+    const allowed = await handlers.tool_call({ type: "tool_call", toolName: "bash", input: { command: "rg foo data" } }, { cwd: cwd + "/bin" });
+    if (allowed.block) throw new Error("pi blocked an allowed call");
+    const grep = await handlers.tool_call({ type: "tool_call", toolName: "grep", input: { pattern: "x", path: "/" } }, { cwd });
+    if (!grep.block) throw new Error("pi grep tool over / not blocked");
+    const read = await handlers.tool_call({ type: "tool_call", toolName: "read", input: { path: "big.bin" } }, { cwd });
+    if (!read.block || !read.reason.includes("Blocked large read")) throw new Error("pi whole read of a big file not blocked: " + JSON.stringify(read));
+    const window = await handlers.tool_call({ type: "tool_call", toolName: "read", input: { path: "big.bin", offset: 1, limit: 20 } }, { cwd });
+    if (window.block) throw new Error("pi blocked a bounded read");
+  ' "$h/.pi/agent/extensions/lattice-data-gate.ts" "$cwd" 2>&1 || fail "the installed Pi extension blocks through the gate"
+  fi
+
+  HOME="$h" node --input-type=module -e '
+    const [plugin, cwd] = process.argv.slice(1);
+    const mod = await import(plugin);
+    const hooks = await mod.LatticeDataGate({ directory: cwd });
+    let threw = false;
+    try { await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "du -sh ~" } }); } catch (e) { threw = e.message.startsWith("BLOCKED (data gate)"); }
+    if (!threw) throw new Error("opencode did not block");
+    await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "ls" } });
+    threw = false;
+    try { await hooks["tool.execute.before"]({ tool: "read" }, { args: { filePath: cwd + "/big.bin" } }); } catch (e) { threw = e.message.includes("Blocked large read"); }
+    if (!threw) throw new Error("opencode did not block a whole read of a big file");
+    await hooks["tool.execute.before"]({ tool: "read" }, { args: { filePath: cwd + "/big.bin", offset: 0, limit: 10 } });
+  ' "$h/.config/opencode/plugins/lattice-data-gate.js" "$cwd" 2>&1 || fail "the installed OpenCode plugin blocks through the gate"
+  rm -f "$cwd/big.bin"
+  pass "installed Claude, Codex, Grok, Pi and OpenCode adapters call the gate"
+}
+
+test_installed_adapters_log_reads() {
+  local h cmd payload reads cwd
+  h=$(new_home readlog)
+  cwd="$h/Tools/firstmate"
+  reads="$h/.local/state/lattice-data-gate/reads-$(date +%F).jsonl"
+  inst "$h" install >/dev/null || fail "install failed"
+  printf 'enforce\n' >"$h/.config/lattice-data-gate/mode"
+  printf 'hello\n' >"$cwd/claude.txt"
+  cp "$cwd/claude.txt" "$cwd/opencode.txt"
+  cp "$cwd/claude.txt" "$cwd/pi.txt"
+
+  payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],session_id:"s1",tool_name:"Read",tool_input:{file_path:process.argv[1]+"/claude.txt"}}))' "$cwd")
+  cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse[0].hooks[0].command)' "$h/.claude/settings.json")
+  printf '%s' "$payload" | HOME="$h" env -u GROK_AGENT -u GROK_HOOK_EVENT sh -c "$cmd" >/dev/null 2>&1
+  expect_code 0 $? "the installed Claude hook allows a Read in enforce mode"
+  assert_grep "\"harness\":\"claude\",\"home\":\"$cwd\"" "$reads" "the installed Claude hook logs a Read"
+
+  HOME="$h" node --input-type=module -e '
+    const [plugin, cwd] = process.argv.slice(1);
+    const mod = await import(plugin);
+    const hooks = await mod.LatticeDataGate({ directory: cwd });
+    await hooks["tool.execute.before"]({ tool: "read" }, { args: { filePath: cwd + "/opencode.txt", limit: 1 } });
+  ' "$h/.config/opencode/plugins/lattice-data-gate.js" "$cwd" 2>&1 || fail "the installed OpenCode plugin passes a read"
+  grep -q '"harness":"opencode".*opencode.txt.*"lines":1' "$reads" || fail "the installed OpenCode plugin logs a bounded read"
+
+  if [ "$(node -p 'Boolean(process.features.typescript)' 2>/dev/null)" != true ]; then
+    pass "this node cannot load TypeScript; the Pi read check is skipped here"
+  else
+  HOME="$h" node --input-type=module -e '
+    const [ext, cwd] = process.argv.slice(1);
+    const mod = await import(ext);
+    const handlers = {};
+    mod.default({ on: (name, fn) => { handlers[name] = fn; } });
+    const result = await handlers.tool_call({ type: "tool_call", toolName: "read", input: { path: cwd + "/pi.txt" } }, { cwd });
+    if (result.block) throw new Error("pi blocked a read");
+  ' "$h/.pi/agent/extensions/lattice-data-gate.ts" "$cwd" 2>&1 || fail "the installed Pi extension passes a read"
+  grep -q '"harness":"pi".*pi.txt' "$reads" || fail "the installed Pi extension logs a read"
+  fi
+  pass "installed Claude, OpenCode and Pi adapters log reads without blocking them"
+}
+
+test_reinstall_upgrades_old_claude_matcher() {
+  local h matcher
+  h=$(new_home upgrade)
+  printf '{"hooks":{"PreToolUse":[{"matcher":"Bash|Grep|Glob","hooks":[{"type":"command","command":"exec /old/fm-data-gate.sh --harness claude","timeout":10}]},{"matcher":"Bash","hooks":[{"type":"command","command":"other"}]}]}}\n' >"$h/.claude/settings.json"
+  inst "$h" install >/dev/null || fail "install failed"
+  matcher=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks.PreToolUse; process.stdout.write(p.map((g)=>g.matcher).join(","))' "$h/.claude/settings.json")
+  assert_equals "Bash|Grep|Glob|Read,Bash" "$matcher" "an earlier gate entry is upgraded to match Read in place"
+  pass "re-install upgrades an earlier Claude gate entry to include Read"
+}
+
+# Codex's hook trust contract (codex-rs hooks discovery): the key is
+# "<hooks.json>:pre_tool_use:<group>:<handler>" and the hash is sha256 over the
+# key-sorted compact JSON of {event_name, matcher, hooks:[normalized handler]}.
+codex_expected_trust() {  # <hooks.json>
+  node -e '
+    const crypto = require("crypto");
+    const path = process.argv[1];
+    const groups = JSON.parse(require("fs").readFileSync(path, "utf8")).hooks.PreToolUse;
+    const g = groups.findIndex((x) => x.hooks.some((k) => k.command.includes("fm-data-gate.sh")));
+    const k = groups[g].hooks.findIndex((x) => x.command.includes("fm-data-gate.sh"));
+    const hook = groups[g].hooks[k];
+    const id = JSON.stringify({ event_name: "pre_tool_use", hooks: [{ async: false, command: hook.command, timeout: hook.timeout, type: "command" }], matcher: groups[g].matcher });
+    process.stdout.write(`[hooks.state."${path}:pre_tool_use:${g}:${k}"]\ntrusted_hash = "sha256:${crypto.createHash("sha256").update(id).digest("hex")}"`);
+  ' "$1"
+}
+
+test_codex_trust_and_status() {
+  local h out
+  h=$(new_home status)
+  printf '[hooks.state."%s:pre_tool_use:0:0"]\ntrusted_hash = "sha256:old"\n\n[tui]\nx = 1\n' "$h/.codex/hooks.json" >>"$h/.codex/config.toml"
+  out=$(inst "$h" status) || fail "status failed"
+  assert_contains "$out" "missing   $h/.claude/settings.json" "status before install"
+  assert_contains "$out" "missing   $h/.codex/config.toml" "no Codex trust before install"
+  inst "$h" install >/dev/null || fail "install failed"
+  assert_contains "$(cat "$h/.codex/config.toml")" "$(codex_expected_trust "$h/.codex/hooks.json")" "install records Codex's trust hash for exactly the gate hook"
+  assert_equals 1 "$(grep -c 'pre_tool_use:0:0' "$h/.codex/config.toml")" "a stale entry at the gate hook's key is replaced, not duplicated"
+  assert_grep 'x = 1' "$h/.codex/config.toml" "other Codex tables are kept"
+  out=$(inst "$h" status) || fail "status failed"
+  assert_contains "$out" "mode      log" "status shows the mode"
+  assert_contains "$out" "size      log, limit 209715200 bytes" "status shows the size rule's mode and limit"
+  assert_contains "$out" "installed $h/.codex/hooks.json" "status after install"
+  assert_contains "$out" "installed $h/.codex/config.toml" "status sees the Codex trust entry"
+  printf '[later]\ny = 2\n' >>"$h/.codex/config.toml"
+  if inst "$h" install | grep -q "^changed   $h/.codex/config.toml"; then fail "a re-install rewrote a current Codex trust entry"; fi
+  inst "$h" uninstall >/dev/null || fail "uninstall failed"
+  assert_no_grep 'fm-data-gate' "$h/.codex/hooks.json" "uninstall removes the Codex hook"
+  assert_no_grep 'pre_tool_use' "$h/.codex/config.toml" "uninstall removes the Codex trust entry"
+  assert_grep 'y = 2' "$h/.codex/config.toml" "uninstall keeps later Codex settings"
+  pass "install records the Codex trust hash and status reports it"
+}
+
+unit_value() {  # <unit file> <section> <key>: the key's value, parsed as systemd reads it
+  node -e '
+    const [file, section, key] = process.argv.slice(1);
+    let current = "";
+    for (const raw of require("fs").readFileSync(file, "utf8").split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const header = line.match(/^\[(.+)\]$/);
+      if (header) current = header[1];
+      else if (current === section && line.slice(0, line.indexOf("=")) === key) process.stdout.write(line.slice(line.indexOf("=") + 1));
+    }' "$1" "$2" "$3"
+}
+
+test_report_timer() {
+  local h units service timer exec out
+  h=$(new_home timer)
+  units="$h/.config/systemd/user"
+  service="$units/lattice-data-gate-report.service"
+  timer="$units/lattice-data-gate-report.timer"
+  : >"$FAKE_SYSTEMCTL_LOG"
+  out=$(inst "$h" install --dry-run) || fail "dry-run install failed"
+  assert_contains "$out" "would enable lattice-data-gate-report.timer" "dry run names the timer"
+  assert_equals "" "$(cat "$FAKE_SYSTEMCTL_LOG")" "dry run calls no systemctl"
+  out=$(inst "$h" install) || fail "install failed"
+  assert_contains "$out" "enabled lattice-data-gate-report.timer" "install reports the timer enabled"
+  assert_equals "--user daemon-reload
+--user enable --now lattice-data-gate-report.timer" "$(cat "$FAKE_SYSTEMCTL_LOG")" "install reloads the user manager and enables the timer"
+  assert_equals "oneshot|19|idle" "$(unit_value "$service" Service Type)|$(unit_value "$service" Service Nice)|$(unit_value "$service" Service IOSchedulingClass)" \
+    "the report runs as a oneshot at nice 19 in the idle IO class"
+  assert_equals "*-*-* 00:40:00|true|timers.target" "$(unit_value "$timer" Timer OnCalendar)|$(unit_value "$timer" Timer Persistent)|$(unit_value "$timer" Install WantedBy)" \
+    "the timer fires daily shortly after midnight and catches up a missed run"
+  exec=$(unit_value "$service" Service ExecStart)
+  out=$(HOME="$h" sh -c "$exec") || fail "the service's ExecStart does not run the report: $out"
+  assert_contains "$out" "Data gate $(date -d yesterday +%F): agents read" "the service's ExecStart writes yesterday's report"
+  assert_present "$h/.local/state/lattice-data-gate/reports/$(date -d yesterday +%F).md" "and the report file"
+  out=$(inst "$h" status) || fail "status failed"
+  assert_contains "$out" "installed $timer" "status sees the timer unit"
+  : >"$FAKE_SYSTEMCTL_LOG"
+  inst "$h" uninstall >/dev/null || fail "uninstall failed"
+  assert_equals "--user disable --now lattice-data-gate-report.timer
+--user daemon-reload" "$(cat "$FAKE_SYSTEMCTL_LOG")" "uninstall disables the timer and reloads the user manager"
+  assert_absent "$units" "uninstall removes the units and the unit directory it created"
+  mkdir -p "$INSTALL_ROOT/no-systemctl"
+  out=$(PATH="$INSTALL_ROOT/no-systemctl" HOME="$h" "$(command -v node)" "$ROOT/bin/fm-data-gate-install.mjs" install) || fail "install without systemctl failed"
+  assert_contains "$out" "not enabled lattice-data-gate-report.timer (systemctl not found); run: systemctl --user daemon-reload" "install without systemctl says how to enable the timer"
+  assert_present "$timer" "and still writes the units"
+  pass "install writes and enables the daily report timer, and uninstall disables and removes it"
+}
+
+# --- Read log and daily report (bin/fm-data-gate-reads.mjs, fm-data-gate-report.sh)
+READS_ROOT="$TMP_ROOT/reads"
+READS_HOME="$READS_ROOT/home"
+REPORT="$ROOT/bin/fm-data-gate-report.sh"
+READS_MAIN="$READS_HOME/Tools/firstmate"
+READS_WT="$READS_ROOT/pool/1/project"
+READS_STATE="$READS_HOME/.local/state/lattice-data-gate"
+
+build_reads_fixture() {
+  mkdir -p "$READS_MAIN/bin" "$READS_MAIN/data/big" "$READS_MAIN/data/other" "$READS_MAIN/state" "$READS_WT"
+  : >"$READS_MAIN/AGENTS.md"
+  : >"$READS_MAIN/state/wt-task.status"
+  seq 1 1000 >"$READS_MAIN/data/big/lines.txt"
+  truncate -s 20M "$READS_MAIN/data/big/table.jsonl"
+  truncate -s 300M "$READS_MAIN/data/big/huge.csv"
+  printf '# summary\n' >"$READS_MAIN/data/big/DIGEST.md"
+  git -C "$READS_WT" init -q -b fm/wt-task
+  printf 'x\n' >"$READS_WT/notes.md"
+}
+
+reads_gate() {  # <args...>: both rules in log mode, no inherited task or home attribution
+  HOME="$READS_HOME" LATTICE_DATA_GATE=log LATTICE_DATA_GATE_SIZE=log env -u FM_TASK_ID -u FM_HOME "$GATE" "$@"
+}
+
+field() {  # <row> <js expression over r>
+  node -e 'const r = JSON.parse(process.argv[1]); process.stdout.write(String(eval(process.argv[2])))' "$1" "$2"
+}
+
+all_rows() {  # every read log, oldest day first
+  cat "$READS_STATE"/reads-*.jsonl 2>/dev/null
+}
+
+last_row() {
+  all_rows | tail -n 1
+}
+
+rows() {
+  all_rows | wc -l | tr -d ' '
+}
+
+test_claude_read_tool() {
+  local row payload out
+  payload=$(node -e 'process.stdout.write(JSON.stringify({session_id:"s1",cwd:process.argv[1],tool_name:"Read",tool_input:{file_path:"data/big/lines.txt",offset:10,limit:100}}))' "$READS_MAIN")
+  out=$(printf '%s' "$payload" | reads_gate --harness claude 2>&1)
+  expect_code 0 $? "a Read call is allowed"
+  assert_equals "" "$out" "a Read call prints nothing"
+  row=$(last_row)
+  assert_equals "claude|s1|$READS_MAIN|$READS_MAIN/data/big/lines.txt|3893|true|false|100|true" \
+    "$(field "$row" '[r.harness, r.session, r.home, r.path, r.size, r.bounded, r.whole_file, r.lines, r.bytes_estimated].join("|")')" \
+    "a line-bounded Read records harness, session, home, path, size and bounds"
+  assert_equals 389 "$(field "$row" 'r.bytes_requested')" "100 lines become bytes from the file's own bytes per line"
+  payload=$(node -e 'process.stdout.write(JSON.stringify({cwd:process.argv[1],tool_name:"Read",tool_input:{file_path:process.argv[1]+"/data/big/table.jsonl"}}))' "$READS_MAIN")
+  printf '%s' "$payload" | reads_gate --harness claude
+  row=$(last_row)
+  assert_equals "20971520|0|true|false" "$(field "$row" '[r.bytes_requested, r.bytes_returned_est, r.whole_file, r.size_rule_would_block].join("|")')" \
+    "an unbounded Read requests the whole file, and Claude returns nothing above 256 KB"
+  assert_present "$READS_STATE/reads-$(date +%F).jsonl" "reads go to the day's read log"
+  pass "the Claude Read tool is logged, allowed and silent"
+}
+
+test_returned_bytes_and_size_rule() {  # table: <harness> <path> [limit] => <requested>|<returned>|<size rule would block>
+  local line harness path limit expected
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    expected=${line#*=> }
+    read -r harness path limit <<<"${line%% =>*}"
+    reads_gate --harness "$harness" --cwd "$READS_MAIN" --tool read --path "$path" ${limit:+--limit "$limit"}
+    assert_equals "$expected" "$(field "$(last_row)" '[r.bytes_requested, r.bytes_returned_est, r.size_rule_would_block].join("|")')" \
+      "$harness Read of $path${limit:+ limit $limit}"
+  done <<'EOF'
+claude data/big/lines.txt => 3893|3893|false
+claude data/big/huge.csv => 314572800|0|true
+claude data/big/huge.csv 1 => 65536|65536|false
+pi data/big/lines.txt => 3893|3893|false
+pi data/big/table.jsonl => 20971520|51200|false
+opencode data/big/huge.csv => 314572800|131072000|true
+EOF
+  reads_gate --harness pi --cwd "$READS_MAIN" --command 'tail -n +2 data/big/huge.csv'
+  assert_equals "314572800|true|false" "$(field "$(last_row)" '[r.bytes_requested, r.whole_file, r.size_rule_would_block].join("|")')" \
+    "a tail to the end of a file over the limit is a whole-file read the size rule does not refuse"
+  reads_gate --harness pi --cwd "$READS_MAIN" --command 'cat data/big/huge.csv'
+  assert_equals "314572800|true|true" "$(field "$(last_row)" '[r.bytes_requested, r.whole_file, r.size_rule_would_block].join("|")')" \
+    "a cat of a file over the limit is one the size rule refuses"
+  ln -sfn big "$READS_MAIN/data/linked"
+  reads_gate --harness pi --cwd "$READS_MAIN/data/linked" --command 'cat huge.csv'
+  assert_equals "$READS_MAIN/data/linked/huge.csv|true" "$(field "$(last_row)" '[r.path, r.size_rule_would_block].join("|")')" \
+    "a read through a symlink carries the size rule's verdict on the real file"
+  reads_gate --harness pi --cwd "$READS_MAIN" --command 'nice -n 19 ionice -c3 cat data/big/huge.csv'
+  assert_equals "true|false" "$(field "$(last_row)" '[r.whole_file, r.size_rule_would_block].join("|")')" \
+    "a niced whole-file read is one the size rule lets through"
+  LATTICE_DATA_GATE_SIZE_LIMIT=400M reads_gate --harness pi --cwd "$READS_MAIN" --command 'cat data/big/huge.csv'
+  assert_equals false "$(field "$(last_row)" 'r.size_rule_would_block')" "the configured size limit is the rule's"
+  pass "Read rows estimate the harness-capped bytes returned and carry the size rule's decision"
+}
+
+test_shell_reads() {  # table: <command> => <tool:path-suffix:bytes_requested,...>
+  local before line cmd expected got
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    cmd=${line%% =>*}
+    expected=${line#*=>}
+    expected=${expected# }
+    before=$(rows)
+    reads_gate --harness pi --cwd "$READS_MAIN" --command "$cmd" || fail "a read command must be allowed: $cmd"
+    got=$(all_rows | tail -n "+$((before + 1))" | node -e '
+      const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean).map(JSON.parse);
+      process.stdout.write(lines.map((r) => `${r.tool}:${r.path.split("/").slice(-2).join("/")}:${r.bytes_requested}`).join(","));')
+    assert_equals "$expected" "$got" "rows for: $cmd"
+  done <<'EOF'
+cat data/big/lines.txt => cat:big/lines.txt:3893
+head -c 100 data/big/table.jsonl => head:big/table.jsonl:100
+head -n 5 data/big/lines.txt => head:big/lines.txt:19
+tail -3 data/big/lines.txt => tail:big/lines.txt:12
+tail -n -3 data/big/lines.txt => tail:big/lines.txt:12
+tail -n +2 data/big/lines.txt => tail:big/lines.txt:3893
+tail -c +5 data/big/lines.txt => tail:big/lines.txt:3893
+head -n -5 data/big/lines.txt => head:big/lines.txt:3893
+head --lines=-5 data/big/lines.txt => head:big/lines.txt:3893
+head data/big/lines.txt => head:big/lines.txt:39
+cat data/big/lines.txt | head -c 7 => cat:big/lines.txt:7
+grep foo data/big/lines.txt | head -n 5 => grep:big/lines.txt:19
+cat data/big/lines.txt | head -n -5 => cat:big/lines.txt:3893
+sort -u data/big/lines.txt | head => sort:big/lines.txt:3893
+wc -l data/big/lines.txt | head -1 => wc:big/lines.txt:3893
+sha256sum data/big/lines.txt | head -c 64 => sha256sum:big/lines.txt:3893
+nice -n 19 ionice -c3 wc -l data/big/lines.txt => wc:big/lines.txt:3893
+grep -n foo data/big/lines.txt data/big => grep:big/lines.txt:3893
+grep -e foo data/big/lines.txt => grep:big/lines.txt:3893
+rg -g '*.txt' foo data/big/lines.txt => rg:big/lines.txt:3893
+sed -n '1,5p' data/big/lines.txt => sed:big/lines.txt:3893
+awk -F, '{print $1}' data/big/lines.txt => awk:big/lines.txt:3893
+jq --arg a b . data/big/DIGEST.md => jq:big/DIGEST.md:10
+python3 -c "print(open('data/big/lines.txt').read())" => python3:big/lines.txt:3893
+wc -l < data/big/lines.txt => redirect:big/lines.txt:3893
+head -n 5 < data/big/lines.txt => redirect:big/lines.txt:19
+tail -n +2 < data/big/lines.txt => redirect:big/lines.txt:3893
+grep foo < data/big/lines.txt | head -n 5 => redirect:big/lines.txt:19
+sort < data/big/lines.txt | head -n 5 => redirect:big/lines.txt:3893
+head -n 5 data/big/DIGEST.md 3< data/big/lines.txt => redirect:big/lines.txt:3893,head:big/DIGEST.md:10
+grep x data/big/DIGEST.md 3< data/big/lines.txt | head -n 1 => redirect:big/lines.txt:3893,grep:big/DIGEST.md:10
+cd data/big && cat DIGEST.md => cat:big/DIGEST.md:10
+bash -c 'cat ~/Tools/firstmate/data/big/lines.txt' => cat:big/lines.txt:3893
+cat data/big/missing.txt =>
+cat data/big =>
+cat data/big/*.txt =>
+ls data/big =>
+echo hello =>
+EOF
+  pass "shell read commands record each named file with its requested bytes"
+}
+
+test_digest_flag_and_attribution() {
+  local row
+  reads_gate --harness pi --cwd "$READS_WT" --command 'cat notes.md'
+  row=$(last_row)
+  assert_equals "wt-task|$READS_MAIN|false" "$(field "$row" '[r.task, r.home, r.is_digest].join("|")')" \
+    "a worktree read takes its task from the fm/ branch and its home from that task's status file"
+  HOME="$READS_HOME" FM_TASK_ID=env-task FM_HOME=/somewhere "$GATE" --harness pi --cwd "$READS_WT" --command 'cat notes.md'
+  row=$(last_row)
+  assert_equals "env-task|/somewhere" "$(field "$row" '[r.task, r.home].join("|")')" "FM_TASK_ID and FM_HOME win"
+  reads_gate --harness opencode --cwd "$READS_MAIN" --tool read --path data/big/DIGEST.md --limit 20
+  row=$(last_row)
+  assert_equals "opencode|true|true" "$(field "$row" '[r.harness, r.is_digest, r.bounded].join("|")')" "a DIGEST.md read through --tool read is flagged"
+  pass "digest reads are flagged and reads are attributed to a home and task"
+}
+
+test_never_blocks() {
+  local before out today
+  before=$(rows)
+  out=$(printf '%s' '{"tool_name":"Read","tool_input":{"file_path":"/"}}' | HOME="$READS_HOME" LATTICE_DATA_GATE=enforce "$GATE" --harness claude 2>&1)
+  expect_code 0 $? "a Read of a directory is allowed in enforce mode"
+  assert_equals "" "$out" "and prints nothing"
+  LATTICE_DATA_GATE_READS=off reads_gate --harness pi --cwd "$READS_MAIN" --command 'cat data/big/lines.txt'
+  assert_equals "$before" "$(rows)" "LATTICE_DATA_GATE_READS=off logs nothing"
+  HOME="$READS_HOME" LATTICE_DATA_GATE=enforce "$GATE" --harness pi --cwd "$READS_MAIN" --command 'cat data/big/lines.txt; rg foo' >/dev/null 2>&1
+  expect_code 2 $? "a scan in the same command is still refused in enforce mode"
+  assert_equals "$((before + 1))" "$(rows)" "and its read is still logged"
+  today="$READS_STATE/reads-$(date +%F).jsonl"
+  mv "$today" "$today.keep"
+  mkdir "$today"
+  out=$(reads_gate --harness pi --cwd "$READS_MAIN" --command 'cat data/big/lines.txt' 2>&1)
+  expect_code 0 $? "an unwritable read log still allows"
+  assert_equals "" "$out" "and prints nothing"
+  rmdir "$today"
+  mv "$today.keep" "$today"
+  pass "the read log never blocks, never prints, and can be turned off"
+}
+
+epoch_of() {  # <local date> <HH:MM>
+  date -d "$1 $2" +%s
+}
+
+iso_of() {  # <local date> <HH:MM>
+  date -u -d "@$(epoch_of "$1" "$2")" +%Y-%m-%dT%H:%M:%SZ
+}
+
+test_report() {
+  local h="$READS_ROOT/rhome" day prev next state out relay md big="/d/big" small="/d/small" old kept
+  day=$(date -d '-3 days' +%F)
+  prev=$(date -d "$day -1 day" +%F)
+  next=$(date -d "$day +1 day" +%F)
+  old=$(date -d '-61 days' +%F)
+  kept=$(date -d '-59 days' +%F)
+  state="$h/.local/state/lattice-data-gate"
+  mkdir -p "$state" "$h/base"
+  row() {  # <date> <time> <session> <path> <size> <bytes> [digest] [whole] [returned]
+    printf '{"ts":"%s","harness":"claude","session":"%s","task":"t1","cwd":"/d","tool":"Read","path":"%s","size":%s,"bytes_requested":%s,"bytes_returned_est":%s,"is_digest":%s,"whole_file":%s,"size_rule_would_block":%s}\n' \
+      "$(iso_of "$1" "$2")" "$3" "$4" "$5" "$6" "${9:-$6}" "${7:-false}" "${8:-true}" "$([ "${8:-true}" = true ] && [ "$5" -gt 200000000 ] && echo true || echo false)"
+  }
+  {
+    row "$day" 09:00 s1 "$big/DIGEST.md" 100 100 true
+    row "$day" 09:10 s1 "$big/table.jsonl" 50000000 1000 false false
+    row "$day" 10:00 s2 "$big/DIGEST.md" 100 100 true
+    row "$day" 10:05 s2 "$small/other.jsonl" 50000000 50000000
+    row "$day" 11:00 s3 "$big/DIGEST.md" 100 100 true
+    row "$day" 11:50 s3 "$big/table.jsonl" 300000000 300000000 false true 0
+    row "$day" 12:00 s4 "$big/DIGEST.md" 100 100 true
+    row "$day" 12:05 s5 "$big/table.jsonl" 50000000 2000 false false
+    row "$day" 23:50 s6 "$big/DIGEST.md" 100 100 true
+  } >"$state/reads-$day.jsonl"
+  {
+    row "$next" 00:10 s6 "$big/table.jsonl" 50000000 50000000
+    row "$next" 09:00 s7 "$big/table.jsonl" 50000000 50000000
+  } >"$state/reads-$next.jsonl"
+  printf '{"ts":"%s","harness":"pi","session":null,"task":null,"cwd":"/d","tool":"cat","path":"/d/prev.txt","size":9,"bytes_requested":9,"whole_file":true}\n' "$(iso_of "$prev" 12:00)" \
+    >"$state/reads-$prev.jsonl"
+  : >"$state/reads-$old.jsonl"
+  : >"$state/reads-$kept.jsonl"
+  {
+    printf '{"ts":"%s","verdict":"block","would_block":true,"mode":"enforce","targets":[]}\n' "$(iso_of "$day" 09:00)"
+    printf '{"ts":"%s","verdict":"allow","would_block":true,"mode":"log","targets":[]}\n' "$(iso_of "$day" 09:30)"
+    printf '{"ts":"%s","verdict":"allow","would_block":false,"mode":"log","targets":[]}\n' "$(iso_of "$day" 10:00)"
+    printf '{"ts":"%s","verdict":"allow","would_block":true,"would_block_rules":["size"],"mode":"enforce","size_mode":"log","targets":[{"rule":"size","size":314572800,"verdict":"block"}]}\n' "$(iso_of "$day" 10:30)"
+    printf '{"ts":"%s","verdict":"block","would_block":true,"would_block_rules":["size"],"mode":"log","size_mode":"enforce","targets":[{"rule":"size","size":314572800,"verdict":"block"}]}\n' "$(iso_of "$day" 10:45)"
+    printf '{"ts":"%s","verdict":"allow","would_block":false,"error":"node not found"}\n' "$(iso_of "$day" 11:00)"
+    printf '{"ts":"%s","verdict":"block","would_block":true,"mode":"enforce","targets":[]}\n' "$(iso_of "$next" 09:00)"
+  } >"$state/decisions.jsonl"
+  {
+    printf '{"ts":%s,"io_some_avg60":4.0,"io_full_avg60":1.0,"memory_some_avg60":2.0,"memory_full_avg60":0.5,"root_used":1000000000,"mntc_used":5000000000,"disk_read_bytes":100,"disk_write_bytes":1000000000}\n' "$(epoch_of "$day" 00:05)"
+    printf '{"ts":%s,"io_some_avg60":8.0,"io_full_avg60":3.0,"memory_some_avg60":4.0,"memory_full_avg60":1.5,"root_used":2500000000,"mntc_used":5000000000,"disk_read_bytes":300,"disk_write_bytes":3000000000}\n' "$(epoch_of "$day" 12:00)"
+    printf '{"ts":%s,"io_some_avg60":6.0,"io_full_avg60":2.0,"memory_some_avg60":3.0,"memory_full_avg60":1.0,"root_used":3000000000,"mntc_used":4000000000,"disk_read_bytes":50,"disk_write_bytes":500000000}\n' "$(epoch_of "$day" 23:55)"
+  } >"$state/samples.jsonl"
+  printf '# Baseline\n\n**Headline: agents requested on average 2.2 GB of file reads per day** (details).\n' >"$h/base/report.md"
+
+  out=$(HOME="$h" "$REPORT" --date "$day" --baseline "$h/base/report.md")
+  expect_code 0 $? "the report runs"
+  assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "the report prints exactly one relay line"
+  relay="Data gate $day: agents read 350 MB in 9 reads (est. returned 50.0 MB; largest 300 MB table.jsonl); scans would-block 2, blocked 1; size would-block 2, blocked 1; >200 MB whole-file reads 1; digests 5 read, hit rate 60%; disk root +2.0 GB, /mnt/c -1.0 GB, written 2.0 GB; IO PSI some 6.0% full 2.0%; baseline 2.2 GB of file reads per day"
+  assert_equals "$relay" "$out" "the relay line carries bytes requested and returned, largest read, blocks, digest hit rate, disk and PSI"
+  md="$state/reports/$day.md"
+  assert_present "$md" "the report file is written under the gate's state dir"
+  assert_grep "| DIGEST.md reads | 5: 3 hit, 2 miss" "$md" "a same-session big read in the digest's folder inside the window, even past midnight, is a miss"
+  assert_grep "| Bytes returned (est., harness Read caps) | 50.0 MB |" "$md" "the harness-capped estimate is shown beside bytes requested"
+  assert_grep "| Gate errors (allowed) | 1 |" "$md" "gate errors are counted"
+  assert_grep "| Baseline (before) | agents requested on average 2.2 GB of file reads per day |" "$md" "the baseline headline is included"
+  assert_grep "- 300 MB Read /d/big/table.jsonl (claude, t1)" "$md" "the largest reads are listed"
+  [ "$(wc -l <"$md")" -le 30 ] || fail "the report fits one screen"
+  assert_absent "$state/reads-$old.jsonl" "a read log older than 60 days is deleted"
+  assert_present "$state/reads-$kept.jsonl" "a read log inside 60 days is kept"
+  out=$(HOME="$h" LATTICE_DATA_GATE_READS_KEEP_DAYS=30 "$REPORT" --date "$day" --baseline "$h/none")
+  assert_not_contains "$out" "baseline" "an absent baseline is left out"
+  assert_absent "$state/reads-$kept.jsonl" "LATTICE_DATA_GATE_READS_KEEP_DAYS shortens the retention"
+  assert_present "$state/reads-$day.jsonl" "the reported day's log is kept"
+  out=$(HOME="$READS_ROOT/empty" "$REPORT" --date "$day")
+  assert_equals "Data gate $day: agents read 0 B in 0 reads (est. returned 0 B; none); scans would-block 0, blocked 0; size would-block 0, blocked 0; >200 MB whole-file reads 0; digests 0 read, hit rate n/a; no disk/PSI samples" \
+    "$out" "missing inputs report as empty"
+  HOME="$h" "$REPORT" --date 20-09-2026 >/dev/null 2>&1
+  expect_code 1 $? "a malformed date is refused"
+  for flag in --today --no-write --digest-window-min; do
+    HOME="$h" "$REPORT" "$flag" >/dev/null 2>&1
+    expect_code 1 $? "$flag is not an option"
+  done
+  pass "the daily report summarizes reads, decisions, digests, disk and PSI for one local day"
+}
+
 build_fixture
 test_home_discovery
 test_bash_table
@@ -755,3 +1482,32 @@ test_size_read_table
 test_size_refusal_and_modes
 test_size_read_payload_transports
 test_size_internal_error_allows
+
+# The installer cases see the fake systemctl first on PATH; the subshell keeps
+# that PATH and FAKE_SYSTEMCTL_LOG away from every other case.
+(
+  export FAKE_SYSTEMCTL_LOG="$INSTALL_ROOT/systemctl.log"
+  export PATH="$INSTALL_FAKEBIN:$PATH"
+  test_dry_run_writes_nothing
+  test_install_merges_and_backs_up
+  test_reinstall_is_idempotent
+  test_uninstall_restores_bytes
+  test_generated_bulk_paths_feed_gate_and_ignores
+  test_reinstall_after_edit_keeps_edits
+  test_uninstall_after_edit_strips_only_gate
+  test_unparseable_settings_left_untouched
+  test_only_existing_harnesses
+  test_installed_adapters_call_the_gate
+  test_installed_adapters_log_reads
+  test_reinstall_upgrades_old_claude_matcher
+  test_codex_trust_and_status
+  test_report_timer
+) || exit 1
+
+build_reads_fixture
+test_claude_read_tool
+test_returned_bytes_and_size_rule
+test_shell_reads
+test_digest_flag_and_attribution
+test_never_blocks
+test_report

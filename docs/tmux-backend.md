@@ -107,7 +107,7 @@ Without that baseline, an `unknown` verdict is preserved untouched, so a busy-lo
 tests/fm-backend-tmux-smoke.test.sh
 tests/fm-tmux-agent-liveness.test.sh
 tests/fm-harness-liveness-drift-live-e2e.test.sh
-tests/fm-composer-ghost.test.sh
+tests/fm-composer-lib.test.sh
 tests/fm-kimi-harness.test.sh
 tests/fm-cursor-harness.test.sh
 tests/fm-muse-harness.test.sh

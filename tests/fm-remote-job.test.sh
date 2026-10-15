@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # Behavior tests for the bounded remote job queue and worker.
+#
+# The closing sections pin the hourly sequence-claim sweep. Serving must not
+# starve while it runs: the live failure shape (scout report, ~17k claim dirs)
+# was fm_remote_job_reap_stale walking every .seq-claims entry with a per-claim
+# uname+stat fork before worker_process_once, so a job staged during the sweep
+# sat queued with no .claim past fm-send's 30s remote budget while worker.ready
+# stayed fresh. The sweep must also preserve the former numeric-name
+# eligibility rules and whole-second expiry.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -27,6 +35,9 @@ STALL_REPLACEMENT_PID=
 STALL_JOB_GROUP=
 QUIET_WORKER_PID=
 SCAN_LANE_PID=
+CLAIM_REAP_ROOT="$TMP_ROOT/claim-reap"
+CLAIM_REAP_STATE="$CLAIM_REAP_ROOT/remote-jobs"
+CLAIM_REAP_WORKER_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
 # that pid alone leaves the supervisor to respawn - the leak
@@ -49,6 +60,13 @@ cleanup_remote_job_fixture() {
   [ -z "$STALL_JOB_GROUP" ] || kill -KILL -- "-$STALL_JOB_GROUP" 2>/dev/null || true
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
+  fi
+  if [ -n "$CLAIM_REAP_WORKER_PID" ]; then
+    kill -TERM "$CLAIM_REAP_WORKER_PID" 2>/dev/null || true
+    wait "$CLAIM_REAP_WORKER_PID" 2>/dev/null || true
+  fi
+  if [ -f "$CLAIM_REAP_STATE/worker.pid" ]; then
+    fm_remote_job_stop_worker_tree "$(cat "$CLAIM_REAP_STATE/worker.pid")" || true
   fi
   fm_test_stop_remote_job_workers "$TMP_ROOT" || true
   rm -rf -- "$TMP_ROOT"
@@ -1587,5 +1605,176 @@ if command -v flock >/dev/null 2>&1; then
 else
   echo "skip: flock absent; inherited-lock release not exercised on this host"
 fi
+
+# --- claim sweep must not starve serving --------------------------------------
+#
+# Drives the real worker and lib against a synthetic ~17k claim directory with
+# the hourly marker due, stages one job during that sweep, and requires the job
+# to be claimed and finished well under fm-send's budget. Expired claims must be
+# removed and fresh ones kept. Its fixture lives under $CLAIM_REAP_ROOT and its
+# worker is stopped by cleanup_remote_job_fixture.
+CLAIM_REAP_REMOTE_ROOT="$CLAIM_REAP_ROOT/remote-root"
+CLAIM_REAP_REMOTE_HOME="$CLAIM_REAP_ROOT/remote-home"
+CLAIM_REAP_ACCOUNT_HOME="$CLAIM_REAP_ROOT/account"
+CLAIM_REAP_COUNT=17460
+CLAIM_REAP_EXPIRED_COUNT=8730
+# Well under fm-send's 30s remote budget; the pre-fix walk is ~80s here.
+CLAIM_REAP_SERVE_BOUND_SECONDS=15
+command -v python3 >/dev/null || fail "test needs python3 to seed a large claim directory quickly"
+
+mkdir -p "$CLAIM_REAP_REMOTE_ROOT/bin" "$CLAIM_REAP_REMOTE_HOME" "$CLAIM_REAP_ACCOUNT_HOME"
+cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" \
+  "$ROOT/bin/fm-remote-delta-read.sh" "$CLAIM_REAP_REMOTE_ROOT/bin/"
+printf 'fixture\n' > "$CLAIM_REAP_REMOTE_ROOT/AGENTS.md"
+cat > "$CLAIM_REAP_REMOTE_ROOT/bin/fm-touch-job.sh" <<'SH'
+#!/bin/bash
+printf 'ran\n' > "$1"
+SH
+chmod +x "$CLAIM_REAP_REMOTE_ROOT/bin"/*.sh
+git -C "$CLAIM_REAP_REMOTE_ROOT" init -q -b main
+git -C "$CLAIM_REAP_REMOTE_ROOT" config user.email test@example.com
+git -C "$CLAIM_REAP_REMOTE_ROOT" config user.name Test
+git -C "$CLAIM_REAP_REMOTE_ROOT" add AGENTS.md bin
+git -C "$CLAIM_REAP_REMOTE_ROOT" commit -qm 'claim-reap fixture'
+
+# The earlier cases tuned the idle wait; this sweep runs with the default.
+unset FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS
+FM_REMOTE_JOB_STATE_ROOT="$CLAIM_REAP_STATE"
+FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
+FM_REMOTE_JOB_QUEUE_TIMEOUT=60
+FM_REMOTE_JOB_TIMEOUT=30
+export FM_REMOTE_JOB_STATE_ROOT FM_REMOTE_JOB_PLATFORM_OVERRIDE FM_REMOTE_JOB_QUEUE_TIMEOUT \
+  FM_REMOTE_JOB_TIMEOUT
+# shellcheck source=bin/fm-remote-job-lib.sh
+. "$ROOT/bin/fm-remote-job-lib.sh"
+
+fm_remote_job_prepare_state "$CLAIM_REAP_ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+
+python3 - "$CLAIM_REAP_STATE/.seq-claims" "$CLAIM_REAP_COUNT" "$CLAIM_REAP_EXPIRED_COUNT" <<'PY'
+import os, sys, time
+
+claims_dir, count_s, expired_s = sys.argv[1:4]
+count = int(count_s)
+expired = int(expired_s)
+old = time.time() - 90000
+for i in range(1, count + 1):
+    path = os.path.join(claims_dir, str(i))
+    os.mkdir(path)
+    if i <= expired:
+        os.utime(path, (old, old))
+PY
+
+printf '%s\n' "$CLAIM_REAP_COUNT" > "$CLAIM_REAP_STATE/seq"
+# Force the claim sweep on the worker's first pass.
+fm_touch_epoch 946684800 "$CLAIM_REAP_STATE/.seq-claims-reaped"
+
+assert_present "$CLAIM_REAP_STATE/.seq-claims/1" "expired claim seed missing"
+assert_present "$CLAIM_REAP_STATE/.seq-claims/$CLAIM_REAP_COUNT" "fresh claim seed missing"
+assert_present "$CLAIM_REAP_STATE/.seq-claims/$CLAIM_REAP_EXPIRED_COUNT" "expired boundary seed missing"
+CLAIM_REAP_FRESH_KEEP=$((CLAIM_REAP_EXPIRED_COUNT + 1))
+assert_present "$CLAIM_REAP_STATE/.seq-claims/$CLAIM_REAP_FRESH_KEEP" "fresh boundary seed missing"
+
+HOME="$CLAIM_REAP_ACCOUNT_HOME" FM_ROOT_OVERRIDE="$CLAIM_REAP_REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$CLAIM_REAP_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  "$CLAIM_REAP_REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$CLAIM_REAP_ROOT/worker.out" 2> "$CLAIM_REAP_ROOT/worker.err" &
+CLAIM_REAP_WORKER_PID=$!
+
+for _ in $(seq 1 200); do
+  [ -f "$CLAIM_REAP_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$CLAIM_REAP_STATE/worker.ready" "the worker did not become ready"
+
+CLAIM_REAP_TOUCHED="$CLAIM_REAP_ROOT/served"
+claim_reap_began=$SECONDS
+fm_remote_job_stage "$CLAIM_REAP_ACCOUNT_HOME" "$CLAIM_REAP_REMOTE_ROOT" "$CLAIM_REAP_REMOTE_HOME" \
+  fm-touch-job.sh "$CLAIM_REAP_TOUCHED" < /dev/null > /dev/null \
+  || fail "staging a job during the due claim sweep failed: $FM_REMOTE_JOB_ERROR"
+CLAIM_REAP_JOB_ID=$FM_REMOTE_JOB_ID
+
+# Bound the wait tightly so a fork-per-claim walk fails this test instead of
+# succeeding after the sweep finally finishes.
+claim_reap_deadline=$((SECONDS + CLAIM_REAP_SERVE_BOUND_SECONDS))
+claim_reap_state=
+while [ "$SECONDS" -lt "$claim_reap_deadline" ]; do
+  claim_reap_state=$(fm_remote_job_read_state "$CLAIM_REAP_STATE/jobs/$CLAIM_REAP_JOB_ID" 2>/dev/null || true)
+  [ "$claim_reap_state" = 'done' ] && break
+  sleep 0.05
+done
+claim_reap_elapsed=$((SECONDS - claim_reap_began))
+[ "$claim_reap_state" = 'done' ] \
+  || fail "job $CLAIM_REAP_JOB_ID stayed '$claim_reap_state' for ${claim_reap_elapsed}s during a due claim sweep (bound ${CLAIM_REAP_SERVE_BOUND_SECONDS}s); serving was starved"
+[ "$claim_reap_elapsed" -le "$CLAIM_REAP_SERVE_BOUND_SECONDS" ] \
+  || fail "job $CLAIM_REAP_JOB_ID finished only after ${claim_reap_elapsed}s; serving was starved by the claim sweep"
+fm_remote_job_wait "$CLAIM_REAP_ACCOUNT_HOME" "$CLAIM_REAP_JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq 0 ] \
+  || fail "the job staged during the claim sweep exited $FM_REMOTE_JOB_EXIT"
+assert_present "$CLAIM_REAP_TOUCHED" "the job staged during the claim sweep never ran"
+[ "$(cat "$CLAIM_REAP_TOUCHED")" = ran ] \
+  || fail "the job staged during the claim sweep did not publish its side effect"
+fm_remote_job_reap "$CLAIM_REAP_ACCOUNT_HOME" "$CLAIM_REAP_JOB_ID" || fail "could not reap the served job"
+
+assert_absent "$CLAIM_REAP_STATE/.seq-claims/1" "an expired sequence claim survived the sweep"
+assert_absent "$CLAIM_REAP_STATE/.seq-claims/$CLAIM_REAP_EXPIRED_COUNT" "the expired boundary claim survived the sweep"
+assert_present "$CLAIM_REAP_STATE/.seq-claims/$CLAIM_REAP_FRESH_KEEP" "a fresh sequence claim was reaped"
+assert_present "$CLAIM_REAP_STATE/.seq-claims/$CLAIM_REAP_COUNT" "the freshest seed claim was reaped"
+
+claim_reap_remaining=$(find "$CLAIM_REAP_STATE/.seq-claims" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+# Fresh seed ids CLAIM_REAP_FRESH_KEEP..CLAIM_REAP_COUNT remain, plus the staged job's seq claim.
+claim_reap_expected_fresh=$((CLAIM_REAP_COUNT - CLAIM_REAP_EXPIRED_COUNT))
+[ "$claim_reap_remaining" -ge "$claim_reap_expected_fresh" ] \
+  || fail "too few claims remained after the sweep ($claim_reap_remaining; expected at least $claim_reap_expected_fresh fresh seeds)"
+[ "$claim_reap_remaining" -le $((claim_reap_expected_fresh + 5)) ] \
+  || fail "too many claims remained after the sweep ($claim_reap_remaining; expected about $claim_reap_expected_fresh plus the staged seq)"
+
+pass "a due claim sweep over ~${CLAIM_REAP_COUNT} dirs does not starve job serving"
+
+# --- claim sweep keeps numeric-name eligibility -----------------------------
+#
+# Runs in a subshell so its pinned date() override, fresh lib state, and state
+# root never reach the cases above or the summary below.
+(
+  CLAIM_RETENTION_ROOT="$TMP_ROOT/claim-retention"
+  unset FM_REMOTE_JOB_PLATFORM_OVERRIDE FM_REMOTE_JOB_QUEUE_TIMEOUT FM_REMOTE_JOB_TIMEOUT \
+    FM_REMOTE_JOB_WORKER_IDLE_WAIT_SECONDS
+  export FM_REMOTE_JOB_STATE_ROOT="$CLAIM_RETENTION_ROOT/state"
+  # shellcheck source=bin/fm-remote-job-lib.sh
+  . "$ROOT/bin/fm-remote-job-lib.sh"
+  mkdir -p "$CLAIM_RETENTION_ROOT/account"
+  fm_remote_job_prepare_state "$CLAIM_RETENTION_ROOT/account" || fail "$FM_REMOTE_JOB_ERROR"
+  for name in 0 notes 1x .private 1 00 01; do
+    mkdir "$FM_REMOTE_JOB_SEQ_CLAIMS/$name"
+    fm_touch_epoch 946684800 "$FM_REMOTE_JOB_SEQ_CLAIMS/$name"
+  done
+  mkdir "$FM_REMOTE_JOB_SEQ_CLAIMS/2"
+  # Pin the sweep clock so claims can sit on either side of the whole-second
+  # cutoff without racing a real second boundary.
+  NOW=$(command date +%s)
+  date() {
+    if [ "$*" = '+%s' ]; then printf '%s\n' "$NOW"; else command date "$@"; fi
+  }
+  touch_frac() { # <epoch> <fraction> <path>
+    local stamp
+    stamp=$(TZ=UTC0 command date -d "@$1" +%Y-%m-%dT%H:%M:%S 2>/dev/null) \
+      || stamp=$(TZ=UTC0 command date -r "$1" +%Y-%m-%dT%H:%M:%S 2>/dev/null) \
+      || fail "touch_frac: date(1) accepted neither -d @<epoch> nor -r <epoch>"
+    touch -d "$stamp.$2Z" "$3" || fail "touch_frac: touch -d $stamp.$2Z failed"
+  }
+  CUTOFF=$((NOW - FM_REMOTE_JOB_SEQ_CLAIM_REAP_SECONDS))
+  for spec in 3:$CUTOFF:0 4:$CUTOFF:5 5:$((CUTOFF + 1)):0 6:$((CUTOFF + 1)):5; do
+    IFS=: read -r name epoch frac <<< "$spec"
+    mkdir "$FM_REMOTE_JOB_SEQ_CLAIMS/$name"
+    touch_frac "$epoch" "$frac" "$FM_REMOTE_JOB_SEQ_CLAIMS/$name"
+  done
+  fm_remote_job_reap_stale "$CLAIM_RETENTION_ROOT/account" || fail "claim sweep failed"
+  for name in 0 notes 1x .private 2 5 6; do
+    assert_present "$FM_REMOTE_JOB_SEQ_CLAIMS/$name" "ineligible or fresh claim $name was reaped"
+  done
+  for name in 1 00 01 3 4; do
+    assert_absent "$FM_REMOTE_JOB_SEQ_CLAIMS/$name" "expired eligible claim $name survived"
+  done
+  pass "claim sweep preserves numeric-name eligibility and whole-second expiry"
+) || exit 1
 
 echo "ALL TESTS PASSED"

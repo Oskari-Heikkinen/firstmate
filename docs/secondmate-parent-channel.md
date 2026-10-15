@@ -88,7 +88,7 @@ Its header and `--help` describe supported routes, independent-consumer exclusio
 `tests/fm-pending-reply.test.sh` covers helper-selected local routing, explicit multi-correlation receipts, answer/ack separation, remote-channel classification, same-basename restatement before false escalation, readable wrong-home diagnostics, and the rule that arbitrary mate-home sightings never acknowledge a reply.
 `tests/fm-task-inbox.test.sh` covers direct milestone delivery, evidence integrity, generation checks, reviewer claims and exclusions, retries, home moves and consumption receipts.
 `tests/fm-watch-triage.test.sh` covers the routine lines above against a real watcher: an absorbed `working:` line that rides along at the next wake, an absorbed acknowledgement, the answer, `done:`, and mixed spans that still wake, and a repeated outcome absorbed only when nothing intervened.
-`tests/fm-pending-reply.test.sh` and `tests/fm-send-secondmate-marker.test.sh` cover the recorded acknowledgement kind, and `tests/fm-wake-drain-unread-status.test.sh` covers the ride-along presentation.
+`tests/fm-pending-reply.test.sh` and `tests/fm-send-secondmate-marker.test.sh` cover the recorded acknowledgement kind, and the unread-status cases in `tests/fm-wake-drain-open-decisions.test.sh` cover the ride-along presentation.
 `tests/fm-parent-channel-scan-exclusion.test.sh` covers the home-shape-aware scan exclusion against real remote, main-home, and local-mate fixtures: the watcher signal scan, both heartbeat backstops, the fleet-wide folds, and the real `fm-wake-drain.sh` end to end.
 
 ## Live verification

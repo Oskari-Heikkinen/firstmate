@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Behavior tests for bin/fm-brief.sh.
+# Behavior tests for bin/fm-brief.sh, including the ask-user authority
+# instructions its ship briefs and secondmate charters carry.
 #
 # Regression coverage for the heredoc-in-command-substitution parse bug (issues
 # #166, #958, #1069). Building a variable with `VAR=$(cat <<EOF ... EOF)` is
@@ -21,6 +22,71 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
+
+# The assertions below check a generated brief's structure - its headings,
+# paths, commands, flags, skill names, state tokens, and which of them share a
+# line or a section - rather than whole sentences, so a wording-only edit to the
+# generator's prose does not break them while the contract still holds.
+
+# section_text <file> <heading>: print the body under the exact Markdown heading
+# line <heading>, up to the next heading of the same or a higher level.
+section_text() {
+  awk -v heading="$2" '
+    BEGIN { level = index(heading, " ") - 1 }
+    on && /^#+ / { if (index($0, " ") - 1 <= level) exit }
+    $0 == heading { on = 1; next }
+    on { print }
+  ' "$1"
+}
+
+# has_line_with <needle>...: succeed when one line of stdin holds every
+# fixed-string needle, in any order.
+has_line_with() {
+  awk '
+    BEGIN { n = ARGC - 1; for (i = 1; i <= n; i++) need[i] = ARGV[i]; ARGC = 1 }
+    {
+      for (i = 1; i <= n; i++) if (index($0, need[i]) == 0) next
+      found = 1
+      exit
+    }
+    END { exit !found }
+  ' "$@"
+}
+
+# assert_line_with <file> <msg> <needle>...: one line of <file> holds every needle.
+assert_line_with() {
+  local file=$1 msg=$2
+  shift 2
+  has_line_with "$@" < "$file" || fail "$msg"
+}
+
+# assert_no_line_with <file> <msg> <needle>...: no line of <file> holds every needle.
+assert_no_line_with() {
+  local file=$1 msg=$2
+  shift 2
+  ! has_line_with "$@" < "$file" || fail "$msg"
+}
+
+# assert_section_line_with <file> <heading> <msg> <needle>...: <heading> exists
+# with a nonempty body, and one line of that body holds every needle.
+assert_section_line_with() {
+  local file=$1 heading=$2 msg=$3 body
+  shift 3
+  body=$(section_text "$file" "$heading")
+  [ -n "$body" ] || fail "$msg (no '$heading' section)"
+  printf '%s\n' "$body" | has_line_with "$@" || fail "$msg"
+}
+
+# assert_section_no_line_with <file> <heading> <msg> <needle>...: <heading>
+# exists with a nonempty body - so the negative check is never vacuous - and no
+# line of that body holds every needle.
+assert_section_no_line_with() {
+  local file=$1 heading=$2 msg=$3 body
+  shift 3
+  body=$(section_text "$file" "$heading")
+  [ -n "$body" ] || fail "$msg (no '$heading' section)"
+  ! printf '%s\n' "$body" | has_line_with "$@" || fail "$msg"
+}
 
 # The script itself must always parse under the ambient bash. That is Bash 5 in
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
@@ -171,9 +237,12 @@ PERL
 }
 
 test_help_includes_entire_header() {
-  local help
+  local help last
   help=$("$ROOT/bin/fm-brief.sh" --help)
-  assert_contains "$help" "Refuses to overwrite an existing brief." "fm-brief.sh --help omitted its header terminator"
+  # The header's last comment line is the one just before its first code line.
+  last=$(awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); last = $0; next } { print last; exit }' "$ROOT/bin/fm-brief.sh")
+  [ -n "$last" ] || fail "fm-brief.sh has no header comment to render"
+  [ "$(printf '%s\n' "$help" | tail -n 1)" = "$last" ] || fail "fm-brief.sh --help omitted its header terminator"
   pass "fm-brief.sh: --help renders the complete header"
 }
 
@@ -213,9 +282,11 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "{FIRSTMATE_SPEC}" "$brief" "$id: brief missing the {FIRSTMATE_SPEC} placeholder"
     assert_grep "## Captain's intent" "$brief" "$id: brief missing Captain's intent subsection"
     assert_grep "## Firstmate spec" "$brief" "$id: brief missing Firstmate spec subsection"
-    assert_grep 'never a bare number such as "PR 108"' "$brief" "$id: brief missing the full-PR-URL rule"
-    assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
-      "$id: brief missing nonterminal working:/setup-complete gate protection"
+    assert_section_line_with "$brief" "# Rules" "$id: brief missing the full-PR-URL rule" \
+      'https://' 'never' 'PR 108'
+    # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+    assert_section_line_with "$brief" "# Rules" "$id: brief missing nonterminal working:/setup-complete gate protection" \
+      '`working:`' 'nonterminal' '`done:`'
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/direct-push/local-only briefs generate cleanly"
@@ -240,8 +311,9 @@ test_forge_selection_renders_correct_cli() {
   assert_no_grep 'chrome-devtools-axi' "$brief" \
     "a brief with no --forge still names the browser CLI as a rule"
   # shellcheck disable=SC2016 # Backticks are literal generated brief text.
-  assert_grep 'open a PR with `gh-axi`' "$brief" \
-    "a direct-PR brief with no --forge must still tell the worker to open the PR with gh-axi"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "a direct-PR brief with no --forge must still tell the worker to open the PR with gh-axi" \
+    'open' 'PR' '`gh-axi`'
   grep -qx "Delivery contract: mode=direct-PR" "$brief" \
     || fail "a brief with no --forge must keep the bare delivery contract line"
 
@@ -249,16 +321,19 @@ test_forge_selection_renders_correct_cli() {
     || fail "--forge forgejo should scaffold a direct-PR ship brief"
   brief="$home/data/brief-forge-forgejo/brief.md"
   # shellcheck disable=SC2016 # Backticks are literal generated brief text.
-  assert_grep 'open a PR with `tea`' "$brief" \
-    "--forge forgejo's direct-PR DOD must tell the worker to open the PR with tea"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "--forge forgejo's direct-PR DOD must tell the worker to open the PR with tea" \
+    'open' 'PR' '`tea`'
   grep -qx "Delivery contract: mode=direct-PR forge=forgejo" "$brief" \
     || fail "--forge forgejo must mark the delivery contract line for the spawn's registry check"
   # shellcheck disable=SC2016 # Backticks and braces are literal generated brief text.
-  assert_grep 'confirm it is not a draft (`tea api --repo <owner>/<repo> /repos/{owner}/{repo}/pulls/<number>` must show `draft` as false' "$brief" \
-    "--forge forgejo's direct-PR DOD must read the draft state back with tea"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "--forge forgejo's direct-PR DOD must read the draft state back with tea" \
+    '`tea api --repo <owner>/<repo> /repos/{owner}/{repo}/pulls/<number>`' '`draft`' 'false'
   # shellcheck disable=SC2016 # Backticks are literal generated brief text.
-  assert_grep 'remove that prefix with `tea pulls edit <number>' "$brief" \
-    "--forge forgejo's direct-PR DOD must clear a draft with tea"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "--forge forgejo's direct-PR DOD must clear a draft with tea" \
+    'draft' '`tea pulls edit <number> --repo <owner>/<repo>'
   assert_no_grep 'gh-axi pr view' "$brief" \
     "--forge forgejo's direct-PR DOD must not send the worker to gh-axi for the draft read-back"
   assert_no_grep 'gh-axi pr ready' "$brief" \
@@ -270,8 +345,9 @@ test_forge_selection_renders_correct_cli() {
   grep -qx "Delivery contract: mode=no-mistakes forge=forgejo" "$brief" \
     || fail "a no-mistakes --forge forgejo brief must mark the delivery contract line"
   # shellcheck disable=SC2016 # Backticks and braces are literal generated brief text.
-  assert_grep 'confirm it is not a draft (`tea api --repo <owner>/<repo> /repos/{owner}/{repo}/pulls/<number>` must show `draft` as false' "$brief" \
-    "a no-mistakes --forge forgejo DOD must read the draft state back with tea"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "a no-mistakes --forge forgejo DOD must read the draft state back with tea" \
+    '`tea api --repo <owner>/<repo> /repos/{owner}/{repo}/pulls/<number>`' '`draft`' 'false'
   assert_no_grep 'gh-axi pr view' "$brief" \
     "a no-mistakes --forge forgejo DOD must not send the worker to gh-axi for the draft read-back"
   assert_no_grep 'gh-axi pr ready' "$brief" \
@@ -334,8 +410,12 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
-  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
-    "explicit no-mistakes brief did not render the pipeline definition of done"
+  # shellcheck disable=SC2016 # Backticks and braces are literal generated Markdown.
+  assert_section_line_with "$brief" "# Definition of done" \
+    "explicit no-mistakes brief did not render the pipeline definition of done" \
+    '`done [at=<epoch>]: {summary}`'
+  worker_guide_ref "$brief" no-mistakes-drive >/dev/null \
+    || fail "explicit no-mistakes brief did not name the pipeline's drive reference"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a6 never-registered --mode local-only >/dev/null 2>&1 \
@@ -375,24 +455,30 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   id="brief-direct-authority-a4"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
-  assert_grep "The configured merge authority decides whether to merge the PR; firstmate relays the outcome." "$brief" \
-    "direct-PR brief lost configured merge authority"
-  assert_no_grep "The captain reviews and merges the PR" "$brief" \
-    "direct-PR brief hard-coded captain-only authority"
+  assert_section_line_with "$brief" "# Definition of done" "direct-PR brief lost configured merge authority" \
+    'configured merge authority' 'merge' 'firstmate'
+  assert_section_no_line_with "$brief" "# Definition of done" "direct-PR brief hard-coded captain-only authority" \
+    'captain' 'merge'
   id="brief-local-authority-a4"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" local-proj --mode local-only >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
-  assert_grep "The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path." "$brief" \
-    "local-only brief lost configured merge authority and guarded landing"
-  assert_no_grep "The captain approves the ready branch" "$brief" \
-    "local-only brief hard-coded captain-only authority"
-  assert_no_grep "Firstmate then reviews your branch diff" "$brief" \
-    "local-only brief retained a personal review stacked on the selected delivery path"
-  assert_no_grep "pass \`--intent\` as only this brief's \`## Captain's intent\`" "$home/data/$id/brief.md" \
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_section_line_with "$brief" "# Definition of done" \
+    "local-only brief lost configured merge authority and guarded landing" \
+    'configured merge authority' 'ready branch' 'firstmate' 'local `main`' 'fast-forward'
+  assert_section_no_line_with "$brief" "# Definition of done" "local-only brief hard-coded captain-only authority" \
+    'captain' 'ready branch'
+  assert_section_no_line_with "$brief" "# Definition of done" \
+    "local-only brief retained a personal review stacked on the selected delivery path" \
+    'review' 'diff'
+  assert_no_grep '--intent' "$brief" \
     "local-only brief must not include the no-mistakes --intent contract"
   id="brief-direct-intent-a4"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
-  assert_no_grep "pass \`--intent\` as only this brief's \`## Captain's intent\`" "$home/data/$id/brief.md" \
+  brief="$home/data/$id/brief.md"
+  grep -qx "Delivery contract: mode=direct-PR" "$brief" \
+    || fail "direct-PR brief did not render its Definition of done"
+  assert_no_grep '--intent' "$brief" \
     "direct-PR brief must not include the no-mistakes --intent contract"
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
 }
@@ -414,13 +500,15 @@ test_pr_based_dod_requires_non_draft() {
       continue
     fi
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
-    assert_grep 'confirm it is not a draft (`gh-axi pr view <number>` must print `draft: no`' "$brief" \
-      "$mode: done must require reading the PR back from the forge as non-draft"
+    assert_section_line_with "$brief" "# Definition of done" \
+      "$mode: done must require reading the PR back from the forge as non-draft" \
+      'draft' '`gh-axi pr view <number>`' '`draft: no`'
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
-    assert_grep 'mark it ready with `gh-axi pr ready <number>`' "$brief" \
-      "$mode: a draft must be marked ready before done"
-    assert_grep "If you deliberately keep the PR a draft, append \`paused" "$brief" \
-      "$mode: a deliberate draft must declare a wait instead of done"
+    assert_section_line_with "$brief" "# Definition of done" "$mode: a draft must be marked ready before done" \
+      'draft' '`gh-axi pr ready <number>`'
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+    assert_section_line_with "$brief" "# Definition of done" "$mode: a deliberate draft must declare a wait instead of done" \
+      'draft' '`paused [at=<epoch>]: '
   done
   pass "fm-brief.sh: PR-based done requires a non-draft PR; a deliberate draft declares a wait"
 }
@@ -428,7 +516,7 @@ test_pr_based_dod_requires_non_draft() {
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
 # reference must render as plain prose with no dangling apostrophe artifact.
 test_no_mistakes_dod_wording() {
-  local home id brief spelling ref
+  local home id brief spelling ref intent_heading
   home="$TMP_ROOT/wording-home"
   mkdir -p "$home/data"
   id="brief-wording-b1"
@@ -440,46 +528,54 @@ test_no_mistakes_dod_wording() {
   done
   # The DOD keeps the core --intent boundary inline and names the reference that
   # owns the full worker-facing rule, read before no-mistakes starts.
-  assert_grep "Pass as \`--intent\` only this brief's \`## Captain's intent\` body plus later words the captain actually said, never \`## Firstmate spec\`" "$brief" \
-    "no-mistakes DOD lost its inline --intent boundary"
-  assert_grep "replaces the no-mistakes skill's advice to enrich \`--intent\`" "$brief" \
-    "no-mistakes DOD must override the external skill's enrich-with-decisions guidance"
+  assert_section_line_with "$brief" "# Definition of done" "no-mistakes DOD lost its inline --intent boundary" \
+    "\`--intent\`" "\`## Captain's intent\`" 'never' "\`## Firstmate spec\`"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "no-mistakes DOD must override the external skill's enrich-with-decisions guidance" \
+    '/.agents/skills/worker-guide/references/no-mistakes-drive.md' 'replaces' 'enrich' "\`--intent\`"
   ref=$(worker_guide_ref "$brief" no-mistakes-drive) || fail "no-mistakes DOD names no readable drive reference"
   for spelling in 'Captain:' "Captain's words:" "Captain's ask:" "Captain's intent:" 'Captain,'; do
     assert_no_grep "$spelling" "$ref" "the drive reference still teaches operator-address labels"
   done
   assert_grep '[captain]' "$ref" "the drive reference must explain the neutral legacy provenance marker"
-  assert_grep "no-mistakes itself provides for the mechanics" "$ref" \
-    "the drive reference lost its guidance-reference sentence"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_line_with "$ref" "the drive reference lost its guidance-reference sentence" \
+    '/no-mistakes' '`no-mistakes axi run --help`' 'authoritative'
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
   assert_grep '`no-mistakes axi run --help`' "$ref" \
     "the drive reference must render literal backticks around the help command"
-  assert_grep "pass \`--intent\` as only your brief's \`## Captain's intent\`" "$ref" \
-    "the drive reference must require --intent to be the Captain's intent subsection"
-  assert_grep "plus any later words the captain actually said" "$ref" \
-    "the drive reference must allow later captain words in --intent"
-  assert_grep "Do not include \`## Firstmate spec\`" "$ref" \
-    "the drive reference must keep Firstmate spec out of --intent"
-  assert_grep "or your own decisions and tradeoffs" "$ref" \
-    "the drive reference must keep worker tradeoffs out of --intent"
-  assert_grep "This replaces the no-mistakes skill's advice to enrich \`--intent\`" "$ref" \
-    "the drive reference must override the external skill's enrich-with-decisions guidance"
+  intent_heading="## What \`--intent\` may carry"
+  assert_section_line_with "$ref" "$intent_heading" \
+    "the drive reference must require --intent to be the Captain's intent subsection" \
+    "\`--intent\`" "\`## Captain's intent\`" 'only'
+  assert_section_line_with "$ref" "$intent_heading" "the drive reference must allow later captain words in --intent" \
+    "\`--intent\`" "\`## Captain's intent\`" 'later' 'captain'
+  assert_section_line_with "$ref" "$intent_heading" "the drive reference must keep Firstmate spec out of --intent" \
+    'not' "\`## Firstmate spec\`"
+  assert_section_line_with "$ref" "$intent_heading" "the drive reference must keep worker tradeoffs out of --intent" \
+    'not' "\`## Firstmate spec\`" 'decisions' 'tradeoffs'
+  assert_section_line_with "$ref" "$intent_heading" \
+    "the drive reference must override the external skill's enrich-with-decisions guidance" \
+    'replaces' 'enrich' "\`--intent\`"
   # A bare reference cannot preserve the captain's ask, so the reference states
   # the self-sufficiency rule and requires referenced material to be resolved into
   # its substance.
-  assert_grep "The \`--intent\` string you pass must be self-sufficient" "$ref" \
-    "the drive reference must require a self-sufficient --intent string"
-  assert_grep "write the substance of the referenced items into \`--intent\`" "$ref" \
-    "the drive reference must tell the worker to resolve report, decision, and PR references into substance"
+  assert_section_line_with "$ref" "$intent_heading" "the drive reference must require a self-sufficient --intent string" \
+    "\`--intent\`" 'self-sufficient'
+  assert_section_line_with "$ref" "$intent_heading" \
+    "the drive reference must tell the worker to resolve report, decision, and PR references into substance" \
+    'substance' 'report' 'PR' "\`--intent\`"
 
   # The --yes ban is a fleet-wide prohibition, not a preference, and it must not
   # claim an enforcement the tool does not provide: this is instruction only.
-  assert_grep "NEVER pass \`--yes\` (or \`-y\`) to \`no-mistakes axi run\` or \`no-mistakes axi respond\`. It is banned fleet-wide." "$brief" \
-    "no-mistakes DOD must state the --yes ban as a prohibition"
-  assert_grep "answering your own ask-user finding is a hard rule violation" "$brief" \
-    "no-mistakes DOD must say why --yes is banned"
-  assert_no_grep "Avoid \`--yes\`" "$brief" \
-    "no-mistakes DOD still states the --yes ban as a preference"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_section_line_with "$brief" "# Definition of done" "no-mistakes DOD must state the --yes ban as a prohibition" \
+    'NEVER' '`--yes`' '`-y`' '`no-mistakes axi run`' '`no-mistakes axi respond`' 'banned'
+  assert_section_line_with "$brief" "# Definition of done" "no-mistakes DOD must say why --yes is banned" \
+    'auto-resolves' 'ask-user' 'violation'
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_section_no_line_with "$brief" "# Definition of done" "no-mistakes DOD still states the --yes ban as a preference" \
+    'Avoid' '`--yes`'
   assert_no_grep "no-mistakes refuses" "$brief" \
     "no-mistakes DOD must not claim the tool itself refuses --yes"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose and bans --yes outright"
@@ -499,18 +595,23 @@ test_no_mistakes_dod_green_detection() {
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
   ref=$(worker_guide_ref "$brief" no-mistakes-drive) || fail "no-mistakes DOD names no readable drive reference"
-  assert_grep "only a drive call's return reports the green PR" "$ref" \
-    "the drive reference must make the drive call's return the green signal"
-  assert_grep "never reports \`checks-passed\` while the ci step is still monitoring the PR for merge" "$ref" \
-    "the drive reference must say axi status cannot show a green PR in merge monitoring"
-  assert_grep "never wait on a status poll for the next gate or outcome" "$ref" \
-    "the drive reference must forbid waiting on a status poll"
-  assert_grep "reattach at once by re-running \`no-mistakes axi run\` without flags" "$ref" \
-    "the drive reference must reattach the drive call after a bounded return"
-  assert_grep "once checks are green a reattach returns \`checks-passed\` immediately" "$ref" \
-    "the drive reference must say a reattach reports an already-green PR"
-  assert_no_grep "poll \`no-mistakes axi status\` from a separate call" "$ref" \
-    "the drive reference still makes a status poll the wait for the next gate or outcome"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  {
+    assert_section_line_with "$ref" "## Driving the run" "the drive reference must make the drive call's return the green signal" \
+      'drive call' 'return' 'green PR'
+    assert_section_line_with "$ref" "## Driving the run" \
+      "the drive reference must say axi status cannot show a green PR in merge monitoring" \
+      '`no-mistakes axi status`' 'never' '`checks-passed`' 'ci step' 'merge'
+    assert_section_line_with "$ref" "## Driving the run" "the drive reference must forbid waiting on a status poll" \
+      'never' 'status poll'
+    assert_section_line_with "$ref" "## Driving the run" "the drive reference must reattach the drive call after a bounded return" \
+      'reattach' '`no-mistakes axi run`' 'without flags'
+    assert_section_line_with "$ref" "## Driving the run" "the drive reference must say a reattach reports an already-green PR" \
+      'reattach' '`checks-passed`' 'immediately'
+    assert_section_no_line_with "$ref" "## Driving the run" \
+      "the drive reference still makes a status poll the wait for the next gate or outcome" \
+      '`no-mistakes axi status`' 'separate call'
+  }
   pass "fm-brief.sh: no-mistakes DOD detects a green PR from the drive call, not a status poll"
 }
 
@@ -526,32 +627,35 @@ test_ask_user_escalation_format() {
   # A no-mistakes ask-user gate must escalate its ask-user findings as one status
   # event plus one verbatim findings snapshot file, using that same shape even
   # for a single finding, never paraphrased into the status line.
-  assert_grep "escalate all ask-user findings as one event plus one snapshot file" "$brief" \
-    "ship rule 6 lost the one-event-plus-snapshot-file ask-user contract"
-  assert_grep "using that same shape even when the gate holds only a single ask-user finding" "$brief" \
-    "ship rule 6 must require the same shape for a single finding"
-  assert_grep "write only the ask-user findings, verbatim and unparaphrased (id, severity, file, line, description, authority)" "$brief" \
-    "ship rule 6 must limit the verbatim axi slice to ask-user findings"
+  assert_section_line_with "$brief" "# Rules" "ship rule 6 lost the one-event-plus-snapshot-file ask-user contract" \
+    'ask-user' 'one event' 'snapshot file'
+  assert_section_line_with "$brief" "# Rules" "ship rule 6 must require the same shape for a single finding" \
+    'same shape' 'single ask-user finding'
+  assert_section_line_with "$brief" "# Rules" "ship rule 6 must limit the verbatim axi slice to ask-user findings" \
+    'ask-user findings' 'verbatim' '(id, severity, file, line, description, authority)' \
+    "\`$home/data/$id/nm-<run>-findings.txt\`"
   # shellcheck disable=SC2016  # single quotes are deliberate: backticks and the key/findings/file tokens must stay literal
   assert_grep 'needs-decision [at=<epoch>] [key=nm-<run>-<step>]: ask-user findings=<id1>,<id2>,... file='"$home/data/$id/nm-<run>-findings.txt" "$brief" \
     "ship rule 6 must render the exact needs-decision ask-user status line"
   assert_grep "$home/data/$id/nm-<run>-findings.txt" "$brief" \
     "ship rule 6 must point the snapshot file under this task's own data directory"
-  assert_grep "The status line only points at the file; it never restates or summarizes a finding's content." "$brief" \
-    "ship rule 6 must forbid paraphrasing ask-user findings into the status line"
+  assert_section_line_with "$brief" "# Rules" "ship rule 6 must forbid paraphrasing ask-user findings into the status line" \
+    'status line' 'file' 'never' 'finding'
 
   # The DOD's own ask-user paragraph must point back at rule 6's format
   # (one-owner rule) rather than restating or bare-citing it.
-  assert_grep "escalate to firstmate using rule 6's ask-user format" "$brief" \
-    "no-mistakes DOD ask-user paragraph must point at rule 6's format instead of a bare citation"
-  assert_no_grep "escalate to firstmate (rule 6) and stop." "$brief" \
-    "no-mistakes DOD ask-user paragraph still uses the old bare rule-6 pointer"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "no-mistakes DOD ask-user paragraph must point at rule 6's format instead of a bare citation" \
+    'ask-user' "rule 6's" 'format'
+  assert_section_no_line_with "$brief" "# Definition of done" \
+    "no-mistakes DOD ask-user paragraph still uses the old bare rule-6 pointer" \
+    '(rule 6)'
 
   other_id="brief-no-ask-user-scout"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$other_id" some-proj --scout >/dev/null 2>&1
   other_brief="$home/data/$other_id/brief.md"
-  assert_no_grep "destructive actions, ask-user findings" "$other_brief" \
-    "scout brief received a no-mistakes-only decision case"
+  assert_section_no_line_with "$other_brief" "# Rules" "scout brief received a no-mistakes-only decision case" \
+    'ask-user'
 
   for mode in direct-PR local-only; do
     other_id="brief-no-ask-user-$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
@@ -559,8 +663,8 @@ test_ask_user_escalation_format() {
     other_brief="$home/data/$other_id/brief.md"
     assert_no_grep "nm-<run>-findings.txt" "$other_brief" \
       "$mode brief received a no-mistakes-only escalation format"
-    assert_no_grep "destructive actions, ask-user findings" "$other_brief" \
-      "$mode brief received a no-mistakes-only decision case"
+    assert_section_no_line_with "$other_brief" "# Rules" "$mode brief received a no-mistakes-only decision case" \
+      'ask-user'
   done
 
   pass "fm-brief.sh: no-mistakes ask-user findings use one event plus a verbatim snapshot"
@@ -578,23 +682,26 @@ test_ship_project_memory_wording() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
-  assert_grep "loaded into every agent session" "$brief" \
-    "project-memory contract lost the per-session cost rationale"
-  assert_grep "only to correct information that is factually wrong" "$brief" \
-    "project-memory contract lost the corrections-only bound"
-  assert_grep "including information your own change made wrong" "$brief" \
-    "project-memory contract lost the self-inflicted correction case"
-  assert_grep "never to add knowledge because it is missing" "$brief" \
-    "project-memory contract still permits additions of missing knowledge"
-  assert_no_grep "if this task produced durable project-intrinsic knowledge" "$brief" \
-    "project-memory contract still invites additions for durable knowledge"
-  assert_grep "A correction edits only the wrong text: do not run \`$ROOT/bin/fm-ensure-agents-md.sh\`" "$brief" \
-    "project-memory contract no longer forbids the ensure helper on a correction"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  {
+    assert_section_line_with "$brief" "# Project memory" "project-memory contract lost the per-session cost rationale" \
+      '`AGENTS.md`' '`CLAUDE.md`' 'every agent session'
+    assert_section_line_with "$brief" "# Project memory" "project-memory contract lost the corrections-only bound" \
+      '`AGENTS.md`' 'only' 'correct' 'wrong'
+    assert_section_line_with "$brief" "# Project memory" "project-memory contract lost the self-inflicted correction case" \
+      'own change' 'wrong'
+    assert_section_line_with "$brief" "# Project memory" "project-memory contract still permits additions of missing knowledge" \
+      'never' 'add' 'missing'
+    assert_section_no_line_with "$brief" "# Project memory" "project-memory contract still invites additions for durable knowledge" \
+      'durable'
+  }
+  assert_section_line_with "$brief" "# Project memory" "project-memory contract no longer forbids the ensure helper on a correction" \
+    'correction' 'not run' "\`$ROOT/bin/fm-ensure-agents-md.sh\`"
   pass "fm-brief.sh: ship project-memory wording bounds edits to corrections of wrong information"
 }
 
 test_herdr_lab_contract_is_explicit_and_complete() {
-  local home id brief
+  local home id brief herdr_heading
   home="$TMP_ROOT/herdr-lab-home"
   mkdir -p "$home/data"
   id="brief-herdr-lab-d1"
@@ -611,14 +718,18 @@ test_herdr_lab_contract_is_explicit_and_complete() {
     "Herdr lab brief missing helper-owned provisioning"
   assert_grep "\"\$HERDR_LAB_HELPER\" teardown \"\$HERDR_LAB_SESSION\"" "$brief" \
     "Herdr lab brief missing helper-owned teardown"
-  assert_grep "required \`--session \"\$HERDR_LAB_SESSION\"\` as a Herdr option, before any \`--\` delimiter" "$brief" \
-    "Herdr lab brief missing the per-call session option contract"
-  assert_grep "direct \`herdr server stop\`" "$brief" \
-    "Herdr lab brief missing the forbidden server-global command list"
-  assert_grep "records the live default session before provisioning" "$brief" \
-    "Herdr lab brief missing the before tripwire"
-  assert_grep "verifies the identical fleet state after teardown" "$brief" \
-    "Herdr lab brief missing the after tripwire"
+  herdr_heading="# Herdr isolation - HARD SAFETY CONTRACT"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks and $VAR must stay literal
+  {
+    assert_section_line_with "$brief" "$herdr_heading" "Herdr lab brief missing the per-call session option contract" \
+      '`--session "$HERDR_LAB_SESSION"`' 'before' '`--`'
+    assert_section_line_with "$brief" "$herdr_heading" "Herdr lab brief missing the forbidden server-global command list" \
+      'Forbidden' 'direct `herdr server stop`' 'direct `herdr session stop`' 'direct `herdr session delete`'
+  }
+  assert_section_line_with "$brief" "$herdr_heading" "Herdr lab brief missing the before tripwire" \
+    'default session' 'before' 'provision'
+  assert_section_line_with "$brief" "$herdr_heading" "Herdr lab brief missing the after tripwire" \
+    'default session' 'fleet state' 'after' 'teardown'
   assert_no_grep "Herdr lifecycle declaration - NOT ENABLED" "$brief" \
     "Herdr lab brief retained the unguarded declaration"
   pass "fm-brief.sh: --herdr-lab emits the complete hard safety contract"
@@ -655,8 +766,9 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
     brief="$home/data/$id/brief.md"
     assert_grep "# Herdr lifecycle declaration - NOT ENABLED" "$brief" \
       "$kind brief silently omitted the Herdr declaration"
-    assert_grep "regenerate the brief with \`--herdr-lab\` before dispatch" "$brief" \
-      "$kind brief missing the fail-visible regeneration instruction"
+    assert_section_line_with "$brief" "# Herdr lifecycle declaration - NOT ENABLED" \
+      "$kind brief missing the fail-visible regeneration instruction" \
+      'regenerate' "\`--herdr-lab\`" 'before dispatch'
   done
   pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
 }
@@ -669,7 +781,7 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
 # see the task text. Each placeholder must exist only at its genuine fill site,
 # so the documented fill leaves the gate intact and each body appears once.
 test_documented_global_replace_leaves_the_herdr_gate_intact() {
-  local home id brief kind count content filled body spec
+  local home id brief kind count content filled body spec gate
   home="$TMP_ROOT/task-fill-site-home"
   mkdir -p "$home/data"
   body='Restart the herdr session, then profile it'
@@ -698,7 +810,11 @@ test_documented_global_replace_leaves_the_herdr_gate_intact() {
     count=$(printf '%s\n' "$filled" | grep -c -F "$spec")
     [ "$count" = 1 ] \
       || fail "$kind brief: the {FIRSTMATE_SPEC} replace duplicated the spec body $count times"
-    printf '%s\n' "$filled" | grep -qF 'this scaffold cannot inspect the task text' \
+    # The gate section must come through the fill byte for byte.
+    gate=$(section_text "$brief" "# Herdr lifecycle declaration - NOT ENABLED")
+    [ -n "$gate" ] || fail "$kind brief carries no Herdr safety gate to protect"
+    printf '%s\n' "$filled" > "$brief.filled"
+    [ "$(section_text "$brief.filled" "# Herdr lifecycle declaration - NOT ENABLED")" = "$gate" ] \
       || fail "$kind brief: the Herdr safety gate did not survive the documented fill"
   done
   pass "fm-brief.sh: the documented {TASK} and {FIRSTMATE_SPEC} fills cannot corrupt the Herdr safety gate"
@@ -718,24 +834,31 @@ test_secondmate_no_projects_charter() {
   brief="$home/data/fdev/brief.md"
   assert_present "$brief" "project-less charter was not scaffolded"
   assert_grep "# Project clones" "$brief" "project-less charter dropped the Project clones heading"
-  assert_grep "None. This is a project-less domain" "$brief" \
-    "project-less charter did not render a sensible no-clones note"
-  assert_grep "its crews take pooled worktrees of that repo" "$brief" \
-    "project-less charter operating model lost the pooled-worktree note"
-  assert_no_grep "The projects above are local clones" "$brief" \
-    "project-less charter kept the with-projects operating-model line"
+  # A body opening with "None." is how --render-charter recognizes a project-less domain.
+  [ "$(section_text "$brief" "# Project clones" | head -n 1 | cut -c1-5)" = "None." ] \
+    || fail "project-less charter did not render a sensible no-clones note"
+  assert_section_line_with "$brief" "# Project clones" "project-less charter did not render a sensible no-clones note" \
+    'None.' 'project-less'
+  assert_section_line_with "$brief" "# Project clones" "project-less charter operating model lost the pooled-worktree note" \
+    'pooled worktrees'
+  assert_section_no_line_with "$brief" "# Project clones" "project-less charter kept the with-projects operating-model line" \
+    'local clones'
   assert_grep '# The captain and the parent channel' "$brief" \
     "secondmate charter lost the parent-channel section"
-  assert_grep 'Nobody reads this chat' "$brief" \
-    "secondmate charter no longer says the chat is unread"
-  assert_grep 'in this home it IS the captain' "$brief" \
-    "secondmate charter no longer names the parent channel as the captain"
+  assert_section_line_with "$brief" "# The captain and the parent channel" \
+    "secondmate charter no longer says the chat is unread" \
+    'Nobody' 'chat' "'$home/state/fdev.status'"
+  assert_section_line_with "$brief" "# The captain and the parent channel" \
+    "secondmate charter no longer names the parent channel as the captain" \
+    "'$home/state/fdev.status'" 'IS the captain'
   assert_grep 'working [key=<work-slug>]' "$brief" \
     "secondmate charter did not key material routed-work phases"
   assert_grep 'resolved [key=<work-slug>]' "$brief" \
     "secondmate charter did not close a quietly ended routed-work phase"
-  assert_grep 'use the same key on its later' "$brief" \
-    "secondmate charter did not supersede working phases with later states"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_section_line_with "$brief" "# Escalation to main firstmate" \
+    "secondmate charter did not supersede working phases with later states" \
+    '`working [key=<work-slug>]' 'same key' '`done`'
   if grep -nE '^-[[:space:]]*$' "$brief" >/dev/null; then
     fail "project-less charter left a stray empty project bullet"
   fi
@@ -757,7 +880,7 @@ test_secondmate_no_projects_charter() {
 }
 
 test_secondmate_marked_request_reporting_contract() {
-  local home brief
+  local home brief requests escalation
   home="$TMP_ROOT/marked-request-reporting-home"
   mkdir -p "$home/data"
   FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
@@ -765,48 +888,57 @@ test_secondmate_marked_request_reporting_contract() {
     "$ROOT/bin/fm-brief.sh" marked-request-reporting --secondmate --no-projects >/dev/null 2>&1
   brief="$home/data/marked-request-reporting/brief.md"
 
-  assert_grep 'A marked request requires one correlated answer after the work' "$brief" \
-    "secondmate charter did not require the correlated answer after the work"
-  assert_grep 'bin/fm-secondmate-report.sh --receipt <corr_id>' "$brief" \
-    "secondmate charter did not expose the explicit uptake receipt operation"
-  assert_grep 'substantive replies and failures still use their ordinary report, never a receipt' "$brief" \
-    "secondmate charter hid substantive reports behind receipt delivery"
-  assert_grep 'does not require a separate receipt or start acknowledgement' "$brief" \
-    "secondmate charter did not reject a separate receipt/start acknowledgement"
-  assert_grep "Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started." "$brief" \
-    "secondmate charter did not forbid a generic working acknowledgement"
-  assert_no_grep "Give every routed-work phase a stable key: open it with \`working" "$brief" \
-    "secondmate charter retained the unconditional working opener"
-  assert_grep 'When a routed-work phase has a supervisor-actionable material change worth reporting under the rule above' "$brief" \
-    "secondmate charter did not limit keyed phases to reportable material changes"
-  assert_grep "If its first reportable event is \`working [key=<work-slug>]: {material phase}\`" "$brief" \
-    "secondmate charter lost keyed working syntax for a reportable material phase"
-  assert_grep "use the same key on its later \`paused\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event" "$brief" \
-    "secondmate charter lost same-key closure for a reportable material phase"
+  requests="# Requests from the main firstmate"
+  escalation="# Escalation to main firstmate"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks and braces must stay literal
+  {
+    assert_section_line_with "$brief" "$requests" "secondmate charter did not require the correlated answer after the work" \
+      'marked request' 'one correlated answer' 'after the work'
+    assert_section_line_with "$brief" "$requests" "secondmate charter did not expose the explicit uptake receipt operation" \
+      '`expect=ack`' '`bin/fm-secondmate-report.sh --receipt <corr_id>`'
+    assert_section_line_with "$brief" "$requests" "secondmate charter hid substantive reports behind receipt delivery" \
+      '`bin/fm-secondmate-report.sh --receipt <corr_id>`' 'substantive' 'failures' 'never a receipt'
+    assert_section_line_with "$brief" "$requests" "secondmate charter did not reject a separate receipt/start acknowledgement" \
+      'marked request' 'not require' 'receipt' 'acknowledgement'
+    assert_section_line_with "$brief" "$requests" "secondmate charter did not forbid a generic working acknowledgement" \
+      'Never' '`working:`' 'acknowledge'
+    assert_section_no_line_with "$brief" "$escalation" "secondmate charter retained the unconditional working opener" \
+      'every routed-work phase'
+    assert_section_line_with "$brief" "$escalation" "secondmate charter did not limit keyed phases to reportable material changes" \
+      'routed-work phase' 'material change' 'stable key'
+    assert_section_line_with "$brief" "$escalation" "secondmate charter lost keyed working syntax for a reportable material phase" \
+      'first reportable event' '`working [key=<work-slug>]: {material phase}`'
+    assert_section_line_with "$brief" "$escalation" "secondmate charter lost same-key closure for a reportable material phase" \
+      'same key' '`paused`' '`done`' '`failed`' '`needs-decision`' '`blocked`'
+  }
   assert_grep 'resolved [key=<work-slug>]' "$brief" \
     "secondmate charter lost resolved closure for a keyed material phase"
 
-  assert_grep 'include that exact token in your parent status reply' "$brief" \
-    "secondmate charter lost correlated parent results"
-  assert_grep 'bin/fm-secondmate-report.sh <verb> <corr_id> <note>' "$brief" \
-    "secondmate charter lost the mechanical helper invocation"
-  assert_grep 'do not pass a status path' "$brief" \
-    "secondmate charter still tells the mate to pass a hand path to the helper"
-  assert_grep 'For a terse result, a status line is the whole answer.' "$brief" \
-    "secondmate charter lost terse result reporting"
-  assert_grep 'append a status line that points to that doc' "$brief" \
-    "secondmate charter lost detailed document pointers"
-  assert_grep 'Report only true captain-relevant outcomes or a declared external wait' "$brief" \
-    "secondmate charter lost declared external waits"
-  assert_grep 'a captain decision, a real blocker, a failure, work ready for review, or work you landed' "$brief" \
-    "secondmate charter lost decisions, blockers, failures, ready outcomes, or landed work"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  {
+    assert_section_line_with "$brief" "$requests" "secondmate charter lost correlated parent results" \
+      '`corr=<id>`' 'exact token' 'parent status'
+    assert_grep 'bin/fm-secondmate-report.sh <verb> <corr_id> <note>' "$brief" \
+      "secondmate charter lost the mechanical helper invocation"
+    assert_section_line_with "$brief" "$requests" "secondmate charter still tells the mate to pass a hand path to the helper" \
+      '`bin/fm-secondmate-report.sh <verb> <corr_id> <note>`' 'not pass a status path'
+    assert_section_line_with "$brief" "$requests" "secondmate charter lost terse result reporting" \
+      'terse' 'status line'
+    assert_section_line_with "$brief" "$requests" "secondmate charter lost detailed document pointers" \
+      '`data/`' 'status line' 'doc'
+    assert_section_line_with "$brief" "$escalation" "secondmate charter lost declared external waits" \
+      '`bin/fm-secondmate-report.sh --state <state>' '[--wait <kind>:<arg>]' 'captain-relevant' 'external wait'
+    assert_section_line_with "$brief" "$escalation" \
+      "secondmate charter lost decisions, blockers, failures, ready outcomes, or landed work" \
+      'captain decision' 'blocker' 'failure' 'ready for review' 'landed'
+  }
   assert_grep 'States: working, needs-decision, blocked, paused, done, failed.' "$brief" \
     "secondmate charter changed the preserved status vocabulary"
   pass "fm-brief.sh: marked requests avoid generic acknowledgements and preserve material reporting"
 }
 
 test_secondmate_render_charter_uses_current_template() {
-  local home stored rendered status
+  local home stored rendered status template_line
   home="$TMP_ROOT/render-charter-home"
   mkdir -p "$home/data"
   FM_HOME="$home" FM_SECONDMATE_CHARTER='Handle alpha work.' FM_SECONDMATE_SCOPE='alpha routing' \
@@ -814,11 +946,14 @@ test_secondmate_render_charter_uses_current_template() {
   # A seeded copy made from an older template: one template line drifted and
   # the domain added its own hard-rule section.
   stored="$TMP_ROOT/render-charter-stored.md"
-  sed 's/^Nobody reads this chat.*/STALE TEMPLATE LINE/' "$home/data/rc/brief.md" > "$stored"
+  template_line=$(section_text "$home/data/rc/brief.md" "# The captain and the parent channel" | head -n 1)
+  [ -n "$template_line" ] || fail "charter scaffold has no parent-channel template line to drift"
+  TEMPLATE_LINE=$template_line awk '$0 == ENVIRON["TEMPLATE_LINE"] { print "STALE TEMPLATE LINE"; next } { print }' \
+    "$home/data/rc/brief.md" > "$stored"
   printf '\n# Domain hard rule\nNever touch production.\n' >> "$stored"
   rendered=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rc --secondmate --render-charter "$stored") \
     || fail "rendering a stored charter failed"
-  assert_contains "$rendered" 'Nobody reads this chat' "render did not restore the current template"
+  assert_contains "$rendered" "$template_line" "render did not restore the current template"
   assert_not_contains "$rendered" 'STALE TEMPLATE LINE' "render kept the stored copy's template text"
   assert_contains "$rendered" 'Handle alpha work.' "render lost the stored Charter section"
   assert_contains "$rendered" 'alpha routing' "render lost the stored Routing scope section"
@@ -1053,15 +1188,17 @@ SIGNALS
     assert_grep "States: working, needs-decision, blocked, awaiting, done, failed." "$brief" \
       "$kind brief did not render the configured pause verb in its states list"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-    assert_grep 'Use `awaiting: {why}`' "$brief" \
+    assert_grep '`awaiting: {why}`' "$brief" \
       "$kind brief did not instruct the configured pause status"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_no_grep '`paused: {why}`' "$brief" \
       "$kind brief still instructs the default paused status"
-    assert_grep 'a blocker or wait clears' "$brief" \
-      "$kind brief did not require durable resolution when a blocker clears"
-    assert_grep 'even when the answer is what started that work' "$brief" \
-      "$kind brief did not warn that an answer-started done/working never closes a decision"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_line_with "$brief" "$kind brief did not require durable resolution when a blocker clears" \
+      'blocker' 'clears' '`resolved [at=<epoch>]: {how it cleared}`'
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_line_with "$brief" "$kind brief did not warn that an answer-started done/working never closes a decision" \
+      '`resolved`' 'never' '`done' '`working' 'answer'
   done
   pass "fm-brief.sh: custom pause verb renders in every scaffold"
 }
@@ -1080,27 +1217,35 @@ test_ship_and_scout_teach_validation_round_pause() {
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
     fi
     brief="$home/data/$id/brief.md"
-    assert_grep "your own validation round, which you declare once just before its blocking hold" "$brief" \
-      "$kind brief did not teach workers to declare their validation-round wait before holding it"
-    assert_grep "append \`paused:\` once just before its first blocking command, then stay in the command" "$brief" \
-      "$kind brief's Waiting section does not declare the validation round once and then hold it"
-    assert_no_grep "is not a \`paused:\` wait" "$brief" \
-      "$kind brief still tells workers never to declare a wait they hold in a command"
-    assert_grep "your own validation round" "$brief" \
-      "$kind brief did not teach workers to declare their validation-round wait"
-    assert_grep 'Before ending your turn with your own background shell or monitor still running' "$brief" \
-      "$kind brief did not require declaring a background-work wait"
-    assert_grep 'before waiting on your own pipeline run or a long foreground command' "$brief" \
-      "$kind brief did not require declaring a pipeline or foreground wait"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    {
+      assert_section_line_with "$brief" "# Waiting" \
+        "$kind brief did not teach workers to declare their validation-round wait before holding it" \
+        'validation round' 'once' 'before' 'blocking hold'
+      assert_section_line_with "$brief" "# Waiting" \
+        "$kind brief's Waiting section does not declare the validation round once and then hold it" \
+        '`paused:`' 'once' 'first blocking command' 'never append it again'
+      assert_section_no_line_with "$brief" "# Waiting" \
+        "$kind brief still tells workers never to declare a wait they hold in a command" \
+        'is not a `paused:`'
+      assert_section_line_with "$brief" "# Rules" "$kind brief did not teach workers to declare their validation-round wait" \
+        '`paused: {why}`' 'validation round'
+      assert_section_line_with "$brief" "# Rules" "$kind brief did not require declaring a background-work wait" \
+        'background shell or monitor' '`paused [at=<epoch>]: {what you wait for and what resumes you}`'
+      assert_section_line_with "$brief" "# Rules" "$kind brief did not require declaring a pipeline or foreground wait" \
+        'pipeline run' 'long foreground command' '`paused [at=<epoch>]: {what you wait for and what resumes you}`'
+    }
     ref=$(worker_guide_ref "$brief" waits-and-parking) || fail "$kind brief names no readable waits reference"
-    assert_grep 'Firstmate may still raise one first-sight alert' "$ref" \
-      "$kind brief's waits reference incorrectly promised to suppress the first alert"
+    assert_section_line_with "$ref" "## Tagging a declared wait" \
+      "$kind brief's waits reference incorrectly promised to suppress the first alert" \
+      'may still raise' 'first-sight alert'
     # shellcheck disable=SC2016 # Literal backticks and placeholders must remain unexpanded.
     assert_grep '`[wait=<kind>:<arg>]`' "$ref" "$kind brief's waits reference lost the machine-checkable wait tag"
-    assert_grep "park instead of idling with \`FM_HOME=" "$brief" "$kind brief lost its task's exact park command"
+    assert_section_line_with "$brief" "# Rules" "$kind brief lost its task's exact park command" \
+      'park' "\`FM_HOME='$home' "
     assert_grep "/bin/fm-park.sh' $id --handoff <file>" "$brief" "$kind brief's park command does not name its own task"
-    assert_grep 'Do not declare active implementation or reasoning as a wait' "$brief" \
-      "$kind brief did not limit the declaration to actual waits"
+    assert_section_line_with "$brief" "# Rules" "$kind brief did not limit the declaration to actual waits" \
+      'not declare' 'implementation' 'wait'
   done
   pass "fm-brief.sh: ship and scout scaffolds declare a validation-round pause once, then hold it"
 }
@@ -1134,13 +1279,15 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   scout="$home/data/sample-investigation/brief.md"
   assert_grep "$ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md" "$scout" \
     "scout brief did not load the captain-call policy before done"
-  assert_grep "pass its shared completion gate for the report" "$scout" \
-    "scout brief did not cross-reference report completion"
+  assert_section_line_with "$scout" "# Definition of done" "scout brief did not cross-reference report completion" \
+    "\`$ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\`" 'completion gate' 'report'
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='sample reviews' \
     "$ROOT/bin/fm-brief.sh" sample-mate --secondmate --no-projects >/dev/null 2>&1
   charter="$home/data/sample-mate/brief.md"
-  assert_grep "load \`captain-hold-lifecycle\`" "$charter" \
-    "secondmate charter did not load the shared captain-call policy for detailed investigations"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_section_line_with "$charter" "# Requests from the main firstmate" \
+    "secondmate charter did not load the shared captain-call policy for detailed investigations" \
+    'load' '`captain-hold-lifecycle`' 'completion gate'
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
@@ -1156,8 +1303,9 @@ test_scout_visual_deliverable_is_a_file_beside_the_report() {
     "$ROOT/bin/fm-brief.sh" scout-visual alpha --scout >/dev/null \
     || fail "scout scaffold failed"
   brief="$case_dir/home/data/scout-visual/brief.md"
-  assert_grep 'A visual deliverable is a static HTML file beside the report' "$brief" \
-    "scout brief did not route a visual deliverable to a file beside the report"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "scout brief did not route a visual deliverable to a file beside the report" \
+    'visual deliverable' 'HTML file' 'report'
   ! grep -qi 'lavish' "$brief" || fail "scout brief still offers a hosted review loop"
   pass "fm-brief.sh: a scout's visual deliverable is a static file beside its report"
 }
@@ -1203,36 +1351,46 @@ test_workers_wait_without_spending_turns() {
     || fail "fm-brief.sh scout scaffold exited non-zero"
   for id in brief-wait-ship brief-wait-scout; do
     brief="$home/data/$id/brief.md"
-    assert_grep "end your turn at once" "$brief" "$id: a decision wait must end the turn"
-    assert_grep "with ONE blocking shell command that returns when the state changes" "$brief" \
-      "$id: an external wait must sleep in one blocking shell command"
-    assert_grep "gh pr checks <pr> --watch" "$brief" "$id: the CI wait primitive is missing"
-    assert_grep "a \`timeout\` of at most 2700 seconds" "$brief" "$id: the Pi ceiling is missing"
-    assert_grep "its maximum \`timeout\` of 600000 ms" "$brief" "$id: the Claude Code ceiling is missing"
-    assert_grep "empty \`write_stdin\` polls of up to 300000 ms" "$brief" "$id: the Codex ceiling is missing"
-    assert_grep "is the sanctioned foreground wait" "$brief" \
-      "$id: the wait a Claude Code worker may use is not named"
-    assert_grep "reattach with \`no-mistakes axi run --wait\` instead, and never send the same \`respond\` again" "$brief" \
-      "$id: a timed-out respond must reattach with axi run, never resend its answer"
-    assert_grep "Do not poll or list the inbox while waiting; a waiting instruction rings." "$brief" \
-      "$id: polling the inbox while waiting is not forbidden"
-    assert_grep "natural checkpoint" "$brief" "$id: the flag dropped the natural-checkpoint inbox check"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    {
+      assert_section_line_with "$brief" "# Waiting" "$id: a decision wait must end the turn" \
+        '`needs-decision:`' '`blocked:`' 'end your turn'
+      assert_section_line_with "$brief" "# Waiting" "$id: an external wait must sleep in one blocking shell command" \
+        'ONE blocking shell command' '`--wait`'
+      assert_grep "gh pr checks <pr> --watch" "$brief" "$id: the CI wait primitive is missing"
+      assert_section_line_with "$brief" "# Waiting" "$id: the Pi ceiling is missing" \
+        'Pi' '`timeout`' '2700 seconds'
+      assert_section_line_with "$brief" "# Waiting" "$id: the Claude Code ceiling is missing" \
+        'Claude Code' '`timeout`' '600000 ms'
+      assert_section_line_with "$brief" "# Waiting" "$id: the Codex ceiling is missing" \
+        'Codex' '`write_stdin`' '300000 ms'
+      assert_section_line_with "$brief" "# Waiting" "$id: the wait a Claude Code worker may use is not named" \
+        'Claude Code' '`until`' 'sanctioned foreground wait'
+      assert_section_line_with "$brief" "# Waiting" "$id: a timed-out respond must reattach with axi run, never resend its answer" \
+        '`respond`' 'reattach' '`no-mistakes axi run --wait`' 'never'
+    }
+    assert_section_line_with "$brief" "# Firstmate instruction inbox" "$id: polling the inbox while waiting is not forbidden" \
+      'not poll' 'inbox' 'waiting'
+    assert_section_line_with "$brief" "# Firstmate instruction inbox" "$id: the flag dropped the natural-checkpoint inbox check" \
+      'natural checkpoint'
   done
   brief="$home/data/brief-wait-ship/brief.md"
-  assert_grep "This home's drive shape is foreground" "$brief" \
-    "the no-mistakes DOD must select the foreground drive shape"
+  assert_section_line_with "$brief" "# Definition of done" "the no-mistakes DOD must select the foreground drive shape" \
+    'drive shape is foreground'
   assert_no_grep "drive shape is backgrounded" "$brief" "the no-mistakes DOD still backgrounds the drive call"
   ref=$(worker_guide_ref "$brief" no-mistakes-drive) || fail "the no-mistakes DOD names no readable drive reference"
-  assert_grep "issue the same foreground call again" "$ref" \
-    "the drive reference must reattach the foreground shape with the same foreground call"
+  assert_section_line_with "$ref" "## Driving the run" \
+    "the drive reference must reattach the foreground shape with the same foreground call" \
+    'reattach' 'same foreground call'
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-wait-sm --secondmate --no-projects >/dev/null 2>&1 \
     || fail "fm-brief.sh secondmate scaffold exited non-zero"
   brief="$home/data/brief-wait-sm/brief.md"
-  assert_grep "Do not poll or list the inbox while waiting; a waiting instruction rings." "$brief" \
-    "secondmate: polling the inbox while waiting is not forbidden"
-  assert_grep "natural checkpoint" "$brief" "secondmate: the flag dropped the natural-checkpoint inbox check"
+  assert_section_line_with "$brief" "# Firstmate instruction inbox" "secondmate: polling the inbox while waiting is not forbidden" \
+    'not poll' 'inbox' 'waiting'
+  assert_section_line_with "$brief" "# Firstmate instruction inbox" "secondmate: the flag dropped the natural-checkpoint inbox check" \
+    'natural checkpoint'
   pass "fm-brief: workers end the turn on a decision, wait in one bounded shell command, and never poll"
 }
 
@@ -1245,10 +1403,15 @@ test_wait_no_turns_absent_keeps_the_previous_brief() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-wait-off some-proj --mode no-mistakes >/dev/null 2>&1 \
     || fail "fm-brief.sh ship scaffold exited non-zero"
   brief="$home/data/brief-wait-off/brief.md"
-  assert_no_grep "end your turn at once" "$brief" "an absent flag still added the waiting section"
-  assert_grep "natural checkpoint" "$brief" "an absent flag dropped the unprompted inbox check"
-  assert_no_grep "Do not poll or list the inbox while waiting" "$brief" "an absent flag still added the no-poll inbox line"
-  assert_grep "This home's drive shape is backgrounded" "$brief" "an absent flag replaced the backgrounded drive shape"
+  assert_grep "# Rules" "$brief" "an absent flag left the brief without its rules"
+  ! grep -qx '# Waiting' "$brief" || fail "an absent flag still added the waiting section"
+  assert_no_grep "end your turn" "$brief" "an absent flag still added the waiting section"
+  assert_section_line_with "$brief" "# Firstmate instruction inbox" "an absent flag dropped the unprompted inbox check" \
+    'natural checkpoint'
+  assert_section_no_line_with "$brief" "# Firstmate instruction inbox" "an absent flag still added the no-poll inbox line" \
+    'not poll'
+  assert_section_line_with "$brief" "# Definition of done" "an absent flag replaced the backgrounded drive shape" \
+    'drive shape is backgrounded'
   assert_no_grep "drive shape is foreground" "$brief" \
     "an absent flag still asked for the foreground drive"
   pass "fm-brief: without config/wait-no-turns the brief and drive text stay as they were"
@@ -1273,9 +1436,13 @@ test_worker_role_scope() {
   brief="$home/data/supervisor/brief.md"
   assert_no_grep '# Current worker role contract' "$brief" "secondmate received the worker exception"
   assert_no_grep 'do not adopt the supervisor identity' "$brief" "secondmate received the worker exception"
-  assert_grep "The local \`AGENTS.md\` is your job description" "$brief" "secondmate lost its supervisor contract"
-  assert_grep 'a sentence not appended there has not been sent' "$brief" "secondmate lost its parent channel"
-  assert_grep 'You are a persistent second mate managed by the main firstmate' "$brief" "secondmate lost its identity line"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_section_line_with "$brief" "# Operating model" "secondmate lost its supervisor contract" \
+    '`AGENTS.md`' 'job description'
+  assert_section_line_with "$brief" "# The captain and the parent channel" "secondmate lost its parent channel" \
+    "'$home/state/supervisor.status'" 'not appended' 'not been sent'
+  sed -n '1p' "$brief" | has_line_with 'persistent second mate' 'main firstmate' \
+    || fail "secondmate lost its identity line"
   pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"
 }
 
@@ -1306,7 +1473,8 @@ test_home_brief_include_is_appended_last() {
     brief="$home/data/include-$kind/brief.md"
     # shellcheck disable=SC2016 # Literal include text.
     assert_grep 'Run `house-tool $(id)` first.' "$brief" "$kind brief did not carry the include verbatim"
-    assert_grep 'every other section of this brief takes precedence' "$brief" "$kind include section lost its precedence line"
+    assert_section_line_with "$brief" "# Home brief additions" "$kind include section lost its precedence line" \
+      'every other section' 'precedence'
     last_heading=$(grep -n '^# ' "$brief" | grep -v -x '[0-9]*:# Task' | tail -n 1)
     [ "${last_heading#*:}" = '# Home brief additions' ] \
       || fail "$kind include was not the last generated section (got: $last_heading)"
@@ -1354,18 +1522,19 @@ test_base_branch_is_rendered_and_bounded() {
   base=$(fm_brief_base_branches "$brief")
   [ "$base" = feature/hub ] || fail "the direct-PR brief recorded base '$base', not feature/hub"
   # shellcheck disable=SC2016  # literal backticks in rendered prose must stay unexpanded
-  assert_grep 'open a PR with `gh-axi` that is ready for review, not a draft, against the base branch `feature/hub` (`--base feature/hub`)' "$brief" \
-    "the direct-PR definition of done does not target the base branch"
+  assert_section_line_with "$brief" "# Definition of done" "the direct-PR definition of done does not target the base branch" \
+    'open' '`gh-axi`' 'not a draft' 'base branch `feature/hub`' '(`--base feature/hub`)'
   # shellcheck disable=SC2016
-  assert_grep 'Never push to the base branch `feature/hub` or the default branch' "$brief" \
-    "the direct-PR safety rule does not protect the base branch"
+  assert_section_line_with "$brief" "# Rules" "the direct-PR safety rule does not protect the base branch" \
+    'Never push to' '`feature/hub`' 'default branch'
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-base-nm-b2 some-proj --mode no-mistakes --base-branch release/1.2 >/dev/null 2>&1 \
     || fail "no-mistakes --base-branch should scaffold"
   brief="$home/data/brief-base-nm-b2/brief.md"
   # shellcheck disable=SC2016
-  assert_grep 'pass `--base-branch release/1.2` on every `no-mistakes axi run`' "$brief" \
-    "the no-mistakes definition of done does not pass the base branch to the pipeline"
+  assert_section_line_with "$brief" "# Definition of done" \
+    "the no-mistakes definition of done does not pass the base branch to the pipeline" \
+    '`--base-branch release/1.2`' 'every' '`no-mistakes axi run`'
 
   # A base git accepts but the shell would expand is quoted in worker commands.
   # shellcheck disable=SC2016  # the literal $HOTFIX is the point
@@ -1376,8 +1545,8 @@ test_base_branch_is_rendered_and_bounded() {
   base=$(fm_brief_base_branches "$brief")
   [ "$base" = "$meta_base" ] || fail "the brief recorded base '$base', not $meta_base"
   # shellcheck disable=SC2016
-  assert_grep 'pass `--base-branch release/\$HOTFIX` on every' "$brief" \
-    "the no-mistakes command did not shell-quote the base branch"
+  assert_section_line_with "$brief" "# Definition of done" "the no-mistakes command did not shell-quote the base branch" \
+    '`--base-branch release/\$HOTFIX`' '`no-mistakes axi run`'
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-base-meta-b9 some-proj --mode direct-PR --base-branch "$meta_base" >/dev/null 2>&1 \
     || fail "direct-PR --base-branch with a shell metacharacter should scaffold"
   # shellcheck disable=SC2016
@@ -1392,8 +1561,10 @@ test_base_branch_is_rendered_and_bounded() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-base-none-b4 some-proj --mode direct-PR >/dev/null 2>&1
   brief="$home/data/brief-base-none-b4/brief.md"
   ! fm_brief_base_branches "$brief" >/dev/null || fail "a brief without --base-branch recorded a base"
-  assert_grep 'at a detached HEAD on a clean default branch.' "$brief" \
-    "a brief without --base-branch changed its default-branch setup line"
+  assert_section_line_with "$brief" "# Setup" "a brief without --base-branch changed its default-branch setup line" \
+    'detached HEAD' 'default branch'
+  assert_section_no_line_with "$brief" "# Setup" "a brief without --base-branch still names a base branch" \
+    'base branch'
 
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-base-lo-b5 some-proj --mode local-only --base-branch feature/hub 2>&1); rc=$?
   [ "$rc" -ne 0 ] || fail "local-only --base-branch should be refused"
@@ -1451,8 +1622,8 @@ test_ship_branch_prefix_override_is_consistent_across_modes() {
   assert_grep "\`git checkout -b contrib/$id --\`" "$brief" \
     "direct-PR: branch-creation command did not use the configured override"
   # shellcheck disable=SC2016
-  assert_grep "push only your \`contrib/$id\` branch" "$brief" \
-    "direct-PR: never-push rule text did not use the configured override"
+  assert_section_line_with "$brief" "# Rules" "direct-PR: never-push rule text did not use the configured override" \
+    'push only' "\`contrib/$id\`"
   assert_no_grep "fm/$id" "$brief" \
     "direct-PR: brief mixed the legacy fm/ prefix in with the configured override"
 
@@ -1463,11 +1634,11 @@ test_ship_branch_prefix_override_is_consistent_across_modes() {
   assert_grep "\`git checkout -b contrib/$id --\`" "$brief" \
     "local-only: branch-creation command did not use the configured override"
   # shellcheck disable=SC2016
-  assert_grep "Work only on your \`contrib/$id\` branch" "$brief" \
-    "local-only: never-push rule text did not use the configured override"
+  assert_section_line_with "$brief" "# Rules" "local-only: never-push rule text did not use the configured override" \
+    'Never push' 'only' "\`contrib/$id\`"
   # shellcheck disable=SC2016
-  assert_grep "committed on your branch \`contrib/$id\`" "$brief" \
-    "local-only: definition-of-done text did not use the configured override"
+  assert_section_line_with "$brief" "# Definition of done" "local-only: definition-of-done text did not use the configured override" \
+    'committed' "\`contrib/$id\`"
   # shellcheck disable=SC2016
   assert_grep "\`done [at=<epoch>]: ready in branch contrib/$id\`" "$brief" \
     "local-only: status-message text did not use the configured override"
@@ -1577,17 +1748,18 @@ test_crewmate_scaffolds_forbid_pool_administration() {
     brief="$home/data/$id/brief.md"
     assert_grep "worktree pool" "$brief" \
       "$mode ship brief did not name the shared worktree pool"
-    assert_grep "create, remove, return, prune, move, or reassign" "$brief" \
-      "$mode ship brief did not state the prohibition around the act"
+    assert_section_line_with "$brief" "# Rules" "$mode ship brief did not state the prohibition around the act" \
+      'worktree pool' 'never' 'create' 'remove' 'return' 'prune' 'move' 'reassign'
     # shellcheck disable=SC2016 # Literal command text must remain unexpanded.
     assert_grep 'git worktree add|remove|move|prune' "$brief" \
       "$mode ship brief did not name the concrete git worktree commands"
     assert_grep "treehouse" "$brief" \
       "$mode ship brief did not name the treehouse mutation commands"
-    assert_grep "any other worktree provider" "$brief" \
-      "$mode ship brief pinned one provider instead of covering every provider"
-    assert_grep "sibling slot" "$brief" \
-      "$mode ship brief did not forbid writing into a sibling slot"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_section_line_with "$brief" "# Rules" "$mode ship brief pinned one provider instead of covering every provider" \
+      '`treehouse`' 'other worktree provider'
+    assert_section_line_with "$brief" "# Rules" "$mode ship brief did not forbid writing into a sibling slot" \
+      'never' 'sibling slot'
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'blocked [at=<epoch>]: {what you need}' "$brief" \
       "$mode ship brief gave the prohibition no exit for a genuine second-checkout need"
@@ -1612,7 +1784,9 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   # The daemon half of the rule survived the fold as a one-line ban in every
   # kind, while the check for when a pipeline block is real reaches only a
   # no-mistakes ship, through the drive reference its Definition of done names.
-  assert_grep "never stop, restart, or" "$brief" "scout brief lost the shared no-mistakes daemon ban"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_section_line_with "$brief" "# Rules" "scout brief lost the shared no-mistakes daemon ban" \
+    '`no-mistakes` daemon' 'never' 'stop' 'restart'
   # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
   assert_no_grep 'blocked [at=<epoch>]: {the daemon error}' "$brief" \
     "scout brief still carries the no-mistakes-only daemon diagnosis"
@@ -1621,19 +1795,67 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
   assert_grep 'blocked [at=<epoch>]: {the daemon error}' "$ref" \
     "the no-mistakes drive reference lost the daemon-error reporting instruction"
-  assert_grep "Only after ruling out socket refusal" "$ref" \
-    "the no-mistakes drive reference lost the socket-refusal check"
+  assert_section_line_with "$ref" "## When a pipeline block is real" "the no-mistakes drive reference lost the socket-refusal check" \
+    'socket refusal' 'reattach'
 
   # A secondmate runs its own home and legitimately allocates and returns slots
   # for its own crewmates, so the crewmate prohibition must NOT reach its charter.
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-pool-mate --secondmate alpha >/dev/null 2>&1 \
     || fail "fm-brief.sh --secondmate exited non-zero"
-  assert_no_grep "create, remove, return, prune, move, or reassign" \
-    "$home/data/brief-pool-mate/brief.md" \
-    "secondmate charter must not inherit the crewmate pool-administration prohibition"
+  assert_grep "# Operating model" "$home/data/brief-pool-mate/brief.md" \
+    "secondmate charter was not scaffolded with its operating model"
+  assert_no_line_with "$home/data/brief-pool-mate/brief.md" \
+    "secondmate charter must not inherit the crewmate pool-administration prohibition" \
+    'worktree' 'prune' 'reassign'
 
   pass "fm-brief.sh: every crewmate scaffold forbids administering the shared worktree pool"
+}
+
+# Ask-user authority belongs to firstmate: a no-mistakes ship must escalate
+# ask-user findings to the `ask-user-authority` owner and never auto-resolve
+# them with --yes, while a secondmate gets the same boundary by loading its
+# home's AGENTS.md rather than a duplicated copy of the procedure. This case
+# exists because a charter trim once dropped that load.
+test_ask_user_authority_reaches_ship_and_secondmate_instructions() {
+  local home ship charter
+  home="$TMP_ROOT/ask-user-authority-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" authority-worker sample --mode no-mistakes >/dev/null 2>&1 \
+    || fail "fm-brief.sh no-mistakes scaffold exited non-zero"
+  ship="$home/data/authority-worker/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  {
+    assert_section_line_with "$ship" "# Definition of done" \
+      "generated implementation brief lets the worker own an ask-user decision" \
+      'ask-user findings' 'never' 'escalate'
+    assert_section_line_with "$ship" "# Definition of done" \
+      "generated implementation brief bypasses the primary authority owner" \
+      'Firstmate' '`ask-user-authority`' 'captain'
+    assert_section_line_with "$ship" "# Definition of done" \
+      "generated implementation brief does not prohibit silent ask-user auto-resolution" \
+      'NEVER' '`--yes`' '`-y`' '`no-mistakes axi run`' '`no-mistakes axi respond`'
+    assert_section_line_with "$ship" "# Definition of done" \
+      "generated implementation brief does not explain the ask-user authority bypass" \
+      'auto-resolves' 'ask-user' 'no escalation'
+  }
+  assert_section_no_line_with "$ship" "# Definition of done" \
+    "generated implementation brief retained conflicting captain-only wording" \
+    'captain' 'not you' 'ask-user'
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='Handle sample work.' \
+    "$ROOT/bin/fm-brief.sh" authority-mate --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "fm-brief.sh secondmate scaffold exited non-zero"
+  charter="$home/data/authority-mate/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_section_line_with "$charter" "# Operating model" \
+    "generated secondmate charter does not load the tracked authority boundary" \
+    'local `AGENTS.md`' 'job description'
+  assert_no_grep 'frame-by-frame' "$charter" \
+    "generated secondmate charter duplicated the detailed authority procedure"
+  pass "fm-brief.sh: primary workers and secondmates receive the ask-user authority rule through generated instructions"
 }
 
 test_script_parses
@@ -1676,3 +1898,4 @@ test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
+test_ask_user_authority_reaches_ship_and_secondmate_instructions
