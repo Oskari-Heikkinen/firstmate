@@ -73,7 +73,7 @@ puts YAML.load_file(ARGV[0]).fetch("jobs").fetch(ARGV[1]).fetch("timeout-minutes
 # Tier membership is the executable inventory of the timeout policy: a new job
 # must join a tier, and a job-level value outside these tiers is exactly the
 # one-off number the policy removed.
-FAST_TIER_JOBS='test-coverage invariants tests-timing-aggregate'
+FAST_TIER_JOBS='prior-pass test-coverage invariants tests-timing-aggregate'
 NORMAL_TIER_JOBS='lint tests-portable-parallel-1 tests-portable-parallel-2 tests-portable-serial macos-stock-bash'
 HEAVY_TIER_JOBS='tests-herdr'
 
@@ -276,7 +276,31 @@ RUBY
   pass "CI matrices cover every executable serial and Herdr lane and canonical lint root exactly once"
 }
 
+# A main push whose commit already passed on ci/** skips the suites, so the
+# workflow may conclude success without running them only when prior-pass
+# verified that run: every other job either always runs (the seconds-long
+# guards) or waits on prior-pass and runs unless it verified.
+test_suite_jobs_skip_only_on_a_verified_prior_pass() {
+  ruby -ryaml - "$CI_WORKFLOW" <<'RUBY' || fail "prior-pass gating contract"
+jobs = YAML.load_file(ARGV[0]).fetch("jobs")
+always_run = %w[prior-pass test-coverage invariants]
+gate = "needs.prior-pass.outputs.verified != 'true'"
+raise "prior-pass must publish its verdict" unless jobs.fetch("prior-pass").fetch("outputs").key?("verified")
+always_run.each do |name|
+  job = jobs.fetch(name)
+  raise "#{name} must always run" if job.key?("if") || (job.key?("needs") && name != "prior-pass")
+end
+(jobs.keys - always_run).each do |name|
+  job = jobs.fetch(name)
+  raise "#{name} must wait on prior-pass" unless Array(job["needs"]).include?("prior-pass")
+  raise "#{name} must run unless prior-pass verified" unless job["if"].to_s.include?(gate)
+end
+RUBY
+  pass "suite jobs skip only when prior-pass verified an earlier pass of the commit"
+}
+
 test_ci_matrices_match_executable_partitions
+test_suite_jobs_skip_only_on_a_verified_prior_pass
 test_pr_pushes_supersede_within_one_pr
 test_separate_prs_do_not_cancel_each_other
 test_main_pushes_are_never_cancelled

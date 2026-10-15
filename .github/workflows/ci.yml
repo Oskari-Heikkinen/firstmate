@@ -28,8 +28,68 @@ concurrency:
 # Each job comment identifies the tier implemented by its executable value.
 
 jobs:
+  # Stopgap until the tiered pipeline: a main push whose exact commit already
+  # passed this same workflow file on a ci/** push verifies that run here
+  # instead of re-running the suites. Every suite job waits on this job and runs
+  # unless it verified, so the workflow, and with it green-pointer.yml, still
+  # concludes success only on a verified green run of that exact SHA. Any doubt
+  # (another event or ref, an API error, no matching run) runs the full suites.
+  # The coverage guard and invariants always run: they are seconds of work and
+  # judge the main push's own commit range. This rests on ci/** runs carrying
+  # the full suite; drop it when ci/** stops doing so.
+  prior-pass:
+    name: Prior ci/** pass for this commit
+    runs-on: ubuntu-latest
+    # Fast tier: two API reads.
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      verified: ${{ steps.verify.outputs.verified }}
+    steps:
+      - name: Verify a successful ci/** run of this exact commit
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -u
+          # Never fails: every path that cannot prove a prior pass runs the suites.
+          run_suites() {
+            echo "$1: running the full suites"
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ] || run_suites "not a push to main"
+          workflow_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id) \
+            && [ -n "$workflow_id" ] || run_suites "could not read this run's workflow"
+          runs=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?head_sha=$HEAD_SHA&event=push&status=success&per_page=100") \
+            || run_suites "could not list this commit's runs"
+          prior=$(printf '%s' "$runs" | jq -r --arg sha "$HEAD_SHA" --arg repo "$REPO" \
+            --argjson wid "$workflow_id" --argjson self "$RUN_ID" '
+            [.workflow_runs[]?
+              | select(.head_sha == $sha and .event == "push" and .conclusion == "success"
+                and .workflow_id == $wid and .id != $self
+                and (.head_branch // "" | startswith("ci/"))
+                and .head_repository.full_name == $repo)]
+            | sort_by(.run_started_at) | last // empty
+            | "\(.html_url) \(.head_branch)"') || run_suites "could not read this commit's runs"
+          [ -n "$prior" ] || run_suites "no successful ci/** run of $HEAD_SHA"
+          url=${prior%% *}
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+          echo "verified: $url (${prior#* }) passed this workflow on $HEAD_SHA; suites skipped"
+          printf 'Suites skipped: %s already passed this workflow on `%s` (%s).\n' \
+            "$url" "$HEAD_SHA" "${prior#* }" >> "$GITHUB_STEP_SUMMARY"
+
   lint:
     name: Lint ${{ matrix.partition }}
+    needs: prior-pass
+    if: needs.prior-pass.outputs.verified != 'true'
     runs-on: ubuntu-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -113,6 +173,8 @@ jobs:
   # set only. Composition owner: bin/fm-test-run.sh (docs/fm-test-portable-shards.md).
   tests-portable-parallel-1:
     name: Behavior portable parallel 1
+    needs: prior-pass
+    if: needs.prior-pass.outputs.verified != 'true'
     runs-on: ubuntu-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -160,6 +222,8 @@ jobs:
 
   tests-portable-parallel-2:
     name: Behavior portable parallel 2
+    needs: prior-pass
+    if: needs.prior-pass.outputs.verified != 'true'
     runs-on: ubuntu-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -204,6 +268,8 @@ jobs:
   # whose "ofN" disagrees with it (docs/fm-test-portable-shards.md).
   tests-portable-serial:
     name: Behavior portable serial ${{ matrix.shard }}
+    needs: prior-pass
+    if: needs.prior-pass.outputs.verified != 'true'
     runs-on: ubuntu-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -282,6 +348,8 @@ jobs:
   # the failure evidence and move the job to macOS rather than skip assertions.
   tests-herdr:
     name: Behavior tests (Herdr ${{ matrix.shard }})
+    needs: prior-pass
+    if: needs.prior-pass.outputs.verified != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -415,11 +483,12 @@ jobs:
     # Fast tier: aggregation is seconds of work over lane artifacts.
     timeout-minutes: 5
     needs:
+      - prior-pass
       - tests-portable-parallel-1
       - tests-portable-parallel-2
       - tests-portable-serial
       - tests-herdr
-    if: always()
+    if: always() && needs.prior-pass.outputs.verified != 'true'
     steps:
       - uses: actions/checkout@v6
       - name: Download lane timing artifacts
@@ -433,7 +502,10 @@ jobs:
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           shopt -s nullglob
-          inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json)
+          # A lane uploading more than one path keeps its fm-test/ folder in
+          # the artifact (the Herdr lanes do), so read one level down too.
+          inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json
+            "$RUNNER_TEMP"/fm-test-aggregate/*/fm-test-timing-*.json)
           if [ "${#inputs[@]}" -eq 0 ]; then
             echo "::warning::no per-lane timing JSON found to aggregate"
             exit 0
@@ -451,6 +523,8 @@ jobs:
 
   macos-stock-bash:
     name: Stock macOS Bash snapshot compatibility
+    needs: prior-pass
+    if: needs.prior-pass.outputs.verified != 'true'
     runs-on: macos-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
