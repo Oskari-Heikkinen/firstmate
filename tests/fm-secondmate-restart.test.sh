@@ -493,6 +493,35 @@ test_watcher_stands_aside_during_planned_restart() {
   pass "T5b the watcher's auto-relaunch stands aside while a planned restart owns the mate"
 }
 
+# --- T5c: a relaunch re-reads the supervisor compaction window ---------------
+# config/supervisor-compact-at is read afresh on every secondmate launch, so a
+# relaunch carries the home's current value rather than the recorded one.
+test_relaunch_carries_the_supervisor_compaction_window() {
+  local dir out rc launch preamble seen
+  dir=$(new_case supervisor-compact)
+  add_local_mate "$dir" sm1
+  echo "compact_at=150000" >> "$dir/home/state/sm1.meta"
+  printf '300000\n' > "$dir/home/config/supervisor-compact-at"
+
+  out=$(run_control_relaunch "$dir" sm1); rc=$?
+
+  expect_code 0 "$rc" "relaunch with the supervisor knob must succeed"$'\n'"$out"
+  assert_grep '^compact_at=300000$' "$dir/home/state/sm1.meta" "relaunch did not record the home's current supervisor window"
+  launch=$(grep 'Firstmate operational input waiting: read' "$dir/fake/literal" | tail -1)
+  [ -n "$launch" ] || fail "relaunch sent no replacement launch command"
+  cat > "$dir/fakebin/claude" <<'SH'
+#!/bin/sh
+printf '%s' "${CLAUDE_CODE_AUTO_COMPACT_WINDOW-unset}"
+SH
+  chmod +x "$dir/fakebin/claude"
+  preamble=$(grep '^export ' "$dir/fake/keys")
+  seen=$(env -i HOME="$dir" PATH="$dir/fakebin:$PATH" TERM=xterm TMUX=synthetic-pane \
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000 /bin/sh -c "$preamble
+$launch") || fail "the replacement launch failed to run"
+  assert_equals 300000 "$seen" "a relaunched secondmate must start with the supervisor window"
+  pass "T5c a secondmate relaunch carries the home's current supervisor compaction window"
+}
+
 # --- T5b2: the same race on a direct single-mate relaunch -------------------
 # The captain's documented way to move one live local mate is a bare
 # fm-control relaunch, with no restart pass around it. The same watcher pass
@@ -1026,6 +1055,7 @@ test_unknown_mate_is_accounted_for
 test_refused_restart_falls_back_without_claiming_a_reload
 test_watcher_stands_aside_during_planned_restart
 test_watcher_stands_aside_during_direct_relaunch
+test_relaunch_carries_the_supervisor_compaction_window
 test_restart_stands_aside_for_a_live_recovery_claim
 test_crashed_restart_claim_is_reclaimed
 test_local_restart_uses_the_home_pin_and_reports_what_ran

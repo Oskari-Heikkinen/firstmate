@@ -120,6 +120,9 @@
 #   stays unchanged. Other harnesses record it and warn without refusing the spawn.
 #   Secondmates ignore it. Absent means no change; relaunch preserves it unless
 #   explicitly overridden, and batch dispatch forwards it to each worker.
+#   A secondmate's threshold comes instead from the launching home's
+#   config/supervisor-compact-at (same range, refused when invalid), applied
+#   the same way on every --secondmate spawn, liveness respawn and relaunch.
 #   OpenCode has no interactive effort flag, so its effort is written as the
 #   build agent's variant, keyed to the resolved model, inside the
 #   OPENCODE_CONFIG_CONTENT JSON its launch already carries (config schema
@@ -2664,10 +2667,20 @@ if [ "$KIND" = secondmate ] && [ -z "$ARG3" ]; then
     fi
   fi
 fi
-# Early compaction is an opt-in worker axis, never a supervisor setting.
+# A worker's early compaction comes from --compact-at; a secondmate ignores
+# that flag and takes this home's config/supervisor-compact-at instead, read
+# afresh on every spawn, respawn and relaunch. Absent means no change.
 if [ "$KIND" = secondmate ]; then
   COMPACT_AT=
-elif [ -n "$COMPACT_AT" ]; then
+  if [ -f "$CONFIG/supervisor-compact-at" ]; then
+    COMPACT_AT=$(tr -d '[:space:]' <"$CONFIG/supervisor-compact-at")
+    validate_compact_at "$COMPACT_AT" || {
+      echo "error: config/supervisor-compact-at holds '$COMPACT_AT'" >&2
+      exit 1
+    }
+  fi
+fi
+if [ -n "$COMPACT_AT" ]; then
   case "$HARNESS" in
     claude|pi|pi-signed) ;;
     *) echo "warning: compact_at=$COMPACT_AT recorded but not applied for harness=$HARNESS" >&2 ;;
@@ -6069,10 +6082,15 @@ fi
 # LAUNCH_ENV_PREFIX construction below sets it again at the `env -i` boundary,
 # so under an enabled allowlist the switch is established before the wrapping
 # `/bin/sh` starts rather than only inside the command that shell runs.
-if [ "$HARNESS" = claude ] && [ "$KIND" != secondmate ] && [ -n "$COMPACT_AT" ]; then
+if [ "$HARNESS" = claude ] && [ -n "$COMPACT_AT" ]; then
   # Export inside the generated shell, including env -i and compound launches,
   # never into the supervising process or another worker's environment.
   LAUNCH="export CLAUDE_CODE_AUTO_COMPACT_WINDOW=$COMPACT_AT; $LAUNCH"
+elif [ "$HARNESS" = claude ] && [ -f "$CONFIG/supervisor-compact-at" ]; then
+  # The primary session carries the supervisor window in its settings env
+  # (bin/fm-bootstrap.sh), which its subprocesses inherit; a worker without
+  # its own threshold keeps its tool's default instead.
+  LAUNCH="unset CLAUDE_CODE_AUTO_COMPACT_WINDOW; $LAUNCH"
 fi
 # Every launch also exports the absolute steering-inbox path as internal
 # context. The self-contained doorbell (bin/fm-task-inbox-lib.sh) carries that

@@ -9,6 +9,10 @@
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
+#                 "SUPERVISOR_COMPACT_AT: <file or value problem>; primary session
+#                 setting left unchanged",
+#                 "BOOTSTRAP_INFO: supervisor compaction window set to <n> in <file>;
+#                 it takes effect at the primary session's next start",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "HOME_SUMMARY: <ledger never published|not republished since
@@ -1307,6 +1311,76 @@ startup_memory_budget_setup() {
   fi
 }
 
+# The primary session is started by hand, so no launch export reaches it.
+# Its window converges instead through the CLAUDE_CODE_AUTO_COMPACT_WINDOW
+# key in the "env" block of this home's own untracked
+# .claude/settings.local.json, which Claude Code reads only at session start.
+# Only that key is touched; every other entry the file holds is kept. A
+# state marker records the value this step wrote, so removing the knob
+# removes only a value this step owns. The user-level ~/.claude/settings.json
+# is never written: a local file that is a link, or that resolves to it, is
+# refused.
+supervisor_compact_window_setup() {
+  local knob=$CONFIG/supervisor-compact-at want='' dir file marker owned='' cur tmp
+  if [ -e "$FM_HOME/.fm-secondmate-home" ] || [ -L "$FM_HOME/.fm-secondmate-home" ]; then
+    return 0
+  fi
+  dir=$FM_HOME/.claude
+  file=$dir/settings.local.json
+  marker=$STATE/.supervisor-compact-window
+  if [ -f "$knob" ]; then
+    want=$(tr -d '[:space:]' <"$knob")
+    if ! [[ "$want" =~ ^[1-9][0-9]{5,6}$ ]] || [ "$want" -lt 100000 ] || [ "$want" -gt 1000000 ]; then
+      echo "SUPERVISOR_COMPACT_AT: invalid config/supervisor-compact-at '$want' - must be an integer from 100000 through 1000000; primary session setting left unchanged"
+      return 0
+    fi
+  fi
+  [ -f "$marker" ] && owned=$(tr -d '[:space:]' <"$marker")
+  [ -n "$want$owned" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  if [ -L "$dir" ] || [ -L "$file" ] || { [ -e "$file" ] && [ "$file" -ef "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" ]; }; then
+    echo "SUPERVISOR_COMPACT_AT: $file is a link; primary session setting left unchanged"
+    return 0
+  fi
+  cur=
+  if [ -e "$file" ]; then
+    cur=$(jq -r 'if type == "object" then (.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW // "") | tostring else error("not an object") end' "$file" 2>/dev/null) || {
+      echo "SUPERVISOR_COMPACT_AT: $file is not a JSON object; primary session setting left unchanged"
+      return 0
+    }
+  fi
+  if [ -z "$want" ]; then
+    # The knob is gone: drop the key only while it still holds our value.
+    if [ -n "$cur" ] && [ "$cur" = "$owned" ]; then
+      tmp=$(mktemp "$file.XXXXXX") || return 0
+      if jq 'del(.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) | if .env == {} then del(.env) else . end' "$file" >"$tmp" && mv -f "$tmp" "$file"; then
+        echo "BOOTSTRAP_INFO: supervisor compaction window removed from $file; the primary session keeps its current window until its next start"
+      else
+        rm -f "$tmp"
+        return 0
+      fi
+    fi
+    rm -f "$marker"
+    return 0
+  fi
+  if [ "$cur" != "$want" ]; then
+    mkdir -p "$dir" || return 0
+    tmp=$(mktemp "$file.XXXXXX") || return 0
+    if { if [ -e "$file" ]; then cat "$file"; else echo '{}'; fi; } |
+        jq --arg w "$want" '.env = ((.env // {}) + {CLAUDE_CODE_AUTO_COMPACT_WINDOW: $w})' >"$tmp" &&
+      mv -f "$tmp" "$file"; then
+      echo "BOOTSTRAP_INFO: supervisor compaction window set to $want in $file; it takes effect at the primary session's next start"
+    else
+      rm -f "$tmp"
+      return 0
+    fi
+    printf '%s\n' "$want" >"$marker"
+  elif [ "$owned" != "$want" ]; then
+    # The value was already there and this step did not write it, so it stays the user's.
+    rm -f "$marker"
+  fi
+}
+
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -1367,6 +1441,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
     fi
   fi
   startup_memory_budget_setup
+  supervisor_compact_window_setup
   if backlog_record_reconcile; then
     :
   else

@@ -1066,6 +1066,86 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
   pass "bootstrap surfaces active crew-dispatch rules only as verbose BOOTSTRAP_INFO"
 }
 
+# config/supervisor-compact-at reaches the hand-started primary session through
+# the env block of the home's own untracked .claude/settings.local.json; the
+# user-level settings file is never written.
+test_supervisor_compact_window_reaches_the_primary_settings() {
+  local case_dir home fakebin out local_file user_file before
+  case_dir="$TMP_ROOT/supervisor-compact"
+  home="$case_dir/home"
+  mkdir -p "$home/config" "$home/.claude" "$case_dir/user/.claude"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  local_file="$home/.claude/settings.local.json"
+  user_file="$case_dir/user/.claude/settings.json"
+  printf '%s\n' '{"env":{"KEEP":"1"}}' > "$user_file"
+  printf '%s\n' '{"permissions":{"allow":["Bash(ls)"]},"env":{"OTHER":"x"}}' > "$local_file"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_jq "$fakebin"
+  run_supervisor_bootstrap() {
+    PATH="$fakebin:$BASE_PATH" HOME="$case_dir/user" CLAUDE_CONFIG_DIR='' FM_HOME="$home" \
+      FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh"
+  }
+
+  out=$(run_supervisor_bootstrap)
+  assert_not_contains "$out" "supervisor compaction window" "bootstrap without the supervisor knob should stay silent"
+  [ "$(jq -c . "$local_file")" = '{"permissions":{"allow":["Bash(ls)"]},"env":{"OTHER":"x"}}' ] \
+    || fail "bootstrap without the knob changed the local settings: $(cat "$local_file")"
+
+  printf '%s\n' 200000 > "$home/config/supervisor-compact-at"
+  out=$(run_supervisor_bootstrap)
+  assert_contains "$out" "BOOTSTRAP_INFO: supervisor compaction window set to 200000 in $local_file; it takes effect at the primary session's next start" \
+    "bootstrap did not report the next-start window"
+  [ "$(jq -r '.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW' "$local_file")" = 200000 ] || fail "window not written: $(cat "$local_file")"
+  [ "$(jq -r '.env.OTHER + "|" + .permissions.allow[0]' "$local_file")" = 'x|Bash(ls)' ] \
+    || fail "bootstrap dropped other local settings: $(cat "$local_file")"
+  before=$(cat "$local_file")
+  out=$(run_supervisor_bootstrap)
+  assert_not_contains "$out" "supervisor compaction window" "an unchanged window should be silent"
+  [ "$(cat "$local_file")" = "$before" ] || fail "an unchanged window rewrote the local settings"
+
+  printf '%s\n' 250000 > "$home/config/supervisor-compact-at"
+  out=$(run_supervisor_bootstrap)
+  assert_contains "$out" "supervisor compaction window set to 250000" "a changed knob was not applied"
+
+  printf '%s\n' 99999 > "$home/config/supervisor-compact-at"
+  out=$(run_supervisor_bootstrap)
+  assert_contains "$out" "SUPERVISOR_COMPACT_AT: invalid config/supervisor-compact-at '99999'" "an invalid knob was not reported"
+  [ "$(jq -r '.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW' "$local_file")" = 250000 ] || fail "an invalid knob changed the window"
+
+  rm -f "$home/config/supervisor-compact-at"
+  out=$(run_supervisor_bootstrap)
+  assert_contains "$out" "supervisor compaction window removed from $local_file" "removing the knob did not remove the window"
+  [ "$(jq -c . "$local_file")" = '{"permissions":{"allow":["Bash(ls)"]},"env":{"OTHER":"x"}}' ] \
+    || fail "removing the knob left more than the original settings: $(cat "$local_file")"
+
+  # A value the user already set stays when the knob later goes away.
+  printf '%s\n' '{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}' > "$local_file"
+  printf '%s\n' 200000 > "$home/config/supervisor-compact-at"
+  out=$(run_supervisor_bootstrap)
+  assert_not_contains "$out" "supervisor compaction window" "a window the user already set should be silent"
+  rm -f "$home/config/supervisor-compact-at"
+  out=$(run_supervisor_bootstrap)
+  assert_not_contains "$out" "supervisor compaction window removed" "bootstrap removed a window it never wrote"
+  [ "$(jq -r '.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW' "$local_file")" = 200000 ] || fail "bootstrap removed a window it never wrote: $(cat "$local_file")"
+
+  # A link to the user-level settings is refused rather than written through.
+  rm -f "$local_file"
+  ln -s "$user_file" "$local_file"
+  printf '%s\n' 200000 > "$home/config/supervisor-compact-at"
+  out=$(run_supervisor_bootstrap)
+  assert_contains "$out" "SUPERVISOR_COMPACT_AT: $local_file is a link" "a linked local settings file was not refused"
+  [ "$(cat "$user_file")" = '{"env":{"KEEP":"1"}}' ] || fail "bootstrap wrote the user-level settings: $(cat "$user_file")"
+
+  # A secondmate home never writes its own primary setting.
+  rm -f "$local_file"
+  printf '%s\n' sm > "$home/.fm-secondmate-home"
+  out=$(run_supervisor_bootstrap)
+  assert_not_contains "$out" "supervisor compaction window" "a secondmate home wrote a primary setting"
+  assert_absent "$local_file" "a secondmate home wrote a primary setting"
+  [ "$(cat "$user_file")" = '{"env":{"KEEP":"1"}}' ] || fail "bootstrap wrote the user-level settings: $(cat "$user_file")"
+  pass "bootstrap writes the supervisor window into the primary's local settings idempotently and never the user settings"
+}
+
 test_crew_dispatch_validation() {
   local label body expect mode case_dir fakebin out child_env n
   n=0
@@ -1231,3 +1311,4 @@ test_network_phases_record_per_step_elapsed_times
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation
+test_supervisor_compact_window_reaches_the_primary_settings

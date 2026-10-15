@@ -31,6 +31,9 @@
 # Primary config/supervision-host-off is the fleet's supervision-host opt-out,
 # so a primary that opts out opts every secondmate home out too, while each
 # home's config/supervision-host engine line stays its own.
+# Primary config/supervisor-compact-at sets the window for every secondmate a
+# home launches, and tells that home's Claude crewmates without their own
+# threshold to drop the window their supervisor's environment carries.
 # It also pushes
 # the one primary-authoritative shared captain-preference file,
 # data/captain-shared.md, into each secondmate home's data/ as a read-only copy.
@@ -85,7 +88,7 @@ FM_SHARED_CAPTAIN_MODE="444"
 # The declared inheritable set (space-separated, config-dir-relative item paths).
 # Extend here to inherit more of the primary's local config; override via the
 # environment only in tests. Items must not contain whitespace.
-FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-never-send crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context launch-env-allowlist claude-permission-mode keep-ai-trailers accounts account-floor account-auto supervision-host-off}"
+FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-never-send crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context launch-env-allowlist claude-permission-mode keep-ai-trailers accounts account-floor account-auto supervision-host-off supervisor-compact-at}"
 
 # Home-owned routing: seed from the primary only while the destination is absent.
 # Local propagation and remote receivers derive the exception from this set.

@@ -2211,6 +2211,88 @@ SH
   pass "Claude gets worker-only compaction even with env filtering; secondmates keep their existing settings"
 }
 
+# config/supervisor-compact-at is the supervisor window: a secondmate launch
+# exports it, an invalid value refuses the launch, and a Claude worker without
+# its own threshold drops the window it would otherwise inherit.
+probe_claude_compact_window() {  # <fakebin> <launch-log>
+  cat > "$1/claude" <<'SH'
+#!/bin/sh
+printf '%s' "${CLAUDE_CODE_AUTO_COMPACT_WINDOW-unset}"
+SH
+  chmod +x "$1/claude"
+  env -i HOME="$HOME_DIR" PATH="$1:$PATH" CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000 bash -c "$(cat "$2")"
+}
+
+test_supervisor_compact_at_knob() {
+  local rec id sm out status result
+  id=supervisor-compact-sm
+  rec=$(make_spawn_case supervisor-compact-sm claude "$id" supervisor-compact-ship supervisor-compact-own)
+  read_case_record "$rec"
+  printf ' 200000\n' > "$HOME_DIR/config/supervisor-compact-at"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  expect_code 0 $? "secondmate spawn with the supervisor knob failed: $out"
+  result=$(probe_claude_compact_window "$FAKEBIN_DIR" "$LAUNCH_LOG") || fail "secondmate launch failed to run"
+  [ "$result" = 200000 ] || fail "secondmate did not receive the supervisor window: $result"
+  assert_grep 'compact_at=200000' "$HOME_DIR/state/$id.meta" "secondmate meta does not record the supervisor window"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" supervisor-compact-ship "$PROJ_DIR")
+  expect_code 0 $? "worker spawn beside the supervisor knob failed: $out"
+  result=$(probe_claude_compact_window "$FAKEBIN_DIR" "$LAUNCH_LOG") || fail "worker launch failed to run"
+  [ "$result" = unset ] || fail "worker without compact_at kept the supervisor window: $result"
+  if grep -q '^compact_at=' "$HOME_DIR/state/supervisor-compact-ship.meta"; then fail "worker recorded the supervisor window"; fi
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" supervisor-compact-own "$PROJ_DIR" --compact-at 150000)
+  expect_code 0 $? "worker spawn with its own threshold failed: $out"
+  result=$(probe_claude_compact_window "$FAKEBIN_DIR" "$LAUNCH_LOG") || fail "worker launch failed to run"
+  [ "$result" = 150000 ] || fail "worker lost its own threshold beside the supervisor knob: $result"
+
+  for bad in 99999 1000001 abc 2e5; do
+    id="supervisor-compact-bad-$bad"
+    rec=$(make_spawn_case "supervisor-compact-bad-$bad" claude "$id")
+    read_case_record "$rec"
+    printf '%s\n' "$bad" > "$HOME_DIR/config/supervisor-compact-at"
+    sm="$CASE_DIR/secondmate-home"
+    make_seeded_secondmate_home "$sm" "$id"
+    out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "secondmate spawn accepted supervisor-compact-at=$bad"
+    assert_contains "$out" "config/supervisor-compact-at holds '$bad'" "invalid knob refusal is not actionable: $out"
+    assert_absent "$HOME_DIR/state/$id.meta" "refused secondmate spawn still wrote a record"
+    [ ! -s "$LAUNCH_LOG" ] || fail "refused secondmate spawn still sent a launch"
+  done
+
+  id=supervisor-compact-pi
+  rec=$(make_spawn_case supervisor-compact-pi codex "$id")
+  read_case_record "$rec"
+  printf '%s\n' pi > "$HOME_DIR/config/secondmate-harness"
+  printf '200000\n' > "$HOME_DIR/config/supervisor-compact-at"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  cp "$ROOT/AGENTS.md" "$sm/AGENTS.md"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  expect_code 0 $? "Pi secondmate spawn with the supervisor knob failed: $out"
+  assert_grep 'compact_at=200000' "$HOME_DIR/state/$id.meta" "Pi secondmate meta does not record the supervisor window"
+  EXT_PATH="$HOME_DIR/state/$id.pi-ext.ts" node --input-type=module <<'JS' || fail "Pi secondmate does not compact early at the supervisor window"
+import { pathToFileURL } from "node:url";
+import assert from "node:assert/strict";
+const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
+const handlers = {};
+mod.default({ on: (name, fn) => { handlers[name] = fn; }, events: { on() {} } });
+globalThis.setTimeout = () => 1;
+globalThis.clearTimeout = () => {};
+let tokens = 200000, calls = 0;
+const ctx = { isIdle: () => true, getContextUsage: () => ({ tokens }), compact: () => { calls++; } };
+await handlers.agent_settled({}, ctx);
+assert.equal(calls, 0, "at the window it must not compact");
+tokens = 200001;
+await handlers.agent_settled({}, ctx);
+assert.equal(calls, 1, "above the window it must compact once");
+JS
+  pass "config/supervisor-compact-at sets every secondmate's window, refuses invalid values, and leaves workers on their own"
+}
+
 # The generated extension is the public artifact. Drive its lifecycle API with
 # native compact callbacks, including concurrent settles and stale/null usage.
 test_compact_at_pi_settled_and_retry_limit() {
@@ -2379,6 +2461,7 @@ test_compact_at_validation_and_unsupported_tool() {
 }
 
 test_compact_at_claude_and_secondmate_environment
+test_supervisor_compact_at_knob
 test_compact_at_pi_settled_and_retry_limit
 test_compact_at_validation_and_unsupported_tool
 test_worker_launch_delivers_role_scope

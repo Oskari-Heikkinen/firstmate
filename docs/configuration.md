@@ -1300,9 +1300,25 @@ Claude gets a worker-launch-scoped `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, overriding
 Pi and pi-signed (including Sol) request native compaction only above the threshold at a settled, confirmed-idle boundary; a long active run may still reach Pi's unchanged normal hard-window protection first.
 The spawn script's header owns the bounded retry mechanics, metadata and relaunch behavior.
 Other tools record the requested value and report that it is not applied, without refusing the spawn.
-Secondmate spawns ignore the option, and the first mate's own session is never changed.
+Secondmate spawns ignore the option; supervisors take the separate home knob below.
 Owners leave independent reviewers and pinned roles on rules without this field; this launch option does not classify or enforce routing.
 Each home owns activation on its routine rules; this setting does not reconfigure existing workers or account defaults.
+
+**Optional supervisor compaction**
+
+The local, gitignored `config/supervisor-compact-at` holds one integer of tokens, 100000 through 1000000, the same range as a rule's `compact_at`.
+An absent file changes nothing.
+Every second mate the home launches takes it: a `fm-spawn.sh --secondmate` spawn, the session-start liveness respawn, and a relaunch each read the file afresh.
+A Claude second mate gets a launch-scoped `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, and a Pi or pi-signed second mate gets the same idle-boundary early compaction as a worker.
+A value outside the range refuses the second mate's spawn rather than launching it without the setting.
+A second mate on a remote host is not covered by this knob.
+The primary session is started by hand, so locked primary bootstrap writes the value as `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in the `env` block of the home's own untracked `.claude/settings.local.json`, keeping every other entry there.
+That write prints one `BOOTSTRAP_INFO` line because the primary session reads the setting only at its next start; an unchanged value prints nothing.
+Removing the file removes the key on the next bootstrap, only while it still holds the value bootstrap wrote.
+The user-level `~/.claude/settings.json` is never written, and a local settings file that is a link is refused with a `SUPERVISOR_COMPACT_AT` line.
+While the file exists, a Claude worker launched without its own `compact_at` drops the inherited window and keeps its tool's default.
+Second mate homes inherit the file from the primary through the declared inheritable config set.
+Running sessions are not relaunched; each supervisor picks the value up at its next launch.
 
 **Fields applied only by typed resolution**
 
