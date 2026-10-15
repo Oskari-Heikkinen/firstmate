@@ -641,14 +641,17 @@ case_resume_before_release() {
 # Timeout belongs to the action, not the cheap condition. An injected slow
 # native close occurs after real saved-custody preparation; the standard when
 # runner must immediately capture failure and the release must clean its locks.
-# Keep the same five-second envelope/assertion: the release's own shorter work
-# deadline, not an outer TERM trap or an extra test delay, must provide cleanup.
+# The injected close sleeps exactly the release bound, so the release's own
+# shorter work deadline (bound minus its two-second headroom), not an outer TERM
+# trap or an extra test delay, must provide cleanup. The bound is 15 seconds,
+# not the 5-second minimum, so loaded runners still finish the real custody
+# preparation inside the 13-second work deadline before the close starts.
 case_release_timeout() {
   id=release-timeout; dir=$(suspend_case "$TMP_ROOT" "$id") || fail 'timeout fixture failed'
   home="$dir/home"; meta="$home/state/$id.meta"
   suspend_idle_terminal "$dir" "$id"
-  printf 'on\n' > "$home/config/park-release"; : > "$dir/slow-kill"
-  FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FM_PARK_RELEASE_TIMEOUT=5 suspend_park "$dir" "$id" --handoff "$home/data/$id/handoff.md" --relocation-safe > "$dir/out" 2>&1 || fail 'timeout park registration failed'
+  printf 'on\n' > "$home/config/park-release"; printf '15\n' > "$dir/slow-kill"
+  FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FM_PARK_RELEASE_TIMEOUT=15 suspend_park "$dir" "$id" --handoff "$home/data/$id/handoff.md" --relocation-safe > "$dir/out" 2>&1 || fail 'timeout park registration failed'
   fm_test_track_procevent_home "$home"
   sid=$(sed -n 's/^park_release_source=//p' "$meta"); token=$(sed -n 's/^park_token=//p' "$meta")
   # Readiness and ordinary condition checks must not invoke even one native call.
@@ -998,9 +1001,8 @@ pool_param_cases() {
 # another or on their order. They run through fm_run_case_pool (tests/lib.sh),
 # the ones that sit through real deadlines first. FM_PARK_CASE_JOBS overrides
 # the concurrency, which defaults to the host's processor count capped at four;
-# 1 runs the cases serially. case_release_timeout runs alone before the pool:
-# its five-second release deadline must fall after the real custody
-# preparation, which concurrent deadline cases can delay past it.
+# 1 runs the cases serially.
+POOL_CASES+=(case_release_timeout)
 pool_param_cases save_timeout_case bundle import clean quiet evidence
 POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
   case_superseded_resume case_failed_relaunch case_notification_failure)
@@ -1017,5 +1019,4 @@ pool_param_cases identity_uncertainty_case identity-missing identity-mismatch id
 pool_param_cases pid_uncertainty_case missing malformed
 POOL_CASES+=(case_pickup_authority)
 case_jobs=$(fm_case_pool_jobs "${FM_PARK_CASE_JOBS:-}")
-fm_run_case_pool 1 "$TMP_ROOT/.case-logs-alone" case_release_timeout || exit 1
 fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" "${POOL_CASES[@]}" || exit 1

@@ -121,7 +121,7 @@ case "$1" in
   capture-pane) printf 'idle shell\n' ;;
   kill-window)
     printf '%s\n' "$*" >> "$SUSPEND_DIR/terminal-calls"
-    [ ! -e "$SUSPEND_DIR/slow-kill" ] || /bin/sleep 5
+    [ ! -e "$SUSPEND_DIR/slow-kill" ] || /bin/sleep "$(cat "$SUSPEND_DIR/slow-kill")"
     [ ! -e "$SUSPEND_DIR/fail-kill" ] || exit 1
     : > "$SUSPEND_DIR/windows" ;;
   *) exit 9 ;;
