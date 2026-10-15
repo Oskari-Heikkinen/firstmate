@@ -67,15 +67,13 @@ make_spawn_case() {
   proj="$case_dir/project"
   wt="$case_dir/wt"
   launchlog="$case_dir/launch.log"
-  fakebin=$(make_spawn_fakebin "$case_dir/fake")
+  fakebin="$case_dir/fake/fakebin"
+  mkdir -p "$case_dir/fake"
+  cp -a "$PROJECT_TEMPLATE/fake/fakebin" "$fakebin"
   fm_test_spawn_home "$home" "$harness"
   # Every case's project is the same one-commit repo with a local bare origin
-  # (fm_git_worktree's shape), so build it once and copy it, re-point the copy
-  # at its own origin, and add this case's worktree fresh.
-  [ -d "$PROJECT_TEMPLATE/project.origin.git" ] || {
-    fm_git_init_commit "$PROJECT_TEMPLATE/project"
-    fm_git_add_origin "$PROJECT_TEMPLATE/project" "$PROJECT_TEMPLATE/project.origin.git"
-  }
+  # (fm_git_worktree's shape), built once by build_case_templates; copy it,
+  # re-point the copy at its own origin, and add this case's worktree fresh.
   cp -a "$PROJECT_TEMPLATE/project" "$proj"
   cp -a "$PROJECT_TEMPLATE/project.origin.git" "$proj.origin.git"
   git -C "$proj" remote set-url origin "file://$proj.origin.git"
@@ -84,6 +82,16 @@ make_spawn_case() {
     fm_test_spawn_brief "$home" "$id"
   done
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$launchlog"
+}
+
+# build_case_templates: the project repo, its bare origin, and the fakebin every
+# case copies. Built once before the case pool starts so concurrent cases never
+# race to create them; each case copies them and edits only its own copy.
+build_case_templates() {
+  make_spawn_fakebin "$PROJECT_TEMPLATE/fake" >/dev/null || fail "could not build the template fakebin"
+  fm_git_init_commit "$PROJECT_TEMPLATE/project"
+  fm_git_add_origin "$PROJECT_TEMPLATE/project" "$PROJECT_TEMPLATE/project.origin.git"
+  [ -d "$PROJECT_TEMPLATE/project.origin.git" ] || fail "could not build the template project"
 }
 
 enable_dispatch_profile() {
@@ -1897,12 +1905,6 @@ SH
   done
 }
 
-test_launch_environment_allowlist
-test_launch_environment_invalid_config_refuses
-test_launch_environment_inaccessible_config_refuses
-test_launch_environment_inherited_by_secondmate
-test_launch_environment_inheritance_preserves_on_source_errors
-
 test_worker_launch_delivers_role_scope() {
   local rec id out launch kind prompt envelope encoded brief_kind brief content first_line role_line task_line inbox
   for brief_kind in heading legacy scaffold; do
@@ -2460,78 +2462,93 @@ test_compact_at_validation_and_unsupported_tool() {
   pass "compact_at rejects malformed values before launch and records unsupported-tool requests"
 }
 
-test_compact_at_claude_and_secondmate_environment
-test_supervisor_compact_at_knob
-test_compact_at_pi_settled_and_retry_limit
-test_compact_at_validation_and_unsupported_tool
-test_worker_launch_delivers_role_scope
-test_no_profile_keeps_claude_profile_defaults
-test_claude_launch_brief_publishes_record_doorbell
-test_claude_secondmate_launch_brief_publishes_into_its_own_home
-test_claude_spawn_refuses_when_the_brief_record_cannot_publish
-test_non_cursor_launch_clears_inherited_cursor_markers
-test_relative_home_overrides_launch_with_absolute_cross_process_paths
-test_home_defaults_preserve_absolute_or_resolve_relative_paths
-test_absolute_override_spelling_is_preserved_in_launch_paths
-test_unresolvable_relative_overrides_fail_loudly
-test_active_dispatch_profile_requires_explicit_harness_for_ship
-test_active_dispatch_profile_requires_explicit_harness_for_scout
-test_active_dispatch_profile_allows_explicit_harness
-test_active_dispatch_profile_allows_positional_harness
-test_active_dispatch_profile_allows_raw_launch_command
-test_chained_raw_launch_strips_ai_trailer_in_every_step
-test_claude_threads_model_and_effort
-test_codex_threads_model_and_effort
-test_codex_threads_model_and_max_effort
-test_codex_omits_max_effort_for_unsupported_model
-test_codex_crewmate_launch_disables_the_hook_layer
-test_codex_secondmate_launch_keeps_the_hook_layer
-test_grok_threads_model_and_reasoning_effort
-test_grok_omits_invalid_max_reasoning_effort
-test_grok_omits_invalid_xhigh_reasoning_effort
-test_cursor_threads_model_workspace_and_omits_effort_axis
-test_cursor_refuses_model_absent_from_live_catalog
-test_cursor_failed_catalog_probe_does_not_block_spawn
-test_opencode_threads_model_and_effort_variant
-test_opencode_without_effort_keeps_launch_config_unchanged
-test_opencode_emits_variant_for_openai_family_effort
-test_opencode_omits_variant_when_model_family_lacks_effort
-test_native_effort_validator_keeps_axes_separate
-test_native_pi_ultra_is_explicit_and_model_scoped
-test_batch_preserves_native_ultra
-test_pi_scout_launch_enters_recorded_worktree
-test_pi_threads_model_and_max_effort
-test_pi_tui_mode_probe_is_safe_for_old_and_new_pi
-test_pi_signed_threads_shared_pi_profile_and_preserves_identity
-test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
-test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity
-test_pi_seeded_secondmate_preapproves_project_trust
-test_pi_worker_launch_omits_seeded_home_approve
-test_pi_approve_probe_omits_unsupported_flag
-test_pi_exclude_tools_reach_ship_and_scout_launches
-test_pi_exclude_tools_worker_registry_reports
-test_pi_exclude_tools_absent_and_empty_lists
-test_exclude_tools_non_pi_runtime_refuses_non_empty_list
-test_pi_exclude_tools_malformed_entry_refuses_before_endpoint
-test_pi_exclude_tools_read_failure_refuses_before_launch
-test_pi_exclude_tools_do_not_leak_across_homes_or_to_secondmates
-test_batch_forwards_shared_profile_flags
-test_claude_forwards_firstmate_config_dir_when_set
-test_retired_presentation_host_config_is_ignored
-test_claude_permission_mode_bypass_matches_absent_launch
-test_claude_permission_mode_auto_swaps_only_the_permission_flag
-test_claude_permission_mode_auto_reaches_scout_launch
-test_claude_worker_launch_covers_task_channel_dirs
-test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata
-test_non_claude_harness_ignores_claude_permission_mode
-test_non_claude_harness_ignores_config_dir
-test_claude_task_launch_carries_control_channel_authority
-test_claude_secondmate_launch_omits_task_control_channel_authority
-test_claude_long_launch_is_delivered_intact
-test_claude_crewmate_launch_carries_the_attribution_policy
-test_keep_ai_trailers_omits_attribution_settings_and_strip_hooks
-test_keep_ai_trailers_reaches_secondmate_crew_launches
-test_claude_secondmate_launch_carries_the_attribution_policy
-test_active_dispatch_profile_does_not_block_secondmate_launch
+# Every case builds its own home, project copy, worktree, and fakebin under a
+# case directory no other case uses, and spawns task ids no other case uses
+# (fm-spawn keys its per-task /tmp roots by id), so no case depends on another
+# or on their order; they run through fm_run_case_pool (tests/lib.sh), the
+# multi-spawn cases first so the longest ones do not land at the tail.
+# FM_SPAWN_DISPATCH_PROFILE_CASE_JOBS overrides the concurrency, which defaults
+# to the host's processor count capped at four; 1 runs the cases serially.
+build_case_templates
+case_jobs=$(fm_case_pool_jobs "${FM_SPAWN_DISPATCH_PROFILE_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_pi_exclude_tools_worker_registry_reports \
+  test_native_pi_ultra_is_explicit_and_model_scoped \
+  test_worker_launch_delivers_role_scope \
+  test_compact_at_validation_and_unsupported_tool \
+  test_supervisor_compact_at_knob \
+  test_pi_exclude_tools_malformed_entry_refuses_before_endpoint \
+  test_launch_environment_inheritance_preserves_on_source_errors \
+  test_launch_environment_allowlist \
+  test_compact_at_pi_settled_and_retry_limit \
+  test_launch_environment_invalid_config_refuses \
+  test_launch_environment_inaccessible_config_refuses \
+  test_pi_tui_mode_probe_is_safe_for_old_and_new_pi \
+  test_pi_exclude_tools_reach_ship_and_scout_launches \
+  test_pi_exclude_tools_read_failure_refuses_before_launch \
+  test_claude_worker_launch_covers_task_channel_dirs \
+  test_compact_at_claude_and_secondmate_environment \
+  test_pi_exclude_tools_absent_and_empty_lists \
+  test_exclude_tools_non_pi_runtime_refuses_non_empty_list \
+  test_launch_environment_inherited_by_secondmate \
+  test_no_profile_keeps_claude_profile_defaults \
+  test_claude_launch_brief_publishes_record_doorbell \
+  test_claude_secondmate_launch_brief_publishes_into_its_own_home \
+  test_claude_spawn_refuses_when_the_brief_record_cannot_publish \
+  test_non_cursor_launch_clears_inherited_cursor_markers \
+  test_relative_home_overrides_launch_with_absolute_cross_process_paths \
+  test_home_defaults_preserve_absolute_or_resolve_relative_paths \
+  test_absolute_override_spelling_is_preserved_in_launch_paths \
+  test_unresolvable_relative_overrides_fail_loudly \
+  test_active_dispatch_profile_requires_explicit_harness_for_ship \
+  test_active_dispatch_profile_requires_explicit_harness_for_scout \
+  test_active_dispatch_profile_allows_explicit_harness \
+  test_active_dispatch_profile_allows_positional_harness \
+  test_active_dispatch_profile_allows_raw_launch_command \
+  test_chained_raw_launch_strips_ai_trailer_in_every_step \
+  test_claude_threads_model_and_effort \
+  test_codex_threads_model_and_effort \
+  test_codex_threads_model_and_max_effort \
+  test_codex_omits_max_effort_for_unsupported_model \
+  test_codex_crewmate_launch_disables_the_hook_layer \
+  test_codex_secondmate_launch_keeps_the_hook_layer \
+  test_grok_threads_model_and_reasoning_effort \
+  test_grok_omits_invalid_max_reasoning_effort \
+  test_grok_omits_invalid_xhigh_reasoning_effort \
+  test_cursor_threads_model_workspace_and_omits_effort_axis \
+  test_cursor_refuses_model_absent_from_live_catalog \
+  test_cursor_failed_catalog_probe_does_not_block_spawn \
+  test_opencode_threads_model_and_effort_variant \
+  test_opencode_without_effort_keeps_launch_config_unchanged \
+  test_opencode_emits_variant_for_openai_family_effort \
+  test_opencode_omits_variant_when_model_family_lacks_effort \
+  test_native_effort_validator_keeps_axes_separate \
+  test_batch_preserves_native_ultra \
+  test_pi_scout_launch_enters_recorded_worktree \
+  test_pi_threads_model_and_max_effort \
+  test_pi_signed_threads_shared_pi_profile_and_preserves_identity \
+  test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata \
+  test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity \
+  test_pi_seeded_secondmate_preapproves_project_trust \
+  test_pi_worker_launch_omits_seeded_home_approve \
+  test_pi_approve_probe_omits_unsupported_flag \
+  test_pi_exclude_tools_do_not_leak_across_homes_or_to_secondmates \
+  test_batch_forwards_shared_profile_flags \
+  test_claude_forwards_firstmate_config_dir_when_set \
+  test_retired_presentation_host_config_is_ignored \
+  test_claude_permission_mode_bypass_matches_absent_launch \
+  test_claude_permission_mode_auto_swaps_only_the_permission_flag \
+  test_claude_permission_mode_auto_reaches_scout_launch \
+  test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata \
+  test_non_claude_harness_ignores_claude_permission_mode \
+  test_non_claude_harness_ignores_config_dir \
+  test_claude_task_launch_carries_control_channel_authority \
+  test_claude_secondmate_launch_omits_task_control_channel_authority \
+  test_claude_long_launch_is_delivered_intact \
+  test_claude_crewmate_launch_carries_the_attribution_policy \
+  test_keep_ai_trailers_omits_attribution_settings_and_strip_hooks \
+  test_keep_ai_trailers_reaches_secondmate_crew_launches \
+  test_claude_secondmate_launch_carries_the_attribution_policy \
+  test_active_dispatch_profile_does_not_block_secondmate_launch || exit 1
 
 echo "# all fm-spawn-dispatch-profile tests passed"
