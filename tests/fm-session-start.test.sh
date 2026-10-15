@@ -49,29 +49,37 @@ FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT" "$SESSION_START_SECOND_MATE_TMP" "$SESSION_ST
 trap fm_test_cleanup EXIT
 fm_git_identity fmtest fmtest@example.invalid
 
-# --- world builders ----------------------------------------------------------
+# The cases run in a bounded pool (see the bottom of this file). Every case
+# builds its own world, so the only shared names are the secondmate ids, whose
+# spawn temp roots are fixed /tmp/fm-<id> paths: the pool setup gives every case
+# its own pair, registered for cleanup here before any case starts.
+SESSION_START_CASE_ID_BASE_SM=$SESSION_START_SECOND_MATE_ID
+SESSION_START_CASE_ID_BASE_HERDR=$SESSION_START_HERDR_SECOND_MATE_ID
 
-# new_world <name>: a real, throwaway git repo on `main` (so the worktree-tangle
-# and default-branch checks behave exactly as they do against the real
-# firstmate repo) to use as FM_ROOT_OVERRIDE, plus an empty FM_HOME with
-# state/, data/, config/, and a fakebin. Echoes "<root-dir>|<home-dir>|<fakebin>".
-new_world() {
-  local name=$1 w root home fakebin
-  w="$TMP_ROOT/$name"
-  root="$w/root"
-  home="$w/home"
-  fakebin="$w/fakebin"
-  mkdir -p "$home/state" "$home/data" "$home/config" "$fakebin"
-  git init -q -b main "$root"
-  git -C "$root" commit -q --allow-empty -m init
-  printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
+session_start_case_setup() {  # <case-index>
+  SESSION_START_SECOND_MATE_ID="$SESSION_START_CASE_ID_BASE_SM-$1"
+  SESSION_START_SECOND_MATE_TMP="/tmp/fm-$SESSION_START_SECOND_MATE_ID"
+  SESSION_START_HERDR_SECOND_MATE_ID="$SESSION_START_CASE_ID_BASE_HERDR-$1"
+  SESSION_START_HERDR_SECOND_MATE_TMP="/tmp/fm-$SESSION_START_HERDR_SECOND_MATE_ID"
 }
 
-# make_fake_toolchain <fakebin>: every tool fm-bootstrap.sh detects, present
-# and compatible, so its own detect-only section stays quiet except where a
-# test deliberately breaks one. Mirrors fm-bootstrap.test.sh's fixture.
-make_fake_toolchain() {
-  local fakebin=$1
+session_start_case_teardown() {
+  rm -rf "$SESSION_START_SECOND_MATE_TMP" "$SESSION_START_HERDR_SECOND_MATE_TMP"
+}
+
+# --- world builders ----------------------------------------------------------
+
+# Shared read-only fixtures, built once and copied per case: the throwaway
+# `main` repo every world starts from, and the compatible fake toolchain.
+SESSION_START_WORLD_TEMPLATE="$TMP_ROOT/.world-template"
+SESSION_START_TOOLCHAIN_TEMPLATE="$TMP_ROOT/.toolchain-template"
+
+build_session_start_templates() {
+  local fakebin=$SESSION_START_TOOLCHAIN_TEMPLATE
+  mkdir -p "$SESSION_START_WORLD_TEMPLATE/home/state" "$SESSION_START_WORLD_TEMPLATE/home/data" \
+    "$SESSION_START_WORLD_TEMPLATE/home/config" "$SESSION_START_WORLD_TEMPLATE/fakebin" "$fakebin"
+  git init -q -b main "$SESSION_START_WORLD_TEMPLATE/root"
+  git -C "$SESSION_START_WORLD_TEMPLATE/root" commit -q --allow-empty -m init
   fm_fake_exit0 "$fakebin" tmux node chrome-devtools-axi
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
@@ -105,6 +113,31 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/no-mistakes"
+}
+build_session_start_templates || fail "could not build the shared session-start fixtures"
+
+# new_world <name>: a real, throwaway git repo on `main` (so the worktree-tangle
+# and default-branch checks behave exactly as they do against the real
+# firstmate repo) to use as FM_ROOT_OVERRIDE, plus an empty FM_HOME with
+# state/, data/, config/, and a fakebin. Echoes "<root-dir>|<home-dir>|<fakebin>".
+# Copied from the shared template rather than re-initialised per case.
+new_world() {
+  local name=$1 w root home fakebin
+  w="$TMP_ROOT/$name"
+  root="$w/root"
+  home="$w/home"
+  fakebin="$w/fakebin"
+  cp -R "$SESSION_START_WORLD_TEMPLATE" "$w"
+  printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
+}
+
+# make_fake_toolchain <fakebin>: every tool fm-bootstrap.sh detects, present
+# and compatible, so its own detect-only section stays quiet except where a
+# test deliberately breaks one. Mirrors fm-bootstrap.test.sh's fixture. The
+# tools are copied from the shared template built once above.
+make_fake_toolchain() {
+  local fakebin=$1
+  cp -p "$SESSION_START_TOOLCHAIN_TEMPLATE"/* "$fakebin/"
   printf '%s\n' manual > "${fakebin%/*}/home-placeholder" 2>/dev/null || true
 }
 
@@ -698,10 +731,21 @@ run_session_start_herdr_secondmate() {
 # published. Only a TEST does this: the digest itself is required never to wait,
 # which is exactly why the sweeps it used to run inline have to be re-asserted
 # here instead of straight off the digest's own output.
+# The stage's own `wait` re-reads its status record once a second, so a stage
+# that settles just after a read costs the case most of a second. Poll the same
+# terminal states in 0.1s steps, bounded by iteration count, then let the real
+# `wait` give the authoritative answer (it returns at once on a settled stage
+# and still owns the dead-worker verdict when the poll ran out).
 wait_for_network_stage() {
-  local home=$1 root=$2 limit=${3:-30}
+  local home=$1 root=$2 limit=${3:-30} ticks=0 state
+  while [ "$ticks" -lt "$((limit * 10))" ]; do
+    state=$(sed -n 's/^state=//p' "$home/state/.startup-network.status" 2>/dev/null | tail -1)
+    case "$state" in done|timeout|failed) break ;; esac
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
   FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
-    "$ROOT/bin/fm-startup-network.sh" wait "$limit"
+    "$ROOT/bin/fm-startup-network.sh" wait 1
 }
 
 wait_for_network_wake() {
@@ -3148,69 +3192,88 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
-test_context_digest_absent_empty_present
-test_lock_refusal_read_only_path
-test_lock_write_failure_read_only_path
-test_trace_context_effective_state_is_frozen_after_lock
-test_session_lock_concurrent_single_winner
-test_output_ordering_diagnostics_lead
-test_digest_ends_with_one_end_marker
-test_herdr_backend_diagnostics_follow_real_session_start
-test_session_start_relaunches_missing_pi_secondmate
-test_deferred_relaunch_is_always_reported
-test_inactive_reconcile_never_blocks_the_digest
-test_unreachable_network_never_blocks_the_digest
-test_deferred_result_reaches_the_agent_when_the_digest_cannot_print_it
-test_read_only_session_declares_skipped_network_checks
-test_tasks_axi_compatibility_is_probed_once
-test_session_start_preserves_ambiguous_pi_process
-test_session_start_preserves_transiently_unreadable_tmux
-test_session_start_preserves_proven_bare_shell_recovery
-test_session_start_relaunches_herdr_husk_secondmate
-test_status_tail_bounding
-test_status_tail_line_cap
-test_orphan_status_logs_are_printed
-test_endpoint_liveness_tmux
-test_dead_worker_relaunch_plan_is_shown_for_a_gone_agent_only
-test_endpoint_liveness_herdr
-test_endpoint_read_death_is_isolated_and_reported
-test_endpoint_read_hang_is_bounded_and_reported
-test_endpoint_bound_rejects_padded_zero
-test_perl_timeout_fallback_reports_signal_death_nonzero
-test_abnormal_digest_death_banners_and_exits_zero
-test_composition_invokes_real_scripts
-test_branch_outcome_replay_respects_captain_barrier_and_lease_sweep
-test_non_pi_session_start_leaves_branch_state_untouched
-test_session_start_seeds_the_outcome_display_tail_while_away
-test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
-test_backlog_queued_bound_discloses_its_remainder
-test_backlog_compact_manual_backend_skips_indented_bodies
-test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
-test_fleet_digest_empty_fleet
-test_supervision_state_sources_x_mode_cadence
-test_supervision_state_afk_delegates_to_daemon
-test_supervision_state_quiet_mode_delegates_to_daemon
-test_quiet_record_digest_holds_nothing_for_a_return
-test_supervision_state_afk_legacy_empty_flag_defaults_away
-test_supervision_block_exactly_one_and_pi_diagnostic
-test_pi_signed_primary_uses_pi_extensions_without_identity_normalization
-test_pi_diagnostic_rejects_stale_loaded_marker
-test_pi_diagnostic_rejects_handoff_generation_marker
-test_pi_diagnostic_accepts_prelock_loaded_marker
-test_omp_supervision_block_and_diagnostic
-test_omp_diagnostic_accepts_prelock_loaded_marker
-test_pi_diagnostic_rejects_missing_turnend_guard_marker
-test_pi_diagnostic_rejects_previous_session_loaded_marker
-test_runtime_bound_truncates_loudly_and_exits_zero
-test_portable_timeout_escalates_term_resistant_process
-test_runtime_bound_leaves_a_healthy_digest_untouched
-test_runtime_bound_leaves_harness_ancestry_headroom
-test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain
-test_reemit_compacts_unchanged_bulky_sections
-test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
-test_read_only_pi_compact_refreshes_against_its_own_session_identity
-test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh
-test_agents_baseline_requires_sha256_and_successful_completion
-test_reemit_keeps_repair_ownership_with_the_lock_holder
+# Every case builds its own world and acts only on processes it started, so the
+# cases run in a bounded pool, longest first so the slow ones never trail the
+# run. FM_SESSION_START_CASE_JOBS overrides the concurrency; 1 runs them serially.
+SESSION_START_CASES=(
+  test_endpoint_bound_rejects_padded_zero
+  test_runtime_bound_truncates_loudly_and_exits_zero
+  test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
+  test_reemit_compacts_unchanged_bulky_sections
+  test_session_lock_concurrent_single_winner
+  test_session_start_relaunches_missing_pi_secondmate
+  test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain
+  test_unreachable_network_never_blocks_the_digest
+  test_inactive_reconcile_never_blocks_the_digest
+  test_deferred_result_reaches_the_agent_when_the_digest_cannot_print_it
+  test_endpoint_read_hang_is_bounded_and_reported
+  test_context_digest_absent_empty_present
+  test_lock_refusal_read_only_path
+  test_lock_write_failure_read_only_path
+  test_trace_context_effective_state_is_frozen_after_lock
+  test_output_ordering_diagnostics_lead
+  test_digest_ends_with_one_end_marker
+  test_herdr_backend_diagnostics_follow_real_session_start
+  test_deferred_relaunch_is_always_reported
+  test_read_only_session_declares_skipped_network_checks
+  test_tasks_axi_compatibility_is_probed_once
+  test_session_start_preserves_ambiguous_pi_process
+  test_session_start_preserves_transiently_unreadable_tmux
+  test_session_start_preserves_proven_bare_shell_recovery
+  test_session_start_relaunches_herdr_husk_secondmate
+  test_status_tail_bounding
+  test_status_tail_line_cap
+  test_orphan_status_logs_are_printed
+  test_endpoint_liveness_tmux
+  test_dead_worker_relaunch_plan_is_shown_for_a_gone_agent_only
+  test_endpoint_liveness_herdr
+  test_endpoint_read_death_is_isolated_and_reported
+  test_perl_timeout_fallback_reports_signal_death_nonzero
+  test_abnormal_digest_death_banners_and_exits_zero
+  test_composition_invokes_real_scripts
+  test_branch_outcome_replay_respects_captain_barrier_and_lease_sweep
+  test_non_pi_session_start_leaves_branch_state_untouched
+  test_session_start_seeds_the_outcome_display_tail_while_away
+  test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
+  test_backlog_queued_bound_discloses_its_remainder
+  test_backlog_compact_manual_backend_skips_indented_bodies
+  test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
+  test_fleet_digest_empty_fleet
+  test_supervision_state_sources_x_mode_cadence
+  test_supervision_state_afk_delegates_to_daemon
+  test_supervision_state_quiet_mode_delegates_to_daemon
+  test_quiet_record_digest_holds_nothing_for_a_return
+  test_supervision_state_afk_legacy_empty_flag_defaults_away
+  test_supervision_block_exactly_one_and_pi_diagnostic
+  test_pi_signed_primary_uses_pi_extensions_without_identity_normalization
+  test_pi_diagnostic_rejects_stale_loaded_marker
+  test_pi_diagnostic_rejects_handoff_generation_marker
+  test_pi_diagnostic_accepts_prelock_loaded_marker
+  test_omp_supervision_block_and_diagnostic
+  test_omp_diagnostic_accepts_prelock_loaded_marker
+  test_pi_diagnostic_rejects_missing_turnend_guard_marker
+  test_pi_diagnostic_rejects_previous_session_loaded_marker
+  test_portable_timeout_escalates_term_resistant_process
+  test_runtime_bound_leaves_a_healthy_digest_untouched
+  test_runtime_bound_leaves_harness_ancestry_headroom
+  test_read_only_pi_compact_refreshes_against_its_own_session_identity
+  test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh
+  test_agents_baseline_requires_sha256_and_successful_completion
+  test_reemit_keeps_repair_ownership_with_the_lock_holder
+)
+
+session_start_case_index=0
+while [ "$session_start_case_index" -lt "${#SESSION_START_CASES[@]}" ]; do
+  FM_TEST_CLEANUP_DIRS+=(
+    "/tmp/fm-$SESSION_START_CASE_ID_BASE_SM-$session_start_case_index"
+    "/tmp/fm-$SESSION_START_CASE_ID_BASE_HERDR-$session_start_case_index"
+  )
+  session_start_case_index=$((session_start_case_index + 1))
+done
+
+FM_CASE_POOL_SETUP=session_start_case_setup \
+FM_CASE_POOL_TEARDOWN=session_start_case_teardown \
+  fm_run_case_pool "$(fm_case_pool_jobs "${FM_SESSION_START_CASE_JOBS:-}")" "$TMP_ROOT/.case-logs" \
+  "${SESSION_START_CASES[@]}" || exit 1
 
 echo "# fm-session-start.test.sh: all assertions passed"
