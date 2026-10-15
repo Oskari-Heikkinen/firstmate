@@ -1,0 +1,217 @@
+name: Mutation audit
+
+# A sampled mutation audit of the risky-area scripts: bin/fm-mutate.sh breaks
+# one guard at a time and records which tests notice. docs/fm-test-portable-shards.md
+# "Mutation testing" owns the rationale and how to read the report.
+# It is a one-off audit, never a gate: a push to audit/mutation/** runs it
+# (a ref ending in /pilot runs a small pilot), and workflow_dispatch reruns it.
+on:
+  push:
+    branches: ['audit/mutation/**']
+  workflow_dispatch:
+    inputs:
+      scripts:
+        description: Space-separated risky scripts to audit (empty means all)
+        required: false
+        default: ''
+      max:
+        description: Mutants per script (empty sizes it by the test set)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# No concurrency block: an audit run is never cancelled or replaced, which
+# bin/fm-lint-workflows.sh enforces together with a timeout on every job.
+
+env:
+  # The last commit before the test remake: the old safety core's parity side.
+  BASELINE_SHA: ea8d6e208d49ebec34d413a6c611b699c55f24d9
+
+jobs:
+  plan:
+    name: Plan the audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Size each script's share
+        id: plan
+        env:
+          REF: ${{ github.ref }}
+          SCRIPTS: ${{ inputs.scripts }}
+          MAX: ${{ inputs.max }}
+        run: |
+          set -eu
+          scripts=${SCRIPTS:-}
+          max=${MAX:-}
+          case "$REF" in
+            */pilot) scripts=${scripts:-'bin/fm-green-pointer.sh bin/fm-park.sh bin/fm-watch-arm.sh'}; max=${max:-2} ;;
+          esac
+          if [ -z "$scripts" ]; then
+            scripts=$(git ls-files 'bin/*.sh' | while IFS= read -r s; do
+              awk -v s="$s" '$2 == "script" { g = $3; gsub(/[.]/, "[.]", g); gsub(/[*]/, ".*", g); if (s ~ "^" g "$") { print s; exit } }' \
+                tests/risky-areas.list
+            done)
+          fi
+          # Fewer mutants where the test set is heavy, and heavy sets split
+          # into parts so each job stays well inside its timeout.
+          matrix=$(for s in $scripts; do
+            n=$(bin/fm-mutate.sh tests "$s" | grep -c . || true)
+            if [ "$n" -le 3 ]; then m=12; parts=1
+            elif [ "$n" -le 7 ]; then m=8; parts=1
+            elif [ "$n" -le 10 ]; then m=5; parts=2
+            else m=6; parts=3
+            fi
+            [ -z "$max" ] || { m=$max; parts=1; }
+            p=1
+            while [ "$p" -le "$parts" ]; do
+              jq -nc --arg s "$s" --argjson m "$m" --argjson p "$p" --argjson n "$parts" \
+                '{script: $s, max: $m, part: $p, parts: $n}'
+              p=$((p + 1))
+            done
+          done | jq -sc '.')
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$matrix" | jq -r '.[] | "\(.script) part \(.part)/\(.parts): \(.max) mutants"' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+  mutate:
+    name: Mutate ${{ matrix.script }} ${{ matrix.part }}/${{ matrix.parts }}
+    needs: plan
+    runs-on: ubuntu-latest
+    # Each mutant runs its whole test set twice (current and baseline), so a
+    # job runs long; the plan splits the heaviest scripts to stay well inside.
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      # Leaves most of the account's concurrent-job allowance to CI.
+      max-parallel: 6
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: current
+          fetch-depth: 0
+      - uses: actions/checkout@v6
+        with:
+          path: baseline
+          ref: ${{ env.BASELINE_SHA }}
+          fetch-depth: 0
+      - name: Install pinned ShellCheck and actionlint
+        working-directory: current
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install the test tools the CI tests job installs
+        run: |
+          set -eu
+          command -v tmux >/dev/null || { echo "::error::tmux is required"; exit 1; }
+          # A long audit runs many jobs, so one registry reset should not lose one.
+          for pkg in tasks-axi @earendil-works/pi-coding-agent@0.87.1; do
+            for try in 1 2 3; do
+              npm install -g "$pkg" && break
+              [ "$try" -lt 3 ] || exit 1
+              sleep 20
+            done
+          done
+      - name: Run the mutants
+        working-directory: current
+        env:
+          SCRIPT: ${{ matrix.script }}
+          MAX: ${{ matrix.max }}
+          PART: ${{ matrix.part }}
+          PARTS: ${{ matrix.parts }}
+        run: |
+          set -u
+          out="$RUNNER_TEMP/mutation"
+          mkdir -p "$out"
+          slug="$(printf '%s' "$SCRIPT" | tr '/.' '--')-$PART"
+          base_root="$GITHUB_WORKSPACE/baseline"
+          cur_tests=$(bin/fm-mutate.sh tests "$SCRIPT")
+          gate_tests=$(bin/fm-mutate.sh tests "$SCRIPT" --tier gate)
+          base_tests=$(FM_MUTATE_ROOT=$base_root bin/fm-mutate.sh tests "$SCRIPT" --from-list tests/safety-core.list)
+          printf 'current tests:\n%s\nbaseline tests:\n%s\n' "$cur_tests" "$base_tests"
+          bin/fm-mutate.sh list "$SCRIPT" --max "$MAX" --seed audit \
+            | awk -v p="$PART" -v n="$PARTS" '(NR - 1) % n == p - 1' >"$out/$slug.rows"
+          cur="$out/$slug.current.tsv"
+          base="$out/$slug.baseline.tsv"
+          : >"$cur"
+          : >"$base"
+          # run_side <root> <tests> <row> <out>: one mutant (or - for the
+          # unmutated sanity run) against one side's tests.
+          run_side() {
+            [ -n "$2" ] || return 0
+            if [ ! -f "$1/$SCRIPT" ]; then
+              [ "$3" = - ] || printf '%s\tabsent\t-\t0\n' "$(printf '%s' "$3" | cut -f1)" >>"$4"
+              return 0
+            fi
+            # The sanity run keeps the runner's output, so a test failing
+            # without any mutant can be diagnosed from the artifact.
+            log=/dev/null
+            [ "$3" != - ] || log="$4.sanity.log"
+            # shellcheck disable=SC2086 # one test path per word
+            FM_MUTATE_LOG=$log FM_MUTATE_ROOT=$1 bin/fm-mutate.sh run "$SCRIPT" "$3" $2 >>"$4" \
+              || echo "::warning::unjudged run for $(printf '%s' "$3" | cut -f1) in $1"
+          }
+          run_side "$PWD" "$cur_tests" - "$cur"
+          run_side "$base_root" "$base_tests" - "$base"
+          for f in "$cur" "$base"; do
+            awk -F '\t' '$3 != "survived" { print $2 }' "$f" | while IFS= read -r t; do
+              echo "::warning::$t fails unmutated in $(basename "$f"); see the .sanity.log artifact"
+            done
+          done
+          while IFS= read -r row; do
+            echo "::group::$(printf '%s' "$row" | cut -f1)"
+            run_side "$PWD" "$cur_tests" "$row" "$cur"
+            run_side "$base_root" "$base_tests" "$row" "$base"
+            tail -n 40 "$cur" "$base" | grep -F "$(printf '%s' "$row" | cut -f1)" || true
+            echo "::endgroup::"
+          done <"$out/$slug.rows"
+          # Rerun both sides once for any old-core kill the gate missed, so a
+          # flake on either side cannot decide parity.
+          bin/fm-mutate.sh report "$out" | grep -F '**LOST**' | sed 's/^| .\([^ |]*\). |.*/\1/' \
+            | while IFS= read -r id; do
+                row=$(awk -F '\t' -v id="$id" '$1 == id' "$out/$slug.rows")
+                [ -n "$row" ] || continue
+                { run_side "$PWD" "$gate_tests" "$row" /dev/stdout | sed 's/^\([^\t]*\)/\1@current/'
+                  run_side "$base_root" "$base_tests" "$row" /dev/stdout | sed 's/^\([^\t]*\)/\1@baseline/'
+                } >>"$out/$slug.rerun.tsv"
+              done
+          bin/fm-mutate.sh report "$out" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/mutation/
+          if-no-files-found: warn
+
+  report:
+    name: Kill matrix and parity
+    needs: mutate
+    if: always() && needs.mutate.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download every job's results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-*
+          path: ${{ runner.temp }}/mutation
+          merge-multiple: true
+      - name: Build the report
+        run: |
+          set -eu
+          bin/fm-mutate.sh report "$RUNNER_TEMP/mutation" | tee "$RUNNER_TEMP/mutation/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the report
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: ${{ runner.temp }}/mutation/

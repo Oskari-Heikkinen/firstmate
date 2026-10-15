@@ -77,6 +77,23 @@ Its `--list-files` interface exposes partition membership; `tests/fm-lint.test.s
 The workflow uploads each lint scope's telemetry plus its per-root lifecycle sidecar to distinguish analysis cost, memory use, and host contention.
 The weekly test-file lint runs `bin/fm-lint.sh tests/*.sh`, which is a full pass over those paths in CI.
 
+## Mutation testing
+
+[`bin/fm-mutate.sh`](../bin/fm-mutate.sh) is a small mutation tester for the risky-area scripts in `tests/risky-areas.list`; its header owns the operators, the subcommands and the output fields.
+A mutant breaks one guard (an exit code, a negation, an `&&`/`||`, a comparison, a `-z`/`-n`, or a whole guard statement), and the tests guarding that script should then fail.
+A mutant every guarding test still passes is a survivor: a guard no test notices breaking.
+
+[`.github/workflows/mutation-audit.yml`](../.github/workflows/mutation-audit.yml) runs the one-off sampled audit, never as a gate.
+A push to `audit/mutation/**` starts it, a ref ending in `/pilot` runs a small pilot, and a manual dispatch can name scripts and a sample size.
+Each script gets 5 to 12 mutants, fewer where its test set is heavy, and each mutant runs against the current gate and full tests that name the script and against the old safety core at the last pre-remake commit.
+The report is a kill matrix plus a parity result: parity holds when every mutant the old safety core killed is still killed by a current gate-tier test.
+A mutant the old core killed but the gate missed is rerun on both sides once, so a flake on either side cannot decide parity.
+Its mutate jobs run up to 300 minutes each, because every mutant runs its whole test set twice; the audit is rare and off the landing path, so that bound sits outside the timeout policy below.
+
+The "Mutation check on changed risky lines" job in `ci.yml` runs on `ci/**` pushes that change a risky-area script.
+It samples up to 20 mutants on the changed lines and runs each against the script's gate-tier tests, stopping at the first kill, within a 15-minute budget.
+It is non-blocking: survivors show in the job summary, and the job cannot fail the run.
+
 ## Local entry points
 
 [CONTRIBUTING.md](../CONTRIBUTING.md) owns the local test policy and common entry points.
@@ -91,7 +108,7 @@ A job that reaches its tier bound needs investigation and a distribution or runt
 | Tier | Jobs | Bound | Rationale |
 |---|---|---|---|
 | Fast | plan, static checks, timing aggregate, weekly alert | 5 to 10 minutes | Seconds-long work, so the tripwire only catches a hung runner. |
-| Normal | lint partitions, test shards, changed area, macOS stock Bash, test-file lint | 30 minutes, one value shared by every job in the tier | One shared hang tripwire keeps every ordinary test and lint job on the same policy instead of letting packing estimates or one-off caps set the bound. |
+| Normal | lint partitions, test shards, changed area, mutation check, macOS stock Bash, test-file lint | 30 minutes, one value shared by every job in the tier | One shared hang tripwire keeps every ordinary test and lint job on the same policy instead of letting packing estimates or one-off caps set the bound. |
 | Heavy | Herdr | family-run step 20 minutes under a 75-minute job-level last-resort backstop | The step tripwire fails a wedged suite while the `always()` cleanup and timing upload still run, and the job cap only catches a hang outside that step. |
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) holds the executable values and names each job's tier beside its `timeout-minutes`.
