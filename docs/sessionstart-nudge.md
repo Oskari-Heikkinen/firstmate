@@ -115,6 +115,7 @@ The requested session start remains idempotent.
 `bin/fm-session-start.sh --reemit` owns these re-emit details:
 
 - Which work a re-emit skips.
+- Which unchanged bulky sections a re-emit compacts to a pointer.
 - Its true-start AGENTS.md baseline.
 - Its supported stale-instruction refresh pairs.
 

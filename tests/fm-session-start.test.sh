@@ -2503,6 +2503,70 @@ EOF
   pass "--reemit reprints the digest without repeating startup's mutating sweeps and still drains queued wakes"
 }
 
+run_reemit_session_start() {  # <home> <root> <path> [fm-session-start args...]
+  local home=$1 root=$2 path=$3
+  shift 3
+  env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_FAKE_HARNESS_PID=$$ FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
+    "$SESSION_START" "$@"
+}
+
+test_reemit_compacts_unchanged_bulky_sections() {
+  local rec root home fakebin path full reemit changed again fresh printed rc
+  rec=$(new_world reemit-compact)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  path="$fakebin:$BASE_PATH"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  printf '%s\n' '## In flight' '- [ ] live-item - Item under way' '' '## Queued' \
+    '- [ ] ready-item - Item ready to dispatch' > "$home/data/backlog.md"
+  printf '%s\n' '- demo [no-mistakes] - PROJECTS-MARKER' > "$home/data/projects.md"
+  printf '%s\n' 'LEARNINGS-FIRST' > "$home/data/learnings.md"
+
+  full=$(run_reemit_session_start "$home" "$root" "$path")
+  assert_contains "$full" "LEARNINGS-FIRST" "the first full start omitted learnings"
+  assert_contains "$full" "ready-item - Item ready to dispatch" "the first full start omitted the ready queue"
+  assert_not_contains "$full" "--print-section" "the first full start printed a pointer instead of a section"
+
+  reemit=$(run_reemit_session_start "$home" "$root" "$path" --reemit --source compact)
+  assert_contains "$reemit" "SESSION START (CONTEXT RE-EMIT) - $home" "the re-emit did not label itself"
+  assert_contains "$reemit" "live-item - Item under way" "the compact re-emit dropped an in-flight backlog line"
+  assert_not_contains "$reemit" "ready-item" "the compact re-emit reprinted an unchanged ready queue"
+  assert_not_contains "$reemit" "LEARNINGS-FIRST" "the compact re-emit reprinted unchanged learnings"
+  assert_not_contains "$reemit" "PROJECTS-MARKER" "the compact re-emit reprinted unchanged projects"
+  assert_contains "$reemit" "FM_HOME=$home $ROOT/bin/fm-session-start.sh --print-section learnings" \
+    "the compact re-emit did not point at the omitted learnings"
+  assert_contains "$reemit" "--print-section backlog" "the compact re-emit did not point at the omitted ready queue"
+  assert_contains "$reemit" "WAKE QUEUE" "the compact re-emit dropped the wake queue"
+  assert_contains "$reemit" "END OF SESSION START DIGEST" "the compact re-emit dropped its end marker"
+
+  printf '%s\n' 'LEARNINGS-SECOND' > "$home/data/learnings.md"
+  changed=$(run_reemit_session_start "$home" "$root" "$path" --reemit --source compact)
+  assert_contains "$changed" "LEARNINGS-SECOND" "a changed section was not printed in full"
+  assert_not_contains "$changed" "--print-section learnings" "a changed section was replaced by a pointer"
+  assert_not_contains "$changed" "PROJECTS-MARKER" "an unchanged section was reprinted beside a changed one"
+  again=$(run_reemit_session_start "$home" "$root" "$path" --reemit --source compact)
+  assert_not_contains "$again" "LEARNINGS-SECOND" "a section printed in full on a re-emit was printed again unchanged"
+
+  printed=$(run_reemit_session_start "$home" "$root" "$path" --print-section learnings)
+  [ "$printed" = "LEARNINGS-SECOND" ] || fail "the pointer command did not print the omitted section: $printed"
+  printed=$(run_reemit_session_start "$home" "$root" "$path" --print-section backlog)
+  assert_contains "$printed" "ready-item - Item ready to dispatch" "the pointer command did not print the ready queue"
+  rc=0
+  run_reemit_session_start "$home" "$root" "$path" --print-section nope >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "an unknown section exited $rc, not 2"
+
+  fresh=$(run_reemit_session_start "$home" "$root" "$path" --source startup)
+  assert_contains "$fresh" "LEARNINGS-SECOND" "a fresh start compacted learnings"
+  assert_contains "$fresh" "PROJECTS-MARKER" "a fresh start compacted projects"
+  assert_contains "$fresh" "ready-item - Item ready to dispatch" "a fresh start compacted the ready queue"
+
+  pass "a compact re-emit points at unchanged bulky sections and prints changed ones, while a fresh start prints all"
+}
+
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact() {
   local rec root home fakebin startup compact_equal compact_first compact_second clear_out resume_out reset_out baseline baseline_after expected_hash refresh_line bootstrap_line
   rec=$(new_world agents-refresh)
@@ -3142,6 +3206,7 @@ test_portable_timeout_escalates_term_resistant_process
 test_runtime_bound_leaves_a_healthy_digest_untouched
 test_runtime_bound_leaves_harness_ancestry_headroom
 test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain
+test_reemit_compacts_unchanged_bulky_sections
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
 test_read_only_pi_compact_refreshes_against_its_own_session_identity
 test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh

@@ -197,6 +197,7 @@
 # the digest never runs without the same hard bound and process-group cleanup.
 #
 # Usage: fm-session-start.sh [--reemit] [--source <source>]
+#        fm-session-start.sh --print-section <name>
 #   Prints the full ordered digest to stdout and always exits 0: this is a
 #   reporting command, not a gate. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
@@ -218,6 +219,20 @@
 #             same-session Claude id as its own, so the re-emit proceeds, while
 #             a lock another live session took meanwhile still produces the
 #             ordinary read-only path.
+#             A locked re-emit is also COMPACT: each bulky section (the backlog
+#             listing's ready queue and the projects, secondmates, captain,
+#             captain-shared, and learnings files) whose content is unchanged
+#             since this lock owner last printed it in full collapses to one
+#             pointer line naming its --print-section command; a changed
+#             section prints in full. Every other section always prints. The
+#             per-section checksums live in state/.session-start-digest-sections,
+#             keyed to the lock pid, so a missing or foreign record, a read-only
+#             re-emit, and every full start print everything.
+#
+#   --print-section <name>
+#             Print one digest section in full and exit, taking no lock and
+#             running nothing else: backlog, projects, secondmates, captain,
+#             captain-shared, or learnings.
 #
 #   --source  The native session-open source, supplied only by
 #             fm-sessionstart-run.sh. A genuine `startup` that owns the active
@@ -239,10 +254,12 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 COMPLETION_FILE="$STATE/.session-start-complete"
+DIGEST_SECTIONS_FILE="$STATE/.session-start-digest-sections"
 AGENTS_BASELINE_FILE="$STATE/.session-start-agents-baseline"
 
 REEMIT=0
 SESSION_SOURCE=
+PRINT_SECTION=
 REBOOT_PLAN=
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -258,13 +275,21 @@ while [ "$#" -gt 0 ]; do
       SESSION_SOURCE=${1#--source=}
       shift
       ;;
+    --print-section)
+      PRINT_SECTION=${2:-}
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi
+      ;;
+    --print-section=*)
+      PRINT_SECTION=${1#--print-section=}
+      shift
+      ;;
     -h|--help)
       sed -n '2,/^set -u$/p' "$SCRIPT_DIR/fm-session-start.sh" | sed 's/^# \{0,1\}//; $d'
       exit 0
       ;;
     *)
       printf 'fm-session-start: unknown argument: %s\n' "$1" >&2
-      printf 'usage: fm-session-start.sh [--reemit] [--source <source>]\n' >&2
+      printf 'usage: fm-session-start.sh [--reemit] [--source <source>] | --print-section <name>\n' >&2
       exit 2
       ;;
   esac
@@ -286,7 +311,7 @@ stage() {  # <stage-name>: breadcrumb for the parent's truncation banner
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
-if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
+if [ -z "$PRINT_SECTION" ] && [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
   SESSION_START_BUDGET=${FM_SESSION_START_TIMEOUT:-120}
   # A non-positive or non-numeric budget is not a budget (`timeout 0` disables
   # the deadline outright), so an unusable value falls back to the default
@@ -400,15 +425,13 @@ SUBRULE='-----------------------------------------------------------------------
 section() { printf '\n%s\n%s\n%s\n' "$RULE" "$1" "$RULE"; }
 subsection() { printf '\n%s\n%s\n' "$1" "$SUBRULE"; }
 
-# print_file_or_absent <path> <label>: full contents under a labeled
-# subsection, or an explicit ABSENT marker. Absence is semantically
+# print_file_body <path>: full contents, or an explicit ABSENT marker. Absence is semantically
 # meaningful for every one of these files (captain.md absent = firstmate
 # repo built-in defaults, projects.md absent = rebuild from clones, etc. -
 # AGENTS.md section 3) and must never be confused with an empty-but-present
 # file, so the two cases print differently.
-print_file_or_absent() {
-  local path=$1 label=$2
-  subsection "$label"
+print_file_body() {
+  local path=$1
   if [ -f "$path" ]; then
     if [ -s "$path" ]; then
       cat "$path"
@@ -551,9 +574,8 @@ print_backlog_tasks_axi_compact() {
   print_backlog_manual_compact "$path" "fallback"
 }
 
-print_backlog_compact() {
-  local path=$1 label=$2
-  subsection "$label"
+print_backlog_body() {
+  local path=$1
   if [ -f "$path" ]; then
     if [ -s "$path" ]; then
       if fm_tasks_axi_backend_available "$CONFIG"; then
@@ -569,6 +591,62 @@ print_backlog_compact() {
   else
     printf 'ABSENT\n'
   fi
+}
+
+# --- compact re-emit -----------------------------------------------------
+# The bulky sections a locked re-emit may collapse (this file's --reemit note).
+# Each record line is "<name> <cksum>"; line 1 is the lock pid it belongs to.
+digest_section_body() {  # <name>
+  case "$1" in
+    backlog) print_backlog_body "$DATA/backlog.md" ;;
+    projects|secondmates|captain|captain-shared|learnings) print_file_body "$DATA/$1.md" ;;
+    *) return 1 ;;
+  esac
+}
+
+digest_section_pointer() {  # <name>
+  local home_env=
+  [ "$FM_HOME" = "$FM_ROOT" ] || home_env="FM_HOME=$FM_HOME "
+  printf '(unchanged since this session last printed it in full; print it with: %s%s/fm-session-start.sh --print-section %s)\n' \
+    "$home_env" "$SCRIPT_DIR" "$1"
+}
+
+DIGEST_COMPACT=0
+DIGEST_RECORD=
+DIGEST_SUMS=
+# emit_digest_section <name> <label>: the section under its label, in full
+# unless this is a compact re-emit and its checksum matches the record. An
+# unchanged backlog keeps every group above its ready queue: in-flight, held,
+# and blocked lines are recovery input, not bulk.
+emit_digest_section() {
+  local name=$1 label=$2 body sum recorded
+  body=$(digest_section_body "$name")
+  sum=$(printf '%s\n' "$body" | cksum | awk '{ print $1 "-" $2 }')
+  DIGEST_SUMS="${DIGEST_SUMS}$name $sum
+"
+  subsection "$label"
+  if [ "$DIGEST_COMPACT" -eq 1 ]; then
+    recorded=$(printf '%s\n' "$DIGEST_RECORD" | awk -v n="$name" '$1 == n { print $2; exit }')
+    if [ "$recorded" = "$sum" ]; then
+      [ "$name" != backlog ] \
+        || printf '%s\n' "$body" | awk '/^ready queued:$/ || /^##[[:space:]]+Queued[[:space:]]*$/ { exit } { print }'
+      digest_section_pointer "$name"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$body"
+}
+
+# write_digest_record <lock-pid>: publish this run's checksums for the next
+# re-emit by the same lock owner. Best-effort: a missing record prints in full.
+write_digest_record() {
+  local pid=$1 tmp
+  tmp=$(mktemp "$DIGEST_SECTIONS_FILE.XXXXXX" 2>/dev/null) || return 0
+  if printf '%s\n%s' "$pid" "$DIGEST_SUMS" > "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$DIGEST_SECTIONS_FILE" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
 }
 
 # status_newest <status-file>: the newest status line, capped, after its age
@@ -708,6 +786,13 @@ EOF
   fi
 }
 
+if [ -n "$PRINT_SECTION" ]; then
+  digest_section_body "$PRINT_SECTION" && exit 0
+  printf 'fm-session-start: unknown section: %s (backlog, projects, secondmates, captain, captain-shared, learnings)\n' \
+    "$PRINT_SECTION" >&2
+  exit 2
+fi
+
 AGENTS_START_HASH=
 if [ "$REEMIT" -eq 0 ] && [ "$SESSION_SOURCE" = startup ]; then
   AGENTS_START_HASH=$(hash_file_sha256 "$FM_ROOT/AGENTS.md" 2>/dev/null || true)
@@ -746,6 +831,16 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '●  otherwise mutate fleet state from this session.\n'
     printf '%s\n' "$BAR"
   }
+fi
+# A compact re-emit needs a record this same lock owner wrote; anything else
+# prints in full.
+LOCK_PID=$(cat "$STATE/.lock" 2>/dev/null || true)
+case "$LOCK_PID" in ''|*[!0-9]*) LOCK_PID= ;; esac
+if [ "$REEMIT" -eq 1 ] && [ "$READ_ONLY" -eq 0 ] && [ -n "$LOCK_PID" ] \
+  && [ -f "$DIGEST_SECTIONS_FILE" ] && [ ! -L "$DIGEST_SECTIONS_FILE" ] \
+  && [ "$(sed -n '1p' "$DIGEST_SECTIONS_FILE" 2>/dev/null)" = "$LOCK_PID" ]; then
+  DIGEST_COMPACT=1
+  DIGEST_RECORD=$(sed '1d' "$DIGEST_SECTIONS_FILE" 2>/dev/null || true)
 fi
 REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
 print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
@@ -906,7 +1001,7 @@ fi
 # truncated tail must never take.
 stage fleet-state
 section "FLEET STATE"
-print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
+emit_digest_section backlog "data/backlog.md"
 
 subsection "Work under way (one line per state/*.meta)"
 # One line per task carries what recovery acts on: identity, the cheap
@@ -1051,11 +1146,11 @@ fi
 # take (see this file's ORDERING note).
 stage context
 section "CONTEXT"
-print_file_or_absent "$DATA/projects.md" "data/projects.md"
-print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
-print_file_or_absent "$DATA/captain.md" "data/captain.md"
-print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
-print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+emit_digest_section projects "data/projects.md"
+emit_digest_section secondmates "data/secondmates.md"
+emit_digest_section captain "data/captain.md"
+emit_digest_section captain-shared "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
+emit_digest_section learnings "data/learnings.md"
 
 # --- 8. end marker -----------------------------------------------------
 # One line proves the digest ran to its end; the truncation banner covers every
@@ -1074,6 +1169,7 @@ if [ "$READ_ONLY" -eq 0 ] && [ "$REEMIT" -eq 0 ]; then
     && printf '%s\n' "$COMPLETION_PID" > "$COMPLETION_TMP" 2>/dev/null \
     && mv -f "$COMPLETION_TMP" "$COMPLETION_FILE" 2>/dev/null; then
     COMPLETION_RECORDED=1
+    write_digest_record "$COMPLETION_PID"
   else
     [ -z "$COMPLETION_TMP" ] || rm -f "$COMPLETION_TMP" 2>/dev/null || true
     printf '\nSESSION_START_COMPLETION: not recorded - the next clear or compact will run a full startup.\n'
@@ -1083,6 +1179,9 @@ if [ "$READ_ONLY" -eq 0 ] && [ "$REEMIT" -eq 0 ]; then
       printf '\nSESSION_START_AGENTS_BASELINE: not recorded - a later supported rebuild will re-emit AGENTS.md.\n'
     fi
   fi
+elif [ "$DIGEST_COMPACT" -eq 1 ]; then
+  # A section printed in full here is the new baseline for the next re-emit.
+  write_digest_record "$LOCK_PID"
 fi
 
 exit 0
