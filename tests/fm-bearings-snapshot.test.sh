@@ -87,16 +87,42 @@ make_home() {  # <name>
   printf '%s\n' "$home"
 }
 
+# A Claude busy-state record is the pair fm-busy-event.sh leaves after `arm`
+# then one `apply`: state/<id>.busy-gen and state/<id>.busy-state. Neither
+# names the task or a path (the id is only the file name), so the real writer
+# produces one busy and one idle pair once, before the case pool
+# (build_busy_template), and record_claude_state copies the pair for <id>,
+# exactly what a fresh arm+apply for <id> would leave.
+BUSY_TEMPLATE="$TMP_ROOT/.busy-template"
+
+build_busy_template() {
+  local semantic_state event gen dir
+  for semantic_state in busy idle; do
+    case "$semantic_state" in
+      busy) event=user-prompt-submit ;;
+      idle) event=stop ;;
+    esac
+    dir="$BUSY_TEMPLATE/$semantic_state"
+    mkdir -p "$dir"
+    gen=$("$ROOT/bin/fm-busy-event.sh" arm "$dir" template) \
+      || fail "could not arm the $semantic_state busy-state template"
+    "$ROOT/bin/fm-busy-event.sh" apply "$dir" template "$semantic_state" --gen "$gen" \
+      --source claude-hook --event "$event" || fail "could not apply the $semantic_state busy-state template"
+    [ -f "$dir/template.busy-state" ] && [ -f "$dir/template.busy-gen" ] \
+      || fail "the $semantic_state busy-state template is incomplete"
+  done
+}
+
 record_claude_state() {  # <state-dir> <id> <busy|idle>
-  local state=$1 id=$2 semantic_state=$3 gen event
+  local state=$1 id=$2 semantic_state=$3
   case "$semantic_state" in
-    busy) event=user-prompt-submit ;;
-    idle) event=stop ;;
+    busy|idle) ;;
     *) fail "unsupported semantic fixture state: $semantic_state" ;;
   esac
-  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
-  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" "$semantic_state" --gen "$gen" \
-    --source claude-hook --event "$event"
+  # arm clears any progress marker of the incarnation it replaces.
+  [ ! -e "$state/$id.progress" ] || rm -f "$state/$id.progress"
+  cp "$BUSY_TEMPLATE/$semantic_state/template.busy-gen" "$state/$id.busy-gen"
+  cp "$BUSY_TEMPLATE/$semantic_state/template.busy-state" "$state/$id.busy-state"
 }
 
 fixture_mate_home() {  # <parent-home>
@@ -189,7 +215,7 @@ EOF
 }
 
 refresh_local_secondmate_ledgers() {  # <parent-home>
-  local parent=$1 registry line mate refresh_path=$PATH
+  local parent=$1 registry line mate fingerprint_file refresh_path=$PATH
   registry="$parent/data/secondmates.md"
   [ -f "$registry" ] && [ -r "$registry" ] || return 0
   # Once this fixture's fake backend exists, ledger production must use it too;
@@ -201,10 +227,69 @@ refresh_local_secondmate_ledgers() {  # <parent-home>
     mate=$SECONDMATE_REGISTRY_HOME
     [ -f "$mate/.fm-secondmate-home" ] && [ -f "$mate/AGENTS.md" ] \
       && [ -d "$mate/bin" ] && [ -d "$mate/data" ] && [ -d "$mate/state" ] || continue
+    fingerprint_file="$LEDGER_FINGERPRINTS/${mate//\//%}"
+    if [ "$LEDGER_FINGERPRINTS_USABLE" = 1 ] && [ "${LEDGER_REFRESH_ALWAYS:-0}" != 1 ] \
+      && [ -f "$fingerprint_file" ] \
+      && [ "$(ledger_input_fingerprint "$mate" "$refresh_path")" = "$(cat "$fingerprint_file")" ]; then
+      continue
+    fi
     PATH="$refresh_path" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$mate" \
       FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z FM_SNAPSHOT_NOW_EPOCH=1783792800 \
       "$ROOT/bin/fm-home-summary-refresh.sh" >/dev/null 2>&1 || true
+    [ "$LEDGER_FINGERPRINTS_USABLE" = 1 ] \
+      && ledger_input_fingerprint "$mate" "$refresh_path" > "$fingerprint_file"
   done < "$registry"
+}
+
+# A home's ledger is a pure function of what the summary producer can read: the
+# home tree itself (its own published ledger included), any child worktree or
+# home a meta records outside it, the fixture fakebins on the refresh PATH, and
+# the exported environment. ledger_input_fingerprint captures all of that
+# (names, types, modes, sizes, nanosecond mtimes, link targets, and content
+# checksums), and refresh_local_secondmate_ledgers records it right after each
+# refresh. A later refresh whose fingerprint is unchanged would rerun the
+# producer over byte-identical inputs, so it is skipped and the ledger the
+# previous refresh published stays in place; any change at all, including a
+# test editing or removing the ledger, refreshes again. GNU find's -printf
+# carries the nanosecond detail; without it every refresh runs.
+LEDGER_FINGERPRINTS="$TMP_ROOT/.ledger-fingerprints"
+mkdir -p "$LEDGER_FINGERPRINTS"
+LEDGER_FINGERPRINTS_USABLE=0
+find "$LEDGER_FINGERPRINTS" -maxdepth 0 -printf '' >/dev/null 2>&1 && LEDGER_FINGERPRINTS_USABLE=1
+
+ledger_input_fingerprint() {  # <mate-home> <refresh-path>
+  local mate=$1 refresh_path=$2 meta line value dir
+  local -a dirs parts
+  dirs=("$mate")
+  for meta in "$mate/state"/*.meta; do
+    [ -f "$meta" ] && [ -r "$meta" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        worktree=*|home=*|project=*) value=${line#*=} ;;
+        *) continue ;;
+      esac
+      case "$value" in
+        "$mate"|"$mate"/*) ;;
+        /*) [ ! -e "$value" ] || dirs+=("$value") ;;
+      esac
+    done < "$meta"
+  done
+  IFS=: read -r -a parts <<<"$refresh_path"
+  for dir in "${parts[@]}"; do
+    case "$dir" in "$TMP_ROOT"/*) [ ! -d "$dir" ] || dirs+=("$dir") ;; esac
+  done
+  # Fixture files a fake backend reads through an exported variable.
+  while IFS= read -r line; do
+    value=${!line}
+    case "$value" in "$TMP_ROOT"/*) [ ! -e "$value" ] || dirs+=("$value") ;; esac
+  done < <(compgen -e)
+  {
+    printf 'PATH=%s\n' "$refresh_path"
+    # `_` is bash's last-argument variable, not an input.
+    export -p | grep -v '^declare -x _='
+    find "${dirs[@]}" -printf '%p\t%y\t%m\t%s\t%T@\t%l\n' 2>&1
+    find "${dirs[@]}" -type f -exec cksum {} + 2>&1
+  } | cksum
 }
 
 run() {  # <home> <fakebin> <args...>
@@ -245,15 +330,17 @@ write_remote_home_summary() {  # <remote-home> <generated-epoch>
   }' > "$home/state/home-summary.json"
 }
 
-make_remote_ledger_fleet() {  # <parent-home> <count>
-  local parent=$1 count=$2 i id remote_home
+# Remote home i lives at <home-prefix>-i (default $TMP_ROOT/remote-ledger-home),
+# so a case that passes its own prefix shares no remote home with another.
+make_remote_ledger_fleet() {  # <parent-home> <count> [home-prefix]
+  local parent=$1 count=$2 prefix=${3:-$TMP_ROOT/remote-ledger-home} i id remote_home
   mkdir -p "$parent/data" "$parent/state" "$parent/config" "$parent/projects"
   : > "$parent/data/backlog.md"
   : > "$parent/data/secondmates.md"
   i=1
   while [ "$i" -le "$count" ]; do
     id="ledger-$i"
-    remote_home="$TMP_ROOT/remote-ledger-home-$i"
+    remote_home="$prefix-$i"
     mkdir -p "$remote_home/state"
     remote_home=$(cd "$remote_home" && pwd -P)
     printf -- '- %s - ledger fixture (host: host-%s; root: /remote/root; home: %s; scope: fixture; projects: sample; added 2026-09-01)\n' \
@@ -1037,8 +1124,10 @@ test_current_landed_baseline_is_repeatable_and_prior_report_independent() {
 - Phase 7 started
 EOF
   fakebin=$(make_fakebin "$home")
-  one=$(run "$home" "$fakebin" --json)
-  two=$(run "$home" "$fakebin" --json)
+  # Both snapshots republish the ledger, so the comparison also covers a
+  # repeated publication rather than one ledger read twice.
+  one=$(LEDGER_REFRESH_ALWAYS=1 run "$home" "$fakebin" --json)
+  two=$(LEDGER_REFRESH_ALWAYS=1 run "$home" "$fakebin" --json)
   [ "$(printf '%s' "$one" | jq -c '.landed')" = "$(printf '%s' "$two" | jq -c '.landed')" ] \
     || fail "the same structured state produced different recent-completion baselines"
   printf '%s' "$two" | jq -e '
@@ -1865,8 +1954,8 @@ EOF
 test_landed_preserves_kindless_v1_summary_reports() {
   local parent fakebin remote_home json freshness epoch=1100
   parent=$(make_home kindless-v1-reports)
-  make_remote_ledger_fleet "$parent" 1
-  remote_home="$TMP_ROOT/remote-ledger-home-1"
+  make_remote_ledger_fleet "$parent" 1 "$TMP_ROOT/kindless-v1-reports-remote-home"
+  remote_home="$TMP_ROOT/kindless-v1-reports-remote-home-1"
   fakebin=$(make_remote_ledger_ssh "$parent/remote-ssh")
   jq '
     .landed = [
@@ -2451,8 +2540,8 @@ EOF
 test_nameless_legacy_summary_uses_its_durable_identifier() {
   local parent remote_home fakebin json
   parent=$(make_home nameless-legacy-summary)
-  make_remote_ledger_fleet "$parent" 1
-  remote_home="$TMP_ROOT/remote-ledger-home-1"
+  make_remote_ledger_fleet "$parent" 1 "$TMP_ROOT/nameless-legacy-summary-remote-home"
+  remote_home="$TMP_ROOT/nameless-legacy-summary-remote-home-1"
   fakebin=$(make_remote_ledger_ssh "$parent/remote-ssh")
   jq '
     .active_children = [
@@ -3322,8 +3411,8 @@ EOF
 test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_compute() {
   local parent fakebin remote_home json
   parent=$(make_home remote-ledger-missing)
-  make_remote_ledger_fleet "$parent" 1
-  remote_home="$TMP_ROOT/remote-ledger-home-1"
+  make_remote_ledger_fleet "$parent" 1 "$TMP_ROOT/remote-ledger-missing-remote-home"
+  remote_home="$TMP_ROOT/remote-ledger-missing-remote-home-1"
   rm -f "$remote_home/state/home-summary.json" "$remote_home/state/slow-ledger-read"
   fakebin=$(make_remote_ledger_ssh "$parent/remote-ssh")
   : > "$parent/ledger-calls.log"
@@ -3354,11 +3443,15 @@ run_cases_concurrently() {
   fm_run_case_pool "$jobs" "$TMP_ROOT/.concurrent-cases" "$@" || exit 1
 }
 
-# Every case below builds its own homes under a name of its own, so they run
-# concurrently.
+# Every case below builds its own homes (remote ledger homes included) under a
+# name of its own, so they run concurrently. The large local snapshot case
+# judges overlap by what its concurrent reads observe, not by wall-clock time,
+# so it is unaffected by sharing the host.
+build_busy_template
 run_cases_concurrently \
   test_mixed_secondmate_roles_partial_state_and_captain_readiness \
   test_landed_accepts_only_kind_owned_delivery_artifacts \
+  test_large_local_snapshot_overlaps_local_reads_without_projection_drift \
   test_registry_unavailability_and_bounds_are_explicit \
   test_secondmate_and_child_bounds_are_disclosed \
   test_working_captain_holds_keep_their_bucket_surfaces \
@@ -3411,14 +3504,11 @@ run_cases_concurrently \
   test_revealed_deferred_holds_show_their_deferral_reason \
   test_pr_repository_cap_and_expansion \
   test_per_repository_pr_cap_is_disclosed \
-  test_projection_and_toon_fail_closed
+  test_projection_and_toon_fail_closed \
+  test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_compute \
+  test_landed_preserves_kindless_v1_summary_reports \
+  test_nameless_legacy_summary_uses_its_durable_identifier
 
-# These run one at a time after the concurrent batch, alone on the host: the
-# first judges overlap by what concurrent reads observe, the second judges a
-# shared wall-clock budget, and the remaining three reuse the second's fixed
-# remote-ledger fixture home in this order.
-test_large_local_snapshot_overlaps_local_reads_without_projection_drift
+# This one runs after the concurrent batch, alone on the host: it judges a
+# shared wall-clock budget.
 test_remote_ledgers_share_one_concurrent_budget_and_fall_back_to_cache
-test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_compute
-test_landed_preserves_kindless_v1_summary_reports
-test_nameless_legacy_summary_uses_its_durable_identifier
