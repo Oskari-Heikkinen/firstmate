@@ -7,20 +7,22 @@
 # reserved on C: until the file is compacted. Real room is therefore the Windows
 # drive's free space, taken together with Linux free space, minus the writes
 # that running jobs have declared. Slack inside the disk file is NOT room (ext4
-# happily grows the file while slack exists); it is reported separately as what
-# the next compaction would reclaim. The Windows restore-point shadow storage's
-# headroom (its cap minus what it already allocated) is reserved too, because
-# copy-on-write after each restore point fills it from host free space while
-# Linux df and the disk file stay flat; so is the WSL swap file's remaining
-# growth up to its configured size. docs/disk-room.md owns the contract and
-# the one-time Windows install (bin/fm-wsl-reclaim.ps1).
+# happily grows the file while slack exists). What the next compaction would
+# reclaim is reported separately, read from the disk file's own block table
+# (bin/fm-vhdx-bat.py), never guessed from Linux's view. The Windows
+# restore-point shadow storage's headroom (its cap minus what it already
+# allocated) is reserved too, because copy-on-write after each restore point
+# fills it from host free space while Linux df and the disk file stay flat; so
+# is the WSL swap file's remaining growth up to its configured size.
+# docs/disk-room.md owns the contract and the one-time Windows install
+# (bin/fm-wsl-reclaim.ps1).
 #
 # Usage:
 #   fm-disk-room.sh status [--json]
 #       Print host free, Linux free, reservations, the shadow storage
 #       reservation and any cycling warning, the swap file's growth
-#       reservation, real room, the disk file's
-#       slack and its reclaimable estimate, the last compaction result, and
+#       reservation, real room, the disk file's slack and what compaction
+#       can reclaim, the last compaction result, and
 #       the external SSD's room with the active fetched-results root (read
 #       from the results-root file bin/fm-storage.sh publishes).
 #   fm-disk-room.sh check --expect-write SIZE [--exclude NAME]
@@ -138,6 +140,7 @@ DEFAULT_TTL=43200
 SHADOW_STALE_SECS=604800
 SHADOW_EVENTS_CACHE_SECS=3600
 SHADOW_LIVE_CACHE_SECS=300
+BAT_CACHE_SECS=300
 
 die() { printf 'fm-disk-room: %s\n' "$*" >&2; exit 2; }
 
@@ -245,6 +248,31 @@ fragmented_free() {
   sed 's/[#:]/ /g; s/\[/ /; s/\]/ /' "$file" | awk -v bs="$bs" -v top="$max_order" '
     $1 ~ /^[0-9]+$/ { for (i = 0; i <= top; i++) s += $(i + 5) * 2 ^ i; seen = 1 }
     END { if (!seen) exit 1; printf "%.0f\n", s * bs }'
+}
+
+# bat_reclaim FILE SIZE -> bytes a compaction of FILE can give back, from its
+# block table (bin/fm-vhdx-bat.py), or fails when that cannot be read. Cached
+# for 5 minutes per file and size, failures included, because it reads
+# megabytes through the Windows drive.
+bat_reclaim() {
+  local cache t when='' size='' r='' path='' out
+  cache="$(state_dir)/vhdx-bat"
+  t=$(now)
+  [ -r "$cache" ] && read -r when size r path <"$cache"
+  case "$when" in
+    ''|*[!0-9]*) when='' ;;
+    *) { [ "$path" = "$1" ] && [ "$size" = "$2" ] && [ "$t" -ge "$when" ] && [ $(( t - when )) -lt "$BAT_CACHE_SECS" ]; } || when='' ;;
+  esac
+  if [ -z "$when" ]; then
+    r=-
+    if out=$(timeout 60 python3 -I "$SCRIPT_DIR/fm-vhdx-bat.py" "$1" 2>/dev/null); then
+      r=$(printf '%s\n' "$out" | sed -n 's/^reclaimable=\([0-9]*\) .*/\1/p')
+    fi
+    case "$r" in ''|*[!0-9]*|???????????????????*) r=- ;; esac
+    mkdir -p "$(state_dir)" 2>/dev/null && printf '%s %s %s %s\n' "$t" "$2" "$r" "$1" >"$cache" 2>/dev/null
+  fi
+  case "$r" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$r"
 }
 
 # Shadow storage ---------------------------------------------------------------
@@ -711,10 +739,13 @@ measure() {
   if [ -n "$VHDX_SIZE" ]; then
     SLACK=$(( VHDX_SIZE - LINUX_USED )); [ "$SLACK" -lt 0 ] && SLACK=0
     # ext4's own metadata (inode tables, journal, bitmaps) sits in the disk
-    # file's slack but is neither df used nor df total, and compaction keeps it.
+    # file's slack but is neither df used nor df total. Slack, fragmented free
+    # space and metadata are readings only: compaction drops just the blocks
+    # the disk file's block table already holds no data for, so only that
+    # table's figure is ever promised.
     fs_size=$(df_field "$root" size)
     if [ -n "$fs_size" ] && dev=$(dev_size) && [ "$dev" -ge "$fs_size" ]; then OVERHEAD=$(( dev - fs_size )); fi
-    if [ -n "$FRAG" ] && [ -n "$OVERHEAD" ]; then RECLAIM=$(( SLACK - FRAG - OVERHEAD )); [ "$RECLAIM" -lt 0 ] && RECLAIM=0; fi
+    RECLAIM=$(bat_reclaim "$VHDX" "$VHDX_SIZE") || RECLAIM=''
   fi
   COMPACT=''
   result=${FM_DISK_ROOM_COMPACT_RESULT:-${HOST:+$HOST/ProgramData/firstmate/wsl-compact-last.txt}}
@@ -739,7 +770,7 @@ advice() {
     printf 'compaction would reclaim under 5 GiB; data must be freed or moved'
   elif [ -n "$HOST" ]; then
     printf 'reclaimable by compaction unknown (%s); run fm-disk-room.sh status' \
-      "$(if [ -z "$VHDX_SIZE" ]; then echo 'disk file not found'; elif [ -z "$FRAG" ]; then echo 'fragmented free space unreadable'; else echo 'ext4 metadata size unreadable'; fi)"
+      "$(if [ -z "$VHDX_SIZE" ]; then echo 'disk file not found'; else echo 'disk file block table unreadable'; fi)"
   else
     printf 'data must be freed or moved'
   fi
@@ -1026,16 +1057,10 @@ cmd_status() {
     swap_line
   fi
   if [ -n "$VHDX_SIZE" ]; then
-    if [ -n "$RECLAIM" ]; then
-      printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s GiB and ext4 metadata %s GiB; reclaimable by compaction about %s GiB\n' \
-        "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(gib "$FRAG")" "$(gib "$OVERHEAD")" "$(gib "$RECLAIM")"
-    elif [ -n "$FRAG" ]; then
-      printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s GiB, ext4 metadata unknown; reclaimable by compaction unknown\n' \
-        "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(gib "$FRAG")"
-    else
-      printf 'disk file: %s GiB (%s); slack %s GiB, fragmented unknown; reclaimable by compaction unknown\n' \
-        "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")"
-    fi
+    printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s and ext4 metadata %s; reclaimable by compaction %s\n' \
+      "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "${FRAG:+$(gib "$FRAG") GiB}${FRAG:-unknown}" \
+      "${OVERHEAD:+$(gib "$OVERHEAD") GiB}${OVERHEAD:-unknown}" \
+      "$(if [ -n "$RECLAIM" ]; then printf 'about %s GiB (disk file block table)' "$(gib "$RECLAIM")"; else printf 'unknown (disk file block table unreadable)'; fi)"
   elif [ -n "$HOST" ]; then
     printf 'disk file: not found (set FM_DISK_ROOM_VHDX)\n'
   fi

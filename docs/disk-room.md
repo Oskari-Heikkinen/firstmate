@@ -12,12 +12,18 @@ A home that runs `bin/fm-disk-room.sh` under a pin declares itself as described 
 Slack inside the disk file is not counted as room: ext4 does not prefer blocks the file already holds, so a large new file grows the file even while slack exists.
 The slack is reported separately, together with how much of it the next compaction would actually return.
 
-A compaction can drop a 1 MiB block of the disk file only when every ext4 block inside it is free.
-Free space scattered in holes smaller than 1 MiB between live data therefore stays allocated through any compaction, and through sparse mode too.
-The monitor reads that fragmented free space from `/proc/fs/ext4/<device>/mb_groups` and subtracts it.
-ext4's own metadata (inode tables, journal, bitmaps) also sits in the disk file's slack, because `df` counts it neither as used nor in its total, and no compaction returns it.
-The monitor takes it as the root block device's size minus the `df` total and subtracts it too, so "reclaimable" means what a compaction can really give back, never more.
-When that table, the device size, or the disk file cannot be read, the monitor reports reclaimable as unknown rather than guessing.
+A compaction (diskpart `compact vdisk`, which cannot read ext4) drops only the 1 MiB blocks that the disk file's own block allocation table (BAT) already marks as not present, unmapped or zero, then shrinks the file.
+Linux's view of free space does not decide it: a block stays in the file until a discard from Linux unmaps the whole block.
+So "reclaimable by compaction" is read from the BAT alone, by `bin/fm-vhdx-bat.py`: the disk file's length minus its present blocks and its fixed header area.
+The read is read-only, about 9 MiB for a 1 TiB disk, and cached for 5 minutes.
+The figure can only under-promise, because blocks unmapped after the reading are not counted, and no block becomes compactable without being unmapped first.
+When the BAT cannot be read, reclaimable is reported as unknown, and nothing is promised in its place.
+Only the distro's disk file is read; Docker Desktop's `docker_data.vhdx` is compacted too but not counted.
+
+The status line also shows the slack's Linux-side readings, which never feed the reclaimable figure, the advice or the alerts.
+Free space scattered in holes smaller than 1 MiB between live data (from `/proc/fs/ext4/<device>/mb_groups`) shares its blocks with live data, so no compaction returns it.
+ext4's own metadata (inode tables, journal, bitmaps; the root block device's size minus the `df` total) sits in the slack too, because `df` counts it neither as used nor in its total, and no compaction returns it either.
+The rest of the slack is free space Linux holds no data in that the BAT may still mark present, so it is not reclaimable until a discard covers each whole block.
 
 The margin is the room that must remain after a job's expected write, 20 GiB by default.
 A home sets it durably in `config/disk-room-margin`, and `FM_DISK_ROOM_MARGIN` overrides that for one run; [`configuration.md`](configuration.md#disk-room-margin-configdisk-room-margin) owns the format, precedence, and inheritance.
@@ -125,7 +131,8 @@ The install:
 - registers the "Firstmate WSL compact at startup" task, which runs as SYSTEM at every Windows start, compacts each recorded file that nothing holds open, and records the shadow storage cap and used size;
 - records the shadow storage once right away.
 
-No trim step is needed: the distro root is mounted with online `discard`, so blocks Linux frees are already unmapped for compaction.
+The distro root is mounted with online `discard`, so most blocks Linux frees are unmapped for compaction as they are freed.
+A 1 MiB block freed in pieces at different times can still stay present, because no single discard covered all of it; reclaim-now does not run a trim, so such blocks stay out of both the reclaimable figure and the result.
 
 While the startup task is enabled, a WSL or Docker start during the few minutes of startup compaction fails with the file in use and can simply be retried.
 Each compaction run appends to `C:\ProgramData\firstmate\wsl-compact.log` and rewrites `wsl-compact-last.txt`, which `fm-disk-room.sh status` shows as `last compaction:`.

@@ -3,10 +3,11 @@
 # Behavior tests for bin/fm-disk-room.sh (docs/disk-room.md).
 #
 # Every case runs against a PATH-shimmed df that reports fixture sizes for a
-# fake Windows drive and a fake Linux root, a real sparse file standing in for
-# ext4.vhdx, a fixture ext4 mb_groups table, a stub wevtutil that prints
-# fixture volsnap events, and a stub powershell that prints a fixture shadow
-# storage reading, so nothing reads the real disk, the Windows log or WMI.
+# fake Windows drive and a fake Linux root, a sparse VHDX fixture with a known
+# block table standing in for ext4.vhdx, a fixture ext4 mb_groups table, a
+# stub wevtutil that prints fixture volsnap events, and a stub powershell that
+# prints a fixture shadow storage reading, so nothing reads the real disk, the
+# Windows log or WMI.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -146,6 +147,73 @@ write_shadow_record() {
     $(( $(date +%s) - $3 )) $(( $1 * GIB )) $(( $2 * GIB )) $(( $2 * GIB )) >"$HOSTDIR/ProgramData/firstmate/shadow-storage.txt"
 }
 
+# mkvhdx.py FILE LENGTH HOLE UNMAPPED ZERO NOT_PRESENT: a sparse VHDX of
+# LENGTH bytes (1 MiB blocks, 512-byte sectors, so a sector bitmap entry after
+# every 4096 payload entries) whose block table marks enough blocks present,
+# alternately full and partial, to fill all but HOLE bytes after the fixed
+# area, plus the given counts of unmapped, zero and not-present blocks.
+# Prints "present=N fixed=B", where fixed is the header, log, metadata and
+# block table area that sits before the first present block.
+cat >"$TMP_ROOT/mkvhdx.py" <<'PY'
+import struct, sys, uuid
+MIB = 1 << 20
+path, length, hole, unmapped, zero, absent = sys.argv[1], *map(int, sys.argv[2:])
+def guid(s): return uuid.UUID(s).bytes_le
+chunk = 4096
+def entries(blocks): return blocks + (blocks - 1) // chunk
+# The fixed area depends on the table size, which depends on the block count.
+bat_mib, present = 1, 0
+while True:
+    fixed = (3 + bat_mib) * MIB
+    present = (length - fixed - hole) // MIB
+    blocks = present + unmapped + zero + absent
+    need = -(-entries(blocks) * 8 // MIB)
+    if need <= bat_mib:
+        break
+    bat_mib = need
+states = [6 if i % 2 == 0 else 7 for i in range(present)] + [3] * unmapped + [2] * zero + [0] * absent
+bat = bytearray(bat_mib * MIB)
+k = 0
+for i, st in enumerate(states):
+    if i and i % chunk == 0:
+        k += 1  # sector bitmap entry, left not present
+    where = fixed // MIB + i if st in (6, 7) else 0
+    struct.pack_into("<Q", bat, 8 * k, (where << 20) | st)
+    k += 1
+with open(path, "wb") as f:
+    f.write(b"vhdxfile")
+    h = bytearray(4096); h[:4] = b"head"
+    struct.pack_into("<Q", h, 8, 5); struct.pack_into("<I", h, 68, MIB)
+    f.seek(64 * 1024); f.write(h)
+    r = bytearray(4096); r[:4] = b"regi"; struct.pack_into("<I", r, 8, 2)
+    r[16:32] = guid("2DC27766-F623-4200-9D64-115E9BFD4A08"); struct.pack_into("<QI", r, 32, 3 * MIB, bat_mib * MIB)
+    r[48:64] = guid("8B7CA206-4790-4B9A-B8FE-575F050F886E"); struct.pack_into("<QI", r, 64, 2 * MIB, MIB)
+    f.seek(192 * 1024); f.write(r)
+    m = bytearray(65536); m[:8] = b"metadata"; struct.pack_into("<H", m, 10, 3)
+    items = [("CAA16737-FA36-4D43-B3B6-33F0AA44E76B", struct.pack("<I", MIB)),
+             ("2FA54224-CD1B-4876-B211-5DBED83BF4B8", struct.pack("<Q", blocks * MIB)),
+             ("8141BF1D-A96F-4709-BA47-F233A8FAAB5F", struct.pack("<I", 512))]
+    for n, (g, data) in enumerate(items):
+        e, at = 32 + 32 * n, 65536 + 16 * n
+        m[e:e + 16] = guid(g); struct.pack_into("<II", m, e + 16, at, len(data))
+    f.seek(2 * MIB); f.write(m)
+    for n, (_, data) in enumerate(items):
+        f.seek(2 * MIB + 65536 + 16 * n); f.write(data)
+    f.seek(3 * MIB); f.write(bat)
+    f.truncate(length)
+print("present=%d fixed=%d" % (present, fixed))
+PY
+
+# write_vhdx LENGTH_GIB HOLE_MIB [UNMAPPED ZERO NOT_PRESENT]: the disk file as
+# a VHDX fixture; sets VHDX_PRESENT and VHDX_FIXED from what it wrote.
+write_vhdx() {
+  local out
+  out=$(python3 -I "$TMP_ROOT/mkvhdx.py" "$VHDX" $(( $1 * GIB )) $(( $2 * 1048576 )) "${3:-1000}" "${4:-200}" "${5:-300}") ||
+    fail "the VHDX fixture is written"
+  VHDX_PRESENT=$(printf '%s\n' "$out" | sed -n 's/^present=\([0-9]*\) .*/\1/p')
+  VHDX_FIXED=$(printf '%s\n' "$out" | sed -n 's/.* fixed=\([0-9]*\)$/\1/p')
+}
+
 # The host frame bytes have 4 KiB blocks here, so real stat reports the block
 # size of the temp filesystem; the fixture groups assume 4 KiB.
 BS=$(stat -f -c %S "$LINUXDIR")
@@ -153,7 +221,7 @@ BS=$(stat -f -c %S "$LINUXDIR")
 test_status_real_room_and_reclaim() {
   reset_state
   set_sizes 60 600 400
-  truncate -s $(( 470 * GIB )) "$VHDX"
+  write_vhdx 470 $(( 12 * 1024 ))
   write_mb_groups 30
   local out
   out=$(run_room status --json) || fail "status exits 0"
@@ -162,10 +230,13 @@ test_status_real_room_and_reclaim() {
   assert_equals $(( 70 * GIB )) "$(json_field "$out" slack)" "slack is disk file size minus Linux used"
   if [ "$BS" = 4096 ]; then
     assert_equals $(( 30 * GIB )) "$(json_field "$out" fragmented_free)" "only sub-1 MiB buddies count as fragmented"
-    assert_equals $(( 40 * GIB )) "$(json_field "$out" reclaimable)" "reclaimable is slack minus fragmented free"
   fi
+  assert_equals $(( 470 * GIB - VHDX_PRESENT * 1048576 - VHDX_FIXED )) "$(json_field "$out" reclaimable)" \
+    "reclaimable is the disk file length minus its present blocks and fixed area"
+  assert_equals $(( 12 * GIB )) "$(json_field "$out" reclaimable)" "reclaimable is the block table's hole, not slack minus fragmented free"
   out=$(run_room status)
   assert_contains "$out" "real room: 60.0 GiB (limited by $HOSTDIR; margin 20.0 GiB)" "plain status names the limit"
+  assert_contains "$out" "reclaimable by compaction about 12.0 GiB (disk file block table)" "plain status names the block table figure"
   set_sizes 60 50 400
   out=$(run_room status --json)
   assert_equals $(( 50 * GIB )) "$(json_field "$out" room)" "Linux free limits when it is smaller"
@@ -229,33 +300,47 @@ test_margin_sources() {
 test_low_advice() {
   reset_state
   set_sizes 30 600 400
-  truncate -s $(( 470 * GIB )) "$VHDX"
-  write_mb_groups 30
+  write_vhdx 470 $(( 8 * 1024 ))
+  write_mb_groups 10
   local out
   out=$(run_room check --expect-write 20G)
-  if [ "$BS" = 4096 ]; then
-    assert_contains "$out" "a compaction would reclaim about 40.0 GiB" "large slack points at compaction"
-  fi
-  truncate -s $(( 430 * GIB )) "$VHDX"
+  assert_contains "$out" "a compaction would reclaim about 8.0 GiB" "holes in the block table point at compaction"
+  reset_state
+  write_vhdx 470 0 0 0 0
   out=$(run_room check --expect-write 20G)
-  assert_contains "$out" "data must be freed or moved" "fragmented slack alone does not suggest compaction"
-  pass "a low reading says whether compaction would help"
+  assert_not_contains "$out" "a compaction would reclaim about" "slack the ext4 side reads as 60 GiB unfragmented promises nothing without block table holes"
+  assert_contains "$out" "compaction would reclaim under 5 GiB; data must be freed or moved" "a full block table says compaction cannot help"
+  out=$(run_room status --json)
+  assert_equals 0 "$(json_field "$out" reclaimable)" "a block table without holes reclaims nothing"
+  pass "a low reading says whether compaction would help, from the disk file's block table"
 }
 
 test_unknown_reclaim() {
   reset_state
   set_sizes 30 600 400
+  truncate -s 0 "$VHDX"
   truncate -s $(( 470 * GIB )) "$VHDX"
-  rm -f "$TMP_ROOT/mb_groups"
+  write_mb_groups 30
   local out
   out=$(run_room status --json)
-  assert_equals null "$(json_field "$out" fragmented_free)" "no fragmented reading"
-  assert_equals null "$(json_field "$out" reclaimable)" "reclaimable is not guessed without the fragmented reading"
+  assert_equals null "$(json_field "$out" reclaimable)" "reclaimable is not guessed from slack when the file is no VHDX"
   out=$(run_room status)
-  assert_contains "$out" "reclaimable by compaction unknown" "plain status says the estimate is unknown"
+  assert_contains "$out" "reclaimable by compaction unknown (disk file block table unreadable)" "plain status says the figure is unknown"
   out=$(run_room check --expect-write 20G)
-  assert_contains "$out" "reclaimable by compaction unknown (fragmented free space unreadable)" "low advice names the missing reading"
-  assert_not_contains "$out" "a compaction would reclaim" "no compaction promise without the reading"
+  assert_contains "$out" "reclaimable by compaction unknown (disk file block table unreadable)" "low advice names the unreadable block table"
+  assert_not_contains "$out" "a compaction would reclaim" "no compaction promise without the block table"
+  reset_state
+  write_vhdx 470 $(( 12 * 1024 ))
+  printf 'xxxx' | dd of="$VHDX" bs=1 seek=$(( 192 * 1024 )) conv=notrunc 2>/dev/null
+  printf 'xxxx' | dd of="$VHDX" bs=1 seek=$(( 256 * 1024 )) conv=notrunc 2>/dev/null
+  out=$(run_room status --json)
+  assert_equals null "$(json_field "$out" reclaimable)" "a VHDX without a readable region table is unknown"
+  reset_state
+  write_vhdx 470 $(( 12 * 1024 ))
+  rm -f "$TMP_ROOT/mb_groups"
+  out=$(run_room status --json)
+  assert_equals null "$(json_field "$out" fragmented_free)" "no fragmented reading"
+  assert_equals $(( 12 * GIB )) "$(json_field "$out" reclaimable)" "the block table figure does not need the ext4 readings"
   write_mb_groups 30
   out=$(FM_DISK_ROOM_VHDX="$TMP_ROOT/missing.vhdx" run_room check --expect-write 20G)
   assert_contains "$out" "reclaimable by compaction unknown (disk file not found)" "a missing disk file is unknown, not hopeless"
@@ -344,30 +429,24 @@ test_watch_line() {
 test_fs_overhead() {
   reset_state
   set_sizes 30 600 400
-  truncate -s $(( 470 * GIB )) "$VHDX"
+  write_vhdx 470 $(( 2 * 1024 ))
   write_mb_groups 30
   local out
   out=$(TEST_DEV_SIZE=$(( 1017 * GIB )) run_room status --json)
   assert_equals $(( 17 * GIB )) "$(json_field "$out" fs_overhead)" "ext4 metadata is the block device size minus the df total"
+  assert_equals $(( 2 * GIB )) "$(json_field "$out" reclaimable)" "reclaimable comes from the block table, not slack minus fragmented free minus metadata"
   if [ "$BS" = 4096 ]; then
-    assert_equals $(( 23 * GIB )) "$(json_field "$out" reclaimable)" "reclaimable is slack minus fragmented free minus ext4 metadata"
     out=$(TEST_DEV_SIZE=$(( 1017 * GIB )) run_room status)
-    assert_contains "$out" "slack 70.0 GiB, of which fragmented 30.0 GiB and ext4 metadata 17.0 GiB; reclaimable by compaction about 23.0 GiB" "status names the metadata"
+    assert_contains "$out" "slack 70.0 GiB, of which fragmented 30.0 GiB and ext4 metadata 17.0 GiB; reclaimable by compaction about 2.0 GiB (disk file block table)" "status names the ext4 readings apart from the reclaimable figure"
   fi
-  truncate -s $(( 410 * GIB )) "$VHDX"
-  out=$(TEST_DEV_SIZE=$(( 1017 * GIB )) run_room status --json)
-  assert_equals 0 "$(json_field "$out" reclaimable)" "metadata past the slack floors reclaimable at 0"
-  out=$(TEST_DEV_SIZE=$(( 1017 * GIB )) run_room check --expect-write 20G)
-  assert_not_contains "$out" "a compaction would reclaim" "no compaction promise for slack that is all metadata"
-  assert_contains "$out" "data must be freed or moved" "low advice says compaction cannot help"
-  truncate -s $(( 470 * GIB )) "$VHDX"
   out=$(TEST_DEV_SIZE=unreadable run_room status --json)
   assert_equals null "$(json_field "$out" fs_overhead)" "no metadata reading"
-  assert_equals null "$(json_field "$out" reclaimable)" "reclaimable is not guessed without the device size"
+  assert_equals $(( 2 * GIB )) "$(json_field "$out" reclaimable)" "the block table figure does not need the device size"
+  out=$(TEST_DEV_SIZE=unreadable run_room status)
+  assert_contains "$out" "and ext4 metadata unknown; reclaimable by compaction about 2.0 GiB" "an unknown metadata size is shown as unknown"
   out=$(TEST_DEV_SIZE=unreadable run_room check --expect-write 20G)
-  assert_contains "$out" "reclaimable by compaction unknown (ext4 metadata size unreadable)" "low advice names the missing device size"
-  assert_not_contains "$out" "a compaction would reclaim" "no fallback to the estimate without metadata"
-  pass "ext4 metadata is subtracted from the reclaimable estimate"
+  assert_contains "$out" "compaction would reclaim under 5 GiB; data must be freed or moved" "low advice follows the block table alone"
+  pass "ext4 metadata is reported apart from what compaction can reclaim"
 }
 
 test_linux_only() {
@@ -858,6 +937,23 @@ test_growth_alerts() {
   pass "growth and C: runway alerts speak once per change and growth reports daily and weekly values"
 }
 
+test_c_runway_reclaim() {
+  reset_state
+  set_sizes 60 600 400
+  write_vhdx 470 0 0 0 0
+  write_mb_groups 10
+  local out t0
+  t0=$(date +%s)
+  out=$(FM_DISK_ROOM_C_FREE_MIN=100G FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "storage alert: $HOSTDIR has 60.0 GiB actually free (floor 100.0 GiB)" "C: under its floor alerts"
+  assert_not_contains "$out" "a compaction could return" "ext4 slack without block table holes is not offered as runway"
+  reset_state
+  write_vhdx 470 $(( 9 * 1024 ))
+  out=$(FM_DISK_ROOM_C_FREE_MIN=100G FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "actually free (floor 100.0 GiB); a compaction could return about 9.0 GiB" "the runway alert offers the block table figure"
+  pass "the C: runway alert offers only what the disk file's block table can give back"
+}
+
 test_d_runway_and_substitution() {
   reset_state
   rm -rf "${TMP_ROOT:?}/storage" "${TMP_ROOT:?}/mnt"
@@ -929,4 +1025,5 @@ test_linux_only
 test_vhdx_discovery_cached
 test_arm_and_disarm
 test_growth_alerts
+test_c_runway_reclaim
 test_d_runway_and_substitution
