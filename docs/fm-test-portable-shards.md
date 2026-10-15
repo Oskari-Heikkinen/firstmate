@@ -39,6 +39,7 @@ Lint and test jobs wait only on `plan`, the static job waits on nothing, and the
 Landing after a green `ci/**` run is allowed; `main` then catches tier-2 regressions outside the changed area.
 
 A red weekly run opens, or comments on, one open issue titled `Weekly CI run failed` in the repository, so it reaches someone instead of sitting in the Actions tab.
+Where repository issues are disabled, the alert job instead fails with an error annotation and a job summary naming the run, so GitHub's failed-run notification carries it.
 
 The `live` tier's real-Herdr guard runs on demand only, because the weekly run starts no Herdr job.
 

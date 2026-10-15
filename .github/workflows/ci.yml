@@ -768,6 +768,13 @@ jobs:
           set -eu
           title='Weekly CI run failed'
           body="The weekly CI run failed: $RUN_URL"
+          printf '## %s\n\n%s\n' "$title" "$body" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$(gh api "repos/$REPO" --jq .has_issues)" != true ]; then
+            # Issues are off: stay red so the run and GitHub's failed-run
+            # notification still carry the alert.
+            echo "::error title=$title::$body (repository issues are disabled, so no issue was opened)"
+            exit 1
+          fi
           number=$(gh issue list -R "$REPO" --state open --search "\"$title\" in:title" \
             --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -n "$number" ]; then
