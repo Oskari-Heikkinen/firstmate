@@ -116,6 +116,7 @@ test_ntfs_mounted_and_idempotent() {
   assert_equals ssd "$(rr active)" "active is ssd"
   assert_present "$MNT/d/lattice-data/tetjet-results" "results folder exists"
   assert_present "$MNT/d/lattice-data/archive" "archive folder exists"
+  assert_present "$MNT/d/lattice-data/research" "research folder exists"
   assert_equals "\\\\?\\Volume{ssd1}\\" "$(cat "$MNT/d/lattice-data/.lattice-storage-id")" "the marker holds the volume id"
   case "$(rr write_mib_s)" in ''|*[!0-9]*) fail "write speed is measured" ;; esac
   [ -z "$(find "$MNT/d/lattice-data" -name '.speedtest*' -o -name '.probe*')" ] || fail "speed and probe files are removed"
@@ -392,6 +393,49 @@ test_no_fallback_refused() {
   pass "check refuses to publish without a C: fallback"
 }
 
+test_named_roots() {
+  reset
+  listing "$(ssd_vol D exFAT)"
+  FAKE_BULK_DEVICE=999 FAKE_SUDO_OK=1 FM_STORAGE_NOW=1000 run check >/dev/null || fail "bulk publication"
+  local out rc home="$TMP_ROOT/research-home"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root --root research job); rc=$?
+  expect_code 0 "$rc" "research root verifies on D"
+  assert_equals "$MNT/d/lattice-data/research/job" "$out" "verified research path"
+  assert_equals "$MNT/d/lattice-data/research/job" \
+    "$(FM_HOME="$home" FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run root --root research job)" "the fall-back form prints D when verified"
+  assert_equals "$MNT/d/lattice-data/tetjet-results/job" \
+    "$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job)" "default root unchanged"
+  assert_equals "$MNT/d/lattice-data/tetjet-results/job" \
+    "$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root --root tetjet-results job)" "tetjet-results is the default name"
+  assert_equals "$MNT/d/lattice-data/tetjet-results/job" "$(FM_STORAGE_NOW=1100 run root job)" "legacy root unchanged"
+  rmdir "$MNT/d/lattice-data/research"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root --root research job 2>&1); rc=$?
+  expect_code 75 "$rc" "a missing research directory waits"
+  assert_contains "$out" wrong-root "research root reason"
+  mkdir "$MNT/d/lattice-data/research"
+  mv "$MNT/d/lattice-data" "$TMP_ROOT/lattice-data"
+  : >"$MOUNTS"
+  out=$(FM_STORAGE_NOW=1100 run verify-bulk-root --root research job 2>&1); rc=$?
+  expect_code 75 "$rc" "an empty unmounted D waits for the research root"
+  assert_not_contains "$out" "$home" "the mandatory form never falls back"
+  assert_equals "$home/data/job/bulk" "$(FM_HOME="$home" FM_STORAGE_NOW=1100 run root --root research job)" \
+    "the fall-back form gives the Linux fallback"
+  assert_equals "$ROOT/data/job/bulk" "$(unset FM_HOME; FM_STORAGE_NOW=1100 run root --root research job)" \
+    "without FM_HOME the fallback is under the script's checkout"
+  out=$(run verify-bulk-root --root nope job 2>&1); rc=$?
+  expect_code 2 "$rc" "unknown root refused"
+  assert_contains "$out" "unknown root nope" "unknown root reason"
+  out=$(run root --root nope job 2>&1); rc=$?
+  expect_code 2 "$rc" "root refuses an unknown root"
+  out=$(run bulk-root --root nope job --name d --download 0 --expanded 0 --packaging 0 2>&1); rc=$?
+  expect_code 2 "$rc" "bulk-root refuses an unknown root"
+  out=$(run verify-bulk-root --root 2>&1); rc=$?
+  expect_code 2 "$rc" "--root needs a value"
+  out=$(run root --root research ../job 2>&1); rc=$?
+  expect_code 2 "$rc" "research task traversal is misuse"
+  pass "named roots verify research on D, wait or fall back without it, and refuse unknown names"
+}
+
 test_mandatory_bulk() {
   reset
   listing "$(ssd_vol D exFAT)"
@@ -473,6 +517,7 @@ test_mandatory_bulk() {
   pass "mandatory bulk rejects unavailable, stale, mismatched and Linux-backed storage"
 }
 
+test_named_roots
 test_mandatory_bulk
 test_absent
 test_ntfs_mounted_and_idempotent

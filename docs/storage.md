@@ -41,7 +41,7 @@ Undo it with `wsl -d <distro> -u root -- rm /etc/sudoers.d/lattice-storage`.
 2. The SSD is a lettered volume other than C:, Fixed or Removable, of at least 1.5 TB; once set up, its remembered volume id wins, so a small USB stick is never picked.
 3. NTFS or exFAT is usable; a RAW, unformatted, or other filesystem is reported and nothing is ever written to it, because formatting needs the captain.
 4. Mount it through the rule with `sudo -n` when `/mnt/<l>` is not mounted; a refusal is `not-mounted`, never a password prompt.
-5. First time only: create `<L>:\lattice-data\tetjet-results` and `<L>:\lattice-data\archive`, write the marker `lattice-data\.lattice-storage-id` holding the volume id, and measure sequential write speed with one 1 GiB temp file (deleted after); a failed measurement is retried on the next check.
+5. Create `<L>:\lattice-data\tetjet-results`, `<L>:\lattice-data\research` and `<L>:\lattice-data\archive` when missing; first time only, write the marker `lattice-data\.lattice-storage-id` holding the volume id, and measure sequential write speed with one 1 GiB temp file (deleted after); a failed measurement is retried on the next check.
 6. Probe a small write, then publish the results-root file atomically.
 
 When the listing fails, the check first proves the remembered SSD without Windows: the remembered letter's `/mnt/<l>` is in the mount table, its marker names exactly the remembered volume id, its device number equals the published `ssd_device`, and a small write probe in `lattice-data` succeeds and is removed.
@@ -140,3 +140,23 @@ No new index or service is involved.
 Already-started deliveries must use their recorded root, including C: pins, without reselecting or rewriting them through this interface.
 This change does not automatically classify existing callers as bulk or deploy consumer changes.
 Regression coverage is in `tests/fm-storage.test.sh` and `tests/fm-disk-room.test.sh`.
+
+## Named roots
+
+`root`, `verify-bulk-root` and `bulk-root` take `--root ROOT`, written before TASK, naming one directory under `/mnt/d/lattice-data`:
+
+| ROOT | D: directory | fallback of `root --root ROOT` |
+|---|---|---|
+| `tetjet-results` (default) | `tetjet-results/TASK` (line 1's template) | the C: template, by the reader rules |
+| `research` | `research/TASK` | `$FM_HOME/data/TASK/bulk`, or `data/TASK/bulk` in the checkout holding the script when `FM_HOME` is unset |
+
+Any other name exits 2.
+Without `--root`, every command and its output is unchanged.
+The results-root file is unchanged: line 1 stays the `tetjet-results` template, and every root shares its D: publication, marker, mount and device checks; the named root's own directory must exist as a real directory on that device.
+The check creates `research` beside `tetjet-results`, so it exists after the first check that runs this version.
+
+Which command a writer calls depends on whether it may fall back:
+- A **mandatory** writer, whose records pin the D: root, calls `verify-bulk-root --root research TASK` (or `bulk-root --root research TASK --name ...` to also reserve its peak). On anything but a verified D: it exits 75 with one `wait:` reason and prints no path; it never prints the Linux fallback.
+- A writer that **may fall back** calls `root --root research TASK`. It prints the verified D: directory, or the Linux fallback on any failed check, exiting 0 either way.
+
+`bulk-root --root research` verifies the research directory, admits the peak through `fm-disk-room.sh reserve-bulk` in the same D: reservation pool as `tetjet-results`, and prints the research directory.

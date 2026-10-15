@@ -23,18 +23,23 @@
 #       Run check now, then print status.
 #   fm-storage.sh status
 #       Print the published choice from the results-root file (no Windows call).
-#   fm-storage.sh root [TASK]
+#   fm-storage.sh root [--root ROOT] [TASK]
 #       Apply the reader rules and print the directory to use: the template
 #       with {task} replaced by TASK (kept as {task} when TASK is omitted).
-#       Falls back to the C: template on any doubt.
-#   fm-storage.sh verify-bulk-root [TASK]
+#       Falls back to the C: template on any doubt. With --root research it
+#       prints the verified D: research directory, else the Linux fallback
+#       ${FM_HOME:-<this checkout>}/data/TASK/bulk.
+#   fm-storage.sh verify-bulk-root [--root ROOT] [TASK]
 #       Verify the published D: root and live volume identity, without reserving.
-#       Exit 75 with one stderr reason on unavailable storage; never return C:.
-#   fm-storage.sh bulk-root TASK --name NAME --download SIZE --expanded SIZE
-#                         --packaging SIZE [--pid PID] [--ttl SECONDS]
+#       Exit 75 with one stderr reason on unavailable storage; never return C:
+#       or Linux.
+#   fm-storage.sh bulk-root [--root ROOT] TASK --name NAME --download SIZE
+#                         --expanded SIZE --packaging SIZE [--pid PID] [--ttl SECONDS]
 #       Verify and admit the whole allocation peak via fm-disk-room reserve-bulk.
 #       Print only the D: root on success (0); unavailable/low room exits 75,
 #       misuse exits 2. No pin files are read or rewritten by either command.
+#   ROOT names one D: directory under <mount>/lattice-data: tetjet-results
+#   (the default, line 1's template) or research. Any other name exits 2.
 #   fm-storage.sh install-timer --fallback TEMPLATE [--notify FILE]
 #       Write storage.conf (fallback template and notification file), then
 #       write and enable the user-level fm-storage.timer (every 5 minutes,
@@ -118,6 +123,14 @@ load_conf() {
   NOTIFY=$(conf notify "${FM_STORAGE_NOTIFY:-}")
   MIN_FREE=$(to_bytes "$(conf min_free "${FM_STORAGE_MIN_FREE:-}" 50G)") || die "min_free is not a size"
   MIN_SIZE=$(to_bytes "$(conf min_size "${FM_STORAGE_MIN_SIZE:-}" 1500000000000)") || die "min_size is not a size"
+}
+
+# root_dir ROOT -> its directory name under lattice-data, or fail when unknown.
+root_dir() {
+  case "$1" in
+    tetjet-results|research) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
 }
 
 valid_template() { case "$1" in /*'{task}'*) return 0 ;; *) return 1 ;; esac; }
@@ -280,7 +293,7 @@ setup_and_probe() {
       return 1
     fi
   fi
-  if ! mkdir -p "$data/tetjet-results" "$data/archive" 2>/dev/null; then
+  if ! mkdir -p "$data/tetjet-results" "$data/research" "$data/archive" 2>/dev/null; then
     STATE=unwritable REASON="could not create the folders on $SSD_LETTER:"
     return 1
   fi
@@ -457,13 +470,24 @@ cmd_status() {
 }
 
 cmd_root() {
-  local task='{task}' f line1 fb
+  local task='{task}' f line1 fb root=tetjet-results
   while [ $# -gt 0 ]; do
     case "$1" in
+      --root) [ "$#" -ge 2 ] || die "--root needs a ROOT"; root=$2; shift 2 ;;
       -*) die "unknown option $1" ;;
       *) task=$1; shift ;;
     esac
   done
+  root_dir "$root" >/dev/null || die "unknown root $root (known: tetjet-results, research)"
+  if [ "$root" != tetjet-results ]; then
+    case "$task" in '{task}') ;; ''|.|..|*[!A-Za-z0-9._-]*) die "invalid TASK" ;; esac
+    if line1=$(cmd_verify_bulk_root --root "$root" "$task" 2>/dev/null); then
+      printf '%s\n' "$line1"
+    else
+      printf '%s/data/%s/bulk\n' "${FM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}" "$task"
+    fi
+    return 0
+  fi
   load_conf
   f="$(config_dir)/results-root"
   fb=$FALLBACK
@@ -489,8 +513,14 @@ cmd_root() {
 bulk_wait() { printf 'fm-storage: wait: %s\n' "$*" >&2; return 75; }
 
 cmd_verify_bulk_root() {
-  local task=${1:-'{task}'} f mp marker uid checked age device actual rootdev hostdev cand mount
+  local task='' root=tetjet-results dir f mp marker uid checked age device actual rootdev hostdev cand mount
+  if [ "${1:-}" = --root ]; then
+    [ "$#" -ge 2 ] || die "--root needs a ROOT"
+    root=$2; shift 2
+  fi
   [ "$#" -le 1 ] || die "verify-bulk-root takes one TASK"
+  task=${1:-'{task}'}
+  dir=$(root_dir "$root") || die "unknown root $root (known: tetjet-results, research)"
   case "$task" in '{task}') ;; ''|.|..|*[!A-Za-z0-9._-]*) die "invalid TASK" ;; esac
   f=${FM_STORAGE_RESULTS_ROOT:-$(config_dir)/results-root}
   [ -r "$f" ] || { bulk_wait missing-publication; return 75; }
@@ -510,7 +540,7 @@ cmd_verify_bulk_root() {
   mp="$(mnt_base)/d"
   cand=$(head -n 1 "$f")
   [ "$cand" = "$mp/lattice-data/tetjet-results/{task}" ] &&
-    [ "$(realpath -e -- "$mp/lattice-data/tetjet-results" 2>/dev/null)" = "$mp/lattice-data/tetjet-results" ] || {
+    [ "$(realpath -e -- "$mp/lattice-data/$dir" 2>/dev/null)" = "$mp/lattice-data/$dir" ] || {
     bulk_wait wrong-root; return 75;
   }
   marker=$(kv "$f" ssd_marker); uid=$(kv "$f" ssd_id)
@@ -527,21 +557,35 @@ cmd_verify_bulk_root() {
   case "$mount" in '9p|D:'|'9p|D:\134'|'drvfs|D:'|'drvfs|D:\134') ;;
     *) bulk_wait wrong-mount-identity; return 75 ;; esac
   device=$(kv "$f" ssd_device)
-  actual=$(stat -c %d -- "$mp/lattice-data/tetjet-results" 2>/dev/null)
+  actual=$(stat -c %d -- "$mp/lattice-data/$dir" 2>/dev/null)
   rootdev=$(stat -c %d -- / 2>/dev/null)
   hostdev=$(stat -c %d -- "${FM_DISK_ROOM_HOST:-/mnt/c}" 2>/dev/null || true)
   [ -n "$device" ] && [ "$actual" = "$device" ] && [ "$actual" != "$rootdev" ] &&
     [ "$actual" != "$hostdev" ] || { bulk_wait wrong-filesystem-identity; return 75; }
-  printf '%s\n' "${cand//\{task\}/$task}"
+  printf '%s\n' "$mp/lattice-data/$dir/$task"
 }
 
+# Another root shares the D: filesystem, so it is admitted in the same D:
+# reservation pool and prints its own verified directory instead.
 cmd_bulk_root() {
-  local task=${1:-} name=''
+  local task name='' root=tetjet-results out
+  if [ "${1:-}" = --root ]; then
+    [ "$#" -ge 2 ] || die "--root needs a ROOT"
+    root=$2; shift 2
+  fi
+  root_dir "$root" >/dev/null || die "unknown root $root (known: tetjet-results, research)"
+  task=${1:-}
   [ "$#" -gt 0 ] || die "bulk-root needs TASK"
   shift
   [ "${1:-}" = --name ] && [ "$#" -ge 2 ] || die "bulk-root needs --name NAME"
   name=$2; shift 2
-  "$(dirname "${BASH_SOURCE[0]}")/fm-disk-room.sh" reserve-bulk "$name" --task "$task" "$@"
+  if [ "$root" = tetjet-results ]; then
+    "$(dirname "${BASH_SOURCE[0]}")/fm-disk-room.sh" reserve-bulk "$name" --task "$task" "$@"
+    return
+  fi
+  out=$(cmd_verify_bulk_root --root "$root" "$task") || return "$?"
+  "$(dirname "${BASH_SOURCE[0]}")/fm-disk-room.sh" reserve-bulk "$name" --task "$task" "$@" >/dev/null || return "$?"
+  printf '%s\n' "$out"
 }
 
 UNIT=fm-storage

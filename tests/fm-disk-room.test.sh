@@ -635,6 +635,16 @@ test_bulk_reservations() {
     --download 10G --expanded 20G --packaging 20G --pid "$$"); rc=$?
   expect_code 0 "$rc" "storage bulk-root reserves before answering"
   assert_equals "$mp/lattice-data/tetjet-results/job" "$out" "integrated root"
+  run_room release-bulk integrated
+  mkdir -p "$mp/lattice-data/research"
+  out=$(PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
+    FM_STORAGE_CONFIG="$cfg" FM_STORAGE_MNT="$TMP_ROOT/mnt" FM_STORAGE_MOUNTINFO="$TMP_ROOT/mountinfo" \
+    FM_DISK_ROOM_STATE="$TMP_ROOT/state" "$ROOT/bin/fm-storage.sh" bulk-root --root research job --name integrated \
+    --download 10G --expanded 20G --packaging 20G --pid "$$"); rc=$?
+  expect_code 0 "$rc" "research bulk-root reserves in the same D pool"
+  assert_equals "$mp/lattice-data/research/job" "$out" "integrated research root"
+  out=$(run_room reserve-bulk after-research --task job2 --download 1 --expanded 0 --packaging 0 2>&1); rc=$?
+  expect_code 75 "$rc" "the research reservation counts against D room"
   rm "$cfg/results-root"
   out=$(run_room reserve-bulk no-volume --task job --download 0 --expanded 0 --packaging 0 2>&1); rc=$?
   expect_code 75 "$rc" "no publication never creates C reservation"
