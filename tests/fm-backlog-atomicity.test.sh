@@ -71,6 +71,29 @@ pin_markdown_backend() {  # <addressing-root>
   printf '%s\n' 'backend = "markdown"' > "$1/.tasks.toml"
 }
 
+# Every home's project is the same one-commit repository with a bare origin, so
+# it is built once here and copied per case instead of re-running git init,
+# commit, and a bare clone a hundred times. The two absolute paths git recorded
+# (the project's origin URL and the bare clone's own source) are rewritten to
+# the case's copies, which leaves each case exactly what fm_git_init_commit
+# and fm_git_add_origin would have built at <case-dir>/project.
+TEMPLATE_ROOT="$TMP_ROOT/.template"
+fm_git_init_commit "$TEMPLATE_ROOT/project"
+fm_git_add_origin "$TEMPLATE_ROOT/project" "$TEMPLATE_ROOT/project.origin.git"
+
+copy_template_project() {  # <case-dir>
+  local case_dir=$1 config text
+  mkdir -p "$case_dir"
+  cp -R "$TEMPLATE_ROOT/project" "$TEMPLATE_ROOT/project.origin.git" "$case_dir/" \
+    || fail "could not copy the template project into $case_dir"
+  for config in "$case_dir/project/.git/config" "$case_dir/project.origin.git/config"; do
+    text=$(<"$config")
+    printf '%s\n' "${text//"$TEMPLATE_ROOT/"/"$case_dir/"}" > "$config"
+  done
+  grep -qF "file://$case_dir/project.origin.git" "$case_dir/project/.git/config" \
+    || fail "the copied project's origin still points at the template"
+}
+
 # A home with a real backlog, a real project clone with an origin, a pooled
 # worktree, and stubs for every tool the spawn path shells out to.
 make_home() {  # <name> [task-id...]
@@ -118,8 +141,7 @@ SH
   fm_test_fake_treehouse_lease "$fakebin"
   fm_fake_exit0 "$fakebin" gh gh-axi no-mistakes
 
-  fm_git_init_commit "$case_dir/project"
-  fm_git_add_origin "$case_dir/project" "$case_dir/project.origin.git"
+  copy_template_project "$case_dir"
   git -C "$case_dir/project" worktree add --quiet -b pooled "$case_dir/wt"
 
   printf '%s\n' "$case_dir"
