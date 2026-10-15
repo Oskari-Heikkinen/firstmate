@@ -107,6 +107,15 @@ assert_private_symlink_unchanged() {
   esac
 }
 
+# The test's own snapshots hash with coreutils sha256sum where the host has it:
+# it prints the same "<sha-256>  <name>" lines as shasum -a 256 without starting
+# perl, which the hundreds of snapshots below would otherwise pay for each time.
+if command -v sha256sum >/dev/null 2>&1; then
+  SNAPSHOT_SHA256=(sha256sum)
+else
+  SNAPSHOT_SHA256=(shasum -a 256)
+fi
+
 # One mode read and one hash process cover every regular file, so a snapshot
 # stays cheap enough to take around each of the hundreds of refused calls below.
 state_snapshot() {
@@ -127,7 +136,7 @@ state_snapshot() {
     else
       stat -c 'file %n %a' -- "${files[@]}"
     fi
-    shasum -a 256 -- "${files[@]}"
+    "${SNAPSHOT_SHA256[@]}" -- "${files[@]}"
   )
 }
 
@@ -289,6 +298,38 @@ SH
   : > "$dir/gerrit-axi.log"
   : > "$dir/guard.log"
   printf '%s\n' "$dir"
+}
+
+# run_case_parts <part>...: run one case's independent parts side by side, each
+# "<function> [<word>...]" in a background subshell of its own, and wait for
+# all of them. A part builds its own sandbox with make_case under a name no
+# other part uses and asserts exactly what the case asserted for it inline, so
+# only the case's wall time changes. Every part's output is printed in the
+# order given, and the case fails after all parts finish when any one failed.
+run_case_parts() {
+  local logs part i=0 rc status=0
+  local -a pids words
+  logs=$(mktemp -d "$TMP_ROOT/.case-parts.XXXXXX") || fail "could not create a case-part log directory"
+  for part in "$@"; do
+    read -r -a words <<< "$part"
+    ( "${words[@]}" ) > "$logs/$i.out" 2>&1 &
+    pids[i]=$!
+    i=$((i + 1))
+  done
+  i=0
+  for part in "$@"; do
+    rc=0
+    wait "${pids[i]}" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      cat "$logs/$i.out"
+    else
+      cat "$logs/$i.out" >&2
+      printf 'case part failed: %s\n' "$part" >&2
+      status=1
+    fi
+    i=$((i + 1))
+  done
+  [ "$status" -eq 0 ] || fail "a part of this case failed (see its output above)"
 }
 
 write_task_meta() {
@@ -578,17 +619,31 @@ EOF
   pass "raw-byte parser accepts canonical URLs and rejects the complete adversarial matrix"
 }
 
-test_invalid_entrypoints_have_zero_side_effects() {
-  local dir before after value rc
-  dir=$(make_case invalid-entrypoints)
+# The refused calls below are split across parts that run side by side. Each
+# part refuses its share against a sandbox of its own seeded exactly like the
+# others, compares the state after every call with that sandbox's baseline, and
+# proves its own calls reached no forge CLI and no guard.
+invalid_entrypoints_sandbox() {  # <part>: sets the calling part's dir and before
+  dir=$(make_case "invalid-entrypoints-$1")
   write_task_meta "$dir"
   printf 'existing-check\n' > "$dir/home/state/task-a.check.sh"
   printf 'existing-data\n' > "$dir/home/state/task-a.pr-poll"
   chmod 0600 "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll"
   # Every refused call must leave this exact state, so one baseline serves them all.
   before=$(state_snapshot "$dir/home/state")
+}
 
-  for value in "${INVALID_URLS[@]}"; do
+invalid_entrypoints_assert_no_calls() {  # <dir>
+  local dir=$1
+  [ ! -s "$dir/gh.log" ] || fail "invalid direct or merge data called gh"
+  [ ! -s "$dir/gh-axi.log" ] || fail "invalid direct or merge data called gh-axi"
+  [ ! -s "$dir/guard.log" ] || fail "invalid direct or merge data called the guard"
+}
+
+invalid_check_urls_part() {  # <first> <count>
+  local dir before after value rc
+  invalid_entrypoints_sandbox "check-urls-$1"
+  for value in "${INVALID_URLS[@]:$1:$2}"; do
     set +e
     run_check_entry "$dir" task-a "$value" > "$dir/stdout" 2> "$dir/stderr"
     rc=$?
@@ -598,7 +653,12 @@ test_invalid_entrypoints_have_zero_side_effects() {
     after=$(state_snapshot "$dir/home/state")
     [ "$after" = "$before" ] || fail "direct invalid URL changed prior state"
   done
+  invalid_entrypoints_assert_no_calls "$dir"
+}
 
+invalid_check_ids_part() {
+  local dir before after value rc
+  invalid_entrypoints_sandbox check-ids
   for value in "${INVALID_IDS[@]}"; do
     set +e
     run_check_entry "$dir" "$value" https://github.com/o/r/pull/1 > "$dir/stdout" 2> "$dir/stderr"
@@ -609,7 +669,21 @@ test_invalid_entrypoints_have_zero_side_effects() {
     [ "$after" = "$before" ] || fail "invalid task ID changed state or traversed a path"
   done
 
-  for value in "${INVALID_URLS[@]}"; do
+  set +e
+  run_check_entry "$dir" > /dev/null 2> "$dir/stderr"; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct entrypoint accepted zero arguments"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 extra > /dev/null 2> "$dir/stderr"; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct entrypoint accepted extra arguments"
+  invalid_entrypoints_assert_no_calls "$dir"
+}
+
+invalid_merge_urls_part() {  # <first> <count>
+  local dir before after value rc
+  invalid_entrypoints_sandbox "merge-urls-$1"
+  for value in "${INVALID_URLS[@]:$1:$2}"; do
     set +e
     run_merge_entry "$dir" task-a "$value" > "$dir/stdout" 2> "$dir/stderr"
     rc=$?
@@ -619,7 +693,12 @@ test_invalid_entrypoints_have_zero_side_effects() {
     after=$(state_snapshot "$dir/home/state")
     [ "$after" = "$before" ] || fail "merge invalid URL changed prior state"
   done
+  invalid_entrypoints_assert_no_calls "$dir"
+}
 
+invalid_merge_ids_part() {
+  local dir before after value rc
+  invalid_entrypoints_sandbox merge-ids
   for value in "${INVALID_IDS[@]}"; do
     set +e
     run_merge_entry "$dir" "$value" https://github.com/o/r/pull/1 > "$dir/stdout" 2> "$dir/stderr"
@@ -630,6 +709,16 @@ test_invalid_entrypoints_have_zero_side_effects() {
     [ "$after" = "$before" ] || fail "merge invalid task ID changed state"
   done
 
+  set +e
+  run_merge_entry "$dir" > /dev/null 2> "$dir/stderr"; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "merge entrypoint accepted zero arguments"
+  invalid_entrypoints_assert_no_calls "$dir"
+}
+
+invalid_teardown_ids_part() {
+  local dir before after value rc
+  invalid_entrypoints_sandbox teardown-ids
   for value in "${UNSAFE_LIFECYCLE_IDS[@]}"; do
     set +e
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_TEST_GUARD_LOG="$dir/guard.log" \
@@ -642,23 +731,20 @@ test_invalid_entrypoints_have_zero_side_effects() {
     after=$(state_snapshot "$dir/home/state")
     [ "$after" = "$before" ] || fail "teardown invalid task ID changed state"
   done
+  invalid_entrypoints_assert_no_calls "$dir"
+}
 
-  set +e
-  run_check_entry "$dir" > /dev/null 2> "$dir/stderr"; rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "direct entrypoint accepted zero arguments"
-  set +e
-  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 extra > /dev/null 2> "$dir/stderr"; rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "direct entrypoint accepted extra arguments"
-  set +e
-  run_merge_entry "$dir" > /dev/null 2> "$dir/stderr"; rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "merge entrypoint accepted zero arguments"
-
-  [ ! -s "$dir/gh.log" ] || fail "invalid direct or merge data called gh"
-  [ ! -s "$dir/gh-axi.log" ] || fail "invalid direct or merge data called gh-axi"
-  [ ! -s "$dir/guard.log" ] || fail "invalid direct or merge data called the guard"
+test_invalid_entrypoints_have_zero_side_effects() {
+  local half
+  half=$(( (${#INVALID_URLS[@]} + 1) / 2 ))
+  run_case_parts \
+    "invalid_check_urls_part 0 $half" \
+    "invalid_check_urls_part $half ${#INVALID_URLS[@]}" \
+    "invalid_merge_urls_part 0 $half" \
+    "invalid_merge_urls_part $half ${#INVALID_URLS[@]}" \
+    invalid_check_ids_part \
+    invalid_merge_ids_part \
+    invalid_teardown_ids_part
   [ ! -e "$TMP_ROOT/escape.check.sh" ] || fail "task traversal wrote outside state"
   pass "PR and teardown entrypoints reject invalid arguments before every side effect"
 }
@@ -771,8 +857,8 @@ test_direct_pr_unpushed_commit_refuses_registration() {
   pass "fm-pr-check refuses a direct-PR registration while a later commit is only in the copy"
 }
 
-test_valid_recording_and_merge_derivation() {
-  local dir expected sidecar count rc
+valid_recording_main_part() {
+  local dir expected count rc sidecar
   dir=$(make_case valid-recording)
   write_task_meta "$dir"
   expected=0123456789abcdef0123456789abcdef01234567
@@ -830,7 +916,10 @@ test_valid_recording_and_merge_derivation() {
     || fail "guarded merge retirement removed pr metadata"
   grep -qxF "pr_head=$expected" "$dir/home/state/task-a.meta" \
     || fail "guarded merge retirement removed pr_head metadata"
+}
 
+valid_recording_newline_head_part() {
+  local dir
   dir=$(make_case newline-head)
   write_task_meta "$dir"
   FM_TEST_GH_HEAD=$'0123456789abcdef0123456789abcdef01234567\nwindow=unexpected' \
@@ -838,7 +927,10 @@ test_valid_recording_and_merge_derivation() {
     || fail "valid check with malformed remote head failed"
   assert_no_grep 'pr_head=' "$dir/home/state/task-a.meta" "multiline PR head reached metadata"
   assert_no_grep 'window=unexpected' "$dir/home/state/task-a.meta" "newline metadata key was injected"
+}
 
+valid_recording_lifecycle_id_part() {
+  local dir
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
@@ -858,49 +950,60 @@ SH
     || fail "safe lifecycle-compatible task ID could not be torn down"
   [ ! -e "$dir/home/state/Task_A.1.meta" ] \
     || fail "safe lifecycle-compatible task teardown retained metadata"
+}
 
-  for id in _noncanonical aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
-    dir=$(make_case "legacy-teardown-${id:0:12}")
-    fm_write_meta "$dir/home/state/$id.meta" \
-      "window=firstmate:fm-$id" \
-      "endpoint_task_id=$id" \
-      "worktree=$dir/wt" \
-      "project=$dir/project" \
-      'kind=ship' \
-      'mode=local-only'
-    cat > "$dir/fakebin/tmux" <<'SH'
+valid_recording_legacy_id_part() {  # <legacy task ID>
+  local id=$1 dir rc
+  dir=$(make_case "legacy-teardown-${id:0:12}")
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "endpoint_task_id=$id" \
+    "worktree=$dir/wt" \
+    "project=$dir/project" \
+    'kind=ship' \
+    'mode=local-only'
+  cat > "$dir/fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
-    chmod 0700 "$dir/fakebin/tmux"
-    touch "$dir/home/state/.last-watcher-beat"
-    mkdir "$dir/home/state/$id.check.sh"
-    set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
-      "$TEARDOWN" "$id" --force > "$dir/unsafe-teardown.out" 2> "$dir/unsafe-teardown.err"
-    rc=$?
-    set -e
-    [ "$rc" -ne 0 ] || fail "legacy task teardown accepted an unsafe direct artifact"
-    [ -e "$dir/home/state/$id.meta" ] \
-      || fail "legacy task teardown mutated lifecycle state before artifact refusal"
-    [ -d "$dir/home/state/$id.check.sh" ] \
-      || fail "legacy task teardown changed the unsafe direct artifact"
-    rmdir "$dir/home/state/$id.check.sh"
-    FM_HOME="$dir/home" "$ROOT/bin/fm-x-link.sh" "$id" req-legacy \
-      --carry-count 0 --carry-ts 1700000000 --carry-platform x --carry-max 280 \
-      > "$dir/x-link.out" 2> "$dir/x-link.err" \
-      || fail "path-safe legacy task ID could not link an X request"
-    run_merge_entry "$dir" "$id" https://github.com/o/r/pull/4 \
-      > "$dir/merge.out" 2> "$dir/merge.err" \
-      || fail "path-safe legacy task ID could not use the PR merge flow"
-    fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
-      || fail "path-safe legacy task ID did not publish an authenticated poll"
-    rm -rf "$dir/wt"
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
-      "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
-      || fail "legacy path-safe task ID could not be torn down"
-    [ ! -e "$dir/home/state/$id.meta" ] || fail "legacy task teardown retained metadata"
+  chmod 0700 "$dir/fakebin/tmux"
+  touch "$dir/home/state/.last-watcher-beat"
+  mkdir "$dir/home/state/$id.check.sh"
+  set +e
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    "$TEARDOWN" "$id" --force > "$dir/unsafe-teardown.out" 2> "$dir/unsafe-teardown.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "legacy task teardown accepted an unsafe direct artifact"
+  [ -e "$dir/home/state/$id.meta" ] \
+    || fail "legacy task teardown mutated lifecycle state before artifact refusal"
+  [ -d "$dir/home/state/$id.check.sh" ] \
+    || fail "legacy task teardown changed the unsafe direct artifact"
+  rmdir "$dir/home/state/$id.check.sh"
+  FM_HOME="$dir/home" "$ROOT/bin/fm-x-link.sh" "$id" req-legacy \
+    --carry-count 0 --carry-ts 1700000000 --carry-platform x --carry-max 280 \
+    > "$dir/x-link.out" 2> "$dir/x-link.err" \
+    || fail "path-safe legacy task ID could not link an X request"
+  run_merge_entry "$dir" "$id" https://github.com/o/r/pull/4 \
+    > "$dir/merge.out" 2> "$dir/merge.err" \
+    || fail "path-safe legacy task ID could not use the PR merge flow"
+  fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
+    || fail "path-safe legacy task ID did not publish an authenticated poll"
+  rm -rf "$dir/wt"
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
+    || fail "legacy path-safe task ID could not be torn down"
+  [ ! -e "$dir/home/state/$id.meta" ] || fail "legacy task teardown retained metadata"
+}
+
+# Each flow below runs in a sandbox of its own, so the parts run side by side.
+test_valid_recording_and_merge_derivation() {
+  local id
+  local -a parts=(valid_recording_main_part valid_recording_newline_head_part valid_recording_lifecycle_id_part)
+  for id in _noncanonical aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
+    parts+=("valid_recording_legacy_id_part $id")
   done
+  run_case_parts "${parts[@]}"
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
 }
 
@@ -1274,8 +1377,49 @@ assert_no_final_poll() {
     || fail "failed publication left a registration name"
 }
 
+postrename_fault_part() {  # <artifact> <action>
+  local artifact=$1 action=$2 dir state destination link_target gate
+  dir=$(make_case "poll-final-$artifact-$action")
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  fm_pr_poll_prepare "$state" task-a github https://github.com/o/r/pull/1 github.com o/r 1 "$POLL" \
+    || fail "could not prepare prior poll"
+  fm_pr_poll_publish_prepared || fail "could not publish prior poll"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/2
+  fm_pr_poll_prepare "$state" task-a github https://github.com/o/r/pull/2 github.com o/r 2 "$POLL" \
+    || fail "could not stage replacement poll"
+  case "$artifact" in
+    data) destination="$state/task-a.pr-poll" ;;
+    registration) destination="$state/task-a.pr-poll-registration" ;;
+    check) destination="$state/task-a.check.sh" ;;
+  esac
+  link_target="$dir/external-sentinel"
+  gate="$dir/device-fault"
+  printf 'external sentinel\n' > "$link_target"
+  chmod 0644 "$link_target"
+  install_final_publication_fault "$dir"
+  if FM_TEST_FINAL_PATH="$destination" FM_TEST_FINAL_ACTION="$action" \
+    FM_TEST_FAULT_LINK_TARGET="$link_target" FM_TEST_FAULT_GATE="$gate" \
+    FM_TEST_REAL_MV="$REAL_MV" FM_TEST_REAL_STAT="$REAL_STAT" FM_TEST_REAL_CHMOD="$REAL_CHMOD" \
+    PATH="$dir/fakebin:$BASE_PATH" fm_pr_poll_publish_prepared; then
+    fail "post-rename $artifact $action fault was reported as success"
+  fi
+  fm_pr_poll_cleanup
+  assert_no_final_poll "$state"
+  [ "$(cat "$link_target")" = 'external sentinel' ] || fail "poll type fault changed an external target"
+  [ "$(file_mode "$link_target")" = 644 ] || fail "poll type fault changed an external target mode"
+
+  fm_pr_poll_prepare "$state" task-a github https://github.com/o/r/pull/2 github.com o/r 2 "$POLL" \
+    || fail "could not prepare poll retry"
+  PATH="$BASE_PATH" fm_pr_poll_publish_prepared || fail "poll retry did not recover after final validation fault"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" || fail "poll retry did not publish a valid pair"
+}
+
+# Every artifact and fault pair builds a sandbox of its own, so the pairs run
+# side by side.
 test_postrename_poll_validation_revokes_and_retries() {
-  local artifact action dir state destination link_target gate
+  local artifact action
+  local -a parts=()
   for artifact in data registration check; do
     for action in type mode device content; do
       # The device fault is injected by a fake stat on PATH; on Darwin the
@@ -1284,42 +1428,10 @@ test_postrename_poll_validation_revokes_and_retries() {
       if [ "$action" = device ] && [ "$(uname)" = Darwin ]; then
         continue
       fi
-      dir=$(make_case "poll-final-$artifact-$action")
-      state="$dir/home/state"
-      write_poll_meta "$state" task-a https://github.com/o/r/pull/1
-      fm_pr_poll_prepare "$state" task-a github https://github.com/o/r/pull/1 github.com o/r 1 "$POLL" \
-        || fail "could not prepare prior poll"
-      fm_pr_poll_publish_prepared || fail "could not publish prior poll"
-      write_poll_meta "$state" task-a https://github.com/o/r/pull/2
-      fm_pr_poll_prepare "$state" task-a github https://github.com/o/r/pull/2 github.com o/r 2 "$POLL" \
-        || fail "could not stage replacement poll"
-      case "$artifact" in
-        data) destination="$state/task-a.pr-poll" ;;
-        registration) destination="$state/task-a.pr-poll-registration" ;;
-        check) destination="$state/task-a.check.sh" ;;
-      esac
-      link_target="$dir/external-sentinel"
-      gate="$dir/device-fault"
-      printf 'external sentinel\n' > "$link_target"
-      chmod 0644 "$link_target"
-      install_final_publication_fault "$dir"
-      if FM_TEST_FINAL_PATH="$destination" FM_TEST_FINAL_ACTION="$action" \
-        FM_TEST_FAULT_LINK_TARGET="$link_target" FM_TEST_FAULT_GATE="$gate" \
-        FM_TEST_REAL_MV="$REAL_MV" FM_TEST_REAL_STAT="$REAL_STAT" FM_TEST_REAL_CHMOD="$REAL_CHMOD" \
-        PATH="$dir/fakebin:$BASE_PATH" fm_pr_poll_publish_prepared; then
-        fail "post-rename $artifact $action fault was reported as success"
-      fi
-      fm_pr_poll_cleanup
-      assert_no_final_poll "$state"
-      [ "$(cat "$link_target")" = 'external sentinel' ] || fail "poll type fault changed an external target"
-      [ "$(file_mode "$link_target")" = 644 ] || fail "poll type fault changed an external target mode"
-
-      fm_pr_poll_prepare "$state" task-a github https://github.com/o/r/pull/2 github.com o/r 2 "$POLL" \
-        || fail "could not prepare poll retry"
-      PATH="$BASE_PATH" fm_pr_poll_publish_prepared || fail "poll retry did not recover after final validation fault"
-      fm_pr_poll_artifacts_valid "$state" task-a "$POLL" || fail "poll retry did not publish a valid pair"
+      parts+=("postrename_fault_part $artifact $action")
     done
   done
+  run_case_parts "${parts[@]}"
   pass "post-rename poll validation faults revoke both names and allow a clean retry"
 }
 
@@ -2151,7 +2263,8 @@ SH
 }
 
 test_gitlab_merge_watch() {
-  local dir state out rc url value noglab entry bindir name
+  local dir state out rc url value noglab entry bindir
+  local -a entries
   dir=$(make_case gitlab-merge-watch)
   state="$dir/home/state"
   url=https://gitlab.example/group/subgroup/project/-/merge_requests/7
@@ -2192,14 +2305,17 @@ group/subgroup/project
   # PATH would make this prove nothing.
   noglab="$dir/noglab"
   mkdir -p "$noglab"
+  # One ln per bindir: ln leaves a name an earlier bindir already supplied in
+  # place, so the first match still wins as it does on the real path.
   while IFS= read -r bindir; do
     [ -d "$bindir" ] || continue
+    entries=()
     for entry in "$bindir"/*; do
       [ -e "$entry" ] || continue
-      name=$(basename "$entry")
-      [ "$name" = glab ] && continue
-      [ -e "$noglab/$name" ] || ln -s "$entry" "$noglab/$name" 2>/dev/null
+      [ "${entry##*/}" = glab ] && continue
+      entries+=("$entry")
     done
+    [ "${#entries[@]}" -eq 0 ] || ln -s -- "${entries[@]}" "$noglab/" 2>/dev/null || :
   done <<EOF
 $dir/fakebin
 $(printf '%s\n' "$BASE_PATH" | tr ':' '\n')
@@ -2301,7 +2417,7 @@ poll_artifact_snapshot() {
       printf 'link %s %s\n' "$suffix" "$(readlink "$path")"
     elif [ -f "$path" ]; then
       printf 'file %s %s ' "$suffix" "$(file_mode "$path")"
-      shasum -a 256 "$path" | awk '{print $1}'
+      "${SNAPSHOT_SHA256[@]}" "$path" | awk '{print $1}'
     else
       printf 'other %s\n' "$suffix"
     fi
@@ -2454,10 +2570,9 @@ test_merged_poll_retries_a_failed_upward_report() {
   pass "a failed upward merge report keeps its poll armed for repair and retry"
 }
 
-test_self_merge_and_poll_publish_one_outcome() {
+self_merge_committed_part() {
   local dir state replies url rc
   url=https://github.com/o/r/pull/1
-
   # Interleaving one: self publication commits before the poll observes the
   # merge, so the poll absorbs the committed identity without reporting again.
   dir=$(make_case merge-outcome-committed)
@@ -2482,7 +2597,11 @@ test_self_merge_and_poll_publish_one_outcome() {
   assert_no_grep "check: $state/task-a.check.sh: merged" "$state/.wake-queue" \
     "merge-outcome-committed: absorbed poll published a second outcome"
   assert_poll_absent "$state" task-a
+}
 
+self_merge_uncommitted_part() {
+  local dir state url rc
+  url=https://github.com/o/r/pull/1
   # Interleaving two: self publication lands but its marker commit fails. After
   # that outcome is drained, the still-armed poll must publish it again rather
   # than treating the interrupted attempt as complete and going silent.
@@ -2532,6 +2651,11 @@ SH
   fm_pr_poll_merge_already_notified "$state" task-a github github.com o/r 1 \
     || fail "merge-outcome-uncommitted: successful retry did not commit the marker"
   assert_poll_absent "$state" task-a
+}
+
+# The two interleavings build sandboxes of their own, so they run side by side.
+test_self_merge_and_poll_publish_one_outcome() {
+  run_case_parts self_merge_committed_part self_merge_uncommitted_part
   pass "staged self-merge and poll interleavings are never silent"
 }
 
@@ -2672,9 +2796,9 @@ test_persistent_secondmate_retirement_is_poll_only() {
   pass "a merged poll on a persistent secondmate retires silently: no outcome, marker, or wake, and every lifecycle artifact preserved"
 }
 
-test_retirement_crash_recovery() {
+# Each crash point is a sandbox of its own, so the parts run side by side.
+retirement_crash_after_queue_part() {
   local dir state rc raw_count drain_count historical_poll
-
   dir=$(make_case retirement-after-queue)
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/3
@@ -2700,7 +2824,10 @@ test_retirement_crash_recovery() {
   drain_count=$(grep -cF "$(printf '\tcheck\tmerged-task-a-https://github.com/o/r/pull/3\t')" \
     "$dir/drain.out" || true)
   [ "$drain_count" -eq 1 ] || fail "same-key crash retry rows did not deduplicate at drain"
+}
 
+retirement_crash_after_receipt_part() {
+  local dir state rc raw_count drain_count historical_poll
   dir=$(make_case retirement-after-receipt)
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/4
@@ -2715,7 +2842,10 @@ test_retirement_crash_recovery() {
   [ "$rc" -eq 0 ] || fail "receipt recovery watcher failed: $(cat "$dir/restart.err")"
   assert_poll_absent "$state" task-a
   ! grep -F 'task-a.check.sh: merged' "$dir/restart.out" >/dev/null || fail "receipt recovery duplicated the terminal wake"
+}
 
+retirement_crash_after_check_removal_part() {
+  local dir state rc raw_count drain_count historical_poll
   dir=$(make_case retirement-after-check-removal)
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/5
@@ -2732,7 +2862,10 @@ test_retirement_crash_recovery() {
   case "$(cat "$dir/restart.out")" in check:*z-stop.check.sh:*stop-cycle) ;; *) fail "post-check-removal restart did not reach the control check" ;; esac
   assert_poll_absent "$state" task-a
   fm_pr_poll_retirement_recover_one "$state" task-a "$POLL" || fail "completed retirement was not idempotent"
+}
 
+retirement_crash_after_registration_removal_part() {
+  local dir state rc raw_count drain_count historical_poll
   dir=$(make_case retirement-after-registration-removal)
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/5
@@ -2748,7 +2881,10 @@ test_retirement_crash_recovery() {
   [ "$rc" -eq 0 ] || fail "post-registration-removal restart failed: $(cat "$dir/restart.err")"
   case "$(cat "$dir/restart.out")" in check:*z-stop.check.sh:*stop-cycle) ;; *) fail "post-registration-removal restart did not reach the control check" ;; esac
   assert_poll_absent "$state" task-a
+}
 
+retirement_crash_before_receipt_removal_part() {
+  local dir state rc raw_count drain_count historical_poll
   dir=$(make_case retirement-before-receipt-removal)
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/5
@@ -2764,7 +2900,10 @@ test_retirement_crash_recovery() {
   [ "$rc" -eq 0 ] || fail "receipt-only restart failed: $(cat "$dir/restart.err")"
   case "$(cat "$dir/restart.out")" in check:*z-stop.check.sh:*stop-cycle) ;; *) fail "receipt-only restart did not reach the control check" ;; esac
   assert_poll_absent "$state" task-a
+}
 
+retirement_crash_after_template_update_part() {
+  local dir state rc raw_count drain_count historical_poll
   dir=$(make_case retirement-after-template-update)
   state="$dir/home/state"
   historical_poll="$dir/historical-fm-pr-poll.sh"
@@ -2796,6 +2935,16 @@ test_retirement_crash_recovery() {
   ! grep "$(printf '\tcheck\ttask-a.check.sh\t')" "$state/.wake-queue" >/dev/null 2>&1 \
     || fail "template-update recovery left the handled terminal wake queued"
   assert_poll_absent "$state" task-a
+}
+
+test_retirement_crash_recovery() {
+  run_case_parts \
+    retirement_crash_after_queue_part \
+    retirement_crash_after_receipt_part \
+    retirement_crash_after_check_removal_part \
+    retirement_crash_after_registration_removal_part \
+    retirement_crash_before_receipt_removal_part \
+    retirement_crash_after_template_update_part
   pass "queue, receipt, and every fixed-path removal crash point recover without loss or repeated execution"
 }
 
@@ -3067,41 +3216,46 @@ queue_merge() {  # <dir> <url>
     || fail "the accepted queued merge did not persist its authority"
 }
 
-test_merged_poll_row_carries_the_merge_authority() {
-  local dir state url expected posture
+merge_authority_posture_part() {  # <yolo|words>
+  local posture=$1 dir state url expected
   url=https://github.com/o/r/pull/1
+  dir=$(make_case "queued-merge-authority-$posture")
+  state="$dir/home/state"
+  write_task_meta "$dir" task-a
+  if [ "$posture" = yolo ]; then
+    printf 'yolo=on\n' >> "$state/task-a.meta"
+    write_away_record "$dir"
+  else
+    write_away_record "$dir" --words 'merge task-a when green'
+  fi
+  expected=away
+  run_check_entry "$dir" task-a "$url" >/dev/null 2> "$dir/seed.err" \
+    || fail "$posture: could not arm the merge poll"
+  queue_merge "$dir" "$url"
+  archive_away_record "$dir"
+  run_merged_poll_cycle "$dir"
+  [ "$(merged_ledger_row "$state" task-a)" = "check: merge landed: task-a $url $expected" ] \
+    || fail "$posture: archived posture lost persisted authority: $(merged_ledger_row "$state" task-a)"
+  [ ! -e "$state/task-a.merge-authority" ] \
+    || fail "$posture: published merge left its authority record behind"
+}
 
+test_merged_poll_row_carries_the_merge_authority() {
+  local posture
+  local -a parts=()
   # Both a yolo=on task and an ordinary one merge under the record's away
   # authority; the words model retired the per-task grant and the yolo tag.
+  # Each posture builds a sandbox of its own, so the two run side by side.
   for posture in yolo words; do
-    dir=$(make_case "queued-merge-authority-$posture")
-    state="$dir/home/state"
-    write_task_meta "$dir" task-a
-    if [ "$posture" = yolo ]; then
-      printf 'yolo=on\n' >> "$state/task-a.meta"
-      write_away_record "$dir"
-    else
-      write_away_record "$dir" --words 'merge task-a when green'
-    fi
-    expected=away
-    run_check_entry "$dir" task-a "$url" >/dev/null 2> "$dir/seed.err" \
-      || fail "$posture: could not arm the merge poll"
-    queue_merge "$dir" "$url"
-    archive_away_record "$dir"
-    run_merged_poll_cycle "$dir"
-    [ "$(merged_ledger_row "$state" task-a)" = "check: merge landed: task-a $url $expected" ] \
-      || fail "$posture: archived posture lost persisted authority: $(merged_ledger_row "$state" task-a)"
-    [ ! -e "$state/task-a.merge-authority" ] \
-      || fail "$posture: published merge left its authority record behind"
+    parts+=("merge_authority_posture_part $posture")
   done
-
+  run_case_parts "${parts[@]}"
   pass "queued merges retain their away authority after captain return"
 }
 
-test_merged_poll_row_names_no_authority_when_no_record_grants_one() {
+merge_authority_attended_part() {
   local dir state url
   url=https://github.com/o/r/pull/1
-
   dir=$(make_case queued-merge-authority-attended)
   state="$dir/home/state"
   write_task_meta "$dir" task-a
@@ -3111,7 +3265,11 @@ test_merged_poll_row_names_no_authority_when_no_record_grants_one() {
   run_merged_poll_cycle "$dir"
   [ "$(merged_ledger_row "$state" task-a)" = "check: merge landed: task-a $url" ] \
     || fail "attended queued merge was tagged: $(merged_ledger_row "$state" task-a)"
+}
 
+merge_authority_external_part() {
+  local dir state url
+  url=https://github.com/o/r/pull/1
   dir=$(make_case merged-poll-authority-external)
   state="$dir/home/state"
   write_poll_meta "$state" task-a "$url" yolo=on
@@ -3121,7 +3279,12 @@ test_merged_poll_row_names_no_authority_when_no_record_grants_one() {
   [ "$(merged_ledger_row "$state" task-a)" = "check: merge landed: task-a $url external" ] \
     || fail "external merge was attributed from live away posture: $(merged_ledger_row "$state" task-a)"
   assert_poll_absent "$state" task-a
+}
 
+# The attended and external merges build sandboxes of their own, so they run
+# side by side.
+test_merged_poll_row_names_no_authority_when_no_record_grants_one() {
+  run_case_parts merge_authority_attended_part merge_authority_external_part
   pass "poll distinguishes attended authorization from external landing"
 }
 
@@ -3396,56 +3559,46 @@ SH
   pass "a poll armed before a volume renumber is re-recorded under the control lock and keeps detecting merges"
 }
 
-test_device_rerecord_refuses_tampered_artifacts() {
-  local mutation dir state out rc registration_sha shifted_device replacement exercised=
-  for mutation in swapped-check altered-check swapped-sidecar altered-sidecar altered-template-hash \
-    wrong-mode hardlinked-check split-device foreign-device; do
-    # A regular file cannot sit on another device than its own directory without
-    # a file mount, which Darwin does not offer, and Darwin's device helper reads
-    # /usr/bin/stat directly, so no PATH fake can stand in there.
-    if [ "$mutation" = foreign-device ] && [ "$(uname)" = Darwin ]; then
-      exercised="$exercised (foreign-device not exercisable on Darwin)"
-      continue
-    fi
-    exercised="$exercised $mutation"
-    dir=$(make_case "device-rerecord-refuses-$mutation")
-    state="$dir/home/state"
-    write_poll_meta "$state" task-a https://github.com/o/r/pull/1
-    seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
-    if [ "$mutation" = split-device ]; then
-      shift_registration_device "$state" task-a data
-    else
-      shift_registration_device "$state" task-a
-    fi
-    shifted_device=$(( $(fm_pr_file_device "$state") + 1 ))
-    case "$mutation" in
-      swapped-check)
-        cp "$POLL" "$state/.swap"
-        chmod 0600 "$state/.swap"
-        mv -f -- "$state/.swap" "$state/task-a.check.sh"
-        ;;
-      altered-check) printf '# tampered\n' >> "$state/task-a.check.sh" ;;
-      swapped-sidecar)
-        cp "$state/task-a.pr-poll" "$state/.swap"
-        chmod 0600 "$state/.swap"
-        mv -f -- "$state/.swap" "$state/task-a.pr-poll"
-        ;;
-      altered-sidecar)
-        printf '%s\n%s\n%s\n%s\n%s\n' github https://github.com/o/r/pull/2 github.com o/r 2 \
-          > "$state/task-a.pr-poll"
-        ;;
-      altered-template-hash)
-        replacement=$(printf 'another template\n' | shasum -a 256 | awk '{print $1}')
-        awk -v hash="$replacement" 'NR == 9 { $0 = hash } { print }' \
-          "$state/task-a.pr-poll-registration" > "$state/.swap"
-        chmod 0600 "$state/.swap"
-        mv -f -- "$state/.swap" "$state/task-a.pr-poll-registration"
-        ;;
-      wrong-mode) chmod 0640 "$state/task-a.check.sh" ;;
-      hardlinked-check) ln "$state/task-a.check.sh" "$dir/check.alias" ;;
-      split-device) ;;
-      foreign-device)
-        cat > "$dir/fakebin/stat" <<'SH'
+device_rerecord_refuses_mutation_part() {  # <mutation>
+  local mutation=$1 dir state out rc registration_sha shifted_device replacement
+  dir=$(make_case "device-rerecord-refuses-$mutation")
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  if [ "$mutation" = split-device ]; then
+    shift_registration_device "$state" task-a data
+  else
+    shift_registration_device "$state" task-a
+  fi
+  shifted_device=$(( $(fm_pr_file_device "$state") + 1 ))
+  case "$mutation" in
+    swapped-check)
+      cp "$POLL" "$state/.swap"
+      chmod 0600 "$state/.swap"
+      mv -f -- "$state/.swap" "$state/task-a.check.sh"
+      ;;
+    altered-check) printf '# tampered\n' >> "$state/task-a.check.sh" ;;
+    swapped-sidecar)
+      cp "$state/task-a.pr-poll" "$state/.swap"
+      chmod 0600 "$state/.swap"
+      mv -f -- "$state/.swap" "$state/task-a.pr-poll"
+      ;;
+    altered-sidecar)
+      printf '%s\n%s\n%s\n%s\n%s\n' github https://github.com/o/r/pull/2 github.com o/r 2 \
+        > "$state/task-a.pr-poll"
+      ;;
+    altered-template-hash)
+      replacement=$(printf 'another template\n' | shasum -a 256 | awk '{print $1}')
+      awk -v hash="$replacement" 'NR == 9 { $0 = hash } { print }' \
+        "$state/task-a.pr-poll-registration" > "$state/.swap"
+      chmod 0600 "$state/.swap"
+      mv -f -- "$state/.swap" "$state/task-a.pr-poll-registration"
+      ;;
+    wrong-mode) chmod 0640 "$state/task-a.check.sh" ;;
+    hardlinked-check) ln "$state/task-a.check.sh" "$dir/check.alias" ;;
+    split-device) ;;
+    foreign-device)
+      cat > "$dir/fakebin/stat" <<'SH'
 #!/usr/bin/env bash
 last=${!#}
 if [ "$last" = "$FM_TEST_FOREIGN_PATH" ]; then
@@ -3455,32 +3608,34 @@ if [ "$last" = "$FM_TEST_FOREIGN_PATH" ]; then
 fi
 exec "$FM_TEST_REAL_STAT" "$@"
 SH
-        chmod +x "$dir/fakebin/stat"
-        ;;
-    esac
-    ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-      || fail "$mutation fixture was authenticated before any watcher cycle"
-    registration_sha=$(fm_pr_sha256 "$state/task-a.pr-poll-registration")
-    set +e
-    FM_TEST_FOREIGN_PATH="$state/task-a.check.sh" FM_TEST_FOREIGN_DEVICE="$shifted_device" \
-      FM_TEST_REAL_STAT="$REAL_STAT" FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_STATE=MERGED \
-      run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
-    rc=$?
-    set -e
-    [ "$rc" -eq 0 ] || fail "$mutation watcher failed: $(cat "$dir/watch.err")"
-    out=$(cat "$dir/watch.out")
-    case "$out" in
-      "check: rejected unauthenticated state checks:"*"task-a.check.sh"*) ;;
-      *) fail "$mutation on a renumbered registration was not refused: $out" ;;
-    esac
-    [ "$(fm_pr_sha256 "$state/task-a.pr-poll-registration")" = "$registration_sha" ] \
-      || fail "$mutation let the watcher re-record the registration"
-    ! grep -F -- '--json state' "$dir/gh.log" >/dev/null 2>&1 \
-      || fail "$mutation ran the refused poll"
-    ! ls "$state"/.fm-pr-poll-registration.* >/dev/null 2>&1 \
-      || fail "$mutation left a staged registration behind"
-  done
+      chmod +x "$dir/fakebin/stat"
+      ;;
+  esac
+  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "$mutation fixture was authenticated before any watcher cycle"
+  registration_sha=$(fm_pr_sha256 "$state/task-a.pr-poll-registration")
+  set +e
+  FM_TEST_FOREIGN_PATH="$state/task-a.check.sh" FM_TEST_FOREIGN_DEVICE="$shifted_device" \
+    FM_TEST_REAL_STAT="$REAL_STAT" FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_STATE=MERGED \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "$mutation watcher failed: $(cat "$dir/watch.err")"
+  out=$(cat "$dir/watch.out")
+  case "$out" in
+    "check: rejected unauthenticated state checks:"*"task-a.check.sh"*) ;;
+    *) fail "$mutation on a renumbered registration was not refused: $out" ;;
+  esac
+  [ "$(fm_pr_sha256 "$state/task-a.pr-poll-registration")" = "$registration_sha" ] \
+    || fail "$mutation let the watcher re-record the registration"
+  ! grep -F -- '--json state' "$dir/gh.log" >/dev/null 2>&1 \
+    || fail "$mutation ran the refused poll"
+  ! ls "$state"/.fm-pr-poll-registration.* >/dev/null 2>&1 \
+    || fail "$mutation left a staged registration behind"
+}
 
+device_rerecord_refuses_pending_retirement_part() {
+  local dir state
   dir=$(make_case device-rerecord-pending-retirement)
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/1
@@ -3494,6 +3649,27 @@ SH
     || fail "a pending retirement receipt did not keep its artifacts from being re-recorded"
   ! fm_pr_poll_registration_rerecord_device "$state" task-a "$POLL" \
     || fail "a pending retirement receipt was re-recorded around"
+}
+
+# Every mutation and the pending retirement build sandboxes of their own, so
+# the parts run side by side.
+test_device_rerecord_refuses_tampered_artifacts() {
+  local mutation exercised=
+  local -a parts=()
+  for mutation in swapped-check altered-check swapped-sidecar altered-sidecar altered-template-hash \
+    wrong-mode hardlinked-check split-device foreign-device; do
+    # A regular file cannot sit on another device than its own directory without
+    # a file mount, which Darwin does not offer, and Darwin's device helper reads
+    # /usr/bin/stat directly, so no PATH fake can stand in there.
+    if [ "$mutation" = foreign-device ] && [ "$(uname)" = Darwin ]; then
+      exercised="$exercised (foreign-device not exercisable on Darwin)"
+      continue
+    fi
+    exercised="$exercised $mutation"
+    parts+=("device_rerecord_refuses_mutation_part $mutation")
+  done
+  parts+=(device_rerecord_refuses_pending_retirement_part)
+  run_case_parts "${parts[@]}"
   pass "a renumbered registration is never re-recorded around a tampered artifact:$exercised, or a pending retirement"
 }
 
