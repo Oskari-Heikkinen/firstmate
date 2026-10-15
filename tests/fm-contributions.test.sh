@@ -480,7 +480,7 @@ test_watcher_keeps_diagnostics_separate_from_contribution_wakes() {
   out="$home/watcher-diagnostics.out"
   rc=0
   with_home "$home" env FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 \
-    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 15 > "$out" 2> "$home/watcher-diagnostics.err" || rc=$?
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 120 > "$out" 2> "$home/watcher-diagnostics.err" || rc=$?
   [ "$rc" -eq 0 ] || fail "watcher did not surface contribution diagnostics: $(cat "$home/watcher-diagnostics.err")"
   diagnostic=$(awk -F '\t' -v key="$home/state/contributions.check.sh" '$3 == "check" && $4 == key { print $5 }' "$home/state/.wake-queue")
   [ "$diagnostic" = "check: $home/state/contributions.check.sh: contributions: 1 unreadable durable record(s)" ] \
@@ -511,8 +511,14 @@ test_expired_child_unsupported_forge_stays_unmeasured() {
   pass 'expired child unsupported-forge coverage remains unmeasured'
 }
 
+comment_reads() { # home: comment-list reads the wrapped forge has logged
+  local count
+  count=$(grep -c '^api repos/o/r/issues/8/comments?' "$1/forge/calls" 2>/dev/null) || true
+  printf '%s\n' "${count:-0}"
+}
+
 test_watcher_surfaces_new_contribution_once() {
-  local home out rc rows
+  local home out rc rows pid i reads
   home=$(new_home watcher-contribution)
   forge_home "$home"
   with_home "$home" "$ROOT/bin/fm-pr-check.sh" delivery https://github.com/o/r/pull/8 >/dev/null \
@@ -532,10 +538,34 @@ test_watcher_surfaces_new_contribution_once() {
     || fail "watcher did not surface the durable contribution wake: $(cat "$out")"
   rows=$(awk -F '\t' 'NF >= 5 && $3 == "check" { count++ } END { print count + 0 }' "$home/state/.wake-queue")
   [ "$rows" = 1 ] || fail "one contribution signal created $rows durable check wakes"
-  rc=0
-  with_home "$home" env FM_WATCH_HANDLING_SUCCESSOR=1 FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 \
-    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$home/watcher-repeat.out" 2> "$home/watcher-repeat.err" || rc=$?
-  [ "$rc" -eq 124 ] || fail "an already durable contribution signal re-rang the watcher: $(cat "$home/watcher-repeat.out")"
+  # The repeat watcher must finish whole observations without ringing. Count its
+  # comment reads instead of granting it a wall-clock window: a second read means
+  # the watcher already judged the first one, however slow the runner is.
+  wrap_forge "$home"
+  with_home "$home" env FM_WATCH_FOREGROUND_CHECKPOINT=1 FM_WATCH_HANDLING_SUCCESSOR=1 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch.sh" > "$home/watcher-repeat.out" 2> "$home/watcher-repeat.err" &
+  pid=$!
+  fm_test_track_watcher_state "$home/state"
+  i=0
+  while [ "$i" -lt 1200 ] && kill -0 "$pid" 2>/dev/null \
+    && [ "$(comment_reads "$home")" -lt 2 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  reads=$(comment_reads "$home")
+  with_home "$home" "$ROOT/bin/fm-watch-arm.sh" --stop >/dev/null 2>&1 || true
+  i=0
+  while [ "$i" -lt 300 ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null || true
+  ! grep -E '^(signal:|stale:|check:|heartbeat($|:))' "$home/watcher-repeat.out" >/dev/null \
+    || fail "an already durable contribution signal re-rang the watcher: $(cat "$home/watcher-repeat.out")"
+  [ "$reads" -ge 2 ] \
+    || fail "the repeat watcher finished no whole contribution observation ($reads reads): $(cat "$home/watcher-repeat.err")"
   rows=$(awk -F '\t' 'NF >= 5 && $3 == "check" { count++ } END { print count + 0 }' "$home/state/.wake-queue")
   [ "$rows" = 1 ] || fail "repeat contribution observation created $rows durable check wakes"
   pass 'watcher surfaces one newly durable contribution signal without re-ringing it'

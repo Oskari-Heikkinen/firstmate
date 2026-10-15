@@ -1245,6 +1245,18 @@ esac
 ep_reconcile "failed=1" 1 "the second cycle stopped relaunching a source that cannot start"
 [ "$(launch_failed_wake_count "$HEP" episode-src)" = 1 ] \
   || fail "the same failure episode was announced twice: $ep_out"
+# A failed cycle stops waiting for its runner, not the runner itself: on a loaded
+# host a runner still starting would read the repaired registration and own the
+# source before the next cycle could launch and confirm its own.
+ep_failed_runners_gone() {
+  local _
+  for _ in $(seq 1 600); do
+    pgrep -f 'fm-procevent\.sh _start episode-src( |$)' >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  return 1
+}
+ep_failed_runners_gone || fail "a failed episode-src launch runner never exited"
 ep_repair
 ep_reconcile "started=1" 0 "a repaired source did not confirm"
 assert_contains "$ep_out" "failed=0" "a repaired source was still reported failed: $ep_out"

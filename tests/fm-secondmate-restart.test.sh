@@ -683,6 +683,18 @@ case "${rargs[1]:-}" in
         /bin/sleep 2
         : > "$FM_FAKE_DIR/remote-relaunch-end"
         ;;
+      relaunch-until-local)
+        # Hold the relaunch open until the local mate's stop lands inside it,
+        # bounded by polls rather than seconds, so a loaded runner cannot close
+        # the window first while a serialized pass still never fills it.
+        : > "$FM_FAKE_DIR/remote-relaunch-start"
+        i=0
+        while [ "$i" -lt 600 ] && [ ! -e "$FM_FAKE_DIR/local-relaunch-during-remote" ]; do
+          /bin/sleep 0.1
+          i=$((i + 1))
+        done
+        : > "$FM_FAKE_DIR/remote-relaunch-end"
+        ;;
     esac
     printf 'relaunched %s harness=%s from=claude model=%s effort=%s backend=herdr endpoint=fm-remote:2ndmate-%s worktree=/srv/fm\n' \
       "${rargs[2]}" "${rargs[3]}" "${rargs[4]}" "${rargs[5]}" "${rargs[2]}"
@@ -867,7 +879,7 @@ test_post_stop_failure_is_reported_unreached() {
 test_relaunches_do_not_block_persist_polling() {
   local dir out rc
   dir=$(new_case relaunch-polling)
-  setup_remote_case "$dir" sm1 slow-relaunch
+  setup_remote_case "$dir" sm1 relaunch-until-local
   add_local_mate "$dir" sm2
   printf -- '- sm2 - local domain (home: %s; scope: things; projects: p; added 2026-09-03)\n' \
     "$dir/sm2-home" >> "$dir/home/data/secondmates.md"

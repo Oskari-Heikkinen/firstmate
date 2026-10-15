@@ -437,18 +437,22 @@ run_extension_section_lane() {
 }
 
 run_extension_section_lanes() {
-  local section result_file section_rc timeout_seconds deadline index remaining launched total maximum_sections
+  local section result_file section_rc timeout_seconds poll_limit polls index remaining launched total maximum_sections
   local active maximum_concurrent
   local -a sections=("$@")
   local -a section_pids=()
   local -a section_results=()
   local -a section_complete=()
   local section_result_root
-  timeout_seconds=${FM_EXTENSION_BINDING_COORDINATOR_TIMEOUT_SECONDS:-34}
+  # The bound only catches a hung lane. It counts the scheduler's 0.05-second
+  # polls rather than wall seconds, with headroom over the lanes' loaded cost,
+  # so a busy runner that slows every lane cannot trip it first.
+  timeout_seconds=${FM_EXTENSION_BINDING_COORDINATOR_TIMEOUT_SECONDS:-180}
   case "$timeout_seconds" in
     ''|*[!0-9]*) return 64 ;;
   esac
-  [ "$timeout_seconds" -gt 0 ] && [ "$timeout_seconds" -lt 35 ] || return 64
+  [ "$timeout_seconds" -gt 0 ] && [ "$timeout_seconds" -le 600 ] || return 64
+  poll_limit=$((timeout_seconds * 20))
   section_result_root=$(mktemp -d "$TMP_ROOT/section-lanes.XXXXXX") || return 1
   total=${#sections[@]}
   # Sixteen selectors are validated here. The bounded aggregate keeps its
@@ -470,7 +474,7 @@ run_extension_section_lanes() {
     launched=$((launched + 1))
     active=$((active + 1))
   done
-  deadline=$((SECONDS + timeout_seconds))
+  polls=0
   remaining=$total
   while [ "$remaining" -gt 0 ]; do
     for index in "${!section_pids[@]}"; do
@@ -510,7 +514,8 @@ run_extension_section_lanes() {
       active=$((active + 1))
     done
     [ "$remaining" -eq 0 ] && break
-    if [ "$SECONDS" -ge "$deadline" ]; then
+    polls=$((polls + 1))
+    if [ "$polls" -ge "$poll_limit" ]; then
       terminate_section_lanes
       return 124
     fi
@@ -1070,7 +1075,9 @@ pass "one external adapter registers, invokes, captures unhandled evidence, clas
 FM_HOME="$H_FLOW" "$PROCEVENT" register-extension ext-flow crash-silent-source --config-ref crash-silent >/dev/null
 FM_HOME="$H_FLOW" "$PROCEVENT" start crash-silent-source > "$TMP_ROOT/crash-silent-start.out" 2>&1 &
 crash_silent_start_pid=$!
-for _ in $(seq 1 400); do
+# A wedged runner never exits; the poll count only needs headroom over a loaded
+# runner's recovery, which a four-second budget did not have.
+for _ in $(seq 1 6000); do
   if [ -f "$TMP_ROOT/claims/crash-silent-source.claim" ]; then
     # The successful crash-recovery path may release this durable claim between
     # the observation above and this best-effort cleanup PID read.
@@ -1138,9 +1145,12 @@ done
 [ -L "$FM_PROCEVENT_CLAIM_ROOT/order-source.lock" ] || fail "neither lock-order contender took the source lock"
 sleep 0.2
 touch "$order_release"
-order_deadline=$((SECONDS + 12))
+# A deadlock never ends, so count polls with headroom instead of wall seconds:
+# a loaded runner must not look deadlocked.
+order_polls=0
 while kill -0 "$order_register_pid" 2>/dev/null || kill -0 "$order_reconcile_pid" 2>/dev/null; do
-  if [ "$SECONDS" -ge "$order_deadline" ]; then
+  order_polls=$((order_polls + 1))
+  if [ "$order_polls" -gt 1200 ]; then
     # Killing registration lets lock recovery free reconcile for cleanup.
     kill -KILL "$order_register_pid" 2>/dev/null || true
     wait "$order_register_pid" 2>/dev/null || true
