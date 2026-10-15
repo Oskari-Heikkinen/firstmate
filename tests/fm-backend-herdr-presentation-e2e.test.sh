@@ -4,6 +4,13 @@
 # owning-parent ordering across primary and secondmate homes.
 # The test drives the real spawn and teardown scripts, a real Treehouse pool,
 # and the guarded named-session lab helper.
+#
+# The scenarios run as independent "worlds": each world provisions its own
+# guarded lab session, homes, projects, logs, and task ids, so worlds share no
+# Herdr, Treehouse-pool, or task state and run concurrently in a small bounded
+# pool (FM_HERDR_PRESENTATION_WORLD_JOBS overrides it; 1 runs them serially).
+# Inside a world every scenario keeps its original order and shared session,
+# because those steps build on each other's live workspaces.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,25 +29,17 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found"; exit
 REAL_HERDR=$(command -v herdr)
 REAL_TREEHOUSE=$(command -v treehouse)
 HERDR_ORIGINAL_PATH=$PATH
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-presentation.XXXXXX")
-FAKEBIN="$TMP_ROOT/fakebin"
-HERDR_CALL_LOG="$TMP_ROOT/herdr-calls.log"
-TREEHOUSE_CALL_LOG="$TMP_ROOT/treehouse-calls.log"
-TREEHOUSE_LOCK_DIR="$TMP_ROOT/treehouse-call.lock"
-MOVE_CALL_LOG="$TMP_ROOT/workspace-move-calls.log"
-FOCUS_AUDIT_LOG="$TMP_ROOT/focus-audit.log"
-ACTIVE_SEEDED_CONTROL="$TMP_ROOT/active-seeded-control"
-POST_CREATE_ABORT_CONTROL="$TMP_ROOT/post-create-abort-control"
-RECOVERY_DELIVERY_ABORT_CONTROL="$TMP_ROOT/recovery-delivery-abort-control"
-TEARDOWN_ORDER_CONTROL="$TMP_ROOT/teardown-order-control"
+SUITE_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-presentation.XXXXXX")
+# Each world points TMP_ROOT at its own directory under SUITE_ROOT; the suite
+# itself owns SUITE_ROOT until every world has finished.
+TMP_ROOT=$SUITE_ROOT
+FAKEBIN="$SUITE_ROOT/fakebin"
+# One suite-wide lock serializes every world's real Treehouse calls, exactly as
+# one world's calls were serialized before the worlds ran concurrently.
+TREEHOUSE_LOCK_DIR="$SUITE_ROOT/treehouse-call.lock"
 mkdir -p "$FAKEBIN"
-: > "$HERDR_CALL_LOG"
-: > "$TREEHOUSE_CALL_LOG"
-: > "$MOVE_CALL_LOG"
-: > "$FOCUS_AUDIT_LOG"
 REAL_MOVER="$ROOT/bin/backends/herdr-workspace-move.py"
-export REAL_HERDR REAL_TREEHOUSE REAL_MOVER HERDR_CALL_LOG TREEHOUSE_CALL_LOG TREEHOUSE_LOCK_DIR MOVE_CALL_LOG FOCUS_AUDIT_LOG HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
-export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL RECOVERY_DELIVERY_ABORT_CONTROL TEARDOWN_ORDER_CONTROL TMP_ROOT
+export REAL_HERDR REAL_TREEHOUSE REAL_MOVER TREEHOUSE_LOCK_DIR HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
 
 # Log every production-adapter call, remove its already-validated trailing
 # session flag, and send the operation through the lab helper so that helper
@@ -319,14 +318,13 @@ export FM_BACKEND_HERDR_WORKSPACE_MOVER="$FAKEBIN/herdr-workspace-mover"
 # parent this suite sets up, not on the developer's own workspace.
 herdr_forget_inherited_pane
 
-HERDR_LAB_SESSION=$(PATH="$HERDR_ORIGINAL_PATH" \
-  "$HERDR_LAB_HELPER" name fm-herdr-presentation-projection)
-export HERDR_SESSION="$HERDR_LAB_SESSION" HERDR_LAB_SESSION
 LAB_READY=0
 RECORDED_WORKTREES=""
 LOCK_CONTENTION_OWNER_PID=
 LOCK_REFUSE_HOLDER_PID=
 LOCK_WAIT_HOLDER_PID=
+# Inside a world this releases that world's holders, copies, lab session, and
+# directory; at suite level (TMP_ROOT=SUITE_ROOT) it only removes SUITE_ROOT.
 cleanup_all() {
   local wt pid
   for pid in "$LOCK_CONTENTION_OWNER_PID" "$LOCK_REFUSE_HOLDER_PID" "$LOCK_WAIT_HOLDER_PID"; do
@@ -352,11 +350,6 @@ EOF
   rm -rf "$TMP_ROOT"
 }
 trap cleanup_all EXIT
-
-PATH="$HERDR_ORIGINAL_PATH" \
-  "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
-  || fail "could not provision the isolated Herdr lab"
-LAB_READY=1
 
 lab() {
   PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"
@@ -579,9 +572,202 @@ assert_no_projection_mutation_since() {  # <line-count> <case-name>
   fi
 }
 
-HOME_DIR="$TMP_ROOT/home"
-PROJECT_DIR="$TMP_ROOT/project"
-RECOVERY_PROJECT_DIR="$TMP_ROOT/recovery-project"
+# ------------------------------------------------------------------
+# World infrastructure.
+# ------------------------------------------------------------------
+
+# world_begin <world>: give this world its own directory, call logs, fixture
+# controls, guarded lab session, primary home, and two fixture projects. It runs
+# inside the world's own background subshell, so every assignment stays local
+# to the world.
+world_begin() {  # <world>
+  local world=$1
+  TMP_ROOT="$SUITE_ROOT/$world"
+  mkdir -p "$TMP_ROOT"
+  trap cleanup_all EXIT
+  HERDR_CALL_LOG="$TMP_ROOT/herdr-calls.log"
+  TREEHOUSE_CALL_LOG="$TMP_ROOT/treehouse-calls.log"
+  MOVE_CALL_LOG="$TMP_ROOT/workspace-move-calls.log"
+  FOCUS_AUDIT_LOG="$TMP_ROOT/focus-audit.log"
+  ACTIVE_SEEDED_CONTROL="$TMP_ROOT/active-seeded-control"
+  POST_CREATE_ABORT_CONTROL="$TMP_ROOT/post-create-abort-control"
+  RECOVERY_DELIVERY_ABORT_CONTROL="$TMP_ROOT/recovery-delivery-abort-control"
+  TEARDOWN_ORDER_CONTROL="$TMP_ROOT/teardown-order-control"
+  : > "$HERDR_CALL_LOG"
+  : > "$TREEHOUSE_CALL_LOG"
+  : > "$MOVE_CALL_LOG"
+  : > "$FOCUS_AUDIT_LOG"
+  export HERDR_CALL_LOG TREEHOUSE_CALL_LOG MOVE_CALL_LOG FOCUS_AUDIT_LOG
+  export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL RECOVERY_DELIVERY_ABORT_CONTROL TEARDOWN_ORDER_CONTROL TMP_ROOT
+  HERDR_LAB_SESSION=$(PATH="$HERDR_ORIGINAL_PATH" \
+    "$HERDR_LAB_HELPER" name "fmhp-$world") \
+    || fail "could not name the isolated Herdr lab for world $world"
+  export HERDR_SESSION="$HERDR_LAB_SESSION" HERDR_LAB_SESSION
+  PATH="$HERDR_ORIGINAL_PATH" \
+    "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
+    || fail "could not provision the isolated Herdr lab"
+  LAB_READY=1
+  HOME_DIR="$TMP_ROOT/home"
+  PROJECT_DIR="$TMP_ROOT/project"
+  RECOVERY_PROJECT_DIR="$TMP_ROOT/recovery-project"
+  mkdir -p "$HOME_DIR/state" "$HOME_DIR/config"
+  touch "$HOME_DIR/state/.last-watcher-beat"
+  # Presentation spaces are on by default, so the flat baseline below opts out
+  # explicitly; the projected cases each restate the setting they exercise.
+  printf 'off\n' > "$HOME_DIR/config/herdr-presentation-spaces"
+  make_project "$PROJECT_DIR"
+  make_project "$RECOVERY_PROJECT_DIR"
+}
+
+# world_end: the guarded lab teardown and its default-session tripwire check,
+# which every world must pass, then the world's own cleanup.
+world_end() {
+  PATH="$HERDR_ORIGINAL_PATH" \
+    "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" \
+    || fail "guarded Herdr lab teardown or default-session tripwire verification failed"
+  LAB_READY=0
+  cleanup_all
+  trap - EXIT
+}
+
+# The two pre-existing secondmate parent workspaces, with the second one
+# focused as the captain's current space for every later focus assertion.
+world_captain_fixture() {
+SECOND_ONE_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label 2ndmate-alpha --no-focus) \
+  || fail "could not create the first secondmate presentation fixture"
+SECOND_TWO_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label 2ndmate-bravo --focus) \
+  || fail "could not create the focused secondmate presentation fixture"
+SECOND_ONE_WSID=$(printf '%s' "$SECOND_ONE_OUT" | jq -r '.result.workspace.workspace_id // empty')
+SECOND_TWO_WSID=$(printf '%s' "$SECOND_TWO_OUT" | jq -r '.result.workspace.workspace_id // empty')
+SECOND_TWO_TAB=$(printf '%s' "$SECOND_TWO_OUT" | jq -r '.result.tab.tab_id // empty')
+SECOND_TWO_PANE=$(printf '%s' "$SECOND_TWO_OUT" | jq -r '.result.root_pane.pane_id // empty')
+[ -n "$SECOND_ONE_WSID" ] && [ -n "$SECOND_TWO_WSID" ] && [ -n "$SECOND_TWO_TAB" ] && [ -n "$SECOND_TWO_PANE" ] \
+  || fail "secondmate presentation fixtures returned incomplete IDs"
+SECOND_ORDER_BEFORE=$(printf '%s\n%s\n' "$SECOND_ONE_WSID" "$SECOND_TWO_WSID")
+CAPTAIN_FOCUS="$SECOND_TWO_WSID/$SECOND_TWO_TAB"
+assert_focus_is "$CAPTAIN_FOCUS" "focused secondmate fixture"
+}
+
+# world_base_fixture <anchor-id>: the session state the opening primary
+# sequence leaves behind for the later scenarios - one live opted-out anchor
+# task in the durable firstmate workspace, then the two secondmate parent
+# workspaces with the captain focused on the second, and the home's
+# presentation setting back to the historical empty-file opt-in. The anchor id
+# is unique per world because spawn keys its task temp root on the id alone.
+world_base_fixture() {  # <anchor-id>
+  local anchor_id=$1
+  write_ship_brief "$HOME_DIR" "$anchor_id" 'Projection anchor fixture.'
+  spawn_task "$anchor_id" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/anchor.out" 2> "$TMP_ROOT/anchor.err" \
+    || fail "opted-out anchor spawn failed: $(cat "$TMP_ROOT/anchor.err")"
+  ANCHOR_META="$HOME_DIR/state/$anchor_id.meta"
+  remember_meta_worktree "$ANCHOR_META" >/dev/null
+  FIRSTMATE_WSID=$(grep '^herdr_workspace_id=' "$ANCHOR_META" | cut -d= -f2-)
+  [ -n "$FIRSTMATE_WSID" ] || fail "anchor metadata did not record the firstmate workspace"
+  world_captain_fixture
+  : > "$HOME_DIR/config/herdr-presentation-spaces"
+}
+
+# Two real secondmate homes registered under the primary home, each a
+# gitignored firstmate home so inheritance may write its config.
+setup_secondmate_homes() {
+SECOND_HOME_A="$TMP_ROOT/home-2ndmate-alpha"
+SECOND_HOME_B="$TMP_ROOT/home-2ndmate-bravo"
+mkdir -p "$SECOND_HOME_A/state" "$SECOND_HOME_A/config" "$SECOND_HOME_A/data" \
+  "$SECOND_HOME_B/state" "$SECOND_HOME_B/config" "$SECOND_HOME_B/data"
+printf 'alpha\n' > "$SECOND_HOME_A/.fm-secondmate-home"
+printf 'bravo\n' > "$SECOND_HOME_B/.fm-secondmate-home"
+for home in "$SECOND_HOME_A" "$SECOND_HOME_B"; do
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$HOME_DIR" \
+    > "$home/.fm-secondmate-parent"
+done
+printf -- '- %s - Presentation fixture (home: %s; scope: presentation; projects: ; added 2026-10-12)\n' \
+  alpha "$SECOND_HOME_A" bravo "$SECOND_HOME_B" > "$HOME_DIR/data/secondmates.md"
+touch "$SECOND_HOME_A/state/.last-watcher-beat" "$SECOND_HOME_B/state/.last-watcher-beat"
+# Ensure the secondmate homes look like gitignored firstmate homes so inheritance
+# may write config/herdr-presentation-spaces.
+git -C "$SECOND_HOME_A" init -q
+git -C "$SECOND_HOME_B" init -q
+printf 'config/herdr-presentation-spaces\nconfig/crew-harness\nconfig/crew-dispatch.json\nconfig/backlog-backend\nconfig/backend\nconfig/startup-memory-budget\n' \
+  > "$SECOND_HOME_A/.gitignore"
+cp "$SECOND_HOME_A/.gitignore" "$SECOND_HOME_B/.gitignore"
+git -C "$SECOND_HOME_A" add .gitignore
+git -C "$SECOND_HOME_B" add .gitignore
+git -C "$SECOND_HOME_A" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm init
+git -C "$SECOND_HOME_B" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm init
+mkdir -p "$SECOND_HOME_A/bin"
+printf '# Firstmate secondmate fixture\n' > "$SECOND_HOME_A/AGENTS.md"
+printf 'Secondmate alpha charter.\n' > "$SECOND_HOME_A/data/charter.md"
+}
+
+# The primary home's presentation setting propagated into both secondmate
+# homes, the state the multi-home inheritance scenario establishes.
+inherit_secondmate_presentation() {
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-config-inherit-lib.sh"
+  propagate_inheritable_config "$HOME_DIR/config" "$SECOND_HOME_A/config" \
+    || fail "inheritance into secondmate A failed"
+  propagate_inheritable_config "$HOME_DIR/config" "$SECOND_HOME_B/config" \
+    || fail "inheritance into secondmate B failed"
+}
+
+# A full-session restart of this world's lab: every agent stops while Herdr
+# restores the panes structurally.
+restart_lab_session() {  # <purpose>
+  PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null \
+    || fail "could not stop the isolated session for $1"
+  PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
+    || fail "could not reprovision the isolated session for $1"
+}
+
+# run_worlds <jobs> <world-function>...: start the worlds in list order in a
+# bounded pool of background subshells, each with its whole output in
+# WORLD_LOGS/<world>.out and its exit status in WORLD_LOGS/<world>.rc.
+run_worlds() {  # <jobs> <world-function>...
+  local jobs=$1 world running started
+  shift
+  mkdir -p "$WORLD_LOGS"
+  for world in "$@"; do
+    while :; do
+      running=0
+      for started in "$WORLD_LOGS"/*.started; do
+        [ -e "$started" ] || continue
+        [ -e "${started%.started}.rc" ] || running=$((running + 1))
+      done
+      [ "$running" -ge "$jobs" ] || break
+      sleep 0.2
+    done
+    : > "$WORLD_LOGS/$world.started"
+    {
+      start=$(date +%s)
+      ( trap - EXIT INT TERM HUP QUIT; "$world" ) > "$WORLD_LOGS/$world.out" 2>&1
+      rc=$?
+      printf '# world %s took %ss\n' "$world" "$(( $(date +%s) - start ))" >> "$WORLD_LOGS/$world.out"
+      printf '%s\n' "$rc" > "$WORLD_LOGS/$world.rc.tmp" && mv -f "$WORLD_LOGS/$world.rc.tmp" "$WORLD_LOGS/$world.rc"
+    } &
+  done
+  wait
+}
+
+world_ok() {  # <world-function>
+  [ "$(cat "$WORLD_LOGS/$1.rc" 2>/dev/null)" = 0 ]
+}
+
+# world_report <world-function>: print one finished world's output; false when
+# that world failed.
+world_report() {  # <world-function>
+  cat "$WORLD_LOGS/$1.out" 2>/dev/null
+  world_ok "$1" && return 0
+  printf 'not ok - world %s failed (see its output above)\n' "$1" >&2
+  return 1
+}
+
+# ------------------------------------------------------------------
+# World a1: the opening primary sequence - opt-out baseline, default floor,
+# projected create, seeded prune, bounded lock contention, concurrent ordering,
+# move failure, post-create abort, and projected cleanup - in one session.
+# ------------------------------------------------------------------
+world_a1() {
+world_begin a1
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" \
   "$HOME_DIR/data/anchor" "$HOME_DIR/data/shape" \
   "$HOME_DIR/data/order-a" "$HOME_DIR/data/order-b" \
@@ -606,8 +792,6 @@ write_ship_brief "$HOME_DIR" abort-a 'Projection abort fixture A.'
 write_ship_brief "$HOME_DIR" abort-b 'Projection abort fixture B.'
 write_ship_brief "$HOME_DIR" lock-contended 'Projection lock contention fixture.'
 write_ship_brief "$HOME_DIR" default-on 'Projection default-on fixture.'
-make_project "$PROJECT_DIR"
-make_project "$RECOVERY_PROJECT_DIR"
 
 # Keep one ordinary primary task live so the durable firstmate workspace is
 # first and remains present while disposable workers are projected around it.
@@ -692,19 +876,7 @@ fi
 # projected workspaces that are still live, so this retired one starts them clean.
 : > "$MOVE_CALL_LOG"
 
-SECOND_ONE_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label 2ndmate-alpha --no-focus) \
-  || fail "could not create the first secondmate presentation fixture"
-SECOND_TWO_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label 2ndmate-bravo --focus) \
-  || fail "could not create the focused secondmate presentation fixture"
-SECOND_ONE_WSID=$(printf '%s' "$SECOND_ONE_OUT" | jq -r '.result.workspace.workspace_id // empty')
-SECOND_TWO_WSID=$(printf '%s' "$SECOND_TWO_OUT" | jq -r '.result.workspace.workspace_id // empty')
-SECOND_TWO_TAB=$(printf '%s' "$SECOND_TWO_OUT" | jq -r '.result.tab.tab_id // empty')
-SECOND_TWO_PANE=$(printf '%s' "$SECOND_TWO_OUT" | jq -r '.result.root_pane.pane_id // empty')
-[ -n "$SECOND_ONE_WSID" ] && [ -n "$SECOND_TWO_WSID" ] && [ -n "$SECOND_TWO_TAB" ] && [ -n "$SECOND_TWO_PANE" ] \
-  || fail "secondmate presentation fixtures returned incomplete IDs"
-SECOND_ORDER_BEFORE=$(printf '%s\n%s\n' "$SECOND_ONE_WSID" "$SECOND_TWO_WSID")
-CAPTAIN_FOCUS="$SECOND_TWO_WSID/$SECOND_TWO_TAB"
-assert_focus_is "$CAPTAIN_FOCUS" "focused secondmate fixture"
+world_captain_fixture
 
 : > "$TREEHOUSE_CALL_LOG"
 # The historical presence-based opt-in was an empty file; it must still project,
@@ -925,12 +1097,13 @@ pass "real Herdr lab: forced workspace.move failure leaves a successful worker i
 mkdir -p "$POST_CREATE_ABORT_CONTROL"
 ABORT_START=$(log_line_count)
 ABORT_FOCUS_START=$(focus_audit_line_count)
-# The armed failure is the discovery poll's own deadline, so a 0.1s poll
-# interval reaches the same refusal without waiting out 60 one-second reads.
-FM_SPAWN_WORKTREE_POLL_SECS=0.1 \
+# The armed failure is the discovery poll's own deadline, a fixed count of 60
+# reads, so a 0.02s poll interval reaches the same refusal after the same 60
+# rejected reads without waiting out 60 one-second sleeps.
+FM_SPAWN_WORKTREE_POLL_SECS=0.02 \
   spawn_task abort-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-a.out" 2> "$TMP_ROOT/abort-a.err" &
 ABORT_A_PID=$!
-FM_SPAWN_WORKTREE_POLL_SECS=0.1 \
+FM_SPAWN_WORKTREE_POLL_SECS=0.02 \
   spawn_task abort-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-b.out" 2> "$TMP_ROOT/abort-b.err" &
 ABORT_B_PID=$!
 if wait "$ABORT_A_PID"; then ABORT_A_STATUS=0; else ABORT_A_STATUS=$?; fi
@@ -1007,10 +1180,21 @@ teardown_task order-fail "$HOME_DIR" > "$TMP_ROOT/order-fail-teardown.out" 2> "$
   || fail "projected ordering failure fixture teardown failed"
 assert_focus_is "$CAPTAIN_FOCUS" "failed-order projection teardown"
 pass "real Herdr lab: concurrent projected cleanup is serialized and leaves active workspace/tab unchanged"
+world_end
+}
+
+# ------------------------------------------------------------------
+# World waves: repeated full two-worker create, order, and cleanup waves.
+# ------------------------------------------------------------------
+world_waves() {
+world_begin waves
+world_base_fixture anchor-waves
 
 # Repeat full two-worker create, order, and cleanup waves.
-# This exercises the focus guard after the original regression sequence and
-# proves the shared presentation lock keeps concurrent operations composable.
+# This starts from exactly the workspace set and captain focus the opening
+# regression sequence leaves behind (firstmate, 2ndmate-alpha, focused
+# 2ndmate-bravo), exercises the focus guard, and proves the shared presentation
+# lock keeps concurrent operations composable.
 for ROUND in 1 2 3; do
   mkdir -p "$HOME_DIR/data/focus-$ROUND-a" "$HOME_DIR/data/focus-$ROUND-b"
   write_ship_brief "$HOME_DIR" "focus-$ROUND-a" "Projection focus wave $ROUND fixture A."
@@ -1052,38 +1236,17 @@ for ROUND in 1 2 3; do
     || fail "focus wave $ROUND cleanup left a projected workspace behind: $WAVE_REMAINING"
 done
 pass "real Herdr lab: three repeated concurrent create/order/cleanup waves have zero active workspace or tab drift"
+world_end
+}
 
 # ------------------------------------------------------------------
 # Multi-home topology: real secondmate FM_HOME spawn paths, inheritance,
 # concurrent cross-home waves, and session-scoped lock contention.
 # ------------------------------------------------------------------
-SECOND_HOME_A="$TMP_ROOT/home-2ndmate-alpha"
-SECOND_HOME_B="$TMP_ROOT/home-2ndmate-bravo"
-mkdir -p "$SECOND_HOME_A/state" "$SECOND_HOME_A/config" "$SECOND_HOME_A/data" \
-  "$SECOND_HOME_B/state" "$SECOND_HOME_B/config" "$SECOND_HOME_B/data"
-printf 'alpha\n' > "$SECOND_HOME_A/.fm-secondmate-home"
-printf 'bravo\n' > "$SECOND_HOME_B/.fm-secondmate-home"
-for home in "$SECOND_HOME_A" "$SECOND_HOME_B"; do
-  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$HOME_DIR" \
-    > "$home/.fm-secondmate-parent"
-done
-printf -- '- %s - Presentation fixture (home: %s; scope: presentation; projects: ; added 2026-10-12)\n' \
-  alpha "$SECOND_HOME_A" bravo "$SECOND_HOME_B" > "$HOME_DIR/data/secondmates.md"
-touch "$SECOND_HOME_A/state/.last-watcher-beat" "$SECOND_HOME_B/state/.last-watcher-beat"
-# Ensure the secondmate homes look like gitignored firstmate homes so inheritance
-# may write config/herdr-presentation-spaces.
-git -C "$SECOND_HOME_A" init -q
-git -C "$SECOND_HOME_B" init -q
-printf 'config/herdr-presentation-spaces\nconfig/crew-harness\nconfig/crew-dispatch.json\nconfig/backlog-backend\nconfig/backend\nconfig/startup-memory-budget\n' \
-  > "$SECOND_HOME_A/.gitignore"
-cp "$SECOND_HOME_A/.gitignore" "$SECOND_HOME_B/.gitignore"
-git -C "$SECOND_HOME_A" add .gitignore
-git -C "$SECOND_HOME_B" add .gitignore
-git -C "$SECOND_HOME_A" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm init
-git -C "$SECOND_HOME_B" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm init
-mkdir -p "$SECOND_HOME_A/bin"
-printf '# Firstmate secondmate fixture\n' > "$SECOND_HOME_A/AGENTS.md"
-printf 'Secondmate alpha charter.\n' > "$SECOND_HOME_A/data/charter.md"
+world_multi() {
+world_begin multi
+world_base_fixture anchor-multi
+setup_secondmate_homes
 
 # Primary setting only; real inheritance must push it into both secondmate homes.
 [ -f "$HOME_DIR/config/herdr-presentation-spaces" ] \
@@ -1271,17 +1434,115 @@ teardown_task aflat "$SECOND_HOME_A" > "$TMP_ROOT/aflat-teardown.out" 2> "$TMP_R
   || fail "flat cross-home contention fixture teardown failed"
 pass "real Herdr lab: session lock contention from a secondmate home falls back flat with no journal"
 
+# The secondmate-home tasks above stay live for the exact-pane teardowns below,
+# which run against panes Herdr restored across a full-session restart with
+# their agents stopped.
+restart_lab_session "the multi-home restart"
+
+# Seed a legacy old-format primary projection and a flat secondmate tab; correction must not migrate them.
+LEGACY_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label "firstmate/legacy-seed · p:AbCdEfGhIjKlMnOpQrStUv" --no-focus) \
+  || fail "could not seed a legacy old-format presentation space"
+LEGACY_WSID=$(printf '%s' "$LEGACY_OUT" | jq -r '.result.workspace.workspace_id // empty')
+[ -n "$LEGACY_WSID" ] || fail "legacy seed returned no workspace id"
+FLAT_TAB_OUT=$(lab tab create --workspace "$(lab workspace list | jq -r '.result.workspaces[] | select(.label == "2ndmate-alpha") | .workspace_id' | head -1)" --cwd "$PROJECT_DIR" --label fm-flat-legacy-tab --no-focus) \
+  || fail "could not seed a flat secondmate child tab"
+FLAT_TAB_ID=$(printf '%s' "$FLAT_TAB_OUT" | jq -r '.result.tab.tab_id // empty')
+mkdir -p "$HOME_DIR/data/post-legacy"
+write_ship_brief "$HOME_DIR" post-legacy 'Post-legacy primary child.'
+spawn_task post-legacy "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/post-legacy.out" 2> "$TMP_ROOT/post-legacy.err" \
+  || fail "post-legacy projected spawn failed: $(cat "$TMP_ROOT/post-legacy.err")"
+remember_meta_worktree "$HOME_DIR/state/post-legacy.meta" >/dev/null
+[ "$(lab workspace get "$LEGACY_WSID" | jq -r '.result.workspace.label')" = "firstmate/legacy-seed · p:AbCdEfGhIjKlMnOpQrStUv" ] \
+  || fail "correction renamed or moved the seeded legacy projection"
+lab tab get "$FLAT_TAB_ID" >/dev/null 2>&1 \
+  || fail "correction removed the seeded flat secondmate child tab"
+pass "real Herdr lab: legacy projection labels and flat secondmate tabs are left unmigrated"
+
+# Teardown multi-home projected tasks by exact pane only.
+for META_HOME_PAIR in \
+  "p1:$HOME_DIR" "p2:$HOME_DIR" "pcw:$HOME_DIR" "post-legacy:$HOME_DIR" \
+  "a1:$SECOND_HOME_A" "a2:$SECOND_HOME_A" "acw:$SECOND_HOME_A" \
+  "alpha:$HOME_DIR" \
+  "b1:$SECOND_HOME_B" "b2:$SECOND_HOME_B" "bcw:$SECOND_HOME_B"
+do
+  TASK_ID=${META_HOME_PAIR%%:*}
+  TASK_HOME=${META_HOME_PAIR#*:}
+  teardown_task "$TASK_ID" "$TASK_HOME" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err" \
+    || fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
+done
+assert_focus_is "$CAPTAIN_FOCUS" "multi-home teardown"
+pass "real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority"
+
+# Missing, renamed, and duplicate tokens are read-only recovery diagnostics.
+# The duplicate case allows flat fallback only when every matching pane is
+# positively agent-free.
+# shellcheck source=/dev/null
+. "$ROOT/bin/backends/herdr.sh"
+
+MISSING_STATE="$TMP_ROOT/missing-state"; mkdir -p "$MISSING_STATE"
+fm_backend_herdr_projection_journal_create "$MISSING_STATE" missing1 >/dev/null
+MISSING_JOURNAL=$(fm_backend_herdr_projection_journal_path "$MISSING_STATE" missing1)
+START=$(log_line_count)
+fm_backend_herdr_projection_recovery_allows_flat "$HERDR_LAB_SESSION" "$MISSING_JOURNAL" missing1 \
+  || fail "missing token match should degrade to flat"
+assert_no_projection_mutation_since "$START" "missing-token recovery"
+
+RENAMED_STATE="$TMP_ROOT/renamed-state"; mkdir -p "$RENAMED_STATE"
+RENAMED_TOKEN=$(fm_backend_herdr_projection_journal_create "$RENAMED_STATE" renamed1)
+RENAMED_JOURNAL=$(fm_backend_herdr_projection_journal_path "$RENAMED_STATE" renamed1)
+RENAMED_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label "firstmate/renamed1 · p:$RENAMED_TOKEN" --no-focus)
+RENAMED_WSID=$(printf '%s' "$RENAMED_OUT" | jq -r '.result.workspace.workspace_id')
+lab workspace rename "$RENAMED_WSID" renamed-without-token >/dev/null
+START=$(log_line_count)
+fm_backend_herdr_projection_recovery_allows_flat "$HERDR_LAB_SESSION" "$RENAMED_JOURNAL" renamed1 \
+  || fail "renamed token match should degrade to flat"
+assert_no_projection_mutation_since "$START" "renamed-token recovery"
+lab workspace get "$RENAMED_WSID" >/dev/null 2>&1 || fail "renamed-token recovery removed or adopted the old workspace"
+
+DUP_STATE="$TMP_ROOT/duplicate-state"; mkdir -p "$DUP_STATE"
+DUP_TOKEN=$(fm_backend_herdr_projection_journal_create "$DUP_STATE" duplicate1)
+DUP_JOURNAL=$(fm_backend_herdr_projection_journal_path "$DUP_STATE" duplicate1)
+DUP1=$(lab workspace create --cwd "$PROJECT_DIR" --label "firstmate/duplicate1 · p:$DUP_TOKEN" --no-focus)
+DUP2=$(lab workspace create --cwd "$PROJECT_DIR" --label "copy/duplicate1 · p:$DUP_TOKEN" --no-focus)
+DUP1_WSID=$(printf '%s' "$DUP1" | jq -r '.result.workspace.workspace_id')
+DUP2_WSID=$(printf '%s' "$DUP2" | jq -r '.result.workspace.workspace_id')
+DUP1_PANE=$(printf '%s' "$DUP1" | jq -r '.result.root_pane.pane_id')
+START=$(log_line_count)
+fm_backend_herdr_projection_recovery_allows_flat "$HERDR_LAB_SESSION" "$DUP_JOURNAL" duplicate1 \
+  || fail "agent-free duplicate token matches should permit flat fallback"
+assert_no_projection_mutation_since "$START" "agent-free duplicate-token recovery"
+lab workspace get "$DUP1_WSID" >/dev/null 2>&1 || fail "duplicate-token recovery removed the first quarantined workspace"
+lab workspace get "$DUP2_WSID" >/dev/null 2>&1 || fail "duplicate-token recovery removed the second quarantined workspace"
+
+lab pane report-agent "$DUP1_PANE" --source fm-projection-e2e --agent test-agent --state idle >/dev/null \
+  || fail "could not register the duplicate-live-agent risk fixture"
+START=$(log_line_count)
+if fm_backend_herdr_projection_recovery_allows_flat "$HERDR_LAB_SESSION" "$DUP_JOURNAL" duplicate1; then
+  fail "a duplicate token match with a registered agent should refuse fallback"
+fi
+assert_no_projection_mutation_since "$START" "live duplicate-token recovery"
+lab workspace get "$DUP1_WSID" >/dev/null 2>&1 || fail "live duplicate refusal removed the first workspace"
+lab workspace get "$DUP2_WSID" >/dev/null 2>&1 || fail "live duplicate refusal removed the second workspace"
+pass "real Herdr lab: missing, renamed, and duplicate tokens trigger zero destructive or adoptive calls, and live duplicate risk refuses launch"
+
+STATUS_JSON=$(lab status --json)
+HERDR_VERSION=$(printf '%s' "$STATUS_JSON" | jq -r '.client.version // "unknown"')
+printf '%s\n' "$HERDR_VERSION" > "$SUITE_ROOT/herdr-version"
+world_end
+}
+
 # Same-identity recovery replaces only one exact agent-free husk in its
 # original projected workspace. These full-session restarts also stop the
-# earlier multi-home workers whose restored panes are retained for the final
-# exact-pane cleanup assertions. Keep the recovery fixtures in their own
-# Treehouse pool so those intentionally retained records cannot claim a slot
-# that a recovery fixture legitimately acquires after their processes stop.
+# world's anchor worker, whose restored pane is retained as a husk. Keep the
+# recovery fixtures in their own Treehouse pool so that intentionally retained
+# record cannot claim a slot that a recovery fixture legitimately acquires
+# after its process stops.
 # Exercise both the leading fm- identity style seen in Hi Bit work and the
 # project-name identity style used by Wheelhouse work. A separate third task
 # tests delivery abort: its replacement endpoint is already gone before
 # teardown, so it must not share the successful-reclaim retirement assertion.
-for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1 recovery-abort-r1; do
+restart_case() {  # <restart-id>
+  RESTART_ID=$1
   spawn_task "$RESTART_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" > "$TMP_ROOT/$RESTART_ID-first.out" 2> "$TMP_ROOT/$RESTART_ID-first.err" \
     || fail "$RESTART_ID fixture's projected spawn failed: $(cat "$TMP_ROOT/$RESTART_ID-first.err")"
   RESTART_META="$HOME_DIR/state/$RESTART_ID.meta"
@@ -1488,13 +1749,31 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1 recovery-abort-r1; do
   assert_focus_is "$RESTART_TEARDOWN_FOCUS" "$RESTART_ID reclaimed teardown"
   "$REAL_TREEHOUSE" return --force "$OLD_RESTART_WT" >/dev/null 2>&1 || true
   "$REAL_TREEHOUSE" return --force "$NEW_RESTART_WT" >/dev/null 2>&1 || true
-done
-pass "real Herdr lab: Hi Bit and Wheelhouse-style same-identity restarts reclaim one nested space with exact focus and idempotence"
+}
+
+world_restart() {
+world_begin restart
+world_base_fixture anchor-restart
+write_ship_brief "$HOME_DIR" fm-hibit-resume-r1 'Hi Bit-style projection restart fixture.'
+write_ship_brief "$HOME_DIR" wheelhouse-healing-r1 'Wheelhouse-style projection restart fixture.'
+restart_case fm-hibit-resume-r1
+restart_case wheelhouse-healing-r1
+world_end
+}
+
+world_restart_abort() {
+world_begin rabort
+world_base_fixture anchor-rabort
+write_ship_brief "$HOME_DIR" recovery-abort-r1 'Projection recovery delivery-abort fixture.'
+restart_case recovery-abort-r1
+world_end
+}
 
 # Flat recovery is still a replacement of the same task, whether projection is
 # explicitly disabled or enabled with no journal. Use real pool/backend paths
 # and retain unfinished work rather than silently making another leased copy.
-for FLAT_SETTING in off no-journal; do
+flat_recovery_case() {  # <off|no-journal>
+  FLAT_SETTING=$1
   FLAT_ID="flat-resume-$FLAT_SETTING"
   mkdir -p "$HOME_DIR/data/$FLAT_ID"
   write_ship_brief "$HOME_DIR" "$FLAT_ID" 'Flat same-task recovery fixture.'
@@ -1587,8 +1866,26 @@ for FLAT_SETTING in off no-journal; do
   teardown_task "$FLAT_ID" "$HOME_DIR" > "$TMP_ROOT/$FLAT_ID-teardown.out" 2> "$TMP_ROOT/$FLAT_ID-teardown.err" \
     || fail "flat recovery cleanup failed: $(cat "$TMP_ROOT/$FLAT_ID-teardown.err")"
   pass "real Herdr lab: $FLAT_SETTING flat recovery keeps the exact reservation and unfinished work on success and failed delivery"
-done
+}
+
+world_flat() {
+world_begin flat
+world_base_fixture anchor-flat
+flat_recovery_case off
+flat_recovery_case no-journal
 : > "$HOME_DIR/config/herdr-presentation-spaces"
+world_end
+}
+
+# ------------------------------------------------------------------
+# World cross: secondmate-child restart binding and concurrent cross-home
+# recovery, from the multi-home state the inheritance scenario establishes.
+# ------------------------------------------------------------------
+world_cross() {
+world_begin cross
+world_base_fixture anchor-cross
+setup_secondmate_homes
+inherit_secondmate_presentation
 
 # A secondmate child binds and reclaims only inside its own home and parent.
 CROSS_RESTART_ID=wheel-child-resume
@@ -1681,6 +1978,12 @@ teardown_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" > "$TMP_ROOT/bravo-wave-teardown
 "$REAL_TREEHOUSE" return --force "$PRIMARY_WAVE_NEW_WT" >/dev/null 2>&1 || true
 "$REAL_TREEHOUSE" return --force "$BRAVO_WAVE_NEW_WT" >/dev/null 2>&1 || true
 pass "real Herdr lab: concurrent cross-home recoveries replace exact husks under one session lock with no focus drift"
+world_end
+}
+
+world_lock() {
+world_begin lock
+world_base_fixture anchor-lock
 
 # Exact-resume presentation-lock contention refuses by default. Hold the
 # shared session lock from an unrelated process past the bounded-retry window
@@ -1699,14 +2002,19 @@ PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not reprovision the isolated session for resume lock-refuse"
 
 LOCK_REFUSE_READY="$TMP_ROOT/lock-refuse-ready"
+# The holder keeps the lock until the refused resume has returned (capped at
+# the old fixed hold), so the whole bounded-retry window is contended without
+# waiting out the rest of the cap after the refusal.
+LOCK_REFUSE_RELEASE="$TMP_ROOT/lock-refuse-release"
 LOCK_REFUSE_HOLD_SECONDS=15
 LOCK_REFUSE_PATH=$(session_presentation_lock_path) \
   || fail "could not resolve session lock for resume lock-refuse"
-ROOT="$ROOT" READY="$LOCK_REFUSE_READY" HOLD="$LOCK_REFUSE_HOLD_SECONDS" LOCK="$LOCK_REFUSE_PATH" bash -c '
+ROOT="$ROOT" READY="$LOCK_REFUSE_READY" RELEASE="$LOCK_REFUSE_RELEASE" HOLD="$LOCK_REFUSE_HOLD_SECONDS" LOCK="$LOCK_REFUSE_PATH" bash -c '
   . "$ROOT/bin/fm-wake-lib.sh"
   fm_lock_try_acquire "$LOCK" || exit 1
   : > "$READY"
-  sleep "$HOLD"
+  end=$((SECONDS + HOLD))
+  while [ ! -e "$RELEASE" ] && [ "$SECONDS" -lt "$end" ]; do sleep 0.05; done
   fm_lock_release "$LOCK"
 ' &
 LOCK_REFUSE_HOLDER_PID=$!
@@ -1720,6 +2028,7 @@ if spawn_task "$LOCK_REFUSE_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" \
 else
   LOCK_REFUSE_STATUS=$?
 fi
+: > "$LOCK_REFUSE_RELEASE"
 if [ "$LOCK_REFUSE_STATUS" -eq 0 ]; then
   kill "$LOCK_REFUSE_HOLDER_PID" 2>/dev/null || true
   wait "$LOCK_REFUSE_HOLDER_PID" 2>/dev/null || true
@@ -1804,99 +2113,35 @@ teardown_task "$LOCK_WAIT_ID" "$HOME_DIR" > "$TMP_ROOT/lock-wait-teardown.out" 2
 "$REAL_TREEHOUSE" return --force "$LOCK_WAIT_OLD_WT" >/dev/null 2>&1 || true
 "$REAL_TREEHOUSE" return --force "$LOCK_WAIT_NEW_WT" >/dev/null 2>&1 || true
 pass "real Herdr lab: --herdr-resume-lock-wait waits out session lock contention instead of refusing"
+world_end
+}
 
-# Seed a legacy old-format primary projection and a flat secondmate tab; correction must not migrate them.
-LEGACY_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label "firstmate/legacy-seed · p:AbCdEfGhIjKlMnOpQrStUv" --no-focus) \
-  || fail "could not seed a legacy old-format presentation space"
-LEGACY_WSID=$(printf '%s' "$LEGACY_OUT" | jq -r '.result.workspace.workspace_id // empty')
-[ -n "$LEGACY_WSID" ] || fail "legacy seed returned no workspace id"
-FLAT_TAB_OUT=$(lab tab create --workspace "$(lab workspace list | jq -r '.result.workspaces[] | select(.label == "2ndmate-alpha") | .workspace_id' | head -1)" --cwd "$PROJECT_DIR" --label fm-flat-legacy-tab --no-focus) \
-  || fail "could not seed a flat secondmate child tab"
-FLAT_TAB_ID=$(printf '%s' "$FLAT_TAB_OUT" | jq -r '.result.tab.tab_id // empty')
-mkdir -p "$HOME_DIR/data/post-legacy"
-write_ship_brief "$HOME_DIR" post-legacy 'Post-legacy primary child.'
-spawn_task post-legacy "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/post-legacy.out" 2> "$TMP_ROOT/post-legacy.err" \
-  || fail "post-legacy projected spawn failed: $(cat "$TMP_ROOT/post-legacy.err")"
-remember_meta_worktree "$HOME_DIR/state/post-legacy.meta" >/dev/null
-[ "$(lab workspace get "$LEGACY_WSID" | jq -r '.result.workspace.label')" = "firstmate/legacy-seed · p:AbCdEfGhIjKlMnOpQrStUv" ] \
-  || fail "correction renamed or moved the seeded legacy projection"
-lab tab get "$FLAT_TAB_ID" >/dev/null 2>&1 \
-  || fail "correction removed the seeded flat secondmate child tab"
-pass "real Herdr lab: legacy projection labels and flat secondmate tabs are left unmigrated"
-
-# Teardown multi-home projected tasks by exact pane only.
-for META_HOME_PAIR in \
-  "p1:$HOME_DIR" "p2:$HOME_DIR" "pcw:$HOME_DIR" "post-legacy:$HOME_DIR" \
-  "a1:$SECOND_HOME_A" "a2:$SECOND_HOME_A" "acw:$SECOND_HOME_A" \
-  "alpha:$HOME_DIR" \
-  "b1:$SECOND_HOME_B" "b2:$SECOND_HOME_B" "bcw:$SECOND_HOME_B"
-do
-  TASK_ID=${META_HOME_PAIR%%:*}
-  TASK_HOME=${META_HOME_PAIR#*:}
-  teardown_task "$TASK_ID" "$TASK_HOME" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err" \
-    || fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
-done
-assert_focus_is "$CAPTAIN_FOCUS" "multi-home teardown"
-pass "real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority"
-
-# Missing, renamed, and duplicate tokens are read-only recovery diagnostics.
-# The duplicate case allows flat fallback only when every matching pane is
-# positively agent-free.
-# shellcheck source=/dev/null
-. "$ROOT/bin/backends/herdr.sh"
-
-MISSING_STATE="$TMP_ROOT/missing-state"; mkdir -p "$MISSING_STATE"
-fm_backend_herdr_projection_journal_create "$MISSING_STATE" missing1 >/dev/null
-MISSING_JOURNAL=$(fm_backend_herdr_projection_journal_path "$MISSING_STATE" missing1)
-START=$(log_line_count)
-fm_backend_herdr_projection_recovery_allows_flat "$HERDR_LAB_SESSION" "$MISSING_JOURNAL" missing1 \
-  || fail "missing token match should degrade to flat"
-assert_no_projection_mutation_since "$START" "missing-token recovery"
-
-RENAMED_STATE="$TMP_ROOT/renamed-state"; mkdir -p "$RENAMED_STATE"
-RENAMED_TOKEN=$(fm_backend_herdr_projection_journal_create "$RENAMED_STATE" renamed1)
-RENAMED_JOURNAL=$(fm_backend_herdr_projection_journal_path "$RENAMED_STATE" renamed1)
-RENAMED_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label "firstmate/renamed1 · p:$RENAMED_TOKEN" --no-focus)
-RENAMED_WSID=$(printf '%s' "$RENAMED_OUT" | jq -r '.result.workspace.workspace_id')
-lab workspace rename "$RENAMED_WSID" renamed-without-token >/dev/null
-START=$(log_line_count)
-fm_backend_herdr_projection_recovery_allows_flat "$HERDR_LAB_SESSION" "$RENAMED_JOURNAL" renamed1 \
-  || fail "renamed token match should degrade to flat"
-assert_no_projection_mutation_since "$START" "renamed-token recovery"
-lab workspace get "$RENAMED_WSID" >/dev/null 2>&1 || fail "renamed-token recovery removed or adopted the old workspace"
-
-DUP_STATE="$TMP_ROOT/duplicate-state"; mkdir -p "$DUP_STATE"
-DUP_TOKEN=$(fm_backend_herdr_projection_journal_create "$DUP_STATE" duplicate1)
-DUP_JOURNAL=$(fm_backend_herdr_projection_journal_path "$DUP_STATE" duplicate1)
-DUP1=$(lab workspace create --cwd "$PROJECT_DIR" --label "firstmate/duplicate1 · p:$DUP_TOKEN" --no-focus)
-DUP2=$(lab workspace create --cwd "$PROJECT_DIR" --label "copy/duplicate1 · p:$DUP_TOKEN" --no-focus)
-DUP1_WSID=$(printf '%s' "$DUP1" | jq -r '.result.workspace.workspace_id')
-DUP2_WSID=$(printf '%s' "$DUP2" | jq -r '.result.workspace.workspace_id')
-DUP1_PANE=$(printf '%s' "$DUP1" | jq -r '.result.root_pane.pane_id')
-START=$(log_line_count)
-fm_backend_herdr_projection_recovery_allows_flat "$HERDR_LAB_SESSION" "$DUP_JOURNAL" duplicate1 \
-  || fail "agent-free duplicate token matches should permit flat fallback"
-assert_no_projection_mutation_since "$START" "agent-free duplicate-token recovery"
-lab workspace get "$DUP1_WSID" >/dev/null 2>&1 || fail "duplicate-token recovery removed the first quarantined workspace"
-lab workspace get "$DUP2_WSID" >/dev/null 2>&1 || fail "duplicate-token recovery removed the second quarantined workspace"
-
-lab pane report-agent "$DUP1_PANE" --source fm-projection-e2e --agent test-agent --state idle >/dev/null \
-  || fail "could not register the duplicate-live-agent risk fixture"
-START=$(log_line_count)
-if fm_backend_herdr_projection_recovery_allows_flat "$HERDR_LAB_SESSION" "$DUP_JOURNAL" duplicate1; then
-  fail "a duplicate token match with a registered agent should refuse fallback"
+# ------------------------------------------------------------------
+# Run the worlds, longest first, then report them in scenario order.
+# ------------------------------------------------------------------
+WORLD_LOGS="$SUITE_ROOT/world-logs"
+WORLD_JOBS=${FM_HERDR_PRESENTATION_WORLD_JOBS:-}
+if [ -z "$WORLD_JOBS" ]; then
+  WORLD_JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+  case "$WORLD_JOBS" in ''|*[!0-9]*|0) WORLD_JOBS=2 ;; esac
+  [ "$WORLD_JOBS" -le 4 ] || WORLD_JOBS=4
 fi
-assert_no_projection_mutation_since "$START" "live duplicate-token recovery"
-lab workspace get "$DUP1_WSID" >/dev/null 2>&1 || fail "live duplicate refusal removed the first workspace"
-lab workspace get "$DUP2_WSID" >/dev/null 2>&1 || fail "live duplicate refusal removed the second workspace"
-pass "real Herdr lab: missing, renamed, and duplicate tokens trigger zero destructive or adoptive calls, and live duplicate risk refuses launch"
+case "$WORLD_JOBS" in ''|*[!0-9]*|0) fail "invalid FM_HERDR_PRESENTATION_WORLD_JOBS '$WORLD_JOBS'" ;; esac
+run_worlds "$WORLD_JOBS" world_multi world_a1 world_cross world_lock \
+  world_restart world_flat world_waves world_restart_abort
 
-STATUS_JSON=$(lab status --json)
-HERDR_VERSION=$(printf '%s' "$STATUS_JSON" | jq -r '.client.version // "unknown"')
-PATH="$HERDR_ORIGINAL_PATH" \
-  "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" \
-  || fail "guarded Herdr lab teardown or default-session tripwire verification failed"
-LAB_READY=0
+WORLDS_STATUS=0
+for WORLD in world_a1 world_waves world_multi world_restart_abort world_restart; do
+  world_report "$WORLD" || WORLDS_STATUS=1
+done
+if world_ok world_restart && world_ok world_restart_abort; then
+  pass "real Herdr lab: Hi Bit and Wheelhouse-style same-identity restarts reclaim one nested space with exact focus and idempotence"
+fi
+for WORLD in world_flat world_cross world_lock; do
+  world_report "$WORLD" || WORLDS_STATUS=1
+done
+[ "$WORLDS_STATUS" -eq 0 ] || fail "at least one isolated Herdr lab world failed"
+HERDR_VERSION=$(cat "$SUITE_ROOT/herdr-version" 2>/dev/null || printf unknown)
 pass "real Herdr lab validation completed on Herdr $HERDR_VERSION with the default-session tripwire intact"
 
 cleanup_all
