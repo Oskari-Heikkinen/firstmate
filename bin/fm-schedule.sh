@@ -166,12 +166,13 @@ list_homes() {
 }
 
 engine() {
-  local tmp rc=0
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-schedule.XXXXXX")
-  trap 'rm -rf "$tmp"' EXIT
-  list_homes > "$tmp/homes.tsv"
+  local rc=0
+  # Global, not local: the EXIT trap runs after engine returns, when a local is gone.
+  ENGINE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-schedule.XXXXXX")
+  trap 'rm -rf "$ENGINE_TMP"' EXIT
+  list_homes > "$ENGINE_TMP/homes.tsv"
   python3 "$SCRIPT_DIR/fm-schedule.py" "$cmd" ${positional[@]+"${positional[@]}"} \
-    --home "$home" --homes "$tmp/homes.tsv" --code-root "$CODE_ROOT" ${now:+--now "$now"} ${json:+"$json"} || rc=$?
+    --home "$home" --homes "$ENGINE_TMP/homes.tsv" --code-root "$CODE_ROOT" ${now:+--now "$now"} ${json:+"$json"} || rc=$?
   return "$rc"
 }
 
