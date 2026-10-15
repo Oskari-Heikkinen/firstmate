@@ -33,7 +33,9 @@ fm_git_identity fmtest fmtest@example.com
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-restart)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'rm -rf -- "$TMP_ROOT"' EXIT
+# A relaunch leaves its hook directories read-only; make the tree writable
+# again so the cleanup does not leave them behind.
+trap 'chmod -R u+w -- "$TMP_ROOT" 2>/dev/null; rm -rf -- "$TMP_ROOT"' EXIT
 
 # A session-provider stub that models the two things this pass depends on: the
 # harness exit command stops the agent, a launch brief starts the replacement,
@@ -457,6 +459,12 @@ env TMUX='' FM_BACKEND=tmux FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
 pid=\$!
 n=0
 while kill -0 "\$pid" 2>/dev/null && [ "\$n" -lt 40 ]; do
+  # The watcher stamps its cycle number at the top of each cycle, so cycle 2
+  # means cycle 1 - the one supervision pass this window exists for, liveness
+  # tick included - has run to its end. Stop there instead of idling out the
+  # whole window.
+  beat=\$(cat "$dir/home/state/.last-watcher-beat" 2>/dev/null)
+  case "\$beat" in ''|*[!0-9]*) ;; *) [ "\$beat" -lt 2 ] || break ;; esac
   /bin/sleep 0.1
   n=\$((n + 1))
 done
@@ -680,7 +688,18 @@ case "${rargs[1]:-}" in
     case "${FM_FAKE_SSH_MODE:-ok}" in
       slow-relaunch)
         : > "$FM_FAKE_DIR/remote-relaunch-start"
-        /bin/sleep 2
+        # Hold the relaunch open for up to two seconds, and release it as soon
+        # as the case has observed what the open window is for: the local
+        # relaunch that ran inside it, the injected reap-window result, or the
+        # case's own release after it removed the result directory.
+        n=0
+        while [ "$n" -lt 200 ]; do
+          [ ! -e "$FM_FAKE_DIR/release-relaunch" ] \
+            && [ ! -e "$FM_FAKE_DIR/local-relaunch-during-remote" ] \
+            && [ ! -e "$FM_FAKE_DIR/result-race-injected" ] || break
+          /bin/sleep 0.01
+          n=$((n + 1))
+        done
         : > "$FM_FAKE_DIR/remote-relaunch-end"
         ;;
       relaunch-until-local)
@@ -840,13 +859,28 @@ SH
 
 # --- T10: one unanswered mate does not hold a confirmed mate behind it -------
 test_persist_waits_are_polled_together() {
-  local dir out rc exit_line nudge_line
+  local dir out rc exit_line nudge_line real_date
   dir=$(new_case concurrent-waits)
   add_local_mate "$dir" sm1
   add_local_mate "$dir" sm2
   arm_answer "$dir" sm2
+  # The unanswered mate's deadline is read off `date +%s`. Until the confirmed
+  # mate's /exit reaches the pane the clock is real, so a pass that held sm2
+  # behind sm1 would still time sm1 out first after the real 30 s; once that
+  # /exit lands the clock jumps a minute ahead, so sm1 times out on the next
+  # poll instead of after a fixed real wait that a loaded runner can outlast.
+  real_date=$(command -v date)
+  cat > "$dir/fakebin/date" <<SH
+#!/usr/bin/env bash
+if [ "\$#" -eq 1 ] && [ "\$1" = +%s ] && grep -qx '/exit' "$dir/fake/literal" 2>/dev/null; then
+  printf '%s\\n' "\$(( \$("$real_date" +%s) + 60 ))"
+  exit 0
+fi
+exec "$real_date" "\$@"
+SH
+  chmod +x "$dir/fakebin/date"
 
-  out=$(FM_TEST_PERSIST_WAIT=3 run_restart "$dir" sm1 sm2); rc=$?
+  out=$(FM_TEST_PERSIST_WAIT=30 run_restart "$dir" sm1 sm2); rc=$?
 
   expect_code 3 "$rc" "the unanswered mate should fall back after the confirmed mate restarts"$'\n'"$out"
   exit_line=$(grep -n '^/exit$' "$dir/fake/literal" | head -1 | cut -d: -f1)
@@ -912,7 +946,7 @@ test_unpublished_worker_result_is_accounted_for() {
   driver=$!
   result_dir=
   i=0
-  while [ "$i" -lt 200 ]; do
+  while [ "$i" -lt 1000 ]; do
     result_dir=$(find "$dir/home/state" -maxdepth 1 -type d -name '.secondmate-restart.*' -print -quit)
     [ -e "$dir/fake/remote-relaunch-start" ] && [ -n "$result_dir" ] && break
     /bin/sleep 0.01
@@ -920,6 +954,7 @@ test_unpublished_worker_result_is_accounted_for() {
   done
   [ -n "$result_dir" ] || { kill "$driver" 2>/dev/null || true; fail "restart result directory never appeared"; }
   rm -rf -- "$result_dir"
+  : > "$dir/fake/release-relaunch"
   i=0
   while kill -0 "$driver" 2>/dev/null && [ "$i" -lt 400 ]; do
     /bin/sleep 0.01
@@ -1058,29 +1093,40 @@ test_already_current_unprovable_mate_stays_on_the_nudge_path() {
   pass "T16 an already-current mate with an unprovable runtime keeps the honest nudge path"
 }
 
-test_persist_gates_and_asks_only_for_open_records
-test_persist_precedes_restart
-test_arrived_answer_precedes_deadline_check
-test_answer_between_resolution_and_timeout_wins
-test_unprovable_runtime_falls_back
-test_unknown_mate_is_accounted_for
-test_refused_restart_falls_back_without_claiming_a_reload
-test_watcher_stands_aside_during_planned_restart
-test_watcher_stands_aside_during_direct_relaunch
-test_relaunch_carries_the_supervisor_compaction_window
-test_restart_stands_aside_for_a_live_recovery_claim
-test_crashed_restart_claim_is_reclaimed
-test_local_restart_uses_the_home_pin_and_reports_what_ran
-test_native_ultra_restart_keeps_local_and_remote_profiles
-test_remote_mate_restarts_over_the_transport_hop
-test_unreachable_host_is_reported_unknown
-test_concurrent_reply_cannot_release_persist_gate
-test_persist_waits_are_polled_together
-test_post_stop_failure_is_reported_unreached
-test_relaunches_do_not_block_persist_polling
-test_unpublished_worker_result_is_accounted_for
-test_result_published_while_reaping_is_honored
-test_already_current_mate_restarts_end_to_end
-test_already_current_unprovable_mate_stays_on_the_nudge_path
+# Every case builds its own home under a directory of its own (new_case names
+# are unique), keeps its stubs and fake state there, and signals only processes
+# it started, so the cases run through fm_run_case_pool (tests/lib.sh), longest
+# first. Cases that share a mate id also share only fm-spawn's /tmp/fm-<id>
+# root, which a relaunch reuses when it already exists as this user's private
+# directory; its staged launch file is namespaced by home. The remote cases
+# export their fake-transport settings inside their own pool subshell.
+# FM_SECONDMATE_RESTART_CASE_JOBS overrides the concurrency, which defaults to
+# the host's processor count capped at four; 1 runs the cases serially.
+case_jobs=$(fm_case_pool_jobs "${FM_SECONDMATE_RESTART_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_already_current_mate_restarts_end_to_end \
+  test_already_current_unprovable_mate_stays_on_the_nudge_path \
+  test_native_ultra_restart_keeps_local_and_remote_profiles \
+  test_crashed_restart_claim_is_reclaimed \
+  test_watcher_stands_aside_during_planned_restart \
+  test_watcher_stands_aside_during_direct_relaunch \
+  test_relaunch_carries_the_supervisor_compaction_window \
+  test_unpublished_worker_result_is_accounted_for \
+  test_relaunches_do_not_block_persist_polling \
+  test_result_published_while_reaping_is_honored \
+  test_persist_waits_are_polled_together \
+  test_remote_mate_restarts_over_the_transport_hop \
+  test_persist_gates_and_asks_only_for_open_records \
+  test_persist_precedes_restart \
+  test_arrived_answer_precedes_deadline_check \
+  test_answer_between_resolution_and_timeout_wins \
+  test_unprovable_runtime_falls_back \
+  test_unknown_mate_is_accounted_for \
+  test_refused_restart_falls_back_without_claiming_a_reload \
+  test_restart_stands_aside_for_a_live_recovery_claim \
+  test_local_restart_uses_the_home_pin_and_reports_what_ran \
+  test_unreachable_host_is_reported_unknown \
+  test_concurrent_reply_cannot_release_persist_gate \
+  test_post_stop_failure_is_reported_unreached || exit 1
 
 echo "# all fm-secondmate-restart tests passed"
