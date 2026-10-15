@@ -44,6 +44,10 @@ Undo it with `wsl -d <distro> -u root -- rm /etc/sudoers.d/lattice-storage`.
 5. First time only: create `<L>:\lattice-data\tetjet-results` and `<L>:\lattice-data\archive`, write the marker `lattice-data\.lattice-storage-id` holding the volume id, and measure sequential write speed with one 1 GiB temp file (deleted after); a failed measurement is retried on the next check.
 6. Probe a small write, then publish the results-root file atomically.
 
+When the listing fails, the check first proves the remembered SSD without Windows: the remembered letter's `/mnt/<l>` is in the mount table, its marker names exactly the remembered volume id, its device number equals the published `ssd_device`, and a small write probe in `lattice-data` succeeds and is removed.
+When all four pass, the check continues as above with free and total space from the mount's statfs, publishes `state=ok` with `ssd_identity=marker`, and its reason says the identity came from the marker; any readable listing or such a check resets the unreadable count.
+When any of them fails, the check counts as unreadable and its reason names the failed check.
+
 Each change of state appends one `note [at=<epoch>]: SSD storage <state>: ...` line to the notification file; an unchanged state never notifies twice, and the first reading of an absent SSD is a silent baseline.
 `bin/fm-disk-room.sh status` also reports the SSD's free and total space and which root is active.
 
@@ -53,7 +57,8 @@ Path: `~/.config/lattice-storage/results-root`, written only by `fm-storage.sh c
 
 Line 1 is the only line a fetcher needs: the absolute directory template for fetched results, containing `{task}`.
 Line 2 is exactly `format=lattice-storage-results-root/v1`.
-Later lines are `key=value` facts: `active` (`ssd` or `c`), `state`, `reason`, `checked_at`, `fallback`, and for a found SSD `ssd_letter`, `ssd_id`, `ssd_fs`, `ssd_free_bytes`, `ssd_total_bytes`, `write_mib_s`, plus `ssd_marker`, `archive`, and `ssd_device` (the Linux filesystem device number) when active.
+Later lines are `key=value` facts: `active` (`ssd` or `c`), `state`, `reason`, `checked_at`, `fallback`, and for a found SSD `ssd_letter`, `ssd_id`, `ssd_fs`, `ssd_free_bytes`, `ssd_total_bytes`, `write_mib_s`, plus `ssd_marker`, `archive`, and `ssd_device` (the Linux filesystem device number) when active, and `ssd_identity=marker` when the identity came from the marker because the Windows listing failed.
+Readers treat that `ok` exactly like any other.
 
 | state | meaning |
 |---|---|
@@ -65,7 +70,7 @@ Later lines are `key=value` facts: `active` (`ssd` or `c`), `state`, `reason`, `
 | `raw` | RAW, unformatted, or unsupported filesystem; nothing written |
 | `unwritable` | folders, marker, or the write probe failed |
 | `ambiguous` | several large volumes and none is the remembered SSD, or the marker names another volume |
-| `unreadable` | the Windows listing failed or timed out on 3 consecutive checks; until then a failed check keeps the last published state and root and does not notify, and any readable listing resets the count |
+| `unreadable` | the Windows listing failed or timed out, and the marker check failed, on 3 consecutive checks; until then a failed check keeps the last published state and root and does not notify, and any readable listing resets the count |
 
 Every state except `ok` has `active=c` and line 1 equal to `fallback`.
 A format that changes line 1's meaning uses a new file name, never a new `format=` value in this file.

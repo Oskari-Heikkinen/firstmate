@@ -282,6 +282,8 @@ test_unreadable_threshold() {
   reset
   listing "$(ssd_vol D NTFS)"
   FAKE_SUDO_OK=1 FM_STORAGE_NOW=1000 run check >/dev/null || fail "setup exits 0"
+  # Without the mount the marker cannot stand in for the listing.
+  : >"$MOUNTS"
   local out
   out=$(FAKE_PS_FAIL=1 FM_STORAGE_NOW=1300 run check) || fail "first failed check exits 0"
   assert_contains "$out" "kept ok" "the first failed check keeps the published state"
@@ -299,10 +301,68 @@ test_unreadable_threshold() {
   FAKE_SUDO_OK=1 run check >/dev/null || fail "recovery exits 0"
   assert_equals ok "$(rr state)" "a readable listing recovers"
   assert_equals 3 "$(notes)" "recovery notifies the change back"
+  : >"$MOUNTS"
   FAKE_PS_FAIL=1 run check >/dev/null || fail "failure after recovery exits 0"
   FAKE_PS_FAIL=1 run check >/dev/null || fail "failure after recovery exits 0"
   assert_equals ok "$(rr state)" "a readable listing resets the count"
   pass "unreadable is published and notified only after three consecutive failed checks"
+}
+
+test_marker_identity_without_listing() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_BULK_DEVICE=999 FAKE_SUDO_OK=1 FM_STORAGE_NOW=1000 run check >/dev/null || fail "setup exits 0"
+  local out n
+  for n in 1 2 3 4; do
+    out=$(FAKE_BULK_DEVICE=999 FAKE_PS_FAIL=1 FM_STORAGE_NOW=$(( 1000 + n * 300 )) run check) || fail "failed listing $n exits 0"
+  done
+  assert_contains "$out" "identity from the marker" "the line says where the identity came from"
+  assert_equals ok "$(rr state)" "a proven SSD stays ok through failed listings"
+  assert_equals ssd "$(rr active)" "a proven SSD stays active"
+  assert_equals marker "$(rr ssd_identity)" "the publication records the marker identity"
+  assert_equals 2200 "$(rr checked_at)" "the check is published, not kept"
+  assert_equals "\\\\?\\Volume{ssd1}\\" "$(rr ssd_id)" "the remembered volume id is published"
+  assert_equals $(( $(stat -f -c '%a' "$MNT/d") * $(stat -f -c '%S' "$MNT/d") )) "$(rr ssd_free_bytes)" "free space comes from statfs"
+  assert_absent "$ST/unreadable-runs" "a proven SSD resets the unreadable count"
+  [ -z "$(find "$MNT/d/lattice-data" -name '.probe*')" ] || fail "the probe file is removed"
+  assert_equals 1 "$(notes)" "an unchanged ok never notifies"
+  assert_equals "$MNT/d/lattice-data/tetjet-results/t" "$(FM_STORAGE_NOW=2200 run root t)" "root accepts the marker ok"
+  out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=2200 run verify-bulk-root t) || fail "verify-bulk-root accepts the marker ok"
+  assert_equals "$MNT/d/lattice-data/tetjet-results/t" "$out" "mandatory bulk accepts the marker ok"
+  pass "a failed listing keeps the SSD when mount, marker, device and probe prove it"
+}
+
+# marker_check_fails WHY BREAK [DEVICE]: after setup, BREAK one check (DEVICE
+# is the device the failed checks see); three failed listings then fall back
+# exactly as before, naming WHY.
+marker_check_fails() {
+  local why=$1 brk=$2 dev=${3:-999} out
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_BULK_DEVICE=999 FAKE_SUDO_OK=1 FM_STORAGE_NOW=1000 run check >/dev/null || fail "setup exits 0"
+  eval "$brk"
+  out=$(FAKE_BULK_DEVICE=$dev FAKE_PS_FAIL=1 FM_STORAGE_NOW=1300 run check) || fail "$why: first failed check exits 0"
+  assert_contains "$out" "kept ok" "$why: the first failed check keeps the published state"
+  FAKE_BULK_DEVICE=$dev FAKE_PS_FAIL=1 run check >/dev/null || fail "$why: second failed check exits 0"
+  FAKE_BULK_DEVICE=$dev FAKE_PS_FAIL=1 run check >/dev/null || fail "$why: third failed check exits 0"
+  assert_equals unreadable "$(rr state)" "$why: three failed checks publish unreadable"
+  assert_equals c "$(rr active)" "$why: unreadable falls back to C:"
+  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "$why: line 1 is the fallback"
+  assert_contains "$(rr reason)" "marker check failed: $why" "$why: the reason names the failed check"
+  assert_equals 1 "$(grep -c 'SSD storage unreadable' "$NOTE")" "$why: unreadable notifies once"
+}
+
+# shellcheck disable=SC2016 # each BREAK is eval'd inside marker_check_fails
+test_marker_checks_fall_back() {
+  marker_check_fails "$MNT/d is not mounted" ': >"$MOUNTS"'
+  marker_check_fails "the marker on $MNT/d is missing or names another volume" \
+    'printf "other\n" >"$MNT/d/lattice-data/.lattice-storage-id"'
+  marker_check_fails "the device of $MNT/d is not the published ssd_device" : 998
+  if [ "$(id -u)" != 0 ]; then
+    marker_check_fails "write probe on $MNT/d failed" 'chmod a-w "$MNT/d/lattice-data"'
+    chmod u+w "$MNT/d/lattice-data"
+  fi
+  pass "a missing mount, marker mismatch, device change or failed probe falls back as before"
 }
 
 test_reader_rules() {
@@ -429,5 +489,7 @@ test_ambiguous_and_identity
 test_unreadable
 test_transient_listing_failure_retried
 test_unreadable_threshold
+test_marker_identity_without_listing
+test_marker_checks_fall_back
 test_reader_rules
 test_no_fallback_refused

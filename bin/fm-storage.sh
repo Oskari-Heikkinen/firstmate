@@ -15,7 +15,10 @@
 #       results-root file atomically and notify on a state change.
 #       The Windows listing is tried up to 3 times; a check that still cannot
 #       read it keeps the last readable published state until 3 consecutive
-#       checks have failed, then publishes unreadable. Prints one line.
+#       checks have failed, then publishes unreadable. A check whose listing
+#       fails first proves the remembered SSD without Windows (mount, marker,
+#       published device, write probe) and, when all pass, publishes it as ok.
+#       Prints one line.
 #   fm-storage.sh setup
 #       Run check now, then print status.
 #   fm-storage.sh status
@@ -308,6 +311,7 @@ publish() {
       if [ "$STATE" = ok ]; then
         printf 'ssd_marker=%s\narchive=%s\n' "$mp/lattice-data/.lattice-storage-id" "$mp/lattice-data/archive"
         printf 'ssd_device=%s\n' "$(stat -c %d -- "$mp" 2>/dev/null)"
+        [ -n "$IDENTITY" ] && printf 'ssd_identity=%s\n' "$IDENTITY"
       fi
     fi
     printf 'fallback=%s\n' "$FALLBACK"
@@ -333,6 +337,7 @@ notify() {
 
 run_check() {
   local mp='' lock
+  IDENTITY=''
   load_conf
   valid_template "$FALLBACK" || die "no C: fallback template with {task} configured (install-timer --fallback TEMPLATE or FM_STORAGE_FALLBACK)"
   mkdir -p "$(state_dir)" || die "cannot create $(state_dir)"
@@ -340,7 +345,7 @@ run_check() {
   exec 9>"$lock"
   flock -w 60 9 || die "another check holds $lock"
   detect
-  if [ "$STATE" = unreadable ]; then
+  if [ "$STATE" = unreadable ] && ! marker_identity; then
     keep_last_readable && return 0
   else
     rm -f "$(state_dir)/unreadable-runs"
@@ -352,7 +357,7 @@ run_check() {
     elif ! mount_ssd "$mp"; then
       STATE=not-mounted
     elif setup_and_probe "$mp"; then
-      STATE=ok REASON="SSD $SSD_LETTER: $SSD_FS, $(tib "$SSD_FREE") free"
+      STATE=ok REASON="SSD $SSD_LETTER: $SSD_FS, $(tib "$SSD_FREE") free${IDENTITY:+; identity from the marker (Windows listing failed)}"
     fi
   else
     release_stale
@@ -360,6 +365,41 @@ run_check() {
   publish "$mp"
   notify
   printf 'results root: %s (%s: %s)\n' "$LINE1" "$STATE" "$REASON"
+}
+
+# marker_identity: with the Windows listing unreadable, prove the remembered
+# SSD from WSL alone: its mount is present, the marker names the remembered
+# volume id, the mount's device is the published ssd_device, and a write probe
+# succeeds. On success sets the SSD_* fields (free and total from statfs),
+# IDENTITY=marker and an empty STATE; otherwise appends the failed check to
+# REASON and changes nothing else.
+marker_identity() {
+  local ident l mp data uid fs dev why='' st bs
+  ident="$(config_dir)/ssd-identity"
+  uid=$(kv "$ident" uniqueid); fs=$(kv "$ident" fs); l=$(lower "$(kv "$ident" letter)")
+  mp="$(mnt_base)/$l"; data="$mp/lattice-data"
+  dev=$(kv "$(config_dir)/results-root" ssd_device)
+  if [ -z "$uid" ] || [ -z "$fs" ] || [ -z "$l" ]; then
+    why="no remembered SSD"
+  elif ! is_mounted "$mp"; then
+    why="$mp is not mounted"
+  elif [ "$(head -n 1 "$data/.lattice-storage-id" 2>/dev/null)" != "$uid" ]; then
+    why="the marker on $mp is missing or names another volume"
+  elif [ -z "$dev" ] || [ "$(stat -c %d -- "$mp" 2>/dev/null)" != "$dev" ]; then
+    why="the device of $mp is not the published ssd_device"
+  elif ! { : >"$data/.probe.$$" && rm -f "$data/.probe.$$"; } 2>/dev/null; then
+    why="write probe on $mp failed"
+  elif ! st=$(stat -f -c '%a %b %S' -- "$mp" 2>/dev/null) || ! read -r SSD_FREE SSD_SIZE bs <<<"$st"; then
+    why="could not read the free space of $mp"
+  fi
+  if [ -n "$why" ]; then
+    SSD_FREE='' SSD_SIZE=''
+    REASON="$REASON; marker check failed: $why"
+    return 1
+  fi
+  SSD_FREE=$(( SSD_FREE * bs )) SSD_SIZE=$(( SSD_SIZE * bs ))
+  SSD_LETTER=$(printf '%s' "$(kv "$ident" letter)" | tr '[:lower:]' '[:upper:]')
+  SSD_ID=$uid SSD_FS=$fs SSD_LABEL=$(kv "$ident" label) IDENTITY=marker STATE='' REASON=''
 }
 
 # keep_last_readable: count this unreadable check; while fewer than
