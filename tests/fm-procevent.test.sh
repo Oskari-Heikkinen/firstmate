@@ -19,6 +19,12 @@ set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP_ROOT=$(fm_test_tmproot fm-procevent-tests)
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
+# Claims and source locks live in this one machine-wide root, keyed by source
+# id alone. Each case group below runs beside the others, so it takes a root of
+# its own: ids its cases reuse, and its foreign-home claims, stay within it.
+use_claim_root() {  # <case-group>
+  export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims/$1"
+}
 
 # The runner resolves adapters under its root, so the suite points that root at
 # fixture adapters only it controls.
@@ -73,7 +79,7 @@ pe() { FM_HOME="$1" "$ROOT/bin/fm-procevent.sh" "${@:2}"; }
 pe_register() {  # <home> <adapter> <source-id> -- <argv>...
   local home=$1 adapter=$2 id=$3
   shift 3
-  fm_test_track_procevent_home "$home"
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
   pe "$home" register "$adapter" "$id" "$@"
 }
 new_home() { mkdir -p "$1/state"; }
@@ -211,6 +217,268 @@ hold_source_lock_then_handle() {  # <home> <source-id> <sequence> <ready-file> <
   HOLDER_PID=$!
 }
 
+# --- fixtures and helpers shared by every case group ---------------------
+
+# --- a terminal result retires its source, on the adapter's verdict alone ----
+# The runner must carry no notion of its own about what "done" means for a
+# source. It asks that source's adapter whether the captured result ends the
+# source, and retires the registration only on that adapter's verdict. Two
+# fixture adapters isolate exactly that decision - one that ends on any result,
+# one with no terminal knowledge at all - so the observed behavior is proven to
+# follow the adapter rather than any condition built into the runner.
+cat > "$ADAPTER_ROOT/bin/fm-procevent-endnow.sh" <<'SH'
+#!/usr/bin/env bash
+# Fixture adapter: every captured result ends this source.
+case "${1-}" in
+  terminal) [ -f "${2-}" ] && exit 0 || exit 1 ;;
+esac
+exit 2
+SH
+cat > "$ADAPTER_ROOT/bin/fm-procevent-openended.sh" <<'SH'
+#!/usr/bin/env bash
+# Fixture adapter with no terminal knowledge at all: nothing ever ends it.
+exit 2
+SH
+cat > "$ADAPTER_ROOT/bin/fm-procevent-applying.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1-}" in
+  autohandle)
+    printf '%s %s\n' "$2" "$3" >> "$FM_HOME/state/applied"
+    "$FM_PROCEVENT_UNDER_TEST" handled "$2" "$3" >/dev/null
+    ;;
+  *) exit 2 ;;
+esac
+SH
+cat > "$ADAPTER_ROOT/bin/fm-procevent-selfann.sh" <<'SH'
+#!/usr/bin/env bash
+# Fixture adapter that declares a durable downstream announcement of its own.
+# FM_HOME/state/selfann-fail makes its application fail so the fallback
+# publication path stays provable.
+case "${1-}" in
+  self-announcing) exit 0 ;;
+  autohandle)
+    [ ! -e "$FM_HOME/state/selfann-fail" ] || exit 1
+    printf '%s %s\n' "$2" "$3" >> "$FM_HOME/state/applied"
+    "$FM_PROCEVENT_UNDER_TEST" handled "$2" "$3" >/dev/null
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$ADAPTER_ROOT/bin/fm-procevent-endnow.sh" "$ADAPTER_ROOT/bin/fm-procevent-openended.sh" \
+  "$ADAPTER_ROOT/bin/fm-procevent-applying.sh" "$ADAPTER_ROOT/bin/fm-procevent-selfann.sh"
+
+pe_adapter() {  # <home> <command>...: run the runner against the fixture adapters
+  local home=$1
+  shift
+  FM_ROOT_OVERRIDE="$ADAPTER_ROOT" FM_PROCEVENT_UNDER_TEST="$ROOT/bin/fm-procevent.sh" \
+    FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" "$@"
+}
+
+RACE_BLOCKER="$TMP_ROOT/race-blocker.sh"
+cat > "$RACE_BLOCKER" <<'SH'
+#!/usr/bin/env bash
+printf 'started\n' >> "$1"
+while [ ! -e "$2" ]; do sleep 0.05; done
+printf 'race result\n'
+SH
+chmod +x "$RACE_BLOCKER"
+
+# When a fixture never records TERM, capture the claim, leader, group, and
+# retirement output to help distinguish a blocked stop from a refused signal.
+# Collect this evidence only on the failure path so passing cases stay quiet.
+post_term_evidence() {  # <case> <runner-pid> <claim> <signals> <started-epoch> <retire-output>
+  local case=$1 runner=$2 claim=$3 signals=$4 started=$5 out=$6
+  {
+    printf 'post-TERM evidence (%s case)\n' "$case"
+    printf '  elapsed since retire started: %ss\n' "$(( $(date +%s) - started ))"
+    printf '  identity recorded at claim time: %s\n' "$(sed -n '4p' "$claim" 2>/dev/null || echo '<claim unreadable>')"
+    printf '  identity readable now (real ps): %s\n' "$(LC_ALL=C ps -p "$runner" -o lstart= 2>/dev/null || echo '<ps failed>')"
+    printf '  signals file: %s (%s bytes)\n' "$signals" "$(wc -c < "$signals" 2>/dev/null | tr -d ' ' || echo 0)"
+    printf '  leader state: %s\n' "$(ps -o pid=,ppid=,pgid=,stat= -p "$runner" 2>/dev/null || echo '<leader gone>')"
+    printf '  leader wchan: %s\n' "$(ps -o wchan= -p "$runner" 2>/dev/null || echo '<none>')"
+    printf '  live members of the runner group:\n'
+    ps -Ao pid,ppid,pgid,stat,wchan,command 2>/dev/null | awk -v g="$runner" 'NR==1 || $3==g' | sed 's/^/    /'
+    printf '  retire said: %s\n' "${out:-<no output>}"
+  } >&2
+}
+
+# --- launch pacing and guard startup ----------------------------------------
+
+FAST_SOURCE="$TMP_ROOT/fast-source.sh"
+cat > "$FAST_SOURCE" <<'SH'
+#!/usr/bin/env bash
+perl -MTime::HiRes=time -e 'printf "%.6f\n", time' >> "$1"
+exit 1
+SH
+chmod +x "$FAST_SOURCE"
+
+STORM_SOURCE="$TMP_ROOT/storm-source.sh"
+cat > "$STORM_SOURCE" <<'SH'
+#!/usr/bin/env bash
+perl -MTime::HiRes=time -e 'printf "%.6f\n", time' >> "$1"
+FM_HOME="$2" perl -MPOSIX=setsid -e '
+  my @command = @ARGV;
+  defined(my $pid = fork) or exit 1;
+  exit 0 if $pid;
+  setsid() >= 0 or exit 1;
+  open STDIN, "<", "/dev/null" or exit 1;
+  open STDOUT, ">", "/dev/null" or exit 1;
+  open STDERR, ">", "/dev/null" or exit 1;
+  select undef, undef, undef, 0.2;
+  exec @command;
+' "$3/bin/fm-procevent.sh" reconcile
+exit 1
+SH
+chmod +x "$STORM_SOURCE"
+
+
+# --- an accidentally orphaned runner is bounded by its owner ----------------
+#
+# Reproduces the shape that wedged a host: a listener detached into its own
+# process group, reparented to init when its session ended, and left running for
+# a day with its blocking child - and everything that child spawned - still
+# executing. The cost was not the runner itself but the process churn under it,
+# which is why this asserts the whole descendant tree stops, not just the leader.
+#
+# Scope is asserted alongside it, in the same run and against the same stub: a
+# home whose session is still there keeps its runner. Reaping that keyed on the
+# script or process name instead of the owning session would take both.
+
+ORPHAN_STUB="$TMP_ROOT/orphan-stub.sh"
+cat > "$ORPHAN_STUB" <<'SH'
+#!/usr/bin/env bash
+# A blocking source whose child keeps spawning processes, which is what a poll
+# stub waiting on a trigger file actually does. The spawn rate is what turned a
+# leftover listener into a host-wide storm, so the tick log is the evidence that
+# the storm stopped and not merely that one pid went away.
+marker=$1
+( while [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ]; do
+    printf 'tick\n' >> "$marker.ticks"
+    sleep 0.1
+  done ) &
+printf '%s\n' "$!" > "$marker.descendant"
+while [ ! -e "$marker.trigger" ]; do
+  [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
+  sleep 0.1
+done
+printf 'orphan payload\n'
+SH
+chmod +x "$ORPHAN_STUB"
+
+# The same shape without the spawn churn, for the home that exercises explicit
+# retirement rather than the storm. Retirement refuses instead of signalling
+# when it cannot confirm the runner's identity, that identity is read through
+# `ps`, and the churning stub above starves that read often enough to make a
+# single retirement attempt a race. The storm itself is already covered against
+# the churning stub by the owner-loss reaping above, which asserts the tick log
+# stops, so this home only needs a reparented listener holding a real
+# descendant in its group.
+QUIET_STUB="$TMP_ROOT/quiet-stub.sh"
+cat > "$QUIET_STUB" <<'SH'
+#!/usr/bin/env bash
+marker=$1
+( sleep "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ) &
+printf '%s\n' "$!" > "$marker.descendant"
+while [ ! -e "$marker.trigger" ]; do
+  [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
+  sleep 0.1
+done
+printf 'orphan payload\n'
+SH
+chmod +x "$QUIET_STUB"
+
+# Short enough to observe, and driven through the same environment a real home
+# uses, so the bound under test is the shipped one rather than a test-only path.
+# One source of truth for the shortened lease and check these fixtures run under,
+# so a case that derives a deadline from the guard's documented bound cannot
+# silently diverge from the settings the guard is actually given.
+PROOF_LEASE_SECONDS=2
+PROOF_CHECK_SECONDS=1
+
+# The documented bound, derived here rather than restated as a flat number.
+#
+# The whole-second lease comparison is part of the bound, not slack: a lease of
+# N is honoured until its age reads N+1, so the lease term is N+1.
+PROOF_LEASE_BOUND=$((PROOF_LEASE_SECONDS + 1))
+# Detection is the lease plus ONE check interval. The guard still takes two
+# consecutive failing reads before it acts - one unreadable read must not end a
+# live runner - but they are spaced half an interval apart, so the pair fits
+# inside the single interval this term budgets.
+PROOF_DETECT_BOUND=$((PROOF_LEASE_BOUND + PROOF_CHECK_SECONDS))
+# The stop's own ceiling: two seconds for the ordinary signal, then two for the
+# forced one. Only a group that outlives the ordinary signal spends it, so a
+# case whose stub exits on that signal uses PROOF_PROMPT_STOP instead.
+PROOF_STOP_CEILING=4
+PROOF_PROMPT_STOP=1
+# Additive scheduling slack shared by cleanup and timing cases. The strict
+# timing case below owns and enforces its relation to BOUND_CHECK_SECONDS.
+PROOF_LOAD_SLACK=2
+
+orphan_pe() {  # <home> <command...>
+  local home=$1
+  shift
+  FM_PROCEVENT_OWNER_LEASE_SECONDS="$PROOF_LEASE_SECONDS" \
+    FM_PROCEVENT_OWNER_CHECK_SECONDS="$PROOF_CHECK_SECONDS" \
+    FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" "$@"
+}
+
+wait_gone() {  # <pid-or-group-spec> [tries]
+  local spec=$1 n=${2:-160}
+  for _ in $(seq 1 "$n"); do
+    kill -0 "$spec" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# --- a stop reaches a child that does not die on the ordinary signal ---------
+#
+# Every reaper here sends the ordinary stop signal to the runner's process group
+# and escalates only if the group outlives it. Both halves of that escalation
+# were broken, in ways that hid each other:
+#
+#   - The stop held the per-source lock across its wait while the runner's own
+#     exit cleanup waited for that same lock, so the runner outlived the ordinary
+#     signal every time and the forced kill silently became the normal path.
+#   - The escalation re-derived ownership from the leader, so once the leader did
+#     die to the stop's own signal it read that success as a leaderless group and
+#     refused to escalate at all.
+#
+# With only the first repaired, the second turned every stop of a signal-proof
+# child into a refusal that left it running. They are asserted together because
+# they only hold together.
+#
+# Earlier fixtures include TERM-resistant children and deliberately kept-alive
+# leaders. The cases below also exercise escalation after TERM ends the leader.
+
+# Millisecond clock for the supplementary retirement measurement;
+# the healthy-stop verdict below requires attached-start status 143 (TERM).
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
+
+SIGNAL_PROOF_STUB="$TMP_ROOT/signal-proof-stub.sh"
+cat > "$SIGNAL_PROOF_STUB" <<'SH'
+#!/usr/bin/env bash
+# A blocking source whose child handles the ordinary stop signal and keeps
+# waiting - the shape a poll client with its own shutdown handler presents while
+# a request is still outstanding. Reaching it requires a real escalation. The
+# signal log is what proves the child was signalled and survived, rather than
+# never having been signalled at all. The wait stays bounded so an escaped stub
+# cannot outlive the suite.
+marker=$1
+trap 'printf "signalled\n" >> "$marker.signals"' TERM INT HUP
+printf '%s\n' "$$" > "$marker.child"
+while [ ! -e "$marker.trigger" ]; do
+  [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
+  sleep 0.1 &
+  wait $!
+done
+printf 'signal-proof payload\n'
+SH
+chmod +x "$SIGNAL_PROOF_STUB"
+
+
+test_basics() {
+use_claim_root test_basics
 # --- inert with nothing configured ------------------------------------------
 IDLE="$TMP_ROOT/idle"; mkdir -p "$IDLE"
 out=$(pe "$IDLE" list)
@@ -432,64 +700,12 @@ private_mode=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -
   '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_mode "$2"' _ "$ROOT" "$HPRIVATE/state/procevent-inbox/private-src.1.handled")
 assert_contains "$private_mode" 600 "the handled marker is private under a permissive caller umask"
 pass "handled acknowledgement creation is private and fails safely"
-
-# --- a terminal result retires its source, on the adapter's verdict alone ----
-# The runner must carry no notion of its own about what "done" means for a
-# source. It asks that source's adapter whether the captured result ends the
-# source, and retires the registration only on that adapter's verdict. Two
-# fixture adapters isolate exactly that decision - one that ends on any result,
-# one with no terminal knowledge at all - so the observed behavior is proven to
-# follow the adapter rather than any condition built into the runner.
-cat > "$ADAPTER_ROOT/bin/fm-procevent-endnow.sh" <<'SH'
-#!/usr/bin/env bash
-# Fixture adapter: every captured result ends this source.
-case "${1-}" in
-  terminal) [ -f "${2-}" ] && exit 0 || exit 1 ;;
-esac
-exit 2
-SH
-cat > "$ADAPTER_ROOT/bin/fm-procevent-openended.sh" <<'SH'
-#!/usr/bin/env bash
-# Fixture adapter with no terminal knowledge at all: nothing ever ends it.
-exit 2
-SH
-cat > "$ADAPTER_ROOT/bin/fm-procevent-applying.sh" <<'SH'
-#!/usr/bin/env bash
-case "${1-}" in
-  autohandle)
-    printf '%s %s\n' "$2" "$3" >> "$FM_HOME/state/applied"
-    "$FM_PROCEVENT_UNDER_TEST" handled "$2" "$3" >/dev/null
-    ;;
-  *) exit 2 ;;
-esac
-SH
-cat > "$ADAPTER_ROOT/bin/fm-procevent-selfann.sh" <<'SH'
-#!/usr/bin/env bash
-# Fixture adapter that declares a durable downstream announcement of its own.
-# FM_HOME/state/selfann-fail makes its application fail so the fallback
-# publication path stays provable.
-case "${1-}" in
-  self-announcing) exit 0 ;;
-  autohandle)
-    [ ! -e "$FM_HOME/state/selfann-fail" ] || exit 1
-    printf '%s %s\n' "$2" "$3" >> "$FM_HOME/state/applied"
-    "$FM_PROCEVENT_UNDER_TEST" handled "$2" "$3" >/dev/null
-    ;;
-  *) exit 2 ;;
-esac
-SH
-chmod +x "$ADAPTER_ROOT/bin/fm-procevent-endnow.sh" "$ADAPTER_ROOT/bin/fm-procevent-openended.sh" \
-  "$ADAPTER_ROOT/bin/fm-procevent-applying.sh" "$ADAPTER_ROOT/bin/fm-procevent-selfann.sh"
-
-pe_adapter() {  # <home> <command>...: run the runner against the fixture adapters
-  local home=$1
-  shift
-  FM_ROOT_OVERRIDE="$ADAPTER_ROOT" FM_PROCEVENT_UNDER_TEST="$ROOT/bin/fm-procevent.sh" \
-    FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" "$@"
 }
 
+test_adapter_verdicts() {
+use_claim_root test_adapter_verdicts
 HPUBLISH="$TMP_ROOT/hpublish"; new_home "$HPUBLISH"
-fm_test_track_procevent_home "$HPUBLISH"
+fm_test_track_procevent_home "$HPUBLISH" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_adapter "$HPUBLISH" register applying publish-src -- /bin/echo "apply after publish" >/dev/null
 mkdir "$HPUBLISH/state/.wake-queue"
 out=$(pe_adapter "$HPUBLISH" start publish-src 2>&1)
@@ -521,7 +737,7 @@ pass "automatic application waits for durable publication and failed publication
 # channel is the announcement. The declaration never silences a capture the
 # adapter could NOT apply - that one still publishes for the handler.
 HSELF="$TMP_ROOT/hself"; new_home "$HSELF"
-fm_test_track_procevent_home "$HSELF"
+fm_test_track_procevent_home "$HSELF" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_adapter "$HSELF" register selfann self-src -- /bin/echo "self announced" >/dev/null
 out=$(pe_adapter "$HSELF" start self-src 2>&1)
 assert_contains "$out" "autohandled: self-src" "the self-announcing adapter did not apply its own capture"
@@ -552,7 +768,7 @@ rm -f "$HSELF/state/selfann-fail"
 pass "a self-announcing adapter applies quietly and still publishes what it could not apply"
 
 HTERM="$TMP_ROOT/hterm"; new_home "$HTERM"
-fm_test_track_procevent_home "$HTERM"
+fm_test_track_procevent_home "$HTERM" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_adapter "$HTERM" register endnow ends-src -- /bin/echo "terminal payload" >/dev/null
 out=$(pe_adapter "$HTERM" start ends-src)
 assert_contains "$out" "captured:" "a terminal result is still captured durably"
@@ -576,7 +792,7 @@ assert_contains "$out" "published=0" "an acknowledged terminal result stops bein
 pass "an adapter-classified terminal result is captured once, announced, and retires its source automatically"
 
 HOPEN="$TMP_ROOT/hopen"; new_home "$HOPEN"
-fm_test_track_procevent_home "$HOPEN"
+fm_test_track_procevent_home "$HOPEN" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_adapter "$HOPEN" register openended open-src -- /bin/echo "open payload" >/dev/null
 out=$(pe_adapter "$HOPEN" start open-src)
 assert_contains "$out" "captured:" "a result from an adapter with no terminal verdict is captured"
@@ -586,7 +802,7 @@ pe_adapter "$HOPEN" retire open-src >/dev/null
 pass "a source stays armed unless its own adapter classifies the result terminal"
 
 HREPLACE="$TMP_ROOT/hreplace"; new_home "$HREPLACE"
-fm_test_track_procevent_home "$HREPLACE"
+fm_test_track_procevent_home "$HREPLACE" "$FM_PROCEVENT_CLAIM_ROOT"
 OLD_TRIGGER="$TMP_ROOT/replace-old-trigger"
 OLD_STARTED="$TMP_ROOT/replace-old-started"
 pe_adapter "$HREPLACE" register endnow replace-src -- \
@@ -611,7 +827,7 @@ pe_adapter "$HREPLACE" retire replace-src >/dev/null
 pass "terminal retirement preserves and releases a concurrently replaced registration"
 
 HRETFAIL="$TMP_ROOT/hretfail"; new_home "$HRETFAIL"
-fm_test_track_procevent_home "$HRETFAIL"
+fm_test_track_procevent_home "$HRETFAIL" "$FM_PROCEVENT_CLAIM_ROOT"
 FAIL_RM_BIN=$(fm_fakebin "$TMP_ROOT/retire-fail-bin")
 REAL_RM=$(command -v rm)
 export REAL_RM
@@ -729,7 +945,10 @@ expected=$(printf '%s\n' \
   'check: procevent plain ordered-src 10')
 [ "$deduped" = "$expected" ] || fail "distinct result generations were coalesced or reordered: $deduped"
 pass "pending results preserve numeric order and distinct wake identity"
+}
 
+test_ownership_and_stale_claims() {
+use_claim_root test_ownership_and_stale_claims
 # --- two homes cannot both own one canonical source -------------------------
 HA="$TMP_ROOT/ha"; HB="$TMP_ROOT/hb"; new_home "$HA"; new_home "$HB"
 TRIG2="$TMP_ROOT/trigger-two"
@@ -810,14 +1029,6 @@ pass "cross-home stale recovery removes abandoned output from the old state dire
 HR="$TMP_ROOT/hr"; new_home "$HR"
 RACE_TRIGGER="$TMP_ROOT/race-trigger"
 RACE_LOG="$TMP_ROOT/race-executions"
-RACE_BLOCKER="$TMP_ROOT/race-blocker.sh"
-cat > "$RACE_BLOCKER" <<'SH'
-#!/usr/bin/env bash
-printf 'started\n' >> "$1"
-while [ ! -e "$2" ]; do sleep 0.05; done
-printf 'race result\n'
-SH
-chmod +x "$RACE_BLOCKER"
 pe_register "$HR" plain race-src -- "$RACE_BLOCKER" "$RACE_LOG" "$RACE_TRIGGER" >/dev/null
 printf '%s\n%s\nold-token\nold-identity\n' "$TMP_ROOT/gone-home" 999999 > "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
 chmod 0600 "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
@@ -940,7 +1151,10 @@ wait_for "$DEAD_LOG" || fail "the replacement source never started for a truly d
 : > "$DEAD_TRIGGER"
 pe "$HG2" retire dead-gen-src >/dev/null
 pass "a truly dead generation with no surviving group is still safely reclaimed"
+}
 
+test_state_root_drift() {
+use_claim_root test_state_root_drift
 # --- a dead generation stays reclaimable when the state root cannot be
 # revalidated -----------------------------------------------------------------
 # The reported wedge. Reclaiming a dead generation ran the claim's
@@ -1175,7 +1389,11 @@ assert_contains "$(cat "$TMP_ROOT/reused-plain-start.out")" "captured:" \
 for _ in $(seq 1 50); do kill -0 -"$sr5_leader" 2>/dev/null || break; sleep 0.1; done
 pe "$HSR5" retire reused-plain-src >/dev/null 2>&1 || true
 pass "start reclaims a reused-pid claim whose leftovers can still be tidied"
+}
 
+test_launch_confirmation() {
+set -e
+use_claim_root test_launch_confirmation
 # --- a launch that cannot confirm is announced once per failure episode ------
 # `bin/fm-watch.sh` discards reconcile's `failed=` count and exit status, so a
 # runner that dies before claiming - for any cause, not only the claim wedge -
@@ -1356,7 +1574,7 @@ pass "reconcile reports a launch it could not confirm instead of counting it as 
 # runner has captured its result and let go of both its claim and its runner
 # record. Confirmation therefore starts strictly after the fast runner is gone.
 HFC="$TMP_ROOT/hfc"; new_home "$HFC"
-FC_FAST="$TMP_ROOT/fast-source.sh"
+FC_FAST="$TMP_ROOT/fc-fast-source.sh"
 cat > "$FC_FAST" <<'SH'
 #!/usr/bin/env bash
 printf 'fast payload\n'
@@ -1447,7 +1665,11 @@ assert_contains "$iw_ok" "failed=0" \
 : > "$IW_TRIGGER"
 pe "$HIW" retire invalid-window-src >/dev/null 2>&1 || true
 pass "an unusable launch confirm window is refused by name instead of blamed on the sources"
+}
 
+test_lifecycle_and_sweeps() {
+set -e
+use_claim_root test_lifecycle_and_sweeps
 # --- a dead generation's untidyable leftovers never wedge ownership ----------
 # The same wedge as the state-root case above, reached through the sibling
 # cleanups in the stale-claim branch rather than the capture reservation. Every
@@ -1663,7 +1885,11 @@ assert_contains "$sup" no "registration-free results do not broaden continuous s
 out=$(pe "$HV" sweep-home)
 assert_contains "$out" "swept: attempted=0" "result-only homes need no process cleanup"
 pass "healthy runtime behavior remains registration-only"
+}
 
+test_argv_and_bounds() {
+set -e
+use_claim_root test_argv_and_bounds
 # --- argv boundaries, stderr, exit status, bounds, malformed output ---------
 HD="$TMP_ROOT/hd"; new_home "$HD"
 TRIG3="$TMP_ROOT/trigger-three"
@@ -1733,113 +1959,6 @@ kill -0 "$noisy_child" 2>/dev/null && fail "TERM-resistant source child survived
 assert_absent "$staged" "retirement removes the tracked partial staging file"
 pass "live output stays bounded and retirement reaps the whole source group"
 
-# When a fixture never records TERM, capture the claim, leader, group, and
-# retirement output to help distinguish a blocked stop from a refused signal.
-# Collect this evidence only on the failure path so passing cases stay quiet.
-post_term_evidence() {  # <case> <runner-pid> <claim> <signals> <started-epoch> <retire-output>
-  local case=$1 runner=$2 claim=$3 signals=$4 started=$5 out=$6
-  {
-    printf 'post-TERM evidence (%s case)\n' "$case"
-    printf '  elapsed since retire started: %ss\n' "$(( $(date +%s) - started ))"
-    printf '  identity recorded at claim time: %s\n' "$(sed -n '4p' "$claim" 2>/dev/null || echo '<claim unreadable>')"
-    printf '  identity readable now (real ps): %s\n' "$(LC_ALL=C ps -p "$runner" -o lstart= 2>/dev/null || echo '<ps failed>')"
-    printf '  signals file: %s (%s bytes)\n' "$signals" "$(wc -c < "$signals" 2>/dev/null | tr -d ' ' || echo 0)"
-    printf '  leader state: %s\n' "$(ps -o pid=,ppid=,pgid=,stat= -p "$runner" 2>/dev/null || echo '<leader gone>')"
-    printf '  leader wchan: %s\n' "$(ps -o wchan= -p "$runner" 2>/dev/null || echo '<none>')"
-    printf '  live members of the runner group:\n'
-    ps -Ao pid,ppid,pgid,stat,wchan,command 2>/dev/null | awk -v g="$runner" 'NR==1 || $3==g' | sed 's/^/    /'
-    printf '  retire said: %s\n' "${out:-<no output>}"
-  } >&2
-}
-
-for post_term_case in mismatch unreadable unreadable-pgid nonleader; do
-  HPOST_TERM="$TMP_ROOT/post-term-$post_term_case"; new_home "$HPOST_TERM"
-  POST_TERM_SOURCE="$HPOST_TERM/source.sh"
-  POST_TERM_PID="$HPOST_TERM/child.pid"
-  POST_TERM_SIGNALS="$HPOST_TERM/child.signals"
-  cat > "$POST_TERM_SOURCE" <<'SH'
-#!/usr/bin/env bash
-trap 'printf "signalled\n" >> "$2"' TERM
-printf '%s\n' "$$" > "$1"
-while [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ]; do sleep 1; done
-SH
-  chmod +x "$POST_TERM_SOURCE"
-  POST_TERM_BIN=$(fm_fakebin "$HPOST_TERM/tools")
-  REAL_PS=$(command -v ps) || fail "the post-TERM reuse fixture requires ps"
-  pe_register "$HPOST_TERM" plain post-term-src -- \
-    "$POST_TERM_SOURCE" "$POST_TERM_PID" "$POST_TERM_SIGNALS" >/dev/null
-  FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-post-term-proc" \
-    FM_PROCEVENT_OWNER_CHECK_SECONDS=5 pe "$HPOST_TERM" reconcile >/dev/null
-  wait_for "$POST_TERM_PID" || fail "the post-TERM reuse fixture did not start"
-  wait_for "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim" \
-    || fail "the post-TERM reuse fixture did not claim its source"
-  POST_TERM_RUNNER=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim")
-  # The child can publish its PID before startup releases the source lock.
-  # Cross that boundary before suspending the runner, or retirement waits on
-  # a stopped lock owner instead of exercising the signal checks below.
-  FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-post-term-proc" pe "$HPOST_TERM" list >/dev/null \
-    || fail "the post-TERM fixture never finished its source launch"
-  kill -STOP "$POST_TERM_RUNNER" || fail "the post-TERM fixture could not keep its leader alive"
-  cat > "$POST_TERM_BIN/ps" <<SH
-#!/usr/bin/env bash
-if [ "\${1-}" = -p ] && [ "\${2-}" = "$POST_TERM_RUNNER" ] \
-  && [ "\${3-}" = -o ] && [ "\${4-}" = lstart= ]; then
-  if [ "$post_term_case" = mismatch ]; then
-    printf 'reused identity\n'
-    exit 0
-  fi
-  [ ! -s "$POST_TERM_SIGNALS" ] || exit 1
-fi
-if [ "\${1-}" = -o ] && [ "\${2-}" = pgid= ] \
-  && [ "\${3-}" = -p ] && [ "\${4-}" = "$POST_TERM_RUNNER" ]; then
-  case "$post_term_case" in
-    unreadable-pgid) [ ! -s "$POST_TERM_SIGNALS" ] || exit 1 ;;
-    nonleader) printf '0\n'; exit 0 ;;
-  esac
-fi
-exec "$REAL_PS" "\$@"
-SH
-  chmod +x "$POST_TERM_BIN/ps"
-  post_term_status=0
-  post_term_started=$(date +%s)
-  post_term_out=$(PATH="$POST_TERM_BIN:$PATH" FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-post-term-proc" \
-    pe "$HPOST_TERM" retire post-term-src 2>&1) || post_term_status=$?
-  case "$post_term_case" in
-    mismatch|nonleader)
-      assert_absent "$POST_TERM_SIGNALS" "the first signal refuses $post_term_case evidence"
-      [ "$post_term_status" -ne 0 ] || fail "retirement escalated despite $post_term_case evidence"
-      assert_contains "$post_term_out" "cannot confirm runner identity" \
-        "first-signal $post_term_case evidence refuses retirement"
-      kill -0 "$POST_TERM_RUNNER" 2>/dev/null \
-        || fail "the post-TERM fixture lost its leader instead of exercising $post_term_case evidence"
-      kill -0 -"$POST_TERM_RUNNER" 2>/dev/null \
-        || fail "a $post_term_case group was killed during escalation"
-      assert_present "$HPOST_TERM/state/procevent/post-term-src.source" \
-        "first-signal $post_term_case evidence preserves registration"
-      assert_present "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim" \
-        "first-signal $post_term_case evidence preserves its claim"
-      kill -KILL -"$POST_TERM_RUNNER" 2>/dev/null || true
-      ;;
-    *)
-      if [ ! -s "$POST_TERM_SIGNALS" ]; then
-        post_term_evidence "$post_term_case" "$POST_TERM_RUNNER" \
-          "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim" "$POST_TERM_SIGNALS" \
-          "$post_term_started" "$post_term_out"
-        fail "the post-TERM fixture never received TERM"
-      fi
-      [ "$post_term_status" -eq 0 ] \
-        || fail "retirement abandoned a proved stop after $post_term_case identity: $post_term_out"
-      assert_absent "$HPOST_TERM/state/procevent/post-term-src.source" \
-        "proved escalation retires the source after $post_term_case identity"
-      assert_absent "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim" \
-        "proved escalation releases its claim after $post_term_case identity"
-      ;;
-  esac
-  for _ in $(seq 1 50); do kill -0 -"$POST_TERM_RUNNER" 2>/dev/null || break; sleep 0.1; done
-  kill -0 -"$POST_TERM_RUNNER" 2>/dev/null && fail "the post-TERM fixture group survived: $post_term_case"
-  pe "$HPOST_TERM" retire post-term-src >/dev/null
-  pass "stop $post_term_case evidence preserves the proved-stop boundary"
-done
 
 HBAD="$TMP_ROOT/hbad"; new_home "$HBAD"
 pe_register "$HBAD" plain bad-limit -- /bin/true >/dev/null
@@ -1882,38 +2001,13 @@ assert_contains "$runner_help" "Durability boundary" \
 assert_not_contains "$runner_help" "exactly-once" \
   "the runner's help claims no exactly-once delivery"
 pass "the published interfaces state the loss limitation and claim no lossless delivery"
+}
 
-# --- launch pacing and guard startup ----------------------------------------
-
-FAST_SOURCE="$TMP_ROOT/fast-source.sh"
-cat > "$FAST_SOURCE" <<'SH'
-#!/usr/bin/env bash
-perl -MTime::HiRes=time -e 'printf "%.6f\n", time' >> "$1"
-exit 1
-SH
-chmod +x "$FAST_SOURCE"
-
-STORM_SOURCE="$TMP_ROOT/storm-source.sh"
-cat > "$STORM_SOURCE" <<'SH'
-#!/usr/bin/env bash
-perl -MTime::HiRes=time -e 'printf "%.6f\n", time' >> "$1"
-FM_HOME="$2" perl -MPOSIX=setsid -e '
-  my @command = @ARGV;
-  defined(my $pid = fork) or exit 1;
-  exit 0 if $pid;
-  setsid() >= 0 or exit 1;
-  open STDIN, "<", "/dev/null" or exit 1;
-  open STDOUT, ">", "/dev/null" or exit 1;
-  open STDERR, ">", "/dev/null" or exit 1;
-  select undef, undef, undef, 0.2;
-  exec @command;
-' "$3/bin/fm-procevent.sh" reconcile
-exit 1
-SH
-chmod +x "$STORM_SOURCE"
-
+test_launch_pacing() {
+set -e
+use_claim_root test_launch_pacing
 HFLOOR="$TMP_ROOT/launch-floor"; new_home "$HFLOOR"
-fm_test_track_procevent_home "$HFLOOR"
+fm_test_track_procevent_home "$HFLOOR" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_register "$HFLOOR" plain floor-src -- \
   "$STORM_SOURCE" "$TMP_ROOT/launch-times" "$HFLOOR" "$ROOT"
 # Three real launches can outlive a four-second lease on a loaded host. Give
@@ -1941,7 +2035,7 @@ perl -e 'exit($ARGV[0] >= ($ARGV[1] - 1) * 0.8 ? 0 : 1)' "$launch_span" "$launch
 pass "an orphaned source command obeys the launch floor during its grace window"
 
 HPACE="$TMP_ROOT/registration-pacing"; new_home "$HPACE"
-fm_test_track_procevent_home "$HPACE"
+fm_test_track_procevent_home "$HPACE" "$FM_PROCEVENT_CLAIM_ROOT"
 PACE_LOG="$TMP_ROOT/registration-pacing.log"
 pe_register "$HPACE" plain pace-src -- "$FAST_SOURCE" "$PACE_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=3600 pe "$HPACE" start pace-src >/dev/null
@@ -1967,7 +2061,7 @@ PACE_STAMPS=$(find "$HPACE/state/procevent" -maxdepth 1 -type f \
 pass "a replacement registration starts with one fresh launch floor"
 
 HPACE_RACE="$TMP_ROOT/registration-pacing-race"; new_home "$HPACE_RACE"
-fm_test_track_procevent_home "$HPACE_RACE"
+fm_test_track_procevent_home "$HPACE_RACE" "$FM_PROCEVENT_CLAIM_ROOT"
 PACE_RACE_LOG="$TMP_ROOT/registration-pacing-race.log"
 pe_register "$HPACE_RACE" plain pace-race-src -- "$FAST_SOURCE" "$PACE_RACE_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=3 pe "$HPACE_RACE" start pace-race-src >/dev/null
@@ -2025,7 +2119,7 @@ PACE_RACE_STAMPS=$(find "$HPACE_RACE/state/procevent" -maxdepth 1 -type f \
 pass "a superseded sleeping runner cannot recreate stale pacing state"
 
 HCOMMIT="$TMP_ROOT/registration-commit"; new_home "$HCOMMIT"
-fm_test_track_procevent_home "$HCOMMIT"
+fm_test_track_procevent_home "$HCOMMIT" "$FM_PROCEVENT_CLAIM_ROOT"
 COMMIT_LOG="$TMP_ROOT/registration-commit.log"
 mkdir -p "$HCOMMIT/state/procevent/commit-src.1-2.last-launch"
 pe_register "$HCOMMIT" plain commit-src -- "$FAST_SOURCE" "$COMMIT_LOG" >/dev/null \
@@ -2037,7 +2131,7 @@ FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1 pe "$HCOMMIT" start commit-src >/dev/null \
 pass "post-commit pacing cleanup cannot veto registration publication"
 
 HROLLBACK="$TMP_ROOT/rollback-pacing"; new_home "$HROLLBACK"
-fm_test_track_procevent_home "$HROLLBACK"
+fm_test_track_procevent_home "$HROLLBACK" "$FM_PROCEVENT_CLAIM_ROOT"
 ROLLBACK_LOG="$TMP_ROOT/rollback-pacing.log"
 pe_register "$HROLLBACK" plain rollback-src -- "$FAST_SOURCE" "$ROLLBACK_LOG" >/dev/null
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1 pe "$HROLLBACK" start rollback-src >/dev/null
@@ -2073,9 +2167,13 @@ while :; do
     || fail "an orphaned self-relaunching source survived its expired owner lease"
 done
 pass "an expired owner lease stops a self-relaunching source generation"
+}
 
+test_owner_lease_attached() {
+set -e
+use_claim_root test_owner_lease_attached
 HRECREATED="$TMP_ROOT/recreated-owner"; new_home "$HRECREATED"
-fm_test_track_procevent_home "$HRECREATED"
+fm_test_track_procevent_home "$HRECREATED" "$FM_PROCEVENT_CLAIM_ROOT"
 RECREATED_TRIGGER="$TMP_ROOT/recreated-owner.trigger"
 pe_register "$HRECREATED" plain recreated-src -- \
   "$BLOCKER" "$RECREATED_TRIGGER" "recreated payload" >/dev/null
@@ -2098,7 +2196,7 @@ done
 pass "a recreated state path does not preserve the old runner"
 
 HGUARDFAIL="$TMP_ROOT/guard-failure"; new_home "$HGUARDFAIL"
-fm_test_track_procevent_home "$HGUARDFAIL"
+fm_test_track_procevent_home "$HGUARDFAIL" "$FM_PROCEVENT_CLAIM_ROOT"
 pe_register "$HGUARDFAIL" plain guard-fail-src -- "$FAST_SOURCE" "$TMP_ROOT/unguarded-launches"
 guard_fail_status=0
 guard_fail_out=$(FM_PROCEVENT_OWNER_LEASE_SECONDS=invalid \
@@ -2111,7 +2209,7 @@ assert_absent "$TMP_ROOT/unguarded-launches" \
 pass "a runner fails closed when its owner guard cannot initialize"
 
 HATTACHED="$TMP_ROOT/attached-owner"; new_home "$HATTACHED"
-fm_test_track_procevent_home "$HATTACHED"
+fm_test_track_procevent_home "$HATTACHED" "$FM_PROCEVENT_CLAIM_ROOT"
 ATTACHED_TRIGGER="$TMP_ROOT/attached.trigger"
 pe_register "$HATTACHED" plain attached-src -- "$BLOCKER" "$ATTACHED_TRIGGER" "attached payload"
 FM_PROCEVENT_OWNER_LEASE_SECONDS=1 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
@@ -2127,9 +2225,13 @@ wait "$ATTACHED_START_PID" || fail "the attached start did not complete after it
 assert_contains "$(cat "$TMP_ROOT/attached.out")" "captured:" \
   "the attached source result was not captured"
 pass "a foreground start refreshes its lease while its caller remains attached"
+}
 
+test_owner_lease_clock_and_reuse() {
+set -e
+use_claim_root test_owner_lease_clock_and_reuse
 HCLOCK="$TMP_ROOT/lease-clock"; new_home "$HCLOCK"
-fm_test_track_procevent_home "$HCLOCK"
+fm_test_track_procevent_home "$HCLOCK" "$FM_PROCEVENT_CLAIM_ROOT"
 CLOCK_TRIGGER="$TMP_ROOT/lease-clock.trigger"
 CLOCK_STATE="$TMP_ROOT/lease-clock-state"
 CLOCK_BIN=$(fm_fakebin "$TMP_ROOT/lease-clock-bin")
@@ -2164,7 +2266,7 @@ wait "$CLOCK_START_PID" || fail "the clock-shift fixture did not complete"
 pass "wall-clock corrections do not alter owner lease age"
 
 HDETACHED="$TMP_ROOT/detached-attached-owner"; new_home "$HDETACHED"
-fm_test_track_procevent_home "$HDETACHED"
+fm_test_track_procevent_home "$HDETACHED" "$FM_PROCEVENT_CLAIM_ROOT"
 DETACHED_TRIGGER="$TMP_ROOT/detached-attached.trigger"
 pe_register "$HDETACHED" plain detached-attached-src -- \
   "$BLOCKER" "$DETACHED_TRIGGER" "detached attached payload"
@@ -2189,7 +2291,7 @@ done
 pass "an attached-start keeper stops refreshing after its parent exits"
 
 HREUSED_GROUP="$TMP_ROOT/reused-runner-group"; new_home "$HREUSED_GROUP"
-fm_test_track_procevent_home "$HREUSED_GROUP"
+fm_test_track_procevent_home "$HREUSED_GROUP" "$FM_PROCEVENT_CLAIM_ROOT"
 REUSED_GROUP_MARKER="$TMP_ROOT/reused-runner-group.marker"
 REUSED_GROUP_TRIGGER="$TMP_ROOT/reused-runner-group.trigger"
 REUSED_GROUP_BIN=$(fm_fakebin "$TMP_ROOT/reused-runner-group-bin")
@@ -2230,110 +2332,15 @@ for _ in $(seq 1 50); do kill -0 -"$REUSED_GROUP_RUNNER" 2>/dev/null || break; s
 kill -0 -"$REUSED_GROUP_RUNNER" 2>/dev/null \
   && fail "retirement left the group alive once runner identity was unambiguous"
 pass "a detected ambiguous reused-PID group is not signalled"
-
-# --- an accidentally orphaned runner is bounded by its owner ----------------
-#
-# Reproduces the shape that wedged a host: a listener detached into its own
-# process group, reparented to init when its session ended, and left running for
-# a day with its blocking child - and everything that child spawned - still
-# executing. The cost was not the runner itself but the process churn under it,
-# which is why this asserts the whole descendant tree stops, not just the leader.
-#
-# Scope is asserted alongside it, in the same run and against the same stub: a
-# home whose session is still there keeps its runner. Reaping that keyed on the
-# script or process name instead of the owning session would take both.
-
-ORPHAN_STUB="$TMP_ROOT/orphan-stub.sh"
-cat > "$ORPHAN_STUB" <<'SH'
-#!/usr/bin/env bash
-# A blocking source whose child keeps spawning processes, which is what a poll
-# stub waiting on a trigger file actually does. The spawn rate is what turned a
-# leftover listener into a host-wide storm, so the tick log is the evidence that
-# the storm stopped and not merely that one pid went away.
-marker=$1
-( while [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ]; do
-    printf 'tick\n' >> "$marker.ticks"
-    sleep 0.1
-  done ) &
-printf '%s\n' "$!" > "$marker.descendant"
-while [ ! -e "$marker.trigger" ]; do
-  [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
-  sleep 0.1
-done
-printf 'orphan payload\n'
-SH
-chmod +x "$ORPHAN_STUB"
-
-# The same shape without the spawn churn, for the home that exercises explicit
-# retirement rather than the storm. Retirement refuses instead of signalling
-# when it cannot confirm the runner's identity, that identity is read through
-# `ps`, and the churning stub above starves that read often enough to make a
-# single retirement attempt a race. The storm itself is already covered against
-# the churning stub by the owner-loss reaping above, which asserts the tick log
-# stops, so this home only needs a reparented listener holding a real
-# descendant in its group.
-QUIET_STUB="$TMP_ROOT/quiet-stub.sh"
-cat > "$QUIET_STUB" <<'SH'
-#!/usr/bin/env bash
-marker=$1
-( sleep "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ) &
-printf '%s\n' "$!" > "$marker.descendant"
-while [ ! -e "$marker.trigger" ]; do
-  [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
-  sleep 0.1
-done
-printf 'orphan payload\n'
-SH
-chmod +x "$QUIET_STUB"
-
-# Short enough to observe, and driven through the same environment a real home
-# uses, so the bound under test is the shipped one rather than a test-only path.
-# One source of truth for the shortened lease and check these fixtures run under,
-# so a case that derives a deadline from the guard's documented bound cannot
-# silently diverge from the settings the guard is actually given.
-PROOF_LEASE_SECONDS=2
-PROOF_CHECK_SECONDS=1
-
-# The documented bound, derived here rather than restated as a flat number.
-#
-# The whole-second lease comparison is part of the bound, not slack: a lease of
-# N is honoured until its age reads N+1, so the lease term is N+1.
-PROOF_LEASE_BOUND=$((PROOF_LEASE_SECONDS + 1))
-# Detection is the lease plus ONE check interval. The guard still takes two
-# consecutive failing reads before it acts - one unreadable read must not end a
-# live runner - but they are spaced half an interval apart, so the pair fits
-# inside the single interval this term budgets.
-PROOF_DETECT_BOUND=$((PROOF_LEASE_BOUND + PROOF_CHECK_SECONDS))
-# The stop's own ceiling: two seconds for the ordinary signal, then two for the
-# forced one. Only a group that outlives the ordinary signal spends it, so a
-# case whose stub exits on that signal uses PROOF_PROMPT_STOP instead.
-PROOF_STOP_CEILING=4
-PROOF_PROMPT_STOP=1
-# Additive scheduling slack shared by cleanup and timing cases. The strict
-# timing case below owns and enforces its relation to BOUND_CHECK_SECONDS.
-PROOF_LOAD_SLACK=2
-
-orphan_pe() {  # <home> <command...>
-  local home=$1
-  shift
-  FM_PROCEVENT_OWNER_LEASE_SECONDS="$PROOF_LEASE_SECONDS" \
-    FM_PROCEVENT_OWNER_CHECK_SECONDS="$PROOF_CHECK_SECONDS" \
-    FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" "$@"
 }
 
-wait_gone() {  # <pid-or-group-spec> [tries]
-  local spec=$1 n=${2:-160}
-  for _ in $(seq 1 "$n"); do
-    kill -0 "$spec" 2>/dev/null || return 0
-    sleep 0.1
-  done
-  return 1
-}
-
+test_orphaned_listener() {
+set -e
+use_claim_root test_orphaned_listener
 HORPHAN="$TMP_ROOT/orphan-dead-owner"; new_home "$HORPHAN"
-fm_test_track_procevent_home "$HORPHAN"
+fm_test_track_procevent_home "$HORPHAN" "$FM_PROCEVENT_CLAIM_ROOT"
 HKEEP="$TMP_ROOT/orphan-live-owner"; new_home "$HKEEP"
-fm_test_track_procevent_home "$HKEEP"
+fm_test_track_procevent_home "$HKEEP" "$FM_PROCEVENT_CLAIM_ROOT"
 orphan_pe "$HORPHAN" register plain orphan-src -- "$ORPHAN_STUB" "$TMP_ROOT/orphan-dead" >/dev/null
 orphan_pe "$HKEEP" register plain keep-src -- "$QUIET_STUB" "$TMP_ROOT/orphan-live" >/dev/null
 orphan_pe "$HORPHAN" reconcile >/dev/null
@@ -2431,7 +2438,11 @@ wait_gone "-$KEEP_PID" \
 wait_gone "$KEEP_DESCENDANT" \
   || fail "retiring a source left a descendant of its listener running"
 pass "retiring a source reaps its reparented listener and every descendant under it"
+}
 
+test_guard_retry() {
+set -e
+use_claim_root test_guard_retry
 # --- an expired runner's guard retries unproved cleanup ---------------------
 #
 # A stop the guard cannot PROVE must not end the guard. A descendant still
@@ -2444,7 +2455,7 @@ pass "retiring a source reaps its reparented listener and every descendant under
 # Every other `ps` call, and every later one, is the real command.
 
 RETRY_HOME="$TMP_ROOT/stop-retry"; new_home "$RETRY_HOME"
-fm_test_track_procevent_home "$RETRY_HOME"
+fm_test_track_procevent_home "$RETRY_HOME" "$FM_PROCEVENT_CLAIM_ROOT"
 RETRY_STATE="$TMP_ROOT/stop-retry-state"; mkdir -p "$RETRY_STATE"
 RETRY_BIN=$(fm_fakebin "$TMP_ROOT/stop-retry-bin")
 REAL_PS=$(command -v ps) || fail "this host has no ps to build the retry fixture on"
@@ -2491,122 +2502,11 @@ done
 wait_gone "$RETRY_DESCENDANT" \
   || fail "the guard stopped retrying before the expired runner's descendant was reaped"
 pass "a stop the guard cannot prove is retried until the expired runner is reaped"
-
-# --- a stop reaches a child that does not die on the ordinary signal ---------
-#
-# Every reaper here sends the ordinary stop signal to the runner's process group
-# and escalates only if the group outlives it. Both halves of that escalation
-# were broken, in ways that hid each other:
-#
-#   - The stop held the per-source lock across its wait while the runner's own
-#     exit cleanup waited for that same lock, so the runner outlived the ordinary
-#     signal every time and the forced kill silently became the normal path.
-#   - The escalation re-derived ownership from the leader, so once the leader did
-#     die to the stop's own signal it read that success as a leaderless group and
-#     refused to escalate at all.
-#
-# With only the first repaired, the second turned every stop of a signal-proof
-# child into a refusal that left it running. They are asserted together because
-# they only hold together.
-#
-# Earlier fixtures include TERM-resistant children and deliberately kept-alive
-# leaders. The cases below also exercise escalation after TERM ends the leader.
-
-# Millisecond clock for the supplementary retirement measurement;
-# the healthy-stop verdict below requires attached-start status 143 (TERM).
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
-
-SIGNAL_PROOF_STUB="$TMP_ROOT/signal-proof-stub.sh"
-cat > "$SIGNAL_PROOF_STUB" <<'SH'
-#!/usr/bin/env bash
-# A blocking source whose child handles the ordinary stop signal and keeps
-# waiting - the shape a poll client with its own shutdown handler presents while
-# a request is still outstanding. Reaching it requires a real escalation. The
-# signal log is what proves the child was signalled and survived, rather than
-# never having been signalled at all. The wait stays bounded so an escaped stub
-# cannot outlive the suite.
-marker=$1
-trap 'printf "signalled\n" >> "$marker.signals"' TERM INT HUP
-printf '%s\n' "$$" > "$marker.child"
-while [ ! -e "$marker.trigger" ]; do
-  [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
-  sleep 0.1 &
-  wait $!
-done
-printf 'signal-proof payload\n'
-SH
-chmod +x "$SIGNAL_PROOF_STUB"
-
-trap '[ -z "${PROOF_RELEASE:-}" ] || touch "$PROOF_RELEASE"; fm_test_cleanup' EXIT
-for proof_state in absent zombie; do
-  HPROOF="$TMP_ROOT/signal-proof-retire-$proof_state"; new_home "$HPROOF"
-  PROOF_MARKER="$HPROOF/poll"
-  pe_register "$HPROOF" plain proof-src -- "$SIGNAL_PROOF_STUB" "$PROOF_MARKER" >/dev/null
-  PROOF_RELEASE=
-  if [ "$proof_state" = zombie ]; then
-    PROOF_RELEASE="$HPROOF/reap"
-    FM_HOME="$HPROOF" FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-proof-proc" \
-      perl - "$PROOF_RELEASE" "$ROOT/bin/fm-procevent.sh" _start proof-src >"$HPROOF/start.log" 2>&1 <<'PL' &
-my $release = shift @ARGV;
-defined(my $pid = fork) or exit 125;
-if ($pid == 0) {
-  setpgrp(0, 0) or exit 125;
-  $ENV{FM_PROCEVENT_RUNNER_GROUP} = $$;
-  exec @ARGV;
-  exit 125;
 }
-my $deadline = time + ($ENV{FM_TEST_STUB_MAX_BLOCK_SECONDS} // 120);
-while (!-e $release && time < $deadline) { select undef, undef, undef, 0.05; }
-waitpid($pid, 0) == $pid or exit 125;
-PL
-  else
-    FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-proof-proc" \
-      pe "$HPROOF" start proof-src >"$HPROOF/start.log" 2>&1 &
-  fi
-  PROOF_START=$!
-  wait_for "$HPROOF/state/procevent/proof-src.runner" \
-    || fail "the signal-proof listener never recorded its runner"
-  PROOF_PID=$(cat "$HPROOF/state/procevent/proof-src.runner")
-  wait_for "$PROOF_MARKER.child" || fail "the signal-proof child never started"
-  PROOF_CHILD=$(cat "$PROOF_MARKER.child")
-  FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-proof-proc" \
-    pe "$HPROOF" retire proof-src >"$HPROOF/retire.log" 2>&1 &
-  PROOF_STOP=$!
-  proof_transition=0
-  for _ in $(seq 1 100); do
-    if [ "$proof_state" = zombie ]; then
-      case "$(ps -o stat= -p "$PROOF_PID" 2>/dev/null | tr -d '[:space:]')" in
-        Z*) proof_transition=1; break ;;
-      esac
-    elif ! kill -0 "$PROOF_PID" 2>/dev/null; then
-      proof_transition=1
-      break
-    fi
-    sleep 0.05
-  done
-  proof_survivor=0
-  kill -0 "$PROOF_CHILD" 2>/dev/null && proof_survivor=1
-  proof_reaped=0
-  for _ in $(seq 1 100); do
-    if ! kill -0 "$PROOF_CHILD" 2>/dev/null; then proof_reaped=1; break; fi
-    sleep 0.1
-  done
-  [ -z "$PROOF_RELEASE" ] || touch "$PROOF_RELEASE"
-  PROOF_RELEASE=
-  proof_status=0
-  wait "$PROOF_STOP" || proof_status=$?
-  [ "$proof_reaped" -eq 1 ] || kill -KILL -"$PROOF_PID" 2>/dev/null || true
-  wait "$PROOF_START" 2>/dev/null || true
-  [ "$proof_transition" -eq 1 ] || fail "the runner never became $proof_state after TERM"
-  [ "$proof_survivor" -eq 1 ] || fail "no child survived the $proof_state leader's TERM"
-  [ "$proof_reaped" -eq 1 ] || fail "escalation abandoned a child behind a $proof_state leader"
-  [ "$proof_status" -eq 0 ] || fail "retiring the $proof_state leader's group reported failure"
-  wait_gone "-$PROOF_PID" || fail "retirement left the $proof_state leader's group running"
-  [ -s "$PROOF_MARKER.signals" ] || fail "the signal-proof child never received TERM"
-  pass "retirement escalates after TERM leaves a surviving child ($proof_state leader)"
-done
-trap fm_test_cleanup EXIT
 
+test_guard_signal_proof() {
+set -e
+use_claim_root test_guard_signal_proof
 # --- the owner guard reaps a signal-proof child too --------------------------
 #
 # The guard is where the time bound on a leaked listener lives, so it is the half
@@ -2615,7 +2515,7 @@ trap fm_test_cleanup EXIT
 # no guard, because the leader it destroyed was the only proof of ownership left.
 
 HPGUARD="$TMP_ROOT/signal-proof-guard"; new_home "$HPGUARD"
-fm_test_track_procevent_home "$HPGUARD"
+fm_test_track_procevent_home "$HPGUARD" "$FM_PROCEVENT_CLAIM_ROOT"
 orphan_pe "$HPGUARD" register plain proof-guard-src \
   -- "$SIGNAL_PROOF_STUB" "$TMP_ROOT/proof-guard" >/dev/null
 orphan_pe "$HPGUARD" reconcile >/dev/null
@@ -2658,7 +2558,11 @@ wait_gone "$GUARD_CHILD" \
 [ -s "$TMP_ROOT/proof-guard.signals" ] \
   || fail "the guarded child was never signalled, so nothing about escalation was exercised"
 pass "an expired runner's guard escalates past a signal-proof child"
+}
 
+test_guard_bound() {
+set -e
+use_claim_root test_guard_bound
 # --- the guard's bound is one check interval, not two ------------------------
 #
 # The case above proves the guard reaps at all. This one measures HOW LONG it
@@ -2712,7 +2616,7 @@ mono_since() {  # <monotonic-reference>: seconds elapsed, one decimal
 }
 
 HBOUND="$TMP_ROOT/guard-bound"; new_home "$HBOUND"
-fm_test_track_procevent_home "$HBOUND"
+fm_test_track_procevent_home "$HBOUND" "$FM_PROCEVENT_CLAIM_ROOT"
 BOUND_STATE="$TMP_ROOT/guard-bound-state"; mkdir -p "$BOUND_STATE"
 BOUND_BIN=$(fm_fakebin "$TMP_ROOT/guard-bound-bin")
 REAL_PERL=$(command -v perl) || fail "this host has no perl to observe the guard's lease reads"
@@ -2811,7 +2715,11 @@ wait_gone "$BOUND_DESCENDANT" \
 printf 'guard bound: lease=%ss check=%ss reaped %ss after the last owner activity, documented bound %ss\n' \
   "$BOUND_LEASE_SECONDS" "$BOUND_CHECK_SECONDS" "$bound_elapsed" "$bound_total"
 pass "an orphaned runner is reaped within the lease plus ONE check interval"
+}
 
+test_decimal_interval() {
+set -e
+use_claim_root test_decimal_interval
 # --- a zero-prefixed interval still starts a listener, and halves correctly ---
 #
 # OUR OWN REGRESSION, found in review before this change was published. The
@@ -2856,7 +2764,11 @@ for interval in 08 010; do
   printf 'decimal interval: %s halves to %ss and its listener started\n' "$interval" "$expected_half"
 done
 pass "a zero-prefixed decimal interval starts its listener and halves as decimal"
+}
 
+test_lease_debounce() {
+set -e
+use_claim_root test_lease_debounce
 # --- one unreadable read still does not end a live runner --------------------
 #
 # The bound above was tightened by moving the guard's two reads closer together,
@@ -2871,7 +2783,7 @@ pass "a zero-prefixed decimal interval starts its listener and halves as decimal
 # failed read is therefore the only thing wrong that the guard can see.
 
 DEBOUNCE_HOME="$TMP_ROOT/lease-debounce"; new_home "$DEBOUNCE_HOME"
-fm_test_track_procevent_home "$DEBOUNCE_HOME"
+fm_test_track_procevent_home "$DEBOUNCE_HOME" "$FM_PROCEVENT_CLAIM_ROOT"
 DEBOUNCE_STATE="$TMP_ROOT/lease-debounce-state"; mkdir -p "$DEBOUNCE_STATE"
 DEBOUNCE_BIN=$(fm_fakebin "$TMP_ROOT/lease-debounce-bin")
 REAL_PERL=$(command -v perl) || fail "this host has no perl to build the debounce fixture on"
@@ -2922,7 +2834,11 @@ debounce_pe retire debounce-src >/dev/null \
 wait_gone "-$DEBOUNCE_PID" \
   || fail "retiring the debounce fixture left its process group running"
 pass "one unreadable read does not end a live runner"
+}
 
+test_prompt_stop_and_crash() {
+set -e
+use_claim_root test_prompt_stop_and_crash
 # --- the ordinary stop signal is what stops a runner ------------------------
 #
 # The forced kill is the backstop, not the normal path. When it carries every
@@ -2983,6 +2899,214 @@ kill -0 -"$CRASH_PID" 2>/dev/null \
   || fail "a refused retirement signalled the leaderless group anyway"
 pass "a group whose leader died to something else is still refused, not signalled"
 kill -KILL -"$CRASH_PID" 2>/dev/null || true
+}
 
+# Each stop-evidence case owns its home, claim root and fake ps.
+post_term_case() {
+  local post_term_case=$1
+  set -e
+  use_claim_root "post-term-$post_term_case"
+  HPOST_TERM="$TMP_ROOT/post-term-$post_term_case"; new_home "$HPOST_TERM"
+  POST_TERM_SOURCE="$HPOST_TERM/source.sh"
+  POST_TERM_PID="$HPOST_TERM/child.pid"
+  POST_TERM_SIGNALS="$HPOST_TERM/child.signals"
+  cat > "$POST_TERM_SOURCE" <<'SH'
+#!/usr/bin/env bash
+trap 'printf "signalled\n" >> "$2"' TERM
+printf '%s\n' "$$" > "$1"
+while [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ]; do sleep 1; done
+SH
+  chmod +x "$POST_TERM_SOURCE"
+  POST_TERM_BIN=$(fm_fakebin "$HPOST_TERM/tools")
+  REAL_PS=$(command -v ps) || fail "the post-TERM reuse fixture requires ps"
+  pe_register "$HPOST_TERM" plain post-term-src -- \
+    "$POST_TERM_SOURCE" "$POST_TERM_PID" "$POST_TERM_SIGNALS" >/dev/null
+  FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-post-term-proc" \
+    FM_PROCEVENT_OWNER_CHECK_SECONDS=5 pe "$HPOST_TERM" reconcile >/dev/null
+  wait_for "$POST_TERM_PID" || fail "the post-TERM reuse fixture did not start"
+  wait_for "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim" \
+    || fail "the post-TERM reuse fixture did not claim its source"
+  POST_TERM_RUNNER=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim")
+  # The child can publish its PID before startup releases the source lock.
+  # Cross that boundary before suspending the runner, or retirement waits on
+  # a stopped lock owner instead of exercising the signal checks below.
+  FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-post-term-proc" pe "$HPOST_TERM" list >/dev/null \
+    || fail "the post-TERM fixture never finished its source launch"
+  kill -STOP "$POST_TERM_RUNNER" || fail "the post-TERM fixture could not keep its leader alive"
+  cat > "$POST_TERM_BIN/ps" <<SH
+#!/usr/bin/env bash
+if [ "\${1-}" = -p ] && [ "\${2-}" = "$POST_TERM_RUNNER" ] \
+  && [ "\${3-}" = -o ] && [ "\${4-}" = lstart= ]; then
+  if [ "$post_term_case" = mismatch ]; then
+    printf 'reused identity\n'
+    exit 0
+  fi
+  [ ! -s "$POST_TERM_SIGNALS" ] || exit 1
+fi
+if [ "\${1-}" = -o ] && [ "\${2-}" = pgid= ] \
+  && [ "\${3-}" = -p ] && [ "\${4-}" = "$POST_TERM_RUNNER" ]; then
+  case "$post_term_case" in
+    unreadable-pgid) [ ! -s "$POST_TERM_SIGNALS" ] || exit 1 ;;
+    nonleader) printf '0\n'; exit 0 ;;
+  esac
+fi
+exec "$REAL_PS" "\$@"
+SH
+  chmod +x "$POST_TERM_BIN/ps"
+  post_term_status=0
+  post_term_started=$(date +%s)
+  post_term_out=$(PATH="$POST_TERM_BIN:$PATH" FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-post-term-proc" \
+    pe "$HPOST_TERM" retire post-term-src 2>&1) || post_term_status=$?
+  case "$post_term_case" in
+    mismatch|nonleader)
+      assert_absent "$POST_TERM_SIGNALS" "the first signal refuses $post_term_case evidence"
+      [ "$post_term_status" -ne 0 ] || fail "retirement escalated despite $post_term_case evidence"
+      assert_contains "$post_term_out" "cannot confirm runner identity" \
+        "first-signal $post_term_case evidence refuses retirement"
+      kill -0 "$POST_TERM_RUNNER" 2>/dev/null \
+        || fail "the post-TERM fixture lost its leader instead of exercising $post_term_case evidence"
+      kill -0 -"$POST_TERM_RUNNER" 2>/dev/null \
+        || fail "a $post_term_case group was killed during escalation"
+      assert_present "$HPOST_TERM/state/procevent/post-term-src.source" \
+        "first-signal $post_term_case evidence preserves registration"
+      assert_present "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim" \
+        "first-signal $post_term_case evidence preserves its claim"
+      kill -KILL -"$POST_TERM_RUNNER" 2>/dev/null || true
+      ;;
+    *)
+      if [ ! -s "$POST_TERM_SIGNALS" ]; then
+        post_term_evidence "$post_term_case" "$POST_TERM_RUNNER" \
+          "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim" "$POST_TERM_SIGNALS" \
+          "$post_term_started" "$post_term_out"
+        fail "the post-TERM fixture never received TERM"
+      fi
+      [ "$post_term_status" -eq 0 ] \
+        || fail "retirement abandoned a proved stop after $post_term_case identity: $post_term_out"
+      assert_absent "$HPOST_TERM/state/procevent/post-term-src.source" \
+        "proved escalation retires the source after $post_term_case identity"
+      assert_absent "$FM_PROCEVENT_CLAIM_ROOT/post-term-src.claim" \
+        "proved escalation releases its claim after $post_term_case identity"
+      ;;
+  esac
+  for _ in $(seq 1 50); do kill -0 -"$POST_TERM_RUNNER" 2>/dev/null || break; sleep 0.1; done
+  kill -0 -"$POST_TERM_RUNNER" 2>/dev/null && fail "the post-TERM fixture group survived: $post_term_case"
+  pe "$HPOST_TERM" retire post-term-src >/dev/null
+  pass "stop $post_term_case evidence preserves the proved-stop boundary"
+}
+
+test_post_term_mismatch() { post_term_case mismatch; }
+test_post_term_unreadable() { post_term_case unreadable; }
+test_post_term_unreadable_pgid() { post_term_case unreadable-pgid; }
+test_post_term_nonleader() { post_term_case nonleader; }
+
+# A failing case must still release a parked zombie reaper, so the release
+# rides this case's own EXIT; the suite's cleanup stays with the main shell.
+signal_proof_case() {
+  local proof_state=$1
+  set -e
+  use_claim_root "signal-proof-$proof_state"
+  trap '[ -z "${PROOF_RELEASE:-}" ] || touch "$PROOF_RELEASE"' EXIT
+  HPROOF="$TMP_ROOT/signal-proof-retire-$proof_state"; new_home "$HPROOF"
+  PROOF_MARKER="$HPROOF/poll"
+  pe_register "$HPROOF" plain proof-src -- "$SIGNAL_PROOF_STUB" "$PROOF_MARKER" >/dev/null
+  PROOF_RELEASE=
+  if [ "$proof_state" = zombie ]; then
+    PROOF_RELEASE="$HPROOF/reap"
+    FM_HOME="$HPROOF" FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-proof-proc" \
+      perl - "$PROOF_RELEASE" "$ROOT/bin/fm-procevent.sh" _start proof-src >"$HPROOF/start.log" 2>&1 <<'PL' &
+my $release = shift @ARGV;
+defined(my $pid = fork) or exit 125;
+if ($pid == 0) {
+  setpgrp(0, 0) or exit 125;
+  $ENV{FM_PROCEVENT_RUNNER_GROUP} = $$;
+  exec @ARGV;
+  exit 125;
+}
+my $deadline = time + ($ENV{FM_TEST_STUB_MAX_BLOCK_SECONDS} // 120);
+while (!-e $release && time < $deadline) { select undef, undef, undef, 0.05; }
+waitpid($pid, 0) == $pid or exit 125;
+PL
+  else
+    FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-proof-proc" \
+      pe "$HPROOF" start proof-src >"$HPROOF/start.log" 2>&1 &
+  fi
+  PROOF_START=$!
+  wait_for "$HPROOF/state/procevent/proof-src.runner" \
+    || fail "the signal-proof listener never recorded its runner"
+  PROOF_PID=$(cat "$HPROOF/state/procevent/proof-src.runner")
+  wait_for "$PROOF_MARKER.child" || fail "the signal-proof child never started"
+  PROOF_CHILD=$(cat "$PROOF_MARKER.child")
+  FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-proof-proc" \
+    pe "$HPROOF" retire proof-src >"$HPROOF/retire.log" 2>&1 &
+  PROOF_STOP=$!
+  proof_transition=0
+  for _ in $(seq 1 100); do
+    if [ "$proof_state" = zombie ]; then
+      case "$(ps -o stat= -p "$PROOF_PID" 2>/dev/null | tr -d '[:space:]')" in
+        Z*) proof_transition=1; break ;;
+      esac
+    elif ! kill -0 "$PROOF_PID" 2>/dev/null; then
+      proof_transition=1
+      break
+    fi
+    sleep 0.05
+  done
+  proof_survivor=0
+  kill -0 "$PROOF_CHILD" 2>/dev/null && proof_survivor=1
+  proof_reaped=0
+  for _ in $(seq 1 100); do
+    if ! kill -0 "$PROOF_CHILD" 2>/dev/null; then proof_reaped=1; break; fi
+    sleep 0.1
+  done
+  [ -z "$PROOF_RELEASE" ] || touch "$PROOF_RELEASE"
+  PROOF_RELEASE=
+  proof_status=0
+  wait "$PROOF_STOP" || proof_status=$?
+  [ "$proof_reaped" -eq 1 ] || kill -KILL -"$PROOF_PID" 2>/dev/null || true
+  wait "$PROOF_START" 2>/dev/null || true
+  [ "$proof_transition" -eq 1 ] || fail "the runner never became $proof_state after TERM"
+  [ "$proof_survivor" -eq 1 ] || fail "no child survived the $proof_state leader's TERM"
+  [ "$proof_reaped" -eq 1 ] || fail "escalation abandoned a child behind a $proof_state leader"
+  [ "$proof_status" -eq 0 ] || fail "retiring the $proof_state leader's group reported failure"
+  wait_gone "-$PROOF_PID" || fail "retirement left the $proof_state leader's group running"
+  [ -s "$PROOF_MARKER.signals" ] || fail "the signal-proof child never received TERM"
+  pass "retirement escalates after TERM leaves a surviving child ($proof_state leader)"
+  trap - EXIT
+}
+
+test_signal_proof_absent_leader() { signal_proof_case absent; }
+test_signal_proof_zombie_leader() { signal_proof_case zombie; }
+
+# Every case group above owns its homes, its claim root (use_claim_root) and its
+# fixture paths, and acts only on processes it started, so the groups run through
+# fm_run_case_pool (tests/lib.sh), longest first. FM_PROCEVENT_CASE_JOBS
+# overrides the concurrency, which defaults to the host's processor count capped
+# at four; 1 runs the groups serially.
+case_jobs=$(fm_case_pool_jobs "${FM_PROCEVENT_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
+  test_launch_pacing \
+  test_guard_bound \
+  test_state_root_drift \
+  test_basics \
+  test_ownership_and_stale_claims \
+  test_launch_confirmation \
+  test_owner_lease_clock_and_reuse \
+  test_owner_lease_attached \
+  test_orphaned_listener \
+  test_lifecycle_and_sweeps \
+  test_adapter_verdicts \
+  test_guard_signal_proof \
+  test_guard_retry \
+  test_lease_debounce \
+  test_post_term_mismatch \
+  test_post_term_unreadable \
+  test_post_term_unreadable_pgid \
+  test_post_term_nonleader \
+  test_signal_proof_absent_leader \
+  test_signal_proof_zombie_leader \
+  test_decimal_interval \
+  test_argv_and_bounds \
+  test_prompt_stop_and_crash \
+  || fail 'one or more procevent case groups failed'
 
 printf '\nall procevent tests passed\n'
