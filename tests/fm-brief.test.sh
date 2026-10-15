@@ -617,7 +617,7 @@ test_no_mistakes_dod_green_detection() {
 
 test_ask_user_escalation_format() {
   local home id brief mode other_id other_brief
-  home="$TMP_ROOT/ask-user-home"
+  home="$TMP_ROOT/escalation-home"
   mkdir -p "$home/data"
   id="brief-ask-user-d1"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
