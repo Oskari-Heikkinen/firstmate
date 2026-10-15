@@ -506,7 +506,7 @@ test_relaunch_carries_the_supervisor_compaction_window() {
   out=$(run_control_relaunch "$dir" sm1); rc=$?
 
   expect_code 0 "$rc" "relaunch with the supervisor knob must succeed"$'\n'"$out"
-  assert_grep '^compact_at=300000$' "$dir/home/state/sm1.meta" "relaunch did not record the home's current supervisor window"
+  grep -qx 'compact_at=300000' "$dir/home/state/sm1.meta" || fail "relaunch did not record the home's current supervisor window"
   launch=$(grep 'Firstmate operational input waiting: read' "$dir/fake/literal" | tail -1)
   [ -n "$launch" ] || fail "relaunch sent no replacement launch command"
   cat > "$dir/fakebin/claude" <<'SH'
