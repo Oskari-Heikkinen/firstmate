@@ -998,9 +998,11 @@ pool_param_cases() {
 # another or on their order. They run through fm_run_case_pool (tests/lib.sh),
 # the ones that sit through real deadlines first. FM_PARK_CASE_JOBS overrides
 # the concurrency, which defaults to the host's processor count capped at four;
-# 1 runs the cases serially.
+# 1 runs the cases serially. case_release_timeout runs alone before the pool:
+# its five-second release deadline must fall after the real custody
+# preparation, which concurrent deadline cases can delay past it.
 pool_param_cases save_timeout_case bundle import clean quiet evidence
-POOL_CASES+=(case_release_timeout case_deadline_wakes_supervisor case_resume_and_repark
+POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
   case_superseded_resume case_failed_relaunch case_notification_failure)
 POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queue_adoption_refusal
   case_park_records_and_rearms case_default_cadence case_self_park_detached_exit
@@ -1015,4 +1017,5 @@ pool_param_cases identity_uncertainty_case identity-missing identity-mismatch id
 pool_param_cases pid_uncertainty_case missing malformed
 POOL_CASES+=(case_pickup_authority)
 case_jobs=$(fm_case_pool_jobs "${FM_PARK_CASE_JOBS:-}")
+fm_run_case_pool 1 "$TMP_ROOT/.case-logs-alone" case_release_timeout || exit 1
 fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" "${POOL_CASES[@]}" || exit 1
