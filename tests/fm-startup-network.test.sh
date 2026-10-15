@@ -31,23 +31,22 @@ DRAIN="$ROOT/bin/fm-wake-drain.sh"
 FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
 trap fm_test_cleanup EXIT
 
-# new_world <name>: an FM_HOME plus a fake code root whose bin/ is a real
-# firstmate bin/ except for fm-bootstrap.sh, which is replaced by a scriptable
-# stand-in. The stage's contract is about WHEN and WHETHER the network half runs
-# and how its result is published; bin/fm-bootstrap.sh's own behavior is owned by
-# tests/fm-bootstrap.test.sh, so pinning it here would duplicate that owner and
-# make these assertions depend on unrelated tool detection.
-new_world() {
-  local name=$1 w home root
-  w="$TMP_ROOT/$name"
-  home="$w/home"
-  root="$w/root"
-  mkdir -p "$home/state" "$root/bin"
+# build_template_bin: the fake code root's bin/, built once before the case pool
+# and copied per world (one cp instead of one ln per bin/ script per case). It is
+# a real firstmate bin/ except for fm-bootstrap.sh, which is replaced by a
+# scriptable stand-in. The stage's contract is about WHEN and WHETHER the network
+# half runs and how its result is published; bin/fm-bootstrap.sh's own behavior
+# is owned by tests/fm-bootstrap.test.sh, so pinning it here would duplicate that
+# owner and make these assertions depend on unrelated tool detection.
+TEMPLATE_BIN="$TMP_ROOT/.template-bin"
+build_template_bin() {
+  local bin=$TEMPLATE_BIN f
+  mkdir -p "$bin"
   for f in "$ROOT"/bin/*.sh; do
-    ln -s "$f" "$root/bin/$(basename "$f")"
+    ln -s "$f" "$bin/$(basename "$f")"
   done
-  rm -f "$root/bin/fm-bootstrap.sh"
-  cat > "$root/bin/fm-bootstrap.sh" <<'SH'
+  rm -f "$bin/fm-bootstrap.sh"
+  cat > "$bin/fm-bootstrap.sh" <<'SH'
 #!/usr/bin/env bash
 # Scriptable stand-in: records how it was invoked, then behaves as the test asks.
 set -u
@@ -68,8 +67,8 @@ fi
 [ -z "${FM_FAKE_BOOTSTRAP_OUT:-}" ] || printf '%s\n' "$FM_FAKE_BOOTSTRAP_OUT"
 exit "${FM_FAKE_BOOTSTRAP_RC:-0}"
 SH
-  chmod +x "$root/bin/fm-bootstrap.sh"
-  cat > "$root/bin/ps" <<'SH'
+  chmod +x "$bin/fm-bootstrap.sh"
+  cat > "$bin/ps" <<'SH'
 #!/usr/bin/env bash
 pid=
 previous=
@@ -87,7 +86,19 @@ else
   /bin/ps "$@"
 fi
 SH
-  chmod +x "$root/bin/ps"
+  chmod +x "$bin/ps"
+}
+
+# new_world <name>: an FM_HOME plus a fake code root holding a private copy of
+# the template bin/ (symlinks stay symlinks), so a case may replace a script in
+# its own copy without touching any other case.
+new_world() {
+  local name=$1 w home root
+  w="$TMP_ROOT/$name"
+  home="$w/home"
+  root="$w/root"
+  mkdir -p "$home/state" "$root"
+  cp -PRp "$TEMPLATE_BIN" "$root/bin"
   printf '%s|%s|%s\n' "$home" "$root" "$w/bootstrap.log"
 }
 
@@ -117,10 +128,15 @@ EOF
   pass "fm-startup-network: wait fails when no deferred stage publishes before its deadline"
 }
 
+# Cases that pin the delivery window set FM_SESSION_START_TIMEOUT themselves.
+# Every other case gets a short delivery bound, so a detached worker whose claim
+# names this still-live suite shell settles seconds after it publishes instead of
+# polling its publish lock for the 120s default while later cases run.
 run_stage() {  # <home> <root> <args...>
   local home=$1 root=$2
   shift 2
   PATH="$root/bin:$PATH" FM_FAKE_HARNESS_PID="${FM_FAKE_HARNESS_PID_OVERRIDE:-$$}" \
+    FM_SESSION_START_TIMEOUT="${FM_SESSION_START_TIMEOUT:-5}" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$root/bin/fm-startup-network.sh" "$@"
 }
 
@@ -181,11 +197,13 @@ EOF
 
   started=$(date +%s)
   # Command substitution reads to EOF, exactly like a hook harvesting hook output.
-  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=10 \
+  # The worker sleeps longer than the 4s bound below, so a start that waited
+  # for it could not pass.
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=6 \
     run_stage "$home" "$root" start --locked 1 --harvest-pid $$ >/dev/null
   elapsed=$(( $(date +%s) - started ))
 
-  [ "$elapsed" -lt 4 ] || fail "start blocked for ${elapsed}s behind a 10s worker"
+  [ "$elapsed" -lt 4 ] || fail "start blocked for ${elapsed}s behind a 6s worker"
   await_worker_record "$home"
   pending=$(run_stage "$home" "$root" report)
   [ "$(printf '%s\n' "$pending" | head -1)" = "IN PROGRESS - the deferred network checks have not finished yet." ] \
@@ -546,10 +564,10 @@ $rec
 EOF
   printf '%s\n' $$ > "$home/state/.lock"
 
-  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=6 \
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=4 \
     run_stage "$home" "$root" start --locked 1 --harvest-pid $$
   await_worker_record "$home"
-  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=6 \
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=4 \
     run_stage "$home" "$root" start --locked 1 --harvest-pid $$
   run_stage "$home" "$root" wait 40 >/dev/null || fail "the worker never published"
 
@@ -577,7 +595,7 @@ lock_pid=
 EOF
   printf 'old result\n' > "$home/state/.startup-network.report"
 
-  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=5 \
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=3 \
     run_stage "$home" "$root" start --locked 0 --harvest-pid $$
   report=$(run_stage "$home" "$root" harvest --pid $$)
   assert_contains "$report" "IN PROGRESS" \
@@ -595,7 +613,7 @@ test_new_lock_owner_does_not_reuse_the_previous_owners_worker() {
 $rec
 EOF
   printf '%s\n' $$ > "$home/state/.lock"
-  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=6 \
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=4 \
     run_stage "$home" "$root" start --locked 1 --harvest-pid $$
   generation_one=$(sed -n 's/^generation=//p' "$home/state/.startup-network.status")
 
@@ -918,26 +936,36 @@ EOF
   pass "fm-startup-network: the dead-worker relaunch runs first in locked work only, and its failures are reported"
 }
 
-test_wait_fails_without_a_published_stage
-test_start_returns_without_holding_the_callers_stdout
-test_harvest_acknowledgement_suppresses_the_wake_and_no_claim_produces_it
-test_a_claimant_crash_after_publish_still_queues_the_wake
-test_a_report_publication_failure_is_failed_and_still_wakes
-test_a_successful_result_never_queues_a_wake
-test_an_actionable_successful_result_still_queues_a_wake
-test_deferred_invalid_secondmate_markers_queue_durable_findings
-test_mutating_sweeps_are_refused_when_the_lock_changed_hands
-test_the_stage_bound_is_reported_not_swallowed
-test_an_abandoned_run_reads_as_needing_a_rerun
-test_locked_start_is_not_satisfied_by_an_inflight_probe
-test_start_is_single_flight
-test_start_reserves_its_generation_before_returning
-test_new_lock_owner_does_not_reuse_the_previous_owners_worker
-test_lock_takeover_stays_read_only_while_a_sweep_holds_the_lease
-test_records_share_one_origin_so_offsets_form_a_timeline
-test_timings_are_published_and_only_the_on_demand_report_prints_them
-test_a_bounded_run_still_publishes_the_timings_it_managed_to_record
-test_the_timing_artifact_cannot_carry_a_command_line_or_forge_records
-test_a_held_publish_lock_cannot_keep_the_worker_alive_past_its_budget
+# The cases are independent: each builds its own world under a unique name, and
+# every background process it starts is bound to that world's home. Most of the
+# suite is spent waiting on real worker sleeps and the stage's one-second `wait`
+# poll, so the cases run in a bounded pool, the longest first.
+# FM_STARTUP_NETWORK_CASE_JOBS overrides the concurrency (1 runs them serially).
+build_template_bin
+POOL_CASES=(
+  test_a_held_publish_lock_cannot_keep_the_worker_alive_past_its_budget
+  test_dead_worker_relaunch_runs_only_in_locked_work_and_reports_its_failures
+  test_start_returns_without_holding_the_callers_stdout
+  test_lock_takeover_stays_read_only_while_a_sweep_holds_the_lease
+  test_locked_start_is_not_satisfied_by_an_inflight_probe
+  test_harvest_acknowledgement_suppresses_the_wake_and_no_claim_produces_it
+  test_deferred_invalid_secondmate_markers_queue_durable_findings
+  test_start_is_single_flight
+  test_new_lock_owner_does_not_reuse_the_previous_owners_worker
+  test_the_stage_bound_is_reported_not_swallowed
+  test_a_report_publication_failure_is_failed_and_still_wakes
+  test_start_reserves_its_generation_before_returning
+  test_a_successful_result_never_queues_a_wake
+  test_an_actionable_successful_result_still_queues_a_wake
+  test_a_claimant_crash_after_publish_still_queues_the_wake
+  test_mutating_sweeps_are_refused_when_the_lock_changed_hands
+  test_a_bounded_run_still_publishes_the_timings_it_managed_to_record
+  test_timings_are_published_and_only_the_on_demand_report_prints_them
+  test_the_timing_artifact_cannot_carry_a_command_line_or_forge_records
+  test_an_abandoned_run_reads_as_needing_a_rerun
+  test_wait_fails_without_a_published_stage
+  test_records_share_one_origin_so_offsets_form_a_timeline
+)
+case_jobs=$(fm_case_pool_jobs "${FM_STARTUP_NETWORK_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" "${POOL_CASES[@]}" || exit 1
 echo "# fm-startup-network.test.sh: all assertions passed"
-test_dead_worker_relaunch_runs_only_in_locked_work_and_reports_its_failures
