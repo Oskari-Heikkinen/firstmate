@@ -10,7 +10,8 @@ Homes arrive in the --homes file as `<area>\t<home>\t<remote 0|1>` lines (main f
 parsed by the wrapper with bin/fm-secondmate-registry-lib.sh. Project feeds,
 detector thresholds, session roots and scheduled units come from
 <home>/config/board-feeds (docs/configuration.md "Fleet board feeds"); a missing
-file means no feeds and default thresholds.
+file means no feeds and default thresholds. The Scheduled runs panel shows the
+rows of <home>/state/schedules/summary.json, written by bin/fm-schedule.sh scan.
 
 Every item has one shape {panel, group, title, state, since, owner, link,
 detail} plus optional `value` (a count) and `view` ("count" or "bar"). A source
@@ -39,10 +40,13 @@ from fm_receipt_io import atomic_text as atomic_write, iso_epoch, load  # noqa: 
 
 SCHEMA = "fm-board.v1"
 SUMMARY_SCHEMA = "fm-secondmate-home-summary.v1"
-PANELS = ["decisions", "health", "work", "pipeline", "waste", "tokens"]
+PANELS = ["decisions", "health", "work", "schedules", "pipeline", "waste", "tokens"]
 STATES = {"ok", "bad", "warn", "blind", "idle", "info"}
 SOURCE_TIMEOUT = 5.0
-DEFAULTS = {"summary_max_age": 7200, "verdict_max_age": 900, "merge_stall_seconds": 3600}
+DEFAULTS = {"summary_max_age": 7200, "verdict_max_age": 900, "merge_stall_seconds": 3600,
+            "schedule_max_age": 3600}
+SCHEDULE_SCHEMA = "fm-schedule-summary/v1"
+SCHEDULE_COLUMNS = ["Name", "Home", "What", "Next run", "Last run", "Result", "State"]
 HYPOTHESES_HEADER = ["Running", "Ready to test", "Open after a result", "Want to test",
                      "Settled", "Dropped"]
 TAIL_BYTES = 4 * 1024 * 1024
@@ -549,6 +553,46 @@ def load_units(board, cfg):
                   detail=None if good else "Last result: %s." % trunc(props.get("Result"), 40))
 
 
+def load_schedules(board, home, thresholds):
+    """Rows of bin/fm-schedule.sh's summary; its scan owns every word in them."""
+    name = "Scheduled runs"
+    path = os.path.join(home, "state", "schedules", "summary.json")
+    if os.path.islink(path):
+        board.source(name, "schedule", "fm-schedule", "error", "Symlinked summary refused.")
+        return None
+    if not os.path.exists(path):
+        board.source(name, "schedule", "fm-schedule", "not-configured",
+                     "No scan has run; bin/fm-schedule.sh install-timer starts the 15-minute scan.")
+        return None
+    try:
+        data = load(path, limit=SUMMARY_MAX_BYTES)
+    except (OSError, ValueError):
+        board.source(name, "schedule", "fm-schedule", "error", "Summary unreadable.")
+        return None
+    if not isinstance(data, dict) or data.get("schema") != SCHEDULE_SCHEMA or not isinstance(data.get("rows"), list):
+        board.source(name, "schedule", "fm-schedule", "unknown-version", "Expected %s." % SCHEDULE_SCHEMA)
+        return None
+    age = board.now - int(data.get("generated_epoch") or 0)
+    if age > thresholds["schedule_max_age"]:
+        board.source(name, "schedule", "fm-schedule", "stale",
+                     "Last scan %s ago; check fm-schedule.timer." % ago(age), age)
+    else:
+        board.source(name, "schedule", "fm-schedule", "ok", age=age)
+    rows = [r for r in data["rows"] if isinstance(r, dict) and isinstance(r.get("display"), dict)]
+    for r in rows:
+        label = "%s/%s" % (r.get("home"), r.get("name"))
+        if not r.get("valid"):
+            board.add("schedules", "Needs attention", "%s refused" % label, "warn", owner=r.get("home"),
+                      detail=trunc(r.get("error"), 200))
+        elif r.get("paused"):
+            board.add("schedules", "Needs attention", "%s paused" % label, "bad", owner=r.get("home"),
+                      detail=trunc(r.get("paused_reason"), 200))
+        if r.get("scan_error"):
+            board.add("schedules", "Needs attention", "%s scan error" % label, "warn", owner=r.get("home"),
+                      detail=trunc(r.get("scan_error"), 200))
+    return rows
+
+
 def load_spawn_starts(homes):
     starts = []
     for area, home, remote in homes:
@@ -685,6 +729,7 @@ PANEL_META = {
     "decisions": ("Decisions", "What is waiting on a call?", "var(--signal)", False),
     "health": ("Health", "Is everything running as intended?", "var(--ok)", False),
     "work": ("Work", "What is being worked on, what is stuck or parked?", "var(--accent)", True),
+    "schedules": ("Scheduled runs", "What runs on a calendar, and how did each last run go?", "var(--ok)", True),
     "pipeline": ("Pipeline", "What ideas and tests are coming?", "var(--blind)", False),
     "waste": ("Waste", "Where are agents doing a script's job?", "var(--bad)", False),
     "tokens": ("Tokens", "Where do tokens go today?", "var(--accent)", True),
@@ -769,6 +814,15 @@ def render_work_table(table):
             '</tr></thead><tbody>%s</tbody></table></div>' % "".join(rows))
 
 
+def render_schedule_table(rows):
+    if not rows:
+        return ""
+    body = "".join("<tr>%s</tr>" % "".join("<td>%s</td>" % e(r["display"].get(c, "")) for c in SCHEDULE_COLUMNS)
+                   for r in rows)
+    return ('<div class="tablewrap"><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>'
+            % ("".join("<th>%s</th>" % e(c) for c in SCHEDULE_COLUMNS), body))
+
+
 def render_heaviest(tok):
     if not tok or not tok["sessions"]:
         return ""
@@ -800,7 +854,7 @@ def render_heaviest(tok):
             % "".join(rows))
 
 
-def render(board, tok, table):
+def render(board, tok, table, schedules=None):
     now = board.now
     by_panel = {p: {} for p in PANELS}
     for it in board.items:
@@ -818,6 +872,8 @@ def render(board, tok, table):
         parts = []
         if p == "work":
             parts.append(render_work_table(table))
+        if p == "schedules":
+            parts.append(render_schedule_table(schedules))
         groups = by_panel[p]
         order = sorted(groups, key=lambda g: (g in FOLDED, g == "Blind spots"))
         for g in order:
@@ -896,6 +952,7 @@ def main(argv=None):
         board.source("Project feeds", "feed", "board", "not-configured",
                      "No config/board-feeds file lists any feed.")
     load_units(board, cfg)
+    schedules = load_schedules(board, home, thresholds)
     for title, words, owner, detail in STATIC_BLIND:
         board.source(title, "static", owner, "not-configured", detail)
         board.items[-1]["title"] = "%s: %s" % (title, words)
@@ -925,9 +982,9 @@ def main(argv=None):
 
     doc = {"schema": SCHEMA, "generated_epoch": now, "home": home, "sources": board.sources,
            "items": board.items,
-           "work": table}
+           "work": table, "schedules": schedules or []}
     atomic_write(os.path.join(board_dir, "board.json"), json.dumps(doc, indent=1, sort_keys=True) + "\n")
-    atomic_write(os.path.join(board_dir, "index.html"), render(board, tok, table))
+    atomic_write(os.path.join(board_dir, "index.html"), render(board, tok, table, schedules))
     print(os.path.join(board_dir, "index.html"))
     return 0
 

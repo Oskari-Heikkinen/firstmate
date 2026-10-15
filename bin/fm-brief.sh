@@ -565,6 +565,7 @@ Only a \`resolved\` line carrying an escalated decision's or blocker's exact key
 You are persistent: an empty queue is a healthy resting state, never a reason to exit.
 On startup and restart, run normal firstmate bootstrap and recovery through \`bin/fm-session-start.sh\` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.
 Then, with nothing assigned, go idle and wait silently for the main firstmate to route you a task; never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
+A scheduled run that \`bin/fm-schedule.sh\` files in this home's backlog from an approved \`config/schedules.d\` file counts as captain-routed work, not self-started work.
 If this charter cannot be carried out, append \`blocked [at=<epoch>]: {why}\` or \`failed [at=<epoch>]: {why}\` to the parent channel and stop.
 EOF
 }

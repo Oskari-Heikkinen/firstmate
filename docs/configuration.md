@@ -1632,6 +1632,69 @@ A missing file means no project feeds, the default session roots and default thr
 - `broad_root <path>` adds a path the broad-search rule treats as too wide, beside `/`, `/home`, `$HOME`, `$HOME/.treehouse`, `/mnt/c`, every home root and its `data/`.
 - `unit <unit> <owner>` adds a systemd user unit whose last result the Health panel shows.
 
+## Scheduled runs
+
+A scheduled run is a captain-approved task that [`bin/fm-schedule.sh`](../bin/fm-schedule.sh) files on a calendar, so nobody has to remember it.
+The script's header owns its commands, the timer and the scan steps; this section owns the file formats.
+`bin/fm-schedule.sh install-timer` enables one user timer that scans every 15 minutes; nothing is scheduled until a home adds a schedule file.
+Main and every local home in main's `data/secondmates.md` are scanned, and each home's tasks are filed through that home's own `bin/fm-tasks-axi.sh`.
+A scheduled run counts as captain-routed work, so the home that receives one dispatches it like any other approved task.
+
+### Schedule file (`config/schedules.d/<name>.conf`)
+
+Each schedule is one local `key=value` file per line, with blank and `#` lines ignored.
+Every key except `repo` is required, no other key is allowed, and a key may appear only once.
+
+- `schema=fm-schedule/v1`.
+- `name`: 1-40 characters of `a-z`, `0-9` and `-`, equal to the file name without `.conf`.
+- `calendar`: a systemd `OnCalendar` expression in this machine's local time, for example `Sun *-*-* 01:30:00`; `systemd-analyze calendar` must accept it.
+- `kind`: `ship` or `scout`, the backlog kind of the filed task.
+- `title`: the task title; the slot date and time are appended to it.
+- `brief`: a regular file of at most 64 KiB, absolute or relative to the home, whose text becomes the task body.
+- `approval`: who approved the schedule and when, as `<who> <YYYY-MM-DD>` or `<who> <YYYY-MM-DDTHH:MMZ>`.
+- `repo` (optional): the project name passed to `fm-tasks-axi.sh add --repo`.
+
+A file that fails any check is refused with its reason: `list`, `validate` and the board show it, and it is never fired.
+
+### Run record and filed task
+
+Each schedule keeps one bounded run record, `state/schedules/<name>.run` in its home (`schema=fm-schedule-run/v1`), holding the next slot, the last slot, fire time and task, the last outcome and its result fields, the skip count, the failure count and the pause state.
+A new or changed calendar only records the next slot, so a new schedule never fires at once.
+A due slot files the backlog task `sched-<name>-<YYYYMMDDHHMM>`, named by the slot's local date and time, so a second scan of the same slot adds nothing.
+The home is then woken through `bin/fm-inbox.sh note` with that task id as the request id, saying this is a captain-approved scheduled run and naming the schedule.
+The next slot is always the next one after the scan, so after downtime a schedule fires once and the missed slots are only counted.
+The scheduler's own outcomes are:
+
+- `skipped-open`: a slot came due while the previous run's task was still open, so nothing was filed.
+- `missed/caught-up`: the run fired more than an hour after its slot or after missed slots, which are counted and not run.
+- `paused-after-failures`: two failed runs in a row (a `failed` or invalid run summary, or a task that could not be filed) paused the schedule; `bin/fm-schedule.sh resume <home-area> <name>` clears it.
+- `no-summary`: the task closed without a run summary.
+
+### Run summary (fm-schedule-result/v1)
+
+The run writes one `key=value` file to `data/schedules/<name>/<task-id>.result` in its home before its task closes; the filed task body names the exact path.
+The scheduler reads it once the task is done and keeps the newest 12 per schedule.
+
+- `schema=fm-schedule-result/v1`.
+- `started` and `ended`: UTC times as `YYYY-MM-DDTHH:MM:SSZ`.
+- `used_seconds`: whole seconds the run used.
+- `outcome`: `complete`, `cut-short` or `failed`.
+- `cut_reason`: `none`, `job-cap`, `weekly-budget` or `other` (explained in `note`); it is `none` exactly when `outcome` is not `cut-short`.
+- `carried_over`: a whole number of items carried to the next run.
+- `note`: one line, possibly empty.
+- `budget_seconds` (optional): the run's time budget in whole seconds.
+- `report` (optional): the absolute path of the run's detailed report.
+
+For a TETJET mutation run, `used_seconds` is `total_heavy_seconds`, `budget_seconds` is its budget, `outcome` is `cut-short` when `interrupted` is true, `cut_reason` is `job-cap` for the one-hour job cap and `weekly-budget` for the two-hour weekly budget, `carried_over` is the count of carried mutants, and `report` is the full path of the per-run report.
+
+### Notification and views
+
+After a run closes, is skipped, or is paused, exactly one line goes to the main firstmate: from a second-mate home through `bin/fm-parent-channel-lib.sh`, and from main through main's own `bin/fm-inbox.sh note`.
+The line names the schedule, the home, the time used and whether the run was interrupted and cut short and why; without a run summary it gives the task's open and close times and says "no run summary".
+A line that cannot be delivered is kept in `state/schedules/<name>.notices` and retried on each scan.
+Each scan writes `state/schedules/summary.json` (`fm-schedule-summary/v1`) in main, which the fleet board's Scheduled runs panel shows; `bin/fm-schedule.sh list` prints the same table without changing anything.
+Behavioral verification lives in `tests/fm-schedule.test.sh`.
+
 ## Disk inventory (data/housekeeping)
 
 [`bin/fm-disk-inventory.sh`](../bin/fm-disk-inventory.sh) writes a read-only KEEP / REMOVE / other-homes inventory of one home, its pool slots, the shared pools, no-mistakes worktrees and task temp folders to `data/housekeeping/inventory-<date>.md`.

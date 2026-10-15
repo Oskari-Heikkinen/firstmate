@@ -22,6 +22,7 @@ The board reads published summaries only, never raw status logs, watcher interna
 - Each home's `state/spawn-starts.jsonl`, written by every spawn and kept through cleanup, to tell which task ran in a reused working copy.
 - Project feeds, detector thresholds, session roots and scheduled units listed in `config/board-feeds` (docs/configuration.md "Fleet board feeds").
 - Claude Code session records in the named session roots, one folder level at a time, never recursively.
+- Main's `state/schedules/summary.json`, written by each `bin/fm-schedule.sh scan` (docs/configuration.md "Scheduled runs").
 
 Home summaries must be regular non-symlink files within the board's byte bound and match the selected physical home and hold classifier schema; [`bin/fm-board.py`](../bin/fm-board.py) owns those checks.
 Each source has a five-second limit.
@@ -34,6 +35,7 @@ Facts no owner publishes yet (why a spawn was refused, which heavy job holds the
   A captain call mirrored up from a second mate is judged by that second mate's own summary, so it is counted once.
 - **Health**: each area's monitoring verdict, incomplete summaries, stopped second mates, scheduled jobs, the merge train and blind spots.
 - **Work**: per area, what is working, idle, parked with no agent, or finished with its tab still open, and every task whose last word is "working" with no agent.
+- **Scheduled runs**: every schedule across homes with what it files, its next run in local time, its last run with the time used and whether it was cut short, and whether it is paused, skipped or refused; `bin/fm-schedule.sh list` prints the same table.
 - **Pipeline**: owner feeds such as the hypothesis register, the job queue and the merge train, plus queued work per area.
 - **Waste**: habits where an agent does a script's job, from the token reader's rules and the work records.
 - **Tokens**: today's token counts per area, kind of agent, task and agent, and the seven detector rules.

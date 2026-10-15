@@ -331,7 +331,7 @@ ok("every missing, stale, unknown-version or unread source is a blind-spot line 
 
 for i in items:
     assert set(i) - {"value", "view"} == {"panel", "group", "title", "state", "since", "owner", "link", "detail"}, i
-    assert i["panel"] in ("decisions", "health", "work", "pipeline", "waste", "tokens"), i
+    assert i["panel"] in ("decisions", "health", "work", "schedules", "pipeline", "waste", "tokens"), i
 ok("every item uses the single item shape")
 
 # ---------------------------------------------------------------- decisions (F3, F4)
