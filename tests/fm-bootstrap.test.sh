@@ -39,7 +39,17 @@ unset TMUX TMUX_PANE HERDR_ENV HERDR_PANE_ID HERDR_SESSION HERDR_SOCKET_PATH \
 
 # A fake toolchain where every required tool is present and gh is authenticated.
 # treehouse's `get --help` advertises --lease only when FM_FAKE_TREEHOUSE_LEASE_HELP=1.
+# The toolchain is read-only shared fixture material, so it is built once into
+# FAKE_TOOLCHAIN_TEMPLATE and each case gets its own copy, which it may then
+# alter freely.
 make_fake_toolchain() {
+  local dir=$1
+  mkdir -p "$dir" || fail "could not create $dir"
+  cp -R "$FAKE_TOOLCHAIN_TEMPLATE" "$dir/fakebin" || fail "could not copy the fake toolchain into $dir"
+  printf '%s\n' "$dir/fakebin"
+}
+
+build_fake_toolchain_template() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
   fm_fake_exit0 "$fakebin" tmux node chrome-devtools-axi
@@ -153,10 +163,56 @@ make_fake_fleet_sync_root() {
 [ -z "${FM_FAKE_FLEET_SYNC_STARTED_MARKER:-}" ] || : > "$FM_FAKE_FLEET_SYNC_STARTED_MARKER"
 printf '%s\n' 'alpha: synced'
 printf '%s\n' 'beta: skipped: no origin remote'
+[ -z "${FM_FAKE_FLEET_SYNC_PRINTED_MARKER:-}" ] || : > "$FM_FAKE_FLEET_SYNC_PRINTED_MARKER"
 exec perl -e 'sleep 300'
 SH
   chmod +x "$fake_root/bin/fm-fleet-sync.sh"
   printf '%s\n' "$fake_root"
+}
+
+# run_table_rows <name> <row-function>: read '^'-separated rows from stdin and
+# call <row-function> <n> <row> for every row whose first field is non-empty, n
+# counting from 1 in table order exactly as the former serial loops did. Each
+# row builds its own per-n fixture, so rows run in up to FM_BOOTSTRAP_ROW_JOBS
+# background subshells (default: the case-pool width; 1 runs them serially).
+# Every row is waited for, and any failing row replays its own "not ok" output
+# and fails the case.
+run_table_rows() {
+  local name=$1 fn=$2 line logs n=0 k=0 jobs
+  local -a rows pids rcs
+  rows=()
+  while IFS= read -r line; do
+    [ -n "${line%%^*}" ] || continue
+    rows+=("$line")
+  done
+  jobs=$(fm_case_pool_jobs "${FM_BOOTSTRAP_ROW_JOBS:-}")
+  case "$jobs" in ''|*[!0-9]*|0) fail "run_table_rows: invalid job count '$jobs'" ;; esac
+  logs="$TMP_ROOT/.rows-$name"
+  mkdir -p "$logs" || fail "could not create the row log directory $logs"
+  while [ "$n" -lt "${#rows[@]}" ]; do
+    ( trap - EXIT INT TERM HUP QUIT; "$fn" "$((n + 1))" "${rows[n]}" ) > "$logs/$n.out" 2>&1 &
+    pids[n]=$!
+    n=$((n + 1))
+    if [ $((n - k)) -ge "$jobs" ]; then
+      wait "${pids[k]}"
+      rcs[k]=$?
+      k=$((k + 1))
+    fi
+  done
+  while [ "$k" -lt "$n" ]; do
+    wait "${pids[k]}"
+    rcs[k]=$?
+    k=$((k + 1))
+  done
+  [ "$n" -gt 0 ] || fail "$name: the table had no rows"
+  k=0
+  while [ "$k" -lt "$n" ]; do
+    if [ "${rcs[k]}" != 0 ]; then
+      cat "$logs/$k.out" >&2
+      fail "$name row $((k + 1)) failed (see its output above)"
+    fi
+    k=$((k + 1))
+  done
 }
 
 add_origin_backed_projects() {
@@ -183,21 +239,30 @@ add_no_origin_projects() {
 }
 
 run_bootstrap_timeout_case() {
-  local home=$1 fake_root=$2 fakebin=$3 override started_marker git_record wait_for_marker
+  local home=$1 fake_root=$2 fakebin=$3 override started_marker git_record wait_for_marker printed_marker
   override=__unset__
   started_marker=${5:-}
   git_record=${6:-}
   wait_for_marker=${7:-0}
+  printed_marker="${home%/*}/fleet-sync.printed"
   [ "$#" -lt 4 ] || override=$4
   (
     # shellcheck disable=SC2317,SC2329 # Exported and invoked by the bootstrap subprocess.
     sleep() {
-      local inc=${1:-1}
+      local inc=${1:-1} tries=0
       SECONDS=$((SECONDS + inc))
-      # Advance fake time quickly, but yield on every tick so the background
-      # fleet-sync process can deterministically write its partial output before
-      # the simulated timeout kills it, even on a busy full-suite runner.
-      command sleep 0.01
+      # Advance fake time instantly once the background fleet-sync process has
+      # written its partial output; until then, yield in short real steps
+      # (bounded) so it deterministically lands before the simulated timeout
+      # kills the process, even on a busy full-suite runner.
+      if [ -z "${FM_FAKE_FLEET_SYNC_PRINTED_MARKER:-}" ]; then
+        command sleep 0.01
+        return 0
+      fi
+      while [ ! -e "$FM_FAKE_FLEET_SYNC_PRINTED_MARKER" ] && [ "$tries" -lt 500 ]; do
+        command sleep 0.01
+        tries=$((tries + 1))
+      done
     }
     # shellcheck disable=SC2317,SC2329 # Exported and invoked by the bootstrap subprocess.
     git() {
@@ -221,6 +286,7 @@ run_bootstrap_timeout_case() {
         FM_FAKE_FLEET_SYNC_STARTED_MARKER="$started_marker" \
         FM_FAKE_GIT_SYNC_STARTED_RECORD="$git_record" \
         FM_FAKE_GIT_WAIT_FOR_FLEET_START="$wait_for_marker" \
+        FM_FAKE_FLEET_SYNC_PRINTED_MARKER="$printed_marker" \
         FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null
     else
       PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$fake_root" \
@@ -228,6 +294,7 @@ run_bootstrap_timeout_case() {
         FM_FAKE_FLEET_SYNC_STARTED_MARKER="$started_marker" \
         FM_FAKE_GIT_SYNC_STARTED_RECORD="$git_record" \
         FM_FAKE_GIT_WAIT_FOR_FLEET_START="$wait_for_marker" \
+        FM_FAKE_FLEET_SYNC_PRINTED_MARKER="$printed_marker" \
         FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null
     fi
   )
@@ -248,59 +315,60 @@ assert_timeout_report() {
 #   mode=empty -> output must be empty (expect/notcontains ignored)
 #   mode=exact -> output must equal <expect>
 #   mode=grep  -> output must contain <expect> (fixed string); <notcontains> must not appear
-test_bootstrap_reporting() {
-  local label lease tasks quota backend mode expect notcontains case_dir fakebin out n archive_body multi_id
-  n=0
-  while IFS='^' read -r label lease tasks quota backend mode expect notcontains; do
-    [ -n "$label" ] || continue
-    n=$((n + 1))
-    case_dir="$TMP_ROOT/case-$n"
-    mkdir -p "$case_dir/home"
-    if [ "$backend" != "-" ]; then
-      mkdir -p "$case_dir/home/config"
-      printf '%s\n' "$backend" > "$case_dir/home/config/backlog-backend"
-    fi
-    fakebin=$(make_fake_toolchain "$case_dir")
-    if [ "$tasks" = "-" ]; then
-      rm -f "$fakebin/tasks-axi"
-    else
-      archive_body=yes
-      multi_id=yes
-      case "$tasks" in
-        *:noarchive)
-          archive_body=no
-          tasks=${tasks%:noarchive}
-          ;;
-      esac
-      case "$tasks" in
-        *:nomulti)
-          multi_id=no
-          tasks=${tasks%:nomulti}
-          ;;
-      esac
-      add_tasks_axi "$fakebin" "$tasks" "$archive_body" "$multi_id"
-    fi
-    if [ "$quota" = "0" ]; then
-      rm -f "$fakebin/quota-axi"
-    fi
-    # FM_ROOT_OVERRIDE points the worktree-tangle check at the non-git home dir so
-    # it stays inert: this suite pins tool detection, not the tangle guard, and the
-    # ambient checkout (CI runs on a feature branch) must not leak a TANGLE line in.
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP="$lease" "$ROOT/bin/fm-bootstrap.sh")
-    case "$mode" in
-      empty)
-        [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
-      exact)
-        [ "$out" = "$expect" ] || fail "$label: expected '$expect', got: $out" ;;
-      grep)
-        printf '%s\n' "$out" | grep -Fx "$expect" >/dev/null || fail "$label: missing '$expect' (got: $out)"
-        if [ -n "$notcontains" ]; then
-          printf '%s\n' "$out" | grep -F "$notcontains" >/dev/null && fail "$label: unexpected '$notcontains' in: $out"
-        fi
+reporting_row() {
+  local n=$1 label lease tasks quota backend mode expect notcontains case_dir fakebin out archive_body multi_id
+  IFS='^' read -r label lease tasks quota backend mode expect notcontains <<< "$2"
+  case_dir="$TMP_ROOT/case-$n"
+  mkdir -p "$case_dir/home"
+  if [ "$backend" != "-" ]; then
+    mkdir -p "$case_dir/home/config"
+    printf '%s\n' "$backend" > "$case_dir/home/config/backlog-backend"
+  fi
+  fakebin=$(make_fake_toolchain "$case_dir")
+  if [ "$tasks" = "-" ]; then
+    rm -f "$fakebin/tasks-axi"
+  else
+    archive_body=yes
+    multi_id=yes
+    case "$tasks" in
+      *:noarchive)
+        archive_body=no
+        tasks=${tasks%:noarchive}
         ;;
     esac
-  done <<'ROWS'
+    case "$tasks" in
+      *:nomulti)
+        multi_id=no
+        tasks=${tasks%:nomulti}
+        ;;
+    esac
+    add_tasks_axi "$fakebin" "$tasks" "$archive_body" "$multi_id"
+  fi
+  if [ "$quota" = "0" ]; then
+    rm -f "$fakebin/quota-axi"
+  fi
+  # FM_ROOT_OVERRIDE points the worktree-tangle check at the non-git home dir so
+  # it stays inert: this suite pins tool detection, not the tangle guard, and the
+  # ambient checkout (CI runs on a feature branch) must not leak a TANGLE line in.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP="$lease" "$ROOT/bin/fm-bootstrap.sh")
+  case "$mode" in
+    empty)
+      [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+    exact)
+      [ "$out" = "$expect" ] || fail "$label: expected '$expect', got: $out" ;;
+    grep)
+      printf '%s\n' "$out" | grep -Fx "$expect" >/dev/null || fail "$label: missing '$expect' (got: $out)"
+      if [ -n "$notcontains" ]; then
+        printf '%s\n' "$out" | grep -F "$notcontains" >/dev/null && fail "$label: unexpected '$notcontains' in: $out"
+      fi
+      ;;
+  esac
+  return 0
+}
+
+test_bootstrap_reporting() {
+  run_table_rows reporting reporting_row <<'ROWS'
 treehouse --lease support is accepted silently^1^0.2.6^1^manual^empty^^
 treehouse without --lease reports an upgrade, gh auth is fine^0^0.2.6^1^-^grep^MISSING: treehouse (install: curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh)^NEEDS_GH_AUTH
 compatible tasks-axi is silent by default^1^0.2.6^1^-^empty^^
@@ -315,27 +383,28 @@ ROWS
   pass "bootstrap reports treehouse lease + tasks-axi/quota-axi bootstrap contracts"
 }
 
-test_no_mistakes_min_version() {
-  local label version mode case_dir fakebin out missing n
+no_mistakes_row() {
+  local n=$1 label version mode case_dir fakebin out missing
   missing='MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)'
-  n=0
-  while IFS='^' read -r label version mode; do
-    [ -n "$label" ] || continue
-    n=$((n + 1))
-    case_dir="$TMP_ROOT/no-mistakes-$n"
-    mkdir -p "$case_dir/home"
-    mkdir -p "$case_dir/home/config"
-    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
-    fakebin=$(make_fake_toolchain "$case_dir")
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_NO_MISTAKES_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh")
-    case "$mode" in
-      empty)
-        [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
-      missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
-    esac
-  done <<'ROWS'
+  IFS='^' read -r label version mode <<< "$2"
+  case_dir="$TMP_ROOT/no-mistakes-$n"
+  mkdir -p "$case_dir/home"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_NO_MISTAKES_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh")
+  case "$mode" in
+    empty)
+      [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+    missing)
+      [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+  esac
+  return 0
+}
+
+test_no_mistakes_min_version() {
+  run_table_rows no-mistakes no_mistakes_row <<'ROWS'
 minimum no-mistakes version is accepted^no-mistakes version v1.46.0 (fake)^empty
 newer no-mistakes minor is accepted^no-mistakes version v1.47.0 (fake)^empty
 newer no-mistakes major is accepted^no-mistakes version v2.0.0 (fake)^empty
@@ -345,26 +414,27 @@ ROWS
   pass "bootstrap enforces no-mistakes minimum version"
 }
 
-test_gh_axi_min_version() {
-  local label version mode case_dir fakebin out missing n
+gh_axi_row() {
+  local n=$1 label version mode case_dir fakebin out missing
   missing='MISSING: gh-axi (install: npm install -g gh-axi && gh-axi setup hooks)'
-  n=0
-  while IFS='^' read -r label version mode; do
-    [ -n "$label" ] || continue
-    n=$((n + 1))
-    case_dir="$TMP_ROOT/gh-axi-$n"
-    mkdir -p "$case_dir/home/config"
-    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
-    fakebin=$(make_fake_toolchain "$case_dir")
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_GH_AXI_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh")
-    case "$mode" in
-      empty)
-        [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
-      missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
-    esac
-  done <<'ROWS'
+  IFS='^' read -r label version mode <<< "$2"
+  case_dir="$TMP_ROOT/gh-axi-$n"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_GH_AXI_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh")
+  case "$mode" in
+    empty)
+      [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+    missing)
+      [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+  esac
+  return 0
+}
+
+test_gh_axi_min_version() {
+  run_table_rows gh-axi gh_axi_row <<'ROWS'
 minimum gh-axi version is accepted^0.1.29^empty
 newer gh-axi patch is accepted^0.1.30^empty
 newer gh-axi minor is accepted^0.2.0^empty
@@ -376,41 +446,42 @@ ROWS
   pass "bootstrap enforces gh-axi minimum version"
 }
 
-test_tasks_axi_min_version() {
-  local label version mode case_dir fakebin out missing n archive_body multi_id
+tasks_axi_row() {
+  local n=$1 label version mode case_dir fakebin out missing archive_body multi_id
   missing='MISSING: tasks-axi (install: npm install -g tasks-axi)'
-  n=0
-  while IFS='^' read -r label version mode; do
-    [ -n "$label" ] || continue
-    n=$((n + 1))
-    case_dir="$TMP_ROOT/tasks-axi-$n"
-    mkdir -p "$case_dir/home/config"
-    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
-    fakebin=$(make_fake_toolchain "$case_dir")
-    archive_body=yes
-    multi_id=yes
-    case "$version" in
-      *:noarchive)
-        archive_body=no
-        version=${version%:noarchive}
-        ;;
-    esac
-    case "$version" in
-      *:nomulti)
-        multi_id=no
-        version=${version%:nomulti}
-        ;;
-    esac
-    add_tasks_axi "$fakebin" "$version" "$archive_body" "$multi_id"
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-    case "$mode" in
-      empty)
-        [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
-      missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
-    esac
-  done <<'ROWS'
+  IFS='^' read -r label version mode <<< "$2"
+  case_dir="$TMP_ROOT/tasks-axi-$n"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  archive_body=yes
+  multi_id=yes
+  case "$version" in
+    *:noarchive)
+      archive_body=no
+      version=${version%:noarchive}
+      ;;
+  esac
+  case "$version" in
+    *:nomulti)
+      multi_id=no
+      version=${version%:nomulti}
+      ;;
+  esac
+  add_tasks_axi "$fakebin" "$version" "$archive_body" "$multi_id"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  case "$mode" in
+    empty)
+      [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+    missing)
+      [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+  esac
+  return 0
+}
+
+test_tasks_axi_min_version() {
+  run_table_rows tasks-axi tasks_axi_row <<'ROWS'
 minimum tasks-axi version is accepted^0.2.6^empty
 newer tasks-axi patch is accepted^0.2.7^empty
 newer tasks-axi minor is accepted^0.3.0^empty
@@ -426,26 +497,27 @@ ROWS
 
 # These rows exercise the real bootstrap check with a fake quota-axi answering
 # --version: below the floor produces MISSING, while at or above is silent.
-test_quota_axi_min_version() {
-  local label version mode case_dir fakebin out missing n
+quota_axi_row() {
+  local n=$1 label version mode case_dir fakebin out missing
   missing='MISSING: quota-axi (install: npm install -g quota-axi)'
-  n=0
-  while IFS='^' read -r label version mode; do
-    [ -n "$label" ] || continue
-    n=$((n + 1))
-    case_dir="$TMP_ROOT/quota-axi-$n"
-    mkdir -p "$case_dir/home/config"
-    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
-    fakebin=$(make_fake_toolchain "$case_dir")
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_QUOTA_AXI_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh")
-    case "$mode" in
-      empty)
-        [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
-      missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
-    esac
-  done <<'ROWS'
+  IFS='^' read -r label version mode <<< "$2"
+  case_dir="$TMP_ROOT/quota-axi-$n"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_QUOTA_AXI_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh")
+  case "$mode" in
+    empty)
+      [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+    missing)
+      [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+  esac
+  return 0
+}
+
+test_quota_axi_min_version() {
+  run_table_rows quota-axi quota_axi_row <<'ROWS'
 minimum quota-axi version is accepted^0.1.51^empty
 newer quota-axi patch is accepted^0.1.52^empty
 newer quota-axi minor is accepted^0.2.0^empty
@@ -860,7 +932,7 @@ test_routine_bootstrap_contract_runs_under_system_bash() {
 # split is a PARTITION: `skip` plus `only` together do exactly what `all` does,
 # with no step dropped and no step run twice.
 test_network_phase_partitions_the_run() {
-  local case_dir fakebin all_out skip_out only_out combined
+  local case_dir fakebin all_out skip_out only_out combined sans_node
   case_dir="$TMP_ROOT/network-phase"
   mkdir -p "$case_dir/home/config"
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
@@ -873,18 +945,21 @@ test_network_phase_partitions_the_run() {
 exit 1
 SH
   chmod +x "$fakebin/gh"
+  # One node-less copy of the base PATH serves all four runs; building it walks
+  # every system bin directory, so it is built once rather than per run.
+  sans_node=$(fm_test_base_path_sans "$BASE_PATH" node) || fail "could not build a node-less base PATH"
 
-  all_out=$(PATH="$fakebin:$(fm_test_base_path_sans "$BASE_PATH" node)" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+  all_out=$(PATH="$fakebin:$sans_node" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
   assert_contains "$all_out" "MISSING: node (install:" "the unsplit run lost its local diagnostic"
   assert_contains "$all_out" "NEEDS_GH_AUTH" "the unsplit run lost its network diagnostic"
 
-  skip_out=$(PATH="$fakebin:$(fm_test_base_path_sans "$BASE_PATH" node)" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+  skip_out=$(PATH="$fakebin:$sans_node" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=skip "$ROOT/bin/fm-bootstrap.sh")
   assert_contains "$skip_out" "MISSING: node (install:" "the local half lost its own diagnostic"
   assert_not_contains "$skip_out" "NEEDS_GH_AUTH" "the local half still made a network call"
 
-  only_out=$(PATH="$fakebin:$(fm_test_base_path_sans "$BASE_PATH" node)" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+  only_out=$(PATH="$fakebin:$sans_node" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only "$ROOT/bin/fm-bootstrap.sh")
   assert_contains "$only_out" "NEEDS_GH_AUTH" "the network half lost its own diagnostic"
   assert_not_contains "$only_out" "MISSING: node" "the network half repeated the local half's work"
@@ -895,7 +970,7 @@ SH
 
   # A typo must never silently drop a safety sweep, so anything unrecognized
   # resolves to the complete run.
-  [ "$(PATH="$fakebin:$(fm_test_base_path_sans "$BASE_PATH" node)" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+  [ "$(PATH="$fakebin:$sans_node" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=sikp "$ROOT/bin/fm-bootstrap.sh")" = "$all_out" ] \
     || fail "an unrecognized FM_BOOTSTRAP_NETWORK value did not fall back to the complete run"
   pass "bootstrap: FM_BOOTSTRAP_NETWORK partitions one run into local and network halves"
@@ -1146,29 +1221,31 @@ test_supervisor_compact_window_reaches_the_primary_settings() {
   pass "bootstrap writes the supervisor window into the primary's local settings idempotently and never the user settings"
 }
 
+dispatch_row() {
+  local n=$1 label body expect mode case_dir fakebin out
+  IFS='^' read -r label body mode expect <<< "$2"
+  case_dir="$TMP_ROOT/dispatch-$n"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$body" > "$case_dir/home/config/crew-dispatch.json"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_jq "$fakebin"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    TYPESAFE_API_KEY=test-key FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  case "$mode" in
+    empty)
+      [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+    exact)
+      [ "$out" = "$expect" ] || fail "$label: expected '$expect', got: $out" ;;
+    grep)
+      printf '%s\n' "$out" | grep -Fx "$expect" >/dev/null || fail "$label: missing '$expect' (got: $out)" ;;
+  esac
+  return 0
+}
+
 test_crew_dispatch_validation() {
-  local label body expect mode case_dir fakebin out child_env n
-  n=0
-  while IFS='^' read -r label body mode expect; do
-    [ -n "$label" ] || continue
-    n=$((n + 1))
-    case_dir="$TMP_ROOT/dispatch-$n"
-    mkdir -p "$case_dir/home/config"
-    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
-    printf '%s\n' "$body" > "$case_dir/home/config/crew-dispatch.json"
-    fakebin=$(make_fake_toolchain "$case_dir")
-    add_real_jq "$fakebin"
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      TYPESAFE_API_KEY=test-key FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-    case "$mode" in
-      empty)
-        [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
-      exact)
-        [ "$out" = "$expect" ] || fail "$label: expected '$expect', got: $out" ;;
-      grep)
-        printf '%s\n' "$out" | grep -Fx "$expect" >/dev/null || fail "$label: missing '$expect' (got: $out)" ;;
-    esac
-  done <<'ROWS'
+  local case_dir fakebin out child_env
+  run_table_rows dispatch dispatch_row <<'ROWS'
 malformed dispatch config is flagged^{"rules":[^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - malformed JSON
 worker compaction is accepted^{"rules":[{"when":"routine","compact_at":200000,"use":{"harness":"claude"}}]}^empty^
 fractional worker compaction is refused^{"rules":[{"when":"routine","compact_at":200000.5,"use":{"harness":"claude"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - compact_at must be an integer from 100000 through 1000000
@@ -1284,31 +1361,37 @@ ROWS
   pass "bootstrap gates resolver fields and additive harnesses on the typed key"
 }
 
-test_bootstrap_reporting
-test_no_mistakes_min_version
-test_gh_axi_min_version
-test_tasks_axi_min_version
-test_quota_axi_min_version
-test_git_is_required_with_supported_install_instruction
-test_orca_backend_gates_orca_tool_only_when_selected
-test_session_provider_backends_do_not_require_tmux
-test_session_provider_backends_gate_own_cli_not_tmux
-test_herdr_install_requires_manual_action
-test_cmux_bundled_cli_satisfies_dependency
-test_unknown_backend_reports_invalid_configuration
-test_json_backends_require_jq_not_tmux
-test_treehouse_lease_check_follows_resolved_backend
-test_fleet_sync_timeout_scales_with_origin_backed_project_count
-test_fleet_sync_timeout_floor_preserves_small_fleets
-test_fleet_sync_timeout_explicit_override_wins
-test_fleet_sync_timeout_empty_override_uses_default
-test_fleet_sync_timeout_is_computed_before_launch
-test_routine_bootstrap_confirmations_are_silent
-test_routine_bootstrap_contract_runs_under_system_bash
-test_network_phase_partitions_the_run
-test_network_sweeps_recheck_lock_ownership
-test_network_phases_record_per_step_elapsed_times
-test_tasks_axi_verdict_handoff_is_consumed_once
-test_crew_dispatch_active_rules_are_verbose_bootstrap_info
-test_crew_dispatch_validation
-test_supervisor_compact_window_reaches_the_primary_settings
+# Every case builds its own fixture under its own TMP_ROOT subdirectory and acts
+# only on processes it started, so the cases run through fm_run_case_pool
+# (tests/lib.sh), the largest tables first. FM_BOOTSTRAP_CASE_JOBS overrides the
+# case concurrency and FM_BOOTSTRAP_ROW_JOBS the per-table row concurrency; both
+# default to the host's processor count capped at four, and 1 runs serially.
+FAKE_TOOLCHAIN_TEMPLATE=$(build_fake_toolchain_template "$TMP_ROOT/.toolchain-template") \
+  || fail "could not build the shared fake toolchain"
+POOL_CASES=(test_crew_dispatch_validation test_bootstrap_reporting
+  test_tasks_axi_min_version test_network_phase_partitions_the_run
+  test_gh_axi_min_version test_quota_axi_min_version
+  test_no_mistakes_min_version
+  test_git_is_required_with_supported_install_instruction
+  test_orca_backend_gates_orca_tool_only_when_selected
+  test_session_provider_backends_do_not_require_tmux
+  test_session_provider_backends_gate_own_cli_not_tmux
+  test_herdr_install_requires_manual_action
+  test_cmux_bundled_cli_satisfies_dependency
+  test_unknown_backend_reports_invalid_configuration
+  test_json_backends_require_jq_not_tmux
+  test_treehouse_lease_check_follows_resolved_backend
+  test_fleet_sync_timeout_scales_with_origin_backed_project_count
+  test_fleet_sync_timeout_floor_preserves_small_fleets
+  test_fleet_sync_timeout_explicit_override_wins
+  test_fleet_sync_timeout_empty_override_uses_default
+  test_fleet_sync_timeout_is_computed_before_launch
+  test_routine_bootstrap_confirmations_are_silent
+  test_routine_bootstrap_contract_runs_under_system_bash
+  test_network_sweeps_recheck_lock_ownership
+  test_network_phases_record_per_step_elapsed_times
+  test_tasks_axi_verdict_handoff_is_consumed_once
+  test_crew_dispatch_active_rules_are_verbose_bootstrap_info
+  test_supervisor_compact_window_reaches_the_primary_settings)
+case_jobs=$(fm_case_pool_jobs "${FM_BOOTSTRAP_CASE_JOBS:-}")
+fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" "${POOL_CASES[@]}" || exit 1
