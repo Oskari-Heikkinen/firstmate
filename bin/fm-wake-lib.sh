@@ -1321,7 +1321,7 @@ _fm_lock_acquire_wait_handoff() {  # <lockdir> <caller-pid>
 # reconciliation refusal instead of wedging an unattended close.
 # Mutation-critical callers that can safely block keep fm_lock_acquire_wait.
 fm_lock_acquire_wait_bounded() {
-  local lockdir=$1 seconds=$2 caller_pid rc owner_pid
+  local lockdir=$1 seconds=$2 caller_pid rc owner_pid attempts
   case "$seconds" in ''|*[!0-9]*|0) return 2 ;; esac
   _fm_wake_require_timeout || return 1
   if fm_lock_try_acquire "$lockdir"; then
@@ -1354,16 +1354,27 @@ fm_lock_acquire_wait_bounded() {
     return 0
   fi
   if [ "$rc" -eq 124 ]; then
-    owner_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
-    case "$owner_pid" in
-      ''|*[!0-9]*|0) ;;
-      *)
-        if [ "$owner_pid" -gt 0 ] 2>/dev/null && fm_pid_alive "$owner_pid"; then
-          FM_LOCK_HELD_PID=$owner_pid
-          return 124
-        fi
-        ;;
-    esac
+    # Under contention the lock can pass between short-lived holders while it is
+    # read here, so one read naming no live owner is not evidence of an unsafe
+    # lock: sample a few more times, taking the lock if it comes free.
+    attempts=0
+    while [ "$attempts" -lt 10 ]; do
+      owner_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+      case "$owner_pid" in
+        ''|*[!0-9]*|0) ;;
+        *)
+          if [ "$owner_pid" -gt 0 ] 2>/dev/null && fm_pid_alive "$owner_pid"; then
+            FM_LOCK_HELD_PID=$owner_pid
+            return 124
+          fi
+          ;;
+      esac
+      if fm_lock_try_acquire "$lockdir"; then
+        return 0
+      fi
+      attempts=$((attempts + 1))
+      sleep 0.1
+    done
     # shellcheck disable=SC2034 # Output read by callers after bounded acquisition.
     FM_LOCK_HELD_PID=
     return 1

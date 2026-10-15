@@ -54,6 +54,37 @@ test_concurrent_append_and_drain() {
   pass "concurrent append plus drain preserves durable records through acknowledgement"
 }
 
+# A drain whose bounded lock wait runs out while short-lived appenders keep
+# handing the queue lock between them must report the contention as a skip, not
+# as an unsafe lock: at the deadline the lock can be between two live holders.
+test_bounded_drain_under_append_contention() {
+  local dir state pids i pid round rc
+  dir=$(make_case bounded-contention)
+  state="$dir/state"
+  round=1
+  while [ "$round" -le 3 ]; do
+    pids=
+    i=1
+    while [ "$i" -le 40 ]; do
+      append_wake "$state" signal "round-$round-$i" "signal: $state/round-$round-$i.status" &
+      pids="$pids $!"
+      i=$((i + 1))
+    done
+    rc=0
+    FM_STATUS_PRESENTATION_LOCK_TIMEOUT=1 FM_STATE_OVERRIDE="$state" "$DRAIN" \
+      > "$dir/drain-$round.out" 2> "$dir/drain-$round.err" || rc=$?
+    for pid in $pids; do
+      wait "$pid" || fail "contended append subprocess failed"
+    done
+    [ "$rc" -eq 0 ] || fail "a contended bounded drain exited $rc: $(cat "$dir/drain-$round.err")"
+    round=$((round + 1))
+  done
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain-final.out" 2> "$dir/drain-final.err" || fail "final drain failed"
+  [ "$(awk -F '\t' 'NF == 5 { keys[$4] = 1 } END { for (k in keys) count++; print count + 0 }' "$dir/drain-final.out")" -eq 120 ] \
+    || fail "contended drains lost or duplicated queued records"
+  pass "a bounded drain that loses the lock race to appenders skips instead of failing"
+}
+
 test_signal_catchup_without_running_watcher() {
   local dir state fakebin out drain_out drain_err status_file sequence generation
   dir=$(make_case signal)
@@ -3275,8 +3306,10 @@ test_secondmate_liveness_tick_leaves_alive_and_inconclusive_untouched() {
 
   # An ambiguous existing process is evidence of nothing; it is triage-only
   # and never a relaunch. Drain the killed leg's downtime marker first so the
-  # next watcher does not resurface instead of exercising the tick.
+  # next watcher does not resurface instead of exercising the tick, and clear the
+  # cadence marker the alive leg just stamped so this leg's first cycle probes.
   drain_liveness_wakes "$dir"
+  rm -f "$state/.secondmate-liveness-tick"
   run_liveness_leg "$dir" ambiguous FM_FAKE_TMUX_CURRENT_COMMAND=node; pid=$LIVENESS_PID
   await_liveness_leg_quiet "$dir" "$pid"
   is_live_non_zombie "$pid" \
@@ -3702,5 +3735,6 @@ WAKE_QUEUE_CASES=(
   test_term_stops_a_watcher_blocked_in_the_drain_ring_idle_capture
   test_handover_restore_undoes_only_its_own_stop
   test_drain_rotates_orphaned_scratch
+  test_bounded_drain_under_append_contention
 )
 run_case_pool "${WAKE_QUEUE_CASES[@]}" || exit 1
