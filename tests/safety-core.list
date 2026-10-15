@@ -1,6 +1,6 @@
 # Firstmate's safety core: agent-free behavior tests that cover the risky areas
 # named in tests/risky-areas.list. bin/fm-safety-guard.sh owns the rules:
-# every entry must exist and be selected by a CI shard, and a commit that drops
+# every entry must exist and be selected by the gate tier, and a commit that drops
 # an entry fails CI unless its message carries a `safety-core-removal: <reason>`
 # line. One repo-relative test path per line; `#` starts a comment.
 

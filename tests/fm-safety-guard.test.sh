@@ -3,8 +3,8 @@
 # safety-core tests present and make risky-script changes carry a test.
 #
 # The guarantees under test:
-#   - core passes when every listed test exists and a CI lane selects it, and
-#     fails on a missing entry, an entry no CI lane selects, or a risky area
+#   - core passes when every listed test exists and the gate tier selects it,
+#     and fails on a missing entry, an entry the gate tier does not select, or a risky area
 #     with no test line.
 #   - commits fails a commit that changes a risky script without adding or
 #     modifying a test in that area, judging every commit in the range rather
@@ -83,7 +83,7 @@ test_core_passes_and_fails() {
   printf 'demo script bin/x.sh\ndemo test tests/x.test.sh\n' >"$r/tests/risky-areas.list"
   printf '%s\n' '# core' tests/fm-watch-triage.test.sh >"$r/tests/safety-core.list"
   out=$(cd "$r" && "$GUARD" core 2>&1) || fail "core must pass on a present, CI-selected entry: $out"
-  assert_contains "$out" "1 safety-core tests present and selected by CI" "core counts the entry"
+  assert_contains "$out" "1 safety-core tests present and selected by the gate tier" "core counts the entry"
 
   printf '%s\n' tests/fm-watch-triage.test.sh tests/fm-gone.test.sh >"$r/tests/safety-core.list"
   out=$(cd "$r" && "$GUARD" core 2>&1); rc=$?
@@ -92,8 +92,8 @@ test_core_passes_and_fails() {
 
   printf '%s\n' tests/lib.sh >"$r/tests/safety-core.list"
   out=$(cd "$r" && "$GUARD" core 2>&1); rc=$?
-  expect_code 1 "$rc" "a safety-core file no CI lane selects fails"
-  assert_contains "$out" "tests/lib.sh is not selected by any CI lane" "unselected entry is named"
+  expect_code 1 "$rc" "a safety-core file the gate tier does not select fails"
+  assert_contains "$out" "tests/lib.sh is not selected by the gate tier" "unselected entry is named"
 
   printf '%s\n' tests/fm-watch-triage.test.sh >"$r/tests/safety-core.list"
   printf 'demo script bin/x.sh\n' >"$r/tests/risky-areas.list"

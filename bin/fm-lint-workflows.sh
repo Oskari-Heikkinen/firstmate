@@ -8,6 +8,14 @@
 # invokes this owner on its default (no explicit-path) path, which CI and
 # commands.lint both use.
 #
+# After actionlint passes, a policy check holds every workflow that runs on
+# push (python3 with PyYAML parses it; either missing fails closed):
+#   - every job sets timeout-minutes to a positive integer, so a hung job
+#     cannot hold a runner for GitHub's six-hour default;
+#   - a push run is never cancelled or replaced: every concurrency block leaves
+#     cancel-in-progress absent or literally false, and its group names
+#     github.run_id, because a group also drops older pending runs.
+#
 # Usage:
 #   fm-lint-workflows.sh                 lint workflows under this repo
 #   fm-lint-workflows.sh --root <dir>    lint workflows under <dir>
@@ -27,7 +35,7 @@ if [ "${1:-}" = "--required-version" ]; then
 fi
 
 fm_lint_workflows_usage() {
-  sed -n '2,16{s/^# \{0,1\}//;p;}' "$SELF"
+  sed -n '2,24{s/^# \{0,1\}//;p;}' "$SELF"
 }
 
 EXPLICIT_ROOT=
@@ -132,6 +140,58 @@ set -e
 if [ "$rc" -ne 0 ]; then
   exit "$rc"
 fi
+
+if ! command -v python3 >/dev/null 2>&1 \
+  || ! python3 -I -c 'import yaml' >/dev/null 2>&1; then
+  printf 'fm-lint-workflows.sh: python3 with PyYAML is required for the workflow policy check.\n' >&2
+  exit 1
+fi
+python3 -I - "${FILES[@]}" <<'PY'
+import sys
+import yaml
+
+problems = []
+
+
+def triggers(doc):
+    on = doc.get("on", doc.get(True))
+    if isinstance(on, str):
+        return {on}
+    if isinstance(on, (list, dict)):
+        return set(on)
+    return set()
+
+
+def check_concurrency(path, where, conc):
+    if conc is None:
+        return
+    if not isinstance(conc, dict):
+        problems.append(f"{path}: {where} concurrency must be a mapping naming github.run_id in its group")
+        return
+    cancel = conc.get("cancel-in-progress", False)
+    if cancel is not False:
+        problems.append(f"{path}: {where} concurrency cancel-in-progress must be absent or false in a push workflow (got {cancel!r})")
+    if "github.run_id" not in str(conc.get("group", "")):
+        problems.append(f"{path}: {where} concurrency group must name github.run_id so no push run is replaced")
+
+
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as handle:
+        doc = yaml.safe_load(handle)
+    if not isinstance(doc, dict) or "push" not in triggers(doc):
+        continue
+    check_concurrency(path, "workflow", doc.get("concurrency"))
+    for name, job in (doc.get("jobs") or {}).items():
+        job = job or {}
+        limit = job.get("timeout-minutes")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            problems.append(f"{path}: job {name} needs timeout-minutes as a positive integer (got {limit!r})")
+        check_concurrency(path, f"job {name}", job.get("concurrency"))
+
+for problem in problems:
+    print(f"fm-lint-workflows.sh: {problem}", file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
 
 printf 'fm-lint-workflows.sh: %s workflow files valid\n' "${#FILES[@]}"
 exit 0

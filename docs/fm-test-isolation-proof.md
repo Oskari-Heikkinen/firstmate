@@ -235,8 +235,8 @@ On the stale package the case fails serially as well as concurrently, so it is a
 
 ## CI runner (ubuntu-latest, 4 vCPU)
 
-The family proofs above were taken on a 14-core maintainer host; this section records the same proof on the GitHub runner that executes the CI serial shards.
-`bin/fm-test-run.sh`'s `list_ci_concurrent_families` admits a family to overlap on CI serial shards only from a passing result here.
+The family proofs above were taken on a 14-core maintainer host; this section records the same proof on the four-vCPU GitHub runner.
+CI shards overlap only the proven-isolated set, as [fm-test-portable-shards.md](fm-test-portable-shards.md) describes, so no family overlaps on CI today and these results inform any future admission.
 
 - Date: 2026-10-05
 - Command: `bin/fm-test-isolation-proof.sh --pool <family> --jobs 4`, one family per fresh `ubuntu-latest` runner (4 vCPU, 16 GB) with the tools CI installs.
@@ -291,7 +291,7 @@ The harness now restores owner write access before cleanup, so the exit status r
 
 Each family measured with `bin/fm-test-run.sh --family <name> --jobs <n>` on the same host, back to back, every run reporting 0 failures.
 Together the pairs quantify the effect when a plain `--changed` or script-list selection contains all three families: the automatic scheduler gives each admitted family its own concurrent phase and leaves unproven work in the serial tail.
-Curated `--family`, `--lane`, and `--all` selections remain serial unless the caller explicitly requests an admissible `--jobs` value, as documented by `bin/fm-test-run.sh --help`.
+Curated `--family`, `--tier`, and `--all` selections remain serial unless the caller explicitly requests an admissible `--jobs` value, as documented by `bin/fm-test-run.sh --help`.
 
 | family | scripts | `--jobs 1` | `--jobs 4` | speedup | recovered |
 |---|---:|---:|---:|---:|---:|

@@ -1,55 +1,49 @@
 name: CI
 
+# docs/fm-test-portable-shards.md owns the tiered layout below: which tiers each
+# trigger runs, how shards pack from timing artifacts, and the timeout policy.
+# tests/tiers.list owns each test's tier; bin/fm-test-run.sh owns selection.
 on:
   push:
-    # ci/** branches let scratch work be verified on GitHub before it lands on main.
+    # ci/** verifies scratch work before it lands; ci/full/** runs the main
+    # layout before landing.
     branches: [main, 'ci/**']
-  pull_request:
-    branches: [main]
+  schedule:
+    # Weekly tier: Mondays 04:17 UTC.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# Per-PR supersession: a new push to the same PR replaces that PR's in-flight
-# CI instead of letting superseded heads keep the full hosted-runner fan-out.
-# The group uses the PR number for pull_request events, so every run of one PR
-# shares a group, and falls back to the unique run id for push events, so each
-# main push gets its own group and is never cancelled. Cancellation is likewise
-# limited to pull_request events. Evidence and rationale: the September 12
-# Actions starvation report, section 3 "Workflow mechanics to ship first".
-# The compliance workflow deliberately keeps its own event-specific groups; do
-# not collapse it onto this simpler shape.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+# No concurrency block: a push run is never cancelled or replaced, which
+# bin/fm-lint-workflows.sh enforces together with a timeout on every job.
 # Timeout policy: docs/fm-test-portable-shards.md "Timeouts" owns the three
-# tiers and their rationale; tests/fm-ci-workflow.test.sh guards this workflow.
-# Each job comment identifies the tier implemented by its executable value.
+# tiers and their rationale; each job comment names the tier it implements.
 
 jobs:
-  # Stopgap until the tiered pipeline: a main push whose exact commit already
-  # passed this same workflow file on a ci/** push verifies that run here
-  # instead of re-running the suites. Every suite job waits on this job and runs
-  # unless it verified, so the workflow, and with it green-pointer.yml, still
-  # concludes success only on a verified green run of that exact SHA. Any doubt
-  # (another event or ref, an API error, no matching run) runs the full suites.
-  # The coverage guard and invariants always run: they are seconds of work and
-  # judge the main push's own commit range. This rests on ci/** runs carrying
-  # the full suite; drop it when ci/** stops doing so.
-  prior-pass:
-    name: Prior ci/** pass for this commit
+  plan:
+    name: Plan the tiered run
     runs-on: ubuntu-latest
-    # Fast tier: two API reads.
+    # Fast tier: a changed-file listing and a few API reads.
     timeout-minutes: 5
     permissions:
       actions: read
       contents: read
     outputs:
-      verified: ${{ steps.verify.outputs.verified }}
+      layout: ${{ steps.layout.outputs.layout }}
+      tiers: ${{ steps.layout.outputs.tiers }}
+      shards: ${{ steps.layout.outputs.shards }}
+      changed: ${{ steps.layout.outputs.changed }}
+      herdr_paths: ${{ steps.layout.outputs.herdr_paths }}
+      baseline: ${{ steps.baseline.outputs.found }}
     steps:
-      - name: Verify a successful ci/** run of this exact commit
-        id: verify
+      - uses: actions/checkout@v6
+        with:
+          # --changed diffs against origin/main.
+          fetch-depth: 0
+      - name: Choose the layout for this trigger
+        id: layout
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -59,37 +53,198 @@ jobs:
           REF: ${{ github.ref }}
         run: |
           set -u
-          # Never fails: every path that cannot prove a prior pass runs the suites.
-          run_suites() {
-            echo "$1: running the full suites"
-            echo "verified=false" >> "$GITHUB_OUTPUT"
+          out() { printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; }
+          summary() { printf '%s\n' "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
+
+          # A main push whose exact commit already passed this same workflow
+          # on a ci/full/** push (the main layout) skips the suites. Any doubt
+          # (an API error, no matching run) runs them.
+          prior_full_pass() {
+            local workflow_id runs prior
+            workflow_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id) \
+              && [ -n "$workflow_id" ] || return 1
+            runs=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?head_sha=$HEAD_SHA&event=push&status=success&per_page=100") \
+              || return 1
+            prior=$(printf '%s' "$runs" | jq -r --arg sha "$HEAD_SHA" --arg repo "$REPO" \
+              --argjson wid "$workflow_id" --argjson self "$RUN_ID" '
+              [.workflow_runs[]?
+                | select(.head_sha == $sha and .event == "push" and .conclusion == "success"
+                  and .workflow_id == $wid and .id != $self
+                  and (.head_branch // "" | startswith("ci/full/"))
+                  and .head_repository.full_name == $repo)]
+              | sort_by(.run_started_at) | last // empty
+              | "\(.html_url) \(.head_branch)"') || return 1
+            [ -n "$prior" ] || return 1
+            summary "Suites skipped: ${prior%% *} (${prior#* }) already passed this workflow on \`$HEAD_SHA\`."
+          }
+
+          layout=full
+          case "$EVENT" in
+            schedule|workflow_dispatch) layout=weekly ;;
+            push)
+              case "$REF" in
+                refs/heads/main) prior_full_pass && layout=skip ;;
+                refs/heads/ci/full/*) layout=full ;;
+                refs/heads/ci/*) layout=ci ;;
+              esac
+              ;;
+          esac
+
+          changed=false
+          herdr_paths=
+          if [ "$layout" = ci ]; then
+            # Tier-2 and weekly tests mapped to the changed files. An unmapped
+            # path, or a widely sourced change selecting more than 30 tests,
+            # escalates the push to the main layout.
+            herdr_family=$(bin/fm-test-run.sh --list --family real-herdr-gated) || exit 1
+            if ! selected=$(bin/fm-test-run.sh --list --changed --base origin/main --tier full,weekly); then
+              summary "Changed files include a path the test map cannot place: running the main layout."
+              layout=full
+            elif [ "$(printf '%s\n' "$selected" | grep -c .)" -gt 30 ]; then
+              summary "Changed files select more than 30 tier-2 tests: running the main layout."
+              layout=full
+            else
+              portable=$(printf '%s\n' "$selected" | grep -vxF -e "$herdr_family" | grep . || true)
+              [ -z "$portable" ] || changed=true
+              herdr_gate=$(bin/fm-test-run.sh --list --family real-herdr-gated --tier gate) || exit 1
+              herdr_paths=$( { printf '%s\n' "$herdr_gate"; printf '%s\n' "$selected" | grep -xF -e "$herdr_family" || true; } \
+                | grep . | LC_ALL=C sort -u | tr '\n' ' ')
+              summary "Changed-area tier-2 tests: $(printf '%s\n' "$selected" | grep -c .)"
+            fi
+          fi
+
+          case "$layout" in
+            skip) tiers=; shards='[]' ;;
+            ci) tiers=gate; shards='[1,2,3]' ;;
+            full) tiers=gate,full; shards='[1,2,3,4,5,6,7]' ;;
+            weekly) tiers=weekly,live; shards='[1,2,3,4,5]' ;;
+          esac
+          summary "Layout: $layout (event $EVENT, ref $REF)"
+          out layout "$layout"
+          out tiers "$tiers"
+          out shards "$shards"
+          out changed "$changed"
+          out herdr_paths "$herdr_paths"
+      # Shards pack by measured durations: the aggregate timing artifact of the
+      # newest successful main or ci/full/** run, merged with the newest
+      # successful weekly run's. Without one every test weighs the same.
+      - name: Fetch the baseline timing
+        id: baseline
+        if: steps.layout.outputs.layout != 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -u
+          none() {
+            echo "$1: shards weigh every test the same"
+            echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           }
-          [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ] || run_suites "not a push to main"
           workflow_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id) \
-            && [ -n "$workflow_id" ] || run_suites "could not read this run's workflow"
-          runs=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?head_sha=$HEAD_SHA&event=push&status=success&per_page=100") \
-            || run_suites "could not list this commit's runs"
-          prior=$(printf '%s' "$runs" | jq -r --arg sha "$HEAD_SHA" --arg repo "$REPO" \
-            --argjson wid "$workflow_id" --argjson self "$RUN_ID" '
-            [.workflow_runs[]?
-              | select(.head_sha == $sha and .event == "push" and .conclusion == "success"
-                and .workflow_id == $wid and .id != $self
-                and (.head_branch // "" | startswith("ci/"))
-                and .head_repository.full_name == $repo)]
-            | sort_by(.run_started_at) | last // empty
-            | "\(.html_url) \(.head_branch)"') || run_suites "could not read this commit's runs"
-          [ -n "$prior" ] || run_suites "no successful ci/** run of $HEAD_SHA"
-          url=${prior%% *}
-          echo "verified=true" >> "$GITHUB_OUTPUT"
-          echo "verified: $url (${prior#* }) passed this workflow on $HEAD_SHA; suites skipped"
-          printf 'Suites skipped: %s already passed this workflow on `%s` (%s).\n' \
-            "$url" "$HEAD_SHA" "${prior#* }" >> "$GITHUB_STEP_SUMMARY"
+            && [ -n "$workflow_id" ] || none "could not read this run's workflow"
+          runs=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?status=success&per_page=100") \
+            || none "could not list successful runs"
+          dir="$RUNNER_TEMP/fm-timing-runs"
+          for group in suite weekly; do
+            ids=$(printf '%s' "$runs" | jq -r --arg g "$group" --arg repo "$REPO" '
+              .workflow_runs[]?
+              | select(.head_repository.full_name == $repo)
+              | select(if $g == "suite"
+                  then .event == "push" and ((.head_branch // "") as $b | $b == "main" or ($b | startswith("ci/full/")))
+                  else .event == "schedule" or .event == "workflow_dispatch" end)
+              | .id' | head -n 10) || continue
+            for id in $ids; do
+              # Main runs that skipped their suites carry no aggregate.
+              if gh run download "$id" -R "$REPO" -n fm-test-timing-aggregate -D "$dir/$group" >/dev/null 2>&1 \
+                && [ -s "$dir/$group/fm-test-timing-aggregate.json" ]; then
+                echo "baseline $group timing: run $id"
+                break
+              fi
+              rm -rf "${dir:?}/$group"
+            done
+          done
+          shopt -s nullglob
+          inputs=("$dir"/*/fm-test-timing-aggregate.json)
+          [ "${#inputs[@]}" -gt 0 ] || none "no successful run kept an aggregate timing artifact"
+          mkdir -p "$RUNNER_TEMP/fm-timing"
+          bin/fm-test-run.sh --aggregate-json "$RUNNER_TEMP/fm-timing/fm-timing-baseline.json" "${inputs[@]}" \
+            || none "could not merge the baseline timing"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+      - name: Upload the baseline timing
+        if: steps.baseline.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          # Deliberately outside the fm-test-timing-* pattern the aggregate reads.
+          name: fm-timing-baseline
+          path: ${{ runner.temp }}/fm-timing/fm-timing-baseline.json
+
+  # Tier 0 on every run: the tier-map coverage guard, the safety guards
+  # (bin/fm-safety-guard.sh owns their rules), the static-tier tests, and the
+  # repository invariants.
+  static:
+    name: Static checks
+    runs-on: ubuntu-latest
+    # Fast tier: seconds-long local checks.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The commit guard reads every pushed commit and the merge base.
+          fetch-depth: 0
+      - name: Every test has exactly one tier
+        run: bin/fm-test-run.sh --check-coverage
+      - name: Safety-core tests present and selected by the gate tier
+        run: bin/fm-safety-guard.sh core
+      - name: Pushed commits keep risky-area tests and the safety core
+        if: github.event_name == 'push'
+        env:
+          GUARD_BEFORE: ${{ github.event.before }}
+          GUARD_HEAD: ${{ github.sha }}
+        run: bin/fm-safety-guard.sh commits --before "$GUARD_BEFORE" --head "$GUARD_HEAD"
+      - name: Pushed risky-area commits carry a lean-review receipt
+        if: github.event_name == 'push'
+        env:
+          GUARD_BEFORE: ${{ github.event.before }}
+          GUARD_HEAD: ${{ github.sha }}
+        run: bin/fm-safety-guard.sh receipts --before "$GUARD_BEFORE" --head "$GUARD_HEAD"
+      - name: Compatibility pointers must stay intact
+        run: |
+          set -eu
+          [ ! -L CLAUDE.md ] || { echo "::error::CLAUDE.md must be a real @AGENTS.md pointer file, not a symlink"; exit 1; }
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          printf '%s\n' '@AGENTS.md' >"$tmp"
+          cmp -s CLAUDE.md "$tmp" || { echo "::error::CLAUDE.md must be the canonical @AGENTS.md pointer"; exit 1; }
+          [ "$(readlink .claude/skills)" = "../.agents/skills" ] || { echo "::error::.claude/skills must be a symlink to ../.agents/skills"; exit 1; }
+      - name: Personal fleet paths must not be tracked
+        run: |
+          set -eu
+          tracked=$(git ls-files -- data state config projects .no-mistakes)
+          if [ -n "$tracked" ]; then
+            echo "::error::Personal fleet paths are tracked in git:"
+            printf '%s\n' "$tracked"
+            exit 1
+          fi
+      - name: Run the static tier
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          bin/fm-test-run.sh --tier static \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-static.json"
+      - name: Upload static timing artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-test-timing-static
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-static.json
+          if-no-files-found: warn
 
   lint:
     name: Lint ${{ matrix.partition }}
-    needs: prior-pass
-    if: needs.prior-pass.outputs.verified != 'true'
+    needs: plan
+    if: needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full'
     runs-on: ubuntu-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -140,136 +295,12 @@ jobs:
             ${{ runner.temp }}/fm-lint/partition-${{ matrix.partition }}.roots.tsv
           if-no-files-found: warn
 
-  # Deterministic proof that portable parallel shards + portable serial + Herdr
-  # equal the complete tests/*.test.sh inventory with no missing or duplicates,
-  # and that the portable serial CI shards partition that serial lane exactly.
-  # The safety guards sit beside it: bin/fm-safety-guard.sh owns their rules.
-  test-coverage:
-    name: Test coverage guard
-    runs-on: ubuntu-latest
-    # Fast tier: the coverage guard is a seconds-long local computation.
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          # The commit guard reads every pushed commit and the merge base.
-          fetch-depth: 0
-      - name: Prove complete regression partition
-        run: bin/fm-test-run.sh --check-coverage
-      - name: Safety-core tests present and selected by CI
-        run: bin/fm-safety-guard.sh core
-      - name: Pushed commits keep risky-area tests and the safety core
-        env:
-          GUARD_BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          GUARD_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bin/fm-safety-guard.sh commits --before "$GUARD_BEFORE" --head "$GUARD_HEAD"
-      - name: Pushed risky-area commits carry a lean-review receipt
-        env:
-          GUARD_BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          GUARD_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bin/fm-safety-guard.sh receipts --before "$GUARD_BEFORE" --head "$GUARD_HEAD"
-
-  # Two duration-balanced portable parallel shards of the Phase 2 proven-isolated
-  # set only. Composition owner: bin/fm-test-run.sh (docs/fm-test-portable-shards.md).
-  tests-portable-parallel-1:
-    name: Behavior portable parallel 1
-    needs: prior-pass
-    if: needs.prior-pass.outputs.verified != 'true'
-    runs-on: ubuntu-latest
-    # Normal tier (see the timeout policy above).
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Install pinned ShellCheck
-        run: |
-          set -eu
-          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Install pinned actionlint
-        run: |
-          set -eu
-          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Install tasks-axi
-        run: |
-          set -eu
-          npm install -g tasks-axi
-          tasks-axi --version
-      # Pinned to the last known-good Pi: 0.99.1 breaks the Calm export and
-      # outcome-rendering tests (kunchenguid/firstmate issue 6220); lift the
-      # pin once the extension and tests support the newer release.
-      - name: Install the Pi package for the Pi extension tests
-        run: |
-          set -eu
-          npm install -g @earendil-works/pi-coding-agent@0.87.1
-          npm ls -g --depth 0 @earendil-works/pi-coding-agent
-      - name: Run portable parallel shard 1
-        run: |
-          set -eu
-          mkdir -p "$RUNNER_TEMP/fm-test"
-          bin/fm-test-run.sh --lane portable-parallel-1 --jobs 4 \
-            --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
-            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
-      - name: Upload shard 1 timing artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fm-test-timing-portable-parallel-1
-          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-parallel-1.json
-          if-no-files-found: warn
-
-  tests-portable-parallel-2:
-    name: Behavior portable parallel 2
-    needs: prior-pass
-    if: needs.prior-pass.outputs.verified != 'true'
-    runs-on: ubuntu-latest
-    # Normal tier (see the timeout policy above).
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Install pinned ShellCheck
-        run: |
-          set -eu
-          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Install pinned actionlint
-        run: |
-          set -eu
-          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Install tasks-axi
-        run: |
-          set -eu
-          npm install -g tasks-axi
-          tasks-axi --version
-      - name: Run portable parallel shard 2
-        run: |
-          set -eu
-          mkdir -p "$RUNNER_TEMP/fm-test"
-          bin/fm-test-run.sh --lane portable-parallel-2 --jobs 4 \
-            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
-      - name: Upload shard 2 timing artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fm-test-timing-portable-parallel-2
-          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-parallel-2.json
-          if-no-files-found: warn
-
-  # Required portable serial remainder: watcher, lock, AFK, tmux, daemon,
-  # ambiguous, and other stateful tests. Real Herdr stays in tests-herdr.
-  # Split across separate runners so no two of these stateful scripts ever share
-  # a machine: each shard is still strictly serial in itself. Shard membership
-  # and the shard count both belong to bin/fm-test-run.sh, which refuses a lane
-  # whose "ofN" disagrees with it (docs/fm-test-portable-shards.md).
-  tests-portable-serial:
-    name: Behavior portable serial ${{ matrix.shard }}
-    needs: prior-pass
-    if: needs.prior-pass.outputs.verified != 'true'
+  # The plan's tiers, packed into duration-balanced shards by bin/fm-test-run.sh
+  # --shard. Real Herdr stays in tests-herdr.
+  tests:
+    name: Behavior shard ${{ matrix.shard }}
+    needs: plan
+    if: needs.plan.outputs.layout != 'skip'
     runs-on: ubuntu-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -277,7 +308,7 @@ jobs:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -316,47 +347,105 @@ jobs:
           set -eu
           npm install -g @earendil-works/pi-coding-agent@0.87.1
           npm ls -g --depth 0 @earendil-works/pi-coding-agent
-      - name: Run portable serial shard ${{ matrix.shard }}
+      - name: Download the baseline timing
+        if: needs.plan.outputs.baseline == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: fm-timing-baseline
+          path: ${{ runner.temp }}/fm-timing
+      - name: Run shard ${{ matrix.shard }}
         env:
-          # job-total rather than a literal, so shrinking or growing the matrix
-          # without matching bin/fm-test-run.sh is refused instead of quietly
-          # leaving a shard of the required lane unrun.
-          FM_SERIAL_LANE: portable-serial-${{ matrix.shard }}of${{ strategy.job-total }}
-          FM_SERIAL_SHARD: ${{ matrix.shard }}
+          TIERS: ${{ needs.plan.outputs.tiers }}
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          SHARD_NUMBER: ${{ matrix.shard }}
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
+          timing=()
+          baseline="$RUNNER_TEMP/fm-timing/fm-timing-baseline.json"
+          [ ! -s "$baseline" ] || timing=(--timing "$baseline")
           # The Pi package is installed above and CI provides npm and tsc, so
-          # any missing typecheck prerequisite is a broken lane, not a valid skip.
-          # --jobs must equal the runner's serial_ci_jobs (see --check-coverage),
-          # which its shard packing assumes; only proof-admitted scripts overlap.
-          bin/fm-test-run.sh --lane "$FM_SERIAL_LANE" --jobs 4 \
+          # any missing typecheck prerequisite is a broken shard, not a valid skip.
+          bin/fm-test-run.sh --tier "$TIERS" --exclude-family real-herdr-gated \
+            --shard "$SHARD" --jobs 4 ${timing[@]+"${timing[@]}"} \
             --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
-            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-${FM_SERIAL_SHARD}.json"
-      - name: Upload portable serial shard ${{ matrix.shard }} timing artifact
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-tests-${SHARD_NUMBER}.json"
+      - name: Upload shard ${{ matrix.shard }} timing artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fm-test-timing-portable-serial-${{ matrix.shard }}
-          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-serial-${{ matrix.shard }}.json
+          name: fm-test-timing-tests-${{ matrix.shard }}
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-tests-${{ matrix.shard }}.json
           if-no-files-found: warn
 
-  # Required real-Herdr lane: pinned install, the real-herdr-gated family split
-  # across runners (each shard serial in itself), hard-fail on "skip: herdr not
-  # found". Starts on Linux x86_64; if a genuine
-  # platform invariant fails (focus, cleanup, default-session tripwire), keep
-  # the failure evidence and move the job to macOS rather than skip assertions.
-  tests-herdr:
-    name: Behavior tests (Herdr ${{ matrix.shard }})
-    needs: prior-pass
-    if: needs.prior-pass.outputs.verified != 'true'
+  # On a ci/** push: the tier-2 and weekly tests mapped to the changed files.
+  tests-changed:
+    name: Behavior changed area
+    needs: plan
+    if: needs.plan.outputs.layout == 'ci' && needs.plan.outputs.changed == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # The matrix size must equal bin/fm-test-run.sh's REAL_HERDR_SHARDS;
-        # the lane name below carries it, so a mismatch refuses to run.
-        shard: [1, 2]
+    # Normal tier (see the timeout policy above).
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Require tmux for e2e tests
+        run: |
+          set -eu
+          command -v tmux >/dev/null || {
+            echo "::error::tmux is required for real afk injection e2e coverage"
+            exit 1
+          }
+          tmux -V
+      - name: Install tasks-axi for backlog-handoff delegation
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
+      # Same pin and reason as the tests job above.
+      - name: Install the Pi package for the Pi extension tests
+        run: |
+          set -eu
+          npm install -g @earendil-works/pi-coding-agent@0.87.1
+          npm ls -g --depth 0 @earendil-works/pi-coding-agent
+      - name: Run the changed-area tests
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          bin/fm-test-run.sh --changed --base origin/main --tier full,weekly \
+            --exclude-family real-herdr-gated --jobs 4 \
+            --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-changed.json"
+      - name: Upload changed-area timing artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-test-timing-changed
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-changed.json
+          if-no-files-found: warn
+
+  # Required real-Herdr job: pinned install, the real-herdr-gated family run
+  # serially, hard-fail on "skip: herdr not found". The main layout runs its
+  # gate and tier-2 members; a ci/** push runs the gate members plus those
+  # mapped to the changed files. Starts on Linux x86_64; if a genuine platform
+  # invariant fails (focus, cleanup, default-session tripwire), keep the
+  # failure evidence and move the job to macOS rather than skip assertions.
+  tests-herdr:
+    name: Behavior tests (Herdr)
+    needs: plan
+    if: needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full'
+    runs-on: ubuntu-latest
     # Heavy tier (see the timeout policy above): the last-resort job backstop.
     # The family-run step below owns the hang tripwire, so a wedged suite fails
     # there with the always() cleanup and timing upload still running.
@@ -441,19 +530,27 @@ jobs:
           bin/fm-herdr-ci-cleanup.sh snapshot "$RUNNER_TEMP/fm-herdr/sessions-before.json"
       - name: Run real-Herdr family (serial, required)
         id: run-real-herdr-family
-        # Heavy tier step tripwire: above the healthy shard wall and far
+        # Heavy tier step tripwire: above the healthy family wall and far
         # below the job backstop, so a hang fails this step and cleanup runs.
         timeout-minutes: 20
         env:
-          FM_HERDR_LANE: real-herdr-gated-${{ matrix.shard }}of${{ strategy.job-total }}
+          LAYOUT: ${{ needs.plan.outputs.layout }}
+          HERDR_PATHS: ${{ needs.plan.outputs.herdr_paths }}
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
+          if [ "$LAYOUT" = full ]; then
+            selection=(--family real-herdr-gated --tier 'gate,full')
+          else
+            # Paths the plan job listed: the gate members and the changed area.
+            read -r -a selection <<<"$HERDR_PATHS"
+            selection=(--tier 'gate,full,weekly' "${selection[@]}")
+          fi
           # Serial only. Fail if any script reports herdr not found. Live
-          # harness credential tests stay outside this family (opt-in env only).
-          bin/fm-test-run.sh --lane "$FM_HERDR_LANE" \
+          # harness credential tests stay outside this job (opt-in env only).
+          bin/fm-test-run.sh "${selection[@]}" --jobs 1 \
             --fail-on-gate-skip 'herdr not found' \
-            --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr-${{ matrix.shard }}.json"
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
       - name: Cleanup job-owned Herdr lab sessions
         id: cleanup-herdr-lab-sessions
         if: always()
@@ -469,29 +566,29 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fm-test-timing-herdr-${{ matrix.shard }}
+          name: fm-test-timing-herdr
           path: |
-            ${{ runner.temp }}/fm-test/fm-test-timing-herdr-${{ matrix.shard }}.json
+            ${{ runner.temp }}/fm-test/fm-test-timing-herdr.json
             ${{ runner.temp }}/fm-herdr/sessions-before.json
             ${{ runner.temp }}/fm-herdr/default-server.log
           if-no-files-found: warn
 
-  # Aggregate per-lane timing into one summary artifact for critical-path review.
+  # Aggregate per-job timing into the artifact later runs pack their shards by.
   tests-timing-aggregate:
     name: Behavior timing aggregate
     runs-on: ubuntu-latest
-    # Fast tier: aggregation is seconds of work over lane artifacts.
+    # Fast tier: aggregation is seconds of work over job artifacts.
     timeout-minutes: 5
     needs:
-      - prior-pass
-      - tests-portable-parallel-1
-      - tests-portable-parallel-2
-      - tests-portable-serial
+      - plan
+      - static
+      - tests
+      - tests-changed
       - tests-herdr
-    if: always() && needs.prior-pass.outputs.verified != 'true'
+    if: always() && needs.plan.outputs.layout != 'skip' && needs.plan.result == 'success'
     steps:
       - uses: actions/checkout@v6
-      - name: Download lane timing artifacts
+      - name: Download job timing artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: fm-test-timing-*
@@ -502,12 +599,12 @@ jobs:
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           shopt -s nullglob
-          # A lane uploading more than one path keeps its fm-test/ folder in
-          # the artifact (the Herdr lanes do), so read one level down too.
+          # A job uploading more than one path keeps its fm-test/ folder in
+          # the artifact (the Herdr job does), so read one level down too.
           inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json
             "$RUNNER_TEMP"/fm-test-aggregate/*/fm-test-timing-*.json)
           if [ "${#inputs[@]}" -eq 0 ]; then
-            echo "::warning::no per-lane timing JSON found to aggregate"
+            echo "::warning::no per-job timing JSON found to aggregate"
             exit 0
           fi
           bin/fm-test-run.sh --aggregate-json \
@@ -523,8 +620,8 @@ jobs:
 
   macos-stock-bash:
     name: Stock macOS Bash snapshot compatibility
-    needs: prior-pass
-    if: needs.prior-pass.outputs.verified != 'true'
+    needs: plan
+    if: needs.plan.outputs.layout == 'weekly'
     runs-on: macos-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -617,28 +714,64 @@ jobs:
             exit 1
           }
 
-  invariants:
-    name: Repo invariants
+  # Weekly full lint of the test files, which the per-push lint will leave out.
+  test-lint:
+    name: Test-file lint
+    needs: plan
+    if: needs.plan.outputs.layout == 'weekly'
     runs-on: ubuntu-latest
-    # Fast tier: the invariant checks are seconds-long file comparisons.
-    timeout-minutes: 5
+    # Normal tier (see the timeout policy above).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - name: Compatibility pointers must stay intact
+      - name: Install pinned ShellCheck
         run: |
           set -eu
-          [ ! -L CLAUDE.md ] || { echo "::error::CLAUDE.md must be a real @AGENTS.md pointer file, not a symlink"; exit 1; }
-          tmp=$(mktemp)
-          trap 'rm -f "$tmp"' EXIT
-          printf '%s\n' '@AGENTS.md' >"$tmp"
-          cmp -s CLAUDE.md "$tmp" || { echo "::error::CLAUDE.md must be the canonical @AGENTS.md pointer"; exit 1; }
-          [ "$(readlink .claude/skills)" = "../.agents/skills" ] || { echo "::error::.claude/skills must be a symlink to ../.agents/skills"; exit 1; }
-      - name: Personal fleet paths must not be tracked
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Lint every test file
+        env:
+          # Same bounds and reasons as the lint job above.
+          FM_LINT_REQUIRE_BOUNDS: '1'
+          FM_LINT_JOBS: '2'
+          FM_LINT_ROOT_MEMORY_KIB: '16777216'
         run: |
           set -eu
-          tracked=$(git ls-files -- data state config projects .no-mistakes)
-          if [ -n "$tracked" ]; then
-            echo "::error::Personal fleet paths are tracked in git:"
-            printf '%s\n' "$tracked"
-            exit 1
+          bin/fm-lint.sh tests/*.sh
+
+  # A red weekly run opens, or comments on, one tracking issue so it reaches
+  # someone instead of sitting in the Actions tab.
+  weekly-alert:
+    name: Report a red weekly run
+    needs:
+      - plan
+      - static
+      - tests
+      - tests-timing-aggregate
+      - macos-stock-bash
+      - test-lint
+    if: >-
+      always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    # Fast tier: two API calls.
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the weekly-failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          title='Weekly CI run failed'
+          body="The weekly CI run failed: $RUN_URL"
+          number=$(gh issue list -R "$REPO" --state open --search "\"$title\" in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" -R "$REPO" --body "$body"
+          else
+            gh issue create -R "$REPO" --title "$title" --body "$body"
           fi

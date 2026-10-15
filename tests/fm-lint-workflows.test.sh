@@ -138,11 +138,22 @@ on: push
 jobs:
   x:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: |
           set -eu
           echo ok
 YAML
+}
+
+# Lints the workflow body on stdin under a fresh root and prints the combined
+# output; the exit code is the linter's.
+lint_policy_fixture() {
+  local name=$1 tmp
+  tmp=$(fm_test_tmproot "fm-lint-wf-$name")
+  mkdir -p "$tmp/.github/workflows"
+  cat > "$tmp/.github/workflows/ci.yml"
+  "$LINT_WF" --root "$tmp" 2>&1
 }
 
 # #2512-class breakage: a heredoc body at column 0 inside a `run: |` block.
@@ -202,6 +213,112 @@ test_valid_fixture_passes() {
   assert_contains "$out" "1 workflow files valid" \
     "valid fixture did not report one valid file"
   pass "valid fixture workflow passes"
+}
+
+test_push_workflow_jobs_need_a_timeout() {
+  local out rc
+  rc=0
+  out=$(lint_policy_fixture timeout <<'YAML'
+name: CI
+on: push
+jobs:
+  bounded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo ok
+  unbounded:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+  zero:
+    runs-on: ubuntu-latest
+    timeout-minutes: 0
+    steps:
+      - run: echo ok
+YAML
+) || rc=$?
+  [ "$rc" -eq 1 ] || fail "a push job without a timeout expected exit 1, got $rc"$'\n'"$out"
+  assert_contains "$out" "job unbounded needs timeout-minutes" \
+    "a push job without timeout-minutes was not named"
+  assert_contains "$out" "job zero needs timeout-minutes" \
+    "a push job with timeout-minutes 0 was not named"
+  assert_not_contains "$out" "job bounded" \
+    "a push job with a positive timeout was reported"
+  pass "every job of a push workflow needs a positive integer timeout"
+}
+
+test_push_runs_are_never_cancelled_or_replaced() {
+  local out rc
+  rc=0
+  out=$(lint_policy_fixture cancel <<'YAML'
+name: CI
+on:
+  push:
+    branches: [main]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: x-${{ github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - run: echo ok
+YAML
+) || rc=$?
+  [ "$rc" -eq 1 ] || fail "a cancellable push workflow expected exit 1, got $rc"$'\n'"$out"
+  assert_contains "$out" "workflow concurrency cancel-in-progress must be absent or false" \
+    "an expression cancel-in-progress was accepted"
+  assert_contains "$out" "workflow concurrency group must name github.run_id" \
+    "a shared push concurrency group was accepted"
+  assert_contains "$out" "job x concurrency cancel-in-progress must be absent or false" \
+    "a job-level cancel-in-progress was accepted"
+  assert_not_contains "$out" "job x concurrency group" \
+    "a per-run job group was reported"
+
+  rc=0
+  out=$(lint_policy_fixture percall <<'YAML'
+name: CI
+on: [push, workflow_dispatch]
+concurrency:
+  group: ci-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo ok
+YAML
+) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a per-run, never-cancelled push workflow failed"$'\n'"$out"
+  pass "a push run is never cancelled and never shares a concurrency group"
+}
+
+test_non_push_workflows_are_outside_the_policy() {
+  local out rc
+  rc=0
+  out=$(lint_policy_fixture pr <<'YAML'
+name: Review
+on:
+  pull_request:
+    branches: [main]
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+YAML
+) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a pull_request-only workflow was held to the push policy"$'\n'"$out"
+  pass "workflows that do not run on push are outside the timeout and cancel policy"
 }
 
 test_empty_workflows_dir_fails() {
@@ -518,6 +635,9 @@ test_pins_an_explicit_version
 test_current_workflows_pass
 test_col0_heredoc_fails_with_clear_error
 test_valid_fixture_passes
+test_push_workflow_jobs_need_a_timeout
+test_push_runs_are_never_cancelled_or_replaced
+test_non_push_workflows_are_outside_the_policy
 test_empty_workflows_dir_fails
 test_explicit_broken_path_fails
 test_non_mapping_root_fails

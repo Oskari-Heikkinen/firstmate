@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fm-safety-guard.sh - Firstmate's agent-free CI guards around its risky
-# areas, run by the "Test coverage guard" job in .github/workflows/ci.yml.
+# areas, run by the "Static checks" job in .github/workflows/ci.yml.
 #
 # Two committed lists drive it:
 #   tests/safety-core.list   the safety core: agent-free tests covering the
@@ -14,9 +14,8 @@
 # Usage:
 #   fm-safety-guard.sh core [--list <path>]
 #     Fails when a safety-core entry is missing from the checkout, or is not
-#     selected by any CI lane. It reads every whole lane bin/fm-test-run.sh
-#     --list-lanes names; `fm-test-run.sh --check-coverage`, run in the same CI
-#     job, proves each lane's CI shards partition that lane exactly. It also
+#     selected by the gate tier (`bin/fm-test-run.sh --tier gate --list`),
+#     which every CI push runs. It also
 #     validates tests/risky-areas.list: every area needs a script line and a
 #     test line, and kind must be script or test.
 #   fm-safety-guard.sh commits --before <sha> --head <sha> [--default-ref <ref>]
@@ -135,7 +134,7 @@ validate_areas() { # <areas text>
 }
 
 run_core() {
-  local list=$CORE_LIST tmp lane entry bad=0 areas
+  local list=$CORE_LIST tmp entry bad=0 areas
   while [ $# -gt 0 ]; do
     case "$1" in
       --list) [ $# -ge 2 ] || die "--list needs a path"; list=$2; shift 2 ;;
@@ -148,14 +147,7 @@ run_core() {
   # shellcheck disable=SC2064 # expand tmp now
   trap "rm -rf '$tmp'" EXIT
 
-  : >"$tmp/selected"
-  "$TEST_RUN" --list-lanes >"$tmp/lanes" || die "fm-test-run.sh --list-lanes failed"
-  while IFS= read -r lane; do
-    case "$lane" in
-      *-[0-9]*of[0-9]*) continue ;; # a CI shard of a whole lane listed separately
-    esac
-    "$TEST_RUN" --list --lane "$lane" >>"$tmp/selected" || die "fm-test-run.sh --list --lane $lane failed"
-  done <"$tmp/lanes"
+  "$TEST_RUN" --tier gate --list >"$tmp/selected" || die "fm-test-run.sh --tier gate --list failed"
 
   list_entries <"$list" >"$tmp/core"
   [ -s "$tmp/core" ] || { printf 'fm-safety-guard: %s names no tests\n' "$list" >&2; bad=1; }
@@ -164,7 +156,7 @@ run_core() {
       printf 'fm-safety-guard: safety-core test %s is missing\n' "$entry" >&2
       bad=1
     elif ! grep -Fxq -- "$entry" "$tmp/selected"; then
-      printf 'fm-safety-guard: safety-core test %s is not selected by any CI lane\n' "$entry" >&2
+      printf 'fm-safety-guard: safety-core test %s is not selected by the gate tier\n' "$entry" >&2
       bad=1
     fi
   done <"$tmp/core"
@@ -172,7 +164,7 @@ run_core() {
   areas=$(list_entries <"$AREAS_LIST")
   validate_areas "$areas" || bad=1
   [ "$bad" -eq 0 ] || return 1
-  printf 'fm-safety-guard: %s safety-core tests present and selected by CI; risky areas valid\n' "$(wc -l <"$tmp/core" | tr -d ' ')"
+  printf 'fm-safety-guard: %s safety-core tests present and selected by the gate tier; risky areas valid\n' "$(wc -l <"$tmp/core" | tr -d ' ')"
 }
 
 # Print the safety-core entries at <commit>, nothing when the list is absent.

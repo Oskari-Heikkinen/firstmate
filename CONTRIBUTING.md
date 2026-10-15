@@ -40,7 +40,8 @@ Add required status checks with `strict_required_status_checks_policy: false`; a
 Bind the checks to the GitHub Actions app already producing them, rather than accepting the same context from any integration.
 No new app installation or manual runner setup is needed for that setting.
 
-Require the actual job contexts: `Lint 1` through `Lint 4`, `Test coverage guard`, `Repo invariants`, `Stock macOS Bash snapshot compatibility`, `Behavior portable parallel 1`, `Behavior portable parallel 2`, `Behavior portable serial 1` through `Behavior portable serial 11`, `Behavior tests (Herdr 1)`, `Behavior tests (Herdr 2)`, `Behavior timing aggregate`, and `PR must be raised via no-mistakes`.
+Require the job contexts every push produces: `Static checks`, `Lint 1` through `Lint 4`, `Behavior shard 1` through `Behavior shard 3`, `Behavior tests (Herdr)`, `Behavior timing aggregate`, and `PR must be raised via no-mistakes`.
+Shards 4 to 7 and `Behavior changed area` run only in some layouts, and the macOS and test-file lint jobs run only weekly, so none of them can be a required context.
 The last name is the compliance job context, not its workflow title; its existing automation exceptions remain unchanged.
 The timing aggregate is not a substitute for individual jobs because it can succeed while collecting evidence from a failed run.
 
@@ -107,9 +108,10 @@ bin/fm-test-run.sh --changed   # normal changed-file-informed path with automati
 bin/fm-test-run.sh --changed --jobs 1   # explicit serial override
 bin/fm-test-run.sh --changed --max-wall-ms 300000   # same automatic path with a post-run five-minute result check
 bin/fm-test-run.sh --proven-isolated --jobs 4   # explicit local parallel of the individually proven set
-bin/fm-test-run.sh --lane portable-serial   # portable serial remainder (watcher/AFK/tmux/stateful)
-bin/fm-test-run.sh --list-lanes   # discover exact lane names, including the current CI serial shards
-bin/fm-test-run.sh --check-coverage   # prove portable shards + serial + serial shards + Herdr equal the full inventory
+bin/fm-test-run.sh --tier gate   # the gate tier every push runs
+bin/fm-test-run.sh --list-tiers   # each tier's test count
+bin/fm-test-run.sh --list --tier gate --shard 1/3   # one CI shard's selection
+bin/fm-test-run.sh --check-coverage   # prove tests/tiers.list gives every test exactly one tier
 bin/fm-test-run.sh --all   # deliberate complete regression (optional local full walk; not no-mistakes Test)
 bin/fm-test-isolation-proof.sh --list   # proven portable parallel candidate set
 bin/fm-test-isolation-proof.sh --jobs 4 --json /tmp/fm-isolation-proof.json   # re-run the portable candidate proof
@@ -121,19 +123,19 @@ EOF
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
 ```
 
-`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
-Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
+`bin/fm-test-run.sh` is the single owner of behavior-suite selection, tier selection and shard packing, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
+Its header and `--help` own the flags, family labels, tiers, and changed-file map; this section only documents the entry points.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
-Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
+The tiers, CI layouts, and shard packing are described in `docs/fm-test-portable-shards.md`.
 Family selection is the ordinary local path; `--all` is deliberate full regression only.
-CI owns broad regression across required portable parallel shards, the portable serial lane's separate-runner shards, the Herdr lane, lint, invariants, the coverage guard, and stock macOS Bash compatibility in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-Pushing a new head to a pull request cancels that pull request's still-running CI so only the current head is validated; pushes to `main` are never cancelled, and the workflow owns that contract and its rationale.
-The coverage guard job also runs `bin/fm-safety-guard.sh`, whose header owns its agent-free rules judged on every pushed commit, for `ci/**` pushes, pushes to `main`, and pull requests alike.
+CI owns broad regression by tier in [`.github/workflows/ci.yml`](.github/workflows/ci.yml): the gate on every push, the full suite on `main` and `ci/full/**`, and the weekly tier with stock macOS Bash compatibility once a week.
+CI runs are never cancelled, and `bin/fm-lint-workflows.sh` enforces that.
+The static checks job also runs `bin/fm-safety-guard.sh`, whose header owns its agent-free rules judged on every pushed commit, for `ci/**` pushes and pushes to `main` alike.
 A commit that changes a risky-area script matched by `tests/risky-areas.list` must also add or change a test in that area; when the change truly needs none, such as a comment-only edit, give the reason in a `no-test-needed: <reason>` line of that commit's message.
-Every test in `tests/safety-core.list` must exist and be selected by a CI lane, and a commit that drops an entry from that list must give the reason in a `safety-core-removal: <reason>` line of its message.
+Every test in `tests/safety-core.list` must exist and be selected by the gate tier, and a commit that drops an entry from that list must give the reason in a `safety-core-removal: <reason>` line of its message.
 A commit that changes a risky-area script must also pass the lean pre-push review before it is pushed: run `bin/fm-lean-review.sh` right after making it, and a pass adds the `Lean-Review:` receipt trailer that the guard's receipt rule requires, with no override line.
 That script's header owns the reviewer's four questions (intent, weakened guards, real-runtime assumptions, and untested risky-area behaviour), its strict verdict, and what to do with each finding; commits that change no risky-area script need no review.
-Use `bin/fm-test-run.sh --list-lanes` for exact lane names and `--help` for `--jobs` rules and required gate-skip flags when reproducing a lane locally.
+Use `bin/fm-test-run.sh --list-tiers` for the tiers and `--help` for `--jobs` rules and required gate-skip flags when reproducing a CI shard locally.
 Leave the `sleep 0.1` cadence in the suites' bounded condition waits alone.
 Those sleeps look like recoverable overhead - `fm-watch-triage.test.sh` alone issues about 1,900 of them, each paying a flat ~100ms scheduler wake-up penalty on macOS - but they are not overhead added to the clock; they are how a test waits for a subject that only moves on `fm-watch.sh`'s own one-second `FM_POLL` cadence.
 Sampling less often does not remove that wait, it only delays detection: raising the interval to 0.5s and charging each sample proportionally measured `fm-watch-triage.test.sh` at 435s and 440s against 390s and 393s for the unchanged script, back to back on 2026-09-03, because each of its ~40 poll-cycle waits and ~73 process-exit waits paid up to half a second more.

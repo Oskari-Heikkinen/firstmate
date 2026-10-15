@@ -1710,7 +1710,7 @@ Observed guarantees: every measured release classifies as the table records; eit
 The whole real-Herdr lane was run on 2026-08-05 against both the CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
 
 ```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --family real-herdr-gated
 ```
 
 Both runs reported `family=real-herdr-gated count=11 failed=0`.

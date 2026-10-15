@@ -235,7 +235,7 @@ test_list_exclusions_documents_reasons() {
 }
 
 test_family_map_labels_this_contract() {
-  local fam safe safe_max scheduled_first
+  local fam safe safe_max
   fam=$("$RUNNER" --list --family pure-contract-unit)
   printf '%s\n' "$fam" | grep -Fq 'tests/fm-test-isolation-proof.test.sh' \
     || fail "fm-test-isolation-proof.test.sh must map to pure-contract-unit"
@@ -248,24 +248,16 @@ test_family_map_labels_this_contract() {
   [ "$safe_max" -eq 4 ] || fail "runner exposed the wrong watcher family worker cap: $safe_max"
   safe_max=$("$RUNNER" --concurrent-safe-family-jobs-max pure-contract-unit)
   [ "$safe_max" -eq 4 ] || fail "runner exposed the wrong contract-unit family worker cap: $safe_max"
-  scheduled_first=$("$RUNNER" --list-scheduled --family watcher-wake-lock | head -n 1)
-  [ "$scheduled_first" = tests/fm-watch-triage.test.sh ] \
-    || fail "runner scheduled the watcher family out of longest-hint order: $scheduled_first"
   pass "isolation-proof contract test is family-mapped"
 }
 
-test_parallel_shards_consume_the_proven_set() {
-  local proven shards
+test_runner_selects_the_proven_set() {
+  local proven selected
   proven=$("$PROOF" --list | LC_ALL=C sort -u)
-  shards=$(
-    {
-      "$RUNNER" --list --lane portable-parallel-1
-      "$RUNNER" --list --lane portable-parallel-2
-    } | LC_ALL=C sort -u
-  )
-  [ "$proven" = "$shards" ] \
-    || fail "portable parallel shards must equal isolation-proof --list exactly"
-  pass "parallel shards consume the proven-isolated set only"
+  selected=$("$RUNNER" --list --proven-isolated | LC_ALL=C sort -u)
+  [ "$proven" = "$selected" ] \
+    || fail "runner --proven-isolated must equal isolation-proof --list exactly"
+  pass "runner proven-isolated selection consumes the proven set only"
 }
 
 # A fixture repository names its branch, so a suite that resolves `main` gets
@@ -293,5 +285,5 @@ test_candidates_exclude_serial_classes
 test_extra_hermetic_candidates_present
 test_list_exclusions_documents_reasons
 test_family_map_labels_this_contract
-test_parallel_shards_consume_the_proven_set
+test_runner_selects_the_proven_set
 test_fixture_repo_branch_is_pinned
