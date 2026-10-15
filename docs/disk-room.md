@@ -166,6 +166,33 @@ Because it shuts WSL down, any `.wslconfig` change waiting for a restart takes e
 `fm-wsl-reclaim.ps1 -Uninstall`, elevated, removes the task and the ProgramData script, file list, and shadow storage record, and keeps the logs.
 Compaction changes no data inside the disk, so there is nothing else to roll back.
 
+## Consumer interface
+
+`fm-disk-room.sh --interface` prints the consumer interface this copy serves, now `fm-disk-room-interface/v1`.
+A consumer pins that interface, not the script's bytes, so an update that keeps the interface needs no new review on the consumer's side.
+The consumer's declaration and acceptance stay as [`helper-consumers.md`](helper-consumers.md) describes; what the consumer accepts is a copy that serves its pinned version.
+
+Interface v1 is every command, every exit code, and every `status --json` field with its unit, as listed under "Interface v1" in `bin/fm-disk-room.sh`'s header:
+
+- `status --json` prints one JSON object on one line, every size in bytes, with integer, integer-or-null, boolean, and string fields named there.
+- `check` exits 0, 1, or 2 with a line starting `ok: `, `low: `, or `cannot measure disk room: `.
+- `run` returns the admitted command's own status, or 75 with a line starting `fm-disk-room: refused NAME: `.
+- `reserve-bulk` prints only the admitted root, or exits 75 with a `wait:` line naming a reason.
+- `watch-line` always exits 0 and prints nothing or one line.
+- Misuse exits 2 on every command.
+
+The versioning rule:
+
+- A change to any command, exit code, or listed field's name, unit, or meaning takes a new version, such as v2, and the old version is no longer served.
+- An addition a v1 consumer can ignore, such as a new field or command, keeps v1.
+- Wording that the header does not list, such as `status` and `growth` text or the rest of a line after its listed start, is for people and may change within a version.
+
+Before trusting a new copy, a consumer runs `fm-disk-room.sh --self-test v1`.
+It exits 0 with one line when the copy serves v1 and a hermetic probe of it passes, 1 with one line naming what failed or the version served, and 2 on misuse.
+The probe uses its own temp state, measures Linux alone, starts no Windows reading, and leaves no reservation behind.
+
+`tests/fm-disk-room.test.sh` pins v1 through the executable, so a change that breaks v1 without a version bump fails CI, and a bump fails until the new version's case is added.
+
 ## Limits
 
 - Sparse mode (`wsl --manage <distro> --set-sparse true`) is not used: WSL 2.5.6 and later require `--allow-unsafe` for it because of potential data corruption, a sparse file cannot be compacted by diskpart, and it frees space at the same 1 MiB granularity.

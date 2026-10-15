@@ -25,6 +25,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - A refusal is a wait, not a failure: hold the job and report the refusal line to firstmate.
 - To move a finished, rarely read tree to D:, pack it with `bin/fm-pack.sh pack TASK UNIT SRC`; [`docs/storage.md`](../../../docs/storage.md#packing-cold-data) owns the command and the retention rule.
 - Retention rule R2: the home that owns a packed source, on D: or Linux, releases it with `bin/fm-pack.sh release` as soon as the pack verifies (zero window since 2026-10-18), and the command refuses unless its verify, acceptance, reference, mount-use and hard-link guards hold; [`docs/storage.md`](../../../docs/storage.md#retention-rule-r2) owns the rule.
+- A home that pins `fm-disk-room.sh` pins its consumer interface (`fm-disk-room.sh --interface`), not its bytes, and runs `fm-disk-room.sh --self-test v1` before trusting a new copy; `docs/disk-room.md` "Consumer interface" owns the rule.
 
 ## What a low reading means and who acts
 

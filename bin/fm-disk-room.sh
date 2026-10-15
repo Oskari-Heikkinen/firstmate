@@ -61,6 +61,52 @@
 #       Write FM_HOME's state/disk-room.check.sh shim (running watch-line with
 #       this script's environment settings) and bind it with
 #       fm-check-register.sh, or retire it with fm-check-unregister.sh.
+#   fm-disk-room.sh --interface
+#       Print the consumer interface this script serves, one line:
+#       fm-disk-room-interface/v1.
+#   fm-disk-room.sh --self-test VERSION
+#       Before trusting a new copy, a consumer runs this with the version it
+#       pins (v1). Exit 0 with one line when this script serves VERSION and a
+#       hermetic probe of it passes (temp state, Linux-only, no Windows
+#       readings, no reservation outside the temp state); 1 with one line
+#       naming what failed or the version served; 2 on misuse.
+#
+# Interface v1 - what a consumer may rely on; docs/disk-room.md "Consumer
+# interface" owns the versioning rule. A change to any command, exit code, or
+# listed field's name, unit or meaning takes a new version; additions that v1
+# consumers ignore keep v1. Wording not listed here (status and growth text,
+# the rest of a line after its listed start) is for people and may change.
+#   status --json  exit 0 with one JSON object on one line; 2 when a reading
+#       fails. Fields, every size in bytes:
+#         integers: margin, linux_free, linux_used, reserved, shadow_reserved,
+#           room (may be negative)
+#         integer or null (unknown): host_free, vhdx_size, fragmented_free,
+#           fs_overhead, slack, reclaimable, ssd_free, ssd_total, shadow_max,
+#           shadow_used, shadow_allocated, shadow_events (an event count)
+#         boolean: low (room is under margin)
+#         strings: host (Windows drive mount, "" when Linux-only), vhdx (disk
+#           file path or ""), results_active (ssd, c or ""), results_state,
+#           shadow_source (live, record, stale-record, config, unbounded or
+#           none), shadow_reading (live, record or none)
+#   status   exit 0 with text for people; 2 when a reading fails.
+#   check    exit 0 with one stdout line starting "ok: ", 1 with "low: ", 2
+#       with "cannot measure disk room: " when a reading fails; 2 with a
+#       stderr line on misuse.
+#   run      the command's own exit status once admitted (it is exec'd); 75
+#       with one stderr line starting "fm-disk-room: refused NAME: " when low
+#       or unreadable, the command not started; 2 on misuse.
+#   reserve  exit 0 with one line starting "reserved NAME: "; 2 on misuse.
+#   release  exit 0, also for a name with no reservation; 2 on misuse.
+#   reserve-bulk  exit 0 with stdout exactly the admitted root; 75 with one
+#       stderr line starting "fm-disk-room: wait: " or "fm-storage: wait: "
+#       followed by a reason token; 2 on misuse.
+#   release-bulk  exit 0; 2 on misuse.
+#   watch-line  exit 0; stdout empty, or one line made of a part starting
+#       "disk room low: " or "disk room: cannot measure" and a part starting
+#       "storage alert", joined by " | " when both speak.
+#   growth   exit 0 with text for people; 2 when a reading fails or on misuse.
+#   arm      exit 0 with one line starting "armed: "; 2 on failure.
+#   disarm   fm-check-unregister.sh's exit status.
 #
 # SIZE is bytes or a number with K, M, G or T (binary: G = GiB, matching what
 # Windows Explorer shows as GB).
@@ -141,6 +187,11 @@ SHADOW_STALE_SECS=604800
 SHADOW_EVENTS_CACHE_SECS=3600
 SHADOW_LIVE_CACHE_SECS=300
 BAT_CACHE_SECS=300
+INTERFACE=v1
+INTERFACE_V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int room:int
+  host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
+  ssd_free:opt ssd_total:opt shadow_max:opt shadow_used:opt shadow_allocated:opt shadow_events:opt
+  low:bool host:str vhdx:str results_active:str results_state:str shadow_source:str shadow_reading:str'
 
 die() { printf 'fm-disk-room: %s\n' "$*" >&2; exit 2; }
 
@@ -1285,7 +1336,83 @@ cmd_disarm() {
   FM_HOME="$home" "$SCRIPT_DIR/fm-check-unregister.sh" disk-room
 }
 
+# Interface --------------------------------------------------------------------
+
+# json_value JSON KEY -> the raw value of a top-level KEY in a one-line object.
+json_value() { printf '%s\n' "$1" | sed -n "s/.*[{,]\"$2\":\(\"[^\"]*\"\|[^,}]*\).*/\1/p"; }
+
+# self_probe MARGIN ARG... -> this script run hermetically: every
+# FM_DISK_ROOM_* setting replaced, Linux-only, state and readings in SELF_TMP.
+self_probe() {
+  local margin=$1 v
+  shift
+  (
+    for v in $(compgen -e); do case "$v" in FM_DISK_ROOM_*) unset "$v" ;; esac; done
+    export FM_DISK_ROOM_HOST='' FM_DISK_ROOM_ROOT="$SELF_TMP" FM_DISK_ROOM_STATE="$SELF_TMP/state" \
+      FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_MB_GROUPS="$SELF_TMP/none" \
+      FM_DISK_ROOM_RESULTS_ROOT="$SELF_TMP/none" FM_DISK_ROOM_SAMPLES="$SELF_TMP/none" \
+      FM_DISK_ROOM_COMPACT_RESULT="$SELF_TMP/none" FM_DISK_ROOM_MARGIN="$margin"
+    exec "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}" "$@"
+  )
+}
+
+# self_test_v1 -> nothing on success, else what failed.
+self_test_v1() {
+  local out rc spec key kind v
+  [ "$(self_probe 0 --interface)" = "fm-disk-room-interface/v1" ] || { echo "--interface does not print fm-disk-room-interface/v1"; return; }
+  out=$(self_probe 0 status --json 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] || { echo "status --json exited $rc"; return; }
+  for spec in $INTERFACE_V1_FIELDS; do
+    key=${spec%%:*}; kind=${spec#*:}; v=$(json_value "$out" "$key")
+    case "$kind:$v" in
+      int:|int:*[!0-9-]*|opt:) echo "status --json field $key is not an integer: '$v'"; return ;;
+      opt:null) ;;
+      opt:*[!0-9-]*) echo "status --json field $key is not an integer or null: '$v'"; return ;;
+      bool:true|bool:false) ;;
+      bool:*) echo "status --json field $key is not a boolean: '$v'"; return ;;
+      str:\"*\") ;;
+      str:*) echo "status --json field $key is not a string: '$v'"; return ;;
+    esac
+  done
+  out=$(self_probe 0 check --expect-write 1K 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ "${out#ok: }" != "$out" ] || { echo "check with room did not exit 0 with 'ok: ' (exit $rc)"; return; }
+  out=$(self_probe 100000T check --expect-write 0 2>/dev/null); rc=$?
+  [ "$rc" -eq 1 ] && [ "${out#low: }" != "$out" ] || { echo "check under the margin did not exit 1 with 'low: ' (exit $rc)"; return; }
+  self_probe 0 check >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 2 ] || { echo "check without --expect-write did not exit 2 (exit $rc)"; return; }
+  self_probe 0 run --name fm-self-test --expect-write 1K -- sh -c 'exit 7' >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 7 ] || { echo "an admitted run did not return the command's status (exit $rc)"; return; }
+  out=$(self_probe 100000T run --name fm-self-test --expect-write 0 -- sh -c 'echo ran' 2>&1); rc=$?
+  [ "$rc" -eq 75 ] && [ "${out#fm-disk-room: refused fm-self-test: }" != "$out" ] || { echo "a refused run did not exit 75 with its refusal line (exit $rc)"; return; }
+  out=$(self_probe 0 reserve fm-self-test 1G --ttl 60 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ "${out#reserved fm-self-test: }" != "$out" ] || { echo "reserve did not exit 0 with 'reserved NAME: ' (exit $rc)"; return; }
+  [ "$(json_value "$(self_probe 0 status --json 2>/dev/null)" reserved)" = "$GIB" ] || { echo "status --json reserved does not count a 1G reservation as $GIB bytes"; return; }
+  self_probe 0 release fm-self-test >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] && [ "$(json_value "$(self_probe 0 status --json 2>/dev/null)" reserved)" = 0 ] || { echo "release did not exit 0 and drop the reservation (exit $rc)"; return; }
+  out=$(self_probe 0 watch-line 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ -z "$out" ] || { echo "watch-line above the margin did not exit 0 silently (exit $rc)"; return; }
+}
+
+cmd_self_test() {
+  local want=${1:-} failure
+  [ "$#" -eq 1 ] && [ -n "$want" ] || die "--self-test needs one interface version, such as v1"
+  if [ "$want" != "$INTERFACE" ]; then
+    printf 'fm-disk-room: does not serve interface %s (serves fm-disk-room-interface/%s)\n' "$want" "$INTERFACE"
+    return 1
+  fi
+  SELF_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-disk-room-self-test.XXXXXX") || die "cannot create a temp directory"
+  failure=$(self_test_v1)
+  rm -rf -- "$SELF_TMP"
+  if [ -n "$failure" ]; then
+    printf 'fm-disk-room: self-test %s failed: %s\n' "$want" "$failure"
+    return 1
+  fi
+  printf 'fm-disk-room: self-test %s passed (fm-disk-room-interface/%s)\n' "$want" "$INTERFACE"
+}
+
 case "${1:-}" in
+  --interface) [ "$#" -eq 1 ] || die "--interface takes no arguments"; printf 'fm-disk-room-interface/%s\n' "$INTERFACE" ;;
+  --self-test) shift; cmd_self_test "$@" ;;
   status) shift; cmd_status "$@" ;;
   check) shift; cmd_check "$@" ;;
   run) shift; cmd_run "$@" ;;

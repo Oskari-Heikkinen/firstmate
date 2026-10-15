@@ -1001,6 +1001,146 @@ test_d_runway_and_substitution() {
   pass "D: runway and Linux substitution alerts, with disk file and D: history"
 }
 
+# Consumers pin interface v1, not the script's bytes, so this case pins v1's
+# commands, fields, units and exit codes through the executable. A version
+# other than v1 fails here until its own contract case is added, so the
+# interface cannot drift without a version bump.
+V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int room:int
+  host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
+  ssd_free:opt ssd_total:opt shadow_max:opt shadow_used:opt shadow_allocated:opt shadow_events:opt
+  low:bool host:str vhdx:str results_active:str results_state:str shadow_source:str shadow_reading:str'
+
+# v1_value JSON KEY: a field's raw value, quotes kept on strings (which may hold braces).
+v1_value() {
+  printf '%s\n' "$1" | sed -n -e "s/.*[{,]\"$2\":\(\"[^\"]*\"\).*/\1/p;t" -e "s/.*[{,]\"$2\":\([^,}]*\).*/\1/p"
+}
+
+test_interface_v1_contract() {
+  reset_state
+  set_sizes 60 600 400
+  truncate -s $(( 470 * GIB )) "$VHDX"
+  write_mb_groups 30
+  write_shadow_live 10 4 3
+  local out rc spec key v
+  out=$(run_room --interface); rc=$?
+  expect_code 0 "$rc" "--interface exits 0"
+  assert_equals "fm-disk-room-interface/v1" "$out" "this contract case covers only interface v1; add the new version's case before bumping"
+  out=$(run_room status --json); rc=$?
+  expect_code 0 "$rc" "status --json exits 0"
+  assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "status --json is one line"
+  for spec in $V1_FIELDS; do
+    key=${spec%%:*}
+    v=$(v1_value "$out" "$key")
+    case "${spec#*:}" in
+      int) [[ "$v" =~ ^-?[0-9]+$ ]] ;;
+      opt) [[ "$v" =~ ^(null|[0-9]+)$ ]] ;;
+      bool) [[ "$v" =~ ^(true|false)$ ]] ;;
+      str) [[ "$v" =~ ^\".*\"$ ]] ;;
+    esac || fail "status --json field $key is not ${spec#*:}: '$v'"
+  done
+  assert_equals $(( 20 * GIB )) "$(json_field "$out" margin)" "margin is bytes"
+  assert_equals $(( 60 * GIB )) "$(json_field "$out" host_free)" "host_free is the drive's free bytes"
+  assert_equals $(( 600 * GIB )) "$(json_field "$out" linux_free)" "linux_free is bytes"
+  assert_equals $(( 400 * GIB )) "$(json_field "$out" linux_used)" "linux_used is bytes"
+  assert_equals $(( 6 * GIB )) "$(json_field "$out" shadow_reserved)" "shadow_reserved is cap minus allocated, in bytes"
+  assert_equals $(( 10 * GIB )) "$(json_field "$out" shadow_max)" "shadow_max is bytes"
+  assert_equals $(( 4 * GIB )) "$(json_field "$out" shadow_allocated)" "shadow_allocated is bytes"
+  assert_equals $(( 3 * GIB )) "$(json_field "$out" shadow_used)" "shadow_used is bytes"
+  assert_equals '"live"' "$(json_field "$out" shadow_reading)" "shadow_reading names the live source"
+  assert_equals '"live"' "$(json_field "$out" shadow_source)" "shadow_source names the live source"
+  assert_equals $(( 54 * GIB )) "$(json_field "$out" room)" "room is host free minus shadow headroom, in bytes"
+  assert_equals false "$(json_field "$out" low)" "low is false at or above the margin"
+  assert_equals "\"$HOSTDIR\"" "$(v1_value "$out" host)" "host is the drive mount"
+  assert_equals "\"$VHDX\"" "$(v1_value "$out" vhdx)" "vhdx is the disk file path"
+  assert_equals $(( 470 * GIB )) "$(json_field "$out" vhdx_size)" "vhdx_size is bytes"
+  assert_equals $(( 70 * GIB )) "$(json_field "$out" slack)" "slack is bytes"
+  out=$(run_room reserve contract-job 2G); rc=$?
+  expect_code 0 "$rc" "reserve exits 0"
+  assert_contains "$out" "reserved contract-job: " "reserve names the reservation"
+  out=$(run_room status --json)
+  assert_equals $(( 2 * GIB )) "$(json_field "$out" reserved)" "reserved is bytes"
+  assert_equals $(( 52 * GIB )) "$(json_field "$out" room)" "room subtracts reservations"
+  run_room release contract-job; rc=$?
+  expect_code 0 "$rc" "release exits 0"
+  run_room release never-reserved; rc=$?
+  expect_code 0 "$rc" "release of an unknown name exits 0"
+  run_room release 'bad/name' 2>/dev/null; rc=$?
+  expect_code 2 "$rc" "release of an invalid name is misuse"
+  run_room reserve contract-job lots >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "reserve with a bad size is misuse"
+
+  out=$(run_room check --expect-write 34G); rc=$?
+  expect_code 0 "$rc" "check exits 0 when the margin holds"
+  assert_equals "ok: " "${out:0:4}" "check's admitted line starts ok:"
+  out=$(run_room check --expect-write 35G); rc=$?
+  expect_code 1 "$rc" "check exits 1 under the margin"
+  assert_equals "low: " "${out:0:5}" "check's refused line starts low:"
+  out=$(TEST_HOST="$TMP_ROOT/missing" run_room check --expect-write 1G 2>/dev/null); rc=$?
+  expect_code 2 "$rc" "check exits 2 when a reading fails"
+  assert_contains "$out" "cannot measure disk room: " "an unreadable check says so on stdout"
+  run_room check --expect-write 1G --bogus >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "check misuse exits 2"
+  TEST_HOST="$TMP_ROOT/missing" run_room status --json >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "status --json exits 2 when a reading fails"
+  run_room status >/dev/null; rc=$?
+  expect_code 0 "$rc" "plain status exits 0"
+
+  run_room run --name contract-run --expect-write 1G -- sh -c 'exit 7' >/dev/null 2>&1; rc=$?
+  expect_code 7 "$rc" "an admitted run returns the command's own status"
+  out=$(run_room run --name contract-run --expect-write 35G -- sh -c 'echo ran' 2>&1 >/dev/null); rc=$?
+  expect_code 75 "$rc" "a run under the margin exits 75"
+  assert_equals "fm-disk-room: refused contract-run: " "${out:0:36}" "a refused run says so on stderr"
+  assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "a refusal is one stderr line"
+  TEST_HOST="$TMP_ROOT/missing" run_room run --name contract-run --expect-write 1G -- true >/dev/null 2>&1; rc=$?
+  expect_code 75 "$rc" "a run with an unreadable reading exits 75"
+  run_room run --name contract-run -- true >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "run misuse exits 2"
+
+  out=$(FM_DISK_ROOM_RESULTS_ROOT="$TMP_ROOT/no-results-root" run_room reserve-bulk contract-bulk --task t \
+    --download 1G --expanded 1G --packaging 1G 2>&1 >/dev/null); rc=$?
+  expect_code 75 "$rc" "reserve-bulk without verified D: storage exits 75"
+  case "$out" in "fm-disk-room: wait: "?*|"fm-storage: wait: "?*) ;; *) fail "reserve-bulk's wait line names a reason: '$out'" ;; esac
+  run_room reserve-bulk contract-bulk --task t >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "reserve-bulk misuse exits 2"
+  run_room release-bulk contract-bulk; rc=$?
+  expect_code 0 "$rc" "release-bulk exits 0"
+  run_room release-bulk >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "release-bulk misuse exits 2"
+
+  out=$(run_room watch-line); rc=$?
+  expect_code 0 "$rc" "watch-line exits 0 above the margin"
+  assert_equals "" "$out" "watch-line is silent above the margin"
+  out=$(FM_DISK_ROOM_MARGIN=100G run_room watch-line); rc=$?
+  expect_code 0 "$rc" "watch-line exits 0 under the margin"
+  assert_equals "disk room low: " "${out:0:15}" "watch-line's low line starts disk room low:"
+  out=$(TEST_HOST="$TMP_ROOT/missing" run_room watch-line); rc=$?
+  expect_code 0 "$rc" "watch-line exits 0 when a reading fails"
+  assert_equals "disk room: cannot measure" "${out:0:25}" "watch-line's error line starts disk room: cannot measure"
+  run_room growth >/dev/null; rc=$?
+  expect_code 0 "$rc" "growth exits 0"
+  run_room growth extra >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "growth misuse exits 2"
+  run_room --interface extra >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "--interface misuse exits 2"
+  pass "interface v1: commands, fields, units and exit codes hold through the executable"
+}
+
+test_self_test() {
+  local out rc
+  out=$(TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test v1); rc=$?
+  expect_code 0 "$rc" "--self-test v1 passes on the interface this script serves"
+  assert_contains "$out" "self-test v1 passed" "a passing self-test says so"
+  assert_equals "" "$(find "$TMP_ROOT" -maxdepth 1 -name 'fm-disk-room-self-test.*')" "the self-test removes its temp state"
+  out=$(TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test v2); rc=$?
+  expect_code 1 "$rc" "--self-test of an unserved version exits 1"
+  assert_contains "$out" "serves fm-disk-room-interface/v1" "an unserved version names the one served"
+  TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "--self-test without a version is misuse"
+  pass "--self-test reports whether this script serves the pinned interface"
+}
+
+test_interface_v1_contract
+test_self_test
 test_bulk_reservations
 test_status_real_room_and_reclaim
 test_shadow_record_reserves_headroom
