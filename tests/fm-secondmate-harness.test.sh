@@ -522,7 +522,7 @@ make_seeded_home() {
 spawn_secondmate() {
   local world=$1 id=$2 home=$3 harness=${4:-} fakebin
   mkdir -p "$world/home/state" "$world/home/data"
-  fakebin=$(make_noop_tmux "$world/tmux-$id")
+  fakebin=$SHARED_NOOP_TMUX
   # An empty harness must contribute zero args, not an empty positional; build the
   # arg list explicitly so the optional harness is omitted cleanly.
   local spawn_args=("$id" "$home")
@@ -535,6 +535,10 @@ spawn_secondmate() {
     FM_SPAWN_NO_GUARD=1 \
     "$ROOT/bin/fm-spawn.sh" "${spawn_args[@]}" >/dev/null 2>&1 || true
 }
+
+# The no-op tmux is stateless and no case writes into spawn_secondmate's fakebin,
+# so every spawn_secondmate shares one copy.
+SHARED_NOOP_TMUX=$(make_noop_tmux "$TMP_ROOT/.shared-noop-tmux")
 
 meta_harness() { grep '^harness=' "$1" 2>/dev/null | tail -1 | cut -d= -f2-; }
 
@@ -1105,12 +1109,15 @@ EOF
 # A PRIMARY firstmate repo on main with one commit + a home dir, mirroring the
 # real gitignore (config/crew-harness ignored, so a propagated value never dirties
 # the secondmate worktree on a later sweep). Echoes the world dir.
-new_world() {
-  local name=$1 dispatch_ignore=${2:-yes} w
-  w="$TMP_ROOT/$name"
-  mkdir -p "$w/home/state" "$w/home/data" "$w/home/config"
-  touch "$w/home/state/.last-watcher-beat"
-  git init -q -b main "$w/main"
+# The world's repo is identical for every case but its name, so build_world_template
+# commits it once per gitignore variant and new_world copies that template. The
+# copy refreshes the index's stat data, because inode and ctime cannot survive a
+# copy and plumbing that skips the refresh would otherwise read every tracked
+# file as modified. The beat is touched per world so its age starts at the copy.
+build_world_template() {
+  local t=$1 dispatch_ignore=$2
+  mkdir -p "$t/home/state" "$t/home/data" "$t/home/config"
+  git init -q -b main "$t/main"
   {
     printf 'projects/\nstate/\ndata/\n.no-mistakes/\n'
     [ "$dispatch_ignore" = no ] || printf 'config/crew-dispatch.json\n'
@@ -1118,13 +1125,26 @@ new_world() {
     printf 'config/dispatch-never-send\nconfig/launch-env-allowlist\n'
     printf 'config/backend\nconfig/herdr-presentation-spaces\nconfig/startup-memory-budget\n'
     printf 'config/claude-permission-mode\n'
-  } > "$w/main/.gitignore"
-  printf 'v1\n' > "$w/main/AGENTS.md"
-  printf 'r1\n' > "$w/main/README.md"
-  mkdir -p "$w/main/bin"
-  printf 'echo a\n' > "$w/main/bin/tool.sh"
-  git -C "$w/main" add -A
-  git -C "$w/main" commit -qm c1
+  } > "$t/main/.gitignore"
+  printf 'v1\n' > "$t/main/AGENTS.md"
+  printf 'r1\n' > "$t/main/README.md"
+  mkdir -p "$t/main/bin"
+  printf 'echo a\n' > "$t/main/bin/tool.sh"
+  git -C "$t/main" add -A
+  git -C "$t/main" commit -qm c1
+}
+WORLD_TEMPLATE_ROOT="$TMP_ROOT/.world-templates"
+build_world_template "$WORLD_TEMPLATE_ROOT/yes" yes
+build_world_template "$WORLD_TEMPLATE_ROOT/no" no
+
+new_world() {
+  local name=$1 dispatch_ignore=${2:-yes} w variant=yes
+  [ "$dispatch_ignore" = no ] && variant=no
+  w="$TMP_ROOT/$name"
+  mkdir -p "$w"
+  cp -pR "$WORLD_TEMPLATE_ROOT/$variant/." "$w/"
+  git -C "$w/main" update-index -q --refresh >/dev/null 2>&1 || true
+  touch "$w/home/state/.last-watcher-beat"
   printf '%s\n' "$w"
 }
 
@@ -1153,7 +1173,7 @@ add_sm_worktree() {
   } > "$w/home/state/$id.meta"
 }
 
-make_fake_toolchain() {
+build_fake_toolchain() {
   local dir=$1 fakebin
   fakebin="$dir/fakebin"
   mkdir -p "$fakebin"
@@ -1246,9 +1266,22 @@ SH
   printf '%s\n' "$fakebin"
 }
 
+# Every fake above is stateless (each reads its behaviour from the caller's
+# environment), so the toolchain is built once. run_bootstrap and run_config_push
+# use that shared copy directly; a case that adds its own override (mv, cp, tmux)
+# takes a private copy through make_fake_toolchain, which overwrites the shared
+# fakes in <dir>/fakebin and keeps any extra file already there, exactly as the
+# per-call rebuild did.
+SHARED_TOOLCHAIN=$(build_fake_toolchain "$TMP_ROOT/.shared-toolchain")
+make_fake_toolchain() {
+  local fakebin="$1/fakebin"
+  mkdir -p "$fakebin"
+  cp -pR "$SHARED_TOOLCHAIN/." "$fakebin/"
+  printf '%s\n' "$fakebin"
+}
+
 run_bootstrap() {
-  local w=$1 fakebin log=${2:-}
-  fakebin=$(make_fake_toolchain "$w")
+  local w=$1 fakebin=$SHARED_TOOLCHAIN log=${2:-}
   if [ -n "$log" ]; then
     PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
       FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
@@ -1260,8 +1293,7 @@ run_bootstrap() {
 }
 
 run_config_push() {
-  local w=$1 fakebin log=${2:-}
-  fakebin=$(make_fake_toolchain "$w")
+  local w=$1 fakebin=$SHARED_TOOLCHAIN log=${2:-}
   if [ -n "$log" ]; then
     PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
       FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
@@ -2855,63 +2887,64 @@ test_routing_home_owned_at_every_local_convergence() {
 
 # Every case builds its own world under a name of its own, so no case depends
 # on another or on their order; they run through fm_run_case_pool
-# (tests/lib.sh), longest first. FM_SECONDMATE_HARNESS_CASE_JOBS overrides the
-# concurrency, which defaults to the host's processor count capped at four; 1
-# runs the cases serially.
+# (tests/lib.sh), longest first by their recorded CI times so the long
+# config-reread queue cases never start last. FM_SECONDMATE_HARNESS_CASE_JOBS
+# overrides the concurrency, which defaults to the host's processor count capped
+# at four; 1 runs the cases serially.
 case_jobs=$(fm_case_pool_jobs "${FM_SECONDMATE_HARNESS_CASE_JOBS:-}")
 fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
-  test_config_reread_full_retry_queue_drains_before_new_push \
   test_config_reread_cleanup_runs_after_mixed_delivery_failure \
-  test_harness_resolution \
-  test_cursor_marker_detection \
-  test_secondmate_model_effort_tokens \
-  test_pi_signed_detection_and_session_lock_identity \
-  test_dash_leading_process_names_are_basename_operands \
-  test_propagate_lib \
+  test_config_reread_full_retry_queue_drains_before_new_push \
   test_routing_home_owned_at_every_local_convergence \
-  test_spawn_split_and_inherit \
-  test_spawn_backward_compat_crew_fallback \
-  test_spawn_bare_backward_compat \
-  test_spawn_explicit_harness_wins \
-  test_spawn_unverified_secondmate_harness_refused \
-  test_spawn_cursor_secondmate_launches_with_its_primary_contract \
+  test_config_reread_isolation_and_absent_and_send_failure \
+  test_bootstrap_sweep_propagates_and_reconverges \
+  test_backend_inheritance_present_and_absent \
+  test_presentation_inheritance_default_on_and_opt_out \
+  test_config_reread_serializes_concurrent_pushes \
+  test_spawned_secondmate_uses_its_harness_supervision_model \
+  test_bootstrap_sweep_materializes_and_inherits_memory_default \
+  test_claude_permission_mode_inheritance_present_and_absent \
+  test_config_push_propagates_reports_without_ff_or_nudge \
+  test_spawn_fallback_chain_and_crew_scout_unaffected \
+  test_config_reread_write_failure_retains_exact_retry_generation \
+  test_config_reread_exact_temp_survives_adoption_failure \
+  test_config_push_reports_skips_dirty_and_invalid_home \
+  test_config_reread_per_home_changed_sets_and_exact_bytes \
+  test_bootstrap_sweep_propagates_when_tracked_current \
+  test_bootstrap_sweep_defers_dispatch_on_stale_unignored_home \
+  test_spawn_secondmate_claude_grants_parent_inbox_dir \
+  test_config_reread_bootstrap_path_and_spawn_flexibility \
+  test_bootstrap_rereads_after_partial_propagation \
+  test_config_reread_publication_failure_retries_exact_generation \
   test_spawn_backend_precedence_over_inherited_config \
   test_spawn_explicit_backend_precedence_over_env_and_inherited_config \
+  test_spawn_bare_backward_compat \
+  test_bootstrap_sweep_surfaces_config_propagation_failure \
+  test_spawn_split_and_inherit \
+  test_spawn_backward_compat_crew_fallback \
   test_spawn_bare_harness_no_model_effort_flag \
   test_spawn_secondmate_harness_model_token \
+  test_config_push_rereads_after_partial_propagation \
+  test_spawn_explicit_harness_wins \
   test_spawn_secondmate_harness_model_and_effort_tokens \
   test_spawn_explicit_model_overrides_secondmate_harness_token \
   test_spawn_explicit_effort_overrides_secondmate_harness_token \
-  test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens \
   test_spawn_explicit_harness_uses_explicit_profile_axes \
-  test_spawned_secondmate_uses_its_harness_supervision_model \
-  test_spawn_fallback_chain_and_crew_scout_unaffected \
-  test_bootstrap_sweep_propagates_and_reconverges \
-  test_bootstrap_sweep_propagates_when_tracked_current \
-  test_bootstrap_sweep_defers_dispatch_on_stale_unignored_home \
-  test_bootstrap_sweep_materializes_and_inherits_memory_default \
-  test_backend_inheritance_present_and_absent \
   test_spawn_secondmate_claude_permission_mode_auto \
-  test_spawn_secondmate_claude_grants_parent_inbox_dir \
-  test_claude_permission_mode_inheritance_present_and_absent \
-  test_presentation_inheritance_default_on_and_opt_out \
-  test_bootstrap_sweep_surfaces_config_propagation_failure \
-  test_bootstrap_rereads_after_partial_propagation \
-  test_config_push_propagates_reports_without_ff_or_nudge \
-  test_config_push_reports_skips_dirty_and_invalid_home \
-  test_config_push_exits_nonzero_on_copy_error \
-  test_config_push_rereads_after_partial_propagation \
-  test_config_reread_per_home_changed_sets_and_exact_bytes \
-  test_config_reread_isolation_and_absent_and_send_failure \
-  test_config_reread_publication_failure_retries_exact_generation \
-  test_config_reread_write_failure_retains_exact_retry_generation \
-  test_config_reread_exact_temp_survives_adoption_failure \
-  test_config_reread_serializes_concurrent_pushes \
-  test_config_reread_stops_after_failed_generation \
-  test_config_reread_skips_when_unchanged_and_reads_after_push \
-  test_config_reread_bootstrap_path_and_spawn_flexibility \
-  test_bootstrap_respawns_before_config_reread \
   test_spawn_quarantines_pending_rereads_on_cleanup_failure \
+  test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens \
+  test_propagate_lib \
+  test_harness_resolution \
+  test_config_push_exits_nonzero_on_copy_error \
+  test_config_reread_skips_when_unchanged_and_reads_after_push \
+  test_bootstrap_respawns_before_config_reread \
+  test_secondmate_model_effort_tokens \
+  test_pi_signed_detection_and_session_lock_identity \
+  test_dash_leading_process_names_are_basename_operands \
+  test_spawn_unverified_secondmate_harness_refused \
+  test_cursor_marker_detection \
+  test_spawn_cursor_secondmate_launches_with_its_primary_contract \
+  test_config_reread_stops_after_failed_generation \
   test_bootstrap_detect_only_does_not_create_state || exit 1
 
 echo "# all fm-secondmate-harness tests passed"
