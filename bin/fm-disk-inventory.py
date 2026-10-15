@@ -294,7 +294,8 @@ class Inventory:
         except (OSError, ValueError) as e:
             return None, 'unreadable pool state %s (%s)' % (f, e)
         out = {}
-        for w in data.get('worktrees', []):
+        ws = data.get('worktrees')
+        for w in ws if isinstance(ws, list) else []:
             if w.get('leased'):
                 out[os.path.realpath(w.get('path', ''))] = w.get('lease_holder') or 'unknown holder'
         return out, None

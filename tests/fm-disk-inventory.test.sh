@@ -150,3 +150,18 @@ assert 'unreadable meta' in text
 assert 'None.' in text.split('## REMOVE')[1].split('## Other homes')[0]
 print('PASS: unreadable task references invalidate REMOVE proposals')
 PY
+
+# A pool state with "worktrees": null means no leases, not a crash.
+NULLPOOL=$T/pool/repo-null
+mkdir -p "$NULLPOOL/1"
+git -C "$T/main" worktree add -q --detach "$NULLPOOL/1/repo" main
+echo '{"worktrees":null}' > "$NULLPOOL/treehouse-state.json"
+run --stdout > "$T/null-pool.md"
+python3 - "$T/null-pool.md" "$NULLPOOL" <<'PY'
+import sys
+text, pool = open(sys.argv[1]).read(), sys.argv[2]
+assert 'unreadable pool state' not in text
+m = [ln for ln in text.splitlines() if ln.startswith('| `%s/1`' % pool)]
+assert len(m) == 1 and 'leased' not in m[0], m
+print('PASS: null pool worktrees read as no leases')
+PY
