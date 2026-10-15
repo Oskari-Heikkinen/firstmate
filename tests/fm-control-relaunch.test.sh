@@ -2116,7 +2116,7 @@ test_secondmate_checkpoint_ignores_a_vanished_scratch_find_walk() {
   : > "$dir/smhome/state/.count-0"
   : > "$dir/smhome/state/.last-0"
   {
-    echo "window=fmses:fm-sm6"
+    echo "window=fmses:fm-sm6b"
     echo "endpoint_task_id=sm6b"
     echo "worktree=$dir/smhome"
     echo "project=$dir/smhome"
@@ -2129,7 +2129,7 @@ test_secondmate_checkpoint_ignores_a_vanished_scratch_find_walk() {
     echo "home=$dir/smhome"
     echo "projects="
   } > "$home/state/sm6b.meta"
-  printf '%s\n' "fm-sm6" > "$dir/fake/windows"
+  printf '%s\n' "fm-sm6b" > "$dir/fake/windows"
   printf '%s' "$dir/smhome" > "$dir/fake/cwd"
   real_find=$(command -v find)
   cat > "$dir/fakebin/find" <<SH
@@ -2286,7 +2286,7 @@ test_spawn_relaunch_keeps_its_early_meta_lock_continuous() {
   dir=$(new_case continuous-meta-lock rl38b)
   add_ship_task "$dir" rl38b claude
   printf 'zsh' > "$dir/fake/command"
-  lock="$dir/home/state/.meta-rl38.lock"
+  lock="$dir/home/state/.meta-rl38b.lock"
   mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-real"
   cat > "$dir/fakebin/tmux" <<SH
 #!/usr/bin/env bash
