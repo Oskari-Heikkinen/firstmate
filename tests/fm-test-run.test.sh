@@ -91,7 +91,6 @@ init_changed_fixture_repo() {
     fm-test-fixtures.test.sh \
     fm-cd-pretool-check.test.sh \
     fm-daemon.test.sh \
-    fm-harness-adapter-instructions-live-e2e.test.sh \
     fm-harness-adapter-references.test.sh \
     fm-backend-herdr-smoke.test.sh \
     fm-secondmate-safety.test.sh \
@@ -364,14 +363,14 @@ test_changed_dependency_selection_and_unmapped_failure() {
   printf '\n' >>"$repo/.agents/skills/harness-adapters/references/common/dispatch.md"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
   assert_contains "$listed" "tests/fm-harness-adapter-references.test.sh" "harness adapter reference selects portable structural coverage"
-  assert_contains "$listed" "tests/fm-harness-adapter-instructions-live-e2e.test.sh" "harness adapter reference selects opt-in instruction coverage"
+  assert_contains "$listed" "tests/fm-afk-pi-herdr-return-e2e.test.sh" "harness adapter reference selects the opt-in live guards"
   git -C "$repo" add .agents/skills/harness-adapters
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm harness-adapter-reference-change
 
   printf '\n' >>"$repo/.agents/skills/harness-adapters/SKILL.md"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
   assert_contains "$listed" "tests/fm-harness-adapter-references.test.sh" "harness adapter router selects portable structural coverage"
-  assert_contains "$listed" "tests/fm-harness-adapter-instructions-live-e2e.test.sh" "harness adapter router selects opt-in instruction coverage"
+  assert_contains "$listed" "tests/fm-afk-pi-herdr-return-e2e.test.sh" "harness adapter router selects the opt-in live guards"
   git -C "$repo" add .agents/skills/harness-adapters/SKILL.md
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm harness-adapter-router-change
 

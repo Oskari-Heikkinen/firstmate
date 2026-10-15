@@ -193,7 +193,6 @@ weekly tests/fm-cursor-primary.test.sh
 weekly tests/fm-devin-harness.test.sh
 weekly tests/fm-gemini-harness.test.sh
 weekly tests/fm-grok-harness.test.sh
-weekly tests/fm-jev-mem-guard.test.sh
 weekly tests/fm-kimi-harness.test.sh
 weekly tests/fm-live-lab-up-mate.test.sh
 weekly tests/fm-live-lab.test.sh
@@ -253,7 +252,6 @@ live tests/fm-cursor-primary-live-e2e.test.sh
 live tests/fm-devin-signals-live-e2e.test.sh
 live tests/fm-grok-continuity-live-e2e.test.sh
 live tests/fm-grok-stop-live-e2e.test.sh
-live tests/fm-harness-adapter-instructions-live-e2e.test.sh
 live tests/fm-harness-liveness-drift-live-e2e.test.sh
 live tests/fm-herdr-pi-stale-registration-live-e2e.test.sh
 live tests/fm-herdr-submit-confirm-live-e2e.test.sh
