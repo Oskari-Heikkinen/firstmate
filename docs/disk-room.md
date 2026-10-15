@@ -29,13 +29,18 @@ Windows restore points keep their copy-on-write data in the system drive's shado
 The part already used shows up in the drive's free space, but the headroom left up to its cap is not yet taken and would otherwise be counted as room.
 After each restore point, the first overwrite of any block inside the non-sparse `ext4.vhdx` makes `volsnap` copy the old block into the diff area.
 The diff area therefore grows in 224 MiB steps until its cap binds, while Linux `df` and the disk file's size stay flat.
-The monitor reserves that headroom, the cap minus what is already used, from the Windows drive's free space.
+The monitor reserves that headroom, the cap minus what is already allocated, from the Windows drive's free space.
 
-Reading the cap and the used size needs elevation, so the elevated script from the install below records both in `C:\ProgramData\firstmate\shadow-storage.txt` at every `-Install` and reclaim-now run, and at every Windows start while the startup task is enabled.
+The monitor reads the cap and the allocated and used sizes live, without elevation, from `Win32_ShadowStorage` through `powershell.exe` (`FM_DISK_ROOM_POWERSHELL`; empty disables it), under a 20 second timeout, and caches the reading, or its failure, for 5 minutes.
+Because the reading is live, the reservation shrinks as the diff area grows and returns to nearly the whole cap after a restore point starts a new, nearly empty diff area.
+The `shadow storage:` status line ends with the source of its numbers, `live`, `record`, or `none`, and `status --json` gives it as `shadow_reading`.
+
+When the live reading fails or times out, the elevated record is the fallback, reserving the cap minus the recorded used size.
+The elevated script from the install below writes that record, `C:\ProgramData\firstmate\shadow-storage.txt`, at every `-Install` and reclaim-now run, and at every Windows start while the startup task is enabled.
 The task runs the copy the install made in `C:\ProgramData\firstmate\`, so an install made before this record existed never writes it; re-run `fm-wsl-reclaim.ps1 -Install` elevated to update that copy.
 A record older than 7 days, or no record at all, leaves the used size unknown; the monitor then reserves the whole cap, the larger of the record's cap and `FM_DISK_ROOM_SHADOW_MAX` (for example `10G`), because a too-large reservation only makes room read low.
 With neither a capped record nor `FM_DISK_ROOM_SHADOW_MAX`, nothing is reserved and room reads as before; a record of shadow storage without a cap reserves nothing unless `FM_DISK_ROOM_SHADOW_MAX` bounds it.
-Without a fresh record the monitor also counts `volsnap` System events 25, 33, and 36 of the last 7 days, which need no elevation, and warns that the shadow storage is cycling, deleting restore points at its cap, when any occurred.
+On every reading the monitor also counts `volsnap` System events 25, 33, and 36 of the last 7 days, which need no elevation, and warns that the shadow storage is cycling, deleting restore points at its cap, when any occurred.
 
 ## Admitting big writes
 
@@ -52,8 +57,9 @@ This replaces fixed floors on raw Windows free space, which either stop a job th
 A home that should hear about low room arms the standing watcher check with `bin/fm-disk-room.sh arm`, which writes `state/disk-room.check.sh` with the `FM_DISK_ROOM_*` settings in force and binds it with `bin/fm-check-register.sh`; `bin/fm-disk-room.sh disarm` retires it.
 `watch-line` prints nothing while real room is at or above the margin.
 Under the margin it prints one line with the real room, the declared writes, and the next step, and repeats only after a further 5 GiB drop or 6 hours; a failed reading prints a "cannot measure" line at most every 6 hours.
-It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, and the shadow storage record, and never starts PowerShell, which times out when Windows is short of memory.
-Without a fresh shadow storage record it runs `wevtutil.exe` for the event count at most once an hour, under a 20 second timeout.
+It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, the live shadow storage reading, and the shadow storage record.
+It starts PowerShell for the live reading at most once every 5 minutes, failures included, under a 20 second timeout, because PowerShell times out when Windows is short of memory.
+It runs `wevtutil.exe` for the event count at most once an hour, under a 20 second timeout.
 
 ## Growth and runway alerts
 
@@ -106,7 +112,7 @@ With it disabled:
 
 - freed space returns to the Windows drive only through the reclaim-now step below;
 - `last compaction:` advances only on reclaim-now runs;
-- the shadow storage record is refreshed only by `-Install` and `-Now`, so 7 days after the last one the monitor treats the record as stale and reserves the whole cap, which makes room read lower, never higher, until the next reclaim-now.
+- the shadow storage record is refreshed only by `-Install` and `-Now`, so when the live reading fails 7 days after the last one the monitor treats the record as stale and reserves the whole cap, which makes room read lower, never higher, until the next reclaim-now.
 
 ### Reclaim now
 

@@ -30,6 +30,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - "reclaimable by compaction unknown" - the disk file, its fragmented free space, or the ext4 metadata size could not be read; run `fm-disk-room.sh status`, fix the named reading, and do not promise the captain a compaction result until it reads.
 - "data must be freed or moved" - compaction cannot help (the slack is fragmented free space sharing 1 MiB disk blocks with live data, or ext4's own metadata); bring the captain the owning task's numbers and options, and delete nothing without the captain's word.
 - "shadow storage cycling" - Windows restore points are filling the shadow storage up to its cap and deleting older ones; report it to the captain with the rest of the reading, and change no restore-point or shadow storage setting.
+- "source record" or "source none" on the `shadow storage:` line - the live shadow storage reading failed, so the reservation comes from the elevated record or is missing; say so with the reading, since room can then be overstated after a restore point.
 - "cannot measure" - a reading failed; investigate the named reading before trusting any floor.
 - "storage alert" - Linux growth, C: or D: runway, or a mandatory D: substitution crossed its threshold; read `fm-disk-room.sh growth` and relay the alert with that reading to the captain, who decides any retention, move, or compaction, and run none of them.
 

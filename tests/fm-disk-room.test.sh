@@ -4,15 +4,16 @@
 #
 # Every case runs against a PATH-shimmed df that reports fixture sizes for a
 # fake Windows drive and a fake Linux root, a real sparse file standing in for
-# ext4.vhdx, a fixture ext4 mb_groups table, and a stub wevtutil that prints
-# fixture volsnap events, so nothing reads the real disk or the Windows log.
+# ext4.vhdx, a fixture ext4 mb_groups table, a stub wevtutil that prints
+# fixture volsnap events, and a stub powershell that prints a fixture shadow
+# storage reading, so nothing reads the real disk, the Windows log or WMI.
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
-  FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_RESULTS_ROOT \
+  FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_POWERSHELL FM_DISK_ROOM_RESULTS_ROOT \
   FM_DISK_ROOM_SAMPLES FM_DISK_ROOM_GROWTH_MAX FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_STORAGE_MNT
 TMP_ROOT=$(fm_test_tmproot fm-disk-room)
 DISK_ROOM="$ROOT/bin/fm-disk-room.sh"
@@ -61,6 +62,25 @@ SH
 chmod +x "$FAKEBIN/wevtutil-stub"
 EVENTS="$TMP_ROOT/events.xml"
 
+# powershell stub: prints $FAKE_SHADOW_LIVE (the live reading's lines) and
+# counts its calls; without the fixture it fails like a timed-out call.
+cat >"$FAKEBIN/powershell-stub" <<'SH'
+#!/usr/bin/env bash
+printf 'x\n' >>"$FAKE_SHADOW_LIVE.calls"
+[ -r "$FAKE_SHADOW_LIVE" ] || exit 1
+cat "$FAKE_SHADOW_LIVE"
+SH
+chmod +x "$FAKEBIN/powershell-stub"
+SHADOW_LIVE="$TMP_ROOT/shadow-live.txt"
+
+# write_shadow_live MAX_GIB ALLOCATED_GIB USED_GIB: what the live
+# Win32_ShadowStorage reading prints, with Windows line endings.
+write_shadow_live() {
+  printf 'SHADOW|%s|%s|%s\r\nEND\r\n' $(( $1 * GIB )) $(( $2 * GIB )) $(( $3 * GIB )) >"$SHADOW_LIVE"
+}
+
+live_calls() { if [ -r "$SHADOW_LIVE.calls" ]; then wc -l <"$SHADOW_LIVE.calls" | tr -d ' '; else echo 0; fi; }
+
 # write_events ID...: one volsnap event per id, as wevtutil /f:xml prints them.
 write_events() {
   local id
@@ -103,6 +123,7 @@ run_room() {
     FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
     FM_DISK_ROOM_DEV_SIZE="${TEST_DEV_SIZE-$LINUX_SIZE}" \
     FAKE_EVENTS="$EVENTS" FM_DISK_ROOM_WEVTUTIL="${FM_DISK_ROOM_WEVTUTIL-wevtutil-stub}" \
+    FAKE_SHADOW_LIVE="$SHADOW_LIVE" FM_DISK_ROOM_POWERSHELL="${FM_DISK_ROOM_POWERSHELL-powershell-stub}" \
     FM_DISK_ROOM_RESULTS_ROOT="${FM_DISK_ROOM_RESULTS_ROOT-$TMP_ROOT/storage/results-root}" \
     FM_DISK_ROOM_SAMPLES="${TEST_SAMPLES-$TMP_ROOT/no-samples}" \
     FM_DISK_ROOM_C_FREE_MIN="${FM_DISK_ROOM_C_FREE_MIN-off}" \
@@ -111,7 +132,7 @@ run_room() {
 
 json_field() { printf '%s\n' "$1" | sed -n "s/.*\"$2\":\([^,}]*\).*/\1/p"; }
 
-reset_state() { rm -rf "$TMP_ROOT/state" "$EVENTS" "$EVENTS.calls" "$HOSTDIR/ProgramData"; }
+reset_state() { rm -rf "$TMP_ROOT/state" "$EVENTS" "$EVENTS.calls" "$SHADOW_LIVE" "$SHADOW_LIVE.calls" "$HOSTDIR/ProgramData"; }
 
 # write_shadow_record MAX_GIB USED_GIB AGE_SECONDS: the file the elevated
 # fm-wsl-reclaim.ps1 task writes (tests/fm-wsl-reclaim.test.sh pins its format).
@@ -330,7 +351,7 @@ test_vhdx_discovery_cached() {
   truncate -s $(( 470 * GIB )) "$VHDX"
   local out
   out=$(PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FM_DISK_ROOM_HOST="${TEST_HOST-$HOSTDIR}" FM_DISK_ROOM_ROOT="$LINUXDIR" \
-    FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" FM_DISK_ROOM_VHDX='' "$DISK_ROOM" status --json)
+    FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" FM_DISK_ROOM_VHDX='' FM_DISK_ROOM_POWERSHELL='' "$DISK_ROOM" status --json)
   assert_contains "$out" "\"vhdx\":\"$VHDX\"" "the single distro disk under the Windows profile is found"
   mkdir -p "$HOSTDIR/Users/v/AppData/Local/wsl/{h}"
   : >"$HOSTDIR/Users/v/AppData/Local/wsl/{h}/ext4.vhdx"
@@ -347,7 +368,7 @@ test_arm_and_disarm() {
   home="$TMP_ROOT/home"
   mkdir -p "$home/state"
   chmod 700 "$home/state"
-  out=$(FM_HOME="$home" FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_MARGIN=20G FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" \
+  out=$(FM_HOME="$home" FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_MARGIN=20G FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" \
     FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
     FM_DISK_ROOM_RESULTS_ROOT="$TMP_ROOT/missing-results-root" FM_DISK_ROOM_SAMPLES="$TMP_ROOT/no-samples" \
     FM_DISK_ROOM_C_FREE_MIN=40G "$DISK_ROOM" arm) || fail "arm exits 0"
@@ -391,10 +412,10 @@ test_shadow_record_reserves_headroom() {
   assert_equals $(( 53 * GIB )) "$(json_field "$out" room)" "room drops by the cap minus what is used"
   assert_equals $(( 7 * GIB )) "$(json_field "$out" shadow_reserved)" "the headroom is reported"
   assert_equals '"record"' "$(json_field "$out" shadow_source)" "the elevated record is the source"
-  assert_equals null "$(json_field "$out" shadow_events)" "a fresh record needs no event count"
-  assert_absent "$EVENTS.calls" "a fresh record starts no Windows process"
+  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "the reading is named as the record"
   out=$(run_room status)
   assert_contains "$out" "shadow storage: 7.0 GiB headroom reserved (cap 10.0 GiB, used 3.0 GiB" "plain status explains the reservation"
+  assert_contains "$out" "source record, no live reading)" "plain status names the record as the source"
   out=$(run_room check --expect-write 34G); rc=$?
   expect_code 1 "$rc" "admission counts the shadow storage headroom"
   assert_contains "$out" "low: only 19.0 GiB would be left on $HOSTDIR" "the low line names the drive"
@@ -445,6 +466,77 @@ test_shadow_fallback_and_stale() {
   pass "without a fresh record the configured cap is reserved whole"
 }
 
+test_shadow_live_reading() {
+  reset_state
+  set_sizes 60 600 400
+  write_shadow_record 10 3 60
+  write_shadow_live 19 16 15
+  local out t0
+  t0=$(date +%s)
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room status --json)
+  assert_equals $(( 3 * GIB )) "$(json_field "$out" shadow_reserved)" "the live reading reserves the cap minus what is allocated"
+  assert_equals $(( 57 * GIB )) "$(json_field "$out" room)" "room drops by the live headroom, not the record's"
+  assert_equals '"live"' "$(json_field "$out" shadow_source)" "the live reading is the source"
+  assert_equals '"live"' "$(json_field "$out" shadow_reading)" "the reading is named as live"
+  assert_equals $(( 19 * GIB )) "$(json_field "$out" shadow_max)" "the live cap is reported"
+  assert_equals $(( 16 * GIB )) "$(json_field "$out" shadow_allocated)" "the live allocated size is reported"
+  assert_equals $(( 15 * GIB )) "$(json_field "$out" shadow_used)" "the live used size is reported"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 60 )) run_room status)
+  assert_contains "$out" "shadow storage: 3.0 GiB headroom reserved (cap 19.0 GiB, allocated 16.0 GiB, used 15.0 GiB" "plain status explains the live reservation"
+  assert_contains "$out" "source live)" "plain status names the live source"
+  assert_equals 1 "$(live_calls)" "the live reading is cached for a few minutes"
+  write_shadow_live 19 1 0
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 299 )) run_room status --json)
+  assert_equals $(( 3 * GIB )) "$(json_field "$out" shadow_reserved)" "the cached reading is reused within its window"
+  assert_equals 1 "$(live_calls)" "no Windows process starts within the window"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room status --json)
+  assert_equals 2 "$(live_calls)" "an expired cache is read again"
+  assert_equals $(( 18 * GIB )) "$(json_field "$out" shadow_reserved)" "after a restore-point cycle the small allocation reserves almost the whole cap"
+  assert_equals $(( 42 * GIB )) "$(json_field "$out" room)" "after a cycle room is not overstated from the record's old used size"
+  write_shadow_live 10 12 12
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 600 )) run_room status --json)
+  assert_equals 0 "$(json_field "$out" shadow_reserved)" "allocated above the cap reserves nothing"
+  printf 'SHADOW|unbounded|%s|%s\r\nEND\r\n' $(( 2 * GIB )) $(( 2 * GIB )) >"$SHADOW_LIVE"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 900 )) FM_DISK_ROOM_SHADOW_MAX=10G run_room status --json)
+  assert_equals $(( 10 * GIB )) "$(json_field "$out" shadow_reserved)" "a live reading without a cap reserves the configured cap whole"
+  assert_equals '"live"' "$(json_field "$out" shadow_reading)" "the uncapped reading is still named live"
+  pass "a live shadow storage reading reserves the cap minus what is allocated"
+}
+
+test_shadow_live_failure_falls_back() {
+  reset_state
+  set_sizes 60 600 400
+  write_shadow_record 10 3 60
+  local out t0
+  t0=$(date +%s)
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room status --json) || fail "a failed live reading does not fail status"
+  assert_equals 1 "$(live_calls)" "the live reading is tried"
+  assert_equals $(( 7 * GIB )) "$(json_field "$out" shadow_reserved)" "a failed live reading falls back to the record"
+  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "the fallback is named as the record"
+  write_shadow_live 19 16 15
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 60 )) run_room status --json)
+  assert_equals 1 "$(live_calls)" "a failure is cached too, so a hung powershell is not retried on every status"
+  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "the cached failure keeps the record"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room status --json)
+  assert_equals '"live"' "$(json_field "$out" shadow_reading)" "the live reading is retried once the window passes"
+  printf 'SHADOW|%s|%s|%s\r\n' $(( 19 * GIB )) $(( 16 * GIB )) $(( 15 * GIB )) >"$SHADOW_LIVE"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 600 )) run_room status --json)
+  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "a reading cut off before its END line is a failure"
+  printf 'END\r\n' >"$SHADOW_LIVE"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 900 )) run_room status --json)
+  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "a reading with no shadow storage on the drive falls back"
+  printf 'SHADOW|9223372036854775808|0|0\r\nEND\r\n' >"$SHADOW_LIVE"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 1200 )) run_room status --json)
+  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "a live cap past signed 64 bits is unreadable"
+  rm -f "$HOSTDIR/ProgramData/firstmate/shadow-storage.txt" "$SHADOW_LIVE"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 1500 )) run_room status)
+  assert_contains "$out" "shadow storage: not reserved (no live reading and no record" "with neither reading nothing is reserved"
+  assert_contains "$out" "source none)" "plain status names no source"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 1500 )) FM_DISK_ROOM_POWERSHELL='' run_room status --json)
+  assert_equals '"none"' "$(json_field "$out" shadow_reading)" "an empty powershell setting disables the live reading"
+  pass "a failed live reading falls back to the elevated record"
+}
+
 test_shadow_no_data_unchanged() {
   reset_state
   set_sizes 60 600 400
@@ -478,6 +570,12 @@ test_shadow_cycling_warning() {
   rm -f "$EVENTS"
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 10800 )) run_room status) || fail "a failed event read does not fail status"
   assert_not_contains "$out" "cycling" "a failed event read gives no warning"
+  reset_state
+  write_shadow_record 10 3 60
+  write_shadow_live 19 16 15
+  write_events 25 36
+  out=$(run_room status --json)
+  assert_equals 2 "$(json_field "$out" shadow_events)" "events are counted with a fresh record and a live reading present"
   pass "recent volsnap 25/33/36 events warn that shadow storage is cycling"
 }
 
@@ -647,6 +745,8 @@ test_bulk_reservations
 test_status_real_room_and_reclaim
 test_shadow_record_reserves_headroom
 test_shadow_fallback_and_stale
+test_shadow_live_reading
+test_shadow_live_failure_falls_back
 test_shadow_no_data_unchanged
 test_shadow_cycling_warning
 test_shadow_wevtutil_from_drive

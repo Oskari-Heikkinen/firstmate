@@ -9,7 +9,7 @@
 # that running jobs have declared. Slack inside the disk file is NOT room (ext4
 # happily grows the file while slack exists); it is reported separately as what
 # the next compaction would reclaim. The Windows restore-point shadow storage's
-# headroom (its cap minus what it already uses) is reserved too, because
+# headroom (its cap minus what it already allocated) is reserved too, because
 # copy-on-write after each restore point fills it from host free space while
 # Linux df and the disk file stay flat. docs/disk-room.md owns the contract and
 # the one-time Windows install (bin/fm-wsl-reclaim.ps1).
@@ -75,16 +75,24 @@
 #                         ext4 metadata size. Not a number: unreadable.
 #   FM_DISK_ROOM_COMPACT_RESULT  last-result file written by fm-wsl-reclaim.ps1
 #                         (default <host>/ProgramData/firstmate/wsl-compact-last.txt)
+#   FM_DISK_ROOM_POWERSHELL  powershell command for the live, non-admin
+#                         Win32_ShadowStorage reading of the system drive (cap
+#                         minus allocated is reserved), cached for 5 minutes,
+#                         failures included, under a 20 second timeout (default
+#                         powershell.exe on PATH, else the drive's
+#                         Windows/System32/WindowsPowerShell/v1.0/powershell.exe;
+#                         empty disables the live reading)
 #   FM_DISK_ROOM_SHADOW_RECORD  shadow storage max/used written by the elevated
-#                         fm-wsl-reclaim.ps1 task (default
-#                         <host>/ProgramData/firstmate/shadow-storage.txt). A record
-#                         older than 7 days keeps only its max: used is then unknown.
-#   FM_DISK_ROOM_SHADOW_MAX  shadow storage cap (SIZE) used when no fresh record
-#                         gives one, e.g. 10G. With used unknown the whole cap is
-#                         reserved, the conservative choice. Unset and no record:
-#                         nothing is reserved.
-#   FM_DISK_ROOM_WEVTUTIL  wevtutil command used, only when no fresh record exists,
-#                         to count volsnap System events 25/33/36 of the last 7 days
+#                         fm-wsl-reclaim.ps1 task, used when the live reading fails
+#                         (default <host>/ProgramData/firstmate/shadow-storage.txt).
+#                         A record older than 7 days keeps only its max: used is
+#                         then unknown.
+#   FM_DISK_ROOM_SHADOW_MAX  shadow storage cap (SIZE) used when neither the live
+#                         reading nor a fresh record gives one, e.g. 10G. With used
+#                         unknown the whole cap is reserved, the conservative
+#                         choice. Unset and no record: nothing is reserved.
+#   FM_DISK_ROOM_WEVTUTIL  wevtutil command used on every reading to count
+#                         volsnap System events 25/33/36 of the last 7 days
 #                         (cached for an hour) for the cycling warning
 #                         (default wevtutil.exe on PATH, else the drive's
 #                         Windows/System32/wevtutil.exe; empty disables the count)
@@ -111,6 +119,7 @@ REALERT_SECS=21600
 DEFAULT_TTL=43200
 SHADOW_STALE_SECS=604800
 SHADOW_EVENTS_CACHE_SECS=3600
+SHADOW_LIVE_CACHE_SECS=300
 
 die() { printf 'fm-disk-room: %s\n' "$*" >&2; exit 2; }
 
@@ -261,16 +270,80 @@ shadow_events() {
   [ "$n" = - ] || printf '%s\n' "$n"
 }
 
-# shadow_reservation: sets SHADOW_RES (bytes reserved), SHADOW_SRC (record,
-# stale-record, config, unbounded or none), SHADOW_MAX, SHADOW_USED, SHADOW_AT and
-# SHADOW_EVENTS. A reading only ever adds a reservation, so a stale or
-# unreadable record can never make room look larger than plain df.
+# powershell_cmd -> the powershell command to run, or fails when there is none.
+powershell_cmd() {
+  if [ -n "${FM_DISK_ROOM_POWERSHELL+set}" ]; then
+    [ -n "$FM_DISK_ROOM_POWERSHELL" ] && command -v -- "$FM_DISK_ROOM_POWERSHELL" 2>/dev/null
+    return
+  fi
+  command -v powershell.exe 2>/dev/null && return 0
+  [ -x "$HOST/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ] && printf '%s\n' "$HOST/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+}
+
+# shadow_live: sets LIVE_MAX (bytes or unbounded), LIVE_ALLOC, LIVE_USED and
+# LIVE_AT from a non-admin Win32_ShadowStorage reading of the system drive's
+# diff area, or fails. Cached for 5 minutes, failures included, because it
+# starts a Windows process that hangs when Windows is short of memory.
+shadow_live() {
+  local cache t when='' line='' out cmd m a u
+  LIVE_MAX=''; LIVE_ALLOC=''; LIVE_USED=''; LIVE_AT=''
+  cmd=$(powershell_cmd) && [ -n "$cmd" ] || return 1
+  cache="$(state_dir)/shadow-live"
+  t=$(now)
+  [ -r "$cache" ] && read -r when line <"$cache"
+  case "$when" in
+    ''|*[!0-9]*) when='' ;;
+    *) { [ "$t" -ge "$when" ] && [ $(( t - when )) -lt "$SHADOW_LIVE_CACHE_SECS" ]; } || when='' ;;
+  esac
+  if [ -z "$when" ]; then
+    when=$t
+    # shellcheck disable=SC2016
+    out=$(timeout 20 "$cmd" -NoProfile -NonInteractive -Command '$ErrorActionPreference="Stop"; $v = Get-CimInstance -ClassName Win32_Volume -Filter "DriveLetter='\''$env:SystemDrive'\''"; $n = 0; $m = [decimal]0; $a = [decimal]0; $u = [decimal]0; $ub = $false; foreach ($s in @(Get-CimInstance -ClassName Win32_ShadowStorage | Where-Object { $_.DiffVolume.DeviceID -eq $v.DeviceID })) { $n++; if ([decimal]$s.MaxSpace -ge [decimal]9223372036854775808) { $ub = $true } else { $m += [decimal]$s.MaxSpace }; $a += [decimal]$s.AllocatedSpace; $u += [decimal]$s.UsedSpace }; if ($n -gt 0) { "SHADOW|{0}|{1}|{2}" -f $(if ($ub) { "unbounded" } else { $m }), $a, $u }; "END"' 2>/dev/null \
+      | tr -d '\r')
+    line=-
+    if printf '%s\n' "$out" | grep -qx END; then
+      line=$(printf '%s\n' "$out" | sed -n 's/^SHADOW|//p' | head -n 1 | tr '|' ' ')
+    fi
+  fi
+  read -r m a u <<<"$line"
+  # Past 18 digits a value could wrap signed 64-bit arithmetic, so it is unreadable.
+  case "${m:-}" in unbounded) ;; ''|*[!0-9]*|???????????????????*) m='' ;; esac
+  case "${a:-}" in ''|*[!0-9]*|???????????????????*) a='' ;; esac
+  case "${u:-}" in ''|*[!0-9]*|???????????????????*) u='' ;; esac
+  if [ -z "$m" ] || [ -z "$a" ] || [ -z "$u" ]; then
+    mkdir -p "$(state_dir)" 2>/dev/null && printf '%s -\n' "$when" >"$cache" 2>/dev/null
+    return 1
+  fi
+  mkdir -p "$(state_dir)" 2>/dev/null && printf '%s %s %s %s\n' "$when" "$m" "$a" "$u" >"$cache" 2>/dev/null
+  LIVE_MAX=$m; LIVE_ALLOC=$a; LIVE_USED=$u; LIVE_AT=$when
+}
+
+# shadow_reservation: sets SHADOW_RES (bytes reserved), SHADOW_SRC (live, record,
+# stale-record, config, unbounded or none), SHADOW_READING (live, record or none:
+# where the numbers came from), SHADOW_MAX, SHADOW_ALLOC, SHADOW_USED, SHADOW_AT
+# and SHADOW_EVENTS. The live reading reserves the cap minus what is allocated;
+# when it fails the elevated record is the fallback. A reading only ever adds a
+# reservation, so a stale or unreadable one can never make room look larger
+# than plain df.
 shadow_reservation() {
   local f kv max='' used='' at='' cfg=''
-  SHADOW_RES=0; SHADOW_SRC=none; SHADOW_MAX=''; SHADOW_USED=''; SHADOW_AT=''; SHADOW_EVENTS=''
+  SHADOW_RES=0; SHADOW_SRC=none; SHADOW_READING=none; SHADOW_MAX=''; SHADOW_ALLOC=''; SHADOW_USED=''; SHADOW_AT=''; SHADOW_EVENTS=''
   [ -n "$HOST" ] || return 0
   if [ -n "${FM_DISK_ROOM_SHADOW_MAX:-}" ]; then
     cfg=$(to_bytes "$FM_DISK_ROOM_SHADOW_MAX") || { ERR="bad FM_DISK_ROOM_SHADOW_MAX"; return 1; }
+  fi
+  SHADOW_EVENTS=$(shadow_events)
+  if shadow_live; then
+    SHADOW_READING=live; SHADOW_ALLOC=$LIVE_ALLOC; SHADOW_USED=$LIVE_USED; SHADOW_AT=$LIVE_AT
+    if [ "$LIVE_MAX" = unbounded ]; then
+      SHADOW_SRC=unbounded
+      # With no cap the configured one bounds it; reserve it whole, as without a record.
+      [ -n "$cfg" ] && { SHADOW_SRC=config; SHADOW_MAX=$cfg; SHADOW_RES=$cfg; }
+      return 0
+    fi
+    SHADOW_SRC=live; SHADOW_MAX=$LIVE_MAX
+    SHADOW_RES=$(( LIVE_MAX - LIVE_ALLOC )); [ "$SHADOW_RES" -lt 0 ] && SHADOW_RES=0
+    return 0
   fi
   f=${FM_DISK_ROOM_SHADOW_RECORD:-$HOST/ProgramData/firstmate/shadow-storage.txt}
   if [ -r "$f" ]; then
@@ -279,36 +352,46 @@ shadow_reservation() {
     used=$(printf '%s\n' "$kv" | sed -n 's/^used_bytes=//p' | head -n 1)
     at=$(printf '%s\n' "$kv" | sed -n 's/^recorded_epoch=//p' | head -n 1)
     # Past 18 digits a value could wrap signed 64-bit arithmetic, so it is unreadable.
-    case "$max" in unbounded) SHADOW_SRC=unbounded; max='' ;; ''|*[!0-9]*|???????????????????*) max='' ;; esac
+    case "$max" in unbounded) SHADOW_SRC=unbounded; SHADOW_READING=record; max='' ;; ''|*[!0-9]*|???????????????????*) max='' ;; esac
     case "$used" in ''|*[!0-9]*|???????????????????*) used='' ;; esac
     case "$at" in ''|*[!0-9]*|???????????????????*) at='' ;; esac
   fi
   if [ -n "$max" ] && [ -n "$used" ] && [ -n "$at" ] && [ $(( $(now) - at )) -lt "$SHADOW_STALE_SECS" ]; then
-    SHADOW_SRC=record; SHADOW_MAX=$max; SHADOW_USED=$used; SHADOW_AT=$at
+    SHADOW_SRC=record; SHADOW_READING=record; SHADOW_MAX=$max; SHADOW_USED=$used; SHADOW_AT=$at
     SHADOW_RES=$(( max - used )); [ "$SHADOW_RES" -lt 0 ] && SHADOW_RES=0
     return 0
   fi
   # No fresh record: used is unknown, so reserve the whole cap.
   if [ -n "$max" ] && [ -n "$at" ]; then
-    SHADOW_SRC=stale-record; SHADOW_MAX=$max; SHADOW_AT=$at
+    SHADOW_SRC=stale-record; SHADOW_READING=record; SHADOW_MAX=$max; SHADOW_AT=$at
     [ -n "$cfg" ] && [ "$cfg" -gt "$max" ] && SHADOW_MAX=$cfg
   elif [ -n "$cfg" ]; then
     SHADOW_SRC=config; SHADOW_MAX=$cfg
   fi
   [ -n "$SHADOW_MAX" ] && SHADOW_RES=$SHADOW_MAX
-  SHADOW_EVENTS=$(shadow_events)
   return 0
 }
 
+# shadow_line ends each wording with the source of its numbers: live, record or none.
 shadow_line() {
   case "$SHADOW_SRC" in
-    record) printf 'shadow storage: %s GiB headroom reserved (cap %s GiB, used %s GiB, recorded %s)\n' \
+    live) printf 'shadow storage: %s GiB headroom reserved (cap %s GiB, allocated %s GiB, used %s GiB, read %s; source live)\n' \
+      "$(gib "$SHADOW_RES")" "$(gib "$SHADOW_MAX")" "$(gib "$SHADOW_ALLOC")" "$(gib "$SHADOW_USED")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "$SHADOW_AT")" ;;
+    record) printf 'shadow storage: %s GiB headroom reserved (cap %s GiB, used %s GiB, recorded %s; source record, no live reading)\n' \
       "$(gib "$SHADOW_RES")" "$(gib "$SHADOW_MAX")" "$(gib "$SHADOW_USED")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "$SHADOW_AT")" ;;
-    stale-record) printf 'shadow storage: %s GiB reserved (whole cap; the record from %s is over 7 days old, so used is unknown)\n' \
+    stale-record) printf 'shadow storage: %s GiB reserved (whole cap; the record from %s is over 7 days old, so used is unknown; source record, no live reading)\n' \
       "$(gib "$SHADOW_RES")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d' 2>/dev/null || echo "$SHADOW_AT")" ;;
-    config) printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; used is unknown without the elevated record)\n' "$(gib "$SHADOW_RES")" ;;
-    unbounded) printf 'shadow storage: not reserved (the recorded shadow storage has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it)\n' ;;
-    *) printf 'shadow storage: not reserved (no record from the elevated task, so run or re-run fm-wsl-reclaim.ps1 -Install elevated, and FM_DISK_ROOM_SHADOW_MAX unset)\n' ;;
+    config) if [ "$SHADOW_READING" = live ]; then
+        printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; the shadow storage read live has no cap; source live)\n' "$(gib "$SHADOW_RES")"
+      else
+        printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; used is unknown without a live reading or the elevated record; source %s)\n' "$(gib "$SHADOW_RES")" "$SHADOW_READING"
+      fi ;;
+    unbounded) if [ "$SHADOW_READING" = live ]; then
+        printf 'shadow storage: not reserved (the shadow storage read live has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it; source live)\n'
+      else
+        printf 'shadow storage: not reserved (the recorded shadow storage has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it; source record, no live reading)\n'
+      fi ;;
+    *) printf 'shadow storage: not reserved (no live reading and no record from the elevated task, so run or re-run fm-wsl-reclaim.ps1 -Install elevated, and FM_DISK_ROOM_SHADOW_MAX unset; source none)\n' ;;
   esac
 }
 
@@ -711,11 +794,11 @@ cmd_status() {
   measure || die "$ERR"
   results_root
   if [ "$json" = 1 ]; then
-    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s}\n' \
+    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s,"shadow_reading":"%s","shadow_allocated":%s}\n' \
       "$MARGIN" "$HOST" "${HOST_FREE:-null}" "$LINUX_FREE" "$LINUX_USED" "$RESERVED" "$ROOM" \
       "$([ "$ROOM" -lt "$MARGIN" ] && echo true || echo false)" "$VHDX" "${VHDX_SIZE:-null}" \
       "${FRAG:-null}" "${OVERHEAD:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}" \
-      "$SHADOW_RES" "$SHADOW_SRC" "${SHADOW_MAX:-null}" "${SHADOW_USED:-null}" "${SHADOW_EVENTS:-null}"
+      "$SHADOW_RES" "$SHADOW_SRC" "${SHADOW_MAX:-null}" "${SHADOW_USED:-null}" "${SHADOW_EVENTS:-null}" "$SHADOW_READING" "${SHADOW_ALLOC:-null}"
     return 0
   fi
   printf 'real room: %s GiB (limited by %s; margin %s GiB)%s\n' "$(gib "$ROOM")" "$(limit_name)" "$(gib "$MARGIN")" \
@@ -938,7 +1021,7 @@ cmd_arm() {
   tmp=$(umask 077; mktemp "$state/.fm-disk-room-check.XXXXXX") || die "cannot write in $state"
   {
     printf '%s\n' '#!/usr/bin/env bash' '# Auto-generated by fm-disk-room.sh arm - real disk room watcher check.'
-    for v in MARGIN HOST ROOT VHDX MB_GROUPS DEV_SIZE COMPACT_RESULT SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE \
+    for v in MARGIN HOST ROOT VHDX MB_GROUPS DEV_SIZE COMPACT_RESULT POWERSHELL SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE \
       RESULTS_ROOT SAMPLES GROWTH_MAX C_FREE_MIN D_FREE_MIN; do
       name=FM_DISK_ROOM_$v
       [ -z "${!name+x}" ] || printf 'export %s=%q\n' "$name" "${!name}"
