@@ -5,6 +5,11 @@ When injection cannot confirm a submit past `FM_MAX_DEFER_SECS`, `inject_wedge_a
 The active alert is pane-independent because a tmux status-line flash has no cross-backend equivalent and cannot reach an unattended captain reliably.
 The durable marker and tmux flash remain as additional signals.
 
+The channel functions live in `bin/fm-alert-lib.sh`, which two callers source.
+The daemon's `inject_wedge_alarm` is one.
+The away watchdog (`bin/fm-away-watch.sh`) is the other: it alerts from a systemd user timer when away-mode supervision has stopped and nothing inside a session can say so ([configuration](configuration.md#away-watchdog-configaway-watch)).
+Both read the same `config/wedge-alarm`, so one channel setup covers both alerts.
+
 ## Channels
 
 `config/wedge-alarm` is local and gitignored.
@@ -30,10 +35,11 @@ See [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
 ## Test safety
 
-Every notifier routes through `FM_WEDGE_ALARM_EXEC` in `wedge_alarm_emit`.
+Every notifier routes through `FM_WEDGE_ALARM_EXEC` in `wedge_alarm_emit` (`bin/fm-alert-lib.sh`).
 When the daemon is sourced as a library, that seam defaults to `discard`, so a test cannot accidentally post a real notification.
 `tests/wake-helpers.sh` replaces it with a recorder when a suite needs to assert channel selection and summary propagation.
 Production leaves the seam unset and uses the configured real channels.
 
+`tests/fm-away-watch.test.sh` drives the watchdog through the same recorder.
 `tests/fm-daemon.test.sh` covers directive parsing, rate limiting, timeout and process-group cleanup, argv-safe dispatch, channel fallback, and safe `command:` summary delivery.
 [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) records the bounded manual macOS and Herdr channel proof.

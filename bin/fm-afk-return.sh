@@ -324,8 +324,8 @@ return_guard() {
 
 # --- supervisor health, snapshotted before anything is shut down ------------
 
-health_snapshot() {  # <evidence-file>
-  local evidence=$1 beat_age state lines="" note=""
+health_snapshot() {  # <evidence-file> <since-epoch>
+  local evidence=$1 since=${2:-} beat_age state lines="" note="" watch
   beat_age=$(fm_path_age "$STATE/.last-watcher-beat")
   if [ -e "$STATE/.watcher-down" ]; then
     # The marker survives past its episode in an acked:* state
@@ -357,11 +357,33 @@ GAP: the watcher beat was ${beat_age}s old at return (grace ${RETURN_GRACE}s)"
     lines="$lines
 delivery wedged: $(head -1 "$STATE/.subsuper-inject-wedged" 2>/dev/null || true)"
   fi
+  watch=$(away_watch_line "$since")
+  if [ -n "$watch" ]; then
+    lines="$lines
+$watch"
+  fi
   if [ -z "$(printf '%s' "$lines" | tr -d '[:space:]')" ]; then
     lines="supervision ran through the away window with no detected gap (watcher beat ${beat_age}s old at return)"
   fi
   append_evidence health "$lines
 $note" "$evidence"
+}
+
+# What the away watchdog (bin/fm-away-watch.sh) alerted on in the window, as
+# one line, from its durable marker state/.away-watch-alert: every condition
+# row whose last alert is at or after <since-epoch>. Prints nothing when it
+# never alerted.
+away_watch_line() {  # <since-epoch>
+  local since=$1 rows
+  case "$since" in ''|*[!0-9]*) since=0 ;; esac
+  rows=$(awk -F '\t' -v since="$since" \
+    'NR > 1 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $3 + 0 >= since + 0 { print $2 "\t" $3 "\t" $4 "\t" $5 }' \
+    "$STATE/.away-watch-alert" 2>/dev/null) || rows=
+  [ -n "$rows" ] || return 0
+  printf 'the away watchdog alerted during the away window: '
+  printf '%s\n' "$rows" | while IFS=$'\t' read -r first last count text; do
+    printf '%s (first %s, last %s, %s alert(s))\n' "$text" "$(epoch_to_iso "$first")" "$(epoch_to_iso "$last")" "$count"
+  done | awk 'NR > 1 { printf "; " } { printf "%s", $0 } END { printf "\n" }'
 }
 
 # The supervision host's broken-session latch across the window, from its
@@ -710,7 +732,7 @@ return_reconcile() {
   # Health is read before the shutdown below so the shutdown cannot read as a gap;
   # a repeated begin/check keeps the first snapshot.
   if ! grep -q "^evidence$(printf '\t')health$(printf '\t')" "$evidence" 2>/dev/null; then
-    health_snapshot "$evidence"
+    health_snapshot "$evidence" "$since"
     engine_snapshot "$evidence" "$since"
   fi
 

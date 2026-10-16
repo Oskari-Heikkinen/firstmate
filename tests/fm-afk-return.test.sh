@@ -914,6 +914,29 @@ test_return_brief_health_leads_with_a_gap() {
   pass "the return brief leads with supervisor health and names every detected gap"
 }
 
+test_return_brief_reports_the_away_watchdog_marker_in_one_health_line() {
+  local dir out now tab watch_lines
+  tab=$(printf '\t')
+  dir="$TMP_ROOT/brief-away-watch"
+  install_runner "$dir"
+  contract_in "$dir" enter >/dev/null 2>&1 || fail "could not write the away-posture record"
+  now=$(date +%s)
+  # The marker bin/fm-away-watch.sh writes: a window line, then one row per
+  # condition. A row whose last alert predates the window is not reported.
+  printf 'window%s1\nlock%s%s%s%s%s2%sno main session holds the session lock\nqueue%s5%s6%s1%sa queued wake has waited 70 minutes unacknowledged\n' \
+    "$tab" "$tab" "$((now - 120))" "$tab" "$now" "$tab" "$tab" "$tab" "$tab" "$tab" "$tab" > "$dir/home/state/.away-watch-alert"
+  touch "$dir/home/state/.last-watcher-beat"
+  : > "$dir/home/state/.fake-drain"
+  out=$(run_return "$dir" begin) || fail "a clean fleet with a watchdog alert should still clear the gate: $out"
+  watch_lines=$(printf '%s\n' "$out" | grep -c 'the away watchdog alerted during the away window')
+  assert_equals 1 "$watch_lines" "the watchdog marker did not become exactly one health line"
+  assert_contains "$out" 'the away watchdog alerted during the away window: no main session holds the session lock (first ' "the health line did not name the condition"
+  assert_contains "$out" ', 2 alert(s))' "the health line did not count the alerts"
+  assert_not_contains "$out" '70 minutes' "a row from before the window was reported"
+  assert_not_contains "$out" 'no detected gap' "a window the watchdog alerted in was reported as clean"
+  pass "the return brief turns the away watchdog's marker into one health line for the window"
+}
+
 test_return_brief_does_not_report_an_acked_watcher_down_marker_as_a_gap() {
   local dir out
   dir="$TMP_ROOT/brief-acked-marker"
@@ -1377,6 +1400,7 @@ test_statusless_leftover_record_keeps_catchup_gated_until_cleanup
 test_statusful_leftover_record_lets_catchup_clear
 test_return_guard_refuses_while_the_record_exists
 test_return_brief_health_leads_with_a_gap
+test_return_brief_reports_the_away_watchdog_marker_in_one_health_line
 test_return_brief_does_not_report_an_acked_watcher_down_marker_as_a_gap
 test_return_brief_reports_only_an_open_downtime_episode_as_a_gap
 test_return_brief_reports_an_engine_latch_in_the_window

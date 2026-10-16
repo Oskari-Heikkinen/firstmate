@@ -262,6 +262,24 @@ It names the trip time only when the ledger retains the initial-trip row: a fail
 The brief also says whether the latch is still paused or has recovered.
 The latch belongs to one main session, engine, and model, so a new main session or another engine or model starts clean.
 
+### When main cannot run turns
+
+Every path above ends with main, so none of them can say anything when main itself cannot run a turn: a quota or limit pause, a dialog waiting for input, or a dead session.
+The away watchdog (`bin/fm-away-watch.sh`) covers that case from outside every session.
+A systemd user timer runs it every five minutes, and it does nothing unless the home holds an away record that is not quiet mode's.
+It alerts through the `config/wedge-alarm` channels ([wedge-alarm.md](wedge-alarm.md)) when any of these holds:
+
+- No host process is live under the identity `state/.supervision-host` records, and no main or host activity is newer than 30 minutes.
+- The session lock's recorded owner is dead, or no session holds the lock.
+- The broken-session latch has held past one cooldown.
+- A queued wake has waited unacknowledged for more than 60 minutes.
+- The Stop hook's auto-arm failure markers exist.
+
+Each condition alerts at most once an hour.
+The alert names only the home, the conditions, and their durations, since a channel may be a public topic.
+The durable marker `state/.away-watch-alert` keeps every condition that alerted in the window, and the away return brief reports it as one health line.
+[Configuration](configuration.md#away-watchdog-configaway-watch) owns the thresholds and the timer install.
+
 ### Lost ownership
 
 When the host loses session-lock ownership or its auto-arm generation, it stands down silently and leaves continuity to whoever owns it now.
