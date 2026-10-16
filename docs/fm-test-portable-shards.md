@@ -90,7 +90,7 @@ The report is a kill matrix plus a parity result: parity holds when every mutant
 A mutant the old core killed but the gate missed is rerun on both sides once, so a flake on either side cannot decide parity.
 Its mutate jobs run up to 300 minutes each, because every mutant runs its whole test set twice; the audit is rare and off the landing path, so that bound sits outside the timeout policy below.
 
-The "Mutation check on changed risky lines" job in `ci.yml` runs on `ci/**` pushes that change a risky-area script.
+The "Mutation check on changed risky lines" job in `ci.yml` runs on `ci/**` pushes that change a risky-area script, including pushes that escalate to the main layout.
 It samples up to 20 mutants on the changed lines and runs each against the script's gate-tier tests, stopping at the first kill, within a 15-minute budget.
 It is non-blocking: survivors show in the job summary, and the job cannot fail the run.
 

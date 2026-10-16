@@ -457,10 +457,14 @@ jobs:
   # changed lines, each run against the script's gate-tier tests
   # (bin/fm-mutate.sh changed). A report beside the lean review, never a
   # gate: survivors only show in the summary, and the job cannot fail the run.
+  # A risky-script change often selects enough tests to escalate the push to
+  # the main layout, so the job keys on the ci/** ref, not on the layout.
   mutation-changed:
     name: Mutation check on changed risky lines
     needs: plan
-    if: needs.plan.outputs.layout == 'ci'
+    if: >-
+      startsWith(github.ref, 'refs/heads/ci/') &&
+      (needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full')
     runs-on: ubuntu-latest
     continue-on-error: true
     # Normal tier (see the timeout policy above); the check spends at most
