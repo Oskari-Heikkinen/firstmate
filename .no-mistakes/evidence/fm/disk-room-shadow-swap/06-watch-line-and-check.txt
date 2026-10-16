@@ -1,0 +1,7 @@
+=== watch-line on the real host with the fixture .wslconfig (swap=16GB, live swap.vhdx 1 GiB)
+disk room low: -1.7 GiB real room on /mnt/c after 0.0 GiB of declared writes and 3.0 GiB of shadow storage headroom and 15.0 GiB of swap file growth (margin 20.0 GiB); shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved | storage alert: Linux used grew 6.50 GiB/day over the last 7.0 days (limit 0.5 GiB/day, approved installs and kept datasets included); /mnt/c has 16.3 GiB actually free (floor 100.0 GiB)
+exit=0
+
+=== check --expect-write 1G admission with the swap reservation (real room negative -> refused)
+low: only -2.7 GiB would be left on /mnt/c after a 1.0 GiB write (margin 20.0 GiB); shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+exit=1

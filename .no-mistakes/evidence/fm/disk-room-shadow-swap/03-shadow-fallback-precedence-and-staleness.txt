@@ -1,0 +1,21 @@
+=== A record newer than the last live reading wins (record written after the last good live reading, cap 5 GiB, used 1 GiB)
+recorded_epoch=1792149662
+max_bytes=5368709120
+used_bytes=1073741824
+real room: 12.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+shadow storage: 4.0 GiB headroom reserved (cap 5.0 GiB, used 1.0 GiB, recorded 2026-10-16 11:21 UTC; source record, no live reading)
+
+=== The real (older, 2026-10-15) record loses to the last live reading
+real room: 13.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+shadow storage: 3.0 GiB headroom reserved (cap 3.0 GiB, allocated 0.0 GiB, used 0.0 GiB; source last live reading at 2026-10-16 11:17 UTC, no live reading now)
+
+=== 8 days later, live still failing: last live reading is stale -> whole cap reserved, max(cap, FM_DISK_ROOM_SHADOW_MAX)
+real room: 13.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+shadow storage: 3.0 GiB reserved (whole cap; the last live reading is over 7 days old, so allocated is unknown; source last live reading at 2026-10-16 11:17 UTC, no live reading now)
+real room: 12.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+shadow storage: 4.0 GiB reserved (whole cap; the last live reading is over 7 days old, so allocated is unknown; source last live reading at 2026-10-16 11:17 UTC, no live reading now)
+
+=== Garbage in the last-live file is ignored (falls back to the record, never crashes)
+real room: 6.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+shadow storage: 10.0 GiB headroom reserved (cap 10.0 GiB, used 0.0 GiB, recorded 2026-10-15 16:18 UTC; source record, no live reading)
+exit=0

@@ -1,0 +1,28 @@
+ok - D and C reservations are independent and full allocation peak is admitted
+ok - status reports real room, slack and the reclaimable estimate
+ok - a fresh elevated record reserves the shadow storage headroom
+ok - without a fresh record the configured cap is reserved whole
+ok - a live shadow storage reading reserves the cap minus what is allocated
+ok - a failed live reading falls back to the elevated record
+ok - a failed live reading falls back to the newer of the last good live reading and the record
+ok - the WSL swap file's remaining growth is reserved from the drive
+ok - with no shadow storage data room is unchanged
+ok - recent volsnap 25/33/36 events warn that shadow storage is cycling
+ok - without wevtutil.exe on PATH the drive's System32 copy counts the events
+ok - status reports the SSD's room and the active results root
+ok - check admits down to the margin after the expected write
+ok - a low reading says whether compaction would help
+ok - an unreadable reclaim estimate is reported as unknown
+ok - ext4 metadata is subtracted from the reclaimable estimate
+ok - reservations reduce room until released, expired, or their process exits
+ok - run admits, holds the reservation for the command, and refuses when low
+ok - watch-line speaks only when room is low, without repeating itself
+ok - outside WSL the monitor measures the Linux filesystem alone
+ok - the distro disk is discovered once and cached
+ok - arm registers the watcher check with its settings and disarm retires it
+ok - growth and C: runway alerts speak once per change and growth reports daily and weekly values
+ok - D: runway and Linux substitution alerts, with disk file and D: history
+
+real	0m20.432s
+user	0m12.015s
+sys	0m12.390s

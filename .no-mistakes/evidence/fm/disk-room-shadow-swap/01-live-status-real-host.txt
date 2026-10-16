@@ -1,0 +1,21 @@
+$ FM_DISK_ROOM_STATE=<tmp> bin/fm-disk-room.sh status   # head 4f5b567d, real host, real PowerShell
+real room: 13.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+/mnt/c free: 16.3 GiB
+Linux free: 509.6 GiB, used 446.0 GiB
+reserved writes: 0.0 GiB
+shadow storage: 3.0 GiB headroom reserved (cap 3.0 GiB, allocated 0.0 GiB, used 0.0 GiB, read 2026-10-16 11:17 UTC; source live)
+shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap
+swap file: 0.0 GiB growth reserved (size 16.0 GiB from swap= in /mnt/c/Users/Oskari/.wslconfig; file now 16.0 GiB at /mnt/c/Users/Oskari/AppData/Local/Temp/E7FCB6E3-7247-448B-A6B0-F71BF80B5315/swap.vhdx)
+disk file: 641.1 GiB (/mnt/c/Users/Oskari/AppData/Local/wsl/{05372fbb-9cf8-49d7-bf6a-9c571a9b9da7}/ext4.vhdx); slack 195.0 GiB, of which fragmented 175.3 GiB and ext4 metadata 17.1 GiB; reclaimable by compaction about 2.7 GiB
+last compaction: 2026-10-15T18:18:31 now ok reclaimed 0.2 GiB
+SSD D: 623.4 GiB free of 1863.0 GiB (exFAT)
+fetched results root: SSD D:
+
+real	0m6.721s
+user	0m0.209s
+sys	0m0.596s
+
+--- state after:
+/tmp/fmdr-live.sceD5J/shadow-live: 1792149474 3221225472 0 0
+/tmp/fmdr-live.sceD5J/shadow-live-good: 1792149474 3221225472 0 0
+/tmp/fmdr-live.sceD5J/swap-path: 99987b1b-b4b6-4d86-ac82-1aff46afd899 /mnt/c/Users/Oskari/AppData/Local/Temp/E7FCB6E3-7247-448B-A6B0-F71BF80B5315/swap.vhdx

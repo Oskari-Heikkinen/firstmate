@@ -1,0 +1,32 @@
+Real host C: (free/live shadow cached in state), fixture Windows user folder /tmp/fmdr-user.jSPEBe for .wslconfig and %TEMP%
+
+=== swap=16GB, swap.vhdx now 2 GiB -> 14 GiB growth reserved, real room drops by 14 GiB
+real room: -0.7 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+swap file: 14.0 GiB growth reserved (size 16.0 GiB from swap= in /tmp/fmdr-user.jSPEBe/.wslconfig; file now 2.0 GiB at /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G2-NEW/swap.vhdx)
+
+=== swap.vhdx deleted at WSL shutdown (the 15-Oct case): whole 16 GiB reserved
+real room: -2.7 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+swap file: 16.0 GiB growth reserved (size 16.0 GiB from swap= in /tmp/fmdr-user.jSPEBe/.wslconfig; no swap file found, so all of it)
+
+=== swap= unset, memory=16GB -> WSL default quarter = 4 GiB; file 2 GiB -> 2 GiB reserved
+real room: 11.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+swap file: 2.0 GiB growth reserved (size 4.0 GiB, the WSL default of a quarter of 16.0 GiB memory rounded up, since swap= is unset in /tmp/fmdr-user.jSPEBe/.wslconfig; file now 2.0 GiB at /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G2-NEW/swap.vhdx)
+
+=== swap=0 -> not reserved
+real room: 13.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+swap file: not reserved (swap=0 in /tmp/fmdr-user.jSPEBe/.wslconfig, so WSL keeps no swap file)
+
+=== swapFile= on another drive -> not reserved
+[wsl2]
+swap=8GB
+swapFile=D:\\wsl\\swap.vhdx
+real room: 13.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+swap file: not reserved (swapFile=D:\wsl\swap.vhdx in /tmp/fmdr-user.jSPEBe/.wslconfig is not on /mnt/c)
+
+=== FM_DISK_ROOM_WSLCONFIG empty -> disabled
+real room: 13.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+swap file: not reserved (FM_DISK_ROOM_WSLCONFIG is empty)
+
+=== status --json swap fields (swap=16GB, file 2 GiB)
+{'room': -799256576, 'host_free': 17454354432, 'shadow_reserved': 3221225472, 'swap_reserved': 15032385536, 'swap_source': 'wslconfig', 'swap_size': 17179869184, 'swap_file_size': 2147483648}
+room == host_free - shadow - swap: True

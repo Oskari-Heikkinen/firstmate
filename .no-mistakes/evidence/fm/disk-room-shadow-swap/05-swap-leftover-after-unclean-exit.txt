@@ -1,0 +1,18 @@
+=== Boot A: only G1 exists, grown to 15 GiB; mtime set to 3 hours ago (host asleep since its last write)
+swap file: 1.0 GiB growth reserved (size 16.0 GiB from swap= in /tmp/fmdr-user.jSPEBe/.wslconfig; file now 15.0 GiB at /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G1-OLD/swap.vhdx)
+cache: boot-A /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G1-OLD/swap.vhdx
+
+=== Same boot, file mtime older than any uptime cutoff: cached live file is still used (no false 16 GiB reservation)
+swap file: 1.0 GiB growth reserved (size 16.0 GiB from swap= in /tmp/fmdr-user.jSPEBe/.wslconfig; file now 15.0 GiB at /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G1-OLD/swap.vhdx)
+
+=== Unclean WSL exit: G1 left behind at 15 GiB; VM reboots (new boot id) and creates G2 at 1 GiB
+swap file: 15.0 GiB growth reserved (size 16.0 GiB from swap= in /tmp/fmdr-user.jSPEBe/.wslconfig; file now 1.0 GiB at /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G2-NEW/swap.vhdx)
+cache: boot-B /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G2-NEW/swap.vhdx
+
+=== Control: same G1/G2 files but boot id NOT changed -> the stale cache would keep G1 (shows why the boot-id key matters)
+swap file: 1.0 GiB growth reserved (size 16.0 GiB from swap= in /tmp/fmdr-user.jSPEBe/.wslconfig; file now 15.0 GiB at /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G1-OLD/swap.vhdx)
+(cache keyed to the previous boot-A instead):
+swap file: 15.0 GiB growth reserved (size 16.0 GiB from swap= in /tmp/fmdr-user.jSPEBe/.wslconfig; file now 1.0 GiB at /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G2-NEW/swap.vhdx)
+
+=== Cached path outside the user Temp folder is not trusted
+swap file: 15.0 GiB growth reserved (size 16.0 GiB from swap= in /tmp/fmdr-user.jSPEBe/.wslconfig; file now 1.0 GiB at /tmp/fmdr-user.jSPEBe/AppData/Local/Temp/G2-NEW/swap.vhdx)

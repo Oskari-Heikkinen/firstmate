@@ -1,0 +1,27 @@
+=== BASE fae857a8: first a real live reading, then 400 s later the live reading hangs (stub killed by the 20 s timeout)
+real room: 13.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+/mnt/c free: 16.3 GiB
+shadow storage: 3.0 GiB headroom reserved (cap 3.0 GiB, allocated 0.0 GiB, used 0.0 GiB, read 2026-10-16 11:18 UTC; source live)
+--- live reading fails:
+real room: 6.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+/mnt/c free: 16.3 GiB
+shadow storage: 10.0 GiB headroom reserved (cap 10.0 GiB, used 0.0 GiB, recorded 2026-10-15 16:18 UTC; source record, no live reading)
+
+real	0m20.228s
+user	0m0.149s
+sys	0m0.120s
+
+=== HEAD 4f5b567d: same state dir as the earlier real live reading, 400 s later the live reading hangs
+real room: 13.3 GiB (limited by /mnt/c; margin 20.0 GiB) - LOW: shadow storage cycling: 19 volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap; compaction would reclaim under 5 GiB; data must be freed or moved
+/mnt/c free: 16.3 GiB
+shadow storage: 3.0 GiB headroom reserved (cap 3.0 GiB, allocated 0.0 GiB, used 0.0 GiB; source last live reading at 2026-10-16 11:17 UTC, no live reading now)
+swap file: 0.0 GiB growth reserved (size 16.0 GiB from swap= in /mnt/c/Users/Oskari/.wslconfig; file now 16.0 GiB at /mnt/c/Users/Oskari/AppData/Local/Temp/E7FCB6E3-7247-448B-A6B0-F71BF80B5315/swap.vhdx)
+
+real	0m18.904s
+user	0m0.165s
+sys	0m0.142s
+--- json:
+{'room': 14231298048, 'host_free': 17452523520, 'shadow_reserved': 3221225472, 'shadow_source': 'last-live', 'shadow_reading': 'last-live', 'shadow_max': 3221225472, 'swap_reserved': 0, 'swap_source': 'wslconfig', 'swap_size': 17179869184, 'swap_file_size': 17217617920}
+--- state after failure (shadow-live overwritten with failure, shadow-live-good kept):
+/tmp/fmdr-live.sceD5J/shadow-live: 1792149901 -
+/tmp/fmdr-live.sceD5J/shadow-live-good: 1792149474 3221225472 0 0
