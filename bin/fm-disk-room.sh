@@ -1058,8 +1058,8 @@ cmd_status() {
   fi
   if [ -n "$VHDX_SIZE" ]; then
     printf 'disk file: %s GiB (%s); slack %s GiB, of which fragmented %s and ext4 metadata %s; reclaimable by compaction %s\n' \
-      "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "${FRAG:+$(gib "$FRAG") GiB}${FRAG:-unknown}" \
-      "${OVERHEAD:+$(gib "$OVERHEAD") GiB}${OVERHEAD:-unknown}" \
+      "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(if [ -n "$FRAG" ]; then printf '%s GiB' "$(gib "$FRAG")"; else printf unknown; fi)" \
+      "$(if [ -n "$OVERHEAD" ]; then printf '%s GiB' "$(gib "$OVERHEAD")"; else printf unknown; fi)" \
       "$(if [ -n "$RECLAIM" ]; then printf 'about %s GiB (disk file block table)' "$(gib "$RECLAIM")"; else printf 'unknown (disk file block table unreadable)'; fi)"
   elif [ -n "$HOST" ]; then
     printf 'disk file: not found (set FM_DISK_ROOM_VHDX)\n'
