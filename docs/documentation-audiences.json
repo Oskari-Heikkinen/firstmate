@@ -285,6 +285,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/tj-capacity-alerts/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/updatefirstmate/SKILL.md",
       "audience": "agent-runtime"
     },
