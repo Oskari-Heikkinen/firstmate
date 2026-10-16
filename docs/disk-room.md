@@ -8,7 +8,7 @@ A home that runs `bin/fm-disk-room.sh` under a pin declares itself as described 
 
 ## Real room
 
-`bin/fm-disk-room.sh` treats real room as the smaller of the Windows drive's free space and Linux free space, each minus the writes running jobs have declared, with the Windows drive's figure also minus the shadow storage headroom described below.
+`bin/fm-disk-room.sh` treats real room as the smaller of the Windows drive's free space and Linux free space, each minus the writes running jobs have declared, with the Windows drive's figure also minus the shadow storage headroom and the swap file growth described below.
 Slack inside the disk file is not counted as room: ext4 does not prefer blocks the file already holds, so a large new file grows the file even while slack exists.
 The slack is reported separately, together with how much of it the next compaction would actually return.
 
@@ -33,14 +33,29 @@ The monitor reserves that headroom, the cap minus what is already allocated, fro
 
 The monitor reads the cap and the allocated and used sizes live, without elevation, from `Win32_ShadowStorage` through `powershell.exe` (`FM_DISK_ROOM_POWERSHELL`; empty disables it), under a 20 second timeout, and caches the reading, or its failure, for 5 minutes.
 Because the reading is live, the reservation shrinks as the diff area grows and returns to nearly the whole cap after a restore point starts a new, nearly empty diff area.
-The `shadow storage:` status line ends with the source of its numbers, `live`, `record`, or `none`, and `status --json` gives it as `shadow_reading`.
+The `shadow storage:` status line ends with the source of its numbers, `live`, the last live reading with its time, `record`, or `none`, and `status --json` gives it as `shadow_reading` (`live`, `last-live`, `record`, or `none`).
 
-When the live reading fails or times out, the elevated record is the fallback, reserving the cap minus the recorded used size.
+Each good live reading is also kept as the last good live reading, which a failed reading never overwrites.
+When the live reading fails or times out, the newer of the last good live reading and the elevated record is the fallback.
+The last good live reading reserves its cap minus its allocated size, and the line says `source last live reading at <time>, no live reading now`.
+The record reserves the cap minus the recorded used size.
+A last good live reading older than 7 days is treated like a stale record below and reserves its whole cap.
 The elevated script from the install below writes that record, `C:\ProgramData\firstmate\shadow-storage.txt`, at every `-Install` and reclaim-now run, and at every Windows start while the startup task is enabled.
 The task runs the copy the install made in `C:\ProgramData\firstmate\`, so an install made before this record existed never writes it; re-run `fm-wsl-reclaim.ps1 -Install` elevated to update that copy.
 A record older than 7 days, or no record at all, leaves the used size unknown; the monitor then reserves the whole cap, the larger of the record's cap and `FM_DISK_ROOM_SHADOW_MAX` (for example `10G`), because a too-large reservation only makes room read low.
 With neither a capped record nor `FM_DISK_ROOM_SHADOW_MAX`, nothing is reserved and room reads as before; a record of shadow storage without a cap reserves nothing unless `FM_DISK_ROOM_SHADOW_MAX` bounds it.
 On every reading the monitor also counts `volsnap` System events 25, 33, and 36 of the last 7 days, which need no elevation, and warns that the shadow storage is cycling, deleting restore points at its cap, when any occurred.
+
+### Swap file growth
+
+WSL keeps its swap file, `swap.vhdx`, on the Windows drive and grows it as Linux swaps, up to the configured swap size, while Linux `df` and the disk file stay flat.
+The monitor reserves that remaining growth, the swap size minus the swap file's current length, from the Windows drive's free space.
+The swap size is `swap=` in the `[wsl2]` section of the Windows `.wslconfig`; `swap=0` means no swap file and nothing is reserved.
+When `swap=` is unset, the size is WSL's default of a quarter of the VM's memory rounded up to a whole GiB, with the memory taken from `memory=` or else from Linux `MemTotal`.
+The swap file is `swapFile=` when set, else the newest `%TEMP%\<guid>\swap.vhdx` in the Windows user folder; a swap file that cannot be found counts as empty, so the whole size is reserved, and a `swapFile=` on another drive reserves nothing here.
+The `.wslconfig` is the one beside the disk file's Windows user folder (`FM_DISK_ROOM_WSLCONFIG`; empty disables the reservation).
+Everything is read as files through the drive mount, so no Windows process starts.
+The `swap file:` status line names where the size came from, and `status --json` gives `swap_reserved`, `swap_source`, `swap_size`, and `swap_file_size`.
 
 ## Admitting big writes
 
@@ -57,7 +72,7 @@ This replaces fixed floors on raw Windows free space, which either stop a job th
 A home that should hear about low room arms the standing watcher check with `bin/fm-disk-room.sh arm`, which writes `state/disk-room.check.sh` with the `FM_DISK_ROOM_*` settings in force and binds it with `bin/fm-check-register.sh`; `bin/fm-disk-room.sh disarm` retires it.
 `watch-line` prints nothing while real room is at or above the margin.
 Under the margin it prints one line with the real room, the declared writes, and the next step, and repeats only after a further 5 GiB drop or 6 hours; a failed reading prints a "cannot measure" line at most every 6 hours.
-It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, the live shadow storage reading, and the shadow storage record.
+It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, the live shadow storage reading, the last good live reading, the shadow storage record, the `.wslconfig`, and one `stat` of the swap file.
 It starts PowerShell for the live reading at most once every 5 minutes, failures included, under a 20 second timeout, because PowerShell times out when Windows is short of memory.
 It runs `wevtutil.exe` for the event count at most once an hour, under a 20 second timeout.
 
@@ -112,7 +127,7 @@ With it disabled:
 
 - freed space returns to the Windows drive only through the reclaim-now step below;
 - `last compaction:` advances only on reclaim-now runs;
-- the shadow storage record is refreshed only by `-Install` and `-Now`, so when the live reading fails 7 days after the last one the monitor treats the record as stale and reserves the whole cap, which makes room read lower, never higher, until the next reclaim-now.
+- the shadow storage record is refreshed only by `-Install` and `-Now`, so when the live reading fails 7 days after both the last good live reading and the record the monitor treats them as stale and reserves the whole cap, which makes room read lower, never higher, until the next reclaim-now.
 
 ### Reclaim now
 

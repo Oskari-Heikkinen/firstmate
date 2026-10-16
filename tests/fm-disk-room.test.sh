@@ -14,7 +14,8 @@ set -u
 
 unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
   FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_POWERSHELL FM_DISK_ROOM_RESULTS_ROOT \
-  FM_DISK_ROOM_SAMPLES FM_DISK_ROOM_GROWTH_MAX FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_STORAGE_MNT
+  FM_DISK_ROOM_SAMPLES FM_DISK_ROOM_GROWTH_MAX FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_STORAGE_MNT \
+  FM_DISK_ROOM_WSLCONFIG FM_DISK_ROOM_MEMINFO
 TMP_ROOT=$(fm_test_tmproot fm-disk-room)
 DISK_ROOM="$ROOT/bin/fm-disk-room.sh"
 GIB=1073741824
@@ -127,7 +128,8 @@ run_room() {
     FM_DISK_ROOM_RESULTS_ROOT="${FM_DISK_ROOM_RESULTS_ROOT-$TMP_ROOT/storage/results-root}" \
     FM_DISK_ROOM_SAMPLES="${TEST_SAMPLES-$TMP_ROOT/no-samples}" \
     FM_DISK_ROOM_C_FREE_MIN="${FM_DISK_ROOM_C_FREE_MIN-off}" \
-    "$DISK_ROOM" "$@"
+    FM_DISK_ROOM_WSLCONFIG="${FM_DISK_ROOM_WSLCONFIG-}" FM_DISK_ROOM_MEMINFO="${FM_DISK_ROOM_MEMINFO-$TMP_ROOT/meminfo}" \
+    ${TEST_SWAP_DISCOVER:+env -u FM_DISK_ROOM_WSLCONFIG} "$DISK_ROOM" "$@"
 }
 
 json_field() { printf '%s\n' "$1" | sed -n "s/.*\"$2\":\([^,}]*\).*/\1/p"; }
@@ -513,28 +515,130 @@ test_shadow_live_failure_falls_back() {
   assert_equals 1 "$(live_calls)" "the live reading is tried"
   assert_equals $(( 7 * GIB )) "$(json_field "$out" shadow_reserved)" "a failed live reading falls back to the record"
   assert_equals '"record"' "$(json_field "$out" shadow_reading)" "the fallback is named as the record"
+  [ ! -e "$TMP_ROOT/state/shadow-live-good" ] || fail "a failed reading never writes the last good reading"
   write_shadow_live 19 16 15
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 60 )) run_room status --json)
   assert_equals 1 "$(live_calls)" "a failure is cached too, so a hung powershell is not retried on every status"
   assert_equals '"record"' "$(json_field "$out" shadow_reading)" "the cached failure keeps the record"
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room status --json)
   assert_equals '"live"' "$(json_field "$out" shadow_reading)" "the live reading is retried once the window passes"
+  # From here the good reading at t0 + 300 is newer than the record, so each
+  # failure falls back to it.
   printf 'SHADOW|%s|%s|%s\r\n' $(( 19 * GIB )) $(( 16 * GIB )) $(( 15 * GIB )) >"$SHADOW_LIVE"
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 600 )) run_room status --json)
-  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "a reading cut off before its END line is a failure"
+  assert_equals '"last-live"' "$(json_field "$out" shadow_reading)" "a reading cut off before its END line is a failure"
   printf 'END\r\n' >"$SHADOW_LIVE"
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 900 )) run_room status --json)
-  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "a reading with no shadow storage on the drive falls back"
+  assert_equals '"last-live"' "$(json_field "$out" shadow_reading)" "a reading with no shadow storage on the drive falls back"
   printf 'SHADOW|9223372036854775808|0|0\r\nEND\r\n' >"$SHADOW_LIVE"
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 1200 )) run_room status --json)
-  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "a live cap past signed 64 bits is unreadable"
-  rm -f "$HOSTDIR/ProgramData/firstmate/shadow-storage.txt" "$SHADOW_LIVE"
+  assert_equals '"last-live"' "$(json_field "$out" shadow_reading)" "a live cap past signed 64 bits is unreadable"
+  rm -f "$HOSTDIR/ProgramData/firstmate/shadow-storage.txt" "$SHADOW_LIVE" "$TMP_ROOT/state/shadow-live-good"
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 1500 )) run_room status)
   assert_contains "$out" "shadow storage: not reserved (no live reading and no record" "with neither reading nothing is reserved"
   assert_contains "$out" "source none)" "plain status names no source"
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 1500 )) FM_DISK_ROOM_POWERSHELL='' run_room status --json)
   assert_equals '"none"' "$(json_field "$out" shadow_reading)" "an empty powershell setting disables the live reading"
   pass "a failed live reading falls back to the elevated record"
+}
+
+test_shadow_last_live_fallback() {
+  reset_state
+  set_sizes 60 600 400
+  write_shadow_record 10 0 3600
+  write_shadow_live 3 1 1
+  local out t0 when
+  t0=$(date +%s)
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room status --json)
+  assert_equals '"live"' "$(json_field "$out" shadow_reading)" "the live reading is taken"
+  rm -f "$SHADOW_LIVE"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room status --json)
+  assert_equals 2 "$(live_calls)" "the live reading is tried again and fails"
+  assert_equals '"last-live"' "$(json_field "$out" shadow_reading)" "the last good live reading, newer than the record, is the fallback"
+  assert_equals '"last-live"' "$(json_field "$out" shadow_source)" "the source is the last live reading"
+  assert_equals $(( 2 * GIB )) "$(json_field "$out" shadow_reserved)" "the last live cap minus allocated is reserved, not the older record's 10 GiB"
+  assert_equals $(( 58 * GIB )) "$(json_field "$out" room)" "room keeps the last live reservation"
+  read -r when _ <"$TMP_ROOT/state/shadow-live-good"
+  assert_equals "$t0" "$when" "a failure never overwrites the last good reading"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room status)
+  assert_contains "$out" "shadow storage: 2.0 GiB headroom reserved (cap 3.0 GiB, allocated 1.0 GiB, used 1.0 GiB; source last live reading at $(date -u -d "@$t0" '+%Y-%m-%d %H:%M UTC'), no live reading now)" "plain status names the last live reading and its time"
+  write_shadow_record 10 3 -100
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 600 )) run_room status --json)
+  assert_equals '"record"' "$(json_field "$out" shadow_reading)" "a record newer than the last good live reading wins"
+  assert_equals $(( 7 * GIB )) "$(json_field "$out" shadow_reserved)" "the newer record's headroom is reserved"
+  rm -f "$HOSTDIR/ProgramData/firstmate/shadow-storage.txt"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 8 * 86400 )) run_room status --json)
+  assert_equals '"stale-last-live"' "$(json_field "$out" shadow_source)" "a last live reading over 7 days old is stale"
+  assert_equals $(( 3 * GIB )) "$(json_field "$out" shadow_reserved)" "a stale last live reading reserves its whole cap"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 8 * 86400 + 300 )) FM_DISK_ROOM_SHADOW_MAX=10G run_room status --json)
+  assert_equals $(( 10 * GIB )) "$(json_field "$out" shadow_reserved)" "a larger configured cap bounds a stale last live reading"
+  pass "a failed live reading falls back to the newer of the last good live reading and the record"
+}
+
+test_swap_file_growth() {
+  reset_state
+  set_sizes 60 600 400
+  local conf="$HOSTDIR/Users/u/.wslconfig" g1="$HOSTDIR/Users/u/AppData/Local/Temp/{G1}" g2="$HOSTDIR/Users/u/AppData/Local/Temp/{G2}" out rc
+  mkdir -p "$g1"
+  truncate -s $(( 3 * GIB )) "$g1/swap.vhdx"
+  printf '\xEF\xBB\xBF[wsl2]\r\nmemory=16GB\r\nSwap = 16GB\r\n' >"$conf"
+  printf 'MemTotal:       16375996 kB\n' >"$TMP_ROOT/meminfo"
+  out=$(TEST_SWAP_DISCOVER=1 run_room status --json)
+  assert_equals '"wslconfig"' "$(json_field "$out" swap_source)" ".wslconfig beside the disk file gives the swap size"
+  assert_equals $(( 16 * GIB )) "$(json_field "$out" swap_size)" "swap= is read from the [wsl2] section"
+  assert_equals $(( 3 * GIB )) "$(json_field "$out" swap_file_size)" "the newest Temp swap.vhdx is the swap file"
+  assert_equals $(( 13 * GIB )) "$(json_field "$out" swap_reserved)" "the swap file's remaining growth is reserved"
+  assert_equals $(( 47 * GIB )) "$(json_field "$out" room)" "room drops by the swap file's growth"
+  out=$(TEST_SWAP_DISCOVER=1 run_room status)
+  assert_contains "$out" "swap file: 13.0 GiB growth reserved (size 16.0 GiB from swap= in $conf; file now 3.0 GiB at $g1/swap.vhdx)" "plain status names the swap line's source"
+  out=$(TEST_SWAP_DISCOVER=1 run_room check --expect-write 30G); rc=$?
+  expect_code 1 "$rc" "admission counts the swap file's growth"
+  assert_contains "$out" "on $HOSTDIR" "the low line names the drive"
+  rm -f "$g1/swap.vhdx"
+  mkdir -p "$g2"
+  truncate -s $(( 5 * GIB )) "$g2/swap.vhdx"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals $(( 11 * GIB )) "$(json_field "$out" swap_reserved)" "a vanished cached swap file is looked up again"
+  printf '[wsl2]\r\nmemory=16GB\r\n[experimental]\r\nswap=99GB\r\n' >"$conf"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals '"default"' "$(json_field "$out" swap_source)" "swap= outside [wsl2] leaves the WSL default"
+  assert_equals $(( 4 * GIB )) "$(json_field "$out" swap_size)" "the default is a quarter of memory="
+  assert_equals 0 "$(json_field "$out" swap_reserved)" "a swap file past the default size reserves nothing"
+  rm -f "$conf"
+  printf 'MemTotal:       8000000 kB\n' >"$TMP_ROOT/meminfo"
+  truncate -s $(( 1 * GIB )) "$g2/swap.vhdx"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals '"default"' "$(json_field "$out" swap_source)" "with no .wslconfig the WSL default applies"
+  assert_equals $(( 2 * GIB )) "$(json_field "$out" swap_size)" "the default is a quarter of Linux memory rounded up to a GiB"
+  assert_equals $(( 1 * GIB )) "$(json_field "$out" swap_reserved)" "the default size minus the file is reserved"
+  assert_equals $(( 59 * GIB )) "$(json_field "$out" room)" "room drops by the default's remaining growth"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status)
+  assert_contains "$out" "swap file: 1.0 GiB growth reserved (size 2.0 GiB, the WSL default of a quarter of 7.6 GiB memory rounded up, since swap= is unset in $conf" "plain status names the default"
+  printf '[wsl2]\r\nswap=0\r\n' >"$conf"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals '"off"' "$(json_field "$out" swap_source)" "swap=0 means no swap file"
+  assert_equals 0 "$(json_field "$out" swap_reserved)" "swap=0 reserves nothing"
+  assert_equals $(( 60 * GIB )) "$(json_field "$out" room)" "swap=0 leaves room unchanged"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status)
+  assert_contains "$out" "swap file: not reserved (swap=0 in $conf" "plain status names swap=0"
+  mkdir -p "$HOSTDIR/swap"
+  truncate -s $(( 2 * GIB )) "$HOSTDIR/swap/wsl.vhdx"
+  printf '[wsl2]\r\nswap=8GB\r\nswapFile=C:\\\\swap\\\\wsl.vhdx\r\n' >"$conf"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals $(( 2 * GIB )) "$(json_field "$out" swap_file_size)" "swapFile= on the drive is read through its mount"
+  assert_equals $(( 6 * GIB )) "$(json_field "$out" swap_reserved)" "swapFile='s remaining growth is reserved"
+  printf '[wsl2]\r\nswap=8GB\r\nswapFile=D:\\\\swap.vhdx\r\n' >"$conf"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals '"other-drive"' "$(json_field "$out" swap_source)" "a swapFile= on another drive is named"
+  assert_equals 0 "$(json_field "$out" swap_reserved)" "a swapFile= on another drive reserves nothing here"
+  printf '[wsl2]\r\nswap=8GB\r\nswapFile=C:\\\\missing.vhdx\r\n' >"$conf"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals $(( 8 * GIB )) "$(json_field "$out" swap_reserved)" "a swap file not found reserves the whole size"
+  out=$(run_room status --json)
+  assert_equals '"disabled"' "$(json_field "$out" swap_source)" "an empty FM_DISK_ROOM_WSLCONFIG disables the reservation"
+  assert_equals 0 "$(json_field "$out" swap_reserved)" "a disabled reservation reserves nothing"
+  rm -rf "$conf" "$HOSTDIR/Users/u/AppData/Local/Temp" "$HOSTDIR/swap" "$TMP_ROOT/meminfo"
+  pass "the WSL swap file's remaining growth is reserved from the drive"
 }
 
 test_shadow_no_data_unchanged() {
@@ -757,6 +861,8 @@ test_shadow_record_reserves_headroom
 test_shadow_fallback_and_stale
 test_shadow_live_reading
 test_shadow_live_failure_falls_back
+test_shadow_last_live_fallback
+test_swap_file_growth
 test_shadow_no_data_unchanged
 test_shadow_cycling_warning
 test_shadow_wevtutil_from_drive
