@@ -82,7 +82,7 @@ The same watcher check also reports storage growth and runway, from readings tha
 It raises an alert when any of these holds:
 
 - Linux used grew faster than 0.5 GiB/day over the last week (`FM_DISK_ROOM_GROWTH_MAX`), judged only from at least six days of samples whose newest is under 2 hours old;
-- the Windows drive has under 100 GiB actually free (`FM_DISK_ROOM_C_FREE_MIN`), before reservations and shadow storage headroom;
+- the Windows drive has under 100 GiB actually free (`FM_DISK_ROOM_C_FREE_MIN`), before reservations, shadow storage headroom, and swap file growth;
 - D: has under 50 GiB free after its live bulk reservations (`FM_DISK_ROOM_D_FREE_MIN`), measured live when the publication's D: device is mounted and otherwise from the last published reading;
 - mandatory D: bulk substituted Linux storage: a D: reservation pool sits on the Linux disk or C:, or the D: mount path's `lattice-data` folder sits on the Linux disk, where writes to a pinned D: root land once D: is not mounted.
 
