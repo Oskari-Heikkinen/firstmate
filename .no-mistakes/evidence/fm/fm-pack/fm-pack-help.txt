@@ -1,0 +1,73 @@
+fm-pack.sh - pack one finished, quiet directory tree (a unit) into one
+read-only SquashFS image on the external SSD (D:), verify it, and restore it.
+docs/storage.md "Packing cold data" owns when to pack and the retention rule;
+this header owns the mechanics.
+
+Usage:
+  fm-pack.sh pack [--root ROOT] TASK UNIT SRC
+      Pack the directory SRC as UNIT under fm-storage.sh's D: root for TASK
+      (ROOT tetjet-results, the default, or research):
+        1. census: files, logical bytes, and the bytes removing SRC would
+           free (a file counts only when all its hard links are inside SRC);
+        2. admission: fm-storage.sh bulk-root --name pack-UNIT with
+           --packaging logical + 1% + 1 MiB, held for this process only;
+        3. lists in R/.incoming: UNIT.members.sha256 (sha256sum of every
+           regular file, ./-relative, sorted) and UNIT.tree.tsv (kind, size,
+           mode, links, mtime, link target, path of every entry);
+        4. mksquashfs -comp gzip -keep-as-directory, so the image root holds
+           basename(SRC)/, then UNIT.sqfs.sha256;
+        5. the tree list again: any change to SRC since step 3 refuses;
+        6. verify (below) on the staged image;
+        7. UNIT.json, then commit: every file renamed from .incoming into R,
+           the image last but one and UNIT.json last;
+        8. release-bulk pack-UNIT, on success and on every failure.
+      Prints one line on success:
+        fm-pack-receipt/v1 image=PATH sha256=HEX files=N logical=BYTES frees=BYTES verified_at=EPOCH sidecar=PATH
+      Exit codes:
+        0   packed and verified, the unit committed;
+        1   refused after admission (SRC changed, the staged image failed
+            verify, a tool failed), nothing committed and this run's
+            staging removed;
+        2   usage or precondition refusal, nothing written: bad
+            arguments, a name SRC holds that the lists cannot carry (a
+            newline or a backslash), R equal to SRC or inside it, SRC inside
+            R/.incoming, no usable FUSE mount in the default mode, UNIT
+            already at R, or stale staging for UNIT in R/.incoming;
+        75  wait on disk room (D: unavailable, low room, or pack-UNIT
+            already reserved), nothing written.
+  fm-pack.sh verify IMAGE [--against SRC]
+      IMAGE is R/UNIT.sqfs with its sidecars beside it. Checks the image
+      sha256, then reads the image afresh: every member's sha256 and the
+      regular-file count must match UNIT.members.sha256. With --against, SRC
+      must also still match UNIT.tree.tsv, the check to repeat before an
+      owner removes the source. Exit 0 verified, 1 a mismatch, 2 misuse.
+  fm-pack.sh restore IMAGE DEST
+      Check the image sha256, then fm-disk-room.sh run --name restore-UNIT
+      --expect-write <logical bytes> -- unsquashfs -d DEST IMAGE, then the
+      member check on DEST/basename(SRC). DEST must not exist yet. Exit 0
+      restored and checked, 75 refused for room, 1 a failure, 2 misuse.
+
+Reading the image afresh: a new squashfuse -o ro mount on a temporary
+directory (fusermount3 -u afterwards). pack and verify refuse with exit 2
+before any work when squashfuse, fusermount3 or a usable /dev/fuse is
+missing, unless FM_PACK_MOUNT=unsquashfs names the slow path. The UNIT.json
+verify_method field and verify's output name the path taken.
+
+UNIT.json (fm-pack-unit/v1) holds the source, its directory name, the owner
+home, task, root, counts, both sha256 values, the mksquashfs version, and
+packed_at and verified_at (epoch seconds), so an owner can read its
+rollback window from the sidecar.
+
+fm-pack.sh never deletes or rewrites SRC, keeps no index (the sidecars beside
+the image are the manifest), and never removes anything it did not create in
+this run. Heavy steps run at nice 19 and idle I/O priority.
+
+Environment (all optional):
+  FM_PACK_MOUNT   mount (default): verify through a fresh squashfuse mount;
+                  unsquashfs: for tests and hosts without FUSE, unsquashfs
+                  -lln for the count and one unsquashfs -cat per member,
+                  each rereading the image tables, so roughly quadratic in
+                  the file count
+  FM_HOME         owner home recorded in UNIT.json (default this checkout)
+  FM_PACK_TEST_BEFORE_RECHECK  test hook only: a command run by bash -c
+                  between packing and the source re-check

@@ -1,0 +1,10 @@
+ok - pack waits with 75 and writes nothing when D: is not published
+ok - pack commits a verified image with its sidecars and one receipt line
+ok - verify --against refuses a source that changed after packing
+ok - pack refuses with 1 and commits nothing when the source changes
+ok - verify fails on a changed image byte or members list
+ok - pack never overwrites a unit
+ok - pack and verify refuse with 2 before any work on an unknown or unusable reader
+ok - pack refuses with 2 when the D: root and SRC overlap
+ok - restore unpacks and checks the unit, and waits for room
+ok - verify reads the image through a fresh squashfuse mount

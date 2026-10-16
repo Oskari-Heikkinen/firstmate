@@ -1,0 +1,147 @@
+=== S1 no published D: -> wait
+
+$ fm-pack.sh pack job unit-a /tmp/fm-pack-live.WqASex/src/unit-a
+fm-storage: wait: missing-publication
+[exit 75]
+reservations: []
+=== S2 pack in default mount mode
+
+$ fm-pack.sh pack job unit-a /tmp/fm-pack-live.WqASex/src/unit-a
+fm-pack-receipt/v1 image=/tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs sha256=47736b4bb78a5f137722aafbeaf6d246be32f22f801786e2d6c660ee9c142d1c files=6 logical=11015 frees=3015 verified_at=1792150486 sidecar=/tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.json
+[exit 0]
+total 20
+-rw-r--r-- 1 oskari oskari  708 Oct 16 13:34 unit-a.json
+-rw-r--r-- 1 oskari oskari  465 Oct 16 13:34 unit-a.members.sha256
+-rw-r--r-- 1 oskari oskari 4096 Oct 16 13:34 unit-a.sqfs
+-rw-r--r-- 1 oskari oskari   78 Oct 16 13:34 unit-a.sqfs.sha256
+-rw-r--r-- 1 oskari oskari  471 Oct 16 13:34 unit-a.tree.tsv
+reservations: []
+{
+  "format": "fm-pack-unit/v1",
+  "unit": "unit-a",
+  "task": "job",
+  "root": "tetjet-results",
+  "source": "/tmp/fm-pack-live.WqASex/src/unit-a",
+  "dir": "unit-a",
+  "owner_home": "/tmp/fm-pack-live.WqASex/home",
+  "files": 6,
+  "logical_bytes": 11015,
+  "frees_bytes": 3015,
+  "image": "/tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs",
+  "image_bytes": 4096,
+  "image_sha256": "47736b4bb78a5f137722aafbeaf6d246be32f22f801786e2d6c660ee9c142d1c",
+  "members_sha256": "bb878220d27e3f4bff353f08f016350e083b64aff47c368ab039eaa11500e70b",
+  "packed_at": 1792150485,
+  "verified_at": 1792150486,
+  "verify_method": "mount",
+  "mksquashfs": "mksquashfs version 4.6.1 (2023/03/25)"
+}
+=== S3 verify via fresh mount, and --against
+
+$ fm-pack.sh verify /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs
+fm-pack: verified /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs (6 files, mount)
+[exit 0]
+
+$ fm-pack.sh verify /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs --against /tmp/fm-pack-live.WqASex/src/unit-a
+fm-pack: verified /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs (6 files, mount), source unchanged
+[exit 0]
+leftover verify mounts: []
+=== S4 tampering under mount mode
+
+$ fm-pack.sh verify /tmp/fm-pack-live.WqASex/t1/unit-a.sqfs
+unit-a.sqfs: FAILED
+sha256sum: WARNING: 1 computed checksum did NOT match
+fm-pack: /tmp/fm-pack-live.WqASex/t1/unit-a.sqfs does not match unit-a.sqfs.sha256
+[exit 1]
+
+$ fm-pack.sh verify /tmp/fm-pack-live.WqASex/t2/unit-a.sqfs
+./hl1: FAILED
+sha256sum: WARNING: 1 computed checksum did NOT match
+fm-pack: /tmp/fm-pack-live.WqASex/t2/unit-a.sqfs failed the member check (mount)
+[exit 1]
+leftover verify mounts: []
+=== S5 existing unit refused
+
+$ fm-pack.sh pack job unit-a /tmp/fm-pack-live.WqASex/src/unit-a
+fm-pack: /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs exists; a unit is never overwritten
+[exit 2]
+image unchanged
+=== S6 source changes between pack and re-check
+
+$ FM_PACK_TEST_BEFORE_RECHECK='touch unit-b/new' fm-pack.sh pack job unit-b unit-b
+fm-pack: /tmp/fm-pack-live.WqASex/src/unit-b changed while it was packed; nothing committed
+[exit 1]
+unit-a.json
+unit-a.members.sha256
+unit-a.sqfs
+unit-a.sqfs.sha256
+unit-a.tree.tsv
+reservations: []
+=== S7 SIGTERM mid-pack releases reservation and staging
+
+$ FM_PACK_TEST_BEFORE_RECHECK='kill -TERM $PPID' fm-pack.sh pack job unit-c unit-c
+[exit 143]
+unit-a.json
+unit-a.members.sha256
+unit-a.sqfs
+unit-a.sqfs.sha256
+unit-a.tree.tsv
+reservations: []
+=== S8 root overlap refused before any work
+
+$ fm-pack.sh pack job job-raw /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job
+fm-pack: the D: root /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job is /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job or inside it; pack a tree outside its own results root
+[exit 2]
+
+$ fm-pack.sh pack job job-up /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results
+fm-pack: the D: root /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job is /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results or inside it; pack a tree outside its own results root
+[exit 2]
+unit-a.json
+unit-a.members.sha256
+unit-a.sqfs
+unit-a.sqfs.sha256
+unit-a.tree.tsv
+reservations: []
+=== S9 reader-mode guards
+
+$ PATH=<no squashfuse/fusermount3> fm-pack.sh pack job unit-n SRC
+fm-pack: no usable FUSE mount (squashfuse, fusermount3 and a usable /dev/fuse) to verify through; FM_PACK_MOUNT=unsquashfs names the slow path
+[exit 2]
+
+$ FM_PACK_MOUNT=auto fm-pack.sh pack job unit-n SRC
+fm-pack: FM_PACK_MOUNT must be mount or unsquashfs, not auto
+[exit 2]
+
+$ FM_PACK_MOUNT=on fm-pack.sh restore ... 
+fm-pack: FM_PACK_MOUNT must be mount or unsquashfs, not on
+[exit 2]
+unit-a.json
+unit-a.members.sha256
+unit-a.sqfs
+unit-a.sqfs.sha256
+unit-a.tree.tsv
+no restore dest written
+=== S10 restore with room, and without
+
+$ fm-pack.sh restore /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs /tmp/fm-pack-live.WqASex/restored
+fm-pack: restored /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs into /tmp/fm-pack-live.WqASex/restored/unit-a and checked 6 files
+[exit 0]
+restored tree identical (diff -r)
+
+$ fm-pack.sh restore /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-a.sqfs /tmp/fm-pack-live.WqASex/low
+fm-disk-room: refused restore-unit-a: low: only 1.0 GiB would be left on Linux after a 0.0 GiB write (margin 1.0 GiB); reclaimable by compaction unknown (disk file not found); run fm-disk-room.sh status
+[exit 75]
+no low-room dest written
+=== S11 larger unit (3000 small files) in mount mode
+
+$ fm-pack.sh pack job unit-big /tmp/fm-pack-live.WqASex/src/unit-big
+fm-pack-receipt/v1 image=/tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-big.sqfs sha256=cf343cc161968d0362acac042772cebb47b65e596fa673ad4004ad79bd3d43b8 files=3000 logical=16860 frees=16860 verified_at=1792150496 sidecar=/tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-big.json
+[exit 0]
+elapsed 4s
+
+$ fm-pack.sh verify /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-big.sqfs --against /tmp/fm-pack-live.WqASex/src/unit-big
+fm-pack: verified /tmp/fm-pack-live.WqASex/mnt/d/lattice-data/tetjet-results/job/unit-big.sqfs (3000 files, mount), source unchanged
+[exit 0]
+elapsed 2s
+=== S12 source byte-identical after everything
+unit-a source identical to its pre-run snapshot
