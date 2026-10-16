@@ -82,7 +82,9 @@
 #           room (may be negative)
 #         integer or null (unknown): host_free, vhdx_size, fragmented_free,
 #           fs_overhead, slack, reclaimable, ssd_free, ssd_total, shadow_max,
-#           shadow_used, shadow_allocated, shadow_events (an event count)
+#           shadow_used, shadow_allocated, shadow_events (an event count);
+#           reclaimable is the disk file block table's figure, null when the
+#           block table cannot be read
 #         boolean: low (room is under margin)
 #         strings: host (Windows drive mount, "" when Linux-only), vhdx (disk
 #           file path or ""), results_active (ssd, c or ""), results_state,
@@ -178,7 +180,13 @@
 #   FM_DISK_ROOM_NOW      epoch override for tests
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Pinned consumers run these bytes as `bash -c TEXT PATH ARG...`, where
+# BASH_SOURCE is empty and PATH (the file they hashed) is $0; SELF_TEXT then
+# keeps TEXT so the self-test probes the same bytes.
+SELF="${BASH_SOURCE[0]:-$0}"
+SELF_TEXT=''
+[ -n "${BASH_SOURCE[0]:-}" ] || SELF_TEXT=${BASH_EXECUTION_STRING:-}
+SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 GIB=1073741824
 REALERT_DROP=$((5 * GIB))
 REALERT_SECS=21600
@@ -187,6 +195,8 @@ SHADOW_STALE_SECS=604800
 SHADOW_EVENTS_CACHE_SECS=3600
 SHADOW_LIVE_CACHE_SECS=300
 BAT_CACHE_SECS=300
+# sha256 of bin/fm-vhdx-bat.py; only a reader with exactly these bytes runs.
+VHDX_BAT_SHA256=241abc28b3cf943a251e8441a550d776eb187490225692fcb75e460a505c347a
 INTERFACE=v1
 INTERFACE_V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int room:int
   host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
@@ -304,9 +314,11 @@ fragmented_free() {
 # bat_reclaim FILE SIZE -> bytes a compaction of FILE can give back, from its
 # block table (bin/fm-vhdx-bat.py), or fails when that cannot be read. Cached
 # for 5 minutes per file and size, failures included, because it reads
-# megabytes through the Windows drive.
+# megabytes through the Windows drive. The reader runs from the bytes that
+# were hashed, and only when they match VHDX_BAT_SHA256, so a pin on this
+# script covers it.
 bat_reclaim() {
-  local cache t when='' size='' r='' path='' out
+  local cache t when='' size='' r='' path='' out text
   cache="$(state_dir)/vhdx-bat"
   t=$(now)
   [ -r "$cache" ] && read -r when size r path <"$cache"
@@ -316,7 +328,9 @@ bat_reclaim() {
   esac
   if [ -z "$when" ]; then
     r=-
-    if out=$(timeout 60 python3 -I "$SCRIPT_DIR/fm-vhdx-bat.py" "$1" 2>/dev/null); then
+    text=$(cat -- "$SCRIPT_DIR/fm-vhdx-bat.py" 2>/dev/null && printf x) && text=${text%x}
+    if [ -n "$text" ] && [ "$(printf '%s' "$text" | sha256sum | cut -d' ' -f1)" = "$VHDX_BAT_SHA256" ] &&
+      out=$(timeout 60 python3 -I -c "$text" "$1" 2>/dev/null); then
       r=$(printf '%s\n' "$out" | sed -n 's/^reclaimable=\([0-9]*\) .*/\1/p')
     fi
     case "$r" in ''|*[!0-9]*|???????????????????*) r=- ;; esac
@@ -1352,7 +1366,8 @@ self_probe() {
       FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_MB_GROUPS="$SELF_TMP/none" \
       FM_DISK_ROOM_RESULTS_ROOT="$SELF_TMP/none" FM_DISK_ROOM_SAMPLES="$SELF_TMP/none" \
       FM_DISK_ROOM_COMPACT_RESULT="$SELF_TMP/none" FM_DISK_ROOM_MARGIN="$margin"
-    exec "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}" "$@"
+    [ -z "$SELF_TEXT" ] || exec bash -c "$SELF_TEXT" "$SELF" "$@"
+    exec "$SELF" "$@"
   )
 }
 

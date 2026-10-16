@@ -174,7 +174,7 @@ The consumer's declaration and acceptance stay as [`helper-consumers.md`](helper
 
 Interface v1 is every command, every exit code, and every `status --json` field with its unit, as listed under "Interface v1" in `bin/fm-disk-room.sh`'s header:
 
-- `status --json` prints one JSON object on one line, every size in bytes, with integer, integer-or-null, boolean, and string fields named there.
+- `status --json` prints one JSON object on one line, every size in bytes, with integer, integer-or-null, boolean, and string fields named there; `reclaimable` is the block-table figure described above, null when the block table cannot be read.
 - `check` exits 0, 1, or 2 with a line starting `ok: `, `low: `, or `cannot measure disk room: `.
 - `run` returns the admitted command's own status, or 75 with a line starting `fm-disk-room: refused NAME: `.
 - `reserve-bulk` prints only the admitted root, or exits 75 with a `wait:` line naming a reason.
@@ -190,6 +190,10 @@ The versioning rule:
 Before trusting a new copy, a consumer runs `fm-disk-room.sh --self-test v1`.
 It exits 0 with one line when the copy serves v1 and a hermetic probe of it passes, 1 with one line naming what failed or the version served, and 2 on misuse.
 The probe uses its own temp state, measures Linux alone, starts no Windows reading, and leaves no reservation behind.
+
+A consumer that pins bytes may run them as `bash -c TEXT PATH ARG...`, with PATH the file it hashed.
+The script then finds its sibling helpers beside PATH, never in the working directory, and runs `bin/fm-vhdx-bat.py` only from bytes matching the digest embedded in `fm-disk-room.sh`, so a pin on `fm-disk-room.sh` covers the reader and a missing or changed reader leaves reclaimable unknown.
+`--self-test` works in that mode too and probes the same bytes.
 
 `tests/fm-disk-room.test.sh` pins v1 through the executable, so a change that breaks v1 without a version bump fails CI, and a bump fails until the new version's case is added.
 

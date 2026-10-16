@@ -132,8 +132,9 @@ run_room() {
     FM_DISK_ROOM_C_FREE_MIN="${FM_DISK_ROOM_C_FREE_MIN-off}" \
     FM_DISK_ROOM_WSLCONFIG="${FM_DISK_ROOM_WSLCONFIG-}" FM_DISK_ROOM_MEMINFO="${FM_DISK_ROOM_MEMINFO-$TMP_ROOT/meminfo}" \
     FM_DISK_ROOM_BOOT_ID="${FM_DISK_ROOM_BOOT_ID-$TMP_ROOT/boot_id}" \
-    ${TEST_SWAP_DISCOVER:+env -u FM_DISK_ROOM_WSLCONFIG} "$DISK_ROOM" "$@"
+    ${TEST_SWAP_DISCOVER:+env -u FM_DISK_ROOM_WSLCONFIG} "${ROOM_CMD[@]}" "$@"
 }
+ROOM_CMD=("$DISK_ROOM")
 
 json_field() { printf '%s\n' "$1" | sed -n "s/.*\"$2\":\([^,}]*\).*/\1/p"; }
 
@@ -1125,6 +1126,43 @@ test_interface_v1_contract() {
   pass "interface v1: commands, fields, units and exit codes hold through the executable"
 }
 
+# Pinned consumers hash the helper and run those bytes as bash -c TEXT PATH,
+# from any working directory; only the digest-matched reader beside PATH may run.
+test_pinned_mode() {
+  local out rc cwd="$TMP_ROOT/cwd" tbin="$TMP_ROOT/tbin" planted
+  mkdir -p "$cwd" "$tbin"
+  planted="import sys; open('$TMP_ROOT/planted-ran', 'w').close(); print('reclaimable=123456789 present=0 fixed=0')"
+  printf '%s\n' "$planted" >"$cwd/fm-vhdx-bat.py"
+  set_sizes 60 600 400
+  write_vhdx 470 $(( 12 * 1024 ))
+  write_mb_groups 30
+  assert_equals "$(sha256sum "$ROOT/bin/fm-vhdx-bat.py" | cut -d' ' -f1)" \
+    "$(sed -n 's/^VHDX_BAT_SHA256=//p' "$DISK_ROOM")" "the helper embeds the digest of the reader it ships with"
+  reset_state; rm -f "$TMP_ROOT/planted-ran"
+  out=$(cd "$cwd" && ROOM_CMD=(bash -c "$(cat "$DISK_ROOM")" "$DISK_ROOM") && run_room status --json) || fail "pinned status exits 0"
+  assert_equals "" "$(ls "$TMP_ROOT/planted-ran" 2>/dev/null)" "a reader planted in the working directory never runs"
+  assert_equals $(( 12 * GIB )) "$(json_field "$out" reclaimable)" "pinned mode reads the block table with the shipped reader"
+  cp "$DISK_ROOM" "$tbin/fm-disk-room.sh"
+  { cat "$ROOT/bin/fm-vhdx-bat.py"; printf '%s\n' "$planted"; } >"$tbin/fm-vhdx-bat.py"
+  reset_state; rm -f "$TMP_ROOT/planted-ran"
+  out=$(ROOM_CMD=("$tbin/fm-disk-room.sh") && run_room status --json) || fail "status with a tampered reader exits 0"
+  assert_equals "" "$(ls "$TMP_ROOT/planted-ran" 2>/dev/null)" "a tampered reader beside the helper never runs"
+  assert_equals null "$(json_field "$out" reclaimable)" "a tampered reader leaves reclaimable unknown"
+  reset_state
+  out=$(cd "$cwd" && ROOM_CMD=(bash -c "$(cat "$tbin/fm-disk-room.sh")" "$tbin/fm-disk-room.sh") && run_room status --json) ||
+    fail "pinned status with a tampered reader exits 0"
+  assert_equals null "$(json_field "$out" reclaimable)" "pinned mode refuses a tampered reader too"
+  rm -f "$tbin/fm-vhdx-bat.py"
+  reset_state
+  out=$(ROOM_CMD=("$tbin/fm-disk-room.sh") && run_room status --json) || fail "status without a reader exits 0"
+  assert_equals null "$(json_field "$out" reclaimable)" "a missing reader leaves reclaimable unknown"
+  out=$(cd "$cwd" && TMPDIR="$TMP_ROOT" bash -c "$(cat "$DISK_ROOM")" "$DISK_ROOM" --self-test v1); rc=$?
+  expect_code 0 "$rc" "--self-test v1 passes when run as bash -c TEXT PATH"
+  assert_contains "$out" "self-test v1 passed" "the pinned-mode self-test says it passed"
+  reset_state
+  pass "pinned bash -c runs only the digest-matched reader and can self-test"
+}
+
 test_self_test() {
   local out rc
   out=$(TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test v1); rc=$?
@@ -1141,6 +1179,7 @@ test_self_test() {
 
 test_interface_v1_contract
 test_self_test
+test_pinned_mode
 test_bulk_reservations
 test_status_real_room_and_reclaim
 test_shadow_record_reserves_headroom
