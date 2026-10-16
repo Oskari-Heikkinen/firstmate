@@ -23,6 +23,8 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
   For a job spread over several processes, use `check --expect-write` plus `reserve`/`release` instead.
 - Use a measured or stated expected write (for example about 20 GiB per TETJET close-out slice), rounded up; when unknown, say so and ask the job's owner rather than guessing low.
 - A refusal is a wait, not a failure: hold the job and report the refusal line to firstmate.
+- To move a finished, rarely read tree to D:, pack it with `bin/fm-pack.sh pack TASK UNIT SRC`; [`docs/storage.md`](../../../docs/storage.md#packing-cold-data) owns the command and the retention rule.
+- Retention rule R2: the raw D: tree of a packed unit is deleted only by the home that owns it, after a passing `fm-pack.sh verify UNIT.sqfs --against SRC`, that home's reader acceptance, and 7 days from `verified_at` in `UNIT.json`; one copy on D: is accepted, and no Firstmate command deletes it.
 
 ## What a low reading means and who acts
 

@@ -160,3 +160,43 @@ Which command a writer calls depends on whether it may fall back:
 - A writer that **may fall back** calls `root --root research TASK`. It prints the verified D: directory, or the Linux fallback on any failed check, exiting 0 either way.
 
 `bulk-root --root research` verifies the research directory, admits the peak through `fm-disk-room.sh reserve-bulk` in the same D: reservation pool as `tetjet-results`, and prints the research directory.
+
+## Packing cold data
+
+A finished directory tree that no reader opens often (a unit) can live on D: as one read-only SquashFS image instead of many small files.
+`bin/fm-pack.sh`'s header owns the steps, the sidecar fields and the exit codes; this section owns when to use it and the retention rule.
+
+```sh
+bin/fm-pack.sh pack [--root ROOT] TASK UNIT SRC
+bin/fm-pack.sh verify D_ROOT/UNIT.sqfs [--against SRC]
+bin/fm-pack.sh restore D_ROOT/UNIT.sqfs DEST
+```
+
+`pack` admits its packaging peak through `bulk-root --name pack-UNIT`, so it waits with exit 75 on anything but a verified D: with room, and writes nothing then.
+It lists and hashes SRC, builds the image in `D_ROOT/.incoming`, refuses with exit 1 if SRC changed while it was packed, verifies the staged image, and only then renames the image and its sidecars into `D_ROOT`.
+It always releases its reservation and prints one `fm-pack-receipt/v1` line on success.
+A unit is never overwritten: an existing `UNIT.sqfs` or stale staging for UNIT exits 2.
+
+Each image keeps four sidecars beside it: `UNIT.sqfs.sha256`, `UNIT.members.sha256`, `UNIT.tree.tsv` and `UNIT.json` (`fm-pack-unit/v1`).
+They are the whole manifest; there is no index.
+`UNIT.json` records `packed_at` and `verified_at` in epoch seconds.
+
+`verify` checks the image sha256, then reads the image afresh through a new squashfuse mount and compares every member.
+Without squashfuse, fusermount3 and a usable `/dev/fuse`, `pack` and `verify` refuse with exit 2 before any work; `FM_PACK_MOUNT=unsquashfs` reads each member with its own `unsquashfs -cat` instead, which is roughly quadratic in the file count and meant for tests and hosts without FUSE.
+`pack` also refuses with exit 2 when the D: root is SRC or inside it, or SRC is inside its `.incoming`.
+`--against SRC` also requires SRC to still match the tree list.
+`restore` unpacks into a new DEST behind an ordinary `fm-disk-room.sh run` admission for the logical size and checks every member there.
+Packing is cheap to undo: the source stays where it is until its owner removes it.
+
+### Retention rule R2
+
+fm-pack.sh never deletes or rewrites SRC, and no Firstmate command deletes a packed source.
+The home that owns the data deletes the raw D: tree itself, and only when all three hold:
+1. `pack` committed the unit, and `fm-pack.sh verify UNIT.sqfs --against SRC` passes just before the deletion.
+2. The owner home has accepted that its readers work from the image (mounted or restored).
+3. The 7-day rollback window has passed: now is at least `verified_at` in `UNIT.json` plus 604800 seconds.
+
+A single copy on D: is accepted for now; there is no second copy of the image.
+R2 covers the `tetjet-results` trees, `moved/`, the `linux-cold-archive` mirror, and `tetjet-prep` once released.
+
+Regression coverage is in `tests/fm-pack.test.sh`.
