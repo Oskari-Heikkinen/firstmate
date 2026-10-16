@@ -27,6 +27,7 @@ gate tests/fm-fleet-sync.test.sh
 gate tests/fm-green-pointer.test.sh
 gate tests/fm-lean-review.test.sh
 gate tests/fm-operational-input.test.sh
+gate tests/fm-pack.test.sh
 gate tests/fm-park.test.sh
 gate tests/fm-pr-merge.test.sh
 gate tests/fm-procevent-when.test.sh

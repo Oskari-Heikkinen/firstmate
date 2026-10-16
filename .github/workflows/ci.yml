@@ -349,6 +349,14 @@ jobs:
             exit 1
           }
           tmux -V
+      # tests/fm-pack.test.sh packs and reads real SquashFS images; without
+      # these tools it skips. Its mount case also skips where FUSE cannot mount.
+      - name: Install SquashFS tools for the pack tests
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools squashfuse
+          mksquashfs -version | head -n1
       - name: Install tasks-axi for backlog-handoff delegation
         run: |
           set -eu
