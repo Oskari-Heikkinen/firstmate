@@ -93,7 +93,7 @@ need() {
 
 valid_unit() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
 
-# tree_list DIR: the tree list of DIR on stdout (docs/storage.md step 4).
+# tree_list DIR: the tree list of DIR on stdout (pack step 3 above).
 tree_list() {
   (cd "$1" && find . -xdev -printf '%y\t%s\t%m\t%n\t%T@\t%l\t%p\n' | LC_ALL=C sort -t$'\t' -k7)
 }
