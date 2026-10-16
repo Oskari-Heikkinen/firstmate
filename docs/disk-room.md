@@ -52,7 +52,7 @@ WSL keeps its swap file, `swap.vhdx`, on the Windows drive and grows it as Linux
 The monitor reserves that remaining growth, the swap size minus the swap file's current length, from the Windows drive's free space.
 The swap size is `swap=` in the `[wsl2]` section of the Windows `.wslconfig`; `swap=0` means no swap file and nothing is reserved.
 When `swap=` is unset, the size is WSL's default of a quarter of the VM's memory rounded up to a whole GiB, with the memory taken from `memory=` or else from Linux `MemTotal`.
-The swap file is `swapFile=` when set, else the newest `%TEMP%\<guid>\swap.vhdx` in the Windows user folder; a swap file that cannot be found counts as empty, so the whole size is reserved, and a `swapFile=` on another drive reserves nothing here.
+The swap file is `swapFile=` when set, else the newest `%TEMP%\<guid>\swap.vhdx` in the Windows user folder made since the VM booted, so one left behind by an unclean WSL exit is skipped; a swap file that cannot be found counts as empty, so the whole size is reserved, and a `swapFile=` on another drive reserves nothing here.
 The `.wslconfig` is the one beside the disk file's Windows user folder (`FM_DISK_ROOM_WSLCONFIG`; empty disables the reservation).
 Everything is read as files through the drive mount, so no Windows process starts.
 The `swap file:` status line names where the size came from, and `status --json` gives `swap_reserved`, `swap_source`, `swap_size`, and `swap_file_size`.
@@ -72,7 +72,7 @@ This replaces fixed floors on raw Windows free space, which either stop a job th
 A home that should hear about low room arms the standing watcher check with `bin/fm-disk-room.sh arm`, which writes `state/disk-room.check.sh` with the `FM_DISK_ROOM_*` settings in force and binds it with `bin/fm-check-register.sh`; `bin/fm-disk-room.sh disarm` retires it.
 `watch-line` prints nothing while real room is at or above the margin.
 Under the margin it prints one line with the real room, the declared writes, and the next step, and repeats only after a further 5 GiB drop or 6 hours; a failed reading prints a "cannot measure" line at most every 6 hours.
-It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, the live shadow storage reading, the last good live reading, the shadow storage record, the `.wslconfig`, and one `stat` of the swap file.
+It reads only `df`, one `stat` of the disk file through `/mnt/c`, `mb_groups`, the live shadow storage reading, the last good live reading, the shadow storage record, the `.wslconfig`, `/proc/uptime`, and one `stat` of the swap file.
 It starts PowerShell for the live reading at most once every 5 minutes, failures included, under a 20 second timeout, because PowerShell times out when Windows is short of memory.
 It runs `wevtutil.exe` for the event count at most once an hour, under a 20 second timeout.
 

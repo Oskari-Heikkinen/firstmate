@@ -129,6 +129,7 @@ run_room() {
     FM_DISK_ROOM_SAMPLES="${TEST_SAMPLES-$TMP_ROOT/no-samples}" \
     FM_DISK_ROOM_C_FREE_MIN="${FM_DISK_ROOM_C_FREE_MIN-off}" \
     FM_DISK_ROOM_WSLCONFIG="${FM_DISK_ROOM_WSLCONFIG-}" FM_DISK_ROOM_MEMINFO="${FM_DISK_ROOM_MEMINFO-$TMP_ROOT/meminfo}" \
+    FM_DISK_ROOM_UPTIME="${FM_DISK_ROOM_UPTIME-$TMP_ROOT/uptime}" \
     ${TEST_SWAP_DISCOVER:+env -u FM_DISK_ROOM_WSLCONFIG} "$DISK_ROOM" "$@"
 }
 
@@ -373,7 +374,7 @@ test_arm_and_disarm() {
   out=$(FM_HOME="$home" FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_MARGIN=20G FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" \
     FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
     FM_DISK_ROOM_RESULTS_ROOT="$TMP_ROOT/missing-results-root" FM_DISK_ROOM_SAMPLES="$TMP_ROOT/no-samples" \
-    FM_DISK_ROOM_C_FREE_MIN=40G "$DISK_ROOM" arm) || fail "arm exits 0"
+    FM_DISK_ROOM_WSLCONFIG='' FM_DISK_ROOM_C_FREE_MIN=40G "$DISK_ROOM" arm) || fail "arm exits 0"
   assert_contains "$out" "armed: $home/state/disk-room.check.sh" "arm names the shim"
   assert_present "$home/state/disk-room.check-trust" "arm binds the shim's bytes"
   out=$(env -u FM_DISK_ROOM_HOST PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" FM_STORAGE_MNT="$TMP_ROOT/mnt" "$home/state/disk-room.check.sh")
@@ -578,7 +579,7 @@ test_shadow_last_live_fallback() {
 test_swap_file_growth() {
   reset_state
   set_sizes 60 600 400
-  local conf="$HOSTDIR/Users/u/.wslconfig" g1="$HOSTDIR/Users/u/AppData/Local/Temp/{G1}" g2="$HOSTDIR/Users/u/AppData/Local/Temp/{G2}" out rc
+  local conf="$HOSTDIR/Users/u/.wslconfig" g1="$HOSTDIR/Users/u/AppData/Local/Temp/{G1}" g2="$HOSTDIR/Users/u/AppData/Local/Temp/{G2}" g3="$HOSTDIR/Users/u/AppData/Local/Temp/{G3}" out rc
   mkdir -p "$g1"
   truncate -s $(( 3 * GIB )) "$g1/swap.vhdx"
   printf '\xEF\xBB\xBF[wsl2]\r\nmemory=16GB\r\nSwap = 16GB\r\n' >"$conf"
@@ -599,6 +600,19 @@ test_swap_file_growth() {
   truncate -s $(( 5 * GIB )) "$g2/swap.vhdx"
   out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
   assert_equals $(( 11 * GIB )) "$(json_field "$out" swap_reserved)" "a vanished cached swap file is looked up again"
+  printf '3600.00 1000.00\n' >"$TMP_ROOT/uptime"
+  truncate -s $(( 15 * GIB )) "$g2/swap.vhdx"
+  touch -d "@$(( $(date +%s) - 7200 ))" "$g2/swap.vhdx"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals $(( 16 * GIB )) "$(json_field "$out" swap_reserved)" "a cached swap file from before the VM booted is not the swap file"
+  mkdir -p "$g3"
+  truncate -s $(( 1 * GIB )) "$g3/swap.vhdx"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals $(( 1 * GIB )) "$(json_field "$out" swap_file_size)" "the swap file made since the VM booted wins over a leftover from an unclean exit"
+  assert_equals $(( 15 * GIB )) "$(json_field "$out" swap_reserved)" "the current swap file's growth is reserved, not the leftover's"
+  rm -rf "$g3" "$TMP_ROOT/uptime"
+  truncate -s $(( 5 * GIB )) "$g2/swap.vhdx"
+  touch "$g2/swap.vhdx"
   printf '[wsl2]\r\nmemory=16GB\r\n[experimental]\r\nswap=99GB\r\n' >"$conf"
   out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
   assert_equals '"default"' "$(json_field "$out" swap_source)" "swap= outside [wsl2] leaves the WSL default"
