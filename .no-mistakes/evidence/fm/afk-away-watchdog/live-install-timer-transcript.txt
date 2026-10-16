@@ -1,0 +1,71 @@
+### S13 install-timer for two homes (systemctl recorded by a shim so the real user manager is untouched; PATH includes a user-only dir /tmp/fm-lab.lsVjBP/userbin holding the push tool)
+wrote /tmp/fm-lab.lsVjBP/xdg/systemd/user/fm-away-watch-3151108623.service and fm-away-watch-3151108623.timer (home /tmp/fm-lab.lsVjBP)
+enabled fm-away-watch-3151108623.timer
+wrote /tmp/fm-lab.lsVjBP/xdg/systemd/user/fm-away-watch-222770363.service and fm-away-watch-222770363.timer (home /tmp/fm-lab.VMRDV2)
+enabled fm-away-watch-222770363.timer
+--- unit dir:
+fm-away-watch-222770363.service
+fm-away-watch-222770363.timer
+fm-away-watch-3151108623.service
+fm-away-watch-3151108623.timer
+--- /tmp/fm-lab.lsVjBP/xdg/systemd/user/fm-away-watch-222770363.service
+[Unit]
+Description=Firstmate away watchdog check for /tmp/fm-lab.VMRDV2
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+Environment=FM_HOME=/tmp/fm-lab.VMRDV2
+Environment="PATH=/tmp/fm-lab.lsVjBP/shim:/tmp/fm-lab.lsVjBP/userbin:/usr/bin:/bin"
+ExecStart=/usr/bin/env bash /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M522CR7WN41X1BXKVXHPKRCV/bin/fm-away-watch.sh run --home /tmp/fm-lab.VMRDV2
+--- /tmp/fm-lab.lsVjBP/xdg/systemd/user/fm-away-watch-3151108623.service
+[Unit]
+Description=Firstmate away watchdog check for /tmp/fm-lab.lsVjBP
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+Environment=FM_HOME=/tmp/fm-lab.lsVjBP
+Environment="PATH=/tmp/fm-lab.lsVjBP/shim:/tmp/fm-lab.lsVjBP/userbin:/usr/bin:/bin"
+Environment="HERDR_SOCKET_PATH=/tmp/herdr-lab.sock"
+ExecStart=/usr/bin/env bash /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M522CR7WN41X1BXKVXHPKRCV/bin/fm-away-watch.sh run --home /tmp/fm-lab.lsVjBP
+--- timer:
+[Unit]
+Description=Run the Firstmate away watchdog every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+--- systemctl calls:
+systemctl --user daemon-reload
+systemctl --user enable --now fm-away-watch-3151108623.timer
+systemctl --user daemon-reload
+systemctl --user enable --now fm-away-watch-222770363.timer
+--- systemd-analyze verify (real systemd parser):
+verify fm-away-watch-222770363.service: rc=0
+verify fm-away-watch-222770363.timer: rc=0
+verify fm-away-watch-3151108623.service: rc=0
+verify fm-away-watch-3151108623.timer: rc=0
+
+### S14 run the first home's service ExecStart in a systemd-like empty environment carrying only the unit's Environment= lines; trip the latch
+fm-away-watch: the supervision host's broken-session latch has held past one cooldown (now 600s, next probe from 12:28)
+exit=0
+--- push.log:
+PUSHED: away supervision stalled in home main: the supervision host's broken-session latch has held past one cooldown (now 600s, next probe from 12:28) - see state/.away-watch-alert
+
+### S14-contrast: the same ExecStart with the systemd default PATH only (what an install without PATH would get)
+exit=0
+push.log: (nothing reached the push tool)
+watch log tail:
+1792146025	alert	the supervision host's broken-session latch has held past one cooldown (now 600s, next probe from 12:28)
+1792146025	wedge alarm: command channel exited 127 (command redacted)
+
+### S15 uninstall-timer for the second home only
+removed fm-away-watch-222770363.timer and fm-away-watch-222770363.service from /tmp/fm-lab.lsVjBP/xdg/systemd/user
+fm-away-watch-3151108623.service
+fm-away-watch-3151108623.timer

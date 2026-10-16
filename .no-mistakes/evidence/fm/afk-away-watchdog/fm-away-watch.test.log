@@ -1,0 +1,8 @@
+ok - the watchdog is silent with no away record and under quiet mode
+ok - a live host keeps the watchdog silent and the same host dead past the threshold alerts
+ok - the host condition waits for its threshold, which config/away-watch sets
+ok - a dead or missing session-lock owner alerts
+ok - the broken-session latch alerts once it has held past one cooldown
+ok - a queued wake unacknowledged past the queue threshold alerts, without its content
+ok - auto-arm markers alert, each condition alerts once an hour, and a new window resets the marker
+ok - install-timer writes and enables a 5-minute timer per home carrying PATH, and uninstall-timer removes only that home's

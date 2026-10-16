@@ -1,0 +1,8 @@
+1792146635	away supervision stalled in home main: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified) - see state/.away-watch-alert
+1792146658	away supervision stalled in home main: no live supervision host and no main or host activity for 31 minutes (last at 12:30) - see state/.away-watch-alert
+1792146659	away supervision stalled in home main: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified) - see state/.away-watch-alert
+1792146659	away supervision stalled in home main: no live supervision host and no main or host activity for 92 minutes (last at 12:30) - see state/.away-watch-alert
+1792146674	away supervision stalled in home main: a queued wake has waited 62 minutes unacknowledged (since 12:31) - see state/.away-watch-alert
+1792146821	away supervision stalled in home main: a queued wake has waited 242 minutes unacknowledged (since 12:31) - see state/.away-watch-alert
+1792146836	away supervision stalled in home main: the main session's lock owner (pid 3078340) is dead - see state/.away-watch-alert
+1792146914	away supervision stalled in home main: the main session's lock owner (pid 3078340) is dead; the Stop hook could not arm supervision (state/.claude-autoarm-failure-alarmed) - see state/.away-watch-alert

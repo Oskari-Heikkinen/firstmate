@@ -1,0 +1,10 @@
+1792146635	alert	the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+1792148518	alert	no live supervision host and no main or host activity for 31 minutes (last at 12:30)
+1792150318	alert	the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+1792152178	alert	no live supervision host and no main or host activity for 92 minutes (last at 12:30)
+1792150394	alert	a queued wake has waited 62 minutes unacknowledged (since 12:31)
+1792161220	alert	a queued wake has waited 242 minutes unacknowledged (since 12:31)
+1792146836	alert	the main session's lock owner (pid 3078340) is dead
+1792146914	alert	the main session's lock owner (pid 3078340) is dead; the Stop hook could not arm supervision (state/.claude-autoarm-failure-alarmed)
+1792146915	alert	the main session's lock owner (pid 3078340) is dead; the Stop hook could not arm supervision (state/.claude-autoarm-failure-alarmed)
+1792146915	wedge alarm: command channel exited 127 (command redacted)

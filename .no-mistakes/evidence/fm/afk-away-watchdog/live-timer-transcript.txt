@@ -1,0 +1,82 @@
+### T1 install-timer for two homes
+$ install-timer --home LAB
+wrote /tmp/fm-lab.niinRu/xdg/systemd/user/fm-away-watch-2423324861.service and fm-away-watch-2423324861.timer (home /tmp/fm-lab.niinRu)
+enabled fm-away-watch-2423324861.timer
+$ install-timer --home LAB2
+wrote /tmp/fm-lab.niinRu/xdg/systemd/user/fm-away-watch-3687599118.service and fm-away-watch-3687599118.timer (home /tmp/fm-lab.SFeyRO)
+enabled fm-away-watch-3687599118.timer
+--- unit dir:
+fm-away-watch-2423324861.service
+fm-away-watch-2423324861.timer
+fm-away-watch-3687599118.service
+fm-away-watch-3687599118.timer
+--- systemctl calls:
+systemctl --user daemon-reload
+systemctl --user enable --now fm-away-watch-2423324861.timer
+systemctl --user daemon-reload
+systemctl --user enable --now fm-away-watch-3687599118.timer
+--- /tmp/fm-lab.niinRu/xdg/systemd/user/fm-away-watch-2423324861.service
+[Unit]
+Description=Firstmate away watchdog check for /tmp/fm-lab.niinRu
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+Environment=FM_HOME=/tmp/fm-lab.niinRu
+Environment="PATH=<installer PATH, 1 line> (contains pushbin: yes)
+Environment="HERDR_SOCKET_PATH=/tmp/lab-herdr.sock"
+ExecStart=/usr/bin/env bash /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M522CR7WN41X1BXKVXHPKRCV/bin/fm-away-watch.sh run --home /tmp/fm-lab.niinRu
+PATH line carries /tmp/fm-lab.niinRu/pushbin: yes
+--- /tmp/fm-lab.niinRu/xdg/systemd/user/fm-away-watch-3687599118.service
+[Unit]
+Description=Firstmate away watchdog check for /tmp/fm-lab.SFeyRO
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+Environment=FM_HOME=/tmp/fm-lab.SFeyRO
+Environment="PATH=<installer PATH, 1 line> (contains pushbin: yes)
+Environment="HERDR_SOCKET_PATH=/tmp/lab-herdr.sock"
+ExecStart=/usr/bin/env bash /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M522CR7WN41X1BXKVXHPKRCV/bin/fm-away-watch.sh run --home /tmp/fm-lab.SFeyRO
+PATH line carries /tmp/fm-lab.niinRu/pushbin: yes
+[Unit]
+Description=Run the Firstmate away watchdog every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+### T2 systemd-analyze verify (systemd's own unit parser)
+$ systemd-analyze --user verify fm-away-watch-2423324861.service
+exit=0
+$ systemd-analyze --user verify fm-away-watch-2423324861.timer
+exit=0
+### T3 run the generated service's ExecStart with only the unit's Environment= (as systemd starts a oneshot user service; no session env)
+away record: away; lock: 3078340
+unit env names: FM_HOME PATH HERDR_SOCKET_PATH 
+$ env -i HOME=$HOME <unit Environment=> /usr/bin/env bash /home/oskari/.no-mistakes/worktrees/ca1b14ddd4b9/01M522CR7WN41X1BXKVXHPKRCV/bin/fm-away-watch.sh run --home /tmp/fm-lab.niinRu
+fm-away-watch: the main session's lock owner (pid 3078340) is dead; the Stop hook could not arm supervision (state/.claude-autoarm-failure-alarmed)
+exit=0
+new pushes via command: channel: 1
+1792146914	away supervision stalled in home main: the main session's lock owner (pid 3078340) is dead; the Stop hook could not arm supervision (state/.claude-autoarm-failure-alarmed) - see state/.away-watch-alert
+--- adversarial: same away home, systemd default PATH without the installer's (what the pre-fix unit got)
+fm-away-watch: the main session's lock owner (pid 3078340) is dead; the Stop hook could not arm supervision (state/.claude-autoarm-failure-alarmed)
+exit=0
+new pushes: 0
+daemon-style log lines:
+1792146914	alert	the main session's lock owner (pid 3078340) is dead; the Stop hook could not arm supervision (state/.claude-autoarm-failure-alarmed)
+1792146915	alert	the main session's lock owner (pid 3078340) is dead; the Stop hook could not arm supervision (state/.claude-autoarm-failure-alarmed)
+1792146915	wedge alarm: command channel exited 127 (command redacted)
+### T4 uninstall-timer for LAB2 only
+removed fm-away-watch-3687599118.timer and fm-away-watch-3687599118.service from /tmp/fm-lab.niinRu/xdg/systemd/user
+--- unit dir after:
+fm-away-watch-2423324861.service
+fm-away-watch-2423324861.timer
+--- systemctl calls:
+systemctl --user disable --now fm-away-watch-3687599118.timer
+systemctl --user daemon-reload
+--- LAB state untouched by uninstall: /tmp/fm-lab.niinRu/state/.away-watch-alert /tmp/fm-lab.niinRu/state/.away-watch.log 

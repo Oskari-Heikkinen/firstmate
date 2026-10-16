@@ -1,0 +1,101 @@
+### S1 attended: real Claude primary holds lock pid 3078340; ps: claude
+away record present? no
+$ fm-away-watch.sh run --home $LAB 
+exit=0
+pushes: 0; marker: ls: cannot access '/tmp/fm-lab.niinRu/state/.away-watch-alert': No such file or directory
+### S2 quiet mode: FM_AFK_MODE=quiet fm-afk-contract.sh enter
+  holds: none - you are present, so nothing waits for your return: every action you ask for, a local landing or a merge included, proceeds now under ordinary attended authority, and quiet mode changes only which updates reach this conversation.
+  your words (verbatim):
+    lab quiet
+quiet
+$ fm-away-watch.sh run --home $LAB 
+exit=0
+pushes: 0; marker: absent
+### S3 away + auto-arm failure marker, live Claude lock owner, within host threshold
+fm-afk-contract: quiet mode became the away posture; the quiet record is archived at /tmp/fm-lab.niinRu/state/afk-contracts/1792146623-superseded-1792146635.afk-contract
+Away posture recorded at 2026-10-16T10:30:35Z: hold-for-return only. No phone channel is configured; anything that needs you waits for your return. Your away instructions are recorded verbatim; the away session will carry them out where it can, and anything it is unsure of, or that needs you, waits for your return. Destructive, irreversible, and security-sensitive actions are never pre-authorizable, whatever the words say. Expected return: not given. Spend cap: 4 concurrent workers.
+away
+$ fm-away-watch.sh run --home $LAB 
+fm-away-watch: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+exit=0
+--- pushes.log (what the command: channel received):
+1792146635	away supervision stalled in home main: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified) - see state/.away-watch-alert
+--- marker:
+window	1792146635
+autoarm	1792146635	1792146635	1	the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+### S4 rate limit: immediate re-run
+$ fm-away-watch.sh run --home $LAB 
+exit=0
+pushes now: 1
+### S5 dead host + aged queue row; clock driven with --now from t0=1792146658
+host record: host	3365857	dead-identity (pid gone: yes)
+fm_wake_append: invalid wake kind: lab-kind
+queue: 
+--- t0+29min
+$ fm-away-watch.sh run --home $LAB --now 1792148398
+exit=0
+--- t0+31min
+$ fm-away-watch.sh run --home $LAB --now 1792148518
+fm-away-watch: no live supervision host and no main or host activity for 31 minutes (last at 12:30)
+exit=0
+--- t0+61min
+$ fm-away-watch.sh run --home $LAB --now 1792150318
+fm-away-watch: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+exit=0
+--- t0+92min
+$ fm-away-watch.sh run --home $LAB --now 1792152178
+fm-away-watch: no live supervision host and no main or host activity for 92 minutes (last at 12:30)
+exit=0
+--- pushes.log:
+1792146635	away supervision stalled in home main: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified) - see state/.away-watch-alert
+1792146658	away supervision stalled in home main: no live supervision host and no main or host activity for 31 minutes (last at 12:30) - see state/.away-watch-alert
+1792146659	away supervision stalled in home main: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified) - see state/.away-watch-alert
+1792146659	away supervision stalled in home main: no live supervision host and no main or host activity for 92 minutes (last at 12:30) - see state/.away-watch-alert
+--- marker:
+window	1792146635
+autoarm	1792146635	1792150318	2	the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+host	1792148518	1792152178	2	no live supervision host and no main or host activity for 92 minutes (last at 12:30)
+--- run log:
+1792146635	alert	the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+1792148518	alert	no live supervision host and no main or host activity for 31 minutes (last at 12:30)
+1792150318	alert	the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+1792152178	alert	no live supervision host and no main or host activity for 92 minutes (last at 12:30)
+### S6 aged queue row (real fm_wake_append, kind=signal), t0=1792146674
+queue: 1792146674	1	signal	lab-key	lab payload
+--- t0+59min (re-alert window measured from prior alerts)
+$ fm-away-watch.sh run --home $LAB --now 1792150214
+exit=0
+--- t0+62min (re-alert window measured from prior alerts)
+$ fm-away-watch.sh run --home $LAB --now 1792150394
+fm-away-watch: a queued wake has waited 62 minutes unacknowledged (since 12:31)
+exit=0
+--- last push:
+1792146674	away supervision stalled in home main: a queued wake has waited 62 minutes unacknowledged (since 12:31) - see state/.away-watch-alert
+queue	1792150394	1792150394	1	a queued wake has waited 62 minutes unacknowledged (since 12:31)
+### S7 live real supervision host (started by the lab Claude primary), clock +4h so all activity is stale
+host	3589683
+3589683 bash bin/fm-supervision-host.sh park
+queue: 1792146674	1	signal	lab-key	lab payload
+$ fm-away-watch.sh run --home $LAB --now 1792161220
+fm-away-watch: a queued wake has waited 242 minutes unacknowledged (since 12:31)
+exit=0
+new pushes: 1
+1792146821	away supervision stalled in home main: a queued wake has waited 242 minutes unacknowledged (since 12:31) - see state/.away-watch-alert
+### S8 session death: kill -9 the lab Claude primary (lock pid 3078340: claude)
+lock pid alive? no; host pid alive? yes
+$ fm-away-watch.sh run --home $LAB 
+fm-away-watch: the main session's lock owner (pid 3078340) is dead
+exit=0
+new pushes: 1
+1792146836	away supervision stalled in home main: the main session's lock owner (pid 3078340) is dead - see state/.away-watch-alert
+--- marker:
+window	1792146635
+autoarm	1792146635	1792150318	2	the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified)
+host	1792148518	1792152178	2	no live supervision host and no main or host activity for 92 minutes (last at 12:30)
+queue	1792150394	1792161220	2	a queued wake has waited 242 minutes unacknowledged (since 12:31)
+lock	1792146836	1792146836	1	the main session's lock owner (pid 3078340) is dead
+### S9 after the real return (fm-afk-return.sh begin): away record archived, conditions still hold
+away record present? no
+$ fm-away-watch.sh run --home $LAB --now 1792168482
+exit=0
+new pushes: 0

@@ -1,0 +1,92 @@
+### lab home: /tmp/fm-lab.lsVjBP (config/supervision-host present; real Claude primary pid 1337113 holds state/.lock)
+### config/wedge-alarm:
+command: printf "%s\t%s\n" "$(date +%s)" "$1" >> /tmp/fm-lab.lsVjBP/phone.log
+
+### S1 attended: no away record, autoarm failure marker present
+exit=0 marker=absent phone=0
+
+### S2 quiet mode: bin/fm-afk-launch-style quiet record
+quiet
+exit=0 marker=absent phone=0
+
+### enter away for real: bin/fm-afk-contract.sh enter
+Away posture recorded at 2026-10-16T10:16:41Z: hold-for-return only. No phone channel is configured; anything that needs you waits for your return. Your away instructions are recorded verbatim; the away session will carry them out where it can, and anything it is unsure of, or that needs you, waits for your return. Destructive, irreversible, and security-sensitive actions are never pre-authorizable, whatever the words say. Expected return: not given. Spend cap: 4 concurrent workers.
+Away posture (recorded):
+  entered: 2026-10-16T10:16:41Z
+  expected return: not given
+  spend cap: 4 concurrent workers
+away
+
+### S3 away, live lock owner, no host, fresh activity (inside 30 min): expect silence
+exit=0 marker=absent phone=0
+
+### S4 live host: a live process recorded in state/.supervision-host under its real engine identity, clock +31 min: expect silence
+host	1755596	linux-starttime=6868925 cmdline-hex=736c656570003330303000
+exit=0 marker=absent phone_lines=0
+
+### S5 host dies (kill 1755596), clock still +31 min past last activity: expect host alert on the command: channel
+fm-away-watch: no live supervision host and no main or host activity for 31 minutes (last at 12:18)
+exit=0 marker=present phone_lines=1
+--- phone.log (what the off-machine command: channel received):
+1792145917	away supervision stalled in home main: no live supervision host and no main or host activity for 31 minutes (last at 12:18) - see state/.away-watch-alert
+--- state/.away-watch-alert (durable marker):
+window	1792145801
+host	1792147776	1792147776	1	no live supervision host and no main or host activity for 31 minutes (last at 12:18)
+
+### S6 rate limit: same condition 10 min later: expect no new alert
+exit=0 marker=present phone_lines=1
+
+### S7 real primary session dies: kill the lab tmux server running Claude (pid 1337113)
+lock owner pid 1337113 is gone
+lock: stale (pid 1337113 dead or not a harness)
+fm-away-watch: the main session's lock owner (pid 1337113) is dead
+exit=0 marker=present phone_lines=2
+--- newest phone.log line:
+1792145920	away supervision stalled in home main: the main session's lock owner (pid 1337113) is dead - see state/.away-watch-alert
+
+### S8 aged wake queue row: enqueue a real wake through fm_wake_append (payload 'SECRET-TASK-TITLE'), then check at +10 min and +61 min
+1792145939	1	check	lab-key	SECRET-TASK-TITLE needs captain decision
++10 min: queue alerted? 0
+fm-away-watch: a queued wake has waited 61 minutes unacknowledged (since 12:18)
++61 min: queue alerted? 1
+payload text did not reach the channel
+
+### S9 broken-session latch held past one cooldown (doubled cooldown 600s > default)
+main key: 
+latch alerts: 0
+
+### S10 Stop-hook auto-arm failure markers
+fm-away-watch: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified and state/.claude-autoarm-failure-alarmed)
+autoarm alerts: 1
+
+### S11 hourly re-alert: same conditions 61 minutes after first alerts -> each re-alerts once in one summary
+fm-away-watch: no live supervision host and no main or host activity for 125 minutes (last at 12:18); the main session's lock owner (pid 1337113) is dead; a queued wake has waited 125 minutes unacknowledged (since 12:18); the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified and state/.claude-autoarm-failure-alarmed)
+exit=0 phone_lines=5
+--- marker now:
+window	1792145801
+host	1792147776	1792153459	2	no live supervision host and no main or host activity for 125 minutes (last at 12:18)
+lock	1792148676	1792153459	2	the main session's lock owner (pid 1337113) is dead
+queue	1792149599	1792153459	2	a queued wake has waited 125 minutes unacknowledged (since 12:18)
+autoarm	1792149719	1792153459	2	the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified and state/.claude-autoarm-failure-alarmed)
+--- full phone.log:
+1792145917	away supervision stalled in home main: no live supervision host and no main or host activity for 31 minutes (last at 12:18) - see state/.away-watch-alert
+1792145920	away supervision stalled in home main: the main session's lock owner (pid 1337113) is dead - see state/.away-watch-alert
+1792145939	away supervision stalled in home main: a queued wake has waited 61 minutes unacknowledged (since 12:18) - see state/.away-watch-alert
+1792145940	away supervision stalled in home main: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified and state/.claude-autoarm-failure-alarmed) - see state/.away-watch-alert
+1792145940	away supervision stalled in home main: no live supervision host and no main or host activity for 125 minutes (last at 12:18); the main session's lock owner (pid 1337113) is dead; a queued wake has waited 125 minutes unacknowledged (since 12:18); the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified and state/.claude-autoarm-failure-alarmed) - see state/.away-watch-alert
+
+### S9b broken-session latch with a live main session (new real Claude primary, lock: held by live harness pid 1813898)
+main key: 1813898:3445158754:1043203242
+-- inside first cooldown (300s, retry in 200s):
+(no latch alert)
+-- doubled cooldown (a probe failed):
+fm-away-watch: the supervision host's broken-session latch has held past one cooldown (now 600s, next probe from 12:28)
+latch lines on channel: 1
+1792145986	away supervision stalled in home main: the supervision host's broken-session latch has held past one cooldown (now 600s, next probe from 12:28) - see state/.away-watch-alert
+
+### S12 new away window: after the real return archived the record, re-enter away and trip the latch again
+1792146004
+  fm-away-watch: the supervision host's broken-session latch has held past one cooldown (now 600s, next probe from 12:28)
+--- marker (window line should name the new entered_epoch, old rows gone):
+window	1792146004
+latch	1792146005	1792146005	1	the supervision host's broken-session latch has held past one cooldown (now 600s, next probe from 12:28)

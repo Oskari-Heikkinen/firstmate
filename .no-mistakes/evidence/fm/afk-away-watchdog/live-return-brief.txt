@@ -1,0 +1,27 @@
+fm-afk-launch: away-posture record archived at /tmp/fm-lab.niinRu/state/afk-contracts/1792146635.afk-contract
+fm-afk-launch: away mode stopped; no daemon terminal was running, .afk cleared, and the posture record archived
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+=== Return brief (away 2026-10-16T10:30:35Z -> 2026-10-16T10:34:21Z, 3m) ===
+Supervisor health:
+  - GAP: watcher downtime was detected during the away window (recovery marker present)
+  - the away watchdog alerted during the away window: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified) (first 2026-10-16T10:30:35Z, last 2026-10-16T11:31:58Z, 2 alert(s)); no live supervision host and no main or host activity for 92 minutes (last at 12:30) (first 2026-10-16T11:01:58Z, last 2026-10-16T12:02:58Z, 2 alert(s)); a queued wake has waited 242 minutes unacknowledged (since 12:31) (first 2026-10-16T11:33:14Z, last 2026-10-16T14:33:40Z, 2 alert(s)); the main session's lock owner (pid 3078340) is dead (first 2026-10-16T10:33:56Z, last 2026-10-16T10:33:56Z, 1 alert(s))
+Your instructions:
+  your words at entry:
+    lab away
+  the away session took no action under them.
+Waiting on you:
+  (nothing)
+Tried and failed, or could not be fixed:
+  (nothing)
+Landed, cleanup due:
+  (nothing)
+Handled while away:
+  0 outcome(s) handled by the away session (0 routine, 0 escalated above)
+  (no routine outcomes recorded in the store for this window)
+Cost: 0 supervision outcome(s) recorded (0 routine, 0 captain); 0 task(s) live at return.
+catch-up health: GAP: watcher downtime was detected during the away window (recovery marker present)
+catch-up health: the away watchdog alerted during the away window: the Stop hook could not arm supervision (state/.claude-autoarm-failure-notified) (first 2026-10-16T10:30:35Z, last 2026-10-16T11:31:58Z, 2 alert(s)); no live supervision host and no main or host activity for 92 minutes (last at 12:30) (first 2026-10-16T11:01:58Z, last 2026-10-16T12:02:58Z, 2 alert(s)); a queued wake has waited 242 minutes unacknowledged (since 12:31) (first 2026-10-16T11:33:14Z, last 2026-10-16T14:33:40Z, 2 alert(s)); the main session's lock owner (pid 3078340) is dead (first 2026-10-16T10:33:56Z, last 2026-10-16T10:33:56Z, 1 alert(s))
+catch-up wake: 1792146674 1 signal lab-key lab payload
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3401349.1792146674.jyq32X
+fm-afk-return: catch-up clear; ordinary captain work may proceed
+RC=0
