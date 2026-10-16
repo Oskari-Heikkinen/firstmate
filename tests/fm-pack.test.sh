@@ -5,8 +5,9 @@
 # Every case packs a small fixture tree into a plain directory standing in for
 # the D: publication, behind the same PATH-shimmed df and stat that
 # tests/fm-disk-room.test.sh uses, so nothing touches real drives or data.
-# The member check runs through unsquashfs; the squashfuse mount path runs
-# only where /dev/fuse can actually mount, and is skipped elsewhere.
+# The member check runs through FM_PACK_MOUNT=unsquashfs; the default
+# squashfuse mount path runs only where /dev/fuse can actually mount, and is
+# skipped elsewhere.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -85,7 +86,7 @@ run_pack() {
     FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_WEVTUTIL='' \
     FM_DISK_ROOM_SAMPLES="$TMP_ROOT/no-samples" FM_DISK_ROOM_C_FREE_MIN=off FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/no-mb-groups" \
     FM_DISK_ROOM_VHDX="$TMP_ROOT/no-vhdx" FM_DISK_ROOM_DEV_SIZE=$((1000 * GIB)) FM_DISK_ROOM_MARGIN=1G \
-    FM_DISK_ROOM_BULK_MARGIN=1G FM_PACK_MOUNT="${FM_PACK_MOUNT-off}" FM_HOME="$TMP_ROOT/home" \
+    FM_DISK_ROOM_BULK_MARGIN=1G FM_PACK_MOUNT="${FM_PACK_MOUNT-unsquashfs}" FM_HOME="$TMP_ROOT/home" \
     bash "$PACK" "$@"
 }
 
@@ -231,6 +232,63 @@ test_repack_refuses() {
   pass "pack never overwrites a unit"
 }
 
+# no_fuse_path: a PATH dir holding only what pack and verify need before the
+# reader check, so squashfuse and fusermount3 are missing.
+no_fuse_path() {
+  local d="$TMP_ROOT/no-fuse-bin" t
+  mkdir -p "$d"
+  for t in bash dirname mksquashfs unsquashfs sha256sum jq; do ln -sf "$(command -v "$t")" "$d/$t"; done
+  printf '%s\n' "$d"
+}
+
+test_reader_mode_refuses() {
+  local out rc nofuse mode
+  nofuse=$(no_fuse_path)
+  out=$(FM_PACK_MOUNT='' PATH="$nofuse" run_pack pack job unit-n "$SRC" 2>&1); rc=$?
+  expect_code 2 "$rc" "pack without a usable FUSE mount in the default mode is refused"
+  assert_contains "$out" "no usable FUSE mount" "the refusal names the missing mount"
+  out=$(FM_PACK_MOUNT='' PATH="$nofuse" run_pack verify "$R/unit-a.sqfs" 2>&1); rc=$?
+  expect_code 2 "$rc" "verify without a usable FUSE mount in the default mode is refused"
+  assert_contains "$out" "no usable FUSE mount" "the verify refusal names the missing mount"
+  for mode in on off auto; do
+    out=$(FM_PACK_MOUNT=$mode run_pack pack job unit-n "$SRC" 2>&1); rc=$?
+    expect_code 2 "$rc" "pack with FM_PACK_MOUNT=$mode is misuse"
+    assert_contains "$out" "FM_PACK_MOUNT must be mount or unsquashfs" "the refusal names the variable"
+    out=$(FM_PACK_MOUNT=$mode run_pack verify "$R/unit-a.sqfs" 2>&1); rc=$?
+    expect_code 2 "$rc" "verify with FM_PACK_MOUNT=$mode is misuse"
+    out=$(FM_PACK_MOUNT=$mode run_pack restore "$R/unit-a.sqfs" "$TMP_ROOT/restore-$mode" 2>&1); rc=$?
+    expect_code 2 "$rc" "restore with FM_PACK_MOUNT=$mode is misuse"
+    assert_absent "$TMP_ROOT/restore-$mode" "a misused restore writes nothing"
+  done
+  for f in sqfs sqfs.sha256 members.sha256 tree.tsv json; do assert_absent "$R/unit-n.$f" "nothing written: $f"; done
+  assert_absent "$R/.incoming" "no staging created"
+  assert_equals "" "$(pack_reservations)" "no reservation is held"
+  assert_equals "$SNAP" "$(snapshot "$SRC")" "the source is untouched"
+  pass "pack and verify refuse with 2 before any work on an unknown or unusable reader"
+}
+
+test_root_overlap_refuses() {
+  local out rc before parent="$MP/lattice-data/tetjet-results" stage="$R/.incoming/inner"
+  before=$(snapshot "$parent")
+  out=$(run_pack pack job job-raw "$R" 2>&1); rc=$?
+  expect_code 2 "$rc" "packing the task's own results root is refused"
+  assert_contains "$out" "the D: root $R is $R or inside it" "the refusal names both paths"
+  out=$(run_pack pack job job-up "$parent" 2>&1); rc=$?
+  expect_code 2 "$rc" "packing a tree that holds the results root is refused"
+  assert_contains "$out" "the D: root $R is $parent or inside it" "the refusal names both paths"
+  assert_equals "$before" "$(snapshot "$parent")" "a refused overlap writes nothing on D:"
+  assert_equals "" "$(pack_reservations)" "no reservation is held"
+  mkdir -p "$stage"
+  printf 'x' >"$stage/f"
+  out=$(run_pack pack job job-in "$stage" 2>&1); rc=$?
+  expect_code 2 "$rc" "packing a tree inside the staging is refused"
+  assert_contains "$out" "$stage is inside the staging of the D: root $R" "the refusal names both paths"
+  assert_equals "" "$(pack_reservations)" "no reservation is held"
+  assert_equals x "$(cat "$stage/f")" "the staged source is untouched"
+  rm -rf "$R/.incoming"
+  pass "pack refuses with 2 when the D: root and SRC overlap"
+}
+
 test_restore() {
   local out rc dest="$TMP_ROOT/restored"
   out=$(run_pack restore "$R/unit-a.sqfs" "$dest" 2>&1); rc=$?
@@ -261,12 +319,12 @@ test_mount_verify() {
     return 0
   fi
   fusermount3 -u "$probe"
-  out=$(FM_PACK_MOUNT=require run_pack verify "$R/unit-a.sqfs" --against "$SRC"); rc=$?
+  out=$(FM_PACK_MOUNT='' run_pack verify "$R/unit-a.sqfs" --against "$SRC"); rc=$?
   expect_code 0 "$rc" "verify through a fresh mount passes"
   assert_contains "$out" "(6 files, mount), source unchanged" "verify names the mount path"
   d=$(tamper_copy mount-edited)
   flip_first_hash "$d/unit-a.members.sha256"
-  out=$(FM_PACK_MOUNT=require run_pack verify "$d/unit-a.sqfs" 2>&1); rc=$?
+  out=$(FM_PACK_MOUNT='' run_pack verify "$d/unit-a.sqfs" 2>&1); rc=$?
   expect_code 1 "$rc" "an edited members line fails the mount verify"
   assert_equals "" "$(grep fm-pack-verify /proc/self/mounts)" "no verify mount is left behind"
   pass "verify reads the image through a fresh squashfuse mount"
@@ -278,5 +336,7 @@ test_against_changed_source
 test_source_change_refuses
 test_tampering_fails_verify
 test_repack_refuses
+test_reader_mode_refuses
+test_root_overlap_refuses
 test_restore
 test_mount_verify

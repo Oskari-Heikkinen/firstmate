@@ -24,12 +24,18 @@
 #         8. release-bulk pack-UNIT, on success and on every failure.
 #       Prints one line on success:
 #         fm-pack-receipt/v1 image=PATH sha256=HEX files=N logical=BYTES frees=BYTES verified_at=EPOCH sidecar=PATH
-#       Exit 0 committed; 75 wait (D: unavailable, low room, or pack-UNIT
-#       already reserved), nothing written; 1 refused after admission (SRC
-#       changed, the image failed verify, a tool failed), nothing committed and
-#       this run's staging removed; 2 misuse, a name SRC holds that the lists
-#       cannot carry (a newline or a backslash), UNIT already at R, or stale
-#       staging for UNIT in R/.incoming.
+#       Exit codes:
+#         0   packed and verified, the unit committed;
+#         1   refused after admission (SRC changed, the staged image failed
+#             verify, a tool failed), nothing committed and this run's
+#             staging removed;
+#         2   usage or precondition refusal, nothing written: bad
+#             arguments, a name SRC holds that the lists cannot carry (a
+#             newline or a backslash), R equal to SRC or inside it, SRC inside
+#             R/.incoming, no usable FUSE mount in the default mode, UNIT
+#             already at R, or stale staging for UNIT in R/.incoming;
+#         75  wait on disk room (D: unavailable, low room, or pack-UNIT
+#             already reserved), nothing written.
 #   fm-pack.sh verify IMAGE [--against SRC]
 #       IMAGE is R/UNIT.sqfs with its sidecars beside it. Checks the image
 #       sha256, then reads the image afresh: every member's sha256 and the
@@ -43,8 +49,9 @@
 #       restored and checked, 75 refused for room, 1 a failure, 2 misuse.
 #
 # Reading the image afresh: a new squashfuse -o ro mount on a temporary
-# directory (fusermount3 -u afterwards) when /dev/fuse is usable, else
-# unsquashfs -lln for the count and unsquashfs -cat per member. The UNIT.json
+# directory (fusermount3 -u afterwards). pack and verify refuse with exit 2
+# before any work when squashfuse, fusermount3 or a usable /dev/fuse is
+# missing, unless FM_PACK_MOUNT=unsquashfs names the slow path. The UNIT.json
 # verify_method field and verify's output name the path taken.
 #
 # UNIT.json (fm-pack-unit/v1) holds the source, its directory name, the owner
@@ -57,8 +64,11 @@
 # this run. Heavy steps run at nice 19 and idle I/O priority.
 #
 # Environment (all optional):
-#   FM_PACK_MOUNT   auto (default): mount when usable, else unsquashfs;
-#                   off: always unsquashfs; require: mount or fail
+#   FM_PACK_MOUNT   mount (default): verify through a fresh squashfuse mount;
+#                   unsquashfs: for tests and hosts without FUSE, unsquashfs
+#                   -lln for the count and one unsquashfs -cat per member,
+#                   each rereading the image tables, so roughly quadratic in
+#                   the file count
 #   FM_HOME         owner home recorded in UNIT.json (default this checkout)
 #   FM_PACK_TEST_BEFORE_RECHECK  test hook only: a command run by bash -c
 #                   between packing and the source re-check
@@ -115,13 +125,13 @@ unmount_verify() {
   MNT=''
 }
 
-# check_members_mount IMAGE DIR MEMBERS: 0 match, 1 mismatch, 3 cannot mount.
+# check_members_mount IMAGE DIR MEMBERS: 0 match, 1 mismatch or no mount.
 check_members_mount() {
   local img=$1 dir=$2 members=$3 count rc
-  MNT=$(mktemp -d "${TMPDIR:-/tmp}/fm-pack-verify.XXXXXX") || return 3
+  MNT=$(mktemp -d "${TMPDIR:-/tmp}/fm-pack-verify.XXXXXX") || return 1
   if ! squashfuse -o ro "$img" "$MNT" 2>/dev/null; then
     rmdir "$MNT"; MNT=''
-    return 3
+    note "squashfuse could not mount $img"; return 1
   fi
   if [ ! -d "$MNT/$dir" ] || [ -L "$MNT/$dir" ]; then
     note "the image holds no directory $dir"; unmount_verify; return 1
@@ -151,22 +161,27 @@ check_members_unsquashfs() {
   done <"$members"
 }
 
-# check_members IMAGE DIR MEMBERS: sets METHOD; 0 match, 1 mismatch.
+# pack_mode: sets METHOD from FM_PACK_MOUNT; exits 2 on an unknown value.
 METHOD=''
-check_members() {
-  local mode=${FM_PACK_MOUNT:-auto} rc
-  case "$mode" in auto|off|require) ;; *) die "FM_PACK_MOUNT must be auto, off or require" ;; esac
-  if [ "$mode" != off ] && mount_usable; then
-    METHOD=mount
-    check_members_mount "$@"; rc=$?
-    [ "$rc" != 3 ] && return "$rc"
-    [ "$mode" = require ] && { note "squashfuse could not mount $1"; return 1; }
-    note "squashfuse could not mount $1; reading it with unsquashfs"
-  elif [ "$mode" = require ]; then
-    note "no usable /dev/fuse, squashfuse and fusermount3"; return 1
-  fi
-  METHOD=unsquashfs
-  check_members_unsquashfs "$@"
+pack_mode() {
+  METHOD=${FM_PACK_MOUNT:-mount}
+  case "$METHOD" in mount|unsquashfs) ;; *) die "FM_PACK_MOUNT must be mount or unsquashfs, not $METHOD" ;; esac
+}
+
+# need_reader: pack_mode, then exit 2 when the mount path cannot run here.
+need_reader() {
+  pack_mode
+  [ "$METHOD" = unsquashfs ] || mount_usable ||
+    die "no usable FUSE mount (squashfuse, fusermount3 and a usable /dev/fuse) to verify through; FM_PACK_MOUNT=unsquashfs names the slow path"
+}
+
+# check_members IMAGE DIR MEMBERS: 0 match, 1 mismatch.
+check_members() { "check_members_$METHOD" "$@"; }
+
+# outside_src R SRC: exit 2 when R is SRC or inside it, or SRC is inside R/.incoming.
+outside_src() {
+  case "$1/" in "$2"/*) die "the D: root $1 is $2 or inside it; pack a tree outside its own results root" ;; esac
+  case "$2/" in "$1/.incoming/"*) die "$2 is inside the staging of the D: root $1" ;; esac
 }
 
 # image_sha_ok DIR UNIT
@@ -198,11 +213,19 @@ cmd_pack() {
   task=$1 UNIT=$2 src=$3
   valid_unit "$UNIT" || die "UNIT must be letters, digits, . _ - and not start with . _ -"
   need mksquashfs unsquashfs sha256sum jq
+  need_reader
   [ -d "$src" ] && [ ! -L "$src" ] || die "$src is not a real directory"
   src=$(cd -P -- "$src" && pwd -P) || die "cannot resolve $src"
   dir=${src##*/}
   [ -n "$dir" ] || die "cannot pack /"
   case "$src" in *"$NL"*|*\\*) die "$src: a newline or backslash in the path" ;; esac
+  R=$("$BIN/fm-storage.sh" verify-bulk-root --root "$root" "$task"); rc=$?
+  case "$rc" in
+    0) ;;
+    75) exit 75 ;;
+    *) exit 2 ;;
+  esac
+  outside_src "$(realpath -m -- "$R")" "$src"
   out=$(find "$src" -xdev \( -name "*$NL*" -o -name '*\\*' \) -print -quit)
   [ -z "$out" ] || die "$src holds a name with a newline or backslash, which the lists cannot carry"
 
@@ -221,6 +244,7 @@ cmd_pack() {
     *) exit 2 ;;
   esac
   [ -n "$R" ] || exit 2
+  outside_src "$(realpath -m -- "$R")" "$src"
   for ext in sqfs sqfs.sha256 members.sha256 tree.tsv json; do
     [ ! -e "$R/$UNIT.$ext" ] && [ ! -L "$R/$UNIT.$ext" ] || die "$R/$UNIT.$ext exists; a unit is never overwritten"
     [ ! -e "$R/.incoming/$UNIT.$ext" ] && [ ! -L "$R/.incoming/$UNIT.$ext" ] ||
@@ -299,6 +323,7 @@ cmd_verify() {
   local against=''
   [ "$#" -ge 1 ] || die "verify needs IMAGE"
   need unsquashfs sha256sum jq
+  need_reader
   load_image "$1"; shift
   if [ "${1:-}" = --against ]; then
     [ "$#" = 2 ] || die "--against needs SRC"
@@ -320,6 +345,7 @@ cmd_restore() {
   local dest logical
   [ "$#" = 2 ] || die "restore needs IMAGE DEST"
   need unsquashfs sha256sum jq
+  pack_mode
   load_image "$1"
   dest=$2
   [ ! -e "$dest" ] && [ ! -L "$dest" ] || die "$dest exists; restore never writes into an existing path"

@@ -181,7 +181,9 @@ Each image keeps four sidecars beside it: `UNIT.sqfs.sha256`, `UNIT.members.sha2
 They are the whole manifest; there is no index.
 `UNIT.json` records `packed_at` and `verified_at` in epoch seconds.
 
-`verify` checks the image sha256, then reads the image afresh through a new squashfuse mount, or unsquashfs where FUSE is unusable, and compares every member.
+`verify` checks the image sha256, then reads the image afresh through a new squashfuse mount and compares every member.
+Without squashfuse, fusermount3 and a usable `/dev/fuse`, `pack` and `verify` refuse with exit 2 before any work; `FM_PACK_MOUNT=unsquashfs` reads each member with its own `unsquashfs -cat` instead, which is roughly quadratic in the file count and meant for tests and hosts without FUSE.
+`pack` also refuses with exit 2 when the D: root is SRC or inside it, or SRC is inside its `.incoming`.
 `--against SRC` also requires SRC to still match the tree list.
 `restore` unpacks into a new DEST behind an ordinary `fm-disk-room.sh run` admission for the logical size and checks every member there.
 Packing is cheap to undo: the source stays where it is until its owner removes it.
