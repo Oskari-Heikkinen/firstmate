@@ -928,7 +928,9 @@ test_return_brief_reports_the_away_watchdog_marker_in_one_health_line() {
   touch "$dir/home/state/.last-watcher-beat"
   : > "$dir/home/state/.fake-drain"
   out=$(run_return "$dir" begin) || fail "a clean fleet with a watchdog alert should still clear the gate: $out"
-  watch_lines=$(printf '%s\n' "$out" | grep -c 'the away watchdog alerted during the away window')
+  # The brief's Supervisor health section lists it as one bullet; the cleared
+  # gate's catch-up evidence echo repeats every health line, so count bullets.
+  watch_lines=$(printf '%s\n' "$out" | grep -c '^  - the away watchdog alerted during the away window')
   assert_equals 1 "$watch_lines" "the watchdog marker did not become exactly one health line"
   assert_contains "$out" 'the away watchdog alerted during the away window: no main session holds the session lock (first ' "the health line did not name the condition"
   assert_contains "$out" ', 2 alert(s))' "the health line did not count the alerts"
