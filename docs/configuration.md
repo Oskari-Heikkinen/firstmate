@@ -561,10 +561,11 @@ It runs from a systemd user timer, outside every agent session, and sends throug
 
 ### Installing the timer
 
-`bin/fm-away-watch.sh install-timer [--home DIR]` writes `fm-away-watch.service` and `fm-away-watch.timer` into `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, pinned to this code root and the home, then enables the timer.
-Install it once per home that goes away under the supervision host.
+`bin/fm-away-watch.sh install-timer [--home DIR]` writes `fm-away-watch-<id>.service` and `fm-away-watch-<id>.timer` into `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, where `<id>` is the `cksum` of the home's path, pinned to this code root and the home, then enables the timer.
+Install it once per home that goes away under the supervision host; each home gets its own pair of units.
+The service carries the installer's `PATH`, and `HERDR_SOCKET_PATH` when it is set, so `herdr` and `command:` channels resolve as they do in a session; reinstall after either changes.
 The timer runs every five minutes and catches up once after the machine sleeps.
-`bin/fm-away-watch.sh uninstall-timer` disables the timer and removes both units.
+`bin/fm-away-watch.sh uninstall-timer [--home DIR]` disables that home's timer and removes both its units.
 `bin/fm-away-watch.sh run [--home DIR]` checks once by hand.
 
 ### Thresholds

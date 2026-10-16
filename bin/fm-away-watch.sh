@@ -5,7 +5,7 @@
 # Usage:
 #   fm-away-watch.sh run [--home DIR] [--now EPOCH]   check once and alert (the timer runs this)
 #   fm-away-watch.sh install-timer [--home DIR]       write and enable the systemd user timer
-#   fm-away-watch.sh uninstall-timer                  disable and remove that timer
+#   fm-away-watch.sh uninstall-timer [--home DIR]     disable and remove that home's timer
 #   fm-away-watch.sh --help
 #
 # It runs outside every agent session, so it still runs when main cannot run
@@ -47,13 +47,16 @@
 # return brief (bin/fm-afk-return.sh) turns its rows into one health line.
 # Each run logs to state/.away-watch.log (bounded).
 #
-# install-timer writes fm-away-watch.service and fm-away-watch.timer into
-# ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user, pinned to this code root and
-# the selected home, then runs `systemctl --user daemon-reload` and
-# `systemctl --user enable --now fm-away-watch.timer`. The timer runs every 5
-# minutes and is Persistent=true; the service is a oneshot capped at 2 minutes.
-# uninstall-timer disables the timer and removes both units; neither touches
-# the marker or the log.
+# install-timer writes fm-away-watch-<id>.service and fm-away-watch-<id>.timer
+# into ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user, where <id> is the
+# cksum of the selected home's path, so each home gets its own pair. The
+# service is pinned to this code root and that home and carries the
+# installer's PATH (and HERDR_SOCKET_PATH when set), so herdr and command:
+# channels resolve as they do in a session. It then runs
+# `systemctl --user daemon-reload` and `systemctl --user enable --now` on the
+# timer. The timer runs every 5 minutes and is Persistent=true; the service is
+# a oneshot capped at 2 minutes. uninstall-timer disables the selected home's
+# timer and removes both its units; neither touches the marker or the log.
 #
 # Thresholds, each in seconds, from the environment or else from the local
 # config/away-watch (one key=value per line, read every run):
@@ -64,7 +67,6 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-UNIT=fm-away-watch
 
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed -e '$d' -e 's/^# \{0,1\}//'; }
 die() { printf 'fm-away-watch: %s\n' "$*" >&2; exit 2; }
@@ -89,26 +91,42 @@ done
 [ -d "$home" ] || die "home not found: $home"
 home=$(cd "$home" && pwd -P)
 case "$now" in ''|*[!0-9]*) [ -z "$now" ] || die "--now must be an integer epoch" ;; esac
+UNIT="fm-away-watch-$(printf '%s' "$home" | cksum | cut -d' ' -f1)"
 
 unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
 # systemd unit lines get these paths verbatim, so only plain path characters pass.
 safe_path() { [[ "$1" =~ ^/[A-Za-z0-9._/@+-]+$ ]]; }
 
+# unit_env NAME VALUE: one quoted Environment= line, escaped for a unit file.
+unit_env() {
+  local value=$2
+  case "$value" in *$'\n'*) die "$1 holds a newline a unit file cannot carry" ;; esac
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//%/%%}
+  printf 'Environment="%s=%s"\n' "$1" "$value"
+}
+
 install_timer() {
-  local dir
+  local dir env_lines
   safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
   safe_path "$home" || die "home has characters a unit file cannot carry: $home"
+  env_lines=$(unit_env PATH "$PATH") || exit 2
+  if [ -n "${HERDR_SOCKET_PATH:-}" ]; then
+    env_lines+=$'\n'$(unit_env HERDR_SOCKET_PATH "$HERDR_SOCKET_PATH") || exit 2
+  fi
   dir=$(unit_dir)
   mkdir -p "$dir" || die "cannot create $dir"
   cat > "$dir/$UNIT.service.tmp" <<EOF
 [Unit]
-Description=Firstmate away watchdog check
+Description=Firstmate away watchdog check for $home
 
 [Service]
 Type=oneshot
 TimeoutStartSec=120
 Environment=FM_HOME=$home
+$env_lines
 ExecStart=/usr/bin/env bash $CODE_ROOT/bin/fm-away-watch.sh run --home $home
 EOF
   cat > "$dir/$UNIT.timer.tmp" <<EOF

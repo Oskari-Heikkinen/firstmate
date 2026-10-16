@@ -137,10 +137,9 @@ test_dead_lock_owner() {
   local home pid out
   home=$(make_home dead-lock)
   away "$home"
-  start_sleeper
-  pid=$LAST_SLEEPER
-  kill "$pid" 2>/dev/null
-  wait "$pid" 2>/dev/null
+  sleep 0 &
+  pid=$!
+  wait "$pid"
   printf '%s\n' "$pid" > "$home/state/.lock"
   out=$(run_watch "$home") || fail "dead-lock run failed: $out"
   assert_equals 1 "$(alert_count "$home")" "a dead lock owner did not alert"
@@ -158,9 +157,8 @@ seed_latch() {  # <home> <cooldown> <retry-after>
   local home=$1 key
   # shellcheck disable=SC2016 # expands in the child shell
   key=$(FM_HOME="$home" bash -c '. "$1/fm-wake-lib.sh" && . "$1/fm-supervision-engine-lib.sh" \
-    && fm_supervision_host_config "$2" claude && fm_supervision_host_health_key "$3"' _ \
-    "$ROOT/bin" "$home/config" "$home/state") || fail "could not compute the latch key"
-  printf 'key=%s\nerrors=2\ncooldown=%s\nretry_after=%s\n' "$key" "$2" "$3" > "$home/state/.supervision-host-health"
+    && fm_supervision_host_main_key "$2"' _ "$ROOT/bin" "$home/state") || fail "could not compute the latch key"
+  printf 'key=%s|claude|sonnet\nerrors=2\ncooldown=%s\nretry_after=%s\n' "$key" "$2" "$3" > "$home/state/.supervision-host-health"
 }
 
 test_held_latch() {
@@ -249,28 +247,44 @@ test_autoarm_markers_and_rate_limit() {
 }
 
 test_timer_install_and_uninstall() {
-  local dir home fakebin out
+  local dir home other fakebin out unit other_unit units
   dir="$TMP_ROOT/timer"
   home=$(make_home timer-home)
+  other=$(make_home timer-other)
   fakebin="$dir/fakebin"
+  units="$dir/xdg/systemd/user"
   mkdir -p "$fakebin" "$dir/xdg"
   cat > "$fakebin/systemctl" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$dir/systemctl.log"
 SH
   chmod +x "$fakebin/systemctl"
-  out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" install-timer --home "$home" 2>&1) \
-    || fail "install-timer failed: $out"
+  unit="fm-away-watch-$(printf '%s' "$(cd "$home" && pwd -P)" | cksum | cut -d' ' -f1)"
+  other_unit="fm-away-watch-$(printf '%s' "$(cd "$other" && pwd -P)" | cksum | cut -d' ' -f1)"
+  out=$(PATH="$fakebin:/opt/my tools/bin:/x%y:$PATH" HERDR_SOCKET_PATH=/run/herdr.sock XDG_CONFIG_HOME="$dir/xdg" \
+    "$WATCH" install-timer --home "$home" 2>&1) || fail "install-timer failed: $out"
+  out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" install-timer --home "$other" 2>&1) \
+    || fail "second install-timer failed: $out"
   assert_grep "ExecStart=/usr/bin/env bash $ROOT/bin/fm-away-watch.sh run --home $(cd "$home" && pwd -P)" \
-    "$dir/xdg/systemd/user/fm-away-watch.service" "the service does not run the watchdog for the home"
-  assert_grep 'OnCalendar=*:0/5' "$dir/xdg/systemd/user/fm-away-watch.timer" "the timer does not run every 5 minutes"
-  assert_grep '--user enable --now fm-away-watch.timer' "$dir/systemctl.log" "install-timer did not enable the timer"
-  out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" uninstall-timer 2>&1) \
+    "$units/$unit.service" "the second home's install replaced the first home's service"
+  assert_grep "ExecStart=/usr/bin/env bash $ROOT/bin/fm-away-watch.sh run --home $(cd "$other" && pwd -P)" \
+    "$units/$other_unit.service" "the service does not run the watchdog for the second home"
+  assert_grep "Environment=\"PATH=$fakebin:/opt/my tools/bin:/x%%y:" "$units/$unit.service" \
+    "the service does not carry the installer's PATH"
+  assert_grep 'Environment="HERDR_SOCKET_PATH=/run/herdr.sock"' "$units/$unit.service" \
+    "the service does not carry HERDR_SOCKET_PATH"
+  assert_no_grep HERDR_SOCKET_PATH "$units/$other_unit.service" \
+    "the service carries HERDR_SOCKET_PATH the installer did not have"
+  assert_grep 'OnCalendar=*:0/5' "$units/$unit.timer" "the timer does not run every 5 minutes"
+  assert_grep "--user enable --now $unit.timer" "$dir/systemctl.log" "install-timer did not enable the timer"
+  assert_grep "--user enable --now $other_unit.timer" "$dir/systemctl.log" "install-timer did not enable the second timer"
+  out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" uninstall-timer --home "$home" 2>&1) \
     || fail "uninstall-timer failed: $out"
-  assert_absent "$dir/xdg/systemd/user/fm-away-watch.service" "uninstall-timer left the service"
-  assert_absent "$dir/xdg/systemd/user/fm-away-watch.timer" "uninstall-timer left the timer"
-  assert_grep '--user disable --now fm-away-watch.timer' "$dir/systemctl.log" "uninstall-timer did not disable the timer"
-  pass "install-timer writes and enables a 5-minute user timer and uninstall-timer removes it"
+  assert_absent "$units/$unit.service" "uninstall-timer left the service"
+  assert_absent "$units/$unit.timer" "uninstall-timer left the timer"
+  assert_grep "--user disable --now $unit.timer" "$dir/systemctl.log" "uninstall-timer did not disable the timer"
+  assert_present "$units/$other_unit.timer" "uninstall-timer removed another home's timer"
+  pass "install-timer writes and enables a 5-minute timer per home carrying PATH, and uninstall-timer removes only that home's"
 }
 
 test_silent_when_attended_or_quiet
