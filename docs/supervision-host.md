@@ -269,13 +269,14 @@ The away watchdog (`bin/fm-away-watch.sh`) covers that case from outside every s
 A systemd user timer runs it every five minutes, and it does nothing unless the home holds an away record that is not quiet mode's.
 It alerts through the `config/wedge-alarm` channels ([wedge-alarm.md](wedge-alarm.md)) when any of these holds:
 
-- No host process is live under the identity `state/.supervision-host` records, and no main or host activity is newer than 30 minutes.
+- No host process is live under the identity `state/.supervision-host` records, and no main or host activity is newer than 30 minutes (by default).
+  Activity is read from state-file times, since no signal says a main turn is under way, so a main turn longer than that threshold with no live host also alerts.
 - The session lock's recorded owner is dead, or no session holds the lock.
 - The broken-session latch has held past one cooldown.
-- A queued wake has waited unacknowledged for more than 60 minutes.
+- A queued wake has waited unacknowledged for more than 60 minutes (by default).
 - The Stop hook's auto-arm failure markers exist.
 
-Each condition alerts at most once an hour.
+Each condition alerts at most once an hour by default.
 The alert names only the home, the conditions, and their durations, since a channel may be a public topic.
 The durable marker `state/.away-watch-alert` keeps every condition that alerted in the window, and the away return brief reports it as one health line.
 [Configuration](configuration.md#away-watchdog-configaway-watch) owns the thresholds and the timer install.
