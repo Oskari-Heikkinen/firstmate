@@ -249,7 +249,7 @@ test_handoff_done_relaunches_but_ready_done_stays_stopped() {
 
   track rr5
   dir=$(new_case ready rr5)
-  status "$dir" rr5 "done [at=1790000000]: PR https://example.test/pr/5 checks green"
+  status "$dir" rr5 "done [at=1790000000]: PR https://github.com/o/r/pull/5 checks green"
   out=$(run_relaunch "$dir")
   assert_contains "$out" "BOOTSTRAP_INFO: reboot relaunch: left rr5 stopped: it reported its finished work" \
     "a ready PR needs no live worker"$'\n'"$out"
