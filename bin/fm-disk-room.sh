@@ -11,13 +11,15 @@
 # the next compaction would reclaim. The Windows restore-point shadow storage's
 # headroom (its cap minus what it already allocated) is reserved too, because
 # copy-on-write after each restore point fills it from host free space while
-# Linux df and the disk file stay flat. docs/disk-room.md owns the contract and
+# Linux df and the disk file stay flat; so is the WSL swap file's remaining
+# growth up to its configured size. docs/disk-room.md owns the contract and
 # the one-time Windows install (bin/fm-wsl-reclaim.ps1).
 #
 # Usage:
 #   fm-disk-room.sh status [--json]
 #       Print host free, Linux free, reservations, the shadow storage
-#       reservation and any cycling warning, real room, the disk file's
+#       reservation and any cycling warning, the swap file's growth
+#       reservation, real room, the disk file's
 #       slack and its reclaimable estimate, the last compaction result, and
 #       the external SSD's room with the active fetched-results root (read
 #       from the results-root file bin/fm-storage.sh publishes).
@@ -83,7 +85,8 @@
 #                         Windows/System32/WindowsPowerShell/v1.0/powershell.exe;
 #                         empty disables the live reading)
 #   FM_DISK_ROOM_SHADOW_RECORD  shadow storage max/used written by the elevated
-#                         fm-wsl-reclaim.ps1 task, used when the live reading fails
+#                         fm-wsl-reclaim.ps1 task; when the live reading fails the
+#                         newer of it and the last good live reading is used
 #                         (default <host>/ProgramData/firstmate/shadow-storage.txt).
 #                         A record older than 7 days keeps only its max: used is
 #                         then unknown.
@@ -91,6 +94,18 @@
 #                         reading nor a fresh record gives one, e.g. 10G. With used
 #                         unknown the whole cap is reserved, the conservative
 #                         choice. Unset and no record: nothing is reserved.
+#   FM_DISK_ROOM_WSLCONFIG  the Windows .wslconfig whose [wsl2] swap= (WSL's
+#                         default when unset: a quarter of memory= or of Linux
+#                         MemTotal, rounded up to a GiB; swap=0: none) minus the
+#                         swap file's length (swapFile=, else the newest
+#                         %TEMP%\<guid>\swap.vhdx, cached for the VM boot)
+#                         is reserved on the
+#                         drive as the swap file's remaining growth (default
+#                         <drive>/Users/<user>/.wslconfig beside the disk file;
+#                         empty disables the reservation)
+#   FM_DISK_ROOM_MEMINFO  meminfo read for that default (default /proc/meminfo)
+#   FM_DISK_ROOM_BOOT_ID  boot id keying that swap file cache
+#                         (default /proc/sys/kernel/random/boot_id)
 #   FM_DISK_ROOM_WEVTUTIL  wevtutil command used on every reading to count
 #                         volsnap System events 25/33/36 of the last 7 days
 #                         (cached for an hour) for the cycling warning
@@ -283,7 +298,9 @@ powershell_cmd() {
 # shadow_live: sets LIVE_MAX (bytes or unbounded), LIVE_ALLOC, LIVE_USED and
 # LIVE_AT from a non-admin Win32_ShadowStorage reading of the system drive's
 # diff area, or fails. Cached for 5 minutes, failures included, because it
-# starts a Windows process that hangs when Windows is short of memory.
+# starts a Windows process that hangs when Windows is short of memory. Each
+# good reading is also kept in shadow-live-good, which a failure never
+# overwrites, so the fallback can use the last good reading.
 shadow_live() {
   local cache t when='' line='' out cmd m a u
   LIVE_MAX=''; LIVE_ALLOC=''; LIVE_USED=''; LIVE_AT=''
@@ -315,18 +332,34 @@ shadow_live() {
     return 1
   fi
   mkdir -p "$(state_dir)" 2>/dev/null && printf '%s %s %s %s\n' "$when" "$m" "$a" "$u" >"$cache" 2>/dev/null
+  printf '%s %s %s %s\n' "$when" "$m" "$a" "$u" >"$cache-good" 2>/dev/null
   LIVE_MAX=$m; LIVE_ALLOC=$a; LIVE_USED=$u; LIVE_AT=$when
 }
 
-# shadow_reservation: sets SHADOW_RES (bytes reserved), SHADOW_SRC (live, record,
-# stale-record, config, unbounded or none), SHADOW_READING (live, record or none:
-# where the numbers came from), SHADOW_MAX, SHADOW_ALLOC, SHADOW_USED, SHADOW_AT
-# and SHADOW_EVENTS. The live reading reserves the cap minus what is allocated;
-# when it fails the elevated record is the fallback. A reading only ever adds a
-# reservation, so a stale or unreadable one can never make room look larger
-# than plain df.
+# shadow_last_live: sets LIVE_MAX, LIVE_ALLOC, LIVE_USED and LIVE_AT from the
+# last good live reading, or fails when there is none.
+shadow_last_live() {
+  local when='' m='' a='' u=''
+  LIVE_MAX=''; LIVE_ALLOC=''; LIVE_USED=''; LIVE_AT=''
+  [ -r "$(state_dir)/shadow-live-good" ] || return 1
+  read -r when m a u <"$(state_dir)/shadow-live-good" || [ -n "$when" ] || return 1
+  case "$when" in ''|*[!0-9]*|???????????????????*) return 1 ;; esac
+  case "$m" in unbounded) ;; ''|*[!0-9]*|???????????????????*) return 1 ;; esac
+  case "$a" in ''|*[!0-9]*|???????????????????*) return 1 ;; esac
+  case "$u" in ''|*[!0-9]*|???????????????????*) return 1 ;; esac
+  LIVE_MAX=$m; LIVE_ALLOC=$a; LIVE_USED=$u; LIVE_AT=$when
+}
+
+# shadow_reservation: sets SHADOW_RES (bytes reserved), SHADOW_SRC (live,
+# last-live, record, stale-last-live, stale-record, config, unbounded or none),
+# SHADOW_READING (live, last-live, record or none: where the numbers came from),
+# SHADOW_MAX, SHADOW_ALLOC, SHADOW_USED, SHADOW_AT and SHADOW_EVENTS. The live
+# reading reserves the cap minus what is allocated; when it fails the newer of
+# the last good live reading and the elevated record is the fallback. A reading
+# only ever adds a reservation, so a stale or unreadable one can never make
+# room look larger than plain df.
 shadow_reservation() {
-  local f kv max='' used='' at='' cfg=''
+  local f kv max='' used='' at='' cfg='' rec_unbounded=''
   SHADOW_RES=0; SHADOW_SRC=none; SHADOW_READING=none; SHADOW_MAX=''; SHADOW_ALLOC=''; SHADOW_USED=''; SHADOW_AT=''; SHADOW_EVENTS=''
   [ -n "$HOST" ] || return 0
   if [ -n "${FM_DISK_ROOM_SHADOW_MAX:-}" ]; then
@@ -334,15 +367,7 @@ shadow_reservation() {
   fi
   SHADOW_EVENTS=$(shadow_events)
   if shadow_live; then
-    SHADOW_READING=live; SHADOW_ALLOC=$LIVE_ALLOC; SHADOW_USED=$LIVE_USED; SHADOW_AT=$LIVE_AT
-    if [ "$LIVE_MAX" = unbounded ]; then
-      SHADOW_SRC=unbounded
-      # With no cap the configured one bounds it; reserve it whole, as without a record.
-      [ -n "$cfg" ] && { SHADOW_SRC=config; SHADOW_MAX=$cfg; SHADOW_RES=$cfg; }
-      return 0
-    fi
-    SHADOW_SRC=live; SHADOW_MAX=$LIVE_MAX
-    SHADOW_RES=$(( LIVE_MAX - LIVE_ALLOC )); [ "$SHADOW_RES" -lt 0 ] && SHADOW_RES=0
+    shadow_from_live live "$cfg"
     return 0
   fi
   f=${FM_DISK_ROOM_SHADOW_RECORD:-$HOST/ProgramData/firstmate/shadow-storage.txt}
@@ -352,10 +377,17 @@ shadow_reservation() {
     used=$(printf '%s\n' "$kv" | sed -n 's/^used_bytes=//p' | head -n 1)
     at=$(printf '%s\n' "$kv" | sed -n 's/^recorded_epoch=//p' | head -n 1)
     # Past 18 digits a value could wrap signed 64-bit arithmetic, so it is unreadable.
-    case "$max" in unbounded) SHADOW_SRC=unbounded; SHADOW_READING=record; max='' ;; ''|*[!0-9]*|???????????????????*) max='' ;; esac
+    case "$max" in unbounded) rec_unbounded=1; max='' ;; ''|*[!0-9]*|???????????????????*) max='' ;; esac
     case "$used" in ''|*[!0-9]*|???????????????????*) used='' ;; esac
     case "$at" in ''|*[!0-9]*|???????????????????*) at='' ;; esac
   fi
+  # A last good live reading newer than the record wins: the record can be
+  # days old while the live cap was read minutes before this failure.
+  if shadow_last_live && { [ -z "$at" ] || [ "$LIVE_AT" -gt "$at" ]; }; then
+    shadow_from_live last-live "$cfg"
+    return 0
+  fi
+  [ -n "$rec_unbounded" ] && { SHADOW_SRC=unbounded; SHADOW_READING=record; }
   if [ -n "$max" ] && [ -n "$used" ] && [ -n "$at" ] && [ $(( $(now) - at )) -lt "$SHADOW_STALE_SECS" ]; then
     SHADOW_SRC=record; SHADOW_READING=record; SHADOW_MAX=$max; SHADOW_USED=$used; SHADOW_AT=$at
     SHADOW_RES=$(( max - used )); [ "$SHADOW_RES" -lt 0 ] && SHADOW_RES=0
@@ -372,25 +404,58 @@ shadow_reservation() {
   return 0
 }
 
-# shadow_line ends each wording with the source of its numbers: live, record or none.
+# shadow_from_live READING CFG: the reservation from LIVE_* (a reading taken
+# now, or the last good one). A last good reading past 7 days keeps only its
+# cap, like a stale record.
+shadow_from_live() {
+  local cfg=$2
+  SHADOW_READING=$1; SHADOW_ALLOC=$LIVE_ALLOC; SHADOW_USED=$LIVE_USED; SHADOW_AT=$LIVE_AT
+  if [ "$LIVE_MAX" = unbounded ]; then
+    SHADOW_SRC=unbounded
+    # With no cap the configured one bounds it; reserve it whole, as without a record.
+    [ -n "$cfg" ] && { SHADOW_SRC=config; SHADOW_MAX=$cfg; SHADOW_RES=$cfg; }
+    return 0
+  fi
+  SHADOW_SRC=$1; SHADOW_MAX=$LIVE_MAX
+  if [ "$1" = last-live ] && [ $(( $(now) - LIVE_AT )) -ge "$SHADOW_STALE_SECS" ]; then
+    SHADOW_SRC=stale-last-live; SHADOW_ALLOC=''; SHADOW_USED=''
+    [ -n "$cfg" ] && [ "$cfg" -gt "$LIVE_MAX" ] && SHADOW_MAX=$cfg
+    SHADOW_RES=$SHADOW_MAX
+    return 0
+  fi
+  SHADOW_RES=$(( LIVE_MAX - LIVE_ALLOC )); [ "$SHADOW_RES" -lt 0 ] && SHADOW_RES=0
+  return 0
+}
+
+# shadow_at FORMAT -> SHADOW_AT in UTC.
+shadow_at() { date -u -d "@$SHADOW_AT" "$1" 2>/dev/null || echo "$SHADOW_AT"; }
+
+# shadow_line ends each wording with the source of its numbers: live, the last
+# live reading (with its time), record or none.
 shadow_line() {
+  local last
+  last="source last live reading at $(shadow_at '+%Y-%m-%d %H:%M UTC'), no live reading now"
   case "$SHADOW_SRC" in
     live) printf 'shadow storage: %s GiB headroom reserved (cap %s GiB, allocated %s GiB, used %s GiB, read %s; source live)\n' \
-      "$(gib "$SHADOW_RES")" "$(gib "$SHADOW_MAX")" "$(gib "$SHADOW_ALLOC")" "$(gib "$SHADOW_USED")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "$SHADOW_AT")" ;;
+      "$(gib "$SHADOW_RES")" "$(gib "$SHADOW_MAX")" "$(gib "$SHADOW_ALLOC")" "$(gib "$SHADOW_USED")" "$(shadow_at '+%Y-%m-%d %H:%M UTC')" ;;
+    last-live) printf 'shadow storage: %s GiB headroom reserved (cap %s GiB, allocated %s GiB, used %s GiB; %s)\n' \
+      "$(gib "$SHADOW_RES")" "$(gib "$SHADOW_MAX")" "$(gib "$SHADOW_ALLOC")" "$(gib "$SHADOW_USED")" "$last" ;;
     record) printf 'shadow storage: %s GiB headroom reserved (cap %s GiB, used %s GiB, recorded %s; source record, no live reading)\n' \
-      "$(gib "$SHADOW_RES")" "$(gib "$SHADOW_MAX")" "$(gib "$SHADOW_USED")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "$SHADOW_AT")" ;;
+      "$(gib "$SHADOW_RES")" "$(gib "$SHADOW_MAX")" "$(gib "$SHADOW_USED")" "$(shadow_at '+%Y-%m-%d %H:%M UTC')" ;;
+    stale-last-live) printf 'shadow storage: %s GiB reserved (whole cap; the last live reading is over 7 days old, so allocated is unknown; %s)\n' \
+      "$(gib "$SHADOW_RES")" "$last" ;;
     stale-record) printf 'shadow storage: %s GiB reserved (whole cap; the record from %s is over 7 days old, so used is unknown; source record, no live reading)\n' \
-      "$(gib "$SHADOW_RES")" "$(date -u -d "@$SHADOW_AT" '+%Y-%m-%d' 2>/dev/null || echo "$SHADOW_AT")" ;;
-    config) if [ "$SHADOW_READING" = live ]; then
-        printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; the shadow storage read live has no cap; source live)\n' "$(gib "$SHADOW_RES")"
-      else
-        printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; used is unknown without a live reading or the elevated record; source %s)\n' "$(gib "$SHADOW_RES")" "$SHADOW_READING"
-      fi ;;
-    unbounded) if [ "$SHADOW_READING" = live ]; then
-        printf 'shadow storage: not reserved (the shadow storage read live has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it; source live)\n'
-      else
-        printf 'shadow storage: not reserved (the recorded shadow storage has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it; source record, no live reading)\n'
-      fi ;;
+      "$(gib "$SHADOW_RES")" "$(shadow_at '+%Y-%m-%d')" ;;
+    config) case "$SHADOW_READING" in
+        live) printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; the shadow storage read live has no cap; source live)\n' "$(gib "$SHADOW_RES")" ;;
+        last-live) printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; the shadow storage last read live has no cap; %s)\n' "$(gib "$SHADOW_RES")" "$last" ;;
+        *) printf 'shadow storage: %s GiB reserved (whole FM_DISK_ROOM_SHADOW_MAX cap; used is unknown without a live reading or the elevated record; source %s)\n' "$(gib "$SHADOW_RES")" "$SHADOW_READING" ;;
+      esac ;;
+    unbounded) case "$SHADOW_READING" in
+        live) printf 'shadow storage: not reserved (the shadow storage read live has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it; source live)\n' ;;
+        last-live) printf 'shadow storage: not reserved (the shadow storage last read live has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it; %s)\n' "$last" ;;
+        *) printf 'shadow storage: not reserved (the recorded shadow storage has no cap; set FM_DISK_ROOM_SHADOW_MAX to bound it; source record, no live reading)\n' ;;
+      esac ;;
     *) printf 'shadow storage: not reserved (no live reading and no record from the elevated task, so run or re-run fm-wsl-reclaim.ps1 -Install elevated, and FM_DISK_ROOM_SHADOW_MAX unset; source none)\n' ;;
   esac
 }
@@ -399,6 +464,130 @@ shadow_line() {
 shadow_warning() {
   case "$SHADOW_EVENTS" in ''|0) return 0 ;; esac
   printf 'shadow storage cycling: %s volsnap event(s) 25/33/36 in the last 7 days, so restore points are hitting the cap' "$SHADOW_EVENTS"
+}
+
+# WSL swap file -----------------------------------------------------------------
+
+# wslconfig_value KEY FILE -> the [wsl2] section's KEY value from .wslconfig
+# (key case-insensitive, quotes and a trailing comment dropped), or fails when unset.
+wslconfig_value() {
+  [ -r "$2" ] || return 1
+  sed '1s/^\xEF\xBB\xBF//; s/\r$//' "$2" 2>/dev/null | awk -v key="$1" '
+    { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+    line ~ /^\[/ { sect = tolower(line); gsub(/[ \t]/, "", sect); next }
+    sect == "[wsl2]" && index(line, "=") {
+      k = substr(line, 1, index(line, "=") - 1); v = substr(line, index(line, "=") + 1)
+      gsub(/[ \t]/, "", k)
+      if (tolower(k) != tolower(key)) next
+      sub(/[ \t]+[#;].*$/, "", v); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub(/^"|"$/, "", v)
+      val = v; found = 1
+    }
+    END { if (!found) exit 1; print val }'
+}
+
+# wsl_size VALUE -> bytes for a .wslconfig size (16GB, 512MB, bytes), or fails.
+wsl_size() { to_bytes "$(printf '%s' "$1" | tr -d ' \t')"; }
+
+# swap_vhdx USERDIR -> the newest %TEMP%\<guid>\swap.vhdx WSL made, or fails.
+# The Temp glob costs seconds on drvfs, so the match is cached for this VM boot
+# while it exists; a new boot looks again, as an unclean exit leaves the old one.
+swap_vhdx() {
+  local cache boot id m f newest='' t best=0
+  cache="$(state_dir)/swap-path"
+  boot=$(cat "${FM_DISK_ROOM_BOOT_ID:-/proc/sys/kernel/random/boot_id}" 2>/dev/null) || boot=''
+  boot=${boot:--}
+  if [ -r "$cache" ]; then
+    read -r id m <"$cache" || m=''
+    if [ "$id" = "$boot" ]; then
+      case "$m" in "$1"/AppData/Local/Temp/*/swap.vhdx) [ -f "$m" ] && { printf '%s\n' "$m"; return 0; } ;; esac
+    fi
+  fi
+  for f in "$1"/AppData/Local/Temp/*/swap.vhdx; do
+    [ -f "$f" ] || continue
+    t=$(stat -c %Y -- "$f" 2>/dev/null) || continue
+    [ "$t" -ge "$best" ] && { best=$t; newest=$f; }
+  done
+  [ -n "$newest" ] || return 1
+  mkdir -p "$(state_dir)" 2>/dev/null && printf '%s %s\n' "$boot" "$newest" >"$cache" 2>/dev/null
+  printf '%s\n' "$newest"
+}
+
+# swap_reservation: sets SWAP_RES (bytes the WSL swap file can still grow on
+# the Windows drive), SWAP_SRC (wslconfig, default, off, other-drive, disabled
+# or unknown), SWAP_SIZE, SWAP_LEN, SWAP_FILE, SWAP_CONF, SWAP_MEM and
+# SWAP_WHY. WSL grows the swap file from host free space while Linux df and
+# the disk file stay flat. Only files are read, through the drive mount; no
+# Windows process starts.
+swap_reservation() {
+  local conf v mem drive rest h
+  SWAP_RES=0; SWAP_SRC=''; SWAP_SIZE=''; SWAP_LEN=''; SWAP_FILE=''; SWAP_CONF=''; SWAP_MEM=''; SWAP_WHY=''
+  [ -n "$HOST" ] || return 0
+  if [ -n "${FM_DISK_ROOM_WSLCONFIG+set}" ]; then
+    conf=$FM_DISK_ROOM_WSLCONFIG
+    [ -n "$conf" ] || { SWAP_SRC=disabled; return 0; }
+  else
+    case "$VHDX" in
+      "$HOST"/Users/*/*) v=${VHDX#"$HOST"/Users/}; conf="$HOST/Users/${v%%/*}/.wslconfig" ;;
+      *) SWAP_SRC=unknown; SWAP_WHY='the Windows user folder holding .wslconfig was not found; set FM_DISK_ROOM_WSLCONFIG'; return 0 ;;
+    esac
+  fi
+  SWAP_CONF=$conf
+  if v=$(wslconfig_value swap "$conf") && SWAP_SIZE=$(wsl_size "$v"); then
+    SWAP_SRC=wslconfig
+    [ "$SWAP_SIZE" -eq 0 ] && { SWAP_SRC=off; return 0; }
+  else
+    # WSL's default: a quarter of the VM's memory, rounded up to a whole GiB.
+    # The VM's memory is memory= when set, else what Linux sees.
+    SWAP_SRC=default
+    if v=$(wslconfig_value memory "$conf") && mem=$(wsl_size "$v"); then :
+    else
+      mem=$(awk '$1 == "MemTotal:" { printf "%.0f\n", $2 * 1024 }' "${FM_DISK_ROOM_MEMINFO:-/proc/meminfo}" 2>/dev/null)
+    fi
+    case "$mem" in
+      ''|*[!0-9]*) SWAP_SRC=unknown; SWAP_SIZE=''; SWAP_WHY="swap= is unset in $conf and the memory size is unreadable"; return 0 ;;
+    esac
+    SWAP_MEM=$mem
+    SWAP_SIZE=$(( (mem / 4 + GIB - 1) / GIB * GIB ))
+  fi
+  if v=$(wslconfig_value swapFile "$conf") && [ -n "$v" ]; then
+    v=${v//\\\\/\\}
+    case "$v" in
+      [A-Za-z]:[\\/]*)
+        drive=${v%%:*}; rest=${v#?:}; h=${HOST##*/}
+        if [ "${drive,,}" != "${h,,}" ]; then
+          SWAP_SRC=other-drive; SWAP_FILE=$v; return 0
+        fi
+        SWAP_FILE="$HOST${rest//\\//}" ;;
+      *) SWAP_FILE=$v ;;
+    esac
+  else
+    SWAP_FILE=$(swap_vhdx "${conf%/*}") || SWAP_FILE=''
+  fi
+  # A swap file that cannot be found counts as empty, so its whole size is reserved.
+  SWAP_LEN=0
+  [ -n "$SWAP_FILE" ] && [ -f "$SWAP_FILE" ] && SWAP_LEN=$(stat -c %s -- "$SWAP_FILE" 2>/dev/null)
+  case "$SWAP_LEN" in ''|*[!0-9]*) SWAP_LEN=0 ;; esac
+  SWAP_RES=$(( SWAP_SIZE - SWAP_LEN )); [ "$SWAP_RES" -lt 0 ] && SWAP_RES=0
+  return 0
+}
+
+# swap_line names where the swap file's size and length came from.
+swap_line() {
+  local size file
+  case "$SWAP_SRC" in
+    wslconfig) size="size $(gib "$SWAP_SIZE") GiB from swap= in $SWAP_CONF" ;;
+    default) size="size $(gib "$SWAP_SIZE") GiB, the WSL default of a quarter of $(gib "$SWAP_MEM") GiB memory rounded up, since swap= is unset in $SWAP_CONF" ;;
+    off) printf 'swap file: not reserved (swap=0 in %s, so WSL keeps no swap file)\n' "$SWAP_CONF"; return 0 ;;
+    other-drive) printf 'swap file: not reserved (swapFile=%s in %s is not on %s)\n' "$SWAP_FILE" "$SWAP_CONF" "$HOST"; return 0 ;;
+    disabled) printf 'swap file: not reserved (FM_DISK_ROOM_WSLCONFIG is empty)\n'; return 0 ;;
+    *) printf 'swap file: not reserved (%s)\n' "$SWAP_WHY"; return 0 ;;
+  esac
+  if [ -n "$SWAP_FILE" ] && [ -f "$SWAP_FILE" ]; then
+    file="file now $(gib "$SWAP_LEN") GiB at $SWAP_FILE"
+  else
+    file="no swap file found${SWAP_FILE:+ at $SWAP_FILE}, so all of it"
+  fi
+  printf 'swap file: %s GiB growth reserved (%s; %s)\n' "$(gib "$SWAP_RES")" "$size" "$file"
 }
 
 # Reservations ---------------------------------------------------------------
@@ -484,14 +673,15 @@ measure() {
     RES_LIST="$RES_LIST${RES_LIST:+, }${line% *} $(gib "${line##* }") GiB"
   done < <(live_reservations "${1:-}")
   shadow_reservation || return 1
-  ROOM=$(( LINUX_FREE - RESERVED ))
-  if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - RESERVED )) -lt "$ROOM" ]; then
-    ROOM=$(( HOST_FREE - SHADOW_RES - RESERVED ))
-  fi
   VHDX=''; VHDX_SIZE=''; FRAG=''; OVERHEAD=''; SLACK=''; RECLAIM=''
   if [ -n "$HOST" ] && vhdx=$(discover_vhdx); then
     VHDX=$vhdx
     VHDX_SIZE=$(stat -c %s -- "$vhdx" 2>/dev/null) || VHDX_SIZE=''
+  fi
+  swap_reservation
+  ROOM=$(( LINUX_FREE - RESERVED ))
+  if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - SWAP_RES - RESERVED )) -lt "$ROOM" ]; then
+    ROOM=$(( HOST_FREE - SHADOW_RES - SWAP_RES - RESERVED ))
   fi
   bs=$(stat -f -c %S -- "$root" 2>/dev/null)
   [ -n "$bs" ] && FRAG=$(fragmented_free "$bs") || FRAG=''
@@ -513,7 +703,7 @@ measure() {
   return 0
 }
 
-limit_name() { if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES )) -le "$LINUX_FREE" ]; then printf '%s\n' "$HOST"; else printf 'Linux\n'; fi; }
+limit_name() { if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - SWAP_RES )) -le "$LINUX_FREE" ]; then printf '%s\n' "$HOST"; else printf 'Linux\n'; fi; }
 
 # advice -> the next step when room is low.
 advice() {
@@ -794,11 +984,12 @@ cmd_status() {
   measure || die "$ERR"
   results_root
   if [ "$json" = 1 ]; then
-    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s,"shadow_reading":"%s","shadow_allocated":%s}\n' \
+    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s,"shadow_reading":"%s","shadow_allocated":%s,"swap_reserved":%s,"swap_source":"%s","swap_size":%s,"swap_file_size":%s}\n' \
       "$MARGIN" "$HOST" "${HOST_FREE:-null}" "$LINUX_FREE" "$LINUX_USED" "$RESERVED" "$ROOM" \
       "$([ "$ROOM" -lt "$MARGIN" ] && echo true || echo false)" "$VHDX" "${VHDX_SIZE:-null}" \
       "${FRAG:-null}" "${OVERHEAD:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}" \
-      "$SHADOW_RES" "$SHADOW_SRC" "${SHADOW_MAX:-null}" "${SHADOW_USED:-null}" "${SHADOW_EVENTS:-null}" "$SHADOW_READING" "${SHADOW_ALLOC:-null}"
+      "$SHADOW_RES" "$SHADOW_SRC" "${SHADOW_MAX:-null}" "${SHADOW_USED:-null}" "${SHADOW_EVENTS:-null}" "$SHADOW_READING" "${SHADOW_ALLOC:-null}" \
+      "$SWAP_RES" "$SWAP_SRC" "${SWAP_SIZE:-null}" "${SWAP_LEN:-null}"
     return 0
   fi
   printf 'real room: %s GiB (limited by %s; margin %s GiB)%s\n' "$(gib "$ROOM")" "$(limit_name)" "$(gib "$MARGIN")" \
@@ -809,6 +1000,7 @@ cmd_status() {
   if [ -n "$HOST" ]; then
     shadow_line
     [ -n "$(shadow_warning)" ] && printf '%s\n' "$(shadow_warning)"
+    swap_line
   fi
   if [ -n "$VHDX_SIZE" ]; then
     if [ -n "$RECLAIM" ]; then
@@ -979,7 +1171,7 @@ cmd_watch_line() {
     kind=error; msg="disk room: cannot measure ($ERR)"; ROOM=0; measured=0
   elif [ "$ROOM" -lt "$MARGIN" ]; then
     kind=low
-    msg="disk room low: $(gib "$ROOM") GiB real room on $(limit_name) after $(gib "$RESERVED") GiB of declared writes and $(gib "$SHADOW_RES") GiB of shadow storage headroom (margin $(gib "$MARGIN") GiB); $(advice)"
+    msg="disk room low: $(gib "$ROOM") GiB real room on $(limit_name) after $(gib "$RESERVED") GiB of declared writes and $(gib "$SHADOW_RES") GiB of shadow storage headroom$([ "$SWAP_RES" -gt 0 ] && printf ' and %s GiB of swap file growth' "$(gib "$SWAP_RES")") (margin $(gib "$MARGIN") GiB); $(advice)"
   else
     rm -f -- "$rec"
   fi
@@ -1022,7 +1214,7 @@ cmd_arm() {
   {
     printf '%s\n' '#!/usr/bin/env bash' '# Auto-generated by fm-disk-room.sh arm - real disk room watcher check.'
     for v in MARGIN HOST ROOT VHDX MB_GROUPS DEV_SIZE COMPACT_RESULT POWERSHELL SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE \
-      RESULTS_ROOT SAMPLES GROWTH_MAX C_FREE_MIN D_FREE_MIN; do
+      WSLCONFIG MEMINFO BOOT_ID RESULTS_ROOT SAMPLES GROWTH_MAX C_FREE_MIN D_FREE_MIN; do
       name=FM_DISK_ROOM_$v
       [ -z "${!name+x}" ] || printf 'export %s=%q\n' "$name" "${!name}"
     done
