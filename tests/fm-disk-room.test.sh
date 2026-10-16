@@ -129,7 +129,7 @@ run_room() {
     FM_DISK_ROOM_SAMPLES="${TEST_SAMPLES-$TMP_ROOT/no-samples}" \
     FM_DISK_ROOM_C_FREE_MIN="${FM_DISK_ROOM_C_FREE_MIN-off}" \
     FM_DISK_ROOM_WSLCONFIG="${FM_DISK_ROOM_WSLCONFIG-}" FM_DISK_ROOM_MEMINFO="${FM_DISK_ROOM_MEMINFO-$TMP_ROOT/meminfo}" \
-    FM_DISK_ROOM_UPTIME="${FM_DISK_ROOM_UPTIME-$TMP_ROOT/uptime}" \
+    FM_DISK_ROOM_BOOT_ID="${FM_DISK_ROOM_BOOT_ID-$TMP_ROOT/boot_id}" \
     ${TEST_SWAP_DISCOVER:+env -u FM_DISK_ROOM_WSLCONFIG} "$DISK_ROOM" "$@"
 }
 
@@ -600,17 +600,17 @@ test_swap_file_growth() {
   truncate -s $(( 5 * GIB )) "$g2/swap.vhdx"
   out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
   assert_equals $(( 11 * GIB )) "$(json_field "$out" swap_reserved)" "a vanished cached swap file is looked up again"
-  printf '3600.00 1000.00\n' >"$TMP_ROOT/uptime"
   truncate -s $(( 15 * GIB )) "$g2/swap.vhdx"
   touch -d "@$(( $(date +%s) - 7200 ))" "$g2/swap.vhdx"
-  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
-  assert_equals $(( 16 * GIB )) "$(json_field "$out" swap_reserved)" "a cached swap file from before the VM booted is not the swap file"
   mkdir -p "$g3"
   truncate -s $(( 1 * GIB )) "$g3/swap.vhdx"
   out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
-  assert_equals $(( 1 * GIB )) "$(json_field "$out" swap_file_size)" "the swap file made since the VM booted wins over a leftover from an unclean exit"
+  assert_equals $(( 15 * GIB )) "$(json_field "$out" swap_file_size)" "the cached swap file holds for the same VM boot"
+  printf 'next-boot\n' >"$TMP_ROOT/boot_id"
+  out=$(FM_DISK_ROOM_WSLCONFIG="$conf" run_room status --json)
+  assert_equals $(( 1 * GIB )) "$(json_field "$out" swap_file_size)" "after a new VM boot the new swap file wins over a leftover from an unclean exit"
   assert_equals $(( 15 * GIB )) "$(json_field "$out" swap_reserved)" "the current swap file's growth is reserved, not the leftover's"
-  rm -rf "$g3" "$TMP_ROOT/uptime"
+  rm -rf "$g3" "$TMP_ROOT/boot_id"
   truncate -s $(( 5 * GIB )) "$g2/swap.vhdx"
   touch "$g2/swap.vhdx"
   printf '[wsl2]\r\nmemory=16GB\r\n[experimental]\r\nswap=99GB\r\n' >"$conf"
