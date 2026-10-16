@@ -550,7 +550,42 @@ Directives are `off` (a position-independent kill switch that disables every act
 An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisely so a wedged away-mode primary is never silent, and it fires at most once per max-defer window after a genuine wedge.
 
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
+The [away watchdog](#away-watchdog-configaway-watch) sends through the same channels.
 See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) for active evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
+
+## Away watchdog (config/away-watch)
+
+`bin/fm-away-watch.sh` is the alert for an away window whose supervision has stopped while main cannot run turns ([supervision-host.md](supervision-host.md#when-main-cannot-run-turns) owns why and what it checks).
+It runs from a systemd user timer, outside every agent session, and sends through the [wedge alarm channels](#away-mode-wedge-alarm-channels-configwedge-alarm).
+`bin/fm-away-watch.sh --help` prints the full contract.
+
+### Installing the timer
+
+`bin/fm-away-watch.sh install-timer [--home DIR]` writes `fm-away-watch-<id>.service` and `fm-away-watch-<id>.timer` into `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, where `<id>` is the `cksum` of the home's path, pinned to this code root and the home, then enables the timer.
+Install it once per home that goes away under the supervision host; each home gets its own pair of units.
+The service carries the installer's `PATH`, and `HERDR_SOCKET_PATH` when it is set, so `herdr` and `command:` channels resolve as they do in a session; reinstall after either changes.
+The timer runs every five minutes and catches up once after the machine sleeps.
+`bin/fm-away-watch.sh uninstall-timer [--home DIR]` disables that home's timer and removes both its units.
+`bin/fm-away-watch.sh run [--home DIR]` checks once by hand.
+
+### Thresholds
+
+The optional local, gitignored `config/away-watch` holds `key=value` lines, read on every run.
+An environment variable wins over its key.
+
+| Key | Environment | Default | Meaning |
+|---|---|---|---|
+| `host_secs` | `FM_AWAY_WATCH_HOST_SECS` | 1800 | How long a dead host with no main or host activity waits before it alerts |
+| `queue_secs` | `FM_AWAY_WATCH_QUEUE_SECS` | 3600 | How long a queued wake may wait unacknowledged |
+| `realert_secs` | `FM_AWAY_WATCH_REALERT_SECS` | 3600 | The least time between two alerts for one condition |
+
+A value that is not a positive whole number falls back to the default.
+
+### Marker and log
+
+`state/.away-watch-alert` records each condition that alerted in the current away window, with its first and last alert and the count; a new away window starts a new marker.
+It is also the rate-limit store, and `bin/fm-afk-return.sh` turns it into one health line of the return brief.
+Each alert is also logged to the bounded `state/.away-watch.log`.
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
 

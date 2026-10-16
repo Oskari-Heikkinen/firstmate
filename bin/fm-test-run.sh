@@ -417,7 +417,7 @@ family_for_basename() {
       printf '%s\n' pr-forge
       ;;
     fm-afk-contract.test.sh|fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh|\
-    fm-supervision-host.test.sh|fm-host-mirror.test.sh)
+    fm-away-watch.test.sh|fm-supervision-host.test.sh|fm-host-mirror.test.sh)
       printf '%s\n' afk
       ;;
     fm-bearings-snapshot.test.sh|fm-contributions.test.sh|\
@@ -1061,6 +1061,15 @@ families_for_changed_path() {
     bin/fm-afk*)
       printf '%s\n' afk
       printf '%s\n' real-herdr-gated
+      ;;
+    bin/fm-away-watch.sh)
+      printf '%s\n' afk
+      ;;
+    bin/fm-alert-lib.sh)
+      # The alert channels the away daemon's wedge alarm and the away watchdog
+      # share: the daemon's suite and the watchdog's suite.
+      printf '%s\n' "__script__:fm-daemon.test.sh"
+      printf '%s\n' afk
       ;;
     bin/fm-supervision-host.sh|bin/fm-supervision-engine-lib.sh|\
     bin/fm-branch-report.sh|bin/fm-branch-dispatch.mjs)
