@@ -9,7 +9,9 @@
 #   ~/.local/state/lattice-data-gate/reads-<date>.jsonl  agent file reads (bin/fm-data-gate.sh),
 #                                                        plus the next day's first 30 minutes
 #   ~/.local/state/lattice-data-gate/decisions.jsonl     gate decisions, grouped by their
-#                                                        `rule` field (absent means scan)
+#                                                        `rule` field (absent means scan),
+#                                                        plus rotated decisions-<date>T*.jsonl
+#                                                        files from <date> on
 #   ~/.local/state/lattice-data-gate/samples.jsonl       PSI, disk used and disk IO counters
 #                                                        (~/.local/bin/fm-io-sample)
 # and writes ~/.local/state/lattice-data-gate/reports/<date>.md, then prints
@@ -22,7 +24,10 @@
 # A DIGEST.md read is a miss when the same session (else task, else cwd) reads
 # a file over 10 MB in the same folder within 30 minutes; otherwise it is a hit.
 # After writing the report it deletes reads-<date>.jsonl files dated more than
-# LATTICE_DATA_GATE_READS_KEEP_DAYS days ago (default 60).
+# LATTICE_DATA_GATE_READS_KEEP_DAYS days ago (default 60), renames
+# decisions.jsonl to decisions-<date>T<HHMMSS>.jsonl when it is over
+# LATTICE_DATA_GATE_DECISIONS_MAX_BYTES (default 16 MiB), and deletes rotated
+# decision logs dated more than those keep days ago.
 # Missing inputs count as empty. Exit 1 on a bad argument.
 # bin/fm-data-gate-reads.mjs owns the computation; docs/data-gate.md owns the contract.
 set -u

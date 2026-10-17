@@ -41,13 +41,20 @@
 # naming a reader such as cat, head, tail, jq, sed, grep or python -c open) is
 # also passed to bin/fm-data-gate-reads.mjs, which appends one row per named
 # file to ~/.local/state/lattice-data-gate/reads-<date>.jsonl. That path never blocks,
-# never prints, and is bounded to three seconds. LATTICE_DATA_GATE_READS=off
+# never prints, and is bounded to two seconds. LATTICE_DATA_GATE_READS=off
 # turns it off.
+#
+# Time limit: the policy gets LATTICE_DATA_GATE_TIMEOUT seconds (1-7, default
+# 6), so the read log and the decision fit the hooks' 10-second budget.
 #
 # Exit/output contract:
 #   ALLOW - exit 0, no output.
 #   DENY (a rule in enforce) - exit 2 and the refusal on stderr; --harness grok
 #     also gets {"decision":"deny","reason":...} on stdout. Claude needs stdout empty.
+#   TIMEOUT - the policy did not answer within the time limit. When a rule in
+#     enforce would have checked the call (the prefilter matched it), DENY with
+#     the timeout refusal, so a slow check never silently allows; otherwise
+#     allow. Either way append an error record with "timeout":true.
 #   INTERNAL ERROR - allow (exit 0, no output) and append an error record.
 set -u
 
@@ -145,12 +152,17 @@ json_escape() {
   printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
 }
 
-log_error() {
-  local harness=$1 message=$2 cmd=$3
+log_error() {  # <harness> <message> <cmd> [verdict] [extra JSON fields]
+  local harness=$1 message=$2 cmd=$3 verdict=${4:-allow} extra=${5:-}
   mkdir -p "$STATE_DIR" 2>/dev/null || return 0
-  printf '{"ts":"%s","harness":"%s","cwd":"%s","cmd":"%s","verdict":"allow","would_block":false,"error":"%s"}\n' \
+  printf '{"ts":"%s","harness":"%s","cwd":"%s","cmd":"%s","verdict":"%s","would_block":false,"error":"%s"%s}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(json_escape "$harness")" "$(json_escape "$PWD")" \
-    "$(json_escape "${cmd:0:4000}")" "$(json_escape "$message")" >>"$LOG" 2>/dev/null || true
+    "$(json_escape "${cmd:0:4000}")" "$verdict" "$(json_escape "$message")" "$extra" >>"$LOG" 2>/dev/null || true
+}
+
+decide_seconds() {
+  local raw="${LATTICE_DATA_GATE_TIMEOUT:-}"
+  if [[ "$raw" =~ ^[1-7]$ ]]; then printf '%s\n' "$raw"; else printf '6\n'; fi
 }
 
 scan_refusal() {  # <tool> <target>
@@ -173,12 +185,19 @@ See skill data-access, section "Blocked large read". If none of these fits, ask 
 EOF
 }
 
+timeout_refusal() {  # <seconds>
+  cat <<EOF
+BLOCKED (data gate): the gate's check of this call did not finish within $1 s (the machine is busy), so the call did not run.
+Nothing was found against it: retry the same call. If it keeps timing out, run smaller commands or ask main.
+EOF
+}
+
 # Log-only: never blocks, never prints, bounded, allows on any error.
 log_reads() {
   [ "${LATTICE_DATA_GATE_READS:-on}" != off ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   if command -v timeout >/dev/null 2>&1; then
-    timeout 3 node "$READS" log --size-limit "$SIZE_LIMIT" "$@" >/dev/null 2>&1 || true
+    timeout 2 node "$READS" log --size-limit "$SIZE_LIMIT" "$@" >/dev/null 2>&1 || true
   else
     node "$READS" log --size-limit "$SIZE_LIMIT" "$@" >/dev/null 2>&1 || true
   fi
@@ -186,7 +205,7 @@ log_reads() {
 
 run_policy() {
   if command -v timeout >/dev/null 2>&1; then
-    timeout 5 node "$POLICY" "$@"
+    timeout -k 1 "$DECIDE_SECONDS" node "$POLICY" "$@"
   else
     node "$POLICY" "$@"
   fi
@@ -224,13 +243,19 @@ done
 MODE=$(gate_mode scan)
 SIZE_MODE=$(gate_mode size)
 SIZE_LIMIT=$(size_limit)
+DECIDE_SECONDS=$(decide_seconds)
+# Which rules the prefilter says could apply; a timeout refuses only for these.
+SCAN_SHAPED=0
+READ_SHAPED=0
 
 args=(decide --harness "$HARNESS" --mode "$MODE" --size-mode "$SIZE_MODE" --size-limit "$SIZE_LIMIT")
 [ -n "$CWD" ] && args+=(--cwd "$CWD")
 PAYLOAD=""
 if [ "$CMD_SET" = 1 ]; then
   ! printf '%s' "$CMD" | grep -qE "$LOG_READ_WORDS" || log_reads --harness "$HARNESS" ${CWD:+--cwd "$CWD"} --command "$CMD"
-  printf '%s' "$CMD" | grep -qiE "$SCAN_WORDS|$READ_WORDS" || exit 0
+  ! printf '%s' "$CMD" | grep -qiE "$SCAN_WORDS" || SCAN_SHAPED=1
+  ! printf '%s' "$CMD" | grep -qiE "$READ_WORDS" || READ_SHAPED=1
+  [ "$SCAN_SHAPED$READ_SHAPED" != 00 ] || exit 0
   args+=(--command "$CMD")
   DESC=$CMD
 elif [ "$TOOL" = read ]; then
@@ -245,11 +270,13 @@ elif [ "$TOOL" = read ]; then
     *) [ -n "$CWD" ] && fpath="$CWD/$fpath" ;;
   esac
   read_fast_path "$fpath" "$bounded"
+  READ_SHAPED=1
   args+=(--tool read --path "$TPATH")
   [ -n "$OFFSET" ] && args+=(--offset "$OFFSET")
   [ -n "$LIMIT" ] && args+=(--limit "$LIMIT")
   DESC="read path=$TPATH"
 elif [ -n "$TOOL" ]; then
+  SCAN_SHAPED=1
   args+=(--tool "$TOOL")
   [ -n "$TPATH" ] && args+=(--path "$TPATH")
   [ -n "$PATTERN" ] && args+=(--pattern "$PATTERN")
@@ -269,8 +296,11 @@ else
       [ "${BASH_REMATCH[3]}" = '"' ] || fpath=escaped
     fi
     read_fast_path "$fpath" "$bounded"
+    READ_SHAPED=1
   else
-    printf '%s' "$PAYLOAD" | grep -qiE "$SCAN_WORDS|$READ_WORDS" || exit 0
+    ! printf '%s' "$PAYLOAD" | grep -qiE "$SCAN_WORDS" || SCAN_SHAPED=1
+    ! printf '%s' "$PAYLOAD" | grep -qiE "$READ_WORDS" || READ_SHAPED=1
+    [ "$SCAN_SHAPED$READ_SHAPED" != 00 ] || exit 0
   fi
   args+=(--stdin)
   DESC=$PAYLOAD
@@ -289,6 +319,15 @@ STATUS=$?
 case "$STATUS:$OUT" in
   0:allow) exit 0 ;;
   0:block$'\t'scan$'\t'*|0:block$'\t'size$'\t'*) ;;
+  124:*|137:*)
+    if { [ "$MODE" = enforce ] && [ "$SCAN_SHAPED" = 1 ]; } || { [ "$SIZE_MODE" = enforce ] && [ "$READ_SHAPED" = 1 ]; }; then
+      log_error "$HARNESS" "policy timed out after ${DECIDE_SECONDS}s (exit $STATUS)" "$DESC" block ',"timeout":true'
+      OUT=timeout
+    else
+      log_error "$HARNESS" "policy timed out after ${DECIDE_SECONDS}s (exit $STATUS)" "$DESC" allow ',"timeout":true'
+      exit 0
+    fi
+    ;;
   *)
     log_error "$HARNESS" "policy failed (exit $STATUS): ${OUT:0:500}" "$DESC"
     exit 0
@@ -296,7 +335,9 @@ case "$STATUS:$OUT" in
 esac
 
 IFS=$'\t' read -r _ BRULE BTOOL BTARGET BSIZE BLIMIT <<<"$OUT"
-if [ "$BRULE" = size ]; then
+if [ "$OUT" = timeout ]; then
+  REASON=$(timeout_refusal "$DECIDE_SECONDS")
+elif [ "$BRULE" = size ]; then
   [ "$SIZE_MODE" = enforce ] || exit 0
   REASON=$(size_refusal "$BTOOL" "$BTARGET" "$BSIZE" "$BLIMIT")
 else

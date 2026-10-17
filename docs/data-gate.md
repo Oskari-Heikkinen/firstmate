@@ -30,6 +30,21 @@ A target is refused only when it is, or is an ancestor of, one of these protecte
 
 Everything else passes, including reading an exact file, `ls` of a named folder, `grep` or `rg` inside a small named folder such as `rg foo data/<task>/`, a search inside one store item or one ledger folder, and `find` or `tree` limited to depth 0 or 1.
 A scan whose target is a regular file always passes.
+
+### Measuring a store root's size
+
+Read-only size measurement of the documented store roots passes, so their storage can be measured without opening a single file.
+`df` and `stat` are never scans and always pass.
+`du` passes on a protected target only when it stays on one filesystem (`-x` or `--one-file-system`) and has none of `-L`, `--dereference` or `--files0-from`, and only when that target is one of these measurable roots:
+
+- `~/lattice-store` and any directory inside it;
+- each bulk directory matching a line of a home's `data/bulk-paths.txt`, such as `data/rolling-runs-<v>/slices` or `data/<task>/tetjet-results`;
+- `~/lattice-ledger/search-recording` and `~/lattice-ledger/diagnostics`.
+
+`du -x` over an ancestor of those roots stays refused: `~`, `/`, `/mnt/c`, a Firstmate home root, a home's `data/` root, a run folder holding a bulk directory, `~/lattice-ledger` and `~/.cache`.
+A `du` without `-x` stays refused on every protected root, and every content search (`grep -r`, `rg`, `find`, `tree`, `ls -R`) stays refused on the measurable roots too.
+For example, `du -shx ~/lattice-store` and `du -shx data/rolling-runs-v11-2-1/slices` pass, while `du -sh ~/lattice-store`, `du -shx data` and `rg foo ~/lattice-store` are refused.
+The decision log marks such a target with `why: measure`.
 Over `ssh`, a remote `find` or recursive `grep` is refused when its remote target is `/`, the remote home (including no path), `/home`, `/home/<user>`, `/mnt` or `/mnt/c`; a remote `cd` earlier in the same remote command moves the directory relative targets resolve against.
 
 `data/bulk-paths.txt` holds one path per line, relative to that `data/` or absolute, and may use globs.
@@ -109,18 +124,28 @@ Use:  the file's DIGEST.md or its catalog entry first         (lattice-data find
 See skill data-access, section "Blocked large read". If none of these fits, ask main.
 ```
 
-The gate never walks a directory tree, and each decision is bounded to five seconds.
-When the gate itself fails (Node missing, the policy erroring or timing out, an unparseable payload), it allows the call, even in `enforce` mode, and records the error.
+The gate never walks a directory tree, and builds its protected roots only when a scan needs them, so a plain read costs no directory listing.
+Each decision is bounded to `LATTICE_DATA_GATE_TIMEOUT` seconds (1 to 7, default 6), inside the hooks' 10-second limit.
+When that bound runs out, a call shaped like an enforced rule's (a scan-shaped call while the scan rule enforces, or a read while the size rule enforces) is refused instead of silently allowed, and the record carries `"timeout":true`:
+
+```
+BLOCKED (data gate): the gate's check of this call did not finish within <seconds> s (the machine is busy), so the call did not run.
+Nothing was found against it: retry the same call. If it keeps timing out, run smaller commands or ask main.
+```
+
+A timed-out call that no enforcing rule would look at, or any call while both rules are in `log`, is allowed and recorded with `"timeout":true`.
+When the gate itself fails in any other way (Node missing, the policy erroring, an unparseable payload), it allows the call, even in `enforce` mode, and records the error.
 
 ## The decision log
 
 Records go to `~/.local/state/lattice-data-gate/decisions.jsonl`, one JSON object per line.
+The daily report renames it to `decisions-<date>T<HHMMSS>.jsonl` when it grows past `LATTICE_DATA_GATE_DECISIONS_MAX_BYTES` (default 16 MiB), and the gate starts a fresh one on its next record.
 Only scan-shaped calls and reads of files over the size limit are recorded; ordinary commands and small reads never reach the log.
 Each record carries `ts`, `harness`, `cwd`, `cmd`, `verdict` (what the gate did: `allow` or `block`), `would_block` (whether any rule would block under enforcement), `would_block_rules` (which: `scan`, `size`), `mode` (the scan rule's), `size_mode`, `size_limit`, and the resolved `targets`.
-Each target names its `rule`; a size target also carries the file's `size` in bytes and, when it passed although over the limit, `why` (`bounded`, `niced` or `allow-rule`).
-Error records carry an `error` field instead of `targets`.
+Each target names its `rule`; a size target also carries the file's `size` in bytes and, when it passed although over the limit, `why` (`bounded`, `niced` or `allow-rule`); a scan target that passed as a size measurement carries `why: measure`.
+Error records carry an `error` field instead of `targets`, plus `"timeout":true` when the decision ran out of time; their `verdict` is `block` when that timeout refused the call.
 
-While a rule runs in `log`, review its would-block lines before switching it to `enforce`, for example `grep '"would_block_rules":\["scan"' ~/.local/state/lattice-data-gate/decisions.jsonl` for the scan rule or `grep '"would_block_rules":\[[^]]*"size"' ~/.local/state/lattice-data-gate/decisions.jsonl` for the size rule.
+While a rule runs in `log`, review its would-block lines before switching it to `enforce`, for example `grep '"would_block_rules":\["scan"' ~/.local/state/lattice-data-gate/decisions*.jsonl` for the scan rule or `grep '"would_block_rules":\[[^]]*"size"' ~/.local/state/lattice-data-gate/decisions*.jsonl` for the size rule.
 Each false block becomes an allow rule and a test row before that rule switches to `enforce`.
 
 ## The read log and the daily report
@@ -133,13 +158,13 @@ Each named regular file gets one row in the day's `~/.local/state/lattice-data-g
 An unlimited Read counts as the whole file, as the transcript baseline counts it; `bytes_returned_est` applies the harness's Read caps instead (Claude 2000 lines and a refusal above 256 KB without a limit, Pi and OMP 2000 lines and 50 KB, OpenCode 2000 lines) and equals `bytes_requested` for shell reads.
 The task is `FM_TASK_ID`, else the `fm/<id>` branch of the working directory's worktree; the home is `FM_HOME`, else the discovered home containing the working directory, else the home holding that task's status file.
 Field names follow the transcript baseline in the main home's `data/fm-read-baseline/`, so its numbers stay comparable.
-The read path never blocks, never prints, stats each file once, and is bounded to three seconds; `LATTICE_DATA_GATE_READS=off` turns it off.
+The read path never blocks, never prints, stats each file once, and is bounded to two seconds; `LATTICE_DATA_GATE_READS=off` turns it off.
 Directories, missing files and glob or variable operands are not recorded.
 
-`bin/fm-data-gate-report.sh` summarizes one local day (default yesterday) in `~/.local/state/lattice-data-gate/reports/<date>.md` and prints one relay line: bytes requested by agents (the headline, comparable with the baseline) and the estimated bytes returned, the largest reads, scan and size would-blocks and blocks from the decision log (by a record's `would_block_rules` and each rule's mode; a record without them is the scan rule's), the reads the size rule would refuse, the `DIGEST.md` hit rate, disk growth and IO pressure from the `fm-io-sample` log `samples.jsonl`, and the baseline headline when that baseline report exists.
+`bin/fm-data-gate-report.sh` summarizes one local day (default yesterday) in `~/.local/state/lattice-data-gate/reports/<date>.md` and prints one relay line: bytes requested by agents (the headline, comparable with the baseline) and the estimated bytes returned, the largest reads, scan and size would-blocks and blocks from the decision log (by a record's `would_block_rules` and each rule's mode; a record without them is the scan rule's), the reads the size rule would refuse, gate errors and timeout refusals from the live and rotated decision logs, the `DIGEST.md` hit rate, disk growth and IO pressure from the `fm-io-sample` log `samples.jsonl`, and the baseline headline when that baseline report exists.
 A `DIGEST.md` read is a miss when the same session (else task, else working directory) reads a file over 10 MB in the same folder within 30 minutes, a fixed window, and a hit otherwise.
 The installer's `lattice-data-gate-report.timer` runs it daily at 00:40 under `Nice=19` and the idle IO class, so the window past midnight is complete.
-After each report, read logs dated more than `LATTICE_DATA_GATE_READS_KEEP_DAYS` days ago (default 60) are deleted; the decision log and `samples.jsonl` are not rotated.
+After each report, read logs dated more than `LATTICE_DATA_GATE_READS_KEEP_DAYS` days ago (default 60) are deleted, the decision log is rotated when it is over its size limit, and rotated decision logs dated more than that many days ago are deleted; `samples.jsonl` is not rotated.
 Its header owns the options.
 
 ## Install, status and uninstall

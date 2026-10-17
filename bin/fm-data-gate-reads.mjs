@@ -12,7 +12,9 @@
 // ~/.local/state/lattice-data-gate/reads-YYYY-MM-DD.jsonl. It never walks a
 // directory, never expands a glob, and never runs any byte of the submitted
 // command; the shell lexing comes from bin/fm-arm-command-policy.mjs,
-// firstmate's sole shell lexer. `report` deletes read logs older than
+// firstmate's sole shell lexer. `report` rotates the gate's decision log once
+// it is over LATTICE_DATA_GATE_DECISIONS_MAX_BYTES (default 16 MiB), and
+// deletes read logs and rotated decision logs older than
 // LATTICE_DATA_GATE_READS_KEEP_DAYS days (default 60).
 //
 // CLI:
@@ -47,6 +49,7 @@ const BIG_FILE_BYTES = 10 * 1000 * 1000;
 const DIGEST_WINDOW_MIN = 30;
 const TOP_READS = 5;
 const KEEP_DAYS = 60;
+const DECISIONS_MAX_BYTES = 16 * 1024 * 1024;
 // Read tool caps per harness: default line window, a hard line and byte cap,
 // and the size above which an unlimited Read is refused.
 const READ_CAPS = {
@@ -498,14 +501,29 @@ async function readStats(date, nextDate, start, end, windowMs) {
   return stats;
 }
 
-async function decisionStats(path, start, end) {
+// The decision logs that can hold records of `date`: every rotated
+// decisions-<rotated at>.jsonl rotated on or after it, then the live log.
+function decisionLogs(date) {
+  let names = [];
+  try {
+    names = readdirSync(stateDir());
+  } catch {
+    // no state dir: only the (missing) live log
+  }
+  const rotated = names.filter((name) => (name.match(/^decisions-(\d{4}-\d{2}-\d{2})T\d{6}\.jsonl$/)?.[1] ?? "") >= date).sort();
+  return [...rotated, "decisions.jsonl"].map((name) => join(stateDir(), name));
+}
+
+async function decisionStats(paths, start, end) {
   const byRule = { scan: { seen: 0, would: 0, blocked: 0 }, size: { seen: 0, would: 0, blocked: 0 } };
   let errors = 0;
-  await eachJson(path, (record) => {
+  let timeoutBlocks = 0;
+  const onRecord = (record) => {
     const t = tsMs(record.ts);
     if (!(t >= start && t < end)) return;
     if (record.error) {
-      errors += 1;
+      if (record.verdict === "block") timeoutBlocks += 1;
+      else errors += 1;
       return;
     }
     // A record from before the size rule has no would_block_rules and no
@@ -519,8 +537,9 @@ async function decisionStats(path, start, end) {
       byRule[rule].would += 1;
       if (record.verdict === "block" && (rule === "size" ? record.size_mode : record.mode) === "enforce") byRule[rule].blocked += 1;
     }
-  });
-  return { byRule, errors };
+  };
+  for (const path of paths) await eachJson(path, onRecord);
+  return { byRule, errors, timeoutBlocks };
 }
 
 const PSI_KEYS = ["io_some_avg60", "io_full_avg60", "memory_some_avg60", "memory_full_avg60"];
@@ -565,7 +584,7 @@ export async function buildReport(options) {
   const end = new Date(y, m - 1, d + 1).getTime();
   const windowMs = DIGEST_WINDOW_MIN * 60 * 1000;
   const reads = await readStats(options.date, localDate(new Date(end)), start, end, windowMs);
-  const decisions = await decisionStats(join(stateDir(), "decisions.jsonl"), start, end);
+  const decisions = await decisionStats(decisionLogs(options.date), start, end);
   const samples = await sampleStats(join(stateDir(), "samples.jsonl"), start, end);
   const baseline = baselineHeadline(options.baseline);
   const hits = reads.digests - reads.misses;
@@ -595,6 +614,7 @@ export async function buildReport(options) {
     `| Whole-file reads > 200 MB (size rule would block) | ${reads.sizeWould} |`,
     ...Object.entries(decisions.byRule).map(([name, r]) => `| Gate ${name} decisions | ${r.seen} logged, ${r.would} would-block, ${r.blocked} blocked |`),
     `| Gate errors (allowed) | ${decisions.errors} |`,
+    `| Gate timeouts (refused) | ${decisions.timeoutBlocks} |`,
     `| DIGEST.md reads | ${reads.digests}: ${hits} hit, ${reads.misses} miss (${rate}; miss = a > 10 MB file in the same folder read within ${DIGEST_WINDOW_MIN} min) |`,
     `| Disk growth | root ${samples.rootGrowth === null ? "n/a" : signed(samples.rootGrowth)}, /mnt/c ${samples.mntcGrowth === null ? "n/a" : signed(samples.mntcGrowth)} |`,
     `| Disk IO | ${fmtBytes(samples.readBytes)} read, ${fmtBytes(samples.written)} written (${samples.samples} samples) |`,
@@ -611,8 +631,24 @@ export async function buildReport(options) {
   return { relay, markdown: lines.join("\n") };
 }
 
-// Deletes read logs dated more than LATTICE_DATA_GATE_READS_KEEP_DAYS days ago.
-function pruneReads() {
+// Moves the decision log aside to decisions-<local date>T<HHMMSS>.jsonl once
+// it is over LATTICE_DATA_GATE_DECISIONS_MAX_BYTES. Writers append by path, so
+// the next record starts a fresh decisions.jsonl.
+function rotateDecisions(now = new Date()) {
+  const max = Number(process.env.LATTICE_DATA_GATE_DECISIONS_MAX_BYTES);
+  const path = join(stateDir(), "decisions.jsonl");
+  try {
+    if (statSync(path).size <= (Number.isInteger(max) && max > 0 ? max : DECISIONS_MAX_BYTES)) return;
+  } catch {
+    return;
+  }
+  const time = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => String(n).padStart(2, "0")).join("");
+  renameSync(path, join(stateDir(), `decisions-${localDate(now)}T${time}.jsonl`));
+}
+
+// Deletes read logs and rotated decision logs dated more than
+// LATTICE_DATA_GATE_READS_KEEP_DAYS days ago.
+function pruneLogs() {
   const keep = Number(process.env.LATTICE_DATA_GATE_READS_KEEP_DAYS);
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - (Number.isInteger(keep) && keep > 0 ? keep : KEEP_DAYS));
@@ -624,7 +660,7 @@ function pruneReads() {
     return;
   }
   for (const name of names) {
-    const date = name.match(/^reads-(\d{4}-\d{2}-\d{2})\.jsonl$/)?.[1];
+    const date = name.match(/^(?:reads-(\d{4}-\d{2}-\d{2})|decisions-(\d{4}-\d{2}-\d{2})T\d{6})\.jsonl$/)?.slice(1).find(Boolean);
     if (date && date < oldest) unlinkSync(join(stateDir(), name));
   }
 }
@@ -648,7 +684,8 @@ async function runReport(argv) {
   const target = join(dir, `${options.date}.md`);
   writeFileSync(`${target}.tmp.${process.pid}`, markdown);
   renameSync(`${target}.tmp.${process.pid}`, target);
-  pruneReads();
+  rotateDecisions();
+  pruneLogs();
   process.stdout.write(`${relay}\n`);
 }
 

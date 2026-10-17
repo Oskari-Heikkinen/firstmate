@@ -237,16 +237,21 @@ function loadRoots() {
 export function protectedRoots(roots = loadRoots()) {
   const home = realish(gateHome());
   const exact = new Set(["/", home, "/mnt/c", join(home, ".cache")]);
-  exact.add(realish(join(home, "lattice-ledger", "search-recording")));
-  exact.add(realish(join(home, "lattice-ledger", "diagnostics")));
+  // The ledger bulk folders and every existing bulk directory are also the
+  // store roots a `du -x` measurement may walk (measurableRoot).
+  const measure = new Set([
+    realish(join(home, "lattice-ledger", "search-recording")),
+    realish(join(home, "lattice-ledger", "diagnostics")),
+  ]);
+  for (const pattern of roots.bulk) {
+    for (const match of globExpand(pattern, Infinity)) if (existsSync(match)) measure.add(realish(match));
+  }
+  for (const root of measure) exact.add(root);
   for (const h of roots.homes) {
     exact.add(h);
     exact.add(realish(join(h, "data")));
   }
-  for (const pattern of roots.bulk) {
-    for (const match of globExpand(pattern, Infinity)) if (existsSync(match)) exact.add(realish(match));
-  }
-  return { exact: [...exact], bulk: roots.bulk, store: realish(join(home, "lattice-store")), home };
+  return { exact: [...exact], bulk: roots.bulk, store: realish(join(home, "lattice-store")), home, measure: [...measure] };
 }
 
 function isAncestorOrSelf(target, root) {
@@ -277,6 +282,21 @@ function bulkHit(path, pattern) {
   for (let i = 0; i < have.length; i += 1) if (!segmentRegex(want[i]).test(have[i])) return false;
   if (have.length === want.length) return true;
   return globExpand(join(path, ...want.slice(have.length))).some((p) => existsSync(p));
+}
+
+// A store root a read-only size measurement (`du -x`) may walk: the bulk
+// store or a directory inside it, a bulk directory itself, or a ledger bulk
+// folder. Never an ancestor of one: ~, /, a home and its data/ root stay refused.
+function bulkMatch(path, pattern) {
+  const want = pattern.split("/").filter(Boolean);
+  const have = path.split("/").filter(Boolean);
+  return have.length === want.length && have.every((segment, i) => segmentRegex(want[i]).test(segment));
+}
+
+export function measurableRoot(target, roots, lexical = target) {
+  if (storeVerdict(target, roots.store)) return true;
+  if (roots.measure.includes(target)) return true;
+  return roots.bulk.some((pattern) => bulkMatch(target, pattern) || bulkMatch(lexical, pattern));
 }
 
 export function classifyTarget(target, roots, lexical = target) {
@@ -472,7 +492,10 @@ function findArgs(args) {
 function duArgs(args) {
   const { options, operands } = operandsAfterOptions(args, { shortArg: "BdtX", longArg: ["block-size", "max-depth", "threshold", "exclude-from", "time-style", "files0-from"] });
   if (has(options, "help", "version")) return { scan: false, paths: [] };
-  return { scan: true, paths: operands };
+  // A read-only size measurement: it stays on one filesystem, follows no
+  // symlink below its operands, and takes its paths only from the command line.
+  const measure = has(options, "x", "one-file-system") && !has(options, "L", "dereference", "files0-from");
+  return { scan: true, paths: operands, ...(measure ? { measure } : {}) };
 }
 
 function treeArgs(args) {
@@ -660,7 +683,7 @@ function analyzeNode(tokens, state, depth, remote, context) {
     const stdinRedirect = tokens.some((t) => t.type === "redir" && t.value.startsWith("<"));
     if (viaXargs) out.scans.push({ tool: name, target: "(paths from stdin)", verdict: "allow", unresolved: true });
     else if (STDIN_READERS.has(name) && (context.pipedStdin || stdinRedirect)) out.scans.push({ tool: name, target: "(stdin)", verdict: "allow" });
-    else out.scans.push({ tool: name, target: state.cwd, verdict: null });
+    else out.scans.push({ tool: name, target: state.cwd, verdict: null, ...(parsed.measure ? { measure: true } : {}) });
     return out;
   }
   for (const word of parsed.paths) {
@@ -669,7 +692,7 @@ function analyzeNode(tokens, state, depth, remote, context) {
       out.scans.push({ tool: name, target: word.value, verdict: "allow", unresolved: true });
       continue;
     }
-    for (const resolved of targets) out.scans.push({ tool: name, ...resolved, verdict: null });
+    for (const resolved of targets) out.scans.push({ tool: name, ...resolved, verdict: null, ...(parsed.measure ? { measure: true } : {}) });
   }
   return out;
 }
@@ -989,7 +1012,9 @@ function toolTargets(kind, path, pattern, cwd) {
 // Decide one call under both rules. Returns { verdict, scans, tool, target,
 // note } for the scan rule plus `size`: { verdict, reads, tool, target, bytes }
 // for the size rule, whose `reads` lists only reads of files over the limit.
-export function decide(call, roots = protectedRoots(), { sizeLimit = DEFAULT_SIZE_LIMIT } = {}) {
+// The protected roots are built only when a scan needs them, so a read-only
+// call never pays for the roots cache or the bulk-pattern expansion.
+export function decide(call, roots = null, { sizeLimit = DEFAULT_SIZE_LIMIT } = {}) {
   let scans = [];
   let reads = [];
   let note;
@@ -1005,7 +1030,12 @@ export function decide(call, roots = protectedRoots(), { sizeLimit = DEFAULT_SIZ
     const tool = call.kind === "glob" ? "Glob" : "Grep";
     scans = toolTargets(call.kind, call.path, call.pattern, cwd).map((resolved) => ({ tool, ...resolved, verdict: null }));
   }
-  for (const scan of scans) if (!scan.verdict) scan.verdict = classifyTarget(scan.target, roots, scan.lexical);
+  for (const scan of scans) {
+    if (scan.verdict) continue;
+    roots ??= protectedRoots();
+    scan.verdict = classifyTarget(scan.target, roots, scan.lexical);
+    if (scan.verdict === "block" && scan.measure && measurableRoot(scan.target, roots, scan.lexical)) [scan.verdict, scan.why] = ["allow", "measure"];
+  }
   const over = sizeVerdicts(reads, sizeLimit);
   const tooBig = over.find((r) => r.verdict === "block");
   const size = tooBig
@@ -1090,7 +1120,7 @@ function runDecide(args) {
     process.stdout.write("allow\n");
     return;
   }
-  const result = decide(call, protectedRoots(), { sizeLimit: args.sizeLimit });
+  const result = decide(call, null, { sizeLimit: args.sizeLimit });
   const scanBlocks = result.verdict === "block";
   const sizeBlocks = result.size.verdict === "block";
   const enforcedScan = scanBlocks && args.mode === "enforce";
@@ -1108,7 +1138,7 @@ function runDecide(args) {
       size_mode: args.sizeMode,
       size_limit: args.sizeLimit,
       targets: [
-        ...result.scans.map((s) => ({ rule: "scan", tool: s.tool, target: s.target, verdict: s.verdict, ...(s.unresolved ? { unresolved: true } : {}) })),
+        ...result.scans.map((s) => ({ rule: "scan", tool: s.tool, target: s.target, verdict: s.verdict, ...(s.why ? { why: s.why } : {}), ...(s.unresolved ? { unresolved: true } : {}) })),
         ...result.size.reads.map((r) => ({ rule: "size", tool: r.tool, target: r.target, size: r.size, verdict: r.verdict, ...(r.why ? { why: r.why } : {}) })),
       ],
     };

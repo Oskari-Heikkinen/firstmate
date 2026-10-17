@@ -223,6 +223,30 @@ block|H|ssh engineer@10.0.0.3 'cd / && find . -name x'
 block|H|ssh engineer@10.0.0.3 'cd /srv && cd && find . -name x'
 block|H|ssh engineer@10.0.0.3 find /mnt/c -name x
 allow|H|ssh engineer@10.0.0.3 find /mnt/d -name x
+# Read-only size measurement: du -x of a measurable store root passes.
+allow|H|du -shx ~/lattice-store
+allow|H|du -sx --one-file-system ~/lattice-store/items/tetjet-slice
+allow|H|du -shx data/rolling-runs-v11-2-1/slices
+allow|H|du -shx data/exp2/tetjet-results
+allow|H|du -shx ~/lattice-ledger/search-recording ~/lattice-ledger/diagnostics
+allow|H|nice -n 19 ionice -c3 du -sx ~/lattice-store
+allow|H|cd ~/lattice-store && du -sx
+allow|H|du -shx ~/link-store
+allow|H|df -h ~/lattice-store
+allow|H|stat ~/lattice-store
+block|H|du -shxL ~/lattice-store
+block|H|du -shx --dereference ~/lattice-store
+block|H|du -sx --files0-from=list ~/lattice-store
+block|H|du -shx ~
+block|H|du -shx /
+block|H|du -shx data
+block|H|du -shx .
+block|H|du -shx data/rolling-runs-v11-2-1
+block|H|du -shx data/*
+block|H|du -shx ~/lattice-ledger
+block|H|du -shx ~/lattice-store ~
+block|H|rg foo ~/lattice-store
+block|H|find -x ~/lattice-store -name x
 EOF
 )
 
@@ -458,6 +482,60 @@ test_internal_error_allows_and_logs() {
   printf '{not json' | HOME="$FAKE_HOME" LATTICE_DATA_GATE=enforce "$GATE" --harness claude >/dev/null 2>&1
   expect_code 0 $? "unparseable stdin with a scan word allows"
   pass "internal errors allow and are logged"
+}
+
+test_measure_logs_why() {
+  local log="$FAKE_HOME/.local/state/lattice-data-gate/decisions.jsonl"
+  gate enforce --harness pi --cwd "$MAIN" --command 'du -shx ~/lattice-store' >/dev/null 2>&1
+  expect_code 0 $? "du -x of the store root passes in enforce"
+  tail -n 1 "$log" | grep -q '"cmd":"du -shx ~/lattice-store".*"verdict":"allow".*"why":"measure"' || fail "a measurement target is logged with why measure"
+  pass "a size measurement passes and is logged as why measure"
+}
+
+# A slow policy past LATTICE_DATA_GATE_TIMEOUT refuses a call an enforcing rule
+# would look at, and allows (but logs) every other call.
+test_timeout_refuses_enforced_calls() {
+  local copy="$TMP_ROOT/slowbin" log="$FAKE_HOME/.local/state/lattice-data-gate/decisions.jsonl" err out
+  mkdir -p "$copy"
+  cp "$GATE" "$copy/fm-data-gate.sh"
+  printf 'await new Promise((r) => setTimeout(r, 4000));\nprocess.stdout.write("allow\\n");\n' >"$copy/fm-data-gate-policy.mjs"
+  slow() {  # <scan mode> <size mode> <args...>
+    local mode=$1 size=$2
+    shift 2
+    HOME="$FAKE_HOME" LATTICE_DATA_GATE="$mode" LATTICE_DATA_GATE_SIZE="$size" LATTICE_DATA_GATE_TIMEOUT=1 \
+      LATTICE_DATA_GATE_READS=off "$copy/fm-data-gate.sh" "$@"
+  }
+  err=$(slow enforce log --harness pi --cwd "$MAIN" --command 'rg foo /x' 2>&1 >/dev/null)
+  expect_code 2 $? "a timed-out scan-shaped call is refused while the scan rule enforces"
+  assert_contains "$err" "did not finish within 1 s" "the refusal says the check ran out of time"
+  tail -n 1 "$log" | grep -q '"verdict":"block".*"timeout":true' || fail "the refused timeout is logged as a block with timeout true"
+  out=$(printf '{"cwd":"%s","toolName":"Bash","toolInput":{"command":"rg foo /x"}}' "$MAIN" | slow enforce log --harness grok 2>/dev/null)
+  assert_contains "$out" '"decision":"deny"' "a timed-out grok call gets the deny object"
+  slow log enforce --harness pi --cwd "$MAIN" --tool read --path "$MAIN/data/task1/report.md" >/dev/null 2>&1
+  expect_code 2 $? "a timed-out read is refused while the size rule enforces"
+  slow enforce log --harness pi --cwd "$MAIN" --command "cat $MAIN/data/task1/report.md" >/dev/null 2>&1
+  expect_code 0 $? "a timed-out read passes while only the scan rule enforces"
+  tail -n 1 "$log" | grep -q '"verdict":"allow".*"timeout":true' || fail "the allowed timeout is logged with timeout true"
+  slow log log --harness pi --cwd "$MAIN" --command 'rg foo /x' >/dev/null 2>&1
+  expect_code 0 $? "a timed-out call passes while both rules log"
+  pass "a policy timeout refuses calls an enforcing rule would check and allows the rest"
+}
+
+# The protected roots are built only when a scan needs classifying, so a plain
+# read never lists the homes and bulk directories.
+test_roots_built_lazily() {
+  local h="$TMP_ROOT/lazyhome"
+  mkdir -p "$h"
+  printf 'x\n' >"$h/f"
+  HOME="$h" LATTICE_DATA_GATE=enforce LATTICE_DATA_GATE_SIZE=enforce LATTICE_DATA_GATE_READS=off \
+    "$GATE" --harness pi --cwd "$h" --command "cat $h/f" >/dev/null 2>&1
+  expect_code 0 $? "a small read passes"
+  assert_absent "$h/.local/state/lattice-data-gate/roots.json" "a read decision does not build the roots cache"
+  HOME="$h" LATTICE_DATA_GATE=enforce LATTICE_DATA_GATE_READS=off \
+    "$GATE" --harness pi --cwd "$h" --command "rg foo $h" >/dev/null 2>&1
+  expect_code 2 $? "a scan of the home is refused"
+  assert_present "$h/.local/state/lattice-data-gate/roots.json" "a scan decision builds the roots cache"
+  pass "protected roots are built only for scans"
 }
 
 test_home_discovery() {
@@ -1428,6 +1506,10 @@ test_report() {
     printf '{"ts":"%s","verdict":"allow","would_block":false,"error":"node not found"}\n' "$(iso_of "$day" 11:00)"
     printf '{"ts":"%s","verdict":"block","would_block":true,"mode":"enforce","targets":[]}\n' "$(iso_of "$next" 09:00)"
   } >"$state/decisions.jsonl"
+  printf '{"ts":"%s","verdict":"block","would_block":false,"error":"policy timed out after 6s (exit 124)","timeout":true}\n' "$(iso_of "$day" 08:00)" \
+    >"$state/decisions-${day}T080000.jsonl"
+  : >"$state/decisions-${old}T000000.jsonl"
+  : >"$state/decisions-${kept}T000000.jsonl"
   {
     printf '{"ts":%s,"io_some_avg60":4.0,"io_full_avg60":1.0,"memory_some_avg60":2.0,"memory_full_avg60":0.5,"root_used":1000000000,"mntc_used":5000000000,"disk_read_bytes":100,"disk_write_bytes":1000000000}\n' "$(epoch_of "$day" 00:05)"
     printf '{"ts":%s,"io_some_avg60":8.0,"io_full_avg60":3.0,"memory_some_avg60":4.0,"memory_full_avg60":1.5,"root_used":2500000000,"mntc_used":5000000000,"disk_read_bytes":300,"disk_write_bytes":3000000000}\n' "$(epoch_of "$day" 12:00)"
@@ -1445,11 +1527,20 @@ test_report() {
   assert_grep "| DIGEST.md reads | 5: 3 hit, 2 miss" "$md" "a same-session big read in the digest's folder inside the window, even past midnight, is a miss"
   assert_grep "| Bytes returned (est., harness Read caps) | 50.0 MB |" "$md" "the harness-capped estimate is shown beside bytes requested"
   assert_grep "| Gate errors (allowed) | 1 |" "$md" "gate errors are counted"
+  assert_grep "| Gate timeouts (refused) | 1 |" "$md" "a refused timeout in a rotated decision log is counted"
   assert_grep "| Baseline (before) | agents requested on average 2.2 GB of file reads per day |" "$md" "the baseline headline is included"
   assert_grep "- 300 MB Read /d/big/table.jsonl (claude, t1)" "$md" "the largest reads are listed"
   [ "$(wc -l <"$md")" -le 30 ] || fail "the report fits one screen"
   assert_absent "$state/reads-$old.jsonl" "a read log older than 60 days is deleted"
   assert_present "$state/reads-$kept.jsonl" "a read log inside 60 days is kept"
+  assert_absent "$state/decisions-${old}T000000.jsonl" "a rotated decision log older than 60 days is deleted"
+  assert_present "$state/decisions-${kept}T000000.jsonl" "a rotated decision log inside 60 days is kept"
+  assert_present "$state/decisions.jsonl" "a decision log under the size limit is not rotated"
+  HOME="$h" LATTICE_DATA_GATE_DECISIONS_MAX_BYTES=100 "$REPORT" --date "$day" --baseline "$h/none" >/dev/null
+  assert_absent "$state/decisions.jsonl" "a decision log over the size limit is rotated"
+  [ "$(find "$state" -maxdepth 1 -name 'decisions-*T*.jsonl' | wc -l | tr -d ' ')" -eq 3 ] || fail "the rotated decision log sits beside the earlier ones"
+  out=$(HOME="$h" "$REPORT" --date "$day" --baseline "$h/none")
+  assert_contains "$out" "scans would-block 2, blocked 1" "the next report still reads the rotated decision log"
   out=$(HOME="$h" LATTICE_DATA_GATE_READS_KEEP_DAYS=30 "$REPORT" --date "$day" --baseline "$h/none")
   assert_not_contains "$out" "baseline" "an absent baseline is left out"
   assert_absent "$state/reads-$kept.jsonl" "LATTICE_DATA_GATE_READS_KEEP_DAYS shortens the retention"
@@ -1476,6 +1567,9 @@ test_enforce_transports
 test_log_mode_default
 test_unknown_mode_is_log
 test_internal_error_allows_and_logs
+test_measure_logs_why
+test_timeout_refuses_enforced_calls
+test_roots_built_lazily
 build_size_fixture
 test_size_bash_table
 test_size_read_table
