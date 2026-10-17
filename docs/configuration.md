@@ -1686,6 +1686,18 @@ A missing file means no project feeds, the default session roots and default thr
 - `broad_root <path>` adds a path the broad-search rule treats as too wide, beside `/`, `/home`, `$HOME`, `$HOME/.treehouse`, `/mnt/c`, every home root and its `data/`.
 - `unit <unit> <owner>` adds a systemd user unit whose last result the Health panel shows.
 
+## Loop sources (config/loop-sources)
+
+`config/loop-sources` is an optional, local, gitignored, line-oriented file read by [`bin/fm-loop.sh`](../bin/fm-loop.sh); [`docs/examples/loop-sources`](examples/loop-sources) is a tracked example, and [`docs/loop-status.md`](loop-status.md) explains what each source feeds.
+A missing file means the default paths and thresholds.
+`#` starts a comment, fields are separated by whitespace, paths cannot contain spaces, and `~` expands to the home directory; a relative path is taken from the selected home.
+An unknown or malformed line is ignored and printed as a warning.
+
+- `source <name> <path>` replaces one source's default path.
+  The names and defaults are `submits` (`<home>/data/tetjet-offload/requests`), `handoff_queue` (`~/.local/share/tj-handoff/queue`), `operator_acked` (`~/.local/share/tj-handoff/consumers/tj-operator.acked`), `collected` (`<home>/data/tetjet-collected/requests`), `snapshot` (`<home>/data/tetjet-offload/queue-snapshot.json`), `batches` (`~/lattice-batches`), `catalog` (`$LATTICE_LEDGER_DIR/catalog.sqlite`, else `~/lattice-ledger/catalog.sqlite`), `backlog` (`<home>/data/backlog.md`), `parks` (`<home>/state`) and `tetjet_status` (`<home>/state/tetjet-mate.status`).
+  `backlog` and `parks` may repeat, one home each; the other names keep their last line.
+- `threshold <name> <hours>` overrides an alert threshold: `no_collection_hours` (default 24), `accepted_no_package_hours` (default 12) or `collected_no_analysis_hours` (default 6); hours may be fractional and must be positive.
+
 ## Scheduled runs
 
 A scheduled run is a captain-approved task that [`bin/fm-schedule.sh`](../bin/fm-schedule.sh) files on a calendar, so nobody has to remember it.

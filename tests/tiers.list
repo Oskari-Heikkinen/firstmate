@@ -124,6 +124,7 @@ full tests/fm-landed-sync.test.sh
 full tests/fm-lint-workflows.test.sh
 full tests/fm-lint.test.sh
 full tests/fm-live-gate.test.sh
+full tests/fm-loop.test.sh
 full tests/fm-mem-guard.test.sh
 full tests/fm-mutate.test.sh
 full tests/fm-parent-channel-scan-exclusion.test.sh
