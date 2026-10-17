@@ -41,6 +41,8 @@
 #       provably down (explicit daemon-status probe fails) reads unknown -
 #       "unverified", never failed; the same record with the daemon up stays
 #       failed.
+#   (m) FM_CREW_STATE_*_OVERRIDE guard: a mismatched-basename override is
+#       ignored, a matching one is honoured.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1094,16 +1096,20 @@ test_snapshot_open_decision_set_replaces_the_fold() {
   assert_contains "$plain" "pick A or B" "the fold supplies the open decision"
   bash -c '. "$1/bin/fm-classify-lib.sh"; status_open_decisions "$2" ship' _ "$ROOT" "$d/state/feat-os.status" \
     > "$d/open-set"
-  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/open-set" run_crew_state "$d" feat-os)
+  # The snapshot publishes the set beside its status copy and passes both.
+  local log="$d/state/feat-os.status"
+  out=$(FM_CREW_STATE_STATUS_OVERRIDE="$log" FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/open-set" run_crew_state "$d" feat-os)
   [ "$out" = "$plain" ] || fail "the snapshot's set changed the reading: $out (fold: $plain)"
   printf 'k9\tneeds-decision\tfrom the published set\n' > "$d/other-set"
-  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/other-set" run_crew_state "$d" feat-os)
+  out=$(FM_CREW_STATE_STATUS_OVERRIDE="$log" FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/other-set" run_crew_state "$d" feat-os)
   assert_contains "$out" "from the published set" "the set file is read instead of folding the log"
   assert_not_contains "$out" "pick A or B" "no second fold of the log"
-  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/missing-set" run_crew_state "$d" feat-os)
+  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/other-set" run_crew_state "$d" feat-os)
+  [ "$out" = "$plain" ] || fail "a set without its status copy must fall back to the fold: $out"
+  out=$(FM_CREW_STATE_STATUS_OVERRIDE="$log" FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/missing-set" run_crew_state "$d" feat-os)
   [ "$out" = "$plain" ] || fail "a missing set file must fall back to the fold: $out"
   ln -s other-set "$d/linked-set"
-  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/linked-set" run_crew_state "$d" feat-os)
+  out=$(FM_CREW_STATE_STATUS_OVERRIDE="$log" FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/linked-set" run_crew_state "$d" feat-os)
   [ "$out" = "$plain" ] || fail "a symlinked set file must fall back to the fold: $out"
   pass "the snapshot's open-decision set reports the same current line without a second fold"
 }
@@ -3507,6 +3513,59 @@ test_missing_meta() {
   pass "missing meta is handled gracefully"
 }
 
+# (m) override guard: FM_CREW_STATE_*_OVERRIDE is honoured only when its
+# basename is the asked task's own file name. A mismatched override inherited
+# from another task's environment must fall through to $STATE/$ID.*, while the
+# snapshot's own matching-name override keeps steering the read at the captured
+# generation.
+test_mismatched_state_override_is_ignored() {
+  reset_fakes
+  local d out
+  d=$(new_case override-mismatch)
+  make_repo_on_branch "$d/wt" fm/feat-ovr
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ovr.meta" "window=fm:fm-feat-ovr" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: real task log line\n' > "$d/state/feat-ovr.status"
+  # Another task's snapshot capture, under snapshot-style names.
+  fm_write_meta "$d/state/feat-other.meta" "window=fm:fm-feat-other" "worktree=$d/foreign-missing-wt" "kind=ship" "harness=claude"
+  printf 'blocked: other task log line\n' > "$d/state/feat-other.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-ovr
+  out=$(FM_CREW_STATE_META_OVERRIDE="$d/state/feat-other.meta" \
+    FM_CREW_STATE_STATUS_OVERRIDE="$d/state/feat-other.status" \
+    run_crew_state "$d" feat-ovr)
+  assert_contains "$out" "state: working" "a mismatched override must be ignored: the task's own working log line wins"
+  assert_contains "$out" "source: status-log" "a mismatched override must fall through to the task's own status log"
+  assert_not_contains "$out" "worktree gone" "a mismatched metadata override must fall through to the task's live worktree"
+  assert_not_contains "$out" "other task log line" "a mismatched override must never surface the other task's status"
+  pass "override guard: a foreign-named override is ignored and the task's own state files are read"
+}
+
+test_matched_state_override_is_honoured() {
+  reset_fakes
+  local d out
+  d=$(new_case override-match)
+  make_repo_on_branch "$d/wt" fm/feat-ovr2
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ovr2.meta" "window=fm:fm-feat-ovr2" "worktree=$d/live-missing-wt" "kind=ship" "harness=claude"
+  printf 'working: live log line\n' > "$d/state/feat-ovr2.status"
+  # The fleet snapshot's captured generation for THIS task: matching names.
+  mkdir -p "$d/snapshot"
+  fm_write_meta "$d/snapshot/feat-ovr2.meta" "window=fm:fm-feat-ovr2" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'paused: snapshot captured status\n' > "$d/snapshot/feat-ovr2.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-ovr2
+  out=$(FM_CREW_STATE_META_OVERRIDE="$d/snapshot/feat-ovr2.meta" \
+    FM_CREW_STATE_STATUS_OVERRIDE="$d/snapshot/feat-ovr2.status" \
+    run_crew_state "$d" feat-ovr2)
+  assert_contains "$out" "state: paused" "a matched-name override must be honoured over the live status log"
+  assert_contains "$out" "source: status-log" "a matched-name override reads the captured log through the normal source"
+  assert_not_contains "$out" "worktree gone" "a matched-name metadata override must use the captured worktree"
+  pass "override guard: a matching-name override still steers the read at the captured generation"
+}
+
 # (k) crew_is_provably_working end-to-end over the REAL fm-crew-state.sh (not a
 # canned fake verdict, unlike tests/fm-watch-triage.test.sh's classifier
 # coverage). This is the direct regression pair for the 2026-07-02 herdr
@@ -5864,6 +5923,8 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_remote_unreachable_is_unknown_remote_not_dead \
   test_remote_dead_reports_remote_verdict \
   test_missing_meta \
+  test_mismatched_state_override_is_ignored \
+  test_matched_state_override_is_honoured \
   test_provably_working_via_runs_list_fallback \
   test_not_provably_working_when_stopped \
   test_usage_error \
