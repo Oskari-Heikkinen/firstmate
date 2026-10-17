@@ -1299,6 +1299,8 @@ This section is the single owner of the canonical schema and its per-field seman
   "rules": [
     {
       "when": "<natural-language condition describing a kind of task>",
+      "label": "<optional short rule name, e.g. routine-ops>",
+      "routine": true,
       "approval": "captain",
       "min_confidence": 0.85,
       "compact_at": 200000,
@@ -1325,6 +1327,22 @@ This section is the single owner of the canonical schema and its per-field seman
 | Profile `harness` | Required in every profile. |
 | Profile `model` and `effort`; rule `why` | Optional. |
 | Rule `compact_at` | Optional integer tokens, 100000 through 1000000 (Claude's supported native range). |
+| Rule `label` | Optional short name of lowercase letters, digits and single hyphens, unique across rules; `default` and `unrecorded` are reserved. |
+| Rule `routine` | Optional boolean; `true` marks the rule as the one routine work should reach. |
+
+**Rule labels and the routing record**
+
+Firstmate passes the matched rule's `label` as `--dispatch-rule <label>`, or `--dispatch-rule default` when it fell back to the top-level `default`.
+When any rule carries a label, `fm-spawn.sh` refuses a `--dispatch-rule` value that names none of them, with one error line before launch.
+The label is recorded as `dispatch_rule` in task meta and in the `state/spawn-starts.jsonl` start record, beside `effort` and `compact_at`; a relaunch keeps it unless a new one is passed.
+Every crewmate or scout spawn prints one `dispatch <id> harness=... model=... effort=... compact_at=... rule=...` line, with `rule=unrecorded` when no label was passed.
+While the file has rules, a fresh spawn that lacks `--model` or `--effort`, or passes `--dispatch-rule default`, prints one `WARNING:` line naming the axis that fell back.
+While any rule carries a label, a fresh spawn that passes no `--dispatch-rule` prints one `WARNING:` line.
+When `--dispatch-rule` is passed, the spawn checks its harness, model and effort (and `compact_at`, when the rule sets one) against that rule's `use` profiles, or the `default` profiles for `default`, and prints one `WARNING:` line when none fits, so a reused flag set that does not belong to the named rule shows itself.
+The start record's `dispatch_match` is `true` or `false` for that check, and `null` when no rule was passed or the file holds no such rule to check against.
+A batch spawn makes every one of these checks for each pair.
+While the file has rules, a task id that looks routine (the one pattern list is `spawn_routine_task_id` in `bin/fm-spawn.sh`) prints one `WARNING:` line unless its `--dispatch-rule` names a rule marked `"routine": true`; prose in `when` or `why` never counts as the mark, and a home silences the line by labelling its routine rule and setting that mark.
+None of these lines refuses or changes a launch; only the unknown-label check refuses.
 
 **Optional worker compaction**
 
@@ -1425,6 +1443,7 @@ Secondmate routing follows the home-owned, seed-only declaration in [`fm-config-
 It is off unless `TYPESAFE_API_KEY` is non-empty in the calling environment or the home's gitignored `.env` holds a `TYPESAFE_API_KEY=` line; the environment wins, matching the Relay and mail-plane contracts, and the Relay accessor in `bin/fm-env-lib.sh` reads the line.
 
 Off means one `dispatch-resolve: off` line on stderr, nothing on stdout, exit 0, and no network call, so firstmate dispatches exactly as it does without the tool.
+While it is off, firstmate still matches the brief against the rules by hand at every crewmate or scout intake, then passes the matched rule's concrete profile and `--dispatch-rule` label; the off line never means the rules are skipped.
 This section is the single owner of the tool's operator contract; the script header owns its exact flags and output lines, and "Crew dispatch profiles" above owns the declared rule and profile fields it applies.
 
 Rules come only from the effective home's `config/crew-dispatch.json`; `FM_CONFIG_OVERRIDE` selects the config directory for tests and specialized setup like the other scripts.

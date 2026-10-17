@@ -472,6 +472,248 @@ test_active_dispatch_profile_allows_explicit_harness() {
   pass "active crew-dispatch profile allows an explicit resolved harness"
 }
 
+# A labelled dispatch file: one rule marked routine, one plain rule.
+enable_labelled_dispatch_profile() {
+  local home=$1
+  printf '%s\n' '{"rules":[{"when":"routine ops","label":"routine-ops","routine":true,"compact_at":200000,"use":{"harness":"codex","model":"gpt-5","effort":"medium"}},{"when":"feature work","label":"impl","use":{"harness":"codex","model":"gpt-5","effort":"high"}}],"default":{"harness":"codex","model":"gpt-5","effort":"medium"}}' \
+    > "$home/config/crew-dispatch.json"
+}
+
+# spawn_start_fields <home> <id>: the id's last start record as
+# "relaunch effort compact_at dispatch_rule dispatch_match".
+spawn_start_fields() {
+  jq -r --arg id "$2" 'select(.task == $id) | [.relaunch, .effort, .compact_at, .dispatch_rule, .dispatch_match] | map(tostring) | join(" ")' \
+    "$1/state/spawn-starts.jsonl" | tail -1
+}
+
+test_dispatch_rule_is_echoed_and_recorded() {
+  local rec id out status
+  id=profile-rule-recorded-z41
+  rec=$(make_spawn_case profile-rule-recorded claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high --compact-at 200000 --dispatch-rule impl)
+  status=$?
+  expect_code 0 "$status" "a labelled spawn should succeed"
+  assert_contains "$out" "dispatch $id harness=codex model=gpt-5 effort=high compact_at=200000 rule=impl" \
+    "spawn did not echo the resolved profile and rule"
+  assert_not_contains "$out" "WARNING: $id" "a fully specified non-routine spawn should not warn"
+  assert_grep "dispatch_rule=impl" "$HOME_DIR/state/$id.meta" "meta missing dispatch_rule=impl"
+  assert_equals "false high 200000 impl true" "$(spawn_start_fields "$HOME_DIR" "$id")" \
+    "start record should carry effort, compact_at and dispatch_rule"
+  pass "a --dispatch-rule spawn echoes its profile and records the rule in meta and the start record"
+}
+
+test_unlabelled_spawn_records_unrecorded_rule() {
+  local rec id out status
+  id=profile-rule-unrecorded-z42
+  rec=$(make_spawn_case profile-rule-unrecorded codex "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "a spawn with no dispatch file or profile flags should succeed"
+  assert_contains "$out" "dispatch $id harness=codex model=default effort=default compact_at=default rule=unrecorded" \
+    "spawn did not echo the unrecorded rule"
+  assert_not_contains "$out" "WARNING: $id" "a home without dispatch rules should not warn"
+  assert_no_grep "dispatch_rule=" "$HOME_DIR/state/$id.meta" "meta should hold no guessed dispatch_rule"
+  assert_equals "false default null null null" "$(spawn_start_fields "$HOME_DIR" "$id")" \
+    "start record should record absent values as default or null"
+  pass "a spawn with no rule records rule=unrecorded, effort default and null compact_at and dispatch_rule"
+}
+
+test_default_profile_fallback_warns() {
+  local rec id out status
+  id=profile-fallback-axes-z43
+  rec=$(make_spawn_case profile-fallback-axes claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness codex)
+  status=$?
+  expect_code 0 "$status" "a default-profile fallback should warn, never refuse"
+  assert_contains "$out" "WARNING: $id fell back to the default profile for model (no --model), effort (no --effort)" \
+    "spawn did not name the fallen-back axes"
+  assert_contains "$out" "spawned $id harness=codex" "the warned spawn should still launch"
+
+  id=profile-fallback-rule-z44
+  rec=$(make_spawn_case profile-fallback-rule claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort medium --dispatch-rule default)
+  status=$?
+  expect_code 0 "$status" "--dispatch-rule default should warn, never refuse"
+  assert_contains "$out" "WARNING: $id fell back to the default profile for rule (--dispatch-rule default)" \
+    "spawn did not warn on an explicit default rule"
+  assert_not_contains "$out" "no --model" "given axes must not be named as fallen back"
+  pass "a fresh spawn that falls back to the default profile prints one WARNING naming what fell back"
+}
+
+test_routine_task_id_on_non_routine_rule_warns() {
+  local rec id out status
+  id=land-notes-z45
+  rec=$(make_spawn_case profile-routine-miss claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high --dispatch-rule impl)
+  status=$?
+  expect_code 0 "$status" "a routine-name warning should never refuse"
+  assert_contains "$out" "WARNING: $id looks like routine work but rule=impl is not a rule config/crew-dispatch.json marks routine" \
+    "spawn did not warn on a routine-looking id under a non-routine rule"
+
+  id=land-notes-z46
+  rec=$(make_spawn_case profile-routine-hit claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort medium --compact-at 200000 --dispatch-rule routine-ops)
+  status=$?
+  expect_code 0 "$status" "a routine spawn on the routine rule should succeed"
+  assert_not_contains "$out" "WARNING: $id" "a routine-looking id on a routine rule should not warn"
+  assert_equals "false medium 200000 routine-ops true" "$(spawn_start_fields "$HOME_DIR" "$id")" \
+    "the rule's own profile and compact_at should record a match"
+
+  id=land-notes-z47
+  rec=$(make_spawn_case profile-routine-default-only claude "$id")
+  read_case_record "$rec"
+  printf '%s\n' '{"default":{"harness":"codex","model":"gpt-5","effort":"medium"}}' > "$HOME_DIR/config/crew-dispatch.json"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort medium)
+  status=$?
+  expect_code 0 "$status" "a routine-looking id in a default-only home should succeed"
+  assert_not_contains "$out" "looks like routine work" "a dispatch file without rules should not run the routine-name check"
+  pass "a routine-looking task id warns only when its rule is not marked routine"
+}
+
+test_unknown_dispatch_rule_is_refused_when_labels_exist() {
+  local rec id out status
+  id=profile-rule-unknown-z47
+  rec=$(make_spawn_case profile-rule-unknown claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high --dispatch-rule bug-fix)
+  status=$?
+  expect_code 1 "$status" "an unknown --dispatch-rule should be refused"
+  assert_contains "$out" "error: --dispatch-rule 'bug-fix' names no rule in config/crew-dispatch.json; use one of: routine-ops impl default" \
+    "refusal did not name the known labels"
+  assert_absent "$HOME_DIR/state/$id.meta" "the refusal should happen before meta is written"
+  pass "an unknown --dispatch-rule is refused before launch when the dispatch file has labels"
+}
+
+test_dispatch_rule_profile_mismatch_warns_and_is_recorded() {
+  local rec id out status
+  id=profile-rule-mismatch-z48
+  rec=$(make_spawn_case profile-rule-mismatch claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort medium --dispatch-rule impl)
+  status=$?
+  expect_code 0 "$status" "a profile mismatch should warn, never refuse"
+  assert_contains "$out" "WARNING: $id passes harness=codex model=gpt-5 effort=medium compact_at=default, which is not a profile of rule=impl" \
+    "spawn did not warn that the flags are not one of the rule's profiles"
+  assert_equals "false medium null impl false" "$(spawn_start_fields "$HOME_DIR" "$id")" \
+    "start record should record the mismatch"
+  pass "a --dispatch-rule whose rule holds no matching profile warns and records dispatch_match false"
+}
+
+test_labelled_rules_warn_when_no_dispatch_rule_is_passed() {
+  local rec id out status
+  id=profile-rule-missing-z49
+  rec=$(make_spawn_case profile-rule-missing claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high)
+  status=$?
+  expect_code 0 "$status" "a missing --dispatch-rule should warn, never refuse"
+  assert_contains "$out" "WARNING: $id passes no --dispatch-rule while config/crew-dispatch.json labels its rules" \
+    "spawn did not warn on a missing rule label"
+  assert_equals "false high null null null" "$(spawn_start_fields "$HOME_DIR" "$id")" \
+    "an unlabelled spawn has no rule to check, so dispatch_match is null"
+  pass "a fresh spawn with no --dispatch-rule warns when the dispatch file labels its rules"
+}
+
+test_batch_checks_the_dispatch_rule_per_pair() {
+  local rec id1 id2 out status
+  id1=profile-batch-rule-a-z50
+  id2=profile-batch-rule-b-z51
+  rec=$(make_spawn_case profile-batch-rule claude "$id1" "$id2")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort medium --dispatch-rule impl)
+  status=$?
+  expect_code 0 "$status" "a batch with a mismatched rule should warn, never refuse"
+  assert_contains "$out" "WARNING: $id1 passes harness=codex model=gpt-5 effort=medium" "first pair was not checked"
+  assert_contains "$out" "WARNING: $id2 passes harness=codex model=gpt-5 effort=medium" "second pair was not checked"
+  assert_equals "false medium null impl false" "$(spawn_start_fields "$HOME_DIR" "$id2")" \
+    "each pair's start record should carry its own check"
+  pass "batch dispatch forwards --dispatch-rule and checks each pair's profile against the rule"
+}
+
+test_dispatch_rule_compact_at_mismatch_warns() {
+  local rec id out status
+  id=profile-rule-compact-z52
+  rec=$(make_spawn_case profile-rule-compact claude "$id")
+  read_case_record "$rec"
+  enable_labelled_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort medium --dispatch-rule routine-ops)
+  status=$?
+  expect_code 0 "$status" "a compact_at mismatch should warn, never refuse"
+  assert_contains "$out" "WARNING: $id passes harness=codex model=gpt-5 effort=medium compact_at=default, which is not a profile of rule=routine-ops" \
+    "spawn did not warn that the rule's compact_at was not passed"
+  assert_equals "false medium null routine-ops false" "$(spawn_start_fields "$HOME_DIR" "$id")" \
+    "start record should record the compact_at mismatch"
+  pass "a rule that sets compact_at counts a spawn without that compact_at as a profile mismatch"
+}
+
+test_malformed_dispatch_rule_is_refused() {
+  local rec id out status value
+  id=profile-rule-malformed-z53
+  rec=$(make_spawn_case profile-rule-malformed codex "$id")
+  read_case_record "$rec"
+
+  for value in Bad-Rule unrecorded ''; do
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" "--dispatch-rule=$value")
+    status=$?
+    expect_code 1 "$status" "--dispatch-rule '$value' should be refused"
+    assert_contains "$out" "error: --dispatch-rule must be a rule label of lowercase letters, digits and single hyphens, or default (got '$value')" \
+      "refusal of '$value' did not explain the label shape"
+    assert_absent "$HOME_DIR/state/$id.meta" "the refusal of '$value' should happen before meta is written"
+  done
+  pass "a malformed or reserved --dispatch-rule value is refused before launch"
+}
+
+test_secondmate_spawn_refuses_dispatch_rule() {
+  local rec id sm out status
+  id=profile-secondmate-rule-z54
+  rec=$(make_spawn_case profile-secondmate-rule codex "$id")
+  read_case_record "$rec"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate --dispatch-rule impl)
+  status=$?
+  expect_code 1 "$status" "a secondmate spawn with --dispatch-rule should be refused"
+  assert_contains "$out" "error: --dispatch-rule names a crew dispatch rule and applies to crewmate and scout spawns only" \
+    "secondmate refusal did not name the crew-only scope"
+  assert_absent "$HOME_DIR/state/$id.meta" "the secondmate refusal should happen before meta is written"
+  pass "a --secondmate spawn refuses --dispatch-rule before launch"
+}
+
 test_active_dispatch_profile_allows_positional_harness() {
   local rec id out status
   id=profile-positional-z14
@@ -2503,6 +2745,17 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_active_dispatch_profile_requires_explicit_harness_for_ship \
   test_active_dispatch_profile_requires_explicit_harness_for_scout \
   test_active_dispatch_profile_allows_explicit_harness \
+  test_dispatch_rule_is_echoed_and_recorded \
+  test_unlabelled_spawn_records_unrecorded_rule \
+  test_default_profile_fallback_warns \
+  test_routine_task_id_on_non_routine_rule_warns \
+  test_unknown_dispatch_rule_is_refused_when_labels_exist \
+  test_dispatch_rule_profile_mismatch_warns_and_is_recorded \
+  test_labelled_rules_warn_when_no_dispatch_rule_is_passed \
+  test_batch_checks_the_dispatch_rule_per_pair \
+  test_dispatch_rule_compact_at_mismatch_warns \
+  test_malformed_dispatch_rule_is_refused \
+  test_secondmate_spawn_refuses_dispatch_rule \
   test_active_dispatch_profile_allows_positional_harness \
   test_active_dispatch_profile_allows_raw_launch_command \
   test_chained_raw_launch_strips_ai_trailer_in_every_step \

@@ -1025,4 +1025,21 @@ for bad_compact in null '"200000"' 0 99999 200000.5 1000001; do
 done
 pass "worker compaction follows only the selected rule and validates before requests"
 
+# A labelled rules file names the selected rule, or default after quota-floor
+# fall-through, so firstmate passes it on as --dispatch-rule; an unlabelled one
+# keeps the profile line unchanged.
+write_quota "$QUOTA" 0.7597
+jq '.rules[0].label = "feature" | .rules[3].label = "bug-fix"' "$BASE_RULES" > "$RULES"
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium' --dispatch-rule 'bug-fix'" "labelled rule did not reach the profile line"
+write_response "$RESPONSE" rule_1 0.97
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-high' --dispatch-rule 'default'" "quota-floor default did not name the default rule"
+cp "$BASE_RULES" "$RULES"
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
+assert_not_contains "$out" '--dispatch-rule' "unlabelled rules must not emit a rule label"
+pass "the profile line carries the selected rule's label only when the rules carry labels"
+
 printf '# all fm-dispatch-resolve tests passed\n'

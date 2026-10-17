@@ -64,8 +64,9 @@
 #     sent: kind=.. summary=<the exact redacted summary sent>   (every outcome after the request)
 #     reason: <why the status is not clear>
 #     candidate: <harness>:<model> provider=.. scope=.. remaining=..% spendPriority=.. runway=.. -> eligible | eligible, unranked: <reason> | not eligible: <reason>
-#     profile: --harness <h> [--model <m>] [--effort <e>] [--compact-at <tokens>]
-#              (status clear only; compact_at belongs to the selected rule)
+#     profile: --harness <h> [--model <m>] [--effort <e>] [--compact-at <tokens>] [--dispatch-rule <label>]
+#              (status clear only; compact_at and the label belong to the selected rule,
+#              and the label, or default, appears only when the rules carry labels)
 #   clear     -> pass the profile line to fm-spawn.sh unless you state a reason to override
 #   ambiguous -> confidence below the floor; decide as today from the probabilities
 #   escalate  -> the rule requires captain approval, no candidate is rankable, a genuine tie,
@@ -513,7 +514,10 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
       ($elig | max_by(.spendPriority)) as $best |
       ([$elig[] | select(.spendPriority == $best.spendPriority)] | length) as $ties |
       if $ties > 1 then $ev + {status: "escalate", reason: "genuine spendPriority tie", note: $sel.note, candidates: $cands}
-      else $ev + {status: "clear", note: $sel.note, candidates: $cands, chosen: $best, compact_at: (rule_at($sel.source).compact_at // null)}
+      else $ev + {status: "clear", note: $sel.note, candidates: $cands, chosen: $best, compact_at: (rule_at($sel.source).compact_at // null),
+          dispatch_rule: (if ([$cfg.rules[]? | .label? | strings] | length) == 0 then null
+                          elif $sel.source == "default" then "default"
+                          else (rule_at($sel.source).label // null) end)}
         + (if ($unranked | length) > 0 then
              {unranked_note: "\($unranked | length) eligible candidate(s) unranked (\([$unranked[].provider] | unique | join(", ")))"}
            else {} end)
@@ -543,6 +547,7 @@ TEXT=$(jq -r --arg sent "$SENT_LINE" '
   (if .chosen then "  profile: --harness \(.chosen.profile.harness | shell_arg)"
       + (if .chosen.profile.model then " --model \(.chosen.profile.model | shell_arg)" else "" end)
       + (if .chosen.profile.effort then " --effort \(.chosen.profile.effort | shell_arg)" else "" end)
-      + (if .compact_at then " --compact-at \(.compact_at | tostring)" else "" end) else empty end)' <<<"$RESULT") || emit_error "output rendering failed"
+      + (if .compact_at then " --compact-at \(.compact_at | tostring)" else "" end)
+      + (if .dispatch_rule then " --dispatch-rule \(.dispatch_rule | shell_arg)" else "" end) else empty end)' <<<"$RESULT") || emit_error "output rendering failed"
 printf '%s\n' "$TEXT"
 exit 0

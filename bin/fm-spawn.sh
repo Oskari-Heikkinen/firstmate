@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--compact-at <tokens>] [--backend <name>] [--herdr-resume-lock-wait]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--compact-at <tokens>] [--backend <name>] [--herdr-resume-lock-wait]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|direct-push|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--compact-at <tokens>] [--dispatch-rule <label>] [--backend <name>] [--herdr-resume-lock-wait]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--compact-at <tokens>] [--dispatch-rule <label>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -60,7 +60,7 @@
 #   claims restore-prepared before fresh leased allocation, and never reuses an
 #   old acquisition. Failures preserve the exact new reservation for recovery.
 #   bin/fm-suspend-lib.sh owns this record and saved-work proof.
-#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>] [--compact-at <tokens>]
+#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>] [--compact-at <tokens>] [--dispatch-rule <label>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded worktree, reusing its recorded endpoint when that
 #   endpoint still exists, instead of creating either from scratch. It is
@@ -123,6 +123,28 @@
 #   A secondmate's threshold comes instead from the launching home's
 #   config/supervisor-compact-at (same range, refused when invalid), applied
 #   the same way on every --secondmate spawn, liveness respawn and relaunch.
+#   --dispatch-rule <label> names the config/crew-dispatch.json rule firstmate
+#   matched for this crewmate or scout ("default" for the file's default
+#   profile); docs/configuration.md "Crew dispatch profiles" owns the rule
+#   `label` and `routine` fields. Scripts never match rule prose, so the label
+#   is only recorded and reported: when the file declares any label, a value
+#   naming none of them (or not "default") is refused before launch as a typo,
+#   and it is refused on --secondmate. A relaunch keeps the recorded label
+#   unless a new one is passed. Every spawn prints one `dispatch` line (harness,
+#   model, effort, compact_at, rule; rule=unrecorded without the flag) and
+#   records effort, compact_at and the label in its fm-spawn-start.v1 line and
+#   state/<id>.meta (dispatch_rule=). A fresh crewmate or scout spawn in a home
+#   whose dispatch file has rules also prints one WARNING when it has no
+#   --model or no --effort or passes --dispatch-rule default, and one when its
+#   task id looks routine (spawn_routine_task_id) while the label names no rule
+#   marked routine, and one when the file labels its rules but no
+#   --dispatch-rule was passed. Whenever --dispatch-rule is passed (a batch
+#   forwards it, so each pair is checked), spawn_dispatch_profile_match checks
+#   the harness, model, effort and the rule's compact_at against that rule's
+#   use profiles (default: the default profiles), prints one WARNING on a
+#   mismatch, and records dispatch_match (true, false, or null when there was
+#   nothing to check) in the start record. No warning refuses or changes the
+#   launch.
 #   OpenCode has no interactive effort flag, so its effort is written as the
 #   build agent's variant, keyed to the resolved model, inside the
 #   OPENCODE_CONFIG_CONTENT JSON its launch already carries (config schema
@@ -739,6 +761,8 @@ MODEL=
 EFFORT=
 COMPACT_AT=
 COMPACT_AT_SET=0
+DISPATCH_RULE=
+DISPATCH_RULE_SET=0
 BACKEND_ARG=
 MODE=
 YOLO=
@@ -786,6 +810,10 @@ for a in "$@"; do
     compact-at)
       COMPACT_AT=$a
       COMPACT_AT_SET=1
+      ;;
+    dispatch-rule)
+      DISPATCH_RULE=$a
+      DISPATCH_RULE_SET=1
       ;;
     backend)
       BACKEND_ARG=$a
@@ -851,6 +879,11 @@ for a in "$@"; do
   --compact-at=*)
     COMPACT_AT=${a#--compact-at=}
     COMPACT_AT_SET=1
+    ;;
+  --dispatch-rule) want_value=dispatch-rule ;;
+  --dispatch-rule=*)
+    DISPATCH_RULE=${a#--dispatch-rule=}
+    DISPATCH_RULE_SET=1
     ;;
   --backend) want_value=backend ;;
   --backend=*)
@@ -944,6 +977,56 @@ case "$EFFORT" in
   exit 1
   ;;
 esac
+# Dispatch rule labels (header: --dispatch-rule). The label set is read from the
+# rules file and never matched against rule prose; an unreadable or invalid file
+# yields no labels, which bootstrap reports, so it never blocks a spawn here.
+spawn_dispatch_rule_label_valid() {
+  [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "$1" != unrecorded ]
+}
+# The one list of task-id shapes that read as routine work (landings, register
+# rows, cold-storage moves, refiles, reruns, collections), checked only to warn.
+spawn_routine_task_id() {
+  [[ "$1" =~ (^|-)(land|register)- || "$1" =~ -to-d(-|$) || "$1" =~ refile|rerun|collect ]]
+}
+spawn_dispatch_labels() {
+  [ -f "$CONFIG/crew-dispatch.json" ] || return 0
+  jq -r '(.rules // [])[]? | objects | .label? | strings' "$CONFIG/crew-dispatch.json" 2>/dev/null || true
+}
+# spawn_dispatch_profile_match <rule> <harness> <model> <effort> <compact_at>
+# prints match when the axes are one of the labelled rule's use profiles (and
+# its compact_at, when the rule sets one), or one of the default profiles for
+# rule default; mismatch when they are none; nothing when there is no such
+# rule or no readable file to check against.
+spawn_dispatch_profile_match() {
+  [ -f "$CONFIG/crew-dispatch.json" ] || return 0
+  jq -r --arg rule "$1" --arg h "$2" --arg m "$3" --arg e "$4" --arg c "$5" '
+    def profiles(u): if (u | type) == "array" then u[] elif (u | type) == "object" then u else empty end;
+    def fits: type == "object" and .harness == $h and ((.model // "") == $m) and ((.effort // "") == $e);
+    if $rule == "default" then
+      if .default == null then empty elif any(profiles(.default); fits) then "match" else "mismatch" end
+    else
+      ([(.rules // [])[]? | objects | select(.label == $rule)] | first) as $r
+      | if $r == null then empty
+        elif any(profiles($r.use); fits) and ($r.compact_at == null or ($r.compact_at | tostring) == $c) then "match"
+        else "mismatch" end
+    end' "$CONFIG/crew-dispatch.json" 2>/dev/null || true
+}
+if [ "$DISPATCH_RULE_SET" -eq 1 ]; then
+  spawn_dispatch_rule_label_valid "$DISPATCH_RULE" || {
+    echo "error: --dispatch-rule must be a rule label of lowercase letters, digits and single hyphens, or default (got '$DISPATCH_RULE')" >&2
+    exit 1
+  }
+  [ "$KIND" != secondmate ] || {
+    echo "error: --dispatch-rule names a crew dispatch rule and applies to crewmate and scout spawns only" >&2
+    exit 1
+  }
+  SPAWN_DISPATCH_LABELS=$(spawn_dispatch_labels)
+  if [ "$DISPATCH_RULE" != default ] && [ -n "$SPAWN_DISPATCH_LABELS" ] &&
+    ! printf '%s\n' "$SPAWN_DISPATCH_LABELS" | grep -Fqx -- "$DISPATCH_RULE"; then
+    echo "error: --dispatch-rule '$DISPATCH_RULE' names no rule in config/crew-dispatch.json; use one of: $(printf '%s\n' "$SPAWN_DISPATCH_LABELS" | paste -sd ' ' -) default" >&2
+    exit 1
+  fi
+fi
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
@@ -1633,6 +1716,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ -z "$MODEL" ] || shared_args+=(--model "$MODEL")
   [ -z "$EFFORT" ] || shared_args+=(--effort "$EFFORT")
   [ -z "$COMPACT_AT" ] || shared_args+=(--compact-at "$COMPACT_AT")
+  [ -z "$DISPATCH_RULE" ] || shared_args+=(--dispatch-rule "$DISPATCH_RULE")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
   # One delivery contract applies to every pair in a batch, exactly like the shared
   # harness. Each pair still re-validates it against its own brief, so a batch
@@ -2042,6 +2126,14 @@ if [ "$RELAUNCH" -eq 1 ]; then
   if [ "$COMPACT_AT_SET" -eq 0 ] && [ "$KIND" != secondmate ]; then
     COMPACT_AT=$(fm_meta_get "$RELAUNCH_META" compact_at)
     [ -z "$COMPACT_AT" ] || validate_compact_at "$COMPACT_AT" || exit 1
+  fi
+  if [ "$KIND" = secondmate ] && [ "$DISPATCH_RULE_SET" -eq 1 ]; then
+    echo "error: --dispatch-rule names a crew dispatch rule and applies to crewmate and scout spawns only" >&2
+    exit 1
+  fi
+  if [ "$DISPATCH_RULE_SET" -eq 0 ] && [ "$KIND" != secondmate ]; then
+    DISPATCH_RULE=$(fm_meta_get "$RELAUNCH_META" dispatch_rule)
+    spawn_dispatch_rule_label_valid "$DISPATCH_RULE" || DISPATCH_RULE=
   fi
   # A secondmate whose endpoint is gone already has ONE owner for that
   # recovery: the session-start liveness sweep respawns it with
@@ -5736,7 +5828,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree treehouse_lease_holder treehouse_lease_id project harness kind mode yolo branch tasktmp base_branch model effort compact_at account account_provider claude_config_dir busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree treehouse_lease_holder treehouse_lease_id project harness kind mode yolo branch tasktmp base_branch model effort compact_at dispatch_rule account account_provider claude_config_dir busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -5761,6 +5853,7 @@ preserve_relaunch_meta() {
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "$COMPACT_AT" ] || echo "compact_at=$COMPACT_AT"
+  [ -z "$DISPATCH_RULE" ] || echo "dispatch_rule=$DISPATCH_RULE"
   # The worker account pin, only when this home declares one, so an unpinned
   # task record stays byte-identical; otherwise the subscription account
   # bin/fm-account-lib.sh chose, when it chose one.
@@ -6415,14 +6508,48 @@ SPAWN_ACCOUNT=
 # Durable start record: one fm-spawn-start.v1 line per fresh spawn or relaunch
 # appended to state/spawn-starts.jsonl, which teardown never removes, so a later
 # reader (bin/fm-board.sh's token reader) can attribute an agent session in a
-# reused copy to the task that owned that copy when the session began.
-# Best-effort: a failed append never changes this spawn's result.
+# reused copy to the task that owned that copy when the session began, and a
+# routing overview can read the profile and rule each spawn ran under. Fields
+# are only ever added; an absent model or effort is "default", an absent
+# compact_at or dispatch_rule is null. Best-effort: a failed append never
+# changes this spawn's result. dispatch_match is true or false only when
+# --dispatch-rule was passed on this spawn and names a rule (or default) the
+# file holds, so its profiles could be checked; otherwise it is null.
+SPAWN_DISPATCH_MATCH=
+[ "$DISPATCH_RULE_SET" -eq 0 ] || [ "$KIND" = secondmate ] ||
+  SPAWN_DISPATCH_MATCH=$(spawn_dispatch_profile_match "$DISPATCH_RULE" "$HARNESS" "$MODEL" "$EFFORT" "$COMPACT_AT")
 { jq -cn --arg task "$ID" --arg kind "$KIND" --arg home "$FM_HOME" --arg worktree "$WT" \
     --arg spawn_gen "$SPAWN_GEN" --arg harness "$HARNESS" --arg model "${MODEL:-default}" \
-    --arg project "${PROJ_ABS##*/}" --argjson relaunch "$([ "$RELAUNCH" -eq 1 ] && echo true || echo false)" \
+    --arg effort "${EFFORT:-default}" --arg compact_at "$COMPACT_AT" --arg dispatch_rule "$DISPATCH_RULE" \
+    --arg dispatch_match "$SPAWN_DISPATCH_MATCH" --arg project "${PROJ_ABS##*/}" --argjson relaunch "$([ "$RELAUNCH" -eq 1 ] && echo true || echo false)" \
     '{schema:"fm-spawn-start.v1",task:$task,kind:$kind,home:$home,worktree:$worktree,
       spawn_gen:$spawn_gen,
       spawn_epoch:(first($spawn_gen | capture("^s(?<e>[0-9]+)") | .e | tonumber) // null),
-      harness:$harness,model:$model,project:$project,relaunch:$relaunch}' \
+      harness:$harness,model:$model,project:$project,relaunch:$relaunch,
+      effort:$effort,
+      compact_at:(if $compact_at == "" then null else ($compact_at | tonumber) end),
+      dispatch_rule:(if $dispatch_rule == "" then null else $dispatch_rule end),
+      dispatch_match:(if $dispatch_match == "" then null else $dispatch_match == "match" end)}' \
     >> "$STATE/spawn-starts.jsonl"; } 2>/dev/null || true
+# Routing visibility (header: --dispatch-rule): warnings only, never a refusal.
+[ "$SPAWN_DISPATCH_MATCH" != mismatch ] ||
+  echo "WARNING: $ID passes harness=$HARNESS model=${MODEL:-default} effort=${EFFORT:-default} compact_at=${COMPACT_AT:-default}, which is not a profile of rule=$DISPATCH_RULE in config/crew-dispatch.json; check the flags were resolved from that rule, not reused" >&2
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
+  SPAWN_FELL_BACK=
+  if jq -e '(.rules | type) == "array" and (.rules | length) > 0' "$CONFIG/crew-dispatch.json" >/dev/null 2>&1; then
+    [ -n "$MODEL" ] || SPAWN_FELL_BACK="model (no --model)"
+    [ -n "$EFFORT" ] || SPAWN_FELL_BACK="${SPAWN_FELL_BACK:+$SPAWN_FELL_BACK, }effort (no --effort)"
+    [ "$DISPATCH_RULE" != default ] || SPAWN_FELL_BACK="${SPAWN_FELL_BACK:+$SPAWN_FELL_BACK, }rule (--dispatch-rule default)"
+    [ -z "$SPAWN_FELL_BACK" ] ||
+      echo "WARNING: $ID fell back to the default profile for $SPAWN_FELL_BACK while config/crew-dispatch.json has rules; check that no more specific rule matches" >&2
+    if spawn_routine_task_id "$ID" &&
+      ! jq -e --arg rule "$DISPATCH_RULE" 'any(.rules[]; type == "object" and .label == $rule and .routine == true)' \
+        "$CONFIG/crew-dispatch.json" >/dev/null 2>&1; then
+      echo "WARNING: $ID looks like routine work but rule=${DISPATCH_RULE:-unrecorded} is not a rule config/crew-dispatch.json marks routine; check that the routine rule was not skipped (to silence: give the routine rule a label and \"routine\": true, and pass --dispatch-rule with that label)" >&2
+    fi
+  fi
+  [ "$DISPATCH_RULE_SET" -eq 1 ] || [ -z "$(spawn_dispatch_labels)" ] ||
+    echo "WARNING: $ID passes no --dispatch-rule while config/crew-dispatch.json labels its rules; pass the matched rule's label, or default" >&2
+fi
+echo "dispatch $ID harness=$HARNESS model=${MODEL:-default} effort=${EFFORT:-default} compact_at=${COMPACT_AT:-default} rule=${DISPATCH_RULE:-unrecorded}"
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT"

@@ -1569,6 +1569,64 @@ test_spawn_relaunch_without_a_harness_reuses_the_recorded_one() {
   pass "fm-spawn --relaunch: with no explicit harness it reuses the task's recorded one, never the crew default"
 }
 
+# A relaunch keeps the dispatch rule label the task was spawned under, so the
+# start record and meta still say which rule chose the profile; an explicit
+# --dispatch-rule on the relaunch replaces it.
+test_spawn_relaunch_carries_the_recorded_dispatch_rule() {
+  local dir out last
+  dir=$(new_case spawnrule rl21r)
+  add_ship_task "$dir" rl21r claude
+  printf 'dispatch_rule=impl\ncompact_at=200000\n' >> "$dir/home/state/rl21r.meta"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl21r --relaunch)
+  [ "$(meta_field "$dir" rl21r dispatch_rule)" = impl ] \
+    || fail "fm-spawn --relaunch must keep the recorded dispatch rule, got '$(meta_field "$dir" rl21r dispatch_rule)'"
+  assert_contains "$out" "dispatch rl21r harness=claude model=default effort=default compact_at=200000 rule=impl" \
+    "the relaunch should echo the carried rule"
+  last=$(tail -1 "$dir/home/state/spawn-starts.jsonl")
+  [ "$(jq -r '[.relaunch, .dispatch_rule, .effort, .compact_at] | map(tostring) | join(" ")' <<<"$last")" = "true impl default 200000" ] \
+    || fail "the relaunch start record must carry relaunch, rule, effort and compact_at, got: $last"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl21r --relaunch --dispatch-rule bug-fix)
+  [ "$(meta_field "$dir" rl21r dispatch_rule)" = bug-fix ] \
+    || fail "an explicit --dispatch-rule on relaunch must replace the recorded one, got '$(meta_field "$dir" rl21r dispatch_rule)'"
+  [ "$(tail -1 "$dir/home/state/spawn-starts.jsonl" | jq -r .dispatch_rule)" = bug-fix ] \
+    || fail "the relaunch start record must carry the replacement rule"
+  pass "fm-spawn --relaunch: the recorded dispatch rule carries into meta and the start record unless a new one is passed"
+}
+
+test_spawn_relaunch_of_a_secondmate_refuses_dispatch_rule() {
+  local dir home out rc
+  dir=$(new_case smrule smr)
+  home="$dir/home"
+  mkdir -p "$home/data/smr"
+  printf '# secondmate brief\n' > "$home/data/smr/brief.md"
+  relaunch_git_worktree "$dir/proj" "$dir/smhome" sm-rule-branch
+  mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
+  printf 'smr\n' > "$dir/smhome/.fm-secondmate-home"
+  printf '# agents\n' > "$dir/smhome/AGENTS.md"
+  {
+    echo "window=fmses:fm-smr"
+    echo "endpoint_task_id=smr"
+    echo "worktree=$dir/smhome"
+    echo "project=$dir/smhome"
+    echo "harness=claude"
+    echo "kind=secondmate"
+    echo "mode=secondmate"
+    echo "yolo=off"
+    echo "home=$dir/smhome"
+  } > "$home/state/smr.meta"
+  printf '%s\n' "fm-smr" > "$dir/fake/windows"
+  printf '%s' "$dir/smhome" > "$dir/fake/cwd"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" smr --relaunch --dispatch-rule impl); rc=$?
+  expect_code 1 "$rc" "a secondmate relaunch with --dispatch-rule should be refused"
+  assert_contains "$out" "error: --dispatch-rule names a crew dispatch rule and applies to crewmate and scout spawns only" \
+    "the secondmate relaunch refusal did not name the crew-only scope"
+  [ -z "$(meta_field "$dir" smr dispatch_rule)" ] || fail "the refused relaunch must not record a dispatch rule"
+  pass "fm-spawn --relaunch: a secondmate relaunch refuses --dispatch-rule"
+}
+
 # A promoted scout records kind=ship and a custom ship branch in its meta, but
 # its brief is the scout scaffold: it never gained a Ship branch line, and a
 # relaunch cannot regenerate the brief (--branch-prefix is refused there). The
@@ -3215,6 +3273,8 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_explicit_secondmate_harness_ignores_configured_profile_axes \
   test_ship_relaunch_ignores_the_crew_harness_config \
   test_spawn_relaunch_without_a_harness_reuses_the_recorded_one \
+  test_spawn_relaunch_carries_the_recorded_dispatch_rule \
+  test_spawn_relaunch_of_a_secondmate_refuses_dispatch_rule \
   test_spawn_relaunch_of_promoted_scout_uses_the_recorded_branch \
   test_prefixed_prior_harness_wiring_is_still_retired \
   test_muse_session_binding_is_retired_on_a_harness_switch \
