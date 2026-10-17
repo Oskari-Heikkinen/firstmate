@@ -68,7 +68,15 @@
 #           handles it. --when defaults to the one
 #           condition named in the handoff's "Waiting for" section; when given,
 #           it must equal that condition exactly. --deadline is a UTC time,
-#           YYYY-MM-DDTHH:MM[:SS]Z, default seven days from now (FM_PARK_DEADLINE_SECS).
+#           YYYY-MM-DDTHH:MM[:SS]Z; its default depends on the condition kind
+#           (Environment knobs below): seven days, or a few hours for a
+#           merge-result:, gh-run: or heavy: wait, so a wait that never comes
+#           wakes the supervisor the same day. A passed deadline only wakes the
+#           supervisor (never-true); it never relaunches the task. Before
+#           anything is installed, park runs the condition's `check` once
+#           (bounded by FM_PARK_PRECHECK_TIMEOUT) and refuses, showing the
+#           check's output, when it exits 2 or above: a watch on a broken check would never
+#           resume the task.
 #           When run by the worker parking itself (FM_TASK_ID is the task, or
 #           the current directory is inside its worktree), the exit is detached
 #           through `stop` so this command can return before its own session is
@@ -119,7 +127,25 @@
 #   cmd:<executable> [args...]    run directly, arguments split on whitespace;
 #                                 exit 0 true, 1 not yet, anything else an error;
 #                                 an executable path must be absolute
-# Written without backticks, a file: or pr-merged: condition ends at the first
+#   receipt:<absolute-path>       an alias of file: for a receipt another home writes
+#   merge-result:<head40>         true once this home's configured merge queue
+#                                 (config/merge-queue) has a final RESULT for the
+#                                 full head; read through
+#                                 fm-procevent-merge-queue.sh result-ready
+#   heavy:<job-id>                true once the heavy-slot job has left queued and
+#                                 running (finished, failed or stopped); read
+#                                 only through the slot's heavy-job.sh `record`
+#                                 verb, located by a
+#                                 `path=<absolute heavy-job.sh>` line in
+#                                 config/heavy-job, else in
+#                                 ${XDG_CONFIG_HOME:-~/.config}/firstmate/heavy-job
+#                                 (a file, not the environment, because the
+#                                 watch polls from its own environment);
+#                                 a missing record or script is an error
+#   gh-run:<owner/repo>:<run-id>  true once that GitHub Actions run has completed,
+#                                 whatever its conclusion; read with
+#                                 gh run view -R <owner/repo>
+# Written without backticks, any condition but cmd: ends at the first
 # whitespace, and trailing punctuation (.,;:)) is not part of it.
 #
 # Outcomes that need the supervisor come from the watch itself: the deadline
@@ -152,13 +178,19 @@
 #
 # Environment knobs:
 #   FM_PARK_INTERVAL       condition poll cadence in seconds (default by kind:
-#                          30 for file:, inbox: and cmd:, 300 for pr-merged:,
-#                          which calls GitHub). With FM_PARK_STABLE the watch
+#                          300 for pr-merged: and 120 for gh-run:, which call
+#                          GitHub, 30 for every other kind). With FM_PARK_STABLE the watch
 #                          fires one to two intervals after the condition holds,
 #                          so a local wait resumes within about a minute.
 #   FM_PARK_STABLE         consecutive true polls required (2)
 #   FM_PARK_ERROR_BUDGET   consecutive condition errors before waking (5)
-#   FM_PARK_DEADLINE_SECS  default deadline from now (604800)
+#   FM_PARK_DEADLINE_SECS  default deadline from now (604800) for file:,
+#                          pr-merged:, inbox: and cmd:
+#   FM_PARK_DEADLINE_MERGE_RESULT_SECS  merge-result: default deadline (10800)
+#   FM_PARK_DEADLINE_GH_RUN_SECS        gh-run: default deadline (21600)
+#   FM_PARK_DEADLINE_HEAVY_SECS         heavy: default deadline (43200)
+#   FM_PARK_DEADLINE_RECEIPT_SECS       receipt: default deadline (86400)
+#   FM_PARK_PRECHECK_TIMEOUT  park-time condition check bound (60, one poll's bound)
 #   FM_PARK_RELEASE_TIMEOUT  separate copy-release action bound (1800 seconds, minimum 5)
 set -u
 
@@ -184,6 +216,8 @@ export FM_HOME
 . "$SCRIPT_DIR/fm-suspend-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 # Test seam: a fake control plane stands in for the harness endpoint.
 CONTROL="${FM_PARK_CONTROL_OVERRIDE:-$SCRIPT_DIR/fm-control.sh}"
@@ -267,8 +301,20 @@ condition_valid() {
   case "$cond" in
     *$'\n'*) echo "a condition is one line" >&2; return 1 ;;
     inbox:*) fm_task_id_path_safe "${cond#inbox:}" || return 1; return 0 ;;
-    file:/*) return 0 ;;
-    file:*) echo "file: needs an absolute path" >&2; return 1 ;;
+    file:/*|receipt:/*) return 0 ;;
+    file:*|receipt:*) echo "${cond%%:*}: needs an absolute path" >&2; return 1 ;;
+    merge-result:*)
+      [[ ${cond#merge-result:} =~ ^[0-9a-f]{40}$ ]] \
+        || { echo "merge-result: needs a full 40-character lowercase head sha" >&2; return 1; }
+      ;;
+    heavy:*)
+      [[ ${cond#heavy:} =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$ ]] \
+        || { echo "heavy: needs a heavy-slot job id (letters, digits, _ and -)" >&2; return 1; }
+      ;;
+    gh-run:*)
+      [[ ${cond#gh-run:} =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+:[0-9]+$ ]] \
+        || { echo "gh-run: needs <owner/repo>:<numeric run id>" >&2; return 1; }
+      ;;
     pr-merged:*)
       value=${cond#pr-merged:}
       fm_pr_url_parse "$value" && [ "$FM_PR_PROVIDER" = github ] \
@@ -283,23 +329,58 @@ condition_valid() {
         *) command -v -- "$exe" >/dev/null 2>&1 ;;
       esac || { echo "cmd: executable is unavailable: $exe" >&2; return 1; }
       ;;
-    *) echo "unknown condition kind (use file:, pr-merged:, or cmd:): $cond" >&2; return 1 ;;
+    *) echo "unknown condition kind (use file:, receipt:, pr-merged:, merge-result:, heavy:, gh-run:, or cmd:): $cond" >&2; return 1 ;;
   esac
 }
 
 # park_interval <condition>: the resume watch's default poll cadence. Local
 # conditions are cheap, so they poll often enough that the stable-count fire
-# lands within about a minute of the condition holding; pr-merged: spends a
-# GitHub API call per poll and keeps the slower cadence.
+# lands within about a minute of the condition holding; pr-merged: and gh-run:
+# spend a GitHub API call per poll and keep a slower cadence.
 park_interval() {
   case "$1" in
     pr-merged:*) printf '300\n' ;;
+    gh-run:*) printf '120\n' ;;
     *) printf '30\n' ;;
   esac
 }
 
+# park_default_deadline <condition>: seconds from now to the default deadline.
+# A cross-home result normally arrives within hours, so those kinds wake the
+# supervisor the same day instead of after the seven-day default.
+park_default_deadline() {
+  local secs
+  case "$1" in
+    merge-result:*) secs=${FM_PARK_DEADLINE_MERGE_RESULT_SECS:-10800} ;;
+    gh-run:*) secs=${FM_PARK_DEADLINE_GH_RUN_SECS:-21600} ;;
+    heavy:*) secs=${FM_PARK_DEADLINE_HEAVY_SECS:-43200} ;;
+    receipt:*) secs=${FM_PARK_DEADLINE_RECEIPT_SECS:-86400} ;;
+    *) secs=${FM_PARK_DEADLINE_SECS:-604800} ;;
+  esac
+  case "$secs" in ''|0*|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$secs"
+}
+
+# heavy_job_path: the heavy slot's heavy-job.sh, from the last path= line of
+# this home's config/heavy-job, else the machine-wide one.
+heavy_job_path() {
+  local path='' file
+  for file in "$CONFIG/heavy-job" "${XDG_CONFIG_HOME:-$HOME/.config}/firstmate/heavy-job"; do
+    [ -z "$path" ] || break
+    [ -f "$file" ] || continue
+    path=$(sed -n 's/^path=//p' "$file" | tail -1)
+  done
+  case "$path" in \~/*) path=$HOME/${path#\~/} ;; esac
+  case "$path" in
+    '') echo "heavy: no heavy-job.sh is configured (add path=<absolute heavy-job.sh> to config/heavy-job)"; return 1 ;;
+    /*) [ -f "$path" ] && [ -x "$path" ] || { echo "heavy: heavy-job.sh is not an executable file: $path"; return 1; } ;;
+    *) echo "heavy: the heavy-job.sh path must be absolute: $path"; return 1 ;;
+  esac
+  printf '%s\n' "$path"
+}
+
 cmd_check() {
-  local cond=${1-} state
+  local cond=${1-} state value tool
   local -a argv
   condition_valid "$cond" || exit 2
   case "$cond" in
@@ -307,7 +388,38 @@ cmd_check() {
       task_resolve "${cond#inbox:}"
       [ -n "$(meta_get park_token)" ] && [ "$(meta_get park_pickup)" = "$(meta_get park_token)" ] && exit 0
       exit 1 ;;
-    file:*) [ -e "${cond#file:}" ] && exit 0; exit 1 ;;
+    file:*|receipt:*) [ -e "${cond#*:}" ] && exit 0; exit 1 ;;
+    merge-result:*)
+      value=${cond#merge-result:}
+      "$SCRIPT_DIR/fm-procevent-merge-queue.sh" result-ready "$value"
+      state=$?
+      [ "$state" -gt 1 ] || exit "$state"
+      printf 'cannot read the merge queue result for head %s: this home needs config/merge-queue naming a readable queue\n' "$value"
+      exit 2
+      ;;
+    heavy:*)
+      value=${cond#heavy:}
+      tool=$(heavy_job_path) || { printf '%s\n' "$tool"; exit 2; }
+      command -v jq >/dev/null 2>&1 || { echo "heavy: jq is required to read the job record"; exit 2; }
+      state=$("$tool" record "$value" 2>&1) || { printf 'cannot read heavy job %s: %s\n' "$value" "$state"; exit 2; }
+      state=$(jq -r --arg id "$value" 'select(.schema == "heavy-slot-job/v1" and .id == $id) | .state' <<< "$state" 2>&1) \
+        || { printf 'heavy job %s record is not JSON: %s\n' "$value" "$state"; exit 2; }
+      case "$state" in
+        queued|running) exit 1 ;;
+        finished|failed|stopped) exit 0 ;;
+        *) printf 'heavy job %s has no heavy-slot-job/v1 record state: %s\n' "$value" "$state"; exit 2 ;;
+      esac
+      ;;
+    gh-run:*)
+      value=${cond#gh-run:}
+      state=$(gh run view "${value##*:}" -R "${value%:*}" --json status --jq .status 2>&1) || {
+        printf 'cannot read the GitHub Actions run: %s\n' "$state"; exit 2; }
+      case "$state" in
+        completed) exit 0 ;;
+        queued|in_progress|waiting|pending|requested) exit 1 ;;
+        *) printf 'unexpected GitHub Actions run status: %s\n' "$state"; exit 2 ;;
+      esac
+      ;;
     pr-merged:*)
       state=$(gh pr view "${cond#pr-merged:}" --json state --jq .state 2>&1) || {
         printf 'cannot read the pull request: %s\n' "$state"; exit 2; }
@@ -327,10 +439,15 @@ cmd_check() {
 
 # The pointer a resumed session reads first to find what it was waiting for.
 results_pointer() {  # <condition>
-  local cond=$1
+  local cond=$1 repo
   case "$cond" in
     inbox:*) printf 'the supervisor explicitly authorized pickup; read ordinary inbox messages in sequence' ;;
-    file:*) printf 'the results are at %s' "${cond#file:}" ;;
+    file:*|receipt:*) printf 'the results are at %s' "${cond#*:}" ;;
+    merge-result:*) printf 'the merge queue has a final result for head %s; read it with %s result %s' \
+      "${cond#merge-result:}" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" "${cond#merge-result:}" ;;
+    heavy:*) printf 'heavy job %s has ended; read its record with heavy-job.sh record %s' "${cond#heavy:}" "${cond#heavy:}" ;;
+    gh-run:*) repo=${cond#gh-run:}; repo=${repo%:*}
+      printf 'the GitHub Actions run has completed; read its conclusion with gh run view %s -R %s' "${cond##*:}" "$repo" ;;
     pr-merged:*) printf 'the pull request %s is merged' "${cond#pr-merged:}" ;;
     cmd:*) printf 'the check "%s" now succeeds; run it to read the result' "${cond#cmd:}" ;;
   esac
@@ -357,18 +474,18 @@ section_filled() {  # <body>: 0 when it holds any non-placeholder text
 
 # The one condition named in a "Waiting for" body: the first backticked token
 # starting with a known kind, else the first such word (at a line start or after
-# whitespace): a cmd: takes the rest of its line, a file: or pr-merged: only its
-# first token without trailing punctuation.
+# whitespace): a cmd: takes the rest of its line, any other kind only its first
+# token without trailing punctuation.
 waiting_condition() {  # <body>
   printf '%s\n' "$1" | awk '
     { lines[NR] = $0 }
     END {
       for (i = 1; i <= NR; i++)
-        if (match(lines[i], /`(file|pr-merged|cmd|inbox):[^`]*`/)) {
+        if (match(lines[i], /`(file|receipt|pr-merged|merge-result|heavy|gh-run|cmd|inbox):[^`]*`/)) {
           print substr(lines[i], RSTART + 1, RLENGTH - 2); exit
         }
       for (i = 1; i <= NR; i++)
-        if (match(lines[i], /(^|[ \t])(file|pr-merged|cmd|inbox):/)) {
+        if (match(lines[i], /(^|[ \t])(file|receipt|pr-merged|merge-result|heavy|gh-run|cmd|inbox):/)) {
           line = substr(lines[i], RSTART); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
           if (line !~ /^cmd:/) { sub(/[ \t].*/, "", line); sub(/[.,;:)]+$/, "", line) }
           print line; exit
@@ -388,7 +505,7 @@ validate_handoff() {
   waiting=$(section_body "$file" "waiting for")
   HANDOFF_CONDITION=$(waiting_condition "$waiting")
   if [ -z "$HANDOFF_CONDITION" ]; then
-    problems="$problems"$'\n'"  - \"Waiting for\" names no condition (file:<path>, pr-merged:<url>, or cmd:<executable> [args])"
+    problems="$problems"$'\n'"  - \"Waiting for\" names no condition (file:<path>, receipt:<path>, pr-merged:<url>, merge-result:<head>, heavy:<job-id>, gh-run:<owner/repo>:<run-id>, or cmd:<executable> [args])"
   elif [ -n "$want" ] && [ "$want" != "$HANDOFF_CONDITION" ]; then
     problems="$problems"$'\n'"  - \"Waiting for\" does not name the --when condition: $want (it names $HANDOFF_CONDITION)"
   fi
@@ -446,6 +563,7 @@ cmd_park() {
     sid="merge-queue-$ID-${adopted:0:8}"
     tag=" [key=merge-queue] [wait=merge-result:$adopted]"
   fi
+  precheck_condition "$HANDOFF_CONDITION"
   [ "${FM_TASK_ID-}" != "$ID" ] || detached=1
   wt=$(meta_get worktree)
   here=$(pwd -P 2>/dev/null || true)
@@ -458,7 +576,9 @@ cmd_park() {
     deadline_epoch=$(fm_utc_iso_to_epoch "$deadline_iso") \
       || die "--deadline must be a UTC time like 2026-10-02T12:00Z: $deadline_iso"
   else
-    deadline_epoch=$(( now + ${FM_PARK_DEADLINE_SECS:-604800} ))
+    rel=$(park_default_deadline "$HANDOFF_CONDITION") \
+      || die "the default deadline for this condition kind must be a positive number of seconds"
+    deadline_epoch=$(( now + rel ))
   fi
   rel=$(( deadline_epoch - now ))
   [ "$rel" -gt 0 ] || die "--deadline is not in the future: $deadline_iso"
@@ -537,6 +657,20 @@ cmd_park() {
   fi
   park_record "park_exit_confirmed=$token" || die "verified exit could not be recorded"
   printf 'parked %s: waiting for %s until %s; agent stopped (%s)\n' "$ID" "$HANDOFF_CONDITION" "$deadline_iso" "$out"
+}
+
+# precheck_condition <condition>: run the condition's check once before
+# anything is installed, bounded like one watch poll. A check that errors
+# (exit 2 or above, or the bound) would only spend the watch's error budget and
+# never resume the task, so park refuses and shows the check's own output.
+precheck_condition() {
+  local out rc=0 bound=${FM_PARK_PRECHECK_TIMEOUT:-60}
+  case "$bound" in ''|0*|*[!0-9]*) bound=60 ;; esac
+  out=$(fm_run_timed "$bound" "$SCRIPT_DIR/fm-park.sh" check "$1" 2>&1 < /dev/null) || rc=$?
+  [ "$rc" -le 1 ] && return 0
+  [ "$rc" -ne 124 ] || out="the check did not finish within $bound seconds${out:+; $out}"
+  die "task $ID was not parked and its agent keeps running: the check of $1 failed with exit $rc, so its watch could never resume the task${out:+:
+$out}"
 }
 
 # refuse_claude_background_work: a Claude session asked to exit while one of

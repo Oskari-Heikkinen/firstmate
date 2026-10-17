@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for bin/fm-park.sh: the handoff validator, park idempotence,
+# the cross-home condition checkers with their per-kind default deadlines, the
+# park-time refusal of a condition whose check errors,
 # automatic resume when the wait condition holds, the supervisor wake on a
 # deadline or failed relaunch, the self-park detached exit, and the Claude
 # self-park refusal while background shells still run. A fake control
@@ -30,6 +32,41 @@ printf '%s\n' "$*" >> "$FAKE_CONTROL_LOG"
 echo "fake $2 ok"
 SH
 chmod +x "$CONTROL"
+
+# Fake gh and heavy-job.sh for the GitHub and heavy-slot conditions: each logs
+# its argv and answers from a state file the case writes; FAKE_FAIL makes the
+# read fail as an unreachable source would.
+FAKEBIN="$TMP_ROOT/fakebin"; mkdir -p "$FAKEBIN"
+# The condition checks read the machine-wide heavy-job config from here, so
+# none leaks in from the host running the tests.
+TEST_XDG="$TMP_ROOT/xdg"
+cat > "$FAKEBIN/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_STATE.gh-args"
+[ ! -e "$FAKE_STATE.fail" ] || { echo "HTTP 404: Not Found" >&2; exit 1; }
+cat "$FAKE_STATE"
+SH
+cat > "$TMP_ROOT/heavy-job.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_STATE.heavy-args"
+[ "$1" = record ] || { echo "only record is a read verb" >&2; exit 64; }
+[ -e "$FAKE_STATE" ] || { echo "heavy-job: [Errno 2] No such file or directory: jobs/$2.json" >&2; exit 2; }
+printf '{"schema": "heavy-slot-job/v1", "id": "%s", "state": "%s"}\n' "$2" "$(cat "$FAKE_STATE")"
+SH
+chmod +x "$FAKEBIN/gh" "$TMP_ROOT/heavy-job.sh"
+fake_park() {  # <state-file> <home> <args>...: park with the fakes on PATH
+  PATH="$FAKEBIN:$PATH" XDG_CONFIG_HOME="$TEST_XDG" FAKE_STATE="$1" park "${@:2}"
+}
+check_rc() {  # <state-file> <home> <condition>: print the check's exit code
+  local rc=0
+  PATH="$FAKEBIN:$PATH" XDG_CONFIG_HOME="$TEST_XDG" FAKE_STATE="$1" FM_HOME="$2" "$PARK" check "$3" >/dev/null 2>&1 || rc=$?
+  printf '%s\n' "$rc"
+}
+deadline_in() {  # <meta>: seconds from now to the recorded park deadline
+  local iso
+  iso=$(sed -n 's/^park_deadline=//p' "$1" | tail -1)
+  echo $(( $(date -u -d "$iso" +%s 2>/dev/null || date -u -j -f %Y-%m-%dT%H:%M:%SZ "$iso" +%s) - $(date +%s) ))
+}
 
 # new_task <home> <id>: a ship task record with a PR at its tail, plus a
 # worktree holding an uncommitted change that parking must never touch.
@@ -218,11 +255,173 @@ case_default_cadence() {
   park "$H" tcmd --handoff "$TMP_ROOT/tcmd.md" >/dev/null || fail "park tcmd failed"
   assert_equals 30 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-tcmd.spec")" "a cmd: wait is polled every 30 seconds"
   handoff "$TMP_ROOT/tpr.md" "pr-merged:https://github.com/example/repo/pull/7"
-  park "$H" tpr --handoff "$TMP_ROOT/tpr.md" >/dev/null || fail "park tpr failed"
+  printf 'OPEN\n' > "$TMP_ROOT/tpr.state"
+  fake_park "$TMP_ROOT/tpr.state" "$H" tpr --handoff "$TMP_ROOT/tpr.md" >/dev/null || fail "park tpr failed"
   assert_equals 300 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-tpr.spec")" "a pr-merged: wait keeps the slower GitHub-friendly cadence"
   FM_PARK_INTERVAL=7 park "$H" tcmd --handoff "$TMP_ROOT/tcmd.md" >/dev/null || fail "re-park tcmd failed"
   assert_equals 7 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-tcmd.spec")" "FM_PARK_INTERVAL still overrides the default cadence"
   pass "the resume watch polls local waits often enough to resume within about a minute"
+}
+
+# --- the cross-home condition kinds each read their own source ----------------
+case_cross_home_conditions() {
+  H="$TMP_ROOT/h-kinds"; mkdir -p "$H/state" "$H/config"
+  st="$TMP_ROOT/kinds.state"
+  # receipt: is file: under another name.
+  assert_equals 1 "$(check_rc "$st" "$H" "receipt:$TMP_ROOT/kinds-receipt")" "an absent receipt is not yet"
+  : > "$TMP_ROOT/kinds-receipt"
+  assert_equals 0 "$(check_rc "$st" "$H" "receipt:$TMP_ROOT/kinds-receipt")" "a present receipt holds"
+  assert_equals 2 "$(check_rc "$st" "$H" "receipt:kinds-receipt")" "a relative receipt is an error"
+  # merge-result: reads this home's configured queue for the full head.
+  head=0123456789abcdef0123456789abcdef01234567
+  assert_equals 2 "$(check_rc "$st" "$H" "merge-result:$head")" "an unconfigured merge queue is an error"
+  out=$(FM_HOME="$H" "$PARK" check "merge-result:$head" 2>&1)
+  assert_contains "$out" "config/merge-queue" "the unconfigured queue error names the missing config"
+  mkdir -p "$TMP_ROOT/kinds-queue"; : > "$TMP_ROOT/kinds-queue/queue.log"
+  printf 'dir=%s\nhome=test-home\n' "$TMP_ROOT/kinds-queue" > "$H/config/merge-queue"
+  assert_equals 1 "$(check_rc "$st" "$H" "merge-result:$head")" "a head without a result is pending"
+  printf 'RESULT 2026-10-17T12:00:00Z head=%s outcome=taken\n' "$head" >> "$TMP_ROOT/kinds-queue/queue.log"
+  assert_equals 1 "$(check_rc "$st" "$H" "merge-result:$head")" "a taken head is still pending"
+  printf 'RESULT 2026-10-17T12:30:00Z head=%s outcome=landed main=%s\n' "$head" "$head" >> "$TMP_ROOT/kinds-queue/queue.log"
+  assert_equals 0 "$(check_rc "$st" "$H" "merge-result:$head")" "a final result holds"
+  assert_equals 2 "$(check_rc "$st" "$H" "merge-result:${head:0:12}")" "a short head is an error"
+  # heavy: reads only the slot's heavy-job.sh record verb.
+  assert_equals 2 "$(check_rc "$st" "$H" heavy:job-1)" "an unconfigured heavy-job.sh is an error"
+  printf 'path=%s\n' "$TMP_ROOT/heavy-job.sh" > "$H/config/heavy-job"
+  assert_equals 2 "$(check_rc "$st" "$H" heavy:job-1)" "a missing job record is an error"
+  for state in queued running; do
+    printf '%s\n' "$state" > "$st"
+    assert_equals 1 "$(check_rc "$st" "$H" heavy:job-1)" "a $state heavy job is not yet"
+  done
+  for state in finished failed stopped; do
+    printf '%s\n' "$state" > "$st"
+    assert_equals 0 "$(check_rc "$st" "$H" heavy:job-1)" "a $state heavy job has ended"
+  done
+  printf 'mystery\n' > "$st"
+  assert_equals 2 "$(check_rc "$st" "$H" heavy:job-1)" "an unknown heavy job state is an error"
+  rm -f "$H/config/heavy-job"
+  printf 'running\n' > "$st"
+  mkdir -p "$TEST_XDG/firstmate"
+  printf 'path=%s\n' "$TMP_ROOT/heavy-job.sh" > "$TEST_XDG/firstmate/heavy-job"
+  assert_equals 1 "$(check_rc "$st" "$H" heavy:job-1)" "the machine-wide config locates heavy-job.sh"
+  rm -f "$TEST_XDG/firstmate/heavy-job"
+  assert_equals 2 "$(check_rc "$st" "$H" heavy:../job)" "a path-like job id is an error"
+  assert_equals "" "$(grep -v '^record job-1$' "$st.heavy-args" || true)" "heavy: calls heavy-job.sh only as record <job-id>"
+  # gh-run: names its repository explicitly and waits for completion.
+  : > "$st.gh-args"
+  for status in queued in_progress waiting; do
+    printf '%s\n' "$status" > "$st"
+    assert_equals 1 "$(check_rc "$st" "$H" gh-run:example/repo:42)" "a $status run is not yet"
+  done
+  printf 'completed\n' > "$st"
+  assert_equals 0 "$(check_rc "$st" "$H" gh-run:example/repo:42)" "a completed run holds"
+  assert_grep "^run view 42 -R example/repo " "$st.gh-args" "gh-run: reads the run with -R"
+  : > "$st.fail"
+  assert_equals 2 "$(check_rc "$st" "$H" gh-run:example/repo:42)" "an unreadable run is an error"
+  rm -f "$st.fail"
+  assert_equals 2 "$(check_rc "$st" "$H" gh-run:example/repo)" "a gh-run: without a run id is an error"
+  # Each kind is found in a handoff, backticked or not.
+  printf '## Goal\ng\n## Done\nd\n## Waiting for\nCI on the head: gh-run:example/repo:42.\n## Next steps\nn\n' > "$TMP_ROOT/kinds.md"
+  out=$(FM_HOME="$H" "$PARK" validate "$TMP_ROOT/kinds.md" 2>&1) || fail "an unbackticked gh-run: was refused: $out"
+  assert_equals "handoff ok: waiting for gh-run:example/repo:42" "$out" "an unbackticked gh-run: ends at its run id"
+  for cond in "receipt:/tmp/r" "merge-result:$head" "heavy:job-1"; do
+    handoff "$TMP_ROOT/kinds.md" "$cond"
+    out=$(FM_HOME="$H" "$PARK" validate "$TMP_ROOT/kinds.md" 2>&1) || fail "validate refused $cond: $out"
+    assert_equals "handoff ok: waiting for $cond" "$out" "validate reads $cond"
+  done
+  pass "receipt:, merge-result:, heavy: and gh-run: each have a tested checker"
+}
+
+# --- the cross-home kinds default to short deadlines; overrides still win -----
+case_kind_default_deadlines() {
+  H="$TMP_ROOT/h-deadlines"; mkdir -p "$H/config"
+  st="$TMP_ROOT/deadlines.state"
+  head=89abcdef0123456789abcdef0123456789abcdef
+  mkdir -p "$TMP_ROOT/deadlines-queue"; : > "$TMP_ROOT/deadlines-queue/queue.log"
+  printf 'dir=%s\nhome=test-home\n' "$TMP_ROOT/deadlines-queue" > "$H/config/merge-queue"
+  printf 'path=%s\n' "$TMP_ROOT/heavy-job.sh" > "$H/config/heavy-job"
+  new_task "$H" dmr; new_task "$H" dgh; new_task "$H" dhv; new_task "$H" drc; new_task "$H" dfile
+  handoff "$TMP_ROOT/dmr.md" "merge-result:$head"
+  fake_park "$st" "$H" dmr --handoff "$TMP_ROOT/dmr.md" >/dev/null || fail "park dmr failed"
+  left=$(deadline_in "$H/state/dmr.meta")
+  [ "$left" -gt 10500 ] && [ "$left" -le 10800 ] || fail "a merge-result: wait defaults to three hours, got $left seconds"
+  printf 'in_progress\n' > "$st"
+  handoff "$TMP_ROOT/dgh.md" "gh-run:example/repo:42"
+  fake_park "$st" "$H" dgh --handoff "$TMP_ROOT/dgh.md" >/dev/null || fail "park dgh failed"
+  left=$(deadline_in "$H/state/dgh.meta")
+  [ "$left" -gt 21300 ] && [ "$left" -le 21600 ] || fail "a gh-run: wait defaults to six hours, got $left seconds"
+  assert_equals 120 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-dgh.spec")" "a gh-run: wait polls GitHub every two minutes"
+  printf 'running\n' > "$st"
+  handoff "$TMP_ROOT/dhv.md" "heavy:job-2"
+  fake_park "$st" "$H" dhv --handoff "$TMP_ROOT/dhv.md" >/dev/null || fail "park dhv failed"
+  left=$(deadline_in "$H/state/dhv.meta")
+  [ "$left" -gt 42900 ] && [ "$left" -le 43200 ] || fail "a heavy: wait defaults to twelve hours, got $left seconds"
+  handoff "$TMP_ROOT/drc.md" "receipt:$TMP_ROOT/drc-receipt"
+  park "$H" drc --handoff "$TMP_ROOT/drc.md" >/dev/null || fail "park drc failed"
+  left=$(deadline_in "$H/state/drc.meta")
+  [ "$left" -gt 86100 ] && [ "$left" -le 86400 ] || fail "a receipt: wait defaults to a day, got $left seconds"
+  handoff "$TMP_ROOT/dfile.md" "file:$TMP_ROOT/dfile-results"
+  park "$H" dfile --handoff "$TMP_ROOT/dfile.md" >/dev/null || fail "park dfile failed"
+  left=$(deadline_in "$H/state/dfile.meta")
+  [ "$left" -gt 604500 ] && [ "$left" -le 604800 ] || fail "a file: wait keeps the seven-day default, got $left seconds"
+  FM_PARK_DEADLINE_MERGE_RESULT_SECS=600 fake_park "$st" "$H" dmr --handoff "$TMP_ROOT/dmr.md" >/dev/null || fail "re-park dmr failed"
+  left=$(deadline_in "$H/state/dmr.meta")
+  [ "$left" -gt 300 ] && [ "$left" -le 600 ] || fail "FM_PARK_DEADLINE_MERGE_RESULT_SECS overrides the default, got $left seconds"
+  fake_park "$st" "$H" dmr --handoff "$TMP_ROOT/dmr.md" --deadline 2099-01-01T00:00Z >/dev/null || fail "re-park dmr with --deadline failed"
+  assert_grep "park_deadline=2099-01-01T00:00:00Z" "$H/state/dmr.meta" "--deadline overrides the kind's default"
+  if FM_PARK_DEADLINE_HEAVY_SECS=soon fake_park "$st" "$H" dhv --handoff "$TMP_ROOT/dhv.md" 2>"$TMP_ROOT/dhv.err"; then
+    fail "a malformed per-kind deadline was accepted"
+  fi
+  assert_grep "positive number of seconds" "$TMP_ROOT/dhv.err" "a malformed per-kind deadline is named"
+  pass "cross-home waits default to deadlines of hours, and --deadline or the kind's knob overrides them"
+}
+
+# --- park runs the check once and refuses a condition that errors -------------
+case_park_time_refusal() {
+  H="$TMP_ROOT/h-precheck"; mkdir -p "$H/config"; new_task "$H" pbad; new_task "$H" pmiss; new_task "$H" pok; new_task "$H" pheavy; new_task "$H" pslow
+  cat > "$TMP_ROOT/check-error.sh" <<'SH'
+#!/usr/bin/env bash
+echo "gh: no repository found; pass -R" >&2
+exit 2
+SH
+  cat > "$TMP_ROOT/check-missing.sh" <<SH
+#!/usr/bin/env bash
+"$TMP_ROOT/no-such-result.sh"
+SH
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP_ROOT/check-pending.sh"
+  chmod +x "$TMP_ROOT/check-error.sh" "$TMP_ROOT/check-missing.sh" "$TMP_ROOT/check-pending.sh"
+  handoff "$TMP_ROOT/pbad.md" "cmd:$TMP_ROOT/check-error.sh"
+  if park "$H" pbad --handoff "$TMP_ROOT/pbad.md" 2>"$TMP_ROOT/pbad.err"; then
+    fail "park accepted a condition whose check exits 2"
+  fi
+  assert_grep "failed with exit 2" "$TMP_ROOT/pbad.err" "the refusal names the check's exit"
+  assert_grep "no repository found; pass -R" "$TMP_ROOT/pbad.err" "the refusal shows the check's own output"
+  assert_absent "$H/control.log" "a refused park never touches the agent"
+  assert_absent "$H/state/procevent/when-park-pbad.source" "a refused park arms no watch"
+  assert_no_grep "park_state=" "$H/state/pbad.meta" "a refused park records nothing"
+  assert_absent "$H/data/pbad/handoff.md" "a refused park installs no handoff"
+  handoff "$TMP_ROOT/pmiss.md" "cmd:$TMP_ROOT/check-missing.sh"
+  if park "$H" pmiss --handoff "$TMP_ROOT/pmiss.md" 2>"$TMP_ROOT/pmiss.err"; then
+    fail "park accepted a check that calls a missing script"
+  fi
+  assert_grep "failed with exit 127" "$TMP_ROOT/pmiss.err" "a check calling a missing script is refused"
+  printf 'path=%s\n' "$TMP_ROOT/heavy-job.sh" > "$H/config/heavy-job"
+  handoff "$TMP_ROOT/pheavy.md" "heavy:never-submitted"
+  if fake_park "$TMP_ROOT/pheavy.absent" "$H" pheavy --handoff "$TMP_ROOT/pheavy.md" 2>"$TMP_ROOT/pheavy.err"; then
+    fail "park accepted a heavy: wait on a job with no record"
+  fi
+  assert_grep "cannot read heavy job never-submitted" "$TMP_ROOT/pheavy.err" "a heavy: wait on an unknown job is refused with the reason"
+  handoff "$TMP_ROOT/pslow.md" "cmd:sleep 10"
+  if FM_PARK_PRECHECK_TIMEOUT=1 park "$H" pslow --handoff "$TMP_ROOT/pslow.md" 2>"$TMP_ROOT/pslow.err"; then
+    fail "park accepted a check that outlived its bound"
+  fi
+  assert_grep "failed with exit 124" "$TMP_ROOT/pslow.err" "a check that outlives its bound is refused"
+  assert_grep "did not finish within 1 seconds" "$TMP_ROOT/pslow.err" "the refusal says the check timed out"
+  assert_no_grep "park_state=" "$H/state/pslow.meta" "a timed-out check parks nothing"
+  handoff "$TMP_ROOT/pok.md" "cmd:$TMP_ROOT/check-pending.sh"
+  park "$H" pok --handoff "$TMP_ROOT/pok.md" >/dev/null || fail "park refused a check that is merely not yet true"
+  assert_grep "park_state=parked" "$H/state/pok.meta" "a pending check parks"
+  pass "park runs the condition once and refuses one whose check errors, showing why"
 }
 
 # --- the condition relaunches the task with the handoff and a results pointer --
@@ -1007,7 +1206,8 @@ pool_param_cases save_timeout_case bundle import clean quiet evidence
 POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
   case_superseded_resume case_failed_relaunch case_notification_failure)
 POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queue_adoption_refusal
-  case_park_records_and_rearms case_default_cadence case_self_park_detached_exit
+  case_park_records_and_rearms case_default_cadence case_cross_home_conditions case_kind_default_deadlines
+  case_park_time_refusal case_self_park_detached_exit
   case_self_park_by_task_id case_self_park_exit_failure case_claude_background_refusal
   case_other_harness_background case_copy_free_qualification case_wait_age)
 pool_param_cases release_scenario_case off true nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll
