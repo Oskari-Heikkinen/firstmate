@@ -947,13 +947,17 @@ $set
 EOF
   printf '%s' "$out"
 }
-# Drop every record whose verb is `blocked` from an open set, keeping order.
+# Drop every record whose verb is `blocked` from an open set, keeping order. A
+# reserved-namespace record stays: only its owner ever closes it (see
+# _fm_decision_key_reserved below).
 _fm_decision_drop_blocked() {  # <open-set>
   local line out='' rest
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     rest=${line#*$'\t'}
-    case "$rest" in blocked$'\t'*) continue ;; esac
+    case "$rest" in
+      blocked$'\t'*) _fm_decision_key_reserved "${line%%$'\t'*}" || continue ;;
+    esac
     out="${out}${line}"$'\n'
   done <<EOF
 $1
@@ -969,7 +973,10 @@ EOF
 #   note [supersedes=<relaunch|resume|validation-run>] [at=<epoch>]: <evidence>
 # and the decision fold closes every `blocked` record (keyed or unkeyed) opened
 # before it. A `needs-decision` record is never closed this way: a question
-# still needs its answer. The event is a `note:`, so the drain's UNREAD STATUS
+# still needs its answer. Nor is a blocker under a reserved key namespace
+# (FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT below): a library or tool raised
+# it, not the worker, and its owner is the only thing that ever closes it, so a
+# relaunch must never mute it. The event is a `note:`, so the drain's UNREAD STATUS
 # presents it once as the closing evidence (status_line_is_unread_surface).
 # bin/fm-wake-lib.sh's fm_status_supersede_blockers is the writer the relaunch
 # and validation-trigger paths use; a worker may append the same event itself.
@@ -1011,7 +1018,24 @@ status_supersedes_kind() {  # <status-line>
 # consumer-side rule on purpose - it protects local and remote writers
 # identically, and it can never fail a whole delta or wedge a stream the way a
 # writer-side rejection would.
-FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT='pending-reply-'
+#
+# `handoff-pickup-` and `handoff-tj-` are the key forms the handoff-stall plan
+# (Q7) gives blockers a tool raises in a session's status file: an auto-pickup
+# hold (`handoff-pickup-<request>`) and the TETJET lane liveness alerts
+# (`handoff-tj-idle`, `handoff-tj-lane-refused`, `handoff-tj-capacity-unread`),
+# whose notes begin `handoff-...:`. Only those forms are reserved, so a
+# worker-chosen key such as `handoff-stall-audit` still opens and closes as an
+# ordinary decision.
+FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT='pending-reply- handoff-pickup- handoff-tj-'
+
+# 0 when <key> lies in a reserved namespace.
+_fm_decision_key_reserved() {  # <key>
+  local prefix
+  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
+    case "$1" in "$prefix"*) return 0 ;; esac
+  done
+  return 1
+}
 
 # 0 when <key> is not reserved, or is reserved and <note> speaks its vocabulary.
 _fm_decision_key_transition_allowed() {  # <key> <note>
@@ -1457,7 +1481,10 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # discarded and rebuilt from byte 0 under the new reading.
 # 10: a `note [supersedes=...]` evidence event closes every open blocked
 # record, so cursors folded before that rule are discarded.
-FM_OPEN_DECISIONS_FOLD_VERSION=10
+# 11: that supersession keeps reserved-namespace blockers open, and
+# `handoff-pickup-` and `handoff-tj-` joined the reserved prefixes, so cursors folded under version 10 are
+# discarded.
+FM_OPEN_DECISIONS_FOLD_VERSION=11
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity

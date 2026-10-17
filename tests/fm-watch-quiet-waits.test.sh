@@ -7,7 +7,8 @@
 # or a stale pane for that task itself, recording it in state/.quiet-wait-acks;
 # a condition that stops holding or an endpoint with no agent still wakes. A
 # typed `note [supersedes=<kind>]:` evidence line closes every open blocker in
-# the shared OPEN DECISIONS fold, never a needs-decision.
+# the shared OPEN DECISIONS fold, never a needs-decision or a reserved-namespace
+# blocker.
 # Heavy-slot job records here are fixtures only.
 set -u
 
@@ -297,6 +298,110 @@ test_supersedes_note_closes_blockers_not_decisions() {
   printf 'note: ordinary progress mentioning supersedes=relaunch\n' >> "$f"
   assert_contains "$(status_open_decisions "$f")" "later" "an untyped note closed a blocker"
   pass "a typed supersedes note closes every earlier open blocker and never a needs-decision"
+}
+
+# The handoff-stall plan's N1 repro: a relaunch note used to close a
+# library-raised pending-reply escalation and a tool-raised handoff blocker.
+test_supersedes_note_keeps_reserved_blockers() {
+  local dir f open
+  dir="$TMP_ROOT/supersede-reserved"; mkdir -p "$dir"
+  f="$dir/t.status"
+  printf 'kind=ship\n' > "$dir/t.meta"
+  {
+    printf 'blocked [key=pending-reply-0123abcd] [at=1791967000]: pending-reply-missed: reply for corr=0123abcd never arrived\n'
+    printf 'blocked [key=handoff-pickup-slice-1013-5] [at=1791967938]: handoff-pickup-hold: auto-pickup is holding slice-1013-5\n'
+    printf 'blocked [key=handoff-pickup-bare] [at=1791967940]: a note outside the namespace vocabulary\n'
+    printf 'blocked [key=disk] [at=1791967945]: disk full\n'
+    printf 'needs-decision [key=q1] [at=1791967950]: pick a kit sha\n'
+    printf 'note [supersedes=relaunch] [at=1791978134]: relaunched on claude (from claude); superseded open blockers: disk\n'
+  } > "$f"
+  open=$(status_open_decisions "$f")
+  assert_contains "$open" "pending-reply-0123abcd" "the supersedes note closed a pending-reply escalation"
+  assert_contains "$open" "handoff-pickup-slice-1013-5" "the supersedes note closed a handoff blocker"
+  assert_contains "$open" "q1" "the supersedes note closed a needs-decision"
+  assert_not_contains "$open" "disk" "the supersedes note left an ordinary blocker open"
+  assert_not_contains "$open" "handoff-pickup-bare" "a handoff key without its vocabulary opened a blocker"
+  [ "$open" = "$(status_open_decisions_incremental "$f")" ] \
+    || fail "the incremental fold disagreed with the whole-file fold on reserved blockers"
+
+  printf 'resolved [key=handoff-pickup-slice-1013-5]: picked up\n' >> "$f"
+  assert_contains "$(status_open_decisions "$f")" "handoff-pickup-slice-1013-5" "a bare resolution closed a handoff blocker"
+  printf 'resolved [key=handoff-pickup-slice-1013-5]: handoff-pickup-collected: request collected\n' >> "$f"
+  assert_not_contains "$(status_open_decisions "$f")" "handoff-pickup" "the owner's resolution left a handoff blocker open"
+  pass "a supersedes note keeps reserved-namespace blockers open and still closes ordinary ones"
+}
+
+# Only Q7's tool-raised forms are reserved; a worker-chosen handoff-* key is an
+# ordinary decision that opens, closes, and is superseded as before.
+test_worker_handoff_key_stays_ordinary() {
+  local dir f open
+  dir="$TMP_ROOT/supersede-worker-handoff"; mkdir -p "$dir"
+  f="$dir/t.status"
+  printf 'kind=secondmate\n' > "$dir/t.meta"
+  {
+    printf 'needs-decision [key=handoff-stall-audit] [at=1792183283]: corr=7c9e0ed1 plan ready for approval\n'
+    printf 'blocked [key=handoff-cutover] [at=1792183300]: waiting on the cutover window\n'
+  } > "$f"
+  open=$(status_open_decisions "$f")
+  assert_contains "$open" "handoff-stall-audit" "a worker-chosen handoff needs-decision did not open"
+  assert_contains "$open" "handoff-cutover" "a worker-chosen handoff blocker did not open"
+  printf 'note [supersedes=relaunch] [at=1792183400]: relaunched; superseded open blockers: handoff-cutover\n' >> "$f"
+  open=$(status_open_decisions "$f")
+  assert_not_contains "$open" "handoff-cutover" "the supersedes note left a worker-chosen handoff blocker open"
+  assert_contains "$open" "handoff-stall-audit" "the supersedes note closed a worker-chosen handoff needs-decision"
+  printf 'resolved [key=handoff-stall-audit]: approved\n' >> "$f"
+  assert_not_contains "$(status_open_decisions "$f")" "handoff-stall-audit" "a plain resolution left a worker-chosen handoff key open"
+  pass "a worker-chosen handoff-* key stays an ordinary decision"
+}
+
+# A tool-raised handoff blocker is not the task's own decision, like a
+# pending-reply escalation, so pending-reply recovery and the retry ring do not
+# wait on it; a worker-chosen handoff-* key still is the task's own.
+test_reserved_handoff_blockers_are_not_own_decisions() {
+  local dir f own
+  dir="$TMP_ROOT/own-reserved-handoff"; mkdir -p "$dir"
+  f="$dir/t.status"
+  printf 'kind=ship\n' > "$dir/t.meta"
+  {
+    printf 'blocked [key=handoff-pickup-r1]: handoff-pickup-hold: auto-pickup is holding r1\n'
+    printf 'blocked [key=handoff-tj-idle]: handoff-tj-idle: queue dry\n'
+  } > "$f"
+  assert_contains "$(status_open_decisions "$f")" "handoff-tj-idle" "a tool-raised handoff blocker did not open"
+  own=$(status_own_open_decisions "$f")
+  [ -z "$own" ] || fail "tool-raised handoff blockers counted as the task's own decisions: $own"
+  printf 'blocked [key=handoff-cutover]: waiting on the cutover window\n' >> "$f"
+  own=$(status_own_open_decisions "$f")
+  assert_contains "$own" "handoff-cutover" "a worker-chosen handoff blocker was not the task's own decision"
+  assert_not_contains "$own" "handoff-pickup-r1" "an auto-pickup hold counted as the task's own decision"
+  assert_not_contains "$own" "handoff-tj-idle" "a lane alert counted as the task's own decision"
+  pass "tool-raised handoff blockers are not the task's own decisions; worker-chosen ones are"
+}
+
+# The Pi branch dispatcher folds decisions in TypeScript with its own copy of
+# the reserved-prefix default; the two folds must agree on which keys are
+# reserved.
+test_reserved_prefix_default_matches_pi_fold() {
+  local ts="$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts"
+  grep -qF "process.env.FM_CLASSIFY_RESERVED_KEY_PREFIXES || \"$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT\")" "$ts" \
+    || fail "the Pi branch fold's reserved-prefix default differs from FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT"
+  pass "the Pi branch fold reserves the same key prefixes as the shell fold"
+}
+
+test_supersede_writer_skips_reserved_blockers() {
+  local dir state f
+  dir="$TMP_ROOT/supersede-writer-reserved"; state="$dir/state"; mkdir -p "$state"
+  f="$state/t.status"
+  printf 'kind=ship\n' > "$state/t.meta"
+  printf 'blocked [key=handoff-tj-idle]: handoff-tj-idle: queue dry\n' > "$f"
+  supersede_blockers "$state" "$f" relaunch "relaunched" || fail "superseding only reserved blockers failed"
+  assert_not_contains "$(cat "$f")" "supersedes" "a supersedes note was written with only reserved blockers open"
+
+  printf 'blocked [key=net]: network down\n' >> "$f"
+  supersede_blockers "$state" "$f" relaunch "relaunched" || fail "superseding a mixed set failed"
+  assert_contains "$(cat "$f")" "superseded open blockers: net" "the evidence note did not name the ordinary blocker"
+  assert_not_contains "$(grep supersedes "$f")" "handoff-tj-idle" "the evidence note named a reserved blocker"
+  assert_contains "$(status_open_decisions "$f")" "handoff-tj-idle" "the written evidence closed a reserved blocker"
+  pass "the supersede writer names and closes only ordinary blockers"
 }
 
 test_supersede_writer_records_evidence_once() {
@@ -646,7 +751,12 @@ test_wait_conditions_hold_only_while_checkable
 test_wait_tag_survives_stamping
 test_configured_merge_result_checker
 test_supersedes_note_closes_blockers_not_decisions
+test_supersedes_note_keeps_reserved_blockers
+test_worker_handoff_key_stays_ordinary
 test_supersede_writer_records_evidence_once
+test_supersede_writer_skips_reserved_blockers
+test_reserved_handoff_blockers_are_not_own_decisions
+test_reserved_prefix_default_matches_pi_fold
 test_turn_end_under_holding_wait_is_acknowledged
 test_new_status_line_under_holding_wait_still_wakes
 test_turn_end_with_prose_until_still_wakes
