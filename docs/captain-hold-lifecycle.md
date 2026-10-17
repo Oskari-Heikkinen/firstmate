@@ -13,6 +13,7 @@ This document records the deterministic mechanism, structured surfaces, compatib
 | What is a captain call, and which subcommand does what? | [Mechanism](#mechanism) |
 | Why does cleanup of finished work leave a captain call open? | [Cleanup never closes a captain call](#cleanup-never-closes-a-captain-call) |
 | How does a keyed answer from chat or a captured source reach the call? | [Answer-time resolution](#answer-time-resolution) |
+| What is a decision packet, and when does its default apply? | [Decision packets and defaults](#decision-packets-and-defaults) |
 | How is a call closed when it stopped being a question? | [Reconcile](#reconcile-re-check-reality-never-a-blind-close) |
 | Where does a hold appear in snapshots and Bearings? | [Structured read surfaces](#structured-read-surfaces) |
 | What does a `RECORD DIVERGENCE` section mean? | [Record divergence](#record-divergence) |
@@ -42,6 +43,10 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 | `reconcile-requests` | Internal intake that records a reconcile request from a bound captured source. | [Reconcile](#reconcile-re-check-reality-never-a-blind-close) |
 | `reconcile close`, `reconcile note`, `reconcile list` | Retire or list pending reconcile requests. | [Verifying and retiring a request](#verifying-and-retiring-a-request) |
 | `diverged` | Read-only report of a call whose two records disagree. | [Record divergence](#record-divergence) |
+| `packet`, `packet show`, `packets` | Attach, show, or list the decision packet of an open call. | [Decision packets and defaults](#decision-packets-and-defaults) |
+| `apply-defaults` | Applies every due default under research's standing authority. | [Applying a default](#applying-a-default-apply-defaults) |
+| `reverse` | Records words that change an applied default. | [Reversing a default](#reversing-a-default-reverse) |
+| `log` | Prints the append-only decision log. | [The decision log](#the-decision-log) |
 
 ### Creating a hold (`hold`)
 
@@ -239,6 +244,87 @@ Two channels feed that one intake today, and both are ordinary callers rather th
 An adapter's `answers` command must never let freeform captain prose forge a task id or a mode.
 
 Trusted external process-event adapters intentionally expose no answer operation and cannot feed this authority-bearing intake; [`extension-bindings.md`](extension-bindings.md#trust-boundary) owns that boundary.
+
+## Decision packets and defaults
+
+A decision packet states what a call asks, so it can be answered without reading the report behind it.
+It is optional: a held task without a packet behaves exactly as one did before packets existed.
+[`bin/fm-decision-packet-lib.sh`](../bin/fm-decision-packet-lib.sh) owns the packet format and the decision log.
+
+### Attaching a packet (`packet`)
+
+`packet <task-id> --packet-file <path>` attaches a packet to an open captain call.
+The input is one `key: value` line per field:
+
+| Key | Count | Meaning |
+| --- | --- | --- |
+| `question` | exactly one | The question the call asks. |
+| `option` | two or more | `<key> <text>`, one per choice; keys are unique. |
+| `recommendation` | exactly one | The option key recommended. |
+| `authority` | exactly one | The authority the call falls under, as a slug. |
+| `evidence` | any | A path or reference the recommendation rests on. |
+| `run` | any | A run id the evidence came from. |
+| `prerequisite` | any | `<owner> <text>`: work that must happen first, and who owns it. |
+| `deadline` | research only | `<N>h`, `<N>d`, or an absolute UTC time after now; stored as UTC. |
+| `default` | research only | The option that applies at the deadline; it must be the recommendation. |
+| `on-default` | research only | `done` (the default) closes the call; `release` frees held work. |
+
+Only a packet under `research-standing`, research's standing authority, carries a default.
+Such a packet needs both a deadline and a default.
+A packet under any other authority is refused if it names a deadline, a default, or `on-default`; it waits for an explicit answer.
+
+The packet is stored at `data/captain-hold/packets/<task-id>.packet` and records the call's hold-set timestamp.
+A packet whose timestamp no longer matches the call's belongs to an earlier hold lifecycle.
+It is inactive: it is not listed, its default never applies, and a re-held task starts without one.
+Attaching a packet again replaces it.
+
+`packet show <task-id>` prints one packet, marking it inactive when it is stale.
+`packets` lists every active packet of an open call with its age since the hold-set timestamp, the stored fields, and a status line.
+That status reads `no default; waits for an explicit answer`, `default <key> applies in <age>`, or `deadline passed <age> ago`.
+
+### Applying a default (`apply-defaults`)
+
+`apply-defaults` is an explicit command a supervisor runs, for example on a heartbeat; no daemon applies a default.
+For each active research packet whose deadline has passed, under the task's control lock, it:
+
+1. Re-checks that the call is still open and the packet still matches its lifecycle.
+2. Prepends a resolution record with mode `defaulted` and the label `Default applied:`.
+   The record names the option, authority, deadline, and question, and how to reverse it.
+   It is never labelled `Captain decision:`, because nobody gave those words.
+3. Closes the call, or releases held work for `on-default: release`.
+4. Publishes the outcome to a parent channel the same way `answer` does.
+5. Appends a `defaulted` record to the decision log.
+
+It prints `defaulted: <task-id>` for each one and ends with `defaults-applied: <count>`.
+A rerun is a no-op, and a packet outside research's standing authority is never touched.
+`complete` and `verify` accept a defaulted call as resolved; their gate is otherwise unchanged.
+
+### Reversing a default (`reverse`)
+
+An applied default stays reversible.
+`answer` refuses a call its default closed, and points at `reverse`.
+`reverse <task-id> --decision-file <path>` records the words that change the default as a new `reversed` record labelled `Reversal decision:`.
+The default's record is kept, and a reversal is logged as a new outcome.
+It leaves the task's state as the default left it; acting on the reversal is ordinary follow-up work.
+`reverse` refuses a call whose newest outcome is not an applied default, and an identical retry is a no-op.
+
+### The decision log
+
+Every outcome is appended as one JSON line to `data/captain-hold/decisions.jsonl`, under a lock in the home's state directory.
+Each record has `schema` (`fm-decision-log.v1`), `at`, `task`, `outcome`, `mode`, `occurrence`, and `digest`, plus `authority` and `default` when known.
+
+| Outcome | Written by |
+| --- | --- |
+| `answered` | `answer`, including a replay that completes an interrupted close. |
+| `deferred` | `hold --until`; the mode names the date. |
+| `reconciled` | `reconcile close` when it closes the call. |
+| `defaulted` | `apply-defaults`; the mode is `done` or `release`. |
+| `reversed` | `reverse`. |
+
+A record identical in task, outcome, occurrence, and digest is never appended twice, so retries leave one line.
+The log is written after the backlog record, and the backlog stays the source of truth.
+A failed append prints an `actionable:` line on stderr and does not undo the outcome.
+`log [<task-id>]` prints the log, optionally for one task.
 
 ## Reconcile: re-check reality, never a blind close
 
@@ -490,6 +576,17 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
 - Hold-set stamping precedes visible hold state, preserves an active lifecycle's timestamp, and resets after release.
 - Interrupted answer closure retains the stamp until close and restores resolution-first ordering on retry.
 - Deferral through `--until` leaves `captain_actionable` false until due.
+
+### Decision packets and defaults
+
+- A packet is refused on a task that is no open call, and a packet outside research's standing authority is refused a deadline or default.
+  A research packet is refused without a deadline or with a default other than its recommendation.
+- `packets` lists each active packet with its age, prerequisite owner, run ids, and when its default applies, and a packet-less answer is unchanged.
+- `apply-defaults` applies nothing before the deadline, applies only the due research default at it, never touches a product call, and is a no-op on rerun.
+  The record is `defaulted` with no `Captain decision:` label, and `complete` and `verify` accept it.
+- `answer` refuses a defaulted call; `reverse` records a new outcome, keeps the default's record, refuses a call that was never defaulted, and replays without a duplicate log line.
+- An `on-default: release` default frees held work, and a re-held task's stale packet is neither listed nor applied.
+- The decision log holds exactly one record per answer and deferral across retries.
 
 ### Legacy paths
 

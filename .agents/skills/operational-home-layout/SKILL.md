@@ -70,6 +70,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   <id>/handoff.md    a parked task's handoff (goal, done, waiting for, next steps), plus park-resume-note.md and park-exit.log beside it; written only by bin/fm-park.sh
   fleet-sync/        atomic per-clone source-refresh receipts and OS-lock anchors, written only by bin/fm-fleet-provenance.py through fm-fleet-sync.sh; observations, not application-update authority
   housekeeping/      dated read-only disk inventories written only by bin/fm-disk-inventory.sh; proposals, never deletion authority
+  captain-hold/      decision records written only by bin/fm-captain-hold.sh: packets/<id>.packet is an open call's fm-decision-packet.v1 packet bound to its hold-set timestamp, and decisions.jsonl is the append-only fm-decision-log.v1 record of every answered, deferred, reconciled, defaulted, and reversed outcome; bin/fm-decision-packet-lib.sh owns both formats (`captain-hold-lifecycle` skill; docs/captain-hold-lifecycle.md)
   pipeline-spend.jsonl  optional per-task no-mistakes pipeline spend, written only when config/pipeline-spend is present; bin/fm-pipeline-spend.sh owns the schema
 projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception
 state/               runtime records and signals; gitignored

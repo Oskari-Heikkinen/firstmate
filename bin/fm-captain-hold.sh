@@ -35,6 +35,12 @@
 #   fm-captain-hold.sh reconcile list
 #   fm-captain-hold.sh reconcile close <task-id> --evidence-file <path>
 #   fm-captain-hold.sh reconcile note <task-id> --note-file <path>
+#   fm-captain-hold.sh packet <task-id> --packet-file <path>
+#   fm-captain-hold.sh packet show <task-id>
+#   fm-captain-hold.sh packets
+#   fm-captain-hold.sh apply-defaults
+#   fm-captain-hold.sh reverse <task-id> --decision-file <path>
+#   fm-captain-hold.sh log [<task-id>]
 #
 # `hold` places an existing task under an active captain hold, or creates the
 # task first when no work item exists to hold (--title required to create; the
@@ -198,6 +204,26 @@
 # `diverged` is the read-only guard over the seam between the two records of
 # one captain call. See "record divergence" beside command_diverged below.
 #
+# DECISION PACKETS, DEADLINES, AND REVERSIBLE DEFAULTS.
+# bin/fm-decision-packet-lib.sh owns the packet and decision-log formats and
+# their validation rules. `packet` attaches (or replaces) the packet of an open
+# captain call, bound to its current hold-set stamp; `packet show` and
+# `packets` list live packets with the call's age, its deadline, and its
+# default. `apply-defaults` is the explicit, supervisor-run step (a heartbeat,
+# never a daemon) that applies each research-standing packet's default once its
+# deadline has passed: it writes a `defaulted` resolution record under a
+# `Default applied:` label, so a default can never read as anyone's words,
+# closes or releases the task as the packet's on-default says, and logs it. A
+# packet under any other authority has no default, so this command never
+# touches it. `reverse` records a reversal of a defaulted call: the words
+# actually given are written as a `reversed` record under a
+# `Reversal decision:` label and logged as a new outcome; the task's state is
+# unchanged, and acting on the reversal is ordinary routed work. `log` prints
+# the decision log. Every outcome - answered (including released and
+# repaired), deferred (`hold --until`), defaulted, reversed, and reconciled -
+# is appended to it; a log that cannot be written is reported as
+# `actionable:` on stderr and never undoes the durable record.
+#
 # Resolution records: the block written into the body names this script, the
 # decision digest, and a `Resolution mode:` of answered, released, repaired, or
 # reconciled. Records written by the retired fm-decision-hold.sh (routed,
@@ -242,6 +268,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-parent-channel-lib.sh"
+# shellcheck source=bin/fm-decision-packet-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-decision-packet-lib.sh"
 
 PARENT_HOLD_PUBLISHED=0
 publish_parent_hold() {  # <task-id> <occurrence> <verb> <note>
@@ -562,6 +591,8 @@ body_has_resolution_record() {  # <task-body>
     *"Resolution recorded by fm-captain-hold."*"Captain decision:"*) return 0 ;;
     *"Resolution recorded by fm-decision-hold."*"Captain decision:"*) return 0 ;;
     *"Resolution recorded by fm-captain-hold."*"Reconciliation evidence:"*) return 0 ;;
+    *"Resolution recorded by fm-captain-hold."*"Default applied:"*) return 0 ;;
+    *"Resolution recorded by fm-captain-hold."*"Reversal decision:"*) return 0 ;;
   esac
   return 1
 }
@@ -607,12 +638,19 @@ closed_answer_replay_mode_compatible() {  # <mode> <task-body>
   return 1
 }
 
-# The record's label is what keeps an evidence-backed reconciliation from
-# reading as the captain's own words. `reconciled` closes a call that went moot
-# and carries verified evidence; every other mode carries what the captain said.
+# The record's label is what keeps an evidence-backed reconciliation or an
+# applied default from reading as the captain's own words. `reconciled` closes a
+# call that went moot and carries verified evidence, `defaulted` carries the
+# packet default that applied at its deadline, `reversed` carries the words
+# that reversed such a default, and every other mode carries what the captain
+# said.
 resolution_block() {  # <mode>
   local label='Captain decision:'
-  [ "$1" != reconciled ] || label='Reconciliation evidence:'
+  case "$1" in
+    reconciled) label='Reconciliation evidence:' ;;
+    defaulted) label='Default applied:' ;;
+    reversed) label='Reversal decision:' ;;
+  esac
   printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n\n%s\n%s\n' \
     "$DECISION_DIGEST" "$1" "$label" "$DECISION_TEXT"
 }
@@ -996,6 +1034,28 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origi
   printf '%s %s %s\n' "$id" "$how" "$origin_state"
 }
 
+# Append one outcome to the decision log. The record it describes is already
+# durable, so a failed append is reported rather than undoing that record.
+log_outcome() {  # <task-id> <outcome> <mode> <occurrence> <digest> [<authority> [<default>]]
+  local data at
+  data=$(fm_backlog_data_absolute "$DATA") || data=$DATA
+  at=${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+  fm_decision_log_append "$data" "$STATE" "$at" "$@" \
+    || printf 'actionable: the %s outcome of task %s is recorded but did not reach the decision log %s\n' \
+      "$2" "$1" "$(fm_decision_log_path "$data")" >&2
+}
+
+# The authority of the packet written for this task's current hold lifecycle,
+# or empty when it has none.
+live_packet_authority() {  # <task-id> <shown-body>
+  local data path stamp
+  data=$(fm_backlog_data_absolute "$DATA") || return 0
+  path=$(fm_packet_path "$data" "$1")
+  stamp=$(body_hold_set_timestamp "$(decode_shown_value "$2")")
+  fm_packet_live "$path" "$1" "$stamp" || return 0
+  fm_packet_field "$path" authority
+}
+
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
   local existing_hold_kind='' existing_held='' preserve_hold_set=0 stored_reason previous_origin='' hold_status=0
@@ -1104,6 +1164,10 @@ command_hold() {
   [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
     || fail "task $id lost its hold-set stamp while being held"
   publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
+  if [ -n "$until" ]; then
+    hold_set=$(body_hold_set_timestamp "$(show_field_value "$show" body)")
+    log_outcome "$id" deferred "until $until" "$occurrence" "$(sha256_text "$hold_set until $until")"
+  fi
   printf '%s\n' "$id"
 }
 
@@ -1200,7 +1264,7 @@ remove_interrupted_answer_stamp() {  # <task-id>
 }
 
 command_answer() {
-  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence
+  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence authority
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -1221,6 +1285,7 @@ command_answer() {
   hold_kind=$(show_field_value "$show" hold_kind)
   body=$(show_field "$show" body)
   if [ "$release" = 1 ]; then outcome=released; else outcome=answered; fi
+  authority=$(live_packet_authority "$id" "$body")
   # The occurrence the parent line names: the record about to be written is
   # one past those already in the body, and a retry names the newest one.
   occurrence=$(( $(resolution_record_count "$body") + 1 ))
@@ -1228,6 +1293,9 @@ command_answer() {
   if [ "$state" = "done" ]; then
     if body_has_resolution_record "$body"; then
       # An exact compatible retry is an idempotent no-op; drift is rejected.
+      [ "$(recorded_resolution_mode "$body" || true)" != defaulted ] \
+        || [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+        || fail "captain-held task $id was closed by its decision packet's default; record words that change it with reverse"
       [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
         || fail "captain-held task $id records a different captain decision"
       recorded_mode=$(recorded_resolution_mode "$body" || true)
@@ -1241,6 +1309,7 @@ command_answer() {
       else
         publish_parent_resolution_then_retire "$id" $((occurrence - 1)) answered
       fi
+      log_outcome "$id" answered "${recorded_mode:-answered}" $((occurrence - 1)) "$DECISION_DIGEST" "$authority"
       printf 'answered: %s\n' "$id"
       return 0
     fi
@@ -1258,6 +1327,7 @@ command_answer() {
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     publish_parent_resolution_then_retire "$id" "$occurrence" "answered (repaired)"
+    log_outcome "$id" answered repaired "$occurrence" "$DECISION_DIGEST" "$authority"
     printf 'repaired: %s\n' "$id"
     return 0
   fi
@@ -1282,6 +1352,7 @@ command_answer() {
       fi
       remove_interrupted_answer_stamp "$id"
       publish_parent_resolution_then_retire "$id" $((occurrence - 1)) "$outcome"
+      log_outcome "$id" answered "$outcome" $((occurrence - 1)) "$DECISION_DIGEST" "$authority"
       printf '%s: %s\n' "$outcome" "$id"
       return 0
     fi
@@ -1295,6 +1366,7 @@ command_answer() {
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     publish_parent_resolution_then_retire "$id" "$occurrence" "$outcome"
+    log_outcome "$id" answered "$outcome" "$occurrence" "$DECISION_DIGEST" "$authority"
     printf '%s: %s\n' "$outcome" "$id"
     return 0
   fi
@@ -1308,6 +1380,7 @@ command_answer() {
       || fail "task $id records this answer with mode ${recorded_mode:-unknown}; replay requires matching --release"
     remove_interrupted_answer_stamp "$id"
     publish_parent_resolution_then_retire "$id" $((occurrence - 1)) released
+    log_outcome "$id" answered released $((occurrence - 1)) "$DECISION_DIGEST" "$authority"
     printf 'released: %s\n' "$id"
     return 0
   fi
@@ -1741,6 +1814,7 @@ reconcile_close() {
     [ "$PARENT_HOLD_PUBLISHED" = 1 ] \
       || fail "could not publish the reconciled captain-held task $id to its parent"
     reconcile_request_retire "$id"
+    log_outcome "$id" reconciled reconciled "$occurrence" "$DECISION_DIGEST"
     printf 'reconciled: %s\n' "$id"
     return 0
   fi
@@ -1764,6 +1838,7 @@ reconcile_close() {
   [ "$PARENT_HOLD_PUBLISHED" = 1 ] \
     || fail "could not publish the reconciled captain-held task $id to its parent"
   reconcile_request_retire "$id"
+  log_outcome "$id" reconciled reconciled "$occurrence" "$DECISION_DIGEST"
   printf 'reconciled: %s\n' "$id"
 }
 
@@ -2134,6 +2209,268 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
   exit 2
 }
 
+# --- decision packets, deadlines, and reversible defaults ---------------------
+#
+# bin/fm-decision-packet-lib.sh owns the packet and decision-log formats. These
+# commands own when a packet may be written, how it is listed, and the one
+# explicit step that applies a research-standing default at its deadline.
+
+captain_now() {
+  local now=${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+  case "$now" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+    *) fail "FM_CAPTAIN_HOLD_NOW must be a UTC YYYY-MM-DDTHH:MM:SSZ timestamp" ;;
+  esac
+  printf '%s' "$now"
+}
+
+packet_data_dir() {
+  fm_backlog_data_absolute "$DATA" || fail "data directory cannot be resolved: $DATA"
+}
+
+# Is <task-id> an open captain call? 0 yes, 1 no; a call that cannot be
+# established stops the command rather than reading as either.
+packet_call_open() {  # <task-id>
+  local rc=0
+  (command_open "$1") || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1|3) return 1 ;;
+    *) fail "cannot establish whether $1 is still an open captain call" ;;
+  esac
+}
+
+# One listing block: the call's age from its hold-set stamp, whether and when
+# a default applies, then the stored packet fields.
+packet_print() {  # <packet-file> <task-id> <hold-set> <now-epoch>
+  local path=$1 id=$2 hold_set=$3 now=$4 held deadline due status
+  held=$(fm_packet_epoch "$hold_set") || held=$now
+  printf '%s\tage=%s\theld-since=%s\n' "$id" "$(fm_packet_age $((now - held)))" "$hold_set"
+  deadline=$(fm_packet_field "$path" deadline)
+  if [ -z "$deadline" ]; then
+    status='no default; waits for an explicit answer'
+  else
+    due=$(( $(fm_packet_epoch "$deadline") - now ))
+    if [ "$due" -gt 0 ]; then
+      status="default $(fm_packet_field "$path" default) applies in $(fm_packet_age "$due")"
+    else
+      status="deadline passed $(fm_packet_age $((-due))) ago; apply-defaults applies default $(fm_packet_field "$path" default)"
+    fi
+  fi
+  printf '  status: %s\n' "$status"
+  sed -e '/^schema: /d' -e '/^task: /d' -e '/^hold-set: /d' -e 's/^/  /' "$path"
+}
+
+command_packet() {
+  local id packet_file='' data normalized now hold_set show
+  case "${1:-}" in
+    show) shift; packet_show "$@"; return ;;
+  esac
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  id=$1
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --packet-file) shift; packet_file=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug task-id "$id"
+  [ -n "$packet_file" ] || fail "--packet-file is required"
+  [ -f "$packet_file" ] || fail "packet file does not exist: $packet_file"
+  now=$(captain_now)
+  normalized=$(fm_packet_normalize "$packet_file" "$now" 2>&1) \
+    || fail "packet for $id refused: $normalized"
+  acquire_task_control_lock "$id"
+  require_tasks_axi
+  packet_call_open "$id" \
+    || fail "task $id is not an open captain call; hold it before attaching a packet"
+  task_show_or_fail "$id" "captain-held task $id is absent from this home's configured backlog (data directory $DATA)"
+  hold_set=$(body_hold_set_timestamp "$(show_field_value "$show" body)")
+  [ -n "$hold_set" ] \
+    || fail "task $id carries no hold-set stamp; re-hold it through hold before attaching a packet"
+  data=$(packet_data_dir)
+  fm_packet_write "$data" "$id" "$hold_set" "$normalized" \
+    || fail "could not record the decision packet for $id"
+  printf 'packet: %s\n' "$id"
+}
+
+packet_show() {  # <task-id>
+  local id=${1:-} data path show hold_set=''
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  validate_slug task-id "$id"
+  data=$(packet_data_dir)
+  path=$(fm_packet_path "$data" "$id")
+  [ -f "$path" ] || fail "task $id has no decision packet"
+  if packet_call_open "$id"; then
+    task_show_or_fail "$id" "captain-held task $id is absent from this home's configured backlog (data directory $DATA)"
+    hold_set=$(body_hold_set_timestamp "$(show_field_value "$show" body)")
+  fi
+  if fm_packet_live "$path" "$id" "$hold_set"; then
+    packet_print "$path" "$id" "$hold_set" "$(fm_packet_epoch "$(captain_now)")"
+    return 0
+  fi
+  printf '%s\tinactive: the call is closed, released, or re-held since this packet was written\n' "$id"
+  sed -e '/^schema: /d' -e '/^task: /d' -e 's/^/  /' "$path"
+}
+
+command_packets() {
+  local data dir path id show hold_set now count=0
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  now=$(fm_packet_epoch "$(captain_now)")
+  data=$(packet_data_dir)
+  dir=$(fm_packet_dir "$data")
+  if [ -d "$dir" ]; then
+    for path in "$dir"/*.packet; do
+      [ -e "$path" ] || continue
+      id=${path##*/}; id=${id%.packet}
+      case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+      packet_call_open "$id" || continue
+      task_show "$id" || continue
+      show=$TASK_SHOW_OUTPUT
+      hold_set=$(body_hold_set_timestamp "$(show_field_value "$show" body)")
+      fm_packet_live "$path" "$id" "$hold_set" || continue
+      packet_print "$path" "$id" "$hold_set" "$now"
+      count=$((count + 1))
+    done
+  fi
+  printf 'decision-packets: %s\n' "$count"
+}
+
+# Apply one due default under the task's control lock. Returns 1 when there is
+# nothing to apply: the call was answered, closed, or re-held meanwhile.
+apply_packet_default() {  # <task-id> <packet-file> <now-epoch>
+  local id=$1 path=$2 now=$3 show body hold_set authority deadline default text close release=0 occurrence recorded_mode
+  acquire_task_control_lock "$id"
+  if ! packet_call_open "$id"; then
+    release_task_control_lock
+    return 1
+  fi
+  task_show_or_fail "$id" "captain-held task $id disappeared before its default applied"
+  body=$(show_field "$show" body)
+  hold_set=$(body_hold_set_timestamp "$(decode_shown_value "$body")")
+  authority=$(fm_packet_field "$path" authority)
+  deadline=$(fm_packet_field "$path" deadline)
+  default=$(fm_packet_field "$path" default)
+  close=$(fm_packet_field "$path" on-default)
+  if ! fm_packet_live "$path" "$id" "$hold_set" \
+    || [ "$authority" != "$FM_PACKET_RESEARCH_AUTHORITY" ] \
+    || [ -z "$deadline" ] || [ -z "$default" ] \
+    || [ "$(fm_packet_epoch "$deadline")" -gt "$now" ]; then
+    release_task_control_lock
+    return 1
+  fi
+  text=$(fm_packet_option_text "$path" "$default")
+  [ -n "$text" ] || fail "decision packet for $id names default $default but no such option"
+  [ "$close" != release ] || release=1
+  # Deterministic text, so a retry after an interrupted close finds its record.
+  DECISION_TEXT=$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+    'No answer was given by the deadline, so the decision packet default applied.' \
+    "Default option: $default - $text" \
+    "Authority: $authority" \
+    "Deadline: $deadline" \
+    "Question: $(fm_packet_field "$path" question)" \
+    "Reversible: fm-captain-hold.sh reverse $id --decision-file <path> records the words that change it.")
+  DECISION_DIGEST=$(sha256_text "$DECISION_TEXT")
+  occurrence=$(( $(resolution_record_count "$body") + 1 ))
+  recorded_mode=$(recorded_resolution_mode "$body" || true)
+  if body_has_resolution_record "$body" && [ "$recorded_mode" = defaulted ] \
+    && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
+    occurrence=$((occurrence - 1))
+  else
+    write_resolution_record "$id" defaulted "$body"
+  fi
+  close_answered "$id" "$release" || fail "could not close defaulted captain-held task $id"
+  remove_interrupted_answer_stamp "$id"
+  publish_parent_resolution_then_retire "$id" "$occurrence" "defaulted to $default"
+  log_outcome "$id" defaulted "$close" "$occurrence" "$DECISION_DIGEST" "$authority" "$default"
+  release_task_control_lock
+  printf 'defaulted: %s\n' "$id"
+}
+
+# The explicit step a supervisor runs, for example on a heartbeat. There is no
+# daemon: a default applies only when this command runs after its deadline.
+command_apply_defaults() {
+  local data dir path id now count=0
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  now=$(fm_packet_epoch "$(captain_now)")
+  data=$(packet_data_dir)
+  dir=$(fm_packet_dir "$data")
+  if [ -d "$dir" ]; then
+    require_tasks_axi
+    for path in "$dir"/*.packet; do
+      [ -e "$path" ] || continue
+      id=${path##*/}; id=${id%.packet}
+      case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+      # Only research's standing authority carries a default; every other
+      # packet keeps waiting for an explicit answer and is never touched here.
+      [ "$(fm_packet_field "$path" authority)" = "$FM_PACKET_RESEARCH_AUTHORITY" ] || continue
+      [ -n "$(fm_packet_field "$path" deadline)" ] || continue
+      if apply_packet_default "$id" "$path" "$now"; then
+        count=$((count + 1))
+      fi
+    done
+  fi
+  printf 'defaults-applied: %s\n' "$count"
+}
+
+# A reversal is a new outcome on a defaulted call, never an edit of the default
+# record: the words actually given are recorded and logged, and the task's
+# state is left as the default left it.
+command_reverse() {
+  local id=${1:-} decision_file='' show body recorded_mode count
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --decision-file) shift; decision_file=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug task-id "$id"
+  load_decision "$decision_file"
+  acquire_task_control_lock "$id"
+  require_tasks_axi
+  task_show_or_fail "$id" "task $id is absent from this home's configured backlog (data directory $DATA)"
+  body=$(show_field "$show" body)
+  count=$(resolution_record_count "$body")
+  recorded_mode=$(recorded_resolution_mode "$body" || true)
+  if [ "$recorded_mode" = reversed ] \
+    && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
+    log_outcome "$id" reversed reversed "$count" "$DECISION_DIGEST"
+    printf 'reversed: %s\n' "$id"
+    return 0
+  fi
+  [ "$recorded_mode" = defaulted ] \
+    || fail "task $id's newest outcome is ${recorded_mode:-none}, not an applied default; only a defaulted call is reversed"
+  write_resolution_record "$id" reversed "$body"
+  task_show_or_fail "$id" "task $id disappeared while recording its reversal"
+  [ "$(recorded_resolution_mode "$(show_field "$show" body)" || true)" = reversed ] \
+    || fail "task $id did not retain its reversal record"
+  log_outcome "$id" reversed reversed $((count + 1)) "$DECISION_DIGEST"
+  printf 'reversed: %s\n' "$id"
+}
+
+command_log() {
+  local id=${1:-} data log
+  [ "$#" -le 1 ] || { usage >&2; exit 2; }
+  [ -z "$id" ] || validate_slug task-id "$id"
+  data=$(packet_data_dir)
+  log=$(fm_decision_log_path "$data")
+  [ -f "$log" ] || return 0
+  if [ -z "$id" ]; then
+    cat "$log"
+  else
+    perl -MJSON::PP -ne '
+      BEGIN { $t = pop @ARGV; }
+      my $r = eval { JSON::PP->new->decode($_) } or next;
+      print if $r->{task} eq $t;
+    ' "$log" "$id"
+  fi
+}
+
 case "${1:-}" in
   hold) shift; command_hold "$@" ;;
   answer) shift; command_answer "$@" ;;
@@ -2147,6 +2484,11 @@ case "${1:-}" in
   open) shift; command_open "$@" ;;
   diverged) shift; command_diverged "$@" ;;
   reconcile) shift; command_reconcile "$@" ;;
+  packet) shift; command_packet "$@" ;;
+  packets) shift; command_packets "$@" ;;
+  apply-defaults) shift; command_apply_defaults "$@" ;;
+  reverse) shift; command_reverse "$@" ;;
+  log) shift; command_log "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
