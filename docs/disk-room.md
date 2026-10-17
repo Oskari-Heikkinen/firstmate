@@ -95,6 +95,13 @@ The growth figure includes approved software installs and intentionally kept dat
 `bin/fm-disk-room.sh growth` is the read-only report: Linux used and C: used change over the last day and week, C: free, the disk file's length and D: free with their daily and weekly change, D: and Linux/C: reservations, each alert's state, and the thresholds in force.
 The disk file and D: changes come from a history of at most 200 hourly entries that `watch-line` keeps in its state directory, so they read unknown until the armed check has run for a day.
 
+## Usage report
+
+`bin/fm-usage-report.sh` holds read-only usage readouts that write, reserve, and schedule nothing and never walk a tree.
+`d-line` prints one D: days-to-full line computed only from the `growth` report: D: free, the last day's and last week's rate, and at each falling rate the days until D: is full and that date.
+A window the growth report reads as unknown stays unknown, a window whose free space did not fall reads `not filling`, and an unmeasured D: reads unknown, so the line never estimates.
+The script's `--help` owns its exact output and exit codes.
+
 ## Reclaim (one-time Windows install)
 
 `bin/fm-wsl-reclaim.ps1` is run by a Windows administrator; nothing in this repo runs elevated or as root on its own.

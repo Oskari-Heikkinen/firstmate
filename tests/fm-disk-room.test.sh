@@ -865,6 +865,9 @@ test_d_runway_and_substitution() {
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 86400 )) run_room growth)
   assert_contains "$out" "disk file: 473.0 GiB; last day +3.0 GiB over 1.0 days" "the disk file's daily change comes from the hourly history"
   assert_contains "$out" "free last day -10.0 GiB over 1.0 days" "D: free's daily change comes from the hourly history"
+  out=$(printf '%s\n' "$out" | FM_USAGE_NOW=$(( t0 + 86400 )) "$ROOT/bin/fm-usage-report.sh" d-line --from -) || fail "d-line reads the growth report"
+  assert_contains "$out" "D: 90.0 GiB free (live) at " "the D: line carries growth's D: free"
+  assert_contains "$out" "last day -10.00 GiB/day: full in 9.0 days ($(date -u -d "@$(( t0 + 86400 + 9 * 86400 ))" +%Y-%m-%d))" "the D: line turns growth's daily rate into days to full"
   rm -rf "$TMP_ROOT/state/reservations-d/$rootdev" "$cfg/results-root"
   pass "D: runway and Linux substitution alerts, with disk file and D: history"
 }
