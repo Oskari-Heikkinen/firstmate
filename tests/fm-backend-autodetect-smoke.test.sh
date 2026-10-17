@@ -91,6 +91,9 @@ trap on_exit EXIT
 
 # --- scratch world: FM_HOME with NO backend config, one throwaway project ---
 
+# FM_HOME is the scratch root, not the checkout: the shared Treehouse project
+# lock lives under the root home's state/, which a fresh checkout lacks.
+export FM_HOME="$TMP_ROOT"
 STATE="$TMP_ROOT/state"; DATA="$TMP_ROOT/data"; CONFIG="$TMP_ROOT/config"
 mkdir -p "$STATE" "$DATA/$ID" "$CONFIG"
 # Backend auto-detection is what is under test here, so opt out of the default-on
