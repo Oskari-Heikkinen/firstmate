@@ -1,0 +1,21 @@
+# Example config/loop-sources for bin/fm-loop.sh (docs/configuration.md "Loop sources").
+# Copy to <home>/config/loop-sources and edit the paths; a missing file means the defaults below.
+
+# source <name> <path>; the defaults are shown, and <home> is the selected home
+source submits /home/me/homes/research/data/tetjet-offload/requests
+source handoff_queue /home/me/.local/share/tj-handoff/queue
+source operator_acked /home/me/.local/share/tj-handoff/consumers/tj-operator.acked
+source collected /home/me/homes/research/data/tetjet-collected/requests
+source snapshot /home/me/homes/research/data/tetjet-offload/queue-snapshot.json
+source batches /home/me/lattice-batches
+source catalog /home/me/lattice-ledger/catalog.sqlite
+source tetjet_status /home/me/firstmate/state/tetjet-mate.status
+
+# backlog and parks may repeat, one home each
+source backlog /home/me/homes/research/data/backlog.md
+source parks /home/me/homes/research/state
+
+# threshold <name> <hours>; the defaults are shown
+threshold no_collection_hours 24
+threshold accepted_no_package_hours 12
+threshold collected_no_analysis_hours 6
