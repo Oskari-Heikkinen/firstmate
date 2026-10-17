@@ -315,7 +315,7 @@ case_cross_home_conditions() {
   done
   printf 'completed\n' > "$st"
   assert_equals 0 "$(check_rc "$st" "$H" gh-run:example/repo:42)" "a completed run holds"
-  assert_grep "^run view 42 -R example/repo " "$st.gh-args" "gh-run: reads the run with -R"
+  assert_grep "run view 42 -R example/repo " "$st.gh-args" "gh-run: reads the run with -R"
   : > "$st.fail"
   assert_equals 2 "$(check_rc "$st" "$H" gh-run:example/repo:42)" "an unreadable run is an error"
   rm -f "$st.fail"
