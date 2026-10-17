@@ -316,7 +316,7 @@ Each record has `schema` (`fm-decision-log.v1`), `at`, `task`, `outcome`, `mode`
 | Outcome | Written by |
 | --- | --- |
 | `answered` | `answer`, including a replay that completes an interrupted close. |
-| `deferred` | `hold --until`; the mode names the date. |
+| `deferred` | `hold --until`; the mode names the date, and repeating the same date in one occurrence logs once. |
 | `reconciled` | `reconcile close` when it closes the call. |
 | `defaulted` | `apply-defaults`; the mode is `done` or `release`. |
 | `reversed` | `reverse`. |

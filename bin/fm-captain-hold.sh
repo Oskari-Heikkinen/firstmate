@@ -1164,9 +1164,10 @@ command_hold() {
   [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
     || fail "task $id lost its hold-set stamp while being held"
   publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
+  # A repeated deferral to the same date in one occurrence is the same outcome,
+  # even when it rewrote the hold-set stamp, so the digest leaves the stamp out.
   if [ -n "$until" ]; then
-    hold_set=$(body_hold_set_timestamp "$(show_field_value "$show" body)")
-    log_outcome "$id" deferred "until $until" "$occurrence" "$(sha256_text "$hold_set until $until")"
+    log_outcome "$id" deferred "until $until" "$occurrence" "$(sha256_text "until $until")"
   fi
   printf '%s\n' "$id"
 }
