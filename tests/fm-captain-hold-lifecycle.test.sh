@@ -4682,6 +4682,241 @@ SH
 }
 
 
+# --- decision packets, deadlines, and reversible defaults ---------------------
+
+write_research_packet() {  # <file> [on-default]
+  {
+    printf 'question: Keep the sample flag experimental until its review?\n'
+    printf 'option: keep Keep the flag experimental and opt-in until the review\n'
+    printf 'option: promote Make the flag the default now\n'
+    printf 'recommendation: keep\n'
+    printf 'authority: research-standing\n'
+    printf 'evidence: data/sample-review/report.md\n'
+    printf 'run: sample-run-7\n'
+    printf 'prerequisite: tooling-mate review the sample flag\n'
+    printf 'deadline: 48h\n'
+    printf 'default: keep\n'
+    [ -z "${2:-}" ] || printf 'on-default: %s\n' "$2"
+  } > "$1"
+}
+
+write_product_packet() {  # <file>
+  {
+    printf 'question: Change the sample product default?\n'
+    printf 'option: change Change the product default\n'
+    printf 'option: hold Keep the current product default\n'
+    printf 'recommendation: hold\n'
+    printf 'authority: product\n'
+    printf 'prerequisite: main write the change note\n'
+  } > "$1"
+}
+
+test_decision_packets_record_list_and_refuse_defaults_outside_research() {
+  local home out show
+  home=$(make_home packets-record)
+  write_research_packet "$home/research.packet"
+  write_product_packet "$home/product.packet"
+  if FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-unheld-call \
+    --packet-file "$home/research.packet" > "$home/unheld.out" 2>&1; then
+    fail "a packet was attached to a task that is no open captain call"
+  fi
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" hold sample-research-call \
+    --title "Decide the sample flag" --reason "keep or promote the sample flag" --repo sample >/dev/null \
+    || fail "could not hold the research call"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" hold sample-product-call \
+    --title "Decide the product default" --reason "change the product default" --repo sample >/dev/null \
+    || fail "could not hold the product call"
+
+  # Outside research standing authority a packet carries no deadline and no default.
+  { cat "$home/product.packet"; printf 'default: hold\n'; } > "$home/product-default.packet"
+  { cat "$home/product.packet"; printf 'deadline: 48h\n'; } > "$home/product-deadline.packet"
+  for bad in product-default product-deadline; do
+    if FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-product-call \
+      --packet-file "$home/$bad.packet" > "$home/$bad.out" 2>&1; then
+      fail "a product packet was accepted with a default or deadline ($bad)"
+    fi
+    assert_contains "$(cat "$home/$bad.out")" "outside research standing authority" \
+      "the $bad refusal did not name the authority rule"
+  done
+  # A research packet needs a deadline and the recommended option as its default.
+  grep -v '^deadline: ' "$home/research.packet" > "$home/no-deadline.packet"
+  sed 's/^default: keep$/default: promote/' "$home/research.packet" > "$home/wrong-default.packet"
+  for bad in no-deadline wrong-default; do
+    if FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-research-call \
+      --packet-file "$home/$bad.packet" > "$home/$bad.out" 2>&1; then
+      fail "a research packet was accepted with $bad"
+    fi
+  done
+
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-research-call \
+    --packet-file "$home/research.packet" >/dev/null || fail "the research packet was refused"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-product-call \
+    --packet-file "$home/product.packet" >/dev/null || fail "the product packet was refused"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-11T15:00:00Z run_captain "$home" packets) \
+    || fail "packets listing failed"
+  assert_contains "$out" "sample-research-call"$'\t'"age=1d3h" "the listing did not show the research call's age"
+  assert_contains "$out" "sample-product-call"$'\t'"age=1d3h" "the listing did not show the product call's age"
+  assert_contains "$out" "status: default keep applies in 21h0m" "the listing did not show when the default applies"
+  assert_contains "$out" "deadline: 2026-07-12T12:00:00Z" "the relative deadline was not stored as a UTC time"
+  assert_contains "$out" "status: no default; waits for an explicit answer" \
+    "the product packet did not read as waiting for an explicit answer"
+  assert_contains "$out" "prerequisite: tooling-mate review the sample flag" "the prerequisite owner was not listed"
+  assert_contains "$out" "run: sample-run-7" "the run id was not listed"
+  assert_contains "$out" "decision-packets: 2" "the listing did not count both packets"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-11T15:00:00Z run_captain "$home" packet show sample-product-call) \
+    || fail "packet show failed"
+  assert_contains "$out" "authority: product" "packet show did not print the authority"
+
+  # A held task without a packet behaves exactly as before.
+  run_captain "$home" hold sample-plain-call --title "Decide the plain call" \
+    --reason "plain call" --repo sample >/dev/null || fail "could not hold the plain call"
+  printf 'Captain chose the plain option.\n' > "$home/plain.txt"
+  out=$(run_captain "$home" answer sample-plain-call --decision-file "$home/plain.txt") \
+    || fail "answer on a packet-less call failed"
+  assert_equals "answered: sample-plain-call" "$out" "a packet-less answer changed its output"
+  show=$(tasks_in "$home" show sample-plain-call --full)
+  assert_contains "$show" "state: done" "a packet-less answer did not close"
+  assert_contains "$show" "Captain decision:" "a packet-less answer lost its label"
+  pass "decision packets record, list with age, and refuse defaults outside research standing authority"
+}
+
+test_apply_defaults_applies_due_research_defaults_reversibly() {
+  local home origin out show
+  home=$(make_home packets-defaults)
+  origin=sample-flag-review
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review the sample flag" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the origin"
+  write_origin_meta "$home" "$origin"
+  write_research_packet "$home/research.packet"
+  write_product_packet "$home/product.packet"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" hold sample-research-call \
+    --title "Decide the sample flag" --reason "keep or promote the sample flag" --repo sample \
+    --origin "$origin" >/dev/null || fail "could not hold the research call"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" hold sample-product-call \
+    --title "Decide the product default" --reason "change the product default" --repo sample >/dev/null \
+    || fail "could not hold the product call"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-research-call \
+    --packet-file "$home/research.packet" >/dev/null || fail "the research packet was refused"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-product-call \
+    --packet-file "$home/product.packet" >/dev/null || fail "the product packet was refused"
+
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-12T11:59:59Z run_captain "$home" apply-defaults) \
+    || fail "apply-defaults failed before the deadline"
+  assert_equals "defaults-applied: 0" "$out" "a default applied before its deadline"
+  show=$(tasks_in "$home" show sample-research-call --full)
+  assert_contains "$show" "held: yes" "the research call left its hold before the deadline"
+
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-12T12:00:00Z run_captain "$home" apply-defaults) \
+    || fail "apply-defaults failed at the deadline"
+  assert_contains "$out" "defaulted: sample-research-call" "the due default did not apply"
+  assert_contains "$out" "defaults-applied: 1" "apply-defaults touched more than the due research packet"
+  show=$(tasks_in "$home" show sample-research-call --full)
+  assert_contains "$show" "state: done" "the defaulted call did not close"
+  assert_contains "$show" "Resolution mode: defaulted" "the default was not recorded as defaulted"
+  assert_contains "$show" "Default applied:" "the default record lost its label"
+  assert_contains "$show" "Default option: keep - Keep the flag experimental" "the default record did not name its option"
+  assert_not_contains "$show" "Captain decision:" "an applied default was recorded as the captain's words"
+  show=$(tasks_in "$home" show sample-product-call --full)
+  assert_contains "$show" "held: yes" "a product call lost its hold to a default"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-09-01T00:00:00Z run_captain "$home" apply-defaults) \
+    || fail "a repeated apply-defaults failed"
+  assert_equals "defaults-applied: 0" "$out" "a repeated apply-defaults applied a default again"
+  show=$(tasks_in "$home" show sample-product-call --full)
+  assert_contains "$show" "held: yes" "a product call defaulted long after any deadline"
+
+  # The completion gate accepts the defaulted call as durably resolved.
+  run_captain "$home" complete "$origin" sample-research-call >/dev/null \
+    || fail "complete refused a defaulted captain call"
+  run_captain "$home" verify "$origin" >/dev/null || fail "verify refused a defaulted captain call"
+
+  printf 'Captain: keep is fine.\n' > "$home/late.txt"
+  if run_captain "$home" answer sample-research-call --decision-file "$home/late.txt" \
+    > "$home/late.out" 2>&1; then
+    fail "answer overwrote an applied default"
+  fi
+  assert_contains "$(cat "$home/late.out")" "reverse" "the refused answer did not point at reverse"
+  printf 'Promote the flag after all.\n' > "$home/reverse.txt"
+  if run_captain "$home" reverse sample-product-call --decision-file "$home/reverse.txt" \
+    > "$home/reverse-product.out" 2>&1; then
+    fail "reverse accepted a call that was never defaulted"
+  fi
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-12T13:00:00Z run_captain "$home" reverse sample-research-call \
+    --decision-file "$home/reverse.txt") || fail "reverse failed on the defaulted call"
+  assert_equals "reversed: sample-research-call" "$out" "reverse did not report the reversal"
+  FM_CAPTAIN_HOLD_NOW=2026-07-12T13:05:00Z run_captain "$home" reverse sample-research-call \
+    --decision-file "$home/reverse.txt" >/dev/null || fail "a replayed reverse failed"
+  show=$(tasks_in "$home" show sample-research-call --full)
+  assert_contains "$show" "Resolution mode: reversed" "the reversal was not recorded"
+  assert_contains "$show" "Reversal decision:" "the reversal lost its label"
+  assert_contains "$show" "Promote the flag after all." "the reversal lost its words"
+  assert_contains "$show" "Resolution mode: defaulted" "the reversal erased the default record"
+
+  out=$(run_captain "$home" log sample-research-call) || fail "log failed"
+  printf '%s\n' "$out" | jq -se '
+    length == 2
+    and .[0].outcome == "defaulted" and .[0].authority == "research-standing"
+    and .[0].default == "keep" and .[0].mode == "done" and .[0].at == "2026-07-12T12:00:00Z"
+    and .[1].outcome == "reversed" and .[1].occurrence == 2
+    and all(.[]; .schema == "fm-decision-log.v1")' >/dev/null \
+    || fail "the decision log did not hold one defaulted and one reversed record: $out"
+  pass "apply-defaults applies only due research defaults, logs them as defaulted, and keeps them reversible"
+}
+
+test_default_release_and_stale_packets() {
+  local home out show
+  home=$(make_home packets-release)
+  write_research_packet "$home/release.packet" release
+  tasks_in "$home" add sample-flag-work "Ship the sample flag" --kind ship --repo sample >/dev/null \
+    || fail "could not create the held work item"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" hold sample-flag-work \
+    --reason "go before shipping the sample flag" >/dev/null || fail "could not hold the work item"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-flag-work \
+    --packet-file "$home/release.packet" >/dev/null || fail "the release packet was refused"
+  FM_CAPTAIN_HOLD_NOW=2026-07-13T00:00:00Z run_captain "$home" apply-defaults >/dev/null \
+    || fail "apply-defaults failed on the release packet"
+  show=$(tasks_in "$home" show sample-flag-work --full)
+  assert_contains "$show" "state: queued" "a release default closed the work item"
+  assert_contains "$show" "held: no" "a release default kept the hold"
+  assert_contains "$show" "Resolution mode: defaulted" "the release default was not recorded"
+
+  # A packet is bound to its hold lifecycle: re-holding starts without one.
+  FM_CAPTAIN_HOLD_NOW=2026-07-14T00:00:00Z run_captain "$home" hold sample-flag-work \
+    --reason "a second go before shipping" >/dev/null || fail "could not re-hold the work item"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-20T00:00:00Z run_captain "$home" packets) || fail "packets failed"
+  assert_equals "decision-packets: 0" "$out" "a stale packet was listed for a new hold lifecycle"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-20T00:00:00Z run_captain "$home" apply-defaults) \
+    || fail "apply-defaults failed on a stale packet"
+  assert_equals "defaults-applied: 0" "$out" "a stale packet's default applied to a new hold"
+  show=$(tasks_in "$home" show sample-flag-work --full)
+  assert_contains "$show" "held: yes" "a stale packet released the re-held work item"
+  pass "a release default frees held work, and a packet never outlives its hold lifecycle"
+}
+
+test_decision_log_records_answers_and_deferrals_once() {
+  local home out
+  home=$(make_home packets-log)
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" hold sample-later-call \
+    --title "Revisit the sample plan" --reason "revisit later" --repo sample --until 2026-08-01 >/dev/null \
+    || fail "could not defer the call"
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:30:00Z run_captain "$home" hold sample-later-call \
+    --reason "revisit later" --until 2026-08-01 >/dev/null || fail "could not repeat the deferral"
+  run_captain "$home" hold sample-answer-call --title "Decide the sample cut" \
+    --reason "cut choice" --repo sample >/dev/null || fail "could not hold the answer call"
+  printf 'Captain chose the narrow cut.\n' > "$home/cut.txt"
+  run_captain "$home" answer sample-answer-call --decision-file "$home/cut.txt" >/dev/null \
+    || fail "answer failed"
+  run_captain "$home" answer sample-answer-call --decision-file "$home/cut.txt" >/dev/null \
+    || fail "a replayed answer failed"
+  out=$(run_captain "$home" log) || fail "log failed"
+  printf '%s\n' "$out" | jq -se '
+    length == 2
+    and ([.[] | select(.task == "sample-later-call" and .outcome == "deferred" and .mode == "until 2026-08-01")] | length) == 1
+    and ([.[] | select(.task == "sample-answer-call" and .outcome == "answered" and .mode == "answered")] | length) == 1' >/dev/null \
+    || fail "the decision log did not hold exactly one deferral and one answer: $out"
+  pass "the decision log appends each answer and deferral once"
+}
+
 # Every case builds its own homes under a name of its own, and its background
 # races wait only on processes it started, so no case depends on another or on
 # their order; they run through fm_run_case_pool (tests/lib.sh), longest first
@@ -4751,4 +4986,8 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_complete_accepts_a_migrated_inventory_on_beads \
   test_verify_names_the_unresolvable_legacy_id_once \
   test_verify_resolves_a_pre_collapse_key_through_its_derived_marker \
-  test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
+  test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type \
+  test_decision_packets_record_list_and_refuse_defaults_outside_research \
+  test_apply_defaults_applies_due_research_defaults_reversibly \
+  test_default_release_and_stale_packets \
+  test_decision_log_records_answers_and_deferrals_once
