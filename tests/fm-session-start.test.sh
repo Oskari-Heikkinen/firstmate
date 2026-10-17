@@ -2613,6 +2613,35 @@ EOF
   pass "a compact re-emit points at unchanged bulky sections and prints changed ones, while a fresh start prints all"
 }
 
+test_dispatch_reminder_follows_the_dispatch_file() {
+  local rec root home fakebin path full reemit line
+  rec=$(new_world dispatch-reminder)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  path="$fakebin:$BASE_PATH"
+  line="Dispatch: choose each worker's profile by matching its task to a config/crew-dispatch.json rule"
+
+  full=$(run_reemit_session_start "$home" "$root" "$path" --source startup)
+  assert_not_contains "$full" "$line" "a start without config/crew-dispatch.json printed the dispatch reminder"
+  reemit=$(run_reemit_session_start "$home" "$root" "$path" --reemit --source compact)
+  assert_contains "$reemit" "SESSION START (CONTEXT RE-EMIT) - $home" "the re-emit did not label itself"
+  assert_not_contains "$reemit" "$line" "a re-emit without config/crew-dispatch.json printed the dispatch reminder"
+
+  printf '%s\n' '{"default":{"harness":"claude"}}' > "$home/config/crew-dispatch.json"
+  full=$(run_reemit_session_start "$home" "$root" "$path" --source startup)
+  assert_contains "$full" "$line" "a start with config/crew-dispatch.json omitted the dispatch reminder"
+  assert_contains "$full" "never reuse a previous spawn's --model/--effort/--compact-at." \
+    "the dispatch reminder lost its no-reuse clause"
+  reemit=$(run_reemit_session_start "$home" "$root" "$path" --reemit --source compact)
+  assert_contains "$reemit" "SESSION START (CONTEXT RE-EMIT) - $home" "the re-emit did not label itself"
+  assert_contains "$reemit" "$line" "a compact re-emit with config/crew-dispatch.json omitted the dispatch reminder"
+
+  pass "the per-task dispatch reminder prints on a start and a compact re-emit only when config/crew-dispatch.json exists"
+}
+
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact() {
   local rec root home fakebin startup compact_equal compact_first compact_second clear_out resume_out reset_out baseline baseline_after expected_hash refresh_line bootstrap_line
   rec=$(new_world agents-refresh)
@@ -3206,6 +3235,7 @@ SESSION_START_CASES=(
   test_runtime_bound_truncates_loudly_and_exits_zero
   test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
   test_reemit_compacts_unchanged_bulky_sections
+  test_dispatch_reminder_follows_the_dispatch_file
   test_session_lock_concurrent_single_winner
   test_session_start_relaunches_missing_pi_secondmate
   test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain

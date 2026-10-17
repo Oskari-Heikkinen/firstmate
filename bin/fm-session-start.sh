@@ -43,7 +43,8 @@
 #                       outcome store's display tail copy when that is absent
 #                       (bin/fm-branch-outcome.sh seed-tail).
 #   4. supervision-instructions - the one emitted operating block for the
-#                       detected primary harness.
+#                       detected primary harness, then one per-task dispatch
+#                       reminder line when config/crew-dispatch.json exists.
 #   5. fleet digest   - a compact data/backlog.md listing (open items one
 #                       line each, done rows as a count), one line per
 #                       state/*.meta (identity, a cheap endpoint-liveness
@@ -995,6 +996,11 @@ fi
   --afk "$AFK_PRESENT" \
   --afk-mode "$AFK_MODE" \
   --x-mode "$X_MODE_PRESENT"
+# A compaction summary can turn one spawn's flags into a fixed recipe, so every
+# start and re-emit restates that the profile is a per-task rule match.
+if [ -f "$CONFIG/crew-dispatch.json" ]; then
+  printf "Dispatch: choose each worker's profile by matching its task to a config/crew-dispatch.json rule (pass --dispatch-rule <label> when rules carry labels); never reuse a previous spawn's --model/--effort/--compact-at.\n"
+fi
 
 # --- 5. fleet-state digest ---------------------------------------------
 # Before CONTEXT: see this file's ORDERING note. Live fleet identity is what a
