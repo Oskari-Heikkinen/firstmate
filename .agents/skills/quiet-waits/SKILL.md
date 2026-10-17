@@ -55,7 +55,7 @@ An interrupted or invalid saved transaction remains blocked with its evidence in
 ## Superseded blockers close themselves
 
 A typed `note [supersedes=<kind>] [at=<epoch>]: <evidence>` line closes every blocker open before it, keyed or unkeyed, in the shared decision fold, and the drain shows that note as the closing evidence.
-It never closes a needs-decision.
+It never closes a needs-decision, nor a blocker under a reserved key namespace (`pending-reply-`, and the tool-raised handoff forms `handoff-pickup-` and `handoff-tj-`): a library or tool raised it, and only its owner closes it. A worker-chosen `handoff-*` key outside those forms is an ordinary decision.
 The kinds are `relaunch`, `resume`, and `validation-run`; `status_supersedes_kind` in `bin/fm-classify-lib.sh` owns them, and `fm_status_supersede_blockers` in [`bin/fm-wake-lib.sh`](../../../bin/fm-wake-lib.sh) owns the writer, which appends only when a blocker is actually open.
 
 When it runs:
