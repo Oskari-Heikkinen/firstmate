@@ -2,7 +2,8 @@
 # Loop status: stages joined from every source, captain holds and parks, TETJET
 # capacity alerts shown not re-raised, durable stall alerts with ack, clear and
 # recur, lead time per family and week, every source missing or unreadable
-# reading as unknown without failing, and no write outside the home's alerts.
+# reading as unknown without failing, no write outside the home's alerts, and
+# the new-alerts-only check mode with its arm and disarm.
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -192,6 +193,10 @@ def run(*args, now=NOW, check=True):
     return proc
 
 
+def cursor_of(h):
+    return h / "state/loop-alerts/reported.cursor"
+
+
 def status(now=NOW):
     return json.loads(run("status", "--json", now=now).stdout)
 
@@ -362,6 +367,105 @@ text = run("leadtime").stdout
 if "fam-ready" not in text or "gate->package" not in text:
     fail("leadtime text: %s" % text)
 ok("leadtime gives accepted-to-launch-ready and to first result per family, and per-stage medians per week")
+
+# alerts --new, the watcher check's mode, in a fresh home.
+home = tmp / "home-new"
+home.mkdir()
+build()
+config()
+cursor = cursor_of(home)
+
+
+def new(now):
+    return run("alerts", "--new", now=now).stdout.splitlines()
+
+
+if new(NOW) or not cursor.is_file() or not run("alerts").stdout.strip():
+    fail("the first run printed or did not seed")
+if new(NOW + 60):
+    fail("a seeded alert printed")
+if "seeded the reported cursor with 5 alert(s)" not in (home / "state/loop-alerts/log").read_text():
+    fail("the seed is not logged")
+ok("the first run seeds every open alert as reported and prints nothing")
+
+sha = submit("fresh-acc-1", NOW - 30 * H)
+accept("fresh-acc-1", NOW - 20 * H, sha)
+lines = new(NOW + 120)
+if len(lines) != 1 or not lines[0].startswith("no-package--fresh-acc-1 since %s: " % iso(NOW + 120)):
+    fail("a new alert: %s" % lines)
+if new(NOW + 180) or new(NOW + 240):
+    fail("a reported alert printed again")
+ok("a newly opened alert prints once and never again")
+
+package("fresh-acc-1", "pkg-fresh", NOW, sha)
+if new(NOW + 300):
+    fail("a clear printed")
+os.remove(queue / ("ready-for-launch--pkg-fresh--%d.json" % NOW))
+lines = new(NOW + 360)
+if len(lines) != 1 or not lines[0].startswith("no-package--fresh-acc-1 since %s: " % iso(NOW + 360)):
+    fail("a recurring alert: %s" % lines)
+if new(NOW + 420):
+    fail("a recurring alert printed twice")
+ok("an alert that clears and recurs prints again, once")
+
+sha = submit("acked-acc-1", NOW - 30 * H)
+accept("acked-acc-1", NOW - 20 * H, sha)
+run("alerts", now=NOW + 480)
+run("ack", "no-package--acked-acc-1")
+if new(NOW + 540):
+    fail("an acknowledged alert printed")
+ok("an acknowledged alert never prints")
+
+for step, override in enumerate(({"handoff_queue": bad / "queue"}, {"handoff_queue": tmp / "nowhere"},
+                                 {"collected": bad / "collected"}, {})):
+    config(override)
+    lines = new(NOW + 600 + 60 * step)
+    if lines:
+        fail("source %s printed: %s" % (override, lines))
+rec = json.loads((home / "state/loop-alerts/no-package--fresh-acc-1.json").read_text())
+if rec["cleared_at"]:
+    fail("an alert cleared while its source was unreadable: %s" % rec)
+ok("an unreadable or missing source prints nothing, and holds clears so its return raises nothing")
+
+cursor.write_text("{not json")
+lines = new(NOW + 900)
+if len(lines) != 1 or "reseeded" not in lines[0] or new(NOW + 960):
+    fail("an unreadable cursor: %s" % lines)
+ok("an unreadable cursor prints one line and is reseeded")
+
+home = tmp / "home-arm"
+(home / "state").mkdir(parents=True)
+config()
+before_arm = tree(src)
+shim = home / "state/loop-alerts.check.sh"
+trust = home / "state/loop-alerts.check-trust"
+
+
+def loop_cmd(*args):
+    proc = subprocess.run([str(root / "bin/fm-loop.sh"), *args, "--home", str(home)],
+                          capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        fail("%s exited %d: %s" % (" ".join(args), proc.returncode, proc.stderr))
+    return proc.stdout
+
+
+if loop_cmd("arm") != "armed: state/loop-alerts.check.sh\n" or not cursor_of(home).is_file():
+    fail("arm did not arm and seed")
+first = (shim.read_bytes(), cursor_of(home).read_bytes())
+if loop_cmd("arm") != "armed: state/loop-alerts.check.sh\n" or (shim.read_bytes(), cursor_of(home).read_bytes()) != first:
+    fail("a second arm changed the shim or reseeded")
+if shim.stat().st_mode & 0o777 != 0o700 or "alerts --new --home %s" % home.resolve() not in shim.read_text():
+    fail("shim: %o %s" % (shim.stat().st_mode, shim.read_text()))
+if trust.read_text().splitlines()[0] != "fm-custom-check-v1":
+    fail("the shim is not bound")
+written = sorted(str(p.relative_to(home)) for p in home.rglob("*") if p.is_file())
+if any(not (w.startswith("state/") or w == "config/loop-sources") for w in written) or tree(src) != before_arm:
+    fail("arm wrote outside state: %s" % written)
+if loop_cmd("disarm") != "disarmed: state/loop-alerts.check.sh\n":
+    fail("disarm output")
+if shim.exists() or trust.exists() or cursor_of(home).exists():
+    fail("disarm left the shim, trust or cursor")
+ok("arm seeds, writes and binds the check idempotently inside state/, and disarm removes it")
 PY
 
 if "$ROOT/bin/fm-loop.sh" bogus >/dev/null 2>&1; then fail "an unknown command succeeded"; fi

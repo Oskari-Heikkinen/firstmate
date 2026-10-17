@@ -22,7 +22,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-board.sh`           | Build the local read-only fleet board and install or remove its user timer |
 | `fm-board.py`           | Project published summaries and configured feeds into fleet board JSON and HTML |
 | `fm_board_tokens.py`    | Incrementally count metadata-only session usage and repetition candidates |
-| `fm-loop.sh`            | Print the experiment loop's request stages, stall alerts and lead times, read-only |
+| `fm-loop.sh`            | Print the experiment loop's request stages, stall alerts and lead times, read-only; arm a watcher check for newly opened alerts |
 | `fm-loop.py`            | Join the loop's records into request stages, sync stall-alert records and count lead times |
 | `fm-schedule.sh`        | File captain-approved scheduled runs on a calendar, list them, and install or remove its user timer |
 | `fm-schedule.py`        | Validate schedule files, run the scheduled-run scan, read run summaries and write the board summary |

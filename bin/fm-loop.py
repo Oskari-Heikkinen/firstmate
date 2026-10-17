@@ -5,7 +5,8 @@ Driven by bin/fm-loop.sh, whose header owns usage. This file owns the source
 list, the stage rules, the alert conditions and the lead-time buckets;
 docs/loop-status.md explains them and docs/configuration.md "Loop sources"
 owns the config file format. Every source is read directly and never written;
-the only writes are this home's own alert records under state/loop-alerts/.
+the only writes are this home's own alert records and the reported cursor
+under state/loop-alerts/.
 """
 import argparse
 import datetime
@@ -22,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fm_receipt_io import atomic, iso_epoch, load  # noqa: E402
 
 ALERT_SCHEMA = "fm-loop-alert.v1"
+CURSOR_SCHEMA = "fm-loop-reported.v1"
 STATUS_SCHEMA = "fm-loop-status.v1"
 LEADTIME_SCHEMA = "fm-loop-leadtime.v1"
 SNAPSHOT_LIMIT = 32 * 1024 * 1024
@@ -610,9 +612,9 @@ class Loop:
         def add(condition, subject, message):
             out["%s--%s" % (condition, re.sub(r"[^A-Za-z0-9._-]", "_", subject))] = (condition, subject, message)
 
-        for name, src in s.items():
-            if src.state == "unreadable" or (src.configured and not src.ok):
-                add("source-unreadable", name, "%s source is %s: %s" % (name, src.state, src.detail))
+        for name in self.failing_sources():
+            src = s[name]
+            add("source-unreadable", name, "%s source is %s: %s" % (name, src.state, src.detail))
         open_rows = self.open_requests()
         if s["collected"].ok:
             last = [iso_epoch(rec.get("recorded_at")) for rec in self.collected.values()]
@@ -647,8 +649,16 @@ class Loop:
                         % (park["task"], why, rid, park["meta"]))
         return out
 
+    def failing_sources(self):
+        """Sources that are unreadable, or configured and not read."""
+        return [n for n, src in self.sources.items() if src.state == "unreadable" or (src.configured and not src.ok)]
+
     def record_alerts(self):
-        """Sync durable alert records with current conditions; return open ones."""
+        """Sync durable alert records with current conditions; return open ones.
+
+        While a source fails, no alert clears: its condition is unknown, not
+        gone, so a source that comes back never re-raises what it hid.
+        """
         folder = self.home / "state/loop-alerts"
         folder.mkdir(parents=True, exist_ok=True)
         current = self.conditions()
@@ -667,19 +677,22 @@ class Loop:
                 rec = records.get(alert_id)
                 if rec is None or rec.get("cleared_at"):
                     event = "raised" if rec is None else "raised again"
+                    occurrence = 1 if rec is None else rec.get("occurrence", 1) + 1
                     rec = {"schema": ALERT_SCHEMA, "id": alert_id, "condition": condition, "subject": subject,
-                           "first_seen": stamp, "cleared_at": None, "acked_at": None}
+                           "first_seen": stamp, "cleared_at": None, "acked_at": None, "occurrence": occurrence}
                     self.log(folder, "%s %s: %s; it prints until bin/fm-loop.sh ack %s" % (event, alert_id, message, alert_id))
                 rec["message"] = message
                 rec["last_seen"] = stamp
                 records[alert_id] = rec
                 atomic(folder / (alert_id + ".json"), rec)
+            holding = bool(self.failing_sources())
             for alert_id, rec in records.items():
-                if alert_id not in current and not rec.get("cleared_at"):
+                if alert_id not in current and not rec.get("cleared_at") and not holding:
                     rec["cleared_at"] = stamp
                     atomic(folder / (alert_id + ".json"), rec)
                     note = "it prints until acked" if not rec.get("acked_at") else "already acked"
                     self.log(folder, "cleared %s: the condition no longer holds; %s" % (alert_id, note))
+        self.records = records
         return sorted((r for r in records.values() if not r.get("acked_at")), key=lambda r: (r["first_seen"], r["id"]))
 
     def log(self, folder, line):
@@ -764,10 +777,57 @@ def status(loop, as_json, show_all):
     return 0
 
 
+def alert_line(a):
+    cleared = " (cleared %s)" % a["cleared_at"] if a.get("cleared_at") else ""
+    return "%s since %s%s: %s" % (a["id"], a["first_seen"], cleared, a["message"])
+
+
 def alerts_mode(loop):
     for a in loop.record_alerts():
-        cleared = " (cleared %s)" % a["cleared_at"] if a.get("cleared_at") else ""
-        print("%s since %s%s: %s" % (a["id"], a["first_seen"], cleared, a["message"]))
+        print(alert_line(a))
+    return 0
+
+
+def occurrence_key(rec):
+    return "%s#%d" % (rec["first_seen"], rec.get("occurrence", 1))
+
+
+def new_alerts_mode(loop):
+    """Print each unacknowledged alert occurrence not yet reported, once.
+
+    The cursor maps alert id to the raise occurrence last reported. The first
+    run seeds it with every record and prints nothing; source-unreadable
+    alerts never print here. Lines print before the cursor moves, so a cursor
+    that cannot be written repeats a line rather than losing it.
+    """
+    loop.record_alerts()
+    folder = loop.home / "state/loop-alerts"
+    path = folder / "reported.cursor"
+    with open(folder / ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        reported, broken = None, False
+        if path.exists():
+            try:
+                data = load(path)
+                if isinstance(data, dict) and data.get("schema") == CURSOR_SCHEMA and isinstance(data.get("reported"), dict):
+                    reported = data["reported"]
+            except (OSError, ValueError):
+                pass
+            broken = reported is None
+        records = sorted(loop.records.values(), key=lambda r: (r["first_seen"], r["id"]))
+        if reported is not None:
+            for rec in records:
+                if rec.get("acked_at") or rec["condition"] == "source-unreadable":
+                    continue
+                if reported.get(rec["id"]) != occurrence_key(rec):
+                    print(alert_line(rec))
+        if broken:
+            print("loop alerts: %s was unreadable; reseeded with every current alert as reported" % path)
+        sys.stdout.flush()
+        atomic(path, {"schema": CURSOR_SCHEMA, "updated_utc": utc(loop.now),
+                      "reported": {rec["id"]: occurrence_key(rec) for rec in records}})
+        if reported is None:
+            loop.log(folder, "seeded the reported cursor with %d alert(s): alerts --new prints only alerts raised or raised again after this" % len(records))
     return 0
 
 
@@ -876,6 +936,7 @@ def main():
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--weeks", type=int, default=8)
+    parser.add_argument("--new", action="store_true")
     args = parser.parse_args()
     home = Path(args.home)
     now = args.now if args.now is not None else int(datetime.datetime.now(datetime.timezone.utc).timestamp())
@@ -887,7 +948,7 @@ def main():
     if args.command == "status":
         return status(loop, args.json, args.all)
     if args.command == "alerts":
-        return alerts_mode(loop)
+        return new_alerts_mode(loop) if args.new else alerts_mode(loop)
     return leadtime(loop, args.json, max(1, args.weeks))
 
 

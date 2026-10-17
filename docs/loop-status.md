@@ -9,10 +9,12 @@ The "Loop sources" section of [docs/configuration.md](configuration.md#loop-sour
 - `bin/fm-loop.sh status [--json] [--all]` prints each open request's stage, age in that stage, last event and the reason it waits, then the open TETJET capacity alerts and the open loop alerts.
   `--all` also lists closed and fully analysed requests.
 - `bin/fm-loop.sh alerts` prints one line per unacknowledged loop alert and nothing otherwise.
+- `bin/fm-loop.sh alerts --new` prints only alerts newly raised since it last reported them; see "Watcher check".
 - `bin/fm-loop.sh ack <alert-id>` acknowledges one alert.
 - `bin/fm-loop.sh leadtime [--json] [--weeks N]` prints lead times per request family and per week.
+- `bin/fm-loop.sh arm` and `bin/fm-loop.sh disarm` install and remove the watcher check.
 
-Every run is niced to 19, idle I/O class, and capped at 60 seconds.
+Every run is niced to 19, idle I/O class, and capped at 60 seconds; `alerts --new` is capped at the watcher's `FM_CHECK_TIMEOUT` less 5 seconds.
 
 ## What it reads
 
@@ -65,8 +67,35 @@ Each condition below is one durable record, `<home>/state/loop-alerts/<alert-id>
 `status` and `alerts` both sync the records.
 An alert prints until it is acknowledged, even after its condition clears; the line then says when it cleared.
 An acknowledged alert stays quiet while its condition holds, and is raised again if the condition clears and later recurs.
+While any source raises `source-unreadable`, no alert clears: its condition is unknown, not gone, so a source that comes back does not raise again what it hid.
 `<home>/state/loop-alerts/log` gets one line per raise, clear and acknowledgement, with the time, what happened and what happens next.
-The tool arms no watcher or check; `alerts` prints nothing when everything is acknowledged, so a check can use it later.
+
+## Watcher check
+
+`alerts --new` is the mode a standing watcher check runs, so firstmate wakes once per newly opened alert and never for alerts already open.
+It prints one line per alert occurrence it has not reported yet, in the same format as `alerts`, and nothing otherwise.
+An occurrence is the alert id with the raise it belongs to: a raise again after a clear is a new occurrence and prints again.
+An acknowledged alert never prints, and neither does `source-unreadable`, so a missing or unreadable source never makes the check print; `status` and `alerts` still show it.
+An alert raised and cleared between two runs still prints once, marked cleared.
+
+`<home>/state/loop-alerts/reported.cursor` records the last reported occurrence per alert.
+The first run in a home, with no cursor, records every current alert as reported and prints nothing, and the log says so.
+Lines print before the cursor moves, so an interrupted run can repeat a line but never loses one; an unreadable cursor prints one line and is reseeded.
+The run is capped at `FM_CHECK_TIMEOUT` less 5 seconds (25 by default); a failure or timeout prints one line, once per distinct failure, kept in `<home>/state/loop-alerts/check-failure` until a run succeeds.
+
+`bin/fm-loop.sh arm` installs the check in a home: it seeds the cursor when none exists, writes `<home>/state/loop-alerts.check.sh` to run `alerts --new` for that home, and binds it with `bin/fm-check-register.sh loop-alerts`, so the home's running watcher runs it every `FM_CHECK_INTERVAL`.
+Rerunning `arm` is safe: it neither reseeds a cursor nor rewrites an unchanged shim.
+`bin/fm-loop.sh disarm` unregisters it with `bin/fm-check-unregister.sh loop-alerts` and removes the cursor, so a later `arm` seeds afresh.
+Neither writes outside the home's `state/`.
+
+To install it in a home, from that home's checkout:
+
+1. Write `config/loop-sources` naming the home's sources (see "Loop sources" in [docs/configuration.md](configuration.md#loop-sources-configloop-sources)).
+2. Run `bin/fm-loop.sh status --home <home>` and confirm the sources line reads every source as expected.
+3. Run `bin/fm-loop.sh arm --home <home>`; it prints `armed: state/loop-alerts.check.sh`.
+4. Run `bin/fm-loop.sh alerts --new --home <home>`; it prints nothing while no new alert has opened.
+
+A check line wakes firstmate as `check: <home>/state/loop-alerts.check.sh: <alert line>`; the `loop-status` skill says what to do with it.
 
 TETJET's own capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) are shown beside the stages when their latest status line is `blocked`, and are never raised again here; tetjet-mate owns them.
 

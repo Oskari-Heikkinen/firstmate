@@ -32,5 +32,6 @@ This skill owns only how agents use it.
 
 - Each alert line names the condition and its subject; act on the cause first, then acknowledge with `bin/fm-loop.sh ack <alert-id>`.
 - Acknowledge only an alert you have handed to its owner or resolved; an ack silences that record until the condition clears and recurs.
-- `bin/fm-loop.sh alerts` prints nothing when every alert is acknowledged, so a watcher check can use it; no watcher or check is armed by this tool.
+- A `check: .../state/loop-alerts.check.sh` wake carries one line per newly opened alert from `bin/fm-loop.sh alerts --new`; it never repeats an alert already reported, so act on each line when it arrives rather than waiting for a reminder.
+- Install or remove that check only with `bin/fm-loop.sh arm` or `disarm` (steps in the "Watcher check" section of the doc); never write or delete `state/loop-alerts.check.sh` or `state/loop-alerts/reported.cursor` by hand, and never run `alerts --new` as a diagnostic, because it consumes what the check would report: use `alerts` or `status`.
 - Never edit or delete a record under `state/loop-alerts/` by hand; its `log` file explains every raise, clear and ack.
