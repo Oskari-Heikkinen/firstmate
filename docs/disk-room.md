@@ -100,7 +100,13 @@ The disk file and D: changes come from a history of at most 200 hourly entries t
 `bin/fm-usage-report.sh` holds read-only usage readouts that write, reserve, and schedule nothing and never walk a tree.
 `d-line` prints one D: days-to-full line computed only from the `growth` report: D: free, the last day's and last week's rate, and at each falling rate the days until D: is full and that date.
 A window the growth report reads as unknown stays unknown, a window whose free space did not fall reads `not filling`, and an unmeasured D: reads unknown, so the line never estimates.
-The script's `--help` owns its exact output and exit codes.
+
+`report` answers what is using each tier and when it is full, from existing records only: lattice-data `catalog.jsonl` per store, the cold archive's `MANIFEST.tsv` and `MANIFEST.packed.tsv` with their pack sidecars, the TETJET pack index and census, `tetjet-collected/v1` receipts, the research `catalog.sqlite` kept steps, and the `growth` report.
+Each row is one tier (Linux, C:, D:), owner, kind, and age bucket with its item count, logical bytes, and allocated bytes, and each tier's heading gives its free space and days to full at the last day's and last week's rate.
+A size a record does not hold, such as a pack image's allocation, prints `unknown` and makes its row's sum `unknown`, never an estimate.
+A path several records name counts once, under the first source in that order, and a raw tree the records name counts only while that one path still stands; nothing else touches the disk.
+Sources that live in another home, the TETJET pack index, census, and receipts, are read only when their environment variables name them, and the report lists every source as read, absent, unreadable, or not configured.
+The script's `--help` owns its exact output, its environment, and its exit codes.
 
 ## Reclaim (one-time Windows install)
 

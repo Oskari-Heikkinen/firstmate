@@ -35,7 +35,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - "source last live reading at <time>", "source record", or "source none" on the `shadow storage:` line - the live shadow storage reading failed, so the reservation comes from the newer of the last good live reading and the elevated record, or is missing; say so with the reading and its time, since room can then be overstated after a restore point.
 - "swap file:" line - the WSL swap file's remaining growth up to its configured size is reserved from the Windows drive; a large reservation there is room that Linux swapping will take, and changing `.wslconfig` is the captain's call.
 - "cannot measure" - a reading failed; investigate the named reading before trusting any floor.
-- "storage alert" - Linux growth, C: or D: runway, or a mandatory D: substitution crossed its threshold; read `fm-disk-room.sh growth` and relay the alert with that reading to the captain, who decides any retention, move, or compaction, and run none of them.
+- "storage alert" - Linux growth, C: or D: runway, or a mandatory D: substitution crossed its threshold; read `fm-disk-room.sh growth` (and `fm-usage-report.sh report` for what uses the tier) and relay the alert with that reading to the captain, who decides any retention, move, or compaction, and run none of them.
 
 Firstmate relays only low readings, in the captain's terms; above the margin, disk is not news.
 
