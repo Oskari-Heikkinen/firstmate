@@ -9,7 +9,8 @@
 # A DECISION PACKET is the structured form of one captain call: the question,
 # its options and the recommendation, the authority the call falls under, the
 # evidence and run ids, the prerequisite work with its owner, and - only under
-# research's standing authority - a deadline and a default. It is stored at
+# research's standing authority or a named standing budget - a deadline and a
+# default. It is stored at
 # <data>/captain-hold/packets/<task-id>.packet and is bound to the hold
 # lifecycle it was written for by the task's `Captain hold set:` stamp, so a
 # re-held task never inherits an old packet's default. A task without a packet
@@ -24,15 +25,22 @@
 #   evidence: <text>                      any number
 #   run: <run-id>                         any number
 #   prerequisite: <owner-slug> <text>     any number
-#   deadline: <UTC timestamp> | <N>h | <N>d   research-standing only, then required
-#   default: <option-key>                 research-standing only, then required
-#   on-default: done | release            research-standing only, optional (done)
-# Only `authority: research-standing` - research's standing authority to
-# approve experiments - may carry a deadline and a default, and its default
-# must be the recommended option. Every other authority (product, spend,
-# global-default, or anything else) is refused a deadline, a default, and an
-# on-default, and keeps waiting for an explicit answer. A relative deadline is
-# resolved against the recording time and stored as an absolute UTC timestamp.
+#   deadline: <UTC timestamp> | <N>h | <N>d   default authorities only, then required
+#   default: <option-key>                 default authorities only, then required
+#   on-default: done | release            default authorities only, optional (done)
+# Two authorities may carry a deadline and a default, and either default must
+# be the recommended option:
+#   - `research-standing`, research's standing authority to approve
+#     experiments;
+#   - `budget.<id>`, a named standing budget whose record
+#     (bin/fm-budget-lib.sh) loads with its recorded quote. Its default must be
+#     that budget's over-budget-default and its deadline exactly the budget's
+#     deadline-offset, so the budget, not the packet, sets both.
+# Every other authority (product, spend, global-default, a `budget.<id>` with no
+# valid quoted record, or anything else) is refused a deadline, a default, and
+# an on-default, and keeps waiting for an explicit answer. A relative deadline
+# is resolved against the recording time and stored as an absolute UTC
+# timestamp.
 #
 # The DECISION LOG is <data>/captain-hold/decisions.jsonl: one JSON object per
 # line, appended once per outcome (answered, deferred, defaulted, reversed,
@@ -40,8 +48,8 @@
 # outcome, occurrence, and digest, so a replayed command never logs twice, and
 # replaying a command whose append was interrupted fills the gap.
 #
-# Source this file after bin/fm-wake-lib.sh (for fm_lock_acquire_wait); it
-# defines functions only.
+# Source this file after bin/fm-wake-lib.sh (for fm_lock_acquire_wait) and
+# bin/fm-budget-lib.sh (for the budget authority); it defines functions only.
 
 FM_PACKET_SCHEMA=fm-decision-packet.v1
 FM_DECISION_LOG_SCHEMA=fm-decision-log.v1
@@ -84,14 +92,53 @@ fm_packet_age() {
   fi
 }
 
-# fm_packet_normalize <input-file> <recorded-utc>: validate a packet input and
-# print its stored body lines (without the schema, task, and hold-set header).
-# On refusal returns 1 with the reason on stderr.
+# fm_packet_budget_state <authority> <config-dir>: for a `budget.<id>`
+# authority prints `valid<TAB><default><TAB><deadline-offset>` when the budget
+# record loads, or `invalid<TAB><reason>` when it does not; for any other
+# authority prints `none`.
+fm_packet_budget_state() {
+  local id record
+  if ! id=$(fm_budget_authority_id "$1"); then
+    printf 'none\n'
+    return 0
+  fi
+  if record=$(fm_budget_load "$2" "$id" 2>&1); then
+    printf 'valid\t%s\t%s\n' "$(fm_budget_field "$record" over-budget-default)" \
+      "$(fm_budget_field "$record" deadline-offset)"
+  else
+    printf 'invalid\t%s\n' "$(printf '%s\n' "$record" | head -1)"
+  fi
+}
+
+# fm_packet_default_authorized <packet-file> <config-dir>: 0 when the stored
+# packet's authority may carry its default right now - research's standing
+# authority, or a standing budget whose record still loads with its quote and
+# still names this default. Re-checked when a default applies, so a budget
+# withdrawn or changed since the packet was written applies nothing.
+fm_packet_default_authorized() {
+  local authority state
+  authority=$(fm_packet_field "$1" authority)
+  [ "$authority" != "$FM_PACKET_RESEARCH_AUTHORITY" ] || return 0
+  state=$(fm_packet_budget_state "$authority" "$2")
+  case "$state" in
+    valid$'\t'*) : ;;
+    *) return 1 ;;
+  esac
+  state=${state#valid$'\t'}
+  [ "${state%%$'\t'*}" = "$(fm_packet_field "$1" default)" ]
+}
+
+# fm_packet_normalize <input-file> <recorded-utc> <config-dir>: validate a
+# packet input and print its stored body lines (without the schema, task, and
+# hold-set header). On refusal returns 1 with the reason on stderr.
 fm_packet_normalize() {
-  local out rc=0
+  local out rc=0 authority budget
+  authority=$(sed -n 's/^authority:[ \t]*//p' "$1" 2>/dev/null | head -1 | sed 's/[ \t\r]*$//')
+  budget=$(fm_packet_budget_state "$authority" "$3")
   out=$(perl -MTime::Local=timegm -e '
     use strict; use warnings;
-    my ($path, $now, $research) = @ARGV;
+    my ($path, $now, $research, $budget) = @ARGV;
+    my ($budget_state, $budget_a, $budget_b) = split /\t/, $budget, 3;
     sub refuse { print STDERR "$_[0]\n"; exit 1; }
     open(my $f, "<", $path) or refuse("packet file cannot be read: $path");
     local $/; my $text = <$f>; close $f;
@@ -137,11 +184,19 @@ fm_packet_normalize() {
     refuse("recommendation names no option: $one{recommendation}")
       unless $option_key{$one{recommendation}};
     my $deadline;
-    if ($one{authority} eq $research) {
-      refuse("a $research packet needs a deadline") unless exists $one{deadline};
-      refuse("a $research packet needs a default") unless exists $one{default};
+    my $standing_budget = $budget_state eq "valid";
+    if ($one{authority} eq $research || $standing_budget) {
+      my $kind = $standing_budget ? "standing budget $one{authority}" : $research;
+      refuse("a $kind packet needs a deadline") unless exists $one{deadline};
+      refuse("a $kind packet needs a default") unless exists $one{default};
       refuse("the default must be the recommended option $one{recommendation}, not $one{default}")
         unless $one{default} eq $one{recommendation};
+      if ($standing_budget) {
+        refuse("the default of $kind must be its over-budget default $budget_a, not $one{default}")
+          unless $one{default} eq $budget_a;
+        refuse("the deadline of $kind must be its deadline offset $budget_b, not $one{deadline}")
+          unless $one{deadline} eq $budget_b;
+      }
       my $close = $one{"on-default"} // "done";
       refuse("on-default must be done or release: $close") unless $close eq "done" || $close eq "release";
       $one{"on-default"} = $close;
@@ -159,8 +214,11 @@ fm_packet_normalize() {
       my @t = gmtime($epoch);
       $deadline = sprintf("%04d-%02d-%02dT%02d:%02d:%02dZ", $t[5] + 1900, $t[4] + 1, @t[3, 2, 1, 0]);
     } else {
+      my $why = $budget_state eq "invalid"
+        ? "names no standing budget with a recorded quote ($budget_a)"
+        : "is outside research standing authority and names no standing budget";
       for my $key (qw(deadline default on-default)) {
-        refuse("authority $one{authority} is outside research standing authority, so the packet carries no $key; it waits for an explicit answer")
+        refuse("authority $one{authority} $why, so the packet carries no $key; it waits for an explicit answer")
           if exists $one{$key};
       }
     }
@@ -177,7 +235,7 @@ fm_packet_normalize() {
     print "evidence: $_\n" for @evidence;
     print "run: $_\n" for @runs;
     print "prerequisite: $_\n" for @prereqs;
-  ' -- "$1" "$2" "$FM_PACKET_RESEARCH_AUTHORITY" 2>&1) || rc=$?
+  ' -- "$1" "$2" "$FM_PACKET_RESEARCH_AUTHORITY" "$budget" 2>&1) || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2
     return 1

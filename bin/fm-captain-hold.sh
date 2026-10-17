@@ -210,12 +210,13 @@
 # captain call, bound to its current hold-set stamp; `packet show` and
 # `packets` list live packets with the call's age, its deadline, and its
 # default. `apply-defaults` is the explicit, supervisor-run step (a heartbeat,
-# never a daemon) that applies each research-standing packet's default once its
-# deadline has passed: it writes a `defaulted` resolution record under a
+# never a daemon) that applies each research-standing or standing-budget
+# packet's default once its deadline has passed (a budget packet only while its
+# config/budgets record still loads with its quote and names that default): it writes a `defaulted` resolution record under a
 # `Default applied:` label, so a default can never read as anyone's words,
 # closes or releases the task as the packet's on-default says, and logs it. A
 # packet under any other authority has no default, so this command never
-# touches it. `reverse` records a reversal of a defaulted call: the words
+# touches it. bin/fm-budget.sh open-gate writes such budget packets. `reverse` records a reversal of a defaulted call: the words
 # actually given are written as a `reversed` record under a
 # `Reversal decision:` label and logged as a new outcome; the task's state is
 # unchanged, and acting on the reversal is ordinary routed work. `log` prints
@@ -249,6 +250,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
@@ -268,6 +270,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-parent-channel-lib.sh"
+# shellcheck source=bin/fm-budget-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-budget-lib.sh"
 # shellcheck source=bin/fm-decision-packet-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-decision-packet-lib.sh"
@@ -2214,7 +2219,8 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
 #
 # bin/fm-decision-packet-lib.sh owns the packet and decision-log formats. These
 # commands own when a packet may be written, how it is listed, and the one
-# explicit step that applies a research-standing default at its deadline.
+# explicit step that applies a research-standing or standing-budget default at
+# its deadline.
 
 captain_now() {
   local now=${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
@@ -2281,7 +2287,7 @@ command_packet() {
   [ -n "$packet_file" ] || fail "--packet-file is required"
   [ -f "$packet_file" ] || fail "packet file does not exist: $packet_file"
   now=$(captain_now)
-  normalized=$(fm_packet_normalize "$packet_file" "$now" 2>&1) \
+  normalized=$(fm_packet_normalize "$packet_file" "$now" "$CONFIG" 2>&1) \
     || fail "packet for $id refused: $normalized"
   acquire_task_control_lock "$id"
   require_tasks_axi
@@ -2356,7 +2362,7 @@ apply_packet_default() {  # <task-id> <packet-file> <now-epoch>
   default=$(fm_packet_field "$path" default)
   close=$(fm_packet_field "$path" on-default)
   if ! fm_packet_live "$path" "$id" "$hold_set" \
-    || [ "$authority" != "$FM_PACKET_RESEARCH_AUTHORITY" ] \
+    || ! fm_packet_default_authorized "$path" "$CONFIG" \
     || [ -z "$deadline" ] || [ -z "$default" ] \
     || [ "$(fm_packet_epoch "$deadline")" -gt "$now" ]; then
     release_task_control_lock
@@ -2404,9 +2410,10 @@ command_apply_defaults() {
       [ -e "$path" ] || continue
       id=${path##*/}; id=${id%.packet}
       case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-      # Only research's standing authority carries a default; every other
-      # packet keeps waiting for an explicit answer and is never touched here.
-      [ "$(fm_packet_field "$path" authority)" = "$FM_PACKET_RESEARCH_AUTHORITY" ] || continue
+      # Only research's standing authority or a quoted standing budget carries
+      # a default; every other packet keeps waiting for an explicit answer and
+      # is never touched here.
+      fm_packet_default_authorized "$path" "$CONFIG" || continue
       [ -n "$(fm_packet_field "$path" deadline)" ] || continue
       if apply_packet_default "$id" "$path" "$now"; then
         count=$((count + 1))

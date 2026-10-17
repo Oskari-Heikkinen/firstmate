@@ -46,8 +46,9 @@ A captain-held task closed outside this owner leaves no durable answer, so the c
 Resolved findings, recommendations that need no captain choice, and prose that merely sounds decision-like do not create held tasks.
 Bearings reads the resulting structured state and must never compensate by scraping historical reports, visual-review artifacts, terminal output, chat, or other prose.
 
-A call may carry a decision packet, attached with `bin/fm-captain-hold.sh packet <id> --packet-file <path>`: the question, options, recommendation, authority, evidence and run ids, prerequisite work with its owner, and, only under research's standing authority, a deadline and default.
-Name the authority the call actually falls under; only a call within research's standing authority (`research-standing`) carries a default, and the command refuses a deadline or default on any other packet, which keeps waiting for an explicit answer.
+A call may carry a decision packet, attached with `bin/fm-captain-hold.sh packet <id> --packet-file <path>`: the question, options, recommendation, authority, evidence and run ids, prerequisite work with its owner, and, only under a default authority, a deadline and default.
+Name the authority the call actually falls under; only a call within research's standing authority (`research-standing`) or a quoted standing budget (`budget.<id>`, whose default and deadline must be the budget's own) carries a default, and the command refuses a deadline or default on any other packet, which keeps waiting for an explicit answer.
+Open an over-budget call with `bin/fm-budget.sh open-gate`, never by hand; while the budget is in shadow mode it only logs what it would open (docs/budgets.md).
 Run `bin/fm-captain-hold.sh apply-defaults` on each supervision heartbeat; nothing applies a default otherwise.
 An applied default is recorded as `defaulted`, never as an answer and never in anyone's words, and stays reversible: when the captain's words change it, record them with `reverse`, which logs a new outcome rather than editing the default.
 Every outcome - answered, deferred, reconciled, defaulted, reversed - is appended once to the decision log that `log` prints, and `packets` lists open calls' packets with their age.

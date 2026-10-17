@@ -4917,6 +4917,281 @@ test_decision_log_records_answers_and_deferrals_once() {
   pass "the decision log appends each answer and deferral once"
 }
 
+# --- standing budgets and over-budget gate rows -------------------------------
+
+run_budget() {  # <home> <command args...>
+  local home=$1
+  shift
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_REPLAY" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-budget.sh" "$@"
+}
+
+# A standing budget record: 100 core-hours, 1000 bytes, through 2026-07-31,
+# refused by default 24h after its gate row opens. Extra lines are appended,
+# and `noquote` leaves the quote out.
+write_budget() {  # <home> <id> <shadow on|off> [noquote] [extra line]...
+  local home=$1 id=$2 shadow=$3 quote=1
+  shift 3
+  if [ "${1:-}" = noquote ]; then quote=0; shift; fi
+  mkdir -p "$home/config/budgets"
+  {
+    printf 'schema: fm-budget.v1\n'
+    printf 'id: %s\n' "$id"
+    printf 'covers: kind sample-sweep\n'
+    printf 'owner: main\n'
+    printf 'core-hours: 100\n'
+    printf 'disk-bytes: 1000\n'
+    printf 'end-date: 2026-07-31\n'
+    printf 'over-budget-default: refuse\n'
+    printf 'deadline-offset: 24h\n'
+    printf 'shadow: %s\n' "$shadow"
+    printf 'approved-at: 2026-07-01T09:00:00Z\n'
+    [ "$quote" = 0 ] || printf 'quote: 2. a\n'
+    [ "$#" -eq 0 ] || printf '%s\n' "$@"
+  } > "$home/config/budgets/$id.budget"
+}
+
+budget_spend_record() {  # <budget> <request> <core-hours> <disk-bytes>
+  printf '{"schema":"fm-budget-spend.v1","budget":"%s","request":"%s","core_hours":"%s","disk_bytes":%s,"at":"2026-07-02T00:00:00Z"}\n' \
+    "$1" "$2" "$3" "$4"
+}
+
+write_budget_packet() {  # <file> <authority> [<default>] [<deadline>]
+  {
+    printf 'question: Run the sample request over budget?\n'
+    printf 'option: approve Run it over budget\n'
+    printf 'option: refuse Do not run it\n'
+    printf 'recommendation: %s\n' "${3:-refuse}"
+    printf 'authority: %s\n' "$2"
+    printf 'default: %s\n' "${3:-refuse}"
+    printf 'deadline: %s\n' "${4:-24h}"
+  } > "$1"
+}
+
+test_budget_record_needs_a_quote_and_check_reports_each_cap() {
+  local home out
+  home=$(make_home budget-check)
+  write_budget "$home" sample-noquote off noquote
+  local -a request=(--request sample-r1 --core-hours 1 --disk-bytes 1)
+  for cmd in show check spend open-gate; do
+    case "$cmd" in
+      show) set -- ;;
+      check) set -- "${request[@]}" --date 2026-07-10 ;;
+      spend) set -- "${request[@]}" ;;
+      open-gate) set -- "${request[@]}" --date 2026-07-10 --requester tetjet-mate ;;
+    esac
+    if run_budget "$home" "$cmd" sample-noquote "$@" > "$home/noquote-$cmd.out" 2>&1; then
+      fail "$cmd accepted a budget record with no quote"
+    fi
+    assert_contains "$(cat "$home/noquote-$cmd.out")" "records no quote, so it is not a standing budget" \
+      "the $cmd refusal did not name the missing quote"
+  done
+  write_budget "$home" sample-budget off
+  out=$(run_budget "$home" show sample-budget) || fail "show refused a quoted budget"
+  assert_contains "$out" "quote: 2. a" "show did not keep the quote verbatim"
+
+  # This home's own ledger: spend is recorded once per request.
+  FM_CAPTAIN_HOLD_NOW=2026-07-02T00:00:00Z run_budget "$home" spend sample-budget --request sample-r0 \
+    --core-hours 60.5 --disk-bytes 400 >/dev/null || fail "spend failed"
+  out=$(run_budget "$home" spend sample-budget --request sample-r0 --core-hours 60.5 --disk-bytes 400) \
+    || fail "an identical spend replay failed"
+  assert_contains "$out" "already recorded" "an identical spend replay was not a no-op"
+  if run_budget "$home" spend sample-budget --request sample-r0 --core-hours 70 --disk-bytes 400 \
+    > "$home/spend-drift.out" 2>&1; then
+    fail "spend accepted different values for a recorded request"
+  fi
+
+  out=$(run_budget "$home" check sample-budget --request sample-r1 --core-hours 39.5 --disk-bytes 600 \
+    --date 2026-07-31) || fail "an inside check failed"
+  assert_contains "$out" "verdict: inside" "a request at every cap's edge was not inside"
+  assert_contains "$out" "exceeded: none" "an inside request named an exceeded cap"
+  assert_contains "$out" "core-hours: ok cap=100 spent=60.5 request=39.5 remaining=39.5" \
+    "the core-hours line did not show the remaining amount"
+  assert_contains "$out" "disk-bytes: ok cap=1000 spent=400 request=600 remaining=600" \
+    "the disk line did not show the remaining amount"
+  assert_contains "$out" "end-date: ok cap=2026-07-31 request=2026-07-31 remaining-days=0" \
+    "the end-date line did not show the remaining days"
+  # One cap at a time is exceeded, and only that cap is named.
+  out=$(run_budget "$home" check sample-budget --core-hours 39.6 --disk-bytes 0 --date 2026-07-10) \
+    || fail "a core-hours check failed"
+  assert_contains "$out" "verdict: over" "a request past the core-hour cap was inside"
+  assert_contains "$out" "exceeded: core-hours"$'\n' "the core-hour excess was not the only cap named"
+  out=$(run_budget "$home" check sample-budget --core-hours 0 --disk-bytes 601 --date 2026-07-10) \
+    || fail "a disk check failed"
+  assert_contains "$out" "exceeded: disk-bytes"$'\n' "the disk excess was not the only cap named"
+  out=$(run_budget "$home" check sample-budget --core-hours 0 --disk-bytes 0 --date 2026-08-01) \
+    || fail "an end-date check failed"
+  assert_contains "$out" "exceeded: end-date"$'\n' "the end-date excess was not the only cap named"
+  assert_contains "$out" "remaining-days=-1" "the end-date excess did not show negative days"
+  out=$(run_budget "$home" check sample-budget --request sample-r2 --core-hours 50 --disk-bytes 700 \
+    --date 2026-07-10 --json) || fail "a json check failed"
+  printf '%s\n' "$out" | jq -e '
+    .schema == "fm-budget-check.v1" and .verdict == "over" and .mode == "live"
+    and .exceeded == ["core-hours", "disk-bytes"]
+    and .caps.core_hours.remaining == "39.5" and .caps.core_hours.over == true
+    and .caps.disk_bytes.remaining == 600 and .caps.end_date.over == false
+    and .spend_records == 1' >/dev/null || fail "the json check was wrong: $out"
+
+  # Given spend records replace the ledger; other budgets and repeats are skipped.
+  {
+    budget_spend_record sample-budget sample-x1 90 10
+    budget_spend_record sample-budget sample-x1 90 10
+    budget_spend_record sample-other sample-x2 500 500
+  } > "$home/given.jsonl"
+  out=$(run_budget "$home" check sample-budget --core-hours 10 --disk-bytes 0 --date 2026-07-10 \
+    --spend-file "$home/given.jsonl" --json) || fail "a check over given spend failed"
+  printf '%s\n' "$out" | jq -e '.verdict == "inside" and .caps.core_hours.spent == "90"
+    and .caps.disk_bytes.spent == 10 and .spend_records == 1' >/dev/null \
+    || fail "given spend was not counted once for this budget alone: $out"
+  printf 'not json\n' > "$home/bad.jsonl"
+  if run_budget "$home" check sample-budget --core-hours 1 --disk-bytes 0 --date 2026-07-10 \
+    --spend-file "$home/bad.jsonl" > "$home/bad.out" 2>&1; then
+    fail "a check counted an unreadable spend record as no spend"
+  fi
+  assert_absent "$home/data/budgets/sample-budget.shadow.jsonl" "a live check wrote a shadow log"
+  pass "a budget needs its quote, and check reports inside or over per cap with the remaining amount"
+}
+
+test_budget_shadow_mode_logs_and_opens_nothing() {
+  local home out
+  home=$(make_home budget-shadow)
+  write_budget "$home" sample-shadow on
+  cp "$home/data/backlog.md" "$home/backlog.before"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_budget "$home" check sample-shadow \
+    --request sample-r1 --core-hours 150 --disk-bytes 0 --date 2026-07-10) || fail "a shadow check failed"
+  assert_contains "$out" "mode: shadow" "a shadow check did not say so"
+  assert_contains "$out" "verdict: over" "a shadow check lost its verdict"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_budget "$home" open-gate sample-shadow \
+    --request sample-r1 --requester tetjet-mate --core-hours 150 --disk-bytes 0 --date 2026-07-10) \
+    || fail "a shadow open-gate failed"
+  assert_contains "$out" "shadow: would open gate budget-gate-sample-shadow-sample-r1" \
+    "a shadow open-gate did not say what it would open"
+  out=$(run_budget "$home" open-gate sample-shadow --request sample-r2 --requester tetjet-mate \
+    --core-hours 1 --disk-bytes 0 --date 2026-07-10) || fail "an inside shadow open-gate failed"
+  assert_contains "$out" "no gate would open" "an inside shadow open-gate did not say so"
+
+  out=$(run_budget "$home" shadow-log sample-shadow) || fail "shadow-log failed"
+  printf '%s\n' "$out" | jq -se '
+    length == 3 and all(.[]; .schema == "fm-budget-shadow.v1" and .budget == "sample-shadow")
+    and .[0].command == "check" and .[0].would == "open-gate" and .[0].exceeded == ["core-hours"]
+    and .[1].command == "open-gate" and .[1].would == "open-gate"
+    and .[1].task == "budget-gate-sample-shadow-sample-r1" and .[1].default == "refuse"
+    and .[1].deadline_offset == "24h" and .[1].at == "2026-07-10T12:00:00Z"
+    and .[2].would == "no-gate"' >/dev/null || fail "the shadow log was wrong: $out"
+  # Shadow writes its log and nothing else: no task, no packet, no ledger.
+  cmp -s "$home/backlog.before" "$home/data/backlog.md" || fail "a shadow open-gate changed the backlog"
+  assert_absent "$home/data/captain-hold" "a shadow open-gate wrote a packet or a decision log"
+  assert_absent "$home/data/budgets/sample-shadow.spend.jsonl" "a shadow run wrote spend"
+  out=$(ls "$home/data/budgets")
+  assert_equals "sample-shadow.shadow.jsonl" "$out" "shadow mode wrote more than its log"
+  pass "shadow mode logs what check and open-gate would do and opens nothing"
+}
+
+test_budget_gate_row_defaults_from_the_budget_reversibly() {
+  local home out show task=budget-gate-sample-live-sample-r1
+  home=$(make_home budget-gate)
+  write_budget "$home" sample-live off
+  out=$(run_budget "$home" open-gate sample-live --request sample-r0 --requester tetjet-mate \
+    --core-hours 10 --disk-bytes 10 --date 2026-07-10) || fail "an inside open-gate failed"
+  assert_contains "$out" "inside: sample-live sample-r0; no gate opened" "an inside request opened a gate"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_budget "$home" open-gate sample-live \
+    --request sample-r1 --requester tetjet-mate --core-hours 120 --disk-bytes 10 --date 2026-07-10 \
+    --run sample-run-7 --evidence data/sample-sweep/request.md --repo sample) || fail "open-gate failed"
+  assert_contains "$out" "gate: $task" "open-gate did not name its gate row"
+  show=$(tasks_in "$home" show "$task" --full)
+  assert_contains "$show" "hold_kind: captain" "the gate row is not a captain call"
+  assert_contains "$show" "held: yes" "the gate row is not held"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-10T18:00:00Z run_captain "$home" packets) || fail "packets failed"
+  assert_contains "$out" "authority: budget.sample-live" "the gate packet did not name its budget authority"
+  assert_contains "$out" "status: default refuse applies in 18h0m" "the default did not come from the budget"
+  assert_contains "$out" "deadline: 2026-07-11T12:00:00Z" "the deadline did not come from the budget offset"
+  assert_contains "$out" "recommendation: refuse" "the recommendation was not the budget default"
+  assert_contains "$out" "evidence: core-hours: over cap=100 spent=0 request=120 remaining=100" \
+    "the packet did not carry the check as evidence"
+  assert_contains "$out" "prerequisite: tetjet-mate hold request sample-r1" "the requester was not the prerequisite owner"
+  assert_contains "$out" "run: sample-run-7" "the run id was not carried"
+  # A retry leaves the open gate and its deadline as they are.
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-10T20:00:00Z run_budget "$home" open-gate sample-live \
+    --request sample-r1 --requester tetjet-mate --core-hours 120 --disk-bytes 10 --date 2026-07-10) \
+    || fail "a repeated open-gate failed"
+  assert_contains "$out" "gate: $task already open" "a repeated open-gate did not leave the gate as it was"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-10T20:00:00Z run_captain "$home" packet show "$task")
+  assert_contains "$out" "deadline: 2026-07-11T12:00:00Z" "a repeated open-gate restarted the deadline"
+
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-11T11:59:59Z run_captain "$home" apply-defaults) \
+    || fail "apply-defaults failed before the deadline"
+  assert_equals "defaults-applied: 0" "$out" "a budget default applied before its deadline"
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-11T12:00:00Z run_captain "$home" apply-defaults) \
+    || fail "apply-defaults failed at the deadline"
+  assert_contains "$out" "defaulted: $task" "the budget default did not apply at its deadline"
+  show=$(tasks_in "$home" show "$task" --full)
+  assert_contains "$show" "state: done" "the defaulted gate row did not close"
+  assert_contains "$show" "Resolution mode: defaulted" "the budget default was not recorded as defaulted"
+  assert_not_contains "$show" "Captain decision:" "a budget default was recorded as the captain's words"
+  printf 'Run it after all.\n' > "$home/reverse.txt"
+  run_captain "$home" reverse "$task" --decision-file "$home/reverse.txt" >/dev/null \
+    || fail "reverse refused a budget default"
+  out=$(run_captain "$home" log "$task") || fail "log failed"
+  printf '%s\n' "$out" | jq -se '
+    length == 2 and .[0].outcome == "defaulted" and .[0].authority == "budget.sample-live"
+    and .[0].default == "refuse" and .[1].outcome == "reversed"' >/dev/null \
+    || fail "the decision log did not hold the budget default and its reversal: $out"
+  assert_absent "$home/data/budgets" "a live gate wrote a shadow log or spend"
+  pass "an over-budget gate row carries the budget's default and deadline, applies it once, and stays reversible"
+}
+
+test_budget_authority_is_the_only_new_default_authority() {
+  local home out bad
+  home=$(make_home budget-authority)
+  write_budget "$home" sample-live off
+  write_budget "$home" sample-noquote off noquote
+  for call in sample-budget-call sample-noquote-call sample-missing-call sample-spend-call; do
+    FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" hold "$call" \
+      --title "Decide $call" --reason "budget call $call" --repo sample >/dev/null \
+      || fail "could not hold $call"
+  done
+  # A budget's default and deadline are its own; the packet cannot pick others.
+  write_budget_packet "$home/other-default.packet" budget.sample-live approve
+  write_budget_packet "$home/other-deadline.packet" budget.sample-live refuse 48h
+  for bad in other-default other-deadline; do
+    if FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-budget-call \
+      --packet-file "$home/$bad.packet" > "$home/$bad.out" 2>&1; then
+      fail "a budget packet was accepted with $bad"
+    fi
+  done
+  assert_contains "$(cat "$home/other-default.out")" "its over-budget default refuse" \
+    "the refusal did not name the budget's default"
+  # A budget with no quote, a missing budget, and any other authority carry no default.
+  write_budget_packet "$home/noquote.packet" budget.sample-noquote
+  write_budget_packet "$home/missing.packet" budget.sample-missing
+  write_budget_packet "$home/spend.packet" spend
+  for bad in noquote:sample-noquote-call missing:sample-missing-call spend:sample-spend-call; do
+    if FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet "${bad#*:}" \
+      --packet-file "$home/${bad%%:*}.packet" > "$home/${bad%%:*}.out" 2>&1; then
+      fail "a ${bad%%:*} packet was allowed a default"
+    fi
+    assert_contains "$(cat "$home/${bad%%:*}.out")" "it waits for an explicit answer" \
+      "the ${bad%%:*} refusal did not keep the call waiting"
+  done
+  assert_contains "$(cat "$home/noquote.out")" "names no standing budget with a recorded quote" \
+    "the no-quote budget refusal did not name the missing quote"
+  assert_contains "$(cat "$home/spend.out")" "outside research standing authority" \
+    "a non-budget authority refusal changed"
+
+  # A budget withdrawn after its packet was written applies nothing.
+  write_budget_packet "$home/live.packet" budget.sample-live
+  FM_CAPTAIN_HOLD_NOW=2026-07-10T12:00:00Z run_captain "$home" packet sample-budget-call \
+    --packet-file "$home/live.packet" >/dev/null || fail "a valid budget packet was refused"
+  write_budget "$home" sample-live off noquote
+  out=$(FM_CAPTAIN_HOLD_NOW=2026-07-12T00:00:00Z run_captain "$home" apply-defaults) \
+    || fail "apply-defaults failed over a withdrawn budget"
+  assert_equals "defaults-applied: 0" "$out" "a withdrawn budget's default applied"
+  out=$(tasks_in "$home" show sample-budget-call --full)
+  assert_contains "$out" "held: yes" "a withdrawn budget's default closed the call"
+  pass "only a quoted standing budget joins research as an authority that carries a default"
+}
+
 # Every case builds its own homes under a name of its own, and its background
 # races wait only on processes it started, so no case depends on another or on
 # their order; they run through fm_run_case_pool (tests/lib.sh), longest first
@@ -4990,4 +5265,8 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_decision_packets_record_list_and_refuse_defaults_outside_research \
   test_apply_defaults_applies_due_research_defaults_reversibly \
   test_default_release_and_stale_packets \
-  test_decision_log_records_answers_and_deferrals_once
+  test_decision_log_records_answers_and_deferrals_once \
+  test_budget_record_needs_a_quote_and_check_reports_each_cap \
+  test_budget_shadow_mode_logs_and_opens_nothing \
+  test_budget_gate_row_defaults_from_the_budget_reversibly \
+  test_budget_authority_is_the_only_new_default_authority

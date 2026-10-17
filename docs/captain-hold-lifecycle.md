@@ -44,7 +44,7 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 | `reconcile close`, `reconcile note`, `reconcile list` | Retire or list pending reconcile requests. | [Verifying and retiring a request](#verifying-and-retiring-a-request) |
 | `diverged` | Read-only report of a call whose two records disagree. | [Record divergence](#record-divergence) |
 | `packet`, `packet show`, `packets` | Attach, show, or list the decision packet of an open call. | [Decision packets and defaults](#decision-packets-and-defaults) |
-| `apply-defaults` | Applies every due default under research's standing authority. | [Applying a default](#applying-a-default-apply-defaults) |
+| `apply-defaults` | Applies every due default under research's standing authority or a standing budget. | [Applying a default](#applying-a-default-apply-defaults) |
 | `reverse` | Records words that change an applied default. | [Reversing a default](#reversing-a-default-reverse) |
 | `log` | Prints the append-only decision log. | [The decision log](#the-decision-log) |
 
@@ -265,13 +265,18 @@ The input is one `key: value` line per field:
 | `evidence` | any | A path or reference the recommendation rests on. |
 | `run` | any | A run id the evidence came from. |
 | `prerequisite` | any | `<owner> <text>`: work that must happen first, and who owns it. |
-| `deadline` | research only | `<N>h`, `<N>d`, or an absolute UTC time after now; stored as UTC. |
-| `default` | research only | The option that applies at the deadline; it must be the recommendation. |
-| `on-default` | research only | `done` (the default) closes the call; `release` frees held work. |
+| `deadline` | default authorities only | `<N>h`, `<N>d`, or an absolute UTC time after now; stored as UTC. |
+| `default` | default authorities only | The option that applies at the deadline; it must be the recommendation. |
+| `on-default` | default authorities only | `done` (the default) closes the call; `release` frees held work. |
 
-Only a packet under `research-standing`, research's standing authority, carries a default.
-Such a packet needs both a deadline and a default.
-A packet under any other authority is refused if it names a deadline, a default, or `on-default`; it waits for an explicit answer.
+Two authorities carry a default, and such a packet needs both a deadline and a default:
+
+- `research-standing`, research's standing authority.
+- `budget.<id>`, a standing budget whose record at `config/budgets/<id>.budget` loads with its recorded quote.
+  Its default must be the budget's over-budget default, and its deadline must be the budget's deadline offset.
+  [`budgets.md`](budgets.md) describes the record and the over-budget gate row `bin/fm-budget.sh open-gate` opens.
+
+A packet under any other authority, or naming a budget that is missing or records no quote, is refused if it names a deadline, a default, or `on-default`; it waits for an explicit answer.
 
 The packet is stored at `data/captain-hold/packets/<task-id>.packet` and records the call's hold-set timestamp.
 A packet whose timestamp no longer matches the call's belongs to an earlier hold lifecycle.
@@ -285,9 +290,9 @@ That status reads `no default; waits for an explicit answer`, `default <key> app
 ### Applying a default (`apply-defaults`)
 
 `apply-defaults` is an explicit command a supervisor runs, for example on a heartbeat; no daemon applies a default.
-For each active research packet whose deadline has passed, under the task's control lock, it:
+For each active packet under a default authority whose deadline has passed, under the task's control lock, it:
 
-1. Re-checks that the call is still open and the packet still matches its lifecycle.
+1. Re-checks that the call is still open, the packet still matches its lifecycle, and a budget authority's record still carries its quote and the same default.
 2. Prepends a resolution record with mode `defaulted` and the label `Default applied:`.
    The record names the option, authority, deadline, and question, and how to reverse it.
    It is never labelled `Captain decision:`, because nobody gave those words.
@@ -296,7 +301,7 @@ For each active research packet whose deadline has passed, under the task's cont
 5. Appends a `defaulted` record to the decision log.
 
 It prints `defaulted: <task-id>` for each one and ends with `defaults-applied: <count>`.
-A rerun is a no-op, and a packet outside research's standing authority is never touched.
+A rerun is a no-op, and a packet under any other authority, or under a budget withdrawn since, is never touched.
 `complete` and `verify` accept a defaulted call as resolved; their gate is otherwise unchanged.
 
 ### Reversing a default (`reverse`)
@@ -586,6 +591,10 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
   The record is `defaulted` with no `Captain decision:` label, and `complete` and `verify` accept it.
 - `answer` refuses a defaulted call; `reverse` records a new outcome, keeps the default's record, refuses a call that was never defaulted, and replays without a duplicate log line.
 - An `on-default: release` default frees held work, and a re-held task's stale packet is neither listed nor applied.
+- A standing budget refuses a record without a quote, and `check` reports inside or over for each cap with the remaining amount, over given spend or this home's ledger.
+- A shadow budget's `check` and `open-gate` append to its shadow log and write nothing else.
+- An over-budget gate row carries the budget's authority, default, and deadline, applies its default once at the deadline as `defaulted`, and stays reversible.
+- A budget packet is refused a default or deadline other than its budget's, a budget without a quote carries no default, other authorities are still refused one, and a budget withdrawn after the gate opened applies nothing.
 - The decision log holds exactly one record per answer and deferral across retries.
 
 ### Legacy paths
