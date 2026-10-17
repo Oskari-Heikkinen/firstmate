@@ -511,7 +511,10 @@ test_timeout_refuses_enforced_calls() {
   tail -n 1 "$log" | grep -q '"verdict":"block".*"timeout":true' || fail "the refused timeout is logged as a block with timeout true"
   out=$(printf '{"cwd":"%s","toolName":"Bash","toolInput":{"command":"rg foo /x"}}' "$MAIN" | slow enforce log --harness grok 2>/dev/null)
   assert_contains "$out" '"decision":"deny"' "a timed-out grok call gets the deny object"
-  slow log enforce --harness pi --cwd "$MAIN" --tool read --path "$MAIN/data/task1/report.md" >/dev/null 2>&1
+  # A small file passes the wrapper's fast path before the policy runs, so the
+  # read target is a sparse file over the size limit.
+  truncate -s 300M "$copy/big.log"
+  slow log enforce --harness pi --cwd "$MAIN" --tool read --path "$copy/big.log" >/dev/null 2>&1
   expect_code 2 $? "a timed-out read is refused while the size rule enforces"
   slow enforce log --harness pi --cwd "$MAIN" --command "cat $MAIN/data/task1/report.md" >/dev/null 2>&1
   expect_code 0 $? "a timed-out read passes while only the scan rule enforces"
