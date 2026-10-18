@@ -15,6 +15,12 @@ source tetjet_status /home/me/firstmate/state/tetjet-mate.status
 source backlog /home/me/homes/research/data/backlog.md
 source parks /home/me/homes/research/state
 
+# the capacity filler's files have no default and are read only when named
+# source lane_alerts /home/me/firstmate/data/tj-auto-capacity/state/lane-alerts.json
+# source queue_state /home/me/homes/research/data/tetjet-offload/requests/filler/queue-state.json
+# source filler_stop /home/me/firstmate/data/tj-auto-capacity/state/STOP
+# threshold filler_stale_minutes 5
+
 # threshold <name> <hours>; the defaults are shown
 threshold no_collection_hours 24
 threshold accepted_no_package_hours 12

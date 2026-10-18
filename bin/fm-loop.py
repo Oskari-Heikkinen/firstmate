@@ -5,12 +5,13 @@ Driven by bin/fm-loop.sh, whose header owns usage. This file owns the source
 list, the stage rules, the alert conditions and the lead-time buckets;
 docs/loop-status.md explains them and docs/configuration.md "Loop sources"
 owns the config file format. Every source is read directly and never written;
-the only writes are this home's own alert records and the reported cursor
-under state/loop-alerts/.
+the only writes are this home's own alert records and cursors under
+state/loop-alerts/.
 """
 import argparse
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,7 +27,12 @@ ALERT_SCHEMA = "fm-loop-alert.v1"
 CURSOR_SCHEMA = "fm-loop-reported.v1"
 STATUS_SCHEMA = "fm-loop-status.v1"
 LEADTIME_SCHEMA = "fm-loop-leadtime.v1"
+LANE_CURSOR_SCHEMA = "fm-loop-lane-cursor.v1"
+LANE_ALERTS_SCHEMA = "tj-capacity-alerts/v1"
+QUEUE_STATE_SCHEMAS = ("tj-capacity-queue-state/v1", "tj-capacity-queue-state/v2")
 SNAPSHOT_LIMIT = 32 * 1024 * 1024
+# The lane alerts journal is never truncated by its writer.
+LANE_LIMIT = 128 * 1024 * 1024
 STATUS_TAIL = 256 * 1024
 
 # Hours; each can be overridden by a `threshold <name> <hours>` config line.
@@ -41,6 +47,12 @@ SOURCE_NAMES = (
     "batches", "catalog", "backlog", "parks", "tetjet_status",
 )
 REPEATABLE = {"backlog", "parks"}
+# The capacity filler's observation files and STOP marker: no default, read
+# only when configured, and their failures raise filler-stale, not
+# source-unreadable.
+FILLER_SOURCES = ("lane_alerts", "queue_state", "filler_stop")
+# About three ticks of the filler's 90 s interval, rounded up.
+FILLER_STALE_MINUTES = 5
 
 # Stages a request is open in, in loop order.
 STAGES = (
@@ -113,7 +125,7 @@ class Source:
 
 
 def read_config(home):
-    """Parse <home>/config/loop-sources; return (sources, thresholds, warnings)."""
+    """Parse <home>/config/loop-sources; return (sources, thresholds, stale_minutes, warnings)."""
     ledger = os.environ.get("LATTICE_LEDGER_DIR") or os.path.expanduser("~/lattice-ledger")
     defaults = {
         "submits": [home / "data/tetjet-offload/requests"],
@@ -129,6 +141,7 @@ def read_config(home):
     }
     configured = {}
     thresholds = dict(THRESHOLDS)
+    stale_minutes = FILLER_STALE_MINUTES
     warnings = []
     path = home / "config/loop-sources"
     try:
@@ -141,7 +154,7 @@ def read_config(home):
         if not fields:
             continue
         where = "config/loop-sources line %d" % number
-        if fields[0] == "source" and len(fields) == 3 and fields[1] in SOURCE_NAMES:
+        if fields[0] == "source" and len(fields) == 3 and (fields[1] in SOURCE_NAMES or fields[1] in FILLER_SOURCES):
             value = Path(os.path.expanduser(fields[2]))
             if not value.is_absolute():
                 value = home / value
@@ -158,12 +171,24 @@ def read_config(home):
                 warnings.append("%s: threshold %s must be a positive number of hours; kept %s" % (where, fields[1], thresholds[fields[1]]))
             else:
                 thresholds[fields[1]] = hours
+        elif fields[0] == "threshold" and len(fields) == 3 and fields[1] == "filler_stale_minutes":
+            try:
+                minutes = float(fields[2])
+            except ValueError:
+                minutes = -1
+            if minutes <= 0:
+                warnings.append("%s: threshold filler_stale_minutes must be a positive number of minutes; kept %s" % (where, stale_minutes))
+            else:
+                stale_minutes = minutes
         else:
             warnings.append("%s ignored: %s" % (where, line.strip()))
     sources = {}
     for name in SOURCE_NAMES:
         sources[name] = Source(name, configured.get(name, defaults[name]), name in configured)
-    return sources, thresholds, warnings
+    for name in FILLER_SOURCES:
+        if name in configured:
+            sources[name] = Source(name, configured[name], True)
+    return sources, thresholds, stale_minutes, warnings
 
 
 def load_json(path, src, limit=None):
@@ -378,6 +403,99 @@ def read_tetjet_alerts(src):
             for key, (state, at, text_) in sorted(last.items()) if state == "blocked"]
 
 
+def read_stamped(src, limit, schemas):
+    """Load a filler observation file whose schema is one of schemas; None if not read."""
+    path = src.paths[0]
+    data = load_json(path, src, limit)
+    if data is None:
+        return None
+    schema = data.get("schema") if isinstance(data, dict) else None
+    if schema not in schemas:
+        src.fail("unreadable", "%s has schema %r, not %s; refused" % (path, schema, " or ".join(schemas)))
+        return None
+    at = iso_epoch(data.get("at"))
+    try:
+        mtime = int(os.stat(path).st_mtime)
+    except OSError as exc:
+        src.fail("unreadable", "%s: %s" % (path, exc))
+        return None
+    if at is None:
+        src.fail("unreadable", "%s has no readable at" % path)
+        return None
+    src.detail = "%s at %s" % (schema, data.get("at"))
+    return data, at, mtime
+
+
+def read_lane_alerts(src):
+    """The filler's tj-capacity-alerts/v1 snapshot: active alerts and the event journal."""
+    got = read_stamped(src, LANE_LIMIT, (LANE_ALERTS_SCHEMA,))
+    if got is None:
+        return None
+    data, at, mtime = got
+
+    def alert_ok(alert):
+        return isinstance(alert, dict) and all(isinstance(alert.get(k), str) for k in ("key", "kind", "subject", "reason"))
+
+    active, events, revision = data.get("active"), data.get("events"), data.get("revision")
+    bad = None
+    if not isinstance(active, dict) or not all(alert_ok(a) and a["key"] == k for k, a in active.items()):
+        bad = "active"
+    elif not isinstance(events, list) or not all(
+            isinstance(e, dict) and isinstance(e.get("seq"), int) and e.get("action") in ("raised", "cleared")
+            and isinstance(e.get("key"), str) and alert_ok(e.get("alert")) and isinstance(e.get("at"), str) for e in events):
+        bad = "events"
+    elif not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        bad = "revision"
+    if bad:
+        src.fail("unreadable", "%s has a malformed %s" % (src.paths[0], bad))
+        return None
+    return {"at": at, "mtime": mtime, "revision": revision, "active": active, "events": events}
+
+
+def read_queue_state(src):
+    """The filler's queue snapshot, v1 or v2: supply and lane health kept apart."""
+    got = read_stamped(src, SNAPSHOT_LIMIT, QUEUE_STATE_SCHEMAS)
+    if got is None:
+        return None
+    data, at, mtime = got
+    health = None
+    if data["schema"] != QUEUE_STATE_SCHEMAS[0]:
+        lanes = data.get("lanes") if isinstance(data.get("lanes"), dict) else {}
+        health = {"refusing": data.get("refusing"), "since": data.get("since"), "lanes": {
+            name: {k: lane.get(k) for k in ("state", "reasons", "key", "since")}
+            for name, lane in sorted(lanes.items()) if isinstance(lane, dict)}}
+    return {"schema": data["schema"], "seq": data.get("seq"), "at": data.get("at"), "at_epoch": at, "mtime": mtime,
+            "supply": {"state": data.get("state"), "admissible_run_eq": data.get("admissible_run_eq"),
+                       "free_slots": data.get("free_slots"), "queued_run_eq": data.get("queued_run_eq")},
+            "lane_health": health, "why": data.get("why")}
+
+
+def read_filler_stop(src):
+    """True when the filler's STOP marker exists, False when not, None if unknown."""
+    try:
+        os.lstat(src.paths[0])
+    except FileNotFoundError:
+        src.detail = "absent"
+        return False
+    except OSError as exc:
+        src.fail("unreadable", "%s: %s" % (src.paths[0], exc))
+        return None
+    src.detail = "present"
+    return True
+
+
+def lane_alert_id(alert, key):
+    safe = lambda value: re.sub(r"[^A-Za-z0-9._-]", "_", value)
+    return "%s--%s--%s" % (safe(alert["kind"]), safe(alert["subject"])[:80], hashlib.sha256(key.encode()).hexdigest()[:10])
+
+
+def lane_message(alert):
+    evidence = alert.get("evidence") if isinstance(alert.get("evidence"), dict) else {}
+    summary = ", ".join("%s=%s" % (k, str(v)[:60]) for k, v in sorted(evidence.items()))[:200]
+    return "%s %s: %s (since %s)%s" % (alert["kind"], alert["subject"], alert["reason"][:200], alert.get("since") or "unknown",
+                                      "; evidence " + summary if summary else "")
+
+
 def request_refs(record, submits_dir):
     """Request ids a package record names, through covers[] or requests[].path.
 
@@ -399,7 +517,7 @@ class Loop:
     def __init__(self, home, now):
         self.home = home
         self.now = now
-        self.sources, self.thresholds, self.warnings = read_config(home)
+        self.sources, self.thresholds, self.stale_minutes, self.warnings = read_config(home)
         s = self.sources
         self.submits = read_submits(s["submits"])
         self.queue = read_queue(s["handoff_queue"])
@@ -411,6 +529,9 @@ class Loop:
         self.holds = read_holds(s["backlog"])
         self.parks = read_parks(s["parks"])
         self.tetjet = read_tetjet_alerts(s["tetjet_status"])
+        self.lane = read_lane_alerts(s["lane_alerts"]) if "lane_alerts" in s else None
+        self.queue_state = read_queue_state(s["queue_state"]) if "queue_state" in s else None
+        self.stopped = read_filler_stop(s["filler_stop"]) if "filler_stop" in s else False
         self.requests = self.join()
 
     def join(self):
@@ -615,6 +736,9 @@ class Loop:
         for name in self.failing_sources():
             src = s[name]
             add("source-unreadable", name, "%s source is %s: %s" % (name, src.state, src.detail))
+        problems = self.filler_problems()
+        if problems:
+            add("filler-stale", "tj-capacity", "%s; the filler cannot report its own death" % "; ".join(problems))
         open_rows = self.open_requests()
         if s["collected"].ok:
             last = [iso_epoch(rec.get("recorded_at")) for rec in self.collected.values()]
@@ -650,8 +774,31 @@ class Loop:
         return out
 
     def failing_sources(self):
-        """Sources that are unreadable, or configured and not read."""
-        return [n for n, src in self.sources.items() if src.state == "unreadable" or (src.configured and not src.ok)]
+        """Sources that are unreadable, or configured and not read; the filler's raise filler-stale instead."""
+        return [n for n, src in self.sources.items()
+                if n not in FILLER_SOURCES and (src.state == "unreadable" or (src.configured and not src.ok))]
+
+    def filler_problems(self):
+        """Why the filler's observation files are not current; empty while it is stopped on purpose."""
+        if self.stopped:
+            return []
+        out = []
+        limit = self.stale_minutes * 60
+        for name, doc in (("lane_alerts", self.lane), ("queue_state", self.queue_state)):
+            src = self.sources.get(name)
+            if src is None:
+                continue
+            if not src.ok:
+                out.append("%s %s: %s" % (name, src.state, src.detail))
+                continue
+            at = doc["at"] if name == "lane_alerts" else doc["at_epoch"]
+            age = self.now - min(at, doc["mtime"])
+            if age > limit:
+                out.append("%s last written %s ago (at %s, mtime %s; limit %g min)" % (
+                    name, span(age), utc(at), utc(doc["mtime"]), self.stale_minutes))
+        if out and self.stopped is None:
+            out.append("filler_stop %s, so a STOP is not known" % self.sources["filler_stop"].state)
+        return out
 
     def record_alerts(self):
         """Sync durable alert records with current conditions; return open ones.
@@ -685,8 +832,18 @@ class Loop:
                 rec["last_seen"] = stamp
                 records[alert_id] = rec
                 atomic(folder / (alert_id + ".json"), rec)
+            lane_owned = "lane_alerts" in self.sources
+            if self.lane is not None:
+                self.sync_lane(folder, records, stamp)
+            elif lane_owned and self.sources["lane_alerts"].state == "missing" and not (folder / "lane-alerts.cursor").exists():
+                # The filler starts the file empty, so a first file reports every event in it.
+                atomic(folder / "lane-alerts.cursor", {"schema": LANE_CURSOR_SCHEMA, "updated_utc": stamp, "revision": 0,
+                                                       "path": str(self.sources["lane_alerts"].paths[0])})
+                self.log(folder, "seeded the lane alerts cursor at revision 0: the file is missing, so every event in it once it appears is reported")
             holding = bool(self.failing_sources())
             for alert_id, rec in records.items():
+                if lane_owned and rec.get("source") == "lane_alerts":
+                    continue
                 if alert_id not in current and not rec.get("cleared_at") and not holding:
                     rec["cleared_at"] = stamp
                     atomic(folder / (alert_id + ".json"), rec)
@@ -694,6 +851,85 @@ class Loop:
                     self.log(folder, "cleared %s: the condition no longer holds; %s" % (alert_id, note))
         self.records = records
         return sorted((r for r in records.values() if not r.get("acked_at")), key=lambda r: (r["first_seen"], r["id"]))
+
+    def sync_lane(self, folder, records, stamp):
+        """Mirror the filler's lane alerts into alert records, by its event journal.
+
+        Events after the cursor's revision apply in seq order, deduplicated by
+        key, so a raise and clear between two runs still makes an occurrence.
+        The active map then reconciles what the events left. A missing cursor
+        seeds quietly; an unreadable one, one for another file, or one ahead
+        of the file's revision reconciles against active without replaying.
+        """
+        doc = self.lane
+        source_path = str(self.sources["lane_alerts"].paths[0])
+        path = folder / "lane-alerts.cursor"
+        seed = not path.exists()
+        cursor, lost = None, None
+        if not seed:
+            try:
+                data = load(path)
+                if isinstance(data, dict) and data.get("schema") == LANE_CURSOR_SCHEMA and isinstance(data.get("revision"), int):
+                    cursor = data
+            except (OSError, ValueError):
+                pass
+            if cursor is None:
+                lost = "unreadable"
+            elif cursor.get("path") != source_path:
+                cursor, lost = None, "for %s" % cursor.get("path")
+            elif cursor["revision"] > doc["revision"]:
+                lost = "at revision %d, ahead of the file's %d" % (cursor["revision"], doc["revision"])
+                cursor = None
+        by_key = {rec["tj_key"]: rec for rec in records.values() if rec.get("source") == "lane_alerts"}
+        # A long journal behind the cursor touches one record many times, so
+        # records and log lines are written once, after every event applies.
+        self.lane_dirty, self.lane_notes = set(), []
+        if cursor is not None:
+            for event in sorted((e for e in doc["events"] if e["seq"] > cursor["revision"]), key=lambda e: e["seq"]):
+                self.lane_event(folder, records, by_key, event["action"], event["key"], event["alert"], event["at"], False)
+        elif lost:
+            self.lane_notes.append("lane alerts cursor was %s; reconciled with the active lane alerts instead of replaying the journal" % lost)
+        for key, alert in sorted(doc["active"].items()):
+            detected = alert.get("detected_at") if iso_epoch(alert.get("detected_at")) else stamp
+            self.lane_event(folder, records, by_key, "raised", key, alert, detected, seed)
+        for key, rec in sorted(by_key.items()):
+            if key not in doc["active"] and not rec.get("cleared_at"):
+                self.lane_event(folder, records, by_key, "cleared", key, None, stamp, False)
+        for alert_id in sorted(self.lane_dirty):
+            atomic(folder / (alert_id + ".json"), records[alert_id])
+        if self.lane_notes:
+            with open(folder / "log", "a", encoding="utf-8") as stream:
+                stream.writelines("%s %s\n" % (stamp, note) for note in self.lane_notes)
+        atomic(path, {"schema": LANE_CURSOR_SCHEMA, "path": source_path, "revision": doc["revision"], "updated_utc": stamp})
+        if seed:
+            self.log(folder, "seeded the lane alerts cursor at revision %d with %d active lane alert(s): alerts --new does not report them" % (
+                doc["revision"], len(doc["active"])))
+
+    def lane_event(self, folder, records, by_key, action, key, alert, at, quiet):
+        rec = by_key.get(key)
+        if action == "cleared":
+            if rec and not rec.get("cleared_at"):
+                rec["cleared_at"] = at
+                self.lane_dirty.add(rec["id"])
+                note = "it prints until acked" if not rec.get("acked_at") else "already acked"
+                self.lane_notes.append("cleared %s: the filler cleared lane alert %s; %s" % (rec["id"], key, note))
+            return
+        message = lane_message(alert)
+        if rec is None or rec.get("cleared_at"):
+            alert_id = rec["id"] if rec else lane_alert_id(alert, key)
+            occurrence = 1 if rec is None else rec.get("occurrence", 1) + 1
+            rec = {"schema": ALERT_SCHEMA, "id": alert_id, "condition": alert["kind"], "subject": alert["subject"],
+                   "source": "lane_alerts", "tj_key": key, "first_seen": at, "cleared_at": None, "acked_at": None,
+                   "occurrence": occurrence}
+            if quiet:
+                rec["quiet"] = occurrence_key(rec)
+            self.lane_notes.append("%s %s: %s; it prints until bin/fm-loop.sh ack %s" % (
+                "raised" if occurrence == 1 else "raised again", alert_id, message, alert_id))
+        rec["message"] = message
+        rec["last_seen"] = utc(self.now)
+        records[rec["id"]] = rec
+        by_key[key] = rec
+        self.lane_dirty.add(rec["id"])
 
     def log(self, folder, line):
         with open(folder / "log", "a", encoding="utf-8") as stream:
@@ -736,6 +972,7 @@ def request_view(loop, r):
 
 def status(loop, as_json, show_all):
     alerts = loop.record_alerts()
+    filler = filler_view(loop)
     rows = loop.open_requests() if not show_all else sorted(loop.requests.values(), key=lambda r: r["id"])
     views = [request_view(loop, r) for r in rows]
     if as_json:
@@ -744,6 +981,7 @@ def status(loop, as_json, show_all):
             "sources": {name: src.view() for name, src in loop.sources.items()},
             "thresholds_hours": loop.thresholds, "warnings": loop.warnings,
             "requests": views, "alerts": alerts, "tetjet_alerts": loop.tetjet,
+            **({"filler": filler} if filler else {}),
         }, indent=2, sort_keys=True))
         return 0
     for warning in loop.warnings:
@@ -771,10 +1009,57 @@ def status(loop, as_json, show_all):
             print("  %s since %s: %s" % (t["key"], t["since"] or "unknown", t["line"]))
     else:
         print("TETJET alerts: unknown (tetjet_status %s)" % loop.sources["tetjet_status"].state)
+    if filler:
+        print_filler(loop, filler)
     print("loop alerts: %s" % ("none open" if not alerts else ""))
     for a in alerts:
         print("  %s since %s%s: %s" % (a["id"], a["first_seen"], " (cleared %s)" % a["cleared_at"] if a.get("cleared_at") else "", a["message"]))
     return 0
+
+
+def filler_view(loop):
+    """The capacity filler's two observation files, supply and lane health apart; None when unconfigured."""
+    if not any(name in loop.sources for name in FILLER_SOURCES):
+        return None
+    queue = None
+    if loop.queue_state is not None:
+        queue = {k: v for k, v in loop.queue_state.items() if k not in ("at_epoch", "mtime")}
+        queue["age_seconds"] = loop.now - loop.queue_state["at_epoch"]
+    lane = None
+    if loop.lane is not None:
+        lane = {"at": utc(loop.lane["at"]), "age_seconds": loop.now - loop.lane["at"],
+                "revision": loop.lane["revision"], "active": len(loop.lane["active"])}
+    return {"stopped": loop.stopped, "stale_minutes": loop.stale_minutes, "queue_state": queue,
+            "lane_alerts": lane, "problems": loop.filler_problems()}
+
+
+def print_filler(loop, filler):
+    print("TETJET filler (its observation files; lane alerts are listed with the loop alerts):")
+    if filler["stopped"]:
+        print("  STOP marker present: stopped on purpose, so stale files raise nothing")
+    q = filler["queue_state"]
+    if q:
+        supply = q["supply"]
+        print("  queue-state %s seq %s at %s (%s ago)" % (q["schema"].rsplit("/", 1)[-1], q["seq"], q["at"], span(q["age_seconds"])))
+        print("  supply: state %s, admissible_run_eq %s (free_slots %s, queued_run_eq %s)" % (
+            supply["state"], supply["admissible_run_eq"], supply["free_slots"], supply["queued_run_eq"]))
+        health = q["lane_health"]
+        if health is None:
+            print("  lane health: not in a v1 snapshot")
+        else:
+            print("  lane health: %s" % ("refusing since %s" % health["since"] if health["refusing"] else "no lane refusing"))
+            for name, lane in health["lanes"].items():
+                print("    %s %s since %s (key %s): %s" % (name, lane["state"], lane["since"], str(lane["key"])[:12],
+                                                     "; ".join(str(r) for r in lane["reasons"] or [])))
+    elif "queue_state" in loop.sources:
+        print("  queue-state: unknown (%s)" % loop.sources["queue_state"].state)
+    lane = filler["lane_alerts"]
+    if lane:
+        print("  lane alerts revision %d at %s (%s ago): %d active" % (lane["revision"], lane["at"], span(lane["age_seconds"]), lane["active"]))
+    elif "lane_alerts" in loop.sources:
+        print("  lane alerts: unknown (%s)" % loop.sources["lane_alerts"].state)
+    for problem in filler["problems"]:
+        print("  stale: %s" % problem)
 
 
 def alert_line(a):
@@ -817,7 +1102,7 @@ def new_alerts_mode(loop):
         records = sorted(loop.records.values(), key=lambda r: (r["first_seen"], r["id"]))
         if reported is not None:
             for rec in records:
-                if rec.get("acked_at") or rec["condition"] == "source-unreadable":
+                if rec.get("acked_at") or rec["condition"] == "source-unreadable" or rec.get("quiet") == occurrence_key(rec):
                     continue
                 if reported.get(rec["id"]) != occurrence_key(rec):
                     print(alert_line(rec))

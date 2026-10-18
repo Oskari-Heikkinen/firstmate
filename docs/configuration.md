@@ -1696,7 +1696,9 @@ An unknown or malformed line is ignored and printed as a warning.
 - `source <name> <path>` replaces one source's default path.
   The names and defaults are `submits` (`<home>/data/tetjet-offload/requests`), `handoff_queue` (`~/.local/share/tj-handoff/queue`), `operator_acked` (`~/.local/share/tj-handoff/consumers/tj-operator.acked`), `collected` (`<home>/data/tetjet-collected/requests`), `snapshot` (`<home>/data/tetjet-offload/queue-snapshot.json`), `batches` (`~/lattice-batches`), `catalog` (`$LATTICE_LEDGER_DIR/catalog.sqlite`, else `~/lattice-ledger/catalog.sqlite`), `backlog` (`<home>/data/backlog.md`), `parks` (`<home>/state`) and `tetjet_status` (`<home>/state/tetjet-mate.status`).
   `backlog` and `parks` may repeat, one home each; the other names keep their last line.
+  `lane_alerts`, `queue_state` and `filler_stop` (the capacity filler's lane alerts file, queue-state file and STOP marker) have no default and are read only when named; [docs/loop-status.md](loop-status.md#capacity-filler-watch) explains them.
 - `threshold <name> <hours>` overrides an alert threshold: `no_collection_hours` (default 24), `accepted_no_package_hours` (default 12) or `collected_no_analysis_hours` (default 6); hours may be fractional and must be positive.
+- `threshold filler_stale_minutes <minutes>` sets how old the capacity filler's files may grow before `filler-stale` is raised (default 5); minutes may be fractional and must be positive.
 
 ## Scheduled runs
 

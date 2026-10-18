@@ -27,6 +27,9 @@ This skill owns only how agents use it.
 - A source that reads as missing or unreadable means its columns are unknown, not empty or healthy; name the source when reporting, and do not guess the stage from other files.
 - TETJET's capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) show beside the stages but belong to tetjet-mate; act on them through the `tj-capacity-alerts` skill, never through `ack` here.
 - Lane truth stays with tetjet-mate: the snapshot columns are what its snapshot says, not a second opinion.
+- The capacity filler's lane alerts (`lane-refusing`, `accepted-no-pickup`, `no-liveness`, `rc-unknown`) are raised here only because the filler notifies nobody; hand each to tetjet-mate, which owns the filler and its lanes, then `ack` it here.
+- `filler-stale--tj-capacity` means the filler's files stopped updating while no STOP marker exists, which can mean the filler is dead; report it to tetjet-mate and never restart, repair or rewrite the filler or its files yourself.
+- A home's capacity filler lines in `config/loop-sources` are in the "Capacity filler watch" section of the doc.
 
 ## Alerts
 

@@ -17,7 +17,11 @@
 # --all also lists closed and analysed requests. TETJET's own capacity alerts
 # (tj-lane-refused, tj-idle, tj-capacity-unread) are shown beside the stages,
 # never re-raised. A missing or unreadable source reads as unknown for what it
-# feeds and never fails the command.
+# feeds and never fails the command. When config names the capacity filler's
+# lane_alerts and queue_state files (and its filler_stop marker), status shows
+# its supply and lane health apart, each filler lane alert becomes a loop alert
+# followed through its event journal, and filler-stale is raised while either
+# file is missing, unreadable or stale and no STOP marker exists.
 #
 # status and alerts both sync the stall alerts: one durable record per alert
 # under <home>/state/loop-alerts/<alert-id>.json, with a plain-language event

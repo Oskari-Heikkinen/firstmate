@@ -6,7 +6,7 @@ The "Loop sources" section of [docs/configuration.md](configuration.md#loop-sour
 
 ## Commands
 
-- `bin/fm-loop.sh status [--json] [--all]` prints each open request's stage, age in that stage, last event and the reason it waits, then the open TETJET capacity alerts and the open loop alerts.
+- `bin/fm-loop.sh status [--json] [--all]` prints each open request's stage, age in that stage, last event and the reason it waits, then the open TETJET capacity alerts, the capacity filler's state when its files are configured, and the open loop alerts.
   `--all` also lists closed and fully analysed requests.
 - `bin/fm-loop.sh alerts` prints one line per unacknowledged loop alert and nothing otherwise.
 - `bin/fm-loop.sh alerts --new` prints only alerts newly raised since it last reported them; see "Watcher check".
@@ -30,6 +30,7 @@ Every source is only read: nothing is woken, consumed or acknowledged, and no co
 - Captain-held backlog rows (`(hold-kind: captain)`), matched by task id against the request's family or id.
 - Parked tasks' `.meta` files whose `park_when` names a request id.
 - The last 256 KiB of the TETJET status file, for the latest line per capacity alert key.
+- Only when configured, the capacity filler's lane alerts file, its queue-state file and its STOP marker; see "Capacity filler watch".
 
 A source that is missing or unreadable is listed on the sources line; what it feeds reads as unknown, and the command still succeeds.
 A source named in the config file that is missing, or any source that exists but cannot be read, also raises a `source-unreadable` alert.
@@ -63,6 +64,7 @@ Each condition below is one durable record, `<home>/state/loop-alerts/<alert-id>
 - `analysis-refused--<batch>`: an unresolved analysis refusal for an open request, raised at once.
 - `park-on-closed--<task>--<request>`: a parked task's condition names a superseded or withdrawn request.
 - `source-unreadable--<source>`: see "What it reads".
+- `filler-stale--tj-capacity` and one alert per lane alert of the capacity filler: see "Capacity filler watch".
 
 `status` and `alerts` both sync the records.
 An alert prints until it is acknowledged, even after its condition clears; the line then says when it cleared.
@@ -98,6 +100,38 @@ To install it in a home, from that home's checkout:
 A check line wakes firstmate as `check: <home>/state/loop-alerts.check.sh: <alert line>`; the `loop-status` skill says what to do with it.
 
 TETJET's own capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) are shown beside the stages when their latest status line is `blocked`, and are never raised again here; tetjet-mate owns them.
+
+## Capacity filler watch
+
+TETJET's capacity filler writes two observation files and arms no notification itself, and a dead filler cannot report its own death.
+When a home's `config/loop-sources` names them, fm-loop raises the filler's lane alerts as loop alerts and alarms when the files go stale; a home that names neither sees no change.
+Both files and the STOP marker are only read: fm-loop never writes, repairs, rotates or quarantines them, and never contacts the filler, its service or TETJET.
+The filler's contract is `LANE-TRUTH.md` in its package.
+
+- `source lane_alerts <path>` reads `lane-alerts.json`, schema exactly `tj-capacity-alerts/v1`.
+  Each active alert becomes the loop alert `<kind>--<subject>--<digest>`, where the kind is `lane-refusing`, `accepted-no-pickup`, `no-liveness` or `rc-unknown` and the digest is the first 10 hex characters of the SHA-256 of the filler's alert key; its message carries the subject, reason, since and an evidence summary.
+  The filler's event journal is followed by sequence number from `<home>/state/loop-alerts/lane-alerts.cursor`, deduplicated by alert key, so an alert raised and cleared between two runs still prints once, marked cleared, and a raise after a clear is a new occurrence.
+  With no cursor, the first run records the active alerts quietly, so `alerts --new` does not print them; a cursor taken while the file was missing is at revision 0, so every event in the file once it appears prints.
+  A cursor that is unreadable, names another file, or is ahead of the file's revision is replaced by reconciling with the active alerts, never by replaying the journal, and the log says so.
+  While the file cannot be read, its alerts neither raise nor clear.
+- `source queue_state <path>` reads `queue-state.json`, schema `tj-capacity-queue-state/v1` or `/v2`.
+  `status` shows supply (`state`, `admissible_run_eq`) and lane health (`refusing` and each lane's state, reasons, key and since) as separate fields, never one derived from the other; a v1 file has no lane health.
+- `source filler_stop <path>` names the filler's STOP marker, `STOP` in its state directory.
+  While it exists the filler is stopped on purpose, and stale or missing files raise nothing.
+  Whether the filler's service is meant to run is not read, since that would need the live service manager; without this line staleness alone decides.
+  A lane disabled in the filler's config needs no handling here: the filler still writes both files every tick and raises no alert for that lane.
+
+`filler-stale--tj-capacity` is one alert raised while either configured file is missing, unreadable, of another schema, or older than `filler_stale_minutes` (default 5, about three of the filler's 90-second ticks) by its `at` or its modification time, whichever is older, and the STOP marker is absent.
+Its message names each failing file, and it clears once both are current again.
+These sources never raise `source-unreadable` and never hold other alerts from clearing.
+
+For the main home, the lines are:
+
+```text
+source lane_alerts /home/oskari/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-capacity/state/lane-alerts.json
+source queue_state /home/oskari/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/requests/filler/queue-state.json
+source filler_stop /home/oskari/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-capacity/state/STOP
+```
 
 ## Lead time
 
