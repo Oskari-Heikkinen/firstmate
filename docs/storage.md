@@ -170,6 +170,7 @@ A finished directory tree that no reader opens often (a unit) can live on D: as 
 bin/fm-pack.sh pack [--root ROOT] TASK UNIT SRC
 bin/fm-pack.sh verify D_ROOT/UNIT.sqfs [--against SRC]
 bin/fm-pack.sh restore D_ROOT/UNIT.sqfs DEST
+bin/fm-pack.sh release D_ROOT/UNIT.sqfs SRC --accepted-by WHO [--note TEXT] [--ref FILE]... [--also PATH]...
 ```
 
 `pack` admits its packaging peak through `bulk-root --name pack-UNIT`, so it waits with exit 75 on anything but a verified D: with room, and writes nothing then.
@@ -186,17 +187,28 @@ Without squashfuse, fusermount3 and a usable `/dev/fuse`, `pack` and `verify` re
 `pack` also refuses with exit 2 when the D: root is SRC or inside it, or SRC is inside its `.incoming`.
 `--against SRC` also requires SRC to still match the tree list.
 `restore` unpacks into a new DEST behind an ordinary `fm-disk-room.sh run` admission for the logical size and checks every member there.
-Packing is cheap to undo: the source stays where it is until its owner removes it.
+Packing is cheap to undo: the source stays where it is until its owner releases it under R2.
 
 ### Retention rule R2
 
-fm-pack.sh never deletes or rewrites SRC, and no Firstmate command deletes a packed source.
-The home that owns the data deletes the raw D: tree itself, and only when all three hold:
-1. `pack` committed the unit, and `fm-pack.sh verify UNIT.sqfs --against SRC` passes just before the deletion.
-2. The owner home has accepted that its readers work from the image (mounted or restored).
-3. The 7-day rollback window has passed: now is at least `verified_at` in `UNIT.json` plus 604800 seconds.
+The home that owns the data releases a packed source as soon as its pack verifies, with `fm-pack.sh release`, the only Firstmate command that deletes a packed source.
+This holds for raw D: trees and for Linux copies alike, and needs no per-unit approval.
+`release` deletes SRC only when every guard holds, else it refuses and deletes nothing:
+1. `pack` committed the unit, and the image and SRC pass the same check as `fm-pack.sh verify UNIT.sqfs --against SRC`, run just before the removal.
+2. The owner home has accepted that its readers work from the image (mounted or restored), recorded with `--accepted-by` and an optional `--note`.
+3. No reference the owner names with `--ref` (a ledger tree literal, a delivery pin) still contains SRC's path.
+4. Nothing inside SRC is a mount point, the working directory or an open file of a live process, or held by a live disk-room reservation for the unit.
+5. Every hard-link name of a file in SRC is inside SRC or released in the same call with `--also`, so the bytes the receipt reports are really freed.
+6. The release window has passed; it is zero, so a verified pack is releasable at once.
+
+The window is configurable (`--window`, or `FM_PACK_RELEASE_WINDOW` in seconds) and keeps the `verified_at` plus window check when it is non-zero.
+It was 7 days (604800 seconds) until the storage ruling of 2026-10-18 set it to zero to free space fast; returning to a non-zero window is a new decision.
+
+`release` renames SRC aside in its own parent, re-checks the tree list, removes it, and leaves `SRC/STORED.md` naming the image.
+It prints one `fm-pack-release/v1` receipt line with the bytes freed, writes `UNIT.release.json` beside the image, and appends one line per release, refusal or wait to `fm-pack-release.log` there, so owners report GiB freed per release from the receipt or the record.
+`bin/fm-pack.sh`'s header owns the guards' exact checks, the record fields and the exit codes.
 
 A single copy on D: is accepted for now; there is no second copy of the image.
-R2 covers the `tetjet-results` trees, `moved/`, the `linux-cold-archive` mirror, and `tetjet-prep` once released.
+R2 covers the `tetjet-results` trees, `moved/`, the `linux-cold-archive` mirror, `tetjet-prep` once released, and Linux sources packed to D:.
 
 Regression coverage is in `tests/fm-pack.test.sh`.

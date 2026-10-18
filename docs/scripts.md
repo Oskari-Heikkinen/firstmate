@@ -78,7 +78,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-disk-room.sh`        | Real free room on a WSL laptop, admission of big writes with reservations, and the standing low-room watcher check (docs/disk-room.md) |
 | `fm-usage-report.sh`     | Read-only storage usage readouts: the D: days-to-full line from the growth report and the per-tier, owner, kind and age usage report from existing records (docs/disk-room.md) |
 | `fm-storage.sh`          | Detect and prepare an external SSD for fetched results and publish the results root with a C: fallback, on a user timer (docs/storage.md) |
-| `fm-pack.sh`             | Pack a finished, rarely read tree into one verified read-only SquashFS image on D:, verify it, and restore it (docs/storage.md) |
+| `fm-pack.sh`             | Pack a finished, rarely read tree into one verified read-only SquashFS image on D:, verify it, restore it, and release the packed source under retention rule R2 (docs/storage.md) |
 | `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home, maintain `data/secondmates.md`, and refresh a seeded charter from the current template |

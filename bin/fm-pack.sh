@@ -48,6 +48,52 @@
 #       member check on DEST/basename(SRC). DEST must not exist yet. Exit 0
 #       restored and checked, 75 refused for room, 1 a failure, 2 misuse.
 #
+#   fm-pack.sh release IMAGE SRC --accepted-by WHO [--note TEXT] [--ref FILE]...
+#                      [--also PATH]... [--window SECONDS]
+#       Delete one packed source (retention rule R2), run by the home that
+#       owns it. SRC must be the source UNIT.json records, and must hold
+#       neither IMAGE nor its sidecars. Every guard runs, cheapest first:
+#         1. window: now >= verified_at + SECONDS (--window, else
+#            FM_PACK_RELEASE_WINDOW, else 0, the zero window of R2);
+#         2. acceptance: --accepted-by names who accepted that its readers
+#            work from the image (letters, digits, . _ @ : / -); --note is
+#            free text kept in the release record;
+#         3. references: no --ref FILE contains SRC's path (fixed string);
+#         4. mounts: no mount point (FM_PACK_MOUNTINFO, default
+#            /proc/self/mountinfo) is SRC or inside it;
+#         5. processes: no visible process has its cwd or an open file in
+#            SRC or on an --also name;
+#         6. reservations: no live fm-disk-room reservation, Linux or D:
+#            pool, is named UNIT, pack-UNIT or basename(SRC) (reservations
+#            record no path, so a writer is caught by name or by step 5);
+#         7. hard links: every name of a multi-link file in SRC is inside
+#            SRC or named by an --also PATH (a regular file outside SRC);
+#         8. verify: the same check as verify IMAGE --against SRC.
+#       Then UNIT.release.json (fm-pack-release/v1, state releasing) is
+#       written beside the image, SRC is renamed to .NAME.fm-pack-release in
+#       its own parent (the same filesystem), its tree list is checked again
+#       (any change renames it back and refuses), steps 4 and 5 run again on
+#       the new name, it is removed with the --also names, SRC/STORED.md is
+#       left naming the image, and the record is rewritten with state
+#       released. One line per outcome goes to fm-pack-release.log beside
+#       the image. Prints one line on success:
+#         fm-pack-release/v1 image=PATH src=PATH freed=BYTES accepted_by=WHO released_at=EPOCH record=PATH
+#       freed counts each released inode once by size, the --also names
+#       included; GiB freed is freed / 1073741824.
+#       Exit codes:
+#         0   released;
+#         1   refused by a guard, nothing deleted; also a removal that failed
+#             partway after the rename, the remainder kept at the aside path
+#             stderr names and the record left in state releasing;
+#         2   usage or precondition refusal, nothing deleted: bad arguments,
+#             SRC not the recorded source, SRC holding the image, an
+#             unreadable --ref, an --also PATH that is not a link of a file in
+#             SRC, the unit already released, or an aside left by an earlier
+#             run (rename it back to SRC, then release again);
+#         75  wait, nothing deleted: the window has not passed, or another
+#             release of the unit holds its lock (a file in XDG_RUNTIME_DIR,
+#             else TMPDIR, else /tmp).
+#
 # Reading the image afresh: a new squashfuse -o ro mount on a temporary
 # directory (fusermount3 -u afterwards). pack and verify refuse with exit 2
 # before any work when squashfuse, fusermount3 or a usable /dev/fuse is
@@ -57,11 +103,13 @@
 # UNIT.json (fm-pack-unit/v1) holds the source, its directory name, the owner
 # home, task, root, counts, both sha256 values, the mksquashfs version, and
 # packed_at and verified_at (epoch seconds), so an owner can read its
-# rollback window from the sidecar.
+# release window from the sidecar.
 #
-# fm-pack.sh never deletes or rewrites SRC, keeps no index (the sidecars beside
-# the image are the manifest), and never removes anything it did not create in
-# this run. Heavy steps run at nice 19 and idle I/O priority.
+# Only release deletes SRC, and only after every guard holds; pack, verify and
+# restore never delete or rewrite it. fm-pack.sh keeps no index (the sidecars
+# beside the image are the manifest), and pack and restore never remove
+# anything they did not create in this run. Heavy steps run at nice 19 and
+# idle I/O priority.
 #
 # Environment (all optional):
 #   FM_PACK_MOUNT   mount (default): verify through a fresh squashfuse mount;
@@ -70,8 +118,13 @@
 #                   each rereading the image tables, so roughly quadratic in
 #                   the file count
 #   FM_HOME         owner home recorded in UNIT.json (default this checkout)
+#   FM_PACK_RELEASE_WINDOW  release's default window in seconds (0)
+#   FM_PACK_MOUNTINFO  the mount table release reads (/proc/self/mountinfo)
+#   FM_DISK_ROOM_STATE  fm-disk-room's state directory, for release's
+#                   reservation check (the same default as fm-disk-room.sh)
 #   FM_PACK_TEST_BEFORE_RECHECK  test hook only: a command run by bash -c
-#                   between packing and the source re-check
+#                   between packing and the source re-check, and between
+#                   release's rename aside and its re-check
 set -u
 
 BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -363,10 +416,262 @@ cmd_restore() {
   printf 'fm-pack: restored %s into %s/%s and checked %s files\n' "$IMG" "$dest" "$IDIRNAME" "$(wc -l <"$IMEMBERS")"
 }
 
+# ---------------------------------------------------------------- release
+
+REL_SRC='' REL_ASIDE='' REL_RECORD='' REL_PENDING='' REL_MOVED=''
+
+release_cleanup() {
+  unmount_verify
+  if [ -n "$REL_MOVED" ]; then
+    if mv -n -T -- "$REL_ASIDE" "$REL_SRC" 2>/dev/null && [ ! -e "$REL_ASIDE" ]; then
+      note "renamed $REL_ASIDE back to $REL_SRC"
+    else
+      note "could not rename $REL_ASIDE back to $REL_SRC; it holds the whole source, rename it back by hand"
+      REL_PENDING=''
+    fi
+    REL_MOVED=''
+  fi
+  [ -n "$REL_PENDING" ] && rm -f -- "$REL_RECORD"
+  REL_PENDING=''
+}
+
+# rel_log TEXT: one line in fm-pack-release.log beside the image.
+rel_log() {
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$IDIR/fm-pack-release.log" 2>/dev/null ||
+    note "cannot append to $IDIR/fm-pack-release.log"
+}
+
+# rel_refuse CODE REASON: log the refusal or wait, then exit CODE.
+rel_refuse() {
+  local code=$1; shift
+  note "$*; nothing deleted"
+  if [ "$code" = 75 ]; then rel_log "waits $IUNIT $REL_SRC: $*; nothing deleted, release again later"
+  else rel_log "refused $IUNIT $REL_SRC: $*; nothing deleted"; fi
+  exit "$code"
+}
+
+# mounts_in PATH: mount points at PATH or under it, from the mount table.
+mounts_in() {
+  awk -v p="$1" '{ m = $5; gsub(/\\040/, " ", m); gsub(/\\011/, "\t", m); gsub(/\\134/, "\\", m)
+    if (m == p || index(m, p "/") == 1) print m }' "${FM_PACK_MOUNTINFO:-/proc/self/mountinfo}"
+}
+
+# procs_in PATH [NAME...]: "pid<TAB>path" of each visible process whose cwd or
+# open file is PATH, under it, or one of the NAMEs.
+procs_in() {
+  local p=$1; shift
+  find /proc -mindepth 2 -maxdepth 3 \( -path '/proc/[0-9]*/cwd' -o -path '/proc/[0-9]*/fd/*' \) \
+    -printf '%p\t%l\n' 2>/dev/null |
+    awk -F'\t' -v p="$p" -v names="$(printf '%s\n' "$@")" '
+      BEGIN { n = split(names, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") x[a[i]] = 1 }
+      { t = $2; sub(/ \(deleted\)$/, "", t)
+        if (t == p || index(t, p "/") == 1 || (t in x)) { split($1, q, "/"); print q[3] "\t" t } }' |
+    LC_ALL=C sort -u
+}
+
+# in_use PATH [NAME...]: refuse when PATH or under it is a mount point, or a
+# process uses PATH, a path under it, or a NAME.
+in_use() {
+  local p=$1 tab=${FM_PACK_MOUNTINFO:-/proc/self/mountinfo} out
+  [ -r "$tab" ] || rel_refuse 1 "cannot read the mount table $tab"
+  [ -r /proc/self/fd ] || rel_refuse 1 "cannot read /proc to find the processes that use $p"
+  out=$(mounts_in "$p" | head -n1)
+  [ -z "$out" ] || rel_refuse 1 "$out is a mount point at or inside $p"
+  out=$(procs_in "$@" | head -n1)
+  [ -z "$out" ] || rel_refuse 1 "process ${out%%$'\t'*} ($(cat "/proc/${out%%$'\t'*}/comm" 2>/dev/null)) uses ${out#*$'\t'}"
+}
+
+# reservations_named NAME...: each live fm-disk-room reservation file, Linux or
+# D: pool, named one of NAMEs (a pid that exists, or a ttl not yet passed).
+reservations_named() {
+  local dir f n pid expires t
+  dir=${FM_DISK_ROOM_STATE:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/fm-disk-room}
+  t=$(date +%s)
+  for f in "$dir"/reservations/* "$dir"/reservations-d/*/*; do
+    [ -f "$f" ] || continue
+    for n in "$@"; do
+      [ "${f##*/}" = "$n" ] || continue
+      pid=$(sed -n 's/^pid=//p' "$f"); expires=$(sed -n 's/^expires=//p' "$f")
+      if [ -n "$pid" ]; then
+        [ -d "/proc/$pid" ] || continue
+      elif [ -n "$expires" ] && [ "$t" -ge "$expires" ] 2>/dev/null; then
+        continue
+      fi
+      printf '%s\n' "$f"
+    done
+  done
+}
+
+# links SRC [ALSO...]: "files FILES", "freed BYTES" (each inode once), then
+# "out N PATH" for a multi-link file with N names neither in SRC nor in ALSO,
+# and "bad PATH" for an ALSO that is no link of a file in SRC.
+links() {
+  local src=$1 a; shift
+  {
+    find "$src" -xdev -type f -printf 'i\t%D:%i\t%n\t%s\t%p\n'
+    for a in "$@"; do stat -c $'a\t%d:%i\t%h\t%s\t%n' -- "$a"; done
+  } | awk -F'\t' '
+    $1 == "i" { files++; if (!($2 in size)) { size[$2] = $4; nl[$2] = $3; path[$2] = $5 } ins[$2]++; next }
+    { if ($2 in size) oth[$2]++; else print "bad\t" $5 }
+    END { for (k in size) { freed += size[k]; left = nl[k] - ins[k] - oth[k]; if (left > 0) print "out\t" left "\t" path[k] }
+      printf "files\t%.0f\nfreed\t%.0f\n", files, freed }'
+}
+
+# release_record STATE FILES FREED [RELEASED_AT]: write UNIT.release.json.
+release_record() {
+  local tmp=$REL_RECORD.tmp
+  jq -n --arg unit "$IUNIT" --arg image "$IMG" --arg image_sha "$(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256")" \
+    --arg src "$REL_SRC" --arg state "$1" --arg accepted "$REL_ACCEPTED" --arg note "$REL_NOTE" \
+    --arg refs "$REL_REFS" --arg also "$REL_ALSO" --arg owner "${FM_HOME:-$(cd "$BIN/.." && pwd)}" \
+    --argjson window "$REL_WINDOW" --argjson verified "$REL_VERIFIED" --argjson files "$2" --argjson freed "$3" \
+    --argjson released "${4:-null}" \
+    '{format: "fm-pack-release/v1", unit: $unit, image: $image, image_sha256: $image_sha, src: $src,
+      state: $state, accepted_by: $accepted, note: $note, refs: ($refs | split("\n") | map(select(. != ""))),
+      also: ($also | split("\n") | map(select(. != ""))), owner_home: $owner, window_seconds: $window,
+      verified_at: $verified, files: $files, freed_bytes: $freed, released_at: $released}' >"$tmp" &&
+    mv -f -- "$tmp" "$REL_RECORD"
+}
+
+# stored_md RELEASED_AT: the stub left at SRC's old place.
+stored_md() {
+  cat <<MD
+# Stored in a packed image
+
+This directory was packed into an image and released by fm-pack.sh release.
+
+- image: $IMG
+- image sha256: $(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256")
+- record: $REL_RECORD
+- accepted by: $REL_ACCEPTED
+- released at: $(date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ)
+
+Restore it with \`bin/fm-pack.sh restore $IMG DEST\`.
+MD
+}
+
+REL_ACCEPTED='' REL_NOTE='' REL_REFS='' REL_ALSO='' REL_WINDOW=0 REL_VERIFIED=0
+
+cmd_release() {
+  local given src recorded ref a out now released files freed state
+  local refs=() also=() names=()
+  [ "$#" -ge 2 ] || die "release needs IMAGE SRC"
+  need unsquashfs sha256sum jq flock
+  need_reader
+  load_image "$1"
+  given=$2; shift 2
+  REL_WINDOW=${FM_PACK_RELEASE_WINDOW:-0}
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || die "$1 needs a value"
+    case "$1" in
+      --accepted-by) REL_ACCEPTED=$2 ;;
+      --note) REL_NOTE=$2 ;;
+      --ref) refs+=("$2") ;;
+      --also) also+=("$2") ;;
+      --window) REL_WINDOW=$2 ;;
+      *) die "unknown release argument: $1" ;;
+    esac
+    shift 2
+  done
+  [ -n "$REL_ACCEPTED" ] || die "release needs --accepted-by WHO: no acceptance, no release"
+  [[ $REL_ACCEPTED =~ ^[A-Za-z0-9._@:/-]+$ ]] || die "--accepted-by must be letters, digits, . _ @ : / -"
+  case "$REL_NOTE" in *"$NL"*) die "--note must be one line" ;; esac
+  [[ $REL_WINDOW =~ ^[0-9]{1,10}$ ]] || die "the window must be whole seconds, not $REL_WINDOW"
+  REL_WINDOW=$((10#$REL_WINDOW))
+  REL_VERIFIED=$(sidecar verified_at "$IJSON") && [[ $REL_VERIFIED =~ ^[0-9]+$ ]] || die "$IJSON has no verified_at"
+  recorded=$(sidecar source "$IJSON") || die "$IJSON has no source"
+
+  [ -d "$given" ] && [ ! -L "$given" ] || die "$given is not a real directory"
+  src=$(cd -P -- "$given" && pwd -P) || die "cannot resolve $given"
+  [ "$src" = "$recorded" ] || die "$src is not the source $IJSON records ($recorded)"
+  case "$IDIR/" in "$src"/*) die "$src holds the image $IMG; a release never removes its own image" ;; esac
+  REL_SRC=$src
+  REL_ASIDE=$(dirname -- "$src")/.${src##*/}.fm-pack-release
+  REL_RECORD=$IDIR/$IUNIT.release.json
+  if [ -e "$REL_RECORD" ]; then
+    state=$(jq -r .state "$REL_RECORD" 2>/dev/null)
+    [ "$state" != releasing ] || die "$REL_RECORD is in state releasing: a removal stopped partway, what is left is at $REL_ASIDE"
+    die "$IUNIT is already released ($REL_RECORD)"
+  fi
+  [ ! -e "$REL_ASIDE" ] && [ ! -L "$REL_ASIDE" ] ||
+    die "$REL_ASIDE is left from an earlier release; rename it back to $src, then release again"
+  for ref in "${refs[@]}"; do
+    [ -f "$ref" ] && [ -r "$ref" ] || die "--ref $ref is not a readable file"
+    REL_REFS+=$ref$NL
+  done
+  for a in "${also[@]}"; do
+    [ -f "$a" ] && [ ! -L "$a" ] || die "--also $a is not a regular file"
+    a=$(realpath -e -- "$a") || die "cannot resolve --also $a"
+    case "$a" in "$src"/*) die "--also $a is inside $src" ;; *"$NL"*) die "--also $a: a newline in the path" ;; esac
+    case "$NL$REL_ALSO" in *"$NL$a$NL"*) continue ;; esac
+    REL_ALSO+=$a$NL names+=("$a")
+  done
+
+  # The lock lives on Linux: D:'s 9p mount need not support flock.
+  exec 8>>"${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/fm-pack-release.$IUNIT.lock" || die "cannot open the release lock for $IUNIT"
+  flock -n 8 || rel_refuse 75 "another release of $IUNIT holds its lock"
+  trap release_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  now=$(date +%s)
+  [ "$now" -ge $((REL_VERIFIED + REL_WINDOW)) ] ||
+    rel_refuse 75 "the release window of $REL_WINDOW s ends at $((REL_VERIFIED + REL_WINDOW)), $((REL_VERIFIED + REL_WINDOW - now)) s from now"
+  for ref in "${refs[@]}"; do
+    ! grep -qF -- "$src" "$ref" || rel_refuse 1 "$ref still names $src"
+    [ "${given:0:1}" != / ] || [ "$given" = "$src" ] || ! grep -qF -- "$given" "$ref" || rel_refuse 1 "$ref still names $given"
+  done
+  in_use "$src" "${names[@]}"
+  out=$(reservations_named "$IUNIT" "pack-$IUNIT" "${src##*/}" | head -n1)
+  [ -z "$out" ] || rel_refuse 1 "the reservation $out is live"
+  out=$(links "$src" "${names[@]}")
+  [ -n "$out" ] || rel_refuse 1 "the hard-link census of $src failed"
+  a=$(printf '%s\n' "$out" | sed -n 's/^bad\t//p' | head -n1)
+  [ -z "$a" ] || die "--also $a is not a link of a file in $src"
+  a=$(printf '%s\n' "$out" | sed -n 's/^out\t//p' | head -n1)
+  [ -z "$a" ] || rel_refuse 1 "${a#*$'\t'} has ${a%%$'\t'*} more hard-link name(s) outside $src; name each with --also to release them too"
+  files=$(printf '%s\n' "$out" | sed -n 's/^files\t//p')
+  freed=$(printf '%s\n' "$out" | sed -n 's/^freed\t//p')
+
+  image_sha_ok "$IDIR" "$IUNIT" || rel_refuse 1 "$IMG does not match $IUNIT.sqfs.sha256"
+  check_members "$IMG" "$IDIRNAME" "$IMEMBERS" || rel_refuse 1 "$IMG failed the member check ($METHOD)"
+  cmp -s <(tree_list "$src") "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src no longer matches $IUNIT.tree.tsv"
+
+  REL_PENDING=1
+  release_record releasing "$files" "$freed" || rel_refuse 1 "cannot write $REL_RECORD"
+  mv -n -T -- "$src" "$REL_ASIDE" 2>/dev/null
+  [ -d "$REL_ASIDE" ] && [ ! -e "$src" ] || rel_refuse 1 "cannot rename $src aside to $REL_ASIDE"
+  REL_MOVED=1
+  if [ -n "${FM_PACK_TEST_BEFORE_RECHECK:-}" ]; then bash -c "$FM_PACK_TEST_BEFORE_RECHECK"; fi
+  cmp -s <(tree_list "$REL_ASIDE") "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src changed while it was renamed aside"
+  in_use "$REL_ASIDE" "${names[@]}"
+
+  REL_MOVED='' REL_PENDING=''
+  if ! heavy rm -rf --one-file-system -- "$REL_ASIDE"; then
+    note "removing $REL_ASIDE failed partway; what is left stays there and $REL_RECORD stays in state releasing"
+    rel_log "failed $IUNIT $src: removing $REL_ASIDE stopped partway; the image verified, the remainder stays there"
+    exit 1
+  fi
+  for a in "${names[@]}"; do
+    rm -f -- "$a" || {
+      note "removing the hard-link name $a failed; $REL_RECORD stays in state releasing"
+      rel_log "failed $IUNIT $src: removed the source but not the hard-link name $a"
+      exit 1
+    }
+  done
+  released=$(date +%s)
+  { mkdir -- "$src" && stored_md "$released" >"$src/STORED.md"; } ||
+    note "cannot leave $src/STORED.md; the release itself is complete"
+  release_record released "$files" "$freed" "$released" || note "cannot rewrite $REL_RECORD as released"
+  rel_log "released $IUNIT $src: freed $freed bytes ($(awk -v b="$freed" 'BEGIN { printf "%.2f", b / 1073741824 }') GiB), accepted by $REL_ACCEPTED"
+  printf 'fm-pack-release/v1 image=%s src=%s freed=%s accepted_by=%s released_at=%s record=%s\n' \
+    "$IMG" "$src" "$freed" "$REL_ACCEPTED" "$released" "$REL_RECORD"
+}
+
 case "${1:-}" in
   pack) shift; cmd_pack "$@" ;;
   verify) shift; cmd_verify "$@" ;;
   restore) shift; cmd_restore "$@" ;;
+  release) shift; cmd_release "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

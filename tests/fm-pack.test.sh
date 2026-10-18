@@ -330,6 +330,163 @@ test_mount_verify() {
   pass "verify reads the image through a fresh squashfuse mount"
 }
 
+SRC_R="$TMP_ROOT/src/unit-r"
+IMG_R="$R/unit-r.sqfs"
+ASIDE_R="$TMP_ROOT/src/.unit-r.fm-pack-release"
+OUT_R="$TMP_ROOT/outside-unit-r"
+SNAP_R=''
+
+test_release_setup() {
+  local out rc
+  make_src "$SRC_R"
+  out=$(run_pack pack job unit-r "$SRC_R"); rc=$?
+  expect_code 0 "$rc" "the release fixture packs"
+  SNAP_R=$(snapshot "$SRC_R")
+}
+
+# expect_release_refused CODE WHY PATTERN ARGS...: releasing unit-r with ARGS
+# exits CODE naming PATTERN and deletes nothing.
+expect_release_refused() {
+  local code=$1 why=$2 pattern=$3 out rc
+  shift 3
+  out=$(run_pack release "$IMG_R" "$SRC_R" "$@" 2>&1); rc=$?
+  expect_code "$code" "$rc" "$why"
+  assert_contains "$out" "$pattern" "$why: the refusal says why"
+  assert_equals "$SNAP_R" "$(snapshot "$SRC_R")" "$why: the source is untouched"
+  assert_present "$OUT_R" "$why: the outside name is untouched"
+  assert_absent "$R/unit-r.release.json" "$why: no release record"
+  assert_absent "$ASIDE_R" "$why: no aside left"
+}
+
+# wait_link LINK TARGET: wait up to 5 s until the symlink LINK reads TARGET.
+wait_link() {
+  local _
+  for _ in $(seq 50); do
+    [ "$(readlink "$1" 2>/dev/null)" = "$2" ] && return 0
+    sleep 0.1
+  done
+  fail "$1 never pointed at $2"
+}
+
+test_release_refusals() {
+  local also=(--also "$OUT_R") ok=(--accepted-by tetjet-mate --also "$OUT_R") out rc copy d pid m
+  expect_release_refused 2 "a release without acceptance" "no acceptance, no release" "${also[@]}"
+  expect_release_refused 2 "an acceptance that is not a name" "--accepted-by must be" --accepted-by 'two words' "${also[@]}"
+  expect_release_refused 2 "a window that is not seconds" "whole seconds" "${ok[@]}" --window 7d
+
+  copy="$TMP_ROOT/copy/unit-r"
+  mkdir -p "$TMP_ROOT/copy"
+  cp -a "$SRC_R" "$copy"
+  out=$(run_pack release "$IMG_R" "$copy" "${ok[@]}" 2>&1); rc=$?
+  expect_code 2 "$rc" "releasing a copy of the source is misuse"
+  assert_contains "$out" "is not the source" "the refusal names the recorded source"
+  assert_present "$copy/hl1" "the copy is untouched"
+
+  expect_release_refused 75 "a window not yet passed" "release window of 604800 s ends at" "${ok[@]}" --window 604800
+  FM_PACK_RELEASE_WINDOW=604800 expect_release_refused 75 "a configured window not yet passed" "release window of 604800 s" "${ok[@]}"
+  assert_contains "$(tail -n1 "$R/fm-pack-release.log")" "waits unit-r $SRC_R" "the wait is logged"
+
+  printf 'tree: %s\n' "$SRC_R" >"$TMP_ROOT/ledger.txt"
+  expect_release_refused 1 "a ledger that still names the source" "$TMP_ROOT/ledger.txt still names $SRC_R" \
+    "${ok[@]}" --ref "$TMP_ROOT/ledger.txt"
+  assert_contains "$(tail -n1 "$R/fm-pack-release.log")" "refused unit-r $SRC_R" "the refusal is logged"
+  expect_release_refused 2 "an unreadable reference" "is not a readable file" "${ok[@]}" --ref "$TMP_ROOT/no-ledger"
+
+  printf '36 1 0:5 / %s rw - tmpfs tmpfs rw\n' "$SRC_R/nested" >"$TMP_ROOT/mountinfo-r"
+  FM_PACK_MOUNTINFO="$TMP_ROOT/mountinfo-r" expect_release_refused 1 "a mount inside the source" \
+    "$SRC_R/nested is a mount point" "${ok[@]}"
+
+  (cd "$SRC_R/nested" && exec sleep 30) &
+  pid=$!
+  wait_link "/proc/$pid/cwd" "$SRC_R/nested"
+  expect_release_refused 1 "a process working in the source" "process $pid (sleep) uses $SRC_R/nested" "${ok[@]}"
+  kill "$pid"; wait "$pid" 2>/dev/null
+  (exec 3<"$SRC_R/with space.txt" && exec sleep 30) &
+  pid=$!
+  wait_link "/proc/$pid/fd/3" "$SRC_R/with space.txt"
+  expect_release_refused 1 "a file open in the source" "uses $SRC_R/with space.txt" "${ok[@]}"
+  kill "$pid"; wait "$pid" 2>/dev/null
+  (exec 3<"$OUT_R" && exec sleep 30) &
+  pid=$!
+  wait_link "/proc/$pid/fd/3" "$OUT_R"
+  expect_release_refused 1 "an open --also name" "uses $OUT_R" "${ok[@]}"
+  kill "$pid"; wait "$pid" 2>/dev/null
+
+  mkdir -p "$TMP_ROOT/state/reservations" "$TMP_ROOT/state/reservations-d/999"
+  printf 'bytes=1\nexpires=%s\n' $(( $(date +%s) + 3600 )) >"$TMP_ROOT/state/reservations/unit-r"
+  expect_release_refused 1 "a live Linux reservation named for the unit" "reservations/unit-r is live" "${ok[@]}"
+  printf 'bytes=1\nexpires=1\n' >"$TMP_ROOT/state/reservations/unit-r"
+  printf 'bytes=1\npid=%s\n' "$$" >"$TMP_ROOT/state/reservations-d/999/pack-unit-r"
+  expect_release_refused 1 "a live D: reservation for the unit's pack" "reservations-d/999/pack-unit-r is live" "${ok[@]}"
+  rm -f "$TMP_ROOT/state/reservations-d/999/pack-unit-r"
+
+  expect_release_refused 1 "a hard link left outside the source" \
+    "$SRC_R/shared has 1 more hard-link name(s) outside $SRC_R" --accepted-by tetjet-mate
+  expect_release_refused 2 "an --also that is no link of the source" "is not a link of a file in" \
+    "${ok[@]}" --also "$TMP_ROOT/ledger.txt"
+  expect_release_refused 2 "an --also inside the source" "is inside $SRC_R" "${ok[@]}" --also "$SRC_R/hl2"
+
+  d="$TMP_ROOT/flipped-r"
+  mkdir -p "$d"
+  for f in sqfs sqfs.sha256 members.sha256 tree.tsv json; do cp "$R/unit-r.$f" "$d/unit-r.$f"; done
+  printf '\377' | dd of="$d/unit-r.sqfs" bs=1 seek=$(( $(stat -c %s "$d/unit-r.sqfs") / 2 )) conv=notrunc status=none
+  out=$(run_pack release "$d/unit-r.sqfs" "$SRC_R" "${ok[@]}" 2>&1); rc=$?
+  expect_code 1 "$rc" "an image that fails verify refuses the release"
+  assert_contains "$out" "does not match" "the refusal names the image sha256"
+  assert_absent "$d/unit-r.release.json" "no release record for the failed image"
+  assert_equals "$SNAP_R" "$(snapshot "$SRC_R")" "the source is untouched after a failed verify"
+
+  m=$(find "$SRC_R/empty" -printf '%T@')
+  touch -d @1 "$SRC_R/empty"
+  out=$(run_pack release "$IMG_R" "$SRC_R" "${ok[@]}" 2>&1); rc=$?
+  touch -d "@$m" "$SRC_R/empty"
+  expect_code 1 "$rc" "a changed source refuses the release"
+  assert_contains "$out" "no longer matches unit-r.tree.tsv" "the refusal names the tree list"
+  assert_equals "$SNAP_R" "$(snapshot "$SRC_R")" "the source is back as it was"
+
+  out=$(FM_PACK_TEST_BEFORE_RECHECK="touch -d @1 '$ASIDE_R/empty'" run_pack release "$IMG_R" "$SRC_R" "${ok[@]}" 2>&1); rc=$?
+  expect_code 1 "$rc" "a change while renamed aside refuses the release"
+  assert_contains "$out" "changed while it was renamed aside" "the refusal names the aside re-check"
+  assert_present "$SRC_R/hl1" "the source is renamed back after the aside re-check"
+  assert_absent "$ASIDE_R" "no aside is left after the aside re-check"
+  assert_absent "$R/unit-r.release.json" "the pending record is removed after the aside re-check"
+  touch -d "@$m" "$SRC_R/empty"
+  assert_equals "$SNAP_R" "$(snapshot "$SRC_R")" "the renamed-back source is whole"
+  pass "release refuses on every guard and deletes nothing"
+}
+
+test_release() {
+  local out rc rec="$R/unit-r.release.json"
+  printf 'tree: %s\n' "$TMP_ROOT/src/unit-other" >"$TMP_ROOT/ledger-clean.txt"
+  out=$(run_pack release "$IMG_R" "$SRC_R" --accepted-by tetjet-mate --note 'the ledger reads the image' \
+    --ref "$TMP_ROOT/ledger-clean.txt" --also "$OUT_R"); rc=$?
+  expect_code 0 "$rc" "release succeeds when every guard holds"
+  assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "release prints one line"
+  assert_contains "$out" "fm-pack-release/v1 image=$IMG_R src=$SRC_R " "the receipt names the image and source"
+  assert_equals 8015 "$(receipt_field "$out" freed)" "freed counts each inode once, the outside name included"
+  assert_equals tetjet-mate "$(receipt_field "$out" accepted_by)" "the receipt names who accepted"
+  assert_equals "$rec" "$(receipt_field "$out" record)" "the receipt names the record"
+  assert_equals fm-pack-release/v1 "$(jq -r .format "$rec")" "record format"
+  assert_equals released "$(jq -r .state "$rec")" "the record says released"
+  assert_equals 8015 "$(jq -r .freed_bytes "$rec")" "the record keeps the freed bytes"
+  assert_equals 6 "$(jq -r .files "$rec")" "the record keeps the file count"
+  assert_equals "the ledger reads the image" "$(jq -r .note "$rec")" "the record keeps the acceptance note"
+  assert_equals "$OUT_R" "$(jq -r '.also[0]' "$rec")" "the record names the released outside name"
+  assert_equals 0 "$(jq -r .window_seconds "$rec")" "the default window is zero"
+  assert_equals "$(receipt_field "$out" released_at)" "$(jq -r .released_at "$rec")" "record and receipt agree on released_at"
+  assert_equals STORED.md "$(ls -A "$SRC_R")" "only the stub is left at the source"
+  assert_contains "$(cat "$SRC_R/STORED.md")" "image: $IMG_R" "the stub names the image"
+  assert_absent "$OUT_R" "the outside name is released too"
+  assert_absent "$ASIDE_R" "no aside is left"
+  assert_contains "$(tail -n1 "$R/fm-pack-release.log")" "released unit-r $SRC_R: freed 8015 bytes" "the release is logged"
+  out=$(run_pack verify "$IMG_R"); rc=$?
+  expect_code 0 "$rc" "the image still verifies after the release"
+  out=$(run_pack release "$IMG_R" "$SRC_R" --accepted-by tetjet-mate 2>&1); rc=$?
+  expect_code 2 "$rc" "a second release is misuse"
+  assert_contains "$out" "already released" "the second release says so"
+  pass "release removes a verified, accepted source and leaves a receipt, a record and a stub"
+}
+
 test_no_publication_waits
 test_pack_round_trip
 test_against_changed_source
@@ -340,3 +497,6 @@ test_reader_mode_refuses
 test_root_overlap_refuses
 test_restore
 test_mount_verify
+test_release_setup
+test_release_refusals
+test_release
