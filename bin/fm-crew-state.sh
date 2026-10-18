@@ -902,11 +902,18 @@ nm_daemon_answered_down() {
 # daemon each probe burns the full timeout inside the supervisor's per-crew
 # polling loop.
 nm_daemon_probe() {
-  local rc=0
+  local rc=0 daemon_status running_re='(^|[[:space:]])daemon running([[:space:]]|$)'
   [ -n "$NM_DAEMON_ANSWER" ] && return 0
-  fm_nm_run_checked "$WT" "$NM_TIMEOUT" daemon status >/dev/null || rc=$?
+  daemon_status=$(fm_nm_run_checked "$WT" "$NM_TIMEOUT" daemon status) || rc=$?
   case "$rc" in
-    0)   NM_DAEMON_ANSWER=up ;;
+    0)
+      # A clean stop also exits 0, with "○ daemon not running". Matched
+      # in-shell; a newline is [[:space:]], so this is the per-line match.
+      if [[ "$daemon_status" =~ $running_re ]]; then
+        NM_DAEMON_ANSWER=up
+      else
+        NM_DAEMON_ANSWER=down
+      fi ;;
     124) NM_DAEMON_ANSWER=unanswered ;;
     *)   NM_DAEMON_ANSWER=down ;;
   esac
