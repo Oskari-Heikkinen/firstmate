@@ -133,6 +133,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/component-skills/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/diagnostic-reasoning/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -237,6 +241,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/loop-observability/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/loop-status/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -266,6 +274,10 @@
     },
     {
       "path": ".agents/skills/quota-array-dispatch/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/results-storage/SKILL.md",
       "audience": "agent-runtime"
     },
     {

@@ -11,6 +11,7 @@ metadata:
 Load this before changing firstmate's shared, tracked material, as defined by `AGENTS.md` section 1.
 It exists because `AGENTS.md` grew from 585 to 958 lines between its last two restructures, entirely from conditional detail added inline instead of routed to its right home.
 Applying the rules below on every change is what keeps that from happening again.
+Each component's goals and review checks live in the skill that `docs/component-map.json` names for it; load it before changing a mapped path.
 
 ## Knowledge-placement decision tree
 

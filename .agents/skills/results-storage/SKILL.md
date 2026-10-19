@@ -1,0 +1,74 @@
+---
+name: results-storage
+description: "Load before changing bin/fm-storage.sh, bin/fm-pack.sh, docs/storage.md or their tests. Results go only to the verified external SSD, writers wait with exit 75 rather than fall back to C: or Linux, cold trees pack to verified SquashFS, and only a guarded R2 release deletes a source."
+user-invocable: false
+metadata:
+  internal: true
+  sources:
+    - path: docs/storage.md
+      sha256: 46067cec636908f347519ab01f4ffa934cf3007b8ac350a1fbab70cfdc0ca9ac
+    - path: bin/fm-storage.sh
+      sha256: 2d131e1be58ff12ddf0e9465271a4d769443cb7afa33a2020493a3c796677f6c
+    - path: bin/fm-pack.sh
+      sha256: 36a6c0356143aa87d4b9c10576dcdc1f2f7824afdc1d6820f887e5feb858de52
+---
+
+# results-storage
+
+## Goal and operating principle
+
+Result bytes leave the laptop's C: and Linux disk for good, and every byte kept on D: can be verified and found again.
+One publisher, `fm-storage.sh check`, proves the SSD and atomically writes one versioned results-root file; every writer gets its directory from `root`, `verify-bulk-root` or `bulk-root`, never from a path of its own.
+Doubt is a wait: any state that is not proven `ok` exits 75 with one `wait:` reason, and no command names a C: or Linux fallback.
+A new large delivery reserves its whole peak in the disk-room D: pool before it writes, and an already-started delivery keeps its recorded root.
+A cold tree becomes one verified read-only image whose sidecars are its whole manifest, and only `fm-pack.sh release`, with every R2 guard holding, deletes its source.
+Each rule has one owner: `docs/storage.md` for formats, states, reader rules and R2, each script's header for its commands, fields and exit codes.
+
+## Where each rule lives
+
+- `docs/storage.md`: the results-root file `lattice-storage-results-root/v1`, the states, the reader rules, mandatory bulk admission, named roots, when to pack, and retention rule R2.
+- `bin/fm-storage.sh` header: commands, files, environment.
+- `bin/fm-pack.sh` header: pack, verify, restore and release steps, sidecar fields, the release guards' exact checks, exit codes.
+- `docs/disk-room.md` and `bin/fm-disk-room.sh`: the reservation pools and the runway alerts this component admits through.
+
+## Long-term-correct patterns
+
+- A new destination is data the publisher resolves (a named root in `docs/storage.md`), not a directory a caller builds; this is the rule wave-2 data's storage-class-map recommendation expresses.
+- A new fact for readers is a new `key=value` line; a change to what line 1 means is a new file name.
+- A new state is a row in the `docs/storage.md` table, a once-per-change notification, and a test through the public command.
+- A new unit or record format is read through an explicit allowlist of format names, and everything else is refused before any work.
+- Heavy steps run at `nice 19` and idle I/O and finish inside existing helpers, with no new service or index.
+
+## Refuse
+
+- A C: or Linux fallback in any form: a default path, mapping exit 75 or any non-zero `root` exit to another directory, or reviving `--fallback`, `FM_STORAGE_FALLBACK` or `fallback=` (`docs/storage.md` opening rule and reader rules; wave-2 history H6 records TETJET's results writer mapping the new wait back to C:).
+- Treating an unreadable listing, a missing marker, a stale `checked_at`, a missing `ssd_device` or any unknown state as usable (reader rules 1-4; tool-design rule 1: unknown is a failure, never healthy).
+- Taking line 1 alone as permission for a bulk write, or authorizing bulk from a marker in an empty Linux-backed `/mnt/d` (`docs/storage.md` "Mandatory bulk admission").
+- Changing what line 1 means under the same file name, or writing the results-root file from anywhere but `check` (`docs/storage.md` "The results-root file").
+- Moving, reselecting or rewriting the root of a delivery that already started, including C: pins (reader rule 5; "Already-started deliveries must use their recorded root").
+- Writing a new large delivery without a `bulk-root` reservation, estimating the expanded peak from compressed or logical size, or staging incomplete payloads in a Linux temp directory (`docs/storage.md` "Mandatory bulk admission").
+- Silently replacing a live reservation name (`docs/storage.md`: "A live reservation name is never silently replaced").
+- Deleting a packed source anywhere but `fm-pack.sh release`, skipping or weakening an R2 guard, or deleting before `verify --against` passes (`docs/storage.md` "Retention rule R2"; `bin/fm-pack.sh` header).
+- Changing the release window default without a recorded decision (`docs/storage.md`: "returning to a non-zero window is a new decision").
+- Overwriting a committed unit, reusing stale staging, or reading an unknown unit format leniently (`bin/fm-pack.sh` header exit 2 cases).
+- Adding an index, catalog or second manifest beside the sidecars (`docs/storage.md`: "They are the whole manifest; there is no index").
+- Changing an exit code, a `wait:` token or a receipt line consumers parse without a versioned format and a note to those consumers (wave-2 history H5: byte-pinned helper consumers cascaded into multi-hour stops).
+- Writing a new absolute storage path into a record where a root name and a relative location would do (wave-2 data recommendation 5, placement by identity).
+- Notifying on every check instead of once per state change, or muting a notification (`docs/storage.md` "What a check does"; tool-design rules 1 and 3).
+
+## Review
+
+Answer each check PASS or FINDING.
+
+1. Does every changed path end in a verified D: location or an exit 75 with exactly one `wait:` reason, with no C: or Linux destination anywhere?
+2. Does every unknown, unreadable, stale or unproven reading lead to a wait or a refusal, never to a write?
+3. Is the results-root file still written only by `check`, atomically, with line 1's v1 meaning unchanged?
+4. Does a new delivery path reserve its whole peak before writing and release its reservation on success and on every failure?
+5. Does every deletion go through `fm-pack.sh release`, with every R2 guard run and `verify --against` passing just before removal?
+6. Are exit codes, `wait:` tokens, receipt lines and sidecar formats unchanged, or changed through a new versioned format with every consumer named?
+7. Is each new fact stated once in its owner (`docs/storage.md` or the script header) and only cross-referenced elsewhere?
+8. Does each state change notify once, and is every wait, refusal and release logged with its reason?
+9. Would `tests/fm-storage.test.sh` or `tests/fm-pack.test.sh` fail, through the public commands, if this behaviour broke?
+10. Would a new root, data family or unit format need only a data or allowlist entry, not a new code branch?
+11. Do heavy steps still run at `nice 19` and idle I/O, with no new service, daemon or index?
+12. If a source pinned in this skill's `metadata.sources` changed, does every rule here still hold, and are the pins updated in the same change?
