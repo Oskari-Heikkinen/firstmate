@@ -21,11 +21,15 @@ GOAL = "Goal and operating principle"
 REFUSE = "Refuse"
 REVIEW = "Review"
 REQUIRED_SECTIONS = (GOAL, REFUSE, REVIEW)
-# The goal section is what the component hook injects. Its output is capped at
-# 10,000 characters for every component one tool call touches, so 1,500 keeps
-# room for six components plus their path lines.
+# The goal section is the text sized for injection, under the 10,000-character
+# cap on a hook's output. Six components of 1,500 characters claiming one path
+# leave room for their path lines, so check refuses a seventh.
 GOAL_LIMIT = 1500
-FRONTMATTER_KEYS = {"name", "description", "license", "allowed-tools", "metadata", "compatibility"}
+MAX_CLAIMS = 6
+# skill-creator's validator keys plus Claude Code's documented skill keys: check
+# validates what the harness accepts, not one authoring style.
+FRONTMATTER_KEYS = {"name", "description", "license", "allowed-tools", "metadata", "compatibility",
+                    "user-invocable", "disable-model-invocation", "when_to_use", "argument-hint", "model", "paths"}
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -469,6 +473,15 @@ def skill_problems(path, expected_name):
     compat = fm.get("compatibility")
     if compat is not None and (not isinstance(compat, str) or len(compat) > 500):
         problems.append("frontmatter: compatibility must be a string of at most 500 characters")
+    for key in ("user-invocable", "disable-model-invocation"):
+        if key in fm and not isinstance(fm[key], bool):
+            problems.append(f"frontmatter: {key} must be true or false")
+    for key in ("when_to_use", "argument-hint", "model"):
+        if key in fm and not isinstance(fm[key], str):
+            problems.append(f"frontmatter: {key} must be a string")
+    if "paths" in fm and not (isinstance(fm["paths"], str)
+                              or isinstance(fm["paths"], list) and all(isinstance(p, str) for p in fm["paths"])):
+        problems.append("frontmatter: paths must be a string or a list of strings")
     meta = fm.get("metadata")
     if meta is not None and not isinstance(meta, dict):
         problems.append("frontmatter: metadata must be a mapping")
@@ -604,8 +617,13 @@ def cmd_check(args):
     for glob, regex in zip(cmap.roots, cmap.root_regexes):
         if not any(regex.fullmatch(p) for p in tracked):
             problems.append(f"roots: glob {glob!r} matches no tracked file")
+    if not cmap.roots:
+        notes.append("note: the map has no roots, so coverage is not checked")
     for path in tracked:
-        if any(r.fullmatch(path) for r in cmap.root_regexes) and not any(c.matches(path) for c in cmap.components):
+        claims = sum(1 for c in cmap.components if c.matches(path))
+        if claims > MAX_CLAIMS:
+            problems.append(f"{path}: claimed by {claims} components; at most {MAX_CLAIMS} fit the hook output cap")
+        if not claims and any(r.fullmatch(path) for r in cmap.root_regexes):
             problems.append(f"{path}: under a component root but in no component")
     for line in notes:
         print(line)
@@ -672,9 +690,10 @@ def cmd_drift(args):
         raise UsageError("drift needs exactly <repo|map>")
     target = args[0]
     if os.path.isdir(target):
-        if not os.path.exists(os.path.join(target, REPO_MAP)):
+        repo = repo_root(target)
+        if not os.path.exists(os.path.join(repo, REPO_MAP)):
             return OK
-        cmap = repo_map(os.path.abspath(target))
+        cmap = repo_map(repo)
     elif os.path.isfile(target):
         if is_repo_map(target):
             cmap = repo_map(git_toplevel(os.path.dirname(os.path.abspath(target))))
@@ -700,8 +719,11 @@ def cmd_drift(args):
             src = source_path(skill, pin["path"])
             try:
                 now = sha256_file(src)
-            except OSError:
+            except FileNotFoundError:
                 out.append(f"vanished\t{label}\t{skill}\t{src}")
+                continue
+            except OSError as exc:
+                out.append(f"unreadable\t{label}\t{skill}\t{src}: {exc.strerror}")
                 continue
             if now != pin["sha256"]:
                 out.append(f"changed\t{label}\t{skill}\t{src}\t{pin['sha256']}\t{now}")

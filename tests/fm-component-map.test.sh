@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Component map: check validates the schema, the named skills, their
-# frontmatter and required sections, the goal size limit, non-provisional glob
-# matches and root coverage; touched resolves multi-match, unmapped, outside and
-# provisional paths and fails open without a map; review-pack carries each
-# touched component's Review section; drift reports a changed and a vanished
-# pinned source for a repo map and a home map; one exit-code contract.
+# frontmatter and required sections, the goal size limit, the two skill
+# directories, non-provisional glob matches, root coverage and the claims limit;
+# touched resolves multi-match, unmapped, outside, provisional and '**' paths
+# and fails open without a map; review-pack carries each touched component's
+# Review section across renames, deletions and spaces; drift reports a changed,
+# a vanished and an unreadable pinned source for a repo map and a home map; one
+# exit-code contract.
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -123,6 +125,13 @@ repo, cmap = make_repo("clean")
 rc, out, err = run("check", repo)
 expect(rc == 0 and out.strip().startswith("ok: 3 components, 3 skills"), "a valid map and skills pass check", out + err)
 expect("note:" not in out, "a provisional component whose globs match nothing gets no note", out)
+noroots = dict(cmap)
+del noroots["roots"]
+set_map(repo, noroots)
+rc, out, err = run("check", repo)
+expect(rc == 0 and "note: the map has no roots, so coverage is not checked" in out and "ok:" in out,
+       "a map without roots passes with a note that coverage is not checked", out + err)
+set_map(repo, cmap)
 rc, out, err = run("check", repo / "src")
 expect(rc == 2 and "top level" in err, "check on a subdirectory exits 2", err)
 
@@ -143,6 +152,13 @@ expect(rc == 0 and lines[0].split("\t")[2] == "alpha" and lines[1].split("\t")[2
        and lines[1].split("\t")[3] == str(repo / ".claude/skills/gamma/SKILL.md") and lines[1].split("\t")[4] == "1"
        and lines[2] == "unmapped\tsrc/beta/deep/c.py",
        "an absolute path, a not-yet-existing provisional path and a '*' that stops at '/' resolve correctly", out)
+repo, cmap = make_repo("globs")
+set_map(repo, {"schema": "component-map/v1", "components": [
+    {"id": "x", "skill": "alpha", "paths": ["lib/**/b"]}, {"id": "all", "skill": "alpha", "paths": ["**"]}]})
+rc, out, err = run("touched", repo, "lib/b", "lib/x/y/b", "lib/bb")
+expect(rc == 0 and [line.split("\t")[1:3] for line in out.strip().split("\n")]
+       == [["lib/b", "x"], ["lib/b", "all"], ["lib/x/y/b", "x"], ["lib/x/y/b", "all"], ["lib/bb", "all"]],
+       "a middle '**' matches zero or more segments and a bare '**' matches every path", out + err)
 bare = tmp / "bare"
 bare.mkdir()
 rc, out, err = run("touched", bare, "x.py")
@@ -188,6 +204,19 @@ expect("component delta: skill 'delta' not found" in out, "a missing skill is re
 expect("roots: glob 'nothing/**' matches no tracked file" in out, "a root matching nothing is reported", out)
 expect("README.md:" not in out, "a file outside the roots may stay unmapped", out)
 
+# --- claims limit ---
+repo, cmap = make_repo("claims")
+many = {"schema": "component-map/v1", "roots": ["src/**"],
+        "components": [{"id": f"c{n}", "skill": "alpha", "paths": ["src/**"]} for n in range(7)]}
+set_map(repo, many)
+rc, out, err = run("check", repo)
+expect(rc == 1 and "src/shared.py: claimed by 7 components; at most 6" in out,
+       "a tracked file claimed by more than six components is reported", out + err)
+many["components"].pop()
+set_map(repo, many)
+rc, out, err = run("check", repo)
+expect(rc == 0 and out.startswith("ok: 6 components"), "six components on one path pass", out + err)
+
 # --- provisional note ---
 repo, cmap = make_repo("prov")
 write(repo / "tools/gamma/run.py", "x\n")
@@ -200,13 +229,13 @@ expect(rc == 0 and "note: component gamma: every glob now matches a tracked file
 # --- bad frontmatter and skill shape ---
 repo, cmap = make_repo("shape")
 write(repo / ".agents/skills/alpha/SKILL.md", skill_text(
-    "alfa", extra_fm="paths: src/**\n").replace("One owner, fail closed.", "One owner <fast>."))
+    "alfa", extra_fm="owner: me\n").replace("One owner, fail closed.", "One owner <fast>."))
 write(repo / ".agents/skills/beta/SKILL.md", skill_text("beta", refuse="", review="1. ok") .replace("## Review", "## Reviews"))
 write(repo / ".claude/skills/gamma/SKILL.md", "no frontmatter\n")
 git(repo, "add", "-A")
 git(repo, "commit", "-qm", "bad skills")
 rc, out, err = run("check", repo)
-for needle in (".agents/skills/alpha/SKILL.md: frontmatter: unknown key 'paths'",
+for needle in (".agents/skills/alpha/SKILL.md: frontmatter: unknown key 'owner'",
                "name 'alfa' differs from the skill directory 'alpha'",
                "description must not contain angle brackets",
                ".agents/skills/beta/SKILL.md: section '## Refuse' is empty",
@@ -218,6 +247,29 @@ write(repo / ".agents/skills/beta/SKILL.md", skill_text("beta", sources=[("docs/
 rc, out, err = run("check", repo)
 expect(rc == 1 and "outside the supported YAML subset" in out, "a flow collection in frontmatter is refused", out)
 expect("metadata.sources[0] must have exactly a path and a lowercase 64-hex sha256" in out, "a malformed pin is refused", out)
+write(repo / ".agents/skills/alpha/SKILL.md", skill_text(
+    "alpha", extra_fm="user-invocable: false\nwhen_to_use: Before edits.\nargument-hint: <file>\nmodel: opus\npaths:\n  - src/**\n"))
+write(repo / ".agents/skills/beta/SKILL.md", skill_text("beta", extra_fm="disable-model-invocation: maybe\n"))
+rc, out, err = run("check", repo)
+expect(rc == 1 and ".agents/skills/alpha/SKILL.md" not in out,
+       "Claude Code's documented skill keys are allowed", out)
+expect(".agents/skills/beta/SKILL.md: frontmatter: disable-model-invocation must be true or false" in out,
+       "a Claude Code skill key of the wrong type is refused", out)
+
+# --- the two skill directories ---
+repo, cmap = make_repo("links")
+shutil.move(str(repo / ".claude/skills/gamma"), str(repo / ".agents/skills/gamma"))
+os.rmdir(repo / ".claude/skills")
+os.symlink("../.agents/skills", repo / ".claude/skills")
+git(repo, "add", "-A")
+git(repo, "commit", "-qm", "link skills")
+rc, out, err = run("check", repo)
+expect(rc == 0 and out.startswith("ok: 3 components"), "a .claude/skills symlink to .agents/skills is one copy of each skill", out + err)
+repo, cmap = make_repo("copies")
+write(repo / ".claude/skills/alpha/SKILL.md", (repo / ".agents/skills/alpha/SKILL.md").read_text())
+rc, out, err = run("check", repo)
+expect(rc == 1 and "component alpha: skill 'alpha' exists in both .agents/skills and .claude/skills" in out,
+       "a skill present as two different files is reported", out + err)
 
 # --- oversize goal ---
 repo, cmap = make_repo("goal")
@@ -257,6 +309,20 @@ rc, out, err = run("review-pack", repo, base, "HEAD")
 expect(rc == 1 and "Review checklist unavailable: no '## Review' section." in out and "Alpha check" in out,
        "a component whose checklist cannot be read exits 1 and says why in its block", out)
 
+# --- review pack across a rename, a deletion and a path with spaces ---
+repo, cmap = make_repo("moves")
+base = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+git(repo, "mv", "src/beta/b.py", "lib/new name.py")
+git(repo, "rm", "-q", "src/alpha/a.py")
+write(repo / "src/alpha/f 1.py", "f = 1\n")
+git(repo, "add", "-A")
+git(repo, "commit", "-qm", "move, delete, space")
+rc, out, err = run("review-pack", repo, base, "HEAD")
+expect(rc == 0 and "Changed paths: src/alpha/a.py, src/alpha/f 1.py\n" in out,
+       "a deletion and a path with spaces are carried", out + err)
+expect("## Component beta" in out and "Changed paths: src/beta/b.py\n" in out,
+       "a rename out of a component still carries the component it left", out + err)
+
 # --- drift ---
 repo, cmap = make_repo("drift")
 rc, out, err = run("drift", repo)
@@ -283,8 +349,20 @@ write(home_map, json.dumps({"schema": "component-map/v1", "roots": ["/x/**"], "c
 rc, out, err = run("drift", home_map)
 expect(rc == 3 and "unknown top-level key 'roots'" in err and "absolute path to a SKILL.md" in err
        and "absolute path glob" in err, "a home map refuses roots, skill names and relative globs", err)
+nomap = tmp / "nomap"
+nomap.mkdir()
+git(nomap, "init", "-q")
+rc, out, err = run("drift", nomap)
+expect(rc == 0 and out == "", "drift on a repository top level without a map is silent", out + err)
 rc, out, err = run("drift", bare)
-expect(rc == 0 and out == "", "drift on a repo without a map is silent", out + err)
+expect(rc == 2 and "not a git repository" in err, "drift on a directory outside any repository exits 2", err)
+rc, out, err = run("drift", repo / "src")
+expect(rc == 2 and "top level" in err, "drift on a repository subdirectory exits 2", err)
+repo, cmap = make_repo("pindir")
+write(repo / ".claude/skills/gamma/SKILL.md", skill_text("gamma", sources=[("src", "a" * 64)]))
+rc, out, err = run("drift", repo)
+expect(rc == 1 and out.startswith(f"unreadable\tgamma\t{repo / '.claude/skills/gamma/SKILL.md'}\t{repo / 'src'}: ")
+       and "vanished" not in out, "a pin naming a directory is unreadable, not vanished", out + err)
 rc, out, err = run("drift", tmp / "missing.json")
 expect(rc == 2, "drift on a missing path exits 2", err)
 PY

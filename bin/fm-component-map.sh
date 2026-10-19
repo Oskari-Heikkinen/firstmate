@@ -17,10 +17,11 @@
 # each skill exists under .agents/skills/<name>/ or .claude/skills/<name>/ and
 # its frontmatter and required sections are valid; that the goal section is
 # at most 1,500 characters; that every glob of a non-provisional component
-# matches at least one tracked file; and that every tracked file under the
-# map's roots belongs to a component. It prints one line per problem, a
-# "note:" line for a provisional component whose globs all match now, and an
-# "ok:" summary when clean.
+# matches at least one tracked file; that no tracked file is claimed by more
+# than six components; and that every tracked file under the map's roots
+# belongs to a component. It prints one line per problem, a "note:" line for a
+# provisional component whose globs all match now and for a map without roots
+# (coverage not checked), and an "ok:" summary when clean.
 #
 # touched prints, for each <path>, one tab-separated line per component that
 # claims it, "match<TAB>path<TAB>id<TAB>skill-path<TAB>provisional(0|1)", or
@@ -39,8 +40,10 @@
 # map names, for a repo or for a map file (a home map such as
 # $FM_HOME/config/component-map.json), and prints one tab-separated line per
 # problem: "changed<TAB>ids<TAB>skill<TAB>source<TAB>pinned<TAB>now",
-# "vanished<TAB>ids<TAB>skill<TAB>source" or "unreadable<TAB>ids<TAB>skill<TAB>why".
-# It prints nothing when every pin holds; a repo without a map exits 0.
+# "vanished<TAB>ids<TAB>skill<TAB>source" (the source does not exist) or
+# "unreadable<TAB>ids<TAB>skill<TAB>why" (anything else that stops the read).
+# It prints nothing when every pin holds; a repository top level without a map
+# exits 0.
 #
 # Exit codes, the same for every subcommand:
 #   0  ran, and nothing is wrong (touched and review-pack: output printed, maybe none).
@@ -50,7 +53,7 @@
 #      level, a failing git command, or an internal error.
 #   3  the map is missing (check only) or unusable: unreadable, not JSON, or
 #      not schema-valid; one line per problem on stderr names the map.
-# A caller that must fail open (the component hook) treats every non-zero exit
+# A caller that must fail open (such as a hook) treats every non-zero exit
 # as "no component context" and never blocks on it.
 #
 # Read-only: it writes nothing anywhere. bin/fm-component-map.py implements it.
