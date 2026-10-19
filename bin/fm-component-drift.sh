@@ -3,12 +3,13 @@
 # file one backlog item per drifted skill to that skill's owner home.
 #
 # Usage:
-#   fm-component-drift.sh run [--home DIR] [--result PATH] [--now EPOCH]
+#   fm-component-drift.sh run [--home DIR] [--now EPOCH]
 #   fm-component-drift.sh --help
 #
-# It is the body of the daily scheduled run docs/component-map.md ("Drift run")
-# describes; docs/examples/component-drift/ holds the schedule file and brief.
-# --home is main firstmate's home (default $FM_HOME, else the code root).
+# It is the daily drift run docs/component-map.md ("Drift run") describes,
+# started by the user timer in docs/examples/component-drift/; --now pins the
+# clock for tests. --home is main firstmate's home (default $FM_HOME, else the
+# code root).
 #
 # run, in order:
 #   - homes are main plus every local home in main's data/secondmates.md
@@ -28,28 +29,37 @@
 #     from main's data/secondmates.md, or "main"); without one, a skill named
 #     by a home map is owned by that home; anything else, including an owner
 #     that names no local home, goes to main, and the item says why;
-#   - one item per drifted skill is added Queued in the owner home through
-#     that home's bin/fm-tasks-axi.sh, and the home is woken through its
-#     bin/fm-inbox.sh note with the task id as request id;
-#   - a skill whose drift (every changed, vanished or unreadable source and its
-#     hashes) is unchanged since its last item, while that item is still open,
-#     files nothing; once that item is done or gone, a still-unchanged drift
-#     files a new item; a changed drift files a new item that names the open
-#     one; a skill that no longer drifts is forgotten;
-#   - a failed add or wake is retried on the next run; a task state it cannot
-#     read is treated as open and fails the run.
-# With --result it writes the scheduled run's fm-schedule-result/v1 summary
-# there (docs/configuration.md "Scheduled runs"): outcome complete or failed,
-# carried_over the adds and wakes left to retry, and the log as report.
+#   - a skill has at most one open item: with none open, one item is added
+#     Queued in the owner home through that home's bin/fm-tasks-axi.sh, and
+#     the home is woken through its bin/fm-inbox.sh note with the task id as
+#     request id;
+#   - the drift fingerprint is every changed source with its pinned hash
+#     (not its current one, so editing a drifted source again is the same
+#     drift), and every vanished or unreadable source;
+#   - while the item is open, an unchanged drift does nothing and a changed
+#     drift rewrites that item's title and body in place (tasks-axi update
+#     --archive-body) and wakes its home again; once the item is done or gone,
+#     the next run with drift adds a new item; a skill that no longer drifts
+#     is forgotten;
+#   - a failed add, rewrite or wake is retried on the next run; a task state
+#     it cannot read is treated as open and fails the run.
+# A failed run (exit 1 or 2, a run that was stopped, or one refused because
+# another run holds the lock) wakes main through main's bin/fm-inbox.sh note
+# with the summary and the log; an alarm main's inbox has not taken is kept
+# and resent by the next run.
 #
 # State is <home>/state/component-drift/ of the --home: ledger.json (one entry
 # per drifted skill: its drift fingerprint, task and owner home), log (one
-# plain line per event, UTC) and a lock that serializes overlapping runs.
+# plain line per event, UTC), alarms/ (alarms not yet delivered) and a lock
+# that serializes overlapping runs. The ledger is saved after every add,
+# rewrite and wake, and an add is recorded before it starts, so a run stopped
+# at any point never files an item twice.
 # It runs at nice 19 and ionice -c3. It never edits a skill, map or source.
 #
 # Exit codes: 0 ran and nothing failed (items may have been filed); 1 ran but
-# a map could not be checked, a task state could not be read, or an add or
-# wake failed; 2 usage error or could not run.
+# a map could not be checked, a task state could not be read, or an add,
+# rewrite or wake failed; 2 usage error, could not run, was stopped, or
+# another run holds the lock.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -64,12 +74,10 @@ case "${1:-}" in
 esac
 
 home=${FM_HOME:-$CODE_ROOT}
-result=
 now=
 while [ $# -gt 0 ]; do
   case "$1" in
     --home) [ $# -ge 2 ] || die "--home needs a directory"; home=$2; shift 2 ;;
-    --result) [ $# -ge 2 ] || die "--result needs a path"; result=$2; shift 2 ;;
     --now) [ $# -ge 2 ] || die "--now needs an epoch"; now=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
@@ -78,7 +86,6 @@ done
 [ -d "$home" ] || die "home not found: $home"
 home=$(cd "$home" && pwd -P)
 case "$now" in ''|*[!0-9]*) [ -z "$now" ] || die "--now must be an integer epoch" ;; esac
-case "$result" in ''|/*) ;; *) result="$PWD/$result" ;; esac
 
 # Main first, then every second mate, as bin/fm-schedule.sh lists them.
 list_homes() {
@@ -103,5 +110,5 @@ low=(nice -n 19)
 command -v ionice >/dev/null 2>&1 && low+=(ionice -c3)
 rc=0
 "${low[@]}" python3 "$SCRIPT_DIR/fm-component-drift.py" --home "$home" --homes "$TMP/homes.tsv" \
-  --code-root "$CODE_ROOT" ${result:+--result "$result"} ${now:+--now "$now"} || rc=$?
+  --code-root "$CODE_ROOT" ${now:+--now "$now"} || rc=$?
 exit "$rc"

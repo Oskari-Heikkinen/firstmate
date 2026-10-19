@@ -1,0 +1,12 @@
+# Example systemd user timer running fm-component-drift.service daily.
+# Enable it once the drift run is approved for this machine:
+# systemctl --user enable --now fm-component-drift.timer
+[Unit]
+Description=Daily firstmate component-skill drift run
+
+[Timer]
+OnCalendar=*-*-* 06:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

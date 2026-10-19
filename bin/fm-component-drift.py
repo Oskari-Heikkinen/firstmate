@@ -15,15 +15,24 @@ import importlib.util
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
 
 LEDGER_SCHEMA = "fm-component-drift-ledger/v1"
-RESULT_SCHEMA = "fm-schedule-result/v1"
+ALARM_SCHEMA = "fm-component-drift-alarm/v1"
 CLOSED = ("done", "gone")
 REPO_MAP = os.path.join("docs", "component-map.json")
 HOME_MAP = os.path.join("config", "component-map.json")
+
+
+class Interrupted(Exception):
+    """SIGTERM or SIGINT: the run stops through its failure path, so the ledger is saved and main is alarmed."""
+
+
+def interrupt(signum, _frame):
+    raise Interrupted("signal %d" % signum)
 
 
 def one_line(text, n=300):
@@ -80,14 +89,14 @@ class Run:
         self.home = args.home.rstrip("/")
         self.code_root = args.code_root
         self.now = args.now if args.now is not None else int(time.time())
-        self.started = int(time.time())
         self.homes = self.read_homes(args.homes)
         self.sdir = os.path.join(self.home, "state", "component-drift")
         self.log_path = os.path.join(self.sdir, "log")
+        self.alarm_dir = os.path.join(self.sdir, "alarms")
         self.tool = load_map_tool(self.code_root)
+        self.ledger = None
         self.failures = []
-        self.carried = 0
-        self.counts = {"maps": 0, "drifted": 0, "filed": 0, "open": 0}
+        self.counts = {"maps": 0, "drifted": 0, "filed": 0, "updated": 0, "open": 0}
 
     # ------------------------------------------------------------ plumbing
 
@@ -227,7 +236,9 @@ class Run:
 
     @staticmethod
     def fingerprint(ident, problems):
-        text = ident + "\n" + "\n".join("\t".join(p) for p in sorted(problems))
+        """A changed source counts by its path and pinned hash only, so editing it again is the same drift."""
+        keys = sorted(p[:3] if p[0] == "changed" else p for p in problems)
+        text = ident + "\n" + "\n".join("\t".join(k) for k in keys)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def owner(self, rec):
@@ -252,7 +263,7 @@ class Run:
 
     # ------------------------------------------------------------ items
 
-    def body(self, rec, owner_why, previous):
+    def body(self, rec, owner_why, note=None):
         lines = ["The component skill %s has drifted: a source it pins in metadata.sources changed, vanished or "
                  "could not be read." % rec["skill"],
                  "",
@@ -272,50 +283,125 @@ class Run:
                   "repository's normal path with a non-author review.",
                   "A source change that contradicts the skill is a finding against the source's owner, not a silent "
                   "skill edit.",
-                  "The daily drift run files no second item for this exact drift while this one is open; closing "
-                  "it without re-pinning files a new item on the next run."]
-        if previous:
-            lines += ["", "This drift differs from the one in %s, which is still open; this item supersedes it." % previous]
+                  "While this item is open the daily drift run files no second item for this skill: a further "
+                  "drift rewrites this body and wakes this home again; closing it without re-pinning files a new "
+                  "item on the next run."]
+        if note:
+            lines += ["", note]
         return "\n".join(lines) + "\n"
+
+    def title(self, rec):
+        return "Re-pin component skill %s: %d pinned source(s) drifted" % (rec["name"], len(rec["problems"]))
 
     def file_item(self, rec, ident, fp, entry):
         hid, hpath, why = self.owner(rec)
-        previous = entry.get("task") if entry and entry.get("fingerprint") != fp else None
-        if previous and self.task_state(entry["home_path"], previous) in CLOSED:
-            previous = None
         slug = re.sub(r"[^a-z0-9-]+", "-", rec["name"].lower()).strip("-")[:40] or "skill"
         task = "drift-%s-%s-%s" % (slug, fp[:6], time.strftime("%Y%m%d%H%M", time.gmtime(self.now)))
-        title = "Re-pin component skill %s: %d pinned source(s) drifted" % (rec["name"], len(rec["problems"]))
+        new = {"fingerprint": fp, "task": task, "home": hid, "home_path": hpath, "filed": utc(self.now),
+               "skill": rec["skill"], "wake_pending": True}
+        # The intent is saved before the add, so a run stopped mid-add leaves a record the next run resolves.
+        self.ledger[ident] = dict(new, filing=True, prior=entry)
+        self.save_ledger()
         body_path = os.path.join(self.sdir, ".item.body")
-        atomic_text(body_path, self.body(rec, why, previous))
-        rc, out, err = self.run_in(hpath, [self.home_tool(hpath, "fm-tasks-axi.sh"), "add", task, title,
+        atomic_text(body_path, self.body(rec, why))
+        rc, out, err = self.run_in(hpath, [self.home_tool(hpath, "fm-tasks-axi.sh"), "add", task, self.title(rec),
                                            "--kind", "ship", "--body-file", body_path, "--json"])
         os.unlink(body_path)
         if rc != 0:
-            self.carried += 1
+            self.restore(ident, entry)
             self.fail("could not file %s in %s for %s: %s; the next run retries" % (task, hid, ident,
                                                                                  one_line(err or out)))
-            return entry
+            return
+        self.ledger[ident] = new
+        self.save_ledger()
         self.counts["filed"] += 1
         self.log("filed %s in %s for %s (%s)" % (task, hid, ident, why))
-        new = {"fingerprint": fp, "task": task, "home": hid, "home_path": hpath, "filed": utc(self.now),
-               "skill": rec["skill"], "wake_pending": True}
         self.wake(new, ident)
-        return new
+
+    def update_item(self, rec, ident, fp, entry):
+        """A changed drift while the skill's item is open: rewrite that item in place and wake its home again."""
+        hid, _, why = self.owner(rec)
+        note = "Rewritten by the drift run at %s because the drift changed; the earlier body is archived." % utc(self.now)
+        if hid != entry["home"]:
+            why = "it was filed here while open; the owner rule now names %s (%s)" % (hid, why)
+        body_path = os.path.join(self.sdir, ".item.body")
+        atomic_text(body_path, self.body(rec, why, note))
+        hpath = entry["home_path"]
+        rc, out, err = self.run_in(hpath, [self.home_tool(hpath, "fm-tasks-axi.sh"), "update", entry["task"],
+                                           "--title", self.title(rec), "--body-file", body_path, "--archive-body"])
+        os.unlink(body_path)
+        if rc != 0:
+            self.fail("could not rewrite %s in %s for %s: %s; the next run retries" % (
+                entry["task"], entry["home"], ident, one_line(err or out)))
+            return
+        # The rewrite is idempotent, so a run stopped before this save only rewrites it again.
+        entry.update(fingerprint=fp, wake_pending=True, wake_id="%s-%s" % (entry["task"], fp[:6]),
+                     updated=utc(self.now))
+        self.save_ledger()
+        self.counts["updated"] += 1
+        self.log("rewrote %s in %s for %s: the drift changed" % (entry["task"], entry["home"], ident))
+        self.wake(entry, ident)
+
+    def restore(self, ident, entry):
+        if entry:
+            self.ledger[ident] = entry
+        else:
+            self.ledger.pop(ident, None)
+        self.save_ledger()
 
     def wake(self, entry, ident):
-        text = ("The component-skill drift run filed backlog task %s: the skill %s drifted from a source it pins. "
+        text = ("The component-skill drift run %s backlog task %s: the skill %s drifted from a source it pins. "
                 "It is part of the captain-approved daily drift check; its body names the drift and the update path."
-                % (entry["task"], entry["skill"]))
+                % ("rewrote" if entry.get("wake_id") else "filed", entry["task"], entry["skill"]))
         rc, out, err = self.run_in(entry["home_path"], [self.home_tool(entry["home_path"], "fm-inbox.sh"), "note",
-                                                        "--request-id", entry["task"], "--", text])
+                                                        "--request-id", entry.get("wake_id", entry["task"]),
+                                                        "--", text])
         if rc == 0:
             entry["wake_pending"] = False
+            self.save_ledger()
             self.log("woke %s about %s" % (entry["home"], entry["task"]))
         else:
-            self.carried += 1
             self.fail("could not wake %s about %s for %s: %s; the next run retries" % (
                 entry["home"], entry["task"], ident, one_line(err or out)))
+
+    # ------------------------------------------------------------ alarms
+
+    def alarm(self, summary):
+        """Wake main about a failed or refused run; the alarm is kept on disk until main's inbox takes it."""
+        rid = "component-drift-failed-%s-%d" % (time.strftime("%Y%m%d%H%M", time.gmtime(self.now)), os.getpid())
+        text = ("The component-skill drift run failed: %s. Its log %s names every failed step (FAILED lines); fix "
+                "the cause. Adds and wakes it could not finish are retried by the next daily run." % (
+                    summary, self.log_path))
+        os.makedirs(self.alarm_dir, exist_ok=True)
+        atomic_text(os.path.join(self.alarm_dir, rid + ".json"),
+                    json.dumps({"schema": ALARM_SCHEMA, "request_id": rid, "text": text}) + "\n")
+        self.send_alarms(only=rid)
+
+    def send_alarms(self, only=None):
+        """Deliver kept alarms to main's inbox; the request id makes a repeat delivery a no-op."""
+        for path in sorted(glob.glob(os.path.join(self.alarm_dir, "*.json"))):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                rid, text = data["request_id"], data["text"]
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, KeyError, TypeError) as err:
+                self.log("FAILED: alarm %s cannot be read (%s); move it aside after reading it" % (path, err))
+                continue
+            if only and rid != only:
+                continue
+            rc, out, err = self.run_in(self.home, [self.home_tool(self.home, "fm-inbox.sh"), "note",
+                                                   "--request-id", rid, "--", text])
+            if rc == 0:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+                self.log("alarmed main: %s" % rid)
+            else:
+                self.log("FAILED: could not alarm main with %s: %s; the next run retries" % (
+                    rid, one_line(err or out)))
 
     # ------------------------------------------------------------ main
 
@@ -330,51 +416,65 @@ class Run:
             raise RuntimeError("ledger %s is not %s; move it aside to start fresh" % (path, LEDGER_SCHEMA))
         return data["skills"]
 
-    def save_ledger(self, skills):
+    def save_ledger(self):
         atomic_text(os.path.join(self.sdir, "ledger.json"),
-                    json.dumps({"schema": LEDGER_SCHEMA, "skills": skills}, indent=2, sort_keys=True) + "\n")
+                    json.dumps({"schema": LEDGER_SCHEMA, "skills": self.ledger}, indent=2, sort_keys=True) + "\n")
+
+    def resolve_filing(self):
+        """An add an earlier run was stopped in: filed unless the task is gone, then the prior entry stands."""
+        for ident in sorted(self.ledger):
+            entry = self.ledger[ident]
+            if not entry.get("filing"):
+                continue
+            if self.task_state(entry["home_path"], entry["task"]) == "gone":
+                self.log("%s was not filed by a stopped run; its earlier record stands" % entry["task"])
+                self.restore(ident, entry.get("prior"))
+            else:
+                self.log("%s was filed by a stopped run; recorded, its wake is retried" % entry["task"])
+                self.ledger[ident] = {k: v for k, v in entry.items() if k not in ("filing", "prior")}
+                self.ledger[ident]["wake_pending"] = True
+                self.save_ledger()
 
     def execute(self):
-        ledger = self.load_ledger()
+        self.ledger = self.load_ledger()
         self.log("run started for %d home(s)" % len(self.homes))
+        self.send_alarms()
+        self.resolve_filing()
         found = self.collect()
         self.counts["drifted"] = len(found)
         incomplete = bool(self.failures)
-        out = {}
         for ident in sorted(found):
             rec = found[ident]
             fp = self.fingerprint(ident, rec["problems"])
-            entry = ledger.get(ident)
-            if entry and entry.get("fingerprint") == fp:
-                if entry.get("wake_pending"):
-                    self.wake(entry, ident)
+            entry = self.ledger.get(ident)
+            if entry:
                 state = self.task_state(entry["home_path"], entry["task"])
                 if state is None:
                     self.fail("could not read the state of %s in %s; treated as open, nothing filed for %s" % (
                         entry["task"], entry["home"], ident))
-                    out[ident] = entry
+                    continue
+                if state not in CLOSED and entry.get("fingerprint") != fp:
+                    self.update_item(rec, ident, fp, entry)
                     continue
                 if state not in CLOSED:
+                    if entry.get("wake_pending"):
+                        self.wake(entry, ident)
                     self.counts["open"] += 1
                     self.log("unchanged drift of %s: %s in %s is still %s, nothing filed" % (
                         ident, entry["task"], entry["home"], state))
-                    out[ident] = entry
                     continue
-                self.log("unchanged drift of %s, but %s is %s: filing again" % (ident, entry["task"], state))
-            new = self.file_item(rec, ident, fp, entry)
-            if new:
-                out[ident] = new
-        for ident, entry in ledger.items():
-            if ident in out:
-                continue
+                self.log("%s for %s is %s: filing a new item" % (entry["task"], ident, state))
+            self.file_item(rec, ident, fp, entry)
+        for ident in sorted(set(self.ledger) - set(found)):
             if incomplete:
-                out[ident] = entry
                 self.log("kept %s: a map could not be checked this run" % ident)
             else:
+                del self.ledger[ident]
                 self.log("%s no longer drifts; forgotten" % ident)
-        self.save_ledger(out)
-        summary = ("%d map(s) checked, %d drifted skill(s): %d filed, %d still open" % (
-            self.counts["maps"], self.counts["drifted"], self.counts["filed"], self.counts["open"]))
+        self.save_ledger()
+        summary = ("%d map(s) checked, %d drifted skill(s): %d filed, %d rewritten, %d still open" % (
+            self.counts["maps"], self.counts["drifted"], self.counts["filed"], self.counts["updated"],
+            self.counts["open"]))
         if self.failures:
             summary += "; %d failure(s): %s" % (len(self.failures), self.failures[0])
         self.log("run ended: " + summary)
@@ -382,52 +482,44 @@ class Run:
         return summary
 
 
-def write_result(path, run, summary, failed):
-    ended = int(time.time())
-    lines = ["schema=%s" % RESULT_SCHEMA,
-             "started=%s" % utc(run.started),
-             "ended=%s" % utc(ended),
-             "used_seconds=%d" % max(0, ended - run.started),
-             "outcome=%s" % ("failed" if failed else "complete"),
-             "cut_reason=none",
-             "carried_over=%d" % run.carried,
-             "note=%s" % one_line(summary, 500),
-             "report=%s" % run.log_path]
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    atomic_text(path, "\n".join(lines) + "\n")
-
-
 def main(argv):
     ap = argparse.ArgumentParser(prog="fm-component-drift.py")
     ap.add_argument("--home", required=True)
     ap.add_argument("--homes", required=True)
     ap.add_argument("--code-root", required=True)
-    ap.add_argument("--result")
     ap.add_argument("--now", type=int)
     args = ap.parse_args(argv)
     run = Run(args)
     os.makedirs(run.sdir, exist_ok=True)
-    lock = open(os.path.join(run.sdir, ".lock"), "w")
+    lock_path = os.path.join(run.sdir, ".lock")
+    lock = open(lock_path, "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("fm-component-drift: another run holds the lock; nothing done", file=sys.stderr)
+        summary = "another run holds the lock %s, so this run did nothing" % lock_path
+        print("fm-component-drift: " + summary, file=sys.stderr)
+        run.log("FAILED: " + summary)
+        run.alarm(summary)
         return 2
+    signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(signal.SIGINT, interrupt)
     try:
         summary = run.execute()
     except Exception as exc:  # noqa: BLE001 - any crash is "could not run", reported in the summary
         summary = "the run stopped: %s" % one_line(repr(exc))
         try:
+            if run.ledger is not None:
+                run.save_ledger()
             run.log("FAILED: " + summary)
+            run.alarm(summary)
         except OSError:
             pass
         print("fm-component-drift: " + summary, file=sys.stderr)
-        if args.result:
-            write_result(args.result, run, summary, True)
         return 2
-    if args.result:
-        write_result(args.result, run, summary, bool(run.failures))
-    return 1 if run.failures else 0
+    if run.failures:
+        run.alarm(summary)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

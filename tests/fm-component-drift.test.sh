@@ -2,12 +2,15 @@
 # Component-skill drift run: a run where every pin holds files nothing; a
 # changed pinned source files exactly one item, in the home metadata.owner
 # names, and wakes that home, even with the repository checked out in two
-# homes; a rerun of the unchanged drift files no second item while the first
-# is open; once that item is done the same drift files a new one; a further
-# change files a new item naming the open one; an owner naming no local home
-# and a home-map skill without an owner route to main and to the map's home;
-# a map drift cannot read fails the run and its summary. Temp homes, real
-# tasks-axi, a fake clock (--now).
+# homes; a rerun of the unchanged drift, or a further edit of the same
+# drifted source, files no second item while the first is open; a run
+# stopped right after an add records it, so the next run files nothing more
+# and delivers the wake; once that item is done the same drift files a new
+# one; a further drift rewrites the open item in place and wakes its home
+# again; an owner naming no local home and a home-map skill without an owner
+# route to main and to the map's home; a map drift cannot read, and a run
+# refused by the lock, fail and alarm main. Temp homes, real tasks-axi, a
+# fake clock (--now).
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -30,6 +33,7 @@ printf -- '- mate-a - Tooling (home: %s; scope: tooling; projects: proj; added 2
 
 python3 - "$ROOT" "$TMP_ROOT" <<'PY'
 import hashlib
+import fcntl
 import json
 import os
 import re
@@ -114,6 +118,10 @@ def notes(home):
     return sorted(p.read_text() for p in d.glob("*.note")) if d.is_dir() else []
 
 
+def alarms():
+    return [n for n in notes(main) if "component-skill drift run failed" in n]
+
+
 # A repository whose skill pins one in-repo source and one plan in main's data/.
 plan = main / "data/plan.md"
 write(plan, "Plan v1\n")
@@ -137,12 +145,11 @@ ENV["GIT_COMMITTER_DATE"] = "2026-02-01T00:00:00Z"
 git(repo, "commit", "-q", "--allow-empty", "-m", "newer")
 del ENV["GIT_COMMITTER_DATE"]
 
-p = run("--result", str(tmp / "r0.result"))
-check(items(main) == [] and items(mate) == [] and notes(mate) == [],
-      "an unchanged run files nothing", p.stdout + p.stderr)
-res = dict(l.split("=", 1) for l in (tmp / "r0.result").read_text().splitlines())
-check(res["schema"] == "fm-schedule-result/v1" and res["outcome"] == "complete" and res["carried_over"] == "0"
-      and res["report"].endswith("state/component-drift/log"), "the run writes a complete run summary", str(res))
+p = run()
+check(items(main) == [] and items(mate) == [] and notes(mate) == [] and alarms() == [],
+      "an unchanged run files nothing and raises no alarm", p.stdout + p.stderr)
+log = (main / "state/component-drift/log").read_text()
+check("run ended: 1 map(s) checked, 0 drifted" in log, "the log records the run's summary", log[-400:])
 
 write(plan, "Plan v2\n")
 p = run()
@@ -160,18 +167,38 @@ check(items(mate) == [first], "a rerun of the unchanged drift files no second it
       str(items(mate)))
 run()
 check(items(mate) == [first], "a third run files nothing either", str(items(mate)))
+write(plan, "Plan v3\n")
+run()
+check(items(mate) == [first], "editing an already-drifted source again files nothing", str(items(mate)))
 
+# A run stopped right after its add (the owner home's tasks-axi kills it) records the item it filed.
 p = axi(mate, "done", first)
 check(p.returncode == 0, "the first item closes", p.stdout + p.stderr)
-run()
+stopper = mate / "bin/fm-tasks-axi.sh"
+write(stopper, '#!/usr/bin/env bash\n"%s" "$@"; rc=$?\n[ "$1" = add ] && kill -TERM "$PPID"\nexit $rc\n'
+      % (root / "bin/fm-tasks-axi.sh"))
+stopper.chmod(0o755)
+p = run(rc=2)
+stopper.unlink()
 again = [t for t in items(mate) if t != first]
-check(len(again) == 1, "once the item is done, the still-unchanged drift files a new item", str(items(mate)))
+check(len(again) == 1 and len(alarms()) == 1 and "stopped" in alarms()[0],
+      "a stopped run has filed one new item for the done one's unchanged drift and alarms main",
+      "%s %s\n%s" % (items(mate), alarms(), p.stdout + p.stderr))
+woken = len(notes(mate))
+run()
+check(sorted(items(mate)) == sorted([first, again[0]]),
+      "the run after a stopped one files no second item", str(items(mate)))
+check(len(notes(mate)) == woken + 1 and any(again[0] in n for n in notes(mate)),
+      "the run after a stopped one delivers the wake it missed", str(notes(mate)))
 
 write(repo / "docs/contract.md", "Contract v2\n")
+woken = len(notes(mate))
 run()
-third = [t for t in items(mate) if t not in (first, again[0])]
-check(len(third) == 1 and again[0] in body(mate, third[0]),
-      "a further change files a new item naming the open one", str(items(mate)))
+b = body(mate, again[0])
+check(sorted(items(mate)) == sorted([first, again[0]]) and "docs/contract.md" in b and "Rewritten by the drift run" in b,
+      "a further drift rewrites the open item in place and files no new one", "%s\n%s" % (items(mate), b))
+check(len(notes(mate)) == woken + 1 and any("rewrote backlog task %s" % again[0] in n for n in notes(mate)),
+      "the rewrite wakes the owner home again", str(notes(mate)))
 
 # Re-pin everything: the run files nothing and forgets the skill.
 write(repo / ".agents/skills/core-skill/SKILL.md",
@@ -201,10 +228,19 @@ check(len(new) == 1 and new[0].startswith("drift-kit-skill-") and "home map in m
 
 # A map drift cannot read fails the run and says so in the summary.
 write(mate / "config/component-map.json", "{not json")
-p = run("--result", str(tmp / "r1.result"), rc=1)
-res = dict(l.split("=", 1) for l in (tmp / "r1.result").read_text().splitlines())
-check(res["outcome"] == "failed" and "component-map.json" in res["note"],
-      "an unreadable map fails the run and its summary names the map", str(res))
+before = len(alarms())
+p = run(rc=1)
+check(len(alarms()) == before + 1 and any("component-map.json" in a for a in alarms()),
+      "an unreadable map fails the run and its alarm to main names the map", str(alarms()))
 log = (main / "state/component-drift/log").read_text()
 check("FAILED: drift could not check home-map" in log, "the log records the failure", log[-400:])
+
+# A run refused by the lock alarms main, naming the lock, and does nothing else.
+before, filed = len(alarms()), (items(main), items(mate))
+with open(main / "state/component-drift/.lock", "w") as held:
+    fcntl.flock(held, fcntl.LOCK_EX)
+    p = run(rc=2)
+check(len(alarms()) == before + 1 and any("holds the lock" in a and ".lock" in a for a in alarms())
+      and (items(main), items(mate)) == filed,
+      "a run refused by the lock alarms main naming the lock and files nothing", str(alarms()) + p.stderr)
 PY

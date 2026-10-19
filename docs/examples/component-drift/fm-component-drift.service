@@ -1,0 +1,11 @@
+# Example systemd user service for the daily component-skill drift run.
+# Copy to ~/.config/systemd/user/ and replace both paths with this machine's
+# main firstmate code root and home.
+[Unit]
+Description=Firstmate component-skill drift run
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=%h/firstmate/bin/fm-component-drift.sh run --home %h/firstmate

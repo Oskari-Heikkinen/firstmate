@@ -153,6 +153,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/component-drift/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/disk-inventory/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -461,11 +465,11 @@
       "audience": "operator-example"
     },
     {
-      "path": "docs/examples/component-drift/component-drift.conf",
+      "path": "docs/examples/component-drift/fm-component-drift.service",
       "audience": "operator-example"
     },
     {
-      "path": "docs/examples/component-drift/brief.md",
+      "path": "docs/examples/component-drift/fm-component-drift.timer",
       "audience": "operator-example"
     },
     {
