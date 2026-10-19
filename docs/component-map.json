@@ -4,6 +4,6 @@
   "components": [
     {"id": "results-storage", "skill": "results-storage", "paths": ["bin/fm-storage.sh", "bin/fm-pack.sh", "docs/storage.md", "tests/fm-storage.test.sh", "tests/fm-pack.test.sh"]},
     {"id": "loop-observability", "skill": "loop-observability", "paths": ["bin/fm-loop.sh", "bin/fm-loop.py", "bin/fm-project-capacity-lib.sh", "docs/loop-status.md", "tests/fm-loop.test.sh", "tests/fm-project-capacity.test.sh"]},
-    {"id": "component-skills", "skill": "component-skills", "paths": ["bin/fm-component-*", "docs/component-map.md", "docs/component-map.json", "tests/fm-component-map.test.sh"]}
+    {"id": "component-skills", "skill": "component-skills", "paths": ["bin/fm-component-*", "docs/component-map.md", "docs/component-map.json", "docs/component-skills.md", "tests/fm-component-map.test.sh", "tests/fm-component-check.test.sh"]}
   ]
 }

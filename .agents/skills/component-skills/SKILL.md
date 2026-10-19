@@ -6,11 +6,15 @@ metadata:
   internal: true
   sources:
     - path: docs/component-map.md
-      sha256: e648230068fadcb2c40b72fe436ba83343075b4cfa405b51b0dc5c2b13653e80
+      sha256: a6bc5ac74d20099967b4643f88aff52fd53fcba525ab4c7e9d678127e0cf8f0f
     - path: bin/fm-component-map.sh
-      sha256: e7ef850b82cce060ffa57ec512efdbb666387867f986c4242391499b30e554c6
+      sha256: 6b0276f889311a4dcb626054e886d075114b286ae4ed080633be6fa18b5eb2bc
     - path: bin/fm-component-map.py
-      sha256: e6d09b94f9f29ae40b4ea34b00b93c3195089313a132e656b4d324d7af7d918e
+      sha256: 3d7bac0134c2f090d456559e54586deae6c4cb4b076be82b4eb7c99e7af40b17
+    - path: docs/component-skills.md
+      sha256: 0e062df2775715e27e3f65248095a303e28ea7c7a64012b82a379061bf59eb8c
+    - path: bin/fm-component-check.sh
+      sha256: 08974b6c091859d8ab3aaf35480c0ceb75d2198c8cd68fae13fde2d2359c4f1f
     - path: bin/fm-lean-review.sh
       sha256: cdb2b6e7d7b1db33ecce337746a13ca947377419499775d74051f007b160e470
 ---
@@ -21,7 +25,7 @@ metadata:
 
 Every agent that touches a mapped path gets that component's goals, and every review of a change gets that component's review checks, without depending on the model choosing a skill from its description.
 One map per repo, `docs/component-map.json` (schema `component-map/v1`), is the only path-to-skill source; the hook, the brief section, the review-pack resolver and the coverage check all read it and nothing else.
-`bin/fm-component-map.sh` is its one reader (`check`, `touched`, `review-pack`, `drift`), and `docs/component-map.md` owns the schema, the skill shape and the pin format.
+`bin/fm-component-map.sh` is its one reader (`check`, `touched`, `goal`, `review-pack`, `drift`), and `docs/component-map.md` owns the schema, the skill shape and the pin format.
 The hook informs and never blocks: it injects the matched skill's `## Goal and operating principle` and its path once per session and again after compaction, stays silent on unmapped paths, and fails open on bad input or a missing map.
 Review checks reach reviewers as prompt text, because dedicated reviewers run with project skills off.
 Each component skill pins its defining sources by sha256 in `metadata.sources`, and a drift check names any skill whose source changed so its owner updates the skill.
@@ -32,9 +36,11 @@ This mechanism is owned here; each skill's contents belong to its component's ow
 - A second path-to-skill list anywhere: in the hook, a brief template, a review script, skill `paths:` frontmatter or `.claude/rules` (architecture skills plan section 3 item 1; the one-owner rule in `firstmate-coding-guidelines`).
 - Guessing a component from file names or similarity when the map has no match (the plan's C3 goal: "never guesses").
 - Denying or delaying a tool call until a skill is read (plan open question 4: inject only).
-- Failing closed on malformed hook input or a missing map, or reporting a malformed map more than once (plan section 3 item 2).
+- Failing closed on malformed hook input or a missing map, exiting 2 on any failure, or reporting a malformed map more than once (plan section 3 item 2; `docs/component-skills.md` "Output contract").
+- Parsing a map or a skill inside the hook instead of through `bin/fm-component-map.sh` `touched` and `goal` (`docs/component-skills.md` "Purpose and boundary").
+- A Bash sweep that takes git's index lock or re-reads every dirty path's content instead of the batched status, size and mtime fingerprint (`docs/component-skills.md` "Shipped mechanism").
 - Letting a failing or partial `review-pack` block or fail the lean review instead of warning and running Q1-Q4 without Q5 (`bin/fm-lean-review.sh` header).
-- Injecting the whole skill, or injected text over the harness's context cap (plan open question 3: the goal section plus the path).
+- Injecting the whole skill, or injected text over the harness's context cap (plan open question 3: the goal section plus the path; `docs/component-skills.md` keeps it under 9,500 characters).
 - Relying on description triggering alone, or on skills loading inside a reviewer that runs without project settings (plan sections 3 and 4).
 - Weakening any rule `check` enforces so a map passes: accepting unknown keys, letting a non-provisional glob match no tracked file, leaving a tracked file under `roots` in no component, allowing more than six components on one path or a goal section over 1,500 characters; or marking a component `provisional`, narrowing or dropping `roots` to silence a no-match or coverage error (`docs/component-map.md` "Repository map", "Component roots", "Provisional components" and the skill-shape table; `bin/fm-component-map.sh` header).
 - Re-pinning a hash to silence drift without reading the source delta and updating the skill (plan section 5 "Update path").
