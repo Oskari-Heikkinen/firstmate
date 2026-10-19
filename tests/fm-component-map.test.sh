@@ -312,6 +312,7 @@ expect(rc == 1 and "Review checklist unavailable: no '## Review' section." in ou
 # --- review pack across a rename, a deletion and a path with spaces ---
 repo, cmap = make_repo("moves")
 base = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+(repo / "lib").mkdir()
 git(repo, "mv", "src/beta/b.py", "lib/new name.py")
 git(repo, "rm", "-q", "src/alpha/a.py")
 write(repo / "src/alpha/f 1.py", "f = 1\n")
