@@ -45,9 +45,17 @@ TASK_TMP_LIST="$TMP_ROOT/.task-tmps"
 register_task_tmp() {  # <path>
   printf '%s\n' "$1" >> "$TASK_TMP_LIST"
 }
+# Stand-in session processes are started inside those subshells too, so they
+# are registered the same way for the parent's trap to stop.
+SESSION_PID_LIST="$TMP_ROOT/.session-pids"
 
 relaunch_cleanup() {
   local d
+  if [ -f "$SESSION_PID_LIST" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && kill -KILL "$d" 2>/dev/null
+    done < "$SESSION_PID_LIST"
+  fi
   if [ -f "$TASK_TMP_LIST" ]; then
     while IFS= read -r d; do
       [ -n "$d" ] && rm -rf "$d"
@@ -473,21 +481,240 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
 }
 
-test_relaunch_answers_claude_background_work_exit_dialog() {
+test_relaunch_refuses_claude_background_work_exit_dialog() {
   local dir out rc
   dir=$(new_case bgwork rl90)
   add_ship_task "$dir" rl90 claude
   : > "$dir/fake/claude-dialog"
   out=$(run_control "$dir" rl90 relaunch --note "background shell still running"); rc=$?
-  expect_code 0 "$rc" "a relaunch through Claude's background-work dialog should succeed"$'\n'"$out"
-  [ "$(cat "$dir/fake/claude-choice" 2>/dev/null)" = "Move to background and exit" ] \
-    || fail "the old agent should exit through Move to background and exit"$'\n'"$out"
-  assert_contains "$out" "relaunched rl90 harness=claude from=claude" "the outcome should name the transition"
-  [ "$(journal_field "$dir" rl90 exit_result)" = "stopped background-work=kept" ] \
-    || fail "the journal should record that background work was kept, got '$(journal_field "$dir" rl90 exit_result)'"
-  [ "$(journal_field "$dir" rl90 phase)" = complete ] \
-    || fail "the transaction journal should end complete"
-  pass "fm-control relaunch: Claude's background-work exit dialog is answered with Move to background and exit"
+  expect_code 1 "$rc" "a relaunch must refuse Claude's background-work dialog"$'\n'"$out"
+  [ -z "$(cat "$dir/fake/claude-choice" 2>/dev/null)" ] \
+    || fail "no dialog option may be confirmed, got '$(cat "$dir/fake/claude-choice")'"
+  [ "$(tail -1 "$dir/fake/keys")" = Escape ] || fail "the dialog should be dismissed with Escape"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "the old agent must keep running"
+  assert_contains "$out" "Chose Stay with Escape" "the refusal should name the Stay choice"
+  assert_not_contains "$out" "relaunched rl90" "a refused relaunch must not report a replacement"
+  assert_no_grep "Firstmate operational input waiting: read" "$dir/fake/literal" \
+    "no replacement may be launched beside the old agent"
+  pass "fm-control relaunch: Claude's background-work exit dialog is dismissed and refused, never moved to the background"
+}
+
+# A Claude session that outlives its pane - the detached `kind=bg` job a "Move
+# to background and exit" answer leaves behind - is modelled by a real process
+# started in a given directory, plus a session record naming its pid and the
+# kernel start time Claude records as procStart, under the given config dir or
+# else the default one of run_control's HOME. With ignore-term the process
+# ignores SIGTERM, as a session that will not stop. Sets SESSION_PID.
+start_session_process() {  # <cwd> [ignore-term]
+  if [ "${2-}" = ignore-term ]; then
+    ( cd "$1" && trap '' TERM && exec /bin/sleep 300 >/dev/null 2>&1 ) &
+  else
+    ( cd "$1" && exec /bin/sleep 300 >/dev/null 2>&1 ) &
+  fi
+  SESSION_PID=$!
+  printf '%s\n' "$SESSION_PID" >> "$SESSION_PID_LIST"
+}
+
+proc_start_of() {  # <pid>
+  awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat"
+}
+
+write_session_record() {  # <case-dir> <pid> <cwd> <kind> <procStart|-> [config-dir]
+  local sessions="${6:-$1/user-home/.claude}/sessions" start=
+  mkdir -p "$sessions"
+  [ "$5" = - ] || start=",\"procStart\":\"$5\""
+  printf '{"pid":%s,"sessionId":"sess-%s","cwd":"%s"%s,"kind":"%s","entrypoint":"cli"}\n' \
+    "$2" "$2" "$3" "$start" "$4" > "$sessions/$2.json"
+}
+
+process_running() {  # <pid>: alive and not a zombie awaiting its reaper
+  [ -r "/proc/$1/stat" ] || return 1
+  [ "$(awk '{ sub(/.*\) /, ""); print $1 }' "/proc/$1/stat")" != Z ]
+}
+
+test_relaunch_stops_a_surviving_old_session() {
+  local dir out rc pid
+  dir=$(new_case survivor rl95)
+  add_ship_task "$dir" rl95 claude
+  start_session_process "$dir/wt"
+  pid=$SESSION_PID
+  write_session_record "$dir" "$pid" "$dir/wt" bg "$(proc_start_of "$pid")"
+  out=$(run_control "$dir" rl95 relaunch --note "account moved"); rc=$?
+  expect_code 0 "$rc" "a relaunch should stop the old agent's surviving session, then proceed"$'\n'"$out"
+  ! process_running "$pid" || fail "the surviving old session $pid should have been stopped"
+  wait "$pid" 2>/dev/null
+  [ "$?" = 143 ] || fail "the surviving old session should have ended by SIGTERM"
+  [ "$(journal_field "$dir" rl95 exit_result)" = "stopped session-stopped=$pid" ] \
+    || fail "the journal should record the stopped session, got '$(journal_field "$dir" rl95 exit_result)'"
+  assert_contains "$out" "relaunched rl95 harness=claude from=claude" "the outcome should name the transition"
+  pass "fm-control relaunch: an old Claude session surviving as a background job in the copy is stopped and verified gone first"
+}
+
+test_account_move_stops_a_survivor_under_the_old_login() {
+  local dir out rc pid decoy
+  dir=$(new_case survivor-login rl99)
+  add_ship_task "$dir" rl99 claude
+  add_accounts "$dir"
+  printf 'account=gmail\nclaude_config_dir=%s\n' "$dir/gmail" >> "$dir/home/state/rl99.meta"
+  # The old agent ran on the gmail login, so its surviving session is recorded
+  # there; a live session with a proven record for the same copy under the
+  # default ~/.claude was not launched by this task and must be left alone.
+  start_session_process "$dir/wt"
+  pid=$SESSION_PID
+  write_session_record "$dir" "$pid" "$dir/wt" bg "$(proc_start_of "$pid")" "$dir/gmail"
+  start_session_process "$dir/wt"
+  decoy=$SESSION_PID
+  write_session_record "$dir" "$decoy" "$dir/wt" bg "$(proc_start_of "$decoy")"
+  out=$(FM_SPAWN_ACCOUNT=work run_control "$dir" rl99 relaunch --note "moved to another login"); rc=$?
+  expect_code 0 "$rc" "an account move should stop the old login's surviving session, then proceed"$'\n'"$out"
+  ! process_running "$pid" || fail "the surviving session under the old login $pid should have been stopped"
+  process_running "$decoy" || fail "a session recorded under another config dir must be left running"
+  kill "$decoy" 2>/dev/null
+  [ "$(journal_field "$dir" rl99 exit_result)" = "stopped session-stopped=$pid" ] \
+    || fail "the journal should record the stopped session, got '$(journal_field "$dir" rl99 exit_result)'"
+  assert_grep "CLAUDE_CONFIG_DIR='$dir/work' " "$dir/fake/literal" "the replacement must launch on the new login"
+  pass "fm-control relaunch: an account move stops the old session recorded under the login it was launched with"
+}
+
+test_relaunch_with_no_surviving_session_proceeds() {
+  local dir out rc pid
+  dir=$(new_case no-survivor rl96)
+  add_ship_task "$dir" rl96 claude
+  # The exited pane's own record whose process is gone, and a record whose pid
+  # now belongs to another process (a different start time): neither is a
+  # running session of the old agent.
+  start_session_process "$dir"
+  pid=$SESSION_PID
+  write_session_record "$dir" "$pid" "$dir/wt" bg "$(( $(proc_start_of "$pid") + 1 ))"
+  write_session_record "$dir" 999999999 "$dir/wt" interactive 12345
+  out=$(run_control "$dir" rl96 relaunch --note "clean exit"); rc=$?
+  expect_code 0 "$rc" "a relaunch with no surviving session should proceed"$'\n'"$out"
+  process_running "$pid" || fail "a process whose start time does not match its record must not be signalled"
+  kill "$pid" 2>/dev/null
+  [ "$(journal_field "$dir" rl96 exit_result)" = stopped ] \
+    || fail "no session should be reported stopped, got '$(journal_field "$dir" rl96 exit_result)'"
+  assert_contains "$out" "relaunched rl96 harness=claude" "the relaunch should complete"
+  pass "fm-control relaunch: a clean exit with no live session left in the copy relaunches normally"
+}
+
+test_relaunch_leaves_a_session_in_another_copy_untouched() {
+  local dir out rc pid
+  dir=$(new_case other-copy rl97)
+  add_ship_task "$dir" rl97 claude
+  mkdir -p "$dir/other-copy"
+  start_session_process "$dir/other-copy"
+  pid=$SESSION_PID
+  write_session_record "$dir" "$pid" "$dir/other-copy" bg "$(proc_start_of "$pid")"
+  out=$(run_control "$dir" rl97 relaunch --note "neighbour busy"); rc=$?
+  expect_code 0 "$rc" "a background session in another copy must not block the relaunch"$'\n'"$out"
+  process_running "$pid" || fail "a background session in another copy must be left running"
+  kill "$pid" 2>/dev/null
+  [ "$(journal_field "$dir" rl97 exit_result)" = stopped ] \
+    || fail "no session should be reported stopped, got '$(journal_field "$dir" rl97 exit_result)'"
+  pass "fm-control relaunch: a Claude background session in a different copy is left untouched"
+}
+
+test_relaunch_refuses_an_unproven_surviving_session() {
+  local dir out rc pid
+  dir=$(new_case unproven rl98)
+  add_ship_task "$dir" rl98 claude
+  start_session_process "$dir/wt"
+  pid=$SESSION_PID
+  write_session_record "$dir" "$pid" "$dir/wt" bg -
+  cp "$dir/home/data/rl98/brief.md" "$dir/brief-before"
+  out=$(run_control "$dir" rl98 relaunch --note "identity unknown"); rc=$?
+  expect_code 1 "$rc" "a surviving session whose identity cannot be proven must refuse"$'\n'"$out"
+  process_running "$pid" || fail "an unproven session must not be signalled"
+  kill "$pid" 2>/dev/null
+  assert_contains "$out" "as pid $pid ($dir/user-home/.claude/sessions/$pid.json)" \
+    "the refusal should name the surviving pid and its session record"
+  assert_not_contains "$out" "relaunched rl98" "a refused relaunch must not report a replacement"
+  assert_no_grep "Firstmate operational input waiting: read" "$dir/fake/literal" \
+    "no replacement may be launched beside the surviving session"
+  [ "$(journal_field "$dir" rl98 phase)" = failed:reaping ] \
+    || fail "the journal should end failed:reaping, got '$(journal_field "$dir" rl98 phase)'"
+  cmp -s "$dir/home/data/rl98/brief.md" "$dir/brief-before" \
+    || fail "a refused relaunch must restore the old agent's instructions byte-for-byte"
+  pass "fm-control relaunch: a surviving session that cannot be proven the old agent's own refuses without a success claim"
+}
+
+test_exit_stops_a_surviving_old_session() {
+  local dir out rc pid
+  dir=$(new_case exit-survivor rl99)
+  add_ship_task "$dir" rl99 claude
+  start_session_process "$dir/wt"
+  pid=$SESSION_PID
+  write_session_record "$dir" "$pid" "$dir/wt" bg "$(proc_start_of "$pid")"
+  out=$(run_control "$dir" rl99 exit); rc=$?
+  expect_code 0 "$rc" "exit should stop the old agent's surviving session"$'\n'"$out"
+  ! process_running "$pid" || fail "the surviving old session $pid should have been stopped"
+  assert_contains "$out" "stopped session-stopped=$pid rl99 harness=claude" \
+    "exit should report the session it stopped"
+  pass "fm-control exit: an old Claude session surviving as a background job in the copy is stopped and reported"
+}
+
+test_refused_exit_still_records_the_deliberate_stop() {
+  local dir out rc pid
+  dir=$(new_case exit-unproven rl102)
+  add_ship_task "$dir" rl102 claude
+  start_session_process "$dir/wt"
+  pid=$SESSION_PID
+  write_session_record "$dir" "$pid" "$dir/wt" bg -
+  out=$(run_control "$dir" rl102 exit); rc=$?
+  expect_code 1 "$rc" "exit must refuse beside a surviving session it cannot prove its own"$'\n'"$out"
+  process_running "$pid" || fail "an unproven session must not be signalled"
+  kill "$pid" 2>/dev/null
+  assert_not_contains "$out" "stopped rl102" "a refused exit must not claim a stop"
+  [ -f "$dir/home/state/rl102.control-exit" ] \
+    || fail "a refused exit must still record the deliberate stop so session start does not revive the task beside the survivor"
+  pass "fm-control exit: an exit refused on an unproven survivor still records the deliberate stop"
+}
+
+test_relaunch_refuses_a_surviving_session_that_does_not_stop() {
+  local dir out rc pid
+  dir=$(new_case survivor-stays rl100)
+  add_ship_task "$dir" rl100 claude
+  start_session_process "$dir/wt" ignore-term
+  pid=$SESSION_PID
+  sleep 0.2
+  write_session_record "$dir" "$pid" "$dir/wt" bg "$(proc_start_of "$pid")"
+  cp "$dir/home/data/rl100/brief.md" "$dir/brief-before"
+  out=$(FM_CONTROL_SURVIVOR_WAIT=0.2 run_control "$dir" rl100 relaunch --note "will not stop"); rc=$?
+  expect_code 1 "$rc" "a surviving session that outlives SIGTERM must refuse"$'\n'"$out"
+  process_running "$pid" || fail "the stand-in session should have ignored SIGTERM"
+  kill -KILL "$pid" 2>/dev/null
+  assert_contains "$out" "as pid $pid ($dir/user-home/.claude/sessions/$pid.json) 0.2s after SIGTERM" \
+    "the refusal should name the surviving pid, its record, and the wait"
+  assert_not_contains "$out" "relaunched rl100" "a refused relaunch must not report a replacement"
+  assert_no_grep "Firstmate operational input waiting: read" "$dir/fake/literal" \
+    "no replacement may be launched beside the surviving session"
+  [ "$(journal_field "$dir" rl100 phase)" = failed:reaping ] \
+    || fail "the journal should end failed:reaping, got '$(journal_field "$dir" rl100 phase)'"
+  cmp -s "$dir/home/data/rl100/brief.md" "$dir/brief-before" \
+    || fail "a refused relaunch must restore the old agent's instructions byte-for-byte"
+  pass "fm-control relaunch: a surviving session that does not stop after SIGTERM refuses by pid and record"
+}
+
+test_exit_refuses_when_session_records_cannot_be_read() {
+  local dir out rc nojq d f
+  dir=$(new_case no-jq rl101)
+  add_ship_task "$dir" rl101 claude
+  mkdir -p "$dir/user-home/.claude/sessions"
+  # A PATH holding every command this run reaches except jq.
+  nojq="$dir/nojq-bin"
+  mkdir -p "$nojq"
+  local IFS=:
+  for d in $PATH; do
+    for f in "$d"/*; do
+      [ -x "$f" ] && [ ! -e "$nojq/${f##*/}" ] && [ "${f##*/}" != jq ] && ln -s "$f" "$nojq/${f##*/}"
+    done
+  done
+  unset IFS
+  out=$(PATH="$nojq" run_control "$dir" rl101 exit); rc=$?
+  expect_code 1 "$rc" "exit must refuse when no surviving session can be ruled out"$'\n'"$out"
+  assert_contains "$out" "cannot be read (jq is missing)" "the refusal should name the unreadable session records"
+  assert_not_contains "$out" "stopped rl101" "a refused exit must not claim a stop"
+  pass "fm-control exit: unreadable Claude session records refuse rather than claim the old agent stopped"
 }
 
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
@@ -3317,4 +3544,13 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause \
   test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it \
   test_relaunch_moves_a_drifted_item_back_in_flight \
-  test_relaunch_answers_claude_background_work_exit_dialog
+  test_relaunch_refuses_claude_background_work_exit_dialog \
+  test_relaunch_stops_a_surviving_old_session \
+  test_account_move_stops_a_survivor_under_the_old_login \
+  test_relaunch_with_no_surviving_session_proceeds \
+  test_relaunch_leaves_a_session_in_another_copy_untouched \
+  test_relaunch_refuses_an_unproven_surviving_session \
+  test_exit_stops_a_surviving_old_session \
+  test_refused_exit_still_records_the_deliberate_stop \
+  test_relaunch_refuses_a_surviving_session_that_does_not_stop \
+  test_exit_refuses_when_session_records_cannot_be_read

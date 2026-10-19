@@ -245,9 +245,12 @@ fm_control_exit_command() {  # <harness>
 # single rendered string is load-bearing, and each must fill its whole row.
 # bin/fm-control.sh counts only rows the viewport did not show before the exit
 # command was typed, so a transcript quoting the dialog does not read as the
-# dialog. Verified live on Claude Code 2.1.286 in tmux: Down then Enter on the focused background option exited the
-# agent and left its background shell running, and Escape left the agent
-# running at an empty composer.
+# dialog. No option is ever confirmed: `Exit and stop tasks` kills the agent's
+# background work, and `Move to background and exit` keeps the WHOLE session
+# running as a detached Claude background job (a `kind=bg` session record) that
+# goes on editing the copy beside any replacement. The control plane answers
+# with the dismiss key below and refuses. Verified live on Claude Code 2.1.286
+# in tmux: Escape left the agent running at an empty composer.
 fm_control_exit_dialog_signal() {  # <harness>
   case "${1-}" in
     claude) printf '%s' '^[[:space:]]*(Background work is running|The following will stop when you exit:|(❯[[:space:]]*)?([0-9]+\.[[:space:]]*)?Exit and stop tasks)[[:space:]]*$' ;;
@@ -256,21 +259,81 @@ fm_control_exit_dialog_signal() {  # <harness>
   esac
 }
 
-# The exit dialog's work-preserving option: its label, an ERE for the option
-# row that proves it is offered, the key that moves focus onto it from the
-# default option, an ERE proving that focus, and the key that dismisses the
-# dialog without exiting. Tab-separated; nothing when the adapter has no exit
-# dialog. The focus proof matters because Enter confirms whatever is focused,
-# and the default focus stops the background work; Enter is sent only after
-# that proof renders.
-fm_control_exit_dialog_preserve() {  # <harness> -> label, offered ERE, focus key, focused ERE, dismiss key
+# The key that closes the exit dialog without exiting (Stay); nothing when the
+# adapter has no exit dialog. Enter is never the answer, because it confirms the
+# focused option.
+fm_control_exit_dialog_dismiss_key() {  # <harness>
   case "${1-}" in
-    claude) printf '%s\t%s\t%s\t%s\t%s\n' 'Move to background and exit' \
-      '^[[:space:]]*(❯[[:space:]]*)?([0-9]+\.[[:space:]]*)?Move to background and exit[[:space:]]*$' Down \
-      '^[[:space:]]*❯[[:space:]]*([0-9]+\.[[:space:]]*)?Move to background and exit[[:space:]]*$' Escape ;;
+    claude) printf 'Escape' ;;
     codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|devin) ;;
     *) return 1 ;;
   esac
+}
+
+# The kernel start time of a live process (field 22 of /proc/<pid>/stat, in
+# clock ticks since boot), the value Claude records as a session's
+# `procStart`. Fails for a dead or zombie process and wherever /proc is absent,
+# so a caller can never mistake "unreadable" for "a different process".
+fm_control_proc_start() {  # <pid>
+  local stat
+  case "${1-}" in ''|*[!0-9]*) return 1 ;; esac
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  # The command name in field 2 may hold spaces or parentheses; fields 3 on
+  # start after its last closing parenthesis.
+  stat=${stat##*) }
+  # shellcheck disable=SC2086 # deliberate word split into the stat fields
+  set -- $stat
+  [ "$#" -ge 20 ] && [ "$1" != Z ] || return 1
+  printf '%s' "${20}"
+}
+
+# Claude session records under <sessions-dir> (<config-dir>/sessions/*.json,
+# one per running Claude process) whose `cwd` is exactly <cwd> and whose
+# process is still alive, one tab-separated row each:
+#   proven <pid> <kind> <record>    pid is alive and its kernel start time is
+#                                   the record's procStart: this exact process
+#                                   wrote the record
+#   unproven <pid> <kind> <record>  pid answers kill -0 but its identity cannot
+#                                   be proven (no procStart, or no /proc)
+# A record whose pid is dead, or now belongs to a process with another start
+# time (a reused pid), describes no running session and is skipped, as is a
+# record that does not parse. A missing directory holds no sessions. Fails
+# only when jq, which reads the records, is missing.
+fm_control_claude_live_sessions() {  # <sessions-dir> <cwd>
+  local dir=$1 cwd=$2 rec row pid start kind live
+  local -a recs
+  [ -d "$dir" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 1
+  recs=("$dir"/*.json)
+  # The directory is shared by every Claude session on the machine, so parse
+  # only records that carry the path verbatim; a path JSON would escape
+  # (a quote or backslash) cannot be prefiltered and parses them all.
+  case "$cwd" in
+    *'"'* | *\\*) ;;
+    *) mapfile -t recs < <(grep -lF -- "$cwd" "${recs[@]}" 2>/dev/null) ;;
+  esac
+  for rec in "${recs[@]}"; do
+    [ -f "$rec" ] || continue
+    row=$(jq -r --arg cwd "$cwd" \
+      'select(type == "object" and .cwd == $cwd and ((.pid | type) == "number"))
+       | [(.pid | tostring),
+          ((.procStart // "") | tostring | if . == "" then "-" else . end),
+          ((.kind // "") | tostring | if . == "" then "unknown" else . end)] | @tsv' \
+      "$rec" 2>/dev/null) || continue
+    [ -n "$row" ] || continue
+    # Tab is IFS whitespace, so read collapses an empty field into the next
+    # one; every field above is therefore non-empty, with "-" for no procStart.
+    IFS=$'\t' read -r pid start kind <<< "$row"
+    if live=$(fm_control_proc_start "$pid"); then
+      if [ "$start" = - ]; then
+        printf 'unproven\t%s\t%s\t%s\n' "$pid" "$kind" "$rec"
+      elif [ "$live" = "$start" ]; then
+        printf 'proven\t%s\t%s\t%s\n' "$pid" "$kind" "$rec"
+      fi
+    elif [ ! -d /proc/self ] && kill -0 "$pid" 2>/dev/null; then
+      printf 'unproven\t%s\t%s\t%s\n' "$pid" "$kind" "$rec"
+    fi
+  done
 }
 
 # The launch argument that makes a RELAUNCH of <harness> RESUME an exact agent
@@ -313,17 +376,12 @@ fm_control_relaunch_resume_flag() {  # <harness> <registered-agent>
 # Which named keys a backend adapter can deliver. Every session provider
 # normalizes Enter, Ctrl+C, and the Ctrl+U composer clear; Orca's terminal API
 # exposes only an interrupt and an Enter, so it can deliver neither Escape nor
-# Ctrl+U (bin/backends/orca.sh's fm_backend_orca_send_key). Down moves a
-# dialog's focus for fm_control_exit_dialog_preserve, so it is listed only on
-# the two backends that can prove an exit at all; tmux was verified live, and
-# herdr's `down` key name is unverified there but harmless, because Enter
-# waits for the focus to render.
+# Ctrl+U (bin/backends/orca.sh's fm_backend_orca_send_key).
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
     tmux|herdr|zellij|cmux)
       case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
-      case "$backend:$key" in tmux:Down|herdr:Down) return 0 ;; esac
       ;;
     orca)
       case "$key" in Enter|C-c) return 0 ;; esac

@@ -39,10 +39,13 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Claude answers `/exit` with a "Background work is running" dialog while background shells or scheduled tasks are live, focused on `Exit and stop tasks`.
 `exit` submits Claude's exit command with one Enter, because the dialog's focused row reads as pending composer text and a retried Enter would stop that work.
-When the dialog offers `Move to background and exit`, `exit` moves focus onto it, presses Enter only after that focus renders, and requires the agent to read dead, reporting `stopped background-work=kept`.
-Otherwise it chooses Stay with Escape and refuses by naming the dialog, leaving the agent and its background work running, so `relaunch` fails before anything is launched.
+`exit` always chooses Stay with Escape and refuses by naming the dialog, leaving the agent and its background work running, so `relaunch` fails before anything is launched.
+Neither exit option is safe: `Exit and stop tasks` kills the background work, and `Move to background and exit` keeps the whole session running as a detached `kind=bg` job that goes on editing the copy beside any replacement.
 Only dialog rows the viewport did not already show before `/exit` was typed count, so a transcript quoting the dialog is never answered as the dialog.
-The tmux Down key was verified live; herdr's `down` key is not yet live-verified, and is guarded by the same focus proof, so Enter follows only once focus renders on `Move to background and exit`, and otherwise `exit` chooses Stay and refuses by name.
+A stopped pane is not proof that the old Claude agent stopped, so after the pane stops, `exit` and `relaunch` read the session records under the task's Claude config dir (`claude_config_dir`, else `~/.claude`) and consider only those whose `cwd` is exactly the task's copy and whose pid is alive.
+A live process whose kernel start time matches its record's `procStart` is stopped with SIGTERM and must be gone within `FM_CONTROL_SURVIVOR_WAIT` seconds, reported as `session-stopped=<pid>`.
+One whose identity cannot be proven, or that does not stop, refuses naming its pid and record, and a relaunch then restores the instructions, journals `failed:reaping`, and launches nothing beside it.
+Sessions in any other copy or home are never touched.
 [`bin/fm-control-lib.sh`](../bin/fm-control-lib.sh) owns the dialog signals and keys.
 Interrupt never rewrites busy state as proof of its own success.
 Claude exposes no lifecycle acknowledgement for a manual interrupt, so delivery succeeds with `cancel=unconfirmed` and its adapter-owned busy state remains as observed.

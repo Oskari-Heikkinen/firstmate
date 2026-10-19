@@ -1410,7 +1410,7 @@ The same strings quoted above a normal composer, as a diff, this note, or a test
 Submit retries now stop after the Enter that opened the picker and report unknown.
 A typed submit to a pane that already shows the picker types nothing and sends no Enter.
 The fork refuses an already-open picker before typing `/exit`, naming it as a blocked prompt and sending no keys.
-For a picker opened by its own `/exit`, the retained control path instead selects `Move to background and exit` only after proving the preserving focus, or dismisses with Escape and refuses; [the fork's live dialog record](#claude-background-work-exit-dialog) documents that path.
+For a picker opened by its own `/exit`, the control path dismisses with Escape and refuses; [the fork's live dialog record](#claude-background-work-exit-dialog) documents that path.
 A submit can return before any read sees a late picker; the stop wait can then report an unconfirmed exit without naming it, so this historical submit observation is not proof that every late-rendering picker was answered.
 Exit does not report a stopped agent whose pane still shows the picker text as blocked on a prompt.
 The watcher does not read the picker: a pane parked on it keeps the ordinary stale triage.
@@ -1828,6 +1828,9 @@ With a background shell running (bash mode `!sleep <n>`, then Ctrl+B twice), `/e
 
 Some sessions omit `Move to background and exit`, leaving `1. Exit and stop tasks` and `2. Stay`, so a digit cannot name the work-preserving option.
 Down moved the focus to `❯ 2. Move to background and exit`, and Enter then exited Claude while the backgrounded `sleep` kept running.
+On Claude Code 2.1.303, observed 2026-10-19 after account moves, that answer leaves the whole session running: its record under `<config>/sessions/<pid>.json` reads `kind=bg` with a live pid and the copy as its `cwd`, and it keeps editing that copy beside the relaunched agent.
+`bin/fm-control.sh` therefore never confirms either exit option and stops or refuses any live session left in the copy after the pane stops.
+A session record's `procStart` equals field 22 (start time) of `/proc/<pid>/stat` for its pid, which is how the control plane proves a pid still belongs to the recorded session before signalling it.
 Escape chose Stay and returned to an empty composer.
 While the dialog is open, `fm_tmux_composer_state` reads its focused row as `pending`, so a blind Enter retry after `/exit` confirms `Exit and stop tasks`; the first live run of the guard below stopped Claude that way before `bin/fm-control.sh` submitted its exit command with a single Enter.
 Herdr's `down` key name was not exercised live: the lab helper refused to provision because the host's `default` session was stopped.
@@ -1838,11 +1841,13 @@ The guard that refreshes this record drives the real `bin/fm-control.sh exit` ag
 FM_CLAUDE_EXIT_DIALOG_LIVE_E2E=1 tests/fm-control-claude-exit-dialog-live-e2e.test.sh
 ```
 
-Observed 2026-10-01, three runs:
+Observed 2026-10-01, three runs, with the earlier guard that accepted `Move to background and exit`:
 
 ```text
 ok - Claude Code 2.1.286 (Claude Code): fm-control exit answered the background-work dialog and kept the shell
 ```
+
+The guard now requires the Stay refusal, a proven live session record for the running agent, and, when the dialog offers the background option, that `fm-control exit` stops the detached session a by-hand `Move to background and exit` leaves behind; it has not yet been run live in that form.
 
 `tests/fm-control.test.sh` and `tests/fm-control-relaunch.test.sh` pin the portable logic with a tmux stub that renders those rows.
 

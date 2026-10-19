@@ -82,7 +82,7 @@ verified_adapter_contract() {  # <harness> -> exit command, interrupt key, repea
 #            after a few more state reads, counted down in `claude-dying`).
 #            The Enter that submits /exit then opens the dialog instead of
 #            stopping the agent, `claude-focus` holds the
-#            focused option number, Down moves it unless FM_FAKE_CLAUDE_DOWN_IGNORED is set,
+#            focused option number, Down moves it,
 #            Escape closes the dialog (Stay), and Enter answers the focused
 #            option, recording its label in `claude-choice`. Until the
 #            dialog opens the composer renders `❯ /exit`, and
@@ -179,8 +179,7 @@ case "${1:-}" in
       elif [ -f "$D/claude-focus" ]; then
         case "$payload" in
           Down)
-            if [ -z "${FM_FAKE_CLAUDE_DOWN_IGNORED:-}" ] \
-               && [ "$(cat "$D/claude-focus")" -lt "$(claude_dialog_options | wc -l)" ]; then
+            if [ "$(cat "$D/claude-focus")" -lt "$(claude_dialog_options | wc -l)" ]; then
               printf '%s' "$(( $(cat "$D/claude-focus") + 1 ))" > "$D/claude-focus"
             fi
             ;;
@@ -329,7 +328,6 @@ run_control() {
     FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK="${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" \
     FM_FAKE_INTERRUPT_STOPS_AGENT="${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" \
     FM_FAKE_DEVIN_PICKER_STUCK="${FM_FAKE_DEVIN_PICKER_STUCK:-}" \
-    FM_FAKE_CLAUDE_DOWN_IGNORED="${FM_FAKE_CLAUDE_DOWN_IGNORED:-}" \
     FM_FAKE_CLAUDE_SWALLOW_FIRST_ENTER="${FM_FAKE_CLAUDE_SWALLOW_FIRST_ENTER:-}" \
     FM_CONTROL_EXIT_WAIT="${FM_CONTROL_EXIT_WAIT:-0.05}" \
     "$CONTROL" "$@" 2>&1
@@ -504,47 +502,38 @@ claude_choice() {  # <case-dir>
   cat "$1/fake/claude-choice" 2>/dev/null || true
 }
 
-test_claude_exit_dialog_moves_background_work_and_exits() {
-  local dir out rc
-  dir=$(claude_dialog_case claude-dialog-offered offered)
-  out=$(run_control "$dir" t1 exit); rc=$?
-  expect_code 0 "$rc" "exit through the offered background option should succeed"$'\n'"$out"
-  [ "$(claude_choice "$dir")" = "Move to background and exit" ] \
-    || fail "exit should answer the dialog with Move to background and exit, got: '$(claude_choice "$dir")'"$'\n'"$out"
-  [ "$(cat "$dir/fake/keys")" = $'Enter\nDown\nEnter' ] \
-    || fail "exit should submit /exit with one Enter, never retry it onto the dialog, then Down and Enter, got: $(cat "$dir/fake/keys")"
-  [ "$(cat "$dir/fake/command")" = zsh ] || fail "the agent should have stopped"
-  assert_contains "$out" "stopped background-work=kept t1 harness=claude" \
-    "exit should report the verified stop and the kept background work"
-  pass "fm-control exit: Claude's background-work dialog is answered with Move to background and exit, then the stop is verified"
-}
+# Why every Claude exit dialog is refused: both of its exit options are unsafe.
+CLAUDE_DIALOG_WHY="either stop that background work or keep the whole session running as a detached background job"
 
-assert_claude_dialog_refused() {  # <case-dir> <out> <rc> <reason-fragment> <label>
+assert_claude_dialog_refused() {  # <case-dir> <out> <rc> <label>
   local dir=$1 out=$2 rc=$3
-  expect_code 1 "$rc" "$5 should refuse"$'\n'"$out"
-  assert_contains "$out" "Background work is running" "$5 should name the dialog"
-  assert_contains "$out" "$4" "$5 should say why it could not choose"
-  assert_contains "$out" "Chose Stay with Escape" "$5 should say the dialog was dismissed with Stay"
-  assert_not_contains "$out" "stopped t1" "$5 must not claim a stop"
+  expect_code 1 "$rc" "$4 should refuse"$'\n'"$out"
+  assert_contains "$out" "Background work is running" "$4 should name the dialog"
+  assert_contains "$out" "$CLAUDE_DIALOG_WHY" "$4 should say why no option was chosen"
+  assert_contains "$out" "Chose Stay with Escape" "$4 should say the dialog was dismissed with Stay"
+  assert_not_contains "$out" "stopped t1" "$4 must not claim a stop"
   [ -z "$(claude_choice "$dir")" ] \
-    || fail "$5 must never confirm a dialog option, got: '$(claude_choice "$dir")'"
-  [ ! -f "$dir/fake/claude-focus" ] || fail "$5 should leave the dialog closed"
-  [ "$(cat "$dir/fake/command")" = claude ] || fail "$5 must leave the agent running"
+    || fail "$4 must never confirm a dialog option, got: '$(claude_choice "$dir")'"
+  [ ! -f "$dir/fake/claude-focus" ] || fail "$4 should leave the dialog closed"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "$4 must leave the agent running"
 }
 
-test_claude_exit_dialog_without_background_option_refuses() {
-  local dir out rc
-  dir=$(claude_dialog_case claude-dialog-absent absent)
-  out=$(run_control "$dir" t1 exit); rc=$?
-  assert_claude_dialog_refused "$dir" "$out" "$rc" "offers no 'Move to background and exit' option" \
-    "exit on a dialog without the background option"
-  [ "$(cat "$dir/fake/keys")" = $'Enter\nEscape' ] \
-    || fail "only the submitting Enter and Escape should be sent, got: $(cat "$dir/fake/keys")"
-  out=$(run_control "$dir" t1 relaunch --note "carry on"); rc=$?
-  assert_claude_dialog_refused "$dir" "$out" "$rc" "offers no 'Move to background and exit' option" \
-    "relaunch on a dialog without the background option"
-  assert_not_contains "$out" "relaunched t1" "the refused relaunch must not report a replacement"
-  pass "fm-control exit/relaunch: a background-work dialog with no preserving option is dismissed with Stay and refused by name"
+# Move to background and exit would keep the whole old session running as a
+# detached background job beside any replacement, so it is never chosen, even
+# when offered; Exit and stop tasks would kill the agent's background work.
+test_claude_exit_dialog_is_dismissed_and_refused() {
+  local dir out rc offer
+  for offer in offered absent; do
+    dir=$(claude_dialog_case "claude-dialog-$offer" "$offer")
+    out=$(run_control "$dir" t1 exit); rc=$?
+    assert_claude_dialog_refused "$dir" "$out" "$rc" "exit on a dialog ($offer background option)"
+    [ "$(cat "$dir/fake/keys")" = $'Enter\nEscape' ] \
+      || fail "only the submitting Enter and Escape should be sent ($offer), got: $(cat "$dir/fake/keys")"
+    out=$(run_control "$dir" t1 relaunch --note "carry on"); rc=$?
+    assert_claude_dialog_refused "$dir" "$out" "$rc" "relaunch on a dialog ($offer background option)"
+    assert_not_contains "$out" "relaunched t1" "the refused relaunch must not report a replacement"
+  done
+  pass "fm-control exit/relaunch: Claude's background-work dialog is dismissed with Stay and refused, never moved to the background"
 }
 
 test_claude_exit_ignores_a_transcript_quoting_the_dialog() {
@@ -562,22 +551,10 @@ test_claude_exit_retries_a_swallowed_enter_only_before_the_dialog() {
   local dir out rc
   dir=$(claude_dialog_case claude-dialog-swallow offered)
   out=$(FM_FAKE_CLAUDE_SWALLOW_FIRST_ENTER=1 FM_CONTROL_EXIT_WAIT=5 run_control "$dir" t1 exit); rc=$?
-  expect_code 0 "$rc" "a swallowed first Enter should be retried"$'\n'"$out"
-  [ "$(cat "$dir/fake/keys")" = $'Enter\nEnter\nDown\nEnter' ] \
-    || fail "exit should retry Enter once while /exit is still in the composer, then answer the dialog, got: $(cat "$dir/fake/keys")"
-  [ "$(claude_choice "$dir")" = "Move to background and exit" ] \
-    || fail "the dialog should be answered with Move to background and exit, got: '$(claude_choice "$dir")'"
+  assert_claude_dialog_refused "$dir" "$out" "$rc" "exit after a swallowed Enter"
+  [ "$(cat "$dir/fake/keys")" = $'Enter\nEnter\nEscape' ] \
+    || fail "exit should retry Enter once while /exit is still in the composer, then dismiss the dialog, got: $(cat "$dir/fake/keys")"
   pass "fm-control exit: a swallowed /exit Enter is retried only while the composer still shows it"
-}
-
-test_claude_exit_dialog_unproven_focus_refuses() {
-  local dir out rc
-  dir=$(claude_dialog_case claude-dialog-stuck offered)
-  out=$(FM_FAKE_CLAUDE_DOWN_IGNORED=1 run_control "$dir" t1 exit); rc=$?
-  assert_claude_dialog_refused "$dir" "$out" "$rc" "focus did not render on 'Move to background and exit'" \
-    "exit when focus never reaches the background option"
-  [ "$(keys_sent "$dir")" = $'Down\nEscape' ] || fail "Down then Escape should be sent, got: $(keys_sent "$dir")"
-  pass "fm-control exit: Enter is never sent until focus is proven on Move to background and exit"
 }
 
 # A recorded harness can carry a raw launch command's basename, so the tables
@@ -1071,19 +1048,18 @@ test_exit_refuses_the_confirming_enter() {
   out=$(env FM_FAKE_NEVER_DIES=1 PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" \
     FM_FAKE_DIR="$dir/fake" FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 \
     "$CONTROL" t1 exit 2>&1); rc=$?
-  expect_code 1 "$rc" "an unproven preserving selection must refuse"$'\n'"$out"
-  assert_contains "$out" "focus did not render on 'Move to background and exit'" \
-    "the refusal should name the missing preserving-focus proof"
-  assert_contains "$(keys_sent "$dir")" "Escape" "an unproven selection must dismiss the picker without confirming it"
+  expect_code 1 "$rc" "an exit picker after submit must refuse"$'\n'"$out"
+  assert_contains "$out" "$CLAUDE_DIALOG_WHY" "the refusal should say why no option was chosen"
+  assert_contains "$(keys_sent "$dir")" "Escape" "the picker must be dismissed without confirming it"
   [ "$(literals "$dir")" = /exit ] || fail "the exit command should still be typed, got '$(literals "$dir")'"
   enters=$(grep -c '^Enter$' "$dir/fake/keys" || true)
   [ "$enters" -eq 1 ] || fail "only the submitting Enter should be sent, got $enters"
-  pass "fm-control exit: an unproven preserving option after submit is dismissed without a confirming Enter"
+  pass "fm-control exit: an exit picker after submit is dismissed without a confirming Enter"
 }
 
 # The submit reads a cleared composer before the picker renders, so it reports
 # delivery and no read inside it sees the picker. Exit's later read must still
-# require visible focus on the preserving option before confirming it.
+# recognise it and dismiss it rather than confirm any option.
 test_exit_names_a_picker_that_renders_after_the_submit() {
   local dir out rc enters
   dir=$(new_case late-picker)
@@ -1097,14 +1073,13 @@ test_exit_names_a_picker_that_renders_after_the_submit() {
   expect_code 1 "$rc" "a picker that renders after the submit should refuse"$'\n'"$out"
   [ "$(cat "$dir/fake/after-enter-late")" = 0 ] \
     || fail "the submit should have read the ordinary pane once after Enter"
-  assert_contains "$out" "focus did not render on 'Move to background and exit'" \
-    "the late picker must require proof of a preserving selection"
-  assert_contains "$(keys_sent "$dir")" "Escape" "a late unproven selection must be dismissed"
+  assert_contains "$out" "$CLAUDE_DIALOG_WHY" "the late picker must be refused by name"
+  assert_contains "$(keys_sent "$dir")" "Escape" "a late picker must be dismissed"
   assert_not_contains "$out" "did not stop within" \
     "a recognised picker must not fall back to the generic timeout message"
   enters=$(grep -c '^Enter$' "$dir/fake/keys" || true)
   [ "$enters" -eq 1 ] || fail "only the submitting Enter should be sent, got $enters"
-  pass "fm-control exit: a late picker with unproven preserving focus is dismissed without confirmation"
+  pass "fm-control exit: a late picker is dismissed without confirmation"
 }
 
 test_idle_agent_is_not_interrupted() {
@@ -1457,9 +1432,7 @@ test_muse_interrupt_confirms_adapter_acknowledgement
 test_interrupt_revalidates_agent_after_acknowledgement_wait
 test_exit_accepts_agent_stopped_by_busy_interrupt
 test_agent_that_does_not_stop_fails_closed
-test_claude_exit_dialog_moves_background_work_and_exits
-test_claude_exit_dialog_without_background_option_refuses
-test_claude_exit_dialog_unproven_focus_refuses
+test_claude_exit_dialog_is_dismissed_and_refused
 test_claude_exit_retries_a_swallowed_enter_only_before_the_dialog
 test_claude_exit_ignores_a_transcript_quoting_the_dialog
 test_grok_interrupt_without_acknowledgement_reports_unconfirmed

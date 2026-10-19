@@ -153,6 +153,8 @@
 #   FM_CONTROL_EXIT_WAIT         alive->dead wait after the exit command (30)
 #   FM_CONTROL_LAUNCH_WAIT       dead->alive wait after a relaunch (90)
 #   FM_CONTROL_EXIT_RETRIES      Enter retries for the exit command (3)
+#   FM_CONTROL_SURVIVOR_WAIT     wait for a surviving old Claude session to
+#                                stop after SIGTERM (10)
 #   FM_SECONDMATE_RESTART_CLAIM_WAIT
 #                                wait for another recovery of a secondmate to
 #                                release its liveness claim before relaunching
@@ -218,6 +220,7 @@ ARM_WAIT=${FM_CONTROL_ARM_WAIT:-1.5}
 EXIT_WAIT=${FM_CONTROL_EXIT_WAIT:-30}
 LAUNCH_WAIT=${FM_CONTROL_LAUNCH_WAIT:-90}
 EXIT_RETRIES=${FM_CONTROL_EXIT_RETRIES:-3}
+SURVIVOR_WAIT=${FM_CONTROL_SURVIVOR_WAIT:-10}
 EXIT_BASELINE=
 
 die() {  # <message>
@@ -507,13 +510,12 @@ dialog_rendered() {  # <ere>
   printf '%s\n' "$screen" | fresh_rows | grep -Eq -- "$1"
 }
 
-# wait_rendered <ere> <timeout> [matcher]: poll the viewport until a row
-# matches, through rendered_matches unless another matcher is named.
-wait_rendered() {  # <ere> <timeout> [matcher]
-  local elapsed=0 step matcher=${3:-rendered_matches}
+# wait_rendered <ere> <timeout>: poll the viewport until a row matches.
+wait_rendered() {  # <ere> <timeout>
+  local elapsed=0 step
   step=$(awk -v p="$POLL" 'BEGIN{printf "%s", (p < 0.1 ? p : 0.1)}')
   while :; do
-    "$matcher" "$1" && return 0
+    rendered_matches "$1" && return 0
     awk -v e="$elapsed" -v t="$2" 'BEGIN{exit !(e < t)}' || return 1
     sleep "$step"
     elapsed=$(awk -v e="$elapsed" -v p="$step" 'BEGIN{printf "%.3f", e + p}')
@@ -787,39 +789,25 @@ wait_dialog_closed() {  # <dialog-ere>
   done
 }
 
-# answer_exit_dialog <interrupt-result>: the exit command opened the adapter's
-# exit dialog. Select its work-preserving option only when the dialog offers
-# it, the backend can deliver the focus and confirm keys, and the focus is
-# proven on that option; then require the agent to read dead. Every other
-# path dismisses the dialog and refuses (dismiss_exit_dialog).
-answer_exit_dialog() {  # <interrupt-result>
-  local dialog label offered focus_key focused dismiss state
+# answer_exit_dialog: the exit command opened the adapter's exit dialog. None
+# of its options is a safe exit (bin/fm-control-lib.sh's
+# fm_control_exit_dialog_signal says why), so it is always dismissed with its
+# Stay key and exit refuses (dismiss_exit_dialog).
+answer_exit_dialog() {
+  local dialog dismiss
   dialog=$(fm_control_exit_dialog_signal "$HARNESS")
-  IFS=$'\t' read -r label offered focus_key focused dismiss <<< "$(fm_control_exit_dialog_preserve "$HARNESS")"
-  [ -n "$label" ] \
-    || die "exit-delivered $ID exit=refused: the $cmd exit command opened a $HARNESS exit dialog that has no verified work-preserving answer; nothing more was sent. Answer it in the pane"
+  dismiss=$(fm_control_exit_dialog_dismiss_key "$HARNESS")
+  [ -n "$dismiss" ] \
+    || die "exit-delivered $ID exit=refused: the $cmd exit command opened a $HARNESS exit dialog that has no verified dismiss key; nothing more was sent. Answer it in the pane"
   fm_control_backend_supports_key "$BACKEND" "$dismiss" \
     || die "exit-delivered $ID exit=refused: the $cmd exit command opened $HARNESS's 'Background work is running' dialog, and the $BACKEND backend cannot deliver its $dismiss; nothing more was sent. Answer it in the pane, never with Enter, which stops the background work"
-  dialog_rendered "$offered" \
-    || dismiss_exit_dialog "$dismiss" "$dialog" "it offers no '$label' option, only choices that stop the background work or stay"
-  if ! fm_control_backend_supports_key "$BACKEND" "$focus_key" \
-     || ! fm_control_backend_supports_key "$BACKEND" Enter; then
-    dismiss_exit_dialog "$dismiss" "$dialog" "the $BACKEND backend cannot deliver the $focus_key and Enter that select '$label'"
-  fi
-  fm_backend_send_key "$BACKEND" "$T" "$focus_key" "$LABEL" \
-    || dismiss_exit_dialog "$dismiss" "$dialog" "the $focus_key that moves focus onto '$label' was not delivered"
-  wait_rendered "$focused" "$ARM_WAIT" dialog_rendered \
-    || dismiss_exit_dialog "$dismiss" "$dialog" "focus did not render on '$label' after $focus_key, so Enter could have confirmed an option that stops the background work"
-  fm_backend_send_key "$BACKEND" "$T" Enter "$LABEL" \
-    || dismiss_exit_dialog "$dismiss" "$dialog" "the Enter that confirms '$label' was not delivered"
-  state=$(wait_agent_state "$EXIT_WAIT" dead) \
-    || die "exit-delivered $ID interrupt=$1 exit-command=delivered exit-dialog=answered choice='$label' agent-state=$state exit=unconfirmed; the agent did not stop within ${EXIT_WAIT}s"
+  dismiss_exit_dialog "$dismiss" "$dialog" "its exit options either stop that background work or keep the whole session running as a detached background job that goes on editing $WT beside any replacement"
 }
 
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
-# `already-stopped`, `endpoint-gone`, `stopped`, or `stopped
-# background-work=kept` when the adapter's exit dialog was answered with its
-# work-preserving option.
+# `already-stopped`, `endpoint-gone`, or `stopped`. Its callers then run
+# stop_surviving_sessions, because a stopped pane does not prove the agent's
+# session ended.
 do_exit() {
   local state cmd hazard dialog submit_retries verdict composer_state cancel absence interrupt_result=not-needed
   require_state_verified_backend exit
@@ -928,15 +916,49 @@ do_exit() {
   state=$(wait_exit_or_dialog "$dialog" "$cmd") || {
     [ "$state" = exit-dialog ] \
       || die "exit-delivered $ID interrupt=$interrupt_result exit-command=delivered agent-state=$state exit=unconfirmed; the agent did not stop within ${EXIT_WAIT}s"
-    answer_exit_dialog "$interrupt_result"
-    retire_busy_incarnation
-    printf 'stopped background-work=kept'
-    return 0
+    answer_exit_dialog
   }
   # The incarnation is over: retire its busy wiring so no stale record or
   # orphaned generation survives the agent that produced it.
   retire_busy_incarnation
   printf 'stopped'
+}
+
+# stop_surviving_sessions: after do_exit, prove no session of this task's old
+# Claude agent lives on outside its pane - the detached `kind=bg` job that a
+# "Move to background and exit" answer leaves running in the copy, or any other
+# live session there. A stopped pane is not that proof. Only session records
+# under the config dir the agent was launched with (claude_config_dir, else
+# ~/.claude) whose cwd is exactly $WT count, so a session in another copy or
+# home is never touched. A process whose kernel start time matches its record's
+# procStart is the agent's own session and is stopped with SIGTERM, then must be
+# gone within SURVIVOR_WAIT; one whose identity cannot be proven, or that does
+# not stop, refuses naming its pid and record rather than claim a stop. Sets
+# SESSIONS_STOPPED to the stopped pids, comma-separated.
+SESSIONS_STOPPED=
+stop_surviving_sessions() {
+  local dir rows verdict pid kind rec elapsed stopped=
+  [ "$HARNESS" = claude ] || return 0
+  [ -n "$WT" ] || return 0
+  dir=$(fm_meta_get "$META" claude_config_dir)
+  dir="${dir:-$HOME/.claude}/sessions"
+  rows=$(fm_control_claude_live_sessions "$dir" "$WT") \
+    || die "task $ID's pane stopped, but its Claude session records in $dir cannot be read (jq is missing), so no surviving session of the old agent could be ruled out; refusing to claim it stopped"
+  while IFS=$'\t' read -r verdict pid kind rec; do
+    [ -n "$verdict" ] || continue
+    [ "$verdict" = proven ] \
+      || die "task $ID's pane stopped, but a $kind Claude session of its old agent is still running in $WT as pid $pid ($rec), and its identity cannot be proven, so it was not signalled; stop it by hand, then retry '$VERB'"
+    kill -TERM "$pid" 2>/dev/null || true
+    elapsed=0
+    while [ -n "$(fm_control_claude_live_sessions "$dir" "$WT" | awk -F'\t' -v p="$pid" '$2 == p')" ]; do
+      awk -v e="$elapsed" -v t="$SURVIVOR_WAIT" 'BEGIN{exit !(e < t)}' \
+        || die "task $ID's pane stopped, but a $kind Claude session of its old agent is still running in $WT as pid $pid ($rec) ${SURVIVOR_WAIT}s after SIGTERM; stop it by hand, then retry '$VERB'"
+      sleep "$POLL"
+      elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+    done
+    stopped="${stopped:+$stopped,}$pid"
+  done <<< "$rows"
+  SESSIONS_STOPPED=$stopped
 }
 
 # --- transactional relaunch -------------------------------------------------
@@ -1049,6 +1071,14 @@ relaunch_rollback() {
           echo "error: relaunch of $ID failed while stopping the old agent and its state is '$state', so it was not proven stopped; its original instructions were restored and the durable record was retained for recovery" >&2
           ;;
       esac
+      ;;
+    reaping)
+      # The pane stopped, but stop_surviving_sessions could not end a session
+      # of the old agent that still runs in the copy, so that agent may still
+      # be reading these instructions: restore them, as when it is alive.
+      restore_relaunch_instructions
+      journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored-session-survives" || true
+      echo "error: relaunch of $ID refused: a session of its old agent survives in $WT (named above), so no replacement was launched beside it; its original instructions were restored" >&2
       ;;
     exited|launching)
       if [ "$RELAUNCH_AGENT_CONFIRMED" = 1 ]; then
@@ -1407,6 +1437,9 @@ do_relaunch() {
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
   exit_result=$(do_exit)
+  journal_write reaping "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+  stop_surviving_sessions
+  [ -z "$SESSIONS_STOPPED" ] || exit_result="$exit_result session-stopped=$SESSIONS_STOPPED"
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
@@ -1483,9 +1516,13 @@ case "$VERB" in
     result=$(do_exit)
     # A deliberate stop is durable intent: bin/fm-reboot-relaunch.sh leaves a
     # task carrying this record stopped at session start instead of reviving it.
-    # A later relaunch removes it, and teardown removes it with the task.
+    # A later relaunch removes it, and teardown removes it with the task. It is
+    # written before the survivor check because the pane is stopped either way,
+    # and a refused exit must not let session start revive the task beside it.
     printf 'exited=%s\n' "$(date +%s)" > "$STATE/$ID.control-exit" 2>/dev/null \
       || echo "warning: could not record that $ID was stopped deliberately; an automatic session-start relaunch may revive it" >&2
+    stop_surviving_sessions
+    [ -z "$SESSIONS_STOPPED" ] || result="$result session-stopped=$SESSIONS_STOPPED"
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)
