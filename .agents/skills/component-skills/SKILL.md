@@ -6,11 +6,13 @@ metadata:
   internal: true
   sources:
     - path: docs/component-map.md
-      sha256: 4a5bb74f772574ba9ce85952dacfca56033536ce32404bffbb1c7253eccfa445
+      sha256: e648230068fadcb2c40b72fe436ba83343075b4cfa405b51b0dc5c2b13653e80
     - path: bin/fm-component-map.sh
       sha256: e7ef850b82cce060ffa57ec512efdbb666387867f986c4242391499b30e554c6
     - path: bin/fm-component-map.py
       sha256: e6d09b94f9f29ae40b4ea34b00b93c3195089313a132e656b4d324d7af7d918e
+    - path: bin/fm-lean-review.sh
+      sha256: cdb2b6e7d7b1db33ecce337746a13ca947377419499775d74051f007b160e470
 ---
 
 # component-skills
@@ -31,6 +33,7 @@ This mechanism is owned here; each skill's contents belong to its component's ow
 - Guessing a component from file names or similarity when the map has no match (the plan's C3 goal: "never guesses").
 - Denying or delaying a tool call until a skill is read (plan open question 4: inject only).
 - Failing closed on malformed hook input or a missing map, or reporting a malformed map more than once (plan section 3 item 2).
+- Letting a failing or partial `review-pack` block or fail the lean review instead of warning and running Q1-Q4 without Q5 (`bin/fm-lean-review.sh` header).
 - Injecting the whole skill, or injected text over the harness's context cap (plan open question 3: the goal section plus the path).
 - Relying on description triggering alone, or on skills loading inside a reviewer that runs without project settings (plan sections 3 and 4).
 - Weakening any rule `check` enforces so a map passes: accepting unknown keys, letting a non-provisional glob match no tracked file, leaving a tracked file under `roots` in no component, allowing more than six components on one path or a goal section over 1,500 characters; or marking a component `provisional`, narrowing or dropping `roots` to silence a no-match or coverage error (`docs/component-map.md` "Repository map", "Component roots", "Provisional components" and the skill-shape table; `bin/fm-component-map.sh` header).
