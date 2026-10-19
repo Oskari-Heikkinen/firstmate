@@ -6,7 +6,7 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: 46067cec636908f347519ab01f4ffa934cf3007b8ac350a1fbab70cfdc0ca9ac
+      sha256: d68db4031efc3d733822569add311bbf988c32b1cf9fc684ca8b7a5af936730e
     - path: bin/fm-storage.sh
       sha256: 2d131e1be58ff12ddf0e9465271a4d769443cb7afa33a2020493a3c796677f6c
     - path: bin/fm-pack.sh
@@ -28,6 +28,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 
 - `docs/storage.md`: the results-root file `lattice-storage-results-root/v1`, the states, the reader rules, mandatory bulk admission, named roots, when to pack, and retention rule R2.
 - `bin/fm-storage.sh` header: commands, files, environment.
+- `bin/fm-spawn.sh` header: when a worker launch carries `LATTICE_STORAGE_TOOL`, the absolute path workers resolve `fm-storage.sh` from, since it is not on their `PATH`.
 - `bin/fm-pack.sh` header: pack, verify, restore and release steps, sidecar fields, the release guards' exact checks, exit codes.
 - `docs/disk-room.md` and `bin/fm-disk-room.sh`: the reservation pools and the runway alerts this component admits through.
 
