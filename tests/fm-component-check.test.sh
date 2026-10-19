@@ -6,7 +6,10 @@
 # Bash sweep catches a file changed by a shell command; a compact SessionStart
 # resets the record; a subagent gets its own record; the home map applies
 # beside the repository map; output stays under 10,000 characters; and the
-# Grok and --tool input shapes classify the same as Claude's.
+# Grok and --tool input shapes classify the same as Claude's. The sweep stays
+# fast over thousands of untracked files and never rewrites the index; a goal
+# too big for any message is recorded with its pointer line; a bad argument
+# fails open.
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -19,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 root, tmp = Path(sys.argv[1]), Path(sys.argv[2])
@@ -181,8 +185,39 @@ expect(post_bash("w1", repo) == "", "the next sweep with no new change is silent
 write(repo / "src/alpha/new file.py", "n\n")
 ctx = post_bash("w1", repo)
 expect("ALPHA-GOAL" in ctx and "src/alpha/new file.py" in ctx, "a new untracked mapped file with a space is caught", ctx)
-git(repo, "mv", "src/shared.py", "src/shared2.py")
-expect(post_bash("w2", repo) != "", "a rename entry is parsed without error")
+
+# A rename in an otherwise clean repository: only the destination counts.
+repo = make_repo("rename")
+git(repo, "mv", "src/alpha/a.py", "src/beta/moved.py")
+ctx = post_bash("w2", repo)
+expect("BETA-GOAL" in ctx and "src/beta/moved.py" in ctx and "ALPHA" not in ctx and "alpha" not in ctx,
+       "a rename injects only the destination's component and names only the new path", ctx)
+
+# The sweep never takes the index lock: a stale index stays as it was.
+repo = make_repo("index")
+os.utime(repo / "src/alpha/a.py", (1000000000, 1000000000))
+index = repo / ".git/index"
+before = index.stat().st_mtime_ns
+time.sleep(0.05)
+post_bash("i1", repo)
+expect(index.stat().st_mtime_ns == before, "a sweep over a stale index leaves the index untouched")
+git(repo, "status", "--porcelain")
+expect(index.stat().st_mtime_ns != before, "a plain status over the same stale index does rewrite it (control)")
+
+# Thousands of untracked files stay cheap, first sweep and steady state.
+repo = make_repo("many")
+for n in range(2000):
+    write(repo / f"build/out{n}.txt", "x\n")
+start = time.monotonic()
+expect(post_bash("m1", repo) == "", "a sweep over 2,000 unmapped untracked files is silent")
+first = time.monotonic() - start
+start = time.monotonic()
+post_bash("m1", repo)
+second = time.monotonic() - start
+expect(first < 8 and second < 3,
+       f"a sweep over 2,000 untracked files finishes within its bound (first {first:.2f}s, next {second:.2f}s)")
+write(repo / "src/alpha/a.py", "a = 2\n")
+expect("ALPHA-GOAL" in post_bash("m1", repo), "a mapped change among 2,000 untracked files is still caught")
 
 # --- unusable map ---
 repo = make_repo("broken")
@@ -231,6 +266,19 @@ expect(any(f"component c{n}" in ctx and "comes with the next touch" in ctx for n
 rest = pre("c1", repo / "src/many/f0.py")
 expect(all(f"C{n}-GOAL" in rest for n in range(10) if n not in told) and all(f"C{n}-GOAL" not in rest for n in told),
        "goals held back by the cap arrive on the next touch, and only those", rest[:400])
+
+# --- a goal too big for any message ---
+repo = make_repo("huge")
+write(repo / ".agents/skills/alpha/SKILL.md", skill("alpha", "HUGE " + "g" * 9800))
+ctx = pre("u1", repo / "src/alpha/a.py")
+expect("component alpha" in ctx and "over the size limit" in ctx and "next touch" not in ctx and len(ctx) < 10000,
+       "a goal over the budget leaves a pointer line that says it is over the size limit", ctx[:400])
+expect(pre("u1", repo / "src/alpha/a.py") == "", "an over-budget goal is recorded, so the next touch is silent")
+
+# --- bad arguments fail open ---
+for args in (["--tool"], ["--tool", "Edit", "--pth", "x"]):
+    rc, out, err = hook(args=args, claude=False)
+    expect(rc == 0 and out == "" and "error:" in err, f"bad arguments {args} fail open with exit 0", f"{rc} {out} {err}")
 
 # --- Grok and --tool shapes classify the same ---
 repo = make_repo("shapes")

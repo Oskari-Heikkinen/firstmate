@@ -44,8 +44,9 @@
 #            no map anywhere.
 #   UNUSABLE MAP - a map that fm-component-map.sh refuses is reported once per
 #            session as context naming the map and its first problem.
-#   FAIL OPEN - malformed or empty stdin, missing jq for stdin mode, or any
-#            resolver failure: exit 0, never a deny.
+#   FAIL OPEN - a bad argument (reported on stderr), malformed or empty stdin,
+#            missing jq for stdin mode, or any resolver failure: exit 0, never a
+#            deny.
 #
 # Environment: FM_HOME (default: this checkout) names the home whose map is
 # read; FM_COMPONENT_STATE_DIR (default ${TMPDIR:-/tmp}/fm-component-check.<uid>)
@@ -62,7 +63,9 @@ usage() { sed -n '2,/^set -u/p' "${BASH_SOURCE[0]}" | sed -e '$d' -e 's/^# \{0,1
 
 TOOL="" FILE="" CWD="" SESSION="" AGENT="" EVENT="" SOURCE=""
 CLI=0 CLAUDE_MODE=0
-need() { [ "$2" -gt 1 ] || { echo "error: $1 requires a value" >&2; exit 2; }; }
+# A bad argument fails open: several harnesses read exit 2 as a block, and this
+# hook never blocks.
+need() { [ "$2" -gt 1 ] || { echo "error: $1 requires a value" >&2; exit 0; }; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tool) need "$1" "$#"; TOOL=$2; CLI=1; shift 2 ;;
@@ -72,7 +75,7 @@ while [ "$#" -gt 0 ]; do
     --agent) need "$1" "$#"; AGENT=$2; shift 2 ;;
     --claude) CLAUDE_MODE=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "error: unknown argument: $1" >&2; exit 2 ;;
+    *) echo "error: unknown argument: $1" >&2; exit 0 ;;
   esac
 done
 
@@ -174,13 +177,11 @@ else
   [ "$lc_tool" = bash ] || exit 0
   TOP=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null) || exit 0
   [ -f "$TOP/$REPO_MAP" ] || [ -f "$HOME_MAP" ] || exit 0
-  # stat flavour: GNU first, BSD second.
-  if stat -c '%Y %s' -- "$TOP" >/dev/null 2>&1; then
-    fingerprint() { stat -c '%Y %s' -- "$1" 2>/dev/null || printf 'gone'; }
-  else
-    fingerprint() { stat -f '%m %z' -- "$1" 2>/dev/null || printf 'gone'; }
-  fi
-  NEW_SWEPT=""
+  # Parse the status entries in the shell, fingerprint every path with one
+  # batched stat, and diff against the previous record with one awk, so a sweep
+  # costs a few forks however many paths are dirty. --no-optional-locks keeps
+  # status from rewriting the index under the agent's own git commands.
+  RELS=() XYS=() ON_DISK=() EXIST=()
   skip_next=0
   while IFS= read -r -d '' entry; do
     [ -n "$entry" ] || continue
@@ -189,12 +190,48 @@ else
     rel=${entry:3}
     # A rename or copy entry is followed by its source path.
     case "$xy" in R*|C*) skip_next=1 ;; esac
-    line="$rel	$xy $(fingerprint "$TOP/$rel")"
-    NEW_SWEPT+="$line"$'\n'
-    if ! grep -qxF -- "$line" "$SWEPT" 2>/dev/null; then
-      PATHS+=("$TOP/$rel")
+    # The record is line-based, so a name with a newline is not tracked.
+    case "$rel" in *$'\n'*) continue ;; esac
+    RELS+=("$rel")
+    XYS+=("$xy")
+    if [ -e "$TOP/$rel" ] || [ -L "$TOP/$rel" ]; then
+      ON_DISK+=(1)
+      EXIST+=("$TOP/$rel")
+    else
+      ON_DISK+=(0)
     fi
-  done < <(git -C "$TOP" status --porcelain=v1 -z --untracked-files=all 2>/dev/null)
+  done < <(git -C "$TOP" --no-optional-locks status --porcelain=v1 -z --untracked-files=all 2>/dev/null)
+  [ "${#RELS[@]}" -gt 0 ] || { : > "$SWEPT" 2>/dev/null; exit 0; }
+  # stat flavour: GNU first, BSD second. It prints one line per path in order.
+  if stat -c '%Y %s' -- "$TOP" >/dev/null 2>&1; then
+    STAT_FMT=(-c '%Y %s')
+  else
+    STAT_FMT=(-f '%m %z')
+  fi
+  FPS=()
+  if [ "${#EXIST[@]}" -gt 0 ]; then
+    mapfile -t FPS < <(printf '%s\0' "${EXIST[@]}" | xargs -0 stat "${STAT_FMT[@]}" -- 2>/dev/null)
+  fi
+  # A path removed between the status and the stat leaves the lines unaligned;
+  # then no fingerprint is trusted and every entry counts as changed.
+  aligned=0
+  [ "${#FPS[@]}" -eq "${#EXIST[@]}" ] && aligned=1
+  NEW_SWEPT=""
+  k=0
+  for ((n = 0; n < ${#RELS[@]}; n++)); do
+    if [ "${ON_DISK[n]}" -eq 1 ]; then
+      if [ "$aligned" -eq 1 ]; then fp=${FPS[k]}; else fp="unknown $$"; fi
+      k=$((k + 1))
+    else
+      fp=gone
+    fi
+    NEW_SWEPT+="${RELS[n]}	${XYS[n]} $fp"$'\n'
+  done
+  [ -f "$SWEPT" ] || : > "$SWEPT" 2>/dev/null
+  # Line numbers of entries absent from the previous record.
+  while IFS= read -r n; do
+    PATHS+=("$TOP/${RELS[n - 1]}")
+  done < <(printf '%s' "$NEW_SWEPT" | awk 'FILENAME == ARGV[1] { seen[$0] = 1; next } !($0 in seen) { print FNR }' "$SWEPT" - 2>/dev/null)
   printf '%s' "$NEW_SWEPT" > "$SWEPT.tmp" 2>/dev/null && mv -f -- "$SWEPT.tmp" "$SWEPT" 2>/dev/null
   [ "${#PATHS[@]}" -gt 0 ] || exit 0
 fi
@@ -287,8 +324,13 @@ for ((n = 0; n < ${#PENDING_KEYS[@]}; n++)); do
     block="$head Its goal section could not be read; \`bin/fm-component-map.sh check\` says why."
   fi
   # A goal that does not fit under the cap leaves only its pointer line, and
-  # the component stays unrecorded so its goal arrives on its next touch.
+  # the component stays unrecorded so its goal arrives on its next touch. A
+  # goal too big for any message is recorded with its pointer line instead, so
+  # it is not promised again on every touch.
   if add_text "$block"; then
+    printf '%s\n' "${PENDING_KEYS[$n]}" >> "$INJECTED"
+  elif [ "${#block}" -gt "$BUDGET" ]; then
+    add_text "$head Its goal section is over the size limit, so it is not shown here; \`bin/fm-component-map.sh check\` reports it." || break
     printf '%s\n' "${PENDING_KEYS[$n]}" >> "$INJECTED"
   else
     add_text "$head Its goal did not fit in this message and comes with the next touch of its files." || break
