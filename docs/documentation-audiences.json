@@ -461,6 +461,14 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/examples/component-drift/component-drift.conf",
+      "audience": "operator-example"
+    },
+    {
+      "path": "docs/examples/component-drift/brief.md",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/examples/heavy-slot-mem-guard.patch",
       "audience": "operator-example"
     },

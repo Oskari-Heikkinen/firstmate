@@ -101,3 +101,23 @@ A `path` is absolute, starts with `~/`, or is relative to the root of the reposi
 The pins live only in the skill, so the map and the skill cannot disagree about them.
 `drift` reports a pin whose source changed or vanished; the owner then reads the source's change, updates the goal, refuse and review sections, and pins the new hash.
 Pins are optional, and a skill with none never drifts.
+
+A skill names the home that owns it in `metadata.owner`: a second-mate id from main firstmate's `data/secondmates.md`, or `main`.
+The pins and the owner sit together in the skill, so no separate registry names who updates a drifted skill.
+Without it, a skill named by a home map is owned by the home holding that map, and any other skill goes to main firstmate, which routes it.
+
+```yaml
+metadata:
+  owner: tetjet-mate
+  sources:
+    - path: docs/kind-contract.md
+      sha256: 2c68b933...
+```
+
+## Drift run
+
+Sources outside a repository, such as plans in a home's `data/`, are visible only on the machine that holds the homes, so one daily scheduled run checks every pin there.
+[`bin/fm-component-drift.sh`](../bin/fm-component-drift.sh) is that run: it checks every local home's repository maps and home map through `drift`, files one backlog item per drifted skill in its owner home, and wakes that home; its header owns the steps, the state and the exit codes.
+An unchanged drift files no second item while the first is open, and a run that finds no new drift files nothing.
+The schedule is a normal scheduled run in main firstmate's home (`docs/configuration.md`, "Scheduled runs"); [`docs/examples/component-drift/`](examples/component-drift/) holds its schedule file and brief, which the home copies into `config/schedules.d/` once the schedule is approved.
+Behavioral verification lives in `tests/fm-component-drift.test.sh`.
