@@ -42,6 +42,11 @@
 #       regular-file count must match UNIT.members.sha256. With --against, SRC
 #       must also still match UNIT.tree.tsv, the check to repeat before an
 #       owner removes the source. Exit 0 verified, 1 a mismatch, 2 misuse.
+#       verify, restore and release read a unit whose UNIT.json format is
+#       fm-pack-unit/v1 or tj-fetch-arrival-unit/v2 (a lattice-research fetch
+#       arrival, whose members list carries paths without ./), and refuse any
+#       other or missing format with exit 2 before any work. An arrival unit's
+#       tree list is not fm-pack's, so --against and release refuse it with 2.
 #   fm-pack.sh restore IMAGE DEST
 #       Check the image sha256, then fm-disk-room.sh run --name restore-UNIT
 #       --expect-write <logical bytes> -- unsquashfs -d DEST IMAGE, then the
@@ -201,15 +206,17 @@ check_members_mount() {
 
 # check_members_unsquashfs IMAGE DIR MEMBERS: 0 match, 1 mismatch.
 check_members_unsquashfs() {
-  local img=$1 dir=$2 members=$3 line want path got count n=0
+  local img=$1 dir=$2 members=$3 line want path got count n=0 bare=''
+  [ "${IFORMAT:-}" = tj-fetch-arrival-unit/v2 ] && bare=1
   count=$(unsquashfs -no-wildcards -lln "$img" "$dir" 2>/dev/null | grep -c '^-') || count=0
   [ "$count" = "$(wc -l <"$members")" ] || { note "the image holds $count files, the members list $(wc -l <"$members")"; return 1; }
   while IFS= read -r line; do
     n=$((n + 1))
     want=${line:0:64} path=${line:66}
-    [[ $want =~ ^[0-9a-f]{64}$ ]] && [ "${line:64:2}" = '  ' ] && [ "${path:0:2}" = './' ] ||
+    if [ "${path:0:2}" = './' ]; then path=${path#./}; elif [ -z "$bare" ]; then path=''; fi
+    [[ $want =~ ^[0-9a-f]{64}$ ]] && [ "${line:64:2}" = '  ' ] && [ -n "$path" ] ||
       { note "members line $n is malformed"; return 1; }
-    got=$(heavy unsquashfs -no-wildcards -cat "$img" "$dir/${path#./}" 2>/dev/null | sha256sum; exit "${PIPESTATUS[0]}") || got=''
+    got=$(heavy unsquashfs -no-wildcards -cat "$img" "$dir/$path" 2>/dev/null | sha256sum; exit "${PIPESTATUS[0]}") || got=''
     [ "${got%% *}" = "$want" ] || { note "$path: FAILED"; return 1; }
   done <"$members"
 }
@@ -357,7 +364,8 @@ cmd_pack() {
 
 # ---------------------------------------------------------------- verify, restore
 
-# load_image IMAGE: sets IDIR, IUNIT, IJSON, IMEMBERS after checking the sidecars.
+# load_image IMAGE: sets IDIR, IUNIT, IJSON, IMEMBERS, IFORMAT after checking
+# the sidecars and the unit format.
 load_image() {
   local img=$1 ext
   case "$img" in *.sqfs) ;; *) die "IMAGE must be a UNIT.sqfs file" ;; esac
@@ -369,6 +377,11 @@ load_image() {
   done
   IJSON=$IDIR/$IUNIT.json IMEMBERS=$IDIR/$IUNIT.members.sha256
   IMG=$IDIR/$IUNIT.sqfs
+  IFORMAT=$(sidecar format "$IJSON") || die "$IJSON has no format"
+  case "$IFORMAT" in
+    fm-pack-unit/v1|tj-fetch-arrival-unit/v2) ;;
+    *) die "$IJSON has the unknown format $IFORMAT" ;;
+  esac
   IDIRNAME=$(sidecar dir "$IJSON") || die "$IJSON has no dir"
 }
 
@@ -381,6 +394,7 @@ cmd_verify() {
   if [ "${1:-}" = --against ]; then
     [ "$#" = 2 ] || die "--against needs SRC"
     against=$2
+    [ "$IFORMAT" = fm-pack-unit/v1 ] || die "--against reads fm-pack's own tree list; $IJSON is $IFORMAT"
   elif [ "$#" != 0 ]; then
     die "unknown verify argument: $1"
   fi
@@ -558,6 +572,7 @@ cmd_release() {
   need unsquashfs sha256sum jq flock
   need_reader
   load_image "$1"
+  [ "$IFORMAT" = fm-pack-unit/v1 ] || die "release reads fm-pack's own tree list; $IJSON is $IFORMAT"
   given=$2; shift 2
   REL_WINDOW=${FM_PACK_RELEASE_WINDOW:-0}
   while [ "$#" -gt 0 ]; do

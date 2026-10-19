@@ -181,6 +181,7 @@ A unit is never overwritten: an existing `UNIT.sqfs` or stale staging for UNIT e
 
 Each image keeps four sidecars beside it: `UNIT.sqfs.sha256`, `UNIT.members.sha256`, `UNIT.tree.tsv` and `UNIT.json` (`fm-pack-unit/v1`).
 They are the whole manifest; there is no index.
+`verify` and `restore` also read lattice-research fetch-arrival units (`tj-fetch-arrival-unit/v2`), which `verify --against` and `release` refuse; any other unit format is refused.
 `UNIT.json` records `packed_at` and `verified_at` in epoch seconds.
 
 `verify` checks the image sha256, then reads the image afresh through a new squashfuse mount and compares every member.

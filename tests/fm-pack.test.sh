@@ -310,6 +310,91 @@ test_restore() {
   pass "restore unpacks and checks the unit, and waits for room"
 }
 
+# make_arrival NAME: an arrival unit NAME in the shape a lattice-research
+# fetch-arrival v2 writer leaves it: the image root holds NAME/ and the
+# .tj-pack.json marker, members list paths carry no ./, the tree list is
+# tj-pack-tree/v1, and NAME.json has the tj-fetch-arrival-unit/v2 field set.
+ARR="$TMP_ROOT/arrival"
+make_arrival() {
+  local k=$1 stage="$TMP_ROOT/arrival-stage" files logical now
+  mkdir -p "$stage/$k/sub" "$ARR"
+  printf 'arrival one' >"$stage/$k/a.txt"
+  printf 'arrival two' >"$stage/$k/sub/b.txt"
+  : >"$stage/$k/sub/empty"
+  printf '{"layout":"tj-pack-marker/v1"}\n' >"$stage/.tj-pack.json"
+  mksquashfs "$stage" "$ARR/$k.sqfs" -noappend -comp gzip -no-xattrs -quiet -no-progress >/dev/null
+  (cd "$ARR" && sha256sum -- "$k.sqfs" >"$k.sqfs.sha256")
+  (cd "$stage/$k" && find . -type f -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum --) >"$ARR/$k.members.sha256"
+  {
+    printf '# tj-pack-tree/v1\tkind\tsize\tperm\tlink\tpath\n'
+    (cd "$stage/$k" && find . -mindepth 1 -printf '%y\t%s\t%m\t-\t%P\n' | LC_ALL=C sort -t$'\t' -k5)
+  } >"$ARR/$k.tree.tsv"
+  cp "$stage/.tj-pack.json" "$ARR/$k.marker.json"
+  files=$(wc -l <"$ARR/$k.members.sha256" | tr -d ' ')
+  logical=$(find "$stage/$k" -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}')
+  now=$(date +%s)
+  jq -n --arg k "$k" --arg arr "$ARR" --arg home "$TMP_ROOT/home" --argjson files "$files" --argjson logical "$logical" \
+    --argjson bytes "$(stat -c %s "$ARR/$k.sqfs")" --arg sha "$(cut -d' ' -f1 <"$ARR/$k.sqfs.sha256")" \
+    --arg msha "$(sha256sum <"$ARR/$k.members.sha256" | cut -d' ' -f1)" --argjson now "$now" \
+    '{format: "tj-fetch-arrival-unit/v2", fm_pack_reader: "verify/restore-compatible subset", unit: $k, task: "job",
+      root: "tetjet-results", source: ($arr + "/" + $k + ".raw.tar"), source_kind: "tar-stream", dir: $k,
+      owner_home: $home, files: $files, logical_bytes: $logical, frees_bytes: 0, image: ($arr + "/" + $k + ".sqfs"),
+      image_bytes: $bytes, image_sha256: $sha, members_sha256: $msha, packed_at: $now, verified_at: $now,
+      verify_method: "mount", pack_layout: "tj-pack-marker/v1", raw_archive: ($arr + "/" + $k + ".raw.tar"),
+      raw_sha256: $sha, retention: {class: "R2", delete: true, minimum_days_after_verify: 0,
+        requires: ["cold fresh-mount member verification", "G7", "G8", "raw integrity"]},
+      raw_release_record: ($arr + "/" + $k + ".raw.tar.released.json")}' >"$ARR/$k.json"
+  rm -rf "$stage"
+}
+
+test_unit_format() {
+  local out rc d fmt dest
+  d=$(tamper_copy fmt-v9)
+  jq '.format = "fm-pack-unit/v9"' "$R/unit-a.json" >"$d/unit-a.json"
+  d=$(tamper_copy fmt-none)
+  jq 'del(.format)' "$R/unit-a.json" >"$d/unit-a.json"
+  for fmt in v9 none; do
+    d="$TMP_ROOT/fmt-$fmt"
+    printf '\377' | dd of="$d/unit-a.sqfs" bs=1 seek=0 conv=notrunc status=none
+    out=$(run_pack verify "$d/unit-a.sqfs" 2>&1); rc=$?
+    expect_code 2 "$rc" "verify refuses a unit with format $fmt"
+    assert_contains "$out" "$d/unit-a.json has" "the verify refusal names the unit file"
+    dest="$TMP_ROOT/restore-fmt-$fmt"
+    out=$(run_pack restore "$d/unit-a.sqfs" "$dest" 2>&1); rc=$?
+    expect_code 2 "$rc" "restore refuses a unit with format $fmt"
+    assert_absent "$dest" "a refused restore writes nothing"
+  done
+  assert_contains "$(run_pack verify "$TMP_ROOT/fmt-v9/unit-a.sqfs" 2>&1)" "unknown format fm-pack-unit/v9" "the refusal names the format"
+  assert_contains "$(run_pack restore "$TMP_ROOT/fmt-none/unit-a.sqfs" "$TMP_ROOT/r" 2>&1)" "has no format" "the refusal names the missing format"
+  pass "verify and restore refuse an unknown or missing unit format with 2 before any work"
+}
+
+test_arrival_unit() {
+  local out rc dest="$TMP_ROOT/restored-arrival" d
+  make_arrival pkg-a
+  out=$(run_pack verify "$ARR/pkg-a.sqfs"); rc=$?
+  expect_code 0 "$rc" "an arrival unit verifies"
+  assert_contains "$out" "(3 files, unsquashfs)" "verify checks every arrival member"
+  out=$(run_pack restore "$ARR/pkg-a.sqfs" "$dest" 2>&1); rc=$?
+  expect_code 0 "$rc" "an arrival unit restores"
+  assert_contains "$out" "checked 3 files" "restore checks every arrival member"
+  assert_equals 'arrival two' "$(cat "$dest/pkg-a/sub/b.txt")" "restored arrival contents match"
+  out=$(run_pack verify "$ARR/pkg-a.sqfs" --against "$dest/pkg-a" 2>&1); rc=$?
+  expect_code 2 "$rc" "verify --against refuses an arrival unit"
+  assert_contains "$out" "tj-fetch-arrival-unit/v2" "the --against refusal names the format"
+  out=$(run_pack release "$ARR/pkg-a.sqfs" "$dest/pkg-a" --accepted-by test 2>&1); rc=$?
+  expect_code 2 "$rc" "release refuses an arrival unit"
+  assert_contains "$out" "tj-fetch-arrival-unit/v2" "the release refusal names the format"
+  assert_present "$dest/pkg-a/a.txt" "a refused release deletes nothing"
+  assert_absent "$ARR/pkg-a.release.json" "a refused release writes no record"
+  d=$(tamper_copy bare-v1)
+  sed -i 's#  \./#  #' "$d/unit-a.members.sha256"
+  out=$(run_pack verify "$d/unit-a.sqfs" 2>&1); rc=$?
+  expect_code 1 "$rc" "an fm-pack-unit/v1 members list with bare paths fails verify"
+  assert_contains "$out" "members line 1 is malformed" "bare paths stay arrival-only"
+  pass "verify and restore read an arrival unit; --against and release refuse it"
+}
+
 test_mount_verify() {
   local probe out rc d
   probe=$(mktemp -d "$TMP_ROOT/probe.XXXXXX")
@@ -327,6 +412,9 @@ test_mount_verify() {
   out=$(FM_PACK_MOUNT='' run_pack verify "$d/unit-a.sqfs" 2>&1); rc=$?
   expect_code 1 "$rc" "an edited members line fails the mount verify"
   assert_equals "" "$(grep fm-pack-verify /proc/self/mounts)" "no verify mount is left behind"
+  out=$(FM_PACK_MOUNT='' run_pack verify "$ARR/pkg-a.sqfs"); rc=$?
+  expect_code 0 "$rc" "an arrival unit verifies through a fresh mount"
+  assert_contains "$out" "(3 files, mount)" "the arrival verify names the mount path"
   pass "verify reads the image through a fresh squashfuse mount"
 }
 
@@ -496,6 +584,8 @@ test_repack_refuses
 test_reader_mode_refuses
 test_root_overlap_refuses
 test_restore
+test_unit_format
+test_arrival_unit
 test_mount_verify
 test_release_setup
 test_release_refusals
