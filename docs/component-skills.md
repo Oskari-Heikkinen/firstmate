@@ -75,20 +75,28 @@ A block too big for any message, which only a goal over the size `check` enforce
 
 | Harness | Wiring | Status |
 | --- | --- | --- |
-| Claude | Tracked `.claude/settings.json`: `PreToolUse` on `Read\|Edit\|Write\|MultiEdit\|NotebookEdit`, `PostToolUse` on `Bash`, and `SessionStart` on `compact`, each passing `--claude` with a 10-second timeout. | Wired for sessions in this repository. |
-| Grok | Grok loads Claude project settings, so each tracked entry carries the `GROK_AGENT`/`GROK_HOOK_EVENT` guard and is inert under Grok, as recorded in [`turnend-guard.md`](turnend-guard.md). | Not wired; a Grok adapter would call the hook with `--tool`. |
-| Codex | Crewmates and scouts launch with hooks disabled. | Not wired; relies on the component section in the task brief. |
-| Cursor | Cursor also loads Claude project settings, and the component entries do not stand down on a Cursor payload the way the supervision entries do, because no Cursor registration covers this event. | Fires with Claude-shaped output; whether Cursor reads that context is unverified. |
-| Pi | pi-code loads `<project>/.claude/settings.json` and keeps running the Claude-shaped hooks it delivers, as recorded in [`turnend-guard.md`](turnend-guard.md), and the component entries carry only the Grok guard. | Fires with Claude-shaped output; whether pi-code reads that context is unverified. |
-| Others | Gemini, opencode and omp would call `--tool <name> --path <file> --session <id>` from their own pre-tool event. | Not wired. |
+| Claude | Tracked `.claude/settings.json`: `PreToolUse` on `Read\|Edit\|Write\|MultiEdit\|NotebookEdit`, `PostToolUse` on `Bash`, and `SessionStart` on `compact`, each passing `--claude` with a 10-second timeout. `bin/fm-spawn.sh` installs the same three entries, with `FM_HOME` set, for every Claude crewmate and scout in the worktree's `.claude/settings.local.json` and for every Claude secondmate in `state/<id>.claude-settings.json`, passed with `--settings`. | Wired in this repository and, through spawn, in every repository. |
+| Pi | `bin/fm-spawn.sh` adds handlers to the per-task extension `state/<id>.pi-ext.ts`: `tool_result` for `read`, `edit` and `write` calls the hook with `--tool <name> --path <input.path> --cwd <cwd> --session <id>` and appends its text to the tool result, `tool_result` for `bash` calls it with `--tool bash` for the sweep, and `session_compact` feeds it a `compact` `SessionStart`. The extension loads for crewmates, scouts and secondmates. | Wired through spawn; live check opt-in, not yet run. The goal arrives with the tool result rather than before the call, because a `tool_call` handler can only block or rewrite the input. |
+| Codex | Crewmates and scouts launch with hooks disabled. | Not wired; relies on the brief section. |
+| Grok | Grok loads Claude project settings, so each tracked entry carries the `GROK_AGENT`/`GROK_HOOK_EVENT` guard and is inert under Grok, as recorded in [`turnend-guard.md`](turnend-guard.md). Spawn's only Grok hook is a global `~/.grok/hooks` entry for turn end. | Not wired; relies on the brief section. A Grok registration would call the hook with `--tool`. |
+| Cursor | Cursor also loads Claude project settings, and the component entries do not stand down on a Cursor payload the way the supervision entries do, because no Cursor registration covers this event. Spawn installs no Cursor hooks. | Fires in this repository with Claude-shaped output whose delivery is unverified; elsewhere relies on the brief section. |
+| Gemini, opencode, omp | Spawn wires their busy hooks, and each has a pre-tool or tool-result event that could call `--tool <name> --path <file> --session <id>`. | Not wired, because no installed build has validated the tool names, the path field or how returned text reaches the model; relies on the brief section. |
+| Devin, Kimi, Rovo, Muse | Spawn installs no tool-event hook for them. | Not wired; relies on the brief section. |
 
-Installing the hook into crewmate and secondmate sessions in other repositories, the adapter wiring, and the brief section for hook-less harnesses belong to `bin/fm-spawn.sh` and are not part of this script.
+### Brief section
+
+Every ship or scout launch brief whose task checkout has `docs/component-map.json` ends with a `## Component skills` section, so every harness, hooked or not, starts with the component list.
+`bin/fm-spawn.sh` appends it once the checkout is known, from `fm_component_skills_block` in `bin/fm-dod-lib.sh`, which reads the components only through `bin/fm-component-map.sh list`.
+The section lists each component's id, skill path and globs, and states the rule: before changing a mapped path, load its skill; before reporting done, answer its Review checks.
+An unusable map yields a section that says so and names `bin/fm-component-map.sh check`, and spawn prints a warning; a checkout without a map gets no section.
 
 ## Automated validation
 
 `tests/fm-component-check.test.sh` drives the script through its public input shapes against fixture repositories and homes.
 It covers injection on Read, Edit and a relative notebook path, silence on a second touch, a file in two components, silence for unmapped paths, a repository with no map and a path outside any repository, a Write into a missing directory, a separate subagent record, reset on `compact` but not on `resume`, the Bash sweep including a rename in a clean repository and untracked names with spaces, an unchanged index after a sweep over a stale one, a time bound on sweeps over 2,000 untracked files, one non-blocking line for an unusable map, fail-open on malformed stdin, the home map alone and beside a repository map, the output cap with held-back goals arriving on the next touch, a goal over the budget recorded with its pointer line, bad arguments failing open, and the Grok and `--tool` shapes.
-`tests/fm-component-map.test.sh` covers the `goal` command and the home-map forms of `check` and `touched`.
+`tests/fm-component-map.test.sh` covers the `goal` and `list` commands and the home-map forms of `check` and `touched`.
+`tests/fm-spawn-component-skills.test.sh` covers the spawn wiring: a Claude crewmate's `settings.local.json` and a Claude secondmate's settings file carry the three entries and inject a goal when run, a Pi extension appends the goal to a read result, a Codex brief carries the section, and a repository without a map gets no section and a silent hook.
+`tests/fm-component-hook-live-e2e.test.sh` is an opt-in live check (`FM_COMPONENT_HOOK_LIVE_E2E=1`) that a real `claude -p` reading a mapped file receives the goal through the installed hook, and that a real Pi session over `pi --mode rpc` receives it through the spawned extension once per session id and again after a compaction; `FM_COMPONENT_HOOK_LIVE_HARNESSES` picks the cases.
 `tests/fm-turnend-guard.test.sh` pins that the tracked entries stay inert under Grok.
 
 ## Known residual gaps
@@ -100,3 +108,5 @@ It covers injection on Read, Edit and a relative notebook path, silence on a sec
 - A home map is never checked in CI, because it lives outside the repository.
   `bin/fm-component-map.sh check <map>` validates one on demand.
 - A Bash command that only reads a mapped file changes nothing in `git status`, so it injects no goal.
+- In Firstmate's own repository, a Pi session with pi-code installed also runs the tracked Claude entries.
+  If pi-code shares the session id with the extension but does not deliver Claude-shaped context, the tracked entry can record a component before the extension's call, which then stays silent for it.

@@ -6,6 +6,7 @@
 #   fm-component-map.sh touched <repo|map> <path>...
 #   fm-component-map.sh goal <repo|map> <id>
 #   fm-component-map.sh review-pack <repo> <base> <head>
+#   fm-component-map.sh list <repo|map>
 #   fm-component-map.sh drift <repo|map>
 #   fm-component-map.sh --help
 #
@@ -47,6 +48,11 @@
 # A repo without a map, or a diff touching no component, prints nothing.
 # The map and skills are read from <repo>'s working tree, not from <head>.
 #
+# list prints one tab-separated line per component, in map order,
+# "id<TAB>skill-path<TAB>provisional(0|1)<TAB>glob[<TAB>glob...]"; fm-spawn
+# builds a brief's `## Component skills` section from it. It validates no
+# skill. A repository top level without a map prints nothing and exits 0.
+#
 # drift recomputes the sha256 of every metadata.sources pin of every skill the
 # map names, for a repo or for a map file (a home map such as
 # $FM_HOME/config/component-map.json), and prints one tab-separated line per
@@ -57,7 +63,7 @@
 # exits 0.
 #
 # Exit codes, the same for every subcommand:
-#   0  ran, and nothing is wrong (touched and review-pack: output printed, maybe none).
+#   0  ran, and nothing is wrong (touched, review-pack and list: output printed, maybe none).
 #   1  ran, and found problems: check problems, drift lines, a review-pack
 #      block whose checklist could not be read (the block says why), or a goal
 #      that could not be read.

@@ -6,7 +6,8 @@
 # and fails open without a map; review-pack carries each touched component's
 # Review section across renames, deletions and spaces; drift reports a changed,
 # a vanished and an unreadable pinned source for a repo map and a home map; goal
-# prints a component's goal section; touched, goal and check read a home map;
+# prints a component's goal section; list prints every component's skill and
+# globs; touched, goal, list and check read a home map;
 # one exit-code contract.
 set -eu
 # shellcheck source=tests/lib.sh
@@ -387,6 +388,22 @@ expect(rc == 2, "goal on a non-repository exits 2", err)
 rc, out, err = run("goal", nomap, "alpha")
 expect(rc == 3 and "no component map" in err, "goal on a repository without a map exits 3", err)
 
+# --- list ---
+rc, out, err = run("list", repo)
+real = os.path.realpath(repo)
+expect(rc == 0 and out.split("\n")[:-1] == [
+    f"alpha\t{real}/.agents/skills/alpha/SKILL.md\t0\tsrc/alpha/**\tsrc/shared.py\tdocs/alpha.md",
+    f"beta\t{real}/.agents/skills/beta/SKILL.md\t0\tsrc/beta/*.py\tsrc/shared.py",
+    f"gamma\t{real}/.claude/skills/gamma/SKILL.md\t1\ttools/gamma/**"],
+    "list prints each component's id, skill path, provisional flag and globs in map order", out + err)
+rc, out, err = run("list", nomap)
+expect(rc == 0 and out == "", "list on a repository without a map prints nothing and exits 0", out + err)
+rc, out, err = run("list", repo, "extra")
+expect(rc == 2, "list with two arguments exits 2", err)
+write(repo / "docs/component-map.json", "{not json")
+rc, out, err = run("list", repo)
+expect(rc == 3 and out == "", "list on an unusable map exits 3", out + err)
+
 # --- home maps: touched, goal and check ---
 home = Path(os.path.realpath(tmp)) / "home2"
 kit = home / "data/kit"
@@ -410,6 +427,9 @@ rc, out, err = run("touched", home_map, str(link / "data/kit/run.sh"))
 expect(rc == 0 and out.startswith("match\t"), "a home map matches a path through a symlink", out + err)
 rc, out, err = run("goal", home_map, "kit")
 expect(rc == 0 and out == "Kit goal.\n", "goal reads a home map's skill", out + err)
+rc, out, err = run("list", home_map)
+expect(rc == 0 and out == f"kit\t{kit_skill}\t0\t{kit}/**\ngate\t{kit_skill}\t1\t{home / 'data/gate.sh'}\n",
+       "list reads a home map", out + err)
 rc, out, err = run("check", home_map)
 expect(rc == 0 and out.startswith("ok: 2 components, 1 skills") and "provisional" not in out,
        "a valid home map passes check without any tracked-file check", out + err)

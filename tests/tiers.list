@@ -158,6 +158,7 @@ full tests/fm-sessionstart-nudge.test.sh
 full tests/fm-shared-captain-inheritance.test.sh
 full tests/fm-spawn-batch.test.sh
 full tests/fm-spawn-compact-adviser-disable.test.sh
+full tests/fm-spawn-component-skills.test.sh
 full tests/fm-startup-growth-check.test.sh
 full tests/fm-startup-memory-budget.test.sh
 full tests/fm-startup-network.test.sh
@@ -253,6 +254,7 @@ live tests/fm-claude-stop-autoarm-live-e2e.test.sh
 live tests/fm-cmux-claude-composer-live-e2e.test.sh
 live tests/fm-codex-continuity-live-e2e.test.sh
 live tests/fm-codex-hook-layer-live-e2e.test.sh
+live tests/fm-component-hook-live-e2e.test.sh
 live tests/fm-composer-codex-idle-live-e2e.test.sh
 live tests/fm-composer-matrix-live-e2e.test.sh
 live tests/fm-control-claude-exit-dialog-live-e2e.test.sh

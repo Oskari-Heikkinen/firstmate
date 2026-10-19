@@ -694,6 +694,35 @@ This task changes Firstmate's own repository, whose suite runs on GitHub, so thi
 EOF
 }
 
+# The `## Component skills` section of a launch brief whose task checkout has a
+# docs/component-map.json (docs/component-skills.md). Paths come only from
+# `bin/fm-component-map.sh list`; a checkout without a map prints nothing, and
+# an unusable map prints a section that says so and returns 1 so the caller can
+# warn. Every harness gets it: it is the only component guidance a runtime
+# without the component hook receives.
+fm_component_skills_block() {  # <checkout> <fm-root>
+  local checkout=$1 tool="$2/bin/fm-component-map.sh" rows rc=0 id skill prov globs mark
+  rows=$("$tool" list "$checkout" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    cat <<EOF
+## Component skills
+This checkout's \`docs/component-map.json\` could not be read (\`fm-component-map.sh list\` exited $rc), so no component is listed here. Run \`$tool check $checkout\` to see why; until it passes, look in \`.agents/skills/\` and \`.claude/skills/\` for the component skill that governs a path before changing it.
+EOF
+    return 1
+  fi
+  [ -n "$rows" ] || return 0
+  cat <<EOF
+## Component skills
+This checkout maps its paths to component skills in \`docs/component-map.json\`. Before changing a mapped path, load its skill; before reporting done, answer its Review checks. \`$tool touched $checkout <path>\` names the components that claim a path.
+EOF
+  while IFS=$'\t' read -r id skill prov globs; do
+    mark=
+    [ "$prov" = 1 ] && mark=' (provisional)'
+    # shellcheck disable=SC2016 # the backticks are Markdown, not expansions
+    printf -- '- `%s`%s: skill `%s`; paths `%s`\n' "$id" "$mark" "$skill" "${globs//$'\t'/'`, `'}"
+  done <<<"$rows"
+}
+
 # 0 when <sha> is contained in a ref under <namespace> in <repo>.
 # --contains tests that exact commit, so a branch that moved to a different
 # tip does not count.

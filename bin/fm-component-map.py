@@ -757,6 +757,17 @@ def cmd_goal(args):
     return OK
 
 
+def cmd_list(args):
+    if len(args) != 1:
+        raise UsageError("list needs exactly <repo|map>")
+    cmap = map_arg(args[0], "list")
+    if cmap is None:
+        return OK
+    out = [f"{c.id}\t{cmap.skill_label(c)}\t{int(c.provisional)}\t" + "\t".join(c.globs) for c in cmap.components]
+    print("\n".join(out))
+    return OK
+
+
 def cmd_drift(args):
     if len(args) != 1:
         raise UsageError("drift needs exactly <repo|map>")
@@ -796,7 +807,7 @@ def cmd_drift(args):
 
 
 COMMANDS = {"check": cmd_check, "touched": cmd_touched, "goal": cmd_goal, "review-pack": cmd_review_pack,
-            "drift": cmd_drift}
+            "list": cmd_list, "drift": cmd_drift}
 
 
 def main(argv):
