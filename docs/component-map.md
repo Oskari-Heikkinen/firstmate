@@ -3,6 +3,7 @@
 A component map names, for one repository, which component skill governs which paths.
 It is the only path-to-skill source, read through `bin/fm-component-map.sh`, whose header owns the commands and the exit codes: `check` validates a map and its skills, `touched` names the components that claim given paths, `review-pack` collects the review checklists of the components a diff touches, and `drift` reports skills whose pinned sources changed.
 A component skill states the component's goal and operating principle, the scrappy fixes to refuse and a review checklist.
+`bin/fm-lean-review.sh` asks its Q5 architecture-conformance question from `review-pack`, and its header owns what happens when the map is missing or unusable.
 
 ## Repository map
 

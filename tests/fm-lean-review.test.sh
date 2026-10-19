@@ -14,6 +14,10 @@
 #   - FIX findings exit 1 and DECIDE findings exit 3, recording nothing.
 #   - An answer outside the strict form, a failed reviewer, or a reviewer that
 #     hits its bound exits 2 and records nothing.
+#   - A commit touching a path the repo's component map claims gets Q5 with
+#     that component's review checklist, and a Q5 finding counts like Q1-Q4;
+#     an unmapped commit gets the four-question prompt and Q5 is out of range;
+#     a broken map warns and reviews Q1-Q4 without blocking.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -62,6 +66,17 @@ new_repo() { # <name> <msg> <file>...
   git -C "$r" add -A
   git -C "$r" commit -qm "$msg"
   printf '%s\n' "$r"
+}
+
+# Gives <repo> a component map whose one component, park, claims <glob> and
+# names skill <skill>; the skill file is written only for park-rules.
+add_map() { # <repo> <glob> [skill]
+  local r=$1 glob=$2 skill=${3:-park-rules}
+  mkdir -p "$r/docs" "$r/.agents/skills/park-rules"
+  printf '{"schema": "component-map/v1", "components": [{"id": "park", "skill": "%s", "paths": ["%s"]}]}\n' \
+    "$skill" "$glob" >"$r/docs/component-map.json"
+  printf -- '---\nname: park-rules\ndescription: Load before changing parking. One owner, fail closed.\n---\n\n# park-rules\n\n## Goal and operating principle\nPark keeps work resumable.\n\n## Refuse\n- A sleep loop.\n\n## Review\n1. Park check: is every parked task resumable?\n' \
+    >"$r/.agents/skills/park-rules/SKILL.md"
 }
 
 review() { # <repo> [args...]
@@ -200,11 +215,77 @@ test_merge_reviews_the_complete_first_parent_diff() {
   pass "a merge independently reviews the complete first-parent diff and records its own receipt"
 }
 
+test_q5_asks_the_touched_components_checklist() {
+  local r out rc head
+  r=$(new_repo q5 "park: keep the lock" bin/fm-park.sh tests/fm-park.test.sh)
+  add_map "$r" 'bin/fm-park.sh'
+  head=$(git -C "$r" rev-parse HEAD)
+  answer 'VERDICT: PASS\n'
+  out=$(review "$r" --print-only 2>&1) || fail "a mapped commit must pass: $out"
+  out=$(cat "$FAKE_DIR/prompt")
+  assert_contains "$out" "Answer only these five questions" "the prompt asks five questions"
+  assert_contains "$out" "Q5 Architecture conformance" "the prompt asks Q5"
+  assert_contains "$out" "## Component park" "the prompt names the touched component"
+  assert_contains "$out" "/.agents/skills/park-rules/SKILL.md" "the prompt names the component's skill"
+  assert_contains "$out" "1. Park check: is every parked task resumable?" "the prompt carries the component's checklist"
+  assert_contains "$out" "<Q1|Q2|Q3|Q4|Q5>" "the answer form allows Q5"
+
+  answer 'VERDICT: FINDINGS\nFINDING: Q5 FIX bin/fm-park.sh park check 1: the task is not resumable\n'
+  out=$(review "$r" 2>&1); rc=$?
+  expect_code 1 "$rc" "a Q5 FIX finding"
+  assert_contains "$out" "FINDING: Q5 FIX bin/fm-park.sh park check 1" "the Q5 finding is shown"
+  answer 'VERDICT: FINDINGS\nFINDING: Q5 DECIDE bin/fm-park.sh park check 1 may not apply\n'
+  out=$(review "$r" 2>&1); rc=$?
+  expect_code 3 "$rc" "a Q5 DECIDE finding"
+  assert_equals "$head" "$(git -C "$r" rev-parse HEAD)" "Q5 findings leave HEAD alone"
+  pass "a commit touching a mapped path gets Q5 with that component's checklist, and Q5 findings exit like Q1-Q4"
+}
+
+test_q5_absent_for_an_unmapped_commit() {
+  local r out rc
+  r=$(new_repo q5none "park change" bin/fm-park.sh tests/fm-park.test.sh)
+  add_map "$r" 'docs/park/**'
+  answer 'VERDICT: PASS\n'
+  out=$(review "$r" --print-only 2>&1) || fail "an unmapped commit must pass: $out"
+  assert_not_contains "$out" "warning" "an unmapped commit warns of nothing"
+  out=$(cat "$FAKE_DIR/prompt")
+  assert_contains "$out" "Answer only these four questions" "the prompt asks four questions"
+  assert_not_contains "$out" "Q5" "the prompt has no Q5"
+  answer 'VERDICT: FINDINGS\nFINDING: Q5 FIX not asked\n'
+  out=$(review "$r" 2>&1); rc=$?
+  expect_code 2 "$rc" "a Q5 finding when Q5 was not asked"
+  assert_contains "$out" "did not answer in the strict verdict form" "an unasked Q5 is outside the strict form"
+  pass "a commit touching no mapped path gets no Q5"
+}
+
+test_q5_never_blocks_on_a_broken_map() {
+  local r out
+  r=$(new_repo q5broken "park change" bin/fm-park.sh tests/fm-park.test.sh)
+  mkdir -p "$r/docs"
+  printf '{not json\n' >"$r/docs/component-map.json"
+  answer 'VERDICT: PASS\n'
+  out=$(review "$r" --print-only 2>&1) || fail "an unusable map must not block the review: $out"
+  assert_contains "$out" "review-pack failed with status 3, so Q5 (architecture conformance) is not asked" "the unusable map is warned about"
+  assert_contains "$out" "Lean-Review: " "the Q1-Q4 review still passes"
+  assert_not_contains "$(cat "$FAKE_DIR/prompt")" "Q5" "the prompt has no Q5"
+
+  add_map "$r" 'bin/fm-park.sh' missing-skill
+  out=$(review "$r" --print-only 2>&1) || fail "an unreadable checklist must not block the review: $out"
+  assert_contains "$out" "a component review checklist could not be read" "the unreadable checklist is warned about"
+  out=$(cat "$FAKE_DIR/prompt")
+  assert_contains "$out" "Q5 Architecture conformance" "Q5 is still asked"
+  assert_contains "$out" "Review checklist unavailable" "the Q5 block says why its checklist is missing"
+  pass "a broken map or checklist warns and never blocks the review"
+}
+
 test_merge_reviews_the_complete_first_parent_diff
 test_no_review_needed
 test_pass_amends_head_with_a_receipt
 test_pass_prints_without_amending
 test_findings_record_nothing
 test_bad_answers_record_nothing
+test_q5_asks_the_touched_components_checklist
+test_q5_absent_for_an_unmapped_commit
+test_q5_never_blocks_on_a_broken_map
 
 echo "# all fm-lean-review tests passed"

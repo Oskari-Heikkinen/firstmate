@@ -21,12 +21,25 @@
 # guards, real-runtime assumptions (naming the opt-in live lab test or saying
 # one is missing), and untested risky-area behaviour. It is told not to judge
 # test results, lint, style, or doc wording, and it never runs a command.
+#
+# A fifth question, Q5 architecture conformance, is asked only when the
+# commit's first-parent diff touches a path the repository's component map
+# (docs/component-map.md) claims. Its text is `bin/fm-component-map.sh
+# review-pack` output for the commit: each touched component's skill path,
+# changed paths, and `## Review` checklist, which the reviewer checks the
+# change against. With no map, no touched component, or a root commit there
+# is no Q5 and the prompt is the four-question one. A review-pack that fails
+# (map unusable, git error) never blocks the review: a warning on stderr names
+# the status, Q5 is not asked, and the review runs on Q1-Q4; repair the map
+# with `bin/fm-component-map.sh check`. A pack in which a checklist could not
+# be read is still asked, each such block saying why, with the same warning.
+#
 # The reviewer must answer in this strict form, and anything else is an error:
 #   VERDICT: PASS
 # or
 #   VERDICT: FINDINGS
 #   FINDING: <Q1|Q2|Q3|Q4> <FIX|DECIDE> <one-line finding>
-#   (one FINDING line each; no other text)
+#   (one FINDING line each, Q5 too when it was asked; no other text)
 # FIX means the worker fixes it and reviews again; DECIDE means the finding is
 # ambiguous or changes scope, so the worker reports it to firstmate as a
 # needs-decision status line and re-runs with the answer in --intent-file.
@@ -101,23 +114,50 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-lean-review.XXXXXX") || die "mktemp failed"
 # shellcheck disable=SC2064 # expand tmp now
 trap "rm -rf '$tmp'" EXIT
 
+# Q5's review pack: empty when nothing mapped is touched, dropped with a
+# warning when the resolver fails, so the Q1-Q4 review always runs.
+pack=''
+if parent=$(git rev-parse --verify --quiet "$sha^1"); then
+  top=$(git rev-parse --show-toplevel) || die "could not find the repository top level"
+  pack=$("$SELF_DIR/fm-component-map.sh" review-pack "$top" "$parent" "$sha" 2>"$tmp/pack.err"); rc=$?
+  case "$rc" in
+    0) ;;
+    1) printf 'fm-lean-review: warning: a component review checklist could not be read; its Q5 block says why (see bin/fm-component-map.sh check)\n' >&2 ;;
+    *)
+      printf 'fm-lean-review: warning: bin/fm-component-map.sh review-pack failed with status %s, so Q5 (architecture conformance) is not asked; repair the map with bin/fm-component-map.sh check\n' "$rc" >&2
+      sed 's/^/  | /' "$tmp/pack.err" >&2
+      pack='' ;;
+  esac
+fi
+qmax=4 count=four q5_scope='' q5_question='' q5_judge='' q5_read='' q5_fix='' q5_list='' q5_form=''
+if [ -n "$pack" ]; then
+  qmax=5 count=five
+  q5_scope=$'\nIt also touches architecture components, each governed by a component skill whose review checklist is below.'
+  q5_question=$'\nQ5 Architecture conformance: for each component whose checklist is below, does the change keep that component\'s goal and pass every check of its checklist, rather than adding a short-term fix its rules refuse? A check the change does not bear on passes, and a checklist that could not be read is not itself a finding.'
+  q5_judge=', unless a Q5 checklist check asks about it'
+  q5_read=', and the skill file each Q5 checklist names'
+  q5_fix=' or a Q5 checklist'
+  q5_list='|Q5'
+  q5_form='; for Q5, also the component id and check number'
+fi
+
 {
-  cat <<'EOF'
+  cat <<EOF
 You are a lean pre-push reviewer for one commit to Firstmate, a supervisor for AI coding agents built mostly from bash scripts.
 You did not write this change; judge it independently.
-The commit touches Firstmate's risky areas: watcher and supervision, cleanup (teardown and park), steering and control, fleet sync and self-update, or the spawn and merge guards.
+The commit touches Firstmate's risky areas: watcher and supervision, cleanup (teardown and park), steering and control, fleet sync and self-update, or the spawn and merge guards.$q5_scope
 
-Answer only these four questions:
+Answer only these $count questions:
 Q1 Intent: does the change do what the stated intent asks, no more and no less (no scope creep, no missing piece)?
 Q2 Weakened guards: did any refusal, check, lock, timeout, allow-list, or safety condition get weaker, removed, bypassable, or widened, even if every test still passes?
 Q3 Runtime assumptions: does the change rely on how the real Claude or Codex terminal, WSL timing, or the live Herdr server behaves? If so, name the opt-in live lab test that should be run (tests in the live-harness-optin family of bin/fm-test-run.sh, or Herdr lab tests), or say that one is missing.
-Q4 Untested behaviour: is there new behaviour in a risky area with no test that would fail if it broke?
+Q4 Untested behaviour: is there new behaviour in a risky area with no test that would fail if it broke?$q5_question
 
-Do not judge, and do not report on: whether tests pass, lint or shellcheck, formatting or style, documentation wording, or anything CI already proves.
+Do not judge, and do not report on: whether tests pass, lint or shellcheck, formatting or style, documentation wording, or anything CI already proves$q5_judge.
 Do not run commands.
-You may read the files this diff touches, and their tests, with the Read, Grep, and Glob tools; the working tree may hold later commits than this one, so the diff below is authoritative.
+You may read the files this diff touches, and their tests$q5_read, with the Read, Grep, and Glob tools; the working tree may hold later commits than this one, so the diff below is authoritative.
 Report only real problems you can point to in this diff; a concern without concrete evidence is not a finding.
-Mark a finding FIX when the change should be corrected to match the stated intent, and DECIDE when it is ambiguous whether the behaviour is wanted or fixing it would change the task's scope.
+Mark a finding FIX when the change should be corrected to match the stated intent$q5_fix, and DECIDE when it is ambiguous whether the behaviour is wanted or fixing it would change the task's scope.
 
 Answer with exactly one of these two forms and no other text, no code fences, and no explanation outside the finding lines:
 
@@ -126,7 +166,7 @@ VERDICT: PASS
 or
 
 VERDICT: FINDINGS
-FINDING: <Q1|Q2|Q3|Q4> <FIX|DECIDE> <one-line finding naming the file and what is wrong>
+FINDING: <Q1|Q2|Q3|Q4$q5_list> <FIX|DECIDE> <one-line finding naming the file and what is wrong$q5_form>
 
 Use one FINDING line per finding.
 
@@ -136,6 +176,9 @@ EOF
   if [ -n "$intent_file" ]; then
     printf '\n## Stated intent: task intent and decisions\n'
     cat "$intent_file"
+  fi
+  if [ -n "$pack" ]; then
+    printf '\n## Q5 component review checklists\n\n%s\n' "$pack"
   fi
   printf '\n## The commit diff\n'
   git show --first-parent --diff-merges=first-parent --no-color --no-ext-diff --no-renames --format='commit %H' --stat -p "$sha"
@@ -164,6 +207,7 @@ fi
 # Parse the strict verdict: blank lines are ignored, the first line must be the
 # verdict, PASS takes no other line, and FINDINGS takes only FINDING lines.
 verdict='' findings=0 decide=0 bad=''
+finding_re="^FINDING: Q[1-$qmax] (FIX|DECIDE) [^[:space:]]"
 while IFS= read -r line || [ -n "$line" ]; do
   line=${line%$'\r'}
   case "$line" in *[![:space:]]*) ;; *) continue ;; esac
@@ -175,7 +219,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     esac
     continue
   fi
-  if [ "$verdict" = findings ] && [[ $line =~ ^FINDING:\ Q[1-4]\ (FIX|DECIDE)\ [^[:space:]] ]]; then
+  if [ "$verdict" = findings ] && [[ $line =~ $finding_re ]]; then
     findings=$((findings + 1))
     [ "${BASH_REMATCH[1]}" = FIX ] || decide=1
     continue

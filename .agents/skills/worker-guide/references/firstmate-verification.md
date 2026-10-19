@@ -6,7 +6,7 @@ Your brief's `# Firstmate repository verification` section keeps the rules that 
 
 ## Lean pre-push review
 
-Before you push any commit that changes a script matched by `tests/risky-areas.list`, it must pass the lean pre-push review, a separate read-only reviewer call whose header in `bin/fm-lean-review.sh` owns the four questions, the verdict, and the receipt.
+Before you push any commit that changes a script matched by `tests/risky-areas.list`, it must pass the lean pre-push review, a separate read-only reviewer call whose header in `bin/fm-lean-review.sh` owns the questions (four, plus Q5 architecture conformance when the commit touches a component-map path), the verdict, and the receipt.
 Right after making each such commit, write your Captain's intent text to a file outside the worktree and run `bin/fm-lean-review.sh --intent-file <that file>`; a pass adds the `Lean-Review:` receipt trailer to that commit, and other commits need no review.
 On FIX findings, amend the fix into that same commit and review again.
 If the review itself errors, run it once more and treat a second error as a blocker.
