@@ -401,6 +401,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/component-map.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/helper-consumers.md",
       "audience": "operator-current"
     },
