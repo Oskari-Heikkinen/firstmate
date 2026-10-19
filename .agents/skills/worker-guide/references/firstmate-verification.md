@@ -10,6 +10,7 @@ Before you push any commit that changes a script matched by `tests/risky-areas.l
 Right after making each such commit, write your Captain's intent text to a file outside the worktree and run `bin/fm-lean-review.sh --intent-file <that file>`; a pass adds the `Lean-Review:` receipt trailer to that commit, and other commits need no review.
 On FIX findings, amend the fix into that same commit and review again.
 If the review itself errors, run it once more and treat a second error as a blocker.
+Report any `fm-lean-review: warning:` line the review prints in your ready report.
 On a DECIDE finding, append a `needs-decision` status line naming it and stop, then re-run with firstmate's answer added to the intent file.
 Never judge your own finding or write the trailer by hand.
 A plain rebase keeps a receipt valid, but a conflict resolution or any later edit to a reviewed commit's risky-area files needs a fresh review.

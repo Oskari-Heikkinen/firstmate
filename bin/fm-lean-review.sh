@@ -17,10 +17,11 @@
 #     --print-only   on a pass, print the trailer line instead of amending.
 #
 # One separate, read-only reviewer call reads the commit's diff and its stated
-# intent and answers only four questions: intent (no more, no less), weakened
-# guards, real-runtime assumptions (naming the opt-in live lab test or saying
-# one is missing), and untested risky-area behaviour. It is told not to judge
-# test results, lint, style, or doc wording, and it never runs a command.
+# intent and answers four questions (and Q5 below when a mapped path is
+# touched): intent (no more, no less), weakened guards, real-runtime
+# assumptions (naming the opt-in live lab test or saying one is missing), and
+# untested risky-area behaviour. It is told not to judge test results, lint,
+# style, or doc wording, and it never runs a command.
 #
 # A fifth question, Q5 architecture conformance, is asked only when the
 # commit's first-parent diff touches a path the repository's component map
