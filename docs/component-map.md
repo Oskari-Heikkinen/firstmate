@@ -1,7 +1,7 @@
 # Component maps
 
 A component map names, for one repository, which component skill governs which paths.
-It is the only path-to-skill source, read through `bin/fm-component-map.sh`, whose header owns the commands and the exit codes: `check` validates a map and its skills, `touched` names the components that claim given paths, `review-pack` collects the review checklists of the components a diff touches, and `drift` reports skills whose pinned sources changed.
+It is the only path-to-skill source, read through `bin/fm-component-map.sh`, whose header owns the commands and the exit codes: `check` validates a map and its skills, `touched` names the components that claim given paths, `goal` prints a component's goal section, `review-pack` collects the review checklists of the components a diff touches, and `drift` reports skills whose pinned sources changed.
 A component skill states the component's goal and operating principle, the scrappy fixes to refuse and a review checklist.
 `bin/fm-lean-review.sh` asks its Q5 architecture-conformance question from `review-pack`, and its header owns what happens when the map is missing or unusable.
 
@@ -56,7 +56,8 @@ Matching is otherwise the same: `touched` resolves the first file created under 
 
 Components whose source is not in any repository (for example kit folders in a home's `data/`) go in `$FM_HOME/config/component-map.json` of the owning home.
 It has the same schema with three differences: every glob in `paths` is an absolute path glob, `skill` is the absolute path of a `SKILL.md` (normally in a checkout of the repository that owns the skill), and `roots` is not allowed.
-`drift` accepts a home map directly; `check`, `touched` and `review-pack` read only a repository's map.
+`check`, `touched`, `goal` and `drift` accept a home map file directly; `check` then validates its schema and skills but matches no glob against tracked files, and `review-pack` reads only a repository's map.
+The component hook reads the home map of the home it runs for beside the repository map ([component skills](component-skills.md)).
 
 ## Component skill shape
 

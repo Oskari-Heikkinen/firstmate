@@ -90,6 +90,7 @@ full tests/fm-cd-pretool-check.test.sh
 full tests/fm-check-unregister.test.sh
 full tests/fm-classify-corr-token.test.sh
 full tests/fm-claude-trust.test.sh
+full tests/fm-component-check.test.sh
 full tests/fm-component-map.test.sh
 full tests/fm-composer-lib.test.sh
 full tests/fm-control-herdr-smoke.test.sh

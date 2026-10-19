@@ -578,15 +578,38 @@ def sha256_file(path):
 
 # ---------- subcommands ----------
 
+def home_skill_problems(cmap):
+    """check for a home map: every skill exists and has a valid shape; its globs
+    name home data outside any repository, so no tracked-file check applies."""
+    problems, checked = [], set()
+    for comp in cmap.components:
+        skill = cmap.skill_path(comp)
+        if skill is None:
+            problems.append(f"component {comp.id}: skill {comp.skill} not found")
+            continue
+        if skill in checked:
+            continue
+        checked.add(skill)
+        for problem in skill_problems(skill, os.path.basename(os.path.dirname(skill))):
+            problems.append(f"{skill}: {problem}")
+    if problems:
+        for line in problems:
+            print(line)
+        return FINDINGS
+    print(f"ok: {len(cmap.components)} components, {len(checked)} skills (home map: globs not checked)")
+    return OK
+
+
 def cmd_check(args):
     if len(args) != 1:
-        raise UsageError("check needs exactly <repo>")
-    repo = repo_root(args[0])
-    map_file = os.path.join(repo, REPO_MAP)
-    if not os.path.exists(map_file):
+        raise UsageError("check needs exactly <repo|map>")
+    cmap = map_arg(args[0], "check")
+    if cmap is None:
         print(f"{REPO_MAP}: no component map", file=sys.stderr)
         return MAP_UNUSABLE
-    cmap = repo_map(repo)
+    if cmap.home:
+        return home_skill_problems(cmap)
+    repo = cmap.root
     tracked = nul_list(git(repo, "ls-files", "-z", "--full-name"))
     problems, notes = [], []
     checked = set()
@@ -635,19 +658,33 @@ def cmd_check(args):
     return OK
 
 
+def home_forms(path):
+    """The absolute forms of an input path that a home map's globs may name."""
+    path = os.path.abspath(path)
+    return {path, os.path.realpath(path)}
+
+
 def cmd_touched(args):
     if len(args) < 2:
-        raise UsageError("touched needs <repo> and at least one <path>")
-    repo, paths = args[0], args[1:]
-    if not os.path.isdir(repo):
-        raise UsageError(f"not a directory: {repo}")
-    if not os.path.exists(os.path.join(repo, REPO_MAP)):
-        return OK
-    cmap = repo_map(repo)
+        raise UsageError("touched needs <repo|map> and at least one <path>")
+    target, paths = args[0], args[1:]
+    if os.path.isfile(target) and not is_repo_map(target):
+        cmap = load_map(target, True, None)
+    else:
+        repo = git_toplevel(os.path.dirname(os.path.abspath(target))) if os.path.isfile(target) else target
+        if not os.path.isdir(repo):
+            raise UsageError(f"not a directory or map: {target}")
+        if not os.path.exists(os.path.join(repo, REPO_MAP)):
+            return OK
+        cmap = repo_map(repo)
     out = []
     for path in paths:
-        rel = repo_relative(repo, path)
-        hits = [c for c in cmap.components if rel is not None and c.matches(rel)]
+        if cmap.home:
+            forms = home_forms(path)
+        else:
+            rel = repo_relative(cmap.root, path)
+            forms = set() if rel is None else {rel}
+        hits = [c for c in cmap.components if any(c.matches(f) for f in forms)]
         if not hits:
             out.append(f"unmapped\t{path}")
         for comp in hits:
@@ -685,22 +722,47 @@ def cmd_review_pack(args):
     return rc
 
 
+def map_arg(target, cmd):
+    """The map a <repo|map> argument names: a repository top level's map (None
+    when it has none), that map given as a file, or a home map file."""
+    if os.path.isdir(target):
+        repo = repo_root(target)
+        return repo_map(repo) if os.path.exists(os.path.join(repo, REPO_MAP)) else None
+    if os.path.isfile(target):
+        if is_repo_map(target):
+            return repo_map(git_toplevel(os.path.dirname(os.path.abspath(target))))
+        return load_map(target, True, None)
+    raise UsageError(f"{cmd}: no such repository or map: {target}")
+
+
+def cmd_goal(args):
+    if len(args) != 2:
+        raise UsageError("goal needs <repo|map> and one <id>")
+    cmap = map_arg(args[0], "goal")
+    if cmap is None:
+        print(f"{REPO_MAP}: no component map", file=sys.stderr)
+        return MAP_UNUSABLE
+    comp = next((c for c in cmap.components if c.id == args[1]), None)
+    if comp is None:
+        raise UsageError(f"goal: no component {args[1]!r} in {cmap.path}")
+    skill = cmap.skill_label(comp)
+    try:
+        goal = sections(read_skill(skill)[1]).get(GOAL, [""])[0].strip()
+        if not goal:
+            raise ValueError(f"no '## {GOAL}' section")
+    except ValueError as exc:
+        print(f"{skill}: {exc}", file=sys.stderr)
+        return FINDINGS
+    print(goal)
+    return OK
+
+
 def cmd_drift(args):
     if len(args) != 1:
         raise UsageError("drift needs exactly <repo|map>")
-    target = args[0]
-    if os.path.isdir(target):
-        repo = repo_root(target)
-        if not os.path.exists(os.path.join(repo, REPO_MAP)):
-            return OK
-        cmap = repo_map(repo)
-    elif os.path.isfile(target):
-        if is_repo_map(target):
-            cmap = repo_map(git_toplevel(os.path.dirname(os.path.abspath(target))))
-        else:
-            cmap = load_map(target, True, None)
-    else:
-        raise UsageError(f"no such repository or map: {target}")
+    cmap = map_arg(args[0], "drift")
+    if cmap is None:
+        return OK
     owners = {}
     for comp in cmap.components:
         owners.setdefault(cmap.skill_label(comp), []).append(comp.id)
@@ -733,7 +795,8 @@ def cmd_drift(args):
     return OK
 
 
-COMMANDS = {"check": cmd_check, "touched": cmd_touched, "review-pack": cmd_review_pack, "drift": cmd_drift}
+COMMANDS = {"check": cmd_check, "touched": cmd_touched, "goal": cmd_goal, "review-pack": cmd_review_pack,
+            "drift": cmd_drift}
 
 
 def main(argv):

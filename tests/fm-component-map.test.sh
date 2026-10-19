@@ -5,8 +5,9 @@
 # touched resolves multi-match, unmapped, outside, provisional and '**' paths
 # and fails open without a map; review-pack carries each touched component's
 # Review section across renames, deletions and spaces; drift reports a changed,
-# a vanished and an unreadable pinned source for a repo map and a home map; one
-# exit-code contract.
+# a vanished and an unreadable pinned source for a repo map and a home map; goal
+# prints a component's goal section; touched, goal and check read a home map;
+# one exit-code contract.
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -366,4 +367,68 @@ expect(rc == 1 and out.startswith(f"unreadable\tgamma\t{repo / '.claude/skills/g
        and "vanished" not in out, "a pin naming a directory is unreadable, not vanished", out + err)
 rc, out, err = run("drift", tmp / "missing.json")
 expect(rc == 2, "drift on a missing path exits 2", err)
+
+# --- goal ---
+repo, cmap = make_repo("goals")
+rc, out, err = run("goal", repo, "alpha")
+expect(rc == 0 and out == "Keep the component flexible and fail closed.\n", "goal prints the goal section verbatim", out + err)
+rc, out, err = run("goal", repo / "docs/component-map.json", "beta")
+expect(rc == 0 and out == "Beta goal.\n", "goal accepts a repo map file", out + err)
+rc, out, err = run("goal", repo, "nope")
+expect(rc == 2 and "no component 'nope'" in err, "goal for an id the map does not name exits 2", err)
+rc, out, err = run("goal", repo)
+expect(rc == 2, "goal without an id exits 2", err)
+write(repo / ".claude/skills/gamma/SKILL.md", skill_text("gamma").replace("## Goal and operating principle", "## Aim"))
+rc, out, err = run("goal", repo, "gamma")
+expect(rc == 1 and out == "" and "no '## Goal and operating principle' section" in err
+       and str(repo / ".claude/skills/gamma/SKILL.md") in err, "a skill without a goal section exits 1 and names it", err)
+rc, out, err = run("goal", bare, "alpha")
+expect(rc == 2, "goal on a non-repository exits 2", err)
+rc, out, err = run("goal", nomap, "alpha")
+expect(rc == 3 and "no component map" in err, "goal on a repository without a map exits 3", err)
+
+# --- home maps: touched, goal and check ---
+home = Path(os.path.realpath(tmp)) / "home2"
+kit = home / "data/kit"
+write(kit / "run.sh", "run\n")
+kit_skill = tmp / "lr/.claude/skills/kit/SKILL.md"
+write(kit_skill, skill_text("kit", goal="Kit goal."))
+home_map = home / "config/component-map.json"
+write(home_map, json.dumps({"schema": "component-map/v1", "components": [
+    {"id": "kit", "skill": str(kit_skill), "paths": [str(kit) + "/**"]},
+    {"id": "gate", "skill": str(kit_skill), "paths": [str(home / "data/gate.sh")], "provisional": True}]}))
+rc, out, err = run("touched", home_map, str(kit / "run.sh"), str(home / "data/gate.sh"), str(home / "other.sh"))
+expect(rc == 0 and out.strip().split("\n") == [
+    f"match\t{kit / 'run.sh'}\tkit\t{kit_skill}\t0", f"match\t{home / 'data/gate.sh'}\tgate\t{kit_skill}\t1",
+    f"unmapped\t{home / 'other.sh'}"], "touched resolves absolute paths against a home map", out + err)
+rc, out, err = run("touched", home_map, "data/kit/run.sh", cwd=home)
+expect(rc == 0 and out.startswith("match\tdata/kit/run.sh\tkit\t"),
+       "a relative path resolves against the working directory for a home map", out + err)
+link = tmp / "home2-link"
+os.symlink(home, link)
+rc, out, err = run("touched", home_map, str(link / "data/kit/run.sh"))
+expect(rc == 0 and out.startswith("match\t"), "a home map matches a path through a symlink", out + err)
+rc, out, err = run("goal", home_map, "kit")
+expect(rc == 0 and out == "Kit goal.\n", "goal reads a home map's skill", out + err)
+rc, out, err = run("check", home_map)
+expect(rc == 0 and out.startswith("ok: 2 components, 1 skills") and "provisional" not in out,
+       "a valid home map passes check without any tracked-file check", out + err)
+write(kit_skill, skill_text("kit", goal="k" * 1501, extra_fm="owner: me\n").replace("## Refuse", "## Avoid"))
+rc, out, err = run("check", home_map)
+for needle in ("frontmatter: unknown key 'owner'", "missing required section '## Refuse'",
+               "is 1501 characters; the injection limit is 1500"):
+    expect(rc == 1 and f"{kit_skill}: " in out and needle in out, f"check reports a home-map skill problem: {needle}", out)
+write(home_map, json.dumps({"schema": "component-map/v1", "components": [
+    {"id": "kit", "skill": str(tmp / "absent/SKILL.md"), "paths": [str(kit) + "/**"]}]}))
+rc, out, err = run("check", home_map)
+expect(rc == 1 and f"component kit: skill {tmp / 'absent/SKILL.md'} not found" in out,
+       "check reports a missing home-map skill", out)
+write(home_map, json.dumps({"schema": "component-map/v1", "components": [
+    {"id": "kit", "skill": "kit", "paths": ["data/**"]}]}))
+rc, out, err = run("check", home_map)
+expect(rc == 3 and "absolute path to a SKILL.md" in err, "check refuses a home map with a repo-style skill name", err)
+rc, out, err = run("touched", home_map, str(kit / "run.sh"))
+expect(rc == 3 and out == "" and str(home_map) in err, "touched exits 3 on an unusable home map", err)
+rc, out, err = run("check", tmp / "missing.json")
+expect(rc == 2, "check on a missing path exits 2", err)
 PY
