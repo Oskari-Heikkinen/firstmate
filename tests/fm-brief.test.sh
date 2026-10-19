@@ -1579,6 +1579,45 @@ test_base_branch_is_rendered_and_bounded() {
   pass "fm-brief.sh: --base-branch records the base, targets the PR at it, and is refused where no PR carries it"
 }
 
+# --review-range marks a ship or scout as a review of that range with a Review
+# range line under # Setup, after any Base branch line, which fm-spawn reads to
+# append the touched components' review checklists.
+test_review_range_is_rendered_and_bounded() {
+  local home out rc brief ranges id
+  home="$TMP_ROOT/review-range-home"
+  mkdir -p "$home/data"
+  # shellcheck source=bin/fm-dod-lib.sh
+  . "$ROOT/bin/fm-dod-lib.sh"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-scout-r1 some-proj --scout --review-range origin/main...origin/feature/x >/dev/null 2>&1 \
+    || fail "scout --review-range should scaffold"
+  ranges=$(fm_brief_review_ranges "$home/data/brief-review-scout-r1/brief.md")
+  [ "$ranges" = origin/main...origin/feature/x ] || fail "the scout brief recorded review range '$ranges'"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-based-r2 some-proj --mode direct-PR --base-branch feature/hub --review-range=origin/feature/hub...abc1234 >/dev/null 2>&1 \
+    || fail "a based ship with --review-range should scaffold"
+  brief="$home/data/brief-review-based-r2/brief.md"
+  ranges=$(fm_brief_review_ranges "$brief")
+  [ "$ranges" = origin/feature/hub...abc1234 ] || fail "the based ship brief recorded review range '$ranges'"
+  [ "$(fm_brief_base_branches "$brief")" = feature/hub ] || fail "a review range hid the brief's Base branch line"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-none-r3 some-proj --scout >/dev/null 2>&1
+  ! fm_brief_review_ranges "$home/data/brief-review-none-r3/brief.md" >/dev/null \
+    || fail "a brief without --review-range recorded a review range"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-bad-r4 some-proj --scout --review-range origin/main..HEAD 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "a two-dot review range should be refused"
+  assert_contains "$out" "<base>...<head>" "the malformed range refusal did not name the form"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-dash-r5 some-proj --scout --review-range=main...--output=x 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "a review range revision starting with '-' should be refused"
+  out=$(FM_HOME="$home" FM_SECONDMATE_CHARTER=charter "$ROOT/bin/fm-brief.sh" brief-review-sm-r6 --secondmate --no-projects --review-range main...HEAD 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "a secondmate charter should refuse --review-range"
+  for id in brief-review-bad-r4 brief-review-dash-r5 brief-review-sm-r6; do
+    [ ! -e "$home/data/$id/brief.md" ] || fail "a refused --review-range scaffold wrote $id"
+  done
+  pass "fm-brief.sh: --review-range records one Setup review range and refuses a malformed one or a secondmate"
+}
+
 # (a) An unregistered/default project - no --branch-prefix passed at all - must
 # keep every generated ship mode's branch on the legacy "fm/<task-id>" name, byte
 # for byte, so every existing firstmate installation is unaffected.
@@ -1891,6 +1930,7 @@ test_workers_wait_without_spending_turns
 test_wait_no_turns_absent_keeps_the_previous_brief
 test_home_brief_include_is_appended_last
 test_base_branch_is_rendered_and_bounded
+test_review_range_is_rendered_and_bounded
 test_ship_branch_prefix_defaults_to_legacy_fm
 test_ship_branch_prefix_override_is_consistent_across_modes
 test_ship_branch_prefix_empty_override_yields_bare_task_id

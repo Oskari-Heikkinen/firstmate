@@ -1241,6 +1241,181 @@ test_scout_base_branch_refused_on_gerrit_forge() {
   pass "a based scout on a forge=gerrit project is refused at spawn"
 }
 
+# Publish a component map and its skill on origin's default branch, then a
+# feature branch that changes a mapped path and rewrites the skill's checklist,
+# so a review pack read from the reviewed head would carry the rewrite.
+publish_mapped_review_fixture() { # <branch>
+  local pub="$CASE_DIR/publisher"
+  mkdir -p "$pub/docs" "$pub/.agents/skills/demo-comp" "$pub/src"
+  printf '%s\n' '{"schema": "component-map/v1", "components": [{"id": "demo", "skill": "demo-comp", "paths": ["src/**"]}]}' \
+    > "$pub/docs/component-map.json"
+  printf '%s\n' '---' 'name: demo-comp' 'description: Load when touching src. Keeps the demo component whole.' '---' '' \
+    '## Goal and operating principle' 'Keep the demo whole.' '' '## Refuse' '- Partial demos.' '' \
+    '## Review' '1. Does the change keep the demo whole? (fixture-trusted-check)' \
+    > "$pub/.agents/skills/demo-comp/SKILL.md"
+  printf 'base\n' > "$pub/src/demo.txt"
+  git -C "$pub" add docs .agents src
+  git -C "$pub" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm map
+  git -C "$pub" push --quiet origin "$DEFAULT_BRANCH"
+  git -C "$pub" checkout --quiet -b "$1"
+  printf 'changed\n' > "$pub/src/demo.txt"
+  sed -i 's/fixture-trusted-check/fixture-head-rewrite/' "$pub/.agents/skills/demo-comp/SKILL.md"
+  git -C "$pub" add src .agents
+  git -C "$pub" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm feature
+  git -C "$pub" push --quiet origin "$1"
+}
+
+# A ship or scout whose brief names a Review range over a mapped repo gets the
+# touched components' review checklists, read from its starting commit, in its
+# launch brief; a non-review task and an unmapped repo get none.
+test_review_range_appends_component_review_pack() {
+  local rec id out status kind launch
+  for kind in ship scout; do
+    id="pool-review-pack-$kind-r1"
+    rec=$(make_case "review-pack-$kind" "$id")
+    read_case_record "$rec"
+    publish_mapped_review_fixture feature/review
+    fm_test_spawn_brief "$HOME_DIR" "$id"
+    printf '\n# Setup\nYou are in a disposable git worktree of project, at a detached HEAD on a clean default branch.\nReview range: origin/main...origin/feature/review\n' >> "$HOME_DIR/data/$id/brief.md"
+    if [ "$kind" = ship ]; then
+      out=$(run_spawn "$id" --mode direct-PR --yolo off)
+    else
+      out=$(run_spawn "$id" --scout)
+    fi
+    status=$?
+    expect_code 0 "$status" "a $kind review spawn over a mapped repo should launch"$'\n'"$out"
+    launch="$HOME_DIR/data/$id/launch-brief.md"
+    assert_grep '^# Component review checklists$' "$launch" "the $kind review launch brief has no component review section"
+    assert_grep '^## Component demo$' "$launch" "the $kind review pack did not name the touched component"
+    assert_grep 'Changed paths: .*src/demo.txt' "$launch" "the $kind review pack did not list the changed path"
+    assert_grep 'fixture-trusted-check' "$launch" "the $kind review pack did not carry the default branch's checklist"
+    assert_no_grep 'fixture-head-rewrite' "$launch" "the $kind review pack read the checklist from the reviewed head"
+  done
+
+  id='pool-review-pack-plain-r1'
+  rec=$(make_case review-pack-plain "$id")
+  read_case_record "$rec"
+  publish_mapped_review_fixture feature/review
+  out=$(run_spawn "$id" --scout)
+  status=$?
+  expect_code 0 "$status" "a non-review scout over a mapped repo should launch"$'\n'"$out"
+  assert_no_grep 'Component review checklists' "$HOME_DIR/data/$id/launch-brief.md" "a non-review task got a component review section"
+  [ ! -e "$HOME_DIR/data/$id/review-pack.md" ] || fail "a non-review task saved a review pack"
+
+  id='pool-review-pack-unmapped-r1'
+  rec=$(make_case review-pack-unmapped "$id")
+  read_case_record "$rec"
+  publish_feature_branch feature/review
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  printf '\n# Setup\nYou are in a disposable git worktree of project, at a detached HEAD on a clean default branch.\nReview range: origin/main...origin/feature/review\n' >> "$HOME_DIR/data/$id/brief.md"
+  out=$(run_spawn "$id" --scout)
+  status=$?
+  expect_code 0 "$status" "a review scout over an unmapped repo should launch"$'\n'"$out"
+  assert_no_grep 'Component review checklists' "$HOME_DIR/data/$id/launch-brief.md" "an unmapped repo's review got a component review section"
+  pass "a review range appends the default branch's component review checklists; a non-review task or unmapped repo gets none"
+}
+
+# A review range that does not resolve, or a brief with two, refuses the spawn
+# before any task metadata is published.
+test_bad_review_range_refuses() {
+  local rec id out status case_name
+  for case_name in unresolved duplicate malformed; do
+    id="pool-review-bad-$case_name-r1"
+    rec=$(make_case "review-bad-$case_name" "$id")
+    read_case_record "$rec"
+    fm_test_spawn_brief "$HOME_DIR" "$id"
+    printf '\n# Setup\nYou are in a disposable git worktree of project, at a detached HEAD on a clean default branch.\n' >> "$HOME_DIR/data/$id/brief.md"
+    case "$case_name" in
+    unresolved) printf 'Review range: origin/main...origin/feature/missing\n' ;;
+    duplicate) printf 'Review range: origin/main...HEAD\nReview range: origin/main...HEAD~1\n' ;;
+    malformed) printf 'Review range: origin/main..HEAD\n' ;;
+    esac >> "$HOME_DIR/data/$id/brief.md"
+    out=$(run_spawn "$id" --scout)
+    status=$?
+    [ "$status" -ne 0 ] || fail "a $case_name review range should refuse the spawn"
+    case "$case_name" in
+    unresolved) assert_contains "$out" "origin/feature/missing" "the unresolved refusal did not name the revision" ;;
+    duplicate) assert_contains "$out" "more than one Review range" "the duplicate refusal did not name the Review range lines" ;;
+    malformed) assert_contains "$out" "<base>...<head>" "the malformed refusal did not name the range form" ;;
+    esac
+    [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "a refused $case_name review spawn published task metadata"
+  done
+  pass "an unresolved, duplicated or malformed review range refuses the spawn"
+}
+
+# A relaunch re-appends the fresh launch's saved pack unchanged instead of
+# reading a map or checklist the worker has since changed in its copy.
+test_review_pack_survives_relaunch_unchanged() {
+  local rec id=pool-review-relaunch-r1 out status launch saved
+  rec=$(make_case review-relaunch "$id")
+  read_case_record "$rec"
+  lay_out_as_pool_slot
+  publish_mapped_review_fixture feature/review
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  printf '\n# Setup\nYou are in a disposable git worktree of project, at a detached HEAD on a clean default branch.\nReview range: origin/main...origin/feature/review\n' >> "$HOME_DIR/data/$id/brief.md"
+  out=$(run_spawn "$id" --scout); status=$?
+  expect_code 0 "$status" "the review scout fixture should launch"$'\n'"$out"
+  saved="$CASE_DIR/review-pack.before"
+  cp "$HOME_DIR/data/$id/review-pack.md" "$saved" || fail "the fresh review launch saved no review pack"
+  sed -i 's/fixture-trusted-check/fixture-worker-edit/' "$POOL_DIR/.agents/skills/demo-comp/SKILL.md"
+  mv "$FAKEBIN_DIR/tmux" "$FAKEBIN_DIR/tmux-original"
+  cat > "$FAKEBIN_DIR/tmux" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'#{pane_current_command}'*) printf 'bash\n'; exit 0 ;;
+esac
+case "\$1" in list-windows) printf 'fm-%s\n' '$id'; exit 0 ;; esac
+exec '$FAKEBIN_DIR/tmux-original' "\$@"
+SH
+  chmod +x "$FAKEBIN_DIR/tmux"
+  out=$(fm_test_run_spawn "$HOME_DIR" "$POOL_DIR" "$FAKEBIN_DIR" "$id" --relaunch --harness codex); status=$?
+  expect_code 0 "$status" "the review scout should relaunch"$'\n'"$out"
+  launch="$HOME_DIR/data/$id/launch-brief.md"
+  cmp -s "$saved" "$HOME_DIR/data/$id/review-pack.md" || fail "the relaunch rebuilt the saved review pack"
+  [ "$(grep -c '^# Component review checklists$' "$launch")" -eq 1 ] || fail "the relaunch brief does not carry the review pack exactly once"
+  assert_grep 'fixture-trusted-check' "$launch" "the relaunch brief lost the saved checklist"
+  assert_no_grep 'fixture-worker-edit' "$launch" "the relaunch brief read the worker's edited checklist"
+  pass "a relaunch re-appends the saved review pack unchanged"
+}
+
+# An unusable map refuses a review launch; a checklist that cannot be read
+# launches with a warning and a block that says why.
+test_review_pack_failures() {
+  local rec id out status
+  id='pool-review-badmap-r1'
+  rec=$(make_case review-badmap "$id")
+  read_case_record "$rec"
+  publish_mapped_review_fixture feature/review
+  git -C "$CASE_DIR/publisher" checkout --quiet "$DEFAULT_BRANCH"
+  printf 'not json\n' > "$CASE_DIR/publisher/docs/component-map.json"
+  git -C "$CASE_DIR/publisher" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qam break-map
+  git -C "$CASE_DIR/publisher" push --quiet origin "$DEFAULT_BRANCH"
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  printf '\n# Setup\nYou are in a disposable git worktree of project, at a detached HEAD on a clean default branch.\nReview range: origin/main...origin/feature/review\n' >> "$HOME_DIR/data/$id/brief.md"
+  out=$(run_spawn "$id" --scout); status=$?
+  [ "$status" -ne 0 ] || fail "a review over an unusable map should refuse the spawn"
+  assert_contains "$out" "component review pack" "the unusable-map refusal did not name the review pack"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "a refused unusable-map review spawn published task metadata"
+
+  id='pool-review-noreview-r1'
+  rec=$(make_case review-noreview "$id")
+  read_case_record "$rec"
+  publish_mapped_review_fixture feature/review
+  git -C "$CASE_DIR/publisher" checkout --quiet "$DEFAULT_BRANCH"
+  sed -i '/^## Review$/,$d' "$CASE_DIR/publisher/.agents/skills/demo-comp/SKILL.md"
+  git -C "$CASE_DIR/publisher" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qam drop-review
+  git -C "$CASE_DIR/publisher" push --quiet origin "$DEFAULT_BRANCH"
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  printf '\n# Setup\nYou are in a disposable git worktree of project, at a detached HEAD on a clean default branch.\nReview range: origin/main...origin/feature/review\n' >> "$HOME_DIR/data/$id/brief.md"
+  out=$(run_spawn "$id" --scout); status=$?
+  expect_code 0 "$status" "a review whose checklist cannot be read should still launch"$'\n'"$out"
+  assert_contains "$out" "could not be read" "the unreadable-checklist launch printed no warning"
+  assert_grep '^## Component demo$' "$HOME_DIR/data/$id/launch-brief.md" "the unreadable-checklist block is missing"
+  assert_grep 'Review checklist unavailable' "$HOME_DIR/data/$id/launch-brief.md" "the block does not say the checklist is unavailable"
+  assert_grep 'marked unavailable is itself a finding' "$HOME_DIR/data/$id/launch-brief.md" "the brief does not tell the reviewer to report the gap"
+  pass "an unusable map refuses a review launch; an unreadable checklist launches with its gap named"
+}
+
 test_owner_adoption_real_idle_shell() {
   local id=owner-idle-shell pid keeper out status variant backend
   command -v python3 >/dev/null 2>&1 || { skip 'idle-shell process regression requires python3'; return; }
@@ -1437,6 +1612,10 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_claim_publication_keeps_foreign_identity \
   test_linked_spawning_home_returns_scout \
   test_prose_base_branch_line_is_ignored \
+  test_review_range_appends_component_review_pack \
+  test_bad_review_range_refuses \
+  test_review_pack_survives_relaunch_unchanged \
+  test_review_pack_failures \
   test_scout_base_branch_refused_on_gerrit_forge \
   test_non_main_default_branch_refreshes_before_branching \
   test_direct_pr_and_scout_refresh_before_launch \

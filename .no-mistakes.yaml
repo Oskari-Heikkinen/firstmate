@@ -22,6 +22,21 @@ document:
     evidence destination, and unique safety facts, then review the complete
     branch diff again after every documentation or lint fix.
 
+# Trusted component review pointer for the Review step. The "*" path matches
+# every changed file, so the block joins every review. docs/component-map.md
+# owns the map and the component skills own their checklists; keep this as a
+# pointer so gate instructions never become a second copy of either.
+review:
+  path_instructions:
+    - path: "*"
+      instructions: |
+        If docs/component-map.json exists, apply the `## Review` checklist of
+        every component the diff touches; `bin/fm-component-map.sh review-pack
+        . <base> HEAD` prints them for the reviewed range.
+        Judge a diff that changes the map or a component skill against the
+        default branch's copy of it.
+        Report each failed check as a finding naming the component and check.
+
 # Pin lint to the same owner CI invokes instead of leaving it to no-mistakes'
 # default handling, which does not invoke the repository's canonical lint gate.
 # `bin/fm-lint.sh` owns the context-sensitive ShellCheck modes and GitHub

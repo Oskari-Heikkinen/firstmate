@@ -50,6 +50,19 @@
 #   base_branch= in state/<id>.meta, which a relaunch reuses and later review and
 #   cleanup read; it is refused on secondmates and relaunches, and without it
 #   nothing changes.
+#   A ship or scout is a review task when its brief has a Setup "Review range:
+#   <base>...<head>" line (bin/fm-brief.sh --review-range writes it;
+#   bin/fm-dod-lib.sh's fm_brief_review_ranges owns where it counts and
+#   fm_review_range_valid its form). The spawn refuses more than one such line or
+#   a malformed one before allocating. A fresh launch resolves both revisions in
+#   the freshened copy, refusing when either does not resolve, runs
+#   bin/fm-component-map.sh review-pack on them there and appends the touched
+#   components' review checklists to the launch brief, saving them as
+#   data/<id>/review-pack.md, which a relaunch or restore appends again unchanged.
+#   An unmapped repo or a range touching no component adds nothing. A pack that
+#   cannot run, or an unusable map, refuses the launch; a checklist that cannot
+#   be read launches with a warning, its block saying why and the brief telling
+#   the reviewer to report it.
 #   Ship/scout launches always put fm-dod-lib.sh's current worker role scope
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
@@ -3531,6 +3544,15 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
     echo "error: $BRIEF records a Base branch line but the spawn has no --base-branch; pass the brief's base with --base-branch or re-scaffold the brief without one" >&2
     exit 1
   fi
+  REVIEW_RANGE=
+  if REVIEW_RANGES=$(fm_brief_review_ranges "$BRIEF"); then
+    if [ "$(printf '%s\n' "$REVIEW_RANGES" | wc -l)" -ne 1 ]; then
+      echo "error: $BRIEF records more than one Review range line; keep exactly one, as bin/fm-brief.sh --review-range writes it" >&2
+      exit 1
+    fi
+    REVIEW_RANGE=$REVIEW_RANGES
+    fm_review_range_valid "$REVIEW_RANGE" "fm-spawn.sh $BRIEF" || exit 1
+  fi
   # Use the existing launch-brief overlay for every worker kind, including
   # pre-scope briefs and relaunches. Charters never enter this worker path.
   SOURCE_BRIEF=$BRIEF
@@ -3886,6 +3908,56 @@ freshen_spawn_worktree_base() { # <worktree> [<base-branch>]
   actual=$(git -C "$worktree" rev-parse --verify --quiet HEAD 2>/dev/null || true)
   if [ "$actual" != "$expected" ]; then
     echo "error: pooled worktree '$worktree' is at '${actual:-unknown}', not current '$target' ('$expected'); refusing to launch" >&2
+    return 1
+  fi
+}
+
+# Write the launch brief's component review section for a review task to
+# <out>, or nothing when the range touches no mapped component (including a
+# repo without docs/component-map.json). It runs on the freshened copy, so the
+# map and skills are the default or base branch's, never the reviewed head's;
+# bin/fm-component-map.sh review-pack is the only source of checklist text.
+build_spawn_review_pack() { # <worktree> <range> <out>
+  local worktree=$1 range=$2 out=$3 base head base_sha head_sha err pack rc=0
+  base=${range%%...*}
+  head=${range#*...}
+  rm -f -- "$out"
+  base_sha=$(git -C "$worktree" rev-parse --verify --quiet "$base^{commit}") || {
+    echo "error: review range base '$base' does not resolve to a commit in '$worktree' after its origin fetch; refusing to launch a review without its component checklists" >&2
+    return 1
+  }
+  head_sha=$(git -C "$worktree" rev-parse --verify --quiet "$head^{commit}") || {
+    echo "error: review range head '$head' does not resolve to a commit in '$worktree' after its origin fetch; refusing to launch a review without its component checklists" >&2
+    return 1
+  }
+  err=$(mktemp "$out.err.XXXXXX") || return 1
+  pack=$("$FM_ROOT/bin/fm-component-map.sh" review-pack "$worktree" "$base_sha" "$head_sha" 2>"$err") || rc=$?
+  case "$rc" in
+    0 | 1) ;;
+    *)
+      echo "error: component review pack for $range failed (exit $rc): $(tr '\n' ' ' <"$err"); refusing to launch a review without its component checklists" >&2
+      rm -f -- "$err"
+      return 1
+      ;;
+  esac
+  rm -f -- "$err"
+  [ "$rc" -eq 0 ] || echo "warning: a component review checklist for $range could not be read; its block in the launch brief says why" >&2
+  if [ -z "$pack" ]; then
+    echo "info: review range $range touches no mapped component; the launch brief gets no component review checklists"
+    return 0
+  fi
+  if ! {
+    printf '\n# Component review checklists\n'
+    printf '%s\n' "This review covers $range ($base_sha...$head_sha)." \
+      "The repository's component map assigns the changed paths below to these components." \
+      "The map and checklists were read from this copy's starting commit, not from the reviewed head." \
+      "Answer every numbered check of each component and record \`Component review: <id>: PASS\` or a finding naming the component and the check." \
+      "A component whose checklist is marked unavailable is itself a finding: name it and the reason its block gives." \
+      ''
+    printf '%s\n' "$pack"
+  } >"$out.tmp" || ! mv -- "$out.tmp" "$out"; then
+    rm -f -- "$out.tmp"
+    echo "error: could not write the component review pack to $out" >&2
     return 1
   fi
 }
@@ -4925,6 +4997,19 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" "$BASE_BRANCH" || exit 1
+  rm -f -- "$DATA/$ID/review-pack.md"
+  if [ -n "${REVIEW_RANGE:-}" ]; then
+    build_spawn_review_pack "$WT" "$REVIEW_RANGE" "$DATA/$ID/review-pack.md" || exit 1
+  fi
+fi
+# A relaunch or restore reuses the fresh launch's pack rather than reading a
+# map the worker's own commits may have changed.
+if [ "$KIND" != secondmate ] && [ -s "$DATA/$ID/review-pack.md" ]; then
+  if ! { cat -- "$BRIEF" "$DATA/$ID/review-pack.md" >"$BRIEF.pack.tmp" && mv -- "$BRIEF.pack.tmp" "$BRIEF"; }; then
+    rm -f -- "$BRIEF.pack.tmp"
+    echo "error: could not append the component review pack to $BRIEF" >&2
+    exit 1
+  fi
 fi
 
 # Re-assert the durable task copy after either treehouse acquisition or endpoint

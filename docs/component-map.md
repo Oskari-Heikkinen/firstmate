@@ -122,3 +122,9 @@ An unchanged drift does nothing while the skill's item is open, a changed drift 
 It is deterministic software, so a user timer runs it rather than an agent task: copy the example service and timer in [`docs/examples/component-drift/`](examples/component-drift/) to `~/.config/systemd/user/`, adjust their paths to main firstmate's home, set the service's `PATH` to start with the directories `command -v tasks-axi node` prints (a user timer's PATH has neither, and a run where tasks-axi does not run checks nothing and alarms main), and enable the timer with `systemctl --user enable --now fm-component-drift.timer` once the run is approved for the machine.
 The [`component-drift`](../.agents/skills/component-drift/SKILL.md) skill owns how agents act on its items and alarms.
 Behavioral verification lives in `tests/fm-component-drift.test.sh`.
+
+## Review paths
+
+Reviews get component checklists only through `review-pack`, so no review path keeps a copy of a skill's `## Review` text.
+- A ship or scout spawned with a `Review range:` line in its brief (`bin/fm-brief.sh --review-range`) gets the pack for that range appended to its launch brief; the `bin/fm-spawn.sh` header owns when it is built and when the spawn refuses.
+- The no-mistakes Review step gets a trusted pointer in `.no-mistakes.yaml` (`review.path_instructions`), honoured only from the default-branch copy, that asks the reviewer to apply the touched components' checklists.

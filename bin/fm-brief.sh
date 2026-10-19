@@ -14,8 +14,8 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|direct-push|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo> [--shape squash]] [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|direct-push|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo> [--shape squash]] [--review-range <base>...<head>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--review-range <base>...<head>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #        fm-brief.sh <task-id> --secondmate --render-charter <stored-charter> [--dropped-lines]
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -75,6 +75,12 @@
 # Definition of done then targets that branch with its pull request.
 # bin/fm-dod-lib.sh's fm_base_branch_valid owns which deliveries accept one.
 # Refused on --secondmate.
+# --review-range <base>...<head> marks the task as a review of that range and
+# writes a "Review range: <base>...<head>" line under `# Setup`.
+# bin/fm-spawn.sh reads it and appends the review checklists of the components
+# the range touches, from the repository's component map
+# (docs/component-map.md), to the launch brief; bin/fm-dod-lib.sh's
+# fm_review_range_valid owns the line's form. Refused on --secondmate.
 # --forge names the project's forge, defaults to none, and is orthogonal to --mode
 # exactly as the registry's `forge=` token is. It is the captain's confirmed
 # registry binding, read from data/projects.md at intake and passed here; this
@@ -208,6 +214,8 @@ BRANCH_PREFIX=fm/
 BRANCH_PREFIX_SET=0
 BASE_BRANCH=
 BASE_BRANCH_SET=0
+REVIEW_RANGE=
+REVIEW_RANGE_SET=0
 FORGE=none
 FORGE_SET=0
 SHAPE=
@@ -225,6 +233,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
       base-branch) BASE_BRANCH=$a; BASE_BRANCH_SET=1 ;;
+      review-range) REVIEW_RANGE=$a; REVIEW_RANGE_SET=1 ;;
       forge) FORGE=$a; FORGE_SET=1 ;;
       shape) SHAPE=$a; SHAPE_SET=1 ;;
       render-charter) RENDER_CHARTER=$a ;;
@@ -244,6 +253,8 @@ for a in "$@"; do
     --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=}; BRANCH_PREFIX_SET=1 ;;
     --base-branch) want_value="base-branch" ;;
     --base-branch=*) BASE_BRANCH=${a#--base-branch=}; BASE_BRANCH_SET=1 ;;
+    --review-range) want_value="review-range" ;;
+    --review-range=*) REVIEW_RANGE=${a#--review-range=}; REVIEW_RANGE_SET=1 ;;
     --forge) want_value=forge ;;
     --forge=*) FORGE=${a#--forge=}; FORGE_SET=1 ;;
     --shape) want_value=shape ;;
@@ -315,6 +326,13 @@ if [ "$BASE_BRANCH_SET" -eq 1 ]; then
     exit 1
   fi
   fm_base_branch_valid "$BASE_BRANCH" "$MODE" "$FORGE" "fm-brief.sh --base-branch" || exit 1
+fi
+if [ "$REVIEW_RANGE_SET" -eq 1 ]; then
+  if [ "$KIND" = secondmate ]; then
+    echo "error: --review-range applies only to ship and scout briefs" >&2
+    exit 1
+  fi
+  fm_review_range_valid "$REVIEW_RANGE" "fm-brief.sh --review-range" || exit 1
 fi
 ID=${POS[0]}
 BRANCH="$BRANCH_PREFIX$ID"
@@ -659,6 +677,10 @@ if [ -n "$BASE_BRANCH" ]; then
 Base branch: $BASE_BRANCH"
 else
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch."
+fi
+if [ -n "$REVIEW_RANGE" ]; then
+  SETUP_BASE="$SETUP_BASE
+Review range: $REVIEW_RANGE"
 fi
 
 if [ "$KIND" = scout ]; then

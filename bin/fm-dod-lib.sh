@@ -259,6 +259,33 @@ fm_brief_base_branches() {  # <brief>
   ' "$1"
 }
 
+# A review task names the range it reviews as one "Review range: <base>...<head>"
+# line under the brief's `# Setup` heading, written by bin/fm-brief.sh
+# --review-range directly after the Setup sentence and any Base branch line.
+# bin/fm-spawn.sh reads it to append the touched components' review checklists
+# to the launch brief; <base> and <head> are any revisions the reviewer's copy
+# resolves after its origin fetch, and the diff is git's three-dot form.
+fm_review_range_valid() {  # <range> <caller>
+  case "$1" in
+    *[[:space:]]* | -* | *...-* | ...* | *... | *...*...*) ;;
+    *...*) return 0 ;;
+  esac
+  echo "error: $2: review range '$1' must be <base>...<head>, two revisions without spaces or a leading '-'" >&2
+  return 1
+}
+
+# Print the value of every "Review range:" line in the Setup position
+# fm_review_range_valid describes; return 1 when there is none. Any other
+# "Review range:" line is prose and ignored.
+fm_brief_review_ranges() {  # <brief>
+  awk '
+    { line = $0; is_range = sub(/^Review range: /, "") }
+    anchor && is_range { print; n++ }
+    { anchor = line ~ /^You are in a disposable git worktree of .*, at a detached HEAD on a clean (default branch|copy of its base branch)\.$/ || (anchor && (line ~ /^Base branch: / || is_range)) }
+    END { exit !n }
+  ' "$1"
+}
+
 fm_ship_rule_one() {  # <no-mistakes|direct-PR|direct-push|local-only> <task-id> [branch] [<forge>] [<base>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-}
   local branch=${3:-fm/$id} target='the default branch'
