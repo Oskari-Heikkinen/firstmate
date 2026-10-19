@@ -1315,6 +1315,58 @@ test_review_range_appends_component_review_pack() {
   pass "a review range appends the default branch's component review checklists; a non-review task or unmapped repo gets none"
 }
 
+# A Review range line outside the Setup position is prose: alone it neither
+# marks the task a review nor refuses it, and beside a Setup line it is not a
+# second range. A range over a mapped repo that touches no mapped path adds
+# nothing.
+test_review_range_prose_and_unmapped_paths() {
+  local rec id out status launch pub
+  id='pool-review-prose-only-r1'
+  rec=$(make_case review-prose-only "$id")
+  read_case_record "$rec"
+  publish_mapped_review_fixture feature/review
+  fm_test_spawn_brief "$HOME_DIR" "$id" $'Review the demo.\nReview range: origin/main...origin/feature/review'
+  out=$(run_spawn "$id" --scout)
+  status=$?
+  expect_code 0 "$status" "a brief quoting a Review range line only in its Task body should launch"$'\n'"$out"
+  assert_no_grep 'Component review checklists' "$HOME_DIR/data/$id/launch-brief.md" "a prose Review range line marked the task a review"
+  [ ! -e "$HOME_DIR/data/$id/review-pack.md" ] || fail "a prose Review range line saved a review pack"
+
+  id='pool-review-prose-setup-r1'
+  rec=$(make_case review-prose-setup "$id")
+  read_case_record "$rec"
+  publish_mapped_review_fixture feature/review
+  fm_test_spawn_brief "$HOME_DIR" "$id" $'Review the demo.\nReview range: origin/main...origin/feature/missing'
+  printf '\n# Setup\nYou are in a disposable git worktree of project, at a detached HEAD on a clean default branch.\nReview range: origin/main...origin/feature/review\n' >> "$HOME_DIR/data/$id/brief.md"
+  out=$(run_spawn "$id" --scout)
+  status=$?
+  expect_code 0 "$status" "a Setup Review range beside a prose one should launch as one range"$'\n'"$out"
+  launch="$HOME_DIR/data/$id/launch-brief.md"
+  [ "$(grep -c '^# Component review checklists$' "$launch")" -eq 1 ] || fail "the Setup range did not give exactly one component review section"
+  assert_grep 'This review covers origin/main...origin/feature/review' "$launch" "the pack did not cover the Setup line's range"
+  assert_no_grep 'origin/feature/missing' "$HOME_DIR/data/$id/review-pack.md" "the pack covered the prose line's range"
+
+  id='pool-review-no-component-r1'
+  rec=$(make_case review-no-component "$id")
+  read_case_record "$rec"
+  publish_mapped_review_fixture feature/review
+  pub="$CASE_DIR/publisher"
+  git -C "$pub" checkout --quiet -b feature/notes "$DEFAULT_BRANCH"
+  printf 'notes\n' > "$pub/notes.txt"
+  git -C "$pub" add notes.txt
+  git -C "$pub" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm notes
+  git -C "$pub" push --quiet origin feature/notes
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  printf '\n# Setup\nYou are in a disposable git worktree of project, at a detached HEAD on a clean default branch.\nReview range: origin/main...origin/feature/notes\n' >> "$HOME_DIR/data/$id/brief.md"
+  out=$(run_spawn "$id" --scout)
+  status=$?
+  expect_code 0 "$status" "a review range touching only unmapped paths should launch"$'\n'"$out"
+  assert_contains "$out" "touches no mapped component" "the no-component launch did not say why it added no checklists"
+  assert_no_grep 'Component review checklists' "$HOME_DIR/data/$id/launch-brief.md" "a range touching no component got a component review section"
+  [ ! -e "$HOME_DIR/data/$id/review-pack.md" ] || fail "a range touching no component saved a review pack"
+  pass "a prose Review range line is ignored, and a range touching no mapped component adds nothing"
+}
+
 # A review range that does not resolve, or a brief with two, refuses the spawn
 # before any task metadata is published.
 test_bad_review_range_refuses() {
@@ -1613,6 +1665,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_linked_spawning_home_returns_scout \
   test_prose_base_branch_line_is_ignored \
   test_review_range_appends_component_review_pack \
+  test_review_range_prose_and_unmapped_paths \
   test_bad_review_range_refuses \
   test_review_pack_survives_relaunch_unchanged \
   test_review_pack_failures \
