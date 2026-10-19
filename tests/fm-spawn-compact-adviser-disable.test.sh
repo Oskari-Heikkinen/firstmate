@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/fm-spawn-compact-adviser-disable.test.sh - every agent this fleet
-# launches must start with COMPACT_ADVISER_DISABLE=1 in its environment.
+# launches must start with COMPACT_ADVISER_DISABLE=1 in its environment, and
+# with FM_TASK_INBOX and LATTICE_STORAGE_TOOL carried by the launch text.
 #
 # The assertions never read bin/fm-spawn.sh's source. They drive the real spawn
 # against a fake pane and a real isolated git worktree, then EXECUTE the launch
@@ -225,6 +226,52 @@ test_launch_exports_task_inbox() {
   pass "ship and secondmate launches export their absolute steering inbox as FM_TASK_INBOX"
 }
 
+# lattice-research resolves its storage tool from LATTICE_STORAGE_TOOL, and a
+# worker's PATH carries no fm-storage.sh, so every launch kind must start its
+# agent with the absolute path of the tool beside the fm-spawn.sh that launched
+# it. The enabled allowlist is the cleared environment an ambient forward would
+# lose; the pane carries a contrary value the launch must override.
+test_launch_exports_storage_tool() {
+  local kind setting rec id sm out status seen want
+  want="$ROOT/bin/fm-storage.sh"
+  for kind in ship scout secondmate; do
+    for setting in absent enabled; do
+      id="storage-$kind-$setting-a1"
+      rec=$(make_case "storage-$kind-$setting" codex "$id")
+      read_case "$rec"
+      [ "$setting" = absent ] || : > "$HOME_DIR/config/launch-env-allowlist"
+      case "$kind" in
+        ship) out=$(run_case_spawn "$id" "$PROJ_DIR" --mode no-mistakes --yolo off) ;;
+        scout) out=$(run_case_spawn "$id" "$PROJ_DIR" --scout) ;;
+        secondmate)
+          sm="$CASE_DIR/secondmate-home"
+          mkdir -p "$sm/bin" "$sm/data"
+          printf '# Firstmate\n' > "$sm/AGENTS.md"
+          printf '%s\n' "$id" > "$sm/.fm-secondmate-home"
+          printf 'charter for %s\n' "$id" > "$sm/data/charter.md"
+          printf '%s\n' 'projects/' 'state/' 'data/' 'config/' '.no-mistakes/' > "$sm/.gitignore"
+          git -C "$sm" init -q -b main
+          out=$(run_case_spawn "$id" "$sm" --secondmate)
+          ;;
+      esac
+      status=$?
+      expect_code 0 "$status" "$kind spawn with allowlist=$setting should succeed: $out"
+      [ "$setting" = absent ] || assert_contains "$(cat "$LAUNCH_LOG")" '/usr/bin/env -i' \
+        "$kind: an enabled allowlist should launch under a cleared environment"
+      install_env_probe "$FAKEBIN_DIR" codex LATTICE_STORAGE_TOOL
+      seen=$(env -i HOME="$TMP_ROOT/pane-home" PATH="$FAKEBIN_DIR:$PATH" TERM=xterm \
+        TMUX=synthetic-pane LATTICE_STORAGE_TOOL=/contrary/fm-storage.sh \
+        /bin/sh -c "$(grep '^export ' "$PANE_LOG")
+$(cat "$LAUNCH_LOG")") \
+        || fail "$kind, allowlist $setting: the emitted launch failed to run"
+      assert_equals "$want" "$seen" \
+        "a $kind agent launched with allowlist=$setting must start with LATTICE_STORAGE_TOOL naming the spawning home's fm-storage.sh"
+    done
+  done
+  [ -f "$want" ] && [ -x "$want" ] || fail "the exported storage tool $want is not an executable file"
+  pass "ship, scout and secondmate launches export the spawning home's fm-storage.sh in both allowlist postures"
+}
+
 # --- relaunch ---------------------------------------------------------------
 #
 # bin/fm-control.sh relaunch stops the agent and rebuilds the launch through
@@ -347,8 +394,15 @@ $launch") \
       || fail "relaunch with allowlist=$setting: the replacement launch failed to run"
     assert_equals 1 "$seen" \
       "a relaunched agent with allowlist=$setting must start with the compact adviser disabled, exactly as a fresh spawn does"
+    install_env_probe "$dir/fakebin" codex LATTICE_STORAGE_TOOL
+    seen=$(env -i HOME="$dir/user-home" PATH="$dir/fakebin:$PATH" TERM=xterm \
+      TMUX=synthetic-pane /bin/sh -c "$preamble
+$launch") \
+      || fail "relaunch with allowlist=$setting: the replacement launch failed to run for the storage-tool probe"
+    assert_equals "$ROOT/bin/fm-storage.sh" "$seen" \
+      "a relaunched agent with allowlist=$setting must start with LATTICE_STORAGE_TOOL, exactly as a fresh spawn does"
   done
-  pass "relaunch rebuilds the compact-adviser switch for the replacement agent in both allowlist postures"
+  pass "relaunch rebuilds the compact-adviser switch and the storage-tool export for the replacement agent in both allowlist postures"
 }
 
 # A command-prefix assignment only covers the first simple command. A raw
@@ -390,5 +444,6 @@ test_ship_allowlist_enabled
 test_launch_command_carries_the_switch_without_the_pane_export
 test_secondmate_launch
 test_launch_exports_task_inbox
+test_launch_exports_storage_tool
 test_relaunch_rebuilds_the_switch
 test_raw_compound_launch_command_carries_the_switch

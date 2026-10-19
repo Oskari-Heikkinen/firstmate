@@ -399,7 +399,10 @@
 #   An enabled task trace also retains TRACEPARENT. Explicit Firstmate launch
 #   assignments still apply inside the filtered environment, including the
 #   FM_TASK_INBOX export every launch carries (the absolute state/<id>.inbox
-#   path the steering doorbell names). Raw commands must
+#   path the steering doorbell names) and the LATTICE_STORAGE_TOOL export
+#   naming the fm-storage.sh beside this script (lattice-research resolves its
+#   storage tool from that variable), skipped only when that file is not an
+#   executable regular file. Raw commands must
 #   be POSIX sh compatible under this opt-in; the absent-file path is unchanged.
 #   This is an exec environment boundary, not a sandbox for the pane's startup
 #   shell, credential files, same-user processes, or later shell initialization.
@@ -6190,6 +6193,12 @@ fi
 # absolute path directly and does not rely on tool-shell inheritance. Like
 # the kill switch below, this export survives a compound raw launch and the
 # launch-env-allowlist `env -i` wrapper.
+# The storage tool beside this script rides the same way, so lattice-research
+# can resolve fm-storage.sh, which is not on a worker's PATH; a secondmate's own
+# workers get that secondmate home's tool because its fm-spawn runs from there.
+if [ -f "$SCRIPT_DIR/fm-storage.sh" ] && [ -x "$SCRIPT_DIR/fm-storage.sh" ]; then
+  LAUNCH="export LATTICE_STORAGE_TOOL=$(shell_quote "$SCRIPT_DIR/fm-storage.sh"); $LAUNCH"
+fi
 LAUNCH="export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
 # When the live-harness gate has exported DISABLE_AUTOUPDATER into this spawn's

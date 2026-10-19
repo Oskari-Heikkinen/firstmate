@@ -90,6 +90,9 @@ On every fetch, before choosing the destination, a reader either runs `bin/fm-st
 On any doubt `root` exits 75 with one `wait:` reason on stderr and prints no path, using the refusal tokens of [Mandatory bulk admission](#mandatory-bulk-admission); a reader treats exit 75 as wait, never as a cue to pick its own C: or Linux path.
 These rules are not admission for a new D:-required delivery.
 
+Every worker Firstmate launches starts with `LATTICE_STORAGE_TOOL` set to the absolute path of the launching home's `bin/fm-storage.sh`, because that script is not on a worker's `PATH` and lattice-research resolves its storage tool from this variable.
+`bin/fm-spawn.sh`'s header owns when the export is carried.
+
 ## Mandatory bulk admission
 
 For a **new** large delivery, use the publisher's integrated interface:
