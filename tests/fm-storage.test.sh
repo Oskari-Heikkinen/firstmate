@@ -23,6 +23,7 @@ NOTE="$TMP_ROOT/parent.status"
 PSOUT="$TMP_ROOT/ps.txt"
 MOUNTS="$TMP_ROOT/mountinfo"
 SUDOLOG="$TMP_ROOT/sudo.log"
+# A C: template the removed fallback setting names; nothing may ever print it.
 FB="$TMP_ROOT/c-home/data/{task}/tetjet-results"
 TB=2000000000000
 GIB=1073741824
@@ -89,6 +90,19 @@ run() {
 calls() { [ -r "$PSOUT.calls" ] && wc -l <"$PSOUT.calls" | tr -d ' ' || echo 0; }
 
 rr() { sed -n "s/^$1=//p" "$CFG/results-root"; }
+
+# root_waits WHY ARGS...: run root ARGS (environment as given) and require exit
+# 75, no stdout and one wait: reason on stderr containing WHY.
+root_waits() {
+  local why=$1 out err rc
+  shift
+  out=$(run root "$@" 2>"$TMP_ROOT/root.err"); rc=$?
+  err=$(cat "$TMP_ROOT/root.err")
+  expect_code 75 "$rc" "root $* waits ($why)"
+  assert_equals "" "$out" "root $* prints no path ($why)"
+  assert_contains "$err" "fm-storage: wait: $why" "root $* names why it waits"
+  assert_not_contains "$err" "c-home" "root $* never names a C: path"
+}
 notes() { [ -r "$NOTE" ] && wc -l <"$NOTE" | tr -d ' ' || echo 0; }
 
 test_absent() {
@@ -97,12 +111,13 @@ test_absent() {
   local out
   out=$(run check) || fail "check exits 0"
   assert_contains "$out" "(absent: no SSD found in Windows)" "check names the state"
-  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "line 1 is the C: fallback"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "line 1 names no directory"
+  assert_no_grep fallback= "$CFG/results-root" "no fallback= is published"
   assert_equals "format=lattice-storage-results-root/v1" "$(sed -n 2p "$CFG/results-root")" "line 2 is the format"
   assert_equals c "$(rr active)" "active is c"
   assert_equals 0 "$(notes)" "the first absent reading is a baseline, not a notification"
-  assert_equals "$TMP_ROOT/c-home/data/t1/tetjet-results" "$(run root t1)" "root resolves the fallback for a task"
-  pass "no SSD publishes the C: fallback without notifying"
+  root_waits 'storage-unavailable: absent' t1
+  pass "no SSD publishes unavailable without notifying, and root waits"
 }
 
 test_ntfs_mounted_and_idempotent() {
@@ -147,7 +162,7 @@ test_raw() {
   listing 'VOL|D|Unknown|RAW|Removable|2000000000000|0|\\?\Volume{r}\|'
   FAKE_SUDO_OK=1 run check >/dev/null || fail "check exits 0"
   assert_equals raw "$(rr state)" "RAW volume is raw"
-  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "raw keeps the fallback"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "raw names no directory"
   assert_absent "$MNT/d/lattice-data" "nothing is written to a raw drive"
   assert_absent "$SUDOLOG" "a raw drive is not mounted"
   assert_grep 'formatting needs the captain' "$NOTE" "raw notifies"
@@ -164,9 +179,12 @@ test_full() {
   listing "$(ssd_vol D NTFS $(( 10 * GIB )))"
   FAKE_SUDO_OK=1 run check >/dev/null || fail "check exits 0"
   assert_equals full "$(rr state)" "under the minimum free is full"
-  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "full uses the fallback"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "full names no directory"
   assert_grep 'SSD storage full' "$NOTE" "full notifies"
-  pass "a full SSD falls back to C:"
+  assert_grep 'fetched-result writers wait until it is usable' "$NOTE" "the note says writers wait"
+  assert_no_grep c-home "$NOTE" "the note never names a C: path"
+  root_waits 'storage-unavailable: full' t
+  pass "a full SSD makes writers wait, never C:"
 }
 
 test_small_stick_ignored() {
@@ -188,8 +206,8 @@ test_not_mounted() {
   assert_equals not-mounted "$(rr state)" "a sudo refusal is not-mounted"
   assert_grep 'restart the laptop with the SSD plugged in, or see the mount rule section in docs/storage.md' "$CFG/results-root" "the reason says what to do"
   assert_absent "$MNT/d/lattice-data" "nothing is written into an unmounted folder"
-  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "not-mounted uses the fallback"
-  pass "without the mount rule the SSD is reported and C: stays active"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "not-mounted names no directory"
+  pass "without the mount rule the SSD is reported and writers wait"
 }
 
 test_stale_mount() {
@@ -259,10 +277,10 @@ test_unreadable() {
   reset
   FAKE_PS_FAIL=1 run check >/dev/null || fail "check exits 0"
   assert_equals unreadable "$(rr state)" "a failed Windows listing is unreadable"
-  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "unreadable uses the fallback"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "unreadable names no directory"
   assert_equals 3 "$(calls)" "the listing is tried three times"
   assert_grep 'SSD storage unreadable' "$NOTE" "with nothing published before, unreadable is published and notified at once"
-  pass "a failed Windows call falls back to C:"
+  pass "a failed Windows call publishes unavailable"
 }
 
 test_transient_listing_failure_retried() {
@@ -295,7 +313,7 @@ test_unreadable_threshold() {
   assert_equals 1 "$(notes)" "failed checks under the threshold never notify"
   FAKE_PS_FAIL=1 run check >/dev/null || fail "third failed check exits 0"
   assert_equals unreadable "$(rr state)" "three consecutive failed checks publish unreadable"
-  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "unreadable uses the fallback"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "unreadable names no directory"
   assert_equals 1 "$(grep -c 'SSD storage unreadable' "$NOTE")" "unreadable notifies once"
   FAKE_PS_FAIL=1 run check >/dev/null || fail "fourth failed check exits 0"
   assert_equals 1 "$(grep -c 'SSD storage unreadable' "$NOTE")" "a lasting failure never notifies twice"
@@ -334,8 +352,8 @@ test_marker_identity_without_listing() {
 }
 
 # marker_check_fails WHY BREAK [DEVICE]: after setup, BREAK one check (DEVICE
-# is the device the failed checks see); three failed listings then fall back
-# exactly as before, naming WHY.
+# is the device the failed checks see); three failed listings then publish
+# unreadable, naming WHY.
 marker_check_fails() {
   local why=$1 brk=$2 dev=${3:-999} out
   reset
@@ -347,8 +365,8 @@ marker_check_fails() {
   FAKE_BULK_DEVICE=$dev FAKE_PS_FAIL=1 run check >/dev/null || fail "$why: second failed check exits 0"
   FAKE_BULK_DEVICE=$dev FAKE_PS_FAIL=1 run check >/dev/null || fail "$why: third failed check exits 0"
   assert_equals unreadable "$(rr state)" "$why: three failed checks publish unreadable"
-  assert_equals c "$(rr active)" "$why: unreadable falls back to C:"
-  assert_equals "$FB" "$(head -n 1 "$CFG/results-root")" "$why: line 1 is the fallback"
+  assert_equals c "$(rr active)" "$why: unreadable is not active"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "$why: line 1 names no directory"
   assert_contains "$(rr reason)" "marker check failed: $why" "$why: the reason names the failed check"
   assert_equals 1 "$(grep -c 'SSD storage unreadable' "$NOTE")" "$why: unreadable notifies once"
 }
@@ -363,34 +381,56 @@ test_marker_checks_fall_back() {
     marker_check_fails "write probe on $MNT/d failed" 'chmod a-w "$MNT/d/lattice-data"'
     chmod u+w "$MNT/d/lattice-data"
   fi
-  pass "a missing mount, marker mismatch, device change or failed probe falls back as before"
+  pass "a missing mount, marker mismatch, device change or failed probe publishes unreadable"
 }
 
 test_reader_rules() {
   reset
   listing "$(ssd_vol D NTFS)"
   FAKE_SUDO_OK=1 FM_STORAGE_NOW=1000 run check >/dev/null || fail "check exits 0"
-  local c="$TMP_ROOT/c-home/data/t/tetjet-results"
   assert_equals "$MNT/d/lattice-data/tetjet-results/t" "$(FM_STORAGE_NOW=1000 run root t)" "fresh ok gives the SSD"
-  assert_equals "$c" "$(FM_STORAGE_NOW=99999 run root t)" "an old check falls back"
+  assert_equals "$MNT/d/lattice-data/tetjet-results/{task}" "$(FM_STORAGE_NOW=1000 run root)" "without TASK the template is kept"
+  FM_STORAGE_NOW=99999 root_waits stale-publication t
+  sed -i 's/^checked_at=.*/checked_at=malformed/' "$CFG/results-root"
+  FM_STORAGE_NOW=1000 root_waits stale-publication t
+  sed -i 's/^checked_at=.*/checked_at=1000/' "$CFG/results-root"
   mv "$MNT/d/lattice-data/.lattice-storage-id" "$TMP_ROOT/marker"
-  assert_equals "$c" "$(FM_STORAGE_NOW=1000 run root t)" "a missing marker falls back"
+  FM_STORAGE_NOW=1000 root_waits missing-marker t
   mv "$TMP_ROOT/marker" "$MNT/d/lattice-data/.lattice-storage-id"
   sed -i 2s/v1/v2/ "$CFG/results-root"
-  assert_equals "$c" "$(FM_STORAGE_NOW=1000 run root t)" "an unknown format falls back"
+  FM_STORAGE_NOW=1000 root_waits invalid-publication t
+  sed -i 2s/v2/v1/ "$CFG/results-root"
+  sed -i 1s/.*/unavailable/ "$CFG/results-root"
+  FM_STORAGE_NOW=1000 root_waits wrong-root t
   rm -f "$CFG/results-root"
-  assert_equals "$c" "$(run root t)" "a missing file falls back"
-  pass "root applies the reader rules and falls back on any doubt"
+  root_waits missing-publication t
+  pass "root applies the reader rules and waits on any doubt, never printing C:"
 }
 
-test_no_fallback_refused() {
+test_no_fallback_needed() {
   reset
   listing
-  local rc
+  local out rc
   PATH="$FAKEBIN:$PSBIN:$PATH" FAKE_PS="$PSOUT" FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$ST" "$STORAGE" check >/dev/null 2>&1; rc=$?
-  expect_code 2 "$rc" "check refuses without a fallback template"
-  assert_absent "$CFG/results-root" "nothing is published without a fallback"
-  pass "check refuses to publish without a C: fallback"
+  expect_code 0 "$rc" "check needs no fallback template"
+  assert_equals absent "$(rr state)" "check publishes without a fallback"
+  # A storage.conf left from the fallback era never brings C: back.
+  reset
+  mkdir -p "$CFG"
+  printf 'fallback=%s\nnotify=%s\n' "$FB" "$NOTE" >"$CFG/storage.conf"
+  listing "$(ssd_vol D NTFS $(( 10 * GIB )))"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "check with a leftover fallback= exits 0"
+  assert_equals full "$(rr state)" "the leftover config still checks"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "a leftover fallback= is not published as line 1"
+  assert_no_grep fallback= "$CFG/results-root" "a leftover fallback= is not republished"
+  root_waits 'storage-unavailable: full' t
+  printf '%s\nformat=lattice-storage-results-root/v1\nactive=c\nstate=full\nreason=old\nchecked_at=1\nfallback=%s\n' "$FB" "$FB" >"$CFG/results-root"
+  root_waits 'storage-unavailable: full' t
+  out=$(run install-timer --fallback "$FB" 2>&1); rc=$?
+  expect_code 2 "$rc" "install-timer refuses the removed --fallback"
+  assert_contains "$out" "--fallback was removed" "the refusal says why"
+  assert_grep "fallback=$FB" "$CFG/storage.conf" "a refused install-timer leaves storage.conf alone"
+  pass "no command needs, publishes or honours a C: fallback"
 }
 
 test_named_roots() {
@@ -402,7 +442,7 @@ test_named_roots() {
   expect_code 0 "$rc" "research root verifies on D"
   assert_equals "$MNT/d/lattice-data/research/job" "$out" "verified research path"
   assert_equals "$MNT/d/lattice-data/research/job" \
-    "$(FM_HOME="$home" FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run root --root research job)" "the fall-back form prints D when verified"
+    "$(FM_HOME="$home" FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run root --root research job)" "root --root research prints D when verified"
   assert_equals "$MNT/d/lattice-data/tetjet-results/job" \
     "$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job)" "default root unchanged"
   assert_equals "$MNT/d/lattice-data/tetjet-results/job" \
@@ -418,10 +458,10 @@ test_named_roots() {
   out=$(FM_STORAGE_NOW=1100 run verify-bulk-root --root research job 2>&1); rc=$?
   expect_code 75 "$rc" "an empty unmounted D waits for the research root"
   assert_not_contains "$out" "$home" "the mandatory form never falls back"
-  assert_equals "$home/data/job/bulk" "$(FM_HOME="$home" FM_STORAGE_NOW=1100 run root --root research job)" \
-    "the fall-back form gives the Linux fallback"
-  assert_equals "$ROOT/data/job/bulk" "$(unset FM_HOME; FM_STORAGE_NOW=1100 run root --root research job)" \
-    "without FM_HOME the fallback is under the script's checkout"
+  out=$(FM_HOME="$home" FM_STORAGE_NOW=1100 run root --root research job 2>&1); rc=$?
+  expect_code 75 "$rc" "root --root research waits without D"
+  assert_contains "$out" "fm-storage: wait:" "root --root research names why it waits"
+  assert_not_contains "$out" "/data/job/bulk" "root --root research never prints the Linux path"
   out=$(run verify-bulk-root --root nope job 2>&1); rc=$?
   expect_code 2 "$rc" "unknown root refused"
   assert_contains "$out" "unknown root nope" "unknown root reason"
@@ -433,7 +473,7 @@ test_named_roots() {
   expect_code 2 "$rc" "--root needs a value"
   out=$(run root --root research ../job 2>&1); rc=$?
   expect_code 2 "$rc" "research task traversal is misuse"
-  pass "named roots verify research on D, wait or fall back without it, and refuse unknown names"
+  pass "named roots verify research on D, wait without it, and refuse unknown names"
 }
 
 test_mandatory_bulk() {
@@ -501,7 +541,7 @@ test_mandatory_bulk() {
   out=$(FAKE_BULK_DEVICE=999 FM_STORAGE_NOW=1100 run verify-bulk-root job 2>&1); rc=$?
   expect_code 75 "$rc" "missing marker refuses"
   assert_contains "$out" missing-marker "missing marker reason"
-  assert_equals "$TMP_ROOT/c-home/data/job/tetjet-results" "$(FM_STORAGE_NOW=1100 run root job)" "legacy fallback unchanged"
+  FM_STORAGE_NOW=1100 root_waits missing-marker job
   rm "$CFG/results-root"
   out=$(run verify-bulk-root job 2>&1); rc=$?
   expect_code 75 "$rc" "missing config refuses"
@@ -537,4 +577,4 @@ test_unreadable_threshold
 test_marker_identity_without_listing
 test_marker_checks_fall_back
 test_reader_rules
-test_no_fallback_refused
+test_no_fallback_needed

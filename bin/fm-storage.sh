@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # fm-storage.sh - put fetched results on an external SSD when one is usable,
-# and publish that choice (with a C: fallback) in one machine-local file that
-# every fetcher reads. docs/storage.md owns the results-root file format
+# and publish that choice in one machine-local file that every fetcher reads.
+# There is no C: or Linux fallback: when the SSD is not usable, writers wait.
+# docs/storage.md owns the results-root file format
 # (lattice-storage-results-root/v1), the states, and the reader rules.
 #
 # Usage:
@@ -26,9 +27,9 @@
 #   fm-storage.sh root [--root ROOT] [TASK]
 #       Apply the reader rules and print the directory to use: the template
 #       with {task} replaced by TASK (kept as {task} when TASK is omitted).
-#       Falls back to the C: template on any doubt. With --root research it
-#       prints the verified D: research directory, else the Linux fallback
-#       ${FM_HOME:-<this checkout>}/data/TASK/bulk.
+#       On any doubt exit 75 with one stderr wait: reason and print no path.
+#       With --root research it prints the verified D: research directory
+#       (verify-bulk-root's answer, exit 75 the same way otherwise).
 #   fm-storage.sh verify-bulk-root [--root ROOT] [TASK]
 #       Verify the published D: root and live volume identity, without reserving.
 #       Exit 75 with one stderr reason on unavailable storage; never return C:
@@ -40,22 +41,23 @@
 #       misuse exits 2. No pin files are read or rewritten by either command.
 #   ROOT names one D: directory under <mount>/lattice-data: tetjet-results
 #   (the default, line 1's template) or research. Any other name exits 2.
-#   fm-storage.sh install-timer --fallback TEMPLATE [--notify FILE]
-#       Write storage.conf (fallback template and notification file), then
+#   fm-storage.sh install-timer [--notify FILE]
+#       Write storage.conf (notification file, kept min_free and min_size), then
 #       write and enable the user-level fm-storage.timer (every 5 minutes,
-#       Nice=19, idle IO). No root.
+#       Nice=19, idle IO). No root. The removed --fallback option exits 2.
 #   fm-storage.sh uninstall-timer
 #       Disable and remove that timer; the config and results-root stay.
 #
 # Files (config dir ${XDG_CONFIG_HOME:-~/.config}/lattice-storage):
 #   results-root   the published file (docs/storage.md)
-#   storage.conf   key=value: fallback, notify, min_free, min_size
+#   storage.conf   key=value: notify, min_free, min_size (a leftover fallback=
+#                  line is ignored)
 #   ssd-identity   key=value: uniqueid, letter, fs, label, setup_at, write_mib_s
 # State dir ${XDG_STATE_HOME:-~/.local/state}/fm-storage: last-state, lock,
 #   unreadable-runs (consecutive checks whose listing failed; removed on success).
 #
 # Environment (all optional; each overrides storage.conf):
-#   FM_STORAGE_FALLBACK  C: results template containing {task}
+#   FM_STORAGE_FALLBACK  removed and ignored: no command uses a fallback
 #   FM_STORAGE_NOTIFY    status file that receives one note line per state change
 #   FM_STORAGE_MIN_FREE  SSD free space below which it is full (default 50G)
 #   FM_STORAGE_MIN_SIZE  smallest volume taken as the SSD (default 1500000000000)
@@ -119,7 +121,6 @@ conf() {
 }
 
 load_conf() {
-  FALLBACK=$(conf fallback "${FM_STORAGE_FALLBACK:-}")
   NOTIFY=$(conf notify "${FM_STORAGE_NOTIFY:-}")
   MIN_FREE=$(to_bytes "$(conf min_free "${FM_STORAGE_MIN_FREE:-}" 50G)") || die "min_free is not a size"
   MIN_SIZE=$(to_bytes "$(conf min_size "${FM_STORAGE_MIN_SIZE:-}" 1500000000000)") || die "min_size is not a size"
@@ -314,7 +315,7 @@ setup_and_probe() {
 
 publish() {
   local line1 mp=$1
-  if [ "$STATE" = ok ]; then line1="$mp/lattice-data/tetjet-results/{task}"; else line1=$FALLBACK; fi
+  if [ "$STATE" = ok ]; then line1="$mp/lattice-data/tetjet-results/{task}"; else line1=unavailable; fi
   {
     printf '%s\nformat=%s\nactive=%s\nstate=%s\nreason=%s\nchecked_at=%s\n' \
       "$line1" "$FORMAT" "$([ "$STATE" = ok ] && echo ssd || echo c)" "$STATE" "$REASON" "$(now)"
@@ -327,7 +328,6 @@ publish() {
         [ -n "$IDENTITY" ] && printf 'ssd_identity=%s\n' "$IDENTITY"
       fi
     fi
-    printf 'fallback=%s\n' "$FALLBACK"
     [ -n "$SSD_LETTER" ] && printf 'write_mib_s=%s\n' "$(kv "$(config_dir)/ssd-identity" write_mib_s)"
   } | write_atomic "$(config_dir)/results-root" || die "could not write $(config_dir)/results-root"
   LINE1=$line1
@@ -342,7 +342,11 @@ notify() {
   # The very first reading of an absent SSD is the baseline, not news.
   if [ -n "$last" ] || [ "$STATE" != absent ]; then
     if [ -n "$NOTIFY" ]; then
-      printf 'note [at=%s]: SSD storage %s: %s; fetched results go to %s\n' "$(now)" "$STATE" "$REASON" "$LINE1" >>"$NOTIFY" || return 0
+      if [ "$STATE" = ok ]; then
+        printf 'note [at=%s]: SSD storage %s: %s; fetched results go to %s\n' "$(now)" "$STATE" "$REASON" "$LINE1" >>"$NOTIFY" || return 0
+      else
+        printf 'note [at=%s]: SSD storage %s: %s; fetched-result writers wait until it is usable\n' "$(now)" "$STATE" "$REASON" >>"$NOTIFY" || return 0
+      fi
     fi
   fi
   printf '%s\n' "$key" | write_atomic "$lastf" || true
@@ -352,7 +356,6 @@ run_check() {
   local mp='' lock
   IDENTITY=''
   load_conf
-  valid_template "$FALLBACK" || die "no C: fallback template with {task} configured (install-timer --fallback TEMPLATE or FM_STORAGE_FALLBACK)"
   mkdir -p "$(state_dir)" || die "cannot create $(state_dir)"
   lock="$(state_dir)/lock"
   exec 9>"$lock"
@@ -456,21 +459,22 @@ release_stale() {
 cmd_status() {
   local f age active
   f="$(config_dir)/results-root"
-  [ -r "$f" ] || { printf 'results root: not published yet (no %s); readers use the C: fallback\n' "$f"; return 0; }
+  [ -r "$f" ] || { printf 'results root: not published yet (no %s); writers wait\n' "$f"; return 0; }
   active=$(kv "$f" active)
   age=$(( $(now) - $(kv "$f" checked_at || echo 0) ))
   printf 'results root: %s (%s, state %s, checked %s s ago)\n' "$(head -n 1 "$f")" \
-    "$([ "$active" = ssd ] && echo SSD || echo 'C: fallback')" "$(kv "$f" state)" "$age"
+    "$([ "$active" = ssd ] && echo SSD || echo 'none, writers wait')" "$(kv "$f" state)" "$age"
   printf 'reason: %s\n' "$(kv "$f" reason)"
   if [ -n "$(kv "$f" ssd_letter)" ]; then
     printf 'SSD %s: %s, %s free of %s, write speed %s MiB/s\n' "$(kv "$f" ssd_letter)" "$(kv "$f" ssd_fs)" \
       "$(tib "$(kv "$f" ssd_free_bytes)")" "$(tib "$(kv "$f" ssd_total_bytes)")" "$(kv "$f" write_mib_s)"
   fi
-  printf 'fallback: %s\n' "$(kv "$f" fallback)"
 }
 
+# root keeps the legacy reader rules for its answer, but any doubt is a wait
+# (exit 75 with one reason), never a C: or Linux path.
 cmd_root() {
-  local task='{task}' f line1 fb root=tetjet-results
+  local task='{task}' f line1 checked root=tetjet-results
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) [ "$#" -ge 2 ] || die "--root needs a ROOT"; root=$2; shift 2 ;;
@@ -481,31 +485,23 @@ cmd_root() {
   root_dir "$root" >/dev/null || die "unknown root $root (known: tetjet-results, research)"
   if [ "$root" != tetjet-results ]; then
     case "$task" in '{task}') ;; ''|.|..|*[!A-Za-z0-9._-]*) die "invalid TASK" ;; esac
-    if line1=$(cmd_verify_bulk_root --root "$root" "$task" 2>/dev/null); then
-      printf '%s\n' "$line1"
-    else
-      printf '%s/data/%s/bulk\n' "${FM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}" "$task"
-    fi
-    return 0
+    cmd_verify_bulk_root --root "$root" "$task"
+    return
   fi
-  load_conf
   f="$(config_dir)/results-root"
-  fb=$FALLBACK
-  [ -r "$f" ] && [ -z "$fb" ] && fb=$(kv "$f" fallback)
-  valid_template "$fb" || die "no C: fallback template known"
-  line1=$fb
-  if [ -r "$f" ] && [ "$(sed -n 2p "$f")" = "format=$FORMAT" ]; then
-    local cand
-    cand=$(head -n 1 "$f")
-    if valid_template "$cand" && [ "$(kv "$f" active)" = ssd ]; then
-      if [ $(( $(now) - $(kv "$f" checked_at || echo 0) )) -le "${FM_STORAGE_MAX_AGE:-1800}" ] \
-        && [ -e "$(kv "$f" ssd_marker)" ]; then
-        line1=$cand
-      fi
-    elif valid_template "$cand"; then
-      line1=$cand
-    fi
-  fi
+  [ -r "$f" ] || { bulk_wait missing-publication; return 75; }
+  [ "$(sed -n 2p "$f")" = "format=$FORMAT" ] || { bulk_wait invalid-publication; return 75; }
+  [ "$(kv "$f" active)" = ssd ] && [ "$(kv "$f" state)" = ok ] || {
+    bulk_wait "storage-unavailable: $(kv "$f" state): $(kv "$f" reason)"; return 75;
+  }
+  line1=$(head -n 1 "$f")
+  valid_template "$line1" || { bulk_wait wrong-root; return 75; }
+  checked=$(kv "$f" checked_at)
+  case "$checked" in ''|*[!0-9]*) bulk_wait stale-publication; return 75 ;; esac
+  [ "${#checked}" -le 10 ] && [ $(( $(now) - 10#$checked )) -le "${FM_STORAGE_MAX_AGE:-1800}" ] || {
+    bulk_wait stale-publication; return 75;
+  }
+  [ -e "$(kv "$f" ssd_marker)" ] || { bulk_wait missing-marker; return 75; }
   printf '%s\n' "${line1//\{task\}/$task}"
 }
 
@@ -591,17 +587,15 @@ cmd_bulk_root() {
 UNIT=fm-storage
 
 cmd_install_timer() {
-  local fb='' nf='' dir self k v
+  local nf='' dir self k v
   while [ $# -gt 0 ]; do
     case "$1" in
-      --fallback) fb=${2:-}; shift 2 ;;
+      --fallback) die "--fallback was removed: writers wait when the SSD is unavailable, never fall back" ;;
       --notify) nf=${2:-}; shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
-  valid_template "$fb" || die "--fallback must be an absolute path containing {task}"
   {
-    printf 'fallback=%s\n' "$fb"
     [ -n "$nf" ] && printf 'notify=%s\n' "$nf"
     for k in min_free min_size; do
       v=$(kv "$(config_dir)/storage.conf" "$k")
@@ -611,7 +605,7 @@ cmd_install_timer() {
   self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
   dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   mkdir -p "$dir" || die "cannot create $dir"
-  printf '[Unit]\nDescription=Choose the fetched-results root (external SSD or C: fallback)\n\n[Service]\nType=oneshot\nNice=19\nIOSchedulingClass=idle\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin:%s\nExecStart=%s check\n' "$PS_DIR" "$self" \
+  printf '[Unit]\nDescription=Publish the fetched-results root on the external SSD\n\n[Service]\nType=oneshot\nNice=19\nIOSchedulingClass=idle\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin:%s\nExecStart=%s check\n' "$PS_DIR" "$self" \
     | write_atomic "$dir/$UNIT.service" || die "could not write $dir/$UNIT.service"
   printf '[Unit]\nDescription=Check the external SSD every 5 minutes\n\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=5min\nAccuracySec=30s\n\n[Install]\nWantedBy=timers.target\n' \
     | write_atomic "$dir/$UNIT.timer" || die "could not write $dir/$UNIT.timer"

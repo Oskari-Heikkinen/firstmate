@@ -1,7 +1,7 @@
 # External SSD for fetched results
 
 On a WSL laptop whose Windows drive is nearly full, new large fetched results must explicitly request mandatory D: admission.
-Legacy small/control callers retain the external SSD preference with the Windows drive as fallback.
+Every other caller also writes only to the external SSD: when it is not usable, writers wait, and no command names a C: or Linux fallback.
 `bin/fm-storage.sh` detects the SSD, prepares it, and publishes the choice in one machine-local file that every fetcher reads; its header owns the exact commands and environment settings.
 Plugging the SSD in is the only step anyone takes after the one-time setup below.
 
@@ -10,8 +10,8 @@ Plugging the SSD in is the only step anyone takes after the one-time setup below
 1. Mount rule (root, once): WSL mounts drives only when the distro starts, so a drive plugged in later gets no `/mnt/<letter>` until the laptop restarts or root mounts it.
    A narrow sudoers rule lets the check mount exactly `mount -t drvfs <L>: /mnt/<l> -o uid=<uid>,gid=<gid>` (and `umount /mnt/<l>`, `umount -l /mnt/<l>`) for letters D to H without a password, with the matching `/mnt/<l>` folders created; see [Mount rule](#mount-rule).
    Without it everything still works except that a hot-plugged SSD reads as `not-mounted` until the next restart.
-2. Timer (user, no root): `bin/fm-storage.sh install-timer --fallback <C: template> --notify <status file>` writes `~/.config/lattice-storage/storage.conf` and enables `fm-storage.timer`, which runs `check` every 5 minutes at `Nice=19` with idle IO.
-   The fallback template is the directory fetched results use today, with `{task}` in place of the task name.
+2. Timer (user, no root): `bin/fm-storage.sh install-timer --notify <status file>` writes `~/.config/lattice-storage/storage.conf` and enables `fm-storage.timer`, which runs `check` every 5 minutes at `Nice=19` with idle IO.
+   The removed `--fallback` option exits 2, `FM_STORAGE_FALLBACK` is ignored, and a `fallback=` line left in an older `storage.conf` is ignored, so none of them can bring back a C: destination.
 
 ## Mount rule
 
@@ -55,9 +55,9 @@ Each change of state appends one `note [at=<epoch>]: SSD storage <state>: ...` l
 
 Path: `~/.config/lattice-storage/results-root`, written only by `fm-storage.sh check`, atomically.
 
-Line 1 is the only line a fetcher needs: the absolute directory template for fetched results, containing `{task}`.
+Line 1 is the only line a fetcher needs: in state `ok` the absolute directory template for fetched results, containing `{task}`; in every other state the word `unavailable`, which no reader rule accepts as a directory.
 Line 2 is exactly `format=lattice-storage-results-root/v1`.
-Later lines are `key=value` facts: `active` (`ssd` or `c`), `state`, `reason`, `checked_at`, `fallback`, and for a found SSD `ssd_letter`, `ssd_id`, `ssd_fs`, `ssd_free_bytes`, `ssd_total_bytes`, `write_mib_s`, plus `ssd_marker`, `archive`, and `ssd_device` (the Linux filesystem device number) when active, and `ssd_identity=marker` when the identity came from the marker because the Windows listing failed.
+Later lines are `key=value` facts: `active` (`ssd`, or `c` meaning no usable SSD), `state`, `reason`, `checked_at`, and for a found SSD `ssd_letter`, `ssd_id`, `ssd_fs`, `ssd_free_bytes`, `ssd_total_bytes`, `write_mib_s`, plus `ssd_marker`, `archive`, and `ssd_device` (the Linux filesystem device number) when active, and `ssd_identity=marker` when the identity came from the marker because the Windows listing failed.
 Readers treat that `ok` exactly like any other.
 
 | state | meaning |
@@ -72,20 +72,23 @@ Readers treat that `ok` exactly like any other.
 | `ambiguous` | several large volumes and none is the remembered SSD, or the marker names another volume |
 | `unreadable` | the Windows listing failed or timed out, and the marker check failed, on 3 consecutive checks; until then a failed check keeps the last published state and root and does not notify, and any readable listing resets the count |
 
-Every state except `ok` has `active=c` and line 1 equal to `fallback`.
+Every state except `ok` has `active=c` and line 1 `unavailable`; writers wait until a check publishes `ok`.
+A file written by an older `fm-storage.sh` may still carry a `fallback=` key and a C: line 1 in those states; readers ignore `fallback=` and treat any state but `ok` as a wait.
 A format that changes line 1's meaning uses a new file name, never a new `format=` value in this file.
+Line 1 still means the one directory to write to, or none: a v1 reader's rule 2 already refuses `unavailable`, so it keeps this file name.
 
 ## Reader rules
 
 On every fetch, before choosing the destination, a reader either runs `bin/fm-storage.sh root <task>` or applies the same rules itself:
 
-1. A missing or unreadable file, or line 2 other than the v1 format: use the C: path.
-2. Line 1 must be an absolute path containing `{task}`; replace `{task}` with the task name.
-3. When `active=ssd`, also require `checked_at` no older than 30 minutes and the `ssd_marker` file present (so an empty `/mnt/<l>` folder on the Linux disk is never mistaken for the SSD); otherwise use the C: path.
-4. Never move what is already on either side; a fetch finishes where it started.
+1. A missing or unreadable file, or line 2 other than the v1 format: wait.
+2. Require `active=ssd` and `state=ok`; otherwise wait.
+3. Line 1 must be an absolute path containing `{task}`; replace `{task}` with the task name.
+4. Also require `checked_at` no older than 30 minutes and the `ssd_marker` file present (so an empty `/mnt/<l>` folder on the Linux disk is never mistaken for the SSD); otherwise wait.
+5. Never move what is already on either side; a fetch finishes where it started.
 
-These legacy rules, including the C: fallback on doubt, remain unchanged for callers that have not opted into mandatory bulk.
-They are not admission for a new D:-required delivery.
+On any doubt `root` exits 75 with one `wait:` reason on stderr and prints no path, using the refusal tokens of [Mandatory bulk admission](#mandatory-bulk-admission); a reader treats exit 75 as wait, never as a cue to pick its own C: or Linux path.
+These rules are not admission for a new D:-required delivery.
 
 ## Mandatory bulk admission
 
@@ -117,8 +120,7 @@ A live reservation name is never silently replaced by a new bulk admission.
 
 Mandatory verification requires a fresh non-future v1 publication, active/ok D:, NTFS or exFAT, the expected non-symlink results directory, matching publication/marker/remembered volume IDs, a live D: DrvFS/9p mount, and the current device matching the published `ssd_device` while differing from Linux root and C:.
 An old publication without `ssd_device` must be refreshed with the existing `check` command before mandatory admission.
-The legacy publication's line 1, fallback and state/reason meanings do not change; unavailable state/reason remains published even when line 1 selects C: for legacy callers.
-Mandatory callers do not interpret that C: line as permission to write.
+Mandatory verification reads only the state, identity and freshness facts; it never takes line 1 alone as permission to write.
 Verification is read-only and does not mount, initialize, probe, or create D: directories.
 A copied marker in an empty Linux-backed `/mnt/d` cannot authorize bulk.
 This is admission, not protection against unplug during a write: the writer must preserve its root and handle I/O errors without fallback.
@@ -145,19 +147,18 @@ Regression coverage is in `tests/fm-storage.test.sh` and `tests/fm-disk-room.tes
 
 `root`, `verify-bulk-root` and `bulk-root` take `--root ROOT`, written before TASK, naming one directory under `/mnt/d/lattice-data`:
 
-| ROOT | D: directory | fallback of `root --root ROOT` |
+| ROOT | D: directory | `root --root ROOT` checks |
 |---|---|---|
-| `tetjet-results` (default) | `tetjet-results/TASK` (line 1's template) | the C: template, by the reader rules |
-| `research` | `research/TASK` | `$FM_HOME/data/TASK/bulk`, or `data/TASK/bulk` in the checkout holding the script when `FM_HOME` is unset |
+| `tetjet-results` (default) | `tetjet-results/TASK` (line 1's template) | the reader rules |
+| `research` | `research/TASK` | the same checks as `verify-bulk-root --root research` |
 
 Any other name exits 2.
 Without `--root`, every command and its output is unchanged.
 The results-root file is unchanged: line 1 stays the `tetjet-results` template, and every root shares its D: publication, marker, mount and device checks; the named root's own directory must exist as a real directory on that device.
 The check creates `research` beside `tetjet-results`, so it exists after the first check that runs this version.
 
-Which command a writer calls depends on whether it may fall back:
-- A **mandatory** writer, whose records pin the D: root, calls `verify-bulk-root --root research TASK` (or `bulk-root --root research TASK --name ...` to also reserve its peak). On anything but a verified D: it exits 75 with one `wait:` reason and prints no path; it never prints the Linux fallback.
-- A writer that **may fall back** calls `root --root research TASK`. It prints the verified D: directory, or the Linux fallback on any failed check, exiting 0 either way.
+No form falls back: on anything but a verified D: each exits 75 with one `wait:` reason and prints no path.
+A writer whose records pin the D: root calls `verify-bulk-root --root research TASK`, or `bulk-root --root research TASK --name ...` to also reserve its peak; `root --root research TASK` gives the same answer as `verify-bulk-root`.
 
 `bulk-root --root research` verifies the research directory, admits the peak through `fm-disk-room.sh reserve-bulk` in the same D: reservation pool as `tetjet-results`, and prints the research directory.
 
