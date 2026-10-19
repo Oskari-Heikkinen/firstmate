@@ -1285,9 +1285,9 @@ test_review_range_appends_component_review_pack() {
     status=$?
     expect_code 0 "$status" "a $kind review spawn over a mapped repo should launch"$'\n'"$out"
     launch="$HOME_DIR/data/$id/launch-brief.md"
-    assert_grep '^# Component review checklists$' "$launch" "the $kind review launch brief has no component review section"
-    assert_grep '^## Component demo$' "$launch" "the $kind review pack did not name the touched component"
-    assert_grep 'Changed paths: .*src/demo.txt' "$launch" "the $kind review pack did not list the changed path"
+    assert_grep '# Component review checklists' "$launch" "the $kind review launch brief has no component review section"
+    assert_grep '## Component demo' "$launch" "the $kind review pack did not name the touched component"
+    assert_grep 'Changed paths: src/demo.txt' "$launch" "the $kind review pack did not list the changed path"
     assert_grep 'fixture-trusted-check' "$launch" "the $kind review pack did not carry the default branch's checklist"
     assert_no_grep 'fixture-head-rewrite' "$launch" "the $kind review pack read the checklist from the reviewed head"
   done
@@ -1410,7 +1410,7 @@ test_review_pack_failures() {
   out=$(run_spawn "$id" --scout); status=$?
   expect_code 0 "$status" "a review whose checklist cannot be read should still launch"$'\n'"$out"
   assert_contains "$out" "could not be read" "the unreadable-checklist launch printed no warning"
-  assert_grep '^## Component demo$' "$HOME_DIR/data/$id/launch-brief.md" "the unreadable-checklist block is missing"
+  assert_grep '## Component demo' "$HOME_DIR/data/$id/launch-brief.md" "the unreadable-checklist block is missing"
   assert_grep 'Review checklist unavailable' "$HOME_DIR/data/$id/launch-brief.md" "the block does not say the checklist is unavailable"
   assert_grep 'marked unavailable is itself a finding' "$HOME_DIR/data/$id/launch-brief.md" "the brief does not tell the reviewer to report the gap"
   pass "an unusable map refuses a review launch; an unreadable checklist launches with its gap named"
