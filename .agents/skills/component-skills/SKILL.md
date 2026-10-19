@@ -33,6 +33,7 @@ This mechanism is owned here; each skill's contents belong to its component's ow
 - Failing closed on malformed hook input or a missing map, or reporting a malformed map more than once (plan section 3 item 2).
 - Injecting the whole skill, or injected text over the harness's context cap (plan open question 3: the goal section plus the path).
 - Relying on description triggering alone, or on skills loading inside a reviewer that runs without project settings (plan sections 3 and 4).
+- Weakening any rule `check` enforces so a map passes: accepting unknown keys, letting a non-provisional glob match no tracked file, leaving a tracked file under `roots` in no component, allowing more than six components on one path or a goal section over 1,500 characters; or marking a component `provisional`, narrowing or dropping `roots` to silence a no-match or coverage error (`docs/component-map.md` "Repository map", "Component roots", "Provisional components" and the skill-shape table; `bin/fm-component-map.sh` header).
 - Re-pinning a hash to silence drift without reading the source delta and updating the skill (plan section 5 "Update path").
 - A project-, repo- or component-specific branch in the hook, resolver or checker code (tool-design rule 4).
 - Editing another repo's tracked settings to install the hook (plan section 3 item 3).
@@ -49,6 +50,7 @@ Answer each check PASS or FINDING.
 5. Does every review path (self-review, lean review, no-mistakes, non-author review briefs) receive the Review checks of every touched component?
 6. Is every supported harness reached by the hook or by brief injection, with the gap for hook-less harnesses closed by the brief?
 7. Does the drift check flag a changed or vanished pinned source and stay silent when nothing changed?
-8. Would the component-map and hook tests fail, through the public commands, if this behaviour broke?
-9. Would a new repo or component need only a map row and a skill, not a code change?
-10. If a source pinned in this skill's `metadata.sources` changed, does every rule here still hold, and are the pins updated in the same change?
+8. Does `check` still refuse an unknown key, a non-provisional glob matching no tracked file, an uncovered tracked file under `roots`, a path claimed by more than six components and a goal section over 1,500 characters, and is every `provisional` flag or `roots` change justified by code that has not landed rather than by a failing check?
+9. Would the component-map and hook tests fail, through the public commands, if this behaviour broke?
+10. Would a new repo or component need only a map row and a skill, not a code change?
+11. If a source pinned in this skill's `metadata.sources` changed, does every rule here still hold, and are the pins updated in the same change?

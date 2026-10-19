@@ -1,6 +1,6 @@
 ---
 name: loop-observability
-description: Load before changing bin/fm-loop.sh, bin/fm-loop.py, bin/fm-project-capacity-lib.sh or their tests. The loop view only reads records, says why each request waits, reads unknown as unknown and alerts once per new occurrence; it never launches, retries or edits a queue, and capacity admission fails closed.
+description: Load before changing bin/fm-loop.sh, bin/fm-loop.py, bin/fm-project-capacity-lib.sh, docs/loop-status.md or their tests. The loop view only reads records, says why each request waits, reads unknown as unknown and alerts once per occurrence; it never launches or edits a queue, and capacity admission fails closed.
 user-invocable: false
 metadata:
   internal: true
@@ -20,9 +20,9 @@ metadata:
 ## Goal and operating principle
 
 Anyone can see from records alone where every experiment request stands, why it waits, and when the loop stalls, so idle capacity and silent refusals never go unnoticed.
-`fm-loop` is a read-only join over the loop's own records: it never writes, wakes, consumes or acknowledges a source, and its only writes are its alert records, cursors and log under `<home>/state/loop-alerts/`.
+`fm-loop` is a read-only join over the loop's own records: it never writes, wakes, consumes or acknowledges a source, and its only writes are its alert records, cursors, log and check shim under `<home>/state`.
 A missing, unreadable or wrong-schema source reads as unknown, never as empty or healthy, and an unknown condition never clears an alert.
-Each alert is one durable record that wakes firstmate once per new occurrence through the watcher check; alerts other owners raise are shown beside the stages, never raised again.
+Each alert is one durable record that wakes firstmate once per new occurrence through the watcher check, except `source-unreadable`; TETJET's own capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) are shown beside the stages, never raised again.
 `fm-project-capacity-lib.sh` is the one owner of per-project worker capacity: a declared number, counted from task records under the shared project lock, and an unreadable declaration refuses spawns instead of guessing.
 Sources, thresholds and limits are data (`config/loop-sources`, `config/project-capacity`), so a new source or project is a config line, not code.
 
@@ -57,7 +57,7 @@ Answer each check PASS or FINDING.
 3. Is every new wait reason derived from records and shown in `status` with the source it came from?
 4. Does each new alert have a durable record, a log line per raise, clear and acknowledgement, print once per occurrence in `alerts --new`, and stay quiet after `ack`?
 5. Can any alert be suppressed while the condition it reports is true?
-6. Are supply and lane health still separate fields, and are other owners' alerts shown without being raised again?
+6. Are supply and lane health still separate fields, and are TETJET's own capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) shown without being raised again?
 7. Are new sources and thresholds config lines with documented defaults, and are stage rules and conditions stated once in `bin/fm-loop.py` and explained once in `docs/loop-status.md`?
 8. Does the run stay niced, idle I/O, capped, and bounded in what it reads?
 9. Does capacity admission still refuse on an unreadable declaration or holder record, evaluate under the shared project lock, and free a place only through records?

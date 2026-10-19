@@ -42,6 +42,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 ## Refuse
 
 - A C: or Linux fallback in any form: a default path, mapping exit 75 or any non-zero `root` exit to another directory, or reviving `--fallback`, `FM_STORAGE_FALLBACK` or `fallback=` (`docs/storage.md` opening rule and reader rules; wave-2 history H6 records TETJET's results writer mapping the new wait back to C:).
+- Writing to or formatting a RAW, unformatted or non-NTFS/exFAT volume, picking any volume other than the remembered volume id by size or letter, prompting for a password when mounting, or widening the mount rule beyond `mount -t drvfs <L>: /mnt/<l>` and its `umount` lines for D to H (`docs/storage.md` "What a check does" steps 2-4 and "Mount rule": "formatting needs the captain", a refusal is `not-mounted`; `bin/fm-storage.sh` `mount_ssd`).
 - Treating an unreadable listing, a missing marker, a stale `checked_at`, a missing `ssd_device` or any unknown state as usable (reader rules 1-4; tool-design rule 1: unknown is a failure, never healthy).
 - Taking line 1 alone as permission for a bulk write, or authorizing bulk from a marker in an empty Linux-backed `/mnt/d` (`docs/storage.md` "Mandatory bulk admission").
 - Changing what line 1 means under the same file name, or writing the results-root file from anywhere but `check` (`docs/storage.md` "The results-root file").
@@ -63,12 +64,13 @@ Answer each check PASS or FINDING.
 1. Does every changed path end in a verified D: location or an exit 75 with exactly one `wait:` reason, with no C: or Linux destination anywhere?
 2. Does every unknown, unreadable, stale or unproven reading lead to a wait or a refusal, never to a write?
 3. Is the results-root file still written only by `check`, atomically, with line 1's v1 meaning unchanged?
-4. Does a new delivery path reserve its whole peak before writing and release its reservation on success and on every failure?
-5. Does every deletion go through `fm-pack.sh release`, with every R2 guard run and `verify --against` passing just before removal?
-6. Are exit codes, `wait:` tokens, receipt lines and sidecar formats unchanged, or changed through a new versioned format with every consumer named?
-7. Is each new fact stated once in its owner (`docs/storage.md` or the script header) and only cross-referenced elsewhere?
-8. Does each state change notify once, and is every wait, refusal and release logged with its reason?
-9. Would `tests/fm-storage.test.sh` or `tests/fm-pack.test.sh` fail, through the public commands, if this behaviour broke?
-10. Would a new root, data family or unit format need only a data or allowlist entry, not a new code branch?
-11. Do heavy steps still run at `nice 19` and idle I/O, with no new service, daemon or index?
-12. If a source pinned in this skill's `metadata.sources` changed, does every rule here still hold, and are the pins updated in the same change?
+4. Does volume selection still honour the remembered volume id, write nothing to and never format a volume that is not NTFS or exFAT, and mount only through `sudo -n` within the five-line D-H rule, reading a refusal as `not-mounted`?
+5. Does a new delivery path reserve its whole peak before writing and release its reservation on success and on every failure?
+6. Does every deletion go through `fm-pack.sh release`, with every R2 guard run and `verify --against` passing just before removal?
+7. Are exit codes, `wait:` tokens, receipt lines and sidecar formats unchanged, or changed through a new versioned format with every consumer named?
+8. Is each new fact stated once in its owner (`docs/storage.md` or the script header) and only cross-referenced elsewhere?
+9. Does each state change notify once, and is every wait, refusal and release logged with its reason?
+10. Would `tests/fm-storage.test.sh` or `tests/fm-pack.test.sh` fail, through the public commands, if this behaviour broke?
+11. Would a new root, data family or unit format need only a data or allowlist entry, not a new code branch?
+12. Do heavy steps still run at `nice 19` and idle I/O, with no new service, daemon or index?
+13. If a source pinned in this skill's `metadata.sources` changed, does every rule here still hold, and are the pins updated in the same change?
