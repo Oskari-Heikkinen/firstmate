@@ -89,11 +89,12 @@ class Run:
         self.home = args.home.rstrip("/")
         self.code_root = args.code_root
         self.now = args.now if args.now is not None else int(time.time())
-        self.homes = self.read_homes(args.homes)
+        self.homes_path = args.homes
+        self.homes = []
         self.sdir = os.path.join(self.home, "state", "component-drift")
         self.log_path = os.path.join(self.sdir, "log")
         self.alarm_dir = os.path.join(self.sdir, "alarms")
-        self.tool = load_map_tool(self.code_root)
+        self.tool = None
         self.ledger = None
         self.failures = []
         self.counts = {"maps": 0, "drifted": 0, "filed": 0, "updated": 0, "open": 0}
@@ -113,10 +114,18 @@ class Run:
                 homes.append((parts[0], parts[1].rstrip("/"), parts[2] == "1"))
         return homes or [("main", self.home, False)]
 
+    def local_homes(self):
+        return {hid: hpath for hid, hpath, remote in self.homes if not remote}
+
     def log(self, text):
+        """Best effort, so a run that cannot write its log still reaches its alarm."""
         line = "%s %s\n" % (utc(int(time.time())), one_line(text, 1000))
-        with open(self.log_path, "a", encoding="utf-8") as fh:
-            fh.write(line)
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as fh:
+                fh.write(line)
+        except OSError as err:
+            print("fm-component-drift: cannot write the log %s (%s): %s" % (self.log_path, err, line.strip()),
+                  file=sys.stderr)
 
     def fail(self, text):
         self.failures.append(text)
@@ -148,6 +157,19 @@ class Run:
             if m:
                 return m.group(1).strip('"')
         return None
+
+    def entry_state(self, entry):
+        """task_state of a ledger entry's item, through the home's registered path; 'gone' once the home is retired."""
+        known = self.local_homes()
+        if entry["home"] not in known:
+            self.log("%s's home %s is no longer a registered local home: its item is treated as gone" % (
+                entry["task"], entry["home"]))
+            return "gone"
+        if known[entry["home"]] != entry["home_path"]:
+            self.log("%s's home %s is now registered at %s, not %s" % (
+                entry["task"], entry["home"], known[entry["home"]], entry["home_path"]))
+            entry["home_path"] = known[entry["home"]]
+        return self.task_state(entry["home_path"], entry["task"])
 
     # ------------------------------------------------------------ targets
 
@@ -243,7 +265,7 @@ class Run:
 
     def owner(self, rec):
         """(home id, home path, why) for a drifted skill."""
-        known = {hid: hpath for hid, hpath, remote in self.homes if not remote}
+        known = self.local_homes()
         named = None
         try:
             fm, _ = self.tool.read_skill(rec["skill"])
@@ -334,9 +356,11 @@ class Run:
             self.fail("could not rewrite %s in %s for %s: %s; the next run retries" % (
                 entry["task"], entry["home"], ident, one_line(err or out)))
             return
-        # The rewrite is idempotent, so a run stopped before this save only rewrites it again.
-        entry.update(fingerprint=fp, wake_pending=True, wake_id="%s-%s" % (entry["task"], fp[:6]),
-                     updated=utc(self.now))
+        # The rewrite is idempotent, so a run stopped before this save only rewrites it again. A request id
+        # is bound for good, so each rewrite's wake gets its own, or a drift that returns would not wake.
+        rewrites = entry.get("rewrites", 0) + 1
+        entry.update(fingerprint=fp, wake_pending=True, wake_id="%s-rewrite-%d" % (entry["task"], rewrites),
+                     rewrites=rewrites, updated=utc(self.now))
         self.save_ledger()
         self.counts["updated"] += 1
         self.log("rewrote %s in %s for %s: the drift changed" % (entry["task"], entry["home"], ident))
@@ -372,10 +396,25 @@ class Run:
         text = ("The component-skill drift run failed: %s. Its log %s names every failed step (FAILED lines); fix "
                 "the cause. Adds and wakes it could not finish are retried by the next daily run." % (
                     summary, self.log_path))
-        os.makedirs(self.alarm_dir, exist_ok=True)
-        atomic_text(os.path.join(self.alarm_dir, rid + ".json"),
-                    json.dumps({"schema": ALARM_SCHEMA, "request_id": rid, "text": text}) + "\n")
+        try:
+            os.makedirs(self.alarm_dir, exist_ok=True)
+            atomic_text(os.path.join(self.alarm_dir, rid + ".json"),
+                        json.dumps({"schema": ALARM_SCHEMA, "request_id": rid, "text": text}) + "\n")
+        except OSError as err:
+            # Not kept, so not resent; still sent once now.
+            self.log("FAILED: alarm %s cannot be kept (%s)" % (rid, err))
+            self.send_alarm(rid, text)
+            return
         self.send_alarms(only=rid)
+
+    def send_alarm(self, rid, text):
+        rc, out, err = self.run_in(self.home, [self.home_tool(self.home, "fm-inbox.sh"), "note",
+                                               "--request-id", rid, "--", text])
+        if rc == 0:
+            self.log("alarmed main: %s" % rid)
+            return True
+        self.log("FAILED: could not alarm main with %s: %s; the next run retries" % (rid, one_line(err or out)))
+        return False
 
     def send_alarms(self, only=None):
         """Deliver kept alarms to main's inbox; the request id makes a repeat delivery a no-op."""
@@ -391,17 +430,11 @@ class Run:
                 continue
             if only and rid != only:
                 continue
-            rc, out, err = self.run_in(self.home, [self.home_tool(self.home, "fm-inbox.sh"), "note",
-                                                   "--request-id", rid, "--", text])
-            if rc == 0:
+            if self.send_alarm(rid, text):
                 try:
                     os.unlink(path)
                 except FileNotFoundError:
                     pass
-                self.log("alarmed main: %s" % rid)
-            else:
-                self.log("FAILED: could not alarm main with %s: %s; the next run retries" % (
-                    rid, one_line(err or out)))
 
     # ------------------------------------------------------------ main
 
@@ -426,7 +459,7 @@ class Run:
             entry = self.ledger[ident]
             if not entry.get("filing"):
                 continue
-            if self.task_state(entry["home_path"], entry["task"]) == "gone":
+            if self.entry_state(entry) == "gone":
                 self.log("%s was not filed by a stopped run; its earlier record stands" % entry["task"])
                 self.restore(ident, entry.get("prior"))
             else:
@@ -436,9 +469,21 @@ class Run:
                 self.save_ledger()
 
     def execute(self):
+        self.homes = self.read_homes(self.homes_path)
+        self.tool = load_map_tool(self.code_root)
         self.ledger = self.load_ledger()
         self.log("run started for %d home(s)" % len(self.homes))
         self.send_alarms()
+        rc, out, err = self.run_in(self.home, ["tasks-axi", "--version"])
+        if rc != 0:
+            # Every item read, add and rewrite goes through tasks-axi, so without it the run can only alarm.
+            self.fail("tasks-axi does not run on this run's PATH %s (%s), so no drift item can be read, filed or "
+                      "rewritten; put the directories of tasks-axi and node on the run's PATH "
+                      "(docs/component-map.md, Drift run)" % (os.environ.get("PATH", ""), one_line(err or out)))
+            summary = "nothing checked; 1 failure(s): %s" % self.failures[0]
+            self.log("run ended: " + summary)
+            print(summary)
+            return summary
         self.resolve_filing()
         found = self.collect()
         self.counts["drifted"] = len(found)
@@ -448,7 +493,7 @@ class Run:
             fp = self.fingerprint(ident, rec["problems"])
             entry = self.ledger.get(ident)
             if entry:
-                state = self.task_state(entry["home_path"], entry["task"])
+                state = self.entry_state(entry)
                 if state is None:
                     self.fail("could not read the state of %s in %s; treated as open, nothing filed for %s" % (
                         entry["task"], entry["home"], ident))
@@ -490,30 +535,31 @@ def main(argv):
     ap.add_argument("--now", type=int)
     args = ap.parse_args(argv)
     run = Run(args)
-    os.makedirs(run.sdir, exist_ok=True)
-    lock_path = os.path.join(run.sdir, ".lock")
-    lock = open(lock_path, "w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        summary = "another run holds the lock %s, so this run did nothing" % lock_path
-        print("fm-component-drift: " + summary, file=sys.stderr)
-        run.log("FAILED: " + summary)
-        run.alarm(summary)
-        return 2
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
+    # Everything after Run(), which only names paths, is inside the alarmed path.
     try:
+        os.makedirs(run.sdir, exist_ok=True)
+        lock_path = os.path.join(run.sdir, ".lock")
+        lock = open(lock_path, "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            summary = "another run holds the lock %s, so this run did nothing" % lock_path
+            print("fm-component-drift: " + summary, file=sys.stderr)
+            run.log("FAILED: " + summary)
+            run.alarm(summary)
+            return 2
         summary = run.execute()
     except Exception as exc:  # noqa: BLE001 - any crash is "could not run", reported in the summary
         summary = "the run stopped: %s" % one_line(repr(exc))
         try:
             if run.ledger is not None:
                 run.save_ledger()
-            run.log("FAILED: " + summary)
-            run.alarm(summary)
         except OSError:
             pass
+        run.log("FAILED: " + summary)
+        run.alarm(summary)
         print("fm-component-drift: " + summary, file=sys.stderr)
         return 2
     if run.failures:

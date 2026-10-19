@@ -38,15 +38,24 @@
 #     drift), and every vanished or unreadable source;
 #   - while the item is open, an unchanged drift does nothing and a changed
 #     drift rewrites that item's title and body in place (tasks-axi update
-#     --archive-body) and wakes its home again; once the item is done or gone,
+#     --archive-body) and wakes its home again, each rewrite with the task id
+#     plus its rewrite count as request id; once the item is done or gone,
 #     the next run with drift adds a new item; a skill that no longer drifts
 #     is forgotten;
+#   - an item whose home is no longer a registered local home (retired from
+#     main's data/secondmates.md) counts as gone, so the next item goes to the
+#     owner the rule names now;
 #   - a failed add, rewrite or wake is retried on the next run; a task state
-#     it cannot read is treated as open and fails the run.
-# A failed run (exit 1 or 2, a run that was stopped, or one refused because
-# another run holds the lock) wakes main through main's bin/fm-inbox.sh note
-# with the summary and the log; an alarm main's inbox has not taken is kept
-# and resent by the next run.
+#     it cannot read in a registered home is treated as open and fails the run;
+#   - tasks-axi, and the node it runs on, must be on the run's PATH (a user
+#     timer's PATH lacks both unless its service sets one); a run where
+#     `tasks-axi --version` fails checks nothing and fails.
+# Once the engine starts, a failed run (exit 1, or exit 2 when it crashed, was
+# stopped, or was refused because another run holds the lock) wakes main
+# through main's bin/fm-inbox.sh note with the summary and the log; an alarm
+# main's inbox has not taken is kept and resent by the next run. A usage error
+# or a --home that does not exist exits 2 before then and reaches only stderr
+# (the journal, under the timer), since there is no home to alarm.
 #
 # State is <home>/state/component-drift/ of the --home: ledger.json (one entry
 # per drifted skill: its drift fingerprint, task and owner home), log (one
@@ -57,9 +66,9 @@
 # It runs at nice 19 and ionice -c3. It never edits a skill, map or source.
 #
 # Exit codes: 0 ran and nothing failed (items may have been filed); 1 ran but
-# a map could not be checked, a task state could not be read, or an add,
-# rewrite or wake failed; 2 usage error, could not run, was stopped, or
-# another run holds the lock.
+# tasks-axi was missing, a map could not be checked, a task state could not
+# be read, or an add, rewrite or wake failed; 2 usage error, no such home,
+# crashed, was stopped, or another run holds the lock.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

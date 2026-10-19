@@ -7,10 +7,12 @@
 # stopped right after an add records it, so the next run files nothing more
 # and delivers the wake; once that item is done the same drift files a new
 # one; a further drift rewrites the open item in place and wakes its home
-# again; an owner naming no local home and a home-map skill without an owner
-# route to main and to the map's home; a map drift cannot read, and a run
-# refused by the lock, fail and alarm main. Temp homes, real tasks-axi, a
-# fake clock (--now).
+# again, on every rewrite even when a drift returns; an owner naming no
+# local home and a home-map skill without an owner route to main and to the
+# map's home; a map drift cannot read, a run refused by the lock, a map tool
+# that cannot load and a PATH without tasks-axi fail and alarm main; an item
+# in a retired home counts as gone, so the next item goes to the current
+# owner. Temp homes, real tasks-axi, a fake clock (--now).
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -90,10 +92,10 @@ def skill(name, owner, pins):
                  "## Review\n1. Is there one path?\n" % name)
 
 
-def run(*extra, rc=0):
+def run(*extra, rc=0, tool=TOOL, env=None):
     NOW[0] += 600
-    p = subprocess.run([TOOL, "run", "--home", str(main), "--now", str(NOW[0]), *extra],
-                       text=True, capture_output=True, env=ENV, timeout=300)
+    p = subprocess.run([tool, "run", "--home", str(main), "--now", str(NOW[0]), *extra],
+                       text=True, capture_output=True, env=env or ENV, timeout=300)
     if rc is not None and p.returncode != rc:
         fail("run exited %d, wanted %d:\n%s%s" % (p.returncode, rc, p.stdout, p.stderr))
     return p
@@ -168,8 +170,12 @@ check(items(mate) == [first], "a rerun of the unchanged drift files no second it
 run()
 check(items(mate) == [first], "a third run files nothing either", str(items(mate)))
 write(plan, "Plan v3\n")
+woken, b = len(notes(mate)), body(mate, first)
 run()
-check(items(mate) == [first], "editing an already-drifted source again files nothing", str(items(mate)))
+check(items(mate) == [first] and body(mate, first) == b and "Rewritten by the drift run" not in b
+      and len(notes(mate)) == woken,
+      "editing an already-drifted source again files, rewrites and wakes nothing",
+      "%s\n%s\n%s" % (items(mate), body(mate, first), notes(mate)))
 
 # A run stopped right after its add (the owner home's tasks-axi kills it) records the item it filed.
 p = axi(mate, "done", first)
@@ -199,6 +205,14 @@ check(sorted(items(mate)) == sorted([first, again[0]]) and "docs/contract.md" in
       "a further drift rewrites the open item in place and files no new one", "%s\n%s" % (items(mate), b))
 check(len(notes(mate)) == woken + 1 and any("rewrote backlog task %s" % again[0] in n for n in notes(mate)),
       "the rewrite wakes the owner home again", str(notes(mate)))
+# The drift returns to an earlier shape and back: every rewrite wakes the home, none is a request-id replay.
+for text in ("Contract v1\n", "Contract v2\n", "Contract v1\n"):
+    write(repo / "docs/contract.md", text)
+    woken = len(notes(mate))
+    run()
+    check(len(notes(mate)) == woken + 1 and items(mate) == sorted([first, again[0]]),
+          "a drift back to %s rewrites the open item and wakes its home again" % text.strip(), str(notes(mate)))
+write(repo / "docs/contract.md", "Contract v2\n")
 
 # Re-pin everything: the run files nothing and forgets the skill.
 write(repo / ".agents/skills/core-skill/SKILL.md",
@@ -243,4 +257,48 @@ with open(main / "state/component-drift/.lock", "w") as held:
 check(len(alarms()) == before + 1 and any("holds the lock" in a and ".lock" in a for a in alarms())
       and (items(main), items(mate)) == filed,
       "a run refused by the lock alarms main naming the lock and files nothing", str(alarms()) + p.stderr)
+(mate / "config/component-map.json").unlink()
+
+# A map tool that cannot load (a broken landing) still alarms main.
+code = tmp / "code"
+shutil.copytree(root / "bin", code / "bin")
+(code / "bin/fm-component-map.py").write_text('raise SyntaxError("broken landing")\n')
+before = len(alarms())
+p = run(rc=2, tool=str(code / "bin/fm-component-drift.sh"))
+check(len(alarms()) == before + 1 and any("broken landing" in a for a in alarms()),
+      "a map tool that cannot load alarms main", str(alarms()) + p.stderr)
+
+# Without tasks-axi on PATH (a user timer's default PATH) the run checks nothing and alarms main.
+axi_dir = os.path.dirname(shutil.which("tasks-axi"))
+needed = [os.path.dirname(shutil.which(c)) for c in ("python3", "git", "bash", "nice")]
+if axi_dir in needed:
+    ok("skip: tasks-axi shares a directory with python3, git, bash or nice")
+else:
+    bare = dict(ENV, PATH=os.pathsep.join(d for d in ENV["PATH"].split(os.pathsep) if d != axi_dir))
+    before, filed = len(alarms()), (items(main), items(mate))
+    p = run(rc=1, env=bare)
+    check(len(alarms()) == before + 1 and any("tasks-axi does not run" in a for a in alarms())
+          and (items(main), items(mate)) == filed,
+          "a run without tasks-axi on PATH alarms main and files nothing", str(alarms()) + p.stdout + p.stderr)
+
+# An item in a home since retired from main's registry counts as gone: the next item goes to the owner now.
+for t in items(main):
+    axi(main, "done", t)
+write(repo / ".agents/skills/core-skill/SKILL.md",
+      skill("core-skill", "mate-a", [("docs/contract.md", sha(repo / "docs/contract.md")), (str(plan), "2" * 64)]))
+before = items(mate)
+run()
+in_mate = [t for t in items(mate) if t not in before]
+check(len(in_mate) == 1, "the skill's next item is filed in mate-a", str(items(mate)))
+(main / "data/secondmates.md").write_text("")
+mate.rename(tmp / "mate-a.retired")
+before = items(main)
+p = run()
+moved = [t for t in items(main) if t not in before]
+log = (main / "state/component-drift/log").read_text()
+check(len(moved) == 1 and "no longer a registered local home" in log,
+      "an item in a retired home counts as gone and the drift is filed with the owner now",
+      "%s\n%s%s" % (items(main), p.stdout, log[-600:]))
+p = run()
+check(items(main) == sorted(before + moved), "the run after files nothing more", str(items(main)))
 PY

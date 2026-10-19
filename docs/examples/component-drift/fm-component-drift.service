@@ -1,6 +1,9 @@
 # Example systemd user service for the daily component-skill drift run.
 # Copy to ~/.config/systemd/user/ and replace both paths with this machine's
-# main firstmate code root and home.
+# main firstmate code root and home. The user manager's PATH has neither
+# tasks-axi nor the node it runs on, so PATH names their directories first:
+# replace %h/.local/npm/bin and /opt/node24/bin with the directories
+# `command -v tasks-axi node` prints.
 [Unit]
 Description=Firstmate component-skill drift run
 
@@ -8,4 +11,5 @@ Description=Firstmate component-skill drift run
 Type=oneshot
 Nice=19
 IOSchedulingClass=idle
+Environment=PATH=%h/.local/npm/bin:/opt/node24/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/firstmate/bin/fm-component-drift.sh run --home %h/firstmate
