@@ -375,6 +375,8 @@ fm_test_run_spawn() {
   # because bin/fm-spawn.sh prefixes the launch only when the value is non-empty,
   # so every launch-shape assertion in the suite keeps reading the same command.
   # A test that needs the set case opts in through FM_TEST_CLAUDE_CONFIG_DIR.
+  # FM_TEST_SPAWN_ROOT drives a scratch copy of the checkout instead of $ROOT,
+  # for a test whose spawner must see a different bin/ beside it.
   local spawn_home=$home/user-home
   mkdir -p "$spawn_home"
   FM_ROOT_OVERRIDE='' FM_HOME="$home" HOME="$spawn_home" \
@@ -383,7 +385,7 @@ fm_test_run_spawn() {
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$pane" TMUX="${TMUX:-fake,1,0}" \
     PATH="$fakebin:$PATH" \
-    "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
+    "${FM_TEST_SPAWN_ROOT:-$ROOT}/bin/fm-spawn.sh" "$@" 2>&1
 }
 
 # --- send-world stubs -------------------------------------------------------

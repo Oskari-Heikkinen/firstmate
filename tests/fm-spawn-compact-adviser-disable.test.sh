@@ -272,6 +272,55 @@ $(cat "$LAUNCH_LOG")") \
   pass "ship, scout and secondmate launches export the spawning home's fm-storage.sh in both allowlist postures"
 }
 
+# A home whose fm-storage.sh is missing or not executable must launch with no
+# export at all: a dead path would beat lattice-research's PATH fallback and
+# fail exactly as an unset variable does today. The spawner runs from a scratch
+# copy of the checkout whose bin/ is real and whose tool is broken, so with the
+# allowlist absent the agent keeps the pane's value, and with it enabled the
+# cleared environment leaves the variable unset.
+test_launch_skips_storage_tool_when_unusable() {
+  local variant setting scratch entry rec id out status seen want launch
+  for variant in missing noexec; do
+    scratch="$TMP_ROOT/storage-skip-$variant-root"
+    mkdir -p "$scratch"
+    cp -R "$ROOT/bin" "$scratch/bin"
+    for entry in "$ROOT"/* "$ROOT"/.[!.]*; do
+      case "${entry##*/}" in bin|data|state|.git) continue ;; esac
+      [ -e "$entry" ] && ln -s "$entry" "$scratch/${entry##*/}"
+    done
+    case "$variant" in
+      missing) rm -f "$scratch/bin/fm-storage.sh" ;;
+      noexec) chmod -x "$scratch/bin/fm-storage.sh" ;;
+    esac
+    for setting in absent enabled; do
+      id="storage-skip-$variant-$setting-a1"
+      rec=$(make_case "storage-skip-$variant-$setting" codex "$id")
+      read_case "$rec"
+      [ "$setting" = absent ] || : > "$HOME_DIR/config/launch-env-allowlist"
+      out=$(FM_TEST_SPAWN_ROOT="$scratch" run_case_spawn "$id" "$PROJ_DIR" --mode no-mistakes --yolo off)
+      status=$?
+      expect_code 0 "$status" "ship spawn with fm-storage.sh $variant and allowlist=$setting should succeed: $out"
+      launch=$(cat "$LAUNCH_LOG")
+      [ -n "$launch" ] || fail "fm-storage.sh $variant, allowlist $setting: the spawn sent no launch command"
+      case "$launch" in
+        *LATTICE_STORAGE_TOOL*) fail "fm-storage.sh $variant, allowlist $setting: the launch exported LATTICE_STORAGE_TOOL: $launch" ;;
+      esac
+      [ "$setting" = absent ] || assert_contains "$launch" '/usr/bin/env -i' \
+        "fm-storage.sh $variant: an enabled allowlist should launch under a cleared environment"
+      install_env_probe "$FAKEBIN_DIR" codex LATTICE_STORAGE_TOOL
+      seen=$(env -i HOME="$TMP_ROOT/pane-home" PATH="$FAKEBIN_DIR:$PATH" TERM=xterm \
+        TMUX=synthetic-pane LATTICE_STORAGE_TOOL=/contrary/fm-storage.sh \
+        /bin/sh -c "$(grep '^export ' "$PANE_LOG")
+$launch") \
+        || fail "fm-storage.sh $variant, allowlist $setting: the emitted launch failed to run"
+      if [ "$setting" = absent ]; then want=/contrary/fm-storage.sh; else want='unset'; fi
+      assert_equals "$want" "$seen" \
+        "with fm-storage.sh $variant and allowlist=$setting the agent must see no launch-supplied LATTICE_STORAGE_TOOL"
+    done
+  done
+  pass "a home whose fm-storage.sh is missing or not executable launches with no LATTICE_STORAGE_TOOL export in either allowlist posture"
+}
+
 # --- relaunch ---------------------------------------------------------------
 #
 # bin/fm-control.sh relaunch stops the agent and rebuilds the launch through
@@ -445,5 +494,6 @@ test_launch_command_carries_the_switch_without_the_pane_export
 test_secondmate_launch
 test_launch_exports_task_inbox
 test_launch_exports_storage_tool
+test_launch_skips_storage_tool_when_unusable
 test_relaunch_rebuilds_the_switch
 test_raw_compound_launch_command_carries_the_switch
