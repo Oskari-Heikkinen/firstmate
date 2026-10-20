@@ -6,13 +6,13 @@ metadata:
   internal: true
   sources:
     - path: docs/component-map.md
-      sha256: 45f510bd72439b7577913fae82909380f018e63a35ea5f02735e231b871a3460
+      sha256: 462693da0651576c1868a7864a55a2902f9c782f03385cf4418ec3aa67248dd6
     - path: bin/fm-component-map.sh
-      sha256: 6b0276f889311a4dcb626054e886d075114b286ae4ed080633be6fa18b5eb2bc
+      sha256: 299f07ae24496b90e11de3803565b229b7225a206948cf066ff77e4f3c839d8f
     - path: bin/fm-component-map.py
-      sha256: 3d7bac0134c2f090d456559e54586deae6c4cb4b076be82b4eb7c99e7af40b17
+      sha256: 6c52c2829189fa348de94e880842e4f63e2e6ee4b46d0366233f4bedf30325ad
     - path: docs/component-skills.md
-      sha256: 0e062df2775715e27e3f65248095a303e28ea7c7a64012b82a379061bf59eb8c
+      sha256: 6d3c4367f178bb83c300bb7706c5f80610fcb5951ac0958a336ea82d3f17b22d
     - path: bin/fm-component-check.sh
       sha256: 08974b6c091859d8ab3aaf35480c0ceb75d2198c8cd68fae13fde2d2359c4f1f
     - path: bin/fm-component-drift.sh
