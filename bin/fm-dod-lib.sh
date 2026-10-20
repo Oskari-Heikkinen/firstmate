@@ -702,6 +702,8 @@ EOF
 # without the component hook receives.
 fm_component_skills_block() {  # <checkout> <fm-root>
   local checkout=$1 tool="$2/bin/fm-component-map.sh" rows rc=0 id skill prov globs mark
+  # shellcheck disable=SC2016 # the backticks are Markdown, not expansions
+  local sep='`, `'
   rows=$("$tool" list "$checkout" 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then
     cat <<EOF
@@ -713,13 +715,13 @@ EOF
   [ -n "$rows" ] || return 0
   cat <<EOF
 ## Component skills
-This checkout maps its paths to component skills in \`docs/component-map.json\`. Before changing a mapped path, load its skill; before reporting done, answer its Review checks. \`$tool touched $checkout <path>\` names the components that claim a path.
+This checkout maps its paths to component skills in \`docs/component-map.json\`. Before changing a mapped path, load its skill; before reporting done, answer its Review checks and record \`Component review: <id>: PASS\` or the finding in your report or PR body. \`$tool touched $checkout <path>\` names the components that claim a path.
 EOF
   while IFS=$'\t' read -r id skill prov globs; do
     mark=
     [ "$prov" = 1 ] && mark=' (provisional)'
     # shellcheck disable=SC2016 # the backticks are Markdown, not expansions
-    printf -- '- `%s`%s: skill `%s`; paths `%s`\n' "$id" "$mark" "$skill" "${globs//$'\t'/'`, `'}"
+    printf -- '- `%s`%s: skill `%s`; paths `%s`\n' "$id" "$mark" "$skill" "${globs//$'\t'/$sep}"
   done <<<"$rows"
 }
 

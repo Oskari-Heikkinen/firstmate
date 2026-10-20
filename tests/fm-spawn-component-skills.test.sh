@@ -150,8 +150,10 @@ test_codex_brief_carries_the_component_section() {
   assert_present "$brief" "codex spawn did not render the launch brief"
   section=$(sed -n '/^## Component skills$/,$p' "$brief")
   assert_contains "$section" "## Component skills" "a codex brief for a mapped checkout must carry the component section"
-  assert_contains "$section" "Before changing a mapped path, load its skill; before reporting done, answer its Review checks." \
+  assert_contains "$section" "Before changing a mapped path, load its skill; before reporting done, answer its Review checks" \
     "the section must state the load-and-review rule"
+  assert_contains "$section" "record \`Component review: <id>: PASS\` or the finding in your report or PR body." \
+    "the section must say how the self-review is recorded"
   assert_contains "$section" "- \`ledger\`: skill \`$WT_DIR/.agents/skills/ledger/SKILL.md\`; paths \`src/ledger/**\`, \`docs/ledger.md\`" \
     "the section must list the component id, skill path and globs"
   assert_contains "$section" "fm-component-map.sh touched $WT_DIR <path>" "the section must name the lookup command"

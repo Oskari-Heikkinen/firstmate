@@ -66,9 +66,9 @@
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
 #   secondmate's charter. When the task checkout has docs/component-map.json,
-#   the overlay ends with fm-dod-lib.sh's `## Component skills` section, and
-#   Claude and Pi sessions (crewmate or secondmate) also carry the component
-#   hook bin/fm-component-check.sh (docs/component-skills.md owns both).
+#   the overlay ends with fm-dod-lib.sh's `## Component skills` section.
+#   Every Claude and Pi session (crewmate or secondmate, any repo) carries the
+#   component hook bin/fm-component-check.sh (docs/component-skills.md owns both).
 #        fm-spawn.sh <task-id> --restore
 #   --restore is the control-owned saved-task continuation, not fresh dispatch.
 #   It requires validated released custody, preserves the recorded launch pins,

@@ -87,7 +87,7 @@ A block too big for any message, which only a goal over the size `check` enforce
 
 Every ship or scout launch brief whose task checkout has `docs/component-map.json` ends with a `## Component skills` section, so every harness, hooked or not, starts with the component list.
 `bin/fm-spawn.sh` appends it once the checkout is known, from `fm_component_skills_block` in `bin/fm-dod-lib.sh`, which reads the components only through `bin/fm-component-map.sh list`.
-The section lists each component's id, skill path and globs, and states the rule: before changing a mapped path, load its skill; before reporting done, answer its Review checks.
+The section lists each component's id, skill path and globs, and states the rule: before changing a mapped path, load its skill; before reporting done, answer its Review checks and record `Component review: <id>: PASS` or the finding in the report or PR body.
 An unusable map yields a section that says so and names `bin/fm-component-map.sh check`, and spawn prints a warning; a checkout without a map gets no section.
 
 ## Automated validation
