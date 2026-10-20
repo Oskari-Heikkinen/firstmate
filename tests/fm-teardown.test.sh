@@ -173,8 +173,14 @@ SH
   # runner's own PATH. Tests exercising the run-abort path override
   # FM_FAKE_AXI_STATUS/FM_FAKE_NM_ABORT_LOG/FM_FAKE_NM_RUNS_LIST before
   # run_teardown.
+  # When FM_FAKE_NM_EXPECT_HOME is set, the stub sees runs only from that
+  # NM_HOME, as a per-workspace daemon would: any other home answers no run
+  # and records no abort.
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
+if [ -n "${FM_FAKE_NM_EXPECT_HOME:-}" ] && [ "${NM_HOME:-}" != "$FM_FAKE_NM_EXPECT_HOME" ]; then
+  exit 0
+fi
 case "${1:-}" in
   axi)
     shift
@@ -4312,6 +4318,35 @@ test_parked_own_run_is_aborted_before_teardown() {
   assert_grep "parked at a gate; aborting" "$case_dir/stderr" \
     "parked-run-abort: teardown did not report aborting the parked run before removing the worker"
   pass "a task's own parked no-mistakes run is aborted, not orphaned, before the worker is removed"
+}
+
+# A parked run that lives in a per-workspace no-mistakes home is found and
+# aborted through the home's configured resolver when NM_HOME is unset.
+test_parked_run_in_a_resolved_workspace_home_is_aborted() {
+  local case_dir head rc=0
+  case_dir=$(make_case parked-run-resolved-home)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  mkdir -p "$case_dir/workspace-nm"
+  cat > "$case_dir/resolver" <<SH
+#!/usr/bin/env bash
+[ "\$1" = '$case_dir/wt' ] && printf '%s\\n' '$case_dir/workspace-nm'
+SH
+  chmod +x "$case_dir/resolver"
+  printf '%s\n' "$case_dir/resolver" > "$case_dir/config/nm-home-resolver"
+
+  (
+    unset NM_HOME
+    FM_FAKE_NM_EXPECT_HOME="$case_dir/workspace-nm" \
+    FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+    FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+      run_teardown "$case_dir"
+  ) > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "parked-run-resolved-home: teardown should still succeed"
+  assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
+    "parked-run-resolved-home: the parked run in the resolved workspace home was not aborted"
+  pass "a parked run in a resolved workspace no-mistakes home is aborted before the worker is removed"
 }
 
 # An abort can race a concurrent gate response: the run finishes with a
@@ -8462,6 +8497,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_empty_retry_wait_uses_default_without_aborting \
   test_fractional_legacy_retry_wait_refuses_without_arithmetic_error \
   test_parked_own_run_is_aborted_before_teardown \
+  test_parked_run_in_a_resolved_workspace_home_is_aborted \
   test_parked_own_run_concludes_on_passed_with_override_after_abort \
   test_parked_own_run_concludes_on_passed_with_skips_after_abort \
   test_parked_run_advanced_past_unfetched_head_is_still_aborted \
