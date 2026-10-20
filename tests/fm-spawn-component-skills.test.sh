@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# fm-spawn's component-skill wiring (docs/component-skills.md): a Claude
-# crewmate's worktree settings.local.json carries the component hook on
+# fm-spawn's component-skill wiring (bin/fm-component-spawn-lib.sh,
+# docs/component-skills.md): a Claude crewmate's worktree
+# settings.local.json carries the component hook on
 # PreToolUse, the PostToolUse Bash sweep and the compact SessionStart, and
 # running those entries injects a mapped file's goal once per session; a Claude
 # secondmate's --settings file carries the same entries for the mate's own home

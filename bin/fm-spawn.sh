@@ -65,10 +65,8 @@
 #   Ship/scout launches always put fm-dod-lib.sh's current worker role scope
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
-#   secondmate's charter. When the task checkout has docs/component-map.json,
-#   the overlay ends with fm-dod-lib.sh's `## Component skills` section.
-#   Every Claude and Pi session (crewmate or secondmate, any repo) carries the
-#   component hook bin/fm-component-check.sh (docs/component-skills.md owns both).
+#   secondmate's charter. bin/fm-component-spawn-lib.sh owns its component
+#   wiring: hook entries, review pack and `## Component skills` (docs/component-skills.md).
 #        fm-spawn.sh <task-id> --restore
 #   --restore is the control-owned saved-task continuation, not fresh dispatch.
 #   It requires validated released custody, preserves the recorded launch pins,
@@ -479,8 +477,8 @@
 #                  every other harness)
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
-#     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi busy-state and
-#                  component-hook extension, written by this script; outside the worktree to avoid pi's trust gate;
+#     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi busy-state extension,
+#                  written by this script; outside the worktree to avoid pi's trust gate;
 #                  a secondmate loads it beside its two primary extensions)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
@@ -754,6 +752,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-component-spawn-lib.sh
+. "$SCRIPT_DIR/fm-component-spawn-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
@@ -5008,12 +5008,8 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
 fi
 # A relaunch or restore reuses the fresh launch's pack rather than reading a
 # map the worker's own commits may have changed.
-if [ "$KIND" != secondmate ] && [ -s "$DATA/$ID/review-pack.md" ]; then
-  if ! { cat -- "$BRIEF" "$DATA/$ID/review-pack.md" >"$BRIEF.pack.tmp" && mv -- "$BRIEF.pack.tmp" "$BRIEF"; }; then
-    rm -f -- "$BRIEF.pack.tmp"
-    echo "error: could not append the component review pack to $BRIEF" >&2
-    exit 1
-  fi
+if [ "$KIND" != secondmate ]; then
+  fm_component_brief_append "$WT" "$FM_ROOT" "$BRIEF" "$ID" "$DATA/$ID/review-pack.md" || exit 1
 fi
 
 # Re-assert the durable task copy after either treehouse acquisition or endpoint
@@ -5282,14 +5278,6 @@ BUSY_GEN=
     fi
     ;;
   esac
-  # The component hook (bin/fm-component-check.sh, docs/component-skills.md)
-  # is wired below for each harness whose tool events it has been validated
-  # against; it is silent wherever no component map claims a path. FM_HOME
-  # names the home whose config/component-map.json applies: the spawning
-  # home, or a secondmate's own home.
-  component_check="$FM_ROOT/bin/fm-component-check.sh"
-  component_home=$FM_HOME
-  [ "$KIND" = secondmate ] && component_home=$WT
   case "$WIRING_HARNESS" in
   claude*)
     # Semantic busy-state hooks (bin/fm-busy-lib.sh): UserPromptSubmit opens
@@ -5338,14 +5326,7 @@ BUSY_GEN=
       j_stop=$(json_escape "${stop_turnend}$busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
       stop_entry="\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stop\"}]}],"
     fi
-    # The component hook rides beside the busy hooks for every repository.
-    # A worktree of Firstmate's own repo also registers it in the tracked
-    # .claude/settings.json; the hook's per-session record makes the second
-    # registration inject nothing.
-    j_component=$(json_escape "FM_HOME=$(shell_quote "$component_home") $(shell_quote "$component_check") --claude || true")
-    component_hook="{\"type\":\"command\",\"command\":\"$j_component\",\"timeout\":10}"
-    component_entries="\"SessionStart\":[{\"matcher\":\"compact\",\"hooks\":[$component_hook]}],\"PreToolUse\":[{\"matcher\":\"Read|Edit|Write|MultiEdit|NotebookEdit\",\"hooks\":[$component_hook]}],\"PostToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[$component_hook]}],"
-    hooks_json="\"hooks\":{${component_entries}\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_submit\"}]}],${stop_entry}\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stopfail\"}]}],\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_sessionend\"}]}]}"
+    hooks_json="\"hooks\":{$(fm_component_claude_entries "$FM_ROOT" "$KIND" "$FM_HOME" "$WT")\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_submit\"}]}],${stop_entry}\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stopfail\"}]}],\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_sessionend\"}]}]}"
     if [ "$KIND" = secondmate ]; then
       session_keys='"feedbackDrafts":"off",'
       if [ "$KEEP_AI_TRAILERS" != 1 ]; then
@@ -5679,43 +5660,7 @@ EOF
       "progress", "$STATE_REAL", "$ID", "--gen", "$BUSY_GEN",
     ]);
   });
-  // Component hook (docs/component-skills.md): after a read, edit or write,
-  // append the goal of each component that claims the file to the tool
-  // result; after bash, the hook sweeps git status for changed files. A
-  // compaction forgets what this session was told. The hook always exits 0
-  // and prints nothing where no component map claims a path.
-  const componentCheck = $(perl -MJSON::PP -MEncode=decode_utf8 -e 'print encode_json(decode_utf8($ARGV[0]))' -- "$component_check");
-  const componentEnv = { ...process.env, FM_HOME: $(perl -MJSON::PP -MEncode=decode_utf8 -e 'print encode_json(decode_utf8($ARGV[0]))' -- "$component_home") };
-  const componentCwd = $(perl -MJSON::PP -MEncode=decode_utf8 -e 'print encode_json(decode_utf8($ARGV[0]))' -- "$WT");
-  const componentTools: Record<string, string> = { read: "Read", edit: "Edit", write: "Write", bash: "Bash" };
-  const componentHook = (args: string[], input = "") => new Promise<string>((resolve) => {
-    try {
-      const child = execFile(componentCheck, args, { env: componentEnv, timeout: 10000 },
-        (_err: any, stdout: any) => resolve(typeof stdout === "string" ? stdout.trim() : ""));
-      child.stdin?.end(input);
-    } catch { resolve(""); }
-  });
-  const componentSession = (ctx: any) => {
-    try { return String(ctx?.sessionManager?.getSessionId?.() ?? ""); } catch { return ""; }
-  };
-  pi.on("tool_result", async (event: any, ctx: any) => {
-    const tool = componentTools[event?.toolName];
-    if (!tool) return;
-    const args = ["--tool", tool, "--cwd", typeof ctx?.cwd === "string" && ctx.cwd ? ctx.cwd : componentCwd];
-    if (tool !== "Bash") {
-      const path = event?.input?.path;
-      if (typeof path !== "string" || !path) return;
-      args.push("--path", path);
-    }
-    const session = componentSession(ctx);
-    if (session) args.push("--session", session);
-    const text = await componentHook(args);
-    if (!text) return;
-    return { content: [...(Array.isArray(event.content) ? event.content : []), { type: "text", text }] };
-  });
-  pi.on("session_compact", async (_event: any, ctx: any) => {
-    await componentHook([], JSON.stringify({ hook_event_name: "SessionStart", source: "compact", session_id: componentSession(ctx) }));
-  });
+$(fm_component_pi_handlers "$FM_ROOT" "$KIND" "$FM_HOME" "$WT")
 $pi_context_filter}
 EOF
     ;;
@@ -5891,27 +5836,6 @@ EOF
     fi
     ;;
   esac
-
-# A task checkout with a component map gets the `## Component skills` brief
-# section (bin/fm-dod-lib.sh's fm_component_skills_block): the hook above
-# covers the harnesses it is wired for, and this section is the one route
-# that reaches every harness. It is appended here, once the checkout is known,
-# onto the launch brief rendered from the task brief on every spawn.
-if { [ "$KIND" = ship ] || [ "$KIND" = scout ]; } && [ -f "$WT/docs/component-map.json" ]; then
-  component_section=$(fm_component_skills_block "$WT" "$FM_ROOT") ||
-    echo "warning: $WT/docs/component-map.json is unusable, so $ID's brief says so instead of listing components; run bin/fm-component-map.sh check $WT" >&2
-  BRIEF_TMP="$DATA/$ID/.launch-brief.md.${BASHPID:-$$}"
-  if ! { cat "$BRIEF" && printf '\n%s\n' "$component_section"; } >"$BRIEF_TMP"; then
-    rm -f -- "$BRIEF_TMP"
-    echo "error: could not append the component skills section to $BRIEF" >&2
-    exit 1
-  fi
-  if ! mv "$BRIEF_TMP" "$BRIEF"; then
-    rm -f -- "$BRIEF_TMP"
-    echo "error: could not publish the component skills section to $BRIEF" >&2
-    exit 1
-  fi
-fi
 
 # Per-task git hooksPath that strips AI commit trailers at the commit object.
 # Installed for every kind, including secondmate, unless the home opts in to

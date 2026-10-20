@@ -12,9 +12,11 @@ metadata:
     - path: bin/fm-component-map.py
       sha256: 6c52c2829189fa348de94e880842e4f63e2e6ee4b46d0366233f4bedf30325ad
     - path: docs/component-skills.md
-      sha256: 6d3c4367f178bb83c300bb7706c5f80610fcb5951ac0958a336ea82d3f17b22d
+      sha256: 4340ae5dc58083a4ccc691dfc7614ffbd072c1fd4cf28869ce995263227a9dab
     - path: bin/fm-component-check.sh
       sha256: 08974b6c091859d8ab3aaf35480c0ceb75d2198c8cd68fae13fde2d2359c4f1f
+    - path: bin/fm-component-spawn-lib.sh
+      sha256: 8cff6ca011203c0631df69d4ffb5602cf86d433c2219b6b5f5b28f5eaaf48aed
     - path: bin/fm-component-drift.sh
       sha256: 28f4a051931f4daa11582aa8ba0238b8ce188d19777d44ade361373489317800
     - path: bin/fm-lean-review.sh

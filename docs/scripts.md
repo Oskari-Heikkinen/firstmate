@@ -82,6 +82,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-component-map.sh`    | Validate a repository or home component map and its skills, resolve paths to component skills, print a component's goal, build a diff's review pack, and report drifted source pins (docs/component-map.md) |
 | `fm-component-check.sh`  | Component hook: inject a touched component's goal once per session, after file tools and Bash changes (docs/component-skills.md) |
 | `fm-component-map.py`   | Map schema, glob, skill-shape and pin logic behind fm-component-map.sh |
+| `fm-component-spawn-lib.sh` | Spawn wiring of component skills: the component hook entries for Claude settings and the Pi extension, and the launch brief's component review pack and `## Component skills` section (docs/component-skills.md) |
 | `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home, maintain `data/secondmates.md`, and refresh a seeded charter from the current template |
