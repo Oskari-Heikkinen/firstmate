@@ -6,7 +6,7 @@ metadata:
   internal: true
   sources:
     - path: docs/component-map.md
-      sha256: 60417a57f6b97e585acd632427407317dcde6b1e196628ceb46c5c45f87093c4
+      sha256: 45f510bd72439b7577913fae82909380f018e63a35ea5f02735e231b871a3460
     - path: bin/fm-component-map.sh
       sha256: 6b0276f889311a4dcb626054e886d075114b286ae4ed080633be6fa18b5eb2bc
     - path: bin/fm-component-map.py
@@ -18,7 +18,11 @@ metadata:
     - path: bin/fm-component-drift.sh
       sha256: 28f4a051931f4daa11582aa8ba0238b8ce188d19777d44ade361373489317800
     - path: bin/fm-lean-review.sh
-      sha256: cdb2b6e7d7b1db33ecce337746a13ca947377419499775d74051f007b160e470
+      sha256: 3fab912ec49bcb2d0255aa6b03d17c7cfc10a633d98c68ccbe1c237abdf5318e
+    - path: bin/fm-rereview-brief.sh
+      sha256: 31c86611956bb83704c7a226f24a6a1fc94527e9402e5e8c475f7a207fa5960d
+    - path: .agents/skills/independent-rereview/SKILL.md
+      sha256: e3310fd6677f13487dc167ab73a7c42a6a3aad32e310847645e6ad9e96b0b07d
 ---
 
 # component-skills
@@ -41,7 +45,7 @@ This mechanism is owned here; each skill's contents belong to its component's ow
 - Failing closed on malformed hook input or a missing map, exiting 2 on any failure, or reporting a malformed map more than once (plan section 3 item 2; `docs/component-skills.md` "Output contract").
 - Parsing a map or a skill inside the hook instead of through `bin/fm-component-map.sh` `touched` and `goal` (`docs/component-skills.md` "Purpose and boundary").
 - A Bash sweep that takes git's index lock or re-reads every dirty path's content instead of the batched status, size and mtime fingerprint (`docs/component-skills.md` "Shipped mechanism").
-- Letting a failing or partial `review-pack` block or fail the lean review instead of warning and running Q1-Q4 without Q5 (`bin/fm-lean-review.sh` header).
+- Launching a spawned review whose pack cannot run, passing a review without reporting an unavailable checklist as a finding, or letting a pack failure stop the lean review from asking Q1-Q4 or still give the commit a receipt (`docs/component-map.md` "Review paths"; `bin/fm-lean-review.sh` and `bin/fm-spawn.sh` headers).
 - Injecting the whole skill, or injected text over the harness's context cap (plan open question 3: the goal section plus the path; `docs/component-skills.md` keeps it under 9,500 characters).
 - Relying on description triggering alone, or on skills loading inside a reviewer that runs without project settings (plan sections 3 and 4).
 - Weakening any rule `check` enforces so a map passes: accepting unknown keys, letting a non-provisional glob match no tracked file, leaving a tracked file under `roots` in no component, allowing more than six components on one path or a goal section over 1,500 characters; or marking a component `provisional`, narrowing or dropping `roots` to silence a no-match or coverage error (`docs/component-map.md` "Repository map", "Component roots", "Provisional components" and the skill-shape table; `bin/fm-component-map.sh` header).
