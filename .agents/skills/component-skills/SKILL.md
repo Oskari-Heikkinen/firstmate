@@ -6,7 +6,7 @@ metadata:
   internal: true
   sources:
     - path: docs/component-map.md
-      sha256: a6bc5ac74d20099967b4643f88aff52fd53fcba525ab4c7e9d678127e0cf8f0f
+      sha256: 60417a57f6b97e585acd632427407317dcde6b1e196628ceb46c5c45f87093c4
     - path: bin/fm-component-map.sh
       sha256: 6b0276f889311a4dcb626054e886d075114b286ae4ed080633be6fa18b5eb2bc
     - path: bin/fm-component-map.py
@@ -15,6 +15,8 @@ metadata:
       sha256: 0e062df2775715e27e3f65248095a303e28ea7c7a64012b82a379061bf59eb8c
     - path: bin/fm-component-check.sh
       sha256: 08974b6c091859d8ab3aaf35480c0ceb75d2198c8cd68fae13fde2d2359c4f1f
+    - path: bin/fm-component-drift.sh
+      sha256: 28f4a051931f4daa11582aa8ba0238b8ce188d19777d44ade361373489317800
     - path: bin/fm-lean-review.sh
       sha256: cdb2b6e7d7b1db33ecce337746a13ca947377419499775d74051f007b160e470
 ---
@@ -28,7 +30,7 @@ One map per repo, `docs/component-map.json` (schema `component-map/v1`), is the 
 `bin/fm-component-map.sh` is its one reader (`check`, `touched`, `goal`, `review-pack`, `drift`), and `docs/component-map.md` owns the schema, the skill shape and the pin format.
 The hook informs and never blocks: it injects the matched skill's `## Goal and operating principle` and its path once per session and again after compaction, stays silent on unmapped paths, and fails open on bad input or a missing map.
 Review checks reach reviewers as prompt text, because dedicated reviewers run with project skills off.
-Each component skill pins its defining sources by sha256 in `metadata.sources`, and a drift check names any skill whose source changed so its owner updates the skill.
+Each component skill pins its defining sources by sha256 in `metadata.sources`, and a drift check names any skill whose source changed; a daily timer run of `bin/fm-component-drift.sh` keeps one item per drifted skill in its owner home.
 This mechanism is owned here; each skill's contents belong to its component's owner.
 
 ## Refuse
@@ -44,6 +46,7 @@ This mechanism is owned here; each skill's contents belong to its component's ow
 - Relying on description triggering alone, or on skills loading inside a reviewer that runs without project settings (plan sections 3 and 4).
 - Weakening any rule `check` enforces so a map passes: accepting unknown keys, letting a non-provisional glob match no tracked file, leaving a tracked file under `roots` in no component, allowing more than six components on one path or a goal section over 1,500 characters; or marking a component `provisional`, narrowing or dropping `roots` to silence a no-match or coverage error (`docs/component-map.md` "Repository map", "Component roots", "Provisional components" and the skill-shape table; `bin/fm-component-map.sh` header).
 - Re-pinning a hash to silence drift without reading the source delta and updating the skill (plan section 5 "Update path").
+- Running the cross-home drift check as an agent task or a remembered command instead of the timer-run `bin/fm-component-drift.sh`, detecting drift other than through `drift`, a second open item for one skill, or an owner registry beside `metadata.owner` (`docs/component-map.md` "Drift run"; `bin/fm-component-drift.sh` header).
 - A project-, repo- or component-specific branch in the hook, resolver or checker code (tool-design rule 4).
 - Editing another repo's tracked settings to install the hook (plan section 3 item 3).
 - Wording injected text as commands rather than facts (plan section 3 item 2).
@@ -58,7 +61,7 @@ Answer each check PASS or FINDING.
 4. Is the injected text the goal section plus the skill path, phrased as facts, and under the size cap?
 5. Does every review path (self-review, lean review, no-mistakes, non-author review briefs) receive the Review checks of every touched component?
 6. Is every supported harness reached by the hook or by brief injection, with the gap for hook-less harnesses closed by the brief?
-7. Does the drift check flag a changed or vanished pinned source and stay silent when nothing changed?
+7. Does the drift check flag a changed or vanished pinned source and stay silent when nothing changed, and does the drift run file one item per drifted skill in its owner home, rewrite it on a changed drift and file nothing on an unchanged run?
 8. Does `check` still refuse an unknown key, a non-provisional glob matching no tracked file, an uncovered tracked file under `roots`, a path claimed by more than six components and a goal section over 1,500 characters, and is every `provisional` flag or `roots` change justified by code that has not landed rather than by a failing check?
 9. Would the component-map and hook tests fail, through the public commands, if this behaviour broke?
 10. Would a new repo or component need only a map row and a skill, not a code change?
