@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Behavior tests for bin/fm-rereview-brief.sh: a filled re-review scout brief
 # copies the first report's Verdict and Findings verbatim, pins digests from the
-# landed commit rather than the working tree, passes fm-spawn's brief checks,
-# and refuses without writing anything when it would have to guess.
+# landed commit rather than the working tree, marks the brief a review of the
+# fixes' range, passes fm-spawn's brief checks, and refuses without writing
+# anything when it would have to guess.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -82,6 +83,8 @@ test_fills_brief_from_report_and_commit() {
   assert_not_equals "$want" "$(sha256_file "$home/projects/proj/scripts/handoff.sh")" "fixture working tree differs from the commit"
   assert_grep "\`scripts/handoff.sh\` sha256 \`$want\`" "$brief" "digest comes from the landed commit"
   assert_grep "$sha" "$brief" "full landed sha is named"
+  assert_equals "$(git -C "$home/projects/proj" rev-parse HEAD~1)...$sha" "$(fm_brief_review_ranges "$brief")" \
+    "the brief's one review range runs from the commit's parent to the commit"
   assert_grep '> **safe to cut over once two small fixes are in (F1 and F2)**' "$brief" "verdict heading text is carried"
   assert_grep '> The HANDOFF line stays backward compatible.' "$brief" "verdict body is quoted verbatim"
   assert_grep '> ### F1. The dossier machinery can hang a handoff' "$brief" "F1 is quoted"
@@ -112,6 +115,21 @@ test_report_path_and_default_heavy_rule() {
   assert_grep 'nice 19 and ionice -c3.' "$brief" "heavy rule without a helper"
   assert_no_grep 'validate`' "$brief" "no helper named when none was given"
   pass "fm-rereview-brief: accepts a report path and a plain heavy-run rule"
+}
+
+test_base_sets_the_review_range() {
+  local home out rc root sha
+  home=$(new_world base)
+  printf 'more\n' >> "$home/projects/proj/scripts/handoff.sh"
+  git -C "$home/projects/proj" -c user.name=t -c user.email=t@example.invalid commit -qam 'more fixes'
+  root=$(git -C "$home/projects/proj" rev-parse HEAD~2)
+  sha=$(git -C "$home/projects/proj" rev-parse HEAD)
+  out=$(run_script "$home" rr3 proj --first first-review --commit HEAD --base HEAD~2 \
+    --file scripts/handoff.sh 2>&1); rc=$?
+  expect_code 0 "$rc" "--base form should succeed: $out"
+  assert_equals "$root...$sha" "$(fm_brief_review_ranges "$home/data/rr3/brief.md")" \
+    "the review range starts at --base, resolved to a full sha"
+  pass "fm-rereview-brief: --base sets where the reviewed range starts"
 }
 
 expect_refusal() {  # <home> <task-id> <message-fragment> <label> <args...>
@@ -155,9 +173,16 @@ test_refuses_rather_than_guessing() {
 
   expect_refusal "$home" r8 "--file" "no candidate files" \
     --first first-review --commit HEAD
+
+  expect_refusal "$home" r9 "has no parent; pass --base" "root commit without --base" \
+    --first first-review --commit HEAD~1 --file scripts/handoff.sh
+
+  expect_refusal "$home" r10 "base deadbeef not found" "unknown base" \
+    --first first-review --commit HEAD --base deadbeef --file scripts/handoff.sh
   pass "fm-rereview-brief: refuses and writes nothing when it would have to guess"
 }
 
 test_fills_brief_from_report_and_commit
 test_report_path_and_default_heavy_rule
+test_base_sets_the_review_range
 test_refuses_rather_than_guessing

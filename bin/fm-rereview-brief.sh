@@ -3,8 +3,9 @@
 # fixed an earlier review's findings, so firstmate never hand-copies them.
 #
 # Usage: fm-rereview-brief.sh <task-id> <repo-name> --first <review-task-id|report.md>
-#          --commit <rev> --file <path> [--file <path>...] [--repo-dir <dir>]
-#          [--heavy-slot <path>] [--context <text>] [--spec <text>]
+#          --commit <rev> --file <path> [--file <path>...] [--base <rev>]
+#          [--repo-dir <dir>] [--heavy-slot <path>] [--context <text>]
+#          [--spec <text>]
 #   <task-id>        the new re-review scout's task id.
 #   <repo-name>      the project the candidate lives in, passed to fm-brief.sh.
 #   --first          the first review: a task id whose data/<id>/report.md exists
@@ -13,6 +14,9 @@
 #                    sha in --repo-dir without fetching.
 #   --file           a candidate file path inside the repo; repeatable. Its
 #                    sha256 is computed from the blob at that commit.
+#   --base           where the reviewed fixes start, such as the head the first
+#                    review read; resolved like --commit. Default: the commit's
+#                    first parent, refused for a root commit.
 #   --repo-dir       the git clone holding the commit (default: the active
 #                    home's projects/<repo-name>). It is only read, never fetched.
 #   --heavy-slot     optional heavy-slot helper; heavy runs then go through
@@ -30,7 +34,9 @@
 # or the commit or any candidate file cannot be resolved, the script refuses
 # and writes nothing.
 #
-# On success it runs `fm-brief.sh <task-id> <repo-name> --scout`, replaces the
+# On success it runs `fm-brief.sh <task-id> <repo-name> --scout --review-range
+# <base-sha>...<commit-sha>`, so the spawn appends the review checklists of the
+# components the fixes touch (docs/component-map.md "Review paths"), replaces the
 # {TASK} and {FIRSTMATE_SPEC} placeholders atomically, and prints
 # `filled: <brief path>`. The filled brief asks for a verdict (safe to cut over /
 # safe with named fixes / not safe), each first-review finding closed or open
@@ -64,6 +70,7 @@ case "$REPO" in ''|-*) die "invalid repo name: $REPO" ;; esac
 
 FIRST=
 COMMIT=
+BASE=
 REPO_DIR=
 HEAVY_SLOT=${FM_HEAVY_SLOT:-}
 CONTEXT=
@@ -71,12 +78,13 @@ FILES=()
 SPECS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --first|--commit|--file|--repo-dir|--heavy-slot|--context|--spec)
+    --first|--commit|--file|--base|--repo-dir|--heavy-slot|--context|--spec)
       [ "$#" -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --first) FIRST=$2 ;;
         --commit) COMMIT=$2 ;;
         --file) FILES+=("$2") ;;
+        --base) BASE=$2 ;;
         --repo-dir) REPO_DIR=$2 ;;
         --heavy-slot) HEAVY_SLOT=$2 ;;
         --context) CONTEXT=$2 ;;
@@ -109,6 +117,13 @@ git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1 \
   || die "repo dir is not a git clone: $REPO_DIR (pass --repo-dir)"
 SHA=$(git -C "$REPO_DIR" rev-parse --verify --quiet "$COMMIT^{commit}") \
   || die "commit $COMMIT not found in $REPO_DIR; fetch it there first"
+if [ -n "$BASE" ]; then
+  BASE_SHA=$(git -C "$REPO_DIR" rev-parse --verify --quiet "$BASE^{commit}") \
+    || die "base $BASE not found in $REPO_DIR; fetch it there first"
+else
+  BASE_SHA=$(git -C "$REPO_DIR" rev-parse --verify --quiet "$SHA^1") \
+    || die "commit $SHA has no parent; pass --base <rev>"
+fi
 
 sha256_stdin() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'; else sha256sum | awk '{print $1}'; fi
@@ -207,7 +222,7 @@ fi
   printf '%s\n' "Report: a clear verdict (safe to cut over / safe with named fixes / not safe); each first-review finding marked closed or still open with evidence (commands, output, file:line); anything new broken; and the final cutover steps pinned to the digests above, including the pre-check that the live copy is still the reviewed baseline and the rollback copy, carried forward from the first report where it gave them."
 } > "$WORK/spec"
 
-out=$("$SCRIPT_DIR/fm-brief.sh" "$ID" "$REPO" --scout) || exit 1
+out=$("$SCRIPT_DIR/fm-brief.sh" "$ID" "$REPO" --scout --review-range "$BASE_SHA...$SHA") || exit 1
 BRIEF=$(printf '%s\n' "$out" | sed -n 's/^scaffolded: \(.*\) (scout;.*$/\1/p' | head -n 1)
 [ -n "$BRIEF" ] && [ -f "$BRIEF" ] || die "could not locate the scaffolded brief from: $out"
 
