@@ -4,9 +4,9 @@
 Driven by bin/fm-loop.sh, whose header owns usage. This file owns the source
 list, the stage rules, the alert conditions and the lead-time buckets;
 docs/loop-status.md explains them and docs/configuration.md "Loop sources"
-owns the config file format. Every source is read directly and never written;
-the only writes are this home's own alert records and cursors under
-state/loop-alerts/.
+owns the config file format and the handoff-registry/v1 stage key that
+declares a source. Every source is read directly and never written; the only
+writes are this home's own alert records and cursors under state/loop-alerts/.
 """
 import argparse
 import datetime
@@ -24,6 +24,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fm_receipt_io import atomic, atomic_text, iso_epoch, load  # noqa: E402
+import fm_handoff_registry as registry  # noqa: E402
 
 ALERT_SCHEMA = "fm-loop-alert.v1"
 CURSOR_SCHEMA = "fm-loop-reported.v1"
@@ -51,11 +52,15 @@ SOURCE_NAMES = (
     "submits", "handoff_queue", "operator_acked", "collected", "snapshot",
     "batches", "catalog", "backlog", "parks", "tetjet_status",
 )
-REPEATABLE = {"backlog", "parks"}
 # The capacity filler's observation files and STOP marker: no default, read
 # only when configured, and their failures raise filler-stale, not
-# source-unreadable.
+# source-unreadable. The config's lines form the tj-capacity group; each
+# registry stage that declares one forms a group named <protocol>/<stage>.
 FILLER_SOURCES = ("lane_alerts", "queue_state", "filler_stop")
+DEFAULT_FILLER = "tj-capacity"
+# The handoff-registry/v1 stage ext key, under the fragment's own home id,
+# that declares the stage's records as loop sources.
+REGISTRY_KEY = "loop-source"
 # About three ticks of the filler's 90 s interval, rounded up.
 FILLER_STALE_MINUTES = 5
 
@@ -106,9 +111,10 @@ def family_of(rid, task=None):
 class Source:
     """One input: its path, whether it was configured, and how reading went."""
 
-    def __init__(self, name, paths, configured):
+    def __init__(self, name, paths, configured, kind=None):
         self.name = name
-        self.paths = paths
+        self.kind = kind or name
+        self.paths = list(dict.fromkeys(paths))
         self.configured = configured
         self.state = "ok"
         self.detail = ""
@@ -129,8 +135,76 @@ class Source:
                 "configured": self.configured, "detail": self.detail}
 
 
+def registry_sources(home):
+    """Loop sources the handoff registry declares: (paths, groups, registry source).
+
+    paths maps a source kind to the stage paths declared for it; groups maps
+    <protocol>/<stage> to {filler kind: path}. The registry source is None
+    when no home this machine sees has a fragment; it reads unreadable when a
+    fragment that may declare a source cannot be loaded, so its sources are
+    unknown, not absent. Another home's invalid fragment that names no loop
+    source is its watcher's alarm, not this view's.
+    """
+    paths, groups = {}, {}
+    src = Source("registry", [home / "state/handoff-registry"], True)
+    try:
+        _, homes = registry.discover(home)
+    except (OSError, ValueError) as exc:
+        src.fail("unreadable", "home discovery failed: %s" % exc)
+        return paths, groups, src
+    files = []
+    for hid, hpath in sorted(homes.items()):
+        try:
+            files += registry.fragment_files(hpath)
+        except OSError as exc:
+            src.fail("unreadable", "%s/state/handoff-registry: %s" % (hpath, exc))
+    if not files and src.ok:
+        return paths, groups, None
+    module = registry.validator()
+    schema = module.Schema(str(Path(registry.HERE).parent / "docs/handoff-coverage/handoff-registry-v1.schema.json"))
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            src.fail("unreadable", "%s: %s" % (path, exc))
+            continue
+        doc, problem = registry.check_fragment(module, schema, path)
+        if problem:
+            if "." + REGISTRY_KEY in text:
+                src.fail("unreadable", "%s %s" % (path, problem))
+            continue
+        if doc is None:
+            continue
+        key = "%s.%s" % (doc["home"], REGISTRY_KEY)
+        for protocol in doc["protocols"]:
+            for stage in protocol["stages"]:
+                value = (stage.get("ext") or {}).get(key)
+                if value is None:
+                    continue
+                where = "%s %s/%s %s" % (path, protocol["id"], stage["name"], key)
+                if not isinstance(value, str):
+                    src.fail("unreadable", "%s is not a string" % where)
+                    continue
+                group = "%s/%s" % (protocol["id"], stage["name"])
+                for item in (part.strip() for part in value.split(",")):
+                    kind, sep, target = item.partition("=")
+                    target = target if sep else stage["input"]["path"]
+                    if kind not in SOURCE_NAMES and kind not in FILLER_SOURCES:
+                        src.fail("unreadable", "%s names unknown source %r" % (where, kind))
+                    elif not target.startswith("/"):
+                        src.fail("unreadable", "%s gives %s a path that is not absolute" % (where, kind))
+                    elif kind in FILLER_SOURCES:
+                        if kind in groups.setdefault(group, {}):
+                            src.fail("unreadable", "%s names %s twice" % (where, kind))
+                        groups[group][kind] = Path(target)
+                    else:
+                        paths.setdefault(kind, []).append(Path(target))
+    src.detail = src.detail or "%d fragment(s)" % len(files)
+    return paths, groups, src
+
+
 def read_config(home):
-    """Parse <home>/config/loop-sources; return (sources, thresholds, stale_minutes, warnings)."""
+    """Parse <home>/config/loop-sources and the registry; return (sources, thresholds, stale_minutes, warnings)."""
     ledger = os.environ.get("LATTICE_LEDGER_DIR") or os.path.expanduser("~/lattice-ledger")
     defaults = {
         "submits": [home / "data/tetjet-offload/requests"],
@@ -163,10 +237,10 @@ def read_config(home):
             value = Path(os.path.expanduser(fields[2]))
             if not value.is_absolute():
                 value = home / value
-            if fields[1] in REPEATABLE:
-                configured.setdefault(fields[1], []).append(value)
-            else:
+            if fields[1] in FILLER_SOURCES:
                 configured[fields[1]] = [value]
+            else:
+                configured.setdefault(fields[1], []).append(value)
         elif fields[0] == "threshold" and len(fields) == 3 and fields[1] in THRESHOLDS:
             try:
                 hours = float(fields[2])
@@ -187,12 +261,20 @@ def read_config(home):
                 stale_minutes = minutes
         else:
             warnings.append("%s ignored: %s" % (where, line.strip()))
+    declared, groups, registry_src = registry_sources(home)
     sources = {}
+    # A declared path joins configured ones and replaces the default.
     for name in SOURCE_NAMES:
-        sources[name] = Source(name, configured.get(name, defaults[name]), name in configured)
+        paths = configured.get(name, []) + declared.get(name, [])
+        sources[name] = Source(name, paths or defaults[name], bool(paths))
     for name in FILLER_SOURCES:
         if name in configured:
             sources[name] = Source(name, configured[name], True)
+    for group, kinds in sorted(groups.items()):
+        for kind, path in sorted(kinds.items()):
+            sources["%s@%s" % (kind, group)] = Source("%s@%s" % (kind, group), [path], True, kind)
+    if registry_src is not None:
+        sources["registry"] = registry_src
     return sources, thresholds, stale_minutes, warnings
 
 
@@ -218,9 +300,14 @@ def list_dir(path, src, suffix):
         return []
 
 
+def each_file(src, suffix):
+    for folder in src.paths:
+        yield from list_dir(folder, src, suffix)
+
+
 def read_submits(src):
     out = {}
-    for path in list_dir(src.paths[0], src, ".submit.json"):
+    for path in each_file(src, ".submit.json"):
         data = load_json(path, src)
         if isinstance(data, dict) and isinstance(data.get("id"), str):
             out[data["id"]] = data
@@ -231,7 +318,7 @@ def read_submits(src):
 
 def read_queue(src):
     out = []
-    for path in list_dir(src.paths[0], src, ".json"):
+    for path in each_file(src, ".json"):
         data = load_json(path, src)
         if isinstance(data, dict) and data.get("schema") == "tj-handoff/v1" and isinstance(data.get("kind"), str):
             data["_epoch"] = iso_epoch(data.get("created_at"))
@@ -243,26 +330,30 @@ def read_queue(src):
 
 
 def read_acked(src):
+    """Record id to its first ack time, over every acks file."""
     out = {}
-    path = src.paths[0]
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        src.fail("missing", "%s not found" % path)
-        return out
-    except (OSError, UnicodeDecodeError) as exc:
-        src.fail("unreadable", "%s: %s" % (path, exc))
-        return out
-    for line in text.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and iso_epoch(fields[1]) is not None:
-            out.setdefault(fields[0], iso_epoch(fields[1]))
+    for path in src.paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            src.fail("missing", "%s not found" % path)
+            continue
+        except (OSError, UnicodeDecodeError) as exc:
+            src.fail("unreadable", "%s: %s" % (path, exc))
+            continue
+        seen = {}
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and iso_epoch(fields[1]) is not None:
+                seen.setdefault(fields[0], iso_epoch(fields[1]))
+        for rid, at in seen.items():
+            out[rid] = min(at, out.get(rid, at))
     return out
 
 
 def read_collected(src):
     out = {}
-    for path in list_dir(src.paths[0], src, ".json"):
+    for path in each_file(src, ".json"):
         data = load_json(path, src)
         if isinstance(data, dict) and isinstance(data.get("request_id"), str):
             out[data["request_id"]] = data
@@ -272,31 +363,36 @@ def read_collected(src):
 
 
 def read_snapshot(src):
-    data = load_json(src.paths[0], src, SNAPSHOT_LIMIT)
-    if data is None:
-        return {}
-    if not isinstance(data, dict) or data.get("schema") != "tetjet-queue-snapshot.v1" or not isinstance(data.get("jobs"), list):
-        src.fail("unreadable", "%s is not a tetjet-queue-snapshot.v1 file" % src.paths[0])
-        return {}
-    jobs = {}
-    for job in data["jobs"]:
-        if isinstance(job, dict):
-            for key in (job.get("batch_id"), job.get("id")):
-                if isinstance(key, str):
-                    jobs.setdefault(key, job)
-    src.detail = "generated %s" % data.get("generated_at")
+    jobs, generated = {}, []
+    for path in src.paths:
+        data = load_json(path, src, SNAPSHOT_LIMIT)
+        if data is None:
+            continue
+        if not isinstance(data, dict) or data.get("schema") != "tetjet-queue-snapshot.v1" or not isinstance(data.get("jobs"), list):
+            src.fail("unreadable", "%s is not a tetjet-queue-snapshot.v1 file" % path)
+            continue
+        for job in data["jobs"]:
+            if isinstance(job, dict):
+                for key in (job.get("batch_id"), job.get("id")):
+                    if isinstance(key, str):
+                        jobs.setdefault(key, job)
+        generated.append("generated %s" % data.get("generated_at"))
+    if src.ok:
+        src.detail = "; ".join(generated)
     return jobs
 
 
 class Batches:
-    """Lazy reader of ~/lattice-batches/.registered and .analysis per batch."""
+    """Lazy reader of ~/lattice-batches/.registered and .analysis per batch; the first root that has a file wins."""
 
     def __init__(self, src):
         self.src = src
-        self.root = src.paths[0]
         self.cache = {}
-        if src.ok and not self.root.is_dir():
-            src.fail("missing", "%s is not a directory" % self.root)
+        if src.ok:
+            for root in src.paths:
+                if not root.is_dir():
+                    src.fail("missing", "%s is not a directory" % root)
+                    break
 
     def prefetch(self, batches):
         for batch in batches:
@@ -308,7 +404,14 @@ class Batches:
             return self.cache[batch]
         info = {"registered": None, "collected": None, "launched": None, "analysed": None, "refusal": None}
         if self.src.ok and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", batch):
-            reg = self.root / ".registered" / (batch + ".json")
+            for root in self.src.paths:
+                self.read_batch(root, batch, info)
+        self.cache[batch] = info
+        return info
+
+    def read_batch(self, root, batch, info):
+        if info["registered"] is None:
+            reg = root / ".registered" / (batch + ".json")
             if reg.is_file():
                 data = load_json(reg, self.src)
                 if isinstance(data, dict):
@@ -316,39 +419,44 @@ class Batches:
                     collection = data.get("collection") if isinstance(data.get("collection"), dict) else {}
                     info["collected"] = iso_epoch(collection.get("recorded_utc")) or iso_epoch(data.get("collected_utc"))
                     info["launched"] = iso_epoch(data.get("launched_utc"))
-            current = self.root / ".analysis" / batch / "CURRENT"
-            if current.is_file():
-                data = load_json(current, self.src)
-                if isinstance(data, dict):
-                    info["analysed"] = iso_epoch(data.get("analysed_utc"))
-            refused = self.root / ".analysis" / batch / "refused.json"
-            if refused.is_file():
-                data = load_json(refused, self.src)
-                if isinstance(data, dict) and not data.get("resolved_utc"):
-                    info["refusal"] = {
-                        "code": data.get("code"),
-                        "message": str(data.get("message") or "")[:200],
-                        "since": iso_epoch(data.get("unresolved_since_utc")) or iso_epoch(data.get("refused_utc")),
-                    }
-        self.cache[batch] = info
-        return info
+        current = root / ".analysis" / batch / "CURRENT"
+        if info["analysed"] is None and current.is_file():
+            data = load_json(current, self.src)
+            if isinstance(data, dict):
+                info["analysed"] = iso_epoch(data.get("analysed_utc"))
+        refused = root / ".analysis" / batch / "refused.json"
+        if info["refusal"] is None and refused.is_file():
+            data = load_json(refused, self.src)
+            if isinstance(data, dict) and not data.get("resolved_utc"):
+                info["refusal"] = {
+                    "code": data.get("code"),
+                    "message": str(data.get("message") or "")[:200],
+                    "since": iso_epoch(data.get("unresolved_since_utc")) or iso_epoch(data.get("refused_utc")),
+                }
 
 
 def read_catalog(src):
-    path = src.paths[0]
-    if not path.is_file():
-        src.fail("missing", "%s not found" % path)
-        return {}
-    try:
-        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=5)
+    out = {}
+    for path in src.paths:
+        if not path.is_file():
+            src.fail("missing", "%s not found" % path)
+            continue
         try:
-            rows = conn.execute("SELECT batch_id, COUNT(*), MIN(started_utc) FROM runs WHERE batch_id IS NOT NULL GROUP BY batch_id").fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        src.fail("unreadable", "%s: %s" % (path, exc))
-        return {}
-    return {row[0]: {"runs": row[1], "started": iso_epoch(row[2])} for row in rows}
+            conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=5)
+            try:
+                rows = conn.execute("SELECT batch_id, COUNT(*), MIN(started_utc) FROM runs WHERE batch_id IS NOT NULL GROUP BY batch_id").fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            src.fail("unreadable", "%s: %s" % (path, exc))
+            continue
+        for batch, runs, started in rows:
+            row = out.setdefault(batch, {"runs": 0, "started": None})
+            row["runs"] += runs
+            started = iso_epoch(started)
+            if started is not None:
+                row["started"] = min(started, row["started"] or started)
+    return out
 
 
 def read_holds(src):
@@ -391,26 +499,28 @@ def read_parks(src):
 
 
 def read_tetjet_alerts(src):
-    path = src.paths[0]
-    try:
-        with open(path, "rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            size = stream.tell()
-            stream.seek(max(0, size - STATUS_TAIL))
-            text = stream.read().decode("utf-8", "replace")
-    except FileNotFoundError:
-        src.fail("missing", "%s not found" % path)
-        return []
-    except OSError as exc:
-        src.fail("unreadable", "%s: %s" % (path, exc))
-        return []
-    last = {}
-    for line in text.splitlines():
-        match = re.match(r"(\w[\w-]*) \[key=([\w-]+)\](?: \[at=(\d+)\])?: ?(.*)", line)
-        if match and match.group(2) in TETJET_KEYS:
-            last[match.group(2)] = (match.group(1), int(match.group(3)) if match.group(3) else None, match.group(4))
-    return [{"key": key, "since": utc(at), "line": text_}
-            for key, (state, at, text_) in sorted(last.items()) if state == "blocked"]
+    out = []
+    for path in src.paths:
+        try:
+            with open(path, "rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - STATUS_TAIL))
+                text = stream.read().decode("utf-8", "replace")
+        except FileNotFoundError:
+            src.fail("missing", "%s not found" % path)
+            continue
+        except OSError as exc:
+            src.fail("unreadable", "%s: %s" % (path, exc))
+            continue
+        last = {}
+        for line in text.splitlines():
+            match = re.match(r"(\w[\w-]*) \[key=([\w-]+)\](?: \[at=(\d+)\])?: ?(.*)", line)
+            if match and match.group(2) in TETJET_KEYS:
+                last[match.group(2)] = (match.group(1), int(match.group(3)) if match.group(3) else None, match.group(4))
+        out += [{"key": key, "since": utc(at), "line": text_}
+                for key, (state, at, text_) in sorted(last.items()) if state == "blocked"]
+    return out
 
 
 def read_stamped(src, limit, schemas):
@@ -494,9 +604,10 @@ def read_filler_stop(src):
     return True
 
 
-def lane_alert_id(alert, key):
+def lane_alert_id(alert, key, tag):
     safe = lambda value: re.sub(r"[^A-Za-z0-9._-]", "_", value)
-    return "%s--%s--%s" % (safe(alert["kind"]), safe(alert["subject"])[:80], hashlib.sha256(key.encode()).hexdigest()[:10])
+    ident = key if tag == "lane_alerts" else "%s %s" % (tag, key)
+    return "%s--%s--%s" % (safe(alert["kind"]), safe(alert["subject"])[:80], hashlib.sha256(ident.encode()).hexdigest()[:10])
 
 
 def lane_message(alert):
@@ -506,10 +617,10 @@ def lane_message(alert):
                                       "; evidence " + summary if summary else "")
 
 
-def request_refs(record, submits_dir):
+def request_refs(record, submits_dirs):
     """Request ids a package record names, through covers[] or requests[].path.
 
-    A requests[] path counts only inside the submits folder; packages also
+    A requests[] path counts only inside a submits folder; packages also
     name their own per-batch request copies, which are not requests.
     """
     ids = []
@@ -518,7 +629,7 @@ def request_refs(record, submits_dir):
             ids.append(cover["request_id"])
     for ref in record.get("requests") or []:
         path = ref.get("path") if isinstance(ref, dict) else None
-        if isinstance(path, str) and path.endswith(".json") and Path(path).parent == submits_dir:
+        if isinstance(path, str) and path.endswith(".json") and Path(path).parent in submits_dirs:
             ids.append(os.path.basename(path)[:-5])
     return list(dict.fromkeys(ids))
 
@@ -530,17 +641,16 @@ class Loop:
         self.read_timeout = read_timeout
         self.timed_out = False
         self.sources, self.thresholds, self.stale_minutes, self.warnings = read_config(home)
+        fillers = {"lane_alerts": read_lane_alerts, "queue_state": read_queue_state, "filler_stop": read_filler_stop}
         got = self.bounded([
             ("submits", read_submits, {}), ("handoff_queue", read_queue, []), ("operator_acked", read_acked, {}),
             ("collected", read_collected, {}), ("snapshot", read_snapshot, {}), ("catalog", read_catalog, {}),
-            ("backlog", read_holds, {}), ("parks", read_parks, []), ("tetjet_status", read_tetjet_alerts, []),
-            ("lane_alerts", read_lane_alerts, None), ("queue_state", read_queue_state, None),
-            ("filler_stop", read_filler_stop, None)])
+            ("backlog", read_holds, {}), ("parks", read_parks, []), ("tetjet_status", read_tetjet_alerts, [])]
+            + [(name, fillers[src.kind], None) for name, src in self.sources.items() if src.kind in fillers])
         self.submits, self.queue, self.acked = got["submits"], got["handoff_queue"], got["operator_acked"]
         self.collected, self.jobs, self.catalog = got["collected"], got["snapshot"], got["catalog"]
         self.holds, self.parks, self.tetjet = got["backlog"], got["parks"], got["tetjet_status"]
-        self.lane, self.queue_state = got.get("lane_alerts"), got.get("queue_state")
-        self.stopped = got["filler_stop"] if "filler_stop" in self.sources else False
+        self.fillers = filler_groups(self.sources, got)
         self.requests = self.join()
 
     def bounded(self, readers):
@@ -571,7 +681,7 @@ class Loop:
                 continue
             # The abandoned thread keeps the old Source, so nothing it does later shows.
             old = self.sources[name]
-            src = self.sources[name] = Source(name, old.paths, old.configured)
+            src = self.sources[name] = Source(name, old.paths, old.configured, old.kind)
             if thread.is_alive():
                 self.timed_out = True
                 src.fail("unreadable", "read did not finish within %gs (a slow disk or a blocking file)" % self.read_timeout)
@@ -621,7 +731,7 @@ class Loop:
                 req(subject)["all_cut"] = at
             elif kind in PACKAGE_KINDS:
                 records.setdefault(subject, []).append(rec.get("id"))
-                for rid in request_refs(rec, self.sources["submits"].paths[0]):
+                for rid in request_refs(rec, self.sources["submits"].paths):
                     req(rid)["packages"].setdefault(subject, {
                         "batch": subject, "at": at, "abandoned": abandoned.get(subject)})
         for rid, rec in self.collected.items():
@@ -786,9 +896,10 @@ class Loop:
         for name in self.failing_sources():
             src = s[name]
             add("source-unreadable", name, "%s source is %s: %s" % (name, src.state, src.detail))
-        problems = self.filler_problems()
-        if problems:
-            add("filler-stale", "tj-capacity", "%s; the filler cannot report its own death" % "; ".join(problems))
+        for group in self.fillers:
+            problems = self.filler_problems(group)
+            if problems:
+                add("filler-stale", group["subject"], "%s; the filler cannot report its own death" % "; ".join(problems))
         open_rows = self.open_requests()
         if s["collected"].ok:
             last = [iso_epoch(rec.get("recorded_at")) for rec in self.collected.values()]
@@ -826,16 +937,16 @@ class Loop:
     def failing_sources(self):
         """Sources that are unreadable, or configured and not read; the filler's raise filler-stale instead."""
         return [n for n, src in self.sources.items()
-                if n not in FILLER_SOURCES and (src.state == "unreadable" or (src.configured and not src.ok))]
+                if src.kind not in FILLER_SOURCES and (src.state == "unreadable" or (src.configured and not src.ok))]
 
-    def filler_problems(self):
-        """Why the filler's observation files are not current; empty while it is stopped on purpose."""
-        if self.stopped:
+    def filler_problems(self, group):
+        """Why a filler group's observation files are not current; empty while it is stopped on purpose."""
+        if group["stopped"]:
             return []
         out = []
         limit = self.stale_minutes * 60
-        for name, doc in (("lane_alerts", self.lane), ("queue_state", self.queue_state)):
-            src = self.sources.get(name)
+        for name, doc in (("lane_alerts", group["lane"]), ("queue_state", group["queue_state"])):
+            src = group["src"].get(name)
             if src is None:
                 continue
             if not src.ok:
@@ -846,8 +957,8 @@ class Loop:
             if age > limit:
                 out.append("%s last written %s ago (at %s, mtime %s; limit %g min)" % (
                     name, span(age), utc(at), utc(doc["mtime"]), self.stale_minutes))
-        if out and self.stopped is None:
-            out.append("filler_stop %s, so a STOP is not known" % self.sources["filler_stop"].state)
+        if out and group["stopped"] is None:
+            out.append("filler_stop %s, so a STOP is not known" % group["src"]["filler_stop"].state)
         return out
 
     def record_alerts(self):
@@ -897,17 +1008,22 @@ class Loop:
                     atomic(folder / (alert_id + ".json"), rec)
                 elif changed:
                     atomic_text(folder / (alert_id + ".json"), json.dumps(rec, sort_keys=True) + "\n")
-            lane_owned = "lane_alerts" in self.sources
-            if self.lane is not None:
-                self.sync_lane(folder, records, stamp)
-            elif lane_owned and self.sources["lane_alerts"].state == "missing" and not (folder / "lane-alerts.cursor").exists():
-                # The filler starts the file empty, so a first file reports every event in it.
-                atomic(folder / "lane-alerts.cursor", {"schema": LANE_CURSOR_SCHEMA, "updated_utc": stamp, "revision": 0,
-                                                       "path": str(self.sources["lane_alerts"].paths[0])})
-                self.log(folder, "seeded the lane alerts cursor at revision 0: the file is missing, so every event in it once it appears is reported")
+            lane_owned = set()
+            for group in self.fillers:
+                if "lane_alerts" not in group["src"]:
+                    continue
+                lane_owned.add(group["tag"])
+                if group["lane"] is not None:
+                    self.sync_lane(folder, records, stamp, group)
+                elif group["src"]["lane_alerts"].state == "missing" and not (folder / group["cursor"]).exists():
+                    # The filler starts the file empty, so a first file reports every event in it.
+                    atomic(folder / group["cursor"], {"schema": LANE_CURSOR_SCHEMA, "updated_utc": stamp, "revision": 0,
+                                                      "path": str(group["src"]["lane_alerts"].paths[0])})
+                    self.log(folder, "seeded the lane alerts cursor%s at revision 0: the file is missing, so every event in it once it appears is reported"
+                             % group["label"])
             holding = bool(self.failing_sources())
             for alert_id, rec in records.items():
-                if lane_owned and rec.get("source") == "lane_alerts":
+                if rec.get("source") in lane_owned:
                     continue
                 if alert_id not in current and not rec.get("cleared_at") and not holding:
                     rec["cleared_at"] = stamp
@@ -917,7 +1033,7 @@ class Loop:
         self.records = records
         return sorted((r for r in records.values() if not r.get("acked_at")), key=lambda r: (r["first_seen"], r["id"]))
 
-    def sync_lane(self, folder, records, stamp):
+    def sync_lane(self, folder, records, stamp, group):
         """Mirror the filler's lane alerts into alert records, by its event journal.
 
         Events after the cursor's revision apply in seq order, deduplicated by
@@ -926,9 +1042,9 @@ class Loop:
         seeds quietly; an unreadable one, one for another file, or one ahead
         of the file's revision reconciles against active without replaying.
         """
-        doc = self.lane
-        source_path = str(self.sources["lane_alerts"].paths[0])
-        path = folder / "lane-alerts.cursor"
+        doc = group["lane"]
+        source_path = str(group["src"]["lane_alerts"].paths[0])
+        path = folder / group["cursor"]
         seed = not path.exists()
         cursor, lost = None, None
         if not seed:
@@ -945,21 +1061,22 @@ class Loop:
             elif cursor["revision"] > doc["revision"]:
                 lost = "at revision %d, ahead of the file's %d" % (cursor["revision"], doc["revision"])
                 cursor = None
-        by_key = {rec["tj_key"]: rec for rec in records.values() if rec.get("source") == "lane_alerts"}
+        by_key = {rec["tj_key"]: rec for rec in records.values() if rec.get("source") == group["tag"]}
         # A long journal behind the cursor touches one record many times, so
         # records and log lines are written once, after every event applies.
         self.lane_dirty, self.lane_notes = set(), []
         if cursor is not None:
             for event in sorted((e for e in doc["events"] if e["seq"] > cursor["revision"]), key=lambda e: e["seq"]):
-                self.lane_event(folder, records, by_key, event["action"], event["key"], event["alert"], event["at"], False)
+                self.lane_event(group, records, by_key, event["action"], event["key"], event["alert"], event["at"], False)
         elif lost:
-            self.lane_notes.append("lane alerts cursor was %s; reconciled with the active lane alerts instead of replaying the journal" % lost)
+            self.lane_notes.append("lane alerts cursor%s was %s; reconciled with the active lane alerts instead of replaying the journal"
+                                   % (group["label"], lost))
         for key, alert in sorted(doc["active"].items()):
             detected = alert.get("detected_at") if iso_epoch(alert.get("detected_at")) else stamp
-            self.lane_event(folder, records, by_key, "raised", key, alert, detected, seed)
+            self.lane_event(group, records, by_key, "raised", key, alert, detected, seed)
         for key, rec in sorted(by_key.items()):
             if key not in doc["active"] and not rec.get("cleared_at"):
-                self.lane_event(folder, records, by_key, "cleared", key, None, stamp, False)
+                self.lane_event(group, records, by_key, "cleared", key, None, stamp, False)
         for alert_id in sorted(self.lane_dirty):
             atomic(folder / (alert_id + ".json"), records[alert_id])
         if self.lane_notes:
@@ -968,10 +1085,10 @@ class Loop:
         if cursor is None or cursor["revision"] != doc["revision"]:
             atomic(path, {"schema": LANE_CURSOR_SCHEMA, "path": source_path, "revision": doc["revision"], "updated_utc": stamp})
         if seed:
-            self.log(folder, "seeded the lane alerts cursor at revision %d with %d active lane alert(s): alerts --new does not report them" % (
-                doc["revision"], len(doc["active"])))
+            self.log(folder, "seeded the lane alerts cursor%s at revision %d with %d active lane alert(s): alerts --new does not report them" % (
+                group["label"], doc["revision"], len(doc["active"])))
 
-    def lane_event(self, folder, records, by_key, action, key, alert, at, quiet):
+    def lane_event(self, group, records, by_key, action, key, alert, at, quiet):
         rec = by_key.get(key)
         if action == "cleared":
             if rec and not rec.get("cleared_at"):
@@ -983,10 +1100,10 @@ class Loop:
         message = lane_message(alert)
         dirty = rec is None or rec.get("cleared_at") or rec.get("message") != message
         if rec is None or rec.get("cleared_at"):
-            alert_id = rec["id"] if rec else lane_alert_id(alert, key)
+            alert_id = rec["id"] if rec else lane_alert_id(alert, key, group["tag"])
             occurrence = 1 if rec is None else rec.get("occurrence", 1) + 1
             rec = {"schema": ALERT_SCHEMA, "id": alert_id, "condition": alert["kind"], "subject": alert["subject"],
-                   "source": "lane_alerts", "tj_key": key, "first_seen": at, "cleared_at": None, "acked_at": None,
+                   "source": group["tag"], "tj_key": key, "first_seen": at, "cleared_at": None, "acked_at": None,
                    "occurrence": occurrence}
             if quiet:
                 rec["quiet"] = occurrence_key(rec)
@@ -1040,7 +1157,9 @@ def request_view(loop, r):
 
 def status(loop, as_json, show_all):
     alerts = loop.record_alerts()
-    filler = filler_view(loop)
+    fillers = [(g, filler_view(loop, g)) for g in loop.fillers]
+    filler = next((view for g, view in fillers if g["subject"] == DEFAULT_FILLER), None)
+    views_by_group = {g["subject"]: view for g, view in fillers if g["subject"] != DEFAULT_FILLER}
     rows = loop.open_requests() if not show_all else sorted(loop.requests.values(), key=lambda r: r["id"])
     views = [request_view(loop, r) for r in rows]
     if as_json:
@@ -1050,6 +1169,7 @@ def status(loop, as_json, show_all):
             "thresholds_hours": loop.thresholds, "warnings": loop.warnings,
             "requests": views, "alerts": alerts, "tetjet_alerts": loop.tetjet,
             **({"filler": filler} if filler else {}),
+            **({"filler_groups": views_by_group} if views_by_group else {}),
         }, indent=2, sort_keys=True))
         return 0
     for warning in loop.warnings:
@@ -1077,32 +1197,54 @@ def status(loop, as_json, show_all):
             print("  %s since %s: %s" % (t["key"], t["since"] or "unknown", t["line"]))
     else:
         print("TETJET alerts: unknown (tetjet_status %s)" % loop.sources["tetjet_status"].state)
-    if filler:
-        print_filler(loop, filler)
+    for group, view in fillers:
+        print_filler(group, view)
     print("loop alerts: %s" % ("none open" if not alerts else ""))
     for a in alerts:
         print("  %s since %s%s: %s" % (a["id"], a["first_seen"], " (cleared %s)" % a["cleared_at"] if a.get("cleared_at") else "", a["message"]))
     return 0
 
 
-def filler_view(loop):
-    """The capacity filler's two observation files, supply and lane health apart; None when unconfigured."""
-    if not any(name in loop.sources for name in FILLER_SOURCES):
-        return None
+def filler_groups(sources, got):
+    """The filler groups: the config's tj-capacity group, then one per registry stage, from the bounded reads."""
+    found = {}
+    for name, src in sources.items():
+        if src.kind in FILLER_SOURCES:
+            found.setdefault(name.partition("@")[2], {})[src.kind] = src
+    groups = []
+    for key, srcs in sorted(found.items()):
+        groups.append({
+            "subject": key or DEFAULT_FILLER, "src": srcs,
+            "tag": "lane_alerts@" + key if key else "lane_alerts",
+            "cursor": "lane-alerts--%s.cursor" % re.sub(r"[^A-Za-z0-9._-]", "--", key) if key else "lane-alerts.cursor",
+            "label": " for " + key if key else "",
+            "lane": got.get(srcs["lane_alerts"].name) if "lane_alerts" in srcs else None,
+            "queue_state": got.get(srcs["queue_state"].name) if "queue_state" in srcs else None,
+            "stopped": bool(got.get(srcs["filler_stop"].name)) if "filler_stop" in srcs else False,
+        })
+    return groups
+
+
+def filler_view(loop, group):
+    """One filler group's two observation files, supply and lane health apart."""
     queue = None
-    if loop.queue_state is not None:
-        queue = {k: v for k, v in loop.queue_state.items() if k not in ("at_epoch", "mtime")}
-        queue["age_seconds"] = loop.now - loop.queue_state["at_epoch"]
+    if group["queue_state"] is not None:
+        queue = {k: v for k, v in group["queue_state"].items() if k not in ("at_epoch", "mtime")}
+        queue["age_seconds"] = loop.now - group["queue_state"]["at_epoch"]
     lane = None
-    if loop.lane is not None:
-        lane = {"at": utc(loop.lane["at"]), "age_seconds": loop.now - loop.lane["at"],
-                "revision": loop.lane["revision"], "active": len(loop.lane["active"])}
-    return {"stopped": loop.stopped, "stale_minutes": loop.stale_minutes, "queue_state": queue,
-            "lane_alerts": lane, "problems": loop.filler_problems()}
+    if group["lane"] is not None:
+        lane = {"at": utc(group["lane"]["at"]), "age_seconds": loop.now - group["lane"]["at"],
+                "revision": group["lane"]["revision"], "active": len(group["lane"]["active"])}
+    return {"stopped": group["stopped"], "stale_minutes": loop.stale_minutes, "queue_state": queue,
+            "lane_alerts": lane, "problems": loop.filler_problems(group)}
 
 
-def print_filler(loop, filler):
-    print("TETJET filler (its observation files; lane alerts are listed with the loop alerts):")
+def print_filler(group, filler):
+    srcs = group["src"]
+    if group["subject"] == DEFAULT_FILLER:
+        print("TETJET filler (its observation files; lane alerts are listed with the loop alerts):")
+    else:
+        print("filler %s (declared in the handoff registry; lane alerts are listed with the loop alerts):" % group["subject"])
     if filler["stopped"]:
         print("  STOP marker present: stopped on purpose, so stale files raise nothing")
     q = filler["queue_state"]
@@ -1119,13 +1261,13 @@ def print_filler(loop, filler):
             for name, lane in health["lanes"].items():
                 print("    %s %s since %s (key %s): %s" % (name, lane["state"], lane["since"], str(lane["key"])[:12],
                                                      "; ".join(str(r) for r in lane["reasons"] or [])))
-    elif "queue_state" in loop.sources:
-        print("  queue-state: unknown (%s)" % loop.sources["queue_state"].state)
+    elif "queue_state" in srcs:
+        print("  queue-state: unknown (%s)" % srcs["queue_state"].state)
     lane = filler["lane_alerts"]
     if lane:
         print("  lane alerts revision %d at %s (%s ago): %d active" % (lane["revision"], lane["at"], span(lane["age_seconds"]), lane["active"]))
-    elif "lane_alerts" in loop.sources:
-        print("  lane alerts: unknown (%s)" % loop.sources["lane_alerts"].state)
+    elif "lane_alerts" in srcs:
+        print("  lane alerts: unknown (%s)" % srcs["lane_alerts"].state)
     for problem in filler["problems"]:
         print("  stale: %s" % problem)
 

@@ -6,11 +6,11 @@ metadata:
   internal: true
   sources:
     - path: docs/loop-status.md
-      sha256: adbaf005623ecd71c439f18d6be682a981582c3fde029153e33bcc823c65f0af
+      sha256: 79f350288c74bcd180f5239c371d7ddb5a1b64fd0abb353f893fe4d2b7d853a6
     - path: bin/fm-loop.sh
       sha256: 221e4751ff00b48abd41f505dc21d3fc3c4a3f7ce9a3c3decdb0ceee60e8048f
     - path: bin/fm-loop.py
-      sha256: 0c7997af25fbb709ba4807715c23f6d904593c894b402ab65f3baca8fecd27f9
+      sha256: 2c8664749dc1e2456691b2461b9d827bae8f781d1fca23b6df129ae516a59eff
     - path: bin/fm-project-capacity-lib.sh
       sha256: 8722b50acaa6c2988b7b31c1e56a12ec23769c3c3675d5afdc487e1480a0ba94
 ---
@@ -24,13 +24,13 @@ Anyone can see from records alone where every experiment request stands, why it 
 A missing, unreadable or wrong-schema source reads as unknown, never as empty or healthy, and an unknown condition never clears an alert.
 Each alert is one durable record that wakes firstmate once per new occurrence through the watcher check, `source-unreadable` included; TETJET's own capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) are shown beside the stages, never raised again.
 `fm-project-capacity-lib.sh` is the one owner of per-project worker capacity: a declared number, counted from task records under the shared project lock, and an unreadable declaration refuses spawns instead of guessing.
-Sources, thresholds and limits are data (`config/loop-sources`, `config/project-capacity`), so a new source or project is a config line, not code.
+Sources, thresholds and limits are data (`config/loop-sources`, a stage's `<home>.loop-source` key in the handoff registry, `config/project-capacity`), so a new source or project is a config line, not code.
 
 ## Where each rule lives
 
 - `bin/fm-loop.sh` header: usage, the run cap and the watcher check's install.
 - `bin/fm-loop.py`: the source list, stage rules, alert conditions and lead-time buckets; `docs/loop-status.md` explains them.
-- `docs/configuration.md` "Loop sources" and "Project capacity": the two config file formats.
+- `docs/configuration.md` "Loop sources" and "Project capacity": the two config file formats and the registry `loop-source` key.
 - `bin/fm-project-capacity-lib.sh` header: the declaration format, what holds a place and the admission verdict; `bin/fm-spawn.sh` owns where the check runs.
 
 ## Refuse

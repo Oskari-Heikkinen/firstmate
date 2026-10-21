@@ -1693,12 +1693,19 @@ A missing file means the default paths and thresholds.
 `#` starts a comment, fields are separated by whitespace, paths cannot contain spaces, and `~` expands to the home directory; a relative path is taken from the selected home.
 An unknown or malformed line is ignored and printed as a warning.
 
-- `source <name> <path>` replaces one source's default path.
+- `source <name> <path>` names one path of a source, replacing its default.
   The names and defaults are `submits` (`<home>/data/tetjet-offload/requests`), `handoff_queue` (`~/.local/share/tj-handoff/queue`), `operator_acked` (`~/.local/share/tj-handoff/consumers/tj-operator.acked`), `collected` (`<home>/data/tetjet-collected/requests`), `snapshot` (`<home>/data/tetjet-offload/queue-snapshot.json`), `batches` (`~/lattice-batches`), `catalog` (`$LATTICE_LEDGER_DIR/catalog.sqlite`, else `~/lattice-ledger/catalog.sqlite`), `backlog` (`<home>/data/backlog.md`), `parks` (`<home>/state`) and `tetjet_status` (`<home>/state/tetjet-mate.status`).
-  `backlog` and `parks` may repeat, one home each; the other names keep their last line.
-  `lane_alerts`, `queue_state` and `filler_stop` (the capacity filler's lane alerts file, queue-state file and STOP marker) have no default and are read only when named; [docs/loop-status.md](loop-status.md#capacity-filler-watch) explains them.
+  Every name may repeat, and each line adds a path that is read and merged with the others.
+  `lane_alerts`, `queue_state` and `filler_stop` (the capacity filler's lane alerts file, queue-state file and STOP marker) have no default, are read only when named, and keep their last line, since together they describe one filler; [docs/loop-status.md](loop-status.md#capacity-filler-watch) explains them.
 - `threshold <name> <hours>` overrides an alert threshold: `no_collection_hours` (default 24), `accepted_no_package_hours` (default 12) or `collected_no_analysis_hours` (default 6); hours may be fractional and must be positive.
 - `threshold filler_stale_minutes <minutes>` sets how old the capacity filler's files may grow before `filler-stale` is raised (default 5); minutes may be fractional and must be positive.
+
+A source can also be declared where its records are registered.
+A `handoff-registry/v1` stage ([docs/handoff-coverage.md](handoff-coverage.md)) in any home this machine's watcher reads may carry the ext key `<fragment home>.loop-source`, a comma list of source names, each alone or as `<name>=<absolute path>`.
+A name alone means the stage's `input.path`.
+Declared paths join the configured ones and replace the default; a key under any other home's name is ignored.
+Filler names declared on one stage form one filler group named `<protocol>/<stage>`, with its own lane alerts cursor and its own `filler-stale` subject; the config's filler lines are the `tj-capacity` group.
+A home with no fragment reads exactly what this file names.
 
 ## Scheduled runs
 

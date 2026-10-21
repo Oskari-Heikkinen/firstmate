@@ -33,10 +33,16 @@ Every source is only read: nothing is woken, consumed or acknowledged, and no co
 - The last 256 KiB of the TETJET status file, for the latest line per capacity alert key.
 - Only when configured, the capacity filler's lane alerts file, its queue-state file and its STOP marker; see "Capacity filler watch".
 
+Each source may have several paths, from repeated config lines or from stages in the handoff registry that declare it; every path is read and the records are merged.
 A source that is missing or unreadable is listed on the sources line; what it feeds reads as unknown, and the command still succeeds.
-A source named in the config file that is missing, or any source that exists but cannot be read, also raises a `source-unreadable` alert.
+A source named in the config file or the registry that is missing, or any source that exists but cannot be read, also raises a `source-unreadable` alert.
 A source whose read has not finished within its bound (a slow disk, a FIFO, a lock) is unreadable for that run, with "read did not finish within Ns" as its detail: it raises `source-unreadable` like any other, once per occurrence, and holds every other alert from clearing; a capacity filler file raises `filler-stale` instead.
 `FM_LOOP_READ_TIMEOUT` sets the bound in whole seconds.
+
+When any home this machine's watcher reads has a `handoff-registry/v1` fragment, the sources line also lists `registry`.
+A stage's `<fragment home>.loop-source` key declares sources (the format is in [docs/configuration.md](configuration.md#loop-sources-configloop-sources)).
+A fragment that cannot be read, or that is invalid and names a `loop-source` key, makes `registry` unreadable and raises `source-unreadable--registry`, since the sources it declares are then unknown.
+An invalid fragment that names no such key is its home watcher's alarm, not this view's.
 
 ## Stages
 
@@ -130,6 +136,11 @@ The filler's contract is `LANE-TRUTH.md` in its package.
 `filler-stale--tj-capacity` is one alert raised while either configured file is missing, unreadable, of another schema, or older than `filler_stale_minutes` (default 5, about three of the filler's 90-second ticks) by its `at` or its modification time, whichever is older, and the STOP marker is absent.
 Its message names each failing file, and it clears once both are current again.
 These sources never raise `source-unreadable` and never hold other alerts from clearing.
+
+A registry stage may declare its own filler files (`lane_alerts=<path>` and the others in its `loop-source` key).
+Each such stage is a filler group named `<protocol>/<stage>`, shown under that name in `status` and under `filler_groups` in `--json`.
+It follows its journal with its own cursor, `lane-alerts--<protocol>--<stage>.cursor`, its lane alert digests also cover the group name, and its stale alarm is `filler-stale--<protocol>_<stage>`.
+The config's lines stay the `tj-capacity` group, under `filler` in `--json`.
 
 For the main home, the lines are:
 

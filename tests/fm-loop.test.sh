@@ -805,6 +805,78 @@ took = time.monotonic() - started
 if took > 15 or lane_path.stat().st_size < 10 * 1024 * 1024:
     fail("a %d-byte journal took %.1fs" % (lane_path.stat().st_size, took))
 ok("a %d MiB journal is followed in %.1fs" % (lane_path.stat().st_size // (1024 * 1024), took))
+
+# Sources declared in the handoff registry: a stage's <home>.loop-source key.
+home = tmp / "home-registry"
+home.mkdir()
+build()
+config()
+plain = status()
+if "registry" in plain["sources"] or "filler_groups" in plain:
+    fail("a home with no fragment reads a registry: %s" % sorted(plain["sources"]))
+extra_submits = tmp / "elsewhere/requests"
+write(extra_submits / "far-filed-1.submit.json", {"schema": "tetjet-request-submit.v1", "id": "far-filed-1",
+                                                  "request_sha256": "f" * 64, "task": "far", "submitted_utc": iso(NOW - H)})
+lane2 = tmp / "elsewhere/lane-alerts.json"
+fragment = json.loads((root / "docs/handoff-coverage/examples/xp-chain.fragment.json").read_text())
+fragment.pop("example", None)
+owner = fragment["home"]
+stages = fragment["protocols"][0]["stages"]
+pid = fragment["protocols"][0]["id"]
+stages[0]["input"]["path"] = str(extra_submits)
+stages[0]["ext"] = {owner + ".loop-source": "submits"}
+stages[1]["ext"] = {owner + ".loop-source": "lane_alerts=%s" % lane2, "main.loop-source": "catalog=/nowhere"}
+group = "%s/%s" % (pid, stages[1]["name"])
+write(home / "state/handoff-registry/xp.json", fragment)
+lane_doc = {"schema": "tj-capacity-alerts/v1", "at": iso(NOW), "revision": 0, "active": {}, "events": []}
+write(lane2, lane_doc)
+stamp(lane2, NOW)
+before = tree(src)
+data = status()
+rows = {r["id"]: r for r in data["requests"]}
+if rows.get("far-filed-1", {}).get("stage") != "filed" or rows.get("fam-filed-1", {}).get("stage") != "filed":
+    fail("declared submits are not joined with configured ones: %s" % sorted(rows))
+if data["sources"]["submits"]["paths"] != [str(submits), str(extra_submits)] or data["sources"]["catalog"]["paths"] != [str(catalog)]:
+    fail("declared paths: %s / %s" % (data["sources"]["submits"], data["sources"]["catalog"]))
+if data["sources"]["registry"]["state"] != "ok" or group not in data.get("filler_groups", {}) or "filler" in data:
+    fail("registry or filler group: %s / %s" % (data["sources"]["registry"], sorted(data)))
+ok("a stage's loop-source key adds its input place to configured paths; a key under another home's name is ignored")
+
+new(NOW + 30)
+
+refusing2 = lane_alert("lane-refusing", "tjpkg", "lane two refuses", NOW)
+write(lane2, dict(lane_doc, at=iso(NOW + 60), revision=1, active={refusing2["key"]: dict(refusing2, detected_at=iso(NOW + 60))},
+                  events=[{"seq": 1, "at": iso(NOW + 60), "action": "raised", "key": refusing2["key"], "alert": refusing2}]))
+stamp(lane2, NOW + 60)
+lines = [l for l in new(NOW + 90) if l.startswith("lane-refusing--")]
+cursor2 = home / "state/loop-alerts" / ("lane-alerts--%s.cursor" % group.replace("/", "--"))
+if len(lines) != 1 or alert_id(refusing2) in lines[0] or json.loads(cursor2.read_text())["revision"] != 1:
+    fail("a declared filler group's lane alert: %s" % lines)
+if "filler %s (declared in the handoff registry" % group not in run("status", now=NOW + 90).stdout:
+    fail("status does not name the filler group")
+lines = new(NOW + 60 + 6 * 60 + 30)
+if not any(l.startswith("filler-stale--%s since " % group.replace("/", "_")) for l in lines):
+    fail("a declared filler group's stale file: %s" % lines)
+ok("a declared filler group keeps its own cursor, alert ids and filler-stale subject")
+
+broken = dict(fragment, unknown_field=1)
+write(home / "state/handoff-registry/other.json", {"format": "handoff-registry/v1", "home": "x"})
+data = status(now=NOW + 7 * 60)
+if data["sources"]["registry"]["state"] != "ok":
+    fail("an invalid fragment that names no loop source was read as unknown: %s" % data["sources"]["registry"])
+write(home / "state/handoff-registry/other.json", broken)
+data = status(now=NOW + 8 * 60)
+if data["sources"]["registry"]["state"] != "unreadable" or "source-unreadable--registry" not in [a["id"] for a in data["alerts"]]:
+    fail("an invalid fragment naming a loop source: %s" % data["sources"]["registry"])
+if any(a.get("cleared_at") for a in data["alerts"] if a["id"].startswith("filler-stale--")):
+    fail("an alert cleared while the registry was unknown")
+os.remove(home / "state/handoff-registry/other.json")
+if tree(src) != before:
+    fail("a source was changed")
+written = sorted(str(p.relative_to(home)) for p in home.rglob("*") if p.is_file())
+if any(not (w.startswith("state/loop-alerts/") or w == "config/loop-sources" or w.startswith("state/handoff-registry/")) for w in written):
+    fail("wrote outside state/loop-alerts: %s" % written)
+ok("an invalid fragment that may declare a source raises source-unreadable and holds clears; others are its watcher's")
 PY
 
 if "$ROOT/bin/fm-loop.sh" bogus >/dev/null 2>&1; then fail "an unknown command succeeded"; fi
