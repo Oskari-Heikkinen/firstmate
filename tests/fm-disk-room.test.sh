@@ -1006,10 +1006,11 @@ test_d_runway_and_substitution() {
 # commands, fields, units and exit codes through the executable. A version
 # other than v1 fails here until its own contract case is added, so the
 # interface cannot drift without a version bump.
-V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int room:int
+V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int swap_reserved:int room:int
   host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
   ssd_free:opt ssd_total:opt shadow_max:opt shadow_used:opt shadow_allocated:opt shadow_events:opt
-  low:bool host:str vhdx:str results_active:str results_state:str shadow_source:str shadow_reading:str'
+  swap_size:opt swap_file_size:opt
+  low:bool host:str vhdx:str results_active:str results_state:str shadow_source:str shadow_reading:str swap_source:str'
 
 # v1_value JSON KEY: a field's raw value, quotes kept on strings (which may hold braces).
 v1_value() {
@@ -1049,6 +1050,8 @@ test_interface_v1_contract() {
   assert_equals $(( 3 * GIB )) "$(json_field "$out" shadow_used)" "shadow_used is bytes"
   assert_equals '"live"' "$(json_field "$out" shadow_reading)" "shadow_reading names the live source"
   assert_equals '"live"' "$(json_field "$out" shadow_source)" "shadow_source names the live source"
+  assert_equals 0 "$(json_field "$out" swap_reserved)" "swap_reserved is bytes, none with the reservation disabled"
+  assert_equals '"disabled"' "$(json_field "$out" swap_source)" "swap_source names why nothing is reserved"
   assert_equals $(( 54 * GIB )) "$(json_field "$out" room)" "room is host free minus shadow headroom, in bytes"
   assert_equals false "$(json_field "$out" low)" "low is false at or above the margin"
   assert_equals "\"$HOSTDIR\"" "$(v1_value "$out" host)" "host is the drive mount"

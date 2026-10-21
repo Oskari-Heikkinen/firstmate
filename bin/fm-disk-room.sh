@@ -79,17 +79,18 @@
 #   status --json  exit 0 with one JSON object on one line; 2 when a reading
 #       fails. Fields, every size in bytes:
 #         integers: margin, linux_free, linux_used, reserved, shadow_reserved,
-#           room (may be negative)
+#           swap_reserved, room (may be negative)
 #         integer or null (unknown): host_free, vhdx_size, fragmented_free,
 #           fs_overhead, slack, reclaimable, ssd_free, ssd_total, shadow_max,
-#           shadow_used, shadow_allocated, shadow_events (an event count);
-#           reclaimable is the disk file block table's figure, null when the
-#           block table cannot be read
+#           shadow_used, shadow_allocated, shadow_events (an event count),
+#           swap_size, swap_file_size; reclaimable is the disk file block
+#           table's figure, null when the block table cannot be read
 #         boolean: low (room is under margin)
 #         strings: host (Windows drive mount, "" when Linux-only), vhdx (disk
 #           file path or ""), results_active (ssd, c or ""), results_state,
 #           shadow_source (live, record, stale-record, config, unbounded or
-#           none), shadow_reading (live, record or none)
+#           none), shadow_reading (live, record or none), swap_source
+#           (wslconfig, default, off, other-drive, disabled, unknown or "")
 #   status   exit 0 with text for people; 2 when a reading fails.
 #   check    exit 0 with one stdout line starting "ok: ", 1 with "low: ", 2
 #       with "cannot measure disk room: " when a reading fails; 2 with a
@@ -198,10 +199,11 @@ BAT_CACHE_SECS=300
 # sha256 of bin/fm-vhdx-bat.py; only a reader with exactly these bytes runs.
 VHDX_BAT_SHA256=241abc28b3cf943a251e8441a550d776eb187490225692fcb75e460a505c347a
 INTERFACE=v1
-INTERFACE_V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int room:int
+INTERFACE_V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int swap_reserved:int room:int
   host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
   ssd_free:opt ssd_total:opt shadow_max:opt shadow_used:opt shadow_allocated:opt shadow_events:opt
-  low:bool host:str vhdx:str results_active:str results_state:str shadow_source:str shadow_reading:str'
+  swap_size:opt swap_file_size:opt
+  low:bool host:str vhdx:str results_active:str results_state:str shadow_source:str shadow_reading:str swap_source:str'
 
 die() { printf 'fm-disk-room: %s\n' "$*" >&2; exit 2; }
 
