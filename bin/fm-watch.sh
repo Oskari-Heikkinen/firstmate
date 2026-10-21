@@ -654,7 +654,7 @@ inbox_steer_escalate_unavailable() {  # <window> <task> <record>
 # being healthy, while an unacknowledged instruction can still be a stuck steer.
 inbox_steer_check() {  # <window> <task>
   local w=$1 task=$2 action verb rec count tail40 reason='' ring_rc backend agent_state
-  action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
+  fm_task_inbox_due_action_to action "$STATE" "$task" || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
   if [ "$verb" = retry ] && [ -n "$(status_own_open_decisions "$STATE/$task.status")" ]; then
@@ -1572,20 +1572,7 @@ EOF
 # long-finished one cannot make the next deferral resurface immediately.
 clear_write_tracking() {  # <window-key>
   local key=$1
-  rm_present "$STATE/.writing-since-$key" "$STATE/.writing-resurfaced-$key"
-}
-
-# rm_present <path>...: rm -f <path>... when any of them exists or is a link,
-# so the pass that clears a window's markers every poll forks nothing while
-# there is nothing to clear.
-rm_present() {
-  local _rp_path
-  for _rp_path in "$@"; do
-    if [ -e "$_rp_path" ] || [ -L "$_rp_path" ]; then
-      rm -f "$@"
-      return
-    fi
-  done
+  fm_rm_present "$STATE/.writing-since-$key" "$STATE/.writing-resurfaced-$key"
 }
 
 # The question the wedge timer never asked before it alarmed: is there still an
@@ -4097,7 +4084,7 @@ EOF
         if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
           busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" && paused_bound=0
         else
-          rm_present "$ssf" "$ewf"
+          fm_rm_present "$ssf" "$ewf"
           clear_write_tracking "$key"
         fi
         # A busy pane normally means real work resumed, so stale pause bookkeeping
@@ -4116,7 +4103,7 @@ EOF
       if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
         busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" && paused_bound=0
       else
-        rm_present "$ssf" "$ewf"
+        fm_rm_present "$ssf" "$ewf"
         clear_write_tracking "$key"
       fi
       task=$WR_TASK

@@ -263,6 +263,19 @@ fm_path_age() {
   echo "$_fm_pag_age"
 }
 
+# fm_rm_present <path>...: rm -f <path>... when any of them exists or is a link,
+# so a pass that clears markers every poll forks nothing while there is nothing
+# to clear.
+fm_rm_present() {
+  local _fm_rp_path
+  for _fm_rp_path in "$@"; do
+    if [ -e "$_fm_rp_path" ] || [ -L "$_fm_rp_path" ]; then
+      rm -f "$@"
+      return
+    fi
+  done
+}
+
 # fm_poll_derived_grace [poll-seconds]
 # Default guard-grace derivation: max(300, poll + 60). A watcher touches its
 # liveness beacon once per poll cycle, so a fixed 300s grace stops correctly

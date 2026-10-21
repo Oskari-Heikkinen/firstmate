@@ -1081,15 +1081,15 @@ r="$dir/rm-$$"
 mkdir -p "$r/dir" "$r/dir2"
 : > "$r/a"
 ln -s missing "$r/link"
-rm_present "$r/a" "$r/none"; rc=$?
-[ "$rc" = 0 ] && [ ! -e "$r/a" ] || printf 'rm_present kept a present file (status %s)\n' "$rc"
-rm_present "$r/none" "$r/link"; rc=$?
-[ "$rc" = 0 ] && [ ! -L "$r/link" ] || printf 'rm_present kept a dangling link (status %s)\n' "$rc"
-rm_present "$r/none" "$r/none2"; rc=$?
-[ "$rc" = 0 ] || printf 'rm_present of absent paths returned %s\n' "$rc"
+fm_rm_present "$r/a" "$r/none"; rc=$?
+[ "$rc" = 0 ] && [ ! -e "$r/a" ] || printf 'fm_rm_present kept a present file (status %s)\n' "$rc"
+fm_rm_present "$r/none" "$r/link"; rc=$?
+[ "$rc" = 0 ] && [ ! -L "$r/link" ] || printf 'fm_rm_present kept a dangling link (status %s)\n' "$rc"
+fm_rm_present "$r/none" "$r/none2"; rc=$?
+[ "$rc" = 0 ] || printf 'fm_rm_present of absent paths returned %s\n' "$rc"
 rm -f "$r/dir2" 2>/dev/null; want=$?
-rm_present "$r/dir" "$r/none" 2>/dev/null; rc=$?
-[ "$rc" = "$want" ] || printf 'rm_present of a directory returned %s, rm -f %s\n' "$rc" "$want"
+fm_rm_present "$r/dir" "$r/none" 2>/dev/null; rc=$?
+[ "$rc" = "$want" ] || printf 'fm_rm_present of a directory returned %s, rm -f %s\n' "$rc" "$want"
 : > "$STATE/.writing-since-k$$"
 : > "$STATE/.writing-resurfaced-k$$"
 clear_write_tracking "k$$"
@@ -1113,13 +1113,13 @@ counted() {  # <command> [args...]
 }
 counted window_key_to got sess:w.1/x
 [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'window_key_to ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
-counted rm_present "$r/none" "$r/none2"
-[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'rm_present of absent paths ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+counted fm_rm_present "$r/none" "$r/none2"
+[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'fm_rm_present of absent paths ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
 counted clear_write_tracking absent-key
 [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'clear_write_tracking with no markers ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
 : > "$r/b"
-counted rm_present "$r/none" "$r/b"
-[ "$TOOLS" = 'rm ' ] || printf 'rm_present of a present path ran [%s], not [rm ]\n' "$TOOLS"
+counted fm_rm_present "$r/none" "$r/b"
+[ "$TOOLS" = 'rm ' ] || printf 'fm_rm_present of a present path ran [%s], not [rm ]\n' "$TOOLS"
 # Only Linux resolves stat through PATH and only Bash 4.2+ reads the clock in
 # the shell, so the age read is counted there; the md5sum branch is counted
 # where it is the one the watcher picked.
@@ -1137,7 +1137,222 @@ SH
   if ! command -v md5 >/dev/null 2>&1 && command -v md5sum >/dev/null 2>&1; then
     run_everywhere "watcher poll helpers with md5" "$script" "$dir" "$shim" "$log" "$count_shim" "$count_log"
   fi
-  pass "hash_pane_to, window_key_to, age_of_to and rm_present match what they replaced and start no more processes"
+  pass "hash_pane_to, window_key_to, age_of_to and fm_rm_present match what they replaced and start no more processes"
+}
+
+test_inbox_due_action_matches_what_it_replaced() {
+  local script="$TMP_ROOT/inbox-due.sh" dir="$TMP_ROOT/inbox-due" count_shim="$TMP_ROOT/inbox-due-count"
+  local count_log="$TMP_ROOT/inbox-due-count.log" tool path
+  mkdir -p "$dir" "$count_shim"
+  for tool in rm stat date cat awk grep; do
+    path=$(command -v "$tool") || continue
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$count_log" "$path" > "$count_shim/$tool"
+    chmod +x "$count_shim/$tool"
+  done
+  cat > "$script" <<'SH'
+# The watcher's source guard returns before its loop, leaving every helper below.
+. "$1/bin/fm-watch.sh"
+dir=$2 count_shim=$3 count_log=$4
+STATE=$dir/state
+inbox=$STATE/t1.inbox
+export FM_CONFIG_OVERRIDE=$dir/config FM_TASK_INBOX_GRACE_SECS=60
+# The replaced fm_task_inbox_oldest_unhandled and fm_task_inbox_due_action.
+reference_oldest_unhandled() {  # <state-dir> <task-id>
+  local dir best='' best_n=0 f n
+  dir=$(fm_task_inbox_dir "$1" "$2")
+  for f in "$dir"/*.msg; do
+    [ -e "$f" ] || continue
+    fm_task_inbox_is_fire_and_forget "$f" && continue
+    n=$(fm_task_inbox_seq_of "${f##*/}") || continue
+    if [ -z "$best" ] || [ "$n" -lt "$best_n" ]; then
+      best=$f
+      best_n=$n
+    fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s' "$best"
+}
+reference_due_action() {  # <state-dir> <task-id>
+  local dir oldest base now grace max ladder rec_base count last
+  dir=$(fm_task_inbox_dir "$1" "$2")
+  if ! oldest=$(reference_oldest_unhandled "$1" "$2"); then
+    rm -f "$dir/.ring-state" "$dir/.escalated" "$dir/.busy-state" 2>/dev/null || true
+    if [ -e "${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}/wait-no-turns" ]; then
+      base=$(cat "$dir/.retry-ring" 2>/dev/null || true)
+      if ! fm_task_inbox_seq_of "$base" >/dev/null || [ ! -f "$dir/$base" ]; then
+        rm -f "$dir/.retry-ring" 2>/dev/null || true
+      elif [ "$(fm_path_age "$dir/.retry-ring")" -ge "$(fm_task_inbox_grace_secs)" ]; then
+        printf 'retry %s' "$dir/$base"
+        return 0
+      fi
+    fi
+    printf 'quiet'
+    return 0
+  fi
+  base=${oldest##*/}
+  if ! fm_task_inbox_generation_current "$1" "$2" "$oldest"; then
+    printf 'stale-generation %s' "$oldest"
+    return 0
+  fi
+  grace=$(fm_task_inbox_grace_secs)
+  if [ "$(fm_path_age "$oldest")" -lt "$grace" ]; then
+    printf 'quiet'
+    return 0
+  fi
+  count=0
+  last=0
+  ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
+  IFS=$(printf '\t') read -r rec_base count last <<EOF
+$ladder
+EOF
+  if [ -n "$rec_base" ] && [ "$rec_base" != "$base" ]; then
+    count=0
+    last=0
+  fi
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ "$(cat "$dir/.escalated" 2>/dev/null || true)" = "$base" ]; then
+    printf 'quiet'
+    return 0
+  fi
+  max=$(fm_task_inbox_ring_max)
+  if [ "$count" -ge "$max" ]; then
+    printf 'escalate %s %s' "$oldest" "$count"
+    return 0
+  fi
+  now=$(date +%s)
+  if [ "$((now - last))" -lt "$grace" ]; then
+    printf 'quiet'
+    return 0
+  fi
+  printf 'ring %s' "$oldest"
+}
+record() {  # <name> [header-line...]: a record written long ago
+  local name=$1 line
+  shift
+  {
+    printf 'schema=fm-task-inbox.v1\nat=2000-01-01T00:00:00Z\n'
+    for line in "$@"; do printf '%s\n' "$line"; done
+    printf -- '--\nbody of %s\n' "$name"
+  } > "$inbox/$name"
+  touch -t 200001010000 "$inbox/$name"
+}
+setup() {  # <case>
+  rm -rf "$STATE" "$FM_CONFIG_OVERRIDE"
+  mkdir -p "$inbox/handled" "$FM_CONFIG_OVERRIDE"
+  case "$1" in
+    wait-*) : > "$FM_CONFIG_OVERRIDE/wait-no-turns" ;;
+  esac
+  case "$1" in
+    no-inbox) rm -rf "$inbox" ;;
+    empty|wait-empty) ;;
+    leftovers)
+      printf '004.msg\t3\t0\n' > "$inbox/.ring-state"
+      printf '004.msg\n' > "$inbox/.escalated"
+      printf '004.msg\t1\n' > "$inbox/.busy-state"
+      ;;
+    ladder-dir) mkdir "$inbox/.ring-state" ;;
+    leftover-link) ln -s missing "$inbox/.escalated" ;;
+    fire-and-forget|wait-fire-and-forget) record 005.msg delivery=fire-and-forget ;;
+    wait-mark-missing) printf '009.msg\n' > "$inbox/.retry-ring" ;;
+    wait-mark-junk) printf 'not a record\n' > "$inbox/.retry-ring" ;;
+    wait-mark-dir) mkdir "$inbox/.retry-ring" ;;
+    wait-mark-fresh)
+      record 005.msg delivery=fire-and-forget
+      printf '005.msg\n' > "$inbox/.retry-ring"
+      ;;
+    wait-mark-due|wait-mark-newlines)
+      record 005.msg delivery=fire-and-forget
+      if [ "$1" = wait-mark-due ]; then printf '005.msg\n' > "$inbox/.retry-ring"; else printf '005.msg\n\n\n' > "$inbox/.retry-ring"; fi
+      touch -t 200001010000 "$inbox/.retry-ring"
+      ;;
+    fresh) record 007.msg; touch "$inbox/007.msg" ;;
+    due) record 007.msg ;;
+    spaced) record 007.msg; printf '007.msg\t1\t%s\n' "$(date +%s)" > "$inbox/.ring-state" ;;
+    spent) record 007.msg; printf '007.msg\t3\t0\n' > "$inbox/.ring-state" ;;
+    other-ladder) record 007.msg; printf '006.msg\t5\t%s\n' "$(date +%s)" > "$inbox/.ring-state" ;;
+    junk-ladder) record 007.msg; printf '007.msg\tx\ty\n' > "$inbox/.ring-state" ;;
+    escalated) record 007.msg; printf '007.msg\t3\t0\n' > "$inbox/.ring-state"; printf '007.msg\n' > "$inbox/.escalated" ;;
+    ordering)
+      record 010.msg
+      record 002.msg
+      record 001.msg delivery=fire-and-forget
+      record abc.msg
+      record 1a.msg
+      ;;
+    stale-generation) record 007.msg task_generation=g2; printf 'spawn_gen=g1\n' > "$STATE/t1.meta" ;;
+    current-generation) record 007.msg task_generation=g1; printf 'spawn_gen=g1\n' > "$STATE/t1.meta" ;;
+  esac
+}
+left() {  # the names left in the inbox, dotfiles included
+  local f out=''
+  for f in "$inbox"/.[!.]* "$inbox"/*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    out="$out ${f##*/}"
+  done
+  printf '%s' "$out"
+}
+for c in no-inbox empty wait-empty leftovers ladder-dir leftover-link fire-and-forget wait-fire-and-forget \
+  wait-mark-missing wait-mark-junk wait-mark-dir wait-mark-fresh wait-mark-due wait-mark-newlines fresh due \
+  spaced spent other-ladder junk-ladder escalated ordering stale-generation current-generation; do
+  setup "$c"
+  want=$(reference_oldest_unhandled "$STATE" t1); want_rc=$?
+  got=unset
+  fm_task_inbox_oldest_unhandled_to got "$STATE" t1; got_rc=$?
+  [ "$got/$got_rc" = "$want/$want_rc" ] || printf '%s: oldest_unhandled_to %q (status %s), replaced %q (status %s)\n' "$c" "$got" "$got_rc" "$want" "$want_rc"
+  got=$(fm_task_inbox_oldest_unhandled "$STATE" t1); got_rc=$?
+  [ "$got/$got_rc" = "$want/$want_rc" ] || printf '%s: oldest_unhandled printed %q (status %s), replaced %q (status %s)\n' "$c" "$got" "$got_rc" "$want" "$want_rc"
+  want=$(reference_due_action "$STATE" t1); want_rc=$?
+  want_left=$(left)
+  setup "$c"
+  got=unset
+  fm_task_inbox_due_action_to got "$STATE" t1; got_rc=$?
+  got_left=$(left)
+  [ "$got/$got_rc" = "$want/$want_rc" ] || printf '%s: due_action_to %q (status %s), replaced %q (status %s)\n' "$c" "$got" "$got_rc" "$want" "$want_rc"
+  [ "$got_left" = "$want_left" ] || printf '%s: due_action_to left [%s], replaced [%s]\n' "$c" "$got_left" "$want_left"
+  setup "$c"
+  got=$(fm_task_inbox_due_action "$STATE" t1); got_rc=$?
+  got_left=$(left)
+  [ "$got/$got_rc" = "$want/$want_rc" ] || printf '%s: due_action printed %q (status %s), replaced %q (status %s)\n' "$c" "$got" "$got_rc" "$want" "$want_rc"
+  [ "$got_left" = "$want_left" ] || printf '%s: due_action left [%s], replaced [%s]\n' "$c" "$got_left" "$want_left"
+done
+# Run <command> with every tool it starts through PATH, and every command one
+# of its subshells runs, logged: TOOLS lists the tools, SUBSHELLS counts the
+# subshell commands.
+counted() {  # <command> [args...]
+  : > "$count_log"
+  : > "$count_log.sub"
+  (
+    PATH="$count_shim:$PATH"
+    __spawn_level=$BASH_SUBSHELL
+    set -T
+    trap '[ "$BASH_SUBSHELL" -le "$__spawn_level" ] || printf "%s\n" "$BASH_COMMAND" >> "$count_log.sub"' DEBUG
+    "$@"
+  ) > /dev/null 2>&1
+  TOOLS=$(sort "$count_log" | tr '\n' ' ')
+  SUBSHELLS=$(grep -c . "$count_log.sub" || true)
+}
+# A quiet inbox is checked, and the watcher's per-window inbox check returns,
+# without starting a process; leftover bookkeeping costs one rm. Bash before
+# 4.2 reads the retry mark with cat.
+cases='no-inbox empty'
+if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; then
+  cases="$cases wait-empty"
+fi
+for c in $cases; do
+  setup "$c"
+  counted fm_task_inbox_due_action_to got "$STATE" t1
+  [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf '%s: due_action_to ran [%s] and %s subshell commands\n' "$c" "$TOOLS" "$SUBSHELLS"
+  counted inbox_steer_check sess:fm-t1 t1
+  [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf '%s: inbox_steer_check ran [%s] and %s subshell commands\n' "$c" "$TOOLS" "$SUBSHELLS"
+done
+setup leftovers
+counted fm_task_inbox_due_action_to got "$STATE" t1
+[ "$TOOLS" = 'rm ' ] && [ "$SUBSHELLS" -eq 0 ] || printf 'leftovers: due_action_to ran [%s] and %s subshell commands, not [rm ]\n' "$TOOLS" "$SUBSHELLS"
+exit 0
+SH
+  run_everywhere "inbox due action" "$script" "$dir" "$count_shim" "$count_log"
+  pass "fm_task_inbox_due_action_to and fm_task_inbox_oldest_unhandled_to match what they replaced and start no process on a quiet inbox"
 }
 
 if [ -n "${FM_TEST_ONLY:-}" ]; then
@@ -1155,4 +1370,5 @@ else
   test_status_signature_reads_once_and_matches_the_forked_reader
   test_status_event_reads_match_the_tail_pipeline
   test_watcher_poll_helpers_match_what_they_replaced
+  test_inbox_due_action_matches_what_it_replaced
 fi

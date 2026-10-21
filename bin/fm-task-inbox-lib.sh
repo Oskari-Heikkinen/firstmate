@@ -157,8 +157,14 @@ fm_task_inbox_clear_busy() {  # <state-dir> <task-id>
   rm -f "$dir/.busy-state" 2>/dev/null
 }
 
+fm_task_inbox_dir_to() {  # <output-variable> <state-dir> <task-id>
+  printf -v "$1" '%s/%s.inbox' "$2" "$3"
+}
+
 fm_task_inbox_dir() {  # <state-dir> <task-id>
-  printf '%s/%s.inbox' "$1" "$2"
+  local _fm_tid_dir
+  fm_task_inbox_dir_to _fm_tid_dir "$1" "$2"
+  printf '%s' "$_fm_tid_dir"
 }
 
 fm_task_inbox_handled_dir() {  # <state-dir> <task-id>
@@ -483,20 +489,29 @@ fm_task_inbox_is_fire_and_forget() {  # <record-path>
 }
 
 # Oldest escalation-tracked unhandled record, or fail when none is due.
-fm_task_inbox_oldest_unhandled() {  # <state-dir> <task-id>
-  local dir best='' best_n=0 f n
-  dir=$(fm_task_inbox_dir "$1" "$2")
-  for f in "$dir"/*.msg; do
-    [ -e "$f" ] || continue
-    fm_task_inbox_is_fire_and_forget "$f" && continue
-    n=$(fm_task_inbox_seq_of "${f##*/}") || continue
-    if [ -z "$best" ] || [ "$n" -lt "$best_n" ]; then
-      best=$f
-      best_n=$n
+# fm_task_inbox_oldest_unhandled_to assigns it, or an empty value, instead of
+# printing it, so an inbox with no record is checked without starting a process.
+fm_task_inbox_oldest_unhandled_to() {  # <output-variable> <state-dir> <task-id>
+  local _fm_tou_dir _fm_tou_best='' _fm_tou_best_n=0 _fm_tou_f _fm_tou_n
+  printf -v "$1" '%s' ''
+  fm_task_inbox_dir_to _fm_tou_dir "$2" "$3"
+  for _fm_tou_f in "$_fm_tou_dir"/*.msg; do
+    [ -e "$_fm_tou_f" ] || continue
+    fm_task_inbox_is_fire_and_forget "$_fm_tou_f" && continue
+    _fm_tou_n=$(fm_task_inbox_seq_of "${_fm_tou_f##*/}") || continue
+    if [ -z "$_fm_tou_best" ] || [ "$_fm_tou_n" -lt "$_fm_tou_best_n" ]; then
+      _fm_tou_best=$_fm_tou_f
+      _fm_tou_best_n=$_fm_tou_n
     fi
   done
-  [ -n "$best" ] || return 1
-  printf '%s' "$best"
+  [ -n "$_fm_tou_best" ] || return 1
+  printf -v "$1" '%s' "$_fm_tou_best"
+}
+
+fm_task_inbox_oldest_unhandled() {  # <state-dir> <task-id>
+  local _fm_tou_out
+  fm_task_inbox_oldest_unhandled_to _fm_tou_out "$1" "$2" || return 1
+  printf '%s' "$_fm_tou_out"
 }
 
 # Owe a fire-and-forget record its one retry ring (see the header). A newer
@@ -525,63 +540,72 @@ fm_task_inbox_clear_retry() {  # <state-dir> <task-id> <record-path>
 #   stale-generation <record-path>  typed binding no longer current; quarantine
 #   retry <record-path>       a fire-and-forget record's one retry ring is due
 # An empty inbox also resets the ladder bookkeeping so the next message starts
-# a fresh ladder.
-fm_task_inbox_due_action() {  # <state-dir> <task-id>
-  local dir oldest base now grace max ladder rec_base count last
-  dir=$(fm_task_inbox_dir "$1" "$2")
-  if ! oldest=$(fm_task_inbox_oldest_unhandled "$1" "$2"); then
-    rm -f "$dir/.ring-state" "$dir/.escalated" "$dir/.busy-state" 2>/dev/null || true
+# a fresh ladder. fm_task_inbox_due_action_to assigns the decision instead of
+# printing it, and on an inbox with no record and no bookkeeping left to reset
+# starts no process.
+fm_task_inbox_due_action_to() {  # <output-variable> <state-dir> <task-id>
+  local _fm_tda_dir _fm_tda_oldest _fm_tda_base _fm_tda_now _fm_tda_grace _fm_tda_max
+  local _fm_tda_ladder _fm_tda_rec_base _fm_tda_count _fm_tda_last
+  fm_task_inbox_dir_to _fm_tda_dir "$2" "$3"
+  if ! fm_task_inbox_oldest_unhandled_to _fm_tda_oldest "$2" "$3"; then
+    fm_rm_present "$_fm_tda_dir/.ring-state" "$_fm_tda_dir/.escalated" "$_fm_tda_dir/.busy-state" 2>/dev/null || true
     # The one retry ring exists only while config/wait-no-turns is present.
     # Absent, a mark is left untouched and the inbox stays quiet, as before.
     if [ -e "${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}/wait-no-turns" ]; then
-      base=$(cat "$dir/.retry-ring" 2>/dev/null || true)
-      if ! fm_task_inbox_seq_of "$base" >/dev/null || [ ! -f "$dir/$base" ]; then
-        rm -f "$dir/.retry-ring" 2>/dev/null || true
-      elif [ "$(fm_path_age "$dir/.retry-ring")" -ge "$(fm_task_inbox_grace_secs)" ]; then
-        printf 'retry %s' "$dir/$base"
+      fm_file_text_to _fm_tda_base "$_fm_tda_dir/.retry-ring" || true
+      if ! fm_task_inbox_seq_of "$_fm_tda_base" >/dev/null || [ ! -f "$_fm_tda_dir/$_fm_tda_base" ]; then
+        fm_rm_present "$_fm_tda_dir/.retry-ring" 2>/dev/null || true
+      elif [ "$(fm_path_age "$_fm_tda_dir/.retry-ring")" -ge "$(fm_task_inbox_grace_secs)" ]; then
+        printf -v "$1" 'retry %s' "$_fm_tda_dir/$_fm_tda_base"
         return 0
       fi
     fi
-    printf 'quiet'
+    printf -v "$1" '%s' quiet
     return 0
   fi
-  base=${oldest##*/}
-  if ! fm_task_inbox_generation_current "$1" "$2" "$oldest"; then
-    printf 'stale-generation %s' "$oldest"
+  _fm_tda_base=${_fm_tda_oldest##*/}
+  if ! fm_task_inbox_generation_current "$2" "$3" "$_fm_tda_oldest"; then
+    printf -v "$1" 'stale-generation %s' "$_fm_tda_oldest"
     return 0
   fi
-  grace=$(fm_task_inbox_grace_secs)
-  if [ "$(fm_path_age "$oldest")" -lt "$grace" ]; then
-    printf 'quiet'
+  _fm_tda_grace=$(fm_task_inbox_grace_secs)
+  if [ "$(fm_path_age "$_fm_tda_oldest")" -lt "$_fm_tda_grace" ]; then
+    printf -v "$1" '%s' quiet
     return 0
   fi
-  count=0
-  last=0
-  ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
-  IFS=$(printf '\t') read -r rec_base count last <<EOF
-$ladder
+  _fm_tda_count=0
+  _fm_tda_last=0
+  _fm_tda_ladder=$(cat "$_fm_tda_dir/.ring-state" 2>/dev/null || true)
+  IFS=$(printf '\t') read -r _fm_tda_rec_base _fm_tda_count _fm_tda_last <<EOF
+$_fm_tda_ladder
 EOF
-  if [ -n "$rec_base" ] && [ "$rec_base" != "$base" ]; then
-    count=0
-    last=0
+  if [ -n "$_fm_tda_rec_base" ] && [ "$_fm_tda_rec_base" != "$_fm_tda_base" ]; then
+    _fm_tda_count=0
+    _fm_tda_last=0
   fi
-  case "$count" in ''|*[!0-9]*) count=0 ;; esac
-  case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  if [ "$(cat "$dir/.escalated" 2>/dev/null || true)" = "$base" ]; then
-    printf 'quiet'
+  case "$_fm_tda_count" in ''|*[!0-9]*) _fm_tda_count=0 ;; esac
+  case "$_fm_tda_last" in ''|*[!0-9]*) _fm_tda_last=0 ;; esac
+  if [ "$(cat "$_fm_tda_dir/.escalated" 2>/dev/null || true)" = "$_fm_tda_base" ]; then
+    printf -v "$1" '%s' quiet
     return 0
   fi
-  max=$(fm_task_inbox_ring_max)
-  if [ "$count" -ge "$max" ]; then
-    printf 'escalate %s %s' "$oldest" "$count"
+  _fm_tda_max=$(fm_task_inbox_ring_max)
+  if [ "$_fm_tda_count" -ge "$_fm_tda_max" ]; then
+    printf -v "$1" 'escalate %s %s' "$_fm_tda_oldest" "$_fm_tda_count"
     return 0
   fi
-  now=$(date +%s)
-  if [ "$((now - last))" -lt "$grace" ]; then
-    printf 'quiet'
+  _fm_tda_now=$(date +%s)
+  if [ "$((_fm_tda_now - _fm_tda_last))" -lt "$_fm_tda_grace" ]; then
+    printf -v "$1" '%s' quiet
     return 0
   fi
-  printf 'ring %s' "$oldest"
+  printf -v "$1" 'ring %s' "$_fm_tda_oldest"
+}
+
+fm_task_inbox_due_action() {  # <state-dir> <task-id>
+  local _fm_tda_out
+  fm_task_inbox_due_action_to _fm_tda_out "$1" "$2"
+  printf '%s' "$_fm_tda_out"
 }
 
 # Advance the ladder after a delivery attempt. A failed ring or a composer-
@@ -592,12 +616,12 @@ EOF
 # the caller must surface the unwritable ladder while the record remains
 # unhandled.
 fm_task_inbox_record_ring() {  # <state-dir> <task-id> <record-path>
-  local dir base ladder rec_base count last
+  local dir base ladder rec_base count
   dir=$(fm_task_inbox_dir "$1" "$2")
   base=${3##*/}
   count=0
   ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
-  IFS=$(printf '\t') read -r rec_base count last <<EOF
+  IFS=$(printf '\t') read -r rec_base count _ <<EOF
 $ladder
 EOF
   [ "$rec_base" = "$base" ] || count=0
