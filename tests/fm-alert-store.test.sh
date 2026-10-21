@@ -208,7 +208,7 @@ test_unreadable_store_raises_and_holds() {
   printf '{"schema":"fm-alert-store/v1","store":"broken","revision":0,"active":{},"events":[]}\n' > "$store"
   out=$(store_cli "$home" tick) || fail "the recovered tick failed"
   assert_equals "" "$out" "a readable store still reports a problem"
-  assert_contains "$(cat "$home/state/alert-stores.log")" "read cleanly again" "the log does not record the recovery"
+  assert_contains "$(cat "$home/state/alert-stores.log")" "reads cleanly again" "the log does not record the recovery"
   pass "an unreadable store is a problem on every tick and holds its blockers open"
 }
 
