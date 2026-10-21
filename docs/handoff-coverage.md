@@ -4,11 +4,11 @@ A handoff is any record that crosses a home, machine or process boundary: an exp
 `handoff-coverage/v1` makes every handoff covered by construction.
 Each artifact type is a registered protocol with an ordered chain of stages, every stage writes a receipt for every decision, and a watcher in every home joins the two to alarm on anything that is refused, stuck, unread or undeclared.
 
-This document owns three formats and the rules that bind them:
+This document owns two formats and the rules that bind them:
 
 - `handoff-registry/v1`, the fragment in which a home declares the protocols it owns ([Registry fragment](#registry-fragment-handoff-registryv1));
 - `handoff-receipt/v1`, one stage's outcome for one record ([Receipts](#receipts-handoff-receiptv1));
-- the alert store the coverage checks raise into, which generalises `tj-capacity-alerts/v1` and whose format is owned by its own document ([Alert store](#alert-store)).
+- how the coverage checks use alert stores, whose format `fm-alert-store/v1` generalises `tj-capacity-alerts/v1` and is owned by [docs/alert-store.md](alert-store.md) ([Alert store](#alert-store)).
 
 The machine-checkable schemas are `docs/handoff-coverage/handoff-registry-v1.schema.json` and `docs/handoff-coverage/handoff-receipt-v1.schema.json`.
 `bin/fm-handoff-validate.py` checks files against them plus the cross-field rules a schema cannot express; its header owns the commands and exit codes.
@@ -39,7 +39,7 @@ This document fixes what they read; it does not specify how they run.
 | Receipt | `<outbox>/<YYYYMMDDTHHMMSS.ffffffZ>-<receipt_id>.json` | the stage owner, atomically, before its decision takes effect | the watcher (the outbox's registered reader), the next stage if it wants |
 | Receipt staging | `<outbox>/.tmp/` | the stage owner | nobody |
 | Sync stamp | `<synced folder>/.synced-at` | the sync job that copies a synced place or outbox | the watcher |
-| Alerts | the alert store (see [Alert store](#alert-store)) | the watcher | the status-line projection, the routed homes |
+| Alerts | an `fm-alert-store/v1` store per alarm target, registered in that target's `state/alert-stores/` (see [Alert store](#alert-store)) | the watcher | the alert-store tick in the target home |
 
 `<home>` is the home's root folder.
 A home may publish several fragment files, for example one per publishing tool; each file carries its own `publisher` and `revision`.
@@ -318,8 +318,21 @@ Every item is a field in its protocol owner's fragment, and nothing else is need
 
 ## Alert store
 
-The coverage checks raise their alarms into the shared alert store, which generalises `tj-capacity-alerts/v1` (active entries, an event list and a revision) into level-asserted alarms (I5).
-Its format, location and acknowledgement rules are owned by its own document and are not repeated here.
+The coverage checks raise their alarms as levels in alert stores (I5).
+[docs/alert-store.md](alert-store.md) owns the store format `fm-alert-store/v1` (which generalises `tj-capacity-alerts/v1`), the registration `fm-alert-registration/v1`, the projection onto status lines and the acknowledgement rules; none of it is repeated here.
+This section says only how the coverage checks fill it.
+
+- **Writer.** The watcher is each store's one writer, through `bin/fm-alert-store.sh assert` and `clear`.
+  It asserts every alarm on every pass while its condition holds and clears it only when the condition is gone, so a relaunch or note cannot close it.
+- **One store per target.** A registration binds a store to one status file, so an alarm reaches each target in the [Alarm to](#coverage-checks) column through a store registered in that target's home (`<target home>/state/alert-stores/<store-id>.reg`).
+  The watcher writes that registration itself, as data, the way the alert-store doc allows a tool in another home to.
+- **Entry fields.** `key` is one stable slug per check and subject, so re-asserting it is idempotent; it never starts with a reserved prefix (`pending-reply-`, `handoff-pickup-`, `handoff-tj-`).
+  `kind` is the check name from the coverage-check table, such as `lane-fault`.
+  `subject` names what the alarm is about: `<protocol>/<stage>/<record>` for a record, `<protocol>/<stage>` for a stage, or the path for `source-unreadable` and `sync-stale`.
+  `reason` is the one-line blocker text: the receipt's `detail` when it has one, and for `lane-fault` it names the code's `stops`.
+  `since` is when the condition began (the receipt's `written_at`, or when the record arrived), and `evidence` holds the receipt or file path.
+- **Acknowledgement.** Only the alarm's target acknowledges it, with `bin/fm-alert-store.sh ack`; the acknowledgement always has an `until` of at most 7 days, after which the alarm is projected again if its condition still holds.
+  An acknowledgement of an open `refused` receipt closes the refusal for the 4 h rule until then.
 
 ## Compatibility and versioning
 
@@ -369,7 +382,7 @@ Each seam of the new pipeline lands in these fields; `examples/xp-chain.fragment
 
 Reused blocks land here:
 
-- the `tj-capacity-alerts/v1` alert-file shape becomes the [alert store](#alert-store);
+- the `tj-capacity-alerts/v1` alert-file shape becomes `fm-alert-store/v1` ([docs/alert-store.md](alert-store.md));
 - the launch-check rule that every undecided outcome is an alert becomes `source-unreadable` and the refusal of an unknown `format`;
 - ap-v2.1's per-id alarm after a threshold, where every hold names what it stops, becomes `retry_limit` with `open-past-bound`, and `stops`;
 - the merge queue's receipts, whose readers ignore unknown `key=value`, become the `ext` rule;
@@ -378,7 +391,8 @@ Reused blocks land here:
 ## Open points owners must settle
 
 - **Cross-home stage declarations.** A protocol owner declares stages that other homes own; whether a stage owner must also confirm its stages in its own fragment is for tooling-mate and the stage owners to settle with the watcher work.
-- **Refusal closure.** A later attempt or an alert-store acknowledgement closes a refusal; whether an acknowledgement needs an expiry per code is for the alert store's owner.
+- **Refusal closure.** A later attempt closes a refusal for good; an alert-store acknowledgement closes it only until its `until`, at most 7 days by [docs/alert-store.md](alert-store.md). Whether some codes need a shorter maximum is for the watcher work.
+- **Alarm keys and store ids.** The exact spelling of each check's alert key and of each target's store id is for the watcher work, within the entry-field rules in [Alert store](#alert-store).
 - **Dated-rule slips.** Moving a date is a new revision; whether a slip needs a review step, as `xp-route-schedule/v1` does, is for the schedule work.
 - **Fragment discovery.** Every home's watcher reads the fragments of every home on its machine; how it finds homes on another machine, if any are added, is for the watcher work.
 - **Record ids across stages.** The chain assumes one stable `record` id from filing to collect; a stage that renames records records the old id in `ext` until its owner settles a field for it.

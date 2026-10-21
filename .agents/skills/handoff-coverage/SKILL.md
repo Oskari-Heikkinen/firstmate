@@ -58,7 +58,7 @@ The doc's "Coverage checks" table is the full list; in short:
 - a dated rule 14, 7 or 1 days out or past its date (`dated-rule`);
 - a home's watcher heartbeat older than 2 ticks (`watcher-silent`).
 
-An alarm stays active while its condition holds, so notes and status lines cannot close it: fix the cause, or acknowledge it in the alert store if you own it.
+Each alarm is a level in an alert store ([docs/alert-store.md](../../../docs/alert-store.md)), so notes and status lines cannot close it while its condition holds: fix the cause, or, if it was routed to you, acknowledge it with a bounded expiry as the `alert-store` skill says.
 
 ## Never
 
