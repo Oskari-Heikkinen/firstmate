@@ -57,6 +57,94 @@ else
   fm_epoch_seconds_to() { printf -v "$1" '%s' "$(date +%s)"; }
 fi
 
+# Fork-free stand-ins for `$(cat <file>)` and `$(od -An -v -tx1 <file> | tr -d
+# '[:space:]')` on the watcher-health paths, which read lock files and /proc
+# every poll. Each assigns <output-variable> exactly what that command
+# substitution would - text drops NUL bytes and trailing newlines - and returns
+# 1 with an empty value when the file cannot be opened or is a directory.
+# Stock macOS Bash 3.2, which CI checks only weekly, keeps cat and od.
+# Every _to helper below prefixes its locals with a name of its own: bash scopes
+# locals dynamically, so a local that shared a caller's output-variable name
+# would take the result and leave the caller's variable untouched.
+if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; then
+  # The readers run bytewise under a local LC_ALL=C, because a multibyte locale
+  # makes read take the NUL after a stray lead byte into that character. Their
+  # public names discard stderr, so restoring an ambient LC_ALL that names an
+  # uninstalled locale cannot print a setlocale warning on every poll.
+  fm_file_text_to() { _fm_file_text_c_to "$@" 2>/dev/null; }
+  fm_file_hex_to() { _fm_file_hex_c_to "$@" 2>/dev/null; }
+
+  _fm_file_text_c_to() {  # <output-variable> <file>
+    local LC_ALL=C _fm_ft_text='' _fm_ft_chunk=''
+    printf -v "$1" '%s' ''
+    [ ! -d "$2" ] || return 1
+    while IFS= read -r -d '' _fm_ft_chunk; do
+      _fm_ft_text+=$_fm_ft_chunk
+    done 2>/dev/null < "$2" || return 1
+    _fm_ft_text+=$_fm_ft_chunk
+    while [ "${_fm_ft_text%$'\n'}" != "$_fm_ft_text" ]; do _fm_ft_text=${_fm_ft_text%$'\n'}; done
+    printf -v "$1" '%s' "$_fm_ft_text"
+  }
+
+  # printf '%02x' "'<char>" yields one byte per character only where the C
+  # locale is single-byte, so a platform that answers otherwise keeps od.
+  _fm_hex_bytewise() {
+    local LC_ALL=C _fm_hb_probe=$'\xc3\xa9\xff\x01\x7f' _fm_hb_got
+    [ "${#_fm_hb_probe}" -eq 5 ] || return 1
+    printf -v _fm_hb_got '%02x%02x%02x%02x%02x' "'${_fm_hb_probe:0:1}" "'${_fm_hb_probe:1:1}" \
+      "'${_fm_hb_probe:2:1}" "'${_fm_hb_probe:3:1}" "'${_fm_hb_probe:4:1}"
+    [ "$_fm_hb_got" = c3a9ff017f ]
+  }
+  _FM_HEX_BYTEWISE=0
+  ! _fm_hex_bytewise 2>/dev/null || _FM_HEX_BYTEWISE=1
+
+  # Past 512 bytes a printf per byte costs more than the od fork it replaces.
+  _fm_file_hex_c_to() {  # <output-variable> <file>
+    local LC_ALL=C _fm_fh_hex='' _fm_fh_chunk='' _fm_fh_byte _fm_fh_len _fm_fh_size=0 _fm_fh_n=0 _fm_fh_i _fm_fh_j
+    local -a _fm_fh_chunks
+    printf -v "$1" '%s' ''
+    [ ! -d "$2" ] || return 1
+    if [ "$_FM_HEX_BYTEWISE" = 1 ]; then
+      while IFS= read -r -d '' _fm_fh_chunk; do
+        _fm_fh_chunks[_fm_fh_n]=$_fm_fh_chunk
+        _fm_fh_n=$((_fm_fh_n + 1))
+        _fm_fh_size=$((_fm_fh_size + ${#_fm_fh_chunk} + 1))
+      done 2>/dev/null < "$2" || return 1
+      _fm_fh_chunks[_fm_fh_n]=$_fm_fh_chunk
+      _fm_fh_size=$((_fm_fh_size + ${#_fm_fh_chunk}))
+    fi
+    if [ "$_FM_HEX_BYTEWISE" != 1 ] || [ "$_fm_fh_size" -gt 512 ]; then
+      _fm_fh_hex=$(od -An -v -tx1 "$2" 2>/dev/null) || return 1
+      printf -v "$1" '%s' "${_fm_fh_hex//[[:space:]]/}"
+      return 0
+    fi
+    for ((_fm_fh_j = 0; _fm_fh_j <= _fm_fh_n; _fm_fh_j++)); do
+      _fm_fh_chunk=${_fm_fh_chunks[_fm_fh_j]}
+      _fm_fh_len=${#_fm_fh_chunk}
+      for ((_fm_fh_i = 0; _fm_fh_i < _fm_fh_len; _fm_fh_i++)); do
+        printf -v _fm_fh_byte '%02x' "'${_fm_fh_chunk:_fm_fh_i:1}"
+        _fm_fh_hex+=$_fm_fh_byte
+      done
+      [ "$_fm_fh_j" -eq "$_fm_fh_n" ] || _fm_fh_hex+='00'
+    done
+    printf -v "$1" '%s' "$_fm_fh_hex"
+  }
+else
+  fm_file_text_to() {  # <output-variable> <file>
+    local _fm_ft_text
+    _fm_ft_text=$(cat "$2" 2>/dev/null) || { printf -v "$1" '%s' ''; return 1; }
+    printf -v "$1" '%s' "$_fm_ft_text"
+  }
+
+  fm_file_hex_to() {  # <output-variable> <file>
+    local _fm_fh_hex
+    printf -v "$1" '%s' ''
+    [ ! -d "$2" ] || return 1
+    _fm_fh_hex=$(od -An -v -tx1 "$2" 2>/dev/null) || return 1
+    printf -v "$1" '%s' "${_fm_fh_hex//[[:space:]]/}"
+  }
+fi
+
 fm_pid_alive() {
   local pid=$1
   case "$pid" in
@@ -65,35 +153,64 @@ fm_pid_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
-fm_pid_identity() {
-  local pid=$1 out proc_root stat_line starttime cmdline_hex identity_key
-  local -a stat_fields
-  case "$pid" in
+# Status 0 assigns the /proc identity, 1 fails, and 2 means <pid> has no
+# Linux-compatible /proc entry, so the caller falls back to ps.
+_fm_pid_identity_proc_to() {  # <output-variable> <pid>
+  local _fm_pi_pid=$2 _fm_pi_root _fm_pi_stat _fm_pi_start _fm_pi_cmdline _fm_pi_key
+  local -a _fm_pi_fields
+  printf -v "$1" '%s' ''
+  case "$_fm_pi_pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  _fm_pi_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
   # Prefer a Linux-compatible /proc when present: stat field 22 (starttime, clock ticks since boot) is
   # immune to the wall-clock steps that re-render the ps lstart fallback's date
   # (observed as WSL2 btime drift) and would evict a live watcher; combining the
   # full NUL-separated cmdline keeps PID reuse a mismatch even on a tick collision.
   # Git Bash/MSYS exposes these compatible files but its Cygwin ps rejects the
   # portable fallback's -o fields, so capability detection must not key on uname.
-  if [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ]; then
-    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
-    # After the final comm delimiter, array index 19 is proc stat field 22.
-    read -r -a stat_fields <<< "${stat_line##*)}"
-    [ "${#stat_fields[@]}" -ge 20 ] || return 1
-    starttime=${stat_fields[19]}
-    case "$starttime" in
-      ''|*[!0-9]*) return 1 ;;
-    esac
-    cmdline_hex=$(od -An -v -tx1 "$proc_root/$pid/cmdline" 2>/dev/null | tr -d '[:space:]') || return 1
-    [ -n "$cmdline_hex" ] || return 1
-    identity_key=proc-starttime
-    [ "$_FM_UNAME" != Linux ] || identity_key=linux-starttime
-    printf '%s=%s cmdline-hex=%s\n' "$identity_key" "$starttime" "$cmdline_hex"
-    return 0
+  [ -r "$_fm_pi_root/$_fm_pi_pid/stat" ] && [ -r "$_fm_pi_root/$_fm_pi_pid/cmdline" ] || return 2
+  fm_file_text_to _fm_pi_stat "$_fm_pi_root/$_fm_pi_pid/stat" || return 1
+  # After the final comm delimiter, array index 19 is proc stat field 22.
+  read -r -a _fm_pi_fields <<< "${_fm_pi_stat##*)}"
+  [ "${#_fm_pi_fields[@]}" -ge 20 ] || return 1
+  _fm_pi_start=${_fm_pi_fields[19]}
+  case "$_fm_pi_start" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  fm_file_hex_to _fm_pi_cmdline "$_fm_pi_root/$_fm_pi_pid/cmdline" || return 1
+  [ -n "$_fm_pi_cmdline" ] || return 1
+  _fm_pi_key=proc-starttime
+  [ "$_FM_UNAME" != Linux ] || _fm_pi_key=linux-starttime
+  printf -v "$1" '%s=%s cmdline-hex=%s' "$_fm_pi_key" "$_fm_pi_start" "$_fm_pi_cmdline"
+}
+
+# fm_pid_identity_to <output-variable> <pid>
+# Assigns what `$(fm_pid_identity <pid>)` would, without forking on the /proc
+# path, so health polls can prove a holder's identity every cycle.
+fm_pid_identity_to() {
+  local _fm_pit_value _fm_pit_rc=0
+  _fm_pid_identity_proc_to _fm_pit_value "$2" || _fm_pit_rc=$?
+  if [ "$_fm_pit_rc" -eq 2 ]; then
+    _fm_pit_rc=0
+    _fm_pit_value=$(_fm_pid_identity_ps "$2") || _fm_pit_rc=1
   fi
+  printf -v "$1" '%s' "$_fm_pit_value"
+  return "$_fm_pit_rc"
+}
+
+fm_pid_identity() {
+  local _fm_pip_value _fm_pip_rc=0
+  _fm_pid_identity_proc_to _fm_pip_value "$1" || _fm_pip_rc=$?
+  case "$_fm_pip_rc" in
+    0) printf '%s\n' "$_fm_pip_value" ;;
+    2) _fm_pid_identity_ps "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+_fm_pid_identity_ps() {  # <pid>
+  local pid=$1 out
   # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
   # written under one locale but re-read under the machine's ambient locale, which
   # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
@@ -115,11 +232,32 @@ fm_path_mtime() {
   fi
 }
 
+# fm_path_mtime_to <output-variable> <path>
+# Assigns what `$(fm_path_mtime <path>)` would, with the one stat fork.
+fm_path_mtime_to() {
+  local _fm_pm_mtime
+  if [ "$_FM_UNAME" = Darwin ]; then
+    _fm_pm_mtime=$(/usr/bin/stat -f %m "$2" 2>/dev/null) || { printf -v "$1" '%s' ''; return 1; }
+  else
+    _fm_pm_mtime=$(stat -c %Y "$2" 2>/dev/null) || { printf -v "$1" '%s' ''; return 1; }
+  fi
+  printf -v "$1" '%s' "$_fm_pm_mtime"
+}
+
+# fm_path_age_to <output-variable> <path>
+# Assigns what `$(fm_path_age <path>)` would: seconds since <path> changed, or
+# 999999 when it cannot be read.
+fm_path_age_to() {
+  local _fm_pa_mtime _fm_pa_now
+  fm_path_mtime_to _fm_pa_mtime "$2" || { printf -v "$1" '%s' 999999; return 0; }
+  fm_epoch_seconds_to _fm_pa_now
+  printf -v "$1" '%s' "$((_fm_pa_now - _fm_pa_mtime))"
+}
+
 fm_path_age() {
-  local path=$1 m now
-  m=$(fm_path_mtime "$path") || { echo 999999; return; }
-  fm_epoch_seconds_to now
-  echo $(( now - m ))
+  local _fm_pag_age
+  fm_path_age_to _fm_pag_age "$1"
+  echo "$_fm_pag_age"
 }
 
 # fm_poll_derived_grace [poll-seconds]
@@ -171,13 +309,13 @@ fm_watcher_lock_matches_pid() {
   local state=$1 watch_path=$2 pid=$3 home=${4:-$FM_HOME} lockdir lock_home lock_path lock_identity current_identity
   FM_WATCHER_MATCHED_IDENTITY=
   lockdir="$state/.watch.lock"
-  lock_home=$(cat "$lockdir/fm-home" 2>/dev/null || true)
-  lock_path=$(cat "$lockdir/watcher-path" 2>/dev/null || true)
-  lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+  fm_file_text_to lock_home "$lockdir/fm-home" || true
+  fm_file_text_to lock_path "$lockdir/watcher-path" || true
+  fm_file_text_to lock_identity "$lockdir/pid-identity" || true
   [ "$lock_home" = "$home" ] || return 1
   [ "$lock_path" = "$watch_path" ] || return 1
   [ -n "$lock_identity" ] || return 1
-  current_identity=$(fm_pid_identity "$pid") || return 1
+  fm_pid_identity_to current_identity "$pid" || return 1
   [ "$current_identity" = "$lock_identity" ] || return 1
   FM_WATCHER_MATCHED_IDENTITY=$lock_identity
 }
@@ -190,11 +328,11 @@ fm_watcher_healthy() {
   FM_WATCHER_HEALTHY_IDENTITY=
   lockdir="$state/.watch.lock"
   beat="$state/.last-watcher-beat"
-  pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+  fm_file_text_to pid "$lockdir/pid" || true
   fm_pid_alive "$pid" || return 1
   fm_watcher_lock_matches_pid "$state" "$watch_path" "$pid" "$home" || return 1
   identity=$FM_WATCHER_MATCHED_IDENTITY
-  age=$(fm_path_age "$beat")
+  fm_path_age_to age "$beat"
   [ "$age" -lt "$grace" ] || return 1
   # shellcheck disable=SC2034 # Read by callers after fm_watcher_healthy returns.
   FM_WATCHER_HEALTHY_PID=$pid
@@ -435,7 +573,7 @@ fm_watcher_supervision_verdict() {
   FM_WATCHER_VERDICT_OK=false
   FM_WATCHER_VERDICT_REASON=stale-beacon
   beat="$state/.last-watcher-beat"
-  age=$(fm_path_age "$beat")
+  fm_path_age_to age "$beat"
   case "$age" in
     ''|*[!0-9]*) ;;
     *) [ "$age" -lt "$grace" ] && fresh=true ;;

@@ -3167,7 +3167,9 @@ WATCHDOG_PID=
 WATCHDOG_INTERVAL=${FM_WATCHER_WATCHDOG_INTERVAL:-15}
 case "$WATCHDOG_INTERVAL" in ''|*[!0-9]*|0) WATCHDOG_INTERVAL=15 ;; esac
 watcher_watchdog_owns() {
-  [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$WATCHER_PID" ] \
+  local owner_pid
+  fm_file_text_to owner_pid "$WATCH_LOCK/pid" || true
+  [ "$owner_pid" = "$WATCHER_PID" ] \
     && fm_watcher_lock_matches_pid "$STATE" "$WATCH_PATH" "$WATCHER_PID" "$FM_HOME"
 }
 watcher_watchdog_start() {
@@ -3191,7 +3193,7 @@ watcher_watchdog_start() {
         continue
       fi
       unproven=''
-      mtime=$(fm_path_mtime "$STATE/.last-watcher-beat")
+      fm_path_mtime_to mtime "$STATE/.last-watcher-beat" || true
       if [ "$mtime" != "$seen" ]; then
         seen=$mtime
         still=0

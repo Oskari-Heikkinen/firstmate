@@ -330,12 +330,15 @@ START_CAP_SECONDS=$GRACE
 # within the cap and has not published a contradicting identity. A long-held
 # lock whose beacon went stale is a wedged holder, not a starting one.
 successor_starting() {
-  local pid identity
-  pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  local pid identity claim_age current
+  fm_file_text_to pid "$WATCH_LOCK/pid" || true
   fm_pid_alive "$pid" || return 1
-  [ "$(fm_path_age "$WATCH_LOCK/pid")" -lt "$START_CAP_SECONDS" ] || return 1
-  identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
-  [ -z "$identity" ] || [ "$identity" = "$(fm_pid_identity "$pid" 2>/dev/null || true)" ]
+  fm_path_age_to claim_age "$WATCH_LOCK/pid"
+  [ "$claim_age" -lt "$START_CAP_SECONDS" ] || return 1
+  fm_file_text_to identity "$WATCH_LOCK/pid-identity" || true
+  [ -n "$identity" ] || return 0
+  fm_pid_identity_to current "$pid" 2>/dev/null || true
+  [ "$identity" = "$current" ]
 }
 
 # Give a successor the same bounded confirmation window used for a fresh child.
@@ -343,14 +346,14 @@ successor_starting() {
 # false failure when process-close delivery and lock publication cross briefly.
 wait_for_healthy_successor() {
   local started deadline cap now
-  # date(1) exposes whole seconds. Add one rounding second so a timeout of one
+  # The clock reads whole seconds. Add one rounding second so a timeout of one
   # second cannot collapse to a few milliseconds when called near a boundary.
-  started=$(date +%s)
+  fm_epoch_seconds_to started
   deadline=$(( started + CONFIRM_TIMEOUT + 1 ))
   cap=$(( started + START_CAP_SECONDS + 1 ))
   while :; do
     healthy_watcher && return 0
-    now=$(date +%s)
+    fm_epoch_seconds_to now
     if [ "$now" -ge "$deadline" ]; then
       [ "$now" -lt "$cap" ] || return 1
       successor_starting || return 1
@@ -403,7 +406,7 @@ close_unobserved_cycle() {
 # the identity this arm's current cycle attached to, whatever its beacon age.
 attached_holder_live() {
   local pid=$1 lock_pid
-  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  fm_file_text_to lock_pid "$WATCH_LOCK/pid" || true
   [ "$lock_pid" = "$pid" ] || return 1
   fm_pid_alive "$pid" || return 1
   fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$pid" "$FM_HOME" || return 1
@@ -433,7 +436,7 @@ attach_and_wait() {
       continue
     fi
     if attached_holder_live "$attached_pid"; then
-      age=$(fm_path_age "$BEAT")
+      fm_path_age_to age "$BEAT"
       if [ "$age" -lt "$STALL_BOUND" ]; then
         sleep "$ATTACH_POLL"
         continue
@@ -812,7 +815,7 @@ while :; do
     owned_child_finished "$rc"
     exit $?
   fi
-  now=$(date +%s)
+  fm_epoch_seconds_to now
   if [ "$now" -ge "$deadline" ]; then
     [ "$now" -lt "$confirm_cap" ] || break
     fm_pid_alive "$child" || break

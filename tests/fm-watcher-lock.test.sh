@@ -2092,6 +2092,60 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
+test_health_poll_spawns_only_the_beacon_stat() {
+  # The arm's attach poll and the watcher's watchdog prove a live holder on
+  # every poll. On a /proc host with Bash 4.2+ that proof reads the lock files
+  # and the holder's identity in the shell, so the beacon's stat is the one
+  # command it spawns, and a changed identity still fails the proof.
+  local dir state counted log holder identity tool out
+  dir=$(make_case health-poll-spawns)
+  state="$dir/state"
+  counted="$dir/counted-bin"
+  log="$dir/spawned.log"
+  mkdir -p "$counted"
+  for tool in cat od tr sed ps stat; do
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$log" "$(command -v "$tool")" > "$counted/$tool"
+    chmod +x "$counted/$tool"
+  done
+  sleep 300 &
+  holder=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$holder") || fail "could not identify the fake holder"
+  mkdir -p "$state/.watch.lock"
+  printf '%s\n' "$holder" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+  touch "$state/.last-watcher-beat"
+  out=$(PATH="$counted:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; } \
+      || [ ! -r "/proc/$4/stat" ]; then
+      echo skip
+      exit 0
+    fi
+    : > "$3"
+    fm_watcher_healthy "$STATE" "$2" 300 "$FM_HOME" || { echo "a live identity-matched holder was unhealthy"; exit 1; }
+    [ "$FM_WATCHER_HEALTHY_PID" = "$4" ] || echo "health named pid $FM_WATCHER_HEALTHY_PID, not $4"
+    spawned=
+    while IFS= read -r line; do spawned="$spawned$line "; done < "$3"
+    [ "$spawned" = "stat " ] || echo "the health proof spawned: $spawned"
+    IFS= read -r recorded < "$STATE/.watch.lock/pid-identity"
+    printf "%s\n" "x$recorded" > "$STATE/.watch.lock/pid-identity"
+    ! fm_watcher_healthy "$STATE" "$2" 300 "$FM_HOME" || echo "a changed identity still proved the holder"
+  ' _ "$LIB" "$WATCH" "$log" "$holder" 2>&1)
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  case "$out" in
+    skip)
+      pass "health-poll spawn count skipped without /proc or Bash 4.2"
+      return
+      ;;
+    '') ;;
+    *) fail "$out" ;;
+  esac
+  pass "the watcher health proof spawns only the beacon stat and still rejects a changed identity"
+}
+
 # Case pool (fm_run_case_pool in tests/lib.sh). Every case builds its own
 # fixture under its own make_case directory (or a uniquely named TMP_ROOT
 # path), starts and reaps only its own watchers, arms, and lock contenders, and
@@ -2125,6 +2179,7 @@ WATCHER_LOCK_CASES=(
   test_pid_identity_is_terminal_width_invariant
   test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
   test_msys_pid_identity_uses_proc
+  test_health_poll_spawns_only_the_beacon_stat
   test_stale_watch_lock_reclaimed
   test_stale_watch_reclaim_publishes_before_clear
   test_live_stale_watch_lock_is_actionable
