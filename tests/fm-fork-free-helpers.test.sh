@@ -998,6 +998,148 @@ SH
   pass "status event reads match the tail pipeline they replaced and start no process for a file the window holds"
 }
 
+test_watcher_poll_helpers_match_what_they_replaced() {
+  local script="$TMP_ROOT/poll-helpers.sh" dir="$TMP_ROOT/poll-helpers" shim="$TMP_ROOT/poll-helpers-md5"
+  local log="$TMP_ROOT/poll-helpers-md5.log" count_shim="$TMP_ROOT/poll-helpers-count"
+  local count_log="$TMP_ROOT/poll-helpers-count.log" tool path
+  mkdir -p "$dir/sub" "$dir/state" "$shim" "$count_shim"
+  printf 'beat\n' > "$dir/fresh"
+  touch -t 200001010000 "$dir/old"
+  touch -t 209901010000 "$dir/future"
+  ln -s missing-target "$dir/dangling"
+  # What md5 -q prints, logged, so a host that ships only md5sum also runs the
+  # md5 branch the watcher picks when it loads.
+  cat > "$shim/md5" <<SH
+#!/bin/sh
+printf 'md5\n' >> "$log"
+[ "\$1" = -q ] || exit 2
+sum=\$(md5sum) || exit 1
+printf '%s\n' "\${sum%% *}"
+SH
+  chmod +x "$shim/md5"
+  for tool in rm stat date md5sum md5 cut cat; do
+    path=$(command -v "$tool") || continue
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$count_log" "$path" > "$count_shim/$tool"
+    chmod +x "$count_shim/$tool"
+  done
+  cat > "$script" <<'SH'
+md5_shim=$3 md5_log=$4 count_shim=$5 count_log=$6
+[ -z "$md5_shim" ] || PATH="$md5_shim:$PATH"
+# The watcher's source guard returns before its loop, leaving every helper below.
+. "$1/bin/fm-watch.sh"
+dir=$2
+STATE=$dir/state
+hash_pane() {  # the replaced hash reader
+  if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | cut -d' ' -f1; fi
+}
+reference_key() {  # the replaced window_key body
+  local key=${1//:/_}
+  key=${key//\//_}
+  printf '%s' "${key//./_}"
+}
+long=''
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  long="$long  line $i of a pane, \$ % \\ ${i}0%"$'\n\n'
+done
+for t in '' a ' ' $'\n' $'line\n' $'two\nlines\n\n' -n '%s %d \' $'caf\xc3\xa9 \xff\xfe' "$long"; do
+  want=$(printf '%s' "$t" | hash_pane)
+  [ -z "$md5_log" ] || : > "$md5_log"
+  got=unset
+  hash_pane_to got "$t"
+  [ "$got" = "$want" ] || printf 'hash %q: helper %q, pipeline %q\n' "$t" "$got" "$want"
+  [ -z "$md5_shim" ] || [ -s "$md5_log" ] || printf 'hash %q: md5 on PATH at load, but the helper did not run it\n' "$t"
+done
+for w in '' sess:w1 a/b.c:d ... ::: x:y/z.w fm-x sess:fm-a.b/c $'caf\xc3\xa9:\xff.x' '%s/%d'; do
+  want=$(reference_key "$w")
+  got=unset
+  window_key_to got "$w"
+  [ "$got" = "$want" ] || printf 'window_key_to %q: helper %q, reference %q\n' "$w" "$got" "$want"
+  got=$(window_key "$w")
+  [ "$got" = "$want" ] || printf 'window_key %q: printed %q, reference %q\n' "$w" "$got" "$want"
+done
+for f in "$dir/fresh" "$dir/old" "$dir/future" "$dir/sub" "$dir/dangling" "$dir/missing"; do
+  m=$(stat_mtime "$f"); mrc=$?
+  before=$(date +%s)
+  got=unset
+  age_of_to got "$f"; grc=$?
+  printed=$(age_of "$f")
+  after=$(date +%s)
+  [ "$grc" = 0 ] || printf 'age_of_to %s returned %s\n' "${f##*/}" "$grc"
+  for age in "$got" "$printed"; do
+    if [ "$mrc" -ne 0 ] || [ "$m" -gt "$before" ]; then
+      [ "$age" = 999999 ] || printf 'age %s: unreadable or future mtime gave %q, not 999999\n' "${f##*/}" "$age"
+      continue
+    fi
+    case "$age" in
+      ''|*[!0-9]*) printf 'age %s: not seconds: %q\n' "${f##*/}" "$age"; continue ;;
+    esac
+    [ "$age" -ge $((before - m)) ] && [ "$age" -le $((after - m)) ] \
+      || printf 'age %s: %s outside [%s, %s]\n' "${f##*/}" "$age" "$((before - m))" "$((after - m))"
+  done
+done
+r="$dir/rm-$$"
+mkdir -p "$r/dir" "$r/dir2"
+: > "$r/a"
+ln -s missing "$r/link"
+rm_present "$r/a" "$r/none"; rc=$?
+[ "$rc" = 0 ] && [ ! -e "$r/a" ] || printf 'rm_present kept a present file (status %s)\n' "$rc"
+rm_present "$r/none" "$r/link"; rc=$?
+[ "$rc" = 0 ] && [ ! -L "$r/link" ] || printf 'rm_present kept a dangling link (status %s)\n' "$rc"
+rm_present "$r/none" "$r/none2"; rc=$?
+[ "$rc" = 0 ] || printf 'rm_present of absent paths returned %s\n' "$rc"
+rm -f "$r/dir2" 2>/dev/null; want=$?
+rm_present "$r/dir" "$r/none" 2>/dev/null; rc=$?
+[ "$rc" = "$want" ] || printf 'rm_present of a directory returned %s, rm -f %s\n' "$rc" "$want"
+: > "$STATE/.writing-since-k$$"
+: > "$STATE/.writing-resurfaced-k$$"
+clear_write_tracking "k$$"
+[ ! -e "$STATE/.writing-since-k$$" ] && [ ! -e "$STATE/.writing-resurfaced-k$$" ] \
+  || printf 'clear_write_tracking kept a marker\n'
+# Run <command> with every tool it starts through PATH, and every command one
+# of its subshells runs, logged: TOOLS lists the tools, SUBSHELLS counts the
+# subshell commands.
+counted() {  # <command> [args...]
+  : > "$count_log"
+  : > "$count_log.sub"
+  (
+    PATH="$count_shim:$PATH"
+    __spawn_level=$BASH_SUBSHELL
+    set -T
+    trap '[ "$BASH_SUBSHELL" -le "$__spawn_level" ] || printf "%s\n" "$BASH_COMMAND" >> "$count_log.sub"' DEBUG
+    "$@"
+  ) > /dev/null 2>&1
+  TOOLS=$(sort "$count_log" | tr '\n' ' ')
+  SUBSHELLS=$(grep -c . "$count_log.sub" || true)
+}
+counted window_key_to got sess:w.1/x
+[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'window_key_to ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+counted rm_present "$r/none" "$r/none2"
+[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'rm_present of absent paths ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+counted clear_write_tracking absent-key
+[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'clear_write_tracking with no markers ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+: > "$r/b"
+counted rm_present "$r/none" "$r/b"
+[ "$TOOLS" = 'rm ' ] || printf 'rm_present of a present path ran [%s], not [rm ]\n' "$TOOLS"
+# Only Linux resolves stat through PATH and only Bash 4.2+ reads the clock in
+# the shell, so the age read is counted there; the md5sum branch is counted
+# where it is the one the watcher picked.
+if [ "$_FM_UNAME" = Linux ] && { [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; }; then
+  counted age_of_to got "$dir/old"
+  [ "$TOOLS" = 'stat ' ] || printf 'age_of_to ran [%s], not [stat ]\n' "$TOOLS"
+fi
+if [ -z "$md5_shim" ] && ! command -v md5 >/dev/null 2>&1; then
+  counted hash_pane_to got "$long"
+  [ "$TOOLS" = 'md5sum ' ] || printf 'hash_pane_to ran [%s], not [md5sum ]\n' "$TOOLS"
+fi
+rm -rf "$r"
+SH
+  run_everywhere "watcher poll helpers" "$script" "$dir" '' '' "$count_shim" "$count_log"
+  if ! command -v md5 >/dev/null 2>&1 && command -v md5sum >/dev/null 2>&1; then
+    run_everywhere "watcher poll helpers with md5" "$script" "$dir" "$shim" "$log" "$count_shim" "$count_log"
+  fi
+  pass "hash_pane_to, window_key_to, age_of_to and rm_present match what they replaced and start no more processes"
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -1012,4 +1154,5 @@ else
   test_path_age_helpers_match_stat_and_the_clock
   test_status_signature_reads_once_and_matches_the_forked_reader
   test_status_event_reads_match_the_tail_pipeline
+  test_watcher_poll_helpers_match_what_they_replaced
 fi
