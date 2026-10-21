@@ -25,6 +25,7 @@
 # Write side (callers serialize with a lock; bin/fm-alert-store.sh does):
 #   fm_alert_store_assert <store> <id> <key> <reason> [<kind>] [<subject>]
 #   fm_alert_store_clear <store> <id> <key> <reason>
+#   fm_alert_store_sync <store> <id> <wanted-file> <reason>
 #   fm_alert_store_ack <store> <id> <key> <by> <seconds> <reason>
 # Every reader and writer needs jq. A failure sets FM_ALERT_PROBLEM to one
 # plain-language sentence and returns 1.
@@ -303,6 +304,38 @@ fm_alert_store_clear() {  # <store> <id> <key> <reason>
                      reason: $reason, alert: .active[$key]}]
       | del(.active[$key]) | del(.acks[$key])
     else . end' --arg key "$key" --arg reason "$4"
+}
+
+# Make the store's active set equal <wanted-file> in one write: a JSON object
+# mapping each key to {kind, subject, reason, since, evidence}. A new key is
+# raised with that since and evidence, an active key refreshes its reason,
+# evidence and detected_at as assert does, and an active key absent from the
+# file is cleared with <reason>. For a tool that computes its whole alarm set
+# each pass and owns every key in its store.
+fm_alert_store_sync() {  # <store> <id> <wanted-file> <reason>
+  FM_ALERT_PROBLEM=
+  if ! jq -e 'type == "object" and ([keys[] | test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")] | all)
+      and ([.[] | type == "object" and (.reason | type) == "string"] | all)' "$3" >/dev/null 2>&1; then
+    FM_ALERT_PROBLEM="wanted set $3 is not an object of slug keys with a reason each"
+    return 1
+  fi
+  # shellcheck disable=SC2016  # jq variables.
+  _fm_alert_store_write "$1" "$2" '
+    reduce ($want[0] | to_entries[]) as $e (.;
+      if .active[$e.key] then
+        .active[$e.key].reason = $e.value.reason | .active[$e.key].detected_at = $now
+        | .active[$e.key].evidence = ($e.value.evidence // .active[$e.key].evidence)
+      else
+        .revision += 1
+        | .active[$e.key] = {key: $e.key, kind: ($e.value.kind // $e.key), subject: ($e.value.subject // ""),
+                             reason: $e.value.reason, since: ($e.value.since // $now),
+                             detected_at: $now, evidence: ($e.value.evidence // {})}
+        | .events += [{seq: .revision, at: $now, action: "raised", key: $e.key, alert: .active[$e.key]}]
+      end)
+    | reduce (.active | keys[] | select(. as $k | $want[0] | has($k) | not)) as $k (.;
+      .revision += 1
+      | .events += [{seq: .revision, at: $now, action: "cleared", key: $k, reason: $reason, alert: .active[$k]}]
+      | del(.active[$k]) | del(.acks[$k]))' --slurpfile want "$3" --arg reason "$4"
 }
 
 # Acknowledge active <key> for <seconds> (1 to FM_ALERT_ACK_MAX_SECONDS). The

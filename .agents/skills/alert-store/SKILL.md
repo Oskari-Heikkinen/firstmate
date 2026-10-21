@@ -6,7 +6,7 @@ metadata:
   internal: true
   sources:
     - path: docs/alert-store.md
-      sha256: 5f10cec2d90178a00c27fe460d5d436241d978daf727aa1e31dd7a2c83c56312
+      sha256: 445408ed6a27384d12b3b397526e1925206de4992f56b5f7388913f5b4d5bc83
 ---
 
 # alert-store
@@ -21,7 +21,7 @@ A relaunch or resume note never closes a key a registered store holds, and an un
 
 ## How it works
 
-- `bin/fm-alert-store.sh assert|clear|ack` write a store under its lock; `register|unregister` write or remove `state/alert-stores/<store-id>.reg`, and unregister closes the store's open blockers; `tick` re-posts and closes blockers.
+- `bin/fm-alert-store.sh assert|clear|sync|ack` write a store under its lock (`sync` makes the active set equal a wanted set in one write); `register|unregister` write or remove `state/alert-stores/<store-id>.reg`, and unregister closes the store's open blockers; `tick` re-posts and closes blockers.
 - `bin/fm-watch.sh` runs the tick at the start of its slow-check step whenever `state/alert-stores/` exists; nothing is armed per home.
 - `bin/fm-classify-lib.sh` asks `_fm_decision_key_protected`, which asks `fm_alert_store_holds`, before a supersede note closes a blocker.
 

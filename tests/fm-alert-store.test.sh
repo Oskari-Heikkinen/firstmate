@@ -127,6 +127,33 @@ test_clear_closes_the_blocker_on_the_next_tick() {
   pass "clearing the store closes the blocker on the next tick, once"
 }
 
+test_sync_makes_the_active_set_equal_the_wanted_set() {
+  local home f store want revision
+  home=$(make_home sync)
+  f="$home/state/t.status"
+  store="$home/tool/alerts.json"
+  want="$home/tool/want.json"
+  store_cli "$home" assert "$store" s old-alarm "gone soon" >/dev/null || fail "assert failed"
+  store_cli "$home" register "$store" s t.status >/dev/null || fail "register failed"
+  store_cli "$home" tick >/dev/null || fail "the raising tick failed"
+  printf '{"new-alarm":{"kind":"no-receipt","subject":"p/s/r1","reason":"no receipt","since":"2026-10-20T10:00:00Z","evidence":{"path":"/x"}}}\n' > "$want"
+  store_cli "$home" sync "$store" s "$want" "no longer wanted" >/dev/null || fail "sync failed"
+  assert_equals '["new-alarm"]' "$(jq -c '.active | keys' "$store")" "sync did not make the active set equal the wanted set"
+  assert_equals "no-receipt p/s/r1 2026-10-20T10:00:00Z /x" \
+    "$(jq -r '.active["new-alarm"] | "\(.kind) \(.subject) \(.since) \(.evidence.path)"' "$store")" "sync lost a wanted field"
+  assert_equals "no longer wanted" "$(jq -r '[.events[] | select(.action == "cleared")][0].reason' "$store")" "the clear does not carry the reason"
+  store_cli "$home" tick >/dev/null || fail "the projecting tick failed"
+  assert_contains "$(open_keys "$f")" "new-alarm" "the tick did not raise the synced alarm"
+  assert_not_contains "$(open_keys "$f")" "old-alarm" "the tick did not close the alarm sync cleared"
+  revision=$(jq '.revision' "$store")
+  store_cli "$home" sync "$store" s "$want" "no longer wanted" >/dev/null || fail "a repeat sync failed"
+  assert_equals "$revision" "$(jq '.revision' "$store")" "a repeat sync raised or cleared again"
+  printf '{"Bad Key":{"reason":"x"}}\n' > "$want"
+  if store_cli "$home" sync "$store" s "$want" "x" >/dev/null 2>&1; then fail "sync accepted a key that is not a slug"; fi
+  assert_equals '["new-alarm"]' "$(jq -c '.active | keys' "$store")" "a refused sync changed the store"
+  pass "sync raises, refreshes and clears in one write, and a refused wanted set changes nothing"
+}
+
 test_acknowledgement_hides_until_expiry() {
   local home f store rc tmp
   home=$(make_home ack)
@@ -362,6 +389,7 @@ test_watcher_wakes_on_a_tick_that_never_finishes() {
 test_relaunch_never_closes_a_store_alarm
 test_reserved_prefix_alarm_is_reposted_in_its_vocabulary
 test_clear_closes_the_blocker_on_the_next_tick
+test_sync_makes_the_active_set_equal_the_wanted_set
 test_acknowledgement_hides_until_expiry
 test_invalid_acknowledgement_hides_nothing
 test_unreadable_store_raises_and_holds

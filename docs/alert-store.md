@@ -62,11 +62,12 @@ A `tj-capacity-alerts/v1` store is read as an `fm-alert-store/v1` store with no 
 ### Writing a store
 
 Each store has exactly one writer, its owning tool.
-The tool either calls `bin/fm-alert-store.sh assert|clear|ack`, which take `<store>.lock` and replace the file through a temporary file and a rename, or writes its own file the same way: a complete JSON object written to a temporary file in the same directory, then renamed over the store.
+The tool either calls `bin/fm-alert-store.sh assert|clear|sync|ack`, which take `<store>.lock` and replace the file through a temporary file and a rename, or writes its own file the same way: a complete JSON object written to a temporary file in the same directory, then renamed over the store.
 A partly written store must never be visible, because an unreadable store holds every blocker it might own open and wakes on every tick.
 
 Raise is level-triggered: `assert` on an active key changes only its `reason` and `detected_at` and writes no event, so a tool may assert its condition on every pass.
 `clear` on an inactive key does nothing.
+`sync` is the whole-set form for a tool that computes every alarm it owns on each pass: it takes a JSON object mapping each wanted key to its `kind`, `subject`, `reason`, `since` and `evidence`, raises the new keys, refreshes the active ones as `assert` does, and clears every active key the object lacks, with its acknowledgement, in one locked write.
 
 ## Registration: `fm-alert-registration/v1`
 

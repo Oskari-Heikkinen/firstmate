@@ -5,6 +5,7 @@
 # Usage:
 #   fm-alert-store.sh assert <store> <store-id> <key> <reason> [<kind>] [<subject>]
 #   fm-alert-store.sh clear <store> <store-id> <key> <reason>
+#   fm-alert-store.sh sync <store> <store-id> <wanted-file> <reason>
 #   fm-alert-store.sh ack <store> <store-id> <key> <seconds> <by> <reason>
 #   fm-alert-store.sh register <store> <store-id> <status-name> [<owner>]
 #   fm-alert-store.sh unregister <store-id>
@@ -19,7 +20,10 @@
 # drops it and any acknowledgement, and ack hides an active key from the status
 # projection for 1 to 604800 seconds. Each takes <store>.lock, rewrites the
 # store through a temporary file and a rename, and prints one line saying what
-# happened.
+# happened. sync is the whole-set form for a tool that owns every key in its
+# store: <wanted-file> is a JSON object mapping each key to {kind, subject,
+# reason, since, evidence}; keys it lacks are cleared with <reason>, new keys are
+# raised and active keys refreshed, all in one locked write.
 #
 # register writes state/alert-stores/<store-id>.reg in this home, binding the
 # store to state/<status-name> (for example tetjet-mate.status); unregister
@@ -111,6 +115,14 @@ cmd_clear() {
   need_store_path "$1" "$2"
   locked_write "$1" fm_alert_store_clear "${@:2}"
   printf 'alert %s is clear in store %s\n' "$3" "$2"
+}
+
+cmd_sync() {
+  [ "$#" -eq 4 ] || die_usage "sync needs <store> <store-id> <wanted-file> <reason>"
+  need_store_path "$1" "$2"
+  [ -f "$3" ] || die_usage "the wanted file does not exist: $3"
+  locked_write "$1" fm_alert_store_sync "${@:2}"
+  printf 'store %s matches %s\n' "$2" "$3"
 }
 
 cmd_ack() {
@@ -317,6 +329,7 @@ case "$sub" in
   -h|--help|help) usage ;;
   assert) cmd_assert "$@" ;;
   clear) cmd_clear "$@" ;;
+  sync) cmd_sync "$@" ;;
   ack) cmd_ack "$@" ;;
   register) cmd_register "$@" ;;
   unregister) cmd_unregister "$@" ;;
