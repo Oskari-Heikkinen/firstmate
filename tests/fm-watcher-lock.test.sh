@@ -2146,6 +2146,100 @@ test_health_poll_spawns_only_the_beacon_stat() {
   pass "the watcher health proof spawns only the beacon stat and still rejects a changed identity"
 }
 
+test_lock_cycle_spawns_only_link_and_owner_commands() {
+  # Every procevent reconcile takes and releases a lock per source, and a
+  # waiter retries a held lock ten times a second. On Bash 4.2+ a lock cycle
+  # reads its pid files in the shell and splits its paths without dirname or
+  # basename, so an acquire spawns only the owner directory and link commands,
+  # a release only the link reads and removals, and a try against a live
+  # holder spawns nothing and makes no owner directory.
+  local dir state counted log tool holder out
+  dir=$(make_case lock-cycle-spawns)
+  state="$dir/state"
+  counted="$dir/counted-bin"
+  log="$dir/spawned.log"
+  mkdir -p "$counted"
+  for tool in cat od tr sed ps stat date dirname basename mktemp ln readlink rm rmdir mkdir uname; do
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$log" "$(command -v "$tool")" > "$counted/$tool"
+    chmod +x "$counted/$tool"
+  done
+  sleep 300 &
+  holder=$!
+  out=$(PATH="$counted:$PATH" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; then
+      echo skip
+      exit 0
+    fi
+    log=$2 holder=$3 lock="$STATE/.cycle.lock"
+    expect_spawned() {  # <step> <commands>: compare the log, then empty it
+      local line got=
+      while IFS= read -r line; do got="$got$line "; done < "$log"
+      : > "$log"
+      [ "$got" = "$2" ] || echo "$1 spawned: $got"
+    }
+    : > "$log"
+    fm_lock_try_acquire "$lock" || echo "an uncontended try did not take the lock"
+    expect_spawned "the acquire" "mktemp ln readlink readlink "
+    owner=$FM_LOCK_OWNER_DIR
+    [ -L "$lock" ] && [ -d "$owner" ] || echo "the acquire left no linked owner directory"
+    fm_lock_release "$lock"
+    expect_spawned "the release" "readlink readlink rm rm rmdir "
+    [ ! -e "$lock" ] && [ ! -L "$lock" ] && [ ! -e "$owner" ] || echo "the release left the lock or its owner"
+    mkdir "$lock.owner.held"
+    printf "%s\n" "$holder" > "$lock.owner.held/pid"
+    ln -s "$lock.owner.held" "$lock"
+    : > "$log"
+    ! fm_lock_try_acquire "$lock" || echo "a try took the lock from its live holder"
+    expect_spawned "a try against a live holder" ""
+    [ "$FM_LOCK_HELD_PID" = "$holder" ] || echo "the try named holder $FM_LOCK_HELD_PID, not $holder"
+    fm_lock_release "$lock"
+    expect_spawned "a release by a non-holder" "readlink "
+    [ -L "$lock" ] || echo "a release by a non-holder removed the lock"
+    owners=
+    for entry in "$lock".owner.*; do owners="$owners${entry##*/} "; done
+    [ "$owners" = ".cycle.lock.owner.held " ] || echo "owner directories left: $owners"
+  ' _ "$LIB" "$log" "$holder" 2>&1)
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  case "$out" in
+    skip)
+      pass "lock-cycle spawn count skipped below Bash 4.2"
+      return
+      ;;
+    '') ;;
+    *) fail "$out" ;;
+  esac
+  pass "a lock cycle spawns only its owner directory and link commands, and a held lock's try spawns nothing"
+}
+
+test_lock_link_into_a_raced_directory_leaves_no_stray() {
+  # A directory lock made between the acquirer's checks and its ln makes ln put
+  # the owner link inside that directory. The acquirer must report the lock
+  # held and remove both that stray link and its own owner directory.
+  local dir state lockdir fakebin out
+  dir=$(make_case lock-raced-directory)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  fakebin="$dir/fakebin"
+  cat > "$fakebin/ln" <<'SH'
+#!/usr/bin/env bash
+mkdir "$FM_TEST_RACE_DIR"
+exec /bin/ln "$@"
+SH
+  chmod +x "$fakebin/ln"
+  out=$(PATH="$fakebin:$PATH" FM_TEST_RACE_DIR="$lockdir" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    ! fm_lock_try_create "$2" || echo "the acquirer took a lock that ln linked inside a directory"
+    [ -d "$2" ] && [ ! -L "$2" ] || echo "the raced directory lock was replaced"
+    for entry in "$2"/* "$2"/.[!.]* "$2".owner.*; do
+      if [ -e "$entry" ] || [ -L "$entry" ]; then echo "left behind: ${entry#"$STATE"/}"; fi
+    done
+  ' _ "$LIB" "$lockdir" 2>&1)
+  [ -z "$out" ] || fail "$out"
+  pass "an owner link that ln put inside a raced directory lock is removed with its owner directory"
+}
+
 # Case pool (fm_run_case_pool in tests/lib.sh). Every case builds its own
 # fixture under its own make_case directory (or a uniquely named TMP_ROOT
 # path), starts and reaps only its own watchers, arms, and lock contenders, and
@@ -2180,6 +2274,8 @@ WATCHER_LOCK_CASES=(
   test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
   test_msys_pid_identity_uses_proc
   test_health_poll_spawns_only_the_beacon_stat
+  test_lock_cycle_spawns_only_link_and_owner_commands
+  test_lock_link_into_a_raced_directory_leaves_no_stray
   test_stale_watch_lock_reclaimed
   test_stale_watch_reclaim_publishes_before_clear
   test_live_stale_watch_lock_is_actionable

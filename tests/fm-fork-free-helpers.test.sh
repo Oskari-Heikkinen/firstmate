@@ -117,15 +117,58 @@ for f in "$state/crew.status" "$state/a.b.c.status" "state/x.status" ".status" \
   esac
   [ "$got" = "$want" ] || printf 'seen path %q: helper %q, commands %q\n' "$f" "$got" "$want"
 done
+want=$(cd "$FM_WAKE_LIB_DIR/.." && pwd)
+[ "$FM_WAKE_DEFAULT_ROOT" = "$want" ] || printf 'default root: library %q, commands %q\n' "$FM_WAKE_DEFAULT_ROOT" "$want"
+want=$(uname 2>/dev/null || echo unknown)
+[ "$_FM_UNAME" = "$want" ] || printf 'kernel name: library %q, command %q\n' "$_FM_UNAME" "$want"
 cd "$3" || exit 1
 for p in "$3/x.lock" "$3/sub/x.lock" "$3//sub//x.lock" "sub/x.lock" "x.lock" "sub/x.lock/" "./sub/../x.lock"; do
   got=$(fm_lock_abs_path "$p")
   want="$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
   [ "$got" = "$want" ] || printf 'lock path %q: helper %q, commands %q\n' "$p" "$got" "$want"
+  fm_lock_abs_path_to got "$p" || printf 'lock path %q: the _to form failed\n' "$p"
+  [ "$got" = "$want" ] || printf 'lock path %q: _to form %q, commands %q\n' "$p" "$got" "$want"
+  fm_lock_owner_dir_to owner "$p" || printf 'owner dir %q: the _to form failed\n' "$p"
+  case "$owner" in
+    "$want".owner.??????)
+      if [ -d "$owner" ]; then rmdir "$owner"; else printf 'owner dir %q: %q is no directory\n' "$p" "$owner"; fi
+      ;;
+    *) printf 'owner dir %q: %q is not %q.owner.XXXXXX\n' "$p" "$owner" "$want" ;;
+  esac
+done
+for f in fm_lock_abs_path_to fm_lock_owner_dir_to; do
+  got=stale
+  ! "$f" got "$3/missing/x.lock" || printf '%s: a lock in a missing directory succeeded\n' "$f"
+  [ -z "$got" ] || printf '%s: a lock in a missing directory left %q\n' "$f" "$got"
+done
+# The replaced reference: readlink and dirname in command substitutions.
+reference_link_owner() {
+  local lockdir=$1 owner
+  owner=$(readlink "$lockdir" 2>/dev/null) || return 1
+  [ -n "$owner" ] || return 1
+  case "$owner" in
+    /*) printf '%s\n' "$owner" ;;
+    *) printf '%s/%s\n' "$(dirname "$lockdir")" "$owner" ;;
+  esac
+}
+# Each interpreter and locale reruns this script on the same directory.
+rm -f "$3/abs.link" "$3/rel.link" "$3/newline.link" "$3/dangling.link"
+ln -s "$3/sub" "$3/abs.link"
+ln -s sub "$3/rel.link"
+ln -s "sub/x.lock"$'\n' "$3/newline.link"
+ln -s "$3/nowhere" "$3/dangling.link"
+for l in "$3/abs.link" "$3/rel.link" rel.link ./rel.link "$3//rel.link" "$3/newline.link" \
+  "$3/dangling.link" "$3/sub" "$3/missing.link"; do
+  if want=$(reference_link_owner "$l"); then want="ok:$want"; else want=fail; fi
+  got=stale
+  if fm_lock_link_owner_to got "$l"; then got="ok:$got"; elif [ -z "$got" ]; then got=fail; fi
+  [ "$got" = "$want" ] || printf 'link owner %q: _to form %q, reference %q\n' "$l" "$got" "$want"
+  if got=$(fm_lock_link_owner "$l"); then got="ok:$got"; else got=fail; fi
+  [ "$got" = "$want" ] || printf 'link owner %q: helper %q, reference %q\n' "$l" "$got" "$want"
 done
 SH
   run_everywhere "seen and lock paths" "$script" "$TMP_ROOT/state" "$dir"
-  pass "signal seen paths and absolute lock paths are byte-identical to the dirname/basename/tr forms"
+  pass "signal seen paths, lock paths and lock link owners are byte-identical to the command forms"
 }
 
 test_recovery_marker_read_accepts_exactly_one_newline() {
