@@ -25,6 +25,15 @@ This skill owns only when an agent or home must act, and how.
 Publish atomically (temporary dot name in the same folder, then rename), raise `revision`, and run `bin/fm-handoff-validate.py fragment <file>` before the rename.
 A fragment with `"example": true` is never loaded; never mark a live fragment that way.
 
+## Firstmate's own handoffs
+
+Briefs, marked `fm-send` requests and secondmate status lines are registered by `bin/fm-handoff-firstmate.py`, never by hand; the doc's "Firstmate's own handoffs" section owns what it declares.
+
+- To adopt it in a home, run `bin/fm-handoff-firstmate.py publish --home <home>`, then `bin/fm-handoff-watch.sh arm`.
+- Rerun `publish` after adding or retiring a secondmate (and, in tooling-mate, after a home joins or leaves); an unchanged publish writes nothing.
+- Its stages read the existing records through receipt adapters (`bin/fm_handoff_adapters.py`): never write receipt files for them, and never add a second writer of a pending reply, inbox message or status line to feed the watcher.
+- A new adapter is a reader only, is named in the stage's `<owner>.receipt-adapter` ext key, and reads each file once per change.
+
 ## When you install a tool
 
 Every installer runs the shared install check before it installs a timer, service, cron job or custom check, and installs only on exit 0; the doc's "Installed tools" section owns the rules and grandfathering.

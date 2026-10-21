@@ -1,0 +1,323 @@
+{
+  "format": "handoff-registry/v1",
+  "home": "tooling-mate",
+  "publisher": "example: bin/fm-handoff-firstmate.py fragment for tooling-mate with one local secondmate, docs-mate",
+  "revision": 1,
+  "published_at": "2026-10-21T12:00:00Z",
+  "example": true,
+  "protocols": [
+    {
+      "cleanup": {
+        "receipts_after": "1d",
+        "records_after": "7d",
+        "stage": "launch"
+      },
+      "first_stage": "launch",
+      "id": "fm-brief.tooling-mate",
+      "owner": "tooling-mate",
+      "record_types": [
+        "fm-task-meta"
+      ],
+      "schema": "firstmate:bin/fm-spawn.sh",
+      "senders": [
+        "tooling-mate"
+      ],
+      "stages": [
+        {
+          "accepts": {
+            "max": 1,
+            "min": 1
+          },
+          "bounds": {
+            "accepted": "2h",
+            "held": "1h",
+            "waiting": "1h"
+          },
+          "cleanup": {
+            "action": "keep"
+          },
+          "codes": {},
+          "ext": {
+            "tooling-mate.receipt-adapter": "first-status"
+          },
+          "input": {
+            "match": "*.meta",
+            "path": "/example/homes/tooling-mate/state",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "name": "launch",
+          "outbox": {
+            "path": "/example/homes/tooling-mate/state",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "owner": "tooling-mate",
+          "retry_limit": 0
+        }
+      ],
+      "title": "Worker briefs from tooling-mate: each launched task until its first status line",
+      "versions": {
+        "max": 1,
+        "min": 1
+      }
+    },
+    {
+      "cleanup": {
+        "receipts_after": "1d",
+        "records_after": "7d",
+        "stage": "reply.docs-mate"
+      },
+      "first_stage": "reply.docs-mate",
+      "id": "fm-corr.tooling-mate",
+      "owner": "tooling-mate",
+      "record_types": [
+        "fm-pending-reply.v1"
+      ],
+      "schema": "firstmate:bin/fm-pending-reply-lib.sh",
+      "senders": [
+        "tooling-mate"
+      ],
+      "stages": [
+        {
+          "accepts": {
+            "max": 1,
+            "min": 1
+          },
+          "bounds": {
+            "accepted": "24h",
+            "held": "4h",
+            "waiting": "1h"
+          },
+          "cleanup": {
+            "action": "keep"
+          },
+          "codes": {
+            "delivery-unknown": {
+              "fix_owner": "tooling-mate",
+              "holds_all": false,
+              "what": "tooling-mate cannot tell whether the request reached docs-mate; it may resend under the same correlation"
+            },
+            "reply-missed": {
+              "fix_owner": "docs-mate",
+              "holds_all": false,
+              "what": "docs-mate sent no correlated reply, even after REPOST REQUIRED"
+            },
+            "unacked": {
+              "fix_owner": "docs-mate",
+              "holds_all": false,
+              "what": "docs-mate has not moved the request to handled/ through the whole inbox re-ring ladder"
+            }
+          },
+          "ext": {
+            "tooling-mate.receipt-adapter": "corr-request"
+          },
+          "input": {
+            "match": "*.msg",
+            "path": "/example/homes/tooling-mate/state/docs-mate.inbox",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "name": "reply.docs-mate",
+          "outbox": {
+            "path": "/example/homes/tooling-mate/state/pending-replies",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "owner": "tooling-mate",
+          "retry_limit": 1
+        }
+      ],
+      "title": "Marked fm-send requests from tooling-mate to its secondmates, until the correlated reply",
+      "versions": {
+        "max": 1,
+        "min": 1
+      }
+    },
+    {
+      "cleanup": {
+        "receipts_after": "1d",
+        "records_after": "7d",
+        "stage": "status.docs-mate"
+      },
+      "first_stage": "status.docs-mate",
+      "id": "fm-status.tooling-mate",
+      "owner": "tooling-mate",
+      "record_types": [
+        "fm-status-log"
+      ],
+      "schema": "firstmate:bin/fm-classify-lib.sh",
+      "senders": [
+        "docs-mate"
+      ],
+      "stages": [
+        {
+          "accepts": {
+            "max": 1,
+            "min": 1
+          },
+          "bounds": {
+            "accepted": "7d",
+            "held": "1h",
+            "waiting": "1h"
+          },
+          "cleanup": {
+            "action": "keep"
+          },
+          "codes": {},
+          "ext": {
+            "tooling-mate.receipt-adapter": "status-decisions"
+          },
+          "input": {
+            "match": "docs-mate.status",
+            "path": "/example/homes/tooling-mate/state",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "name": "status.docs-mate",
+          "outbox": {
+            "path": "/example/homes/tooling-mate/state",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "owner": "tooling-mate",
+          "retry_limit": 0
+        }
+      ],
+      "title": "Keyed status lines tooling-mate's secondmates post to it, until resolved",
+      "versions": {
+        "max": 1,
+        "min": 1
+      }
+    },
+    {
+      "cleanup": {
+        "receipts_after": "1d",
+        "records_after": "1d",
+        "stage": "docs-mate"
+      },
+      "first_stage": "docs-mate",
+      "id": "handoff-watch",
+      "owner": "tooling-mate",
+      "record_types": [
+        "handoff-receipt/v1"
+      ],
+      "schema": "firstmate:docs/handoff-coverage.md",
+      "senders": [
+        "tooling-mate"
+      ],
+      "stages": [
+        {
+          "accepts": {
+            "max": 0,
+            "min": 0
+          },
+          "actors": [
+            "fm-check:handoff-watch"
+          ],
+          "bounds": {
+            "accepted": "10m",
+            "held": "10m",
+            "waiting": "10m"
+          },
+          "cleanup": {
+            "action": "keep"
+          },
+          "codes": {},
+          "input": {
+            "path": "/example/homes/docs-mate/state/handoff-registry",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "name": "docs-mate",
+          "outbox": {
+            "path": "/example/homes/docs-mate/state/handoff-watch/heartbeat",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "owner": "docs-mate",
+          "retry_limit": 0
+        },
+        {
+          "accepts": {
+            "max": 0,
+            "min": 0
+          },
+          "actors": [
+            "fm-check:handoff-watch"
+          ],
+          "bounds": {
+            "accepted": "10m",
+            "held": "10m",
+            "waiting": "10m"
+          },
+          "cleanup": {
+            "action": "keep"
+          },
+          "codes": {},
+          "input": {
+            "path": "/example/homes/main/state/handoff-registry",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "name": "main",
+          "outbox": {
+            "path": "/example/homes/main/state/handoff-watch/heartbeat",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "owner": "main",
+          "retry_limit": 0
+        },
+        {
+          "accepts": {
+            "max": 0,
+            "min": 0
+          },
+          "actors": [
+            "fm-check:handoff-watch"
+          ],
+          "bounds": {
+            "accepted": "10m",
+            "held": "10m",
+            "waiting": "10m"
+          },
+          "cleanup": {
+            "action": "keep"
+          },
+          "codes": {},
+          "input": {
+            "path": "/example/homes/tooling-mate/state/handoff-registry",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "name": "tooling-mate",
+          "outbox": {
+            "path": "/example/homes/tooling-mate/state/handoff-watch/heartbeat",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "owner": "tooling-mate",
+          "retry_limit": 0
+        }
+      ],
+      "title": "Each home's handoff watcher heartbeat",
+      "versions": {
+        "max": 0,
+        "min": 0
+      }
+    }
+  ]
+}

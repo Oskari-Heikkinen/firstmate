@@ -25,6 +25,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-loop.sh`            | Print the experiment loop's request stages, stall alerts and lead times, read-only; arm a watcher check for newly opened alerts |
 | `fm-loop.py`            | Join the loop's records into request stages, sync stall-alert records and count lead times |
 | `fm_handoff_registry.py` | Find the homes a handoff watcher reads and load their handoff-registry/v1 fragments, shared by the watcher and the loop view |
+| `fm_handoff_adapters.py` | Receipt adapters: read Firstmate's existing handoff records (pending replies, inbox messages, task metas, status logs) as handoff-receipt/v1 for the watcher, writing nothing |
 | `fm-schedule.sh`        | File captain-approved scheduled runs on a calendar, list them, and install or remove its user timer |
 | `fm-schedule.py`        | Validate schedule files, run the scheduled-run scan, read run summaries and write the board summary |
 | `fm-usage-audit.py`      | Audit explicitly selected local usage, status, ledger and inventory inputs |
@@ -88,6 +89,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-handoff-validate.py` | Validate handoff-registry/v1 fragments, handoff-receipt/v1 receipts and receipt outboxes against their schemas and the registry (docs/handoff-coverage.md) |
 | `fm-handoff-watch.sh` | Run the registry-driven handoff coverage watcher once, as a watcher check, or arm and disarm that check (docs/handoff-coverage.md) |
 | `fm-handoff-watch.py` | One watcher pass: read fragments, outboxes, places, dated rules and heartbeats, and sync one alert store per alarm target |
+| `fm-handoff-firstmate.py` | Print or publish the handoff-registry/v1 fragment of a home's own Firstmate handoffs (docs/handoff-coverage.md "Firstmate's own handoffs") |
 | `fm-handoff-actors.py` | The handoff install check (refuse a tool no fragment or declaration covers), no-handoff declarations, and the actor inventory `undeclared-actor` reads (docs/handoff-coverage.md "Installed tools") |
 | `fm-handoff-actors-lib.sh` | Shell wrappers installers source to run the handoff install check and record a no-handoff declaration |
 | `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |

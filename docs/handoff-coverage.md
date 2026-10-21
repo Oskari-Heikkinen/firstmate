@@ -94,7 +94,7 @@ A range is `{"min": <int >= 0>, "max": <int >= 0>}` with `min <= max`, in record
 | `accepts` | range | yes | the record versions the stage reads |
 | `writes` | range | no | the versions it hands to the next stage; absent for a stage that hands nothing on |
 | `input` | place | yes | where its records arrive |
-| `outbox` | outbox | yes | where its receipts go; never the same folder as any input place |
+| `outbox` | outbox | yes | where its receipts go; never the same folder as any input place, except at a stage a [receipt adapter](#receipt-adapters) reads |
 | `bounds` | bounds | yes | the longest each non-terminal state may last |
 | `retry_limit` | integer 0-1000 | yes | how many attempts after the first the stage may make on one record before `open-past-bound` fires |
 | `codes` | map of code to code entry | yes | every refusal and hold code the stage may write; may be `{}` |
@@ -365,7 +365,8 @@ On its first call in a home, the check writes a one-time snapshot of what is ins
 
 Each snapshot is written once, never replaced, and only after its own listing succeeded, so a machine whose user units cannot be listed still grandfathers its checks and takes the unit snapshot on a later call.
 Re-registering a grandfathered check, as every arm command does on update, therefore succeeds.
-Firstmate's own built-in checks and timers are grandfathered in code (`BUILTIN` in `bin/fm-handoff-actors.py`) until Firstmate registers its own handoffs, so a fresh home arms them too.
+Firstmate's own built-in checks and timers are grandfathered in code (`BUILTIN` in `bin/fm-handoff-actors.py`), so a fresh home arms them too.
+[Firstmate's own handoffs](#firstmates-own-handoffs) are registered now, but their only actor is the watcher itself (`fm-check:handoff-watch`), so `BUILTIN` stays until each built-in is listed in a stage.
 A grandfathered actor appears as such in the inventory, so the coverage line can count it; it is never alarmed.
 Retiring a grandfathered tool and installing it again later needs no new declaration while its snapshot entry stays; an owner who declares it removes the entry by hand.
 
@@ -472,11 +473,47 @@ Every raise and clear is appended to `state/handoff-watch/log`.
 Each pass ends by writing one `handoff-receipt/v1` receipt of protocol `handoff-watch`, stage and record set to the home id, to `state/handoff-watch/heartbeat/`, keeping only the newest.
 Main's watcher raises `watcher-silent` for any home whose heartbeat folder exists and whose newest heartbeat is older than two intervals (`FM_HANDOFF_WATCH_SILENT_AFTER` seconds, default twice `FM_CHECK_INTERVAL`); every other watcher does the same for main's heartbeat, with variant `seen-by-<home>`.
 `disarm` removes the heartbeat, so a disarmed watcher is not read as silent, and unregisters its stores so their blockers close.
-Tooling-mate's `handoff-watch` fragment declares each home's heartbeat folder as that stage's outbox; the watcher never evaluates that protocol as a chain.
+Tooling-mate's `handoff-watch` fragment, published by `bin/fm-handoff-firstmate.py` ([Firstmate's own handoffs](#firstmates-own-handoffs)), declares each home's heartbeat folder as that stage's outbox; the watcher never evaluates that protocol as a chain.
 
 **Latency.**
 A condition is seen at the next pass and projected at the target home's next alert-store tick, so a target hears of it within about two intervals, 10 minutes at the default.
 A killed watcher is seen once its heartbeat is two intervals old, at main's next pass, and projected at main's next tick: up to four intervals, 20 minutes at the default; a home that needs 10 minutes sets `FM_HANDOFF_WATCH_SILENT_AFTER` or a shorter interval.
+
+## Firstmate's own handoffs
+
+`bin/fm-handoff-firstmate.py` publishes `<home>/state/handoff-registry/firstmate.json`, the fragment of the handoffs Firstmate itself makes; its header owns usage.
+`docs/handoff-coverage/examples/firstmate.fragment.json` is that fragment for tooling-mate with one local secondmate.
+Each protocol is owned by the home that sends, because only that home's watcher can read the records, which live in its own `state/`.
+
+| Protocol | Stage | Record | Done when | Codes | Bounds |
+|---|---|---|---|---|---|
+| `fm-brief.<home>` | `launch` | a launched task's `state/<id>.meta` | its `state/<id>.status` has a line | none | `accepted` 2h |
+| `fm-corr.<home>` | `reply.<secondmate>`, one per local secondmate | a marked `fm-send` request (its `state/pending-replies/<corr>`), or an unmarked message in `state/<secondmate>.inbox/` | the pending reply is `resolved`, or the message moved to `handled/` | `unacked`, `reply-missed` (fix: the secondmate), `delivery-unknown` (fix: the sender) | `accepted` 24h, `held` 4h, `retry_limit` 1 |
+| `fm-status.<home>` | `status.<secondmate>`, one per local secondmate | an open keyed `needs-decision` or `blocked` line in `state/<secondmate>.status` | the key is resolved | none | `accepted` 7d |
+| `handoff-watch` (tooling-mate only) | one per home it sees | that home's watcher heartbeat | see [Watcher](#watcher-fm-handoff-watch) | none | not evaluated |
+
+The existing tools stay the only writers of these records: `fm-spawn`, `fm-send` with `bin/fm-pending-reply-lib.sh`, `bin/fm-task-inbox-lib.sh`, and the status-append path.
+The bounds are backstops behind that enforcement, not new limits: the pending-reply ladder already sends REPOST REQUIRED and escalates on its own clock, and the watcher only raises what that ladder has given up on, or what has sat open far longer than any ladder step.
+A secondmate on another machine (a `(host: ...)` entry in `data/secondmates.md`) gets no stage yet.
+
+**Adopting it.**
+A home's owner runs `bin/fm-handoff-firstmate.py publish --home <home>` and then `bin/fm-handoff-watch.sh arm`, and runs `publish` again whenever a secondmate is added or retired; an unchanged publish writes nothing.
+Tooling-mate's publish also declares each home's heartbeat folder, so it reruns `publish` when a home joins or leaves.
+
+### Receipt adapters
+
+A stage whose `ext` holds `<owner>.receipt-adapter` has no receipt files: the watcher calls that adapter in `bin/fm_handoff_adapters.py` instead of reading the outbox, and it skips the stage's `no-receipt` check, because the adapter reads the input place itself.
+An adapter only reads; it turns each record's current state into one `handoff-receipt/v1` document whose `evidence` is the record file, and the watcher validates it like any receipt.
+Each file is parsed once per size, inode and mtime, and the status fold runs once per changed status file, never once per line.
+Such a stage's outbox may be the same folder as its input place, since nothing is written there.
+
+| Adapter | Reads | Maps |
+|---|---|---|
+| `corr-request` | `state/pending-replies/<corr>` with that `task_id`, and the secondmate's inbox messages | `resolved` is `done`; an open ladder phase is `accepted`, attempt 2 once recovery was sent; `escalated` after delivery is `held` `reply-missed`; `escalated` with no delivery is `held` `delivery-unknown`; the message named in the inbox's `.escalated` is `held` `unacked` |
+| `first-status` | each `state/<id>.meta` and its `state/<id>.status` | `accepted` at the meta's mtime until the status file is not empty, then `done` |
+| `status-decisions` | `state/<secondmate>.status`, folded by `status_open_decisions` in `bin/fm-classify-lib.sh` | each open key is `accepted` at its line's `[at=]`; keys the pending-reply and handoff tools reserve are skipped |
+
+An adapter name the watcher does not know raises `source-unreadable` on the stage's outbox path.
 
 ## Compatibility and versioning
 
@@ -491,6 +528,7 @@ Information a home needs beyond the closed fields goes in `ext`, which the fragm
 An `ext` key is `<home>.<name>`, owned by the home before the dot; a home writes only keys under its own name.
 An `ext` value is a string, number or boolean, so `ext` reads as `key=value`.
 Readers ignore every `ext` key they do not know, the rule the merge queue's HANDOFF and RESULT receipts already follow.
+Firstmate's watcher reads one stage key, `<owner>.receipt-adapter`, which names the [receipt adapter](#receipt-adapters) that reads the stage's records.
 One key is read by Firstmate itself: a stage's `<home>.loop-source` declares loop-view sources for that home's `bin/fm-loop.sh`, in the format [docs/configuration.md](configuration.md#loop-sources-configloop-sources) gives.
 
 ### Versions
@@ -523,7 +561,7 @@ Each seam of the new pipeline lands in these fields; `examples/xp-chain.fragment
 | Adapters | old-to-new adapters | each a stage with an owner; its receipts count its use, and its retirement is a dated rule |
 | Tool alarms | TETJET liveness (`tj-idle`, `tj-lane-refused`, `tj-capacity-unread`) | entries in the alert store |
 | Workbench | lattice-mate readers of research outputs | stages whose `accepts` declares the versions they read; unknown input is refused with `version-unsupported` |
-| Firstmate | briefs, `fm-send` corr requests, status lines (tooling-mate) | protocols whose stages adapt the existing receipts (REPOST REQUIRED, keyed lines) |
+| Firstmate | briefs, `fm-send` corr requests, status lines (each home; the `handoff-watch` heartbeat is tooling-mate's) | protocols whose stages adapt the existing records (REPOST REQUIRED, keyed lines); see [Firstmate's own handoffs](#firstmates-own-handoffs) |
 
 Reused blocks land here:
 

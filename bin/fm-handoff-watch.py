@@ -27,6 +27,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fm_handoff_adapters as adapters  # noqa: E402
 import fm_handoff_registry as registry  # noqa: E402
 from fm_receipt_io import atomic  # noqa: E402
 
@@ -222,8 +223,11 @@ class Watch:
             place = stage[which]
             if not planned or os.path.isdir(place["path"]):
                 self.sync_stamp(scope, place["path"], place["reach"])
-        self.read_outbox(proto, stage, scope, st, planned)
-        self.read_place(stage, scope, st, planned)
+        if adapters.adapter_name(stage):
+            self.read_adapter(proto, stage, scope, st)
+        else:
+            self.read_outbox(proto, stage, scope, st, planned)
+            self.read_place(stage, scope, st, planned)
         self.judge(proto, sindex, scope, st)
         atomic(path, st)
 
@@ -266,6 +270,30 @@ class Watch:
             self.incomplete.add(scope)
         else:
             ob["sig"] = sig
+
+    def read_adapter(self, proto, stage, scope, st):
+        """Fold the receipts a receipt adapter reads from existing records; each pass replaces the last."""
+        try:
+            docs, problems = adapters.adapt(proto, stage, st.setdefault("adapter", {}), self.now)
+        except KeyError:
+            self.unreadable(scope, stage["outbox"]["path"], f"is read by receipt adapter "
+                            f"{adapters.adapter_name(stage)!r}, which this watcher does not know")
+            return
+        for path, why in problems:
+            self.unreadable(scope, path, why)
+        records = {}
+        for doc in docs:
+            bad = self.receipt_schema.errors(doc) or self.validate.receipt_problems(doc, self.protocols)
+            if bad:
+                where, what = bad[0]
+                self.unreadable(scope, doc.get("evidence"), f"adapts to an invalid receipt at {where}: {what}")
+                continue
+            cur = {k: doc.get(k) for k in ("state", "code", "attempt", "seq", "holds_all", "stops", "detail",
+                                           "sender", "until", "evidence")}
+            cur.update(name=doc["evidence"], path=doc["evidence"],
+                       at=self.validate.parse_utc(doc["written_at"]).timestamp())
+            records[doc["record"]] = {"pairs": [], "cur": cur}
+        st["records"] = records
 
     def receipt(self, proto, stage, st, folder, name):
         """Fold one outbox entry into the stage state; False when it should be read again next pass."""
@@ -393,7 +421,7 @@ class Watch:
                     del st["records"][record]
                 continue
             subject = f"{pid}/{sname}/{record}"
-            evidence = os.path.join(outbox, cur["name"])
+            evidence = cur.get("path") or os.path.join(outbox, cur["name"])
             senders = [cur["sender"]] if cur.get("sender") else [prev_owner] if prev_owner else proto["senders"]
             entry = self.validate.code_entry(stage, cur["code"]) if cur.get("code") else None
             fix = entry["fix_owner"] if entry else owner

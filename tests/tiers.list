@@ -116,6 +116,7 @@ full tests/fm-gate-refuse.test.sh
 full tests/fm-git-strip-ai-trailers.test.sh
 full tests/fm-gotmp.test.sh
 full tests/fm-guard-stale-banner.test.sh
+full tests/fm-handoff-firstmate.test.sh
 full tests/fm-handoff-watch.test.sh
 full tests/fm-harness-precedence.test.sh
 full tests/fm-helper-consumers.test.sh

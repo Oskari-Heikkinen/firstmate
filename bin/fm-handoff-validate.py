@@ -16,8 +16,8 @@ fragment  checks each handoff-registry/v1 fragment against its schema and the
           are unique, first_stage and the cleanup stage exist, ranges are
           ordered, every stage's writes range is accepted by the next stage
           (readers first), a reserved code is never redeclared, and no outbox
-          is also an input place. Several fragments in one call must not
-          declare the same protocol id.
+          is also an input place, except at a stage a receipt adapter reads.
+          Several fragments in one call must not declare the same protocol id.
 receipt   checks each handoff-receipt/v1 file against its schema and the
           cross-field rules (a waiting receipt's until is after written_at).
           With --fragment, it also checks the receipt against the registry:
@@ -284,7 +284,10 @@ def fragment_problems(doc):
                     out.append((f"{sw}/codes/{code}", "a reserved code is routed by the protocol and is never declared"))
             if "input" in stage:
                 inputs.setdefault(stage["input"].get("path"), f"{sw}/input")
-            if "outbox" in stage:
+            # A receipt adapter reads existing records rather than an outbox of receipt
+            # files, so its outbox may be the input folder those records sit in.
+            adapted = f"{stage.get('owner')}.receipt-adapter" in (stage.get("ext") or {})
+            if "outbox" in stage and not adapted:
                 outboxes.append((stage["outbox"].get("path"), f"{sw}/outbox"))
     for path, where in outboxes:
         if path in inputs:
