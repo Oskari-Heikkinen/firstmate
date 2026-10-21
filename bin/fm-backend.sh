@@ -333,33 +333,67 @@ fm_backend_required_tool_available() {  # <backend> <tool>
 # errors) if the file or key is absent. Mirrors the ad hoc `grep '^key=' |
 # tail -1 | cut -d= -f2-` snippet every fm-*.sh script used to repeat inline.
 fm_meta_get() {  # <meta-file> <key>
-  local meta=$1 key=$2 line value=''
-  [ -f "$meta" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "$key="*) value=${line#*=} ;;
-    esac
-  done < "$meta" 2>/dev/null || true
-  printf '%s' "$value"
+  local _fmg_value
+  fm_meta_get_to _fmg_value "$1" "$2"
+  printf '%s' "$_fmg_value"
+}
+
+# The *_to forms below assign what `$(...)` of the printing form would, without
+# the subshell, and return the same status. Their locals carry a reserved
+# prefix: bash locals are dynamically scoped, so a plain name would shadow a
+# caller's output variable of the same name.
+fm_meta_get_to() {  # <output-variable> <meta-file> <key>
+  local _fmgt_line _fmgt_value=''
+  # The braces put the open of <meta-file> under the 2>/dev/null too, so an
+  # unreadable meta reads as empty without a message, as an absent one does.
+  if [ -f "$2" ]; then
+    {
+      while IFS= read -r _fmgt_line || [ -n "$_fmgt_line" ]; do
+        case "$_fmgt_line" in
+          "$3="*) _fmgt_value=${_fmgt_line#*=} ;;
+        esac
+      done < "$2"
+    } 2>/dev/null || true
+  fi
+  printf -v "$1" '%s' "$_fmgt_value"
 }
 
 # fm_backend_of_meta: the backend recorded in <meta-file>, defaulting to
 # `tmux` when the field is absent - the P1 compatibility contract.
 fm_backend_of_meta() {  # <meta-file>
-  local v
-  v=$(fm_meta_get "$1" backend)
-  printf '%s' "${v:-tmux}"
+  local _fmbo_backend
+  fm_backend_of_meta_to _fmbo_backend "$1"
+  printf '%s' "$_fmbo_backend"
 }
 
+fm_backend_of_meta_to() {  # <output-variable> <meta-file>
+  local _fmbot_value
+  fm_meta_get_to _fmbot_value "$2" backend
+  printf -v "$1" '%s' "${_fmbot_value:-tmux}"
+}
+
+# fm_backend_target_of_meta: the endpoint <meta-file> records - an Orca
+# terminal when it has one, else the last window= - and 1 with nothing printed
+# when it records none.
 fm_backend_target_of_meta() {  # <meta-file>
-  local meta=$1 backend terminal window
-  backend=$(fm_backend_of_meta "$meta")
-  if [ "$backend" = orca ]; then
-    terminal=$(fm_meta_get "$meta" terminal)
-    [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
+  local _fmbt_target
+  fm_backend_target_of_meta_to _fmbt_target "$1" || return 1
+  printf '%s' "$_fmbt_target"
+}
+
+fm_backend_target_of_meta_to() {  # <output-variable> <meta-file>
+  local _fmbtt_backend _fmbtt_value
+  fm_backend_of_meta_to _fmbtt_backend "$2"
+  if [ "$_fmbtt_backend" = orca ]; then
+    fm_meta_get_to _fmbtt_value "$2" terminal
+    if [ -n "$_fmbtt_value" ]; then
+      printf -v "$1" '%s' "$_fmbtt_value"
+      return 0
+    fi
   fi
-  window=$(fm_meta_get "$meta" window)
-  [ -n "$window" ] && printf '%s' "$window"
+  fm_meta_get_to _fmbtt_value "$2" window
+  printf -v "$1" '%s' "$_fmbtt_value"
+  [ -n "$_fmbtt_value" ]
 }
 
 # fm_backend_validate_task_endpoint: validate a task cleanup record entirely
@@ -560,8 +594,8 @@ fm_backend_meta_for_window() {  # <target> <state-dir>
   local target=$1 state=$2 meta window terminal
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
-    window=$(fm_meta_get "$meta" window)
-    terminal=$(fm_meta_get "$meta" terminal)
+    fm_meta_get_to window "$meta" window
+    fm_meta_get_to terminal "$meta" terminal
     { [ -n "$window" ] && [ "$window" = "$target" ]; } || { [ -n "$terminal" ] && [ "$terminal" = "$target" ]; } || continue
     printf '%s' "$meta"
     return 0

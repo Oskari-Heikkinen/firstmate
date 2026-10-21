@@ -202,7 +202,7 @@ SH
   pass "recovery marker reads accept exactly the one-line records wc -l accepted"
 }
 
-test_window_to_task_matches_the_meta_pipeline() {
+test_window_and_meta_readers_match_the_meta_pipelines() {
   local script="$TMP_ROOT/window.sh" state="$TMP_ROOT/window-state"
   mkdir -p "$state"
   printf 'window=sess:w1\nbackend=tmux\n' > "$state/alpha.meta"
@@ -215,9 +215,17 @@ test_window_to_task_matches_the_meta_pipeline() {
   mkdir -p "$state/dir.meta"
   printf 'window=sess:w9\n' > "$state/theta.meta"
   chmod 000 "$state/theta.meta"
+  printf 'kind=ship\nwindow=sess:w10\nkind=secondmate\nharness=claude\nbackend=herdr\nbackend=\n' > "$state/iota.meta"
+  printf 'backend=orca\nterminal=term-11\nwindow=sess:w11\n' > "$state/kappa.meta"
+  printf 'backend=orca\nwindow=sess:w12\nterminal=\n' > "$state/lambda.meta"
+  printf 'window=sess:w1\nkind=secondmate\n' > "$state/mu.meta"
+  printf 'window=sess:w13\nkind=\nkind=\n\n' > "$state/nu.meta"
+  printf 'window=sess:w14\nharness=a\nharness=\nkind=x=y' > "$state/xi.meta"
   cat > "$script" <<'SH'
-. "$1/bin/fm-classify-lib.sh"
+# The watcher's source guard returns before its loop, leaving every reader below.
+. "$1/bin/fm-watch.sh"
 state=$2
+STATE=$state
 reference() {  # the replaced grep | tail -1 | cut -d= -f2- lookup
   local w=$1 meta mw mt t
   for meta in "$state"/*.meta; do
@@ -229,15 +237,74 @@ reference() {  # the replaced grep | tail -1 | cut -d= -f2- lookup
   done
   t="${w##*:}"; t="${t#fm-}"; printf '%s' "$t"
 }
-for w in sess:w1 old sess:w2 term-3 '' a=b=c a sess:w5 $'sess:w5\r' ' sess:w6 ' sess:w6 t7 sess:w9 sess:fm-fallback-x unknown; do
+last_value() {  # <meta> <key>: the replaced grep | tail -1 | cut -d= -f2- read
+  grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
+}
+all_values() {  # <meta> <key>: the replaced grep | cut -d= -f2- read of every value
+  grep "^$2=" "$1" 2>/dev/null | cut -d= -f2- || true
+}
+# What the watcher's window_kind, window_backend, window_harness and
+# window_label readers printed before window_resolve replaced them, each
+# matching through the window's meta: sets ref_task, ref_kind, ref_backend,
+# ref_harness and ref_label.
+reference_resolve() {  # <window>
+  local w=$1 meta
+  ref_task=$(reference "$w") ref_kind=unknown ref_backend=tmux ref_harness=''
+  if [ -n "$w" ]; then
+    for meta in "$state"/*.meta; do
+      [ -e "$meta" ] || continue
+      [ "$(last_value "$meta" window)" = "$w" ] || [ "$(last_value "$meta" terminal)" = "$w" ] || continue
+      ref_kind=$(all_values "$meta" kind); [ -n "$ref_kind" ] || ref_kind=ship
+      ref_backend=$(all_values "$meta" backend); [ -n "$ref_backend" ] || ref_backend=tmux
+      ref_harness=$(all_values "$meta" harness)
+      break
+    done
+  fi
+  ref_label=${ref_task:+fm-$ref_task}
+}
+for w in sess:w1 old sess:w2 term-3 '' a=b=c a sess:w5 $'sess:w5\r' ' sess:w6 ' sess:w6 t7 sess:w9 \
+  sess:w10 sess:w11 term-11 sess:w12 sess:w13 sess:w14 sess:fm-fallback-x unknown sess: sess:fm-; do
   got=$(window_to_task "$w" "$state")
   want=$(reference "$w")
   [ "$got" = "$want" ] || printf 'window %q: helper %q, pipeline %q\n' "$w" "$got" "$want"
+  reference_resolve "$w"
+  window_resolve "$w"
+  got=$(printf 'task=%s kind=%s backend=%s harness=%s label=%s' \
+    "$WR_TASK" "$WR_KIND" "$WR_BACKEND" "$WR_HARNESS" "$WR_LABEL")
+  want=$(printf 'task=%s kind=%s backend=%s harness=%s label=%s' \
+    "$ref_task" "$ref_kind" "$ref_backend" "$ref_harness" "$ref_label")
+  [ "$got" = "$want" ] || printf 'window_resolve %q: helper %q, pipelines %q\n' "$w" "$got" "$want"
+  got=$(printf 'task=%s kind=%s backend=%s label=%s' "$(window_to_task "$w" "$state")" \
+    "$(window_kind "$w")" "$(window_backend "$w")" "$(window_label "$w")")
+  want=$(printf 'task=%s kind=%s backend=%s label=%s' "$ref_task" "$ref_kind" "$ref_backend" "$ref_label")
+  [ "$got" = "$want" ] || printf 'window_* readers %q: helpers %q, pipelines %q\n' "$w" "$got" "$want"
+done
+for meta in "$state"/*.meta "$state/absent.meta"; do
+  for key in window terminal backend; do
+    got=unset
+    fm_meta_get_to got "$meta" "$key"
+    want=$(last_value "$meta" "$key")
+    [ "$got" = "$want" ] || printf 'fm_meta_get_to %q %s: helper %q, pipeline %q\n' "${meta##*/}" "$key" "$got" "$want"
+  done
+  backend=$(last_value "$meta" backend)
+  backend=${backend:-tmux}
+  got=unset
+  fm_backend_of_meta_to got "$meta"
+  [ "$got" = "$backend" ] || printf 'fm_backend_of_meta_to %q: helper %q, pipeline %q\n' "${meta##*/}" "$got" "$backend"
+  want=
+  [ "$backend" != orca ] || want=$(last_value "$meta" terminal)
+  [ -n "$want" ] || want=$(last_value "$meta" window)
+  want_rc=1
+  [ -z "$want" ] || want_rc=0
+  got=unset rc=0
+  fm_backend_target_of_meta_to got "$meta" || rc=$?
+  [ "$got" = "$want" ] && [ "$rc" = "$want_rc" ] \
+    || printf 'fm_backend_target_of_meta_to %q: helper %q rc %s, pipeline %q rc %s\n' "${meta##*/}" "$got" "$rc" "$want" "$want_rc"
 done
 SH
-  run_everywhere "window_to_task" "$script" "$state"
+  run_everywhere "window and meta readers" "$script" "$state"
   chmod 600 "$state/theta.meta"
-  pass "window_to_task resolves every recorded window exactly as the grep/tail/cut pipeline did"
+  pass "window_to_task, window_resolve and the meta _to readers match the grep/tail/cut pipelines they replaced"
 }
 
 test_classify_stat_helpers_read_the_kernel_name_once() {
@@ -496,7 +563,7 @@ else
   test_epoch_helper_matches_date_and_never_forks_more
   test_signal_seen_path_and_lock_abs_path_are_unchanged
   test_recovery_marker_read_accepts_exactly_one_newline
-  test_window_to_task_matches_the_meta_pipeline
+  test_window_and_meta_readers_match_the_meta_pipelines
   test_classify_stat_helpers_read_the_kernel_name_once
   test_file_readers_match_cat_and_od
   test_proc_identity_matches_the_forked_reader

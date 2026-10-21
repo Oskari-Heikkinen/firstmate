@@ -496,56 +496,105 @@ hash_pane() {
 # busy fallbacks and the launch-prompt backstop that keeps a launch pinned at
 # its fm-spawn seed from reading as provably working.
 window_is_busy() {  # <window> <tail40>
-  local w=$1 tail40=$2 task meta verdict
-  task=$(window_to_task "$w" "$STATE")
-  meta="$STATE/$task.meta"
-  if [ -n "$task" ] && [ -f "$meta" ]; then
-    verdict=$(fm_busy_classify_meta "$meta" "$task" "$STATE" "$tail40")
+  local w=$1 tail40=$2 meta verdict
+  local WR_TASK WR_KIND WR_BACKEND WR_HARNESS WR_LABEL
+  window_resolve "$w"
+  meta="$STATE/$WR_TASK.meta"
+  if [ -n "$WR_TASK" ] && [ -f "$meta" ]; then
+    verdict=$(fm_busy_classify_meta "$meta" "$WR_TASK" "$STATE" "$tail40")
   else
-    verdict=$(fm_busy_classify "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
-      "${task:-unknown}" "$STATE" "$tail40")
+    verdict=$(fm_busy_classify "$WR_BACKEND" "$w" "$WR_HARNESS" \
+      "${WR_TASK:-unknown}" "$STATE" "$tail40")
   fi
   [ "${verdict%% *}" = busy ]
 }
 
-window_kind() {
-  local w=$1 meta kind
-  meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
-  if [ -n "$meta" ]; then
-    kind=$(grep '^kind=' "$meta" | cut -d= -f2- || true)
-    [ -n "$kind" ] || kind=ship
-    echo "$kind"
-    return 0
+# window_resolve: what the watcher reads about <window> from the task metas, in
+# one pass in the watcher's own shell instead of a subshell plus grep and cut per
+# field, each of which re-read every meta. The meta is the first in glob order
+# whose last window= or terminal= is <window>, as in window_to_task and
+# fm_backend_meta_for_window. It sets:
+#   WR_TASK     window_to_task's answer, including its name fallback
+#   WR_KIND     the meta's kind= values, ship when it has none; unknown with no meta
+#   WR_BACKEND  the meta's backend= values, tmux when it has none or there is no
+#               meta (absent backend= means tmux; the P1 compatibility contract)
+#   WR_HARNESS  the meta's harness= values, or empty
+#   WR_LABEL    fm-<task>, or empty when there is no task
+# Kind, backend and harness keep the reading the watcher's window_* readers
+# always had: every value of the key, newline-joined, as `grep '^key=' | cut
+# -d= -f2-` printed them into $(...). An empty <window> names no meta for them, as
+# fm_backend_meta_for_window never matches an empty target. The pane-stale pass
+# resolves its current window once and reads these globals for the rest of that
+# window's turn; every other caller declares them local first, as the readers
+# below do, so it never overwrites the pass's answer.
+window_resolve() {  # <window>
+  local _wr_meta _wr_line _wr_mw _wr_mt _wr_kind _wr_backend _wr_harness _wr_nl=$'\n'
+  WR_TASK='' WR_KIND=unknown WR_BACKEND=tmux WR_HARNESS='' WR_LABEL=''
+  for _wr_meta in "$STATE"/*.meta; do
+    [ -e "$_wr_meta" ] || continue
+    _wr_mw='' _wr_mt='' _wr_kind='' _wr_backend='' _wr_harness=''
+    {
+      while IFS= read -r _wr_line || [ -n "$_wr_line" ]; do
+        case "$_wr_line" in
+          window=*) _wr_mw=${_wr_line#window=} ;;
+          terminal=*) _wr_mt=${_wr_line#terminal=} ;;
+          kind=*) _wr_kind=$_wr_kind${_wr_line#kind=}$_wr_nl ;;
+          backend=*) _wr_backend=$_wr_backend${_wr_line#backend=}$_wr_nl ;;
+          harness=*) _wr_harness=$_wr_harness${_wr_line#harness=}$_wr_nl ;;
+        esac
+      done < "$_wr_meta"
+    } 2>/dev/null
+    [ "$_wr_mw" = "$1" ] || [ "$_wr_mt" = "$1" ] || continue
+    WR_TASK=${_wr_meta##*/}
+    WR_TASK=${WR_TASK%.meta}
+    if [ -n "$1" ]; then
+      window_resolve_chomp _wr_kind
+      window_resolve_chomp _wr_backend
+      window_resolve_chomp _wr_harness
+      WR_KIND=${_wr_kind:-ship}
+      WR_BACKEND=${_wr_backend:-tmux}
+      WR_HARNESS=$_wr_harness
+    fi
+    break
+  done
+  if [ -z "$WR_TASK" ]; then
+    WR_TASK=${1##*:}
+    WR_TASK=${WR_TASK#fm-}
   fi
-  echo unknown
+  [ -z "$WR_TASK" ] || WR_LABEL=fm-$WR_TASK
+}
+
+# Cut every trailing newline from the named variable, as $(...) does.
+window_resolve_chomp() {  # <variable>
+  local _wrc_value=${!1} _wrc_nl=$'\n'
+  while :; do
+    case "$_wrc_value" in
+      *"$_wrc_nl") _wrc_value=${_wrc_value%"$_wrc_nl"} ;;
+      *) break ;;
+    esac
+  done
+  printf -v "$1" '%s' "$_wrc_value"
+}
+
+window_kind() {
+  local WR_TASK WR_KIND WR_BACKEND WR_HARNESS WR_LABEL
+  window_resolve "$1"
+  echo "$WR_KIND"
 }
 
 # window_backend: the backend recorded in the meta whose window= matches <w>,
 # defaulting to tmux (absent backend= means tmux; the P1 compatibility
 # contract) when no matching meta carries the field, or none matches at all.
 window_backend() {
-  local w=$1 meta backend
-  meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
-  if [ -n "$meta" ]; then
-    backend=$(grep '^backend=' "$meta" | cut -d= -f2- || true)
-    [ -n "$backend" ] || backend=tmux
-    echo "$backend"
-    return 0
-  fi
-  echo tmux
-}
-
-window_harness() {
-  local w=$1 meta
-  meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
-  [ -n "$meta" ] || return 0
-  grep '^harness=' "$meta" | cut -d= -f2- || true
+  local WR_TASK WR_KIND WR_BACKEND WR_HARNESS WR_LABEL
+  window_resolve "$1"
+  echo "$WR_BACKEND"
 }
 
 window_label() {
-  local w=$1 task
-  task=$(window_to_task "$w" "$STATE")
-  [ -n "$task" ] && printf 'fm-%s' "$task"
+  local WR_TASK WR_KIND WR_BACKEND WR_HARNESS WR_LABEL
+  window_resolve "$1"
+  [ -n "$WR_LABEL" ] && printf '%s' "$WR_LABEL"
 }
 
 # The ONE derivation of a window's per-window marker key: `:`, `/` and `.` become
@@ -886,8 +935,7 @@ recorded_windows() {
   local meta w seen=
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
-    w=$(fm_backend_target_of_meta "$meta")
-    [ -n "$w" ] || continue
+    fm_backend_target_of_meta_to w "$meta" || continue
     case "$seen" in
       *"|$w|"*) continue ;;
     esac
@@ -2907,15 +2955,17 @@ heartbeat_scan_finds_actionable() {
 # a second watcher, so every guard/beacon/arm/turn-end mechanism is unchanged.
 event_wait_or_sleep() {
   local w b session first_backend="" first_session="" rec rc
+  local WR_TASK WR_KIND WR_BACKEND WR_HARNESS WR_LABEL
   local windows=()
   while IFS= read -r w; do
-    b=$(window_backend "$w")
+    window_resolve "$w"
+    b=$WR_BACKEND
     fm_backend_has_push "$b" || continue
     # Secondmate endpoints are supervised via status writes, not pane/agent
     # state (an idle or blocked secondmate agent pane is healthy by design), so
     # they are excluded from the fast escalation exactly as the stale loop skips
     # them.
-    [ "$(window_kind "$w")" = secondmate ] && continue
+    [ "$WR_KIND" = secondmate ] && continue
     session=${w%%:*}
     if [ -z "$first_backend" ]; then first_backend=$b; first_session=$session; fi
     # One socket connection covers one backend+session; a home normally has a
@@ -3812,8 +3862,9 @@ EOF
   recheck_declared_keys=' '
   while IFS= read -r w; do
     watcher_beat
-    kind=$(window_kind "$w")
-    task=$(window_to_task "$w" "$STATE")
+    window_resolve "$w"
+    kind=$WR_KIND
+    task=$WR_TASK
     # Steering-inbox loss detection runs before the secondmate stale
     # exemption below, because a mate's steers land in an inbox too.
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
@@ -3834,7 +3885,7 @@ EOF
     if [ "$kind" = secondmate ] && ! status_is_paused_or_captain_held "$last"; then
       continue
     fi
-    watcher_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" || continue
+    watcher_capture "$WR_BACKEND" "$w" 40 "$WR_LABEL" || continue
     tail40=$WATCHER_CAPTURE
     h=$(printf '%s' "$tail40" | hash_pane)
     hf="$STATE/.hash-$key"
@@ -3889,7 +3940,7 @@ EOF
           # authoritative source fm-crew-state.sh itself already prioritizes
           # over the log) a chance to override before trusting the log.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
-            if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
+            if crew_is_provably_working "$WR_TASK"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
               clear_write_tracking "$key"
@@ -3912,7 +3963,7 @@ EOF
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
               clear_write_tracking "$key"
-              stale_status="$STATE/$(window_to_task "$w" "$STATE").status"
+              stale_status="$STATE/$WR_TASK.status"
               stale_record=$(status_span_first_actionable_record "$stale_status" 0 '' '' watcher_beat)
               case $? in
                 0|1) stale_end=${stale_record%%$'\t'*}; stale_rest=${stale_record#*$'\t'}; stale_ident=${stale_rest%%$'\t'*} ;;
@@ -3947,7 +3998,7 @@ EOF
           #     waiting on a decision, or wedged) instead of leaving the finish to
           #     wait out the timer.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
-            task=$(window_to_task "$w" "$STATE")
+            task=$WR_TASK
             case "$(pause_state_class "$w" "$task")" in
               working)
                 clear_pause_tracking "$key"
@@ -3963,7 +4014,7 @@ EOF
                 ;;
             esac
           else
-            task=$(window_to_task "$w" "$STATE")
+            task=$WR_TASK
             if [ -e "$pf" ] || status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$task.status")"; then
               case "$(pause_state_class "$w" "$task")" in
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
@@ -4000,7 +4051,7 @@ EOF
         # is cleared - but not in the same poll the declared-pause cadence just
         # recorded it, or the re-surface throttle it depends on would be erased and
         # the pause would re-surface every poll instead of once per long cadence.
-        if [ "$paused_bound" -ne 0 ] && [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
+        if [ "$paused_bound" -ne 0 ] && [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$WR_TASK.status")"; }; then
           clear_pause_tracking "$key"
         fi
       fi
@@ -4014,7 +4065,7 @@ EOF
         rm -f "$ssf" "$ewf"
         clear_write_tracking "$key"
       fi
-      task=$(window_to_task "$w" "$STATE")
+      task=$WR_TASK
       if ! afk_present && status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then
         case "$(pause_state_class "$w" "$task")" in
           paused) handle_paused_stale "$w" "$task" "$h" ;;

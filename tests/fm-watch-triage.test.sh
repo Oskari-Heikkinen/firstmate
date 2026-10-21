@@ -5058,6 +5058,44 @@ test_secondmate_captain_held_resurfaces_in_normal_mode() {
   pass "a captain-held secondmate re-surfaces on the bounded normal-mode cadence"
 }
 
+# The pane-stale pass reads a window's kind, task and backend from the first meta
+# in glob order whose latest window= names it, as window_to_task does. A later
+# meta claiming the same window never lends it its kind, and a mate whose window
+# was renamed, and is not named after its task, still reaches its own status.
+test_stale_pass_reads_each_window_from_its_first_meta() {
+  local dir state fakebin out capture_file statusf window back pid
+  dir=$(make_case stale-pass-first-meta); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/mate-renamed.status"
+  window="test:fm-pane-7"
+  printf 'idle awaiting external\n' > "$capture_file"
+  # Glob order is the pass order, so the mate whose re-surface ends the run
+  # comes last.
+  printf 'window=test:fm-shared\nkind=secondmate\n' > "$state/a-first.meta"
+  printf 'window=test:fm-shared\nkind=ship\n' > "$state/b-later.meta"
+  printf 'window=test:fm-ship\n' > "$state/c-ship.meta"
+  printf 'window=test:fm-mate-old\nwindow=%s\nkind=secondmate\n' "$window" > "$state/mate-renamed.meta"
+  printf 'paused: awaiting the upstream release\nThe release window opens tomorrow.\n\n' > "$statusf"
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-mate-renamed_status"
+  printf '%s' "$(hash_text 'idle awaiting external')" > "$state/.hash-test_fm-pane-7"
+  printf '1\n' > "$state/.count-test_fm-pane-7"
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · awaiting the upstream release'
+  watch_bg "$state" "$fakebin" "$out" env FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_WINDOWS="$(printf 'fm-shared\nfm-ship\nfm-pane-7')" FM_PAUSE_RESURFACE_SECS=240
+  pid=$!
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "the renamed paused mate was never re-surfaced: $(cat "$out")"; }
+  unset FM_FAKE_CREW_STATE
+  grep -F "stale: $window (paused" "$out" >/dev/null \
+    || fail "a mate whose window is not named after its task did not reach its own paused status: $(cat "$out")"
+  [ -s "$state/.hash-test_fm-ship" ] || fail "a ship's window was not captured on the default tmux backend"
+  [ ! -e "$state/.hash-test_fm-shared" ] \
+    || fail "a later meta's ship kind put a window its first meta records as a mate on the pane path"
+  [ ! -e "$state/.hash-test_fm-mate-old" ] || fail "a renamed window was supervised under its old name"
+  pass "the pane-stale pass reads each window from the first meta whose latest window= names it"
+}
+
 test_secondmate_nonpaused_stale_remains_suppressed() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid
   dir=$(make_case secondmate-stale-suppressed); state="$dir/state"; fakebin="$dir/fakebin"
@@ -7911,6 +7949,7 @@ TRIAGE_CASES=(
   test_failed_wake_append_does_not_arm_the_captain_hold_throttle
   test_secondmate_paused_resurfaces_in_normal_mode
   test_secondmate_captain_held_resurfaces_in_normal_mode
+  test_stale_pass_reads_each_window_from_its_first_meta
   test_secondmate_nonpaused_stale_remains_suppressed
   test_secondmate_unpause_clears_pause_tracking
   test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash
