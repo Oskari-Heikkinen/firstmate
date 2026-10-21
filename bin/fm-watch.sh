@@ -1423,7 +1423,7 @@ wedge_wait_evidence() {  # <task> -> one wait_record on stdout
   local task=$1 last statusf run wait_rc
   [ -n "$task" ] || return 1
   statusf="$STATE/$task.status"
-  last=$(status_declared_wait_line "$statusf")
+  status_declared_wait_line_to last "$statusf"
   if status_is_captain_held "$last"; then
     wait_record 'captain-held' 'awaiting the captain - verified hold transfer' \
       captain 'answer the held decision or release the hold' "$statusf"
@@ -1762,7 +1762,7 @@ quiet_wait_lane_check() {  # <window> <window-key> <task> <declaration>
 # No other dead or unreadable endpoint receives an exemption.
 queue_park_proven() {  # <task>
   local cond line
-  line=$(status_declared_wait_line "$STATE/$1.status")
+  status_declared_wait_line_to line "$STATE/$1.status"
   status_wait_tag "$line" cond || return 1
   case "$cond" in merge-result:*) ;; *) return 1 ;; esac
   fm_procevent_merge_queue_park_matches "$STATE" "$1" "${cond#merge-result:}" "$SCRIPT_DIR/fm-procevent-merge-queue.sh"
@@ -1803,7 +1803,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
   now=$(date +%s)
   age=$(( now - mtime ))
-  last=$(status_declared_wait_line "$statusf")
+  status_declared_wait_line_to last "$statusf"
   min_age=$PAUSE_RESURFACE_SECS
   declaration=$(declared_wait_scope "$STATE" "$task")
   base=$declaration
@@ -2033,7 +2033,7 @@ recheck_flush() {  # <poll|ride>
     task=
     [ -z "$win" ] || task=$(window_to_task "$win" "$STATE")
     last=
-    [ -z "$task" ] || last=$(last_status_line "$STATE/$task.status")
+    [ -z "$task" ] || last_status_line_to last "$STATE/$task.status"
     if [ -z "$task" ] || [ -z "$reason" ] || ! status_is_paused_or_captain_held "$last" \
       || captain_held_silenced "$last"; then
       rm -f "$f"
@@ -2261,9 +2261,10 @@ recheck_sweep() {  # <space-delimited declared window keys>
 # its own classification, which is why the declaration is read before the afk
 # branch rather than after it.
 busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-file>
-  local win=$1 task=$2 h=$3 since_file=$4 escalation_file=$5 key statusf declared
+  local win=$1 task=$2 h=$3 since_file=$4 escalation_file=$5 key statusf declared line
   statusf="$STATE/$task.status"
-  if status_is_paused_or_captain_held "$(status_declared_wait_line "$statusf")"; then
+  status_declared_wait_line_to line "$statusf"
+  if status_is_paused_or_captain_held "$line"; then
     if afk_present; then
       # Away mode is daemon-owned, so this bound hands off the PLAIN wake identity
       # and lets the daemon classify the declaration itself - the undecorated
@@ -2288,7 +2289,8 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
       rm -f "$since_file" "$escalation_file"
       clear_write_tracking "$key"
       declared=$(declared_wait_scope "$STATE" "$task")
-      if captain_held_silenced "$(status_declared_wait_line "$statusf")"; then
+      status_declared_wait_line_to line "$statusf"
+      if captain_held_silenced "$line"; then
         printf '%s' "$declared" > "$STATE/.stale-$key"
         triage_log "absorbed busy over-age pane (captain-held, never rechecked while the away-posture record exists): $win"
         return 0
@@ -2328,7 +2330,7 @@ clear_pause_tracking() {  # <window-key>
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class
   key=$(window_key "$win")
-  last=$(status_declared_wait_line "$STATE/$task.status")
+  status_declared_wait_line_to last "$STATE/$task.status"
   recheck_file="$STATE/.paused-rechecked-$key"
   if ! status_is_paused_or_captain_held "$last"; then
     rm -f "$recheck_file"
@@ -3874,7 +3876,7 @@ EOF
     # exemption below, because a mate's steers land in an inbox too.
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
     key=$(window_key "$w")
-    last=$(status_declared_wait_line "$STATE/$task.status")
+    status_declared_wait_line_to last "$STATE/$task.status"
     if status_is_paused_or_captain_held "$last"; then
       recheck_declared_keys="$recheck_declared_keys$key "
     elif [ -e "$STATE/.paused-$key" ]; then
@@ -4020,7 +4022,8 @@ EOF
             esac
           else
             task=$WR_TASK
-            if [ -e "$pf" ] || status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$task.status")"; then
+            if [ -e "$pf" ] \
+              || { status_declared_wait_line_to declared_line "$STATE/$task.status"; status_is_paused_or_captain_held "$declared_line"; }; then
               case "$(pause_state_class "$w" "$task")" in
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
                 working) clear_pause_state "$key"
@@ -4056,7 +4059,8 @@ EOF
         # is cleared - but not in the same poll the declared-pause cadence just
         # recorded it, or the re-surface throttle it depends on would be erased and
         # the pause would re-surface every poll instead of once per long cadence.
-        if [ "$paused_bound" -ne 0 ] && [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$WR_TASK.status")"; }; then
+        if [ "$paused_bound" -ne 0 ] && [ -e "$pf" ] && { [ "$n" -ge 2 ] \
+          || { status_declared_wait_line_to declared_line "$STATE/$WR_TASK.status"; ! status_is_paused_or_captain_held "$declared_line"; }; }; then
           clear_pause_tracking "$key"
         fi
       fi
@@ -4071,7 +4075,9 @@ EOF
         clear_write_tracking "$key"
       fi
       task=$WR_TASK
-      if ! afk_present && status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then
+      declared_line=
+      if [ "$busy_now" -ne 0 ] && ! afk_present \
+        && { status_declared_wait_line_to declared_line "$STATE/$task.status"; status_is_paused_or_captain_held "$declared_line"; }; then
         case "$(pause_state_class "$w" "$task")" in
           paused) handle_paused_stale "$w" "$task" "$h" ;;
           *)      clear_pause_tracking "$key" ;;

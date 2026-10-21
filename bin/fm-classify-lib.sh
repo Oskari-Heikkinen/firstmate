@@ -165,7 +165,8 @@ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 # How many trailing lines the latest-event read parses before it widens to the
 # whole file. A status record and its continuation prose sit within a few lines
 # of the log's end, so this bounds the watcher's per-poll read on a long-lived
-# log while a log whose tail holds no event still gets a full pass.
+# log while a log whose tail holds no event still gets a full pass. A log no
+# longer than this is read whole in the shell instead (_fm_status_lines_read).
 FM_CLASSIFY_EVENT_WINDOW_LINES=200
 
 # Return the last recognized status event, ignoring continuation prose and blanks
@@ -175,15 +176,90 @@ FM_CLASSIFY_EVENT_WINDOW_LINES=200
 # always reads the whole file, since a bounded window cannot bound two events.
 # This is an event read; status_current_line below reconciles open decisions.
 last_status_line() {  # <status-file> [<previous-event-var>]
-  local f=$1 scan=''
-  [ -f "$f" ] && [ -r "$f" ] || return 0
+  local __fm_lsl_out
+  [ -f "$1" ] && [ -r "$1" ] || return 0
   if [ "$#" -gt 1 ]; then
-    scan=$(_fm_status_event_scan < "$f") || :
-  elif ! scan=$(tail -n "$FM_CLASSIFY_EVENT_WINDOW_LINES" "$f" 2>/dev/null | _fm_status_event_scan); then
-    scan=$(_fm_status_event_scan < "$f") || :
+    last_status_line_to __fm_lsl_out "$1" "$2"
+  else
+    last_status_line_to __fm_lsl_out "$1"
   fi
-  [ "$#" -lt 2 ] || printf -v "$2" '%s' "${scan%%$'\n'*}"
-  printf '%s\n' "${scan##*$'\n'}"
+  printf '%s\n' "$__fm_lsl_out"
+}
+
+# last_status_line, assigned to <out-var> instead of printed, so the watcher's
+# per-window read needs no command substitution. A missing or unreadable file
+# assigns an empty line and leaves <previous-event-var> as it was. A file the
+# event window holds whole is read in the shell; a longer one, one that cannot
+# be opened, and one whose lines read back joined keep the tail pipeline.
+last_status_line_to() {  # <out-var> <status-file> [<previous-event-var>]
+  local __fm_lsl_f=$2 __fm_lsl_scan='' __fm_lsl_last='' __fm_lsl_prev=''
+  printf -v "$1" '%s' ''
+  [ -f "$__fm_lsl_f" ] && [ -r "$__fm_lsl_f" ] || return 0
+  if _fm_status_lines_read "$__fm_lsl_f"; then
+    if [ "$#" -gt 2 ]; then
+      _fm_status_lines_events_to __fm_lsl_last __fm_lsl_prev || :
+      printf -v "$3" '%s' "$__fm_lsl_prev"
+    else
+      _fm_status_lines_events_to __fm_lsl_last || :
+    fi
+    printf -v "$1" '%s' "$__fm_lsl_last"
+    return 0
+  fi
+  if [ "$#" -gt 2 ]; then
+    __fm_lsl_scan=$(_fm_status_event_scan < "$__fm_lsl_f") || :
+  elif ! __fm_lsl_scan=$(tail -n "$FM_CLASSIFY_EVENT_WINDOW_LINES" "$__fm_lsl_f" 2>/dev/null | _fm_status_event_scan); then
+    __fm_lsl_scan=$(_fm_status_event_scan < "$__fm_lsl_f") || :
+  fi
+  [ "$#" -lt 3 ] || printf -v "$3" '%s' "${__fm_lsl_scan%%$'\n'*}"
+  printf -v "$1" '%s' "${__fm_lsl_scan##*$'\n'}"
+}
+
+# Read a status file of at most FM_CLASSIFY_EVENT_WINDOW_LINES lines into
+# _FM_STATUS_LINES (_FM_STATUS_LINE_COUNT of them), each line exactly as read
+# takes it from the tail pipeline, which passes such a file on whole. Returns 1,
+# for the caller to keep that pipeline, when the file cannot be opened, holds
+# more lines than the window, or a line comes back with a newline inside it:
+# under a multibyte locale read takes the newline after a stray lead byte into
+# that character, and the pipeline's command substitution decides how the
+# joined line reads.
+_fm_status_lines_read() {  # <status-file>
+  local __fm_slr_line __fm_slr_n=0
+  _FM_STATUS_LINES=()
+  _FM_STATUS_LINE_COUNT=0
+  while IFS= read -r __fm_slr_line || [ -n "$__fm_slr_line" ]; do
+    [ "$__fm_slr_n" -lt "$FM_CLASSIFY_EVENT_WINDOW_LINES" ] || return 1
+    case "$__fm_slr_line" in *$'\n'*) return 1 ;; esac
+    _FM_STATUS_LINES[__fm_slr_n]=$__fm_slr_line
+    __fm_slr_n=$((__fm_slr_n + 1))
+  done 2>/dev/null < "$1" || return 1
+  _FM_STATUS_LINE_COUNT=$__fm_slr_n
+}
+
+# Walk _FM_STATUS_LINES back from the end and assign the latest status event to
+# <latest-var> and, when <previous-var> is given, the event before it. Whether a
+# line is an event depends on that line alone, so these are the two events
+# _fm_status_event_scan reports for the same lines, found without testing every
+# earlier line. With no event the latest is the last nonblank line, the previous
+# is empty, and the status is 1.
+_fm_status_lines_events_to() {  # <latest-var> [<previous-var>]
+  local _fm_se_i=$_FM_STATUS_LINE_COUNT _fm_se_line _fm_se_last='' _fm_se_prev='' _fm_se_fallback='' _fm_se_re
+  _fm_se_re="^[[:space:]]*(${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT})"
+  while [ "$_fm_se_i" -gt 0 ]; do
+    _fm_se_i=$((_fm_se_i - 1))
+    _fm_se_line=${_FM_STATUS_LINES[_fm_se_i]}
+    case "$_fm_se_line" in *[![:space:]]*) ;; *) continue ;; esac
+    [ -n "$_fm_se_fallback" ] || _fm_se_fallback=$_fm_se_line
+    _fm_status_line_is_event "$_fm_se_line" "$_fm_se_re" || continue
+    if [ -n "$_fm_se_last" ]; then
+      _fm_se_prev=$_fm_se_line
+      break
+    fi
+    _fm_se_last=$_fm_se_line
+    [ "$#" -gt 1 ] || break
+  done
+  [ "$#" -lt 2 ] || printf -v "$2" '%s' "$_fm_se_prev"
+  printf -v "$1" '%s' "${_fm_se_last:-$_fm_se_fallback}"
+  [ -n "$_fm_se_last" ]
 }
 
 # 0 when <verb> is exactly one recognized status verb, with no leftover token.
@@ -297,7 +373,7 @@ _fm_classify_matches() {  # <line> <pattern>
 status_is_terminal_verb() {
   local line=$1 verb
   [ -n "$line" ] || return 1
-  verb=$(status_line_verb "$line")
+  status_line_verb "$line" verb
   case "$verb" in
     done|needs-decision|blocked|failed) return 0 ;;
     *) return 1 ;;
@@ -342,7 +418,7 @@ status_is_captain_relevant() {
 status_is_paused() {  # <status-line>
   local line=$1 verb
   [ -n "$line" ] || return 1
-  verb=$(status_line_verb "$line")
+  status_line_verb "$line" verb
   [ "$verb" = "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}" ]
 }
 
@@ -355,7 +431,7 @@ status_is_paused() {  # <status-line>
 status_is_captain_held() {  # <status-line>
   local line=$1 verb
   [ -n "$line" ] || return 1
-  verb=$(status_line_verb "$line")
+  status_line_verb "$line" verb
   [ "$verb" = "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}" ]
 }
 
@@ -382,19 +458,34 @@ status_is_paused_or_captain_held() {  # <status-line>
 # latest event. Bounded like last_status_line: only a tail window made wholly of
 # resolved events widens the read to the whole file.
 status_declared_wait_line() {  # <status-file>
-  local f=$1 last verb resolve legacy_re
-  last=$(last_status_line "$f")
-  if status_is_paused_or_captain_held "$last"; then
-    printf '%s\n' "$last"
+  local __fm_dwl_out
+  status_declared_wait_line_to __fm_dwl_out "$1"
+  [ -z "$__fm_dwl_out" ] || printf '%s\n' "$__fm_dwl_out"
+}
+
+# status_declared_wait_line, assigned to <out-var> (empty when no wait is
+# declared) instead of printed, so the watcher's per-window read needs no
+# command substitution. Reads the file the way last_status_line_to does.
+status_declared_wait_line_to() {  # <out-var> <status-file>
+  local __fm_dwl_f=$2 __fm_dwl_last __fm_dwl_verb __fm_dwl_resolve __fm_dwl_re __fm_dwl_line=''
+  printf -v "$1" '%s' ''
+  last_status_line_to __fm_dwl_last "$__fm_dwl_f"
+  if status_is_paused_or_captain_held "$__fm_dwl_last"; then
+    printf -v "$1" '%s' "$__fm_dwl_last"
     return 0
   fi
-  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
-  status_line_verb "$last" verb
-  [ "$verb" = "$resolve" ] || return 0
-  legacy_re="^[[:space:]]*(${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT})"
-  tail -n "$FM_CLASSIFY_EVENT_WINDOW_LINES" "$f" 2>/dev/null \
-    | _fm_status_declared_wait_scan "$resolve" "$legacy_re" \
-    || _fm_status_declared_wait_scan "$resolve" "$legacy_re" < "$f" || :
+  __fm_dwl_resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  status_line_verb "$__fm_dwl_last" __fm_dwl_verb
+  [ "$__fm_dwl_verb" = "$__fm_dwl_resolve" ] || return 0
+  __fm_dwl_re="^[[:space:]]*(${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT})"
+  if _fm_status_lines_read "$__fm_dwl_f"; then
+    _fm_status_lines_declared_wait_to __fm_dwl_line "$__fm_dwl_resolve" "$__fm_dwl_re" || :
+  else
+    __fm_dwl_line=$(tail -n "$FM_CLASSIFY_EVENT_WINDOW_LINES" "$__fm_dwl_f" 2>/dev/null \
+      | _fm_status_declared_wait_scan "$__fm_dwl_resolve" "$__fm_dwl_re" \
+      || _fm_status_declared_wait_scan "$__fm_dwl_resolve" "$__fm_dwl_re" < "$__fm_dwl_f") || :
+  fi
+  printf -v "$1" '%s' "$__fm_dwl_line"
 }
 
 # Walk the status lines on stdin back from the newest event past resolved lines
@@ -402,30 +493,39 @@ status_declared_wait_line() {  # <status-file>
 # resolved lines share a phase key with. Returns 1 when every event is a
 # resolved line, so a caller reading a bounded window knows to widen it.
 _fm_status_declared_wait_scan() {  # <resolve-verb> <legacy-captain-re>
-  local resolve=$1 legacy_re=$2 line verb key keys=$'\n' i=0
-  local -a lines=()
+  local line found _FM_STATUS_LINE_COUNT=0
+  local -a _FM_STATUS_LINES=()
   while IFS= read -r line || [ -n "$line" ]; do
-    lines[i]=$line
-    i=$((i + 1))
+    _FM_STATUS_LINES[_FM_STATUS_LINE_COUNT]=$line
+    _FM_STATUS_LINE_COUNT=$((_FM_STATUS_LINE_COUNT + 1))
   done
-  while [ "$i" -gt 0 ]; do
-    i=$((i - 1))
-    line=${lines[i]}
-    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
-    _fm_status_line_is_event "$line" "$legacy_re" || continue
-    status_line_verb "$line" verb
-    case "$verb" in
-      "$resolve") ;;
+  _fm_status_lines_declared_wait_to found "$1" "$2" || return 1
+  [ -z "$found" ] || printf '%s\n' "$found"
+}
+
+# The walk _fm_status_declared_wait_scan describes, over _FM_STATUS_LINES,
+# assigning the pause it finds to <out-var> (empty when there is none).
+_fm_status_lines_declared_wait_to() {  # <out-var> <resolve-verb> <legacy-captain-re>
+  local _fm_dw_i=$_FM_STATUS_LINE_COUNT _fm_dw_line _fm_dw_verb _fm_dw_key _fm_dw_keys=$'\n'
+  printf -v "$1" '%s' ''
+  while [ "$_fm_dw_i" -gt 0 ]; do
+    _fm_dw_i=$((_fm_dw_i - 1))
+    _fm_dw_line=${_FM_STATUS_LINES[_fm_dw_i]}
+    case "$_fm_dw_line" in *[![:space:]]*) ;; *) continue ;; esac
+    _fm_status_line_is_event "$_fm_dw_line" "$3" || continue
+    status_line_verb "$_fm_dw_line" _fm_dw_verb
+    case "$_fm_dw_verb" in
+      "$2") ;;
       "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
       *) return 0 ;;
     esac
-    key=$(_fm_decision_key "$line" "$_FM_CLASSIFY_KEYLESS_PHASE") || key=
-    if [ "$verb" = "$resolve" ]; then
-      keys="$keys$key"$'\n'
+    _fm_dw_key=$(_fm_decision_key "$_fm_dw_line" "$_FM_CLASSIFY_KEYLESS_PHASE") || _fm_dw_key=
+    if [ "$_fm_dw_verb" = "$2" ]; then
+      _fm_dw_keys="$_fm_dw_keys$_fm_dw_key"$'\n'
       continue
     fi
-    case "$keys" in *$'\n'"$key"$'\n'*) return 0 ;; esac
-    printf '%s\n' "$line"
+    case "$_fm_dw_keys" in *$'\n'"$_fm_dw_key"$'\n'*) return 0 ;; esac
+    printf -v "$1" '%s' "$_fm_dw_line"
     return 0
   done
   return 1
@@ -1226,8 +1326,8 @@ status_current_line() {  # <status-file> <kind>
   done <<EOF
 $open
 EOF
-  [ -n "$current" ] || current=$(status_declared_wait_line "$1")
-  [ -n "$current" ] || current=$(last_status_line "$1")
+  [ -n "$current" ] || status_declared_wait_line_to current "$1"
+  [ -n "$current" ] || last_status_line_to current "$1"
   printf '%s\n' "$current"
 }
 
@@ -3511,7 +3611,7 @@ signal_declared_wait_holds() {  # <file> ...
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
     cond=''
-    last=$(last_status_line "$dir/$task.status")
+    last_status_line_to last "$dir/$task.status"
     status_wait_untagged "$last" && return 1
     status_declared_wait_check "$last" '' cond || return 1
     out="$out$task"$'\t'"$cond"$'\n'
@@ -3526,6 +3626,6 @@ signal_declared_wait_holds() {  # <file> ...
 # while the away-mode daemon applies its persistence recheck.
 stale_is_terminal() {  # <window> <state>
   local win=$1 state=$2 last
-  last=$(last_status_line "$state/$(window_to_task "$win" "$state").status")
+  last_status_line_to last "$state/$(window_to_task "$win" "$state").status"
   [ -n "$last" ] && status_is_captain_relevant "$last"
 }

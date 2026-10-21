@@ -784,6 +784,220 @@ SH
   pass "status_observed_signature_to reads each status file once and signs it exactly as the forked readers did"
 }
 
+test_status_event_reads_match_the_tail_pipeline() {
+  local script="$TMP_ROOT/status-events.sh" cases="$TMP_ROOT/status-events" i
+  mkdir -p "$cases/dir.status"
+  : > "$cases/empty.status"
+  printf '\n  \n\t\n' > "$cases/blank.status"
+  printf 'some prose\nmore prose\n' > "$cases/prose.status"
+  printf 'paused: awaiting release\nPR ready https://example.com/pull/1\nMore detail: cleanup complete.\n\n' > "$cases/legacy.status"
+  printf 'working: a\nneeds-decision [key=k]: b\ncontinuation\nresolved [key=k]: c\npaused: d\nmore\n' > "$cases/events.status"
+  printf 'working: x\ncaptain-held [key=h]: held\nprose\n' > "$cases/captain-held.status"
+  printf 'working [at=1792600000]: a\npaused [at=17:00]: b\n' > "$cases/stamped.status"
+  printf 'paused: x\nparked: y\nprose\n' > "$cases/unrecognized.status"
+  printf 'needs-decision corr=0123456789abcdef [key=k]: x\nresolved corr=0123456789abcdef [key=k]: y\n' > "$cases/corr.status"
+  printf 'working: a\ncustom-event: ready\nprose\n' > "$cases/custom.status"
+  printf 'paused [key=p]: waiting\nresolved [key=q]: other\nresolved: default\n' > "$cases/resolved-other.status"
+  printf 'paused [key=p]: waiting\nresolved [key=p]: done\n' > "$cases/resolved-same.status"
+  printf 'paused: waiting\nresolved: answered\n' > "$cases/resolved-keyless.status"
+  printf 'paused: x\nworking: y\nresolved [key=z]: a\n' > "$cases/resolved-working.status"
+  printf 'resolved: a\nresolved [key=b]: c\n' > "$cases/resolved-only.status"
+  # Under a two-line window these widen past resolved lines to the whole file.
+  printf 'paused: waiting\nresolved [key=a]: x\nresolved [key=b]: y\n' > "$cases/resolved-widen.status"
+  printf 'paused [key=b]: waiting\nresolved [key=a]: x\nresolved [key=b]: y\n' > "$cases/resolved-widen-same.status"
+  printf 'working: a\r\npaused: b\r\n\r\n' > "$cases/crlf.status"
+  printf 'working: a\npau\0sed: b\n\0\n' > "$cases/nul.status"
+  printf 'working: a\npaused: b' > "$cases/unterminated.status"
+  printf 'working: \377\376\npaused: \303\251t\303\251\n' > "$cases/high-bytes.status"
+  # Stray lead bytes: under a UTF-8 locale read takes the newline after each
+  # into the character, joining lines.
+  printf 'paused: x\342\nworking: y\n' > "$cases/join.status"
+  printf 'working: a\npaused: x\342\n\n' > "$cases/join-trailing.status"
+  printf 'working: a\360\237\npaused: b\n' > "$cases/join-four.status"
+  printf 'paused: x\342\n\nresolved [key=q]: other\n' > "$cases/join-resolved.status"
+  printf 'working: a\npaused: c\342' > "$cases/lead-at-end.status"
+  {
+    for ((i = 1; i <= 300; i++)); do printf 'prose %s\n' "$i"; done
+    printf 'working: recent\n'
+  } > "$cases/long-recent.status"
+  {
+    printf 'done: shipped\n'
+    for ((i = 1; i <= 300; i++)); do printf '\n'; done
+  } > "$cases/long-blank.status"
+  {
+    printf 'paused: at the window edge\n'
+    for ((i = 1; i < 200; i++)); do printf 'prose %s\n' "$i"; done
+  } > "$cases/window.status"
+  {
+    printf 'paused: past the window edge\n'
+    for ((i = 1; i <= 200; i++)); do printf 'prose %s\n' "$i"; done
+  } > "$cases/window-plus-one.status"
+  ln -s legacy.status "$cases/link.status"
+  ln -s missing-target "$cases/dangling.status"
+  printf 'paused: secret\n' > "$cases/unreadable.status"
+  chmod 000 "$cases/unreadable.status"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-classify-lib.sh"
+set -u
+cases=$2 out=$3
+# The readers the in-shell reads replaced, kept as the reference: the tail
+# pipeline into the forward event scan, the stdin walk behind
+# status_declared_wait_line, and the command-substitution verb read.
+reference_last() {  # <status-file> [<previous-event-var>]
+  local f=$1 scan=''
+  [ -f "$f" ] && [ -r "$f" ] || return 0
+  if [ "$#" -gt 1 ]; then
+    scan=$(_fm_status_event_scan < "$f") || :
+  elif ! scan=$(tail -n "$FM_CLASSIFY_EVENT_WINDOW_LINES" "$f" 2>/dev/null | _fm_status_event_scan); then
+    scan=$(_fm_status_event_scan < "$f") || :
+  fi
+  [ "$#" -lt 2 ] || printf -v "$2" '%s' "${scan%%$'\n'*}"
+  printf '%s\n' "${scan##*$'\n'}"
+}
+reference_wait_scan() {  # <resolve-verb> <legacy-captain-re>
+  local resolve=$1 legacy_re=$2 line verb key keys=$'\n' i=0
+  local -a lines=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    lines[i]=$line
+    i=$((i + 1))
+  done
+  while [ "$i" -gt 0 ]; do
+    i=$((i - 1))
+    line=${lines[i]}
+    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    _fm_status_line_is_event "$line" "$legacy_re" || continue
+    status_line_verb "$line" verb
+    case "$verb" in
+      "$resolve") ;;
+      "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
+      *) return 0 ;;
+    esac
+    key=$(_fm_decision_key "$line" "$_FM_CLASSIFY_KEYLESS_PHASE") || key=
+    if [ "$verb" = "$resolve" ]; then
+      keys="$keys$key"$'\n'
+      continue
+    fi
+    case "$keys" in *$'\n'"$key"$'\n'*) return 0 ;; esac
+    printf '%s\n' "$line"
+    return 0
+  done
+  return 1
+}
+reference_wait() {  # <status-file>
+  local f=$1 last verb resolve legacy_re
+  last=$(reference_last "$f")
+  if reference_verb_is "$last" "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}" \
+    || reference_verb_is "$last" "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}"; then
+    printf '%s\n' "$last"
+    return 0
+  fi
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  status_line_verb "$last" verb
+  [ "$verb" = "$resolve" ] || return 0
+  legacy_re="^[[:space:]]*(${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT})"
+  tail -n "$FM_CLASSIFY_EVENT_WINDOW_LINES" "$f" 2>/dev/null \
+    | reference_wait_scan "$resolve" "$legacy_re" \
+    || reference_wait_scan "$resolve" "$legacy_re" < "$f" || :
+}
+reference_verb_is() {  # <status-line> <verb>
+  local verb
+  [ -n "$1" ] || return 1
+  verb=$(status_line_verb "$1")
+  [ "$verb" = "$2" ]
+}
+reference_terminal() {  # <status-line>
+  local verb
+  [ -n "$1" ] || return 1
+  verb=$(status_line_verb "$1")
+  case "$verb" in done|needs-decision|blocked|failed) return 0 ;; esac
+  return 1
+}
+compare() {  # <status-file>
+  local f=$1 name="${1##*/} (window $FM_CLASSIFY_EVENT_WINDOW_LINES, captain re ${FM_CAPTAIN_RE-unset})"
+  local want got want_prev got_prev wrc grc
+  want=$(reference_last "$f"; printf '.%s' "$?")
+  got=$(last_status_line "$f"; printf '.%s' "$?")
+  [ "$got" = "$want" ] || printf 'last_status_line %s: %q, reference %q\n' "$name" "$got" "$want"
+  want_prev=untouched got_prev=untouched
+  reference_last "$f" want_prev > "$out.want"
+  last_status_line "$f" got_prev > "$out.got"
+  [ "$got_prev" = "$want_prev" ] && cmp -s "$out.want" "$out.got" \
+    || printf 'last_status_line %s with the previous event: %q, reference %q\n' "$name" "$got_prev" "$want_prev"
+  want=$(reference_last "$f")
+  got=unset
+  last_status_line_to got "$f" || printf 'last_status_line_to %s failed\n' "$name"
+  [ "$got" = "$want" ] || printf 'last_status_line_to %s: %q, reference %q\n' "$name" "$got" "$want"
+  got=unset got_prev=untouched
+  last_status_line_to got "$f" got_prev
+  want=$(reference_last "$f" ignored)
+  [ "$got" = "$want" ] && [ "$got_prev" = "$want_prev" ] \
+    || printf 'last_status_line_to %s with the previous event: %q %q, reference %q %q\n' "$name" "$got" "$got_prev" "$want" "$want_prev"
+  # Every caller captures the declared wait with a command substitution, which
+  # also drops the second newline the scan printed after a joined line that
+  # ended in one.
+  want=$(reference_wait "$f"); wrc=$?
+  got=$(status_declared_wait_line "$f"); grc=$?
+  [ "$got.$grc" = "$want.$wrc" ] || printf 'status_declared_wait_line %s: %q (%s), reference %q (%s)\n' "$name" "$got" "$grc" "$want" "$wrc"
+  got=unset
+  status_declared_wait_line_to got "$f" || printf 'status_declared_wait_line_to %s failed\n' "$name"
+  [ "$got" = "$want" ] || printf 'status_declared_wait_line_to %s: %q, reference %q\n' "$name" "$got" "$want"
+}
+for window in 200 2; do
+  FM_CLASSIFY_EVENT_WINDOW_LINES=$window
+  for f in "$cases"/*.status "$cases/missing.status"; do
+    compare "$f"
+    FM_CAPTAIN_RE='custom-event:' compare "$f"
+  done
+done
+FM_CLASSIFY_EVENT_WINDOW_LINES=200
+# The verb predicates now assign the verb instead of capturing it.
+for line in '' ' ' 'paused: x' ' paused : x' 'paused [key=a]: x' 'paused corr=0123456789abcdef [key=a]: x' \
+  'corr=0123456789abcdef paused: x' 'paused corr=deadbeef: x' 'paused [at=17:00]: x' 'paused' 'Paused: x' \
+  $'paused\t: x' $'paused\n: x' $'paused\r: x' 'captain-held [key=h]: x' 'done: y' 'done corr=0123456789abcdef: y' \
+  'needs-decision: z' 'blocked: q' 'failed: f' 'working: w' 'awaiting: x' $'pa\303\251used: x' $'\377: x'; do
+  for paused_verb in '' awaiting; do
+    FM_CLASSIFY_PAUSED_VERB=$paused_verb
+    status_is_paused "$line"; got=$?
+    reference_verb_is "$line" "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}"; want=$?
+    [ "$got" = "$want" ] || printf 'status_is_paused %q (paused verb %q): %s, reference %s\n' "$line" "$paused_verb" "$got" "$want"
+  done
+  FM_CLASSIFY_PAUSED_VERB=
+  status_is_captain_held "$line"; got=$?
+  reference_verb_is "$line" "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}"; want=$?
+  [ "$got" = "$want" ] || printf 'status_is_captain_held %q: %s, reference %s\n' "$line" "$got" "$want"
+  status_is_terminal_verb "$line"; got=$?
+  reference_terminal "$line"; want=$?
+  [ "$got" = "$want" ] || printf 'status_is_terminal_verb %q: %s, reference %s\n' "$line" "$got" "$want"
+done
+# A status file the event window holds is read without starting a process
+# unless its lines read back joined or, for the declared wait, its latest event
+# is a resolved line, whose walk still reads each key with a command
+# substitution. Every command a subshell runs is logged.
+spawned() {  # <command> [args...]
+  : > "$out.spawned"
+  (
+    __spawn_level=$BASH_SUBSHELL
+    set -T
+    trap '[ "$BASH_SUBSHELL" -le "$__spawn_level" ] || printf "%s\n" "$BASH_COMMAND" >> "$out.spawned"' DEBUG
+    "$@"
+  ) > /dev/null
+  [ ! -s "$out.spawned" ] || printf '%s spawned: %s\n' "$*" "$(tr '\n' ' ' < "$out.spawned")"
+}
+for f in empty blank prose legacy events captain-held stamped unrecognized crlf nul unterminated high-bytes window missing; do
+  f="$cases/$f.status"
+  spawned last_status_line "$f"
+  spawned last_status_line_to got "$f"
+  spawned last_status_line_to got "$f" got_prev
+  spawned status_declared_wait_line "$f"
+  spawned status_declared_wait_line_to got "$f"
+done
+exit 0
+SH
+  run_everywhere "status event reads" "$script" "$cases" "$TMP_ROOT/status-events-out"
+  chmod 600 "$cases/unreadable.status"
+  pass "status event reads match the tail pipeline they replaced and start no process for a file the window holds"
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -797,4 +1011,5 @@ else
   test_proc_identity_matches_the_forked_reader
   test_path_age_helpers_match_stat_and_the_clock
   test_status_signature_reads_once_and_matches_the_forked_reader
+  test_status_event_reads_match_the_tail_pipeline
 fi
