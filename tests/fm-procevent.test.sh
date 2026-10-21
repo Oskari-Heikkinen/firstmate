@@ -1037,6 +1037,40 @@ assert_present "$BROKEN_CLAIM" "reconcile preserves a claim it could not read"
 rm -f -- "$BROKEN_CLAIM"
 pass "reconcile still reports an unreadable claim"
 
+# A live source with no launch-failure episode open leaves reconcile nothing to
+# settle, so a lock held on it - by its runner publishing or a hand-run command
+# - must not stall the cycle behind it.
+HLV="$TMP_ROOT/hlv"; new_home "$HLV"
+LV_TRIGGER="$TMP_ROOT/live-held-trigger"
+LV_LOG="$TMP_ROOT/live-held-executions"
+pe_register "$HLV" plain live-held-src -- "$RACE_BLOCKER" "$LV_LOG" "$LV_TRIGGER" >/dev/null
+pe "$HLV" reconcile >/dev/null
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/live-held-src.claim" \
+  || fail "the live-held fixture never claimed its source"
+wait_for "$LV_LOG" || fail "the live-held fixture source never started"
+LV_READY="$TMP_ROOT/live-held.ready"
+LV_RELEASE="$TMP_ROOT/live-held.release"
+hold_source_lock live-held-src "$LV_READY" "$LV_RELEASE"
+live_holder=$HOLDER_PID
+wait_for "$LV_READY" || fail "the live source's lock holder never took the lock"
+pe "$HLV" reconcile > "$TMP_ROOT/live-held.out" 2>&1 &
+live_reconcile=$!
+for _ in $(seq 1 100); do kill -0 "$live_reconcile" 2>/dev/null || break; sleep 0.1; done
+live_waited=0
+kill -0 "$live_reconcile" 2>/dev/null && live_waited=1
+: > "$LV_RELEASE"
+wait "$live_reconcile" 2>/dev/null || true
+wait "$live_holder" 2>/dev/null || true
+[ "$live_waited" = 0 ] || fail "reconcile waited on the source lock of a live source it had nothing to settle for"
+out=$(cat "$TMP_ROOT/live-held.out")
+assert_contains "$out" "started=0" "reconcile started a second runner beside a live one: $out"
+assert_contains "$out" "uncertain=0" "a live source counted as uncertain: $out"
+[ "$(wc -l < "$LV_LOG" | tr -d ' ')" = 1 ] \
+  || fail "a second source ran beside the live one: $(cat "$LV_LOG")"
+: > "$LV_TRIGGER"
+pe "$HLV" retire live-held-src >/dev/null
+pass "reconcile reads a live source without waiting on its source lock"
+
 # --- a stale claim is reclaimable, a live one is not ------------------------
 CLAIM="$FM_PROCEVENT_CLAIM_ROOT/stale-src.claim"
 mkdir -p "$FM_PROCEVENT_CLAIM_ROOT"
@@ -1507,15 +1541,15 @@ ep_reconcile "failed=1" 1 "the second cycle stopped relaunching a source that ca
 # A failed cycle stops waiting for its runner, not the runner itself: on a loaded
 # host a runner still starting would read the repaired registration and own the
 # source before the next cycle could launch and confirm its own.
-ep_failed_runners_gone() {
+ep_failed_runners_gone() {  # <source-id>
   local _
   for _ in $(seq 1 600); do
-    pgrep -f 'fm-procevent\.sh _start episode-src( |$)' >/dev/null 2>&1 || return 0
+    pgrep -f "fm-procevent\\.sh _start $1( |\$)" >/dev/null 2>&1 || return 0
     sleep 0.1
   done
   return 1
 }
-ep_failed_runners_gone || fail "a failed episode-src launch runner never exited"
+ep_failed_runners_gone episode-src || fail "a failed episode-src launch runner never exited"
 ep_repair
 ep_reconcile "started=1" 0 "a repaired source did not confirm"
 assert_contains "$ep_out" "failed=0" "a repaired source was still reported failed: $ep_out"
@@ -1545,6 +1579,49 @@ esac
 ep_repair
 pe "$HEP" retire episode-src >/dev/null 2>&1 || true
 pass "a launch that cannot confirm is announced once per failure episode"
+
+# A live owner ends a launch-failure episode however its runner was started, so
+# a live source whose episode is open still takes reconcile's locked path: once
+# a hand-run start owns the repaired source, the next failure of that same
+# registration opens a new episode instead of passing unannounced.
+HEL="$TMP_ROOT/hel"; new_home "$HEL"
+EL_TRIGGER="$TMP_ROOT/episode-live-trigger"
+EL_LOG="$TMP_ROOT/episode-live-executions"
+pe_register "$HEL" plain episode-live-src -- "$RACE_BLOCKER" "$EL_LOG" "$EL_TRIGGER" >/dev/null
+EL_SOURCE="$HEL/state/procevent/episode-live-src.source"
+cp "$EL_SOURCE" "$TMP_ROOT/episode-live-good.source"
+awk '/^argv:$/ { print; exit } { print }' "$EL_SOURCE" > "$TMP_ROOT/episode-live-bad.source" \
+  || fail "could not prepare the damaged episode-live registration"
+el_reconcile() {  # <expected-fragment> <msg>; sets el_out
+  el_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=1 pe "$HEL" reconcile) || true
+  assert_contains "$el_out" "$1" "$2: $el_out"
+}
+cat "$TMP_ROOT/episode-live-bad.source" > "$EL_SOURCE"
+el_reconcile "failed=1" "a launch that never proved its claim was not reported failed"
+[ "$(launch_failed_wake_count "$HEL" episode-live-src)" = 1 ] \
+  || fail "the episode-live launch failure was not announced: $el_out"
+ep_failed_runners_gone episode-live-src || fail "a failed episode-live-src launch runner never exited"
+cat "$TMP_ROOT/episode-live-good.source" > "$EL_SOURCE"
+pe "$HEL" start episode-live-src > "$TMP_ROOT/episode-live-start.out" 2>&1 &
+el_start=$!
+wait_for "$EL_LOG" || fail "the hand-run start never ran the repaired source"
+el_reconcile "started=0" "reconcile started a second runner beside the hand-run owner"
+assert_contains "$el_out" "failed=0" "a source a hand-run start owns was reported failed: $el_out"
+: > "$EL_TRIGGER"
+wait "$el_start" || fail "the hand-run start failed: $(cat "$TMP_ROOT/episode-live-start.out")"
+for _ in $(seq 1 100); do
+  [ -e "$FM_PROCEVENT_CLAIM_ROOT/episode-live-src.claim" ] || break
+  sleep 0.1
+done
+[ ! -e "$FM_PROCEVENT_CLAIM_ROOT/episode-live-src.claim" ] \
+  || fail "the hand-run start never released its claim"
+cat "$TMP_ROOT/episode-live-bad.source" > "$EL_SOURCE"
+el_reconcile "failed=1" "a source that failed again after a live owner was not reported failed"
+[ "$(launch_failed_wake_count "$HEL" episode-live-src)" = 2 ] \
+  || fail "a live owner did not end the open episode, so the next failure went unannounced: $el_out"
+cat "$TMP_ROOT/episode-live-good.source" > "$EL_SOURCE"
+pe "$HEL" retire episode-live-src >/dev/null 2>&1 || true
+pass "a live owner a hand-run start brought up ends the launch-failure episode"
 
 # --- the launch-failed key fits the watcher's seen marker at the id limit ----
 # bin/fm-watch.sh names the marker for a surfaced key `.seen-procevent-<hex>`,

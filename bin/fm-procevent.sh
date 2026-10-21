@@ -1526,6 +1526,18 @@ cmd_reconcile() {
       [ -e "$rec" ] || continue
       id=${rec##*/}; id=${id%.source}
       fm_procevent_source_id_valid "$id" || continue
+      # A live claim leaves the locked path below nothing to do but end a
+      # launch-failure episode, so a live source with no episode open is read
+      # without its source lock, and a lock held elsewhere does not stall the
+      # cycle. Claims are replaced by rename, so the read sees one whole claim,
+      # and its runner can die just after the read as after a locked one; every
+      # other state takes the lock and reads the claim again.
+      launch_failed_file_to failed_mark "$id"
+      if [ -f "$rec" ] && [ ! -L "$rec" ] \
+        && [ ! -e "$failed_mark" ] && [ ! -L "$failed_mark" ] \
+        && fm_procevent_claim_state_locked "$id"; then
+        continue
+      fi
       fm_procevent_source_lock_acquire "$id" || continue
       if [ -f "$rec" ] && [ ! -L "$rec" ]; then
         fm_procevent_claim_state_locked "$id"
@@ -1591,7 +1603,6 @@ cmd_reconcile() {
         elif [ "$claim_state" -eq 0 ]; then
           # A live owner is the same evidence confirmation reads, however the
           # runner was started, so it ends any launch-failure episode here.
-          launch_failed_file_to failed_mark "$id"
           if [ -e "$failed_mark" ] || [ -L "$failed_mark" ]; then
             rm -f -- "$failed_mark"
           fi
