@@ -293,6 +293,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/claude-update/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/stow/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -410,6 +414,10 @@
     },
     {
       "path": "docs/disk-room.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/claude-update.md",
       "audience": "operator-current"
     },
     {

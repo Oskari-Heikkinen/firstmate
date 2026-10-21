@@ -20,6 +20,7 @@ gate tests/fm-backend-herdr-smoke.test.sh
 gate tests/fm-backend-herdr-stale-active-tab-e2e.test.sh
 gate tests/fm-busy-state.test.sh
 gate tests/fm-claude-stop-autoarm.test.sh
+gate tests/fm-claude-update.test.sh
 gate tests/fm-control-relaunch.test.sh
 gate tests/fm-control.test.sh
 gate tests/fm-disk-room.test.sh

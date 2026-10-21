@@ -76,6 +76,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-data-gate-reads.mjs` | Log-only owner of the data gate's agent read log, daily report computation and decision-log rotation (docs/data-gate.md) |
 | `fm-data-gate-report.sh` | Write the data gate's daily one-screen report and print its relay line (docs/data-gate.md) |
 | `fm-disk-room.sh`        | Real free room on a WSL laptop, admission of big writes with reservations, and the standing low-room watcher check (docs/disk-room.md) |
+| `fm-claude-update.sh`    | Install each Claude Code release into its own verified folder, switch by one rename with rollback, and arm the update alarm check (docs/claude-update.md) |
 | `fm-usage-report.sh`     | Read-only storage usage readouts: the D: days-to-full line from the growth report and the per-tier, owner, kind and age usage report from existing records (docs/disk-room.md) |
 | `fm-storage.sh`          | Detect and prepare an external SSD for fetched results and publish the results root (writers wait when it is unusable), on a user timer (docs/storage.md) |
 | `fm-pack.sh`             | Pack a finished, rarely read tree into one verified read-only SquashFS image on D:, verify it, restore it, and release the packed source under retention rule R2 (docs/storage.md) |
