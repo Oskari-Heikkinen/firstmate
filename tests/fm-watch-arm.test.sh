@@ -1552,8 +1552,10 @@ printf '%s\n' "$FM_HOME" > "$STATE/.watch.lock/fm-home"
 printf '%s\n' "$STUB_DIR/fm-watch.sh" > "$STATE/.watch.lock/watcher-path"
 fm_pid_identity "${BASHPID:-$$}" > "$STATE/.watch.lock/pid-identity"
 cleanup() {
-  rm -f "$STATE/.last-watcher-beat"
+  # Release before dropping the beacon: to an attached arm, a live holder the
+  # lock still names with no beacon is a stalled holder, however briefly.
   fm_lock_release "$STATE/.watch.lock"
+  rm -f "$STATE/.last-watcher-beat"
   touch "$STATE/handoff-ready"
   exit 0
 }
