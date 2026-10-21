@@ -457,7 +457,7 @@ cmd_status() {
     printf 'last ok:   never\n'
   fi
   printf 'alarm:     %s\n' "$(cat "$STATE/alarm" 2>/dev/null || echo none)"
-  printf 'skipped:   %s\n' "$(tr '\n' ' ' <"$STATE/skipped-versions" 2>/dev/null)"
+  printf 'skipped:   %s\n' "$(tr '\n' ' ' 2>/dev/null <"$STATE/skipped-versions")"
   printf 'settings:  %s, tag %s, min age %sh, keep %s, log %s\n' "$PKG" "$TAG" "$MIN_AGE_HOURS" "$KEEP" "$STATE/log"
 }
 

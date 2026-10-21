@@ -237,6 +237,7 @@ test_stage_switches_nothing() {
   assert_present "$R/versions/2.1.302/bin/claude" "stage keeps the verified copy"
   out=$(run_tool install 2.1.302 2>&1) || fail "install of a staged version"
   assert_equals 1 "$(grep -c '2.1.302$' "$FAKE/calls")" "a staged version is not installed twice"
+  assert_equals "" "$(run_tool status 2>&1 >/dev/null)" "status without skipped-versions prints no error"
   pass "stage installs and verifies without switching"
 }
 
