@@ -426,7 +426,8 @@ make_isolated_bin() {  # <name> <register-exit-code>
     "$ROOT/bin/fm-startup-memory-budget-lib.sh" "$ROOT/bin/fm-line-cap-lib.sh" \
     "$ROOT/bin/fm-check-lib.sh" "$ROOT/bin/fm-startup-memory-budget.sh" "$bin/"
   if [ "$code" = 0 ]; then
-    cp "$ROOT/bin/fm-check-register.sh" "$bin/fm-check-register.sh"
+    cp "$ROOT/bin/fm-check-register.sh" "$ROOT/bin/fm-handoff-actors-lib.sh" "$ROOT/bin/fm-handoff-actors.py" \
+      "$ROOT/bin/fm_handoff_registry.py" "$ROOT/bin/fm-handoff-validate.py" "$ROOT/bin/fm_receipt_io.py" "$bin/"
   else
     printf '#!/usr/bin/env bash\nexit %s\n' "$code" > "$bin/fm-check-register.sh"
     chmod 0755 "$bin/fm-check-register.sh"

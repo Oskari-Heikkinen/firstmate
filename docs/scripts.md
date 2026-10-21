@@ -88,6 +88,8 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-handoff-validate.py` | Validate handoff-registry/v1 fragments, handoff-receipt/v1 receipts and receipt outboxes against their schemas and the registry (docs/handoff-coverage.md) |
 | `fm-handoff-watch.sh` | Run the registry-driven handoff coverage watcher once, as a watcher check, or arm and disarm that check (docs/handoff-coverage.md) |
 | `fm-handoff-watch.py` | One watcher pass: read fragments, outboxes, places, dated rules and heartbeats, and sync one alert store per alarm target |
+| `fm-handoff-actors.py` | The handoff install check (refuse a tool no fragment or declaration covers), no-handoff declarations, and the actor inventory `undeclared-actor` reads (docs/handoff-coverage.md "Installed tools") |
+| `fm-handoff-actors-lib.sh` | Shell wrappers installers source to run the handoff install check and record a no-handoff declaration |
 | `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home, maintain `data/secondmates.md`, and refresh a seeded charter from the current template |
@@ -175,7 +177,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-busy-event.sh`       | The only writer of a task's semantic busy-state record and native-harness progress marker; arms an incarnation and applies lifecycle events |
 | `fm-tmux-lib.sh`         | Shared tmux pane primitives for composer capture, verified submit, and the submit-time busy check |
 | `fm-peek.sh`             | Print a bounded tail of a crewmate endpoint                                          |
-| `fm-check-register.sh`   | Bind an intentional custom watcher check to its current bytes                       |
+| `fm-check-register.sh`   | Bind an intentional custom watcher check to its current bytes, after the handoff install check allows it |
 | `fm-check-unregister.sh` | Retire a custom watcher check and its trust binding by validated task id            |
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
 | `fm-tool-update-check.sh` | Report watched tooling with an update available, and updates installed but left inert by PATH order |

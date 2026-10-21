@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handoff-actors/v1",
+  "title": "handoff-actors/v1 declaration file",
+  "description": "A home's declarations of installed tools that are not stage actors: tools that read or write no handoff, and tools grandfathered from before the install check. docs/handoff-coverage.md owns the meaning of every field; bin/fm-handoff-actors.py reads and writes it.",
+  "type": "object",
+  "required": ["format", "publisher", "revision", "published_at", "actors"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {"const": "handoff-actors/v1"},
+    "publisher": {"type": "string", "minLength": 1, "maxLength": 200},
+    "revision": {"type": "integer", "minimum": 1},
+    "published_at": {"$ref": "#/$defs/utc"},
+    "actors": {"type": "array", "items": {"$ref": "#/$defs/entry"}}
+  },
+  "$defs": {
+    "utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"},
+    "entry": {
+      "type": "object",
+      "required": ["actor", "handoff", "reason", "since"],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {"type": "string", "pattern": "^(systemd-timer|systemd-service|fm-check|cron|process):[^\\s*]{1,200}\\*?$"},
+        "handoff": {"enum": ["none", "grandfathered"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 300},
+        "since": {"$ref": "#/$defs/utc"}
+      }
+    }
+  }
+}

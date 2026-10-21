@@ -4,19 +4,20 @@ A handoff is any record that crosses a home, machine or process boundary: an exp
 `handoff-coverage/v1` makes every handoff covered by construction.
 Each artifact type is a registered protocol with an ordered chain of stages, every stage writes a receipt for every decision, and a watcher in every home joins the two to alarm on anything that is refused, stuck, unread or undeclared.
 
-This document owns two formats and the rules that bind them:
+This document owns these formats and the rules that bind them:
 
 - `handoff-registry/v1`, the fragment in which a home declares the protocols it owns ([Registry fragment](#registry-fragment-handoff-registryv1));
 - `handoff-receipt/v1`, one stage's outcome for one record ([Receipts](#receipts-handoff-receiptv1));
+- `handoff-actors/v1` and `handoff-actor-inventory/v1`, the install check's declarations and the `undeclared-actor` source ([Installed tools](#installed-tools));
 - how the coverage checks use alert stores, whose format `fm-alert-store/v1` generalises `tj-capacity-alerts/v1` and is owned by [docs/alert-store.md](alert-store.md) ([Alert store](#alert-store)).
 
-The machine-checkable schemas are `docs/handoff-coverage/handoff-registry-v1.schema.json` and `docs/handoff-coverage/handoff-receipt-v1.schema.json`.
+The machine-checkable schemas are `docs/handoff-coverage/handoff-registry-v1.schema.json`, `docs/handoff-coverage/handoff-receipt-v1.schema.json` and `docs/handoff-coverage/handoff-actors-v1.schema.json`.
 `bin/fm-handoff-validate.py` checks files against them plus the cross-field rules a schema cannot express; its header owns the commands and exit codes.
 Worked examples are in `docs/handoff-coverage/examples/`, and every one of them validates in CI (`tests/fm-handoff-coverage.test.sh`).
 The skill `.agents/skills/handoff-coverage/SKILL.md` tells an agent when it must publish a fragment or write receipts.
 
 The watcher that reads these files is `bin/fm-handoff-watch.sh` ([Watcher](#watcher-fm-handoff-watch)); its header owns the commands and arming.
-The shared installer check and the dated-rule schedule are later work items.
+The shared installer check is `bin/fm-handoff-actors.py` ([Installed tools](#installed-tools)); the dated-rule schedule is later work.
 
 ## Words
 
@@ -40,6 +41,7 @@ The shared installer check and the dated-rule schedule are later work items.
 | Receipt staging | `<outbox>/.tmp/` | the stage owner | nobody |
 | Sync stamp | `<synced folder>/.synced-at` | the sync job that copies a synced place or outbox | the watcher |
 | Alerts | an `fm-alert-store/v1` store per alarm target, registered in that target's `state/alert-stores/` (see [Alert store](#alert-store)) | the watcher | the alert-store tick in the target home |
+| Actor declarations | `<home>/state/handoff-actors/*.json` (`handoff-actors/v1`) | `bin/fm-handoff-actors.py` | the install check and the actor inventory in every home |
 
 `<home>` is the home's root folder.
 A home may publish several fragment files, for example one per publishing tool; each file carries its own `publisher` and `revision`.
@@ -282,7 +284,7 @@ Each check reads only the fields named here, so any stage or type declared this 
 | `lane-fault` | the current receipt has `holds_all: true` | `codes.<code>.holds_all`, `stops` | main, at once, naming `stops` |
 | `source-unreadable` | a fragment, outbox, place or sync stamp cannot be read or parsed, or a receipt or fragment has an unknown `format` | every declared path | the owner of the path; never silent |
 | `sync-stale` | a synced copy's `.synced-at` is older than `max_lag` | `reach` | the stage owner |
-| `undeclared-actor` | a user timer, service, cron job or Firstmate custom check is running that no stage lists in `actors` | `actors` | tooling-mate and the installing home |
+| `undeclared-actor` | a user timer, service, cron job or Firstmate custom check is running that no stage lists in `actors` | `actors`, the [actor inventory](#actor-inventory-and-undeclared-actor) | tooling-mate and the installing home |
 | `dated-rule` | a dated rule is 14, 7 or 1 days out, or past its date | `dated_rules` | the rule's `owner` |
 | `watcher-silent` | a home's watcher heartbeat is older than 2 ticks | the `handoff-watch` protocol | main |
 
@@ -315,6 +317,104 @@ Every item is a field in its protocol owner's fragment, and nothing else is need
 | its retention and cleanup | `protocols[].cleanup`, each stage's `cleanup` |
 | any dated rules | `dated_rules` |
 | who sends it | `senders` |
+
+## Installed tools
+
+Every installer refuses a tool unless a protocol covers it (I1).
+A tool here is anything that runs on its own: a Firstmate custom check, a systemd user timer or service, a cron job or a long-running process.
+One shared check decides, and `undeclared-actor` catches what an installer that skipped the check left behind.
+`bin/fm-handoff-actors.py` implements both; its header owns the commands, the output line and the exit codes, and `bin/fm-handoff-actors-lib.sh` wraps it for shell installers.
+
+### The install check
+
+An installer asks `fm-handoff-actors.py check --home <home> <actor>` before it installs, where the actor is named as in a stage's `actors` (`<kind>:<name>`, such as `fm-check:disk-room` or `systemd-timer:tj-sched.timer`).
+It installs only on exit 0.
+The verdict is the first of these that holds:
+
+| Verdict | Holds when | Installs |
+|---|---|---|
+| `declared` | a stage in a fragment the home sees lists the actor in `actors` | yes |
+| `none` | a `handoff-actors/v1` file declares the actor `none`: it reads and writes no handoff record | yes |
+| `grandfathered` | the actor was installed before the check existed, or is a Firstmate built-in | yes |
+| `unknown` | none of the above, and a fragment, declaration file or unit listing could not be read | no (exit 3) |
+| `refused` | none of the above | no (exit 1) |
+
+The homes a home sees are the ones `fm-handoff-watch` reads: itself, its local parent, the homes they list in `data/secondmates.md`, and `config/handoff-homes`.
+A custom check runs in one home, so only a stage whose `owner` is that home, or that home's own declarations, cover a `fm-check:` actor.
+User units are machine-wide, so a stage or declaration in any home the caller sees covers a `systemd-timer:` or `systemd-service:` actor.
+A service is also covered by the timer of the same name (`systemd-service:x.service` by `systemd-timer:x.timer`), since the timer starts it.
+A tool that reads or writes handoff records is declared in its stage's `actors`, never as `none`.
+
+`bin/fm-check-register.sh <id> [--no-handoff <reason>]` runs the check for `fm-check:<id>` before it binds the trust record, and refuses with exit 1 otherwise.
+`--no-handoff <reason>` first records the `none` declaration, for a check that touches no handoff record.
+Other installers adopt the check by calling it themselves:
+
+- a shell installer sources `bin/fm-handoff-actors-lib.sh` and installs only when `fm_handoff_actor_install_check <home> <state> <actor>` returns 0, logging `FM_HANDOFF_ACTOR_WHY` otherwise;
+- any other installer runs `bin/fm-handoff-actors.py check --home <home> <actor>` and installs only on exit 0;
+- either declares a tool that touches no handoff with `fm_handoff_actor_declare_none` or `fm-handoff-actors.py declare --home <home> --none --reason <text> <actor>`, and a tool that does by listing it in its stage's `actors` and republishing the fragment.
+
+Every verdict is appended to `<home>/state/handoff-actors/log` with the reason and whether the install proceeds.
+
+### Grandfathering
+
+Nothing installed before the check existed stops, and nothing armed stops on update.
+On its first call in a home, the check writes a one-time snapshot of what is installed there and grandfathers every entry in it:
+
+- `state/handoff-actors/grandfathered.json` lists the home's registered custom checks;
+- `state/handoff-actors/grandfathered-units.json` lists the machine's active user and transient units, written only in the machine's anchor home (the home with no local parent).
+
+Each snapshot is written once, never replaced, and only after its own listing succeeded, so a machine whose user units cannot be listed still grandfathers its checks and takes the unit snapshot on a later call.
+Re-registering a grandfathered check, as every arm command does on update, therefore succeeds.
+Firstmate's own built-in checks and timers are grandfathered in code (`BUILTIN` in `bin/fm-handoff-actors.py`) until Firstmate registers its own handoffs, so a fresh home arms them too.
+A grandfathered actor appears as such in the inventory, so the coverage line can count it; it is never alarmed.
+Retiring a grandfathered tool and installing it again later needs no new declaration while its snapshot entry stays; an owner who declares it removes the entry by hand.
+
+### Declaration files (`handoff-actors/v1`)
+
+Every `*.json` file in `<home>/state/handoff-actors/` (dot files excepted) is a declaration file, schema `docs/handoff-coverage/handoff-actors-v1.schema.json`.
+`declared.json` is written by `fm-handoff-actors.py declare` and `undeclare`, under a lock and atomically; the snapshots are the two `grandfathered*.json` files.
+Every object is closed, and an unreadable or invalid file is a problem that makes every actor it might cover `unknown`.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `format` | `"handoff-actors/v1"` | this format |
+| `publisher` | string | the tool that wrote the file |
+| `revision` | integer from 1 | raised on every change |
+| `published_at` | UTC timestamp | when this revision was written |
+| `actors[].actor` | actor, with an optional trailing `*` | the actor, or with `*` every actor starting with what precedes it |
+| `actors[].handoff` | `none` or `grandfathered` | reads and writes no handoff, or installed before the check |
+| `actors[].reason` | string, 1-300 characters | why, in one line |
+| `actors[].since` | UTC timestamp | when the declaration was made |
+
+### Actor inventory and `undeclared-actor`
+
+`fm-handoff-actors.py list --home <home>` prints the home's inventory as one JSON document, format `handoff-actor-inventory/v1`, which is the source the watcher reads for `undeclared-actor`.
+
+| Field | Meaning |
+|---|---|
+| `format` | `"handoff-actor-inventory/v1"` |
+| `home`, `home_path` | the home id and its folder |
+| `anchor` | whether this home lists the machine's units |
+| `actors[]` | one row per installed actor: `actor`, `scope` (`home` or `machine`), `state`, and `why` (the evidence, with the covering file's path) |
+| `problems[]` | one `{subject, what}` per input that could not be read |
+
+A row's `state` is `declared`, `none`, `grandfathered`, `undeclared` (the install check would refuse it) or `unknown`.
+The installed actors are the home's registered custom checks (a `state/<id>.check.sh` with its `state/<id>.check-trust` binding) and, in the anchor home only, the active user timers and services: transient units and units whose unit file is under the user's home, from one read-only `systemctl --user list-units` and one `systemctl --user show`.
+Units shipped by the distribution are not inventoried.
+A machine without `systemctl` has no units; a `systemctl` that fails is a problem.
+The exit is 3 when `problems` is not empty, else 1 when any row is `undeclared`, else 0.
+
+The watcher raises `undeclared-actor` for each `undeclared` row, with subject the actor, to tooling-mate and the inventory's home, and `source-unreadable` for each problem.
+A check bound by hand or a unit started around an installer is therefore alarmed on the watcher's next tick.
+The inventory reuses each file's parse while its size, inode and mtime are unchanged and reruns `systemctl --user show` only when the active unit list changed (cache `state/handoff-actors/.cache.json`), so a tick with no change costs one `list-units`.
+Each change in the undeclared set is logged once to `state/handoff-actors/log`.
+
+### Not yet covered
+
+- `cron:` and `process:` actors can be declared and checked, but the inventory does not list crontabs or processes yet.
+- Firstmate's own timer installers do not call the check; their units are covered by `BUILTIN`.
+- The TETJET service installer and the research timers adopt the check through their owners.
+- `fm-handoff-watch` raises `undeclared-actor` from this inventory once it runs `list` on its tick; until then an owner runs `list` by hand.
 
 ## Alert store
 
@@ -355,7 +455,7 @@ Outboxes and places are rescanned by modification time, and a receipt is read on
 **Kinds it raises.**
 Besides the checks in [Coverage checks](#coverage-checks), the routing in [Routing and alarm targets](#routing-and-alarm-targets) is raised as kind `refused` or `held` for the current receipt of a record, to the code's `fix_owner` and the sender (the sender and the protocol owner for a reserved code such as `version-unsupported`).
 `open-past-bound` is raised for an `accepted`, `held` or `waiting` receipt past its bound, and with variant `retries` past `retry_limit`.
-`undeclared-actor` is not raised yet; it needs the installer inventory of a later work item.
+`undeclared-actor` is not raised yet; the watcher does not run the [actor inventory](#actor-inventory-and-undeclared-actor) on its tick yet.
 While any source of a stage cannot be read, that stage's earlier alarms are kept, since their conditions are unknown, not gone.
 
 **Escalation and acknowledgement.**

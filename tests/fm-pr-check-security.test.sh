@@ -1290,13 +1290,13 @@ test_live_artifact_single_link_and_privacy_validation() {
   alias="$dir/custom-check.alias"
   ln "$state/custom.check.sh" "$alias"
   set +e
-  FM_HOME="$dir/home" "$REGISTER" custom > "$dir/register.out" 2> "$dir/register.err"
+  FM_HOME="$dir/home" "$REGISTER" custom --no-handoff test-fixture > "$dir/register.out" 2> "$dir/register.err"
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "custom check registration accepted a hard-linked source"
   [ ! -e "$state/custom.check-trust" ] || fail "rejected hard-linked custom check received a trust record"
   rm -f "$alias"
-  FM_HOME="$dir/home" "$REGISTER" custom >/dev/null \
+  FM_HOME="$dir/home" "$REGISTER" custom --no-handoff test-fixture >/dev/null \
     || fail "could not register the custom check single-link fixture"
   ln "$state/custom.check.sh" "$alias"
   ! fm_custom_check_registered "$state" custom \
@@ -1319,13 +1319,13 @@ test_live_artifact_single_link_and_privacy_validation() {
   printf '#!/usr/bin/env bash\nprintf "custom-ready\\n"\n' > "$state/custom.check.sh"
   chmod 0755 "$state/custom.check.sh"
   set +e
-  FM_HOME="$dir/home" "$REGISTER" custom > "$dir/register.out" 2> "$dir/register.err"
+  FM_HOME="$dir/home" "$REGISTER" custom --no-handoff test-fixture > "$dir/register.out" 2> "$dir/register.err"
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "custom check registration accepted a non-private source"
   [ ! -e "$state/custom.check-trust" ] || fail "non-private custom check received a trust record"
   chmod 0700 "$state/custom.check.sh"
-  FM_HOME="$dir/home" "$REGISTER" custom >/dev/null \
+  FM_HOME="$dir/home" "$REGISTER" custom --no-handoff test-fixture >/dev/null \
     || fail "could not register private custom check fixture"
   chmod 0755 "$state/custom.check.sh"
   ! fm_custom_check_registered "$state" custom \
@@ -1479,7 +1479,7 @@ trap 'kill -TERM "$child" 2>/dev/null; exit 124' TERM
 wait "$child"
 SH
   chmod 0700 "$dir/fakebin/timeout"
-  FM_HOME="$dir/home" "$REGISTER" custom >/dev/null \
+  FM_HOME="$dir/home" "$REGISTER" custom --no-handoff test-fixture >/dev/null \
     || fail "could not register signal cleanup custom check"
 
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_POLL=0 FM_CHECK_INTERVAL=0 \
@@ -1551,7 +1551,7 @@ esac
 SH
     for check in custom z-drain-witness; do
       chmod 0700 "$state/$check.check.sh"
-      FM_HOME="$dir/home" "$REGISTER" "$check" >/dev/null \
+      FM_HOME="$dir/home" "$REGISTER" "$check" --no-handoff test-fixture >/dev/null \
         || fail "could not register $backend returned-descendant $check check"
     done
     if [ "$backend" = installed-timeout ]; then
@@ -2396,7 +2396,7 @@ add_stop_custom_check() {
   state="$dir/home/state"
   printf '#!/usr/bin/env bash\nprintf "stop-cycle\\n"\n' > "$state/z-stop.check.sh"
   chmod 0700 "$state/z-stop.check.sh"
-  FM_HOME="$dir/home" "$REGISTER" z-stop >/dev/null \
+  FM_HOME="$dir/home" "$REGISTER" z-stop --no-handoff test-fixture >/dev/null \
     || fail "could not register stop-cycle custom check"
 }
 
@@ -3075,7 +3075,7 @@ test_retirement_refuses_replacement_and_nonterminal_results() {
   state="$dir/home/state"
   printf '#!/usr/bin/env bash\nprintf "merged\\n"\n' > "$state/custom.check.sh"
   chmod 0700 "$state/custom.check.sh"
-  FM_HOME="$dir/home" "$REGISTER" custom >/dev/null || fail "could not register merged custom check"
+  FM_HOME="$dir/home" "$REGISTER" custom --no-handoff test-fixture >/dev/null || fail "could not register merged custom check"
   set +e
   run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/custom.out" 2> "$dir/custom.err"
   rc=$?

@@ -3101,7 +3101,7 @@ test_herdr_reclaim_keeps_the_task_whole() {
   printf '%s\n' "pr=https://example.invalid/pr/7" >> "$dir/home/state/rl75.meta"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$dir/home/state/rl75.check.sh"
   chmod 0700 "$dir/home/state/rl75.check.sh"
-  FM_HOME="$dir/home" "$ROOT/bin/fm-check-register.sh" rl75 >/dev/null \
+  FM_HOME="$dir/home" "$ROOT/bin/fm-check-register.sh" rl75 --no-handoff test-fixture >/dev/null \
     || fail "could not arm a custom check for the reclaim fixture"
   printf 'working: parked on an approval nobody can answer\n' >> "$dir/home/state/rl75.status"
 

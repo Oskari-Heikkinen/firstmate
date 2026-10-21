@@ -25,7 +25,7 @@ write_registered_check() {
 printf 'custom-ready\n'
 SH
   chmod 0700 "$home/state/$id.check.sh"
-  FM_HOME="$home" "$REGISTER" "$id" >/dev/null \
+  FM_HOME="$home" "$REGISTER" "$id" --no-handoff test-fixture >/dev/null \
     || fail "could not register custom check $id"
 }
 

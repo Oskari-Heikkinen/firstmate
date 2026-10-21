@@ -260,7 +260,7 @@ printf '%s %s\n' "\$(date +%s)" "$id" >> "$dir/check-starts.log"
 sleep $secs
 SH
   chmod 0700 "$dir/state/$id.check.sh"
-  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" "$ROOT/bin/fm-check-register.sh" "$id" >/dev/null \
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" "$ROOT/bin/fm-check-register.sh" "$id" --no-handoff test-fixture >/dev/null \
     || fail "could not register slow check $id"
 }
 
@@ -1689,7 +1689,7 @@ test_arm_propagates_immediate_wake_before_confirmation() {
 printf 'merged: https://example.test/pr/7\n'
 SH
   chmod 0700 "$check_file"
-  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task >/dev/null \
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task --no-handoff test-fixture >/dev/null \
     || fail "could not register immediate-wake custom check"
   rc=0
   # This case asserts wake propagation, not the confirmation deadline, and its
@@ -1799,7 +1799,7 @@ test_cycle_exit_ledger_links_successor_and_stays_bounded() {
 printf 'done: synthetic cycle\n'
 SH
   chmod 0700 "$check_file"
-  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task >/dev/null \
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task --no-handoff test-fixture >/dev/null \
     || fail "could not register cycle-ledger check"
 
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=0 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &

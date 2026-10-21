@@ -198,7 +198,7 @@ test_check_output_is_queued() {
 printf 'merged: https://example.test/pr/1\n'
 SH
   chmod 0700 "$check_file"
-  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task >/dev/null \
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task --no-handoff test-fixture >/dev/null \
     || fail "could not register queue custom check"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   wait_for_exit "$!" 40 || fail "watcher did not exit for check output"

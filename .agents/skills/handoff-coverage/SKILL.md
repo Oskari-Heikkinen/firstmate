@@ -19,11 +19,21 @@ This skill owns only when an agent or home must act, and how.
 
 - Your home owns an artifact type that crosses a home, machine or process boundary: you own its protocol, so it lives in a fragment under your home's `state/handoff-registry/`.
 - You add, remove, rename or reorder a stage, change a bound, retry limit, code, place, outbox, version range or cleanup, or add a dated constant: publish a new revision of the fragment that declares it.
-- You install a timer, service, cron job or custom check that reads or writes handoff records: name it in its stage's `actors`, or it raises `undeclared-actor`.
+- You install a timer, service, cron job or custom check that reads or writes handoff records: name it in its stage's `actors`, or the install check refuses it and, if installed around the check, it raises `undeclared-actor`.
 - A stage another home owns belongs to your protocol: declare it in your fragment with that home as `owner`, and tell its owner which outbox to write.
 
 Publish atomically (temporary dot name in the same folder, then rename), raise `revision`, and run `bin/fm-handoff-validate.py fragment <file>` before the rename.
 A fragment with `"example": true` is never loaded; never mark a live fragment that way.
+
+## When you install a tool
+
+Every installer runs the shared install check before it installs a timer, service, cron job or custom check, and installs only on exit 0; the doc's "Installed tools" section owns the rules and grandfathering.
+
+- `bin/fm-check-register.sh <id>` runs it for you; add `--no-handoff <reason>` for a check that reads and writes no handoff record.
+- A shell installer sources `bin/fm-handoff-actors-lib.sh` and calls `fm_handoff_actor_install_check <home> <state> <actor>`; anything else runs `bin/fm-handoff-actors.py check --home <home> <actor>`.
+- A tool that touches no handoff is declared with `bin/fm-handoff-actors.py declare --home <home> --none --reason <text> <actor>`; a tool that does is named in its stage's `actors`, never declared `none`.
+- A refusal is not a fault to work around: declare the tool, or do not install it.
+  Never write a trust record, unit or crontab by hand to get past it; `bin/fm-handoff-actors.py list` reports that as `undeclared-actor`.
 
 ## When you must write receipts
 

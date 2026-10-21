@@ -114,7 +114,7 @@ register_custom_check() {
   local state=$1 id=$2
   printf '#!/usr/bin/env bash\nexit 0\n' > "$state/$id.check.sh"
   chmod 700 "$state/$id.check.sh"
-  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" "$id" >/dev/null \
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" "$id" --no-handoff test-fixture >/dev/null \
     || fail "fm-check-register.sh could not register $id"
 }
 
