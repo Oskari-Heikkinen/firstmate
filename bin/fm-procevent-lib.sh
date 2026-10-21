@@ -32,7 +32,18 @@
 # Machine-wide claim root. Homes can share one underlying source store, so the
 # "one owner per canonical source" rule cannot live inside a single home.
 fm_procevent_claim_root() {
-  printf '%s\n' "${FM_PROCEVENT_CLAIM_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/procevent-claims}"
+  local root
+  fm_procevent_claim_root_to root
+  printf '%s\n' "$root"
+}
+
+# The same root, assigned without a subshell and without the trailing newlines
+# a command substitution of fm_procevent_claim_root drops, so every caller
+# names the same directory.
+fm_procevent_claim_root_to() {  # <output-variable>
+  local fm_claim_root=${FM_PROCEVENT_CLAIM_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/procevent-claims}
+  while [ "${fm_claim_root%$'\n'}" != "$fm_claim_root" ]; do fm_claim_root=${fm_claim_root%$'\n'}; done
+  printf -v "$1" '%s' "$fm_claim_root"
 }
 
 fm_procevent_registry_dir() { printf '%s\n' "$1/procevent"; }
@@ -328,20 +339,34 @@ fm_procevent_owner_alive() {  # <state-root> <lease-seconds>
 # serialized at one source boundary.
 
 fm_procevent_claim_path() {
-  printf '%s/%s.claim\n' "$(fm_procevent_claim_root)" "$1"
+  local root
+  fm_procevent_claim_root_to root
+  printf '%s/%s.claim\n' "$root" "$1"
 }
 
 fm_procevent_source_lock_path() {
-  printf '%s/%s.lock\n' "$(fm_procevent_claim_root)" "$1"
+  local root
+  fm_procevent_claim_root_to root
+  printf '%s/%s.lock\n' "$root" "$1"
+}
+
+# Create the claim root on first use; an existing private directory is used
+# as it is. Assigns the root to <output-variable>.
+fm_procevent_claim_root_ready_to() {  # <output-variable>
+  local fm_ready_root
+  fm_procevent_claim_root_to fm_ready_root
+  if [ ! -d "$fm_ready_root" ] || [ -L "$fm_ready_root" ]; then
+    (umask 077; mkdir -p "$fm_ready_root") || return 1
+    [ -d "$fm_ready_root" ] && [ ! -L "$fm_ready_root" ] || return 1
+  fi
+  printf -v "$1" '%s' "$fm_ready_root"
 }
 
 fm_procevent_source_lock_acquire() {
   local id=$1 root
   fm_procevent_source_id_valid "$id" || return 1
-  root=$(fm_procevent_claim_root)
-  (umask 077; mkdir -p "$root") || return 1
-  [ -d "$root" ] && [ ! -L "$root" ] || return 1
-  fm_lock_acquire_wait "$(fm_procevent_source_lock_path "$id")"
+  fm_procevent_claim_root_ready_to root || return 1
+  fm_lock_acquire_wait "$root/$id.lock"
 }
 
 # fm_procevent_source_lock_try_acquire <source-id>
@@ -350,14 +375,14 @@ fm_procevent_source_lock_acquire() {
 fm_procevent_source_lock_try_acquire() {
   local id=$1 root
   fm_procevent_source_id_valid "$id" || return 1
-  root=$(fm_procevent_claim_root)
-  (umask 077; mkdir -p "$root") || return 1
-  [ -d "$root" ] && [ ! -L "$root" ] || return 1
-  fm_lock_try_acquire "$(fm_procevent_source_lock_path "$id")"
+  fm_procevent_claim_root_ready_to root || return 1
+  fm_lock_try_acquire "$root/$id.lock"
 }
 
 fm_procevent_source_lock_release() {
-  fm_lock_release "$(fm_procevent_source_lock_path "$1")"
+  local root
+  fm_procevent_claim_root_to root
+  fm_lock_release "$root/$1.lock"
 }
 
 # Exact built-in queue registration and park incarnation proof. This is not a
@@ -558,7 +583,8 @@ fm_procevent_registration_matches_locked() {  # <state> <adapter> <source-id> <a
 
 fm_procevent_claim_load_locked() {  # <source-id>
   local claim home pid token identity reg_dir reg_identity terminal state_root state_device state_inode state_owner state_mode extra
-  claim=$(fm_procevent_claim_path "$1")
+  fm_procevent_claim_root_to claim
+  claim=$claim/$1.claim
   [ -f "$claim" ] && [ ! -L "$claim" ] || return 1
   {
     IFS= read -r home \
@@ -742,7 +768,8 @@ fm_procevent_pid_state() {
 # process group still alive, 4 terminal retirement pending.
 fm_procevent_claim_state_locked() {
   local claim registration current_identity
-  claim=$(fm_procevent_claim_path "$1")
+  fm_procevent_claim_root_to claim
+  claim=$claim/$1.claim
   [ -e "$claim" ] || return 1
   fm_procevent_claim_load_locked "$1" || return 2
   if [ "$FM_PROCEVENT_CLAIM_TERMINAL" = terminal ] && [ -n "$FM_PROCEVENT_CLAIM_REG_IDENTITY" ]; then
@@ -1193,7 +1220,7 @@ fm_procevent_capture() {
 # it; this is what makes a restart between publication and handling recover
 # instead of silently losing the result.
 fm_procevent_pending() {
-  local state=$1 inbox result base seq
+  local state=$1 inbox result base seq pending=
   inbox=$(fm_procevent_inbox_dir "$state")
   [ -d "$inbox" ] || return 0
   for result in "$inbox"/*.result; do
@@ -1202,8 +1229,11 @@ fm_procevent_pending() {
     base=${result%.result}
     seq=${base##*.}
     case "$seq" in ''|*[!0-9]*) continue ;; esac
-    printf '%s\t%s\n' "$seq" "$result"
-  done | sort -n -k1,1 -k2,2 | cut -f2-
+    pending+=$seq$'\t'$result$'\n'
+  done
+  # Every result handled is the usual case, and it needs no sort.
+  [ -n "$pending" ] || return 0
+  printf '%s' "$pending" | sort -n -k1,1 -k2,2 | cut -f2-
 }
 
 # fm_procevent_event_line <adapter> <source-id> <sequence>

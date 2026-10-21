@@ -2427,6 +2427,7 @@ Ownership is machine-wide per canonical source, because separate homes can share
 - Each claim binds its caller-reported home and runner PID to a process identity, unique claim generation, exact registration-file generation, and resolved state-root identity.
 - Registration, acquisition, replacement, retirement, and generation-bound release are serialized at one machine-wide boundary per source.
 - A live identity-matched owner is never displaced, and release removes only the exact generation the caller acquired.
+- `reconcile` leaves a claim that names another owner to that owner without entering its boundary, so a boundary held in one home never delays another home's cycle; a claim that does not parse names no owner, so it is still read inside the boundary and reported as uncertain.
 
 **Prove ownership before stopping a runner**
 

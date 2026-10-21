@@ -39,6 +39,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | immutable adapter identity | a captured result retains its adapter after its mutable registration is removed |
 | result identity and ordering | each wake names the committed sequence to read, and pending sequences 1, 2, and 10 publish in numeric order |
 | one owner per canonical source | a second home's `start` for the same source id reports `already owned` and publishes nothing |
+| other homes' claims during reconcile | `reconcile` returns while another process holds the source boundary of a claim naming another home, leaves that claim byte-identical, and counts it as neither stopped nor uncertain, while an unregistered claim that does not parse is preserved and still reported as `uncertain=1` |
 | isolated public start boundary | direct `start` establishes a new runner-led process group before claiming the source, so retirement cannot signal an unrelated process inherited from the caller's group |
 | guarded runner startup | the source command does not launch when the detached owner guard rejects an invalid lease configuration, proving the runner waits for positive guard readiness and fails closed when initialization fails |
 | attached owner continuity | a foreground `start` with a one-second lease remains alive beyond that lease while its caller stays attached, then captures normally when the blocking source completes |

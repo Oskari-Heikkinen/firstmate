@@ -996,6 +996,47 @@ for _ in $(seq 1 40); do kill -0 "$orphan_pid" 2>/dev/null || break; sleep 0.1; 
 kill -0 "$orphan_pid" 2>/dev/null && fail "reconcile left an orphaned runner alive"
 pass "reconcile reaps a runner whose source registration is gone"
 
+# The claim root is machine-wide, so every home's reconcile meets every other
+# home's claims. A claim naming another owner is that owner's to settle:
+# reconcile must leave it as it is without waiting on its source lock, or one
+# home holding a lock stalls every other home's cycle behind it.
+HF="$TMP_ROOT/hf"; new_home "$HF"
+FOREIGN_CLAIM="$FM_PROCEVENT_CLAIM_ROOT/foreign-held-src.claim"
+printf '%s\n%s\nforeign-token\nforeign-identity\n' "$TMP_ROOT/foreign-home" 999999 > "$FOREIGN_CLAIM"
+chmod 0600 "$FOREIGN_CLAIM"
+foreign_before=$(cat "$FOREIGN_CLAIM")
+FOREIGN_READY="$TMP_ROOT/foreign-held.ready"
+FOREIGN_RELEASE="$TMP_ROOT/foreign-held.release"
+hold_source_lock foreign-held-src "$FOREIGN_READY" "$FOREIGN_RELEASE"
+foreign_holder=$HOLDER_PID
+wait_for "$FOREIGN_READY" || fail "the foreign source lock holder never took the lock"
+pe "$HF" reconcile > "$TMP_ROOT/foreign-held.out" 2>&1 &
+foreign_reconcile=$!
+for _ in $(seq 1 100); do kill -0 "$foreign_reconcile" 2>/dev/null || break; sleep 0.1; done
+foreign_waited=0
+kill -0 "$foreign_reconcile" 2>/dev/null && foreign_waited=1
+: > "$FOREIGN_RELEASE"
+wait "$foreign_reconcile" 2>/dev/null || true
+wait "$foreign_holder" 2>/dev/null || true
+[ "$foreign_waited" = 0 ] || fail "reconcile waited on the source lock of a claim another home owns"
+out=$(cat "$TMP_ROOT/foreign-held.out")
+assert_contains "$out" "stopped=0" "reconcile stopped another home's runner: $out"
+assert_contains "$out" "uncertain=0" "another home's readable claim counted as this home's uncertainty: $out"
+[ "$(cat "$FOREIGN_CLAIM")" = "$foreign_before" ] || fail "reconcile changed a claim another home owns"
+rm -f -- "$FOREIGN_CLAIM"
+pass "reconcile leaves another home's claim alone without waiting on its source lock"
+
+# A claim that does not parse names no owner, so it is never passed over as
+# another home's: reconcile reads it under the source lock and reports it.
+BROKEN_CLAIM="$FM_PROCEVENT_CLAIM_ROOT/broken-claim-src.claim"
+printf '%s\nnot-a-pid\nbroken-token\nbroken-identity\n' "$TMP_ROOT/foreign-home" > "$BROKEN_CLAIM"
+chmod 0600 "$BROKEN_CLAIM"
+out=$(pe "$HF" reconcile)
+assert_contains "$out" "uncertain=1" "reconcile stopped reporting a claim it cannot read: $out"
+assert_present "$BROKEN_CLAIM" "reconcile preserves a claim it could not read"
+rm -f -- "$BROKEN_CLAIM"
+pass "reconcile still reports an unreadable claim"
+
 # --- a stale claim is reclaimable, a live one is not ------------------------
 CLAIM="$FM_PROCEVENT_CLAIM_ROOT/stale-src.claim"
 mkdir -p "$FM_PROCEVENT_CLAIM_ROOT"

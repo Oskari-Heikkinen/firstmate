@@ -398,7 +398,8 @@ source_field() {  # <source-id> <field>
 runner_file()  { printf '%s/%s.runner\n' "$REG" "$1"; }
 staging_file() { printf '%s/.%s.%s.output\n' "$REG" "$1" "$2"; }
 stranded_file() { printf '%s/.%s.stranded\n' "$REG" "$1"; }
-launch_failed_file() { printf '%s/.%s.launch-failed\n' "$REG" "$1"; }
+launch_failed_file() { local path; launch_failed_file_to path "$1"; printf '%s\n' "$path"; }
+launch_failed_file_to() { printf -v "$1" '%s/.%s.launch-failed' "$REG" "$2"; }  # <output-variable> <source-id>
 
 # Let the source's own adapter apply and acknowledge one captured result. See
 # the header for why this exists and what each exit means. An already
@@ -1448,8 +1449,8 @@ stranded_leaderless_detail() {  # <source-id>
 }
 
 cmd_reconcile() {
-  local rec id published started=0 stopped=0 uncertain=0 failed=0 claim owner pid token identity claim_state stop_state
-  local launch_identity launch_stamp launch_mark unconfirmed entry
+  local rec id published started=0 stopped=0 uncertain=0 failed=0 claim claim_root owner pid token identity claim_state stop_state
+  local launch_identity launch_stamp launch_mark failed_mark unconfirmed entry
   local -a launched=()
   # Rejected before anything is launched, and by name. A window this command
   # cannot use makes every launch unconfirmable, so validating it later would
@@ -1462,12 +1463,28 @@ cmd_reconcile() {
   # Stop a runner this home owns whose source is no longer registered. Without
   # this, unregistering a source that never completes leaves its child blocked
   # forever with nothing left to reap it.
-  for claim in "$(fm_procevent_claim_root)"/*.claim; do
+  # The claim root is machine-wide, so most claims here are other homes'. Only
+  # a claim that may be this home's takes the source lock: a registered id
+  # belongs to the source loop below, and a claim naming another owner is that
+  # owner's to settle. Claims are replaced by rename, so the unlocked read sees
+  # one whole claim; one that does not parse takes the locked path, which
+  # reads it again and counts it. A claim this home gains after the read is
+  # settled on the next cycle, as one gained after the lock is released is.
+  fm_procevent_claim_root_to claim_root
+  for claim in "$claim_root"/*.claim; do
     [ -e "$claim" ] || continue
     id=${claim##*/}; id=${id%.claim}
     fm_procevent_source_id_valid "$id" || continue
+    rec=$REG/$id.source
+    if [ -f "$rec" ] && [ ! -L "$rec" ]; then
+      continue
+    fi
+    if fm_procevent_claim_load_locked "$id" 2>/dev/null \
+      && ! fm_procevent_claim_owned_by_state "$STATE" "$FM_HOME"; then
+      continue
+    fi
     fm_procevent_source_lock_acquire "$id" || continue
-    if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
+    if [ -f "$rec" ] && [ ! -L "$rec" ]; then
       fm_procevent_source_lock_release "$id"
       continue
     fi
@@ -1507,7 +1524,7 @@ cmd_reconcile() {
       id=${rec##*/}; id=${id%.source}
       fm_procevent_source_id_valid "$id" || continue
       fm_procevent_source_lock_acquire "$id" || continue
-      if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
+      if [ -f "$rec" ] && [ ! -L "$rec" ]; then
         fm_procevent_claim_state_locked "$id"
         claim_state=$?
         if [ "$claim_state" -eq 1 ] && fm_procevent_claim_undisplaceable_locked "$id"; then
@@ -1571,7 +1588,10 @@ cmd_reconcile() {
         elif [ "$claim_state" -eq 0 ]; then
           # A live owner is the same evidence confirmation reads, however the
           # runner was started, so it ends any launch-failure episode here.
-          rm -f -- "$(launch_failed_file "$id")"
+          launch_failed_file_to failed_mark "$id"
+          if [ -e "$failed_mark" ] || [ -L "$failed_mark" ]; then
+            rm -f -- "$failed_mark"
+          fi
         fi
       fi
       fm_procevent_source_lock_release "$id"
