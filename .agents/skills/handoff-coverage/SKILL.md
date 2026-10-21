@@ -12,6 +12,7 @@ Load this before building or changing anything that hands a record across a home
 
 [`docs/handoff-coverage.md`](../../../docs/handoff-coverage.md) owns the formats, file locations, routing, checks and compatibility rules.
 `bin/fm-handoff-validate.py` checks fragments, receipts and outboxes; its header owns the commands and exit codes.
+`bin/fm-handoff-watch.sh` is the watcher that raises the coverage alarms; its header owns the commands and arming.
 This skill owns only when an agent or home must act, and how.
 
 ## When you must publish a fragment
@@ -54,14 +55,24 @@ The doc's "Coverage checks" table is the full list; in short:
 - a receipt still `accepted`, `held` or `waiting` past its bound, a refusal open 4 h, or retries past `retry_limit` (`open-past-bound`);
 - any receipt with `holds_all` (`lane-fault`, to main at once);
 - an unreadable or unparseable fragment, outbox, place or sync stamp, an unknown `format`, or a synced copy older than `max_lag` (`source-unreadable`, `sync-stale`);
-- a timer, service, cron job or custom check no stage names (`undeclared-actor`);
+- a timer, service, cron job or custom check no stage names (`undeclared-actor`, not raised until the installer inventory lands);
 - a dated rule 14, 7 or 1 days out or past its date (`dated-rule`);
 - a home's watcher heartbeat older than 2 ticks (`watcher-silent`).
 
+A refusal or hold is also raised to its `fix_owner` and sender as kind `refused` or `held`.
 Each alarm is a level in an alert store ([docs/alert-store.md](../../../docs/alert-store.md)), so notes and status lines cannot close it while its condition holds: fix the cause, or, if it was routed to you, acknowledge it with a bounded expiry as the `alert-store` skill says.
+
+## Running the watcher
+
+A home that owns a stage or a protocol, and main, run the watcher: `bin/fm-handoff-watch.sh arm` once in that home, which runs a first pass and binds the watcher check.
+Run `bin/fm-handoff-watch.sh tick` to see a change take effect at once; drills use `tick --root <scratch root>` and never arm anything or touch a live home.
+`bin/fm-handoff-watch.sh disarm` stops it, closes the blockers it posted and removes its heartbeat; disarm only a watcher that is being retired.
+An alarm reaches you as a `blocked` line in your `state/handoff-watch.status`; `state/handoff-watch/log` in the watching home holds every raise and clear.
+A printed `handoff-watch: ... cannot be delivered` line means an alarm has no reachable target: fix the home list or the target's `state/` folder.
 
 ## Never
 
 - Never put routing, bounds or codes in code instead of the fragment; changing a route is a fragment revision, not a code change.
 - Never add a closed field by hand; information beyond the closed fields goes in `ext` under your own home's name.
 - Never write receipts for a stage your home does not own, or point two stages at one outbox.
+- Never arm the watcher in a scratch copy or run a drill against a live home's state.

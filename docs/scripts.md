@@ -24,6 +24,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm_board_tokens.py`    | Incrementally count metadata-only session usage and repetition candidates |
 | `fm-loop.sh`            | Print the experiment loop's request stages, stall alerts and lead times, read-only; arm a watcher check for newly opened alerts |
 | `fm-loop.py`            | Join the loop's records into request stages, sync stall-alert records and count lead times |
+| `fm_handoff_registry.py` | Find the homes a handoff watcher reads and load their handoff-registry/v1 fragments, shared by the watcher and the loop view |
 | `fm-schedule.sh`        | File captain-approved scheduled runs on a calendar, list them, and install or remove its user timer |
 | `fm-schedule.py`        | Validate schedule files, run the scheduled-run scan, read run summaries and write the board summary |
 | `fm-usage-audit.py`      | Audit explicitly selected local usage, status, ledger and inventory inputs |
@@ -85,6 +86,8 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-component-map.py`   | Map schema, glob, skill-shape and pin logic behind fm-component-map.sh |
 | `fm-component-spawn-lib.sh` | Spawn wiring of component skills: the component hook entries for Claude settings and the Pi extension, and the launch brief's component review pack and `## Component skills` section (docs/component-skills.md) |
 | `fm-handoff-validate.py` | Validate handoff-registry/v1 fragments, handoff-receipt/v1 receipts and receipt outboxes against their schemas and the registry (docs/handoff-coverage.md) |
+| `fm-handoff-watch.sh` | Run the registry-driven handoff coverage watcher once, as a watcher check, or arm and disarm that check (docs/handoff-coverage.md) |
+| `fm-handoff-watch.py` | One watcher pass: read fragments, outboxes, places, dated rules and heartbeats, and sync one alert store per alarm target |
 | `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home, maintain `data/secondmates.md`, and refresh a seeded charter from the current template |
@@ -135,7 +138,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-afk-return.sh`       | Own deterministic return shutdown, the return brief, catch-up evidence, and the firstmate-actionable blocker gate |
 | `fm-away-watch.sh`       | Away watchdog: alert from a user timer when away supervision has stopped, and install or remove that timer |
 | `fm-alert-lib.sh`        | Sourced active-alert channels (`config/wedge-alarm`) shared by the daemon's wedge alarm and the away watchdog |
-| `fm-alert-store.sh`      | Raise, clear and acknowledge level alarms in an owned alert store, register a store with a home, and run the watcher tick that re-posts active alarms ([alert-store.md](alert-store.md)) |
+| `fm-alert-store.sh`      | Raise, clear, sync and acknowledge level alarms in an owned alert store, register a store with a home, and run the watcher tick that re-posts active alarms ([alert-store.md](alert-store.md)) |
 | `fm-alert-store-lib.sh`  | Sourced alert-store reader and writer, including the registered-store check the decision fold uses to keep a store alarm open |
 | `fm-supervisor-target-lib.sh` | Resolve the shared supervisor target and backend for the daemon and launcher       |
 | `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery |

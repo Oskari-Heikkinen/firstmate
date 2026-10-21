@@ -15,8 +15,8 @@ The machine-checkable schemas are `docs/handoff-coverage/handoff-registry-v1.sch
 Worked examples are in `docs/handoff-coverage/examples/`, and every one of them validates in CI (`tests/fm-handoff-coverage.test.sh`).
 The skill `.agents/skills/handoff-coverage/SKILL.md` tells an agent when it must publish a fragment or write receipts.
 
-The watcher that reads these files (`fm-handoff-watch`), the shared installer check and the dated-rule schedule are later work items.
-This document fixes what they read; it does not specify how they run.
+The watcher that reads these files is `bin/fm-handoff-watch.sh` ([Watcher](#watcher-fm-handoff-watch)); its header owns the commands and arming.
+The shared installer check and the dated-rule schedule are later work items.
 
 ## Words
 
@@ -322,8 +322,10 @@ The coverage checks raise their alarms as levels in alert stores (I5).
 [docs/alert-store.md](alert-store.md) owns the store format `fm-alert-store/v1` (which generalises `tj-capacity-alerts/v1`), the registration `fm-alert-registration/v1`, the projection onto status lines and the acknowledgement rules; none of it is repeated here.
 This section says only how the coverage checks fill it.
 
-- **Writer.** The watcher is each store's one writer, through `bin/fm-alert-store.sh assert` and `clear`.
+- **Writer.** The watcher is each store's one writer, through `bin/fm-alert-store.sh sync`, which makes the store's active set equal the alarms it wants for that target in one write.
   It asserts every alarm on every pass while its condition holds and clears it only when the condition is gone, so a relaunch or note cannot close it.
+- **Store and key spelling.** The store id is `handoff-watch.<watching home>`, its file is `<watching home>/state/handoff-watch/stores/<target>.json`, and its registration in the target home names the status file `handoff-watch.status`, which the watcher creates empty when it is missing.
+  A key is `hw-<kind>-<subject>[-<variant>]`, with each `/` and unsafe character in the subject turned into `-`; a subject that loses characters this way, or a key over 128 characters, ends in a 12-character digest instead.
 - **One store per target.** A registration binds a store to one status file, so an alarm reaches each target in the [Alarm to](#coverage-checks) column through a store registered in that target's home (`<target home>/state/alert-stores/<store-id>.reg`).
   The watcher writes that registration itself, as data, the way the alert-store doc allows a tool in another home to.
 - **Entry fields.** `key` is one stable slug per check and subject, so re-asserting it is idempotent; it never starts with a reserved prefix (`pending-reply-`, `handoff-pickup-`, `handoff-tj-`).
@@ -333,6 +335,48 @@ This section says only how the coverage checks fill it.
   `since` is when the condition began (the receipt's `written_at`, or when the record arrived), and `evidence` holds the receipt or file path.
 - **Acknowledgement.** Only the alarm's target acknowledges it, with `bin/fm-alert-store.sh ack`; the acknowledgement always has an `until` of at most 7 days, after which the alarm is projected again if its condition still holds.
   An acknowledgement of an open `refused` receipt closes the refusal for the 4 h rule until then.
+
+## Watcher (`fm-handoff-watch`)
+
+`bin/fm-handoff-watch.sh` runs one pass every `FM_CHECK_INTERVAL` (300 s by default) as a Firstmate watcher check, once a home arms it; its header owns `tick`, `check`, `arm` and `disarm`.
+A pass is niced, idle I/O and capped below the check timeout, and it reads only declared folders, never a tree walk.
+
+**Homes it reads.**
+A watcher reads this home, its local parent (`.fm-secondmate-parent`), every local home either of them lists in `data/secondmates.md`, and every line `<home id> <absolute path>` in either's `config/handoff-homes`.
+A home on another machine is read through a synced copy listed in `config/handoff-homes`; nothing is fetched across machines.
+With `--root DIR`, used by drills, every folder under `DIR` named like a home id is that home and nothing else is read.
+
+**What it evaluates.**
+It reads the fragments of every home it sees, but checks only the stages this home owns, the dated rules of the protocols this home owns, and the heartbeats it watches, so each alarm has one writer.
+A fragment that turns invalid, or whose `revision` goes back, raises `source-unreadable` for its home and the last valid revision stays in use.
+A protocol declared in two fragments keeps the first by home and file name, and raises `source-unreadable` with variant `duplicate` to tooling-mate and both homes.
+Outboxes and places are rescanned by modification time, and a receipt is read once; per-stage cursors stay in `state/handoff-watch/stages/`.
+
+**Kinds it raises.**
+Besides the checks in [Coverage checks](#coverage-checks), the routing in [Routing and alarm targets](#routing-and-alarm-targets) is raised as kind `refused` or `held` for the current receipt of a record, to the code's `fix_owner` and the sender (the sender and the protocol owner for a reserved code such as `version-unsupported`).
+`open-past-bound` is raised for an `accepted`, `held` or `waiting` receipt past its bound, and with variant `retries` past `retry_limit`.
+`undeclared-actor` is not raised yet; it needs the installer inventory of a later work item.
+While any source of a stage cannot be read, that stage's earlier alarms are kept, since their conditions are unknown, not gone.
+
+**Escalation and acknowledgement.**
+Main is added to a `refused`, `held` or `open-past-bound` alarm once it has been open 4 h from its receipt's `written_at`; an acknowledgement in any of the watcher's stores of a `refused` or `held` key stops that for its `until`.
+Main is added to an `unregistered-type` or `unregistered-receipt` alarm 1 h after the watcher first saw it.
+An acknowledgement is bounded by the alert-store limit of 7 days for every code; no code has a shorter maximum.
+
+**Delivery.**
+An alarm for a home this machine does not see goes to main, its reason prefixed with the intended target.
+When main is not seen either, or a store or registration cannot be written, the pass prints one line per occurrence, which wakes the arming home through the watcher check.
+Every raise and clear is appended to `state/handoff-watch/log`.
+
+**Heartbeat.**
+Each pass ends by writing one `handoff-receipt/v1` receipt of protocol `handoff-watch`, stage and record set to the home id, to `state/handoff-watch/heartbeat/`, keeping only the newest.
+Main's watcher raises `watcher-silent` for any home whose heartbeat folder exists and whose newest heartbeat is older than two intervals (`FM_HANDOFF_WATCH_SILENT_AFTER` seconds, default twice `FM_CHECK_INTERVAL`); every other watcher does the same for main's heartbeat, with variant `seen-by-<home>`.
+`disarm` removes the heartbeat, so a disarmed watcher is not read as silent, and unregisters its stores so their blockers close.
+Tooling-mate's `handoff-watch` fragment declares each home's heartbeat folder as that stage's outbox; the watcher never evaluates that protocol as a chain.
+
+**Latency.**
+A condition is seen at the next pass and projected at the target home's next alert-store tick, so a target hears of it within about two intervals, 10 minutes at the default.
+A killed watcher is seen once its heartbeat is two intervals old, at main's next pass, and projected at main's next tick: up to four intervals, 20 minutes at the default; a home that needs 10 minutes sets `FM_HANDOFF_WATCH_SILENT_AFTER` or a shorter interval.
 
 ## Compatibility and versioning
 
@@ -347,6 +391,7 @@ Information a home needs beyond the closed fields goes in `ext`, which the fragm
 An `ext` key is `<home>.<name>`, owned by the home before the dot; a home writes only keys under its own name.
 An `ext` value is a string, number or boolean, so `ext` reads as `key=value`.
 Readers ignore every `ext` key they do not know, the rule the merge queue's HANDOFF and RESULT receipts already follow.
+One key is read by Firstmate itself: a stage's `<home>.loop-source` declares loop-view sources for that home's `bin/fm-loop.sh`, in the format [docs/configuration.md](configuration.md#loop-sources-configloop-sources) gives.
 
 ### Versions
 
@@ -390,9 +435,9 @@ Reused blocks land here:
 
 ## Open points owners must settle
 
-- **Cross-home stage declarations.** A protocol owner declares stages that other homes own; whether a stage owner must also confirm its stages in its own fragment is for tooling-mate and the stage owners to settle with the watcher work.
-- **Refusal closure.** A later attempt closes a refusal for good; an alert-store acknowledgement closes it only until its `until`, at most 7 days by [docs/alert-store.md](alert-store.md). Whether some codes need a shorter maximum is for the watcher work.
-- **Alarm keys and store ids.** The exact spelling of each check's alert key and of each target's store id is for the watcher work, within the entry-field rules in [Alert store](#alert-store).
+- **Cross-home stage declarations.** A protocol owner declares stages that other homes own, and the stage owner need not confirm them: the owner's watcher checks every stage declared with its home as owner, so a wrong declaration shows as `no-receipt` to that owner.
+- **Refusal closure.** A later attempt closes a refusal for good; an alert-store acknowledgement closes it only until its `until`, at most 7 days for every code ([Watcher](#watcher-fm-handoff-watch)).
+- **Alarm keys and store ids.** Settled in [Alert store](#alert-store).
 - **Dated-rule slips.** Moving a date is a new revision; whether a slip needs a review step, as `xp-route-schedule/v1` does, is for the schedule work.
-- **Fragment discovery.** Every home's watcher reads the fragments of every home on its machine; how it finds homes on another machine, if any are added, is for the watcher work.
+- **Fragment discovery.** A home on another machine is read through a synced copy listed in `config/handoff-homes` ([Watcher](#watcher-fm-handoff-watch)).
 - **Record ids across stages.** The chain assumes one stable `record` id from filing to collect; a stage that renames records records the old id in `ext` until its owner settles a field for it.
