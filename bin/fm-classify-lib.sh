@@ -1528,8 +1528,23 @@ _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
     epoch=$(LC_ALL=C stat -c '%W' "$f" 2>/dev/null) || epoch=0
     if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -c '%w' "$f" 2>/dev/null) || birth=''; else birth=''; fi
   fi
-  case "$ident$birth" in *$'\t'*|*$'\n'*|'') return 1 ;; esac
-  if [ -n "$birth" ]; then printf 'strong:%s:%s' "$ident" "$birth"; else printf 'weak:%s' "$ident"; fi
+  _fm_file_ident_compose_to ident "$ident" "$epoch" "$birth" || return 1
+  printf '%s' "$ident"
+}
+
+# The identity above from its stat fields, shared with status_observed_signature_to,
+# which reads the same fields in one call. A birth time counts only when its epoch
+# is known (not 0).
+_fm_file_ident_compose_to() {  # <output-variable> <dev:ino> <birth-epoch> <birth-time>
+  local _fic_birth=$4
+  printf -v "$1" '%s' ''
+  [ "$3" != 0 ] || _fic_birth=''
+  case "$2$_fic_birth" in *$'\t'*|*$'\n'*|'') return 1 ;; esac
+  if [ -n "$_fic_birth" ]; then
+    printf -v "$1" 'strong:%s:%s' "$2" "$_fic_birth"
+  else
+    printf -v "$1" 'weak:%s' "$2"
+  fi
 }
 
 _fm_status_file_size() {  # <status-file>
@@ -1952,41 +1967,125 @@ _status_observed_path_state() {
   fi
 }
 
-status_observed_signature() {
-  local f=$1 size=${2-} ident=${3-} path_state link_target=- access kind encoded
-  path_state=$(_status_observed_path_state "$f") || path_state=stat-error
-  if [ -L "$f" ]; then
-    link_target=$(readlink "$f" 2>/dev/null) || link_target=readlink-error
-    kind=symlink
-  elif [ ! -e "$f" ]; then
-    kind=absent
-  elif [ ! -f "$f" ]; then
-    kind=nonregular
-  elif [ -r "$f" ]; then
-    kind=readable
-  else
-    kind=unreadable
-  fi
-  if [ -z "$size" ]; then
-    size=$(_fm_status_file_size "$f") || size='size-error'
-    size=${size//[[:space:]]/}
-    case "$size" in ''|*[!0-9]*) size='size-error' ;; esac
-  fi
-  if [ -z "$ident" ]; then
-    ident=$(_fm_open_decisions_file_ident "$f") || ident=identity-error
-    [ -n "$ident" ] || ident=identity-error
-  fi
-  if [ -r "$f" ]; then access=readable; else access=unreadable; fi
-  encoded=$(printf '%s\0%s\0%s\0%s\0%s\0%s' \
-    "$size" "$ident" "$path_state" "$link_target" "$access" "$kind" \
-    | LC_ALL=C od -An -v -tx1 | tr -d ' \n') || return 1
-  printf 'r1:%s' "$encoded"
+status_observed_signature() {  # <file> [size] [identity]
+  local _sos_printed
+  status_observed_signature_to _sos_printed "$@" || return 1
+  printf '%s' "$_sos_printed"
 }
+
+# The watcher computes this signature for every status file on every poll, so it
+# costs one process where it can: GNU stat prints the type, mode, size, identity
+# and birth time in one call, and Bash 4.2+ encodes the fields itself. Darwin, a
+# set size or identity reader, and a combined read that fails or does not print
+# exactly five lines keep the separate reads above; Bash 3.2 keeps od.
+status_observed_signature_to() {  # <output-variable> <file> [size] [identity]
+  local _sos_f=$2 _sos_size=${3-} _sos_ident=${4-} _sos_path_state _sos_link_target=- _sos_access _sos_kind
+  local _sos_stat='' _sos_stat_size _sos_dev_ino _sos_epoch _sos_birth _sos_encoded
+  printf -v "$1" '%s' ''
+  if [ "$_FM_CLASSIFY_UNAME_S" != Darwin ] && [ -z "${FM_STATUS_IDENTITY_READER:-}" ] \
+    && [ -z "${FM_STATUS_SIZE_READER:-}" ]; then
+    { _sos_stat=$(LC_ALL=C exec stat -c $'%F:%f\n%s\n%d:%i\n%W\n%w' "$_sos_f"); } 2>/dev/null || _sos_stat=''
+    case "$_sos_stat" in
+      *$'\n'*$'\n'*$'\n'*$'\n'*$'\n'*) _sos_stat='' ;;
+      *$'\n'*$'\n'*$'\n'*$'\n'*) ;;
+      *) _sos_stat='' ;;
+    esac
+  fi
+  if [ -n "$_sos_stat" ]; then
+    _sos_path_state=${_sos_stat%%$'\n'*}; _sos_stat=${_sos_stat#*$'\n'}
+    _sos_stat_size=${_sos_stat%%$'\n'*}; _sos_stat=${_sos_stat#*$'\n'}
+    _sos_dev_ino=${_sos_stat%%$'\n'*}; _sos_stat=${_sos_stat#*$'\n'}
+    _sos_epoch=${_sos_stat%%$'\n'*}; _sos_birth=${_sos_stat#*$'\n'}
+  else
+    _sos_path_state=$(_status_observed_path_state "$_sos_f") || _sos_path_state=stat-error
+  fi
+  if [ -L "$_sos_f" ]; then
+    { _sos_link_target=$(exec readlink "$_sos_f"); } 2>/dev/null || _sos_link_target=readlink-error
+    _sos_kind=symlink
+  elif [ ! -e "$_sos_f" ]; then
+    _sos_kind=absent
+  elif [ ! -f "$_sos_f" ]; then
+    _sos_kind=nonregular
+  elif [ -r "$_sos_f" ]; then
+    _sos_kind=readable
+  else
+    _sos_kind=unreadable
+  fi
+  if [ -z "$_sos_size" ]; then
+    if [ -n "$_sos_stat" ]; then
+      _sos_size=$_sos_stat_size
+    else
+      _sos_size=$(_fm_status_file_size "$_sos_f") || _sos_size='size-error'
+    fi
+    _sos_size=${_sos_size//[[:space:]]/}
+    case "$_sos_size" in ''|*[!0-9]*) _sos_size='size-error' ;; esac
+  fi
+  if [ -z "$_sos_ident" ]; then
+    if [ -n "$_sos_stat" ]; then
+      _fm_file_ident_compose_to _sos_ident "$_sos_dev_ino" "$_sos_epoch" "$_sos_birth" || _sos_ident=identity-error
+    else
+      _sos_ident=$(_fm_open_decisions_file_ident "$_sos_f") || _sos_ident=identity-error
+    fi
+    [ -n "$_sos_ident" ] || _sos_ident=identity-error
+  fi
+  if [ -r "$_sos_f" ]; then _sos_access=readable; else _sos_access=unreadable; fi
+  if [ "$_FM_CLASSIFY_HEX_BYTEWISE" != 1 ] || ! _status_observed_hex_c_to _sos_encoded "$_sos_size" "$_sos_ident" \
+    "$_sos_path_state" "$_sos_link_target" "$_sos_access" "$_sos_kind" 2>/dev/null; then
+    _sos_encoded=$(printf '%s\0%s\0%s\0%s\0%s\0%s' \
+      "$_sos_size" "$_sos_ident" "$_sos_path_state" "$_sos_link_target" "$_sos_access" "$_sos_kind" \
+      | LC_ALL=C od -An -v -tx1 | tr -d ' \n') || return 1
+  fi
+  printf -v "$1" 'r1:%s' "$_sos_encoded"
+}
+
+# What `printf '%s\0...' <field>... | LC_ALL=C od -An -v -tx1 | tr -d ' \n'` prints:
+# each field's bytes as lower-case hex, joined by 00. It runs bytewise under a
+# local LC_ALL=C and is called with stderr discarded, so restoring an ambient
+# LC_ALL that names an uninstalled locale cannot warn on every poll. Past 512
+# bytes a printf per byte costs more than od, so it returns 1 and the caller
+# forks od instead.
+_FM_CLASSIFY_HEX_BYTEWISE=0
+if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; then
+  _status_observed_hex_c_to() {  # <output-variable> <field>...
+    local LC_ALL=C _soh_var=$1 _soh_hex='' _soh_byte _soh_field _soh_len _soh_i _soh_total=-1 _soh_n=0
+    shift
+    for _soh_field in "$@"; do
+      _soh_total=$((_soh_total + ${#_soh_field} + 1))
+    done
+    [ "$_soh_total" -le 512 ] || return 1
+    for _soh_field in "$@"; do
+      [ "$_soh_n" -eq 0 ] || _soh_hex+='00'
+      _soh_n=$((_soh_n + 1))
+      _soh_len=${#_soh_field}
+      for ((_soh_i = 0; _soh_i < _soh_len; _soh_i++)); do
+        printf -v _soh_byte '%02x' "'${_soh_field:_soh_i:1}"
+        _soh_hex+=$_soh_byte
+      done
+    done
+    printf -v "$_soh_var" '%s' "$_soh_hex"
+  }
+
+  # printf '%02x' "'<char>" yields one byte per character only where the C
+  # locale is single-byte, so a platform that answers otherwise keeps od.
+  _status_observed_hex_bytewise() {
+    local LC_ALL=C _sohb_probe=$'\xc3\xa9\xff\x01\x7f' _sohb_got
+    [ "${#_sohb_probe}" -eq 5 ] || return 1
+    printf -v _sohb_got '%02x%02x%02x%02x%02x' "'${_sohb_probe:0:1}" "'${_sohb_probe:1:1}" \
+      "'${_sohb_probe:2:1}" "'${_sohb_probe:3:1}" "'${_sohb_probe:4:1}"
+    [ "$_sohb_got" = c3a9ff017f ]
+  }
+  ! _status_observed_hex_bytewise 2>/dev/null || _FM_CLASSIFY_HEX_BYTEWISE=1
+fi
 
 status_presentation_marker_reported_matches() {
   local raw
   raw=$(cat "$1" 2>/dev/null) || return 1
-  status_presentation_marker_parse "$raw" || return 1
+  status_presentation_text_reported_matches "$raw" "$2"
+}
+
+# The same test on marker text the caller has already read.
+status_presentation_text_reported_matches() {  # <marker-text> <reported-signature>
+  status_presentation_marker_parse "$1" || return 1
   [ "$STATUS_PRESENTATION_REPORTED" = "$2" ]
 }
 

@@ -116,6 +116,8 @@ for f in "$state/crew.status" "$state/a.b.c.status" "state/x.status" ".status" \
     *) want=$(printf '%s/.seen-%s' "$state" "$(basename "$f" | tr '.' '_')") ;;
   esac
   [ "$got" = "$want" ] || printf 'seen path %q: helper %q, commands %q\n' "$f" "$got" "$want"
+  fm_wake_signal_seen_path_to got "$state" "$f"
+  [ "$got" = "$want" ] || printf 'seen path_to %q: helper %q, commands %q\n' "$f" "$got" "$want"
 done
 want=$(cd "$FM_WAKE_LIB_DIR/.." && pwd)
 [ "$FM_WAKE_DEFAULT_ROOT" = "$want" ] || printf 'default root: library %q, commands %q\n' "$FM_WAKE_DEFAULT_ROOT" "$want"
@@ -556,6 +558,232 @@ SH
   pass "fm_path_mtime_to, fm_path_age_to and fm_path_age agree with stat and the clock"
 }
 
+test_status_signature_reads_once_and_matches_the_forked_reader() {
+  local script="$TMP_ROOT/status-sig.sh" quiet="$TMP_ROOT/status-sig-quiet.sh" cases="$TMP_ROOT/status-sig"
+  local state="$TMP_ROOT/status-sig-state" shim="$TMP_ROOT/status-sig-shim" seams="$TMP_ROOT/status-sig-seams"
+  local log="$TMP_ROOT/status-sig-spawned.log" long='' i tool interpreter out
+  mkdir -p "$cases/dir.status" "$state" "$shim" "$seams"
+  printf 'working: one\n' > "$cases/regular.status"
+  : > "$cases/empty.status"
+  ln -s regular.status "$cases/ascii-link.status"
+  ln -s $'caf\303\251-\342\202\254-target' "$cases/utf8-link.status"
+  # A filesystem that refuses a non-UTF-8 link target just leaves the case out.
+  ln -s $'raw-\377\001-target' "$cases/raw-link.status" 2>/dev/null || true
+  ln -s missing-target "$cases/dangling.status"
+  i=1
+  while [ "$i" -le 50 ]; do
+    long="${long}segment-$i/"
+    i=$((i + 1))
+  done
+  ln -s "$long" "$cases/long-link.status"
+  printf 'secret\n' > "$cases/unreadable.status"
+  chmod 000 "$cases/unreadable.status"
+  mkfifo "$cases/fifo.status"
+  printf 'turn\n' > "$state/crew.turn-ended"
+  for tool in stat readlink od tr cat; do
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$log" "$(command -v "$tool")" > "$shim/$tool"
+    chmod +x "$shim/$tool"
+  done
+  cat > "$seams/ident-ok" <<'SH'
+#!/bin/sh
+printf 'seam:%s\n' "${1##*/}"
+SH
+  printf '#!/bin/sh\nexit 3\n' > "$seams/ident-fail"
+  printf '#!/bin/sh\nprintf " 42 \\n"\n' > "$seams/size-ok"
+  printf '#!/bin/sh\nexit 4\n' > "$seams/size-fail"
+  chmod +x "$seams"/*
+  cat > "$script" <<'SH'
+. "$1/bin/fm-wake-lib.sh"
+_fm_wake_require_classify || { printf 'the classify library did not load\n'; exit 0; }
+cases=$2 state=$3 shim=$4 log=$5 seams=$6
+# The forked readers these helpers replaced, kept as the reference.
+reference_ident() {
+  local f=$1 epoch birth ident
+  if [ -n "${FM_STATUS_IDENTITY_READER:-}" ]; then
+    "$FM_STATUS_IDENTITY_READER" "$f"
+    return
+  fi
+  if [ "$_FM_CLASSIFY_UNAME_S" = Darwin ]; then
+    ident=$(LC_ALL=C /usr/bin/stat -f '%d:%i' "$f" 2>/dev/null) || return 1
+    epoch=$(LC_ALL=C /usr/bin/stat -f '%B' "$f" 2>/dev/null) || epoch=0
+    if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C /usr/bin/stat -f '%FB' "$f" 2>/dev/null) || birth=''; else birth=''; fi
+  else
+    ident=$(LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null) || return 1
+    epoch=$(LC_ALL=C stat -c '%W' "$f" 2>/dev/null) || epoch=0
+    if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -c '%w' "$f" 2>/dev/null) || birth=''; else birth=''; fi
+  fi
+  case "$ident$birth" in *$'\t'*|*$'\n'*|'') return 1 ;; esac
+  if [ -n "$birth" ]; then printf 'strong:%s:%s' "$ident" "$birth"; else printf 'weak:%s' "$ident"; fi
+}
+reference_signature() {  # <file> [size] [identity]
+  local f=$1 size=${2-} ident=${3-} path_state link_target=- access kind encoded
+  if [ "$_FM_CLASSIFY_UNAME_S" = Darwin ]; then
+    path_state=$(LC_ALL=C /usr/bin/stat -f '%HT:%p' "$f" 2>/dev/null) || path_state=stat-error
+  else
+    path_state=$(LC_ALL=C stat -c '%F:%f' "$f" 2>/dev/null) || path_state=stat-error
+  fi
+  if [ -L "$f" ]; then
+    link_target=$(readlink "$f" 2>/dev/null) || link_target=readlink-error
+    kind=symlink
+  elif [ ! -e "$f" ]; then
+    kind=absent
+  elif [ ! -f "$f" ]; then
+    kind=nonregular
+  elif [ -r "$f" ]; then
+    kind=readable
+  else
+    kind=unreadable
+  fi
+  if [ -z "$size" ]; then
+    if [ -n "${FM_STATUS_SIZE_READER:-}" ]; then
+      size=$("$FM_STATUS_SIZE_READER" "$f") || size='size-error'
+    elif [ "$_FM_CLASSIFY_UNAME_S" = Darwin ]; then
+      size=$(LC_ALL=C /usr/bin/stat -f '%z' "$f" 2>/dev/null) || size='size-error'
+    else
+      size=$(LC_ALL=C stat -c '%s' "$f" 2>/dev/null) || size='size-error'
+    fi
+    size=${size//[[:space:]]/}
+    case "$size" in ''|*[!0-9]*) size='size-error' ;; esac
+  fi
+  if [ -z "$ident" ]; then
+    ident=$(reference_ident "$f") || ident=identity-error
+    [ -n "$ident" ] || ident=identity-error
+  fi
+  if [ -r "$f" ]; then access=readable; else access=unreadable; fi
+  encoded=$(printf '%s\0%s\0%s\0%s\0%s\0%s' \
+    "$size" "$ident" "$path_state" "$link_target" "$access" "$kind" \
+    | LC_ALL=C od -An -v -tx1 | tr -d ' \n') || return 1
+  printf 'r1:%s' "$encoded"
+}
+counted_signature() {  # <file> [size] [identity]: status_observed_signature_to with every spawned command logged
+  local PATH="$shim:$PATH"
+  : > "$log"
+  status_observed_signature_to got "$@"; grc=$?
+}
+# Only GNU stat reads every field at once, and the expected spawns assume the
+# in-shell encoder; elsewhere the values must still match.
+counts=0
+[ "$_FM_CLASSIFY_UNAME_S" != Linux ] || [ "$_FM_CLASSIFY_HEX_BYTEWISE" != 1 ] || counts=1
+check() {  # <spawned-commands|-> <file> [size] [identity]
+  local spawns=$1 want wrc printed prc spawned
+  shift
+  want=$(reference_signature "$@" 2>/dev/null); wrc=$?
+  counted_signature "$@"
+  spawned=$(sort "$log" | tr '\n' ' ')
+  printed=$(status_observed_signature "$@" 2>/dev/null); prc=$?
+  [ "$got" = "$want" ] && [ "$grc" = "$wrc" ] \
+    || printf 'signature_to %s [%s]: helper %q (%s), reference %q (%s)\n' "${1##*/}" "${*:2}" "$got" "$grc" "$want" "$wrc"
+  [ "$printed" = "$want" ] && [ "$prc" = "$wrc" ] \
+    || printf 'signature %s [%s]: helper %q (%s), reference %q (%s)\n' "${1##*/}" "${*:2}" "$printed" "$prc" "$want" "$wrc"
+  [ "$spawns" != - ] && [ "$counts" = 1 ] || return 0
+  [ "$spawned" = "$spawns" ] || printf 'signature_to %s spawned [%s], not [%s]\n' "${1##*/}" "$spawned" "$spawns"
+}
+for f in "$cases"/*.status "$cases/absent.status"; do
+  case "${f##*/}" in
+    long-link.status) spawns='od readlink stat tr ' ;;
+    *-link.status|dangling.status) spawns='readlink stat ' ;;
+    absent.status) spawns=- ;;
+    *) spawns='stat ' ;;
+  esac
+  check "$spawns" "$f"
+  check - "$f" 17
+  check - "$f" '' 'weak:1:2'
+  check - "$f" 9 'strong:1:2:x'
+  for reader in ident-ok ident-fail; do
+    FM_STATUS_IDENTITY_READER=$seams/$reader check - "$f"
+    want=$(FM_STATUS_IDENTITY_READER=$seams/$reader reference_ident "$f"); wrc=$?
+    got=$(FM_STATUS_IDENTITY_READER=$seams/$reader _fm_open_decisions_file_ident "$f"); grc=$?
+    [ "$got" = "$want" ] && [ "$grc" = "$wrc" ] \
+      || printf 'identity %s with %s: helper %q (%s), reference %q (%s)\n' "${f##*/}" "$reader" "$got" "$grc" "$want" "$wrc"
+  done
+  for reader in size-ok size-fail; do
+    FM_STATUS_SIZE_READER=$seams/$reader check - "$f"
+  done
+  want=$(reference_ident "$f"); wrc=$?
+  got=$(_fm_open_decisions_file_ident "$f"); grc=$?
+  [ "$got" = "$want" ] && [ "$grc" = "$wrc" ] \
+    || printf 'identity %s: helper %q (%s), reference %q (%s)\n' "${f##*/}" "$got" "$grc" "$want" "$wrc"
+  want=$(reference_signature "$f"); wrc=$?
+  fm_wake_signal_sig_to got "$f"; grc=$?
+  [ "$got" = "$want" ] && [ "$grc" = "$wrc" ] \
+    || printf 'signal sig_to %s: helper %q (%s), reference %q (%s)\n' "${f##*/}" "$got" "$grc" "$want" "$wrc"
+done
+for f in "$state/crew.turn-ended" "$state/absent.turn-ended"; do
+  if [ "$_FM_UNAME" = Darwin ]; then
+    want=$(/usr/bin/stat -f '%z:%Fm' "$f" 2>/dev/null); wrc=$?
+  else
+    want=$(stat -c '%s:%Y' "$f" 2>/dev/null); wrc=$?
+  fi
+  fm_wake_signal_sig_to got "$f"; grc=$?
+  [ "$got" = "$want" ] && [ "$grc" = "$wrc" ] \
+    || printf 'signal sig_to %s: helper %q (%s), stat %q (%s)\n' "${f##*/}" "$got" "$grc" "$want" "$wrc"
+done
+# A passed signature stands in for reading the file again, so it decides the
+# answer; an empty one never matches, and neither does a missing marker.
+current() {  # <expected-rc> <label> <predicate> <state> <file> [signature]
+  local want=$1 label=$2 rc
+  shift 2
+  "$@"; rc=$?
+  [ "$rc" = "$want" ] || printf '%s %s: rc %s, not %s\n' "$label" "${3##*/}" "$rc" "$want"
+}
+cp "$cases/regular.status" "$state/crew.status"
+for f in "$state/crew.status" "$state/crew.turn-ended"; do
+  fm_wake_signal_seen_path_to marker "$state" "$f"
+  rm -f "$marker"
+  fm_wake_signal_sig_to sig "$f"
+  for predicate in fm_wake_signal_reported_current fm_wake_signal_seen_current; do
+    current 1 "unmarked" "$predicate" "$state" "$f"
+    current 1 "unmarked with its signature" "$predicate" "$state" "$f" "$sig"
+  done
+  case "$f" in
+    *.status) fm_wake_status_mark_current "$state" "$f" ;;
+    *) printf '%s\n' "$sig" > "$marker" ;;
+  esac
+  for predicate in fm_wake_signal_reported_current fm_wake_signal_seen_current; do
+    current 0 "marked" "$predicate" "$state" "$f"
+    current 0 "marked with its signature" "$predicate" "$state" "$f" "$sig"
+    current 1 "marked with another signature" "$predicate" "$state" "$f" "${sig}0"
+    current 1 "marked with an empty signature" "$predicate" "$state" "$f" ''
+  done
+  : > "$log"
+  (PATH="$shim:$PATH"; fm_wake_signal_reported_current "$state" "$f" "$sig") \
+    || printf 'reported_current %s: the marked signature did not match\n' "${f##*/}"
+  [ "$counts" = 1 ] && [ -s "$log" ] && printf 'reported_current %s with its signature spawned [%s]\n' "${f##*/}" "$(tr '\n' ' ' < "$log")"
+  printf 'more\n' >> "$f"
+  fm_wake_signal_sig_to newsig "$f"
+  for predicate in fm_wake_signal_reported_current fm_wake_signal_seen_current; do
+    current 1 "changed" "$predicate" "$state" "$f"
+    current 1 "changed with its new signature" "$predicate" "$state" "$f" "$newsig"
+    current 0 "changed with the marked signature" "$predicate" "$state" "$f" "$sig"
+  done
+done
+exit 0
+SH
+  run_everywhere "status signature" "$script" "$cases" "$state" "$shim" "$log" "$seams"
+  # The watcher signs every status file each poll, so an ambient LC_ALL that
+  # names an uninstalled locale must not make a signature print a setlocale
+  # warning. Bash itself warns once at startup, before the script takes stderr.
+  # Darwin keeps the separate per-field reads, which this does not cover.
+  cat > "$quiet" <<'SH'
+exec 2>"$3"
+. "$1/bin/fm-wake-lib.sh"
+if [ "$_FM_UNAME" = Linux ]; then
+  for f in "$2"/*.status; do
+    fm_wake_signal_sig_to got "$f"
+  done
+fi
+exec 2>&-
+while IFS= read -r line; do printf 'stderr: %s\n' "$line"; done < "$3"
+SH
+  while IFS= read -r interpreter; do
+    out=$(LC_ALL=xx_XX.UTF-8 FM_STATE_OVERRIDE="$TMP_ROOT/state" "$interpreter" "$quiet" "$ROOT" "$cases" "$TMP_ROOT/status-sig-quiet.err" 2>/dev/null) \
+      || fail "status signatures failed under $interpreter with an uninstalled LC_ALL: $out"
+    [ -z "$out" ] || fail "status signatures wrote to stderr under $interpreter with an uninstalled LC_ALL:"$'\n'"$out"
+  done < <(test_interpreters)
+  chmod 600 "$cases/unreadable.status"
+  pass "status_observed_signature_to reads each status file once and signs it exactly as the forked readers did"
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -568,4 +796,5 @@ else
   test_file_readers_match_cat_and_od
   test_proc_identity_matches_the_forked_reader
   test_path_age_helpers_match_stat_and_the_clock
+  test_status_signature_reads_once_and_matches_the_forked_reader
 fi

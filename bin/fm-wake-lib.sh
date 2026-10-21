@@ -2870,10 +2870,40 @@ fm_wake_signal_sig() {  # <file> -> reported-state signature
   esac
 }
 
+# The signature fm_wake_signal_sig prints, assigned without a subshell for the
+# watcher's per-poll scan: the status signature costs one stat where
+# status_observed_signature_to can read it that way, and a turn-ended
+# signature one stat fork.
+fm_wake_signal_sig_to() {  # <output-variable> <file>
+  local _fm_wss_sig='' _fm_wss_rc=0
+  printf -v "$1" '%s' ''
+  case "$2" in
+    *.status)
+      _fm_wake_require_classify || return 1
+      status_observed_signature_to "$1" "$2"
+      ;;
+    *)
+      if [ "$_FM_UNAME" = Darwin ]; then
+        { _fm_wss_sig=$(exec /usr/bin/stat -f '%z:%Fm' "$2"); } 2>/dev/null || _fm_wss_rc=$?
+      else
+        { _fm_wss_sig=$(exec stat -c '%s:%Y' "$2"); } 2>/dev/null || _fm_wss_rc=$?
+      fi
+      printf -v "$1" '%s' "$_fm_wss_sig"
+      return "$_fm_wss_rc"
+      ;;
+  esac
+}
+
 fm_wake_signal_seen_path() {  # <state> <file>
-  local task
-  fm_basename_to task "$2"
-  printf '%s/.seen-%s' "$1" "${task//./_}"
+  local _fm_wsp_path
+  fm_wake_signal_seen_path_to _fm_wsp_path "$1" "$2"
+  printf '%s' "$_fm_wsp_path"
+}
+
+fm_wake_signal_seen_path_to() {  # <output-variable> <state> <file>
+  local _fm_wsp_task
+  fm_basename_to _fm_wsp_task "$3"
+  printf -v "$1" '%s/.seen-%s' "$2" "${_fm_wsp_task//./_}"
 }
 
 # The byte size recorded in <file>'s seen marker, or 0 when no marker exists, it
@@ -2906,17 +2936,24 @@ fm_wake_signal_seen_size() {  # <state> <file>
 # This predicate never consults the owned-append ledger, which is what makes it
 # the safe gate for a captain-facing surface: a line must never be withheld from
 # presentation merely because this home is the writer that appended it.
-fm_wake_signal_reported_current() {  # <state> <file>
-  local sig marker
-  sig=$(fm_wake_signal_sig "$2") || return 1
+# A caller that has just read <file>'s signature passes it as <signature>, so the
+# file is observed once; an empty one is not a match either.
+fm_wake_signal_reported_current() {  # <state> <file> [signature]
+  local sig marker text
+  if [ "$#" -ge 3 ]; then
+    sig=$3
+  else
+    fm_wake_signal_sig_to sig "$2" || return 1
+  fi
   [ -n "$sig" ] || return 1
-  marker=$(fm_wake_signal_seen_path "$1" "$2")
+  fm_wake_signal_seen_path_to marker "$1" "$2"
+  fm_file_text_to text "$marker" || return 1
   case "$2" in
     *.status)
       _fm_wake_require_classify || return 1
-      status_presentation_marker_reported_matches "$marker" "$sig"
+      status_presentation_text_reported_matches "$text" "$sig"
       ;;
-    *) [ "$(cat "$marker" 2>/dev/null)" = "$sig" ] ;;
+    *) [ "$text" = "$sig" ] ;;
   esac
 }
 
@@ -2928,10 +2965,10 @@ fm_wake_signal_reported_current() {  # <state> <file>
 # without owned growth is not a match, so uncertainty still reads as unreported.
 # This is the wake-scan predicate and answers only "should this wake the home?".
 # Presentation asks the different question and uses
-# fm_wake_signal_reported_current.
-fm_wake_signal_seen_current() {  # <state> <file>
+# fm_wake_signal_reported_current, which also takes the optional <signature>.
+fm_wake_signal_seen_current() {  # <state> <file> [signature]
   local classified size
-  fm_wake_signal_reported_current "$1" "$2" && return 0
+  fm_wake_signal_reported_current "$@" && return 0
   case "$2" in *.status) ;; *) return 1 ;; esac
   _fm_wake_require_classify || return 1
   classified=$(fm_wake_signal_seen_size "$1" "$2")

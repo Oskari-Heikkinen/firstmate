@@ -2569,10 +2569,12 @@ age_of() {  # seconds since file mtime; "due immediately" if missing
 # bookkeeping appends; fm_wake_signal_seen_current (bin/fm-wake-lib.sh) owns that
 # rule and every other signature change still reads as unreported.
 # Pure read: prints one "<seen-file>\t<sig>\t<file>" line per changed file.
+# Each file's signature is observed once per scan, and that one observation is
+# both the one compared and the one printed.
 # The caller records reported state only after surfacing or intentional absorption,
 # and commits a status classification position only after a successful span read.
 scan_signals() {
-  local f sig sf exclude
+  local f sig sf exclude marker
   # A remote mate's own parent channel is not a self-home task status log; the
   # home-shape-aware exclusion and its precedent live in
   # status_scan_parent_channel_exclude (fm-classify-lib.sh).
@@ -2582,12 +2584,15 @@ scan_signals() {
     if [ ! -e "$f" ]; then
       case "$f" in *.status) [ -L "$f" ] || continue ;; *) continue ;; esac
     fi
-    sig=$(fm_wake_signal_sig "$f") || continue
+    fm_wake_signal_sig_to sig "$f" || continue
     [ -n "$sig" ] || continue
-    sf=$(fm_wake_signal_seen_path "$STATE" "$f")
+    fm_wake_signal_seen_path_to sf "$STATE" "$f"
     case "$f" in
-      *.status) fm_wake_signal_seen_current "$STATE" "$f" && continue ;;
-      *) [ "$sig" = "$(cat "$sf" 2>/dev/null)" ] && continue ;;
+      *.status) fm_wake_signal_seen_current "$STATE" "$f" "$sig" && continue ;;
+      *)
+        fm_file_text_to marker "$sf" || true
+        [ "$sig" = "$marker" ] && continue
+        ;;
     esac
     printf '%s\t%s\t%s\n' "$sf" "$sig" "$f"
   done

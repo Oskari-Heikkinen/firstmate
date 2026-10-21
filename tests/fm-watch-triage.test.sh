@@ -2774,6 +2774,55 @@ test_unreadable_status_reports_once_per_file_state() {
   pass "unreadable status reports are bounded without advancing classification"
 }
 
+# One scan_signals pass, loaded through the watcher's own source guard in a
+# child shell (the entry run_malformed_wait_record_round uses), so a case sees
+# exactly the lines the poll loop acts on.
+scan_signals_once() {  # <state>
+  FM_STATE_OVERRIDE="$1" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    scan_signals
+  ' _ "$WATCH"
+}
+
+# The scan observes each file's signature once, so the signature it prints for a
+# changed file - the one its caller records after surfacing it - is the one it
+# compared. Primed files print nothing, including a turn-end marker whose
+# recorded signature ends in a newline.
+test_signal_scan_prints_the_signature_it_compared() {
+  local dir state out err quiet moved ended settled want
+  dir=$(make_case signal-scan-once); state="$dir/state"
+  out="$dir/scan.out"; err="$dir/scan.err"
+  quiet="$state/quiet.status"; moved="$state/moved.status"
+  ended="$state/ended.turn-ended"; settled="$state/settled.turn-ended"
+  printf 'working: steady\n' > "$quiet"
+  printf 'working: about to change\n' > "$moved"
+  : > "$ended"
+  printf 'turn ended\n' > "$settled"
+  prime_status_seen "$state" "$quiet"
+  prime_status_seen "$state" "$moved"
+  prime_turnend_seen "$ended"
+  printf '%s\n' "$(seen_sig "$settled")" > "$state/.seen-settled_turn-ended"
+
+  scan_signals_once "$state" > "$out" 2> "$err" \
+    || fail "the signal scan failed on primed files: $(cat "$out" "$err")"
+  [ ! -s "$out" ] || fail "the signal scan reported primed files: $(cat "$out")"
+
+  printf 'blocked: waiting on review\n' >> "$moved"
+  printf 'x' >> "$ended"
+  scan_signals_once "$state" > "$out" 2> "$err" \
+    || fail "the signal scan failed on changed files: $(cat "$out" "$err")"
+  [ "$(wc -l < "$out" | tr -d '[:space:]')" = 2 ] \
+    || fail "the signal scan did not report exactly the two changed files: $(cat "$out")"
+  want=$(status_observed_signature "$moved")
+  grep -Fx "$state/.seen-moved_status"$'\t'"$want"$'\t'"$moved" "$out" >/dev/null \
+    || fail "a changed status did not print the signature it compared ($want): $(cat "$out")"
+  want=$(seen_sig "$ended")
+  grep -Fx "$state/.seen-ended_turn-ended"$'\t'"$want"$'\t'"$ended" "$out" >/dev/null \
+    || fail "a changed turn-end marker did not print the signature it compared ($want): $(cat "$out")"
+  pass "the signal scan prints the one signature it compared for each changed file"
+}
+
 test_permission_recovery_surfaces_preserved_status() {
   local dir state fakebin out status_file marker before_ident after_ident pid
   dir=$(make_case permission-recovery); state="$dir/state"; fakebin="$dir/fakebin"
@@ -7923,6 +7972,7 @@ TRIAGE_CASES=(
   test_release_completion_survives_a_later_routine_append
   test_routine_appends_after_a_classified_event_stay_absorbed
   test_unreadable_status_reports_once_per_file_state
+  test_signal_scan_prints_the_signature_it_compared
   test_permission_recovery_surfaces_preserved_status
   test_terminal_stale_surfaced
   test_stale_terminal_status_overridden_by_active_run
