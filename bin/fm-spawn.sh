@@ -728,7 +728,12 @@ fi
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
-# shellcheck source=bin/fm-classify-lib.sh
+# The /dev/null directives below and on four later lines mark libraries that
+# ShellCheck already follows into this file's analysis through the library
+# each one names. Following them again here would expand their whole source
+# graphs a second time, spending this heavy root's CI lint memory while adding
+# no file the analysis does not already see (bin/fm-lint.sh owns the cap).
+# shellcheck source=/dev/null # Followed through fm-wake-lib.sh and fm-dod-lib.sh.
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: spawn refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
@@ -736,11 +741,11 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 }
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
-# shellcheck source=bin/fm-backend.sh
+# shellcheck source=/dev/null # Followed through fm-account-lib.sh.
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
-# shellcheck source=bin/fm-control-lib.sh
+# shellcheck source=/dev/null # Followed through fm-suspend-lib.sh.
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
@@ -748,7 +753,7 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
-# shellcheck source=bin/fm-pr-lib.sh
+# shellcheck source=/dev/null # Followed through fm-dod-lib.sh and fm-backlog-transition-lib.sh.
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
@@ -758,7 +763,7 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
-# shellcheck source=bin/fm-timeout-lib.sh
+# shellcheck source=/dev/null # Followed through fm-account-lib.sh and others.
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-project-capacity-lib.sh
 . "$SCRIPT_DIR/fm-project-capacity-lib.sh"
