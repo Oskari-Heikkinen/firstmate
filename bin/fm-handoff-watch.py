@@ -389,7 +389,7 @@ class Watch:
         pid, sname, owner = proto["id"], stage["name"], stage["owner"]
         bounds = {k: self.validate.seconds(v) for k, v in stage["bounds"].items()}
         outbox, place = stage["outbox"]["path"], stage["input"]["path"]
-        for name, (kind, why, writer) in st["outbox"]["bad"].items():
+        for name, (kind, why, writer) in st["outbox"].get("bad", {}).items():
             path = os.path.join(outbox, name)
             if kind == "source-unreadable":
                 self.alarm(scope, kind, f"{pid}/{sname}/{name}", f"receipt {path} {why}", [owner], self.now, path)
