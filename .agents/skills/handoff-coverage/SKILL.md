@@ -1,6 +1,6 @@
 ---
 name: handoff-coverage
-description: Load before building or changing anything that hands a record across a home, machine or process boundary (a new artifact type, a stage, a timer, service or custom check that reads or writes handoff records), before publishing or editing a handoff-registry/v1 fragment or writing handoff-receipt/v1 receipts, and when a handoff coverage alarm names your home.
+description: Load before building or changing anything that hands a record across a home, machine or process boundary (a new artifact type, a stage, a timer, service or custom check that reads or writes handoff records), before publishing or editing a handoff-registry/v1 fragment, a dated-rule-schedule/v1 schedule or handoff-receipt/v1 receipts, before writing a dated constant into code, and when a handoff coverage or dated-rule alarm names your home.
 user-invocable: false
 metadata:
   internal: true
@@ -11,7 +11,8 @@ metadata:
 Load this before building or changing anything that hands a record across a home, machine or process boundary, before publishing a fragment or writing receipts, and when a coverage alarm names your home.
 
 [`docs/handoff-coverage.md`](../../../docs/handoff-coverage.md) owns the formats, file locations, routing, checks and compatibility rules.
-`bin/fm-handoff-validate.py` checks fragments, receipts and outboxes; its header owns the commands and exit codes.
+[`docs/dated-rule-schedule.md`](../../../docs/dated-rule-schedule.md) owns the dated-rule schedule, its alarms and the lookup.
+`bin/fm-handoff-validate.py` checks fragments, receipts, outboxes and schedules; its header owns the commands and exit codes.
 `bin/fm-handoff-watch.sh` is the watcher that raises the coverage alarms; its header owns the commands and arming.
 This skill owns only when an agent or home must act, and how.
 
@@ -65,6 +66,15 @@ Pick a protocol id no fragment uses, then declare its `schema`, `record_types`, 
 The first stage is where an unsupported change is refused, with a receipt.
 Put a dated rule in `dated_rules`, never as a date constant in code.
 
+## Dated rules
+
+- A date your code acts on is a row in your home's schedule, `state/dated-rules/<name>.json`, owned by your home; the code reads it with `bin/fm-dated-rules.sh lookup <rule>` (or the library's `lookup`) and treats a failed lookup as the stricter behaviour.
+- The fragment's `dated_rules` entry names the rule id and carries its effective date.
+- To move a date, add a row with the new date, `replaces` the old row and a `review` mark from whoever reviewed the move; never edit the old row's date. Then revise the fragment with the new date.
+- When the rule holds, set its newest row's `state` to `in-force`; when it is dropped, `withdrawn`.
+- Run `bin/fm-handoff-validate.py schedule --fragment <your fragment> <schedule>` before the rename.
+- A second slip escalates to main; only main records `main_decision` on the row.
+
 ## What the coverage checks alarm on
 
 The doc's "Coverage checks" table is the full list; in short:
@@ -75,7 +85,7 @@ The doc's "Coverage checks" table is the full list; in short:
 - any receipt with `holds_all` (`lane-fault`, to main at once);
 - an unreadable or unparseable fragment, outbox, place or sync stamp, an unknown `format`, or a synced copy older than `max_lag` (`source-unreadable`, `sync-stale`);
 - a timer, service, cron job or custom check no stage names (`undeclared-actor`, not raised until the installer inventory lands);
-- a dated rule 14, 7 or 1 days out or past its date (`dated-rule`);
+- a dated rule 14, 7 or 1 days out or past its date, a move without review, a broken chain or an unreadable schedule, a fragment entry that disagrees with the schedule, and a second slip, to main (`dated-rule`, raised by `bin/fm-dated-rules.sh check` for a rule in its owner's schedule, and by the watcher only for a fragment rule no schedule declares);
 - a home's watcher heartbeat older than 2 ticks (`watcher-silent`).
 
 A refusal or hold is also raised to its `fix_owner` and sender as kind `refused` or `held`.

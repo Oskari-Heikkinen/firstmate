@@ -5,6 +5,7 @@ Usage:
   fm-handoff-validate.py [--schema-dir DIR] fragment FILE...
   fm-handoff-validate.py [--schema-dir DIR] receipt [--fragment FILE]... FILE...
   fm-handoff-validate.py [--schema-dir DIR] outbox [--fragment FILE]... DIR
+  fm-handoff-validate.py [--schema-dir DIR] schedule [--fragment FILE]... FILE...
 
 docs/handoff-coverage.md owns the formats; the JSON schemas beside it in
 docs/handoff-coverage/ are their machine-checkable form. This tool reads files
@@ -29,6 +30,14 @@ outbox    checks every receipt in DIR as receipt does, plus the file name rule
           <written_at as YYYYMMDDTHHMMSS.ffffffZ>-<receipt_id>.json. Dot entries
           (the .tmp/ staging folder, a .synced-at stamp) are skipped; any other
           entry that is not a receipt name is a finding.
+schedule  checks each dated-rule-schedule/v1 file (docs/dated-rule-schedule.md)
+          against its schema and bin/fm_dated_rules.py's rules: a file holds
+          only its home's rows, row ids are unique, and each rule's rows form
+          one chain from one root in one file, where every moved date is
+          reviewed and nothing in force or withdrawn is replaced. With
+          --fragment, every dated rule a fragment declares for a home whose
+          schedule is given must name a rule of that schedule and carry its
+          effective date; rules of homes with no schedule given are not checked.
 
 Output: one "ok <kind> <path>" line per valid file, one "<path>: <where>:
 <problem>" line per finding, then one summary line.
@@ -39,6 +48,7 @@ is failure, never a pass).
 """
 
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -383,6 +393,45 @@ def validate_receipt(schema, path, protocols, run, name_check):
     run.report(path, problems, "receipt")
 
 
+def validate_schedules(schema_dir, paths, fragments, registry, run):
+    spec = importlib.util.spec_from_file_location("fm_dated_rules", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fm_dated_rules.py"))
+    rules_lib = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rules_lib)
+    checker = Schema(os.path.join(schema_dir, rules_lib.SCHEMA_FILE))
+    homes = {}
+    for path in paths:
+        if not os.path.isfile(path):
+            raise Unreadable(f"{path}: not a readable file")
+        doc, problems = rules_lib.read_file(path, checker)
+        if doc is not None:
+            homes.setdefault(doc["home"], []).append((path, doc))
+        else:
+            run.report(path, problems, "schedule")
+    resolved = {}
+    for home, docs in homes.items():
+        resolved[home] = rules_lib.resolve(docs)
+        found = {path: [] for path, _ in docs}
+        for rule_id, text in rules_lib.chain_problems(resolved[home]):
+            rule = resolved[home][rule_id]
+            for path in sorted(rule.paths):
+                found[path].append((f"rule {rule_id}", text))
+        for path, problems in found.items():
+            run.report(path, problems, "schedule")
+    for path in fragments:
+        doc, bad = load_json(path)
+        problems = [("/", bad)] if bad else registry.errors(doc)
+        if not problems:
+            problems = fragment_problems(doc)
+        if not problems:
+            for pi, proto in enumerate(doc.get("protocols", [])):
+                for ri, item in enumerate(proto.get("dated_rules", [])):
+                    if item["owner"] in resolved:
+                        problem = rules_lib.link_problem(item, resolved[item["owner"]])
+                        if problem:
+                            problems.append((f"/protocols/{pi}/dated_rules/{ri}", problem))
+        run.report(path, problems, "fragment")
+
+
 def parse_args(argv):
     schema_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "handoff-coverage")
     if argv[:1] == ["--schema-dir"]:
@@ -392,7 +441,7 @@ def parse_args(argv):
     if not argv or argv[0] in ("-h", "--help"):
         raise ValueError(None)
     command, rest = argv[0], argv[1:]
-    if command not in ("fragment", "receipt", "outbox"):
+    if command not in ("fragment", "receipt", "outbox", "schedule"):
         raise ValueError(f"unknown command {command}")
     fragments = []
     while command != "fragment" and rest[:1] == ["--fragment"]:
@@ -422,6 +471,8 @@ def main(argv):
         registry = Schema(os.path.join(schema_dir, "handoff-registry-v1.schema.json"))
         if command == "fragment":
             validate_fragments(registry, targets, run)
+        elif command == "schedule":
+            validate_schedules(schema_dir, targets, fragments, registry, run)
         else:
             receipt = Schema(os.path.join(schema_dir, "handoff-receipt-v1.schema.json"))
             protocols = None

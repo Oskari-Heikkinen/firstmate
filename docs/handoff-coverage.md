@@ -17,7 +17,8 @@ Worked examples are in `docs/handoff-coverage/examples/`, and every one of them 
 The skill `.agents/skills/handoff-coverage/SKILL.md` tells an agent when it must publish a fragment or write receipts.
 
 The watcher that reads these files is `bin/fm-handoff-watch.sh` ([Watcher](#watcher-fm-handoff-watch)); its header owns the commands and arming.
-The shared installer check is `bin/fm-handoff-actors.py` ([Installed tools](#installed-tools)); the dated-rule schedule is later work.
+The shared installer check is `bin/fm-handoff-actors.py` ([Installed tools](#installed-tools)).
+Dated rules live in each owner's schedule, `dated-rule-schedule/v1`, which [docs/dated-rule-schedule.md](dated-rule-schedule.md) owns.
 
 ## Words
 
@@ -173,14 +174,15 @@ A dated rule replaces a dated constant in code (I9):
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `id` | name | yes | unique within the protocol |
+| `id` | name | yes | the rule id in the owner's [dated-rule schedule](dated-rule-schedule.md); unique within the protocol |
 | `owner` | home | yes | the home that alarms are routed to and that moves the date |
-| `date` | `YYYY-MM-DD` | yes | the UTC date the rule takes effect |
+| `date` | `YYYY-MM-DD` | yes | the UTC date the rule takes effect: the rule's effective date in that schedule |
 | `what` | text | yes | what happens on that date |
 | `ext` | extensions | no | |
 
-`dated-rule` alarms the owner 14, 7 and 1 days before `date` and every tick after it while the row stays.
-Moving a date is a new fragment revision with the new date.
+The owner's schedule is the source of the date: `dated-rule` alarms for a rule it declares come from the schedule reader, and a fragment entry whose date differs from the schedule's raises `unlinked` for the owner ([Fragment links](dated-rule-schedule.md#fragment-links)).
+Only a fragment rule that no schedule of its owner declares is alarmed by the watcher from the fragment's `date`, 14, 7 and 1 days before it and every tick after it.
+Moving a date is a reviewed new row in the schedule, then a new fragment revision with the new date.
 
 ### Publishing a fragment
 
@@ -285,7 +287,7 @@ Each check reads only the fields named here, so any stage or type declared this 
 | `source-unreadable` | a fragment, outbox, place or sync stamp cannot be read or parsed, or a receipt or fragment has an unknown `format` | every declared path | the owner of the path; never silent |
 | `sync-stale` | a synced copy's `.synced-at` is older than `max_lag` | `reach` | the stage owner |
 | `undeclared-actor` | a user timer, service, cron job or Firstmate custom check is running that no stage lists in `actors` | `actors`, the [actor inventory](#actor-inventory-and-undeclared-actor) | tooling-mate and the installing home |
-| `dated-rule` | a dated rule is 14, 7 or 1 days out, or past its date | `dated_rules` | the rule's `owner` |
+| `dated-rule` | a dated rule is 14, 7 or 1 days out, or past its date; it slipped twice (main) | the owner's schedule ([docs/dated-rule-schedule.md](dated-rule-schedule.md#alarms)), linked from `dated_rules` | the rule's `owner`; main for the second slip |
 | `watcher-silent` | a home's watcher heartbeat is older than 2 ticks | the `handoff-watch` protocol | main |
 
 The watcher's heartbeat is itself a registered protocol, `handoff-watch`, owned by tooling-mate with one stage per home; its receipts are the heartbeat and Firstmate's existing watcher reads them (I10).
@@ -448,7 +450,7 @@ A home on another machine is read through a synced copy listed in `config/handof
 With `--root DIR`, used by drills, every folder under `DIR` named like a home id is that home and nothing else is read.
 
 **What it evaluates.**
-It reads the fragments of every home it sees, but checks only the stages this home owns, the dated rules of the protocols this home owns, and the heartbeats it watches, so each alarm has one writer.
+It reads the fragments of every home it sees, but checks only the stages this home owns, the dated rules of the protocols this home owns that their owner's schedule does not declare, and the heartbeats it watches, so each alarm has one writer.
 A fragment that turns invalid, or whose `revision` goes back, raises `source-unreadable` for its home and the last valid revision stays in use.
 A protocol declared in two fragments keeps the first by home and file name, and raises `source-unreadable` with variant `duplicate` to tooling-mate and both homes.
 Outboxes and places are rescanned by modification time, and a receipt is read once; per-stage cursors stay in `state/handoff-watch/stages/`.
@@ -569,13 +571,12 @@ Reused blocks land here:
 - the launch-check rule that every undecided outcome is an alert becomes `source-unreadable` and the refusal of an unknown `format`;
 - ap-v2.1's per-id alarm after a threshold, where every hold names what it stops, becomes `retry_limit` with `open-past-bound`, and `stops`;
 - the merge queue's receipts, whose readers ignore unknown `key=value`, become the `ext` rule;
-- `xp-route-schedule/v1`, with alarms at 14, 7 and 1 days, becomes `dated_rules`.
+- `xp-route-schedule/v1`, with alarms at 14, 7 and 1 days and escalation after two slips, becomes `dated-rule-schedule/v1` rows linked from `dated_rules` ([what does not map](dated-rule-schedule.md#what-xp-route-schedulev1-keeps)).
 
 ## Open points owners must settle
 
 - **Cross-home stage declarations.** A protocol owner declares stages that other homes own, and the stage owner need not confirm them: the owner's watcher checks every stage declared with its home as owner, so a wrong declaration shows as `no-receipt` to that owner.
 - **Refusal closure.** A later attempt closes a refusal for good; an alert-store acknowledgement closes it only until its `until`, at most 7 days for every code ([Watcher](#watcher-fm-handoff-watch)).
 - **Alarm keys and store ids.** Settled in [Alert store](#alert-store).
-- **Dated-rule slips.** Moving a date is a new revision; whether a slip needs a review step, as `xp-route-schedule/v1` does, is for the schedule work.
 - **Fragment discovery.** A home on another machine is read through a synced copy listed in `config/handoff-homes` ([Watcher](#watcher-fm-handoff-watch)).
 - **Record ids across stages.** The chain assumes one stable `record` id from filing to collect; a stage that renames records records the old id in `ext` until its owner settles a field for it.

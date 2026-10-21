@@ -3483,6 +3483,26 @@ while :; do
     rejected_checks=
     contribution_check_output=
     alert_store_reason=
+    # Dated-rule alarms (docs/dated-rule-schedule.md) run just before the tick,
+    # so a store they change is projected in this same pass. The check skips
+    # unchanged inputs itself and ends with a completion mark; its problem
+    # lines are woken on with the tick's, after the custom checks. It also runs
+    # while a store is left from a removed schedule folder, to retire it.
+    if [ -d "$STATE/dated-rules" ] || [ -e "$STATE/dated-rules.alerts.json" ] \
+      || [ -e "$STATE/dated-rules.escalated.json" ]; then
+      watcher_beat
+      FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATED_RULES_CHECK_MARK=1 \
+        run_check_capture "$SCRIPT_DIR/fm-dated-rules.sh" check || exit 1
+      case "$FM_CHECK_RESULT" in
+        'dated-rules check: complete') FM_CHECK_RESULT= ;;
+        *$'\n''dated-rules check: complete') FM_CHECK_RESULT=${FM_CHECK_RESULT%$'\n''dated-rules check: complete'} ;;
+        *) FM_CHECK_RESULT="${FM_CHECK_RESULT:+$FM_CHECK_RESULT$'\n'}dated-rules check did not finish within ${CHECK_TIMEOUT}s, so dated rules are unchecked" ;;
+      esac
+      if [ -n "$FM_CHECK_RESULT" ]; then
+        alert_store_reason="check: dated-rules: ${FM_CHECK_RESULT//$'\n'/; }"
+        fm_wake_append check dated-rules "$alert_store_reason" || exit 1
+      fi
+    fi
     # The alert-store tick (docs/alert-store.md) runs first, so a waking custom
     # check below can never starve it: it re-posts every registered store's
     # active alerts missing from their status files, and those appends wake
@@ -3500,8 +3520,9 @@ while :; do
         *) FM_CHECK_RESULT="${FM_CHECK_RESULT:+$FM_CHECK_RESULT$'\n'}alert-store tick did not finish within ${CHECK_TIMEOUT}s, so its stores are unchecked" ;;
       esac
       if [ -n "$FM_CHECK_RESULT" ]; then
-        alert_store_reason="check: alert-stores: ${FM_CHECK_RESULT//$'\n'/; }"
-        fm_wake_append check alert-stores "$alert_store_reason" || exit 1
+        alert_store_line="check: alert-stores: ${FM_CHECK_RESULT//$'\n'/; }"
+        fm_wake_append check alert-stores "$alert_store_line" || exit 1
+        alert_store_reason="${alert_store_reason:+$alert_store_reason; }$alert_store_line"
       fi
     fi
     for c in "$STATE"/*.check.sh; do

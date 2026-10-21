@@ -86,12 +86,15 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-component-check.sh`  | Component hook: inject a touched component's goal once per session, after file tools and Bash changes (docs/component-skills.md) |
 | `fm-component-map.py`   | Map schema, glob, skill-shape and pin logic behind fm-component-map.sh |
 | `fm-component-spawn-lib.sh` | Spawn wiring of component skills: the component hook entries for Claude settings and the Pi extension, and the launch brief's component review pack and `## Component skills` section (docs/component-skills.md) |
-| `fm-handoff-validate.py` | Validate handoff-registry/v1 fragments, handoff-receipt/v1 receipts and receipt outboxes against their schemas and the registry (docs/handoff-coverage.md) |
+| `fm-handoff-validate.py` | Validate handoff-registry/v1 fragments, handoff-receipt/v1 receipts, receipt outboxes and dated-rule-schedule/v1 schedules against their schemas and the registry (docs/handoff-coverage.md, docs/dated-rule-schedule.md) |
 | `fm-handoff-watch.sh` | Run the registry-driven handoff coverage watcher once, as a watcher check, or arm and disarm that check (docs/handoff-coverage.md) |
 | `fm-handoff-watch.py` | One watcher pass: read fragments, outboxes, places, dated rules and heartbeats, and sync one alert store per alarm target |
 | `fm-handoff-firstmate.py` | Print or publish the handoff-registry/v1 fragment of a home's own Firstmate handoffs (docs/handoff-coverage.md "Firstmate's own handoffs") |
 | `fm-handoff-actors.py` | The handoff install check (refuse a tool no fragment or declaration covers), no-handoff declarations, and the actor inventory `undeclared-actor` reads (docs/handoff-coverage.md "Installed tools") |
 | `fm-handoff-actors-lib.sh` | Shell wrappers installers source to run the handoff install check and record a no-handoff declaration |
+| `fm-dated-rules.sh`      | Watcher slow check that raises a home's dated-rule alarms in its alert stores, and the date lookup code uses instead of a dated constant (docs/dated-rule-schedule.md) |
+| `fm-dated-rules.py`      | Store, registration and lookup logic behind fm-dated-rules.sh |
+| `fm_dated_rules.py`      | Dated-rule schedule rules shared by the validator and the reader: chain resolution, alarms, fragment links and the importable lookup |
 | `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home, maintain `data/secondmates.md`, and refresh a seeded charter from the current template |

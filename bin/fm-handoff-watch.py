@@ -8,7 +8,8 @@ into alert-store levels.
 
 A pass reads every handoff-registry/v1 fragment on the homes this machine
 sees, evaluates the stages this home owns, the dated rules of the protocols it
-owns and the heartbeats it watches, then makes each target's alert store equal
+owns that their owner's dated-rule schedule does not declare (bin/fm-dated-rules.sh
+alarms those) and the heartbeats it watches, then makes each target's alert store equal
 the alarms it wants there. Its only writes are under <home>/state/handoff-watch/,
 the heartbeat receipt, and in each target home the store registration and an
 empty handoff-watch.status when that file is missing.
@@ -28,6 +29,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fm_handoff_adapters as adapters  # noqa: E402
+import fm_dated_rules as schedules  # noqa: E402
 import fm_handoff_registry as registry  # noqa: E402
 from fm_receipt_io import atomic  # noqa: E402
 
@@ -95,6 +97,7 @@ class Watch:
         schemas = HERE.parent / "docs/handoff-coverage"
         self.fragment_schema = self.validate.Schema(str(schemas / "handoff-registry-v1.schema.json"))
         self.receipt_schema = self.validate.Schema(str(schemas / "handoff-receipt-v1.schema.json"))
+        self.schedule_schema = None
         interval = int(os.environ.get("FM_CHECK_INTERVAL") or 300)
         self.silent_after = int(os.environ.get("FM_HANDOFF_WATCH_SILENT_AFTER") or 2 * interval)
 
@@ -175,6 +178,7 @@ class Watch:
                     continue
                 self.protocols[pid] = proto
                 declared[pid] = (kept[key]["home"], key)
+        self.declared = declared
         self.record_types = {t for proto in self.protocols.values() for t in proto.get("record_types", [])}
 
     def fragment_alarm(self, hid, path, problem):
@@ -455,12 +459,38 @@ class Watch:
 
     # ---------- dated rules ----------
 
+    def scheduled(self, owner, cache):
+        """The rules <owner>'s dated-rule schedule declares, by id; its reader alarms those, not this watcher."""
+        if owner not in cache:
+            cache[owner] = {}
+            if owner in self.homes:
+                try:
+                    if self.schedule_schema is None:
+                        self.schedule_schema = schedules.schema()
+                    cache[owner] = schedules.read_home(str(self.homes[owner] / "state/dated-rules"),
+                                                       self.schedule_schema)[0]
+                except schedules.Unknown:
+                    pass
+        return cache[owner]
+
     def dated_rules(self):
         today = datetime.datetime.fromtimestamp(self.now, datetime.timezone.utc).date()
+        cache = {}
         for pid, proto in sorted(self.protocols.items()):
             if proto["owner"] != self.self_id:
                 continue
             for rule in proto.get("dated_rules", []):
+                rules = self.scheduled(rule["owner"], cache)
+                if rule["id"] in rules:
+                    # The owner's reader checks the link for fragments in its own home; this
+                    # watcher checks it for a protocol published elsewhere.
+                    home, path = self.declared[pid]
+                    problem = None if home == rule["owner"] else schedules.link_problem(rule, rules)
+                    if problem:
+                        self.alarm(f"dated:{pid}", "dated-rule", f"{pid}/{rule['id']}",
+                                   f"fragment {path} protocol {pid}: {problem}", [self.self_id, rule["owner"]],
+                                   self.now, path, variant="unlinked")
+                    continue
                 try:
                     date = datetime.date.fromisoformat(rule["date"])
                 except ValueError:

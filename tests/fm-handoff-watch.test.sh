@@ -4,7 +4,8 @@
 # file through that home's alert-store tick; refusal escalation to main at 4 h
 # unless acknowledged; a later attempt clearing the levels; unregistered and
 # duplicate receipts; an invalid fragment keeping its last valid revision; an
-# example fragment never loaded; dated rules; a target this machine does not
+# example fragment never loaded; dated rules, left to the owner's schedule
+# reader once its schedule declares them; a target this machine does not
 # see falling back to main; a quiet pass writing nothing; and arm and disarm.
 set -eu
 # shellcheck source=tests/lib.sh
@@ -330,8 +331,35 @@ expect("hw-dated-rule-xp-v0-retire-d1" in active(RES, RES) and "hw-dated-rule-xp
 tick(RES, T2 + 12 * day)
 expect("hw-dated-rule-xp-v0-retire-due" in active(RES, RES), "past its date it stays due on every tick")
 
-# A target this machine does not see falls back to main, saying so.
+# A rule its owner's dated-rule schedule declares is alarmed by fm-dated-rules.sh, not here.
+SCHED = write(R / RES / "state/dated-rules/main.json", {
+    "format": "dated-rule-schedule/v1", "home": RES, "publisher": "fm-handoff-watch.test", "revision": 1,
+    "published_at": "2026-10-21T12:00:00Z",
+    "rows": [{"id": "v0-retire.1", "rule": "v0-retire", "owner": RES, "date": rule_day.isoformat(),
+              "what": "v0 readers retire", "state": "scheduled"}]})
+tick(RES, T2 + 12 * day + 30)
+expect(not [k for k in active(RES, RES) if "dated-rule" in k], "a rule in its owner's schedule leaves the watcher",
+       json.dumps(active(RES, RES)))
+SCHED.unlink()
+
+# A rule owned by another home is linked by this watcher: a fragment date the schedule disagrees with alarms both.
 frag = fragment(revision=4, rule_date=rule_day.isoformat())
+frag["protocols"][0]["dated_rules"][0]["owner"] = TJ
+write(FRAG, frag)
+TJ_SCHED = write(R / TJ / "state/dated-rules/main.json", {
+    "format": "dated-rule-schedule/v1", "home": TJ, "publisher": "fm-handoff-watch.test", "revision": 1,
+    "published_at": "2026-10-21T12:00:00Z",
+    "rows": [{"id": "v0-retire.1", "rule": "v0-retire", "owner": TJ, "date": "2031-01-01",
+              "what": "v0 readers retire", "state": "scheduled"}]})
+tick(RES, T2 + 12 * day + 40)
+unlinked = active(RES, TJ).get("hw-dated-rule-xp-v0-retire-unlinked")
+expect(unlinked and "says 2031-01-01" in unlinked["reason"] and "hw-dated-rule-xp-v0-retire-unlinked" in active(RES, RES)
+       and "hw-dated-rule-xp-v0-retire-due" not in active(RES, TJ),
+       "a cross-home fragment date the owner's schedule disagrees with alarms both homes", json.dumps(active(RES, TJ)))
+TJ_SCHED.unlink()
+
+# A target this machine does not see falls back to main, saying so.
+frag = fragment(revision=5, rule_date=rule_day.isoformat())
 frag["protocols"][0]["dated_rules"][0]["owner"] = "lattice-ml-mate"
 write(FRAG, frag)
 tick(RES, T2 + 12 * day + 60)

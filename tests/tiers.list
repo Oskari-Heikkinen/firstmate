@@ -5,6 +5,7 @@
 # `#` starts a comment. A new test file must be added here before CI passes.
 
 # static: repository checks that run in the static job on every push.
+static tests/fm-dated-rules.test.sh
 static tests/fm-documentation-audiences.test.sh
 static tests/fm-gitignore-config.test.sh
 static tests/fm-handoff-coverage.test.sh
@@ -188,6 +189,7 @@ full tests/fm-usage-report.test.sh
 full tests/fm-vendor-auth-probe.test.sh
 full tests/fm-wake-drain-open-decisions.test.sh
 full tests/fm-wake-queue.test.sh
+full tests/fm-watch-dated-rules.test.sh
 full tests/fm-watch-quiet-waits.test.sh
 full tests/fm-worker-account.test.sh
 full tests/fm-wsl-reclaim.test.sh

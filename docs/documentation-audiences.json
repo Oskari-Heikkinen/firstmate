@@ -453,6 +453,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/dated-rule-schedule.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/helper-consumers.md",
       "audience": "operator-current"
     },

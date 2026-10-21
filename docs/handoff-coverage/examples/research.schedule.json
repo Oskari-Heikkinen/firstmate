@@ -1,0 +1,36 @@
+{
+  "format": "dated-rule-schedule/v1",
+  "home": "lattice-research-mate",
+  "publisher": "example: lattice-research-mate's dated rules",
+  "revision": 3,
+  "published_at": "2026-10-21T12:00:00Z",
+  "example": true,
+  "rows": [
+    {
+      "id": "prep-grace-end.1",
+      "rule": "prep-grace-end",
+      "owner": "lattice-research-mate",
+      "date": "2026-10-27",
+      "what": "Example: prep-check refuses a draft whose protocol is not ready (today the GRACE_UNTIL constant in lattice_batches/prep.py)",
+      "state": "scheduled"
+    },
+    {
+      "id": "xp-v0-reader-retire.1",
+      "rule": "xp-v0-reader-retire",
+      "owner": "lattice-research-mate",
+      "date": "2026-12-31",
+      "what": "Example: the v0 readers retire once every stage writes v1",
+      "state": "scheduled"
+    },
+    {
+      "id": "xp-v0-reader-retire.2",
+      "rule": "xp-v0-reader-retire",
+      "owner": "lattice-research-mate",
+      "date": "2027-01-31",
+      "what": "Example: the v0 readers retire once every stage writes v1",
+      "state": "scheduled",
+      "replaces": "xp-v0-reader-retire.1",
+      "review": {"by": "example-reviewer", "at": "2026-10-21T11:30:00Z", "ref": "Example: the collect stage still writes v0; review record data/xp-v0-slip/review.md"}
+    }
+  ]
+}
