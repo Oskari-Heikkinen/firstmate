@@ -12,13 +12,16 @@ owns that their owner's dated-rule schedule does not declare (bin/fm-dated-rules
 alarms those) and the heartbeats it watches, then makes each target's alert store equal
 the alarms it wants there. Its only writes are under <home>/state/handoff-watch/,
 the heartbeat receipt, and in each target home the store registration and an
-empty handoff-watch.status when that file is missing.
+empty handoff-watch.status when that file is missing. Once every 7 days a pass
+also writes the home's coverage line (bin/fm-handoff-measure.py) under
+state/handoff-watch/coverage/ and prints it.
 """
 import argparse
 import datetime
 import fcntl
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -42,7 +45,13 @@ UNCOVERED_TO_MAIN = 3600
 RESCAN = 300
 DATED_STEPS = ((14, "d14"), (7, "d7"), (1, "d1"))
 ACK_MAX = 604800
+# How long after an alarm is due each target may take to hear it (the C3 (a)
+# targets in docs/handoff-coverage.md "Routing and alarm targets"); a target
+# home's store entry carries its role and deliver_by for bin/fm-handoff-measure.py.
+WINDOWS = {"fix-owner": 600, "sender": 900, "owner": 600, "main": 600}
 STATE_SCHEMA = "fm-handoff-watch-state/v1"
+COVERAGE_EVERY = 7 * 86400
+COVERAGE_KEEP = 8
 REG_SCHEMA = "fm-alert-registration/v1"
 STORE_SCHEMA = "fm-alert-store/v1"
 UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -84,11 +93,20 @@ def read_json(path):
         return None
 
 
+def measure_module():
+    """bin/fm-handoff-measure.py (its file name has a hyphen)."""
+    spec = importlib.util.spec_from_file_location("fm_handoff_measure", HERE / "fm-handoff-measure.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class Watch:
     def __init__(self, home, root, now):
         self.now = now
         self.self_id, self.homes = registry.discover(home, root)
         self.home = self.homes[self.self_id]
+        self.root = root
         self.dir = self.home / "state/handoff-watch"
         self.alarms = {}
         self.incomplete = set()
@@ -104,15 +122,22 @@ class Watch:
     # ---------- alarms ----------
 
     def alarm(self, scope, kind, subject, reason, targets, since, evidence=None,
-              main_after=None, ack_closes=False, variant="", uncovered=False):
+              main_after=None, ack_closes=False, variant="", uncovered=False, due=None, roles=None):
+        """Want one alarm. due is when its condition crossed into an alarm (default since); roles maps a
+        target to its WINDOWS role, owner by default."""
         key = alert_key(kind, subject, variant)
+        roles = {t: (roles or {}).get(t, "owner") for t in targets if t}
         entry = self.alarms.get(key)
         if entry:
             entry["targets"] = sorted(set(entry["targets"]) | set(targets))
+            for target, role in roles.items():
+                old = entry["roles"].get(target)
+                if old is None or WINDOWS[role] < WINDOWS[old]:
+                    entry["roles"][target] = role
             return
         self.alarms[key] = {
             "scope": scope, "kind": kind, "subject": subject, "reason": " ".join(str(reason).split())[:400],
-            "targets": sorted(set(t for t in targets if t)), "since": since,
+            "targets": sorted(roles), "since": since, "due": since if due is None else due, "roles": roles,
             "evidence": {"path": str(evidence)} if evidence else {},
             "main_after": main_after, "ack_closes": ack_closes, "uncovered": uncovered,
         }
@@ -163,22 +188,12 @@ class Watch:
                 kept[key] = entry
                 self.fragment_alarm(hid, path, entry["problem"])
         atomic(cache_path, {"schema": STATE_SCHEMA, "files": kept})
-        self.protocols = {}
-        declared = {}
-        for key in sorted(kept, key=lambda k: (kept[k]["home"], k)):
-            doc = kept[key].get("doc")
-            for proto in (doc or {}).get("protocols", []):
-                pid = proto["id"]
-                if pid in self.protocols:
-                    first_home, first_path = declared[pid]
-                    if self.self_id in (first_home, kept[key]["home"]):
-                        self.alarm("fragments", "source-unreadable", f"protocol {pid}",
-                                   f"protocol {pid} is declared in both {first_path} and {key}; the first is used",
-                                   [TOOLING, first_home, kept[key]["home"]], self.now, key, variant="duplicate")
-                    continue
-                self.protocols[pid] = proto
-                declared[pid] = (kept[key]["home"], key)
-        self.declared = declared
+        self.protocols, self.declared, duplicates = registry.first_declared(kept)
+        for pid, (first_home, first_path), (home, key) in duplicates:
+            if self.self_id in (first_home, home):
+                self.alarm("fragments", "source-unreadable", f"protocol {pid}",
+                           f"protocol {pid} is declared in both {first_path} and {key}; the first is used",
+                           [TOOLING, first_home, home], self.now, key, variant="duplicate")
         self.record_types = {t for proto in self.protocols.values() for t in proto.get("record_types", [])}
 
     def fragment_alarm(self, hid, path, problem):
@@ -215,7 +230,7 @@ class Watch:
         lag = self.validate.seconds(reach.get("max_lag"))
         if lag is not None and self.now - at.timestamp() > lag:
             self.alarm(scope, "sync-stale", str(folder), f"{folder} was last synced at {text}, more than {reach['max_lag']} ago "
-                       f"(from {reach.get('source')})", [self.self_id], at.timestamp(), stamp)
+                       f"(from {reach.get('source')})", [self.self_id], at.timestamp(), stamp, due=at.timestamp() + lag)
 
     def stage(self, proto, sindex):
         stage = proto["stages"][sindex]
@@ -297,6 +312,7 @@ class Watch:
             cur.update(name=doc["evidence"], path=doc["evidence"],
                        at=self.validate.parse_utc(doc["written_at"]).timestamp())
             records[doc["record"]] = {"pairs": [], "cur": cur}
+            st["last_receipt"] = max(st.get("last_receipt") or 0, cur["at"])
         st["records"] = records
 
     def receipt(self, proto, stage, st, folder, name):
@@ -339,6 +355,7 @@ class Watch:
             return True
         rec["pairs"].append(pair)
         st["answered"][doc.get("input") or f"{doc['record']}.json"] = name_epoch(name)
+        st["last_receipt"] = max(st.get("last_receipt") or 0, name_epoch(name))
         cur = rec.get("cur")
         if cur is None or (doc["attempt"], doc["seq"]) > (cur["attempt"], cur["seq"]):
             rec["cur"] = {k: doc.get(k) for k in ("state", "code", "attempt", "seq", "holds_all", "stops", "detail",
@@ -411,7 +428,7 @@ class Watch:
                     and self.now - mtime > bounds["accepted"]:
                 self.alarm(scope, "no-receipt", f"{pid}/{sname}/{name}",
                            f"{path} has waited past the {stage['bounds']['accepted']} accepted bound with no "
-                           f"receipt from {sname}", [owner], mtime, path)
+                           f"receipt from {sname}", [owner], mtime, path, due=mtime + bounds["accepted"])
         keep = self.validate.seconds(proto["cleanup"]["receipts_after"]) or 0
         entries = st["place"].get("entries", {})
         st["answered"] = {n: at for n, at in st["answered"].items() if n in entries or self.now - (at or 0) <= keep}
@@ -431,31 +448,36 @@ class Watch:
             fix = entry["fix_owner"] if entry else owner
             detail = cur.get("detail")
             if cur["state"] in ("refused", "held"):
+                roles = {s: "sender" for s in senders}
                 if cur["code"] in self.validate.RESERVED_CODES:
                     targets = senders + [proto["owner"]]
+                    roles.setdefault(proto["owner"], "owner")
                 else:
                     targets = [fix] + senders
+                    roles[fix] = "fix-owner"
                 self.alarm(scope, cur["state"], subject, detail or f"{subject} is {cur['state']} with code {cur['code']}",
-                           targets, cur["at"], evidence, main_after=REFUSAL_TO_MAIN, ack_closes=True)
+                           targets, cur["at"], evidence, main_after=REFUSAL_TO_MAIN, ack_closes=True, roles=roles)
                 if cur.get("holds_all"):
                     self.alarm(scope, "lane-fault", subject, f"{cur['code']} stops {cur.get('stops')}", [MAIN],
-                               cur["at"], evidence)
+                               cur["at"], evidence, roles={MAIN: "main"})
             late = None
             if cur["state"] == "held" and bounds["held"] is not None and self.now - cur["at"] > bounds["held"]:
-                late = (f"held past its {stage['bounds']['held']} bound", fix)
+                late = (f"held past its {stage['bounds']['held']} bound", fix, "fix-owner", cur["at"] + bounds["held"])
             elif cur["state"] == "accepted" and bounds["accepted"] is not None and self.now - cur["at"] > bounds["accepted"]:
-                late = (f"accepted past its {stage['bounds']['accepted']} bound", owner)
+                late = (f"accepted past its {stage['bounds']['accepted']} bound", owner, "owner",
+                        cur["at"] + bounds["accepted"])
             elif cur["state"] == "waiting":
                 until = self.validate.parse_utc(cur.get("until") or "")
                 if until is not None and self.now > until.timestamp():
-                    late = (f"waiting past its until {cur['until']}", owner)
+                    late = (f"waiting past its until {cur['until']}", owner, "owner", until.timestamp())
             if late:
                 self.alarm(scope, "open-past-bound", subject, f"{subject} is {late[0]}" + (f": {detail}" if detail else ""),
-                           [late[1]], cur["at"], evidence, main_after=REFUSAL_TO_MAIN)
+                           [late[1]], cur["at"], evidence, main_after=REFUSAL_TO_MAIN, due=late[3],
+                           roles={late[1]: late[2]})
             if cur["attempt"] - 1 > stage["retry_limit"]:
                 self.alarm(scope, "open-past-bound", subject, f"{subject} is on attempt {cur['attempt']}, past its retry "
                            f"limit {stage['retry_limit']}", [fix], cur["at"], evidence,
-                           main_after=REFUSAL_TO_MAIN, variant="retries")
+                           main_after=REFUSAL_TO_MAIN, variant="retries", roles={fix: "fix-owner"})
 
     # ---------- dated rules ----------
 
@@ -550,7 +572,8 @@ class Watch:
                 seen = f"its last heartbeat was at {iso(last)}" if last else "it has no heartbeat"
                 self.alarm(f"heartbeat:{hid}", "watcher-silent", hid,
                            f"the handoff watcher of {hid} is silent: {seen}, more than {self.silent_after} s ago",
-                           [MAIN], last or self.now, folder, variant=variant)
+                           [MAIN], last or self.now, folder, variant=variant, roles={MAIN: "main"},
+                           due=last + self.silent_after if last else self.now)
 
     # ---------- delivery ----------
 
@@ -582,6 +605,8 @@ class Watch:
         for key, old in prev.items():
             if key not in self.alarms and old.get("scope") in self.incomplete:
                 self.alarms[key] = {k: v for k, v in old.items() if k not in ("first_seen", "routed")}
+                self.alarms[key].setdefault("due", old.get("since"))
+                self.alarms[key].setdefault("roles", {})
         stores_dir = self.dir / "stores"
         stores_dir.mkdir(parents=True, exist_ok=True)
         stores = {p.stem: read_json(p) for p in stores_dir.glob("*.json")}
@@ -592,10 +617,15 @@ class Watch:
             alarm["first_seen"] = first
             base = first if alarm["uncovered"] else alarm["since"]
             targets = set(alarm["targets"])
+            # deliver_by per target: when it is due there plus its role's window.
+            by = {t: alarm["due"] + WINDOWS[alarm["roles"].get(t, "owner")] for t in targets}
             if alarm["main_after"] is not None and self.now - base >= alarm["main_after"] \
                     and not (alarm["ack_closes"] and self.acked(key, stores)):
                 targets.add(MAIN)
+                by[MAIN] = min(by.get(MAIN, base + alarm["main_after"] + WINDOWS["main"]),
+                               base + alarm["main_after"] + WINDOWS["main"])
             routed = set()
+            delivered = {}
             for target in sorted(targets):
                 note = ""
                 if target not in self.homes:
@@ -604,11 +634,19 @@ class Watch:
                                              f"neither {target} nor main is a home this machine sees")
                         continue
                     note = f"(for {target}, whose home this machine does not see) "
+                    role, deliver_by = alarm["roles"].get(target, "owner"), by[target]
                     target = MAIN
+                else:
+                    role, deliver_by = ("main" if target == MAIN and target not in alarm["roles"]
+                                        else alarm["roles"].get(target, "owner")), by[target]
+                if target in delivered and delivered[target][1] <= deliver_by:
+                    continue
+                delivered[target] = (role, deliver_by)
                 routed.add(target)
                 wanted.setdefault(target, {})[key] = {
                     "kind": alarm["kind"], "subject": alarm["subject"], "reason": note + alarm["reason"],
-                    "since": iso(alarm["since"]), "evidence": alarm["evidence"]}
+                    "since": iso(alarm["since"]), "evidence": alarm["evidence"],
+                    "role": role, "deliver_by": iso(deliver_by)}
             alarm["routed"] = sorted(routed)
         log = []
         for target in sorted(set(wanted) | set(stores)):
@@ -711,7 +749,73 @@ class Watch:
             self.silence()
             self.deliver()
             self.beat()
+            self.weekly()
         return 0
+
+    # ---------- weekly coverage ----------
+
+    def weekly(self):
+        """Every COVERAGE_EVERY, write and print the coverage line; a failure prints once and never fails the pass."""
+        folder = self.dir / "coverage"
+        failure = folder / "failure"
+        try:
+            line = self.coverage(folder)
+        except Exception as exc:  # the pass's alarms are already delivered; report, keep ticking
+            line = f"handoff coverage line for {self.self_id} could not be written: {type(exc).__name__}: {exc}"
+            try:
+                old = failure.read_text(encoding="utf-8").strip()
+            except OSError:
+                old = None
+            if old != line:
+                print(line)
+                folder.mkdir(parents=True, exist_ok=True)
+                failure.write_text(line + "\n", encoding="utf-8")
+            return
+        failure.unlink(missing_ok=True)
+        if line:
+            print(line)
+
+    def coverage(self, folder):
+        """Read only what came since the last weekly pass: the alert-stores.log bytes past its offset, the
+        stores' events since then, the raises still pending from it and the owned stages' state."""
+        state_path = folder / "state.json"
+        st = read_json(state_path)
+        log = self.home / "state/alert-stores.log"
+        if not isinstance(st, dict) or st.get("schema") != STATE_SCHEMA or not isinstance(st.get("at"), (int, float)):
+            folder.mkdir(parents=True, exist_ok=True)
+            try:
+                stat = os.stat(log)
+                cursor = {"ino": stat.st_ino, "offset": stat.st_size}
+            except FileNotFoundError:
+                cursor = {"ino": None, "offset": 0}
+            atomic(state_path, {"schema": STATE_SCHEMA, "at": self.now, "log": cursor, "pending": []})
+            return None
+        if self.now - st["at"] < COVERAGE_EVERY:
+            return None
+        measure = measure_module()
+        cursor = st.get("log") if isinstance(st.get("log"), dict) else {}
+        try:
+            same = os.stat(log).st_ino == cursor.get("ino")
+        except FileNotFoundError:
+            same = False
+        posts, (ino, offset) = measure.deliveries(log, cursor.get("offset", 0) if same else 0)
+        carried = [r for r in st.get("pending") or [] if isinstance(r, dict)]
+        rows, problems, notes = measure.measure(self.home, st["at"], self.now + 1, self.now, posts=posts,
+                                                carried=carried)
+        line, detail, _, _ = measure.coverage_for(self.home, self.root, self.now, rows=rows, problems=problems,
+                                                  notes=notes, protocols=self.protocols)
+        day = iso(self.now)[:10]
+        report = folder / f"{day}.txt"
+        report.write_text("\n".join([line, ""] + detail) + "\n", encoding="utf-8")
+        old = sorted(n for n in os.listdir(folder) if re.match(r"^\d{4}-\d{2}-\d{2}\.txt$", n))
+        for name in old[:-COVERAGE_KEEP]:
+            (folder / name).unlink(missing_ok=True)
+        with open(self.dir / "log", "a", encoding="utf-8") as handle:
+            handle.write(f"{iso(self.now)} coverage: {line}\n")
+        pending = [r for r in rows if r["outcome"] == measure.PENDING]
+        atomic(state_path, {"schema": STATE_SCHEMA, "at": self.now, "log": {"ino": ino, "offset": offset},
+                            "pending": pending})
+        return f"{line} (report: {report})"
 
     def release(self):
         """Unregister this watcher's stores from every home it can see and drop its heartbeat."""

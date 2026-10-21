@@ -110,6 +110,25 @@ def discover(home, root=None):
     return self_id, homes
 
 
+def first_declared(kept):
+    """Pick each protocol's declaration from the watcher's fragment cache entries.
+
+    kept maps a fragment path to {"home", "doc"}; the first declaration by home
+    and path wins. Returns (protocols by id, (home, path) by id, duplicates as
+    (protocol id, first (home, path), later (home, path))).
+    """
+    protocols, declared, duplicates = {}, {}, []
+    for key in sorted(kept, key=lambda k: (kept[k]["home"], k)):
+        for proto in (kept[key].get("doc") or {}).get("protocols", []):
+            pid = proto["id"]
+            if pid in protocols:
+                duplicates.append((pid, declared[pid], (kept[key]["home"], key)))
+                continue
+            protocols[pid] = proto
+            declared[pid] = (kept[key]["home"], key)
+    return protocols, declared, duplicates
+
+
 def fragment_files(home):
     """Fragment paths in <home>/state/handoff-registry/, sorted; dot names skipped. Raises OSError."""
     folder = Path(home) / "state/handoff-registry"

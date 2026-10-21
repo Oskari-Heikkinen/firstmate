@@ -68,6 +68,7 @@ A partly written store must never be visible, because an unreadable store holds 
 Raise is level-triggered: `assert` on an active key changes only its `reason` and `detected_at` and writes no event, so a tool may assert its condition on every pass.
 `clear` on an inactive key does nothing.
 `sync` is the whole-set form for a tool that computes every alarm it owns on each pass: it takes a JSON object mapping each wanted key to its `kind`, `subject`, `reason`, `since` and `evidence`, raises the new keys, refreshes the active ones as `assert` does, and clears every active key the object lacks, with its acknowledgement, in one locked write.
+A new key's entry also keeps any further fields the tool put in the object, such as the handoff watcher's `role` and `deliver_by`, so its raise event carries them; refreshing an active key changes only `reason`, `evidence` and `detected_at`.
 
 ## Registration: `fm-alert-registration/v1`
 

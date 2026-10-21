@@ -88,7 +88,8 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-component-spawn-lib.sh` | Spawn wiring of component skills: the component hook entries for Claude settings and the Pi extension, and the launch brief's component review pack and `## Component skills` section (docs/component-skills.md) |
 | `fm-handoff-validate.py` | Validate handoff-registry/v1 fragments, handoff-receipt/v1 receipts, receipt outboxes and dated-rule-schedule/v1 schedules against their schemas and the registry (docs/handoff-coverage.md, docs/dated-rule-schedule.md) |
 | `fm-handoff-watch.sh` | Run the registry-driven handoff coverage watcher once, as a watcher check, or arm and disarm that check (docs/handoff-coverage.md) |
-| `fm-handoff-watch.py` | One watcher pass: read fragments, outboxes, places, dated rules and heartbeats, and sync one alert store per alarm target |
+| `fm-handoff-watch.py` | One watcher pass: read fragments, outboxes, places, dated rules and heartbeats, and sync one alert store per alarm target, and once a week write the home's coverage line |
+| `fm-handoff-measure.py` | Read-only time to notice per alarm against its target, and a home's weekly coverage line; the watcher's weekly pass prints the same line (docs/handoff-coverage.md "Measurement") |
 | `fm-handoff-firstmate.py` | Print or publish the handoff-registry/v1 fragment of a home's own Firstmate handoffs (docs/handoff-coverage.md "Firstmate's own handoffs") |
 | `fm-handoff-actors.py` | The handoff install check (refuse a tool no fragment or declaration covers), no-handoff declarations, and the actor inventory `undeclared-actor` reads (docs/handoff-coverage.md "Installed tools") |
 | `fm-handoff-actors-lib.sh` | Shell wrappers installers source to run the handoff install check and record a no-handoff declaration |

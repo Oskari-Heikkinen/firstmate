@@ -43,6 +43,7 @@ Dated rules live in each owner's schedule, `dated-rule-schedule/v1`, which [docs
 | Sync stamp | `<synced folder>/.synced-at` | the sync job that copies a synced place or outbox | the watcher |
 | Alerts | an `fm-alert-store/v1` store per alarm target, registered in that target's `state/alert-stores/` (see [Alert store](#alert-store)) | the watcher | the alert-store tick in the target home |
 | Actor declarations | `<home>/state/handoff-actors/*.json` (`handoff-actors/v1`) | `bin/fm-handoff-actors.py` | the install check and the actor inventory in every home |
+| Coverage reports | `<home>/state/handoff-watch/coverage/<YYYY-MM-DD>.txt` and its `state.json` | the watcher's weekly pass | the home's owner (see [Measurement](#measurement)) |
 
 `<home>` is the home's root folder.
 A home may publish several fragment files, for example one per publishing tool; each file carries its own `publisher` and `revision`.
@@ -271,6 +272,7 @@ A `refused` or `held` receipt routes to:
 `version-unsupported` routes to the sender and to the protocol owner.
 A record or receipt no fragment covers reaches tooling-mate within 10 minutes and main at 1 h.
 These targets are protocol constants, not fragment fields; the watcher implements them.
+Each alarm's store entry says which target it is for and when it is due there (`role` and `deliver_by` in [Alert store](#alert-store)), and [Measurement](#measurement) reports each delivery against them.
 Delivery is retried until it is delivered.
 
 ## Coverage checks
@@ -436,6 +438,11 @@ This section says only how the coverage checks fill it.
   `subject` names what the alarm is about: `<protocol>/<stage>/<record>` for a record, `<protocol>/<stage>` for a stage, or the path for `source-unreadable` and `sync-stale`.
   `reason` is the one-line blocker text: the receipt's `detail` when it has one, and for `lane-fault` it names the code's `stops`.
   `since` is when the condition began (the receipt's `written_at`, or when the record arrived), and `evidence` holds the receipt or file path.
+  `role` is the target's part in the alarm: `fix-owner`, `sender`, `owner` (the stage, protocol or rule owner, tooling-mate, or the home that reads a stale sync) or `main` (a lane fault, a silent watcher, or an escalation).
+  `deliver_by` is when the target must have heard of it: the time the alarm became due plus 10 minutes, or 15 minutes for `sender`.
+  An alarm becomes due when its condition crosses its bound: at `since` for a receipt or record, at the bound's end for `no-receipt`, `open-past-bound` and `sync-stale`, two intervals after the last heartbeat for `watcher-silent`, and 4 h or 1 h after it opened for main's escalation.
+  An alarm rerouted to main for an unseen target keeps that target's role.
+  Both fields are written when the key is raised; an entry raised before they existed has neither and is not judged.
 - **Acknowledgement.** Only the alarm's target acknowledges it, with `bin/fm-alert-store.sh ack`; the acknowledgement always has an `until` of at most 7 days, after which the alarm is projected again if its condition still holds.
   An acknowledgement of an open `refused` receipt closes the refusal for the 4 h rule until then.
 
@@ -471,6 +478,11 @@ An alarm for a home this machine does not see goes to main, its reason prefixed 
 When main is not seen either, or a store or registration cannot be written, the pass prints one line per occurrence, which wakes the arming home through the watcher check.
 Every raise and clear is appended to `state/handoff-watch/log`.
 
+**Weekly coverage.**
+The first pass stamps `state/handoff-watch/coverage/state.json`; the first pass 7 days after the stamp writes the home's [coverage line](#measurement) to `state/handoff-watch/coverage/<YYYY-MM-DD>.txt` (keeping the 8 newest), appends it to the log as `coverage: <line>`, prints it with the report's path, which wakes the home once a week through the watcher check, and stamps again.
+That pass reads only what changed since the stamp: the home's `state/alert-stores.log` from the byte offset it kept, the stores' events since the stamp, the raises still pending at the last pass, the owned stages' state files, and one run of the actor inventory.
+A failure prints one line once per distinct message and never fails the pass.
+
 **Heartbeat.**
 Each pass ends by writing one `handoff-receipt/v1` receipt of protocol `handoff-watch`, stage and record set to the home id, to `state/handoff-watch/heartbeat/`, keeping only the newest.
 Main's watcher raises `watcher-silent` for any home whose heartbeat folder exists and whose newest heartbeat is older than two intervals (`FM_HANDOFF_WATCH_SILENT_AFTER` seconds, default twice `FM_CHECK_INTERVAL`); every other watcher does the same for main's heartbeat, with variant `seen-by-<home>`.
@@ -479,7 +491,35 @@ Tooling-mate's `handoff-watch` fragment, published by `bin/fm-handoff-firstmate.
 
 **Latency.**
 A condition is seen at the next pass and projected at the target home's next alert-store tick, so a target hears of it within about two intervals, 10 minutes at the default.
+[Measurement](#measurement) says how close each delivery came.
 A killed watcher is seen once its heartbeat is two intervals old, at main's next pass, and projected at main's next tick: up to four intervals, 20 minutes at the default; a home that needs 10 minutes sets `FM_HANDOFF_WATCH_SILENT_AFTER` or a shorter interval.
+
+## Measurement
+
+`bin/fm-handoff-measure.py` reads the records the watcher and the alert stores already write and writes nothing; its header owns the usage.
+
+**Time to notice.**
+`fm-handoff-measure.py notice --home <home> [--since T] [--until T]` lists every `handoff-watch.*` alarm raised for that home in the window (default the last 7 days).
+For each raise in a store registered in the home it takes the event time (the entry's `since`), the delivery (the first `re-posted alert <key>` line of that store in the home's `state/alert-stores.log` after the raise and before the key cleared or was acknowledged), and the entry's `deliver_by`.
+The outcome is `met` (delivered by `deliver_by`), `missed` (delivered after it), `undelivered` (not delivered, and `deliver_by` has passed), `pending` (not delivered yet, still in time), `cleared before delivery`, or `no target` (an entry without `deliver_by`).
+One summary line per check kind gives the counts and the median and longest time to notice.
+A store that kept only its newest 500 events, from inside the window, is named in a note.
+The exit is 1 when an alarm missed or was not delivered, 3 when a store or registration could not be read, else 0.
+
+**Coverage line.**
+`fm-handoff-measure.py coverage --home <home>` prints the line the watcher's weekly pass writes, for the 7 days before `--now`:
+
+- the protocols the home owns, from the watcher's fragment cache (`handoff-watch` is not counted);
+- the stages it owns: those with a receipt in the week, and those with none, each idle stage saying `idle since <last receipt>`, `never had a receipt`, or `has no watcher state`; planned stages are counted apart;
+- the undeclared actors from [the actor inventory](#actor-inventory-and-undeclared-actor);
+- the week's time to notice.
+
+The detail lines below it list each part and every alarm.
+The exit is 1 when a stage is idle, an actor is undeclared or an alarm missed, 3 when a source could not be read.
+
+**Adoption.**
+Nothing new is armed: a home that runs `fm-handoff-watch.sh arm` gets the weekly line from its next pass on, and an owner runs `notice` or `coverage` by hand for any window.
+The command runs under nice 19 and idle I/O.
 
 ## Firstmate's own handoffs
 

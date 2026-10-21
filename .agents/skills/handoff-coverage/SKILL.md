@@ -1,6 +1,6 @@
 ---
 name: handoff-coverage
-description: Load before building or changing anything that hands a record across a home, machine or process boundary (a new artifact type, a stage, a timer, service or custom check that reads or writes handoff records), before publishing or editing a handoff-registry/v1 fragment, a dated-rule-schedule/v1 schedule or handoff-receipt/v1 receipts, before writing a dated constant into code, and when a handoff coverage or dated-rule alarm names your home.
+description: Load before building or changing anything that hands a record across a home, machine or process boundary (a new artifact type, a stage, a timer, service or custom check that reads or writes handoff records), before publishing or editing a handoff-registry/v1 fragment, a dated-rule-schedule/v1 schedule or handoff-receipt/v1 receipts, before writing a dated constant into code, when a handoff coverage or dated-rule alarm names your home, and on a weekly handoff coverage line.
 user-invocable: false
 metadata:
   internal: true
@@ -14,6 +14,7 @@ Load this before building or changing anything that hands a record across a home
 [`docs/dated-rule-schedule.md`](../../../docs/dated-rule-schedule.md) owns the dated-rule schedule, its alarms and the lookup.
 `bin/fm-handoff-validate.py` checks fragments, receipts, outboxes and schedules; its header owns the commands and exit codes.
 `bin/fm-handoff-watch.sh` is the watcher that raises the coverage alarms; its header owns the commands and arming.
+`bin/fm-handoff-measure.py` measures time to notice and prints the weekly coverage line; its header owns the commands and exit codes.
 This skill owns only when an agent or home must act, and how.
 
 ## When you must publish a fragment
@@ -84,7 +85,7 @@ The doc's "Coverage checks" table is the full list; in short:
 - a receipt still `accepted`, `held` or `waiting` past its bound, a refusal open 4 h, or retries past `retry_limit` (`open-past-bound`);
 - any receipt with `holds_all` (`lane-fault`, to main at once);
 - an unreadable or unparseable fragment, outbox, place or sync stamp, an unknown `format`, or a synced copy older than `max_lag` (`source-unreadable`, `sync-stale`);
-- a timer, service, cron job or custom check no stage names (`undeclared-actor`, not raised until the installer inventory lands);
+- a timer, service, cron job or custom check no stage names (`undeclared-actor`, listed by `bin/fm-handoff-actors.py list` and the weekly coverage line; the watcher does not raise it per tick yet);
 - a dated rule 14, 7 or 1 days out or past its date, a move without review, a broken chain or an unreadable schedule, a fragment entry that disagrees with the schedule, and a second slip, to main (`dated-rule`, raised by `bin/fm-dated-rules.sh check` for a rule in its owner's schedule, and by the watcher only for a fragment rule no schedule declares);
 - a home's watcher heartbeat older than 2 ticks (`watcher-silent`).
 
@@ -98,6 +99,14 @@ Run `bin/fm-handoff-watch.sh tick` to see a change take effect at once; drills u
 `bin/fm-handoff-watch.sh disarm` stops it, closes the blockers it posted and removes its heartbeat; disarm only a watcher that is being retired.
 An alarm reaches you as a `blocked` line in your `state/handoff-watch.status`; `state/handoff-watch/log` in the watching home holds every raise and clear.
 A printed `handoff-watch: ... cannot be delivered` line means an alarm has no reachable target: fix the home list or the target's `state/` folder.
+
+## When to measure
+
+- A `handoff coverage <home> ...` line arrives once a week from the watcher check, with its report under `state/handoff-watch/coverage/`.
+  Act on it: an idle stage whose upstream should have sent records is a broken handoff to chase with that stage's sender; an undeclared actor is declared or removed as in "When you install a tool"; a missed or undelivered time to notice goes to tooling-mate with the report.
+- To check how fast alarms reach a home, run `bin/fm-handoff-measure.py notice --home <home>` (add `--since`/`--until` for another window); for the coverage line on demand, `bin/fm-handoff-measure.py coverage --home <home>`.
+- Both only read; nothing extra is armed, and drills run them with `--root <scratch root>`.
+- An alarm raised before the watcher wrote `role` and `deliver_by` shows as `no target`; it is not a miss.
 
 ## Never
 
