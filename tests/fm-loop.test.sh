@@ -453,6 +453,40 @@ if new(NOW + 860):
     fail("a missing source coming back printed")
 ok("a missing source prints once, the same as an unreadable one")
 
+record_path = home / "state/loop-alerts/analysis-refused--pkg-arf.json"
+inode = record_path.stat().st_ino
+write(home / "state/loop-alerts/.receipt-left", "{}")
+if new(NOW + 865) or record_path.stat().st_ino != inode:
+    fail("a run with nothing new printed or rewrote an unchanged alert record")
+if (home / "state/loop-alerts/.receipt-left").exists() or "removed .receipt-left" not in (home / "state/loop-alerts/log").read_text():
+    fail("a temp file left by a stopped run was not removed and logged")
+ok("an unchanged alert record is not rewritten, and a stopped run's temp file is removed")
+
+# A source that blocks (a FIFO nobody writes) reads as unknown within its bound.
+fifo = tmp / "blocking.status"
+os.mkfifo(fifo)
+config({"tetjet_status": fifo})
+package("fresh-acc-1", "pkg-fresh", NOW, hashlib.sha256(b"fresh-acc-1").hexdigest())
+started = time.monotonic()
+proc = subprocess.run([str(root / "bin/fm-loop.sh"), "alerts", "--new", "--home", str(home), "--now", str(NOW + 880)],
+                      capture_output=True, text=True, timeout=60, env=dict(os.environ, FM_CHECK_TIMEOUT="12"))
+took = time.monotonic() - started
+unreadable_lines(proc.stdout.splitlines(), "tetjet_status")
+if "did not finish within 1s" not in proc.stdout or took > 7 or (home / "state/loop-alerts/check-failure").exists():
+    fail("a blocking source in a 7s check took %.1fs: %r" % (took, proc.stdout))
+if json.loads((home / "state/loop-alerts/no-package--fresh-acc-1.json").read_text())["cleared_at"]:
+    fail("an alert cleared while a source was blocked")
+proc = subprocess.run([str(root / "bin/fm-loop.sh"), "status", "--json", "--home", str(home), "--now", str(NOW + 890)],
+                      capture_output=True, text=True, timeout=60, env=dict(os.environ, FM_LOOP_READ_TIMEOUT="1"))
+view = json.loads(proc.stdout)["sources"]["tetjet_status"]
+if view["state"] != "unreadable" or "did not finish" not in view["detail"]:
+    fail("a blocked source in status: %s" % view)
+config()
+os.remove(queue / ("ready-for-launch--pkg-fresh--%d.json" % NOW))
+if new(NOW + 895):
+    fail("a blocked source coming back printed")
+ok("a blocking source reads as unknown within its bound, raises source-unreadable once, holds clears, and the check stays in its cap")
+
 cursor.write_text("{not json")
 lines = new(NOW + 900)
 if len(lines) != 1 or "reseeded" not in lines[0] or new(NOW + 960):

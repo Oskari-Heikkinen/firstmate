@@ -15,6 +15,7 @@ The "Loop sources" section of [docs/configuration.md](configuration.md#loop-sour
 - `bin/fm-loop.sh arm` and `bin/fm-loop.sh disarm` install and remove the watcher check.
 
 Every run is niced to 19, idle I/O class, and capped at 60 seconds; `alerts --new` is capped at the watcher's `FM_CHECK_TIMEOUT` less 5 seconds.
+The sources are read side by side within a quarter of that cap, and the batch lookups within another quarter, so one slow source cannot use up the run (see "What it reads").
 
 ## What it reads
 
@@ -34,6 +35,8 @@ Every source is only read: nothing is woken, consumed or acknowledged, and no co
 
 A source that is missing or unreadable is listed on the sources line; what it feeds reads as unknown, and the command still succeeds.
 A source named in the config file that is missing, or any source that exists but cannot be read, also raises a `source-unreadable` alert.
+A source whose read has not finished within its bound (a slow disk, a FIFO, a lock) is unreadable for that run, with "read did not finish within Ns" as its detail: it raises `source-unreadable` like any other, once per occurrence, and holds every other alert from clearing; a capacity filler file raises `filler-stale` instead.
+`FM_LOOP_READ_TIMEOUT` sets the bound in whole seconds.
 
 ## Stages
 
@@ -71,6 +74,8 @@ An alert prints until it is acknowledged, even after its condition clears; the l
 An acknowledged alert stays quiet while its condition holds, and is raised again if the condition clears and later recurs.
 While any source raises `source-unreadable`, no alert clears: its condition is unknown, not gone, so a source that comes back does not raise again what it hid.
 `<home>/state/loop-alerts/log` gets one line per raise, clear and acknowledgement, with the time, what happened and what happens next.
+A record is written and synced to disk when it is raised, cleared or acknowledged, rewritten without a sync when only its message changes, and left alone otherwise, so a busy disk does not hold up a run; its `last_seen` on disk is the last write.
+A temp file left by a stopped run is removed on the next run, with a log line.
 
 ## Watcher check
 

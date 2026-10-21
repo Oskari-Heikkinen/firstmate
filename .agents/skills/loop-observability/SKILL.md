@@ -6,11 +6,11 @@ metadata:
   internal: true
   sources:
     - path: docs/loop-status.md
-      sha256: 9260eaaf7ed9b0f149572d822c699d59d2448e89487e5db373e0cebbec167a8d
+      sha256: adbaf005623ecd71c439f18d6be682a981582c3fde029153e33bcc823c65f0af
     - path: bin/fm-loop.sh
-      sha256: 658d6a8a6726b24a0d80ddfe50cf78b7be2c323424259c38130d76f4248629ce
+      sha256: 221e4751ff00b48abd41f505dc21d3fc3c4a3f7ce9a3c3decdb0ceee60e8048f
     - path: bin/fm-loop.py
-      sha256: 09d180e02e1c2804681b37a69be1c2971592389c8979e403b7816bb129435bc7
+      sha256: 0c7997af25fbb709ba4807715c23f6d904593c894b402ab65f3baca8fecd27f9
     - path: bin/fm-project-capacity-lib.sh
       sha256: 8722b50acaa6c2988b7b31c1e56a12ec23769c3c3675d5afdc487e1480a0ba94
 ---
@@ -44,7 +44,7 @@ Sources, thresholds and limits are data (`config/loop-sources`, `config/project-
 - A watcher check that prints every open alert on each run, prints acknowledged alerts, hides `source-unreadable`, or moves its cursor before printing (`docs/loop-status.md` "Watcher check").
 - Accepting an unknown schema leniently, or replaying the lane journal to recover a bad cursor (`docs/loop-status.md` "Capacity filler watch").
 - A hard-coded source path, threshold, home or request family in code where a `config/loop-sources` line belongs (`docs/configuration.md` "Loop sources"; tool-design rule 4).
-- Unbounded reads, tree walks or runs past the cap (`bin/fm-loop.sh` header: niced and capped at 60 s; wave-2 history H9 unbounded read volume).
+- Unbounded reads, tree walks or runs past the cap, a source read outside the per-source bound, or a sync to disk for an alert record that has not changed (`bin/fm-loop.sh` header: niced and capped at 60 s, sources read within a quarter of the cap; `docs/loop-status.md` "Alerts"; wave-2 history H9 unbounded read volume).
 - Writing outside `<home>/state` from `arm` or `disarm` (`bin/fm-loop.sh` header).
 - Guessing a capacity from a malformed declaration, counting holders outside the shared project lock, or adding a per-project branch to the capacity code (`bin/fm-project-capacity-lib.sh` header).
 

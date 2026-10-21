@@ -48,6 +48,10 @@
 # and alert conditions, and docs/loop-status.md explains them. Every source is
 # only read: nothing is woken, consumed or acknowledged. The home defaults to
 # FM_HOME, else this code root. Runs under nice -n 19 ionice -c3, capped at 60 s.
+# Each source is read in its own thread, all within a quarter of the cap (15 s,
+# or 6 s for alerts --new by default; FM_LOOP_READ_TIMEOUT seconds overrides),
+# and the batch lookups within the same again; a read still running then is
+# abandoned and its source reads as unreadable, so the run finishes in its cap.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -141,6 +145,10 @@ if [ -n "$new" ]; then
   cap=$((cap - 5))
   [ "$cap" -ge 5 ] || cap=5
 fi
+read_timeout=${FM_LOOP_READ_TIMEOUT:-$((cap / 4))}
+case "$read_timeout" in ''|*[!0-9]*) read_timeout=$((cap / 4)) ;; esac
+[ "$read_timeout" -ge 1 ] || read_timeout=1
+args+=(--read-timeout "$read_timeout")
 prefix=()
 command -v nice >/dev/null 2>&1 && prefix+=(nice -n 19)
 command -v ionice >/dev/null 2>&1 && prefix+=(ionice -c3)

@@ -25,6 +25,7 @@ This skill owns only how agents use it.
 
 - Run it in the home whose `config/loop-sources` names the sources; it reads every source and writes only that home's own `state/loop-alerts/`.
 - A source that reads as missing or unreadable means its columns are unknown, not empty or healthy; name the source when reporting, and do not guess the stage from other files.
+- A `source-unreadable` alert whose detail says the read did not finish within its bound means that source was slow or blocked on that run (a busy disk, a FIFO, a lock), not that it is corrupt: check whether the source's disk or writer is stalled, and expect the alert to clear once a run reads it in time.
 - TETJET's capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) show beside the stages but belong to tetjet-mate; act on them through the `tj-capacity-alerts` skill, never through `ack` here.
 - Lane truth stays with tetjet-mate: the snapshot columns are what its snapshot says, not a second opinion.
 - The capacity filler's lane alerts (`lane-refusing`, `accepted-no-pickup`, `no-liveness`, `rc-unknown`) are raised here only because the filler notifies nobody; hand each to tetjet-mate, which owns the filler and its lanes, then `ack` it here.

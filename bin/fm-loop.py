@@ -19,9 +19,11 @@ import re
 import sqlite3
 import statistics
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fm_receipt_io import atomic, iso_epoch, load  # noqa: E402
+from fm_receipt_io import atomic, atomic_text, iso_epoch, load  # noqa: E402
 
 ALERT_SCHEMA = "fm-loop-alert.v1"
 CURSOR_SCHEMA = "fm-loop-reported.v1"
@@ -34,6 +36,9 @@ SNAPSHOT_LIMIT = 32 * 1024 * 1024
 # The lane alerts journal is never truncated by its writer.
 LANE_LIMIT = 128 * 1024 * 1024
 STATUS_TAIL = 256 * 1024
+# Seconds the source reads, and then the batch lookups, may take; fm-loop.sh
+# passes a quarter of its run cap.
+READ_TIMEOUT = 15
 
 # Hours; each can be overridden by a `threshold <name> <hours>` config line.
 THRESHOLDS = {
@@ -290,8 +295,13 @@ class Batches:
         self.src = src
         self.root = src.paths[0]
         self.cache = {}
-        if not self.root.is_dir():
+        if src.ok and not self.root.is_dir():
             src.fail("missing", "%s is not a directory" % self.root)
+
+    def prefetch(self, batches):
+        for batch in batches:
+            self.get(batch)
+        return self
 
     def get(self, batch):
         if batch in self.cache:
@@ -514,25 +524,61 @@ def request_refs(record, submits_dir):
 
 
 class Loop:
-    def __init__(self, home, now):
+    def __init__(self, home, now, read_timeout=READ_TIMEOUT):
         self.home = home
         self.now = now
+        self.read_timeout = read_timeout
+        self.timed_out = False
         self.sources, self.thresholds, self.stale_minutes, self.warnings = read_config(home)
-        s = self.sources
-        self.submits = read_submits(s["submits"])
-        self.queue = read_queue(s["handoff_queue"])
-        self.acked = read_acked(s["operator_acked"])
-        self.collected = read_collected(s["collected"])
-        self.jobs = read_snapshot(s["snapshot"])
-        self.batches = Batches(s["batches"])
-        self.catalog = read_catalog(s["catalog"])
-        self.holds = read_holds(s["backlog"])
-        self.parks = read_parks(s["parks"])
-        self.tetjet = read_tetjet_alerts(s["tetjet_status"])
-        self.lane = read_lane_alerts(s["lane_alerts"]) if "lane_alerts" in s else None
-        self.queue_state = read_queue_state(s["queue_state"]) if "queue_state" in s else None
-        self.stopped = read_filler_stop(s["filler_stop"]) if "filler_stop" in s else False
+        got = self.bounded([
+            ("submits", read_submits, {}), ("handoff_queue", read_queue, []), ("operator_acked", read_acked, {}),
+            ("collected", read_collected, {}), ("snapshot", read_snapshot, {}), ("catalog", read_catalog, {}),
+            ("backlog", read_holds, {}), ("parks", read_parks, []), ("tetjet_status", read_tetjet_alerts, []),
+            ("lane_alerts", read_lane_alerts, None), ("queue_state", read_queue_state, None),
+            ("filler_stop", read_filler_stop, None)])
+        self.submits, self.queue, self.acked = got["submits"], got["handoff_queue"], got["operator_acked"]
+        self.collected, self.jobs, self.catalog = got["collected"], got["snapshot"], got["catalog"]
+        self.holds, self.parks, self.tetjet = got["backlog"], got["parks"], got["tetjet_status"]
+        self.lane, self.queue_state = got.get("lane_alerts"), got.get("queue_state")
+        self.stopped = got["filler_stop"] if "filler_stop" in self.sources else False
         self.requests = self.join()
+
+    def bounded(self, readers):
+        """Run each configured reader in its own thread, all within read_timeout seconds.
+
+        A reader still running at the deadline (a slow disk, a FIFO, a lock)
+        is abandoned: its source reads as unreadable, so what it feeds is
+        unknown, and its result is the given empty value.
+        """
+        threads, results, errors = {}, {}, {}
+
+        def run(name, reader, src):
+            try:
+                results[name] = reader(src)
+            except Exception as exc:  # noqa: BLE001 - one source's bug must not stop the others
+                errors[name] = "%s: %s" % (type(exc).__name__, exc)
+
+        for name, reader, empty in readers:
+            if name in self.sources:
+                threads[name] = (threading.Thread(target=run, args=(name, reader, self.sources[name]), daemon=True), empty)
+                threads[name][0].start()
+        deadline = time.monotonic() + self.read_timeout
+        got = {}
+        for name, (thread, empty) in threads.items():
+            thread.join(max(0, deadline - time.monotonic()))
+            if name in results:
+                got[name] = results[name]
+                continue
+            # The abandoned thread keeps the old Source, so nothing it does later shows.
+            old = self.sources[name]
+            src = self.sources[name] = Source(name, old.paths, old.configured)
+            if thread.is_alive():
+                self.timed_out = True
+                src.fail("unreadable", "read did not finish within %gs (a slow disk or a blocking file)" % self.read_timeout)
+            else:
+                src.fail("unreadable", "reader failed: %s" % errors.get(name, "no result"))
+            got[name] = empty
+        return got
 
     def join(self):
         reqs = {}
@@ -584,6 +630,10 @@ class Loop:
                 if isinstance(batch, dict) and isinstance(batch.get("batch_id"), str):
                     r["packages"].setdefault(batch["batch_id"], {
                         "batch": batch["batch_id"], "at": None, "abandoned": abandoned.get(batch["batch_id"])})
+        names = list(dict.fromkeys(pkg["batch"] for r in reqs.values() for pkg in r["packages"].values()))
+        self.batches = self.bounded([("batches", lambda src: Batches(src).prefetch(names), None)])["batches"]
+        if self.batches is None:
+            self.batches = Batches(self.sources["batches"])
         for r in reqs.values():
             for pkg in r["packages"].values():
                 pkg["records"] = records.get(pkg["batch"], [])
@@ -805,12 +855,22 @@ class Loop:
 
         While a source fails, no alert clears: its condition is unknown, not
         gone, so a source that comes back never re-raises what it hid.
+
+        A raise or clear is written and synced at once. A record whose message
+        changed is rewritten without a sync, since the next run derives it
+        again, and an unchanged record is not written at all: a sync per open
+        alert per run starves under idle I/O on a busy disk. last_seen on disk
+        is therefore the last write, and this run's view carries the current one.
         """
         folder = self.home / "state/loop-alerts"
         folder.mkdir(parents=True, exist_ok=True)
         current = self.conditions()
         with open(folder / ".lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            # Under the lock no write is in progress, so a temp file is one a killed run left.
+            for stray in [*folder.glob(".receipt-*"), *folder.glob("*.json.tmp.*")]:
+                stray.unlink(missing_ok=True)
+                self.log(folder, "removed %s, left by a run that was stopped while writing" % stray.name)
             records = {}
             for path in sorted(folder.glob("*.json")):
                 try:
@@ -822,16 +882,21 @@ class Loop:
             stamp = utc(self.now)
             for alert_id, (condition, subject, message) in current.items():
                 rec = records.get(alert_id)
-                if rec is None or rec.get("cleared_at"):
+                raised = rec is None or rec.get("cleared_at")
+                if raised:
                     event = "raised" if rec is None else "raised again"
                     occurrence = 1 if rec is None else rec.get("occurrence", 1) + 1
                     rec = {"schema": ALERT_SCHEMA, "id": alert_id, "condition": condition, "subject": subject,
                            "first_seen": stamp, "cleared_at": None, "acked_at": None, "occurrence": occurrence}
                     self.log(folder, "%s %s: %s; it prints until bin/fm-loop.sh ack %s" % (event, alert_id, message, alert_id))
+                changed = rec.get("message") != message
                 rec["message"] = message
                 rec["last_seen"] = stamp
                 records[alert_id] = rec
-                atomic(folder / (alert_id + ".json"), rec)
+                if raised:
+                    atomic(folder / (alert_id + ".json"), rec)
+                elif changed:
+                    atomic_text(folder / (alert_id + ".json"), json.dumps(rec, sort_keys=True) + "\n")
             lane_owned = "lane_alerts" in self.sources
             if self.lane is not None:
                 self.sync_lane(folder, records, stamp)
@@ -900,7 +965,8 @@ class Loop:
         if self.lane_notes:
             with open(folder / "log", "a", encoding="utf-8") as stream:
                 stream.writelines("%s %s\n" % (stamp, note) for note in self.lane_notes)
-        atomic(path, {"schema": LANE_CURSOR_SCHEMA, "path": source_path, "revision": doc["revision"], "updated_utc": stamp})
+        if cursor is None or cursor["revision"] != doc["revision"]:
+            atomic(path, {"schema": LANE_CURSOR_SCHEMA, "path": source_path, "revision": doc["revision"], "updated_utc": stamp})
         if seed:
             self.log(folder, "seeded the lane alerts cursor at revision %d with %d active lane alert(s): alerts --new does not report them" % (
                 doc["revision"], len(doc["active"])))
@@ -915,6 +981,7 @@ class Loop:
                 self.lane_notes.append("cleared %s: the filler cleared lane alert %s; %s" % (rec["id"], key, note))
             return
         message = lane_message(alert)
+        dirty = rec is None or rec.get("cleared_at") or rec.get("message") != message
         if rec is None or rec.get("cleared_at"):
             alert_id = rec["id"] if rec else lane_alert_id(alert, key)
             occurrence = 1 if rec is None else rec.get("occurrence", 1) + 1
@@ -929,7 +996,8 @@ class Loop:
         rec["last_seen"] = utc(self.now)
         records[rec["id"]] = rec
         by_key[key] = rec
-        self.lane_dirty.add(rec["id"])
+        if dirty:
+            self.lane_dirty.add(rec["id"])
 
     def log(self, folder, line):
         with open(folder / "log", "a", encoding="utf-8") as stream:
@@ -1110,8 +1178,9 @@ def new_alerts_mode(loop):
         if broken:
             print("loop alerts: %s was unreadable; reseeded with every current alert as reported" % path)
         sys.stdout.flush()
-        atomic(path, {"schema": CURSOR_SCHEMA, "updated_utc": utc(loop.now),
-                      "reported": {rec["id"]: occurrence_key(rec) for rec in records}})
+        now_reported = {rec["id"]: occurrence_key(rec) for rec in records}
+        if now_reported != reported:
+            atomic(path, {"schema": CURSOR_SCHEMA, "updated_utc": utc(loop.now), "reported": now_reported})
         if reported is None:
             loop.log(folder, "seeded the reported cursor with %d alert(s): alerts --new prints only alerts raised or raised again after this" % len(records))
     return 0
@@ -1223,6 +1292,7 @@ def main():
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--weeks", type=int, default=8)
     parser.add_argument("--new", action="store_true")
+    parser.add_argument("--read-timeout", type=float, default=READ_TIMEOUT)
     args = parser.parse_args()
     home = Path(args.home)
     now = args.now if args.now is not None else int(datetime.datetime.now(datetime.timezone.utc).timestamp())
@@ -1230,12 +1300,19 @@ def main():
         if not args.alert_id:
             parser.error("ack needs an alert id")
         return ack(home, now, args.alert_id)
-    loop = Loop(home, now)
+    loop = Loop(home, now, max(0.1, args.read_timeout))
     if args.command == "status":
-        return status(loop, args.json, args.all)
-    if args.command == "alerts":
-        return new_alerts_mode(loop) if args.new else alerts_mode(loop)
-    return leadtime(loop, args.json, max(1, args.weeks))
+        rc = status(loop, args.json, args.all)
+    elif args.command == "alerts":
+        rc = new_alerts_mode(loop) if args.new else alerts_mode(loop)
+    else:
+        rc = leadtime(loop, args.json, max(1, args.weeks))
+    if loop.timed_out:
+        # An abandoned reader may sit in a blocking call; never wait for it at exit.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(rc)
+    return rc
 
 
 if __name__ == "__main__":
