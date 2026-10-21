@@ -2871,8 +2871,9 @@ EOF
 # (status_supersedes_kind in bin/fm-classify-lib.sh owns the grammar and the
 # closing rule) reads as closing every one of them, and which the next drain
 # presents once under UNREAD STATUS. No open blocker means nothing is written.
-# needs-decision records and reserved-namespace blockers
-# (_fm_decision_key_reserved) are never named or closed. Returns 0 written or
+# needs-decision records and protected blockers - a reserved-namespace key or one
+# a registered alert store holds active (_fm_decision_key_protected) - are never
+# named or closed. Returns 0 written or
 # nothing to write, 1 when the append failed.
 fm_status_supersede_blockers() {  # <state> <status-file> <relaunch|resume|validation-run> <evidence>
   local state=$1 file=$2 kind=$3 evidence=$4 open key verb rest keys='' rc=0
@@ -2881,7 +2882,7 @@ fm_status_supersede_blockers() {  # <state> <status-file> <relaunch|resume|valid
   open=$(status_open_decisions "$file")
   while IFS=$'\t' read -r key verb rest; do
     [ "$verb" = blocked ] || continue
-    ! _fm_decision_key_reserved "$key" || continue
+    ! _fm_decision_key_protected "$key" "$file" || continue
     [ "$key" != default ] || key=unkeyed
     keys="${keys:+$keys, }$key"
   done <<EOF

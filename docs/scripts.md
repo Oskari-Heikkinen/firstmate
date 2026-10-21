@@ -134,6 +134,8 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-afk-return.sh`       | Own deterministic return shutdown, the return brief, catch-up evidence, and the firstmate-actionable blocker gate |
 | `fm-away-watch.sh`       | Away watchdog: alert from a user timer when away supervision has stopped, and install or remove that timer |
 | `fm-alert-lib.sh`        | Sourced active-alert channels (`config/wedge-alarm`) shared by the daemon's wedge alarm and the away watchdog |
+| `fm-alert-store.sh`      | Raise, clear and acknowledge level alarms in an owned alert store, register a store with a home, and run the watcher tick that re-posts active alarms ([alert-store.md](alert-store.md)) |
+| `fm-alert-store-lib.sh`  | Sourced alert-store reader and writer, including the registered-store check the decision fold uses to keep a store alarm open |
 | `fm-supervisor-target-lib.sh` | Resolve the shared supervisor target and backend for the daemon and launcher       |
 | `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery |
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |

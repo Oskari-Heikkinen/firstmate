@@ -79,6 +79,8 @@ SH
   # fm-timeout-lib.sh: the shared hard bound fm-classify-lib.sh sources for the
   # wedge detector's bounded worktree write probe.
   ln -s "$ROOT/bin/fm-timeout-lib.sh" "$fake/bin/fm-timeout-lib.sh"
+  # fm-alert-store-lib.sh: the alert-store reader fm-classify-lib.sh sources.
+  ln -s "$ROOT/bin/fm-alert-store-lib.sh" "$fake/bin/fm-alert-store-lib.sh"
   ln -s "$ROOT/bin/fm-task-evidence-lib.sh" "$fake/bin/fm-task-evidence-lib.sh"
   ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   ln -s "$ROOT/bin/fm-path-lib.sh" "$fake/bin/fm-path-lib.sh"

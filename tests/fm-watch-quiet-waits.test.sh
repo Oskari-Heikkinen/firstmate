@@ -7,8 +7,8 @@
 # or a stale pane for that task itself, recording it in state/.quiet-wait-acks;
 # a condition that stops holding or an endpoint with no agent still wakes. A
 # typed `note [supersedes=<kind>]:` evidence line closes every open blocker in
-# the shared OPEN DECISIONS fold, never a needs-decision or a reserved-namespace
-# blocker.
+# the shared OPEN DECISIONS fold, never a needs-decision, a reserved-namespace
+# blocker, or one a registered alert store holds (tests/fm-alert-store.test.sh).
 # Heavy-slot job records here are fixtures only.
 set -u
 
@@ -404,6 +404,24 @@ test_supersede_writer_skips_reserved_blockers() {
   pass "the supersede writer names and closes only ordinary blockers"
 }
 
+test_supersede_writer_skips_store_held_blockers() {
+  local dir state f
+  dir="$TMP_ROOT/supersede-writer-store"; state="$dir/state"; mkdir -p "$state/alert-stores"
+  f="$state/t.status"
+  printf 'kind=ship\n' > "$state/t.meta"
+  printf '{"schema":"fm-alert-store/v1","store":"tool","revision":1,"active":{"tool-alarm":{"key":"tool-alarm","reason":"held"}},"events":[]}\n' \
+    > "$dir/alerts.json"
+  printf 'schema=fm-alert-registration/v1\nstore=tool\npath=%s\nstatus=t.status\n' "$dir/alerts.json" \
+    > "$state/alert-stores/tool.reg"
+  printf 'blocked [key=tool-alarm]: held\nblocked [key=net]: network down\n' > "$f"
+  supersede_blockers "$state" "$f" relaunch "relaunched" || fail "superseding a mixed set failed"
+  assert_contains "$(grep supersedes "$f")" "superseded open blockers: net" "the evidence note did not name the ordinary blocker"
+  assert_not_contains "$(grep supersedes "$f")" "tool-alarm" "the evidence note named a store-held blocker"
+  assert_contains "$(status_open_decisions "$f")" "tool-alarm" "the written evidence closed a store-held blocker"
+  assert_not_contains "$(status_open_decisions "$f")" "net" "the written evidence did not close the ordinary blocker"
+  pass "the supersede writer leaves a registered store's blocker open"
+}
+
 test_supersede_writer_records_evidence_once() {
   local dir state f rc
   dir="$TMP_ROOT/supersede-writer"; state="$dir/state"; mkdir -p "$state"
@@ -755,6 +773,7 @@ test_supersedes_note_keeps_reserved_blockers
 test_worker_handoff_key_stays_ordinary
 test_supersede_writer_records_evidence_once
 test_supersede_writer_skips_reserved_blockers
+test_supersede_writer_skips_store_held_blockers
 test_reserved_handoff_blockers_are_not_own_decisions
 test_reserved_prefix_default_matches_pi_fold
 test_turn_end_under_holding_wait_is_acknowledged

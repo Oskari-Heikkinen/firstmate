@@ -3482,6 +3482,28 @@ while :; do
   if [ "$(age_of "$STATE/.last-check")" -ge "$CHECK_INTERVAL" ]; then
     rejected_checks=
     contribution_check_output=
+    alert_store_reason=
+    # The alert-store tick (docs/alert-store.md) runs first, so a waking custom
+    # check below can never starve it: it re-posts every registered store's
+    # active alerts missing from their status files, and those appends wake
+    # through the signal scan. Its problem lines are queued at once and woken
+    # on after the custom checks, so a broken store cannot starve them either.
+    # The tick ends with a completion mark; a tick killed by the check timeout
+    # or failing early never prints it, and that is a problem, not a quiet tick.
+    if [ -d "$STATE/alert-stores" ]; then
+      watcher_beat
+      FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" FM_ALERT_STORE_TICK_MARK=1 \
+        run_check_capture "$SCRIPT_DIR/fm-alert-store.sh" tick || exit 1
+      case "$FM_CHECK_RESULT" in
+        'alert-store tick: complete') FM_CHECK_RESULT= ;;
+        *$'\n''alert-store tick: complete') FM_CHECK_RESULT=${FM_CHECK_RESULT%$'\n''alert-store tick: complete'} ;;
+        *) FM_CHECK_RESULT="${FM_CHECK_RESULT:+$FM_CHECK_RESULT$'\n'}alert-store tick did not finish within ${CHECK_TIMEOUT}s, so its stores are unchecked" ;;
+      esac
+      if [ -n "$FM_CHECK_RESULT" ]; then
+        alert_store_reason="check: alert-stores: ${FM_CHECK_RESULT//$'\n'/; }"
+        fm_wake_append check alert-stores "$alert_store_reason" || exit 1
+      fi
+    fi
     for c in "$STATE"/*.check.sh; do
       [ -e "$c" ] || continue
       watcher_beat
@@ -3603,6 +3625,9 @@ EOF
       wake "$reason"
     fi
     touch "$STATE/.last-check"
+    if [ -n "$alert_store_reason" ]; then
+      wake "$alert_store_reason"
+    fi
     if [ -n "$contribution_check_output" ]; then
       wake "$contribution_check_output"
     fi

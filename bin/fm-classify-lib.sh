@@ -71,6 +71,11 @@ case $- in *u*) _fm_classify_nounset=on ;; *) _fm_classify_nounset=off ;; esac
 # shellcheck disable=SC1091
 . "$_FM_CLASSIFY_LIB_DIR/fm-timeout-lib.sh"
 [ "$_fm_classify_nounset" = on ] || set +u
+# The alert-store reader answers whether a registered store holds a key active
+# (_fm_decision_key_protected below). It defines functions only.
+# shellcheck source=bin/fm-alert-store-lib.sh
+# shellcheck disable=SC1091
+. "$_FM_CLASSIFY_LIB_DIR/fm-alert-store-lib.sh"
 unset _fm_classify_nounset
 
 # Captain-relevant status verbs. A status line carrying any of these is work
@@ -948,15 +953,16 @@ EOF
   printf '%s' "$out"
 }
 # Drop every record whose verb is `blocked` from an open set, keeping order. A
-# reserved-namespace record stays: only its owner ever closes it (see
-# _fm_decision_key_reserved below).
+# protected record stays: a reserved-namespace key, or a key a registered alert
+# store holds active (see _fm_decision_key_protected below). Only its owner ever
+# closes it.
 _fm_decision_drop_blocked() {  # <open-set>
   local line out='' rest
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     rest=${line#*$'\t'}
     case "$rest" in
-      blocked$'\t'*) _fm_decision_key_reserved "${line%%$'\t'*}" || continue ;;
+      blocked$'\t'*) _fm_decision_key_protected "${line%%$'\t'*}" || continue ;;
     esac
     out="${out}${line}"$'\n'
   done <<EOF
@@ -974,9 +980,10 @@ EOF
 # and the decision fold closes every `blocked` record (keyed or unkeyed) opened
 # before it. A `needs-decision` record is never closed this way: a question
 # still needs its answer. Nor is a blocker under a reserved key namespace
-# (FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT below): a library or tool raised
-# it, not the worker, and its owner is the only thing that ever closes it, so a
-# relaunch must never mute it. The event is a `note:`, so the drain's UNREAD STATUS
+# (FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT below), or one a registered alert
+# store holds active (docs/alert-store.md): a library or tool raised it, not the
+# worker, and its owner is the only thing that ever closes it, so a relaunch
+# must never mute it. The event is a `note:`, so the drain's UNREAD STATUS
 # presents it once as the closing evidence (status_line_is_unread_surface).
 # bin/fm-wake-lib.sh's fm_status_supersede_blockers is the writer the relaunch
 # and validation-trigger paths use; a worker may append the same event itself.
@@ -1035,6 +1042,18 @@ _fm_decision_key_reserved() {  # <key>
     case "$1" in "$prefix"*) return 0 ;; esac
   done
   return 1
+}
+
+# 0 when a supersede note must leave blocker <key> open: the key is reserved,
+# or a registered alert store for the status file holds it active (or cannot be
+# read). Ownership comes from the registration, not from how the key is spelled.
+# The status file is <status-file>, or the fold's _fm_fold_status_file, a local
+# each fold entry point sets so the per-line helpers can see it.
+_fm_decision_key_protected() {  # <key> [<status-file>]
+  _fm_decision_key_reserved "$1" && return 0
+  local f=${2:-${_fm_fold_status_file:-}}
+  [ -n "$f" ] || return 1
+  fm_alert_store_holds "$f" "$1"
 }
 
 # 0 when <key> is not reserved, or is reserved and <note> speaks its vocabulary.
@@ -1144,6 +1163,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
 # path resolution rather than this directory-local glob.
 status_open_decisions() {  # <status-file> [<kind>]
   local f=$1 kind=${2:-} line resolve held open='' verb
+  local _fm_fold_status_file=$1
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   kind=$(_fm_status_kind "$f" "$kind")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
@@ -1217,7 +1237,9 @@ EOF
 # own blocker about a broken remote reply mirror
 # (bin/fm-procevent-remote-reply.sh), and a `captain-hold-` key relays a child
 # decision a secondmate escalated to the captain (bin/fm-captain-hold.sh) while
-# it keeps working, so the task is not waiting on any of them. Pending-reply
+# it keeps working, so the task is not waiting on any of them. A key an alert
+# store holds stays in: it is still an open blocker in this file, and these
+# guards keep leaving the task alone while it is open. Pending-reply
 # recovery and a fire-and-forget retry ring consult this set and leave a task
 # alone while it is non-empty.
 status_own_open_decisions() {  # <status-file>
@@ -1308,6 +1330,7 @@ EOF
 # tag cannot be a transition, because the fold's own declaration guard rejects it.
 status_key_closing_verb() {  # <status-file> <key>
   local f=$1 want=$2 line resolve held open='' was verb='' kind event candidates
+  local _fm_fold_status_file=$1
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   [ -n "$want" ] || return 0
   kind=$(_fm_status_kind "$f")
@@ -1484,7 +1507,10 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # 11: that supersession keeps reserved-namespace blockers open, and
 # `handoff-pickup-` and `handoff-tj-` joined the reserved prefixes, so cursors folded under version 10 are
 # discarded.
-FM_OPEN_DECISIONS_FOLD_VERSION=11
+# 12: that supersession also keeps open a blocker whose key a registered alert
+# store holds active (docs/alert-store.md), so cursors folded under version 11
+# are discarded.
+FM_OPEN_DECISIONS_FOLD_VERSION=12
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
@@ -1560,6 +1586,7 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
   local f=$1 captured_end=${2:-} cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
   local version='' size actual_size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0
   local target_cursor kind fold_version
+  local _fm_fold_status_file=$1
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   kind=$(_fm_status_kind "$f")
   fold_version="$FM_OPEN_DECISIONS_FOLD_VERSION:$kind"
@@ -2657,6 +2684,7 @@ _fm_status_classification_progress() {  # <on-record> <completed-records>
 _fm_status_open_decision_origins() {  # <status-file> [<kind>] [<on-record>]
   local f=$1 on_record=${3:-} line open='' after key verb note number=0 origins=''
   local resolve held kind
+  local _fm_fold_status_file=$1
   kind=$(_fm_status_kind "$f" "${2:-}")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
