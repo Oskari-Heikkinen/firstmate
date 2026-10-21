@@ -47,6 +47,7 @@ fm_procevent_claim_root_to() {  # <output-variable>
 }
 
 fm_procevent_registry_dir() { printf '%s\n' "$1/procevent"; }
+fm_procevent_registry_dir_to() { printf -v "$1" '%s' "$2/procevent"; }  # <output-variable> <state-root>
 fm_procevent_inbox_dir()    { printf '%s\n' "$1/procevent-inbox"; }
 fm_procevent_capture_reservation_dir() { printf '%s\n' "$1/procevent-capture-reservations"; }
 
@@ -131,17 +132,17 @@ fm_procevent_any_registered() {
 # is untouched: that home refreshes its own lease. Nothing here keys on a script
 # name, a command line, or a process name, all of which are shared across homes.
 
-fm_procevent_owner_lease_path() {  # <state-root>
-  printf '%s/.owner-lease\n' "$(fm_procevent_registry_dir "$1")"
+fm_procevent_owner_lease_path_to() {  # <output-variable> <state-root>
+  printf -v "$1" '%s' "$2/procevent/.owner-lease"
 }
 
 # Record owner-presence activity in this home's process-event state. Best
 # effort by design: a home with no registry directory yet owns no runner.
 fm_procevent_owner_lease_touch() {  # <state-root>
   local reg lease tmp now
-  reg=$(fm_procevent_registry_dir "$1")
+  fm_procevent_registry_dir_to reg "$1"
   [ -d "$reg" ] && [ ! -L "$reg" ] || return 1
-  lease=$(fm_procevent_owner_lease_path "$1")
+  fm_procevent_owner_lease_path_to lease "$1"
   now=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
     'printf "%.6f\n", clock_gettime(CLOCK_MONOTONIC)') || return 1
   tmp=$(umask 077; mktemp "$reg/.owner-lease.XXXXXX") || return 1
@@ -151,14 +152,15 @@ fm_procevent_owner_lease_touch() {  # <state-root>
   fi
 }
 
-# Seconds since the last refresh. Fails when the lease is absent or unreadable,
-# which is what a removed home looks like from inside a surviving runner.
-fm_procevent_owner_lease_age() {  # <state-root>
-  local lease value
-  lease=$(fm_procevent_owner_lease_path "$1")
-  [ -f "$lease" ] && [ ! -L "$lease" ] || return 1
-  IFS= read -r value < "$lease" || return 1
-  perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e '
+# Assign the seconds since the last refresh. Fails when the lease is absent or
+# unreadable, which is what a removed home looks like from inside a surviving
+# runner. The guard reads it on every tick, so only the clock read forks.
+fm_procevent_owner_lease_age_to() {  # <output-variable> <state-root>
+  local _fm_la_lease _fm_la_value _fm_la_age
+  fm_procevent_owner_lease_path_to _fm_la_lease "$2"
+  [ -f "$_fm_la_lease" ] && [ ! -L "$_fm_la_lease" ] || return 1
+  IFS= read -r _fm_la_value < "$_fm_la_lease" || return 1
+  _fm_la_age=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e '
     use strict;
     use warnings;
     my $value = shift;
@@ -166,7 +168,8 @@ fm_procevent_owner_lease_age() {  # <state-root>
     my $now = clock_gettime(CLOCK_MONOTONIC);
     $now >= $value or exit 1;
     printf "%d\n", int($now - $value);
-  ' "$value"
+  ' "$_fm_la_value") || return 1
+  printf -v "$1" '%s' "$_fm_la_age"
 }
 
 # How long a runner keeps going with no activity in its owning home. The default
@@ -329,7 +332,7 @@ fm_procevent_launch_floor_wait() {  # <state-root> <source-id> <registration-ide
 # True while the owning home is provably still active.
 fm_procevent_owner_alive() {  # <state-root> <lease-seconds>
   local age
-  age=$(fm_procevent_owner_lease_age "$1") || return 1
+  fm_procevent_owner_lease_age_to age "$1" || return 1
   [ "$age" -le "$2" ]
 }
 
@@ -646,15 +649,25 @@ fm_procevent_claim_state_root_field_valid() {  # <canonical-state-root>
   return 0
 }
 
+# Assign the identity a claim records for its owning state root, as five tab-
+# separated fields: the physical root, its device, inode, owner (the current
+# user) and mode. The fields come from the stat that validated the root, so the
+# owner guard's per-tick check forks only for that stat and the two physical
+# path reads.
+fm_procevent_claim_state_root_identity_to() {  # <output-variable> <state-root>
+  local _fm_si_canonical
+  fm_procevent_state_root_resolve_to _fm_si_canonical "$2" || return 1
+  fm_procevent_claim_state_root_field_valid "$_fm_si_canonical" || return 1
+  [ "$FM_PROCEVENT_DIR_STAT_PATH" = "$_fm_si_canonical" ] || return 1
+  printf -v "$1" '%s\t%s\t%s\t%s\t%s' "$_fm_si_canonical" \
+    "$FM_PROCEVENT_DIR_STAT_DEVICE" "$FM_PROCEVENT_DIR_STAT_INODE" "$EUID" \
+    "$FM_PROCEVENT_DIR_STAT_MODE"
+}
+
 fm_procevent_claim_state_root_identity() {  # <state-root>
-  local state=$1 canonical device inode owner mode
-  canonical=$(fm_procevent_state_root_resolve "$state") || return 1
-  fm_procevent_claim_state_root_field_valid "$canonical" || return 1
-  device=$(fm_pr_file_device "$canonical") || return 1
-  inode=$(fm_pr_file_inode "$canonical") || return 1
-  owner=$(id -u) || return 1
-  mode=$(fm_pr_file_mode "$canonical") || return 1
-  printf '%s\t%s\t%s\t%s\t%s\n' "$canonical" "$device" "$inode" "$owner" "$mode"
+  local fm_state_identity
+  fm_procevent_claim_state_root_identity_to fm_state_identity "$1" || return 1
+  printf '%s\n' "$fm_state_identity"
 }
 
 fm_procevent_claim_owned_by_state() {  # <state-root> <legacy-home>
@@ -669,7 +682,7 @@ fm_procevent_claim_recorded_state_root_valid() {
   local identity state_root state_device state_inode state_owner state_mode
   state_root=${FM_PROCEVENT_CLAIM_STATE_ROOT:-}
   [ -n "$state_root" ] || return 0
-  identity=$(fm_procevent_claim_state_root_identity "$state_root") || return 1
+  fm_procevent_claim_state_root_identity_to identity "$state_root" || return 1
   IFS=$'\t' read -r state_root state_device state_inode state_owner state_mode <<< "$identity"
   [ "$state_root" = "$FM_PROCEVENT_CLAIM_STATE_ROOT" ] \
     && [ "$state_device" = "$FM_PROCEVENT_CLAIM_STATE_DEVICE" ] \
@@ -1010,55 +1023,93 @@ fm_procevent_claim_release_mode_locked() {
 
 # --- durable capture and publication ----------------------------------------
 
-fm_procevent_path_normalize() {
-  local path=${1-} part
-  local -a parts normalized=()
-  [ -n "$path" ] || return 1
-  case "$path" in
+# Assign the lexically normalized absolute spelling of a path. The owner guard
+# validates its state root on every tick, so the join stays in this shell.
+fm_procevent_path_normalize_to() {  # <output-variable> <path>
+  local _fm_pn_path=${2-} _fm_pn_part _fm_pn_joined='' IFS=/
+  local -a _fm_pn_parts _fm_pn_normalized=()
+  [ -n "$_fm_pn_path" ] || return 1
+  case "$_fm_pn_path" in
     /*) ;;
-    *) path="$(pwd -P)/$path" ;;
+    *) _fm_pn_path="$(pwd -P)/$_fm_pn_path" ;;
   esac
-  IFS=/ read -r -a parts <<< "$path"
-  for part in "${parts[@]}"; do
-    case "$part" in
+  read -r -a _fm_pn_parts <<< "$_fm_pn_path"
+  for _fm_pn_part in "${_fm_pn_parts[@]}"; do
+    case "$_fm_pn_part" in
       ''|.) ;;
-      ..) [ "${#normalized[@]}" -gt 0 ] && unset 'normalized[${#normalized[@]}-1]' ;;
-      *) normalized+=("$part") ;;
+      ..) [ "${#_fm_pn_normalized[@]}" -gt 0 ] && unset '_fm_pn_normalized[${#_fm_pn_normalized[@]}-1]' ;;
+      *) _fm_pn_normalized+=("$_fm_pn_part") ;;
     esac
   done
-  printf '/%s\n' "$(IFS=/; printf '%s' "${normalized[*]}")"
+  # Bash before 4.4 expands an empty array as unset under set -u, so no
+  # components join to nothing rather than through the array.
+  [ "${#_fm_pn_normalized[@]}" -eq 0 ] || _fm_pn_joined="${_fm_pn_normalized[*]}"
+  # In a multibyte locale read can keep the line's newline on a component that
+  # ends in an invalid byte. The command substitution this join replaced
+  # dropped trailing newlines, so they are dropped here too.
+  while [ "${_fm_pn_joined%$'\n'}" != "$_fm_pn_joined" ]; do _fm_pn_joined=${_fm_pn_joined%$'\n'}; done
+  printf -v "$1" '/%s' "$_fm_pn_joined"
 }
 
-fm_procevent_directory_owned_by_current_user() {
-  local owner
-  if [ "$(uname)" = Darwin ]; then
-    owner=$(/usr/bin/stat -f %u "$1" 2>/dev/null)
+# The kernel name, read once at source time rather than forked by every
+# directory check below. fm-wake-lib.sh's _FM_UNAME is reused when it is
+# already loaded; the value is compared only against Darwin.
+_FM_PROCEVENT_UNAME=${_FM_UNAME:-$(uname 2>/dev/null)}
+
+# fm_procevent_directory_stat <path>
+# Read the owner, mode, device and inode of the entry itself in one stat, the
+# fields fm_pr_file_mode, fm_pr_file_device and fm_pr_file_inode each read
+# alone. They land in FM_PROCEVENT_DIR_STAT_OWNER, _MODE, _DEVICE and _INODE,
+# and FM_PROCEVENT_DIR_STAT_PATH names the path they describe. All five are
+# cleared first, so a failed read leaves nothing from an earlier one. The
+# redirect stays outside the substitution: inside it, bash forks a subshell and
+# then stat rather than running stat as the substitution itself.
+fm_procevent_directory_stat() {  # <path>
+  local _fm_ds_out _fm_ds_owner _fm_ds_mode _fm_ds_device _fm_ds_inode _fm_ds_rest
+  FM_PROCEVENT_DIR_STAT_PATH=
+  FM_PROCEVENT_DIR_STAT_OWNER=
+  FM_PROCEVENT_DIR_STAT_MODE=
+  FM_PROCEVENT_DIR_STAT_DEVICE=
+  FM_PROCEVENT_DIR_STAT_INODE=
+  if [ "$_FM_PROCEVENT_UNAME" = Darwin ]; then
+    { _fm_ds_out=$(/usr/bin/stat -f '%u %Lp %d %i' "$1"); } 2>/dev/null || return 1
   else
-    owner=$(stat -c %u "$1" 2>/dev/null)
+    { _fm_ds_out=$(stat -c '%u %a %d %i' "$1"); } 2>/dev/null || return 1
   fi
-  [ "$owner" = "$(id -u)" ]
+  IFS=' ' read -r _fm_ds_owner _fm_ds_mode _fm_ds_device _fm_ds_inode _fm_ds_rest <<< "$_fm_ds_out"
+  [ -n "$_fm_ds_inode" ] && [ -z "$_fm_ds_rest" ] || return 1
+  FM_PROCEVENT_DIR_STAT_PATH=$1
+  FM_PROCEVENT_DIR_STAT_OWNER=$_fm_ds_owner
+  FM_PROCEVENT_DIR_STAT_MODE=$_fm_ds_mode
+  FM_PROCEVENT_DIR_STAT_DEVICE=$_fm_ds_device
+  FM_PROCEVENT_DIR_STAT_INODE=$_fm_ds_inode
 }
 
-# fm_procevent_state_root_resolve <state-root>
-# Print the physical private directory this module operates on, or fail. A home
-# is legitimately spelled through a symlinked ancestor - /tmp and $TMPDIR are
-# symlinks on macOS - so the caller's spelling is resolved exactly once here and
-# every derived path, recorded claim identity, and later confinement check uses
-# the physical root instead. Resolving before validating is what makes the
+# fm_procevent_state_root_resolve_to <output-variable> <state-root>
+# Assign the physical private directory this module operates on, or fail. A
+# home is legitimately spelled through a symlinked ancestor - /tmp and $TMPDIR
+# are symlinks on macOS - so the caller's spelling is resolved exactly once here
+# and every derived path, recorded claim identity, and later confinement check
+# uses the physical root instead. Resolving before validating is what makes the
 # private-directory contract hold for the directory actually operated on, rather
-# than only for callers that already spelled it physically.
-fm_procevent_state_root_resolve() {  # <state-root>
-  local state=$1 canonical
-  canonical=$(CDPATH='' cd -P -- "$state" 2>/dev/null && pwd -P) || return 1
-  fm_procevent_private_directory_valid "$canonical" 0 || return 1
-  printf '%s\n' "$canonical"
+# than only for callers that already spelled it physically. On success the
+# FM_PROCEVENT_DIR_STAT_* fields describe the resolved root.
+fm_procevent_state_root_resolve_to() {  # <output-variable> <state-root>
+  local _fm_sr_canonical
+  _fm_sr_canonical=$(CDPATH='' cd -P -- "$2" 2>/dev/null && pwd -P) || return 1
+  fm_procevent_private_directory_valid "$_fm_sr_canonical" 0 || return 1
+  printf -v "$1" '%s' "$_fm_sr_canonical"
 }
 
-fm_procevent_private_directory_valid() {
+# A directory owned by the current user, not writable by group or others (mode
+# 700 exactly when <exact-mode> is 1), and spelled physically. On success the
+# FM_PROCEVENT_DIR_STAT_* fields describe it.
+fm_procevent_private_directory_valid() {  # <directory> <exact-mode>
   local directory=$1 exact_mode=$2 canonical normalized mode
   [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
-  fm_procevent_directory_owned_by_current_user "$directory" || return 1
-  mode=$(fm_pr_file_mode "$directory") || return 1
+  fm_procevent_directory_stat "$directory" || return 1
+  [ "$FM_PROCEVENT_DIR_STAT_OWNER" = "$EUID" ] || return 1
+  mode=$FM_PROCEVENT_DIR_STAT_MODE
   case "$mode" in ''|*[!0-7]*) return 1 ;; esac
   if [ "$exact_mode" = 1 ]; then
     [ "$mode" = 700 ] || return 1
@@ -1066,13 +1117,13 @@ fm_procevent_private_directory_valid() {
     return 1
   fi
   canonical=$(cd -P -- "$directory" && pwd -P) || return 1
-  normalized=$(fm_procevent_path_normalize "$directory") || return 1
+  fm_procevent_path_normalize_to normalized "$directory" || return 1
   [ "$canonical" = "$normalized" ]
 }
 
 fm_procevent_capture_inbox_prepare() {
   local state=$1 inbox
-  state=$(fm_procevent_state_root_resolve "$state") || return 1
+  fm_procevent_state_root_resolve_to state "$state" || return 1
   inbox=$(fm_procevent_inbox_dir "$state")
   if [ ! -e "$inbox" ] && [ ! -L "$inbox" ]; then
     (umask 077; mkdir "$inbox") || return 1
@@ -1086,7 +1137,7 @@ fm_procevent_capture_inbox_prepare() {
 # `pwd -P` compares against the same physical path this validated.
 fm_procevent_extension_staging_prepare() {
   local state=$1 registry
-  state=$(fm_procevent_state_root_resolve "$state") || return 1
+  fm_procevent_state_root_resolve_to state "$state" || return 1
   registry=$(fm_procevent_registry_dir "$state")
   fm_procevent_private_directory_valid "$registry" 1 || return 1
   printf '%s\n' "$registry"
@@ -1094,7 +1145,7 @@ fm_procevent_extension_staging_prepare() {
 
 fm_procevent_capture_reservation_prepare() {
   local state=$1 reservation
-  state=$(fm_procevent_state_root_resolve "$state") || return 1
+  fm_procevent_state_root_resolve_to state "$state" || return 1
   reservation=$(fm_procevent_capture_reservation_dir "$state")
   if [ ! -e "$reservation" ] && [ ! -L "$reservation" ]; then
     (umask 077; mkdir "$reservation") || return 1

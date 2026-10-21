@@ -3118,6 +3118,275 @@ PL
 test_signal_proof_absent_leader() { signal_proof_case absent; }
 test_signal_proof_zombie_leader() { signal_proof_case zombie; }
 
+test_state_root_identity() {
+set -e
+use_claim_root test_state_root_identity
+# --- the state-root identity comes from the stat that validates the root -----
+#
+# Every owner-guard tick re-reads its home's state-root identity, so the library
+# assembles it from the one stat that validates the root, where it once took a
+# stat per field, an `id -u`, and a `uname` per stat. A claim recorded before
+# that change holds the per-field readings, so the identity must stay
+# byte-identical to them or a live generation would read as drifted. The
+# refusals that one stat now decides, high-byte names that a multibyte read
+# splits differently, and the commands one read runs are pinned through the
+# library under every Bash this host has.
+SI="$TMP_ROOT/state-root-identity"
+mkdir -p "$SI/home" "$SI/real/state/procevent" "$SI/real/sub" "$SI/bytes" \
+  "$SI/m750" "$SI/m770" "$SI/m702" "$SI/foreign"
+chmod 700 "$SI/real/state" "$SI/bytes"
+chmod 750 "$SI/m750"
+chmod 770 "$SI/m770"
+chmod 702 "$SI/m702"
+ln -s real "$SI/alias"
+ln -s real/state "$SI/link"
+: > "$SI/file"
+si_ctl=$'ctl\tname'
+mkdir "$SI/$si_ctl"
+chmod 700 "$SI/$si_ctl"
+si_base=$(cd -P "$SI" && pwd -P)
+si_phys="$si_base/real/state"
+si_bashes=("$BASH")
+# shellcheck disable=SC2016 # Expanded by /bin/bash.
+if [ -x /bin/bash ] && [ "$(/bin/bash -c 'printf %s "$BASH_VERSION"')" != "$BASH_VERSION" ]; then
+  si_bashes+=(/bin/bash)
+fi
+
+SI_FIELDS="$TMP_ROOT/state-root-identity-fields.sh"
+cat > "$SI_FIELDS" <<'SH'
+# <root> <physical-state-root> <spelling>...: report each spelling whose
+# identity differs from the per-field readings an older claim recorded.
+set -u
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+phys=$2
+shift 2
+device=$(fm_pr_file_device "$phys") && inode=$(fm_pr_file_inode "$phys") \
+  && owner=$(id -u) && mode=$(fm_pr_file_mode "$phys") \
+  || { printf 'fixture invalid: the per-field readings of %q failed\n' "$phys"; exit 0; }
+want=$(printf '%s\t%s\t%s\t%s\t%s' "$phys" "$device" "$inode" "$owner" "$mode")
+for spelling in "$@"; do
+  got=
+  fm_procevent_claim_state_root_identity_to got "$spelling" \
+    || { printf 'the identity of %q is unreadable\n' "$spelling"; continue; }
+  [ "$got" = "$want" ] || printf 'the identity of %q is %q, not %q\n' "$spelling" "$got" "$want"
+  printed=$(fm_procevent_claim_state_root_identity "$spelling"; printf x)
+  [ "$printed" = "$want"$'\n'x ] || printf 'the printed identity of %q is %q\n' "$spelling" "$printed"
+done
+SH
+for si_bash in "${si_bashes[@]}"; do
+  si_out=$(FM_HOME="$SI/home" "$si_bash" "$SI_FIELDS" "$ROOT" "$si_phys" \
+    "$si_phys" "$SI/real/state" "$si_base/alias/state" "$si_base/real/sub/../state" "$si_phys/" 2>&1) \
+    || fail "the state-root identity check could not run under $si_bash: $si_out"
+  [ -z "$si_out" ] || fail "the state-root identity differs from the per-field readings under $si_bash:"$'\n'"$si_out"
+done
+pass "the one-stat state-root identity matches the per-field readings older claims recorded"
+
+SI_VERDICTS="$TMP_ROOT/state-root-identity-verdicts.sh"
+cat > "$SI_VERDICTS" <<'SH'
+# <root> then <accept|refuse> <0|1|identity> <path> triples: report each verdict
+# that differs. 0 and 1 are fm_procevent_private_directory_valid's exact-mode
+# argument; identity reads the claim identity, which a refusal leaves unset.
+set -u
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+shift
+while [ "$#" -ge 3 ]; do
+  expect=$1 kind=$2 path=$3
+  shift 3
+  got=unassigned
+  if [ "$kind" = identity ]; then
+    fm_procevent_claim_state_root_identity_to got "$path"
+  else
+    fm_procevent_private_directory_valid "$path" "$kind"
+  fi
+  rc=$?
+  case "$expect:$rc" in
+    accept:0|refuse:[1-9]*) ;;
+    *) printf '%s check of %q: expected %s, got exit %s\n' "$kind" "$path" "$expect" "$rc" ;;
+  esac
+  [ "$rc" -eq 0 ] || [ "$got" = unassigned ] || printf 'the refused identity of %q assigned %q\n' "$path" "$got"
+done
+SH
+si_cases=(
+  accept 1 "$si_phys"
+  accept 0 "$si_base/real/sub/../state"
+  refuse 0 "$si_base/alias/state"
+  refuse 0 "$si_base/link"
+  refuse 1 "$si_base/link"
+  accept 0 "$si_base/m750"
+  refuse 1 "$si_base/m750"
+  refuse 0 "$si_base/m770"
+  refuse 0 "$si_base/m702"
+  refuse 0 "$si_base/file"
+  refuse 0 "$si_base/missing"
+  accept 1 "$si_base/$si_ctl"
+  accept identity "$si_base/alias/state"
+  accept identity "$si_base/link"
+  refuse identity "$si_base/m770"
+  refuse identity "$si_base/m702"
+  refuse identity "$si_base/file"
+  refuse identity "$si_base/missing"
+  refuse identity "$si_base/$si_ctl"
+)
+if [ "$(uname)" = Darwin ]; then
+  si_root_owner=$(/usr/bin/stat -f %u /)
+else
+  si_root_owner=$(stat -c %u /)
+fi
+if [ "$si_root_owner" != "$(id -u)" ]; then
+  si_cases+=(refuse 0 / refuse identity /)
+elif chown 65534 "$SI/foreign" 2>/dev/null; then
+  si_cases+=(refuse 0 "$si_base/foreign" refuse identity "$si_base/foreign")
+else
+  printf 'foreign owner: no directory owned by another user is available here\n'
+fi
+for si_bash in "${si_bashes[@]}"; do
+  si_out=$(FM_HOME="$SI/home" "$si_bash" "$SI_VERDICTS" "$ROOT" "${si_cases[@]}" 2>&1) \
+    || fail "the state-root verdict check could not run under $si_bash: $si_out"
+  [ -z "$si_out" ] || fail "a state-root verdict changed under $si_bash:"$'\n'"$si_out"
+done
+pass "state-root validation still refuses shared, linked, misspelled, foreign and non-directory roots"
+
+# A UTF-8 read keeps the line's newline on a last component that ends in an
+# incomplete multibyte sequence, so such a name would never match its physical
+# spelling unless the lexical normalization drops it as the command
+# substitution it replaced did. Filesystems that refuse invalid UTF-8 names
+# (APFS) keep only the valid one.
+SI_BYTES="$TMP_ROOT/state-root-identity-bytes.sh"
+cat > "$SI_BYTES" <<'SH'
+# <root> <directory>...: report each directory that is refused, or that the
+# identity does not name by its physical path, in the current locale.
+set -u
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+shift
+for dir in "$@"; do
+  want=$(cd -P -- "$dir" && pwd -P) || { printf 'fixture invalid: %q does not resolve\n' "$dir"; continue; }
+  fm_procevent_private_directory_valid "$want" 1 || printf '%q is refused in %s\n' "$want" "${LC_ALL-}"
+  got=
+  if fm_procevent_claim_state_root_identity_to got "$dir"; then
+    [ "${got%%$'\t'*}" = "$want" ] || printf 'the identity of %q names %q in %s\n' "$dir" "${got%%$'\t'*}" "${LC_ALL-}"
+  else
+    printf 'the identity of %q is unreadable in %s\n' "$dir" "${LC_ALL-}"
+  fi
+done
+SH
+si_byte_dirs=()
+for si_name in $'caf\xc3' $'x\xe2\x82' $'\xff' $'caf\xc3\xa9'; do
+  mkdir "$SI/bytes/$si_name" 2>/dev/null || continue
+  chmod 700 "$SI/bytes/$si_name"
+  si_byte_dirs+=("$si_base/bytes/$si_name")
+done
+[ "${#si_byte_dirs[@]}" -gt 0 ] || fail "fixture invalid: no high-byte directory name could be created"
+si_locales=(C)
+si_utf8=$(locale -a 2>/dev/null | grep -i -m 1 -E '^(C|en_US)\.UTF-?8$' || true)
+[ -z "$si_utf8" ] || si_locales+=("$si_utf8")
+for si_bash in "${si_bashes[@]}"; do
+  for si_locale in "${si_locales[@]}"; do
+    si_out=$(LC_ALL=$si_locale FM_HOME="$SI/home" "$si_bash" "$SI_BYTES" "$ROOT" "${si_byte_dirs[@]}" 2>&1) \
+      || fail "the high-byte state-root check could not run under $si_bash ($si_locale): $si_out"
+    [ -z "$si_out" ] || fail "a high-byte state root misresolved under $si_bash ($si_locale):"$'\n'"$si_out"
+  done
+done
+pass "high-byte state-root names resolve to their physical path in the C and UTF-8 locales"
+
+# The commands one read runs, counted through PATH shims. Darwin reads
+# /usr/bin/stat by absolute path, so there the stat is not counted.
+SI_SPAWN_BIN=$(fm_fakebin "$TMP_ROOT/state-root-identity-spawns")
+for si_tool in stat id uname perl; do
+  si_real=$(command -v "$si_tool") || fail "this host has no $si_tool to count"
+  cat > "$SI_SPAWN_BIN/$si_tool" <<SH
+#!/bin/sh
+printf '%s\n' $si_tool >> "\$SI_SPAWN_LOG"
+exec "$si_real" "\$@"
+SH
+  chmod +x "$SI_SPAWN_BIN/$si_tool"
+done
+SI_SPAWNS="$TMP_ROOT/state-root-identity-spawns.sh"
+cat > "$SI_SPAWNS" <<'SH'
+# <root> <state-root>: read the identity three times, then the owner lease three
+# times, each under its own marker in the spawn log.
+set -u
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+state=$2
+fm_procevent_owner_lease_touch "$state" \
+  || { printf 'fixture invalid: the owner lease could not be refreshed\n'; exit 0; }
+printf 'identity\n' > "$SI_SPAWN_LOG"
+for _ in 1 2 3; do
+  fm_procevent_claim_state_root_identity_to identity "$state" || printf 'an identity read failed\n'
+done
+printf 'lease\n' >> "$SI_SPAWN_LOG"
+for _ in 1 2 3; do
+  fm_procevent_owner_alive "$state" 600 || printf 'an owner lease read failed\n'
+done
+SH
+si_section() {  # <log> <marker>
+  awk -v marker="$2" '/^(identity|lease)$/ { on = ($0 == marker); next } on' "$1"
+}
+si_want_identity=$'stat\nstat\nstat'
+[ "$(uname)" != Darwin ] || si_want_identity=
+for si_bash in "${si_bashes[@]}"; do
+  si_out=$(PATH="$SI_SPAWN_BIN:$PATH" SI_SPAWN_LOG="$SI/spawns.log" FM_HOME="$SI/home" \
+    "$si_bash" "$SI_SPAWNS" "$ROOT" "$si_phys" 2>&1) \
+    || fail "the state-root spawn count could not run under $si_bash: $si_out"
+  [ -z "$si_out" ] || fail "the state-root spawn count failed under $si_bash:"$'\n'"$si_out"
+  assert_equals "$si_want_identity" "$(si_section "$SI/spawns.log" identity)" \
+    "three identity reads under $si_bash ran more than one stat each"
+  assert_equals $'perl\nperl\nperl' "$(si_section "$SI/spawns.log" lease)" \
+    "three owner lease reads under $si_bash ran more than one perl each"
+done
+pass "a state-root identity read runs one stat and no id, uname or perl"
+
+# A stat that fails or prints a malformed line yields no identity, even right
+# after a good read whose fields it must not reuse. Darwin's absolute stat path
+# cannot be shimmed.
+if [ "$(uname)" != Darwin ]; then
+  SI_BAD_BIN=$(fm_fakebin "$TMP_ROOT/state-root-identity-bad-stat")
+  cat > "$SI_BAD_BIN/stat" <<'SH'
+#!/bin/sh
+case "$SI_BAD_STAT" in
+  short) printf '%s 700 1\n' "$(id -u)" ;;
+  long) printf '%s 700 1 2 3\n' "$(id -u)" ;;
+esac
+[ "$SI_BAD_STAT" != fail ]
+SH
+  chmod +x "$SI_BAD_BIN/stat"
+  SI_BAD="$TMP_ROOT/state-root-identity-bad.sh"
+  cat > "$SI_BAD" <<'SH'
+# <root> <state-root> <bad-stat-dir>
+set -u
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+state=$2 bad=$3 real_path=$PATH
+for SI_BAD_STAT in fail short long; do
+  export SI_BAD_STAT
+  fm_procevent_claim_state_root_identity_to good "$state" \
+    || { printf 'fixture invalid: the real stat was refused\n'; exit 0; }
+  PATH="$bad:$real_path"
+  got=unassigned
+  if fm_procevent_claim_state_root_identity_to got "$state"; then
+    printf 'a %s stat still produced the identity %q\n' "$SI_BAD_STAT" "$got"
+  fi
+  [ "$got" = unassigned ] || printf 'a %s stat assigned %q\n' "$SI_BAD_STAT" "$got"
+  PATH=$real_path
+done
+SH
+  for si_bash in "${si_bashes[@]}"; do
+    si_out=$(FM_HOME="$SI/home" "$si_bash" "$SI_BAD" "$ROOT" "$si_phys" "$SI_BAD_BIN" 2>&1) \
+      || fail "the malformed-stat check could not run under $si_bash: $si_out"
+    [ -z "$si_out" ] || fail "a malformed stat yielded a state-root identity under $si_bash:"$'\n'"$si_out"
+  done
+  pass "a failed or malformed stat yields no state-root identity"
+fi
+}
+
 # Every case group above owns its homes, its claim root (use_claim_root) and its
 # fixture paths, and acts only on processes it started, so the groups run through
 # fm_run_case_pool (tests/lib.sh), longest first. FM_PROCEVENT_CASE_JOBS
@@ -3148,6 +3417,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_decimal_interval \
   test_argv_and_bounds \
   test_prompt_stop_and_crash \
+  test_state_root_identity \
   || fail 'one or more procevent case groups failed'
 
 printf '\nall procevent tests passed\n'

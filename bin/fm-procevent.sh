@@ -246,7 +246,7 @@ usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//';
 
 case "${1-}" in ''|-h|--help|help) usage ;; esac
 
-REG=$(fm_procevent_registry_dir "$STATE")
+fm_procevent_registry_dir_to REG "$STATE"
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 EXTENSION_HOST="$SCRIPT_DIR/fm-extension.mjs"
 EXTENSION_LIFECYCLE_LOCK="$REG/.extension-binding-lifecycle.lock"
@@ -256,8 +256,10 @@ state_root_bind() {  # [create]
     [ "${1-}" = create ] || return 1
     (umask 077; mkdir -p "$STATE") || return 1
   fi
-  STATE=$(fm_procevent_state_root_resolve "$STATE") || return 1
-  REG=$(fm_procevent_registry_dir "$STATE")
+  # A failed resolve empties STATE, as the command substitution this replaced
+  # did, so nothing after it can act on the unresolved spelling.
+  fm_procevent_state_root_resolve_to STATE "$STATE" || { STATE=; return 1; }
+  fm_procevent_registry_dir_to REG "$STATE"
   EXTENSION_LIFECYCLE_LOCK="$REG/.extension-binding-lifecycle.lock"
   FM_STATE_OVERRIDE=$STATE
   export FM_STATE_OVERRIDE
@@ -1308,7 +1310,7 @@ cmd_owner_watchdog() {  # <source-id> <runner-pid> <runner-identity> <ready-file
   fm_procevent_pid_state "$pid" "$identity"
   pid_state=$?
   [ "$pid_state" -eq 0 ] || die "runner identity changed before owner guard initialization"
-  state_identity=$(fm_procevent_claim_state_root_identity "$STATE") \
+  fm_procevent_claim_state_root_identity_to state_identity "$STATE" \
     || die "owning state root identity is unreadable at owner guard initialization"
   IFS=$'\t' read -r _ current_device current_inode _ _ <<< "$state_identity"
   [ "$current_device" = "$state_device" ] && [ "$current_inode" = "$state_inode" ] \
@@ -1326,7 +1328,8 @@ cmd_owner_watchdog() {  # <source-id> <runner-pid> <runner-identity> <ready-file
       0) ;;
       *) continue ;;
     esac
-    state_identity=$(fm_procevent_claim_state_root_identity "$STATE" 2>/dev/null || true)
+    fm_procevent_claim_state_root_identity_to state_identity "$STATE" 2>/dev/null \
+      || state_identity=
     current_device=
     current_inode=
     [ -z "$state_identity" ] \
