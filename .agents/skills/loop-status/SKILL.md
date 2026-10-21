@@ -36,5 +36,6 @@ This skill owns only how agents use it.
 - Each alert line names the condition and its subject; act on the cause first, then acknowledge with `bin/fm-loop.sh ack <alert-id>`.
 - Acknowledge only an alert you have handed to its owner or resolved; an ack silences that record until the condition clears and recurs.
 - A `check: .../state/loop-alerts.check.sh` wake carries one line per newly opened alert from `bin/fm-loop.sh alerts --new`; it never repeats an alert already reported, so act on each line when it arrives rather than waiting for a reminder.
+- A `source-unreadable--<source>` line means that source is missing or unreadable, so everything it feeds reads unknown and no alert clears; fix the path or access named in the line (or the home's `config/loop-sources`), or hand it to the source's owner, before acknowledging it.
 - Install or remove that check only with `bin/fm-loop.sh arm` or `disarm` (steps in the "Watcher check" section of the doc); never write or delete `state/loop-alerts.check.sh` or `state/loop-alerts/reported.cursor` by hand, and never run `alerts --new` as a diagnostic, because it consumes what the check would report: use `alerts` or `status`.
 - Never edit or delete a record under `state/loop-alerts/` by hand; its `log` file explains every raise, clear and ack.

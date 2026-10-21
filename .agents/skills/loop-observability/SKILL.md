@@ -22,7 +22,7 @@ metadata:
 Anyone can see from records alone where every experiment request stands, why it waits, and when the loop stalls, so idle capacity and silent refusals never go unnoticed.
 `fm-loop` is a read-only join over the loop's own records: it never writes, wakes, consumes or acknowledges a source, and its only writes are its alert records, cursors, log and check shim under `<home>/state`.
 A missing, unreadable or wrong-schema source reads as unknown, never as empty or healthy, and an unknown condition never clears an alert.
-Each alert is one durable record that wakes firstmate once per new occurrence through the watcher check, except `source-unreadable`; TETJET's own capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) are shown beside the stages, never raised again.
+Each alert is one durable record that wakes firstmate once per new occurrence through the watcher check, `source-unreadable` included; TETJET's own capacity alerts (`tj-lane-refused`, `tj-idle`, `tj-capacity-unread`) are shown beside the stages, never raised again.
 `fm-project-capacity-lib.sh` is the one owner of per-project worker capacity: a declared number, counted from task records under the shared project lock, and an unreadable declaration refuses spawns instead of guessing.
 Sources, thresholds and limits are data (`config/loop-sources`, `config/project-capacity`), so a new source or project is a config line, not code.
 
@@ -41,7 +41,7 @@ Sources, thresholds and limits are data (`config/loop-sources`, `config/project-
 - Suppressing an alert in the very state it should report, such as an idle alarm muted while a lane is broken (wave-2 history H16: a ~50 h lane refusal went unseen this way; wave-2 queue section 7: queue state read `ok` while blocked).
 - Folding supply and lane health into one derived status (`docs/loop-status.md`: shown "as separate fields, never one derived from the other").
 - Raising TETJET's own capacity alerts again as loop alerts (`docs/loop-status.md`: tetjet-mate owns them).
-- A watcher check that prints every open alert on each run, prints acknowledged or `source-unreadable` alerts, or moves its cursor before printing (`docs/loop-status.md` "Watcher check").
+- A watcher check that prints every open alert on each run, prints acknowledged alerts, hides `source-unreadable`, or moves its cursor before printing (`docs/loop-status.md` "Watcher check").
 - Accepting an unknown schema leniently, or replaying the lane journal to recover a bad cursor (`docs/loop-status.md` "Capacity filler watch").
 - A hard-coded source path, threshold, home or request family in code where a `config/loop-sources` line belongs (`docs/configuration.md` "Loop sources"; tool-design rule 4).
 - Unbounded reads, tree walks or runs past the cap (`bin/fm-loop.sh` header: niced and capped at 60 s; wave-2 history H9 unbounded read volume).

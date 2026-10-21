@@ -417,16 +417,41 @@ if new(NOW + 540):
     fail("an acknowledged alert printed")
 ok("an acknowledged alert never prints")
 
-for step, override in enumerate(({"handoff_queue": bad / "queue"}, {"handoff_queue": tmp / "nowhere"},
-                                 {"collected": bad / "collected"}, {})):
-    config(override)
-    lines = new(NOW + 600 + 60 * step)
-    if lines:
-        fail("source %s printed: %s" % (override, lines))
+
+def unreadable_lines(lines, source):
+    want = "source-unreadable--%s since " % source
+    if len(lines) != 1 or not lines[0].startswith(want):
+        fail("expected one %s line: %s" % (want, lines))
+
+
+config({"handoff_queue": bad / "queue"})
+unreadable_lines(new(NOW + 600), "handoff_queue")
+if new(NOW + 660):
+    fail("an unreadable source printed twice")
 rec = json.loads((home / "state/loop-alerts/no-package--fresh-acc-1.json").read_text())
 if rec["cleared_at"]:
     fail("an alert cleared while its source was unreadable: %s" % rec)
-ok("an unreadable or missing source prints nothing, and holds clears so its return raises nothing")
+ok("an unreadable source prints once, and holds clears so its return raises nothing")
+
+config()
+if new(NOW + 720):
+    fail("a source coming back printed")
+config({"handoff_queue": bad / "queue"})
+unreadable_lines(new(NOW + 780), "handoff_queue")
+if new(NOW + 790):
+    fail("a returning unreadable source printed twice")
+ok("an unreadable source that clears and returns prints again, once")
+
+config()
+new(NOW + 800)
+config({"collected": tmp / "nowhere"})
+unreadable_lines(new(NOW + 820), "collected")
+if new(NOW + 840):
+    fail("a missing source printed twice")
+config()
+if new(NOW + 860):
+    fail("a missing source coming back printed")
+ok("a missing source prints once, the same as an unreadable one")
 
 cursor.write_text("{not json")
 lines = new(NOW + 900)

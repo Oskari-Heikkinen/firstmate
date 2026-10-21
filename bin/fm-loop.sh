@@ -32,9 +32,9 @@
 # alerts --new is the watcher check's mode: one line per alert raised (or
 # raised again after clearing) since this mode last reported it, nothing
 # otherwise. Its cursor is <home>/state/loop-alerts/reported.cursor; the first
-# run seeds it with every current alert and prints nothing. Acknowledged and
-# source-unreadable alerts never print here. It is capped at FM_CHECK_TIMEOUT
-# less 5 s (default 25 s); a failed or timed-out run prints one line, once per
+# run seeds it with every current alert and prints nothing. Acknowledged alerts
+# never print here; source-unreadable prints like any other. It is capped at
+# FM_CHECK_TIMEOUT less 5 s (default 25 s); a failed or timed-out run prints one line, once per
 # distinct failure, kept in <home>/state/loop-alerts/check-failure.
 # arm seeds the cursor when it is absent, writes <home>/state/loop-alerts.check.sh
 # to run alerts --new, and binds it with fm-check-register.sh; rerunning it is

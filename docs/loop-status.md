@@ -77,7 +77,8 @@ While any source raises `source-unreadable`, no alert clears: its condition is u
 `alerts --new` is the mode a standing watcher check runs, so firstmate wakes once per newly opened alert and never for alerts already open.
 It prints one line per alert occurrence it has not reported yet, in the same format as `alerts`, and nothing otherwise.
 An occurrence is the alert id with the raise it belongs to: a raise again after a clear is a new occurrence and prints again.
-An acknowledged alert never prints, and neither does `source-unreadable`, so a missing or unreadable source never makes the check print; `status` and `alerts` still show it.
+An acknowledged alert never prints.
+`source-unreadable` prints like any other alert, once per occurrence, because an unknown source is a failure, never ok; a missing source raises the same alert as an unreadable one.
 An alert raised and cleared between two runs still prints once, marked cleared.
 
 `<home>/state/loop-alerts/reported.cursor` records the last reported occurrence per alert.

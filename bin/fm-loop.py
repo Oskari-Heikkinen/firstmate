@@ -1082,8 +1082,9 @@ def new_alerts_mode(loop):
 
     The cursor maps alert id to the raise occurrence last reported. The first
     run seeds it with every record and prints nothing; source-unreadable
-    alerts never print here. Lines print before the cursor moves, so a cursor
-    that cannot be written repeats a line rather than losing it.
+    prints like any other alert, since an unknown source is a failure. Lines
+    print before the cursor moves, so a cursor that cannot be written repeats
+    a line rather than losing it.
     """
     loop.record_alerts()
     folder = loop.home / "state/loop-alerts"
@@ -1102,7 +1103,7 @@ def new_alerts_mode(loop):
         records = sorted(loop.records.values(), key=lambda r: (r["first_seen"], r["id"]))
         if reported is not None:
             for rec in records:
-                if rec.get("acked_at") or rec["condition"] == "source-unreadable" or rec.get("quiet") == occurrence_key(rec):
+                if rec.get("acked_at") or rec.get("quiet") == occurrence_key(rec):
                     continue
                 if reported.get(rec["id"]) != occurrence_key(rec):
                     print(alert_line(rec))
