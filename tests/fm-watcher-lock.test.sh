@@ -252,16 +252,26 @@ test_live_stalled_watch_lock_is_replaced_past_hard_bound() {
 LONG_CYCLE_GRACE=5
 
 # Register one silent custom check that logs its start and then takes <secs>.
+# A running watcher's sweep rejects, and wakes on, any state/*.check.sh it
+# finds without its trust record, which ends that watcher. So the check is
+# written and registered in a staging directory on the same device, then
+# published trust record first and script last, each by one rename.
 register_slow_check() {  # <dir> <id> <secs>
-  local dir=$1 id=$2 secs=$3
-  cat > "$dir/state/$id.check.sh" <<SH
+  local dir=$1 id=$2 secs=$3 stage
+  stage="$dir/check-stage"
+  mkdir -p "$stage"
+  cat > "$stage/$id.check.sh" <<SH
 #!/usr/bin/env bash
 printf '%s %s\n' "\$(date +%s)" "$id" >> "$dir/check-starts.log"
 sleep $secs
 SH
-  chmod 0700 "$dir/state/$id.check.sh"
-  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" "$ROOT/bin/fm-check-register.sh" "$id" --no-handoff test-fixture >/dev/null \
+  chmod 0700 "$stage/$id.check.sh"
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$stage" "$ROOT/bin/fm-check-register.sh" "$id" --no-handoff test-fixture >/dev/null \
     || fail "could not register slow check $id"
+  mv -f "$stage/$id.check-trust" "$dir/state/$id.check-trust" \
+    || fail "could not publish slow check $id's trust record"
+  mv -f "$stage/$id.check.sh" "$dir/state/$id.check.sh" \
+    || fail "could not publish slow check $id"
 }
 
 # Wait until check <id> has started under a running watcher <pid>.
@@ -542,7 +552,7 @@ test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
   state="$dir/state"
   register_slow_check "$dir" wedge 120
   start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" FM_WATCHER_WATCHDOG_INTERVAL=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=600
-  wait_for_check_start "$dir" wedge "$SEED_PID" || { reap_watcher "$SEED_PID"; fail "watcher never reached the hung check"; }
+  wait_for_check_start "$dir" wedge "$SEED_PID" || { reap_watcher "$SEED_PID"; fail "watcher never reached the hung check: $(cat "$dir/watch.out" "$dir/watch.err")"; }
   wait_for_beacon_age "$state" "$LONG_CYCLE_GRACE" || { reap_watcher "$SEED_PID"; fail "a step blocked on one live child did not age the beacon"; }
   i=0
   while [ "$i" -lt 150 ] && is_live_non_zombie "$SEED_PID"; do
@@ -581,7 +591,7 @@ test_watchdog_retries_unproven_identity_then_stops_wedge() {
   printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
   is_live_non_zombie "$SEED_PID" || fail "the watcher did not survive an unproven identity read"
   register_slow_check "$dir" wedge 120
-  wait_for_check_start "$dir" wedge "$SEED_PID" || { reap_watcher "$SEED_PID"; fail "watcher never reached the hung check"; }
+  wait_for_check_start "$dir" wedge "$SEED_PID" || { reap_watcher "$SEED_PID"; fail "watcher never reached the hung check: $(cat "$dir/watch.out" "$dir/watch.err")"; }
   wait_for_beacon_age "$state" "$LONG_CYCLE_GRACE" || { reap_watcher "$SEED_PID"; fail "the hung check did not age the beacon"; }
   i=0
   while [ "$i" -lt 150 ] && is_live_non_zombie "$SEED_PID"; do
