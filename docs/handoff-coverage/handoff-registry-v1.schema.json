@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handoff-registry/v1",
+  "title": "handoff-registry/v1 fragment",
+  "description": "One home's declaration of the handoff protocols it owns. docs/handoff-coverage.md owns the meaning of every field; bin/fm-handoff-validate.py adds the cross-field checks a schema cannot express.",
+  "type": "object",
+  "required": ["format", "home", "publisher", "revision", "published_at", "protocols"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {"const": "handoff-registry/v1"},
+    "home": {"$ref": "#/$defs/home"},
+    "publisher": {"type": "string", "minLength": 1, "maxLength": 200},
+    "revision": {"type": "integer", "minimum": 1},
+    "published_at": {"$ref": "#/$defs/utc"},
+    "example": {"type": "boolean"},
+    "protocols": {"type": "array", "items": {"$ref": "#/$defs/protocol"}},
+    "ext": {"$ref": "#/$defs/ext"}
+  },
+  "$defs": {
+    "home": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+    "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "code": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\\*?$"},
+    "utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"},
+    "date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "duration": {"type": "string", "pattern": "^[1-9][0-9]{0,5}[smhd]$"},
+    "abspath": {"type": "string", "pattern": "^/[^\\n]{0,1023}$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "ext": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9-]{0,63}\\.[a-z0-9][a-z0-9_.-]{0,63}$"},
+      "additionalProperties": {"type": ["string", "number", "boolean"]}
+    },
+    "range": {
+      "type": "object",
+      "required": ["min", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "min": {"type": "integer", "minimum": 0},
+        "max": {"type": "integer", "minimum": 0}
+      }
+    },
+    "reach": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["local", "synced"]},
+        "source": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "max_lag": {"$ref": "#/$defs/duration"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "synced"}}},
+          "then": {"required": ["source", "max_lag"]},
+          "else": {"properties": {"source": false, "max_lag": false}}
+        }
+      ]
+    },
+    "place": {
+      "type": "object",
+      "required": ["path", "reach"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"$ref": "#/$defs/abspath"},
+        "reach": {"$ref": "#/$defs/reach"},
+        "match": {"type": "string", "pattern": "^[^/\\n]{1,128}$"},
+        "type_field": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"}
+      }
+    },
+    "outbox": {
+      "type": "object",
+      "required": ["path", "reach"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"$ref": "#/$defs/abspath"},
+        "reach": {"$ref": "#/$defs/reach"}
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "required": ["accepted", "waiting", "held"],
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {"$ref": "#/$defs/duration"},
+        "waiting": {"$ref": "#/$defs/duration"},
+        "held": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "code_entry": {
+      "type": "object",
+      "required": ["fix_owner", "holds_all", "what"],
+      "additionalProperties": false,
+      "properties": {
+        "fix_owner": {"$ref": "#/$defs/home"},
+        "holds_all": {"type": "boolean"},
+        "stops": {"$ref": "#/$defs/text"},
+        "what": {"$ref": "#/$defs/text"},
+        "ext": {"$ref": "#/$defs/ext"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"holds_all": {"const": true}}},
+          "then": {"required": ["stops"]},
+          "else": {"properties": {"stops": false}}
+        }
+      ]
+    },
+    "stage_cleanup": {
+      "type": "object",
+      "required": ["action"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {"enum": ["delete", "move", "keep"]},
+        "after": {"$ref": "#/$defs/duration"},
+        "to": {"$ref": "#/$defs/abspath"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"action": {"const": "move"}}},
+          "then": {"required": ["after", "to"]},
+          "else": {"properties": {"to": false}}
+        },
+        {
+          "if": {"properties": {"action": {"const": "delete"}}},
+          "then": {"required": ["after"]}
+        },
+        {
+          "if": {"properties": {"action": {"const": "keep"}}},
+          "then": {"properties": {"after": false}}
+        }
+      ]
+    },
+    "actor": {"type": "string", "pattern": "^(systemd-timer|systemd-service|fm-check|cron|process):[^\\s]{1,200}$"},
+    "stage": {
+      "type": "object",
+      "required": ["name", "owner", "accepts", "input", "outbox", "bounds", "retry_limit", "codes", "cleanup"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"$ref": "#/$defs/name"},
+        "owner": {"$ref": "#/$defs/home"},
+        "accepts": {"$ref": "#/$defs/range"},
+        "writes": {"$ref": "#/$defs/range"},
+        "input": {"$ref": "#/$defs/place"},
+        "outbox": {"$ref": "#/$defs/outbox"},
+        "bounds": {"$ref": "#/$defs/bounds"},
+        "retry_limit": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "codes": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/code"},
+          "additionalProperties": {"$ref": "#/$defs/code_entry"}
+        },
+        "cleanup": {"$ref": "#/$defs/stage_cleanup"},
+        "actors": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/actor"}},
+        "planned": {"type": "boolean"},
+        "ext": {"$ref": "#/$defs/ext"}
+      }
+    },
+    "dated_rule": {
+      "type": "object",
+      "required": ["id", "owner", "date", "what"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/name"},
+        "owner": {"$ref": "#/$defs/home"},
+        "date": {"$ref": "#/$defs/date"},
+        "what": {"$ref": "#/$defs/text"},
+        "ext": {"$ref": "#/$defs/ext"}
+      }
+    },
+    "protocol_cleanup": {
+      "type": "object",
+      "required": ["stage", "receipts_after", "records_after"],
+      "additionalProperties": false,
+      "properties": {
+        "stage": {"$ref": "#/$defs/name"},
+        "receipts_after": {"$ref": "#/$defs/duration"},
+        "records_after": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "protocol": {
+      "type": "object",
+      "required": ["id", "owner", "title", "schema", "record_types", "versions", "senders", "first_stage", "stages", "cleanup"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/name"},
+        "owner": {"$ref": "#/$defs/home"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+        "schema": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "record_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "versions": {"$ref": "#/$defs/range"},
+        "senders": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/home"}},
+        "first_stage": {"$ref": "#/$defs/name"},
+        "stages": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stage"}},
+        "cleanup": {"$ref": "#/$defs/protocol_cleanup"},
+        "dated_rules": {"type": "array", "items": {"$ref": "#/$defs/dated_rule"}},
+        "ext": {"$ref": "#/$defs/ext"}
+      }
+    }
+  }
+}

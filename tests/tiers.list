@@ -7,6 +7,7 @@
 # static: repository checks that run in the static job on every push.
 static tests/fm-documentation-audiences.test.sh
 static tests/fm-gitignore-config.test.sh
+static tests/fm-handoff-coverage.test.sh
 static tests/fm-harness-adapter-references.test.sh
 static tests/fm-nm-test-contract.test.sh
 static tests/fm-no-mistakes-required.test.sh

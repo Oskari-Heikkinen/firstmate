@@ -1,0 +1,20 @@
+{
+  "format": "handoff-receipt/v1",
+  "receipt_id": "a1b2c3d4e5f60718",
+  "written_at": "2026-10-21T10:31:40.250000Z",
+  "protocol": "xp-contract",
+  "version": 0,
+  "stage": "offer-intake",
+  "home": "tetjet-mate",
+  "record": "req-20261021-0003",
+  "attempt": 1,
+  "seq": 2,
+  "state": "held",
+  "code": "intake-ledger-lock",
+  "holds_all": true,
+  "detail": "the start ledger lock is held by a second start authority; intake failed closed and holds every start",
+  "evidence": "/srv/example/tj-sched/state/intake-hold.json",
+  "ext": {
+    "tetjet-mate.hold_file": "intake-ledger-lock.hold"
+  }
+}

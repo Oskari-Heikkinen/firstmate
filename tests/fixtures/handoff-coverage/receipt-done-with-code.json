@@ -1,0 +1,15 @@
+{
+  "format": "handoff-receipt/v1",
+  "receipt_id": "5e5e5e5e00000042",
+  "written_at": "2026-10-22T08:15:00.000000Z",
+  "protocol": "xp-contract",
+  "version": 0,
+  "stage": "collect",
+  "home": "lattice-research-mate",
+  "record": "req-20261021-0004",
+  "attempt": 1,
+  "seq": 2,
+  "state": "done",
+  "sender": "tetjet-mate",
+  "code": "finding:x"
+}

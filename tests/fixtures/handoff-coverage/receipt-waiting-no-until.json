@@ -1,0 +1,15 @@
+{
+  "format": "handoff-receipt/v1",
+  "receipt_id": "0c0ffee000000001",
+  "written_at": "2026-10-21T11:00:00.000000Z",
+  "protocol": "xp-contract",
+  "version": 0,
+  "stage": "admission",
+  "home": "tetjet-mate",
+  "record": "req-20261021-0004",
+  "attempt": 1,
+  "seq": 2,
+  "state": "waiting",
+  "reason": "disk:/mnt/d",
+  "detail": "admission waits for room on /mnt/d: the run needs 40 GiB and 12 GiB is free; it decides again by until"
+}

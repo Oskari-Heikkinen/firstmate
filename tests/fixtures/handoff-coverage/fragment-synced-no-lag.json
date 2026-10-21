@@ -1,0 +1,182 @@
+{
+  "format": "handoff-registry/v1",
+  "home": "lattice-research-mate",
+  "publisher": "invalid fixture",
+  "revision": 1,
+  "published_at": "2026-10-21T12:00:00Z",
+  "example": true,
+  "protocols": [
+    {
+      "id": "xp-contract",
+      "owner": "lattice-research-mate",
+      "title": "Example: one experiment request from filing to collect",
+      "schema": "lattice-research:lattice_xp/xp-contract-v0.schema.json",
+      "record_types": [
+        "xp-contract/v0"
+      ],
+      "versions": {
+        "min": 0,
+        "max": 0
+      },
+      "senders": [
+        "lattice-research-mate"
+      ],
+      "first_stage": "filing",
+      "stages": [
+        {
+          "name": "filing",
+          "owner": "lattice-research-mate",
+          "accepts": {
+            "min": 0,
+            "max": 0
+          },
+          "writes": {
+            "min": 0,
+            "max": 0
+          },
+          "input": {
+            "path": "/example/research/xp/filing",
+            "reach": {
+              "kind": "local"
+            },
+            "match": "*.json",
+            "type_field": "schema_version"
+          },
+          "outbox": {
+            "path": "/example/research/receipts/filing",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "bounds": {
+            "accepted": "30m",
+            "waiting": "1h",
+            "held": "1h"
+          },
+          "retry_limit": 3,
+          "codes": {
+            "finding:*": {
+              "fix_owner": "lattice-research-mate",
+              "holds_all": false,
+              "what": "Example: any of filing_check's finding codes; the real fragment lists each code with its own fix_owner"
+            },
+            "capability-unpublished": {
+              "fix_owner": "tetjet-mate",
+              "holds_all": false,
+              "what": "Example: the capability the filing needs is not published by its named publisher stage"
+            }
+          },
+          "cleanup": {
+            "action": "keep"
+          },
+          "actors": [
+            "process:lattice-xp-file"
+          ]
+        },
+        {
+          "name": "compile",
+          "owner": "lattice-research-mate",
+          "accepts": {
+            "min": 0,
+            "max": 0
+          },
+          "writes": {
+            "min": 0,
+            "max": 0
+          },
+          "input": {
+            "path": "/example/research/xp/compile",
+            "reach": {
+              "kind": "local"
+            },
+            "match": "*.json",
+            "type_field": "schema_version"
+          },
+          "outbox": {
+            "path": "/example/research/receipts/compile",
+            "reach": {
+              "kind": "local"
+            }
+          },
+          "bounds": {
+            "accepted": "30m",
+            "waiting": "1h",
+            "held": "1h"
+          },
+          "retry_limit": 3,
+          "codes": {
+            "compile:*": {
+              "fix_owner": "lattice-research-mate",
+              "holds_all": false,
+              "what": "Example: the compiler refused the filed record"
+            }
+          },
+          "cleanup": {
+            "action": "delete",
+            "after": "7d"
+          }
+        },
+        {
+          "name": "offer-intake",
+          "owner": "tetjet-mate",
+          "accepts": {
+            "min": 0,
+            "max": 0
+          },
+          "writes": {
+            "min": 0,
+            "max": 0
+          },
+          "input": {
+            "path": "/example/tetjet-sync/xp/offered",
+            "reach": {
+              "kind": "synced",
+              "source": "tetjet:/srv/example/xp/offered"
+            },
+            "match": "*.json",
+            "type_field": "schema_version"
+          },
+          "outbox": {
+            "path": "/example/tetjet-sync/receipts/offer-intake",
+            "reach": {
+              "kind": "synced",
+              "source": "tetjet:/srv/example/receipts/offer-intake",
+              "max_lag": "15m"
+            }
+          },
+          "bounds": {
+            "accepted": "15m",
+            "waiting": "2h",
+            "held": "1h"
+          },
+          "retry_limit": 12,
+          "codes": {
+            "offer-refused:*": {
+              "fix_owner": "tetjet-mate",
+              "holds_all": false,
+              "what": "Example: the scheduler refused this offer; it retries up to retry_limit, then alarms"
+            },
+            "intake-*": {
+              "fix_owner": "tetjet-mate",
+              "holds_all": true,
+              "stops": "every start in the TETJET scheduler until an operator clears the failed-closed intake hold",
+              "what": "Example: the scheduler intake failed closed (broken lock, second start authority or lost storage)"
+            }
+          },
+          "cleanup": {
+            "action": "keep"
+          },
+          "actors": [
+            "systemd-timer:tj-sched.timer"
+          ]
+        }
+      ],
+      "cleanup": {
+        "stage": "compile",
+        "receipts_after": "30d",
+        "records_after": "90d"
+      },
+      "dated_rules": []
+    }
+  ]
+}

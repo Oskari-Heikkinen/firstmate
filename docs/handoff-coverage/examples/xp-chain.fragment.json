@@ -1,0 +1,183 @@
+{
+  "format": "handoff-registry/v1",
+  "home": "lattice-research-mate",
+  "publisher": "example: the xp chain S1-S9 as lattice_protocols would publish it",
+  "revision": 1,
+  "published_at": "2026-10-21T12:00:00Z",
+  "example": true,
+  "protocols": [
+    {
+      "id": "xp-contract",
+      "owner": "lattice-research-mate",
+      "title": "Example: one experiment request from filing to collect",
+      "schema": "lattice-research:lattice_xp/xp-contract-v0.schema.json",
+      "record_types": ["xp-contract/v0"],
+      "versions": {"min": 0, "max": 0},
+      "senders": ["lattice-research-mate"],
+      "first_stage": "filing",
+      "stages": [
+        {
+          "name": "filing",
+          "owner": "lattice-research-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/research/xp/filing", "reach": {"kind": "local"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/research/receipts/filing", "reach": {"kind": "local"}},
+          "bounds": {"accepted": "30m", "waiting": "1h", "held": "1h"},
+          "retry_limit": 3,
+          "codes": {
+            "finding:*": {"fix_owner": "lattice-research-mate", "holds_all": false, "what": "Example: any of filing_check's finding codes; the real fragment lists each code with its own fix_owner"},
+            "capability-unpublished": {"fix_owner": "tetjet-mate", "holds_all": false, "what": "Example: the capability the filing needs is not published by its named publisher stage"}
+          },
+          "cleanup": {"action": "keep"},
+          "actors": ["process:lattice-xp-file"]
+        },
+        {
+          "name": "compile",
+          "owner": "lattice-research-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/research/xp/compile", "reach": {"kind": "local"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/research/receipts/compile", "reach": {"kind": "local"}},
+          "bounds": {"accepted": "30m", "waiting": "1h", "held": "1h"},
+          "retry_limit": 3,
+          "codes": {
+            "compile:*": {"fix_owner": "lattice-research-mate", "holds_all": false, "what": "Example: the compiler refused the filed record"}
+          },
+          "cleanup": {"action": "delete", "after": "7d"}
+        },
+        {
+          "name": "submit",
+          "owner": "lattice-research-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/research/xp/submit", "reach": {"kind": "local"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/research/receipts/submit", "reach": {"kind": "local"}},
+          "bounds": {"accepted": "15m", "waiting": "1h", "held": "1h"},
+          "retry_limit": 5,
+          "codes": {
+            "submit:*": {"fix_owner": "lattice-research-mate", "holds_all": false, "what": "Example: the compiled record could not be handed to TETJET"}
+          },
+          "cleanup": {"action": "delete", "after": "7d"}
+        },
+        {
+          "name": "ready",
+          "owner": "tetjet-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/tetjet-sync/xp/ready", "reach": {"kind": "synced", "source": "tetjet:/srv/example/xp/ready", "max_lag": "15m"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/tetjet-sync/receipts/ready", "reach": {"kind": "synced", "source": "tetjet:/srv/example/receipts/ready", "max_lag": "15m"}},
+          "bounds": {"accepted": "15m", "waiting": "2h", "held": "1h"},
+          "retry_limit": 3,
+          "codes": {
+            "ready-refused:*": {"fix_owner": "lattice-research-mate", "holds_all": false, "what": "Example: READY refused the submitted record; the code after the colon names why"}
+          },
+          "cleanup": {"action": "move", "after": "1d", "to": "/example/tetjet-sync/xp/offered"}
+        },
+        {
+          "name": "offer-intake",
+          "owner": "tetjet-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/tetjet-sync/xp/offered", "reach": {"kind": "synced", "source": "tetjet:/srv/example/xp/offered", "max_lag": "15m"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/tetjet-sync/receipts/offer-intake", "reach": {"kind": "synced", "source": "tetjet:/srv/example/receipts/offer-intake", "max_lag": "15m"}},
+          "bounds": {"accepted": "15m", "waiting": "2h", "held": "1h"},
+          "retry_limit": 12,
+          "codes": {
+            "offer-refused:*": {"fix_owner": "tetjet-mate", "holds_all": false, "what": "Example: the scheduler refused this offer; it retries up to retry_limit, then alarms"},
+            "intake-*": {"fix_owner": "tetjet-mate", "holds_all": true, "stops": "every start in the TETJET scheduler until an operator clears the failed-closed intake hold", "what": "Example: the scheduler intake failed closed (broken lock, second start authority or lost storage)"}
+          },
+          "cleanup": {"action": "keep"},
+          "actors": ["systemd-timer:tj-sched.timer"]
+        },
+        {
+          "name": "admission",
+          "owner": "tetjet-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/tetjet-sync/xp/admission", "reach": {"kind": "synced", "source": "tetjet:/srv/example/xp/admission", "max_lag": "15m"}, "type_field": "schema_version"},
+          "outbox": {"path": "/example/tetjet-sync/receipts/admission", "reach": {"kind": "synced", "source": "tetjet:/srv/example/receipts/admission", "max_lag": "15m"}},
+          "bounds": {"accepted": "30m", "waiting": "6h", "held": "1h"},
+          "retry_limit": 0,
+          "codes": {
+            "lease-refused": {"fix_owner": "tetjet-mate", "holds_all": false, "what": "Example: xp-start-authority/v1 refused the lease"}
+          },
+          "cleanup": {"action": "keep"}
+        },
+        {
+          "name": "kind-run",
+          "owner": "tetjet-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/tetjet-sync/xp/runs", "reach": {"kind": "synced", "source": "tetjet:/srv/example/xp/runs", "max_lag": "15m"}, "match": "*.json", "type_field": "kind_schema"},
+          "outbox": {"path": "/example/tetjet-sync/receipts/kind-run", "reach": {"kind": "synced", "source": "tetjet:/srv/example/receipts/kind-run", "max_lag": "15m"}},
+          "bounds": {"accepted": "24h", "waiting": "2h", "held": "1h"},
+          "retry_limit": 1,
+          "codes": {
+            "kind-unread": {"fix_owner": "tetjet-mate", "holds_all": false, "what": "Example: the runner does not yet read this lattice-kind version (readers first)"}
+          },
+          "cleanup": {"action": "keep"}
+        },
+        {
+          "name": "reap",
+          "owner": "tetjet-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/tetjet-sync/xp/attempts", "reach": {"kind": "synced", "source": "tetjet:/srv/example/xp/attempts", "max_lag": "15m"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/tetjet-sync/receipts/reap", "reach": {"kind": "synced", "source": "tetjet:/srv/example/receipts/reap", "max_lag": "15m"}},
+          "bounds": {"accepted": "30m", "waiting": "1h", "held": "1h"},
+          "retry_limit": 0,
+          "codes": {
+            "reap-refused": {"fix_owner": "tetjet-mate", "holds_all": true, "stops": "every new start until the reaper's failed-closed hold is cleared", "what": "Example: the attempt reaper failed closed"}
+          },
+          "cleanup": {"action": "keep"}
+        },
+        {
+          "name": "arrival",
+          "owner": "tetjet-mate",
+          "accepts": {"min": 0, "max": 0},
+          "writes": {"min": 0, "max": 0},
+          "input": {"path": "/example/tetjet-sync/xp/arrivals", "reach": {"kind": "synced", "source": "tetjet:/srv/example/xp/arrivals", "max_lag": "15m"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/tetjet-sync/receipts/arrival", "reach": {"kind": "synced", "source": "tetjet:/srv/example/receipts/arrival", "max_lag": "15m"}},
+          "bounds": {"accepted": "1h", "waiting": "12h", "held": "1h"},
+          "retry_limit": 3,
+          "codes": {
+            "unknown-pack": {"fix_owner": "tetjet-mate", "holds_all": false, "what": "Example: phase D does not know the result pack, class or version"},
+            "digest-mismatch": {"fix_owner": "tetjet-mate", "holds_all": false, "what": "Example: the arrived bytes do not match their declared digest"},
+            "join-conflict": {"fix_owner": "lattice-research-mate", "holds_all": false, "what": "Example: the arrival conflicts with a record the producer already joined"}
+          },
+          "cleanup": {"action": "keep"}
+        },
+        {
+          "name": "collect",
+          "owner": "lattice-research-mate",
+          "accepts": {"min": 0, "max": 0},
+          "input": {"path": "/example/research/xp/collect", "reach": {"kind": "local"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/research/receipts/collect", "reach": {"kind": "local"}},
+          "bounds": {"accepted": "1h", "waiting": "12h", "held": "4h"},
+          "retry_limit": 3,
+          "codes": {
+            "audit:*": {"fix_owner": "lattice-research-mate", "holds_all": false, "what": "Example: the collect audit refused the arrived results"}
+          },
+          "cleanup": {"action": "delete", "after": "30d"}
+        },
+        {
+          "name": "reconcile",
+          "owner": "tetjet-mate",
+          "accepts": {"min": 0, "max": 0},
+          "input": {"path": "/example/tetjet-sync/xp/reconcile", "reach": {"kind": "synced", "source": "tetjet:/srv/example/xp/reconcile", "max_lag": "1h"}, "match": "*.json", "type_field": "schema_version"},
+          "outbox": {"path": "/example/tetjet-sync/receipts/reconcile", "reach": {"kind": "synced", "source": "tetjet:/srv/example/receipts/reconcile", "max_lag": "1h"}},
+          "bounds": {"accepted": "1h", "waiting": "6h", "held": "4h"},
+          "retry_limit": 0,
+          "codes": {},
+          "cleanup": {"action": "keep"},
+          "planned": true
+        }
+      ],
+      "cleanup": {"stage": "collect", "receipts_after": "30d", "records_after": "90d"},
+      "dated_rules": [
+        {"id": "xp-v0-reader-retire", "owner": "lattice-research-mate", "date": "2027-01-31", "what": "Example: the v0 readers retire once every stage writes v1"}
+      ]
+    }
+  ]
+}

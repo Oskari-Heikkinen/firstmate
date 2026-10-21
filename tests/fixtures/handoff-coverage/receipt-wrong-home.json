@@ -1,0 +1,18 @@
+{
+  "format": "handoff-receipt/v1",
+  "receipt_id": "3f9c2a7b1d4e6a80",
+  "written_at": "2026-10-21T10:20:05.000000Z",
+  "protocol": "xp-contract",
+  "version": 0,
+  "stage": "filing",
+  "home": "tetjet-mate",
+  "record": "req-20261021-0007",
+  "attempt": 1,
+  "seq": 2,
+  "state": "refused",
+  "code": "finding:results-schema-missing",
+  "sender": "lattice-research-mate",
+  "input": "req-20261021-0007.json",
+  "detail": "filing_check refused the request: the kind declares no results_schema; add it and refile, which writes attempt 2",
+  "evidence": "/example/research/xp/filing/req-20261021-0007.findings.json"
+}

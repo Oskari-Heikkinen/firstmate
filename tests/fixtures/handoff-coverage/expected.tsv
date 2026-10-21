@@ -1,0 +1,33 @@
+# Invalid handoff-coverage/v1 examples for tests/fm-handoff-coverage.test.sh.
+# <file><TAB><text its finding must contain>. Fragments are validated alone;
+# receipts with --fragment docs/handoff-coverage/examples/xp-chain.fragment.json.
+fragment-unknown-field.json	/stage_owner: is not a field of this format
+fragment-wrong-format.json	must be "handoff-registry/v1"
+fragment-holds-all-no-stops.json	missing required field stops
+fragment-readers-first.json	(readers first)
+fragment-foreign-owner.json	a fragment declares only protocols its home owns
+fragment-synced-no-lag.json	missing required field max_lag
+fragment-local-with-source.json	/source: is not allowed here
+fragment-bad-first-stage.json	is not a stage of xp-contract
+fragment-reserved-code.json	a reserved code is routed by the protocol
+fragment-outbox-is-input.json	receipts need their own folder
+fragment-missing-bound.json	missing required field waiting
+fragment-move-without-target.json	missing required field to
+fragment-ext-not-owner-keyed.json	does not match
+fragment-duplicate-stage.json	stage compile is declared twice
+fragment-bad-duration.json	does not match
+receipt-refused-no-code.json	missing required field code
+receipt-waiting-no-until.json	missing required field until
+receipt-waiting-past-bound.json	waits past the stage's waiting bound 6h
+receipt-until-before-written.json	/until: must be after written_at
+receipt-undeclared-code.json	finding-typo is not declared for stage filing
+receipt-holds-all-mismatch.json	must be true as the registry declares for intake-ledger-lock
+receipt-holds-all-no-stops.json	missing required field stops
+receipt-wrong-home.json	is owned by lattice-research-mate, not tetjet-mate
+receipt-unregistered-protocol.json	ledger-entry is not declared by any given fragment
+receipt-unregistered-stage.json	publish is not a stage of xp-contract
+receipt-done-with-code.json	/code: is not allowed here
+receipt-unaccepted-version.json	refused with code version-unsupported
+receipt-unknown-field.json	/retries: is not a field of this format
+receipt-bad-state.json	must be one of
+receipt-not-json.json	not valid JSON
