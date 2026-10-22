@@ -507,17 +507,19 @@ fi
 # <tail40> is the same bounded capture already read for hashing and is passed
 # into the contract's harness-scoped rendered-text checks: the Grok/Rovo/AGY
 # busy fallbacks and the launch-prompt backstop that keeps a launch pinned at
-# its fm-spawn seed from reading as provably working.
+# its fm-spawn seed from reading as provably working. It runs on every polled
+# window, so it takes the verdict through the contract's *_to forms, in this
+# shell, rather than a subshell per window.
 window_is_busy() {  # <window> <tail40>
   local w=$1 tail40=$2 meta verdict
   local WR_TASK WR_KIND WR_BACKEND WR_HARNESS WR_LABEL
   window_resolve "$w"
   meta="$STATE/$WR_TASK.meta"
   if [ -n "$WR_TASK" ] && [ -f "$meta" ]; then
-    verdict=$(fm_busy_classify_meta "$meta" "$WR_TASK" "$STATE" "$tail40")
+    fm_busy_classify_meta_to verdict "$meta" "$WR_TASK" "$STATE" "$tail40"
   else
-    verdict=$(fm_busy_classify "$WR_BACKEND" "$w" "$WR_HARNESS" \
-      "${WR_TASK:-unknown}" "$STATE" "$tail40")
+    fm_busy_classify_to verdict "$WR_BACKEND" "$w" "$WR_HARNESS" \
+      "${WR_TASK:-unknown}" "$STATE" "$tail40"
   fi
   [ "${verdict%% *}" = busy ]
 }

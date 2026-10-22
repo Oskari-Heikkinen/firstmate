@@ -193,6 +193,19 @@ fm_busy_gen_path() {  # <state-dir> <id>
   printf '%s/%s.busy-gen' "$1" "$2"
 }
 
+# The *_to forms in this file assign what $(...) of their printing form would,
+# without the subshell, and return the same status: the watcher classifies every
+# window it polls through them. Their locals carry a reserved prefix, because
+# bash scopes locals dynamically and a plain name would shadow a caller's output
+# variable of the same name.
+fm_busy_record_path_to() {  # <output-variable> <state-dir> <id>
+  printf -v "$1" '%s/%s.busy-state' "$2" "$3"
+}
+
+fm_busy_gen_path_to() {  # <output-variable> <state-dir> <id>
+  printf -v "$1" '%s/%s.busy-gen' "$2" "$3"
+}
+
 # fm_busy_token_valid: conservative token charset shared by gen, source, and
 # event fields. Anything else is malformed.
 fm_busy_token_valid() {  # <value>
@@ -205,12 +218,19 @@ fm_busy_token_valid() {  # <value>
 # fm_busy_current_gen: the task's armed gen token, or failure when the busy
 # contract has never been armed for this task.
 fm_busy_current_gen() {  # <state-dir> <id>
-  local gen_file gen
-  gen_file=$(fm_busy_gen_path "$1" "$2")
-  [ -f "$gen_file" ] || return 1
-  IFS= read -r gen < "$gen_file" 2>/dev/null || gen=
-  fm_busy_token_valid "$gen" || return 1
-  printf '%s' "$gen"
+  local _fmbcg_gen
+  fm_busy_current_gen_to _fmbcg_gen "$1" "$2" || return 1
+  printf '%s' "$_fmbcg_gen"
+}
+
+fm_busy_current_gen_to() {  # <output-variable> <state-dir> <id>
+  local _fmbcgt_file _fmbcgt_gen
+  printf -v "$1" '%s' ''
+  fm_busy_gen_path_to _fmbcgt_file "$2" "$3"
+  [ -f "$_fmbcgt_file" ] || return 1
+  IFS= read -r _fmbcgt_gen < "$_fmbcgt_file" 2>/dev/null || _fmbcgt_gen=
+  fm_busy_token_valid "$_fmbcgt_gen" || return 1
+  printf -v "$1" '%s' "$_fmbcgt_gen"
 }
 
 # fm_busy_sources_for_harness: the semantic sources trusted to classify a
@@ -222,30 +242,37 @@ fm_busy_current_gen() {  # <state-dir> <id>
 # record. Listing a source here without a writer that can clear it would seed a
 # busy record nothing could ever settle.
 fm_busy_sources_for_harness() {  # <harness>
-  local adapter=
-  case "${1:-}" in
-    claude*) adapter=claude-hook ;;
+  local _fmbsh_sources
+  fm_busy_sources_for_harness_to _fmbsh_sources "${1:-}"
+  printf '%s' "$_fmbsh_sources"
+}
+
+fm_busy_sources_for_harness_to() {  # <output-variable> <harness>
+  local _fmbsht_adapter=
+  printf -v "$1" '%s' ''
+  case "${2:-}" in
+    claude*) _fmbsht_adapter=claude-hook ;;
     codex*)
-      fm_busy_codex_semantic_source || { printf ''; return 0; }
-      adapter='codex-hook codex-appserver'
+      fm_busy_codex_semantic_source || return 0
+      _fmbsht_adapter='codex-hook codex-appserver'
       ;;
-    opencode*) adapter=opencode-plugin ;;
-    gemini*) adapter=gemini-hook ;;
-    devin) adapter=devin-hook ;;
-    pi|pi-signed) adapter=pi-ext ;;
-    omp) adapter=omp-ext ;;
+    opencode*) _fmbsht_adapter=opencode-plugin ;;
+    gemini*) _fmbsht_adapter=gemini-hook ;;
+    devin) _fmbsht_adapter=devin-hook ;;
+    pi|pi-signed) _fmbsht_adapter=pi-ext ;;
+    omp) _fmbsht_adapter=omp-ext ;;
     kimi*)
-      fm_busy_kimi_verified || { printf ''; return 0; }
-      adapter='kimi-wire kimi-hook'
+      fm_busy_kimi_verified || return 0
+      _fmbsht_adapter='kimi-wire kimi-hook'
       ;;
-    *) printf ''; return 0 ;;
+    *) return 0 ;;
   esac
-  printf '%s fm-spawn fm-interrupt fm-recovery' "$adapter"
+  printf -v "$1" '%s fm-spawn fm-interrupt fm-recovery' "$_fmbsht_adapter"
 }
 
 fm_busy_source_trusted() {  # <harness> <source>
   local trusted
-  trusted=$(fm_busy_sources_for_harness "$1")
+  fm_busy_sources_for_harness_to trusted "$1"
   case " $trusted " in
     *" $2 "*) return 0 ;;
   esac
@@ -260,51 +287,58 @@ fm_busy_source_trusted() {  # <harness> <source>
 #                existing record
 #   gen-mismatch a record from a stale incarnation
 fm_busy_record_read() {  # <state-dir> <id>
-  local state=$1 id=$2 rec gen line extra ver f
-  local r_gen='' r_seq='' r_state='' r_source='' r_event='' r_ts=''
-  rec=$(fm_busy_record_path "$state" "$id")
-  if [ ! -f "$rec" ]; then
-    printf 'missing'
+  local _fmbrr_out _fmbrr_rc=0
+  fm_busy_record_read_to _fmbrr_out "$1" "$2" || _fmbrr_rc=$?
+  printf '%s' "$_fmbrr_out"
+  return "$_fmbrr_rc"
+}
+
+fm_busy_record_read_to() {  # <output-variable> <state-dir> <id>
+  local _fmbrrt_rec _fmbrrt_gen _fmbrrt_line _fmbrrt_extra _fmbrrt_ver _fmbrrt_f
+  local _fmbrrt_r_gen='' _fmbrrt_r_seq='' _fmbrrt_r_state='' _fmbrrt_r_source='' _fmbrrt_r_event='' _fmbrrt_r_ts=''
+  local -a _fmbrrt_fields
+  fm_busy_record_path_to _fmbrrt_rec "$2" "$3"
+  if [ ! -f "$_fmbrrt_rec" ]; then
+    printf -v "$1" '%s' missing
     return 1
   fi
-  if ! gen=$(fm_busy_current_gen "$state" "$id"); then
+  if ! fm_busy_current_gen_to _fmbrrt_gen "$2" "$3"; then
     # A record without an armed gen has no incarnation to bind to.
-    printf 'malformed'
+    printf -v "$1" '%s' malformed
     return 1
   fi
   # shellcheck disable=SC2034 # extra exists only to prove the record is one line
-  { IFS= read -r line && ! IFS= read -r extra; } < "$rec" 2>/dev/null || {
-    printf 'malformed'
+  { IFS= read -r _fmbrrt_line && ! IFS= read -r _fmbrrt_extra; } < "$_fmbrrt_rec" 2>/dev/null || {
+    printf -v "$1" '%s' malformed
     return 1
   }
   # `read -a` rather than `set --`: it never glob-expands a field and never
   # touches the caller's positional parameters or shell options.
-  local -a fields
-  IFS=' ' read -r -a fields <<< "$line"
-  ver=${fields[0]:-}
-  [ "$ver" = "$FM_BUSY_LIB_VERSION" ] || { printf 'malformed'; return 1; }
-  for f in "${fields[@]:1}"; do
-    case "$f" in
-      gen=*) r_gen=${f#gen=} ;;
-      seq=*) r_seq=${f#seq=} ;;
-      state=*) r_state=${f#state=} ;;
-      source=*) r_source=${f#source=} ;;
-      event=*) r_event=${f#event=} ;;
-      ts=*) r_ts=${f#ts=} ;;
-      *) printf 'malformed'; return 1 ;;
+  IFS=' ' read -r -a _fmbrrt_fields <<< "$_fmbrrt_line"
+  _fmbrrt_ver=${_fmbrrt_fields[0]:-}
+  [ "$_fmbrrt_ver" = "$FM_BUSY_LIB_VERSION" ] || { printf -v "$1" '%s' malformed; return 1; }
+  for _fmbrrt_f in "${_fmbrrt_fields[@]:1}"; do
+    case "$_fmbrrt_f" in
+      gen=*) _fmbrrt_r_gen=${_fmbrrt_f#gen=} ;;
+      seq=*) _fmbrrt_r_seq=${_fmbrrt_f#seq=} ;;
+      state=*) _fmbrrt_r_state=${_fmbrrt_f#state=} ;;
+      source=*) _fmbrrt_r_source=${_fmbrrt_f#source=} ;;
+      event=*) _fmbrrt_r_event=${_fmbrrt_f#event=} ;;
+      ts=*) _fmbrrt_r_ts=${_fmbrrt_f#ts=} ;;
+      *) printf -v "$1" '%s' malformed; return 1 ;;
     esac
   done
-  fm_busy_token_valid "$r_gen" || { printf 'malformed'; return 1; }
-  fm_busy_token_valid "$r_source" || { printf 'malformed'; return 1; }
-  fm_busy_token_valid "$r_event" || { printf 'malformed'; return 1; }
-  case "$r_seq" in ''|*[!0-9]*) printf 'malformed'; return 1 ;; esac
-  case "$r_ts" in ''|*[!0-9]*) printf 'malformed'; return 1 ;; esac
-  case "$r_state" in busy|idle|unknown) : ;; *) printf 'malformed'; return 1 ;; esac
-  if [ "$r_gen" != "$gen" ]; then
-    printf 'gen-mismatch'
+  fm_busy_token_valid "$_fmbrrt_r_gen" || { printf -v "$1" '%s' malformed; return 1; }
+  fm_busy_token_valid "$_fmbrrt_r_source" || { printf -v "$1" '%s' malformed; return 1; }
+  fm_busy_token_valid "$_fmbrrt_r_event" || { printf -v "$1" '%s' malformed; return 1; }
+  case "$_fmbrrt_r_seq" in ''|*[!0-9]*) printf -v "$1" '%s' malformed; return 1 ;; esac
+  case "$_fmbrrt_r_ts" in ''|*[!0-9]*) printf -v "$1" '%s' malformed; return 1 ;; esac
+  case "$_fmbrrt_r_state" in busy|idle|unknown) : ;; *) printf -v "$1" '%s' malformed; return 1 ;; esac
+  if [ "$_fmbrrt_r_gen" != "$_fmbrrt_gen" ]; then
+    printf -v "$1" '%s' gen-mismatch
     return 1
   fi
-  printf '%s %s %s %s' "$r_state" "$r_source" "$r_event" "$r_seq"
+  printf -v "$1" '%s %s %s %s' "$_fmbrrt_r_state" "$_fmbrrt_r_source" "$_fmbrrt_r_event" "$_fmbrrt_r_seq"
 }
 
 # ---------------------------------------------------------------------------
@@ -903,7 +937,7 @@ fm_busy_agy_tail_busy() {
 
 # --- launch-prompt signatures (fm_busy_launch_prompt_parked) ----------------
 #
-# Each function consumes a captured pane tail on stdin (the caller's whole
+# Each function matches a captured pane tail, its one argument (the caller's whole
 # tail40, NOT reduced to the last 12 non-blank lines the way the Grok/Rovo/AGY
 # busy footers above are): a bordered dialog box renders many short lines of
 # pure border/padding (`│  ...  │`) that are NOT whitespace-only, so a 12-line
@@ -928,9 +962,8 @@ fm_busy_agy_tail_busy() {
 # plausible self-referential prose a firstmate-repo worker could easily render
 # on its own (fm-claude-trust.sh's header literally quotes both questions),
 # but the option/footer pairing only ever renders inside the real dialog.
-fm_busy_claude_launch_prompt_tail() {
-  local buf
-  buf=$(cat)
+fm_busy_claude_launch_prompt_tail() {  # <tail>
+  local buf=$1
   if printf '%s' "$buf" | grep -qiE "${FM_BUSY_CLAUDE_TRUST_PROMPT_REGEX:-Quick safety check: Is this a project you created or one you trust\\?}" \
     && printf '%s' "$buf" | grep -qiE 'No, exit|Enter to confirm'; then
     return 0
@@ -951,9 +984,8 @@ fm_busy_claude_launch_prompt_tail() {
 # name. Matching BOTH the heading and "Do not trust" keeps this from firing on
 # a worker's own prose that happens to use the common word "trust" alone.
 # Covers omp too: it shares Pi's engine and the same project-trust gate.
-fm_busy_pi_launch_prompt_tail() {
-  local buf
-  buf=$(cat)
+fm_busy_pi_launch_prompt_tail() {  # <tail>
+  local buf=$1
   printf '%s' "$buf" | grep -qiE "${FM_BUSY_PI_LAUNCH_PROMPT_REGEX:-Trust project folder\\?}" \
     && printf '%s' "$buf" | grep -qiE 'Do not trust'
 }
@@ -978,9 +1010,8 @@ fm_busy_pi_launch_prompt_tail() {
 # equivalent" rather than this guard's own live capture, and stays a single
 # marker: it is reached only after actively selecting that auth method, so
 # self-referential prose is a materially smaller risk there.
-fm_busy_gemini_launch_prompt_tail() {
-  local buf
-  buf=$(cat)
+fm_busy_gemini_launch_prompt_tail() {  # <tail>
+  local buf=$1
   if printf '%s' "$buf" | grep -qiE "${FM_BUSY_GEMINI_TRUST_PROMPT_REGEX:-Do you trust the files in this folder\\?}" \
     && printf '%s' "$buf" | grep -qiE "Trust folder|Don't trust"; then
     return 0
@@ -993,17 +1024,25 @@ fm_busy_gemini_launch_prompt_tail() {
 }
 
 # fm_busy_launch_prompt_parked: dispatch to the signature above for <harness>,
-# or fail when this harness has none. Consumes the tail on stdin. Scoped to
+# or fail when this harness has none. <tail> is matched without its trailing
+# newlines, so a tail of blank rows matches nothing. Scoped to
 # exactly the harnesses fm-spawn.sh arms with the fm-spawn busy source
 # (claude*, opencode*, pi, pi-signed, omp, gemini) since only those can ever
 # read a pinned "busy fm-spawn" record; codex and standalone Kimi already
 # classify unknown before a record is ever consulted, and opencode ships no
 # trust dialog at all.
-fm_busy_launch_prompt_parked() {  # <harness>
+fm_busy_launch_prompt_parked() {  # <harness> <tail>
+  local text=${2-} nl=$'\n'
+  while :; do
+    case "$text" in
+      *"$nl") text=${text%"$nl"} ;;
+      *) break ;;
+    esac
+  done
   case "${1:-}" in
-    claude*) fm_busy_claude_launch_prompt_tail ;;
-    pi | pi-signed | omp) fm_busy_pi_launch_prompt_tail ;;
-    gemini) fm_busy_gemini_launch_prompt_tail ;;
+    claude*) fm_busy_claude_launch_prompt_tail "$text" ;;
+    pi | pi-signed | omp) fm_busy_pi_launch_prompt_tail "$text" ;;
+    gemini) fm_busy_gemini_launch_prompt_tail "$text" ;;
     *) return 1 ;;
   esac
 }
@@ -1018,18 +1057,24 @@ fm_busy_launch_prompt_parked() {  # <harness>
 # without a supplied tail40 it is skipped entirely and a record still pinned
 # at the fm-spawn seed keeps reading busy fm-spawn, unchanged.
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
-  local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
-  local out rc r_state r_source native log
-  case "$harness" in
+  local _fmbc_verdict
+  fm_busy_classify_to _fmbc_verdict "$@"
+  printf '%s' "$_fmbc_verdict"
+}
+
+fm_busy_classify_to() {  # <output-variable> <backend> <target> <harness> <id> <state-dir> [tail40]
+  local _fmbct_backend=$2 _fmbct_target=$3 _fmbct_harness=$4 _fmbct_id=$5 _fmbct_state=$6 _fmbct_tail40=${7-}
+  local _fmbct_out _fmbct_rc _fmbct_r_state _fmbct_r_source _fmbct_native _fmbct_log
+  case "$_fmbct_harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then
-        printf 'unknown kimi-unverified'
+        printf -v "$1" '%s' 'unknown kimi-unverified'
         return 0
       fi
       ;;
     codex*)
       if ! fm_busy_codex_semantic_source; then
-        printf 'unknown codex-unverified'
+        printf -v "$1" '%s' 'unknown codex-unverified'
         return 0
       fi
       ;;
@@ -1040,38 +1085,38 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       # sidecar, no resolvable transcript, an unreadable or record-free file -
       # is unknown, never idle. The rendered `ctrl+c to stop` footer is
       # deliberately NOT consulted here; see the source note above.
-      if ! log=$(fm_busy_cursor_transcript "$state" "$id"); then
-        printf 'unknown cursor-transcript'
+      if ! _fmbct_log=$(fm_busy_cursor_transcript "$_fmbct_state" "$_fmbct_id"); then
+        printf -v "$1" '%s' 'unknown cursor-transcript'
         return 0
       fi
-      case "$(fm_busy_cursor_turn_state "$log" 2>/dev/null)" in
-        busy) printf 'busy cursor-transcript' ;;
-        settled) printf 'idle cursor-transcript' ;;
-        *) printf 'unknown cursor-transcript' ;;
+      case "$(fm_busy_cursor_turn_state "$_fmbct_log" 2>/dev/null)" in
+        busy) printf -v "$1" '%s' 'busy cursor-transcript' ;;
+        settled) printf -v "$1" '%s' 'idle cursor-transcript' ;;
+        *) printf -v "$1" '%s' 'unknown cursor-transcript' ;;
       esac
       return 0
       ;;
   esac
-  out=$(fm_busy_record_read "$state" "$id") && rc=0 || rc=$?
-  if [ "$rc" = 0 ]; then
-    r_state=${out%% *}
-    out=${out#* }
-    r_source=${out%% *}
-    if fm_busy_source_trusted "$harness" "$r_source"; then
-      if [ "$r_state" = busy ] && [ "$r_source" = fm-spawn ] && [ -n "$tail40" ] \
-        && printf '%s' "$tail40" | fm_busy_launch_prompt_parked "$harness"; then
-        printf 'unknown launch-prompt'
+  fm_busy_record_read_to _fmbct_out "$_fmbct_state" "$_fmbct_id" && _fmbct_rc=0 || _fmbct_rc=$?
+  if [ "$_fmbct_rc" = 0 ]; then
+    _fmbct_r_state=${_fmbct_out%% *}
+    _fmbct_out=${_fmbct_out#* }
+    _fmbct_r_source=${_fmbct_out%% *}
+    if fm_busy_source_trusted "$_fmbct_harness" "$_fmbct_r_source"; then
+      if [ "$_fmbct_r_state" = busy ] && [ "$_fmbct_r_source" = fm-spawn ] && [ -n "$_fmbct_tail40" ] \
+        && fm_busy_launch_prompt_parked "$_fmbct_harness" "$_fmbct_tail40"; then
+        printf -v "$1" '%s' 'unknown launch-prompt'
       else
-        printf '%s %s' "$r_state" "$r_source"
+        printf -v "$1" '%s %s' "$_fmbct_r_state" "$_fmbct_r_source"
       fi
     else
-      printf 'unknown source-mismatch'
+      printf -v "$1" '%s' 'unknown source-mismatch'
     fi
     return 0
   fi
-  case "$out" in
+  case "$_fmbct_out" in
     malformed|gen-mismatch)
-      printf 'unknown %s' "$out"
+      printf -v "$1" 'unknown %s' "$_fmbct_out"
       return 0
       ;;
   esac
@@ -1079,94 +1124,94 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   # for BUSY (streaming means a turn is running); native idle is narrower
   # than turn state (a long foreground tool call reads idle) and stays
   # unknown here.
-  if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
-    native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
-    if [ "$native" = busy ]; then
-      printf 'busy herdr-native'
+  if [ "$_fmbct_backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
+    _fmbct_native=$(fm_backend_busy_state "$_fmbct_backend" "$_fmbct_target" 2>/dev/null || true)
+    if [ "$_fmbct_native" = busy ]; then
+      printf -v "$1" '%s' 'busy herdr-native'
       return 0
     fi
   fi
-  case "$harness" in
+  case "$_fmbct_harness" in
     muse*)
       # Semantic, on demand: fold this task's bound session log. An open run is
       # positive proof of a turn in flight and a settled log is a finished turn.
       # Every other outcome - no sidecar, no matching log, an unreadable or
       # run-free log - is unknown, never idle.
-      if ! log=$(fm_busy_muse_session_log "$state" "$id"); then
-        printf 'unknown muse-session-log'
+      if ! _fmbct_log=$(fm_busy_muse_session_log "$_fmbct_state" "$_fmbct_id"); then
+        printf -v "$1" '%s' 'unknown muse-session-log'
         return 0
       fi
-      case "$(fm_busy_muse_run_state "$log" 2>/dev/null)" in
-        busy) printf 'busy muse-session-log' ;;
-        settled) printf 'idle muse-session-log' ;;
-        *) printf 'unknown muse-session-log' ;;
+      case "$(fm_busy_muse_run_state "$_fmbct_log" 2>/dev/null)" in
+        busy) printf -v "$1" '%s' 'busy muse-session-log' ;;
+        settled) printf -v "$1" '%s' 'idle muse-session-log' ;;
+        *) printf -v "$1" '%s' 'unknown muse-session-log' ;;
       esac
       return 0
       ;;
     grok*)
-      if [ -z "$tail40" ]; then
+      if [ -z "$_fmbct_tail40" ]; then
         if command -v fm_backend_capture >/dev/null 2>&1; then
-          tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
-            printf 'unknown capture-failed'
+          _fmbct_tail40=$(fm_backend_capture "$_fmbct_backend" "$_fmbct_target" 40 2>/dev/null) || {
+            printf -v "$1" '%s' 'unknown capture-failed'
             return 0
           }
         else
-          printf 'unknown capture-failed'
+          printf -v "$1" '%s' 'unknown capture-failed'
           return 0
         fi
       fi
-      if printf '%s' "$tail40" | fm_busy_grok_tail_busy; then
-        printf 'busy grok-regex'
+      if printf '%s' "$_fmbct_tail40" | fm_busy_grok_tail_busy; then
+        printf -v "$1" '%s' 'busy grok-regex'
       else
-        printf 'idle grok-regex'
+        printf -v "$1" '%s' 'idle grok-regex'
       fi
       return 0
       ;;
     rovo*)
-      if [ -z "$tail40" ]; then
+      if [ -z "$_fmbct_tail40" ]; then
         if command -v fm_backend_capture >/dev/null 2>&1; then
-          tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
-            printf 'unknown capture-failed'
+          _fmbct_tail40=$(fm_backend_capture "$_fmbct_backend" "$_fmbct_target" 40 2>/dev/null) || {
+            printf -v "$1" '%s' 'unknown capture-failed'
             return 0
           }
         else
-          printf 'unknown capture-failed'
+          printf -v "$1" '%s' 'unknown capture-failed'
           return 0
         fi
       fi
       # This fallback is best-effort: a long turn can scroll the busy marker
       # out of the captured tail, so its absence means "can't tell," never
       # definitive idle - matching the muse and cursor arms above.
-      if printf '%s' "$tail40" | fm_busy_rovo_tail_busy; then
-        printf 'busy rovo-regex'
+      if printf '%s' "$_fmbct_tail40" | fm_busy_rovo_tail_busy; then
+        printf -v "$1" '%s' 'busy rovo-regex'
       else
-        printf 'unknown rovo-regex'
+        printf -v "$1" '%s' 'unknown rovo-regex'
       fi
       return 0
       ;;
     agy)
-      if [ -z "$tail40" ]; then
+      if [ -z "$_fmbct_tail40" ]; then
         if command -v fm_backend_capture >/dev/null 2>&1; then
-          tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
-            printf 'unknown capture-failed'
+          _fmbct_tail40=$(fm_backend_capture "$_fmbct_backend" "$_fmbct_target" 40 2>/dev/null) || {
+            printf -v "$1" '%s' 'unknown capture-failed'
             return 0
           }
         else
-          printf 'unknown capture-failed'
+          printf -v "$1" '%s' 'unknown capture-failed'
           return 0
         fi
       fi
       # Best-effort like rovo: a long turn can scroll the busy marker out of
       # the captured tail, so its absence means "can't tell," never idle.
-      if printf '%s' "$tail40" | fm_busy_agy_tail_busy; then
-        printf 'busy agy-regex'
+      if printf '%s' "$_fmbct_tail40" | fm_busy_agy_tail_busy; then
+        printf -v "$1" '%s' 'busy agy-regex'
       else
-        printf 'unknown agy-regex'
+        printf -v "$1" '%s' 'unknown agy-regex'
       fi
       return 0
       ;;
   esac
-  printf 'unknown missing'
+  printf -v "$1" '%s' 'unknown missing'
 }
 
 # fm_busy_classify_live: fm_busy_classify behind the one process-level
@@ -1191,16 +1236,22 @@ fm_busy_classify_live() {  # <backend> <target> <harness> <id> <state-dir> [expe
 # optional pre-captured plain output reused by the contract's rendered-text
 # checks: the Grok/Rovo/AGY busy fallbacks and the launch-prompt backstop.
 fm_busy_classify_meta() {  # <meta-file> <id> <state-dir> [tail40]
-  local meta=$1 id=$2 state=$3 tail40=${4-} backend target harness
-  [ -f "$meta" ] || { printf 'unknown missing'; return 0; }
-  fm_backend_of_meta_to backend "$meta"
-  fm_backend_target_of_meta_to target "$meta"
-  fm_meta_get_to harness "$meta" harness
-  if [ -z "$target" ]; then
-    printf 'unknown no-target'
+  local _fmbcm_verdict
+  fm_busy_classify_meta_to _fmbcm_verdict "$@"
+  printf '%s' "$_fmbcm_verdict"
+}
+
+fm_busy_classify_meta_to() {  # <output-variable> <meta-file> <id> <state-dir> [tail40]
+  local _fmbcmt_backend _fmbcmt_target _fmbcmt_harness
+  [ -f "$2" ] || { printf -v "$1" '%s' 'unknown missing'; return 0; }
+  fm_backend_of_meta_to _fmbcmt_backend "$2"
+  fm_backend_target_of_meta_to _fmbcmt_target "$2"
+  fm_meta_get_to _fmbcmt_harness "$2" harness
+  if [ -z "$_fmbcmt_target" ]; then
+    printf -v "$1" '%s' 'unknown no-target'
     return 0
   fi
-  fm_busy_classify "$backend" "$target" "$harness" "$id" "$state" "$tail40"
+  fm_busy_classify_to "$1" "$_fmbcmt_backend" "$_fmbcmt_target" "$_fmbcmt_harness" "$3" "$4" "${5-}"
 }
 
 # fm_busy_is_busy: boolean view for callers that only gate on provable

@@ -1504,6 +1504,598 @@ SH
   pass "watcher_capture and fm_pid_pgid_to match what they replaced, and a capture runs no ps, tr or cat"
 }
 
+test_busy_classify_matches_what_it_replaced() {
+  local script="$TMP_ROOT/busy-classify.sh" dir="$TMP_ROOT/busy-classify" count_shim="$TMP_ROOT/busy-classify-count"
+  local count_log="$TMP_ROOT/busy-classify-count.log" tool path
+  mkdir -p "$dir/state" "$dir/meta" "$count_shim"
+  for tool in grep cat tail rm stat date tr cut awk sed head mktemp; do
+    path=$(command -v "$tool") || continue
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$count_log" "$path" > "$count_shim/$tool"
+    chmod +x "$count_shim/$tool"
+  done
+  cat > "$script" <<'SH'
+# The watcher's source guard returns before its loop, leaving every helper below.
+. "$1/bin/fm-watch.sh"
+dir=$2 count_shim=$3 count_log=$4
+STATE=$dir/state
+# The replaced record readers, prompt checks, classifiers and window_is_busy.
+reference_current_gen() {  # <state-dir> <id>
+  local gen_file gen
+  gen_file=$(fm_busy_gen_path "$1" "$2")
+  [ -f "$gen_file" ] || return 1
+  IFS= read -r gen < "$gen_file" 2>/dev/null || gen=
+  fm_busy_token_valid "$gen" || return 1
+  printf '%s' "$gen"
+}
+reference_sources_for_harness() {  # <harness>
+  local adapter=
+  case "${1:-}" in
+    claude*) adapter=claude-hook ;;
+    codex*)
+      fm_busy_codex_semantic_source || { printf ''; return 0; }
+      adapter='codex-hook codex-appserver'
+      ;;
+    opencode*) adapter=opencode-plugin ;;
+    gemini*) adapter=gemini-hook ;;
+    devin) adapter=devin-hook ;;
+    pi|pi-signed) adapter=pi-ext ;;
+    omp) adapter=omp-ext ;;
+    kimi*)
+      fm_busy_kimi_verified || { printf ''; return 0; }
+      adapter='kimi-wire kimi-hook'
+      ;;
+    *) printf ''; return 0 ;;
+  esac
+  printf '%s fm-spawn fm-interrupt fm-recovery' "$adapter"
+}
+reference_source_trusted() {  # <harness> <source>
+  local trusted
+  trusted=$(reference_sources_for_harness "$1")
+  case " $trusted " in
+    *" $2 "*) return 0 ;;
+  esac
+  return 1
+}
+reference_record_read() {  # <state-dir> <id>
+  local state=$1 id=$2 rec gen line extra ver f
+  local r_gen='' r_seq='' r_state='' r_source='' r_event='' r_ts=''
+  rec=$(fm_busy_record_path "$state" "$id")
+  if [ ! -f "$rec" ]; then
+    printf 'missing'
+    return 1
+  fi
+  if ! gen=$(reference_current_gen "$state" "$id"); then
+    printf 'malformed'
+    return 1
+  fi
+  { IFS= read -r line && ! IFS= read -r extra; } < "$rec" 2>/dev/null || {
+    printf 'malformed'
+    return 1
+  }
+  local -a fields
+  IFS=' ' read -r -a fields <<< "$line"
+  ver=${fields[0]:-}
+  [ "$ver" = "$FM_BUSY_LIB_VERSION" ] || { printf 'malformed'; return 1; }
+  for f in "${fields[@]:1}"; do
+    case "$f" in
+      gen=*) r_gen=${f#gen=} ;;
+      seq=*) r_seq=${f#seq=} ;;
+      state=*) r_state=${f#state=} ;;
+      source=*) r_source=${f#source=} ;;
+      event=*) r_event=${f#event=} ;;
+      ts=*) r_ts=${f#ts=} ;;
+      *) printf 'malformed'; return 1 ;;
+    esac
+  done
+  fm_busy_token_valid "$r_gen" || { printf 'malformed'; return 1; }
+  fm_busy_token_valid "$r_source" || { printf 'malformed'; return 1; }
+  fm_busy_token_valid "$r_event" || { printf 'malformed'; return 1; }
+  case "$r_seq" in ''|*[!0-9]*) printf 'malformed'; return 1 ;; esac
+  case "$r_ts" in ''|*[!0-9]*) printf 'malformed'; return 1 ;; esac
+  case "$r_state" in busy|idle|unknown) : ;; *) printf 'malformed'; return 1 ;; esac
+  if [ "$r_gen" != "$gen" ]; then
+    printf 'gen-mismatch'
+    return 1
+  fi
+  printf '%s %s %s %s' "$r_state" "$r_source" "$r_event" "$r_seq"
+}
+reference_claude_launch_prompt_tail() {
+  local buf
+  buf=$(cat)
+  if printf '%s' "$buf" | grep -qiE "${FM_BUSY_CLAUDE_TRUST_PROMPT_REGEX:-Quick safety check: Is this a project you created or one you trust\\?}" \
+    && printf '%s' "$buf" | grep -qiE 'No, exit|Enter to confirm'; then
+    return 0
+  fi
+  printf '%s' "$buf" | grep -qiE "${FM_BUSY_CLAUDE_IMPORTS_PROMPT_REGEX:-Allow external CLAUDE\\.md file imports\\?}" \
+    && printf '%s' "$buf" | grep -qiE 'No, disable external imports|Yes, allow external imports'
+}
+reference_pi_launch_prompt_tail() {
+  local buf
+  buf=$(cat)
+  printf '%s' "$buf" | grep -qiE "${FM_BUSY_PI_LAUNCH_PROMPT_REGEX:-Trust project folder\\?}" \
+    && printf '%s' "$buf" | grep -qiE 'Do not trust'
+}
+reference_gemini_launch_prompt_tail() {
+  local buf
+  buf=$(cat)
+  if printf '%s' "$buf" | grep -qiE "${FM_BUSY_GEMINI_TRUST_PROMPT_REGEX:-Do you trust the files in this folder\\?}" \
+    && printf '%s' "$buf" | grep -qiE "Trust folder|Don't trust"; then
+    return 0
+  fi
+  if printf '%s' "$buf" | grep -qiE "${FM_BUSY_GEMINI_AUTH_PROMPT_REGEX:-How would you like to authenticate for this project\\?}" \
+    && printf '%s' "$buf" | grep -qiE 'Use Gemini API Key|No authentication method selected'; then
+    return 0
+  fi
+  printf '%s' "$buf" | grep -qiE "${FM_BUSY_GEMINI_APIKEY_PROMPT_REGEX:-Enter Gemini API Key}"
+}
+reference_launch_prompt_parked() {  # <harness>
+  case "${1:-}" in
+    claude*) reference_claude_launch_prompt_tail ;;
+    pi | pi-signed | omp) reference_pi_launch_prompt_tail ;;
+    gemini) reference_gemini_launch_prompt_tail ;;
+    *) return 1 ;;
+  esac
+}
+reference_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
+  local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
+  local out rc r_state r_source native log
+  case "$harness" in
+    kimi*)
+      if ! fm_busy_kimi_verified; then
+        printf 'unknown kimi-unverified'
+        return 0
+      fi
+      ;;
+    codex*)
+      if ! fm_busy_codex_semantic_source; then
+        printf 'unknown codex-unverified'
+        return 0
+      fi
+      ;;
+    cursor*)
+      if ! log=$(fm_busy_cursor_transcript "$state" "$id"); then
+        printf 'unknown cursor-transcript'
+        return 0
+      fi
+      case "$(fm_busy_cursor_turn_state "$log" 2>/dev/null)" in
+        busy) printf 'busy cursor-transcript' ;;
+        settled) printf 'idle cursor-transcript' ;;
+        *) printf 'unknown cursor-transcript' ;;
+      esac
+      return 0
+      ;;
+  esac
+  out=$(reference_record_read "$state" "$id") && rc=0 || rc=$?
+  if [ "$rc" = 0 ]; then
+    r_state=${out%% *}
+    out=${out#* }
+    r_source=${out%% *}
+    if reference_source_trusted "$harness" "$r_source"; then
+      if [ "$r_state" = busy ] && [ "$r_source" = fm-spawn ] && [ -n "$tail40" ] \
+        && printf '%s' "$tail40" | reference_launch_prompt_parked "$harness"; then
+        printf 'unknown launch-prompt'
+      else
+        printf '%s %s' "$r_state" "$r_source"
+      fi
+    else
+      printf 'unknown source-mismatch'
+    fi
+    return 0
+  fi
+  case "$out" in
+    malformed|gen-mismatch)
+      printf 'unknown %s' "$out"
+      return 0
+      ;;
+  esac
+  if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
+    native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
+    if [ "$native" = busy ]; then
+      printf 'busy herdr-native'
+      return 0
+    fi
+  fi
+  case "$harness" in
+    muse*)
+      if ! log=$(fm_busy_muse_session_log "$state" "$id"); then
+        printf 'unknown muse-session-log'
+        return 0
+      fi
+      case "$(fm_busy_muse_run_state "$log" 2>/dev/null)" in
+        busy) printf 'busy muse-session-log' ;;
+        settled) printf 'idle muse-session-log' ;;
+        *) printf 'unknown muse-session-log' ;;
+      esac
+      return 0
+      ;;
+    grok*)
+      if [ -z "$tail40" ]; then
+        if command -v fm_backend_capture >/dev/null 2>&1; then
+          tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
+            printf 'unknown capture-failed'
+            return 0
+          }
+        else
+          printf 'unknown capture-failed'
+          return 0
+        fi
+      fi
+      if printf '%s' "$tail40" | fm_busy_grok_tail_busy; then
+        printf 'busy grok-regex'
+      else
+        printf 'idle grok-regex'
+      fi
+      return 0
+      ;;
+    rovo*)
+      if [ -z "$tail40" ]; then
+        if command -v fm_backend_capture >/dev/null 2>&1; then
+          tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
+            printf 'unknown capture-failed'
+            return 0
+          }
+        else
+          printf 'unknown capture-failed'
+          return 0
+        fi
+      fi
+      if printf '%s' "$tail40" | fm_busy_rovo_tail_busy; then
+        printf 'busy rovo-regex'
+      else
+        printf 'unknown rovo-regex'
+      fi
+      return 0
+      ;;
+    agy)
+      if [ -z "$tail40" ]; then
+        if command -v fm_backend_capture >/dev/null 2>&1; then
+          tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
+            printf 'unknown capture-failed'
+            return 0
+          }
+        else
+          printf 'unknown capture-failed'
+          return 0
+        fi
+      fi
+      if printf '%s' "$tail40" | fm_busy_agy_tail_busy; then
+        printf 'busy agy-regex'
+      else
+        printf 'unknown agy-regex'
+      fi
+      return 0
+      ;;
+  esac
+  printf 'unknown missing'
+}
+reference_classify_meta() {  # <meta-file> <id> <state-dir> [tail40]
+  local meta=$1 id=$2 state=$3 tail40=${4-} backend target harness
+  [ -f "$meta" ] || { printf 'unknown missing'; return 0; }
+  fm_backend_of_meta_to backend "$meta"
+  fm_backend_target_of_meta_to target "$meta"
+  fm_meta_get_to harness "$meta" harness
+  if [ -z "$target" ]; then
+    printf 'unknown no-target'
+    return 0
+  fi
+  reference_classify "$backend" "$target" "$harness" "$id" "$state" "$tail40"
+}
+reference_window_is_busy() {  # <window> <tail40>
+  local w=$1 tail40=$2 meta verdict
+  local WR_TASK WR_KIND WR_BACKEND WR_HARNESS WR_LABEL
+  window_resolve "$w"
+  meta="$STATE/$WR_TASK.meta"
+  if [ -n "$WR_TASK" ] && [ -f "$meta" ]; then
+    verdict=$(reference_classify_meta "$meta" "$WR_TASK" "$STATE" "$tail40")
+  else
+    verdict=$(reference_classify "$WR_BACKEND" "$w" "$WR_HARNESS" \
+      "${WR_TASK:-unknown}" "$STATE" "$tail40")
+  fi
+  [ "${verdict%% *}" = busy ]
+}
+# Stand-ins for the gates, the Cursor and Muse readers and the backend, which
+# both sides call; each answers only the arguments the task's own call passes.
+STUB=settled TARGET=sess:w BACKEND=tmux MARK=none VERIFIED=0
+fm_busy_codex_hooks_verified() { [ "$VERIFIED" = 1 ]; }
+fm_busy_kimi_verified() { [ "$VERIFIED" = 1 ]; }
+fm_busy_cursor_transcript() {  # <state-dir> <id>
+  [ "$1/$2" = "$STATE/t" ] && [ "$STUB" != fail ] || return 1
+  printf '%s' "$STATE/t.cursor"
+}
+fm_busy_cursor_turn_state() {  # <transcript>
+  [ "$1" = "$STATE/t.cursor" ] && printf '%s' "$STUB"
+}
+fm_busy_muse_session_log() {  # <state-dir> <id>
+  [ "$1/$2" = "$STATE/t" ] && [ "$STUB" != fail ] || return 1
+  printf '%s' "$STATE/t.muse"
+}
+fm_busy_muse_run_state() {  # <session-log>
+  [ "$1" = "$STATE/t.muse" ] && printf '%s' "$STUB"
+}
+fm_backend_busy_state() {  # <backend> <target>
+  [ "$1 $2" = "herdr $TARGET" ] || return 1
+  case "$STUB" in
+    busy) printf busy ;;
+    settled) printf idle ;;
+    fail) return 1 ;;
+    *) printf '%s' "$STUB" ;;
+  esac
+}
+fm_backend_capture() {  # <backend> <target> <lines>
+  [ "$1 $2 $3" = "$BACKEND $TARGET 40" ] || return 1
+  case "$STUB" in
+    busy) printf 'working\n%s\n\n' "$MARK" ;;
+    fail) return 1 ;;
+    *) printf 'plain pane text\n' ;;
+  esac
+}
+claude_trust='Accessing workspace: /tmp/wt-a
+Quick safety check: Is this a project you created or one you trust?
+> No, exit
+  Yes, I trust this folder
+Enter to confirm . Esc to cancel'
+claude_imports='Allow external CLAUDE.md file imports?
+> No, disable external imports
+  Yes, allow external imports'
+pi_trust=' Trust project folder?
+ /tmp/wt-a
+ > Trust
+   Do not trust
+ up/down navigate  enter select'
+gemini_trust="Do you trust the files in this folder?
+> 1. Trust folder (worktree)
+  3. Don't trust"
+gemini_auth='How would you like to authenticate for this project?
+> 2. Use Gemini API Key'
+gemini_apikey='Enter Gemini API Key'
+# Compare <name>_to, then <name> in a command substitution, with <reference>:
+# value and status. The replaced side's stderr is dropped: its pipe into a
+# prompt check that returns without reading can report a broken pipe where
+# SIGPIPE is ignored.
+compare() {  # <label> <reference> <name> [args...]
+  local label=$1 ref=$2 name=$3 want want_rc got got_rc
+  shift 3
+  want=$("$ref" "$@" 2>/dev/null) && want_rc=0 || want_rc=$?
+  got=unset
+  "${name}_to" got "$@" && got_rc=0 || got_rc=$?
+  [ "$got/$got_rc" = "$want/$want_rc" ] || printf '%s: %s_to %q (status %s), replaced %q (status %s)\n' "$label" "$name" "$got" "$got_rc" "$want" "$want_rc"
+  got=$("$name" "$@") && got_rc=0 || got_rc=$?
+  [ "$got/$got_rc" = "$want/$want_rc" ] || printf '%s: %s %q (status %s), replaced %q (status %s)\n' "$label" "$name" "$got" "$got_rc" "$want" "$want_rc"
+}
+# Write <id>'s gen and record files from printf %b text, leaving either out
+# given -.
+put() {  # <id> <gen|-> <record|->
+  rm -f "$STATE/$1.busy-gen" "$STATE/$1.busy-state"
+  [ "$2" = - ] || printf '%b' "$2" > "$STATE/$1.busy-gen"
+  [ "$3" = - ] || printf '%b' "$3" > "$STATE/$1.busy-state"
+}
+compare_record() {  # <label>
+  compare "$1: gen" reference_current_gen fm_busy_current_gen "$STATE" t
+  compare "$1: record" reference_record_read fm_busy_record_read "$STATE" t
+  compare "$1: classify" reference_classify fm_busy_classify tmux sess:w claude t "$STATE" "$claude_trust"
+}
+# Each record case is <label>|<gen file>|<record file>.
+records() {
+  local entry label gen record id
+  for entry in 'none|-|-' 'gen only|g1\n|-' \
+    'record only|-|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'gen with a space|g 1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'empty gen|\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'unterminated gen|g1|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'gen with a CR|g1\r\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'two gens|g1\ng2\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'glob gen|*\n|v1 gen=* seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'empty record|g1\n|' 'blank record|g1\n|\n' \
+    'two records|g1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\nv1 gen=g1 seq=2 state=idle source=claude-hook event=e ts=2\n' \
+    'unterminated record|g1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1' \
+    'v2|g1\n|v2 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'no version|g1\n|gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'unknown key|g1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1 x=1\n' \
+    'bare glob|g1\n|v1 * gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'bad source|g1\n|v1 gen=g1 seq=1 state=busy source=a/b event=e ts=1\n' \
+    'empty event|g1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event= ts=1\n' \
+    'glob event|g1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=* ts=1\n' \
+    'bad seq|g1\n|v1 gen=g1 seq=1a state=busy source=claude-hook event=e ts=1\n' \
+    'no seq|g1\n|v1 gen=g1 state=busy source=claude-hook event=e ts=1\n' \
+    'negative ts|g1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=-1\n' \
+    'CRLF|g1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\r\n' \
+    'bad state|g1\n|v1 gen=g1 seq=1 state=working source=claude-hook event=e ts=1\n' \
+    'tabs|g1\n|v1\tgen=g1\tseq=1\tstate=busy\tsource=claude-hook\tevent=e\tts=1\n' \
+    'extra spaces|g1\n|v1  gen=g1   seq=1 state=busy source=claude-hook event=e ts=1  \n' \
+    'leading space|g1\n| v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'repeated key|g1\n|v1 gen=g1 seq=1 state=idle source=claude-hook event=e ts=1 state=busy\n' \
+    'gen mismatch|g1\n|v1 gen=g2 seq=1 state=busy source=claude-hook event=e ts=1\n' \
+    'backslash|g1\n|v1 gen=g1 seq=1 state=busy source=claude-hook event=e\\q ts=1\n'; do
+    IFS='|' read -r label gen record <<< "$entry"
+    put t "$gen" "$record"
+    compare_record "$label"
+  done
+  for record in 'busy claude-hook' 'busy fm-spawn' 'busy fm-interrupt' 'busy fm-recovery' 'busy codex-hook' \
+    'busy pi-ext' 'busy gemini-hook' 'busy kimi-wire' 'busy opencode-plugin' 'idle claude-hook' 'idle fm-spawn' \
+    'unknown claude-hook' 'unknown fm-recovery'; do
+    put t 'g1\n' "v1 gen=g1 seq=7 state=${record% *} source=${record#* } event=stop ts=1792000000\n"
+    compare_record "$record"
+  done
+  for id in t '%s' 'a b' $'x\n' ''; do
+    compare "record path $id" fm_busy_record_path fm_busy_record_path "$STATE" "$id"
+    compare "gen path $id" fm_busy_gen_path fm_busy_gen_path "$STATE/%d" "$id"
+  done
+}
+harnesses() {
+  local h VERIFIED src want_rc got_rc record
+  for h in claude claude-x codex codex-x kimi kimi-cli cursor opencode opencode-x gemini gemini-x \
+    devin devin-x pi pi-signed pi-x omp muse grok rovo agy agy-x other ''; do
+    for VERIFIED in 0 1; do
+      case "$VERIFIED/$h" in 0/* | 1/codex* | 1/kimi*) ;; *) continue ;; esac
+      compare "sources $h, verified $VERIFIED" reference_sources_for_harness fm_busy_sources_for_harness "$h"
+      for src in claude-hook codex-hook codex-appserver opencode-plugin gemini-hook devin-hook pi-ext omp-ext \
+        kimi-wire kimi-hook fm-spawn fm-interrupt fm-recovery '' 'pi-ext fm-spawn'; do
+        reference_source_trusted "$h" "$src" && want_rc=0 || want_rc=$?
+        fm_busy_source_trusted "$h" "$src" && got_rc=0 || got_rc=$?
+        [ "$got_rc" = "$want_rc" ] || printf 'trusted %q %q, verified %s: status %s, replaced %s\n' "$h" "$src" "$VERIFIED" "$got_rc" "$want_rc"
+      done
+      for record in 'busy claude-hook' 'busy fm-spawn' 'idle pi-ext'; do
+        put t 'g1\n' "v1 gen=g1 seq=1 state=${record% *} source=${record#* } event=e ts=1\n"
+        compare "classify $h $record, verified $VERIFIED" reference_classify fm_busy_classify tmux sess:w "$h" t "$STATE" "$claude_trust"
+      done
+    done
+  done
+}
+no_record() {
+  local h BACKEND STUB MARK
+  put t - -
+  for h in cursor muse grok rovo agy agy-x claude; do
+    case "$h" in
+      grok) MARK='Ctrl+c:cancel' ;;
+      rovo) MARK='Rovo is thinking...' ;;
+      agy*) MARK='esc to cancel' ;;
+      *) MARK=none ;;
+    esac
+    for BACKEND in tmux herdr; do
+      for STUB in busy settled fail junk; do
+        compare "no record $h $BACKEND $STUB" reference_classify fm_busy_classify "$BACKEND" sess:w "$h" t "$STATE" ''
+      done
+    done
+    BACKEND=tmux STUB=settled
+    compare "no record $h, marked tail" reference_classify fm_busy_classify tmux sess:w "$h" t "$STATE" "working"$'\n'"$MARK"$'\n'
+    compare "no record $h, plain tail" reference_classify fm_busy_classify tmux sess:w "$h" t "$STATE" 'plain pane text'
+  done
+}
+prompts() {
+  local h text want_rc got_rc i
+  for h in claude claude-x pi pi-signed omp gemini gemini-x opencode codex ''; do
+    i=0
+    for text in "$claude_trust" "$claude_imports" "$pi_trust" "$gemini_trust" "$gemini_auth" "$gemini_apikey" \
+      'Trust project folder?' 'TRUST PROJECT FOLDER? DO NOT TRUST' "$claude_trust"$'\n\n\n' $'\n\n' \
+      'I trust this approach and will proceed.' '' $'\xff Trust project folder?\n Do not trust \xc3\n\n'; do
+      i=$((i + 1))
+      reference_launch_prompt_parked "$h" <<< "$text" && want_rc=0 || want_rc=$?
+      fm_busy_launch_prompt_parked "$h" "$text" && got_rc=0 || got_rc=$?
+      [ "$got_rc" = "$want_rc" ] || printf 'prompt %q, tail %s: status %s, replaced %s\n' "$h" "$i" "$got_rc" "$want_rc"
+    done
+  done
+  put t 'g1\n' 'v1 gen=g1 seq=1 state=busy source=fm-spawn event=launch ts=1\n'
+  for h in claude pi gemini opencode; do
+    i=0
+    for text in "$claude_trust" "$pi_trust" "$gemini_auth" 'plain pane text' $'\n\n'; do
+      i=$((i + 1))
+      compare "seed $h, tail $i" reference_classify fm_busy_classify tmux sess:w "$h" t "$STATE" "$text"
+    done
+    compare "seed $h, no tail" reference_classify fm_busy_classify tmux sess:w "$h" t "$STATE"
+  done
+}
+# Each meta case is <label>|<the backend it names>|<meta file>.
+metas() {
+  local entry label BACKEND text record STUB=settled TARGET=sess:w
+  local tail="$claude_trust"$'\n'"$pi_trust"$'\n'"$gemini_trust"
+  for entry in 'none|tmux|-' 'no window|tmux|harness=claude\n' 'window|tmux|window=sess:w\nharness=claude\n' \
+    'orca terminal|orca|backend=orca\nwindow=sess:o\nterminal=sess:w\nharness=grok\n' \
+    'orca without a terminal|orca|backend=orca\nwindow=sess:w\nharness=pi\n' \
+    'herdr|herdr|backend=herdr\nwindow=sess:w\nharness=grok\n' \
+    'two windows|tmux|window=sess:x\nwindow=sess:w\nharness=pi\n' \
+    'unterminated|tmux|window=sess:w\nharness=gemini'; do
+    IFS='|' read -r label BACKEND text <<< "$entry"
+    rm -f "$dir/meta/t.meta"
+    [ "$text" = - ] || printf '%b' "$text" > "$dir/meta/t.meta"
+    for record in seed none; do
+      if [ "$record" = seed ]; then
+        put t 'g1\n' 'v1 gen=g1 seq=1 state=busy source=fm-spawn event=launch ts=1\n'
+      else
+        put t - -
+      fi
+      compare "meta $label, $record" reference_classify_meta fm_busy_classify_meta "$dir/meta/t.meta" t "$STATE" "$tail"
+      compare "meta $label, $record, no tail" reference_classify_meta fm_busy_classify_meta "$dir/meta/t.meta" t "$STATE"
+    done
+  done
+}
+# window_is_busy's status, and that it prints nothing.
+check_window() {  # <label> <window> <tail>
+  local want_rc got_rc
+  reference_window_is_busy "$2" "$3" 2>/dev/null && want_rc=0 || want_rc=$?
+  window_is_busy "$2" "$3" > "$dir/stdout" && got_rc=0 || got_rc=$?
+  [ "$got_rc" = "$want_rc" ] || printf 'window %s: status %s, replaced %s\n' "$1" "$got_rc" "$want_rc"
+  [ ! -s "$dir/stdout" ] || printf 'window %s printed %q\n' "$1" "$(cat "$dir/stdout")"
+}
+windows() {
+  local STUB=settled TARGET=sess:w BACKEND=tmux
+  printf 'window=sess:w\nharness=claude\n' > "$STATE/t.meta"
+  printf 'backend=herdr\nwindow=sess:h\nharness=grok\n' > "$STATE/h.meta"
+  printf 'backend=orca\nwindow=sess:o\nterminal=term-9\nharness=pi\n' > "$STATE/o.meta"
+  put o 'g1\n' 'v1 gen=g1 seq=1 state=busy source=pi-ext event=e ts=1\n'
+  put t 'g1\n' 'v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n'
+  check_window 'hook busy' sess:w 'plain pane text'
+  put t 'g1\n' 'v1 gen=g1 seq=1 state=idle source=claude-hook event=e ts=1\n'
+  check_window 'hook idle' sess:w 'plain pane text'
+  put t 'g1\n' 'v1 gen=g1 seq=1 state=busy source=fm-spawn event=launch ts=1\n'
+  check_window 'seed on the trust dialog' sess:w "$claude_trust"
+  check_window 'seed' sess:w 'plain pane text'
+  TARGET=sess:h BACKEND=herdr
+  for STUB in busy settled; do
+    check_window "herdr $STUB" sess:h 'plain pane text'
+  done
+  check_window 'herdr capture' sess:h ''
+  check_window 'herdr footer' sess:h $'working\nCtrl+c:cancel'
+  check_window 'orca terminal' term-9 'plain pane text'
+  check_window 'no meta' sess:fm-z 'plain pane text'
+  check_window 'empty window' '' 'plain pane text'
+}
+# Every variable's name and value, so one the comparisons set shows.
+variables() {
+  local vars_name
+  for vars_name in $(compgen -v); do
+    case "$vars_name" in
+      _ | vars_* | BASH* | FUNCNAME | LINENO | RANDOM | SRANDOM | SECONDS | EPOCH* | PIPESTATUS | HISTCMD | COLUMNS | LINES) continue ;;
+    esac
+    printf '%s=%q\n' "$vars_name" "${!vars_name-}"
+  done
+}
+vars_before=$(variables)
+records
+harnesses
+no_record
+prompts
+metas
+windows
+vars_after=$(variables)
+if [ "$vars_after" != "$vars_before" ]; then
+  printf '%s\n' "$vars_before" > "$dir/vars-before"
+  printf '%s\n' "$vars_after" > "$dir/vars-after"
+  printf 'the comparisons changed these variables:\n'
+  diff "$dir/vars-before" "$dir/vars-after"
+fi
+# Run <command> with every tool it starts through PATH, and every command one
+# of its subshells runs, logged: TOOLS lists the tools, SUBSHELLS counts the
+# subshell commands.
+counted() {  # <command> [args...]
+  : > "$count_log"
+  : > "$count_log.sub"
+  (
+    PATH="$count_shim:$PATH"
+    __spawn_level=$BASH_SUBSHELL
+    set -T
+    trap '[ "$BASH_SUBSHELL" -le "$__spawn_level" ] || printf "%s\n" "$BASH_COMMAND" >> "$count_log.sub"' DEBUG
+    "$@"
+  ) > /dev/null 2>&1
+  TOOLS=$(sort "$count_log" | tr '\n' ' ')
+  SUBSHELLS=$(grep -c . "$count_log.sub" || true)
+}
+# A window whose record a hook wrote, or that no task owns, is classified
+# without starting a process; one still at its fm-spawn seed starts only the
+# prompt check's two greps.
+put t 'g1\n' 'v1 gen=g1 seq=1 state=busy source=claude-hook event=e ts=1\n'
+counted window_is_busy sess:w 'plain pane text'
+[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'window_is_busy on a hook record ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+counted window_is_busy sess:fm-z 'plain pane text'
+[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'window_is_busy on an unowned window ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+put t 'g1\n' 'v1 gen=g1 seq=1 state=busy source=fm-spawn event=launch ts=1\n'
+counted window_is_busy sess:w 'plain pane text'
+[ "$TOOLS" = 'grep grep ' ] || printf 'window_is_busy on a launch seed ran [%s], not [grep grep ]\n' "$TOOLS"
+exit 0
+SH
+  run_everywhere "busy classify" "$script" "$dir" "$count_shim" "$count_log"
+  pass "fm_busy_classify, its record readers and window_is_busy match what they replaced, and a polled window's verdict starts no subshell"
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -1521,4 +2113,5 @@ else
   test_watcher_poll_helpers_match_what_they_replaced
   test_inbox_due_action_matches_what_it_replaced
   test_watcher_capture_matches_what_it_replaced
+  test_busy_classify_matches_what_it_replaced
 fi
