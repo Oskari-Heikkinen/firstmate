@@ -3750,7 +3750,9 @@ test_capture_calls_pane_read() {
   [ "$out" = $'line one\nline two\nline three' ] || fail "capture did not pass through pane read output, got '$out'"
   assert_contains "$(cat "$log")" "HERDR_SESSION=default"$'\x1f''pane'$'\x1f''read'$'\x1f''w1:p2'$'\x1f''--source'$'\x1f''recent'$'\x1f''--lines'$'\x1f''250' \
     "capture did not call pane read with the right pane id and line bound"
-  pass "fm_backend_herdr_capture: calls 'pane read <pane> --source recent --lines N' with the session set"
+  assert_not_contains "$(cat "$log")" $'\x1f''status'$'\x1f''--json' \
+    "a read the server answered should not also pay a server status check"
+  pass "fm_backend_herdr_capture: calls 'pane read <pane> --source recent --lines N' with the session set, and nothing else"
 }
 
 test_capture_works_around_small_lines_bug() {
@@ -3779,11 +3781,52 @@ test_capture_preserves_pane_read_failure() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_capture default:w1:p2 2' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "capture should fail when pane read fails, got output '$out'"
+  assert_contains "$(head -n 1 "$log")" $'\x1f''pane'$'\x1f''read'$'\x1f''w1:p2' \
+    "capture did not read the requested pane first"
   assert_contains "$(cat "$log")" "HERDR_SESSION=default"$'\x1f''status'$'\x1f''--json' \
-    "capture did not ensure the herdr server before reading the pane"
-  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''read'$'\x1f''w1:p2' \
-    "capture did not try to read the requested pane"
-  pass "fm_backend_herdr_capture: ensures the session and preserves pane read failure"
+    "capture did not check the herdr server after the refused read"
+  [ "$(grep -c $'\x1f''pane'$'\x1f''read' "$log")" -eq 1 ] \
+    || fail "a read refused by a running server should be the result, not read again: $(cat "$log")"
+  assert_not_contains "$(cat "$log")" $'\x1f''server' "a running server must not be started again"
+  pass "fm_backend_herdr_capture: a read refused by a running server fails once, with no second read"
+}
+
+test_capture_starts_a_stopped_server_and_reads_again() {
+  local dir fb out
+  dir="$TMP_ROOT/capture-stopped"; fb="$dir/fakebin"; mkdir -p "$fb"
+  # A stopped server refuses every pane call at the transport and reports
+  # running=false; `herdr server` brings it back with its panes.
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+printf '%s\n' "$*" >> "$D/log"
+case "${1:-}" in
+  status)
+    if [ -e "$D/running" ]; then
+      printf '{"server":{"running":true}}\n'
+    else
+      printf '{"server":{"running":false}}\n'
+    fi
+    ;;
+  server)
+    : > "$D/running"
+    ;;
+  pane)
+    [ -e "$D/running" ] || { echo 'error: could not connect to the herdr server' >&2; exit 1; }
+    printf 'line one\nline two\n'
+    ;;
+esac
+SH
+  chmod +x "$fb/herdr"
+  out=$(PATH="$fb:$PATH" FM_FAKE_DIR="$dir" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_capture fmtest:w1:p2 40' "$ROOT") \
+    || fail "capture should start a stopped server and read the pane: $(cat "$dir/log")"
+  [ "$out" = $'line one\nline two' ] || fail "capture after the server start returned '$out'"
+  assert_contains "$(cat "$dir/log")" "server --session fmtest" "capture did not start the stopped herdr server"
+  [ "$(grep -c '^pane read w1:p2' "$dir/log")" -eq 2 ] \
+    || fail "capture should read once before and once after the server start: $(cat "$dir/log")"
+  pass "fm_backend_herdr_capture: a read refused by a stopped server starts it and reads again"
 }
 
 test_send_key_normalizes_and_targets_pane() {
@@ -6089,6 +6132,7 @@ HERDR_CASES=(
   test_capture_calls_pane_read
   test_capture_works_around_small_lines_bug
   test_capture_preserves_pane_read_failure
+  test_capture_starts_a_stopped_server_and_reads_again
   test_send_key_normalizes_and_targets_pane
   test_kill_is_best_effort
   test_current_path_reads_cwd

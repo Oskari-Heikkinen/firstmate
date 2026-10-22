@@ -1661,10 +1661,11 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # headless (no TUI client) if not already running, mirroring tmux's `tmux
 # has-session || tmux new-session -d`. Verified: a bare socket CLI call does
 # NOT auto-start the server, so this must run before any workspace/tab/pane
-# call. The server outlives its launcher and passes its startup environment to
-# every later pane, so remove home, harness identity, and supervision selection
-# inherited from whichever agent happened to start it. Bounded poll for the
-# server to report running.
+# call that needs the server up. fm_backend_herdr_capture alone reads first
+# and runs this only after a refused read. The server outlives its launcher
+# and passes its startup environment to every later pane, so remove home,
+# harness identity, and supervision selection inherited from whichever agent
+# happened to start it. Bounded poll for the server to report running.
 fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running out i
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
@@ -3144,13 +3145,25 @@ fm_backend_herdr_send_key() {  # <target> <key>
 # instead, so they need no line count at all). Workaround:
 # always request a generous fetch far above any realistic viewport height, then
 # trim to the caller's requested bound ourselves with `tail`.
+#
+# The read goes first, without fm_backend_herdr_target_ready's server-ensure
+# round trip (a `status --json` call and a jq) in front of it: the watcher
+# captures every polled window on every poll, and a running server answers the
+# read itself. Only a failed read asks whether the server is running. A running
+# server's refusal is the result, as before; a stopped or unreadable one goes
+# through fm_backend_herdr_server_ensure, which starts it, and the pane is read
+# again.
 fm_backend_herdr_capture() {  # <target> <lines>
-  fm_backend_herdr_target_ready "$1" || return 1
+  fm_backend_herdr_parse_target "$1" || return 1
   local lines=${2:-200} fetch out
   case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
   fetch=$lines
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
-  out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" 2>/dev/null) || return 1
+  if ! out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" 2>/dev/null); then
+    [ "$(fm_backend_herdr_server_running_state "$FM_BACKEND_HERDR_SESSION")" = running ] && return 1
+    fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION" || return 1
+    out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" 2>/dev/null) || return 1
+  fi
   printf '%s' "$out" | tail -n "$lines"
 }
 
