@@ -19,7 +19,8 @@ ext4's own metadata (inode tables, journal, bitmaps) also sits in the disk file'
 The monitor takes it as the root block device's size minus the `df` total and subtracts it too, so "reclaimable" means what a compaction can really give back, never more.
 When that table, the device size, or the disk file cannot be read, the monitor reports reclaimable as unknown rather than guessing.
 
-The margin is the room that must remain after a job's expected write, 20 GiB by default (`FM_DISK_ROOM_MARGIN`).
+The margin is the room that must remain after a job's expected write, 20 GiB by default.
+A home sets it durably in `config/disk-room-margin`, and `FM_DISK_ROOM_MARGIN` overrides that for one run; [`configuration.md`](configuration.md#disk-room-margin-configdisk-room-margin) owns the format, precedence, and inheritance.
 Sizes are binary (G = GiB), matching what Windows Explorer shows as GB.
 `status` also reports an external SSD's room and which root fetched results use, read from the file [`docs/storage.md`](storage.md) describes.
 

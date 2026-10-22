@@ -1150,6 +1150,16 @@ Each `memory_guard` threshold is four numbers, one per level from `warn` to `cri
 Sizing WSL itself (`.wslconfig` memory limit, reclaim mode, and swap) and handing Linux page cache back to Windows need Windows-side or root changes that no script here makes; they are an operator handover prepared outside the repository, not repository content.
 The headers of `bin/fm-mem-guard.sh` and `bin/fm-job-cap.sh` own only those scripts' own commands, records, and test seams.
 
+## Disk room margin (config/disk-room-margin)
+
+The optional local, gitignored `config/disk-room-margin` sets the room [`bin/fm-disk-room.sh`](../bin/fm-disk-room.sh) keeps after a job's expected write, described in [`disk-room.md`](disk-room.md).
+Its first line is a size in bytes or a number with `K`, `M`, `G`, or `T` (binary, so `1G` is 1 GiB); surrounding whitespace is ignored and later lines are not read.
+A non-empty `FM_DISK_ROOM_MARGIN` wins over the file, and with neither the margin is 20 GiB.
+The script reads the file from `FM_HOME`, or from its own checkout when `FM_HOME` is unset, so a caller that runs a home's script without `FM_HOME` still gets that home's margin.
+A present file that does not parse, including an empty one, is a failed reading: `check` and `run` refuse, `status` exits 2, and the watcher check reports it, each naming the file.
+Every reading uses the file's current contents, so a change applies at once with no re-arm, except that a watcher check armed while `FM_DISK_ROOM_MARGIN` was set keeps that value until it is re-armed without it.
+The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
+
 ## Home brief include (config/brief-include.md)
 
 The optional local, gitignored `config/brief-include.md` adds standing worker instructions to every ship and scout brief.

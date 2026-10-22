@@ -15,7 +15,7 @@ set -u
 unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
   FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_POWERSHELL FM_DISK_ROOM_RESULTS_ROOT \
   FM_DISK_ROOM_SAMPLES FM_DISK_ROOM_GROWTH_MAX FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_STORAGE_MNT \
-  FM_DISK_ROOM_WSLCONFIG FM_DISK_ROOM_MEMINFO
+  FM_DISK_ROOM_WSLCONFIG FM_DISK_ROOM_MEMINFO FM_CONFIG_OVERRIDE FM_INHERITABLE_CONFIG
 TMP_ROOT=$(fm_test_tmproot fm-disk-room)
 DISK_ROOM="$ROOT/bin/fm-disk-room.sh"
 GIB=1073741824
@@ -117,6 +117,7 @@ write_mb_groups() {
 }
 
 run_room() {
+  FM_HOME="${TEST_FM_HOME-$TMP_ROOT/home-unset}" \
   PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
     FM_STORAGE_CONFIG="$TMP_ROOT/storage" FM_STORAGE_MNT="$TMP_ROOT/mnt" \
     FM_STORAGE_MOUNTINFO="$TMP_ROOT/mountinfo" \
@@ -191,6 +192,38 @@ test_check_margin() {
   run_room check >/dev/null 2>&1; rc=$?
   expect_code 2 "$rc" "check needs --expect-write"
   pass "check admits down to the margin after the expected write"
+}
+
+test_margin_sources() {
+  reset_state
+  set_sizes 45 600 400
+  local home="$TMP_ROOT/margin-home" out rc items
+  mkdir -p "$home/config"
+  out=$(TEST_FM_HOME="$home" run_room status --json)
+  assert_equals $(( 20 * GIB )) "$(json_field "$out" margin)" "no file and no variable keeps 20G"
+  printf '1G\r\nignored\n' >"$home/config/disk-room-margin"
+  out=$(TEST_FM_HOME="$home" run_room status --json)
+  assert_equals "$GIB" "$(json_field "$out" margin)" "the home's file wins over the default"
+  out=$(TEST_FM_HOME="$home" run_room check --expect-write 43G); rc=$?
+  expect_code 0 "$rc" "the file's margin admits a write the default would refuse"
+  out=$(FM_DISK_ROOM_MARGIN=10G TEST_FM_HOME="$home" run_room status --json)
+  assert_equals $(( 10 * GIB )) "$(json_field "$out" margin)" "the variable wins over the file"
+  printf 'lots\n' >"$home/config/disk-room-margin"
+  out=$(FM_DISK_ROOM_MARGIN=10G TEST_FM_HOME="$home" run_room status --json)
+  assert_equals $(( 10 * GIB )) "$(json_field "$out" margin)" "the variable wins over a bad file"
+  out=$(TEST_FM_HOME="$home" run_room check --expect-write 1G 2>&1); rc=$?
+  expect_code 2 "$rc" "a bad file is a failed reading"
+  assert_contains "$out" "bad margin in $home/config/disk-room-margin" "a bad file is named"
+  out=$(TEST_FM_HOME="$home" run_room status 2>&1); rc=$?
+  expect_code 2 "$rc" "status fails on a bad file"
+  assert_contains "$out" "bad margin in $home/config/disk-room-margin" "status names the bad file"
+  : >"$home/config/disk-room-margin"
+  out=$(TEST_FM_HOME="$home" run_room check --expect-write 1G 2>&1); rc=$?
+  expect_code 2 "$rc" "an empty file is a failed reading"
+  rm -f "$home/config/disk-room-margin"
+  items=$(env -u FM_INHERITABLE_CONFIG bash -c '. "$1" && fm_config_inherit_items' _ "$ROOT/bin/fm-config-inherit-lib.sh")
+  assert_contains "$items" "config/disk-room-margin" "the margin file is inherited into secondmate homes"
+  pass "the margin comes from the variable, else the home's config file, else 20G"
 }
 
 test_low_advice() {
@@ -885,6 +918,7 @@ test_shadow_cycling_warning
 test_shadow_wevtutil_from_drive
 test_results_root_in_status
 test_check_margin
+test_margin_sources
 test_low_advice
 test_unknown_reclaim
 test_fs_overhead

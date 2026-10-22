@@ -64,7 +64,10 @@
 # Windows Explorer shows as GB).
 #
 # Environment (all optional):
-#   FM_DISK_ROOM_MARGIN   margin kept after the expected write (default 20G)
+#   FM_DISK_ROOM_MARGIN   margin kept after the expected write; when unset or
+#                         empty, the first line of <home>/config/disk-room-margin
+#                         (home: FM_HOME, else this script's checkout; SIZE),
+#                         else 20G; an unparsable value or file is a failed reading
 #   FM_DISK_ROOM_BULK_MARGIN  D: margin after all peak reservations (default 50G)
 #   FM_DISK_ROOM_HOST     Windows drive mount (default /mnt/c; absent => Linux-only)
 #   FM_DISK_ROOM_ROOT     Linux path whose filesystem is measured (default /)
@@ -649,13 +652,33 @@ with_lock() {
 
 # Measurement ----------------------------------------------------------------
 
+# resolve_margin: sets MARGIN from FM_DISK_ROOM_MARGIN, else the first line of
+# the home's config/disk-room-margin, else 20G. The home is FM_HOME, else this
+# script's own checkout, as arm resolves it. Sets ERR and returns 1 when the
+# chosen value does not parse.
+resolve_margin() {
+  local f line=''
+  if [ -n "${FM_DISK_ROOM_MARGIN:-}" ]; then
+    MARGIN=$(to_bytes "$FM_DISK_ROOM_MARGIN") || { ERR="bad FM_DISK_ROOM_MARGIN"; return 1; }
+    return 0
+  fi
+  f=${FM_CONFIG_OVERRIDE:-${FM_HOME:-${SCRIPT_DIR%/*}}/config}/disk-room-margin
+  if [ -e "$f" ] || [ -L "$f" ]; then
+    IFS= read -r line <"$f" 2>/dev/null
+    line=${line//[$' \t\r']/}
+    MARGIN=$(to_bytes "$line") || { ERR="bad margin in $f"; return 1; }
+    return 0
+  fi
+  MARGIN=$((20 * GIB))
+}
+
 # measure [EXCLUDE]: sets globals; returns 1 when a required reading fails.
 measure() {
   local host root line bs vhdx result fs_size dev
   ERR=''
   root=${FM_DISK_ROOM_ROOT:-/}
   host=$(host_mount)
-  MARGIN=$(to_bytes "${FM_DISK_ROOM_MARGIN:-20G}") || { ERR="bad FM_DISK_ROOM_MARGIN"; return 1; }
+  resolve_margin || return 1
   LINUX_FREE=$(df_field "$root" avail); LINUX_USED=$(df_field "$root" used)
   [ -n "$LINUX_FREE" ] && [ -n "$LINUX_USED" ] || { ERR="cannot read Linux free space on $root"; return 1; }
   HOST=''; HOST_FREE=''
