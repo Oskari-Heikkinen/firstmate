@@ -71,6 +71,168 @@ SH
   pass "fm_dirname_to and fm_basename_to match dirname and basename on every edge case"
 }
 
+test_directory_helper_matches_cd_and_pwd() {
+  local script="$TMP_ROOT/cd-pwd.sh"
+  mkdir -p "$TMP_ROOT/cd-pwd"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-dir-lib.sh"
+t=$(mktemp -d "$2/run.XXXXXX") && t=$(cd -P "$t" && pwd) || exit 1
+# Invalid UTF-8 names are refused on some file systems; those shapes then
+# compare two failures.
+mkdir -p "$t/d/sub/deep" "$t/real/x" "$t/sp ace/x" "$t/nl"$'\n' "$t/"$'caf\xc3\xa9/z' \
+  "$t/"$'\xff\xfe/y' "$t/-dash/x" "$t/..." "$t/.hid/x" "$t/shut" 2>/dev/null
+chmod 600 "$t/shut"
+ln -s "$t/real" "$t/link"
+ln -s ../../d "$t/real/x/rel"
+ln -s "$t/missing" "$t/dangling"
+: > "$t/file"
+check() {  # <directory>: the helper either answers what cd and pwd print or assigns nothing
+  local got=unset want rc=0
+  want=$(cd "$1" 2>/dev/null && pwd) || rc=$?
+  if fm_cd_pwd_to got "$1"; then
+    [ "$rc" -eq 0 ] && [ "$got" = "$want" ] ||
+      printf 'helper %q, cd and pwd %q (exit %s) for %q\n' "$got" "$want" "$rc" "$1"
+  else
+    [ "$got" = unset ] || printf 'refusing %q still assigned %q\n' "$1" "$got"
+  fi
+}
+shapes() {
+  local base suffix p
+  for base in "$t/d" "$t/d/sub/deep" "$t/link" "$t/link/x" "$t/link/x/rel" "$t/sp ace/x" \
+    "$t/nl"$'\n' "$t/"$'caf\xc3\xa9/z' "$t/"$'\xff\xfe' "$t/-dash/x" "$t/..." "$t/.hid/x" \
+    "$t/shut" "$t/shut/inner" "$t/dangling" "$t/file" "$t/missing" / "$t"; do
+    for suffix in '' / /. /./ /.. /../.. /../../.. /../../../../../../../../../../.. \
+      /x/.. /sub/.. //.. /../ /.././..; do
+      check "$base$suffix"
+    done
+  done
+  for p in '' . .. ./d d "$t//d" "/$t/d" "$t/./d" "$t/d/../d" // /.. "$t/d//"; do
+    check "$p"
+  done
+}
+shapes
+set -o posix
+shapes
+set +o posix
+# The shapes a caller hands it resolve without a subshell, logical links kept.
+for p in "$t/d" "$t/d/sub/deep/../.." "$t/link/x/rel" "$t/link/x/rel/.." "$t/sp ace/x/../../.." \
+  "$t/"$'caf\xc3\xa9/z' "$t/-dash/x" "$t/..." "$t/.hid/x/.."; do
+  fm_cd_pwd_to got "$p" || printf 'no subshell-free answer for %q\n' "$p"
+done
+# A relative directory is CDPATH's to resolve, so the helper leaves it to cd.
+cd "$t" || exit 1
+CDPATH=$t/d
+for p in sub d d/sub "$t/d"; do check "$p"; done
+CDPATH=
+# Under set -P, pwd prints the physical path, which only cd can know.
+set -P
+for p in "$t/link" "$t/link/x/rel/.." "$t/d"; do
+  got=unset
+  fm_cd_pwd_to got "$p" && printf 'under set -P the helper answered %q for %q\n' "$got" "$p"
+  check "$p"
+done
+set +P
+log=$t/subshells
+saved_path=$PATH
+__level=$BASH_SUBSHELL
+set -T
+trap '[ "$BASH_SUBSHELL" -le "$__level" ] || printf "%s\n" "$BASH_COMMAND" >> "$log"' DEBUG
+PATH=$t/missing
+fm_cd_pwd_to got "$t/link/x/rel/.."
+want_ok=$?
+fm_cd_pwd_to got sub
+PATH=$saved_path
+trap - DEBUG
+set +T
+[ "$want_ok" -eq 0 ] && [ "$got" = "$t/link/x" ] || printf 'without PATH the helper answered %q (exit %s)\n' "$got" "$want_ok"
+[ ! -s "$log" ] || printf 'the helper ran subshell commands: %s\n' "$(tr '\n' ' ' < "$log")"
+chmod 700 "$t/shut"
+SH
+  run_everywhere "directory helper" "$script" "$TMP_ROOT/cd-pwd"
+  pass "fm_cd_pwd_to answers what cd and pwd print, without a subshell or PATH, or assigns nothing"
+}
+
+test_library_loads_match_the_subshells_they_replaced() {
+  local script="$TMP_ROOT/library-loads.sh" dir="$TMP_ROOT/library-loads"
+  mkdir -p "$dir/root" "$dir/noisy"
+  ln -s "$ROOT" "$dir/link"
+  ln -s "$ROOT/bin" "$dir/root/bin"
+  printf '#!/bin/sh\necho "uname: unavailable" >&2\nexit 1\n' > "$dir/noisy/uname"
+  chmod +x "$dir/noisy/uname"
+  cat > "$script" <<'SH'
+root=$1 dir=$2 log=$2/subshells.$$
+cd "$dir" || exit 1
+unset FM_ROOT FM_ROOT_OVERRIDE
+expect() {  # <label> <want> <got>
+  [ "$2" = "$3" ] || printf '%s: %q, not %q\n' "$1" "$3" "$2"
+}
+load_subshells() {  # <first-library-or-empty> <library>...: subshell commands loading each library runs
+  (
+    [ -z "$1" ] || . "$1"
+    shift
+    : > "$log"
+    __level=$BASH_SUBSHELL
+    set -T
+    trap '[ "$BASH_SUBSHELL" -le "$__level" ] || printf "%s\n" "$BASH_COMMAND" >> "$log"' DEBUG
+    for lib in "$@"; do . "$lib"; done
+  ) > /dev/null 2>&1
+  grep -c . "$log" || true
+}
+# A library under a linked, relative or dotted bin resolves what cd and pwd
+# print there, whether or not the caller loaded fm-dir-lib.sh first.
+for bin in "$root/bin" link/bin "$dir/link/bin" "$dir/root/bin" "$dir/link/bin/../bin"; do
+  want=$(cd "$bin/.." && pwd)
+  for first in '' "$root/bin/fm-dir-lib.sh"; do
+    got=$([ -z "$first" ] || . "$first"; . "$bin/fm-backend.sh"; printf '%s' "$FM_ROOT")
+    expect "fm-backend.sh root from $bin${first:+ after fm-dir-lib.sh}" "$want" "$got"
+    got=$([ -z "$first" ] || . "$first"; . "$bin/fm-dod-lib.sh"; fm_worker_guide_ref x)
+    expect "fm_worker_guide_ref from $bin${first:+ after fm-dir-lib.sh}" \
+      "$want/.agents/skills/worker-guide/references/x.md" "$got"
+  done
+done
+without=$(load_subshells '' "$root/bin/fm-backend.sh")
+with=$(load_subshells "$root/bin/fm-dir-lib.sh" "$root/bin/fm-backend.sh")
+[ "$with" -lt "$without" ] ||
+  printf 'fm-backend.sh ran %s subshell commands after fm-dir-lib.sh, %s without it\n' "$with" "$without"
+siblings=$(load_subshells '' "$root/bin/fm-pr-lib.sh" "$root/bin/fm-classify-lib.sh" \
+  "$root/bin/fm-nm-run-lib.sh" "$root/bin/fm-brief-heading-lib.sh")
+dod=$(load_subshells '' "$root/bin/fm-dod-lib.sh")
+[ $((dod - siblings)) -le 4 ] ||
+  printf 'fm-dod-lib.sh ran %s subshell commands of its own, more than one directory resolution\n' "$((dod - siblings))"
+composer=$(load_subshells '' "$root/bin/fm-composer-lib.sh")
+[ "$composer" -eq 0 ] || printf 'loading fm-composer-lib.sh ran %s subshell commands\n' "$composer"
+# The prompt glyph sets hold exactly what their printf lists printed.
+. "$root/bin/fm-composer-lib.sh"
+while IFS= read -r glyph; do
+  fm_composer_leading_agent_glyph_var got "  $glyph hello" || printf 'agent glyph %q unread\n' "$glyph"
+  expect "agent glyph" "$glyph" "$got"
+  fm_composer_leading_prompt_glyph_var got "$glyph"
+  expect "prompt glyph" "$glyph" "$got"
+  fm_composer_leading_shell_glyph_var got "$glyph" && printf 'agent glyph %q read as a shell glyph\n' "$glyph"
+done <<EOF
+$(printf '%s\n' '❯' '›' '⟩' '→' '❭')
+EOF
+while IFS= read -r glyph; do
+  fm_composer_leading_shell_glyph_var got "$glyph ls" || printf 'shell glyph %q unread\n' "$glyph"
+  expect "shell glyph" "$glyph" "$got"
+  fm_composer_leading_prompt_glyph_var got " $glyph"
+  expect "prompt glyph" "$glyph" "$got"
+  fm_composer_leading_agent_glyph_var got "$glyph" && printf 'shell glyph %q read as an agent glyph\n' "$glyph"
+done <<EOF
+$(printf '%s\n' '>' '$' '%' '#')
+EOF
+for text in '' x '*' '-' "$(printf '\302\273')" "$(printf '\342\235')"; do
+  fm_composer_leading_prompt_glyph_var got "$text" && printf '%q read as prompt glyph %q\n' "$text" "$got"
+done
+# A failing uname leaves the classify library's load silent.
+out=$(PATH="$dir/noisy:$PATH"; unset _FM_UNAME; . "$root/bin/fm-classify-lib.sh" 2>&1)
+expect "classify library load output with a failing uname" '' "$out"
+rm -f "$log"
+SH
+  run_everywhere "library loads" "$script" "$dir"
+  pass "fm-backend.sh, fm-dod-lib.sh, fm-composer-lib.sh and fm-classify-lib.sh load as before with fewer subshells"
+}
+
 test_epoch_helper_matches_date_and_never_forks_more() {
   local script="$TMP_ROOT/epoch.sh" shim="$TMP_ROOT/epoch-shim" log="$TMP_ROOT/epoch-date.log"
   mkdir -p "$shim"
@@ -2216,6 +2378,8 @@ if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
   test_path_helpers_match_dirname_and_basename
+  test_directory_helper_matches_cd_and_pwd
+  test_library_loads_match_the_subshells_they_replaced
   test_epoch_helper_matches_date_and_never_forks_more
   test_signal_seen_path_and_lock_abs_path_are_unchanged
   test_recovery_marker_read_accepts_exactly_one_newline

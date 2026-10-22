@@ -263,6 +263,41 @@ case_default_cadence() {
   pass "the resume watch polls local waits often enough to resume within about a minute"
 }
 
+# --- park resolves its own directory and root as cd and pwd print them --------
+# The resume watch runs the condition path park records, and an unset FM_HOME
+# falls back to the script's root, so linked, dotted and relative invocations
+# must resolve exactly as cd and pwd do.
+case_park_resolves_its_directory() {
+  fake="$TMP_ROOT/linked-bin"; link="$TMP_ROOT/linked-root"
+  mkdir -p "$fake/bin"
+  ln -s "$ROOT"/bin/* "$fake/bin/"
+  ln -s "$ROOT" "$link"
+  new_task "$fake" td
+  handoff "$TMP_ROOT/td.md" "file:$TMP_ROOT/td-results"
+  out=$(cd "$TMP_ROOT" && env -u FM_HOME -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE \
+    FAKE_CONTROL_LOG="$fake/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" \
+    "$fake/bin/fm-park.sh" td --handoff "$TMP_ROOT/td.md" 2>&1) || fail "park without FM_HOME failed: $out"
+  assert_grep "park_state=parked" "$fake/state/td.meta" "park without FM_HOME records the park in its own root"
+  assert_equals "$(cd "$fake/bin" && pwd)/fm-park.sh" "$(sed -n '/^argv:$/{n;p;q;}' "$fake/state/when/when-park-td.spec")" \
+    "park without FM_HOME arms its own path as the condition"
+  H="$TMP_ROOT/h-resolve"; n=0
+  for invoked in "$link/bin/fm-park.sh" "$link/bin/../bin/fm-park.sh" linked-root/bin/fm-park.sh; do
+    n=$((n + 1)); new_task "$H" "tr$n"
+    handoff "$TMP_ROOT/tr$n.md" "file:$TMP_ROOT/tr$n-results"
+    out=$(cd "$TMP_ROOT" && FM_HOME="$H" FAKE_CONTROL_LOG="$H/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" \
+      "$invoked" "tr$n" --handoff "$TMP_ROOT/tr$n.md" 2>&1) || fail "park through $invoked failed: $out"
+    condition=$(sed -n '/^argv:$/{n;p;q;}' "$H/state/when/when-park-tr$n.spec")
+    assert_equals "$(cd "$TMP_ROOT" && cd "$(dirname "$invoked")" && pwd)/fm-park.sh" "$condition" \
+      "park through $invoked arms the path cd and pwd print"
+    token=$(sed -n 's/^park_token=//p' "$H/state/tr$n.meta")
+    rc=0; (cd / && FM_HOME="$H" "$condition" poll "tr$n" "$token") || rc=$?
+    expect_code 1 "$rc" "the condition armed through $invoked read an unmet wait"
+    : > "$TMP_ROOT/tr$n-results"
+    (cd / && FM_HOME="$H" "$condition" poll "tr$n" "$token") || fail "the condition armed through $invoked missed its result"
+  done
+  pass "park arms the directory and root cd and pwd print from linked, dotted and relative invocations"
+}
+
 # --- the cross-home condition kinds each read their own source ----------------
 case_cross_home_conditions() {
   H="$TMP_ROOT/h-kinds"; mkdir -p "$H/state" "$H/config"
@@ -1206,8 +1241,8 @@ pool_param_cases save_timeout_case bundle import clean quiet evidence
 POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
   case_superseded_resume case_failed_relaunch case_notification_failure)
 POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queue_adoption_refusal
-  case_park_records_and_rearms case_default_cadence case_cross_home_conditions case_kind_default_deadlines
-  case_park_time_refusal case_self_park_detached_exit
+  case_park_records_and_rearms case_default_cadence case_park_resolves_its_directory case_cross_home_conditions
+  case_kind_default_deadlines case_park_time_refusal case_self_park_detached_exit
   case_self_park_by_task_id case_self_park_exit_failure case_claude_background_refusal
   case_other_harness_background case_copy_free_qualification case_wait_age)
 pool_param_cases release_scenario_case off true nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll

@@ -162,8 +162,15 @@
 # of state; exit 2 only on a usage error (no id).
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+# The fleet snapshot runs this script once per task, so its directories resolve
+# without subshells whenever bin/fm-dir-lib.sh can prove them.
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+# shellcheck source=bin/fm-dir-lib.sh
+{ [ -f "$SCRIPT_DIR/fm-dir-lib.sh" ] && . "$SCRIPT_DIR/fm-dir-lib.sh" && fm_cd_pwd_to SCRIPT_DIR "$SCRIPT_DIR"; } ||
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FM_ROOT=${FM_ROOT_OVERRIDE:-}
+[ -n "$FM_ROOT" ] || { command -v fm_cd_pwd_to >/dev/null && fm_cd_pwd_to FM_ROOT "$SCRIPT_DIR/.."; } ||
+  FM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 

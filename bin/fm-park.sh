@@ -194,8 +194,16 @@
 #   FM_PARK_RELEASE_TIMEOUT  separate copy-release action bound (1800 seconds, minimum 5)
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+# A parked task's resume watch runs this script as its condition on every poll,
+# so its directories resolve without subshells whenever bin/fm-dir-lib.sh can
+# prove them.
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+# shellcheck source=bin/fm-dir-lib.sh
+{ [ -f "$SCRIPT_DIR/fm-dir-lib.sh" ] && . "$SCRIPT_DIR/fm-dir-lib.sh" && fm_cd_pwd_to SCRIPT_DIR "$SCRIPT_DIR"; } ||
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FM_ROOT=${FM_ROOT_OVERRIDE:-}
+[ -n "$FM_ROOT" ] || { command -v fm_cd_pwd_to >/dev/null && fm_cd_pwd_to FM_ROOT "$SCRIPT_DIR/.."; } ||
+  FM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"

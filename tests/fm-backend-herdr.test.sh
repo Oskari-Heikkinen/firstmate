@@ -387,6 +387,45 @@ test_workspace_label_different_secondmates_get_different_labels() {
   pass "fm_backend_herdr_workspace_label: two different secondmate homes get two different, non-colliding labels"
 }
 
+# --- the adapter's root: what cd and pwd print from every load path ----------
+
+test_adapter_root_matches_cd_and_pwd_from_every_load_path() {
+  local dir="$TMP_ROOT/adapter-root" src first want got
+  mkdir -p "$dir/root"
+  ln -s "$ROOT" "$dir/link"
+  ln -s "$ROOT/bin" "$dir/root/bin"
+  cat > "$dir/load.sh" <<'SH'
+# <adapter> <first-library-or-empty> <subshell-log>: load the adapter with
+# every subshell command logged, then print the root it resolved.
+unset FM_ROOT FM_ROOT_OVERRIDE
+[ -z "$2" ] || . "$2"
+: > "$3"
+__level=$BASH_SUBSHELL
+set -T
+trap '[ "$BASH_SUBSHELL" -le "$__level" ] || printf "%s\n" "$BASH_COMMAND" >> "$3"' DEBUG
+. "$1" || exit 1
+trap - DEBUG
+set +T
+declare -F fm_backend_herdr_workspace_label fm_composer_classify_screen >/dev/null || exit 1
+printf '%s\n' "$FM_ROOT"
+SH
+  for src in "$ROOT/bin/backends/herdr.sh" link/bin/backends/herdr.sh "$dir/link/bin/backends/herdr.sh" \
+    "$dir/root/bin/backends/herdr.sh" "$dir/link/bin/backends/../backends/herdr.sh"; do
+    want=$(cd "$dir" && cd "${src%/*}/../.." && pwd)
+    for first in '' "$ROOT/bin/fm-dir-lib.sh"; do
+      got=$(cd "$dir" && bash load.sh "$src" "$first" "$dir/subshells") ||
+        fail "herdr.sh did not load from $src${first:+ after fm-dir-lib.sh}"
+      assert_equals "$want" "$got" "herdr.sh from $src${first:+ after fm-dir-lib.sh} resolves the root cd and pwd print"
+    done
+  done
+  (cd "$dir" && bash load.sh "$ROOT/bin/backends/herdr.sh" '' "$dir/without") >/dev/null || fail "herdr.sh did not load"
+  (cd "$dir" && bash load.sh "$ROOT/bin/backends/herdr.sh" "$ROOT/bin/fm-dir-lib.sh" "$dir/with") >/dev/null ||
+    fail "herdr.sh did not load after fm-dir-lib.sh"
+  [ "$(grep -c . "$dir/with")" -lt "$(grep -c . "$dir/without")" ] ||
+    fail "herdr.sh resolved its root with a subshell although its caller loaded fm-dir-lib.sh"
+  pass "herdr.sh resolves the root cd and pwd print from every load path, without a subshell after fm-dir-lib.sh"
+}
+
 # --- fm_backend_herdr_cli: session targeting (2026-07-02 incident fix) -------
 
 test_cli_helper_sets_env_and_appends_trailing_session_flag() {
@@ -6006,6 +6045,7 @@ HERDR_CASES=(
   test_workspace_label_secondmate_marker_trims_whitespace
   test_workspace_label_empty_marker_falls_back_to_primary
   test_workspace_label_different_secondmates_get_different_labels
+  test_adapter_root_matches_cd_and_pwd_from_every_load_path
   test_cli_helper_sets_env_and_appends_trailing_session_flag
   test_agent_state_bypasses_a_stale_client_shadowing_a_compatible_one
   test_recovery_grade_read_widens_only_at_its_own_boundary

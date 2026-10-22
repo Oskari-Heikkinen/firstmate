@@ -53,7 +53,7 @@ _FM_CLASSIFY_LIB_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] 
 # stat helper below. These helpers mostly run inside $() subshells, where a lazy
 # cache would never persist. fm-wake-lib.sh's _FM_UNAME is reused when it is
 # already loaded; either value is compared only against Darwin.
-_FM_CLASSIFY_UNAME_S=${_FM_UNAME:-$(uname -s 2>/dev/null)}
+{ _FM_CLASSIFY_UNAME_S=${_FM_UNAME:-$(uname -s)}; } 2>/dev/null
 
 # The crew current-state reader used for the "provably working" decision.
 # Overridable so tests can stub the run-step/pane verdict without a real worktree

@@ -138,14 +138,17 @@
 # brief is unchanged. That section also makes the worker run the lean pre-push
 # review (bin/fm-lean-review.sh) on each risky-area commit before pushing it.
 
+# This library's directory, resolved once at source time for the siblings below
+# and the call-time helpers that read them.
+_FM_DOD_LIB_DIR=$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)
 # shellcheck source=bin/fm-pr-lib.sh
-. "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-pr-lib.sh"
+. "$_FM_DOD_LIB_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
-. "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-classify-lib.sh"
+. "$_FM_DOD_LIB_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
-. "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-nm-run-lib.sh"
+. "$_FM_DOD_LIB_DIR/fm-nm-run-lib.sh"
 # shellcheck source=bin/fm-brief-heading-lib.sh
-. "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-brief-heading-lib.sh"
+. "$_FM_DOD_LIB_DIR/fm-brief-heading-lib.sh"
 
 # A direct-push worker's post-landing wait bound, in minutes: roughly two
 # back-to-back full default-branch CI runs, since a superseded run waits behind one.
@@ -191,7 +194,7 @@ fm_dod_project_is_not_firstmate() {  # <project-dir> <fm-root>
 # skill under .agents/skills/worker-guide/ owns that reference text.
 fm_worker_guide_ref() {  # <name>
   local root=${FM_ROOT:-}
-  [ -n "$root" ] || root=$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}/.." && pwd)
+  [ -n "$root" ] || root=$(cd "$_FM_DOD_LIB_DIR/.." && pwd)
   printf '%s/.agents/skills/worker-guide/references/%s.md' "$root" "$1"
 }
 
@@ -798,7 +801,7 @@ fm_dod_gerrit_change_carries_head() {  # <worktree> <url>
   local wt=$1 url=$2 revision head_tree revision_tree lib
   fm_pr_url_parse "$url" || return 1
   [ "$FM_PR_PROVIDER" = gerrit ] || return 1
-  lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-pr-lib.sh"
+  lib=$_FM_DOD_LIB_DIR/fm-pr-lib.sh
   # shellcheck disable=SC2016  # The inner script expands after bash -c receives positional args.
   revision=$(fm_run_timed 10 bash -c '
     . "$1"
