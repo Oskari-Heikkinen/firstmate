@@ -4,7 +4,10 @@
 # elevation and touch no Windows state: the script must parse, and its
 # shadow-storage record formatter, run on fake Win32_ShadowStorage objects, and
 # its trim result formatter must write the key=value lines bin/fm-disk-room.sh
-# reads. Runs under pwsh, or
+# reads, and the trim must name the distro to wsl.exe bare (a quoted name is
+# WSL_E_DISTRO_NOT_FOUND, which made an elevated -Now skip its trim). Under
+# pwsh on Linux a fake wsl.exe on PATH runs Invoke-Trim end to end. Runs under
+# pwsh, or
 # Windows PowerShell through WSL interop; skips when neither is installed.
 set -u
 
@@ -31,11 +34,11 @@ fi
 TMP_ROOT=$(fm_test_tmproot fm-wsl-reclaim)
 DRIVER="$TMP_ROOT/driver.ps1"
 cat >"$DRIVER" <<'PS1'
-param([string]$Path)
+param([string]$Path, [string]$FakeDir)
 $errs = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$errs)
 if ($errs.Count) { $errs | ForEach-Object { "parse-error: $($_.Message)" }; exit 1 }
-foreach ($name in 'Format-ShadowRecord', 'Format-TrimResult') {
+foreach ($name in 'Format-ShadowRecord', 'Format-TrimResult', 'Get-TrimArgv', 'Invoke-Trim') {
   $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true) | Select-Object -First 1
   if (-not $fn) { "missing: $name"; exit 1 }
   . ([scriptblock]::Create($fn.Extent.Text))
@@ -57,10 +60,32 @@ Format-TrimResult "exit 0: /: 30 GiB (32212254720 bytes) trimmed`non /dev/sdf"
 Format-TrimResult 'exit 1: fstrim: /: the discard operation is not supported'
 'case=trim-none'
 Format-TrimResult ''
+'case=trim-no-distro'
+Format-TrimResult "exit -1: There is no distribution with the supplied name.`n`nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND`n"
+'case=trim-argv'
+Get-TrimArgv 'Ubuntu-24.04'
+'case=trim-fake-wsl'
+if ($FakeDir) {
+  $env:PATH = "$FakeDir$([IO.Path]::PathSeparator)$env:PATH"
+  Invoke-Trim 'Ubuntu-24.04'
+  Get-Content (Join-Path $FakeDir 'argv')
+} else { 'skipped' }
 PS1
+[ "$PS" = pwsh ] && [ "$(uname -s)" = Linux ] && FAKE_DIR=$TMP_ROOT/fake || FAKE_DIR=
+if [ -n "$FAKE_DIR" ]; then
+  mkdir -p "$FAKE_DIR"
+  # Like wsl.exe: an unknown distro name is an error, the known one runs fstrim.
+  cat >"$FAKE_DIR/wsl.exe" <<'SH'
+#!/usr/bin/env bash
+printf 'argv=%s\n' "$*" >"$(dirname "$0")/argv"
+[ "$2" = Ubuntu-24.04 ] || { echo "There is no distribution with the supplied name."; exit 1; }
+echo "/: 2 GiB (2147483648 bytes) trimmed on /dev/sdf"
+SH
+  chmod +x "$FAKE_DIR/wsl.exe"
+fi
 [ "$PS" = powershell.exe ] && DRIVER_ARG=$(wslpath -w "$DRIVER") || DRIVER_ARG=$DRIVER
 
-"$PS" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$DRIVER_ARG" "$SCRIPT_ARG" >"$TMP_ROOT/out" 2>&1
+"$PS" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$DRIVER_ARG" "$SCRIPT_ARG" "$FAKE_DIR" >"$TMP_ROOT/out" 2>&1
 RC=$?
 OUT=$(tr -d '\r' <"$TMP_ROOT/out")
 
@@ -103,7 +128,35 @@ trim_detail=no trim in this mode" "$(section trim-none)" "a mode without a trim 
   pass "the trim result is recorded as trim and trim_detail lines"
 }
 
+test_trim_unreachable_says_what_to_do() {
+  assert_equals "trim=failed
+trim_detail=exit -1: There is no distribution with the supplied name. Error code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND - trim by hand: run sudo fstrim -v / in the distro from a normal shell, then -Now" "$(section trim-no-distro)" "a trim wsl.exe never ran names the manual step"
+  pass "a trim that never reached the distro says how to trim by hand"
+}
+
+test_trim_names_distro_bare() {
+  assert_equals "-d
+Ubuntu-24.04
+-u
+root
+--
+timeout
+600
+fstrim
+-v
+/" "$(section trim-argv)" "the distro name carries no literal quotes"
+  if [ -z "$FAKE_DIR" ]; then
+    pass "the trim names the distro bare (fake wsl.exe needs pwsh on Linux)"
+    return
+  fi
+  assert_equals "exit 0: /: 2 GiB (2147483648 bytes) trimmed on /dev/sdf
+argv=-d Ubuntu-24.04 -u root -- timeout 600 fstrim -v /" "$(section trim-fake-wsl)" "Invoke-Trim reaches the distro and returns fstrim's output"
+  pass "the trim names the distro bare and reaches it through wsl.exe"
+}
+
 test_parses
 test_capped_record
 test_unbounded_and_none
 test_trim_result
+test_trim_unreachable_says_what_to_do
+test_trim_names_distro_bare

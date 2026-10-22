@@ -153,10 +153,21 @@ function Invoke-Compact([string]$path) {
 
 # Format-TrimResult: the trim and trim_detail lines for wsl-compact-last.txt
 # from Invoke-Wsl's "exit N: output" text; '' means no trim was attempted.
+# Exit -1 means fstrim never ran (wsl.exe failed, timed out or did not start),
+# so the detail says how to trim by hand.
 function Format-TrimResult([string]$Text) {
   if (-not $Text) { return @('trim=not-run', 'trim_detail=no trim in this mode') }
   $state = if ($Text -match '^exit 0(:|$)') { 'ok' } else { 'failed' }
-  @("trim=$state", "trim_detail=$(($Text -replace '\s+', ' ').Trim())")
+  $detail = ($Text -replace '\s+', ' ').Trim()
+  if ($Text -match '^exit -1(:|$)') { $detail += ' - trim by hand: run sudo fstrim -v / in the distro from a normal shell, then -Now' }
+  @("trim=$state", "trim_detail=$detail")
+}
+
+# Get-TrimArgv: wsl.exe's arguments for the trim. Start-Process joins them with
+# spaces and wsl.exe keeps quotes in the distro name ("Ubuntu-24.04" with its
+# quotes is not found), so the name goes bare; WSL names have no spaces.
+function Get-TrimArgv([string]$name) {
+  @('-d', $name, '-u', 'root', '--', 'timeout', '600', 'fstrim', '-v', '/')
 }
 
 # Invoke-Trim: fstrim / in the distro before it is shut down, so free 1 MiB
@@ -167,7 +178,7 @@ function Format-TrimResult([string]$Text) {
 function Invoke-Trim([string]$name) {
   $out = [IO.Path]::GetTempFileName(); $err = [IO.Path]::GetTempFileName()
   try {
-    $p = Start-Process -FilePath 'wsl.exe' -ArgumentList @('-d', "`"$name`"", '-u', 'root', '--', 'timeout', '600', 'fstrim', '-v', '/') `
+    $p = Start-Process -FilePath 'wsl.exe' -ArgumentList (Get-TrimArgv $name) `
       -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
     $null = $p.Handle  # keeps ExitCode readable after WaitForExit
     if (-not $p.WaitForExit(660000)) {

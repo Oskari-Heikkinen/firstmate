@@ -167,6 +167,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\firstmate\fm-
 
 It runs `fstrim -v /` as root inside the distro (bounded to 10 minutes), then `wsl --shutdown`, compacts every recorded file, prints the before and after sizes, and starts the distro again (`-NoRestart` leaves it stopped).
 A failed or unavailable trim does not stop the compaction; `wsl-compact-last.txt` records it as `trim=ok`, `failed`, or `not-run` with a one-line `trim_detail`, and `last compaction:` ends with the trim result.
+When `wsl.exe` never ran `fstrim` (it failed, timed out, or could not start), `trim_detail` ends with the manual step: run `sudo fstrim -v /` in the distro from a normal shell, then `-Now`.
 Because it shuts WSL down, any `.wslconfig` change waiting for a restart takes effect in the same step, and the script prints the memory line now in effect.
 
 ### Uninstall
