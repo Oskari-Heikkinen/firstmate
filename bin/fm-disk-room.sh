@@ -1137,7 +1137,7 @@ cmd_status() {
   fi
   case "$RR_ACTIVE" in
     ssd) printf 'fetched results root: SSD %s:\n' "$RR_LETTER" ;;
-    c) printf 'fetched results root: none, writers wait (SSD %s)\n' "$RR_STATE" ;;
+    c) printf 'fetched results root: no active SSD publication (state %s); per-fetch wait/refusal/fallback rules apply\n' "$RR_STATE" ;;
   esac
   return 0
 }

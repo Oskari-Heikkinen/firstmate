@@ -515,7 +515,7 @@ test_results_root_in_status() {
   assert_equals $(( 1700 * GIB )) "$(json_field "$out" ssd_free)" "json carries the SSD free space"
   sed -i 's/^active=ssd/active=c/; s/^state=ok/state=full/' "$rr"
   out=$(FM_DISK_ROOM_RESULTS_ROOT="$rr" run_room status)
-  assert_contains "$out" "fetched results root: none, writers wait (SSD full)" "the wait and its cause are named"
+  assert_contains "$out" "fetched results root: no active SSD publication (state full); per-fetch wait/refusal/fallback rules apply" "the publication state is named without promising every fetch waits"
   pass "status reports the SSD's room and the active results root"
 }
 
