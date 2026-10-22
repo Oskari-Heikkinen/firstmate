@@ -371,12 +371,14 @@ test_default_sets_and_clears_the_new_spawn_account() {
 }
 
 test_auto_arms_and_retires_the_watcher_check() {
-  local out rc
+  local out rc obs
   new_case auto
-  out=$(run_account auto sync); rc=$?
+  obs=$(fm_check_rename_observer "$C/observer")
+  out=$(PATH="$obs:$PATH" FM_TEST_MV_LOG="$C/mv.log" FM_TEST_CHECK="$H/state/accounts.check.sh" run_account auto sync); rc=$?
   expect_code 0 "$rc" "sync"$'\n'"$out"
   [ -x "$H/state/accounts.check.sh" ] || fail "sync should install an executable check"
   assert_present "$H/state/accounts.check-trust" "sync should register the check"
+  assert_equals "trust absent|check bound" "$(paste -sd'|' "$C/mv.log")" "sync binds the check before it appears"
   out=$(env PATH="$C/fakebin:$PATH" HOME="$C/user-home" CLAUDE_CONFIG_DIR="$C/gmail" "$H/state/accounts.check.sh")
   assert_contains "$out" "needs the captain: restart this main session on work" "the installed check runs the watcher form for this home"
   out=$(run_account auto off); rc=$?

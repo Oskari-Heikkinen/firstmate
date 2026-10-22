@@ -598,7 +598,7 @@ check_body() {
 }
 
 cmd_auto() {
-  local mode=${1:-} want=1 check="$STATE/$CHECK_ID.check.sh" body
+  local mode=${1:-} want=1 check="$STATE/$CHECK_ID.check.sh" body tmp
   case "$mode" in
   on | off)
     if ! { mkdir -p "$CONFIG" && printf '%s\n' "$mode" >"$CONFIG/mem-guard"; }; then
@@ -625,12 +625,22 @@ cmd_auto() {
     [ "$mode" = sync ] || echo "auto: memory guard on"
     return 0
   fi
-  if ! { (umask 077 && printf '%s\n' "$body" >"$check.tmp.$$") && chmod 0700 "$check.tmp.$$" && mv -f "$check.tmp.$$" "$check"; }; then
-    rm -f "$check.tmp.$$"
+  # The register binds the staged bytes before renaming them onto the check, so
+  # a watcher sweep never finds the new check unbound.
+  if ! tmp=$(umask 077 && mktemp "$STATE/.fm-mem-guard-check.XXXXXX"); then
     echo "error: could not write state/$CHECK_ID.check.sh" >&2
     exit 1
   fi
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-check-register.sh" "$CHECK_ID" >/dev/null || { echo "error: could not register state/$CHECK_ID.check.sh" >&2; exit 1; }
+  if ! { printf '%s\n' "$body" >"$tmp" && chmod 0700 "$tmp"; }; then
+    rm -f -- "$tmp"
+    echo "error: could not write state/$CHECK_ID.check.sh" >&2
+    exit 1
+  fi
+  if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-check-register.sh" "$CHECK_ID" --from "$tmp" >/dev/null; then
+    rm -f -- "$tmp"
+    echo "error: could not register state/$CHECK_ID.check.sh" >&2
+    exit 1
+  fi
   [ "$mode" = sync ] || echo "auto: memory guard on"
 }
 

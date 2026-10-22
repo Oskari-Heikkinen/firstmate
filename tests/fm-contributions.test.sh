@@ -1048,7 +1048,7 @@ test_budget_is_cut_down_to_the_watcher_check_bound() {
 }
 
 test_arm_plumbs_a_configured_budget_into_the_check_shim() {
-  local home out mode
+  local home out mode obs
   for mode in configured inherited; do
     home=$(new_home "arm-budget-$mode")
     forge_home "$home"
@@ -1063,8 +1063,11 @@ test_arm_plumbs_a_configured_budget_into_the_check_shim() {
     # first forge call, so the generated check never writes forge/calls.
     /bin/date +%s > "$home/forge/clock"
     if [ "$mode" = configured ]; then
-      with_home "$home" env FM_CONTRIBUTIONS_BUDGET=1 "$ROOT/bin/fm-contributions.sh" arm >/dev/null \
+      obs=$(fm_check_rename_observer "$home/observer")
+      PATH="$obs:$PATH" FM_TEST_MV_LOG="$home/mv.log" FM_TEST_CHECK="$home/state/contributions.check.sh" \
+        with_home "$home" env FM_CONTRIBUTIONS_BUDGET=1 "$ROOT/bin/fm-contributions.sh" arm >/dev/null \
         || fail 'arm with a configured budget failed'
+      assert_equals "trust absent|check bound" "$(paste -sd'|' "$home/mv.log")" "arm binds the check before it appears"
       out=$(with_home "$home" env -u FM_CONTRIBUTIONS_BUDGET bash "$home/state/contributions.check.sh") \
         || fail 'configured check shim failed'
     else

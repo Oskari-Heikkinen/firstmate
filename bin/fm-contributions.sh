@@ -454,8 +454,12 @@ arm() {
   shim+=("exec $(printf '%q' "$SCRIPT_DIR/fm-contributions.sh") poll")
   printf '%s\n' "${shim[@]}" > "$staged"
   chmod 700 "$staged"
-  mv -f -- "$staged" "$STATE/contributions.check.sh"
-  "$SCRIPT_DIR/fm-check-register.sh" contributions
+  # The register binds the staged bytes before renaming them onto the check, so
+  # a watcher sweep never finds the new check unbound.
+  if ! "$SCRIPT_DIR/fm-check-register.sh" contributions --from "$staged"; then
+    rm -f -- "$staged"
+    return 1
+  fi
 }
 
 case "${1:-}" in

@@ -580,14 +580,17 @@ test_orphan_sweep_stays_inside_the_daily_cadence() {
 }
 
 test_arm_and_disarm_use_authenticated_custom_check() {
-  local rec root home out
+  local rec root home out obs
   rec=$(make_world arm)
   root=${rec%%|*}
   home=${rec#*|}
-  out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$home" "$CHECK" arm)
+  obs=$(fm_check_rename_observer "$TMP_ROOT/arm/observer")
+  out=$(PATH="$obs:$PATH" FM_TEST_MV_LOG="$TMP_ROOT/arm/mv.log" FM_TEST_CHECK="$home/state/startup-growth.check.sh" \
+    FM_ROOT_OVERRIDE="$root" FM_HOME="$home" "$CHECK" arm)
   assert_contains "$out" 'armed: state/startup-growth.check.sh' "arm did not announce the check shim"
   assert_present "$home/state/startup-growth.check.sh" "arm did not write the check shim"
   assert_present "$home/state/startup-growth.check-trust" "arm did not register trust for the check shim"
+  assert_equals "trust absent|check bound" "$(paste -sd'|' "$TMP_ROOT/arm/mv.log")" "arm did not bind the check shim before it appeared"
 
   out=$(env -u FM_HOME FM_ROOT_OVERRIDE="$root" FM_STARTUP_GROWTH_NOW=1000 "$home/state/startup-growth.check.sh" 2>&1) \
     || fail "registered check shim failed: $out"

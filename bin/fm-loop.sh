@@ -103,9 +103,11 @@ shim_content() {
 }
 
 # A shim without a matching trust binding is rejected on every watcher cycle,
-# so a failed arm leaves neither behind.
+# so new or changed bytes are staged in a hidden file that the register's
+# --from binds before it becomes the shim, and a failed arm leaves neither
+# behind.
 arm() {
-  local want tmp
+  local want tmp=
   [ -d "$state" ] && [ ! -L "$state" ] || die "state directory is unavailable: $state"
   if [ -L "$shim" ] || { [ -e "$shim" ] && [ ! -f "$shim" ]; }; then die "refusing a non-regular $shim"; fi
   if [ ! -e "$state/loop-alerts/reported.cursor" ]; then
@@ -115,12 +117,12 @@ arm() {
   want=$(shim_content)
   if [ ! -f "$shim" ] || [ "$(cat "$shim")" != "$want" ]; then
     tmp=$(umask 077; mktemp "$state/.fm-loop-arm.XXXXXX") || die "could not write $shim"
-    if ! printf '%s\n' "$want" > "$tmp" || ! chmod 0700 "$tmp" || ! mv -f -- "$tmp" "$shim"; then
+    if ! printf '%s\n' "$want" > "$tmp" || ! chmod 0700 "$tmp"; then
       rm -f -- "$tmp"; die "could not write $shim"
     fi
   fi
-  if ! env -u FM_STATE_OVERRIDE -u FM_ROOT_OVERRIDE FM_HOME="$home" "$SCRIPT_DIR/fm-check-register.sh" "$CHECK_ID" >/dev/null; then
-    rm -f -- "$shim" "$state/$CHECK_ID.check-trust"
+  if ! env -u FM_STATE_OVERRIDE -u FM_ROOT_OVERRIDE FM_HOME="$home" "$SCRIPT_DIR/fm-check-register.sh" "$CHECK_ID" ${tmp:+--from "$tmp"} >/dev/null; then
+    rm -f -- ${tmp:+"$tmp"} "$shim" "$state/$CHECK_ID.check-trust"
     die "could not register $shim; it was removed"
   fi
   printf 'armed: state/%s.check.sh\n' "$CHECK_ID"

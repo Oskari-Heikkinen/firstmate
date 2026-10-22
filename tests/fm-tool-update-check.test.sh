@@ -884,7 +884,7 @@ test_invalid_environment_and_action_refuse() {
 # --- arming through the existing watcher contract ----------------------------
 
 test_arm_registers_the_check_and_disarm_removes_it() {
-  local home dir status
+  local home dir status obs
   home=$(make_home arm)
   dir="$TMP_ROOT/arm/bin"
   make_copy "$dir" "$TOOL" 'herdr 0.8.2'
@@ -894,11 +894,14 @@ test_arm_registers_the_check_and_disarm_removes_it() {
   assert_absent "$home/state/tool-updates.check.sh" "arm wrote a check shim without a registry"
 
   write_config "$home" "{\"tools\":[{\"name\":\"herdr\",\"command\":\"$TOOL\"}]}"
+  obs=$(fm_check_rename_observer "$TMP_ROOT/arm/observer")
   status=0
-  FM_HOME="$home" "$CHECK" arm >/dev/null || status=$?
+  PATH="$obs:$PATH" FM_TEST_MV_LOG="$TMP_ROOT/arm/mv.log" FM_TEST_CHECK="$home/state/tool-updates.check.sh" \
+    FM_HOME="$home" "$CHECK" arm >/dev/null || status=$?
   expect_code 0 "$status" "arm exit"
   assert_present "$home/state/tool-updates.check.sh" "arm did not write the check shim"
   assert_present "$home/state/tool-updates.check-trust" "arm did not register the check's bytes"
+  assert_equals "trust absent|check bound" "$(paste -sd'|' "$TMP_ROOT/arm/mv.log")" "arm did not bind the check shim before it appeared"
   [ "$(stat -c %a "$home/state/tool-updates.check.sh" 2>/dev/null || stat -f %Lp "$home/state/tool-updates.check.sh")" = 700 ] \
     || fail "the check shim is not mode 700"
   assert_grep 'fm-custom-check-v1' "$home/state/tool-updates.check-trust" "the trust binding has the wrong schema"

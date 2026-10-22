@@ -8,9 +8,10 @@ set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-loop)
+OBSERVER=$(fm_check_rename_observer "$TMP_ROOT/arm-observer")
 export TZ=UTC
 
-python3 - "$ROOT" "$TMP_ROOT" <<'PY'
+python3 - "$ROOT" "$TMP_ROOT" "$OBSERVER" <<'PY'
 import datetime
 import hashlib
 import json
@@ -22,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-root, tmp = Path(sys.argv[1]), Path(sys.argv[2])
+root, tmp, observer = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 NOW = 1792000000
 H = 3600
 
@@ -501,16 +502,22 @@ shim = home / "state/loop-alerts.check.sh"
 trust = home / "state/loop-alerts.check-trust"
 
 
-def loop_cmd(*args):
+def loop_cmd(*args, env=None):
     proc = subprocess.run([str(root / "bin/fm-loop.sh"), *args, "--home", str(home)],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, env=env)
     if proc.returncode != 0:
         fail("%s exited %d: %s" % (" ".join(args), proc.returncode, proc.stderr))
     return proc.stdout
 
 
-if loop_cmd("arm") != "armed: state/loop-alerts.check.sh\n" or not cursor_of(home).is_file():
+mv_log = tmp / "arm-mv.log"
+observed = dict(os.environ, PATH=observer + os.pathsep + os.environ["PATH"],
+                FM_TEST_MV_LOG=str(mv_log), FM_TEST_CHECK=str(shim))
+if loop_cmd("arm", env=observed) != "armed: state/loop-alerts.check.sh\n" or not cursor_of(home).is_file():
     fail("arm did not arm and seed")
+renames = mv_log.read_text().splitlines() if mv_log.exists() else []
+if renames != ["trust absent", "check bound"]:
+    fail("arm did not bind the shim before it appeared: %s" % renames)
 first = (shim.read_bytes(), cursor_of(home).read_bytes())
 if loop_cmd("arm") != "armed: state/loop-alerts.check.sh\n" or (shim.read_bytes(), cursor_of(home).read_bytes()) != first:
     fail("a second arm changed the shim or reseeded")
@@ -525,7 +532,7 @@ if loop_cmd("disarm") != "disarmed: state/loop-alerts.check.sh\n":
     fail("disarm output")
 if shim.exists() or trust.exists() or cursor_of(home).exists():
     fail("disarm left the shim, trust or cursor")
-ok("arm seeds, writes and binds the check idempotently inside state/, and disarm removes it")
+ok("arm seeds, binds and then writes the check idempotently inside state/, and disarm removes it")
 
 # The capacity filler watch: lane alerts, queue-state and the stale alarm.
 filler = tmp / "filler"

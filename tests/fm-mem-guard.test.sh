@@ -324,11 +324,14 @@ test_rules_override_and_malformed_values_warn() {
 }
 
 test_auto_sync_arms_and_retires_the_check() {
-  local out
+  local out obs
   new_case auto
-  out=$(FM_HOME="$C/home" "$GUARD" auto sync 2>&1) || fail "auto sync failed: $out"
+  obs=$(fm_check_rename_observer "$C/observer")
+  out=$(PATH="$obs:$PATH" FM_TEST_MV_LOG="$C/mv.log" FM_TEST_CHECK="$C/home/state/mem-guard.check.sh" \
+    FM_HOME="$C/home" "$GUARD" auto sync 2>&1) || fail "auto sync failed: $out"
   assert_present "$C/home/state/mem-guard.check.sh" "sync arms the check"
   assert_present "$C/home/state/mem-guard.check-trust" "sync registers the check"
+  assert_equals "trust absent|check bound" "$(paste -sd'|' "$C/mv.log")" "sync binds the check before it appears"
   out=$("$C/home/state/mem-guard.check.sh" 2>&1) || fail "the generated check failed: $out"
   assert_equals "" "$out" "the generated check prints nothing on a healthy machine"
   fake_ps 900 10

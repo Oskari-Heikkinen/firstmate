@@ -263,13 +263,16 @@ test_check_lines() {
 
 test_arm_and_disarm() {
   reset
-  local home out
+  local home out obs
   home="$TMP_ROOT/home"
   mkdir -p "$home/state"
   chmod 700 "$home/state"
-  out=$(FM_HOME="$home" FM_CLAUDE_UPDATE_ROOT="$R" FM_CLAUDE_UPDATE_STATE="$S" "$TOOL" arm) || fail "arm exits 0"
+  obs=$(fm_check_rename_observer "$TMP_ROOT/arm-observer")
+  out=$(PATH="$obs:$PATH" FM_TEST_MV_LOG="$TMP_ROOT/arm-mv.log" FM_TEST_CHECK="$home/state/claude-update.check.sh" \
+    FM_HOME="$home" FM_CLAUDE_UPDATE_ROOT="$R" FM_CLAUDE_UPDATE_STATE="$S" "$TOOL" arm) || fail "arm exits 0"
   assert_contains "$out" "armed: $home/state/claude-update.check.sh" "arm names the shim"
   assert_present "$home/state/claude-update.check-trust" "arm binds the shim's bytes"
+  assert_equals "trust absent|check bound" "$(paste -sd'|' "$TMP_ROOT/arm-mv.log")" "arm binds the shim before it appears"
   out=$(FM_CLAUDE_UPDATE_ROOT='' FM_CLAUDE_UPDATE_STATE='' "$home/state/claude-update.check.sh")
   assert_contains "$out" "$S/last-ok missing" "the shim carries the arm-time settings"
   FM_HOME="$home" "$TOOL" disarm >/dev/null || fail "disarm exits 0"

@@ -700,6 +700,62 @@ SH
   chmod +x "$fakebin/claude"
 }
 
+# fm_check_rename_observer <dir> -> echoes a fakebin holding an observing mv
+# Every rename still runs. Around each one that publishes the custom check
+# FM_TEST_CHECK or its binding (the check-trust file beside it), the mv appends
+# to FM_TEST_MV_LOG what a watcher sweep would read: right before a rename onto
+# the check whether the binding names the incoming bytes ("check bound" or
+# "check unbound"), and right after a rename onto the binding whether the
+# visible check is absent, bound or unbound ("trust absent", "trust bound" or
+# "trust unbound"). A first install that binds before it renames logs "trust
+# absent" then "check bound"; a writer that renames a new check into place
+# before binding it logs "check unbound".
+fm_check_rename_observer() {
+  local fakebin real_mv
+  fakebin=$(fm_fakebin "$1")
+  real_mv=$(command -v mv) || return 1
+  cat > "$fakebin/mv" <<SH
+#!/usr/bin/env bash
+real_mv=$(printf '%q' "$real_mv")
+SH
+  cat >> "$fakebin/mv" <<'SH'
+check=${FM_TEST_CHECK:-}
+[ -n "$check" ] || exec "$real_mv" "$@"
+trust=${check%.sh}-trust
+hash_of() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+bound() {  # <file>: the binding names <file>'s bytes
+  [ -f "$trust" ] && [ "$(sed -n 2p "$trust")" = "$(hash_of "$1")" ]
+}
+names() {  # <path> <watched>: the same name in the same directory
+  [ "${1##*/}" = "${2##*/}" ] && [ "${1%/*}" -ef "${2%/*}" ]
+}
+args=("$@")
+src=${args[$# - 2]}
+dest=${args[$# - 1]}
+if names "$dest" "$check"; then
+  if bound "$src"; then echo "check bound"; else echo "check unbound"; fi >> "$FM_TEST_MV_LOG"
+fi
+"$real_mv" "$@" || exit $?
+if names "$dest" "$trust"; then
+  if [ ! -e "$check" ]; then
+    echo "trust absent"
+  elif bound "$check"; then
+    echo "trust bound"
+  else
+    echo "trust unbound"
+  fi >> "$FM_TEST_MV_LOG"
+fi
+SH
+  chmod +x "$fakebin/mv"
+  printf '%s\n' "$fakebin"
+}
+
 # fm_eval_launch <launch-command> <pane-path> <fakebin> [VAR=val ...]
 # Runs a captured launch command the way the destination pane would: from the
 # pane's cwd with the fakebin on PATH and any extra environment assignments.

@@ -11,9 +11,10 @@ set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-handoff-watch)
+OBSERVER=$(fm_check_rename_observer "$TMP_ROOT/arm-observer")
 export TZ=UTC
 
-python3 - "$ROOT" "$TMP_ROOT" <<'PY'
+python3 - "$ROOT" "$TMP_ROOT" "$OBSERVER" <<'PY'
 import datetime
 import json
 import os
@@ -23,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-root, tmp = Path(sys.argv[1]), Path(sys.argv[2])
+root, tmp, observer = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 # Store acknowledgements are stamped with the real clock, so the drill clock starts there.
 NOW = int(time.time()) // 3600 * 3600
 H = 3600
@@ -372,9 +373,9 @@ home = tmp / "home-arm"
 (home / "state").mkdir(parents=True)
 
 
-def cmd(*args):
+def cmd(*args, env=BASE_ENV):
     proc = subprocess.run([WATCH, *args, "--home", str(home)], capture_output=True, text=True, timeout=60,
-                          env=BASE_ENV)
+                          env=env)
     if proc.returncode != 0:
         fail(f"{' '.join(args)} exited {proc.returncode}: {proc.stderr}")
     return proc.stdout
@@ -382,10 +383,15 @@ def cmd(*args):
 
 shim = home / "state/handoff-watch.check.sh"
 trust = home / "state/handoff-watch.check-trust"
-expect(cmd("arm") == "armed: state/handoff-watch.check.sh\n" and shim.is_file()
+mv_log = tmp / "arm-mv.log"
+observed = dict(BASE_ENV, PATH=observer + os.pathsep + BASE_ENV["PATH"],
+                FM_TEST_MV_LOG=str(mv_log), FM_TEST_CHECK=str(shim))
+expect(cmd("arm", env=observed) == "armed: state/handoff-watch.check.sh\n" and shim.is_file()
        and trust.read_text().splitlines()[0] == "fm-custom-check-v1"
        and list((home / "state/handoff-watch/heartbeat").glob("*.json")),
        "arm runs a first pass, writes the heartbeat and binds the check")
+renames = mv_log.read_text().splitlines() if mv_log.exists() else []
+expect(renames == ["trust absent", "check bound"], "arm binds the check before it appears", json.dumps(renames))
 first = shim.read_bytes()
 expect(cmd("arm") == "armed: state/handoff-watch.check.sh\n" and shim.read_bytes() == first, "a second arm is a no-op")
 expect(f"check --home {home.resolve()}" in shim.read_text() and shim.stat().st_mode & 0o777 == 0o700, "the shim runs check")

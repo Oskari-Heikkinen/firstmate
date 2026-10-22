@@ -84,13 +84,16 @@ test_help_and_usage() {
 }
 
 test_arm_writes_and_binds_the_check_and_disarm_removes_it() {
-  local home out
+  local home out obs
   home=$(make_home arm)
   write_env "$home"
-  out=$(FM_HOME="$home" "$CHECK" arm 2>&1) || fail "arm must succeed: $out"
+  obs=$(fm_check_rename_observer "$TMP_ROOT/arm-observer")
+  out=$(PATH="$obs:$PATH" FM_TEST_MV_LOG="$TMP_ROOT/arm-mv.log" FM_TEST_CHECK="$home/state/mail.check.sh" \
+    FM_HOME="$home" "$CHECK" arm 2>&1) || fail "arm must succeed: $out"
   assert_contains "$out" "armed: state/mail.check.sh" "arm names the shim it wrote"
   assert_present "$home/state/mail.check.sh" "arm writes the check shim"
   assert_present "$home/state/mail.check-trust" "arm binds the shim for the watcher"
+  assert_equals "trust absent|check bound" "$(paste -sd'|' "$TMP_ROOT/arm-mv.log")" "arm binds the shim before it appears"
   assert_contains "$(cat "$home/state/mail.check.sh")" "fm-mail-check.sh check" "shim dispatches the check action"
   assert_contains "$(cat "$home/state/mail.check.sh")" "FM_HOME=$home" "shim pins the absolute home"
 

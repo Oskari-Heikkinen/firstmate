@@ -510,12 +510,14 @@ cmd_arm() {
     done
     printf 'exec %q check\n' "$SCRIPT_DIR/fm-claude-update.sh"
   } >"$tmp"
-  if ! chmod 0700 "$tmp" || ! mv -f -- "$tmp" "$shim"; then
+  if ! chmod 0700 "$tmp"; then
     rm -f -- "$tmp"
     die "cannot write $shim"
   fi
-  if ! FM_HOME="$home" "$SCRIPT_DIR/fm-check-register.sh" claude-update >/dev/null; then
-    rm -f -- "$shim"
+  # The register binds the staged bytes before renaming them onto the shim, so
+  # a watcher sweep never finds the new shim unbound.
+  if ! FM_HOME="$home" "$SCRIPT_DIR/fm-check-register.sh" claude-update --from "$tmp" >/dev/null; then
+    rm -f -- "$tmp" "$shim"
     die "cannot register $shim"
   fi
   printf 'armed: %s\n' "$shim"

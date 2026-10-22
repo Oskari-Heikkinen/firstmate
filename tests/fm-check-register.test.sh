@@ -41,47 +41,6 @@ stage_check() {  # <home> <word> -> a staged check in the home's state directory
   printf '%s\n' "$staged"
 }
 
-# The fake mv records, for the check FM_TEST_CHECK names, what a watcher sweep
-# would read at each rename that publishes the check or its binding: right
-# after the binding's rename whether the visible check is absent, bound or
-# unbound, and right before the check's rename whether the binding names the
-# incoming bytes. A rename of the check ahead of its binding logs
-# "check unbound".
-install_mv_observer() {  # <home>
-  local fakebin
-  fakebin=$(fm_fakebin "$1")
-  cat > "$fakebin/mv" <<'SH'
-#!/usr/bin/env bash
-hash_of() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
-  else
-    sha256sum "$1" | awk '{print $1}'
-  fi
-}
-bound() {  # <file>: the binding names <file>'s bytes
-  [ -f "$FM_TEST_TRUST" ] && [ "$(sed -n 2p "$FM_TEST_TRUST")" = "$(hash_of "$1")" ]
-}
-args=("$@")
-src=${args[$# - 2]}
-dest=${args[$# - 1]}
-if [ "$dest" = "$FM_TEST_CHECK" ]; then
-  if bound "$src"; then echo "check bound"; else echo "check unbound"; fi >> "$FM_TEST_MV_LOG"
-fi
-"$FM_TEST_REAL_MV" "$@" || exit $?
-if [ "$dest" = "$FM_TEST_TRUST" ]; then
-  if [ ! -e "$FM_TEST_CHECK" ]; then
-    echo "trust absent"
-  elif bound "$FM_TEST_CHECK"; then
-    echo "trust bound"
-  else
-    echo "trust unbound"
-  fi >> "$FM_TEST_MV_LOG"
-fi
-SH
-  chmod +x "$fakebin/mv"
-}
-
 # The fake mv refuses to rename anything onto FM_TEST_CHECK and passes every
 # other rename through.
 install_failing_check_rename() {  # <home>
@@ -100,15 +59,14 @@ register_with_fake_mv() {  # <home> <id> <args...>: run the register with the ho
   local home=$1 id=$2
   shift 2
   PATH="$home/fakebin:$PATH" FM_TEST_REAL_MV="$REAL_MV" FM_TEST_MV_LOG="$home/mv.log" \
-    FM_TEST_CHECK="$home/state/$id.check.sh" FM_TEST_TRUST="$home/state/$id.check-trust" \
-    FM_HOME="$home" "$REGISTER" "$id" "$@"
+    FM_TEST_CHECK="$home/state/$id.check.sh" FM_HOME="$home" "$REGISTER" "$id" "$@"
 }
 
 test_from_binds_the_check_before_it_appears() {
   local home state staged out status
   home=$(make_home observed)
   state="$home/state"
-  install_mv_observer "$home"
+  fm_check_rename_observer "$home" >/dev/null
 
   staged=$(stage_check "$home" first)
   : > "$home/mv.log"
