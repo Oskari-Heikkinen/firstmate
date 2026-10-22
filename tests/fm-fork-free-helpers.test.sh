@@ -1304,6 +1304,32 @@ for t in '' a ' ' $'\n' $'line\n' $'two\nlines\n\n' -n '%s %d \' $'caf\xc3\xa9 \
   [ "$got" = "$want" ] || printf 'hash %q: helper %q, pipeline %q\n' "$t" "$got" "$want"
   [ -z "$md5_shim" ] || [ -s "$md5_log" ] || printf 'hash %q: md5 on PATH at load, but the helper did not run it\n' "$t"
 done
+# The staleness pass's memory: a slot answers its own unchanged text with the
+# pipeline's hash, and a changed text, down to one trailing newline, is hashed
+# again.
+slot=0
+for t in '' a ' ' $'\n' $'line\n' $'two\nlines\n\n' -n '%s %d \' $'caf\xc3\xa9 \xff\xfe' "$long"; do
+  slot=$((slot + 1))
+  for u in "$t" "$t" "$t"$'\n' "$t"; do
+    want=$(printf '%s' "$u" | hash_pane)
+    got=unset
+    hash_pane_memo_to got "$slot" "$u"
+    [ "$got" = "$want" ] || printf 'memo hash %q in slot %s: helper %q, pipeline %q\n' "$u" "$slot" "$got" "$want"
+  done
+done
+# A failed hash is passed on and never kept, so the slot is hashed again.
+saved_path=$PATH
+PATH=$dir/no-tools
+got=unset
+hash_pane_memo_to got 1 x 2>/dev/null
+PATH=$saved_path
+[ -z "$got" ] || printf 'memo hash with no md5 tool gave %q\n' "$got"
+for u in '' x; do
+  want=$(printf '%s' "$u" | hash_pane)
+  got=unset
+  hash_pane_memo_to got 1 "$u"
+  [ "$got" = "$want" ] || printf 'memo hash %q after a failed hash: helper %q, pipeline %q\n' "$u" "$got" "$want"
+done
 for w in '' sess:w1 a/b.c:d ... ::: x:y/z.w fm-x sess:fm-a.b/c $'caf\xc3\xa9:\xff.x' '%s/%d'; do
   want=$(reference_key "$w")
   got=unset
@@ -1408,14 +1434,19 @@ fi
 if [ -z "$md5_shim" ] && ! command -v md5 >/dev/null 2>&1; then
   counted hash_pane_to got "$long"
   [ "$TOOLS" = 'md5sum ' ] || printf 'hash_pane_to ran [%s], not [md5sum ]\n' "$TOOLS"
+  counted hash_pane_memo_to got 1 "$long"
+  [ "$TOOLS" = 'md5sum ' ] || printf 'hash_pane_memo_to of a changed text ran [%s], not [md5sum ]\n' "$TOOLS"
 fi
+hash_pane_memo_to got 1 "$long"
+counted hash_pane_memo_to got 1 "$long"
+[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'hash_pane_memo_to of an unchanged text ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
 rm -rf "$r"
 SH
   run_everywhere "watcher poll helpers" "$script" "$dir" '' '' "$count_shim" "$count_log"
   if ! command -v md5 >/dev/null 2>&1 && command -v md5sum >/dev/null 2>&1; then
     run_everywhere "watcher poll helpers with md5" "$script" "$dir" "$shim" "$log" "$count_shim" "$count_log"
   fi
-  pass "hash_pane_to, window_key_to, age_of_to, fm_rm_present and the loop's file reads match what they replaced and start no more processes"
+  pass "hash_pane_to and its per-window memory, window_key_to, age_of_to, fm_rm_present and the loop's file reads match what they replaced and start no more processes"
 }
 
 test_inbox_due_action_matches_what_it_replaced() {

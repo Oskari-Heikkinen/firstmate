@@ -499,6 +499,33 @@ else
   }
 fi
 
+# hash_pane_memo_to <output-variable> <slot> <text>: hash_pane_to for the
+# per-window staleness pass, where <slot> is the window's position in that pass.
+# Each slot keeps the last text it hashed and that text's hash, so a pane that
+# has not changed since the previous pass (idle, parked or wedged) is answered
+# without the md5 pipeline; a busy pane's footer changes every pass and is
+# hashed as before. The whole text is compared, so a hit is exactly what
+# hash_pane_to returns, a reordered window list only costs a recompute, and a
+# restarted watcher starts with no memory. A result that is not an md5 hex is
+# never kept, so a failed hash is recomputed on the next pass.
+PANE_HASH_MEMO_TEXTS=()
+PANE_HASH_MEMO_SUMS=()
+hash_pane_memo_to() {  # <output-variable> <slot> <text>
+  local _hm_sum
+  if [ -n "${PANE_HASH_MEMO_SUMS[$2]-}" ] && [ "${PANE_HASH_MEMO_TEXTS[$2]}" = "$3" ]; then
+    printf -v "$1" '%s' "${PANE_HASH_MEMO_SUMS[$2]}"
+    return 0
+  fi
+  hash_pane_to _hm_sum "$3"
+  if [[ $_hm_sum =~ ^[0-9a-f]{32}$ ]]; then
+    PANE_HASH_MEMO_TEXTS[$2]=$3
+    PANE_HASH_MEMO_SUMS[$2]=$_hm_sum
+  else
+    PANE_HASH_MEMO_SUMS[$2]=
+  fi
+  printf -v "$1" '%s' "$_hm_sum"
+}
+
 # window_is_busy: 0 (busy) iff the task's harness is PROVABLY working, through
 # the semantic busy-state contract (bin/fm-busy-lib.sh). Only an exact busy
 # verdict returns 0: idle, unknown, and dead all return 1, so a converted
@@ -3908,7 +3935,9 @@ EOF
   # remembers the hash already classified, or the declaration a busy pane's
   # crossed turn bound already handed to the away-mode daemon).
   recheck_declared_keys=' '
+  pane_slot=0
   while IFS= read -r w; do
+    pane_slot=$((pane_slot + 1))
     watcher_beat
     window_resolve "$w"
     kind=$WR_KIND
@@ -3935,7 +3964,7 @@ EOF
     fi
     watcher_capture "$WR_BACKEND" "$w" 40 "$WR_LABEL" || continue
     tail40=$WATCHER_CAPTURE
-    hash_pane_to h "$tail40"
+    hash_pane_memo_to h "$pane_slot" "$tail40"
     hf="$STATE/.hash-$key"
     cf="$STATE/.count-$key"
     sf="$STATE/.stale-$key"
