@@ -1087,6 +1087,24 @@ fm_rm_present "$r/none" "$r/link"; rc=$?
 [ "$rc" = 0 ] && [ ! -L "$r/link" ] || printf 'fm_rm_present kept a dangling link (status %s)\n' "$rc"
 fm_rm_present "$r/none" "$r/none2"; rc=$?
 [ "$rc" = 0 ] || printf 'fm_rm_present of absent paths returned %s\n' "$rc"
+# The loop's heartbeat streak and lock owner reads, each against the command
+# substitution it replaced.
+mkdir -p "$r/text/dir"
+: > "$r/text/empty"
+printf '3' > "$r/text/bare"
+printf '3\n' > "$r/text/line"
+printf '3\n\n' > "$r/text/lines"
+printf 'a b\n' > "$r/text/spaced"
+for f in "$r/text"/* "$r/text/missing"; do
+  want=$(cat "$f" 2>/dev/null || echo 0)
+  got=unset
+  fm_file_text_to got "$f" || got=0
+  [ "$got" = "$want" ] || printf 'streak read %s: helper %q, substitution %q\n' "${f##*/}" "$got" "$want"
+  want=$(cat "$f" 2>/dev/null || true)
+  got=unset
+  fm_file_text_to got "$f" || true
+  [ "$got" = "$want" ] || printf 'lock owner read %s: helper %q, substitution %q\n' "${f##*/}" "$got" "$want"
+done
 rm -f "$r/dir2" 2>/dev/null; want=$?
 fm_rm_present "$r/dir" "$r/none" 2>/dev/null; rc=$?
 [ "$rc" = "$want" ] || printf 'fm_rm_present of a directory returned %s, rm -f %s\n' "$rc" "$want"
@@ -1120,6 +1138,11 @@ counted clear_write_tracking absent-key
 : > "$r/b"
 counted fm_rm_present "$r/none" "$r/b"
 [ "$TOOLS" = 'rm ' ] || printf 'fm_rm_present of a present path ran [%s], not [rm ]\n' "$TOOLS"
+# Bash before 4.2 reads a file with cat, so the read is counted only after it.
+if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; then
+  counted fm_file_text_to got "$r/text/line"
+  [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'fm_file_text_to ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+fi
 # Only Linux resolves stat through PATH and only Bash 4.2+ reads the clock in
 # the shell, so the age read is counted there; the md5sum branch is counted
 # where it is the one the watcher picked.
@@ -1137,7 +1160,7 @@ SH
   if ! command -v md5 >/dev/null 2>&1 && command -v md5sum >/dev/null 2>&1; then
     run_everywhere "watcher poll helpers with md5" "$script" "$dir" "$shim" "$log" "$count_shim" "$count_log"
   fi
-  pass "hash_pane_to, window_key_to, age_of_to and fm_rm_present match what they replaced and start no more processes"
+  pass "hash_pane_to, window_key_to, age_of_to, fm_rm_present and the loop's file reads match what they replaced and start no more processes"
 }
 
 test_inbox_due_action_matches_what_it_replaced() {

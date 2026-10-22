@@ -1204,15 +1204,16 @@ EOF
 # so a caller can report progress through a pass whose bounded relaunches
 # together outlast the watcher's grace.
 secondmate_liveness_tick() {  # [on-mate]
-  local on_mate=${1:-}
+  local on_mate=${1:-} tick_age
   local tick_marker="$STATE/.secondmate-liveness-tick"
-  [ "$(age_of "$tick_marker")" -ge "$SECONDMATE_LIVENESS_SECS" ] || return 0
+  age_of_to tick_age "$tick_marker"
+  [ "$tick_age" -ge "$SECONDMATE_LIVENESS_SECS" ] || return 0
   touch "$tick_marker" || return 1
   local now=$(( $(date +%s) )) meta id kind
   local bound_marker attempts notify_key reason queued err first_reason='' failed=0
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
-    kind=$(fm_meta_get "$meta" kind 2>/dev/null || true)
+    fm_meta_get_to kind "$meta" kind
     [ "$kind" = secondmate ] || continue
     id=${meta##*/}
     id=${id%.meta}
@@ -3445,6 +3446,7 @@ resurface_after_downtime() {
 # pending-reply scan then costs no process per record.
 WATCHER_CYCLE=0
 WATCHER_BEAT_AT=
+lock_owner='' summary_age='' heartbeat_age=''  # set each pass by the *_to readers in the loop
 watcher_beat() {
   [ "$SECONDS" != "$WATCHER_BEAT_AT" ] || return 0
   WATCHER_BEAT_AT=$SECONDS
@@ -3483,7 +3485,8 @@ while :; do
   # no-ops because the lock pid is not ours, so the survivor's lock is untouched.
   # This makes any duplicate self-resolve within one poll instead of persisting
   # and doubling every wake.
-  if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" != "$WATCHER_PID" ]; then
+  fm_file_text_to lock_owner "$WATCH_LOCK/pid" || true
+  if [ "$lock_owner" != "$WATCHER_PID" ]; then
     exit 0
   fi
 
@@ -3495,7 +3498,8 @@ while :; do
   # status lines before this cycle can exit on a wake. Off costs one file test.
   [ ! -e "$CONFIG/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" capture || true
 
-  if [ "$(age_of "$STATE/home-summary.json")" -ge "$HOME_SUMMARY_INTERVAL" ]; then
+  age_of_to summary_age "$STATE/home-summary.json"
+  if [ "$summary_age" -ge "$HOME_SUMMARY_INTERVAL" ]; then
     home_summary_refresh_detached
   fi
 
@@ -4136,11 +4140,12 @@ EOF
   # no-change heartbeat (idle fleet) up to HEARTBEAT_MAX, and resets on any
   # surfaced non-heartbeat wake.
   watcher_beat
-  streak=$(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0)
+  fm_file_text_to streak "$STATE/.heartbeat-streak" || streak=0
   [ "$streak" -gt 12 ] && streak=12
   hb=$(( HEARTBEAT * (1 << streak) ))
   [ "$hb" -gt "$HEARTBEAT_MAX" ] && hb=$HEARTBEAT_MAX
-  if [ "$(age_of "$STATE/.last-heartbeat")" -ge "$hb" ]; then
+  age_of_to heartbeat_age "$STATE/.last-heartbeat"
+  if [ "$heartbeat_age" -ge "$hb" ]; then
     # Triage: in always-on mode a heartbeat is benign unless the cheap fleet-scan
     # turns up a captain-relevant status the per-wake path missed. Absorb the
     # no-change case (advance the schedule and back off exactly as wake() would,
@@ -4173,7 +4178,7 @@ EOF
 
   # A cycle that held nothing closes the wake batch, so the next routine item
   # opens a full window rather than inheriting an old deadline.
-  [ "$WAKE_BATCH_HELD" -eq 1 ] || rm -f "$WAKE_BATCH_MARKER"
+  [ "$WAKE_BATCH_HELD" -eq 1 ] || fm_rm_present "$WAKE_BATCH_MARKER"
 
   # Terminal wait: a bounded native-event wait for push-capable homes (herdr),
   # else the blind poll sleep. See event_wait_or_sleep.
