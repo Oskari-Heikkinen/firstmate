@@ -212,25 +212,30 @@ export FM_HOME
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
-# shellcheck source=bin/fm-classify-lib.sh
-. "$SCRIPT_DIR/fm-classify-lib.sh"
-# shellcheck source=bin/fm-backlog-transition-lib.sh
-. "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
-# shellcheck source=bin/fm-procevent-lib.sh
-. "$SCRIPT_DIR/fm-procevent-lib.sh"
-# shellcheck source=bin/fm-suspend-lib.sh
-. "$SCRIPT_DIR/fm-suspend-lib.sh"
-# shellcheck source=bin/fm-backend.sh
-. "$SCRIPT_DIR/fm-backend.sh"
-# shellcheck source=bin/fm-timeout-lib.sh
-. "$SCRIPT_DIR/fm-timeout-lib.sh"
+# A park watch runs `poll` every interval, and a poll needs only the task-id
+# and pull request parsers above; cmd_poll loads the custody helpers itself
+# when the record shows an interrupted release to reconcile.
+if [ "${1-}" != poll ]; then
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  # shellcheck source=bin/fm-classify-lib.sh
+  . "$SCRIPT_DIR/fm-classify-lib.sh"
+  # shellcheck source=bin/fm-backlog-transition-lib.sh
+  . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+  # shellcheck source=bin/fm-procevent-lib.sh
+  . "$SCRIPT_DIR/fm-procevent-lib.sh"
+  # shellcheck source=bin/fm-suspend-lib.sh
+  . "$SCRIPT_DIR/fm-suspend-lib.sh"
+  # shellcheck source=bin/fm-backend.sh
+  . "$SCRIPT_DIR/fm-backend.sh"
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$SCRIPT_DIR/fm-timeout-lib.sh"
+  PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
+fi
 
 # Test seam: a fake control plane stands in for the harness endpoint.
 CONTROL="${FM_PARK_CONTROL_OVERRIDE:-$SCRIPT_DIR/fm-control.sh}"
 WHEN="$SCRIPT_DIR/fm-procevent-when.sh"
-PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 die() { printf 'fm-park: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
@@ -239,16 +244,34 @@ meta_get() {  # <key>: the last value of key= in this task's record
   awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { printf "%s", v }' "$META" 2>/dev/null
 }
 
+# meta_read <key>...: set meta_<key> to what meta_get <key> prints, for every
+# key in one pass of the record, read in the shell. As with meta_get, a record
+# that cannot be read gives empty values without a message.
+meta_read() {
+  local _mr_key _mr_line
+  for _mr_key in "$@"; do printf -v "meta_$_mr_key" '%s' ''; done
+  [ -f "$META" ] || return 0
+  {
+    while IFS= read -r _mr_line || [ -n "$_mr_line" ]; do
+      for _mr_key in "$@"; do
+        case "$_mr_line" in "$_mr_key="*) printf -v "meta_$_mr_key" '%s' "${_mr_line#*=}" ;; esac
+      done
+    done < "$META"
+  } 2>/dev/null || true
+}
+
 task_resolve() {  # <id>
+  local meta_kind meta_remote_host
   ID=${1-}
   fm_task_id_path_safe "$ID" || die "not a valid task id: '$ID'"
   META="$STATE/$ID.meta"
   [ -f "$META" ] && [ ! -L "$META" ] || die "task $ID has no task record in this home ($META)"
-  case "$(meta_get kind)" in
+  meta_read kind remote_host
+  case "$meta_kind" in
     ship|scout) ;;
-    *) die "task $ID is kind '$(meta_get kind)'; only ship and scout tasks park (a secondmate idles by design)" ;;
+    *) die "task $ID is kind '$meta_kind'; only ship and scout tasks park (a secondmate idles by design)" ;;
   esac
-  [ -z "$(meta_get remote_host)" ] || die "task $ID runs on another host; park it there"
+  [ -z "$meta_remote_host" ] || die "task $ID runs on another host; park it there"
 }
 
 # --- task record -------------------------------------------------------------
@@ -388,13 +411,14 @@ heavy_job_path() {
 }
 
 cmd_check() {
-  local cond=${1-} state value tool
+  local cond=${1-} state value tool meta_park_token meta_park_pickup
   local -a argv
   condition_valid "$cond" || exit 2
   case "$cond" in
     inbox:*)
       task_resolve "${cond#inbox:}"
-      [ -n "$(meta_get park_token)" ] && [ "$(meta_get park_pickup)" = "$(meta_get park_token)" ] && exit 0
+      meta_read park_token park_pickup
+      [ -n "$meta_park_token" ] && [ "$meta_park_pickup" = "$meta_park_token" ] && exit 0
       exit 1 ;;
     file:*|receipt:*) [ -e "${cond#*:}" ] && exit 0; exit 1 ;;
     merge-result:*)
@@ -1021,10 +1045,19 @@ cmd_release() (
 )
 
 cmd_poll() {
-  local reconcile_rc=0
+  local reconcile_rc=0 meta_park_token meta_park_state meta_copy_state meta_park_when
   task_resolve "${1-}"
-  [ "$(meta_get park_token)" = "${2-}" ] && [ "$(meta_get park_state)" = parked ] || exit 2
-  fm_suspend_reconcile_release "$META" "$ID" "$STATE" "$CONFIG" || reconcile_rc=$?
+  meta_read park_token park_state copy_state
+  [ "$meta_park_token" = "${2-}" ] && [ "$meta_park_state" = parked ] || exit 2
+  # fm_suspend_reconcile_release returns 0 at once for a record that is not
+  # release-prepared, so only such a record loads the custody helpers for it.
+  if [ "$meta_copy_state" = release-prepared ]; then
+    # shellcheck source=/dev/null
+    . "$SCRIPT_DIR/fm-wake-lib.sh"
+    # shellcheck source=/dev/null
+    . "$SCRIPT_DIR/fm-suspend-lib.sh"
+    fm_suspend_reconcile_release "$META" "$ID" "$STATE" "$CONFIG" || reconcile_rc=$?
+  fi
   case "$reconcile_rc" in
     0) ;;
     1) exit 1 ;; # Uncertain attempt custody is not a condition error.
@@ -1033,12 +1066,13 @@ cmd_poll() {
   # The separate release action owns expensive custody and its own failures.
   # Never consume this listener's error budget while a transaction is preparing;
   # it can resume only once custody is settled, regardless of condition changes.
-  case "$(meta_get copy_state)" in
+  meta_read copy_state park_when
+  case "$meta_copy_state" in
     ''|retained|released) ;;
     release-prepared|restore-prepared) exit 1 ;;
     *) exit 2 ;;
   esac
-  cmd_check "$(meta_get park_when)"
+  cmd_check "$meta_park_when"
 }
 
 cmd_pickup() (

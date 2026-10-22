@@ -95,6 +95,9 @@ EOF
 }
 
 park() { (cd "$TMP_ROOT" && FM_HOME="$1" FAKE_CONTROL_LOG="$1/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" "$PARK" "${@:2}"); }
+# bare_poll <home> <task-id> <token>: poll with no command on PATH and stderr in
+# <home>/poll.err, so an answer shows the poll started no process to give it.
+bare_poll() { (cd "$TMP_ROOT" && PATH="$TMP_ROOT/no-commands" FM_HOME="$1" "$BASH" "$PARK" poll "${@:2}" 2> "$1/poll.err"); }
 meta_count() { grep -c "^$2=" "$1" || true; }
 last_line() { tail -n 1 "$1"; }
 
@@ -296,6 +299,53 @@ case_park_resolves_its_directory() {
     (cd / && FM_HOME="$H" "$condition" poll "tr$n" "$token") || fail "the condition armed through $invoked missed its result"
   done
   pass "park arms the directory and root cd and pwd print from linked, dotted and relative invocations"
+}
+
+# --- a poll on a settled copy answers in the shell ----------------------------
+# The resume watch runs poll on every interval. Unless the record shows a release
+# to reconcile, a poll reads its record and checks a file or inbox wait without
+# starting a process, so with no command on PATH it answers as it always has.
+case_poll_answers_in_the_shell() {
+  H="$TMP_ROOT/h-shell-poll"; new_task "$H" tsp; new_task "$H" tsi
+  mkdir -p "$TMP_ROOT/no-commands"
+  handoff "$TMP_ROOT/tsp.md" "file:$TMP_ROOT/tsp-results"
+  park "$H" tsp --handoff "$TMP_ROOT/tsp.md" >/dev/null || fail "park tsp failed"
+  token=$(sed -n 's/^park_token=//p' "$H/state/tsp.meta")
+  : > "$TMP_ROOT/tsp-results"
+  rc=0; bare_poll "$H" tsp retired-token || rc=$?
+  expect_code 2 "$rc" "a poll without commands accepted another park's token"
+  for copy in '' retained released restore-prepared unknown; do
+    case "$copy" in
+      ''|retained|released) unmet=1 met=0 ;;
+      restore-prepared) unmet=1 met=1 ;;
+      *) unmet=2 met=2 ;;
+    esac
+    [ -z "$copy" ] || printf 'copy_state=%s\n' "$copy" >> "$H/state/tsp.meta"
+    rm -f "$TMP_ROOT/tsp-results"
+    rc=0; bare_poll "$H" tsp "$token" || rc=$?
+    expect_code "$unmet" "$rc" "a poll without commands misread an unmet wait with copy_state '$copy'"
+    : > "$TMP_ROOT/tsp-results"
+    rc=0; bare_poll "$H" tsp "$token" || rc=$?
+    expect_code "$met" "$rc" "a poll without commands misread a met wait with copy_state '$copy'"
+    assert_equals '' "$(cat "$H/poll.err")" "a poll without commands printed an error with copy_state '$copy'"
+  done
+  printf 'copy_state=retained\nkind=secondmate\n' >> "$H/state/tsp.meta"
+  rc=0; bare_poll "$H" tsp "$token" || rc=$?
+  expect_code 1 "$rc" "a poll without commands accepted a secondmate record"
+  assert_contains "$(cat "$H/poll.err")" "is kind 'secondmate'" "a poll without commands misread the record's kind"
+  printf 'kind=ship\nremote_host=elsewhere\n' >> "$H/state/tsp.meta"
+  rc=0; bare_poll "$H" tsp "$token" || rc=$?
+  expect_code 1 "$rc" "a poll without commands accepted another host's task"
+  assert_contains "$(cat "$H/poll.err")" "runs on another host" "a poll without commands missed the record's host"
+  handoff "$TMP_ROOT/tsi.md" "inbox:tsi"
+  park "$H" tsi --handoff "$TMP_ROOT/tsi.md" >/dev/null || fail "park tsi failed"
+  token=$(sed -n 's/^park_token=//p' "$H/state/tsi.meta")
+  rc=0; bare_poll "$H" tsi "$token" || rc=$?
+  expect_code 1 "$rc" "a poll without commands picked up an inbox wait by itself"
+  park "$H" pickup tsi >/dev/null || fail "pickup tsi failed"
+  bare_poll "$H" tsi "$token" || fail "a poll without commands missed an explicit pickup"
+  assert_equals '' "$(cat "$H/poll.err")" "an inbox poll without commands printed an error"
+  pass "a poll on a settled copy reads its record and checks its wait without starting a process"
 }
 
 # --- the cross-home condition kinds each read their own source ----------------
@@ -1241,7 +1291,8 @@ pool_param_cases save_timeout_case bundle import clean quiet evidence
 POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
   case_superseded_resume case_failed_relaunch case_notification_failure)
 POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queue_adoption_refusal
-  case_park_records_and_rearms case_default_cadence case_park_resolves_its_directory case_cross_home_conditions
+  case_park_records_and_rearms case_default_cadence case_park_resolves_its_directory
+  case_poll_answers_in_the_shell case_cross_home_conditions
   case_kind_default_deadlines case_park_time_refusal case_self_park_detached_exit
   case_self_park_by_task_id case_self_park_exit_failure case_claude_background_refusal
   case_other_harness_background case_copy_free_qualification case_wait_age)
