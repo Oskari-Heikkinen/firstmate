@@ -349,7 +349,7 @@ User units are machine-wide, so a stage or declaration in any home the caller se
 A service is also covered by the timer of the same name (`systemd-service:x.service` by `systemd-timer:x.timer`), since the timer starts it.
 A tool that reads or writes handoff records is declared in its stage's `actors`, never as `none`.
 
-`bin/fm-check-register.sh <id> [--no-handoff <reason>]` runs the check for `fm-check:<id>` before it binds the trust record, and refuses with exit 1 otherwise.
+`bin/fm-check-register.sh <id> [--from <staged-file>] [--no-handoff <reason>]` runs the check for `fm-check:<id>` before it binds the trust record, and refuses with exit 1 otherwise.
 `--no-handoff <reason>` first records the `none` declaration, for a check that touches no handoff record.
 Other installers adopt the check by calling it themselves:
 
