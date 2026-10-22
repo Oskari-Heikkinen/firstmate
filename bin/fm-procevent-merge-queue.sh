@@ -37,8 +37,8 @@
 #            configured declared-wait checker and park condition reuse this read.
 # source-id  Print the canonical source id.
 # classify   Print the captured outcome class: landed-clean, landed-unproven,
-#            culprit, conflict, superseded, dropped, unexpected, stall, error,
-#            or unknown (malformed capture).
+#            culprit, conflict, precheck-unavailable, superseded, dropped,
+#            unexpected, stall, error, or unknown (malformed capture).
 # settle     Apply one captured outcome (see below). Exit 0 when fully handled
 #            here, 1 when the home's firstmate still has to act on it.
 # retire     Stop a head's watch. Captured results are never touched.
@@ -73,6 +73,14 @@
 #                    Relaunches the worker in its existing copy through
 #                    bin/fm-control.sh relaunch with the RESULT line and the
 #                    stored resume note. A refused relaunch leaves the wake.
+#   precheck-unavailable
+#                    The train could not complete the head's precheck (for
+#                    example its run budget ran out): final, nothing landed, and
+#                    no code verdict. Relaunches the worker like a culprit, with
+#                    a note saying execution was unavailable rather than red and
+#                    asking it to diagnose and hand over a new head, since the
+#                    train never retries this one. A refused relaunch leaves the
+#                    wake.
 #   superseded       outcome=dropped with exact note "superseded by <sha8|sha40>": silent.
 #   dropped          Any other dropped: appends `failed:` to the task status,
 #                    which a secondmate home's ledger delivery publishes upward.
@@ -272,7 +280,7 @@ outcome_class() {  # <file>
   line=$(doc_value "$1" line)
   outcome=$(line_field "$line" outcome) || outcome=
   case "$outcome" in
-    culprit|conflict) printf '%s\n' "$outcome" ;;
+    culprit|conflict|precheck-unavailable) printf '%s\n' "$outcome" ;;
     dropped)
       if [[ "$(line_note "$line")" =~ ^superseded\ by\ ([0-9a-f]{8}|[0-9a-f]{40})$ ]]; then
         printf 'superseded\n'
@@ -376,7 +384,7 @@ cmd_handoff() {
     printf '## Goal\nFinish the queued task %s.\n## Done\nHanded %s to the merge queue.\n' "$task" "$head"
     # shellcheck disable=SC2016 # Markdown code span, not shell substitution.
     printf '## Waiting for\n`cmd:%s result-ready %s`\n' "$SELF" "$head"
-    printf '## Next steps\nThe queue source %s owns settlement; on conflict or culprit follow the RESULT and resume note.\n' "$sid"
+    printf '## Next steps\nThe queue source %s owns settlement; on conflict, culprit or precheck-unavailable follow the RESULT and resume note.\n' "$sid"
     [ "$resume_set" -eq 0 ] || printf '%s\n' "$resume"
   } > "$tmp"
   FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-park.sh" "$task" --handoff "$tmp" --adopt-merge-queue "$head"
@@ -455,7 +463,12 @@ relaunch_note() {  # <line> <head> <task>
     "$(line_field "$1" outcome)" "$2" "$1"
   printf 'Your resume note from the handoff:\n'
   if [ -f "$MQ_STATE/$3.resume" ]; then cat "$MQ_STATE/$3.resume"; else printf '(none recorded)\n'; fi
-  printf '\nFix what the result names in this copy, re-run the gate, push a new head to your branch, and hand it over again with:\n'
+  if [ "$(line_field "$1" outcome)" = precheck-unavailable ]; then
+    printf '\nThe queue could not complete the precheck for that head, so execution was unavailable: this is not a code verdict, and the queue will not retry that head.\n'
+    printf 'Diagnose why the precheck could not run (the note names its receipt and diagnostics), fix or rebase in this copy, re-run the gate, push a new head to your branch, and hand it over with:\n'
+  else
+    printf '\nFix what the result names in this copy, re-run the gate, push a new head to your branch, and hand it over again with:\n'
+  fi
   printf "  FM_HOME='%s' '%s' handoff %s <branch> <new-head40> [--resume-note <text>] -- <note>\n" "$FM_HOME" "$SELF" "$3"
   printf 'then stop.\n'
 }
@@ -543,7 +556,7 @@ cmd_settle() {
   case "$class" in
     landed-clean) settle_landed_clean "$task" "$head" "$line" ;;
     landed-unproven) settle_landed_unproven "$task" "$head" "$line" ;;
-    culprit|conflict)
+    culprit|conflict|precheck-unavailable)
       tmp=$(mktemp "${TMPDIR:-/tmp}/fm-merge-queue-note.XXXXXX") || return 1
       relaunch_note "$line" "$head" "$task" > "$tmp"
       FM_HOME=$FM_HOME "$CONTROL_BIN" "$task" relaunch --note-file "$tmp" >/dev/null 2>&1

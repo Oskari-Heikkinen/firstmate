@@ -2410,7 +2410,7 @@ The built-in `bin/fm-procevent-<adapter>.sh self-announcing` command declares an
 | Any other response | Keep strict publish-before-apply ordering; autohandle runs only after this capture's own wake was successfully appended to the durable queue. |
 
 The remote-secondmate reply adapter declares itself self-announcing: a captured reply reaches its local status mirror and settles its correlated pending-reply expectation without any handler step, the mirrored status bytes are the single wake for one remote note through the same signal classification a local secondmate's append gets, and only a capture the adapter could not fully apply is published as a `check` wake, whose adapter handling remains idempotent.
-The merge-queue adapter also declares itself self-announcing: every outcome it fully settles is announced by the task status or parent-channel line it writes, a result that needs no announcement at all (a relaunch after `culprit` or `conflict`, or a superseded head) stays silent by design, and any outcome it cannot settle is published as a `check` wake.
+The merge-queue adapter also declares itself self-announcing: every outcome it fully settles is announced by the task status or parent-channel line it writes, a result that needs no announcement at all (a relaunch after `culprit`, `conflict` or `precheck-unavailable`, or a superseded head) stays silent by design, and any outcome it cannot settle is published as a `check` wake.
 The [remote-secondmate channel contract](remote-secondmates.md#normal-operation) owns replay suppression and its bounded upgrade exception; a replay that adds no mirror bytes stays quiet.
 
 **Feed keyed captain answers**

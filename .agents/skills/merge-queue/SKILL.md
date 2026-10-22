@@ -27,7 +27,7 @@ FM_HOME='<this home>' '<code root>/bin/fm-procevent-merge-queue.sh' handoff <tas
 That one command runs the queue's own `handoff.sh` under this home's configured name, arms one watch for that head, stores the resume note, and parks the worker through `bin/fm-park.sh`'s queue-adoption option.
 Park records the current worker incarnation and the `merge-result` declared wait, adopts that queue source without a second resume watch, and stops the worker.
 The brief must tell the worker to do nothing after it succeeds, and to report `blocked:` with the command's error if it fails.
-The resume note is what a relaunched worker reads after a `culprit` or `conflict`, so it should carry anything the conversation alone knows, such as how the gate is run.
+The resume note is what a relaunched worker reads after a `culprit`, `conflict` or `precheck-unavailable`, so it should carry anything the conversation alone knows, such as how the gate is run.
 
 ## What happens without an agent turn
 
@@ -41,6 +41,7 @@ It wakes nothing for the outcomes the glue settles itself:
   After cleanup the glue publishes only its parent-channel landed line and never recreates the retired task status log.
   A cleanup refusal appends a blocker to the still-existing task status naming the landed head, main commit and refusal.
 - A `culprit` or `conflict` relaunches the worker in its existing copy with the RESULT line and its resume note; the relaunched worker fixes the problem, pushes a new head, and hands it over again.
+- A `precheck-unavailable` (the train could not complete the head's precheck, for example its run budget ran out) is final and landed nothing, but it is no code verdict: it relaunches the worker the same way, with a note saying execution was unavailable, that the queue never retries that head, and to diagnose and hand over a new head.
 - A `dropped` head fails the task with the queue's reason; only the train's exact `superseded by <sha>` note is silent.
 - An unexpected RESULT outcome ends the declared wait and reports one parent-channel blocker naming the raw outcome; it cleans and relaunches nothing.
 - In a secondmate home, a landing with any differing or dropped file posts one `needs-decision` on the parent channel naming the files and cleans nothing, and a queue `STALL` posts one `note` on the parent channel; the watch keeps going after a stall.
@@ -56,7 +57,7 @@ Read the result and ask `bin/fm-procevent-merge-queue.sh classify <result-file>`
 - `landed-unproven` in a main home: the change is on main but not every file is proven identical there.
   Relay the files and evidence path to the captain as a decision and clean nothing until answered.
 - `stall` in a main home: tell the captain the queue is stalled and since when.
-- `culprit` or `conflict` whose relaunch was refused: recover the worker with `stuck-crewmate-recovery`, then relaunch it with the RESULT line.
+- `culprit`, `conflict` or `precheck-unavailable` whose relaunch was refused: recover the worker with `stuck-crewmate-recovery`, then relaunch it with the RESULT line.
 - `unexpected` in a main home: report the raw queue outcome to the captain; relaunch and clean nothing.
 - `error`: the queue could not be read; fix the configuration or location, then re-arm with `bin/fm-procevent-merge-queue.sh arm <task-id> <head40>`.
 

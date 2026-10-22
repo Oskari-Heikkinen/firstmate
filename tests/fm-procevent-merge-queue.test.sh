@@ -299,6 +299,43 @@ assert_grep "handoff t1" "$TMP_ROOT/relaunch-note" "the relaunch note says how t
 assert_no_grep "teardown" "$CALLS" "a conflict cleans nothing"
 pass "a conflict relaunches the worker with the result and its resume note"
 
+# --- precheck-unavailable: final, no code verdict, owner hands over a new head --
+RECEIPT=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+PU_NOTE="head $HEAD_A: 3 consecutive incomplete prechecks; receipt /q/cars/c7/receipt.json (may be absent); diagnostics /q/cars/c7; execution unavailable, not contract red; diagnose and hand over a new head"
+f="$TMP_ROOT/precheck-unavailable.result"
+for tail in "by=merge-train protocol=lattice-merge-precheck/v1 rule=precheck-unavailable" "protocol=lattice-merge-precheck/v1"; do
+  printf 'status: result\nline: RESULT 2026-10-22T09:00:00Z head=%s outcome=precheck-unavailable main=- home=h task=t1 car=c7 receipt=%s %s note=%s\n' \
+    "$HEAD_A" "$RECEIPT" "$tail" "$PU_NOTE" > "$f"
+  assert_equals precheck-unavailable "$(mq "$TMP_ROOT/h-culprit" classify "$f")" "precheck-unavailable is its own class ($tail)"
+  mq "$TMP_ROOT/h-culprit" terminal "$f" || fail "precheck-unavailable must be terminal ($tail)"
+done
+Q="$TMP_ROOT/q-precheck"; new_queue "$Q"
+H="$TMP_ROOT/h-precheck"; new_home "$H" "$Q" t1
+P="$TMP_ROOT/p-precheck"; make_secondmate "$H" "$P" mate1
+: > "$CALLS"
+mq "$H" handoff t1 fm/t1 "$HEAD_A" --resume-note "gate runs through the heavy slot" -- precheck >/dev/null
+sid=$(mq "$H" source-id t1 "$HEAD_A")
+printf 'RESULT 2026-10-22T09:00:00Z head=%s outcome=precheck-unavailable main=- home=test-home task=t1 car=c7 receipt=%s by=merge-train protocol=lattice-merge-precheck/v1 rule=precheck-unavailable note=%s\n' \
+  "$HEAD_A" "$RECEIPT" "$PU_NOTE" >> "$Q/queue.log"
+FM_HOME="$H" "$ROOT/bin/fm-park.sh" check "cmd:$ROOT/bin/fm-procevent-merge-queue.sh result-ready $HEAD_A" \
+  || fail "precheck-unavailable must end the declared wait"
+pe "$H" reconcile >/dev/null
+wait_for grep -q "^control t1 relaunch --note-file" "$CALLS" || fail "precheck-unavailable did not relaunch the owner"
+wait_for handled_is "$H" 1 || fail "the precheck-unavailable outcome was not acknowledged"
+wait_for source_gone "$H" "$sid" || fail "precheck-unavailable did not end the watch"
+assert_grep "outcome=precheck-unavailable main=- " "$TMP_ROOT/relaunch-note" "the relaunch note carries the RESULT line"
+assert_grep "execution was unavailable: this is not a code verdict" "$TMP_ROOT/relaunch-note" "the owner is told it is no code verdict"
+assert_grep "will not retry that head" "$TMP_ROOT/relaunch-note" "the owner is told the head is not retried"
+assert_grep "Diagnose why the precheck could not run" "$TMP_ROOT/relaunch-note" "the owner is asked to diagnose"
+assert_grep "handoff t1" "$TMP_ROOT/relaunch-note" "the relaunch note says how to hand over a new head"
+assert_grep "gate runs through the heavy slot" "$TMP_ROOT/relaunch-note" "the relaunch note carries the resume note"
+assert_no_grep "Fix what the result names" "$TMP_ROOT/relaunch-note" "no code verdict is implied"
+assert_no_grep "teardown" "$CALLS" "precheck-unavailable cleans nothing"
+assert_no_grep "fleet-sync" "$CALLS" "precheck-unavailable is not a landing"
+assert_no_grep "failed" "$H/state/t1.status" "precheck-unavailable is not a drop"
+assert_no_grep "unexpected" "$P/state/mate1.status" "precheck-unavailable is not reported as unexpected"
+pass "precheck-unavailable relaunches the owner to diagnose and hand over a new head"
+
 # --- dropped: superseded is silent, anything else fails the task --------------
 Q="$TMP_ROOT/q-dropped"; new_queue "$Q"
 H="$TMP_ROOT/h-dropped"; new_home "$H" "$Q" t1
