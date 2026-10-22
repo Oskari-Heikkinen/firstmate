@@ -63,6 +63,8 @@ assert a['status_observations']['characters_with_newlines'] == a['status_observa
 q = run('--queue-log', 'queue.log', '--line-limit', '3')['queue_log']
 assert q['by_kind'] == {'HANDOFF': 1, 'RESULT': 2} and q['distinct_landed_main_commits'] == 1
 assert q['outcomes'] == {'landed': 2}
+(home / 'queue-precheck.log').write_text('RESULT outcome=precheck-unavailable main=- note=x\nRESULT outcome=new-word\n')
+assert run('--queue-log', 'queue-precheck.log')['queue_log']['outcomes'] == {'precheck-unavailable': 1, 'unknown': 1}
 assert run('--status', 'status', '--line-limit', '1')['status_observations']['lines'] == 1
 (home / 'approvals').mkdir()
 (home / 'approvals/a.public.json').write_text('{}')

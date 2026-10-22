@@ -197,9 +197,9 @@ def main():
                 if kind == "queue_log":
                     verb = line.split(maxsplit=1)[0] if line.strip() else "unknown"
                     queue_kinds[verb if verb in {"HANDOFF", "RESULT"} else "unknown"] += 1
-                    outcome = re.search(r"(?:^|\s)outcome=(\w+)(?=\s|$)", line)
+                    outcome = re.search(r"(?:^|\s)outcome=([\w-]+)(?=\s|$)", line)
                     if verb == "RESULT" and outcome:
-                        label_value = outcome[1] if outcome[1] in {"taken", "landed", "culprit", "conflict", "dropped"} else "unknown"
+                        label_value = outcome[1] if outcome[1] in {"taken", "landed", "culprit", "conflict", "precheck-unavailable", "dropped"} else "unknown"
                         queue_outcomes[label_value] += 1
                         main = re.search(r"(?:^|\s)main=([0-9a-f]{7,64})(?=\s|$)", line)
                         if label_value == "landed" and main:
