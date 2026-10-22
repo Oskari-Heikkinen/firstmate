@@ -1318,6 +1318,34 @@ fm_recovery_marker_arm_check() {
   fm_recovery_transition "$1" arm-check
 }
 
+# fm_recovery_marker_arm_check_idle <marker>
+# A live watcher's per-cycle arm check, read without the queue and marker
+# locks. It returns 0, with FM_RECOVERY_MARKER_ACTION set to none or wait, only
+# for a state the locked arm check leaves unchanged and reports no recovery
+# for; any other state returns 1 for the caller to run
+# fm_recovery_marker_arm_check. Reading the queue before the marker keeps this
+# sound without the locks: every marker write is an atomic rename, and a
+# durable append publishes pending downtime before it adds its row, which only
+# the drain's acknowledgement of an emptied queue retires.
+fm_recovery_marker_arm_check_idle() {
+  local marker=$1 queued=0
+  FM_RECOVERY_MARKER_ACTION='none'
+  [ ! -s "$FM_WAKE_QUEUE" ] || queued=1
+  if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
+    [ "$queued" -eq 0 ]
+    return
+  fi
+  fm_recovery_marker_read "$marker" || return 1
+  case "$FM_RECOVERY_MARKER_TOKEN" in
+    pending:handling:*|announced:handling:*|announced:downtime:*)
+      # shellcheck disable=SC2034 # Output read by callers after this function returns.
+      FM_RECOVERY_MARKER_ACTION='wait'
+      ;;
+    acked:*) [ "$queued" -eq 0 ] ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_recovery_marker_reopen_announced() {
   fm_recovery_transition "$1" reopen-announced
 }

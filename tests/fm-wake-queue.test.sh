@@ -2071,6 +2071,128 @@ test_handover_restore_undoes_only_its_own_stop() {
   pass "a handover undoes only the downtime its own stop published over an acknowledged episode"
 }
 
+# A live watcher's per-cycle arm check reads the queue and recovery marker
+# without their locks first (fm_recovery_marker_arm_check_idle). That read may
+# answer only where the locked check changes nothing, and must hand every other
+# state to the locked check.
+set_recovery_case() {  # <state> <marker-shape> <empty|queued>
+  local state=$1 shape=$2
+  rm -rf -- "$state/.watcher-down" "$state/.watcher-down.target"
+  case "$shape" in
+    absent) ;;
+    symlink)
+      printf 'acked:downtime:idle.1\n' > "$state/.watcher-down.target"
+      ln -s .watcher-down.target "$state/.watcher-down"
+      ;;
+    directory) mkdir "$state/.watcher-down" ;;
+    invalid) printf 'acked:downtime:\n' > "$state/.watcher-down" ;;
+    *) printf '%s:idle.1\n' "${shape/-/:}" > "$state/.watcher-down" ;;
+  esac
+  if [ "$3" = queued ]; then
+    printf '1700000000\t1\tcheck\tidle\tcheck: idle\n' > "$state/.wake-queue"
+  else
+    : > "$state/.wake-queue"
+  fi
+}
+
+recovery_marker_shape() {  # <state>
+  local marker="$1/.watcher-down"
+  if [ -L "$marker" ]; then
+    printf 'link:%s\n' "$(readlink "$marker")"
+  elif [ -d "$marker" ]; then
+    printf 'directory\n'
+  elif [ -f "$marker" ]; then
+    printf 'file:%s\n' "$(cat "$marker")"
+  else
+    printf 'absent\n'
+  fi
+}
+
+# Print "<status> <action>" from one recovery check over <state>.
+run_recovery_check() {  # <state> <idle|locked>
+  FM_STATE_OVERRIDE="$1" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1/bin/fm-wake-lib.sh"
+    status=0
+    if [ "$2" = idle ]; then
+      fm_recovery_marker_arm_check_idle "$STATE/.watcher-down" || status=$?
+    else
+      fm_recovery_marker_arm_check "$STATE/.watcher-down" || status=$?
+    fi
+    printf "%s %s\n" "$status" "$FM_RECOVERY_MARKER_ACTION"
+  ' _ "$ROOT" "$2"
+}
+
+test_quiet_recovery_check_reads_without_the_locks() {
+  local dir state holder i spec shape queue expect before out pid problem='' specs
+  dir=$(make_case quiet-recovery-check)
+  state="$dir/state"
+  # <marker-shape>:<queue>:<answer>, where "locked" is a state the locked check
+  # changes and the lock-free read must hand over.
+  specs="absent:empty:none acked-downtime:empty:none acked-handling:empty:none
+    announced-downtime:queued:wait announced-handling:queued:wait pending-handling:queued:wait
+    pending-downtime:empty:locked acked-downtime:queued:locked absent:queued:locked
+    invalid:empty:locked symlink:empty:locked directory:empty:locked"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1/bin/fm-wake-lib.sh"
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 10
+    fm_lock_acquire_wait "$STATE/.watcher-down.lock" || exit 11
+    printf "ready\n" > "$2"
+    i=0
+    while [ ! -e "$3" ] && [ "$i" -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
+    fm_lock_release "$STATE/.watcher-down.lock"
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  ' _ "$ROOT" "$dir/holder.ready" "$dir/release-holder" &
+  holder=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/holder.ready" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$dir/holder.ready" ] || problem="the fixture never took the queue and marker locks"
+  for spec in $specs; do
+    [ -z "$problem" ] || break
+    shape=${spec%%:*}; queue=${spec#*:}; expect=${queue#*:}; queue=${queue%%:*}
+    set_recovery_case "$state" "$shape" "$queue"
+    before=$(recovery_marker_shape "$state")
+    run_recovery_check "$state" idle > "$dir/idle.out" &
+    pid=$!
+    if ! wait_for_exit "$pid" 50; then
+      problem="the lock-free read of $spec waited on a held lock"
+      break
+    fi
+    out=$(cat "$dir/idle.out")
+    case "$expect" in
+      locked) [ "${out%% *}" = 1 ] || problem="the lock-free read answered $spec with '$out' instead of handing it over" ;;
+      *) [ "$out" = "0 $expect" ] || problem="the lock-free read answered $spec with '$out', not '0 $expect'" ;;
+    esac
+    [ "$(recovery_marker_shape "$state")" = "$before" ] || problem="the lock-free read of $spec changed the marker"
+  done
+  : > "$dir/release-holder"
+  wait "$holder" || [ -n "$problem" ] || problem="the lock fixture did not release cleanly"
+  [ -z "$problem" ] || fail "$problem"
+
+  # The locked check agrees: every answered state stays as it was, and every
+  # handed-over state is one it changes and recovers.
+  for spec in $specs; do
+    shape=${spec%%:*}; queue=${spec#*:}; expect=${queue#*:}; queue=${queue%%:*}
+    set_recovery_case "$state" "$shape" "$queue"
+    before=$(recovery_marker_shape "$state")
+    out=$(run_recovery_check "$state" locked)
+    case "$expect" in
+      locked)
+        [ "$out" = "0 recover" ] || fail "the locked check did not recover handed-over $spec: '$out'"
+        ;;
+      *)
+        [ "$out" = "0 $expect" ] || fail "the locked check answered $spec with '$out', not '0 $expect'"
+        [ "$(recovery_marker_shape "$state")" = "$before" ] || fail "the locked check changed answered $spec"
+        ;;
+    esac
+  done
+  pass "a quiet recovery check answers without the queue and marker locks only where the locked check changes nothing"
+}
+
 test_stale_recovery_generation_cannot_touch_a_newer_episode() {
   local dir state first_err replay_err sequence generation handling_marker
   local newer_marker newer_sequence newer_generation rc
@@ -3734,6 +3856,7 @@ WAKE_QUEUE_CASES=(
   test_secondmate_liveness_tick_preserves_unreachable_remote
   test_term_stops_a_watcher_blocked_in_the_drain_ring_idle_capture
   test_handover_restore_undoes_only_its_own_stop
+  test_quiet_recovery_check_reads_without_the_locks
   test_drain_rotates_orphaned_scratch
   test_bounded_drain_under_append_contention
 )

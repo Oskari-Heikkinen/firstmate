@@ -1154,6 +1154,57 @@ test_wake_batch_held_rearm_resurface_survives_a_restart() {
   pass "a held rearm-resurface survives a watcher restart and wakes when the batch expires"
 }
 
+# A live watcher's quiet cycle answers its recovery check without the recovery
+# marker's lock, which only a transition takes, so cycles go on while another
+# process holds it. A durable append made while the watcher runs still
+# resurfaces at once: its pending downtime sends the next cycle to the locked
+# check.
+test_live_watcher_quiet_cycle_skips_the_recovery_lock() {
+  local dir state fakebin out pid holder i
+  dir=$(make_case live-quiet-recovery); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  printf 'acked:downtime:quiet.1\n' > "$state/.watcher-down"
+  watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=0
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "a watcher over an acknowledged episode woke on an empty queue: $(cat "$out")"; }
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1/bin/fm-wake-lib.sh"
+    fm_lock_acquire_wait "$STATE/.watcher-down.lock" || exit 10
+    printf "ready\n" > "$2"
+    i=0
+    while [ ! -e "$3" ] && [ "$i" -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
+    fm_lock_release "$STATE/.watcher-down.lock"
+  ' _ "$ROOT" "$dir/holder.ready" "$dir/release-holder" &
+  holder=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/holder.ready" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  if [ ! -s "$dir/holder.ready" ] || ! wait_poll_cycle "$state" "$pid" || ! wait_poll_cycle "$state" "$pid"; then
+    : > "$dir/release-holder"
+    wait "$holder" 2>/dev/null || true
+    reap "$pid"
+    fail "a quiet cycle waited on the recovery marker lock: $(cat "$out")"
+  fi
+  : > "$dir/release-holder"
+  wait "$holder" || { reap "$pid"; fail "the marker lock fixture did not release cleanly"; }
+  if [ -s "$out" ] || [ "$(cat "$state/.watcher-down")" != acked:downtime:quiet.1 ]; then
+    reap "$pid"
+    fail "a quiet cycle woke or rewrote the acknowledged episode: $(cat "$out" "$state/.watcher-down")"
+  fi
+  append_wake "$state" check live-append "check: appended while the watcher runs" \
+    || { reap "$pid"; fail "the durable append to a live watcher failed"; }
+  wait_for_exit "$pid" 100 || fail "a durable append to a live watcher did not resurface"
+  grep -Fx 'check: rearm-resurface' "$out" >/dev/null || fail "a durable append to a live watcher did not re-announce: $(cat "$out")"
+  case "$(cat "$state/.watcher-down")" in
+    announced:downtime:*) ;;
+    *) fail "the resurfaced append left no announced episode: $(cat "$state/.watcher-down")" ;;
+  esac
+  pass "a live watcher's quiet cycle skips the recovery marker lock, and a durable append still resurfaces at once"
+}
+
 test_wake_batch_holds_a_warm_declared_recheck() {
   local dir state
   dir=$(make_case wake-batch-recheck); state="$dir/state"
@@ -7921,6 +7972,7 @@ TRIAGE_CASES=(
   test_wake_batch_holds_rearm_resurface_unless_a_queued_row_is_urgent
   test_wake_batch_rearm_resurface_bypass_rows
   test_wake_batch_held_rearm_resurface_survives_a_restart
+  test_live_watcher_quiet_cycle_skips_the_recovery_lock
   test_wake_batch_holds_a_warm_declared_recheck
   test_wake_batch_expiry_delivers_a_recheck_beside_absorbed_signals
   test_wake_batch_urgent_recheck_keeps_the_held_deadline

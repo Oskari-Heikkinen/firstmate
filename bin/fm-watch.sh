@@ -3406,7 +3406,10 @@ resurface_after_downtime() {
     return 0
   fi
   if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ] && [ "$WATCHER_RESURFACE_HELD" -ne 1 ]; then
-    if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
+    # A quiet cycle answers from a lock-free read; the queue and marker locks
+    # are taken only when that read finds a state the locked check changes.
+    if ! fm_recovery_marker_arm_check_idle "$WATCHER_DOWNTIME_MARKER" \
+      && ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
       echo "watcher: recovery state could not be consumed safely" >&2
       exit 1
     fi
