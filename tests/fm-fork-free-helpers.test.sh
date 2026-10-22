@@ -518,6 +518,99 @@ SH
   pass "fm_pid_identity_to and fm_pid_identity match the forked reader and spawn nothing on Bash 4.2+"
 }
 
+test_engine_identity_matches_the_pipeline_it_replaced() {
+  local script="$TMP_ROOT/engine-identity.sh" root="$TMP_ROOT/engine-proc" noproc="$TMP_ROOT/engine-noproc"
+  local cases="$TMP_ROOT/engine-ps-cases" shim="$TMP_ROOT/engine-identity-shim" log="$TMP_ROOT/engine-identity-spawned.log"
+  local tail tool pid
+  tail='S 1 1 1 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 12345 1000 100 18446744073709551615'
+  mkdir -p "$shim" "$noproc" "$cases"
+  for tool in cat od tr sed; do
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$log" "$(command -v "$tool")" > "$shim/$tool"
+    chmod +x "$shim/$tool"
+  done
+  # Where there is no /proc entry the identity is ps's line; this ps prints
+  # the case file named by its -p argument and runs the real ps for any other.
+  cat > "$shim/ps" <<SH
+#!/bin/sh
+printf 'ps\n' >> "$log"
+pid= prev=
+for arg in "\$@"; do
+  [ "\$prev" = -p ] && pid=\$arg
+  prev=\$arg
+done
+[ -f "$cases/\$pid" ] || exec "$(command -v ps)" "\$@"
+exec "$(command -v cat)" "$cases/\$pid"
+SH
+  chmod +x "$shim/ps"
+  for pid in 900000101 900000102 900000103; do
+    mkdir -p "$root/$pid"
+    printf '%s (fm-watch-arm.sh) %s\n' "$pid" "$tail" > "$root/$pid/stat"
+  done
+  printf 'bash\0/x/bin/fm-watch-arm.sh\0--take-over\0' > "$root/900000101/cmdline"
+  printf 'a\tb\nc \0 \0' > "$root/900000102/cmdline"
+  : > "$root/900000103/cmdline"
+  printf '  Thu Oct 22 06:37:27 2026 /bin/bash /x/bin/fm-watch-arm.sh\n' > "$cases/800000001"
+  printf 'Thu Oct 22 06:37:27 2026 bash\targ\twith tabs\n' > "$cases/800000002"
+  printf 'Thu Oct 22 06:37:27 2026 ends in spaces   \n' > "$cases/800000003"
+  printf 'Thu Oct 22 06:37:27 2026 ends in a tab\t\n' > "$cases/800000004"
+  printf 'Thu Oct 22 06:37:27 2026 first line\n   second line \t \n' > "$cases/800000005"
+  printf '   \n' > "$cases/800000006"
+  printf 'Thu Oct 22 06:37:27 2026 caf\303\251 nbsp\302\240\n' > "$cases/800000007"
+  printf 'Thu Oct 22 06:37:27 2026 cr\r\n' > "$cases/800000008"
+  printf 'Thu Oct 22 06:37:27 2026 x \t \n \t\n\n' > "$cases/800000009"
+  printf '\n\n' > "$cases/800000010"
+  : > "$cases/800000011"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-supervision-engine-lib.sh"
+root=$2 noproc=$3 shim=$4 log=$5
+# The pipeline the printing _fm_engine_identity ran before
+# _fm_engine_identity_to replaced it, kept as the reference.
+reference_identity() {
+  local identity
+  identity=$(fm_pid_identity "$1" 2>/dev/null) || return 1
+  [ -n "$identity" ] || return 1
+  printf '%s\n' "$identity" | tr '\t\n' '  ' | sed 's/ *$//'
+}
+modern=0
+if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; then
+  modern=1
+fi
+check() {  # <pid> [spawned-on-bash-4.2 spawned-before]: the spawned commands, space-separated
+  local want wrc got grc spawned='' tool PATH="$shim:$PATH"
+  want=$(reference_identity "$1"); wrc=$?
+  : > "$log"
+  _fm_engine_identity_to got "$1"; grc=$?
+  while IFS= read -r tool; do spawned="$spawned$tool "; done < "$log"
+  [ "$got" = "$want" ] && [ "$grc" = "$wrc" ] \
+    || printf 'engine identity_to %q: helper %q (%s), reference %q (%s)\n' "$1" "$got" "$grc" "$want" "$wrc"
+  [ "$#" -gt 1 ] || return 0
+  if [ "$modern" = 1 ]; then
+    [ "$spawned" = "$2" ] || printf 'engine identity_to %q spawned [%s], not [%s]\n' "$1" "$spawned" "$2"
+  else
+    [ "$spawned" = "$3" ] || printf 'engine identity_to %q spawned [%s], not [%s]\n' "$1" "$spawned" "$3"
+  fi
+}
+FM_PROC_ROOT_OVERRIDE=$root
+export FM_PROC_ROOT_OVERRIDE
+check 900000101 '' 'cat od '
+check 900000102 '' 'cat od '
+check 900000103
+check 900000104
+FM_PROC_ROOT_OVERRIDE=$noproc
+for pid in 800000001 800000002 800000003 800000004 800000005 800000007 800000008 800000009; do
+  check "$pid" 'ps sed ' 'ps sed '
+done
+for pid in 800000006 800000010 800000011 800000012 '' abc; do
+  check "$pid"
+done
+unset FM_PROC_ROOT_OVERRIDE
+check "$$"
+SH
+  run_everywhere "engine identity" "$script" "$root" "$noproc" "$shim" "$log"
+  pass "_fm_engine_identity_to matches the printf | tr | sed pipeline it replaced and spawns nothing on the /proc path on Bash 4.2+"
+}
+
 test_path_age_helpers_match_stat_and_the_clock() {
   local script="$TMP_ROOT/path-age.sh" dir="$TMP_ROOT/path-age"
   mkdir -p "$dir/sub"
@@ -2130,6 +2223,7 @@ else
   test_classify_stat_helpers_read_the_kernel_name_once
   test_file_readers_match_cat_and_od
   test_proc_identity_matches_the_forked_reader
+  test_engine_identity_matches_the_pipeline_it_replaced
   test_path_age_helpers_match_stat_and_the_clock
   test_status_signature_reads_once_and_matches_the_forked_reader
   test_status_event_reads_match_the_tail_pipeline

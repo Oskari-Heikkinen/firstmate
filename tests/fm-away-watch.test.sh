@@ -74,7 +74,7 @@ start_sleeper() {
 
 engine_identity() {  # <pid>
   # shellcheck disable=SC2016 # expands in the child shell
-  FM_STATE_OVERRIDE="$TMP_ROOT" bash -c '. "$1/fm-wake-lib.sh" && . "$1/fm-supervision-engine-lib.sh" && _fm_engine_identity "$2"' \
+  FM_STATE_OVERRIDE="$TMP_ROOT" bash -c '. "$1/fm-wake-lib.sh" && . "$1/fm-supervision-engine-lib.sh" && _fm_engine_identity_to id "$2" && printf "%s\n" "$id"' \
     _ "$ROOT/bin" "$1"
 }
 

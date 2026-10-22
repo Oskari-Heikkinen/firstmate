@@ -249,13 +249,14 @@ fm_supervision_engine_bin() {
   printf '%s\n' "$bin"
 }
 
-# Print a process's identity (bin/fm-wake-lib.sh fm_pid_identity) on one
+# Assign a process's identity (bin/fm-wake-lib.sh fm_pid_identity_to) on one
 # line, the form the descendant ledger records and compares.
-_fm_engine_identity() {  # <pid>
-  local identity
-  identity=$(fm_pid_identity "$1" 2>/dev/null) || return 1
-  [ -n "$identity" ] || return 1
-  printf '%s\n' "$identity" | tr '\t\n' '  ' | sed 's/ *$//'
+_fm_engine_identity_to() {  # <output-variable> <pid>
+  local _fm_eit
+  fm_pid_identity_to _fm_eit "$2" 2>/dev/null || _fm_eit=
+  _fm_eit=${_fm_eit//[$'\t\n']/ }
+  printf -v "$1" '%s' "${_fm_eit%"${_fm_eit##*[! ]}"}"
+  [ -n "$_fm_eit" ]
 }
 
 # Print "<pid> <ppid>" for every process.
@@ -283,10 +284,9 @@ _fm_engine_snapshot_descendants() {
         }
       }
     }')
-  [ -n "$pids" ] || return 0
   fresh=
   for pid in $pids; do
-    identity=$(_fm_engine_identity "$pid") || continue
+    _fm_engine_identity_to identity "$pid" || continue
     fresh="$fresh$pid	$identity
 "
   done
@@ -307,9 +307,9 @@ _fm_engine_reap() {
   [ -s "$ledger" ] || return 0
   for signal in TERM KILL; do
     survivors=0
-    while IFS="$(printf '\t')" read -r pid identity; do
+    while IFS=$'\t' read -r pid identity; do
       fm_pid_alive "$pid" || continue
-      current=$(_fm_engine_identity "$pid") || continue
+      _fm_engine_identity_to current "$pid" || continue
       [ "$current" = "$identity" ] || continue
       kill "-$signal" "$pid" 2>/dev/null || true
       survivors=$((survivors + 1))
@@ -382,7 +382,7 @@ fm_supervision_engine_turn() {
     # be recycled here; its identity is refreshed until the subshell's exec
     # into the watchdog has settled.
     if [ -n "$pid_file" ]; then
-      identity=$(_fm_engine_identity "$watched" || true)
+      _fm_engine_identity_to identity "$watched" || true
       if [ -n "$identity" ] && [ "$identity" != "$recorded" ]; then
         printf '%s\t%s\n' "$watched" "$identity" > "$pid_file" 2>/dev/null || true
         recorded=$identity

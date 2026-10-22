@@ -236,12 +236,12 @@ newest_mtime() {  # <current> <file>...
 
 # 0 when a process of the host record's identity is live.
 host_live() {
-  local role pid identity
+  local role pid identity current
   [ -f "$STATE/.supervision-host" ] || return 1
   IFS=$'\t' read -r role pid identity < "$STATE/.supervision-host" 2>/dev/null || [ -n "${role:-}" ] || return 1
   [ "$role" = host ] && [ -n "$identity" ] || return 1
   fm_pid_alive "$pid" || return 1
-  [ "$(_fm_engine_identity "$pid" 2>/dev/null)" = "$identity" ]
+  _fm_engine_identity_to current "$pid" 2>/dev/null && [ "$current" = "$identity" ]
 }
 
 check_host() {

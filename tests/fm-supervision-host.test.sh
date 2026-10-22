@@ -2464,6 +2464,38 @@ SH
   pass "host: parked child-exit sampling uses ordinary half-second sleeps"
 }
 
+recorded_arm_identity_is() {  # <record> <identity>
+  [ "$(awk -F '\t' '$1 == "arm" { print $3 }' "$1")" = "$2" ]
+}
+
+test_parked_host_rerecords_its_arm_only_when_the_identity_differs() {
+  local home record arms settled host_line
+  home=$(make_home refresh attended)
+  record="$home/state/.supervision-host"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "refresh: no watcher started: $(cat "$home/host.out")"
+  arms=$(awk -F '\t' '$1 == "arm" { n++ } END { print n + 0 }' "$record")
+  [ "$arms" -eq 1 ] || fail "refresh: fixture error: expected one recorded arm: $(cat "$record")"
+  # The arm's first identity may have been read before its exec; the host's
+  # next refresh settles it.
+  sleep 2
+  settled=$(awk -F '\t' '$1 == "arm" { print $3 }' "$record")
+  [ -n "$settled" ] || fail "refresh: the arm was recorded with no identity: $(cat "$record")"
+  host_line=$(awk -F '\t' '$1 == "host"' "$record")
+  # A second link to the record's file shows whether the host replaced it.
+  ln "$record" "$home/record.pin" || fail "refresh: could not link the record"
+  sleep 3
+  [ "$record" -ef "$home/record.pin" ] || fail "the parked host rewrote its record while the arm's identity was unchanged"
+  recorded_arm_identity_is "$record" "$settled" || fail "the arm's unchanged identity changed in the record: $(cat "$record")"
+  { awk -F '\t' -v OFS='\t' '$1 == "arm" { $3 = "stale-identity" } { print }' "$record" > "$home/record.edit" \
+      && mv -f "$home/record.edit" "$record"; } || fail "refresh: could not edit the record"
+  wait_until 50 recorded_arm_identity_is "$record" "$settled" \
+    || fail "the parked host did not re-record its arm under its current identity: $(cat "$record")"
+  [ "$(awk -F '\t' '$1 == "host"' "$record")" = "$host_line" ] || fail "re-recording the arm changed the host's line: $(cat "$record")"
+  stop_home_processes "$home"
+  pass "host: a parked host re-records its arm when the recorded identity differs and leaves the record alone while it matches"
+}
+
 test_park_boundary_ends_the_park_before_the_hook_timeout() {
   local home token
   home=$(make_home boundary attended)
@@ -3102,6 +3134,7 @@ HOST_CASES=(
   test_claude_stop_hook_notifies_when_closed_successor_downtime_restore_fails
   test_claude_stop_hook_notifies_when_closed_announced_successor_downtime_restore_fails
   test_park_exit_probe_uses_half_second_child_sleeps
+  test_parked_host_rerecords_its_arm_only_when_the_identity_differs
   test_branch_outcomes_only_on_a_host_home_off_pi
   test_quiet_record_without_its_daemon_is_a_present_captain
   test_attended_main_only_close_passes_straight_to_main

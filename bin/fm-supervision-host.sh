@@ -287,7 +287,9 @@ log_line() {  # <text>
 }
 
 identity_of() {  # <pid>
-  _fm_engine_identity "$1" || true
+  local identity
+  _fm_engine_identity_to identity "$1" || return 0
+  printf '%s\n' "$identity"
 }
 
 # Record one process this host runs, so a successor host can stop exactly it.
@@ -297,13 +299,19 @@ record_process() {  # <role> <pid>
 
 # Re-record a process under its current identity. Safe only for this host's
 # own unreaped child, whose pid cannot be recycled: its first identity may have
-# been read between its fork and its exec.
+# been read between its fork and its exec. The await loop runs this every
+# second, so the identity and the record are read in the shell and only a
+# changed identity starts a process.
 refresh_process() {  # <pid>
-  local pid=$1 identity tmp
+  local pid=$1 identity tmp role='' recorded_pid='' recorded_identity='' stale=0
   [ -n "$pid" ] && [ -f "$HOST_RECORD" ] || return 0
-  identity=$(identity_of "$pid")
+  _fm_engine_identity_to identity "$pid" || true
   [ -n "$identity" ] || return 0
-  awk -F '\t' -v pid="$pid" -v id="$identity" '$2 == pid && $3 != id { found = 1 } END { exit !found }' "$HOST_RECORD" 2>/dev/null || return 0
+  while IFS=$'\t' read -r role recorded_pid recorded_identity || [ -n "$role" ]; do
+    [ "$recorded_pid" = "$pid" ] && [ "$recorded_identity" != "$identity" ] && stale=1
+    role=
+  done 2>/dev/null < "$HOST_RECORD"
+  [ "$stale" -eq 1 ] || return 0
   tmp=$(mktemp "$HOST_RECORD.tmp.XXXXXX" 2>/dev/null) || return 0
   awk -F '\t' -v OFS='\t' -v pid="$pid" -v id="$identity" '$2 == pid { $3 = id } { print }' "$HOST_RECORD" > "$tmp" 2>/dev/null \
     && mv -f "$tmp" "$HOST_RECORD" 2>/dev/null
