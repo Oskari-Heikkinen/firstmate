@@ -28,7 +28,7 @@ Add the line to that commit before you push it.
 
 Once the local checks pass, push the rebased head with `git push origin HEAD:refs/heads/ci/<task-id>`.
 If that plain push is refused because an earlier attempt left a head there that yours does not contain, delete your own CI branch with `git push origin --delete ci/<task-id>` and push again; never force it.
-Then append `paused [at=<epoch>]: waiting on ci/<task-id> checks for {sha} until <YYYY-MM-DDTHH:MMZ>` and wait for the CI workflow's run on that exact commit within the same bound as the Definition of done's post-landing wait: re-list with `gh run list --branch ci/<task-id> --commit <sha>` until it appears, then `gh run watch <run-id> --exit-status`.
+Then append `paused [at=<epoch>]: waiting on ci/<task-id> checks for {sha} until <YYYY-MM-DDTHH:MMZ>` and wait for the CI workflow's run on that exact commit within the same bound as the Definition of done's post-landing wait: re-list with `gh run list -R <owner>/<repo> --branch ci/<task-id> --commit <sha>`, naming the repository you pushed to, at most every 2 minutes until it appears, then `gh run watch <run-id> --exit-status --interval 120 -R <owner>/<repo>` (`tool-design` section 5 says why).
 A red run means fix, commit, and go back to landing-loop step 1; a lost push race that makes you rebase also means a new CI branch run.
 To stop at ready, or to refresh a ready branch, push to your task branch only a head whose CI branch run passed.
 

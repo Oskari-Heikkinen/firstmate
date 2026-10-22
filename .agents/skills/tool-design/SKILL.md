@@ -35,6 +35,10 @@ A tool's own brief or protocol wins on any conflict; record the deviation in its
 
 - Prefer a small script on top of existing Firstmate helpers over a new service, daemon, or dependency.
 - Do one job well and compose with other tools, rather than growing one tool to do everything.
+- A loop pays its per-tick work for every item on every tick in every home that runs it, so inside a supervision cycle, park tick or check, answer what one `stat` or file read answers in the shell rather than with a `$(...)`, pipeline or helper call per item: the `_to` out-variable readers such as `fm_meta_get_to` and `fm_file_text_to`, and `bin/fm-path-lib.sh` for `dirname` and `basename`.
+- Prove each such replacement matches the command it replaces in `tests/fm-fork-free-helpers.test.sh`.
+- Poll an outside service from one loop per thing waited on, at an interval its shared limits allow, and name the target on every call rather than relying on a default.
+- For GitHub that means `-R <owner>/<repo>` on every `gh` call, because a copy can carry more than one GitHub remote, and polls at least 2 minutes apart, because every `gh` call made with the same account draws on one API rate limit and `gh run watch` refreshes every 3 seconds unless given `--interval`.
 
 ## 6. A log anyone can read
 
