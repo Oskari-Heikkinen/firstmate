@@ -215,11 +215,8 @@ emit() {  # <state> <source> [detail]
 
 [ -f "$META" ] || emit unknown none "no metadata for $ID"
 
-meta_value() {  # <key>
-  grep "^$1=" "$META" 2>/dev/null | tail -1 | cut -d= -f2- || true
-}
-
-case "$(meta_value copy_state)" in
+fm_meta_get_to COPY_STATE "$META" copy_state
+case "$COPY_STATE" in
   ''|retained) ;;
   released)
     # shellcheck source=bin/fm-suspend-lib.sh
@@ -230,10 +227,10 @@ case "$(meta_value copy_state)" in
     emit blocked park 'saved branch/bundle custody does not validate' ;;
   *) emit blocked park 'copy release/restore transaction needs reconciliation' ;;
 esac
-WT=$(meta_value worktree)
-KIND=$(meta_value kind)
-HARNESS=$(meta_value harness)
-REMOTE_HOST=$(meta_value remote_host)
+fm_meta_get_to WT "$META" worktree
+fm_meta_get_to KIND "$META" kind
+fm_meta_get_to HARNESS "$META" harness
+fm_meta_get_to REMOTE_HOST "$META" remote_host
 [ -n "$KIND" ] || KIND=ship
 
 # A torn-down (or never-created) worktree has no current state to read. A
@@ -256,9 +253,11 @@ fi
 # whether the head has landed - it is on origin's default branch - or is only
 # ready on its task branch, read from git rather than the worker's note.
 emit_ship_status_done() {  # [extra-detail]
-  local extra=${1:-} reason landed_on head
-  if reason=$(fm_dod_accept_ship_done "$KIND" "$(meta_value mode)" "$WT" "$(meta_value project)" "$LOG_LINE" "$STATE" "$ID" "$META"); then
-    if [ "$KIND" = ship ] && [ "$(meta_value mode)" = direct-push ]; then
+  local extra=${1:-} reason landed_on head mode project
+  fm_meta_get_to mode "$META" mode
+  fm_meta_get_to project "$META" project
+  if reason=$(fm_dod_accept_ship_done "$KIND" "$mode" "$WT" "$project" "$LOG_LINE" "$STATE" "$ID" "$META"); then
+    if [ "$KIND" = ship ] && [ "$mode" = direct-push ]; then
       head=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null || true)
       if landed_on=$(fm_dod_head_on_origin_default "$WT" "$head"); then
         extra="${extra:+$extra${SEP}}landed on $landed_on"
@@ -287,7 +286,7 @@ map_log_state() {  # <line>
 }
 
 LOG_LINE=$(status_current_line "$LOG" "$KIND")
-LOG_VERB=$(status_line_verb "$LOG_LINE")
+status_line_verb "$LOG_LINE" LOG_VERB
 
 # --- remote secondmate: the true source is the remote endpoint ---------------
 # A remote mate's recorded worktree and backend target live on its own host, so
@@ -334,8 +333,8 @@ fi
 # state (e.g. done) instead of being masked as unknown. Backend-aware
 # (fm_backend_of_meta defaults absent backend= to tmux, the P1 contract): a
 # herdr task is read through fm_backend_capture instead of a bare tmux probe.
-TASK_BACKEND=$(fm_backend_of_meta "$META")
-BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
+fm_backend_of_meta_to TASK_BACKEND "$META"
+fm_backend_target_of_meta_to BACKEND_TARGET "$META" || true
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in
@@ -343,7 +342,7 @@ pane_readable() {  # <target>
     *) fm_backend_capture "$TASK_BACKEND" "$1" 1 "$EXPECTED_LABEL" >/dev/null 2>&1 ;;
   esac
 }
-# crew_busy_verdict: the crew's semantic busy state from the one contract
+# crew_busy_verdict_to: the crew's semantic busy state from the one contract
 # owner (bin/fm-busy-lib.sh), as "<busy|idle|unknown> <source>". A converted
 # adapter answers from its own lifecycle record; Grok answers from its
 # isolated rendered-tail fallback; a herdr crew's native `busy` is accepted
@@ -355,10 +354,11 @@ pane_readable() {  # <target>
 # recognized interactive prompt would report `working` here while the
 # watcher's own poll (which always captures a tail) already classifies it
 # unknown - the exact split issue #1792 describes for a different cause.
-crew_busy_verdict() {  # <target>
+crew_busy_verdict_to() {  # <output-variable> <target>
   local tail40
-  tail40=$(fm_backend_capture "$TASK_BACKEND" "$1" 40 "$EXPECTED_LABEL" 2>/dev/null) || tail40=''
-  fm_busy_classify "$TASK_BACKEND" "$1" "$HARNESS" "$ID" "$STATE" "$tail40"
+  tail40=$(fm_backend_capture "$TASK_BACKEND" "$2" 40 "$EXPECTED_LABEL" 2>/dev/null) || tail40=''
+  # shellcheck disable=SC2153  # HARNESS is assigned by fm_meta_get_to above.
+  fm_busy_classify_to "$1" "$TASK_BACKEND" "$2" "$HARNESS" "$ID" "$STATE" "$tail40"
 }
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
@@ -985,9 +985,15 @@ SELECTED_RUN_ID=""
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
-  if [ "$(strip_quotes "$(printf '%s\n' "$RUN_OUT" | sed -n 's/^error: //p')")" = "repo not initialized (run 'no-mistakes init' first)" ]; then
-    RUN_OUT=""
-  fi
+  # Only output with a line that starts with "error: " can be the
+  # uninitialized-repo answer, so any other output skips the pipeline.
+  case "$RUN_OUT" in
+    'error: '*|*$'\n''error: '*)
+      if [ "$(strip_quotes "$(printf '%s\n' "$RUN_OUT" | sed -n 's/^error: //p')")" = "repo not initialized (run 'no-mistakes init' first)" ]; then
+        RUN_OUT=""
+      fi
+      ;;
+  esac
   if [ -n "$RUN_OUT" ]; then
     # The overview includes run ids and creation order, which the plain runs
     # listing omits. Keep the primary empty-call bound above: a nonresponding
@@ -1346,7 +1352,7 @@ fi
 # verdict permits the status-log fallback below. Missing, malformed, stale, or
 # unverified semantic state remains unknown.
 if [ "$KIND" != secondmate ]; then
-  BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
+  crew_busy_verdict_to BUSY_VERDICT "$BACKEND_TARGET"
   case "${BUSY_VERDICT%% *}" in
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
     idle) ;;

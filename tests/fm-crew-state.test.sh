@@ -2619,7 +2619,7 @@ test_no_run_busy_pane() {
 # whenever THIS script reports `state: working · source: pane`, so if this
 # authoritative read still said working, the watcher would silently swallow
 # the wake even though bin/fm-busy-lib.sh's own classifier had already flipped
-# to unknown launch-prompt. crew_busy_verdict must therefore capture a real
+# to unknown launch-prompt. crew_busy_verdict_to must therefore capture a real
 # tail for every harness, not only grok, so the backstop's own tail-based
 # check ever runs here at all.
 test_no_run_launch_prompt_parked_is_not_working() {
