@@ -227,6 +227,32 @@ _fm_pid_identity_ps() {  # <pid>
   printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
 }
 
+# fm_pid_pgid_to <output-variable> <pid>
+# Assigns what `$(ps -o pgid= -p <pid> 2>/dev/null | tr -d '[:space:]')` would:
+# the process group of <pid>, or an empty value when there is no such process.
+# Linux ps reads the group from /proc/<pid>/stat, so on Linux this reads the
+# same field without forking, and the watcher can check the group of every pane
+# read it starts. Elsewhere, and when that entry cannot be read, it runs ps.
+fm_pid_pgid_to() {
+  local _fm_pg_stat _fm_pg_pgid=''
+  local -a _fm_pg_fields
+  case "$2" in
+    ''|0*|*[!0-9]*) ;;
+    *)
+      if [ "$_FM_UNAME" = Linux ] && fm_file_text_to _fm_pg_stat "/proc/$2/stat"; then
+        # After the final comm delimiter, array index 2 is proc stat field 5.
+        read -r -a _fm_pg_fields <<< "${_fm_pg_stat##*)}"
+        _fm_pg_pgid=${_fm_pg_fields[2]:-}
+        case "$_fm_pg_pgid" in
+          *[!0-9]*) _fm_pg_pgid='' ;;
+        esac
+      fi
+      ;;
+  esac
+  [ -n "$_fm_pg_pgid" ] || _fm_pg_pgid=$(ps -o pgid= -p "$2" 2>/dev/null | tr -d '[:space:]')
+  printf -v "$1" '%s' "$_fm_pg_pgid"
+}
+
 fm_path_mtime() {
   if [ "$_FM_UNAME" = Darwin ]; then
     /usr/bin/stat -f %m "$1" 2>/dev/null

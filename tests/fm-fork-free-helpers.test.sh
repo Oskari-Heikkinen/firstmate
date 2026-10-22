@@ -1355,6 +1355,155 @@ SH
   pass "fm_task_inbox_due_action_to and fm_task_inbox_oldest_unhandled_to match what they replaced and start no process on a quiet inbox"
 }
 
+test_watcher_capture_matches_what_it_replaced() {
+  local script="$TMP_ROOT/capture.sh" dir="$TMP_ROOT/capture" count_shim="$TMP_ROOT/capture-count"
+  local count_log="$TMP_ROOT/capture-count.log" tool path
+  mkdir -p "$dir/state" "$count_shim"
+  for tool in mktemp rm cat ps tr; do
+    path=$(command -v "$tool") || continue
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$count_log" "$path" > "$count_shim/$tool"
+    chmod +x "$count_shim/$tool"
+  done
+  # A command whose name holds the stat line's delimiters, run as argv[0] sleep
+  # so a multi-call sleep still knows what to run.
+  ln -s "$(command -v sleep)" "$dir/a) (b c"
+  cat > "$script" <<'SH'
+# The watcher's source guard returns before its loop, leaving every helper below.
+. "$1/bin/fm-watch.sh"
+dir=$2 count_shim=$3 count_log=$4
+STATE=$dir/state
+# The replaced process-group read and watcher_capture.
+reference_pgid() {  # <pid>
+  ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
+}
+reference_capture() {  # <backend> <target> <lines> [expected-label]
+  local rc pgid
+  fm_capture_output_cleanup
+  WATCHER_CAPTURE=
+  FM_CAPTURE_OUTPUT=$(mktemp "$STATE/.fm-capture-output.XXXXXX") || return 1
+  FM_CHECK_SIGNAL_PENDING=
+  trap 'FM_CHECK_SIGNAL_PENDING=1' HUP INT TERM
+  set -m
+  { fm_backend_capture "$@" < /dev/null > "$FM_CAPTURE_OUTPUT" & } 2>/dev/null
+  FM_ACTIVE_CHECK_PID=$!
+  FM_ACTIVE_CHECK_PGID=$FM_ACTIVE_CHECK_PID
+  set +m
+  watcher_stop_signals
+  [ -z "$FM_CHECK_SIGNAL_PENDING" ] || exit 1
+  pgid=$(ps -o pgid= -p "$FM_ACTIVE_CHECK_PID" 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$pgid" ] && [ "$pgid" != "$FM_ACTIVE_CHECK_PGID" ]; then
+    fm_active_check_stop || true
+    fm_capture_output_cleanup
+    return 1
+  fi
+  wait "$FM_ACTIVE_CHECK_PID"
+  rc=$?
+  FM_ACTIVE_CHECK_PID=
+  fm_active_check_stop || { fm_capture_output_cleanup; return 1; }
+  WATCHER_CAPTURE=$(cat "$FM_CAPTURE_OUTPUT" 2>/dev/null || true)
+  fm_capture_output_cleanup
+  return "$rc"
+}
+# The pane read each capture runs, chosen by CAPTURE_CASE.
+fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
+  local i=1
+  case "$CAPTURE_CASE" in
+    text) printf 'first line\n  indented line  \n\n\n' ;;
+    empty) ;;
+    failed) printf 'partial\n'; return 3 ;;
+    prompt) printf 'prompt> ' ;;
+    long)
+      while [ "$i" -le 100 ]; do
+        printf 'pane line %03d with $ %% \\ and a run of trailing spaces          \n' "$i"
+        i=$((i + 1))
+      done
+      ;;
+    bytes) printf 'caf\303\251 \377\376\001\n\n' ;;
+    nul) printf 'before\000after\n' ;;
+    vanished) rm -f "$FM_CAPTURE_OUTPUT"; printf 'gone\n' ;;
+    args) printf '[%s]' "$@" ;;
+    slow) sleep 0.3; printf 'late\n' ;;
+  esac
+}
+captures_left() {  # the capture files left in the state directory
+  local f out=''
+  for f in "$STATE"/.fm-capture-output.*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    out="$out ${f##*/}"
+  done
+  printf '%s' "$out"
+}
+# The replaced read printed bash's null-byte warning, the accepted difference,
+# so only its value and status are compared.
+for CAPTURE_CASE in text empty failed prompt long bytes nul vanished args slow; do
+  reference_capture herdr sess:fm-a 40 fm-a 2>/dev/null; want_rc=$?
+  want=$WATCHER_CAPTURE
+  WATCHER_CAPTURE=unset
+  watcher_capture herdr sess:fm-a 40 fm-a; got_rc=$?
+  [ "$WATCHER_CAPTURE/$got_rc" = "$want/$want_rc" ] || printf '%s: capture %q (status %s), replaced %q (status %s)\n' "$CAPTURE_CASE" "$WATCHER_CAPTURE" "$got_rc" "$want" "$want_rc"
+  left=$(captures_left)
+  [ -z "$FM_CAPTURE_OUTPUT" ] && [ -z "$left" ] || printf '%s: capture left [%s] (%s)\n' "$CAPTURE_CASE" "$left" "$FM_CAPTURE_OUTPUT"
+done
+pgid_check() {  # <label> <pid>
+  local want got
+  want=$(reference_pgid "$2")
+  got=unset
+  fm_pid_pgid_to got "$2"
+  [ "$got" = "$want" ] || printf 'pgid %s %q: helper %q, ps %q\n' "$1" "$2" "$got" "$want"
+}
+# The sleeps end on their own, and the braces hold bash 3.2's setpgid race
+# message as watcher_capture does.
+set -m
+{ sleep 5 > /dev/null 2>&1 & } 2>/dev/null
+own=$!
+{ (exec -a sleep "$dir/a) (b c" 5) > /dev/null 2>&1 & } 2>/dev/null
+odd=$!
+set +m
+sleep 5 > /dev/null 2>&1 &
+shared=$!
+sleep 0 > /dev/null 2>&1 &
+gone=$!
+wait "$gone"
+pgid_check self "$$"
+pgid_check own-group "$own"
+pgid_check odd-name "$odd"
+pgid_check shared-group "$shared"
+pgid_check gone "$gone"
+for p in '' abc 12a 0 0123 -1 '1 2'; do
+  pgid_check invalid "$p"
+done
+# Run <command> with every tool it starts through PATH, and every command one
+# of its subshells runs, logged: TOOLS lists the tools, SUBSHELLS counts the
+# subshell commands.
+counted() {  # <command> [args...]
+  : > "$count_log"
+  : > "$count_log.sub"
+  (
+    PATH="$count_shim:$PATH"
+    __spawn_level=$BASH_SUBSHELL
+    set -T
+    trap '[ "$BASH_SUBSHELL" -le "$__spawn_level" ] || printf "%s\n" "$BASH_COMMAND" >> "$count_log.sub"' DEBUG
+    "$@"
+  ) > /dev/null 2>&1
+  TOOLS=$(sort "$count_log" | tr '\n' ' ')
+  SUBSHELLS=$(grep -c . "$count_log.sub" || true)
+}
+# On Linux with Bash 4.2 and later the group and the text are read in the
+# shell, so a capture starts mktemp and rm and nothing else besides its pane
+# read, whose own commands run in the capture's subshell.
+if [ "$_FM_UNAME" = Linux ] && { [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; }; then
+  counted fm_pid_pgid_to got "$own"
+  [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'fm_pid_pgid_to ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+  CAPTURE_CASE=slow
+  counted watcher_capture herdr sess:fm-a 40 fm-a
+  [ "$TOOLS" = 'mktemp rm ' ] || printf 'watcher_capture ran [%s], not [mktemp rm ]\n' "$TOOLS"
+fi
+exit 0
+SH
+  run_everywhere "watcher capture" "$script" "$dir" "$count_shim" "$count_log"
+  pass "watcher_capture and fm_pid_pgid_to match what they replaced, and a capture runs no ps, tr or cat"
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -1371,4 +1520,5 @@ else
   test_status_event_reads_match_the_tail_pipeline
   test_watcher_poll_helpers_match_what_they_replaced
   test_inbox_due_action_matches_what_it_replaced
+  test_watcher_capture_matches_what_it_replaced
 fi

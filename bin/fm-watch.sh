@@ -2812,7 +2812,9 @@ fm_capture_output_cleanup() {
 # watcher_capture: fm_backend_capture into WATCHER_CAPTURE with its exit status.
 # The read runs as a waited background process group rather than inside $(...),
 # so a stop is not held for a blocked read (watcher_stop_signals). The group is
-# recorded like a check's, so watcher_cleanup stops a read still in flight.
+# recorded like a check's, so watcher_cleanup stops a read still in flight. Its
+# process group and the captured text are read in the shell where it can
+# (fm_pid_pgid_to, fm_file_text_to), since every window's poll runs a capture.
 watcher_capture() {  # <backend> <target> <lines> [expected-label]
   local rc pgid
   fm_capture_output_cleanup
@@ -2830,7 +2832,7 @@ watcher_capture() {  # <backend> <target> <lines> [expected-label]
   set +m
   watcher_stop_signals
   [ -z "$FM_CHECK_SIGNAL_PENDING" ] || exit 1
-  pgid=$(ps -o pgid= -p "$FM_ACTIVE_CHECK_PID" 2>/dev/null | tr -d '[:space:]')
+  fm_pid_pgid_to pgid "$FM_ACTIVE_CHECK_PID"
   if [ -n "$pgid" ] && [ "$pgid" != "$FM_ACTIVE_CHECK_PGID" ]; then
     fm_active_check_stop || true
     fm_capture_output_cleanup
@@ -2840,7 +2842,7 @@ watcher_capture() {  # <backend> <target> <lines> [expected-label]
   rc=$?
   FM_ACTIVE_CHECK_PID=
   fm_active_check_stop || { fm_capture_output_cleanup; return 1; }
-  WATCHER_CAPTURE=$(cat "$FM_CAPTURE_OUTPUT" 2>/dev/null || true)
+  fm_file_text_to WATCHER_CAPTURE "$FM_CAPTURE_OUTPUT" || true
   fm_capture_output_cleanup
   return "$rc"
 }
