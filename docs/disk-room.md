@@ -25,6 +25,12 @@ Free space scattered in holes smaller than 1 MiB between live data (from `/proc/
 ext4's own metadata (inode tables, journal, bitmaps; the root block device's size minus the `df` total) sits in the slack too, because `df` counts it neither as used nor in its total, and no compaction returns it either.
 The rest of the slack is free space Linux holds no data in that the BAT may still mark present, so it is not reclaimable until a discard covers each whole block.
 
+A line `after a trim: about N GiB more` estimates that last part, read-only: the 1 MiB blocks the BAT holds present although ext4's free-space buddies (`mb_groups`) cover each of them whole.
+The reclaim-now step trims the distro root just before it shuts WSL down, which unmaps those blocks so its compaction can drop them too.
+The figure is per ext4 block group, counting the whole free blocks less those the BAT already holds absent in that group, so it is a lower bound; it assumes ext4 fills the virtual disk from its first byte with standard 128 MiB groups, as WSL's root does.
+It is informational only: it never adds to "reclaimable by compaction", the advice or the alerts, because the startup task does not trim, a trim can fail, and ext4 skips block groups an earlier trim in the same boot already covered even when online discard has left blocks present there since.
+`status --json` gives it as `trim_reclaimable`, null when `mb_groups` or the BAT cannot be read.
+
 The margin is the room that must remain after a job's expected write, 20 GiB by default.
 A home sets it durably in `config/disk-room-margin`, and `FM_DISK_ROOM_MARGIN` overrides that for one run; [`configuration.md`](configuration.md#disk-room-margin-configdisk-room-margin) owns the format, precedence, and inheritance.
 Sizes are binary (G = GiB), matching what Windows Explorer shows as GB.
@@ -132,7 +138,8 @@ The install:
 - records the shadow storage once right away.
 
 The distro root is mounted with online `discard`, so most blocks Linux frees are unmapped for compaction as they are freed.
-A 1 MiB block freed in pieces at different times can still stay present, because no single discard covered all of it; reclaim-now does not run a trim, so such blocks stay out of both the reclaimable figure and the result.
+A 1 MiB block freed in pieces at different times can still stay present, because no single discard covered all of it.
+The reclaim-now step trims first, so it returns such blocks too; the startup task runs before the distro starts and does not trim, so it returns only what the reclaimable figure counts.
 
 While the startup task is enabled, a WSL or Docker start during the few minutes of startup compaction fails with the file in use and can simply be retried.
 Each compaction run appends to `C:\ProgramData\firstmate\wsl-compact.log` and rewrites `wsl-compact-last.txt`, which `fm-disk-room.sh status` shows as `last compaction:`.
@@ -158,7 +165,8 @@ When the monitor says a compaction would help and the startup task is disabled o
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\firstmate\fm-wsl-reclaim.ps1 -Now
 ```
 
-It runs `wsl --shutdown`, compacts every recorded file, prints the before and after sizes, and starts the distro again (`-NoRestart` leaves it stopped).
+It runs `fstrim -v /` as root inside the distro (bounded to 10 minutes), then `wsl --shutdown`, compacts every recorded file, prints the before and after sizes, and starts the distro again (`-NoRestart` leaves it stopped).
+A failed or unavailable trim does not stop the compaction; `wsl-compact-last.txt` records it as `trim=ok`, `failed`, or `not-run` with a one-line `trim_detail`, and `last compaction:` ends with the trim result.
 Because it shuts WSL down, any `.wslconfig` change waiting for a restart takes effect in the same step, and the script prints the memory line now in effect.
 
 ### Uninstall
@@ -174,7 +182,7 @@ The consumer's declaration and acceptance stay as [`helper-consumers.md`](helper
 
 Interface v1 is every command, every exit code, and every `status --json` field with its unit, as listed under "Interface v1" in `bin/fm-disk-room.sh`'s header:
 
-- `status --json` prints one JSON object on one line, every size in bytes, with integer, integer-or-null, boolean, and string fields named there; `reclaimable` is the block-table figure described above, null when the block table cannot be read.
+- `status --json` prints one JSON object on one line, every size in bytes, with integer, integer-or-null, boolean, and string fields named there; `reclaimable` is the block-table figure described above, null when the block table cannot be read, and `trim_reclaimable` is the after-a-trim estimate, never part of `reclaimable`.
 - `check` exits 0, 1, or 2 with a line starting `ok: `, `low: `, or `cannot measure disk room: `.
 - `run` returns the admitted command's own status, or 75 with a line starting `fm-disk-room: refused NAME: `.
 - `reserve-bulk` prints only the admitted root, or exits 75 with a `wait:` line naming a reason.

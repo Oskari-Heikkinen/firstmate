@@ -14,9 +14,13 @@ Modes (run from an elevated Windows PowerShell except -Plan):
               SYSTEM write, Users read), record the disk files, register the
               "Firstmate WSL compact at startup" task (SYSTEM, at boot).
               Run it while the distro is running.
-  -Now        wsl --shutdown, compact every recorded disk file, print
+  -Now        fstrim / in the distro (as root, at most 10 minutes), then
+              wsl --shutdown, compact every recorded disk file, print
               before/after, and start the distro again (-NoRestart leaves it
-              stopped). Stops every WSL process.
+              stopped). Stops every WSL process. The trim unmaps free 1 MiB
+              blocks online discard left in the disk file so the compaction
+              can drop them; a failed or unavailable trim is recorded and the
+              compaction runs anyway.
   -Startup    what the task runs at boot: compact every recorded disk file
               that nothing holds open; skips a file in use.
   -Uninstall  remove the task and the ProgramData script, file list and
@@ -27,7 +31,8 @@ docker_data.vhdx out of -Install's file list), -NoRestart (with -Now).
 
 Output: C:\ProgramData\firstmate\wsl-compact.log (appended) and
 wsl-compact-last.txt (key=value: finished, mode, result, reclaimed_bytes,
-c_free_bytes, then one file=<path>|<before>|<after>|<status> line per disk).
+c_free_bytes, trim (ok, failed or not-run) and trim_detail (one line), then
+one file=<path>|<before>|<after>|<status> line per disk).
 -Install, -Now and -Startup also rewrite shadow-storage.txt (key=value:
 recorded, recorded_epoch, volume, max_bytes, used_bytes, allocated_bytes) with
 the restore-point shadow storage held on the system drive, read from
@@ -146,7 +151,39 @@ function Invoke-Compact([string]$path) {
   return 'ok'
 }
 
-function Invoke-CompactAll([string]$mode) {
+# Format-TrimResult: the trim and trim_detail lines for wsl-compact-last.txt
+# from Invoke-Wsl's "exit N: output" text; '' means no trim was attempted.
+function Format-TrimResult([string]$Text) {
+  if (-not $Text) { return @('trim=not-run', 'trim_detail=no trim in this mode') }
+  $state = if ($Text -match '^exit 0(:|$)') { 'ok' } else { 'failed' }
+  @("trim=$state", "trim_detail=$(($Text -replace '\s+', ' ').Trim())")
+}
+
+# Invoke-Trim: fstrim / in the distro before it is shut down, so free 1 MiB
+# blocks online discard never unmapped become compactable. Returns Invoke-Wsl's
+# "exit N: output" form, never throws, and gives up on wsl.exe after 11
+# minutes (fstrim itself is bounded to 10), so a hung trim or distro start
+# never holds up the shutdown and compaction that follow.
+function Invoke-Trim([string]$name) {
+  $out = [IO.Path]::GetTempFileName(); $err = [IO.Path]::GetTempFileName()
+  try {
+    $p = Start-Process -FilePath 'wsl.exe' -ArgumentList @('-d', "`"$name`"", '-u', 'root', '--', 'timeout', '600', 'fstrim', '-v', '/') `
+      -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    $null = $p.Handle  # keeps ExitCode readable after WaitForExit
+    if (-not $p.WaitForExit(660000)) {
+      try { $p.Kill() } catch { }
+      return 'exit -1: wsl.exe did not finish within 11 minutes'
+    }
+    $text = ((Get-Content $out, $err -ErrorAction SilentlyContinue) | ForEach-Object { "$_" -replace "`0", '' }) -join "`n"
+    "exit $($p.ExitCode)$(if ($text) { ": $text" })"
+  } catch {
+    "exit -1: $($_.Exception.Message)"
+  } finally {
+    Remove-Item $out, $err -ErrorAction SilentlyContinue
+  }
+}
+
+function Invoke-CompactAll([string]$mode, [string]$trim = '') {
   $rows = @(); $total = 0; $result = 'ok'
   foreach ($f in Get-DiskFiles) {
     $before = if (Test-Path $f) { (Get-Item $f).Length } else { 0 }
@@ -165,7 +202,7 @@ function Invoke-CompactAll([string]$mode) {
     "result=$result",
     "reclaimed_bytes=$total",
     "c_free_bytes=$(Get-CFree)"
-  ) + $rows
+  ) + (Format-TrimResult $trim) + $rows
   if (Test-Path $Dir) { Set-Content -Path $Last -Encoding ASCII -Value $lines }
   Write-Log ("reclaimed {0:N1} GiB; C: free {1:N1} GiB" -f ($total / 1GB), ((Get-CFree) / 1GB))
 }
@@ -251,11 +288,14 @@ switch ($PSCmdlet.ParameterSetName) {
     Require-Admin
     $info = Get-DistroInfo $Distro
     New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+    Write-Log "fstrim / in $($info.Name)"
+    $trim = Invoke-Trim $info.Name
+    Write-Log "fstrim: $trim"
     Write-Log 'wsl --shutdown'
     & wsl.exe --shutdown
     $deadline = (Get-Date).AddMinutes(3)
     while ((Get-Date) -lt $deadline -and -not (Test-Free $info.Vhdx)) { Start-Sleep -Seconds 2 }
-    Invoke-CompactAll 'now'
+    Invoke-CompactAll 'now' $trim
     Save-ShadowRecord
     $cfg = Join-Path $env:USERPROFILE '.wslconfig'
     if (Test-Path $cfg) { Write-Log ".wslconfig now in effect: $((Select-String -Path $cfg -Pattern '^\s*memory\s*=' | Select-Object -First 1).Line)" }

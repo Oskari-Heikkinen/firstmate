@@ -96,7 +96,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-dated-rules.sh`      | Watcher slow check that raises a home's dated-rule alarms in its alert stores, and the date lookup code uses instead of a dated constant (docs/dated-rule-schedule.md) |
 | `fm-dated-rules.py`      | Store, registration and lookup logic behind fm-dated-rules.sh |
 | `fm_dated_rules.py`      | Dated-rule schedule rules shared by the validator and the reader: chain resolution, alarms, fragment links and the importable lookup |
-| `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now, or uninstall (docs/disk-room.md) |
+| `fm-wsl-reclaim.ps1`     | Windows-side, administrator-run: install the compact-at-startup task, reclaim now (trim, then compact), or uninstall (docs/disk-room.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home, maintain `data/secondmates.md`, and refresh a seeded charter from the current template |
 | `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host              |

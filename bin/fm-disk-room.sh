@@ -21,8 +21,8 @@
 #   fm-disk-room.sh status [--json]
 #       Print host free, Linux free, reservations, the shadow storage
 #       reservation and any cycling warning, the swap file's growth
-#       reservation, real room, the disk file's slack and what compaction
-#       can reclaim, the last compaction result, and
+#       reservation, real room, the disk file's slack, what compaction
+#       can reclaim and what a trim would add, the last compaction result, and
 #       the external SSD's room with the active fetched-results root (read
 #       from the results-root file bin/fm-storage.sh publishes).
 #   fm-disk-room.sh check --expect-write SIZE [--exclude NAME]
@@ -83,8 +83,11 @@
 #         integer or null (unknown): host_free, vhdx_size, fragmented_free,
 #           fs_overhead, slack, reclaimable, ssd_free, ssd_total, shadow_max,
 #           shadow_used, shadow_allocated, shadow_events (an event count),
-#           swap_size, swap_file_size; reclaimable is the disk file block
-#           table's figure, null when the block table cannot be read
+#           swap_size, swap_file_size, trim_reclaimable; reclaimable is the
+#           disk file block table's figure, null when the block table cannot
+#           be read; trim_reclaimable is what a trim would add on top of it
+#           (ext4's wholly free 1 MiB blocks the table still holds), null
+#           when unknown, and never part of reclaimable
 #         boolean: low (room is under margin)
 #         strings: host (Windows drive mount, "" when Linux-only), vhdx (disk
 #           file path or ""), results_active (ssd, c or ""), results_state,
@@ -197,12 +200,12 @@ SHADOW_EVENTS_CACHE_SECS=3600
 SHADOW_LIVE_CACHE_SECS=300
 BAT_CACHE_SECS=300
 # sha256 of bin/fm-vhdx-bat.py; only a reader with exactly these bytes runs.
-VHDX_BAT_SHA256=241abc28b3cf943a251e8441a550d776eb187490225692fcb75e460a505c347a
+VHDX_BAT_SHA256=bc4917f5d8a697c8916671307d6d909219fe16fd45574bb89718ecd92fe69c03
 INTERFACE=v1
 INTERFACE_V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int swap_reserved:int room:int
   host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
   ssd_free:opt ssd_total:opt shadow_max:opt shadow_used:opt shadow_allocated:opt shadow_events:opt
-  swap_size:opt swap_file_size:opt
+  swap_size:opt swap_file_size:opt trim_reclaimable:opt
   low:bool host:str vhdx:str results_active:str results_state:str shadow_source:str shadow_reading:str swap_source:str'
 
 die() { printf 'fm-disk-room: %s\n' "$*" >&2; exit 2; }
@@ -313,33 +316,42 @@ fragmented_free() {
     END { if (!seen) exit 1; printf "%.0f\n", s * bs }'
 }
 
-# bat_reclaim FILE SIZE -> bytes a compaction of FILE can give back, from its
-# block table (bin/fm-vhdx-bat.py), or fails when that cannot be read. Cached
-# for 5 minutes per file and size, failures included, because it reads
+# bat_reclaim FILE SIZE [FS_BLOCK_SIZE] -> "RECLAIM TRIM": bytes a compaction
+# of FILE can give back, from its block table (bin/fm-vhdx-bat.py), and bytes
+# a trim would add (ext4 free 1 MiB blocks the table still holds, joined with
+# mb_groups; "-" when unknown). Fails when the block table cannot be read.
+# Cached for 5 minutes per file and size, failures included, because it reads
 # megabytes through the Windows drive. The reader runs from the bytes that
 # were hashed, and only when they match VHDX_BAT_SHA256, so a pin on this
 # script covers it.
 bat_reclaim() {
-  local cache t when='' size='' r='' path='' out text
+  local cache t when='' size='' r='' trim='' path='' out text mb=()
   cache="$(state_dir)/vhdx-bat"
   t=$(now)
-  [ -r "$cache" ] && read -r when size r path <"$cache"
+  [ -r "$cache" ] && read -r when size r trim path <"$cache"
+  case "$trim" in -) ;; ''|*[!0-9]*|???????????????????*) when='' ;; esac
   case "$when" in
     ''|*[!0-9]*) when='' ;;
     *) { [ "$path" = "$1" ] && [ "$size" = "$2" ] && [ "$t" -ge "$when" ] && [ $(( t - when )) -lt "$BAT_CACHE_SECS" ]; } || when='' ;;
   esac
   if [ -z "$when" ]; then
-    r=-
+    r=-; trim=-
+    if [ -n "${3:-}" ] && out=$(mb_groups_path) && [ -r "$out" ]; then mb=("$out" "$3"); fi
     text=$(cat -- "$SCRIPT_DIR/fm-vhdx-bat.py" 2>/dev/null && printf x) && text=${text%x}
+    # A failed run with mb_groups is retried without it, so the informational
+    # trim figure can never cost the reclaimable one.
     if [ -n "$text" ] && [ "$(printf '%s' "$text" | sha256sum | cut -d' ' -f1)" = "$VHDX_BAT_SHA256" ] &&
-      out=$(timeout 60 python3 -I -c "$text" "$1" 2>/dev/null); then
+      { out=$(timeout 60 python3 -I -c "$text" "$1" "${mb[@]}" 2>/dev/null) ||
+        { [ "${#mb[@]}" -gt 0 ] && out=$(timeout 60 python3 -I -c "$text" "$1" 2>/dev/null); }; }; then
       r=$(printf '%s\n' "$out" | sed -n 's/^reclaimable=\([0-9]*\) .*/\1/p')
+      trim=$(printf '%s\n' "$out" | sed -n 's/.* trim_more=\([0-9]*\)$/\1/p')
     fi
     case "$r" in ''|*[!0-9]*|???????????????????*) r=- ;; esac
-    mkdir -p "$(state_dir)" 2>/dev/null && printf '%s %s %s %s\n' "$t" "$2" "$r" "$1" >"$cache" 2>/dev/null
+    case "$trim" in ''|*[!0-9]*|???????????????????*) trim=- ;; esac
+    mkdir -p "$(state_dir)" 2>/dev/null && printf '%s %s %s %s %s\n' "$t" "$2" "$r" "$trim" "$1" >"$cache" 2>/dev/null
   fi
   case "$r" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s\n' "$r"
+  printf '%s %s\n' "$r" "$trim"
 }
 
 # Shadow storage ---------------------------------------------------------------
@@ -769,7 +781,7 @@ resolve_margin() {
 
 # measure [EXCLUDE]: sets globals; returns 1 when a required reading fails.
 measure() {
-  local host root line bs vhdx result fs_size dev
+  local host root line bs vhdx result fs_size dev bat
   ERR=''
   root=${FM_DISK_ROOM_ROOT:-/}
   host=$(host_mount)
@@ -791,7 +803,7 @@ measure() {
     RES_LIST="$RES_LIST${RES_LIST:+, }${line% *} $(gib "${line##* }") GiB"
   done < <(live_reservations "${1:-}")
   shadow_reservation || return 1
-  VHDX=''; VHDX_SIZE=''; FRAG=''; OVERHEAD=''; SLACK=''; RECLAIM=''
+  VHDX=''; VHDX_SIZE=''; FRAG=''; OVERHEAD=''; SLACK=''; RECLAIM=''; TRIM_MORE=''
   if [ -n "$HOST" ] && vhdx=$(discover_vhdx); then
     VHDX=$vhdx
     VHDX_SIZE=$(stat -c %s -- "$vhdx" 2>/dev/null) || VHDX_SIZE=''
@@ -812,14 +824,18 @@ measure() {
     # table's figure is ever promised.
     fs_size=$(df_field "$root" size)
     if [ -n "$fs_size" ] && dev=$(dev_size) && [ "$dev" -ge "$fs_size" ]; then OVERHEAD=$(( dev - fs_size )); fi
-    RECLAIM=$(bat_reclaim "$VHDX" "$VHDX_SIZE") || RECLAIM=''
+    # After a trim: ext4's wholly free blocks the table still holds. A reading
+    # for people only; it never feeds RECLAIM, the advice or the alerts.
+    if bat=$(bat_reclaim "$VHDX" "$VHDX_SIZE" "$bs"); then
+      RECLAIM=${bat% *}; TRIM_MORE=${bat#* }; [ "$TRIM_MORE" = - ] && TRIM_MORE=''
+    fi
   fi
   COMPACT=''
   result=${FM_DISK_ROOM_COMPACT_RESULT:-${HOST:+$HOST/ProgramData/firstmate/wsl-compact-last.txt}}
   if [ -n "$result" ] && [ -r "$result" ]; then
     COMPACT=$(tr -d '\r' <"$result" | awk -F= '
-      $1 == "finished" { f = $2 } $1 == "mode" { m = $2 } $1 == "reclaimed_bytes" { r = $2 } $1 == "result" { s = $2 }
-      END { if (f != "") printf "%s %s %s reclaimed %.1f GiB", f, m, s, r / 1073741824 }')
+      $1 == "finished" { f = $2 } $1 == "mode" { m = $2 } $1 == "reclaimed_bytes" { r = $2 } $1 == "result" { s = $2 } $1 == "trim" { t = $2 }
+      END { if (f != "") printf "%s %s %s reclaimed %.1f GiB%s", f, m, s, r / 1073741824, (t != "" ? ", trim " t : "") }')
   fi
   return 0
 }
@@ -1105,12 +1121,12 @@ cmd_status() {
   measure || die "$ERR"
   results_root
   if [ "$json" = 1 ]; then
-    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s,"shadow_reading":"%s","shadow_allocated":%s,"swap_reserved":%s,"swap_source":"%s","swap_size":%s,"swap_file_size":%s}\n' \
+    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s,"shadow_reading":"%s","shadow_allocated":%s,"swap_reserved":%s,"swap_source":"%s","swap_size":%s,"swap_file_size":%s,"trim_reclaimable":%s}\n' \
       "$MARGIN" "$HOST" "${HOST_FREE:-null}" "$LINUX_FREE" "$LINUX_USED" "$RESERVED" "$ROOM" \
       "$([ "$ROOM" -lt "$MARGIN" ] && echo true || echo false)" "$VHDX" "${VHDX_SIZE:-null}" \
       "${FRAG:-null}" "${OVERHEAD:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}" \
       "$SHADOW_RES" "$SHADOW_SRC" "${SHADOW_MAX:-null}" "${SHADOW_USED:-null}" "${SHADOW_EVENTS:-null}" "$SHADOW_READING" "${SHADOW_ALLOC:-null}" \
-      "$SWAP_RES" "$SWAP_SRC" "${SWAP_SIZE:-null}" "${SWAP_LEN:-null}"
+      "$SWAP_RES" "$SWAP_SRC" "${SWAP_SIZE:-null}" "${SWAP_LEN:-null}" "${TRIM_MORE:-null}"
     return 0
   fi
   printf 'real room: %s GiB (limited by %s; margin %s GiB)%s\n' "$(gib "$ROOM")" "$(limit_name)" "$(gib "$MARGIN")" \
@@ -1128,6 +1144,10 @@ cmd_status() {
       "$(gib "$VHDX_SIZE")" "$VHDX" "$(gib "$SLACK")" "$(if [ -n "$FRAG" ]; then printf '%s GiB' "$(gib "$FRAG")"; else printf unknown; fi)" \
       "$(if [ -n "$OVERHEAD" ]; then printf '%s GiB' "$(gib "$OVERHEAD")"; else printf unknown; fi)" \
       "$(if [ -n "$RECLAIM" ]; then printf 'about %s GiB (disk file block table)' "$(gib "$RECLAIM")"; else printf 'unknown (disk file block table unreadable)'; fi)"
+    if [ -n "$RECLAIM" ]; then
+      printf 'after a trim: %s (ext4 free 1 MiB blocks the disk file still holds; reclaim-now trims before compacting)\n' \
+        "$(if [ -n "$TRIM_MORE" ]; then printf 'about %s GiB more' "$(gib "$TRIM_MORE")"; else printf 'unknown (ext4 mb_groups unreadable)'; fi)"
+    fi
   elif [ -n "$HOST" ]; then
     printf 'disk file: not found (set FM_DISK_ROOM_VHDX)\n'
   fi

@@ -30,6 +30,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 ## What a low reading means and who acts
 
 - "a compaction would reclaim about N GiB" - the disk file's own block table already holds no data for that space, so a compaction returns at least about that much; the captain runs the reclaim-now step in `docs/disk-room.md`, which also stops every WSL process, so firstmate parks the fleet first.
+- "after a trim: about N GiB more" on the status line - free 1 MiB blocks the disk file still holds; the reclaim-now step trims before compacting so it can return some or all of this on top of the reclaimable figure, but the figure is an estimate and never a promise (a trim can fail, or skip groups an earlier trim in the same boot covered); quote reclaimable as what compaction returns and this as a possible extra.
 - "reclaimable by compaction unknown" - the disk file or its block table could not be read; run `fm-disk-room.sh status`, fix the named reading, and do not promise the captain a compaction result until it reads.
 - "data must be freed or moved" - compaction cannot help, because the disk file's block table holds under 5 GiB of space it already marks free, whatever the slack looks like from Linux; bring the captain the owning task's numbers and options, and delete nothing without the captain's word.
 - "shadow storage cycling" - Windows restore points are filling the shadow storage up to its cap and deleting older ones; report it to the captain with the rest of the reading, and change no restore-point or shadow storage setting.
@@ -45,5 +46,5 @@ Firstmate relays only low readings, in the captain's terms; above the margin, di
 - Fixed C: floors such as "C: free >= 55 GB" or "45 GB": use `check`/`run` with the job's expected write.
 - Treating disk file size minus Linux used, or any figure worked out from Linux's view, as reclaimable: only the disk file's block table says what a compaction returns, and `status` reads it.
 - Proposing `wsl --manage <distro> --set-sparse true --allow-unsafe`: Microsoft gates it for potential data corruption, and it would not recover fragmented slack.
-- Hand-written diskpart sequences, `fstrim`, or `drop_caches` runs: the reclaim-now step covers compaction, and online discard on `/` unmaps most freed space; whether to trim the rest is not an agent's step.
+- Hand-written diskpart sequences, `fstrim`, or `drop_caches` runs: the reclaim-now step trims the distro root and then compacts, so no agent trims or compacts by hand.
 - Every Windows, root, elevation, or WSL-shutdown step still goes to the captain as the exact command from `docs/disk-room.md`; no agent runs one.

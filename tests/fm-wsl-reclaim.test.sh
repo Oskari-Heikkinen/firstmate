@@ -2,8 +2,9 @@
 # shellcheck disable=SC1091
 # Behavior tests for bin/fm-wsl-reclaim.ps1 (docs/disk-room.md) that need no
 # elevation and touch no Windows state: the script must parse, and its
-# shadow-storage record formatter, run on fake Win32_ShadowStorage objects, must
-# write the key=value lines bin/fm-disk-room.sh reads. Runs under pwsh, or
+# shadow-storage record formatter, run on fake Win32_ShadowStorage objects, and
+# its trim result formatter must write the key=value lines bin/fm-disk-room.sh
+# reads. Runs under pwsh, or
 # Windows PowerShell through WSL interop; skips when neither is installed.
 set -u
 
@@ -34,9 +35,11 @@ param([string]$Path)
 $errs = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$errs)
 if ($errs.Count) { $errs | ForEach-Object { "parse-error: $($_.Message)" }; exit 1 }
-$fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Format-ShadowRecord' }, $true) | Select-Object -First 1
-if (-not $fn) { 'missing: Format-ShadowRecord'; exit 1 }
-. ([scriptblock]::Create($fn.Extent.Text))
+foreach ($name in 'Format-ShadowRecord', 'Format-TrimResult') {
+  $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true) | Select-Object -First 1
+  if (-not $fn) { "missing: $name"; exit 1 }
+  . ([scriptblock]::Create($fn.Extent.Text))
+}
 function Storage($id, $max, $used, $alloc) {
   [pscustomobject]@{ DiffVolume = [pscustomobject]@{ DeviceID = $id }; MaxSpace = [uint64]$max; UsedSpace = [uint64]$used; AllocatedSpace = [uint64]$alloc }
 }
@@ -48,6 +51,12 @@ Format-ShadowRecord @((Storage $c 10737418240 3221225472 3489660928), (Storage '
 Format-ShadowRecord @(Storage $c ([uint64]::MaxValue) 1048576 2097152) $c 'C:' $when
 'case=none'
 Format-ShadowRecord @() $c 'C:' $when
+'case=trim-ok'
+Format-TrimResult "exit 0: /: 30 GiB (32212254720 bytes) trimmed`non /dev/sdf"
+'case=trim-failed'
+Format-TrimResult 'exit 1: fstrim: /: the discard operation is not supported'
+'case=trim-none'
+Format-TrimResult ''
 PS1
 [ "$PS" = powershell.exe ] && DRIVER_ARG=$(wslpath -w "$DRIVER") || DRIVER_ARG=$DRIVER
 
@@ -84,6 +93,17 @@ test_unbounded_and_none() {
   pass "an unbounded or absent shadow storage is recorded explicitly"
 }
 
+test_trim_result() {
+  assert_equals "trim=ok
+trim_detail=exit 0: /: 30 GiB (32212254720 bytes) trimmed on /dev/sdf" "$(section trim-ok)" "a trim's output is one detail line"
+  assert_equals "trim=failed
+trim_detail=exit 1: fstrim: /: the discard operation is not supported" "$(section trim-failed)" "a failed trim is recorded, not thrown"
+  assert_equals "trim=not-run
+trim_detail=no trim in this mode" "$(section trim-none)" "a mode without a trim says so"
+  pass "the trim result is recorded as trim and trim_detail lines"
+}
+
 test_parses
 test_capped_record
 test_unbounded_and_none
+test_trim_result

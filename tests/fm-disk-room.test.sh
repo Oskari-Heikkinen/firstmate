@@ -117,6 +117,15 @@ write_mb_groups() {
   } >"$TMP_ROOT/mb_groups"
 }
 
+# add_whole_groups FIRST COUNT: append COUNT mb_groups lines from group FIRST
+# on, each wholly free (4 buddies of 2^13 4 KiB blocks, 128 MiB).
+add_whole_groups() {
+  local i
+  for ((i = $1; i < $1 + $2; i++)); do
+    printf '#%d    : 32768 1 0 [ 0 0 0 0 0 0 0 0 0 0 0 0 0 4 ]\n' "$i"
+  done >>"$TMP_ROOT/mb_groups"
+}
+
 run_room() {
   FM_HOME="${TEST_FM_HOME-$TMP_ROOT/home-unset}" \
   PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
@@ -244,6 +253,49 @@ test_status_real_room_and_reclaim() {
   pass "status reports real room, slack and the reclaimable estimate"
 }
 
+test_trim_estimate() {
+  reset_state
+  set_sizes 60 600 400
+  write_vhdx 470 $(( 12 * 1024 ))
+  write_mb_groups 30
+  # A wholly free group whose blocks the table already holds unmapped adds nothing.
+  add_whole_groups $(( VHDX_PRESENT / 128 + 1 )) 1
+  local out
+  out=$(run_room status --json)
+  assert_equals $(( 12 * GIB )) "$(json_field "$out" reclaimable)" "a trim estimate never adds to reclaimable"
+  if [ "$BS" = 4096 ]; then
+    assert_equals $(( 128 * 1048576 )) "$(json_field "$out" trim_reclaimable)" \
+      "after a trim counts wholly free 1 MiB blocks the table holds present, not ones already unmapped"
+    out=$(run_room status)
+    assert_contains "$out" "after a trim: about 0.1 GiB more (ext4 free 1 MiB blocks the disk file still holds; reclaim-now trims before compacting)" \
+      "plain status names the after-a-trim figure"
+  fi
+  # A cache line from before the trim figure (4 fields) is read again, not trusted.
+  printf '%s %s %s %s\n' "$(date +%s)" $(( 470 * GIB )) 1 "$VHDX" >"$TMP_ROOT/state/vhdx-bat"
+  out=$(run_room status --json)
+  assert_equals $(( 12 * GIB )) "$(json_field "$out" reclaimable)" "an old-format cache line is not trusted"
+  if [ "$BS" = 4096 ]; then
+    # A group past the end of the disk file means the tables do not match.
+    rm -rf "$TMP_ROOT/state"
+    add_whole_groups $(( 470 * 8 + 10 )) 1
+    out=$(run_room status --json)
+    assert_equals null "$(json_field "$out" trim_reclaimable)" "a group past the disk file leaves the trim figure unknown"
+    assert_equals $(( 12 * GIB )) "$(json_field "$out" reclaimable)" "and keeps the block table figure"
+  fi
+  rm -rf "$TMP_ROOT/state" "$TMP_ROOT/mb_groups"
+  out=$(run_room status --json)
+  assert_equals null "$(json_field "$out" trim_reclaimable)" "no mb_groups reading leaves the trim figure unknown"
+  assert_equals $(( 12 * GIB )) "$(json_field "$out" reclaimable)" "and keeps the block table figure"
+  out=$(run_room status)
+  assert_contains "$out" "after a trim: unknown (ext4 mb_groups unreadable)" "plain status says the trim figure is unknown"
+  mkdir -p "$HOSTDIR/ProgramData/firstmate"
+  printf 'finished=2026-10-22T12:00:00\r\nmode=now\r\nresult=ok\r\nreclaimed_bytes=%s\r\nc_free_bytes=1\r\ntrim=ok\r\ntrim_detail=exit 0: /: 30 GiB trimmed\r\nfile=x|2|1|ok\r\n' "$GIB" \
+    >"$HOSTDIR/ProgramData/firstmate/wsl-compact-last.txt"
+  out=$(run_room status)
+  assert_contains "$out" "last compaction: 2026-10-22T12:00:00 now ok reclaimed 1.0 GiB, trim ok" "the last compaction names its trim result"
+  pass "status reports what a trim would add, apart from reclaimable"
+}
+
 test_check_margin() {
   reset_state
   set_sizes 45 600 400
@@ -310,6 +362,14 @@ test_low_advice() {
   write_vhdx 470 0 0 0 0
   out=$(run_room check --expect-write 20G)
   assert_not_contains "$out" "a compaction would reclaim about" "slack the ext4 side reads as 60 GiB unfragmented promises nothing without block table holes"
+  reset_state
+  add_whole_groups 100 60
+  out=$(run_room check --expect-write 20G)
+  assert_not_contains "$out" "a compaction would reclaim about" "a large after-a-trim figure never advises reclaim now"
+  if [ "$BS" = 4096 ]; then
+    assert_equals $(( 61 * 128 * 1048576 )) "$(json_field "$(run_room status --json)" trim_reclaimable)" \
+      "the after-a-trim figure counts the 60 added groups and write_mb_groups' own wholly free group"
+  fi
   assert_contains "$out" "compaction would reclaim under 5 GiB; data must be freed or moved" "a full block table says compaction cannot help"
   out=$(run_room status --json)
   assert_equals 0 "$(json_field "$out" reclaimable)" "a block table without holes reclaims nothing"
@@ -1009,7 +1069,7 @@ test_d_runway_and_substitution() {
 V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int swap_reserved:int room:int
   host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
   ssd_free:opt ssd_total:opt shadow_max:opt shadow_used:opt shadow_allocated:opt shadow_events:opt
-  swap_size:opt swap_file_size:opt
+  swap_size:opt swap_file_size:opt trim_reclaimable:opt
   low:bool host:str vhdx:str results_active:str results_state:str shadow_source:str shadow_reading:str swap_source:str'
 
 # v1_value JSON KEY: a field's raw value, quotes kept on strings (which may hold braces).
@@ -1185,6 +1245,7 @@ test_self_test
 test_pinned_mode
 test_bulk_reservations
 test_status_real_room_and_reclaim
+test_trim_estimate
 test_shadow_record_reserves_headroom
 test_shadow_fallback_and_stale
 test_shadow_live_reading
