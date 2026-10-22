@@ -340,13 +340,21 @@ fi
 # state (e.g. done) instead of being masked as unknown. Backend-aware
 # (fm_backend_of_meta defaults absent backend= to tmux, the P1 contract): a
 # herdr task is read through fm_backend_capture instead of a bare tmux probe.
+# That capture is the 40-line tail crew_busy_verdict_to classifies, kept in
+# PANE_TAIL with PANE_TAIL_READ set once it succeeds, so a readable pane is read
+# once; a failed capture leaves the verdict to capture again.
 fm_backend_of_meta_to TASK_BACKEND "$META"
 fm_backend_target_of_meta_to BACKEND_TARGET "$META" || true
 EXPECTED_LABEL="fm-$ID"
+PANE_TAIL=''
+PANE_TAIL_READ=''
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in
     tmux) tmux display-message -p -t "$1" '#{pane_id}' >/dev/null 2>&1 ;;
-    *) fm_backend_capture "$TASK_BACKEND" "$1" 1 "$EXPECTED_LABEL" >/dev/null 2>&1 ;;
+    *)
+      PANE_TAIL=$(fm_backend_capture "$TASK_BACKEND" "$1" 40 "$EXPECTED_LABEL" 2>/dev/null) || return 1
+      PANE_TAIL_READ=1
+      ;;
   esac
 }
 # crew_busy_verdict_to: the crew's semantic busy state from the one contract
@@ -363,7 +371,11 @@ pane_readable() {  # <target>
 # unknown - the exact split issue #1792 describes for a different cause.
 crew_busy_verdict_to() {  # <output-variable> <target>
   local tail40
-  tail40=$(fm_backend_capture "$TASK_BACKEND" "$2" 40 "$EXPECTED_LABEL" 2>/dev/null) || tail40=''
+  if [ -n "$PANE_TAIL_READ" ]; then
+    tail40=$PANE_TAIL
+  else
+    tail40=$(fm_backend_capture "$TASK_BACKEND" "$2" 40 "$EXPECTED_LABEL" 2>/dev/null) || tail40=''
+  fi
   # shellcheck disable=SC2153  # HARNESS is assigned by fm_meta_get_to above.
   fm_busy_classify_to "$1" "$TASK_BACKEND" "$2" "$HARNESS" "$ID" "$STATE" "$tail40"
 }

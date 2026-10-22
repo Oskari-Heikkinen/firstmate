@@ -2706,6 +2706,43 @@ test_no_run_herdr_unknown_uses_backend_capture() {
   pass "herdr's native busy verdict reads working with no record present"
 }
 
+# The no-run fallback's pane probe and the busy verdict share one capture, so a
+# readable herdr pane is read once. The pane renders a recognized launch prompt
+# over the fm-spawn seed, which reads unknown only when the verdict classifies
+# the probe's tail.
+test_no_run_herdr_reads_a_readable_pane_once() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr single-read test skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case herdr-one-read)
+  make_repo_on_branch "$d/wt" fm/feat-herdr-once
+  make_fakebin "$d" >/dev/null
+  mv "$d/fakebin/herdr" "$d/fakebin/herdr-answers"
+  cat > "$d/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "${0%/*}/herdr.log"
+if [ "${1:-} ${2:-}" = "pane read" ]; then
+  printf '%s\n' 'Quick safety check: Is this a project you created or one you trust? ...' \
+    '> No, exit' '  Yes, I trust this folder' 'Enter to confirm . Esc to cancel'
+  exit 0
+fi
+exec "${0%/*}/herdr-answers" "$@"
+SH
+  chmod +x "$d/fakebin/herdr"
+  fm_write_meta "$d/state/feat-herdr-once.meta" "window=default:w1:p2" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=claude"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  "$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-herdr-once >/dev/null
+  local out; out=$(run_crew_state "$d" feat-herdr-once)
+  assert_contains "$out" "state: unknown" "a herdr launch parked on its trust dialog reads unknown"
+  assert_contains "$out" "launch-prompt" "the busy verdict did not classify the probe's tail"
+  [ "$(grep -c '^pane read ' "$d/fakebin/herdr.log")" = 1 ] \
+    || fail "a readable herdr pane should be read once:"$'\n'"$(cat "$d/fakebin/herdr.log")"
+  pass "a readable herdr pane is read once, and its tail reaches the busy verdict"
+}
+
 # Regression (2026-09 G7 stale-claim incident): a herdr CLI that errors or
 # stalls under load made pane_readable's capture fail, and the fallback read
 # that single failure as "backend target gone" - text the stale sweep matches
@@ -5750,6 +5787,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_no_run_footer_text_alone_is_not_working \
   test_no_run_grok_uses_isolated_fallback \
   test_no_run_herdr_unknown_uses_backend_capture \
+  test_no_run_herdr_reads_a_readable_pane_once \
   test_no_run_herdr_cli_failure_reads_unreachable_not_gone \
   test_no_run_herdr_alive_with_failed_read_stays_live \
   test_no_run_herdr_husk_dead_still_reads_gone \
