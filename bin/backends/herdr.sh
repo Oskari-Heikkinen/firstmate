@@ -1663,8 +1663,9 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # headless (no TUI client) if not already running, mirroring tmux's `tmux
 # has-session || tmux new-session -d`. Verified: a bare socket CLI call does
 # NOT auto-start the server, so this must run before any workspace/tab/pane
-# call that needs the server up. fm_backend_herdr_capture alone reads first
-# and runs this only after a refused read. The server outlives its launcher
+# call that needs the server up. fm_backend_herdr_capture and
+# fm_backend_herdr_busy_state alone read first and run this only after a
+# refused read. The server outlives its launcher
 # and passes its startup environment to every later pane, so remove home,
 # harness identity, and supervision selection inherited from whichever agent
 # happened to start it. Bounded poll for the server to report running.
@@ -3720,12 +3721,12 @@ fm_backend_herdr_classify_submit_agent_status() {  # <raw-agent_status>
 # fm_backend_herdr_agent_status_raw: one `agent get` read, echoing the raw
 # agent_status string (working/idle/done/blocked/...), or empty on any
 # failure. Deliberately skips fm_backend_herdr_target_ready's server-ensure
-# round trip (an extra `status --json` call) that fm_backend_herdr_busy_state
-# pays on every call: fm_backend_herdr_wait_for_working polls this in a tight
-# loop right after a caller has already parsed the target and confirmed the
-# server is live (e.g. fm_backend_herdr_send_text_submit, immediately after a
-# successful send-text), so re-checking server liveness on every poll would
-# only add latency without adding safety.
+# round trip (an extra `status --json` call), which fm_backend_herdr_busy_state
+# still pays after a failed read: fm_backend_herdr_wait_for_working polls this
+# in a tight loop right after a caller has already parsed the target and
+# confirmed the server is live (e.g. fm_backend_herdr_send_text_submit,
+# immediately after a successful send-text), so re-checking server liveness on
+# every poll would only add latency without adding safety.
 fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out
   out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>/dev/null) || { printf ''; return 0; }
@@ -3743,11 +3744,28 @@ fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
 # mid-turn, issue #4115) reads `unknown`, never busy, so the recovery classifier
 # cannot report a shell-only pane as working. Only the busy case pays the extra
 # process read; idle and unknown are never trusted as busy by any consumer.
+#
+# The agent read goes first, as fm_backend_herdr_capture's pane read does,
+# without fm_backend_herdr_target_ready's server-ensure round trip in front of
+# it: the busy classifier asks for this verdict on every read of a crew with no
+# busy record, and a running server answers the read itself. Only a failed read
+# asks whether the server is running. A running server's refusal reads unknown,
+# as before; a stopped or unreadable one goes through
+# fm_backend_herdr_server_ensure, which starts it, and the agent is read again.
 fm_backend_herdr_busy_state() {  # <target>
-  local verdict
-  fm_backend_herdr_target_ready "$1" || { printf 'unknown'; return 0; }
+  local out verdict
+  fm_backend_herdr_parse_target "$1" || { printf 'unknown'; return 0; }
+  if ! out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent get "$FM_BACKEND_HERDR_PANE" 2>/dev/null); then
+    if [ "$(fm_backend_herdr_server_running_state "$FM_BACKEND_HERDR_SESSION")" = running ] \
+      || ! fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION"; then
+      printf 'unknown'
+      return 0
+    fi
+    out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent get "$FM_BACKEND_HERDR_PANE" 2>/dev/null) \
+      || { printf 'unknown'; return 0; }
+  fi
   verdict=$(fm_backend_herdr_classify_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+    "$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)")
   if [ "$verdict" = busy ] \
     && [ "$(fm_backend_herdr_pane_process_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" = shell ]; then
     verdict=unknown

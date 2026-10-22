@@ -3923,8 +3923,10 @@ test_busy_state_working_maps_to_busy() {
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_busy_state default:w1:p2' "$ROOT" )
   [ "$out" = busy ] || fail "agent_status=working should map to busy, got '$out'"
-  assert_contains "$(cat "$log")" $'\x1f''agent'$'\x1f''get'$'\x1f''w1:p2' "busy_state did not call agent get"
-  pass "fm_backend_herdr_busy_state: working -> busy"
+  assert_contains "$(head -n 1 "$log")" $'\x1f''agent'$'\x1f''get'$'\x1f''w1:p2' "busy_state did not call agent get first"
+  assert_not_contains "$(cat "$log")" $'\x1f''status'$'\x1f''--json' \
+    "a read the server answered should not also pay a server status check"
+  pass "fm_backend_herdr_busy_state: working -> busy, read without a server check"
 }
 
 test_busy_state_done_and_blocked_map_to_idle() {
@@ -3953,7 +3955,49 @@ test_busy_state_unknown_on_no_agent() {
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_busy_state default:w1:p2' "$ROOT" )
   [ "$out" = unknown ] || fail "a failed agent get should report unknown (the fallback-to-regex cue), got '$out'"
+  assert_contains "$(cat "$log")" "HERDR_SESSION=default"$'\x1f''status'$'\x1f''--json' \
+    "busy_state did not check the herdr server after the refused read"
+  [ "$(grep -c $'\x1f''agent'$'\x1f''get' "$log")" -eq 1 ] \
+    || fail "a read refused by a running server should be the result, not read again: $(cat "$log")"
+  assert_not_contains "$(cat "$log")" $'\x1f''server' "a running server must not be started again"
   pass "fm_backend_herdr_busy_state: unparseable/absent agent state reports unknown, the regex-fallback cue"
+}
+
+test_busy_state_starts_a_stopped_server_and_reads_again() {
+  local dir fb out
+  dir="$TMP_ROOT/busy-stopped"; fb="$dir/fakebin"; mkdir -p "$fb"
+  # A stopped server refuses every agent call at the transport and reports
+  # running=false; `herdr server` brings it back with its panes.
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+printf '%s\n' "$*" >> "$D/log"
+case "${1:-}" in
+  status)
+    if [ -e "$D/running" ]; then
+      printf '{"server":{"running":true}}\n'
+    else
+      printf '{"server":{"running":false}}\n'
+    fi
+    ;;
+  server)
+    : > "$D/running"
+    ;;
+  agent)
+    [ -e "$D/running" ] || { echo 'error: could not connect to the herdr server' >&2; exit 1; }
+    printf '{"result":{"agent":{"agent_status":"idle"}}}\n'
+    ;;
+esac
+SH
+  chmod +x "$fb/herdr"
+  out=$(PATH="$fb:$PATH" FM_FAKE_DIR="$dir" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_busy_state fmtest:w1:p2' "$ROOT")
+  [ "$out" = idle ] || fail "busy_state after the server start returned '$out': $(cat "$dir/log")"
+  assert_contains "$(cat "$dir/log")" "server --session fmtest" "busy_state did not start the stopped herdr server"
+  [ "$(grep -c '^agent get w1:p2' "$dir/log")" -eq 2 ] \
+    || fail "busy_state should read once before and once after the server start: $(cat "$dir/log")"
+  pass "fm_backend_herdr_busy_state: a read refused by a stopped server starts it and reads again"
 }
 
 # --- composer_state: structural border-row classification --------------------
@@ -6179,6 +6223,7 @@ HERDR_CASES=(
   test_busy_state_working_maps_to_busy
   test_busy_state_done_and_blocked_map_to_idle
   test_busy_state_unknown_on_no_agent
+  test_busy_state_starts_a_stopped_server_and_reads_again
   test_composer_state_bare_prompt_is_empty
   test_composer_state_styled_placeholder_draft_is_pending
   test_composer_state_real_text_is_pending
