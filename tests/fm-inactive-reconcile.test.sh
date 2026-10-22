@@ -841,6 +841,69 @@ test_scan_marker_replaces_symlink_safely() {
   pass "scan marker replaces a symlink without overwriting its target"
 }
 
+# Every watcher poll runs `scan`. Between cadence scans a main-home poll is
+# answered from an unlocked read of the marker: it returns at once even while a
+# live holder has the scan lock, prints nothing, and reconciles nothing. The
+# cases that read must not answer still reach the locked scan: a missing
+# outcome directory is made again, a symlinked one is refused, an out-of-range
+# cadence is rejected, and the first poll past the cadence scans.
+test_poll_between_cadence_scans_skips_the_locked_scan() {
+  local lock holder i started elapsed rc=0
+  make_world fresh-marker
+  write_child "$MAIN" child 'done: PR https://example.test/owner/repo/pull/1 checks green'
+  FM_FAKE_CREW_STATE='working' run_reconcile "$MAIN" --startup
+  [ -d "$MAIN/state/terminal-outcomes" ] && [ -f "$MAIN/state/.inactive-outcome-reconcile" ] \
+    || fail "fixture: the startup scan left no marker or outcome directory"
+
+  lock="$MAIN/state/.inactive-outcome-reconcile.lock"
+  FM_HOME="$MAIN" FM_STATE_OVERRIDE="$MAIN/state" bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    fm_lock_acquire_wait "$2"
+    : > "$3/scan-lock-held"
+    while [ ! -e "$3/release-scan-lock" ]; do sleep 0.05; done
+    fm_lock_release "$2"
+  ' _ "$ROOT" "$lock" "$WORLD" &
+  holder=$!
+  i=0
+  while [ "$i" -lt 40 ] && [ ! -e "$WORLD/scan-lock-held" ]; do sleep 0.05; i=$((i + 1)); done
+  [ -e "$WORLD/scan-lock-held" ] \
+    || { : > "$WORLD/release-scan-lock"; reap "$holder"; fail "fixture: the scan lock holder did not start"; }
+  started=$(date +%s)
+  FM_INACTIVE_RECONCILE_BUDGET_SECS=30 FM_FAKE_CREW_STATE='done' run_reconcile "$MAIN" > "$WORLD/poll.out" 2>&1 || rc=$?
+  elapsed=$(( $(date +%s) - started ))
+  : > "$WORLD/release-scan-lock"
+  i=0
+  while [ "$i" -lt 40 ] && kill -0 "$holder" 2>/dev/null; do sleep 0.05; i=$((i + 1)); done
+  reap "$holder"
+  [ "$rc" -eq 0 ] || fail "a poll between cadence scans failed (rc=$rc): $(cat "$WORLD/poll.out")"
+  [ "$elapsed" -le 5 ] || fail "a poll between cadence scans waited ${elapsed}s behind the scan lock"
+  [ ! -s "$WORLD/poll.out" ] || fail "a poll between cadence scans printed: $(cat "$WORLD/poll.out")"
+  [ "$(outcome_count "$MAIN" pending)" = 0 ] || fail "a poll between cadence scans reconciled a child"
+
+  rm -rf "$MAIN/state/terminal-outcomes"
+  FM_FAKE_CREW_STATE='done' run_reconcile "$MAIN" || fail "a poll with no outcome directory failed"
+  [ -d "$MAIN/state/terminal-outcomes" ] && [ ! -L "$MAIN/state/terminal-outcomes" ] \
+    || fail "a poll between cadence scans did not make the missing outcome directory again"
+
+  mv "$MAIN/state/terminal-outcomes" "$MAIN/state/outcomes-target"
+  ln -s outcomes-target "$MAIN/state/terminal-outcomes"
+  rc=0
+  FM_FAKE_CREW_STATE='done' run_reconcile "$MAIN" 2>/dev/null || rc=$?
+  rm -f "$MAIN/state/terminal-outcomes"
+  mv "$MAIN/state/outcomes-target" "$MAIN/state/terminal-outcomes"
+  [ "$rc" -ne 0 ] || fail "a poll between cadence scans accepted a symlinked outcome directory"
+
+  rc=0
+  FM_HOME="$MAIN" FM_STATE_OVERRIDE="$MAIN/state" FM_INACTIVE_RECONCILE_SECS=5 "$RECON" scan 2>/dev/null || rc=$?
+  [ "$rc" -eq 2 ] || fail "a poll between cadence scans accepted an out-of-range cadence (rc=$rc)"
+
+  age "$MAIN/state/.inactive-outcome-reconcile"
+  FM_FAKE_CREW_STATE='done' run_reconcile "$MAIN" > "$WORLD/due.out" 2>&1 \
+    || fail "the first poll past the cadence failed: $(cat "$WORLD/due.out")"
+  [ "$(outcome_count "$MAIN" pending)" = 1 ] || fail "the first poll past the cadence did not scan"
+  pass "a poll between cadence scans skips the scan lock, and each case it must not answer still reaches the locked scan"
+}
+
 test_nonterminal_and_captain_held_states_do_not_report() {
   local state
   for state in working paused parked unknown; do
@@ -1066,6 +1129,7 @@ test_legacy_metadata_rewrite_keeps_receipt_identity
 test_relaunch_cannot_replace_metadata_during_state_snapshot
 test_heartbeat_cap_does_not_delay_reconciliation
 test_scan_marker_replaces_symlink_safely
+test_poll_between_cadence_scans_skips_the_locked_scan
 test_nonterminal_and_captain_held_states_do_not_report
 test_watcher_hook_and_idle_secondmate_exemption
 test_watcher_poll_delivers_child_ledger_line_to_parent

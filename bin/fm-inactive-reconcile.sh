@@ -96,17 +96,6 @@ SCAN_MARKER="$STATE/.inactive-outcome-reconcile"
 SCAN_LOCK="$STATE/.inactive-outcome-reconcile.lock"
 CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
-# shellcheck source=bin/fm-classify-lib.sh
-. "$SCRIPT_DIR/fm-classify-lib.sh"
-# shellcheck source=bin/fm-parent-channel-lib.sh
-. "$SCRIPT_DIR/fm-parent-channel-lib.sh"
-# shellcheck source=bin/fm-timeout-lib.sh
-. "$SCRIPT_DIR/fm-timeout-lib.sh"
-# shellcheck source=bin/fm-dod-lib.sh
-. "$SCRIPT_DIR/fm-dod-lib.sh"
-
 FM_INACTIVE_RECONCILE_SECS=${FM_INACTIVE_RECONCILE_SECS:-900}
 case "$FM_INACTIVE_RECONCILE_SECS" in
   ''|*[!0-9]*|0)
@@ -654,6 +643,31 @@ acknowledge_notice() { # <fingerprint>
   [ -f "$pending" ] && [ ! -L "$pending" ] || return 0
   record_field_set "$pending" notice_emitted 1
 }
+
+# Every watcher poll runs `scan`, and in a main home all but one poll per
+# cadence find the marker fresh and return at once. Answer those polls here,
+# before loading the libraries and starting the timed, locked re-execution,
+# from the checks scan() makes first: no secondmate identity marker (so no
+# per-poll ledger pass), a real outcome directory, and a marker younger than
+# the cadence. Anything else, --startup included, takes the locked path, which
+# makes the same checks again under the lock.
+if [ "${1:-scan}" = scan ] && [ -z "${2:-}" ] \
+  && [ ! -e "$FM_HOME/.fm-secondmate-home" ] && [ ! -L "$FM_HOME/.fm-secondmate-home" ] \
+  && [ -d "$OUTCOME_DIR" ] && [ ! -L "$OUTCOME_DIR" ] \
+  && [ "$(scan_marker_age)" -lt "$FM_INACTIVE_RECONCILE_SECS" ]; then
+  exit 0
+fi
+
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-parent-channel-lib.sh
+. "$SCRIPT_DIR/fm-parent-channel-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-dod-lib.sh
+. "$SCRIPT_DIR/fm-dod-lib.sh"
 
 mode=${1:-scan}
 case "$mode" in
