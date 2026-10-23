@@ -219,15 +219,38 @@ fm_pending_reply_text_has_corr() {  # <text> <corr_id>
   [[ $text =~ $re ]]
 }
 
+# Byte length of the first <keep> UTF-8 characters of <text> when it holds more
+# than <max> characters, else -1. Counts lead bytes from od output, so the
+# verdict is the same under every caller locale and never splits a character.
+fm_pending_reply_char_cut() {  # <text> <max> <keep>
+  printf '%s' "$1" | LC_ALL=C od -An -v -tu1 | awk -v max="$2" -v keep="$3" '
+    { for (i = 1; i <= NF; i++) {
+        if ($i < 128 || $i >= 192) { chars++; if (chars == keep + 1) cut = n }
+        n++
+      } }
+    END { print (chars > max ? cut : -1) }'
+}
+
+# Drop bytes that are not well-formed UTF-8, then the C1 controls, U+2028 and
+# U+2029, and the bidi controls (U+200E/F, U+202A-U+202E, U+2066-U+2069), so a
+# summary later typed into a terminal carries no escape or reordering sequence.
+fm_pending_reply_strip_unsafe_utf8() {
+  perl -0777 -pe '
+    s/((?:[\x00-\x7f]|[\xc2-\xdf][\x80-\xbf]|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]{2}|\xed[\x80-\x9f][\x80-\xbf]|\xf0[\x90-\xbf][\x80-\xbf]{2}|[\xf1-\xf3][\x80-\xbf]{3}|\xf4[\x80-\x8f][\x80-\xbf]{2})+)|[\x80-\xff]/defined $1 ? $1 : ""/ge;
+    s/\xc2[\x80-\x9f]|\xe2\x80[\x8e\x8f\xa8-\xae]|\xe2\x81[\xa6-\xa9]//g'
+}
+
 # Sanitize a short request summary: single line, bounded, no control chars.
+# Preserve UTF-8 characters, including accents; cap at 120 characters in any locale.
 fm_pending_reply_summarize() {  # <text>
-  local text=$1 cleaned
-  cleaned=$(printf '%s' "$text" | tr '\t\r\n' '   ' | tr -cd '\11\12\15\40-\176' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  local text=$1 cleaned cut
+  cleaned=$(printf '%s' "$text" | tr '\t\r\n' '   ' | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' | fm_pending_reply_strip_unsafe_utf8 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   # Drop an already-present marker/corr prefix so the durable summary stays short.
   cleaned=${cleaned#"$FM_FROMFIRST_MARK"}
   cleaned=$(printf '%s' "$cleaned" | sed -E "s/^corr=[A-Fa-f0-9]{16}[[:space:]]*//")
-  if [ "${#cleaned}" -gt 120 ]; then
-    cleaned="${cleaned:0:117}..."
+  cut=$(fm_pending_reply_char_cut "$cleaned" 120 117)
+  if [ "$cut" -ge 0 ]; then
+    cleaned="$(printf '%s' "$cleaned" | head -c "$cut")..."
   fi
   printf '%s' "$cleaned"
 }

@@ -40,6 +40,10 @@
 #      uncached status read - accepting any verb - immediately before firing
 #  18. A same-kind escalation after an operator close appends again and reopens
 #      the decision; a retry while that decision is still open appends nothing
+#  19. A request summary keeps accented letters, drops control characters, and
+#      caps at 120 characters without splitting one under any caller locale
+#  20. A request summary drops C1 controls, U+2028/U+2029, bidi controls, and
+#      bytes that are not well-formed UTF-8
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -2884,6 +2888,61 @@ SH
   pass 'failed pre-rename publication and interrupted post-rename policy both restart with exactly-once restatement/resolution'
 }
 
+test_summary_keeps_accents_and_caps_by_character() {
+  local out long cap_chars loc
+  out=$(fm_pending_reply_summarize "não faça a correção")
+  [ "$out" = "não faça a correção" ] || fail "accented summary must survive unchanged, got '$out'"
+  out=$(fm_pending_reply_summarize "$(printf 'a\001b\033c\177d\tnão\r\nfaça')")
+  [ "$out" = "abcd não  faça" ] || fail "control characters must be removed and whitespace flattened, got '$out'"
+  long=$(printf 'ç%.0s' $(seq 1 130))
+  for loc in C "" en_US.UTF-8; do
+    out=$(LC_ALL=${loc:-C} fm_pending_reply_summarize "$long")
+    cap_chars=$(printf '%s' "$out" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' ')
+    [ "$cap_chars" = 120 ] || fail "capped accented text must hold 120 characters under locale '${loc:-C}', got $cap_chars"
+    printf '%s' "$out" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+      || fail "capped accented text must stay valid UTF-8 under locale '${loc:-C}'"
+    [ "$out" = "$(printf 'ç%.0s' $(seq 1 117))..." ] || fail "capped text must be 117 characters plus an ellipsis under locale '${loc:-C}'"
+  done
+  out=$(fm_pending_reply_summarize "$(printf 'x%.0s' $(seq 1 120))")
+  [ "${#out}" = 120 ] || fail "a 120-character summary must not be capped, got ${#out}"
+  pass "the summary keeps accented letters, drops control characters, and caps by character"
+}
+
+test_summary_drops_non_ascii_controls_and_invalid_utf8() {
+  local out want label input
+  want="a b"
+  for label in nel csi c1-first ls ps lrm rlm lre rle pdf lro rlo lri rli fsi pdi invalid-lead truncated overlong surrogate; do
+    case "$label" in
+      nel) input=$(printf 'a\302\205 b') ;;
+      csi) input=$(printf 'a\302\233 b') ;;
+      c1-first) input=$(printf 'a\302\200 b') ;;
+      ls) input=$(printf 'a\342\200\250 b') ;;
+      ps) input=$(printf 'a\342\200\251 b') ;;
+      lrm) input=$(printf 'a\342\200\216 b') ;;
+      rlm) input=$(printf 'a\342\200\217 b') ;;
+      lre) input=$(printf 'a\342\200\252 b') ;;
+      rle) input=$(printf 'a\342\200\253 b') ;;
+      pdf) input=$(printf 'a\342\200\254 b') ;;
+      lro) input=$(printf 'a\342\200\255 b') ;;
+      rlo) input=$(printf 'a\342\200\256 b') ;;
+      lri) input=$(printf 'a\342\201\246 b') ;;
+      rli) input=$(printf 'a\342\201\247 b') ;;
+      fsi) input=$(printf 'a\342\201\250 b') ;;
+      pdi) input=$(printf 'a\342\201\251 b') ;;
+      invalid-lead) input=$(printf 'a\377 b') ;;
+      truncated) input=$(printf 'a\303 b') ;;
+      overlong) input=$(printf 'a\300\257 b') ;;
+      surrogate) input=$(printf 'a\355\240\200 b') ;;
+    esac
+    out=$(fm_pending_reply_summarize "$input")
+    [ "$out" = "$want" ] || fail "summary kept unsafe sequence '$label': $(printf '%s' "$out" | LC_ALL=C od -An -c)"
+  done
+  out=$(fm_pending_reply_summarize "$(printf 'n\303\243o \342\202\254 \360\237\232\242 \342\200\224')")
+  [ "$out" = "$(printf 'n\303\243o \342\202\254 \360\237\232\242 \342\200\224')" ] \
+    || fail "summary must keep well-formed printable characters next to the filtered ranges, got '$out'"
+  pass "the summary drops C1 controls, line and paragraph separators, bidi controls, and invalid UTF-8"
+}
+
 # --- run --------------------------------------------------------------------
 
 test_same_inode_regrow_contract_boundary
@@ -2948,5 +3007,7 @@ test_expect_kind_is_persisted_and_types_acknowledgements
 test_tick_prunes_resolved_records_past_retention
 test_tick_over_many_resolved_records_is_fast
 test_same_kind_escalation_reopens_after_operator_close
+test_summary_keeps_accents_and_caps_by_character
+test_summary_drops_non_ascii_controls_and_invalid_utf8
 
 printf 'ok - all pending-reply tests passed\n'
