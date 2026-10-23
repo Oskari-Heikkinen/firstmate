@@ -465,6 +465,10 @@ RECORDED_HARNESS=$(fm_meta_get "$META" harness)
 KIND=$(fm_meta_get "$META" kind)
 WT=$(fm_meta_get "$META" worktree)
 [ -n "$KIND" ] || KIND=ship
+# OpenCode's composer exit key changed between its 1.x and 2.x lines; the major
+# spawn detected is recorded here so the exit command below matches the running
+# agent. Absent (a legacy record or a non-opencode task) it stays empty.
+OPENCODE_MAJOR=$(fm_meta_get "$META" opencode_version); OPENCODE_MAJOR=${OPENCODE_MAJOR%%.*}
 
 HARNESS=$(fm_control_harness_family "$RECORDED_HARNESS") \
   || die "task $ID records harness '${RECORDED_HARNESS:-none}', which has no verified control mechanics; fm-control refuses to guess an interrupt key or exit command"
@@ -874,7 +878,7 @@ do_exit() {
       esac
       ;;
   esac
-  cmd=$(fm_control_exit_command "$HARNESS")
+  cmd=$(fm_control_exit_command "$HARNESS" "$OPENCODE_MAJOR")
   hazard=$(fm_control_interrupt_hazard_signal "$HARNESS")
   if [ -n "$hazard" ] && rendered_matches "$hazard"; then
     die "task $ID shows the $HARNESS revert picker, where typed text becomes a search and Enter reverts file changes; refusing to type the $cmd exit command. Close it with $(fm_control_interrupt_key "$HARNESS"), never Enter, then retry '$VERB'"
@@ -904,18 +908,37 @@ do_exit() {
   # authoritative proof is the agent-state wait below. The retried Enter still
   # matters, because a slash command opens a completion popup on some TUIs that
   # swallows the first Enter; an adapter with an exit dialog retries it only
-  # inside wait_exit_or_dialog.
+  # inside wait_exit_or_dialog. OpenCode 2 exits from an empty composer on a
+  # single Ctrl-C (verified on 2.0.11, 2.0.21, and 2.0.22); typing /exit also
+  # exits but opens a completion popup, so the raw key plane avoids that popup
+  # interacting with the typed submit verification. A Ctrl-C over leftover
+  # composer text only clears it, so Ctrl-U clears the composer first and one
+  # more Ctrl-C follows if the agent is still alive.
   dialog=$(fm_control_exit_dialog_signal "$HARNESS")
-  submit_retries=$EXIT_RETRIES
-  if [ -n "$dialog" ]; then
-    submit_retries=1
-    EXIT_BASELINE=$(fm_backend_visible_capture "$BACKEND" "$T" "$LABEL" 2>/dev/null) \
-      || die "task $ID's viewport could not be read before the $cmd exit command, so its $HARNESS exit dialog could not be told apart from a transcript quoting it; nothing was typed"
-  fi
-  verdict=$(fm_backend_send_text_submit "$BACKEND" "$T" "$cmd" "$submit_retries" "$POLL" 1.2 "$LABEL") \
-    || die "the exit command could not be sent to task $ID on $BACKEND"
-  [ "$verdict" != send-failed ] \
-    || die "the exit command could not be sent to task $ID on $BACKEND"
+  case "$cmd" in
+    C-c)
+      fm_backend_send_key "$BACKEND" "$T" C-u "$LABEL" \
+        || die "the exit key could not be sent to task $ID on $BACKEND"
+      fm_backend_send_key "$BACKEND" "$T" C-c "$LABEL" \
+        || die "the exit key could not be sent to task $ID on $BACKEND"
+      if ! wait_agent_state "$SETTLE_WAIT" dead >/dev/null; then
+        fm_backend_send_key "$BACKEND" "$T" C-c "$LABEL" \
+          || die "the exit key could not be sent to task $ID on $BACKEND"
+      fi
+      ;;
+    *)
+      submit_retries=$EXIT_RETRIES
+      if [ -n "$dialog" ]; then
+        submit_retries=1
+        EXIT_BASELINE=$(fm_backend_visible_capture "$BACKEND" "$T" "$LABEL" 2>/dev/null) \
+          || die "task $ID's viewport could not be read before the $cmd exit command, so its $HARNESS exit dialog could not be told apart from a transcript quoting it; nothing was typed"
+      fi
+      verdict=$(fm_backend_send_text_submit "$BACKEND" "$T" "$cmd" "$submit_retries" "$POLL" 1.2 "$LABEL") \
+        || die "the exit command could not be sent to task $ID on $BACKEND"
+      [ "$verdict" != send-failed ] \
+        || die "the exit command could not be sent to task $ID on $BACKEND"
+      ;;
+  esac
   state=$(wait_exit_or_dialog "$dialog" "$cmd") || {
     [ "$state" = exit-dialog ] \
       || die "exit-delivered $ID interrupt=$interrupt_result exit-command=delivered agent-state=$state exit=unconfirmed; the agent did not stop within ${EXIT_WAIT}s"

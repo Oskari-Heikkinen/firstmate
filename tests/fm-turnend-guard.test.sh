@@ -1064,6 +1064,93 @@ EOF
   pass ".opencode primary plugin: guard path is anchored to worktree, not directory"
 }
 
+# Drive both entrypoints with fake hosts: OpenCode 2's setup(ctx) event stream
+# and OpenCode 1's server export. Each blind-turn follow-up exempts only its own
+# session's next terminal event, and OpenCode 2 child sessions and shutdown
+# events never run the guard.
+test_opencode_plugin_turnend_latch_scopes_sessions() {
+  local plugin worktree_dir out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-turnend-guard.js"
+  worktree_dir="$TMP_ROOT/opencode-latch-worktree"
+  mkdir -p "$worktree_dir/bin"
+  git init -q "$worktree_dir"
+  cat > "$worktree_dir/bin/fm-turnend-guard.sh" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'guard-fired\n' >&2
+exit 2
+EOF
+  chmod +x "$worktree_dir/bin/fm-turnend-guard.sh"
+  out=$(NODE_NO_WARNINGS=1 PLUGIN="$plugin" WORKTREE="$worktree_dir" node 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const fail = (message) => {
+  console.error(message);
+  process.exit(1);
+};
+
+const v2Prompts = [];
+const ended = (type, sessionID, extra = {}) => ({ type, properties: { sessionID, ...extra } });
+// The shutdown event must leave root-b's exemption for its final failed turn.
+const events = [
+  { type: "session.created", properties: { info: { id: "child", parentID: "root-a" } } },
+  ended("session.execution.succeeded", "child"),
+  ended("session.execution.succeeded", "root-a"),
+  ended("session.execution.succeeded", "root-b"),
+  ended("session.execution.succeeded", "root-a"),
+  ended("session.execution.interrupted", "root-a"),
+  ended("session.execution.failed", "root-b", { reason: "shutdown" }),
+  ended("session.execution.failed", "root-b"),
+];
+let streamDone;
+const finished = new Promise((resolve) => {
+  streamDone = resolve;
+});
+mod.default.setup({
+  location: { project: { directory: process.env.WORKTREE } },
+  event: {
+    subscribe: async () => (async function* () {
+      for (const event of events) yield event;
+      streamDone();
+    })(),
+  },
+  session: {
+    prompt: async ({ sessionID, text }) => {
+      if (!text.includes("guard-fired")) fail(`v2 prompt lacks guard output: ${text}`);
+      v2Prompts.push(sessionID);
+    },
+  },
+});
+await finished;
+const v2Want = "root-a,root-b,root-a";
+if (v2Prompts.join(",") !== v2Want) fail(`v2 prompts ${v2Prompts.join(",")}, want ${v2Want}`);
+
+const v1Prompts = [];
+const hooks = await mod.FmPrimaryTurnendGuard({
+  client: {
+    session: {
+      promptAsync: async (request) => {
+        v1Prompts.push(request.path.id);
+      },
+    },
+  },
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+for (const id of ["one", "two", "one", "one"]) {
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID: id } } });
+}
+const v1Want = "one,two,one";
+if (v1Prompts.join(",") !== v1Want) fail(`v1 prompts ${v1Prompts.join(",")}, want ${v1Want}`);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode plugin turn-end latch must scope exemptions per session: $out"
+  [ -z "$out" ] || fail "OpenCode plugin latch test printed output: $out"
+  pass ".opencode primary plugin: OpenCode 1 and 2 turn ends exempt only their own session, skipping children and shutdowns"
+}
+
 test_pi_extension_injects_once_per_logical_agent_run() {
   local repo home ext log out status
   repo="$TMP_ROOT/pi-logical-run-root"
@@ -2352,6 +2439,7 @@ test_tracked_claude_entries_inert_under_grok
 test_codex_hook_uses_process_pwd_when_payload_cwd_is_outside_root
 test_codex_hook_ignores_nested_git_root_guard
 test_opencode_plugin_anchors_guard_to_worktree
+test_opencode_plugin_turnend_latch_scopes_sessions
 test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
 test_pi_extension_keeps_marker_of_live_ancestor_session
