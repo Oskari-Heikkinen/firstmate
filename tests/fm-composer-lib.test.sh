@@ -417,6 +417,52 @@ test_matrix_cursor_reverse_video_placeholder_remnant() {
   pass "matrix: cursor's reverse-video placeholder remnant reads empty; real typed text stays pending"
 }
 
+test_matrix_cursor_fully_dim_placeholder() {
+  # cursor-agent 2026.10.19-6bbf2c4, tmux, idle pane. The glyph and the whole
+  # placeholder are one SGR 2 run on a truecolor background. The terminal
+  # cursor sits below the footer (cursor_flag 0), so nothing on this row is
+  # reverse video. Ghost stripping therefore empties the row instead of
+  # leaving the lone-character remnant the case above covers. Half-block
+  # rules are the live frame; they are edges, not a cornered box.
+  local row screen plain stripped typed
+  row="${ESC}[48;2;42;44;57m ${ESC}[2m→ Add a follow-up${ESC}[0m"
+  row="${row}${ESC}[48;2;42;44;57m        ${ESC}[49m"
+  screen=$'transcript\n '"${ESC}[38;2;42;44;57m▄▄▄▄▄▄▄▄${ESC}[39m"$'\n'"$row"
+  screen="$screen"$'\n '"${ESC}[38;2;42;44;57m▀▀▀▀▀▀▀▀${ESC}[39m"
+  screen="$screen"$'\n  Auto · 64%                                                                   Run Everything\n  ~/wt · <branch>\n'
+  plain=$'transcript\n ▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀\n  Auto · 64%                                                                   Run Everything\n  ~/wt · <branch>'
+
+  # NON-VACUOUSNESS: this row must strip to nothing. A surviving remnant would
+  # be the older case, and this one would no longer prove the empty-content path.
+  stripped=$(printf '%s' "$row" | fm_composer_strip_ghost)
+  fm_composer_normalize_trim_var stripped
+  [ -z "$stripped" ] \
+    || fail "the fully dim cursor row must ghost-strip to empty, got '$stripped'"
+
+  assert_screen "cursor 2026.10 fully dim idle on herdr" empty "$CAPS_STYLED" "$screen"
+  assert_screen "cursor 2026.10 fully dim idle on zellij" empty "$CAPS_STYLED_NOID" "$screen"
+  # The cursor-anchored read stays blind: the cursor is on the blank row under
+  # the footer, not on the composer. The tmux adapter reclassifies only after
+  # process identity; this owner must not treat that blank row as empty.
+  assert_screen "cursor 2026.10 anchored blank row stays unknown" unknown \
+    "$CAPS_TMUX" "$screen" 6
+  assert_screen "cursor 2026.10 unstyled placeholder stays unknown" unknown \
+    "$CAPS_PLAIN" "$plain"
+
+  # Bright typed text, including text that is exactly the placeholder, survives
+  # stripping and must stay pending.
+  typed="${ESC}[48;2;42;44;57m ${ESC}[2m→ ${ESC}[0m${ESC}[38;2;224;222;244mAdd a follow-up${ESC}[0m"
+  assert_screen "cursor 2026.10 typed placeholder stays pending" pending \
+    "$CAPS_STYLED" $'transcript\n '"${ESC}[38;2;42;44;57m▄▄▄▄▄▄▄▄${ESC}[39m"$'\n'"$typed"$'\n '"${ESC}[38;2;42;44;57m▀▀▀▀▀▀▀▀${ESC}[39m"$'\n'
+
+  # Dim text that is not an anchored placeholder is not proof of an empty
+  # composer. Unknown keeps the injection guard closed.
+  row="${ESC}[48;2;42;44;57m ${ESC}[2m→ ship the fix${ESC}[0m"
+  assert_screen "cursor 2026.10 dim non-placeholder stays unknown" unknown \
+    "$CAPS_STYLED" $'transcript\n '"${ESC}[38;2;42;44;57m▄▄▄▄▄▄▄▄${ESC}[39m"$'\n'"$row"$'\n '"${ESC}[38;2;42;44;57m▀▀▀▀▀▀▀▀${ESC}[39m"$'\n'
+  pass "matrix: cursor's fully dim placeholder reads empty; typed text stays pending"
+}
+
 test_matrix_herdr_halfblock_rule_bounds_bare_wrap() {
   # Herdr draws a composer's rules with half-block glyphs (▄ above, ▀ below)
   # rather than the box-drawing family. Without treating those as edges, a bare
@@ -1401,6 +1447,7 @@ test_composer_footer_zone_refuses_rather_than_allows
 test_matrix_codex_dim_hint_row
 test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
+test_matrix_cursor_fully_dim_placeholder
 test_matrix_herdr_halfblock_rule_bounds_bare_wrap
 test_matrix_omp_status_row_bounds_bare_composer
 test_matrix_codex_idle_starfield_furniture
