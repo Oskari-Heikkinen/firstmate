@@ -7155,7 +7155,7 @@ SH
 
 # One public teardown scenario, also callable in isolation by remote mutation
 # proofs. The write fault is below the production helpers, after copying/hashing.
-regular_manifest_append_case() {  # <root> <variant> <flag> <snapshot> [ownership]
+regular_manifest_append_case() {  # <root> <variant> <flag> <snapshot> [ownership] [fault|control]
   local root_name=$1 variant=$2 flag=$3 snapshot=$4 ownership=${5:-owned}
   local case_dir base label key source declaration ev hash rc
   case_dir=$(make_case "regular-append-$root_name-$variant-${flag:-normal}-$snapshot-$ownership")
@@ -7222,6 +7222,7 @@ if [ "${0##*/}" = fm-teardown.sh ]; then
   }
 fi
 SH
+  if [ "${6:-fault}" = fault ]; then
   rc=0
   FM_HOME="$case_dir" FM_APPEND_KIND="$variant" FM_APPEND_KEY="$key" FM_APPEND_SEEN="$case_dir/fault-seen" \
     BASH_ENV="$case_dir/append-fault.sh" run_teardown "$case_dir" ${flag:+"$flag"} \
@@ -7250,7 +7251,10 @@ SH
   else
     [ "$(cat "$source")" = 'fresh evidence bytes' ] || fail 'regular append refusal changed source bytes'
   fi
+  fi
   # The exact same fixture must succeed without the fault, through teardown.
+  # Remote counterfactuals also call this control independently, so an early
+  # failure cannot hide a success-path behavioral discriminator.
   rc=0
   FM_HOME="$case_dir" run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 0 "$rc" "unfaulted regular append retry failed: $(cat "$case_dir/stderr")"
