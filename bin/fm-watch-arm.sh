@@ -505,6 +505,14 @@ handling_successor_generation() {
   esac
 }
 
+# Internal host launch marker: deliberately retained in argv across env/bash
+# exec so recovery can prove home/role ownership together with process birth.
+# It has no effect on the arm mode or on independently launched arms.
+if [ "${1:-}" = --host-arm ]; then
+  [ "$#" -ge 2 ] && [ -n "$2" ] || { echo 'watcher: missing host launch token' >&2; exit 2; }
+  shift 2
+fi
+
 mode=arm
 handling_generation=
 handling_watcher_pid=

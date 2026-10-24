@@ -133,8 +133,11 @@
 # script applies the same partition, leases, and away relocation it applies to
 # the Pi branch. At activation the host stops anything a crashed predecessor
 # left running (recorded with identities, never by name), including the
-# engine descendants its turn recorded, stops the home-bound watcher directly
-# when a recorded arm could not relay its stop, removes that turn's files, and
+# engine descendants its turn recorded. Arm rows also carry a unique launch
+# token in argv: recovery may match its unchanged birth plus that home/role
+# token across exec; legacy rows still require the full identity. Activation
+# stops the home-bound watcher directly when a recorded arm could not relay
+# its stop, removes that turn's files, and
 # releases the branch actor's leases; it releases them again after every
 # engine turn. It also reads the record of a successor a pass-through left for
 # main: while that arm still runs under its recorded identity, the first cycle
@@ -303,8 +306,8 @@ identity_of() {  # <pid>
 }
 
 # Record one process this host runs, so a successor host can stop exactly it.
-record_process() {  # <role> <pid>
-  printf '%s\t%s\t%s\n' "$1" "$2" "$(identity_of "$2")" >> "$HOST_RECORD" 2>/dev/null || true
+record_process() {  # <role> <pid> [launch-token]
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(identity_of "$2")" "${3:-}" >> "$HOST_RECORD" 2>/dev/null || true
 }
 
 # Re-record a process under its current identity. Safe only for this host's
@@ -313,11 +316,11 @@ record_process() {  # <role> <pid>
 # second, so the identity and the record are read in the shell and only a
 # changed identity starts a process.
 refresh_process() {  # <pid>
-  local pid=$1 identity tmp role='' recorded_pid='' recorded_identity='' stale=0
+  local pid=$1 identity tmp role='' recorded_pid='' recorded_identity='' launch_token='' stale=0
   [ -n "$pid" ] && [ -f "$HOST_RECORD" ] || return 0
   _fm_engine_identity_to identity "$pid" || true
   [ -n "$identity" ] || return 0
-  while IFS=$'\t' read -r role recorded_pid recorded_identity || [ -n "$role" ]; do
+  while IFS=$'\t' read -r role recorded_pid recorded_identity launch_token || [ -n "$role" ]; do
     [ "$recorded_pid" = "$pid" ] && [ "$recorded_identity" != "$identity" ] && stale=1
     role=
   done 2>/dev/null < "$HOST_RECORD"
@@ -336,20 +339,48 @@ forget_process() {  # <pid>
   rm -f "$tmp" 2>/dev/null || true
 }
 
-# Stop a recorded process only while it still answers to its recorded
-# identity: TERM, then KILL once <seconds> pass.
-stop_recorded() {  # <pid> <identity> <seconds>
-  local pid=$1 identity=$2 limit=$(( ${3:-10} * 10 )) i
+# An arm can exec after its first recording. Match both its birth and the
+# unique home/role launch token retained in argv across that exec. Neither a
+# recycled pid nor another process with the same birth tick owns that token.
+# Legacy rows and non-arm processes still require their entire identity.
+recorded_identity_matches() {  # <pid> <identity> [launch-token]
+  local current token=${3:-} recorded_birth current_birth argv_hex
+  current=$(identity_of "$1")
+  [ -n "$2" ] && [ -n "$current" ] || return 1
+  [ "$current" != "$2" ] || return 0
+  [ -n "$token" ] || return 1
+  case "$token" in "$STATE"/.supervision-host-arm.??????) ;; *) return 1 ;; esac
+  case "$2" in
+    *-starttime=*' cmdline-hex='*)
+      recorded_birth=${2%% cmdline-hex=*}
+      current_birth=${current%% cmdline-hex=*}
+      [ "$recorded_birth" = "$current_birth" ] || return 1
+      argv_hex=$(printf '%s\0' "$SCRIPT_DIR/fm-watch-arm.sh" --host-arm "$token" | od -An -v -tx1)
+      argv_hex=${argv_hex//[[:space:]]/}
+      case "${current#* cmdline-hex=}" in *"00$argv_hex"*) return 0 ;; esac
+      ;;
+    *)
+      # Portable ps identity: the first 24 C-locale characters are lstart.
+      [ "${2:0:24}" = "${current:0:24}" ] || return 1
+      case "$current" in *" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token"|*" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token "*) return 0 ;; esac
+      ;;
+  esac
+  return 1
+}
+
+# Stop only a proven recorded process: TERM, then KILL once <seconds> pass.
+stop_recorded() {  # <pid> <identity> <seconds> [arm-launch-token]
+  local pid=$1 identity=$2 limit=$(( ${3:-10} * 10 )) token=${4:-} i
   STOP_RECORDED_FORCED=0
   fm_pid_alive "$pid" || return 0
-  [ -n "$identity" ] && [ "$(identity_of "$pid")" = "$identity" ] || return 0
+  recorded_identity_matches "$pid" "$identity" "$token" || return 0
   kill -TERM "$pid" 2>/dev/null || return 0
   i=0
   while [ "$i" -lt "$limit" ] && fm_pid_alive "$pid"; do
     sleep 0.1
     i=$((i + 1))
   done
-  if fm_pid_alive "$pid" && [ "$(identity_of "$pid")" = "$identity" ]; then
+  if fm_pid_alive "$pid" && recorded_identity_matches "$pid" "$identity" "$token"; then
     if kill -KILL "$pid" 2>/dev/null; then
       STOP_RECORDED_FORCED=1
     fi
@@ -366,14 +397,30 @@ release_branch_leases() {
 
 # Snapshot the home-bound watcher before stopping an arm. A fallback must
 # signal this identity, never a successor that acquired the lock meanwhile.
+# Unreadable, non-regular or unvalidated records give no fallback authority;
+# a failed or five-second-bounded snapshot never prevents arm retirement.
 capture_home_watcher() {
+  local snapshot
   CAPTURED_WATCHER_PID=
   CAPTURED_WATCHER_IDENTITY=
-  fm_file_text_to CAPTURED_WATCHER_PID "$STATE/.watch.lock/pid" || return 0
-  if fm_watcher_lock_matches_pid "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$CAPTURED_WATCHER_PID" "$FM_HOME"; then
-    CAPTURED_WATCHER_IDENTITY=$FM_WATCHER_MATCHED_IDENTITY
+  [ -e "$STATE/.watch.lock" ] || return 0
+  # Bookkeeping is optional evidence, never a prerequisite for signalling a
+  # proven arm. Reject unsafe records before opening them, and bound the whole
+  # read/validation to cover replacement between that check and open as well.
+  # Five seconds bounds local metadata only, not watcher readiness or health.
+  if snapshot=$(fm_run_timed 5 bash -c '
+    . "$1/fm-wake-lib.sh"
+    for name in pid fm-home watcher-path pid-identity; do
+      file="$2/.watch.lock/$name"
+      [ ! -L "$file" ] && [ -f "$file" ] && [ -r "$file" ] || exit 1
+    done
+    fm_file_text_to pid "$2/.watch.lock/pid" || exit 1
+    fm_watcher_lock_matches_pid "$2" "$1/fm-watch.sh" "$pid" "$3" || exit 1
+    printf "%s\t%s\n" "$pid" "$FM_WATCHER_MATCHED_IDENTITY"
+  ' _ "$SCRIPT_DIR" "$STATE" "$FM_HOME" 2>/dev/null); then
+    IFS=$'\t' read -r CAPTURED_WATCHER_PID CAPTURED_WATCHER_IDENTITY <<< "$snapshot"
   else
-    CAPTURED_WATCHER_PID=
+    printf 'supervision-host: watcher cleanup snapshot unavailable; no unproven watcher will be signalled\n' >&2
   fi
 }
 
@@ -398,7 +445,7 @@ captured_watcher_is_child_of() {  # <arm-pid>
 # auto-arm admits one generation at a time, so a predecessor still alive here
 # was superseded (its owner died or went stale) or crashed mid-cleanup.
 activate() {
-  local role pid identity forced_owner=0 owns_watcher watcher_pid watcher_identity
+  local role pid identity launch_token forced_owner=0 owns_watcher watcher_pid watcher_identity
   mkdir -p "$STATE" || return 1
   capture_home_watcher
   watcher_pid=$CAPTURED_WATCHER_PID
@@ -406,7 +453,7 @@ activate() {
   if [ -f "$HOST_RECORD" ]; then
     # The predecessor host first, with room for its own cleanup (which stops
     # its engine and arms), before anything it left is stopped individually.
-    while IFS="$(printf '\t')" read -r role pid identity; do
+    while IFS="$(printf '\t')" read -r role pid identity launch_token; do
       [ "$role" = host ] || continue
       [ "$pid" != "$HOST_PID" ] || continue
       stop_recorded "$pid" "$identity" $((ENGINE_GRACE + 20))
@@ -418,11 +465,11 @@ activate() {
     rm -f "$ENGINE_PID_FILE"
   fi
   if [ -f "$HOST_RECORD" ]; then
-    while IFS="$(printf '\t')" read -r role pid identity; do
+    while IFS="$(printf '\t')" read -r role pid identity launch_token; do
       if [ "$role" = arm ]; then
         owns_watcher=0
         captured_watcher_is_child_of "$pid" && owns_watcher=1
-        stop_recorded "$pid" "$identity" 10
+        stop_recorded "$pid" "$identity" 10 "$launch_token"
         [ "$STOP_RECORDED_FORCED" -eq 0 ] || [ "$owns_watcher" -eq 0 ] || forced_owner=1
       fi
     done < "$HOST_RECORD"
@@ -550,13 +597,13 @@ start_arm() {  # <predecessor-arm-pid or empty> [--restart]; sets the started pi
   # (the shape start_handling_successor in bin/fm-claude-stop-autoarm.sh uses).
   [ "${ARM_OWN_GROUP:-0}" -ne 1 ] || set -m 2>/dev/null || true
   if [ -n "$predecessor" ]; then
-    FM_WATCH_PREDECESSOR_ARM_PID=$predecessor FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" "$@" >"$out" 2>&1 </dev/null &
+    FM_WATCH_PREDECESSOR_ARM_PID=$predecessor FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" --host-arm "$out" "$@" >"$out" 2>&1 </dev/null &
   else
-    FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" "$@" >"$out" 2>&1 </dev/null &
+    FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" --host-arm "$out" "$@" >"$out" 2>&1 </dev/null &
   fi
   pid=$!
   [ "${ARM_OWN_GROUP:-0}" -ne 1 ] || set +m 2>/dev/null || true
-  record_process arm "$pid"
+  record_process arm "$pid" "$out"
   STARTED_ARM_PID=$pid
   STARTED_ARM_OUT=$out
 }
