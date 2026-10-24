@@ -1,0 +1,156 @@
+name: Manifest rewrite counterfactuals
+on:
+  push:
+    branches: [ci/evidence-manifest-appends-fail-closed]
+permissions:
+  contents: read
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install fixture prerequisites
+        run: |
+          set -eu
+          command -v tmux
+          npm install -g tasks-axi
+      - name: Isolated public teardown rewrite controls and counterfactuals
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, subprocess, time
+          root = pathlib.Path.cwd()
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'manifest-sort-proof'
+          out.mkdir()
+          source = root / 'bin/fm-task-evidence-lib.sh'
+          tests = root / 'tests/fm-teardown.test.sh'
+          original, test_bytes = source.read_bytes(), tests.read_bytes()
+          sha = lambda b: hashlib.sha256(b).hexdigest()
+          seal = {'schema': 'manifest-sort-proof/v1',
+                  'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                  'tree': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+                  'source_sha256': sha(original), 'tests_sha256': sha(test_bytes),
+                  'bash': subprocess.check_output(['bash', '--version'], text=True).splitlines()[0],
+                  'runner': os.environ['GITHUB_RUN_ID'], 'job': os.environ['GITHUB_JOB'],
+                  'pins_sha256': sha((root / 'tests/risky-areas.list').read_bytes())}
+          (out / 'seal.json').write_text(json.dumps(seal, indent=2) + '\n')
+          (out / 'source.original.sh').write_bytes(original)
+          (out / 'tests.original.sh').write_bytes(test_bytes)
+          guard = '''        if ! sort -k2 -o "$manifest$suffix" "$manifest$suffix"; then
+                    echo "REFUSED: could not sort staged evidence manifest $manifest$suffix for $id" >&2
+                    refused=1
+                    break
+                  fi'''
+          text = original.decode()
+          assert text.count(guard) == 1, repr(guard)
+          line = text[:text.index(guard)].count('\n') + 1
+          inventory = subprocess.check_output([
+              'bash', 'bin/fm-mutate.sh', 'list', str(source.relative_to(root)), '--max', '9999',
+              '--lines', f'{line}-{line+4}', '--seed', 'manifest-sort'], text=True)
+          rows = inventory.splitlines()
+          assert len(rows) == 1, rows
+          (out / 'inventory.tsv').write_text(inventory)
+          for row in rows:
+              fields = row.split('\t')
+              assert base64.b64decode(fields[4]).decode() == text.splitlines()[int(fields[1])-1]
+          prefix, separator, unused = test_bytes.decode().partition('case_jobs=$(fm_case_pool_jobs')
+          assert separator and test_bytes.decode().count('case_jobs=$(fm_case_pool_jobs') == 1
+          entry = root / 'tests/.manifest-sort-isolated.sh'
+          entry.write_text(prefix + '''
+          proof_exit() {
+            local rc=$? dir name
+            for dir in "$TMP_ROOT"/manifest-sort-*; do
+              [ -d "$dir" ] || continue
+              for name in stdout stderr sort-fault.sh meta-before declarations; do
+                [ ! -f "$dir/$name" ] || cp "$dir/$name" "$FM_PROOF_LOG_DIR/fixture-$name"
+              done
+            done
+            fm_test_cleanup
+            exit "$rc"
+          }
+          trap proof_exit EXIT
+          manifest_sort_case "$@"
+          pass 'isolated manifest rewrite public teardown completed'
+          ''')
+          (out / 'isolated-entry.sh').write_bytes(entry.read_bytes())
+          scenarios = [(r, k, f, v, snapshot, 'owned', mode)
+                       for r in ('copy', 'tmp') for k in ('regular', 'link') for f in ('', '--force')
+                       for v, snapshot in (('fresh', 'absent'), ('fresh', 'prior'), ('carry', 'prior'))
+                       for mode in ('fault', 'control')]
+          scenarios += [('copy', k, f, 'carry', 'prior', 'reassigned', mode)
+                        for k in ('regular', 'link') for f in ('', '--force') for mode in ('fault', 'control')]
+          assert len(scenarios) == 56
+          results = []
+          def run(label, args):
+              directory = out / label
+              directory.mkdir()
+              env = os.environ.copy()
+              env['FM_PROOF_LOG_DIR'] = str(directory)
+              start = time.monotonic()
+              try:
+                  p = subprocess.run(['bash', str(entry), *args], env=env,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+                  rc, log = p.returncode, p.stdout
+              except subprocess.TimeoutExpired as exc:
+                  rc, log = 124, (exc.stdout or b'') + b'\nOUTER TIMEOUT: NOT A KILL\n'
+              (directory / 'assertions.log').write_bytes(log)
+              result = {'label': label, 'args': args, 'rc': rc, 'seconds': time.monotonic()-start,
+                        'output_sha256': sha(log), 'source_sha256': sha(source.read_bytes())}
+              results.append(result)
+              (out / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+              print(label, rc, log.decode(errors='replace')[-600:], flush=True)
+              return rc, log.decode(errors='replace')
+          sanity = [run(f'sanity-{n}', args)[0] == 0 for n, args in enumerate(scenarios)]
+          mutations = [(row.split('\t')[0].replace('/', '-').replace(':', '-'), row, None) for row in rows]
+          mutations += [
+              ('semantic-remove-sort-guard', None, '        sort -k2 -o "$manifest$suffix" "$manifest$suffix"'),
+              ('semantic-swallow-sort-error', None, '        sort -k2 -o "$manifest$suffix" "$manifest$suffix" || :'),
+              ('semantic-clear-sort-refusal', None, guard.replace('refused=1', 'refused=0')),
+              ('semantic-sort-early-success', None, guard.replace('break', 'return 0')),
+          ]
+          dispositions = []
+          witnesses = ('failed manifest sort was accepted', 'unfaulted manifest sort retry failed',
+                       'manifest sort failure did not name its refusal', 'manifest sort retry snapshot does not verify',
+                       'manifest sort retry omitted promised row')
+          for label, row, replacement in mutations:
+              source.write_bytes(original)
+              if row:
+                  applied = subprocess.run(['bash', 'bin/fm-mutate.sh', 'apply', str(source), row],
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  assert applied.returncode == 0, (row, applied.stdout)
+              else:
+                  changed = text.replace(guard, replacement, 1)
+                  assert changed != text
+                  source.write_text(changed)
+              mutated = source.read_bytes()
+              (out / (label + '.mutant.sh')).write_bytes(mutated)
+              killed, observations = False, []
+              for n, args in enumerate(scenarios):
+                  rc, log = run(f'{label}-{n}', args)
+                  behavioral = rc == 1 and 'not ok - ' in log and any(w in log for w in witnesses)
+                  killed |= behavioral
+                  observations.append({'case': n, 'rc': rc, 'behavioral_kill': behavioral})
+              dispositions.append({'id': label, 'row': row, 'mutant_sha256': sha(mutated),
+                                   'green_controls': all(sanity),
+                                   'verdict': 'killed' if killed and all(sanity) else 'UNRESOLVED',
+                                   'observations': observations})
+              source.write_bytes(original)
+              assert sha(source.read_bytes()) == seal['source_sha256']
+          (out / 'dispositions.json').write_text(json.dumps(dispositions, indent=2) + '\n')
+          seal['restored_source_sha256'] = sha(source.read_bytes())
+          seal['isolated_sha256'] = sha(entry.read_bytes())
+          seal['finished'] = True
+          (out / 'seal.json').write_text(json.dumps(seal, indent=2) + '\n')
+          print(json.dumps(dispositions, indent=2))
+          assert all(sanity), 'unmutated baseline failures invalidate kills'
+          assert all(d['verdict'] == 'killed' for d in dispositions), 'unresolved counterfactuals'
+          PY
+      - name: Upload source, isolated fixtures, inventory and assertions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-sort-proof
+          path: ${{ runner.temp }}/manifest-sort-proof/
+          if-no-files-found: error
