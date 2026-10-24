@@ -2170,7 +2170,7 @@ test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
   watcher=$(cat "$home/state/.watch.lock/pid")
   kill -TERM "$pid"
   wait_until 200 host_exited "$home" || fail "the host did not stop on TERM"
-  expect_code 143 "$(cat "$home/host.rc")" "a TERMed host must exit 143"
+  expect_code 143 "$(cat "$home/host.rc")" "a TERMed host must exit 143: $(cat "$home/host.out" "$home/claude.err")"
   wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null' _ "$watcher" || fail "a stopped host left its watcher running"
   assert_absent "$home/state/.supervision-host" "a stopped host left its record"
   pass "host: an away wake is handled on the engine through the branch contract and never reaches main"
@@ -2470,7 +2470,7 @@ SH
   # TERM must interrupt the parked host, including with a long outer cadence.
   kill -TERM "$host_pid"
   wait_until 100 host_exited "$home" || fail "park-cadence: parked host ignored TERM"
-  [ "$(cat "$home/host.rc")" = 143 ] || fail "park-cadence: TERM disposition changed"
+  [ "$(cat "$home/host.rc")" = 143 ] || fail "park-cadence: TERM disposition changed: $(cat "$home/host.out" "$home/claude.err")"
   watcher_live "$home" && fail "park-cadence: TERM left the watcher running"
   for path in "$home/state"/.supervision-host-wait.*; do
     [ ! -e "$path" ] || fail "park-cadence: private timer path survived cleanup"
@@ -2483,11 +2483,29 @@ test_park_exit_probe_does_not_wait_for_the_outer_cadence() {
   home=$(make_home park-close attended)
   FM_SUPERVISION_HOST_POLL=60 start_host "$home"
   wait_until 150 watcher_live "$home" || fail "park-close: no watcher started"
-  wait_until 100 grep -q '^watcher: started ' "$home/host.out" || fail "park-close: readiness never streamed"
+  # Readiness is observed on the outer cadence too; allow that first 60s
+  # pass, then require the later close within 10s, not the next outer pass.
+  wait_until 750 grep -q '^watcher: started ' "$home/host.out" || fail "park-close: readiness never streamed: $(cat "$home/host.out" "$home/claude.err")"
   append_status "$home" 'probe the close' needs-decision
   wait_until 100 host_exited "$home" || fail "park-close: close waited for the 60s maintenance cadence"
   assert_re '^signal: .*demo.status' "$home/host.out" "park-close: the arm close did not reach main"
   pass "host: half-second arm probes deliver a close between outer maintenance checks"
+}
+
+test_park_hup_unwinds_the_builtin_before_cleanup() {
+  local home pid
+  home=$(make_home park-hup attended)
+  FM_SUPERVISION_HOST_POLL=60 start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "park-hup: no watcher started"
+  pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
+  # Most of a parked host's time is inside timed read, not between probes.
+  sleep 2
+  kill -HUP "$pid"
+  wait_until 100 host_exited "$home" || fail "park-hup: parked host ignored HUP"
+  expect_code 129 "$(cat "$home/host.rc")" "park-hup: disposition changed: $(cat "$home/host.out" "$home/claude.err")"
+  watcher_live "$home" && fail "park-hup: HUP left the watcher running"
+  assert_absent "$home/state/.supervision-host" "park-hup: HUP left its host record"
+  pass "host: HUP during a parked builtin wait unwinds before cleanup and exits 129"
 }
 
 test_park_timer_failures_wake_instead_of_spinning() {
@@ -3187,6 +3205,7 @@ HOST_CASES=(
   test_claude_stop_hook_notifies_when_closed_announced_successor_downtime_restore_fails
   test_park_exit_probe_avoids_child_sleeps_where_supported
   test_park_exit_probe_does_not_wait_for_the_outer_cadence
+  test_park_hup_unwinds_the_builtin_before_cleanup
   test_park_timer_failures_wake_instead_of_spinning
   test_parked_host_rerecords_its_arm_only_when_the_identity_differs
   test_branch_outcomes_only_on_a_host_home_off_pi

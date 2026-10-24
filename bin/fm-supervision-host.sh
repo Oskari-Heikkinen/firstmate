@@ -281,6 +281,8 @@ READY_LINE=
 # Descriptor 9 is reserved for the host's private timeout FIFO, never stdin.
 WAIT_BUILTIN=0
 WAIT_DIR=
+WAIT_READING=0
+WAIT_SIGNAL=0
 
 log_line() {  # <text>
   local tmp
@@ -561,13 +563,27 @@ prepare_park_wait() {
   WAIT_BUILTIN=1
 }
 
+# A caught signal must let timed read unwind before EXIT cleanup closes its
+# descriptor or runs other builtins; exiting inside read can abort some Bash
+# versions. Outside that builtin the original immediate exit is unchanged.
+host_signal() {  # <exit-status>
+  if [ "$WAIT_READING" -eq 1 ]; then
+    [ "$WAIT_SIGNAL" -ne 0 ] || WAIT_SIGNAL=$1
+  else
+    exit "$1"
+  fi
+}
+
 park_wait_half_second() {
   local _ rc
   if [ "$WAIT_BUILTIN" -eq 0 ]; then
     sleep 0.5
     return
   fi
+  WAIT_READING=1
   if IFS= read -r -t 0.5 -u 9 _; then rc=0; else rc=$?; fi
+  WAIT_READING=0
+  [ "$WAIT_SIGNAL" -eq 0 ] || exit "$WAIT_SIGNAL"
   # A timeout returns >128. EOF, a bad descriptor or unexpected data must not
   # turn a broken timer into a busy loop; cleanup still retires the arms.
   if [ "$rc" -le 128 ]; then
@@ -1099,9 +1115,9 @@ if ! host_still_owner; then
   stand_down "this session does not own supervision"
 fi
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 143' TERM
-trap 'exit 130' INT
+trap 'host_signal 129' HUP
+trap 'host_signal 143' TERM
+trap 'host_signal 130' INT
 activate || { echo "supervision-host stood down: the host record could not be written"; exit 0; }
 prepare_park_wait || { emit 'supervision-host: park timer could not be prepared; drain and re-arm supervision'; exit 1; }
 log_line "start	gen=$GEN	primary=$PRIMARY"
