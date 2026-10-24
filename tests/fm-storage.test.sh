@@ -67,7 +67,13 @@ if [ -n "\${FAKE_BULK_DEVICE:-}" ] && [ "\$1 \$2" = '-c %d' ]; then
   case "\${!#}" in "\$FAKE_BULK_MNT/d"|"\$FAKE_BULK_MNT/d/"*) printf '%s\\n' "\$FAKE_BULK_DEVICE"; exit ;; esac
 fi
 if [ -n "\${FAKE_BULK_STATFS:-}" ] && [ "\$1 \$2 \$3" = '-f -c %a %b %S' ] && [ "\${!#}" = "\$FAKE_BULK_MNT/d" ]; then
-  printf '%s\\n' "\$FAKE_BULK_STATFS"
+  # Each check gets one proved snapshot; a later observation must differ.
+  if [ -e "\$FAKE_BULK_STATFS.\$FM_STORAGE_NOW" ]; then
+    printf '%s\\n' '17000002 488281253 16384'
+  else
+    : >"\$FAKE_BULK_STATFS.\$FM_STORAGE_NOW" || exit 1
+    printf '%s\\n' '17000001 488281251 8192'
+  fi
   exit
 fi
 exec $(command -v stat) "\$@"
@@ -336,11 +342,13 @@ test_marker_identity_without_listing() {
   listing "$(ssd_vol D NTFS)"
   FAKE_BULK_DEVICE=999 FAKE_SUDO_OK=1 FM_STORAGE_NOW=1000 run check >/dev/null || fail "setup exits 0"
   local out n
-  # Pin the snapshot, not a later live reading of a filesystem CI keeps writing.
-  # Distinct counts and an 8192-byte block size also check the statfs conversion.
-  local -x FAKE_BULK_STATFS='17000001 488281251 8192'
+  # Pin each check's first snapshot, not a later live or mixed observation.
+  # The shim keys its observation record by this check's FM_STORAGE_NOW.
+  local -x FAKE_BULK_STATFS="$TMP_ROOT/statfs-observed"
   for n in 1 2 3 4; do
     out=$(FAKE_BULK_DEVICE=999 FAKE_PS_FAIL=1 FM_STORAGE_NOW=$(( 1000 + n * 300 )) run check) || fail "failed listing $n exits 0"
+    assert_equals $(( 17000001 * 8192 )) "$(rr ssd_free_bytes)" "check $n free space comes from the first statfs snapshot"
+    assert_equals $(( 488281251 * 8192 )) "$(rr ssd_total_bytes)" "check $n total space comes from the first statfs snapshot"
   done
   assert_contains "$out" "identity from the marker" "the line says where the identity came from"
   assert_equals ok "$(rr state)" "a proven SSD stays ok through failed listings"
@@ -348,8 +356,6 @@ test_marker_identity_without_listing() {
   assert_equals marker "$(rr ssd_identity)" "the publication records the marker identity"
   assert_equals 2200 "$(rr checked_at)" "the check is published, not kept"
   assert_equals "\\\\?\\Volume{ssd1}\\" "$(rr ssd_id)" "the remembered volume id is published"
-  assert_equals $(( 17000001 * 8192 )) "$(rr ssd_free_bytes)" "free space comes from statfs"
-  assert_equals $(( 488281251 * 8192 )) "$(rr ssd_total_bytes)" "total space comes from statfs"
   assert_absent "$ST/unreadable-runs" "a proven SSD resets the unreadable count"
   [ -z "$(find "$MNT/d/lattice-data" -name '.probe*')" ] || fail "the probe file is removed"
   assert_equals 1 "$(notes)" "an unchanged ok never notifies"
