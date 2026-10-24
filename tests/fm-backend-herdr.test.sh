@@ -136,21 +136,32 @@ herdr_submit_preflight_prefix() {  # <resp-dir>
   printf '  \xe2\x9d\xaf\n' > "$1/1.out"
 }
 
-# make_herdr_server_env_fakebin: a stateful server stub that records only the
-# long-lived server launch environment, then reports the server as running.
+# make_herdr_server_env_fakebin: command-keyed startup fixture. Readiness
+# depends on the server marker, never on the ordering of background launch
+# and status polling through the canned-response counter. Also records the
+# long-lived server launch environment.
 make_herdr_server_env_fakebin() {  # <dir> -> echoes fakebin dir
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
   cat > "$fb/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >> "$FM_HERDR_SERVER_CALL_LOG"
 case "${1:-}" in
   status)
     if [ -e "$FM_HERDR_SERVER_MARKER" ]; then
-      printf '{"server":{"running":true}}\n'
+      printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
     else
-      printf '{"server":{"running":false}}\n'
+      printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":false}}\n'
     fi
+    ;;
+  workspace)
+    [ -e "$FM_HERDR_SERVER_MARKER" ] || exit 1
+    case "${2:-}" in
+      list) printf '{"result":{"workspaces":[]}}\n' ;;
+      create) printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' ;;
+      *) exit 1 ;;
+    esac
     ;;
   server)
     {
@@ -603,6 +614,37 @@ test_registered_agent_with_a_live_foreground_process_stays_alive() {
   pass "herdr stale registration: a registered agent with a live Pi foreground process still reads alive"
 }
 
+# Deterministic process-table seam for negative/synthetic PID cases. No
+# invented PID is assumed absent from the runner's real process namespace.
+make_herdr_process_fake() {  # <dir> -> echoes ps path; reads rows and args/<pid>
+  mkdir -p "$1/args"
+  cat > "$1/ps" <<'SH'
+#!/usr/bin/env bash
+root=${0%/*}
+if [ "$*" = '-axo pid=,ppid=,comm=' ]; then
+  if [ -e "$root/recheck.rows" ] || [ -e "$root/recheck.exit" ]; then
+    # Each classification takes a snapshot, then rechecks its unreadable
+    # descendant. Toggle only in this explicit two-snapshot fixture mode.
+    if [ -e "$root/snapshot-read" ]; then
+      rm "$root/snapshot-read"
+      [ ! -e "$root/recheck.exit" ] || exit "$(cat "$root/recheck.exit")"
+      cat "$root/recheck.rows"
+    else
+      : > "$root/snapshot-read"
+      cat "$root/rows"
+    fi
+  else
+    cat "$root/rows"
+  fi
+else
+  [ "${1:-}" = -p ] && [ "${3:-}" = -o ] && [ "${4:-}" = args= ] || exit 1
+  cat "$root/args/$2"
+fi
+SH
+  chmod +x "$1/ps"
+  printf '%s\n' "$1/ps"
+}
+
 # --- the bound agent session reference (relaunch session continuity) --------
 #
 # Herdr applies only reports carrying the session identity it bound to a pane,
@@ -726,20 +768,23 @@ test_exhausted_settle_window_keeps_a_non_shell_foreground_live() {
   pass "herdr stale registration: an exhausted settle window still reads a non-shell foreground as live"
 }
 
-# wait_for_named_child: bounded poll (5 s) until <parent-pid> has a child whose
-# process name is <name>, replacing a fixed settle sleep before the descendant
-# walk reads the process table. Without pgrep it keeps the old 0.3 s settle.
+# wait_for_named_child: bounded, iteration-counted readiness check before
+# the descendant walk. Never report readiness from an elapsed settle sleep.
 wait_for_named_child() {  # <parent-pid> <name>
   local i=0
-  if ! command -v pgrep >/dev/null 2>&1; then
-    sleep 0.3
-    return 0
-  fi
   while [ "$i" -lt 100 ]; do
-    pgrep -P "$1" -x "$2" >/dev/null 2>&1 && return 0
+    if command -v pgrep >/dev/null 2>&1; then
+      pgrep -P "$1" -x "$2" >/dev/null 2>&1 && return 0
+    elif ps -axo ppid=,comm= | awk -v parent="$1" -v name="$2" '
+      $1 == parent { sub(/^[ \t]*[0-9]+[ \t]+/, ""); sub(/^.*\//, ""); if ($0 == name) found = 1 }
+      END { exit(found ? 0 : 1) }
+    '; then
+      return 0
+    fi
     sleep 0.05
     i=$((i + 1))
   done
+  return 1
 }
 
 test_registered_agent_with_an_agent_descendant_outside_the_foreground_stays_alive() {
@@ -757,7 +802,12 @@ test_registered_agent_with_an_agent_descendant_outside_the_foreground_stays_aliv
   # foreground view shows only the shell (a suspended or backgrounded agent).
   sh -c "'$lab/pi' 300; :" &
   shell_pid=$!
-  wait_for_named_child "$shell_pid" pi
+  wait_for_named_child "$shell_pid" pi || {
+    pkill -P "$shell_pid" 2>/dev/null || true
+    kill "$shell_pid" 2>/dev/null || true
+    wait "$shell_pid" 2>/dev/null || true
+    fail "agent-named descendant did not become ready"
+  }
   out=$(stale_registration_case descendant idle "$(shell_only_process_info "$shell_pid")")
   pkill -P "$shell_pid" 2>/dev/null || true
   kill "$shell_pid" 2>/dev/null || true
@@ -788,7 +838,12 @@ test_agent_descendant_under_a_spaced_install_path_stays_alive() {
   ln -sf "$standin" "$lab/pi"
   sh -c "'$lab/pi' 300; :" &
   shell_pid=$!
-  wait_for_named_child "$shell_pid" pi
+  wait_for_named_child "$shell_pid" pi || {
+    pkill -P "$shell_pid" 2>/dev/null || true
+    kill "$shell_pid" 2>/dev/null || true
+    wait "$shell_pid" 2>/dev/null || true
+    fail "spaced-path agent descendant did not become ready"
+  }
   out=$(stale_registration_case spaced-descendant idle "$(shell_only_process_info "$shell_pid")")
   pkill -P "$shell_pid" 2>/dev/null || true
   kill "$shell_pid" 2>/dev/null || true
@@ -798,7 +853,7 @@ test_agent_descendant_under_a_spaced_install_path_stays_alive() {
 }
 
 test_registered_agent_with_an_unreadable_process_view_is_unknown() {
-  local out
+  local out dir ps_bin body
   out=$(stale_registration_case unreadable-exit idle 'Error: socket unavailable' 1)
   [ "$out" = "unknown unreadable refused" ] \
     || fail "a failed process-info read must not demote OR trust the registration: expected unknown/unreadable, got '$out'"
@@ -809,10 +864,25 @@ test_registered_agent_with_an_unreadable_process_view_is_unknown() {
     '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w9:p9","shell_pid":4242,"foreground_process_group_id":4242,"foreground_processes":[{"pid":4242,"name":"zsh","argv0":"zsh"}]}}}')
   [ "$out" = "unknown unreadable refused" ] \
     || fail "a process view for a different pane must read unknown/unreadable, got '$out'"
-  out=$(stale_registration_case unreadable-no-foreground idle \
-    '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":4242,"foreground_process_group_id":4242,"foreground_processes":[]}}}')
+  dir="$TMP_ROOT/unreadable-process-table"; mkdir -p "$dir"
+  ps_bin=$(make_herdr_process_fake "$dir")
+  body='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":4242,"foreground_process_group_id":4242,"foreground_processes":[]}}}'
+  printf '100 1 zsh\n' > "$dir/rows"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case unreadable-no-foreground idle "$body")
   [ "$out" = "unknown unreadable refused" ] \
-    || fail "an empty foreground list must read unknown/unreadable, got '$out'"
+    || fail "an empty foreground list whose shell is absent from ps must read unknown/unreadable, got '$out'"
+  # The same PID CAN exist (including on CI). Only its presence in the
+  # supplied table changes this verdict; an empty foreground alone does not.
+  printf '4242 1 zsh\n' > "$dir/rows"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case readable-no-foreground idle "$body")
+  [ "$out" = "stale-agent dead refused" ] \
+    || fail "an empty foreground over a present childless shell must read stale-agent/dead, got '$out'"
+  : > "$dir/rows"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case unreadable-empty-table idle "$body")
+  [ "$out" = "unknown unreadable refused" ] || fail "an empty ps result must stay unreadable, got '$out'"
+  rm "$dir/rows"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case unreadable-failed-table idle "$body")
+  [ "$out" = "unknown unreadable refused" ] || fail "a failed ps read must stay unreadable, got '$out'"
   pass "herdr stale registration: an unreadable process view refuses instead of guessing either way"
 }
 
@@ -821,8 +891,8 @@ test_registered_agent_with_an_empty_foreground_over_a_real_shell_settles_via_des
   sleep_bin=$(command -v sleep) || fail "sleep not found"
   # A real, childless shell process stands in for the pane's shell, and the
   # foreground list is empty - the exec-to-shell handoff shape the flake fix
-  # targets. Unlike unreadable-no-foreground above (a synthetic pid absent
-  # from `ps`), this shell_pid is real, so the descendant walk can run to
+  # targets. Unlike the injected missing-shell table above, this shell_pid
+  # is real, so the descendant walk can run to
   # completion and prove the empty array settles to stale-agent, not
   # unreadable.
   "$sleep_bin" 300 &
@@ -833,6 +903,83 @@ test_registered_agent_with_an_empty_foreground_over_a_real_shell_settles_via_des
   [ "$out" = "stale-agent dead refused" ] \
     || fail "an empty foreground list over a real childless shell must settle to stale-agent via the descendant walk, not unreadable, got '$out'"
   pass "herdr stale registration: an empty foreground list over a real shell is not unreadable, it settles via the descendant walk"
+}
+
+test_unreadable_descendant_identity_never_proves_agent_absence() {
+  local dir ps_bin body out mode child_pid other_pid
+  dir="$TMP_ROOT/unreadable-descendant"; mkdir -p "$dir"
+  ps_bin=$(make_herdr_process_fake "$dir")
+  # The classifier can consult /proc/<pid>/cmdline as a separate Gemini
+  # identity signal. Own these PIDs so that signal cannot hit a host agent.
+  sleep 300 & child_pid=$!
+  sleep 300 & other_pid=$!
+  body=$(shell_only_process_info "$$")
+  printf '%s 1 zsh\n%s %s node\n' "$$" "$child_pid" "$$" > "$dir/rows"
+  for mode in failed empty; do
+    [ "$mode" != empty ] || : > "$dir/args/$child_pid"
+    out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case "descendant-$mode" idle "$body")
+    [ "$out" = "unknown unreadable refused" ] \
+      || fail "a $mode descendant argv read must not prove agent absence, got '$out'"
+  done
+  printf 'pi\n' > "$dir/args/$child_pid"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case descendant-readable-agent idle "$body")
+  [ "$out" = "live alive refused" ] || fail "readable Pi argv must prove alive, got '$out'"
+  printf 'zsh\n' > "$dir/args/$child_pid"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case descendant-readable-shell idle "$body")
+  [ "$out" = "stale-agent dead refused" ] || fail "a completely readable shell tree must prove stale, got '$out'"
+  # A positive identity still wins, even if another descendant is unreadable.
+  rm "$dir/args/$child_pid"
+  printf '%s %s node\n' "$other_pid" "$$" >> "$dir/rows"
+  printf 'pi\n' > "$dir/args/$other_pid"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case descendant-partly-readable idle "$body")
+  [ "$out" = "live alive refused" ] || fail "a proven harness must survive another unreadable descendant, got '$out'"
+  # comm alone is also a positive proof when its argv is unavailable.
+  printf '%s 1 zsh\n%s %s pi\n' "$$" "$child_pid" "$$" > "$dir/rows"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case descendant-readable-comm idle "$body")
+  kill "$child_pid" "$other_pid" 2>/dev/null || true
+  wait "$child_pid" "$other_pid" 2>/dev/null || true
+  [ "$out" = "live alive refused" ] || fail "a proven harness comm must survive unreadable argv, got '$out'"
+  pass "herdr stale registration: incomplete descendant identity stays unreadable unless a harness is positively proven"
+}
+
+test_unreadable_descendant_requires_positive_disappearance_proof() {
+  local dir ps_bin body out mode child_pid expected
+  dir="$TMP_ROOT/disappearing-descendant"; mkdir -p "$dir"
+  ps_bin=$(make_herdr_process_fake "$dir")
+  sleep 300 & child_pid=$!
+  body=$(shell_only_process_info "$$")
+  printf '%s 1 zsh\n%s %s node\n' "$$" "$child_pid" "$$" > "$dir/rows"
+  # No args file: the per-PID read fails. Only the subsequent table varies,
+  # without racing an actual exit or relying on a fixed settle duration.
+  for mode in gone present failed empty shell-missing; do
+    rm -f "$dir/recheck.rows" "$dir/recheck.exit" "$dir/snapshot-read"
+    expected='unknown unreadable refused'
+    case "$mode" in
+      gone)
+        printf '%s 1 zsh\n' "$$" > "$dir/recheck.rows"
+        expected='stale-agent dead refused'
+        ;;
+      present) cp "$dir/rows" "$dir/recheck.rows" ;;
+      failed) printf '1\n' > "$dir/recheck.exit" ;;
+      empty) : > "$dir/recheck.rows" ;;
+      shell-missing) printf '1 0 init\n' > "$dir/recheck.rows" ;;
+    esac
+    out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case "disappearance-$mode" idle "$body")
+    [ "$out" = "$expected" ] || {
+      kill "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+      fail "a $mode descendant recheck must read '$expected', got '$out'"
+    }
+  done
+  # A successful but empty argv read needs the same disappearance proof.
+  : > "$dir/args/$child_pid"
+  printf '%s 1 zsh\n' "$$" > "$dir/recheck.rows"
+  out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case disappearance-empty-argv idle "$body")
+  kill "$child_pid" 2>/dev/null || true
+  wait "$child_pid" 2>/dev/null || true
+  [ "$out" = 'stale-agent dead refused' ] \
+    || fail "empty argv followed by positive disappearance must settle to stale-agent/dead, got '$out'"
+  pass "herdr stale registration: a failed descendant read proves absence only after a readable disappearance recheck"
 }
 
 test_projection_reclaim_rollback_refuses_a_stale_registration() {
@@ -1243,26 +1390,15 @@ test_container_ensure_refuses_an_ambiguous_home_label() {
 # --- container_ensure / create_task ------------------------------------------
 
 test_container_ensure_starts_server_and_workspace() {
-  local dir log resp fb out
-  dir="$TMP_ROOT/container"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: version_check status --json (server not running yet, irrelevant to client check)
-  printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
-  # 2: server_ensure's status --json check -> not running
-  printf '{"server":{"running":false}}\n' > "$resp/2.out"
-  # 3: `herdr server` backgrounded launch - no meaningful output
-  # 4: server_ensure poll -> now running
-  printf '{"server":{"running":true}}\n' > "$resp/4.out"
-  # 5: workspace list -> empty (no "firstmate" workspace yet)
-  printf '{"result":{"workspaces":[]}}\n' > "$resp/5.out"
-  # 6: workspace create -> w1, seeding default tab w1:t9 (real herdr returns
-  # the seeded tab/pane ids in the SAME response - verified empirically).
-  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' > "$resp/6.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
+  local dir log fb out
+  dir="$TMP_ROOT/container"; mkdir -p "$dir"; log="$dir/log"; : > "$log"
+  fb=$(make_herdr_server_env_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_SERVER_CALL_LOG="$log" FM_HERDR_SERVER_ENV_LOG="$dir/env" \
+    FM_HERDR_SERVER_MARKER="$dir/running" HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w1\tw1:t9' ] || fail "container_ensure should echo '<session>:<workspace_id>\\t<seeded_default_tab_id>', got '$out'"
-  assert_contains "$(cat "$log")" "HERDR_SESSION=fmtest"$'\x1f''server' "container_ensure did not start the herdr server"
-  assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate' \
+  assert_contains "$(cat "$log")" 'server --session fmtest' "container_ensure did not start the herdr server"
+  assert_contains "$(cat "$log")" 'workspace create --cwd /tmp --label firstmate' \
     "container_ensure did not create the firstmate workspace with the given cwd"
   pass "fm_backend_herdr_container_ensure: version-gates, starts the server, ensures the firstmate workspace, echoes session:workspace_id + the seeded default tab id"
 }
@@ -1271,7 +1407,7 @@ test_server_ensure_scrubs_home_and_harness_identity() {
   local dir log marker fb output name
   dir="$TMP_ROOT/server-env"; mkdir -p "$dir"; log="$dir/env"; marker="$dir/running"
   fb=$(make_herdr_server_env_fakebin "$dir")
-  PATH="$fb:$PATH" FM_HERDR_SERVER_ENV_LOG="$log" FM_HERDR_SERVER_MARKER="$marker" FM_HERDR_SENTINEL=kept \
+  PATH="$fb:$PATH" FM_HERDR_SERVER_CALL_LOG="$dir/calls" FM_HERDR_SERVER_ENV_LOG="$log" FM_HERDR_SERVER_MARKER="$marker" FM_HERDR_SENTINEL=kept \
     FM_HOME=/tmp/wrong-home FM_ROOT_OVERRIDE=/tmp/wrong-root FM_STATE_OVERRIDE=/tmp/wrong-state \
     FM_DATA_OVERRIDE=/tmp/wrong-data FM_PROJECTS_OVERRIDE=/tmp/wrong-projects FM_CONFIG_OVERRIDE=/tmp/wrong-config \
     CURSOR_AGENT=1 CURSOR_INVOKED_AS=cursor-agent CLAUDECODE=1 PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed GROK_AGENT=1 FM_SUPERVISION_MODEL=autoarm \
@@ -6104,6 +6240,8 @@ HERDR_CASES=(
   test_registered_agent_with_an_agent_descendant_outside_the_foreground_stays_alive
   test_agent_descendant_under_a_spaced_install_path_stays_alive
   test_registered_agent_with_an_unreadable_process_view_is_unknown
+  test_unreadable_descendant_identity_never_proves_agent_absence
+  test_unreadable_descendant_requires_positive_disappearance_proof
   test_registered_agent_with_an_empty_foreground_over_a_real_shell_settles_via_descendant_walk
   test_projection_reclaim_rollback_refuses_a_stale_registration
   test_busy_state_never_reports_a_shell_only_pane_busy

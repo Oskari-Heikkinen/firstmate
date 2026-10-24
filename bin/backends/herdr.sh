@@ -2117,8 +2117,11 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #                settle window and the first agent or shell reading wins; only
 #                an exhausted window keeps `other`.
 #   unreadable - process-info failed, described a different pane, named no
-#                shell pid, or the process table could not be read or does not
-#                contain the shell pid. An empty foreground-process list is NOT
+#                shell pid, or the process table could not be read, does not
+#                contain the shell pid, or leaves a descendant's identity
+#                unreadable without proof it has exited or a positive harness
+#                identity elsewhere.
+#                An empty foreground-process list is NOT
 #                unreadable: it is the real, momentary shape of the exec-to-
 #                shell handoff (the harness process has exited but Herdr has
 #                not yet repopulated the foreground group), so it is treated
@@ -2147,7 +2150,7 @@ fm_backend_herdr_pane_process_state() {  # <session> <pane_id>
 # the settle retry.
 fm_backend_herdr_pane_process_state_sample() {  # <session> <pane_id>
   local session=$1 pane_id=$2 info shell_pid count i pid name argv0 args verdict
-  local others=0 ps_bin rows
+  local others=0 ps_bin rows recheck unreadable=0
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane_id" 2>/dev/null) \
     || { printf 'unreadable'; return 0; }
   printf '%s' "$info" | jq -e --arg pane "$pane_id" '
@@ -2194,12 +2197,28 @@ fm_backend_herdr_pane_process_state_sample() {  # <session> <pane_id>
     || { printf 'unreadable'; return 0; }
   while IFS=$'\t' read -r pid name; do
     [ -n "$pid" ] || continue
-    args=$(LC_ALL=C "$ps_bin" -p "$pid" -o args= 2>/dev/null) || continue
+    # A failed/empty argv read is not evidence that this descendant is not
+    # an agent (node's argv may be the only harness identity). A positive
+    # identity in comm still wins; otherwise prove disappearance in a fresh
+    # table, since a prompt helper may have exited since the first snapshot.
+    args=$(LC_ALL=C "$ps_bin" -p "$pid" -o args= 2>/dev/null) || args=
     args=${args#"${args%%[![:space:]]*}"}
     argv0=${args%%[[:space:]]*}
     if [ "$(fm_agent_process_classify "$name" "$argv0" "$args" "$pid")" = agent ]; then
       printf 'agent'
       return 0
+    fi
+    if [ -z "$args" ]; then
+      if recheck=$(LC_ALL=C "$ps_bin" -axo pid=,ppid=,comm= 2>/dev/null); then
+        # A failed, empty or shell-less table cannot prove absence either.
+        printf '%s\n' "$recheck" | awk -v shell="$shell_pid" -v child="$pid" '
+          $1 == shell { found = 1 }
+          $1 == child { present = 1 }
+          END { exit(found && !present ? 0 : 1) }
+        ' || unreadable=1
+      else
+        unreadable=1
+      fi
     fi
   done <<EOF
 $(printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
@@ -2223,6 +2242,7 @@ $(printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
     }
   }')
 EOF
+  [ "$unreadable" -eq 0 ] || { printf 'unreadable'; return 0; }
   printf 'shell'
 }
 
