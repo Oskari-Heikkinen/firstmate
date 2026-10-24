@@ -2484,7 +2484,7 @@ test_park_exit_probe_does_not_wait_for_the_outer_cadence() {
   FM_SUPERVISION_HOST_POLL=60 start_host "$home"
   wait_until 150 watcher_live "$home" || fail "park-close: no watcher started"
   wait_until 100 grep -q '^watcher: started ' "$home/host.out" || fail "park-close: readiness never streamed"
-  append_status "$home" 'needs-decision: probe the close'
+  append_status "$home" 'probe the close' needs-decision
   wait_until 100 host_exited "$home" || fail "park-close: close waited for the 60s maintenance cadence"
   assert_re '^signal: .*demo.status' "$home/host.out" "park-close: the arm close did not reach main"
   pass "host: half-second arm probes deliver a close between outer maintenance checks"
