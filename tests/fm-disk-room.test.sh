@@ -1084,9 +1084,9 @@ test_interface_v1_contract() {
   write_mb_groups 30
   write_shadow_live 10 4 3
   local out rc spec key v
-  out=$(run_room --interface); rc=$?
-  expect_code 0 "$rc" "--interface exits 0"
-  assert_equals "fm-disk-room-interface/v1" "$out" "this contract case covers only interface v1; add the new version's case before bumping"
+  out=$(run_room --interface v1); rc=$?
+  expect_code 0 "$rc" "--interface v1 exits 0"
+  assert_equals "fm-disk-room-interface/v1" "$out" "v2 still explicitly serves v1"
   out=$(run_room status --json); rc=$?
   expect_code 0 "$rc" "status --json exits 0"
   assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "status --json is one line"
@@ -1184,7 +1184,7 @@ test_interface_v1_contract() {
   expect_code 0 "$rc" "growth exits 0"
   run_room growth extra >/dev/null 2>&1; rc=$?
   expect_code 2 "$rc" "growth misuse exits 2"
-  run_room --interface extra >/dev/null 2>&1; rc=$?
+  run_room --interface v1 extra >/dev/null 2>&1; rc=$?
   expect_code 2 "$rc" "--interface misuse exits 2"
   pass "interface v1: commands, fields, units and exit codes hold through the executable"
 }
@@ -1232,14 +1232,161 @@ test_self_test() {
   expect_code 0 "$rc" "--self-test v1 passes on the interface this script serves"
   assert_contains "$out" "self-test v1 passed" "a passing self-test says so"
   assert_equals "" "$(find "$TMP_ROOT" -maxdepth 1 -name 'fm-disk-room-self-test.*')" "the self-test removes its temp state"
-  out=$(TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test v2); rc=$?
+  out=$(TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test v99); rc=$?
   expect_code 1 "$rc" "--self-test of an unserved version exits 1"
-  assert_contains "$out" "serves fm-disk-room-interface/v1" "an unserved version names the one served"
+  assert_contains "$out" "serves fm-disk-room-interface/v2" "an unserved version names the latest served"
   TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test >/dev/null 2>&1; rc=$?
   expect_code 2 "$rc" "--self-test without a version is misuse"
   pass "--self-test reports whether this script serves the pinned interface"
 }
 
+# v2's samples come from real kernel counters, not df deltas or declared sizes.
+# The written fixture is small; no test needs a write-heavy job or Windows I/O.
+test_interface_v2_history() {
+  reset_state
+  set_sizes 60 600 400
+  local out rc high
+  out=$(run_room --interface)
+  assert_equals 'fm-disk-room-interface/v2' "$out" "latest interface is v2"
+  out=$(run_room write-history seal)
+  assert_equals '{"kind":"seal","samples":0,"high_bytes":0}' "$out" "missing history is explicitly empty"
+  out=$(run_room check --kind seal); rc=$?
+  expect_code 2 "$rc" "a new kind cannot infer a write"
+  assert_contains "$out" 'no write history' "the caller must supply a first declaration"
+  out=$(run_room run --name missing --kind seal -- sh -c 'echo ran' 2>&1); rc=$?
+  expect_code 75 "$rc" "an unmeasured kind refuses an undeclared run"
+  assert_not_contains "$out" ran "a refused kind never starts"
+  run_room check --kind ../seal --expect-write 1G >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "a kind cannot escape state"
+  run_room write-history ../seal >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "history queries validate their kind"
+  run_room write-history seal extra >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "history query arity is checked"
+
+  if [ ! -r /proc/$$/io ]; then
+    out=$(run_room run --name unsupported --kind seal --expect-write 1M -- sh -c 'echo ran' 2>&1); rc=$?
+    expect_code 75 "$rc" "unsupported counters refuse rather than record zero"
+    assert_not_contains "$out" ran "unsupported measurement never starts work"
+    pass "v2 refuses unsupported storage write accounting; recording cases require Linux procfs"
+    return
+  fi
+  run_room reserve busy 1G --pid "$$" >/dev/null
+  out=$(run_room run --name busy --kind seal --expect-write 1M -- sh -c 'echo ran' 2>&1); rc=$?
+  expect_code 75 "$rc" "typed runs cannot overwrite a live reservation"
+  assert_contains "$out" 'reservation already live' "collision names the reservation guard"
+  assert_not_contains "$out" ran "a colliding run never starts"
+  run_room release busy
+  run_room run --name seal-1 --kind seal --expect-write 1M -- \
+    dd if=/dev/zero of="$TMP_ROOT/written" bs=4096 count=8 conv=fsync >/dev/null 2>&1; rc=$?
+  expect_code 0 "$rc" "a typed run returns success"
+  out=$(run_room write-history seal)
+  assert_equals 1 "$(json_field "$out" samples)" "one completed run records one sample"
+  high=$(json_field "$out" high_bytes)
+  [ "$high" -ge 32768 ] || fail "the recorded bytes include the actual write"
+  [ "$high" -lt 1048576 ] || fail "the sample is measured, not the 1M declaration"
+  out=$(run_room status --json)
+  assert_equals 0 "$(json_field "$out" reserved)" "completion releases the typed reservation"
+  out=$(run_room check --kind seal --expect-write 0); rc=$?
+  expect_code 1 "$rc" "an understated declaration is refused even with ample room"
+  assert_contains "$out" 'below recorded high' "refusal names the historical comparison"
+  out=$(run_room run --name understated --kind seal --expect-write 0 -- sh -c 'echo ran' 2>&1); rc=$?
+  expect_code 75 "$rc" "run applies the historical check too"
+  assert_not_contains "$out" ran "an understated run does not start"
+  out=$(run_room check --kind seal --expect-write "$high"); rc=$?
+  expect_code 0 "$rc" "a declaration equal to the high is admitted"
+  out=$(run_room check --kind seal); rc=$?
+  expect_code 0 "$rc" "omitted declarations use the high"
+  out=$(run_room run --name seal-2 --kind seal -- sh -c 'cat "$FM_DISK_ROOM_STATE/reservations/seal-2"; exit 7'); rc=$?
+  expect_code 7 "$rc" "typed runs preserve a failed command status"
+  assert_contains "$out" "bytes=$high" "the inferred high is actually reserved"
+  out=$(run_room write-history seal)
+  assert_equals 2 "$(json_field "$out" samples)" "failed attempts are recorded too"
+  assert_equals "$high" "$(json_field "$out" high_bytes)" "a smaller sample never lowers the high"
+  out=$(run_room write-history other)
+  assert_equals 0 "$(json_field "$out" samples)" "kinds have separate history"
+  out=$(FM_DISK_ROOM_MARGIN=1000G run_room check --kind seal); rc=$?
+  expect_code 1 "$rc" "history never bypasses the configured margin"
+  out=$(TEST_HOST="$TMP_ROOT/missing" run_room check --kind seal); rc=$?
+  expect_code 2 "$rc" "history never bypasses an unreadable disk"
+  set_sizes 0 0 400
+  out=$(FM_DISK_ROOM_MARGIN=1G run_room run --name full --kind seal -- true 2>&1); rc=$?
+  expect_code 75 "$rc" "history never bypasses the ENOSPC floor"
+  set_sizes 60 600 400
+
+  # Recording failure after successful work is visible, never a fake success.
+  out=$(run_room run --name break-record --kind break-record --expect-write 1M -- \
+    sh -c 'mkdir -p "$FM_DISK_ROOM_STATE/write-history/break-record"' 2>&1); rc=$?
+  expect_code 74 "$rc" "failure to persist a successful run is an I/O failure"
+  assert_contains "$out" 'cannot read write history' "post-command recording failure is surfaced"
+  out=$(run_room run --name break-failed --kind break-failed --expect-write 1M -- \
+    sh -c 'mkdir -p "$FM_DISK_ROOM_STATE/write-history/break-failed"; exit 9' 2>&1); rc=$?
+  expect_code 9 "$rc" "recording failure preserves a nonzero command result"
+  assert_contains "$out" 'cannot read write history' "the recording error still speaks on command failure"
+  # Concurrent completions must append, not replace each other's samples.
+  run_room run --name parallel-1 --kind parallel --expect-write 1M -- \
+    sh -c 'dd if=/dev/zero of="$1" bs=4096 count=8 conv=fsync 2>/dev/null; exit 6' _ "$TMP_ROOT/parallel-1" &
+  local p1=$!
+  run_room run --name parallel-2 --kind parallel --expect-write 1M -- \
+    dd if=/dev/zero of="$TMP_ROOT/parallel-2" bs=4096 count=16 conv=fsync >/dev/null 2>&1 &
+  local p2=$!
+  wait "$p1"; rc=$?
+  expect_code 6 "$rc" "a failed writer retains its result and waits for its child"
+  wait "$p2"; rc=$?
+  expect_code 0 "$rc" "the concurrent writer completes"
+  out=$(run_room write-history parallel)
+  assert_equals 2 "$(json_field "$out" samples)" "concurrent completions keep both records"
+  [ "$(json_field "$out" high_bytes)" -ge 65536 ] || fail "the high includes the larger writer"
+  pass "v2 records storage bytes per kind and gates declarations and inferred reservations"
+}
+
+test_corrupt_write_history() {
+  reset_state
+  set_sizes 60 600 400
+  local row out rc
+  mkdir -p "$TMP_ROOT/state/write-history"
+  for row in '' garbage 'fm-disk-write/v99 1 10 0' 'fm-disk-write/v1 1 -1 0' \
+    'fm-disk-write/v1 1 9999999999999999999 0' 'fm-disk-write/v1 1 10 256' \
+    'fm-disk-write/v1 1 10 0 extra' 'fm-disk-write/v1 1 10'; do
+    printf '%s\n' "$row" >"$TMP_ROOT/state/write-history/bad"
+    out=$(run_room check --kind bad --expect-write 1G); rc=$?
+    expect_code 2 "$rc" "corrupt history fails closed with an explicit declaration"
+    assert_contains "$out" 'corrupt write history' "corruption is named"
+    out=$(run_room run --name bad-run --kind bad --expect-write 1G -- sh -c 'echo ran' 2>&1); rc=$?
+    expect_code 75 "$rc" "run refuses corrupt history"
+    assert_not_contains "$out" ran "corruption never starts work"
+    run_room write-history bad >/dev/null 2>&1; rc=$?
+    expect_code 2 "$rc" "the query also refuses corrupt history"
+  done
+  # v1 neither consumes nor overwrites the broken v2 history.
+  run_room check --expect-write 1G >/dev/null; rc=$?
+  expect_code 0 "$rc" "legacy check ignores kind history"
+  run_room run --name bad --expect-write 1G -- sh -c 'exit 7'; rc=$?
+  expect_code 7 "$rc" "legacy exec remains unchanged despite corrupt history"
+  printf 'fm-disk-write/v1 1 999999999999999998 0\nfm-disk-write/v1 2 999999999999999999 0\n' >"$TMP_ROOT/state/write-history/large"
+  out=$(run_room write-history large)
+  assert_equals 999999999999999999 "$(json_field "$out" high_bytes)" "high bytes retain integer precision"
+  rm -rf "$TMP_ROOT/state/write-history"
+  printf 'broken directory\n' >"$TMP_ROOT/state/write-history"
+  out=$(run_room check --kind bad --expect-write 1G); rc=$?
+  expect_code 2 "$rc" "an unreadable history directory is not missing history"
+  assert_contains "$out" 'cannot read write history directory' "the unreadable parent is named"
+  pass "missing and corrupt write history never silently become a trusted zero"
+}
+
+test_self_test_v2() {
+  [ -r /proc/$$/io ] || return 0
+  local out rc
+  out=$(TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test v2); rc=$?
+  expect_code 0 "$rc" "the v2 self-test includes the compatible v1 probe"
+  assert_contains "$out" 'self-test v2 passed' "v2 probe reports its version"
+  out=$(TMPDIR="$TMP_ROOT" bash -c "$(cat "$DISK_ROOM")" "$DISK_ROOM" --self-test v2); rc=$?
+  expect_code 0 "$rc" "pinned bash -c bytes can probe v2 too"
+  assert_contains "$out" 'self-test v2 passed' "pinned v2 probe passes"
+}
+
+test_interface_v2_history
+test_corrupt_write_history
+test_self_test_v2
 test_interface_v1_contract
 test_self_test
 test_pinned_mode
