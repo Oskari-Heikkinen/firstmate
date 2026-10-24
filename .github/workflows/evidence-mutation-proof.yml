@@ -1,0 +1,195 @@
+name: Evidence reassigned-carry corrective proof
+
+# Diagnostic-only child; never merge or cherry-pick into delivery or main.
+on:
+  push:
+    branches: ['ci/evidence-missing-cite-warn']
+permissions:
+  contents: read
+jobs:
+  proof:
+    name: Reassigned carry decisions and exact G2 behavior
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install standard proof environment
+        run: |
+          set -eu
+          command -v tmux
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          npm install -g tasks-axi
+          npm install -g @earendil-works/pi-coding-agent@0.87.1
+      - name: Enumerate and complete every delta decision and exact G2 witness
+        run: |
+          set -u
+          out="$RUNNER_TEMP/evidence-proof"
+          mkdir -p "$out"
+          export PROOF_OUT="$out"
+          cat > "$out/proof.py" <<'PY'
+          import base64
+          import difflib
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import time
+
+          out = Path(os.environ['PROOF_OUT'])
+          script = Path('bin/fm-task-evidence-lib.sh')
+          source = script.read_bytes()
+          candidate = subprocess.check_output(['git', 'rev-parse', 'HEAD^']).decode().strip()
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip()
+          old = 'fabb0534d3b1a34e3fd3a6620c4351beaa7d94fa'
+          baseline = 'b2819ff5f26f2b7a4b5fe5cd2a45d1a50a807de6'
+          paths = [str(script), 'tests/fm-teardown.test.sh', 'tests/fm-teardown-endpoint-safety.test.sh', 'tests/lib.sh', 'bin/fm-timeout-lib.sh']
+          (out/'head').write_text(head + '\n')
+          (out/'candidate').write_text(candidate + '\n')
+          (out/'original.sh').write_bytes(source)
+          for path in paths:
+              assert Path(path).read_bytes() == subprocess.check_output(['git', 'show', f'{candidate}:{path}'])
+          def hashes():
+              return ''.join(hashlib.sha256(Path(p).read_bytes()).hexdigest() + '  ' + p + '\n' for p in paths)
+          (out/'source.sha256').write_text(hashes())
+          inventory = {}
+          try:
+              for label, revision in [('old', old), ('current', candidate)]:
+                  raw = subprocess.check_output(['git', 'show', f'{revision}:{script}'])
+                  script.write_bytes(raw)
+                  diff = subprocess.check_output(['git', 'diff', '--unified=0', baseline, revision, '--', str(script)]).decode()
+                  (out/f'{label}.diff').write_text(diff)
+                  ranges = []
+                  for start, count in re.findall(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@', diff, re.M):
+                      start, count = int(start), int(count or 1)
+                      if count:
+                          ranges.append(str(start) if count == 1 else f'{start}-{start+count-1}')
+                  assert ranges
+                  rows = subprocess.check_output(['bash', 'bin/fm-mutate.sh', 'list', str(script), '--max', '10000', '--lines', ','.join(ranges)]).decode().splitlines()
+                  (out/f'{label}.rows').write_text('\n'.join(rows) + '\n')
+                  (out/f'{label}.source.sh').write_bytes(raw)
+                  inventory[label] = rows
+          finally:
+              script.write_bytes(source)
+          assert len(inventory['old']) == 200
+          old_source = (out/'old.source.sh').read_text().splitlines()
+          current_source = source.decode().splitlines()
+          aligned = {}
+          for tag, a, b, c, d in difflib.SequenceMatcher(None, old_source, current_source, autojunk=False).get_opcodes():
+              if tag == 'equal':
+                  aligned.update({c + n + 1: a + n + 1 for n in range(b-a)})
+          old_rows = {tuple(r.split('\t')[1:]): r for r in inventory['old']}
+          mapping, selected = [], []
+          for row in inventory['current']:
+              fields = row.split('\t')
+              previous = old_rows.get((str(aligned.get(int(fields[1]))), *fields[2:]))
+              if previous:
+                  mapping.append([previous.split('\t')[0], fields[0]])
+              else:
+                  selected.append(row)
+          mapped_old = {a for a, b in mapping}
+          replaced = [r for r in inventory['old'] if r.split('\t')[0] not in mapped_old]
+          assert selected and replaced
+          g2 = [r for r in inventory['old'] if r.split('\t')[0] == str(script) + ':456:andor:1']
+          assert len(g2) == 1
+          plan = dict(mapping=mapping, replaced=replaced, selected=selected, g2=g2[0])
+          (out/'plan.json').write_text(json.dumps(plan, indent=2) + '\n')
+          test = Path('tests/fm-teardown.test.sh').read_text()
+          marker = '# Every case builds its own sandbox under a name of its own from the shared\n'
+          assert test.count(marker) == 1
+          prefix = test.split(marker)[0]
+          suites = {}
+          for kind, function in [('success', 'test_reassigned_evidence_citations_only_warn_without_interpreting'), ('faults', 'test_reassigned_evidence_staging_errors_preserve_prior_snapshot')]:
+              suite = Path(f'tests/.evidence-{kind}-isolated.test.sh')
+              suite.write_text(prefix + '\n' + function + '\n')
+              (out/suite.name).write_bytes(suite.read_bytes())
+              suites[kind] = suite
+          (out/'isolated.sha256').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + str(p) + '\n' for p in suites.values()))
+          results, errors = [], []
+          behavioral = ('carried foreign-copy links must survive without target inspection',
+                        'foreign-copy carry lost prior link', 'foreign-copy carried link does not verify',
+                        'reassigned-copy staging failure was accepted',
+                        'staging failure must not become an old-source-loss warning',
+                        'staging refusal changed prior', 'staging refusal replaced the prior tree',
+                        'unfaulted reassigned carried-link success must preserve evidence',
+                        'retry changed', 'unfaulted carried snapshot does not verify',
+                        'already-lost foreign source must retain its warning')
+          def run(name, kind):
+              start = time.monotonic()
+              with (out/f'{name}.log').open('wb') as log:
+                  rc = subprocess.call(['timeout', '-k', '5', '120', 'bash', str(suites[kind])], stdout=log, stderr=subprocess.STDOUT)
+              text = (out/f'{name}.log').read_text(errors='replace')
+              assertions = [line for line in text.splitlines() if line.startswith('not ok')]
+              valid = rc not in [0, 124, 137, -9, -15] and any(any(s in a for s in behavioral) for a in assertions)
+              result = dict(name=name, kind=kind, rc=rc, duration_ms=int((time.monotonic()-start)*1000), assertions=assertions,
+                            behavioral_kill=valid, log_sha256=hashlib.sha256((out/f'{name}.log').read_bytes()).hexdigest())
+              results.append(result)
+              (out/'results.json').write_text(json.dumps(results, indent=2) + '\n')
+              print(json.dumps(result), flush=True)
+              return result
+          controls = {}
+          for kind in suites:
+              result = run(f'sanity-current-{kind}', kind)
+              controls[kind] = result['rc'] == 0 and not result['assertions']
+              if not controls[kind]:
+                  errors.append(f'Invalid current {kind} control')
+          try:
+              for row in selected:
+                  identifier = row.split('\t')[0]
+                  slug = identifier.removeprefix(str(script) + ':').replace(':', '-')
+                  script.write_bytes(source)
+                  applied = subprocess.run(['bash', 'bin/fm-mutate.sh', 'apply', str(script), row], capture_output=True)
+                  (out/f'{slug}.apply.log').write_bytes(applied.stdout + applied.stderr)
+                  if applied.returncode:
+                      errors.append(f'{identifier}: apply rc {applied.returncode}')
+                      continue
+                  (out/f'{slug}.mutated.sh').write_bytes(script.read_bytes())
+                  # Both entries complete independently, even after setup failure.
+                  outcomes = [run(f'{slug}-{kind}', kind) for kind in suites]
+                  if not all(controls.values()) or not any(r['behavioral_kill'] for r in outcomes):
+                      errors.append(f'{identifier}: no valid completed behavioral discriminator')
+              # Reproduce G2 on the EXACT prior source and original generated row,
+              # not merely the changed return-2 row in the corrected source.
+              script.write_bytes((out/'old.source.sh').read_bytes())
+              sanity = run('sanity-exact-g2', 'success')
+              applied = subprocess.run(['bash', 'bin/fm-mutate.sh', 'apply', str(script), g2[0]], capture_output=True)
+              (out/'exact-g2.apply.log').write_bytes(applied.stdout + applied.stderr)
+              if applied.returncode:
+                  errors.append(f'Exact G2 apply rc {applied.returncode}')
+              else:
+                  (out/'exact-g2.mutated.sh').write_bytes(script.read_bytes())
+                  result = run('exact-g2', 'success')
+                  if sanity['rc'] != 0 or sanity['assertions'] or not result['behavioral_kill']:
+                      errors.append('Exact G2 lacks green control and completed behavioral discriminator')
+              # Public semantic witness for the new caller's error classification:
+              # assigning a real staging failure to the old-loss warning is wrong.
+              text = source.decode()
+              original = '          1) echo "warning: declared evidence'
+              assert text.count(original) == 1
+              script.write_text(text.replace(original, '          1|2) echo "warning: declared evidence'))
+              (out/'semantic-stage-as-loss.mutated.sh').write_bytes(script.read_bytes())
+              result = run('semantic-stage-as-loss', 'faults')
+              if not controls['faults'] or not result['behavioral_kill']:
+                  errors.append('Stage-as-loss semantic mutant has no completed behavioral discriminator')
+          finally:
+              script.write_bytes(source)
+              (out/'after.sha256').write_text(hashes())
+          if (out/'source.sha256').read_bytes() != (out/'after.sha256').read_bytes():
+              errors.append('Restoration hashes differ')
+          (out/'errors.json').write_text(json.dumps(errors, indent=2) + '\n')
+          (out/'runner.json').write_text(json.dumps(dict(head=head, candidate=candidate, run=os.environ['GITHUB_RUN_ID'], job=os.environ['GITHUB_JOB'], status=bool(errors)), indent=2) + '\n')
+          raise SystemExit(bool(errors))
+          PY
+          nice -n 19 ionice -c3 python3 "$out/proof.py"
+      - name: Retain inventories, exact mutants, scripts and every assertion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-reassigned-carry
+          path: ${{ runner.temp }}/evidence-proof/
+          include-hidden-files: true
