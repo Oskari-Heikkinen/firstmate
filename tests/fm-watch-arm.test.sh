@@ -367,6 +367,9 @@ test_attached_arm_hands_a_stalled_holder_to_its_replacement() {
     || fail "stalled-holder close did not exit nonzero (status $status)"
   grep -q 'reason=attached-holder-stalled' "$state/.watch-cycle-exits.log" \
     || fail "the stalled-holder close was not classified in the lifecycle ledger"
+  local reported_age
+  reported_age=$(sed -n 's/.*stalled (beacon \([0-9][0-9]*\)s at.*/\1/p' "$armout")
+  [ "$reported_age" -le 22 ] || fail "stall reporting exceeded the 12 s bound plus 10 s health interval"
   is_live_non_zombie "$holder" || fail "the attached arm signalled the holder it follows"
 
   # The owner's retry: a fresh arm reaches the watcher's eviction path, and the
@@ -1962,6 +1965,39 @@ EOF
 }
 
 
+# Observe the real watcher's requested wait, not implementation-source bytes.
+# A fake sleep publishes a status event instead of waiting 30/240 actual seconds.
+test_watcher_poll_default_and_ceiling() {
+  local mode dir state fakebin out expected rc
+  for mode in default ceiling invalid; do
+    dir=$(make_case "poll-$mode"); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/out"
+    expected=30; [ "$mode" != ceiling ] || expected=240
+    cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "$EXPECTED_POLL" ]; then
+  printf '%s\n' "$1" >> "$POLL_LOG"
+  printf 'blocked: cadence observed\n' > "$POLL_STATE/event.status"
+  exit 0
+fi
+exec "$REAL_SLEEP" "$@"
+SH
+    chmod +x "$fakebin/sleep"
+    (
+      unset FM_POLL
+      case "$mode" in ceiling) export FM_POLL=999 ;; invalid) export FM_POLL=bad ;; esac
+      PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+        EXPECTED_POLL="$expected" POLL_LOG="$dir/sleeps" POLL_STATE="$state" REAL_SLEEP="$(command -v sleep)" \
+        FM_SIGNAL_GRACE=0 FM_WAKE_BATCH_SECS=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+        "$WATCH" > "$out"
+    ) &
+    SEED_PID=$!
+    wait_for_exit "$SEED_PID" 600; rc=$?
+    expect_code 0 "$rc" "watcher did not surface the cadence event ($mode)"
+    assert_grep "^$expected$" "$dir/sleeps" "watcher uses its bounded default cadence ($mode)"
+    assert_grep '^signal:' "$out" 'the cadence change does not lose the status wake'
+  done
+}
+
 test_successor_confirmation_window_delayed() { test_successor_confirmation_window delayed; }
 test_successor_confirmation_window_cap() { test_successor_confirmation_window cap; }
 test_successor_confirmation_window_old_lock() { test_successor_confirmation_window old-lock; }
@@ -2009,6 +2045,7 @@ WATCH_ARM_CASES=(
   test_stop_ends_the_home_watcher_and_publishes_downtime
   test_downtime_marker_does_not_follow_symlink
   test_arm_refuses_an_unusable_launch_confirm_window
+  test_watcher_poll_default_and_ceiling
   test_arm_refuses_a_disposable_validation_checkout
   test_handling_delivered_accepts_already_acked_generation
   test_handling_delivered_rejects_a_superseded_generation

@@ -65,7 +65,9 @@
 #            whose action bytes already match its binding is left alone.
 # run        The blocking child the generic runner executes; never run it in a
 #            conversational turn. It polls the condition on the registered
-#            cadence, requires the stable count of consecutive trues, claims a
+#            cadence (local park false polls are change-driven with a 300 s
+#            backstop; bin/fm-park-observe-lib.sh owns the hint), requires the
+#            stable count of consecutive trues, claims a
 #            durable fired marker with an exclusive create BEFORE the action so
 #            a restart or re-poll can never fire the action twice, runs the
 #            action bounded, and emits exactly one outcome document on stdout
@@ -356,6 +358,11 @@ emit_doc() {
 
 cmd_run() {
   local sid=${1-} fired out rc polls=0 consecutive_true=0 consecutive_err=0 now
+  local observation='' previous_observation='' observed=0 last_poll=0 previous_rc=2
+  # This hint only elides unchanged false local park conditions. All verdicts,
+  # errors, stability checks, deadlines and action trust stay on the full path.
+  # shellcheck source=bin/fm-park-observe-lib.sh
+  . "$SCRIPT_DIR/fm-park-observe-lib.sh"
   fm_procevent_source_id_valid "$sid" || die "source id must be path-safe: $sid"
   fired=$(fired_file "$sid")
 
@@ -391,8 +398,20 @@ cmd_run() {
         "the condition never held for $SPEC_STABLE consecutive polls within ${SPEC_DEADLINE}s of arming" "$polls" '' ''
       exit 0
     fi
+    observed=0
+    if fm_park_observation_to observation "${COND_ARGV[@]}"; then
+      observed=1
+      if [ "$previous_rc" -eq 1 ] && [ "$observation" = "$previous_observation" ] \
+        && [ $((now - last_poll)) -ge 0 ] && [ $((now - last_poll)) -lt 300 ]; then
+        sleep "$SPEC_INTERVAL"
+        continue
+      fi
+    fi
     bounded_run "$SPEC_CONDITION_TIMEOUT" "$out" "${COND_ARGV[@]}"
     rc=$?
+    previous_rc=$rc
+    last_poll=$now
+    if [ "$observed" -eq 1 ]; then previous_observation=$observation; else previous_observation=''; fi
     polls=$((polls + 1))
     now=$(date +%s)
     if [ $(( now - SPEC_ARMED )) -ge "$SPEC_DEADLINE" ]; then

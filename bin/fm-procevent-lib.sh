@@ -193,7 +193,7 @@ fm_procevent_owner_lease_seconds() {
 }
 
 # Detection-interval semantics: docs/configuration.md, Process-to-event sources.
-FM_PROCEVENT_OWNER_CHECK_DEFAULT_SECONDS=15
+FM_PROCEVENT_OWNER_CHECK_DEFAULT_SECONDS=60
 FM_PROCEVENT_OWNER_CHECK_MIN_SECONDS=1
 FM_PROCEVENT_OWNER_CHECK_MAX_SECONDS=3600
 

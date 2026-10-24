@@ -646,4 +646,116 @@ assert_grep 'status: fired' "$RESULT" \
 assert_grep 'v2 ran against' "$RESULT" "the fired action ran the rebound (v2) bytes, not a rejection from a torn read"
 pass "the fire-time reload never observes rebind_one's spec/trust publish mid-rename"
 
+# --- local park changes skip false work, never stable/error/deadline work -----
+# Drive the real public runner with an accelerated cadence and a controllable
+# clock. Count only its own clock reads (not children) to synchronize on ticks.
+local_park_runner=''
+trap 'if [ -n "$local_park_runner" ]; then kill "$local_park_runner" 2>/dev/null || true; wait "$local_park_runner" 2>/dev/null || true; fi; fm_test_cleanup' EXIT
+park_ticks() { wc -l < "$1/ticks" | tr -d ' '; }
+wait_park_ticks() {
+  local dir=$1 target=$2 n=0
+  while [ "$n" -lt 300 ]; do
+    [ "$(park_ticks "$dir")" -ge "$target" ] && return 0
+    sleep 0.1
+    n=$((n + 1))
+  done
+  fail "local park runner never reached $target ticks"
+}
+local_park_case() { # <file|receipt|inbox|merge-result|opaque|superseded|deadline>
+  local kind=$1 h="$TMP_ROOT/local-$1" cond now runner target result
+  new_home "$h"
+  mkdir -p "$h/bin" "$h/config" "$h/queue"
+  now=$(date +%s)
+  printf '%s\n' "$now" > "$h/clock"
+  : > "$h/ticks"
+  cat > "$h/bin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "${1-}" = +%s ]; then
+  if [ -f "$FM_HOME/runner" ] && [ "$PPID" = "$(< "$FM_HOME/runner")" ]; then
+    printf 'tick\n' >> "$FM_HOME/ticks"
+  fi
+  IFS= read -r value < "$FM_HOME/clock"
+  printf '%s\n' "$value"
+else
+  exec "$REAL_DATE" "$@"
+fi
+SH
+  chmod +x "$h/bin/date"
+  case "$kind" in
+    inbox) cond=inbox:local ;;
+    merge-result|opaque)
+      cond=merge-result:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      printf 'dir=%s/queue\n' "$h" > "$h/config/merge-queue"
+      : > "$h/queue/queue.log"
+      if [ "$kind" = opaque ]; then
+        cat > "$h/queue/result.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'call\n' >> "$FM_HOME/provider-calls"
+[ ! -f "$FM_HOME/ready" ] || printf 'RESULT now head=%s outcome=merged\n' "$1"
+exit 0
+SH
+        chmod +x "$h/queue/result.sh"
+      fi ;;
+    receipt) cond="receipt:$h/ready" ;;
+    *) cond="file:$h/ready" ;;
+  esac
+  printf 'kind=ship\npark_token=test-token\npark_state=parked\npark_when=%s\n' "$cond" > "$h/state/local.meta"
+  when "$h" arm local --interval 0.1 --stable 2 --deadline 1000 --error-budget 2 \
+    --condition "$ROOT/bin/fm-park.sh" poll local test-token \
+    --action "$ACT" "$h/action" >/dev/null || fail 'could not arm local park fixture'
+  REAL_DATE=$(command -v date) PATH="$h/bin:$PATH" FM_HOME="$h" \
+    "$ROOT/bin/fm-procevent-when.sh" run when-local > "$h/result" &
+  runner=$!
+  local_park_runner=$runner
+  printf '%s\n' "$runner" > "$h/runner"
+  wait_park_ticks "$h" 8
+  case "$kind" in
+    superseded)
+      printf 'park_token=replacement\n' >> "$h/state/local.meta"
+      result=condition-error ;;
+    deadline)
+      printf '%s\n' "$((now + 1100))" > "$h/clock"
+      result=never-true ;;
+    *)
+      # The unchanged false must still get a full poll at the 300 s backstop.
+      target=$(( $(park_ticks "$h") + 8 ))
+      printf '%s\n' "$((now + 301))" > "$h/clock"
+      wait_park_ticks "$h" "$target"
+      case "$kind" in
+        inbox) printf 'park_pickup=test-token\n' >> "$h/state/local.meta" ;;
+        merge-result) printf 'RESULT now head=%s outcome=merged\n' "${cond#merge-result:}" >> "$h/queue/queue.log" ;;
+        *) : > "$h/ready" ;;
+      esac
+      result=fired ;;
+  esac
+  # Completion is bounded independently of the fake clock.
+  target=0
+  while kill -0 "$runner" 2>/dev/null && [ "$target" -lt 300 ]; do
+    sleep 0.1; target=$((target + 1))
+  done
+  if kill -0 "$runner" 2>/dev/null; then kill "$runner"; fail 'local park did not finish'; fi
+  wait "$runner" || fail 'local park runner failed without a terminal result'
+  local_park_runner=''
+  assert_grep "status: $result" "$h/result" "$kind keeps its terminal contract"
+  case "$kind" in
+    superseded)
+      assert_grep '^condition_polls: 3$' "$h/result" 'supersession is checked immediately and errors are not cached'
+      assert_absent "$h/action" 'supersession cannot act' ;;
+    deadline)
+      assert_grep '^condition_polls: 1$' "$h/result" 'an unchanged false still reaches its deadline'
+      assert_absent "$h/action" 'a deadline cannot act' ;;
+    opaque)
+      [ "$(count_lines "$h/provider-calls")" -gt 4 ] || fail 'an opaque provider was cached'
+      assert_contains "$(count_lines "$h/action")" 1 'an opaque provider still fires once' ;;
+    *)
+      assert_grep '^condition_polls: 4$' "$h/result" 'false polls skip until backstop, then two real true polls fire'
+      assert_contains "$(count_lines "$h/action")" 1 'only the real stable condition authorizes one action' ;;
+  esac
+  when "$h" retire local >/dev/null
+}
+for local_kind in file receipt inbox merge-result opaque superseded deadline; do
+  local_park_case "$local_kind"
+done
+pass 'local park observations keep change, backstop, stability, errors and deadline delivery'
+
 printf 'all fm-procevent-when tests passed\n'

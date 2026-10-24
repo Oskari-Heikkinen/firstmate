@@ -314,8 +314,8 @@ fm_rm_present() {
 # docs/turnend-guard.md "Guard grace and the poll cadence" is the single owner
 # of the rationale; every FM_GUARD_GRACE default should derive from this.
 fm_poll_derived_grace() {
-  local poll=${1:-${FM_POLL:-15}} margin=60 derived
-  case "$poll" in ''|*[!0-9]*) poll=15 ;; esac
+  local poll=${1:-${FM_POLL:-30}} margin=60 derived
+  case "$poll" in ''|*[!0-9]*) poll=30 ;; esac
   derived=$((poll + margin))
   [ "$derived" -ge 300 ] || derived=300
   printf '%s\n' "$derived"
@@ -328,7 +328,7 @@ fm_poll_derived_grace() {
 # stale beacon is a slow cycle; at or past it bin/fm-watch.sh evicts that holder
 # and bin/fm-watch-arm.sh stops following it, so both read this one definition.
 fm_watcher_stall_bound() {
-  local poll=${1:-${FM_POLL:-15}} grace
+  local poll=${1:-${FM_POLL:-30}} grace
   grace=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-$(fm_poll_derived_grace "$poll")}}
   printf '%s\n' "${FM_WATCHER_STALL_BOUND:-$((grace * 3))}"
 }
