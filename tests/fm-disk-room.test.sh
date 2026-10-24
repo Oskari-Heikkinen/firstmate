@@ -16,7 +16,7 @@ set -u
 unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
   FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_POWERSHELL FM_DISK_ROOM_RESULTS_ROOT \
   FM_DISK_ROOM_SAMPLES FM_DISK_ROOM_GROWTH_MAX FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_STORAGE_MNT \
-  FM_DISK_ROOM_WSLCONFIG FM_DISK_ROOM_MEMINFO FM_CONFIG_OVERRIDE FM_INHERITABLE_CONFIG
+  FM_DISK_ROOM_WSLCONFIG FM_DISK_ROOM_MEMINFO FM_DISK_ROOM_WRITE_PROC FM_CONFIG_OVERRIDE FM_INHERITABLE_CONFIG
 TMP_ROOT=$(fm_test_tmproot fm-disk-room)
 DISK_ROOM="$ROOT/bin/fm-disk-room.sh"
 GIB=1073741824
@@ -1322,6 +1322,16 @@ test_interface_v2_history() {
     sh -c 'mkdir -p "$FM_DISK_ROOM_STATE/write-history/break-failed"; exit 9' 2>&1); rc=$?
   expect_code 9 "$rc" "recording failure preserves a nonzero command result"
   assert_contains "$out" 'cannot read write history' "the recording error still speaks on command failure"
+  # A failed writer must establish its own nonzero high, not hide behind a
+  # larger successful sample (forcing failed samples to zero must fail here).
+  out=$(run_room run --name failed-only --kind failed-only --expect-write 1M -- \
+    sh -c 'dd if=/dev/zero of="$1" bs=4096 count=16 conv=fsync 2>/dev/null; exit 7' _ "$TMP_ROOT/failed-only" 2>&1); rc=$?
+  expect_code 7 "$rc" "a fresh failed writer preserves its command status"
+  out=$(run_room write-history failed-only)
+  assert_equals 1 "$(json_field "$out" samples)" "a failed writer records its own sample"
+  [ "$(json_field "$out" high_bytes)" -ge 65536 ] || fail "failed writes are measured rather than recorded as zero"
+  out=$(run_room check --kind failed-only --expect-write 0); rc=$?
+  expect_code 1 "$rc" "a failed attempt's high refuses the next understated declaration"
   # Concurrent completions must append, not replace each other's samples.
   run_room run --name parallel-1 --kind parallel --expect-write 1M -- \
     sh -c 'dd if=/dev/zero of="$1" bs=4096 count=8 conv=fsync 2>/dev/null; exit 6' _ "$TMP_ROOT/parallel-1" &
@@ -1337,6 +1347,144 @@ test_interface_v2_history() {
   assert_equals 2 "$(json_field "$out" samples)" "concurrent completions keep both records"
   [ "$(json_field "$out" high_bytes)" -ge 65536 ] || fail "the high includes the larger writer"
   pass "v2 records storage bytes per kind and gates declarations and inferred reservations"
+}
+
+# Positive room alone is not enough: both check and run must subtract the
+# resolved history estimate, for inferred and explicit declarations alike.
+test_history_capacity_boundary() {
+  reset_state
+  set_sizes 1 600 400
+  local out rc declared
+  mkdir -p "$TMP_ROOT/state/write-history"
+  printf 'fm-disk-write/v1 1 %s 0\n' "$((2 * GIB))" >"$TMP_ROOT/state/write-history/boundary"
+  for declared in inferred explicit; do
+    local args=(--kind boundary)
+    [ "$declared" != explicit ] || args+=(--expect-write 2G)
+    out=$(FM_DISK_ROOM_MARGIN=0 run_room check "${args[@]}"); rc=$?
+    expect_code 1 "$rc" "$declared typed check subtracts the high from positive room"
+    assert_contains "$out" 'only -1.0 GiB' "check reports post-write room, not pre-write free space"
+    assert_contains "$out" 'after a 2.0 GiB write' "check reports the resolved history estimate"
+    out=$(FM_DISK_ROOM_MARGIN=0 run_room run --name boundary "${args[@]}" -- sh -c 'echo WRONG_ADMISSION_COMMAND_STARTED' 2>&1); rc=$?
+    expect_code 75 "$rc" "$declared typed run also refuses this positive-room boundary"
+    if [ -r /proc/$$/io ]; then
+      assert_contains "$out" 'only -1.0 GiB' "run also subtracts the resolved estimate before admission"
+      assert_contains "$out" 'after a 2.0 GiB write' "run uses the historical high at the capacity boundary"
+    fi
+    assert_not_contains "$out" WRONG_ADMISSION_COMMAND_STARTED "the boundary refusal never starts work"
+  done
+  pass "typed check and run subtract historical writes at a positive-room boundary"
+}
+
+# This read-error path must run even on Linux with healthy real /proc counters.
+test_unavailable_write_counter() {
+  reset_state
+  set_sizes 60 600 400
+  local out rc
+  out=$(FM_DISK_ROOM_WRITE_PROC="$TMP_ROOT/absent-proc" run_room run --name counterless --kind counterless --expect-write 1M -- \
+    sh -c 'echo COUNTERLESS_COMMAND_STARTED' 2>&1); rc=$?
+  expect_code 75 "$rc" "unreadable accounting refuses with a failure status on every host"
+  assert_contains "$out" 'cannot measure storage write counter' "counter failure is diagnosed"
+  assert_not_contains "$out" COUNTERLESS_COMMAND_STARTED "failed counter reads cannot admit work"
+  out=$(run_room write-history counterless)
+  assert_equals 0 "$(json_field "$out" samples)" "unreadable accounting cannot create a zero sample"
+  # The opt-in accounting source cannot affect untyped v1 execution.
+  FM_DISK_ROOM_WRITE_PROC="$TMP_ROOT/absent-proc" run_room run --name legacy --expect-write 1M -- sh -c 'exit 7'; rc=$?
+  expect_code 7 "$rc" "v1 does not depend on the typed counter source"
+  pass "counter read failures refuse before execution, including on Linux"
+}
+
+# Fault the append after its ordinary validation has read the intact old high.
+# /dev/full produces deterministic ENOSPC even as root; restoring the old file
+# exposes stale-history trust rather than relying on visible file corruption.
+test_unrecorded_write_blocks_kind() {
+  [ -r /proc/$$/io ] && [ -c /dev/full ] || return 0
+  reset_state
+  set_sizes 60 600 400
+  local out rc result kind token fbin="$TMP_ROOT/append-fault-bin" real_awk
+  real_awk=$(command -v awk)
+  mkdir -p "$fbin" "$TMP_ROOT/state/write-history"
+  cat >"$fbin/awk" <<'SH'
+#!/usr/bin/env bash
+"$REAL_AWK" "$@"; rc=$?
+file=${!#}
+if [ "$rc" -eq 0 ] && [ "$file" = "$FAULT_HISTORY" ] && [ -f "$FAULT_ARM" ]; then
+  mv -- "$file" "$file.saved"
+  ln -s /dev/full "$file"
+  rm -- "$FAULT_ARM"
+fi
+exit "$rc"
+SH
+  chmod +x "$fbin/awk"
+  for result in 0 9; do
+    kind="append-failed-$result"
+    printf 'fm-disk-write/v1 1 0 0\n' >"$TMP_ROOT/state/write-history/$kind"
+    out=$(PATH="$fbin:$PATH" REAL_AWK="$real_awk" FAULT_HISTORY="$TMP_ROOT/state/write-history/$kind" FAULT_ARM="$TMP_ROOT/fault-arm" \
+      run_room run --name "$kind" --kind "$kind" --expect-write 1M -- \
+      sh -c 'dd if=/dev/zero of="$1" bs=4096 count=16 conv=fsync 2>/dev/null; touch "$FAULT_ARM"; exit "$2"' _ "$TMP_ROOT/$kind" "$result" 2>&1); rc=$?
+    if [ "$result" -eq 0 ]; then expect_code 74 "$rc" "append ENOSPC after success returns I/O failure"
+    else expect_code "$result" "$rc" "append ENOSPC preserves the failed command's status"; fi
+    assert_contains "$out" 'cannot record write history' "the actual append failure is surfaced"
+    rm -- "$TMP_ROOT/state/write-history/$kind"
+    mv -- "$TMP_ROOT/state/write-history/$kind.saved" "$TMP_ROOT/state/write-history/$kind"
+    out=$(run_room check --kind "$kind" --expect-write 0); rc=$?
+    expect_code 2 "$rc" "an intact stale high cannot authorize an explicit declaration after a lost sample"
+    assert_contains "$out" 'unresolved write' "the abandoned attempt is named"
+    out=$(run_room check --kind "$kind"); rc=$?
+    expect_code 2 "$rc" "an intact stale high cannot authorize an inferred declaration either"
+    out=$(run_room run --name next --kind "$kind" --expect-write 0 -- sh -c 'echo WRONG_ADMISSION_COMMAND_STARTED' 2>&1); rc=$?
+    expect_code 75 "$rc" "a subsequent typed job stays held after append failure"
+    assert_not_contains "$out" WRONG_ADMISSION_COMMAND_STARTED "lost accounting prevents execution"
+    run_room write-history "$kind" >/dev/null 2>&1; rc=$?
+    expect_code 2 "$rc" "queries cannot present the stale high as authoritative"
+    run_room check --expect-write 0 >/dev/null; rc=$?
+    expect_code 0 "$rc" "untyped v1 ignores unresolved typed attempts"
+    local tokens=("$TMP_ROOT/state/write-pending/$kind/"*)
+    assert_equals 1 "${#tokens[@]}" "only the failed attempt remains for recovery"
+    token=${tokens[0]##*/}
+    out=$(run_room recover-write "$kind" "$token" 1M "$result"); rc=$?
+    expect_code 0 "$rc" "evidence-backed recovery records the missing write"
+    out=$(run_room write-history "$kind")
+    assert_equals 2 "$(json_field "$out" samples)" "recovery appends without losing the old sample"
+    assert_equals 1048576 "$(json_field "$out" high_bytes)" "recovery's conservative observation replaces the stale high"
+    out=$(run_room check --kind "$kind"); rc=$?
+    expect_code 0 "$rc" "inferred admission resumes only after recovery"
+    out=$(run_room check --kind "$kind" --expect-write 1M); rc=$?
+    expect_code 0 "$rc" "explicit admission resumes after recovery"
+    run_room recover-write "$kind" "$token" 1M "$result" >/dev/null 2>&1; rc=$?
+    expect_code 2 "$rc" "replaying recovery cannot duplicate a retired attempt"
+  done
+  pass "failed appends invalidate intact old highs until evidence-backed recovery"
+}
+
+# Keep an actual command active while admitting another of the same kind.
+test_live_pending_concurrency() {
+  [ -r /proc/$$/io ] || return 0
+  reset_state
+  set_sizes 60 600 400
+  local pid i out rc token
+  rm -f "$TMP_ROOT/live-ready" "$TMP_ROOT/live-release"
+  mkfifo "$TMP_ROOT/live-release"
+  run_room run --name live-1 --kind overlap --expect-write 1M -- \
+    sh -c 'touch "$1/live-ready"; read -r release <"$1/live-release"' _ "$TMP_ROOT" &
+  pid=$!
+  for ((i=0; i<200; i++)); do
+    [ ! -f "$TMP_ROOT/live-ready" ] || break
+    sleep 0.1
+  done
+  [ -f "$TMP_ROOT/live-ready" ] || fail "the concurrent fixture command started"
+  local tokens=("$TMP_ROOT/state/write-pending/overlap/"*)
+  token=${tokens[0]##*/}
+  out=$(run_room recover-write overlap "$token" 1M 0 2>&1); rc=$?
+  expect_code 2 "$rc" "recovery refuses a still-live attempt"
+  assert_contains "$out" 'pending write active' "the live-attempt recovery guard is named"
+  run_room run --name live-2 --kind overlap --expect-write 1M -- true; rc=$?
+  expect_code 0 "$rc" "a live pending attempt does not serialize same-kind jobs"
+  printf 'release\n' >"$TMP_ROOT/live-release"
+  wait "$pid"; rc=$?
+  expect_code 0 "$rc" "the first overlapping attempt also completes"
+  out=$(run_room write-history overlap)
+  assert_equals 2 "$(json_field "$out" samples)" "overlapping attempts retain both samples and retire their own tokens"
+  pass "live pending attempts permit concurrency but cannot be recovered early"
 }
 
 test_corrupt_write_history() {
@@ -1384,6 +1532,10 @@ test_self_test_v2() {
   assert_contains "$out" 'self-test v2 passed' "pinned v2 probe passes"
 }
 
+test_unavailable_write_counter
+test_history_capacity_boundary
+test_unrecorded_write_blocks_kind
+test_live_pending_concurrency
 test_interface_v2_history
 test_corrupt_write_history
 test_self_test_v2
