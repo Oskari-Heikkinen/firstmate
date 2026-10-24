@@ -16,6 +16,10 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# Honor the shared family gate before the stricter capture authorization.
+# Defer tool checks until both gates pass: FM_LIVE=1 alone must still skip,
+# even on a host without strace, rather than requesting a live capture.
+fm_live_gate opt-in FM_SUPERVISION_CAPTURE_LIVE
 if [ "${FM_SUPERVISION_CAPTURE_LIVE:-}" != 1 ]; then
   printf '%s\n' 'skip: live capture disabled; requires dedicated reviewed FM_SUPERVISION_CAPTURE_LIVE=1 opt-in'
   exit 0

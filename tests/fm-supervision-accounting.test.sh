@@ -198,6 +198,24 @@ probe = json.loads(run('probe').stdout)
 assert probe['attach_attempted'] is False and probe['permission_proven'] is False
 checks += 1
 
+# Portable guard integration: shared disable/opt-in semantics must run before
+# the dedicated capture authorization and before any tool or input checks.
+for family_setting, capture_setting, expected in (
+    (None, None, b'skip: live: opt-in; set FM_SUPERVISION_CAPTURE_LIVE=1 to run'),
+    ('0', None, b'skip: live: disabled by FM_LIVE=0'),
+    ('1', None, b'skip: live capture disabled'),
+    ('1', '0', b'skip: live: disabled by FM_SUPERVISION_CAPTURE_LIVE=0'),
+):
+    guard_env = dict(os.environ)
+    for key, setting in (('FM_LIVE', family_setting), ('FM_SUPERVISION_CAPTURE_LIVE', capture_setting)):
+        guard_env.pop(key, None)
+        if setting is not None:
+            guard_env[key] = setting
+    guard = subprocess.run(['bash', str(root / 'tests/fm-supervision-accounting-live.test.sh')],
+                           env=guard_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+    assert guard.returncode == 0 and expected in guard.stdout, (guard.returncode, guard.stdout, guard.stderr)
+    checks += 1
+
 # Linux capture bounds with a fake tracer, never ptrace. The published root is
 # this test process, and must remain alive and unsignalled after every case.
 if sys.platform == 'linux' and hasattr(os, 'pidfd_open'):
@@ -234,12 +252,6 @@ if sys.platform == 'linux' and hasattr(os, 'pidfd_open'):
     run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
         '--output', tmp / 'no-live', '--acknowledge-ptrace', good=False, env=no_live)
     assert not (tmp / 'no-live').exists()
-    # General live-test settings cannot enable this specific real capture path.
-    default_guard_env = dict(os.environ, FM_LIVE='1')
-    default_guard_env.pop('FM_SUPERVISION_CAPTURE_LIVE', None)
-    guard = subprocess.run(['bash', str(root / 'tests/fm-supervision-accounting-live.test.sh')],
-                           env=default_guard_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
-    assert guard.returncode == 0 and b'skip: live capture disabled' in guard.stdout
     # Real signal delivery through the public CLI: the fake tracer is the only
     # child, and the admitted root is this test process (never signalled).
     for sig in (signal.SIGTERM, signal.SIGHUP):
