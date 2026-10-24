@@ -7238,7 +7238,8 @@ SH
     cmp -s "$case_dir/prior-links" "$ev/MANIFEST.sha256.links" || fail 'retry changed link manifest bytes'
     [ -L "$ev/$key" ] && [ "$(readlink "$ev/$key")" = "$target" ] || fail 'retry changed carried link bytes'
     evidence_manifest_verifies "$ev" || fail 'unfaulted carried snapshot does not verify'
-    assert_grep 'never-saved.*it is lost' "$case_dir/stderr" 'already-lost foreign source must retain its warning'
+    assert_grep "warning: declared evidence $case_dir/wt/workspace/never-saved for task-x1 was not copied out before its pool slot was reassigned; it is lost" \
+      "$case_dir/stderr" 'already-lost foreign source must retain its warning'
     [ "$(cat "$target")" = 'foreign bytes' ] || fail 'reassigned-copy carry changed foreign contents'
   done
   pass 'reassigned-copy staging failures preserve verified prior links; unfaulted retry and old-source-loss warning remain safe'
