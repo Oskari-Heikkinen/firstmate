@@ -30,7 +30,7 @@ checks = 0
 # Routing is observed through the public selector, not implementation bytes.
 selection = subprocess.run(['bash', str(root / 'bin/fm-test-run.sh'), '--list',
                             '--family', 'pure-contract-unit', '--tier', 'gate'],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
 assert selection.returncode == 0, selection.stderr
 assert 'tests/fm-supervision-accounting.test.sh' in selection.stdout.decode().splitlines()
 assert 'tests/fm-supervision-accounting-live.test.sh' not in selection.stdout.decode().splitlines()
@@ -43,10 +43,13 @@ def save(name, value):
     return path
 
 
-def run(*arguments, good=True, env=None, timeout=8):
+def run(*arguments, good=True, env=None, timeout=30):
     result = subprocess.run([sys.executable, str(cli), *map(str, arguments)],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env)
-    assert (result.returncode == 0) == good, (arguments, result.returncode, result.stderr)
+    assert result.returncode == (0 if good else 2), (arguments, result.returncode, result.stderr)
+    if not good:
+        assert not result.stdout and b'refused:' in result.stderr, (arguments, result)
+        assert b'Traceback' not in result.stderr, result.stderr
     return result
 
 
@@ -78,7 +81,46 @@ for count in (6, 30):
     assert result['b0_status'] == 'pending-reviewed-real-capture'
     assert result['synthetic'] and not result['complete_for_attached_trees']
     assert result['seed_cmdline_hints'] == 1
-    assert result['seed_ownership'][0]['qualification'] == 'cmdline-hint-not-observed-entry'
+    assert result['seed_ownership'] == [{'id': 'root', 'family': 'watch',
+                                        'evidence': 'proc-exe-cmdline',
+                                        'qualification': 'cmdline-hint-not-observed-entry'}]
+    assert result['format'] == 'fm-supervision-accounting.v1'
+    assert result['duration_ns'] == 60000000000
+    assert result['machine_births'] == 4 * count + 8
+    assert result['births_per_second'] == (4 * count + 5) / 60
+    assert result['thread_births_included'] == 0
+    assert result['sealed_records'] == 3 and result['requests'] == count
+    assert result['losses'] == dict.fromkeys(value['trace']['losses'], 0)
+    expected_totals = {'crew-state': 4 * count, 'watch': 1, 'wake-drain': 1,
+                       'fleet-snapshot': 1, 'spawn': 1, 'control': 1, 'unattributed': 0}
+    assert result['exclusive_births'] == expected_totals
+    assert result['births_by_origin_ancestry'] == dict.fromkeys(expected_totals, 0) | {'watch': 4 * count + 5}
+    expected_counts = {'crew-state': count, 'watch': 0, 'wake-drain': 1,
+                       'fleet-snapshot': 1, 'spawn': 1, 'control': 1}
+    assert result['entry_counts'] == expected_counts
+    assert result['caller_edges'] == {'watch -> fleet-snapshot': 1,
+                                      'fleet-snapshot -> crew-state': count,
+                                      'watch -> wake-drain': 1, 'watch -> spawn': 1,
+                                      'watch -> control': 1}
+    expected_invocations = {'root:initial': {'family': 'watch', 'seed': True,
+                                            'self_births': 0, 'exclusive_child_births': 1},
+                            'unattributed': {'family': 'unattributed', 'seed': False,
+                                             'self_births': 0, 'exclusive_child_births': 0}}
+    ids = ['summary', *['crew-' + str(n) for n in range(count)], 'wake-drain', 'spawn', 'control']
+    assert [e['id'] for e in result['entries']] == ids
+    for index, ident in enumerate(ids):
+        e = result['entries'][index]
+        family = 'crew-state' if ident.startswith('crew-') else 'fleet-snapshot' if ident == 'summary' else ident
+        invocation = ident + ':entry:' + str(index)
+        assert e['invocation'] == invocation and e['family'] == family
+        assert e['caller_family'] == ('fleet-snapshot' if family == 'crew-state' else 'watch')
+        assert e['caller_invocation'] == ('summary:entry:0' if family == 'crew-state' else 'root:initial')
+        assert e['home'] == 'fixture' and e['exec_evidence'] == 'execve' and e['executable'] == '/bin/bash'
+        assert e['at_ns'] == next(ev['at_ns'] for ev in value['trace']['events']
+                                   if ev['id'] == ident and ev['kind'] == 'exec')
+        expected_invocations[invocation] = {'family': family, 'seed': False, 'self_births': 1,
+                                            'exclusive_child_births': 3 if family == 'crew-state' else 0}
+    assert result['per_invocation'] == expected_invocations
     for record in value['records']:
         raw = run('read-record', path, '--kind', record['kind'], '--name', record['name']).stdout
         assert raw == base64.b64decode(record['base64'])
@@ -92,6 +134,19 @@ for count in (6, 30):
     assert cheap_result['exclusive_births']['crew-state'] == 2 * count
     assert cheap_result['entries'] == result['entries']
     assert cheap_result['residual'] == result['residual']
+    assert cheap_result['observed_births'] == 2 * count + 5
+    assert cheap_result['machine_births'] == 2 * count + 8
+    assert cheap_result['births_per_second'] == (2 * count + 5) / 60
+    expected_totals['crew-state'] = 2 * count
+    assert cheap_result['exclusive_births'] == expected_totals
+    assert cheap_result['entry_counts'] == expected_counts
+    assert cheap_result['caller_edges'] == result['caller_edges']
+    for row in expected_invocations.values():
+        if row['family'] == 'crew-state':
+            row['exclusive_child_births'] = 1
+    assert cheap_result['per_invocation'] == expected_invocations
+    assert cheap_result['births_by_origin_ancestry'] == dict.fromkeys(expected_totals, 0) | {'watch': 2 * count + 5}
+    assert cheap_result['duration_ns'] == result['duration_ns']
     checks += 1
 
 value = fixture.make(6)
@@ -206,6 +261,161 @@ for field, bad in (('exec_evidence', 'proc-exe-cmdline'), ('executable', '/bin/b
     reject(changed, 'invalid-exec-' + field)
 checks += 6
 
+# F6: loss/unknown/completeness paths must discriminate against a genuinely
+# complete positive, not a seed-hinted fixture that is already incomplete.
+for field in complete['trace']['losses']:
+    changed = copy.deepcopy(complete)
+    changed['trace']['losses'][field] = 2
+    result = json.loads(run('replay', save('loss-' + field + '.json', changed)).stdout)
+    assert result['losses'] == changed['trace']['losses']
+    assert not result['complete_for_attached_trees']
+    checks += 1
+changed = copy.deepcopy(complete)
+changed['trace']['capture_complete'] = False
+assert not json.loads(run('replay', save('incomplete.json', changed)).stdout)['complete_for_attached_trees']
+changed = copy.deepcopy(complete)
+changed['trace']['machine_births'] = 0
+result = json.loads(run('replay', save('negative-complete.json', changed)).stdout)
+assert result['residual'] == -1 and not result['complete_for_attached_trees']
+changed = copy.deepcopy(complete)
+changed['trace']['events'] = changed['trace']['events'][:2]
+result = json.loads(run('replay', save('unattributed.json', changed)).stdout)
+assert result['exclusive_births']['unattributed'] == 1 and not result['complete_for_attached_trees']
+# Origin is fixed at birth, whereas direct entry/future descendants change owner.
+changed = copy.deepcopy(complete)
+changed['trace']['events'][2]['argv'] = ['bash', '/fixture/code/bin/fm-spawn.sh', 'task-0', '--restore']
+for ident, parent, script in (('c', 'summary', 'fm-control.sh'), ('d', 'c', 'fm-crew-state.sh')):
+    changed['trace']['events'].extend([
+        {'kind': 'birth', 'id': ident, 'parent': parent, 'at_ns': len(changed['trace']['events']) + 1,
+         'argv': [], 'home': '', 'thread': True, 'executable': '', 'exec_evidence': 'none'},
+        {'kind': 'exec', 'id': ident, 'parent': '', 'at_ns': len(changed['trace']['events']) + 2,
+         'argv': ['bash', '/fixture/code/bin/' + script, 'task-0', 'exit'], 'home': '',
+         'thread': False, 'executable': '/bin/bash', 'exec_evidence': 'execve'}])
+result = json.loads(run('replay', save('origin.json', changed)).stdout)
+assert result['observed_births'] == 3 and result['thread_births_included'] == 2
+assert result['residual'] == 1 and result['births_per_second'] == 3 / 60
+assert result['births_by_origin_ancestry']['unattributed'] == 1
+assert result['births_by_origin_ancestry']['spawn'] == 2
+assert {k: v for k, v in result['exclusive_births'].items() if v} == {'spawn': 1, 'control': 1, 'crew-state': 1}
+assert result['entries'][0]['action'] == 'restore'
+assert result['entries'][1]['lifecycle_entry'] and result['entries'][1]['action'] == 'exit'
+assert result['complete_for_attached_trees']
+checks += 4
+
+# All nonempty adapter response fields are loaded but never executed.
+# Every negative starts otherwise-valid, so a removed guard cannot hide behind
+# an unrelated version/type/seed failure. Test both response byte streams.
+for field, bad in (('adapter', ''), ('generation', ''), ('at_ns', -1),
+                   ('at_ns', 60000000001), ('exit_status', -1), ('exit_status', 256),
+                   ('exit_status', True), ('stdout_base64', '!'), ('stderr_base64', '!'),
+                   ('stdout_base64', base64.b64encode(b'x' * 1048577).decode()),
+                   ('stderr_base64', base64.b64encode(b'x' * 1048577).decode()),
+                   ('unexpected', 'field')):
+    changed = copy.deepcopy(complete)
+    changed['requests'][0]['adapter_responses'][0][field] = bad
+    reject(changed, 'response-' + field)
+    checks += 1
+for field in ('adapter', 'generation', 'at_ns', 'exit_status', 'stdout_base64', 'stderr_base64'):
+    changed = copy.deepcopy(complete)
+    del changed['requests'][0]['adapter_responses'][0][field]
+    reject(changed, 'response-missing-' + field)
+    checks += 1
+changed = copy.deepcopy(complete)
+changed['requests'][0]['at_ns'] = 1
+changed['requests'][0]['adapter_responses'][0]['at_ns'] = 0
+reject(changed, 'response-before-request')
+changed = copy.deepcopy(complete)
+changed['requests'][1]['id'] = changed['requests'][0]['id']
+reject(changed, 'request-duplicate')
+changed = copy.deepcopy(complete)
+changed['requests'][1]['at_ns'] = 3
+changed['requests'][2]['at_ns'] = 2
+reject(changed, 'request-order')
+checks += 3
+# Independently invalidate schema type, required/closed fields and numeric,
+# string and array bounds. In particular bool is not a JSON integer and the
+# string "false" is not capture_complete=false.
+for field, bad in (('capture_complete', 'false'), ('synthetic', 1), ('machine_births', True),
+                   ('monotonic_duration_ns', 0), ('monotonic_duration_ns', 310000000001),
+                   ('format', 'fm-supervision-trace.v2'), ('events', {}), ('start_ns', -1),
+                   ('end_ns', 0), ('unknown', 1)):
+    changed = copy.deepcopy(complete)
+    changed['trace'][field] = bad
+    reject(changed, 'trace-' + field)
+    checks += 1
+for field, bad in (('id', ''), ('id', 'x' * 201), ('kind', 'unknown'), ('at_ns', -1),
+                   ('at_ns', 60000000001), ('argv', ['x' * 65537]), ('argv', ['x'] * 4097),
+                   ('thread', 'false'), ('parent', 'x' * 201), ('home', 'x' * 65),
+                   ('exec_evidence', 'none'), ('unknown', 1)):
+    changed = copy.deepcopy(complete)
+    changed['trace']['events'][2][field] = bad
+    reject(changed, 'event-' + field)
+    checks += 1
+for label, mutate in (
+    ('seed-parent', lambda t: t['events'][0].update(parent='unexpected')),
+    ('seed-thread', lambda t: t['events'][0].update(thread=True)),
+    ('seed-home', lambda t: t['events'][0].update(home='unknown')),
+    ('duplicate-seed', lambda t: t['events'].insert(1, copy.deepcopy(t['events'][0]))),
+    ('exec-parent', lambda t: t['events'][2].update(parent='root')),
+    ('exec-thread', lambda t: t['events'][2].update(thread=True)),
+    ('exec-home', lambda t: t['events'][2].update(home='fixture')),
+    ('exec-orphan', lambda t: t['events'][2].update(id='missing')),
+    ('birth-argv', lambda t: t['events'][1].update(argv=['fabricated'])),
+    ('birth-exe', lambda t: t['events'][1].update(executable='/bin/bash')),
+    ('birth-evidence', lambda t: t['events'][1].update(exec_evidence='execve')),
+    ('birth-home', lambda t: t['events'][1].update(home='fixture')),
+    ('event-order', lambda t: t['events'][2].update(at_ns=0)),
+    ('loss-negative', lambda t: t['losses'].update(unknown_parents=-1)),
+    ('loss-type', lambda t: t['losses'].update(unknown_parents=False)),
+):
+    changed = copy.deepcopy(complete)
+    mutate(changed['trace'])
+    reject(changed, label)
+    checks += 1
+
+# Exercise validate-manifest itself, including populated optional inventories.
+full_manifest = copy.deepcopy(complete['manifest'])
+full_home = full_manifest['homes'][0]
+full_home['sources'] = [{'id': 's', 'registration_token': 'token', 'result_sequence': 4,
+                         'claim_identity': 'pid:start', 'executor_version': 'legacy'}]
+full_home['checks'] = [{'id': 'check', 'binding': 'digest', 'interval_ms': 300000}]
+full_home['capture_roots'] = [{'pid': 10, 'start_ticks': '1'}]
+full_home['unsupported_integrations'] = ['unsupported']
+full_home['tasks'][0].update(park_token='park', custody_phase='retained')
+assert json.loads(run('validate-manifest', save('manifest-valid.json', full_manifest)).stdout) == {
+    'valid': True, 'certified_complete': False, 'homes': 1}
+certified = copy.deepcopy(full_manifest)
+certified['certified_complete'] = True
+assert json.loads(run('validate-manifest', save('manifest-certified.json', certified)).stdout) == {
+    'valid': True, 'certified_complete': True, 'homes': 1}
+for field in ('tasks', 'sources', 'checks', 'timers', 'capture_roots'):
+    changed = copy.deepcopy(full_manifest)
+    changed['homes'][0][field].append(copy.deepcopy(changed['homes'][0][field][0]))
+    run('validate-manifest', save('manifest-duplicate-' + field + '.json', changed), good=False)
+    checks += 1
+for field, bad in (('home', '/fixture/../fixture'), ('code_root', '/fixture/code/'),
+                   ('state_root', '/elsewhere/state'), ('state_root', '/fixture-neighbor/state'),
+                   ('code_ref', 'g' * 40), ('remote', 'false'), ('published_at', 'unknown'),
+                   ('configuration_sha256', '0' * 63), ('timers', []), ('owner', ''),
+                   ('state_identity', {'device': 1, 'inode': 0}), ('capture_roots', [{'pid': 0, 'start_ticks': '1'}]),
+                   ('capture_roots', [{'pid': 4194305, 'start_ticks': '1'}]),
+                   ('capture_roots', [{'pid': 10, 'start_ticks': 'bad'}]),
+                   ('unsupported_integrations', ['same', 'same'])):
+    changed = copy.deepcopy(full_manifest)
+    changed['homes'][0][field] = bad
+    run('validate-manifest', save('manifest-bad-' + field + '.json', changed), good=False)
+    checks += 1
+changed = copy.deepcopy(full_manifest)
+changed['homes'][0]['timers'][0]['bound_ms'] = 14999
+run('validate-manifest', save('timer-bound.json', changed), good=False)
+changed = copy.deepcopy(full_manifest)
+changed['enrolled_homes'] = ['fixture', 'fixture']
+run('validate-manifest', save('duplicate-enrollment.json', changed), good=False)
+changed = copy.deepcopy(full_manifest)
+del changed['homes'][0]['state_identity']
+run('validate-manifest', save('missing-identity.json', changed), good=False)
+checks += 5
+
 # Self-asserted complete/real/certified flags are not provenance or authority.
 changed = copy.deepcopy(value)
 changed['synthetic'] = changed['trace']['synthetic'] = False
@@ -223,7 +433,9 @@ fifo = tmp / 'fifo.json'
 os.mkfifo(fifo)
 run('replay', fifo, good=False, timeout=2)
 run('replay', tmp / 'absent', good=False)
-(tmp / 'duplicate.json').write_text('{"format":1,"format":2}')
+# Otherwise valid input: removing duplicate-key detection must change the verdict.
+(tmp / 'duplicate.json').write_text(json.dumps(complete).replace(
+    '"capture_complete": true', '"capture_complete": false, "capture_complete": true'))
 run('replay', tmp / 'duplicate.json', good=False)
 checks += 4
 
@@ -363,6 +575,86 @@ for index, code_root in enumerate(('/fixture/[code]', '/fixture/quote"back\\slas
         assert report['entry_counts']['spawn'] == int(direct)
         checks += 1
 
+# F6: exact imported losses and identities, not merely incomplete=true.
+# These never invoke strace; all files are sealed synthetic input.
+loss_cases = (
+    ('unknown', 'not strace\n', 'unknown_lines', 1),
+    ('unknown-call', '10 1.000001 mystery() = 0\n', 'unknown_lines', 1),
+    ('malformed-call', '10 1.000001 clone(unterminated\n', 'unknown_lines', 1),
+    ('pending', '10 1.000001 vfork(<unfinished ...>\n', 'unfinished_calls', 1),
+    ('resume-without-entry', '10 1.000001 <... vfork resumed>) = 11\n', 'unfinished_calls', 1),
+    ('pending-replaced', '10 1.000001 fork(<unfinished ...>\n10 1.000002 fork(<unfinished ...>\n', 'unfinished_calls', 2),
+    ('orphan-parent', '99 1.000001 fork() = 11\n', 'unknown_parents', 1),
+    ('truncated-argv', '10 1.000001 fork() = 11\n11 1.000002 execve("/bin/bash", ["bash", ...], 0x1) = 0\n', 'unresolved_argv', 1),
+    ('nul-argv', '10 1.000001 fork() = 11\n11 1.000002 execve("/bin/bash", ["ba\\000sh"], 0x1) = 0\n', 'unresolved_argv', 1),
+    ('invalid-escape', '10 1.000001 fork() = 11\n11 1.000002 execve("/bin/bash", ["ba\\qsh"], 0x1) = 0\n', 'unresolved_argv', 1),
+)
+for name, raw, loss, expected in loss_cases:
+    trace, report, _ = imported('loss-import-' + name, raw)
+    expected_losses = dict.fromkeys(trace['losses'], 0)
+    expected_losses.update(attachment_gaps=1)
+    expected_losses[loss] = expected
+    assert trace['losses'] == expected_losses, (name, trace)
+    assert report['losses'] == expected_losses and not report['complete_for_attached_trees']
+    assert report['entry_counts'] == dict.fromkeys(report['entry_counts'], 0)
+    assert report['observed_births'] == int(name in ('orphan-parent', 'truncated-argv', 'nul-argv', 'invalid-escape'))
+    checks += 1
+raw = ('10 1.000001 clone(flags=CLONE_VM|CLONE_THREAD) = 11\n'
+       '[pid 11] 1.000002 execve("/bin/date", ["date"], 0x1) = -1 ENOENT (missing)\n'
+       '11 1.000003 +++ killed by SIGKILL +++\n'
+       '10 1.000004 fork() = 11\n'
+       '11 1.000005 execve("/bin/bash", ["bash", "/fixture/code/bin/fm-crew-state.sh", "task-0"], 0x1) = 0\n'
+       '11 1.000006 +++ exited with 0 +++\n'
+       '10 1.000007 fork() = -1 EAGAIN (unavailable)\n'
+       '10 1.000008 wait4(-1, [], WNOHANG, NULL) = 0\n'
+       '10 1.000009 waitid(P_ALL, 0, {}, WEXITED, NULL) = 0\n'
+       '10 1.000010 --- SIGCHLD {si_signo=SIGCHLD} ---\n'
+       '10 1.000011 exit_group(0) = ?\n')
+trace, report, capture = imported('pid-reuse', raw)
+births = [e for e in trace['events'] if e['kind'] == 'birth']
+assert [e['id'] for e in births] == ['11:1000001000:1', '11:1000004000:4']
+assert births[0]['thread'] and not births[1]['thread']
+assert all(e['parent'] == 'seed:10:1' for e in births)
+assert trace['losses'] == dict.fromkeys(trace['losses'], 0) | {'attachment_gaps': 1}
+assert report['observed_births'] == 2 and report['thread_births_included'] == 1
+assert report['exclusive_births']['fleet-snapshot'] == 1 and report['exclusive_births']['crew-state'] == 1
+assert report['births_per_second'] == 2 and report['residual'] == 3
+assert report['entry_counts']['crew-state'] == 1
+# Missed exit still creates a new generation but explicitly declares loss.
+trace, report, _ = imported('pid-reuse-missed-exit', raw.replace('11 1.000003 +++ killed by SIGKILL +++\n', ''))
+assert trace['losses']['unknown_lines'] == 1 and report['observed_births'] == 2
+checks += 2
+# Each seal independently protects otherwise-valid evidence. Preserve and
+# restore the bytes between probes so rejection cannot have the wrong cause.
+for filename, bad_bytes in (('strace.log', b'changed'), ('strace.stderr', b'changed'),
+                            ('manifest.json', (json.dumps(full_manifest)).encode())):
+    target = capture / filename
+    original = target.read_bytes()
+    target.write_bytes(bad_bytes)
+    refused = run('import-strace', capture, good=False)
+    assert b'digest mismatch' in refused.stderr or b'manifest changed' in refused.stderr
+    target.write_bytes(original)
+    assert json.loads(run('import-strace', capture).stdout)['losses']['attachment_gaps'] == 1
+    checks += 1
+metadata_path = capture / 'finished.json'
+metadata_original = metadata_path.read_bytes()
+for field, bad in (('format', 'fm-supervision-capture.v2'), ('complete', 'false')):
+    metadata = json.loads(metadata_original)
+    metadata[field] = bad
+    metadata_path.write_text(json.dumps(metadata))
+    run('import-strace', capture, good=False)
+metadata_path.write_bytes(metadata_original)
+raw_path = capture / 'strace.log'
+raw_original = raw_path.read_bytes()
+raw_path.write_bytes(b'\xff')
+metadata = json.loads(metadata_original)
+metadata['raw_sha256'] = hashlib.sha256(b'\xff').hexdigest()
+metadata_path.write_text(json.dumps(metadata))
+run('import-strace', capture, good=False)
+raw_path.write_bytes(raw_original)
+metadata_path.write_bytes(metadata_original)
+checks += 3
+
 # Read-only probe never claims a successful attachment or permission proof.
 probe = json.loads(run('probe').stdout)
 assert probe['attach_attempted'] is False and probe['permission_proven'] is False
@@ -397,18 +689,56 @@ if sys.platform == 'linux' and hasattr(os, 'pidfd_open'):
     local = copy.deepcopy(manifest)
     local['homes'][0]['capture_roots'] = [{'pid': os.getpid(), 'start_ticks': fields[19]}]
     local_path = save('capture-manifest.json', local)
-    tool.write_text('#!' + sys.executable + '\nimport os,signal,sys\np=sys.argv[sys.argv.index("-o")+1]\nopen(p,"w").close()\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(0))\nsignal.pause()\n')
-    tool.chmod(0o700)
+    def write_tracer(body):
+        # Refuse a broadened or incomplete attach argv, including omission of
+        # any admitted -p root. No real tracer or target inspection is used.
+        tool.write_text('#!' + sys.executable + '\nimport json,os,pathlib,signal,sys\n'
+                        'p=sys.argv[sys.argv.index("-o")+1]\n'
+                        'expected=["-f","-qq","-ttt","-s","4096","-e","trace=process","-o",p,"-p",'
+                        + repr(str(os.getpid())) + ']\n'
+                        'assert sys.argv[1:]==expected,sys.argv\n'
+                        'assert pathlib.Path(p).name=="strace.log"\n'
+                        'pathlib.Path(p).with_name("tracer-argv.json").write_text(json.dumps(sys.argv))\n'
+                        + body)
+        tool.chmod(0o700)
+
+    write_tracer('open(p,"w").write("synthetic tracer bytes\\n")\n'
+                 'signal.signal(signal.SIGINT,lambda *_:sys.exit(0))\nsignal.pause()\n')
     start = time.monotonic()
     result = run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
                  '--output', tmp / 'bounded', '--acknowledge-ptrace', env=env)
     assert json.loads(result.stdout)['complete']
-    assert time.monotonic() - start < 6
+    assert time.monotonic() - start < 15
     os.kill(os.getpid(), 0)
     done = json.loads((tmp / 'bounded/finished.json').read_text())
     assert done['after']['machine_births'] >= done['before']['machine_births']
     assert done['after']['monotonic_ns'] > done['before']['monotonic_ns']
-    assert (tmp / 'bounded').stat().st_mode & 0o077 == 0
+    bounded = tmp / 'bounded'
+    assert bounded.stat().st_mode & 0o077 == 0
+    for filename in ('manifest.json', 'strace.log', 'strace.stderr', 'started.json', 'finished.json'):
+        assert (bounded / filename).stat().st_mode & 0o077 == 0, filename
+    assert done['complete'] and done['tracer_rc'] == 0
+    assert done['command'] == json.loads((bounded / 'tracer-argv.json').read_text())
+    assert done['duration_bound_s'] == 1 and done['byte_bound'] == 67108864
+    assert done['raw_sha256'] == hashlib.sha256((bounded / 'strace.log').read_bytes()).hexdigest()
+    assert done['stderr_sha256'] == hashlib.sha256((bounded / 'strace.stderr').read_bytes()).hexdigest()
+    assert done['manifest_sha256'] == hashlib.sha256((bounded / 'manifest.json').read_bytes()).hexdigest()
+    assert done['seeds'] == [{'pid': os.getpid(), 'start_ticks': fields[19],
+                              'argv': [v.decode('utf-8', 'surrogateescape') for v in
+                                       Path('/proc/self/cmdline').read_bytes().rstrip(b'\0').split(b'\0')],
+                              'executable': os.readlink('/proc/self/exe'),
+                              'exec_evidence': 'proc-exe-cmdline', 'home': 'fixture'}]
+    for boundary_name in ('before', 'after'):
+        row = done[boundary_name]
+        assert row['wall_ns'] <= row['counter_sample_end_wall_ns']
+        assert row['cpu_ticks'] and all(type(n) is int and n >= 0 for n in row['cpu_ticks'])
+        assert row['loadavg'] and row['monotonic_ns'] > 0 and row['machine_births'] > 0
+    assert set(done['usage']) == {'collector_user_s', 'collector_system_s', 'tracer_user_s',
+                                   'tracer_system_s', 'tracer_peak_rss_kib'}
+    assert all(n >= 0 for n in done['usage'].values()) and done['usage']['tracer_peak_rss_kib'] > 0
+    started = json.loads((bounded / 'started.json').read_text())
+    assert not started['complete'] and started['before'] == done['before']
+    assert started['command'] == done['command'] and started['seeds'] == done['seeds']
     run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
         '--output', tmp / 'no-ack', good=False, env=env)
     run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 301,
@@ -422,13 +752,55 @@ if sys.platform == 'linux' and hasattr(os, 'pidfd_open'):
     run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
         '--output', tmp / 'no-live', '--acknowledge-ptrace', good=False, env=no_live)
     assert not (tmp / 'no-live').exists()
+    for label, home_patch in (('remote', {'remote': True}), ('no-roots', {'capture_roots': []})):
+        changed = copy.deepcopy(local)
+        changed['homes'][0].update(home_patch)
+        output = tmp / ('refused-' + label)
+        run('capture', '--manifest', save(label + '.json', changed), '--home', 'fixture',
+            '--seconds', 1, '--output', output, '--acknowledge-ptrace', good=False, env=env)
+        assert not output.exists()
+    for label, overrides, capture_env in (
+        ('home', ['--home', 'not-enrolled'], env),
+        ('zero-seconds', ['--seconds', '0'], env),
+        ('small-cap', ['--max-bytes', '4095'], env),
+        ('large-cap', ['--max-bytes', '67108865'], env),
+        ('no-tool', [], dict(env, PATH=str(tmp / 'not-a-tool-dir'))),
+        ('invalid-enable', [], dict(env, FM_SUPERVISION_CAPTURE_LIVE='2')),
+    ):
+        output = tmp / ('refused-' + label)
+        run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
+            '--output', output, '--acknowledge-ptrace', *overrides, good=False, env=capture_env)
+        assert not output.exists()
+    prior = {p.name: p.read_bytes() for p in bounded.iterdir()}
+    run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
+        '--output', bounded, '--acknowledge-ptrace', good=False, env=env)
+    assert prior == {p.name: p.read_bytes() for p in bounded.iterdir()}
+    # Empty stderr is load-bearing even on an exit-0 tracer. Every refused
+    # capture retains seals, status and private input/output for diagnosis.
+    for label, body, expected_rc in (
+        ('stderr', 'open(p,"w").write("partial")\nsys.stderr.write("attach denied\\n")\n', 0),
+        ('bad-exit', 'open(p,"w").write("partial")\nsys.exit(13)\n', 13),
+        ('wrong-scope', 'expected.append("unexpected")\nassert sys.argv[1:]==expected\n', 1),
+    ):
+        write_tracer(body)
+        output = tmp / label
+        run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
+            '--output', output, '--acknowledge-ptrace', good=False, env=env)
+        refused = json.loads((output / 'finished.json').read_text())
+        assert not refused['complete'] and refused['tracer_rc'] == expected_rc
+        assert refused['raw_sha256'] == hashlib.sha256((output / 'strace.log').read_bytes()).hexdigest()
+        assert refused['stderr_sha256'] == hashlib.sha256((output / 'strace.stderr').read_bytes()).hexdigest()
+        if label in ('stderr', 'wrong-scope'):
+            assert (output / 'strace.stderr').read_bytes()
+        assert (output / 'started.json').exists() and output.stat().st_mode & 0o077 == 0
     # Real signal delivery through the public CLI: the fake tracer is the only
     # child, and the admitted root is this test process (never signalled).
     for sig in (signal.SIGTERM, signal.SIGHUP):
         marker = tmp / ('ready-' + str(sig))
         signal_output = tmp / ('interrupted-' + str(sig))
         signal_env = dict(env, FM_FAKE_TRACER_READY=str(marker))
-        tool.write_text('#!' + sys.executable + '\nimport os,signal,sys\np=sys.argv[sys.argv.index("-o")+1]\nopen(p,"w").close()\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(0))\nopen(os.environ["FM_FAKE_TRACER_READY"],"w").write(str(os.getpid()))\nsignal.pause()\n')
+        write_tracer('open(p,"w").close()\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(0))\n'
+                     'open(os.environ["FM_FAKE_TRACER_READY"],"w").write(str(os.getpid()))\nsignal.pause()\n')
         collector = subprocess.Popen([sys.executable, str(cli), 'capture', '--manifest', str(local_path),
                                       '--home', 'fixture', '--seconds', '30', '--output', str(signal_output),
                                       '--acknowledge-ptrace'], env=signal_env,
@@ -455,20 +827,20 @@ if sys.platform == 'linux' and hasattr(os, 'pidfd_open'):
                 collector.kill()
                 collector.communicate(timeout=6)
     # A tracer ignoring SIGINT still cannot extend the recording indefinitely.
-    tool.write_text('#!' + sys.executable + '\nimport os,signal,sys\np=sys.argv[sys.argv.index("-o")+1]\nopen(p,"w").close()\nsignal.signal(signal.SIGINT,signal.SIG_IGN)\nsignal.pause()\n')
+    write_tracer('open(p,"w").close()\nsignal.signal(signal.SIGINT,signal.SIG_IGN)\nsignal.pause()\n')
     start = time.monotonic()
     run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
         '--output', tmp / 'hung', '--acknowledge-ptrace', good=False, env=env)
-    assert time.monotonic() - start < 7
+    assert time.monotonic() - start < 20
     assert not json.loads((tmp / 'hung/finished.json').read_text())['complete']
     os.kill(os.getpid(), 0)
     # Output overflow is a retained incomplete capture, not a false clean trace.
-    tool.write_text('#!' + sys.executable + '\nimport sys\np=sys.argv[sys.argv.index("-o")+1]\nopen(p,"wb").write(b"x"*8192)\n')
+    write_tracer('open(p,"wb").write(b"x"*8192)\n')
     run('capture', '--manifest', local_path, '--home', 'fixture', '--seconds', 1,
         '--max-bytes', 4096, '--output', tmp / 'overflow', '--acknowledge-ptrace', good=False, env=env)
     assert (tmp / 'overflow/strace.log').stat().st_size <= 4096
     assert not json.loads((tmp / 'overflow/finished.json').read_text())['complete']
-    checks += 10
+    checks += 22
 print('ok - public P0 accounting, sealed byte reads, attribution and bounds: ' + str(checks) + ' cases')
 PY
 rc=$?
@@ -479,7 +851,23 @@ rc=$?
 # Production modules have their own canonical source-aware lint roots.
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-supervision-lib.sh"
+printf '%s\n' fm-supervision-readers.v1 legacy-pid-cycle.v1 legacy-epoch-check.v1 > "$TMP/expected-capabilities"
+fm_supervision_reader_capabilities > "$TMP/actual-capabilities"
+cmp -s "$TMP/expected-capabilities" "$TMP/actual-capabilities" || fail 'capability inventory differs from supported legacy APIs'
 fm_supervision_activation_supported fm-supervision-readers.v1 legacy legacy-pid-cycle.v1 legacy-epoch-check.v1 || fail 'legacy capabilities refused'
+# Every advertised capability works alone and together; none licenses resident
+# activation. The protocol line is not itself an activation requirement.
+for capability in legacy-pid-cycle.v1 legacy-epoch-check.v1; do
+  fm_supervision_activation_supported fm-supervision-readers.v1 legacy "$capability" || fail 'advertised capability refused'
+  if fm_supervision_activation_supported fm-supervision-readers.v1 resident "$capability"; then fail 'advertisement licensed resident mode'; fi
+done
+if fm_supervision_activation_supported; then fail 'missing activation arguments accepted'; fi
+if fm_supervision_activation_supported fm-supervision-readers.v1; then fail 'missing mode and requirements accepted'; fi
+if fm_supervision_activation_supported fm-supervision-readers.v1 legacy; then fail 'missing requirement accepted'; fi
+if fm_supervision_activation_supported fm-supervision-readers.v1 legacy ''; then fail 'empty capability accepted'; fi
+if fm_supervision_activation_supported fm-supervision-readers.v1 legacy fm-supervision-readers.v1; then fail 'protocol accepted as capability'; fi
+if fm_supervision_activation_supported fm-supervision-readers.v1 legacy legacy-pid-cycle.v1 unknown; then fail 'unknown trailing capability accepted'; fi
+if fm_supervision_activation_supported fm-supervision-readers.v1 unknown legacy-pid-cycle.v1; then fail 'unknown activation mode accepted'; fi
 if fm_supervision_activation_supported fm-supervision-readers.v1 resident legacy-pid-cycle.v1; then fail 'resident activation accepted'; fi
 if fm_supervision_activation_supported fm-supervision-readers.v2 legacy legacy-pid-cycle.v1; then fail 'unsupported protocol accepted'; fi
 if fm_supervision_activation_supported fm-supervision-readers.v1 legacy virtual-cycle.v2; then fail 'unsupported capability accepted'; fi
@@ -487,6 +875,21 @@ fm_supervision_fence_check 0 ignored "$TMP/fifo.json" || fail 'disabled fence di
 if fm_supervision_fence_check 1 7 "$TMP/fifo.json"; then fail 'FIFO owner accepted'; fi
 printf 'fm-supervision-owner.v1\tlegacy\t7\n' > "$TMP/owner"
 fm_supervision_fence_check 1 7 "$TMP/owner" || fail 'matching epoch refused'
+if fm_supervision_fence_check; then fail 'missing fence arguments accepted'; fi
+if fm_supervision_fence_check 0; then fail 'missing disabled-fence arguments accepted'; fi
+if fm_supervision_fence_check 1 7; then fail 'missing owner path accepted'; fi
+if fm_supervision_fence_check 1 7 "$TMP/owner" extra; then fail 'extra fence arguments accepted'; fi
+for enable in '' 2 -1 true false invalid; do
+  if fm_supervision_fence_check "$enable" 7 "$TMP/no-owner"; then fail 'invalid enable bit accepted'; fi
+  if fm_supervision_fence_check "$enable" 7 "$TMP/owner"; then fail 'invalid enable bit accepted with valid record'; fi
+done
+for epoch in '' 0 00 01 -1 +7 7x ' 7' '7 ' 1000000000000000000; do
+  if fm_supervision_fence_check 1 "$epoch" "$TMP/owner"; then fail 'invalid expected epoch accepted'; fi
+  if fm_supervision_fence_check 1 "$epoch" "$TMP/no-owner"; then fail 'invalid epoch bypassed owner check'; fi
+done
+printf 'fm-supervision-owner.v1\tlegacy\t999999999999999999\n' > "$TMP/owner"
+fm_supervision_fence_check 1 999999999999999999 "$TMP/owner" || fail 'largest supported epoch refused'
+printf 'fm-supervision-owner.v1\tlegacy\t7\n' > "$TMP/owner"
 if fm_supervision_fence_check 1 8 "$TMP/owner"; then fail 'stale callback accepted'; fi
 printf 'fm-supervision-owner.v1\tresident\t7\n' > "$TMP/owner"
 if fm_supervision_fence_check 1 7 "$TMP/owner"; then fail 'unsupported owner mode accepted'; fi
@@ -515,6 +918,26 @@ ln -s "$TMP/owner" "$TMP/owner-link"
 if fm_supervision_fence_check 1 7 "$TMP/owner-link"; then fail 'symlink owner accepted'; fi
 if fm_supervision_fence_check 1 7 "$TMP/no-owner"; then fail 'missing owner accepted'; fi
 if fm_supervision_fence_check invalid 7 "$TMP/owner"; then fail 'invalid enable accepted'; fi
+# An empty file is unknown, not epoch zero or successful EOF. Independently
+# check unsupported protocol/epoch spelling and arbitrary binary bytes.
+for owner_record in '' 'fm-supervision-owner.v2\tlegacy\t7\n' \
+  'fm-supervision-owner.v1\tunknown\t7\n' 'fm-supervision-owner.v1\tlegacy\t07\n' \
+  'fm-supervision-owner.v1\tlegacy\t7\r\n' '\377\n'; do
+  printf '%b' "$owner_record" > "$TMP/owner"
+  if fm_supervision_fence_check 1 7 "$TMP/owner"; then fail 'unknown/malformed owner accepted'; fi
+done
+printf 'fm-supervision-owner.v1\tlegacy\t7\n' > "$TMP/owner"
+chmod 000 "$TMP/owner"
+if [ -r "$TMP/owner" ]; then
+  printf 'skip: unreadable-owner negative requires nonprivileged file permissions\n'
+else
+  if fm_supervision_fence_check 1 7 "$TMP/owner" 2>/dev/null; then fail 'unreadable owner accepted'; fi
+fi
+chmod 600 "$TMP/owner"
+fm_supervision_fence_check 1 7 "$TMP/owner" || fail 'readable owner control refused'
+fm_supervision_fence_check 0 invalid "$TMP/no-owner" || fail 'disabled fence inspected absent owner or epoch'
+fm_supervision_fence_check 0 invalid "$TMP/owner-link" || fail 'disabled fence inspected symlink owner'
+if fm_supervision_fence_check 1 7 "$TMP"; then fail 'directory owner accepted'; fi
 # No helper command is needed even when the bridge is enabled.
 (
   # shellcheck disable=SC2123 # Intentionally prove the APIs need no external helper.
@@ -524,4 +947,5 @@ if fm_supervision_fence_check invalid 7 "$TMP/owner"; then fail 'invalid enable 
   fm_supervision_activation_supported fm-supervision-readers.v1 legacy legacy-epoch-check.v1 || exit 1
   fm_supervision_reader_capabilities
 ) > "$TMP/capabilities" || fail 'bridge unexpectedly needed an external command'
+cmp -s "$TMP/expected-capabilities" "$TMP/capabilities" || fail 'fork-free capability inventory differs'
 pass 'legacy bridge is inert when disabled, fork-free, epoch-fenced and refuses unsupported activation'

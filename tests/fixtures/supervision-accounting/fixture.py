@@ -69,4 +69,9 @@ def make(crews):
             "label": str(crews) + "-crew-synthetic-shell-composition", "manifest": enrollment,
             "trace": trace, "records": records,
             "requests": [{"id": "read-" + str(n), "task": "task-" + str(n), "at_ns": n,
-                          "kind": "crew-state", "adapter_responses": []} for n in range(crews)]}
+                          "kind": "crew-state", "adapter_responses": [
+                              {"adapter": "pane", "generation": "g1", "at_ns": n + 1,
+                               "exit_status": 0, "stdout_base64": "cGFuZQD/", "stderr_base64": ""},
+                              {"adapter": "forge", "generation": "g1", "at_ns": n + 2,
+                               "exit_status": 75, "stdout_base64": "", "stderr_base64": "d2FpdAr/"}
+                          ]} for n in range(crews)]}
