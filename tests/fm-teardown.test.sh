@@ -5489,12 +5489,31 @@ ignore_workspace() {  # <case-dir>
   printf 'workspace/\n' >> "$(git -C "$1/wt" rev-parse --git-common-dir)/info/exclude"
 }
 
-evidence_manifest_verifies() {  # <evidence-dir>
-  if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$1" && sha256sum -c --quiet MANIFEST.sha256)
+evidence_manifest_verifies() {  # <evidence-dir>, including link-only snapshots
+  local ev=$1 line path text actual
+  [ -f "$ev/MANIFEST.sha256" ] || return 1
+  if [ -s "$ev/MANIFEST.sha256" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      (cd "$ev" && sha256sum -c --quiet MANIFEST.sha256) || return 1
+    else
+      (cd "$ev" && shasum -a 256 -c --quiet MANIFEST.sha256) || return 1
+    fi
   else
-    (cd "$1" && shasum -a 256 -c --quiet MANIFEST.sha256)
+    [ -s "$ev/MANIFEST.sha256.links" ] || return 1
   fi
+  [ -f "$ev/MANIFEST.sha256.links" ] || return 0
+  while IFS= read -r line; do
+    path=${line#*  }
+    [ -L "$ev/$path" ] || return 1
+    text=$(readlink "$ev/$path" && printf .) || return 1
+    text=${text%.}
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual=$(printf '%s' "$text" | sha256sum) || return 1
+    else
+      actual=$(printf '%s' "$text" | shasum -a 256) || return 1
+    fi
+    [ "${actual%% *}" = "${line%%  *}" ] || return 1
+  done < "$ev/MANIFEST.sha256.links"
 }
 
 test_declared_evidence_is_copied_out_with_a_verified_manifest() {
@@ -5895,7 +5914,7 @@ test_citation_and_link_target_coverage_requires_surviving_objects() {
               outside) [ "$(cat "$target")" = "$expected" ] || fail 'outside target changed' ;;
               tracked) [ "$(git -C "$case_dir/project" cat-file blob "$head_blob")" = "$expected" ] || fail 'tracked source not recoverable' ;;
             esac
-            evidence_manifest_verifies "$ev" || fail 'object coverage snapshot does not verify'
+            evidence_manifest_verifies "$ev" || fail "$root_name $mode $variant ${flag:-normal}: object coverage snapshot does not verify"
             assert_absent "$case_dir/state/task-x1.meta" 'safe target left task metadata'
           fi
         done
@@ -6065,7 +6084,9 @@ test_numeric_citation_suffixes_check_intermediate_entries() {
     for shorter in missing covered; do
       for suffix in :3 :3:9 :3:9. ':3&amp;'; do
         for flag in '' --force; do
-          case_dir=$(make_case "evidence-numeric-$root_name-$shorter-$suffix-${flag:-normal}")
+          # Keep presentation syntax out of the root itself: a colon in an
+          # absent unquoted filename is deliberately ambiguous to the parser.
+          case_dir=$(make_case "evidence-numeric-$root_name-$shorter-${suffix//[^a-zA-Z0-9]/_}-${flag:-normal}")
           ignore_workspace "$case_dir"
           write_meta "$case_dir" no-mistakes ship
           printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
