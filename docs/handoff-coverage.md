@@ -656,6 +656,7 @@ Native waiting/WAIT and unknown/pending step events are not held events in this 
 Held receipt time is the native hold time; done receipt time is the **first accepted snapshot's** `scanned_at` in which closure of that hold was observed, persisted rather than moved forward by each fresh scan/cache hit, with native event times/identities and native closed_by reason retained in detail.
 Evidence is the declared snapshot; cited native receipt paths remain unfollowed metadata.
 Routing and lane scope still come only from the fragment's code entry.
+The receipt's schema-bounded 1000-character `detail` is a display preview; if shortened it says so, retains the held-versus-resolution qualification, and the full bounded witness text remains verbatim in `<owner>.native-outcome` ext.
 
 Read all events without a recent-window cutoff, including old holds.
 Snapshot absence alone never resolves an observed unresolved hold: retain it and report disappearance until an explicit closure witness arrives.

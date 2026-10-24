@@ -177,7 +177,8 @@ def project(doc, previous):
         if old and old["closed_by"]:
             if not current and not terminal:
                 continue  # terminal history disappeared, no obligation remains
-            if not current and (not terminal or terminal["hold"]["at"] <= old["hold"]["at"]):
+            if not current and (not terminal or terminal["hold"]["id"] in knowledge["ids"]
+                                or terminal["hold"]["at"] <= old["hold"]["at"]):
                 operations[key] = dict(old, resolved=resolved)  # preserve FIRST accepted done observation
                 continue
         if old and not old["closed_by"]:

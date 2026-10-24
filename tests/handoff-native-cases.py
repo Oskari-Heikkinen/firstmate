@@ -587,7 +587,7 @@ class NativeAdapters(unittest.TestCase):
         self.assertIn("policy", adapters.adapt(proto, stage, self.cache, NOW)[1][0][1])
         self.assertIn("exact", self.adapt(family, "*.events.json")[1][0][1])
 
-    def test_open_holds_current_source_annotations_and_class_keys(self):
+    def test_open_holds_current_source_annotation_and_fixture_seals(self):
         family = "native-tj-open-holds"
         fixture = ROOT / "tests/fixtures/handoff-coverage/native/open-holds"
         provenance = json.loads((fixture / "provenance.json").read_text())
@@ -605,23 +605,37 @@ class NativeAdapters(unittest.TestCase):
         self.assertEqual(["done"], [d["state"] for d in docs])
         self.assertIn(native_closed["facts"]["closed_by"], docs[0]["detail"])
         self.assertIn("not proof of removal", docs[0]["detail"])
-        real_removed = by_selection["runner-class-removed"]
+
+    def test_open_holds_current_class_key_rules(self):
+        family = "native-tj-open-holds"
+        fixture = ROOT / "tests/fixtures/handoff-coverage/native/open-holds"
+        extract = json.loads((fixture / "extract.json").read_text())
+        real_removed = next(e["event"] for e in extract if e["selection"] == "runner-class-removed")
         composite = f"{real_removed['facts']['class']}:{real_removed['facts']['root_kind']}:{real_removed['subject']}"
         held = event("held", subject=composite, phase="remove", at="2026-09-28T12:00:00Z")
         for source, at, expected in (("runner-class-receipt", real_removed["at"], "done"),
                                      ("runner-receipt", real_removed["at"], "held"),
                                      ("runner-class-receipt", "2026-09-28T11:00:00Z", "held")):
-            self.cache = {}
-            put(self.folder / "events.json", snapshot([held, dict(real_removed, source=source, at=at)]))
-            docs, bad = self.adapt(family)
-            self.assertEqual([], bad)
-            self.assertEqual(expected, docs[0]["state"])
+            with self.subTest(source=source, at=at):
+                self.cache = {}
+                put(self.folder / "events.json", snapshot([held, dict(real_removed, source=source, at=at)]))
+                docs, bad = self.adapt(family)
+                self.assertEqual([], bad)
+                self.assertEqual(expected, docs[0]["state"])
+                self.assertLessEqual(len(docs[0]["detail"]), 1000)
+                if expected == "done":
+                    self.assertIn(real_removed["facts"]["result"], docs[0]["ext"][f"{OWNER}.native-outcome"])
+                    self.assertIn("full native-outcome in ext", docs[0]["detail"])
         # Follow P exactly: its additional removed key is registered for each
         # allowed success of that source, not only today's emitted removed kind.
         self.cache = {}
         put(self.folder / "events.json", snapshot([held, dict(real_removed, kind="fetched")]))
         self.assertEqual("done", self.adapt(family)[0][0]["state"])
-        self.cache = {}
+
+    def test_open_holds_known_neutrals_and_real_incomplete_header(self):
+        family = "native-tj-open-holds"
+        fixture = ROOT / "tests/fixtures/handoff-coverage/native/open-holds"
+        provenance = json.loads((fixture / "provenance.json").read_text())
         put(self.folder / "events.json", snapshot([event(k) for k in
             ("waiting", "step", "checked", "escalated", "archive-deleted", "closeout-recorded")]))
         self.assertEqual(([], []), self.adapt(family), "known neutral events neither create nor close holds")
@@ -731,21 +745,26 @@ class NativeAdapters(unittest.TestCase):
         self.assertEqual("done", docs[0]["state"])
         self.assertEqual("2026-10-24T16:30:00.000000Z", docs[0]["written_at"])
 
-    def test_open_holds_generated_six_closed_journals_and_operation_not_raw_held_cap(self):
+    def test_open_holds_generated_six_class_keys_and_operation_not_raw_held_cap(self):
         family = "native-tj-open-holds"
         # A CONSTRUCTED 14-vs-8 regression, not replay of the private complete
-        # aggregate: six journal holds are individually already stop-cleared.
+        # aggregate: six class-keyed journal holds close on class removals.
         events = [event("held", subject=f"kit-b{i}", phase="launch" if i < 5 else "fetch") for i in range(8)]
+        expected_phase = {hashlib.sha256(json.dumps([e["subject"], e["phase"]]).encode()).hexdigest(): e["phase"] for e in events}
         for i in range(6):
-            stop = event("held", subject=f"stopped-b{i}", phase="remove")
+            stop = event("held", subject=f"tj-root:tj:mp{i}-root", phase="remove")
             stop["source"] = "runner-journal"
-            stop["facts"].update(closed_at=T, closed_by="stop-cleared: roots retained")
-            events.append(stop)
+            removed = event("removed", subject=f"mp{i}-root", phase="remove", at=T)
+            removed["source"] = "runner-class-receipt"
+            removed["facts"].update({"class": "tj-root", "root_kind": "tj"})
+            events.extend([stop, removed])
         put(self.folder / "events.json", snapshot(events))
         docs, bad = self.adapt(family)
         self.assertEqual([], bad)
         self.assertEqual(8, sum(d["state"] == "held" for d in docs))
         self.assertEqual(6, sum(d["state"] == "done" for d in docs))
+        self.assertEqual({"launch": 5, "fetch": 3}, {phase: sum(d["state"] == "held" and expected_phase.get(d["record"]) == phase
+            for d in docs) for phase in ("launch", "fetch")})
         self.cache = {}
         put(self.folder / "events.json", snapshot([event("held", reason=f"repeat {i}") for i in range(4097)]))
         docs, bad = self.adapt(family)

@@ -543,7 +543,12 @@ def open_hold_receipts(proto, stage, projection, path):
                        "logical hold resolved, not proof of removal or whole-service completion")
         else:
             state, code, at = "held", "native-failed", hold["at"]
-        doc = receipt(proto, stage, record, native_time(at), state, path, code=code, detail=detail, entry=path.name)
+        preview = detail
+        if len(preview) > 1000:
+            prefix = "logical hold resolved, not proof of removal/service completion; " if closed else "native logical hold remains open; "
+            suffix = " ... [full native-outcome in ext]"
+            preview = prefix + detail[:1000 - len(prefix) - len(suffix)] + suffix
+        doc = receipt(proto, stage, record, native_time(at), state, path, code=code, detail=preview, entry=path.name)
         doc["version"] = 1
         doc["ext"] = {f"{stage['owner']}.native-attempts-known": False,
                       f"{stage['owner']}.native-outcome": detail}
