@@ -11,6 +11,8 @@
 # fm_watcher_supervision_verdict (also in bin/fm-wake-lib.sh), which owns what a
 # live watcher process means per supervision model. The status fields here retain
 # the beacon-age details used in their messages.
+# P0 capability/fence readers below are opt-in and write nothing.
+# docs/supervision-accounting.md owns their protocol and activation refusal.
 
 # Portable mtime; Linux stat lacks -f, macOS stat lacks -c.
 fm_sup_stat_mtime() {
@@ -110,4 +112,44 @@ fm_supervision_needed() {
 fm_supervision_unhealthy() {
   fm_supervision_status "$@"
   [ "$FM_SUP_NEEDED" = true ] && [ "$FM_SUP_WATCHER_FRESH" = false ]
+}
+
+# fm_supervision_reader_capabilities
+# Reader-first inventory, not a claim that existing callbacks are all fenced.
+fm_supervision_reader_capabilities() {
+  printf '%s\n' 'fm-supervision-readers.v1' 'legacy-pid-cycle.v1' 'legacy-epoch-check.v1'
+}
+
+# fm_supervision_activation_supported <protocol> <mode> <required-capability>...
+# P0 has no resident activation path. Missing/unknown requirements fail closed.
+fm_supervision_activation_supported() {
+  [ "$#" -ge 3 ] || return 1
+  [ "$1" = fm-supervision-readers.v1 ] && [ "$2" = legacy ] || return 1
+  shift 2
+  local capability
+  for capability in "$@"; do
+    case "$capability" in
+      legacy-pid-cycle.v1|legacy-epoch-check.v1) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# fm_supervision_fence_check <enabled:0|1> <expected-epoch> <owner-record>
+# Call only inside the caller's EXISTING short commit boundary. This reader
+# neither acquires a lock nor makes check-then-callback atomic by itself.
+# Disabled means no record access at all; no legacy producer enables it in P0.
+fm_supervision_fence_check() {
+  [ "$#" -eq 3 ] || return 1
+  case "$1" in 0) return 0 ;; 1) ;; *) return 1 ;; esac
+  local expected=$2 record=$3 line extra
+  case "$expected" in ''|0*|*[!0-9]*) return 1 ;; esac
+  [ "${#expected}" -le 18 ] || return 1
+  [ -f "$record" ] && [ ! -L "$record" ] || return 1
+  {
+    IFS= read -r line || return 1
+    extra=''
+    if IFS= read -r extra || [ -n "$extra" ]; then return 1; fi
+  } < "$record" || return 1
+  [ "$line" = "fm-supervision-owner.v1"$'\t'"legacy"$'\t'"$expected" ]
 }

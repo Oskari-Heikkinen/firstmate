@@ -637,6 +637,14 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/supervision-accounting.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": ".agents/skills/supervision-accounting/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/tmux-backend.md",
       "audience": "operator-current"
     },

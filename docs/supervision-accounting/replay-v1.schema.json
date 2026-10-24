@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sealed read-only P0 replay inputs, never an action program",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "synthetic", "manifest", "trace", "records", "requests", "label"],
+  "properties": {
+    "format": {"const": "fm-supervision-replay.v1"},
+    "synthetic": {"type": "boolean"},
+    "label": {"type": "string", "minLength": 1, "maxLength": 200},
+    "manifest": {"type": "object"}, "trace": {"type": "object"},
+    "records": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/record"}},
+    "requests": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/request"}}
+  },
+  "$defs": {
+    "record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "name", "sha256", "base64"],
+      "properties": {
+        "kind": {"enum": ["queue", "status", "claim"]},
+        "name": {"type": "string", "pattern": "[a-zA-Z0-9_.-]{1,128}"},
+        "sha256": {"type": "string", "pattern": "[0-9a-f]{64}"},
+        "base64": {"type": "string", "maxLength": 1398104}
+      }
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "at_ns", "task", "kind", "adapter_responses"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "at_ns": {"type": "integer", "minimum": 0},
+        "task": {"type": "string", "minLength": 1, "maxLength": 128},
+        "kind": {"enum": ["crew-state", "wake-drain", "fleet-snapshot", "spawn-observation", "control-observation"]},
+        "adapter_responses": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/response"}}
+      }
+    },
+    "response": {
+      "type": "object", "additionalProperties": false,
+      "required": ["adapter", "generation", "at_ns", "exit_status", "stdout_base64", "stderr_base64"],
+      "properties": {
+        "adapter": {"type": "string", "minLength": 1, "maxLength": 128},
+        "generation": {"type": "string", "minLength": 1, "maxLength": 200},
+        "at_ns": {"type": "integer", "minimum": 0},
+        "exit_status": {"type": "integer", "minimum": 0, "maximum": 255},
+        "stdout_base64": {"type": "string", "maxLength": 1398104},
+        "stderr_base64": {"type": "string", "maxLength": 1398104}
+      }
+    }
+  }
+}

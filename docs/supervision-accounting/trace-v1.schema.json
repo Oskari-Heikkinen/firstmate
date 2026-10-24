@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Exclusive birth/exec trace with explicit loss and machine cross-check",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "synthetic", "start_ns", "end_ns", "monotonic_duration_ns", "machine_births", "capture_complete", "losses", "events"],
+  "properties": {
+    "format": {"const": "fm-supervision-trace.v1"},
+    "synthetic": {"type": "boolean"},
+    "start_ns": {"type": "integer", "minimum": 0}, "end_ns": {"type": "integer", "minimum": 1},
+    "monotonic_duration_ns": {"type": "integer", "minimum": 1, "maximum": 310000000000},
+    "machine_births": {"type": "integer", "minimum": 0},
+    "capture_complete": {"type": "boolean"},
+    "losses": {
+      "type": "object", "additionalProperties": false,
+      "required": ["unknown_lines", "unfinished_calls", "unresolved_argv", "unknown_parents", "attachment_gaps"],
+      "properties": {
+        "unknown_lines": {"type": "integer", "minimum": 0},
+        "unfinished_calls": {"type": "integer", "minimum": 0},
+        "unresolved_argv": {"type": "integer", "minimum": 0},
+        "unknown_parents": {"type": "integer", "minimum": 0},
+        "attachment_gaps": {"type": "integer", "minimum": 0}
+      }
+    },
+    "events": {"type": "array", "maxItems": 250000, "items": {"$ref": "#/$defs/event"}}
+  },
+  "$defs": {
+    "event": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id", "parent", "at_ns", "argv", "home", "thread"],
+      "properties": {
+        "kind": {"enum": ["seed", "birth", "exec"]},
+        "id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "parent": {"type": "string", "maxLength": 200},
+        "at_ns": {"type": "integer", "minimum": 0},
+        "argv": {"type": "array", "maxItems": 4096, "items": {"type": "string", "maxLength": 65536}},
+        "home": {"type": "string", "maxLength": 64},
+        "thread": {"type": "boolean"}
+      }
+    }
+  }
+}

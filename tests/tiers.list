@@ -52,6 +52,7 @@ gate tests/fm-spawn-orca-worktree.test.sh
 gate tests/fm-spawn-pool-base-freshen.test.sh
 gate tests/fm-spawn-worktree-settle.test.sh
 gate tests/fm-storage.test.sh
+gate tests/fm-supervision-accounting.test.sh
 gate tests/fm-supervision-host.test.sh
 gate tests/fm-tangle-guard.test.sh
 gate tests/fm-task-inbox.test.sh
@@ -295,6 +296,7 @@ live tests/fm-send-inbox-doorbell-live-e2e.test.sh
 live tests/fm-send-secondmate-marker-herdr-e2e.test.sh
 live tests/fm-sessionstart-hook-live-e2e.test.sh
 live tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh
+live tests/fm-supervision-accounting-live.test.sh
 live tests/fm-supervision-host-attended-live-e2e.test.sh
 live tests/fm-supervision-host-live-e2e.test.sh
 live tests/fm-worker-account-live-e2e.test.sh
