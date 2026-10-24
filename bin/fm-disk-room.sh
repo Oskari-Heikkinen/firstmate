@@ -25,13 +25,19 @@
 #       can reclaim and what a trim would add, the last compaction result, and
 #       the external SSD's room with the active fetched-results root (read
 #       from the results-root file bin/fm-storage.sh publishes).
-#   fm-disk-room.sh check --expect-write SIZE [--exclude NAME]
+#   fm-disk-room.sh check [--expect-write SIZE] [--kind KIND] [--exclude NAME]
 #       Admission: exit 0 when real room minus SIZE stays at or above the
 #       margin, 1 when it would fall below, 2 when a reading fails or on misuse.
 #       Prints one line either way. --exclude drops the caller's own reservation.
-#   fm-disk-room.sh run --name NAME --expect-write SIZE -- COMMAND [ARG...]
-#       check, then hold a reservation for the command's lifetime and exec it.
+#   fm-disk-room.sh run --name NAME [--expect-write SIZE] [--kind KIND]
+#                       -- COMMAND [ARG...]
+#       check, then hold a reservation for the command's lifetime. Without
+#       --kind, exec it unchanged (v1). With --kind, wait for it and record
+#       kernel-accounted storage write bytes, including failed commands.
 #       Refused (low room or unreadable) exits 75 with one line on stderr.
+#   fm-disk-room.sh write-history KIND
+#       Print one JSON object: kind (string), samples and high_bytes (integers).
+#       Exit 0 (missing history: both integers 0), 2 on corruption or misuse.
 #   fm-disk-room.sh reserve NAME SIZE [--pid PID] [--ttl SECONDS]
 #       Declare an in-flight write. With --pid it lapses when that process
 #       exits; otherwise after --ttl (default 43200 s).
@@ -61,12 +67,13 @@
 #       Write FM_HOME's state/disk-room.check.sh shim (running watch-line with
 #       this script's environment settings) and bind it with
 #       fm-check-register.sh, or retire it with fm-check-unregister.sh.
-#   fm-disk-room.sh --interface
+#   fm-disk-room.sh --interface [VERSION]
 #       Print the consumer interface this script serves, one line:
-#       fm-disk-room-interface/v1.
+#       fm-disk-room-interface/v2. Optional VERSION (v1 or v2) queries an
+#       older supported interface explicitly; an unsupported version exits 1.
 #   fm-disk-room.sh --self-test VERSION
 #       Before trusting a new copy, a consumer runs this with the version it
-#       pins (v1). Exit 0 with one line when this script serves VERSION and a
+#       pins (v1 or v2). Exit 0 with one line when this script serves VERSION and a
 #       hermetic probe of it passes (temp state, Linux-only, no Windows
 #       readings, no reservation outside the temp state); 1 with one line
 #       naming what failed or the version served; 2 on misuse.
@@ -74,7 +81,7 @@
 # Interface v1 - what a consumer may rely on; docs/disk-room.md "Consumer
 # interface" owns the versioning rule. A change to any command, exit code, or
 # listed field's name, unit or meaning takes a new version; additions that v1
-# consumers ignore keep v1. Wording not listed here (status and growth text,
+# consumers ignore preserve v1 support. Wording not listed here (status and growth text,
 # the rest of a line after its listed start) is for people and may change.
 #   status --json  exit 0 with one JSON object on one line; 2 when a reading
 #       fails. Fields, every size in bytes:
@@ -113,6 +120,35 @@
 #   growth   exit 0 with text for people; 2 when a reading fails or on misuse.
 #   arm      exit 0 with one line starting "armed: "; 2 on failure.
 #   disarm   fm-check-unregister.sh's exit status.
+#
+# Interface v2 adds --kind KIND to check/run and write-history KIND, while
+# retaining every v1 command and --self-test v1. KIND has NAME's syntax and
+# identifies comparable jobs, not individual run ids. Without --kind, v1
+# still requires --expect-write and does not read or write job history.
+# With --kind, an omitted declaration uses the recorded high; a first run
+# needs an explicit declaration. Any declaration below the high is refused
+# (check: 1 with "low: "; run: 75). Unreadable/corrupt history or no history
+# without a declaration is a failed reading (check: 2; run: 75).
+# A typed run refuses an already-live reservation NAME; use unique run names.
+# The margin and normal disk reading are still checked on every admission.
+#
+# Measurement: --kind run snapshots /proc/$$/io write_bytes immediately before
+# and after waiting for COMMAND. This counts storage bytes charged by Linux
+# to this wrapper and its waited-for descendants, not logical file length or
+# df growth; overwrites and writes later deleted still count. It excludes
+# un-waited/background descendants, other processes/services doing delegated
+# work, non-storage I/O, and writes not accounted by that filesystem. It is
+# not a peak-space measurement or a promise about future jobs; use a rounded-up
+# declaration for known larger inputs. Abrupt wrapper death leaves no sample.
+# Unsupported/unreadable counters refuse before starting, not a zero sample.
+# A measurement/history failure after COMMAND prints a stderr error and exits
+# 74 if COMMAND succeeded, otherwise preserves COMMAND's nonzero status.
+# Job samples are append-only under STATE/write-history/KIND, one line:
+#   fm-disk-write/v1 EPOCH WRITE_BYTES COMMAND_STATUS
+# EPOCH is UTC Unix seconds; sizes are nonnegative integers of <=18 digits.
+# The shared state lock serializes admissions and sample appends, but is never
+# held across COMMAND. The command caller consumes refusals and recording
+# errors through the existing stdout/stderr path and reports holds to its owner.
 #
 # SIZE is bytes or a number with K, M, G or T (binary: G = GiB, matching what
 # Windows Explorer shows as GB).
@@ -201,7 +237,7 @@ SHADOW_LIVE_CACHE_SECS=300
 BAT_CACHE_SECS=300
 # sha256 of bin/fm-vhdx-bat.py; only a reader with exactly these bytes runs.
 VHDX_BAT_SHA256=bc4917f5d8a697c8916671307d6d909219fe16fd45574bb89718ecd92fe69c03
-INTERFACE=v1
+INTERFACE=v2
 INTERFACE_V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int swap_reserved:int room:int
   host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
   ssd_free:opt ssd_total:opt shadow_max:opt shadow_used:opt shadow_allocated:opt shadow_events:opt
@@ -1175,40 +1211,152 @@ admit() {
   return 1
 }
 
+# Job-kind history -------------------------------------------------------------
+
+# read_write_history KIND sets WRITE_SAMPLES and WRITE_HIGH; missing is empty,
+# but an existing unreadable, empty or malformed file fails closed.
+read_write_history() {
+  local file dir out
+  WRITE_SAMPLES=0 WRITE_HIGH=0
+  dir="$(state_dir)/write-history"
+  file="$dir/$1"
+  if { [ -e "$dir" ] || [ -L "$dir" ]; } && { [ ! -d "$dir" ] || [ ! -r "$dir" ] || [ ! -x "$dir" ]; }; then
+    ERR="cannot read write history directory $dir"; return 1
+  fi
+  [ -e "$file" ] || [ -L "$file" ] || return 0
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    ERR="cannot read write history $file"; return 1
+  fi
+  out=$(LC_ALL=C awk '
+    function integer(v) { return v ~ /^(0|[1-9][0-9]*)$/ && length(v) <= 18 }
+    NF != 4 || $1 != "fm-disk-write/v1" || !integer($2) ||
+      !integer($3) || !integer($4) || $4 + 0 > 255 { bad = 1 }
+    { n++; if (length($3) > length(high) ||
+        (length($3) == length(high) && "x" $3 > "x" high)) high = $3 }
+    END { if (bad || !n) exit 1; printf "%d %s\n", n, high }
+  ' "$file") || { ERR="corrupt write history $file"; return 1; }
+  read -r WRITE_SAMPLES WRITE_HIGH <<<"$out"
+}
+
+# kind_expect KIND DECLARED sets EXPECT and LINE; check's exit convention.
+kind_expect() {
+  local kind=$1 declared=$2
+  read_write_history "$kind" || { LINE="cannot measure disk room: $ERR"; return 2; }
+  if [ -z "$declared" ]; then
+    if [ "$WRITE_SAMPLES" -eq 0 ]; then
+      LINE="cannot measure disk room: no write history for kind $kind; declare --expect-write for its first run"
+      return 2
+    fi
+    EXPECT=$WRITE_HIGH
+  elif [ "$declared" -lt "$WRITE_HIGH" ]; then
+    LINE="low: kind $kind declared $declared bytes below recorded high $WRITE_HIGH bytes ($WRITE_SAMPLES samples); raise --expect-write"
+    return 1
+  else
+    EXPECT=$declared
+  fi
+}
+
+# Shell builtins only: a subshell would read the wrong process's counters.
+read_write_counter() {
+  local key value rest
+  IO_BYTES=''
+  while read -r key value rest; do
+    if [ "$key" = write_bytes: ]; then
+      case "$value" in ''|*[!0-9]*|???????????????????*) return 1 ;; esac
+      IO_BYTES=$value
+      return 0
+    fi
+  done <"/proc/$$/io" 2>/dev/null
+  return 1
+}
+
+record_write() {
+  local kind=$1 bytes=$2 rc=$3 dir
+  with_lock
+  read_write_history "$kind" || { printf 'fm-disk-room: %s; repair history before retrying\n' "$ERR" >&2; return 1; }
+  dir="$(state_dir)/write-history"
+  if ! mkdir -p "$dir" || ! printf 'fm-disk-write/v1 %s %s %s\n' "$(now)" "$bytes" "$rc" >>"$dir/$kind"; then
+    printf 'fm-disk-room: cannot record write history %s/%s; repair history before retrying\n' "$dir" "$kind" >&2
+    return 1
+  fi
+}
+
+cmd_write_history() {
+  { [ "$#" -eq 1 ] && valid_name "$1"; } || die "write-history needs KIND"
+  with_lock
+  read_write_history "$1" || die "$ERR"
+  printf '{"kind":"%s","samples":%s,"high_bytes":%s}\n' "$1" "$WRITE_SAMPLES" "$WRITE_HIGH"
+}
+
 cmd_check() {
-  local expect='' exclude='' rc
+  local expect='' exclude='' kind='' rc
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --expect-write) [ "$#" -ge 2 ] || die "--expect-write needs a size"; expect=$(to_bytes "$2") || die "bad size: $2"; shift 2 ;;
       --exclude) { [ "$#" -ge 2 ] && valid_name "$2"; } || die "--exclude needs a name"; exclude=$2; shift 2 ;;
+      --kind) { [ "$#" -ge 2 ] && valid_name "$2"; } || die "--kind needs a kind"; kind=$2; shift 2 ;;
       *) die "unknown check argument: $1" ;;
     esac
   done
-  [ -n "$expect" ] || die "check needs --expect-write SIZE"
+  [ -n "$expect$kind" ] || die "check needs --expect-write SIZE or --kind KIND"
+  if [ -n "$kind" ]; then
+    with_lock
+    kind_expect "$kind" "$expect"; rc=$?
+    [ "$rc" -eq 0 ] || { printf '%s\n' "$LINE"; return "$rc"; }
+    expect=$EXPECT
+  fi
   admit "$expect" "$exclude"; rc=$?
   printf '%s\n' "$LINE"
   return "$rc"
 }
 
 cmd_run() {
-  local name='' expect=''
+  local name='' expect='' kind='' before rc
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --name) { [ "$#" -ge 2 ] && valid_name "$2"; } || die "--name needs a name"; name=$2; shift 2 ;;
+      --kind) { [ "$#" -ge 2 ] && valid_name "$2"; } || die "--kind needs a kind"; kind=$2; shift 2 ;;
       --expect-write) [ "$#" -ge 2 ] || die "--expect-write needs a size"; expect=$(to_bytes "$2") || die "bad size: $2"; shift 2 ;;
       --) shift; break ;;
       *) die "unknown run argument: $1" ;;
     esac
   done
-  [ -n "$name" ] && [ -n "$expect" ] && [ "$#" -gt 0 ] || die "run needs --name, --expect-write and -- COMMAND"
+  [ -n "$name" ] && [ -n "$expect$kind" ] && [ "$#" -gt 0 ] || die "run needs --name, --expect-write or --kind, and -- COMMAND"
   with_lock
+  if [ -n "$kind" ]; then
+    live_reservations >/dev/null
+    if [ -e "$(state_dir)/reservations/$name" ]; then
+      printf 'fm-disk-room: refused %s: reservation already live; use a unique --name\n' "$name" >&2
+      return 75
+    fi
+    if ! kind_expect "$kind" "$expect"; then
+      printf 'fm-disk-room: refused %s: %s\n' "$name" "$LINE" >&2
+      return 75
+    fi
+    expect=$EXPECT
+    if ! read_write_counter; then
+      printf 'fm-disk-room: refused %s: cannot measure storage write counter /proc/%s/io\n' "$name" "$$" >&2
+      return 75
+    fi
+  fi
   if ! admit "$expect" "$name"; then
     printf 'fm-disk-room: refused %s: %s\n' "$name" "$LINE" >&2
     exit 75
   fi
   write_reservation "$name" "$expect" "$$" 0
   exec 9>&-
-  exec "$@"
+  [ -n "$kind" ] || exec "$@"
+  read_write_counter || { printf 'fm-disk-room: refused %s: cannot measure storage write counter\n' "$name" >&2; return 75; }
+  before=$IO_BYTES
+  "$@"; rc=$?
+  if read_write_counter && [ "$IO_BYTES" -ge "$before" ]; then
+    (record_write "$kind" "$(( IO_BYTES - before ))" "$rc") || { [ "$rc" -ne 0 ] || rc=74; }
+  else
+    printf 'fm-disk-room: cannot measure completed write for %s; no sample recorded\n' "$name" >&2
+    [ "$rc" -ne 0 ] || rc=74
+  fi
+  rm -f -- "$(state_dir)/reservations/$name"
+  return "$rc"
 }
 
 cmd_reserve() {
@@ -1396,7 +1544,7 @@ self_probe() {
 # self_test_v1 -> nothing on success, else what failed.
 self_test_v1() {
   local out rc spec key kind v
-  [ "$(self_probe 0 --interface)" = "fm-disk-room-interface/v1" ] || { echo "--interface does not print fm-disk-room-interface/v1"; return; }
+  [ "$(self_probe 0 --interface v1)" = "fm-disk-room-interface/v1" ] || { echo "--interface v1 does not print fm-disk-room-interface/v1"; return; }
   out=$(self_probe 0 status --json 2>/dev/null); rc=$?
   [ "$rc" -eq 0 ] || { echo "status --json exited $rc"; return; }
   for spec in $INTERFACE_V1_FIELDS; do
@@ -1430,15 +1578,28 @@ self_test_v1() {
   [ "$rc" -eq 0 ] && [ -z "$out" ] || { echo "watch-line above the margin did not exit 0 silently (exit $rc)"; return; }
 }
 
+self_test_v2() {
+  local failure out rc
+  failure=$(self_test_v1)
+  [ -z "$failure" ] || { printf '%s\n' "$failure"; return; }
+  [ "$(self_probe 0 --interface)" = "fm-disk-room-interface/v2" ] || { echo "--interface does not print fm-disk-room-interface/v2"; return; }
+  self_probe 0 run --name fm-self-kind --kind self-kind --expect-write 1M -- sh -c 'exit 7' >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 7 ] || { echo "kind run did not return command status (exit $rc)"; return; }
+  out=$(self_probe 0 write-history self-kind 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ "$(json_value "$out" samples)" = 1 ] || { echo "kind run did not record its sample"; return; }
+  out=$(self_probe 0 check --kind self-kind 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ "${out#ok: }" != "$out" ] || { echo "check without a declaration did not use kind history"; return; }
+}
+
 cmd_self_test() {
   local want=${1:-} failure
   [ "$#" -eq 1 ] && [ -n "$want" ] || die "--self-test needs one interface version, such as v1"
-  if [ "$want" != "$INTERFACE" ]; then
+  if [ "$want" != v1 ] && [ "$want" != v2 ]; then
     printf 'fm-disk-room: does not serve interface %s (serves fm-disk-room-interface/%s)\n' "$want" "$INTERFACE"
     return 1
   fi
   SELF_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-disk-room-self-test.XXXXXX") || die "cannot create a temp directory"
-  failure=$(self_test_v1)
+  failure=$("self_test_$want")
   rm -rf -- "$SELF_TMP"
   if [ -n "$failure" ]; then
     printf 'fm-disk-room: self-test %s failed: %s\n' "$want" "$failure"
@@ -1448,11 +1609,17 @@ cmd_self_test() {
 }
 
 case "${1:-}" in
-  --interface) [ "$#" -eq 1 ] || die "--interface takes no arguments"; printf 'fm-disk-room-interface/%s\n' "$INTERFACE" ;;
+  --interface)
+    [ "$#" -le 2 ] || die "--interface takes at most one version"
+    case "${2:-$INTERFACE}" in
+      v1|v2) printf 'fm-disk-room-interface/%s\n' "${2:-$INTERFACE}" ;;
+      *) printf 'fm-disk-room: unsupported interface %s\n' "$2"; exit 1 ;;
+    esac ;;
   --self-test) shift; cmd_self_test "$@" ;;
   status) shift; cmd_status "$@" ;;
   check) shift; cmd_check "$@" ;;
   run) shift; cmd_run "$@" ;;
+  write-history) shift; cmd_write_history "$@" ;;
   reserve) shift; cmd_reserve "$@" ;;
   reserve-bulk) shift; cmd_reserve_bulk "$@" ;;
   release-bulk) shift; cmd_release_bulk "$@" ;;
