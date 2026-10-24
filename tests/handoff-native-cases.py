@@ -353,6 +353,63 @@ class NativeAdapters(unittest.TestCase):
         self.assertEqual([], bad)
         self.assertEqual(2, len({d["record"] for d in docs}))
 
+    def test_exact_native_identity_version_and_observation_coordinates(self):
+        # Independent wire expectations, not values obtained from production mappers.
+        cases = [("native-tj-handoff", {"kind": kind}, "decision.json", expected)
+                 for kind, expected in (("PASS", sample("native-tj-handoff")["id"]),
+                                        ("FAIL", sample("native-tj-handoff")["id"]),
+                                        ("REQUEST ACCEPTED", "request:example:" + SHA),
+                                        ("REQUEST REFUSED", "request:example:" + SHA))]
+        cases += [("native-tetjet-collected", {"kind": kind}, "collection.json", "batch:batch-a")
+                  for kind in ("tj-package", "rolling-slice")]
+        cases += [("native-tetjet-collected", {"kind": "request", "request_id": "request-a",
+                   "request_sha256": SHA, "complete": True, "outcome": "withdrawn"},
+                   "request.json", "request:request-a:" + SHA)]
+        cases += [("native-tj-step", {"rc": rc, "ended": None if rc is None else T},
+                   "batch-a--launch--20261024T160000--123.json", "batch-a--launch--20261024T160000--123.json")
+                  for rc in (None, 0, 1)]
+        cases += [("native-manifest-verified", {"item": "item:a", "manifest": "manifest:b"}, "verified.json",
+                   hashlib.sha256(json.dumps(["item:a", "manifest:b"]).encode()).hexdigest())]
+        base = self.folder
+        for index, (family, changes, name, expected) in enumerate(cases):
+            with self.subTest(family=family, changes=changes):
+                self.folder = base / str(index)
+                self.folder.mkdir()
+                self.cache = {}
+                out = self.one(family, dict(sample(family), **changes), name)
+                self.assertEqual(expected, out["record"])
+                self.assertEqual(1, out["version"])
+                self.assertEqual(1, out["attempt"])
+                self.assertEqual(1 if out["state"] == "accepted" else 2, out["seq"])
+                self.assertEqual(name, out["input"])
+        self.folder = base / "cursor"
+        self.folder.mkdir()
+        self.cache = {}
+        signal = self.folder / "capacity.signal"
+        signal.write_bytes(b"")
+        st = signal.stat()
+        cursor = dict(sample("native-capacity-cursor"), dev=st.st_dev, ino=st.st_ino)
+        out = self.one("native-capacity-cursor", cursor, "capacity.cursor.json")
+        expected = hashlib.sha256(json.dumps([str(self.folder / "capacity.cursor.json")]).encode()).hexdigest()
+        self.assertEqual(expected, out["record"])
+        self.assertEqual(0, out["version"])
+        self.assertEqual((1, 2), (out["attempt"], out["seq"]))
+        for index, phase in enumerate((None, "", "other", "fetch")):
+            with self.subTest(phase=phase):
+                self.folder = base / f"logical-{index}"
+                self.folder.mkdir()
+                self.cache = {}
+                put(self.folder / "events.json", snapshot([event("held", subject="specific-subject", phase=phase)]))
+                docs, bad = self.adapt("native-tj-open-holds")
+                self.assertEqual([], bad)
+                self.assertEqual(1, len(docs))
+                out = docs[0]
+                expected = hashlib.sha256(json.dumps(["specific-subject", phase or "other"]).encode()).hexdigest()
+                self.assertEqual(expected, out["record"])
+                self.assertEqual(1, out["version"])
+                self.assertEqual((1, 2), (out["attempt"], out["seq"]))
+                self.assertEqual(str(self.folder / "events.json"), out["evidence"])
+
     def test_malformed_native_identity_fields_never_mint_receipts(self):
         cases = [("native-manifest-verified", {}, ("item", "manifest"), "missing native identity fields"),
                  ("native-tj-handoff", {}, ("id", "subject"), "native record identity"),
@@ -527,9 +584,13 @@ class NativeAdapters(unittest.TestCase):
         put(self.folder / "nested/record.json", sample(family))
         put(self.folder / ".ignored.json", {"unknown": True})
         self.assertEqual(([], []), self.adapt(family))
-        for i in range(adapters.NATIVE_FILES + 1):
+        for i in range(4096):
             put(self.folder / f"{i % 2}-{i}.json", sample(family))
-        self.assertIn("exceeds", self.adapt(family)[1][0][1])
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(4096, len(docs), "the published matching-record cap is inclusive")
+        put(self.folder / "0-4096.json", sample(family))
+        self.assertIn("exceeds 4096", self.adapt(family)[1][0][1])
         # A real retained step directory exceeds the cap: selection, not directory
         # size, is bounded. Exhaustive disjoint stages must each stay below it.
         selected = set()
@@ -537,10 +598,10 @@ class NativeAdapters(unittest.TestCase):
             docs, bad = self.adapt(family, pattern)
             self.assertEqual([], bad)
             records = {d["record"] for d in docs}
-            self.assertLessEqual(len(records), adapters.NATIVE_FILES)
+            self.assertLessEqual(len(records), 4096)
             self.assertFalse(selected & records)
             selected.update(records)
-        self.assertEqual(adapters.NATIVE_FILES + 1, len(selected))
+        self.assertEqual(4097, len(selected))
         for p in self.folder.glob("[0-9]*.json"):
             p.unlink()
         family = "native-manifest-verified"
@@ -667,6 +728,36 @@ class NativeAdapters(unittest.TestCase):
                 self.assertIn(": " + reasons[-1] + ";", docs[0]["detail"])
                 expected = hashlib.sha256(json.dumps(["pkg-b12-old", phase or "other"]).encode()).hexdigest()
                 self.assertEqual(expected, docs[0]["record"])
+
+    def test_open_holds_unordered_distinct_times_select_latest_not_last(self):
+        family = "native-tj-open-holds"
+        older = event("held", at="2026-10-24T14:00:00Z", reason="older")
+        newer = event("held", at="2026-10-24T15:00:00Z", reason="newer")
+        for events in ([newer, older], [older, newer]):
+            with self.subTest(order=[e["at"] for e in events]):
+                self.cache = {}
+                put(self.folder / "events.json", snapshot(events))
+                docs, bad = self.adapt(family)
+                self.assertEqual([], bad)
+                self.assertEqual("2026-10-24T15:00:00.000000Z", docs[0]["written_at"])
+                self.assertIn(newer["id"], docs[0]["detail"])
+                self.assertIn(": newer;", docs[0]["detail"])
+
+    def test_open_holds_unknown_kind_is_specific_on_fresh_and_retained_cache(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        for prior in (False, True):
+            with self.subTest(prior=prior):
+                self.cache = {}
+                if prior:
+                    put(path, snapshot([event("held")]))
+                    self.assertEqual("held", self.adapt(family)[0][0]["state"])
+                put(path, snapshot([event("future-kind")]))
+                docs, bad = self.adapt(family)
+                self.assertEqual(["held"] if prior else [], [d["state"] for d in docs])
+                self.assertEqual([path], [p for p, _ in bad])
+                self.assertIn("unknown native event kind", bad[0][1])
+                self.assertNotIn("disappeared", bad[0][1], "a pruning error cannot stand in for kind rejection")
 
     def test_open_holds_real_step_derived_events_are_not_live_aggregate(self):
         # These are generated normalized events from the real step pair, not a
@@ -1009,6 +1100,153 @@ class NativeAdapters(unittest.TestCase):
         self.assertTrue(any(k.startswith("hw-held-") for k in tick()))
         put(source, snapshot([event("fetched", at=T)]))
         self.assertFalse(tick(), "native closure proof clears held, past-bound and source-error levels")
+
+    def test_native_lane_scope_code_precedence_and_distinct_routes_through_watcher(self):
+        # Conflicting exact/long/short matches make selection observable in both
+        # the wire receipt and delivered targets. Owner, sender, fix and main differ.
+        base = self.folder
+        for family in ("native-tj-step", "native-tj-open-holds"):
+            for selection in ("exact", "longest-family", "short-family"):
+                with self.subTest(family=family, selection=selection):
+                    self.folder = base / (family + "-" + selection)
+                    self.folder.mkdir()
+                    self.cache = {}
+                    frag, tick = self.watcher_fixture(family)
+                    machine = frag.parents[3]
+                    sender, fix = "sender-mate", "repair-mate"
+                    for hid in (sender, fix, "wrong-mate"):
+                        (machine / hid / "state").mkdir(parents=True)
+                    fragment = json.loads(frag.read_text())
+                    proto = fragment["protocols"][0]
+                    stage = proto["stages"][0]
+                    proto["senders"] = [sender]
+                    lane = {"fix_owner": fix, "holds_all": True, "stops": selection + " observation lane", "what": "stop"}
+                    wrong = {"fix_owner": "wrong-mate", "holds_all": False, "what": "must not win"}
+                    stage["codes"] = {"native-*": lane if selection == "short-family" else wrong}
+                    if selection != "short-family":
+                        stage["codes"]["native-f*"] = lane if selection == "longest-family" else wrong
+                    if selection == "exact":
+                        stage["codes"]["native-failed"] = lane
+                    put(frag, fragment)
+                    if family == "native-tj-step":
+                        source = put(self.folder / "step.json", dict(sample(family), rc=1))
+                    else:
+                        source = put(self.folder / "events.json", snapshot([event("held", at=T)]))
+                    docs, bad = adapters.adapt(proto, stage, {}, NOW)
+                    self.assertEqual([], bad)
+                    self.assertEqual(1, len(docs))
+                    doc = docs[0]
+                    self.assertEqual([], validate.Schema(str(ROOT / "docs/handoff-coverage/handoff-receipt-v1.schema.json")).errors(doc))
+                    self.assertEqual([], validate.receipt_problems(doc, {proto["id"]: proto}))
+                    self.assertIs(True, doc["holds_all"])
+                    self.assertEqual(lane["stops"], doc["stops"])
+                    self.assertEqual("native-failed", doc["code"])
+                    self.assertEqual(1, doc["version"])
+                    self.assertEqual(str(source), doc["evidence"])
+                    _, records = tick()
+                    cur = records[doc["record"]]["cur"]
+                    for field in ("holds_all", "stops", "code", "detail", "evidence", "attempt", "seq"):
+                        self.assertEqual(doc[field], cur[field], field)
+                    durable = json.loads((machine / OWNER / "state/handoff-watch/alarms.json").read_text())["alarms"]
+                    self.assertEqual({"held", "lane-fault", "open-past-bound"}, {a["kind"] for a in durable.values()})
+                    held = next(a for a in durable.values() if a["kind"] == "held")
+                    self.assertEqual(sorted([fix, sender]), held["targets"])
+                    self.assertEqual({fix: "fix-owner", sender: "sender"}, held["roles"])
+                    self.assertEqual(sorted([fix, sender]), held["routed"])
+                    lane_alarm = next(a for a in durable.values() if a["kind"] == "lane-fault")
+                    self.assertEqual(["main"], lane_alarm["targets"])
+                    self.assertEqual(["main"], lane_alarm["routed"])
+                    self.assertIn(lane["stops"], lane_alarm["reason"])
+                    expected = {fix: {"held", "open-past-bound"}, sender: {"held"}, "main": {"lane-fault"}}
+                    for hid, kinds in expected.items():
+                        active = json.loads((machine / OWNER / f"state/handoff-watch/stores/{hid}.json").read_text())["active"]
+                        self.assertEqual(kinds, {a["kind"] for a in active.values()})
+                        if hid in (fix, sender):
+                            self.assertEqual("fix-owner" if hid == fix else "sender",
+                                             next(a for a in active.values() if a["kind"] == "held")["role"])
+                    self.assertFalse((machine / OWNER / "state/handoff-watch/stores/wrong-mate.json").exists())
+                    self.assertFalse((machine / OWNER / "state/handoff-watch/undeliverable").exists())
+
+    def test_fixed_native_record_and_read_budget_boundaries(self):
+        family = "native-tj-step"
+        path = self.folder / "record.json"
+        raw = json.dumps(sample(family)).encode()
+        replace_bytes(path, raw + b" " * (1048576 - len(raw)))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(["done"], [d["state"] for d in docs])
+        replace_bytes(path, raw + b" " * (1048577 - len(raw)))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], docs)
+        self.assertIn("larger than 1048576 bytes", bad[0][1])
+        path.unlink()
+        self.cache = {}
+        for index in range(17):
+            replace_bytes(self.folder / f"{index:02d}.json", raw + b" " * (1048576 - len(raw)))
+        docs, bad = self.adapt(family)
+        self.assertEqual(16, len(docs), "exactly 16 MiB of changed reads is admitted")
+        self.assertEqual(1, len(bad))
+        self.assertIn("exceed 16777216 bytes this pass", bad[0][1])
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(17, len(docs), "deferred changed file is observed on the next pass")
+
+    def test_fixed_open_holds_snapshot_byte_boundary(self):
+        path = self.folder / "events.json"
+        raw = json.dumps(snapshot([])).encode()
+        replace_bytes(path, raw + b" " * (16777216 - len(raw)))
+        self.assertEqual(([], []), self.adapt("native-tj-open-holds"))
+        replace_bytes(path, raw + b" " * (16777217 - len(raw)))
+        docs, bad = self.adapt("native-tj-open-holds")
+        self.assertEqual([], docs)
+        self.assertIn("larger than 16777216 bytes", bad[0][1])
+
+    def test_fixed_open_holds_event_and_witness_boundaries(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        # Minimal source-shaped events keep the event and witness cap tests
+        # independently below the byte cap, without patching any production limit.
+        minimal = {"id": "0", "kind": "step", "subject": "x", "phase": None, "alias": None,
+                   "at": T, "source": "s", "receipt": "r", "facts": {}}
+        events = [dict(minimal, id=str(i)) for i in range(65536)]
+        put(path, snapshot(events))
+        self.assertEqual(([], []), self.adapt(family))
+        put(path, snapshot(events + [dict(minimal, id="65536")]))
+        self.assertIn("at most 65536 events", self.adapt(family)[1][0][1])
+        self.cache = {}
+        for item in events:
+            item["kind"] = "held"
+        put(path, snapshot(events))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(["held"], [d["state"] for d in docs])
+        self.assertIn("native held 65535 at", docs[0]["detail"])
+        # Next frame adds one obligation, while old unresolved ones are pruned:
+        # each frame fits the event cap, but retained history exceeds its own cap.
+        put(path, snapshot([dict(minimal, kind="held", id="65536")]))
+        retained, bad = self.adapt(family)
+        self.assertEqual(docs, retained)
+        self.assertIn("witness count exceeds 65536", bad[0][1])
+
+    def test_fixed_open_holds_operation_and_text_boundaries(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        events = [event("held", subject=f"subject-{i}") for i in range(4096)]
+        put(path, snapshot(events))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(4096, len(docs))
+        put(path, snapshot(events + [event("held", subject="overflow")]))
+        self.assertIn("retention exceeds 4096 operations", self.adapt(family)[1][0][1])
+        self.cache = {}
+        put(path, snapshot([event("held", reason="x" * 4096)]))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertIn("x" * 4096, docs[0]["ext"][f"{OWNER}.native-outcome"])
+        put(path, snapshot([event("held", reason="x" * 4097)]))
+        retained, bad = self.adapt(family)
+        self.assertEqual(docs, retained)
+        self.assertIn("text bound", bad[0][1])
 
     def test_watcher_invalid_adapter_cannot_erase_previous_state(self):
         import importlib.util
