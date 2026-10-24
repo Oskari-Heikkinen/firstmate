@@ -48,6 +48,7 @@ A positively validated saved wait is still the same commissioned task, not a mis
 [`bin/fm-park.sh`](../../../bin/fm-park.sh)'s header owns the per-home canary, qualification, continuous-wait policy, explicit inbox pickup, cancellation and resume commands; [`bin/fm-suspend-lib.sh`](../../../bin/fm-suspend-lib.sh) owns saved-custody proof and interrupted transactions.
 Ordinary text, reminders, timer expiry and results that still need a captain decision never grant pickup authority.
 Resolve the actual decision through its existing owner before authorizing continuation; suspension and cancellation do not resolve approvals or obligations.
+Shared keyed answers use `fm-send.sh`'s explicit fan-out form; its header owns recipient discovery, delivery, closure and inbox pickup.
 Use the normal owner control/park continuation, never a generic fresh spawn, a worker-chosen pickup, an old-path inspection or ordinary teardown.
 The ordinary wait condition stays cheap; the separate incarnation-bound release source owns expensive saving/return and its own bounded outcome, as described by the park owner.
 An interrupted or invalid saved transaction remains blocked with its evidence intact: reconcile only its exact acquisition, never re-run allocation blindly or edit records to manufacture a valid proof.

@@ -905,6 +905,149 @@ test_decision_answer_partition_relocates_under_the_record() {
   pass "fm-send --resolve-key: a decision answer refuses the attended branch before sending, a blocked: key stays steering, and the away-posture record relocates the answer"
 }
 
+# Fan-out uses the same real sender and status consumer as the single-target
+# tests. Park pickup is observed through the production incarnation-bound poll,
+# not inferred from record bytes or a terminal ring.
+test_key_fanout_reaches_all_and_only_waiters() {
+  local dir fb log home other out rc id body
+  dir="$TMP_ROOT/fanout"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home fanout); other=$(setup_home other-home)
+  for id in t1 t2 t3 t4 t5; do
+    fm_write_meta "$home/state/$id.meta" "window=sess:fm-$id" "kind=ship"
+  done
+  printf 'needs-decision [key=capacity]: choose\nworking: unrelated\n' > "$home/state/t1.status"
+  printf 'needs-decision: [key=capacity] choose too\n' > "$home/state/t2.status"
+  printf 'needs-decision [key=other]: unrelated decision\n' > "$home/state/t3.status"
+  printf 'needs-decision [key=capacity]: old\nresolved [key=capacity]: settled\n' > "$home/state/t4.status"
+  printf 'blocked [key=capacity]: not a parked decision waiter\n' > "$home/state/t5.status"
+  fm_write_meta "$other/state/t1.meta" 'window=other:fm-t1' 'kind=ship'
+  printf 'needs-decision [key=capacity]: another home\n' > "$other/state/t1.status"
+  ln -s "$other/state/t1.status" "$home/state/foreign.status"
+  ln -s "$other/state/t1.meta" "$home/state/foreign.meta"
+
+  out=$(run_send "$fb" "$home" "$log" --resolve-key-all capacity 'use six slots'); rc=$?
+  expect_code 0 "$rc" "fan-out should succeed"
+  assert_contains "$out" 'reached task=t1 key=capacity' 'first recipient is visible'
+  assert_contains "$out" 'reached task=t2 key=capacity' 'second recipient is visible'
+  assert_contains "$out" 'reached=2 failed=0' 'the caller sees the total'
+  for id in t1 t2; do
+    body=$(bash -c '. "$1"; fm_task_inbox_body "$2"' _ "$ROOT/bin/fm-task-inbox-lib.sh" \
+      "$home/state/$id.inbox/001.msg")
+    [ "$body" = 'use six slots' ] || fail "$id did not receive the exact answer"
+    [ ! -e "$home/state/$id.inbox/002.msg" ] || fail "$id received duplicate records"
+    [ "$(grep -c 'resolved \[key=capacity\]' "$home/state/$id.status")" = 1 ] \
+      || fail "$id did not get exactly one close"
+  done
+  for id in t3 t4 t5 foreign; do
+    [ ! -e "$home/state/$id.inbox" ] || fail "nonwaiter $id received an answer"
+  done
+  [ ! -e "$other/state/t1.inbox" ] || fail 'fan-out crossed into another home'
+  [ "$(wc -l < "$other/state/t1.status" | tr -d ' ')" = 1 ] || fail 'foreign status was changed'
+  out=$(drain_out "$home")
+  assert_contains "$out" '[key=other]' 'a different decision stays open'
+  if printf '%s\n' "$out" | grep -E '^t[12] .*\[key=capacity\]' >/dev/null; then
+    fail "answered recipients are still open: $out"
+  fi
+  out=$(run_send "$fb" "$home" "$log" --resolve-key-all capacity 'use six slots'); rc=$?
+  expect_code 0 "$rc" 'a repeat answer should be a no-op'
+  assert_contains "$out" 'no-op key=capacity: no waiting tasks in this home' 'no-op must be explicit'
+  [ ! -e "$home/state/t1.inbox/002.msg" ] || fail 'a retry duplicated a settled answer'
+  [ ! -e "$home/state/t2.inbox/002.msg" ] || fail 'a retry duplicated the second answer'
+  pass 'fm-send fan-out answers every matching decision once, leaving other keys and homes untouched'
+}
+
+test_key_fanout_authorizes_normal_park_pickup() {
+  local dir fb log home out rc id
+  dir="$TMP_ROOT/fanout-park"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home fanout-park)
+  for id in t1 t2 t3 t4; do
+    fm_write_meta "$home/state/$id.meta" "window=sess:fm-$id" 'kind=ship' \
+      'park_state=parked' "park_when=inbox:$id" "park_token=token-$id"
+  done
+  printf 'needs-decision [key=capacity]: parked approval\npaused: waiting on inbox\n' > "$home/state/t1.status"
+  printf 'blocked [key=capacity]: parked on this key too\n' > "$home/state/t2.status"
+  printf 'needs-decision [key=other]: different park\n' > "$home/state/t3.status"
+  printf 'needs-decision [key=capacity]: answer does not replace external condition\n' > "$home/state/t4.status"
+  printf 'park_when=file:%s/not-ready\n' "$dir" >> "$home/state/t4.meta"
+  for id in t1 t2 t3; do
+    env FM_HOME="$home" "$ROOT/bin/fm-park.sh" poll "$id" "token-$id" >/dev/null 2>&1; rc=$?
+    expect_code 1 "$rc" "$id must not be ready before the answer"
+  done
+  out=$(run_send "$fb" "$home" "$log" --resolve-key-all capacity 'approved, continue'); rc=$?
+  expect_code 0 "$rc" "answering parked tasks should succeed: $out"
+  for id in t1 t2; do
+    grep -qF 'approved, continue' "$home/state/$id.inbox/001.msg" || fail "$id lost its answer"
+    env FM_HOME="$home" "$ROOT/bin/fm-park.sh" poll "$id" "token-$id" >/dev/null 2>&1; rc=$?
+    expect_code 0 "$rc" "$id must be ready through the normal park listener"
+    env FM_HOME="$home" "$ROOT/bin/fm-park.sh" poll "$id" stale-token >/dev/null 2>&1; rc=$?
+    expect_code 2 "$rc" 'pickup must not bypass the listener incarnation guard'
+  done
+  env FM_HOME="$home" "$ROOT/bin/fm-park.sh" poll t3 token-t3 >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'a different key must remain parked'
+  env FM_HOME="$home" "$ROOT/bin/fm-park.sh" poll t4 token-t4 >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'another external condition must not be overridden'
+  out=$(drain_out "$home")
+  if printf '%s\n' "$out" | grep -F '[key=capacity]' >/dev/null; then
+    fail "parked recipients were not resolved: $out"
+  fi
+  pass 'fm-send fan-out authorizes inbox pickup only after answering; normal park conditions and tokens still govern'
+}
+
+test_key_fanout_partial_failure_and_empty_key() {
+  local dir fb log home out rc
+  dir="$TMP_ROOT/fanout-partial"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home fanout-partial)
+  fm_write_meta "$home/state/t1.meta" 'window=sess:fm-t1' 'kind=ship' \
+    'park_state=parked' 'park_when=inbox:t1' 'park_token=token-t1'
+  fm_write_meta "$home/state/t2.meta" 'window=sess:fm-t2' 'kind=ship'
+  printf 'needs-decision [key=capacity]: first\n' > "$home/state/t1.status"
+  printf 'needs-decision [key=capacity]: second\n' > "$home/state/t2.status"
+  : > "$home/state/t1.inbox"
+  out=$(run_send "$fb" "$home" "$log" --resolve-key-all capacity 'six slots'); rc=$?
+  expect_code 1 "$rc" 'a partial failure must exit nonzero'
+  assert_contains "$out" 'reached task=t2 key=capacity' 'failure must not skip later recipients'
+  assert_contains "$out" 'reached=1 failed=1' 'partial outcome must be visible'
+  env FM_HOME="$home" "$ROOT/bin/fm-park.sh" poll t1 token-t1 >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'a failed delivery must not authorize pickup'
+  out=$(drain_out "$home")
+  assert_contains "$out" '[key=capacity]' 'the failed recipient must remain open'
+  rm "$home/state/t1.inbox"
+  run_send "$fb" "$home" "$log" --resolve-key-all capacity 'six slots' >/dev/null; rc=$?
+  expect_code 0 "$rc" 'a retry should reach the remaining recipient'
+  [ ! -e "$home/state/t2.inbox/002.msg" ] || fail 'partial retry duplicated the successful recipient'
+  out=$(run_send "$fb" "$home" "$log" --resolve-key-all missing 'six slots'); rc=$?
+  expect_code 0 "$rc" 'an unmatched key is a successful no-op'
+  assert_contains "$out" 'no-op key=missing' 'an unmatched key must say no-op'
+  printf 'needs-decision [key=capacity]: lost metadata\n' > "$home/state/orphan.status"
+  out=$(run_send "$fb" "$home" "$log" --resolve-key-all capacity 'six slots'); rc=$?
+  expect_code 1 "$rc" 'a decision with missing metadata is not a healthy no-op'
+  assert_contains "$out" 'reached=0 failed=1' 'missing task records must be counted as failures'
+  [ ! -e "$home/state/orphan.inbox" ] || fail 'orphan decision guessed a delivery endpoint'
+  pass 'fm-send fan-out continues after failure, preserves failed parks and retries only remaining decisions'
+}
+
+test_key_fanout_refuses_invalid_answers_and_attended_branch() {
+  local dir fb log home out rc answer
+  dir="$TMP_ROOT/fanout-refuse"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home fanout-refuse)
+  fm_write_meta "$home/state/t1.meta" 'window=sess:fm-t1' 'kind=ship'
+  printf 'needs-decision [key=capacity]: choose\n' > "$home/state/t1.status"
+  for answer in '' '   ' '--key Enter' '/no-mistakes' "\$no-mistakes"; do
+    run_send "$fb" "$home" "$log" --resolve-key-all capacity "$answer" >/dev/null; rc=$?
+    expect_code 1 "$rc" 'empty or non-inbox answers must refuse'
+  done
+  run_send "$fb" "$home" "$log" --resolve-key-all 'bad key' 'six slots' >/dev/null; rc=$?
+  expect_code 1 "$rc" 'invalid fan-out key must refuse'
+  out=$(FM_SUPERVISION_ACTOR=branch run_send "$fb" "$home" "$log" --resolve-key-all capacity 'six slots'); rc=$?
+  expect_code 6 "$rc" 'attended supervision branch must not answer through fan-out'
+  [ ! -e "$home/state/t1.inbox" ] || fail 'refused fan-out delivered an answer'
+  pass 'fm-send fan-out preserves text, key and decision-answer authority guards'
+}
+
 test_answer_send_closes_open_decision
 test_answer_close_is_self_announced
 test_separate_resolve_key_answers_do_not_rewake
@@ -929,3 +1072,7 @@ test_stamped_close_line_stays_within_the_status_line_cap
 test_failed_close_recovery_command_is_shell_safe
 test_remote_reserved_pending_reply_key_closes_locally
 test_decision_answer_partition_relocates_under_the_record
+test_key_fanout_reaches_all_and_only_waiters
+test_key_fanout_authorizes_normal_park_pickup
+test_key_fanout_partial_failure_and_empty_key
+test_key_fanout_refuses_invalid_answers_and_attended_branch

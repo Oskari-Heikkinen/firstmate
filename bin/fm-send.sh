@@ -2,6 +2,19 @@
 # Steer a task by durable record: write the message into the task's steering
 # inbox and ring a constant doorbell line into its terminal, best-effort.
 # Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id> | --expect ack|answer] <text...>
+#        fm-send.sh --resolve-key-all <key> <answer...>
+#   --resolve-key-all explicitly answers every task in this home's state whose
+#   open needs-decision carries <key>, plus parked tasks with an open blocker
+#   on that key. Discovery uses the same status fold as OPEN DECISIONS, never
+#   another home's state. Each recipient goes through the ordinary single-task
+#   --resolve-key delivery and closure guards, once. Successful inbox-only parks
+#   receive explicit fm-park pickup authority AFTER delivery and closure; their
+#   existing listener owns relaunch. Other park conditions are not overridden.
+#   The answer must be ordinary text, not a parser command or send option.
+#   Prints one reached/failed line per task and a total; no matches is a clear
+#   successful no-op. Partial failure exits nonzero after attempting all tasks;
+#   inspect each task's diagnostic before retrying (a delivered answer whose
+#   close or pickup failed must NOT be resent). A rerun skips closed decisions.
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -467,7 +480,84 @@ fm_send_resolve_target() { # <raw-target>
   return 1
 }
 
-RAW_TARGET=$1
+fm_send_resolve_key_all() { # <key> <ordinary-text-answer...>
+  local key=${1-} answer status task open verb meta park_state park_when
+  local reached=0 failed=0 rc
+  case "$key" in
+  '' | *[!A-Za-z0-9._-]*)
+    echo 'error: --resolve-key-all requires a valid decision key (A-Z a-z 0-9 . _ -)' >&2
+    return 1 ;;
+  esac
+  shift
+  answer=$*
+  if [ -z "${answer//[[:space:]]/}" ]; then
+    echo 'error: --resolve-key-all requires a nonempty answer message' >&2
+    return 1
+  fi
+  case "$answer" in
+  --* | /* | \$*)
+    echo 'error: --resolve-key-all requires ordinary answer text, not send options or parser commands' >&2
+    return 1 ;;
+  esac
+  # All fan-out is a decision answer. Apply the actor partition before any
+  # recipient can be delivered, including a parked blocked: recipient.
+  # shellcheck source=bin/fm-lease-lib.sh
+  . "$SCRIPT_DIR/fm-lease-lib.sh"
+  fm_lease_forbid_branch 'decision answer (fm-send --resolve-key-all)' --away-relocated || return $?
+  for status in "$STATE"/*.status; do
+    [ -f "$status" ] && [ ! -L "$status" ] || continue
+    if [ ! -r "$status" ]; then
+      printf 'failed status=%s key=%s: cannot read decision ledger; check permissions and retry\n' "$status" "$key" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    open=$(status_open_decisions "$status")
+    verb=$(_fm_open_set_verb "$open" "$key")
+    [ -n "$verb" ] || continue
+    task=${status##*/}; task=${task%.status}
+    meta="$STATE/$task.meta"
+    park_state=; park_when=
+    if [ -f "$meta" ] && [ ! -L "$meta" ]; then
+      fm_meta_get_to park_state "$meta" park_state
+      fm_meta_get_to park_when "$meta" park_when
+    fi
+    [ "$verb" = needs-decision ] || [ "$park_state" = parked ] || continue
+    if ! fm_task_id_path_safe "$task" || [ ! -f "$meta" ] || [ ! -r "$meta" ] || [ -L "$meta" ]; then
+      printf 'failed task=%s key=%s: no safe task metadata in this home; nothing sent\n' "$task" "$key" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    rc=0
+    "$SCRIPT_DIR/fm-send.sh" "$task" --resolve-key "$key" "$answer" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'failed task=%s key=%s: send/close exit=%s; follow diagnostic above before retrying\n' "$task" "$key" "$rc" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    reached=$((reached + 1))
+    printf 'reached task=%s key=%s\n' "$task" "$key"
+    if [ "$park_state" = parked ] && [ "$park_when" = "inbox:$task" ]; then
+      if ! "$SCRIPT_DIR/fm-park.sh" pickup "$task"; then
+        printf 'failed task=%s key=%s: answer delivered and closed; do not resend; authorize fm-park.sh pickup %s\n' "$task" "$key" "$task" >&2
+        failed=$((failed + 1))
+      fi
+    fi
+  done
+  if [ "$reached" -eq 0 ] && [ "$failed" -eq 0 ]; then
+    printf 'no-op key=%s: no waiting tasks in this home\n' "$key"
+  else
+    printf 'resolve-key-all key=%s reached=%s failed=%s\n' "$key" "$reached" "$failed"
+  fi
+  [ "$failed" -eq 0 ]
+}
+
+if [ "${1-}" = --resolve-key-all ]; then
+  shift
+  fm_send_resolve_key_all "$@"
+  exit $?
+fi
+
+RAW_TARGET=${1-}
 fm_send_resolve_target "$RAW_TARGET" || exit 1
 T=$RESOLVED_TARGET
 shift
