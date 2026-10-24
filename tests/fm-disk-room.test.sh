@@ -1651,7 +1651,7 @@ SH
       ); rc=$?
       expected=$result
       [ "$result" -ne 0 ] || expected=74
-      expect_code "$expected" "$mode completion failure retains the correct status for command result $result"
+      expect_code "$expected" "$rc" "$mode completion failure retains the correct status for command result $result"
       assert_present "$TMP_ROOT/completion-arm" "the command actually ran before $mode failure"
       assert_present "$TMP_ROOT/completion-hit" "the $mode completion fault was reached"
       case "$mode" in
