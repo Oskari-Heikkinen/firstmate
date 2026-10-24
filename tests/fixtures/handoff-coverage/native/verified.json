@@ -1,0 +1,15 @@
+{
+  "schema_version": "lattice-manifest-verified/v1",
+  "item": "/fixture/scratch-probe",
+  "manifest": "MANIFEST.sha256",
+  "manifest_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "manifest_bytes": 0,
+  "file_count": 0,
+  "hashed_files": 0,
+  "links": 0,
+  "bytes": 0,
+  "verified_at": "2026-10-24T16:00:00Z",
+  "verified_by": "scratch native format probe",
+  "result": "pass",
+  "method": "sha256sum"
+}

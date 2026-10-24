@@ -15,9 +15,12 @@ caller persists between passes, so an unchanged file is not read again.
 """
 import datetime
 import hashlib
+import fnmatch
+import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 
 HERE = Path(__file__).resolve().parent
@@ -236,7 +239,284 @@ def status_decisions(proto, stage, cache, now):
     return out, []
 
 
-ADAPTERS = {"corr-request": corr_request, "first-status": first_status, "status-decisions": status_decisions}
+# Native readers are bounded observations, not a second writer or an executor.
+# The version/state/retention contract is owned by docs/handoff-coverage.md.
+NATIVE_LIMIT = 1 << 20
+NATIVE_PASS_BYTES = 16 << 20
+NATIVE_FILES = 4096
+HANDOFF_KINDS = {
+    "READY FOR LAUNCH", "READY FOR HELPER REVIEW", "READY FOR KIT REVIEW", "PASS", "FAIL",
+    "REQUEST ACCEPTED", "REQUEST REFUSED", "BATCH CUT", "REQUEST ALL CUT", "REQUEST SUPERSEDED",
+    "REQUEST WITHDRAWN", "BATCH ABANDONED",
+}
+STEP_WORDS = {None, "LAUNCH-STARTED", "RELAUNCHED", "FETCHED-VERIFIED", "MOVED-ASIDE", "UPLOAD-ONLY",
+              "DRY-RUN", "READY-CHECK", "REFUSE", "FAIL", "BLOCKED", "WAIT"}
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def token(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\S{1,256}", value):
+        raise ValueError("missing or invalid native record identity")
+    return value
+
+
+def digest_identity(*values):
+    if not all(isinstance(v, str) and v for v in values):
+        raise ValueError("missing native identity fields")
+    return hashlib.sha256(json.dumps(values, ensure_ascii=True).encode()).hexdigest()
+
+
+def native_time(value):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError("missing native UTC decision time")
+    try:
+        return datetime.datetime.fromisoformat(value[:-1] + "+00:00").timestamp()
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("invalid native UTC decision time") from exc
+
+
+def native_json(path):
+    # Never block on a FIFO or follow a source link to an undeclared tree.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("native record is not a regular file")
+        data = stream.read(NATIVE_LIMIT + 1)
+    if len(data) > NATIVE_LIMIT:
+        raise ValueError(f"native record is larger than {NATIVE_LIMIT} bytes")
+    doc = json.loads(data)
+    if not isinstance(doc, dict):
+        raise ValueError("native record is not a JSON object")
+    return doc
+
+
+def native_handoff(doc, path):
+    kind = doc.get("kind")
+    if kind not in HANDOFF_KINDS:
+        raise ValueError(f"unknown tj-handoff kind {kind!r}")
+    record = token(doc.get("id"))
+    if kind in ("REQUEST ACCEPTED", "REQUEST REFUSED"):
+        sha = (doc.get("artefact") or {}).get("sums_sha256")
+        if not isinstance(sha, str) or not SHA_RE.fullmatch(sha):
+            raise ValueError("request decision lacks full artefact sums_sha256")
+        record = token(f"request:{token(doc.get('subject'))}:{sha}")
+    state = "refused" if kind in ("REQUEST REFUSED", "FAIL") else "done"
+    return record, native_time(doc.get("created_at")), state, "native-refused" if state == "refused" else None, kind
+
+
+def native_collected(doc, path):
+    kind = doc.get("kind")
+    if kind == "request":
+        sha = doc.get("request_sha256")
+        if not isinstance(sha, str) or not SHA_RE.fullmatch(sha):
+            raise ValueError("request collection lacks full request_sha256")
+        record = token(f"request:{token(doc.get('request_id'))}:{sha}")
+        outcome = doc.get("outcome")
+        if doc.get("complete") is not True or outcome not in ("collected", "partly-withdrawn", "withdrawn"):
+            raise ValueError("unknown or incomplete collected request outcome")
+    elif kind in ("tj-package", "rolling-slice"):
+        record = token(f"batch:{token(doc.get('batch_id'))}")
+        if not isinstance(doc.get("verification"), dict) or doc["verification"].get("verdict") != "PASS":
+            raise ValueError("unknown collected verification verdict (writer emits only PASS)")
+        outcome = "verified-collection"
+    else:
+        raise ValueError(f"unknown collected kind {kind!r}")
+    return record, native_time(doc.get("recorded_at")), "done", None, f"{kind}:{outcome}"
+
+
+def native_step(doc, path):
+    token(doc.get("subject"))
+    token(doc.get("phase"))
+    word, rc = doc.get("result_word"), doc.get("rc")
+    if word not in STEP_WORDS:
+        raise ValueError(f"unknown step result_word {word!r}")
+    started = native_time(doc.get("started"))
+    if rc is None:
+        if doc.get("ended") is not None:
+            raise ValueError("step ended without a recorded rc")
+        return token(path.name), started, "accepted", None, "wrapper outcome unknown; child liveness not observed"
+    if type(rc) is not int or rc < 0:
+        raise ValueError("invalid step rc")
+    ended = native_time(doc.get("ended"))
+    if ended < started:
+        raise ValueError("step ended before it started")
+    if word == "WAIT":
+        state, code = "held", "native-wait"
+    elif rc != 0 or word in ("REFUSE", "FAIL", "BLOCKED"):
+        state, code = "held", "native-failed"
+    else:
+        state, code = "done", None
+    return token(path.name), ended, state, code, f"wrapper rc={rc} result_word={word}; not downstream completion"
+
+
+def native_verified(doc, path):
+    if doc.get("result") != "pass":
+        raise ValueError("unknown manifest verification result (writer emits only pass)")
+    if not isinstance(doc.get("manifest_sha256"), str) or not SHA_RE.fullmatch(doc["manifest_sha256"]):
+        raise ValueError("missing manifest sha256")
+    record = digest_identity(doc.get("item"), doc.get("manifest"))
+    return record, native_time(doc.get("verified_at")), "done", None, "recorded manifest verification pass; not rehashed"
+
+
+def cursor_shape(doc):
+    if set(doc) != {"dev", "ino", "offset", "tail"}:
+        raise ValueError("unknown capacity cursor version/shape; expected legacy dev/ino/offset/tail")
+    if any(type(doc[k]) is not int or doc[k] < 0 for k in ("dev", "ino", "offset")) \
+            or not isinstance(doc["tail"], str) or not SHA_RE.fullmatch(doc["tail"]):
+        raise ValueError("invalid capacity cursor identity/offset/tail")
+
+
+def native_cursor(doc, path):
+    cursor_shape(doc)
+    if not path.name.endswith(".cursor.json"):
+        raise ValueError("capacity cursor filename must end in .cursor.json")
+    signal = path.with_name(path.name[:-len(".cursor.json")] + ".signal")
+    fd = os.open(signal, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        st = os.fstat(stream.fileno())
+        if not stat.S_ISREG(st.st_mode) or (doc["dev"], doc["ino"]) != (st.st_dev, st.st_ino) \
+                or doc["offset"] > st.st_size:
+            raise ValueError("capacity signal identity/size no longer matches checkpoint; native replay required")
+        stream.seek(max(0, doc["offset"] - 256))
+        tail = stream.read(min(doc["offset"], 256))
+        if hashlib.sha256(tail).hexdigest() != doc["tail"]:
+            raise ValueError("capacity signal checkpoint digest mismatch; native replay required")
+        if doc["offset"] and not tail.endswith(b"\n"):
+            raise ValueError("capacity checkpoint is not after a complete signal line")
+        state = "done" if doc["offset"] == st.st_size else "accepted"
+    return digest_identity(str(path)), path.stat().st_mtime, state, None, \
+        f"stdout checkpoint {doc['offset']}/{st.st_size} bytes; downstream acknowledgement not observed"
+
+
+def native_records(proto, stage, cache, now, schema, mapper):
+    """One top-level native family, with explicit version, bounded reads and pruning evidence."""
+    folder = Path(stage["input"]["path"])
+    pattern = stage["input"].get("match", "*.json")
+    config = [str(folder), pattern, schema]
+    if schema is None and (not pattern.endswith(".cursor.json") or any(c in pattern for c in "*?[]")):
+        return [], [(folder, "capacity cursor input.match must name one exact .cursor.json file")]
+    if cache.get("config") != config:
+        cache.clear()
+        cache.update(config=config, files={}, observed={})
+    files, observed = cache["files"], cache["observed"]
+    try:
+        # Do not materialize an unbounded directory or silently cut its record set.
+        names = []
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                if (entry.name.startswith(".") and not pattern.startswith(".")) \
+                        or not fnmatch.fnmatchcase(entry.name, pattern):
+                    continue
+                names.append(entry.name)
+                if len(names) > NATIVE_FILES:
+                    raise ValueError(f"native stage exceeds {NATIVE_FILES} selected records")
+        if schema is None and not names:
+            raise ValueError(f"declared capacity cursor {pattern} is missing")
+    except (OSError, ValueError) as exc:
+        return list(observed.values()), [(folder, str(exc))]
+    out, problems, present = {}, [], {str(folder / name) for name in names}
+    read_bytes = 0
+    for name in sorted(names):
+        path = folder / name
+        key = str(path)
+        try:
+            st = path.lstat()
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError("native record is not a regular file")
+            sig = [st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns]
+            old = files.get(key)
+            if old and old[0] == sig:
+                if len(old) > 2:
+                    raise ValueError(old[2])
+                mapped = old[1]
+            else:
+                cost = min(st.st_size, NATIVE_LIMIT + 1)
+                if read_bytes + cost > NATIVE_PASS_BYTES:
+                    raise ValueError(f"native changed-record reads exceed {NATIVE_PASS_BYTES} bytes this pass; retry next tick")
+                read_bytes += cost
+                try:
+                    doc = native_json(path)
+                    if schema is not None:
+                        field = "schema_version" if schema == "lattice-manifest-verified/v1" else "schema"
+                        if doc.get(field) != schema:
+                            raise ValueError(f"unknown native version {doc.get(field)!r}; expected {schema}")
+                    # Persist only a small observation, never the whole source.
+                    mapped = doc if schema is None else mapper(doc, path)
+                    if schema is None:
+                        cursor_shape(doc)
+                except (OSError, ValueError, TypeError, AttributeError, OverflowError) as exc:
+                    files[key] = [sig, None, str(exc)[:300]]
+                    raise
+                files[key] = [sig, mapped]
+            # A cursor's signal can grow or rotate even when the cursor is unchanged.
+            record, at, state, code, detail = mapper(mapped, path) if schema is None else mapped
+            adapted = receipt(proto, stage, record, at, state, path, code=code, detail=detail, entry=name)
+            adapted["version"] = 0 if schema is None else 1
+            adapted["ext"] = {f"{stage['owner']}.native-attempts-known": False,
+                              f"{stage['owner']}.native-outcome": detail}
+            if code:
+                # Routing and lane scope remain fragment data, never native-reader constants.
+                entry = proto_code(stage, code)
+                if entry and entry.get("holds_all"):
+                    adapted.update(holds_all=True, stops=entry["stops"])
+            previous = out.get(record)
+            if previous:
+                if schema == "tj-handoff/v1" and record.startswith("request:"):
+                    if previous["written_at"] == adapted["written_at"] and previous["state"] != adapted["state"]:
+                        raise ValueError("conflicting request decisions share a native timestamp")
+                    adapted = max((previous, adapted), key=lambda r: (r["written_at"], r["evidence"]))
+                else:
+                    raise ValueError(f"duplicate native identity {record}")
+            out[record] = adapted
+        except (OSError, ValueError, TypeError, AttributeError, OverflowError) as exc:
+            problems.append((path, str(exc)))
+    # Do not let pruning (or parse failure) manufacture successful resolution.
+    for record, old in observed.items():
+        if record in out or old["state"] == "done":
+            continue
+        if old["evidence"] not in present:
+            problems.append((Path(old["evidence"]), "native record pruned before observed completion"))
+        out[record] = old
+    prune(files, present)
+    if len(out) > NATIVE_FILES:
+        return list(observed.values()), problems + [(folder, "native unresolved observation retention exceeds record cap")]
+    cache["observed"] = out
+    return list(out.values()), problems
+
+
+def proto_code(stage, code):
+    """Use the validator's exact/longest-family rule without importing its CLI module."""
+    codes = stage.get("codes", {})
+    if code in codes:
+        return codes[code]
+    families = [k for k in codes if k.endswith("*") and code.startswith(k[:-1])]
+    return codes[max(families, key=len)] if families else None
+
+
+def tj_handoff(proto, stage, cache, now):
+    return native_records(proto, stage, cache, now, "tj-handoff/v1", native_handoff)
+
+
+def tetjet_collected(proto, stage, cache, now):
+    return native_records(proto, stage, cache, now, "tetjet-collected/v1", native_collected)
+
+
+def tj_step(proto, stage, cache, now):
+    return native_records(proto, stage, cache, now, "tj-step-receipt/v1", native_step)
+
+
+def manifest_verified(proto, stage, cache, now):
+    return native_records(proto, stage, cache, now, "lattice-manifest-verified/v1", native_verified)
+
+
+def capacity_cursor(proto, stage, cache, now):
+    return native_records(proto, stage, cache, now, None, native_cursor)
+
+
+ADAPTERS = {"corr-request": corr_request, "first-status": first_status, "status-decisions": status_decisions,
+            "native-tj-handoff": tj_handoff, "native-tetjet-collected": tetjet_collected,
+            "native-tj-step": tj_step, "native-manifest-verified": manifest_verified,
+            "native-capacity-cursor": capacity_cursor}
 
 
 def adapt(proto, stage, cache, now):

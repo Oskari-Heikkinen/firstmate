@@ -230,3 +230,6 @@ with docs_status.open("a") as stream:
 tick(LEAD, T3 + 7 * 24 * H + 120)
 expect(not keys(LEAD, LEAD, "hw-"), "resolving the decision clears it", json.dumps(active(LEAD, LEAD)))
 PY
+
+# Native family mapping, bounded observation and real watcher/validator integration.
+python3 "$ROOT/tests/handoff-native-cases.py" "$ROOT" "$TMP_ROOT"

@@ -301,9 +301,15 @@ class Watch:
         for path, why in problems:
             self.unreadable(scope, path, why)
         records = {}
+        invalid = False
         for doc in docs:
             bad = self.receipt_schema.errors(doc) or self.validate.receipt_problems(doc, self.protocols)
+            if not bad and (doc["protocol"], doc["stage"]) != (proto["id"], stage["name"]):
+                bad = [("/stage", "adapter returned a receipt for a different protocol/stage")]
+            if not bad and doc["record"] in records:
+                bad = [("/record", "adapter returned duplicate native record identity")]
             if bad:
+                invalid = True
                 where, what = bad[0]
                 self.unreadable(scope, doc.get("evidence"), f"adapts to an invalid receipt at {where}: {what}")
                 continue
@@ -313,7 +319,12 @@ class Watch:
                        at=self.validate.parse_utc(doc["written_at"]).timestamp())
             records[doc["record"]] = {"pairs": [], "cur": cur}
             st["last_receipt"] = max(st.get("last_receipt") or 0, cur["at"])
-        st["records"] = records
+        if problems or invalid:
+            # Unknown is not resolution: retain earlier observations until a complete
+            # read can replace them, even after this pass's alarms have been delivered.
+            st["records"].update(records)
+        else:
+            st["records"] = records
 
     def receipt(self, proto, stage, st, folder, name):
         """Fold one outbox entry into the stage state; False when it should be read again next pass."""
