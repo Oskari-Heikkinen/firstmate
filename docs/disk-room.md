@@ -77,9 +77,9 @@ It is admitted only when the room left after its write stays at or above the mar
 A refusal exits 75 with one line naming the room and whether a compaction would help.
 `check --expect-write`, `reserve`, and `release` cover jobs that span several processes.
 For recurring comparable jobs, add a stable job kind to `run` and `check` so admission checks the declaration against that kind's recorded high, or uses history when no declaration is supplied.
-An unseen kind still needs an explicit declaration, an understated one is refused, and corrupt history fails closed rather than silently resetting the high.
+An unseen kind still needs an explicit declaration, an understated one is refused, and corrupt history or an unresolved recording failure fails closed rather than trusting a stale high.
 The tool records Linux-accounted storage writes from the command and waited-for descendants, including failed attempts; this is not logical output size or a peak-space guarantee.
-The script header owns the kind options, history format and query, measurement limits, and error handling.
+The script header owns the kind options, history and pending-attempt formats, queries, evidence-backed recovery, measurement limits, and error handling.
 Consumers must group comparable inputs and keep declaring larger known writes rather than treating a historical high as a bound.
 Legacy calls without a kind keep their original exec and declaration behavior.
 Mandatory D: bulk uses the separate per-filesystem admission interface documented in [storage.md](storage.md#mandatory-bulk-admission), leaving this Linux/C: admission unchanged.
@@ -204,7 +204,7 @@ A consumer that pins bytes may run them as `bash -c TEXT PATH ARG...`, with PATH
 The script then finds its sibling helpers beside PATH, never in the working directory, and runs `bin/fm-vhdx-bat.py` only from bytes matching the digest embedded in `fm-disk-room.sh`, so a pin on `fm-disk-room.sh` covers the reader and a missing or changed reader leaves reclaimable unknown.
 `--self-test` works in that mode too and probes the same bytes.
 
-`tests/fm-disk-room.test.sh` checks both interfaces through the executable, including recording, understated and missing declarations, corrupt history, and the unchanged v1 contract.
+`tests/fm-disk-room.test.sh` checks both interfaces through the executable, including failed writers, capacity boundaries, unreadable counters, concurrent attempts, append failures and recovery, corrupt history, and the unchanged v1 contract.
 
 ## Limits
 
