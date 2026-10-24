@@ -19,6 +19,7 @@ watcher test tests/fm-branch-supervision.test.sh
 watcher test tests/fm-afk-launch.test.sh
 
 cleanup script bin/fm-teardown.sh
+cleanup script bin/fm-task-evidence-lib.sh
 cleanup script bin/fm-park.sh
 cleanup script bin/fm-suspend-lib.sh
 cleanup test tests/fm-teardown*.test.sh

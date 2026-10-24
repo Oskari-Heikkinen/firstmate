@@ -10,9 +10,12 @@
 # lines starting with # are ignored. A relative path names a file or directory
 # inside the task's copy. An absolute path must name one inside the task's copy
 # or inside its recorded tasktmp folder; anything else is refused. No path may
-# contain a `..` component, be a symlink, or contain a symlink or any entry
-# that is not a regular file or directory, because the copy must be a faithful
-# standalone snapshot.
+# contain a `..` component or contain devices, fifos, sockets or other members
+# that are not regular files, directories or symlinks. Newlines in names or
+# link text are unsupported and refuse. Symlinks are copied as
+# links, never followed, with a warning naming each link. An existing resolved
+# target inside either disposable root must itself be declared or recoverable
+# from git as described below; otherwise cleanup refuses to destroy it.
 #
 # Copy-out: each declared path is copied to data/<id>/evidence/copy/<rel> (from
 # the copy) or data/<id>/evidence/tmp/<rel> (from the tasktmp folder), and every
@@ -20,21 +23,37 @@
 # sha256sum format, so `cd data/<id>/evidence && sha256sum -c MANIFEST.sha256`
 # re-verifies it later. The new evidence tree is built in a staging directory,
 # each copied file's hash is compared with its source's, and only a verified
-# tree replaces the previous one. A declared path whose source is gone (a
+# tree replaces the previous one. MANIFEST.sha256.links separately records hashes
+# of `readlink` output for symlinks; these are checked without following links. A declared path whose source is gone (a
 # retried cleanup after the copy was already returned) keeps its earlier copy
 # when that copy still verifies against the earlier manifest; otherwise the
 # declaration refuses, naming the path.
 #
 # Dangling references: every text file under data/<id>/ other than the
 # evidence tree is scanned for absolute paths strictly inside the copy or the
-# tasktmp folder; a :line or :line:column citation suffix is stripped first.
-# A referenced path is covered when it equals, or lies under, a declared path
-# of the same root. An undeclared regular file in the copy is also recoverable
+# tasktmp folder. Unquoted citations end at whitespace or markup; single,
+# double or backtick quoted citations must close on the same line. Word-internal
+# apostrophes are prose, not quote openers. At every citation boundary,
+# including quotes and markup, every longer same-line prefix is checked for an
+# existing entry, so a delimiter in an existing name cannot turn its citation
+# into a missing prefix. Every such entry must satisfy the same coverage rules.
+# Escaped tokens or paths within larger quoted strings are ambiguous and refuse.
+# Exact entries, including punctuation,
+# are checked before removing markup punctuation or :line[:column] suffixes.
+# Trailing slashes never hide a final dangling link entry.
+# References and link targets share one survival rule: an existing object
+# inside a disposable root is covered only when its resolved location is
+# copied as content by a declaration, or is a clean tracked source as below.
+# Resolve ancestor links, but preserve a final link as its own object; its
+# target is checked separately. Lexical ancestry through a declared link never
+# covers its target. Objects resolved outside both roots survive cleanup.
+# An undeclared regular file in the copy is also recoverable
 # when git tracks it and its bytes match the HEAD blob (without clean filters);
 # ignored, untracked, modified, and temp-folder paths receive no exemption.
-# Any uncovered reference refuses cleanup and is named, so a report can never
-# keep citing a scratch file cleanup is about
-# to destroy. Declare the path in evidence.list or remove the reference, then
+# A reference that no longer exists (and is not a dangling symlink) warns,
+# naming its record and path: there is nothing left to save. An existing
+# uncovered reference refuses cleanup and is named, so a report cannot cite a
+# scratch file cleanup is about to destroy. Declare it or remove the reference, then
 # re-run. --force does not lift either refusal: it authorizes discarding
 # unlanded work, never silently orphaning a durable record's evidence.
 #
@@ -52,10 +71,6 @@ fm_task_evidence_hash() {
   else
     return 1
   fi
-}
-
-fm_task_evidence_ere_escape() {
-  printf '%s' "$1" | sed 's/[][\.*^$+?(){}|]/\\&/g'
 }
 
 # Lexical classification of one declared or referenced path.
@@ -105,6 +120,257 @@ fm_task_evidence_recoverable_source() {
   [ -n "$head" ] && [ "$actual" = "$head" ]
 }
 
+# Keep readlink's significant trailing bytes until unsupported text is rejected.
+# The sentinel also propagates readlink errors instead of hashing empty output.
+fm_task_evidence_read_link() {
+  local text
+  text=$(readlink "$1" && printf '.') || return 2
+  text=${text%.}
+  FM_TE_LINK_TEXT=${text%$'\n'}
+  case "$FM_TE_LINK_TEXT" in
+    *$'\n'*) echo "REFUSED: evidence symlink $1 contains unsupported newline text" >&2; return 2 ;;
+  esac
+}
+
+# Hash the link text, not the target bytes (including readlink's final newline).
+fm_task_evidence_link_hash() {
+  [ -L "$1" ] || return 1
+  fm_task_evidence_read_link "$1" || return 1
+  printf '%s\n' "$FM_TE_LINK_TEXT" | fm_task_evidence_hash /dev/stdin
+}
+
+# Capture physical directories without command substitution dropping name bytes.
+fm_task_evidence_physical_dir() {
+  local text
+  text=$(cd -P -- "$1" 2>/dev/null && pwd -P && printf '.') || return 2
+  text=${text%.}
+  FM_TE_PHYSICAL=${text%$'\n'}
+  case "$FM_TE_PHYSICAL" in *$'\n'*) return 2 ;; esac
+}
+
+# Resolve an existing link target without depending on GNU realpath.
+# Sets FM_TE_TARGET; dangling links and cycles have no existing target.
+fm_task_evidence_link_target() {
+  local path=$1 stored=${2:-$1} parent target n=0
+  FM_TE_TARGET=
+  fm_task_evidence_read_link "$stored" || return 2
+  target=$FM_TE_LINK_TEXT
+  case "$target" in /*) path=$target ;; *) path="${path%/*}/$target" ;; esac
+  [ -e "$path" ] || return 1
+  while [ "$n" -lt 40 ]; do
+    parent=${path%/*}
+    fm_task_evidence_physical_dir "${parent:-/}" || return 2
+    parent=$FM_TE_PHYSICAL
+    path="$parent/${path##*/}"
+    if [ ! -L "$path" ]; then
+      if [ -d "$path" ]; then
+        fm_task_evidence_physical_dir "$path" || return 2
+        path=$FM_TE_PHYSICAL
+      fi
+      FM_TE_TARGET=$path
+      return 0
+    fi
+    fm_task_evidence_read_link "$path" || return 2
+    target=$FM_TE_LINK_TEXT
+    case "$target" in /*) path=$target ;; *) path="$parent/$target" ;; esac
+    n=$((n + 1))
+  done
+  echo "REFUSED: cannot resolve existing evidence link $1" >&2
+  return 2
+}
+
+# Resolve ancestor directories, not a final symlink object. Unlike a lexical
+# prefix, this identifies what a citation actually names through directory links.
+fm_task_evidence_object() {
+  local path=$1 parent=${1%/*}
+  fm_task_evidence_physical_dir "${parent:-/}" || return 2
+  parent=$FM_TE_PHYSICAL
+  FM_TE_OBJECT="$parent/${path##*/}"
+  if [ -d "$FM_TE_OBJECT" ] && [ ! -L "$FM_TE_OBJECT" ]; then
+    fm_task_evidence_physical_dir "$FM_TE_OBJECT" || return 2
+    FM_TE_OBJECT=$FM_TE_PHYSICAL
+  fi
+}
+
+# A staged member proves preservation only without following an ancestor link.
+# A final link is content in its own right; its target has a separate guard.
+fm_task_evidence_staged_member() {
+  local path=$1 rel=$2 part
+  fm_task_evidence_has_dotdot "$rel" && return 1
+  while [[ "$rel" == */* ]]; do
+    part=${rel%%/*}; rel=${rel#*/}
+    path="$path/$part"
+    [ -d "$path" ] && [ ! -L "$path" ] || return 1
+  done
+  [ -e "$path/$rel" ] || [ -L "$path/$rel" ]
+}
+
+# Shared object-survival check for citations and resolved link targets.
+# 0 survives, 1 uncovered, 2 resolution failure (never evidence of absence).
+# Declarations are mapped by their physical object, then checked in verified
+# staging without traversing links; a declared alias cannot cover its target.
+fm_task_evidence_survives() {
+  local path=$1 copy_root=$2 tmp_root=$3 copy_owned=$4 physical_copy=$5 physical_tmp=$6
+  local declared=$7 staging=$8 object d source declaration suffix
+  fm_task_evidence_object "$path" || return 2
+  object=$FM_TE_OBJECT
+  case "$object" in
+    "$physical_copy"|"$physical_tmp") ;; # A root itself is disposable too.
+    *) fm_task_evidence_classify "$object" "$physical_copy" "$physical_tmp" || return 0 ;;
+  esac
+  if [ -n "$physical_copy" ]; then
+    case "$object" in
+      "$physical_copy"|"$physical_copy"/*)
+        [ "$copy_owned" = 1 ] || return 0
+        fm_task_evidence_recoverable_source "$physical_copy" "${object#"$physical_copy"/}" && return 0 ;;
+    esac
+  fi
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$d" in
+      copy/*) [ "$copy_owned" = 1 ] || continue; source="$copy_root/${d#*/}" ;;
+      tmp/*) source="$tmp_root/${d#*/}" ;;
+      *) continue ;;
+    esac
+    [ -e "$source" ] || [ -L "$source" ] || continue
+    fm_task_evidence_object "$source" || return 2
+    declaration=$FM_TE_OBJECT
+    suffix=
+    if [ "$object" != "$declaration" ]; then
+      [ -d "$source" ] && [ ! -L "$source" ] || continue
+      case "$object" in
+        "$declaration"/*) suffix=/${object#"$declaration"/} ;;
+        *) continue ;;
+      esac
+    fi
+    fm_task_evidence_staged_member "$staging" "$d$suffix" && return 0
+  done <<< "$declared"
+  return 1
+}
+
+# Extract complete quoted citations, not a lossy prefix of a quoted filename.
+# Every boundary checks longer existing prefixes, including delimiter name bytes.
+# Ambiguous quotes without a longer existing entry and escapes fail closed.
+fm_task_evidence_references() {
+  local record=$1 root=$2 text prefix rest quote token char context previous before bad=0
+  local continuation candidate extended boundary_quote
+  while IFS= read -r text; do
+    while [[ "$text" == *"$root/"* ]]; do
+      prefix=${text%%"$root/"*}
+      rest=${text#*"$root/"}
+      # A path inside a larger quoted string is ambiguous (it may include
+      # whitespace beyond the first token). Do not downgrade that prefix.
+      quote=; context=$prefix; previous=; before=
+      while [ -n "$context" ]; do
+        char=${context:0:1}; context=${context:1}
+        if [ "$previous" = "\\" ]; then previous=; before=$char; continue; fi
+        if [ "$char" = "\\" ]; then previous=$char; before=$char; continue; fi
+        case "$char" in
+          "'"|'"'|'`')
+            # Possessives and contractions do not begin quoted strings.
+            if [ -z "$quote" ] && [ "$char" = "'" ] \
+               && [[ "$before" == [[:alnum:]_] ]] && [[ "${context:0:1}" == [[:alnum:]_] ]]; then
+              :
+            elif [ -z "$quote" ]; then quote=$char
+            elif [ "$quote" = "$char" ]; then quote=; fi ;;
+        esac
+        before=$char
+      done
+      token="$root/"; boundary_quote=0
+      if [ -n "$quote" ] && [ "${prefix: -1}" != "$quote" ]; then
+        echo "REFUSED: ambiguous quoted context in $record: $token$rest" >&2
+        bad=1; break
+      fi
+      case "$quote" in
+        "'"|'"'|'`')
+          if [[ "$rest" != *"$quote"* ]]; then
+            echo "REFUSED: ambiguous quoted evidence citation in $record: $token$rest" >&2
+            bad=1; break
+          fi
+          token="$token${rest%%"$quote"*}"
+          text=${rest#*"$quote"}
+          continuation="$quote$text"
+          case "$token" in
+            *\\*) echo "REFUSED: ambiguous escaped evidence citation in $record: $token" >&2; bad=1; continue ;;
+          esac
+          ;;
+        *)
+          while [ -n "$rest" ]; do
+            char=${rest:0:1}
+            case "$char" in
+              [[:space:]]|'<') break ;;
+              "'"|'"'|'`') boundary_quote=1; break ;;
+            esac
+            token="$token$char"
+            rest=${rest:1}
+          done
+          text=${rest:1}
+          [ -n "$token" ] || continue
+          case "$token" in
+            *\\*) echo "REFUSED: ambiguous escaped evidence citation in $record: $token" >&2; bad=1; continue ;;
+          esac
+          continuation=$rest
+          ;;
+      esac
+      # Any boundary may be a filename byte, not just whitespace. Check all
+      # longer same-line prefixes without directory traversal. Emit every
+      # existing interpretation for ordinary coverage checks, even when a
+      # shorter one is covered. Only suppress a nonexistent short token when
+      # at least one longer existing interpretation was found.
+      extended=0; candidate=$token
+      while [ -n "$continuation" ]; do
+        candidate="$candidate${continuation:0:1}"
+        continuation=${continuation:1}
+        if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+          printf 'u\t%s\n' "$candidate"
+          extended=1
+        fi
+      done
+      if [ "$boundary_quote" = 1 ] && [ "$extended" = 0 ]; then
+        echo "REFUSED: ambiguous evidence citation in $record: $token$rest" >&2
+        bad=1; continue
+      fi
+      if [ "$extended" = 1 ]; then
+        # A presentation suffix may hide an existing short interpretation too.
+        # Suppress only a genuinely missing token, not that existing entry or
+        # an ambiguity which must still fail closed in the ordinary scan.
+        if [ -n "$quote" ]; then context=q; else context=u; fi
+        if fm_task_evidence_reference_path "$token" "$context" \
+           && [ ! -e "$FM_TE_REF" ] && [ ! -L "$FM_TE_REF" ]; then continue; fi
+      fi
+      if [ -n "$quote" ]; then printf 'q\t%s\n' "$token"; else printf 'u\t%s\n' "$token"; fi
+    done
+  done < <(grep -IhF -- "$root/" "$record" 2>/dev/null)
+  return "$bad"
+}
+
+# Prefer every exact entry before peeling presentation suffixes. Checking the
+# slash-free entry also recognises dangling symlinks cited with trailing '/'.
+fm_task_evidence_reference_path() {
+  local path=$1 quoted=$2 next entry
+  while :; do
+    entry=$path
+    while [[ "$entry" == */ ]]; do entry=${entry%/}; done
+    if [ -e "$entry" ] || [ -L "$entry" ]; then FM_TE_REF=$entry; return; fi
+    next=$(printf '%s' "$path" | sed -E 's/&([[:alpha:]][[:alnum:]]*|#[0-9]+|#[xX][[:xdigit:]]+);$//; s/:[0-9]+(:[0-9]+)?$//')
+    if [ "$next" = "$path" ]; then
+      case "$path" in
+        *'.'|*':'|*'!'|*'?'|*';'|*','|*')'|*']'|*'}'|*'|'|*'*'|*'>') next=${path%?} ;;
+        *)
+          # Interior markup could join several citations or delimit a shorter
+          # existing filename. Only a quoted token proves these are name bytes.
+          if [ "$quoted" != q ]; then
+            case "$entry" in
+              *'('*|*')'*|*'['*|*']'*|*'{'*|*'}'*|*','*|*';'*|*'|'*|*'*'*|*':'*|*'&'*|*'>'*) return 1 ;;
+            esac
+          fi
+          FM_TE_REF=$entry; return ;;
+      esac
+    fi
+    path=$next
+  done
+}
+
 # Copy one source into staging and append its verified manifest lines.
 fm_task_evidence_copy_source() {
   local src=$1 root=$2 dest=$3 key=$4 manifest=$5 src_parent root_phys odd f rel h1 h2
@@ -114,15 +380,25 @@ fm_task_evidence_copy_source() {
     "$root_phys"|"$root_phys"/*) ;;
     *) echo "REFUSED: declared evidence $src resolves outside its root $root" >&2; return 1 ;;
   esac
-  odd=$(find "$src" \( -type l -o \( ! -type f ! -type d \) -o -name '*
+  odd=$(find "$src" \( \( ! -type l ! -type f ! -type d \) -o -name '*
 *' \) -print 2>/dev/null | head -1)
   if [ -n "$odd" ]; then
     echo "REFUSED: declared evidence $src contains $odd, which is not a regular file or directory" >&2
     return 1
   fi
   mkdir -p -- "$(dirname -- "$dest")" || return 1
-  cp -Rp -- "$src" "$dest" || return 1
-  if [ -d "$src" ]; then
+  cp -RPp -- "$src" "$dest" || return 1
+  while IFS= read -r f; do
+    rel=${f#"$src"}
+    echo "warning: preserving evidence symlink $f as a link, not following it" >&2
+    h1=$(fm_task_evidence_link_hash "$f") && [ -n "$h1" ] || return 1
+    h2=$(fm_task_evidence_link_hash "$dest$rel") && [ -n "$h2" ] || return 1
+    [ "$h1" = "$h2" ] || { echo "REFUSED: copied evidence link $dest$rel does not match its source" >&2; return 1; }
+    printf '%s  %s%s\n' "$h2" "$key" "$rel" >> "$manifest.links"
+  done < <(find "$src" -type l -print)
+  if [ -L "$src" ]; then
+    return 0
+  elif [ -d "$src" ]; then
     while IFS= read -r f; do
       rel=${f#"$src"}
       h1=$(fm_task_evidence_hash "$f") && [ -n "$h1" ] || return 1
@@ -140,28 +416,44 @@ fm_task_evidence_copy_source() {
 
 # Carry an earlier verified copy of <key> forward into staging.
 fm_task_evidence_carry_prior() {
-  local prior=$1 key=$2 staging=$3 manifest=$4 lines hash path
-  [ -f "$prior/MANIFEST.sha256" ] && [ -e "$prior/$key" ] || return 1
-  lines=$(awk -v k="$key" '{ p = substr($0, 67) } p == k || index(p, k "/") == 1' "$prior/MANIFEST.sha256")
-  [ -n "$lines" ] || return 1
-  while IFS= read -r line; do
-    hash=${line%%  *}
-    path=${line#*  }
-    [ "$(fm_task_evidence_hash "$prior/$path")" = "$hash" ] || return 1
-  done <<< "$lines"
+  local prior=$1 key=$2 staging=$3 manifest=$4 lines hash path line suffix found=0
+  local regular_lines='' link_lines=''
+  [ -f "$prior/MANIFEST.sha256" ] || return 1
+  [ -e "$prior/$key" ] || [ -L "$prior/$key" ] || return 1
+  for suffix in '' .links; do
+    [ -f "$prior/MANIFEST.sha256$suffix" ] || continue
+    lines=$(awk -v k="$key" '{ p = substr($0, 67) } p == k || index(p, k "/") == 1' "$prior/MANIFEST.sha256$suffix")
+    [ -n "$lines" ] || continue
+    found=1
+    while IFS= read -r line; do
+      hash=${line%%  *}
+      path=${line#*  }
+      if [ "$suffix" = .links ]; then
+        [ "$(fm_task_evidence_link_hash "$prior/$path")" = "$hash" ] || return 1
+        echo "warning: preserving earlier evidence symlink $prior/$path as a link, not following it" >&2
+      else
+        [ "$(fm_task_evidence_hash "$prior/$path")" = "$hash" ] || return 1
+      fi
+    done <<< "$lines"
+    if [ "$suffix" = .links ]; then link_lines=$lines; else regular_lines=$lines; fi
+  done
+  [ "$found" = 1 ] || return 1
   mkdir -p -- "$(dirname -- "$staging/$key")" || return 1
-  cp -Rp -- "$prior/$key" "$staging/$key" || return 1
-  printf '%s\n' "$lines" >> "$manifest"
+  cp -RPp -- "$prior/$key" "$staging/$key" || return 1
+  [ -z "$regular_lines" ] || printf '%s\n' "$regular_lines" >> "$manifest"
+  [ -z "$link_lines" ] || printf '%s\n' "$link_lines" >> "$manifest.links"
+  return 0
 }
 
 # fm_task_evidence_preserve <id> <data-dir> <copy-root> <copy-owned 0|1> <tmp-root>
 # Returns 0 when every declared path is copied and verified and no durable
-# record references an uncovered path; prints each refusal and returns 1
+# record references an existing uncovered path; prints each refusal and returns 1
 # otherwise. Either root may be empty.
 fm_task_evidence_preserve() {
   local id=$1 data=$2 copy_root=$3 copy_owned=$4 tmp_root=$5
   local dir="$data/$id" list evidence staging manifest line path src root key
-  local declared='' refused=0 refs ref covered d escaped pattern overlap
+  local declared='' refused=0 refs ref ref_mode d overlap record
+  local link target label rel physical_copy physical_tmp suffix hash rc
   [ -d "$dir" ] || return 0
   copy_root=${copy_root%/}
   tmp_root=${tmp_root%/}
@@ -171,7 +463,7 @@ fm_task_evidence_preserve() {
     staging="$dir/.evidence.new.$$"
     manifest="$staging/MANIFEST.sha256"
     rm -rf -- "$staging"
-    if ! { mkdir -p -- "$staging" && : > "$manifest"; }; then
+    if ! { mkdir -p -- "$staging" && : > "$manifest" && : > "$manifest.links"; }; then
       echo "REFUSED: cannot stage evidence for $id under $dir" >&2
       return 1
     fi
@@ -216,11 +508,7 @@ fm_task_evidence_preserve() {
           || echo "warning: declared evidence $src for $id was not copied out before its pool slot was reassigned; it is lost" >&2
         continue
       fi
-      if [ -L "$src" ]; then
-        echo "REFUSED: declared evidence $src for $id is a symlink" >&2
-        refused=1; continue
-      fi
-      if [ -e "$src" ]; then
+      if [ -e "$src" ] || [ -L "$src" ]; then
         fm_task_evidence_copy_source "$src" "$root" "$staging/$key" "$key" "$manifest" || {
           echo "REFUSED: could not copy and verify declared evidence $src for $id" >&2
           refused=1
@@ -231,49 +519,98 @@ fm_task_evidence_preserve() {
       fi
     done < "$list"
     if [ "$refused" = 0 ]; then
-      sort -k2 -o "$manifest" "$manifest"
-      while IFS= read -r line; do
-        [ "$(fm_task_evidence_hash "$staging/${line#*  }")" = "${line%%  *}" ] || {
-          echo "REFUSED: staged evidence ${line#*  } for $id failed verification" >&2
-          refused=1
-        }
-      done < "$manifest"
+      for suffix in '' .links; do
+        sort -k2 -o "$manifest$suffix" "$manifest$suffix"
+        while IFS= read -r line; do
+          if [ "$suffix" = .links ]; then
+            hash=$(fm_task_evidence_link_hash "$staging/${line#*  }")
+          else
+            hash=$(fm_task_evidence_hash "$staging/${line#*  }")
+          fi
+          [ "$hash" = "${line%%  *}" ] || {
+            echo "REFUSED: staged evidence ${line#*  } for $id failed verification" >&2
+            refused=1
+          }
+        done < "$manifest$suffix"
+      done
     fi
+  fi
+
+  physical_copy=$copy_root
+  physical_tmp=$tmp_root
+  if [ -n "$copy_root" ] && [ "$copy_owned" = 1 ]; then
+    fm_task_evidence_physical_dir "$copy_root" && physical_copy=$FM_TE_PHYSICAL
+  fi
+  if [ -n "$tmp_root" ]; then
+    fm_task_evidence_physical_dir "$tmp_root" && physical_tmp=$FM_TE_PHYSICAL
+  fi
+
+  # Check link targets only after every declaration has been staged, so list
+  # order cannot hide an undeclared target or reject a later declared target.
+  if [ -n "${staging:-}" ] && [ "$refused" = 0 ]; then
+    while IFS= read -r line; do
+      key=${line#*  }
+      label=${key%%/*}; rel=${key#*/}
+      if [ "$label" = copy ]; then
+        [ "$copy_owned" = 1 ] || continue
+        link="$copy_root/$rel"
+      else
+        link="$tmp_root/$rel"
+      fi
+      rc=0
+      fm_task_evidence_link_target "$link" "$staging/$key" || rc=$?
+      if [ "$rc" = 2 ]; then
+        echo "REFUSED: cannot resolve evidence symlink $link for $id" >&2
+        refused=1; continue
+      fi
+      [ "$rc" = 0 ] || continue
+      target=$FM_TE_TARGET
+      if ! fm_task_evidence_survives "$target" "$copy_root" "$tmp_root" "$copy_owned" \
+           "$physical_copy" "$physical_tmp" "$declared" "$staging"; then
+        echo "REFUSED: evidence symlink $link resolves to $target, which cleanup would destroy and which evidence.list does not declare" >&2
+        refused=1
+      fi
+    done < "$manifest.links"
   fi
 
   # Reference scan over every durable text record except the evidence tree.
   for root in "$copy_root" "$tmp_root"; do
     [ -n "$root" ] || continue
-    escaped=$(fm_task_evidence_ere_escape "$root")
-    # Include a terminating semicolon only to recognise a complete HTML entity.
-    pattern="$escaped/[^][[:space:]'\"\`<>(){}|;,*]+;?"
-    refs=$(find "$dir" \( -path "$dir/evidence" -o -path "$dir/.evidence.*" \) -prune \
-        -o -type f -print0 2>/dev/null \
-      | xargs -0 grep -IhoE -- "$pattern" /dev/null 2>/dev/null \
-      | sed -E 's/&([[:alpha:]][[:alnum:]]*|#[0-9]+|#[xX][[:xdigit:]]+);$//; s/;$//; s/[.:!?]*$//; s/:[0-9]+(:[0-9]+)?$//' | sort -u || true)
+    while IFS= read -r -d '' record; do
+    # Never stat a foreign slot, even to disambiguate a citation's suffix.
+    if [ "$root" = "$copy_root" ] && [ "$copy_owned" != 1 ]; then
+      if grep -IqF -- "$root/" "$record"; then
+        echo "warning: record $record references $root/ inside a copy already reassigned to another task" >&2
+      fi
+      continue
+    fi
+    refs=$(fm_task_evidence_references "$record" "$root") || refused=1
     [ -n "$refs" ] || continue
     while IFS= read -r ref; do
+      ref_mode=${ref%%$'\t'*}; ref=${ref#*$'\t'}
       fm_task_evidence_classify "$ref" "$copy_root" "$tmp_root" || continue
       if [ "$FM_TE_LABEL" = copy ] && [ "$copy_owned" != 1 ]; then
         echo "warning: a record under $dir references $ref inside a copy already reassigned to another task" >&2
         continue
       fi
-      if [ "$FM_TE_LABEL" = copy ] \
-         && fm_task_evidence_recoverable_source "$copy_root" "$FM_TE_REL"; then
+      if ! fm_task_evidence_reference_path "$ref" "$ref_mode"; then
+        echo "REFUSED: ambiguous unquoted evidence citation in $record: $ref" >&2
+        refused=1; continue
+      fi
+      ref=$FM_TE_REF
+      fm_task_evidence_classify "$ref" "$copy_root" "$tmp_root" || continue
+      if [ ! -e "$ref" ] && [ ! -L "$ref" ]; then
+        echo "warning: record $record references missing path $ref; there is nothing left to save" >&2
         continue
       fi
-      covered=0
-      while IFS= read -r d; do
-        [ -n "$d" ] || continue
-        case "$FM_TE_LABEL/$FM_TE_REL" in
-          "$d"|"$d"/*) covered=1; break ;;
-        esac
-      done <<< "$declared"
-      if [ "$covered" = 0 ]; then
+      if ! fm_task_evidence_survives "$ref" "$copy_root" "$tmp_root" "$copy_owned" \
+           "$physical_copy" "$physical_tmp" "$declared" "${staging:-}"; then
         echo "REFUSED: a record under $dir references $ref, which cleanup would destroy and which evidence.list does not declare" >&2
         refused=1
       fi
     done <<< "$refs"
+    done < <(find "$dir" \( -path "$dir/evidence" -o -path "$dir/.evidence.*" \) -prune \
+      -o -type f -print0 2>/dev/null)
   done
 
   if [ "$refused" != 0 ]; then
@@ -282,7 +619,7 @@ fm_task_evidence_preserve() {
     return 1
   fi
   [ -n "${staging:-}" ] || return 0
-  if [ ! -s "$manifest" ] && [ ! -e "$evidence" ]; then
+  if [ ! -s "$manifest" ] && [ ! -s "$manifest.links" ] && [ ! -e "$evidence" ]; then
     rm -rf -- "$staging"
     return 0
   fi

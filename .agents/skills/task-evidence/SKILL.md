@@ -9,8 +9,9 @@ metadata:
 # Task evidence
 
 Cleanup returns a task's copy to the pool (hard reset, untracked files removed) and deletes its own `/tmp/fm-<id>` temp folder.
-Scratch evidence cited from either place would be lost, so cleanup preserves declared evidence itself and refuses while a record still points at undeclared files there.
-Clean tracked source citations are recoverable from git and do not need declarations; `bin/fm-task-evidence-lib.sh` owns that exemption and citation-suffix handling.
+Scratch evidence cited from either place would be lost, so cleanup preserves declared evidence itself and refuses while a record still points at existing undeclared files there.
+Missing citations and preserved symlinks produce warnings; the library header owns the missing-path and symlink-target safety rules.
+Clean tracked source citations are recoverable from git and do not need declarations; `bin/fm-task-evidence-lib.sh` owns that exemption, boundary-aware exact-entry-first citation parsing and unsupported-name rules.
 `bin/fm-task-evidence-lib.sh`'s header owns the exact declaration format, copy layout, verification, and refusal rules; this skill covers only how agents use it.
 
 ## When it runs
@@ -22,7 +23,7 @@ It is not a separate step anyone invokes, polls, or waits on.
 
 - When a record you leave under `data/<id>/` (report, notes, findings) cites a file or directory inside your copy or your temp folder, add that path to `data/<id>/evidence.list`, one per line, relative to the copy root or absolute.
 - Keep evidence in the copy as ignored or untracked scratch that git does not flag as uncommitted work, such as an ignored `workspace/` folder; the landed-work refusal still treats tracked edits and non-ignored untracked files as unlanded work.
-- Cite the evidence by its original path if that is clearer; a declared path, or any path under a declared directory, counts as covered.
+- Cite the evidence by its original path if that is clearer; for citations through directory links, declare the target content rather than relying on the link's declaration (the library header owns shared object-survival coverage).
 
 ## Hand steps agents no longer do
 
@@ -33,7 +34,10 @@ It is not a separate step anyone invokes, polls, or waits on.
 
 - The preserved copy lands at `data/<id>/evidence/copy/...` and `data/<id>/evidence/tmp/...`, with `data/<id>/evidence/MANIFEST.sha256`; re-verify later with `cd data/<id>/evidence && sha256sum -c MANIFEST.sha256`.
 - Cite `data/<id>/evidence/...` in any later record that must outlive the task.
-- A `REFUSED:` line from cleanup names each undeclared reference or bad declaration; nothing was changed.
+- A `REFUSED:` line from cleanup names each existing undeclared reference, unsafe link target or bad declaration; nothing was changed.
+- Read warnings for missing citations and preserved links; links stay links, not snapshots of their targets.
+- A parsing or link-resolution refusal is not proof of absence; fix the ambiguous citation or unsupported link text instead of bypassing it.
+- `MANIFEST.sha256.links` records link-text hashes separately from the regular-file manifest, as specified in the library header.
 
 ## On a refusal
 

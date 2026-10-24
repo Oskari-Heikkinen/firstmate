@@ -95,7 +95,7 @@
 # Before any destructive step, and for every kind but a secondmate, teardown
 # copies the evidence a task declares inside its copy or its own temp folder
 # out to data/<id>/evidence/ and refuses while a record under data/<id>/ still
-# references an undeclared path inside either; bin/fm-task-evidence-lib.sh owns
+# references an existing undeclared path inside either; bin/fm-task-evidence-lib.sh owns
 # that contract. After cleanup it removes the recorded temp folder only when it
 # is exactly the task's own /tmp/fm-<id>.
 # A scratch copy (kind=scout) and a --force run discard untracked content.
@@ -3834,8 +3834,8 @@ if teardown_owns_worktree && [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
 fi
 
 # Declared evidence leaves the copy and the task's temp folder before either
-# is returned or removed, and a durable record still pointing into them
-# refuses here, while nothing has been changed yet. bin/fm-task-evidence-lib.sh
+# is returned or removed; unsafe declarations and existing uncovered references
+# refuse here, while nothing has been changed yet. bin/fm-task-evidence-lib.sh
 # owns the declaration, copy-out, and refusal contract; --force lifts neither.
 if [ "$KIND" != secondmate ]; then
   TEARDOWN_EVIDENCE_COPY_OWNED=0
