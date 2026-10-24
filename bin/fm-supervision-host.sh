@@ -408,6 +408,7 @@ capture_home_watcher() {
   # proven arm. Reject unsafe records before opening them, and bound the whole
   # read/validation to cover replacement between that check and open as well.
   # Five seconds bounds local metadata only, not watcher readiness or health.
+  # shellcheck disable=SC2016 # Expand positional parameters in the bounded child shell, not here.
   if snapshot=$(fm_run_timed 5 bash -c '
     . "$1/fm-wake-lib.sh"
     for name in pid fm-home watcher-path pid-identity; do
@@ -597,8 +598,10 @@ start_arm() {  # <predecessor-arm-pid or empty> [--restart]; sets the started pi
   # (the shape start_handling_successor in bin/fm-claude-stop-autoarm.sh uses).
   [ "${ARM_OWN_GROUP:-0}" -ne 1 ] || set -m 2>/dev/null || true
   if [ -n "$predecessor" ]; then
+    # shellcheck disable=SC2094 # --host-arm retains this pathname only as an argv identity token; it never reads it.
     FM_WATCH_PREDECESSOR_ARM_PID=$predecessor FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" --host-arm "$out" "$@" >"$out" 2>&1 </dev/null &
   else
+    # shellcheck disable=SC2094 # --host-arm retains this pathname only as an argv identity token; it never reads it.
     FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" --host-arm "$out" "$@" >"$out" 2>&1 </dev/null &
   fi
   pid=$!
