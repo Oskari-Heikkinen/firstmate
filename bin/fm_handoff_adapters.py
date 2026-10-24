@@ -23,6 +23,8 @@ import re
 import stat
 import subprocess
 
+import fm_handoff_open_holds as open_holds
+
 HERE = Path(__file__).resolve().parent
 ADAPTER_KEY = "receipt-adapter"
 CORR_RE = re.compile(r"corr=([0-9a-f]{16})")
@@ -276,15 +278,15 @@ def native_time(value):
         raise ValueError("invalid native UTC decision time") from exc
 
 
-def native_json(path):
+def native_json(path, limit=NATIVE_LIMIT):
     # Never block on a FIFO or follow a source link to an undeclared tree.
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     with os.fdopen(fd, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError("native record is not a regular file")
-        data = stream.read(NATIVE_LIMIT + 1)
-    if len(data) > NATIVE_LIMIT:
-        raise ValueError(f"native record is larger than {NATIVE_LIMIT} bytes")
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"native record is larger than {limit} bytes")
     doc = json.loads(data)
     if not isinstance(doc, dict):
         raise ValueError("native record is not a JSON object")
@@ -526,10 +528,75 @@ def capacity_cursor(proto, stage, cache, now):
     return native_records(proto, stage, cache, now, None, native_cursor)
 
 
+def open_hold_receipts(proto, stage, projection, path):
+    """Render compact logical witnesses, not an immutable receipt/retry history."""
+    out = []
+    for record, operation in (projection or {}).get("operations", {}).items():
+        hold, closed = operation["hold"], operation["closed_by"]
+        detail = (f"{hold['subject']}/{hold['phase'] or 'other'}: {hold['reason']}; "
+                  f"native held {hold['id']} at {hold['at']} receipt={hold['receipt']}")
+        if closed:
+            state, code, at = "done", None, operation["done_at"]
+            detail += (f"; closed by {closed['kind']} {closed['subject']} at {closed['at']} "
+                       f"receipt={closed['receipt']}; logical hold resolved, not whole-service completion")
+        else:
+            state, code, at = "held", "native-failed", hold["at"]
+        doc = receipt(proto, stage, record, native_time(at), state, path, code=code, detail=detail, entry=path.name)
+        doc["version"] = 1
+        doc["ext"] = {f"{stage['owner']}.native-attempts-known": False,
+                      f"{stage['owner']}.native-outcome": detail}
+        entry = proto_code(stage, code) if code else None
+        if entry and entry.get("holds_all"):
+            doc.update(holds_all=True, stops=entry["stops"])
+        out.append(doc)
+    return out
+
+
+def tj_open_holds(proto, stage, cache, now):
+    """One bounded, complete native event snapshot; failures never resolve old holds."""
+    folder, pattern = Path(stage["input"]["path"]), stage["input"].get("match", "*.json")
+    config = ["native-tj-open-holds", str(folder), pattern]
+    if cache.get("open-holds-config") != config:
+        cache.clear()
+        cache["open-holds-config"] = config
+    if not isinstance(pattern, str) or not pattern.endswith(".json") or any(c in pattern for c in "*?[]/\\"):
+        return [], [(folder, "logical open-holds input.match must name one exact JSON snapshot")]
+    path = folder / pattern
+    previous = cache.get("projection")
+    old_docs = lambda: open_hold_receipts(proto, stage, previous, path)
+    max_age = (stage.get("ext") or {}).get(f"{stage['owner']}.native-snapshot-max-age-seconds")
+    if type(max_age) is not int or max_age <= 0:
+        return old_docs(), [(path, "logical open-holds requires a positive integer native-snapshot-max-age-seconds policy")]
+    try:
+        st = path.lstat()
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("native events snapshot is not a regular file")
+        sig = [st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns]
+        source = cache.get("source")
+        if not source or source[0] != sig:
+            try:
+                # A single aggregate has its own 16 MiB cap, not the 1 MiB per-invocation cap.
+                projection, problems = open_holds.project(native_json(path, limit=NATIVE_PASS_BYTES), previous)
+                source = [sig, projection, problems]
+            except (OSError, ValueError, TypeError, AttributeError, OverflowError) as exc:
+                source = [sig, None, str(exc)[:300]]
+            cache["source"] = source
+        if source[1] is None:
+            raise ValueError(source[2])
+        projection, problems = source[1:]
+        at = native_time(projection["scanned_at"])
+        if at > now or now - at > max_age:
+            raise ValueError("native events snapshot is stale or future-dated under the declared freshness policy")
+        cache["projection"] = projection
+        return open_hold_receipts(proto, stage, projection, path), [(path, why) for why in problems]
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError) as exc:
+        return old_docs(), [(path, str(exc))]
+
+
 ADAPTERS = {"corr-request": corr_request, "first-status": first_status, "status-decisions": status_decisions,
             "native-tj-handoff": tj_handoff, "native-tetjet-collected": tetjet_collected,
             "native-tj-step": tj_step, "native-manifest-verified": manifest_verified,
-            "native-capacity-cursor": capacity_cursor}
+            "native-capacity-cursor": capacity_cursor, "native-tj-open-holds": tj_open_holds}
 
 
 def adapt(proto, stage, cache, now):

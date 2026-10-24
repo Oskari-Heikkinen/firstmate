@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -47,6 +48,20 @@ def sample(family):
     return {"dev": 0, "ino": 0, "offset": 0, "tail": hashlib.sha256(b"").hexdigest()}
 
 
+def event(kind, subject="pkg-b12-old", phase="fetch", at="2026-10-24T15:00:00Z", reason="native reason"):
+    # Source-shaped normalized native events, not a captured aggregate snapshot.
+    eid = hashlib.sha256(json.dumps([kind, subject, phase, at, reason]).encode()).hexdigest()[:16]
+    alias = re.search(r"(?:^|-)(b\d+)(?:-|$)", subject)
+    return {"id": eid, "kind": kind, "subject": subject, "phase": phase, "at": at,
+            "alias": alias.group(1) if alias else None, "source": "step-receipt",
+            "receipt": f"/fixture/native/{eid}.json", "facts": {"reason": reason}}
+
+
+def snapshot(events, **changes):
+    return dict({"schema": "tj-receipt-events/v1", "version": "tj-auto-receipts/1.1", "scanned_at": T,
+                 "inputs": {"step_receipts": len(events)}, "problems": [], "events": events}, **changes)
+
+
 class NativeAdapters(unittest.TestCase):
     def setUp(self):
         self.folder = TMP / self.id().split(".")[-1]
@@ -56,6 +71,8 @@ class NativeAdapters(unittest.TestCase):
     def protocol(self, family, match="*.json"):
         if family == "native-capacity-cursor" and match == "*.json":
             match = "capacity.cursor.json"
+        if family == "native-tj-open-holds" and match == "*.json":
+            match = "events.json"
         stage = {"name": "observe", "owner": OWNER, "accepts": {"min": 0, "max": 1},
                  "input": {"path": str(self.folder), "reach": {"kind": "local"}, "match": match},
                  "outbox": {"path": str(self.folder), "reach": {"kind": "local"}},
@@ -63,15 +80,17 @@ class NativeAdapters(unittest.TestCase):
                  "codes": {code: {"fix_owner": OWNER, "holds_all": False, "what": code}
                            for code in ("native-refused", "native-wait", "native-failed")},
                  "cleanup": {"action": "keep"}, "ext": {f"{OWNER}.receipt-adapter": family}}
+        if family == "native-tj-open-holds":
+            stage["ext"][f"{OWNER}.native-snapshot-max-age-seconds"] = 86400
         proto = {"id": "native.test", "owner": OWNER, "title": "native observation", "schema": "fixture:local",
                  "record_types": ["native/v1"], "versions": {"min": 0, "max": 99}, "senders": [OWNER],
                  "first_stage": "observe", "stages": [stage],
                  "cleanup": {"stage": "observe", "receipts_after": "7d", "records_after": "7d"}}
         return proto, stage
 
-    def adapt(self, family, match="*.json"):
+    def adapt(self, family, match="*.json", now=NOW):
         proto, stage = self.protocol(family, match)
-        docs, problems = adapters.adapt(proto, stage, self.cache, NOW)
+        docs, problems = adapters.adapt(proto, stage, self.cache, now)
         for doc in docs:
             self.assertEqual([], validate.Schema(str(ROOT / "docs/handoff-coverage/handoff-receipt-v1.schema.json")).errors(doc))
             self.assertEqual([], validate.receipt_problems(doc, {proto["id"]: proto}))
@@ -435,6 +454,167 @@ class NativeAdapters(unittest.TestCase):
         fragment["revision"] += 1
         put(frag, fragment)
         self.assertTrue(any(k.startswith("hw-unregistered-receipt-") for k in tick()))
+
+    def test_open_holds_native_closure_matrix(self):
+        family = "native-tj-open-holds"
+        closures = {"launch": ("launched", "fetched", "closed"), "relaunch": ("launched", "fetched", "closed"),
+                    "fetch": ("fetched", "closed"), "remove": ("removed",), "other": ()}
+        for phase, kinds in closures.items():
+            for kind in ("launched", "fetched", "closed", "removed"):
+                for at in ("2026-10-24T14:00:00Z", "2026-10-24T15:00:00Z", "2026-10-24T15:30:00Z"):
+                    with self.subTest(phase=phase, kind=kind, at=at):
+                        self.cache = {}
+                        put(self.folder / "events.json", snapshot([event("held", phase=phase), event(kind, at=at)]))
+                        docs, bad = self.adapt(family)
+                        self.assertEqual([], bad)
+                        closed = kind in kinds and (at >= "2026-10-24T15:00:00Z"
+                                                    or (phase == "relaunch" and kind in ("fetched", "closed")))
+                        self.assertEqual(["done" if closed else "held"], [d["state"] for d in docs])
+                        expected_at = T if closed else "2026-10-24T15:00:00Z"
+                        self.assertEqual(adapters.utc(adapters.native_time(expected_at)), docs[0]["written_at"])
+        for phase in ("launch", "relaunch", "fetch", "remove"):
+            for subject in ("new-kit-b12-recut", "new-kit-b13-other"):
+                with self.subTest(phase=phase, subject=subject):
+                    self.cache = {}
+                    put(self.folder / "events.json", snapshot([event("held", phase=phase),
+                        event("launched", subject=subject, phase="launch", at="2026-10-24T15:30:00Z")]))
+                    docs, bad = self.adapt(family)
+                    self.assertEqual([], bad)
+                    self.assertEqual("done" if phase == "launch" and "b12" in subject else "held", docs[0]["state"])
+
+    def test_open_holds_wait_pending_and_native_ties(self):
+        family = "native-tj-open-holds"
+        put(self.folder / "events.json", snapshot([event("waiting"), event("step"), event("checked")]))
+        self.assertEqual(([], []), self.adapt(family), "WAIT/pending are not operational held events")
+        for phase in (None, "", "fetch"):
+            for reasons in (("first", "last"), ("last", "first")):
+                self.cache = {}
+                put(self.folder / "events.json", snapshot([event("held", phase=phase, reason=r) for r in reasons]))
+                docs, bad = self.adapt(family)
+                self.assertEqual([], bad)
+                self.assertIn(": " + reasons[-1] + ";", docs[0]["detail"])
+                expected = hashlib.sha256(json.dumps(["pkg-b12-old", phase or "other"]).encode()).hexdigest()
+                self.assertEqual(expected, docs[0]["record"])
+
+    def test_open_holds_real_step_derived_events_are_not_live_aggregate(self):
+        # These are generated normalized events from the real step pair, not a
+        # claimed real native events.json fixture or a run of the native reader.
+        family = "native-tj-open-holds"
+        steps = [json.loads(p.read_text()) for p in (REAL / "steps").glob("allin-*.json")]
+        derived = [event("waiting" if d["result_word"] == "WAIT" else "fetched", subject=d["subject"],
+                         phase=d["phase"], at=d["ended"].split(".")[0] + "Z", reason=d["result"]) for d in steps]
+        put(self.folder / "events.json", snapshot(derived))
+        self.assertEqual(([], []), self.adapt(family))
+        wait = next(e for e in derived if e["kind"] == "waiting")
+        fetched = next(e for e in derived if e["kind"] == "fetched")
+        # A derived failure of the same operation closes on the later real fetch.
+        put(self.folder / "events.json", snapshot([dict(wait, kind="held"), fetched]))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(["done"], [d["state"] for d in docs])
+
+    def test_open_holds_pruning_restart_terminal_watermark_and_new_failure(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        hold = event("held")
+        put(path, snapshot([hold]))
+        self.assertEqual("held", self.adapt(family)[0][0]["state"])
+        self.cache = json.loads(json.dumps(self.cache))  # watcher restart persistence
+        put(path, snapshot([]))
+        docs, bad = self.adapt(family)
+        self.assertEqual("held", docs[0]["state"])
+        self.assertIn("disappeared", bad[0][1])
+        success = event("fetched", at="2026-10-24T15:30:00Z")
+        put(path, snapshot([success]))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual("done", docs[0]["state"], "explicit native witness resolves a pruned hold")
+        for old in (hold, event("held", at="2026-10-24T14:30:00Z")):
+            put(path, snapshot([old]))
+            self.assertEqual("done", self.adapt(family)[0][0]["state"], "pruned closer cannot resurrect old failure")
+        put(path, snapshot([event("held", at="2026-10-24T15:45:00Z")]))
+        self.assertEqual("held", self.adapt(family)[0][0]["state"], "a genuinely later failure is evaluated anew")
+        put(path, snapshot([event("closed", at="2026-10-24T15:50:00Z")]))
+        self.assertEqual("done", self.adapt(family)[0][0]["state"])
+        put(path, snapshot([]))
+        self.assertEqual(([], []), self.adapt(family), "terminal pruning drops operation history")
+
+    def test_open_holds_errors_freshness_cache_and_bounds(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        hold = event("held")
+        good = snapshot([hold])
+        put(path, good)
+        with patch.object(adapters, "native_json", wraps=adapters.native_json) as reader:
+            docs, bad = self.adapt(family)
+            self.assertEqual([], bad)
+            self.assertEqual((docs, bad), self.adapt(family))
+            self.assertEqual(1, reader.call_count)
+            stale_docs, stale = self.adapt(family, now=NOW + 86401)
+            self.assertEqual(docs, stale_docs)
+            self.assertIn("stale", stale[0][1])
+            self.assertEqual(1, reader.call_count, "unchanged aggregate is not re-read for freshness")
+        errors = [dict(good, schema="tj-receipt-events/v2"), dict(good, problems=[{"error": "native failed"}]),
+                  dict(good, scanned_at="2026-10-24T15:59:00Z"), dict(good, scanned_at="2026-10-24T17:00:00Z"),
+                  dict(good, events=[dict(hold, kind="unknown")]), dict(good, events=[dict(hold, alias="b999")]),
+                  dict(good, events=[dict(hold, at="not UTC")]), dict(good, events=[hold, hold]),
+                  dict(good, inputs={"step_receipts": True}), dict(good, events={})]
+        for bad_doc in errors:
+            put(path, bad_doc)
+            docs, bad = self.adapt(family)
+            self.assertTrue(bad)
+            self.assertEqual(["held"], [d["state"] for d in docs])
+        put(path, dict(good, padding="x" * (adapters.NATIVE_LIMIT + 1)))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad, "aggregate cap is distinct from per-invocation JSON cap")
+        self.assertLess(len(json.dumps(self.cache)), 50000, "no full snapshot/padding in cache")
+        with patch.object(adapters.open_holds, "EVENT_LIMIT", 1):
+            put(path, snapshot([hold, event("held", subject="other")]))
+            self.assertIn("at most", self.adapt(family)[1][0][1])
+        with patch.object(adapters.open_holds, "OPERATION_LIMIT", 1):
+            put(path, snapshot([hold, event("held", subject="other")]))
+            self.assertIn("retention exceeds", self.adapt(family)[1][0][1])
+        path.write_text(" " * (adapters.NATIVE_PASS_BYTES + 1))
+        self.assertIn("larger than", self.adapt(family)[1][0][1])
+        path.unlink()
+        path.symlink_to(REAL / "provenance.json")
+        self.assertTrue(self.adapt(family)[1])
+        path.unlink()
+        self.assertTrue(self.adapt(family)[1])
+        put(path, good)
+        proto, stage = self.protocol(family)
+        del stage["ext"][f"{OWNER}.native-snapshot-max-age-seconds"]
+        self.assertIn("policy", adapters.adapt(proto, stage, self.cache, NOW)[1][0][1])
+        self.assertIn("exact", self.adapt(family, "*.events.json")[1][0][1])
+
+    def test_open_holds_watcher_clears_only_on_explicit_native_success(self):
+        machine = self.folder / "machine"
+        for hid in (OWNER, "main", "tooling-mate"):
+            (machine / hid / "state").mkdir(parents=True)
+        old_folder, self.folder = self.folder, self.folder / "sources"
+        self.folder.mkdir()
+        proto, stage = self.protocol("native-tj-open-holds")
+        self.folder = old_folder
+        fragment = {"format": "handoff-registry/v1", "home": OWNER, "publisher": "test", "revision": 1,
+                    "published_at": T, "protocols": [proto]}
+        put(machine / OWNER / "state/handoff-registry/native.json", fragment)
+        source = Path(stage["input"]["path"]) / "events.json"
+        put(source, snapshot([event("held")]))
+        def tick():
+            proc = subprocess.run([sys.executable, str(ROOT / "bin/fm-handoff-watch.py"), "tick", "--root", str(machine),
+                                   "--home", str(machine / OWNER), "--now", str(int(NOW + 7200))],
+                                  capture_output=True, text=True, env=ENV, timeout=60)
+            self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+            return json.loads((machine / OWNER / f"state/handoff-watch/stores/{OWNER}.json").read_text())["active"]
+        self.assertTrue(any(k.startswith("hw-held-") for k in tick()))
+        put(source, snapshot([event("waiting")]))
+        alarms = tick()
+        self.assertTrue(any(k.startswith("hw-held-") for k in alarms))
+        self.assertTrue(any(k.startswith("hw-source-unreadable-") for k in alarms))
+        put(source, snapshot([event("fetched", at=T)], problems=[{"error": "partial native scan"}]))
+        self.assertTrue(any(k.startswith("hw-held-") for k in tick()))
+        put(source, snapshot([event("fetched", at=T)]))
+        self.assertFalse(tick(), "native closure proof clears held, past-bound and source-error levels")
 
     def test_watcher_invalid_adapter_cannot_erase_previous_state(self):
         import importlib.util

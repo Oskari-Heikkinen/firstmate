@@ -571,6 +571,7 @@ A native file in an ordinary outbox remains invalid; there is no format auto-det
 | `native-tj-handoff` | `schema=tj-handoff/v1` -> 1 | Native `id`; REQUEST ACCEPTED/REFUSED instead share `request:<subject>:<full artefact.sums_sha256>` | REQUEST REFUSED and FAIL -> `refused` with `native-refused`; REQUEST ACCEPTED, PASS, READY FOR LAUNCH, READY FOR HELPER REVIEW, READY FOR KIT REVIEW, BATCH CUT, REQUEST ALL CUT, REQUEST SUPERSEDED, REQUEST WITHDRAWN and BATCH ABANDONED -> `done` for publication of that decision only, not its subject's launch or completion |
 | `native-tetjet-collected` | `schema=tetjet-collected/v1` -> 1 | `batch:<batch_id>` for `tj-package`/`rolling-slice`; `request:<request_id>:<request_sha256>` for `request` | Batch `verification.verdict=PASS` -> `done` for verified collection, irrespective of experimental exits or incomplete labels; request `complete=true` with `outcome=collected`, `partly-withdrawn` or `withdrawn` -> `done`, preserving the outcome rather than calling withdrawal collection |
 | `native-tj-step` | `schema=tj-step-receipt/v1` -> 1 | Native filename, which distinguishes invocations of one subject/phase | `rc=null` -> `accepted` from `started` (unknown outcome, not proof the child is alive); WAIT -> `held` `native-wait`; otherwise nonzero rc or REFUSE/FAIL/BLOCKED -> `held` `native-failed`; otherwise rc=0 with a known success word or null -> `done` for wrapper completion only |
+| `native-tj-open-holds` | `schema=tj-receipt-events/v1` -> 1 | SHA256 of JSON `[subject, phase-or-other]` | Native `open_holds` logical-operation projection described below; distinct from historical invocation outcomes |
 | `native-manifest-verified` | `schema_version=lattice-manifest-verified/v1` -> 1 | SHA256 of the JSON array `[item, manifest]` | `result=pass` -> `done` for the recorded verification, not verification of current bytes |
 | `native-capacity-cursor` | Exact legacy unversioned `dev`, `ino`, `offset`, `tail` shape -> 0 | SHA256 of the JSON array `[absolute cursor path]` | A matching signal identity, in-range offset and matching checkpoint-tail SHA256 -> `done` at EOF, otherwise `accepted` while bytes remain, including an unfinished line; this proves stdout checkpointing, not downstream acknowledgement |
 
@@ -587,7 +588,8 @@ Native cursor format additions are unknown versions/shapes until explicitly supp
 Each stage reads only its declared input directory's top level, selecting `input.match` (default `*.json`), never recursing or following source symlinks.
 Dot entries are skipped unless the match explicitly starts with a dot, so a `.pc-archive.VERIFIED.json` needs that explicit match and each collected `requests/` directory needs its own stage.
 A declared missing or unreadable directory is a problem, not an idle success.
-At most 4096 matching entries and 1 MiB per JSON record are admitted, with at most 16 MiB of changed JSON reads per stage per pass; excess is a reported source problem and retried on later ticks, not silent truncation.
+For the per-record native adapters, at most 4096 matching entries and 1 MiB per JSON record are admitted, with at most 16 MiB of changed JSON reads per stage per pass; excess is a reported source problem and retried on later ticks, not silent truncation.
+The aggregate logical-operation adapter has its separate bounds below.
 Every retained selected record is considered regardless of age.
 A retained directory larger than the per-stage cap needs exhaustive, disjoint declared filename matches/stages, each within the cap; never reduce the observed set by ignoring old records or pruning unresolved invocations.
 JSON parsing and mapping (including errors) are cached by inode, size, mtime and ctime; the cache stores only small mapped observations, not whole native documents.
@@ -602,7 +604,7 @@ Keeper DEFER_S and ROOM_S are repeated recheck intervals, not maximum waits or r
 A step WAIT without an explicit native deadline is held, not waiting with an invented `until`.
 The step adapter observes invocation history, not current operational open holds: a later successful invocation never clears an earlier failed or WAIT invocation.
 The native summary's cross-invocation `open_holds` closure rules (which do not fold WAIT as held) are a different projection and are not implemented by this adapter.
-A live current-holds stage therefore requires a separately declared and owner-confirmed logical-operation adapter, not implicit subject grouping or synthetic attempts.
+A current-holds stage uses the separately named logical-operation projection below, only after its source contract is confirmed by the native owner; never substitute implicit subject grouping or synthetic attempts.
 Receipt times come from handoff `created_at`, collection `recorded_at` (not an older backfill's `verified_at`), step `started`/`ended`, manifest `verified_at`, or cursor mtime.
 The source file is always the evidence; native outcome remains in detail and `<owner>.native-outcome` ext.
 Native refusal/hold codes must be declared in the fragment, whose code entry alone supplies routing and lane scope.
@@ -618,6 +620,52 @@ The one native writer must keep unresolved records and allow a watcher pass to o
 The regression entry point is `tests/fm-handoff-firstmate.test.sh`, including native cases, sanitized real queue/collected/step records, the verification probe, and a real signal tail.
 Fixture provenance and hashes are in `tests/fixtures/handoff-coverage/native/real/provenance.json`.
 No real cursor fixture was available: cursor success tests explicitly construct a synthetic checkpoint for the scratch signal's inode, never pair a copied tail with a production cursor or claim it as a captured native checkpoint.
+
+##### Logical-operation open holds
+
+`native-tj-open-holds` reads one exact declared `tj-receipt-events/v1` snapshot, normally `events.json`, already normalized and deduplicated by the native scanner.
+It never imports or executes that scanner, reproduces its source ingestion, or follows the receipt/log paths cited by its events.
+`input.match` must be one exact JSON filename, not a glob or invocation partition.
+The snapshot must have normalized whole-second UTC `scanned_at`/event `at`, an `inputs` count object, an empty `problems` array and an `events` array.
+Unknown event kinds, malformed fields, duplicate native event ids or any native source problem make the whole snapshot unreadable, retaining previous observations rather than clearing holds.
+Supported kinds are held, launched, fetched, closed, removed, waiting, step, checked, archive-deleted and closeout-recorded.
+The package's `version` is metadata, not the schema's wire version.
+
+Logical identity is the unambiguously JSON-encoded pair `[subject, phase-or-other]`, hashed with SHA256; null/empty phase means `other`.
+The alias must equal the native first hyphen-delimited `b`-plus-digits alias of the normalized subject.
+For a fixed subject/phase, the latest native held event wins; equal timestamps use the last event in the native snapshot's order.
+The native closure relation is:
+
+| Held phase | Native success that closes it |
+| --- | --- |
+| launch | Same-subject launched/fetched/closed, or same-alias launched, with success `at >= hold.at` |
+| fetch | Same-subject fetched/closed with success `at >= hold.at` |
+| remove | Same-subject removed with success `at >= hold.at` |
+| relaunch | Same-subject launched with success `at >= hold.at`, or **any** same-subject fetched/closed, even older than the hold |
+| other phase | No implicit closure |
+
+A remaining logical hold maps to `held` with `native-failed`; an explicit native closure witness maps that hold to `done`, not whole-service completion.
+Success-only events with no current or previously observed hold create no invented operation.
+Native waiting/WAIT and unknown/pending step events are not held events in this projection and create neither hold alarms nor fabricated deadlines; this differs deliberately from `native-tj-step` history.
+Held receipt time is the native hold time; done receipt time is the snapshot's `scanned_at`, when the closure relation was observed, with both native event times/identities retained in detail.
+Evidence is the declared snapshot; cited native receipt paths remain unfollowed metadata.
+Routing and lane scope still come only from the fragment's code entry.
+
+Read all events without a recent-window cutoff, including old holds.
+Snapshot absence alone never resolves an observed unresolved hold: retain it and report disappearance until an explicit closure witness arrives.
+A newer observed hold is not replaced by older retained history; a known terminal decision remains terminal while that same/older hold history remains, even if the closer is pruned.
+A genuinely later held event is evaluated anew against current native evidence, never suppressed merely because its subject once succeeded.
+Terminal entries drop when no held history for their logical identity remains; unresolved entries have no TTL.
+A regressed scan timestamp is a source problem.
+A required positive integer `<owner>.native-snapshot-max-age-seconds` ext policy controls snapshot freshness; stale or future-dated snapshots are problems and cannot close cached holds.
+Freshness is checked even on a cache hit; this observation policy is not a native maximum wait.
+
+The aggregate read is capped at 16 MiB, 65,536 normalized events and 4096 selected/retained logical operations, with source problems rather than truncation on overflow.
+Native reason and cited receipt strings carried into compact witnesses are capped at 4096 characters, again failing visibly instead of truncating evidence.
+Only compact hold/closure witnesses and problems are cached, not the snapshot's event list or unrelated payload; unchanged files are not re-read.
+This whole snapshot retains cross-source and cross-alias closure evidence even when the underlying invocation directory exceeds the historical adapter's per-stage file cap.
+Never partition the logical projection by invocation filename: that could separate a hold from the event that closes it.
+The existing native regression entry point also covers this projection's closure matrix, alias/tie/WAIT rules, pruning/restart, completeness/freshness errors, observation bounds and watcher alarm clearing.
 
 ## Compatibility and versioning
 
