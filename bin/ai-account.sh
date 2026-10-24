@@ -220,7 +220,7 @@ init
 case "${1:-overview}" in
   overview) cmd_overview ;;
   status) cmd_status ;;
-  move) [ $# -eq 3 ] || die "usage: ai-account move claude NAME"; cmd_move "$2" "$3" ;;
+  move) cmd_move "${@:2}" ;;
   quota) cmd_quota ;;
   add) [ $# -eq 3 ] || die "usage: ai-account add claude|openai NAME"; cmd_add "$2" "$3" ;;
   use) [ $# -eq 3 ] || die "usage: ai-account use claude|openai NAME"; cmd_use "$2" "$3" ;;

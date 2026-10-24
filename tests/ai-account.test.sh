@@ -14,6 +14,11 @@ new_case() {
     "$U/.config/ai-accounts/pi/anthropic" "$U/.config/ai-accounts/pi/openai-codex"
   local f
   for f in "$ROOT"/bin/*; do ln -s "$f" "$C/bin/${f##*/}"; done
+  # Mutation runs select only a private copy, never rewrite the checkout.
+  if [ -n "${FM_AI_ACCOUNT_TEST_SOURCE:-}" ]; then
+    rm "$C/bin/fm-account.sh"
+    cp "$FM_AI_ACCOUNT_TEST_SOURCE" "$C/bin/fm-account.sh"
+  fi
   ln -s "$C/bin" "$H/bin"
   printf '{"anthropic":{"token":"old"},"openai-codex":{"token":"oa-old"},"other":{"keep":true}}\n' > "$U/.pi/agent/auth.json"
   printf '{"token":"new"}\n' > "$U/.config/ai-accounts/pi/anthropic/work.json"
@@ -28,6 +33,10 @@ for id in "$@"; do
   meta="$FM_HOME/state/$id.meta"
   home=$(awk -F= '$1 == "home" { print $2; exit }' "$meta")
   acct=$(cat "$home/config/account")
+  for proc in "$FM_PROC_ROOT_OVERRIDE"/[0-9]*; do
+    [ "$(readlink "$proc/cwd")" = "$home" ] || continue
+    printf 'CLAUDE_CONFIG_DIR=%s/.claude-work\0FM_TASK_ID=%s\0' "$HOME" "$id" > "$proc/environ"
+  done
   awk -F= '$1 != "account" && $1 != "claude_config_dir"' "$meta" > "$meta.tmp"
   printf 'account=%s\n' "$acct" >> "$meta.tmp"
   mv "$meta.tmp" "$meta"
@@ -36,7 +45,11 @@ SH
   cat > "$C/bin/fm-control.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'control %s %s %s\n' "$FM_HOME" "$1" "$FM_SPAWN_ACCOUNT" >> "$FM_TEST_CALLS"
-[ "${FM_TEST_CONTROL_FAIL:-0}" = 0 ] || exit 1
+[ "${FM_TEST_CONTROL_FAIL:-0}" = 0 ] && [ "${FM_TEST_CONTROL_FAIL_ID:-}" != "$1" ] || exit 1
+for proc in "$FM_PROC_ROOT_OVERRIDE"/[0-9]*; do
+  [ "$(readlink "$proc/cwd")" = "${FM_TEST_CASE}/wt-$1" ] || continue
+  printf 'CLAUDE_CONFIG_DIR=%s/.claude-work\0FM_TASK_ID=%s\0' "$HOME" "$1" > "$proc/environ"
+done
 meta="$FM_HOME/state/$1.meta"
 awk -F= '$1 != "account" && $1 != "claude_config_dir"' "$meta" > "$meta.tmp"
 printf 'account=%s\n' "$FM_SPAWN_ACCOUNT" >> "$meta.tmp"
@@ -55,7 +68,7 @@ SH
 
 run_ai() {
   env -u FM_ROOT_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_STATE_OVERRIDE -u FM_SPAWN_ACCOUNT \
-    FM_HOME="$H" HOME="$U" FM_PROC_ROOT_OVERRIDE="$C/proc" FM_TEST_CALLS="$C/calls" \
+    FM_HOME="$H" HOME="$U" FM_PROC_ROOT_OVERRIDE="$C/proc" FM_TEST_CALLS="$C/calls" FM_TEST_CASE="$C" \
     "$H/bin/ai-account.sh" "$@" 2>&1
 }
 
@@ -74,11 +87,13 @@ add_mate() {
   cp "$H/config/accounts" "$M/config/accounts"
 }
 
-add_proc() { # <id> <login-dir>
-  mkdir -p "$C/proc/101"
-  echo claude > "$C/proc/101/comm"
-  ln -s "$(cd -P "$C/wt-$1" && pwd)" "$C/proc/101/cwd"
-  printf 'CLAUDE_CONFIG_DIR=%s\0FM_TASK_ID=%s\0' "$2" "$1" > "$C/proc/101/environ"
+add_proc() { # <id> <login-dir> [cwd]
+  local pid=101
+  while [ -d "$C/proc/$pid" ]; do pid=$((pid + 1)); done
+  mkdir -p "$C/proc/$pid"
+  echo claude > "$C/proc/$pid/comm"
+  ln -s "$(cd -P "${3:-$C/wt-$1}" && pwd)" "$C/proc/$pid/cwd"
+  printf 'CLAUDE_CONFIG_DIR=%s\0FM_TASK_ID=%s\0' "$2" "$1" > "$C/proc/$pid/environ"
 }
 
 assert_old_login() {
@@ -116,7 +131,7 @@ test_move_records_login_mates_and_both_homes_workers() {
 
 test_move_preflight_refusals_leave_login_and_launches_untouched() {
   local reason out rc
-  for reason in provider name registry saved folder remote child-registry child-account pin child-pin history; do
+  for reason in arity provider name registry saved folder remote child-registry child-account pin child-pin dangling-pin dangling-child-pin malformed-pin malformed-child-pin history root-history; do
     new_case "refuse-$reason"
     add_mate
     add_ship "$M" child
@@ -129,9 +144,15 @@ test_move_preflight_refusals_leave_login_and_launches_untouched() {
       child-account) printf 'new claude %s/.claude\n' "$U" > "$M/config/accounts" ;;
       pin) echo main > "$H/config/claude-account" ;;
       child-pin) echo main > "$M/config/claude-account" ;;
+      dangling-pin) ln -s "$C/missing" "$H/config/claude-account" ;;
+      dangling-child-pin) ln -s "$C/missing" "$M/config/claude-account" ;;
+      malformed-pin) printf 'not a valid pin\n' > "$H/config/claude-account" ;;
+      malformed-child-pin) printf 'not a valid pin\n' > "$M/config/claude-account" ;;
       history) mkdir "$M/state/account-moves.log" ;;
+      root-history) mkdir "$H/state/account-moves.log" ;;
     esac
     case "$reason" in
+      arity) out=$(run_ai move claude) ;;
       provider) out=$(run_ai move openai work) ;;
       name) out=$(run_ai move claude '../work') ;;
       *) out=$(run_ai move claude work) ;;
@@ -141,6 +162,14 @@ test_move_preflight_refusals_leave_login_and_launches_untouched() {
     assert_old_login
     assert_equals old "$(cat "$M/config/account")" "$reason: the mate pin is unchanged"
     assert_grep 'account=old' "$M/state/child.meta" "$reason: the worker record is unchanged"
+    assert_grep 'outcome=refused; reason=' "$H/state/account-move-events.status" "$reason: refusal is durable even with an unreadable history"
+    assert_grep 'next=inspect' "$H/state/account-move-events.status" "$reason: refusal names recovery"
+    assert_equals true "$(jq '.active | has("account-move-incomplete")' "$H/state/account-move-alerts.json")" "$reason: refusal holds a registered alarm"
+    assert_grep 'status=account-move-events.status' "$H/state/alert-stores/account-move.reg" "$reason: the reader is registered"
+    case "$reason" in
+      dangling-pin) assert_equals "$C/missing" "$(readlink "$H/config/claude-account")" 'root pin is not removed' ;;
+      dangling-child-pin) assert_equals "$C/missing" "$(readlink "$M/config/claude-account")" 'child pin is not removed' ;;
+    esac
   done
   new_case no-helper
   rm "$C/bin/fm-account.sh"
@@ -161,11 +190,15 @@ test_busy_and_failed_moves_are_reported_and_retryable() {
   assert_contains "$out" 'waiting: busy' "a running busy worker is not interrupted"
   assert_grep 'account=old' "$H/state/busy.meta" "a busy worker keeps its launch record"
   assert_grep '|busy|old|new|waiting' "$H/state/account-moves.log" "the wait is recorded"
+  assert_grep 'outcome=waiting; reason=' "$H/state/account-move-events.status" 'a waiting outcome is delivered'
+  assert_equals true "$(jq '.active | has("account-move-incomplete")' "$H/state/account-move-alerts.json")" 'waiting holds an alarm'
   touch "$H/state/busy.ready"
   out=$(run_ai move claude work); rc=$?
   expect_code 0 "$rc" "$out"
   assert_grep 'account=new' "$H/state/busy.meta" "retry moves an eligible worker"
   assert_grep '|busy|old|new|moved' "$H/state/account-moves.log" "retry logs a verified launch"
+  assert_equals 0 "$(jq '.active | length' "$H/state/account-move-alerts.json")" 'successful retry clears the alarm'
+  assert_grep 'outcome=done; reason=machine login' "$H/state/account-move-events.status" 'success has a durable outcome'
 
   new_case restart-fail
   add_mate
@@ -182,6 +215,127 @@ test_busy_and_failed_moves_are_reported_and_retryable() {
   assert_old_login
   assert_grep '|login:claude|old|new|failed' "$H/state/account-moves.log" "a failed login swap is logged"
   pass 'busy workers wait, failed restarts remain honest, failed login swaps move no reports, and retries work'
+}
+
+test_live_identity_overrides_target_valued_records() {
+  local out rc kind
+  for kind in ship mate; do
+    new_case "mismatch-$kind"
+    if [ "$kind" = mate ]; then
+      add_mate
+      printf 'account=new\n' > "$C/target"
+      awk '$0 != "account=old"' "$H/state/mate.meta" >> "$C/target"
+      mv "$C/target" "$H/state/mate.meta"
+      add_proc mate "$U/.claude" "$M"
+      out=$(FM_TEST_RESTART_FAIL=1 run_ai move claude work); rc=$?
+    else
+      add_ship "$H" mismatch
+      printf 'account=new\n' > "$C/target"
+      awk '$0 != "account=old"' "$H/state/mismatch.meta" >> "$C/target"
+      mv "$C/target" "$H/state/mismatch.meta"
+      add_proc mismatch "$U/.claude"
+      touch "$H/state/mismatch.ready"
+      out=$(FM_TEST_CONTROL_FAIL=1 run_ai move claude work); rc=$?
+    fi
+    expect_code 1 "$rc" "$kind stale target record must not hide a failed live move: $out"
+    assert_grep 'outcome=failed; reason=' "$H/state/account-move-events.status" 'live mismatch failure is delivered'
+    out=$(run_ai move claude work); rc=$?
+    expect_code 0 "$rc" "$kind retry: $out"
+    assert_equals 2 "$(wc -l < "$C/calls" | tr -d ' ')" 'retry really invokes the guarded relaunch again'
+    out=$(run_ai move claude work); rc=$?
+    expect_code 0 "$rc" "$kind repeat after convergence: $out"
+    assert_equals 2 "$(wc -l < "$C/calls" | tr -d ' ')" 'a proven target live login is idempotent'
+  done
+  pass 'live old-login workers and mates are retried despite target-valued metadata; failed restarts cannot claim success'
+}
+
+test_failed_direct_moves_preserve_completed_work_in_both_scopes() {
+  local out rc owner
+  for owner in root child; do
+    new_case "mixed-$owner"
+    if [ "$owner" = child ]; then add_mate; owner=$M; else owner=$H; fi
+    add_ship "$owner" complete
+    add_ship "$owner" broken
+    add_ship "$owner" busy
+    add_proc broken "$U/.claude"
+    add_proc busy "$U/.claude"
+    touch "$owner/state/broken.ready"
+    out=$(FM_TEST_CONTROL_FAIL=1 run_ai move claude work); rc=$?
+    expect_code 1 "$rc" "ready live control failure: $out"
+    assert_grep 'account=old' "$owner/state/broken.meta" 'failed direct relaunch keeps its old record'
+    assert_grep '|broken|old|new|failed' "$owner/state/account-moves.log" 'direct-worker failure is recorded'
+    assert_grep 'account=new' "$owner/state/complete.meta" 'completed work survives partial failure'
+    assert_grep '|busy|old|new|waiting' "$owner/state/account-moves.log" 'mixed waits are retained'
+    assert_grep 'outcome=partial; reason=' "$H/state/account-move-events.status" 'partial completion is delivered'
+    assert_grep 'outcome=failed; reason=error: broken' "$H/state/account-move-events.status" 'the direct failure itself is delivered'
+    touch "$owner/state/busy.ready"
+    out=$(run_ai move claude work); rc=$?
+    expect_code 0 "$rc" "mixed retry: $out"
+    assert_grep 'account=new' "$owner/state/broken.meta" 'retry moves the failed worker'
+    assert_grep 'account=new' "$owner/state/busy.meta" 'retry moves the waiting worker'
+    assert_no_grep 'control .* complete ' "$C/calls" 'completed work is never relaunched by retry'
+    assert_equals 0 "$(jq '.active | length' "$H/state/account-move-alerts.json")" 'the final success clears only the move alarm'
+  done
+  pass 'failed ready direct-worker relaunches propagate nonzero and retry both ownership scopes without undoing completed work'
+}
+
+run_store() {
+  env -u FM_ROOT_OVERRIDE FM_HOME="$H" FM_STATE_OVERRIDE="$H/state" FM_CONFIG_OVERRIDE="$H/config" \
+    "$H/bin/fm-alert-store.sh" "$@" 2>&1
+}
+
+assert_event_wake() {
+  local out rc
+  # No real endpoint or lifecycle operation: only fixture status delivery.
+  rm -f "$H/state/"*.meta
+  out=$(env -u FM_ROOT_OVERRIDE FM_HOME="$H" FM_STATE_OVERRIDE="$H/state" FM_CONFIG_OVERRIDE="$H/config" \
+    FM_BACKEND=tmux FM_PROC_ROOT_OVERRIDE="$C/proc" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 \
+    "$H/bin/fm-watch-checkpoint.sh" --seconds 15 2>&1); rc=$?
+  expect_code 0 "$rc" "automatic outcome wake: $out"
+  assert_contains "$out" 'account-move-events' 'the builtin watcher reader wakes without manual status polling'
+}
+
+test_outcome_delivery_and_projection_retry() {
+  local out rc
+  new_case delivery-done
+  out=$(run_ai move claude work); rc=$?
+  expect_code 0 "$rc" "$out"
+  assert_grep 'next=manually restart' "$H/state/account-move-events.status" 'success names the remaining action'
+  assert_event_wake
+
+  new_case delivery-refused
+  add_mate
+  printf 'remote_host=elsewhere\n' >> "$H/state/mate.meta"
+  out=$(run_ai move claude work); rc=$?
+  expect_code 1 "$rc" "$out"
+  assert_grep 'remote second mate' "$H/state/account-move-events.status" 'remote refusal reason is durable'
+  assert_event_wake
+
+  new_case delivery-history
+  mkdir "$H/state/account-moves.log"
+  out=$(run_ai move claude work); rc=$?
+  expect_code 1 "$rc" "$out"
+  assert_grep 'cannot write .*account-moves.log' "$H/state/account-move-events.status" 'history failure does not suppress its alarm'
+  assert_event_wake
+
+  new_case delivery-retry
+  mkdir "$H/state/account-move-events.status"
+  out=$(run_ai move claude work); rc=$?
+  expect_code 1 "$rc" "$out"
+  assert_old_login
+  assert_equals true "$(jq '.active | has("account-move-incomplete")' "$H/state/account-move-alerts.json")" 'failed event append leaves the alarm active'
+  rmdir "$H/state/account-move-events.status"
+  touch "$H/state/account-move-events.status"
+  out=$(run_store tick); rc=$?
+  expect_code 0 "$rc" "$out"
+  assert_grep 'blocked .*account-move-incomplete.*outcome delivery failed' "$H/state/account-move-events.status" 'the registered tick retries failed delivery'
+  assert_event_wake
+  out=$(run_ai move claude work); rc=$?
+  expect_code 0 "$rc" "$out"
+  out=$(run_store tick); rc=$?
+  expect_code 0 "$rc" "$out"
+  assert_grep 'resolved .*account-move-incomplete' "$H/state/account-move-events.status" 'only successful completion closes the projected alarm'
+  pass 'success, refusals and unreadable-history failures wake automatically; a failed append is retried through the registered alert store'
 }
 
 test_other_subcommands_keep_machine_login_behavior() {
@@ -262,6 +416,9 @@ SH
 test_move_records_login_mates_and_both_homes_workers
 test_move_preflight_refusals_leave_login_and_launches_untouched
 test_busy_and_failed_moves_are_reported_and_retryable
+test_live_identity_overrides_target_valued_records
+test_failed_direct_moves_preserve_completed_work_in_both_scopes
+test_outcome_delivery_and_projection_retry
 test_other_subcommands_keep_machine_login_behavior
 test_add_quota_and_overview_keep_their_interfaces
 printf '# all ai-account tests passed\n'

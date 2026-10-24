@@ -751,6 +751,10 @@
     {
       "path": ".agents/skills/validation-supervision/SKILL.md",
       "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/account-move/SKILL.md",
+      "audience": "agent-runtime"
     }
   ]
 }
