@@ -170,6 +170,7 @@ HOMES_FILE="$TMP_ROOT/homes"
 # Stop whatever a case left running, by the exact pids its home recorded.
 stop_home_processes() {  # <home>
   local home=$1 pid arms='' i=0
+  release_held_helper "$home"
   { : > "$home/session.stop"; } 2>/dev/null || true
   if [ -f "$home/state/.supervision-host" ]; then
     arms=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
@@ -336,10 +337,43 @@ shutdown_diagnostics() {  # <home> [pid...]
     printf '\n--- %s ---\n' "$file" >&2
     tail -n 20 "$file" >&2 2>/dev/null || true
   done
-  for pid in "$@" $(awk -F '\t' '{ print $2 }' "$home/state/.supervision-host" 2>/dev/null); do
+  for pid in "$@" $(cat "$home/helper-blocked" 2>/dev/null) \
+    $(awk -F '\t' '{ print $2 }' "$home/state/.supervision-host" 2>/dev/null); do
     ps -p "$pid" -o pid=,ppid=,stat=,etime=,args= >&2 || true
   done
 }
+# A helper can be descheduled during synchronous bookkeeping. Hold it on a
+# FIFO instead of racing a short sleep, so the stop must finish before that
+# helper returns. The read is bounded and cleanup releases it even on failure.
+release_held_helper() {  # <home>
+  [ -p "$1/helper-gate" ] || return 0
+  { exec 7<> "$1/helper-gate"; printf 'release\n' >&7; exec 7>&-; } 2>/dev/null || true
+}
+
+hold_arm_health_helper() {  # <home>
+  local home=$1 real_stat
+  real_stat=$(command -v stat)
+  mkfifo "$home/helper-gate"
+  cat > "$home/fakebin/stat" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'.last-watcher-beat'*)
+    case "\$(ps -p "\$PPID" -o args= 2>/dev/null)" in
+      *fm-watch-arm.sh*)
+        if [ ! -e "\$FM_HOME/helper-blocked" ]; then
+          exec 7<> "\$FM_HOME/helper-gate"
+          printf '%s\\n' "\$\$" > "\$FM_HOME/helper-blocked"
+          read -r -t "\$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 7 _ || true
+        fi
+        ;;
+    esac
+    ;;
+esac
+exec "$real_stat" "\$@"
+SH
+  chmod +x "$home/fakebin/stat"
+}
+
 # The recovery marker's episode kind (downtime or handling), read through its
 # owner's parser; the Claude re-arm owner delivers a close only on downtime.
 marker_kind() {  # <home>
@@ -2385,10 +2419,26 @@ test_return_during_an_engine_turn_hands_its_outcomes_to_main() {
 # Silent outcomes stay stored, but neither captain-return path names or relays
 # them when the host decides whether to hand the wake to main.
 test_silent_outcomes_are_not_relayed_when_the_captain_returns() {
-  local mode home host
+  local mode home host watcher real_jq stopped
   for mode in return-silent return-fail-silent; do
     home=$(make_home "away-$mode" away)
     echo "$mode" > "$home/stub-mode"
+    if [ "$mode" = return-silent ]; then
+      real_jq=$(command -v jq)
+      mkfifo "$home/helper-gate"
+      cat > "$home/fakebin/jq" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'map(select(.silent != true)'*)
+    exec 7<> "\$FM_HOME/helper-gate"
+    printf '%s\\n' "\$\$" > "\$FM_HOME/helper-blocked"
+    read -r -t "\$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 7 _ || true
+    ;;
+esac
+exec "$real_jq" "\$@"
+SH
+      chmod +x "$home/fakebin/jq"
+    fi
     start_host "$home"
     wait_until 150 watcher_live "$home" || fail "$mode: the host never started a watcher cycle"
     append_status "$home" 'no-change result during a captain return'
@@ -2397,10 +2447,20 @@ test_silent_outcomes_are_not_relayed_when_the_captain_returns() {
       wait_until 2000 handled_at_least "$home" 1 || fail "$mode: the wake was not handled: host=$(cat "$home/host.out" 2>/dev/null) log=$(tail -n 8 "$home/state/.supervision-host.log" 2>/dev/null) report=$(cat "$home/engine-report.log" 2>/dev/null)"
       [ ! -s "$home/host.rc" ] || fail "$mode: a silent-only outcome forced a captain handoff: $(cat "$home/host.out")"
       watcher_live "$home" || fail "$mode: the host did not park on its successor"
+      # The handled log precedes return bookkeeping; stop in that bookkeeping,
+      # not at an arbitrary point after a polling observation of the log.
+      wait_until 200 test -s "$home/helper-blocked" || fail "$mode: the return lookup never blocked"
       host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+      watcher=$(cat "$home/state/.watch.lock/pid")
       kill -TERM "$host"
-      wait_until 200 host_exited "$home" \
-        || { shutdown_diagnostics "$home" "$host"; fail "$mode: the host did not stop on TERM"; }
+      stopped=0
+      wait_until 200 host_exited "$home" && stopped=1
+      [ "$stopped" -eq 1 ] || shutdown_diagnostics "$home" "$host" "$watcher"
+      release_held_helper "$home"
+      [ "$stopped" -eq 1 ] || fail "$mode: the host did not stop on TERM while its return helper was blocked"
+      expect_code 143 "$(cat "$home/host.rc")" "$mode: TERM disposition changed"
+      wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null' _ "$watcher" \
+        || fail "$mode: the host stopped but left its successor watcher"
     else
       wait_until 2000 host_exited "$home" || fail "$mode: the failed turn did not hand the wake to main: $(cat "$home/host.out" 2>/dev/null) $(tail -n 8 "$home/state/.supervision-host.log" 2>/dev/null)"
       assert_re '^supervision-host: the away session could not take this wake: the engine turn failed \(exit 3\); this wake is yours$' \
@@ -2584,22 +2644,102 @@ test_engine_turn_is_bounded_and_its_descendants_reaped() {
 }
 
 test_restarted_host_stops_what_a_killed_predecessor_left() {
-  local home first_host arm watcher
+  local home first_host arm watcher stopped=0
   home=$(make_home away-crash away)
+  hold_arm_health_helper "$home"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "crash: the host never started a watcher cycle"
+  wait_until 150 test -s "$home/helper-blocked" || fail "crash: the arm never blocked in its health check"
+  watcher_live "$home" || fail "crash: the host never started a watcher cycle"
   first_host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   arm=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
   watcher=$(cat "$home/state/.watch.lock/pid")
+  # Activation deliberately refuses a stale exec identity. This case isolates
+  # a stop blocked in bookkeeping, not the separate pre-exec recording window.
+  wait_until 150 recorded_arm_identity_is "$home/state/.supervision-host" "$(fm_test_pid_identity "$arm")" \
+    || fail "crash: the host never settled the arm's exec identity"
   kill -KILL "$first_host"
-  sleep 1
+  wait_until 100 host_exited "$home" || fail "crash: the first host did not die"
   kill -0 "$arm" 2>/dev/null || fail "crash: fixture error: the arm died with its host, so this case proves nothing"
   start_host "$home"
-  wait_until 200 sh -c '! kill -0 "$1" 2>/dev/null && ! kill -0 "$2" 2>/dev/null' _ "$arm" "$watcher" \
-    || { shutdown_diagnostics "$home" "$first_host" "$arm" "$watcher"; fail "a restarted host left its killed predecessor's arm or watcher running"; }
+  wait_until 200 sh -c '! kill -0 "$1" 2>/dev/null && ! kill -0 "$2" 2>/dev/null' _ "$arm" "$watcher" && stopped=1
+  [ "$stopped" -eq 1 ] || shutdown_diagnostics "$home" "$first_host" "$arm" "$watcher"
+  release_held_helper "$home"
+  [ "$stopped" -eq 1 ] || fail "a restarted host left its killed predecessor's arm or watcher running"
   wait_until 100 sh -c 'grep -q "	start	gen=host-" "$1" && [ "$(grep -c "	start	" "$1")" -ge 2 ]' _ "$home/state/.supervision-host.log" \
     || fail "the restarted host did not start"
   pass "host: a restarted host stops, by recorded identity, the cycle a killed predecessor left running"
+}
+
+test_term_stops_the_watcher_when_its_arm_cannot_relay_term() {
+  local home host watcher stopped=0
+  home=$(make_home blocked-arm-stop away)
+  hold_arm_health_helper "$home"
+  start_host "$home"
+  wait_until 150 test -s "$home/helper-blocked" || fail "blocked-arm-stop: no blocked health check"
+  watcher=$(cat "$home/state/.watch.lock/pid")
+  host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+  kill -TERM "$host"
+  wait_until 200 host_exited "$home" && stopped=1
+  [ "$stopped" -eq 1 ] || shutdown_diagnostics "$home" "$host" "$watcher"
+  release_held_helper "$home"
+  [ "$stopped" -eq 1 ] || fail "blocked-arm-stop: the host did not stop"
+  expect_code 143 "$(cat "$home/host.rc")" "blocked-arm-stop: TERM disposition changed"
+  wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null' _ "$watcher" \
+    || fail "blocked-arm-stop: killing an unresponsive arm left its watcher running"
+  pass "host: stopping an arm blocked in health bookkeeping also stops its home-bound watcher"
+}
+
+test_predecessor_cleanup_preserves_a_cycle_its_arm_does_not_own() {
+  local home old_home mode first_host arm old_watcher watcher new_arm
+  for mode in dead blocked; do
+    old_home=$(make_home "foreign-record-$mode" away)
+    [ "$mode" != blocked ] || hold_arm_health_helper "$old_home"
+    start_host "$old_home"
+    wait_until 150 watcher_live "$old_home" || fail "$mode: no initial watcher"
+    if [ "$mode" = blocked ]; then
+      wait_until 150 test -s "$old_home/helper-blocked" || fail "$mode: no blocked health check"
+    fi
+    first_host=$(awk -F '\t' '$1 == "host" { print $2 }' "$old_home/state/.supervision-host")
+    arm=$(awk -F '\t' '$1 == "arm" { print $2 }' "$old_home/state/.supervision-host")
+    wait_until 150 recorded_arm_identity_is "$old_home/state/.supervision-host" "$(fm_test_pid_identity "$arm")" \
+      || fail "$mode: the arm identity never settled"
+    kill -KILL "$first_host"
+    wait_until 100 host_exited "$old_home" || fail "$mode: the initial host did not die"
+    if [ "$mode" = dead ]; then
+      old_watcher=$(cat "$old_home/state/.watch.lock/pid")
+      kill -TERM "$old_watcher"
+      wait_until 150 sh -c '! kill -0 "$1" 2>/dev/null' _ "$arm" || fail "$mode: the old arm did not exit"
+    fi
+    # Use a separate, fresh home for the selected watcher: no prior cycle's
+    # downtime or recovery queue can close it before the host attaches. Feed
+    # activation only the dead/live-stale predecessor rows from the old home.
+    home=$(make_home "foreign-cycle-$mode" away)
+    FM_HOME="$home" "$ROOT/bin/fm-wake-drain.sh" > "$home/seed-drain.out" 2> "$home/seed-drain.err" \
+      || fail "$mode: the independent home's drain failed"
+    if grep -q '^WAKE_ACK_REQUIRED:' "$home/seed-drain.err"; then
+      ack_drain_err "$home/state" "$home/seed-drain.err" || fail "$mode: could not acknowledge the fixture queue"
+    fi
+    [ ! -s "$home/state/.wake-queue" ] || fail "$mode: the independent home has queued work"
+    cp "$old_home/state/.supervision-host" "$home/state/.supervision-host"
+    FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
+      "$ROOT/bin/fm-watch-arm.sh" > "$home/independent-arm.out" 2>&1 &
+    new_arm=$!
+    printf '%s\n' "$new_arm" > "$home/orphan-pid"
+    wait_until 150 watcher_live "$home" || fail "$mode: the independent cycle did not start"
+    watcher=$(cat "$home/state/.watch.lock/pid")
+    start_host "$home"
+    wait_until 200 grep -q "^watcher: attached pid=$watcher " "$home/host.out" \
+      || { shutdown_diagnostics "$home" "$arm" "$watcher"; fail "$mode: the new host did not preserve and attach to the independent cycle"; }
+    kill -0 "$watcher" 2>/dev/null || fail "$mode: predecessor cleanup stopped the independent watcher"
+    [ "$(cat "$home/state/.watch.lock/pid")" = "$watcher" ] || fail "$mode: predecessor cleanup replaced the independent cycle"
+    if [ "$mode" = blocked ]; then
+      wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null' _ "$arm" || fail "$mode: the identity-matched stale arm was not stopped"
+    fi
+    release_held_helper "$old_home"
+    stop_home_processes "$home"
+    stop_home_processes "$old_home"
+  done
+  pass "host: stale or blocked predecessor arm rows cannot stop a cycle that arm does not own"
 }
 
 test_park_exit_probe_avoids_child_sleeps_where_supported() {
@@ -3357,6 +3497,8 @@ HOST_CASES=(
   test_return_during_a_failed_turn_still_hands_its_outcomes_to_main
   test_incomplete_engine_result_hands_the_wake_to_main
   test_restarted_host_stops_what_a_killed_predecessor_left
+  test_term_stops_the_watcher_when_its_arm_cannot_relay_term
+  test_predecessor_cleanup_preserves_a_cycle_its_arm_does_not_own
   test_park_boundary_ends_the_park_before_the_hook_timeout
   test_park_boundary_rechecked_just_before_the_engine_turn
   test_park_test_clock_requires_the_marker
