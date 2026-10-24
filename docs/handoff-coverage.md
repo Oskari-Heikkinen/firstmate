@@ -578,7 +578,8 @@ A native file in an ordinary outbox remains invalid; there is no format auto-det
 Unknown native versions, kinds, result words, malformed shapes and unsupported outcomes are `source-unreadable`, never ignored or mapped to the nearest version.
 The step reader knows result words LAUNCH-STARTED, RELAUNCHED, FETCHED-VERIFIED, MOVED-ASIDE, UPLOAD-ONLY, DRY-RUN, READY-CHECK, REFUSE, FAIL, BLOCKED and WAIT, plus null.
 Null is a valid result word, not an unknown value: nonzero rc/null is held, while rc=0/null is wrapper completion, never proof of launch or fetch.
-For a finished null-word step, a non-null fallback `result` is preserved verbatim in detail; it must be a string of at most 4096 characters, otherwise the observation reports a source problem rather than truncating evidence.
+For a finished null-word step, a non-null fallback `result` is preserved verbatim in `<owner>.native-outcome` ext; it must be a string of at most 4096 characters, otherwise the observation reports a source problem rather than truncating evidence.
+Native receipt `detail` is a display preview bounded to 1000 characters; a shortened preview is labelled and points to the full outcome in ext.
 A successful DRY-RUN, UPLOAD-ONLY or READY-CHECK is wrapper completion, never a launch.
 The manifest writer emits only `pass`, and the collected batch writer emits only `PASS`; another result is a problem, not an invented refusal state.
 The collector's `tetjet-queue-snapshot.v1` is reference label metadata (`jobs[].slice_id`), not a stage outcome, so it has no receipt adapter.
@@ -606,7 +607,7 @@ The step adapter observes invocation history, not current operational open holds
 The native summary's cross-invocation `open_holds` closure rules (which do not fold WAIT as held) are a different projection and are not implemented by this adapter.
 A current-holds stage uses the separately named logical-operation projection below, only after its source contract is confirmed by the native owner; never substitute implicit subject grouping or synthetic attempts.
 Receipt times come from handoff `created_at`, collection `recorded_at` (not an older backfill's `verified_at`), step `started`/`ended`, manifest `verified_at`, or cursor mtime.
-The source file is always the evidence; native outcome remains in detail and `<owner>.native-outcome` ext.
+The source file is always the evidence; native outcome remains verbatim in `<owner>.native-outcome` ext and is previewed in detail.
 Native refusal/hold codes must be declared in the fragment, whose code entry alone supplies routing and lane scope.
 For shared request decision identities the latest native timestamp wins; conflicting states at the same timestamp are a problem because filename ordering cannot prove decision order.
 A previously observed later request decision stays current while older decisions of that logical request remain, even if the later source file is pruned.
@@ -618,7 +619,7 @@ Pruning an observed unresolved record reports a source problem and retains its l
 An adapter attached after records were pruned cannot reconstruct them, and an unseen transition cannot be inferred from disappearance.
 The one native writer must keep unresolved records and allow a watcher pass to observe terminal transitions; otherwise historical coverage is explicitly incomplete.
 The regression entry point is `tests/fm-handoff-firstmate.test.sh`, including native cases, sanitized real queue/collected/step records, the verification probe, and a real signal tail.
-Fixture provenance and hashes are in `tests/fixtures/handoff-coverage/native/real/provenance.json`.
+Fixture provenance and hashes, including the sanitized empty-manifest scratch probe (not a production verification), are in `tests/fixtures/handoff-coverage/native/real/provenance.json`.
 No real cursor fixture was available: cursor success tests explicitly construct a synthetic checkpoint for the scratch signal's inode, never pair a copied tail with a production cursor or claim it as a captured native checkpoint.
 
 ##### Logical-operation open holds
@@ -661,7 +662,7 @@ The receipt's schema-bounded 1000-character `detail` is a display preview; if sh
 Read all events without a recent-window cutoff, including old holds.
 Snapshot absence alone never resolves an observed unresolved hold: retain it and report disappearance until an explicit closure witness arrives.
 A newer observed unresolved hold is not replaced by older retained history merely because it disappears; a known terminal decision remains terminal while that same/older hold history remains, even if the closer is pruned.
-Individual closed_at annotations do not erase a different previously selected unresolved stop of the same operation: retain those compact selected witnesses until individually resolved, selecting the latest still-unresolved witness.
+Individual closed_at annotations do not erase a different observed unresolved stop of the same operation: retain every compact outstanding event witness until individually or family-resolved, including older stops first observed together with a newer stop, and display the latest still-unresolved witness.
 An explicitly resolved newer stop can therefore expose an older native hold still unresolved; that is not disappearance-based rollback.
 A genuinely later held event is evaluated anew against current native evidence, never suppressed merely because its subject once succeeded.
 Terminal entries drop when no held history for their logical identity remains; unresolved entries have no TTL.
@@ -671,7 +672,7 @@ Freshness is checked even on a cache hit; this observation policy is not a nativ
 
 The aggregate read is capped at 16 MiB, 65,536 normalized events and 4096 selected/retained logical operations, with source problems rather than truncation on overflow.
 Native reason and cited receipt strings carried into compact witnesses are capped at 4096 characters, again failing visibly instead of truncating evidence.
-Only compact selected hold/closure witnesses, previously selected unresolved witnesses and problems are cached, not the snapshot's event list or unrelated payload; unchanged files are not re-read.
+Only compact outstanding event obligations, selected hold/closure witnesses, retained resolution proofs and problems are cached, not the snapshot's event list or unrelated payload; unchanged files are not re-read.
 Retained witness history separately fails closed above 65,536 witnesses or 16 MiB of compact projection; the operation cap remains a cap on logical operations, never raw held-event count.
 This whole snapshot retains cross-source and cross-alias closure evidence even when the underlying invocation directory exceeds the historical adapter's per-stage file cap.
 Never partition the logical projection by invocation filename: that could separate a hold from the event that closes it.

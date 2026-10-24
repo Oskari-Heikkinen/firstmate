@@ -459,7 +459,11 @@ def native_records(proto, stage, cache, now, schema, mapper):
                 files[key] = [sig, mapped]
             # A cursor's signal can grow or rotate even when the cursor is unchanged.
             record, at, state, code, detail = mapper(mapped, path) if schema is None else mapped
-            adapted = receipt(proto, stage, record, at, state, path, code=code, detail=detail, entry=name)
+            preview = detail
+            if len(preview) > 1000:
+                suffix = " ... [display preview; full native-outcome in ext]"
+                preview = detail[:1000 - len(suffix)] + suffix
+            adapted = receipt(proto, stage, record, at, state, path, code=code, detail=preview, entry=name)
             adapted["version"] = 0 if schema is None else 1
             adapted["ext"] = {f"{stage['owner']}.native-attempts-known": False,
                               f"{stage['owner']}.native-outcome": detail}

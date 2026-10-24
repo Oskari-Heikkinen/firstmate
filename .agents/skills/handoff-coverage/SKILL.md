@@ -37,6 +37,7 @@ Briefs, marked `fm-send` requests and secondmate status lines are registered by 
 - A new adapter is a reader only, is named in the stage's `<owner>.receipt-adapter` ext key, and reads each file once per change.
 - Before adopting a native observation adapter, follow the doc's "Native observation adapters" contract: confirm its identity/version/state mapping, historical-versus-logical scope, observation bounds, freshness and retention with the native writer's owner, and never claim whole-service coverage from a terminal output alone.
 - Native records stay in their one writer's format; never put them in an ordinary receipt outbox or invent retry limits or wait deadlines to make a fragment validate.
+- A shortened native receipt detail is only a labelled display preview: use its full native-outcome ext and source evidence, and apply the doc's retention rule to every observed unresolved stop, not only the displayed one.
 
 ## When you install a tool
 

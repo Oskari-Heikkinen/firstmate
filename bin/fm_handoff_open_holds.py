@@ -162,9 +162,13 @@ def project(doc, previous):
         closed = closing_event(hold, latest_ok, alias_launch)
         if not closed and key in knowledge_by_key:
             closed = remembered_closure(hold, knowledge_by_key[key])
-        selected = closed_holds if closed else holds
-        if key not in selected or hold["at"] >= selected[key]["hold"]["at"]:
-            selected[key] = {"hold": hold, "closed_by": closed}
+        if closed:
+            if key not in closed_holds or hold["at"] >= closed_holds[key]["hold"]["at"]:
+                closed_holds[key] = {"hold": hold, "closed_by": closed}
+        else:
+            # Every observed unresolved event is an obligation, even when a
+            # newer event of this operation wins the displayed receipt.
+            holds.setdefault(key, {})[hold["id"]] = hold
     operations, problems = {}, []
     for key in sorted(set(holds) | set(closed_holds) | set(old_operations)):
         old, current = old_operations.get(key), holds.get(key)
@@ -194,8 +198,7 @@ def project(doc, previous):
                         prior_selected_closure = result
                     if not terminal or hold["at"] >= terminal["hold"]["at"]:
                         terminal = result
-        if current:
-            hold = current["hold"]
+        for hold in (current or {}).values():
             pending.pop(hold["id"], None)
             pending[hold["id"]] = hold  # native last-event tie wins over retained missing history
         if pending:

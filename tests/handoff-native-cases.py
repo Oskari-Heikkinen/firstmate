@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -23,10 +24,19 @@ FAMILIES = ("native-tj-handoff", "native-tetjet-collected", "native-tj-step",
             "native-manifest-verified", "native-capacity-cursor")
 
 
-def put(path, doc):
+def replace_bytes(path, data):
+    # Publish a distinct inode rather than relying on timestamp granularity for
+    # same-sized updates. No sleeps or production cache bypasses are needed.
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(doc) + "\n")
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".fixture-", delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(data)
+    temporary.replace(path)
     return path
+
+
+def put(path, doc):
+    return replace_bytes(path, (json.dumps(doc) + "\n").encode())
 
 
 def sample(family):
@@ -109,7 +119,29 @@ class NativeAdapters(unittest.TestCase):
     def copy_real(self, group):
         # Copies are byte-identical to the owner's already-sanitized fixtures.
         for source in (REAL / group).glob("*.json"):
-            (self.folder / source.name).write_bytes(source.read_bytes())
+            replace_bytes(self.folder / source.name, source.read_bytes())
+
+    def watcher_fixture(self, family):
+        machine = self.folder / "machine"
+        for hid in (OWNER, "main", "tooling-mate"):
+            (machine / hid / "state").mkdir(parents=True)
+        self.folder = self.folder / "sources"
+        self.folder.mkdir()
+        proto, stage = self.protocol(family)
+        fragment = {"format": "handoff-registry/v1", "home": OWNER, "publisher": "test", "revision": 1,
+                    "published_at": T, "protocols": [proto]}
+        frag = put(machine / OWNER / "state/handoff-registry/native.json", fragment)
+        def tick():
+            # A separate process each pass exercises persisted restart state.
+            proc = subprocess.run([sys.executable, str(ROOT / "bin/fm-handoff-watch.py"), "tick", "--root", str(machine),
+                                   "--home", str(machine / OWNER), "--now", str(int(NOW + 7200))],
+                                  capture_output=True, text=True, env=ENV, timeout=60)
+            self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+            state = machine / OWNER / "state/handoff-watch"
+            alarms = json.loads((state / f"stores/{OWNER}.json").read_text())["active"]
+            records = json.loads((state / "stages/native.test--observe.json").read_text())["records"]
+            return alarms, records
+        return frag, tick
 
     def test_real_fixture_seal(self):
         provenance = json.loads((REAL / "provenance.json").read_text())
@@ -119,11 +151,16 @@ class NativeAdapters(unittest.TestCase):
         self.assertEqual(10, len(provenance["files"]))
         for name, sha in provenance["files"].items():
             self.assertEqual(sha, hashlib.sha256((REAL / name).read_bytes()).hexdigest(), name)
+        probe = provenance["manifest_probe"]
+        self.assertEqual("../verified.json", probe["fixture"])
+        self.assertFalse(probe["real_production_record"])
+        self.assertEqual("e99f0975be174deb30aaf4ac1ba0b8a33827e5d5203f9dd2b9f2e08bab57e313", probe["source_sha256"])
+        self.assertEqual(probe["sha256"], hashlib.sha256((REAL / probe["fixture"]).read_bytes()).hexdigest())
 
     def test_real_queue_refusal_then_acceptance(self):
         family = "native-tj-handoff"
         refused = next((REAL / "queue").glob("request-refused*.json"))
-        (self.folder / refused.name).write_bytes(refused.read_bytes())
+        replace_bytes(self.folder / refused.name, refused.read_bytes())
         docs, bad = self.adapt(family)
         self.assertEqual([], bad)
         self.assertEqual(["refused"], [d["state"] for d in docs])
@@ -258,6 +295,34 @@ class NativeAdapters(unittest.TestCase):
         self.assertEqual([], bad)
         self.assertEqual(2, len({d["record"] for d in docs}))
 
+    def test_step_long_null_fallback_adapter_cli_and_watcher(self):
+        family = "native-tj-step"
+        frag, tick = self.watcher_fixture(family)
+        prefix = "wrapper rc=0 result_word=None; not downstream completion; result="
+        lengths = (900, 999 - len(prefix), 1000 - len(prefix), 1001 - len(prefix), 1000, 4096)
+        for length in lengths:
+            for rc in (0, 1):
+                with self.subTest(length=length, rc=rc):
+                    result = "x" * length
+                    doc = self.one(family, dict(sample(family), rc=rc, result_word=None, result=result))
+                    full = f"wrapper rc={rc} result_word=None; not downstream completion; result={result}"
+                    self.assertEqual(full, doc["ext"][f"{OWNER}.native-outcome"])
+                    self.assertLessEqual(len(doc["detail"]), 1000)
+                    if len(full) > 1000:
+                        self.assertIn("display preview; full native-outcome in ext", doc["detail"])
+                        self.assertIn("not downstream completion", doc["detail"])
+                    else:
+                        self.assertEqual(full, doc["detail"])
+                    receipt = put(self.folder / ".receipt.json", doc)
+                    check = subprocess.run([sys.executable, str(ROOT / "bin/fm-handoff-validate.py"), "receipt",
+                                            "--fragment", str(frag), str(receipt)], capture_output=True, text=True,
+                                           env=ENV, timeout=30)
+                    self.assertEqual(0, check.returncode, check.stdout + check.stderr)
+                    alarms, records = tick()
+                    self.assertEqual(["done" if rc == 0 else "held"], [r["cur"]["state"] for r in records.values()])
+                    self.assertFalse(any(k.startswith("hw-source-unreadable-") for k in alarms))
+                    self.assertEqual(rc != 0, any(k.startswith("hw-held-") for k in alarms))
+
     def test_verified_real_scratch_probe_and_dot_match(self):
         family = "native-manifest-verified"
         doc = sample(family)
@@ -287,7 +352,7 @@ class NativeAdapters(unittest.TestCase):
                 docs, bad = self.adapt(family)
                 self.assertFalse(docs)
                 self.assertIn("unknown", bad[0][1])
-                path.write_text(" " * (adapters.NATIVE_LIMIT + 1))
+                replace_bytes(path, b" " * (adapters.NATIVE_LIMIT + 1))
                 self.assertIn("larger than", self.adapt(family)[1][0][1])
                 path.unlink()
                 path.symlink_to(self.folder / "absent")
@@ -296,7 +361,7 @@ class NativeAdapters(unittest.TestCase):
                 path.mkdir()
                 self.assertTrue(self.adapt(family)[1])
                 path.rmdir()
-                path.write_text("{partial")
+                replace_bytes(path, b"{partial")
                 self.assertTrue(self.adapt(family)[1])
                 path.unlink()
                 self.folder.rmdir()
@@ -335,7 +400,7 @@ class NativeAdapters(unittest.TestCase):
         else:
             with patch.object(adapters, "native_json", side_effect=PermissionError("permission denied")):
                 self.assertTrue(self.adapt(family)[1])
-            path.touch()  # make the denied parse cache stale
+            put(path, sample(family))  # distinct inode makes denied parse cache stale
         path.unlink()
         for i in range(17):
             put(self.folder / f"{i:02d}.json", dict(sample(family), padding="x" * (adapters.NATIVE_LIMIT - 1000)))
@@ -574,7 +639,7 @@ class NativeAdapters(unittest.TestCase):
         with patch.object(adapters.open_holds, "OPERATION_LIMIT", 1):
             put(path, snapshot([hold, event("held", subject="other")]))
             self.assertIn("retention exceeds", self.adapt(family)[1][0][1])
-        path.write_text(" " * (adapters.NATIVE_PASS_BYTES + 1))
+        replace_bytes(path, b" " * (adapters.NATIVE_PASS_BYTES + 1))
         self.assertIn("larger than", self.adapt(family)[1][0][1])
         path.unlink()
         path.symlink_to(REAL / "provenance.json")
@@ -706,6 +771,44 @@ class NativeAdapters(unittest.TestCase):
         self.assertIn(older["id"], docs[0]["detail"])
         put(path, snapshot([event("removed", phase="remove", at=T)]))
         self.assertEqual("done", self.adapt(family)[0][0]["state"])
+
+    def test_open_holds_simultaneous_stops_pruning_restart_and_individual_close(self):
+        self.check_simultaneous_stops_pruning(family_close=False)
+
+    def test_open_holds_simultaneous_stops_pruning_restart_and_family_close(self):
+        self.check_simultaneous_stops_pruning(family_close=True)
+
+    def check_simultaneous_stops_pruning(self, family_close):
+        family = "native-tj-open-holds"
+        _, tick = self.watcher_fixture(family)
+        path = self.folder / "events.json"
+        older = event("held", phase="remove", at="2026-10-24T14:00:00Z")
+        newer = event("held", phase="remove", at="2026-10-24T15:00:00Z")
+        annotated = dict(newer, facts={"closed_at": "2026-10-24T15:45:00Z", "closed_by": "stop-cleared: roots retained"})
+        put(path, snapshot([older, newer]))
+        alarms, records = tick()
+        self.assertTrue(any(k.startswith("hw-held-") for k in alarms))
+        self.assertIn(newer["id"], next(iter(records.values()))["cur"]["detail"])
+        # Older A was observed with B, never selected alone. B's individual
+        # annotation cannot prove that the now-pruned A resolved.
+        put(path, snapshot([annotated]))
+        for _ in range(2):  # unchanged-source pass and process restart keep the obligation
+            alarms, records = tick()
+            self.assertEqual(["held"], [r["cur"]["state"] for r in records.values()])
+            self.assertIn(older["id"], next(iter(records.values()))["cur"]["detail"])
+            self.assertTrue(any(k.startswith("hw-held-") for k in alarms))
+            self.assertTrue(any(k.startswith("hw-source-unreadable-") for k in alarms))
+        if family_close:
+            # Actual removal covers both events, even with both source stops pruned.
+            put(path, snapshot([event("removed", phase="remove", at=T)]))
+        else:
+            # A's own closure suffices; B's previously observed annotation is
+            # remembered even though the current copy of B lacks it.
+            closed_older = dict(older, facts={"closed_at": T, "closed_by": "stop-cleared: A roots retained"})
+            put(path, snapshot([closed_older, newer]))
+        alarms, records = tick()
+        self.assertEqual(["done"], [r["cur"]["state"] for r in records.values()])
+        self.assertFalse(alarms, "only explicit individual or family proof clears all levels")
 
     def test_open_holds_annotation_errors_and_retained_witness_bounds(self):
         family = "native-tj-open-holds"

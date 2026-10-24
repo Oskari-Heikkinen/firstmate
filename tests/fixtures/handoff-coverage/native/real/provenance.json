@@ -13,5 +13,14 @@
     "steps/bent-chain-s1-look2000-beam-lb-20261008-fetch-20261014T113942.542651Z-1444279.json": "4587d04f880dc3a62ae9d9387bf596f5783d1ecb8b40020ae9cd1e314ad93cc5",
     "steps/informed-search-combined-wf3-lbracket-s23-fetch-20260929T155811.999792Z-59616.json": "f334c631dbb224e55ec59f5db302aca2ad32ba8b499dd2f114f1cd41af327cb1"
   },
+  "manifest_probe": {
+    "fixture": "../verified.json",
+    "source": "owner-approved handoff-fragment-r1/scratch-probe/native-verified.json",
+    "source_sha256": "e99f0975be174deb30aaf4ac1ba0b8a33827e5d5203f9dd2b9f2e08bab57e313",
+    "sha256": "60639c768cc8b474a3cc18a3775fd913f7ad9db7bc1c2a6edb3523d445a2ac0b",
+    "origin": "Pure native manifest_verified.py writer probe on an empty scratch MANIFEST.sha256, documented in the owner's handoff-fragment-r1/README.md and native-validator.txt; not a production verification.",
+    "sanitization": "Only the item string changed to /fixture/scratch-probe; all other bytes unchanged, including verified_at and verified_by.",
+    "real_production_record": false
+  },
   "real_cursor_supplied": false
 }
