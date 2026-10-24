@@ -5,6 +5,7 @@
 # Usage:
 #   fm-account.sh status [--json] [--refresh]
 #   fm-account.sh use <task-id> <account> [--no-relaunch] [--note <text>]
+#   fm-account.sh move claude <saved-login-name>
 #   fm-account.sh default <account>|--clear
 #   fm-account.sh rebalance [--check] [--dry-run]
 #   fm-account.sh auto on|off|sync
@@ -37,14 +38,45 @@
 # use        Move one direct report onto <account> through the guarded path and
 #            record it durably. A second mate gets <home>/config/account (the
 #            pin every later relaunch and respawn honors), then the
-#            persist-gated bin/fm-secondmate-restart.sh unless its record
-#            already shows that account. A ship or scout is relaunched with
+#            persist-gated bin/fm-secondmate-restart.sh unless its record and
+#            observed live login agree (or it is stopped and recorded there). A ship or scout is relaunched with
 #            bin/fm-control.sh relaunch (its task record then carries the new
 #            account), only while it is between steps: an idle pane, no
 #            attributed no-mistakes run, and a working or paused status. The
 #            relaunch note is generated unless --note is given. --no-relaunch
 #            records a second mate's pin only (for one already on that account
 #            or stopped). A remote second mate and a non-Claude worker refuse.
+# move       Machine-login move used by ai-account move. Resolve the saved
+#            login's ~/.claude[-NAME] folder to a registered Claude account in
+#            this home; that account must name the same folder in each local
+#            Claude second mate's registry. Preflight local
+#            Claude direct reports and workers of local Claude second mates;
+#            remote mates, missing registries/logins, and home login pins refuse
+#            before the login changes. Non-Claude reports are left alone.
+#            Switch the machine login through bin/ai-account.sh use, logging
+#            login:claude in this home's account-moves.log. Then use the same
+#            guarded, recorded moves as `use`, or record_crew for stopped workers
+#            and workers already running there. Busy workers wait; failures and
+#            waits return nonzero, are logged in their owning home, and require
+#            rerunning this command. Completed moves are not rolled back.
+#            This home's own session still needs a manual restart. Serialized
+#            with this home's rebalance using .account-rebalance.lock.
+#            Every report outcome and the command's done/partial/waiting/failed/
+#            refused outcome appends an existing-protocol status event in the
+#            invoking home: state/account-move-events.status, with UTC time,
+#            reason and next action. The built-in watcher signal scan reads
+#            every unread event and retries failed queue/delivery writes through
+#            its existing status cursors; no extra check or polling loop runs.
+#            Before preflight, register state/account-move-alerts.json (store
+#            account-move) for that status file and assert account-move-incomplete.
+#            Only full completion clears this level. The built-in alert-store
+#            tick retries failed status appends and reports unreadable stores.
+#            SIGKILL leaves the pending level for that tick; HUP/INT/TERM record
+#            an incomplete outcome. No login/report mutation starts unless the
+#            registration, pending level and event surface can be written.
+#            If even registration/storage is unavailable the command refuses;
+#            the original stderr error remains authoritative, never success.
+#            The account-move skill owns the agent response to these events.
 # default    Set or clear config/spawn-account, this home's starting account for
 #            new ship and scout spawns (a low or running-out outlook still
 #            moves a spawn off it).
@@ -90,7 +122,10 @@
 #
 # Runtime records written only here: state/.account-usage-<name> (lib cache),
 # state/.account-signin-<name> (lib sign-in streak), state/account-moves.log
-# (<epoch>|<id>|<from>|<to>|<result>),
+# (<epoch>|<id>|<from>|<to>|<result>; login:claude is the machine-login id;
+# move adds requested, switched/unchanged, waiting, or failed results),
+# state/account-move-events.status and state/account-move-alerts.json
+# (existing status and alert-store protocols, delivery contract above),
 # state/.account-check (<epoch>|<fingerprint>|<quiet-since-epoch>, the --check
 # advice fingerprint), state/.account-rebalance (<epoch>|<fingerprint>, the
 # moves --check last started), state/.account-rebalance.log (that run's
@@ -117,6 +152,7 @@ usage() {
 }
 
 die() {
+  [ "${MOVE_EVENTS_ACTIVE:-0}" != 1 ] || MOVE_REASON=$1
   echo "error: $1" >&2
   exit 1
 }
@@ -273,7 +309,10 @@ crew_movable() {
 }
 
 log_move() {  # <id> <from> <to> <result>
-  printf '%s|%s|%s|%s|%s\n' "$(date +%s)" "$1" "${2:--}" "$3" "$4" >>"$MOVES_LOG" 2>/dev/null || true
+  printf '%s|%s|%s|%s|%s\n' "$(date +%s)" "$1" "${2:--}" "$3" "$4" >>"$MOVES_LOG" || {
+    echo "error: could not record account move in $MOVES_LOG" >&2
+    return 1
+  }
 }
 
 # advice <agents> <accounts> [captain]: captain-facing lines (restart this
@@ -481,12 +520,15 @@ move_check() {
 # move_verify <id> <from> <account> <exit>: report and log whether the task
 # record now carries <account>.
 move_verify() {
-  if [ "$(fm_account_recorded_name "$STATE/$1.meta")" = "$3" ]; then
+  local live
+  live=$(fm_account_live_for "$CONFIG" "$(fm_account_live_index)" "$(agent_dir "$STATE/$1.meta")" "$1")
+  if [ "$4" = 0 ] && [ "$(fm_account_recorded_name "$STATE/$1.meta")" = "$3" ] &&
+    { [ "$live" = "$3" ] || [ "$live" = none ]; }; then
     echo "moved: $1 ${2:-unrecorded} -> $3"
-    log_move "$1" "$2" "$3" moved
+    log_move "$1" "$2" "$3" moved || return 1
     return 0
   fi
-  echo "error: $1 did not come back on $3 (exit $4); its record still reads ${2:-unrecorded}" >&2
+  echo "error: $1 did not come back on $3 (exit $4); recorded=$(fm_account_recorded_name "$STATE/$1.meta") live=$live; retry at a safe boundary" >&2
   log_move "$1" "$2" "$3" failed
   return 1
 }
@@ -494,13 +536,15 @@ move_verify() {
 # restart_mates <account-for-each "id=account"...>: pin every second mate, then
 # one persist-gated restart for all of them, then verify each.
 restart_mates() {
-  local pair id acct ids=() froms=() accts=() i rc=0 status=0
+  local pair id acct live ids=() froms=() accts=() i rc=0 status=0
   for pair in "$@"; do
     id=${pair%%=*} acct=${pair#*=}
     move_check "$id" "$acct" || { status=1; continue; }
     fm_account_write_name "$MOVE_HOME/config/account" "$acct" || { echo "error: could not record account $acct for $id" >&2; status=1; continue; }
-    if [ "$MOVE_FROM" = "$acct" ]; then
-      echo "unchanged: $id already runs on $acct"
+    live=$(fm_account_live_for "$CONFIG" "$(fm_account_live_index)" "$(agent_dir "$MOVE_META")" "$id")
+    if [ "$MOVE_FROM" = "$acct" ] && { [ "$live" = "$acct" ] || [ "$live" = none ]; }; then
+      log_move "$id" "$MOVE_FROM" "$acct" pinned || { status=1; continue; }
+      echo "unchanged: $id recorded on $acct (live=$live; its next launch uses $acct)"
       continue
     fi
     ids+=("$id") froms+=("$MOVE_FROM") accts+=("$acct")
@@ -516,10 +560,11 @@ restart_mates() {
 # move_crew <id> <account> <note>: relaunch one ship or scout onto <account>
 # while it is between steps; 2 means not now.
 move_crew() {
-  local id=$1 acct=$2 note=$3 reason rc=0
+  local id=$1 acct=$2 note=$3 reason live rc=0
   move_check "$id" "$acct" || return 1
-  if [ "$MOVE_FROM" = "$acct" ]; then
-    echo "unchanged: $id already runs on $acct"
+  live=$(fm_account_live_for "$CONFIG" "$(fm_account_live_index)" "$(agent_dir "$MOVE_META")" "$id")
+  if [ "$MOVE_FROM" = "$acct" ] && { [ "$live" = "$acct" ] || [ "$live" = none ]; }; then
+    echo "unchanged: $id recorded on $acct (live=$live; its next launch uses $acct)"
     return 0
   fi
   if ! reason=$(crew_movable "$id"); then
@@ -538,10 +583,6 @@ move_crew() {
 record_crew() {
   local id=$1 from=$2 acct=$3 lock live tmp line set_acct=0 set_dir=0 rc=0
   move_check "$id" "$acct" || return 1
-  if [ "$MOVE_FROM" = "$acct" ]; then
-    echo "unchanged: $id already runs on $acct"
-    return 0
-  fi
   lock=$(fm_meta_lock_path "$MOVE_META") || { echo "error: $id has no lockable task record" >&2; return 1; }
   if ! fm_lock_acquire_wait_max "$lock" 10; then
     echo "waiting: $id's task record is busy; it moves on a later run" >&2
@@ -615,6 +656,191 @@ cmd_use() {
   [ "$norelaunch" = 0 ] || die "--no-relaunch applies to second mates only; a worker keeps its account in its task record"
   move_crew "$id" "$acct" "$note"
 }
+
+# move_home_plan <home> <login-dir> <include-mates 0|1> <account>: validate before any
+# switch; output <home>|<id>|<registered-account>. Dynamic locals keep every
+# check scoped to the owning home, including its registry and login pin.
+move_home_plan() {
+  local config="$1/config" state="$1/state"
+  if [ "$1" = "$FM_HOME" ]; then config=$CONFIG state=$STATE; fi
+  local FM_HOME=$1 CONFIG=$config STATE=$state
+  local dir=$2 include_mates=$3 acct=$4 meta id targets=()
+  need_registry
+  fm_account_get "$CONFIG" "$acct" || die "$FM_ACCOUNT_ERROR ($CONFIG/accounts)"
+  [ "$FM_ACCOUNT_PROVIDER" = claude ] && [ "$FM_ACCOUNT_DIR" = "$dir" ] || die "account $acct must name Claude login folder $dir in $CONFIG/accounts"
+  { [ ! -e "$CONFIG/claude-account" ] && [ ! -L "$CONFIG/claude-account" ]; } || die "$CONFIG/claude-account declares this home's login pin; move cannot override even a dangling or malformed pin"
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    [ "$(fm_meta_get "$meta" harness)" = claude ] || continue
+    case "$(fm_meta_get "$meta" kind)" in
+      secondmate) [ "$include_mates" = 1 ] || continue ;;
+      ship | scout | '') ;;
+      *) continue ;;
+    esac
+    targets+=("$meta")
+  done
+  for meta in "${targets[@]}"; do
+    id=${meta##*/}; id=${id%.meta}
+    move_check "$id" "$acct" || return 1
+    if [ "$MOVE_KIND" = secondmate ] && { [ -e "$MOVE_HOME/config/claude-account" ] || [ -L "$MOVE_HOME/config/claude-account" ]; }; then
+      die "$MOVE_HOME/config/claude-account pins $id's login; move cannot override it"
+    fi
+    printf '%s|%s|%s\n' "$FM_HOME" "$id" "$acct"
+  done
+}
+
+# move_apply <home> <id> <account>: one existing move path in its owner's
+# scope. A subshell prevents child-home state or restart traps leaking out.
+move_apply() {
+  local config="$1/config" state="$1/state"
+  if [ "$1" = "$FM_HOME" ]; then config=$CONFIG state=$STATE; fi
+  local FM_HOME=$1 CONFIG=$config STATE=$state
+  local MOVES_LOG="$STATE/account-moves.log"
+  local FM_CONFIG_OVERRIDE=$CONFIG FM_STATE_OVERRIDE=$STATE
+  export FM_HOME FM_CONFIG_OVERRIDE FM_STATE_OVERRIDE
+  local id=$2 acct=$3 live rc=0 from
+  if ! move_check "$id" "$acct"; then
+    log_move "$id" '' "$acct" failed
+    return 1
+  fi
+  from=$MOVE_FROM
+  log_move "$id" "$from" "$acct" requested || return 1
+  if [ "$MOVE_KIND" = secondmate ]; then
+    (cmd_use "$id" "$acct") || rc=$?
+  else
+    live=$(fm_account_live_for "$CONFIG" "$(fm_account_live_index)" "$(agent_dir "$MOVE_META")" "$id")
+    case "$live" in
+      none | "$acct") record_crew "$id" "$from" "$acct" || rc=$? ;;
+      *) (cmd_use "$id" "$acct" --note "Moved to subscription account $acct; continue the same task from its current records and copy.") || rc=$? ;;
+    esac
+  fi
+  if [ "$rc" != 0 ]; then
+    log_move "$id" "$from" "$acct" "$([ "$rc" = 2 ] && printf waiting || printf failed)" || return 1
+  fi
+  return "$rc"
+}
+
+# move_event <subject> <outcome> <reason> <next>: existing status protocol,
+# read automatically by fm-watch's signal scan and unread-status delivery.
+# Keep this in the invoking home even when move_apply scopes to a child.
+move_event() {
+  local subject=$1 outcome=$2 reason=$3 next=$4 verb=failed
+  [ "$outcome" != 'done' ] || verb='done'
+  reason=${reason//$'\n'/; }; reason=${reason//$'\r'/ }; reason=${reason//$'\t'/ }
+  subject=${subject//$'\n'/ }; subject=${subject//$'\r'/ }; subject=${subject//$'\t'/ }
+  next=${next//$'\n'/ }; next=${next//$'\r'/ }; next=${next//$'\t'/ }
+  "$SCRIPT_DIR/fm-worker-status.sh" "$MOVE_EVENT_STATE/account-move-events.status" "$MOVE_EVENT_CONFIG" \
+    "$verb [at=<epoch>]: $(date -u +%Y-%m-%dT%H:%M:%SZ) account move $subject outcome=$outcome; reason=$reason; next=$next"
+}
+
+move_alert() {
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$MOVE_EVENT_STATE" FM_CONFIG_OVERRIDE="$MOVE_EVENT_CONFIG" \
+    "$SCRIPT_DIR/fm-alert-store.sh" "$@" >/dev/null
+}
+
+# EXIT runs on preflight die, interrupted moves and normal completion alike.
+# A pending store level is installed before any mutation and survives a failed
+# status append; the built-in alert-store tick retries its projection.
+move_finish() {
+  local rc=$1 next="inspect $MOVE_EVENT_STATE/account-move-events.status; fix the reported cause and rerun ai-account move claude $MOVE_LOGIN"
+  trap - EXIT
+  [ "$MOVE_OUTCOME" != 'done' ] || next='manually restart the invoking session to pick up the login'
+  if ! move_event "login:claude/$MOVE_LOGIN" "$MOVE_OUTCOME" "$MOVE_REASON" "$next"; then
+    MOVE_OUTCOME=failed MOVE_REASON="outcome delivery failed: cannot append $MOVE_EVENT_STATE/account-move-events.status; $MOVE_REASON"
+    rc=1
+  fi
+  if [ "$MOVE_OUTCOME" = 'done' ]; then
+    move_alert clear "$MOVE_STORE" account-move account-move-incomplete "$MOVE_REASON" || rc=1
+  else
+    move_alert assert "$MOVE_STORE" account-move account-move-incomplete \
+      "outcome=$MOVE_OUTCOME; $MOVE_REASON; next=$next" || rc=1
+  fi
+  [ "$MOVE_LOCKED" != 1 ] || fm_lock_release "$STATE/.account-rebalance.lock"
+  exit "$rc"
+}
+
+cmd_move() (
+  local MOVE_EVENT_STATE=$STATE MOVE_EVENT_CONFIG=$CONFIG MOVE_LOGIN=${2:-unspecified}
+  local MOVE_STORE="$STATE/account-move-alerts.json" MOVE_EVENTS_ACTIVE=1
+  local MOVE_OUTCOME=refused MOVE_REASON='request did not finish preflight' MOVE_LOCKED=0
+  local name=${2:-} dir acct from old plan child meta home id target rc=0 result login_result output status moved=0 failed=0 waiting=0
+  trap 'move_finish $?' EXIT
+  trap 'exit 1' HUP INT TERM
+  # Existing registration and status protocols need no extra poller or check.
+  move_alert register "$MOVE_STORE" account-move account-move-events.status fm-account || die 'could not register account move outcome delivery'
+  move_alert assert "$MOVE_STORE" account-move account-move-incomplete \
+    "move to $MOVE_LOGIN has not completed; next=inspect $STATE/account-move-events.status and retry if interrupted" || die 'could not persist pending account move alarm'
+  : >>"$STATE/account-move-events.status" || die 'could not open account move event delivery'
+  [ $# -eq 2 ] && [ "$1" = claude ] || die "usage: fm-account.sh move claude <saved-login-name>"
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "invalid saved login name: $name"
+  need_registry
+  dir="$HOME/.claude"
+  [ "$name" = main ] || dir="$dir-$name"
+  acct=$(fm_account_name_for_dir "$CONFIG" "$dir" claude)
+  [ -n "$acct" ] || die "Claude login folder $dir is not registered in $CONFIG/accounts"
+  [ -d "$dir" ] || die "missing config folder $dir; sign in first"
+  [ -f "$HOME/.config/ai-accounts/pi/anthropic/$name.json" ] || die "no saved Claude login '$name'; run ai-account add claude $name first"
+  fm_lock_try_acquire "$STATE/.account-rebalance.lock" || die "another account move or rebalance is running; retry later"
+  MOVE_LOCKED=1
+  plan=$(move_home_plan "$FM_HOME" "$dir" 1 "$acct" 2>&1) || die "$plan"
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    [ "$(fm_meta_get "$meta" kind)" = secondmate ] || continue
+    [ "$(fm_meta_get "$meta" harness)" = claude ] || continue
+    home=$(fm_meta_get "$meta" home)
+    child=$(move_home_plan "$home" "$dir" 0 "$acct" 2>&1) || die "$child"
+    [ -z "$child" ] || plan+=$'\n'"$child"
+  done
+  # Refuse unwritable histories before changing a login or any launch record.
+  : >>"$MOVES_LOG" || die "cannot write $MOVES_LOG"
+  while IFS='|' read -r home id target; do
+    [ -n "$home" ] && [ "$home" != "$FM_HOME" ] || continue
+    : >>"$home/state/account-moves.log" || die "cannot write $home/state/account-moves.log"
+  done <<<"$plan"
+  old=$(fm_account_read_name "$HOME/.config/ai-accounts/active-claude")
+  old=${old:-main}
+  from="$HOME/.claude"
+  [ "$old" = main ] || from="$from-$old"
+  from=$(fm_account_name_for_dir "$CONFIG" "$from" claude)
+  log_move login:claude "$from" "$acct" requested || die "cannot record login request in $MOVES_LOG"
+  MOVE_OUTCOME=failed MOVE_REASON='machine login switch did not complete; no reports moved'
+  if "$SCRIPT_DIR/ai-account.sh" use claude "$name"; then
+    result=switched
+    [ "$old" != "$name" ] || result=unchanged
+  else
+    log_move login:claude "$from" "$acct" failed
+    echo "error: machine login switch failed; no reports moved" >&2
+    return 1
+  fi
+  log_move login:claude "$from" "$acct" "$result" || die "login changed but cannot record result in $MOVES_LOG"
+  login_result=$result
+  MOVE_REASON="machine login $login_result to $name; report moves have not completed"
+  move_event login:claude 'done' "machine login $result ($old -> $name)" 'move eligible reports; manually restart the invoking session' || die 'could not deliver login outcome'
+  while IFS='|' read -r home id target; do
+    [ -n "$home" ] || continue
+    MOVE_REASON="machine login $login_result to $name; report move $home/$id did not finish"
+    status=0
+    output=$(move_apply "$home" "$id" "$target" 2>&1) || status=$?
+    printf '%s\n' "$output"
+    case "$status" in
+      0) result='done'; moved=$((moved + 1)) ;;
+      2) result=waiting; waiting=$((waiting + 1)); rc=1 ;;
+      *) result=failed; failed=$((failed + 1)); rc=1 ;;
+    esac
+    move_event "$home/$id" "$result" "$output" \
+      "$([ "$status" = 0 ] && printf 'continue on %s' "$target" || printf 'fix the reported cause or wait for a safe boundary, then rerun ai-account move claude %s' "$name")" || die "could not deliver $id outcome"
+  done <<<"$plan"
+  MOVE_OUTCOME='done'
+  if [ "$rc" != 0 ]; then
+    if [ "$moved" -gt 0 ]; then MOVE_OUTCOME=partial
+    elif [ "$failed" -gt 0 ]; then MOVE_OUTCOME=failed
+    else MOVE_OUTCOME=waiting; fi
+    echo "error: some reports did not move; see the refusals above and rerun ai-account move claude $name" >&2
+  fi
+  MOVE_REASON="machine login $login_result to $name; reports done=$moved waiting=$waiting failed=$failed; completed work is retained"
+  echo "This session keeps its old Claude login until manually restarted."
+  return "$rc"
+)
 
 cmd_default() {
   [ $# -eq 1 ] || die "usage: fm-account.sh default <account>|--clear"
@@ -886,6 +1112,7 @@ shift
 case "$cmd" in
   status) cmd_status "$@" ;;
   use) cmd_use "$@" ;;
+  move) cmd_move "$@" ;;
   default) cmd_default "$@" ;;
   rebalance) cmd_rebalance "$@" ;;
   auto) cmd_auto "$@" ;;

@@ -1040,9 +1040,17 @@ A remote secondmate is launched on its host from its own home's configuration, s
 
 ## Subscription accounts (config/accounts)
 
+The optional machine-login helper is tracked as `bin/ai-account.sh` and installed as `~/.local/bin/ai-account`; its header owns usage and prerequisites.
+Installing or replacing that machine-local command is a separate operator step, not part of updating Firstmate.
+`ai-account move` delegates to the selected Firstmate home's `bin/fm-account.sh move`; that script's header owns the move scope, preflight refusals, partial-completion handling, and records.
+The saved machine-login name is resolved by login folder to the fleet's registered account name, which must identify the same folder in each affected local home.
+Other machine-login commands, including `ai-account use`, remain independent of fleet moves.
+Move outcomes reach Firstmate automatically through the existing status reader and registered alert store; `bin/fm-account.sh --help` owns that delivery contract, and the [account-move skill](../.agents/skills/account-move/SKILL.md) owns the response.
+
 The optional local, gitignored `config/accounts` registers the subscription logins the fleet may run on, one per line as `<name> <provider> <login-folder> [<priority>]`.
 A Claude login folder is the `CLAUDE_CONFIG_DIR` the harness reads and a Codex one is its `CODEX_HOME`; only Claude accounts are ever chosen for a launch, while other providers are shown with their usage.
-Firstmate never reads, copies, or prints a credential: usage comes from quota-axi's read of one login folder, and only a folder's existence is checked directly.
+Account usage and launch selection never read, copy, or print a credential: usage comes from quota-axi's read of one login folder, and only a folder's existence is checked directly.
+The machine-login helper separately maintains the saved CLI and Pi logins.
 With no registry, every launch is unchanged and forwards the launching session's own login.
 A home's `config/claude-account` pin ("Worker account pin" above) outranks the registry: that home's Claude launches always use the pinned login, and moving one of its agents to another account refuses.
 
