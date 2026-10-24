@@ -601,6 +601,7 @@ Receipt times come from handoff `created_at`, collection `recorded_at` (not an o
 The source file is always the evidence; native outcome remains in detail and `<owner>.native-outcome` ext.
 Native refusal/hold codes must be declared in the fragment, whose code entry alone supplies routing and lane scope.
 For shared request decision identities the latest native timestamp wins; conflicting states at the same timestamp are a problem because filename ordering cannot prove decision order.
+A previously observed later request decision stays current while older decisions of that logical request remain, even if the later source file is pruned.
 Other duplicate identities are problems.
 
 **Retention.**

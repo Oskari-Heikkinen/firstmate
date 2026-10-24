@@ -472,6 +472,12 @@ def native_records(proto, stage, cache, now, schema, mapper):
             problems.append((path, str(exc)))
     # Do not let pruning (or parse failure) manufacture successful resolution.
     for record, old in observed.items():
+        current = out.get(record)
+        if schema == "tj-handoff/v1" and record.startswith("request:") and current \
+                and current["written_at"] < old["written_at"]:
+            # Pruning a later acceptance must not resurrect an older refusal
+            # still retained in the write-once queue for the same request.
+            out[record] = old
         if record in out or old["state"] == "done":
             continue
         if old["evidence"] not in present:

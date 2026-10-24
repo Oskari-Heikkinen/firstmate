@@ -105,6 +105,10 @@ class NativeAdapters(unittest.TestCase):
         self.assertEqual([], bad)
         self.assertEqual(["done"], [d["state"] for d in docs])
         self.assertTrue(docs[0]["record"].endswith(SHA))
+        (self.folder / "record.json").unlink()
+        self.assertEqual(["done"], [d["state"] for d in self.adapt(family)[0]],
+                         "pruned later acceptance cannot resurrect retained older refusal")
+        put(self.folder / "record.json", sample(family))
         put(self.folder / "refused.json", dict(doc, created_at=T))
         self.assertTrue(self.adapt(family)[1], "same-second conflicting decisions cannot be ordered by filename")
 
