@@ -1472,7 +1472,7 @@ SH
     rm -- "$TMP_ROOT/state/write-history/$kind"
     mv -- "$TMP_ROOT/state/write-history/$kind.saved" "$TMP_ROOT/state/write-history/$kind"
     rm -f "$TMP_ROOT/recovery-retire-hit"
-    out=$(PATH="$fbin:$PATH" FAULT_RETIRE="${tokens[0]}" FAULT_RETIRE_HIT="$TMP_ROOT/recovery-retire-hit" \
+    out=$(PATH="$fbin:$PATH" REAL_AWK="$real_awk" FAULT_RETIRE="${tokens[0]}" FAULT_RETIRE_HIT="$TMP_ROOT/recovery-retire-hit" \
       run_room recover-write "$kind" "$token" 1M "$result" 2>&1); rc=$?
     expect_code 2 "$rc" "recovery token retirement failure cannot report success"
     assert_present "$TMP_ROOT/recovery-retire-hit" "recovery reached the retirement failure"
@@ -1717,6 +1717,154 @@ test_live_pending_concurrency() {
   pass "live pending attempts permit concurrency but cannot be recovered early"
 }
 
+# Stop the real post-command flock helper, then kill only its owned wrapper.
+# A surviving helper must not make the dead wrapper's lost sample look live.
+# The live-wrapper check is the negative control; killing the orphan must not
+# change the already-failed admission. All waits and cleanup are fixture-owned.
+test_orphaned_accounting_helper() {
+  [ -r /proc/$$/io ] || return 0
+  reset_state
+  set_sizes 60 600 400
+  local out rc probe="$TMP_ROOT/orphan-helper.py"
+  mkdir -p "$TMP_ROOT/state/write-history"
+  printf 'fm-disk-write/v1 1 0 0\n' >"$TMP_ROOT/state/write-history/orphan-helper"
+  cat >"$probe" <<'PY'
+import fcntl
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+tool = sys.argv[1]
+root = Path(sys.argv[2])
+state = Path(os.environ['FM_DISK_ROOM_STATE'])
+fifo = root / 'orphan-release'
+ready = root / 'orphan-ready'
+marker = root / 'orphan-wrong-admission'
+os.mkfifo(fifo)
+# RDWR prevents a fixture error from blocking the controller on FIFO open.
+release = os.open(fifo, os.O_RDWR)
+writer = '''import os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+with open(root / 'orphan-output', 'wb') as f:
+    f.write(bytes(65536)); f.flush(); os.fsync(f.fileno())
+(root / 'orphan-ready').touch()
+with open(root / 'orphan-release') as f:
+    f.readline()
+'''
+wrapper = subprocess.Popen([tool, 'run', '--name', 'orphan-original',
+    '--kind', 'orphan-helper', '--expect-write', '1M', '--',
+    sys.executable, '-c', writer, str(root)])
+helper = None
+lock = None
+
+def until(probe, label):
+    for _ in range(200):
+        value = probe()
+        if value:
+            return value
+        time.sleep(0.1)
+    raise AssertionError('timed out: ' + label)
+
+def accounting_child():
+    children = Path(f'/proc/{wrapper.pid}/task/{wrapper.pid}/children')
+    for pid in children.read_text().split():
+        try:
+            argv = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+        except FileNotFoundError:
+            continue
+        if argv[:4] == [b'flock', b'-w', b'30', b'9'] and argv[4:] == [b'']:
+            return int(pid)
+    return None
+
+def stopped():
+    text = Path(f'/proc/{helper}/stat').read_text()
+    return text.rsplit(') ', 1)[1].split()[0] == 'T'
+
+def acquire_lock():
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+def helper_gone():
+    try:
+        text = Path(f'/proc/{helper}/stat').read_text()
+    except FileNotFoundError:
+        return True
+    return text.rsplit(') ', 1)[1].split()[0] == 'Z'
+
+def invoke(expected, *args):
+    result = subprocess.run([tool, *args], capture_output=True, text=True, timeout=40)
+    assert result.returncode == expected, (args, result.returncode, result.stdout, result.stderr)
+    return result.stdout + result.stderr
+
+def held():
+    assert 'unresolved write' in invoke(2, 'write-history', 'orphan-helper')
+    for args in [[], ['--expect-write', '0']]:
+        assert 'unresolved write' in invoke(2, 'check', '--kind', 'orphan-helper', *args)
+    assert 'unresolved write' in invoke(75, 'run', '--name', 'orphan-next',
+        '--kind', 'orphan-helper', '--expect-write', '0', '--',
+        'touch', str(marker))
+    assert not marker.exists(), 'dead wrapper must never authorize another job'
+
+try:
+    until(ready.exists, 'writer fsync and ready')
+    lock = open(state / '.lock', 'w')
+    until(acquire_lock, 'shared lock while writer waits')
+    os.write(release, b'release\n')
+    helper = until(accounting_child, 'real accounting flock child')
+    os.kill(helper, signal.SIGSTOP)
+    until(stopped, 'accounting helper stopped')
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    # Negative control: a living wrapper still permits comparable jobs even
+    # while its accounting helper is stopped; no sample has been appended.
+    assert '"high_bytes":0' in invoke(0, 'write-history', 'orphan-helper')
+    invoke(0, 'check', '--kind', 'orphan-helper', '--expect-write', '0')
+    wrapper.kill()
+    wrapper.wait(timeout=10)
+    held()
+    # Changing only the helper's lifetime cannot change the hold anymore.
+    os.kill(helper, signal.SIGKILL)
+    until(helper_gone, 'orphaned helper exits')
+    helper = None
+    held()
+    tokens = list((state / 'write-pending/orphan-helper').iterdir())
+    assert len(tokens) == 1, tokens
+    invoke(0, 'recover-write', 'orphan-helper', tokens[0].name, '64K', '0')
+    assert '"high_bytes":65536' in invoke(0, 'write-history', 'orphan-helper')
+    invoke(1, 'check', '--kind', 'orphan-helper', '--expect-write', '0')
+    print('orphaned helper cannot mask wrapper death; live-owner control passed')
+finally:
+    if lock is not None:
+        lock.close()
+    os.close(release)
+    if helper is not None:
+        try:
+            os.kill(helper, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    # On an early fixture failure, stop the owned writer as well as its wrapper.
+    if wrapper.poll() is None:
+        children = Path(f'/proc/{wrapper.pid}/task/{wrapper.pid}/children')
+        for pid in children.read_text().split():
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        wrapper.kill()
+    wrapper.wait(timeout=10)
+PY
+  out=$(ROOM_CMD=(python3 "$probe" "$DISK_ROOM" "$TMP_ROOT"); run_room 2>&1); rc=$?
+  expect_code 0 "$rc" "an orphaned real accounting helper cannot keep a dead attempt admissible: $out"
+  assert_contains "$out" 'live-owner control passed' "the orphan probe completes both the live and dead owner controls"
+  pass "wrapper death holds admission even while its real stopped accounting helper survives"
+}
+
 test_corrupt_write_history() {
   reset_state
   set_sizes 60 600 400
@@ -1769,6 +1917,7 @@ test_pending_creation_refusals
 test_unreadable_pending_refusals
 test_pending_completion_failures
 test_live_pending_concurrency
+test_orphaned_accounting_helper
 test_interface_v2_history
 test_corrupt_write_history
 test_self_test_v2
