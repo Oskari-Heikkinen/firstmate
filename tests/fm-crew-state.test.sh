@@ -310,10 +310,9 @@ case "${1:-}" in
         exit 0 ;;
       process-info)
         # The process-level view a registration is verified against (#4115):
-        # `agent` puts a live claude in the foreground, `shell` a bare zsh whose
-        # pid is the case's own test shell (a real, long-lived process with no
-        # harness descendant, so the adapter's real process-table walk finds
-        # it), and anything else answers nothing (unreadable).
+        # `agent` puts a live claude in the foreground; `shell` describes the
+        # shell-only snapshot installed by make_herdr_shell_process_view.
+        # Anything else answers nothing (unreadable).
         pane=""; args=("$@"); for ((i=0; i<${#args[@]}; i++)); do [ "${args[$i]}" = --pane ] && pane=${args[$((i+1))]:-}; done
         case "${FM_FAKE_HERDR_PROCESS:-agent}" in
           agent) printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":424242,"foreground_processes":[{"pid":424242,"name":"claude","argv0":"claude"}]}}}\n' "$pane" "${FM_FAKE_HERDR_SHELL_PID:-$PPID}" ;;
@@ -347,6 +346,22 @@ make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
     ln -s "$real" "$tb/$tool"
   done
   printf '%s\n' "$tb"
+}
+
+# Pin the process-table half of a shell-only Herdr fixture as well as its JSON.
+# Walking the real case shell also sees the probe's own short-lived helpers;
+# their disappearance during argv reads is not evidence about this fake pane.
+make_herdr_shell_process_view() {  # <case-dir>
+  cat > "$1/fakebin/herdr-ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ "${FM_FAKE_HERDR_PS_UNREADABLE:-0}" = 0 ] || exit 1
+case "$*" in
+  '-axo pid=,ppid=,comm=') printf '%s 1 zsh\n' "$FM_FAKE_HERDR_SHELL_PID" ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$1/fakebin/herdr-ps"
 }
 
 # Run the helper for one case dir. FM_FAKE_* env (run output, busy flag) are read
@@ -391,9 +406,8 @@ reset_fakes() {
   FM_FAKE_HERDR_HUSK=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_HERDR_PROCESS=agent
-  # The shell pid is this case's own shell (the pooled case's subshell, or the
-  # script itself where BASHPID is unavailable): a real, live process whose
-  # descendants are only this case's processes, never another pooled case's.
+  # Own this PID even when a case injects a process table: independent identity
+  # sources must never inspect an invented PID belonging to another process.
   FM_FAKE_HERDR_SHELL_PID=${BASHPID:-$$}
   FM_FAKE_CI_LOGS=""
   FM_FAKE_DAEMON_DOWN=0
@@ -2821,11 +2835,16 @@ test_no_run_herdr_stale_registration_over_shell_reads_agent_gone() {
   FM_FAKE_HERDR_READ_FAIL=1
   FM_FAKE_HERDR_AGENT_STATUS=idle
   FM_FAKE_HERDR_PROCESS=shell
-  local out; out=$(run_crew_state "$d" feat-herdr-stale)
+  make_herdr_shell_process_view "$d"
+  local out; out=$(FM_HERDR_PS_BIN="$d/fakebin/herdr-ps" run_crew_state "$d" feat-herdr-stale)
   assert_contains "$out" "state: unknown" "a stale registration over a shell-only pane is not a live state"
   assert_contains "$out" "backend target gone" "a stale registration over a shell-only pane must read as positive agent-gone evidence"
   assert_contains "$out" "agent gone, pane shell remains" "the agent-gone reason must name the remaining shell"
   assert_not_contains "$out" "backend unreachable" "a readable shell-only pane is not unreachable"
+  # The identical registration and JSON are not death proof if the table fails.
+  out=$(FM_FAKE_HERDR_PS_UNREADABLE=1 FM_HERDR_PS_BIN="$d/fakebin/herdr-ps" run_crew_state "$d" feat-herdr-stale)
+  assert_contains "$out" "backend unreachable" "an unreadable process table must stay unknown/unreachable"
+  assert_not_contains "$out" "backend target gone" "an unreadable process table is not death evidence"
   pass "herdr stale registration over a shell-only pane reads agent gone, not alive"
 }
 
@@ -2842,12 +2861,13 @@ test_no_run_herdr_stale_working_record_is_never_busy() {
   FM_FAKE_TMUX_MISSING=1
   FM_FAKE_HERDR_AGENT_STATUS=working
   FM_FAKE_HERDR_PROCESS=shell
-  local out; out=$(run_crew_state "$d" feat-herdr-stale-working)
+  make_herdr_shell_process_view "$d"
+  local out; out=$(FM_HERDR_PS_BIN="$d/fakebin/herdr-ps" run_crew_state "$d" feat-herdr-stale-working)
   assert_not_contains "$out" "state: working" "a stale working record over a shell-only pane must never read busy"
   assert_not_contains "$out" "herdr-native" "the native busy verdict must not be trusted for a shell-only pane"
   # The control: the same record with a live harness in the foreground is busy.
   FM_FAKE_HERDR_PROCESS=agent
-  out=$(run_crew_state "$d" feat-herdr-stale-working)
+  out=$(FM_HERDR_PS_BIN="$d/fakebin/herdr-ps" run_crew_state "$d" feat-herdr-stale-working)
   assert_contains "$out" "state: working" "the same working record with a live harness process must still read working"
   pass "herdr stale working record never reports a shell-only pane busy"
 }
