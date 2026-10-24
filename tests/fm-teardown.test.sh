@@ -6440,7 +6440,7 @@ function [ {
   esac
   builtin [ "$@"
 }
-fm_task_evidence_preserve task-x1 "$2" "$foreign" 0 ""
+fm_task_evidence_preserve task-x1 "$2" "$foreign" 0 "${5:-}"
 SH
   rc=0
   bash "$case_dir/foreign-tripwire.sh" "$ROOT/bin/fm-task-evidence-lib.sh" \
@@ -6457,7 +6457,42 @@ SH
   fi
   [ "$(cat "$case_dir/wt/workspace/proof.")" = 'foreign work' ] || fail 'foreign work was changed'
   assert_absent "$case_dir/data/task-x1/evidence" 'foreign work was copied as task evidence'
-  pass 'reassigned-copy citations only warn, even when exact-entry parsing would otherwise refuse'
+  # A previously saved copy-owned link must also bypass target inspection.
+  local ev hash
+  ev="$case_dir/data/task-x1/evidence"
+  mkdir -p "$ev/copy/workspace"
+  ln -s "$case_dir/wt/workspace/proof." "$ev/copy/workspace/link"
+  hash=$(readlink "$ev/copy/workspace/link" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+  : > "$ev/MANIFEST.sha256"
+  printf '%s  copy/workspace/link\n' "$hash" > "$ev/MANIFEST.sha256.links"
+  printf 'workspace/link\n' > "$case_dir/data/task-x1/evidence.list"
+  rc=0
+  bash "$case_dir/foreign-tripwire.sh" "$ROOT/bin/fm-task-evidence-lib.sh" \
+    "$case_dir/data" "$case_dir/wt" "$case_dir/foreign-access" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" 'carried foreign-copy links must survive without target inspection'
+  assert_absent "$case_dir/foreign-access" 'carried link inspection touched a foreign slot'
+  [ -L "$ev/copy/workspace/link" ] || fail 'foreign-copy carry lost prior link'
+  evidence_manifest_verifies "$ev" || fail 'foreign-copy carried link does not verify'
+  # An owned tmp link may resolve into the foreign copy. Its survival is not
+  # conditional on that copy being git-recoverable or declared by this task.
+  mkdir -p "$case_dir/tasktmp"
+  ln -s "$case_dir/wt/workspace/proof." "$case_dir/tasktmp/link"
+  printf '%s\n' "$case_dir/tasktmp/link" > "$case_dir/data/task-x1/evidence.list"
+  rc=0
+  bash -c '
+    . "$1"
+    tripwire=$5
+    git() { printf "git lookup\\n" >> "$tripwire"; command git "$@"; }
+    fm_task_evidence_preserve task-x1 "$2" "$3" 0 "$4"
+  ' _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" "$case_dir/tasktmp" "$case_dir/foreign-git-access" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "a tmp link into a foreign copy must survive: $(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/foreign-git-access" 'survival queried git in a foreign copy'
+  [ -L "$ev/tmp/link" ] || fail 'tmp link into a foreign copy was lost'
+  evidence_manifest_verifies "$ev" || fail 'tmp foreign-target link does not verify'
+  [ "$(cat "$case_dir/wt/workspace/proof.")" = 'foreign work' ] || fail 'foreign link checks changed foreign bytes'
+  pass 'reassigned-copy citations and carried links do not inspect foreign contents or demand foreign git recovery'
 }
 
 test_link_resolution_refuses_every_unpreserved_disposable_target() {
@@ -6660,6 +6695,17 @@ test_completed_prose_quotes_allow_missing_and_declared_citations() {
         else base="$case_dir/tasktmp"; label=tmp; fi
         printf 'declared bytes\n' > "$base/proof"
         printf '%s\n' "$base/proof" > "$case_dir/data/task-x1/evidence.list"
+        # A quote embedded between word characters still opens a larger
+        # context unless it is an apostrophe, which is ordinary prose.
+        if [ "$quote" != "'" ]; then
+          printf 'The a%sb cited %s/absent\n' "$quote" "$base" > "$case_dir/data/task-x1/report.md"
+          rc=0
+          run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+          [ "$rc" -ne 0 ] || fail 'word-internal double/backtick quote was treated as a prose apostrophe'
+          assert_grep 'ambiguous quoted context' "$case_dir/stderr" 'word-internal non-apostrophe quote must open context'
+          assert_present "$case_dir/state/task-x1.meta" 'word-internal quote refusal removed metadata'
+          assert_absent "$case_dir/data/task-x1/evidence" 'word-internal quote refusal installed evidence'
+        fi
         # Mismatched and embedded quote contexts must not become missing paths.
         printf 'The %srun cited %s/absent" in prose\n' "$quote" "$base" > "$case_dir/data/task-x1/report.md"
         rc=0
@@ -6829,6 +6875,305 @@ SH
     done
   done
   pass 'a missing staged empty-directory member cannot cover its still-existing declared source'
+}
+
+# These use the public preservation entry point only, with fixture-owned data.
+# A fixture watchdog makes a nonterminating citation scan an assertion failure,
+# rather than letting a whole mutation script hit its unrelated outer deadline.
+test_evidence_citation_scan_completes_for_a_plain_missing_path() {
+  local case_dir rc
+  case_dir=$(make_case evidence-bounded-citation)
+  mkdir -p "$case_dir/data/task-x1"
+  printf '%s/absent\n' "$case_dir/wt" > "$case_dir/data/task-x1/report.md"
+  # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  rc=0
+  # shellcheck disable=SC2016 # Positional parameters belong to the child bash.
+  fm_run_timed 30 bash -c '. "$1"; fm_task_evidence_preserve task-x1 "$2" "$3" 1 ""' \
+    _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" 'plain missing citation must finish its bounded scan'
+  assert_grep "references missing path $case_dir/wt/absent; there is nothing left to save" \
+    "$case_dir/stderr" 'bounded scan must deliver its missing-path warning'
+  assert_absent "$case_dir/data/task-x1/evidence" 'missing citation invented an evidence snapshot'
+  pass 'a plain missing citation at the start and end of a line terminates and warns'
+}
+
+test_evidence_physical_root_aliases_do_not_hide_existing_citations() {
+  local case_dir root_name root rc
+  for root_name in copy tmp; do
+    case_dir=$(make_case "evidence-physical-root-$root_name")
+    mkdir -p "$case_dir/data/task-x1" "$case_dir/actual"
+    ln -s actual "$case_dir/alias"
+    printf 'uncovered bytes\n' > "$case_dir/actual/proof"
+    printf 'See %s/alias/proof\n' "$case_dir" > "$case_dir/data/task-x1/report.md"
+    root="$case_dir/alias"
+    rc=0
+    if [ "$root_name" = copy ]; then
+      bash -c '. "$1"; fm_task_evidence_preserve task-x1 "$2" "$3" 1 ""' \
+        _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$root" \
+        > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    else
+      bash -c '. "$1"; fm_task_evidence_preserve task-x1 "$2" "" 1 "$3"' \
+        _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$root" \
+        > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    fi
+    [ "$rc" -ne 0 ] || fail "$root_name physical alias hid an existing undeclared citation"
+    assert_grep "references $root/proof, which cleanup would destroy" "$case_dir/stderr" 'alias must reach the coverage refusal'
+    [ "$(cat "$case_dir/actual/proof")" = 'uncovered bytes' ] || fail 'alias refusal changed source bytes'
+    assert_absent "$case_dir/data/task-x1/evidence" 'alias refusal installed evidence'
+  done
+  pass 'physical aliases of either recorded root cannot make existing disposable objects look outside'
+}
+
+test_evidence_link_physical_failures_and_dangling_newlines_refuse() {
+  local case_dir root_name variant flag base target fault ev rc
+  for root_name in copy tmp; do
+    for variant in dangling-newline physical-newline parent-pwd final-pwd; do
+      for flag in '' --force; do
+        case_dir=$(make_case "evidence-extra-link-$root_name-$variant-${flag:-normal}")
+        ignore_workspace "$case_dir"
+        write_meta "$case_dir" no-mistakes ship
+        printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+        land_shippable_commit "$case_dir"
+        mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/outside/parent" "$case_dir/data/task-x1"
+        if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; else base="$case_dir/tasktmp"; fi
+        target="$case_dir/outside/parent/directory"
+        mkdir -p "$target"
+        printf 'outside bytes\n' > "$target/proof"
+        fault="$case_dir/outside/parent"
+        case "$variant" in
+          dangling-newline) target="$case_dir/outside/absent"$'\n' ;;
+          physical-newline)
+            mkdir -p "$case_dir/outside/parent"$'\n'
+            ln -s "parent"$'\n' "$case_dir/outside/plain-parent"
+            target="$case_dir/outside/plain-parent/proof"
+            printf 'outside bytes\n' > "$target" ;;
+          final-pwd) fault=$target ;;
+        esac
+        ln -s "$target" "$base/link"
+        printf '%s\n' "$base/link" > "$case_dir/data/task-x1/evidence.list"
+        ev="$case_dir/data/task-x1/evidence"
+        mkdir -p "$ev"; printf 'prior bytes\n' > "$ev/sentinel"
+        cat > "$case_dir/pwd-fault.sh" <<SH
+if [ "\${0##*/}" = fm-teardown.sh ]; then
+  pwd() {
+    if [ "\$PWD" = "$fault" ]; then : > "$case_dir/fault-seen"; return 1; fi
+    builtin pwd "\$@"
+  }
+fi
+SH
+        rc=0
+        case "$variant" in
+          *-pwd)
+            BASH_ENV="$case_dir/pwd-fault.sh" run_teardown "$case_dir" ${flag:+"$flag"} \
+              > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$? ;;
+          *) run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$? ;;
+        esac
+        [ "$rc" -ne 0 ] || fail "$root_name $variant ${flag:-normal}: unsupported link resolution passed"
+        case "$variant" in
+          dangling-newline) assert_grep 'unsupported newline text' "$case_dir/stderr" 'a missing target does not permit unsupported link text' ;;
+          *) assert_grep 'cannot resolve evidence symlink' "$case_dir/stderr" 'physical failure must not become link survival' ;;
+        esac
+        case "$variant" in *-pwd) assert_present "$case_dir/fault-seen" 'target physical lookup injection was not reached' ;; esac
+        [ -L "$base/link" ] || fail 'physical refusal removed source link'
+        [ "$(cat "$ev/sentinel")" = 'prior bytes' ] || fail 'physical refusal replaced prior snapshot'
+        assert_absent "$ev/copy" 'physical refusal installed a partial snapshot'
+        assert_present "$case_dir/state/task-x1.meta" 'physical refusal removed metadata'
+        case "$variant" in
+          *-pwd)
+            rc=0
+            run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+            expect_code 0 "$rc" "resolvable outside directory control must pass: $(cat "$case_dir/stderr")"
+            evidence_manifest_verifies "$ev" || fail 'resolvable control snapshot does not verify'
+            [ "$(cat "$target/proof")" = 'outside bytes' ] || fail 'outside control target changed' ;;
+        esac
+      done
+    done
+  done
+  pass 'dangling newline text and initial/final physical lookup errors refuse, with resolvable outside controls'
+}
+
+test_evidence_copy_errors_cannot_replace_an_earlier_snapshot() {
+  local case_dir root_name variant flag base label ev hash rc
+  for root_name in copy tmp; do
+    for variant in fresh prior; do
+      for flag in '' --force; do
+        case_dir=$(make_case "evidence-copy-error-$root_name-$variant-${flag:-normal}")
+        ignore_workspace "$case_dir"
+        write_meta "$case_dir" no-mistakes ship
+        printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+        land_shippable_commit "$case_dir"
+        mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp"
+        if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace; else base="$case_dir/tasktmp"; label=tmp; fi
+        ev="$case_dir/data/task-x1/evidence"
+        mkdir -p "$ev/$label"
+        printf 'prior bytes\n' > "$ev/$label/proof"
+        hash=$({ sha256sum "$ev/$label/proof" 2>/dev/null || shasum -a 256 "$ev/$label/proof"; } | awk '{print $1}')
+        printf '%s  %s/proof\n' "$hash" "$label" > "$ev/MANIFEST.sha256"
+        if [ "$variant" = fresh ]; then printf 'fresh bytes\n' > "$base/proof"; fi
+        # Isolate copy refusal from the independent absolute-citation guard.
+        printf '%s\n' "$base/proof" > "$case_dir/declarations"
+        ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
+        cat > "$case_dir/fakebin/cp" <<SH
+#!/usr/bin/env bash
+: > "$case_dir/fault-seen"
+exit 1
+SH
+        chmod +x "$case_dir/fakebin/cp"
+        rc=0
+        run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        [ "$rc" -ne 0 ] || fail "$variant copy failure was accepted ${flag:-without force}"
+        assert_present "$case_dir/fault-seen" 'copy failure boundary was not reached'
+        if [ "$variant" = fresh ]; then
+          assert_grep 'could not copy and verify' "$case_dir/stderr" 'fresh copy failure must propagate'
+          [ "$(cat "$base/proof")" = 'fresh bytes' ] || fail 'fresh copy failure changed source'
+        else
+          assert_grep 'no verified earlier copy' "$case_dir/stderr" 'carry copy failure must propagate'
+        fi
+        [ "$(cat "$ev/$label/proof")" = 'prior bytes' ] || fail 'copy failure replaced earlier evidence'
+        assert_present "$case_dir/state/task-x1.meta" 'copy failure removed metadata'
+      done
+    done
+  done
+  pass 'fresh and carried copy failures refuse without replacing earlier evidence in either root or force mode'
+}
+
+test_evidence_staging_ancestor_links_cannot_cover_source_content() {
+  local case_dir root_name base label ev flag rc real_sort
+  real_sort=$(command -v sort)
+  for root_name in copy tmp; do
+    case_dir=$(make_case "evidence-staged-ancestor-$root_name")
+    ignore_workspace "$case_dir"
+    write_meta "$case_dir" no-mistakes ship
+    printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+    land_shippable_commit "$case_dir"
+    if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace; else base="$case_dir/tasktmp"; label=tmp; fi
+    mkdir -p "$base/container/empty"
+    ev="$case_dir/data/task-x1/evidence"
+    mkdir -p "$ev"; printf 'prior bytes\n' > "$ev/sentinel"
+    printf '%s\n' "$base/container" > "$case_dir/declarations"
+    ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
+    printf 'See %s/container/empty\n' "$base" > "$case_dir/data/task-x1/report.md"
+    cat > "$case_dir/fakebin/sort" <<SH
+#!/usr/bin/env bash
+"$real_sort" "\$@" || exit \$?
+case "\${!#}" in
+  *'.evidence.new.'*/MANIFEST.sha256.links)
+    stage=\${!#}; stage=\${stage%/*}
+    mv -- "\$stage/$label/container" "$case_dir/moved-content" || exit 1
+    ln -s "$case_dir/moved-content" "\$stage/$label/container" || exit 1
+    : > "$case_dir/fault-seen" ;;
+esac
+SH
+    chmod +x "$case_dir/fakebin/sort"
+    for flag in '' --force; do
+      rm -rf "$case_dir/moved-content"
+      rm -f "$case_dir/fault-seen"
+      rc=0
+      run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      [ "$rc" -ne 0 ] || fail 'a staged ancestor link covered source content'
+      assert_present "$case_dir/fault-seen" 'staging ancestor replacement was not reached'
+      assert_grep "references $base/container/empty, which cleanup would destroy" "$case_dir/stderr" 'ancestor link must not prove coverage'
+      [ -d "$base/container/empty" ] && [ ! -L "$base/container" ] || fail 'staging fault changed source content'
+      [ "$(cat "$ev/sentinel")" = 'prior bytes' ] || fail 'staging fault replaced prior snapshot'
+      assert_present "$case_dir/state/task-x1.meta" 'staging fault removed metadata'
+    done
+  done
+  pass 'verified staging cannot prove coverage by following an ancestor link'
+}
+
+test_missing_prior_sources_do_not_mask_later_preserved_content() {
+  local case_dir root_name flag base label ev hash rc
+  for root_name in copy tmp; do
+    for flag in '' --force; do
+      case_dir=$(make_case "evidence-missing-prior-parent-$root_name-${flag:-normal}")
+      ignore_workspace "$case_dir"
+      write_meta "$case_dir" no-mistakes ship
+      printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+      land_shippable_commit "$case_dir"
+      if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace; else base="$case_dir/tasktmp"; label=tmp; fi
+      mkdir -p "$base"
+      ev="$case_dir/data/task-x1/evidence"
+      mkdir -p "$ev/$label/gone"
+      printf 'prior bytes\n' > "$ev/$label/gone/proof"
+      hash=$({ sha256sum "$ev/$label/gone/proof" 2>/dev/null || shasum -a 256 "$ev/$label/gone/proof"; } | awk '{print $1}')
+      printf '%s  %s/gone/proof\n' "$hash" "$label" > "$ev/MANIFEST.sha256"
+      printf 'live bytes\n' > "$base/live"
+      printf '%s\n' "$base/gone/proof" "$base/live" > "$case_dir/data/task-x1/evidence.list"
+      printf 'See %s/live\n' "$base" > "$case_dir/data/task-x1/report.md"
+      rc=0
+      run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      expect_code 0 "$rc" "verified missing prior source must not block live coverage: $(cat "$case_dir/stderr")"
+      [ "$(cat "$ev/$label/gone/proof")" = 'prior bytes' ] || fail 'missing source lost its prior bytes'
+      [ "$(cat "$ev/$label/live")" = 'live bytes' ] || fail 'live declaration lost its bytes'
+      evidence_manifest_verifies "$ev" || fail 'combined prior/live snapshot does not verify'
+      assert_absent "$case_dir/state/task-x1.meta" 'verified prior/live control left metadata'
+    done
+  done
+  pass 'a missing carried source with an absent parent cannot prevent later declarations from proving live coverage'
+}
+
+test_evidence_prior_manifest_file_types_are_respected() {
+  local case_dir variant ev hash rc flag
+  # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  for variant in missing-regular optional-fifo; do
+    case_dir=$(make_case "evidence-prior-manifest-$variant")
+    ignore_workspace "$case_dir"
+    write_meta "$case_dir" no-mistakes ship
+    land_shippable_commit "$case_dir"
+    ev="$case_dir/data/task-x1/evidence"
+    mkdir -p "$ev/copy/workspace"
+    printf 'workspace/proof\n' > "$case_dir/data/task-x1/evidence.list"
+    if [ "$variant" = missing-regular ]; then
+      ln -s absent "$ev/copy/workspace/proof"
+      hash=$(readlink "$ev/copy/workspace/proof" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+      printf '%s  copy/workspace/proof\n' "$hash" > "$ev/MANIFEST.sha256.links"
+      for flag in '' --force; do
+        rc=0
+        run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        [ "$rc" -ne 0 ] || fail 'a missing mandatory regular manifest was accepted'
+        assert_grep 'no verified earlier copy' "$case_dir/stderr" 'missing mandatory manifest must refuse'
+        [ -L "$ev/copy/workspace/proof" ] || fail 'missing-manifest refusal removed prior link'
+        assert_present "$case_dir/state/task-x1.meta" 'missing-manifest refusal removed metadata'
+      done
+    else
+      printf 'prior bytes\n' > "$ev/copy/workspace/proof"
+      hash=$({ sha256sum "$ev/copy/workspace/proof" 2>/dev/null || shasum -a 256 "$ev/copy/workspace/proof"; } | awk '{print $1}')
+      printf '%s  copy/workspace/proof\n' "$hash" > "$ev/MANIFEST.sha256"
+      mkfifo "$ev/MANIFEST.sha256.links"
+      rc=0
+      # shellcheck disable=SC2016 # Positional parameters belong to the child bash.
+      fm_run_timed 30 bash -c '. "$1"; fm_task_evidence_preserve task-x1 "$2" "$3" 1 ""' \
+        _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" \
+        > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      expect_code 0 "$rc" 'an optional nonregular manifest must not be opened or block preservation'
+      [ "$(cat "$ev/copy/workspace/proof")" = 'prior bytes' ] || fail 'optional-manifest control lost verified prior bytes'
+      evidence_manifest_verifies "$ev" || fail 'optional-manifest control installed unverified bytes'
+    fi
+  done
+  pass 'the regular manifest is mandatory, and an optional nonregular manifest is never read'
+}
+
+test_dangling_links_do_not_resolve_an_empty_target_as_a_disposable_root() {
+  local case_dir rc ev
+  case_dir=$(make_case evidence-dangling-root-alias)
+  mkdir -p "$case_dir/wt/workspace" "$case_dir/data/task-x1"
+  # This alias is only an input to the nondestructive public preservation API.
+  # No teardown metadata or declaration ever asks to copy/remove this root.
+  ln -s / "$case_dir/filesystem-root"
+  ln -s absent "$case_dir/wt/workspace/link"
+  printf 'workspace/link\n' > "$case_dir/data/task-x1/evidence.list"
+  rc=0
+  bash -c '. "$1"; fm_task_evidence_preserve task-x1 "$2" "$3" 1 "$4"' \
+    _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" "$case_dir/filesystem-root" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "a dangling link has no resolved target to classify: $(cat "$case_dir/stderr")"
+  ev="$case_dir/data/task-x1/evidence"
+  [ -L "$ev/copy/workspace/link" ] && [ "$(readlink "$ev/copy/workspace/link")" = absent ] || fail 'dangling link text was lost'
+  evidence_manifest_verifies "$ev" || fail 'dangling root-alias snapshot does not verify'
+  pass 'a dangling link never treats an empty resolver result as the filesystem-root object'
 }
 
 test_own_task_temp_folder_is_removed_and_nothing_else() {
@@ -7232,6 +7577,14 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_persistent_scan_refuses_after_bounded_retries \
   test_process_exit_during_identity_lookup_does_not_refuse \
   test_run_abort_precedes_process_reap_precedes_worktree_removal \
+  test_evidence_citation_scan_completes_for_a_plain_missing_path \
+  test_evidence_physical_root_aliases_do_not_hide_existing_citations \
+  test_evidence_link_physical_failures_and_dangling_newlines_refuse \
+  test_evidence_copy_errors_cannot_replace_an_earlier_snapshot \
+  test_evidence_staging_ancestor_links_cannot_cover_source_content \
+  test_missing_prior_sources_do_not_mask_later_preserved_content \
+  test_evidence_prior_manifest_file_types_are_respected \
+  test_dangling_links_do_not_resolve_an_empty_target_as_a_disposable_root \
   test_declared_evidence_is_copied_out_with_a_verified_manifest \
   test_prose_apostrophes_do_not_open_evidence_quotes \
   test_evidence_link_resolution_exhaustion_has_a_resolvable_control \
