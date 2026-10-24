@@ -2150,7 +2150,7 @@ fm_backend_herdr_pane_process_state() {  # <session> <pane_id>
 # the settle retry.
 fm_backend_herdr_pane_process_state_sample() {  # <session> <pane_id>
   local session=$1 pane_id=$2 info shell_pid count i pid name argv0 args verdict
-  local others=0 ps_bin rows recheck unreadable=0
+  local others=0 ps_bin rows
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane_id" 2>/dev/null) \
     || { printf 'unreadable'; return 0; }
   printf '%s' "$info" | jq -e --arg pane "$pane_id" '
@@ -2193,14 +2193,27 @@ fm_backend_herdr_pane_process_state_sample() {  # <session> <pane_id>
   ps_bin=${FM_HERDR_PS_BIN:-ps}
   command -v "$ps_bin" >/dev/null 2>&1 || { printf 'unreadable'; return 0; }
   rows=$(LC_ALL=C "$ps_bin" -axo pid=,ppid=,comm= 2>/dev/null) || { printf 'unreadable'; return 0; }
+  verdict=$(fm_backend_herdr_descendant_process_state "$shell_pid" "$ps_bin" "$rows")
+  if [ "$verdict" = unreadable ]; then
+    # A prompt helper may have exited before its argv read. Recheck once,
+    # classifying the WHOLE fresh tree: disappearance of the old PID alone
+    # cannot prove absence when a new harness descendant is now visible.
+    rows=$(LC_ALL=C "$ps_bin" -axo pid=,ppid=,comm= 2>/dev/null) \
+      || { printf 'unreadable'; return 0; }
+    verdict=$(fm_backend_herdr_descendant_process_state "$shell_pid" "$ps_bin" "$rows")
+  fi
+  printf '%s' "$verdict"
+}
+
+# Classify every descendant in one supplied snapshot. Incomplete argv never
+# proves absence; a positive harness elsewhere still wins. The caller owns
+# the single fresh-snapshot recheck, so this walk cannot retry indefinitely.
+fm_backend_herdr_descendant_process_state() {  # <shell-pid> <ps-bin> <rows>
+  local shell_pid=$1 ps_bin=$2 rows=$3 pid name args argv0 unreadable=0
   printf '%s\n' "$rows" | awk -v shell="$shell_pid" '$1 == shell { found = 1 } END { exit(found ? 0 : 1) }' \
     || { printf 'unreadable'; return 0; }
   while IFS=$'\t' read -r pid name; do
     [ -n "$pid" ] || continue
-    # A failed/empty argv read is not evidence that this descendant is not
-    # an agent (node's argv may be the only harness identity). A positive
-    # identity in comm still wins; otherwise prove disappearance in a fresh
-    # table, since a prompt helper may have exited since the first snapshot.
     args=$(LC_ALL=C "$ps_bin" -p "$pid" -o args= 2>/dev/null) || args=
     args=${args#"${args%%[![:space:]]*}"}
     argv0=${args%%[[:space:]]*}
@@ -2208,18 +2221,7 @@ fm_backend_herdr_pane_process_state_sample() {  # <session> <pane_id>
       printf 'agent'
       return 0
     fi
-    if [ -z "$args" ]; then
-      if recheck=$(LC_ALL=C "$ps_bin" -axo pid=,ppid=,comm= 2>/dev/null); then
-        # A failed, empty or shell-less table cannot prove absence either.
-        printf '%s\n' "$recheck" | awk -v shell="$shell_pid" -v child="$pid" '
-          $1 == shell { found = 1 }
-          $1 == child { present = 1 }
-          END { exit(found && !present ? 0 : 1) }
-        ' || unreadable=1
-      else
-        unreadable=1
-      fi
-    fi
+    [ -n "$args" ] || unreadable=1
   done <<EOF
 $(printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
   {

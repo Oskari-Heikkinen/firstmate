@@ -906,7 +906,7 @@ test_registered_agent_with_an_empty_foreground_over_a_real_shell_settles_via_des
 }
 
 test_unreadable_descendant_identity_never_proves_agent_absence() {
-  local dir ps_bin body out mode child_pid other_pid
+  local dir ps_bin body out mode order child_pid other_pid
   dir="$TMP_ROOT/unreadable-descendant"; mkdir -p "$dir"
   ps_bin=$(make_herdr_process_fake "$dir")
   # The classifier can consult /proc/<pid>/cmdline as a separate Gemini
@@ -927,9 +927,30 @@ test_unreadable_descendant_identity_never_proves_agent_absence() {
   printf 'zsh\n' > "$dir/args/$child_pid"
   out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case descendant-readable-shell idle "$body")
   [ "$out" = "stale-agent dead refused" ] || fail "a completely readable shell tree must prove stale, got '$out'"
+  # Unreadability is cumulative: a readable non-agent sibling must not erase
+  # another child's missing identity, regardless of the process-table order.
+  printf 'zsh\n' > "$dir/args/$other_pid"
+  for mode in failed empty; do
+    rm -f "$dir/args/$child_pid"
+    [ "$mode" != empty ] || : > "$dir/args/$child_pid"
+    for order in unreadable-first unreadable-last; do
+      printf '%s 1 zsh\n' "$$" > "$dir/rows"
+      if [ "$order" = unreadable-first ]; then
+        printf '%s %s node\n%s %s zsh\n' "$child_pid" "$$" "$other_pid" "$$" >> "$dir/rows"
+      else
+        printf '%s %s zsh\n%s %s node\n' "$other_pid" "$$" "$child_pid" "$$" >> "$dir/rows"
+      fi
+      out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case "descendant-sticky-$mode-$order" idle "$body")
+      [ "$out" = 'unknown unreadable refused' ] || {
+        kill "$child_pid" "$other_pid" 2>/dev/null || true
+        wait "$child_pid" "$other_pid" 2>/dev/null || true
+        fail "a readable non-agent sibling must preserve $mode argv unreadability ($order), got '$out'"
+      }
+    done
+  done
   # A positive identity still wins, even if another descendant is unreadable.
   rm "$dir/args/$child_pid"
-  printf '%s %s node\n' "$other_pid" "$$" >> "$dir/rows"
+  printf '%s 1 zsh\n%s %s node\n%s %s node\n' "$$" "$child_pid" "$$" "$other_pid" "$$" > "$dir/rows"
   printf 'pi\n' > "$dir/args/$other_pid"
   out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case descendant-partly-readable idle "$body")
   [ "$out" = "live alive refused" ] || fail "a proven harness must survive another unreadable descendant, got '$out'"
@@ -980,6 +1001,73 @@ test_unreadable_descendant_requires_positive_disappearance_proof() {
   [ "$out" = 'stale-agent dead refused' ] \
     || fail "empty argv followed by positive disappearance must settle to stale-agent/dead, got '$out'"
   pass "herdr stale registration: a failed descendant read proves absence only after a readable disappearance recheck"
+}
+
+test_disappearance_recheck_classifies_new_descendants() {
+  local dir ps_bin body out mode argv_mode expected old_pid new_pid nested_pid
+  dir="$TMP_ROOT/new-descendant-recheck"; mkdir -p "$dir"
+  ps_bin=$(make_herdr_process_fake "$dir")
+  # Own every PID because the classifier may also read /proc for identity.
+  sleep 300 & old_pid=$!
+  sleep 300 & new_pid=$!
+  sleep 300 & nested_pid=$!
+  body=$(shell_only_process_info "$$")
+  printf '%s 1 zsh\n%s %s node\n' "$$" "$old_pid" "$$" > "$dir/rows"
+  # Only the second snapshot changes. No actual exit, startup or clock race:
+  # the old unreadable helper disappears as a new descendant becomes visible.
+  for argv_mode in failed empty; do
+    rm -f "$dir/args/$old_pid"
+    [ "$argv_mode" != empty ] || : > "$dir/args/$old_pid"
+    for mode in comm argv nested sibling changed-identity shell unreadable foreign shell-missing; do
+      rm -f "$dir/snapshot-read" "$dir/args/$new_pid" "$dir/args/$nested_pid"
+      printf '%s 1 zsh\n' "$$" > "$dir/recheck.rows"
+      expected='live alive refused'
+      case "$mode" in
+        comm) printf '%s %s pi\n' "$new_pid" "$$" >> "$dir/recheck.rows" ;;
+        argv)
+          printf '%s %s node\n' "$new_pid" "$$" >> "$dir/recheck.rows"
+          printf 'pi\n' > "$dir/args/$new_pid"
+          ;;
+        nested)
+          # Reverse row order so the descendant closure must find both hops.
+          printf '%s %s node\n%s %s zsh\n' "$nested_pid" "$new_pid" "$new_pid" "$$" >> "$dir/recheck.rows"
+          printf 'zsh\n' > "$dir/args/$new_pid"
+          printf 'pi\n' > "$dir/args/$nested_pid"
+          ;;
+        sibling)
+          # The old unreadable PID remains, but a new positive sibling wins.
+          printf '%s %s node\n%s %s pi\n' "$old_pid" "$$" "$new_pid" "$$" >> "$dir/recheck.rows"
+          ;;
+        changed-identity) printf '%s %s pi\n' "$old_pid" "$$" >> "$dir/recheck.rows" ;;
+        shell)
+          printf '%s %s zsh\n' "$new_pid" "$$" >> "$dir/recheck.rows"
+          printf 'zsh\n' > "$dir/args/$new_pid"
+          expected='stale-agent dead refused'
+          ;;
+        unreadable)
+          printf '%s %s node\n' "$new_pid" "$$" >> "$dir/recheck.rows"
+          expected='unknown unreadable refused'
+          ;;
+        foreign)
+          printf '%s 1 pi\n' "$new_pid" >> "$dir/recheck.rows"
+          expected='stale-agent dead refused'
+          ;;
+        shell-missing)
+          printf '%s %s pi\n' "$new_pid" "$$" > "$dir/recheck.rows"
+          expected='unknown unreadable refused'
+          ;;
+      esac
+      out=$(FM_HERDR_PS_BIN="$ps_bin" stale_registration_case "new-descendant-$argv_mode-$mode" idle "$body")
+      [ "$out" = "$expected" ] || {
+        kill "$old_pid" "$new_pid" "$nested_pid" 2>/dev/null || true
+        wait "$old_pid" "$new_pid" "$nested_pid" 2>/dev/null || true
+        fail "a $argv_mode argv read with a $mode fresh descendant must read '$expected', got '$out'"
+      }
+    done
+  done
+  kill "$old_pid" "$new_pid" "$nested_pid" 2>/dev/null || true
+  wait "$old_pid" "$new_pid" "$nested_pid" 2>/dev/null || true
+  pass "herdr stale registration: disappearance rechecks retain new live descendants and refuse incomplete fresh identities"
 }
 
 test_projection_reclaim_rollback_refuses_a_stale_registration() {
@@ -6242,6 +6330,7 @@ HERDR_CASES=(
   test_registered_agent_with_an_unreadable_process_view_is_unknown
   test_unreadable_descendant_identity_never_proves_agent_absence
   test_unreadable_descendant_requires_positive_disappearance_proof
+  test_disappearance_recheck_classifies_new_descendants
   test_registered_agent_with_an_empty_foreground_over_a_real_shell_settles_via_descendant_walk
   test_projection_reclaim_rollback_refuses_a_stale_registration
   test_busy_state_never_reports_a_shell_only_pane_busy
