@@ -7389,8 +7389,8 @@ SH
       run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
     expect_code 1 "$rc" "$root_name $kind ${flag:-normal} $variant $snapshot $ownership: failed manifest sort was accepted"
     assert_present "$case_dir/fault-seen" 'manifest sort write fault was not reached'
-    assert_grep "REFUSED: could not sort staged evidence manifest .*${name} for task-x1" \
-      "$case_dir/stderr" 'manifest sort failure did not name its refusal'
+    grep -E "^REFUSED: could not sort staged evidence manifest .*/${name//./[.]} for task-x1$" \
+      "$case_dir/stderr" >/dev/null || fail 'manifest sort failure did not name its refusal'
     cmp -s "$case_dir/meta-before" "$case_dir/state/task-x1.meta" || fail 'manifest sort refusal changed metadata bytes'
     if [ "$snapshot" = prior ]; then
       diff -r "$case_dir/prior-tree" "$ev" || fail 'manifest sort refusal changed prior tree or manifest bytes'
