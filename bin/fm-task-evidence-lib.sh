@@ -38,15 +38,17 @@
 # existing entry, so a delimiter in an existing name cannot turn its citation
 # into a missing prefix. Every such entry must satisfy the same coverage rules.
 # Escaped tokens or paths within larger quoted strings are ambiguous and refuse.
-# Exact entries, including punctuation,
-# are checked before removing markup punctuation or :line[:column] suffixes.
+# Exact entries, including punctuation, are checked before each single
+# component removed from markup punctuation or :line[:column] suffixes.
 # Trailing slashes never hide a final dangling link entry.
 # References and link targets share one survival rule: an existing object
 # inside a disposable root is covered only when its resolved location is
 # copied as content by a declaration, or is a clean tracked source as below.
 # Resolve ancestor links, but preserve a final link as its own object; its
 # target is checked separately. Lexical ancestry through a declared link never
-# covers its target. Objects resolved outside both roots survive cleanup.
+# covers its target. Physical leading-slash aliases are normalized only after
+# directory identity agrees; unresolved identity refuses. Objects resolved
+# outside both roots survive cleanup.
 # An undeclared regular file in the copy is also recoverable
 # when git tracks it and its bytes match the HEAD blob (without clean filters);
 # ignored, untracked, modified, and temp-folder paths receive no exemption.
@@ -60,8 +62,9 @@
 # A copy whose pool slot was already reassigned to another task (teardown's
 # slot-owner claim) is no longer this task's: its contents are gone, reading
 # it would read another task's work, and refusing could save nothing, so
-# declarations and references into it only warn. Its earlier verified copy is
-# still carried forward.
+# declarations and references into it only warn. Reference warnings retain the
+# matching record line verbatim, without existence-aware parsing of foreign
+# paths. Its earlier verified copy is still carried forward.
 
 fm_task_evidence_hash() {
   if command -v shasum >/dev/null 2>&1; then
@@ -146,6 +149,12 @@ fm_task_evidence_physical_dir() {
   text=${text%.}
   FM_TE_PHYSICAL=${text%$'\n'}
   case "$FM_TE_PHYSICAL" in *$'\n'*) return 2 ;; esac
+  # Bash can retain // after traversing a link to /. Compare one spelling
+  # only when the filesystem confirms identity, never assume // is local /.
+  while [[ "$FM_TE_PHYSICAL" == //* ]]; do
+    [ "$FM_TE_PHYSICAL" -ef "${FM_TE_PHYSICAL#/}" ] || return 2
+    FM_TE_PHYSICAL=${FM_TE_PHYSICAL#/}
+  done
 }
 
 # Resolve an existing link target without depending on GNU realpath.
@@ -161,7 +170,7 @@ fm_task_evidence_link_target() {
     parent=${path%/*}
     fm_task_evidence_physical_dir "${parent:-/}" || return 2
     parent=$FM_TE_PHYSICAL
-    path="$parent/${path##*/}"
+    path="${parent%/}/${path##*/}"
     if [ ! -L "$path" ]; then
       if [ -d "$path" ]; then
         fm_task_evidence_physical_dir "$path" || return 2
@@ -172,7 +181,7 @@ fm_task_evidence_link_target() {
     fi
     fm_task_evidence_read_link "$path" || return 2
     target=$FM_TE_LINK_TEXT
-    case "$target" in /*) path=$target ;; *) path="$parent/$target" ;; esac
+    case "$target" in /*) path=$target ;; *) path="${parent%/}/$target" ;; esac
     n=$((n + 1))
   done
   echo "REFUSED: cannot resolve existing evidence link $1" >&2
@@ -185,7 +194,7 @@ fm_task_evidence_object() {
   local path=$1 parent=${1%/*}
   fm_task_evidence_physical_dir "${parent:-/}" || return 2
   parent=$FM_TE_PHYSICAL
-  FM_TE_OBJECT="$parent/${path##*/}"
+  FM_TE_OBJECT="${parent%/}/${path##*/}"
   if [ -d "$FM_TE_OBJECT" ] && [ ! -L "$FM_TE_OBJECT" ]; then
     fm_task_evidence_physical_dir "$FM_TE_OBJECT" || return 2
     FM_TE_OBJECT=$FM_TE_PHYSICAL
@@ -352,7 +361,8 @@ fm_task_evidence_reference_path() {
     entry=$path
     while [[ "$entry" == */ ]]; do entry=${entry%/}; done
     if [ -e "$entry" ] || [ -L "$entry" ]; then FM_TE_REF=$entry; return; fi
-    next=$(printf '%s' "$path" | sed -E 's/&([[:alpha:]][[:alnum:]]*|#[0-9]+|#[xX][[:xdigit:]]+);$//; s/:[0-9]+(:[0-9]+)?$//')
+    next=$(printf '%s' "$path" | sed -E \
+      -e 's/&([[:alpha:]][[:alnum:]]*|#[0-9]+|#[xX][[:xdigit:]]+);$//' -e t -e 's/:[0-9]+$//')
     if [ "$next" = "$path" ]; then
       case "$path" in
         *'.'|*':'|*'!'|*'?'|*';'|*','|*')'|*']'|*'}'|*'|'|*'*'|*'>') next=${path%?} ;;
@@ -579,9 +589,9 @@ fm_task_evidence_preserve() {
     while IFS= read -r -d '' record; do
     # Never stat a foreign slot, even to disambiguate a citation's suffix.
     if [ "$root" = "$copy_root" ] && [ "$copy_owned" != 1 ]; then
-      if grep -IqF -- "$root/" "$record"; then
-        echo "warning: record $record references $root/ inside a copy already reassigned to another task" >&2
-      fi
+      while IFS= read -r line; do
+        echo "warning: record $record cites $line inside a copy already reassigned to another task" >&2
+      done < <(grep -IhF -- "$root/" "$record" 2>/dev/null)
       continue
     fi
     refs=$(fm_task_evidence_references "$record" "$root") || refused=1

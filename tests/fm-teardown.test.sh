@@ -5867,7 +5867,11 @@ test_citation_and_link_target_coverage_requires_surviving_objects() {
           run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
           ev="$case_dir/data/task-x1/evidence"
           if [ "$variant" = undeclared ]; then
-            [ "$rc" -ne 0 ] || fail "$root_name $mode ${flag:-normal}: declared link ancestry covered an unpreserved target"
+            if [ "$rc" -eq 0 ]; then
+              printf 'Unexpected coverage success: %s %s %s\n' "$root_name" "$mode" "${flag:-normal}" >&2
+              cat "$case_dir/stdout" "$case_dir/stderr" >&2
+              fail "$root_name $mode ${flag:-normal}: declared link ancestry covered an unpreserved target"
+            fi
             if [ "$mode" = citation ]; then
               assert_grep "references $citation, which cleanup would destroy" "$case_dir/stderr" 'traversed citation must refuse'
             else
@@ -6052,6 +6056,156 @@ test_retried_cleanup_verifies_link_only_evidence() {
 
 # An exact entry must win over presentation suffixes, and quoted entries must
 # never degrade to an absent whitespace/delimiter prefix. Exercise both roots.
+# Each suffix cut must check the numeric-colon filename, not jump to a
+# missing or already-covered shorter base. The matching declaration is the
+# smallest success counterfactual; genuine missing numeric citations still warn.
+test_numeric_citation_suffixes_check_intermediate_entries() {
+  local case_dir root_name shorter suffix flag base path label rc ev
+  for root_name in copy tmp; do
+    for shorter in missing covered; do
+      for suffix in :3 :3:9 :3:9. ':3&amp;'; do
+        for flag in '' --force; do
+          case_dir=$(make_case "evidence-numeric-$root_name-$shorter-$suffix-${flag:-normal}")
+          ignore_workspace "$case_dir"
+          write_meta "$case_dir" no-mistakes ship
+          printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+          land_shippable_commit "$case_dir"
+          mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/data/task-x1"
+          if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace
+          else base="$case_dir/tasktmp"; label=tmp; fi
+          path="$base/proof:42"
+          printf 'numeric name\n' > "$path"
+          : > "$case_dir/data/task-x1/evidence.list"
+          if [ "$shorter" = covered ]; then
+            printf 'short base\n' > "$base/proof"
+            printf '%s\n' "$base/proof" >> "$case_dir/data/task-x1/evidence.list"
+          fi
+          printf 'See %s%s\n' "$path" "$suffix" > "$case_dir/data/task-x1/report.md"
+          rc=0
+          run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+          [ "$rc" -ne 0 ] || fail "$root_name $shorter $suffix ${flag:-normal}: skipped numeric filename"
+          assert_grep "references $path, which cleanup would destroy" "$case_dir/stderr" 'intermediate numeric entry must refuse'
+          if grep -q 'there is nothing left to save' "$case_dir/stderr"; then fail 'existing numeric citation warned missing'; fi
+          [ "$(cat "$path")" = 'numeric name' ] || fail 'numeric refusal changed source'
+          assert_present "$case_dir/state/task-x1.meta" 'numeric refusal removed metadata'
+          ev="$case_dir/data/task-x1/evidence"
+          assert_absent "$ev" 'numeric refusal installed partial evidence'
+          printf '%s\n' "$path" >> "$case_dir/data/task-x1/evidence.list"
+          printf 'See %s/absent:42:3.\n' "$base" >> "$case_dir/data/task-x1/report.md"
+          rc=0
+          run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+          expect_code 0 "$rc" "declared numeric name refused: $(cat "$case_dir/stderr")"
+          [ "$(cat "$ev/$label/proof:42")" = 'numeric name' ] || fail 'declared numeric bytes lost'
+          assert_grep "missing path $base/absent; there is nothing left to save" "$case_dir/stderr" 'missing numeric control must warn'
+          evidence_manifest_verifies "$ev" || fail 'numeric snapshot does not verify'
+          assert_absent "$case_dir/state/task-x1.meta" 'numeric success left metadata'
+        done
+      done
+    done
+  done
+  pass 'every numeric suffix cut checks intermediate entries before a missing or covered base'
+}
+
+# Reach the shared object resolver, not the earlier link-target reader.
+# The declaration case injects at pwd only after copy-out; the linked list is
+# outside the record scan so a separate citation cannot mask that refusal.
+test_object_resolution_failures_preserve_source_and_prior_snapshot() {
+  local case_dir root_name variant base citation target physical_parent flag rc ev real_cp
+  real_cp=$(command -v cp)
+  for root_name in copy tmp; do
+    for variant in citation declaration identity; do
+      case_dir=$(make_case "evidence-object-failure-$root_name-$variant")
+      ignore_workspace "$case_dir"
+      write_meta "$case_dir" no-mistakes ship
+      printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+      land_shippable_commit "$case_dir"
+      ev="$case_dir/data/task-x1/evidence"
+      mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$ev"
+      printf 'prior snapshot\n' > "$ev/sentinel"
+      if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; else base="$case_dir/tasktmp"; fi
+      if [ "$variant" = citation ]; then
+        target="$base/physical"$'\n'
+        mkdir -p "$target"
+        printf 'unpreserved target\n' > "$target/proof"
+        ln -s "$target" "$base/alias"
+        citation="$base/alias/proof"
+      elif [ "$variant" = identity ]; then
+        target=$base
+        printf 'unpreserved target\n' > "$target/proof"
+        citation="$target/proof"
+        physical_parent=$(cd -P -- "$target" && pwd -P)
+        # A broken pwd result must not be normalized into an outside object.
+        # This sibling path is deliberately absent and outside both roots.
+        cat > "$case_dir/pwd-fault.sh" <<SH
+if [ "\${0##*/}" = fm-teardown.sh ]; then
+  pwd() {
+    if [ "\$PWD" = "$physical_parent" ]; then
+      : > "$case_dir/fault-seen"
+      printf '/%s/unresolvable\\n' "$case_dir"
+    else builtin pwd "\$@"; fi
+  }
+fi
+SH
+      else
+        mkdir -p "$base/declared-parent"
+        target="$base/declared-parent"
+        printf 'declared bytes\n' > "$target/proof"
+        printf 'unpreserved target\n' > "$base/uncovered"
+        citation="$base/uncovered"
+        printf '%s\n' "$target/proof" > "$case_dir/declarations"
+        ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
+        physical_parent=$(cd -P -- "$target" && pwd -P)
+        cat > "$case_dir/fakebin/cp" <<SH
+#!/usr/bin/env bash
+"$real_cp" "\$@" || exit \$?
+case "\${!#}" in *'.evidence.new.'*) : > "$case_dir/staged" ;; esac
+SH
+        cat > "$case_dir/pwd-fault.sh" <<SH
+if [ "\${0##*/}" = fm-teardown.sh ]; then
+  pwd() {
+    if [ "\$PWD" = "$physical_parent" ] && [ -f "$case_dir/staged" ] && [ ! -e "$case_dir/fault-seen" ]; then
+      : > "$case_dir/fault-seen"
+      builtin pwd "\$@" && printf '\\n'
+    else builtin pwd "\$@"; fi
+  }
+fi
+SH
+        chmod +x "$case_dir/fakebin/cp"
+      fi
+      printf 'See %s\n' "$citation" > "$case_dir/data/task-x1/report.md"
+      for flag in '' --force; do
+        rm -f "$case_dir/staged" "$case_dir/fault-seen"
+        rc=0
+        if [ "$variant" != citation ]; then
+          BASH_ENV="$case_dir/pwd-fault.sh" run_teardown "$case_dir" ${flag:+"$flag"} \
+            > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+          assert_present "$case_dir/fault-seen" "$variant physical-object fault was not reached"
+        else
+          run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        fi
+        [ "$rc" -ne 0 ] || fail "$root_name $variant ${flag:-normal}: object resolution failure became survival"
+        assert_grep "references $citation, which cleanup would destroy" "$case_dir/stderr" 'object resolution failure must refuse'
+        if grep -q 'there is nothing left to save' "$case_dir/stderr"; then fail 'resolution failure became missing'; fi
+        if [ "$variant" = citation ]; then
+          [ -L "$base/alias" ] || fail 'object refusal removed source alias'
+          [ "$(readlink "$base/alias"; printf .)" = "$target"$'\n.' ] || fail 'object refusal changed alias text'
+          [ "$(cat "$target/proof")" = 'unpreserved target' ] || fail 'object refusal changed source'
+        elif [ "$variant" = identity ]; then
+          [ "$(cat "$citation")" = 'unpreserved target' ] || fail 'identity refusal changed source'
+        else
+          [ "$(cat "$target/proof")" = 'declared bytes' ] || fail 'object refusal changed declared source'
+          [ "$(cat "$citation")" = 'unpreserved target' ] || fail 'object refusal changed uncovered source'
+        fi
+        [ "$(cat "$ev/sentinel")" = 'prior snapshot' ] || fail 'object refusal replaced prior evidence'
+        assert_absent "$ev/copy" 'object refusal installed partial copy evidence'
+        assert_absent "$ev/tmp" 'object refusal installed partial tmp evidence'
+        assert_present "$case_dir/state/task-x1.meta" 'object refusal removed metadata'
+      done
+    done
+  done
+  pass 'citation, declaration and physical-identity failures refuse in both roots and force modes without replacing prior evidence'
+}
+
 test_existing_unusual_citations_never_become_missing() {
   local case_dir root_name base variant path citation flag rc
   for root_name in copy tmp; do
@@ -6251,6 +6405,9 @@ test_reassigned_evidence_citations_only_warn_without_interpreting() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 0 "$rc" 'reassigned-copy citations cannot cause a refusal'
   assert_grep 'inside a copy already reassigned to another task' "$case_dir/stderr" 'reassigned citation must warn'
+  assert_grep "record $case_dir/data/task-x1/report.md" "$case_dir/stderr" 'foreign warning lost record identity'
+  assert_grep "See $case_dir/wt/workspace/proof." "$case_dir/stderr" 'foreign warning lost exact punctuation citation'
+  assert_grep "Also \"command $case_dir/wt/workspace/my proof" "$case_dir/stderr" 'foreign warning lost ambiguous lexical citation'
   if grep -qE 'REFUSED:|there is nothing left to save' "$case_dir/stderr"; then
     fail 'foreign citation was interpreted as owned evidence'
   fi
@@ -6800,6 +6957,8 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_unsafe_evidence_links_and_fifos_refuse_even_with_force \
   test_link_only_evidence_installs_a_snapshot \
   test_retried_cleanup_verifies_link_only_evidence \
+  test_numeric_citation_suffixes_check_intermediate_entries \
+  test_object_resolution_failures_preserve_source_and_prior_snapshot \
   test_existing_unusual_citations_never_become_missing \
   test_unquoted_spaced_citations_check_every_existing_interpretation \
   test_every_citation_boundary_checks_longer_existing_interpretations \

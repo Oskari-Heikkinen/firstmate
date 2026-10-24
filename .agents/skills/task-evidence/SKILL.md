@@ -36,7 +36,8 @@ It is not a separate step anyone invokes, polls, or waits on.
 - Cite `data/<id>/evidence/...` in any later record that must outlive the task.
 - A `REFUSED:` line from cleanup names each existing undeclared reference, unsafe link target or bad declaration; nothing was changed.
 - Read warnings for missing citations and preserved links; links stay links, not snapshots of their targets.
-- A parsing or link-resolution refusal is not proof of absence; fix the ambiguous citation or unsupported link text instead of bypassing it.
+- A parsing or physical-object/link-resolution refusal is not proof of absence; fix the ambiguous citation or unsupported name/link text instead of bypassing it.
+- Reassigned-copy warnings retain the record's citation text without inspecting the new owner's files (the library header owns that isolation rule).
 - `MANIFEST.sha256.links` records link-text hashes separately from the regular-file manifest, as specified in the library header.
 
 ## On a refusal
