@@ -7153,6 +7153,97 @@ SH
   pass 'fresh standalone/nested and carried link-manifest append failures refuse; unfaulted safety and success controls hold'
 }
 
+# Exercise the public preservation entry with copy_owned=0, as the reassigned
+# slot path in teardown does. Never inspect that slot, even after a carry fault.
+test_reassigned_evidence_staging_errors_preserve_prior_snapshot() {
+  local case_dir fault ev key target hash rc
+  for fault in mkdir cp append; do
+    case_dir=$(make_case "evidence-reassigned-staging-$fault")
+    ev="$case_dir/data/task-x1/evidence"
+    key=copy/workspace/link
+    target="$case_dir/wt/workspace/foreign-target"
+    mkdir -p "$ev/copy/workspace" "$case_dir/wt/workspace"
+    printf 'foreign bytes\n' > "$target"
+    ln -s "$target" "$ev/$key"
+    hash=$(readlink "$ev/$key" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+    : > "$ev/MANIFEST.sha256"
+    printf '%s  %s\n' "$hash" "$key" > "$ev/MANIFEST.sha256.links"
+    printf 'prior snapshot\n' > "$ev/sentinel"
+    cp "$ev/MANIFEST.sha256" "$case_dir/prior-regular"
+    cp "$ev/MANIFEST.sha256.links" "$case_dir/prior-links"
+    # The second declaration was never saved; it must still warn, not refuse.
+    printf 'workspace/link\nworkspace/never-saved\n' > "$case_dir/data/task-x1/evidence.list"
+    cat > "$case_dir/preserve-with-tripwire.sh" <<'SH'
+. "$1"
+foreign=$3
+tripwire=$4
+fault=$5
+seen=$6
+foreign_access() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in "$foreign"|"$foreign"/*) builtin printf '%s\n' "$*" >> "$tripwire" ;; esac
+  done
+}
+cd() { foreign_access "$@"; builtin cd "$@"; }
+pwd() { foreign_access "$PWD"; builtin pwd "$@"; }
+stat() { foreign_access "$@"; command stat "$@"; }
+readlink() { foreign_access "$@"; command readlink "$@"; }
+find() { foreign_access "$@"; command find "$@"; }
+function [ {
+  case "${1:-}" in
+    -e|-L|-d|-f|-r|-w|-x|-s|-b|-c|-p|-S) foreign_access "${2:-}" ;;
+    *) case "${2:-}" in -ef|-nt|-ot) foreign_access "${1:-}" "${3:-}" ;; esac ;;
+  esac
+  builtin [ "$@"
+}
+mkdir() {
+  foreign_access "$@"
+  case "$fault:$*" in mkdir:*'/.evidence.new.'*'/copy/workspace') : > "$seen"; return 1 ;; esac
+  command mkdir "$@"
+}
+cp() {
+  foreign_access "$@"
+  case "$fault:$*" in cp:*'/.evidence.new.'*'/copy/workspace/link') : > "$seen"; return 1 ;; esac
+  command cp "$@"
+}
+printf() {
+  case "$fault:${1-}:${2-}" in
+    append:'%s\n':*'  copy/workspace/link') : > "$seen"; return 1 ;;
+  esac
+  builtin printf "$@"
+}
+fm_task_evidence_preserve task-x1 "$2" "$foreign" 0 ''
+SH
+    rc=0
+    bash "$case_dir/preserve-with-tripwire.sh" "$ROOT/bin/fm-task-evidence-lib.sh" \
+      "$case_dir/data" "$case_dir/wt" "$case_dir/foreign-access" "$fault" "$case_dir/fault-seen" \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "$fault: reassigned-copy staging failure was accepted"
+    assert_present "$case_dir/fault-seen" "$fault: reassigned-copy staging injection was not reached"
+    assert_grep 'REFUSED: could not stage verified earlier evidence' "$case_dir/stderr" 'staging failure must not become an old-source-loss warning'
+    assert_absent "$case_dir/foreign-access" 'staging refusal inspected the reassigned slot'
+    cmp -s "$case_dir/prior-regular" "$ev/MANIFEST.sha256" || fail 'staging refusal changed prior regular manifest'
+    cmp -s "$case_dir/prior-links" "$ev/MANIFEST.sha256.links" || fail 'staging refusal changed prior link manifest'
+    [ -L "$ev/$key" ] && [ "$(readlink "$ev/$key")" = "$target" ] || fail 'staging refusal changed prior link bytes'
+    [ "$(cat "$ev/sentinel")" = 'prior snapshot' ] || fail 'staging refusal replaced the prior tree'
+    evidence_manifest_verifies "$ev" || fail 'staging refusal damaged the verified prior snapshot'
+    rc=0
+    bash "$case_dir/preserve-with-tripwire.sh" "$ROOT/bin/fm-task-evidence-lib.sh" \
+      "$case_dir/data" "$case_dir/wt" "$case_dir/foreign-access" none "$case_dir/fault-seen" \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    expect_code 0 "$rc" "unfaulted reassigned carried-link success must preserve evidence: $(cat "$case_dir/stderr")"
+    assert_absent "$case_dir/foreign-access" 'unfaulted carry inspected the reassigned slot'
+    cmp -s "$case_dir/prior-regular" "$ev/MANIFEST.sha256" || fail 'retry changed regular manifest bytes'
+    cmp -s "$case_dir/prior-links" "$ev/MANIFEST.sha256.links" || fail 'retry changed link manifest bytes'
+    [ -L "$ev/$key" ] && [ "$(readlink "$ev/$key")" = "$target" ] || fail 'retry changed carried link bytes'
+    evidence_manifest_verifies "$ev" || fail 'unfaulted carried snapshot does not verify'
+    assert_grep 'never-saved.*it is lost' "$case_dir/stderr" 'already-lost foreign source must retain its warning'
+    [ "$(cat "$target")" = 'foreign bytes' ] || fail 'reassigned-copy carry changed foreign contents'
+  done
+  pass 'reassigned-copy staging failures preserve verified prior links; unfaulted retry and old-source-loss warning remain safe'
+}
+
 test_evidence_staging_ancestor_links_cannot_cover_source_content() {
   local case_dir root_name base label ev flag rc real_sort
   real_sort=$(command -v sort)
@@ -7696,6 +7787,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_evidence_link_physical_failures_and_dangling_newlines_refuse \
   test_evidence_copy_errors_cannot_replace_an_earlier_snapshot \
   test_evidence_link_manifest_append_errors_refuse_without_discarding \
+  test_reassigned_evidence_staging_errors_preserve_prior_snapshot \
   test_evidence_staging_ancestor_links_cannot_cover_source_content \
   test_missing_prior_sources_do_not_mask_later_preserved_content \
   test_evidence_prior_manifest_file_types_are_respected \

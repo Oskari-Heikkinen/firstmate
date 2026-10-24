@@ -66,7 +66,8 @@
 # it would read another task's work, and refusing could save nothing, so
 # declarations and references into it only warn. Reference warnings retain the
 # matching record line verbatim, without existence-aware parsing of foreign
-# paths. Its earlier verified copy is still carried forward.
+# paths. Its earlier verified copy is still carried forward; a staging failure
+# refuses rather than being treated as proof that the old source is lost.
 
 fm_task_evidence_hash() {
   if command -v shasum >/dev/null 2>&1; then
@@ -427,6 +428,8 @@ fm_task_evidence_copy_source() {
 }
 
 # Carry an earlier verified copy of <key> forward into staging.
+# Return 1 for unavailable/unverifiable prior evidence, 2 for staging failure.
+# A foreign copy may excuse old source loss, never a failure saving valid proof.
 fm_task_evidence_carry_prior() {
   local prior=$1 key=$2 staging=$3 manifest=$4 lines hash path line suffix found=0
   local regular_lines='' link_lines=''
@@ -450,10 +453,10 @@ fm_task_evidence_carry_prior() {
     if [ "$suffix" = .links ]; then link_lines=$lines; else regular_lines=$lines; fi
   done
   [ "$found" = 1 ] || return 1
-  mkdir -p -- "$(dirname -- "$staging/$key")" || return 1
-  cp -RPp -- "$prior/$key" "$staging/$key" || return 1
+  mkdir -p -- "$(dirname -- "$staging/$key")" || return 2
+  cp -RPp -- "$prior/$key" "$staging/$key" || return 2
   [ -z "$regular_lines" ] || printf '%s\n' "$regular_lines" >> "$manifest"
-  [ -z "$link_lines" ] || printf '%s\n' "$link_lines" >> "$manifest.links" || return 1
+  [ -z "$link_lines" ] || printf '%s\n' "$link_lines" >> "$manifest.links" || return 2
   return 0
 }
 
@@ -516,8 +519,15 @@ fm_task_evidence_preserve() {
       if [ "$FM_TE_LABEL" = copy ]; then root=$copy_root; else root=$tmp_root; fi
       src="$root/$FM_TE_REL"
       if [ "$FM_TE_LABEL" = copy ] && [ "$copy_owned" != 1 ]; then
-        fm_task_evidence_carry_prior "$evidence" "$key" "$staging" "$manifest" \
-          || echo "warning: declared evidence $src for $id was not copied out before its pool slot was reassigned; it is lost" >&2
+        rc=0
+        fm_task_evidence_carry_prior "$evidence" "$key" "$staging" "$manifest" || rc=$?
+        case "$rc" in
+          0) ;;
+          1) echo "warning: declared evidence $src for $id was not copied out before its pool slot was reassigned; it is lost" >&2 ;;
+          *)
+            echo "REFUSED: could not stage verified earlier evidence $src for $id" >&2
+            refused=1 ;;
+        esac
         continue
       fi
       if [ -e "$src" ] || [ -L "$src" ]; then
