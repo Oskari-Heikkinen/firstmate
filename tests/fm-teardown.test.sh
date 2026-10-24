@@ -6420,11 +6420,34 @@ test_reassigned_evidence_citations_only_warn_without_interpreting() {
   printf 'foreign work\n' > "$case_dir/wt/workspace/proof."
   printf 'See %s/workspace/proof.\nAlso "command %s/workspace/my proof\n' "$case_dir/wt" "$case_dir/wt" \
     > "$case_dir/data/task-x1/report.md"
+  cat > "$case_dir/foreign-tripwire.sh" <<'SH'
+. "$1"
+foreign=$3
+tripwire=$4
+foreign_access() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in "$foreign"|"$foreign"/*) printf '%s\n' "$*" >> "$tripwire" ;; esac
+  done
+}
+cd() { foreign_access "$@"; builtin cd "$@"; }
+pwd() { foreign_access "$PWD"; builtin pwd "$@"; }
+stat() { foreign_access "$@"; command stat "$@"; }
+function [ {
+  case "${1:-}" in
+    -e|-L|-d|-f|-r|-w|-x|-s|-b|-c|-p|-S) foreign_access "${2:-}" ;;
+    *) case "${2:-}" in -ef|-nt|-ot) foreign_access "${1:-}" "${3:-}" ;; esac ;;
+  esac
+  builtin [ "$@"
+}
+fm_task_evidence_preserve task-x1 "$2" "$foreign" 0 ""
+SH
   rc=0
-  bash -c '. "$1"; fm_task_evidence_preserve task-x1 "$2" "$3" 0 ""' _ \
-    "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" \
+  bash "$case_dir/foreign-tripwire.sh" "$ROOT/bin/fm-task-evidence-lib.sh" \
+    "$case_dir/data" "$case_dir/wt" "$case_dir/foreign-access" \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 0 "$rc" 'reassigned-copy citations cannot cause a refusal'
+  assert_absent "$case_dir/foreign-access" 'evidence preservation inspected an unowned foreign root'
   assert_grep 'inside a copy already reassigned to another task' "$case_dir/stderr" 'reassigned citation must warn'
   assert_grep "record $case_dir/data/task-x1/report.md" "$case_dir/stderr" 'foreign warning lost record identity'
   assert_grep "See $case_dir/wt/workspace/proof." "$case_dir/stderr" 'foreign warning lost exact punctuation citation'
@@ -6560,6 +6583,245 @@ SH
     done
   done
   pass 'fresh/final link corruption, non-link substitution, readlink failures and resolver errors refuse before changing prior evidence'
+}
+
+# The outer declared link is read, not followed, before the manual resolver.
+# Exactly forty further links exercise its final bound on the Linux CI runner.
+test_evidence_link_resolution_exhaustion_has_a_resolvable_control() {
+  local case_dir root_name flag length base target ev rc n next outer
+  for root_name in copy tmp; do
+    for flag in '' --force; do
+      for length in 40 2; do
+        case_dir=$(make_case "evidence-bound-$root_name-${flag:-normal}-$length")
+        ignore_workspace "$case_dir"
+        write_meta "$case_dir" no-mistakes ship
+        printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+        land_shippable_commit "$case_dir"
+        ev="$case_dir/data/task-x1/evidence"
+        mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/outside" "$ev"
+        printf 'prior snapshot\n' > "$ev/sentinel"
+        if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; else base="$case_dir/tasktmp"; fi
+        target="$base/terminal"
+        printf 'terminal bytes\n' > "$target"
+        next=$target; n=$length
+        while [ "$n" -gt 0 ]; do
+          ln -s "$next" "$case_dir/outside/hop-$n"
+          next="$case_dir/outside/hop-$n"; n=$((n - 1))
+        done
+        outer="$case_dir/wt/workspace/outer"
+        ln -s "$next" "$outer"
+        # Only the outer link is declared; no durable citation names terminal.
+        printf 'workspace/outer\n' > "$case_dir/data/task-x1/evidence.list"
+        [ -e "$next" ] || fail 'CI filesystem cannot resolve the boundary chain input'
+        rc=0
+        run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        [ "$rc" -ne 0 ] || fail "$root_name $length ${flag:-normal}: resolver lost an undeclared terminal"
+        if [ "$length" = 40 ]; then
+          assert_grep "cannot resolve existing evidence link $outer" "$case_dir/stderr" 'final resolver bound was not reached'
+          assert_grep "cannot resolve evidence symlink $outer" "$case_dir/stderr" 'resolver exhaustion must propagate refusal'
+        else
+          assert_grep "resolves to $target, which cleanup would destroy" "$case_dir/stderr" 'short control must resolve the actual terminal'
+          if grep -q 'cannot resolve' "$case_dir/stderr"; then fail 'short chain failed before coverage'; fi
+        fi
+        [ -L "$outer" ] && [ "$(readlink "$outer")" = "$next" ] || fail 'resolver refusal changed source link'
+        [ "$(cat "$target")" = 'terminal bytes' ] || fail 'resolver refusal changed terminal'
+        [ "$(cat "$ev/sentinel")" = 'prior snapshot' ] || fail 'resolver refusal replaced prior snapshot'
+        assert_absent "$ev/copy" 'resolver refusal installed partial copy evidence'
+        assert_absent "$ev/tmp" 'resolver refusal installed partial tmp evidence'
+        assert_present "$case_dir/state/task-x1.meta" 'resolver refusal removed metadata'
+        if [ "$length" = 2 ]; then
+          printf '%s\n' "$target" >> "$case_dir/data/task-x1/evidence.list"
+          rc=0
+          run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+          expect_code 0 "$rc" "declared short-chain terminal must pass: $(cat "$case_dir/stderr")"
+          [ -L "$ev/copy/workspace/outer" ] || fail 'short chain was followed during copy'
+          evidence_manifest_verifies "$ev" || fail 'short-chain snapshot does not verify'
+          assert_absent "$case_dir/state/task-x1.meta" 'short-chain control left metadata'
+        fi
+      done
+    done
+  done
+  pass 'resolver exhaustion refuses at forty hops while shorter chains resolve and preserve declared terminals in both roots and force modes'
+}
+
+test_completed_prose_quotes_allow_missing_and_declared_citations() {
+  local case_dir root_name flag base ev rc quote label quote_name
+  for root_name in copy tmp; do
+    for flag in '' --force; do
+      for quote in "'" '"' '`'; do
+        case "$quote" in "'") quote_name=single ;; '"') quote_name=double ;; *) quote_name=backtick ;; esac
+        case_dir=$(make_case "evidence-completed-prose-$root_name-${flag:-normal}-$quote_name")
+        ignore_workspace "$case_dir"
+        write_meta "$case_dir" no-mistakes ship
+        printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+        land_shippable_commit "$case_dir"
+        mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/data/task-x1"
+        if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace
+        else base="$case_dir/tasktmp"; label=tmp; fi
+        printf 'declared bytes\n' > "$base/proof"
+        printf '%s\n' "$base/proof" > "$case_dir/data/task-x1/evidence.list"
+        # Mismatched and embedded quote contexts must not become missing paths.
+        printf 'The %srun cited %s/absent" in prose\n' "$quote" "$base" > "$case_dir/data/task-x1/report.md"
+        rc=0
+        run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        [ "$rc" -ne 0 ] || fail 'larger quoted context was silently accepted'
+        assert_grep 'ambiguous quoted context' "$case_dir/stderr" 'context tracking must remain active'
+        assert_present "$case_dir/state/task-x1.meta" 'quoted-context refusal removed metadata'
+        assert_absent "$case_dir/data/task-x1/evidence" 'quoted-context refusal installed evidence'
+        [ "$(cat "$base/proof")" = 'declared bytes' ] || fail 'quoted-context refusal changed source'
+        {
+          printf 'The %srun%s cited %s/absent\n' "$quote" "$quote" "$base"
+          printf 'The %srun%s cited %s/proof\n' "$quote" "$quote" "$base"
+        } > "$case_dir/data/task-x1/report.md"
+        rc=0
+        run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        expect_code 0 "$rc" "completed prose quotes must close: $(cat "$case_dir/stderr")"
+        assert_grep "record $case_dir/data/task-x1/report.md references missing path $base/absent; there is nothing left to save" \
+          "$case_dir/stderr" 'completed prose missing citation lost its warning'
+        ev="$case_dir/data/task-x1/evidence"
+        [ "$(cat "$ev/$label/proof")" = 'declared bytes' ] || fail 'completed prose lost declared evidence'
+        evidence_manifest_verifies "$ev" || fail 'completed prose snapshot does not verify'
+        assert_absent "$case_dir/state/task-x1.meta" 'completed prose citation prevented cleanup'
+      done
+    done
+  done
+  pass 'completed single/double/backtick prose quotes allow missing and declared citations without accepting larger quoted contexts'
+}
+
+test_missing_markup_short_interpretations_respect_quote_mode() {
+  local case_dir root_name base path flag rc
+  for root_name in copy tmp; do
+    for flag in '' --force; do
+      case_dir=$(make_case "evidence-short-markup-$root_name-${flag:-normal}")
+      ignore_workspace "$case_dir"
+      write_meta "$case_dir" no-mistakes ship
+      printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+      land_shippable_commit "$case_dir"
+      mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/data/task-x1"
+      if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; else base="$case_dir/tasktmp"; fi
+      path="$base/proof:tag longer"
+      printf 'long bytes\n' > "$path"
+      printf '%s\n' "$path" > "$case_dir/data/task-x1/evidence.list"
+      printf 'See %s\n' "$path" > "$case_dir/data/task-x1/report.md"
+      rc=0
+      run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      [ "$rc" -ne 0 ] || fail 'declared longer interpretation hid ambiguous unquoted short markup'
+      assert_grep "ambiguous unquoted evidence citation in $case_dir/data/task-x1/report.md: $base/proof:tag" \
+        "$case_dir/stderr" 'short markup refusal was not reached'
+      assert_present "$case_dir/state/task-x1.meta" 'markup refusal removed metadata'
+      assert_absent "$case_dir/data/task-x1/evidence" 'markup refusal installed partial evidence'
+      # The same missing short token is unambiguous when explicitly quoted.
+      path="$base/proof:tag' longer"
+      printf 'quoted long bytes\n' > "$path"
+      printf '%s\n' "$path" > "$case_dir/data/task-x1/evidence.list"
+      printf "See '%s/proof:tag' longer\n" "$base" > "$case_dir/data/task-x1/report.md"
+      rc=0
+      run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      expect_code 0 "$rc" "quoted missing short interpretation should pass: $(cat "$case_dir/stderr")"
+      if grep -q 'there is nothing left to save' "$case_dir/stderr"; then fail 'covered longer entry did not suppress missing quoted short token'; fi
+      evidence_manifest_verifies "$case_dir/data/task-x1/evidence" || fail 'quoted markup evidence does not verify'
+      assert_absent "$case_dir/state/task-x1.meta" 'quoted markup control left metadata'
+    done
+  done
+  pass 'missing short markup interpretations retain quoted versus unquoted ambiguity rules despite declared longer entries'
+}
+
+test_final_directory_resolution_failure_has_a_success_control() {
+  local case_dir root_name base ev rc flag
+  for root_name in copy tmp; do
+    for flag in '' --force; do
+      case_dir=$(make_case "evidence-final-directory-$root_name-${flag:-normal}")
+      ignore_workspace "$case_dir"
+      write_meta "$case_dir" no-mistakes ship
+      printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+      land_shippable_commit "$case_dir"
+      ev="$case_dir/data/task-x1/evidence"
+      mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$ev"
+      if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; else base="$case_dir/tasktmp"; fi
+      mkdir -p "$base/directory"
+      printf 'directory bytes\n' > "$base/directory/proof"
+      printf 'prior snapshot\n' > "$ev/sentinel"
+      printf '%s\n' "$base/directory" > "$case_dir/declarations"
+      ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
+      printf 'See %s/directory\n' "$base" > "$case_dir/data/task-x1/report.md"
+      cat > "$case_dir/pwd-fault.sh" <<SH
+if [ "\${0##*/}" = fm-teardown.sh ]; then
+  pwd() {
+    if [ "\$PWD" = "$base/directory" ]; then
+      : > "$case_dir/fault-seen"
+      return 1
+    fi
+    builtin pwd "\$@"
+  }
+fi
+SH
+      rc=0
+      BASH_ENV="$case_dir/pwd-fault.sh" run_teardown "$case_dir" ${flag:+"$flag"} \
+        > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      [ "$rc" -ne 0 ] || fail 'final-directory resolution error became survival'
+      assert_present "$case_dir/fault-seen" 'final-directory pwd fault was not reached'
+      assert_grep "references $base/directory, which cleanup would destroy" "$case_dir/stderr" 'final-directory failure must reach citation coverage'
+      [ "$(cat "$base/directory/proof")" = 'directory bytes' ] || fail 'directory refusal changed source'
+      [ "$(cat "$ev/sentinel")" = 'prior snapshot' ] || fail 'directory refusal replaced prior snapshot'
+      assert_absent "$ev/copy" 'directory refusal installed partial copy evidence'
+      assert_absent "$ev/tmp" 'directory refusal installed partial tmp evidence'
+      assert_present "$case_dir/state/task-x1.meta" 'directory refusal removed metadata'
+      rc=0
+      run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      expect_code 0 "$rc" "resolvable declared directory must pass: $(cat "$case_dir/stderr")"
+      evidence_manifest_verifies "$ev" || fail 'directory success snapshot does not verify'
+      assert_absent "$case_dir/state/task-x1.meta" 'directory success control left metadata'
+    done
+  done
+  pass 'final-directory physical lookup failure refuses while the resolvable declared control succeeds'
+}
+
+test_missing_staged_directory_cannot_cover_existing_source() {
+  local case_dir root_name base ev flag rc real_sort
+  real_sort=$(command -v sort)
+  for root_name in copy tmp; do
+    case_dir=$(make_case "evidence-missing-staged-member-$root_name")
+    ignore_workspace "$case_dir"
+    write_meta "$case_dir" no-mistakes ship
+    printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+    land_shippable_commit "$case_dir"
+    ev="$case_dir/data/task-x1/evidence"
+    mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$ev"
+    if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; else base="$case_dir/tasktmp"; fi
+    mkdir -p "$base/empty"
+    printf 'prior snapshot\n' > "$ev/sentinel"
+    printf '%s\n' "$base/empty" > "$case_dir/declarations"
+    ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
+    printf 'See %s/empty\n' "$base" > "$case_dir/data/task-x1/report.md"
+    # Empty directories have no file/link manifest rows. Remove this member
+    # at the last verification boundary, not the source or earlier snapshot.
+    cat > "$case_dir/fakebin/sort" <<SH
+#!/usr/bin/env bash
+"$real_sort" "\$@" || exit \$?
+case "\${!#}" in
+  *'.evidence.new.'*/MANIFEST.sha256.links)
+    stage=\${!#}; stage=\${stage%/*}
+    if [ "$root_name" = copy ]; then key=copy/workspace/empty; else key=tmp/empty; fi
+    rmdir -- "\$stage/\$key" || exit 1
+    : > "$case_dir/fault-seen" ;;
+esac
+SH
+    chmod +x "$case_dir/fakebin/sort"
+    for flag in '' --force; do
+      rm -f "$case_dir/fault-seen"
+      rc=0
+      run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      [ "$rc" -ne 0 ] || fail 'missing staged member covered existing source'
+      assert_present "$case_dir/fault-seen" 'missing staged member fault was not reached'
+      assert_grep "references $base/empty, which cleanup would destroy" "$case_dir/stderr" 'missing staged member must refuse citation'
+      assert_present "$base/empty" 'staged-member refusal changed source'
+      [ "$(cat "$ev/sentinel")" = 'prior snapshot' ] || fail 'staged-member refusal replaced prior evidence'
+      assert_absent "$ev/copy" 'staged-member refusal installed copy evidence'
+      assert_absent "$ev/tmp" 'staged-member refusal installed tmp evidence'
+      assert_present "$case_dir/state/task-x1.meta" 'staged-member refusal removed metadata'
+    done
+  done
+  pass 'a missing staged empty-directory member cannot cover its still-existing declared source'
 }
 
 test_own_task_temp_folder_is_removed_and_nothing_else() {
@@ -6965,6 +7227,11 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_run_abort_precedes_process_reap_precedes_worktree_removal \
   test_declared_evidence_is_copied_out_with_a_verified_manifest \
   test_prose_apostrophes_do_not_open_evidence_quotes \
+  test_evidence_link_resolution_exhaustion_has_a_resolvable_control \
+  test_completed_prose_quotes_allow_missing_and_declared_citations \
+  test_missing_markup_short_interpretations_respect_quote_mode \
+  test_final_directory_resolution_failure_has_a_success_control \
+  test_missing_staged_directory_cannot_cover_existing_source \
   test_undeclared_reference_into_the_copy_refuses_then_declaring_it_proceeds \
   test_html_entities_delimit_declared_evidence_references \
   test_html_entities_do_not_hide_undeclared_evidence_references \
