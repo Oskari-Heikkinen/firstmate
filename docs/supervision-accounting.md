@@ -39,7 +39,7 @@ A remote owner captures on its own machine; the laptop collector refuses an entr
 
 The optional Linux collector uses installed `strace` to attach only to the selected home's explicit PID/start-tick roots and follow their subsequent fork/exec descendants.
 There is no arbitrary command-execution argument.
-It verifies the published start ticks before attach, records the observed initial argv, and never signals or changes a target's lifecycle.
+It verifies the published start ticks before attach, records the initial `/proc/<pid>/exe` link and cmdline with `proc-exe-cmdline` evidence, and never signals or changes a target's lifecycle.
 Ptrace itself pauses tasks briefly and adds overhead; this is observational instrumentation, not a zero-impact measurement.
 It requires a prior reviewed capture authorization, the dedicated live-capture opt-in guard, an explicit attach acknowledgement, Linux pidfds and existing ptrace permission.
 The dedicated guard is independent of general live-test opt-ins; the utility refuses capture by default.
@@ -59,9 +59,10 @@ The starting and finished metadata retain the exact argv, roots, byte/duration b
 No target launch/stop/restart, profiler installation, broad signal or service administration is performed.
 A collector failure or output cap preserves its evidence and refuses success.
 
-The importer handles process forks, exec argv, failed syscalls, interleaved unfinished/resumed calls and ordinary exits.
-It sorts completed syscalls by their entry timestamps so a vfork child's exec is not mistaken for an orphan before its parent's return.
-Unknown syntax, unresolved argv, unmatched calls and unknown parent identities are explicit loss counters.
+The importer handles process forks, execve/execveat executable paths and argv, failed syscalls, interleaved unfinished/resumed calls and ordinary exits.
+It splits syscall operands outside quoted C strings and nested containers, decoding escaped bytes rather than searching for an argv bracket inside a path.
+It sorts completed syscalls by entry timestamp and original entry-line ordinal so even tied timestamps put a vfork/clone child's birth before its exec.
+Unknown syntax, unresolved executable/argv evidence, unmatched calls and unknown parent identities are explicit loss counters.
 Linux `processes` includes task/thread births; threads are included in the exclusive total and also reported as a separate dimension.
 The machine counter includes untraced work and the tracer itself; it is a cross-check, not an attribution source.
 Strace has no simultaneous all-root attachment barrier and does not retroactively capture existing descendants.
@@ -74,20 +75,31 @@ No summary's process labels are converted into such evidence.
 
 [`trace-v1.schema.json`](supervision-accounting/trace-v1.schema.json) owns the normalized event shape.
 Process identities are capture-local generations, not bare reusable PIDs.
-Seeds establish ancestry and initial executable ownership but are not counted as new births or in-window entries.
+Seeds establish ancestry but are not counted as new births or in-window entries.
+Every event carries an `executable` path and `exec_evidence`: births require empty executable/argv with `none`, execs require `execve` or `execveat`, and seeds require `proc-exe-cmdline`.
+A seed's cmdline is mutable, so any family inferred from it is only a reported `seed_ownership` hint, never proof of a script entry.
+`seed_cmdline_hints` counts such provisional owners and prevents a complete attached-tree verdict while any are present.
+Missing executable/evidence fields are refused rather than inferred from argv.
 A birth first inherits its nearest known executable-entry family.
 Its first recognized direct script exec assigns that birth to that script family exactly once.
 Subsequent recognized execs in the same process change the owner of future descendants and add entries, but do not invent another birth or move that first direct-entry allocation.
 This rule makes every observed birth belong to one and only one family.
 Entries, caller edges, thread counts, origin ancestry and births are separate dimensions and must never be added together.
 
-A recognized entry requires an exact admitted absolute script path, directly executed or passed as the script operand to a supported shell invocation.
+A recognized entry requires the kernel exec pathname to equal an admitted absolute script path, or a supported absolute shell pathname with that script as its operand.
+Supported shell executable paths are `/bin/bash`, `/usr/bin/bash`, `/bin/sh` and `/usr/bin/sh`; argv[0] is never executable identity.
+Direct script execution is recognized even with an alternate argv[0].
+Supported shell options are combinations of `-e`, `-u`, `-x`, `-v` and the `--` separator; command/stdin modes, operand-taking or unknown options cannot establish script entry.
+Relative executable paths and fd-relative/empty execveat paths retain their evidence but cannot establish entry without resolved executable identity.
 A script name in sourced text, `bash -c`, an environment string or a descendant's unrelated argv is not an entry.
 The caller is the executable owner immediately before that exec, including an inherited owner where applicable.
 Shared code roots are disambiguated by the seed's owner-published home, not by searching a filesystem.
 Relative script paths, unrecognized shell options and unavailable argv cannot establish direct script entry.
 Such descendants retain the proven ancestry allocation; unavailable ancestry remains unattributed.
-`spawn` entries and explicit mutating control subcommands are separately labelled lifecycle entries; this is an entry classification, not proof that an external action completed.
+Entries retain `target` separately from `action`.
+Control uses its actual `<task-id> <interrupt|exit|relaunch>` positional grammar; missing target/verb is `call_shape: malformed`, and unsupported verbs are `unknown`, never lifecycle entries.
+Spawn labels its target and spawn/relaunch/restore action; other families label read/observe/drain/snapshot work rather than treating a task id as a verb.
+The lifecycle label identifies a recognized spawn/control entry shape, not full CLI validation, admission or proof that an external action completed.
 Neither high spawn-labelled births nor library sourcing alone proves a restart storm.
 Repeated snapshot-to-crew edges expose repeated read paths, but do not prove erroneous duplicate requests without the sealed request trace.
 
@@ -95,7 +107,7 @@ The exclusive table always includes an unattributed bucket.
 The residual is the machine counter delta minus observed births.
 It is retained even when negative; negative residuals are contradictions, never clipped to zero.
 Positive residual is outside the explicitly attached descendant trees and, where declared, attachment/loss gaps; it is not all supervision and not a saving.
-Completeness is false on losses, unattributed births or a negative residual.
+Completeness is false on losses, provisional seed ownership, unattributed births or a negative residual.
 No code sets a B0-eligibility or certification verdict, even when inputs assert nonsynthetic provenance, complete capture and certified enrollment.
 Every accounting report explicitly leaves B0 pending reviewed real capture, because self-asserted JSON flags and matching content hashes cannot prove provenance or authority.
 Only review of actual capture evidence can certify B0; the report must also explain the residual's measured sources and scope before claiming exclusive fleet savings.
@@ -130,7 +142,8 @@ The optional `fm_supervision_fence_check` accepts an explicit enable bit, expect
 Disabled (`0`) returns without reading even an absent or special-file path.
 Enabled (`1`) requires one LF-terminated record, with no second line, of the form `fm-supervision-owner.v1<TAB>legacy<TAB><epoch>`.
 The epoch is canonical positive decimal with at most 18 digits and must exactly equal the callback's captured epoch.
-An absent, symlinked, nonregular, malformed, unsupported-mode or stale record refuses.
+An absent, symlinked, nonregular, malformed, NUL-containing, unterminated, unsupported-mode or stale record refuses.
+The shell reader uses a NUL delimiter and a 64-byte cap before its exact comparison, so Bash cannot silently discard binary bytes; every valid record is shorter than that cap.
 The check writes nothing and uses no external commands.
 No existing producer enables it or changes callbacks in P0.
 A check alone is not a handover transaction: a future callback must invoke it **under the same existing commit lock** that protects the mutation and the reviewed epoch selection, not before a slow observation or outside the boundary.

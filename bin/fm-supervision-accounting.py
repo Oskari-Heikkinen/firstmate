@@ -13,7 +13,6 @@ use stderr; the invoking task owner routes failures through its status path.
 Schemas and semantics: docs/supervision-accounting.md. No daemon or poller.
 """
 import argparse
-import ast
 import base64
 import binascii
 import hashlib
@@ -35,6 +34,7 @@ MAX_BYTES = 64 * 1024 * 1024
 SCHEMAS = Path(__file__).resolve().parent.parent / "docs" / "supervision-accounting"
 FAMILIES = ("crew-state", "watch", "wake-drain", "fleet-snapshot", "spawn", "control")
 SCRIPT_FAMILIES = {"fm-" + name + ".sh": name for name in FAMILIES}
+SHELL_EXECUTABLES = ("/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh")
 
 
 class Refused(ValueError):
@@ -170,7 +170,9 @@ def proc_identity(pid):
     require(len(raw) <= 65536, "root argv too large")
     argv = [v.decode("utf-8", "surrogateescape") for v in raw.rstrip(b"\0").split(b"\0")]
     require(argv and argv[0], "root argv unavailable")
-    return {"pid": pid, "start_ticks": fields[19], "argv": argv}
+    executable = os.readlink("/proc/" + str(pid) + "/exe")
+    return {"pid": pid, "start_ticks": fields[19], "argv": argv,
+            "executable": executable, "exec_evidence": "proc-exe-cmdline"}
 
 
 def probe():
@@ -315,25 +317,92 @@ def capture(args):
 # strace prints one line per traced task with -f -o, and unfinished/resumed calls
 # can interleave. Unknown syntax is loss, never a guessed successful entry.
 LINE = re.compile(r"^(?:\[pid\s+)?(\d+)\]?\s+(\d+\.\d+)\s+(.*)$")
-RETURN = re.compile(r"\)\s+=\s+([0-9]+)(?:\s|$)")
+RETURN = re.compile(r"^\s*=\s+([0-9]+)(?:\s|$)")
 CSTRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
-def argv_from_exec(body):
-    start = body.find("[")
-    require(start >= 0, "exec argv missing")
-    cursor = start + 1
-    result = []
+def syscall_parts(body):
+    """Split top-level operands, never delimiters inside C strings/containers."""
+    opening = body.find("(")
+    require(opening > 0, "syscall opening missing")
+    call = body[:opening]
+    cursor = start = opening + 1
+    stack, arguments = [], []
     while cursor < len(body):
-        while cursor < len(body) and body[cursor] in " ,":
+        char = body[cursor]
+        if char == '"':
+            match = CSTRING.match(body, cursor)
+            require(match is not None, "unterminated syscall string")
+            cursor = match.end()
+            continue
+        if char == ")" and not stack:
+            arguments.append(body[start:cursor].strip())
+            return call, arguments, body[cursor + 1:]
+        if char in "([{":
+            stack.append(char)
+        elif char in ")]}":
+            require(stack and stack.pop() == {")": "(", "]": "[", "}": "{"}[char],
+                    "unbalanced syscall operand")
+        elif char == "," and not stack:
+            arguments.append(body[start:cursor].strip())
+            start = cursor + 1
+        cursor += 1
+    raise Refused("unterminated syscall")
+
+
+def c_string(text):
+    """Decode strace's C byte escapes, including octal UTF-8, without evaluation."""
+    require(CSTRING.fullmatch(text) is not None, "truncated/unreadable string")
+    result = bytearray()
+    cursor = 1
+    escapes = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12,
+               "r": 13, '"': 34, "\\": 92}
+    while cursor < len(text) - 1:
+        char = text[cursor]
+        cursor += 1
+        if char != "\\":
+            result.extend(char.encode("utf-8"))
+            continue
+        char = text[cursor]
+        cursor += 1
+        if char in "01234567":
+            digits = char
+            while cursor < len(text) - 1 and len(digits) < 3 and text[cursor] in "01234567":
+                digits += text[cursor]
+                cursor += 1
+            number = int(digits, 8)
+            require(number <= 255, "invalid byte escape")
+            result.append(number)
+        else:
+            require(char in escapes, "unsupported C escape")
+            result.append(escapes[char])
+    require(0 not in result, "NUL in exec string")
+    return result.decode("utf-8", "surrogateescape")
+
+
+def exec_operands(call, arguments):
+    path_index = 0 if call == "execve" else 1
+    require(len(arguments) == (3 if call == "execve" else 5), "exec operand count")
+    executable = c_string(arguments[path_index])
+    text = arguments[path_index + 1]
+    require(text.startswith("[") and text.endswith("]"), "exec argv missing/truncated")
+    cursor, result = 1, []
+    while cursor < len(text) - 1:
+        while cursor < len(text) - 1 and text[cursor].isspace():
             cursor += 1
-        if body[cursor:cursor + 1] == "]":
-            return result
-        match = CSTRING.match(body, cursor)
+        if cursor == len(text) - 1:
+            break
+        match = CSTRING.match(text, cursor)
         require(match is not None, "truncated/unreadable exec argv")
-        result.append(ast.literal_eval(match.group()))
+        result.append(c_string(match.group()))
         cursor = match.end()
-    raise Refused("unterminated exec argv")
+        while cursor < len(text) - 1 and text[cursor].isspace():
+            cursor += 1
+        if cursor != len(text) - 1:
+            require(text[cursor] == ",", "exec argv separator missing")
+            cursor += 1
+            require(text[cursor:].strip() != "]", "trailing exec argv comma")
+    return executable, result
 
 
 def normalize(raw, metadata):
@@ -348,7 +417,8 @@ def normalize(raw, metadata):
         ident = "seed:" + str(seed["pid"]) + ":" + seed["start_ticks"]
         active[seed["pid"]] = ident
         events.append({"kind": "seed", "id": ident, "at_ns": metadata["before"]["wall_ns"],
-                       "parent": "", "argv": seed["argv"], "home": seed["home"], "thread": False})
+                       "parent": "", "argv": seed["argv"], "home": seed["home"], "thread": False,
+                       "executable": seed["executable"], "exec_evidence": seed["exec_evidence"]})
     pending = {}
     for line_number, line in enumerate(raw.splitlines(), 1):
         match = LINE.fullmatch(line)
@@ -358,32 +428,37 @@ def normalize(raw, metadata):
         pid = int(match[1])
         at = int(Decimal(match[2]) * 1000000000)
         body = match[3]
-        if "<unfinished ...>" in body:
+        if body.endswith("<unfinished ...>"):
             if pid in pending:
                 losses["unfinished_calls"] += 1
-            pending[pid] = (body.replace("<unfinished ...>", ""), at)
+            pending[pid] = (body[:-len("<unfinished ...>")], at, line_number)
             continue
         resumed = re.match(r"<\.\.\. \w+ resumed>(.*)", body)
         if resumed:
             if pid not in pending:
                 losses["unfinished_calls"] += 1
                 continue
-            prefix, at = pending.pop(pid)
+            prefix, at, line_number = pending.pop(pid)
             body = prefix + resumed[1]
         calls.append((at, line_number, pid, body))
     losses["unfinished_calls"] += len(pending)
     # In a vfork/unfinished clone, the child can print exec before its parent's
-    # syscall returns. Sort completed calls by their ENTRY times before folding.
+    # syscall returns. Sort by ENTRY timestamp AND original entry-line ordinal;
+    # timestamp resolution can tie a parent entry, child exec and parent resume.
     for at, line_number, pid, body in sorted(calls):
         if body.startswith("--- "):
             continue
         if body.startswith(("+++ exited with ", "+++ killed by ")):
             active.pop(pid, None)
             continue
-        call = body.split("(", 1)[0]
+        try:
+            call, arguments, outcome = syscall_parts(body)
+        except Refused:
+            losses["unknown_lines"] += 1
+            continue
         if call in ("wait4", "waitid", "exit", "exit_group"):
             continue
-        returned = RETURN.search(body)
+        returned = RETURN.match(outcome)
         if call in ("clone", "clone3", "fork", "vfork"):
             if not returned:
                 if "= -1 " not in body:
@@ -398,7 +473,8 @@ def normalize(raw, metadata):
             ident = str(child) + ":" + str(at) + ":" + str(line_number)
             active[child] = ident
             events.append({"kind": "birth", "id": ident, "parent": parent, "at_ns": at,
-                           "argv": [], "home": "", "thread": "CLONE_THREAD" in body})
+                           "argv": [], "home": "", "thread": "CLONE_THREAD" in body,
+                           "executable": "", "exec_evidence": "none"})
         elif call in ("execve", "execveat"):
             if not returned or int(returned[1]) != 0:
                 if "= -1 " not in body:
@@ -409,12 +485,17 @@ def normalize(raw, metadata):
                 losses["unknown_parents"] += 1
                 continue
             try:
-                argv = argv_from_exec(body)
-            except (Refused, SyntaxError, ValueError):
+                executable, argv = exec_operands(call, arguments)
+                if not executable.startswith("/") or not argv:
+                    # Relative/AT_EMPTY_PATH execs need cwd/fd resolution that
+                    # this capture does not provide. Retain, never guess proof.
+                    losses["unresolved_argv"] += 1
+            except Refused:
                 losses["unresolved_argv"] += 1
-                argv = []
+                executable, argv = "", []
             events.append({"kind": "exec", "id": ident, "parent": "", "at_ns": at,
-                           "argv": argv, "home": "", "thread": False})
+                           "argv": argv, "home": "", "thread": False,
+                           "executable": executable, "exec_evidence": call})
         else:
             losses["unknown_lines"] += 1
     events.sort(key=lambda event: event["at_ns"])
@@ -439,11 +520,12 @@ def import_strace(path):
     return checked(normalize(raw.decode("utf-8", "strict"), metadata), "trace")
 
 
-def entry(argv, enrollment, home_hint=""):
+def entry(executable, argv, enrollment, home_hint=""):
     if not argv:
         return None
     script_index = 0
-    if Path(argv[0]).name in ("bash", "sh"):
+    script = executable  # kernel exec path, NEVER caller-controlled argv[0]
+    if executable in SHELL_EXECUTABLES:
         script_index = 1
         while script_index < len(argv) and argv[script_index].startswith("-"):
             option = argv[script_index]
@@ -454,20 +536,38 @@ def entry(argv, enrollment, home_hint=""):
             if not re.fullmatch(r"-[euxv]+", option):
                 return None
             script_index += 1
-    if script_index >= len(argv):
-        return None
-    script = argv[script_index]
+        if script_index >= len(argv):
+            return None
+        script = argv[script_index]
     for home in enrollment["homes"]:
         if home["id"] != home_hint:
             continue
         for name, family in SCRIPT_FAMILIES.items():
             if script == home["code_root"] + "/bin/" + name:
                 arguments = argv[script_index + 1:]
-                action = arguments[0] if arguments else ""
-                lifecycle = family == "spawn" or (family == "control" and action in
-                            ("start", "stop", "restart", "relaunch", "exit", "interrupt", "resume"))
-                return {"family": family, "home": home["id"], "action": action,
-                        "lifecycle_entry": lifecycle}
+                target, action, shape = "", "", "recognized"
+                if family == "control":
+                    target = arguments[0] if arguments else ""
+                    action = arguments[1] if len(arguments) > 1 else ""
+                    if not target or not action:
+                        shape = "malformed"
+                    elif action not in ("interrupt", "exit", "relaunch"):
+                        shape = "unknown"
+                elif family == "spawn":
+                    target = arguments[0] if arguments else ""
+                    action = "restore" if "--restore" in arguments[1:] else (
+                        "relaunch" if "--relaunch" in arguments[1:] else "spawn")
+                    if not target:
+                        shape = "malformed"
+                elif family == "crew-state":
+                    target = arguments[0] if arguments else ""
+                    action = "read"
+                else:
+                    action = {"watch": "observe", "wake-drain": "drain",
+                              "fleet-snapshot": "snapshot"}[family]
+                lifecycle = family in ("spawn", "control") and shape == "recognized"
+                return {"family": family, "home": home["id"], "target": target, "action": action,
+                        "call_shape": shape, "lifecycle_entry": lifecycle}
     return None
 
 
@@ -482,6 +582,7 @@ def account(trace, enrollment):
     totals = {name: 0 for name in FAMILIES + ("unattributed",)}
     origin_totals = dict(totals)
     thread_births = 0
+    seed_ownership = []
     last_at = trace["start_ns"]
     for event in trace["events"]:
         at, ident, kind = event["at_ns"], event["id"], event["kind"]
@@ -493,8 +594,13 @@ def account(trace, enrollment):
             require(not event["parent"] and not event["thread"], "malformed seed")
             require(event["home"] in enrollment["enrolled_homes"], "seed home not enrolled")
             process_homes[ident] = event["home"]
-            observed = entry(event["argv"], enrollment, event["home"])
+            require(event["exec_evidence"] == "proc-exe-cmdline" and event["executable"],
+                    "seed needs qualified executable/cmdline evidence")
+            observed = entry(event["executable"], event["argv"], enrollment, event["home"])
             owners[ident] = observed["family"] if observed else "unattributed"
+            seed_ownership.append({"id": ident, "family": owners[ident],
+                                   "evidence": "proc-exe-cmdline",
+                                   "qualification": "cmdline-hint-not-observed-entry"})
             origins[ident] = owners[ident]
             invocation = ident + ":initial"
             current_invocations[ident] = invocation
@@ -505,7 +611,8 @@ def account(trace, enrollment):
             parent = event["parent"]
             require(parent in owners or trace["losses"]["unknown_parents"] > 0,
                     "birth without known parent or declared loss")
-            require(not event["argv"] and not event["home"], "birth contains fabricated exec/home")
+            require(not event["argv"] and not event["home"] and not event["executable"]
+                    and event["exec_evidence"] == "none", "birth contains fabricated exec/home")
             process_homes[ident] = process_homes.get(parent, "")
             owners[ident] = owners.get(parent, "unattributed")
             origins[ident] = origins.get(parent, "unattributed")
@@ -516,13 +623,16 @@ def account(trace, enrollment):
         else:
             require(ident in owners, "exec without birth/seed")
             require(not event["parent"] and not event["thread"] and not event["home"], "malformed exec")
-            require(event["argv"] or trace["losses"]["unresolved_argv"] > 0, "exec argv missing without loss")
-            observed = entry(event["argv"], enrollment, process_homes[ident])
+            require(event["exec_evidence"] in ("execve", "execveat"), "exec needs syscall evidence")
+            require((event["argv"] and event["executable"])
+                    or trace["losses"]["unresolved_argv"] > 0, "exec evidence missing without loss")
+            observed = entry(event["executable"], event["argv"], enrollment, process_homes[ident])
             if observed:
                 caller = owners[ident]
                 invocation = ident + ":entry:" + str(len(entries))
                 entries.append(dict(observed, id=ident, at_ns=at, caller_family=caller,
-                                    invocation=invocation,
+                                    invocation=invocation, exec_evidence=event["exec_evidence"],
+                                    executable=event["executable"],
                                     caller_invocation=current_invocations[ident]))
                 invocations[invocation] = {"family": observed["family"], "seed": False,
                                            "exclusive_child_births": 0, "self_births": 0}
@@ -546,11 +656,13 @@ def account(trace, enrollment):
     observed_births = len(births)
     residual = trace["machine_births"] - observed_births
     lossless = trace["capture_complete"] and not any(trace["losses"].values())
-    complete = lossless and totals["unattributed"] == 0 and residual >= 0
+    seed_hints = sum(row["family"] != "unattributed" for row in seed_ownership)
+    complete = lossless and totals["unattributed"] == 0 and residual >= 0 and seed_hints == 0
     return {"format": "fm-supervision-accounting.v1", "synthetic": trace["synthetic"],
             "claimed_births_per_second_saved": 0, "duration_ns": duration,
             "exclusive_births": totals, "observed_births": observed_births,
             "thread_births_included": thread_births, "entries": entries, "caller_edges": edges,
+            "seed_ownership": seed_ownership, "seed_cmdline_hints": seed_hints,
             "entry_counts": {family: sum(row["family"] == family for row in entries) for family in FAMILIES},
             "per_invocation": invocations, "births_by_origin_ancestry": origin_totals,
             "machine_births": trace["machine_births"], "residual": residual,

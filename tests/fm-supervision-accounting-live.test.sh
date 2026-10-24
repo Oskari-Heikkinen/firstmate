@@ -56,8 +56,23 @@ assert metadata['tracer_rc'] in (0, -2), 'unexpected tracer termination'
 assert metadata['after']['machine_births'] >= metadata['before']['machine_births'], 'machine counter contradiction'
 assert trace['losses']['attachment_gaps'] == 1, 'startup gap must remain explicit'
 assert not any(count for key, count in trace['losses'].items() if key != 'attachment_gaps'), 'real strace format/ancestry losses'
-assert any(event['kind'] == 'birth' for event in trace['events']), 'no real birth to prove parser'
-assert any(event['kind'] == 'exec' and event['argv'] for event in trace['events']), 'no real argv to prove parser'
+seeds = [event for event in trace['events'] if event['kind'] == 'seed']
+assert seeds and len(seeds) == len(metadata['seeds']), 'missing real proc seed evidence'
+expected_seeds = {'seed:' + str(seed['pid']) + ':' + seed['start_ticks']: seed
+                  for seed in metadata['seeds']}
+for event in seeds:
+    seed = expected_seeds[event['id']]
+    assert event['executable'].startswith('/') and event['argv'], 'unresolved real proc executable/cmdline'
+    assert event['exec_evidence'] == seed['exec_evidence'] == 'proc-exe-cmdline', 'wrong real seed evidence'
+    assert event['executable'] == seed['executable'] and event['argv'] == seed['argv'], 'changed real seed provenance'
+births = [event for event in trace['events'] if event['kind'] == 'birth']
+assert births, 'no real birth to prove parser'
+assert all(event['executable'] == '' and event['argv'] == [] and event['exec_evidence'] == 'none'
+           for event in births), 'fabricated exec evidence on real birth'
+execs = [event for event in trace['events'] if event['kind'] == 'exec']
+assert execs, 'no real exec to prove parser'
+assert all(event['executable'].startswith('/') and event['argv']
+           and event['exec_evidence'] in ('execve', 'execveat') for event in execs), 'missing real exec pathname/syscall evidence'
 assert report['residual'] >= 0, 'machine cross-check contradiction'
 assert 'b0_eligible' not in report and report['b0_status'] == 'pending-reviewed-real-capture', 'code may not certify B0'
 print('real capture/import/cleanup syntax proof; startup gap and B0 review remain pending')
