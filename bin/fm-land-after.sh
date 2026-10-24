@@ -157,7 +157,7 @@ backlog_pr_link() {  # <blocker> -> pr URL from the backlog row, or nothing
 pr_verdict() {  # <url>
   fm_pr_url_parse "$1" || { printf 'recorded PR URL is not recognized: %s\n' "$1"; return "$LANDED_NOT_YET"; }
   case "$FM_PR_PROVIDER" in
-    github) fm_pr_github_read_record "$FM_PR_OWNER" "$FM_PR_REPO" "$FM_PR_NUMBER" ;;
+    github) fm_pr_github_read_record "$FM_PR_HOST" "$FM_PR_OWNER" "$FM_PR_REPO" "$FM_PR_NUMBER" ;;
     gitlab) fm_pr_gitlab_read_record "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" ;;
     *) false ;;
   esac || { printf 'forge read failed for %s; not landed yet\n' "$1"; return "$LANDED_NOT_YET"; }

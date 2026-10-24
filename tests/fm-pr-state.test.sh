@@ -26,6 +26,7 @@ cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
 set -o pipefail
 head=c2eac54c17a1ddc2633ad51b83e21e5fe888142e
+[ -z "${FM_TEST_HOST_LOG-}" ] || printf 'host=%s\n' "${GH_HOST-}" >> "$FM_TEST_HOST_LOG"
 serve() {
   case "$*" in
     "pr view "*" --json state,mergedAt,isDraft,headRefOid,author,mergeable,reviewDecision --jq "*)
@@ -90,6 +91,20 @@ test_clean_pr_is_silent_and_ignores_skipped_checks() {
   out=$(run_state) || fail "clean fixture was refused"
   [ -z "$out" ] || fail "clean fixture should be silent, got: $out"
   pass "a passing required check and a skipped one leave nothing to report"
+}
+
+test_github_enterprise_pr_reads_its_own_host() {
+  local d out
+  d=$(mktemp -d "$TMP_ROOT/ghe.XXXXXX")
+  mkdir -p "$d/config"
+  printf 'ghe.example.com\n' > "$d/config/github-hosts"
+  out=$(PATH="$FAKEBIN:$PATH" FM_CONFIG_OVERRIDE="$d/config" FM_TEST_HOST_LOG="$d/host.log" \
+    "$SCRIPT" https://ghe.example.com/o/r/pull/7) || fail "an allowlisted Enterprise PR was refused"
+  [ -z "$out" ] || fail "clean Enterprise fixture should be silent, got: $out"
+  [ -s "$d/host.log" ] || fail "no gh read was logged for the Enterprise PR"
+  ! grep -qvx 'host=ghe.example.com' "$d/host.log" \
+    || fail "every gh read must carry the PR's Enterprise host, got: $(cat "$d/host.log")"
+  pass "an Enterprise PR's gh reads carry its own host"
 }
 
 test_terminal_state_is_the_whole_report() {
@@ -322,6 +337,7 @@ test_refusals_exit_nonzero() {
 }
 
 test_clean_pr_is_silent_and_ignores_skipped_checks
+test_github_enterprise_pr_reads_its_own_host
 test_terminal_state_is_the_whole_report
 test_draft_is_a_blocker
 test_stale_blocking_reviews_explain_a_blocking_decision

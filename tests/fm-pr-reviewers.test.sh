@@ -17,6 +17,7 @@ command -v jq >/dev/null 2>&1 \
 cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
 set -o pipefail
+[ -z "${FM_TEST_HOST_LOG-}" ] || printf 'host=%s\n' "${GH_HOST-}" >> "$FM_TEST_HOST_LOG"
 serve() {
   case "$*" in
     "api /repos/o/r/pulls/7 --jq "*)
@@ -84,6 +85,21 @@ test_candidates_use_api_logins_and_unique_commit_counts() {
   pass "reviewer candidates use API-resolved logins and unique commits"
 }
 
+test_github_enterprise_pr_reads_its_own_host() {
+  local d out
+  d=$(mktemp -d "$TMP_ROOT/ghe.XXXXXX")
+  mkdir -p "$d/config"
+  printf 'ghe.example.com\n' > "$d/config/github-hosts"
+  out=$(PATH="$FAKEBIN:$PATH" FM_CONFIG_OVERRIDE="$d/config" FM_TEST_HOST_LOG="$d/host.log" \
+    "$SCRIPT" https://ghe.example.com/o/r/pull/7) || fail "an allowlisted Enterprise PR was refused"
+  assert_contains "$out" $'carol\t2 recent commits' \
+    "the Enterprise PR's candidates are missing"
+  [ -s "$d/host.log" ] || fail "no gh read was logged for the Enterprise PR"
+  ! grep -qvx 'host=ghe.example.com' "$d/host.log" \
+    || fail "every gh read must carry the PR's Enterprise host, got: $(cat "$d/host.log")"
+  pass "an Enterprise PR's gh reads carry its own host"
+}
+
 test_only_author_evidence_says_no_candidates() {
   local out
   out=$(FM_TEST_ONLY_AUTHOR=1 run_reviewers) || fail "author-only fixture was refused"
@@ -112,5 +128,6 @@ test_refusals_exit_nonzero() {
 }
 
 test_candidates_use_api_logins_and_unique_commit_counts
+test_github_enterprise_pr_reads_its_own_host
 test_only_author_evidence_says_no_candidates
 test_refusals_exit_nonzero

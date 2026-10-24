@@ -184,6 +184,7 @@ set -u
 case "${1:-} ${2:-}" in
   "api graphql")
     [ -z "${FM_FAKE_PR_READ_LOG:-}" ] || printf 'gh\n' >> "$FM_FAKE_PR_READ_LOG"
+    [ -z "${FM_FAKE_PR_HOST_LOG:-}" ] || printf 'host=%s\n' "${GH_HOST:-}" >> "$FM_FAKE_PR_HOST_LOG"
     number=1
     for arg in "$@"; do
       case "$arg" in
@@ -1704,6 +1705,30 @@ test_terminal_passed_with_open_pr_does_not_claim_merged() {
   assert_not_contains "$out" "merged/closed" "open PR must not get the old merged/closed label"
   assert_not_contains "$out" "PR merged" "open PR must not be reported merged"
   pass "terminal passed run with open PR does not claim merged"
+}
+
+# A configured GitHub Enterprise PR is read on its own host: the crew-state
+# forge read carries the parsed host to gh rather than asking github.com.
+test_terminal_passed_with_github_enterprise_pr_reads_its_host() {
+  reset_fakes
+  local d url out
+  d=$(new_case passed-ghe-pr)
+  url=https://ghe.example.com/o/r/pull/1
+  make_repo_on_branch "$d/wt" fm/feat-dghe
+  make_fakebin "$d" >/dev/null
+  mkdir -p "$d/config"
+  printf 'ghe.example.com\n' > "$d/config/github-hosts"
+  fm_write_meta "$d/state/feat-dghe.meta" "window=fm:fm-feat-dghe" \
+    "worktree=$d/wt" "kind=ship" "pr=$url"
+  FM_FAKE_PR_STATE=OPEN
+  FM_FAKE_PR_MERGED=false
+  FM_FAKE_AXI_STATUS="$(run_passed_with_pr fm/feat-dghe "$url")"
+  out=$(FM_CONFIG_OVERRIDE="$d/config" FM_FAKE_PR_HOST_LOG="$d/pr-host.log" \
+    run_crew_state "$d" feat-dghe)
+  assert_contains "$out" "run passed: PR open" "the Enterprise PR state is read and named"
+  [ "$(cat "$d/pr-host.log" 2>/dev/null)" = host=ghe.example.com ] \
+    || fail "the crew-state PR read did not address the Enterprise host: $(cat "$d/pr-host.log" 2>/dev/null)"
+  pass "terminal passed run reads a configured GitHub Enterprise PR on its own host"
 }
 
 test_terminal_passed_run_pr_overrides_stale_metadata() {
@@ -6044,6 +6069,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_terminal_passed_uses_matching_retirement_receipt_without_forge \
   test_terminal_passed_no_forge_switch_skips_read_but_keeps_receipt \
   test_terminal_passed_with_open_pr_does_not_claim_merged \
+  test_terminal_passed_with_github_enterprise_pr_reads_its_host \
   test_terminal_passed_run_pr_overrides_stale_metadata \
   test_terminal_passed_without_readable_pr_identity_reports_unknown \
   test_terminal_passed_with_open_gitlab_mr_does_not_claim_merged \

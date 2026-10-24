@@ -40,6 +40,7 @@ exit 0
 SH
 cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
+[ -z "${FM_FAKE_GH_LOG:-}" ] || printf 'host=%s %s\n' "${GH_HOST:-}" "$*" >> "$FM_FAKE_GH_LOG"
 case "${FM_FAKE_PR_STATE:-}" in
   MERGED) printf 'state=MERGED\nmerged=true\n' ;;
   OPEN|CLOSED) printf 'state=%s\nmerged=false\n' "$FM_FAKE_PR_STATE" ;;
@@ -163,8 +164,11 @@ expect_code 1 "$rc" "an unreadable forge is not landed yet, never an error"
 FM_FAKE_PR_STATE=CLOSED la "$H" landed p1 >/dev/null; rc=$?
 expect_code 3 "$rc" "a PR closed without merging is a cancelled blocker"
 assert_absent "$H/state/land-after/p1/landed" "no evidence is recorded for an unlanded blocker"
-FM_FAKE_PR_STATE=MERGED la "$H" landed p1 >/dev/null; rc=$?
+FM_FAKE_PR_STATE=MERGED FM_FAKE_GH_LOG="$H/gh.log" la "$H" landed p1 >/dev/null; rc=$?
 expect_code 0 "$rc" "a merged PR is landed"
+gh_call=$(cat "$H/gh.log")
+assert_contains "$gh_call" "host=github.com " "the forge read addresses the PR URL's host"
+assert_contains "$gh_call" "owner=o -F repo=r -F number=7" "the forge read names the PR URL's owner, repository and number"
 out=$(la "$H" landed gone1 2>&1); rc=$?
 expect_code 3 "$rc" "a blocker with no record and no evidence wakes firstmate"
 assert_contains "$out" "verify its landing by hand" "the vanished-record reason is explicit"
