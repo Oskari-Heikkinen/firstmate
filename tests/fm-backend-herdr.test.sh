@@ -963,6 +963,47 @@ test_unreadable_descendant_identity_never_proves_agent_absence() {
   pass "herdr stale registration: incomplete descendant identity stays unreadable unless a harness is positively proven"
 }
 
+test_positive_initial_descendant_needs_no_refresh() {
+  local dir ps_bin body out fb mode child_pid
+  dir="$TMP_ROOT/positive-initial-descendant"; mkdir -p "$dir/responses"
+  ps_bin=$(make_herdr_process_fake "$dir")
+  # Own the PID so the classifier's independent /proc signal cannot observe
+  # an unrelated host harness. Only the supplied comm/argv proves Pi.
+  sleep 300 & child_pid=$!
+  body=$(shell_only_process_info "$$")
+  printf '1\n' > "$dir/recheck.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  for mode in comm argv; do
+    rm -f "$dir/snapshot-read" "$dir/args/$child_pid" "$dir/responses/.count"
+    printf '%s 1 zsh\n' "$$" > "$dir/rows"
+    case "$mode" in
+      comm) printf '%s %s pi\n' "$child_pid" "$$" >> "$dir/rows" ;;
+      argv)
+        printf '%s %s node\n' "$child_pid" "$$" >> "$dir/rows"
+        printf 'pi\n' > "$dir/args/$child_pid"
+        ;;
+    esac
+    printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$dir/responses/1.out"
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$dir/responses/2.out"
+    printf '%s\n' "$body" > "$dir/responses/3.out"
+    : > "$dir/log"
+    # Exercise one public read: a conclusive initial walk needs no refresh.
+    # The fixture makes an unnecessary second table read fail deterministically.
+    out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$dir/log" FM_HERDR_RESPONSES="$dir/responses" FM_HERDR_PS_BIN="$ps_bin" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state fmtest w1:p2' "$ROOT")
+    if [ "$out" != live ] || [ ! -e "$dir/snapshot-read" ]; then
+      kill "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+      [ "$out" = live ] \
+        || fail "a positive initial $mode descendant must stay live despite an unusable optional refresh, got '$out'"
+      fail "a positive initial $mode descendant must consume only the initial process table"
+    fi
+  done
+  kill "$child_pid" 2>/dev/null || true
+  wait "$child_pid" 2>/dev/null || true
+  pass "herdr stale registration: positive initial comm/argv proof stays live without refreshing the process table"
+}
+
 test_unreadable_descendant_requires_positive_disappearance_proof() {
   local dir ps_bin body out mode child_pid expected
   dir="$TMP_ROOT/disappearing-descendant"; mkdir -p "$dir"
@@ -6329,6 +6370,7 @@ HERDR_CASES=(
   test_agent_descendant_under_a_spaced_install_path_stays_alive
   test_registered_agent_with_an_unreadable_process_view_is_unknown
   test_unreadable_descendant_identity_never_proves_agent_absence
+  test_positive_initial_descendant_needs_no_refresh
   test_unreadable_descendant_requires_positive_disappearance_proof
   test_disappearance_recheck_classifies_new_descendants
   test_registered_agent_with_an_empty_foreground_over_a_real_shell_settles_via_descendant_walk
