@@ -2438,8 +2438,8 @@ test_restarted_host_stops_what_a_killed_predecessor_left() {
   pass "host: a restarted host stops, by recorded identity, the cycle a killed predecessor left running"
 }
 
-test_park_exit_probe_uses_half_second_child_sleeps() {
-  local home host_pid
+test_park_exit_probe_avoids_child_sleeps_where_supported() {
+  local home host_pid path
   home=$(make_home park-cadence attended)
   cat > "$home/fakebin/sleep" <<'SH'
 #!/bin/bash
@@ -2453,15 +2453,67 @@ fi
 exec /bin/sleep "$@"
 SH
   chmod +x "$home/fakebin/sleep"
-  start_host "$home"
+  FM_SUPERVISION_HOST_POLL=60 start_host "$home"
   wait_until 150 watcher_live "$home" || fail "park-cadence: no watcher started"
   host_pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
   [ -n "$host_pid" ] || fail "park-cadence: no recorded host"
   printf '%s\n' "$host_pid" > "$home/probe-host"
-  wait_until 100 test -s "$home/park-sleeps" || fail "park-cadence: no child sleep observed"
-  [ "$(sort -u "$home/park-sleeps")" = 0.5 ] || fail "park-cadence: exit probing did not use half-second sleeps"
-  stop_home_processes "$home"
-  pass "host: parked child-exit sampling uses ordinary half-second sleeps"
+  # Let several probes elapse; a stalled or prematurely exited host must not
+  # pass just because it spawned no sleeps.
+  sleep 2
+  kill -0 "$host_pid" 2>/dev/null || fail "park-cadence: host exited while parked"
+  if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+    [ ! -s "$home/park-sleeps" ] || fail "park-cadence: builtin-capable host still spawned sleep children"
+  else
+    [ "$(sort -u "$home/park-sleeps")" = 0.5 ] || fail "park-cadence: Bash 3.2 fallback did not use half-second sleeps"
+  fi
+  # TERM must interrupt the parked host, including with a long outer cadence.
+  kill -TERM "$host_pid"
+  wait_until 100 host_exited "$home" || fail "park-cadence: parked host ignored TERM"
+  [ "$(cat "$home/host.rc")" = 143 ] || fail "park-cadence: TERM disposition changed"
+  watcher_live "$home" && fail "park-cadence: TERM left the watcher running"
+  for path in "$home/state"/.supervision-host-wait.*; do
+    [ ! -e "$path" ] || fail "park-cadence: private timer path survived cleanup"
+  done
+  pass "host: parked probes avoid child sleeps on Bash 4+, retain the Bash 3.2 fallback, and TERM still cleans up"
+}
+
+test_park_exit_probe_does_not_wait_for_the_outer_cadence() {
+  local home
+  home=$(make_home park-close attended)
+  FM_SUPERVISION_HOST_POLL=60 start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "park-close: no watcher started"
+  wait_until 100 grep -q '^watcher: started ' "$home/host.out" || fail "park-close: readiness never streamed"
+  append_status "$home" 'needs-decision: probe the close'
+  wait_until 100 host_exited "$home" || fail "park-close: close waited for the 60s maintenance cadence"
+  assert_re '^signal: .*demo.status' "$home/host.out" "park-close: the arm close did not reach main"
+  pass "host: half-second arm probes deliver a close between outer maintenance checks"
+}
+
+test_park_timer_failures_wake_instead_of_spinning() {
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] || return 0
+  local home mode path
+  for mode in setup eof; do
+    home=$(make_home "park-timer-$mode" attended)
+    # A failed mkfifo exercises setup cleanup; a defective mkfifo that makes
+    # a regular file exercises EOF on the descriptor after successful setup.
+    cat > "$home/fakebin/mkfifo" <<SH
+#!/usr/bin/env bash
+[ '$mode' != setup ] || exit 1
+: > "\$3"
+SH
+    chmod +x "$home/fakebin/mkfifo"
+    start_host "$home"
+    wait_until 150 host_exited "$home" || fail "park-timer-$mode: timer failure did not exit"
+    assert_re '^supervision-host: park timer .*; drain and re-arm supervision$' "$home/host.out" \
+      "park-timer-$mode: failure did not wake the owner"
+    [ "$(cat "$home/host.rc")" = 1 ] || fail "park-timer-$mode: failure returned success"
+    watcher_live "$home" && fail "park-timer-$mode: failure left the watcher running"
+    for path in "$home/state"/.supervision-host-wait.*; do
+      [ ! -e "$path" ] || fail "park-timer-$mode: timer path survived cleanup"
+    done
+  done
+  pass "host: timer setup failure and EOF wake the owner, clean up, and never spin"
 }
 
 recorded_arm_identity_is() {  # <record> <identity>
@@ -3133,7 +3185,9 @@ HOST_CASES=(
   test_claude_stop_hook_restores_handoff_when_successor_closed_mid_engine_turn
   test_claude_stop_hook_notifies_when_closed_successor_downtime_restore_fails
   test_claude_stop_hook_notifies_when_closed_announced_successor_downtime_restore_fails
-  test_park_exit_probe_uses_half_second_child_sleeps
+  test_park_exit_probe_avoids_child_sleeps_where_supported
+  test_park_exit_probe_does_not_wait_for_the_outer_cadence
+  test_park_timer_failures_wake_instead_of_spinning
   test_parked_host_rerecords_its_arm_only_when_the_identity_differs
   test_branch_outcomes_only_on_a_host_home_off_pi
   test_quiet_record_without_its_daemon_is_a_present_captain
