@@ -40,6 +40,9 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - "storage alert" - Linux growth, C: or D: runway, or a mandatory D: substitution crossed its threshold; read `fm-disk-room.sh growth` (and `fm-usage-report.sh report` for what uses the tier) and relay the alert with that reading to the captain, who decides any retention, move, or compaction, and run none of them.
 
 Firstmate relays only low readings, in the captain's terms; above the margin, disk is not news.
+The compaction (reclaim-now) ask goes to the captain only on a low reading from the watch-line margin path.
+A "later" or "not now" answer is final for that reading: nothing is held, re-dated, or recorded as a deferred captain call.
+The next low reading asks again under the monitor's existing notification cadence.
 
 ## No longer done by hand
 
