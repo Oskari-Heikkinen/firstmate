@@ -346,8 +346,11 @@ shutdown_diagnostics() {  # <home> [pid...]
 # FIFO instead of racing a short sleep, so the stop must finish before that
 # helper returns. The read is bounded and cleanup releases it even on failure.
 release_held_helper() {  # <home>
-  [ -p "$1/helper-gate" ] || return 0
-  { exec 7<> "$1/helper-gate"; printf 'release\n' >&7; exec 7>&-; } 2>/dev/null || true
+  local gate
+  for gate in helper-gate arm-exec-gate host-bookkeeping-gate snapshot-gate; do
+    [ -p "$1/$gate" ] || continue
+    { exec 7<> "$1/$gate"; printf 'release\n' >&7; exec 7>&-; } 2>/dev/null || true
+  done
 }
 
 hold_arm_health_helper() {  # <home>
@@ -2653,10 +2656,6 @@ test_restarted_host_stops_what_a_killed_predecessor_left() {
   first_host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   arm=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
   watcher=$(cat "$home/state/.watch.lock/pid")
-  # Activation deliberately refuses a stale exec identity. This case isolates
-  # a stop blocked in bookkeeping, not the separate pre-exec recording window.
-  wait_until 150 recorded_arm_identity_is "$home/state/.supervision-host" "$(fm_test_pid_identity "$arm")" \
-    || fail "crash: the host never settled the arm's exec identity"
   kill -KILL "$first_host"
   wait_until 100 host_exited "$home" || fail "crash: the first host did not die"
   kill -0 "$arm" 2>/dev/null || fail "crash: fixture error: the arm died with its host, so this case proves nothing"
@@ -2668,6 +2667,203 @@ test_restarted_host_stops_what_a_killed_predecessor_left() {
   wait_until 100 sh -c 'grep -q "	start	gen=host-" "$1" && [ "$(grep -c "	start	" "$1")" -ge 2 ]' _ "$home/state/.supervision-host.log" \
     || fail "the restarted host did not start"
   pass "host: a restarted host stops, by recorded identity, the cycle a killed predecessor left running"
+}
+
+# Freeze the real interpreter before its last exec and the host immediately
+# after recording it. The durable row is never edited: restart must recognize
+# the same birth/launch even though the command identity genuinely changed.
+test_restart_across_the_real_arm_exec_transition() {
+  local home first_host arm watcher stopped=0 real_wc mode=${1:-valid} identity_kind=${2:-proc}
+  local FM_PROC_ROOT_OVERRIDE=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  home=$(make_home "real-preexec-$identity_kind-$mode" away)
+  # Exercise the portable identity branch on Linux too, while retaining real
+  # kernel processes and the same real exec/host-bookkeeping gates.
+  [ "$identity_kind" != ps ] || FM_PROC_ROOT_OVERRIDE="$home/no-proc"
+  export FM_PROC_ROOT_OVERRIDE
+  hold_arm_health_helper "$home"
+  mkfifo "$home/arm-exec-gate" "$home/host-bookkeeping-gate"
+  cat > "$home/fakebin/bash" <<'SH'
+#!/bin/bash
+case "${1:-}" in
+  */fm-watch-arm.sh)
+    if [ ! -e "$FM_HOME/arm-exec-held" ]; then
+      exec 6<> "$FM_HOME/arm-exec-gate"
+      printf '%s\n' "$$" > "$FM_HOME/arm-exec-held"
+      read -r -t "$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 6 _ || true
+      exec 6>&-
+    fi ;;
+esac
+exec /bin/bash "$@"
+SH
+  real_wc=$(command -v wc)
+  cat > "$home/fakebin/wc" <<SH
+#!/bin/bash
+case "\$(readlink /proc/\$\$/fd/0 2>/dev/null)" in
+  *'.supervision-host-arm.'*)
+    if [ ! -e "\$FM_HOME/host-bookkeeping-held" ]; then
+      exec 6<> "\$FM_HOME/host-bookkeeping-gate"
+      printf '%s\n' "\$\$" > "\$FM_HOME/host-bookkeeping-held"
+      read -r -t "\$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 6 _ || true
+      exec 6>&-
+    fi ;;
+esac
+exec "$real_wc" "\$@"
+SH
+  # /proc/fd selects only the host's arm-output read, not unrelated wc calls.
+  [ -d /proc/self/fd ] || { printf 'skip: pre-exec gate needs /proc/fd\n'; return 0; }
+  chmod +x "$home/fakebin/bash" "$home/fakebin/wc"
+  start_host "$home"
+  wait_until 150 test -s "$home/host-bookkeeping-held" || fail 'preexec: host did not reach held bookkeeping'
+  wait_until 150 test -s "$home/arm-exec-held" || fail 'preexec: interpreter did not reach its exec gate'
+  arm=$(cat "$home/arm-exec-held")
+  exec 6<> "$home/arm-exec-gate"; printf 'exec\n' >&6; exec 6>&-
+  wait_until 150 test -s "$home/helper-blocked" || fail 'preexec: arm never reached health bookkeeping'
+  watcher=$(cat "$home/state/.watch.lock/pid")
+  first_host=$(awk -F '\t' '$1 == "host" {print $2}' "$home/state/.supervision-host")
+  if recorded_arm_identity_is "$home/state/.supervision-host" "$(fm_test_pid_identity "$arm")"; then
+    fail 'preexec: fixture failed to retain the real pre-exec identity'
+  fi
+  kill -KILL "$first_host"
+  wait_until 100 host_exited "$home" || fail 'preexec: host not killed'
+  exec 6<> "$home/host-bookkeeping-gate"; printf 'release\n' >&6; exec 6>&-
+  # Negative controls model a reused birth or a row from another launch, with
+  # the real arm still held. Neither may authorize arm or watcher signalling.
+  case "$mode" in
+    birth)
+      awk -F '\t' -v OFS='\t' -v kind="$identity_kind" '$1 == "arm" {
+        if (kind == "ps") $3 = "Thu Jan  1 00:00:00 1970" substr($3, 25)
+        else sub(/starttime=[0-9]+/, "starttime=0", $3)
+      } {print}' "$home/state/.supervision-host" > "$home/changed-record"
+      mv "$home/changed-record" "$home/state/.supervision-host" ;;
+    token)
+      awk -F '\t' -v OFS='\t' -v token="$home/state/.supervision-host-arm.AAAAAA" \
+        '$1 == "arm" {$4 = token} {print}' "$home/state/.supervision-host" > "$home/changed-record"
+      mv "$home/changed-record" "$home/state/.supervision-host" ;;
+  esac
+  printf '%s\n' "$arm" > "$home/orphan-pid"
+  start_host "$home"
+  if [ "$mode" = valid ]; then
+    wait_until 200 sh -c '! kill -0 "$1" 2>/dev/null && ! kill -0 "$2" 2>/dev/null' _ "$arm" "$watcher" && stopped=1
+    [ "$stopped" -eq 1 ] || shutdown_diagnostics "$home" "$first_host" "$arm" "$watcher"
+    release_held_helper "$home"
+    [ "$stopped" -eq 1 ] || fail 'preexec: restarted host left the genuine pre-exec-recorded arm and watcher alive'
+  else
+    wait_until 200 sh -c '[ "$(grep -c "	start	" "$1")" -ge 2 ]' _ "$home/state/.supervision-host.log" \
+      || fail "$mode: replacement host did not activate"
+    kill -0 "$arm" 2>/dev/null || fail "$mode: recovery ignored the mismatched ownership proof"
+    kill -0 "$watcher" 2>/dev/null || fail "$mode: recovery signalled an unproven watcher"
+    [ "$(cat "$home/state/.watch.lock/pid")" = "$watcher" ] || fail "$mode: recovery replaced the unowned watcher"
+    release_held_helper "$home"
+  fi
+  pass "host: pre-exec recovery honors the real birth and launch token ($identity_kind/$mode)"
+}
+
+test_restart_exec_rejects_a_different_birth() { test_restart_across_the_real_arm_exec_transition birth; }
+test_restart_exec_rejects_a_different_launch() { test_restart_across_the_real_arm_exec_transition token; }
+test_restart_exec_ps_identity() { test_restart_across_the_real_arm_exec_transition valid ps; }
+test_restart_exec_ps_rejects_a_different_birth() { test_restart_across_the_real_arm_exec_transition birth ps; }
+test_restart_exec_ps_rejects_a_different_launch() { test_restart_across_the_real_arm_exec_transition token ps; }
+
+test_shutdown_rejects_blocked_or_unreadable_watcher_records() {
+  local home host arm watcher mode stopped record
+  for mode in fifo unreadable bounded; do
+    home=$(make_home "snapshot-$mode" away)
+    hold_arm_health_helper "$home"
+    start_host "$home"
+    wait_until 150 test -s "$home/helper-blocked" || fail "$mode: no held arm"
+    watcher=$(cat "$home/state/.watch.lock/pid")
+    host=$(awk -F '\t' '$1 == "host" {print $2}' "$home/state/.supervision-host")
+    arm=$(awk -F '\t' '$1 == "arm" {print $2}' "$home/state/.supervision-host")
+    record="$home/state/.watch.lock/pid-identity"
+    cp "$record" "$home/saved-identity"
+    if [ "$mode" = bounded ]; then
+      # Deschedule the snapshot's interpreter, even with valid regular records.
+      # The outer metadata bound must still leave the owned arm retirable.
+      mkfifo "$home/snapshot-gate"
+      cat > "$home/fakebin/bash" <<'SH'
+#!/bin/bash
+if [ "${1:-}" = -c ] && [ ! -e "$FM_HOME/snapshot-held" ]; then
+  exec 6<> "$FM_HOME/snapshot-gate"
+  printf '%s\n' "$$" > "$FM_HOME/snapshot-held"
+  read -r -t "$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 6 _ || true
+fi
+exec /bin/bash "$@"
+SH
+      chmod +x "$home/fakebin/bash"
+    elif [ "$mode" = fifo ]; then
+      rm -f "$record"
+      mkfifo "$record"
+    else
+      cp "$home/saved-identity" "$record"
+      chmod 000 "$record"
+      if [ -r "$record" ]; then
+        chmod 600 "$record"
+        mv -f "$home/saved-identity" "$record"
+        printf 'skip: unreadable record requires an unprivileged user\n'
+        stop_home_processes "$home"
+        continue
+      fi
+    fi
+    kill -TERM "$host"
+    stopped=0
+    wait_until 250 host_exited "$home" && stopped=1
+    [ "$mode" != bounded ] || [ -s "$home/snapshot-held" ] || fail 'bounded: snapshot interpreter was not held'
+    # Restore the exact fixture record before any teardown or diagnostics.
+    rm -f "$record"
+    mv "$home/saved-identity" "$record"
+    [ "$stopped" -eq 1 ] || shutdown_diagnostics "$home" "$host" "$arm" "$watcher"
+    [ "$stopped" -eq 1 ] || fail "$mode: shutdown hung on untrusted watcher bookkeeping"
+    wait_until 50 sh -c '! kill -0 "$1" 2>/dev/null' _ "$arm" || fail "$mode: proven arm was not retired"
+    # No snapshot means no authority to signal the watcher directly, even if
+    # this leaves a broken-lock watcher for its own recovery owner.
+    kill -0 "$watcher" 2>/dev/null || fail "$mode: fallback signalled an unproven watcher"
+    assert_grep 'watcher cleanup snapshot unavailable' "$home/host.out" "$mode: failed snapshot was silent"
+    release_held_helper "$home"
+    stop_home_processes "$home"
+  done
+  pass 'host: blocked and unreadable watcher records cannot prevent retirement of its proven arm or widen fallback signalling'
+}
+
+test_retire_preserves_an_independently_owned_watcher() {
+  local home independent watcher host real_stat stopped=0
+  home=$(make_home retire-independent away)
+  FM_HOME="$home" "$ROOT/bin/fm-wake-drain.sh" > "$home/seed-drain.out" 2> "$home/seed-drain.err" || fail 'independent: drain failed'
+  if grep -q '^WAKE_ACK_REQUIRED:' "$home/seed-drain.err"; then
+    ack_drain_err "$home/state" "$home/seed-drain.err" || fail 'independent: ack failed'
+  fi
+  [ ! -s "$home/state/.wake-queue" ] || fail 'independent: fixture queue is not empty'
+  FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
+    "$ROOT/bin/fm-watch-arm.sh" > "$home/independent-arm.out" 2>&1 &
+  independent=$!
+  printf '%s\n' "$independent" > "$home/orphan-pid"
+  wait_until 150 watcher_live "$home" || fail 'independent: no watcher'
+  watcher=$(cat "$home/state/.watch.lock/pid")
+  mkfifo "$home/helper-gate"
+  real_stat=$(command -v stat)
+  cat > "$home/fakebin/stat" <<SH
+#!/bin/bash
+case "\$*" in
+  *'.last-watcher-beat'*)
+    arm=\$(awk -F '\t' '\$1 == "arm" {print \$2; exit}' "\$FM_HOME/state/.supervision-host" 2>/dev/null)
+    if [ "\$arm" = "\$PPID" ] && [ ! -e "\$FM_HOME/helper-blocked" ]; then
+      exec 7<> "\$FM_HOME/helper-gate"
+      printf '%s\n' "\$\$" > "\$FM_HOME/helper-blocked"
+      read -r -t "\$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 7 _ || true
+    fi ;;
+esac
+exec "$real_stat" "\$@"
+SH
+  chmod +x "$home/fakebin/stat"
+  start_host "$home"
+  wait_until 150 test -s "$home/helper-blocked" || fail 'independent: host attaching arm not held'
+  host=$(awk -F '\t' '$1 == "host" {print $2}' "$home/state/.supervision-host")
+  kill -TERM "$host"
+  wait_until 200 host_exited "$home" && stopped=1
+  release_held_helper "$home"
+  [ "$stopped" -eq 1 ] || fail 'independent: host did not stop'
+  kill -0 "$watcher" 2>/dev/null || fail 'independent: host retirement killed another arm own watcher'
+  [ "$(cat "$home/state/.watch.lock/pid")" = "$watcher" ] || fail 'independent: original watcher replaced'
+  pass 'host: forced retirement of a blocked attaching arm preserves the independently owned watcher'
 }
 
 test_term_stops_the_watcher_when_its_arm_cannot_relay_term() {
@@ -3497,6 +3693,14 @@ HOST_CASES=(
   test_return_during_a_failed_turn_still_hands_its_outcomes_to_main
   test_incomplete_engine_result_hands_the_wake_to_main
   test_restarted_host_stops_what_a_killed_predecessor_left
+  test_restart_across_the_real_arm_exec_transition
+  test_restart_exec_rejects_a_different_birth
+  test_restart_exec_rejects_a_different_launch
+  test_restart_exec_ps_identity
+  test_restart_exec_ps_rejects_a_different_birth
+  test_restart_exec_ps_rejects_a_different_launch
+  test_shutdown_rejects_blocked_or_unreadable_watcher_records
+  test_retire_preserves_an_independently_owned_watcher
   test_term_stops_the_watcher_when_its_arm_cannot_relay_term
   test_predecessor_cleanup_preserves_a_cycle_its_arm_does_not_own
   test_park_boundary_ends_the_park_before_the_hook_timeout
