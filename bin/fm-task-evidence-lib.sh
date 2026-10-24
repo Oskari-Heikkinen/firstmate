@@ -23,9 +23,9 @@
 # sha256sum format, so `cd data/<id>/evidence && sha256sum -c MANIFEST.sha256`
 # re-verifies it later. The new evidence tree is built in a staging directory,
 # each copied file's hash is compared with its source's, and only a verified
-# tree replaces the previous one. Every manifest write, regular or link, fails
-# closed before installation or empty-snapshot success, retaining sources and
-# any prior tree.
+# tree replaces the previous one. Every manifest write, regular or link,
+# including its sorted rewrite, fails closed before installation or
+# empty-snapshot success, retaining sources and any prior tree.
 # MANIFEST.sha256.links separately records hashes
 # of `readlink` output for symlinks; these are checked without following links. A declared path whose source is gone (a
 # retried cleanup after the copy was already returned) keeps its earlier copy
@@ -543,7 +543,11 @@ fm_task_evidence_preserve() {
     done < "$list"
     if [ "$refused" = 0 ]; then
       for suffix in '' .links; do
-        sort -k2 -o "$manifest$suffix" "$manifest$suffix"
+        if ! sort -k2 -o "$manifest$suffix" "$manifest$suffix"; then
+          echo "REFUSED: could not sort staged evidence manifest $manifest$suffix for $id" >&2
+          refused=1
+          break
+        fi
         while IFS= read -r line; do
           if [ "$suffix" = .links ]; then
             hash=$(fm_task_evidence_link_hash "$staging/${line#*  }")

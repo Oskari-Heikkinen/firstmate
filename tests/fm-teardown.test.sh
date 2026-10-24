@@ -7312,6 +7312,153 @@ test_regular_manifest_append_errors_refuse_without_discarding() {
   pass 'all regular-manifest append boundaries refuse intact in both roots/force modes; unfaulted retries verify, including reassigned copy carry'
 }
 
+# Isolated public-entry fixture for a destructive sort -o write failure, not
+# an unreadable row or a production-helper override. Also used by remote proof.
+manifest_sort_case() {  # <root> <regular|link> <flag> <fresh|carry> <absent|prior> [ownership] [fault|control]
+  local root_name=$1 kind=$2 flag=$3 variant=$4 snapshot=$5 ownership=${6:-owned}
+  local case_dir base label key source ev name hash rc staged
+  case_dir=$(make_case "manifest-sort-$root_name-$kind-${flag:-normal}-$variant-$snapshot-$ownership")
+  ignore_workspace "$case_dir"
+  land_shippable_commit "$case_dir"
+  if [ "$ownership" = reassigned ]; then
+    # Fixture-only pool identity, never a real pool allocation or lifecycle.
+    mkdir -p "$case_dir/pool/1"
+    mv "$case_dir/wt" "$case_dir/pool/1/project"
+    ln -s pool/1/project "$case_dir/wt"
+    printf '%s\n' "$case_dir/pool/1/project/.git" > "$case_dir/project/.git/worktrees/wt/gitdir"
+    printf '{"worktrees":[{"name":"1","path":"%s"}]}\n' \
+      "$case_dir/pool/1/project" > "$case_dir/pool/treehouse-state.json"
+    printf 'task=successor\nhome=%s\n' "$case_dir" > "$case_dir/pool/1/.fm-slot-owner"
+    cp "$case_dir/pool/1/.fm-slot-owner" "$case_dir/claim-before"
+  fi
+  write_meta "$case_dir" no-mistakes ship
+  printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+  cp "$case_dir/state/task-x1.meta" "$case_dir/meta-before"
+  mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/outside" "$case_dir/data/task-x1"
+  printf 'outside target bytes\n' > "$case_dir/outside/target"
+  if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace
+  else base="$case_dir/tasktmp"; label=tmp; fi
+  key="$label/proof"; source="$base/proof"
+  name=MANIFEST.sha256
+  [ "$kind" != link ] || name=$name.links
+  ev="$case_dir/data/task-x1/evidence"
+  if [ "$snapshot" = prior ]; then
+    mkdir -p "$ev/$label"
+    : > "$ev/MANIFEST.sha256"
+    : > "$ev/MANIFEST.sha256.links"
+    if [ "$kind" = link ]; then
+      ln -s "$case_dir/outside/target" "$ev/$key"
+      hash=$(readlink "$ev/$key" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+    else
+      printf 'prior evidence bytes\n' > "$ev/$key"
+      hash=$({ sha256sum "$ev/$key" 2>/dev/null || shasum -a 256 "$ev/$key"; } | awk '{print $1}')
+    fi
+    printf '%s  %s\n' "$hash" "$key" > "$ev/$name"
+    printf 'prior tree sentinel\n' > "$ev/sentinel"
+    evidence_manifest_verifies "$ev" || fail 'manifest sort prior fixture does not verify'
+    cp -RPp "$ev" "$case_dir/prior-tree"
+  fi
+  if [ "$ownership" = reassigned ]; then
+    printf 'foreign evidence bytes\n' > "$source"
+  elif [ "$variant" = fresh ]; then
+    if [ "$kind" = link ]; then ln -s "$case_dir/outside/target" "$source"
+    else printf 'fresh evidence bytes\n' > "$source"; fi
+  fi
+  # No independent absolute-citation refusal may mask a swallowed sort error.
+  printf '%s\n' "$source" > "$case_dir/declarations"
+  ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
+  cat > "$case_dir/sort-fault.sh" <<'SH'
+if [ "${0##*/}" = fm-teardown.sh ]; then
+  sort() {
+    case "${3-}" in
+      "$FM_SORT_DIR"/.evidence.new.*/"$FM_SORT_NAME")
+        if [ "${1-} ${2-}" = '-k2 -o' ] && [ "${4-}" = "${3-}" ]; then
+          : > "$FM_SORT_SEEN"
+          : > "$3"
+          return 1
+        fi ;;
+    esac
+    command sort "$@"
+  }
+fi
+SH
+  if [ "${7:-fault}" = fault ]; then
+    rc=0
+    FM_HOME="$case_dir" FM_SORT_DIR="$case_dir/data/task-x1" FM_SORT_NAME="$name" \
+      FM_SORT_SEEN="$case_dir/fault-seen" BASH_ENV="$case_dir/sort-fault.sh" \
+      run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    expect_code 1 "$rc" "$root_name $kind ${flag:-normal} $variant $snapshot $ownership: failed manifest sort was accepted"
+    assert_present "$case_dir/fault-seen" 'manifest sort write fault was not reached'
+    assert_grep "REFUSED: could not sort staged evidence manifest .*${name} for task-x1" \
+      "$case_dir/stderr" 'manifest sort failure did not name its refusal'
+    cmp -s "$case_dir/meta-before" "$case_dir/state/task-x1.meta" || fail 'manifest sort refusal changed metadata bytes'
+    if [ "$snapshot" = prior ]; then
+      diff -r "$case_dir/prior-tree" "$ev" || fail 'manifest sort refusal changed prior tree or manifest bytes'
+      evidence_manifest_verifies "$ev" || fail 'manifest sort refusal damaged prior proof'
+    else
+      assert_absent "$ev" 'manifest sort failure installed an incomplete snapshot'
+    fi
+    for staged in "$case_dir/data/task-x1"/.evidence.new.* "$case_dir/data/task-x1"/.evidence.old.*; do
+      assert_absent "$staged" 'manifest sort refusal left a staging or replacement tree'
+    done
+    if [ "$ownership" = reassigned ]; then
+      [ "$(cat "$source")" = 'foreign evidence bytes' ] || fail 'manifest sort refusal changed foreign source bytes'
+      cmp -s "$case_dir/claim-before" "$case_dir/pool/1/.fm-slot-owner" || fail 'manifest sort refusal changed successor claim'
+    elif [ "$variant" = carry ]; then
+      assert_absent "$source" 'manifest sort refusal recreated absent source'
+    elif [ "$kind" = link ]; then
+      [ -L "$source" ] && [ "$(readlink "$source")" = "$case_dir/outside/target" ] || fail 'manifest sort refusal changed source link'
+    else
+      [ "$(cat "$source")" = 'fresh evidence bytes' ] || fail 'manifest sort refusal changed source bytes'
+    fi
+    [ "$(cat "$case_dir/outside/target")" = 'outside target bytes' ] || fail 'manifest sort refusal changed target bytes'
+  fi
+  # Same fixture retries unfaulted; control mode also reaches this independently.
+  rc=0
+  FM_HOME="$case_dir" run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "unfaulted manifest sort retry failed: $(cat "$case_dir/stderr")"
+  evidence_manifest_verifies "$ev" || fail 'manifest sort retry snapshot does not verify'
+  grep -Fq "  $key" "$ev/$name" || fail 'manifest sort retry omitted promised row'
+  if [ "$kind" = link ]; then
+    [ -L "$ev/$key" ] && [ "$(readlink "$ev/$key")" = "$case_dir/outside/target" ] || fail 'manifest sort retry lost link text'
+  elif [ "$variant" = carry ]; then
+    [ "$(cat "$ev/$key")" = 'prior evidence bytes' ] || fail 'manifest sort retry lost carried bytes'
+  else
+    [ "$(cat "$ev/$key")" = 'fresh evidence bytes' ] || fail 'manifest sort retry saved wrong bytes'
+  fi
+  if [ "$variant" = carry ]; then
+    cmp -s "$case_dir/prior-tree/MANIFEST.sha256" "$ev/MANIFEST.sha256" || fail 'sort carry retry changed regular manifest bytes'
+    cmp -s "$case_dir/prior-tree/MANIFEST.sha256.links" "$ev/MANIFEST.sha256.links" || fail 'sort carry retry changed link manifest bytes'
+  fi
+  if [ "$ownership" = reassigned ]; then
+    [ "$(cat "$source")" = 'foreign evidence bytes' ] || fail 'manifest sort retry changed successor content'
+    cmp -s "$case_dir/claim-before" "$case_dir/pool/1/.fm-slot-owner" || fail 'manifest sort retry changed successor claim'
+    assert_grep 'was reassigned to task successor' "$case_dir/stderr" 'sort retry did not exercise reassigned-copy caller'
+  fi
+  [ "$(cat "$case_dir/outside/target")" = 'outside target bytes' ] || fail 'manifest sort retry changed outside target'
+  assert_absent "$case_dir/state/task-x1.meta" 'manifest sort retry left metadata'
+}
+
+test_manifest_sort_errors_refuse_without_discarding() {
+  local root_name kind flag snapshot
+  for root_name in copy tmp; do
+    for kind in regular link; do
+      for flag in '' --force; do
+        for snapshot in absent prior; do
+          manifest_sort_case "$root_name" "$kind" "$flag" fresh "$snapshot"
+        done
+        manifest_sort_case "$root_name" "$kind" "$flag" carry prior
+      done
+    done
+  done
+  for kind in regular link; do
+    for flag in '' --force; do
+      manifest_sort_case copy "$kind" "$flag" carry prior reassigned
+    done
+  done
+  pass 'truncating sort failures refuse both manifests in both roots/force modes, preserving prior/absent snapshots and sources; fresh/carry/reassigned retries verify'
+}
+
 # Exercise the public preservation entry with copy_owned=0, as the reassigned
 # slot path in teardown does. Never inspect that slot, even after a carry fault.
 test_reassigned_evidence_staging_errors_preserve_prior_snapshot() {
@@ -7948,6 +8095,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_evidence_copy_errors_cannot_replace_an_earlier_snapshot \
   test_evidence_link_manifest_append_errors_refuse_without_discarding \
   test_regular_manifest_append_errors_refuse_without_discarding \
+  test_manifest_sort_errors_refuse_without_discarding \
   test_reassigned_evidence_staging_errors_preserve_prior_snapshot \
   test_evidence_staging_ancestor_links_cannot_cover_source_content \
   test_missing_prior_sources_do_not_mask_later_preserved_content \
