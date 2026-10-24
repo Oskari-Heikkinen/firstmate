@@ -1974,7 +1974,11 @@ test_watcher_poll_default_and_ceiling() {
     expected=30; [ "$mode" != ceiling ] || expected=240
     cat > "$fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
-if [ "$1" = "$EXPECTED_POLL" ]; then
+lock_pid=''
+if [ -r "$POLL_STATE/.watch.lock/pid" ]; then
+  IFS= read -r lock_pid < "$POLL_STATE/.watch.lock/pid" || true
+fi
+if [ "$1" = "$EXPECTED_POLL" ] && [ "$PPID" = "$lock_pid" ]; then
   printf '%s\n' "$1" >> "$POLL_LOG"
   printf 'blocked: cadence observed\n' > "$POLL_STATE/event.status"
   exit 0
@@ -1993,8 +1997,8 @@ SH
     SEED_PID=$!
     wait_for_exit "$SEED_PID" 600; rc=$?
     expect_code 0 "$rc" "watcher did not surface the cadence event ($mode)"
-    assert_grep "^$expected$" "$dir/sleeps" "watcher uses its bounded default cadence ($mode)"
-    assert_grep '^signal:' "$out" 'the cadence change does not lose the status wake'
+    assert_equals "$expected" "$(head -n 1 "$dir/sleeps")" "watcher uses its bounded default cadence ($mode)"
+    assert_grep 'signal:' "$out" 'the cadence change does not lose the status wake'
   done
 }
 

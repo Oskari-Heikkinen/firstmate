@@ -3197,6 +3197,7 @@ test_signal_proof_zombie_leader() { signal_proof_case zombie; }
 
 test_owner_check_default() {
   local value
+  # shellcheck disable=SC2016 # The child Bash expands its own parameters.
   value=$(env -u FM_PROCEVENT_OWNER_CHECK_SECONDS bash -c '
     . "$1/bin/fm-procevent-lib.sh"
     fm_procevent_owner_check_seconds
