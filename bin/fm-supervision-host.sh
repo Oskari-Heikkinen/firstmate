@@ -166,10 +166,13 @@
 # successor cycle may take to verify), FM_SUPERVISION_HOST_POLL (1).
 # Park duration uses Bash's process-relative SECONDS counter (including Bash
 # 3.2), while durable timestamps still use epoch time. This is not a portable
-# monotonic-clock guarantee. Arm exit probes use ordinary 0.5-second child
-# sleeps within the unchanged POLL-cadence maintenance and boundary checks;
-# close observation and a shell-only caught signal may wait that interval plus
-# work/scheduling time. No stop-signal disposition or cleanup bound changes.
+# monotonic-clock guarantee. Arm exit probes use a 0.5-second builtin read on
+# a private, unlinked FIFO on Bash 4+ (fractional read timeouts); Bash 3.2 keeps
+# ordinary 0.5-second child sleeps. Maintenance and boundary checks keep their
+# POLL cadence, and close observation still takes at most that probe interval
+# plus work/scheduling time. A builtin wait is interruptible by a caught signal;
+# no stop-signal disposition or cleanup bound changes. A FIFO setup or read
+# failure exits with a supervision-host wake instead of spinning.
 # FM_TEST_SUPERVISION_HOST_CLOCK names a file holding the park's elapsed
 # seconds, which the park and turn boundary checks read in place of SECONDS
 # only when FM_TEST_SEAM=1; tests/lib.sh arms the marker for isolated suites.
@@ -275,6 +278,11 @@ TURN_ERRORS=
 # (header, OUTPUT) and left out of that cycle's close.
 READY_PENDING=1
 READY_LINE=
+# Descriptor 9 is reserved for the host's private timeout FIFO, never stdin.
+WAIT_BUILTIN=0
+WAIT_DIR=
+WAIT_READING=0
+WAIT_SIGNAL=0
 
 log_line() {  # <text>
   local tmp
@@ -423,6 +431,11 @@ stop_engine_turn() {
 cleanup() {
   local rc=$? f
   trap - EXIT HUP TERM INT
+  exec 9>&-
+  if [ -n "$WAIT_DIR" ]; then
+    rm -f "$WAIT_DIR/tick" 2>/dev/null || true
+    rmdir "$WAIT_DIR" 2>/dev/null || true
+  fi
   if [ "$ENGINE_RUNNING" -eq 1 ]; then
     stop_engine_turn
   fi
@@ -537,6 +550,48 @@ stream_ready_line() {
   READY_PENDING=0
 }
 
+# An O_RDWR FIFO keeps its own writer open: read blocks until its timeout,
+# with no child process and no EOF spin. Unlink it before starting any arm so
+# no other process can open it. Bash 3.2 cannot read with a fractional timeout.
+prepare_park_wait() {
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] || return 0
+  WAIT_DIR=$(mktemp -d "$STATE/.supervision-host-wait.XXXXXX") || return 1
+  mkfifo -m 600 "$WAIT_DIR/tick" || return 1
+  exec 9<> "$WAIT_DIR/tick" || return 1
+  rm -f "$WAIT_DIR/tick" && rmdir "$WAIT_DIR" || return 1
+  WAIT_DIR=
+  WAIT_BUILTIN=1
+}
+
+# A caught signal must let timed read unwind before EXIT cleanup closes its
+# descriptor or runs other builtins; exiting inside read can abort some Bash
+# versions. Outside that builtin the original immediate exit is unchanged.
+host_signal() {  # <exit-status>
+  if [ "$WAIT_READING" -eq 1 ]; then
+    [ "$WAIT_SIGNAL" -ne 0 ] || WAIT_SIGNAL=$1
+  else
+    exit "$1"
+  fi
+}
+
+park_wait_half_second() {
+  local _ rc
+  if [ "$WAIT_BUILTIN" -eq 0 ]; then
+    sleep 0.5
+    return
+  fi
+  WAIT_READING=1
+  if IFS= read -r -t 0.5 -u 9 _; then rc=0; else rc=$?; fi
+  WAIT_READING=0
+  [ "$WAIT_SIGNAL" -eq 0 ] || exit "$WAIT_SIGNAL"
+  # A timeout returns >128. EOF, a bad descriptor or unexpected data must not
+  # turn a broken timer into a busy loop; cleanup still retires the arms.
+  if [ "$rc" -le 128 ]; then
+    emit 'supervision-host: park timer failed; drain and re-arm supervision'
+    exit 1
+  fi
+}
+
 # Wait for the current arm to close. Returns 0 with ARM_TEXT set,
 # or 1 when the park boundary arrives first.
 await_close() {
@@ -549,7 +604,7 @@ await_close() {
     # changing the outer identity refresh, readiness, or boundary cadence.
     i=$((POLL * 2))
     while [ "$i" -gt 0 ] && fm_pid_alive "$ARM_PID"; do
-      sleep 0.5
+      park_wait_half_second
       i=$((i - 1))
     done
   done
@@ -1060,10 +1115,11 @@ if ! host_still_owner; then
   stand_down "this session does not own supervision"
 fi
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 143' TERM
-trap 'exit 130' INT
+trap 'host_signal 129' HUP
+trap 'host_signal 143' TERM
+trap 'host_signal 130' INT
 activate || { echo "supervision-host stood down: the host record could not be written"; exit 0; }
+prepare_park_wait || { emit 'supervision-host: park timer could not be prepared; drain and re-arm supervision'; exit 1; }
 log_line "start	gen=$GEN	primary=$PRIMARY"
 
 # The first cycle.
