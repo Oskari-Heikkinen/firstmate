@@ -324,6 +324,22 @@ watcher_live() {  # <home>
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 host_exited() { [ -s "$1/host.rc" ]; }
+# A failed stop needs the surviving process states, not just kill -0: a
+# zombie, an identity mismatch, and a live cleanup are different failures.
+shutdown_diagnostics() {  # <home> [pid...]
+  local home=$1 file pid
+  shift
+  printf '\n--- shutdown diagnostics: %s ---\n' "$home" >&2
+  for file in "$home/state/.supervision-host" "$home/state/.watch.lock/pid" \
+    "$home/host.rc" "$home/host.out" "$home/claude.err" \
+    "$home/state/.supervision-host.log" "$home/state/.watch-cycle-exits.log"; do
+    printf '\n--- %s ---\n' "$file" >&2
+    tail -n 20 "$file" >&2 2>/dev/null || true
+  done
+  for pid in "$@" $(awk -F '\t' '{ print $2 }' "$home/state/.supervision-host" 2>/dev/null); do
+    ps -p "$pid" -o pid=,ppid=,stat=,etime=,args= >&2 || true
+  done
+}
 # The recovery marker's episode kind (downtime or handling), read through its
 # owner's parser; the Claude re-arm owner delivers a close only on downtime.
 marker_kind() {  # <home>
@@ -2383,7 +2399,8 @@ test_silent_outcomes_are_not_relayed_when_the_captain_returns() {
       watcher_live "$home" || fail "$mode: the host did not park on its successor"
       host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
       kill -TERM "$host"
-      wait_until 200 host_exited "$home" || fail "$mode: the host did not stop on TERM"
+      wait_until 200 host_exited "$home" \
+        || { shutdown_diagnostics "$home" "$host"; fail "$mode: the host did not stop on TERM"; }
     else
       wait_until 2000 host_exited "$home" || fail "$mode: the failed turn did not hand the wake to main: $(cat "$home/host.out" 2>/dev/null) $(tail -n 8 "$home/state/.supervision-host.log" 2>/dev/null)"
       assert_re '^supervision-host: the away session could not take this wake: the engine turn failed \(exit 3\); this wake is yours$' \
@@ -2579,7 +2596,7 @@ test_restarted_host_stops_what_a_killed_predecessor_left() {
   kill -0 "$arm" 2>/dev/null || fail "crash: fixture error: the arm died with its host, so this case proves nothing"
   start_host "$home"
   wait_until 200 sh -c '! kill -0 "$1" 2>/dev/null && ! kill -0 "$2" 2>/dev/null' _ "$arm" "$watcher" \
-    || fail "a restarted host left its killed predecessor's arm or watcher running"
+    || { shutdown_diagnostics "$home" "$first_host" "$arm" "$watcher"; fail "a restarted host left its killed predecessor's arm or watcher running"; }
   wait_until 100 sh -c 'grep -q "	start	gen=host-" "$1" && [ "$(grep -c "	start	" "$1")" -ge 2 ]' _ "$home/state/.supervision-host.log" \
     || fail "the restarted host did not start"
   pass "host: a restarted host stops, by recorded identity, the cycle a killed predecessor left running"
