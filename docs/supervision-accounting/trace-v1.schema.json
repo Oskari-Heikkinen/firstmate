@@ -26,15 +26,17 @@
   "$defs": {
     "event": {
       "type": "object", "additionalProperties": false,
-      "required": ["kind", "id", "parent", "at_ns", "argv", "home", "thread"],
+      "required": ["kind", "id", "parent", "at_ns", "argv", "home", "thread", "executable", "exec_evidence"],
       "properties": {
         "kind": {"enum": ["seed", "birth", "exec"]},
         "id": {"type": "string", "minLength": 1, "maxLength": 200},
         "parent": {"type": "string", "maxLength": 200},
         "at_ns": {"type": "integer", "minimum": 0},
-        "argv": {"type": "array", "maxItems": 4096, "items": {"type": "string", "maxLength": 65536}},
+        "argv": {"type": "array", "maxItems": 4096, "items": {"type": "string", "pattern": "[^\\u0000]*", "maxLength": 65536}},
         "home": {"type": "string", "maxLength": 64},
-        "thread": {"type": "boolean"}
+        "thread": {"type": "boolean"},
+        "executable": {"type": "string", "pattern": "[^\\u0000]*", "maxLength": 65536},
+        "exec_evidence": {"enum": ["none", "proc-exe-cmdline", "execve", "execveat"]}
       }
     }
   }

@@ -76,7 +76,9 @@ for count in (6, 30):
     assert sum(entry['lifecycle_entry'] for entry in result['entries']) == 1
     assert result['claimed_births_per_second_saved'] == 0 and 'b0_eligible' not in result
     assert result['b0_status'] == 'pending-reviewed-real-capture'
-    assert result['synthetic'] and result['complete_for_attached_trees']
+    assert result['synthetic'] and not result['complete_for_attached_trees']
+    assert result['seed_cmdline_hints'] == 1
+    assert result['seed_ownership'][0]['qualification'] == 'cmdline-hint-not-observed-entry'
     for record in value['records']:
         raw = run('read-record', path, '--kind', record['kind'], '--name', record['name']).stdout
         assert raw == base64.b64decode(record['base64'])
@@ -131,19 +133,85 @@ assert threads['thread_births_included'] == 1 and threads['observed_births'] == 
 changed = copy.deepcopy(value)
 extra = copy.deepcopy(changed['trace']['events'][-1])
 extra['at_ns'] += 1
-extra['argv'] = ['bash', '/fixture/code/bin/fm-control.sh', 'relaunch']
+extra['argv'] = ['bash', '/fixture/code/bin/fm-control.sh', 'task-0', 'relaunch', '--note', 'saved work']
 changed['trace']['events'].append(extra)
 reexec = json.loads(run('replay', save('reexec.json', changed)).stdout)
 assert reexec['observed_births'] == 29
 assert reexec['entries'][-1]['lifecycle_entry']
 checks += 4
 
+# F1: the public control grammar is TARGET VERB, never VERB TARGET.
+# Each valid verb has an unknown/malformed counterpart, including a task named
+# after a verb. Entry classification does not certify CLI admission or effect.
+for arguments, target, action, shape, lifecycle in (
+    (['task-0', 'interrupt'], 'task-0', 'interrupt', 'recognized', True),
+    (['task-0', 'exit'], 'task-0', 'exit', 'recognized', True),
+    (['task-0', 'relaunch', '--note', 'saved work'], 'task-0', 'relaunch', 'recognized', True),
+    (['relaunch', 'state'], 'relaunch', 'state', 'unknown', False),
+    (['interrupt'], 'interrupt', '', 'malformed', False),
+    ([], '', '', 'malformed', False),
+    (['task-0', 'resume'], 'task-0', 'resume', 'unknown', False),
+    (['task-0', 'restart'], 'task-0', 'restart', 'unknown', False),
+    (['task-0', 'start'], 'task-0', 'start', 'unknown', False),
+    (['task-0', 'stop'], 'task-0', 'stop', 'unknown', False),
+):
+    changed = copy.deepcopy(value)
+    event = next(e for e in changed['trace']['events'] if e['id'] == 'control' and e['kind'] == 'exec')
+    event['argv'] = ['bash', '/fixture/code/bin/fm-control.sh', *arguments]
+    result = json.loads(run('replay', save('control-grammar.json', changed)).stdout)
+    entry = next(e for e in result['entries'] if e['family'] == 'control')
+    assert (entry['target'], entry['action'], entry['call_shape'], entry['lifecycle_entry']) == (
+        target, action, shape, lifecycle), entry
+    assert result['entry_counts']['control'] == 1
+    checks += 1
+
+# Seed argv is mutable proc cmdline, NOT a kernel-observed script entry. Even
+# a matching executable can establish only an explicitly reported ancestry hint.
+changed = copy.deepcopy(value)
+changed['trace']['events'][0]['executable'] = '/bin/echo'
+seed_control = json.loads(run('replay', save('forged-seed.json', changed)).stdout)
+assert seed_control['seed_cmdline_hints'] == 0
+assert seed_control['seed_ownership'][0]['family'] == 'unattributed'
+assert seed_control['entry_counts']['watch'] == 0
+for field in ('executable', 'exec_evidence'):
+    changed = copy.deepcopy(value)
+    del changed['trace']['events'][0][field]
+    reject(changed, 'seed-missing-' + field)
+changed = copy.deepcopy(value)
+changed['trace']['events'][0]['exec_evidence'] = 'execve'
+reject(changed, 'seed-fabricated-proof')
+checks += 4
+
+# A fully observed in-window entry can give a structural complete verdict
+# without claiming seed proof or B0; use this as the loss/seed negative control.
+complete = copy.deepcopy(value)
+complete['trace']['events'] = complete['trace']['events'][:3]
+complete['trace']['events'][0].update(executable='/usr/bin/python3', argv=['python3'])
+complete['trace']['events'][2]['argv'] = ['bash', '/fixture/code/bin/fm-watch.sh']
+complete['trace']['machine_births'] = 4
+complete_result = json.loads(run('replay', save('complete.json', complete)).stdout)
+assert complete_result['complete_for_attached_trees'] and complete_result['seed_cmdline_hints'] == 0
+assert complete_result['exclusive_births']['watch'] == 1 and complete_result['residual'] == 3
+assert complete_result['b0_status'] == 'pending-reviewed-real-capture'
+changed = copy.deepcopy(complete)
+changed['trace']['losses']['unresolved_argv'] = 1
+assert not json.loads(run('replay', save('complete-with-loss.json', changed)).stdout)['complete_for_attached_trees']
+changed = copy.deepcopy(complete)
+changed['trace']['events'][0].update(executable='/bin/bash', argv=['bash', '/fixture/code/bin/fm-watch.sh'])
+assert not json.loads(run('replay', save('complete-with-hint.json', changed)).stdout)['complete_for_attached_trees']
+for field, bad in (('exec_evidence', 'proc-exe-cmdline'), ('executable', '/bin/ba\x00sh'),
+                   ('argv', ['bash', 'bad\x00arg'])):
+    changed = copy.deepcopy(complete)
+    changed['trace']['events'][2][field] = bad
+    reject(changed, 'invalid-exec-' + field)
+checks += 6
+
 # Self-asserted complete/real/certified flags are not provenance or authority.
 changed = copy.deepcopy(value)
 changed['synthetic'] = changed['trace']['synthetic'] = False
 changed['manifest']['certified_complete'] = True
 asserted = json.loads(run('replay', save('asserted-real.json', changed)).stdout)
-assert asserted['complete_for_attached_trees']
+assert not asserted['complete_for_attached_trees'] and asserted['seed_cmdline_hints'] == 1
 assert 'b0_eligible' not in asserted and asserted['b0_status'] == 'pending-reviewed-real-capture'
 checks += 1
 
@@ -159,11 +227,34 @@ run('replay', tmp / 'absent', good=False)
 run('replay', tmp / 'duplicate.json', good=False)
 checks += 4
 
-# Public import interface handles interleaved unfinished vfork and child exec.
-capture = tmp / 'import'
-capture.mkdir()
+# Import and account only sealed SYNTHETIC records through the public CLI.
 manifest = value['manifest']
-(capture / 'manifest.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
+
+
+def imported(name, raw, enrollment=None, seed_argv=None, seed_exe='/bin/bash'):
+    capture = tmp / name
+    capture.mkdir()
+    enrollment = enrollment or manifest
+    (capture / 'manifest.json').write_text(json.dumps(enrollment, sort_keys=True, indent=2) + '\n')
+    (capture / 'strace.log').write_text(raw)
+    (capture / 'strace.stderr').write_bytes(b'')
+    metadata = {'format': 'fm-supervision-capture.v1', 'complete': True,
+                'seeds': [{'pid': 10, 'start_ticks': '1', 'executable': seed_exe,
+                           'exec_evidence': 'proc-exe-cmdline',
+                           'argv': seed_argv or ['bash', '/fixture/code/bin/fm-fleet-snapshot.sh'],
+                           'home': 'fixture'}],
+                'before': {'wall_ns': 1000000000, 'monotonic_ns': 1, 'machine_births': 100},
+                'after': {'wall_ns': 2000000000, 'monotonic_ns': 1000000001, 'machine_births': 105},
+                'raw_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+                'stderr_sha256': hashlib.sha256(b'').hexdigest(),
+                'manifest_sha256': hashlib.sha256((capture / 'manifest.json').read_bytes()).hexdigest()}
+    (capture / 'finished.json').write_text(json.dumps(metadata))
+    trace = json.loads(run('import-strace', capture).stdout)
+    report = json.loads(run('account', save(name + '-trace.json', trace),
+                            '--manifest', capture / 'manifest.json').stdout)
+    return trace, report, capture
+
+
 raw = ('10 1.000000 vfork(<unfinished ...>\n'
        '11 1.010000 execve("/bin/bash", ["bash", "/fixture/code/bin/fm-crew-state.sh", "task-0"], 0x1 /* env */) = 0\n'
        '10 1.020000 <... vfork resumed>) = 11\n'
@@ -171,27 +262,106 @@ raw = ('10 1.000000 vfork(<unfinished ...>\n'
        '12 1.040000 execve("/bin/date", ["date"], 0x1 /* env */) = 0\n'
        '12 1.050000 +++ exited with 0 +++\n'
        '11 1.060000 clone(child_stack=NULL, flags=SIGCHLD) = -1 EAGAIN (unavailable)\n')
-(capture / 'strace.log').write_text(raw)
-(capture / 'strace.stderr').write_bytes(b'')
-metadata = {'format': 'fm-supervision-capture.v1', 'complete': True,
-            'seeds': [{'pid': 10, 'start_ticks': '1', 'argv': ['bash', '/fixture/code/bin/fm-fleet-snapshot.sh'], 'home': 'fixture'}],
-            'before': {'wall_ns': 1000000000, 'monotonic_ns': 1, 'machine_births': 100},
-            'after': {'wall_ns': 2000000000, 'monotonic_ns': 1000000001, 'machine_births': 105},
-            'raw_sha256': hashlib.sha256(raw.encode()).hexdigest(),
-            'stderr_sha256': hashlib.sha256(b'').hexdigest(),
-            'manifest_sha256': hashlib.sha256((capture / 'manifest.json').read_bytes()).hexdigest()}
-(capture / 'finished.json').write_text(json.dumps(metadata))
-trace = json.loads(run('import-strace', capture).stdout)
+trace, report, capture = imported('import', raw)
 assert trace['losses']['unknown_parents'] == 0 and trace['losses']['unknown_lines'] == 0
 assert trace['losses']['attachment_gaps'] == 1
-trace_path = save('import-trace.json', trace)
-report = json.loads(run('account', trace_path, '--manifest', capture / 'manifest.json').stdout)
 assert report['exclusive_births']['crew-state'] == 2 and report['residual'] == 3
 assert not report['complete_for_attached_trees']  # startup gaps are explicit
 # Mutating the trace bytes must refuse rather than silently reinterpret them.
 (capture / 'strace.log').write_text(raw + 'bad\n')
 run('import-strace', capture, good=False)
 checks += 2
+
+# F2: kernel executable evidence, not argv[0], identifies direct entries.
+script = '/fixture/code/bin/fm-spawn.sh'
+for index, (executable, argv, expected) in enumerate((
+    ('/bin/echo', [script, 'hello'], False),
+    ('/bin/echo', ['bash', script, 'task-0'], False),
+    ('/other/bash', ['bash', script, 'task-0'], False),
+    ('/bin/bash', ['arbitrary-argv0', script, 'task-0'], True),
+    ('/usr/bin/bash', ['bash', '-ex', '--', script, 'task-0'], True),
+    ('/bin/sh', ['sh', '--', script, 'task-0'], True),
+    ('/bin/bash', ['bash', '-c', script, 'task-0'], False),
+    ('/bin/bash', ['bash', '-s', script, 'task-0'], False),
+    ('/bin/bash', ['bash', '--rcfile', script, 'task-0'], False),
+    (script, ['alternate-argv0', 'task-0'], True),
+)):
+    for syscall in ('execve', 'execveat'):
+        args = json.dumps(executable) + ', ' + json.dumps(argv) + ', 0x1 /* env */'
+        if syscall == 'execveat':
+            args = 'AT_FDCWD, ' + args + ', 0'
+        raw = ('10 1.000001 clone(flags=SIGCHLD) = 11\n'
+               '11 1.000002 ' + syscall + '(' + args + ') = 0\n')
+        trace, report, _ = imported('exec-' + syscall + '-' + str(index), raw,
+                                    seed_argv=['bash', '/fixture/code/bin/fm-watch.sh'])
+        event = trace['events'][-1]
+        assert event['executable'] == executable and event['exec_evidence'] == syscall
+        assert event['argv'] == argv and trace['losses']['unresolved_argv'] == 0
+        assert report['entry_counts']['spawn'] == int(expected), report
+        assert report['exclusive_births']['spawn'] == int(expected)
+        assert report['exclusive_births']['watch'] == int(not expected)
+        assert report['observed_births'] == 1 and report['seed_cmdline_hints'] == 1
+        if expected:
+            assert report['entries'][0]['target'] == 'task-0'
+            assert report['entries'][0]['exec_evidence'] == syscall
+        checks += 1
+
+# Relative and fd-only identities cannot be upgraded from a forged argv[0].
+for index, executable in enumerate(('', 'fm-spawn.sh')):
+    raw = ('10 1.000001 fork() = 11\n11 1.000002 execveat(3, '
+           + json.dumps(executable) + ', ["/fixture/code/bin/fm-spawn.sh", "task-0"], '
+           '0x1 /* env */, AT_EMPTY_PATH) = 0\n')
+    trace, report, _ = imported('unresolved-exec-' + str(index), raw)
+    assert trace['losses']['unresolved_argv'] == 1
+    assert trace['events'][-1]['executable'] == executable
+    assert report['entry_counts']['spawn'] == 0 and not report['complete_for_attached_trees']
+    checks += 1
+
+# F3: original entry ordinals preserve causality even at tied timestamps.
+# Cover vfork and both clone spellings, with a second nested unfinished call.
+for index, (call, operands) in enumerate((('vfork', ''), ('clone', 'flags=SIGCHLD'),
+                                        ('clone3', '{flags=SIGCHLD}, 88'))):
+    for tied in (True, False):
+        t_child, t_resume = ('1.000001', '1.000001') if tied else ('1.000002', '1.000003')
+        raw = ('10 1.000001 ' + call + '(' + operands + '<unfinished ...>\n'
+               '11 ' + t_child + ' execve("/bin/bash", ["bash", "/fixture/code/bin/fm-crew-state.sh", "task-0"], 0x1 /* env */) = 0\n'
+               '10 ' + t_resume + ' <... ' + call + ' resumed>) = 11\n'
+               '11 1.000004 ' + call + '(' + operands + '<unfinished ...>\n'
+               '12 1.000004 execve("/bin/date", ["date"], 0x1 /* env */) = 0\n'
+               '11 1.000004 <... ' + call + ' resumed>) = 12\n')
+        trace, report, _ = imported('tied-' + str(index) + '-' + str(tied), raw)
+        assert trace['losses']['unknown_parents'] == 0 and trace['losses']['unfinished_calls'] == 0
+        assert trace['losses']['unknown_lines'] == 0
+        assert [e['kind'] for e in trace['events']] == ['seed', 'birth', 'exec', 'birth', 'exec']
+        assert report['entry_counts']['crew-state'] == 1
+        assert report['exclusive_births']['crew-state'] == 2
+        assert report['observed_births'] == 2 and report['residual'] == 3
+        checks += 1
+# Genuine orphan exec is still a declared loss, not a fabricated child.
+trace, report, _ = imported('orphan-exec', '11 1.000001 execve("/bin/date", ["date"], 0x1 /* env */) = 0\n')
+assert trace['losses']['unknown_parents'] == 1 and report['entries'] == []
+assert report['observed_births'] == 0
+checks += 1
+
+# F5: executable-path brackets and quoted/escaped UTF-8 bytes cannot become
+# the argv delimiter. Non-entry paths remain non-entries (negative control).
+def c_quote(text):
+    return '"' + ''.join('\\%03o' % b if b >= 128 else '\\' + chr(b) if b in (34, 92)
+                         else chr(b) for b in text.encode('utf-8')) + '"'
+
+
+for index, code_root in enumerate(('/fixture/[code]', '/fixture/quote"back\\slash', '/fixture/ää')):
+    enrollment = copy.deepcopy(manifest)
+    enrollment['homes'][0]['code_root'] = code_root
+    for direct in (True, False):
+        executable = code_root + '/bin/fm-spawn.sh' if direct else code_root + '/bin/echo'
+        raw = ('10 1.000001 fork() = 11\n11 1.000002 execve(' + c_quote(executable) + ', ['
+               + c_quote(code_root + '/bin/fm-spawn.sh') + ', "task-0"], 0x1 /* env */) = 0\n')
+        trace, report, _ = imported('path-' + str(index) + '-' + str(direct), raw, enrollment)
+        assert trace['events'][-1]['executable'] == executable
+        assert trace['losses']['unresolved_argv'] == 0 and trace['losses']['unknown_lines'] == 0
+        assert report['entry_counts']['spawn'] == int(direct)
+        checks += 1
 
 # Read-only probe never claims a successful attachment or permission proof.
 probe = json.loads(run('probe').stdout)
@@ -323,11 +493,34 @@ if fm_supervision_fence_check 1 7 "$TMP/owner"; then fail 'unsupported owner mod
 printf 'fm-supervision-owner.v1\tlegacy\t7\nextra' > "$TMP/owner"
 if fm_supervision_fence_check 1 7 "$TMP/owner"; then fail 'extra partial line accepted'; fi
 if fm_supervision_fence_check 1 07 "$TMP/owner"; then fail 'noncanonical epoch accepted'; fi
+# F4: read normally discards NUL. Every binary position must fail closed,
+# beside a byte-exact positive control; no producer or live record is involved.
+for binary_record in 'fm-supervision-owner.v1\tlegacy\t7\0\n' \
+  'fm-supervision-owner.v1\tleg\0acy\t7\n' \
+  'fm-supervision-ow\0ner.v1\tlegacy\t7\n' \
+  'fm-supervision-owner.v1\tlegacy\t7\n\0'; do
+  printf '%b' "$binary_record" > "$TMP/owner"
+  if fm_supervision_fence_check 1 7 "$TMP/owner"; then fail 'NUL owner accepted'; fi
+  printf 'fm-supervision-owner.v1\tlegacy\t7\n' > "$TMP/owner"
+  fm_supervision_fence_check 1 7 "$TMP/owner" || fail 'binary negative control refused valid owner'
+done
+printf 'fm-supervision-owner.v1\tlegacy\t7' > "$TMP/owner"
+if fm_supervision_fence_check 1 7 "$TMP/owner"; then fail 'unterminated owner accepted'; fi
+printf 'fm-supervision-owner.v1\tlegacy\t7\n\n' > "$TMP/owner"
+if fm_supervision_fence_check 1 7 "$TMP/owner"; then fail 'extra newline accepted'; fi
+printf '%064d' 0 > "$TMP/owner"
+if fm_supervision_fence_check 1 7 "$TMP/owner"; then fail 'size-bound owner accepted'; fi
+printf 'fm-supervision-owner.v1\tlegacy\t7\n' > "$TMP/owner"
+ln -s "$TMP/owner" "$TMP/owner-link"
+if fm_supervision_fence_check 1 7 "$TMP/owner-link"; then fail 'symlink owner accepted'; fi
+if fm_supervision_fence_check 1 7 "$TMP/no-owner"; then fail 'missing owner accepted'; fi
+if fm_supervision_fence_check invalid 7 "$TMP/owner"; then fail 'invalid enable accepted'; fi
 # No helper command is needed even when the bridge is enabled.
 (
   # shellcheck disable=SC2123 # Intentionally prove the APIs need no external helper.
   PATH=/nonexistent
   fm_supervision_fence_check 0 ignored /does/not/exist || exit 1
+  fm_supervision_fence_check 1 7 "$TMP/owner" || exit 1
   fm_supervision_activation_supported fm-supervision-readers.v1 legacy legacy-epoch-check.v1 || exit 1
   fm_supervision_reader_capabilities
 ) > "$TMP/capabilities" || fail 'bridge unexpectedly needed an external command'

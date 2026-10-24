@@ -142,14 +142,13 @@ fm_supervision_activation_supported() {
 fm_supervision_fence_check() {
   [ "$#" -eq 3 ] || return 1
   case "$1" in 0) return 0 ;; 1) ;; *) return 1 ;; esac
-  local expected=$2 record=$3 line extra
+  local expected=$2 record=$3 line='' LC_ALL=C
   case "$expected" in ''|0*|*[!0-9]*) return 1 ;; esac
   [ "${#expected}" -le 18 ] || return 1
   [ -f "$record" ] && [ ! -L "$record" ] || return 1
-  {
-    IFS= read -r line || return 1
-    extra=''
-    if IFS= read -r extra || [ -n "$extra" ]; then return 1; fi
-  } < "$record" || return 1
-  [ "$line" = "fm-supervision-owner.v1"$'\t'"legacy"$'\t'"$expected" ]
+  # A NUL delimiter makes read succeed on binary input instead of silently
+  # discarding it. Hitting the size bound also refuses; valid records fit in
+  # fewer than 64 bytes. Only EOF without a NUL can reach the exact byte check.
+  if IFS= read -r -d '' -n 64 line < "$record"; then return 1; fi
+  [ "$line" = "fm-supervision-owner.v1"$'\t'"legacy"$'\t'"$expected"$'\n' ]
 }

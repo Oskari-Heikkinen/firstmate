@@ -26,7 +26,11 @@ def make(crews):
     def event(kind, ident, argv=None, parent="", at=None):
         events.append({"kind": kind, "id": ident, "argv": argv or [], "parent": parent,
                        "at_ns": at if at is not None else len(events) + 1,
-                       "home": "fixture" if kind == "seed" else "", "thread": False})
+                       "home": "fixture" if kind == "seed" else "", "thread": False,
+                       "executable": ("/bin/bash" if argv and argv[0] == "bash"
+                                      else argv[0] if argv else ""),
+                       "exec_evidence": {"seed": "proc-exe-cmdline", "birth": "none",
+                                         "exec": "execve"}[kind]})
 
     event("seed", "root", ["bash", "/fixture/code/bin/fm-watch.sh"])
     event("birth", "summary", parent="root")
@@ -40,9 +44,12 @@ def make(crews):
         for suffix in ("date", "stat", "capture"):
             event("birth", ident + "-" + suffix, parent=ident)
             event("exec", ident + "-" + suffix, ["/usr/bin/" + suffix])
-    for family in ("wake-drain", "spawn", "control"):
+    for family, arguments in (("wake-drain", []),
+                              ("spawn", ["task-new", "/fixture/project", "--mode",
+                                         "direct-push", "--yolo", "off"]),
+                              ("control", ["task-0", "state"])):
         event("birth", family, parent="root")
-        event("exec", family, ["bash", "/fixture/code/bin/fm-" + family + ".sh", "state"])
+        event("exec", family, ["bash", "/fixture/code/bin/fm-" + family + ".sh", *arguments])
     # Text mentioning a sourced spawn library is not an executable entry.
     event("birth", "sourced", parent="root")
     event("exec", "sourced", ["bash", "-c", ". /fixture/code/bin/fm-spawn.sh"])
