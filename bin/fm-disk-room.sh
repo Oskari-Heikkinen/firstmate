@@ -155,8 +155,9 @@
 # EPOCH is UTC Unix seconds; sizes are nonnegative integers of <=18 digits.
 # Before COMMAND, a unique STATE/write-pending/KIND/TOKEN file is created:
 #   fm-disk-pending/v1 EPOCH NAME
-# Its fd 8 flock is held by the wrapper, never COMMAND. Under the shared state
-# lock, typed readers allow still-locked attempts (concurrent jobs), but refuse
+# Its fd 8 flock belongs to the wrapper; after acquisition no child helper or
+# COMMAND inherits it. Under the shared state lock, typed readers allow
+# still-locked attempts (concurrent jobs), but refuse
 # an unlocked/unreadable attempt even with an explicit declaration or old high.
 # Successful append removes only that attempt before releasing its flock;
 # counter, append, cleanup, or wrapper failure leaves it for recover-write.
@@ -1302,13 +1303,14 @@ check_write_pending() {
 
 # Shared lock held. Failure leaves any created token inactive and fail-closed.
 begin_write() {
-  local kind=$1 name=$2 dir
+  local kind=$1 name=$2 dir timestamp
   dir="$(state_dir)/write-pending/$kind"
   mkdir -p "$dir" || return 1
   WRITE_PENDING=$(mktemp "$dir/attempt.XXXXXX") || return 1
+  timestamp=$(now) || return 1
   exec 8<>"$WRITE_PENDING" || return 1
   flock -n 8 || return 1
-  printf 'fm-disk-pending/v1 %s %s\n' "$(now)" "$name" >&8
+  printf 'fm-disk-pending/v1 %s %s\n' "$timestamp" "$name" >&8
 }
 
 # Shell builtins only: a subshell would read the wrong process's counters.
@@ -1340,13 +1342,15 @@ append_write() {
 # errors, and close fd 8 before fd 9 in the caller on both success and failure.
 record_write() {
   local kind=$1 bytes=$2 rc=$3 dir
-  dir=$(state_dir)
-  if ! { exec 9>"$dir/.lock"; } || ! flock -w 30 9; then
+  dir=$(state_dir 8>&-)
+  if ! { exec 9>"$dir/.lock"; } || ! flock -w 30 9 8>&-; then
     printf 'fm-disk-room: cannot lock completed write for %s; recover %s before retrying\n' "$kind" "$WRITE_PENDING" >&2
     return 1
   fi
-  append_write "$kind" "$bytes" "$rc" || return 1
-  rm -- "$WRITE_PENDING" || { printf 'fm-disk-room: cannot retire pending write %s; use recover-write\n' "$WRITE_PENDING" >&2; return 1; }
+  # Close in a subshell before invoking helpers, not a function redirection
+  # that temporarily saves a second copy of the lock descriptor in this shell.
+  (exec 8>&-; append_write "$kind" "$bytes" "$rc") || return 1
+  rm -- "$WRITE_PENDING" 8>&- || { printf 'fm-disk-room: cannot retire pending write %s; use recover-write\n' "$WRITE_PENDING" >&2; return 1; }
 }
 
 cmd_recover_write() {
@@ -1431,7 +1435,12 @@ cmd_run() {
     printf 'fm-disk-room: refused %s: cannot establish pending write for kind %s\n' "$name" "$kind" >&2
     return 75
   fi
-  write_reservation "$name" "$expect" "$$" 0
+  if [ -n "$kind" ]; then
+    # The wrapper alone owns the pending lock while reservation helpers run.
+    (exec 8>&-; write_reservation "$name" "$expect" "$$" 0) || return 2
+  else
+    write_reservation "$name" "$expect" "$$" 0
+  fi
   exec 9>&-
   [ -n "$kind" ] || exec "$@"
   read_write_counter || { printf 'fm-disk-room: refused %s: cannot measure storage write counter\n' "$name" >&2; return 75; }
