@@ -1414,7 +1414,14 @@ if [ "$rc" -eq 0 ] && [ "$file" = "$FAULT_HISTORY" ] && [ -f "$FAULT_ARM" ]; the
 fi
 exit "$rc"
 SH
-  chmod +x "$fbin/awk"
+  cat >"$fbin/rm" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${FAULT_RETIRE-}" ] && [ "${!#}" = "$FAULT_RETIRE" ]; then
+  touch "$FAULT_RETIRE_HIT"; exit 1
+fi
+exec /bin/rm "$@"
+SH
+  chmod +x "$fbin/awk" "$fbin/rm"
   for result in 0 9; do
     kind="append-failed-$result"
     printf 'fm-disk-write/v1 1 0 0\n' >"$TMP_ROOT/state/write-history/$kind"
@@ -1441,10 +1448,43 @@ SH
     local tokens=("$TMP_ROOT/state/write-pending/$kind/"*)
     assert_equals 1 "${#tokens[@]}" "only the failed attempt remains for recovery"
     token=${tokens[0]##*/}
+    # Recovery has the same append-before-retire safety boundary as completion.
+    # Bad input or a failed read/append must never consume the recovery target.
+    local status
+    for status in -1 256 00 invalid; do
+      run_room recover-write "$kind" "$token" 1M "$status" >/dev/null 2>&1; rc=$?
+      expect_code 2 "$rc" "recovery rejects invalid command status $status"
+      assert_present "${tokens[0]}" "invalid recovery input cannot retire an attempt"
+    done
+    printf 'corrupt\n' >"$TMP_ROOT/state/write-history/$kind"
+    out=$(run_room recover-write "$kind" "$token" 1M "$result" 2>&1); rc=$?
+    expect_code 2 "$rc" "recovery refuses unreadable history rather than discarding the missing write"
+    assert_contains "$out" 'corrupt write history' "recovery diagnoses the failed history validation"
+    assert_present "${tokens[0]}" "failed history validation retains the recovery target"
+    printf 'fm-disk-write/v1 1 0 0\n' >"$TMP_ROOT/state/write-history/$kind"
+    touch "$TMP_ROOT/fault-arm"
+    out=$(PATH="$fbin:$PATH" REAL_AWK="$real_awk" FAULT_HISTORY="$TMP_ROOT/state/write-history/$kind" FAULT_ARM="$TMP_ROOT/fault-arm" \
+      run_room recover-write "$kind" "$token" 1M "$result" 2>&1); rc=$?
+    expect_code 2 "$rc" "recovery append ENOSPC cannot report success"
+    assert_contains "$out" 'cannot record write history' "recovery reached the actual append failure"
+    assert_present "${tokens[0]}" "recovery append failure cannot retire the attempt"
+    assert_not_contains "$out" 'recovered write:' "failed recovery never prints a success notice"
+    rm -- "$TMP_ROOT/state/write-history/$kind"
+    mv -- "$TMP_ROOT/state/write-history/$kind.saved" "$TMP_ROOT/state/write-history/$kind"
+    rm -f "$TMP_ROOT/recovery-retire-hit"
+    out=$(PATH="$fbin:$PATH" FAULT_RETIRE="${tokens[0]}" FAULT_RETIRE_HIT="$TMP_ROOT/recovery-retire-hit" \
+      run_room recover-write "$kind" "$token" 1M "$result" 2>&1); rc=$?
+    expect_code 2 "$rc" "recovery token retirement failure cannot report success"
+    assert_present "$TMP_ROOT/recovery-retire-hit" "recovery reached the retirement failure"
+    assert_contains "$out" 'cannot retire pending write' "recovery cleanup failure is diagnosed"
+    assert_present "${tokens[0]}" "cleanup failure retains the token despite its appended sample"
+    assert_not_contains "$out" 'recovered write:' "cleanup failure never prints a success notice"
+    run_room check --kind "$kind" --expect-write 1M >/dev/null; rc=$?
+    expect_code 2 "$rc" "a sample appended by failed recovery cannot bypass its unresolved token"
     out=$(run_room recover-write "$kind" "$token" 1M "$result"); rc=$?
     expect_code 0 "$rc" "evidence-backed recovery records the missing write"
     out=$(run_room write-history "$kind")
-    assert_equals 2 "$(json_field "$out" samples)" "recovery appends without losing the old sample"
+    assert_equals 3 "$(json_field "$out" samples)" "retrying recovery retains the old sample and the conservative duplicate from failed cleanup"
     assert_equals 1048576 "$(json_field "$out" high_bytes)" "recovery's conservative observation replaces the stale high"
     out=$(run_room check --kind "$kind"); rc=$?
     expect_code 0 "$rc" "inferred admission resumes only after recovery"
@@ -1454,6 +1494,196 @@ SH
     expect_code 2 "$rc" "replaying recovery cannot duplicate a retired attempt"
   done
   pass "failed appends invalidate intact old highs until evidence-backed recovery"
+}
+
+# A readable empty pending directory is not proof that a token can be created.
+# Exercise the real permission failure on unprivileged hosts, plus deterministic
+# dependency failures (including as root) before any command is allowed to run.
+test_pending_creation_refusals() {
+  [ -r /proc/$$/io ] && [ -c /dev/full ] || return 0
+  reset_state
+  set_sizes 60 600 400
+  local out rc mode dir="$TMP_ROOT/state/write-pending/creation" fbin="$TMP_ROOT/pending-fault-bin"
+  local real_mkdir real_mktemp real_flock
+  real_mkdir=$(command -v mkdir)
+  real_mktemp=$(command -v mktemp)
+  real_flock=$(command -v flock)
+  mkdir -p "$dir" "$TMP_ROOT/state/write-history" "$fbin"
+  printf 'fm-disk-write/v1 1 0 0\n' >"$TMP_ROOT/state/write-history/creation"
+  chmod 0500 "$dir"
+  if [ "$(id -u)" -ne 0 ]; then
+    out=$(run_room run --name creation --kind creation --expect-write 1M -- \
+      sh -c 'touch "$1"' _ "$TMP_ROOT/creation-executed" 2>&1); rc=$?
+    chmod 0700 "$dir"
+    expect_code 75 "$rc" "pending creation permission failure cannot report command success"
+    assert_contains "$out" 'cannot establish pending write' "the failure reaches token creation, not the history or counter guard"
+    assert_absent "$TMP_ROOT/creation-executed" "no command runs without a pending token"
+    out=$(run_room write-history creation)
+    assert_equals 1 "$(json_field "$out" samples)" "creation refusal cannot record a completed job"
+    run_room run --name creation --kind creation --expect-write 1M -- sh -c 'touch "$1"' _ "$TMP_ROOT/creation-executed"; rc=$?
+    expect_code 0 "$rc" "restoring directory write permission permits the same job"
+    assert_present "$TMP_ROOT/creation-executed" "the permission counterfactual actually executes"
+    rm -- "$TMP_ROOT/creation-executed"
+  else
+    chmod 0700 "$dir"
+    printf '# root bypasses mode 0500; deterministic pending-creation faults still run\n'
+  fi
+  cat >"$fbin/mkdir" <<'SH'
+#!/usr/bin/env bash
+if [ "$FAULT_MODE" = directory ] && [ "${!#}" = "$FAULT_DIR" ]; then
+  touch "$FAULT_HIT"; exit 1
+fi
+exec "$REAL_MKDIR" "$@"
+SH
+  cat >"$fbin/mktemp" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "$FAULT_DIR/attempt.XXXXXX" ]; then
+  case "$FAULT_MODE" in
+    temporary) touch "$FAULT_HIT"; exit 1 ;;
+    open|marker)
+      file=$("$REAL_MKTEMP" "$@") || exit
+      rm -- "$file"
+      if [ "$FAULT_MODE" = open ]; then mkdir -- "$file"
+      else ln -s /dev/full "$file"; fi
+      touch "$FAULT_HIT"
+      printf '%s\n' "$file"
+      exit ;;
+  esac
+fi
+exec "$REAL_MKTEMP" "$@"
+SH
+  cat >"$fbin/flock" <<'SH'
+#!/usr/bin/env bash
+if [ "$FAULT_MODE" = lock ] && [ "${!#}" = 8 ]; then
+  touch "$FAULT_HIT"; exit 1
+fi
+exec "$REAL_FLOCK" "$@"
+SH
+  chmod +x "$fbin/mkdir" "$fbin/mktemp" "$fbin/flock"
+  for mode in directory temporary open lock marker; do
+    rm -rf -- "$dir"
+    mkdir -p "$dir"
+    rm -f -- "$TMP_ROOT/pending-fault-hit"
+    out=$(PATH="$fbin:$PATH" FAULT_MODE="$mode" FAULT_DIR="$dir" FAULT_HIT="$TMP_ROOT/pending-fault-hit" \
+      REAL_MKDIR="$real_mkdir" REAL_MKTEMP="$real_mktemp" REAL_FLOCK="$real_flock" \
+      run_room run --name creation --kind creation --expect-write 1M -- \
+      sh -c 'touch "$1"' _ "$TMP_ROOT/creation-executed" 2>&1); rc=$?
+    expect_code 75 "$rc" "$mode pending establishment failure refuses rather than reporting success"
+    assert_present "$TMP_ROOT/pending-fault-hit" "the $mode fault was actually exercised"
+    assert_contains "$out" 'cannot establish pending write' "the $mode fault is diagnosed at the creation boundary"
+    assert_absent "$TMP_ROOT/creation-executed" "$mode failure cannot start the command"
+  done
+  pass "pending creation failures return 75 and never execute the command"
+}
+
+# Invalid pending state must not look like an empty set of active attempts.
+test_unreadable_pending_refusals() {
+  local mode out rc pending_root="$TMP_ROOT/state/write-pending"
+  for mode in root kind token dangling; do
+    reset_state
+    set_sizes 60 600 400
+    mkdir -p "$TMP_ROOT/state/write-history"
+    printf 'fm-disk-write/v1 1 0 0\n' >"$TMP_ROOT/state/write-history/broken-pending"
+    case "$mode" in
+      root) printf 'not a directory\n' >"$pending_root" ;;
+      kind) mkdir -p "$pending_root"; printf 'not a directory\n' >"$pending_root/broken-pending" ;;
+      token) mkdir -p "$pending_root/broken-pending/attempt.invalid" ;;
+      dangling) mkdir -p "$pending_root/broken-pending"; ln -s "$TMP_ROOT/absent-attempt" "$pending_root/broken-pending/attempt.invalid" ;;
+    esac
+    out=$(run_room check --kind broken-pending --expect-write 0); rc=$?
+    expect_code 2 "$rc" "$mode pending state fails explicit admission even with valid zero history"
+    assert_contains "$out" 'cannot read pending' "the $mode pending reading is named"
+    run_room check --kind broken-pending >/dev/null; rc=$?
+    expect_code 2 "$rc" "$mode pending state also refuses inferred admission"
+    out=$(run_room run --name invalid-pending --kind broken-pending --expect-write 1M -- \
+      sh -c 'echo INVALID_PENDING_COMMAND_STARTED' 2>&1); rc=$?
+    expect_code 75 "$rc" "$mode pending state refuses execution"
+    assert_not_contains "$out" INVALID_PENDING_COMMAND_STARTED "invalid pending state cannot start work"
+    run_room write-history broken-pending >/dev/null 2>&1; rc=$?
+    expect_code 2 "$rc" "queries cannot certify history with $mode pending state"
+  done
+  pass "unreadable pending roots, kinds and tokens fail closed on every typed interface"
+}
+
+# Once a command has run, every completion failure must leave a recoverable
+# attempt and preserve a failing command's status rather than losing the hold.
+test_pending_completion_failures() {
+  [ -r /proc/$$/io ] || return 0
+  local mode result out rc token expected samples
+  local fbin="$TMP_ROOT/completion-fault-bin" proc="$TMP_ROOT/accounting-proc" real_flock real_rm
+  real_flock=$(command -v flock)
+  real_rm=$(command -v rm)
+  mkdir -p "$fbin"
+  cat >"$fbin/flock" <<'SH'
+#!/usr/bin/env bash
+if [ "$FAULT_MODE" = lock-flock ] && [ "${!#}" = 9 ] && [ -f "$FAULT_ARM" ]; then
+  touch "$FAULT_HIT"; exit 1
+fi
+exec "$REAL_FLOCK" "$@"
+SH
+  cat >"$fbin/rm" <<'SH'
+#!/usr/bin/env bash
+if [ "$FAULT_MODE" = retire ] && [[ "${!#}" == "$FM_DISK_ROOM_STATE/write-pending/"* ]]; then
+  touch "$FAULT_HIT"; exit 1
+fi
+exec "$REAL_RM" "$@"
+SH
+  chmod +x "$fbin/flock" "$fbin/rm"
+  for mode in lock-open lock-flock retire counter-missing counter-decreased; do
+    for result in 0 9; do
+      reset_state
+      set_sizes 60 600 400
+      mkdir -p "$TMP_ROOT/state/write-history"
+      printf 'fm-disk-write/v1 1 0 0\n' >"$TMP_ROOT/state/write-history/completion"
+      rm -f "$TMP_ROOT/completion-arm" "$TMP_ROOT/completion-hit"
+      out=$(
+        ROOM_CMD=(bash -c 'mkdir -p "$FM_DISK_ROOM_WRITE_PROC/$$"; printf "write_bytes: 100\n" >"$FM_DISK_ROOM_WRITE_PROC/$$/io"; exec "$@"' _ "$DISK_ROOM")
+        PATH="$fbin:$PATH" FAULT_MODE="$mode" FAULT_ARM="$TMP_ROOT/completion-arm" FAULT_HIT="$TMP_ROOT/completion-hit" \
+          REAL_FLOCK="$real_flock" REAL_RM="$real_rm" FM_DISK_ROOM_WRITE_PROC="$proc" \
+          run_room run --name completion --kind completion --expect-write 1M -- sh -c '
+            touch "$FAULT_ARM"
+            case "$FAULT_MODE" in
+              lock-open) rm -- "$FM_DISK_ROOM_STATE/.lock"; mkdir "$FM_DISK_ROOM_STATE/.lock"; touch "$FAULT_HIT" ;;
+              counter-missing) rm -- "$FM_DISK_ROOM_WRITE_PROC/$PPID/io"; touch "$FAULT_HIT" ;;
+              counter-decreased) printf "write_bytes: 99\n" >"$FM_DISK_ROOM_WRITE_PROC/$PPID/io"; touch "$FAULT_HIT" ;;
+            esac
+            exit "$1"' _ "$result" 2>&1
+      ); rc=$?
+      expected=$result
+      [ "$result" -ne 0 ] || expected=74
+      expect_code "$expected" "$mode completion failure retains the correct status for command result $result"
+      assert_present "$TMP_ROOT/completion-arm" "the command actually ran before $mode failure"
+      assert_present "$TMP_ROOT/completion-hit" "the $mode completion fault was reached"
+      case "$mode" in
+        lock-*) assert_contains "$out" 'cannot lock completed write' "completion lock failure is diagnosed" ;;
+        retire) assert_contains "$out" 'cannot retire pending write' "token retirement failure is diagnosed" ;;
+        counter-*) assert_contains "$out" 'cannot measure completed write' "completion counter failure is diagnosed" ;;
+      esac
+      [ "$mode" != lock-open ] || rmdir "$TMP_ROOT/state/.lock"
+      local tokens=("$TMP_ROOT/state/write-pending/completion/"*)
+      assert_equals 1 "${#tokens[@]}" "$mode failure retains exactly the affected attempt"
+      assert_present "${tokens[0]}" "the retained attempt is a real recovery target"
+      token=${tokens[0]##*/}
+      out=$(run_room check --kind completion --expect-write 0); rc=$?
+      expect_code 2 "$rc" "$mode failure cannot authorize a stale explicit zero"
+      assert_contains "$out" 'unresolved write' "the failed attempt holds admission"
+      run_room check --kind completion >/dev/null; rc=$?
+      expect_code 2 "$rc" "$mode failure cannot authorize an inferred write"
+      out=$(run_room run --name after-failure --kind completion --expect-write 1M -- sh -c 'echo LOST_HOLD_COMMAND_STARTED' 2>&1); rc=$?
+      expect_code 75 "$rc" "$mode completion failure holds subsequent execution"
+      assert_not_contains "$out" LOST_HOLD_COMMAND_STARTED "an explicit declaration cannot bypass the retained attempt"
+      run_room write-history completion >/dev/null 2>&1; rc=$?
+      expect_code 2 "$rc" "$mode failure makes the old history nonauthoritative"
+      out=$(run_room recover-write completion "$token" 1M "$result"); rc=$?
+      expect_code 0 "$rc" "repair and evidence-backed recovery clear $mode failure"
+      out=$(run_room write-history completion)
+      samples=2
+      [ "$mode" != retire ] || samples=3
+      assert_equals "$samples" "$(json_field "$out" samples)" "recovery retains prior appends, including a sample whose cleanup failed"
+      assert_equals 1048576 "$(json_field "$out" high_bytes)" "recovery restores a conservative high"
+    done
+  done
+  pass "completion lock, retirement and counter failures preserve status and require recovery"
 }
 
 # Keep an actual command active while admitting another of the same kind.
@@ -1535,6 +1765,9 @@ test_self_test_v2() {
 test_unavailable_write_counter
 test_history_capacity_boundary
 test_unrecorded_write_blocks_kind
+test_pending_creation_refusals
+test_unreadable_pending_refusals
+test_pending_completion_failures
 test_live_pending_concurrency
 test_interface_v2_history
 test_corrupt_write_history
