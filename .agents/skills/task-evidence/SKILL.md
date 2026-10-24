@@ -43,7 +43,8 @@ It is not a separate step anyone invokes, polls, or waits on.
 ## On a refusal
 
 Read each named path.
-For copy or link-manifest-write failures, restore writable storage and retry without removing the evidence declaration.
+Every manifest write, regular or link, fails closed under the library header's refusal contract.
+For copy or manifest-write failures, restore writable storage and retry without removing the evidence declaration.
 If it is real evidence, declare it in `data/<id>/evidence.list` and re-run cleanup; if the reference is incidental, remove or rewrite it in the record.
 `--force` does not lift this refusal, and a captain's discard authority for unlanded work is not permission to orphan a report's evidence.
 A declared path whose source is already gone is accepted only when an earlier copy under `data/<id>/evidence/` still verifies against its manifest.

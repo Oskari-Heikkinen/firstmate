@@ -23,8 +23,9 @@
 # sha256sum format, so `cd data/<id>/evidence && sha256sum -c MANIFEST.sha256`
 # re-verifies it later. The new evidence tree is built in a staging directory,
 # each copied file's hash is compared with its source's, and only a verified
-# tree replaces the previous one. A failed link-manifest append refuses before
-# installation or empty-snapshot success, retaining sources and any prior tree.
+# tree replaces the previous one. Every manifest write, regular or link, fails
+# closed before installation or empty-snapshot success, retaining sources and
+# any prior tree.
 # MANIFEST.sha256.links separately records hashes
 # of `readlink` output for symlinks; these are checked without following links. A declared path whose source is gone (a
 # retried cleanup after the copy was already returned) keeps its earlier copy
@@ -417,13 +418,13 @@ fm_task_evidence_copy_source() {
       h1=$(fm_task_evidence_hash "$f") && [ -n "$h1" ] || return 1
       h2=$(fm_task_evidence_hash "$dest$rel") && [ -n "$h2" ] || return 1
       [ "$h1" = "$h2" ] || { echo "REFUSED: copied evidence $dest$rel does not match its source" >&2; return 1; }
-      printf '%s  %s%s\n' "$h2" "$key" "$rel" >> "$manifest"
+      printf '%s  %s%s\n' "$h2" "$key" "$rel" >> "$manifest" || return 1
     done < <(find "$src" -type f -print)
   else
     h1=$(fm_task_evidence_hash "$src") && [ -n "$h1" ] || return 1
     h2=$(fm_task_evidence_hash "$dest") && [ -n "$h2" ] || return 1
     [ "$h1" = "$h2" ] || { echo "REFUSED: copied evidence $dest does not match its source" >&2; return 1; }
-    printf '%s  %s\n' "$h2" "$key" >> "$manifest"
+    printf '%s  %s\n' "$h2" "$key" >> "$manifest" || return 1
   fi
 }
 
@@ -455,7 +456,7 @@ fm_task_evidence_carry_prior() {
   [ "$found" = 1 ] || return 1
   mkdir -p -- "$(dirname -- "$staging/$key")" || return 2
   cp -RPp -- "$prior/$key" "$staging/$key" || return 2
-  [ -z "$regular_lines" ] || printf '%s\n' "$regular_lines" >> "$manifest"
+  [ -z "$regular_lines" ] || printf '%s\n' "$regular_lines" >> "$manifest" || return 2
   [ -z "$link_lines" ] || printf '%s\n' "$link_lines" >> "$manifest.links" || return 2
   return 0
 }

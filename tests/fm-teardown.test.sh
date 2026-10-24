@@ -7153,6 +7153,143 @@ SH
   pass 'fresh standalone/nested and carried link-manifest append failures refuse; unfaulted safety and success controls hold'
 }
 
+# One public teardown scenario, also callable in isolation by remote mutation
+# proofs. The write fault is below the production helpers, after copying/hashing.
+regular_manifest_append_case() {  # <root> <variant> <flag> <snapshot> [ownership]
+  local root_name=$1 variant=$2 flag=$3 snapshot=$4 ownership=${5:-owned}
+  local case_dir base label key source declaration ev hash rc
+  case_dir=$(make_case "regular-append-$root_name-$variant-${flag:-normal}-$snapshot-$ownership")
+  ignore_workspace "$case_dir"
+  land_shippable_commit "$case_dir"
+  if [ "$ownership" = reassigned ]; then
+    # Fixture-only pool identity, not a real Treehouse allocation or lifecycle.
+    mkdir -p "$case_dir/pool/1"
+    mv "$case_dir/wt" "$case_dir/pool/1/project"
+    ln -s pool/1/project "$case_dir/wt"
+    printf '%s\n' "$case_dir/pool/1/project/.git" > "$case_dir/project/.git/worktrees/wt/gitdir"
+    printf '{"worktrees":[{"name":"1","path":"%s"}]}\n' \
+      "$case_dir/pool/1/project" > "$case_dir/pool/treehouse-state.json"
+    printf 'task=successor\nhome=%s\n' "$case_dir" > "$case_dir/pool/1/.fm-slot-owner"
+    cp "$case_dir/pool/1/.fm-slot-owner" "$case_dir/claim-before"
+  fi
+  write_meta "$case_dir" no-mistakes ship
+  printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+  cp "$case_dir/state/task-x1.meta" "$case_dir/meta-before"
+  mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/data/task-x1"
+  if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace
+  else base="$case_dir/tasktmp"; label=tmp; fi
+  if [ "$variant" = fresh-directory ]; then
+    source="$base/proofs/proof"; key="$label/proofs/proof"; declaration="$base/proofs"
+  else
+    source="$base/proof"; key="$label/proof"; declaration=$source
+  fi
+  ev="$case_dir/data/task-x1/evidence"
+  if [ "$snapshot" = prior ]; then
+    mkdir -p "$ev/${key%/*}"
+    printf 'prior evidence bytes\n' > "$ev/$key"
+    hash=$({ sha256sum "$ev/$key" 2>/dev/null || shasum -a 256 "$ev/$key"; } | awk '{print $1}')
+    printf '%s  %s\n' "$hash" "$key" > "$ev/MANIFEST.sha256"
+    : > "$ev/MANIFEST.sha256.links"
+    printf 'prior tree sentinel\n' > "$ev/sentinel"
+    evidence_manifest_verifies "$ev" || fail 'regular append prior fixture does not verify'
+    cp -RPp "$ev" "$case_dir/prior-tree"
+  fi
+  if [ "$variant" != prior ]; then
+    mkdir -p "${source%/*}"
+    printf 'fresh evidence bytes\n' > "$source"
+  elif [ "$ownership" = reassigned ]; then
+    printf 'foreign evidence bytes\n' > "$source"
+  fi
+  # Keep absolute-citation scanning from independently masking a failed append.
+  printf '%s\n' "$declaration" > "$case_dir/declarations"
+  ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
+  cat > "$case_dir/append-fault.sh" <<'SH'
+if [ "${0##*/}" = fm-teardown.sh ]; then
+  printf() {
+    case "$FM_APPEND_KIND:${1-}" in
+      fresh-directory:'%s  %s%s\n')
+        if [ "${3-}${4-}" = "$FM_APPEND_KEY" ]; then
+          : > "$FM_APPEND_SEEN"; return 1
+        fi ;;
+      fresh-file:'%s  %s\n')
+        if [ "${3-}" = "$FM_APPEND_KEY" ]; then
+          : > "$FM_APPEND_SEEN"; return 1
+        fi ;;
+      prior:'%s\n')
+        case "${2-}" in *"  $FM_APPEND_KEY") : > "$FM_APPEND_SEEN"; return 1 ;; esac ;;
+    esac
+    builtin printf "$@"
+  }
+fi
+SH
+  rc=0
+  FM_HOME="$case_dir" FM_APPEND_KIND="$variant" FM_APPEND_KEY="$key" FM_APPEND_SEEN="$case_dir/fault-seen" \
+    BASH_ENV="$case_dir/append-fault.sh" run_teardown "$case_dir" ${flag:+"$flag"} \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "$root_name $variant ${flag:-normal} $snapshot $ownership: failed regular-manifest append was accepted"
+  assert_present "$case_dir/fault-seen" 'regular-manifest append fault was not reached'
+  if [ "$ownership" = reassigned ]; then
+    assert_grep 'REFUSED: could not stage verified earlier evidence' "$case_dir/stderr" 'carry staging failure became old-source-loss warning'
+  elif [ "$variant" = prior ]; then
+    assert_grep 'no verified earlier copy' "$case_dir/stderr" 'owned carry append failure did not propagate'
+  else
+    assert_grep 'could not copy and verify' "$case_dir/stderr" 'fresh regular append failure did not propagate'
+  fi
+  cmp -s "$case_dir/meta-before" "$case_dir/state/task-x1.meta" || fail 'regular append refusal changed metadata bytes'
+  if [ "$snapshot" = prior ]; then
+    diff -r "$case_dir/prior-tree" "$ev" || fail 'regular append refusal changed prior tree or manifest bytes'
+    evidence_manifest_verifies "$ev" || fail 'regular append refusal damaged prior proof'
+  else
+    assert_absent "$ev" 'regular append failure installed an incomplete snapshot'
+  fi
+  if [ "$ownership" = reassigned ]; then
+    [ "$(cat "$source")" = 'foreign evidence bytes' ] || fail 'regular carry refusal changed foreign bytes'
+    cmp -s "$case_dir/claim-before" "$case_dir/pool/1/.fm-slot-owner" || fail 'regular carry refusal changed successor claim'
+  elif [ "$variant" = prior ]; then
+    assert_absent "$source" 'regular carry refusal recreated absent source'
+  else
+    [ "$(cat "$source")" = 'fresh evidence bytes' ] || fail 'regular append refusal changed source bytes'
+  fi
+  # The exact same fixture must succeed without the fault, through teardown.
+  rc=0
+  FM_HOME="$case_dir" run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "unfaulted regular append retry failed: $(cat "$case_dir/stderr")"
+  evidence_manifest_verifies "$ev" || fail 'regular append retry snapshot does not verify'
+  grep -Fq "  $key" "$ev/MANIFEST.sha256" || fail 'regular append retry omitted promised row'
+  if [ "$variant" = prior ]; then
+    [ "$(cat "$ev/$key")" = 'prior evidence bytes' ] || fail 'carry retry lost prior evidence'
+    cmp -s "$case_dir/prior-tree/MANIFEST.sha256" "$ev/MANIFEST.sha256" || fail 'carry retry changed regular manifest bytes'
+    cmp -s "$case_dir/prior-tree/MANIFEST.sha256.links" "$ev/MANIFEST.sha256.links" || fail 'carry retry changed link manifest bytes'
+  else
+    [ "$(cat "$ev/$key")" = 'fresh evidence bytes' ] || fail 'fresh retry saved wrong bytes'
+  fi
+  if [ "$ownership" = reassigned ]; then
+    [ "$(cat "$source")" = 'foreign evidence bytes' ] || fail 'carry retry touched successor content'
+    cmp -s "$case_dir/claim-before" "$case_dir/pool/1/.fm-slot-owner" || fail 'carry retry changed successor claim'
+    assert_grep 'was reassigned to task successor' "$case_dir/stderr" 'retry did not exercise reassigned-copy caller'
+  fi
+  assert_absent "$case_dir/state/task-x1.meta" 'regular append retry left metadata'
+}
+
+test_regular_manifest_append_errors_refuse_without_discarding() {
+  local root_name variant flag snapshot
+  for root_name in copy tmp; do
+    for flag in '' --force; do
+      for variant in fresh-directory fresh-file prior; do
+        for snapshot in absent prior; do
+          # Carry needs a verified snapshot; missing proof has separate coverage.
+          [ "$variant:$snapshot" != prior:absent ] || continue
+          regular_manifest_append_case "$root_name" "$variant" "$flag" "$snapshot"
+        done
+      done
+    done
+  done
+  for flag in '' --force; do
+    regular_manifest_append_case copy prior "$flag" prior reassigned
+  done
+  pass 'all regular-manifest append boundaries refuse intact in both roots/force modes; unfaulted retries verify, including reassigned copy carry'
+}
+
 # Exercise the public preservation entry with copy_owned=0, as the reassigned
 # slot path in teardown does. Never inspect that slot, even after a carry fault.
 test_reassigned_evidence_staging_errors_preserve_prior_snapshot() {
@@ -7788,6 +7925,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_evidence_link_physical_failures_and_dangling_newlines_refuse \
   test_evidence_copy_errors_cannot_replace_an_earlier_snapshot \
   test_evidence_link_manifest_append_errors_refuse_without_discarding \
+  test_regular_manifest_append_errors_refuse_without_discarding \
   test_reassigned_evidence_staging_errors_preserve_prior_snapshot \
   test_evidence_staging_ancestor_links_cannot_cover_source_content \
   test_missing_prior_sources_do_not_mask_later_preserved_content \
