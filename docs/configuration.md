@@ -1040,6 +1040,9 @@ A remote secondmate is launched on its host from its own home's configuration, s
 
 ## Subscription accounts (config/accounts)
 
+The optional machine-login helper is tracked as `bin/ai-account.sh` and installed as `~/.local/bin/ai-account`; its header owns usage and prerequisites.
+Installing or replacing that machine-local command is a separate operator step, not part of updating Firstmate.
+
 The optional local, gitignored `config/accounts` registers the subscription logins the fleet may run on, one per line as `<name> <provider> <login-folder> [<priority>]`.
 A Claude login folder is the `CLAUDE_CONFIG_DIR` the harness reads and a Codex one is its `CODEX_HOME`; only Claude accounts are ever chosen for a launch, while other providers are shown with their usage.
 Firstmate never reads, copies, or prints a credential: usage comes from quota-axi's read of one login folder, and only a folder's existence is checked directly.
