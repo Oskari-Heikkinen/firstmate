@@ -133,7 +133,8 @@
 # script applies the same partition, leases, and away relocation it applies to
 # the Pi branch. At activation the host stops anything a crashed predecessor
 # left running (recorded with identities, never by name), including the
-# engine descendants its turn recorded, removes that turn's files, and
+# engine descendants its turn recorded, stops the home-bound watcher directly
+# when a recorded arm could not relay its stop, removes that turn's files, and
 # releases the branch actor's leases; it releases them again after every
 # engine turn. It also reads the record of a successor a pass-through left for
 # main: while that arm still runs under its recorded identity, the first cycle
@@ -171,7 +172,8 @@
 # ordinary 0.5-second child sleeps. Maintenance and boundary checks keep their
 # POLL cadence, and close observation still takes at most that probe interval
 # plus work/scheduling time. A builtin wait is interruptible by a caught signal;
-# no stop-signal disposition or cleanup bound changes. A FIFO setup or read
+# HUP/TERM use native fatal handling and EXIT cleanup outside that read, so
+# a foreground bookkeeping helper cannot defer shutdown. A FIFO setup or read
 # failure exits with a supervision-host wake instead of spinning.
 # FM_TEST_SUPERVISION_HOST_CLOCK names a file holding the park's elapsed
 # seconds, which the park and turn boundary checks read in place of SECONDS
@@ -338,6 +340,7 @@ forget_process() {  # <pid>
 # identity: TERM, then KILL once <seconds> pass.
 stop_recorded() {  # <pid> <identity> <seconds>
   local pid=$1 identity=$2 limit=$(( ${3:-10} * 10 )) i
+  STOP_RECORDED_FORCED=0
   fm_pid_alive "$pid" || return 0
   [ -n "$identity" ] && [ "$(identity_of "$pid")" = "$identity" ] || return 0
   kill -TERM "$pid" 2>/dev/null || return 0
@@ -347,7 +350,9 @@ stop_recorded() {  # <pid> <identity> <seconds>
     i=$((i + 1))
   done
   if fm_pid_alive "$pid" && [ "$(identity_of "$pid")" = "$identity" ]; then
-    kill -KILL "$pid" 2>/dev/null || true
+    if kill -KILL "$pid" 2>/dev/null; then
+      STOP_RECORDED_FORCED=1
+    fi
   fi
 }
 
@@ -359,12 +364,45 @@ release_branch_leases() {
   branch_env "$SCRIPT_DIR/fm-lease.sh" release-actor --actor branch >/dev/null 2>&1 || true
 }
 
+# Snapshot the home-bound watcher before stopping an arm. A fallback must
+# signal this identity, never a successor that acquired the lock meanwhile.
+capture_home_watcher() {
+  CAPTURED_WATCHER_PID=
+  CAPTURED_WATCHER_IDENTITY=
+  fm_file_text_to CAPTURED_WATCHER_PID "$STATE/.watch.lock/pid" || return 0
+  if fm_watcher_lock_matches_pid "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$CAPTURED_WATCHER_PID" "$FM_HOME"; then
+    CAPTURED_WATCHER_IDENTITY=$FM_WATCHER_MATCHED_IDENTITY
+  else
+    CAPTURED_WATCHER_PID=
+  fi
+}
+
+# The lock proves the home, not which arm owns the cycle. Only a watcher's
+# actual parent may authorize fallback cleanup after that arm is killed.
+captured_watcher_is_child_of() {  # <arm-pid>
+  local stat parent
+  local -a fields
+  [ -n "$CAPTURED_WATCHER_PID" ] || return 1
+  if fm_file_text_to stat "/proc/$CAPTURED_WATCHER_PID/stat" 2>/dev/null; then
+    read -r -a fields <<< "${stat##*)}"
+    [ "${#fields[@]}" -ge 2 ] || return 1
+    parent=${fields[1]}
+  else
+    parent=$(ps -p "$CAPTURED_WATCHER_PID" -o ppid= 2>/dev/null) || return 1
+    parent=${parent//[[:space:]]/}
+  fi
+  [ -n "$CAPTURED_WATCHER_PID" ] && [ "$parent" = "$1" ]
+}
+
 # Stop whatever a predecessor host left running, then take the record. The
 # auto-arm admits one generation at a time, so a predecessor still alive here
 # was superseded (its owner died or went stale) or crashed mid-cleanup.
 activate() {
-  local role pid identity
+  local role pid identity forced_owner=0 owns_watcher watcher_pid watcher_identity
   mkdir -p "$STATE" || return 1
+  capture_home_watcher
+  watcher_pid=$CAPTURED_WATCHER_PID
+  watcher_identity=$CAPTURED_WATCHER_IDENTITY
   if [ -f "$HOST_RECORD" ]; then
     # The predecessor host first, with room for its own cleanup (which stops
     # its engine and arms), before anything it left is stopped individually.
@@ -381,8 +419,21 @@ activate() {
   fi
   if [ -f "$HOST_RECORD" ]; then
     while IFS="$(printf '\t')" read -r role pid identity; do
-      [ "$role" = arm ] && stop_recorded "$pid" "$identity" 10
+      if [ "$role" = arm ]; then
+        owns_watcher=0
+        captured_watcher_is_child_of "$pid" && owns_watcher=1
+        stop_recorded "$pid" "$identity" 10
+        [ "$STOP_RECORDED_FORCED" -eq 0 ] || [ "$owns_watcher" -eq 0 ] || forced_owner=1
+      fi
     done < "$HOST_RECORD"
+  fi
+  # A caught TERM cannot interrupt an arm's foreground health helper. If its
+  # grace expired, killing the arm did not stop the watcher. Stop the verified
+  # home-bound identity captured before cleanup, not a newer lock holder.
+  # Dead/stale arm rows and cycles another arm owns authorize no fallback.
+  # Detached successors also stay for take-over.
+  if [ "$forced_owner" -eq 1 ]; then
+    stop_recorded "$watcher_pid" "$watcher_identity" 10
   fi
   # A predecessor killed outright ran no cleanup: reap the engine descendants
   # its turn recorded, then drop that turn's files.
@@ -458,15 +509,24 @@ cleanup() {
 # Stop one arm this host started (its TERM handler stops the watcher it owns)
 # and drop its output file.
 retire_arm() {  # <pid> <output-file>
-  local pid=${1:-} out=${2:-} i
+  local pid=${1:-} out=${2:-} i watcher_pid watcher_identity owns_watcher=0
   if [ -n "$pid" ] && fm_pid_alive "$pid"; then
+    capture_home_watcher
+    watcher_pid=$CAPTURED_WATCHER_PID
+    watcher_identity=$CAPTURED_WATCHER_IDENTITY
+    captured_watcher_is_child_of "$pid" && owns_watcher=1
     kill -TERM "$pid" 2>/dev/null || true
     i=0
     while [ "$i" -lt 100 ] && fm_pid_alive "$pid"; do
       sleep 0.1
       i=$((i + 1))
     done
-    fm_pid_alive "$pid" && kill -KILL "$pid" 2>/dev/null
+    if fm_pid_alive "$pid"; then
+      kill -KILL "$pid" 2>/dev/null || true
+      # The arm could not run its handler. Never leave that watcher behind,
+      # but never reach a successor that took the lock while the arm stopped.
+      [ "$owns_watcher" -eq 0 ] || stop_recorded "$watcher_pid" "$watcher_identity" 10
+    fi
     wait "$pid" 2>/dev/null || true
   fi
   [ -z "$pid" ] || forget_process "$pid"
@@ -563,9 +623,15 @@ prepare_park_wait() {
   WAIT_BUILTIN=1
 }
 
-# A caught signal must let timed read unwind before EXIT cleanup closes its
-# descriptor or runs other builtins; exiting inside read can abort some Bash
-# versions. Outside that builtin the original immediate exit is unchanged.
+# Only timed read needs caught HUP/TERM: unwind it before EXIT cleanup closes
+# its descriptor (exiting inside read can abort some Bash versions). Elsewhere
+# native fatal handling runs EXIT cleanup without waiting for a foreground
+# bookkeeping helper; a caught signal would wait for that helper to finish.
+host_stop_signals() {
+  trap - HUP TERM
+  trap 'host_signal 130' INT
+}
+
 host_signal() {  # <exit-status>
   if [ "$WAIT_READING" -eq 1 ]; then
     [ "$WAIT_SIGNAL" -ne 0 ] || WAIT_SIGNAL=$1
@@ -580,9 +646,12 @@ park_wait_half_second() {
     sleep 0.5
     return
   fi
+  trap 'host_signal 129' HUP
+  trap 'host_signal 143' TERM
   WAIT_READING=1
   if IFS= read -r -t 0.5 -u 9 _; then rc=0; else rc=$?; fi
   WAIT_READING=0
+  host_stop_signals
   [ "$WAIT_SIGNAL" -eq 0 ] || exit "$WAIT_SIGNAL"
   # A timeout returns >128. EOF, a bad descriptor or unexpected data must not
   # turn a broken timer into a busy loop; cleanup still retires the arms.
@@ -1115,9 +1184,7 @@ if ! host_still_owner; then
   stand_down "this session does not own supervision"
 fi
 trap cleanup EXIT
-trap 'host_signal 129' HUP
-trap 'host_signal 143' TERM
-trap 'host_signal 130' INT
+host_stop_signals
 activate || { echo "supervision-host stood down: the host record could not be written"; exit 0; }
 prepare_park_wait || { emit 'supervision-host: park timer could not be prepared; drain and re-arm supervision'; exit 1; }
 log_line "start	gen=$GEN	primary=$PRIMARY"
