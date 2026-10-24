@@ -281,6 +281,7 @@ live tests/fm-herdr-pi-stale-registration-live-e2e.test.sh
 live tests/fm-herdr-submit-confirm-live-e2e.test.sh
 live tests/fm-herdr-version-floor-live-e2e.test.sh
 live tests/fm-host-mirror-live-e2e.test.sh
+live tests/fm-kimi-trust-prompt-live-e2e.test.sh
 live tests/fm-launch-prompt-signals-live-e2e.test.sh
 live tests/fm-muse-signals-live-e2e.test.sh
 live tests/fm-nested-home-context-live-e2e.test.sh
