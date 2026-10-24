@@ -570,12 +570,14 @@ A native file in an ordinary outbox remains invalid; there is no format auto-det
 | --- | --- | --- | --- |
 | `native-tj-handoff` | `schema=tj-handoff/v1` -> 1 | Native `id`; REQUEST ACCEPTED/REFUSED instead share `request:<subject>:<full artefact.sums_sha256>` | REQUEST REFUSED and FAIL -> `refused` with `native-refused`; REQUEST ACCEPTED, PASS, READY FOR LAUNCH, READY FOR HELPER REVIEW, READY FOR KIT REVIEW, BATCH CUT, REQUEST ALL CUT, REQUEST SUPERSEDED, REQUEST WITHDRAWN and BATCH ABANDONED -> `done` for publication of that decision only, not its subject's launch or completion |
 | `native-tetjet-collected` | `schema=tetjet-collected/v1` -> 1 | `batch:<batch_id>` for `tj-package`/`rolling-slice`; `request:<request_id>:<request_sha256>` for `request` | Batch `verification.verdict=PASS` -> `done` for verified collection, irrespective of experimental exits or incomplete labels; request `complete=true` with `outcome=collected`, `partly-withdrawn` or `withdrawn` -> `done`, preserving the outcome rather than calling withdrawal collection |
-| `native-tj-step` | `schema=tj-step-receipt/v1` -> 1 | Native filename, which distinguishes invocations of one subject/phase | `rc=null` -> `accepted` from `started` (unknown outcome, not proof the child is alive); WAIT -> `held` `native-wait`; otherwise nonzero rc or REFUSE/FAIL/BLOCKED -> `held` `native-failed`; otherwise rc=0 -> `done` for wrapper completion only |
+| `native-tj-step` | `schema=tj-step-receipt/v1` -> 1 | Native filename, which distinguishes invocations of one subject/phase | `rc=null` -> `accepted` from `started` (unknown outcome, not proof the child is alive); WAIT -> `held` `native-wait`; otherwise nonzero rc or REFUSE/FAIL/BLOCKED -> `held` `native-failed`; otherwise rc=0 with a known success word or null -> `done` for wrapper completion only |
 | `native-manifest-verified` | `schema_version=lattice-manifest-verified/v1` -> 1 | SHA256 of the JSON array `[item, manifest]` | `result=pass` -> `done` for the recorded verification, not verification of current bytes |
 | `native-capacity-cursor` | Exact legacy unversioned `dev`, `ino`, `offset`, `tail` shape -> 0 | SHA256 of the JSON array `[absolute cursor path]` | A matching signal identity, in-range offset and matching checkpoint-tail SHA256 -> `done` at EOF, otherwise `accepted` while bytes remain, including an unfinished line; this proves stdout checkpointing, not downstream acknowledgement |
 
 Unknown native versions, kinds, result words, malformed shapes and unsupported outcomes are `source-unreadable`, never ignored or mapped to the nearest version.
 The step reader knows result words LAUNCH-STARTED, RELAUNCHED, FETCHED-VERIFIED, MOVED-ASIDE, UPLOAD-ONLY, DRY-RUN, READY-CHECK, REFUSE, FAIL, BLOCKED and WAIT, plus null.
+Null is a valid result word, not an unknown value: nonzero rc/null is held, while rc=0/null is wrapper completion, never proof of launch or fetch.
+For a finished null-word step, a non-null fallback `result` is preserved verbatim in detail; it must be a string of at most 4096 characters, otherwise the observation reports a source problem rather than truncating evidence.
 A successful DRY-RUN, UPLOAD-ONLY or READY-CHECK is wrapper completion, never a launch.
 The manifest writer emits only `pass`, and the collected batch writer emits only `PASS`; another result is a problem, not an invented refusal state.
 The collector's `tetjet-queue-snapshot.v1` is reference label metadata (`jobs[].slice_id`), not a stage outcome, so it has no receipt adapter.
@@ -587,6 +589,7 @@ Dot entries are skipped unless the match explicitly starts with a dot, so a `.pc
 A declared missing or unreadable directory is a problem, not an idle success.
 At most 4096 matching entries and 1 MiB per JSON record are admitted, with at most 16 MiB of changed JSON reads per stage per pass; excess is a reported source problem and retried on later ticks, not silent truncation.
 Every retained selected record is considered regardless of age.
+A retained directory larger than the per-stage cap needs exhaustive, disjoint declared filename matches/stages, each within the cap; never reduce the observed set by ignoring old records or pruning unresolved invocations.
 JSON parsing and mapping (including errors) are cached by inode, size, mtime and ctime; the cache stores only small mapped observations, not whole native documents.
 The cursor reader requires `input.match` to name one exact `.cursor.json` file (no glob), reports its absence as a problem, and reads only its sibling `.signal`, checking identity and size each pass and at most 256 bytes immediately before the offset.
 A nonzero checkpoint must follow a complete newline-terminated signal line.
@@ -597,6 +600,9 @@ These are current-state observations, not an immutable receipt history: attempt 
 The mandatory fragment `retry_limit` and bounds must be the owner's observation alarm policy, never a claim that an absent native limit exists.
 Keeper DEFER_S and ROOM_S are repeated recheck intervals, not maximum waits or retry counts, and none of these readers covers keeper logs, liveness state, ledger wait journals, fetch receipts or archive progress state.
 A step WAIT without an explicit native deadline is held, not waiting with an invented `until`.
+The step adapter observes invocation history, not current operational open holds: a later successful invocation never clears an earlier failed or WAIT invocation.
+The native summary's cross-invocation `open_holds` closure rules (which do not fold WAIT as held) are a different projection and are not implemented by this adapter.
+A live current-holds stage therefore requires a separately declared and owner-confirmed logical-operation adapter, not implicit subject grouping or synthetic attempts.
 Receipt times come from handoff `created_at`, collection `recorded_at` (not an older backfill's `verified_at`), step `started`/`ended`, manifest `verified_at`, or cursor mtime.
 The source file is always the evidence; native outcome remains in detail and `<owner>.native-outcome` ext.
 Native refusal/hold codes must be declared in the fragment, whose code entry alone supplies routing and lane scope.
@@ -609,7 +615,9 @@ Queue and collection outputs are write-once, step pending records are replaced a
 Pruning an observed unresolved record reports a source problem and retains its last observation without a TTL; pruning a terminal record drops it from the adapter cache.
 An adapter attached after records were pruned cannot reconstruct them, and an unseen transition cannot be inferred from disappearance.
 The one native writer must keep unresolved records and allow a watcher pass to observe terminal transitions; otherwise historical coverage is explicitly incomplete.
-The regression entry point is `tests/fm-handoff-firstmate.test.sh`, including its native cases and the sanitized native verification probe fixture.
+The regression entry point is `tests/fm-handoff-firstmate.test.sh`, including native cases, sanitized real queue/collected/step records, the verification probe, and a real signal tail.
+Fixture provenance and hashes are in `tests/fixtures/handoff-coverage/native/real/provenance.json`.
+No real cursor fixture was available: cursor success tests explicitly construct a synthetic checkpoint for the scratch signal's inode, never pair a copied tail with a production cursor or claim it as a captured native checkpoint.
 
 ## Compatibility and versioning
 

@@ -1,0 +1,1 @@
+2026-10-20T08:55:35Z tj-auto-capacity TETJET idle, queue empty: free_slots=24 (tj-launch admit(), reference run width 1 / 3.0 GiB), busy=False, load 2.2/112, MemAvailable 120.4 GiB, disk free 62.5 GiB, our launchers 2, rolling drivers 0; launch-order.json has 0 refused and 0 fenced item(s) (fill.jsonl). Research: feed the queue. [key=idle:36@2026-10-20T08:55:35Z]

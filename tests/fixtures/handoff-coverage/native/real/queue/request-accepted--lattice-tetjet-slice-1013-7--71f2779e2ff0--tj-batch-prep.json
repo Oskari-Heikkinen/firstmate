@@ -1,0 +1,56 @@
+{
+ "answers": null,
+ "artefact": {
+  "path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/requests/lattice-tetjet-slice-1013-7.json",
+  "sums_sha256": "71f2779e2ff0dad1c3c27c8e3a84e811e8cbf286300a837b037c80f5fbc9ce88"
+ },
+ "consumer": "tj-batch-prep",
+ "created_at": "2026-10-17T21:35:38Z",
+ "depends_on": [
+  {
+   "subject": "tj-launch",
+   "sums_sha256": "c5a93a9a61c2d2335279905cd1c22750b4d07e3ba0c1a7089024302bc231fd21"
+  }
+ ],
+ "id": "request-accepted--lattice-tetjet-slice-1013-7--71f2779e2ff0--tj-batch-prep",
+ "kind": "REQUEST ACCEPTED",
+ "labels": {
+  "arms": [
+   "plate-off",
+   "plate-start-sizing",
+   "whole-skin-layout",
+   "beam-regression",
+   "random-fill",
+   "even-fill",
+   "editable-skin-size-step"
+  ],
+  "experiment_id": "landed-main-public-smoke-20261013",
+  "name": "Newest-main public smoke: fills, skin, start-size steps and regression",
+  "question": "Does e0439155 retain plate/stability/start-repair/weld/whole-skin behaviour and the previous-kit beam result, and wire both filled starts, optional editable skin and a stalled saved-size step on public cases?"
+ },
+ "launch": null,
+ "lines": {
+  "lists": [
+   "runs"
+  ],
+  "total": 7
+ },
+ "note": "rule-based kit-review gate R1-R8 (tj_handoff.py intake); replaces=lattice-tetjet-slice-1013-6",
+ "producer": "tj-intake-gate",
+ "reasons": [],
+ "replaces": "lattice-tetjet-slice-1013-6",
+ "requests": [
+  {
+   "path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/requests/lattice-tetjet-slice-1013-7.json",
+   "sha256": "71f2779e2ff0dad1c3c27c8e3a84e811e8cbf286300a837b037c80f5fbc9ce88"
+  },
+  {
+   "path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/requests/lattice-tetjet-slice-1013-7.submit.json",
+   "sha256": "2a80c453019a4a516289213f1b6984e6f43ceba76aed35938a25796b5edc5616"
+  }
+ ],
+ "schema": "tj-handoff/v1",
+ "subject": "lattice-tetjet-slice-1013-7",
+ "tool_sha256": "eed0f1cf9e9f14db1d1c5e47cd3e62f2eaf25a8fa7664de3eb1220be37e87268",
+ "verdict_record": null
+}

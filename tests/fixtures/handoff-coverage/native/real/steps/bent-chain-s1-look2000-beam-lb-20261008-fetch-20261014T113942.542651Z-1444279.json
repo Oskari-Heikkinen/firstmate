@@ -1,0 +1,31 @@
+{
+ "argv": [
+  "bash",
+  "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-services/pkg-v1.9.13-fill-v5/fetch-pkg-r5.10/fetch_tjpkg.sh",
+  "bent-chain-s1-look2000-beam-lb-20261008",
+  "bent-chain-s1-2000"
+ ],
+ "caller_stderr_closed": false,
+ "caller_stdout_closed": false,
+ "cwd": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-operator",
+ "ended": "2026-10-14T11:39:42.857711Z",
+ "launcher": null,
+ "output_lines": 1,
+ "output_log": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-receipts/step-receipts/bent-chain-s1-look2000-beam-lb-20261008-fetch-20261014T113942.542651Z-1444279.out",
+ "output_sha256": "c11564dc18d01b22fbe4304e0dbcadc3cb85e50b9997ccdb221ae9d5c2eaa62c",
+ "phase": "fetch",
+ "rc": 7,
+ "recorder": "tj-auto-receipts/1.4.1",
+ "result": "UNREAD bent-chain-s1-look2000-beam-lb-20261008 room: disk room is unreadable (ROOM-UNREAD disk-room owner /home/fixture-user/Tools/firstmate/bin/fm-disk-room.sh (sha256 9b40ff3c571bbf34f65261c7b8e0abba7be0864d8be0a8cd1a444dd4e078a82e) is not the pinned one (e6fb347c4a502c00797a4b5fbe4a1c73cd6236309cc29b15f58eab958c7559e8))",
+ "result_word": null,
+ "schema": "tj-step-receipt/v1",
+ "script": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-services/pkg-v1.9.13-fill-v5/fetch-pkg-r5.10/fetch_tjpkg.sh",
+ "script_sha256": "164f9d1807f294e541268711fdaf20dcca6d911b0b89f2c089c18f462ea2e2cc",
+ "signal": null,
+ "started": "2026-10-14T11:39:42.542651Z",
+ "stderr_lines": 0,
+ "stderr_log": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-receipts/step-receipts/bent-chain-s1-look2000-beam-lb-20261008-fetch-20261014T113942.542651Z-1444279.err",
+ "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "subject": "bent-chain-s1-look2000-beam-lb-20261008",
+ "wrapper_signals_ignored": []
+}

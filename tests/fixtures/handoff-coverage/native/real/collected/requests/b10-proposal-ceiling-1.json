@@ -1,0 +1,36 @@
+{
+ "all_cut": true,
+ "batch_id": null,
+ "batches": [
+  {
+   "batch_id": "proposal-ceiling-lbracket-20260930-s17-s31",
+   "lines": "0-5,10-13",
+   "receipt": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-collected/proposal-ceiling-lbracket-20260930-s17-s31.json",
+   "record": "batch-cut--proposal-ceiling-lbracket-20260930-s17-s31--6e4022656338--any"
+  },
+  {
+   "batch_id": "proposal-ceiling-lbracket-20260930-s43-s71",
+   "lines": "6-9,14-17",
+   "receipt": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-collected/proposal-ceiling-lbracket-20260930-s43-s71.json",
+   "record": "batch-cut--proposal-ceiling-lbracket-20260930-s43-s71--cd68f1a9d366--any"
+  }
+ ],
+ "complete": true,
+ "emitter_sha256": "4aa2c56fde2a5e1af6d4142bc78f3609562f60eef426019246f50d675a058127",
+ "experiment_id": "proposal-ceiling-lbracket-20260930",
+ "fully_collected": true,
+ "kind": "request",
+ "lines_collected": 18,
+ "lines_cut": 18,
+ "lines_not_collected": "",
+ "lines_not_cut": "",
+ "lines_total": 18,
+ "lines_withdrawn": 0,
+ "outcome": "collected",
+ "recorded_at": "2026-09-30T23:39:45Z",
+ "request_id": "b10-proposal-ceiling-1",
+ "request_sha256": "94fb83f28ee0fac5284ace5f0c60aa49a1312c2560be2c9a3d088fcc57e47635",
+ "schema": "tetjet-collected/v1",
+ "superseded_by": null,
+ "withdrawn": []
+}

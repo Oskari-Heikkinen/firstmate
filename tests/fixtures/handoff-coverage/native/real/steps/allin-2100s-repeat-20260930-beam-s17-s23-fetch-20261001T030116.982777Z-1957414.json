@@ -1,0 +1,31 @@
+{
+ "argv": [
+  "bash",
+  "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-services/pkg-v1.8.1-ssdroot/fetch-pkg-r5.1/fetch_tjpkg.sh",
+  "allin-2100s-repeat-20260930-beam-s17-s23",
+  "repeat-2100s-set-build"
+ ],
+ "caller_stderr_closed": false,
+ "caller_stdout_closed": false,
+ "cwd": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-operator",
+ "ended": "2026-10-01T03:01:30.882906Z",
+ "launcher": null,
+ "output_lines": 1,
+ "output_log": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-receipts/step-receipts/allin-2100s-repeat-20260930-beam-s17-s23-fetch-20261001T030116.982777Z-1957414.out",
+ "output_sha256": "dd607fbf7cf4fca62c3dd6264a0d85befebc21f9bb40467e3187375af54ee865",
+ "phase": "fetch",
+ "rc": 3,
+ "recorder": "tj-auto-receipts/1.4.1",
+ "result": "WAIT allin-2100s-repeat-20260930-beam-s17-s23 not ended (no end)",
+ "result_word": "WAIT",
+ "schema": "tj-step-receipt/v1",
+ "script": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-services/pkg-v1.8.1-ssdroot/fetch-pkg-r5.1/fetch_tjpkg.sh",
+ "script_sha256": "cf2871384ea65dcc505de0ecfe65f3dba7fe70982ce673a11273265c6d8d7c28",
+ "signal": null,
+ "started": "2026-10-01T03:01:16.982777Z",
+ "stderr_lines": 0,
+ "stderr_log": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-receipts/step-receipts/allin-2100s-repeat-20260930-beam-s17-s23-fetch-20261001T030116.982777Z-1957414.err",
+ "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "subject": "allin-2100s-repeat-20260930-beam-s17-s23",
+ "wrapper_signals_ignored": []
+}

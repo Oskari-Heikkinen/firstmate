@@ -15,6 +15,7 @@ import fm_handoff_registry as registry
 validate = registry.validator()
 T, SHA, OWNER = "2026-10-24T16:00:00Z", "a" * 64, "tetjet-mate"
 NOW = adapters.native_time(T)
+REAL = ROOT / "tests/fixtures/handoff-coverage/native/real"
 ENV = {k: v for k, v in os.environ.items()
        if k not in ("FM_HOME", "FM_STATE_OVERRIDE", "FM_ROOT_OVERRIDE", "FM_CONFIG_OVERRIDE")}
 FAMILIES = ("native-tj-handoff", "native-tetjet-collected", "native-tj-step",
@@ -86,6 +87,93 @@ class NativeAdapters(unittest.TestCase):
         self.assertEqual(str(self.folder / name), docs[0]["evidence"])
         return docs[0]
 
+    def copy_real(self, group):
+        # Copies are byte-identical to the owner's already-sanitized fixtures.
+        for source in (REAL / group).glob("*.json"):
+            (self.folder / source.name).write_bytes(source.read_bytes())
+
+    def test_real_fixture_seal(self):
+        provenance = json.loads((REAL / "provenance.json").read_text())
+        self.assertEqual("44fd3bc7f3fdc056b397538cd10ba25423f4b366b706ec46ad376d3c93dd13a8",
+                         provenance["owner_manifest_sha256"])
+        self.assertFalse(provenance["real_cursor_supplied"])
+        self.assertEqual(10, len(provenance["files"]))
+        for name, sha in provenance["files"].items():
+            self.assertEqual(sha, hashlib.sha256((REAL / name).read_bytes()).hexdigest(), name)
+
+    def test_real_queue_refusal_then_acceptance(self):
+        family = "native-tj-handoff"
+        refused = next((REAL / "queue").glob("request-refused*.json"))
+        (self.folder / refused.name).write_bytes(refused.read_bytes())
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(["refused"], [d["state"] for d in docs])
+        record = docs[0]["record"]
+        self.copy_real("queue")
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(["done"], [d["state"] for d in docs])
+        self.assertEqual(record, docs[0]["record"])
+
+    def test_real_collected_and_separate_request_directory(self):
+        family = "native-tetjet-collected"
+        self.copy_real("collected")
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(2, len(docs))
+        self.assertTrue(all(d["state"] == "done" for d in docs))
+        # Request collection is a different declared input, not recursive discovery.
+        self.folder = self.folder / "requests"
+        self.folder.mkdir()
+        self.copy_real("collected/requests")
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(1, len(docs))
+        self.assertTrue(docs[0]["record"].startswith("request:b10-proposal-ceiling-1:"))
+        self.assertIn("request:collected", docs[0]["detail"])
+
+    def test_real_step_invocations_and_null_fallback(self):
+        family = "native-tj-step"
+        self.copy_real("steps")
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(["accepted", "done", "held", "held"], sorted(d["state"] for d in docs))
+        self.assertEqual(4, len({d["record"] for d in docs}))
+        # The real WAIT/success pair remains two historical invocation outcomes.
+        pair = [d for d in docs if d["record"].startswith("allin-2100s-repeat-")]
+        self.assertEqual(["done", "held"], sorted(d["state"] for d in pair))
+        fallback = next(d for d in docs if d["record"].startswith("bent-chain-"))
+        source = self.folder / fallback["record"]
+        doc = json.loads(source.read_text())
+        self.assertIsNone(doc["result_word"])
+        self.assertIn(doc["result"], fallback["detail"])
+        # Derived variants, not represented as additional real fixtures.
+        put(source, dict(doc, rc=0))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        fixed = next(d for d in docs if d["record"] == fallback["record"])
+        self.assertEqual("done", fixed["state"], "C1: rc=0/null is wrapper completion, not a launch")
+        self.assertIn(doc["result"], fixed["detail"])
+        put(source, dict(doc, rc=0, result_word="UNRECOGNIZED"))
+        self.assertIn("unknown step result_word", self.adapt(family)[1][0][1])
+        put(source, dict(doc, result="x" * (adapters.NATIVE_RESULT_CHARS + 1)))
+        self.assertIn("at most", self.adapt(family)[1][0][1])
+
+    def test_real_signal_tail_is_not_a_real_cursor(self):
+        family = "native-capacity-cursor"
+        signal = self.folder / "capacity.signal"
+        signal.write_bytes((REAL / "capacity/tj-auto-capacity.signal").read_bytes())
+        docs, bad = self.adapt(family)
+        self.assertEqual([], docs)
+        self.assertIn("missing", bad[0][1])
+        # Synthetic checkpoint for this scratch inode only, not a native live cursor.
+        st = signal.stat()
+        cursor = {"dev": st.st_dev, "ino": st.st_ino, "offset": st.st_size,
+                  "tail": hashlib.sha256(signal.read_bytes()[-256:]).hexdigest()}
+        self.assertEqual("done", self.one(family, cursor, "capacity.cursor.json")["state"])
+        signal.write_bytes(signal.read_bytes() + b"incomplete")
+        self.assertEqual("accepted", self.adapt(family)[0][0]["state"])
+
     def test_handoff_every_kind_and_request_recovery(self):
         family = "native-tj-handoff"
         kinds = ("READY FOR LAUNCH", "READY FOR HELPER REVIEW", "READY FOR KIT REVIEW", "PASS", "FAIL",
@@ -127,6 +215,8 @@ class NativeAdapters(unittest.TestCase):
                         self.assertIn(outcome, out["detail"])
         put(self.folder / "record.json", dict(doc, complete=False))
         self.assertTrue(self.adapt(family)[1])
+        put(self.folder / "record.json", dict(doc, kind="tj-package-partial"))
+        self.assertIn("unknown collected kind", self.adapt(family)[1][0][1])
 
     def test_step_every_state_and_no_fake_until(self):
         family = "native-tj-step"
@@ -159,6 +249,14 @@ class NativeAdapters(unittest.TestCase):
         self.assertEqual([str(path)], [d["evidence"] for d in docs])
         put(path, dict(doc, result="failed"))
         self.assertTrue(self.adapt(family, path.name)[1])
+
+    def test_manifest_pair_identity_is_unambiguous(self):
+        family = "native-manifest-verified"
+        put(self.folder / "a.json", dict(sample(family), item="a:b", manifest="c"))
+        put(self.folder / "b.json", dict(sample(family), item="a", manifest="b:c"))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(2, len({d["record"] for d in docs}))
 
     def test_unknown_versions_oversize_unreadable_and_malformed(self):
         for family in FAMILIES:
@@ -239,8 +337,19 @@ class NativeAdapters(unittest.TestCase):
         put(self.folder / ".ignored.json", {"unknown": True})
         self.assertEqual(([], []), self.adapt(family))
         for i in range(adapters.NATIVE_FILES + 1):
-            (self.folder / f"{i}.json").touch()
+            put(self.folder / f"{i % 2}-{i}.json", sample(family))
         self.assertIn("exceeds", self.adapt(family)[1][0][1])
+        # A real retained step directory exceeds the cap: selection, not directory
+        # size, is bounded. Exhaustive disjoint stages must each stay below it.
+        selected = set()
+        for pattern in ("0-*.json", "1-*.json"):
+            docs, bad = self.adapt(family, pattern)
+            self.assertEqual([], bad)
+            records = {d["record"] for d in docs}
+            self.assertLessEqual(len(records), adapters.NATIVE_FILES)
+            self.assertFalse(selected & records)
+            selected.update(records)
+        self.assertEqual(adapters.NATIVE_FILES + 1, len(selected))
         for p in self.folder.glob("[0-9]*.json"):
             p.unlink()
         family = "native-manifest-verified"

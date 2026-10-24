@@ -1,0 +1,40 @@
+{
+ "answers": null,
+ "artefact": {
+  "path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/requests/lattice-tetjet-slice-1013-7.json",
+  "sums_sha256": "71f2779e2ff0dad1c3c27c8e3a84e811e8cbf286300a837b037c80f5fbc9ce88"
+ },
+ "consumer": "lattice-research-mate",
+ "created_at": "2026-10-17T21:10:36Z",
+ "depends_on": [
+  {
+   "subject": "tj-launch",
+   "sums_sha256": "c5a93a9a61c2d2335279905cd1c22750b4d07e3ba0c1a7089024302bc231fd21"
+  }
+ ],
+ "id": "request-refused--lattice-tetjet-slice-1013-7--71f2779e2ff0--lattice-research-mate--a277fcde",
+ "kind": "REQUEST REFUSED",
+ "labels": null,
+ "launch": null,
+ "lines": null,
+ "note": "rule-based kit-review gate R1-R8 (tj_handoff.py intake); replaces=lattice-tetjet-slice-1013-6",
+ "producer": "tj-intake-gate",
+ "reasons": [
+  "R5 tj-launch@c5a93a9a61c2 has no valid recorded PASS"
+ ],
+ "replaces": "lattice-tetjet-slice-1013-6",
+ "requests": [
+  {
+   "path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/requests/lattice-tetjet-slice-1013-7.json",
+   "sha256": "71f2779e2ff0dad1c3c27c8e3a84e811e8cbf286300a837b037c80f5fbc9ce88"
+  },
+  {
+   "path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/requests/lattice-tetjet-slice-1013-7.submit.json",
+   "sha256": "2a80c453019a4a516289213f1b6984e6f43ceba76aed35938a25796b5edc5616"
+  }
+ ],
+ "schema": "tj-handoff/v1",
+ "subject": "lattice-tetjet-slice-1013-7",
+ "tool_sha256": "eed0f1cf9e9f14db1d1c5e47cd3e62f2eaf25a8fa7664de3eb1220be37e87268",
+ "verdict_record": null
+}

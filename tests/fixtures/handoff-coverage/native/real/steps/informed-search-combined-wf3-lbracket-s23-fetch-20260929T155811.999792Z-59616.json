@@ -1,0 +1,24 @@
+{
+ "argv": [
+  "bash",
+  "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-operator/fetch-pkg-r4.2/fetch_tjpkg.sh",
+  "informed-search-combined-wf3-lbracket-s23",
+  "informed-combined-ab"
+ ],
+ "cwd": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-operator",
+ "ended": null,
+ "launcher": null,
+ "output_log": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-receipts/step-receipts/informed-search-combined-wf3-lbracket-s23-fetch-20260929T155811.999792Z-59616.out",
+ "phase": "fetch",
+ "rc": null,
+ "recorder": "tj-auto-receipts/1.4.1",
+ "result": "",
+ "result_word": null,
+ "schema": "tj-step-receipt/v1",
+ "script": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-operator/fetch-pkg-r4.2/fetch_tjpkg.sh",
+ "script_sha256": "8e3b8bbadd155497c1cb4bafca5d275666079a245274a356d54d045e62b7a1f4",
+ "signal": null,
+ "started": "2026-09-29T15:58:11.999792Z",
+ "stderr_log": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-receipts/step-receipts/informed-search-combined-wf3-lbracket-s23-fetch-20260929T155811.999792Z-59616.err",
+ "subject": "informed-search-combined-wf3-lbracket-s23"
+}

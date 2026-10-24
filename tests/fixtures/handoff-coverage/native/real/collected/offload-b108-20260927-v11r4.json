@@ -1,0 +1,75 @@
+{
+ "alias": "b108",
+ "backfilled": true,
+ "batch_id": "offload-b108-20260927-v11r4",
+ "emitter_sha256": "c7d93530ed17b1d83bd907bef37665f95553f3f03a0f8c17b5ef7594d39055c2",
+ "experiment": {
+  "arms": [
+   "base-plus-j-v4",
+   "base-v4"
+  ],
+  "description": null,
+  "name": null,
+  "question": "Inbox 006 overnight b108: Stage-2 first add-one diagnostic: B versus B+J only, current v4; not the v6 campaign; seed 17; beam-600mm, lbracket-200mm. 600 s compare/1000 charged proposals per searched size, identical physical inputs and serial execution per pair. No changed engineering rule or defaults. No retry; PUBLIC and RELEASE required.",
+  "source": null,
+  "title": null
+ },
+ "experiment_id": null,
+ "kind": "rolling-slice",
+ "labels": {
+  "ledger": {
+   "arms": [
+    "base-plus-j-v4-s17",
+    "base-v4-s17"
+   ],
+   "entries": 24,
+   "entries_without_arm": 0,
+   "entries_without_experiment_id": 24,
+   "experiment_ids": [],
+   "labels": [
+    "rolling-offload-b108-20260927-v11r4"
+   ]
+  },
+  "missing": [
+   "experiment_id",
+   "name",
+   "ledger series.experiment_id unset on 24 of 24 entries"
+  ],
+  "sources": {
+   "arms": "slice.json",
+   "question": "slice.json"
+  },
+  "status": "incomplete"
+ },
+ "ledger": {
+  "entry_ids": [
+   "04c05ca92423486cb90f1cc0f509b33c:line-000",
+   "04c05ca92423486cb90f1cc0f509b33c:line-001",
+   "04c05ca92423486cb90f1cc0f509b33c:line-002",
+   "04c05ca92423486cb90f1cc0f509b33c:line-003",
+   "04c05ca92423486cb90f1cc0f509b33c:slice"
+  ],
+  "receipt": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/rolling-runs-v11-r4/slices/offload-b108-20260927-v11r4/ledger-receipt.json"
+ },
+ "lines": {
+  "exit_0": 4,
+  "nonzero": [],
+  "total": 4
+ },
+ "recorded_at": "2026-09-27T19:59:24Z",
+ "request": null,
+ "request_ids": [],
+ "results_path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/rolling-runs-v11-r4/slices/offload-b108-20260927-v11r4/fetched",
+ "schema": "tetjet-collected/v1",
+ "task": null,
+ "verification": {
+  "bytes": null,
+  "files": 3976,
+  "manifest_sha256": "9f58fcaa4cc0365311cc8a187ea7eb61648800b8919837a495a31655f3dc6f3d",
+  "method": "rolling-closeout-v2",
+  "receipt": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-offload/batches/b108/v11r4/launch/offload-b108-20260927-v11r4/manual-comparison.json",
+  "verdict": "PASS",
+  "verifier_sha256": "5c6d53254e804a0945dcba7ca73aedebdcaf22839f3b7dee561881b0d8782c82"
+ },
+ "verified_at": "2026-09-27T02:44:37.948890+00:00"
+}

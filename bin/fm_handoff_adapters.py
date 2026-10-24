@@ -244,6 +244,7 @@ def status_decisions(proto, stage, cache, now):
 NATIVE_LIMIT = 1 << 20
 NATIVE_PASS_BYTES = 16 << 20
 NATIVE_FILES = 4096
+NATIVE_RESULT_CHARS = 4096
 HANDOFF_KINDS = {
     "READY FOR LAUNCH", "READY FOR HELPER REVIEW", "READY FOR KIT REVIEW", "PASS", "FAIL",
     "REQUEST ACCEPTED", "REQUEST REFUSED", "BATCH CUT", "REQUEST ALL CUT", "REQUEST SUPERSEDED",
@@ -346,7 +347,13 @@ def native_step(doc, path):
         state, code = "held", "native-failed"
     else:
         state, code = "done", None
-    return token(path.name), ended, state, code, f"wrapper rc={rc} result_word={word}; not downstream completion"
+    detail = f"wrapper rc={rc} result_word={word}; not downstream completion"
+    if word is None and doc.get("result") is not None:
+        result = doc["result"]
+        if not isinstance(result, str) or len(result) > NATIVE_RESULT_CHARS:
+            raise ValueError(f"null-word step result must be a string of at most {NATIVE_RESULT_CHARS} characters")
+        detail += f"; result={result}"
+    return token(path.name), ended, state, code, detail
 
 
 def native_verified(doc, path):

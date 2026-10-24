@@ -1,0 +1,97 @@
+{
+ "alias": null,
+ "backfilled": false,
+ "batch_id": "allin-2100s-repeat-20260930-beam-s17-s23",
+ "covers": [
+  {
+   "lines": "0-3,8-11",
+   "request_id": "repeat-2100s-set-build-2",
+   "request_sha256": "6d066bc2974f3c3bdafc1465dfeb9023e0a67d0506529b4d8edf41c85978901c"
+  }
+ ],
+ "emitter_sha256": "cd0293fa87d15d327739e6dd3098e169ce09774190d1ed60206da867bc9ce097",
+ "experiment": {
+  "arms": [
+   "control",
+   "all-in-wf3",
+   "loo-loadpath-wf3",
+   "step-wide"
+  ],
+  "description": null,
+  "name": "All-in 2100 s repeat on beam and L-bracket",
+  "question": "At 2100 s with the sizing/v2 finisher, per part: is the captain-marked all-in-wf3 setup lighter than control, does its load-path step make it lighter, and does a wider load-path step help, with every case passing and the margin held?",
+  "source": "lattice-batch.json",
+  "title": "At 2100 s, does the captain-marked all-in setup end lighter than control on beam and L-bracket, what does its load-path step contribute per part, and does a wider step help?"
+ },
+ "experiment_id": "allin-2100s-repeat-beam-lbracket-20260930",
+ "kind": "tj-package",
+ "labels": {
+  "ledger": {
+   "arms": [
+    "all-in-wf3",
+    "control",
+    "loo-loadpath-wf3",
+    "step-wide"
+   ],
+   "entries": 48,
+   "entries_without_arm": 0,
+   "entries_without_experiment_id": 0,
+   "experiment_ids": [
+    "allin-2100s-repeat-beam-lbracket-20260930"
+   ],
+   "labels": [
+    "allin-2100s-repeat"
+   ]
+  },
+  "missing": [],
+  "sources": {
+   "arms": "intake",
+   "experiment_id": "intake",
+   "name": "intake",
+   "question": "intake"
+  },
+  "status": "complete"
+ },
+ "ledger": null,
+ "lines": {
+  "exit_0": 8,
+  "missing_exit": [],
+  "nonzero": [],
+  "source": "jobs.json",
+  "total": 8
+ },
+ "recorded_at": "2026-10-01T05:05:12Z",
+ "request": null,
+ "request_ids": [
+  "repeat-2100s-set-build-2"
+ ],
+ "requests": [
+  {
+   "all_cut": true,
+   "complete": false,
+   "fully_collected": false,
+   "lines_collected": 8,
+   "lines_cut": 32,
+   "lines_not_collected": "4-7,12-31",
+   "lines_not_cut": "",
+   "lines_total": 32,
+   "lines_withdrawn": 0,
+   "outcome": null,
+   "request_id": "repeat-2100s-set-build-2",
+   "request_sha256": "6d066bc2974f3c3bdafc1465dfeb9023e0a67d0506529b4d8edf41c85978901c",
+   "superseded_by": null
+  }
+ ],
+ "results_path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/repeat-2100s-set-build/tetjet-results/allin-2100s-repeat-20260930-beam-s17-s23",
+ "schema": "tetjet-collected/v1",
+ "task": "repeat-2100s-set-build",
+ "verification": {
+  "bytes": 3020583667,
+  "files": 18776,
+  "manifest_sha256": "12debc8f8bd16ba869f25182bec5a46e16125dee221fa459fd64d9511c456529",
+  "method": "tj-manifest",
+  "receipt": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/repeat-2100s-set-build/tetjet-results/allin-2100s-repeat-20260930-beam-s17-s23.fetch.json",
+  "verdict": "PASS"
+ },
+ "verified_at": "2026-10-01T05:01:14Z"
+}
