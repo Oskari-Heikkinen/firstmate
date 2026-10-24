@@ -6689,7 +6689,7 @@ test_completed_prose_quotes_allow_missing_and_declared_citations() {
 }
 
 test_missing_markup_short_interpretations_respect_quote_mode() {
-  local case_dir root_name base path flag rc
+  local case_dir root_name base path flag rc ev label
   for root_name in copy tmp; do
     for flag in '' --force; do
       case_dir=$(make_case "evidence-short-markup-$root_name-${flag:-normal}")
@@ -6698,10 +6698,14 @@ test_missing_markup_short_interpretations_respect_quote_mode() {
       printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
       land_shippable_commit "$case_dir"
       mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/data/task-x1"
-      if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; else base="$case_dir/tasktmp"; fi
+      if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace
+      else base="$case_dir/tasktmp"; label=tmp; fi
+      # Isolate the report's quote mode: declaration bytes are not another
+      # unquoted citation in a scanned regular record.
+      ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
       path="$base/proof:tag longer"
       printf 'long bytes\n' > "$path"
-      printf '%s\n' "$path" > "$case_dir/data/task-x1/evidence.list"
+      printf '%s\n' "$path" > "$case_dir/declarations"
       printf 'See %s\n' "$path" > "$case_dir/data/task-x1/report.md"
       rc=0
       run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
@@ -6710,16 +6714,19 @@ test_missing_markup_short_interpretations_respect_quote_mode() {
         "$case_dir/stderr" 'short markup refusal was not reached'
       assert_present "$case_dir/state/task-x1.meta" 'markup refusal removed metadata'
       assert_absent "$case_dir/data/task-x1/evidence" 'markup refusal installed partial evidence'
+      [ "$(cat "$path")" = 'long bytes' ] || fail 'markup refusal changed source evidence'
       # The same missing short token is unambiguous when explicitly quoted.
       path="$base/proof:tag' longer"
       printf 'quoted long bytes\n' > "$path"
-      printf '%s\n' "$path" > "$case_dir/data/task-x1/evidence.list"
+      printf '%s\n' "$path" > "$case_dir/declarations"
       printf "See '%s/proof:tag' longer\n" "$base" > "$case_dir/data/task-x1/report.md"
       rc=0
       run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
       expect_code 0 "$rc" "quoted missing short interpretation should pass: $(cat "$case_dir/stderr")"
       if grep -q 'there is nothing left to save' "$case_dir/stderr"; then fail 'covered longer entry did not suppress missing quoted short token'; fi
-      evidence_manifest_verifies "$case_dir/data/task-x1/evidence" || fail 'quoted markup evidence does not verify'
+      ev="$case_dir/data/task-x1/evidence"
+      [ "$(cat "$ev/$label/proof:tag' longer")" = 'quoted long bytes' ] || fail 'quoted markup control lost declared bytes'
+      evidence_manifest_verifies "$ev" || fail 'quoted markup evidence does not verify'
       assert_absent "$case_dir/state/task-x1.meta" 'quoted markup control left metadata'
     done
   done
