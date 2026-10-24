@@ -7197,6 +7197,9 @@ regular_manifest_append_case() {  # <root> <variant> <flag> <snapshot> [ownershi
   if [ "$variant" != prior ]; then
     mkdir -p "${source%/*}"
     printf 'fresh evidence bytes\n' > "$source"
+    if [ "$variant" = fresh-directory ]; then
+      printf 'later directory member\n' > "${source%/*}/zz-after"
+    fi
   elif [ "$ownership" = reassigned ]; then
     printf 'foreign evidence bytes\n' > "$source"
   fi
@@ -7205,6 +7208,14 @@ regular_manifest_append_case() {  # <root> <variant> <flag> <snapshot> [ownershi
   ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
   cat > "$case_dir/append-fault.sh" <<'SH'
 if [ "${0##*/}" = fm-teardown.sh ]; then
+  # A failed first row must not be masked by a successful later directory row.
+  find() {
+    if [ "$FM_APPEND_KIND" = fresh-directory ] && [ "${2-} ${3-}" = '-type f' ]; then
+      command find "$@" | LC_ALL=C sort
+    else
+      command find "$@"
+    fi
+  }
   printf() {
     case "$FM_APPEND_KIND:${1-}" in
       fresh-directory:'%s  %s%s\n')
@@ -7250,6 +7261,9 @@ SH
     assert_absent "$source" 'regular carry refusal recreated absent source'
   else
     [ "$(cat "$source")" = 'fresh evidence bytes' ] || fail 'regular append refusal changed source bytes'
+    if [ "$variant" = fresh-directory ]; then
+      [ "$(cat "${source%/*}/zz-after")" = 'later directory member' ] || fail 'directory append refusal changed later member'
+    fi
   fi
   fi
   # The exact same fixture must succeed without the fault, through teardown.
@@ -7266,6 +7280,10 @@ SH
     cmp -s "$case_dir/prior-tree/MANIFEST.sha256.links" "$ev/MANIFEST.sha256.links" || fail 'carry retry changed link manifest bytes'
   else
     [ "$(cat "$ev/$key")" = 'fresh evidence bytes' ] || fail 'fresh retry saved wrong bytes'
+    if [ "$variant" = fresh-directory ]; then
+      [ "$(cat "$ev/${key%/*}/zz-after")" = 'later directory member' ] || fail 'directory retry omitted later member'
+      grep -Fq "  ${key%/*}/zz-after" "$ev/MANIFEST.sha256" || fail 'directory retry omitted later row'
+    fi
   fi
   if [ "$ownership" = reassigned ]; then
     [ "$(cat "$source")" = 'foreign evidence bytes' ] || fail 'carry retry touched successor content'
