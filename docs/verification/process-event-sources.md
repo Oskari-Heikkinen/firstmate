@@ -120,7 +120,8 @@ The [operating contract](../configuration.md#process-to-event-sources-stateproce
 Measured on 2026-09-08 on macOS (Darwin 25.5.0) against a stand-in poll child that traps TERM, INT, and HUP and keeps blocking: before the repair the guard signalled, lost the leader to that signal, and exited leaving the child running past 70 seconds.
 The guard caused the permanent leak by destroying the leader needed to prove ownership; a guard that causes that leak is worse than no guard.
 After the repair, the guard cleared that child in 7.7 seconds with a 5-second lease and 1-second check, and `retire` cleared the same shape in about 2.4 seconds.
-The bound is the lease term plus ONE check interval plus the stop's grace period, roughly 620 seconds at the shipped 600-second lease and 15-second check - a 601-second lease term, one 15-second interval, and up to 4 seconds of stop, with two reads still required so a single unreadable read cannot kill a live runner.
+At the measurement's then-default 600-second lease and 15-second check, the bound was roughly 620 seconds: a 601-second lease term, one 15-second interval, and up to 4 seconds of stop, with two reads still required so a single unreadable read cannot kill a live runner.
+Current defaults and the nominal detection bound are owned by the [operating contract](../configuration.md#process-to-event-sources-stateprocevent).
 What was tightened is the spacing of those two reads, not their number: half a check interval apart they both fit inside the single interval the bound budgets, where a full interval between them cost a second one.
 The lease term is the configured lease plus one second because the age comparison is in whole seconds, and that rounding is part of the bound rather than slack.
 The figure and that reason belong together: a number recorded without why it is that number is the one a later reader shortens.

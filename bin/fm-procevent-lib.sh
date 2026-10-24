@@ -173,7 +173,7 @@ fm_procevent_owner_lease_age_to() {  # <output-variable> <state-root>
 }
 
 # How long a runner keeps going with no activity in its owning home. The default
-# is forty watcher cycles at the default poll interval, so an ordinary busy or
+# is twenty watcher cycles at the default poll interval, so an ordinary busy or
 # briefly wedged home never trips it, while a home that is simply gone stops
 # owning processes within the hour rather than within a day.
 FM_PROCEVENT_OWNER_LEASE_DEFAULT_SECONDS=600

@@ -35,7 +35,9 @@ fm_park_observation_to() {
       [ ! -e "${_po_cond#*:}" ] || _po_exists=1
       _po_sig=$_po_exists
       ;;
-    inbox:*) _po_sig=inbox ;;
+    inbox:*)
+      [ "$_po_cond" = "inbox:$4" ] || return 1
+      _po_sig=inbox ;;
     merge-result:*)
       if [ -f "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/merge-queue" ]; then
         [ ! -L "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/merge-queue" ] || return 1
@@ -46,7 +48,7 @@ fm_park_observation_to() {
           case "$_po_line" in dir=*) _po_dir=${_po_line#*=} ;; esac
         done <<< "$_po_config"
       fi
-      case "$_po_dir" in '~/'*) _po_dir=$HOME/${_po_dir#'~/'} ;; esac
+      case "$_po_dir" in \~/*) _po_dir=$HOME/${_po_dir#\~/} ;; esac
       [ -n "$_po_dir" ] || return 1
       # A provider can depend on anything, not just these files. Never cache it.
       [ ! -x "$_po_dir/result.sh" ] || return 1

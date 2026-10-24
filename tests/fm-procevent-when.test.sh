@@ -701,6 +701,9 @@ SH
   chmod +x "$h/bin/date"
   case "$kind" in
     inbox) cond=inbox:local ;;
+    foreign-inbox)
+      cond=inbox:other
+      printf 'kind=ship\npark_token=other-token\n' > "$h/state/other.meta" ;;
     merge-result|opaque)
       cond=merge-result:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       printf 'dir=%s/queue\n' "$h" > "$h/config/merge-queue"
@@ -741,6 +744,7 @@ SH
       wait_park_ticks "$h" "$target"
       case "$kind" in
         inbox) printf 'park_pickup=test-token\n' >> "$h/state/local.meta" ;;
+        foreign-inbox) printf 'park_pickup=other-token\n' >> "$h/state/other.meta" ;;
         merge-result) printf 'RESULT now head=%s outcome=merged\n' "${cond#merge-result:}" >> "$h/queue/queue.log" ;;
         *) : > "$h/ready" ;;
       esac
@@ -757,21 +761,24 @@ SH
   assert_grep "status: $result" "$h/result" "$kind keeps its terminal contract"
   case "$kind" in
     superseded)
-      assert_grep '^condition_polls: 3$' "$h/result" 'supersession is checked immediately and errors are not cached'
+      assert_equals 3 "$(sed -n 's/^condition_polls: //p' "$h/result")" 'supersession is checked immediately and errors are not cached'
       assert_absent "$h/action" 'supersession cannot act' ;;
     deadline)
-      assert_grep '^condition_polls: 1$' "$h/result" 'an unchanged false still reaches its deadline'
+      assert_equals 1 "$(sed -n 's/^condition_polls: //p' "$h/result")" 'an unchanged false still reaches its deadline'
       assert_absent "$h/action" 'a deadline cannot act' ;;
+    foreign-inbox)
+      [ "$(sed -n 's/^condition_polls: //p' "$h/result")" -gt 4 ] || fail 'a foreign inbox was cached from the wrong record'
+      assert_contains "$(count_lines "$h/action")" 1 'the foreign inbox is still evaluated by the real condition' ;;
     opaque)
       [ "$(count_lines "$h/provider-calls")" -gt 4 ] || fail 'an opaque provider was cached'
       assert_contains "$(count_lines "$h/action")" 1 'an opaque provider still fires once' ;;
     *)
-      assert_grep '^condition_polls: 4$' "$h/result" 'false polls skip until backstop, then two real true polls fire'
+      assert_equals 4 "$(sed -n 's/^condition_polls: //p' "$h/result")" 'false polls skip until backstop, then two real true polls fire'
       assert_contains "$(count_lines "$h/action")" 1 'only the real stable condition authorizes one action' ;;
   esac
   when "$h" retire local >/dev/null
 }
-for local_kind in file receipt inbox merge-result opaque superseded deadline; do
+for local_kind in file receipt inbox merge-result opaque foreign-inbox superseded deadline; do
   local_park_case "$local_kind"
 done
 pass 'local park observations keep change, backstop, stability, errors and deadline delivery'
