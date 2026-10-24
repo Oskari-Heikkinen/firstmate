@@ -3,8 +3,8 @@
 #
 #   ai-account                        overview: every account, quota left, and what runs on it
 #   ai-account status                 show the active account per provider and the saved ones
-#   ai-account move claude NAME       switch to NAME and move the second mates and their Claude
-#                                     workers onto it (this chat session: restart it yourself)
+#   ai-account move claude NAME       recorded move through FM_HOME/bin/fm-account.sh
+#                                     (this chat session: restart it yourself)
 #   ai-account add claude|openai NAME  create account NAME and log it in (interactive, once)
 #   ai-account use claude|openai NAME  make NAME the active account
 #   ai-account quota                  show the quota left on every saved Claude account (and OpenAI)
@@ -22,7 +22,8 @@
 # history are the same whichever account is active.
 # Tracked source: bin/ai-account.sh; install as ~/.local/bin/ai-account.
 # Requires the existing Claude/Codex wrappers and ~/.config/ai-accounts/quota-line.py.
-# shellcheck disable=SC2034,SC2013 # Preserve the imported retry and roster loops.
+# move uses FM_HOME (default /home/oskari/Tools/firstmate); see fm-account.sh --help.
+# shellcheck disable=SC2034 # Preserve the imported retry loop.
 set -euo pipefail
 
 CFG="$HOME/.config/ai-accounts"
@@ -149,17 +150,11 @@ cmd_overview() {
   echo "Switch everything: ai-account move claude NAME"
 }
 
-# Switch, then move the second mates (restart) and their Claude workers onto the new account.
+# Only fm-account owns fleet moves and their records; use remains the login primitive.
 cmd_move() {
-  local p=$1 name=$2 fm=/home/oskari/Tools/firstmate mate
-  [ "$p" = claude ] || die "move is only for claude (OpenAI workers switch on their next request after: ai-account use openai NAME)"
-  [ "$(active claude)" = "$name" ] || cmd_use claude "$name"
-  for mate in $(sed -n 's/^- \([a-z0-9-]*\) - .*/\1/p' "$fm/data/secondmates.md"); do
-    echo "Restarting second mate $mate on $name..."
-    FM_HOME=$fm "$fm/bin/fm-control.sh" "$mate" relaunch --note "Moved onto Claude account $name by ai-account move; nothing changed in your work." 2>&1 | tail -1
-    FM_HOME=$fm "$fm/bin/fm-send.sh" "$mate" "The captain moved Claude work onto account '$name' (ai-account move). Relaunch every live Claude worker of yours that is not already on it right away (bin/fm-control.sh <task> relaunch --note ...; check a process with: tr '\\0' '\\n' </proc/<pid>/environ | grep CLAUDE_CONFIG_DIR), waiting only for one inside a landing push. One line when done with the count moved." >/dev/null 2>&1 || true
-  done
-  echo "This chat session still runs on its old account: type /exit, then ~/.local/bin/claude --continue"
+  local fm=${FM_HOME:-/home/oskari/Tools/firstmate}
+  [ -x "$fm/bin/fm-account.sh" ] || die "missing $fm/bin/fm-account.sh; set FM_HOME to the Firstmate home"
+  FM_HOME=$fm "$fm/bin/fm-account.sh" move "$@"
 }
 
 cmd_add() {

@@ -14,6 +14,7 @@ static tests/fm-nm-test-contract.test.sh
 static tests/fm-no-mistakes-required.test.sh
 
 # gate: the safety core, feature smokes and real-Herdr smokes, on every push.
+gate tests/ai-account.test.sh
 gate tests/fm-backend-autodetect-smoke.test.sh
 gate tests/fm-backend-herdr-focus-flash-e2e.test.sh
 gate tests/fm-backend-herdr-prune-safety-e2e.test.sh
