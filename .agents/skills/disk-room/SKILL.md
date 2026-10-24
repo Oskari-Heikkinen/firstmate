@@ -24,6 +24,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - For recurring comparable jobs, opt into job-kind history on admission and execution as the script header describes; execution records storage write bytes, and admission refuses a declaration below that kind's high.
   Use history for an omitted declaration only for comparable inputs; a new kind still needs a measured or stated expected write, rounded up, and known larger inputs need a larger declaration.
   When neither history nor a stated write exists, ask the job's owner rather than guessing low.
+  A recording failure holds further typed jobs of that kind; investigate the named attempt and use the header's evidence-backed recovery procedure, never delete the hold merely to resume admission.
 - A refusal is a wait, not a failure: hold the job and report the refusal line to firstmate.
 - To move a finished, rarely read tree to D:, pack it with `bin/fm-pack.sh pack TASK UNIT SRC`; [`docs/storage.md`](../../../docs/storage.md#packing-cold-data) owns the command and the retention rule.
 - Retention rule R2: the home that owns a packed source, on D: or Linux, releases it with `bin/fm-pack.sh release` as soon as the pack verifies (zero window since 2026-10-18), and the command refuses unless its verify, acceptance, reference, mount-use and hard-link guards hold; [`docs/storage.md`](../../../docs/storage.md#retention-rule-r2) owns the rule.
