@@ -538,7 +538,9 @@ def open_hold_receipts(proto, stage, projection, path):
         if closed:
             state, code, at = "done", None, operation["done_at"]
             detail += (f"; closed by {closed['kind']} {closed['subject']} at {closed['at']} "
-                       f"receipt={closed['receipt']}; logical hold resolved, not whole-service completion")
+                       f"receipt={closed['receipt']} reason={closed['reason']}"
+                       f"{'; class-key=' + closed['via'] if closed.get('via') else ''}; "
+                       "logical hold resolved, not proof of removal or whole-service completion")
         else:
             state, code, at = "held", "native-failed", hold["at"]
         doc = receipt(proto, stage, record, native_time(at), state, path, code=code, detail=detail, entry=path.name)

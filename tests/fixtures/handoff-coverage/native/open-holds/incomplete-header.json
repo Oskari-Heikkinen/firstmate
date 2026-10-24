@@ -1,0 +1,33 @@
+{
+  "_fixture_note": "Incomplete metadata excerpt, NOT a complete aggregate or successful coverage fixture; source problems preserved.",
+  "events": [],
+  "inputs": {
+    "archive_deletions": 2,
+    "collected": 396,
+    "disk_watch": 1,
+    "fetch_logs": 1,
+    "launch_logs": 5,
+    "pacing": 81,
+    "removal_holds": 1,
+    "removal_receipts": 216,
+    "removal_sequence_logs": 1,
+    "rolling_launch_dirs": 74,
+    "runner_class_receipts": 332,
+    "runner_escalations": 1,
+    "runner_journal": 1,
+    "runner_receipts": 12,
+    "step_receipts": 7586,
+    "tj_fetch": 169
+  },
+  "problems": [
+    {
+      "error": "UNKNOWN-VERSION tetjet-collected/v1 kind tj-package-partial (tjr 1.4.1 reads only rolling-slice, tj-package, request)",
+      "path": "/home/fixture-user/.treehouse/firstmate-7bab20/2/firstmate/data/tetjet-collected/bent-chain-s1-look2000-beam-lb-20261008.json",
+      "source": "collected",
+      "unknown_version": "tetjet-collected/v1 kind tj-package-partial"
+    }
+  ],
+  "scanned_at": "2026-10-24T17:58:05Z",
+  "schema": "tj-receipt-events/v1",
+  "version": "tj-auto-receipts/1.4.1"
+}

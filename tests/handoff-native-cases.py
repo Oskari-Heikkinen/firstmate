@@ -587,6 +587,171 @@ class NativeAdapters(unittest.TestCase):
         self.assertIn("policy", adapters.adapt(proto, stage, self.cache, NOW)[1][0][1])
         self.assertIn("exact", self.adapt(family, "*.events.json")[1][0][1])
 
+    def test_open_holds_current_source_annotations_and_class_keys(self):
+        family = "native-tj-open-holds"
+        fixture = ROOT / "tests/fixtures/handoff-coverage/native/open-holds"
+        provenance = json.loads((fixture / "provenance.json").read_text())
+        for name, key in (("extract.json", "extract"), ("incomplete-header.json", "incomplete_header")):
+            self.assertEqual(provenance[key]["sha256"], hashlib.sha256((fixture / name).read_bytes()).hexdigest())
+            self.assertFalse(provenance[key]["complete_snapshot"])
+        extract = json.loads((fixture / "extract.json").read_text())
+        by_selection = {e["selection"]: e["event"] for e in extract}
+        native_closed = by_selection["held-with-native-closed_at"]
+        # Generated complete-shaped frames from the sealed small real extract;
+        # NOT the original aggregate, which has a source problem and cannot pass.
+        put(self.folder / "events.json", snapshot([native_closed, by_selection["waiting-not-held"]]))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(["done"], [d["state"] for d in docs])
+        self.assertIn(native_closed["facts"]["closed_by"], docs[0]["detail"])
+        self.assertIn("not proof of removal", docs[0]["detail"])
+        real_removed = by_selection["runner-class-removed"]
+        composite = f"{real_removed['facts']['class']}:{real_removed['facts']['root_kind']}:{real_removed['subject']}"
+        held = event("held", subject=composite, phase="remove", at="2026-09-28T12:00:00Z")
+        for source, at, expected in (("runner-class-receipt", real_removed["at"], "done"),
+                                     ("runner-receipt", real_removed["at"], "held"),
+                                     ("runner-class-receipt", "2026-09-28T11:00:00Z", "held")):
+            self.cache = {}
+            put(self.folder / "events.json", snapshot([held, dict(real_removed, source=source, at=at)]))
+            docs, bad = self.adapt(family)
+            self.assertEqual([], bad)
+            self.assertEqual(expected, docs[0]["state"])
+        # Follow P exactly: its additional removed key is registered for each
+        # allowed success of that source, not only today's emitted removed kind.
+        self.cache = {}
+        put(self.folder / "events.json", snapshot([held, dict(real_removed, kind="fetched")]))
+        self.assertEqual("done", self.adapt(family)[0][0]["state"])
+        self.cache = {}
+        put(self.folder / "events.json", snapshot([event(k) for k in
+            ("waiting", "step", "checked", "escalated", "archive-deleted", "closeout-recorded")]))
+        self.assertEqual(([], []), self.adapt(family), "known neutral events neither create nor close holds")
+        # Current real incomplete header retains its source problem exactly
+        # (username sanitized). Its events are omitted and are never called a
+        # full real aggregate: the completeness gate must reject before folding.
+        incomplete = json.loads((fixture / "incomplete-header.json").read_text())
+        self.assertEqual(provenance["incomplete_header"]["source_problems"], len(incomplete["problems"]))
+        put(self.folder / "events.json", incomplete)
+        self.assertIn("source problems", self.adapt(family)[1][0][1])
+        incomplete["events"] = [{"kind": "unreachable-after-native-source-problem"}]
+        put(self.folder / "events.json", incomplete)
+        self.assertIn("source problems", self.adapt(family)[1][0][1], "fail closed independently of event payload")
+
+    def test_open_holds_closed_at_filters_before_latest_and_keeps_first_done_time(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        older = event("held", phase="remove")
+        newer = event("held", phase="remove", at="2026-10-24T15:30:00Z")
+        annotated = dict(newer, facts={"closed_at": "2026-10-24T15:45:00Z", "closed_by": "stop-cleared: roots retained"})
+        put(path, snapshot([older, newer]))
+        self.assertIn(newer["id"], self.adapt(family)[0][0]["detail"])
+        put(path, snapshot([older, annotated]))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual("held", docs[0]["state"], "closing the newer stop does not close the older unresolved stop")
+        self.assertIn(older["id"], docs[0]["detail"])
+        put(path, snapshot([older, newer]))  # annotation is now pruned
+        self.assertIn(older["id"], self.adapt(family)[0][0]["detail"], "remembered individual proof filters before latest")
+        self.cache = {}
+        put(path, snapshot([annotated]))
+        self.assertEqual("done", self.adapt(family)[0][0]["state"])
+        put(path, snapshot([older, newer]))
+        self.assertEqual("held", self.adapt(family)[0][0]["state"], "a different older stop is not closed by another event's annotation")
+        self.assertIn(older["id"], self.adapt(family)[0][0]["detail"])
+        # Native same-time selection must filter closed facts BEFORE the tie.
+        self.cache = {}
+        same_time_closed = dict(annotated, at=older["at"])
+        put(path, snapshot([older, same_time_closed]))
+        self.assertEqual("held", self.adapt(family)[0][0]["state"])
+        # Explicit removal resolves all remaining observed stops of this subject.
+        put(path, snapshot([older, annotated, event("removed", phase="remove", at=T)]))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual("done", docs[0]["state"])
+        first_done = docs[0]["written_at"]
+        self.cache = json.loads(json.dumps(self.cache))
+        put(path, snapshot([older, annotated, event("removed", phase="remove", at=T)], scanned_at="2026-10-24T17:00:00Z"))
+        docs, bad = self.adapt(family, now=NOW + 3600)
+        self.assertEqual([], bad)
+        self.assertEqual(first_done, docs[0]["written_at"], "fresh scans do not move first accepted terminal observation")
+
+    def test_open_holds_individual_closure_does_not_erase_retained_other_stop(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        older = event("held", phase="remove")
+        newer = event("held", phase="remove", at="2026-10-24T15:30:00Z")
+        put(path, snapshot([older]))
+        self.adapt(family)
+        put(path, snapshot([newer]))
+        self.assertTrue(self.adapt(family)[1], "pruned observed unresolved stop is retained beside new stop")
+        self.cache = json.loads(json.dumps(self.cache))
+        annotated = dict(newer, facts={"closed_at": "2026-10-24T15:45:00Z", "closed_by": "stop-cleared: roots retained"})
+        put(path, snapshot([annotated]))
+        docs, bad = self.adapt(family)
+        self.assertTrue(bad)
+        self.assertEqual("held", docs[0]["state"])
+        self.assertIn(older["id"], docs[0]["detail"])
+        put(path, snapshot([event("removed", phase="remove", at=T)]))
+        self.assertEqual("done", self.adapt(family)[0][0]["state"])
+
+    def test_open_holds_annotation_errors_and_retained_witness_bounds(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        held = event("held", phase="remove")
+        put(path, snapshot([held]))
+        baseline, _ = self.adapt(family)
+        for facts in ({"closed_at": "not a timestamp", "closed_by": "stop-cleared"},
+                      {"closed_at": "2026-10-24T14:00:00Z", "closed_by": "stop-cleared"},
+                      {"closed_at": T}, {"closed_at": T, "closed_by": "x" * 4097}):
+            put(path, snapshot([dict(held, facts=facts)]))
+            docs, bad = self.adapt(family)
+            self.assertTrue(bad)
+            self.assertEqual(baseline, docs, "invalid closure evidence cannot clear a cached hold")
+        newer = event("held", phase="remove", at="2026-10-24T15:30:00Z")
+        with patch.object(adapters.open_holds, "WITNESS_LIMIT", 1):
+            put(path, snapshot([newer]))
+            self.assertIn("witness count", self.adapt(family)[1][0][1])
+        with patch.object(adapters.open_holds, "CACHE_BYTES", 1):
+            put(path, snapshot([held]))
+            self.assertIn("compact projection", self.adapt(family)[1][0][1])
+
+    def test_open_holds_rejected_future_scan_does_not_advance_accepted_clock(self):
+        family = "native-tj-open-holds"
+        path = self.folder / "events.json"
+        held = event("held", phase="remove")
+        put(path, snapshot([held]))
+        self.adapt(family)
+        closed = dict(held, facts={"closed_at": T, "closed_by": "stop-cleared: roots retained"})
+        put(path, snapshot([closed], scanned_at="2026-10-24T17:00:00Z"))
+        docs, bad = self.adapt(family)
+        self.assertIn("future", bad[0][1])
+        self.assertEqual("held", docs[0]["state"])
+        put(path, snapshot([closed], scanned_at="2026-10-24T16:30:00Z"))
+        docs, bad = self.adapt(family, now=NOW + 1800)
+        self.assertEqual([], bad, "rejected 17:00 observation never became accepted high-water mark")
+        self.assertEqual("done", docs[0]["state"])
+        self.assertEqual("2026-10-24T16:30:00.000000Z", docs[0]["written_at"])
+
+    def test_open_holds_generated_six_closed_journals_and_operation_not_raw_held_cap(self):
+        family = "native-tj-open-holds"
+        # A CONSTRUCTED 14-vs-8 regression, not replay of the private complete
+        # aggregate: six journal holds are individually already stop-cleared.
+        events = [event("held", subject=f"kit-b{i}", phase="launch" if i < 5 else "fetch") for i in range(8)]
+        for i in range(6):
+            stop = event("held", subject=f"stopped-b{i}", phase="remove")
+            stop["source"] = "runner-journal"
+            stop["facts"].update(closed_at=T, closed_by="stop-cleared: roots retained")
+            events.append(stop)
+        put(self.folder / "events.json", snapshot(events))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad)
+        self.assertEqual(8, sum(d["state"] == "held" for d in docs))
+        self.assertEqual(6, sum(d["state"] == "done" for d in docs))
+        self.cache = {}
+        put(self.folder / "events.json", snapshot([event("held", reason=f"repeat {i}") for i in range(4097)]))
+        docs, bad = self.adapt(family)
+        self.assertEqual([], bad, "operation cap is not a cap on raw held-event count")
+        self.assertEqual(["held"], [d["state"] for d in docs])
+
     def test_open_holds_watcher_clears_only_on_explicit_native_success(self):
         machine = self.folder / "machine"
         for hid in (OWNER, "main", "tooling-mate"):

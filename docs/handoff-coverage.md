@@ -628,13 +628,16 @@ It never imports or executes that scanner, reproduces its source ingestion, or f
 `input.match` must be one exact JSON filename, not a glob or invocation partition.
 The snapshot must have normalized whole-second UTC `scanned_at`/event `at`, an `inputs` count object, an empty `problems` array and an `events` array.
 Unknown event kinds, malformed fields, duplicate native event ids or any native source problem make the whole snapshot unreadable, retaining previous observations rather than clearing holds.
-Supported kinds are held, launched, fetched, closed, removed, waiting, step, checked, archive-deleted and closeout-recorded.
+Supported kinds are held, launched, fetched, closed, removed, waiting, step, checked, escalated, archive-deleted and closeout-recorded.
 The package's `version` is metadata, not the schema's wire version.
 
 Logical identity is the unambiguously JSON-encoded pair `[subject, phase-or-other]`, hashed with SHA256; null/empty phase means `other`.
 The alias must equal the native first hyphen-delimited `b`-plus-digits alias of the normalized subject.
-For a fixed subject/phase, the latest native held event wins; equal timestamps use the last event in the native snapshot's order.
-The native closure relation is:
+This projection implements the current v1.4.1 native `open_holds` relation, not only the older v1.1 function: the same wire schema does not make their summary semantics identical.
+First filter each individually resolved held event; for a fixed subject/phase, the latest **unresolved** event wins, with equal timestamps using the last event in snapshot order.
+A valid native held `facts.closed_at`/`closed_by` pair is explicit closure evidence: preserve the normalized same/later timestamp and bounded reason without following its paths.
+A native stop-cleared annotation resolves that runner stop, **not proof its root was removed**; its reason may say roots were retained.
+The family closure relation is:
 
 | Held phase | Native success that closes it |
 | --- | --- |
@@ -644,16 +647,21 @@ The native closure relation is:
 | relaunch | Same-subject launched with success `at >= hold.at`, or **any** same-subject fetched/closed, even older than the hold |
 | other phase | No implicit closure |
 
+A native `runner-class-receipt` success additionally registers a removed witness at the exact composite subject `<facts.class>:<facts.root_kind>:<subject>`, as the current native function does, alongside its ordinary subject success.
+This closes a class-keyed remove hold only at the same/later time; it is neither arbitrary subject normalization nor alias closure for removal.
+
 A remaining logical hold maps to `held` with `native-failed`; an explicit native closure witness maps that hold to `done`, not whole-service completion.
 Success-only events with no current or previously observed hold create no invented operation.
 Native waiting/WAIT and unknown/pending step events are not held events in this projection and create neither hold alarms nor fabricated deadlines; this differs deliberately from `native-tj-step` history.
-Held receipt time is the native hold time; done receipt time is the snapshot's `scanned_at`, when the closure relation was observed, with both native event times/identities retained in detail.
+Held receipt time is the native hold time; done receipt time is the **first accepted snapshot's** `scanned_at` in which closure of that hold was observed, persisted rather than moved forward by each fresh scan/cache hit, with native event times/identities and native closed_by reason retained in detail.
 Evidence is the declared snapshot; cited native receipt paths remain unfollowed metadata.
 Routing and lane scope still come only from the fragment's code entry.
 
 Read all events without a recent-window cutoff, including old holds.
 Snapshot absence alone never resolves an observed unresolved hold: retain it and report disappearance until an explicit closure witness arrives.
-A newer observed hold is not replaced by older retained history; a known terminal decision remains terminal while that same/older hold history remains, even if the closer is pruned.
+A newer observed unresolved hold is not replaced by older retained history merely because it disappears; a known terminal decision remains terminal while that same/older hold history remains, even if the closer is pruned.
+Individual closed_at annotations do not erase a different previously selected unresolved stop of the same operation: retain those compact selected witnesses until individually resolved, selecting the latest still-unresolved witness.
+An explicitly resolved newer stop can therefore expose an older native hold still unresolved; that is not disappearance-based rollback.
 A genuinely later held event is evaluated anew against current native evidence, never suppressed merely because its subject once succeeded.
 Terminal entries drop when no held history for their logical identity remains; unresolved entries have no TTL.
 A regressed scan timestamp is a source problem.
@@ -662,10 +670,12 @@ Freshness is checked even on a cache hit; this observation policy is not a nativ
 
 The aggregate read is capped at 16 MiB, 65,536 normalized events and 4096 selected/retained logical operations, with source problems rather than truncation on overflow.
 Native reason and cited receipt strings carried into compact witnesses are capped at 4096 characters, again failing visibly instead of truncating evidence.
-Only compact hold/closure witnesses and problems are cached, not the snapshot's event list or unrelated payload; unchanged files are not re-read.
+Only compact selected hold/closure witnesses, previously selected unresolved witnesses and problems are cached, not the snapshot's event list or unrelated payload; unchanged files are not re-read.
+Retained witness history separately fails closed above 65,536 witnesses or 16 MiB of compact projection; the operation cap remains a cap on logical operations, never raw held-event count.
 This whole snapshot retains cross-source and cross-alias closure evidence even when the underlying invocation directory exceeds the historical adapter's per-stage file cap.
 Never partition the logical projection by invocation filename: that could separate a hold from the event that closes it.
-The existing native regression entry point also covers this projection's closure matrix, alias/tie/WAIT rules, pruning/restart, completeness/freshness errors, observation bounds and watcher alarm clearing.
+The existing native regression entry point also covers this projection's closure matrix, alias/tie/WAIT and known-neutral vocabulary, native stop-cleared/class-key rules, filter-before-latest, first terminal observation time, pruning/restart, completeness/freshness errors, observation/retention bounds and watcher alarm clearing.
+Its sealed small real metadata extract and source-problem header are explicitly incomplete excerpts, not a full successful aggregate fixture; generated frames and count regressions are labelled constructions.
 
 ## Compatibility and versioning
 

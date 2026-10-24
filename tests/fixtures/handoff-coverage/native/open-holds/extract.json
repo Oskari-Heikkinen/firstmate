@@ -1,0 +1,70 @@
+[
+  {
+    "event": {
+      "alias": "b52",
+      "at": "2026-09-28T11:18:58Z",
+      "facts": {
+        "closed_at": "2026-09-28T12:15:04Z",
+        "closed_by": "stop-cleared: captain option A; r2a as sealed; b52/mp11/fea-refs-1 held",
+        "line": 5,
+        "reason": "runner STOPPED (retained): RETAINED b52 offload-b52-20260927-v11r4 step=binding reason=BINDING REFUSE slice=offload-b52-20260927-v11r4 reason=not closed out as a zero-started slice (launch.exit, ledger-collect.exit 0, fetched/COMPLETE, scope, close-out proof FAIL only on zero started: 0 started, every line not-started, 0 missing/different/extra, archive) receipt=-",
+        "step": "runner-stopped"
+      },
+      "id": "997a7a92f835d2bf",
+      "kind": "held",
+      "phase": "remove",
+      "receipt": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-removal/state/journal.jsonl:5",
+      "source": "runner-journal",
+      "subject": "offload-b52-20260927-v11r4"
+    },
+    "selection": "held-with-native-closed_at"
+  },
+  {
+    "event": {
+      "alias": null,
+      "at": "2026-09-28T12:28:18Z",
+      "facts": {
+        "cites": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tetjet-offload/auto-removal-tj/receipts/tj-mp12-relayout-target-r3-20260928T122818.010198Z-1906083.json",
+        "cites_sha256_ok": true,
+        "class": "tj-root",
+        "estimate_bytes": 3632326951,
+        "free_after": 24734281728,
+        "free_before": 21018734592,
+        "freed_bytes": 3715547136,
+        "log": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-removal/state/class-logs/tj-root-tj-mp12-relayout-target-r3-remove-20260928T122420.157093Z.out",
+        "remote_root": "/home/engineer/lattice-research-runs/tj/mp12-relayout-target-r3",
+        "result": "TJROOT REMOVE REMOVED kind=tj name=mp12-relayout-target-r3 exit=0 retry=- binding_sha256=c79198d9e103d46ada4a64d354aba5e62272b7f2d399918384723fd4f3c74064 receipt=/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tetjet-offload/auto-removal-tj/receipts/tj-mp12-relayout-target-r3-20260928T122818.010198Z-1906083.json receipt_sha256=0a08d400374f0c0f83f902daeed1e39048d7d032eaa82d8dcb8746543320e95f freed_bytes=3715547136 free_after=24734281728 reason=REMOVED /home/engineer/lattice-research-runs/tj/.removing-mp12-relayout-target-r3 free_before=21018734592 free_after=24734281728",
+        "retried": false,
+        "root_kind": "tj",
+        "schema": "tj-auto-removal-runner-class-receipt/v1"
+      },
+      "id": "05861c2175b78d48",
+      "kind": "removed",
+      "phase": "remove",
+      "receipt": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-removal/state/receipts/tj-root/tj-mp12-relayout-target-r3.json",
+      "source": "runner-class-receipt",
+      "subject": "mp12-relayout-target-r3"
+    },
+    "selection": "runner-class-removed"
+  },
+  {
+    "event": {
+      "alias": null,
+      "at": "2026-09-27T19:58:38Z",
+      "facts": {
+        "log": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-receipts/step-receipts/mp11-r15-lbracket-edge-sink-fetch-20260927T195836.819270Z-788626.out",
+        "rc": 3,
+        "reason": "WAIT mp11-r15-lbracket-edge-sink not ended",
+        "result": "WAIT mp11-r15-lbracket-edge-sink not ended",
+        "script_sha256": "cd1efc7f4692ff8770eca343f228e9167a3878367364532c89d9ae77d6d9eab5"
+      },
+      "id": "722aebef42d07363",
+      "kind": "waiting",
+      "phase": "fetch",
+      "receipt": "/home/fixture-user/.treehouse/firstmate-65d58b/1/firstmate/data/tj-auto-receipts/step-receipts/mp11-r15-lbracket-edge-sink-fetch-20260927T195836.819270Z-788626.json",
+      "source": "step-receipt",
+      "subject": "mp11-r15-lbracket-edge-sink"
+    },
+    "selection": "waiting-not-held"
+  }
+]

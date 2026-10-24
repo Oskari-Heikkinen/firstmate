@@ -1,0 +1,25 @@
+{
+  "extract": {
+    "bytes": 3808,
+    "complete_snapshot": false,
+    "events": 3,
+    "sanitization": "Owner-selected metadata only; /home/oskari/ replaced by /home/fixture-user/; other paths remain unfollowed metadata",
+    "sha256": "427f3af5a6a092a525ee10423319f8742403cbd7bfcaea1437af79a25b3c9112",
+    "source_events": 8535,
+    "source_problems": 1,
+    "source_sha256": "ec45f693765a8a35fdc4962d5a6fa3df09b05b48c181c83dc12d761f0f629a11"
+  },
+  "format": "native-open-holds-fixture-provenance/v1",
+  "incomplete_header": {
+    "bytes": 1110,
+    "complete_snapshot": false,
+    "sanitization": "Top-level schema/version/scanned_at/inputs/problems retained; events deliberately omitted; /home/oskari/ replaced by /home/fixture-user/",
+    "sha256": "497e6b649ab3433cb597de5185d651890af0fbdf327031f327be161b8b57ee5c",
+    "source_bytes": 13206168,
+    "source_events": 8545,
+    "source_problems": 1,
+    "source_scanned_at": "2026-10-24T17:58:05Z",
+    "source_sha256": "489055fcbf5dfd34cd39af6d64cf3ea8b7c90b413d0d0a7cc701891488dc4654"
+  },
+  "limitations": "Neither file is a complete aggregate. Generated frames using the extract are constructions, never native successful coverage. The real header proves the existing source condition; original full bytes are not published or repaired."
+}
