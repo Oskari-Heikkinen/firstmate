@@ -5869,11 +5869,26 @@ test_citation_and_link_target_coverage_requires_surviving_objects() {
             # real teardown so token extraction, physical resolution and staged
             # coverage decisions are visible without replaying a consumed case.
             cat > "$case_dir/diagnostic-env" <<'SH'
+# Keep tracing out of stderr: teardown parses captured utility diagnostics.
+# Trace only the real teardown shell, not its executable fixture utilities.
+[ "${0##*/}" = fm-teardown.sh ] || return 0
+exec 9>> "$FM_TE_DIAGNOSTIC_TRACE"
+export BASH_XTRACEFD=9
 PS4='+${BASH_SOURCE##*/}:${LINENO}:${FUNCNAME[0]:-main}: '
 set -x
 SH
-            BASH_ENV="$case_dir/diagnostic-env" run_teardown "$case_dir" \
-              > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+            BASH_ENV="$case_dir/diagnostic-env" FM_TE_DIAGNOSTIC_TRACE="$case_dir/trace" \
+              run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+            # Always expose the original fixture, including an early refusal or
+            # an assertion mismatch, not just the unexpected-success branch.
+            printf '\nDIAGNOSTIC: %s/%s/%s/%s rc=%s target=%s citation=%s\n' \
+              "$root_name" "$mode" "$variant" "${flag:-normal}" "$rc" "$target" "$citation" >&2
+            printf '%s\n' '--- captured stdout ---' >&2
+            cat "$case_dir/stdout" >&2
+            printf '%s\n' '--- captured stderr ---' >&2
+            cat "$case_dir/stderr" >&2
+            printf '%s\n' '--- separate execution trace ---' >&2
+            cat "$case_dir/trace" >&2
           else
             run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
           fi
