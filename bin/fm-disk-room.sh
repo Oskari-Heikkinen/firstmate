@@ -37,7 +37,13 @@
 #       Refused (low room or unreadable) exits 75 with one line on stderr.
 #   fm-disk-room.sh write-history KIND
 #       Print one JSON object: kind (string), samples and high_bytes (integers).
-#       Exit 0 (missing history: both integers 0), 2 on corruption or misuse.
+#       Exit 0 (missing history: both integers 0), 2 on corruption, unresolved
+#       recording failure, or misuse.
+#   fm-disk-room.sh recover-write KIND TOKEN SIZE COMMAND_STATUS
+#       After investigating an abandoned attempt named in a refusal, append a
+#       conservative measured write (SIZE), then retire only that attempt.
+#       Exit 0 on recovery; 2 on misuse, active attempt, or persistence failure.
+#       Do not reuse the original declaration without evidence of actual writes.
 #   fm-disk-room.sh reserve NAME SIZE [--pid PID] [--ttl SECONDS]
 #       Declare an in-flight write. With --pid it lapses when that process
 #       exits; otherwise after --ttl (default 43200 s).
@@ -121,7 +127,7 @@
 #   arm      exit 0 with one line starting "armed: "; 2 on failure.
 #   disarm   fm-check-unregister.sh's exit status.
 #
-# Interface v2 adds --kind KIND to check/run and write-history KIND, while
+# Interface v2 adds --kind KIND to check/run, write-history and recover-write, while
 # retaining every v1 command and --self-test v1. KIND has NAME's syntax and
 # identifies comparable jobs, not individual run ids. Without --kind, v1
 # still requires --expect-write and does not read or write job history.
@@ -139,13 +145,25 @@
 # un-waited/background descendants, other processes/services doing delegated
 # work, non-storage I/O, and writes not accounted by that filesystem. It is
 # not a peak-space measurement or a promise about future jobs; use a rounded-up
-# declaration for known larger inputs. Abrupt wrapper death leaves no sample.
+# declaration for known larger inputs. Abrupt wrapper death leaves an unresolved
+# attempt, blocking future typed admission for that kind until recovery.
 # Unsupported/unreadable counters refuse before starting, not a zero sample.
 # A measurement/history failure after COMMAND prints a stderr error and exits
 # 74 if COMMAND succeeded, otherwise preserves COMMAND's nonzero status.
 # Job samples are append-only under STATE/write-history/KIND, one line:
 #   fm-disk-write/v1 EPOCH WRITE_BYTES COMMAND_STATUS
 # EPOCH is UTC Unix seconds; sizes are nonnegative integers of <=18 digits.
+# Before COMMAND, a unique STATE/write-pending/KIND/TOKEN file is created:
+#   fm-disk-pending/v1 EPOCH NAME
+# Its fd 8 flock is held by the wrapper, never COMMAND. Under the shared state
+# lock, typed readers allow still-locked attempts (concurrent jobs), but refuse
+# an unlocked/unreadable attempt even with an explicit declaration or old high.
+# Successful append removes only that attempt before releasing its flock;
+# counter, append, cleanup, or wrapper failure leaves it for recover-write.
+# Recovery requires an inactive TOKEN and repaired readable history; it appends
+# the supplied evidence under the shared lock before removing that token.
+# If append succeeded but cleanup failed, recovery may duplicate a sample;
+# the high remains conservative. Never delete pending files just to admit work.
 # The shared state lock serializes admissions and sample appends, but is never
 # held across COMMAND. The command caller consumes refusals and recording
 # errors through the existing stdout/stderr path and reports holds to its owner.
@@ -217,6 +235,8 @@
 #                         is under this (SIZE, default 50G; off disables)
 #   FM_DISK_ROOM_STATE    reservations, alert records and the hourly history
 #                         (default ${XDG_STATE_HOME:-~/.local/state}/fm-disk-room)
+#   FM_DISK_ROOM_WRITE_PROC  procfs mount for per-pid storage accounting
+#                         (default /proc); unreadable/malformed counters refuse
 #   FM_DISK_ROOM_NOW      epoch override for tests
 set -u
 
@@ -1241,7 +1261,9 @@ read_write_history() {
 # kind_expect KIND DECLARED sets EXPECT and LINE; check's exit convention.
 kind_expect() {
   local kind=$1 declared=$2
-  read_write_history "$kind" || { LINE="cannot measure disk room: $ERR"; return 2; }
+  if ! check_write_pending "$kind" || ! read_write_history "$kind"; then
+    LINE="cannot measure disk room: $ERR"; return 2
+  fi
   if [ -z "$declared" ]; then
     if [ "$WRITE_SAMPLES" -eq 0 ]; then
       LINE="cannot measure disk room: no write history for kind $kind; declare --expect-write for its first run"
@@ -1256,6 +1278,39 @@ kind_expect() {
   fi
 }
 
+# Called under the shared lock. Only live, flock-held attempts may overlap.
+check_write_pending() {
+  local root dir file rc
+  root="$(state_dir)/write-pending"
+  dir="$root/$1"
+  for file in "$root" "$dir"; do
+    if { [ -e "$file" ] || [ -L "$file" ]; } && { [ ! -d "$file" ] || [ ! -r "$file" ] || [ ! -x "$file" ]; }; then
+      ERR="cannot read pending writes directory $file"; return 1
+    fi
+  done
+  for file in "$dir"/*; do
+    [ -e "$file" ] || [ -L "$file" ] || continue
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      ERR="cannot read pending write $file"; return 1
+    fi
+    (exec 7<"$file" && flock -n -E 3 7); rc=$?
+    [ "$rc" -eq 3 ] && continue
+    ERR="unresolved write for kind $1: $file; investigate and use recover-write before retrying"
+    return 1
+  done
+}
+
+# Shared lock held. Failure leaves any created token inactive and fail-closed.
+begin_write() {
+  local kind=$1 name=$2 dir
+  dir="$(state_dir)/write-pending/$kind"
+  mkdir -p "$dir" || return 1
+  WRITE_PENDING=$(mktemp "$dir/attempt.XXXXXX") || return 1
+  exec 8<>"$WRITE_PENDING" || return 1
+  flock -n 8 || return 1
+  printf 'fm-disk-pending/v1 %s %s\n' "$(now)" "$name" >&8
+}
+
 # Shell builtins only: a subshell would read the wrong process's counters.
 read_write_counter() {
   local key value rest
@@ -1266,13 +1321,13 @@ read_write_counter() {
       IO_BYTES=$value
       return 0
     fi
-  done <"/proc/$$/io" 2>/dev/null
+  done <"${FM_DISK_ROOM_WRITE_PROC-/proc}/$$/io" 2>/dev/null
   return 1
 }
 
-record_write() {
+# Shared lock held; does not consult pending attempts (including our own).
+append_write() {
   local kind=$1 bytes=$2 rc=$3 dir
-  with_lock
   read_write_history "$kind" || { printf 'fm-disk-room: %s; repair history before retrying\n' "$ERR" >&2; return 1; }
   dir="$(state_dir)/write-history"
   if ! mkdir -p "$dir" || ! printf 'fm-disk-write/v1 %s %s %s\n' "$(now)" "$bytes" "$rc" >>"$dir/$kind"; then
@@ -1281,10 +1336,39 @@ record_write() {
   fi
 }
 
+# Acquire non-fatally in this wrapper so its command status survives lock
+# errors, and close fd 8 before fd 9 in the caller on both success and failure.
+record_write() {
+  local kind=$1 bytes=$2 rc=$3 dir
+  dir=$(state_dir)
+  if ! { exec 9>"$dir/.lock"; } || ! flock -w 30 9; then
+    printf 'fm-disk-room: cannot lock completed write for %s; recover %s before retrying\n' "$kind" "$WRITE_PENDING" >&2
+    return 1
+  fi
+  append_write "$kind" "$bytes" "$rc" || return 1
+  rm -- "$WRITE_PENDING" || { printf 'fm-disk-room: cannot retire pending write %s; use recover-write\n' "$WRITE_PENDING" >&2; return 1; }
+}
+
+cmd_recover_write() {
+  local kind=${1:-} token=${2:-} bytes status=${4:-} file
+  { [ "$#" -eq 4 ] && valid_name "$kind" && valid_name "$token"; } || die "recover-write needs KIND TOKEN SIZE COMMAND_STATUS"
+  bytes=$(to_bytes "$3") || die "bad size: $3"
+  case "$status" in ''|*[!0-9]*|0[0-9]*|????*) die "bad command status" ;; esac
+  [ "$status" -le 255 ] || die "bad command status"
+  with_lock
+  file="$(state_dir)/write-pending/$kind/$token"
+  [ -f "$file" ] && [ ! -L "$file" ] || die "missing pending write $file"
+  exec 7<"$file" || die "cannot read pending write $file"
+  flock -n 7 || die "pending write active or unreadable: $file"
+  append_write "$kind" "$bytes" "$status" || die "cannot recover $file; repair history before retrying"
+  rm -- "$file" || die "cannot retire pending write $file"
+  printf 'recovered write: %s %s (%s bytes)\n' "$kind" "$token" "$bytes"
+}
+
 cmd_write_history() {
   { [ "$#" -eq 1 ] && valid_name "$1"; } || die "write-history needs KIND"
   with_lock
-  read_write_history "$1" || die "$ERR"
+  if ! check_write_pending "$1" || ! read_write_history "$1"; then die "$ERR"; fi
   printf '{"kind":"%s","samples":%s,"high_bytes":%s}\n' "$1" "$WRITE_SAMPLES" "$WRITE_HIGH"
 }
 
@@ -1311,7 +1395,7 @@ cmd_check() {
 }
 
 cmd_run() {
-  local name='' expect='' kind='' before rc
+  local name='' expect='' kind='' before rc WRITE_PENDING=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --name) { [ "$#" -ge 2 ] && valid_name "$2"; } || die "--name needs a name"; name=$2; shift 2 ;;
@@ -1335,7 +1419,7 @@ cmd_run() {
     fi
     expect=$EXPECT
     if ! read_write_counter; then
-      printf 'fm-disk-room: refused %s: cannot measure storage write counter /proc/%s/io\n' "$name" "$$" >&2
+      printf 'fm-disk-room: refused %s: cannot measure storage write counter %s/%s/io\n' "$name" "${FM_DISK_ROOM_WRITE_PROC-/proc}" "$$" >&2
       return 75
     fi
   fi
@@ -1343,18 +1427,23 @@ cmd_run() {
     printf 'fm-disk-room: refused %s: %s\n' "$name" "$LINE" >&2
     exit 75
   fi
+  if [ -n "$kind" ] && ! begin_write "$kind" "$name"; then
+    printf 'fm-disk-room: refused %s: cannot establish pending write for kind %s\n' "$name" "$kind" >&2
+    return 75
+  fi
   write_reservation "$name" "$expect" "$$" 0
   exec 9>&-
   [ -n "$kind" ] || exec "$@"
   read_write_counter || { printf 'fm-disk-room: refused %s: cannot measure storage write counter\n' "$name" >&2; return 75; }
   before=$IO_BYTES
-  "$@"; rc=$?
+  "$@" 8>&-; rc=$?
   if read_write_counter && [ "$IO_BYTES" -ge "$before" ]; then
-    (record_write "$kind" "$(( IO_BYTES - before ))" "$rc") || { [ "$rc" -ne 0 ] || rc=74; }
+    record_write "$kind" "$(( IO_BYTES - before ))" "$rc" || { [ "$rc" -ne 0 ] || rc=74; }
   else
     printf 'fm-disk-room: cannot measure completed write for %s; no sample recorded\n' "$name" >&2
     [ "$rc" -ne 0 ] || rc=74
   fi
+  exec 8>&- 9>&-
   rm -f -- "$(state_dir)/reservations/$name"
   return "$rc"
 }
@@ -1589,6 +1678,16 @@ self_test_v2() {
   [ "$rc" -eq 0 ] && [ "$(json_value "$out" samples)" = 1 ] || { echo "kind run did not record its sample"; return; }
   out=$(self_probe 0 check --kind self-kind 2>/dev/null); rc=$?
   [ "$rc" -eq 0 ] && [ "${out#ok: }" != "$out" ] || { echo "check without a declaration did not use kind history"; return; }
+  mkdir -p "$SELF_TMP/state/write-pending/self-kind" || { echo "cannot create pending-write fixture"; return; }
+  printf 'fm-disk-pending/v1 1 abandoned\n' >"$SELF_TMP/state/write-pending/self-kind/attempt.abandoned"
+  self_probe 0 check --kind self-kind --expect-write 0 >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 2 ] || { echo "unresolved write did not invalidate an explicit declaration (exit $rc)"; return; }
+  self_probe 0 run --name fm-self-blocked --kind self-kind --expect-write 0 -- true >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 75 ] || { echo "unresolved write did not refuse execution (exit $rc)"; return; }
+  self_probe 0 recover-write self-kind attempt.abandoned 1M 7 >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] || { echo "inactive write could not be recovered (exit $rc)"; return; }
+  out=$(self_probe 0 write-history self-kind 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ "$(json_value "$out" samples)" = 2 ] && [ "$(json_value "$out" high_bytes)" = 1048576 ] || { echo "recovery did not record its conservative observation"; return; }
 }
 
 cmd_self_test() {
@@ -1620,6 +1719,7 @@ case "${1:-}" in
   check) shift; cmd_check "$@" ;;
   run) shift; cmd_run "$@" ;;
   write-history) shift; cmd_write_history "$@" ;;
+  recover-write) shift; cmd_recover_write "$@" ;;
   reserve) shift; cmd_reserve "$@" ;;
   reserve-bulk) shift; cmd_reserve_bulk "$@" ;;
   release-bulk) shift; cmd_release_bulk "$@" ;;
