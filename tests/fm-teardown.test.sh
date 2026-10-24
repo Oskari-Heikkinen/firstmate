@@ -6878,8 +6878,8 @@ SH
 }
 
 # These use the public preservation entry point only, with fixture-owned data.
-# A fixture watchdog makes a nonterminating citation scan an assertion failure,
-# rather than letting a whole mutation script hit its unrelated outer deadline.
+# This call has its own watchdog and successful-completion assertion. Scanner
+# mutants need an isolated public-entry run too: other pooled cases can hang.
 test_evidence_citation_scan_completes_for_a_plain_missing_path() {
   local case_dir rc
   case_dir=$(make_case evidence-bounded-citation)
@@ -7037,6 +7037,120 @@ SH
     done
   done
   pass 'fresh and carried copy failures refuse without replacing earlier evidence in either root or force mode'
+}
+
+# Fail the printf write boundary itself, after copy/hash success. No filesystem
+# permission assumption (CI may be root) or production helper override is needed.
+# The unfaulted unsafe-target refusal and safe-target success are separate controls.
+test_evidence_link_manifest_append_errors_refuse_without_discarding() {
+  local case_dir root_name variant flag base label key source ev target hash rc
+  for root_name in copy tmp; do
+    for variant in fresh-link fresh-directory prior; do
+      for flag in '' --force; do
+        case_dir=$(make_case "evidence-link-append-$root_name-$variant-${flag:-normal}")
+        ignore_workspace "$case_dir"
+        write_meta "$case_dir" no-mistakes ship
+        printf 'tasktmp=%s/tasktmp\n' "$case_dir" >> "$case_dir/state/task-x1.meta"
+        land_shippable_commit "$case_dir"
+        mkdir -p "$case_dir/wt/workspace" "$case_dir/tasktmp" "$case_dir/outside" "$case_dir/data/task-x1"
+        if [ "$root_name" = copy ]; then base="$case_dir/wt/workspace"; label=copy/workspace
+        else base="$case_dir/tasktmp"; label=tmp; fi
+        key="$label/link"; source="$base/link"
+        ev="$case_dir/data/task-x1/evidence"
+        target="$case_dir/tasktmp/uncovered"
+        printf 'undeclared target bytes\n' > "$target"
+        if [ "$variant" = prior ]; then
+          mkdir -p "$ev/$label"
+          ln -s "$target" "$ev/$key"
+          hash=$(readlink "$ev/$key" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+          : > "$ev/MANIFEST.sha256"
+          printf '%s  %s\n' "$hash" "$key" > "$ev/MANIFEST.sha256.links"
+          cp "$ev/MANIFEST.sha256.links" "$case_dir/prior-links"
+          printf 'prior snapshot\n' > "$ev/sentinel"
+          printf '%s\n' "$source" > "$case_dir/declarations"
+        else
+          if [ "$variant" = fresh-directory ]; then
+            mkdir -p "$base/links"
+            source="$base/links/link"; key="$label/links/link"
+            printf '%s\n' "$base/links" > "$case_dir/declarations"
+          else
+            printf '%s\n' "$source" > "$case_dir/declarations"
+          fi
+          ln -s "$case_dir/outside" "$source"
+        fi
+        # A symlinked declaration record avoids unrelated absolute-reference
+        # refusals masking a failed copy/carry return under a counterfactual.
+        ln -s "$case_dir/declarations" "$case_dir/data/task-x1/evidence.list"
+        cat > "$case_dir/append-fault.sh" <<'SH'
+if [ "${0##*/}" = fm-teardown.sh ]; then
+  printf() {
+    case "$FM_APPEND_KIND:${1-}" in
+      fresh*:'%s  %s%s\n')
+        if [ "${3-}${4-}" = "$FM_APPEND_KEY" ]; then
+          : > "$FM_APPEND_SEEN"
+          return 1
+        fi ;;
+      prior:'%s\n')
+        case "${2-}" in
+          *"  $FM_APPEND_KEY") : > "$FM_APPEND_SEEN"; return 1 ;;
+        esac ;;
+    esac
+    builtin printf "$@"
+  }
+fi
+SH
+        rc=0
+        FM_APPEND_KIND="$variant" FM_APPEND_KEY="$key" FM_APPEND_SEEN="$case_dir/fault-seen" \
+          BASH_ENV="$case_dir/append-fault.sh" run_teardown "$case_dir" ${flag:+"$flag"} \
+          > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        [ "$rc" -ne 0 ] || fail "$root_name $variant ${flag:-normal}: failed link-manifest append was accepted"
+        assert_present "$case_dir/fault-seen" 'link-manifest append injection was not reached'
+        if [ "$variant" = prior ]; then
+          assert_grep 'no verified earlier copy' "$case_dir/stderr" 'carried link-manifest failure must propagate'
+          cmp -s "$case_dir/prior-links" "$ev/MANIFEST.sha256.links" || fail 'append failure changed prior manifest'
+          [ ! -s "$ev/MANIFEST.sha256" ] || fail 'append failure changed prior regular manifest'
+          [ "$(cat "$ev/sentinel")" = 'prior snapshot' ] || fail 'append failure replaced prior tree'
+          [ -L "$ev/$key" ] && [ "$(readlink "$ev/$key")" = "$target" ] || fail 'append failure changed prior link'
+          assert_absent "$source" 'append failure recreated the absent original'
+        else
+          assert_grep 'could not copy and verify' "$case_dir/stderr" 'fresh link-manifest failure must propagate'
+          assert_absent "$ev" 'failed fresh append installed or falsely discarded a snapshot'
+          [ -L "$source" ] && [ "$(readlink "$source")" = "$case_dir/outside" ] || fail 'append failure changed source link'
+        fi
+        [ "$(cat "$target")" = 'undeclared target bytes' ] || fail 'append refusal destroyed undeclared target'
+        assert_present "$case_dir/state/task-x1.meta" 'append refusal removed task metadata'
+
+        # Without the write fault, a complete manifest must reach target safety.
+        if [ "$variant" != prior ]; then rm "$source"; ln -s "$target" "$source"; fi
+        rc=0
+        run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        [ "$rc" -ne 0 ] || fail 'unfaulted link to undeclared target escaped safety'
+        assert_grep "$target, which cleanup would destroy" "$case_dir/stderr" 'unfaulted control must reach target refusal'
+        [ "$(cat "$target")" = 'undeclared target bytes' ] || fail 'target refusal destroyed undeclared target'
+        assert_present "$case_dir/state/task-x1.meta" 'target refusal removed metadata'
+        if [ "$variant" = prior ]; then
+          cmp -s "$case_dir/prior-links" "$ev/MANIFEST.sha256.links" || fail 'target refusal replaced prior manifest'
+          [ "$(cat "$ev/sentinel")" = 'prior snapshot' ] || fail 'target refusal replaced prior tree'
+          # Preserve the existing target rather than deleting it for success.
+          printf '%s\n' "$target" >> "$case_dir/declarations"
+        else
+          assert_absent "$ev" 'target refusal installed a partial snapshot'
+          rm "$source"; ln -s "$case_dir/outside" "$source"
+        fi
+        rc=0
+        run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+        expect_code 0 "$rc" "unfaulted safe link must preserve evidence: $(cat "$case_dir/stderr")"
+        [ -L "$ev/$key" ] || fail 'safe link-only control discarded its snapshot'
+        [ -s "$ev/MANIFEST.sha256.links" ] || fail 'safe link has no manifest row'
+        evidence_manifest_verifies "$ev" || fail 'safe append control snapshot does not verify'
+        if [ "$variant" = prior ]; then
+          [ "$(cat "$ev/tmp/uncovered")" = 'undeclared target bytes' ] || fail 'declared target was not preserved'
+        fi
+        assert_absent "$case_dir/state/task-x1.meta" 'safe append control retained metadata'
+      done
+    done
+  done
+  pass 'fresh standalone/nested and carried link-manifest append failures refuse; unfaulted safety and success controls hold'
 }
 
 test_evidence_staging_ancestor_links_cannot_cover_source_content() {
@@ -7581,6 +7695,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_evidence_physical_root_aliases_do_not_hide_existing_citations \
   test_evidence_link_physical_failures_and_dangling_newlines_refuse \
   test_evidence_copy_errors_cannot_replace_an_earlier_snapshot \
+  test_evidence_link_manifest_append_errors_refuse_without_discarding \
   test_evidence_staging_ancestor_links_cannot_cover_source_content \
   test_missing_prior_sources_do_not_mask_later_preserved_content \
   test_evidence_prior_manifest_file_types_are_respected \

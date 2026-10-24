@@ -23,7 +23,9 @@
 # sha256sum format, so `cd data/<id>/evidence && sha256sum -c MANIFEST.sha256`
 # re-verifies it later. The new evidence tree is built in a staging directory,
 # each copied file's hash is compared with its source's, and only a verified
-# tree replaces the previous one. MANIFEST.sha256.links separately records hashes
+# tree replaces the previous one. A failed link-manifest append refuses before
+# installation or empty-snapshot success, retaining sources and any prior tree.
+# MANIFEST.sha256.links separately records hashes
 # of `readlink` output for symlinks; these are checked without following links. A declared path whose source is gone (a
 # retried cleanup after the copy was already returned) keeps its earlier copy
 # when that copy still verifies against the earlier manifest; otherwise the
@@ -404,7 +406,7 @@ fm_task_evidence_copy_source() {
     h1=$(fm_task_evidence_link_hash "$f") && [ -n "$h1" ] || return 1
     h2=$(fm_task_evidence_link_hash "$dest$rel") && [ -n "$h2" ] || return 1
     [ "$h1" = "$h2" ] || { echo "REFUSED: copied evidence link $dest$rel does not match its source" >&2; return 1; }
-    printf '%s  %s%s\n' "$h2" "$key" "$rel" >> "$manifest.links"
+    printf '%s  %s%s\n' "$h2" "$key" "$rel" >> "$manifest.links" || return 1
   done < <(find "$src" -type l -print)
   if [ -L "$src" ]; then
     return 0
@@ -451,7 +453,7 @@ fm_task_evidence_carry_prior() {
   mkdir -p -- "$(dirname -- "$staging/$key")" || return 1
   cp -RPp -- "$prior/$key" "$staging/$key" || return 1
   [ -z "$regular_lines" ] || printf '%s\n' "$regular_lines" >> "$manifest"
-  [ -z "$link_lines" ] || printf '%s\n' "$link_lines" >> "$manifest.links"
+  [ -z "$link_lines" ] || printf '%s\n' "$link_lines" >> "$manifest.links" || return 1
   return 0
 }
 
