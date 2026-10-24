@@ -98,13 +98,13 @@ SH
 
 # run_send <fakebin> <home> <send-log> <fm-send args...>: run the real fm-send
 # with the stubs on PATH against the given home. Guard noise goes to stderr,
-# captured per test when the diagnostic matters.
+# captured beside the send log so failures can report the actual sender error.
 run_send() {
   local fb=$1 home=$2 log=$3; shift 3
   : > "$log"
   env PATH="$fb:$PATH" \
     FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" "$@" 2>/dev/null
+    "$SEND" "$@" 2>"$log.stderr"
 }
 
 setup_home() {  # <name> -> echoes a fresh home dir with an empty state/
@@ -927,7 +927,7 @@ test_key_fanout_reaches_all_and_only_waiters() {
   ln -s "$other/state/t1.meta" "$home/state/foreign.meta"
 
   out=$(run_send "$fb" "$home" "$log" --resolve-key-all capacity 'use six slots'); rc=$?
-  expect_code 0 "$rc" "fan-out should succeed"
+  expect_code 0 "$rc" "fan-out should succeed: $out; $(< "$log.stderr")"
   assert_contains "$out" 'reached task=t1 key=capacity' 'first recipient is visible'
   assert_contains "$out" 'reached task=t2 key=capacity' 'second recipient is visible'
   assert_contains "$out" 'reached=2 failed=0' 'the caller sees the total'
@@ -976,7 +976,7 @@ test_key_fanout_authorizes_normal_park_pickup() {
     expect_code 1 "$rc" "$id must not be ready before the answer"
   done
   out=$(run_send "$fb" "$home" "$log" --resolve-key-all capacity 'approved, continue'); rc=$?
-  expect_code 0 "$rc" "answering parked tasks should succeed: $out"
+  expect_code 0 "$rc" "answering parked tasks should succeed: $out; $(< "$log.stderr")"
   for id in t1 t2; do
     grep -qF 'approved, continue' "$home/state/$id.inbox/001.msg" || fail "$id lost its answer"
     env FM_HOME="$home" "$ROOT/bin/fm-park.sh" poll "$id" "token-$id" >/dev/null 2>&1; rc=$?

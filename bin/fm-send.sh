@@ -504,6 +504,10 @@ fm_send_resolve_key_all() { # <key> <ordinary-text-answer...>
   # shellcheck source=bin/fm-lease-lib.sh
   . "$SCRIPT_DIR/fm-lease-lib.sh"
   fm_lease_forbid_branch 'decision answer (fm-send --resolve-key-all)' --away-relocated || return $?
+  # Task-id path validation belongs to the shared PR/task-record library.
+  # Load it explicitly: ordinary single-target sends do not need that library.
+  # shellcheck source=bin/fm-pr-lib.sh
+  . "$SCRIPT_DIR/fm-pr-lib.sh"
   for status in "$STATE"/*.status; do
     [ -f "$status" ] && [ ! -L "$status" ] || continue
     if [ ! -r "$status" ]; then
