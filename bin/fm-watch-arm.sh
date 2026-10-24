@@ -45,7 +45,9 @@
 # keeps following it, as a started arm waits out a slow child, until the lock
 # changes or the beacon reaches fm_watcher_stall_bound (bin/fm-wake-lib.sh), the
 # age at which the watcher's own re-arm evicts it; there it fails with the
-# stalled-holder line so its owner's retry replaces the holder. A cycle
+# stalled-holder line so its owner's retry replaces the holder. Lock and
+# process identity are checked every 0.5 s; full beacon health every 20 ticks
+# and at least every 10 s, so stall reporting can be about 10 s later. A cycle
 # that ends with no reason line and no healthy successor is resolved against the
 # watcher's identity-bound delivery record: a matching record reports that wake
 # and exits 0, and only a cycle that delivered nothing is the typed nonzero
@@ -140,6 +142,9 @@ esac
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
+# Identity/lock/exit checks stay on every tick; beacon health is checked every
+# 20 ticks and at least every 10 seconds, so a stall adds at most about 10 s.
+ATTACH_HEALTH_TICKS=20
 # The beacon age at which the watcher's own re-arm evicts a live holder; an
 # attached arm follows a slow holder up to it (attach_and_wait).
 STALL_BOUND=$(fm_watcher_stall_bound)
@@ -425,11 +430,20 @@ attached_holder_live() {
 # Only at the stall bound, where the watcher's own re-arm evicts a live holder,
 # does it fail with the typed stalled-holder line so its owner's retry replaces it.
 attach_and_wait() {
-  local attached_pid=$1 age
+  local attached_pid=$1 age health_ticks=20 health_at=0 now
   while :; do
     # Attachments may overlap, so they use the concurrent-producer journal,
     # not a falsely singleton per-home owned slot.
     fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" attached-arm attach-poll-v1
+    now=$SECONDS
+    if [ "$health_ticks" -lt "$ATTACH_HEALTH_TICKS" ] && [ $((now - health_at)) -lt 10 ] \
+      && attached_holder_live "$attached_pid"; then
+      health_ticks=$((health_ticks + 1))
+      sleep "$ATTACH_POLL"
+      continue
+    fi
+    health_ticks=0
+    health_at=$now
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ] || [ "$HEALTHY_IDENTITY" != "$cycle_watcher_identity" ]; then
         cycle_log_append unknown unknown lock-replaced "attached:$HEALTHY_PID"

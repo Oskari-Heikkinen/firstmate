@@ -179,9 +179,12 @@
 # Environment knobs:
 #   FM_PARK_INTERVAL       condition poll cadence in seconds (default by kind:
 #                          300 for pr-merged: and 120 for gh-run:, which call
-#                          GitHub, 30 for every other kind). With FM_PARK_STABLE the watch
+#                          GitHub, 60 for every other kind). With FM_PARK_STABLE the watch
 #                          fires one to two intervals after the condition holds,
-#                          so a local wait resumes within about a minute.
+#                          so a local wait resumes within about two minutes.
+#                          Local false conditions run on change, with a 300 s
+#                          backstop (bin/fm-park-observe-lib.sh); true and error
+#                          results always recheck at the normal cadence.
 #   FM_PARK_STABLE         consecutive true polls required (2)
 #   FM_PARK_ERROR_BUDGET   consecutive condition errors before waking (5)
 #   FM_PARK_DEADLINE_SECS  default deadline from now (604800) for file:,
@@ -365,14 +368,15 @@ condition_valid() {
 }
 
 # park_interval <condition>: the resume watch's default poll cadence. Local
-# conditions are cheap, so they poll often enough that the stable-count fire
-# lands within about a minute of the condition holding; pr-merged: and gh-run:
+# conditions sample changes every 60 seconds, with a full backstop every 300
+# seconds; stable true is rechecked next tick (up to two minutes to fire).
+# pr-merged: and gh-run:
 # spend a GitHub API call per poll and keep a slower cadence.
 park_interval() {
   case "$1" in
     pr-merged:*) printf '300\n' ;;
     gh-run:*) printf '120\n' ;;
-    *) printf '30\n' ;;
+    *) printf '60\n' ;;
   esac
 }
 

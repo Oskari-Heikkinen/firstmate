@@ -2408,6 +2408,7 @@ A long-polling external process is registered as a *source* through its adapter,
 
 The `when` adapter (`bin/fm-procevent-when.sh`) registers a deterministic condition and action once.
 Its blocking child polls the condition without waking firstmate.
+Local park change hints and their fallback are owned by [`bin/fm-park-observe-lib.sh`](../bin/fm-park-observe-lib.sh)'s header; [`bin/fm-park.sh`](../bin/fm-park.sh)'s header owns park cadence.
 A stable true fires the action at most once.
 One terminal outcome is then durably captured and published as a wake, which remains eligible for re-announcement until handled.
 
@@ -2621,7 +2622,7 @@ Detaching a runner into its own process group is what lets a persistent source o
 
 **Detection and stop timing**
 
-For a runner whose ownership can still be proved, the nominal detection bound is the lease plus one check interval.
+For a runner whose ownership can still be proved, the nominal detection bound is the lease plus one check interval, about 660 seconds at the defaults (600 + 60).
 The verified stop then runs within its own grace period.
 The lease age is compared in whole seconds, so the configured lease is honoured until that age reads one second past it.
 
@@ -2642,7 +2643,7 @@ The group signal reaches the blocking child and everything under it exactly as r
 | Setting | Default | Range | Purpose |
 | --- | --- | --- | --- |
 | `FM_PROCEVENT_OWNER_LEASE_SECONDS` | 600 | 1..86400 | How long a runner continues without activity in its owning home. |
-| `FM_PROCEVENT_OWNER_CHECK_SECONDS` | 15 | 1..3600 | Guard detection interval; it reads the lease and recorded state-root identity twice per interval, half an interval apart, so both debounce reads fit inside one interval. |
+| `FM_PROCEVENT_OWNER_CHECK_SECONDS` | 60 | 1..3600 | Guard detection interval; it reads the lease and recorded state-root identity twice per interval, half an interval apart, so both debounce reads fit inside one interval. |
 | `FM_PROCEVENT_LAUNCH_FLOOR_SECONDS` | 1 | 1..3600 | Minimum time between consecutive launches of one registration generation's stored command; bounds immediately returning sources during the lease window. |
 
 The generation's first launch is immediate, later launches share its monotonic pacing timestamp, a timestamp from before a reboot is treated as expired, and replacing the registration starts a fresh pacing generation.
@@ -2766,7 +2767,7 @@ FM_STARTUP_NETWORK_TIMEOUT=120   # seconds bounding the deferred inactive-outcom
 FM_TASKS_AXI_COMPATIBLE=   # internal one-hop handoff of an already-computed tasks-axi compatibility verdict (0 or 1); consumed when bin/fm-tasks-axi-lib.sh is sourced
 FM_GUARD_READ_ONLY=0    # internal/read-only guard mode: keep alarms but suppress drain, supervision repair, and checkout repair commands
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the guarded operation WILL still run.'   # banner continuation line; fm-send.sh overrides it to name the requested message specifically
-FM_POLL=15              # seconds between watcher poll cycles
+FM_POLL=30              # seconds between watcher poll cycles; values at or above 240 clamp to 240
 FM_HOME_SUMMARY_INTERVAL=300   # recurring ledger age and minimum watcher retry age after a failed attempt; bin/fm-home-summary-refresh.sh owns pacing and owed-event mechanics; invalid or zero values use 300
 FM_HOME_SUMMARY_TIMEOUT=60     # seconds bounding the complete best-effort home-summary refresh, including lock acquisition, validation, atomic publication, and worker-side failure logging; invalid or zero values use 60; a refresh keeps its temporary files in state/.home-summary-run.<pid>, removed even after a timeout, and the next refresh sweeps leftovers older than one deadline (bin/fm-home-summary-refresh.sh header)
 FM_HOME_SUMMARY_ERROR_LOG_MAX_BYTES=65536   # approximate size cap for state/.home-summary-refresh.log before it is trimmed to the newest 200 lines; invalid or zero values use 65536
@@ -2797,7 +2798,7 @@ FM_TOOL_UPDATE_NOW=     # test override for the watched-tool sweep clock; the sw
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
 FM_PROCEVENT_OWNER_LEASE_SECONDS=600    # how long a source runner keeps going with no activity in its owning home; 1..86400
-FM_PROCEVENT_OWNER_CHECK_SECONDS=15     # a runner guard's detection interval, read twice per interval; 1..3600
+FM_PROCEVENT_OWNER_CHECK_SECONDS=60     # a runner guard's detection interval, read twice per interval; 1..3600
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1     # minimum interval between launches of one registration generation's source command; 1..3600
 FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=3   # how long reconcile waits for the runners it started to prove they are running; 1..600, keep well below FM_POLL
 FM_WHEN_OUTPUT_TAIL_BYTES=8192          # bound on the command-output tail inside one condition->action outcome document
@@ -2832,7 +2833,7 @@ FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=800   # milliseconds the --claude turn-end guard 
 FM_CLAUDE_AUTOARM_EPOCH_FRESH=15   # seconds a recorded auto-arm outcome remains eligible for the current event epoch's recovery or failure decision
 FM_CLAUDE_TURNEND_BLOCK_BUDGET=3   # consecutive --claude guard re-blocks before the verified one-time attended fail-open; safely below Claude Code's 8-block override
 FM_ARM_CONFIRM_TIMEOUT=10   # seconds fm-watch-arm waits to confirm a fresh watcher before reporting FAILED, extended up to FM_GUARD_GRACE while that watcher is still starting; default 30 on Git Bash/MSYS
-FM_ARM_ATTACH_POLL=0.5  # seconds between checks while fm-watch-arm is attached to an existing watcher cycle
+FM_ARM_ATTACH_POLL=0.5  # seconds between identity/lock checks while attached; full beacon health every 20 ticks, at least every 10 seconds
 FM_OPENCODE_ARM_READY_TIMEOUT_MS=12000   # milliseconds the OpenCode primary watcher plugin waits for an arm attempt to report started, healthy, wake, or failure; default 35000 on Windows to stay above the MSYS confirm budget
 FM_PI_ARM_READY_TIMEOUT_MS=12000   # milliseconds the Pi watcher extension waits for a successor arm to report started or attached; default 35000 on Windows to stay above the MSYS confirm budget
 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=1000   # milliseconds Pi/OpenCode wait for an unready successor arm to exit before abandoning retries

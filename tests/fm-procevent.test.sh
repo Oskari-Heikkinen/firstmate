@@ -3188,6 +3188,15 @@ PL
 test_signal_proof_absent_leader() { signal_proof_case absent; }
 test_signal_proof_zombie_leader() { signal_proof_case zombie; }
 
+test_owner_check_default() {
+  local value
+  value=$(env -u FM_PROCEVENT_OWNER_CHECK_SECONDS bash -c '
+    . "$1/bin/fm-procevent-lib.sh"
+    fm_procevent_owner_check_seconds
+  ' _ "$ROOT") || fail 'could not read the owner-guard default'
+  assert_equals 60 "$value" 'the two guard reads span one 60-second interval'
+}
+
 test_state_root_identity() {
 set -e
 use_claim_root test_state_root_identity
@@ -3488,6 +3497,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_argv_and_bounds \
   test_prompt_stop_and_crash \
   test_state_root_identity \
+  test_owner_check_default \
   || fail 'one or more procevent case groups failed'
 
 printf '\nall procevent tests passed\n'

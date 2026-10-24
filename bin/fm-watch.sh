@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Firstmate watcher.
+# FM_POLL defaults to 30 s; invalid values use that default, values >=240 clamp
+# to 240 s to stay within readers' bare 300 s grace. Fractional polls are allowed.
 # Classifies supervision wakes in bash. In normal mode it absorbs benign wakes
 # and keeps blocking; it queues and exits only for actionable wakes.
 # The no-verb signal and stale path is absorb-only-on-positive-evidence: a wake
@@ -276,7 +278,12 @@ fi
 # markers, while bin/fm-wake-lib.sh owns their wake-facing routing, the legacy
 # turn-ended signature, annotation staleness checks, and guarded bookkeeping writes.
 
-POLL=${FM_POLL:-15}                   # seconds between cycles
+POLL=${FM_POLL:-30}                   # seconds between cycles, at most 240
+if [[ "$POLL" =~ ^([0-9]+)(\.[0-9]+)?$ ]]; then
+  [ "${BASH_REMATCH[1]}" -lt 240 ] 2>/dev/null || POLL=240
+else
+  POLL=30
+fi
 # The liveness beacon is touched at the top of every cycle and refreshed at its
 # step boundaries (see watcher_beat), including just before the terminal wait
 # (event_wait_or_sleep), so a healthy cycle's beacon ages by at most its

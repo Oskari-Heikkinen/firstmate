@@ -229,7 +229,7 @@ case_park_records_and_rearms() {
   assert_grep "park_deadline=2099-01-01T00:00:00Z" "$H/state/t2.meta" "park records the deadline"
   assert_equals "pr=https://github.com/example/repo/pull/7" "$(last_line "$H/state/t2.meta")" "the PR stays the record's tail"
   assert_present "$H/state/procevent/when-park-t2.source" "park arms the resume watch"
-  assert_equals 30 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-t2.spec")" "a local wait is polled every 30 seconds, so it resumes within about a minute"
+  assert_equals 60 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-t2.spec")" "a local wait samples changes every 60 seconds, so it resumes within about two minutes"
   assert_contains "$(last_line "$H/state/t2.status")" "paused [at=" "park declares the wait"
   assert_contains "$(last_line "$H/state/t2.status")" "until 2099-01-01T00:00:00Z" "the declared wait carries the deadline"
   assert_equals "t2 exit" "$(cat "$H/control.log")" "park stops the agent through the control plane exit"
@@ -253,17 +253,20 @@ case_park_records_and_rearms() {
 
 # --- the default poll cadence follows the condition kind ----------------------
 case_default_cadence() {
-  H="$TMP_ROOT/h-cadence"; new_task "$H" tcmd; new_task "$H" tpr
+  H="$TMP_ROOT/h-cadence"; new_task "$H" tcmd; new_task "$H" tpr; new_task "$H" tgh
   handoff "$TMP_ROOT/tcmd.md" "cmd:true"
   park "$H" tcmd --handoff "$TMP_ROOT/tcmd.md" >/dev/null || fail "park tcmd failed"
-  assert_equals 30 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-tcmd.spec")" "a cmd: wait is polled every 30 seconds"
+  assert_equals 60 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-tcmd.spec")" "a cmd: wait is polled every 60 seconds"
   handoff "$TMP_ROOT/tpr.md" "pr-merged:https://github.com/example/repo/pull/7"
   printf 'OPEN\n' > "$TMP_ROOT/tpr.state"
   fake_park "$TMP_ROOT/tpr.state" "$H" tpr --handoff "$TMP_ROOT/tpr.md" >/dev/null || fail "park tpr failed"
   assert_equals 300 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-tpr.spec")" "a pr-merged: wait keeps the slower GitHub-friendly cadence"
+  handoff "$TMP_ROOT/tgh.md" "gh-run:example/repo:123"
+  park "$H" tgh --handoff "$TMP_ROOT/tgh.md" >/dev/null || fail "park tgh failed"
+  assert_equals 120 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-tgh.spec")" "gh-run keeps its longer cadence"
   FM_PARK_INTERVAL=7 park "$H" tcmd --handoff "$TMP_ROOT/tcmd.md" >/dev/null || fail "re-park tcmd failed"
   assert_equals 7 "$(sed -n 's/^interval=//p' "$H/state/when/when-park-tcmd.spec")" "FM_PARK_INTERVAL still overrides the default cadence"
-  pass "the resume watch polls local waits often enough to resume within about a minute"
+  pass "the resume watch samples local waits every minute and retains remote cadences"
 }
 
 # --- park resolves its own directory and root as cd and pwd print them --------
