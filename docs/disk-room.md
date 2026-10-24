@@ -76,6 +76,12 @@ A job that writes 1 GiB or more runs through `fm-disk-room.sh run --name <job> -
 It is admitted only when the room left after its write stays at or above the margin, and it holds a reservation for its lifetime so other admissions and the watcher see its pending write.
 A refusal exits 75 with one line naming the room and whether a compaction would help.
 `check --expect-write`, `reserve`, and `release` cover jobs that span several processes.
+For recurring comparable jobs, add a stable job kind to `run` and `check` so admission checks the declaration against that kind's recorded high, or uses history when no declaration is supplied.
+An unseen kind still needs an explicit declaration, an understated one is refused, and corrupt history fails closed rather than silently resetting the high.
+The tool records Linux-accounted storage writes from the command and waited-for descendants, including failed attempts; this is not logical output size or a peak-space guarantee.
+The script header owns the kind options, history format and query, measurement limits, and error handling.
+Consumers must group comparable inputs and keep declaring larger known writes rather than treating a historical high as a bound.
+Legacy calls without a kind keep their original exec and declaration behavior.
 Mandatory D: bulk uses the separate per-filesystem admission interface documented in [storage.md](storage.md#mandatory-bulk-admission), leaving this Linux/C: admission unchanged.
 
 This replaces fixed floors on raw Windows free space, which either stop a job that still has room or admit one whose own write breaks the margin.
@@ -181,34 +187,24 @@ Compaction changes no data inside the disk, so there is nothing else to roll bac
 
 ## Consumer interface
 
-`fm-disk-room.sh --interface` prints the consumer interface this copy serves, now `fm-disk-room-interface/v1`.
-A consumer pins that interface, not the script's bytes, so an update that keeps the interface needs no new review on the consumer's side.
+`fm-disk-room.sh --interface` prints the latest consumer interface this copy serves, now `fm-disk-room-interface/v2`, while an explicit version query can confirm v1 support.
+A consumer pins an interface, not the script's bytes, so an update that still serves its interface needs no new review on the consumer's side.
 The consumer's declaration and acceptance stay as [`helper-consumers.md`](helper-consumers.md) describes; what the consumer accepts is a copy that serves its pinned version.
 
-Interface v1 is every command, every exit code, and every `status --json` field with its unit, as listed under "Interface v1" in `bin/fm-disk-room.sh`'s header:
+The script header is the authoritative list of commands, exit codes, fields with units, and measurement limits for each interface.
+V2 adds opt-in job-kind write history; untyped v1 commands, JSON fields, and the v1 self-test remain supported unchanged.
+An incompatible change requires a new version and removal of support for the broken version; additive functionality may advertise a new latest version while retaining older supported versions.
+Human-readable wording not listed in the header may change within a version.
 
-- `status --json` prints one JSON object on one line, every size in bytes, with integer, integer-or-null, boolean, and string fields named there; `reclaimable` is the block-table figure described above, null when the block table cannot be read, and `trim_reclaimable` is the after-a-trim estimate, never part of `reclaimable`.
-- `check` exits 0, 1, or 2 with a line starting `ok: `, `low: `, or `cannot measure disk room: `.
-- `run` returns the admitted command's own status, or 75 with a line starting `fm-disk-room: refused NAME: `.
-- `reserve-bulk` prints only the admitted root, or exits 75 with a `wait:` line naming a reason.
-- `watch-line` always exits 0 and prints nothing or one line.
-- Misuse exits 2 on every command.
-
-The versioning rule:
-
-- A change to any command, exit code, or listed field's name, unit, or meaning takes a new version, such as v2, and the old version is no longer served.
-- An addition a v1 consumer can ignore, such as a new field or command, keeps v1.
-- Wording that the header does not list, such as `status` and `growth` text or the rest of a line after its listed start, is for people and may change within a version.
-
-Before trusting a new copy, a consumer runs `fm-disk-room.sh --self-test v1`.
-It exits 0 with one line when the copy serves v1 and a hermetic probe of it passes, 1 with one line naming what failed or the version served, and 2 on misuse.
-The probe uses its own temp state, measures Linux alone, starts no Windows reading, and leaves no reservation behind.
+Before trusting a new copy, a consumer runs the self-test for its pinned version.
+Each supported version has a hermetic probe using temp state and Linux-only readings, without Windows processes or reservations outside that temp state.
+A probe fails explicitly if its required measurement is unavailable.
 
 A consumer that pins bytes may run them as `bash -c TEXT PATH ARG...`, with PATH the file it hashed.
 The script then finds its sibling helpers beside PATH, never in the working directory, and runs `bin/fm-vhdx-bat.py` only from bytes matching the digest embedded in `fm-disk-room.sh`, so a pin on `fm-disk-room.sh` covers the reader and a missing or changed reader leaves reclaimable unknown.
 `--self-test` works in that mode too and probes the same bytes.
 
-`tests/fm-disk-room.test.sh` pins v1 through the executable, so a change that breaks v1 without a version bump fails CI, and a bump fails until the new version's case is added.
+`tests/fm-disk-room.test.sh` checks both interfaces through the executable, including recording, understated and missing declarations, corrupt history, and the unchanged v1 contract.
 
 ## Limits
 

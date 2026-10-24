@@ -21,11 +21,13 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - Read room with `fm-disk-room.sh status`, never with raw `df /` or `df /mnt/c` arithmetic.
 - Before a job that writes 1 GiB or more, admit it with `fm-disk-room.sh run --name <job> --expect-write <size> -- <command>`, which refuses with exit 75 when the room left after that write would fall under the margin, and otherwise holds a reservation for the command's lifetime so concurrent admissions see it.
   For a job spread over several processes, use `check --expect-write` plus `reserve`/`release` instead.
-- Use a measured or stated expected write (for example about 20 GiB per TETJET close-out slice), rounded up; when unknown, say so and ask the job's owner rather than guessing low.
+- For recurring comparable jobs, opt into job-kind history on admission and execution as the script header describes; execution records storage write bytes, and admission refuses a declaration below that kind's high.
+  Use history for an omitted declaration only for comparable inputs; a new kind still needs a measured or stated expected write, rounded up, and known larger inputs need a larger declaration.
+  When neither history nor a stated write exists, ask the job's owner rather than guessing low.
 - A refusal is a wait, not a failure: hold the job and report the refusal line to firstmate.
 - To move a finished, rarely read tree to D:, pack it with `bin/fm-pack.sh pack TASK UNIT SRC`; [`docs/storage.md`](../../../docs/storage.md#packing-cold-data) owns the command and the retention rule.
 - Retention rule R2: the home that owns a packed source, on D: or Linux, releases it with `bin/fm-pack.sh release` as soon as the pack verifies (zero window since 2026-10-18), and the command refuses unless its verify, acceptance, reference, mount-use and hard-link guards hold; [`docs/storage.md`](../../../docs/storage.md#retention-rule-r2) owns the rule.
-- A home that pins `fm-disk-room.sh` pins its consumer interface (`fm-disk-room.sh --interface`), not its bytes, and runs `fm-disk-room.sh --self-test v1` before trusting a new copy; `docs/disk-room.md` "Consumer interface" owns the rule.
+- A home that pins `fm-disk-room.sh` pins its consumer interface, not its bytes, and runs the self-test for that version before trusting a new copy; `docs/disk-room.md` "Consumer interface" owns the rule.
 
 ## What a low reading means and who acts
 
