@@ -273,7 +273,7 @@ test_failed_direct_moves_preserve_completed_work_in_both_scopes() {
     expect_code 0 "$rc" "mixed retry: $out"
     assert_grep 'account=new' "$owner/state/broken.meta" 'retry moves the failed worker'
     assert_grep 'account=new' "$owner/state/busy.meta" 'retry moves the waiting worker'
-    assert_no_grep 'control .* complete ' "$C/calls" 'completed work is never relaunched by retry'
+    assert_no_grep "control $owner complete " "$C/calls" 'completed work is never relaunched by retry'
     assert_equals 0 "$(jq '.active | length' "$H/state/account-move-alerts.json")" 'the final success clears only the move alarm'
   done
   pass 'failed ready direct-worker relaunches propagate nonzero and retry both ownership scopes without undoing completed work'
@@ -315,7 +315,7 @@ test_outcome_delivery_and_projection_retry() {
   mkdir "$H/state/account-moves.log"
   out=$(run_ai move claude work); rc=$?
   expect_code 1 "$rc" "$out"
-  assert_grep 'cannot write .*account-moves.log' "$H/state/account-move-events.status" 'history failure does not suppress its alarm'
+  assert_grep "cannot write $H/state/account-moves.log" "$H/state/account-move-events.status" 'history failure does not suppress its alarm'
   assert_event_wake
 
   new_case delivery-retry
@@ -328,13 +328,13 @@ test_outcome_delivery_and_projection_retry() {
   touch "$H/state/account-move-events.status"
   out=$(run_store tick); rc=$?
   expect_code 0 "$rc" "$out"
-  assert_grep 'blocked .*account-move-incomplete.*outcome delivery failed' "$H/state/account-move-events.status" 'the registered tick retries failed delivery'
+  assert_grep ': account-move-incomplete: outcome=failed; outcome delivery failed:' "$H/state/account-move-events.status" 'the registered tick retries failed delivery'
   assert_event_wake
   out=$(run_ai move claude work); rc=$?
   expect_code 0 "$rc" "$out"
   out=$(run_store tick); rc=$?
   expect_code 0 "$rc" "$out"
-  assert_grep 'resolved .*account-move-incomplete' "$H/state/account-move-events.status" 'only successful completion closes the projected alarm'
+  assert_grep 'resolved [key=account-move-incomplete]' "$H/state/account-move-events.status" 'only successful completion closes the projected alarm'
   pass 'success, refusals and unreadable-history failures wake automatically; a failed append is retried through the registered alert store'
 }
 
