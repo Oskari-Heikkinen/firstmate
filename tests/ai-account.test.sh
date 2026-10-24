@@ -251,6 +251,24 @@ test_live_identity_overrides_target_valued_records() {
 
 test_failed_direct_moves_preserve_completed_work_in_both_scopes() {
   local out rc owner
+  # Keep this separate from mixed outcomes: no busy report may mask a swallowed
+  # control exit with its own nonzero result (the review's M8 counterfactual).
+  new_case ready-failure
+  add_ship "$H" broken
+  add_proc broken "$U/.claude"
+  touch "$H/state/broken.ready"
+  out=$(FM_TEST_CONTROL_FAIL=1 run_ai move claude work); rc=$?
+  expect_code 1 "$rc" "ready live worker control failure must fail the move: $out"
+  assert_grep 'account=old' "$H/state/broken.meta" 'failed ready worker retains its old record'
+  assert_grep '|broken|old|new|failed' "$H/state/account-moves.log" 'ready worker failure is audited'
+  assert_grep 'outcome=failed; reason=error: broken' "$H/state/account-move-events.status" 'ready worker failure is delivered'
+  out=$(run_ai move claude work); rc=$?
+  expect_code 0 "$rc" "ready worker retry: $out"
+  assert_grep 'account=new' "$H/state/broken.meta" 'ready worker retry converges'
+  out=$(run_ai move claude work); rc=$?
+  expect_code 0 "$rc" "ready worker repeat: $out"
+  assert_equals 2 "$(wc -l < "$C/calls" | tr -d ' ')" 'converged ready worker is not relaunched again'
+
   for owner in root child; do
     new_case "mixed-$owner"
     if [ "$owner" = child ]; then add_mate; owner=$M; else owner=$H; fi
@@ -416,8 +434,8 @@ SH
 test_move_records_login_mates_and_both_homes_workers
 test_move_preflight_refusals_leave_login_and_launches_untouched
 test_busy_and_failed_moves_are_reported_and_retryable
-test_live_identity_overrides_target_valued_records
 test_failed_direct_moves_preserve_completed_work_in_both_scopes
+test_live_identity_overrides_target_valued_records
 test_outcome_delivery_and_projection_retry
 test_other_subcommands_keep_machine_login_behavior
 test_add_quota_and_overview_keep_their_interfaces
