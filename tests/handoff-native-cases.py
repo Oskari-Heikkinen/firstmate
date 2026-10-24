@@ -1,4 +1,5 @@
 """Native observation cases called by fm-handoff-firstmate.test.sh; scratch paths only."""
+import copy
 import hashlib
 import json
 import os
@@ -105,6 +106,7 @@ class NativeAdapters(unittest.TestCase):
             self.assertEqual([], validate.Schema(str(ROOT / "docs/handoff-coverage/handoff-receipt-v1.schema.json")).errors(doc))
             self.assertEqual([], validate.receipt_problems(doc, {proto["id"]: proto}))
             self.assertFalse(doc["ext"][f"{OWNER}.native-attempts-known"])
+            self.assertEqual(0 if family == "native-capacity-cursor" else 1, doc["version"])
         return docs, problems
 
     def one(self, family, doc, name="record.json"):
@@ -138,7 +140,16 @@ class NativeAdapters(unittest.TestCase):
                                   capture_output=True, text=True, env=ENV, timeout=60)
             self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
             state = machine / OWNER / "state/handoff-watch"
-            alarms = json.loads((state / f"stores/{OWNER}.json").read_text())["active"]
+            store = state / f"stores/{OWNER}.json"
+            if store.exists():
+                alarms = json.loads(store.read_text())["active"]
+            else:
+                # A clean first pass has no target store until an alarm is raised.
+                # Do not mask a missing store that should have received an alarm.
+                pending = json.loads((state / "alarms.json").read_text())["alarms"]
+                self.assertFalse(any(OWNER in a["routed"] for a in pending.values()))
+                self.assertFalse((state / "undeliverable").exists(), proc.stdout + proc.stderr)
+                alarms = {}
             records = json.loads((state / "stages/native.test--observe.json").read_text())["records"]
             return alarms, records
         return frag, tick
@@ -341,6 +352,102 @@ class NativeAdapters(unittest.TestCase):
         docs, bad = self.adapt(family)
         self.assertEqual([], bad)
         self.assertEqual(2, len({d["record"] for d in docs}))
+
+    def test_malformed_native_identity_fields_never_mint_receipts(self):
+        cases = [("native-manifest-verified", {}, ("item", "manifest"), "missing native identity fields"),
+                 ("native-tj-handoff", {}, ("id", "subject"), "native record identity"),
+                 ("native-tetjet-collected", {}, ("batch_id",), "native record identity"),
+                 ("native-tetjet-collected", {"kind": "request", "request_id": "request-a",
+                                             "request_sha256": SHA, "complete": True, "outcome": "collected"},
+                  ("request_id",), "native record identity"),
+                 ("native-tj-step", {}, ("subject", "phase"), "native record identity")]
+        for family, changes, fields, error in cases:
+            for field in fields:
+                for value in ("missing", None, 17, [], {}, ""):
+                    with self.subTest(family=family, field=field, value=value):
+                        self.cache = {}
+                        doc = dict(sample(family), **changes)
+                        if value == "missing":
+                            doc.pop(field, None)
+                        else:
+                            doc[field] = value
+                        path = put(self.folder / "record.json", doc)
+                        docs, bad = self.adapt(family)
+                        self.assertEqual([], docs)
+                        self.assertEqual([path], [p for p, _ in bad])
+                        self.assertIn(error, bad[0][1])
+
+    def test_semantic_rejections_are_not_json_or_version_errors(self):
+        cases = [("native-tj-handoff", {"kind": "UNSUPPORTED"}, "unknown tj-handoff kind"),
+                 ("native-tetjet-collected", {"verification": {"verdict": "FAIL"}}, "verification verdict"),
+                 ("native-tetjet-collected", {"verification": []}, "verification verdict"),
+                 ("native-tetjet-collected", {"kind": "request", "request_id": "r", "request_sha256": SHA,
+                                             "complete": False, "outcome": "collected"}, "incomplete"),
+                 ("native-tetjet-collected", {"kind": "request", "request_id": "r", "request_sha256": SHA,
+                                             "complete": True, "outcome": "unknown"}, "unknown"),
+                 ("native-tj-step", {"rc": None, "ended": T}, "ended without"),
+                 ("native-tj-step", {"ended": "2026-10-24T15:00:00Z"}, "ended before"),
+                 ("native-manifest-verified", {"result": "FAIL"}, "verification result")]
+        cases += [("native-tj-step", {"rc": rc}, "invalid step rc") for rc in (-1, True, "0", 0.5, [])]
+        for family, field in (("native-tj-handoff", "artefact"),
+                              ("native-tetjet-collected", "request_sha256"),
+                              ("native-manifest-verified", "manifest_sha256")):
+            for sha in (None, "", "a" * 63, "g" * 64, 12):
+                changes = {field: sha}
+                if field == "artefact":
+                    changes[field] = {"sums_sha256": sha}
+                if field == "request_sha256":
+                    changes.update(kind="request", request_id="r", complete=True, outcome="collected")
+                cases.append((family, changes, "sha256"))
+        for family, changes, error in cases:
+            with self.subTest(family=family, changes=changes):
+                self.cache = {}
+                put(self.folder / "record.json", dict(sample(family), **changes))
+                docs, bad = self.adapt(family)
+                self.assertEqual([], docs)
+                self.assertTrue(bad)
+                self.assertIn(error, bad[0][1])
+        for doc in ([], None, 5, "record"):
+            with self.subTest(shape=doc):
+                self.cache = {}
+                put(self.folder / "record.json", doc)
+                docs, bad = self.adapt("native-tj-step")
+                self.assertEqual([], docs)
+                self.assertIn("not a JSON object", bad[0][1])
+
+    def test_cursor_checkpoint_inside_partial_line_is_rejected(self):
+        signal = self.folder / "capacity.signal"
+        signal.write_bytes(b"partial")
+        st = signal.stat()
+        put(self.folder / "capacity.cursor.json", {"dev": st.st_dev, "ino": st.st_ino,
+            "offset": 7, "tail": hashlib.sha256(b"partial").hexdigest()})
+        docs, bad = self.adapt("native-capacity-cursor")
+        self.assertEqual([], docs)
+        self.assertIn("not after a complete signal line", bad[0][1])
+
+    def test_invalid_request_identity_preserves_refusal_through_watcher_restart(self):
+        family = "native-tj-handoff"
+        _, tick = self.watcher_fixture(family)
+        source = self.folder / "record.json"
+        refused = dict(sample(family), kind="REQUEST REFUSED")
+        put(source, refused)
+        alarms, records = tick()
+        key = f"request:example:{SHA}"
+        self.assertEqual("refused", records[key]["cur"]["state"])
+        for field in ("id", "subject", "artefact"):
+            for value in ("missing", None, "", 17):
+                with self.subTest(field=field, value=value):
+                    doc = dict(sample(family))
+                    if value == "missing":
+                        doc.pop(field)
+                    else:
+                        doc[field] = value
+                    put(source, doc)
+                    alarms, records = tick()
+                    self.assertEqual({key}, set(records))
+                    self.assertEqual("refused", records[key]["cur"]["state"])
+                    self.assertTrue(any(k.startswith("hw-source-unreadable-") for k in alarms))
+                    self.assertTrue(any(k.startswith("hw-refused-") for k in alarms))
 
     def test_unknown_versions_oversize_unreadable_and_malformed(self):
         for family in FAMILIES:
@@ -912,18 +1019,34 @@ class NativeAdapters(unittest.TestCase):
         (machine / OWNER / "state").mkdir(parents=True)
         watcher = module.Watch(machine / OWNER, machine, NOW)
         proto, stage = self.protocol("native-tj-step")
-        watcher.protocols = {proto["id"]: proto}
-        old = {"pairs": [], "cur": {"state": "held"}}
-        valid = adapters.receipt(proto, stage, "new", NOW, "done", self.folder / "new.json")
-        cases = [[dict(valid, protocol="elsewhere")], [dict(valid, state="unexpected")],
-                 [valid, dict(valid, receipt_id="f" * 16)]]
-        for docs in cases:
+        proto["versions"] = {"min": 1, "max": 1}
+        other = copy.deepcopy(proto)
+        other["id"] = "elsewhere"
+        alternate = copy.deepcopy(stage)
+        alternate["name"] = "alternate"
+        proto["stages"].append(alternate)
+        watcher.protocols = {proto["id"]: proto, other["id"]: other}
+        held = adapters.receipt(proto, stage, "same", NOW, "held", self.folder / "record.json", code="native-failed")
+        done = adapters.receipt(proto, stage, "same", NOW, "done", self.folder / "record.json")
+        foreign = dict(done, protocol="elsewhere")
+        foreign_stage = dict(done, stage="alternate")
+        for doc in (held, done, foreign, foreign_stage):
+            self.assertEqual([], watcher.receipt_schema.errors(doc))
+            self.assertEqual([], validate.receipt_problems(doc, watcher.protocols))
+        for docs, message in (([foreign], "different protocol/stage"),
+                              ([foreign_stage], "different protocol/stage"),
+                              ([dict(done, state="unexpected")], "invalid receipt"),
+                              ([held, done], "duplicate native record identity")):
             with self.subTest(docs=docs):
-                state = {"records": {"old": old}}
+                watcher.incomplete.clear()
+                watcher.alarms.clear()
+                old = {"pairs": [], "cur": {"state": "held"}}
+                state = {"records": {"same": copy.deepcopy(old)}}
                 with patch.object(adapters, "adapt", return_value=(docs, [])):
                     watcher.read_adapter(proto, stage, "stage:scope", state)
-                self.assertIn("old", state["records"])
+                self.assertEqual("held", state["records"]["same"]["cur"]["state"])
                 self.assertIn("stage:scope", watcher.incomplete)
+                self.assertTrue(any(message in a["reason"] for a in watcher.alarms.values()))
 
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)
