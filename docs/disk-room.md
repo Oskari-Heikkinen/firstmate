@@ -159,7 +159,11 @@ With it disabled:
 
 ### Reclaim now
 
-When the monitor says a compaction would help and the startup task is disabled or a restart is not convenient, the captain parks the work running in WSL and runs, elevated:
+The compaction (reclaim-now) ask goes to the captain only when the watch-line margin path reports low room, as the [`disk-room` skill](../.agents/skills/disk-room/SKILL.md#what-a-low-reading-means-and-who-acts) owns.
+A "later" or "not now" answer is final for that reading: nothing is held, re-dated, or recorded as a deferred captain call; the next low reading asks again under the monitor's existing notification cadence.
+A growth or runway alert alone is not a compaction ask.
+
+When a low reading says a compaction would help and the startup task is disabled or a restart is not convenient, the captain parks the work running in WSL and runs, elevated:
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\firstmate\fm-wsl-reclaim.ps1 -Now
