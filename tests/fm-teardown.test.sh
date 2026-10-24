@@ -5864,10 +5864,30 @@ test_citation_and_link_target_coverage_requires_surviving_objects() {
             ln -s "$citation" "$base/links/indirect"
           fi
           rc=0
-          run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+          if [ "$root_name/$mode/$variant/${flag:-normal}" = copy/citation/undeclared/normal ]; then
+            # CI-only diagnosis of the original failing combination. Trace the
+            # real teardown so token extraction, physical resolution and staged
+            # coverage decisions are visible without replaying a consumed case.
+            cat > "$case_dir/diagnostic-env" <<'SH'
+PS4='+${BASH_SOURCE##*/}:${LINENO}:${FUNCNAME[0]:-main}: '
+set -x
+SH
+            BASH_ENV="$case_dir/diagnostic-env" run_teardown "$case_dir" \
+              > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+          else
+            run_teardown "$case_dir" ${flag:+"$flag"} > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+          fi
           ev="$case_dir/data/task-x1/evidence"
           if [ "$variant" = undeclared ]; then
-            [ "$rc" -ne 0 ] || fail "$root_name $mode ${flag:-normal}: declared link ancestry covered an unpreserved target"
+            if [ "$rc" -eq 0 ]; then
+              printf '\nDIAGNOSTIC: %s/%s/%s/%s target=%s citation=%s\n' \
+                "$root_name" "$mode" "$variant" "${flag:-normal}" "$target" "$citation" >&2
+              printf '%s\n' '--- captured stdout ---' >&2
+              cat "$case_dir/stdout" >&2
+              printf '%s\n' '--- captured stderr (including execution trace) ---' >&2
+              cat "$case_dir/stderr" >&2
+              fail "$root_name $mode ${flag:-normal}: declared link ancestry covered an unpreserved target"
+            fi
             if [ "$mode" = citation ]; then
               assert_grep "references $citation, which cleanup would destroy" "$case_dir/stderr" 'traversed citation must refuse'
             else
