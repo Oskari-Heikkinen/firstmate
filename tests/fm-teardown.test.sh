@@ -6082,7 +6082,7 @@ test_numeric_citation_suffixes_check_intermediate_entries() {
   local case_dir root_name shorter suffix flag base path label rc ev
   for root_name in copy tmp; do
     for shorter in missing covered; do
-      for suffix in :3 :3:9 :3:9. ':3&amp;'; do
+      for suffix in :3 :3:9 :3:9. ':3&amp;' '&amp;' '&#34;' '&#x22;'; do
         for flag in '' --force; do
           # Keep presentation syntax out of the root itself: a colon in an
           # absent unquoted filename is deliberately ambiguous to the parser.
