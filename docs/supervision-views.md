@@ -90,12 +90,14 @@ Selection requires explicit `FM_VIEW_SOCKET`, `FM_VIEW_EPOCH` and canonical `FM_
 Without explicit selection, existing entrypoints do not require Python.
 Unsupported input roots, captured crew overrides, custom classifier/read seams, missing transport or typed service refusals keep the legacy route and report the refusal to stderr.
 A successful crew-state read returns before loading the legacy observation graph.
-The drain still owns annotation, strong-identity capture, cursor/marker offsets, actor eligibility, preparation, stdout and cursor commit.
-It asks once for native unread/open-decision facts and suggested endpoints, keeping divergence, capped branch outcomes and the latest-outcome backstop with their existing owners.
+The drain still owns annotation rendering, strong-identity capture, cursor/marker offsets, actor eligibility, preparation, stdout and cursor commit.
+It asks once for native captured annotation lines, unread/open-decision facts and suggested endpoints before printing any status annotation or section, keeping divergence, capped branch outcomes and the latest-outcome backstop with their existing owners.
+The annotation renderer consumes those captured lines without reopening each span or cursor; historical replay suppression remains with its existing signature owner.
+The drain validates the private client's sorted task groups before native selection, so malformed annotation facts fall back before any annotation or section is printed.
 A failed native read falls back before the prepared status sections reach stdout.
 Native observation device/inode pairs never replace the original strong identity passed to the commit owner.
 A failed stdout leaves the presentation cursor untouched, and concurrent appends past the captured endpoints remain unread.
-The native path currently still pays the legacy per-row offset and annotation reads; it is not a completed hot-path migration or a performance acceptance claim.
+The native path currently still pays the legacy per-row offset and historical-signature reads; it is not a completed hot-path migration or a performance acceptance claim.
 
 ## Verification and remaining migration
 
@@ -107,6 +109,9 @@ Captured-presentation tests compare unread rows, folded decisions, new-line span
 They also exercise append-bounded snapshots, whole-batch refusal on replacement/truncation/generation changes, fresh protected tool levels and batch single-flight/timeout fairness without writing a native cursor.
 Separate initial/final-generation-barrier stalls saturate ordinary capacity with concurrent batches and prove both critical slots still admit status-fold observations.
 Real public entrypoint fixtures additionally compare native/legacy drain rendering and committed cursor bytes, failed-stdout retry, append during observation, epoch-refusal fallback and captured-crew override fallback.
+Queued-signal fixtures also compare full annotation bytes and committed cursor bytes, including whitespace, invalid UTF-8, repeated latest lines and an append after native capture.
+A renderer tripwire refuses any attempted cursor/span reopen when captured annotation facts are supplied.
+A real-client corruption fixture reverses its annotation groups after a successful socket read and requires complete legacy output and cursor parity, detecting validation that happens only after native selection.
 They require an observed native call to prevent a silent legacy-only pass.
 The suite does not test against live endpoints or start a backend.
 
