@@ -2674,6 +2674,53 @@ test_restarted_host_stops_what_a_killed_predecessor_left() {
   pass "host: a restarted host stops, by recorded identity, the cycle a killed predecessor left running"
 }
 
+# Inject a failed cmdline sample only in the real host, for its own child.
+# BASH_ENV instruments runtime function entry, not source bytes or a stubbed
+# classifier. Hold the first refresh so scheduling cannot repair the row
+# before the test kills the host. The real interpreter still crosses exec.
+fail_first_arm_identity_read() {  # <home>
+  cat > "$1/identity-fault.bash" <<'SH'
+if [ "$0" = "$FM_REPO/bin/fm-supervision-host.sh" ]; then
+  _fm_fault_hex_to() {
+    local target stat parent
+    local -a fields
+    case "$2" in
+      /proc/*/cmdline)
+        target=${2#/proc/}; target=${target%/cmdline}
+        if [ "$target" != "$$" ] && [ ! -e "$FM_HOME/identity-read-intercepted" ] \
+          && IFS= read -r stat < "/proc/$target/stat"; then
+          read -r -a fields <<< "${stat##*)}"
+          parent=${fields[1]}
+          if [ "$parent" = "$$" ]; then
+            printf '%s\n' "$target" > "$FM_HOME/identity-read-intercepted"
+            printf -v "$1" '%s' ''
+            return 1
+          fi
+        fi ;;
+    esac
+    _fm_fault_real_hex_to "$@"
+  }
+  _fm_fault_debug() {
+    local definition
+    if [ "${_fm_fault_installed:-0}" = 0 ] && declare -F _fm_engine_identity_to >/dev/null; then
+      definition=$(declare -f fm_file_hex_to)
+      eval "${definition/fm_file_hex_to /_fm_fault_real_hex_to }"
+      fm_file_hex_to() { _fm_fault_hex_to "$@"; }
+      _fm_fault_installed=1
+    fi
+    if [ "${FUNCNAME[1]:-}" = refresh_process ] && [ ! -e "$FM_HOME/host-bookkeeping-held" ]; then
+      exec 6<> "$FM_HOME/host-bookkeeping-gate"
+      printf '%s\n' "$$" > "$FM_HOME/host-bookkeeping-held"
+      read -r -t "$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 6 _ || true
+      exec 6>&-
+    fi
+  }
+  set -T
+  trap '_fm_fault_debug' DEBUG
+fi
+SH
+}
+
 # Assert the actual tab fields, not read's whitespace-IFS projection: an
 # absent/empty/malformed row must never masquerade as a changed argv identity.
 assert_preexec_arm_proof() {  # <home> <pid> <proc|ps>
@@ -2754,7 +2801,12 @@ SH
   # /proc/fd selects only the host's arm-output read, not unrelated wc calls.
   [ -d /proc/self/fd ] || { printf 'skip: pre-exec gate needs /proc/fd\n'; return 0; }
   chmod +x "$home/fakebin/bash" "$home/fakebin/wc"
-  start_host "$home"
+  if [ "$mode" = first-read ]; then
+    fail_first_arm_identity_read "$home"
+    BASH_ENV="$home/identity-fault.bash" start_host "$home"
+  else
+    start_host "$home"
+  fi
   wait_until 150 test -s "$home/host-bookkeeping-held" || fail 'preexec: host did not reach held bookkeeping'
   wait_until 150 test -s "$home/arm-exec-held" || fail 'preexec: interpreter did not reach its exec gate'
   arm=$(cat "$home/arm-exec-held")
@@ -2762,7 +2814,23 @@ SH
   wait_until 150 test -s "$home/helper-blocked" || fail 'preexec: arm never reached health bookkeeping'
   watcher=$(cat "$home/state/.watch.lock/pid")
   first_host=$(awk -F '\t' '$1 == "host" {print $2}' "$home/state/.supervision-host")
-  assert_preexec_arm_proof "$home" "$arm" "$identity_kind"
+  if [ "$mode" = first-read ]; then
+    [ "$(cat "$home/identity-read-intercepted" 2>/dev/null)" = "$arm" ] \
+      || fail 'first-read: the real arm initial identity sample was not intercepted'
+    printf 'identity fault intercepted for real arm pid=%s\n' "$arm"
+    if awk -F '\t' '$1 == "arm" && NF == 4 && $3 == "" { found = 1 } END { exit !found }' "$home/state/.supervision-host"; then
+      # This is the deliberately invalid old-host counterfactual, not a
+      # claimed valid pre-exec fixture premise. Continue through activation
+      # to prove the predicted rejection and surviving arm/watcher.
+      cp "$home/state/.supervision-host" "$home/predecessor-record"
+      fm_test_pid_identity "$arm" > "$home/identity-comparison"
+      printf 'counterfactual: initial arm row has empty identity\n'
+    else
+      assert_preexec_arm_proof "$home" "$arm" "$identity_kind"
+    fi
+  else
+    assert_preexec_arm_proof "$home" "$arm" "$identity_kind"
+  fi
   kill -KILL "$first_host"
   wait_until 100 host_exited "$home" || fail 'preexec: host not killed'
   exec 6<> "$home/host-bookkeeping-gate"; printf 'release\n' >&6; exec 6>&-
@@ -2794,15 +2862,25 @@ SH
   expected_row=$(awk -F '\t' '$1 == "arm"' "$home/recovery-record")
   case "$mode" in
     valid) expected_reason=birth-and-launch ;;
+    first-read)
+      expected_reason=birth-and-launch
+      [ -n "$(awk -F '\t' '$1 == "arm" { print $3 }' "$home/recovery-record")" ] || expected_reason=empty-recorded-identity ;;
     birth) expected_reason=birth-mismatch ;;
     token) expected_reason=launch-argv-mismatch ;;
     empty|short-row) expected_reason=empty-recorded-identity ;;
     missing-token) expected_reason='identity-mismatch-without-launch-token' ;;
   esac
   start_host "$home"
-  if [ "$mode" = valid ]; then
+  if [ "$mode" = valid ] || [ "$mode" = first-read ]; then
     wait_until 200 sh -c '! kill -0 "$1" 2>/dev/null && ! kill -0 "$2" 2>/dev/null' _ "$arm" "$watcher" && stopped=1
     [ "$stopped" -eq 1 ] || shutdown_diagnostics "$home" "$first_host" "$arm" "$watcher"
+    if [ "$mode" = first-read ] && [ "$expected_reason" = empty-recorded-identity ]; then
+      assert_grep "recovery-arm	reason=$expected_reason	current=$expected_current	old-row=$expected_row" \
+        "$home/state/.supervision-host.log" 'first-read: failure did not follow the predicted empty-identity rejection'
+      kill -0 "$arm" 2>/dev/null && kill -0 "$watcher" 2>/dev/null \
+        || fail 'first-read: empty proof did not leave both original processes alive'
+      fail 'first-read: confirmed empty initial identity rejected; original arm and watcher survived'
+    fi
     release_held_helper "$home"
     [ "$stopped" -eq 1 ] || fail 'preexec: restarted host left the genuine pre-exec-recorded arm and watcher alive'
   else
@@ -2823,6 +2901,7 @@ test_restart_exec_rejects_a_different_launch() { test_restart_across_the_real_ar
 test_restart_exec_ps_identity() { test_restart_across_the_real_arm_exec_transition valid ps; }
 test_restart_exec_ps_rejects_a_different_birth() { test_restart_across_the_real_arm_exec_transition birth ps; }
 test_restart_exec_ps_rejects_a_different_launch() { test_restart_across_the_real_arm_exec_transition token ps; }
+test_restart_exec_recovers_from_an_empty_initial_read() { test_restart_across_the_real_arm_exec_transition first-read; }
 test_restart_exec_rejects_an_empty_identity() { test_restart_across_the_real_arm_exec_transition empty; }
 test_restart_exec_rejects_a_missing_token() { test_restart_across_the_real_arm_exec_transition missing-token; }
 test_restart_exec_rejects_a_short_row() { test_restart_across_the_real_arm_exec_transition short-row; }
@@ -3859,6 +3938,7 @@ HOST_CASES=(
   test_restart_exec_ps_identity
   test_restart_exec_ps_rejects_a_different_birth
   test_restart_exec_ps_rejects_a_different_launch
+  test_restart_exec_recovers_from_an_empty_initial_read
   test_restart_exec_rejects_an_empty_identity
   test_restart_exec_rejects_a_missing_token
   test_restart_exec_rejects_a_short_row
