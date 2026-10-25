@@ -1807,10 +1807,11 @@ def held():
     assert 'unresolved write' in invoke(2, 'write-history', 'orphan-helper')
     for args in [[], ['--expect-write', '0']]:
         assert 'unresolved write' in invoke(2, 'check', '--kind', 'orphan-helper', *args)
-    assert 'unresolved write' in invoke(75, 'run', '--name', 'orphan-next',
-        '--kind', 'orphan-helper', '--expect-write', '0', '--',
-        'touch', str(marker))
-    assert not marker.exists(), 'dead wrapper must never authorize another job'
+    for name, args in [('orphan-next-explicit', ['--expect-write', '0']),
+                       ('orphan-next-inferred', [])]:
+        assert 'unresolved write' in invoke(75, 'run', '--name', name,
+            '--kind', 'orphan-helper', *args, '--', 'touch', str(marker))
+        assert not marker.exists(), 'dead wrapper must never authorize another job'
 
 try:
     until(ready.exists, 'writer fsync and ready')
