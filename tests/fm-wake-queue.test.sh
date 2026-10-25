@@ -17,6 +17,13 @@ GRANT="$ROOT/bin/fm-wake-grant.sh"
 GUARD="$ROOT/bin/fm-guard.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-wake-tests)
+# shellcheck source=tests/fixtures/supervision-views/matrix.sh
+. "$ROOT/tests/fixtures/supervision-views/matrix.sh"
+view_matrix_rc=0
+if [ "${FM_VIEW_COMPAT_MATRIX:-0}" = 1 ]; then
+  fm_view_matrix_enable
+  DRAIN=$(fm_view_matrix_wrapper drain)
+fi
 
 
 test_concurrent_append_and_drain() {
@@ -3868,4 +3875,5 @@ WAKE_QUEUE_CASES=(
   test_drain_rotates_orphaned_scratch
   test_bounded_drain_under_append_contention
 )
-run_case_pool "${WAKE_QUEUE_CASES[@]}" || exit 1
+run_case_pool "${WAKE_QUEUE_CASES[@]}" || view_matrix_rc=1
+fm_view_matrix_finish
