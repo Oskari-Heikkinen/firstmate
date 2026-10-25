@@ -59,6 +59,11 @@ Kernel syscalls on an unreliable filesystem cannot be forcibly cancelled by Pyth
 Only concurrent in-flight requests for the same argument set share a native fold.
 A completed request is never a cached fresh answer.
 The operation captures and rechecks task metadata and root identity, and reads external tool levels afresh.
+A bounded disposable status-fold index remembers only a byte-verified local completed prefix, incomplete-line bytes, identity and fold version.
+Append-only input reuses that prefix; replacement, truncation, changed kind/vocabulary or changed tool protection rebuilds it.
+An incomplete final line is evaluated speculatively from its pre-line state, then replayed as a whole when more bytes arrive, so a partial note or key is never frozen into the index.
+The index has fixed entry and byte limits and can be evicted or discarded without changing an outcome.
+It is not a presentation cursor and writes no runtime record.
 There is no monitoring timer, status-tail inference or cross-cycle verdict cache.
 [`fm_view_process.py`](../bin/fm_view_process.py) bounds each passive child group and output stream, using pidfds to observe exit without reaping the leader before cleanup.
 A parent that exits while a descendant holds a pipe open cannot strand the observation or orphan that process group.

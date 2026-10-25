@@ -17,7 +17,7 @@ import stat
 import struct
 import time
 
-from fm_view_status import Fold, Vocabulary
+from fm_view_status import FoldIndex, Vocabulary
 
 PROTOCOL = "fm-supervision-views.v1"
 MAX_MESSAGE = 1024 * 1024
@@ -106,6 +106,7 @@ class Inputs:
         self.home_identity = identity(self.home)
         self.state = self.home / "state"
         self.state_identity = identity(self.state)
+        self.status_index = FoldIndex()
 
     def check(self):
         require(identity(self.home) == self.home_identity and identity(self.state) == self.state_identity,
@@ -202,7 +203,8 @@ class Inputs:
             kind = "unknown"
         status = self.state_read(task, ".status")
         protected, protect_all = self.protection(task)
-        result = Fold(status["bytes"] if status else b"", kind, vocabulary, protected, protect_all).result()
+        result = self.status_index.fold(task, status["identity"] if status else ["missing"],
+                                        status["bytes"] if status else b"", kind, vocabulary, protected, protect_all)
         now = self.metadata(task)
         require(meta == now, "task generation changed during observation")
         self.check()
