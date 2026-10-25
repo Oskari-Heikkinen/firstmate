@@ -209,6 +209,7 @@ Reports distinguish no-model incompleteness, pending model review, and a contrad
 ## CI calibration, opt-in tick journals and retrospective reconciliation
 
 The attribution input shape is owned by [`attribution-v1.schema.json`](supervision-accounting/attribution-v1.schema.json), and the sealed calibration payload by [`calibration-v1.schema.json`](supervision-accounting/calibration-v1.schema.json).
+The tool validates every tick-count and reconciliation output against [`tick-counts-v1.schema.json`](supervision-accounting/tick-counts-v1.schema.json) and [`reconciliation-v1.schema.json`](supervision-accounting/reconciliation-v1.schema.json) before publication.
 These are finite task artifacts, not an automated cross-home publishing stage or a new installed actor.
 The invoking task owner consumes success/refusal and retains evidence through its existing status path.
 
@@ -234,11 +235,19 @@ Command startup remains in that average rather than being silently removed, so a
 The outer canonical-JSON SHA-256 envelope seals all metadata and retained raw trace/CPU evidence; it detects content changes, not provenance forgery or operator authority.
 Replay validates the closed payload, inner trace seals, recomputed births, CPU evidence, repeat count and deterministic birth agreement.
 
-The fixture plan currently measures isolated empty-home crew-state, drain and contribution-input snapshot units.
-It explicitly marks the remaining families unavailable rather than pricing a help command, starting a standing loop or exercising a lifecycle transaction.
-Those synthetic-shape costs are CI measurement evidence for those fixtures, not real fleet calibrations or a B0 acceptance packet.
-A deployment calibration requires a separately reviewed matching fixture plan and complete exclusive scope, including its actual tick unit and work mix.
-The utility does not invent that evidence for an unavailable family.
+The default synthetic plan measures empty-home crew-state, drain and contribution-input snapshot invocations, a first-iteration queued-result watcher wake, a stable-identity host wait interval and admission-refusal spawn/control invocations.
+The host fixture calls the actual bounded interval, including periodic identity and boundary checks and two native half-second waits, without activating an arm, watcher or engine.
+Source/FIFO setup remains in its average; readiness, changed-identity and engine work are excluded.
+The watcher fixture includes startup/watchdog/close and is not a quiet steady iteration price; spawn/control refusal costs are not successful lifecycle prices.
+Every remaining registry family is explicitly unavailable rather than priced from help output or configured cadence.
+These synthetic-shape costs cannot price real captures.
+
+For a deployment calibration, the workflow dispatch `plan` input selects an already tracked, reviewed `ci/supervision-plans/NAME.json` template on that exact revision.
+The offline `prepare-calibration-plan` verb resolves only explicit revision and checkout tokens, validates seals, and requires every registry family per home, including explicit unavailable rows.
+The CI builder refuses untracked, symlinked or escaping selections; it never reads a live home or changes the template's synthetic flag, configuration or work-mix pins.
+A real plan must already declare nonsynthetic provenance, owner-supplied home/configuration pins and reviewed representative fixture bytes, units, startup treatment and complete exclusive scope.
+The same CI measurement and sealed replay checks apply to selected plans; there is no permissive second calibrator.
+No deployment plan or live-home configuration is supplied by the default fixture builder, and missing owner evidence remains a gap.
 Each command is bounded to 30 seconds, the measurement phase to five minutes, repeats to nine and profiles to 32; aggregate trace/stdout/stderr/CPU and fixture bytes are capped at 16 MiB.
 An interrupted or failed command kills only its own private CI process group and retains incomplete evidence.
 Plans must be finite fixtures without escaping/daemonized children, never live-home commands.
@@ -253,15 +262,17 @@ The logger lives with the existing shell bridge in [`fm-supervision-lib.sh`](../
 All successful appends use shell builtins only: no date, stat, helper process, new poller, timer or standing reader.
 No sleep, grace, liveness verdict, queue custody or delivery deadline changes.
 
-`fm-supervision-tick.v2` is one LF-terminated ASCII TSV row: format, family, unit, kernel boot UUID, writer generation (`PID:startup-wall-seconds`), sequence, wall epoch seconds with six fractional digits, proc uptime seconds with two fractional digits, and phase.
-`start` has sequence zero and is not a tick; `tick` and the first retained `rotate` row count once, with a monotonically increasing generation-local sequence.
+`fm-supervision-tick.v3` is one LF-terminated ASCII TSV row: format, family, unit, kernel boot UUID, writer generation (`PID:startup-wall-seconds`), sequence, wall epoch seconds with six fractional digits, proc uptime seconds with two fractional digits, and phase.
+`start` is not a tick; `tick` and the first retained `rotate` row count once.
+Owned sequences are positive and monotonically increasing across all generations, including start rows, with the last sequence durably recorded in the bounded cursor after each append.
+A failed cursor update invalidates the cohort instead of permitting a later generation to reuse its sequence.
 Concurrent `entry` rows have sequence one and a fresh timestamped generation per append.
 The wall stamp is not a proof of process start identity; proc uptime provides the separate boot-clock coordinate.
 The UUID is read with builtins once at owned-loop initialization or per concurrent append, so an earlier boot's identical uptime interval cannot be counted as current work.
-Legacy v1 journal records lack that discriminator and remain unavailable for uptime-based modelling rather than being silently upgraded.
+Legacy v1/v2 records lack boot identity or cross-generation continuity and remain unavailable rather than being silently upgraded.
 Readers preserve raw bytes, unfinished lines, startup qualifications, sequence gaps and rotation loss instead of deriving rates from configured sleeps.
 
-The watcher and host use independently owned two-slot streams at `state/.supervision-watch-ticks.{0,1}.tsv` and `state/.supervision-host-ticks.{0,1}.tsv`, with a two-byte cursor sidecar per stream.
+The watcher and host use independently owned two-slot streams at `state/.supervision-watch-ticks.{0,1}.tsv` and `state/.supervision-host-ticks.{0,1}.tsv`, with a bounded slot/stream-sequence cursor sidecar per stream.
 The existing singleton/host ownership, not the logger, serializes writer generations.
 Each slot has a strict 64 KiB cap, and builtin redirection rotates to the other slot without a subprocess, retaining the previous slot.
 A new generation starts in the alternate slot, not by appending under its predecessor's sequence.
@@ -286,7 +297,8 @@ Every reconcile result repeats this limit next to its counts and residual; it mu
 An ordinary late append after only one rename still lands in the retained previous inode.
 The regression demonstrates both that retained case and the deliberately accepted loss case.
 
-An instrumentation failure invalidates the current recording cohort through `state/.supervision-ticks.error` and stderr, without stopping or certifying the supervisor.
+An instrumentation failure invalidates the current recording cohort through `state/.supervision-ticks.error`, without stopping or certifying the supervisor.
+Marker-publication failure is silent on caller stderr, including closed or captured stderr; existing ticks retry the durable invalidation and the existing watcher remains its delivery owner.
 The existing watcher queues one invalidation notice per cohort through its ordinary slow-check step, not at the head of every monitoring pass; it is a recording failure, not a task status or a new supervisor-health predicate.
 It writes `state/.supervision-ticks.error-seen` only after durable queue publication, so a failed enqueue is retried and an already queued notice does not keep cutting monitoring cycles short.
 The queued notice may ride along with another ordinary wake; normal queue replay and acknowledgement still own delivery.
@@ -306,12 +318,15 @@ Missing owner evidence, stale window coverage or changed pins produce an unavail
 Generic adapters support epoch-first TSV, timestamped status lines and JSON timestamps, including the successful-spawn publication's explicit epoch field.
 Those narrower successful-spawn and watcher-cycle-close units must not be called every spawn attempt or every watcher inner tick.
 
-The instrumented TSV adapter partitions a shared record by exact family and unit, admits only the capture's boot UUID, and checks generation-local sequence continuity.
+The instrumented TSV adapter partitions a shared record by exact family and unit, admits only the capture's boot UUID, and checks both generation-local and stream-wide sequence continuity.
+An owned stream requires retained evidence at or before the window start, so losing whole earlier generations cannot become a confident undercount.
+A concurrent stream likewise requires a retained current-boot entry at or before the window start, independently of owner coverage attestation; no matching-family entry is necessary to prove a quiet unit if another concurrent unit establishes that shared prefix.
 A journal without any evidence from the current boot is unavailable, not zero; current-boot records from other units can establish a quiet concurrent counter.
 Shared fragments must have identical content seals, and other adapter types may not share a record.
 A removed prefix inside the requested interval, duplicate/missing sequence or invalidation prevents modelling that profile.
 Instrumented counts use conservative proc-uptime brackets from the capture, excluding ambiguous edge jiffies; generic adapters use the capture's wall interval.
 Both publish the exact measured monotonic duration as their denominator and retain the wall-minus-monotonic discrepancy.
+The report also publishes the journal count-bracket duration and denominator excess: excluded edge jiffies bias the rate downward relative to full-window counts, with no finite bound on missed edge events or their model cost.
 Centisecond boot-clock quantization, startup and in-flight boundary work remain explicit uncertainties, not recovered events.
 A shared boot UUID does not itself prove a shared time namespace; the owner still attests clock-coordinate equivalence.
 
@@ -319,7 +334,8 @@ For each compatible family, reconciliation multiplies the repeated CI per-tick m
 The report prints a modelled covered subtotal, never measured supervision, with per-family evidence, spread and qualifications.
 With no compatible family the modelled subtotal is null, not a measurement of zero supervision.
 Machine-minus-covered-subtotal births and busy CPU are explicit, with negative residuals preserved as contradictions and positive residuals never allocated to supervision by subtraction.
-Coverage includes every admitted home's six leading families plus explicitly supplied additional families; complete other-family enrollment remains a review obligation.
+Retrospective coverage includes every admitted home crossed with the accounting tool's complete `SOURCE_FAMILIES` registry, shared by the CI plan builder and exposed by `source-families`, plus explicitly supplied additional families.
+Missing instrumented families therefore remain unavailable even when both input lists omit them; complete enrollment of any additional families remains a review obligation.
 Calibration revision/configuration/work-mix pins must match the admitted workload, and tick rates must belong to the exact machine window rather than another capture.
 No output certifies B0, claims savings or authorizes a later capture or performance promotion.
 

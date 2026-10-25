@@ -158,19 +158,24 @@ fm_supervision_tick_init() {
   [ -r /proc/uptime ] || return 2
   fm_supervision_tick_boot_to FM_SUP_TICK_BOOT || return 2
   [ -d "${FM_SUP_TICK_STEM%/*}" ] && [ ! -L "${FM_SUP_TICK_STEM%/*}" ] || return 2
-  local path old_slot=''
+  local path old_slot='' old_seq='' extra='' cursor=''
   for path in "$FM_SUP_TICK_STEM.0.tsv" "$FM_SUP_TICK_STEM.1.tsv" "$FM_SUP_TICK_STEM.cursor"; do
     [ ! -L "$path" ] && { [ ! -e "$path" ] || [ -f "$path" ]; } || return 2
   done
   if [ -f "$FM_SUP_TICK_STEM.cursor" ]; then
-    if IFS= read -r -d '' -n 4 old_slot < "$FM_SUP_TICK_STEM.cursor"; then return 2; fi
-    case "$old_slot" in $'0\n') FM_SUP_TICK_SLOT=1 ;; $'1\n') FM_SUP_TICK_SLOT=0 ;; *) return 2 ;; esac
+    if IFS= read -r -d '' -n 64 cursor < "$FM_SUP_TICK_STEM.cursor"; then return 2; fi
+    IFS=$'\t' read -r old_slot old_seq extra <<< "$cursor"
+    case "$old_slot" in 0) FM_SUP_TICK_SLOT=1 ;; 1) FM_SUP_TICK_SLOT=0 ;; *) return 2 ;; esac
+    [[ "$old_seq" =~ ^[1-9][0-9]{0,16}$ ]] && [ -z "$extra" ] \
+      && [ "$cursor" = "$old_slot"$'\t'"$old_seq"$'\n' ] \
+      && [ "$old_seq" -lt 99999999999999999 ] || return 2
+    FM_SUP_TICK_SEQ=$old_seq
   fi
   # A new generation starts in the other slot, retaining the predecessor's
   # last complete slot. No mv/rm/stat/date, command substitution or subshell.
   : > "$FM_SUP_TICK_STEM.$FM_SUP_TICK_SLOT.tsv" || return 2
-  printf '%s\n' "$FM_SUP_TICK_SLOT" > "$FM_SUP_TICK_STEM.cursor" || return 2
   FM_SUP_TICK_FAILED=0
+  FM_SUP_TICK_SEQ=$((FM_SUP_TICK_SEQ + 1))
   fm_supervision_tick_write start
 }
 
@@ -181,7 +186,7 @@ fm_supervision_tick_write() { # <start|rotate|tick>, called only after init
   [[ "$wall" =~ ^[0-9]{1,12}\.[0-9]{6}$ ]] || { FM_SUP_TICK_FAILED=1; return 2; }
   IFS=' ' read -r uptime rest < /proc/uptime || { FM_SUP_TICK_FAILED=1; return 2; }
   [[ "$uptime" =~ ^[0-9]{1,12}\.[0-9]{2}$ ]] || { FM_SUP_TICK_FAILED=1; return 2; }
-  printf -v line 'fm-supervision-tick.v2\t%s\t%s\t%s\t%s:%s\t%s\t%s\t%s\t%s\n' \
+  printf -v line 'fm-supervision-tick.v3\t%s\t%s\t%s\t%s:%s\t%s\t%s\t%s\t%s\n' \
     "$FM_SUP_TICK_FAMILY" "$FM_SUP_TICK_UNIT" "$FM_SUP_TICK_BOOT" "$FM_SUP_TICK_PID" "$FM_SUP_TICK_GENERATION" \
     "$FM_SUP_TICK_SEQ" "$wall" "$uptime" "$phase"
   if [ $((FM_SUP_TICK_BYTES + ${#line})) -gt "$FM_SUP_TICK_CAP" ]; then
@@ -192,11 +197,10 @@ fm_supervision_tick_write() { # <start|rotate|tick>, called only after init
       FM_SUP_TICK_FAILED=1; return 2
     fi
     : > "$FM_SUP_TICK_STEM.$FM_SUP_TICK_SLOT.tsv" || { FM_SUP_TICK_FAILED=1; return 2; }
-    printf '%s\n' "$FM_SUP_TICK_SLOT" > "$FM_SUP_TICK_STEM.cursor" || { FM_SUP_TICK_FAILED=1; return 2; }
-    # The first retained tick carries its generation and absolute sequence.
-    # An offline reader can detect a missing prefix and refuse window coverage.
+    # Sequence is stream-wide, including start rows across writer generations.
+    # The offline reader requires continuity and a retained pre-window prefix.
     phase=rotate
-    printf -v line 'fm-supervision-tick.v2\t%s\t%s\t%s\t%s:%s\t%s\t%s\t%s\t%s\n' \
+    printf -v line 'fm-supervision-tick.v3\t%s\t%s\t%s\t%s:%s\t%s\t%s\t%s\t%s\n' \
       "$FM_SUP_TICK_FAMILY" "$FM_SUP_TICK_UNIT" "$FM_SUP_TICK_BOOT" "$FM_SUP_TICK_PID" "$FM_SUP_TICK_GENERATION" \
       "$FM_SUP_TICK_SEQ" "$wall" "$uptime" "$phase"
   fi
@@ -204,11 +208,18 @@ fm_supervision_tick_write() { # <start|rotate|tick>, called only after init
     || { FM_SUP_TICK_FAILED=1; return 2; }
   printf '%s' "$line" >> "$FM_SUP_TICK_STEM.$FM_SUP_TICK_SLOT.tsv" || { FM_SUP_TICK_FAILED=1; return 2; }
   FM_SUP_TICK_BYTES=$((FM_SUP_TICK_BYTES + ${#line}))
+  if [ -L "$FM_SUP_TICK_STEM.cursor" ] \
+    || { [ -e "$FM_SUP_TICK_STEM.cursor" ] && [ ! -f "$FM_SUP_TICK_STEM.cursor" ]; }; then
+    FM_SUP_TICK_FAILED=1; return 2
+  fi
+  printf '%s\t%s\n' "$FM_SUP_TICK_SLOT" "$FM_SUP_TICK_SEQ" > "$FM_SUP_TICK_STEM.cursor" \
+    || { FM_SUP_TICK_FAILED=1; return 2; }
 }
 
 fm_supervision_tick_append() {
   [ "${FM_SUP_TICK_FAILED:-1}" -eq 0 ] || return 2
   [ "${BASHPID:-$$}" = "$FM_SUP_TICK_PID" ] || return 2
+  [ "$FM_SUP_TICK_SEQ" -lt 99999999999999999 ] || { FM_SUP_TICK_FAILED=1; return 2; }
   FM_SUP_TICK_SEQ=$((FM_SUP_TICK_SEQ + 1))
   fm_supervision_tick_write tick
 }
@@ -223,13 +234,12 @@ fm_supervision_tick_error() { # <state> <context>
   # A cohort is permanently invalid once this object exists, even if a write
   # was interrupted. Preserve its first evidence and do not churn timestamps.
   if [ -e "$1/.supervision-ticks.error" ] || [ -L "$1/.supervision-ticks.error" ]; then return 0; fi
-  printf 'supervision-accounting: tick recording invalid: %s\n' "$2" >&2
   # Permanent invalidation of this recording cohort, not a supervision-health
   # verdict. The existing watcher presents it; an owner must preserve it with
   # the recording, repair the cause and explicitly begin a new cohort.
   if [ -d "$1" ] && [ ! -L "$1/.supervision-ticks.error" ]; then
     printf 'fm-supervision-tick-error.v1\t%s\t%s\t%s\n' \
-      "${EPOCHREALTIME:-unavailable}" "${BASHPID:-$$}" "$2" > "$1/.supervision-ticks.error" || true
+      "${EPOCHREALTIME:-unavailable}" "${BASHPID:-$$}" "$2" 2>/dev/null > "$1/.supervision-ticks.error" || true
   fi
 }
 
@@ -271,10 +281,10 @@ fm_supervision_tick_entry() { # <state> <config> <family> [unit]
   IFS=' ' read -r uptime rest < /proc/uptime || { fm_supervision_tick_error "$1" "entry-uptime-$3"; return 0; }
   [[ "$uptime" =~ ^[0-9]{1,12}\.[0-9]{2}$ ]] || { fm_supervision_tick_error "$1" "entry-uptime-format-$3"; return 0; }
   fm_supervision_tick_boot_to boot_id || { fm_supervision_tick_error "$1" "entry-boot-$3"; return 0; }
-  printf -v line 'fm-supervision-tick.v2\t%s\t%s\t%s\t%s:%s\t1\t%s\t%s\tentry\n' \
+  printf -v line 'fm-supervision-tick.v3\t%s\t%s\t%s\t%s:%s\t1\t%s\t%s\tentry\n' \
     "$3" "$unit" "$boot_id" "${BASHPID:-$$}" "$wall" "$wall" "$uptime"
   # One small O_APPEND write; no per-entry stat, lock, helper, timer or poll.
-  printf '%s' "$line" >> "$path" || fm_supervision_tick_error "$1" "entry-append-$3"
+  printf '%s' "$line" 2>/dev/null >> "$path" || fm_supervision_tick_error "$1" "entry-append-$3"
 }
 
 # Called only from the existing slow-check step, with fm_wake_append supplied
@@ -300,6 +310,18 @@ fm_supervision_tick_check_notice() { # <state>; sets FM_SUP_TICK_CHECK_REASON
   else
     printf 'supervision-accounting: recording invalidation notice was not queued; retry on the next existing check pass\n' >&2
   fi
+}
+
+# One portable stat process, replacing the watcher's existing summary stat.
+# Caller supplies its cached uname; no platform probe is added to a tick.
+fm_supervision_tick_stat_to() { # <out-variable> <Linux|Darwin> <summary> <entries>
+  local _fm_tick_stats=''
+  if [ "$2" = Darwin ]; then
+    _fm_tick_stats=$(/usr/bin/stat -f $'%N\t%m\t%z' "$3" "$4" 2>/dev/null) || true
+  else
+    _fm_tick_stats=$(stat -c $'%n\t%Y\t%s' "$3" "$4" 2>/dev/null) || true
+  fi
+  printf -v "$1" '%s' "$_fm_tick_stats"
 }
 
 # Called ONLY by the existing watcher pass, with the size from its already

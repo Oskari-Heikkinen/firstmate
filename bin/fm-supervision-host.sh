@@ -768,22 +768,28 @@ park_wait_half_second() {
   fi
 }
 
+# One bounded existing wait interval. Kept callable for isolated CI calibration
+# with a private process identity; it starts no arm, engine or watcher.
+host_wait_interval() {
+  local i
+  refresh_process "$ARM_PID"
+  [ "$READY_PENDING" -eq 0 ] || stream_ready_line
+  boundary_reached && return 1
+  # Preserve the outer identity/readiness/boundary cadence and half-second probes.
+  i=$((POLL * 2))
+  while [ "$i" -gt 0 ] && fm_pid_alive "$ARM_PID"; do
+    park_wait_half_second
+    fm_supervision_tick_loop
+    i=$((i - 1))
+  done
+  return 0
+}
+
 # Wait for the current arm to close. Returns 0 with ARM_TEXT set,
 # or 1 when the park boundary arrives first.
 await_close() {
-  local i
   while fm_pid_alive "$ARM_PID"; do
-    refresh_process "$ARM_PID"
-    [ "$READY_PENDING" -eq 0 ] || stream_ready_line
-    boundary_reached && return 1
-    # Probe the arm's exit twice a second between POLL-cadence checks, without
-    # changing the outer identity refresh, readiness, or boundary cadence.
-    i=$((POLL * 2))
-    while [ "$i" -gt 0 ] && fm_pid_alive "$ARM_PID"; do
-      park_wait_half_second
-      fm_supervision_tick_loop
-      i=$((i - 1))
-    done
+    host_wait_interval || return 1
   done
   wait "$ARM_PID" 2>/dev/null || true
   ARM_TEXT=$(cat "$ARM_OUT" 2>/dev/null || true)
@@ -1283,6 +1289,9 @@ attended_acceptor() {  # <first-reason-line>
   ATTENDED_OFFER=$offer
   [ -z "$ATTENDED_WHY" ]
 }
+
+# Sourcing exposes finite functions only, never ownership or lifecycle work.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
 # Ownership first: a host that does not own supervision leaves the owner's
 # host, processes, arms, and leases alone.

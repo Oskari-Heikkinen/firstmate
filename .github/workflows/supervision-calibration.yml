@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, 'ci/**']
   workflow_dispatch:
+    inputs:
+      plan:
+        description: 'Reviewed tracked ci/supervision-plans/NAME.json (empty selects synthetic fixtures)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -18,9 +23,13 @@ jobs:
       - name: Install CI-only tracing tools
         run: sudo apt-get update && sudo apt-get install -y strace time jq
       - name: Build isolated fixture plan
-        run: >-
-          python3 tests/fixtures/supervision-accounting/calibration.py
-          "$GITHUB_WORKSPACE" "$RUNNER_TEMP/calibration-homes" "$RUNNER_TEMP/plan.json"
+        env:
+          REVIEWED_PLAN: ${{ inputs.plan }}
+        run: |
+          args=()
+          if [ -n "$REVIEWED_PLAN" ]; then args+=("$REVIEWED_PLAN"); fi
+          python3 tests/fixtures/supervision-accounting/calibration.py \
+            "$GITHUB_WORKSPACE" "$RUNNER_TEMP/calibration-homes" "$RUNNER_TEMP/plan.json" "${args[@]}"
       - name: Measure exact-head fixture ticks
         run: >-
           python3 bin/fm-supervision-accounting.py calibrate-ci "$RUNNER_TEMP/plan.json"
@@ -35,3 +44,14 @@ jobs:
             ${{ runner.temp }}/plan.json
             ${{ runner.temp }}/calibration-homes/write-probe.trace
           if-no-files-found: error
+
+  native-stat:
+    name: Native summary stat (Darwin)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check native BSD stat with stock Bash
+        env:
+          FM_TEST_ONLY: test_tick_summary_stat_is_portable
+        run: /bin/bash tests/fm-watch-triage.test.sh

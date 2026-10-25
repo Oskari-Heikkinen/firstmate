@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Saved tick counts (model input, not measured supervision)",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "capture_sha256", "window_wall_ns", "boot_id", "duration_ns", "by_home_family", "clock_qualification", "concurrent_log_loss_limit", "wall_minus_monotonic_ns", "journal_count_interval_ns", "journal_denominator_excess_ns"],
+  "properties": {
+    "format": {"const": "fm-supervision-tick-counts.v1"},
+    "capture_sha256": {"type": "string", "pattern": "[0-9a-f]{64}"},
+    "window_wall_ns": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0}},
+    "boot_id": {"type": "string", "pattern": "[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}"},
+    "duration_ns": {"type": "integer", "minimum": 1},
+    "journal_count_interval_ns": {"type": "integer", "minimum": 0},
+    "journal_denominator_excess_ns": {"type": "integer"},
+    "wall_minus_monotonic_ns": {"type": "integer"},
+    "clock_qualification": {"type": "string"},
+    "concurrent_log_loss_limit": {"type": "string"},
+    "by_home_family": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/row"}}
+  },
+  "$defs": {
+    "row": {
+      "type": "object", "additionalProperties": false,
+      "required": ["home", "family", "code_ref", "configuration_sha256", "qualification"],
+      "properties": {
+        "home": {"type": "string"}, "family": {"type": "string"},
+        "code_ref": {"type": "string", "pattern": "[0-9a-f]{40}"},
+        "configuration_sha256": {"type": "string", "pattern": "[0-9a-f]{64}"},
+        "work_mix_sha256": {"type": "string", "pattern": "[0-9a-f]{64}"},
+        "tick_unit": {"type": "string"}, "qualification": {"type": "string"},
+        "unavailable": {"type": "string"}, "ticks": {"type": "integer", "minimum": 0},
+        "ticks_per_second": {"type": "number", "minimum": 0},
+        "record_fragments": {"type": "array", "minItems": 1, "maxItems": 128, "items": {
+          "type": "object", "additionalProperties": false, "required": ["record_path", "sha256"],
+          "properties": {"record_path": {"type": "string"}, "sha256": {"type": "string", "pattern": "[0-9a-f]{64}"}}
+        }}
+      }
+    }
+  }
+}

@@ -16,6 +16,10 @@ Requires FM_SUPERVISION_PROC_LIVE=1, non-root,
 no effective capabilities, local single-machine enrollment and published roots.
 No subprocess, attach, target signals, policy writes or workload. Output cap is TOTAL.
 `account-proc FILE` replays its proc.json (including synthetic CI fixtures).
+`source-families` prints the retrospective coverage/plan source registry.
+`prepare-calibration-plan FILE --revision SHA --checkout ABSOLUTE` resolves
+@REVISION@ and @CHECKOUT@ tokens offline, validates the complete plan and
+preserves its provenance/pins; it executes nothing and reads no home.
 `calibrate-ci PLAN --output NEW_DIR --repeats 3..9` runs a trusted, bounded
 fixture plan ONLY in GitHub Actions, using installed strace and GNU time.
 This is the only workload-launching verb; never use a plan naming live homes.
@@ -60,9 +64,13 @@ from fractions import Fraction
 MAX_BYTES = 64 * 1024 * 1024
 SCHEMAS = Path(__file__).resolve().parent.parent / "docs" / "supervision-accounting"
 FAMILIES = ("crew-state", "watch", "wake-drain", "fleet-snapshot", "spawn", "control")
+# Shared by retrospective coverage and CI plans, including unavailable units.
+# FAMILIES remains the narrower proc-hint classifier, not a coverage registry.
+SOURCE_FAMILIES = FAMILIES + ("procevent-reconcile", "park-check", "owner-guard",
+    "attached-arm", "supervision-host", "custom-check", "turnend-guard")
 SCRIPT_FAMILIES = {"fm-" + name + ".sh": name for name in FAMILIES}
 SHELL_EXECUTABLES = ("/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh")
-JOURNAL_TIMESTAMPS = ("supervision-tick-v1", "supervision-tick-v2")
+JOURNAL_TIMESTAMPS = ("supervision-tick-v1", "supervision-tick-v2", "supervision-tick-v3")
 BOOT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 
 
@@ -114,13 +122,18 @@ def validate(value, schema, root=None, where="$"):
     root = root or schema
     if "$ref" in schema:
         ref = schema["$ref"]
-        require(ref.startswith("#/$defs/"), "unsupported schema reference")
-        validate(value, root["$defs"][ref[8:]], root, where)
+        if ref in ("tick-counts-v1.schema.json",):
+            validate(value, load_json(SCHEMAS / ref), where=where)
+        else:
+            require(ref.startswith("#/$defs/"), "unsupported schema reference")
+            validate(value, root["$defs"][ref[8:]], root, where)
         return
     types = {"object": dict, "array": list, "string": str, "integer": int,
              "boolean": bool, "null": type(None)}
     if "type" in schema:
-        require(type(value) is types[schema["type"]], where + ": wrong type")
+        admitted = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        require(any((type(value) in (int, float) if kind == "number" else type(value) is types[kind])
+                    for kind in admitted), where + ": wrong type")
     if "const" in schema:
         require(value == schema["const"], where + ": unsupported format/value")
     if "enum" in schema:
@@ -146,7 +159,7 @@ def validate(value, schema, root=None, where="$"):
                 where + ": string size")
         if "pattern" in schema:
             require(re.fullmatch(schema["pattern"], value) is not None, where + ": pattern")
-    elif type(value) is int:
+    elif type(value) in (int, float):
         require(schema.get("minimum", -2**63) <= value <= schema.get("maximum", 2**63 - 1),
                 where + ": numeric bound")
 
@@ -1256,18 +1269,21 @@ def attribution_input(value, kind):
 
 def ci_tick_count(records, profile):
     require(len({r["name"] for r in records}) == len(records), "duplicate CI tick record")
-    pieces, boots = [], set()
+    pieces, boots, owned_starts = [], set(), []
     for record in records:
         data = base64.b64decode(record["base64"], validate=True)
         require(len(data) <= 6 * 1024 * 1024 and digest(data) == record["sha256"], "CI tick record seal mismatch")
         require(not data or data.endswith(b"\n"), "unfinished CI tick record")
         for line in data.splitlines():
             fields = line.decode("ascii").split("\t")
-            require(len(fields) == 9 and fields[0] == "fm-supervision-tick.v2"
+            require(len(fields) == 9 and fields[0] == "fm-supervision-tick.v3"
                     and (fields[1], fields[2]) == (profile["family"], profile["tick_unit"]),
                     "different family/unit or legacy format in CI tick scope")
             boots.add(fields[3])
+            if fields[8] != "entry":
+                owned_starts.append((int(fields[5]), fields[8]))
         pieces.append(data)
+    require(not owned_starts or min(owned_starts) == (1, "start"), "CI owned fixture lost startup prefix")
     require(len(boots) == 1, "CI tick records have missing or mixed boot identity")
     boot_id = next(iter(boots))
     count, reason = count_instrumented_ticks(b"".join(pieces), profile,
@@ -1479,14 +1495,14 @@ def calibrate_ci(args):
 
 
 def count_instrumented_ticks(data, profile, first, last, hz):
-    groups, count, current_boot_seen = {}, 0, False
+    groups, stream, count, current_boot_seen, oldest_entry = {}, [], 0, False, None
     lower = Fraction(first["uptime_upper_ticks"] * 1000000000, hz)
     upper = Fraction(last["uptime_lower_ticks"] * 1000000000, hz)
     for line in data.split(b"\n")[:-1]:
         if not line:
             continue
         fields = line.decode("ascii").split("\t")
-        require(len(fields) == 9 and fields[0] == "fm-supervision-tick.v2"
+        require(len(fields) == 9 and fields[0] == "fm-supervision-tick.v3"
                 and all(len(field) <= 128 for field in fields), "invalid instrumentation row")
         family, unit, record_boot, generation, seq, wall, boot, phase = fields[1:]
         require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", family) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", unit)
@@ -1499,27 +1515,41 @@ def count_instrumented_ticks(data, profile, first, last, hz):
         if record_boot != first["boot_id"]:
             continue
         current_boot_seen = True
+        at = int(Decimal(boot) * 1000000000)
+        if phase == "entry":
+            oldest_entry = at if oldest_entry is None else min(oldest_entry, at)
         if (family, unit) != (profile["family"], profile["tick_unit"]):
             continue
         if profile.get("record_kind") == "owned-loop" and phase == "entry":
             return None, "concurrent entry supplied as owned-loop tick"
         if profile.get("record_kind") == "concurrent" and phase != "entry":
             return None, "owned-loop record supplied as concurrent entry"
-        at = int(Decimal(boot) * 1000000000)
         sequence = int(seq)
-        require((phase == "start" and sequence == 0) or (phase != "start" and sequence > 0), "invalid tick sequence")
+        require(sequence > 0, "invalid tick sequence")
         groups.setdefault(generation, []).append((sequence, at, phase))
+        if phase != "entry":
+            stream.append((sequence, at, phase))
         count += phase != "start" and lower <= at < upper
     if not current_boot_seen:
         return None, "no journal record from the capture boot"
     if profile.get("record_kind") == "owned-loop" and not groups:
         return None, "no owned-loop startup or retained tick record"
+    if profile.get("record_kind") == "concurrent" and (oldest_entry is None or oldest_entry > lower):
+        return None, "concurrent journal has no retained pre-window coverage evidence"
+    # A stream sequence survives generations in the owned cursor. A whole lost
+    # generation becomes a gap; a post-window-start prefix cannot prove coverage.
+    if profile.get("record_kind") == "owned-loop":
+        stream.sort()
+        if stream[0][1] > lower:
+            return None, "earlier generation or prefix lost inside requested window"
+    if stream:
+        stream.sort()
+        if any(b[0] != a[0] + 1 or b[1] < a[1] for a, b in zip(stream, stream[1:])):
+            return None, "duplicate, missing or reversed instrumented stream sequence"
     for rows in groups.values():
         rows.sort()
         if any(b[0] != a[0] + 1 or b[1] < a[1] for a, b in zip(rows, rows[1:])):
             return None, "duplicate, missing or reversed instrumented tick sequence"
-        if rows[0][2] not in ("start", "entry") and rows[0][1] > lower:
-            return None, "rotation removed instrumented prefix inside requested window"
     return count, None
 
 
@@ -1560,13 +1590,13 @@ def count_saved_ticks(records, capture):
                 reason = "instrumentation cohort invalid or error-state attestation missing"
             if profile["timestamp"] in JOURNAL_TIMESTAMPS and "record_kind" not in profile:
                 reason = "journal ownership kind missing"
-            if profile["timestamp"] == "supervision-tick-v1":
-                reason = "legacy journal has no boot identity; cannot model its uptime records"
+            if profile["timestamp"] in ("supervision-tick-v1", "supervision-tick-v2"):
+                reason = "legacy journal lacks boot identity or cross-generation continuity; unavailable"
             if not profile["coverage_start_wall_ns"] <= start < end <= profile["coverage_end_wall_ns"]:
                 reason = "stale or partial tick record window"
             elif not reason:
                 count = 0
-                if profile["timestamp"] == "supervision-tick-v2":
+                if profile["timestamp"] == "supervision-tick-v3":
                     count, reason = count_instrumented_ticks(data, profile, first, last, measured["clock_ticks"])
                 for line in ([] if profile["timestamp"] in JOURNAL_TIMESTAMPS else data.split(b"\n")[:-1]):
                     if profile["line_contains"].encode() not in line:
@@ -1592,11 +1622,13 @@ def count_saved_ticks(records, capture):
         if reason:
             row["unavailable"] = reason
         rows.append(row)
-    return {"format": "fm-supervision-tick-counts.v1", "capture_sha256": digest(dump(capture).encode()),
+    return checked({"format": "fm-supervision-tick-counts.v1", "capture_sha256": digest(dump(capture).encode()),
         "window_wall_ns": [start, end], "boot_id": first["boot_id"], "duration_ns": measured["duration_ns"], "by_home_family": rows,
-        "clock_qualification": "Ordinary rows use [wall-start,wall-end); v2 journal rows match capture boot and conservative uptime brackets (uncertain edge jiffies excluded). Rates use measured monotonic duration. Owner attests retained coverage, clock-namespace equivalence and one row per calibrated unit; boot UUID alone does not prove shared time namespace. Clock steps and quantization remain uncertainty.",
+        "journal_count_interval_ns": max(0, (last["uptime_lower_ticks"] - first["uptime_upper_ticks"]) * 1000000000 // measured["clock_ticks"]),
+        "journal_denominator_excess_ns": measured["duration_ns"] - max(0, (last["uptime_lower_ticks"] - first["uptime_upper_ticks"]) * 1000000000 // measured["clock_ticks"]),
+        "clock_qualification": "Ordinary rows use [wall-start,wall-end); v3 journal rows match capture boot and conservative uptime brackets (uncertain edge jiffies excluded). Rates use measured monotonic duration. The excluded bracket duration is published; this biases rates downward relative to full-window counts, with no finite bound on missed edge events or their model cost. Owner attests retained coverage, clock-namespace equivalence and one row per calibrated unit; boot UUID alone does not prove shared time namespace. Clock steps and quantization remain uncertainty.",
         "concurrent_log_loss_limit": "A producer frozen between O_APPEND open and write across two watcher rename rotations can silently lose its line. No writer-lifetime bound or zero-loss proof is claimed; this limit accompanies every result using the concurrent journal.",
-        "wall_minus_monotonic_ns": end - start - measured["duration_ns"]}
+        "wall_minus_monotonic_ns": end - start - measured["duration_ns"]}, "tick-counts")
 
 
 def reconcile_saved(capture, records, calibrations):
@@ -1612,7 +1644,7 @@ def reconcile_saved(capture, records, calibrations):
             require(key not in costs, "duplicate calibration home/family")
             costs[key] = (profile, result, calibration, artifact["sha256"])
     rates = {(p["home"], p["family"]): p for p in ticks["by_home_family"]}
-    expected = {(home, family) for home in homes for family in FAMILIES} | set(rates) | set(costs)
+    expected = {(home, family) for home in homes for family in SOURCE_FAMILIES} | set(rates) | set(costs)
     require(all(home in homes for home, _ in expected), "calibration home not enrolled")
     rows, totals, covered = [], [Fraction(0), Fraction(0), Fraction(0)], 0
     for home, family in sorted(expected):
@@ -1659,7 +1691,7 @@ def reconcile_saved(capture, records, calibrations):
     birth_residual = measured["machine"]["births"] - totals[0]
     cpu_residual = Fraction(measured["machine"]["busy_cpu_ticks"] * 1000000000, measured["clock_ticks"]) - sum(totals[1:])
     contradiction = birth_residual < 0 or cpu_residual < 0
-    return {"format": "fm-supervision-reconciliation.v1", "basis": "CI per-tick cost times timestamped live unit records; NOT measured supervision",
+    return checked({"format": "fm-supervision-reconciliation.v1", "basis": "CI per-tick cost times timestamped live unit records; NOT measured supervision",
         "status": "model-total-contradiction" if contradiction else "incomplete-model-inputs" if covered < len(expected) else "pending-reviewed-model-baseline",
         "machine": measured["machine"], "duration_ns": duration, "ticks": ticks,
         "exclusive_measured_supervision": None, "by_home_family": rows,
@@ -1675,7 +1707,26 @@ def reconcile_saved(capture, records, calibrations):
         "residual_qualification": "Subtracts covered subtotal only (empty subtotal when coverage is zero), NOT all supervision. Positive residual includes workload, unmodelled supervision, collector and model error; negative values are contradictions, never clipped.",
         "startup_coverage": measured["startup_coverage"],
         "startup_qualification": "CI command startup remains in the per-tick average; real resident startup frequency and in-flight window-boundary work are not recovered. No B0 certification or performance acceptance.",
-        "claimed_births_per_second_saved": 0}
+        "claimed_births_per_second_saved": 0}, "reconciliation")
+
+
+def prepare_calibration_plan(value, revision, checkout):
+    require(re.fullmatch(r"[0-9a-f]{40}", revision) is not None and Path(checkout).is_absolute(),
+            "invalid calibration revision or checkout")
+    # Resolution never changes synthetic provenance, config pins or fixture seals.
+    for profile in value["profiles"]:
+        if profile["code_ref"] == "@REVISION@":
+            profile["code_ref"] = revision
+        if "argv" in profile:
+            profile["argv"] = [v.replace("@CHECKOUT@", checkout) for v in profile["argv"]]
+    plan = attribution_input(value, "calibration-plan")
+    homes = {p["home"] for p in plan["profiles"]}
+    require(bool(homes), "empty reviewed calibration plan")
+    require(not ({(h, f) for h in homes for f in SOURCE_FAMILIES}
+                 - {(p["home"], p["family"]) for p in plan["profiles"]}),
+            "reviewed plan omits source registry families; publish explicit unavailable rows")
+    require(all(p["code_ref"] == revision for p in plan["profiles"]), "reviewed plan revision is stale")
+    return plan
 
 
 def main():
@@ -1684,6 +1735,7 @@ def main():
         return 2
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="verb", required=True)
+    commands.add_parser("source-families", help="print the complete retrospective source registry")
     commands.add_parser("probe", help="read-only availability/privilege report; never attaches")
     for name in ("validate-manifest", "account", "replay", "read-record", "import-strace"):
         sub = commands.add_parser(name)
@@ -1693,6 +1745,10 @@ def main():
         if name == "read-record":
             sub.add_argument("--kind", choices=("queue", "status", "claim"), required=True)
             sub.add_argument("--name", required=True)
+    sub = commands.add_parser("prepare-calibration-plan", help="resolve reviewed plan tokens offline; executes nothing")
+    sub.add_argument("input")
+    sub.add_argument("--revision", required=True)
+    sub.add_argument("--checkout", required=True)
     sub = commands.add_parser("calibrate-ci", help="GitHub CI ONLY: trusted finite fixture calibration")
     sub.add_argument("input")
     sub.add_argument("--output", required=True)
@@ -1725,12 +1781,16 @@ def main():
     sub.add_argument("--acknowledge-ptrace", action="store_true")
     args = parser.parse_args()
     try:
-        if args.verb == "probe":
+        if args.verb == "source-families":
+            result = {"families": list(SOURCE_FAMILIES)}
+        elif args.verb == "probe":
             result = probe()
         elif args.verb == "capture":
             result = capture(args)
         elif args.verb == "capture-proc":
             result = capture_proc(args)
+        elif args.verb == "prepare-calibration-plan":
+            result = prepare_calibration_plan(load_json(args.input), args.revision, args.checkout)
         elif args.verb == "calibrate-ci":
             result = calibrate_ci(args)
         elif args.verb == "count-ticks":

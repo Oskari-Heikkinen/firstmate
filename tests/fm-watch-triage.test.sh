@@ -897,6 +897,25 @@ test_secondmate_status_routine_absorbed_routed_surfaced_classifier() {
 
 # --- benign wakes are absorbed ONLY when the crew is provably working ---------
 
+test_tick_summary_stat_is_portable() {
+  local dir rows path mtime size summary_seen=0 entries_seen=0
+  dir=$(make_case tick-summary-stat)
+  printf '{}\n' > "$dir/state/home-summary.json"
+  printf 'entry\n' > "$dir/state/.supervision-entries.tsv"
+  fm_supervision_tick_stat_to rows "$(uname)" "$dir/state/home-summary.json" "$dir/state/.supervision-entries.tsv"
+  while IFS=$'\t' read -r path mtime size; do
+    case "$mtime:$size" in *[!0-9:]*|:*|*:) fail 'portable summary stat returned invalid numbers' ;; esac
+    case "$path:$size" in
+      "$dir/state/home-summary.json:3") summary_seen=1 ;;
+      "$dir/state/.supervision-entries.tsv:6") entries_seen=1 ;;
+      *) fail "portable summary stat returned an unexpected row: $path:$size" ;;
+    esac
+    [ "$mtime" -le "$(date +%s)" ] || fail 'portable summary stat returned a future mtime'
+  done <<< "$rows"
+  [ "$summary_seen:$entries_seen" = 1:1 ] || fail 'portable stat lost summary age or rotation size'
+  pass 'combined summary and journal stat preserves native platform mtime and sizes'
+}
+
 test_recording_invalidation_is_one_check_and_does_not_stop_supervision() {
   local dir state fakebin out pid
   dir=$(make_case recording-invalidation)
@@ -8211,6 +8230,7 @@ TRIAGE_CASES=(
   test_worktree_write_probe_is_wall_clock_bounded
   test_signal_crew_provably_working_classifier
   test_secondmate_status_routine_absorbed_routed_surfaced_classifier
+  test_tick_summary_stat_is_portable
   test_recording_invalidation_is_one_check_and_does_not_stop_supervision
   test_provably_working_signal_absorbed
   test_turn_ended_provably_working_absorbed

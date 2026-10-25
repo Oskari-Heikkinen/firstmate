@@ -44,7 +44,7 @@ if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/r
   tick_rc=$?
   [ "$tick_rc" -ne 0 ] || fail 'control tick fixture unexpectedly accepted missing arguments'
   IFS=$'\t' read -r tick_format tick_family tick_unit _ < "$TMP_ROOT/tick-home/state/.supervision-entries.tsv"
-  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v2:control:invocation-v1 ] || fail 'control entry tick missing'
+  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v3:control:invocation-v1 ] || fail 'control entry tick missing'
   pass 'control tick instrumentation records a safe pre-endpoint refusal'
 fi
 

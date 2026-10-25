@@ -3579,7 +3579,7 @@ summary_age_and_tick_rotation() {
     return
   fi
   : >> "$STATE/.supervision-entries.tsv" || fm_supervision_tick_error "$STATE" rotation-open
-  rows=$(stat -c $'%n\t%Y\t%s' "$STATE/home-summary.json" "$STATE/.supervision-entries.tsv" 2>/dev/null) || true
+  fm_supervision_tick_stat_to rows "$_FM_UNAME" "$STATE/home-summary.json" "$STATE/.supervision-entries.tsv"
   while IFS=$'\t' read -r path mtime size; do
     case "$path" in
       "$STATE/home-summary.json") summary_mtime=$mtime ;;

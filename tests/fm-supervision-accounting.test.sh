@@ -1311,7 +1311,7 @@ raw_cal = (b'100 1.0 execve("/usr/bin/time", ["time"], []) = 0\n'
 cal_profile = dict(identity, argv=['/bin/bash', '/fixture/code/bin/fm-watch.sh'], environment=[], fixture_files=[], ticks_per_sample=1)
 cal_plan = dict(format='fm-supervision-calibration-plan.v1', synthetic=True,
                 allocation='exclusive-home-family-v1', profiles=[cal_profile])
-cal_ticks = b'fm-supervision-tick.v2\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t100:1.000000\t1\t10.000000\t10.03\tentry\n'
+cal_ticks = b'fm-supervision-tick.v3\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t100:1.000000\t1\t10.000000\t10.03\tentry\n'
 other_boot_ticks = cal_ticks.replace(b'00000000-0000-0000-0000-000000000000', b'11111111-1111-1111-1111-111111111111')
 cal_records = [dict(name='.supervision-entries.tsv', base64=base64.b64encode(cal_ticks).decode(),
                     sha256=hashlib.sha256(cal_ticks).hexdigest())]
@@ -1332,7 +1332,7 @@ def retrospective(records=saved_ticks, artifact=cal_artifact):
                           '--calibration', save('saved-calibration.json', artifact)).stdout)
 
 result = retrospective()
-assert result['coverage'] == dict(modelled_pairs=1, expected_pairs=12,
+assert result['coverage'] == dict(modelled_pairs=1, expected_pairs=26,
                                  other_families='not discovered; require owner inventory and explicit additional profiles')
 assert result['modelled_subtotal'] == dict(births=2.0, births_per_second=1.0,
     user_ns=40000000.0, system_ns=20000000.0, cpu_one_core_percent=3.0)
@@ -1465,15 +1465,16 @@ run('calibrate-ci', save('calibration-plan.json', cal_plan), '--output', tmp / '
 assert not (tmp / 'not-ci-calibration').exists()
 # The new journal adapter seals multiple physical slots, partitions shared
 # producer records by exact family/unit, and never sums rows twice.
-journal = (b'fm-supervision-tick.v2\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t100:1.000000\t0\t9.000000\t9.00\tstart\n'
-           b'fm-supervision-tick.v2\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t100:1.000000\t1\t10.000000\t10.03\ttick\n'
-           b'fm-supervision-tick.v2\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t100:1.000000\t2\t11.000000\t11.00\ttick\n'
-           b'fm-supervision-tick.v2\tcrew-state\tinvocation-v1\t00000000-0000-0000-0000-000000000000\t200:11.000000\t1\t11.000000\t11.00\tentry\n')
+journal = (b'fm-supervision-tick.v3\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t100:1.000000\t1\t9.000000\t9.00\tstart\n'
+           b'fm-supervision-tick.v3\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t100:1.000000\t2\t10.000000\t10.03\ttick\n'
+           b'fm-supervision-tick.v3\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t100:1.000000\t3\t11.000000\t11.00\ttick\n'
+           b'fm-supervision-tick.v3\tcrew-state\tinvocation-v1\t00000000-0000-0000-0000-000000000000\t200:9.000000\t1\t9.000000\t9.00\tentry\n'
+           b'fm-supervision-tick.v3\tcrew-state\tinvocation-v1\t00000000-0000-0000-0000-000000000000\t200:11.000000\t1\t11.000000\t11.00\tentry\n')
 journal_records = copy.deepcopy(saved_ticks)
 jp = journal_records['profiles'][0]
 for key in ('base64', 'sha256', 'record_path'):
     jp.pop(key)
-jp.update(timestamp='supervision-tick-v2', tick_unit='watch-iteration-v1', instrumentation_error=False, record_kind='owned-loop',
+jp.update(timestamp='supervision-tick-v3', tick_unit='watch-iteration-v1', instrumentation_error=False, record_kind='owned-loop',
           fragments=[dict(record_path=owner['home'] + '/journal.previous.tsv',
                           base64=base64.b64encode(journal).decode(), sha256=hashlib.sha256(journal).hexdigest())])
 journal_cal = copy.deepcopy(cal_payload)
@@ -1491,7 +1492,7 @@ old_only['profiles'][0]['fragments'][0].update(base64=base64.b64encode(old_boot_
     sha256=hashlib.sha256(old_boot_journal).hexdigest())
 assert retrospective(old_only, seal_payload(journal_cal))['modelled_subtotal'] is None
 legacy = copy.deepcopy(journal_records)
-legacy_bytes = journal.replace(b'fm-supervision-tick.v2', b'fm-supervision-tick.v1').replace(b'00000000-0000-0000-0000-000000000000\t', b'')
+legacy_bytes = journal.replace(b'fm-supervision-tick.v3', b'fm-supervision-tick.v1').replace(b'00000000-0000-0000-0000-000000000000\t', b'')
 legacy['profiles'][0].update(timestamp='supervision-tick-v1')
 legacy['profiles'][0]['fragments'][0].update(base64=base64.b64encode(legacy_bytes).decode(),
     sha256=hashlib.sha256(legacy_bytes).hexdigest())
@@ -1506,7 +1507,7 @@ for label, transform in (
     transform(bad['profiles'][0])
     assert retrospective(bad, seal_payload(journal_cal))['modelled_subtotal'] is None
 bad = copy.deepcopy(journal_records)
-data = journal.replace(b'\t2\t11.000000', b'\t3\t11.000000')
+data = journal.replace(b'\t3\t11.000000', b'\t4\t11.000000')
 bad['profiles'][0]['fragments'][0].update(base64=base64.b64encode(data).decode(), sha256=hashlib.sha256(data).hexdigest())
 assert retrospective(bad, seal_payload(journal_cal))['modelled_subtotal'] is None
 checks += 4
@@ -1526,6 +1527,76 @@ reserved['plan']['profiles'][0].update(fixture_files=reserved_files,
 run('reconcile', proc_path, '--ticks', save('saved-ticks.json', saved_ticks),
     '--calibration', save('reserved-fixture.json', seal_payload(reserved)), good=False)
 checks += 2
+
+# Refusal counterfactuals: each wrong-kind branch, within-generation prefix
+# loss, whole-generation loss and missing concurrent pre-window evidence.
+def journal_counts(data, kind='owned-loop'):
+    records = copy.deepcopy(journal_records)
+    profile = records['profiles'][0]
+    profile.update(record_kind=kind)
+    profile['fragments'][0].update(base64=base64.b64encode(data).decode(), sha256=hashlib.sha256(data).hexdigest())
+    return json.loads(run('count-ticks', save('journal-negative.json', records), '--capture', proc_path).stdout)['by_home_family'][0]
+
+entry_as_owned = journal.splitlines(keepends=True)[1].replace(b'\ttick\n', b'\tentry\n')
+assert 'concurrent entry supplied' in journal_counts(entry_as_owned)['unavailable']
+assert 'owned-loop record supplied' in journal_counts(journal, 'concurrent')['unavailable']
+prefix = journal.splitlines(keepends=True)[2].replace(b'\ttick\n', b'\trotate\n')
+assert 'prefix lost' in journal_counts(prefix)['unavailable']
+concurrent_late = entry_as_owned
+assert 'pre-window coverage' in journal_counts(concurrent_late, 'concurrent')['unavailable']
+
+def owned_row(gen, seq, at, phase):
+    return ('fm-supervision-tick.v3\twatch\twatch-iteration-v1\t00000000-0000-0000-0000-000000000000\t'
+            + gen + '\t' + str(seq) + '\t' + at + '0000\t' + at + '\t' + phase + '\n').encode()
+# Two surviving generations start in-window after the third overwrote gen1.
+lost = (owned_row('200:10.000000', 4, '10.50', 'start') + owned_row('200:10.000000', 5, '10.60', 'tick')
+        + owned_row('300:11.000000', 6, '11.00', 'start') + owned_row('300:11.000000', 7, '11.10', 'tick'))
+assert 'earlier generation' in journal_counts(lost)['unavailable']
+# Retained pre-window start plus continuous stream is sufficient, even when a
+# previous generation is gone before the requested window.
+retained = (owned_row('100:9.000000', 3, '9.00', 'start') + owned_row('100:9.000000', 4, '10.50', 'tick')
+            + owned_row('200:11.000000', 5, '11.00', 'start') + owned_row('200:11.000000', 6, '11.10', 'tick'))
+assert journal_counts(retained)['ticks'] == 2
+# Missing a complete intermediate generation also breaks the stream sequence.
+assert 'stream sequence' in journal_counts(retained.replace(b'\t5\t11.', b'\t8\t11.').replace(b'\t6\t11.', b'\t9\t11.'))['unavailable']
+# Explicitly publish the bracket/denominator bias rather than implying full
+# machine-window event coverage. No finite edge-event bound is assumed.
+assert counted['journal_count_interval_ns'] < counted['duration_ns']
+assert counted['journal_denominator_excess_ns'] == counted['duration_ns'] - counted['journal_count_interval_ns']
+registry = json.loads(run('source-families').stdout)['families']
+assert set(registry) == set(('crew-state', 'watch', 'wake-drain', 'fleet-snapshot', 'spawn', 'control',
+    'procevent-reconcile', 'park-check', 'owner-guard', 'attached-arm', 'supervision-host', 'custom-check', 'turnend-guard'))
+assert no_cal['coverage']['expected_pairs'] == len(registry) * len(proc_value['manifest']['homes'])
+assert no_cal['status'] == 'incomplete-model-inputs'
+checks += 12
+
+# The reviewed real-home path resolves only explicit checkout/revision tokens;
+# it never relabels default fixtures or invents configuration/work-mix pins.
+reviewed_plan = copy.deepcopy(cal_plan)
+reviewed_plan['synthetic'] = False
+reviewed_plan['profiles'][0].update(code_ref='@REVISION@', argv=['/bin/bash', '@CHECKOUT@/fixture.sh'])
+for family in registry:
+    if family != 'watch':
+        gap_profile = {k: v for k, v in reviewed_plan['profiles'][0].items()
+                       if k in ('home', 'family', 'code_ref', 'configuration_sha256', 'qualification')}
+        gap_profile.update(family=family, unavailable='No reviewed fixture supplied')
+        reviewed_plan['profiles'].append(gap_profile)
+prepared = json.loads(run('prepare-calibration-plan', save('reviewed-plan.json', reviewed_plan),
+    '--revision', owner['code_ref'], '--checkout', '/reviewed/code').stdout)
+assert prepared['synthetic'] is False
+assert prepared['profiles'][0]['argv'] == ['/bin/bash', '/reviewed/code/fixture.sh']
+assert prepared['profiles'][0]['configuration_sha256'] == owner['configuration_sha256']
+assert all(p['code_ref'] == owner['code_ref'] for p in prepared['profiles'])
+for label, change in (
+    ('omitted-family', lambda p: p['profiles'].pop()),
+    ('stale-revision', lambda p: p['profiles'][0].update(code_ref='f' * 40)),
+    ('broken-fixture-seal', lambda p: p['profiles'][0].update(work_mix_sha256='f' * 64)),
+):
+    bad_plan = copy.deepcopy(reviewed_plan)
+    change(bad_plan)
+    run('prepare-calibration-plan', save(label + '-plan.json', bad_plan),
+        '--revision', owner['code_ref'], '--checkout', '/reviewed/code', good=False)
+checks += 7
 
 # Exercise actual shell logging and rename rotation in CI without a live home.
 # These are fixed fixture commands, not lifecycle or supervision operations.
@@ -1568,7 +1639,28 @@ if sys.platform == 'linux' and os.environ.get('BASH_VERSION', '') != '3.2':
         script = ('source "$1"; fm_supervision_tick_init "$2/log" watch watch-iteration-v1 4096 || exit 2; '
                   + setup + 'for ((n=0;n<200;n++)); do if ! fm_supervision_tick_append; then exit 0; fi; done; exit 1')
         subprocess.run(['bash', '-c', script, 'fixture', str(library), str(special)], check=True, timeout=5)
-    checks += 8
+    # Actual three-generation writer regression: the cursor's sequence does
+    # not reset. After two overwrites the surviving window cannot be complete.
+    generation_home = tmp / 'three-generations'
+    generation_home.mkdir()
+    gen_script = ('source "$1"; fm_supervision_tick_init "$2/loop" watch watch-iteration-v1; '
+                  'for ((n=0;n<3;n++)); do fm_supervision_tick_append || exit 2; done')
+    for _ in range(3):
+        subprocess.run(['bash', '-c', gen_script, 'fixture', str(library), str(generation_home)],
+                       check=True, timeout=5)
+    actual_rows = b''.join(p.read_bytes() for p in sorted(generation_home.glob('loop.*.tsv'))).splitlines()
+    sequences = sorted(int(row.split(b'\t')[5]) for row in actual_rows)
+    assert sequences == list(range(5, 13)), sequences
+    # Project only the saved clock/boot onto the small synthetic proc fixture.
+    # The real writer's sequence/phase/generation bytes are left untouched.
+    mapped = []
+    for row in actual_rows:
+        fields = row.split(b'\t')
+        fields[3] = b'00000000-0000-0000-0000-000000000000'
+        fields[6:8] = [b'11.000000', b'11.00']
+        mapped.append(b'\t'.join(fields) + b'\n')
+    assert 'earlier generation' in journal_counts(b''.join(mapped))['unavailable']
+    checks += 10
 
 # Missing records are explicit gaps, never successful zero-tick calibration.
 gap = {k: identity[k] for k in identity}
@@ -1612,6 +1704,72 @@ if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/r
     if fm_supervision_tick_init "$TMP/tick-owned/bad" watch watch-iteration-v1 4095; then exit 1; fi
     if fm_supervision_tick_append; then exit 1; fi
   ) || fail 'owned tick logging forked, lost retained state, or exceeded its slot bound'
+  # A failed cursor commit must invalidate the cohort even when the row itself
+  # was appended. Exercise the public writer and its production loop wrapper.
+  for cursor_fault in symlink directory update; do
+    mkdir -p "$TMP/tick-cursor-$cursor_fault"
+    (
+      cursor_state="$TMP/tick-cursor-$cursor_fault"
+      FM_SUPERVISION_TICKS=1 fm_supervision_tick_loop_init "$cursor_state" "$cursor_state" \
+        "$cursor_state/loop" watch watch-iteration-v1
+      [ "$FM_SUP_TICK_ENABLED" -eq 1 ] || exit 1
+      cursor_before=$(cat "$cursor_state/loop.cursor")
+      case "$cursor_fault" in
+        symlink)
+          printf 'protected\n' > "$cursor_state/target"
+          rm "$cursor_state/loop.cursor"
+          ln -s "$cursor_state/target" "$cursor_state/loop.cursor" ;;
+        directory)
+          rm "$cursor_state/loop.cursor"
+          mkdir "$cursor_state/loop.cursor" ;;
+        update)
+          # Unlike chmod, noclobber forces this regular-file update to fail
+          # even under root. The preceding O_APPEND row still succeeds.
+          set -C ;;
+      esac
+      cursor_rc=0
+      fm_supervision_tick_append 2>/dev/null || cursor_rc=$?
+      set +C
+      [ "$cursor_rc" -eq 2 ] && [ "$FM_SUP_TICK_FAILED" -eq 1 ] || exit 1
+      [ "$(wc -l < "$cursor_state/loop.0.tsv")" -eq 2 ] || exit 1
+      case "$cursor_fault" in
+        symlink) [ "$(cat "$cursor_state/target")" = protected ] || exit 1 ;;
+        directory) [ -d "$cursor_state/loop.cursor" ] || exit 1 ;;
+        update) [ "$(cat "$cursor_state/loop.cursor")" = "$cursor_before" ] || exit 1 ;;
+      esac
+      # The real wrapper converts writer refusal into durable invalidation,
+      # not a healthy zero-tick stream, and retries marker publication.
+      fm_supervision_tick_loop
+      [ "$FM_SUP_TICK_ENABLED" -eq 2 ] && [ -s "$cursor_state/.supervision-ticks.error" ] || exit 1
+      rm "$cursor_state/.supervision-ticks.error"
+      fm_supervision_tick_loop
+      [ -s "$cursor_state/.supervision-ticks.error" ] || exit 1
+      [ "$(wc -l < "$cursor_state/loop.0.tsv")" -eq 2 ] || exit 1
+    ) || fail "cursor $cursor_fault refusal lost cohort invalidation or modified the protected target"
+  done
+  mkdir -p "$TMP/tick-cursor-init"
+  for cursor_record in '0\n' '1\n' '' '2\t1\n' '0\t0\n' '0\t01\n' \
+    '0\t-1\n' '0\t1' '0\t1\nextra' '0\t1\textra\n' '0\t99999999999999999\n' \
+    '0\t100000000000000000\n' '0\t1\0\n'; do
+    (
+      cursor_state="$TMP/tick-cursor-init"
+      # Positive control on the same stem: init resumes a canonical cursor
+      # rather than silently resetting it, then the negative cannot erase it.
+      printf '0\t7\n' > "$cursor_state/loop.cursor"
+      fm_supervision_tick_init "$cursor_state/loop" watch watch-iteration-v1 || exit 1
+      [ "$FM_SUP_TICK_SEQ" -eq 8 ] && [ "$FM_SUP_TICK_SLOT" -eq 1 ] || exit 1
+      printf '%b' "$cursor_record" > "$cursor_state/loop.cursor"
+      cursor_rc=0
+      fm_supervision_tick_init "$cursor_state/loop" watch watch-iteration-v1 || cursor_rc=$?
+      [ "$cursor_rc" -eq 2 ] && [ "$FM_SUP_TICK_FAILED" -eq 1 ] || exit 1
+      if fm_supervision_tick_append; then exit 1; fi
+      [ "$(wc -l < "$cursor_state/loop.1.tsv")" -eq 1 ] || exit 1
+      FM_SUPERVISION_TICKS=1 fm_supervision_tick_loop_init "$cursor_state" "$cursor_state" \
+        "$cursor_state/loop" watch watch-iteration-v1
+      [ "$FM_SUP_TICK_ENABLED" -eq 2 ] && [ -s "$cursor_state/.supervision-ticks.error" ] || exit 1
+      rm "$cursor_state/.supervision-ticks.error"
+    ) || fail "malformed or legacy cursor accepted, reused a sequence, or failed to invalidate: $cursor_record"
+  done
   mkdir -p "$TMP/tick-errors"
   FM_SUPERVISION_TICKS=1 fm_supervision_tick_loop_init "$TMP/tick-errors" "$TMP/tick-errors" \
     "$TMP/tick-errors/missing-parent/log" watch watch-iteration-v1
@@ -1623,6 +1781,16 @@ if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/r
 else
   if fm_supervision_tick_init "$TMP/unavailable" watch watch-iteration-v1; then fail 'unsupported clock silently logged ticks'; fi
 fi
+# A missing state directory (including marker-publication failure) must remain
+# silent under captured or closed stderr and set -e; monitoring still runs.
+(
+  set -e
+  fm_supervision_tick_error "$TMP/missing-error-state" fixture 2>&-
+  fm_supervision_tick_error "$TMP/missing-error-state" fixture 2>&-
+  printf 'continued\n'
+) > "$TMP/tick-error-continued" 2> "$TMP/tick-error-stderr" || fail 'closed stderr stopped supervision'
+[ ! -s "$TMP/tick-error-stderr" ] || fail 'marker failure leaked an instrumentation diagnostic'
+grep -qx continued "$TMP/tick-error-continued" || fail 'marker failure swallowed caller output'
 mkdir -p "$TMP/tick-notice"
 printf 'fixture-invalid\n' > "$TMP/tick-notice/.supervision-ticks.error"
 (

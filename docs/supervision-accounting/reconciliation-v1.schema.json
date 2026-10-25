@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CI model reconciliation against exact machine totals",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "basis", "status", "machine", "duration_ns", "ticks", "exclusive_measured_supervision", "by_home_family", "model_log_loss_limit", "coverage", "modelled_subtotal", "unattributed_machine_minus_modelled_subtotal", "residual_qualification", "startup_coverage", "startup_qualification", "claimed_births_per_second_saved"],
+  "properties": {
+    "format": {"const": "fm-supervision-reconciliation.v1"},
+    "basis": {"type": "string"},
+    "status": {"enum": ["model-total-contradiction", "incomplete-model-inputs", "pending-reviewed-model-baseline"]},
+    "duration_ns": {"type": "integer", "minimum": 1},
+    "ticks": {"$ref": "tick-counts-v1.schema.json"},
+    "exclusive_measured_supervision": {"type": "null"},
+    "claimed_births_per_second_saved": {"const": 0},
+    "model_log_loss_limit": {"type": "string"},
+    "residual_qualification": {"type": "string"},
+    "startup_qualification": {"type": "string"},
+    "machine": {
+      "type": "object", "additionalProperties": false,
+      "required": ["births", "births_per_second", "busy_cpu_ticks", "busy_cpu_one_core_percent"],
+      "properties": {"births": {"type": "integer"}, "births_per_second": {"type": "number"}, "busy_cpu_ticks": {"type": "integer"}, "busy_cpu_one_core_percent": {"type": "number"}}
+    },
+    "startup_coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["barrier", "entry_history", "existing_identities_observed"],
+      "properties": {"barrier": {"type": "string"}, "entry_history": {"type": "string"}, "existing_identities_observed": {"type": "integer", "minimum": 0}}
+    },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["modelled_pairs", "expected_pairs", "other_families"],
+      "properties": {"modelled_pairs": {"type": "integer", "minimum": 0}, "expected_pairs": {"type": "integer", "minimum": 0}, "other_families": {"type": "string"}}
+    },
+    "modelled_subtotal": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["births", "births_per_second", "user_ns", "system_ns", "cpu_one_core_percent"],
+      "properties": {"births": {"type": "number", "minimum": 0}, "births_per_second": {"type": "number", "minimum": 0}, "user_ns": {"type": "number", "minimum": 0}, "system_ns": {"type": "number", "minimum": 0}, "cpu_one_core_percent": {"type": "number", "minimum": 0}}
+    },
+    "unattributed_machine_minus_modelled_subtotal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["births", "births_per_second", "busy_cpu_ns", "busy_cpu_one_core_percent"],
+      "properties": {"births": {"type": "number"}, "births_per_second": {"type": "number"}, "busy_cpu_ns": {"type": "number"}, "busy_cpu_one_core_percent": {"type": "number"}}
+    },
+    "by_home_family": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/row"}}
+  },
+  "$defs": {
+    "range": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer"}},
+    "cost": {"type": "object", "additionalProperties": false, "required": ["mean", "min", "max"], "properties": {"mean": {"type": "number"}, "min": {"type": "number"}, "max": {"type": "number"}}},
+    "row": {
+      "type": "object", "additionalProperties": false, "required": ["home", "family", "status"],
+      "properties": {
+        "home": {"type": "string"}, "family": {"type": "string"},
+        "status": {"enum": ["unavailable", "modelled-not-measured"]},
+        "reasons": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "ticks": {"type": "integer", "minimum": 0},
+        "estimated_births": {"type": "number", "minimum": 0}, "estimated_user_ns": {"type": "number", "minimum": 0}, "estimated_system_ns": {"type": "number", "minimum": 0},
+        "calibration_sha256": {"type": "string", "pattern": "[0-9a-f]{64}"},
+        "ci_url": {"type": "string"}, "method": {"type": "string"}, "cpu_basis": {"const": "untraced matched CI repeat"},
+        "trace_minus_untraced_cpu_ns_per_repeat_range": {"$ref": "#/$defs/range"},
+        "per_tick": {"type": "object", "additionalProperties": false, "required": ["births", "user_ns", "system_ns"], "properties": {"births": {"$ref": "#/$defs/cost"}, "user_ns": {"$ref": "#/$defs/cost"}, "system_ns": {"$ref": "#/$defs/cost"}}},
+        "uncertainty": {"type": "string"}, "qualification": {"type": "string"}, "cpu_quantization_ns_per_component": {"const": 10000000}
+      }
+    }
+  }
+}

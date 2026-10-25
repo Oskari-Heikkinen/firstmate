@@ -1968,7 +1968,7 @@ if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/r
   [ "$tick_rc" -ne 0 ] || fail 'tick fixture bypassed missing-yolo refusal'
   assert_contains "$tick_out" 'ship spawns require --yolo' 'tick fixture refused on the wrong condition'
   IFS=$'\t' read -r tick_format tick_family tick_unit _ < "$tick_home/state/.supervision-entries.tsv"
-  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v2:spawn:invocation-v1 ] || fail 'spawn entry tick missing'
+  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v3:spawn:invocation-v1 ] || fail 'spawn entry tick missing'
   assert_absent "$tick_home/state/tick-entry.meta" 'tick instrumentation created endpoint metadata'
   pass 'spawn tick instrumentation retains admission refusal and records its exact entry unit'
 fi
