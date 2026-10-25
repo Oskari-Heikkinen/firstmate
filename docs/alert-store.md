@@ -7,9 +7,9 @@ This document owns the store format, the registration format, the projection rul
 
 ## Why
 
-A tool that posts each alarm once loses it the moment anything closes the line.
-A relaunch or resume note (`note [supersedes=...]`, written by `fm_status_supersede_blockers` in [`bin/fm-wake-lib.sh`](../bin/fm-wake-lib.sh)) closes every open `blocked` record, so a tool alarm raised in a session's status file could be muted minutes after it was raised, and the tool would never post it again.
-An alert store turns the alarm into a level: the store says "active", and every tick puts the blocker back until the store says otherwise.
+A status stream records events, not a tool's current alarm state.
+A tool that posts an alarm only once cannot restore its blocker if the line is closed while the condition still holds.
+An alert store supplies the current state; the [projection rule](#the-projection-rule) defines the supersede protection and tick reconciliation that keep its blocker visible.
 
 ## Store format: `fm-alert-store/v1`
 

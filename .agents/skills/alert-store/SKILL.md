@@ -6,7 +6,7 @@ metadata:
   internal: true
   sources:
     - path: docs/alert-store.md
-      sha256: 445408ed6a27384d12b3b397526e1925206de4992f56b5f7388913f5b4d5bc83
+      sha256: cdc92687cc7ae23198426d341866665680701e9a00cfebad66e04cd5aed5cc83
 ---
 
 # alert-store
