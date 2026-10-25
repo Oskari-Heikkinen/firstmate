@@ -1034,6 +1034,15 @@ test_key_fanout_refuses_invalid_answers_and_attended_branch() {
   dir="$TMP_ROOT/fanout-refuse"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"
   home=$(setup_home fanout-refuse)
+  # Invalid answers must refuse even with no recipients; a single-task send's
+  # own text guard must not mask a missing fan-out validation return.
+  for answer in '' '   '; do
+    out=$(run_send "$fb" "$home" "$log" --resolve-key-all capacity "$answer"); rc=$?
+    expect_code 1 "$rc" 'an empty answer must refuse before the no-waiter no-op'
+    assert_contains "$(< "$log.stderr")" 'requires a nonempty answer message' \
+      'empty-answer refusal must explain the invalid input'
+    [ -z "$out" ] || fail "an empty answer reached recipient discovery: $out"
+  done
   fm_write_meta "$home/state/t1.meta" 'window=sess:fm-t1' 'kind=ship'
   printf 'needs-decision [key=capacity]: choose\n' > "$home/state/t1.status"
   for answer in '' '   ' '--key Enter' '/no-mistakes' "\$no-mistakes"; do
