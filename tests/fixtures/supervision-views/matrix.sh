@@ -32,6 +32,17 @@ fm_view_matrix_case() {
   fi
 }
 
+# Select only cases whose assertions specifically require the legacy on-disk
+# fold cache/read probe. Preserve every assertion and disclose each invocation;
+# this is not a native pass. Public native lifecycle parity is tested separately.
+fm_view_matrix_legacy_cache() {
+  if [ "${FM_VIEW_COMPAT_MATRIX:-0}" = 1 ]; then
+    ( export FM_VIEW_COMPAT_LEGACY_CACHE=1; "$@" )
+  else
+    "$@"
+  fi
+}
+
 fm_view_matrix_finish() {
   if [ "${FM_VIEW_COMPAT_MATRIX:-0}" = 1 ]; then
     "$VIEW_MATRIX_PYTHON" "$FM_VIEW_COMPAT_MATRIX_HELPER" --summary || view_matrix_rc=1

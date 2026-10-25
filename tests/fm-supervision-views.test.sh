@@ -22,6 +22,9 @@
 # Complete existing snapshot/view and drain/open-decision matrices also run
 # through isolated native selection, retaining the real stdout descriptor so
 # failed-output/commit assertions still exercise the transaction owner.
+# Legacy persistent-cache/probe assertions are explicitly selected and counted
+# separately; real-client resident growth/rotation/kind/cache-independence and
+# complete over-bound/backend fallback parity cover the native boundary.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh
