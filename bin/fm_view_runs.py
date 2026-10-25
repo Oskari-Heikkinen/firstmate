@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
+import time
 
 TERMINAL = ("completed", "failed", "cancelled")
 GATE_SCALAR = re.compile(r'^\s*(?:status|state):\s*"?(?:awaiting_approval|fix_review)"?\s*$')
@@ -268,7 +268,22 @@ def select_run(branch, text, database, timeout):
     selection = overview(branch, text)
     if not selection.startswith("incomplete|"):
         return selection
-    ids = selection.partition("|")[2].split(", ") if selection.partition("|")[2] else []
+    available = selection.partition("|")[2]
+    ids = available.split(", ") if available else []
+    unavailable = "unknown|complete same-branch run inventory reader unavailable; run ids: " + available
+    # SQLite is optional for complete overviews, just as in the legacy reader.
+    # A build lacking it must still return an attributed unknown for a capped
+    # inventory, not fail the RPC import before any classifier can run.
+    try:
+        import sqlite3
+    except ImportError:
+        return unavailable
+    deadline = time.monotonic() + timeout
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError("inventory read deadline")
+        return budget
     try:
         repos = [line[6:].strip() for line in text.splitlines() if line.startswith("repo: ")]
         if len(repos) != 1:
@@ -276,14 +291,21 @@ def select_run(branch, text, database, timeout):
         repo = json.loads(repos[0]) if repos[0].startswith('"') else repos[0]
         if not isinstance(repo, str) or not os.path.isabs(repo):
             raise ValueError("unverified repository")
-        db = sqlite3.connect(Path(database).as_uri() + "?mode=ro", uri=True, timeout=timeout)
+        db = sqlite3.connect(Path(database).as_uri() + "?mode=ro", uri=True, timeout=remaining())
         try:
-            db.execute("BEGIN")
-            matched = db.execute("SELECT id FROM repos WHERE working_path = ?", (repo,)).fetchall()
+            db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+            def query(sql, parameters=()):
+                # Busy waits are separate from SQLite VM progress callbacks.
+                # Each query receives only what remains of this one read bound.
+                db.execute("PRAGMA busy_timeout = " + str(int(remaining() * 1000) + 1))
+                return db.execute(sql, parameters)
+            query("BEGIN")
+            matched = query("SELECT id FROM repos WHERE working_path = ?", (repo,)).fetchall()
             if len(matched) != 1:
                 raise ValueError("repository identity not unique")
-            rows = db.execute("SELECT id, branch, status, head_sha FROM runs WHERE repo_id = ? AND branch = ? "
-                              "ORDER BY created_at DESC, id DESC", (matched[0][0], branch)).fetchmany(10001)
+            rows = query("SELECT id, branch, status, head_sha FROM runs WHERE repo_id = ? AND branch = ? "
+                         "ORDER BY created_at DESC, id DESC", (matched[0][0], branch)).fetchmany(10001)
+            remaining()
             if len(rows) > 10000:
                 raise ValueError("same-branch inventory exceeds native row bound")
         finally:
@@ -301,8 +323,12 @@ def select_run(branch, text, database, timeout):
                 raise ValueError("invalid inventory row")
         captured = "count: {0} of {0} total\nruns[{0}]{{id,branch,status,head,pr}}:\n".format(len(rows))
         captured += "\n".join("  " + ",".join(json.dumps(v, ensure_ascii=False) for v in row) + ',""' for row in rows)
-        return overview(branch, captured)
-    except (ValueError, OSError, sqlite3.Error):
+        answer = overview(branch, captured)
+        remaining()
+        return answer
+    except (ValueError, OSError, sqlite3.Error) as error:
+        if isinstance(error, TimeoutError) or time.monotonic() >= deadline:
+            return unavailable
         return "unknown|complete same-branch run inventory unreadable; run ids: " + ", ".join(ids)
 
 
