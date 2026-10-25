@@ -172,6 +172,8 @@ Seven cases whose assertions specifically require the legacy persistent fold cac
 A separate resident real-client lifecycle regression compares complete output and presentation cursors through repeated growth, resolution, truncation, same-size rotation and a kind change without status mutation; it also requires native calls and proves obsolete legacy fold caches are neither authoritative nor rewritten by the native read.
 The wrapper passes the original stdout descriptor directly to the shell owner so failed-output regressions cannot accidentally commit before a buffered wrapper write fails.
 A no-request path is disclosed separately, not counted as native coverage; these include early lock/validation refusals that never reach read selection.
+The complete existing [`fm-wake-queue.test.sh`](../tests/fm-wake-queue.test.sh) case pool also selects this isolated drain wrapper, retaining concurrent append/ack, actor exclusion, recovery generations, interruption and lock/claim assertions with all independent cases collected before its summary.
+Its default legacy selection remains independently exercised by the existing CI tier.
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.
 There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).

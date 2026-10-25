@@ -25,6 +25,8 @@
 # Legacy persistent-cache/probe assertions are explicitly selected and counted
 # separately; real-client resident growth/rotation/kind/cache-independence and
 # complete over-bound/backend fallback parity cover the native boundary.
+# The complete queue safety case pool also selects the native drain, retaining
+# concurrent append/ack, branch/main actor exclusion and interrupted ownership.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh
@@ -35,4 +37,5 @@ PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.
 FM_VIEW_CREW_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-crew-state.test.sh" || rc=1
 FM_VIEW_COMPAT_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-fleet-snapshot-view.test.sh" || rc=1
 FM_VIEW_COMPAT_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-wake-drain-open-decisions.test.sh" || rc=1
+FM_VIEW_COMPAT_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-wake-queue.test.sh" || rc=1
 exit "$rc"
