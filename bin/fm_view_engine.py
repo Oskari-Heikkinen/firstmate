@@ -245,10 +245,13 @@ class Engine:
         self.critical = BoundedLane(critical_workers)
         self.inflight = {}
         self.operations = 0
+        self.shared = 0
 
     async def request(self, operation, arguments, timeout):
-        require(operation == "status-fold", "unsupported read verb")
-        require(type(arguments) is dict and set(arguments) <= {"task", "kind", "vocabulary"}
+        deadline = time.monotonic() + timeout
+        require(operation in ("status-fold", "crew-state"), "unsupported read verb")
+        allowed = {"task", "kind", "vocabulary"} if operation == "status-fold" else {"task", "options"}
+        require(type(arguments) is dict and set(arguments) <= allowed
                 and "task" in arguments, "invalid fold arguments")
         task = arguments["task"]
         self.inputs.task_path(task, ".status")
@@ -264,17 +267,34 @@ class Engine:
             else:
                 require(type(value) is str and 1 <= len(value) <= 1024, "invalid vocabulary")
         vocabulary = Vocabulary(**raw_vocabulary)
-        try:
-            re.compile(vocabulary.relevant)
-        except re.error as exc:
-            raise Refused("invalid classifier expression") from exc
-        # Generation is captured/revalidated IN the operation. This local-only
-        # pure read is cheap, but still never reused across completed requests.
-        token = json.dumps([operation, arguments], sort_keys=True)
+        require(vocabulary.relevant == Vocabulary().relevant,
+                "custom ERE classification requires legacy; arbitrary regex is not admitted in the resident core")
+        # Capture the task generation when this request starts, before joining
+        # an existing flight. A replacement task cannot inherit an old result
+        # even while an executor-completion callback is waiting on this loop.
+        def capture_generation():
+            self.inputs.check()
+            captured = self.inputs.metadata(task)
+            self.inputs.check()
+            return captured
+        generation = await self.critical.run(capture_generation, timeout)
+        token = json.dumps([operation, arguments, generation["sha256"] if generation else None], sort_keys=True)
+        lane = self.critical
+        def observe():
+            require(self.inputs.metadata(task) == generation, "task generation changed before observation")
+            return self.inputs.fold(task, kind, vocabulary)
+        if operation == "crew-state":
+            options = arguments.get("options", {})
+            require(type(options) is dict and set(options) <= {"FM_CREW_STATE_NM_TIMEOUT", "FM_CREW_STATE_RUNS_LIMIT", "FM_CREW_STATE_NO_FORGE"}
+                    and all(type(value) is str and len(value) <= 32 for value in options.values()), "invalid crew read options")
+            from fm_view_crew import Crew
+            environment = dict(os.environ, **options)
+            observe = lambda: Crew(self.inputs, task, environment, expected_generation=generation).read()
+            lane = self.ordinary
         future = self.inflight.get(token)
         if future is None or future.done():
             self.operations += 1
-            future = asyncio.create_task(self.critical.run(lambda: self.inputs.fold(task, kind, vocabulary), MAX_TIMEOUT))
+            future = asyncio.create_task(lane.run(observe, MAX_TIMEOUT))
             self.inflight[token] = future
             def finished(done):
                 if self.inflight.get(token) is done:
@@ -283,7 +303,18 @@ class Engine:
                 if not done.cancelled():
                     done.exception()
             future.add_done_callback(finished)
-        return await asyncio.wait_for(asyncio.shield(future), timeout)
+        else:
+            self.shared += 1
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        observed = await asyncio.wait_for(asyncio.shield(future), remaining)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        current = await self.critical.run(capture_generation, remaining)
+        require(current == generation, "task generation changed before reply")
+        return observed
 
     def close(self):
         self.ordinary.close()

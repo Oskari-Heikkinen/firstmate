@@ -15,6 +15,7 @@ watcher script bin/fm-supervision-accounting.py
 watcher script bin/fm_supervision_*.py
 watcher script bin/fm-supervision-recorder.py
 watcher script bin/fm_view_*.py
+watcher script bin/fm-view-*.sh
 watcher script bin/fm-afk-launch.sh
 watcher test tests/fm-watch*.test.sh
 watcher test tests/fm-pending-reply.test.sh

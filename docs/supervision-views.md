@@ -16,7 +16,7 @@ A missing status file is an empty span; an existing unreadable or unsupported ob
 The native fold reads registered alert-store levels on every request, even when status bytes have not changed.
 The shell classifier remains the parity oracle; it has not been replaced by these modules.
 
-The transport admits only `status-fold` requests.
+The transport admits `status-fold` and `crew-state` requests.
 It cannot claim, acknowledge, append, retire, resume, publish a summary or alter custody.
 It writes no authoritative state, including presentation cursors.
 The calling transaction owner remains responsible for any presentation commit after successfully writing its output.
@@ -28,7 +28,13 @@ The protocol id is `fm-supervision-views.v1`.
 Each one-request connection carries a newline-terminated JSON object with exactly `schema`, `epoch`, `home`, `request`, `verb`, `timeout_ms` and `args`.
 `schema` names the protocol, `epoch` is the owner-selected service incarnation, `home` is the canonical operational home and `request` is a bounded per-call nonce.
 `timeout_ms` is a positive integer at most 30000.
-The sole verb's arguments contain `task`, an optional explicit `kind`, and optional classifier vocabulary overrides.
+The fold verb's arguments contain `task`, an optional explicit `kind`, and optional classifier vocabulary overrides.
+The current-state verb accepts `task` and bounded `FM_CREW_STATE_NM_TIMEOUT`, `FM_CREW_STATE_RUNS_LIMIT` and `FM_CREW_STATE_NO_FORGE` options.
+Its native run attribution and state mapping live in [`fm_view_runs.py`](../bin/fm_view_runs.py) and [`fm_view_crew.py`](../bin/fm_view_crew.py).
+Fixed passive backend, custody, done-head and forge reads retain their existing owners through [`fm-view-adapter.sh`](../bin/fm-view-adapter.sh); the native engine does not duplicate those contracts.
+Backend fallback currently admits tmux only, and remote endpoint reads remain legacy-owned.
+A run-step observation that needs no backend probe can still be computed natively on other recorded backends.
+An unsupported integration refuses for explicit legacy fallback, never an optimistic current-state answer.
 Unsupported fields, duplicate JSON keys, nonfinite numbers, unsupported verbs and mismatched home/epoch refuse the request.
 A response binds the same protocol, home, epoch and nonce, with `ok` and either `result` or a typed refusal message in `error`.
 Requests and responses are limited to one MiB; regular input files are limited to four MiB.
@@ -53,17 +59,24 @@ Kernel syscalls on an unreliable filesystem cannot be forcibly cancelled by Pyth
 Only concurrent in-flight requests for the same argument set share a native fold.
 A completed request is never a cached fresh answer.
 The operation captures and rechecks task metadata and root identity, and reads external tool levels afresh.
-There is no timer, polling loop, status-tail inference or cross-cycle verdict cache.
+There is no monitoring timer, status-tail inference or cross-cycle verdict cache.
+[`fm_view_process.py`](../bin/fm_view_process.py) bounds each passive child group and output stream, using pidfds to observe exit without reaping the leader before cleanup.
+A parent that exits while a descendant holds a pipe open cannot strand the observation or orphan that process group.
+Missing pidfd/nonreaping-wait support or a nondefault SIGCHLD handler refuses the native passive adapter.
+The native IPC and external-observation path are not yet admitted on non-Linux platforms; their unchanged legacy entrypoints remain selected.
 No process-birth or CPU saving has been measured or claimed.
 
 ## Verification and remaining migration
 
 [`tests/fm-supervision-views.test.sh`](../tests/fm-supervision-views.test.sh) runs isolated real-socket, bounded-lane and legacy-fold comparison tests in CI.
 It checks keyed transitions, correlation tokens, malformed time tags, terminal-task versus persistent-mate folds, protected tool blockers, incomplete final lines, invalid UTF-8, fresh tool levels without status changes, generation/root refusal, single-flight and timeout reservation.
+Native crew-state cases also compare the legacy public CLI on identical isolated git repositories and captured fake no-mistakes/backend/forge responses.
+They include fresh HEAD, daemon and semantic-pane negative controls without status changes, selected-run identity, gate authority, coarse dead-instrument outcomes and a backend no-lifecycle tripwire.
 It does not test against live endpoints or start a backend.
 
-Native current-state attribution, native drain presentation, snapshot composition, dirty-trigger publication and the complete existing parity matrix are not implemented by this foundation.
-There is no HEAD/daemon/pane negative-control proof, P0 replay adapter or B0 performance acceptance yet.
+Production current-state compatibility routing, native drain presentation, snapshot composition, dirty-trigger publication and the complete existing parity matrix are not implemented by this foundation.
+The focused native current-state tests are not the full existing crew-state matrix.
+There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).
 Production fallback and identity-bound service shutdown also remain future integration work.
 Rollback of this uninstalled foundation is removal or non-use of the modules; no queue, cursor, custody or home mode changes to undo exist.
