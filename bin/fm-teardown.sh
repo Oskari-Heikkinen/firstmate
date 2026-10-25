@@ -183,11 +183,15 @@
 # before cleanup. Its current working directory is only incidental process
 # state: the same worker remains the owner after changing directory, so cwd can
 # never veto teardown of that exact recorded endpoint.
-# The scan and destructive return hold a project-identity lock in the local root
+# The cross-task safety scan and destructive return hold a project-identity lock in the local root
 # Firstmate home's state directory, as resolved by bin/fm-wake-lib.sh's
 # fm_firstmate_root_home; a home seeded from another machine is its own local
 # root, since a lock on this filesystem cannot be held or observed across that
-# boundary. Fresh Treehouse spawns for that project in
+# boundary. The bulk evidence text scan runs BEFORE taking that lock; a cheap
+# metadata inventory check refuses changed records before interpreting citations
+# and again before destructive cleanup. Existence-aware path checks and verified
+# evidence copying stay under the lock, so no slot contents are read unlocked.
+# Fresh Treehouse spawns for that project in
 # every local Firstmate home hold the same lock from before slot allocation
 # through metadata publication, closing the publication
 # gap; forced secondmate teardown takes it and runs the same checks for every
@@ -382,6 +386,7 @@ for _teardown_source in \
   fm-timeout-lib.sh \
   fm-backend.sh \
   fm-task-evidence-lib.sh \
+  fm-task-evidence-scan.pl \
   fm-control-lib.sh \
   fm-lock-lib.sh \
   fm-classify-lib.sh \
@@ -489,6 +494,10 @@ teardown_cleanup_release screen || exit 1
 TREEHOUSE_PROJECT_LOCK=
 TREEHOUSE_PROJECT_LOCK_HELD=0
 TREEHOUSE_SLOT_LOCK_REQUIRED=0
+TEARDOWN_EVIDENCE_SCAN=
+# Only durable record bytes are read here, never a disposable root. Keep the
+# temporary scan outside data/<id> so it cannot cite or invalidate itself.
+trap '[ -z "$TEARDOWN_EVIDENCE_SCAN" ] || rm -rf -- "$TEARDOWN_EVIDENCE_SCAN"' EXIT
 if [ -f "$META" ] && [ ! -L "$META" ]; then
   TEARDOWN_LOCK_KIND=$(fm_meta_get "$META" kind)
   [ -n "$TEARDOWN_LOCK_KIND" ] || TEARDOWN_LOCK_KIND=ship
@@ -496,6 +505,12 @@ if [ -f "$META" ] && [ ! -L "$META" ]; then
   [ -n "$TEARDOWN_LOCK_BACKEND" ] || TEARDOWN_LOCK_BACKEND=tmux
   TEARDOWN_LOCK_WT=$(fm_meta_get "$META" worktree)
   TEARDOWN_LOCK_PROJECT=$(fm_meta_get "$META" project)
+  TEARDOWN_EVIDENCE_TMP=$(fm_meta_get "$META" tasktmp)
+  if [ "$TEARDOWN_LOCK_KIND" != secondmate ]; then
+    TEARDOWN_EVIDENCE_SCAN=$(mktemp -d "${TMPDIR:-/tmp}/fm-evidence-scan.XXXXXX") || exit 1
+    fm_task_evidence_scan prepare "$DATA/$ID" "$TEARDOWN_EVIDENCE_SCAN" \
+      "$TEARDOWN_LOCK_WT" "$TEARDOWN_EVIDENCE_TMP" || exit 1
+  fi
   if [ "$TEARDOWN_LOCK_KIND" != secondmate ] \
      && [ "$TEARDOWN_LOCK_BACKEND" != orca ] \
      && fm_treehouse_pool_slot "$TEARDOWN_LOCK_PROJECT" "$TEARDOWN_LOCK_WT"; then
@@ -525,6 +540,7 @@ DESCENDANT_TREEHOUSE_LOCK_PATHS=()
 DESCENDANT_REASSIGNED_SLOTS=()
 teardown_release_locks() {
   local status=$? i
+  [ -z "$TEARDOWN_EVIDENCE_SCAN" ] || rm -rf -- "$TEARDOWN_EVIDENCE_SCAN"
   if declare -F teardown_release_herdr_locks >/dev/null 2>&1; then
     teardown_release_herdr_locks || true
   fi
@@ -3840,7 +3856,15 @@ fi
 if [ "$KIND" != secondmate ]; then
   TEARDOWN_EVIDENCE_COPY_OWNED=0
   if teardown_owns_worktree; then TEARDOWN_EVIDENCE_COPY_OWNED=1; fi
-  fm_task_evidence_preserve "$ID" "$DATA" "$WT" "$TEARDOWN_EVIDENCE_COPY_OWNED" "$TASK_TMP" || exit 1
+  if [ -z "$TEARDOWN_EVIDENCE_SCAN" ] \
+     || [ "$TEARDOWN_LOCK_KIND" != "$KIND" ] \
+     || [ "$TEARDOWN_LOCK_WT" != "$WT" ] || [ "$TEARDOWN_EVIDENCE_TMP" != "$TASK_TMP" ]; then
+    echo "REFUSED: task evidence roots changed since the unlocked scan; retry teardown" >&2
+    exit 1
+  fi
+  fm_task_evidence_preserve "$ID" "$DATA" "$WT" "$TEARDOWN_EVIDENCE_COPY_OWNED" "$TASK_TMP" \
+    "$TEARDOWN_EVIDENCE_SCAN" || exit 1
+  fm_task_evidence_scan verify "$DATA/$ID" "$TEARDOWN_EVIDENCE_SCAN" || exit 1
 fi
 
 # A Herdr close may reposition shared workspace order, so the whole

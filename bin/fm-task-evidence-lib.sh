@@ -34,7 +34,12 @@
 #
 # Dangling references: every text file under data/<id>/ other than the
 # evidence tree is scanned for absolute paths strictly inside the copy or the
-# tasktmp folder. Unquoted citations end at whitespace or markup; single,
+# tasktmp folder. The bulk text prefilter runs once over the records, in bounded
+# grep argv batches for both roots together. Teardown prepares it before taking
+# the project lock; metadata inventories refuse changed record identities,
+# membership or timestamps before parsing and after preservation. The parser's
+# existence-aware checks and preservation still run under the project lock.
+# Unquoted citations end at whitespace or markup; single,
 # double or backtick quoted citations must close on the same line. Word-internal
 # apostrophes are prose, not quote openers. At every citation boundary,
 # including quotes and markup, every longer same-line prefix is checked for an
@@ -353,7 +358,7 @@ fm_task_evidence_references() {
       fi
       if [ -n "$quote" ]; then printf 'q\t%s\n' "$token"; else printf 'u\t%s\n' "$token"; fi
     done
-  done < <(grep -IhF -- "$root/" "$record" 2>/dev/null)
+  done
   return "$bad"
 }
 
@@ -465,8 +470,25 @@ fm_task_evidence_carry_prior() {
 # Returns 0 when every declared path is copied and verified and no durable
 # record references an existing uncovered path; prints each refusal and returns 1
 # otherwise. Either root may be empty.
-fm_task_evidence_preserve() {
-  local id=$1 data=$2 copy_root=$3 copy_owned=$4 tmp_root=$5
+fm_task_evidence_preserve() (
+  # Standalone callers get the same bulk prefilter. Teardown supplies its
+  # already-prepared unlocked scan; only this wrapper owns temporary storage.
+  local scan=${6:-}
+  if [ -z "$scan" ]; then
+    scan=$(mktemp -d "${TMPDIR:-/tmp}/fm-evidence-scan.XXXXXX") || return 1
+    trap 'rm -rf -- "$scan"' EXIT
+    fm_task_evidence_scan prepare "$2/$1" "$scan" "$3" "$5" || return 1
+  fi
+  fm_task_evidence_scan verify "$2/$1" "$scan" || return 1
+  fm_task_evidence_preserve_scanned "$1" "$2" "$3" "$4" "$5" "$scan"
+)
+
+fm_task_evidence_scan() {
+  perl "${BASH_SOURCE[0]%/*}/fm-task-evidence-scan.pl" "$@"
+}
+
+fm_task_evidence_preserve_scanned() {
+  local id=$1 data=$2 copy_root=$3 copy_owned=$4 tmp_root=$5 scan=$6
   local dir="$data/$id" list evidence staging manifest line path src root key
   local declared='' refused=0 refs ref ref_mode d overlap record
   local link target label rel physical_copy physical_tmp suffix hash rc
@@ -600,18 +622,18 @@ fm_task_evidence_preserve() {
     done < "$manifest.links"
   fi
 
-  # Reference scan over every durable text record except the evidence tree.
+  # The text scan is already complete. Interpret only matching record lines;
+  # existence-aware parsing and preservation still share the destructive lock.
   for root in "$copy_root" "$tmp_root"; do
     [ -n "$root" ] || continue
-    while IFS= read -r -d '' record; do
+    while IFS= read -r -d '' record && IFS= read -r line; do
+    [[ "$line" == *"$root/"* ]] || continue
     # Never stat a foreign slot, even to disambiguate a citation's suffix.
     if [ "$root" = "$copy_root" ] && [ "$copy_owned" != 1 ]; then
-      while IFS= read -r line; do
-        echo "warning: record $record cites $line inside a copy already reassigned to another task" >&2
-      done < <(grep -IhF -- "$root/" "$record" 2>/dev/null)
+      echo "warning: record $record cites $line inside a copy already reassigned to another task" >&2
       continue
     fi
-    refs=$(fm_task_evidence_references "$record" "$root") || refused=1
+    refs=$(fm_task_evidence_references "$record" "$root" <<< "$line") || refused=1
     [ -n "$refs" ] || continue
     while IFS= read -r ref; do
       ref_mode=${ref%%$'\t'*}; ref=${ref#*$'\t'}
@@ -636,10 +658,10 @@ fm_task_evidence_preserve() {
         refused=1
       fi
     done <<< "$refs"
-    done < <(find "$dir" \( -path "$dir/evidence" -o -path "$dir/.evidence.*" \) -prune \
-      -o -type f -print0 2>/dev/null)
+    done < "$scan/matches"
   done
 
+  fm_task_evidence_scan verify "$dir" "$scan" || refused=1
   if [ "$refused" != 0 ]; then
     [ -z "${staging:-}" ] || rm -rf -- "$staging"
     echo "Declare each path in $list so cleanup copies it out, or remove the reference, then re-run." >&2

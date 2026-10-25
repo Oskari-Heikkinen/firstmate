@@ -6880,6 +6880,203 @@ SH
 # These use the public preservation entry point only, with fixture-owned data.
 # This call has its own watchdog and successful-completion assertion. Scanner
 # mutants need an isolated public-entry run too: other pooled cases can hang.
+test_unreadable_evidence_records_skip_with_one_warning() {
+  local flag case_dir file dir rc path log
+  for flag in normal force; do
+    case_dir=$(make_case "evidence-unreadable-$flag")
+    write_meta "$case_dir" local-only ship
+    ignore_workspace "$case_dir"
+    land_shippable_commit "$case_dir"
+    mkdir -p "$case_dir/wt/workspace" "$case_dir/data/task-x1/hidden"
+    printf proof > "$case_dir/wt/workspace/proof"
+    file="$case_dir/data/task-x1/unreadable.md"
+    dir="$case_dir/data/task-x1/hidden"
+    printf '%s/workspace/proof\n' "$case_dir/wt" > "$file"
+    printf '%s/workspace/proof\n' "$case_dir/wt" > "$dir/report.md"
+    printf '%s/workspace/proof\n' "$case_dir/wt" > "$case_dir/data/task-x1/readable.md"
+    chmod 000 "$file" "$dir"
+    if [ -r "$file" ] || [ -r "$dir" ]; then
+      chmod 700 "$dir"; chmod 600 "$file"
+      printf 'SKIP: unreadable-record permissions are bypassed by this user\n'
+      return
+    fi
+    rc=0
+    # shellcheck disable=SC2016 # Child positional parameters.
+    bash -c '. "$1"; fm_task_evidence_preserve task-x1 "$2" "$3" 1 ""' \
+      _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" \
+      > "$case_dir/preserve.out" 2> "$case_dir/preserve.err" || rc=$?
+    # Keep running through both checks so a skip never hides a readable record.
+    printf '%s\n' "$rc" > "$case_dir/preserve.rc"
+    rm "$case_dir/data/task-x1/readable.md"
+    rc=0
+    if [ "$flag" = force ]; then
+      run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    else
+      run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    fi
+    chmod 700 "$dir"; chmod 600 "$file"
+    expect_code 1 "$(cat "$case_dir/preserve.rc")" 'unreadable records must not hide a readable uncovered citation'
+    assert_grep "references $case_dir/wt/workspace/proof, which cleanup would destroy" \
+      "$case_dir/preserve.err" 'readable record classification changed after a grep read error'
+    expect_code 0 "$rc" "unreadable records must keep their non-blocking skip policy ($flag): $(cat "$case_dir/stderr")"
+    for log in "$case_dir/preserve.err" "$case_dir/stderr"; do
+      for path in "$file" "$dir"; do
+        [ "$(grep -Fc "WARNING: skipping unreadable evidence record or directory $path" "$log")" = 1 ] \
+          || fail "skip should warn exactly once for $path in $log"
+      done
+    done
+    assert_absent "$case_dir/state/task-x1.meta" 'unreadable records blocked cleanup'
+  done
+  pass 'unreadable evidence records and directories skip non-blockingly with one warning per path, without hiding readable citations'
+}
+
+test_evidence_bulk_scan_reads_each_record_once() {
+  local case_dir n rc calls
+  case_dir=$(make_case evidence-bulk-scan)
+  mkdir -p "$case_dir/data/task-x1/records" "$case_dir/tasktmp"
+  for ((n=0; n<1200; n++)); do
+    printf '%02048d\n' "$n" > "$case_dir/data/task-x1/records/$n.md"
+  done
+  printf '%s\n' "$case_dir/wt/uncovered" "$case_dir/tasktmp/uncovered" \
+    > "$case_dir/data/task-x1/report.md"
+  printf proof > "$case_dir/wt/uncovered"
+  printf proof > "$case_dir/tasktmp/uncovered"
+  cat > "$case_dir/fakebin/grep" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = -IHZF ]; then
+  printf 'batch\n' >> "$case_dir/batches"
+  for arg in "\$@"; do
+    case "\$arg" in "$case_dir/data/task-x1/"*) printf '%s\n' "\$arg" >> "$case_dir/reads" ;; esac
+  done
+fi
+exec "$(command -v grep)" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/grep"
+  rc=0
+  # shellcheck disable=SC2016 # Child positional parameters.
+  PATH="$case_dir/fakebin:$PATH" bash -c \
+    '. "$1"; fm_task_evidence_preserve task-x1 "$2" "$3" 1 "$4"' \
+    _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" "$case_dir/tasktmp" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" 'bulk scan must still refuse uncovered references in both roots'
+  assert_grep "references $case_dir/wt/uncovered, which cleanup would destroy" "$case_dir/stderr" 'copy classification changed'
+  assert_grep "references $case_dir/tasktmp/uncovered, which cleanup would destroy" "$case_dir/stderr" 'tmp classification changed'
+  [ "$(wc -l < "$case_dir/reads" | tr -d ' ')" = 1201 ] || fail 'not every durable record was read once'
+  [ -z "$(sort "$case_dir/reads" | uniq -d)" ] || fail 'a record was read more than once'
+  calls=$(wc -l < "$case_dir/batches" | tr -d ' ')
+  [ "$calls" -le 20 ] || fail "bulk scan spawned $calls grep processes for 1201 records"
+  pass 'one bulk content pass covers both roots with bounded grep batches, not per-record processes'
+}
+
+test_evidence_text_scan_is_outside_project_lock_and_changes_refuse() {
+  local variant case_dir wt rc
+  for variant in stable edit add remove replace declaration during-scan during-copy meta-worktree meta-tasktmp meta-kind; do
+    case_dir=$(make_case "evidence-unlocked-$variant")
+    wt=$(move_case_to_pool_slot "$case_dir" 1)
+    write_meta "$case_dir" local-only ship "$wt"
+    mkdir -p "$case_dir/data/task-x1"
+    printf 'plain durable record\n' > "$case_dir/data/task-x1/report.md"
+    printf proof > "$wt/proof"
+    printf 'proof\n' > "$case_dir/data/task-x1/evidence.list"
+    cat > "$case_dir/fakebin/grep" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = -IHZF ]; then
+  for lock in "$case_dir/state/".treehouse-project-*.lock; do
+    [ ! -e "\$lock" ] || { echo 'text scan held project lock' >&2; exit 2; }
+  done
+  printf 'unlocked\n' >> "$case_dir/scan-state"
+  if [ "$variant" = during-scan ]; then
+    "$(command -v grep)" "\$@"
+    rc=\$?
+    printf 'concurrent edit\n' >> "$case_dir/data/task-x1/report.md"
+    exit "\$rc"
+  fi
+fi
+exec "$(command -v grep)" "\$@"
+SH
+    cat > "$case_dir/fakebin/cp" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'.evidence.new.'*'/copy/proof')
+    held=0
+    for lock in "$case_dir/state/".treehouse-project-*.lock; do
+      [ ! -d "\$lock" ] || held=1
+    done
+    [ "\$held" = 1 ] || { echo 'evidence copy lacked project lock' >&2; exit 1; }
+    : > "$case_dir/copied-locked"
+    "$(command -v cp)" "\$@" || exit
+    if [ "$variant" = during-copy ]; then
+      printf 'concurrent edit\n' >> "$case_dir/data/task-x1/report.md"
+    fi
+    exit 0 ;;
+esac
+exec "$(command -v cp)" "\$@"
+SH
+    cat > "$case_dir/fakebin/mkdir" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'.treehouse-project-'*'.lock'*)
+    if [ ! -e "$case_dir/mutated" ]; then
+      : > "$case_dir/mutated"
+      case "$variant" in
+        edit) printf 'changed\n' >> "$case_dir/data/task-x1/report.md" ;;
+        add) printf 'new record\n' > "$case_dir/data/task-x1/new.md" ;;
+        remove) rm "$case_dir/data/task-x1/report.md" ;;
+        replace) mv "$case_dir/data/task-x1/report.md" "$case_dir/old"; printf 'plain durable record\n' > "$case_dir/data/task-x1/report.md" ;;
+        declaration) printf '# changed declarations\n' > "$case_dir/data/task-x1/evidence.list" ;;
+        meta-worktree)
+          sed 's#^worktree=.*#worktree=$wt/#' "$case_dir/state/task-x1.meta" > "$case_dir/meta.new"
+          mv "$case_dir/meta.new" "$case_dir/state/task-x1.meta" ;;
+        meta-tasktmp) printf 'tasktmp=$case_dir/tasktmp\n' >> "$case_dir/state/task-x1.meta" ;;
+        meta-kind)
+          sed 's/^kind=ship$/kind=scout/' "$case_dir/state/task-x1.meta" > "$case_dir/meta.new"
+          mv "$case_dir/meta.new" "$case_dir/state/task-x1.meta" ;;
+      esac
+    fi ;;
+esac
+exec "$(command -v mkdir)" "\$@"
+SH
+    cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+for lock in "$case_dir/state/".treehouse-project-*.lock; do
+  if [ -d "\$lock" ]; then : > "$case_dir/returned-locked"; exit 0; fi
+done
+echo 'return lacked project lock' >&2
+exit 1
+SH
+    chmod +x "$case_dir/fakebin/grep" "$case_dir/fakebin/cp" "$case_dir/fakebin/mkdir" "$case_dir/fakebin/treehouse"
+    rc=0
+    FM_HOME="$case_dir" run_teardown "$case_dir" --force \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    assert_present "$case_dir/scan-state" 'bulk text prefilter did not run unlocked'
+    if [ "$variant" != during-scan ]; then
+      assert_present "$case_dir/mutated" 'test did not reach project-lock acquisition'
+    fi
+    if [ "$variant" = stable ]; then
+      expect_code 0 "$rc" "unchanged records should clean up: $(cat "$case_dir/stderr")"
+      assert_present "$case_dir/returned-locked" 'destructive return did not hold the project lock'
+      assert_present "$case_dir/copied-locked" 'evidence preservation did not hold the project lock'
+      evidence_manifest_verifies "$case_dir/data/task-x1/evidence" || fail 'unlocked prefilter changed preserved manifest'
+    else
+      expect_code 1 "$rc" "changed $variant records must refuse even under --force"
+      if [ "$variant" = during-scan ]; then
+        assert_grep 'durable records changed during the unlocked scan' "$case_dir/stderr" 'scan-time edit did not refuse'
+      else
+        case "$variant" in
+          meta-*) assert_grep 'task evidence roots changed since the unlocked scan' "$case_dir/stderr" 'metadata-root drift did not refuse' ;;
+          *) assert_grep 'durable records changed since the unlocked scan' "$case_dir/stderr" 'inventory change did not refuse' ;;
+        esac
+      fi
+      if [ "$variant" = during-copy ]; then
+        assert_present "$case_dir/copied-locked" 'test did not mutate during locked preservation'
+      fi
+      assert_present "$case_dir/state/task-x1.meta" 'inventory refusal removed task metadata'
+      assert_absent "$case_dir/returned-locked" 'inventory refusal returned the copy'
+    fi
+  done
+  pass 'text scans run unlocked; record edits, membership, replacement and declarations are rechecked under the destructive lock'
+}
+
 test_evidence_citation_scan_completes_for_a_plain_missing_path() {
   local case_dir rc
   case_dir=$(make_case evidence-bounded-citation)
@@ -8089,6 +8286,9 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_persistent_scan_refuses_after_bounded_retries \
   test_process_exit_during_identity_lookup_does_not_refuse \
   test_run_abort_precedes_process_reap_precedes_worktree_removal \
+  test_unreadable_evidence_records_skip_with_one_warning \
+  test_evidence_bulk_scan_reads_each_record_once \
+  test_evidence_text_scan_is_outside_project_lock_and_changes_refuse \
   test_evidence_citation_scan_completes_for_a_plain_missing_path \
   test_evidence_physical_root_aliases_do_not_hide_existing_citations \
   test_evidence_link_physical_failures_and_dangling_newlines_refuse \
