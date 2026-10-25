@@ -10,7 +10,7 @@ metadata:
     - path: bin/fm-storage.sh
       sha256: 2d131e1be58ff12ddf0e9465271a4d769443cb7afa33a2020493a3c796677f6c
     - path: bin/fm-pack.sh
-      sha256: 7f42f447dbb5e98547bb3fad5c43379d025119eb12d6d1eafd306d38c5cccb72
+      sha256: 655e88facdb5bc35584a79f2c1aa9bd3fb554c324899c6199edee41b55121d3a
 ---
 
 # results-storage
