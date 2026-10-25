@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Isolated native fold/crew-state/captured-presentation/IPC/admission tests.
+# Isolated native fold/crew-state/captured-presentation/IPC/admission tests,
+# plus real drain/client stdout/cursor/fallback transaction checks.
 # Presentation compares unread rows, decisions and suggested contiguous cursor
 # endpoints to the existing shell transaction APIs; no live home or backend.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
