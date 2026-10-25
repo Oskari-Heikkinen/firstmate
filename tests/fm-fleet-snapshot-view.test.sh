@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for the read-only fleet snapshot and its human renderer.
+# The view-engine suite also runs every unchanged assertion through a real
+# isolated native socket/client, with explicit per-request coverage accounting.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -9,6 +11,14 @@ set -u
 SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
 VIEW="$ROOT/bin/fm-fleet-view.sh"
 TMP_ROOT=$(fm_test_tmproot fm-fleet-snapshot)
+# shellcheck source=tests/fixtures/supervision-views/matrix.sh
+. "$ROOT/tests/fixtures/supervision-views/matrix.sh"
+view_matrix_rc=0
+if [ "${FM_VIEW_COMPAT_MATRIX:-0}" = 1 ]; then
+  fm_view_matrix_enable
+  SNAPSHOT=$(fm_view_matrix_wrapper snapshot)
+  VIEW=$(fm_view_matrix_wrapper view)
+fi
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
@@ -1152,21 +1162,22 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
-test_empty_fleet_json
-test_fixture_snapshot_json
-test_home_summary_excludes_secondmate_from_child_inventory
-test_undated_captain_hold_phrasing_and_aging
-test_hold_buckets_are_total_and_text_blind
-test_main_inventory_orphan_and_unstructured_disclosure
-test_normalized_roles_and_plural_blocker_readiness
-test_event_hints_follow_reconciled_current_state
-test_open_decision_survives_later_unrelated_event
-test_secondmate_open_decision_survives_live_endpoint
-test_open_decision_transfers_to_captain_hold
-test_open_decision_clears_on_keyed_resolution
-test_completed_scout_report_is_pointer_not_pending
-test_parked_scout_decision_stays_pending
-test_scout_reports_include_teardown_reports
-test_backlog_tasks_axi_forms_and_overrides
-test_view_renders_snapshot
-test_view_renders_dead_secondmate_agent_status
+fm_view_matrix_case test_empty_fleet_json
+fm_view_matrix_case test_fixture_snapshot_json
+fm_view_matrix_case test_home_summary_excludes_secondmate_from_child_inventory
+fm_view_matrix_case test_undated_captain_hold_phrasing_and_aging
+fm_view_matrix_case test_hold_buckets_are_total_and_text_blind
+fm_view_matrix_case test_main_inventory_orphan_and_unstructured_disclosure
+fm_view_matrix_case test_normalized_roles_and_plural_blocker_readiness
+fm_view_matrix_case test_event_hints_follow_reconciled_current_state
+fm_view_matrix_case test_open_decision_survives_later_unrelated_event
+fm_view_matrix_case test_secondmate_open_decision_survives_live_endpoint
+fm_view_matrix_case test_open_decision_transfers_to_captain_hold
+fm_view_matrix_case test_open_decision_clears_on_keyed_resolution
+fm_view_matrix_case test_completed_scout_report_is_pointer_not_pending
+fm_view_matrix_case test_parked_scout_decision_stays_pending
+fm_view_matrix_case test_scout_reports_include_teardown_reports
+fm_view_matrix_case test_backlog_tasks_axi_forms_and_overrides
+fm_view_matrix_case test_view_renders_snapshot
+fm_view_matrix_case test_view_renders_dead_secondmate_agent_status
+fm_view_matrix_finish
