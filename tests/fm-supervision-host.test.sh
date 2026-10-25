@@ -358,7 +358,7 @@ release_held_helper() {  # <home>
   done
 }
 
-hold_arm_health_helper() {  # <home> [arm-pid-to-exclude]
+hold_arm_health_helper() {  # <home> [target-arm-pid-file]
   local home=$1 real_stat
   real_stat=$(command -v stat)
   mkfifo "$home/helper-gate"
@@ -368,7 +368,25 @@ case "\$*" in
   *'.last-watcher-beat'*)
     case "\$(ps -p "\$PPID" -o args= 2>/dev/null)" in
       *fm-watch-arm.sh*)
-        if [ "\$PPID" != "${2:-}" ] && [ ! -e "\$FM_HOME/helper-blocked" ]; then
+        # stat can run under a command-substitution shell whose argv still
+        # names the first arm. For startup faults, require actual ancestry
+        # from the intercepted child, not an argv match or direct PPID alone.
+        if [ -n "${2:-}" ]; then
+          target=
+          IFS= read -r target < "${2:-}" 2>/dev/null || exec "$real_stat" "\$@"
+          ancestor=\$PPID
+          matched=0
+          for depth in 1 2 3 4 5 6 7 8; do
+            if [ "\$ancestor" = "\$target" ]; then matched=1; break; fi
+            IFS= read -r entry < "/proc/\$ancestor/stat" || break
+            read -r -a fields <<< "\${entry##*)}"
+            ancestor=\${fields[1]:-}
+            [ -n "\$ancestor" ] && [ "\$ancestor" != 1 ] || break
+          done
+          [ "\$matched" = 1 ] || exec "$real_stat" "\$@"
+          printf '%s\\n' "\$target" > "\$FM_HOME/helper-arm"
+        fi
+        if [ ! -e "\$FM_HOME/helper-blocked" ]; then
           exec 7<> "\$FM_HOME/helper-gate"
           printf '%s\\n' "\$\$" > "\$FM_HOME/helper-blocked"
           read -r -t "\$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 7 _ || true
@@ -2984,7 +3002,7 @@ arm_identity_startup_failure_case() {  # <fault mode> [first|successor|pass-thro
       wait_until 150 grep -q '^watcher: started ' "$home/host.out" || fail "$mode: no first cycle"
       first_arm=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
       [ -n "$first_arm" ] || fail "$mode: first arm was not recorded"
-      hold_arm_health_helper "$home" "$first_arm"
+      hold_arm_health_helper "$home" "$home/identity-read-intercepted"
       rm -f "$home/identity-fault-disabled"
       if [ "$phase" = pass-through ]; then
         append_status "$home" 'exercise main-only successor acquisition' needs-decision
@@ -3009,6 +3027,9 @@ arm_identity_startup_failure_case() {  # <fault mode> [first|successor|pass-thro
         arm=$(cat "$home/identity-read-intercepted")
         wait_until 150 test -s "$home/helper-blocked" || fail "$mode: real arm did not reach held health helper"
         watcher=$(cat "$home/state/.watch.lock/pid")
+        if [ "$phase" != first ]; then
+          assert_equals "$arm" "$(cat "$home/helper-arm")" "$mode: held helper is not the intercepted successor's descendant"
+        fi
         case "$mode" in acquire-*)
           wait_until 150 test -s "$home/identity-acquire-held" || fail "$mode: no held acquisition"
           host=$(cat "$home/identity-acquire-held")
@@ -3182,18 +3203,8 @@ watcher_lock_turnover_during_stop_grace() {  # <activate|retire>
   local mode=$1 home first_host arm watcher independent replacement identity stopped=0
   home=$(make_home "lock-turnover-$mode" away)
   hold_arm_health_helper "$home"
-  start_host "$home"
-  wait_until 150 test -s "$home/helper-blocked" || fail "$mode: no blocked owning arm"
-  first_host=$(awk -F '\t' '$1 == "host" {print $2}' "$home/state/.supervision-host")
-  arm=$(awk -F '\t' '$1 == "arm" {print $2}' "$home/state/.supervision-host")
-  watcher=$(cat "$home/state/.watch.lock/pid")
-  [ "$(ps -p "$watcher" -o ppid= | tr -d ' ')" = "$arm" ] \
-    || fail "$mode: original watcher is not the retiring arm's child"
-  printf '%s\n' "$arm" "$watcher" >> "$home/orphan-pid"
-  if [ "$mode" = activate ]; then
-    kill -KILL "$first_host"
-    wait_until 100 host_exited "$home" || fail "$mode: original host did not die"
-  fi
+  # Install before launch: startup acquisition may call sleep and cache its
+  # path, so adding a new PATH entry after readiness cannot intercept it.
   mkfifo "$home/stop-grace-gate"
   cat > "$home/fakebin/sleep" <<'SH'
 #!/bin/bash
@@ -3209,12 +3220,25 @@ fi
 exec /bin/sleep "$@"
 SH
   chmod +x "$home/fakebin/sleep"
+  start_host "$home"
+  wait_until 150 test -s "$home/helper-blocked" || fail "$mode: no blocked owning arm"
+  first_host=$(awk -F '\t' '$1 == "host" {print $2}' "$home/state/.supervision-host")
+  arm=$(awk -F '\t' '$1 == "arm" {print $2}' "$home/state/.supervision-host")
+  watcher=$(cat "$home/state/.watch.lock/pid")
+  [ "$(ps -p "$watcher" -o ppid= | tr -d ' ')" = "$arm" ] \
+    || fail "$mode: original watcher is not the retiring arm's child"
+  printf '%s\n' "$arm" "$watcher" >> "$home/orphan-pid"
   if [ "$mode" = activate ]; then
+    kill -KILL "$first_host"
+    wait_until 100 host_exited "$home" || fail "$mode: original host did not die"
     start_host "$home"
   else
     kill -TERM "$first_host"
   fi
-  wait_until 200 test -s "$home/stop-grace-held" || fail "$mode: host did not enter arm stop grace"
+  wait_until 200 test -s "$home/stop-grace-held" || {
+    shutdown_diagnostics "$home" "$first_host" "$arm" "$watcher"
+    fail "$mode: host did not enter arm stop grace"
+  }
   kill -0 "$arm" 2>/dev/null || fail "$mode: arm exited before the gated grace"
   kill -0 "$watcher" 2>/dev/null || fail "$mode: watcher exited before lock turnover"
   # Keep the old cycle alive despite losing its lock: only saved-identity
