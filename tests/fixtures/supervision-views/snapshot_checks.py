@@ -3,6 +3,8 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -334,6 +336,123 @@ os.execv({sys.executable!r}, [{sys.executable!r}] + sys.argv[1:])
                 self.assertEqual(json.loads(native), json.loads(legacy))
                 self.assertEqual(list(protected.iterdir()), [protected / "sentinel"])
                 self.assertEqual((protected / "sentinel").read_bytes(), b"untouched")
+
+    def pin_summary_wall_timestamp(self):
+        # Keep the primary-ready wall timestamp on the same explicit clock as
+        # snapshot generation. Numeric/elapsed date calls still use real time;
+        # do not normalize away a field or blind the timeout owner.
+        real_date = shutil.which("date", path=self.env["PATH"])
+        self.assertIsNotNone(real_date)
+        date = self.home / "fakebin/date"
+        date.write_text('#!/bin/sh\nif [ "$#" -eq 2 ] && [ "$1" = -u ] && '
+                        '[ "$2" = +%Y-%m-%dT%H:%M:%SZ ]; then\n'
+                        + "  printf '%s\\n' " + shlex.quote(NOW) + "\nelse\n  exec "
+                        + shlex.quote(real_date) + ' "$@"\nfi\n')
+        date.chmod(0o700)
+
+    async def test_complete_home_summary_and_publication_equal_legacy(self):
+        self.pin_summary_wall_timestamp()
+        for task, kind, raw in (
+            ("ship", "ship", b"blocked [key=dependency]: dependency\nnote: later\n"),
+            ("scout", "scout", b"needs-decision [key=route]: route\nworking: later\n"),
+            ("mate", "secondmate", b"working: resident activity\nnote: answer\n"),
+        ):
+            self.status(raw, task=task, kind=kind)
+        report = self.home / "data/scout"
+        report.mkdir()
+        (report / "report.md").write_text("durable scout report\n")
+        (self.home / "data/backlog.md").write_text(
+            "## In flight\n- [ ] ship - Work (repo: fixture) (kind: ship)\n"
+            "- [ ] scout - Inspect (repo: fixture) (kind: scout)\n"
+            "## Queued\n- [ ] future - Next (repo: fixture) (kind: ship)\n"
+            "## Done\n- [x] prior - Prior (repo: fixture) (kind: ship)\n")
+        clock = dict(FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+        calls = []
+        original = Snapshot.compose
+
+        def compose(instance, row, observed_at, epoch):
+            calls.append(row["task"])
+            return original(instance, row, observed_at, epoch)
+
+        with patch.dict(os.environ, self.env), patch.object(Snapshot, "compose", compose):
+            native, error = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", **clock)
+            self.assertNotIn(b"use legacy", error)
+            self.assertCountEqual(calls, ["ship", "scout", "mate"])
+            expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", native=False, **clock)
+            summary = json.loads(native)
+            self.assertEqual(summary, json.loads(expected))
+            self.assertTrue(summary["active_children"])
+            self.assertTrue(summary["decisions_open"])
+            calls.clear()
+            await self.invoke("fm-home-summary-refresh.sh", **clock)
+            self.assertCountEqual(calls, ["ship", "scout", "mate"])
+            ledger = self.state / "home-summary.json"
+            self.assertEqual(json.loads(ledger.read_bytes()), summary)
+            for marker in ("pending", "owed", "attempt"):
+                self.assertFalse((self.state / (".home-summary-refresh." + marker)).exists())
+            # A later fresh read must update the complete ledger, not reuse its
+            # predecessor or normalize away the changed decision/publication.
+            (self.state / "ship.status").write_bytes(b"blocked [key=newer]: new dependency\n")
+            calls.clear()
+            await self.invoke("fm-home-summary-refresh.sh", **clock)
+            self.assertCountEqual(calls, ["ship", "scout", "mate"])
+            updated = json.loads(ledger.read_bytes())
+            fresh, _ = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", native=False, **clock)
+            self.assertEqual(updated, json.loads(fresh))
+            self.assertNotEqual(updated, summary)
+            fallback, error = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary",
+                                                 FM_VIEW_EPOCH="stale", **clock)
+            self.assertIn(b"use legacy", error)
+            self.assertEqual(json.loads(fallback), updated)
+
+    async def test_timed_out_native_publication_retains_prior_complete_ledger_and_retries(self):
+        self.pin_summary_wall_timestamp()
+        self.status(b"blocked [key=first]: original ledger\n")
+        clock = dict(FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        original = Snapshot.compose
+
+        def compose(instance, row, observed_at, epoch):
+            calls.append(row["task"])
+            entered.set()
+            if not release.wait(20):
+                raise RuntimeError("publication-timeout fixture release missing")
+            return original(instance, row, observed_at, epoch)
+
+        pending = None
+        try:
+            with patch.dict(os.environ, self.env):
+                await self.invoke("fm-home-summary-refresh.sh", **clock)
+                ledger = self.state / "home-summary.json"
+                prior = ledger.read_bytes()
+                (self.state / "task.status").write_bytes(b"blocked [key=newer]: replacement ledger\n")
+                with patch.object(Snapshot, "compose", compose):
+                    pending = asyncio.create_task(self.invoke("fm-home-summary-refresh.sh", "--best-effort",
+                                                               FM_HOME_SUMMARY_TIMEOUT="5", **clock))
+                    for _ in range(1000):
+                        if entered.is_set() or pending.done():
+                            break
+                        await asyncio.sleep(.01)
+                    self.assertTrue(entered.is_set(), "timeout did not exercise native composition")
+                    await pending
+                    self.assertEqual(calls, ["task"])
+                    self.assertFalse(release.is_set())
+                    self.assertEqual(ledger.read_bytes(), prior)
+                    self.assertTrue((self.state / ".home-summary-refresh.owed").exists())
+                    self.assertTrue((self.state / ".home-summary-refresh.log").stat().st_size)
+                    release.set()
+                await self.invoke("fm-home-summary-refresh.sh", **clock)
+                current = json.loads(ledger.read_bytes())
+                self.assertEqual([row["key"] for row in current["decisions_open"]], ["newer"])
+                expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", native=False, **clock)
+                self.assertEqual(current, json.loads(expected))
+                for marker in ("pending", "owed", "attempt"):
+                    self.assertFalse((self.state / (".home-summary-refresh." + marker)).exists())
+        finally:
+            release.set()
+            if pending:
+                await asyncio.gather(pending, return_exceptions=True)
 
     async def test_dirty_trigger_during_native_publication_survives_for_next_refresh(self):
         self.status(b"blocked [key=first]: captured\n")
