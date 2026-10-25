@@ -189,7 +189,8 @@ check_worker_dialog() (  # <session> <kind> <dialog|idle>
   if [ "$expected" = dialog ]; then
     [ "$verdict" = unknown ] || fail "trust dialog classified $verdict, not unknown"
     [ "$(fm_composer_blocking_dialog_noted)" = 'Pi project-trust dialog' ] \
-      || fail "composer did not name the real trust viewport"
+      || fail "composer did not name the real trust viewport (target=$target, cursor=$(fm_tmux_composer_cursor_row "$target")):
+$(fm_tmux_composer_capture "$target")"
     stale_worker_dialog "$target" || fail "watcher did not recognize $kind trust viewport"
     reason=$IDLE_PARK_REASON
     [ "$reason" = 'blocked on a prompt: Pi project-trust dialog; inspect the worker' ] \
