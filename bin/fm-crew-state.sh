@@ -174,6 +174,16 @@ FM_ROOT=${FM_ROOT_OVERRIDE:-}
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
+# Explicit owner-managed read transport only; default and every unsupported
+# integration retain legacy. Try before loading the observation graph. A client
+# refusal never substitutes an empty current-state answer for the legacy read.
+if [ -n "${FM_VIEW_SOCKET:-}" ] && [ -n "${1:-}" ] && command -v python3 >/dev/null 2>&1; then
+  if VIEW_STATE=$(FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm-view-client.py" crew-state "$1"); then
+    printf '%s\n' "$VIEW_STATE"
+    exit 0
+  fi
+fi
+
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$SCRIPT_DIR/fm-tmux-lib.sh"
 # shellcheck source=bin/fm-backend.sh

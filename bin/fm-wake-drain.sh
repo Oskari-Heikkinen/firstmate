@@ -429,7 +429,9 @@ EOF
 print_unread_status_section() {
   local snapshot=${1:-} unread task line shown=0
 
-  if [ -n "$snapshot" ]; then
+  if [ "${NATIVE_PRESENTATION:-0}" = 1 ]; then
+    unread=$NATIVE_UNREAD
+  elif [ -n "$snapshot" ]; then
     unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
   else
     unread=$(scan_unread_surface_lines "$STATE") || return 1
@@ -472,7 +474,9 @@ print_open_decisions_section() {
   local snapshot=${1:-} open task key verb note line item_bytes=160 global_bytes=2400
   local output='' used=0 shown=0 omitted=0 bytes omitted_ids='' id
 
-  if [ -n "$snapshot" ]; then
+  if [ "${NATIVE_PRESENTATION:-0}" = 1 ]; then
+    open=$NATIVE_OPEN
+  elif [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
   else
     open=$(scan_open_decisions_incremental "$STATE") || return 1
@@ -755,11 +759,51 @@ cap_outcome_line() {  # <line> <max-bytes>
   OUTCOME_LINE_BYTES=${#OUTCOME_LINE}
 }
 
+# Capture offsets through their original owner, then obtain all native facts in
+# one bounded read. No response writes a cursor or grants queue authority. A
+# refusal happens before stdout/commit and retains the complete legacy route.
+prepare_native_status_facts() {  # <snapshot> <fully-presented-task-ids>
+  local snapshot=$1 fully_presented=$2 task endpoint ident offset classified fully input='' facts tag rest
+  [ -n "${FM_VIEW_SOCKET:-}" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  while IFS=$'\t' read -r task endpoint ident; do
+    [ -n "$task" ] || continue
+    offset=$(status_presentation_cursor_offset "$STATE/$task.status") || return 1
+    classified=$(status_presentation_marker_offset "$(status_signal_seen_marker_path "$STATE" "$task")" "$STATE/$task.status") || return 1
+    fully=0
+    case "
+$fully_presented
+" in *$'\n'"$task"$'\n'*) fully=1 ;; esac
+    input="$input$task"$'\t'"$endpoint"$'\t'"$ident"$'\t'"$offset"$'\t'"$classified"$'\t'"$fully"$'\n'
+  done <<EOF
+$snapshot
+EOF
+  facts=$(FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm-view-client.py" status-presentation <<< "$input") || return 1
+  NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED=''
+  while IFS=$'\t' read -r tag rest; do
+    case "$tag" in
+      A) NATIVE_ACKNOWLEDGED="$NATIVE_ACKNOWLEDGED$rest"$'\n' ;;
+      U) NATIVE_UNREAD="$NATIVE_UNREAD$rest"$'\n' ;;
+      O) NATIVE_OPEN="$NATIVE_OPEN$rest"$'\n' ;;
+      '') ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$facts
+EOF
+  NATIVE_PRESENTATION=1
+}
+
 print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
+  local NATIVE_PRESENTATION=0 NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED=''
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
-  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
+  if prepare_native_status_facts "$snapshot" "$fully_presented"; then
+    acknowledged=$NATIVE_ACKNOWLEDGED
+  else
+    acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
+  fi
   prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
   if ! {
     print_unread_status_section "$snapshot" \
