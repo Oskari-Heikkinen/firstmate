@@ -346,23 +346,32 @@ forget_process() {  # <pid>
 recorded_identity_matches() {  # <pid> <identity> [launch-token]
   local current token=${3:-} recorded_birth current_birth argv_hex
   current=$(identity_of "$1")
-  [ -n "$2" ] && [ -n "$current" ] || return 1
+  MATCH_CURRENT=$current
+  MATCH_REASON=exact-identity
+  [ -n "$2" ] || { MATCH_REASON=empty-recorded-identity; return 1; }
+  [ -n "$current" ] || { MATCH_REASON='current-identity-unavailable'; return 1; }
   [ "$current" != "$2" ] || return 0
+  MATCH_REASON='identity-mismatch-without-launch-token'
   [ -n "$token" ] || return 1
+  MATCH_REASON=invalid-launch-token
   case "$token" in "$STATE"/.supervision-host-arm.??????) ;; *) return 1 ;; esac
   case "$2" in
     *-starttime=*' cmdline-hex='*)
       recorded_birth=${2%% cmdline-hex=*}
       current_birth=${current%% cmdline-hex=*}
+      MATCH_REASON=birth-mismatch
       [ "$recorded_birth" = "$current_birth" ] || return 1
+      MATCH_REASON=launch-argv-mismatch
       argv_hex=$(printf '%s\0' "$SCRIPT_DIR/fm-watch-arm.sh" --host-arm "$token" | od -An -v -tx1)
       argv_hex=${argv_hex//[[:space:]]/}
-      case "${current#* cmdline-hex=}" in *"00$argv_hex"*) return 0 ;; esac
+      case "${current#* cmdline-hex=}" in *"00$argv_hex"*) MATCH_REASON=birth-and-launch; return 0 ;; esac
       ;;
     *)
       # Portable ps identity: the first 24 C-locale characters are lstart.
+      MATCH_REASON=birth-mismatch
       [ "${2:0:24}" = "${current:0:24}" ] || return 1
-      case "$current" in *" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token"|*" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token "*) return 0 ;; esac
+      MATCH_REASON=launch-argv-mismatch
+      case "$current" in *" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token"|*" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token "*) MATCH_REASON=birth-and-launch; return 0 ;; esac
       ;;
   esac
   return 1
@@ -372,6 +381,8 @@ recorded_identity_matches() {  # <pid> <identity> [launch-token]
 stop_recorded() {  # <pid> <identity> <seconds> [arm-launch-token]
   local pid=$1 identity=$2 limit=$(( ${3:-10} * 10 )) token=${4:-} i
   STOP_RECORDED_FORCED=0
+  MATCH_CURRENT=
+  MATCH_REASON=not-alive
   fm_pid_alive "$pid" || return 0
   recorded_identity_matches "$pid" "$identity" "$token" || return 0
   kill -TERM "$pid" 2>/dev/null || return 0
@@ -446,7 +457,7 @@ captured_watcher_is_child_of() {  # <arm-pid>
 # auto-arm admits one generation at a time, so a predecessor still alive here
 # was superseded (its owner died or went stale) or crashed mid-cleanup.
 activate() {
-  local role pid identity launch_token forced_owner=0 owns_watcher watcher_pid watcher_identity
+  local role pid identity launch_token row rest forced_owner=0 owns_watcher watcher_pid watcher_identity
   mkdir -p "$STATE" || return 1
   capture_home_watcher
   watcher_pid=$CAPTURED_WATCHER_PID
@@ -466,11 +477,22 @@ activate() {
     rm -f "$ENGINE_PID_FILE"
   fi
   if [ -f "$HOST_RECORD" ]; then
-    while IFS="$(printf '\t')" read -r role pid identity launch_token; do
+    # Preserve empty tab fields: whitespace IFS would move a launch token
+    # into an empty identity and lose the actual rejected predecessor proof.
+    while IFS= read -r row; do
+      role=${row%%$'\t'*}; rest=
+      [ "$row" = "$role" ] || rest=${row#*$'\t'}
+      pid=${rest%%$'\t'*}; identity=''; launch_token=
+      if [ "$rest" != "$pid" ]; then
+        rest=${rest#*$'\t'}
+        identity=${rest%%$'\t'*}
+        [ "$rest" = "$identity" ] || launch_token=${rest#*$'\t'}
+      fi
       if [ "$role" = arm ]; then
         owns_watcher=0
         captured_watcher_is_child_of "$pid" && owns_watcher=1
         stop_recorded "$pid" "$identity" 10 "$launch_token"
+        log_line "recovery-arm	reason=$MATCH_REASON	current=$MATCH_CURRENT	old-row=$row"
         [ "$STOP_RECORDED_FORCED" -eq 0 ] || [ "$owns_watcher" -eq 0 ] || forced_owner=1
       fi
     done < "$HOST_RECORD"

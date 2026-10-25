@@ -335,7 +335,8 @@ shutdown_diagnostics() {  # <home> [pid...]
   local home=$1 file pid
   shift
   printf '\n--- shutdown diagnostics: %s ---\n' "$home" >&2
-  for file in "$home/state/.supervision-host" "$home/state/.watch.lock/pid" \
+  for file in "$home/predecessor-record" "$home/identity-comparison" \
+    "$home/state/.supervision-host" "$home/state/.watch.lock/pid" \
     "$home/host.rc" "$home/host.out" "$home/claude.err" \
     "$home/state/.supervision-host.log" "$home/state/.watch-cycle-exits.log"; do
     printf '\n--- %s ---\n' "$file" >&2
@@ -2673,6 +2674,43 @@ test_restarted_host_stops_what_a_killed_predecessor_left() {
   pass "host: a restarted host stops, by recorded identity, the cycle a killed predecessor left running"
 }
 
+# Assert the actual tab fields, not read's whitespace-IFS projection: an
+# absent/empty/malformed row must never masquerade as a changed argv identity.
+assert_preexec_arm_proof() {  # <home> <pid> <proc|ps>
+  local home=$1 arm=$2 kind=$3 current
+  current=$(fm_test_pid_identity "$arm")
+  printf 'post-exec pid=%s identity=%s\n' "$arm" "$current" > "$home/identity-comparison"
+  cp "$home/state/.supervision-host" "$home/predecessor-record"
+  if ! awk -F '\t' -v pid="$arm" -v kind="$kind" -v current="$current" \
+    -v prefix="$home/state/.supervision-host-arm." '
+    $1 == "arm" {
+      n++
+      if (NF != 4 || $2 != pid || index($4, prefix) != 1 || length($4) != length(prefix) + 6) bad = 1
+      if (kind == "proc") {
+        if ($3 !~ /^(linux|proc)-starttime=[0-9]+ cmdline-hex=[0-9a-f]+$/) bad = 1
+        oldbirth = $3; sub(/ cmdline-hex=.*/, "", oldbirth)
+        newbirth = current; sub(/ cmdline-hex=.*/, "", newbirth)
+      } else {
+        if (length($3) < 26 || substr($3, 1, 24) !~ /^[A-Z][a-z][a-z] [A-Z][a-z][a-z] +[0-9]+ [0-9:]+ [0-9]+$/) bad = 1
+        oldbirth = substr($3, 1, 24); newbirth = substr(current, 1, 24)
+      }
+      if (oldbirth != newbirth || $3 == current || current == "") bad = 1
+      # The token must also be the actual post-exec arm token, not just a
+      # plausible pathname. The caller checks the genuine argv separately.
+    }
+    END { exit (n != 1 || bad) }
+  ' "$home/predecessor-record"; then
+    shutdown_diagnostics "$home" "$arm"
+    fail 'preexec: invalid premise: expected one genuine pre-exec arm proof with unchanged birth'
+  fi
+  local token
+  token=$(awk -F '\t' '$1 == "arm" { print $4 }' "$home/predecessor-record")
+  case "$(ps -p "$arm" -o args=)" in
+    *" $ROOT/bin/fm-watch-arm.sh --host-arm $token") ;;
+    *) shutdown_diagnostics "$home" "$arm"; fail 'preexec: recorded launch token is not the real arm argv' ;;
+  esac
+}
+
 # Freeze the real interpreter before its last exec and the host immediately
 # after recording it. The durable row is never edited: restart must recognize
 # the same birth/launch even though the command identity genuinely changed.
@@ -2724,9 +2762,7 @@ SH
   wait_until 150 test -s "$home/helper-blocked" || fail 'preexec: arm never reached health bookkeeping'
   watcher=$(cat "$home/state/.watch.lock/pid")
   first_host=$(awk -F '\t' '$1 == "host" {print $2}' "$home/state/.supervision-host")
-  if recorded_arm_identity_is "$home/state/.supervision-host" "$(fm_test_pid_identity "$arm")"; then
-    fail 'preexec: fixture failed to retain the real pre-exec identity'
-  fi
+  assert_preexec_arm_proof "$home" "$arm" "$identity_kind"
   kill -KILL "$first_host"
   wait_until 100 host_exited "$home" || fail 'preexec: host not killed'
   exec 6<> "$home/host-bookkeeping-gate"; printf 'release\n' >&6; exec 6>&-
@@ -2743,8 +2779,26 @@ SH
       awk -F '\t' -v OFS='\t' -v token="$home/state/.supervision-host-arm.AAAAAA" \
         '$1 == "arm" {$4 = token} {print}' "$home/state/.supervision-host" > "$home/changed-record"
       mv "$home/changed-record" "$home/state/.supervision-host" ;;
+    empty|missing-token|short-row)
+      awk -F '\t' -v OFS='\t' -v mode="$mode" '$1 == "arm" {
+        if (mode == "empty") $3 = ""
+        else if (mode == "missing-token") NF = 3
+        else NF = 2
+      } {print}' "$home/state/.supervision-host" > "$home/changed-record"
+      mv "$home/changed-record" "$home/state/.supervision-host" ;;
   esac
   printf '%s\n' "$arm" > "$home/orphan-pid"
+  cp "$home/state/.supervision-host" "$home/recovery-record"
+  local expected_current expected_row expected_reason
+  expected_current=$(fm_test_pid_identity "$arm")
+  expected_row=$(awk -F '\t' '$1 == "arm"' "$home/recovery-record")
+  case "$mode" in
+    valid) expected_reason=birth-and-launch ;;
+    birth) expected_reason=birth-mismatch ;;
+    token) expected_reason=launch-argv-mismatch ;;
+    empty|short-row) expected_reason=empty-recorded-identity ;;
+    missing-token) expected_reason='identity-mismatch-without-launch-token' ;;
+  esac
   start_host "$home"
   if [ "$mode" = valid ]; then
     wait_until 200 sh -c '! kill -0 "$1" 2>/dev/null && ! kill -0 "$2" 2>/dev/null' _ "$arm" "$watcher" && stopped=1
@@ -2759,6 +2813,8 @@ SH
     [ "$(cat "$home/state/.watch.lock/pid")" = "$watcher" ] || fail "$mode: recovery replaced the unowned watcher"
     release_held_helper "$home"
   fi
+  assert_grep "recovery-arm	reason=$expected_reason	current=$expected_current	old-row=$expected_row" \
+    "$home/state/.supervision-host.log" 'preexec: activation lost the old row, current identity, or proof decision'
   pass "host: pre-exec recovery honors the real birth and launch token ($identity_kind/$mode)"
 }
 
@@ -2767,6 +2823,9 @@ test_restart_exec_rejects_a_different_launch() { test_restart_across_the_real_ar
 test_restart_exec_ps_identity() { test_restart_across_the_real_arm_exec_transition valid ps; }
 test_restart_exec_ps_rejects_a_different_birth() { test_restart_across_the_real_arm_exec_transition birth ps; }
 test_restart_exec_ps_rejects_a_different_launch() { test_restart_across_the_real_arm_exec_transition token ps; }
+test_restart_exec_rejects_an_empty_identity() { test_restart_across_the_real_arm_exec_transition empty; }
+test_restart_exec_rejects_a_missing_token() { test_restart_across_the_real_arm_exec_transition missing-token; }
+test_restart_exec_rejects_a_short_row() { test_restart_across_the_real_arm_exec_transition short-row; }
 
 test_shutdown_rejects_blocked_or_unreadable_watcher_records() {
   local home host arm watcher mode stopped record
@@ -3800,6 +3859,9 @@ HOST_CASES=(
   test_restart_exec_ps_identity
   test_restart_exec_ps_rejects_a_different_birth
   test_restart_exec_ps_rejects_a_different_launch
+  test_restart_exec_rejects_an_empty_identity
+  test_restart_exec_rejects_a_missing_token
+  test_restart_exec_rejects_a_short_row
   test_shutdown_rejects_blocked_or_unreadable_watcher_records
   test_retire_preserves_an_independently_owned_watcher
   test_activation_preserves_a_replacement_lock_during_stop_grace
