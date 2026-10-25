@@ -144,6 +144,10 @@ class Scheduling(unittest.IsolatedAsyncioTestCase):
             release = threading.Event()
             def task_path(self, task, suffix):
                 return "/fixture/" + task + suffix
+            def check(self):
+                pass
+            def metadata(self, task):
+                return {"sha256": "g1"}
             def fold(self, task, kind, vocabulary):
                 self.count += 1
                 self.entered.set()
@@ -155,7 +159,11 @@ class Scheduling(unittest.IsolatedAsyncioTestCase):
             a = asyncio.create_task(engine.request("status-fold", {"task": "task"}, 4))
             await asyncio.get_running_loop().run_in_executor(None, inputs.entered.wait, 2)
             b = asyncio.create_task(engine.request("status-fold", {"task": "task"}, 4))
-            await asyncio.sleep(0)
+            for _ in range(200):
+                if engine.shared:
+                    break
+                await asyncio.sleep(0.005)
+            self.assertEqual(engine.shared, 1)
             inputs.release.set()
             self.assertEqual(await a, await b)
             self.assertEqual(inputs.count, 1)
@@ -185,6 +193,60 @@ class Scheduling(unittest.IsolatedAsyncioTestCase):
             ordinary.close()
             critical.close()
 
+    async def test_crew_generation_singleflight_and_reserved_status_lane(self):
+        from unittest.mock import patch
+        import fm_view_crew
+        from fm_view_engine import fields
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            state = home / "state"
+            state.mkdir()
+            meta = state / "task.meta"
+            meta.write_text("kind=ship\nspawn_gen=g1\n")
+            (state / "task.status").write_text("needs-decision [key=x]: question\n")
+            inputs = Inputs(str(home))
+            entered, release = threading.Event(), threading.Event()
+            observed = []
+            class PassiveFixture:
+                def __init__(self, inputs, task, environment, expected_generation):
+                    self.generation = fields(expected_generation["bytes"])["spawn_gen"]
+                    observed.append((self.generation, environment.get("FM_CREW_STATE_NO_FORGE")))
+                def read(self):
+                    if self.generation == "g1":
+                        entered.set()
+                        release.wait(5)
+                    return {"state": "working", "source": "fixture", "generation": self.generation}
+            engine = Engine(inputs)
+            try:
+                with patch.object(fm_view_crew, "Crew", PassiveFixture):
+                    args = {"task": "task", "options": {"FM_CREW_STATE_NO_FORGE": "1"}}
+                    first = asyncio.create_task(engine.request("crew-state", args, 4))
+                    await asyncio.get_running_loop().run_in_executor(None, entered.wait, 2)
+                    second = asyncio.create_task(engine.request("crew-state", args, 4))
+                    for _ in range(200):
+                        if engine.shared:
+                            break
+                        await asyncio.sleep(0.005)
+                    self.assertEqual(engine.shared, 1)
+                    self.assertEqual(engine.ordinary.active, 1)
+                    # A blocked ordinary current-state read cannot consume the
+                    # separately reserved status-delivery lane.
+                    folded = await engine.request("status-fold", {"task": "task"}, 2)
+                    self.assertEqual(folded["open"][0]["key"], "x")
+                    meta.write_text("kind=ship\nspawn_gen=g2\n")
+                    replacement = await engine.request("crew-state", args, 2)
+                    self.assertEqual(replacement["generation"], "g2")
+                    self.assertEqual(observed, [("g1", "1"), ("g2", "1")])
+                    release.set()
+                    with self.assertRaises(Refused):
+                        await first
+                    with self.assertRaises(Refused):
+                        await second
+            finally:
+                release.set()
+                engine.close()
+
+    @unittest.skipUnless(hasattr(socket, "SO_PEERCRED"), "native IPC not admitted here; legacy remains selected")
     async def test_real_transport_binding_and_no_authority(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary).resolve()
@@ -211,8 +273,15 @@ class Scheduling(unittest.IsolatedAsyncioTestCase):
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, call)
                 self.assertEqual(result["open"][0]["key"], "x")
+                crew = await loop.run_in_executor(None, lambda: call("e1", "crew-state", {
+                    "task": "task", "options": {"FM_CREW_STATE_NO_FORGE": "1"}}))
+                self.assertEqual((crew["state"], crew["source"]), ("unknown", "none"))
+                self.assertIn("worktree gone", crew["detail"])
                 for epoch, verb, args in (("old", "status-fold", None), ("e1", "ack", None),
-                                          ("e1", "status-fold", {"task": "../other"})):
+                                          ("e1", "status-fold", {"task": "../other"}),
+                                          ("e1", "crew-state", {"task": "task", "options": {"PATH": "/untrusted"}}),
+                                          ("e1", "crew-state", {"task": "task", "options": {"FM_CREW_STATE_NO_FORGE": "x" * 33}}),
+                                          ("e1", "crew-state", {"task": "task", "options": {"FM_CREW_STATE_NO_FORGE": 1}})):
                     with self.assertRaises(Refused):
                         await loop.run_in_executor(None, lambda: call(epoch, verb, args))
                 self.assertEqual(before, {p.name: p.read_bytes() for p in state.iterdir()})
@@ -230,4 +299,5 @@ class Scheduling(unittest.IsolatedAsyncioTestCase):
 
 
 if __name__ == "__main__":
+    from crew_checks import CrewParity, PassiveProcess
     unittest.main()
