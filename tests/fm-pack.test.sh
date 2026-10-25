@@ -17,6 +17,75 @@ for tool in mksquashfs unsquashfs jq sha256sum; do
   command -v "$tool" >/dev/null 2>&1 || { echo "skip: $tool is not installed"; exit 0; }
 done
 
+# fm-pack-verification/v1 is test-owned evidence, emitted in the executing CI
+# slot's authenticated job log. The parent pins the interpreter and tool bytes
+# before running the whole file, checks them again afterwards, and seals the
+# exact output/rc plus Git tree and GitHub slot identity. Output is also encoded
+# in numbered chunks so a verifier need not guess at Actions' text rendering.
+# No seal is emitted for capability skips above or for an uncommitted tree.
+if [ "${1:-}" != --sealed-child ]; then
+  python3 - "$ROOT" "$0" <<'PY'
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+root, script = sys.argv[1:]
+def git(*args):
+    return subprocess.check_output(['git', '-C', root, *args], text=True).strip()
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+def clean():
+    subprocess.run(['git', '-C', root, 'diff-index', '--quiet', 'HEAD', '--'], check=True)
+
+clean()
+head, tree = git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD^{tree}')
+interpreter = os.readlink(f'/proc/{os.getppid()}/exe')
+# The tree pins repository inputs; this manifest pins the external executable
+# inputs used by the fixtures and production command, including the C compiler.
+tools = '''bash sh python3 gcc mksquashfs unsquashfs jq sha256sum find stat awk
+sed grep cut wc sort cat df du flock nice ionice realpath dirname basename
+readlink date mkdir mktemp mv rm cp ln chmod cmp head tail tr dd sleep touch'''.split()
+pins = []
+for tool in tools:
+    path = shutil.which(tool)
+    if not path:
+        raise SystemExit('seal input missing: ' + tool)
+    path = str(Path(path).resolve())
+    pins.append({'tool': tool, 'path': path, 'sha256': digest(Path(path).read_bytes())})
+interpreter_pin = {'path': interpreter, 'sha256': digest(Path(interpreter).read_bytes()),
+                   'version': subprocess.check_output([interpreter, '-c', 'printf %s "$BASH_VERSION"'], text=True)}
+result = subprocess.run([interpreter, script, '--sealed-child'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+sys.stdout.buffer.write(result.stdout)
+sys.stdout.buffer.flush()
+clean()
+if git('rev-parse', 'HEAD') != head or git('rev-parse', 'HEAD^{tree}') != tree:
+    raise SystemExit('seal tree changed during verification')
+for pin in pins + [interpreter_pin]:
+    if digest(Path(pin['path']).read_bytes()) != pin['sha256']:
+        raise SystemExit('seal input changed: ' + pin['path'])
+encoded = base64.b64encode(result.stdout).decode()
+chunks = [encoded[i:i+4096] for i in range(0, len(encoded), 4096)]
+for i, chunk in enumerate(chunks):
+    print(f'FM_PACK_OUTPUT {i} {chunk}')
+seal = {'format': 'fm-pack-verification/v1', 'head': head, 'tree': tree,
+        'interpreter': interpreter_pin, 'pins': pins, 'pins_sha256': digest(canonical(pins)),
+        'slot': {k: os.environ.get(k, '') for k in
+                 ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB',
+                  'SHARD', 'SHARD_NUMBER', 'RUNNER_NAME')},
+        'rc': result.returncode, 'output_sha256': digest(result.stdout), 'output_chunks': len(chunks)}
+print('FM_PACK_SEAL ' + canonical(seal).decode(), flush=True)
+sys.exit(result.returncode if result.returncode >= 0 else 128 - result.returncode)
+PY
+  exit "$?"
+fi
+
 unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_STATE \
   FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_POWERSHELL FM_DISK_ROOM_RESULTS_ROOT FM_DISK_ROOM_SAMPLES \
   FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_DISK_ROOM_BULK_MARGIN FM_STORAGE_MNT FM_STORAGE_CONFIG \
@@ -100,7 +169,7 @@ publish_d() {
 run_pack() {
   PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
     FM_STORAGE_CONFIG="$CFG" FM_STORAGE_MNT="$TMP_ROOT/mnt" FM_STORAGE_MOUNTINFO="$TMP_ROOT/mountinfo" \
-    FM_DISK_ROOM_STATE="$TMP_ROOT/state" FM_DISK_ROOM_RESULTS_ROOT="$CFG/results-root" \
+    FM_DISK_ROOM_STATE="${PACK_RELEASE_STATE:-$TMP_ROOT/state}" FM_DISK_ROOM_RESULTS_ROOT="$CFG/results-root" \
     FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_WEVTUTIL='' \
     FM_DISK_ROOM_SAMPLES="$TMP_ROOT/no-samples" FM_DISK_ROOM_C_FREE_MIN=off FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/no-mb-groups" \
     FM_DISK_ROOM_VHDX="$TMP_ROOT/no-vhdx" FM_DISK_ROOM_DEV_SIZE=$((1000 * GIB)) FM_DISK_ROOM_MARGIN=1G \
@@ -563,6 +632,9 @@ test_release_refusals() {
 
 test_release() {
   local out rc rec="$R/unit-r.release.json"
+  # A genuinely absent ancestor is allowed, including a literal name with glob
+  # characters and a trailing newline (not a failed metadata read).
+  local PACK_RELEASE_STATE="$TMP_ROOT/uncreated[*]?"$'\n'"/nested"
   printf 'tree: %s\n' "$TMP_ROOT/src/unit-other" >"$TMP_ROOT/ledger-clean.txt"
   out=$(run_pack release "$IMG_R" "$SRC_R" --accepted-by tetjet-mate --note 'the ledger reads the image' \
     --ref "$TMP_ROOT/ledger-clean.txt" --also "$OUT_R"); rc=$?
@@ -674,13 +746,47 @@ SH
 rm -rf -- "${!#}"/*
 SH
   chmod +x "$d/squashfuse" "$d/fusermount3"
+  # Interpose Bash's real metadata syscall, not find's directory reads. This
+  # reproduces ENOMEM in [ -e/-d ] while readdir still lists the live pool.
+  cat >"$d/stat-fault.c" <<'C'
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+extern char *program_invocation_short_name;
+static int fault(const char *path) {
+  const char *target = getenv("PACK_STAT_FAULT"), *hit = getenv("PACK_FAIL_HIT");
+  if (!target || strcmp(program_invocation_short_name, "bash")) return 0;
+  size_t n = strlen(target);
+  if (strncmp(path, target, n) || (path[n] && path[n] != '/')) return 0;
+  if (hit) { int fd = open(hit, O_CREAT | O_WRONLY | O_APPEND, 0600); if (fd >= 0) close(fd); }
+  errno = ENOMEM;
+  return 1;
+}
+int stat(const char *path, struct stat *buf) {
+  if (fault(path)) return -1;
+  int (*real)(const char *, struct stat *) = dlsym(RTLD_NEXT, "stat");
+  return real(path, buf);
+}
+int stat64(const char *path, struct stat64 *buf) {
+  if (fault(path)) return -1;
+  int (*real)(const char *, struct stat64 *) = dlsym(RTLD_NEXT, "stat64");
+  return real(path, buf);
+}
+C
+  gcc -shared -fPIC -Wall -Wextra -Werror -o "$d/stat-fault.so" "$d/stat-fault.c" -ldl ||
+    fail "cannot build the reservation metadata fault fixture"
 }
 
 # One regression oracle, reused against the real command and one fail-open
 # mutant per repaired guard. Mutants change control flow, never the oracle.
 read_failure_case() (
   local mode=$1 exe=$3 unit="read-$1-$2" out rc snap diag mount=unsquashfs
-  local also=()
+  local also=() preload='' PACK_STAT_FAULT='' PACK_RELEASE_STATE="$TMP_ROOT/state"
   local src="$TMP_ROOT/src/$unit" outside="$TMP_ROOT/outside-$unit" image="$R/$unit.sqfs"
   make_src "$src"
   out=$(run_pack pack job "$unit" "$src" 2>&1); rc=$?
@@ -693,6 +799,26 @@ read_failure_case() (
   mkdir -p "$PACK_FAIL_STATE/reservations"
   printf 'bytes=1\nexpires=1\n' >"$PACK_FAIL_RES"
   [ "$mode" != reservation-liveness ] || printf 'bytes=1\npid=%s\n' "$$" >"$PACK_FAIL_RES"
+  case "$mode" in
+    reservation-metadata-linux) PACK_STAT_FAULT="$PACK_FAIL_STATE/reservations" ;;
+    reservation-metadata-d)
+      PACK_STAT_FAULT="$PACK_FAIL_STATE/reservations-d"
+      PACK_FAIL_RES="$PACK_STAT_FAULT/999/$unit"
+      mkdir -p "${PACK_FAIL_RES%/*}" ;;
+    reservation-metadata-ancestor)
+      PACK_RELEASE_STATE="$PACK_FAIL_STATE/ancestor"
+      PACK_STAT_FAULT=$PACK_RELEASE_STATE
+      PACK_FAIL_RES="$PACK_RELEASE_STATE/reservations/$unit"
+      mkdir -p "${PACK_FAIL_RES%/*}" ;;
+  esac
+  if [ -n "$PACK_STAT_FAULT" ]; then
+    printf 'bytes=1\nexpires=9999999999\n' >"$PACK_FAIL_RES"
+    # The identical public command, without the fault, must see the live record.
+    out=$(run_pack release "$image" "$src" --accepted-by test --also "$outside" 2>&1); rc=$?
+    expect_code 1 "$rc" "$mode live reservation control refuses"
+    assert_contains "$out" "$PACK_FAIL_RES is live" "$mode control reads the live reservation"
+    preload="$TMP_ROOT/read-failure-bin/stat-fault.so"
+  fi
   printf 'no source reference here\n' >"$PACK_FAIL_REF"
   : >"$PACK_FAIL_MOUNTS"
   case "$mode" in
@@ -718,7 +844,8 @@ read_failure_case() (
   # The delegates retain the normal fake df/stat and controlled /proc world.
   local oldbin=$FAKEBIN
   FAKEBIN="$TMP_ROOT/read-failure-bin"
-  out=$(BASH_ENV="$FAKEBIN/fuse-env" FM_PACK_MOUNT=$mount PATH="$oldbin:$PATH" \
+  out=$(LD_PRELOAD="$preload" PACK_STAT_FAULT="$PACK_STAT_FAULT" \
+    BASH_ENV="$FAKEBIN/fuse-env" FM_PACK_MOUNT=$mount PATH="$oldbin:$PATH" \
     FM_PACK_MOUNTINFO="$PACK_FAIL_MOUNTS" run_pack release "$image" "$src" --accepted-by test \
     "${also[@]}" --ref "$PACK_FAIL_REF" 2>&1); rc=$?
   FAKEBIN=$oldbin
@@ -769,6 +896,27 @@ elif mode.startswith('account-'):
 elif mode == 'reservation-liveness':
     old = 'live=$(find /proc -mindepth 1 -maxdepth 1 -type d -name "$pid" -print)'
     new = old[:-1] + '; :)'
+elif mode.startswith('reservation-metadata-'):
+    start = text.index('reservation_directory() {')
+    end = text.index('# reservations_named NAME...', start)
+    old = text[start:end]
+    # Restore the reviewed fail-open branch: a failed stat plus successful
+    # parent readdir was accepted as absence, without checking the child name.
+    new = '''reservation_listing() {
+  local d=$1 parent
+  [ ! -L "$d" ] || return 1
+  if [ ! -e "$d" ]; then
+    parent=$(dirname -- "$d") || return 1
+    [ "$parent" != "$d" ] || return 1
+    reservation_listing "$parent" 0 >/dev/null || return 1
+    if [ -d "$parent" ]; then find "$parent" -mindepth 1 -maxdepth 1 -print >/dev/null || return 1; fi
+    return 0
+  fi
+  [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || return 1
+  find -L "$d" -mindepth 1 -maxdepth "$2" -print
+}
+
+'''
 elif mode == 'reservation-list':
     old = 'listing=$(reservation_listing "$dir/reservations" 1 && reservation_listing "$dir/reservations-d" 2)'
     new = old[:-1] + '; :)'
@@ -809,6 +957,7 @@ test_release_read_failures() {
   for mode in links-empty links-partial links-full also account-bad account-out account-files account-freed \
     tree-source tree-aside tree-sort release-record release-aside mount-source mount-aside \
     process-source process-aside reservation-list reservation-pid reservation-expiry reservation-liveness \
+    reservation-metadata-linux reservation-metadata-d reservation-metadata-ancestor \
     reference image-list image-cat member-hash member-count image-hash member-list member-list-io mount-count; do
     read_failure_case "$mode" baseline "$PACK" || errors+="$mode baseline; "
     mutant="$TMP_ROOT/mutant-$mode.sh" log="$TMP_ROOT/mutant-$mode.log"
