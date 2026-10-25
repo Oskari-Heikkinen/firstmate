@@ -54,6 +54,22 @@ set -u
 
 CREW_STATE="$ROOT/bin/fm-crew-state.sh"
 TMP_ROOT=$(fm_test_tmproot fm-crew-state)
+# The native-view suite reuses EVERY case/assertion, in fresh isolated fixtures,
+# rather than maintaining a smaller second copy of this attribution matrix.
+VIEW_MATRIX_PYTHON=''
+if [ "${FM_VIEW_CREW_MATRIX:-0}" = 1 ]; then
+  VIEW_MATRIX_PYTHON=$(command -v python3) || fail 'native matrix requires Python 3.9+'
+  export FM_VIEW_MATRIX_ROOT="$TMP_ROOT"
+  export FM_VIEW_MATRIX_HELPER="$ROOT/tests/fixtures/supervision-views/crew_matrix.py"
+  mkdir -p "$TMP_ROOT/.view-matrix-metrics"
+  CREW_STATE="$TMP_ROOT/.native-crew-state"
+  {
+    printf '#!%s\n' "$VIEW_MATRIX_PYTHON"
+    printf '%s\n' 'import os, runpy' 'runpy.run_path(os.environ["FM_VIEW_MATRIX_HELPER"], run_name="__main__")'
+  } > "$CREW_STATE"
+  chmod +x "$CREW_STATE"
+  export FM_CREW_STATE_BIN="$CREW_STATE"
+fi
 fm_git_identity fmtest fmtest@example.invalid
 
 # A real git repo checked out on <branch>, so the helper's branch attribution
@@ -6000,6 +6016,7 @@ build_repo_template
 build_fakebin_template
 reset_fakes
 case_jobs=$(fm_case_pool_jobs "${FM_CREW_STATE_CASE_JOBS:-}")
+crew_matrix_rc=0
 fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_terminal_green_delivery_disposition_failed_outcome_github \
   test_terminal_green_delivery_disposition_failed_outcome_gitlab \
@@ -6207,6 +6224,10 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_terminal_rebased_run_is_not_attributed \
   test_competing_live_runs_report_unknown_with_both_ids \
   test_newer_failed_run_is_not_hidden_by_older_live_run \
-  test_legacy_conflicting_run_records_report_unknown || exit 1
+  test_legacy_conflicting_run_records_report_unknown || crew_matrix_rc=1
 
+if [ "${FM_VIEW_CREW_MATRIX:-0}" = 1 ]; then
+  "$VIEW_MATRIX_PYTHON" "$FM_VIEW_MATRIX_HELPER" --summary || crew_matrix_rc=1
+fi
+[ "$crew_matrix_rc" -eq 0 ] || exit 1
 echo "all fm-crew-state tests passed"
