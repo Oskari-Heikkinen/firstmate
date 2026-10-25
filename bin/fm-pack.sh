@@ -84,7 +84,9 @@
 #       the image. Prints one line on success:
 #         fm-pack-release/v1 image=PATH src=PATH freed=BYTES accepted_by=WHO released_at=EPOCH record=PATH
 #       freed counts each released inode once by size, the --also names
-#       included; GiB freed is freed / 1073741824.
+#       included; GiB freed is freed / 1073741824. A failed or partial guard
+#       read refuses with a named *-read-failed diagnostic, including /proc
+#       visibility/races; no read failure is interpreted as an empty result.
 #       Exit codes:
 #         0   released;
 #         1   refused by a guard, nothing deleted; also a removal that failed
@@ -131,6 +133,7 @@
 #                   between packing and the source re-check, and between
 #                   release's rename aside and its re-check
 set -u
+set -o pipefail
 
 BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NL=$'\n'
@@ -154,6 +157,21 @@ valid_unit() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
 # tree_list DIR: the tree list of DIR on stdout (pack step 3 above).
 tree_list() {
   (cd "$1" && find . -xdev -printf '%y\t%s\t%m\t%n\t%T@\t%l\t%p\n' | LC_ALL=C sort -t$'\t' -k7)
+}
+
+# tree_matches DIR LIST: capture the complete listing before comparing bytes.
+# A process substitution would hide a failed producer, even on equal output.
+tree_matches() {
+  local tmp rc
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-pack-tree.XXXXXX") || { note "tree-read-failed: cannot create scratch"; return 1; }
+  if tree_list "$1" >"$tmp"; then
+    cmp -s "$tmp" "$2"; rc=$?
+    [ "$rc" -le 1 ] || note "tree-read-failed: comparing $1 with $2"
+  else
+    note "tree-read-failed: $1"; rc=1
+  fi
+  rm -f -- "$tmp"
+  return "$rc"
 }
 
 # members_list DIR: sha256sum lines of every regular file under DIR, sorted.
@@ -185,7 +203,7 @@ unmount_verify() {
 
 # check_members_mount IMAGE DIR MEMBERS: 0 match, 1 mismatch or no mount.
 check_members_mount() {
-  local img=$1 dir=$2 members=$3 count rc
+  local img=$1 dir=$2 members=$3 count expected rc
   MNT=$(mktemp -d "${TMPDIR:-/tmp}/fm-pack-verify.XXXXXX") || return 1
   if ! squashfuse -o ro "$img" "$MNT" 2>/dev/null; then
     rmdir "$MNT"; MNT=''
@@ -197,8 +215,12 @@ check_members_mount() {
   rc=0
   (cd "$MNT/$dir" && heavy sha256sum --quiet --strict -c -- "$members") || rc=1
   if [ "$rc" = 0 ]; then
-    count=$(cd "$MNT/$dir" && find . -type f | wc -l)
-    [ "$count" = "$(wc -l <"$members")" ] || { note "the image holds $count files, the members list $(wc -l <"$members")"; rc=1; }
+    if ! count=$(cd "$MNT/$dir" && find . -type f -printf '.\n' | wc -l) ||
+      ! expected=$(wc -l <"$members"); then
+      note "member-count-read-failed: $img or $members"; rc=1
+    elif [ "$count" != "$expected" ]; then
+      note "the image holds $count files, the members list $expected"; rc=1
+    fi
   fi
   unmount_verify
   return "$rc"
@@ -206,19 +228,25 @@ check_members_mount() {
 
 # check_members_unsquashfs IMAGE DIR MEMBERS: 0 match, 1 mismatch.
 check_members_unsquashfs() {
-  local img=$1 dir=$2 members=$3 line want path got count n=0 bare=''
+  local img=$1 dir=$2 members=$3 line want path got count expected manifest n=0 bare=''
   [ "${IFORMAT:-}" = tj-fetch-arrival-unit/v2 ] && bare=1
-  count=$(unsquashfs -no-wildcards -lln "$img" "$dir" 2>/dev/null | grep -c '^-') || count=0
-  [ "$count" = "$(wc -l <"$members")" ] || { note "the image holds $count files, the members list $(wc -l <"$members")"; return 1; }
+  count=$(unsquashfs -no-wildcards -lln "$img" "$dir" | awk '/^-/ {n++} END {print n+0}') ||
+    { note "member-count-read-failed: $img"; return 1; }
+  expected=$(wc -l <"$members") || { note "member-count-read-failed: $members"; return 1; }
+  [ "$count" = "$expected" ] || { note "the image holds $count files, the members list $expected"; return 1; }
+  manifest=$(cat -- "$members") || { note "member-list-read-failed: $members"; return 1; }
+  [ "$expected" != 0 ] || [ -n "$manifest" ] || return 0
   while IFS= read -r line; do
     n=$((n + 1))
     want=${line:0:64} path=${line:66}
     if [ "${path:0:2}" = './' ]; then path=${path#./}; elif [ -z "$bare" ]; then path=''; fi
     [[ $want =~ ^[0-9a-f]{64}$ ]] && [ "${line:64:2}" = '  ' ] && [ -n "$path" ] ||
       { note "members line $n is malformed"; return 1; }
-    got=$(heavy unsquashfs -no-wildcards -cat "$img" "$dir/$path" 2>/dev/null | sha256sum; exit "${PIPESTATUS[0]}") || got=''
+    got=$(heavy unsquashfs -no-wildcards -cat "$img" "$dir/$path" | sha256sum) ||
+      { note "member-read-failed: $path"; return 1; }
     [ "${got%% *}" = "$want" ] || { note "$path: FAILED"; return 1; }
-  done <"$members"
+  done <<<"$manifest"
+  [ "$n" -eq "$expected" ] || { note "member-list-read-failed: $members"; return 1; }
 }
 
 # pack_mode: sets METHOD from FM_PACK_MOUNT; exits 2 on an unknown value.
@@ -403,7 +431,7 @@ cmd_verify() {
   check_members "$IMG" "$IDIRNAME" "$IMEMBERS" || fail1 "$IMG failed the member check ($METHOD)"
   if [ -n "$against" ]; then
     [ -d "$against" ] || fail1 "$against is not a directory"
-    cmp -s <(tree_list "$against") "$IDIR/$IUNIT.tree.tsv" || fail1 "$against no longer matches $IUNIT.tree.tsv"
+    tree_matches "$against" "$IDIR/$IUNIT.tree.tsv" || fail1 "$against no longer matches $IUNIT.tree.tsv"
   fi
   printf 'fm-pack: verified %s (%s files, %s)%s\n' "$IMG" "$(wc -l <"$IMEMBERS")" "$METHOD" "${against:+, source unchanged}"
 }
@@ -432,7 +460,7 @@ cmd_restore() {
 
 # ---------------------------------------------------------------- release
 
-REL_SRC='' REL_ASIDE='' REL_RECORD='' REL_PENDING='' REL_MOVED=''
+REL_SRC='' REL_ASIDE='' REL_RECORD='' REL_PENDING='' REL_MOVED='' REL_IMAGE_SHA=''
 
 release_cleanup() {
   unmount_verify
@@ -489,31 +517,67 @@ in_use() {
   local p=$1 tab=${FM_PACK_MOUNTINFO:-/proc/self/mountinfo} out
   [ -r "$tab" ] || rel_refuse 1 "cannot read the mount table $tab"
   [ -r /proc/self/fd ] || rel_refuse 1 "cannot read /proc to find the processes that use $p"
-  out=$(mounts_in "$p" | head -n1)
+  out=$(mounts_in "$p") || rel_refuse 1 "mount-table-read-failed: $tab"
+  out=${out%%$'\n'*}
   [ -z "$out" ] || rel_refuse 1 "$out is a mount point at or inside $p"
-  out=$(procs_in "$@" | head -n1)
+  out=$(procs_in "$@") || rel_refuse 1 "process-scan-read-failed: /proc for $p"
+  out=${out%%$'\n'*}
   [ -z "$out" ] || rel_refuse 1 "process ${out%%$'\t'*} ($(cat "/proc/${out%%$'\t'*}/comm" 2>/dev/null)) uses ${out#*$'\t'}"
+}
+
+# reference_clear PATH FILE: grep's 1 means absent, every other failure refuses.
+# Do not use -q: it can return success before encountering a later read error.
+reference_clear() {
+  local rc
+  grep -F -- "$1" "$2" >/dev/null; rc=$?
+  case "$rc" in
+    0) rel_refuse 1 "$2 still names $1" ;;
+    1) return 0 ;;
+    *) rel_refuse 1 "reference-read-failed: $2" ;;
+  esac
+}
+
+# reservation_listing DIR DEPTH: absent is empty only after its parent can be
+# enumerated. Shell globs cannot distinguish an unreadable directory from empty.
+reservation_listing() {
+  local d=$1 parent
+  [ ! -L "$d" ] || return 1
+  if [ ! -e "$d" ]; then
+    parent=$(dirname -- "$d") || return 1
+    [ "$parent" != "$d" ] || return 1
+    reservation_listing "$parent" 0 >/dev/null || return 1
+    # Read the parent directory too, not just its metadata.
+    if [ -d "$parent" ]; then find "$parent" -mindepth 1 -maxdepth 1 -print >/dev/null || return 1; fi
+    return 0
+  fi
+  [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || return 1
+  find -L "$d" -mindepth 1 -maxdepth "$2" -print
 }
 
 # reservations_named NAME...: each live fm-disk-room reservation file, Linux or
 # D: pool, named one of NAMEs (a pid that exists, or a ttl not yet passed).
 reservations_named() {
-  local dir f n pid expires t
+  local dir f n pid expires t listing live
   dir=${FM_DISK_ROOM_STATE:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/fm-disk-room}
-  t=$(date +%s)
-  for f in "$dir"/reservations/* "$dir"/reservations-d/*/*; do
-    [ -f "$f" ] || continue
+  t=$(date +%s) || return 1
+  listing=$(reservation_listing "$dir/reservations" 1 && reservation_listing "$dir/reservations-d" 2) || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     for n in "$@"; do
       [ "${f##*/}" = "$n" ] || continue
-      pid=$(sed -n 's/^pid=//p' "$f"); expires=$(sed -n 's/^expires=//p' "$f")
+      [ -f "$f" ] || return 1
+      pid=$(sed -n 's/^pid=//p' "$f") && expires=$(sed -n 's/^expires=//p' "$f") || return 1
       if [ -n "$pid" ]; then
-        [ -d "/proc/$pid" ] || continue
-      elif [ -n "$expires" ] && [ "$t" -ge "$expires" ] 2>/dev/null; then
-        continue
+        [[ $pid =~ ^[0-9]+$ ]] || return 1
+        live=$(find /proc -mindepth 1 -maxdepth 1 -type d -name "$pid" -print) || return 1
+        [ -n "$live" ] || continue
+      elif [ -n "$expires" ]; then
+        [[ $expires =~ ^[0-9]{1,10}$ ]] || return 1
+        [ "$t" -ge "$((10#$expires))" ] && continue
       fi
       printf '%s\n' "$f"
     done
-  done
+  done <<<"$listing"
 }
 
 # links SRC [ALSO...]: "files FILES", "freed BYTES" (each inode once), then
@@ -522,8 +586,8 @@ reservations_named() {
 links() {
   local src=$1 a; shift
   {
-    find "$src" -xdev -type f -printf 'i\t%D:%i\t%n\t%s\t%p\n'
-    for a in "$@"; do stat -c $'a\t%d:%i\t%h\t%s\t%n' -- "$a"; done
+    find "$src" -xdev -type f -printf 'i\t%D:%i\t%n\t%s\t%p\n' || return 1
+    for a in "$@"; do stat -c $'a\t%d:%i\t%h\t%s\t%n' -- "$a" || return 1; done
   } | awk -F'\t' '
     $1 == "i" { files++; if (!($2 in size)) { size[$2] = $4; nl[$2] = $3; path[$2] = $5 } ins[$2]++; next }
     { if ($2 in size) oth[$2]++; else print "bad\t" $5 }
@@ -534,7 +598,7 @@ links() {
 # release_record STATE FILES FREED [RELEASED_AT]: write UNIT.release.json.
 release_record() {
   local tmp=$REL_RECORD.tmp
-  jq -n --arg unit "$IUNIT" --arg image "$IMG" --arg image_sha "$(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256")" \
+  jq -n --arg unit "$IUNIT" --arg image "$IMG" --arg image_sha "$REL_IMAGE_SHA" \
     --arg src "$REL_SRC" --arg state "$1" --arg accepted "$REL_ACCEPTED" --arg note "$REL_NOTE" \
     --arg refs "$REL_REFS" --arg also "$REL_ALSO" --arg owner "${FM_HOME:-$(cd "$BIN/.." && pwd)}" \
     --argjson window "$REL_WINDOW" --argjson verified "$REL_VERIFIED" --argjson files "$2" --argjson freed "$3" \
@@ -554,7 +618,7 @@ stored_md() {
 This directory was packed into an image and released by fm-pack.sh release.
 
 - image: $IMG
-- image sha256: $(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256")
+- image sha256: $REL_IMAGE_SHA
 - record: $REL_RECORD
 - accepted by: $REL_ACCEPTED
 - released at: $(date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ)
@@ -602,13 +666,16 @@ cmd_release() {
   REL_SRC=$src
   REL_ASIDE=$(dirname -- "$src")/.${src##*/}.fm-pack-release
   REL_RECORD=$IDIR/$IUNIT.release.json
-  if [ -e "$REL_RECORD" ]; then
+  out=$(find "$IDIR" -mindepth 1 -maxdepth 1 -name "$IUNIT.release.json" -print) ||
+    rel_refuse 1 "release-state-read-failed: $IDIR"
+  if [ -n "$out" ]; then
     state=$(jq -r .state "$REL_RECORD" 2>/dev/null)
     [ "$state" != releasing ] || die "$REL_RECORD is in state releasing: a removal stopped partway, what is left is at $REL_ASIDE"
     die "$IUNIT is already released ($REL_RECORD)"
   fi
-  [ ! -e "$REL_ASIDE" ] && [ ! -L "$REL_ASIDE" ] ||
-    die "$REL_ASIDE is left from an earlier release; rename it back to $src, then release again"
+  out=$(find "$(dirname -- "$src")" -mindepth 1 -maxdepth 1 -name ".${src##*/}.fm-pack-release" -print) ||
+    rel_refuse 1 "release-state-read-failed: parent of $src"
+  [ -z "$out" ] || die "$REL_ASIDE is left from an earlier release; rename it back to $src, then release again"
   for ref in "${refs[@]}"; do
     [ -f "$ref" ] && [ -r "$ref" ] || die "--ref $ref is not a readable file"
     REL_REFS+=$ref$NL
@@ -632,24 +699,31 @@ cmd_release() {
   [ "$now" -ge $((REL_VERIFIED + REL_WINDOW)) ] ||
     rel_refuse 75 "the release window of $REL_WINDOW s ends at $((REL_VERIFIED + REL_WINDOW)), $((REL_VERIFIED + REL_WINDOW - now)) s from now"
   for ref in "${refs[@]}"; do
-    ! grep -qF -- "$src" "$ref" || rel_refuse 1 "$ref still names $src"
-    [ "${given:0:1}" != / ] || [ "$given" = "$src" ] || ! grep -qF -- "$given" "$ref" || rel_refuse 1 "$ref still names $given"
+    reference_clear "$src" "$ref"
+    [ "${given:0:1}" != / ] || [ "$given" = "$src" ] || reference_clear "$given" "$ref"
   done
   in_use "$src" "${names[@]}"
-  out=$(reservations_named "$IUNIT" "pack-$IUNIT" "${src##*/}" | head -n1)
+  out=$(reservations_named "$IUNIT" "pack-$IUNIT" "${src##*/}") || rel_refuse 1 "reservation-read-failed: $IUNIT"
+  out=${out%%$'\n'*}
   [ -z "$out" ] || rel_refuse 1 "the reservation $out is live"
-  out=$(links "$src" "${names[@]}")
+  out=$(links "$src" "${names[@]}") || rel_refuse 1 "link-census-read-failed: $src"
   [ -n "$out" ] || rel_refuse 1 "the hard-link census of $src failed"
-  a=$(printf '%s\n' "$out" | sed -n 's/^bad\t//p' | head -n1)
+  a=$(printf '%s\n' "$out" | sed -n 's/^bad\t//p') || rel_refuse 1 "link-accounting-read-failed: $src"
+  a=${a%%$'\n'*}
   [ -z "$a" ] || die "--also $a is not a link of a file in $src"
-  a=$(printf '%s\n' "$out" | sed -n 's/^out\t//p' | head -n1)
+  a=$(printf '%s\n' "$out" | sed -n 's/^out\t//p') || rel_refuse 1 "link-accounting-read-failed: $src"
+  a=${a%%$'\n'*}
   [ -z "$a" ] || rel_refuse 1 "${a#*$'\t'} has ${a%%$'\t'*} more hard-link name(s) outside $src; name each with --also to release them too"
-  files=$(printf '%s\n' "$out" | sed -n 's/^files\t//p')
-  freed=$(printf '%s\n' "$out" | sed -n 's/^freed\t//p')
+  files=$(printf '%s\n' "$out" | sed -n 's/^files\t//p') && [[ $files =~ ^[0-9]+$ ]] ||
+    rel_refuse 1 "link-accounting-read-failed: $src files"
+  freed=$(printf '%s\n' "$out" | sed -n 's/^freed\t//p') && [[ $freed =~ ^[0-9]+$ ]] ||
+    rel_refuse 1 "link-accounting-read-failed: $src freed"
 
   image_sha_ok "$IDIR" "$IUNIT" || rel_refuse 1 "$IMG does not match $IUNIT.sqfs.sha256"
   check_members "$IMG" "$IDIRNAME" "$IMEMBERS" || rel_refuse 1 "$IMG failed the member check ($METHOD)"
-  cmp -s <(tree_list "$src") "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src no longer matches $IUNIT.tree.tsv"
+  REL_IMAGE_SHA=$(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256") && [[ $REL_IMAGE_SHA =~ ^[0-9a-f]{64}$ ]] ||
+    rel_refuse 1 "image-hash-read-failed: $IUNIT.sqfs.sha256"
+  tree_matches "$src" "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src no longer matches $IUNIT.tree.tsv"
 
   REL_PENDING=1
   release_record releasing "$files" "$freed" || rel_refuse 1 "cannot write $REL_RECORD"
@@ -657,7 +731,7 @@ cmd_release() {
   [ -d "$REL_ASIDE" ] && [ ! -e "$src" ] || rel_refuse 1 "cannot rename $src aside to $REL_ASIDE"
   REL_MOVED=1
   if [ -n "${FM_PACK_TEST_BEFORE_RECHECK:-}" ]; then bash -c "$FM_PACK_TEST_BEFORE_RECHECK"; fi
-  cmp -s <(tree_list "$REL_ASIDE") "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src changed while it was renamed aside"
+  tree_matches "$REL_ASIDE" "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src changed while it was renamed aside"
   in_use "$REL_ASIDE" "${names[@]}"
 
   REL_MOVED='' REL_PENDING=''
