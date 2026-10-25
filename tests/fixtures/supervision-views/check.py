@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "bin"))
 from fm_view_engine import (BoundedLane, Engine, Inputs, PROTOCOL, Refused, client,
                             encoded, read_file, serve)
-from fm_view_status import Fold
+from fm_view_status import Fold, FoldIndex
 
 
 class StatusParity(unittest.TestCase):
@@ -133,6 +133,61 @@ status_open_decisions "$2/task.status" "$3"
             status.symlink_to(home / "absent")
             with self.assertRaises(OSError):
                 Inputs(str(home)).fold("task")
+
+
+class IncrementalFold(unittest.TestCase):
+    def test_append_partial_replacement_and_truncation_equal_full_fold(self):
+        cache = FoldIndex()
+        raw = b""
+        fragments = [b"needs-decision [key=quota]: part", b"ial", b" note\n",
+                     b"blocked [key=run]: missing daemon\n", b"note [supersedes=resume]: resumed\n",
+                     b"paused [key=phase]: wait\n", b"resolved [key=other]: unrelated\n",
+                     b"resolved [key=quota]: answered", b"\n", b"resolved [key=phase]: ended\n"]
+        for fragment in fragments:
+            previous_partial = len(raw.rsplit(b"\n", 1)[-1])
+            raw += fragment
+            with self.subTest(raw=raw):
+                self.assertEqual(cache.fold("task", (1, 2), raw, "secondmate"), Fold(raw, "secondmate").result())
+                self.assertLessEqual(cache.last_processed_bytes, len(fragment) + previous_partial)
+                repeated = cache.fold("task", (1, 2), raw, "secondmate")
+                self.assertEqual(repeated, Fold(raw, "secondmate").result())
+                self.assertEqual(cache.last_processed_bytes, 0)
+        # Same inode, shorter/truncated or rewritten bytes: never resume a cursor
+        # into a previous stream. A new identity rebuilds even byte-identical data.
+        for identity, changed in (((1, 2), b"needs-decision [key=new]: replacement\n"),
+                                  ((1, 2), b"blocked: x"), ((1, 3), b"blocked: x")):
+            self.assertEqual(cache.fold("task", identity, changed, "secondmate"), Fold(changed, "secondmate").result())
+            self.assertEqual(cache.last_processed_bytes, len(changed))
+
+    def test_context_changes_rebuild_and_results_cannot_poison_index(self):
+        cache = FoldIndex()
+        raw = b"blocked [key=alarm]: condition\nnote [supersedes=resume]: resumed\n"
+        held = cache.fold("task", (1, 2), raw, "secondmate", protected=("alarm",))
+        self.assertEqual(held["open"][0]["key"], "alarm")
+        held["open"][0]["summary"] = "consumer mutation"
+        again = cache.fold("task", (1, 2), raw, "secondmate", protected=("alarm",))
+        self.assertEqual(again["open"][0]["summary"], "condition")
+        self.assertEqual(cache.last_processed_bytes, 0)
+        cleared = cache.fold("task", (1, 2), raw, "secondmate")
+        self.assertEqual(cleared["open"], [])
+        self.assertEqual(cache.last_processed_bytes, len(raw))
+        raw = b"needs-decision: question\ndone: one item\n"
+        self.assertEqual(len(cache.fold("task", (1, 2), raw, "secondmate")["open"]), 1)
+        self.assertEqual(cache.fold("task", (1, 2), raw, "ship")["open"], [])
+        self.assertEqual(cache.last_processed_bytes, len(raw))
+
+    def test_bounded_eviction_is_disposable(self):
+        cache = FoldIndex(max_entries=2, max_bytes=80)
+        raw = b"blocked: condition\n"
+        for name in ("a", "b", "c", "a"):
+            self.assertEqual(cache.fold(name, (1, 2), raw), Fold(raw).result())
+            self.assertLessEqual(len(cache.entries), 2)
+            self.assertLessEqual(cache.bytes, 80)
+        self.assertEqual(cache.last_processed_bytes, len(raw))
+        too_large = b"note: " + b"x" * 100
+        self.assertEqual(cache.fold("large", (1, 3), too_large), Fold(too_large).result())
+        self.assertNotIn("large", cache.entries)
+        self.assertLessEqual(cache.bytes, 80)
 
 
 class Scheduling(unittest.IsolatedAsyncioTestCase):
