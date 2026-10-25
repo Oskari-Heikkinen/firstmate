@@ -4479,7 +4479,9 @@ SH
   FM_CREW_STATE_NM_TIMEOUT=1
   export FM_CREW_STATE_NM_TIMEOUT
   started=$SECONDS
-  out=$(run_crew_state "$d" competing)
+  # This fake interpreter exercises only the legacy subprocess reader. The
+  # native suite separately holds a real SQLite exclusive lock over its read.
+  out=$(FM_VIEW_MATRIX_LEGACY_READER=1 run_crew_state "$d" competing)
   elapsed=$((SECONDS - started))
   unset FM_CREW_STATE_NM_TIMEOUT
   [ "$elapsed" -lt 10 ] || fail "the capped inventory reader ran unbounded for ${elapsed}s"
@@ -4805,6 +4807,20 @@ test_capped_without_sqlite_preserves_available_ids() {
   assert_contains "$out" '01NEW' 'R5 capped lookup retains available ids without SQLite support'
   assert_contains "$out" 'inventory' 'missing SQLite support leaves an explicit inventory diagnostic'
   pass 'R5 capped lookup without SQLite support preserves available ids'
+}
+
+test_complete_inventory_without_sqlite_keeps_gate() {
+  make_competing_runs_case no-sqlite-complete running cancelled
+  local d=$TMP_ROOT/no-sqlite-complete out
+  mkdir -p "$d/no-sqlite"
+  printf 'raise ImportError("sqlite support unavailable")\n' > "$d/no-sqlite/sqlite3.py"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/competing | sed 's/01RUN/01OLD/; s/failed/cancelled/')"
+  FM_FAKE_AXI_STATUS_RUN="$(run_parked fm/competing | sed 's/01RUN/01NEW/')"
+  out=$(PYTHONPATH="$d/no-sqlite" run_crew_state "$d" competing)
+  assert_contains "$out" 'state: parked' 'complete inventory retains its gate without SQLite'
+  assert_contains "$out" 'parked at review: 2 finding(s)' 'missing optional SQLite does not remove complete gate detail'
+  assert_contains "$out" '01NEW' 'complete inventory retains its selected identity without SQLite'
+  pass 'complete inventory without SQLite keeps the replacement gate'
 }
 
 test_live_to_terminal_inventory_disagreement_is_unknown() {
@@ -6185,6 +6201,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_complete_ambiguity_without_python_names_both_ids \
   test_capped_without_python_preserves_available_ids \
   test_capped_without_sqlite_preserves_available_ids \
+  test_complete_inventory_without_sqlite_keeps_gate \
   test_live_to_terminal_inventory_disagreement_is_unknown \
   test_uninitialized_busy_worker_uses_pane \
   test_uninitialized_idle_worker_uses_status \
