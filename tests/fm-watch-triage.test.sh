@@ -6172,10 +6172,20 @@ test_afk_busy_declared_pause_hands_off_plain_stale() {
 # way the normal-mode absorber does, so lifting the declaration later starts the
 # wedge path from a fresh timer rather than resuming a stale count.
 test_afk_busy_declared_pause_ticking_pane_hands_off_once() {
+  run_afk_ticking_pause_case normal
+}
+
+# stop_after is the number of new captures allowed to publish in each re-arm.
+# The next writer stops with a complete private staging file, before rename.
+run_afk_ticking_pause_case() {  # <normal|0|1>
+  local stop_after=$1 stop_at=0 stopped_pid stage
   local dir state fakebin out drain_out window key sig pid statusf ticks round prev_hash cur_hash prev_ticks
-  dir=$(make_case afk-busy-declared-pause-ticking); state="$dir/state"; fakebin="$dir/fakebin"
+  dir=$(make_case "afk-busy-declared-pause-ticking-$stop_after"); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"; window="test:fm-afk-ticking-scout"
   statusf="$state/afk-ticking-scout.status"; ticks="$dir/ticks"
+  stage=$(mktemp "$ticks.stage.XXXXXX") || fail "could not stage the initial tick counter"
+  printf '0\n' > "$stage" || fail "could not stage the initial tick counter"
+  mv -f "$stage" "$ticks" || fail "could not initialize the tick counter"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -6184,8 +6194,19 @@ case "${1:-}" in
     [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "${FM_FAKE_TMUX_WINDOW#*:}"
     exit 0 ;;
   capture-pane)
-    n=$(( $(cat "$FM_FAKE_TMUX_TICKS" 2>/dev/null || echo 0) + 1 ))
-    echo "$n" > "$FM_FAKE_TMUX_TICKS"
+    n=$(cat "$FM_FAKE_TMUX_TICKS") || exit 1
+    case "$n" in ''|*[!0-9]*) exit 1 ;; esac
+    n=$((n + 1))
+    stage=$(mktemp "$FM_FAKE_TMUX_TICKS.stage.XXXXXX") || exit 1
+    trap 'rm -f "$stage"' EXIT
+    printf '%s\n' "$n" > "$stage" || exit 1
+    if [ "$n" = "${FM_FAKE_TMUX_STOP_AT:-0}" ]; then
+      printf '%s\n' "$$" > "$FM_FAKE_TMUX_TICKS.stopped" || exit 1
+      kill -STOP "$$" || exit 1
+      # Only the watcher's ordinary capture-group cleanup may end this writer.
+      exit 1
+    fi
+    mv -f "$stage" "$FM_FAKE_TMUX_TICKS" || exit 1
     printf 'Working... (%d.%ds) gh run watch' "$(( 7200 + n ))" "$(( n % 10 ))"
     exit 0 ;;
   display-message)
@@ -6241,16 +6262,42 @@ SH
   while [ "$round" -le 6 ]; do
     prev_hash=$(cat "$state/.hash-$key" 2>/dev/null || true)
     prev_ticks=$(cat "$ticks" 2>/dev/null || echo 0)
+    if [ "$stop_after" != normal ]; then
+      stop_at=$((prev_ticks + stop_after + 1))
+      rm -f "$ticks.stopped"
+    fi
     : > "$out"
     PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_TICKS="$ticks" \
+      FM_FAKE_TMUX_STOP_AT="$stop_at" \
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
       FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (pi-ext)' \
       FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=1 FM_PAUSE_RESURFACE_SECS=999 \
       FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
     pid=$!
-    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "re-arm $round on a ticking declared pause re-woke the daemon: $(cat "$out")"; }
+    if [ "$stop_after" = normal ]; then
+      wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "re-arm $round on a ticking declared pause re-woke the daemon: $(cat "$out")"; }
+    else
+      # Reaching the next capture proves the previous poll completed; unlike a
+      # beacon observation, this handshake cannot miss the publication boundary.
+      wait_numeric_file "$ticks.stopped" 300 || { reap "$pid"; fail "re-arm $round never reached the stopped capture: $(cat "$out")"; }
+      stopped_pid=$(cat "$ticks.stopped")
+      kill -STOP "$stopped_pid" || { reap "$pid"; fail "the staged writer vanished before interruption"; }
+      # Inspect while stopped: cleanup may run the EXIT trap or kill the writer.
+      # The staged next value proves interruption really preceded publication.
+      set -- "$ticks".stage.*
+      [ "$#" = 1 ] && [ "$(cat "$1")" = "$stop_at" ] \
+        || { reap "$pid"; fail "the next capture did not leave exactly one unpublished value"; }
+      stage=$1
+    fi
     reap "$pid"
+    if [ "$stop_after" != normal ]; then
+      [ "$(cat "$ticks")" = "$((stop_at - 1))" ] \
+        || fail "interrupted capture damaged the last published count"
+      rm -f "$stage"
+      is_live_non_zombie "$stopped_pid" \
+        && fail "watcher cleanup left the stopped capture alive"
+    fi
     cur_hash=$(cat "$state/.hash-$key" 2>/dev/null || true)
     [ "$(cat "$ticks" 2>/dev/null || echo 0)" -gt "$prev_ticks" ] \
       || fail "re-arm $round never captured the pane, so its silence proves nothing"
@@ -6270,6 +6317,21 @@ SH
   grep "$(printf '\tstale\t')" "$drain_out" >/dev/null \
     && fail "the silent re-arms still queued a stale row for the standing declaration: $(cat "$drain_out")"
   pass "away mode wakes the daemon once per declaration for a busy pane whose footer ticks on every capture"
+}
+
+test_afk_ticking_pause_stopped_next_capture() {
+  run_afk_ticking_pause_case 1
+  pass "stopping the next capture before publication preserves every ticking-pane assertion"
+}
+
+test_afk_ticking_pause_no_completed_capture_fails() {
+  local out="$TMP_ROOT/ticking-no-completed-capture.out"
+  if (run_afk_ticking_pause_case 0) > "$out" 2>&1; then
+    fail "a re-arm without a completed new capture passed"
+  fi
+  grep -Fx 'not ok - re-arm 2 never captured the pane, so its silence proves nothing' "$out" >/dev/null \
+    || fail "the no-new-capture control failed for the wrong reason: $(cat "$out")"
+  pass "a stopped first capture still fails the strict non-vacuity comparison"
 }
 
 # Behavioral proof that the production default (no FM_BUSY_TURN_MAX_SECS override
@@ -7928,6 +7990,8 @@ TRIAGE_CASES=(
   test_backlog_hold_never_rechecked_while_away_record_exists
   test_pr_backed_declared_wait_wakes_only_on_a_pr_change
   test_afk_busy_declared_pause_ticking_pane_hands_off_once
+  test_afk_ticking_pause_stopped_next_capture
+  test_afk_ticking_pause_no_completed_capture_fails
   test_wedge_threshold_keeps_a_wait_past_a_default_key_answer
   test_secondmate_duplicate_done_absorbed_only_when_adjacent
   test_identical_dead_display_of_a_successor_still_reports
