@@ -167,6 +167,9 @@ The complete case pool also exercises missing SQLite through the real socket/cli
 The default legacy matrix remains independently selected by its existing CI tier.
 The same entrypoint additionally selects isolated native services for every existing fleet-snapshot/view and drain/open-decision case through [`view_matrix.py`](../tests/fixtures/supervision-views/view_matrix.py).
 Those matrices keep their existing assertions, collect all independent case failures, count successful RPC verbs/nonempty items and explicit fallback reasons, and fail on unexpected refusals or zero native coverage, including an empty-batch-only pass.
+The declared non-tmux snapshot endpoint and over-bound status-line paths remain explicitly counted legacy fallbacks, with real-client whole-output/cursor parity regressions for these refusals.
+Seven cases whose assertions specifically require the legacy persistent fold cache or shell read-probe run that owner explicitly and are counted as legacy-only, never native coverage.
+A separate resident real-client lifecycle regression compares complete output and presentation cursors through repeated growth, resolution, truncation, same-size rotation and a kind change without status mutation; it also requires native calls and proves obsolete legacy fold caches are neither authoritative nor rewritten by the native read.
 The wrapper passes the original stdout descriptor directly to the shell owner so failed-output regressions cannot accidentally commit before a buffered wrapper write fails.
 A no-request path is disclosed separately, not counted as native coverage; these include early lock/validation refusals that never reach read selection.
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.

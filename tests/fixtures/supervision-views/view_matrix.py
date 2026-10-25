@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -24,8 +25,13 @@ COMMANDS = {"snapshot": "fm-fleet-snapshot.sh", "view": "fm-fleet-view.sh", "dra
 
 
 def admitted(error):
-    return (allowed_refusal(error)
-            or error == b"fm-view-client: read refused; use legacy: service refused: legacy migration cursor requires legacy presentation")
+    # These are the foundation's declared unsupported backend/boundary paths,
+    # not successful native coverage. Keep exact reasons, never a broad catch.
+    return (allowed_refusal(error) or error in (
+        b"fm-view-client: read refused; use legacy: service refused: legacy migration cursor requires legacy presentation",
+        b"fm-view-client: read refused; use legacy: service refused: passive snapshot-endpoint integration unsupported; use legacy",
+        b"fm-view-client: read refused; use legacy: service refused: native status line bound exceeded; use legacy",
+    ))
 
 
 async def invoke(root, home, command, arguments):
@@ -111,7 +117,7 @@ def main(arguments):
                 verbs[label] = verbs.get(label, 0) + 1
                 if request["ok"]:
                     items += request["items"]
-            for reason in detail["refusals"]:
+            for reason in detail["refusals"] + ([detail["legacy_seam"]] if "legacy_seam" in detail else []):
                 reasons[reason] = reasons.get(reason, 0) + 1
         print("native view matrix: " + json.dumps({"counts": counts, "requests": verbs, "native_items": items,
                                                     "legacy_or_refusal_reasons": reasons}, sort_keys=True))
@@ -124,6 +130,18 @@ def main(arguments):
     home.relative_to(root)
     if home == root or (selected and Path(selected).resolve().name != "state"):
         raise ValueError("view matrix requires an isolated suite-owned case home")
+    if os.environ.get("FM_VIEW_COMPAT_LEGACY_CACHE") == "1":
+        # These original assertions require the legacy persistent fold cache
+        # and its shell read-probe. The native service cannot write that cache;
+        # its resident-index/output parity has separate real-client coverage.
+        environment = dict(os.environ)
+        environment.pop("FM_VIEW_SOCKET", None)
+        environment.pop("FM_VIEW_EPOCH", None)
+        code = subprocess.call(["bash", str(ROOT / "bin" / command), *arguments[1:]], env=environment)
+        detail = {"command": command, "requests": [], "refusals": [], "shell_exit": code,
+                  "legacy_seam": "explicit legacy persistent fold-cache/probe seam"}
+        record(root, str(home.relative_to(root)), "legacy", json.dumps(detail, sort_keys=True))
+        return code
     return asyncio.run(invoke(root, home, command, arguments[1:]))
 
 
