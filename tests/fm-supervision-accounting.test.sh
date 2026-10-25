@@ -1277,6 +1277,268 @@ if sys.platform == 'linux':
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
         assert refused.returncode == 2 and b'unrecognized arguments' in refused.stderr
     checks += 8
+# Offline retrospective attribution: no current-home reads, current timestamps,
+# synthetic workload or collector are needed for these public-interface cases.
+def seal_payload(payload, derive_uncertainty=True):
+    if derive_uncertainty and payload.get('format') == 'fm-supervision-calibration.v1':
+        for result in payload['results']:
+            if 'samples' in result:
+                result['uncertainty'] = dict(cpu_quantization_ns_per_component=10000000,
+                    repeat_ranges={k: [min(s[k] for s in result['samples']), max(s[k] for s in result['samples'])]
+                                   for k in ('births', 'user_ns', 'system_ns')})
+    data = (json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
+    return dict(payload=payload, sha256=hashlib.sha256(data).hexdigest())
+
+owner = proc_manifest['homes'][0]
+identity = dict(home=owner['id'], family='watch', code_ref=owner['code_ref'],
+                configuration_sha256=owner['configuration_sha256'], work_mix_sha256=hashlib.sha256(b'[]\n').hexdigest(),
+                tick_unit='watch-iteration-v1', qualification='synthetic regression')
+raw_ticks = b'9\tTICK outside\n10\tTICK TICK one\n11.9\tTICK two\n12\tTICK excluded\n11\tunfinished TICK'
+record = dict(identity, record_path=owner['home'] + '/watch.log', line_contains='TICK',
+              timestamp='epoch-tab-seconds', coverage_start_wall_ns=0,
+              coverage_end_wall_ns=13000000000, base64=base64.b64encode(raw_ticks).decode(),
+              sha256=hashlib.sha256(raw_ticks).hexdigest())
+saved_ticks = dict(format='fm-supervision-tick-records.v1', synthetic=True,
+                   allocation='exclusive-home-family-v1', profiles=[record])
+raw_cal = (b'100 1.0 execve("/usr/bin/time", ["time"], []) = 0\n'
+           b'100 1.1 clone(child_stack=NULL, flags=SIGCHLD) = 101\n'
+           b'101 1.2 execve("/bin/bash", ["bash", "/fixture/code/bin/fm-watch.sh"], []) = 0\n'
+           b'101 1.3 +++ exited with 0 +++\n100 1.4 +++ exited with 0 +++\n')
+cal_profile = dict(identity, argv=['/bin/bash', '/fixture/code/bin/fm-watch.sh'], environment=[], fixture_files=[], ticks_per_sample=1)
+cal_plan = dict(format='fm-supervision-calibration-plan.v1', synthetic=True,
+                allocation='exclusive-home-family-v1', profiles=[cal_profile])
+cal_ticks = b'fm-supervision-tick.v1\twatch\twatch-iteration-v1\t100:1.000000\t1\t10.000000\t10.03\tentry\n'
+cal_records = [dict(name='.supervision-entries.tsv', base64=base64.b64encode(cal_ticks).decode(),
+                    sha256=hashlib.sha256(cal_ticks).hexdigest())]
+cal_sample = dict(ticks=1, tick_records=cal_records, births=1, user_ns=20000000, system_ns=10000000, cpu_reading='0.02 0.01',
+                  trace_base64=base64.b64encode(raw_cal).decode(), trace_sha256=hashlib.sha256(raw_cal).hexdigest())
+cal_payload = dict(format='fm-supervision-calibration.v1', revision=owner['code_ref'], runner='Linux/X64',
+                   ci_url='https://github.com/example/fixture/actions/runs/1',
+                   method='launch-strace-process+GNU-time-subtree.v1', plan=cal_plan,
+                   results=[dict(samples=[copy.deepcopy(cal_sample) for _ in range(3)])],
+                   uncertainty='10ms CPU quantization per reading; synthetic work mix; startup per invocation')
+cal_artifact = seal_payload(cal_payload)
+proc_path = save('retrospective-proc.json', proc_value)
+
+def retrospective(records=saved_ticks, artifact=cal_artifact):
+    return json.loads(run('reconcile', proc_path, '--ticks', save('saved-ticks.json', records),
+                          '--calibration', save('saved-calibration.json', artifact)).stdout)
+
+result = retrospective()
+assert result['coverage'] == dict(modelled_pairs=1, expected_pairs=12,
+                                 other_families='not discovered; require owner inventory and explicit additional profiles')
+assert result['modelled_subtotal'] == dict(births=2.0, births_per_second=1.0,
+    user_ns=40000000.0, system_ns=20000000.0, cpu_one_core_percent=3.0)
+assert result['unattributed_machine_minus_modelled_subtotal'] == dict(births=18.0,
+    births_per_second=9.0, busy_cpu_ns=540000000.0, busy_cpu_one_core_percent=27.0)
+assert result['exclusive_measured_supervision'] is None
+assert result['status'] == 'incomplete-model-inputs' and result['claimed_births_per_second_saved'] == 0
+# Counterfactual: pre-change CLI cannot produce this tick/subtotal/residual;
+# substituting measured lower bounds or configured cadence also fails above.
+counted = json.loads(run('count-ticks', save('saved-ticks.json', saved_ticks), '--capture', proc_path).stdout)
+assert counted['by_home_family'][0]['ticks'] == 2
+assert counted['wall_minus_monotonic_ns'] == 0
+checks += 8
+
+for adapter, data in [('status-at-seconds', b'working [at=10]: TICK\nworking [at=12]: TICK\n'),
+                      ('json-wall-ns', b'{"wall_ns":11000000000,"unit":"TICK"}\n')]:
+    changed = copy.deepcopy(saved_ticks)
+    changed['profiles'][0].update(timestamp=adapter, base64=base64.b64encode(data).decode(),
+                                  sha256=hashlib.sha256(data).hexdigest())
+    assert retrospective(changed)['modelled_subtotal']['births'] == 1
+    checks += 1
+
+for label, edit_record in (
+    ('window', lambda p: p.update(coverage_end_wall_ns=11000000000)),
+    ('code', lambda p: p.update(code_ref='f' * 40)),
+    ('config', lambda p: p.update(configuration_sha256='f' * 64)),
+    ('unit', lambda p: p.update(tick_unit='not the same tick')),
+    ('workmix', lambda p: p.update(work_mix_sha256='f' * 64)),
+):
+    changed = copy.deepcopy(saved_ticks)
+    edit_record(changed['profiles'][0])
+    report = retrospective(changed)
+    assert report['modelled_subtotal'] is None, (label, report)
+    assert report['coverage']['modelled_pairs'] == 0
+    checks += 1
+# A multi-tick CI repeat is divided by its actual recorded tick count, not by
+# repeats alone and never treated as the cost of one tick.
+multi = copy.deepcopy(cal_payload)
+multi['plan']['profiles'][0]['ticks_per_sample'] = 2
+multi_ticks = cal_ticks + cal_ticks.replace(b'100:1.000000', b'100:2.000000')
+for sample in multi['results'][0]['samples']:
+    sample.update(ticks=2, tick_records=[dict(name='.supervision-entries.tsv',
+        base64=base64.b64encode(multi_ticks).decode(), sha256=hashlib.sha256(multi_ticks).hexdigest())])
+assert retrospective(artifact=seal_payload(multi))['modelled_subtotal']['births'] == 1
+checks += 1
+for key in ('code_ref', 'configuration_sha256'):
+    changed = copy.deepcopy(cal_payload)
+    changed['plan']['profiles'][0][key] = 'f' * len(changed['plan']['profiles'][0][key])
+    if key == 'code_ref':
+        changed['revision'] = 'f' * 40
+    assert retrospective(artifact=seal_payload(changed))['modelled_subtotal'] is None
+    checks += 1
+
+empty_records = dict(saved_ticks, profiles=[])
+missing = retrospective(empty_records)
+assert missing['modelled_subtotal'] is None and missing['coverage']['modelled_pairs'] == 0
+no_cal = json.loads(run('reconcile', proc_path, '--ticks', save('saved-ticks.json', saved_ticks)).stdout)
+assert no_cal['modelled_subtotal'] is None
+quiet = copy.deepcopy(saved_ticks)
+quiet['profiles'][0].update(line_contains='never written')
+assert retrospective(quiet)['modelled_subtotal']['births'] == 0
+checks += 3
+
+for label, change in (
+    ('outer-seal', lambda v: v.update(sha256='f' * 64)),
+    ('raw-seal', lambda v: v['payload']['results'][0]['samples'][0].update(trace_sha256='f' * 64)),
+    ('cpu-evidence', lambda v: v['payload']['results'][0]['samples'][0].update(user_ns=1)),
+    ('birth-evidence', lambda v: v['payload']['results'][0]['samples'][0].update(births=2)),
+    ('missing-sample', lambda v: v['payload']['results'][0]['samples'].pop()),
+    ('tick-evidence', lambda v: v['payload']['results'][0]['samples'][0].update(ticks=2)),
+    ('tick-seal', lambda v: v['payload']['results'][0]['samples'][0]['tick_records'][0].update(sha256='f' * 64)),
+    ('uncertainty', lambda v: v['payload']['results'][0]['uncertainty']['repeat_ranges'].update(births=[1, 2])),
+    ('unknown-field', lambda v: v['payload'].update(unknown=True)),
+):
+    changed = copy.deepcopy(cal_artifact)
+    change(changed)
+    if label != 'outer-seal':
+        changed = seal_payload(changed['payload'], derive_uncertainty=label != 'uncertainty')
+    run('reconcile', proc_path, '--ticks', save('saved-ticks.json', saved_ticks),
+        '--calibration', save('bad-cal-' + label + '.json', changed), good=False)
+    checks += 1
+spawn_records = copy.deepcopy(saved_ticks)
+spawn_data = b'{"schema":"fm-spawn-start.v1","spawn_epoch":11}\n'
+spawn_records['profiles'][0].update(timestamp='json-epoch-seconds', timestamp_field='spawn_epoch',
+    line_contains='fm-spawn-start.v1', base64=base64.b64encode(spawn_data).decode(),
+    sha256=hashlib.sha256(spawn_data).hexdigest())
+assert retrospective(spawn_records)['modelled_subtotal']['births'] == 1
+checks += 1
+for key, value in [('sha256', 'f' * 64), ('timestamp', 'invented')]:
+    changed = copy.deepcopy(saved_ticks)
+    changed['profiles'][0][key] = value
+    run('count-ticks', save('bad-record.json', changed), '--capture', proc_path, good=False)
+    checks += 1
+
+# Independent negative CPU residual with perfectly consistent measured bounds.
+changed = copy.deepcopy(cal_payload)
+for sample in changed['results'][0]['samples']:
+    sample.update(user_ns=1000000000, cpu_reading='1.00 0.01')
+report = retrospective(artifact=seal_payload(changed))
+assert report['status'] == 'model-total-contradiction'
+assert report['unattributed_machine_minus_modelled_subtotal']['births'] > 0
+assert report['unattributed_machine_minus_modelled_subtotal']['busy_cpu_ns'] < 0
+# Independent negative birth residual: enough timestamped completions, zero CPU.
+changed_ticks = copy.deepcopy(saved_ticks)
+data = b'10\tTICK\n' * 25
+changed_ticks['profiles'][0].update(base64=base64.b64encode(data).decode(), sha256=hashlib.sha256(data).hexdigest())
+changed_cal = copy.deepcopy(cal_payload)
+for sample in changed_cal['results'][0]['samples']:
+    sample.update(user_ns=0, system_ns=0, cpu_reading='0.00 0.00')
+report = retrospective(changed_ticks, seal_payload(changed_cal))
+assert report['status'] == 'model-total-contradiction'
+assert report['unattributed_machine_minus_modelled_subtotal']['births'] == -5
+assert report['unattributed_machine_minus_modelled_subtotal']['busy_cpu_ns'] == 600000000
+checks += 6
+
+# CI-only guard must refuse before executing even an otherwise parseable plan.
+run('calibrate-ci', save('calibration-plan.json', cal_plan), '--output', tmp / 'not-ci-calibration',
+    env=dict(os.environ, GITHUB_ACTIONS='false'), good=False)
+assert not (tmp / 'not-ci-calibration').exists()
+# The new journal adapter seals multiple physical slots, partitions shared
+# producer records by exact family/unit, and never sums rows twice.
+journal = (b'fm-supervision-tick.v1\twatch\twatch-iteration-v1\t100:1.000000\t0\t9.000000\t9.00\tstart\n'
+           b'fm-supervision-tick.v1\twatch\twatch-iteration-v1\t100:1.000000\t1\t10.000000\t10.03\ttick\n'
+           b'fm-supervision-tick.v1\twatch\twatch-iteration-v1\t100:1.000000\t2\t11.000000\t11.00\ttick\n'
+           b'fm-supervision-tick.v1\tcrew-state\tinvocation-v1\t200:11.000000\t1\t11.000000\t11.00\tentry\n')
+journal_records = copy.deepcopy(saved_ticks)
+jp = journal_records['profiles'][0]
+for key in ('base64', 'sha256', 'record_path'):
+    jp.pop(key)
+jp.update(timestamp='supervision-tick-v1', tick_unit='watch-iteration-v1', instrumentation_error=False, record_kind='owned-loop',
+          fragments=[dict(record_path=owner['home'] + '/journal.previous.tsv',
+                          base64=base64.b64encode(journal).decode(), sha256=hashlib.sha256(journal).hexdigest())])
+journal_cal = copy.deepcopy(cal_payload)
+journal_cal['plan']['profiles'][0]['tick_unit'] = 'watch-iteration-v1'
+assert retrospective(journal_records, seal_payload(journal_cal))['modelled_subtotal']['births'] == 2
+for label, transform in (
+    ('error', lambda p: p.update(instrumentation_error=True)),
+    ('missing-error-attestation', lambda p: p.pop('instrumentation_error')),
+    ('missing-record-kind', lambda p: p.pop('record_kind')),
+):
+    bad = copy.deepcopy(journal_records)
+    transform(bad['profiles'][0])
+    assert retrospective(bad, seal_payload(journal_cal))['modelled_subtotal'] is None
+bad = copy.deepcopy(journal_records)
+data = journal.replace(b'\t2\t11.000000', b'\t3\t11.000000')
+bad['profiles'][0]['fragments'][0].update(base64=base64.b64encode(data).decode(), sha256=hashlib.sha256(data).hexdigest())
+assert retrospective(bad, seal_payload(journal_cal))['modelled_subtotal'] is None
+checks += 4
+shared = copy.deepcopy(journal_records)
+crew_profile = copy.deepcopy(shared['profiles'][0])
+crew_profile.update(family='crew-state', tick_unit='invocation-v1', record_kind='concurrent')
+shared['profiles'].append(crew_profile)
+no_startup = copy.deepcopy(journal_records)
+no_startup['profiles'][0]['fragments'][0].update(base64='', sha256=hashlib.sha256(b'').hexdigest())
+assert retrospective(no_startup, seal_payload(journal_cal))['modelled_subtotal'] is None
+counts = json.loads(run('count-ticks', save('shared-journal.json', shared), '--capture', proc_path).stdout)
+assert [r['ticks'] for r in counts['by_home_family']] == [2, 1]
+reserved = copy.deepcopy(cal_payload)
+reserved_files = [dict(path='state/.supervision-entries.tsv', base64='eA==', sha256=hashlib.sha256(b'x').hexdigest())]
+reserved['plan']['profiles'][0].update(fixture_files=reserved_files,
+    work_mix_sha256=hashlib.sha256((json.dumps(reserved_files, sort_keys=True, indent=2) + '\n').encode()).hexdigest())
+run('reconcile', proc_path, '--ticks', save('saved-ticks.json', saved_ticks),
+    '--calibration', save('reserved-fixture.json', seal_payload(reserved)), good=False)
+checks += 2
+
+# Exercise actual shell logging and rename rotation in CI without a live home.
+# These are fixed fixture commands, not lifecycle or supervision operations.
+if sys.platform == 'linux' and os.environ.get('BASH_VERSION', '') != '3.2':
+    shell_home = tmp / 'tick-shell-home'
+    shell_home.mkdir()
+    library = root / 'bin/fm-supervision-lib.sh'
+    shell = 'source "$1"; fm_supervision_tick_entry "$2" "$2" crew-state'
+    env_ticks = dict(os.environ, FM_SUPERVISION_TICKS='1')
+    for _ in range(2):
+        subprocess.run(['bash', '-c', shell, 'fixture', str(library), str(shell_home)],
+                       env=env_ticks, check=True, timeout=5)
+    entry_file = shell_home / '.supervision-entries.tsv'
+    assert len(entry_file.read_bytes().splitlines()) == 2
+    rotate = 'source "$1"; fm_supervision_tick_rotate_entries "$2" "$3" 4096'
+    # Size is an observation made by the existing watcher, not a per-entry stat.
+    entry_file.write_bytes(b'x' * 4096)
+    subprocess.run(['bash', '-c', rotate, 'fixture', str(library), str(shell_home), '4096'], check=True, timeout=5)
+    previous = shell_home / '.supervision-entries.previous.tsv'
+    assert previous.read_bytes() == b'x' * 4096 and not entry_file.exists()
+    subprocess.run(['bash', '-c', shell, 'fixture', str(library), str(shell_home)],
+                   env=env_ticks, check=True, timeout=5)
+    assert previous.read_bytes() == b'x' * 4096 and len(entry_file.read_bytes().splitlines()) == 1
+    # Accepted D limitation: retain an open append fd across two renames.
+    entry_file.write_bytes(b'a' * 4096)
+    with entry_file.open('ab', buffering=0) as frozen:
+        for byte in (b'b', b'c'):
+            subprocess.run(['bash', '-c', rotate, 'fixture', str(library), str(shell_home), '4096'], check=True, timeout=5)
+            entry_file.write_bytes(byte * 4096)
+        frozen.write(b'late-line\n')
+    assert b'late-line' not in entry_file.read_bytes() + previous.read_bytes()
+    # The bound is two slots plus growth since the last watcher size observation,
+    # not a hard instantaneous cap and not a cap while the watcher is stopped.
+    assert entry_file.stat().st_size == previous.stat().st_size == 4096
+    for kind in ('active', 'rotation'):
+        special = shell_home / kind
+        special.mkdir()
+        setup = ('rm -f "$2/log.0.tsv"; mkfifo "$2/log.0.tsv"; '
+                 if kind == 'active' else 'mkfifo "$2/log.1.tsv"; ')
+        script = ('source "$1"; fm_supervision_tick_init "$2/log" watch watch-iteration-v1 4096 || exit 2; '
+                  + setup + 'for ((n=0;n<200;n++)); do if ! fm_supervision_tick_append; then exit 0; fi; done; exit 1')
+        subprocess.run(['bash', '-c', script, 'fixture', str(library), str(special)], check=True, timeout=5)
+    checks += 8
+
+# Missing records are explicit gaps, never successful zero-tick calibration.
+gap = {k: identity[k] for k in identity}
+gap['unavailable'] = 'no countable inner tick log'
+assert retrospective(dict(saved_ticks, profiles=[gap]))['modelled_subtotal'] is None
+checks += 2
 print('ok - public P0 accounting, sealed byte reads, attribution and bounds: ' + str(checks) + ' cases')
 PY
 rc=$?
@@ -1287,6 +1549,59 @@ rc=$?
 # Production modules have their own canonical source-aware lint roots.
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-supervision-lib.sh"
+# Owned-loop logging strictly bounds each physical slot and rotates with shell
+# builtins only. PATH is unusable inside this scope, so a helper fork fails.
+if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then
+  mkdir -p "$TMP/tick-owned"
+  (
+    # shellcheck disable=SC2123 # Intentionally deny every external command.
+    PATH=/nonexistent
+    fm_supervision_tick_init "$TMP/tick-owned/loop" watch watch-iteration-v1 4096 || exit 1
+    for ((tick_i=0; tick_i<200; tick_i++)); do fm_supervision_tick_append || exit 1; done
+    for tick_slot in 0 1; do
+      tick_data=''
+      IFS= read -r -d '' -n 4097 tick_data < "$TMP/tick-owned/loop.$tick_slot.tsv" || true
+      [ "${#tick_data}" -le 4096 ] || exit 1
+      [ -n "$tick_data" ] || exit 1
+    done
+    if ( fm_supervision_tick_append ); then exit 1; fi
+    # A new writer generation keeps the previous current slot intact.
+    tick_previous=$FM_SUP_TICK_SLOT
+    tick_before=''
+    IFS= read -r -d '' tick_before < "$TMP/tick-owned/loop.$tick_previous.tsv" || true
+    fm_supervision_tick_init "$TMP/tick-owned/loop" watch watch-iteration-v1 4096 || exit 1
+    tick_after=''
+    IFS= read -r -d '' tick_after < "$TMP/tick-owned/loop.$tick_previous.tsv" || true
+    [ "$tick_before" = "$tick_after" ] || exit 1
+    if fm_supervision_tick_init "$TMP/tick-owned/bad" watch watch-iteration-v1 4095; then exit 1; fi
+    if fm_supervision_tick_append; then exit 1; fi
+  ) || fail 'owned tick logging forked, lost retained state, or exceeded its slot bound'
+  mkdir -p "$TMP/tick-errors"
+  FM_SUPERVISION_TICKS=1 fm_supervision_tick_loop_init "$TMP/tick-errors" "$TMP/tick-errors" \
+    "$TMP/tick-errors/missing-parent/log" watch watch-iteration-v1
+  [ -e "$TMP/tick-errors/.supervision-ticks.error" ] || fail 'failed init did not invalidate recording'
+  rm -f "$TMP/tick-errors/.supervision-ticks.error"
+  fm_supervision_tick_loop
+  [ -e "$TMP/tick-errors/.supervision-ticks.error" ] || fail 'existing loop did not retry invalidation delivery'
+  [ "$FM_SUP_TICK_ENABLED" -eq 2 ] || fail 'recording failure became a healthy zero stream'
+else
+  if fm_supervision_tick_init "$TMP/unavailable" watch watch-iteration-v1; then fail 'unsupported clock silently logged ticks'; fi
+fi
+mkdir -p "$TMP/tick-notice"
+printf 'fixture-invalid\n' > "$TMP/tick-notice/.supervision-ticks.error"
+(
+  fm_wake_append() { return 1; }
+  fm_supervision_tick_check_notice "$TMP/tick-notice"
+  [ ! -e "$TMP/tick-notice/.supervision-ticks.error-seen" ] || exit 1
+  [ -z "$FM_SUP_TICK_CHECK_REASON" ] || exit 1
+  notice_calls=0
+  fm_wake_append() { notice_calls=$((notice_calls + 1)); return 0; }
+  fm_supervision_tick_check_notice "$TMP/tick-notice"
+  [ "$notice_calls" -eq 1 ] && [ -n "$FM_SUP_TICK_CHECK_REASON" ] || exit 1
+  fm_supervision_tick_check_notice "$TMP/tick-notice"
+  [ "$notice_calls" -eq 1 ] && [ -z "$FM_SUP_TICK_CHECK_REASON" ] || exit 1
+  [ -e "$TMP/tick-notice/.supervision-ticks.error" ] || exit 1
+) || fail 'recording notice was acknowledged before enqueue, lost its retry, or kept waking after publication'
 printf '%s\n' fm-supervision-readers.v1 legacy-pid-cycle.v1 legacy-epoch-check.v1 > "$TMP/expected-capabilities"
 fm_supervision_reader_capabilities > "$TMP/actual-capabilities"
 cmp -s "$TMP/expected-capabilities" "$TMP/actual-capabilities" || fail 'capability inventory differs from supported legacy APIs'

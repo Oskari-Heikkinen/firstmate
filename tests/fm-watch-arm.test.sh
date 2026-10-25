@@ -182,14 +182,15 @@ start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid]
 }
 
 test_attached_arm_reports_the_delivered_wake() {
-  local dir state fakebin out armout status
+  local dir state fakebin out armout status record_ticks=0
   dir=$(make_case attached-delivered-wake)
+  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then record_ticks=1; fi
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/watch.out"
   armout="$dir/arm.out"
   start_seed_watcher "$state" "$fakebin" "$out"
-  start_attached_arm "$state" "$fakebin" "$armout" 1
+  FM_SUPERVISION_TICKS="$record_ticks" start_attached_arm "$state" "$fakebin" "$armout" 1
 
   # A real captain-relevant status change: the watcher records it in the durable
   # queue, prints its one reason line to its own stdout, and exits.
@@ -206,6 +207,9 @@ test_attached_arm_reports_the_delivered_wake() {
   grep -q '^signal:' "$armout" \
     || fail "attached arm did not report the durably recorded wake reason: $(cat "$armout")"
   expect_code 0 "$status" "an attached arm whose cycle delivered a wake must close successfully"
+  if [ "$record_ticks" -eq 1 ]; then
+    grep -q $'\tattached-arm\tattach-poll-v1\t' "$state/.supervision-entries.tsv" || fail 'attached arm poll record missing'
+  fi
   grep -q 'reason=attached-delivered-wake' "$state/.watch-cycle-exits.log" \
     || fail "the delivered-wake close was not classified in the lifecycle ledger"
   pass "watch-arm: an attached arm reports the wake its cycle delivered instead of a false failure"

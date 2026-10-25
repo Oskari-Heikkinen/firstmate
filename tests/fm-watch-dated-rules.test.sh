@@ -54,5 +54,22 @@ test_watcher_wakes_on_a_check_problem() {
   pass "the watcher wakes on a dated-rules check problem"
 }
 
+test_recording_invalidation_and_dated_rule_problem_share_the_problem_wake() {
+  local home status=0 out
+  home=$(make_home problem-with-recording mate-x 30)
+  printf 'mate-x\n' > "$home/.fm-secondmate-home"
+  printf 'fixture-invalid\n' > "$home/state/.supervision-ticks.error"
+  run_checkpoint "$home" 15 || status=$?
+  expect_code 0 "$status" 'co-due recording and dated-rule checkpoint exit'
+  out=$(cat "$home/checkpoint.out")
+  assert_contains "$out" 'supervision tick recording invalid' 'dated-rule problem replaced the recording notice'
+  assert_contains "$out" 'check: dated-rules: ' 'recording notice replaced the dated-rule problem'
+  assert_contains "$out" 'fm-secondmate-parent is missing or unusable' 'combined wake lost the dated-rule diagnostic'
+  assert_grep $'\tcheck\tsupervision-tick-recording\t' "$home/state/.wake-queue" 'recording notice was not durably queued'
+  assert_grep $'\tcheck\tdated-rules\t' "$home/state/.wake-queue" 'dated-rule notice was not durably queued'
+  pass 'co-due recording and dated-rule failures retain both queued notices and both printed reasons'
+}
+
 test_rule_14_days_out_reaches_the_owner_in_one_pass
 test_watcher_wakes_on_a_check_problem
+test_recording_invalidation_and_dated_rule_problem_share_the_problem_wake

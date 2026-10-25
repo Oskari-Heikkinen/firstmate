@@ -194,6 +194,8 @@ WATCH_HOME_EXISTED=0
 # runtime needlessly spends per-root CI lint memory while adding no uncovered file.
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-push-transition-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # Only for the arm-time check on FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS below;
@@ -3562,6 +3564,37 @@ watcher_beat() {
   WATCHER_BEAT_AT=$SECONDS
   printf '%s\n%s:%s\n' "$WATCHER_CYCLE" "${BASH_SOURCE[1]##*/}" "${BASH_LINENO[0]}" > "$STATE/.last-watcher-beat"
 }
+# Keep rotation's size read in the summary stat already paid by this pass.
+# With logging disabled, the original observation path is unchanged.
+summary_age_and_tick_rotation() {
+  if ! fm_supervision_ticks_enabled "$STATE" "$CONFIG" \
+    && [ ! -e "$STATE/.supervision-entries.tsv" ] && [ ! -L "$STATE/.supervision-entries.tsv" ]; then
+    age_of_to summary_age "$STATE/home-summary.json"
+    return
+  fi
+  local rows path mtime size now summary_mtime='' entry_size=''
+  if [ -L "$STATE/.supervision-entries.tsv" ]; then
+    fm_supervision_tick_error "$STATE" rotation-symlink
+    age_of_to summary_age "$STATE/home-summary.json"
+    return
+  fi
+  : >> "$STATE/.supervision-entries.tsv" || fm_supervision_tick_error "$STATE" rotation-open
+  rows=$(stat -c $'%n\t%Y\t%s' "$STATE/home-summary.json" "$STATE/.supervision-entries.tsv" 2>/dev/null) || true
+  while IFS=$'\t' read -r path mtime size; do
+    case "$path" in
+      "$STATE/home-summary.json") summary_mtime=$mtime ;;
+      "$STATE/.supervision-entries.tsv") entry_size=$size ;;
+    esac
+  done <<< "$rows"
+  fm_epoch_seconds_to now
+  summary_age=999999
+  case "$summary_mtime" in ''|*[!0-9]*) ;; *)
+    [ "$summary_mtime" -gt "$now" ] || summary_age=$((now - summary_mtime)) ;;
+  esac
+  if ! fm_supervision_tick_rotate_entries "$STATE" "$entry_size" "${FM_SUPERVISION_ENTRY_MAX_BYTES:-4194304}"; then
+    fm_supervision_tick_error "$STATE" rotation-size-or-rename
+  fi
+}
 watcher_beat
 watcher_watchdog_start
 
@@ -3600,6 +3633,10 @@ while :; do
     exit 0
   fi
 
+  if [ "$WATCHER_CYCLE" -eq 0 ]; then
+    fm_supervision_tick_loop_init "$STATE" "$CONFIG" "$STATE/.supervision-watch-ticks" watch watch-iteration-v1
+  fi
+  fm_supervision_tick_loop
   WATCHER_CYCLE=$((WATCHER_CYCLE + 1))
   printf '%s\n%s\n' "$WATCHER_CYCLE" 'cycle-start' > "$STATE/.last-watcher-beat"
   WAKE_BATCH_HELD=0
@@ -3608,7 +3645,7 @@ while :; do
   # status lines before this cycle can exit on a wake. Off costs one file test.
   [ ! -e "$CONFIG/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" capture || true
 
-  age_of_to summary_age "$STATE/home-summary.json"
+  summary_age_and_tick_rotation
   if [ "$summary_age" -ge "$HOME_SUMMARY_INTERVAL" ] \
     || [ -e "$STATE/.home-summary-refresh.pending" ] \
     || [ -e "$STATE/.home-summary-refresh.owed" ]; then
@@ -3696,6 +3733,11 @@ while :; do
     rejected_checks=
     contribution_check_output=
     alert_store_reason=
+    # Recording invalidation is one durable check notice per explicit cohort,
+    # not a condition for running supervision. Queue before storing its receipt;
+    # another check's wake can carry the queued notice without starving checks.
+    fm_supervision_tick_check_notice "$STATE"
+    alert_store_reason=$FM_SUP_TICK_CHECK_REASON
     # Dated-rule alarms (docs/dated-rule-schedule.md) run just before the tick,
     # so a store they change is projected in this same pass. The check skips
     # unchanged inputs itself and ends with a completion mark; its problem
@@ -3712,8 +3754,9 @@ while :; do
         *) FM_CHECK_RESULT="${FM_CHECK_RESULT:+$FM_CHECK_RESULT$'\n'}dated-rules check did not finish within ${CHECK_TIMEOUT}s, so dated rules are unchecked" ;;
       esac
       if [ -n "$FM_CHECK_RESULT" ]; then
-        alert_store_reason="check: dated-rules: ${FM_CHECK_RESULT//$'\n'/; }"
-        fm_wake_append check dated-rules "$alert_store_reason" || exit 1
+        dated_rule_reason="check: dated-rules: ${FM_CHECK_RESULT//$'\n'/; }"
+        fm_wake_append check dated-rules "$dated_rule_reason" || exit 1
+        alert_store_reason="${alert_store_reason:+$alert_store_reason; }$dated_rule_reason"
       fi
     fi
     # The alert-store tick (docs/alert-store.md) runs first, so a waking custom

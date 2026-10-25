@@ -1,6 +1,6 @@
 ---
 name: supervision-accounting
-description: Load before collecting, importing or judging a supervision birth trace, validating an owner fleet manifest or replay corpus, or using the legacy reader capability/fence APIs.
+description: Load before collecting, calibrating, recording ticks for, reconciling or judging supervision accounting, validating an owner fleet manifest or replay corpus, or using the legacy reader capability/fence APIs.
 user-invocable: false
 metadata:
   internal: true
@@ -19,6 +19,9 @@ Load `lean-review` before judging results; High risk applies to supervision cont
 - Proc-only sampling is explicitly selected, never an implicit fallback; its optional CI-per-tick model uses only exact owner-admitted append-only tick logs and stays separate from measured machine totals and observed lower bounds.
 - Route `incomplete-unprivileged-attribution`, `pending-reviewed-model-baseline` and `model-total-contradiction` through evidence review even when recording succeeds; the owning doc defines coverage, startup and residual obligations for model-based acceptance.
 - Preserve missing profiles and unavailable live tick records as gaps, not configured-cadence estimates; no model-derived rate is measured live supervision attribution and no positive residual is all supervision.
+- CI calibration executes only reviewed isolated fixtures on an exact clean GitHub revision; fixture costs are not deployment costs without matching unit, shape, configuration and exclusive scope.
+- Tick logging is opt-in and adds no polling process; the owning doc defines its two-slot bounds, invalidation marker and accepted frozen-producer loss across two concurrent-journal rotations, which every report using the records must repeat.
+- Existing actors pick up an opt-in only at their documented boundary; do not restart or inspect foreign actors to obtain records, clear a recording invalidation automatically or treat missing historic logs as recoverable by cadence.
 - Missing tools, elevation, ptrace grants or a changed capture route require a separate decision; never install or elevate implicitly.
 - Read the CLI result and artifacts and report success/refusal through the existing task status owner; do not leave an unobserved artifact or add a poller.
 - Preserve raw evidence, losses, contradictory residuals and synthetic provenance.

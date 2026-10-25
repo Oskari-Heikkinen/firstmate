@@ -897,8 +897,36 @@ test_secondmate_status_routine_absorbed_routed_surfaced_classifier() {
 
 # --- benign wakes are absorbed ONLY when the crew is provably working ---------
 
+test_recording_invalidation_is_one_check_and_does_not_stop_supervision() {
+  local dir state fakebin out pid
+  dir=$(make_case recording-invalidation)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'fm-supervision-tick-error.v1\t1.000000\t1\tfixture\n' > "$state/.supervision-ticks.error"
+  # A retained marker with instrumentation OFF is evidence to present, never
+  # a condition for running the monitor. Check every fixture pass.
+  watch_bg "$state" "$fakebin" "$out" env FM_SUPERVISION_TICKS=0 FM_CHECK_INTERVAL=0 FM_FAKE_TMUX_WINDOW= FM_FAKE_TMUX_WINDOWS=
+  pid=$!
+  wait_for_exit "$pid" 120
+  grep -q '^check: supervision tick recording invalid' "$out" || fail 'recording refusal was not presented as a check'
+  [ "$(grep -c $'\tcheck\tsupervision-tick-recording\t' "$state/.wake-queue")" = 1 ] || fail 'recording invalidation was not durably queued exactly once'
+  ack_stopped_cycle "$state" || fail 'recording check acknowledgement failed'
+
+  watch_bg "$state" "$fakebin" "$out" env FM_SUPERVISION_TICKS=0 FM_CHECK_INTERVAL=0 FM_FAKE_TMUX_WINDOW= FM_FAKE_TMUX_WINDOWS=
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail 'retained recording marker cut the next supervision cycle short'
+  fi
+  [ ! -s "$out" ] || fail 'retained recording marker was presented again after its check was queued'
+  [ -e "$state/.supervision-ticks.error" ] || fail 'monitor hid the failure by clearing recording evidence'
+  printf 'done: unrelated fixture status\n' > "$state/recording-independent.status"
+  wait_for_exit "$pid" 120
+  grep -q '^signal:' "$out" || fail 'recording failure starved ordinary status delivery'
+  [ "$(grep -c $'\tcheck\tsupervision-tick-recording\t' "$state/.wake-queue")" = 0 ] || fail 'recording failure requeued an already presented notice'
+  pass 'recording invalidation queues one check and leaves later monitoring and status delivery intact'
+}
+
 test_provably_working_signal_absorbed() {
-  local dir state fakebin out status_file pid
+  local dir state fakebin out status_file pid record_ticks=0
   dir=$(make_case provably-working-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   status_file="$state/task.status"
   printf 'working: compiling step 2\n' > "$status_file"
@@ -906,7 +934,11 @@ test_provably_working_signal_absorbed() {
   # still working, so a no-verb working: signal is absorbed (the original low-churn
   # case during a long validation).
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
-  watch_bg "$state" "$fakebin" "$out"
+  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then
+    record_ticks=1
+    printf '%4096s' '' > "$state/.supervision-entries.tsv"
+  fi
+  FM_SUPERVISION_TICKS="$record_ticks" FM_SUPERVISION_ENTRY_MAX_BYTES=4096 watch_bg "$state" "$fakebin" "$out"
   pid=$!
   if ! wait_poll_cycle "$state" "$pid"; then
     reap "$pid"; fail "watcher exited for a working: signal whose crew is provably working (should absorb): $(cat "$out")"
@@ -915,7 +947,26 @@ test_provably_working_signal_absorbed() {
   [ ! -s "$state/.wake-queue" ] || fail "provably-working signal enqueued a durable wake record"
   [ -s "$state/.seen-task_status" ] || fail "provably-working signal did not advance its .seen-* suppressor"
   [ -e "$state/.last-watcher-beat" ] || fail "watcher beacon was not touched while absorbing"
+  if [ "$record_ticks" -eq 1 ]; then
+    grep -Eq $'\twatch\twatch-iteration-v1\t.*\t(tick|rotate)$' "$state/.supervision-watch-ticks.0.tsv" \
+      || fail 'quiet watcher produced no countable iteration record'
+    [ ! -e "$state/.supervision-ticks.error" ] || fail 'quiet watcher invalidated its recording'
+    [ -s "$state/.supervision-entries.previous.tsv" ] || fail 'existing watcher pass did not rename the due shared slot'
+  fi
   reap "$pid"
+  if [ "$record_ticks" -eq 1 ]; then
+    # Producer overrides may outlive a watcher flag change. Retention is still
+    # maintained by the same existing pass, not by another reader process.
+    { printf 'second-generation-due\n'; printf '%4096s' ''; } > "$state/.supervision-entries.tsv"
+    FM_SUPERVISION_TICKS=0 FM_SUPERVISION_ENTRY_MAX_BYTES=4096 watch_bg "$state" "$fakebin" "$out"
+    pid=$!
+    if ! wait_poll_cycle "$state" "$pid"; then
+      reap "$pid"; fail 'nonrecording watcher failed while maintaining an existing journal'
+    fi
+    grep -q second-generation-due "$state/.supervision-entries.previous.tsv" \
+      || fail 'watcher flag change disabled retention for an existing producer journal'
+    reap "$pid"
+  fi
   pass "a no-verb signal whose crew is provably working is absorbed (no exit, no queue, suppressor advanced, beacon present)"
 }
 
@@ -8157,6 +8208,7 @@ TRIAGE_CASES=(
   test_worktree_write_probe_is_wall_clock_bounded
   test_signal_crew_provably_working_classifier
   test_secondmate_status_routine_absorbed_routed_surfaced_classifier
+  test_recording_invalidation_is_one_check_and_does_not_stop_supervision
   test_provably_working_signal_absorbed
   test_turn_ended_provably_working_absorbed
   test_turn_ended_not_working_surfaced

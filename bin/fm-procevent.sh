@@ -240,6 +240,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
@@ -1321,6 +1323,7 @@ cmd_owner_watchdog() {  # <source-id> <runner-pid> <runner-identity> <ready-file
   trap - EXIT
   while :; do
     sleep "$half"
+    fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" owner-guard owner-check-v1
     fm_procevent_pid_state "$pid" "$identity"
     pid_state=$?
     case "$pid_state" in
@@ -1452,6 +1455,7 @@ stranded_leaderless_detail() {  # <source-id>
 }
 
 cmd_reconcile() {
+  fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" procevent-reconcile
   local rec id published started=0 stopped=0 uncertain=0 failed=0 claim claim_root owner pid token identity claim_state stop_state
   local launch_identity launch_stamp launch_mark failed_mark unconfirmed entry
   local -a launched=()

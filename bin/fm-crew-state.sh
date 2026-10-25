@@ -173,6 +173,9 @@ FM_ROOT=${FM_ROOT_OVERRIDE:-}
   FM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
+fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" crew-state
 
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$SCRIPT_DIR/fm-tmux-lib.sh"

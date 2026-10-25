@@ -194,6 +194,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -779,6 +781,7 @@ await_close() {
     i=$((POLL * 2))
     while [ "$i" -gt 0 ] && fm_pid_alive "$ARM_PID"; do
       park_wait_half_second
+      fm_supervision_tick_loop
       i=$((i - 1))
     done
   done
@@ -1291,6 +1294,7 @@ host_stop_signals
 activate || { echo "supervision-host stood down: the host record could not be written"; exit 0; }
 prepare_park_wait || { emit 'supervision-host: park timer could not be prepared; drain and re-arm supervision'; exit 1; }
 log_line "start	gen=$GEN	primary=$PRIMARY"
+fm_supervision_tick_loop_init "$STATE" "$CONFIG" "$STATE/.supervision-host-ticks" supervision-host half-second-wait-v1
 
 # The first cycle.
 if [ "$FIRST_ARM_RESTART" -eq 1 ]; then

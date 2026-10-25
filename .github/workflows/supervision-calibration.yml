@@ -1,0 +1,37 @@
+name: Supervision calibration
+
+on:
+  push:
+    branches: [main, 'ci/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  calibrate:
+    name: Sealed per-tick fixture costs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install CI-only tracing tools
+        run: sudo apt-get update && sudo apt-get install -y strace time jq
+      - name: Build isolated fixture plan
+        run: >-
+          python3 tests/fixtures/supervision-accounting/calibration.py
+          "$GITHUB_WORKSPACE" "$RUNNER_TEMP/calibration-homes" "$RUNNER_TEMP/plan.json"
+      - name: Measure exact-head fixture ticks
+        run: >-
+          python3 bin/fm-supervision-accounting.py calibrate-ci "$RUNNER_TEMP/plan.json"
+          --output "$RUNNER_TEMP/calibration" --repeats 3
+      - name: Retain sealed calibration and refusal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supervision-calibration-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/calibration
+            ${{ runner.temp }}/plan.json
+            ${{ runner.temp }}/calibration-homes/write-probe.trace
+          if-no-files-found: error

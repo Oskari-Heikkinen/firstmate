@@ -121,6 +121,8 @@ if [ "${FM_GATE_REFUSE_BYPASS:-}" != 1 ]; then
 fi
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
@@ -425,6 +427,9 @@ attached_holder_live() {
 attach_and_wait() {
   local attached_pid=$1 age
   while :; do
+    # Attachments may overlap, so they use the concurrent-producer journal,
+    # not a falsely singleton per-home owned slot.
+    fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" attached-arm attach-poll-v1
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ] || [ "$HEALTHY_IDENTITY" != "$cycle_watcher_identity" ]; then
         cycle_log_append unknown unknown lock-replaced "attached:$HEALTHY_PID"

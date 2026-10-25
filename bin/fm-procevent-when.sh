@@ -104,6 +104,8 @@ FM_ROOT_REAL=$(cd "$FM_ROOT" 2>/dev/null && pwd -P) || FM_ROOT_REAL=$FM_ROOT
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 WHEN_DIR="$STATE/when"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 OUTPUT_TAIL_BYTES=${FM_WHEN_OUTPUT_TAIL_BYTES:-8192}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
@@ -391,6 +393,7 @@ cmd_run() {
         "the condition never held for $SPEC_STABLE consecutive polls within ${SPEC_DEADLINE}s of arming" "$polls" '' ''
       exit 0
     fi
+    fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" park-check condition-poll-v1
     bounded_run "$SPEC_CONDITION_TIMEOUT" "$out" "${COND_ARGV[@]}"
     rc=$?
     polls=$((polls + 1))

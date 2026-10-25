@@ -55,6 +55,17 @@ wait_for_file() {  # <file> [tries]
   return 1
 }
 
+wait_for_tick_row() { # <home> <family> <unit>; bounded CI fixture only
+  local home=$1 family=$2 unit=$3 remaining=150 marker
+  printf -v marker '\t%s\t%s\t' "$family" "$unit"
+  while [ "$remaining" -gt 0 ]; do
+    grep -q "$marker" "$home/state/.supervision-entries.tsv" 2>/dev/null && return 0
+    sleep 0.1
+    remaining=$((remaining - 1))
+  done
+  return 1
+}
+
 # A condition that is true exactly when its trigger file exists, and counts
 # every evaluation so flap tests can wait on real poll activity.
 COND="$TMP_ROOT/cond.sh"
@@ -139,9 +150,16 @@ ACTLOG="$TMP_ROOT/fire-act"
 when "$H" arm fire --interval 0.1 --stable 2 \
   --condition "$COND" "$TRIG" "$TMP_ROOT/fire-count" \
   --action "$ACT" "$ACTLOG" >/dev/null
-pe "$H" reconcile >/dev/null
+FIRE_TICK_RECORDS=0
+if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then FIRE_TICK_RECORDS=1; fi
+FM_SUPERVISION_TICKS="$FIRE_TICK_RECORDS" FM_PROCEVENT_OWNER_CHECK_SECONDS=1 pe "$H" reconcile >/dev/null
 # Let the runner observe some clean falses before the condition turns true.
 wait_for_file "$TMP_ROOT/fire-count" || fail "the condition was never polled"
+if [ "$FIRE_TICK_RECORDS" -eq 1 ]; then
+  wait_for_tick_row "$H" owner-guard owner-check-v1 || fail 'owner guard tick record missing'
+  wait_for_tick_row "$H" park-check condition-poll-v1 || fail 'condition poll tick record missing'
+  wait_for_tick_row "$H" procevent-reconcile invocation-v1 || fail 'reconcile invocation record missing'
+fi
 : > "$TRIG"
 wait_for_result "$H" when-fire || fail "no outcome was captured after the condition held"
 RESULT=$(first_result "$H" when-fire)

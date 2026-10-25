@@ -8,7 +8,8 @@ The agent entry point is the [`supervision-accounting` skill](../.agents/skills/
 ## Ownership and bounds
 
 The Python 3.9+ standard-library tool is an explicitly invoked, finite task utility, not a check, daemon, notification service or recurring poller.
-It never discovers homes or endpoint namespaces, runs a supplied workload, starts a backend, consumes a queue, writes a status input, acquires custody or activates a supervisor.
+Outside its GitHub-CI-only calibration verb it never runs a supplied workload.
+No verb discovers homes or endpoint namespaces, starts a backend, consumes a queue, writes a status input, acquires custody or activates a supervisor.
 The separately authorized proc route enumerates machine process leaders and optionally reads exact owner-admitted tick-log paths, never home state or endpoint directories by discovery.
 The invoking task owner reads its stdout/artifacts and routes success or refusal through the task's existing status path.
 Exit 2 means refused or invalid input, not an empty successful observation.
@@ -204,6 +205,117 @@ With a supplied model, `pending-reviewed-model-baseline` is a request for eviden
 Review must establish coverage of every enrolled home's relevant source families, calibrated exclusive costs, actual tick-unit equivalence, startup treatment and an explained residual; a list of missing profiles blocks complete fleet acceptance.
 The measured exclusive supervision table remains null, even if all named profiles exist and both cross-checks are nonnegative.
 Reports distinguish no-model incompleteness, pending model review, and a contradicted model without widening collection privileges.
+
+## CI calibration, opt-in tick journals and retrospective reconciliation
+
+The attribution input shape is owned by [`attribution-v1.schema.json`](supervision-accounting/attribution-v1.schema.json), and the sealed calibration payload by [`calibration-v1.schema.json`](supervision-accounting/calibration-v1.schema.json).
+These are finite task artifacts, not an automated cross-home publishing stage or a new installed actor.
+The invoking task owner consumes success/refusal and retains evidence through its existing status path.
+
+### Calibration evidence
+
+Calibration executes a trusted fixture plan only on a GitHub-hosted Linux Actions runner, using installed strace and GNU time, with the clean checkout exactly matching the GitHub run revision before and after measurement.
+The separate [calibration workflow](../.github/workflows/supervision-calibration.yml) installs those CI-only dependencies explicitly and retains evidence on failure too.
+No local profiler, workload, privilege change or implicit calibration fallback is enabled.
+Each repeat reconstructs fresh isolated state from sealed fixture files; explicit home/state/data/config/project overrides must all name that repeat's private scratch tree.
+The retained plan binds family, tick unit, revision, configuration pin, work-mix digest, argv, environment and qualification.
+A work-mix digest seals the canonical fixture-file array; configuration and unit equivalence with deployment remain owner/reviewer assertions, not facts inferred from a matching digest.
+
+Launch tracing counts the script's entry birth and its descendant task births, including threads.
+GNU time reports the same command subtree's user/system CPU, including reaped children, without adding the tracer's own CPU.
+A fixture with another recognized supervision family nested in its subtree is refused rather than assigning inclusive CPU to two families.
+This is an isolated-scope calibration method, not an exclusive CPU splitter for arbitrary nested live workloads.
+Birth counts must agree across repeats; CPU retains every reading and its repeat spread, with 10 ms quantization per component explicitly reported.
+Freshly generated journal records must prove the plan's positive tick count for each repeat, with no other family/unit in that scope; preseeded instrumentation files are refused.
+Costs divide by the sum of actual calibrated ticks, not just the number of repeats.
+Command startup remains in that average rather than being silently removed, so an invocation fixture cannot certify a resident steady-tick cost without matching startup treatment.
+The outer canonical-JSON SHA-256 envelope seals all metadata and retained raw trace/CPU evidence; it detects content changes, not provenance forgery or operator authority.
+Replay validates the closed payload, inner trace seals, recomputed births, CPU evidence, repeat count and deterministic birth agreement.
+
+The fixture plan currently measures isolated empty-home crew-state, drain and contribution-input snapshot units.
+It explicitly marks the remaining families unavailable rather than pricing a help command, starting a standing loop or exercising a lifecycle transaction.
+Those synthetic-shape costs are CI measurement evidence for those fixtures, not real fleet calibrations or a B0 acceptance packet.
+A deployment calibration requires a separately reviewed matching fixture plan and complete exclusive scope, including its actual tick unit and work mix.
+The utility does not invent that evidence for an unavailable family.
+Each command is bounded to 30 seconds, the measurement phase to five minutes, repeats to nine and profiles to 32; aggregate trace/stdout/stderr/CPU and fixture bytes are capped at 16 MiB.
+An interrupted or failed command kills only its own private CI process group and retains incomplete evidence.
+Plans must be finite fixtures without escaping/daemonized children, never live-home commands.
+
+### Tick recording without a new polling process
+
+Logging is disabled by default and landing enables it in no home.
+`config/supervision-tick-logging` opts in existing actors when they start and short commands when invoked; `FM_SUPERVISION_TICKS=1` enables and `0` disables explicitly.
+Linux with Bash's microsecond `EPOCHREALTIME` and readable proc uptime is required for this recording route; unsupported clocks refuse instrumentation while legacy supervision continues.
+No interpreter or new dependency is added to ordinary monitoring.
+The logger lives with the existing shell bridge in [`fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh), whose header owns the shell API.
+All successful appends use shell builtins only: no date, stat, helper process, new poller, timer or standing reader.
+No sleep, grace, liveness verdict, queue custody or delivery deadline changes.
+
+`fm-supervision-tick.v1` is one LF-terminated ASCII TSV row: format, family, unit, writer generation (`PID:startup-wall-seconds`), sequence, wall epoch seconds with six fractional digits, proc uptime seconds with two fractional digits, and phase.
+`start` has sequence zero and is not a tick; `tick` and the first retained `rotate` row count once, with a monotonically increasing generation-local sequence.
+Concurrent `entry` rows have sequence one and a fresh timestamped generation per append.
+The wall stamp is not a proof of process start identity; proc uptime provides the separate boot-clock coordinate.
+Readers preserve raw bytes, unfinished lines, startup qualifications, sequence gaps and rotation loss instead of deriving rates from configured sleeps.
+
+The watcher and host use independently owned two-slot streams at `state/.supervision-watch-ticks.{0,1}.tsv` and `state/.supervision-host-ticks.{0,1}.tsv`, with a two-byte cursor sidecar per stream.
+The existing singleton/host ownership, not the logger, serializes writer generations.
+Each slot has a strict 64 KiB cap, and builtin redirection rotates to the other slot without a subprocess, retaining the previous slot.
+A new generation starts in the alternate slot, not by appending under its predecessor's sequence.
+The APIs refuse malformed caps, slots, symlinks, special files and an append inherited by a different process.
+The APIs are not safe as a shared-writer lock or as an ownership protocol.
+
+Short crew-state, drain, snapshot, spawn and control commands append one entry after home resolution; spawn/control help and earlier gate/home-resolution refusals are outside this unit.
+Snapshot mode and transaction work mix still require matching calibration; an invocation counter is not a claim of equal cost for all requests.
+Reconcile calls, owner-guard checks, condition polls and attached-arm polls also use the concurrent journal because their producers can overlap.
+It is `state/.supervision-entries.tsv`, with `state/.supervision-entries.previous.tsv` as the other retained slot.
+The watcher obtains its size in the stat process already needed for home-summary age, then performs one rename when the default 4 MiB threshold is reached; the existing pass is the only rotation reader.
+An existing active journal is maintained even when that watcher's recording flag is off, so producer-specific overrides cannot leave it unbounded behind an otherwise running watcher.
+`FM_SUPERVISION_ENTRY_MAX_BYTES` can select 4 KiB through 16 MiB for that threshold.
+The concurrent journal's bound is a threshold plus growth until the next watcher pass, not a hard instantaneous cap; there is no such growth bound while that watcher is stopped or delayed.
+Rotation never truncates the shared inode.
+The retained-path size bound also does not bound disk space held by frozen open unlinked inodes.
+
+**Accepted measurement limit: a concurrent producer frozen between its O_APPEND open and write across two watcher rename rotations can silently lose its line.**
+This applies to every producer of that journal, including concurrent polling actors, not just ordinary short requests.
+No writer-lifetime assumption, per-record acknowledgement or zero-loss proof is claimed.
+Every reconcile result repeats this limit next to its counts and residual; it must accompany any capture report that uses those counts.
+An ordinary late append after only one rename still lands in the retained previous inode.
+The regression demonstrates both that retained case and the deliberately accepted loss case.
+
+An instrumentation failure invalidates the current recording cohort through `state/.supervision-ticks.error` and stderr, without stopping or certifying the supervisor.
+The existing watcher queues one invalidation notice per cohort through its ordinary slow-check step, not at the head of every monitoring pass; it is a recording failure, not a task status or a new supervisor-health predicate.
+It writes `state/.supervision-ticks.error-seen` only after durable queue publication, so a failed enqueue is retried and an already queued notice does not keep cutting monitoring cycles short.
+The queued notice may ride along with another ordinary wake; normal queue replay and acknowledgement still own delivery.
+The recording owner preserves the marker and receipt, repairs the cause, then archives both before deliberately beginning a new cohort and accepting rates.
+Offline journal inputs must explicitly attest the absence of that invalidation; missing or positive error state leaves the family unavailable.
+They also declare owned-loop versus concurrent records; an owned loop without startup/retention evidence is unavailable, not a quiet zero.
+Failed owned-loop writers retry invalidation delivery on their existing ticks; an I/O failure is not turned into a healthy zero stream after recovery.
+No code clears an invalidation automatically, enables logging remotely or restarts an actor to pick it up.
+Other loops and entrypoints without these exact records remain uncovered, not inferred from source labels or configured cadence.
+
+### Saved records and same-window arithmetic
+
+Retrospective counting reads only the supplied saved proc envelope and owner-published sealed log bytes, never a current home or a discovered path.
+A profile supplies either one sealed record or explicit sealed fragments, allowing both retained slots to be replayed without rewriting their contents.
+Owner metadata must state full retained window coverage, code/configuration pins, work mix, exact tick unit and source semantics.
+Missing owner evidence, stale window coverage or changed pins produce an unavailable row, not a zero-cost modelled family.
+Generic adapters support epoch-first TSV, timestamped status lines and JSON timestamps, including the successful-spawn publication's explicit epoch field.
+Those narrower successful-spawn and watcher-cycle-close units must not be called every spawn attempt or every watcher inner tick.
+
+The instrumented TSV adapter partitions a shared record by exact family and unit and checks generation-local sequence continuity.
+Shared fragments must have identical content seals, and other adapter types may not share a record.
+A removed prefix inside the requested interval, duplicate/missing sequence or invalidation prevents modelling that profile.
+Instrumented counts use conservative proc-uptime brackets from the capture, excluding ambiguous edge jiffies; generic adapters use the capture's wall interval.
+Both publish the exact measured monotonic duration as their denominator and retain the wall-minus-monotonic discrepancy.
+Centisecond boot-clock quantization, startup and in-flight boundary work remain explicit uncertainties, not recovered events.
+
+For each compatible family, reconciliation multiplies the repeated CI per-tick mean by the counted unit records, without mixing observed proc lower bounds into the estimate.
+The report prints a modelled covered subtotal, never measured supervision, with per-family evidence, spread and qualifications.
+With no compatible family the modelled subtotal is null, not a measurement of zero supervision.
+Machine-minus-covered-subtotal births and busy CPU are explicit, with negative residuals preserved as contradictions and positive residuals never allocated to supervision by subtraction.
+Coverage includes every admitted home's six leading families plus explicitly supplied additional families; complete other-family enrollment remains a review obligation.
+Calibration revision/configuration/work-mix pins must match the admitted workload, and tick rates must belong to the exact machine window rather than another capture.
+No output certifies B0, claims savings or authorizes a later capture or performance promotion.
 
 ## Exclusive accounting
 

@@ -3367,7 +3367,7 @@ test_predecessor_cleanup_preserves_a_cycle_its_arm_does_not_own() {
 }
 
 test_park_exit_probe_avoids_child_sleeps_where_supported() {
-  local home host_pid path
+  local home host_pid path record_ticks=0
   home=$(make_home park-cadence attended)
   cat > "$home/fakebin/sleep" <<'SH'
 #!/bin/bash
@@ -3381,7 +3381,8 @@ fi
 exec /bin/sleep "$@"
 SH
   chmod +x "$home/fakebin/sleep"
-  FM_SUPERVISION_HOST_POLL=60 start_host "$home"
+  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then record_ticks=1; fi
+  FM_SUPERVISION_TICKS="$record_ticks" FM_SUPERVISION_HOST_POLL=60 start_host "$home"
   wait_until 150 watcher_live "$home" || fail "park-cadence: no watcher started"
   host_pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
   [ -n "$host_pid" ] || fail "park-cadence: no recorded host"
@@ -3390,6 +3391,10 @@ SH
   # pass just because it spawned no sleeps.
   sleep 2
   kill -0 "$host_pid" 2>/dev/null || fail "park-cadence: host exited while parked"
+  if [ "$record_ticks" -eq 1 ]; then
+    grep -Eq $'\tsupervision-host\thalf-second-wait-v1\t.*\t(tick|rotate)$' "$home/state/.supervision-host-ticks.0.tsv" \
+      || fail 'park-cadence: host wait ticks missing'
+  fi
   if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
     [ ! -s "$home/park-sleeps" ] || fail "park-cadence: builtin-capable host still spawned sleep children"
   else

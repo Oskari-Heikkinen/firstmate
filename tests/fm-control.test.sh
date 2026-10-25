@@ -34,6 +34,20 @@ mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+# A usage refusal after explicit home resolution still counts an invocation,
+# without resolving or sending to any endpoint.
+if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then
+  mkdir -p "$TMP_ROOT/tick-home/state" "$TMP_ROOT/tick-home/config"
+  FM_SUPERVISION_TICKS=1 FM_HOME="$TMP_ROOT/tick-home" FM_BACKEND=tmux \
+    FM_STATE_OVERRIDE="$TMP_ROOT/tick-home/state" FM_CONFIG_OVERRIDE="$TMP_ROOT/tick-home/config" \
+    bash "$CONTROL" > "$TMP_ROOT/tick-control.out" 2>&1
+  tick_rc=$?
+  [ "$tick_rc" -ne 0 ] || fail 'control tick fixture unexpectedly accepted missing arguments'
+  IFS=$'\t' read -r tick_format tick_family tick_unit _ < "$TMP_ROOT/tick-home/state/.supervision-entries.tsv"
+  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v1:control:invocation-v1 ] || fail 'control entry tick missing'
+  pass 'control tick instrumentation records a safe pre-endpoint refusal'
+fi
+
 VERIFIED_HARNESSES="claude codex opencode pi pi-signed grok kimi cursor muse omp devin"
 
 # The expectation table, written out independently of the implementation so a
