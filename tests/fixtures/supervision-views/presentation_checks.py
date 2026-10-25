@@ -63,6 +63,13 @@ status_new_lines_since_cursor "$f" "$3" || exit 1
                                   for r in native["open"]]), opened)
         self.assertEqual(int(acknowledged.split(b"\t")[1]), native["acknowledged_end"])
         self.assertEqual(encoded(native["new_lines"]), new_lines)
+        # Exercise the production offset-batching interface against those SAME
+        # real owner-written manifest/marker bytes, not a fabricated format.
+        snapshot = {name: row[name] for name in ("task", "end", "identity", "fully_presented")}
+        snapshot["strong_identity"] = acknowledged.split(b"\t")[2].rstrip(b"\n").decode()
+        before = {p.name: p.read_bytes() for p in self.state.iterdir() if p.is_file()}
+        self.assertEqual(Presentation(self.inputs).read_from_snapshot([snapshot])["rows"][0], native)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.state.iterdir() if p.is_file()})
         return native
 
     def test_kind_unread_and_decision_matrix(self):
@@ -163,6 +170,86 @@ status_new_lines_since_cursor "$f" "$3" || exit 1
         store.write_text(json.dumps({"schema": "fm-alert-store/v1", "active": {}}))
         self.assertEqual(Presentation(self.inputs).read([row])["rows"][0]["open"], [])
 
+    def test_marker_formats_compare_to_existing_offset_owner(self):
+        from fm_view_offsets import Offsets
+        raw = b"working: first\nworking: last\n"
+        self.compare(raw)
+        strong = (self.state / ".status-presentation-cursor").read_text().split("\t")[1]
+        info = (self.state / "task.status").stat()
+        snapshot = {"task": "task", "end": len(raw), "identity": [info.st_dev, info.st_ino],
+                    "strong_identity": strong, "fully_presented": False}
+        boundary = len(b"working: first\n")
+        valid = f"{boundary}@{strong}"
+        cases = [valid, f"v2\t{valid}\t{valid}", f"v2\tr1:00ab\t{valid}",
+                 f"v2\tunverifiable\t{valid}", f"v2\t{valid}\t-", "unverifiable", "r1:ab",
+                 f"v2\tbad\t{valid}", f"v2\t{valid}\tr1:ab", f"v2\t{valid}\tunverifiable",
+                 f"v2\t{valid}\t{valid}\textra", "12@other-identity", "malformed", ""]
+        script = '''. "$1/bin/fm-classify-lib.sh"
+status_presentation_marker_offset "$2/.seen-task_status" "$2/task.status"
+'''
+        marker = self.state / ".seen-task_status"
+        for raw_marker in cases:
+            marker.write_text(raw_marker)
+            with self.subTest(marker=raw_marker):
+                before = marker.read_bytes()
+                result = subprocess.run(["bash", "-c", script, "oracle", str(ROOT), str(self.state)],
+                                        capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rows, _ = Offsets(self.inputs).capture([snapshot])
+                self.assertEqual(rows[0]["classified"], int(result.stdout))
+                self.assertEqual(marker.read_bytes(), before)
+
+    def test_offset_batch_missing_rows_identity_reset_migration_and_cursor_barrier(self):
+        from unittest.mock import patch
+        row = self.row(b"working: first\nnote: answer\n")
+        snapshot = {name: row[name] for name in ("task", "end", "identity", "fully_presented")}
+        # A weak original identity remains weak; it must not be upgraded by the
+        # native observer or confused with a different strong proof.
+        strong = "weak:" + ":".join(str(i) for i in row["identity"])
+        snapshot["strong_identity"] = strong
+        manifest = self.state / ".status-presentation-cursor"
+        migration = self.state / ".task.open-decisions-cursor"
+        presentation = Presentation(self.inputs)
+        self.assertEqual(presentation.read_from_snapshot([snapshot])["rows"][0]["new_lines"],
+                         ["working: first", "note: answer"])
+        migration.write_text("legacy cursor remains owned by legacy")
+        with self.assertRaisesRegex(Refused, "migration cursor"):
+            presentation.read_from_snapshot([snapshot])
+        # Missing task rows in an EXISTING manifest must never use migration.
+        manifest.write_bytes(b"")
+        presentation.read_from_snapshot([snapshot])
+        manifest.write_text("task\t" + strong + "\t" + str(row["end"]) + "\t0\n")
+        self.assertEqual(presentation.read_from_snapshot([snapshot])["rows"][0]["new_lines"], [])
+        for identity, offset in (("strong:1:2:other", row["end"]), (strong, row["end"] + 1)):
+            manifest.write_text(f"task\t{identity}\t{offset}\t0\n")
+            self.assertEqual(len(presentation.read_from_snapshot([snapshot])["rows"][0]["new_lines"]), 2)
+        for raw in (b"task\tbad\tnot-a-number\n", b"task\tx\t0\n task\tx\tbad\n",
+                    b"task\tx\t0\ntask\tx\t0\n", b"task\tx\t0\t0\textra\n"):
+            manifest.write_bytes(raw)
+            with self.subTest(raw=raw), self.assertRaises(Refused):
+                presentation.read_from_snapshot([snapshot])
+        manifest.write_bytes(b"")
+        reads = []
+        original_read = self.inputs.state_named_read
+        def count(name):
+            reads.append(name)
+            return original_read(name)
+        with patch.object(self.inputs, "state_named_read", count):
+            presentation.read_from_snapshot([snapshot])
+        self.assertEqual(reads.count(".status-presentation-cursor"), 2)  # capture and barrier only
+        self.assertEqual(reads.count(".seen-task_status"), 1)
+        original = presentation.read
+        def change_cursor(rows):
+            result = original(rows)
+            manifest.write_text("task\t" + strong + "\t0\n")
+            return result
+        with patch.object(presentation, "read", change_cursor), self.assertRaisesRegex(Refused, "cursor changed"):
+            presentation.read_from_snapshot([snapshot])
+        manifest.unlink()
+        manifest.symlink_to(migration)
+        with self.assertRaises(OSError):
+            presentation.read_from_snapshot([snapshot])
+
     def test_invalid_rows_and_unknown_are_refusals(self):
         row = self.row(b"note: answer\n")
         for field, value in (("end", True), ("end", -1), ("end", 4194305),
@@ -182,8 +269,10 @@ status_new_lines_since_cursor "$f" "$3" || exit 1
 class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
     async def test_both_generation_barriers_leave_both_critical_slots_reserved(self):
         import threading
-        for stalled_call, phase in ((1, "pre-observe"), (5, "pre-reply")):
-            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
+        cases = [(call, phase, operation) for call, phase in ((1, "pre-observe"), (5, "pre-reply"))
+                 for operation in ("status-presentation", "drain-presentation")]
+        for stalled_call, phase, operation in cases:
+            with self.subTest(phase=phase, operation=operation), tempfile.TemporaryDirectory() as temporary:
                 home = Path(temporary).resolve()
                 (home / "state").mkdir()
                 batch_entered = {"batch" + str(i): threading.Event() for i in range(4)}
@@ -226,7 +315,12 @@ class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
                         args = {"rows": [{"task": task, "end": info.st_size, "offset": 0,
                                           "identity": [info.st_dev, info.st_ino],
                                           "classified": 0, "fully_presented": False}]}
-                        requests.append(asyncio.create_task(engine.request("status-presentation", args, 20)))
+                        if operation == "drain-presentation":
+                            row = args["rows"][0]
+                            row.pop("offset")
+                            row.pop("classified")
+                            row["strong_identity"] = f"weak:{info.st_dev}:{info.st_ino}"
+                        requests.append(asyncio.create_task(engine.request(operation, args, 20)))
                     await wait_entered(batch_entered)
                     self.assertEqual(engine.ordinary.active, 4)
                     self.assertEqual(engine.critical.active, 0)
@@ -341,6 +435,33 @@ class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
                 await asyncio.gather(first, return_exceptions=True)
+                engine.close()
+
+    async def test_drain_offsets_are_fresh_without_status_changes_and_do_not_share_with_other_verb(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            (home / "state").mkdir()
+            (home / "state/task.meta").write_text("kind=secondmate\nspawn_gen=g1\n")
+            path = home / "state/task.status"
+            path.write_bytes(b"note: answer\n")
+            info = path.stat()
+            strong = f"weak:{info.st_dev}:{info.st_ino}"
+            args = {"rows": [{"task": "task", "end": info.st_size,
+                              "identity": [info.st_dev, info.st_ino], "strong_identity": strong,
+                              "fully_presented": False}]}
+            engine = Engine(Inputs(str(home)))
+            try:
+                first = await engine.request("drain-presentation", args, 2)
+                self.assertEqual(first["rows"][0]["unread"], ["note: answer"])
+                (home / "state/.status-presentation-cursor").write_text(f"task\t{strong}\t{info.st_size}\t0\n")
+                second = await engine.request("drain-presentation", args, 2)
+                self.assertEqual(second["rows"][0]["unread"], [])
+                self.assertEqual(engine.operations, 2)
+                # These shapes are different APIs; a drain snapshot cannot be
+                # admitted as a pre-captured-offset presentation request.
+                with self.assertRaisesRegex(Refused, "invalid presentation row"):
+                    await engine.request("status-presentation", args, 2)
+            finally:
                 engine.close()
 
     async def test_batch_rpc_and_fresh_generation(self):

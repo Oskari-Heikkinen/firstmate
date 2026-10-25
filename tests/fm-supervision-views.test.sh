@@ -4,6 +4,10 @@
 # Queued annotations consume the same captured span as the fold, preserve byte
 # rendering and append boundaries, and never reopen its cursor/span readers.
 # Malformed client annotation groups fall back before native selection.
+# Native offset batching reads real owner-written cursor/marker bytes, refuses
+# unmigrated legacy cursors and leaves all publication/commit authority intact.
+# Real-client corrupt replies exercise observed-offset validation plus the
+# independent owner-side lower bound before native selection or stdout.
 # Presentation compares unread rows, decisions and suggested contiguous cursor
 # endpoints to the existing shell transaction APIs; no live home or backend.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
