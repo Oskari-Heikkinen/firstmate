@@ -6,6 +6,17 @@ Python >=3.9, standard library only. `probe` is read-only, with no attach.
 `capture` needs Linux, strace, pidfds and permission to ptrace every explicitly
 published root. It refuses unless FM_SUPERVISION_CAPTURE_LIVE=1 AND
 --acknowledge-ptrace are supplied; never use it as a routine check.
+`capture-proc` is a separate opt-in, unprivileged Linux /proc-only route:
+--manifest FILE --output NEW_DIR --seconds 1..300 [--interval-ms 1000..10000]
+[--max-bytes 4096..67108864]. Requires FM_SUPERVISION_PROC_LIVE=1, non-root,
+no effective capabilities, local single-machine enrollment and published roots.
+No subprocess, attach, target signals, policy writes or workload. Output cap is TOTAL.
+`account-proc FILE` replays its proc.json (including synthetic CI fixtures).
+`check-proc-fixture FILE` exercises the SAME deadline/scan/task-cap guards with
+closed synthetic JSON clocks/limits and at most 200ms of pause; no /proc reads,
+output directory or live capture. Fixture controls cannot be supplied to live
+capture, by flags, environment or manifest fields.
+Proc reports measured machine totals and observed lower bounds, NOT complete B0.
 Capture output is private and may contain command arguments.
 Exit: 0 report produced, 2 refused/invalid input or failed capture. A report
 may retain losses/contradictions without certifying completeness. Diagnostics
@@ -15,6 +26,7 @@ Schemas and semantics: docs/supervision-accounting.md. No daemon or poller.
 import argparse
 import base64
 import binascii
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -312,6 +324,290 @@ def capture(args):
         write_private(output / "finished.json", metadata)
     require(metadata["complete"], "capture incomplete; retain evidence and report refusal")
     return {"output": str(output), "complete": True, "next": "import-strace"}
+
+
+def proc_enrollment(value):
+    manifest(value)
+    require(not any(h["remote"] for h in value["homes"]), "proc capture refuses remote homes")
+    require(len({h["machine"] for h in value["homes"]}) == 1, "proc capture needs one machine")
+    roots = [r["pid"] for h in value["homes"] for r in h["capture_roots"]]
+    require(roots and len(set(roots)) == len(roots), "missing or shared proc capture roots")
+    return value
+
+
+def proc_boundary(hz):
+    def uptime():
+        return Decimal(read_bytes("/proc/uptime", 256).decode("ascii").split()[0]) * hz
+
+    lower = int(uptime())
+    counter = boundary()
+    # uptime is printed to centiseconds (truncated); add a full centisecond
+    # plus one jiffy, not just a rounding operation at HZ > 100.
+    upper = int(uptime()) + (hz + 99) // 100 + 1
+    return {key: counter[key] for key in
+            ("monotonic_ns", "wall_ns", "machine_births", "cpu_ticks")} | {
+                "uptime_lower_ticks": lower, "uptime_upper_ticks": upper,
+                "boot_id": read_bytes("/proc/sys/kernel/random/boot_id", 128).decode("ascii").strip()}
+
+
+def proc_task(pid):
+    base = "/proc/" + str(pid)
+
+    def fields():
+        text = read_bytes(base + "/stat", 16384).decode("utf-8", "surrogateescape")
+        return text[text.rfind(")") + 2:].split()
+
+    first = fields()
+    hint_unavailable = False
+    try:
+        raw = read_bytes(base + "/cmdline", 65536)
+        executable = os.readlink(base + "/exe") if raw else ""
+    except (PermissionError, Refused):
+        raw, executable, hint_unavailable = b"", "", True
+    last = fields()
+    require(first[19] == last[19], "PID reused during proc read")
+    return {"pid": pid, "ppid": int(last[1]), "start_ticks": int(last[19]),
+            "user_ticks": int(last[11]), "system_ticks": int(last[12]),
+            "argv": [v.decode("utf-8", "surrogateescape") for v in raw.rstrip(b"\0").split(b"\0")]
+            if raw else [], "executable": executable, "hint_unavailable": hint_unavailable}
+
+
+def proc_scan(deadline, byte_budget, fixture=None):
+    # Only check-proc-fixture can supply fixture data. The live caller always
+    # uses /proc, its real monotonic clock and the fixed 32768-leader ceiling.
+    started = time.monotonic_ns()
+    tasks, unreadable, vanished, encoded_bytes = [], 0, 0, 0
+    require(byte_budget >= 0, "proc total output cap exceeded")
+    task_limit = 32768 if fixture is None else fixture["task_limit"]
+    entries = os.scandir("/proc") if fixture is None else nullcontext(fixture["pids"])
+    with entries as directory:
+        for item in directory:
+            now = time.monotonic() if fixture is None else fixture["clock_ms"] / 1000
+            require(now < deadline, "proc scan exceeded duration bound")
+            name = item.name if fixture is None else str(item)
+            if not name.isdecimal():
+                continue
+            require(len(tasks) + unreadable + vanished < task_limit, "proc task cap exceeded")
+            try:
+                task = proc_task(int(name)) if fixture is None else {
+                    "pid": item, "ppid": 0, "start_ticks": 0, "user_ticks": 0,
+                    "system_ticks": 0, "argv": [], "executable": "", "hint_unavailable": False}
+            except (FileNotFoundError, ProcessLookupError):
+                vanished += 1
+                continue
+            except (OSError, Refused, ValueError, IndexError):
+                unreadable += 1
+                continue
+            encoded_bytes += len(dump(task).encode()) + 128  # enclosing JSON indentation
+            require(encoded_bytes <= byte_budget, "proc total output cap exceeded")
+            tasks.append(task)
+    return {"tasks": tasks, "unreadable": unreadable, "vanished": vanished,
+            "scan_ns": time.monotonic_ns() - started}
+
+
+def proc_hints(tasks, enrollment):
+    """An exclusive *provisional* partition, never executable-entry proof."""
+    by_pid = {row["pid"]: row for row in tasks}
+    roots = {r["pid"]: (int(r["start_ticks"]), h["id"])
+             for h in enrollment["homes"] for r in h["capture_roots"]}
+    result, memo = {}, {}
+    for task in tasks:
+        chain, seen, current = [], set(), task
+        home, family = "unattributed", "unattributed"
+        while current and current["pid"] not in seen:
+            pid = current["pid"]
+            if pid in memo:
+                home, family = memo[pid]
+                break
+            seen.add(pid)
+            chain.append(current)
+            if pid in roots and roots[pid][0] == current["start_ticks"]:
+                home = roots[pid][1]
+                break
+            parent = by_pid.get(current["ppid"])
+            current = parent if parent and parent["start_ticks"] <= current["start_ticks"] else None
+        for ancestor in reversed(chain):
+            if home != "unattributed":
+                observed = entry(ancestor["executable"], ancestor["argv"], enrollment, home)
+                if observed:
+                    family = observed["family"]
+            memo[ancestor["pid"]] = (home, family)
+        result[(task["pid"], task["start_ticks"])] = memo[task["pid"]]
+    return result
+
+
+def account_proc(value):
+    checked(value, "proc")
+    enrollment = proc_enrollment(value["manifest"])
+    snapshots, hz = value["snapshots"], value["clock_ticks"]
+    first, last = snapshots[0]["boundary"], snapshots[-1]["boundary"]
+    duration = last["monotonic_ns"] - first["monotonic_ns"]
+    require(0 < duration <= 310000000000, "invalid proc duration")
+    previous = None
+    observations, birth_hints, cpu_hints = {}, {}, {}
+    hint_changes = 0
+    for snapshot in snapshots:
+        at = snapshot["boundary"]
+        require(at["boot_id"] == first["boot_id"], "proc boot changed")
+        require(at["uptime_lower_ticks"] <= at["uptime_upper_ticks"], "invalid uptime bracket")
+        if previous:
+            require(at["monotonic_ns"] > previous["monotonic_ns"]
+                    and at["machine_births"] >= previous["machine_births"]
+                    and at["uptime_lower_ticks"] >= previous["uptime_lower_ticks"],
+                    "proc counter reset or reversed samples")
+        previous = at
+        tasks = snapshot["tasks"]
+        require(len({t["pid"] for t in tasks}) == len(tasks), "duplicate proc PID")
+        hints = proc_hints(tasks, enrollment)
+        for task in tasks:
+            ident = (task["pid"], task["start_ticks"])
+            hint = hints[ident]
+            cpu = (task["user_ticks"], task["system_ticks"])
+            if ident not in observations:
+                observations[ident] = [cpu, cpu, hint, 1]
+                if first["uptime_upper_ticks"] <= ident[1] < last["uptime_lower_ticks"]:
+                    birth_hints[hint] = birth_hints.get(hint, 0) + 1
+            else:
+                row = observations[ident]
+                require(all(a >= b for a, b in zip(cpu, row[1])), "proc CPU counter reset")
+                if hint != row[2]:
+                    hint_changes += 1
+                delta = tuple(a - b for a, b in zip(cpu, row[1]))
+                # Changed executable/ancestry is an unknown interval. Do not
+                # transfer its whole history to the last observed family.
+                bucket = hint if hint == row[2] else ("unattributed", "unattributed")
+                totals = cpu_hints.setdefault(bucket, [0, 0])
+                totals[0] += delta[0]
+                totals[1] += delta[1]
+                row[1], row[2], row[3] = cpu, hint, row[3] + 1
+    observed_births = sum(birth_hints.values())
+    user = sum(v[0] for v in cpu_hints.values())
+    system = sum(v[1] for v in cpu_hints.values())
+    machine_births = last["machine_births"] - first["machine_births"]
+    # guest/guest_nice already occur in user/nice; idle and iowait are not busy.
+    busy = lambda b: sum(b["cpu_ticks"][i] for i in (0, 1, 2, 5, 6, 7))
+    machine_cpu = busy(last) - busy(first)
+    require(machine_cpu >= 0, "machine CPU counter reset")
+    buckets = sorted(set(birth_hints) | set(cpu_hints))
+    return {"format": "fm-supervision-proc-accounting.v1", "synthetic": value["synthetic"],
+            "b0_status": "incomplete-unprivileged-attribution", "claimed_births_per_second_saved": 0,
+            "duration_ns": duration, "clock_ticks": hz,
+            "machine": {"births": machine_births, "births_per_second": machine_births * 1e9 / duration,
+                        "busy_cpu_ticks": machine_cpu, "busy_cpu_one_core_percent":
+                        machine_cpu / hz * 1e11 / duration},
+            "observed": {"process_births_lower_bound": observed_births, "user_ticks": user,
+                         "system_ticks": system, "cpu_one_core_percent_lower_bound":
+                         (user + system) / hz * 1e11 / duration},
+            "residual": {"births_not_observed": machine_births - observed_births,
+                         "busy_cpu_ticks_not_observed": machine_cpu - user - system},
+            "exclusive_measured_supervision_by_home_family": None,
+            "provisional_not_measured_attribution": [
+                {"home": h, "family": f, "observed_process_births": birth_hints.get((h, f), 0),
+                 "user_ticks": cpu_hints.get((h, f), [0, 0])[0],
+                 "system_ticks": cpu_hints.get((h, f), [0, 0])[1]} for h, f in buckets],
+            "losses": {"unreadable_pid_samples": sum(s["unreadable"] for s in snapshots),
+                       "unavailable_hint_samples": sum(t["hint_unavailable"]
+                           for s in snapshots for t in s["tasks"]),
+                       "vanished_pid_samples": sum(s["vanished"] for s in snapshots),
+                       "single_sample_identities": sum(r[3] == 1 for r in observations.values()),
+                       "observed_hint_changes": hint_changes,
+                       "unseen_short_lived_tasks": "unknown; included in births_not_observed",
+                       "unseen_execs_and_reparenting": "unknown; all source/home allocation provisional",
+                       "nonleader_thread_births": "not sampled; included in births_not_observed",
+                       "proc_visibility": "current PID namespace and proc mount permissions only; "
+                       "not proof of machine-wide process visibility"},
+            "startup_coverage": {"existing_identities_observed": sum(
+                ident[1] < first["uptime_upper_ticks"] for ident in observations),
+                "entry_history": "unavailable for every existing process",
+                "barrier": "no simultaneous scan; boundary-tick births excluded conservatively"},
+            "residual_explanation": "Machine minus observed, not machine minus supervision. Includes "
+            "unseen short-lived processes/threads, boundary ticks, unreadable tasks, CPU before first/"
+            "after last observation and between-sample exits. Observed work also includes workload/"
+            "collector. Negative values are retained contradictions. No residual is claimed as savings."}
+
+
+def proc_with_deadline(seconds, action):
+    def expired(_signum, _frame):
+        raise Refused("proc total deadline exceeded; retain incomplete output")
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return action()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def capture_proc(args):
+    require(sys.platform == "linux", "proc capture needs Linux")
+    require(1 <= args.seconds <= 300, "proc duration must be 1..300 seconds")
+    return proc_with_deadline(args.seconds + 5, lambda: collect_proc(args))
+
+
+def check_proc_fixture(value):
+    checked(value, "proc-bounds-fixture")
+    require(hasattr(signal, "setitimer"), "fixture needs interval timer support")
+
+    def exercise():
+        # The bounded pause exercises the real process-local alarm, not a mock
+        # verdict. The scanner's clock and task limit are deterministic data.
+        time.sleep(value["pause_ms"] / 1000)
+        scan = proc_scan(value["scan_deadline_ms"] / 1000, 65536, value)
+        return {"synthetic": True, "tasks_read": len(scan["tasks"])}
+
+    return proc_with_deadline(value["deadline_ms"] / 1000, exercise)
+
+
+def collect_proc(args):
+    require(os.geteuid() != 0, "proc capture refuses root")
+    capabilities = read_bytes("/proc/self/status", 16384).decode("ascii")
+    effective = re.search(r"^CapEff:\s*([0-9a-fA-F]+)$", capabilities, re.M)
+    require(effective is not None and int(effective[1], 16) == 0,
+            "proc capture refuses effective capabilities; no privileged route")
+    require(os.environ.get("FM_SUPERVISION_PROC_LIVE") == "1", "proc live capture disabled")
+    require(1 <= args.seconds <= 300, "proc duration must be 1..300 seconds")
+    require(1000 <= args.interval_ms <= 10000, "proc interval must be 1000..10000 ms")
+    require(4096 <= args.max_bytes <= MAX_BYTES, "proc byte bound must be 4096..67108864")
+    enrollment = proc_enrollment(load_json(args.manifest))
+    hz = os.sysconf("SC_CLK_TCK")
+    value = {"format": "fm-supervision-proc.v1", "synthetic": False,
+             "manifest": enrollment, "clock_ticks": hz, "snapshots": []}
+    output = Path(args.output)
+    output.mkdir(mode=0o700)
+    os.chmod(output, 0o700)
+    # This record is part of the TOTAL output budget, including error cases.
+    started = {"method": "unprivileged-proc", "seconds": args.seconds,
+               "max_bytes": args.max_bytes, "interval_ms": args.interval_ms, "complete": False}
+    write_private(output / "started.json", started)
+    used = len(dump(started).encode())
+    deadline = time.monotonic() + args.seconds
+    hard_deadline = deadline + 2  # final scan budget, no unbounded catch-up
+    before = proc_boundary(hz)
+    while True:
+        scan = proc_scan(hard_deadline, args.max_bytes - len(dump(value).encode()) - used - 16384)
+        scan["boundary"] = before if not value["snapshots"] else proc_boundary(hz)
+        value["snapshots"].append(scan)
+        if len(value["snapshots"]) == 1:
+            available = {t["pid"]: t["start_ticks"] for t in scan["tasks"]}
+            require(all(available.get(r["pid"]) == int(r["start_ticks"])
+                        for h in enrollment["homes"] for r in h["capture_roots"]),
+                    "published proc root missing, unreadable or replaced at startup")
+        # Bound in-memory/output growth before another scan. A cap refusal
+        # leaves started.json, never a partial report claiming success.
+        require(len(dump(value).encode()) + used + 16384 <= args.max_bytes,
+                "proc total output cap exceeded")
+        if time.monotonic() >= deadline and len(value["snapshots"]) >= 2:
+            break
+        time.sleep(max(0, min(args.interval_ms / 1000, deadline - time.monotonic())))
+    result = account_proc(value)
+    raw, report = dump(value).encode(), dump(result).encode()
+    require(len(raw) + len(report) + used <= args.max_bytes, "proc total output cap exceeded")
+    write_private(output / "proc.json", value)
+    write_private(output / "report.json", result)
+    return {"output": str(output), "recording_complete": True,
+            "b0_status": result["b0_status"], "proc_sha256": digest(raw),
+            "report_sha256": digest(report), "total_bytes": len(raw) + len(report) + used}
 
 
 # strace prints one line per traced task with -f -o, and unfinished/resumed calls
@@ -721,6 +1017,16 @@ def main():
         if name == "read-record":
             sub.add_argument("--kind", choices=("queue", "status", "claim"), required=True)
             sub.add_argument("--name", required=True)
+    sub = commands.add_parser("account-proc", help="replay bounded proc.json; never certifies B0")
+    sub.add_argument("input")
+    sub = commands.add_parser("check-proc-fixture", help="synthetic-only deadline/scan/cap guard probes")
+    sub.add_argument("input")
+    sub = commands.add_parser("capture-proc", help="unprivileged proc-only finite sampling, no attach")
+    sub.add_argument("--manifest", required=True)
+    sub.add_argument("--output", required=True)
+    sub.add_argument("--seconds", type=int, required=True)
+    sub.add_argument("--interval-ms", type=int, default=1000)
+    sub.add_argument("--max-bytes", type=int, default=8 * 1024 * 1024)
     sub = commands.add_parser("capture", help="bounded attach only; never executes a workload")
     sub.add_argument("--manifest", required=True)
     sub.add_argument("--home", required=True)
@@ -734,6 +1040,12 @@ def main():
             result = probe()
         elif args.verb == "capture":
             result = capture(args)
+        elif args.verb == "capture-proc":
+            result = capture_proc(args)
+        elif args.verb == "account-proc":
+            result = account_proc(load_json(args.input))
+        elif args.verb == "check-proc-fixture":
+            result = check_proc_fixture(load_json(args.input))
         elif args.verb == "validate-manifest":
             value = manifest(load_json(args.input))
             result = {"valid": True, "certified_complete": value["certified_complete"],

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bounded unprivileged proc samples; not complete attribution",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "synthetic", "manifest", "clock_ticks", "snapshots"],
+  "properties": {
+    "format": {"const": "fm-supervision-proc.v1"},
+    "synthetic": {"type": "boolean"},
+    "manifest": {"type": "object"},
+    "clock_ticks": {"type": "integer", "minimum": 1, "maximum": 1000000},
+    "snapshots": {"type": "array", "minItems": 2, "maxItems": 302, "items": {"$ref": "#/$defs/snapshot"}}
+  },
+  "$defs": {
+    "counter": {"type": "integer", "minimum": 0},
+    "snapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["boundary", "tasks", "unreadable", "vanished", "scan_ns"],
+      "properties": {
+        "boundary": {"$ref": "#/$defs/boundary"},
+        "tasks": {"type": "array", "maxItems": 32768, "items": {"$ref": "#/$defs/task"}},
+        "unreadable": {"$ref": "#/$defs/counter"},
+        "vanished": {"$ref": "#/$defs/counter"},
+        "scan_ns": {"$ref": "#/$defs/counter"}
+      }
+    },
+    "boundary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["monotonic_ns", "wall_ns", "machine_births", "cpu_ticks", "uptime_lower_ticks", "uptime_upper_ticks", "boot_id"],
+      "properties": {
+        "monotonic_ns": {"$ref": "#/$defs/counter"},
+        "wall_ns": {"$ref": "#/$defs/counter"},
+        "machine_births": {"$ref": "#/$defs/counter"},
+        "cpu_ticks": {"type": "array", "minItems": 8, "maxItems": 10, "items": {"$ref": "#/$defs/counter"}},
+        "uptime_lower_ticks": {"$ref": "#/$defs/counter"},
+        "uptime_upper_ticks": {"$ref": "#/$defs/counter"},
+        "boot_id": {"type": "string", "pattern": "[0-9a-f-]{36}"}
+      }
+    },
+    "task": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pid", "start_ticks", "ppid", "user_ticks", "system_ticks", "argv", "executable", "hint_unavailable"],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1, "maximum": 4194304},
+        "ppid": {"$ref": "#/$defs/counter"},
+        "start_ticks": {"$ref": "#/$defs/counter"},
+        "user_ticks": {"$ref": "#/$defs/counter"},
+        "system_ticks": {"$ref": "#/$defs/counter"},
+        "argv": {"type": "array", "maxItems": 4096, "items": {"type": "string", "maxLength": 65536}},
+        "executable": {"type": "string", "maxLength": 4096},
+        "hint_unavailable": {"type": "boolean"}
+      }
+    }
+  }
+}

@@ -841,6 +841,222 @@ if sys.platform == 'linux' and hasattr(os, 'pidfd_open'):
     assert (tmp / 'overflow/strace.log').stat().st_size <= 4096
     assert not json.loads((tmp / 'overflow/finished.json').read_text())['complete']
     checks += 22
+# Proc route: exact machine denominator, deliberately incomplete attribution.
+# Snapshot data is synthetic; neither fixtures nor cmdline hints certify B0.
+proc_manifest = copy.deepcopy(manifest)
+proc_manifest['homes'][0]['capture_roots'] = [{'pid': 10, 'start_ticks': '1'}]
+other = copy.deepcopy(proc_manifest['homes'][0])
+other.update(id='other', home='/other', state_root='/other/state',
+             capture_roots=[{'pid': 20, 'start_ticks': '2'}])
+# Shared code root must never imply shared home identity.
+proc_manifest['homes'].append(other)
+proc_manifest['enrolled_homes'].append('other')
+
+
+def task(pid, parent, start, user=0, system=0, script='fm-watch.sh'):
+    return dict(pid=pid, ppid=parent, start_ticks=start, user_ticks=user,
+                system_ticks=system, executable='/bin/bash',
+                argv=['bash', '/fixture/code/bin/' + script], hint_unavailable=False)
+
+
+def snap(at, births, cpu, tasks):
+    return dict(boundary=dict(monotonic_ns=at * 1000000000, wall_ns=at * 1000000000,
+                              machine_births=births, cpu_ticks=cpu,
+                              uptime_lower_ticks=at * 100, uptime_upper_ticks=at * 100 + 2,
+                              boot_id='00000000-0000-0000-0000-000000000000'),
+                tasks=tasks, unreadable=0, vanished=0, scan_ns=100)
+
+
+proc_value = dict(format='fm-supervision-proc.v1', synthetic=True, manifest=proc_manifest,
+                  clock_ticks=100, snapshots=[
+    snap(10, 100, [100, 0, 100, 100, 0, 0, 0, 0, 40, 0],
+         [task(10, 1, 1, 10, 5), task(20, 1, 2, 4, 2)]),
+    snap(11, 110, [120, 0, 110, 100, 0, 0, 0, 0, 50, 0],
+         [task(10, 1, 1, 14, 7), task(20, 1, 2, 6, 3),
+          task(11, 10, 1050, 2, 1, 'fm-crew-state.sh'),
+          task(21, 20, 1051, 0, 0, 'fm-wake-drain.sh'),
+          task(30, 1, 1001)]),  # uncertain boundary jiffy, not counted as a birth
+    snap(12, 120, [140, 0, 120, 100, 0, 0, 0, 0, 60, 0],
+         [task(10, 1, 1, 17, 8), task(20, 1, 2, 8, 4),
+          task(11, 10, 1050, 5, 2, 'fm-crew-state.sh'),
+          task(21, 20, 1051, 1, 0, 'fm-wake-drain.sh'),
+          task(30, 1, 1001), task(31, 1, 1150)])])
+
+
+def proc_report(v, label='proc'):
+    return json.loads(run('account-proc', save(label + '.json', v)).stdout)
+
+
+p = proc_report(proc_value)
+assert p['machine'] == dict(births=20, births_per_second=10.0, busy_cpu_ticks=60,
+                            busy_cpu_one_core_percent=30.0)
+assert p['observed'] == dict(process_births_lower_bound=3, user_ticks=15,
+                             system_ticks=6, cpu_one_core_percent_lower_bound=10.5)
+assert p['residual'] == dict(births_not_observed=17, busy_cpu_ticks_not_observed=39)
+assert p['exclusive_measured_supervision_by_home_family'] is None
+assert p['b0_status'] == 'incomplete-unprivileged-attribution'
+assert p['claimed_births_per_second_saved'] == 0
+rows = {(r['home'], r['family']): r for r in p['provisional_not_measured_attribution']}
+assert rows['fixture', 'crew-state']['observed_process_births'] == 1
+assert rows['other', 'wake-drain']['observed_process_births'] == 1
+assert rows['unattributed', 'unattributed']['observed_process_births'] == 1
+assert rows['fixture', 'watch']['user_ticks'] == 7
+assert sum(r['observed_process_births'] for r in rows.values()) == 3
+assert sum(r['user_ticks'] + r['system_ticks'] for r in rows.values()) == 21
+assert p['losses']['single_sample_identities'] == 1
+assert p['startup_coverage']['existing_identities_observed'] == 3
+assert p['synthetic']
+checks += 1
+
+# Every family is merely a mutable-cmdline/ancestry hint, never entry evidence.
+for family in ('crew-state', 'watch', 'wake-drain', 'fleet-snapshot', 'spawn', 'control'):
+    changed = copy.deepcopy(proc_value)
+    for s in changed['snapshots'][1:]:
+        s['tasks'][2]['argv'][1] = '/fixture/code/bin/fm-' + family + '.sh'
+    result = proc_report(changed, 'proc-' + family)
+    assert any(r['home'] == 'fixture' and r['family'] == family
+               and r['observed_process_births'] >= 1
+               for r in result['provisional_not_measured_attribution'])
+    assert result['exclusive_measured_supervision_by_home_family'] is None
+    checks += 1
+
+# PID reuse is a new identity, not a negative CPU delta or inherited ancestry.
+changed = copy.deepcopy(proc_value)
+changed['snapshots'][-1]['tasks'][2] = task(11, 1, 1155)
+result = proc_report(changed, 'proc-reuse')
+assert result['observed']['process_births_lower_bound'] == 4
+assert result['observed']['user_ticks'] == 12
+# A later exec/reparent must not transfer earlier work to its new family.
+changed = copy.deepcopy(proc_value)
+changed['snapshots'][-1]['tasks'][2]['argv'][1] = '/fixture/code/bin/fm-control.sh'
+result = proc_report(changed, 'proc-reexec')
+assert result['losses']['observed_hint_changes'] == 1
+assert not any(r['family'] == 'control' and r['user_ticks']
+               for r in result['provisional_not_measured_attribution'])
+# A gap/failed read never turns unknown into zero loss or full attribution.
+changed = copy.deepcopy(proc_value)
+changed['snapshots'][1].update(unreadable=3, vanished=2)
+changed['snapshots'][1]['tasks'][2].update(argv=[], executable='', hint_unavailable=True)
+result = proc_report(changed, 'proc-loss')
+assert result['losses']['unreadable_pid_samples'] == 3
+assert result['losses']['vanished_pid_samples'] == 2
+assert result['losses']['unavailable_hint_samples'] == 1
+changed = copy.deepcopy(proc_value)
+changed['snapshots'][-1]['boundary']['machine_births'] = 101
+changed['snapshots'][1]['boundary']['machine_births'] = 101
+changed['snapshots'][-1]['boundary']['cpu_ticks'] = changed['snapshots'][0]['boundary']['cpu_ticks']
+result = proc_report(changed, 'proc-contradiction')
+assert result['residual'] == dict(births_not_observed=-2, busy_cpu_ticks_not_observed=-21)
+checks += 4
+
+for label, mutate in (
+    ('boot', lambda v: v['snapshots'][-1]['boundary'].update(boot_id='f' * 36)),
+    ('clock', lambda v: v['snapshots'][-1]['boundary'].update(monotonic_ns=1)),
+    ('counter', lambda v: v['snapshots'][-1]['boundary'].update(machine_births=99)),
+    ('cpu', lambda v: v['snapshots'][-1]['tasks'][0].update(user_ticks=1)),
+    ('duplicate', lambda v: v['snapshots'][0]['tasks'].append(v['snapshots'][0]['tasks'][0])),
+    ('remote', lambda v: v['manifest']['homes'][0].update(remote=True)),
+    ('machine', lambda v: v['manifest']['homes'][0].update(machine='elsewhere')),
+    ('shared-root', lambda v: v['manifest']['homes'][1].update(capture_roots=[{'pid': 10, 'start_ticks': '1'}])),
+    ('extra', lambda v: v.update(estimate=1)),
+    ('type', lambda v: v.update(clock_ticks=True)),
+    ('bound', lambda v: v['snapshots'][-1]['boundary'].update(monotonic_ns=400000000000)),
+):
+    changed = copy.deepcopy(proc_value)
+    mutate(changed)
+    run('account-proc', save('proc-bad-' + label + '.json', changed), good=False)
+    checks += 1
+
+# Authorized fixture-only seam: the real whole-run alarm and the same scan
+# deadline/task-cap guards as live capture. Each starts from a successful
+# fixture, changes ONE guard input and requires that guard's exact refusal.
+# Removing its guard would instead produce exit 0 and fail the assertion.
+bounds = dict(format='fm-supervision-proc-bounds-fixture.v1', synthetic=True,
+              deadline_ms=1000, pause_ms=0, scan_deadline_ms=100, clock_ms=10,
+              task_limit=2, pids=[1, 2])
+bounds_path = save('proc-bounds-valid.json', bounds)
+assert json.loads(run('check-proc-fixture', bounds_path).stdout) == dict(synthetic=True, tasks_read=2)
+for label, updates, diagnostic in (
+    ('alarm', dict(deadline_ms=10, pause_ms=200), b'proc total deadline exceeded'),
+    ('scan-deadline', dict(clock_ms=100), b'proc scan exceeded duration bound'),
+    ('task-cap', dict(task_limit=1), b'proc task cap exceeded'),
+):
+    changed = dict(bounds, **updates)
+    refusal = run('check-proc-fixture', save('proc-bounds-' + label + '.json', changed), good=False)
+    assert diagnostic in refusal.stderr, refusal.stderr
+    checks += 1
+for label, updates in (
+    ('not-synthetic', dict(synthetic=False)),
+    ('privileged-route', dict(proc_root='/proc')),
+    ('pause-bound', dict(pause_ms=201)),
+    ('alarm-bound', dict(deadline_ms=0)),
+    ('scan-bound', dict(scan_deadline_ms=0)),
+    ('cap-bound', dict(task_limit=32768)),
+):
+    run('check-proc-fixture', save('proc-bounds-bad-' + label + '.json', dict(bounds, **updates)), good=False)
+    checks += 1
+# The synthetic probe format is not a live manifest or a raw proc capture.
+run('account-proc', bounds_path, good=False)
+checks += 1
+
+# Public collector integration in CI only: read the already running test
+# process, not a launched workload. No ptrace tool or permission is needed.
+# A root CI container exercises the root refusal rather than claiming coverage.
+if sys.platform == 'linux':
+    env_proc = dict(os.environ, FM_SUPERVISION_PROC_LIVE='1')
+    local = copy.deepcopy(manifest)
+    fields = Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()
+    local['homes'][0]['capture_roots'] = [{'pid': os.getpid(), 'start_ticks': fields[19]}]
+    local_path = save('proc-live-ci-manifest.json', local)
+    caps = next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines()
+                if line.startswith('CapEff:'))
+    privileged = os.geteuid() == 0 or int(caps, 16) != 0
+    output = tmp / 'proc-bounded-ci'
+    start = time.monotonic()
+    result = run('capture-proc', '--manifest', local_path, '--seconds', 1, '--output', output,
+                 env=env_proc, good=not privileged, timeout=12)
+    assert time.monotonic() - start < 10
+    if not privileged:
+        recorded = json.loads((output / 'proc.json').read_bytes())
+        report = json.loads((output / 'report.json').read_bytes())
+        assert not recorded['synthetic'] and len(recorded['snapshots']) >= 2
+        assert report == proc_report(recorded, 'proc-ci-replay')
+        assert json.loads(result.stdout)['total_bytes'] == sum(p.stat().st_size for p in output.iterdir())
+        assert json.loads(result.stdout)['total_bytes'] < 8 * 1024 * 1024
+        for pth in [output, *output.iterdir()]:
+            assert pth.stat().st_mode & 0o077 == 0
+        for label, extra, environment in (
+            ('no-live', [], dict(env_proc, FM_SUPERVISION_PROC_LIVE='0')),
+            ('duration', ['--seconds', '301'], env_proc),
+            ('interval', ['--interval-ms', '999'], env_proc),
+            ('cap', ['--max-bytes', '67108865'], env_proc),
+            ('overflow', ['--max-bytes', '4096'], env_proc),
+        ):
+            run('capture-proc', '--manifest', local_path, '--seconds', 1,
+                '--output', tmp / ('proc-refuse-' + label), *extra, env=environment, good=False)
+        old = {p.name: p.read_bytes() for p in output.iterdir()}
+        run('capture-proc', '--manifest', local_path, '--seconds', 1,
+            '--output', output, env=env_proc, good=False)
+        assert old == {p.name: p.read_bytes() for p in output.iterdir()}
+        run('capture-proc', '--manifest', bounds_path, '--seconds', 1,
+            '--output', tmp / 'proc-reject-fixture-format', env=env_proc, good=False)
+        injected_manifest = copy.deepcopy(local)
+        injected_manifest['fixture'] = bounds
+        run('capture-proc', '--manifest', save('proc-injected-manifest.json', injected_manifest),
+            '--seconds', 1, '--output', tmp / 'proc-reject-injected-manifest', env=env_proc, good=False)
+        local['homes'][0]['capture_roots'][0]['start_ticks'] = '0'
+        run('capture-proc', '--manifest', save('proc-stale.json', local), '--seconds', 1,
+            '--output', tmp / 'proc-stale-root', env=env_proc, good=False)
+    else:
+        assert not output.exists()
+    # There is no flag to request sudo, ptrace, perf, BPF or arbitrary commands.
+    for flag in ('--sudo', '--ptrace', '--perf', '--bpf', '--command', '--fixture',
+                 '--proc-root', '--clock-ms', '--task-limit', '--deadline-ms'):
+        refused = subprocess.run([sys.executable, str(cli), 'capture-proc', '--manifest', str(local_path),
+                                  '--seconds', '1', '--output', str(tmp / 'privileged'), flag],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+        assert refused.returncode == 2 and b'unrecognized arguments' in refused.stderr
+    checks += 8
 print('ok - public P0 accounting, sealed byte reads, attribution and bounds: ' + str(checks) + ' cases')
 PY
 rc=$?

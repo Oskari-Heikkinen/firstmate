@@ -8,7 +8,8 @@ The agent entry point is the [`supervision-accounting` skill](../.agents/skills/
 ## Ownership and bounds
 
 The Python 3.9+ standard-library tool is an explicitly invoked, finite task utility, not a check, daemon, notification service or recurring poller.
-It never discovers homes or endpoints, runs a supplied workload, starts a backend, consumes a queue, writes a status input, acquires custody or activates a supervisor.
+It never discovers homes or endpoint namespaces, runs a supplied workload, starts a backend, consumes a queue, writes a status input, acquires custody or activates a supervisor.
+The separately authorized proc route enumerates machine process leaders only, not home state or endpoint directories.
 The invoking task owner reads its stdout/artifacts and routes success or refusal through the task's existing status path.
 Exit 2 means refused or invalid input, not an empty successful observation.
 No unattended actor is installed and no live handoff fragment or receipt is published in P0.
@@ -46,7 +47,8 @@ The dedicated guard is independent of general live-test opt-ins; the utility ref
 `probe` reads tool availability, policy and the calling process's effective capabilities without attempting ptrace or starting any profiler.
 With Linux Yama scope 1, an unrelated tracer ordinarily needs `CAP_SYS_PTRACE` in the target's user namespace or a target-established `PR_SET_PTRACER` grant, plus dumpability and LSM permission.
 The tool neither requests elevation nor installs software nor changes target ptrace policy.
-Absence of a tracer or privilege is a refusal for the owner to route, never permission to fall back to a lossy PID-poll sampler.
+Absence of a tracer or privilege is a refusal for the owner to route, never permission for an implicit fallback.
+The separately selected unprivileged route below reports its sampling gaps rather than impersonating a fork/exec trace.
 The probe does not prove ptrace permission or PID identity across the attach race; a changed or dying root can invalidate the capture.
 
 The configured recording window is 1-300 seconds with at most 64 MiB per tracer output file.
@@ -68,8 +70,86 @@ The machine counter includes untraced work and the tracer itself; it is a cross-
 Strace has no simultaneous all-root attachment barrier and does not retroactively capture existing descendants.
 Consequently this collector always declares an attachment gap and **cannot by itself certify a complete B0**.
 It is useful for bounded caller attribution and for exposing contradictions, not for erasing unobserved work.
-A complete B0 needs an independently sealed fork/exec capture with declared startup coverage and loss counters, plus a certified fleet inventory.
+A complete exclusively attributed B0 needs independently reviewed evidence covering fork/exec and startup losses, plus a certified fleet inventory.
+Neither this strace route alone nor the unprivileged route below supplies that evidence.
 No summary's process labels are converted into such evidence.
+
+## Unprivileged machine baseline and its irreducible gap
+
+The explicit proc route reads Linux procfs using the current unprivileged uid, with no additional dependency, external command, attach, target signal, policy write, workload or standing process.
+Root and any nonzero effective capability set are refused, even if those privileges would not be needed.
+It does not invoke strace, perf, BPF, audit or sudo, and it has no option to select a privileged route or execute an arbitrary command.
+It needs its own live opt-in and an owner-published, single-machine local manifest; remote entries, shared root PIDs and absent roots are refused.
+Roots must match published PID/start-tick generations during the initial scan.
+The code roots disambiguate script hints only after a published root establishes a provisional home; shared code paths alone never assign a home.
+The first scan checks roots but does not claim that the owners published every running supervisor.
+Manifest completeness is still an authority assertion, not something procfs can prove.
+
+[`proc-v1.schema.json`](supervision-accounting/proc-v1.schema.json) owns the replayable raw envelope.
+A fresh private output directory contains an incomplete started record, the raw samples with their pinned manifest, and the derived report.
+Success stdout supplies content digests and the total bytes; the task owner must preserve that receipt with the artifacts.
+Offline accounting reproduces the report without touching a home or starting a process.
+Synthetic fixture provenance remains explicit and cannot certify B0.
+Duration is explicitly 1-300 seconds, samples are spaced by at least one second with no catch-up scans, and each scan admits at most 32,768 leaders.
+A final scan has at most two seconds of slack, and a process-local real-time alarm bounds the entire invocation to duration plus five seconds, including validation, accounting and output.
+The reliable-local-filesystem caveat in Ownership and bounds still applies.
+The explicit byte cap is an aggregate cap over all three files, at most 64 MiB, not a cap per sample.
+The default is 8 MiB, well below 1 GiB; cap, identity, scan or deadline refusal leaves incomplete evidence and exit 2, never a successful baseline.
+No raw sample is published if the in-memory recording cannot fit the cap.
+Private command arguments are retained only in the task evidence directory.
+
+### What is measured
+
+`/proc/stat`'s `processes` delta is the exact machine-wide count of task births between the two kernel counter reads, including nonleader threads, every uid, workload and the collector's startup-adjacent activity if it falls inside the window.
+Wall/monotonic boundaries and uptime brackets are recorded; counter reads are not an atomic process-table barrier.
+Busy machine CPU is the delta of user, nice, system, irq, softirq and steal ticks.
+Idle and iowait are excluded and guest/guest_nice are not added a second time.
+CPU percent uses one logical core as 100%, never the number of CPUs as the denominator.
+Machine rates use the measured monotonic window, not the requested sleep duration.
+
+One in-process scan reads each visible process leader's stat, cmdline and executable, and rereads stat to reject reuse during that read.
+PID plus start ticks identifies a process generation; no bare-PID history is reused.
+The observed process-birth lower bound counts each distinct observed leader whose start tick is definitely inside the machine window once.
+The initial and final uptime brackets deliberately exclude uncertain boundary jiffies, including proc uptime's centisecond truncation at high HZ.
+Existing processes establish startup inventory but are not new births.
+Nonleader threads are not enumerated and remain in the birth residual.
+The observed user/system CPU lower bound sums only nondecreasing own-time deltas between observations of the same generation, all inside the machine window.
+Leader stat CPU aggregates that thread group; threads are not sampled separately, and child CPU is never added.
+Single-observation processes contribute no measured CPU delta.
+A denied executable/cmdline hint does not discard readable stat CPU; it is counted separately and leaves no direct family hint.
+The leader inventory sees only the current PID namespace and proc mount permissions, not a proved machine-wide visible PID set; invisible namespaces and hidepid restrictions also remain in the residual.
+Using a long-lived parent's `cutime/cstime` would double-count sampled descendants, credit reaping-time work performed before the window and erase source boundaries, so this route does not use those counters.
+
+### Exclusive provisional partition, not measured supervision attribution
+
+Each observed leader birth belongs to exactly one provisional home/family bucket, fixed at first observation.
+Each own-CPU delta belongs to exactly one provisional bucket; if the two endpoint hints differ, that interval goes to unattributed rather than moving earlier work to the later executable.
+These partitions reconcile exactly to the observed lower bounds, not to complete machine supervision.
+Every recognized family here is a mutable cmdline hint, including watch, crew-state, wake-drain, fleet-snapshot, spawn and control.
+Nearest observed ancestry to an identity-matched published root is also provisional: a parent may have exited, reparented, execed, or been replaced between reads.
+An unchanged hint cannot exclude an unseen intermediate exec.
+The report therefore separates the provisional table from `exclusive_measured_supervision_by_home_family`, which is explicitly null.
+It does not manufacture entries, caller edges, invocation counts or lifecycle actions from proc cmdlines.
+Other supervision families and unrecognized wrappers remain unattributed even provisionally.
+There is **no family with complete exclusive measured attribution** under this route.
+
+The births residual is machine task births minus observed leader births, not machine births minus supervision.
+It includes short-lived leaders that exist entirely between scans, nonleader threads, unreadable/racing PIDs and boundary-tick births.
+The CPU residual is machine busy ticks minus observed own-time deltas; it includes before-first/after-last-observation CPU, unseen exits, unreadable tasks and unsampled work, including interrupt/steal time not represented by process CPU.
+The observed part itself includes workload and collector CPU and is not all supervision either.
+Unreadable/vanished PID samples, single-observation identities and observed hint changes are counted independently; they are observations of loss, not counts to add to the residual.
+Unseen short-lived tasks, intermediate execs and reparentings have unknown cardinality, not zero.
+Clock quantization and non-atomic counter reads can contradict a small window; negative arithmetic residuals are preserved, never clipped.
+Startup coverage is a finite sequential inventory, not historical exec coverage or a simultaneous all-process barrier.
+
+Consequently the route yields a reproducible **incomplete unprivileged machine baseline**, not the plan's fully attributed B0 performance gate.
+The report always says `incomplete-unprivileged-attribution`, even with complete enrollment and zero visible read errors.
+Two workloads can have identical snapshots but different source families for arbitrarily many short-lived children; a machine fork total cannot distinguish them.
+Per-source record tick rates multiplied by CI births/tick would be a model, not a measurement: live work mixes, callers, children, errors and boundary versions differ.
+No such estimate is silently substituted for measured supervision births/s or CPU.
+Under the unprivileged-only constraint, fully exclusive B0 remains unavailable without additional reviewed source evidence or an explicitly revised acceptance contract.
+This limitation is a visible promotion blocker, not an unexplained extra supervision bucket or permission to widen capture privileges.
+All claimed savings remain zero.
 
 ## Exclusive accounting
 
@@ -171,6 +251,14 @@ Current queue, status, claim, close and custody identities remain authoritative 
 
 [`tests/fm-supervision-accounting.test.sh`](../tests/fm-supervision-accounting.test.sh) is the CI regression entry point for the public CLI, sealed byte reads, exact synthetic ownership, caller edges, lifecycle-vs-sourcing distinction, contradictions, loss refusal, manifest validation, collector bounds and inert legacy fence APIs.
 It uses fake trace inputs and a fake tracer, never a live endpoint or actual ptrace.
+Proc regressions additionally replay synthetic multi-home samples with shared code roots, boundary ambiguity, CPU and birth contradictions, PID reuse, re-exec, read losses and every provisional family.
+CI exercises a one-second proc capture against its already-running test process, with no launched workload; privileged CI containers assert the refusal instead of claiming unprivileged live coverage.
+The public CLI counterfactual requires the new proc mode, exact machine denominator and null measured-attribution verdict, so removing the route or treating hints as proof fails the regression.
+The separate [`proc-bounds-fixture-v1.schema.json`](supervision-accounting/proc-bounds-fixture-v1.schema.json) admits only explicitly synthetic guard probes with closed, small clock/limit/pause inputs.
+That fixture-only command exercises the same process-local real-time alarm, per-scan deadline and task-count guard as live capture, without reading procfs, writing evidence or running a workload.
+A passing fixture and three independent one-input changes require the exact refusal for each guard; removing any guard makes its negative case succeed and fails the regression.
+Fixture controls have no live flags or environment inputs, cannot be included in a closed live manifest, and the synthetic probe format is refused as a live manifest or raw recording.
+The fixture pause is capped at 200ms and its task array at sixteen items; it is not an alternate live capture source.
 The default-refusing [`fm-supervision-accounting-live.test.sh`](../tests/fm-supervision-accounting-live.test.sh) guard exercises the real collector, importer, ptrace/pidfd cleanup and strace format against only an explicitly supplied owner manifest during ordinary workload.
 Its header owns the opt-in environment, output and duration arguments.
 It neither starts a workload nor acquires privilege; missing prerequisites or an empty/incompatible trace fail rather than producing a live PASS.
