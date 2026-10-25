@@ -18,7 +18,7 @@ A direct-PR worker pushes that commit to its PR branch, a direct-push worker pus
 A no-mistakes worker re-validates it with /no-mistakes so the pipeline stays the one publisher; it never pushes from its copy.
 In no-mistakes mode the earlier `done [at=<epoch>]: {summary}` is the pipeline handoff and is not gated.
 Tell the captain the PR's full `https://...` URL copied from the worker's ready line, the resolved checks-green crew-state line, or the task's `pr=` metadata, a concise outcome summary, and the no-mistakes risk level when applicable.
-A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.
+Landing authority, including recorded standing scopes and reserved actions, is owned by `AGENTS.md` section 1; review PASS alone creates no authority.
 For any custom check you write yourself, write it to a hidden file in `state/` (such as one from `mktemp state/.<id>.XXXXXX`), keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then install it with `bin/fm-check-register.sh <id> --from <that file>`.
 That binds its bytes before it becomes `state/<id>.check.sh`: a watcher sweep that finds `state/<id>.check.sh` without its binding rejects it and wakes, so never write a check there directly.
 Registration refuses a check no handoff fragment declares: pass `--no-handoff <reason>` for a check that reads and writes no handoff record, or list it in its stage's `actors` as the `handoff-coverage` skill says.

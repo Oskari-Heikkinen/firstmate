@@ -19,14 +19,16 @@ Name the base the builder started from and the head it reported ready, as revisi
 
 ## When a re-review runs
 
-Use the re-review procedure once a builder has landed fixes for the findings of a completed independent review report, typically a cutover review whose verdict named fixes, and the next step is a short check that those findings closed.
+Use this procedure only when the delivery path requires a re-review of a real blocker/major or a higher-risk changed behavior; apply `lean-review` before commissioning it.
+A low-risk PASS with minors alone does not commission another round.
 It is not for a first review or a fresh full review, and this skill commissions no review the captain has not asked for; section 7's delivery-path rules still decide whether any independent review is warranted.
 
 ## How to use it
 
-1. Collect the first review's task id or report path, the landed commit, and every candidate file the cutover would install.
+1. Collect the first review's task id or report path, the landed commit, and the candidate files under review.
    The commit must already be present in the project clone; the script only reads that clone and never fetches.
-2. Run `bin/fm-rereview-brief.sh <new-task-id> <repo> --first <review> --commit <sha> --file <path>...`, adding `--base <rev>` when the fixes span more than that commit (such as the head the first review read), `--heavy-slot` when this home has a heavy-slot helper, `--context` for facts the report cannot supply (such as the live copy's path and digest), and `--spec` for task-specific read-only boundaries (such as a live directory never to touch).
+2. Run `bin/fm-rereview-brief.sh` with the first report, commit, and candidate files; its `--help` owns the flags for the fix range, heavy slot, context, and read-only boundaries.
+   Select its explicit `--cutover` mode only for an actual cutover review; the default is a closure-and-delta review, not a cutover gate.
 3. On success it prints `filled: <brief path>`; read the brief once, then resolve dispatch and spawn it through the usual scout path.
 4. A refusal names what it could not find: a missing, duplicated, or empty Verdict or Findings section, an absent report, an unknown commit or base, a root commit without `--base`, or a candidate path that is not a file at that commit.
    It writes nothing on refusal, so fix the input or ask the first reviewer's report owner rather than hand-writing the brief around the gap.

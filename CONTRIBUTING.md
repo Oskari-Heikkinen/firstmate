@@ -83,7 +83,7 @@ Coordinate any workflow rollback with its required-check names so a retired chec
 
 ## Development
 
-All tracked changes to firstmate itself ship through the `no-mistakes` pipeline on a feature branch and require an explicit merge approval.
+All tracked changes to firstmate itself ship through the `no-mistakes` pipeline on a feature branch; landing authority and its reserved-action exceptions are owned by `AGENTS.md` section 1.
 Before making any such change, load the agent-only `firstmate-coding-guidelines` skill (`.agents/skills/firstmate-coding-guidelines/SKILL.md`).
 It has the knowledge-placement rules that keep `AGENTS.md` from regrowing after each diet pass.
 There is no reliable way for `bin/fm-brief.sh`'s scaffold to detect that a task's repo is firstmate itself, so firstmate adds this skill's load line to firstmate-repo briefs by hand.

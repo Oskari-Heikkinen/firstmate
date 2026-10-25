@@ -2,8 +2,9 @@
 # Behavior tests for bin/fm-rereview-brief.sh: a filled re-review scout brief
 # copies the first report's Verdict and Findings verbatim, pins digests from the
 # landed commit rather than the working tree, marks the brief a review of the
-# fixes' range, passes fm-spawn's brief checks, and refuses without writing
-# anything when it would have to guess.
+# fixes' range, separates default closure review from explicit cutover review,
+# passes fm-spawn's brief checks, and refuses without writing anything when it
+# would have to guess.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -71,7 +72,7 @@ test_fills_brief_from_report_and_commit() {
   home=$(new_world fill)
   # A dirty working tree must not leak into the pinned digest.
   printf 'uncommitted\n' >> "$home/projects/proj/scripts/handoff.sh"
-  out=$(run_script "$home" rr proj --first first-review --commit HEAD \
+  out=$(run_script "$home" rr proj --first first-review --commit HEAD --cutover \
     --file scripts/handoff.sh --heavy-slot /opt/heavy-slot.sh \
     --context 'The live adapter is still sha256 abc.' --spec 'Never touch ~/.cache/queue.' 2>&1); rc=$?
   expect_code 0 "$rc" "fill should succeed: $out"
@@ -97,7 +98,10 @@ test_fills_brief_from_report_and_commit() {
   # shellcheck disable=SC2016 # Literal Markdown code span, not command substitution.
   assert_grep 'nice 19 and ionice -c3 through `/opt/heavy-slot.sh --validate`' "$brief" "heavy-slot rule names the helper"
   assert_grep 'safe to cut over / safe with named fixes / not safe' "$brief" "report shape asks for the verdict"
+  assert_grep 'final cutover steps pinned to the digests above' "$brief" "cutover steps stay digest-pinned"
+  assert_grep 'pre-check that the live copy is still the reviewed baseline' "$brief" "cutover keeps the live-baseline pre-check"
   assert_grep 'rollback copy' "$brief" "report shape asks for rollback"
+  assert_grep 'Apply lean-review and the selected risk tier.' "$brief" "cutover still applies lean-review"
   assert_grep 'This is a SCOUT task' "$brief" "scaffolded as a scout"
   if fm_brief_task_placeholders_present "$brief"; then fail "placeholders left in the brief"; fi
   fm_brief_task_content_valid "$brief" || fail "fm-spawn would reject the brief's task content"
@@ -114,7 +118,17 @@ test_report_path_and_default_heavy_rule() {
   brief="$home/data/rr2/brief.md"
   assert_grep 'nice 19 and ionice -c3.' "$brief" "heavy rule without a helper"
   assert_no_grep 'validate`' "$brief" "no helper named when none was given"
-  pass "fm-rereview-brief: accepts a report path and a plain heavy-run rule"
+  assert_grep 'Short independent closure-and-delta review of the named blocker/major fixes' "$brief" "default asks for closure review"
+  assert_grep 'Apply lean-review and the selected risk tier.' "$brief" "default applies lean-review"
+  assert_grep 'Report: a clear verdict (PASS / PASS with minors / FAIL under lean-review)' "$brief" "default verdict is not cutover approval"
+  assert_grep 'each first-review finding marked closed or still open with exact-head evidence (commit, commands, output, file:line)' "$brief" "default keeps findings and exact-head evidence"
+  assert_grep 'anything new broken' "$brief" "default checks the delta"
+  assert_grep 'not a cutover gate' "$brief" "default explicitly avoids a cutover gate"
+  assert_no_grep 'safe to cut over / safe with named fixes / not safe' "$brief" "default does not request a cutover verdict"
+  assert_no_grep 'final cutover steps' "$brief" "default requests no cutover steps"
+  assert_no_grep 'pre-check that the live copy is still the reviewed baseline' "$brief" "default requests no live-baseline pre-check"
+  assert_no_grep 'rollback copy' "$brief" "default requests no rollback copy"
+  pass "fm-rereview-brief: default closure review accepts a report path and no cutover paperwork"
 }
 
 test_base_sets_the_review_range() {
@@ -182,7 +196,18 @@ test_refuses_rather_than_guessing() {
   pass "fm-rereview-brief: refuses and writes nothing when it would have to guess"
 }
 
+test_help_describes_modes() {
+  local out rc
+  out=$("$SCRIPT" --help 2>&1); rc=$?
+  expect_code 0 "$rc" "help should succeed: $out"
+  assert_contains "$out" '--cutover' "help documents cutover opt-in"
+  assert_contains "$out" 'Default: closure-and-delta review with exact-head evidence' "help documents default mode"
+  assert_contains "$out" 'never an automatic second round' "help documents conditional invocation"
+  pass "fm-rereview-brief: help explains default and explicit cutover modes"
+}
+
 test_fills_brief_from_report_and_commit
 test_report_path_and_default_heavy_rule
+test_help_describes_modes
 test_base_sets_the_review_range
 test_refuses_rather_than_guessing
