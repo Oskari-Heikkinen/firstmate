@@ -2431,6 +2431,67 @@ EOF
   printf '%s' "$offset"
 }
 
+# Independent admission guard for a read service's suggested presentation
+# endpoints. The caller holds .status-presentation-lock and has not selected
+# native output yet. Read the owner's cursor ONCE for the entire captured
+# snapshot, not once per row; never trust a service's own claimed lower bound
+# as the authority to rewind it. Identity/size resets retain legacy semantics.
+# This does not commit a cursor or change the legacy presentation transaction.
+status_presentation_suggestions_valid() {  # <state> <captured-snapshot> <suggestions>
+  local state=$1 snapshot=$2 suggestions=$3 manifest present=0 task endpoint ident
+  manifest="$state/.status-presentation-cursor"
+  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+    [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
+    present=1
+  else
+    # Only the legacy owner can interpret its migration cursor. The service
+    # also refuses that format; independently retain the same boundary here.
+    while IFS=$'\t' read -r task endpoint ident; do
+      [ -n "$task" ] || continue
+      case "$task" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+      [ ! -e "$state/.$task.open-decisions-cursor" ] && [ ! -L "$state/.$task.open-decisions-cursor" ] || return 1
+    done <<EOF
+$snapshot
+EOF
+  fi
+  LC_ALL=C awk -F '\t' -v manifest="$manifest" -v present="$present" '
+    function uint(value) { return value ~ /^[0-9]+$/ && length(value) <= 16 }
+    BEGIN {
+      section=1
+      if (present) {
+        while ((rc = getline line < manifest) > 0) {
+          if (line == "") continue
+          n = split(line, fields, "\t")
+          if ((n != 3 && n != 4) || fields[1] == "" || fields[2] == "" || !uint(fields[3]) ||
+              (n == 4 && fields[4] != "" && !uint(fields[4])) || (fields[1] in offsets)) { bad=1; exit }
+          identities[fields[1]]=fields[2]; offsets[fields[1]]=fields[3]
+        }
+        if (rc < 0) { bad=1; exit }
+        close(manifest)
+      }
+    }
+    $0 == "@suggestions" { if (section != 1) { bad=1; exit }; section=2; next }
+    NF == 0 { next }
+    section == 1 {
+      if (NF != 3 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || !uint($2) || $3 == "" || ($1 in ends)) { bad=1; exit }
+      ends[$1]=$2; proofs[$1]=$3; count++
+      floor[$1]=(identities[$1] == $3 && offsets[$1] + 0 <= $2 + 0) ? offsets[$1] + 0 : 0
+      next
+    }
+    section == 2 {
+      if (NF != 3 || !($1 in ends) || ($1 in seen) || !uint($2) || $3 != proofs[$1] ||
+          $2 + 0 < floor[$1] || $2 + 0 > ends[$1] + 0) { bad=1; exit }
+      seen[$1]=1; suggested++; next
+    }
+    { bad=1; exit }
+    END { if (bad || section != 2 || suggested != count) exit 1 }
+  ' <<EOF
+$snapshot
+@suggestions
+$suggestions
+EOF
+}
+
 status_outcome_backstop_cursor_offset() {  # <status-file>
   local f=$1 state task manifest data row_task ident presented row_backstop backstop extra current size
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1

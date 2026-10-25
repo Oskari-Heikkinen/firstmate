@@ -189,6 +189,94 @@ sys.exit(run.returncode)
         self.assertEqual(actual, legacy)
         self.assertEqual(cursor_path.read_bytes(), expected_cursor)
 
+    async def test_regressive_service_reply_is_refused_by_real_client_before_selection(self):
+        self.status(b"note: already handled\n")
+        await self.invoke("fm-wake-drain.sh")
+        cursor = self.state / ".status-presentation-cursor"
+        original_cursor = cursor.read_bytes()
+        with (self.state / "task.status").open("ab") as stream:
+            stream.write(b"note: new answer\n")
+        legacy, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        expected_cursor = cursor.read_bytes()
+        original = Presentation.read
+        for changed in ({"acknowledged_end": 0}, {"observed_offset": True}):
+            cursor.write_bytes(original_cursor)
+            calls = []
+            def corrupt(instance, rows, vocabulary=None):
+                calls.append(rows)
+                result = original(instance, rows, vocabulary)
+                self.assertGreater(result["rows"][0]["observed_offset"], 0)
+                result["rows"][0].update(changed)
+                return result
+            with self.subTest(changed=changed), patch.object(Presentation, "read", corrupt):
+                actual, error = await self.invoke("fm-wake-drain.sh")
+                self.assertEqual(len(calls), 1, error)
+                self.assertIn(b"fm-view-client: read refused; use legacy:", error)
+                self.assertEqual(actual, legacy)
+                self.assertEqual(cursor.read_bytes(), expected_cursor)
+
+    async def test_independent_owner_guard_refuses_client_output_that_rewinds_or_malforms_cursor(self):
+        self.status(b"note: already handled\n")
+        await self.invoke("fm-wake-drain.sh")
+        cursor = self.state / ".status-presentation-cursor"
+        original_cursor = cursor.read_bytes()
+        with (self.state / "task.status").open("ab") as stream:
+            stream.write(b"note: new answer\n")
+        legacy, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        expected_cursor = cursor.read_bytes()
+        marker = self.home / "corrupted-client-endpoints"
+        wrapper = self.home / "fakebin/python3"
+        # Preserve real IPC AND the real successful client's reply checks.
+        # Corrupt only the private A records after client validation; the
+        # independent owner-side guard must not trust this output as authority.
+        for corruption in ("rewind", "duplicate", "missing", "foreign", "identity", "past-end"):
+            cursor.write_bytes(original_cursor)
+            marker.unlink(missing_ok=True)
+            wrapper.write_text(f'''#!{sys.executable}
+import subprocess
+import sys
+from pathlib import Path
+run = subprocess.run([{sys.executable!r}] + sys.argv[1:], stdout=subprocess.PIPE)
+output = run.stdout
+if run.returncode == 0 and sys.argv[1].endswith("fm-view-client.py"):
+    lines = output.splitlines(keepends=True)
+    rows = [line for line in lines if line.startswith(b"A\\t")]
+    assert len(rows) == 1, output
+    fields = rows[0].rstrip(b"\\n").split(b"\\t")
+    assert int(fields[2]) > 0
+    corruption = {corruption!r}
+    if corruption == "rewind":
+        fields[2] = b"0"
+    elif corruption == "foreign":
+        fields[1] = b"other-task"
+    elif corruption == "identity":
+        fields[3] = b"weak:1:2"
+    elif corruption == "past-end":
+        fields[2] = b"4194304"
+    row = b"\\t".join(fields) + b"\\n"
+    if corruption == "duplicate":
+        row += row
+    elif corruption == "missing":
+        row = b""
+    output = b"".join(line for line in lines if not line.startswith(b"A\\t")) + row
+    Path({str(marker)!r}).write_bytes(output)
+sys.stdout.buffer.write(output)
+sys.exit(run.returncode)
+''')
+            wrapper.chmod(0o700)
+            calls = []
+            original = Presentation.read
+            def read(instance, rows, vocabulary=None):
+                calls.append(rows)
+                return original(instance, rows, vocabulary)
+            with self.subTest(corruption=corruption), patch.object(Presentation, "read", read):
+                actual, error = await self.invoke("fm-wake-drain.sh")
+                self.assertTrue(marker.exists(), error)
+                self.assertEqual(len(calls), 1, error)
+                self.assertIn(b"malformed or regressive native endpoints; using legacy presentation", error)
+                self.assertEqual(actual, legacy)
+                self.assertEqual(cursor.read_bytes(), expected_cursor)
+
     async def test_native_annotation_rendering_never_reopens_a_span_or_cursor(self):
         self.status()
         script = '''. "$1/bin/fm-wake-lib.sh"

@@ -3,13 +3,16 @@
 
 Usage: fm-view-client.py crew-state TASK
        fm-view-client.py status-presentation < captured-rows.tsv
+       fm-view-client.py drain-presentation < captured-snapshot.tsv
 
 Explicit FM_VIEW_SOCKET, FM_VIEW_EPOCH and canonical FM_HOME select an already
 owner-managed read service. There is no discovery, startup, mode switch or PID
 signal here. Refusal exits 1 on stderr; the invoking shell retains its legacy
 fallback. Unsupported state/data/captured-input overrides refuse, never read a
 different root. stdin presentation rows are task/end/strong-identity/offset/
-classified/fully-presented (0 or 1), tab-separated. Output tagged TSV contains
+classified/fully-presented (0 or 1), tab-separated. drain-presentation instead
+accepts task/end/strong-identity/fully-presented, and reads offsets in one native
+batch through the existing cursor/marker formats. Output tagged TSV contains
 A acknowledgement suggestions, U unread facts, O open-decision facts and N
 captured annotation lines only;
 it is private call output, not a durable acknowledgement or receipt. Strong
@@ -21,6 +24,7 @@ import re
 import sys
 
 from fm_view_engine import MAX_MESSAGE, client, require
+from fm_view_offsets import observation_identity
 
 
 def binding(environment):
@@ -44,21 +48,25 @@ def binding(environment):
     return path, home, epoch
 
 
-def presentation_rows(raw):
+def presentation_rows(raw, from_state=False):
     rows, originals = [], []
     for line in raw.decode("utf-8", "surrogateescape").split("\n"):
         if not line:
             continue
         parts = line.split("\t")
-        require(len(parts) == 6, "invalid captured presentation row")
-        task, end, strong, offset, classified, fully = parts
-        match = re.fullmatch(r"(?:strong|weak):([0-9]+):([0-9]+)(?::([^\t\n]+))?", strong)
-        require(match is not None and (strong.startswith("strong:") == (match.group(3) is not None)),
-                "unsupported captured file identity")
-        require(all(re.fullmatch(r"[0-9]+", value) for value in (end, offset, classified))
+        require(len(parts) == (4 if from_state else 6), "invalid captured presentation row")
+        task, end, strong = parts[:3]
+        fully = parts[-1]
+        values = [end] if from_state else [end, parts[3], parts[4]]
+        require(all(re.fullmatch(r"[0-9]{1,16}", value) for value in values)
                 and fully in ("0", "1"), "invalid captured offsets")
-        rows.append({"task": task, "end": int(end), "identity": [int(match.group(1)), int(match.group(2))],
-                     "offset": int(offset), "classified": int(classified), "fully_presented": fully == "1"})
+        row = {"task": task, "end": int(end), "identity": observation_identity(strong),
+               "fully_presented": fully == "1"}
+        if from_state:
+            row["strong_identity"] = strong
+        else:
+            row.update(offset=int(parts[3]), classified=int(parts[4]))
+        rows.append(row)
         originals.append(strong)
     return rows, originals
 
@@ -70,8 +78,13 @@ def presentation_output(result, rows, originals):
     for returned, expected, strong in zip(result["rows"], rows, originals):
         require(type(returned) is dict and all(returned.get(name) == expected[name]
                     for name in ("task", "end", "identity")), "presentation reply capture mismatch")
+        observed = returned.get("observed_offset")
+        require(type(observed) is int and 0 <= observed <= expected["end"],
+                "presentation reply observed offset invalid")
+        if "offset" in expected:
+            require(observed == expected["offset"], "presentation reply observed offset mismatch")
         endpoint = returned.get("acknowledged_end")
-        require(type(endpoint) is int and expected["offset"] <= endpoint <= expected["end"],
+        require(type(endpoint) is int and observed <= endpoint <= expected["end"],
                 "presentation reply endpoint invalid")
         task = expected["task"]
         output.append(f"A\t{task}\t{endpoint}\t{strong}\n")
@@ -96,7 +109,7 @@ def presentation_output(result, rows, originals):
 
 def main(arguments, environment):
     path, home, epoch = binding(environment)
-    require(arguments and arguments[0] in ("crew-state", "status-presentation"), "unsupported client operation")
+    require(arguments and arguments[0] in ("crew-state", "status-presentation", "drain-presentation"), "unsupported client operation")
     verb = arguments[0]
     if verb == "crew-state":
         require(len(arguments) == 2, "crew-state requires one task")
@@ -109,7 +122,7 @@ def main(arguments, environment):
     require(len(arguments) == 1, "unexpected presentation argument")
     raw = sys.stdin.buffer.read(MAX_MESSAGE + 1)
     require(len(raw) <= MAX_MESSAGE, "presentation input exceeds bound")
-    rows, originals = presentation_rows(raw)
+    rows, originals = presentation_rows(raw, from_state=verb == "drain-presentation")
     result = client(path, home, epoch, verb, {"rows": rows}, timeout=30)
     return presentation_output(result, rows, originals)
 
