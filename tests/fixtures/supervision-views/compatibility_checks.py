@@ -3,6 +3,7 @@ import asyncio
 import os
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -87,6 +88,144 @@ class Compatibility(unittest.IsolatedAsyncioTestCase):
         legacy, _ = await self.invoke("fm-wake-drain.sh", native=False)
         self.assertEqual(native, legacy)
         self.assertEqual(cursor, (self.state / ".status-presentation-cursor").read_bytes())
+
+    async def test_queued_annotations_share_capture_with_fold_and_keep_legacy_bytes(self):
+        raw = (b"working: first\n\tindented\tvalue\r \n\n\v\f\r\t\n"
+               b"note: \xff answer\t \r\nworking: repeated\nworking: repeated")
+        self.status(raw)
+        queue = self.state / ".wake-queue"
+        queue.write_bytes(b"100\t1\tsignal\ttask.turn-ended\tsignal: historical\n"
+                          b"100\t2\tsignal\ttask.status\tsignal: direct\n")
+        calls = []
+        original = Presentation.read
+        def read(instance, rows, vocabulary=None):
+            calls.append(rows)
+            return original(instance, rows, vocabulary)
+        with patch.object(Presentation, "read", read):
+            native, error = await self.invoke("fm-wake-drain.sh")
+        self.assertEqual(len(calls), 1, error)
+        self.assertNotIn(b"fm-view-client:", error)
+        annotations = [line for line in native.split(b"\n") if line.startswith(b"wake annotation:")]
+        self.assertEqual(len(annotations), 5, native)
+        self.assertIn(b"task.status:  indented value  ", annotations[1])
+        self.assertIn(b"task.status: note: \xff answer   ", annotations[2])
+        self.assertTrue(all(b"latest wake-EVENT" in line for line in annotations[-2:]))
+        cursor = (self.state / ".status-presentation-cursor").read_bytes()
+        (self.state / ".status-presentation-cursor").unlink()
+        legacy, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        self.assertEqual(native, legacy)
+        self.assertEqual(cursor, (self.state / ".status-presentation-cursor").read_bytes())
+        again, _ = await self.invoke("fm-wake-drain.sh")
+        self.assertNotIn(b"wake annotation:", again)
+
+    async def test_native_annotation_index_keeps_queue_order_across_tasks(self):
+        for task in ("A-task", "a.task", "z-task"):
+            self.status(b"working: " + task.encode() + b"\n", task=task)
+        order = ("z-task", "A-task", "a.task")
+        (self.state / ".wake-queue").write_text("".join(
+            f"100\t{i}\tsignal\t{task}.status\tsignal: {task}\n" for i, task in enumerate(order, 1)))
+        native, error = await self.invoke("fm-wake-drain.sh")
+        self.assertNotIn(b"fm-view-client:", error)
+        annotations = [line for line in native.split(b"\n") if line.startswith(b"wake annotation:")]
+        self.assertEqual(len(annotations), 3)
+        for task, line in zip(order, annotations):
+            self.assertTrue(line.endswith(task.encode() + b".status: working: " + task.encode()), line)
+        cursor = (self.state / ".status-presentation-cursor").read_bytes()
+        (self.state / ".status-presentation-cursor").unlink()
+        legacy, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        self.assertEqual(native, legacy)
+        self.assertEqual(cursor, (self.state / ".status-presentation-cursor").read_bytes())
+
+    async def test_malformed_client_annotation_order_falls_back_before_native_selection(self):
+        for task in ("A-task", "z-task"):
+            self.status(b"note: " + task.encode() + b" answer\n", task=task)
+        (self.state / ".wake-queue").write_bytes(
+            b"100\t1\tsignal\tA-task.status\tsignal: A\n"
+            b"100\t2\tsignal\tz-task.status\tsignal: z\n")
+        legacy, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        cursor_path = self.state / ".status-presentation-cursor"
+        expected_cursor = cursor_path.read_bytes()
+        cursor_path.unlink()
+        # Interpose only the compatibility-client process, preserving a real
+        # socket observation and its valid A/U/O facts. Reverse the two N task
+        # groups after that client succeeds. On the pre-fix drain, renderer
+        # refusal loses all annotations/sections and leaves no cursor: this
+        # whole-output/cursor assertion therefore catches late validation.
+        marker = self.home / "malformed-client-output"
+        wrapper = self.home / "fakebin/python3"
+        wrapper.write_text(f'''#!{sys.executable}
+import subprocess
+import sys
+from pathlib import Path
+run = subprocess.run([{sys.executable!r}] + sys.argv[1:], stdout=subprocess.PIPE)
+output = run.stdout
+if run.returncode == 0 and sys.argv[1].endswith("fm-view-client.py"):
+    lines = output.splitlines(keepends=True)
+    annotations = [line for line in lines if line.startswith(b"N\\t")]
+    assert len(annotations) == 2
+    output = b"".join(line for line in lines if not line.startswith(b"N\\t")) + b"".join(reversed(annotations))
+    Path({str(marker)!r}).write_bytes(output)
+sys.stdout.buffer.write(output)
+sys.exit(run.returncode)
+''')
+        wrapper.chmod(0o700)
+        calls = []
+        original = Presentation.read
+        def read(instance, rows, vocabulary=None):
+            calls.append(rows)
+            return original(instance, rows, vocabulary)
+        with patch.object(Presentation, "read", read):
+            actual, error = await self.invoke("fm-wake-drain.sh")
+        self.assertEqual(len(calls), 1, error)
+        self.assertTrue(marker.exists(), error)
+        emitted = [line for line in marker.read_bytes().split(b"\n") if line.startswith(b"N\t")]
+        self.assertTrue(emitted[0].startswith(b"N\tz-task\t"))
+        self.assertTrue(emitted[1].startswith(b"N\tA-task\t"))
+        self.assertIn(b"malformed native annotation facts; using legacy presentation", error)
+        self.assertEqual(actual, legacy)
+        self.assertEqual(cursor_path.read_bytes(), expected_cursor)
+
+    async def test_native_annotation_rendering_never_reopens_a_span_or_cursor(self):
+        self.status()
+        script = '''. "$1/bin/fm-wake-lib.sh"
+fm_wake_status_cursor_offset() { echo 'unexpected cursor read' >&2; return 1; }
+fm_wake_unread_events() { echo 'unexpected span read' >&2; return 1; }
+fm_wake_print_annotations "$2" '' "$3"
+'''
+        # Include leading/trailing tabs, CR, invalid UTF-8 and duplicate latest
+        # lines; each output must retain all bytes except the legacy tr mapping.
+        row = (b"100\t1\tsignal\tz-task.status\tsignal: z\n"
+               b"100\t2\tsignal\ttask.status\tsignal: direct\n"
+               b"100\t3\tsignal\tA-task.status\tsignal: A\n"
+               b"100\t4\tsignal\tmissing.status\tsignal: absent capture")
+        captured = b"A-task\tfirst group\ntask\t\tfirst\t\r\ntask\tlast\ntask\tlast\nz-task\tlast group\n"
+        process = await asyncio.create_subprocess_exec(
+            "bash", "-c", script, "fixture", str(ROOT), row, captured,
+            env=self.env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        output, error = await asyncio.wait_for(process.communicate(), 10)
+        self.assertEqual(process.returncode, 0, error)
+        self.assertEqual(error, b"")
+        self.assertEqual(output, b"wake annotation: latest wake-EVENT observed at drain, not current state: z-task.status: last group\n"
+                         + b"wake annotation: unread wake-EVENT since last drain, not current state: task.status:  first  \n"
+                         + b"wake annotation: latest wake-EVENT observed at drain, not current state: task.status: last\n" * 2
+                         + b"wake annotation: latest wake-EVENT observed at drain, not current state: A-task.status: first group\n")
+
+    async def test_annotation_uses_captured_endpoint_when_append_arrives(self):
+        self.status(b"working: captured\n")
+        (self.state / ".wake-queue").write_bytes(b"100\t1\tsignal\ttask.status\tsignal: direct\n")
+        original = Presentation.read
+        def append(instance, rows, vocabulary=None):
+            result = original(instance, rows, vocabulary)
+            with (self.state / "task.status").open("ab") as stream:
+                stream.write(b"note: appended after capture\n")
+            return result
+        with patch.object(Presentation, "read", append):
+            first, error = await self.invoke("fm-wake-drain.sh")
+        self.assertNotIn(b"fm-view-client:", error)
+        self.assertIn(b"task.status: working: captured", first)
+        self.assertNotIn(b"appended after capture", first)
+        second, _ = await self.invoke("fm-wake-drain.sh")
+        self.assertIn(b"task.status: note: appended after capture", second)
 
     @unittest.skipUnless(Path("/dev/full").exists(), "requires failing stdout device")
     async def test_failed_stdout_retries_without_advancing_cursor(self):

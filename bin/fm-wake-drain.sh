@@ -763,7 +763,7 @@ cap_outcome_line() {  # <line> <max-bytes>
 # one bounded read. No response writes a cursor or grants queue authority. A
 # refusal happens before stdout/commit and retains the complete legacy route.
 prepare_native_status_facts() {  # <snapshot> <fully-presented-task-ids>
-  local snapshot=$1 fully_presented=$2 task endpoint ident offset classified fully input='' facts tag rest
+  local snapshot=$1 fully_presented=$2 task endpoint ident offset classified fully input='' facts tag rest line
   [ -n "${FM_VIEW_SOCKET:-}" ] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
   while IFS=$'\t' read -r task endpoint ident; do
@@ -779,27 +779,33 @@ $fully_presented
 $snapshot
 EOF
   facts=$(FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm-view-client.py" status-presentation <<< "$input") || return 1
-  NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED=''
-  while IFS=$'\t' read -r tag rest; do
+  NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED='' NATIVE_NEW_LINES=''
+  while IFS= read -r line; do
+    tag=${line%%$'\t'*}
+    rest=${line#*$'\t'}
     case "$tag" in
       A) NATIVE_ACKNOWLEDGED="$NATIVE_ACKNOWLEDGED$rest"$'\n' ;;
       U) NATIVE_UNREAD="$NATIVE_UNREAD$rest"$'\n' ;;
       O) NATIVE_OPEN="$NATIVE_OPEN$rest"$'\n' ;;
+      N) NATIVE_NEW_LINES="$NATIVE_NEW_LINES$rest"$'\n' ;;
       '') ;;
       *) return 1 ;;
     esac
   done <<EOF
 $facts
 EOF
+  if ! fm_wake_captured_lines_valid "$NATIVE_NEW_LINES"; then
+    printf 'wake drain: malformed native annotation facts; using legacy presentation\n' >&2
+    return 1
+  fi
   NATIVE_PRESENTATION=1
 }
 
 print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
-  local NATIVE_PRESENTATION=0 NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED=''
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
-  if prepare_native_status_facts "$snapshot" "$fully_presented"; then
+  if [ "${NATIVE_PRESENTATION:-0}" = 1 ]; then
     acknowledged=$NATIVE_ACKNOWLEDGED
   else
     acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
@@ -857,6 +863,7 @@ print_config_reread_section() {
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
   local lock_rc holder_pid
+  local NATIVE_PRESENTATION=0 NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED='' NATIVE_NEW_LINES=''
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -875,10 +882,19 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
-    fm_wake_print_annotations "$rows" "$snapshot" || rc=1
-    if [ "$rc" -eq 0 ]; then
-      annotation_manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
-      fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1
+    annotation_manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
+    fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1
+  fi
+  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
+    # One capture supplies annotation and folded sections. Refuse/fall back
+    # before either reaches stdout; only the existing owner commits cursors.
+    prepare_native_status_facts "$snapshot" "$fully_presented" || NATIVE_PRESENTATION=0
+  fi
+  if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
+    if [ "$NATIVE_PRESENTATION" = 1 ]; then
+      fm_wake_print_annotations "$rows" "$snapshot" "$NATIVE_NEW_LINES" || rc=1
+    else
+      fm_wake_print_annotations "$rows" "$snapshot" || rc=1
     fi
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi

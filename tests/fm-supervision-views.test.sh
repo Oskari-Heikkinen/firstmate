@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Isolated native fold/crew-state/captured-presentation/IPC/admission tests,
 # plus real drain/client stdout/cursor/fallback transaction checks.
+# Queued annotations consume the same captured span as the fold, preserve byte
+# rendering and append boundaries, and never reopen its cursor/span readers.
+# Malformed client annotation groups fall back before native selection.
 # Presentation compares unread rows, decisions and suggested contiguous cursor
 # endpoints to the existing shell transaction APIs; no live home or backend.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
