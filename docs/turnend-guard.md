@@ -211,7 +211,8 @@ A healthy watcher's beacon therefore ages by at most its longest single step or 
 The beacon's first line holds the cycle sequence number, advanced only at the top of a cycle, so a reader can tell a new cycle from a step refresh.
 Its second line holds the last published beat's caller location (`file:line`, or `cycle-start` at the top of a cycle).
 The once-per-second step throttle is unchanged: one builtin write replaces the touch, with no extra per-beat fork or file write.
-A step that walks many records refreshes it per record too: the pending-reply scan (`fm_pending_reply_tick`) revisits every durable record each poll, and a parent home with about 1200 resolved records spends minutes in that one step.
+A step that walks many records refreshes it per record too: the pending-reply scan (`fm_pending_reply_tick`) also reports completed parser and bounded read-chunk progress inside its incremental correlation scans.
+`bin/fm-pending-reply-scan-lib.sh` owns the disposable cursor format and reset rules; unchanged status history is not reread.
 The secondmate liveness pass (`secondmate_liveness_tick`) refreshes it per mate, because each relaunch is bounded only by `FM_SECONDMATE_LIVENESS_TIMEOUT` and several in one pass can outlast the grace together.
 A single step that stays blocked still ages the beacon, which is why the loop refreshes it itself rather than from a background timer: a genuinely wedged watcher still reads stale once that step passes grace.
 A wedged watcher is recovered without a manual kill: its own watchdog, which only reads the beacon and never touches it, stops it once it has counted that grace of its own check intervals without seeing the beacon change (TERM, then KILL if the blocked step holds on), so a host suspend that only ages the beacon's wall-clock mtime is not mistaken for a wedge.

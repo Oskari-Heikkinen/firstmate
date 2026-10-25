@@ -480,6 +480,7 @@ It checks that a newly appended keyed decision is classified without rereading e
 - The typed self-eviction failure.
 - Bounded and successor-linked lifecycle rows.
 - A pending-reply scan longer than the grace keeping its beacon fresh per record and surviving the watchdog.
+- A delivered-open pending request over changed large status inputs: restoring the pre-fix library reaches a watchdog stop, the incremental scanner reports actual progress and delivers once, and a blocked span read still stops.
 - The wedge watchdog stopping a watcher blocked on one child that never exits or on a pipe a detached process holds open.
 - The wedge watchdog retrying an unproven identity read and still stopping a later wedge.
 - A SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.

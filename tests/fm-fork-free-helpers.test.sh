@@ -2405,6 +2405,36 @@ SH
   pass "fm_busy_classify, its record readers and window_is_busy match what they replaced, and a polled window's verdict starts no subshell"
 }
 
+test_pending_reply_correlation_matches_forked_token() {
+  local script="$TMP_ROOT/correlation.sh"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-pending-reply-lib.sh"
+old_match() {
+  local re
+  re="(^|[^[:alnum:]_])$(fm_pending_reply_corr_token "$2")([^[:alnum:]_]|\$)"
+  [[ $1 =~ $re ]]
+}
+corr=abcdef0123456789
+for text in '' "corr=$corr" "[corr=$corr]" "note corr=$corr: answer" \
+  "xcorr=$corr" "_corr=$corr" "corr=${corr}ff" "corr=${corr}_" \
+  "corr=${corr}-suffix" "corr=ABCDEF0123456789" $'\303\251'"corr=$corr" \
+  $'\377'"corr=$corr" $'note\t'"corr=$corr"; do
+  want=1 got=1
+  old_match "$text" "$corr" && want=0
+  fm_pending_reply_text_has_corr "$text" "$corr" && got=0
+  [ "$want" = "$got" ] || printf 'correlation %q: old=%s new=%s\n' "$text" "$want" "$got"
+done
+# A runtime tripwire: the new predicate must not ask the token helper to
+# execute in a command substitution for even one unrelated or matching line.
+fm_pending_reply_corr_token() { printf 'unexpected token subprocess\n' >&2; return 1; }
+fm_pending_reply_text_has_corr "note: corr=$corr" "$corr" || exit 1
+if fm_pending_reply_text_has_corr 'working: unrelated' "$corr"; then exit 1; fi
+exit 0
+SH
+  run_everywhere 'pending reply correlation' "$script"
+  pass 'pending-reply whole-token matching equals the old substitution without invoking its helper'
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -2426,4 +2456,5 @@ else
   test_inbox_due_action_matches_what_it_replaced
   test_watcher_capture_matches_what_it_replaced
   test_busy_classify_matches_what_it_replaced
+  test_pending_reply_correlation_matches_forked_token
 fi
