@@ -2877,8 +2877,9 @@ SH
     if [ "$mode" = first-read ] && [ "$expected_reason" = empty-recorded-identity ]; then
       assert_grep "recovery-arm	reason=$expected_reason	current=$expected_current	old-row=$expected_row" \
         "$home/state/.supervision-host.log" 'first-read: failure did not follow the predicted empty-identity rejection'
-      kill -0 "$arm" 2>/dev/null && kill -0 "$watcher" 2>/dev/null \
-        || fail 'first-read: empty proof did not leave both original processes alive'
+      if ! kill -0 "$arm" 2>/dev/null || ! kill -0 "$watcher" 2>/dev/null; then
+        fail 'first-read: empty proof did not leave both original processes alive'
+      fi
       fail 'first-read: confirmed empty initial identity rejected; original arm and watcher survived'
     fi
     release_held_helper "$home"
