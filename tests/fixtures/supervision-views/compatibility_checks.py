@@ -145,7 +145,11 @@ class Compatibility(unittest.IsolatedAsyncioTestCase):
         legacy, _ = await self.invoke("fm-wake-drain.sh", native=False)
         cursor_path = self.state / ".status-presentation-cursor"
         expected_cursor = cursor_path.read_bytes()
-        cursor_path.unlink()
+        # The legacy fold has now populated its migration cursor at EOF. An
+        # absent manifest would seed from that cursor and supply zero N rows,
+        # never reaching the malformed-order control. An empty manifest means
+        # missing task rows start at byte zero, as on the first drain.
+        cursor_path.write_bytes(b"")
         # Interpose only the compatibility-client process, preserving a real
         # socket observation and its valid A/U/O facts. Reverse the two N task
         # groups after that client succeeds. On the pre-fix drain, renderer
@@ -162,7 +166,7 @@ output = run.stdout
 if run.returncode == 0 and sys.argv[1].endswith("fm-view-client.py"):
     lines = output.splitlines(keepends=True)
     annotations = [line for line in lines if line.startswith(b"N\\t")]
-    assert len(annotations) == 2
+    assert len(annotations) == 2, output
     output = b"".join(line for line in lines if not line.startswith(b"N\\t")) + b"".join(reversed(annotations))
     Path({str(marker)!r}).write_bytes(output)
 sys.stdout.buffer.write(output)
