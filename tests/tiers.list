@@ -61,6 +61,7 @@ gate tests/fm-storage-roots.test.sh
 gate tests/fm-storage-v2.test.sh
 gate tests/fm-storage.test.sh
 gate tests/fm-supervision-accounting.test.sh
+gate tests/fm-supervision-views.test.sh
 gate tests/fm-supervision-host.test.sh
 gate tests/fm-tangle-guard.test.sh
 gate tests/fm-task-inbox.test.sh
