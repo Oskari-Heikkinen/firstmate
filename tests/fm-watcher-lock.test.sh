@@ -390,6 +390,120 @@ test_long_pending_reply_scan_survives_watchdog() {
   pass "the watchdog leaves a watcher in a long pending-reply scan running"
 }
 
+# Restore the immutable pre-fix library, rather than a "legacy" switch in
+# production. The identical fixture and watchdog then remove only this repair.
+# Parser latency is fixture-owned (30 ms/line), representing a loaded reader;
+# the bound tests separately prove the root cut in actual input bytes.
+make_pending_correlation_case() {  # <name> <fixed|old|blocked>
+  local dir mode=$2 f
+  dir=$(make_case "$1")
+  mkdir -p "$dir/code/bin" "$dir/mate/state" "$dir/state/pending-replies"
+  for f in "$ROOT"/bin/*; do ln -s "$f" "$dir/code/bin/${f##*/}"; done
+  rm "$dir/code/bin/fm-pending-reply-lib.sh" "$dir/code/bin/fm-classify-lib.sh" "$dir/code/bin/fm-home-summary-refresh.sh"
+  cp "$ROOT/bin/fm-pending-reply-lib.sh" "$dir/code/bin/fm-pending-reply-lib.sh"
+  cp "$ROOT/bin/fm-classify-lib.sh" "$dir/code/bin/fm-classify-lib.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/code/bin/fm-home-summary-refresh.sh"
+  chmod +x "$dir/code/bin/fm-home-summary-refresh.sh"
+  cat > "$dir/state/pending-replies/abcdef0123456789" <<EOF
+schema=fm-pending-reply.v1
+corr_id=abcdef0123456789
+task_id=mate
+phase=escalated
+delivered_epoch=1
+parent_home=$dir
+parent_status=$dir/state/mate.status
+expect=answer
+EOF
+  printf 'kind=secondmate\nhome=%s/mate\nbackend=tmux\n' "$dir" > "$dir/state/mate.meta"
+  python3 - "$dir/mate/state" <<'PY'
+from pathlib import Path
+import sys
+for name in ('000-history', '111-unchanged'):
+    Path(sys.argv[1], name + '.status').write_bytes(b'working: historical input\n' * 600)
+PY
+  # Prime actual durable cursors, then change only one large file. This is
+  # exactly the old whole-set invalidation amplifier, not many cheap records.
+  bash -c '
+    . "$1/bin/fm-pending-reply-lib.sh"
+    for f in "$2/mate/state/"*.status; do
+      fm_pending_reply_scan_status "$2/state/pending-replies/abcdef0123456789" "$f" abcdef0123456789 answer || exit 1
+    done
+  ' _ "$ROOT" "$dir" || return 1
+  python3 - "$dir/mate/state/000-history.status" <<'PY'
+import sys
+with open(sys.argv[1], 'ab') as stream:
+    stream.write(b'working: new input\n' * 240)
+PY
+  printf 'note [corr=abcdef0123456789]: delivered reply\n' > "$dir/mate/state/mate.status"
+  if [ "$mode" = old ]; then
+    git -C "$ROOT" show d08af3fa33299d4f3ea71dc43e83452f7f5b35e6:bin/fm-pending-reply-lib.sh \
+      > "$dir/code/bin/fm-pending-reply-lib.sh" || return 1
+  fi
+  cat >> "$dir/code/bin/fm-pending-reply-lib.sh" <<'SH'
+eval "$(declare -f fm_pending_reply_line_resolves | sed '1s/fm_pending_reply_line_resolves/_test_correlation_resolves/')"
+fm_pending_reply_line_resolves() {
+  sleep 0.03
+  printf x >> "$FM_CORRELATION_TEST_DIR/parsed"
+  _test_correlation_resolves "$@"
+}
+SH
+  if [ "$mode" = blocked ]; then
+    cat >> "$dir/code/bin/fm-classify-lib.sh" <<'SH'
+_fm_status_read_span() {
+  sleep 120 &
+  printf '%s\n' "$!" > "$FM_CORRELATION_TEST_DIR/reader.pid"
+  wait "$!"
+}
+SH
+  fi
+  printf '%s\n' "$dir"
+}
+
+test_pending_correlation_watchdog_counterfactual() {
+  local dir mode i pid records start elapsed reader
+  for mode in old fixed blocked; do
+    dir=$(make_pending_correlation_case "pending-correlation-$mode" "$mode") || fail "cannot build $mode correlation fixture"
+    start=$(date +%s)
+    env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+      FM_CORRELATION_TEST_DIR="$dir" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" \
+      FM_WATCHER_WATCHDOG_INTERVAL=1 "$dir/code/bin/fm-watch.sh" > "$dir/watch.out" 2> "$dir/watch.err" &
+    pid=$!
+    # An iteration bound stretches with CI load; watchdog evidence, not an
+    # elapsed-time guess, distinguishes failure from a slow positive case.
+    i=0
+    while [ "$i" -lt 1000 ] && is_live_non_zombie "$pid"; do sleep 0.1; i=$((i + 1)); done
+    if is_live_non_zombie "$pid"; then
+      reap_watcher "$pid"
+      fail "$mode pending correlation scan did not reach delivery or watchdog stop"
+    fi
+    wait "$pid" 2>/dev/null || true
+    if [ "$mode" = fixed ]; then
+      elapsed=$(( $(date +%s) - start ))
+      [ "$elapsed" -gt "$LONG_CYCLE_GRACE" ] || fail 'positive correlation case finished inside grace'
+      assert_no_grep 'watchdog: stopping' "$dir/state/.watch-triage.log" 'progressing correlation reader was stopped'
+      assert_grep 'signal:' "$dir/watch.out" 'fixed scanner did not deliver'
+      assert_grep 'phase=resolved' "$dir/state/pending-replies/abcdef0123456789" 'fixed reply stayed open'
+      [ "$(grep -cF 'delivered reply' "$dir/state/mate.status")" = 1 ] || fail 'reply was restated more than once'
+      records=$(wc -c < "$dir/parsed" | tr -d ' ')
+      [ "$records" -lt 300 ] || fail "fixed scanner reprocessed unchanged history: $records lines"
+    else
+      assert_grep 'watchdog: stopping wedged watcher' "$dir/state/.watch-triage.log" "$mode scan did not reach watchdog stop"
+      assert_no_grep 'phase=resolved' "$dir/state/pending-replies/abcdef0123456789" "$mode scan prematurely resolved"
+      [ ! -s "$dir/state/.wake-queue" ] || fail "$mode scan delivered an unprocessed reply"
+      if [ "$mode" = old ]; then
+        [ -s "$dir/parsed" ] || fail 'old-code counterfactual made no real parser progress'
+      else
+        reader=$(cat "$dir/reader.pid" 2>/dev/null || true)
+        [ -n "$reader" ] || fail 'blocked-reader counterfactual never entered a read'
+        kill -TERM "$reader" 2>/dev/null || true
+        [ ! -s "$dir/parsed" ] || fail 'blocked reader completed parser work'
+      fi
+    fi
+  done
+  pass 'delivered-open changed-status counterfactual: old stops, incremental reader beats and delivers once, blocked read stops'
+}
+
 # Instrument only the fixture's classifier, keeping the watcher and watchdog
 # real. Both parser passes take longer than the grace; a stuck parser instead
 # waits on one owned child before it can complete even one record.
@@ -2358,6 +2472,7 @@ WATCHER_LOCK_CASES=(
   # The slowest cases start first so the pool drains evenly; the two
   # CPU-heavy pending-reply scans start apart.
   test_long_pending_reply_scan_survives_watchdog
+  test_pending_correlation_watchdog_counterfactual
   test_slow_status_classification_survives_watchdog
   test_arm_waits_for_peer_beacon_after_child_stands_down
   test_cycle_exit_ledger_links_successor_and_stays_bounded

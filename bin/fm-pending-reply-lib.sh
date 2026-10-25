@@ -25,6 +25,8 @@
 #
 # Record location (parent FM_HOME):
 #   state/pending-replies/<corr_id>
+# Disposable status cursors: bin/fm-pending-reply-scan-lib.sh owns their format,
+# reset rules and bounded seek-based input; matches never certify delivery.
 # One more durable input, owned by bin/fm-procevent-remote-reply.sh and read
 # here: state/remote-replies/<task_id>.caught-up, the remote reply mirror's
 # watermark (see the remote reply-channel freshness section below).
@@ -213,7 +215,7 @@ fm_pending_reply_extract_corr() {  # <text>
 # word: xcorr=<id> or corr=<id>ff is a different token, not this one.
 fm_pending_reply_text_has_corr() {  # <text> <corr_id>
   local text=$1 corr=$2 re
-  re="(^|[^[:alnum:]_])$(fm_pending_reply_corr_token "$corr")([^[:alnum:]_]|\$)"
+  re="(^|[^[:alnum:]_])corr=$corr([^[:alnum:]_]|\$)"
   [[ $text =~ $re ]]
 }
 
@@ -684,13 +686,26 @@ fm_pending_reply_find_resolve_line() {  # <status-file> <corr_id> [expect=answer
   return 0
 }
 
+# Lazy, deliberately undirected: the scanner calls the policy functions here,
+# but expanding another transitive library graph in every caller costs lint RAM.
+fm_pending_reply_scan_status() {  # <record> <status-file> <corr> <expect>
+  . "$_FM_PENDING_REPLY_LIB_DIR/fm-pending-reply-scan-lib.sh"
+  _fm_pending_reply_scan "$@"
+}
+
 fm_pending_reply_file_signature() {  # <path>
-  local path=$1
+  local path=$1 observed prefix times birth size
   [ -f "$path" ] || { printf 'missing'; return 0; }
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    LC_ALL=C /usr/bin/stat -f '%d:%i:%z:%m:%c' "$path" 2>/dev/null || printf 'unreadable'
+  if [ "$_FM_CLASSIFY_UNAME_S" = Darwin ]; then
+    LC_ALL=C /usr/bin/stat -L -f '%d:%i-%FB:%z:%Fm:%Fc' "$path" 2>/dev/null || printf 'unreadable'
   else
-    LC_ALL=C stat -c '%d:%i:%s:%Y:%Z' "$path" 2>/dev/null || printf 'unreadable'
+    observed=$(LC_ALL=C stat -L -c '%d:%i:%s %w|%y %z' "$path" 2>/dev/null) \
+      || { printf 'unreadable'; return 0; }
+    prefix=${observed%% *} times=${observed#* }
+    birth=${times%%|*} times=${times#*|} size=${prefix##*:}
+    # Birth time distinguishes reused inodes where the filesystem supplies it.
+    # Preserve nanoseconds without adding colon-delimited identity fields.
+    printf '%s-%s:%s:%s:' "${prefix%:*}" "${birth//:/_}" "$size" "${times//:/_}"
   fi
 }
 
@@ -770,15 +785,14 @@ _fm_pending_reply_try_resolve_locked() {  # <state-dir> <corr_id> [status-file-o
     [ "$status_override" -ef "$status_file" ] || return 1
     status_file=$status_override
   fi
-  if [ -z "$status_override" ] && [ "$unconfirmed" = 0 ]; then
-    signature=$(fm_pending_reply_file_signature "$status_file")
-    previous=$(fm_pending_reply_get "$rec" parent_status_scan_signature)
-    [ "$signature" != "$previous" ] || return 1
-  fi
-  line=$(fm_pending_reply_find_resolve_line "$status_file" "$corr" "$(fm_pending_reply_expect_of "$rec")")
+  local _fm_pr_scan_first _fm_pr_scan_matches _fm_pr_scan_signature
+  fm_pending_reply_scan_status "$rec" "$status_file" "$corr" "$(fm_pending_reply_expect_of "$rec")" || return 1
+  line=$_fm_pr_scan_first
   if [ -z "$line" ]; then
     if [ -z "$status_override" ] && [ "$unconfirmed" = 0 ]; then
-      fm_pending_reply_set "$rec" parent_status_scan_signature "$signature" || return 1
+      signature=$_fm_pr_scan_signature
+      previous=$(fm_pending_reply_get "$rec" parent_status_scan_signature)
+      [ "$signature" = "$previous" ] || fm_pending_reply_set "$rec" parent_status_scan_signature "$signature" || return 1
     fi
     return 1
   fi
@@ -1382,8 +1396,8 @@ _fm_pending_reply_maybe_escalate_locked() {  # <state-dir> <corr_id>
     fi
   fi
   parent_status=$(fm_pending_reply_get "$rec" parent_status)
-  # One fresh, uncached read immediately before firing: a correlated report can
-  # land in the instant between the last resolve attempt and this call.
+  # One fresh observation immediately before firing: the incremental cursor
+  # consumes any bytes appended since the previous attempt, even in this tick.
   if _fm_pending_reply_try_resolve_locked "$state" "$corr" "$parent_status"; then
     return 0
   fi
@@ -1429,7 +1443,8 @@ _fm_pending_reply_maybe_escalate_locked() {  # <state-dir> <corr_id>
 # parent-replies.status is its parent channel, not a stranded self-home file.
 fm_pending_reply_detect_wrong_home() {  # <state-dir> <corr_id> <secondmate-home>
   local state=$1 corr=$2 sm_home=$3
-  local rec delivered hits first sightings snapshot previous status_file line line_no sighting_base sighting_id phase changed=0
+  local rec delivered hits first sightings snapshot previous status_file line_no sighting_base sighting_id phase expect changed=0
+  local _fm_pr_scan_first _fm_pr_scan_matches _fm_pr_scan_signature remaining
   local remote_parent_channel=0
   rec=$(fm_pending_reply_path "$state" "$corr")
   [ -f "$rec" ] || return 1
@@ -1438,15 +1453,13 @@ fm_pending_reply_detect_wrong_home() {  # <state-dir> <corr_id> <secondmate-home
   [ "$phase" != resolved ] || return 0
   delivered=$(fm_pending_reply_get "$rec" delivered_epoch)
   [ -n "$delivered" ] || return 0
-  snapshot=$(fm_pending_reply_status_set_signature "$sm_home/state")
+  snapshot=''
   previous=$(fm_pending_reply_get "$rec" wrong_home_scan_signature)
   hits=$(fm_pending_reply_get "$rec" wrong_home_hits)
   case "$hits" in ''|*[!0-9]*) hits=0 ;; esac
   first=$(fm_pending_reply_get "$rec" wrong_home_first_sighting)
-  if [ "$snapshot" = "$previous" ] && { [ "$hits" = 0 ] || [ -n "$first" ]; }; then
-    return 0
-  fi
   sightings=$(fm_pending_reply_get "$rec" wrong_home_sightings)
+  expect=$(fm_pending_reply_expect_of "$rec")
   # shellcheck source=bin/fm-parent-channel-lib.sh
   . "$_FM_PENDING_REPLY_LIB_DIR/fm-parent-channel-lib.sh"
   if fm_parent_channel_destination "$sm_home" "$sm_home/state" >/dev/null 2>&1 \
@@ -1456,15 +1469,22 @@ fm_pending_reply_detect_wrong_home() {  # <state-dir> <corr_id> <secondmate-home
   for status_file in "$sm_home"/state/*.status; do
     [ -e "$status_file" ] || continue
     if [ "$remote_parent_channel" = 1 ] \
-      && [ "$(basename "$status_file")" = parent-replies.status ]; then
+      && [ "${status_file##*/}" = parent-replies.status ]; then
       continue
     fi
     sighting_base=$(fm_pending_reply_sighting_encode "$status_file" 0) || continue
     sighting_base=${sighting_base%:0}
-    line_no=0
-    while IFS= read -r line || [ -n "$line" ]; do
-      line_no=$((line_no + 1))
-      fm_pending_reply_line_resolves "$line" "$corr" "$(fm_pending_reply_expect_of "$rec")" || continue
+    # A failed observation of one input must not suppress other files' evidence.
+    # No signature gates future reads, so unreadable/racing files retry next tick.
+    if ! fm_pending_reply_scan_status "$rec" "$status_file" "$corr" "$expect"; then
+      snapshot="$snapshot$sighting_base:unreadable"$'\n'
+      continue
+    fi
+    snapshot="$snapshot$sighting_base:$_fm_pr_scan_signature"$'\n'
+    remaining=$_fm_pr_scan_matches
+    while [ -n "$remaining" ]; do
+      line_no=${remaining%%,*}
+      case "$remaining" in *,*) remaining=${remaining#*,} ;; *) remaining='' ;; esac
       sighting_id="$sighting_base:$line_no"
       [ -n "$first" ] || first=$sighting_id
       case ",$sightings," in
@@ -1477,7 +1497,7 @@ fm_pending_reply_detect_wrong_home() {  # <state-dir> <corr_id> <secondmate-home
       fi
       hits=$((hits + 1))
       changed=1
-    done < "$status_file"
+    done
   done
   if [ -n "$first" ] && [ -z "$(fm_pending_reply_get "$rec" wrong_home_first_sighting)" ]; then
     fm_pending_reply_set "$rec" wrong_home_first_sighting "$first" || return 1
@@ -1486,7 +1506,8 @@ fm_pending_reply_detect_wrong_home() {  # <state-dir> <corr_id> <secondmate-home
     fm_pending_reply_set "$rec" wrong_home_sightings "$sightings" || return 1
     fm_pending_reply_set "$rec" wrong_home_hits "$hits" || return 1
   fi
-  fm_pending_reply_set "$rec" wrong_home_scan_signature "$snapshot" || return 1
+  snapshot=$(printf '%s' "$snapshot" | cksum) || return 1
+  [ "$snapshot" = "$previous" ] || fm_pending_reply_set "$rec" wrong_home_scan_signature "$snapshot" || return 1
   return 0
 }
 
@@ -1505,7 +1526,9 @@ fm_pending_reply_restatement_copy_same_basename() {  # <state-dir> <corr_id> <se
   stranded="$sm_home/state/${task_id}.status"
   [ -f "$stranded" ] && [ ! -L "$stranded" ] || return 1
   [ "$stranded" != "$parent_status" ] || return 1
-  line=$(fm_pending_reply_find_resolve_line "$stranded" "$corr" "$(fm_pending_reply_expect_of "$rec")")
+  local _fm_pr_scan_first _fm_pr_scan_matches
+  fm_pending_reply_scan_status "$rec" "$stranded" "$corr" "$(fm_pending_reply_expect_of "$rec")" || return 1
+  line=$_fm_pr_scan_first
   [ -n "$line" ] || return 1
   # Deliberately undirected: bin/fm-parent-channel-lib.sh is expanded once at
   # the fm_pending_reply_detect_wrong_home site; each directed site would
@@ -1671,6 +1694,17 @@ fm_pending_reply_prune() {  # <state-dir> <corr_id>...
     _fm_pending_reply_summary_prunable "$now" "$retention" || continue
     doomed+=("$rec" "$confirm_prefix$corr")
   done
+  [ "${#doomed[@]}" -gt 0 ] || return 0
+  # Hidden scan caches are disposable and have no reader after their record's
+  # terminal retention. Remove only this correlation's cache siblings.
+  for rec in "${doomed[@]}"; do
+    case "$rec" in "$dir"/*)
+      for marker in "$dir/.scan-${rec##*/}-"*; do
+        [ -f "$marker" ] && [ ! -L "$marker" ] && doomed+=("$marker")
+      done
+      ;;
+    esac
+  done
   [ "${#doomed[@]}" -eq 0 ] || rm -f -- "${doomed[@]}" 2>/dev/null || true
   return 0
 }
@@ -1678,10 +1712,11 @@ fm_pending_reply_prune() {  # <state-dir> <corr_id>...
 # Scan every pending record for this parent state. Safe to call every poll.
 # Never scrapes secondmate conversation; uses only parent status, backend busy
 # state, and optional secondmate-home wrong-home path checks. An optional
-# <on-record> command runs before each record, so a caller can report progress
-# through a scan whose many records together take minutes.
+# <on-record> command runs before each record and after completed nested status
+# parsing/read work. It is sideband progress, never a timer masking a blocked read.
 fm_pending_reply_tick() {  # <state-dir> [on-record]
   local state=$1 on_record=${2:-} dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host
+  local _fm_pending_reply_on_progress=$on_record
   local observation observation_task found i now retention
   local _fm_prs_corr_id _fm_prs_task_id _fm_prs_phase
   local _fm_prs_resolved _fm_prs_escalated _fm_prs_escalation_closed

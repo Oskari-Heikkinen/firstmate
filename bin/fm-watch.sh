@@ -3625,6 +3625,7 @@ while :; do
   # parent reports, observe backend busy/idle turn completion, send one recovery
   # repost after grace, and escalate once if the recovery turn is also missed.
   # No conversation scraping; unresolved records are never silently expired.
+  # Incremental status readers use this callback for completed nested work too.
   fm_pending_reply_tick "$STATE" watcher_beat || true
 
   # Endpoint liveness runs before queue observation: a positively dead or

@@ -343,25 +343,21 @@ test_recovery_fresh_status_read_resolves_before_firing() {
   export FM_PENDING_REPLY_NOW=30300
   fm_pending_reply_observe_busy "$state" "$corr" idle
 
-  # An earlier resolve attempt with nothing to find caches the current status
-  # file's scan signature.
+  # An earlier resolve attempt with nothing to find establishes a byte cursor.
   if fm_pending_reply_try_resolve "$state" "$corr"; then
     fail "setup: nothing should resolve yet"
   fi
 
-  # The correlated reply lands, carrying a non-terminal verb, in a write the
-  # cached signature cannot see (for example a same-size rewrite inside the
-  # stat timestamp granularity): the cache now matches the file that holds it,
-  # so only a read that bypasses the cache can find the reply.
+  # The old aggregate signature is diagnostic, not a scan gate: even if it
+  # already names the new input, the incremental cursor must consume the append.
   rec=$(fm_pending_reply_path "$state" "$corr")
   printf 'working [corr=%s]: still wrapping up\n' "$corr" >> "$status"
   fm_pending_reply_set "$rec" parent_status_scan_signature "$(fm_pending_reply_file_signature "$status")"
-  if fm_pending_reply_try_resolve "$state" "$corr"; then
-    fail "setup: the cached signature should hide the reply from a cached read"
-  fi
+  fm_pending_reply_try_resolve "$state" "$corr" \
+    || fail "an aggregate signature suppressed the unread reply"
 
   # Grace has elapsed from the turn's completion, so the demand is otherwise
-  # eligible to fire; its own fresh, uncached read must catch the reply first.
+  # eligible to fire; resolution must still prevent the demand.
   export FM_PENDING_REPLY_NOW=30421
   if fm_pending_reply_send_recovery "$state" "$corr" 2>/dev/null; then
     fail "recovery must not fire once a correlated reply has landed"
@@ -1478,18 +1474,9 @@ test_tick_skips_terminal_and_reuses_target_observation() {
     }
     # shellcheck disable=SC2329
     fm_backend_capture() { fail "native busy observations should not capture"; }
-    # shellcheck disable=SC2329
-    fm_pending_reply_find_resolve_line() {
-      local status_file=$1 corr=$2 line
-      printf '%s\t%s\n' "$status_file" "$corr" >> "$scan_log"
-      [ -f "$status_file" ] || return 0
-      while IFS= read -r line || [ -n "$line" ]; do
-        fm_pending_reply_line_resolves "$line" "$corr" || continue
-        printf '%s' "$line"
-        return 0
-      done < "$status_file"
-      return 0
-    }
+    # Probe paths belong to this test's isolated subshell.
+    # shellcheck disable=SC2030,SC2031
+    export FM_PENDING_REPLY_SCAN_PROBE="$scan_log"
     fm_pending_reply_tick "$state"
     probes=$(wc -l < "$probe_log" | tr -d ' ')
     [ "$probes" = 1 ] || fail "two open records for one target should use one probe, got $probes"
@@ -1502,10 +1489,11 @@ test_tick_skips_terminal_and_reuses_target_observation() {
     rec=$(fm_pending_reply_path "$state" "$escalated")
     snapshot=$(fm_pending_reply_get "$rec" wrong_home_scan_signature)
     [ -n "$snapshot" ] || fail "wrong-home scan should persist its file-set signature"
+    : > "$scan_log"
     fm_pending_reply_tick "$state"
-    scans=$(wc -l < "$scan_log" | tr -d ' ')
-    [ "$scans" = 3 ] \
-      || fail "unchanged records should scan two open and one escalated status only once, got $scans"
+    scans=$(awk '{n += $NF} END {print n+0}' "$scan_log")
+    [ "$scans" -le 128 ] \
+      || fail "unchanged wrong-home input exceeded its boundary witness: $scans bytes"
     [ "$(fm_pending_reply_get "$rec" wrong_home_scan_signature)" = "$snapshot" ] \
       || fail "unchanged wrong-home logs should retain their scan signature"
   ) || fail "terminal-skip and observation-cache regression failed"
@@ -2252,12 +2240,33 @@ test_tick_prunes_resolved_records_past_retention() {
     write_record "$state" bbbbbbbbbbbbbbb2 gone delivery_unknown 100 '' '' '' ''
     write_record "$state" bbbbbbbbbbbbbbb3 gone escalated 100 '' 150 '' 100
     write_record "$state" bbbbbbbbbbbbbbb4 gone recovery_sent 100 '' '' '' 100
+    # Real cursor plus watchdog-orphaned siblings share the correlation prefix.
+    local cache corr
+    printf 'working: cache source\n' > "$home/cache-source.status"
+    for corr in aaaaaaaaaaaaaaa1 aaaaaaaaaaaaaaa2 aaaaaaaaaaaaaaa3 aaaaaaaaaaaaaaa4 bbbbbbbbbbbbbbb1; do
+      fm_pending_reply_scan_status "$dir/$corr" "$home/cache-source.status" "$corr" answer \
+        || fail 'retention cursor fixture failed'
+      : > "$dir/.scan-$corr-orphan.tmp.dead"
+      : > "$dir/.scan-$corr-orphan.tmp.dead.chunk"
+    done
+    : > "$dir/.scan-aaaaaaaaaaaaaaa10-neighbor"
     fm_pending_reply_tick "$state" || fail "retention tick should succeed"
     [ ! -e "$dir/aaaaaaaaaaaaaaa1" ] || fail "resolved record at the retention bound should be pruned"
     [ ! -e "$(fm_pending_reply_delivery_confirmation_path "$state" aaaaaaaaaaaaaaa1)" ] \
       || fail "a pruned record's delivery confirmation should go with it"
     [ -f "$dir/aaaaaaaaaaaaaaa2" ] || fail "resolved record inside retention must be kept"
     [ ! -e "$dir/aaaaaaaaaaaaaaa4" ] || fail "a resolved record whose escalation is closed should prune"
+    for corr in aaaaaaaaaaaaaaa1 aaaaaaaaaaaaaaa4; do
+      for cache in "$dir/.scan-$corr-"*; do
+        [ ! -e "$cache" ] || fail "expired correlation left a cache or orphan: $cache"
+      done
+    done
+    for corr in aaaaaaaaaaaaaaa2 aaaaaaaaaaaaaaa3 bbbbbbbbbbbbbbb1; do
+      for cache in "$dir/.scan-$corr-"*; do
+        [ -f "$cache" ] || fail "prune removed a retained correlation's cache: $cache"
+      done
+    done
+    [ -f "$dir/.scan-aaaaaaaaaaaaaaa10-neighbor" ] || fail 'prune widened the correlation prefix'
     [ -f "$dir/aaaaaaaaaaaaaaa5" ] || fail "a resolved record without resolved_epoch must be kept"
     [ -f "$dir/aaaaaaaaaaaaaaa6" ] || fail "a record a receiver wake marker names must be kept"
     [ -f "$dir/aaaaaaaaaaaaaaa3" ] || fail "an escalation close must land before its record is pruned"
@@ -2268,6 +2277,9 @@ test_tick_prunes_resolved_records_past_retention() {
     done
     fm_pending_reply_tick "$state" || fail "second retention tick should succeed"
     [ ! -e "$dir/aaaaaaaaaaaaaaa3" ] || fail "record should prune once its escalation close landed"
+    for cache in "$dir/.scan-aaaaaaaaaaaaaaa3-"*; do
+      [ ! -e "$cache" ] || fail 'closed expired correlation left cached state'
+    done
     [ -f "$dir/aaaaaaaaaaaaaaa2" ] || fail "resolved record inside retention must still be kept"
     for c in bbbbbbbbbbbbbbb1 bbbbbbbbbbbbbbb2 bbbbbbbbbbbbbbb3 bbbbbbbbbbbbbbb4; do
       [ -f "$dir/$c" ] || fail "unresolved record $c must survive repeated ticks"
@@ -2278,6 +2290,12 @@ test_tick_prunes_resolved_records_past_retention() {
     fm_pending_reply_prune "$state" aaaaaaaaaaaaaaa2 bbbbbbbbbbbbbbb1 ../x \
       || fail "pruning is idempotent and ignores open or foreign names"
     [ -f "$dir/bbbbbbbbbbbbbbb1" ] || fail "a direct prune call must re-check and keep open records"
+    for cache in "$dir/.scan-aaaaaaaaaaaaaaa2-"*; do
+      [ ! -e "$cache" ] || fail 'shortened retention left expired cached state'
+    done
+    for cache in "$dir/.scan-bbbbbbbbbbbbbbb1-"*; do
+      [ -f "$cache" ] || fail 'repeated pruning removed an open correlation cache'
+    done
   ) || fail "resolved-record retention regression failed"
   pass "tick prunes resolved records past retention and never touches open ones"
 }
@@ -2390,7 +2408,206 @@ test_same_kind_escalation_reopens_after_operator_close() {
   pass "a same-kind escalation after an operator close opens the decision again"
 }
 
+test_incremental_correlation_scan_bound_and_edges() {
+  (
+    local home state corr rec f small probe bytes i=0 cache replacement _fm_pr_scan_first _fm_pr_scan_matches _fm_pr_scan_signature
+    home=$(setup_parent incremental-correlation)
+    state="$home/state"
+    corr=abcdef0123456789
+    rec="$state/pending-replies/$corr"
+    mkdir -p "${rec%/*}"
+    f="$state/large.status" small="$state/small.status" probe="$home/spans"
+    # A token split exactly across the 64 KiB read boundary must retain its
+    # prefix. This is less than 128 KiB, not a local stress workload.
+    python3 - "$f" "$small" <<'PY'
+import sys
+with open(sys.argv[1], 'wb') as stream:
+    stream.write(b'working: history\n' * 3854)
+    stream.write(b'note: corr=abcdef0123456789\n')
+with open(sys.argv[2], 'wb') as stream:
+    stream.write(b'working: short\n')
+PY
+    # Probe paths belong to this test's isolated subshell.
+    # shellcheck disable=SC2030,SC2031
+    export FM_PENDING_REPLY_SCAN_PROBE="$probe"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'initial scan failed'
+    assert_contains "$_fm_pr_scan_first" "corr=$corr" 'split token disappeared'
+    [ "$_fm_pr_scan_matches" = 3855 ] || fail 'physical line number changed at chunk boundary'
+    fm_pending_reply_scan_status "$rec" "$small" "$corr" answer || fail 'small scan failed'
+    : > "$probe"
+    while [ "$i" -lt 3 ]; do
+      fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'cached scan failed'
+      fm_pending_reply_scan_status "$rec" "$small" "$corr" answer || fail 'cached short scan failed'
+      i=$((i + 1))
+    done
+    bytes=$(awk '{n += $NF} END {print n+0}' "$probe")
+    [ "$bytes" -le 768 ] || fail "unchanged log size grew boundary work: $bytes bytes"
+    : > "$probe"
+    printf 'working: one append\n' >> "$f"
+    printf 'working: one append\n' >> "$small"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'incremental large scan failed'
+    fm_pending_reply_scan_status "$rec" "$small" "$corr" answer || fail 'incremental small scan failed'
+    bytes=$(awk '{n += $NF} END {print n+0}' "$probe")
+    [ "$bytes" -le 808 ] || fail "append plus fixed boundary work grew with history size: $bytes bytes"
+    [ "$(awk '$NF > 128 {n++} END {print n+0}' "$probe")" = 0 ] || fail 'short append reread old history'
+    # Every malformed cache must rebuild, including a plausible numeric offset
+    # whose checksum no longer matches. A reset replays evidence, not delivery.
+    for cache in "$state/pending-replies"/.scan-*; do
+      sed '5s/.*/1/' "$cache" > "$cache.changed"
+      mv -f "$cache.changed" "$cache"
+    done
+    : > "$probe"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'damaged cursor did not recover'
+    assert_contains "$_fm_pr_scan_first" "corr=$corr" 'rebuild missed a reply'
+    bytes=$(awk '{n += $NF} END {print n+0}' "$probe")
+    [ "$bytes" = "$(( $(wc -c < "$f") + 256 ))" ] || fail 'invalid cursor did not perform one full read plus boundary checks'
+    for cache in "$state/pending-replies"/.scan-*; do printf 'damaged cursor\n' > "$cache"; done
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'unreadable cursor schema did not recover'
+    assert_contains "$_fm_pr_scan_first" "corr=$corr" 'schema rebuild missed a reply'
+    # A provisional partial match must not survive an append which changes
+    # its whole-token boundary before a restatement consumer accepts it.
+    printf 'note: corr=%s' "$corr" > "$state/boundary.status"
+    fm_pending_reply_scan_status "$rec" "$state/boundary.status" "$corr" answer || fail 'partial boundary scan failed'
+    [ -n "$_fm_pr_scan_first" ] || fail 'legacy partial reply semantics changed'
+    printf 'f\n' >> "$state/boundary.status"
+    fm_pending_reply_scan_status "$rec" "$state/boundary.status" "$corr" answer || fail 'changed partial boundary scan failed'
+    [ -z "$_fm_pr_scan_first" ] || fail 'provisional partial match survived a changed token'
+    # Truncate, then finish a partial trailing token in a later call.
+    printf 'note: corr=abcdef01' > "$f"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'truncate failed'
+    [ -z "$_fm_pr_scan_first" ] || fail 'truncate retained an obsolete reply'
+    printf '23456789' >> "$f"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'partial completion failed'
+    [ "$_fm_pr_scan_first" = "note: corr=$corr" ] || fail 'unterminated reply was lost'
+    [ "$_fm_pr_scan_matches" = 1 ] || fail 'partial line got a wrong number'
+    printf '\n' >> "$f"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'newline completion failed'
+    [ "$_fm_pr_scan_matches" = 1 ] || fail 'partial completion duplicated a sighting'
+    # Replacement at the same size, then rotation/recreation, invalidate identity.
+    replacement="$home/replacement"
+    printf 'note: corr=0000000000000000\n' > "$replacement"
+    mv -f "$replacement" "$f"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'replacement failed'
+    [ -z "$_fm_pr_scan_first" ] || fail 'replacement reused an old match'
+    mv "$f" "$home/rotated"
+    printf 'note: corr=%s\n' "$corr" > "$f"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'rotation failed'
+    [ "$_fm_pr_scan_matches" = 1 ] || fail 'recreated file was skipped'
+    # A truncate/regrow that is already larger by the next tick cannot be
+    # mistaken for an append merely because device/inode/size look plausible.
+    python3 - "$f" <<'PY'
+import sys
+with open(sys.argv[1], 'wb') as stream:
+    stream.write(b'working: regrown log\n' * 20)
+PY
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'truncate/regrow failed'
+    [ -z "$_fm_pr_scan_first" ] || fail 'truncate/regrow retained stale reply evidence'
+    printf 'note: corr=%s\n' "$corr" >> "$f"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'reply after regrow failed'
+    [ "$_fm_pr_scan_matches" = 21 ] || fail 'regrown line numbers did not reset'
+    # Reopen in a fresh interpreter to prove that the cursor is durable.
+    FM_SCAN_REC="$rec" FM_SCAN_FILE="$f" FM_SCAN_CORR="$corr" bash -c '
+      . "$1/bin/fm-pending-reply-lib.sh"
+      fm_pending_reply_scan_status "$FM_SCAN_REC" "$FM_SCAN_FILE" "$FM_SCAN_CORR" answer || exit
+      [ "$_fm_pr_scan_matches" = 21 ] && [ "$_fm_pr_scan_first" = "note: corr=$FM_SCAN_CORR" ]
+    ' _ "$ROOT" || fail 'restart lost cached reply evidence'
+  ) || fail 'incremental correlation scan regression failed'
+  pass 'correlation input work follows appends, with durable reset/rotate/partial-line handling'
+}
+
+# Parent-linked logs were accepted before cursoring; target identity, not link
+# inode/size, controls appends and reset after a retarget or target replacement.
+test_linked_parent_status_resolution() {
+  (
+    local mode home state corr rec status target next mate resolved _fm_pr_scan_first _fm_pr_scan_matches
+    for mode in append retarget replace; do
+      home=$(setup_parent "linked-$mode")
+      state="$home/state"
+      corr=$(fm_pending_reply_create "$home" "$state" linked 'linked parent report')
+      fm_pending_reply_mark_delivered "$state" "$corr"
+      rec=$(fm_pending_reply_path "$state" "$corr")
+      status="$state/linked.status" target="$home/target" next="$home/next"
+      printf 'working: seed\n' > "$target"
+      ln -s "$target" "$status"
+      if fm_pending_reply_try_resolve "$state" "$corr"; then fail 'unrelated linked log resolved'; fi
+      if [ "$mode" = append ]; then
+        # The separate restatement path must retain its explicit refusal.
+        mate=$(bind_local_mate "$home" linked)
+        printf 'note: corr=%s\n' "$corr" > "$home/child-target"
+        ln -s "$home/child-target" "$mate/state/linked.status"
+        if fm_pending_reply_restatement_copy_same_basename "$state" "$corr" "$mate"; then
+          fail 'restatement began accepting symlinked child input'
+        fi
+        printf 'note: corr=%s\n' "$corr" >> "$target"
+      else
+        printf 'note: corr=%s\n' "$corr" > "$next"
+        if [ "$mode" = retarget ]; then
+          ln -s "$next" "$home/new-link"
+          mv -f "$home/new-link" "$status"
+        else
+          mv -f "$next" "$target"
+        fi
+      fi
+      fm_pending_reply_scan_status "$rec" "$status" "$corr" answer || fail "linked $mode read failed"
+      case "$mode" in
+        append) [ "$_fm_pr_scan_matches" = 2 ] || fail 'linked append lost its original endpoint' ;;
+        *) [ "$_fm_pr_scan_matches" = 1 ] || fail "linked $mode failed to reset physical line numbers" ;;
+      esac
+      fm_pending_reply_try_resolve "$state" "$corr" || fail "linked $mode parent reply did not resolve"
+      [ "$(phase_of "$state" "$corr")" = resolved ] || fail 'linked parent phase stayed open'
+      resolved=$(fm_pending_reply_get "$rec" resolved_epoch)
+      fm_pending_reply_try_resolve "$state" "$corr" || fail 'linked resolution was not idempotent'
+      [ "$(fm_pending_reply_get "$rec" resolved_epoch)" = "$resolved" ] || fail 'linked reply resolved twice'
+      # A previously cached match cannot survive an equal-sized retarget.
+      printf 'note: corr=0000000000000000\n' > "$home/no-reply"
+      ln -s "$home/no-reply" "$home/new-link"
+      mv -f "$home/new-link" "$status"
+      fm_pending_reply_scan_status "$rec" "$status" "$corr" answer || fail 'linked stale-evidence reset failed'
+      [ -z "$_fm_pr_scan_first" ] || fail 'retarget kept a prior target reply'
+    done
+  ) || fail 'linked parent resolution regression failed'
+  pass 'linked parent logs resolve with target-bound append/retarget/replacement cursors; restatement still refuses links'
+}
+
+test_wrong_home_scan_isolates_failed_inputs() {
+  (
+    local home state mate corr rec reader
+    home=$(setup_parent wrong-home-failed-input)
+    state="$home/state" mate=$(bind_local_mate "$home" linked)
+    corr=$(fm_pending_reply_create "$home" "$state" linked 'mixed input set')
+    fm_pending_reply_mark_delivered "$state" "$corr"
+    rec=$(fm_pending_reply_path "$state" "$corr")
+    printf 'note: corr=%s\n' "$corr" > "$mate/state/a-bad.status"
+    printf 'note: corr=%s\n' "$corr" > "$mate/state/b-good.status"
+    printf 'note: corr=%s\n' "$corr" > "$mate/state/z-bad.status"
+    reader="$home/read-span"
+    cat > "$reader" <<'SH'
+#!/usr/bin/env bash
+case "${1##*/}" in a-bad.status|z-bad.status) exit 1 ;; esac
+dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null
+SH
+    chmod +x "$reader"
+    # The production hook models deterministic read failures even as root.
+    FM_STATUS_SPAN_READER="$reader" fm_pending_reply_detect_wrong_home "$state" "$corr" "$mate" \
+      || fail 'bad input aborted the readable wrong-home observation'
+    [ "$(fm_pending_reply_get "$rec" wrong_home_hits)" = 1 ] || fail 'readable sighting was lost'
+    printf 'note: corr=%s\n' "$corr" >> "$mate/state/b-good.status"
+    FM_STATUS_SPAN_READER="$reader" fm_pending_reply_detect_wrong_home "$state" "$corr" "$mate" \
+      || fail 'persistent bad inputs suppressed a later readable append'
+    [ "$(fm_pending_reply_get "$rec" wrong_home_hits)" = 2 ] || fail 'readable append was not counted once'
+    fm_pending_reply_detect_wrong_home "$state" "$corr" "$mate" || fail 'repaired inputs did not retry'
+    [ "$(fm_pending_reply_get "$rec" wrong_home_hits)" = 4 ] || fail 'repaired inputs were skipped or duplicated'
+    fm_pending_reply_detect_wrong_home "$state" "$corr" "$mate" || fail 'unchanged input replay failed'
+    [ "$(fm_pending_reply_get "$rec" wrong_home_hits)" = 4 ] || fail 'unchanged evidence counted twice'
+  ) || fail 'wrong-home input isolation regression failed'
+  pass 'bad inputs before and after a good file cannot suppress sightings; repaired inputs retry'
+}
+
 # --- run --------------------------------------------------------------------
+
+test_linked_parent_status_resolution
+test_wrong_home_scan_isolates_failed_inputs
+test_incremental_correlation_scan_bound_and_edges
 
 test_normal_correlated_reply_resolves_once
 test_completed_turn_no_report_triggers_one_recovery
