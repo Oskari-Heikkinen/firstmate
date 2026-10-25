@@ -8,7 +8,7 @@
     "revision": {"type": "string", "pattern": "[0-9a-f]{40}"},
     "runner": {"type": "string", "minLength": 1, "maxLength": 256},
     "ci_url": {"type": "string", "pattern": "https://github.com/[^/]+/[^/]+/actions/runs/[0-9]+"},
-    "method": {"const": "launch-strace-process+GNU-time-subtree.v1"},
+    "method": {"const": "launch-strace-births+untraced-GNU-time-subtree.v1"},
     "plan": {"type": "object"},
     "results": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/result"}},
     "uncertainty": {"type": "string", "minLength": 1, "maxLength": 4096}
@@ -26,12 +26,15 @@
     },
     "sample": {
       "type": "object", "additionalProperties": false,
-      "required": ["births", "user_ns", "system_ns", "cpu_reading", "trace_base64", "trace_sha256", "ticks", "tick_records"],
+      "required": ["births", "user_ns", "system_ns", "cpu_reading", "trace_base64", "trace_sha256", "ticks", "tick_records", "cpu_tick_records", "traced_cpu_reading", "boot_id"],
       "properties": {
+        "boot_id": {"type": "string", "pattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"},
         "ticks": {"type": "integer", "minimum": 1, "maximum": 1000000},
         "tick_records": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"$ref": "#/$defs/tick-record"}},
         "births": {"$ref": "#/$defs/count"}, "user_ns": {"$ref": "#/$defs/count"}, "system_ns": {"$ref": "#/$defs/count"},
-        "cpu_reading": {"type": "string", "pattern": "[0-9]+\\.[0-9]{2} [0-9]+\\.[0-9]{2}"},
+        "cpu_reading": {"type": "string", "maxLength": 64, "pattern": "[0-9]+\\.[0-9]{2} [0-9]+\\.[0-9]{2}"},
+        "traced_cpu_reading": {"type": "string", "maxLength": 64, "pattern": "[0-9]+\\.[0-9]{2} [0-9]+\\.[0-9]{2}"},
+        "cpu_tick_records": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"$ref": "#/$defs/tick-record"}},
         "trace_base64": {"type": "string", "maxLength": 1398104},
         "trace_sha256": {"type": "string", "pattern": "[0-9a-f]{64}"}
       }
@@ -43,9 +46,11 @@
         "samples": {"type": "array", "minItems": 3, "maxItems": 9, "items": {"$ref": "#/$defs/sample"}},
         "uncertainty": {
           "type": "object", "additionalProperties": false,
-          "required": ["cpu_quantization_ns_per_component", "repeat_ranges"],
+          "required": ["cpu_quantization_ns_per_component", "repeat_ranges", "trace_minus_untraced_cpu_ns_per_repeat_range"],
           "properties": {
             "cpu_quantization_ns_per_component": {"const": 10000000},
+            "trace_minus_untraced_cpu_ns_per_repeat_range": {"type": "array", "minItems": 2, "maxItems": 2,
+              "items": {"type": "integer", "minimum": -1000000000000000000, "maximum": 1000000000000000000}},
             "repeat_ranges": {
               "type": "object", "additionalProperties": false, "required": ["births", "user_ns", "system_ns"],
               "properties": {

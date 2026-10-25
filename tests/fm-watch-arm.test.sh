@@ -184,7 +184,7 @@ start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid]
 test_attached_arm_reports_the_delivered_wake() {
   local dir state fakebin out armout status record_ticks=0
   dir=$(make_case attached-delivered-wake)
-  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then record_ticks=1; fi
+  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/random/boot_id ]; then record_ticks=1; fi
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/watch.out"

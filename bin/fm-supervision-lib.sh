@@ -125,12 +125,20 @@ fm_supervision_unhealthy() {
   [ "$FM_SUP_NEEDED" = true ] && [ "$FM_SUP_WATCHER_FRESH" = false ]
 }
 
+fm_supervision_tick_boot_to() { # <out-variable>, no subprocess
+  local _fm_tick_boot='' LC_ALL=C
+  IFS= read -r -n 64 _fm_tick_boot < /proc/sys/kernel/random/boot_id || return 2
+  [[ "$_fm_tick_boot" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 2
+  printf -v "$1" '%s' "$_fm_tick_boot"
+}
+
 # Tick slots are not shared-writer logs. The existing actor's singleton/source
 # ownership MUST serialize generations before init; these functions acquire no
 # new lock and do not grant that ownership. Every record is ASCII, so Bash's
 # character count is also the exact byte count without a wc/stat subprocess.
 fm_supervision_tick_init() {
   [ "$#" -ge 3 ] && [ "$#" -le 4 ] || return 2
+  local LC_ALL=C
   FM_SUP_TICK_STEM=$1
   FM_SUP_TICK_FAMILY=$2
   FM_SUP_TICK_UNIT=$3
@@ -140,6 +148,7 @@ fm_supervision_tick_init() {
   FM_SUP_TICK_SLOT=0
   FM_SUP_TICK_PID=${BASHPID:-$$}
   FM_SUP_TICK_GENERATION=${EPOCHREALTIME-}
+  FM_SUP_TICK_BOOT=''
   FM_SUP_TICK_FAILED=1
   [[ "$FM_SUP_TICK_FAMILY" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] && \
     [[ "$FM_SUP_TICK_UNIT" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 2
@@ -147,6 +156,7 @@ fm_supervision_tick_init() {
   [ "${#FM_SUP_TICK_CAP}" -le 5 ] && [ "$FM_SUP_TICK_CAP" -ge 4096 ] && [ "$FM_SUP_TICK_CAP" -le 65536 ] || return 2
   [[ "$FM_SUP_TICK_GENERATION" =~ ^[0-9]{1,12}\.[0-9]{6}$ ]] || return 2
   [ -r /proc/uptime ] || return 2
+  fm_supervision_tick_boot_to FM_SUP_TICK_BOOT || return 2
   [ -d "${FM_SUP_TICK_STEM%/*}" ] && [ ! -L "${FM_SUP_TICK_STEM%/*}" ] || return 2
   local path old_slot=''
   for path in "$FM_SUP_TICK_STEM.0.tsv" "$FM_SUP_TICK_STEM.1.tsv" "$FM_SUP_TICK_STEM.cursor"; do
@@ -167,12 +177,12 @@ fm_supervision_tick_init() {
 fm_supervision_tick_write() { # <start|rotate|tick>, called only after init
   [ "${FM_SUP_TICK_FAILED:-1}" -eq 0 ] || return 2
   # Bash 3.2/non-Linux callers get an explicit init refusal, not a date fork.
-  local wall=${EPOCHREALTIME-} uptime='' rest='' line='' phase=$1
+  local wall=${EPOCHREALTIME-} uptime='' rest='' line='' phase=$1 LC_ALL=C
   [[ "$wall" =~ ^[0-9]{1,12}\.[0-9]{6}$ ]] || { FM_SUP_TICK_FAILED=1; return 2; }
   IFS=' ' read -r uptime rest < /proc/uptime || { FM_SUP_TICK_FAILED=1; return 2; }
   [[ "$uptime" =~ ^[0-9]{1,12}\.[0-9]{2}$ ]] || { FM_SUP_TICK_FAILED=1; return 2; }
-  printf -v line 'fm-supervision-tick.v1\t%s\t%s\t%s:%s\t%s\t%s\t%s\t%s\n' \
-    "$FM_SUP_TICK_FAMILY" "$FM_SUP_TICK_UNIT" "$FM_SUP_TICK_PID" "$FM_SUP_TICK_GENERATION" \
+  printf -v line 'fm-supervision-tick.v2\t%s\t%s\t%s\t%s:%s\t%s\t%s\t%s\t%s\n' \
+    "$FM_SUP_TICK_FAMILY" "$FM_SUP_TICK_UNIT" "$FM_SUP_TICK_BOOT" "$FM_SUP_TICK_PID" "$FM_SUP_TICK_GENERATION" \
     "$FM_SUP_TICK_SEQ" "$wall" "$uptime" "$phase"
   if [ $((FM_SUP_TICK_BYTES + ${#line})) -gt "$FM_SUP_TICK_CAP" ]; then
     FM_SUP_TICK_SLOT=$((1 - FM_SUP_TICK_SLOT))
@@ -186,8 +196,8 @@ fm_supervision_tick_write() { # <start|rotate|tick>, called only after init
     # The first retained tick carries its generation and absolute sequence.
     # An offline reader can detect a missing prefix and refuse window coverage.
     phase=rotate
-    printf -v line 'fm-supervision-tick.v1\t%s\t%s\t%s:%s\t%s\t%s\t%s\t%s\n' \
-      "$FM_SUP_TICK_FAMILY" "$FM_SUP_TICK_UNIT" "$FM_SUP_TICK_PID" "$FM_SUP_TICK_GENERATION" \
+    printf -v line 'fm-supervision-tick.v2\t%s\t%s\t%s\t%s:%s\t%s\t%s\t%s\t%s\n' \
+      "$FM_SUP_TICK_FAMILY" "$FM_SUP_TICK_UNIT" "$FM_SUP_TICK_BOOT" "$FM_SUP_TICK_PID" "$FM_SUP_TICK_GENERATION" \
       "$FM_SUP_TICK_SEQ" "$wall" "$uptime" "$phase"
   fi
   [ -f "$FM_SUP_TICK_STEM.$FM_SUP_TICK_SLOT.tsv" ] && [ ! -L "$FM_SUP_TICK_STEM.$FM_SUP_TICK_SLOT.tsv" ] \
@@ -248,7 +258,7 @@ fm_supervision_tick_loop() {
 
 fm_supervision_tick_entry() { # <state> <config> <family> [unit]
   fm_supervision_ticks_enabled "$1" "$2" || return 0
-  local wall=${EPOCHREALTIME-} uptime='' rest='' line='' path="$1/.supervision-entries.tsv" unit=${4:-invocation-v1}
+  local wall=${EPOCHREALTIME-} uptime='' boot_id='' rest='' line='' path="$1/.supervision-entries.tsv" unit=${4:-invocation-v1} LC_ALL=C
   if ! [[ "$3" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || ! [[ "$unit" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
     fm_supervision_tick_error "$1" entry-label; return 0
   fi
@@ -260,8 +270,9 @@ fm_supervision_tick_entry() { # <state> <config> <family> [unit]
   fi
   IFS=' ' read -r uptime rest < /proc/uptime || { fm_supervision_tick_error "$1" "entry-uptime-$3"; return 0; }
   [[ "$uptime" =~ ^[0-9]{1,12}\.[0-9]{2}$ ]] || { fm_supervision_tick_error "$1" "entry-uptime-format-$3"; return 0; }
-  printf -v line 'fm-supervision-tick.v1\t%s\t%s\t%s:%s\t1\t%s\t%s\tentry\n' \
-    "$3" "$unit" "${BASHPID:-$$}" "$wall" "$wall" "$uptime"
+  fm_supervision_tick_boot_to boot_id || { fm_supervision_tick_error "$1" "entry-boot-$3"; return 0; }
+  printf -v line 'fm-supervision-tick.v2\t%s\t%s\t%s\t%s:%s\t1\t%s\t%s\tentry\n' \
+    "$3" "$unit" "$boot_id" "${BASHPID:-$$}" "$wall" "$wall" "$uptime"
   # One small O_APPEND write; no per-entry stat, lock, helper, timer or poll.
   printf '%s' "$line" >> "$path" || fm_supervision_tick_error "$1" "entry-append-$3"
 }
@@ -284,6 +295,7 @@ fm_supervision_tick_check_notice() { # <state>; sets FM_SUP_TICK_CHECK_REASON
       && { [ ! -e "$state/.supervision-ticks.error-seen" ] || [ -f "$state/.supervision-ticks.error-seen" ]; }; then
       printf 'queued\n' > "$state/.supervision-ticks.error-seen" || true
     fi
+    # shellcheck disable=SC2034 # Public output consumed by the watcher check step.
     FM_SUP_TICK_CHECK_REASON=$reason
   else
     printf 'supervision-accounting: recording invalidation notice was not queued; retry on the next existing check pass\n' >&2

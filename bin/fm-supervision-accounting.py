@@ -62,6 +62,8 @@ SCHEMAS = Path(__file__).resolve().parent.parent / "docs" / "supervision-account
 FAMILIES = ("crew-state", "watch", "wake-drain", "fleet-snapshot", "spawn", "control")
 SCRIPT_FAMILIES = {"fm-" + name + ".sh": name for name in FAMILIES}
 SHELL_EXECUTABLES = ("/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh")
+JOURNAL_TIMESTAMPS = ("supervision-tick-v1", "supervision-tick-v2")
+BOOT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 
 
 class Refused(ValueError):
@@ -1243,7 +1245,7 @@ def attribution_input(value, kind):
                     raw = base64.b64decode(record["base64"], validate=True)
                     require(len(raw) <= 65536 and digest(raw) == record["sha256"], "CI fixture seal mismatch")
             if kind == "tick-records":
-                require(not ({"record_kind", "instrumentation_error"} & profile.keys()) or profile["timestamp"] == "supervision-tick-v1",
+                require(not ({"record_kind", "instrumentation_error"} & profile.keys()) or profile["timestamp"] in JOURNAL_TIMESTAMPS,
                         "journal state metadata on ordinary record")
                 require("timestamp_field" not in profile or profile["timestamp"].startswith("json-"),
                         "timestamp field on non-JSON record")
@@ -1254,24 +1256,36 @@ def attribution_input(value, kind):
 
 def ci_tick_count(records, profile):
     require(len({r["name"] for r in records}) == len(records), "duplicate CI tick record")
-    pieces = []
+    pieces, boots = [], set()
     for record in records:
         data = base64.b64decode(record["base64"], validate=True)
         require(len(data) <= 6 * 1024 * 1024 and digest(data) == record["sha256"], "CI tick record seal mismatch")
         require(not data or data.endswith(b"\n"), "unfinished CI tick record")
         for line in data.splitlines():
             fields = line.decode("ascii").split("\t")
-            require(len(fields) == 8 and (fields[1], fields[2]) == (profile["family"], profile["tick_unit"]),
-                    "different family/unit nested in CI tick scope")
+            require(len(fields) == 9 and fields[0] == "fm-supervision-tick.v2"
+                    and (fields[1], fields[2]) == (profile["family"], profile["tick_unit"]),
+                    "different family/unit or legacy format in CI tick scope")
+            boots.add(fields[3])
         pieces.append(data)
+    require(len(boots) == 1, "CI tick records have missing or mixed boot identity")
+    boot_id = next(iter(boots))
     count, reason = count_instrumented_ticks(b"".join(pieces), profile,
-        {"uptime_upper_ticks": 0}, {"uptime_lower_ticks": 2**63-1}, 100)
+        {"uptime_upper_ticks": 0, "boot_id": boot_id}, {"uptime_lower_ticks": 2**63-1}, 100)
     require(not reason and count == profile["ticks_per_sample"], "CI tick count mismatch or incomplete retention")
-    return count
+    return count, boot_id
+
+
+def ci_cpu_values(reading):
+    require(re.fullmatch(r"[0-9]+\.[0-9]{2} [0-9]+\.[0-9]{2}", reading), "invalid calibration CPU evidence")
+    return [int(Decimal(v) * 1000000000) for v in reading.split()]
 
 
 def calibration_uncertainty(samples):
+    differences = [sum(ci_cpu_values(s["traced_cpu_reading"])) - s["user_ns"] - s["system_ns"]
+                   for s in samples]
     return {"cpu_quantization_ns_per_component": 10000000,
+            "trace_minus_untraced_cpu_ns_per_repeat_range": [min(differences), max(differences)],
             "repeat_ranges": {k: [min(s[k] for s in samples), max(s[k] for s in samples)]
                               for k in ("births", "user_ns", "system_ns")}}
 
@@ -1281,6 +1295,7 @@ def calibration_payload(value):
     checked(payload, "calibration")
     plan = attribution_input(payload["plan"], "calibration-plan")
     require(len(payload["results"]) == len(plan["profiles"]), "calibration result count mismatch")
+    boots = set()
     for profile, result in zip(plan["profiles"], payload["results"]):
         if "unavailable" in profile:
             require(result == {"unavailable": profile["unavailable"]}, "changed calibration gap")
@@ -1295,11 +1310,16 @@ def calibration_payload(value):
             require(digest(raw) == sample["trace_sha256"], "calibration trace seal mismatch")
             births = calibration_births(raw, profile["family"])
             require(sample["births"] == births, "calibration birth count mismatch")
-            require(sample["ticks"] == ci_tick_count(sample["tick_records"], profile), "calibration tick count mismatch")
-            require(re.fullmatch(r"[0-9]+\.[0-9]{2} [0-9]+\.[0-9]{2}", sample["cpu_reading"]), "invalid calibration CPU evidence")
-            cpu = [int(Decimal(v) * 1000000000) for v in sample["cpu_reading"].split()]
+            traced_ticks, traced_boot = ci_tick_count(sample["tick_records"], profile)
+            cpu_ticks, cpu_boot = ci_tick_count(sample["cpu_tick_records"], profile)
+            require(sample["ticks"] == traced_ticks == cpu_ticks and sample["boot_id"] == traced_boot == cpu_boot,
+                    "calibration tick count or boot mismatch")
+            boots.add(traced_boot)
+            ci_cpu_values(sample["traced_cpu_reading"])
+            cpu = ci_cpu_values(sample["cpu_reading"])
             require(cpu == [sample["user_ns"], sample["system_ns"]], "calibration CPU evidence mismatch")
         require(len({s["births"] for s in samples}) == 1, "nondeterministic calibration births")
+    require(len(boots) <= 1, "calibration samples span different boots")
     return payload
 
 
@@ -1329,6 +1349,58 @@ def calibration_births(raw, family):
     return sum(event["kind"] == "birth" for event in trace["events"])
 
 
+def ci_fixture(profile, fixture):
+    fixture.mkdir(mode=0o700, exist_ok=False)
+    for directory in ("state", "data", "config", "projects"):
+        (fixture / directory).mkdir(mode=0o700)
+    for record in profile["fixture_files"]:
+        target = fixture / record["path"]  # already closed, sealed and path-validated
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(record["base64"], validate=True))
+    environment = dict(os.environ)
+    environment.update({p["name"]: p["value"].replace("@FIXTURE@", str(fixture))
+                        for p in profile["environment"]})
+    for key, suffix in (("HOME", ""), ("FM_HOME", ""), ("FM_STATE_OVERRIDE", "/state"),
+                        ("FM_DATA_OVERRIDE", "/data"), ("FM_CONFIG_OVERRIDE", "/config"),
+                        ("FM_PROJECTS_OVERRIDE", "/projects")):
+        require(environment.get(key) == str(fixture) + suffix, "CI fixture environment escapes scratch: " + key)
+    return environment
+
+
+def ci_run(argv, prefix, environment, deadline):
+    # These are private CI fixture children, never live capture targets.
+    def file_limit():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (1048576, 1048576))
+    with open(str(prefix) + ".stdout", "wb") as stdout, open(str(prefix) + ".stderr", "wb") as stderr:
+        child = subprocess.Popen(argv, env=environment, stdout=stdout, stderr=stderr,
+                                 start_new_session=True, preexec_fn=file_limit)
+        try:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, "CI calibration total deadline exceeded")
+            status = child.wait(timeout=min(30, remaining))
+        finally:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
+    require(status == 0, "CI calibration command failed; evidence retained")
+
+
+def ci_tick_records(fixture):
+    require(not (fixture / "state/.supervision-ticks.error").exists(), "CI instrumentation invalidation")
+    records, size = [], 0
+    for name in (".supervision-entries.tsv", ".supervision-entries.previous.tsv",
+                 ".supervision-watch-ticks.0.tsv", ".supervision-watch-ticks.1.tsv",
+                 ".supervision-host-ticks.0.tsv", ".supervision-host-ticks.1.tsv"):
+        path = fixture / "state" / name
+        if path.exists():
+            data = read_bytes(path, 6 * 1024 * 1024)
+            records.append({"name": name, "base64": base64.b64encode(data).decode(), "sha256": digest(data)})
+            size += len(data)
+    return records, size
+
+
 def calibrate_ci(args):
     require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
             "calibration runs only on GitHub-hosted Actions runners")
@@ -1352,79 +1424,43 @@ def calibrate_ci(args):
             results.append({"unavailable": profile["unavailable"]})
             continue
         require(profile["code_ref"] == revision, "calibration plan revision is stale")
-        environment = dict(os.environ)
         names = [p["name"] for p in profile["environment"]]
         require(len(set(names)) == len(names), "duplicate calibration environment name")
         samples = []
         for repeat in range(args.repeats):
-            prefix = output / (str(index) + "-" + str(repeat))
-            raw_path, cpu_path = str(prefix) + ".trace", str(prefix) + ".cpu"
-            fixture = output / (str(index) + "-" + str(repeat) + "-fixture")
-            for directory in ("state", "data", "config", "projects"):
-                (fixture / directory).mkdir(mode=0o700, parents=True, exist_ok=True)
-            paths = set()
-            for record in profile["fixture_files"]:
-                path = record["path"]
-                require(not path.startswith("/") and os.path.normpath(path) == path
-                        and ".." not in Path(path).parts and path not in paths, "unsafe CI fixture path")
-                paths.add(path)
-                data = base64.b64decode(record["base64"], validate=True)
-                require(len(data) <= 65536 and digest(data) == record["sha256"], "CI fixture seal mismatch")
-                target = fixture / path
-                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                target.write_bytes(data)
-            require(profile["work_mix_sha256"] == digest(dump(profile["fixture_files"]).encode()),
-                    "CI fixture work-mix seal mismatch")
-            environment.update({p["name"]: p["value"].replace("@FIXTURE@", str(fixture))
-                                for p in profile["environment"]})
-            for key, suffix in (("HOME", ""), ("FM_HOME", ""), ("FM_STATE_OVERRIDE", "/state"),
-                                ("FM_DATA_OVERRIDE", "/data"), ("FM_CONFIG_OVERRIDE", "/config"),
-                                ("FM_PROJECTS_OVERRIDE", "/projects")):
-                require(environment.get(key) == str(fixture) + suffix, "CI fixture environment escapes scratch: " + key)
-            argv = ["strace", "-f", "-qq", "-ttt", "-s", "65536", "-e", "trace=process",
-                    "-o", raw_path, "/usr/bin/time", "-f", "%U %S", "-o", cpu_path, *profile["argv"]]
-            # Bound every evidence file and the entire private child process
-            # group. These are CI fixture children, never live capture targets.
-            def file_limit():
-                resource.setrlimit(resource.RLIMIT_FSIZE, (1048576, 1048576))
-            with open(str(prefix) + ".stdout", "wb") as stdout, open(str(prefix) + ".stderr", "wb") as stderr:
-                child = subprocess.Popen(argv, env=environment, stdout=stdout, stderr=stderr,
-                                         start_new_session=True, preexec_fn=file_limit)
-                try:
-                    remaining = deadline - time.monotonic()
-                    require(remaining > 0, "CI calibration total deadline exceeded")
-                    status = child.wait(timeout=min(30, remaining))
-                finally:
-                    # Even successful leaders must not leave fixture daemons.
-                    try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    child.wait()
-            require(status == 0, "CI calibration command failed; evidence retained")
-            raw = read_bytes(raw_path, 1048576)
-            cpu = read_bytes(cpu_path, 4096).decode("ascii").strip()
-            require(re.fullmatch(r"[0-9]+\.[0-9]{2} [0-9]+\.[0-9]{2}", cpu), "invalid GNU time CPU reading")
-            user, system = [int(Decimal(v) * 1000000000) for v in cpu.split()]
-            require(not (fixture / "state/.supervision-ticks.error").exists(), "CI instrumentation invalidation")
-            tick_records = []
-            for name in (".supervision-entries.tsv", ".supervision-entries.previous.tsv",
-                         ".supervision-watch-ticks.0.tsv", ".supervision-watch-ticks.1.tsv",
-                         ".supervision-host-ticks.0.tsv", ".supervision-host-ticks.1.tsv"):
-                tick_path = fixture / "state" / name
-                if tick_path.exists():
-                    data = read_bytes(tick_path, 6 * 1024 * 1024)
-                    tick_records.append({"name": name, "base64": base64.b64encode(data).decode(), "sha256": digest(data)})
-                    total_bytes += len(data)
-            ticks = ci_tick_count(tick_records, profile)
-            samples.append({"ticks": ticks, "tick_records": tick_records, "births": calibration_births(raw, profile["family"]),
-                "user_ns": user, "system_ns": system, "cpu_reading": cpu,
-                "trace_base64": base64.b64encode(raw).decode(),
-                "trace_sha256": digest(raw)})
-            total_bytes += sum(Path(str(prefix) + suffix).stat().st_size
-                               for suffix in (".trace", ".cpu", ".stdout", ".stderr")) + sum(
-                                   len(base64.b64decode(r["base64"], validate=True)) for r in profile["fixture_files"])
-            require(total_bytes <= 16 * 1024 * 1024, "calibration aggregate trace cap exceeded")
+            measurements = {}
+            for mode in ("trace", "plain"):
+                prefix = output / (str(index) + "-" + str(repeat) + "-" + mode)
+                fixture = Path(str(prefix) + "-fixture")
+                environment = ci_fixture(profile, fixture)
+                cpu_path = str(prefix) + ".cpu"
+                argv = ["/usr/bin/time", "-f", "%U %S", "-o", cpu_path, *profile["argv"]]
+                suffixes = (".cpu", ".stdout", ".stderr")
+                if mode == "trace":
+                    raw_path = str(prefix) + ".trace"
+                    argv = ["strace", "-f", "-qq", "-ttt", "-s", "65536", "-e", "trace=process",
+                            "-o", raw_path, *argv]
+                    suffixes += (".trace",)
+                ci_run(argv, prefix, environment, deadline)
+                cpu = read_bytes(cpu_path, 4096).decode("ascii").strip()
+                ci_cpu_values(cpu)
+                records, record_bytes = ci_tick_records(fixture)
+                ticks, boot_id = ci_tick_count(records, profile)
+                measurements[mode] = {"cpu": cpu, "records": records, "ticks": ticks, "boot_id": boot_id}
+                if mode == "trace":
+                    measurements[mode]["raw"] = read_bytes(raw_path, 1048576)
+                total_bytes += record_bytes + sum(Path(str(prefix) + suffix).stat().st_size for suffix in suffixes)
+                total_bytes += sum(len(base64.b64decode(r["base64"], validate=True)) for r in profile["fixture_files"])
+                require(total_bytes <= 16 * 1024 * 1024, "calibration aggregate trace cap exceeded")
+            traced, plain = measurements["trace"], measurements["plain"]
+            require(traced["ticks"] == plain["ticks"] and traced["boot_id"] == plain["boot_id"],
+                    "traced/untraced unit counts or boots differ")
+            user, system = ci_cpu_values(plain["cpu"])
+            samples.append({"ticks": traced["ticks"], "boot_id": traced["boot_id"], "tick_records": traced["records"],
+                "cpu_tick_records": plain["records"], "births": calibration_births(traced["raw"], profile["family"]),
+                "user_ns": user, "system_ns": system, "cpu_reading": plain["cpu"],
+                "traced_cpu_reading": traced["cpu"], "trace_base64": base64.b64encode(traced["raw"]).decode(),
+                "trace_sha256": digest(traced["raw"])})
         require(len({s["births"] for s in samples}) == 1, "nondeterministic calibration births")
         results.append({"samples": samples, "uncertainty": calibration_uncertainty(samples)})
     require(subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == revision
@@ -1434,8 +1470,8 @@ def calibrate_ci(args):
         "runner": "/".join(os.environ.get(key, "unknown") for key in
                            ("RUNNER_NAME", "RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion")),
         "ci_url": "https://github.com/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["GITHUB_RUN_ID"],
-        "method": "launch-strace-process+GNU-time-subtree.v1", "plan": plan, "results": results,
-        "uncertainty": "CPU rounded to 10ms per user/system sample; min/max repeat spread is not a confidence interval. Tracing overhead, CI/runtime differences and fixture work mix remain. Command startup remains in the average over actual logged ticks; real resident startup frequency and partial boundary work are not recovered."}
+        "method": "launch-strace-births+untraced-GNU-time-subtree.v1", "plan": plan, "results": results,
+        "uncertainty": "CPU comes from a fresh untraced matched repeat, rounded to 10ms per component. Repeat spread and traced-minus-untraced differences are diagnostics, not confidence intervals or an exact tracer-overhead correction. CI/runtime differences and work mix remain. Command startup remains in the tick average; real resident startup frequency and partial boundary work are not recovered."}
     artifact = content_seal(payload)
     calibration_payload(artifact)
     (output / "calibration.json").write_text(dump(artifact))
@@ -1443,19 +1479,26 @@ def calibrate_ci(args):
 
 
 def count_instrumented_ticks(data, profile, first, last, hz):
-    groups, count = {}, 0
+    groups, count, current_boot_seen = {}, 0, False
     lower = Fraction(first["uptime_upper_ticks"] * 1000000000, hz)
     upper = Fraction(last["uptime_lower_ticks"] * 1000000000, hz)
     for line in data.split(b"\n")[:-1]:
         if not line:
             continue
         fields = line.decode("ascii").split("\t")
-        require(len(fields) == 8 and fields[0] == "fm-supervision-tick.v1", "invalid instrumentation row")
-        family, unit, generation, seq, wall, boot, phase = fields[1:]
-        require(re.fullmatch(r"[0-9]+:[0-9]+\.[0-9]{6}", generation) and seq.isdecimal()
-                and re.fullmatch(r"[0-9]+\.[0-9]{6}", wall)
-                and re.fullmatch(r"[0-9]+\.[0-9]{2}", boot)
+        require(len(fields) == 9 and fields[0] == "fm-supervision-tick.v2"
+                and all(len(field) <= 128 for field in fields), "invalid instrumentation row")
+        family, unit, record_boot, generation, seq, wall, boot, phase = fields[1:]
+        require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", family) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", unit)
+                and re.fullmatch(BOOT_ID_PATTERN, record_boot)
+                and re.fullmatch(r"[0-9]{1,18}:[0-9]{1,12}\.[0-9]{6}", generation)
+                and seq.isdecimal() and len(seq) <= 18
+                and re.fullmatch(r"[0-9]{1,12}\.[0-9]{6}", wall)
+                and re.fullmatch(r"[0-9]{1,12}\.[0-9]{2}", boot)
                 and phase in ("start", "rotate", "tick", "entry"), "invalid instrumentation fields")
+        if record_boot != first["boot_id"]:
+            continue
+        current_boot_seen = True
         if (family, unit) != (profile["family"], profile["tick_unit"]):
             continue
         if profile.get("record_kind") == "owned-loop" and phase == "entry":
@@ -1467,6 +1510,8 @@ def count_instrumented_ticks(data, profile, first, last, hz):
         require((phase == "start" and sequence == 0) or (phase != "start" and sequence > 0), "invalid tick sequence")
         groups.setdefault(generation, []).append((sequence, at, phase))
         count += phase != "start" and lower <= at < upper
+    if not current_boot_seen:
+        return None, "no journal record from the capture boot"
     if profile.get("record_kind") == "owned-loop" and not groups:
         return None, "no owned-loop startup or retained tick record"
     for rows in groups.values():
@@ -1502,7 +1547,7 @@ def count_saved_ticks(records, capture):
                 path = fragment["record_path"]
                 require(os.path.normpath(path) == path and path.startswith(owner["home"] + "/"), "tick path outside admitted home")
                 if path in paths:
-                    require(profile["timestamp"] == "supervision-tick-v1" and paths[path] == (fragment["sha256"], "supervision-tick-v1"),
+                    require(profile["timestamp"] in JOURNAL_TIMESTAMPS and paths[path] == (fragment["sha256"], profile["timestamp"]),
                             "shared saved tick record or inconsistent fragment")
                 paths[path] = (fragment["sha256"], profile["timestamp"])
                 piece = base64.b64decode(fragment["base64"], validate=True)
@@ -1511,17 +1556,19 @@ def count_saved_ticks(records, capture):
             require(len({f["record_path"] for f in fragments}) == len(fragments), "duplicate tick fragment")
             data = b"".join(piece if piece.endswith(b"\n") else piece.rsplit(b"\n", 1)[0] + b"\n"
                             if b"\n" in piece else b"" for piece in pieces)
-            if profile["timestamp"] == "supervision-tick-v1" and profile.get("instrumentation_error", True):
+            if profile["timestamp"] in JOURNAL_TIMESTAMPS and profile.get("instrumentation_error", True):
                 reason = "instrumentation cohort invalid or error-state attestation missing"
-            if profile["timestamp"] == "supervision-tick-v1" and "record_kind" not in profile:
+            if profile["timestamp"] in JOURNAL_TIMESTAMPS and "record_kind" not in profile:
                 reason = "journal ownership kind missing"
+            if profile["timestamp"] == "supervision-tick-v1":
+                reason = "legacy journal has no boot identity; cannot model its uptime records"
             if not profile["coverage_start_wall_ns"] <= start < end <= profile["coverage_end_wall_ns"]:
                 reason = "stale or partial tick record window"
             elif not reason:
                 count = 0
-                if profile["timestamp"] == "supervision-tick-v1":
+                if profile["timestamp"] == "supervision-tick-v2":
                     count, reason = count_instrumented_ticks(data, profile, first, last, measured["clock_ticks"])
-                for line in ([] if profile["timestamp"] == "supervision-tick-v1" else data.split(b"\n")[:-1]):
+                for line in ([] if profile["timestamp"] in JOURNAL_TIMESTAMPS else data.split(b"\n")[:-1]):
                     if profile["line_contains"].encode() not in line:
                         continue
                     if profile["timestamp"] == "epoch-tab-seconds":
@@ -1546,8 +1593,8 @@ def count_saved_ticks(records, capture):
             row["unavailable"] = reason
         rows.append(row)
     return {"format": "fm-supervision-tick-counts.v1", "capture_sha256": digest(dump(capture).encode()),
-        "window_wall_ns": [start, end], "duration_ns": measured["duration_ns"], "by_home_family": rows,
-        "clock_qualification": "Ordinary timestamped rows use [wall-start,wall-end); instrumented rows use conservative boot-uptime brackets (uncertain edge jiffies excluded). Rates use measured monotonic duration. Owner must attest full retained coverage and one row per calibrated unit; clock steps and quantization remain uncertainty.",
+        "window_wall_ns": [start, end], "boot_id": first["boot_id"], "duration_ns": measured["duration_ns"], "by_home_family": rows,
+        "clock_qualification": "Ordinary rows use [wall-start,wall-end); v2 journal rows match capture boot and conservative uptime brackets (uncertain edge jiffies excluded). Rates use measured monotonic duration. Owner attests retained coverage, clock-namespace equivalence and one row per calibrated unit; boot UUID alone does not prove shared time namespace. Clock steps and quantization remain uncertainty.",
         "concurrent_log_loss_limit": "A producer frozen between O_APPEND open and write across two watcher rename rotations can silently lose its line. No writer-lifetime bound or zero-loss proof is claimed; this limit accompanies every result using the concurrent journal.",
         "wall_minus_monotonic_ns": end - start - measured["duration_ns"]}
 
@@ -1598,7 +1645,9 @@ def reconcile_saved(capture, records, calibrations):
             covered += 1
             row.update(status="modelled-not-measured", ticks=rate["ticks"], estimated_births=float(values[0]),
                 estimated_user_ns=float(values[1]), estimated_system_ns=float(values[2]),
-                calibration_sha256=seal, ci_url=calibration["ci_url"],
+                calibration_sha256=seal, ci_url=calibration["ci_url"], method=calibration["method"],
+                cpu_basis="untraced matched CI repeat",
+                trace_minus_untraced_cpu_ns_per_repeat_range=result["uncertainty"]["trace_minus_untraced_cpu_ns_per_repeat_range"],
                 per_tick={k: {"mean": float(Fraction(sum(s[k] for s in samples), calibration_ticks)),
                               "min": float(min(Fraction(s[k], s["ticks"]) for s in samples)),
                               "max": float(max(Fraction(s[k], s["ticks"]) for s in samples))}

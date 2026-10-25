@@ -151,7 +151,7 @@ when "$H" arm fire --interval 0.1 --stable 2 \
   --condition "$COND" "$TRIG" "$TMP_ROOT/fire-count" \
   --action "$ACT" "$ACTLOG" >/dev/null
 FIRE_TICK_RECORDS=0
-if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then FIRE_TICK_RECORDS=1; fi
+if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/random/boot_id ]; then FIRE_TICK_RECORDS=1; fi
 FM_SUPERVISION_TICKS="$FIRE_TICK_RECORDS" FM_PROCEVENT_OWNER_CHECK_SECONDS=1 pe "$H" reconcile >/dev/null
 # Let the runner observe some clean falses before the condition turns true.
 wait_for_file "$TMP_ROOT/fire-count" || fail "the condition was never polled"

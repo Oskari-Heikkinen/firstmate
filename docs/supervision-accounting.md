@@ -217,16 +217,18 @@ The invoking task owner consumes success/refusal and retains evidence through it
 Calibration executes a trusted fixture plan only on a GitHub-hosted Linux Actions runner, using installed strace and GNU time, with the clean checkout exactly matching the GitHub run revision before and after measurement.
 The separate [calibration workflow](../.github/workflows/supervision-calibration.yml) installs those CI-only dependencies explicitly and retains evidence on failure too.
 No local profiler, workload, privilege change or implicit calibration fallback is enabled.
-Each repeat reconstructs fresh isolated state from sealed fixture files; explicit home/state/data/config/project overrides must all name that repeat's private scratch tree.
+Each paired repeat reconstructs two fresh isolated states from the same sealed fixture files; explicit home/state/data/config/project overrides must all name that phase's private scratch tree.
 The retained plan binds family, tick unit, revision, configuration pin, work-mix digest, argv, environment and qualification.
 A work-mix digest seals the canonical fixture-file array; configuration and unit equivalence with deployment remain owner/reviewer assertions, not facts inferred from a matching digest.
 
 Launch tracing counts the script's entry birth and its descendant task births, including threads.
-GNU time reports the same command subtree's user/system CPU, including reaped children, without adding the tracer's own CPU.
+GNU time reports command-subtree user/system CPU, including reaped children, in a separate untraced matched repeat.
+Traced CPU is retained only as a paired diagnostic, not multiplied into the live CPU model: excluding the tracer process itself does not remove tracee-side instrumentation effects.
 A fixture with another recognized supervision family nested in its subtree is refused rather than assigning inclusive CPU to two families.
 This is an isolated-scope calibration method, not an exclusive CPU splitter for arbitrary nested live workloads.
-Birth counts must agree across repeats; CPU retains every reading and its repeat spread, with 10 ms quantization per component explicitly reported.
-Freshly generated journal records must prove the plan's positive tick count for each repeat, with no other family/unit in that scope; preseeded instrumentation files are refused.
+Birth counts must agree across traced repeats; the CPU model uses untraced readings and retains their repeat spread, with 10 ms quantization per component explicitly reported.
+The signed traced-minus-untraced CPU range per paired repeat is retained, including negative differences; it is not a statistical error bound or an exact tracer-overhead correction.
+Freshly generated journal records must prove the same positive planned tick count in both phases, with no other family/unit in that scope; preseeded instrumentation files are refused.
 Costs divide by the sum of actual calibrated ticks, not just the number of repeats.
 Command startup remains in that average rather than being silently removed, so an invocation fixture cannot certify a resident steady-tick cost without matching startup treatment.
 The outer canonical-JSON SHA-256 envelope seals all metadata and retained raw trace/CPU evidence; it detects content changes, not provenance forgery or operator authority.
@@ -245,16 +247,18 @@ Plans must be finite fixtures without escaping/daemonized children, never live-h
 
 Logging is disabled by default and landing enables it in no home.
 `config/supervision-tick-logging` opts in existing actors when they start and short commands when invoked; `FM_SUPERVISION_TICKS=1` enables and `0` disables explicitly.
-Linux with Bash's microsecond `EPOCHREALTIME` and readable proc uptime is required for this recording route; unsupported clocks refuse instrumentation while legacy supervision continues.
+Linux with Bash's microsecond `EPOCHREALTIME`, readable proc uptime and the kernel boot UUID is required for this recording route; unsupported clocks or boot identity refuse instrumentation while legacy supervision continues.
 No interpreter or new dependency is added to ordinary monitoring.
 The logger lives with the existing shell bridge in [`fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh), whose header owns the shell API.
 All successful appends use shell builtins only: no date, stat, helper process, new poller, timer or standing reader.
 No sleep, grace, liveness verdict, queue custody or delivery deadline changes.
 
-`fm-supervision-tick.v1` is one LF-terminated ASCII TSV row: format, family, unit, writer generation (`PID:startup-wall-seconds`), sequence, wall epoch seconds with six fractional digits, proc uptime seconds with two fractional digits, and phase.
+`fm-supervision-tick.v2` is one LF-terminated ASCII TSV row: format, family, unit, kernel boot UUID, writer generation (`PID:startup-wall-seconds`), sequence, wall epoch seconds with six fractional digits, proc uptime seconds with two fractional digits, and phase.
 `start` has sequence zero and is not a tick; `tick` and the first retained `rotate` row count once, with a monotonically increasing generation-local sequence.
 Concurrent `entry` rows have sequence one and a fresh timestamped generation per append.
 The wall stamp is not a proof of process start identity; proc uptime provides the separate boot-clock coordinate.
+The UUID is read with builtins once at owned-loop initialization or per concurrent append, so an earlier boot's identical uptime interval cannot be counted as current work.
+Legacy v1 journal records lack that discriminator and remain unavailable for uptime-based modelling rather than being silently upgraded.
 Readers preserve raw bytes, unfinished lines, startup qualifications, sequence gaps and rotation loss instead of deriving rates from configured sleeps.
 
 The watcher and host use independently owned two-slot streams at `state/.supervision-watch-ticks.{0,1}.tsv` and `state/.supervision-host-ticks.{0,1}.tsv`, with a two-byte cursor sidecar per stream.
@@ -302,12 +306,14 @@ Missing owner evidence, stale window coverage or changed pins produce an unavail
 Generic adapters support epoch-first TSV, timestamped status lines and JSON timestamps, including the successful-spawn publication's explicit epoch field.
 Those narrower successful-spawn and watcher-cycle-close units must not be called every spawn attempt or every watcher inner tick.
 
-The instrumented TSV adapter partitions a shared record by exact family and unit and checks generation-local sequence continuity.
+The instrumented TSV adapter partitions a shared record by exact family and unit, admits only the capture's boot UUID, and checks generation-local sequence continuity.
+A journal without any evidence from the current boot is unavailable, not zero; current-boot records from other units can establish a quiet concurrent counter.
 Shared fragments must have identical content seals, and other adapter types may not share a record.
 A removed prefix inside the requested interval, duplicate/missing sequence or invalidation prevents modelling that profile.
 Instrumented counts use conservative proc-uptime brackets from the capture, excluding ambiguous edge jiffies; generic adapters use the capture's wall interval.
 Both publish the exact measured monotonic duration as their denominator and retain the wall-minus-monotonic discrepancy.
 Centisecond boot-clock quantization, startup and in-flight boundary work remain explicit uncertainties, not recovered events.
+A shared boot UUID does not itself prove a shared time namespace; the owner still attests clock-coordinate equivalence.
 
 For each compatible family, reconciliation multiplies the repeated CI per-tick mean by the counted unit records, without mixing observed proc lower bounds into the estimate.
 The report prints a modelled covered subtotal, never measured supervision, with per-family evidence, spread and qualifications.

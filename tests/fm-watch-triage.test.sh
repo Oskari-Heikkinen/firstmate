@@ -934,7 +934,7 @@ test_provably_working_signal_absorbed() {
   # still working, so a no-verb working: signal is absorbed (the original low-churn
   # case during a long validation).
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
-  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then
+  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/random/boot_id ]; then
     record_ticks=1
     printf '%4096s' '' > "$state/.supervision-entries.tsv"
   fi
@@ -955,13 +955,16 @@ test_provably_working_signal_absorbed() {
   fi
   reap "$pid"
   if [ "$record_ticks" -eq 1 ]; then
+    # TERM creates an unacknowledged recovery episode even for a quiet cycle;
+    # acknowledge that intentional stop before starting the next phase.
+    ack_stopped_cycle "$state" || fail 'could not acknowledge the recording phase stop'
     # Producer overrides may outlive a watcher flag change. Retention is still
     # maintained by the same existing pass, not by another reader process.
     { printf 'second-generation-due\n'; printf '%4096s' ''; } > "$state/.supervision-entries.tsv"
     FM_SUPERVISION_TICKS=0 FM_SUPERVISION_ENTRY_MAX_BYTES=4096 watch_bg "$state" "$fakebin" "$out"
     pid=$!
     if ! wait_poll_cycle "$state" "$pid"; then
-      reap "$pid"; fail 'nonrecording watcher failed while maintaining an existing journal'
+      reap "$pid"; fail "nonrecording watcher failed while maintaining an existing journal: $(cat "$out")"
     fi
     grep -q second-generation-due "$state/.supervision-entries.previous.tsv" \
       || fail 'watcher flag change disabled retention for an existing producer journal'

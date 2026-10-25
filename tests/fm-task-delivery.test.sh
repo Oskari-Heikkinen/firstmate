@@ -1959,7 +1959,7 @@ test_direct_push_brief_spawn_and_pr_check
 test_switch_mode_records_a_direct_push_switch_to_a_pr
 # Logging an admitted spawn invocation must not bypass a delivery refusal or
 # require an endpoint. The same safe refusal is the entry-unit counterfactual.
-if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then
+if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/random/boot_id ]; then
   tick_rec=$(make_home tick-entry)
   IFS='|' read -r tick_home tick_proj tick_fakebin <<< "$tick_rec"
   write_brief "$tick_home" tick-entry direct-push
@@ -1968,7 +1968,7 @@ if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then
   [ "$tick_rc" -ne 0 ] || fail 'tick fixture bypassed missing-yolo refusal'
   assert_contains "$tick_out" 'ship spawns require --yolo' 'tick fixture refused on the wrong condition'
   IFS=$'\t' read -r tick_format tick_family tick_unit _ < "$tick_home/state/.supervision-entries.tsv"
-  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v1:spawn:invocation-v1 ] || fail 'spawn entry tick missing'
+  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v2:spawn:invocation-v1 ] || fail 'spawn entry tick missing'
   assert_absent "$tick_home/state/tick-entry.meta" 'tick instrumentation created endpoint metadata'
   pass 'spawn tick instrumentation retains admission refusal and records its exact entry unit'
 fi

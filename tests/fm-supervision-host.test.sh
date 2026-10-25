@@ -3381,7 +3381,7 @@ fi
 exec /bin/sleep "$@"
 SH
   chmod +x "$home/fakebin/sleep"
-  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then record_ticks=1; fi
+  if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/random/boot_id ]; then record_ticks=1; fi
   FM_SUPERVISION_TICKS="$record_ticks" FM_SUPERVISION_HOST_POLL=60 start_host "$home"
   wait_until 150 watcher_live "$home" || fail "park-cadence: no watcher started"
   host_pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")

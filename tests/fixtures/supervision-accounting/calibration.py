@@ -75,7 +75,7 @@ subprocess.run(['strace', '-f', '-qq', '-s', '65536', '-e', 'trace=process,opena
                env=dict(os.environ, FM_SUPERVISION_TICKS='1', BASH_ENV='/dev/null'), check=True, timeout=10)
 trace = probe_trace.read_text()
 assert not re.search(r'\b(?:clone|clone3|fork|vfork)\(', trace), trace
-writes = re.findall(r'write\(\d+, "fm-supervision-tick\.v1', trace)
+writes = re.findall(r'write\(\d+, "fm-supervision-tick\.v2', trace)
 assert len(writes) == 1 and 'O_APPEND' in trace, trace
 assert len((probe / '.supervision-entries.tsv').read_bytes().splitlines()) == 1
 print('ok - native journal append: one O_APPEND write, zero child births')

@@ -36,7 +36,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # A usage refusal after explicit home resolution still counts an invocation,
 # without resolving or sending to any endpoint.
-if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then
+if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ] && [ -r /proc/sys/kernel/random/boot_id ]; then
   mkdir -p "$TMP_ROOT/tick-home/state" "$TMP_ROOT/tick-home/config"
   FM_SUPERVISION_TICKS=1 FM_HOME="$TMP_ROOT/tick-home" FM_BACKEND=tmux \
     FM_STATE_OVERRIDE="$TMP_ROOT/tick-home/state" FM_CONFIG_OVERRIDE="$TMP_ROOT/tick-home/config" \
@@ -44,7 +44,7 @@ if [ -n "${EPOCHREALTIME:-}" ] && [ -r /proc/uptime ]; then
   tick_rc=$?
   [ "$tick_rc" -ne 0 ] || fail 'control tick fixture unexpectedly accepted missing arguments'
   IFS=$'\t' read -r tick_format tick_family tick_unit _ < "$TMP_ROOT/tick-home/state/.supervision-entries.tsv"
-  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v1:control:invocation-v1 ] || fail 'control entry tick missing'
+  [ "$tick_format:$tick_family:$tick_unit" = fm-supervision-tick.v2:control:invocation-v1 ] || fail 'control entry tick missing'
   pass 'control tick instrumentation records a safe pre-endpoint refusal'
 fi
 
