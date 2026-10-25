@@ -53,6 +53,7 @@ gate tests/fm-spawn-pool-base-freshen.test.sh
 gate tests/fm-spawn-worktree-settle.test.sh
 gate tests/fm-storage.test.sh
 gate tests/fm-supervision-accounting.test.sh
+gate tests/fm-supervision-views.test.sh
 gate tests/fm-supervision-host.test.sh
 gate tests/fm-tangle-guard.test.sh
 gate tests/fm-task-inbox.test.sh

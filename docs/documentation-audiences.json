@@ -645,6 +645,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "docs/supervision-views.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": ".agents/skills/supervision-views/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/tmux-backend.md",
       "audience": "operator-current"
     },
