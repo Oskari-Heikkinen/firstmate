@@ -527,6 +527,15 @@ It also covers generation-claim single-flight, stuck-claim supersession, superse
 
 ## Active limits and verification
 
+### Pending-reply status input
+
+The incremental correlation reader's input/cursor contract is owned by the header of [`bin/fm-pending-reply-scan-lib.sh`](../bin/fm-pending-reply-scan-lib.sh).
+Status inputs are supported as append-only within one inode generation; destructive changes must delete or replace the file with a new inode, and an observed shrink below the saved endpoint resets the cursor.
+Unannounced same-inode truncate/regrow preserving the boundary witness is out of contract and undetectable by design; the witness checks sampled bytes, not rewrite identity.
+`tests/fm-pending-reply.test.sh` records that unsupported boundary explicitly and covers supported shrink/replacement resets, cached-observation retarget/replacement refusal, appends during captured reads, and restart on both sides of cursor publication through the real restatement/resolution consumers.
+
+### Harness limits
+
 The goal is continuity without a Pi, omp, or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed, because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.
 OpenCode support targets persistent TUI sessions rather than headless `opencode run`.

@@ -2493,18 +2493,19 @@ PY
     printf 'note: corr=%s\n' "$corr" > "$f"
     fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'rotation failed'
     [ "$_fm_pr_scan_matches" = 1 ] || fail 'recreated file was skipped'
-    # A truncate/regrow that is already larger by the next tick cannot be
-    # mistaken for an append merely because device/inode/size look plausible.
-    python3 - "$f" <<'PY'
+    # Destructive growth is supported through a new inode, not an unannounced
+    # same-inode truncate/regrow. The latter has no reliable rewrite identity.
+    python3 - "$replacement" <<'PY'
 import sys
 with open(sys.argv[1], 'wb') as stream:
-    stream.write(b'working: regrown log\n' * 20)
+    stream.write(b'working: replaced log\n' * 20)
 PY
-    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'truncate/regrow failed'
-    [ -z "$_fm_pr_scan_first" ] || fail 'truncate/regrow retained stale reply evidence'
+    mv -f "$replacement" "$f"
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'larger replacement failed'
+    [ -z "$_fm_pr_scan_first" ] || fail 'larger replacement retained stale reply evidence'
     printf 'note: corr=%s\n' "$corr" >> "$f"
-    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'reply after regrow failed'
-    [ "$_fm_pr_scan_matches" = 21 ] || fail 'regrown line numbers did not reset'
+    fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'reply after replacement failed'
+    [ "$_fm_pr_scan_matches" = 21 ] || fail 'replacement line numbers did not reset'
     # Reopen in a fresh interpreter to prove that the cursor is durable.
     FM_SCAN_REC="$rec" FM_SCAN_FILE="$f" FM_SCAN_CORR="$corr" bash -c '
       . "$1/bin/fm-pending-reply-lib.sh"
@@ -2603,8 +2604,292 @@ SH
   pass 'bad inputs before and after a good file cannot suppress sightings; repaired inputs retry'
 }
 
+# The unsupported trace deliberately preserves every sampled byte, without a
+# checksum collision. This records the contract limit, NOT rewrite detection.
+# A subsequent supported replacement must discard both missing and stale cache
+# evidence; the separate edge test covers an observed shrink below the cursor.
+test_same_inode_regrow_contract_boundary() {
+  (
+    local home state rec corr f mode before after size witness i
+    local _fm_pr_scan_first _fm_pr_scan_matches
+    home=$(setup_parent regrow-contract)
+    state="$home/state" corr=abcdef0123456789
+    rec="$state/pending-replies/$corr"
+    mkdir -p "${rec%/*}"
+    for mode in missing stale; do
+      f="$state/$mode.status"
+      before=0000000000000000 after=$corr
+      if [ "$mode" = stale ]; then before=$corr after=0000000000000000; fi
+      printf 'note: corr=%s\n' "$before" > "$f"
+      for ((i=0; i<30; i++)); do printf 'working: identical tail\n' >> "$f"; done
+      ln "$f" "$home/$mode-inode"
+      size=$(wc -c < "$f")
+      witness=$(tail -c 128 "$f" | cksum)
+      fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'boundary baseline failed'
+      # Equal-length changed prefix, identical >128-byte tail, and later growth.
+      printf 'note: corr=%s\n' "$after" > "$f"
+      for ((i=0; i<30; i++)); do printf 'working: identical tail\n' >> "$f"; done
+      printf 'working: extra append\n' >> "$f"
+      [ "$f" -ef "$home/$mode-inode" ] || fail 'unsupported trace did not retain its inode'
+      [ "$(wc -c < "$f")" -gt "$size" ] || fail 'unsupported trace did not grow'
+      [ "$(head -c "$size" "$f" | tail -c 128 | cksum)" = "$witness" ] \
+        || fail 'unsupported trace changed the consumed-boundary witness'
+      fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'out-of-contract observation failed'
+      case "$mode" in
+        missing) [ -z "$_fm_pr_scan_first" ] || fail 'unsupported missing trace unexpectedly detected a rewrite' ;;
+        stale) [ "$_fm_pr_scan_first" = "note: corr=$corr" ] || fail 'unsupported stale trace unexpectedly detected a rewrite' ;;
+      esac
+      cp "$f" "$home/replacement"
+      mv -f "$home/replacement" "$f"
+      [ ! "$f" -ef "$home/$mode-inode" ] || fail 'supported replacement retained old inode'
+      fm_pending_reply_scan_status "$rec" "$f" "$corr" answer || fail 'supported boundary reset failed'
+      case "$mode" in
+        missing) [ "$_fm_pr_scan_first" = "note: corr=$corr" ] || fail 'replacement missed the new reply' ;;
+        stale) [ -z "$_fm_pr_scan_first" ] || fail 'replacement retained stale evidence' ;;
+      esac
+    done
+  ) || fail 'regrow contract boundary regression failed'
+  pass 'identical-witness same-inode regrow is unsupported, not detection coverage; new-inode replacement resets missing/stale evidence'
+}
+
+# Run the real restatement/resolution consumers in a fresh interpreter, twice
+# with different clocks so a duplicate policy effect cannot hide in one second.
+restart_scan_policy() {  # <state> <corr> <mate>
+  bash -c '
+    . "$1/bin/fm-pending-reply-lib.sh"
+    export FM_PENDING_REPLY_NOW=3000
+    fm_pending_reply_restatement_copy_same_basename "$2" "$3" "$4" || exit 21
+    fm_pending_reply_try_resolve "$2" "$3" || exit 22
+    export FM_PENDING_REPLY_NOW=4000
+    fm_pending_reply_restatement_copy_same_basename "$2" "$3" "$4" || exit 23
+    fm_pending_reply_try_resolve "$2" "$3" || exit 24
+  ' _ "$ROOT" "$1" "$2" "$3"
+}
+
+# Cached and fresh positive observations must cross the same end barrier.
+# The hook changes input DURING the final witness read, not between ticks or
+# during the fresh scan's initial witness. A pre-witness stat is insufficient.
+test_scan_observation_end_barrier() {
+  (
+    local scenario stage mode home state corr rec status target next reader i resolved at
+    local _fm_pr_scan_first _fm_pr_scan_matches
+    for scenario in cached-retarget cached-replace fresh-retarget fresh-replace; do
+      stage=${scenario%%-*} mode=${scenario#*-}
+      home=$(setup_parent "barrier-$scenario")
+      state="$home/state"
+      corr=$(fm_pending_reply_create "$home" "$state" barrier 'cached observation race')
+      fm_pending_reply_mark_delivered "$state" "$corr"
+      rec=$(fm_pending_reply_path "$state" "$corr")
+      status="$state/barrier.status" target="$home/target" next="$home/next"
+      [ "$mode" != replace ] || target=$status
+      printf 'note: corr=%s\n' "$corr" > "$target"
+      printf 'note: corr=0000000000000000\n' > "$next"
+      for ((i=0; i<30; i++)); do
+        printf 'working: same witness\n' >> "$target"
+        printf 'working: same witness\n' >> "$next"
+      done
+      [ "$mode" != retarget ] || ln -s "$target" "$status"
+      if [ "$stage" = cached ]; then
+        fm_pending_reply_scan_status "$rec" "$status" "$corr" answer || fail 'cached-positive prime failed'
+        [ -n "$_fm_pr_scan_first" ] || fail 'cache was not primed with positive evidence'
+        at=1
+      else
+        set -- "$state/pending-replies"/.scan-*
+        [ ! -e "$1" ] || fail 'fresh observation already has a cursor'
+        at=2
+      fi
+      [ "$(phase_of "$state" "$corr")" = awaiting_report ] || fail 'priming applied the policy effect'
+      reader="$home/reader"
+      cat > "$reader" <<'SH'
+#!/usr/bin/env bash
+set -u
+dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null || exit
+[ "$1" = "$FM_RACE_TARGET" ] || exit 71
+if [ "$3" != 128 ]; then
+  printf 'read captured body\n' > "$FM_RACE_BODY"
+  exit 0
+fi
+count=0
+[ ! -f "$FM_RACE_COUNT" ] || read -r count < "$FM_RACE_COUNT"
+count=$((count + 1))
+printf '%s\n' "$count" > "$FM_RACE_COUNT"
+[ "$count" = "$FM_RACE_AT" ] && [ ! -e "$FM_RACE_FIRED" ] || exit 0
+# Genuine old bytes have been returned. Change the pathname/target only at the
+# last witness: cached read 1, fresh read 2 after its body has been classified.
+case "$FM_RACE_MODE" in
+  retarget)
+    ln -s "$FM_RACE_NEXT" "$FM_RACE_STATUS.new" || exit
+    mv -f "$FM_RACE_STATUS.new" "$FM_RACE_STATUS" || exit ;;
+  replace) mv -f "$FM_RACE_NEXT" "$FM_RACE_STATUS" || exit ;;
+  *) exit 72 ;;
+esac
+printf 'changed during witness %s\n' "$count" > "$FM_RACE_FIRED"
+SH
+      chmod +x "$reader"
+      export FM_RACE_TARGET="$target" FM_RACE_STATUS="$status" FM_RACE_NEXT="$next"
+      export FM_RACE_MODE="$mode" FM_RACE_FIRED="$home/fired"
+      export FM_RACE_AT="$at" FM_RACE_COUNT="$home/count" FM_RACE_BODY="$home/body"
+      if FM_STATUS_SPAN_READER="$reader" fm_pending_reply_try_resolve "$state" "$corr"; then
+        fail "$scenario race resolved stale evidence"
+      fi
+      [ "$(cat "$FM_RACE_FIRED")" = "changed during witness $at" ] || fail 'final witness race was not injected'
+      [ "$(cat "$FM_RACE_COUNT")" = "$at" ] || fail 'wrong witness read was interrupted'
+      if [ "$stage" = fresh ]; then
+        [ "$(cat "$FM_RACE_BODY")" = 'read captured body' ] || fail 'fresh race never read the captured body'
+      else
+        [ ! -e "$FM_RACE_BODY" ] || fail 'cached race unexpectedly read the body'
+      fi
+      if [ "$mode" = retarget ]; then
+        [ "$status" -ef "$next" ] || fail 'original link was not retargeted'
+      else
+        [ ! -e "$next" ] || fail 'replacement was not moved into place'
+      fi
+      if grep -q "corr=$corr" "$status"; then fail 'race destination still contains the old reply'; fi
+      [ "$(phase_of "$state" "$corr")" = awaiting_report ] || fail 'refused observation changed policy phase'
+      # A clean observation must reset stale cached evidence and remain open.
+      if fm_pending_reply_try_resolve "$state" "$corr"; then fail 'retry reused prior-generation reply'; fi
+      printf 'note: corr=%s\n' "$corr" >> "$status"
+      FM_PENDING_REPLY_NOW=3000 fm_pending_reply_try_resolve "$state" "$corr" || fail 'new generation reply did not resolve'
+      resolved=$(fm_pending_reply_get "$rec" resolved_epoch)
+      FM_PENDING_REPLY_NOW=4000 fm_pending_reply_try_resolve "$state" "$corr" || fail 'resolved replay failed'
+      [ "$resolved" = 3000 ] && [ "$(fm_pending_reply_get "$rec" resolved_epoch)" = "$resolved" ] \
+        || fail 'new reply effect was not exactly once'
+    done
+  ) || fail 'observation-end barrier regression failed'
+  pass 'cached and fresh final-witness retarget/replacement is refused before policy effects and retries against the new generation'
+}
+
+# The append occurs after the span's captured bytes have actually been read.
+# Publishing the later observed size instead of the captured endpoint would
+# lose the reply, so the restarted real consumers must find it on the next read.
+test_append_during_captured_span() {
+  (
+    local home state mate corr rec source parent reader size length i
+    local _fm_pr_scan_first _fm_pr_scan_matches
+    home=$(setup_parent append-during-span)
+    state="$home/state" mate=$(bind_local_mate "$home" span)
+    corr=$(fm_pending_reply_create "$home" "$state" span 'append while reading')
+    fm_pending_reply_mark_delivered "$state" "$corr"
+    rec=$(fm_pending_reply_path "$state" "$corr")
+    source="$mate/state/span.status" parent="$state/span.status"
+    : > "$parent"
+    for ((i=0; i<30; i++)); do printf 'working: initial prefix\n' >> "$source"; done
+    fm_pending_reply_scan_status "$rec" "$source" "$corr" answer || fail 'span baseline failed'
+    size=$(wc -c < "$source")
+    for ((i=0; i<20; i++)); do printf 'working: captured append\n' >> "$source"; done
+    length=$(( $(wc -c < "$source") - size ))
+    reader="$home/reader"
+    cat > "$reader" <<'SH'
+#!/usr/bin/env bash
+set -u
+# Match only the new-byte span, not either 128-byte boundary witness.
+if [ "$1" = "$FM_APPEND_TARGET" ] && [ "$2" -eq "$FM_APPEND_START" ] \
+  && [ "$3" -eq "$FM_APPEND_LENGTH" ] && [ ! -e "$FM_APPEND_FIRED" ]; then
+  dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null || exit
+  printf 'note: corr=%s\n' "$FM_APPEND_CORR" >> "$1" || exit
+  printf '%s:%s\n' "$2" "$3" > "$FM_APPEND_FIRED"
+else
+  dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null
+fi
+SH
+    chmod +x "$reader"
+    export FM_APPEND_TARGET="$source" FM_APPEND_START="$size" FM_APPEND_LENGTH="$length"
+    export FM_APPEND_CORR="$corr" FM_APPEND_FIRED="$home/fired"
+    if FM_STATUS_SPAN_READER="$reader" fm_pending_reply_restatement_copy_same_basename "$state" "$corr" "$mate"; then
+      fail 'reply beyond captured endpoint was consumed early'
+    fi
+    [ "$(cat "$FM_APPEND_FIRED")" = "$size:$length" ] || fail 'append did not happen during new-byte span'
+    [ "$(grep -c "corr=$corr" "$source")" = 1 ] || fail 'input append is missing or duplicated'
+    [ ! -s "$parent" ] || fail 'first captured endpoint delivered a later append'
+    [ "$(phase_of "$state" "$corr")" = awaiting_report ] || fail 'first endpoint prematurely resolved'
+    restart_scan_policy "$state" "$corr" "$mate" || fail 'restart did not deliver the unread append'
+    [ "$(grep -c "corr=$corr" "$parent")" = 1 ] || fail 'resumed append delivery was not exactly once'
+    [ "$(phase_of "$state" "$corr")" = resolved ] || fail 'resumed append stayed unresolved'
+    [ "$(fm_pending_reply_get "$rec" resolved_epoch)" = 3000 ] || fail 'resolution replay changed the effect'
+  ) || fail 'captured-span append regression failed'
+  pass 'append during a captured span is unread at its first endpoint and delivered/resolved once after restart'
+}
+
+# Intercept the real cursor rename in a fresh policy process. Before rename,
+# fail publication and keep the old cursor; after rename, exit the interpreter
+# immediately, before the restatement effect. No production crash hook needed.
+test_scan_publication_restart_boundaries() {
+  (
+    local mode home state mate corr rec source parent cache oldsum newsum runner rc
+    local _fm_pr_scan_first _fm_pr_scan_matches
+    for mode in before after; do
+      home=$(setup_parent "publication-$mode")
+      state="$home/state" mate=$(bind_local_mate "$home" publication)
+      corr=$(fm_pending_reply_create "$home" "$state" publication 'interrupted cursor publication')
+      fm_pending_reply_mark_delivered "$state" "$corr"
+      rec=$(fm_pending_reply_path "$state" "$corr")
+      source="$mate/state/publication.status" parent="$state/publication.status"
+      : > "$parent"
+      printf 'working: baseline\n' > "$source"
+      fm_pending_reply_scan_status "$rec" "$source" "$corr" answer || fail 'publication baseline failed'
+      set -- "$state/pending-replies"/.scan-*
+      [ "$#" = 1 ] && [ -f "$1" ] || fail 'expected one real baseline cursor'
+      cache=$1 oldsum=$(cksum < "$1")
+      printf 'note: corr=%s\n' "$corr" >> "$source"
+      runner="$home/policy"
+      cat > "$runner" <<'SH'
+#!/usr/bin/env bash
+set -u
+. "$1/bin/fm-pending-reply-lib.sh"
+state=$2 corr=$3 mate=$4 mode=$5 marker=$6 completed=$7
+# The function runs in this policy interpreter, not a child: exit interrupts
+# the real restatement call immediately after successful cursor publication.
+mv() {
+  local arg dest=''
+  for arg in "$@"; do dest=$arg; done
+  case "$dest" in
+    "$state/pending-replies"/.scan-*)
+      case "$mode" in
+        before) printf 'before rename\n' > "$marker"; return 77 ;;
+        after)
+          command mv "$@" || return
+          printf 'after rename\n' > "$marker"
+          exit 79 ;;
+      esac ;;
+  esac
+  command mv "$@"
+}
+fm_pending_reply_restatement_copy_same_basename "$state" "$corr" "$mate"
+rc=$?
+printf '%s\n' "$rc" > "$completed"
+exit "$rc"
+SH
+      rc=0
+      bash "$runner" "$ROOT" "$state" "$corr" "$mate" "$mode" "$home/fired" "$home/completed" || rc=$?
+      newsum=$(cksum < "$cache")
+      case "$mode" in
+        before)
+          [ "$rc" = 1 ] && [ "$(cat "$home/completed")" = 1 ] || fail 'publication failure was not returned'
+          [ "$(cat "$home/fired")" = 'before rename' ] || fail 'pre-rename failure was not reached'
+          [ "$newsum" = "$oldsum" ] || fail 'failed publication changed the surviving cursor' ;;
+        after)
+          [ "$rc" = 79 ] && [ ! -e "$home/completed" ] || fail 'post-publication interruption did not stop policy'
+          [ "$(cat "$home/fired")" = 'after rename' ] || fail 'post-rename boundary was not reached'
+          [ "$newsum" != "$oldsum" ] || fail 'interruption did not occur after a changed cache publication'
+          grep -q "corr=$corr" "$cache" || fail 'published cache has no reply evidence' ;;
+      esac
+      [ ! -s "$parent" ] || fail "$mode boundary applied restatement before restart"
+      [ "$(phase_of "$state" "$corr")" = awaiting_report ] || fail "$mode boundary resolved before restart"
+      restart_scan_policy "$state" "$corr" "$mate" || fail "$mode boundary lost a reply on restart"
+      [ "$(grep -c "corr=$corr" "$parent")" = 1 ] || fail "$mode boundary duplicated or lost restatement"
+      [ "$(phase_of "$state" "$corr")" = resolved ] || fail "$mode boundary remained unresolved"
+      [ "$(fm_pending_reply_get "$rec" resolved_epoch)" = 3000 ] || fail "$mode boundary resolved twice"
+    done
+  ) || fail 'cursor publication/restart regression failed'
+  pass 'failed pre-rename publication and interrupted post-rename policy both restart with exactly-once restatement/resolution'
+}
+
 # --- run --------------------------------------------------------------------
 
+test_same_inode_regrow_contract_boundary
+test_scan_observation_end_barrier
+test_append_during_captured_span
+test_scan_publication_restart_boundaries
 test_linked_parent_status_resolution
 test_wrong_home_scan_isolates_failed_inputs
 test_incremental_correlation_scan_bound_and_edges

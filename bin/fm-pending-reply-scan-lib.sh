@@ -6,17 +6,18 @@
 # and _fm_pr_scan_matches. The pending-reply library remains the policy owner.
 # Hidden .scan-<corr>-<path-checksum> siblings of the record persist the input
 # identity, consumed bytes, unfinished line and matches atomically. Removing or
-# damaging one forces one full read; a bounded 128-byte boundary witness also
-# detects truncate/regrow across ticks. Cached matches are evidence, not delivery
+# damaging one forces one full read. Cached matches are evidence, not delivery
 # authority. Existing resolve/restatement/sighting owners perform idempotent
 # effects, so a crash on either side of a cache commit cannot lose a reply.
 # Reads use the existing seek-based status span reader, at most 64 KiB at once.
 # Progress is reported only after completed input/parser work through the tick's
 # dynamically scoped _fm_pending_reply_on_progress callback, never by a timer.
 # FM_PENDING_REPLY_SCAN_PROBE (tests only) logs path, start, length per span.
-# Status logs are append-only; shrink, identity change, or a metadata change
-# without growth resets the cache. As with the existing status cursors, arbitrary
-# same-inode prefix edits concurrent with an append are not an append operation.
+# Supported input: append-only within one inode generation. Destructive changes
+# must delete or replace the file with a new inode; an observed shrink below the
+# saved endpoint also resets the cursor. The bounded 128-byte boundary witness
+# checks sampled bytes, not rewrite identity. Unannounced same-inode truncate/
+# regrow preserving that witness is out of contract and undetectable by design.
 # Preserve the parent reader's linked-file policy by resolving a final symlink
 # before the no-follow span reader. Signatures still observe the original path's
 # target, so retarget/replacement resets rather than reusing the old endpoint.
@@ -61,12 +62,31 @@ _fm_pending_reply_scan_result() {
   _fm_pr_scan_first=$_prs_first _fm_pr_scan_matches=$_prs_matches _fm_pr_scan_signature=$_prs_signature
 }
 
+# Common observation-end barrier, after the last witness read and before either
+# cached or fresh evidence escapes. The original pathname and resolved target
+# must still name the captured generation. Growth remains unread beyond the
+# captured endpoint; a failed/racing observation publishes no successful result.
+_fm_pending_reply_scan_observation_valid() {
+  local _prs_after _prs_after_size _prs_read_after
+  _prs_after=$(fm_pending_reply_file_signature "$_prs_file") || return 1
+  _prs_after_size=${_prs_after#*:*:}; _prs_after_size=${_prs_after_size%%:*}
+  case "$_prs_after_size" in ''|*[!0-9]*) return 1 ;; esac
+  _prs_read_after=$_prs_after
+  if [ "$_prs_read_file" != "$_prs_file" ]; then
+    _prs_read_after=$(fm_pending_reply_file_signature "$_prs_read_file") || return 1
+  fi
+  [ "${_prs_read_after%:*:*:*}" = "$_prs_ident" ] \
+    && [ "${_prs_after%:*:*:*}" = "$_prs_ident" ] \
+    && [ "$_prs_after_size" -ge "$_prs_size" ] \
+    && { [ "$_prs_after_size" -gt "$_prs_size" ] || [ "$_prs_after" = "$_prs_signature" ]; }
+}
+
 _fm_pending_reply_scan() {  # <record> <status-file> <corr> <expect>
   local _prs_rec=$1 _prs_file=$2 _prs_corr=$3 _prs_expect=$4
   local _prs_key _prs_digest _prs_cursor _prs_tmp='' _prs_chunk
   local _prs_version='' _prs_saved_key='' _prs_saved_ident='' _prs_saved_signature=''
   local _prs_checksum='' _prs_actual='' _prs_extra='' _prs_valid=0
-  local _prs_ident _prs_signature _prs_fresh_signature _prs_after _prs_size _prs_after_size _prs_read_file
+  local _prs_ident _prs_signature _prs_fresh_signature _prs_size _prs_read_file
   local _prs_offset=0 _prs_lines=0 _prs_matches='' _prs_first='' _prs_partial='' _prs_anchor='' _prs_boundary
   local _prs_result_first='' _prs_result_matches=''
   local _prs_line _prs_number _prs_length _prs_read_size _prs_start
@@ -136,6 +156,7 @@ _fm_pending_reply_scan() {  # <record> <status-file> <corr> <expect>
   if [ "$_prs_valid" != 1 ]; then
     _prs_offset=0 _prs_lines=0 _prs_matches='' _prs_first='' _prs_partial=''
   elif [ "$_prs_offset" -eq "$_prs_size" ]; then
+    _fm_pending_reply_scan_observation_valid || return 1
     _fm_pr_scan_first=$_prs_result_first _fm_pr_scan_matches=$_prs_result_matches _fm_pr_scan_signature=$_prs_signature
     return 0
   fi
@@ -173,20 +194,10 @@ _fm_pending_reply_scan() {  # <record> <status-file> <corr> <expect>
     _prs_offset=$((_prs_offset + _prs_length))
     [ -z "${_fm_pending_reply_on_progress:-}" ] || "$_fm_pending_reply_on_progress" >/dev/null || true
   done
-  # A concurrent append remains unread at the captured endpoint. Replacement,
-  # shrink or a non-growing rewrite during the read cannot publish a cursor.
-  _prs_after=$(fm_pending_reply_file_signature "$_prs_file")
-  _prs_after_size=${_prs_after#*:*:}; _prs_after_size=${_prs_after_size%%:*}
-  case "$_prs_after_size" in ''|*[!0-9]*) _prs_after_size=0 ;; esac
+  # Validate identity after the witness, including when that read itself races
+  # a replacement. A concurrent append remains unread at the captured endpoint.
   _prs_boundary=$(_fm_pending_reply_scan_anchor "$_prs_read_file" "$_prs_size") || _prs_boundary=''
-  local _prs_read_after=$_prs_after
-  if [ "$_prs_read_file" != "$_prs_file" ]; then
-    _prs_read_after=$(fm_pending_reply_file_signature "$_prs_read_file")
-  fi
-  if [ "$_prs_boundary" != "$_prs_anchor" ] \
-    || [ "${_prs_read_after%:*:*:*}" != "$_prs_ident" ] \
-    || [ "${_prs_after%:*:*:*}" != "$_prs_ident" ] || [ "$_prs_after_size" -lt "$_prs_size" ] \
-    || { [ "$_prs_after_size" -eq "$_prs_size" ] && [ "$_prs_after" != "$_prs_signature" ]; }; then
+  if [ "$_prs_boundary" != "$_prs_anchor" ] || ! _fm_pending_reply_scan_observation_valid; then
     rm -f -- "$_prs_tmp" "$_prs_chunk"
     return 1
   fi
