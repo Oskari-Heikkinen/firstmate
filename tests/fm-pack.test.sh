@@ -60,6 +60,24 @@ exec $(command -v stat) "\$@"
 SH
 chmod +x "$FAKEBIN/stat"
 
+# Each release fixture has a controlled process world. Only the sleep process
+# a case explicitly starts is visible; unrelated host users/exit races cannot
+# turn a successful synthetic release into an environmental refusal.
+# Its cwd/fd links are still read from the real /proc by find.
+export PACK_PROC_PID=''
+export PACK_REAL_FIND
+PACK_REAL_FIND=$(command -v find)
+cat >"$FAKEBIN/find" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = /proc ] && [ "${3:-}" = 2 ]; then
+  [ -n "${PACK_PROC_PID:-}" ] || exit 0
+  p=/proc/$PACK_PROC_PID
+  exec "$PACK_REAL_FIND" "$p" -mindepth 1 -maxdepth 2 \( -name cwd -o -path "$p/fd/*" \) -printf '%p\t%l\n'
+fi
+exec "$PACK_REAL_FIND" "$@"
+SH
+chmod +x "$FAKEBIN/find"
+
 key() { printf '%s' "$1" | tr / _; }
 
 # set_linux_free BYTES: Linux root free space as df reports it.
@@ -87,7 +105,7 @@ run_pack() {
     FM_DISK_ROOM_SAMPLES="$TMP_ROOT/no-samples" FM_DISK_ROOM_C_FREE_MIN=off FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/no-mb-groups" \
     FM_DISK_ROOM_VHDX="$TMP_ROOT/no-vhdx" FM_DISK_ROOM_DEV_SIZE=$((1000 * GIB)) FM_DISK_ROOM_MARGIN=1G \
     FM_DISK_ROOM_BULK_MARGIN=1G FM_PACK_MOUNT="${FM_PACK_MOUNT-unsquashfs}" FM_HOME="$TMP_ROOT/home" \
-    bash "$PACK" "$@"
+    bash "${PACK_EXEC:-$PACK}" "$@"
 }
 
 # make_src DIR: six regular files (one empty, one with a space, a hard-linked
@@ -487,17 +505,17 @@ test_release_refusals() {
   (cd "$SRC_R/nested" && exec sleep 30) &
   pid=$!
   wait_link "/proc/$pid/cwd" "$SRC_R/nested"
-  expect_release_refused 1 "a process working in the source" "process $pid (sleep) uses $SRC_R/nested" "${ok[@]}"
+  PACK_PROC_PID=$pid expect_release_refused 1 "a process working in the source" "process $pid (sleep) uses $SRC_R/nested" "${ok[@]}"
   kill "$pid"; wait "$pid" 2>/dev/null
   (exec 3<"$SRC_R/with space.txt" && exec sleep 30) &
   pid=$!
   wait_link "/proc/$pid/fd/3" "$SRC_R/with space.txt"
-  expect_release_refused 1 "a file open in the source" "uses $SRC_R/with space.txt" "${ok[@]}"
+  PACK_PROC_PID=$pid expect_release_refused 1 "a file open in the source" "uses $SRC_R/with space.txt" "${ok[@]}"
   kill "$pid"; wait "$pid" 2>/dev/null
   (exec 3<"$OUT_R" && exec sleep 30) &
   pid=$!
   wait_link "/proc/$pid/fd/3" "$OUT_R"
-  expect_release_refused 1 "an open --also name" "uses $OUT_R" "${ok[@]}"
+  PACK_PROC_PID=$pid expect_release_refused 1 "an open --also name" "uses $OUT_R" "${ok[@]}"
   kill "$pid"; wait "$pid" 2>/dev/null
 
   mkdir -p "$TMP_ROOT/state/reservations" "$TMP_ROOT/state/reservations-d/999"
@@ -575,6 +593,236 @@ test_release() {
   pass "release removes a verified, accepted source and leaves a receipt, a record and a stub"
 }
 
+# Read failures are injected through executable tools, including successful
+# complete output followed by ENOMEM: content equality must not mask status.
+setup_read_failure_tools() {
+  local t d="$TMP_ROOT/read-failure-bin" real
+  mkdir -p "$d"
+  for t in find stat awk sed grep unsquashfs sha256sum cut wc sort cat; do
+    real=$(PATH="$FAKEBIN:$PATH" command -v "$t")
+    printf -v "PACK_REAL_$t" '%s' "$real"
+    export "PACK_REAL_$t"
+  done
+  cat >"$d/tool" <<'SH'
+#!/usr/bin/env bash
+set -u
+t=${0##*/} var=PACK_REAL_${0##*/}
+real=${!var} mode=${PACK_FAIL_MODE:-} fail=''
+case "$t:$mode" in
+  find:links-empty|find:links-partial|find:links-full)
+    if [ "$1" = "$PACK_FAIL_SRC" ]; then fail=1; fi ;;
+  find:tree-source) [ "$1" != . ] || [ "$PWD" != "$PACK_FAIL_SRC" ] || fail=1 ;;
+  find:tree-aside) [ "$1" != . ] || [ "$PWD" != "$PACK_FAIL_ASIDE" ] || fail=1 ;;
+  find:process-source) [ "$1" != /proc ] || fail=1 ;;
+  find:process-aside) [ "$1" != /proc ] || [ ! -d "$PACK_FAIL_ASIDE" ] || fail=1 ;;
+  find:reservation-list) [ "${2:-}" != "$PACK_FAIL_STATE/reservations" ] || fail=1 ;;
+  find:reservation-liveness) [ "$1" != /proc ] || [ "${3:-}" != 1 ] || fail=1 ;;
+  find:release-record) [ "$1" != "${PACK_FAIL_IMG%/*}" ] || fail=1 ;;
+  find:release-aside) [ "$1" != "${PACK_FAIL_SRC%/*}" ] || fail=1 ;;
+  stat:also) [ "${!#}" != "$PACK_FAIL_OUT" ] || fail=1 ;;
+  awk:mount-source) [ "${!#}" != "$PACK_FAIL_MOUNTS" ] || fail=1 ;;
+  awk:mount-aside) [ "${!#}" != "$PACK_FAIL_MOUNTS" ] || [ ! -d "$PACK_FAIL_ASIDE" ] || fail=1 ;;
+  sed:reservation-pid) [ "${!#}" != "$PACK_FAIL_RES" ] || [ "${2:-}" != 's/^pid=//p' ] || fail=1 ;;
+  sed:reservation-expiry) [ "${!#}" != "$PACK_FAIL_RES" ] || [ "${2:-}" != 's/^expires=//p' ] || fail=1 ;;
+  sed:account-*) [ "${2:-}" != "s/^${mode#account-}\\t//p" ] || fail=1 ;;
+  grep:reference) [ "${!#}" != "$PACK_FAIL_REF" ] || fail=2 ;;
+  unsquashfs:image-list) [ "$1" != -no-wildcards ] || [ "${2:-}" != -lln ] || fail=1 ;;
+  unsquashfs:image-cat) [ "$1" != -no-wildcards ] || [ "${2:-}" != -cat ] || fail=1 ;;
+  sha256sum:member-hash) [ "$#" != 0 ] || fail=1 ;;
+  cut:image-hash) fail=1 ;;
+  cat:member-list-io) case "${!#}" in *.members.sha256) fail=1 ;; esac ;;
+  wc:member-count) fail=1 ;;
+  find:mount-count) case "$PWD" in */fm-pack-verify.*/*) fail=1 ;; esac ;;
+  sort:tree-sort) [ "$PWD" != "$PACK_FAIL_SRC" ] || fail=1 ;;
+esac
+if [ -n "$fail" ]; then
+  : >"$PACK_FAIL_HIT"
+  case "$mode" in
+    links-empty|reference|reservation-liveness) : ;;
+    links-partial) "$real" "$@" | awk -F'\t' '$3 > 1' ;;
+    *) "$real" "$@" ;;
+  esac
+  echo "$t: Cannot allocate memory (injected $mode)" >&2
+  exit "$fail"
+fi
+# Simulate the manifest becoming unreadable/truncated after a successful count.
+if [ "$t:$mode" = wc:member-list ]; then
+  path=$(readlink /proc/self/fd/0)
+  "$real" "$@" || exit
+  head -n1 "$path" >"$path.short" && mv "$path.short" "$path"
+  : >"$PACK_FAIL_HIT"
+  exit 0
+fi
+exec "$real" "$@"
+SH
+  chmod +x "$d/tool"
+  for t in find stat awk sed grep unsquashfs sha256sum cut wc sort cat; do ln -s tool "$d/$t"; done
+  # Exercise the mount reader without a host FUSE device: only capability
+  # discovery is shimmed; hashing, counting and the public release are real.
+  cat >"$d/fuse-env" <<'SH'
+[() {
+  case "${1:-}:${2:-}" in -c:/dev/fuse|-r:/dev/fuse|-w:/dev/fuse) return 0 ;; esac
+  builtin [ "$@"
+}
+SH
+  cat >"$d/squashfuse" <<'SH'
+#!/usr/bin/env bash
+exec "$PACK_REAL_unsquashfs" -f -no-progress -quiet -d "${!#}" "${@: -2:1}"
+SH
+  cat >"$d/fusermount3" <<'SH'
+#!/usr/bin/env bash
+rm -rf -- "${!#}"/*
+SH
+  chmod +x "$d/squashfuse" "$d/fusermount3"
+}
+
+# One regression oracle, reused against the real command and one fail-open
+# mutant per repaired guard. Mutants change control flow, never the oracle.
+read_failure_case() (
+  local mode=$1 exe=$3 unit="read-$1-$2" out rc snap diag mount=unsquashfs
+  local also=()
+  local src="$TMP_ROOT/src/$unit" outside="$TMP_ROOT/outside-$unit" image="$R/$unit.sqfs"
+  make_src "$src"
+  out=$(run_pack pack job "$unit" "$src" 2>&1); rc=$?
+  expect_code 0 "$rc" "$mode fixture packs: $out"
+  snap=$(snapshot "$src")
+  export PACK_FAIL_MODE=$mode PACK_FAIL_SRC=$src PACK_FAIL_OUT=$outside PACK_FAIL_IMG=$image
+  export PACK_FAIL_ASIDE="$TMP_ROOT/src/.$unit.fm-pack-release" PACK_FAIL_STATE="$TMP_ROOT/state"
+  export PACK_FAIL_RES="$TMP_ROOT/state/reservations/$unit" PACK_FAIL_REF="$TMP_ROOT/$unit.ref"
+  export PACK_FAIL_MOUNTS="$TMP_ROOT/$unit.mounts" PACK_FAIL_HIT="$TMP_ROOT/$unit.hit"
+  mkdir -p "$PACK_FAIL_STATE/reservations"
+  printf 'bytes=1\nexpires=1\n' >"$PACK_FAIL_RES"
+  [ "$mode" != reservation-liveness ] || printf 'bytes=1\npid=%s\n' "$$" >"$PACK_FAIL_RES"
+  printf 'no source reference here\n' >"$PACK_FAIL_REF"
+  : >"$PACK_FAIL_MOUNTS"
+  case "$mode" in
+    links-*) diag=link-census-read-failed ;;
+    also) diag=link-census-read-failed ;;
+    account-*) diag=link-accounting-read-failed ;;
+    release-*) diag=release-state-read-failed ;;
+    tree-*) diag='tree-read-failed' ;;
+    mount-source|mount-aside) diag='mount-table-read-failed' ;;
+    process-*) diag=process-scan-read-failed ;;
+    reservation-*) diag=reservation-read-failed ;;
+    reference) diag=reference-read-failed ;;
+    image-list|member-count|mount-count) diag=member-count-read-failed ;;
+    image-cat|member-hash) diag=member-read-failed ;;
+    image-hash) diag='image-hash-read-failed' ;;
+    member-list|member-list-io) diag=member-list-read-failed ;;
+    *) fail "unknown failure case $mode" ;;
+  esac
+  [ "$mode" != mount-count ] || mount=mount
+  [ "$mode" = links-empty ] || also=(--also "$outside")
+  local PACK_EXEC=$exe
+  # run_pack prepends FAKEBIN, so put the fault shims there only for this call.
+  # The delegates retain the normal fake df/stat and controlled /proc world.
+  local oldbin=$FAKEBIN
+  FAKEBIN="$TMP_ROOT/read-failure-bin"
+  out=$(BASH_ENV="$FAKEBIN/fuse-env" FM_PACK_MOUNT=$mount PATH="$oldbin:$PATH" \
+    FM_PACK_MOUNTINFO="$PACK_FAIL_MOUNTS" run_pack release "$image" "$src" --accepted-by test \
+    "${also[@]}" --ref "$PACK_FAIL_REF" 2>&1); rc=$?
+  FAKEBIN=$oldbin
+  assert_present "$PACK_FAIL_HIT" "$mode injected the intended read failure: $out"
+  expect_code 1 "$rc" "$mode read error refuses"
+  assert_contains "$out" "$diag" "$mode names the failed guard"
+  assert_equals "$snap" "$(snapshot "$src")" "$mode keeps the entire source"
+  assert_present "$outside" "$mode keeps the outside link"
+  assert_absent "$R/$unit.release.json" "$mode writes no released receipt (nor pending record)"
+  assert_absent "$PACK_FAIL_ASIDE" "$mode restores the original source name"
+  assert_contains "$(tail -n1 "$R/fm-pack-release.log")" 'nothing deleted' "$mode logs the refusal"
+  pass "read failure $mode refuses with intact source and no receipt"
+)
+
+# Mutation generation is fixture construction, not a source-text assertion:
+# only the public-command regression's exit status decides whether it is killed.
+make_read_mutant() {
+  local mode=$1 dest=$2
+  python3 - "$PACK" "$mode" "$dest" <<'PY'
+import pathlib, sys
+source, mode, dest = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+if mode.startswith('links-') or mode == 'also':
+    old, new = 'out=$(links "$src" "${names[@]}")', 'out=$(links "$src" "${names[@]}"; :)'
+elif mode in ('tree-source', 'tree-aside', 'tree-sort'):
+    old, new = 'if tree_list "$1" >"$tmp"; then', 'if tree_list "$1" >"$tmp"; true; then'
+elif mode.startswith('mount-') and mode != 'mount-count':
+    old, new = 'out=$(mounts_in "$p")', 'out=$(mounts_in "$p"; :)'
+elif mode.startswith('process-'):
+    old, new = 'out=$(procs_in "$@")', 'out=$(procs_in "$@"; :)'
+elif mode == 'release-record':
+    old = 'out=$(find "$IDIR" -mindepth 1 -maxdepth 1 -name "$IUNIT.release.json" -print)'
+    new = old[:-1] + '; :)'
+elif mode == 'release-aside':
+    old = 'out=$(find "$(dirname -- "$src")" -mindepth 1 -maxdepth 1 -name ".${src##*/}.fm-pack-release" -print)'
+    new = old[:-1] + '; :)'
+elif mode.startswith('account-'):
+    field = mode.removeprefix('account-')
+    var = field if field in ('files', 'freed') else 'a'
+    old = var + '''=$(printf '%s\\n' "$out" | sed -n 's/^''' + field + '''\\t//p')'''
+    new = old[:-1] + '; :)'
+elif mode == 'reservation-liveness':
+    old = 'live=$(find /proc -mindepth 1 -maxdepth 1 -type d -name "$pid" -print)'
+    new = old[:-1] + '; :)'
+elif mode == 'reservation-list':
+    old = 'listing=$(reservation_listing "$dir/reservations" 1 && reservation_listing "$dir/reservations-d" 2)'
+    new = old[:-1] + '; :)'
+elif mode in ('reservation-pid', 'reservation-expiry'):
+    old = '''pid=$(sed -n 's/^pid=//p' "$f") && expires=$(sed -n 's/^expires=//p' "$f") || return 1'''
+    new = '''pid=$(sed -n 's/^pid=//p' "$f"); expires=$(sed -n 's/^expires=//p' "$f"); :'''
+elif mode == 'reference':
+    old, new = '*) rel_refuse 1 "reference-read-failed: $2" ;;', '*) return 0 ;;'
+elif mode == 'image-list':
+    old = '''count=$(unsquashfs -no-wildcards -lln "$img" "$dir" | awk '/^-/ {n++} END {print n+0}')'''
+    new = old[:-1] + '; :)'
+elif mode in ('image-cat', 'member-hash'):
+    old = 'got=$(heavy unsquashfs -no-wildcards -cat "$img" "$dir/$path" | sha256sum)'
+    new = old[:-1] + '; :)'
+elif mode == 'member-count':
+    old, new = 'expected=$(wc -l <"$members")', 'expected=$(wc -l <"$members"; :)'
+elif mode == 'image-hash':
+    old = '''REL_IMAGE_SHA=$(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256")'''
+    new = old[:-1] + '; :)'
+elif mode == 'member-list-io':
+    old, new = 'manifest=$(cat -- "$members")', 'manifest=$(cat -- "$members"; :)'
+elif mode == 'member-list':
+    old = '[ "$n" -eq "$expected" ] || { note "member-list-read-failed: $members"; return 1; }'
+    new = ':'
+elif mode == 'mount-count':
+    old = 'count=$(cd "$MNT/$dir" && find . -type f -printf \'.\\n\' | wc -l)'
+    new = old[:-1] + '; :)'
+else:
+    raise SystemExit('unknown mutant: ' + mode)
+# A no-op mutation will survive and fail the behavior-based kill check below.
+pathlib.Path(dest).write_text(text.replace(old, new))
+PY
+}
+
+test_release_read_failures() {
+  local mode mutant log errors=''
+  setup_read_failure_tools
+  for mode in links-empty links-partial links-full also account-bad account-out account-files account-freed \
+    tree-source tree-aside tree-sort release-record release-aside mount-source mount-aside \
+    process-source process-aside reservation-list reservation-pid reservation-expiry reservation-liveness \
+    reference image-list image-cat member-hash member-count image-hash member-list member-list-io mount-count; do
+    read_failure_case "$mode" baseline "$PACK" || errors+="$mode baseline; "
+    mutant="$TMP_ROOT/mutant-$mode.sh" log="$TMP_ROOT/mutant-$mode.log"
+    if ! make_read_mutant "$mode" "$mutant"; then
+      errors+="$mode mutant generation; "
+      continue
+    fi
+    if read_failure_case "$mode" mutant "$mutant" >"$log" 2>&1; then
+      errors+="$mode mutant survived; "
+    # Require actual unsafe success, not a fixture/setup error or another refusal.
+    elif ! grep -F "$mode read error refuses: expected exit 1, got 0" "$log" >/dev/null; then
+      cat "$log"
+      errors+="$mode mutant did not reach unsafe release; "
+    else
+      pass "mutant killed: $mode"
+    fi
+  done
+  [ -z "$errors" ] || fail "read-failure regressions: $errors"
+}
+
 test_no_publication_waits
 test_pack_round_trip
 test_against_changed_source
@@ -589,4 +837,5 @@ test_arrival_unit
 test_mount_verify
 test_release_setup
 test_release_refusals
+test_release_read_failures
 test_release

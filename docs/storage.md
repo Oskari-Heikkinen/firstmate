@@ -198,7 +198,10 @@ Packing is cheap to undo: the source stays where it is until its owner releases 
 
 The home that owns the data releases a packed source as soon as its pack verifies, with `fm-pack.sh release`, the only Firstmate command that deletes a packed source.
 This holds for raw D: trees and for Linux copies alike, and needs no per-unit approval.
-`release` deletes SRC only when every guard holds, else it refuses and deletes nothing:
+`release` deletes SRC only when every guard holds, else it refuses and deletes nothing.
+Every filesystem read feeding a guard or its receipt must complete successfully: a failed or partial census, listing, accounting or use check is unknown, not empty, even when its output matches the expected tree.
+Such a failure names the failed check, leaves the whole source (renaming it back if necessary), and writes no released receipt.
+The guards are:
 1. `pack` committed the unit, and the image and SRC pass the same check as `fm-pack.sh verify UNIT.sqfs --against SRC`, run just before the removal.
 2. The owner home has accepted that its readers work from the image (mounted or restored), recorded with `--accepted-by` and an optional `--note`.
 3. No reference the owner names with `--ref` (a ledger tree literal, a delivery pin) still contains SRC's path.
