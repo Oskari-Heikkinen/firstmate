@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fm-view-adapter.sh - fixed passive observations for the native view engine.
-# Internal API: <backend|saved-custody|done-proof|forge> <task-id> [captured-line-or-pr]
+# Internal API: <backend|snapshot-endpoint|saved-custody|done-proof|forge> <task-id> [captured-line-or-pr]
 # FM_HOME selects the explicit home; callers bound the whole process group and
 # stdout/stderr. Output is a NUL-delimited field packet, never executable text.
 # No queue/cursor/publication/action authority; no arbitrary command argument.
@@ -24,6 +24,24 @@ fm_meta_get_to KIND "$META" kind
 KIND=${KIND:-ship}
 fm_meta_get_to WT "$META" worktree
 case "$operation" in
+  snapshot-endpoint)
+    fm_backend_of_meta_to BACKEND "$META"
+    [ "$BACKEND" = tmux ] || exit 3
+    fm_backend_target_of_meta_to TARGET "$META" || TARGET=''
+    EXISTS=null
+    AGENT_STATE=not_checked
+    if [ -n "$TARGET" ]; then
+      if fm_backend_target_exists "$BACKEND" "$TARGET" "fm-$ID" >/dev/null 2>&1; then
+        EXISTS=true
+      else
+        EXISTS=false
+      fi
+      if [ "$KIND" = secondmate ]; then
+        AGENT_STATE=$(fm_backend_agent_alive "$BACKEND" "$TARGET" 2>/dev/null || printf unknown)
+      fi
+    fi
+    printf '%s\0%s\0' "$EXISTS" "$AGENT_STATE"
+    ;;
   backend)
     fm_backend_of_meta_to BACKEND "$META"
     [ "$BACKEND" = tmux ] || exit 3

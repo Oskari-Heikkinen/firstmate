@@ -4,6 +4,7 @@
 Usage: fm-view-client.py crew-state TASK
        fm-view-client.py status-presentation < captured-rows.tsv
        fm-view-client.py drain-presentation < captured-snapshot.tsv
+       fm-view-client.py snapshot-tasks OBSERVED_AT EPOCH CONCURRENCY TASK_TIMEOUT
 
 Explicit FM_VIEW_SOCKET, FM_VIEW_EPOCH and canonical FM_HOME select an already
 owner-managed read service. There is no discovery, startup, mode switch or PID
@@ -23,7 +24,7 @@ from pathlib import Path
 import re
 import sys
 
-from fm_view_engine import MAX_MESSAGE, client, require
+from fm_view_engine import MAX_MESSAGE, TASK_ID, client, encoded, require
 from fm_view_offsets import observation_identity
 
 
@@ -109,8 +110,60 @@ def presentation_output(result, rows, originals):
 
 def main(arguments, environment):
     path, home, epoch = binding(environment)
-    require(arguments and arguments[0] in ("crew-state", "status-presentation", "drain-presentation"), "unsupported client operation")
+    require(arguments and arguments[0] in ("crew-state", "status-presentation", "drain-presentation", "snapshot-tasks"), "unsupported client operation")
     verb = arguments[0]
+    if verb == "snapshot-tasks":
+        require(len(arguments) == 5 and all(re.fullmatch(r"[0-9]{1,13}", value) for value in arguments[2:]),
+                "invalid snapshot client arguments")
+        options = {name: environment[name] for name in (
+            "FM_CREW_STATE_NM_TIMEOUT", "FM_CREW_STATE_RUNS_LIMIT", "FM_CREW_STATE_NO_FORGE") if name in environment}
+        result = client(path, home, epoch, verb, {"observed_at": arguments[1], "epoch": int(arguments[2]),
+            "concurrency": int(arguments[3]), "task_timeout": int(arguments[4]), "options": options}, timeout=30)
+        require(type(result) is dict and set(result) == {"tasks"} and type(result["tasks"]) is list
+                and len(result["tasks"]) <= 256, "invalid snapshot reply")
+        previous = ""
+        for row in result["tasks"]:
+            require(type(row) is dict and type(row.get("id")) is str and TASK_ID.fullmatch(row["id"])
+                    and row["id"] > previous, "invalid snapshot task ordering")
+            previous = row["id"]
+            require(set(row) == {"id", "kind", "harness", "mode", "yolo", "branch", "project", "spawn_gen", "backend",
+                    "remote", "paths", "secondmate_projects", "current_state", "endpoint", "pr", "hints", "actions"},
+                    "invalid snapshot row fields")
+            require(all(type(row[name]) is str for name in ("kind", "harness", "mode", "yolo", "project", "backend"))
+                    and all(row[name] is None or type(row[name]) is str for name in ("branch", "spawn_gen"))
+                    and type(row["secondmate_projects"]) is list
+                    and all(type(value) is str for value in row["secondmate_projects"]), "invalid snapshot scalar fields")
+            for name in ("paths", "current_state", "endpoint", "pr", "hints", "actions"):
+                require(type(row.get(name)) is dict, "invalid snapshot row object")
+            require(set(row["paths"]) == {"meta", "status_log", "worktree", "home", "report"}, "invalid snapshot paths")
+            for name, value in row["paths"].items():
+                require(type(value) is dict and (value.get("path") is None or type(value.get("path")) is str)
+                        and (type(value.get("present")) is bool or name == "home" and value.get("present") is None),
+                        "invalid snapshot path value")
+            require(row["paths"]["meta"]["path"] == home + "/state/" + row["id"] + ".meta"
+                    and row["paths"]["status_log"]["path"] == home + "/state/" + row["id"] + ".status"
+                    and row["paths"]["report"]["path"] == home + "/data/" + row["id"] + "/report.md",
+                    "snapshot task path binding mismatch")
+            current = row["current_state"]
+            require(all(type(current.get(name)) is str for name in ("state", "source", "detail", "raw"))
+                    and current.get("observed_at") == arguments[1] and current.get("freshness") == "fresh",
+                    "invalid snapshot current-state reply")
+            require(current["state"] in ("working", "parked", "blocked", "paused", "done", "failed", "unknown")
+                    and current["source"] in ("none", "status-log", "pane", "run-step", "park")
+                    and "\n" not in current["raw"], "invalid snapshot current-state values")
+            endpoint = row["endpoint"]
+            require((type(endpoint.get("exists")) is bool or endpoint.get("exists") is None)
+                    and endpoint.get("agent_alive") in ("not_checked", "unknown", "alive", "dead")
+                    and endpoint.get("status") in ("unknown", "absent", "alive", "dead")
+                    and endpoint.get("observed_at") == arguments[1] and endpoint.get("freshness") == "fresh",
+                    "invalid snapshot endpoint")
+            require(type(row["hints"].get("open_decisions")) is list
+                    and type(row["hints"].get("pending_decision")) is bool
+                    and type(row["hints"].get("blocked_event")) is bool, "invalid snapshot hints")
+            for opened in row["hints"]["open_decisions"]:
+                require(type(opened) is dict and all(type(opened.get(name)) is str for name in ("key", "verb", "summary"))
+                        and opened["verb"] in ("blocked", "needs-decision"), "invalid snapshot decision")
+        return encoded(result["tasks"]).decode("ascii")
     if verb == "crew-state":
         require(len(arguments) == 2, "crew-state requires one task")
         options = {name: environment[name] for name in (
