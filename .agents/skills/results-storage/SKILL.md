@@ -6,7 +6,7 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: 957b8eb631fc438aa5965d93b0724c51ceef0f9f03c11fd5e283a9bdd25cc0f5
+      sha256: 0b17e3efae60441437eccaaa0ccfbe9b971ce22a9089523f251813f9b6997a4a
     - path: bin/fm-storage.sh
       sha256: 2d131e1be58ff12ddf0e9465271a4d769443cb7afa33a2020493a3c796677f6c
     - path: bin/fm-pack.sh
@@ -34,7 +34,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 
 ## Long-term-correct patterns
 
-- A new destination is data the publisher resolves (a named root in `docs/storage.md`), not a directory a caller builds; this is the rule wave-2 data's storage-class-map recommendation expresses.
+- A new destination is data the publisher resolves (a named root in `docs/storage.md`), not a directory a caller builds.
 - A new fact for readers is a new `key=value` line; a change to what line 1 means is a new file name.
 - A new state is a row in the `docs/storage.md` table, a once-per-change notification, and a test through the public command.
 - A new unit or record format is read through an explicit allowlist of format names, and everything else is refused before any work.
@@ -42,7 +42,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 
 ## Refuse
 
-- A C: or Linux fallback in any form: a default path, mapping exit 75 or any non-zero `root` exit to another directory, or reviving `--fallback`, `FM_STORAGE_FALLBACK` or `fallback=` (`docs/storage.md` opening rule and reader rules; wave-2 history H6 records TETJET's results writer mapping the new wait back to C:).
+- A C: or Linux fallback in any form: a default path, mapping exit 75 or any non-zero `root` exit to another directory, or reviving `--fallback`, `FM_STORAGE_FALLBACK` or `fallback=` (`docs/storage.md` opening rule and reader rules).
 - Writing to or formatting a RAW, unformatted or non-NTFS/exFAT volume, picking any volume other than the remembered volume id by size or letter, prompting for a password when mounting, or widening the mount rule beyond `mount -t drvfs <L>: /mnt/<l>` and its `umount` lines for D to H (`docs/storage.md` "What a check does" steps 2-4 and "Mount rule": "formatting needs the captain", a refusal is `not-mounted`; `bin/fm-storage.sh` `mount_ssd`).
 - Treating an unreadable listing, a missing marker, a stale `checked_at`, a missing `ssd_device` or any unknown state as usable (reader rules 1-4; tool-design rule 1: unknown is a failure, never healthy).
 - Taking line 1 alone as permission for a bulk write, or authorizing bulk from a marker in an empty Linux-backed `/mnt/d` (`docs/storage.md` "Mandatory bulk admission").
@@ -51,11 +51,11 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 - Writing a new large delivery without a `bulk-root` reservation, estimating the expanded peak from compressed or logical size, or staging incomplete payloads in a Linux temp directory (`docs/storage.md` "Mandatory bulk admission").
 - Silently replacing a live reservation name (`docs/storage.md`: "A live reservation name is never silently replaced").
 - Deleting a packed source anywhere but `fm-pack.sh release`, skipping or weakening an R2 guard, or deleting before `verify --against` passes (`docs/storage.md` "Retention rule R2"; `bin/fm-pack.sh` header).
-- Changing the release window default without a recorded decision (`docs/storage.md`: "returning to a non-zero window is a new decision").
+- Changing the release window default without a recorded decision (`docs/storage.md`: "The default window is zero; changing it requires a new recorded decision").
 - Overwriting a committed unit, reusing stale staging, or reading an unknown unit format leniently (`bin/fm-pack.sh` header exit 2 cases).
 - Adding an index, catalog or second manifest beside the sidecars (`docs/storage.md`: "They are the whole manifest; there is no index").
-- Changing an exit code, a `wait:` token or a receipt line consumers parse without a versioned format and a note to those consumers (wave-2 history H5: byte-pinned helper consumers cascaded into multi-hour stops).
-- Writing a new absolute storage path into a record where a root name and a relative location would do (wave-2 data recommendation 5, placement by identity).
+- Changing an exit code, a `wait:` token or a receipt line consumers parse without a versioned format and a note to those consumers.
+- Writing a new absolute storage path into a record where a root name and a relative location would do.
 - Notifying on every check instead of once per state change, or muting a notification (`docs/storage.md` "What a check does"; tool-design rules 1 and 3).
 
 ## Review

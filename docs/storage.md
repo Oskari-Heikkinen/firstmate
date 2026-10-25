@@ -210,7 +210,7 @@ The guards are:
 6. The release window has passed; it is zero, so a verified pack is releasable at once.
 
 The window is configurable (`--window`, or `FM_PACK_RELEASE_WINDOW` in seconds) and keeps the `verified_at` plus window check when it is non-zero.
-It was 7 days (604800 seconds) until the storage ruling of 2026-10-18 set it to zero to free space fast; returning to a non-zero window is a new decision.
+The default window is zero; changing it requires a new recorded decision.
 
 `release` renames SRC aside in its own parent, re-checks the tree list, removes it, and leaves `SRC/STORED.md` naming the image.
 It prints one `fm-pack-release/v1` receipt line with the bytes freed, writes `UNIT.release.json` beside the image, and appends one line per release, refusal or wait to `fm-pack-release.log` there, so owners report GiB freed per release from the receipt or the record.
