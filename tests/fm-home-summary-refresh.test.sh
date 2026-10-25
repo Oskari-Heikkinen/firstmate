@@ -1068,9 +1068,11 @@ pacing_watch() {
   WATCH_PID=$!
 }
 pacing_cycles() {
-  local previous='' current='' changes=0 tick=0
+  local phase=$1 previous='' current='' changes=0 tick=0
   while [ "$changes" -lt 3 ] && [ "$tick" -lt 400 ]; do
-    kill -0 "$WATCH_PID" 2>/dev/null || fail "pacing watcher exited"
+    if ! kill -0 "$WATCH_PID" 2>/dev/null; then
+      fail "pacing watcher exited during $phase: $(cat "$TMP_ROOT/pacing-watch.out" "$TMP_ROOT/pacing-watch.err" "$PACING_HOME/state/.watch-triage.log" 2>/dev/null)"
+    fi
     current=$(cat "$PACING_HOME/state/.last-watcher-beat" 2>/dev/null || true)
     if [ -n "$current" ] && [ "$current" != "$previous" ]; then
       changes=$((changes + 1))
@@ -1094,12 +1096,12 @@ pacing_writer || fail "failing producer changed best-effort result"
 [ -e "$PACING_HOME/state/.home-summary-refresh.attempt" ] \
   || fail "failure did not record a durable attempt"
 pacing_watch
-pacing_cycles
+pacing_cycles initial
 [ "$(wc -l < "$PACING_HOME/attempts" | tr -d ' ')" = 1 ] \
   || fail "consecutive polls retried a failed producer before its interval"
 pacing_stop
 pacing_watch
-pacing_cycles
+pacing_cycles replacement
 [ "$(wc -l < "$PACING_HOME/attempts" | tr -d ' ')" = 1 ] \
   || fail "watcher replacement reset the failed-attempt cadence"
 pacing_stop
@@ -1137,7 +1139,7 @@ LOCK_HOLDER_PID=
 touch "$PACING_HOME/state/home-summary.json"
 : > "$PACING_HOME/succeed"
 pacing_watch
-pacing_cycles
+pacing_cycles owed
 i=0
 while [ -e "$PACING_HOME/state/.home-summary-refresh.attempt" ] && [ "$i" -lt 200 ]; do
   sleep 0.05
@@ -1147,7 +1149,7 @@ done
   || fail "owed refresh did not run against a still-fresh old ledger"
 [ "$(wc -l < "$PACING_HOME/attempts" | tr -d ' ')" = 2 ] \
   || fail "owed retry did not produce exactly one successful refresh"
-pacing_cycles
+pacing_cycles successful
 [ "$(wc -l < "$PACING_HOME/attempts" | tr -d ' ')" = 2 ] \
   || fail "success did not restore normal fresh-ledger scheduling"
 pacing_stop
