@@ -1249,9 +1249,12 @@ test_quoted_exit_picker_text_is_not_a_dialog() {
   pass "picker text quoted above a normal composer is not read as a live picker"
 }
 
-# Recorded real Pi 0.86.1 viewport, runtime-backends.md launch-prompt evidence.
+# Real Pi 0.87.1 worker viewport, including its closing separator.
+# runtime-backends.md owns the live guard and viewport evidence.
 pi_trust_dialog_screen() {
   printf '%s\n' \
+    '────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────' \
+    '' \
     ' Trust project folder?' \
     ' /tmp/task-copy' \
     '' \
@@ -1263,26 +1266,35 @@ pi_trust_dialog_screen() {
     '   Do not trust' \
     '   Do not trust (this session only)' \
     '' \
-    ' ↑↓ navigate  enter select  escape/ctrl+c cancel'
+    ' ↑↓ navigate  enter select  escape/ctrl+c cancel' \
+    '' \
+    '────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────'
 }
 
 test_pi_project_trust_dialog_is_named_not_idle() {
   local screen out caps sink candidate
   screen=$(pi_trust_dialog_screen)
-  out=$(fm_composer_blocking_dialog "$screen")
-  [ "$out" = 'Pi project-trust dialog' ] || fail "Pi trust dialog was not named: $out"
   fm_composer_dialog_sink_prepare || fail "could not prepare dialog sink"
   sink=$FM_COMPOSER_DIALOG_SINK
-  for caps in 'styled=1' 'styled=0' $'styled=1\ncursor=1'; do
-    out=$(fm_composer_classify_screen "$caps" "$screen" 6)
-    [ "$out" != empty ] || fail "a Pi trust dialog must never authorize injection"
-    [ "$(cat "$sink")" = 'Pi project-trust dialog' ] || fail "Pi dialog did not cross the classifier sink"
+  # Keep both the bordered live viewport and the older footer-last shape.
+  for candidate in "$screen" "${screen%$'\n\n────────────────'*}"; do
+    out=$(fm_composer_blocking_dialog "$candidate")
+    [ "$out" = 'Pi project-trust dialog' ] || fail "Pi trust dialog was not named: $out"
+    for caps in 'styled=1' 'styled=0' $'styled=1\ncursor=1'; do
+      out=$(fm_composer_classify_screen "$caps" "$candidate" 8)
+      [ "$out" != empty ] || fail "a Pi trust dialog must never authorize injection"
+      [ "$(cat "$sink")" = 'Pi project-trust dialog' ] || fail "Pi dialog did not cross the classifier sink"
+    done
   done
   # A normal Pi composer, including one below an exact transcript of the
   # dialog, is not a live dialog. A near-matching footer is not one either.
   for candidate in \
     $'────────────────────\n\n────────────────────' \
     "$screen"$'\n────────────────────\n\n────────────────────' \
+    "${screen%$'\n\n────────────────'*}"$'\n────────────────────\n\n────────────────────' \
+    "$screen"$'\nnot a border' \
+    "$screen"$'\n────x────' \
+    "$screen"$'\n> queued input\n────────────────────' \
     "${screen%↑↓*}"'↑↓ navigate  enter select  another action'; do
     out=$(fm_composer_blocking_dialog "$candidate")
     [ -z "$out" ] || fail "ordinary composer or different footer was named as a dialog: $out"

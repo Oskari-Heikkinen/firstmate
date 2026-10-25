@@ -35,7 +35,8 @@ For an already-stalled launch, accept it with Enter only after verifying the sel
 A manual persistent decision is stored per path in `~/.pi/agent/trust.json`, or in the pinned root's `trust.json` under a worker account pin, so later spawns in the same pooled slot under that root skip it.
 For unattended ships, scouts, and seeded secondmates, `../../../bin/fm-spawn.sh --help` owns the capability-gated project-trust approval mechanics; [runtime verification](../../../../../docs/verification/runtime-backends.md#pi-launch-project-trust) owns the regression evidence.
 The composer owner's named blocking-dialog classification also reaches a stale Pi worker's wake reason rather than treating it as idle after a park nudge.
-Live-proof limit: the real-Pi approval guard covers seeded homes only; worker-copy approval and named stale-dialog delivery have fake-only regression coverage, not a live worker verification.
+The same real-Pi guard checks worker-shaped copies, session-only approval scope, and composer/watch dialog naming from a live tmux viewport; the runtime verification record owns its evidence and limits.
+It does not allocate a worker through fm-spawn, submit a brief, or exercise stale-wake scheduling/delivery.
 Existing open-call, declared-wait, and hold bounds retain precedence: a worker already covered by one may remain on the dialog without a distinct dialog wake until that wait is inspected; dialog naming does not override those absorptions.
 
 ## Worker turn-end extension

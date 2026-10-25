@@ -587,7 +587,7 @@ Oh My Pi's only per-launch controls are coarse `--config` switches such as disab
 ## Pi launch project trust
 
 [`fm-spawn.sh --help`](../../bin/fm-spawn.sh) owns the ship/scout/seeded-secondmate project-trust approval contract and compatibility fallback.
-The live guard below isolates Pi's trust-gate behavior in secondmate-shaped homes; portable launch-command coverage separately verifies that spawn selects the flag for both worker kinds as well as seeded homes.
+The same live guard isolates Pi's trust-gate behavior in secondmate-shaped homes and fresh worker-shaped Git copies; portable launch-command coverage separately verifies that spawn selects the flag for both worker kinds as well as seeded homes.
 
 Verified 2026-10-02 on pi 0.82.0 through the default-on live guard (disposable `PI_CODING_AGENT_DIR` / `HOME` only; never `~/.pi`):
 
@@ -605,11 +605,17 @@ ok - unseeded path without --approve still prompts on Trust project folder?
 
 Portable launch-command coverage lives in `tests/fm-spawn-dispatch-profile.test.sh` (`test_pi_seeded_secondmate_preapproves_project_trust`, `test_pi_workers_preapprove_only_the_launch_cwd_when_supported`, `test_pi_approve_probe_omits_unsupported_flag`).
 The worker matrix uses fake Pi/pi-signed help and pane commands for both ship and scout, proves the cwd transition names only the task copy, and verifies old help without the flag still launches.
-`tests/fm-composer-lib.test.sh` pins the named `Pi project-trust dialog` against the Pi 0.86.1 viewport recorded below, including an ordinary idle Pi composer and quoted-dialog negative controls.
+`tests/fm-composer-lib.test.sh` pins the named `Pi project-trust dialog` against footer-last and bordered viewports, including ordinary idle Pi composers and quoted-dialog negative controls.
+On 2026-10-25, Pi 0.87.1 in the worker-shaped live guard rendered the trust heading, choices, and `↑↓ navigate  enter select  escape/ctrl+c cancel` footer, then a blank row and one solid `─` separator.
+The composer accepts that single closing border, not arbitrary trailing content or a two-border idle composer after a quoted dialog.
 `tests/fm-watch-triage.test.sh` (`test_pi_worker_trust_dialog_bypasses_idle_park_nudge`) carries that name through the selected tmux composer adapter into the stale wake, both before any nudge and after an expired one, without sending a park steer.
-Live-proof gap: the real-Pi guard covers seeded homes only, not worker-copy approval or named stale-dialog delivery in a live tmux/Herdr viewport.
-Those worker behaviors have fake-only regression coverage; the dated live captures here establish the vendor surface, not live worker verification.
-Extending the real-Pi guard to worker-shaped worktrees is deferred to a separate verification change.
+The guard's worker cases launch real Pi in a fresh clone containing a project extension, with the explicit external `-e` used by worker launches.
+Without approval, the real viewport must be classified and named by the selected tmux composer adapter and the source-only watcher dialog owner for both scout and ship metadata.
+With `--approve`, the extension must load in exactly the launch cwd, and an ordinary idle Pi composer must not be named as a dialog.
+Reopening that copy, its sibling, and its parent without approval must still prompt using the same byte-identical trust store.
+No prompt is submitted, so these cases spend no model tokens; the existing live-capability gate prints an explicit skip when real Pi or tmux is unavailable.
+Live-proof boundary: this guard does not allocate through fm-spawn, process worker briefs, exercise Herdr, or run a watcher cycle to schedule and deliver a stale wake.
+Actual wake routing remains covered by the portable triage regression above; a live source-only reason check is not a claim of live wake delivery.
 The probe runs only before the idle park nudge, after existing open-call/declared-wait/hold bounds: a dialog behind such a bound retains its existing wait handling and may not get a separately named dialog wake.
 
 ## Launch-prompt backstop signatures

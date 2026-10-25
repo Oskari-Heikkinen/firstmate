@@ -1674,16 +1674,19 @@ EOF
 # fm_composer_blocking_dialog: name a screen whose next Enter would answer it.
 # Prints the name and returns 0 only for a recorded dialog structure: its
 # heading alone on a row, then its selected/decline row, with the recorded
-# footer as the last non-blank row. A heading buried in a sentence,
-# or a last line that only starts with the same words, is not that dialog.
+# footer at the bottom (with Pi's optional closing separator below it).
+# A heading buried in a sentence, or a footer that only starts with the same
+# words, is not that dialog.
 # The strings alone are not enough, because a diff, a note, or a test fixture
 # on the pane can quote all of them above a normal composer. A miss returns 1
 # and prints nothing.
 # Recorded 2026-10-05 on Claude Code 2.1.289: /exit while a background shell
 # is still running opens this picker, and its selected row is Exit and stop tasks.
 # Pi project trust uses the heading, decline choice and bottom navigation footer
-# captured on Pi 0.86.1 in docs/verification/runtime-backends.md (2026-09-22).
-# Requiring the footer at the bottom excludes dialog text above an idle composer.
+# recorded in docs/verification/runtime-backends.md. Pi 0.87.1 also draws one
+# closing solid separator after the footer; no other nonblank tail is allowed.
+# In particular, a quoted dialog followed by a two-border idle composer is not
+# a live dialog.
 fm_composer_blocking_dialog() {  # <screen> -> dialog name
   local screen=${1-}
   [ -n "$screen" ] || return 1
@@ -1692,11 +1695,18 @@ fm_composer_blocking_dialog() {  # <screen> -> dialog name
     heading && /^[ \t]*❯ 1\. Exit and stop tasks[ \t\r]*$/ { selected = 1 }
     /^[ \t]*Trust project folder\?[ \t\r]*$/ { pi_heading = 1 }
     pi_heading && /^[ \t]*(→[ \t]+)?Do not trust( \(this session only\))?[ \t\r]*$/ { pi_decline = 1 }
-    /[^ \t\r]/ { last = $0 }
+    /[^ \t\r]/ {
+      last = $0
+      if ($0 ~ /^[ \t]*↑↓ navigate[ \t]+enter select[ \t]+escape\/ctrl\+c cancel[ \t\r]*$/) {
+        pi_tail = 1
+      } else if (pi_tail == 1 && $0 ~ /^[ \t]*──(─)+[ \t\r]*$/) {
+        pi_tail = 2
+      } else { pi_tail = 0 }
+    }
     END {
       if (selected && last ~ /^[ \t]*Enter to confirm · Esc to cancel[ \t\r]*$/) {
         printf "Claude background-task exit picker"
-      } else if (pi_decline && last ~ /^[ \t]*↑↓ navigate[ \t]+enter select[ \t]+escape\/ctrl\+c cancel[ \t\r]*$/) {
+      } else if (pi_decline && pi_tail) {
         printf "Pi project-trust dialog"
       } else { exit 1 }
     }
