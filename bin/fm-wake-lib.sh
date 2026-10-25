@@ -3323,12 +3323,53 @@ fm_wake_latest_event() {  # <validated-status-path> <tail-byte-cap>
   fm_wake_unread_events "$1" "$2" 0
 }
 
+# Private captured-line contract: byte-sorted task groups, preserving line
+# bytes after the first tab. Validate before selecting native presentation so
+# any malformed client output retains the complete legacy fallback.
+fm_wake_captured_lines_valid() {  # <captured-lines>
+  local line task previous='' LC_ALL=C
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in *$'\t'*) ;; *) return 1 ;; esac
+    task=${line%%$'\t'*}
+    case "$task" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+    [ "${#task}" -le 128 ] || return 1
+    if [ -n "$previous" ] && [ "$previous" != "$task" ] && [[ ! "$previous" < "$task" ]]; then return 1; fi
+    previous=$task
+  done <<EOF
+$1
+EOF
+}
+
 # Print supplemental drain-time context only after the caller has committed the
 # raw queue consumption and released the append lock.
-fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
+fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot> [<captured-lines>]]
   local rows=$1 snapshot=${2:-} manifest status_key mode path prefix line task endpoint
+  local captured_lines=${3-} use_captured=${3+x} captured_task captured_line
+  local captured_count=0 capture_index=0 left right middle
+  local -a captured_tasks=() captured_texts=()
   local snapshot_task snapshot_endpoint _snapshot_ident offset last_event event_line
   local LC_ALL=C
+
+  # The private client supplies byte-sorted task groups. Index each group once
+  # so queue-order rendering does not scan every task's lines for every row.
+  if [ "$use_captured" = x ]; then
+    fm_wake_captured_lines_valid "$captured_lines" || return 1
+    while IFS= read -r captured_line; do
+      [ -n "$captured_line" ] || continue
+      captured_task=${captured_line%%$'\t'*}
+      event_line=${captured_line#*$'\t'}
+      if [ "$captured_count" -eq 0 ] || [ "${captured_tasks[$capture_index]}" != "$captured_task" ]; then
+        capture_index=$captured_count
+        captured_tasks[capture_index]=$captured_task
+        captured_texts[capture_index]=''
+        captured_count=$((captured_count + 1))
+      fi
+      captured_texts[capture_index]="${captured_texts[$capture_index]}$event_line"$'\n'
+    done <<EOF
+$captured_lines
+EOF
+  fi
 
   manifest=$(fm_wake_annotation_manifest "$rows" | awk -F '\t' '
     {
@@ -3370,29 +3411,54 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     if [ "$mode" = historical ] && fm_wake_signal_reported_current "$STATE" "$path"; then
       continue
     fi
-    offset=$(fm_wake_status_cursor_offset "$path") || return 1
-    endpoint=
-    if [ -n "$snapshot" ]; then
+    if [ "$use_captured" = x ]; then
+      # The bounded read client validated these task/line records against the
+      # same snapshot used by the fold. Do not reread a row or cursor here.
       task=${status_key%.status}
-      while IFS=$(printf '\t') read -r snapshot_task snapshot_endpoint _snapshot_ident; do
-        if [ "$snapshot_task" = "$task" ]; then endpoint=$snapshot_endpoint; break; fi
-      done <<EOF
+      FM_WAKE_UNREAD_LINES=''
+      left=0 right=$((captured_count - 1))
+      while [ "$left" -le "$right" ]; do
+        middle=$(((left + right) / 2))
+        if [ "${captured_tasks[$middle]}" = "$task" ]; then
+          FM_WAKE_UNREAD_LINES=${captured_texts[$middle]}
+          break
+        elif [[ "$task" < "${captured_tasks[$middle]}" ]]; then
+          right=$((middle - 1))
+        else
+          left=$((middle + 1))
+        fi
+      done
+      [ -n "$FM_WAKE_UNREAD_LINES" ] || continue
+      last_event=${FM_WAKE_UNREAD_LINES%$'\n'}
+      last_event=${last_event##*$'\n'}
+      last_event=${last_event//$'\t'/ }
+      last_event=${last_event//$'\r'/ }
+    else
+      offset=$(fm_wake_status_cursor_offset "$path") || return 1
+      endpoint=
+      if [ -n "$snapshot" ]; then
+        task=${status_key%.status}
+        while IFS=$(printf '\t') read -r snapshot_task snapshot_endpoint _snapshot_ident; do
+          if [ "$snapshot_task" = "$task" ]; then endpoint=$snapshot_endpoint; break; fi
+        done <<EOF
 $snapshot
 EOF
-      [ -n "$endpoint" ] || continue
+        [ -n "$endpoint" ] || continue
+      fi
+      if [ -n "$endpoint" ] && [ "$offset" -ge "$endpoint" ]; then continue; fi
+      if ! fm_wake_unread_events "$path" 0 "$offset" "$endpoint"; then
+        # Annotation enrichment is supplemental to the already-printed durable
+        # wake rows. A file that disappears, rotates, or becomes unreadable after
+        # the snapshot must not suppress annotations for other status files; the
+        # presentation commit will reject a changed snapshot identity.
+        continue
+      fi
+      last_event=$FM_WAKE_EVENT_LINE
     fi
-    if [ -n "$endpoint" ] && [ "$offset" -ge "$endpoint" ]; then continue; fi
-    if ! fm_wake_unread_events "$path" 0 "$offset" "$endpoint"; then
-      # Annotation enrichment is supplemental to the already-printed durable
-      # wake rows. A file that disappears, rotates, or becomes unreadable after
-      # the snapshot must not suppress annotations for other status files; the
-      # presentation commit will reject a changed snapshot identity.
-      continue
-    fi
-    last_event=$FM_WAKE_EVENT_LINE
     while IFS= read -r event_line || [ -n "$event_line" ]; do
       [ -n "$event_line" ] || continue
-      event_line=$(printf '%s' "$event_line" | LC_ALL=C tr '\t\r' '  ')
+      event_line=${event_line//$'\t'/ }
+      event_line=${event_line//$'\r'/ }
       prefix="wake annotation: latest wake-EVENT observed at drain, not current state"
       if [ "$event_line" != "$last_event" ]; then
         prefix="wake annotation: unread wake-EVENT since last drain, not current state"

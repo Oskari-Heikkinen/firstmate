@@ -10,7 +10,8 @@ signal here. Refusal exits 1 on stderr; the invoking shell retains its legacy
 fallback. Unsupported state/data/captured-input overrides refuse, never read a
 different root. stdin presentation rows are task/end/strong-identity/offset/
 classified/fully-presented (0 or 1), tab-separated. Output tagged TSV contains
-A acknowledgement suggestions, U unread facts and O open-decision facts only;
+A acknowledgement suggestions, U unread facts, O open-decision facts and N
+captured annotation lines only;
 it is private call output, not a durable acknowledgement or receipt. Strong
 identities pass through unchanged to the existing commit transaction owner.
 """
@@ -74,8 +75,10 @@ def presentation_output(result, rows, originals):
                 "presentation reply endpoint invalid")
         task = expected["task"]
         output.append(f"A\t{task}\t{endpoint}\t{strong}\n")
-        require(type(returned.get("unread")) is list and type(returned.get("open")) is list,
-                "presentation reply facts invalid")
+        require(type(returned.get("unread")) is list and type(returned.get("open")) is list
+                and type(returned.get("new_lines")) is list, "presentation reply facts invalid")
+        for line in returned["new_lines"]:
+            require(type(line) is str and "\n" not in line, "invalid annotation reply line")
         for line in returned["unread"]:
             require(type(line) is str and "\n" not in line, "invalid unread reply line")
             output.append(f"U\t{task}\t{line}\n")
@@ -83,6 +86,11 @@ def presentation_output(result, rows, originals):
             require(type(opened) is dict and all(type(opened.get(field)) is str and "\n" not in opened[field]
                         for field in ("key", "verb", "summary")), "invalid open reply line")
             output.append("O\t" + task + "\t" + "\t".join(opened[field] for field in ("key", "verb", "summary")) + "\n")
+    # Group annotation lines in byte-sorted task order for the shell renderer's
+    # per-call binary index. Rendering keeps queue/manifest order, not this order.
+    for returned in sorted(result["rows"], key=lambda row: row["task"]):
+        for line in returned["new_lines"]:
+            output.append(f'N\t{returned["task"]}\t{line}\n')
     return "".join(output)
 
 
