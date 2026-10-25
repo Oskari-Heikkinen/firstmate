@@ -89,6 +89,89 @@ class Compatibility(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(native, legacy)
         self.assertEqual(cursor, (self.state / ".status-presentation-cursor").read_bytes())
 
+    async def test_resident_drain_growth_replacement_and_cache_independence(self):
+        self.status(b"needs-decision [key=x]: question\nnote: initial answer\nworking: later\n")
+        manifest = self.state / ".status-presentation-cursor"
+        manifest.write_bytes(b"")  # explicit start, never legacy migration seeding
+        cache = self.state / ".task.open-decisions-cursor"
+        status = self.state / "task.status"
+        calls = []
+        original = Presentation.read
+
+        def observed(instance, rows, vocabulary=None):
+            reply = original(instance, rows, vocabulary)
+            calls.append(reply)
+            return reply
+
+        async def compare(label, present, absent=()):
+            # An obsolete/poisoned legacy fold cache is not native authority.
+            # Native must neither consume nor rewrite it. Legacy refolds it.
+            sentinel = b"version=3\noffset=999999\nident=obsolete\nforeign\tblocked\tpoison\n"
+            cache.write_bytes(sentinel)
+            before = manifest.read_bytes()
+            count = len(calls)
+            with patch.object(Presentation, "read", observed):
+                actual, error = await self.invoke("fm-wake-drain.sh")
+            self.assertEqual(len(calls), count + 1, (label, error))
+            self.assertNotIn(b"fm-view-client:", error, label)
+            self.assertEqual(cache.read_bytes(), sentinel, label)
+            endpoint = manifest.read_bytes()
+            manifest.write_bytes(before)
+            expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+            self.assertEqual(actual, expected, label)
+            self.assertEqual(manifest.read_bytes(), endpoint, label)
+            for text in present:
+                self.assertIn(text, actual, label)
+            for text in absent:
+                self.assertNotIn(text, actual, label)
+
+        await compare("bootstrap", (b"task [key=x]", b"task note: initial answer"), (b"poison",))
+        for round_number in range(3):
+            with status.open("ab") as stream:
+                stream.write(b"working: growing log\n" * 20)
+            await compare("growth " + str(round_number), (b"task [key=x]",), (b"task note: initial answer",))
+        with status.open("ab") as stream:
+            stream.write(b"resolved [key=x]: answered\nnote: new answer\nworking: later\n")
+        await compare("resolve", (b"task note: new answer",), (b"task [key=x]", b"task note: initial answer"))
+        status.write_bytes(b"blocked [key=y]: truncated\nnote: rewritten\nworking: later\n")
+        await compare("truncate", (b"task [key=y] blocked: truncated", b"task note: rewritten"), (b"task [key=x]",))
+        rotated = status.read_bytes().replace(b"truncated", b"rotated!!")
+        replacement = self.state / ".replacement"
+        replacement.write_bytes(rotated)
+        self.assertEqual(len(rotated), status.stat().st_size)
+        replacement.replace(status)
+        await compare("same-size rotation", (b"task [key=y] blocked: rotated!!", b"task note: rewritten"), (b"truncated",))
+        # A task-kind change must invalidate the resident fold even without a
+        # status change; done is item completion for a mate but terminal for ship.
+        status.write_bytes(b"blocked [key=z]: before completion\ndone: completed\nnote: after\nworking: later\n")
+        await compare("mate terminal", (b"task [key=z]",))
+        (self.state / "task.meta").write_text("kind=ship\nspawn_gen=g1\n")
+        await compare("kind change without status append", (), (b"task [key=z]",))
+
+    async def test_overbound_status_falls_back_with_complete_output_and_cursor_parity(self):
+        self.status(b"note: " + b"x" * 70000 + b"\nworking: routine\n")
+        manifest = self.state / ".status-presentation-cursor"
+        manifest.write_bytes(b"")
+        calls = []
+        original = Presentation.read
+
+        def observed(instance, rows, vocabulary=None):
+            calls.append(True)
+            return original(instance, rows, vocabulary)
+
+        with patch.object(Presentation, "read", observed):
+            actual, error = await self.invoke("fm-wake-drain.sh")
+        self.assertEqual(calls, [True], error)
+        self.assertIn(b"native status line bound exceeded; use legacy", error)
+        endpoint = manifest.read_bytes()
+        manifest.write_bytes(b"")
+        expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        self.assertEqual(actual, expected)
+        self.assertEqual(manifest.read_bytes(), endpoint)
+        self.assertIn(b"task note: " + b"x" * 70000, actual)
+        again, _ = await self.invoke("fm-wake-drain.sh")
+        self.assertNotIn(b"task note:", again)
+
     async def test_queued_annotations_share_capture_with_fold_and_keep_legacy_bytes(self):
         raw = (b"working: first\n\tindented\tvalue\r \n\n\v\f\r\t\n"
                b"note: \xff answer\t \r\nworking: repeated\nworking: repeated")
