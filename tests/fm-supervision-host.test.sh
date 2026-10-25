@@ -171,6 +171,10 @@ HOMES_FILE="$TMP_ROOT/homes"
 stop_home_processes() {  # <home>
   local home=$1 pid arms='' i=0
   release_held_helper "$home"
+  # A lock-turnover case freezes its old watcher so it cannot self-retire on
+  # lock loss. Resume that exact fixture pid even when an assertion failed.
+  pid=$(cat "$home/stopped-watcher-pid" 2>/dev/null || true)
+  [ -z "$pid" ] || kill -CONT "$pid" 2>/dev/null || true
   { : > "$home/session.stop"; } 2>/dev/null || true
   if [ -f "$home/state/.supervision-host" ]; then
     arms=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
@@ -347,7 +351,7 @@ shutdown_diagnostics() {  # <home> [pid...]
 # helper returns. The read is bounded and cleanup releases it even on failure.
 release_held_helper() {  # <home>
   local gate
-  for gate in helper-gate arm-exec-gate host-bookkeeping-gate snapshot-gate; do
+  for gate in helper-gate arm-exec-gate host-bookkeeping-gate snapshot-gate stop-grace-gate; do
     [ -p "$1/$gate" ] || continue
     { exec 7<> "$1/$gate"; printf 'release\n' >&7; exec 7>&-; } 2>/dev/null || true
   done
@@ -2866,6 +2870,103 @@ SH
   pass 'host: forced retirement of a blocked attaching arm preserves the independently owned watcher'
 }
 
+# Hold the host's first stop-grace tick after its ownership snapshot and TERM.
+# Only the host calls this 0.1s sleep here: its park reads use a builtin timeout
+# (or 0.5s on older Bash), and this fixture has no engine turn to retire.
+# Blocking the executable sleep leaves production parentage/identity checks
+# intact and makes replacement startup independent of the ten-second grace.
+watcher_lock_turnover_during_stop_grace() {  # <activate|retire>
+  local mode=$1 home first_host arm watcher independent replacement identity stopped=0
+  home=$(make_home "lock-turnover-$mode" away)
+  hold_arm_health_helper "$home"
+  start_host "$home"
+  wait_until 150 test -s "$home/helper-blocked" || fail "$mode: no blocked owning arm"
+  first_host=$(awk -F '\t' '$1 == "host" {print $2}' "$home/state/.supervision-host")
+  arm=$(awk -F '\t' '$1 == "arm" {print $2}' "$home/state/.supervision-host")
+  watcher=$(cat "$home/state/.watch.lock/pid")
+  [ "$(ps -p "$watcher" -o ppid= | tr -d ' ')" = "$arm" ] \
+    || fail "$mode: original watcher is not the retiring arm's child"
+  printf '%s\n' "$arm" "$watcher" >> "$home/orphan-pid"
+  if [ "$mode" = activate ]; then
+    kill -KILL "$first_host"
+    wait_until 100 host_exited "$home" || fail "$mode: original host did not die"
+  fi
+  mkfifo "$home/stop-grace-gate"
+  cat > "$home/fakebin/sleep" <<'SH'
+#!/bin/bash
+if [ "${1:-}" = 0.1 ] && [ ! -e "$FM_HOME/stop-grace-held" ]; then
+  case "$(ps -p "$PPID" -o args= 2>/dev/null)" in
+    *"$FM_REPO/bin/fm-supervision-host.sh park"*)
+      exec 6<> "$FM_HOME/stop-grace-gate"
+      printf '%s\n' "$PPID" > "$FM_HOME/stop-grace-held"
+      read -r -t "$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 6 _ || true
+      exec 6>&- ;;
+  esac
+fi
+exec /bin/sleep "$@"
+SH
+  chmod +x "$home/fakebin/sleep"
+  if [ "$mode" = activate ]; then
+    start_host "$home"
+  else
+    kill -TERM "$first_host"
+  fi
+  wait_until 200 test -s "$home/stop-grace-held" || fail "$mode: host did not enter arm stop grace"
+  kill -0 "$arm" 2>/dev/null || fail "$mode: arm exited before the gated grace"
+  kill -0 "$watcher" 2>/dev/null || fail "$mode: watcher exited before lock turnover"
+  # Keep the old cycle alive despite losing its lock: only saved-identity
+  # fallback can retire it. Teardown always resumes it on assertion failure.
+  printf '%s\n' "$watcher" > "$home/stopped-watcher-pid"
+  kill -STOP "$watcher"
+  mv "$home/state/.watch.lock" "$home/old-watch-lock"
+  # No invented pid/identity rows: a second real arm owns the replacement and
+  # its watcher acquires and publishes the new lock through the normal path.
+  FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
+    "$ROOT/bin/fm-watch-arm.sh" > "$home/replacement-arm.out" 2>&1 &
+  independent=$!
+  printf '%s\n' "$independent" >> "$home/orphan-pid"
+  wait_until 200 grep -q '^watcher: started pid=' "$home/replacement-arm.out" \
+    || fail "$mode: replacement arm did not confirm its own watcher: $(cat "$home/replacement-arm.out")"
+  replacement=$(cat "$home/state/.watch.lock/pid")
+  [ "$replacement" != "$watcher" ] || fail "$mode: lock did not turn over"
+  [ "$(ps -p "$replacement" -o ppid= | tr -d ' ')" = "$independent" ] \
+    || fail "$mode: replacement is not independently owned"
+  identity=$(fm_test_pid_identity "$replacement")
+  [ -n "$identity" ] && [ "$(cat "$home/state/.watch.lock/pid-identity")" = "$identity" ] \
+    || fail "$mode: replacement lock lacks the real process identity"
+  # The grace has not progressed while the real replacement was starting.
+  if ! kill -0 "$arm" 2>/dev/null || ! kill -0 "$watcher" 2>/dev/null; then
+    fail "$mode: old owned cycle was not alive at lock turnover"
+  fi
+  exec 6<> "$home/stop-grace-gate"; printf 'continue\n' >&6; exec 6>&-
+  if [ "$mode" = activate ]; then
+    # Activation logs start only after predecessor cleanup (including fallback).
+    wait_until 400 sh -c '[ "$(grep -c "	start	" "$1")" -ge 2 ]' _ "$home/state/.supervision-host.log" && stopped=1
+  else
+    wait_until 400 host_exited "$home" && stopped=1
+  fi
+  [ "$stopped" -eq 1 ] || shutdown_diagnostics "$home" "$arm" "$watcher" "$replacement"
+  [ "$stopped" -eq 1 ] || fail "$mode: host did not finish owning-arm cleanup"
+  # Check preservation before teardown resumes the old stopped watcher. A
+  # current-lock recapture kills the replacement instead, even with valid
+  # home identity; both positive survival and unchanged identity are required.
+  kill -0 "$replacement" 2>/dev/null || fail "$mode: cleanup killed the replacement watcher"
+  [ "$(fm_test_pid_identity "$replacement")" = "$identity" ] \
+    || fail "$mode: replacement process identity changed"
+  [ "$(cat "$home/state/.watch.lock/pid" 2>/dev/null)" = "$replacement" ] \
+    && [ "$(cat "$home/state/.watch.lock/pid-identity" 2>/dev/null)" = "$identity" ] \
+    || fail "$mode: cleanup replaced the independent watch lock"
+  kill -0 "$independent" 2>/dev/null || fail "$mode: independent owning arm exited"
+  wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null && ! kill -0 "$2" 2>/dev/null' _ "$arm" "$watcher" \
+    || fail "$mode: cleanup left the original owned arm or watcher alive"
+  rm -f "$home/stopped-watcher-pid"
+  release_held_helper "$home"
+  pass "host: $mode retires the saved owned cycle and preserves an independent lock acquired during stop grace"
+}
+
+test_activation_preserves_a_replacement_lock_during_stop_grace() { watcher_lock_turnover_during_stop_grace activate; }
+test_retirement_preserves_a_replacement_lock_during_stop_grace() { watcher_lock_turnover_during_stop_grace retire; }
+
 test_term_stops_the_watcher_when_its_arm_cannot_relay_term() {
   local home host watcher stopped=0
   home=$(make_home blocked-arm-stop away)
@@ -3701,6 +3802,8 @@ HOST_CASES=(
   test_restart_exec_ps_rejects_a_different_launch
   test_shutdown_rejects_blocked_or_unreadable_watcher_records
   test_retire_preserves_an_independently_owned_watcher
+  test_activation_preserves_a_replacement_lock_during_stop_grace
+  test_retirement_preserves_a_replacement_lock_during_stop_grace
   test_term_stops_the_watcher_when_its_arm_cannot_relay_term
   test_predecessor_cleanup_preserves_a_cycle_its_arm_does_not_own
   test_park_boundary_ends_the_park_before_the_hook_timeout
