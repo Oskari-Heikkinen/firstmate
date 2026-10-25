@@ -1056,13 +1056,14 @@ SH
     chmod +x "$dir/fakebin/treehouse"
   fi
   if [ "$step" = evidence ]; then
-    command -v find > "$dir/real-find"
-    cat > "$dir/fakebin/find" <<'SH'
+    command -v grep > "$dir/real-grep"
+    cat > "$dir/fakebin/grep" <<'SH'
 #!/usr/bin/env bash
-case "${1-}" in "$SUSPEND_DIR"/home/data/*) /bin/sleep 8 ;; esac
-exec "$(cat "$SUSPEND_DIR/real-find")" "$@"
+# Delay the evidence content pass, not unrelated metadata/qualification work.
+if [ "${1-}" = -IHZF ]; then /bin/sleep 8; fi
+exec "$(cat "$SUSPEND_DIR/real-grep")" "$@"
 SH
-    chmod +x "$dir/fakebin/find"
+    chmod +x "$dir/fakebin/grep"
   fi
   FAKE_CONTROL_LOG="$home/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FM_PARK_RELEASE_TIMEOUT=5 suspend_park "$dir" "$id" --handoff "$home/data/$id/handoff.md" --relocation-safe > "$dir/out" 2>&1 || fail 'save deadline park failed'
   fm_test_track_procevent_home "$home"

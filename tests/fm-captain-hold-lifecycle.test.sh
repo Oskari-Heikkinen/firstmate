@@ -207,6 +207,11 @@ install_reused_task_barriers() {  # <home>
   local home=$1
   cat > "$home/fakebin/perl" <<'SH'
 #!/usr/bin/env bash
+# The bulk evidence prefilter runs before the task lock; keep this barrier
+# on the original later Perl call, after lifecycle serialization has begun.
+case "${1:-}" in
+  */fm-task-evidence-scan.pl) exec "$FM_TEST_REAL_PERL" "$@" ;;
+esac
 if [ "${FM_TEST_REUSE_TEARDOWN:-}" = 1 ] \
     && [ ! -e "${FM_TEST_REUSE_TEARDOWN_ONCE:-}" ]; then
   : > "$FM_TEST_REUSE_TEARDOWN_ONCE"

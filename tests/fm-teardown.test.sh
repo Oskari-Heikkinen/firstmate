@@ -7012,7 +7012,8 @@ case "\$*" in
 esac
 exec "$(command -v cp)" "\$@"
 SH
-    cat > "$case_dir/fakebin/mkdir" <<SH
+    # Shared locks publish an owner directory through ln -s, not mkdir.
+    cat > "$case_dir/fakebin/ln" <<SH
 #!/usr/bin/env bash
 case "\$*" in
   *'.treehouse-project-'*'.lock'*)
@@ -7034,7 +7035,7 @@ case "\$*" in
       esac
     fi ;;
 esac
-exec "$(command -v mkdir)" "\$@"
+exec "$(command -v ln)" "\$@"
 SH
     cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
@@ -7044,13 +7045,13 @@ done
 echo 'return lacked project lock' >&2
 exit 1
 SH
-    chmod +x "$case_dir/fakebin/grep" "$case_dir/fakebin/cp" "$case_dir/fakebin/mkdir" "$case_dir/fakebin/treehouse"
+    chmod +x "$case_dir/fakebin/grep" "$case_dir/fakebin/cp" "$case_dir/fakebin/ln" "$case_dir/fakebin/treehouse"
     rc=0
     FM_HOME="$case_dir" run_teardown "$case_dir" --force \
       > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
     assert_present "$case_dir/scan-state" 'bulk text prefilter did not run unlocked'
     if [ "$variant" != during-scan ]; then
-      assert_present "$case_dir/mutated" 'test did not reach project-lock acquisition'
+      assert_present "$case_dir/mutated" "test did not reach project-lock acquisition ($variant, rc=$rc): $(cat "$case_dir/stderr")"
     fi
     if [ "$variant" = stable ]; then
       expect_code 0 "$rc" "unchanged records should clean up: $(cat "$case_dir/stderr")"
