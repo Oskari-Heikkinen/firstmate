@@ -461,60 +461,6 @@ jobs:
           path: ${{ runner.temp }}/fm-test/fm-test-timing-changed.json
           if-no-files-found: warn
 
-  # On a ci/** push that changes a risky-area script: a few mutants on the
-  # changed lines, each run against the script's gate-tier tests
-  # (bin/fm-mutate.sh changed). A report beside the lean review, never a
-  # gate: survivors only show in the summary, and the job cannot fail the run.
-  # A risky-script change often selects enough tests to escalate the push to
-  # the main layout, so the job keys on the ci/** ref, not on the layout.
-  mutation-changed:
-    name: Mutation check on changed risky lines
-    needs: plan
-    if: >-
-      startsWith(github.ref, 'refs/heads/ci/') &&
-      (needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full')
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    # Normal tier (see the timeout policy above); the check spends at most
-    # 15 minutes on mutants.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Find changed risky-area scripts
-        id: scope
-        run: |
-          set -eu
-          base=$(git merge-base origin/main HEAD)
-          scripts=$(bin/fm-mutate.sh changed --base "$base" --scripts-only)
-          printf 'base=%s\n' "$base" >> "$GITHUB_OUTPUT"
-          if [ -n "$scripts" ]; then
-            printf 'changed=true\n' >> "$GITHUB_OUTPUT"
-            printf 'Changed risky-area scripts:\n%s\n' "$scripts"
-          else
-            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
-            echo "No risky-area script changed; nothing to mutate."
-          fi
-      - name: Install the test tools the tests job installs
-        if: steps.scope.outputs.changed == 'true'
-        run: |
-          set -eu
-          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
-          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          npm install -g tasks-axi
-          npm install -g @earendil-works/pi-coding-agent@0.87.1
-      - name: Mutate the changed lines
-        if: steps.scope.outputs.changed == 'true'
-        env:
-          BASE: ${{ steps.scope.outputs.base }}
-        run: |
-          set -u
-          bin/fm-mutate.sh changed --base "$BASE" --max 20 --budget-secs 900 \
-            | tee -a "$GITHUB_STEP_SUMMARY"
-          exit 0
-
   # Required real-Herdr job: pinned install, the real-herdr-gated family run
   # serially, hard-fail on "skip: herdr not found". The main layout runs its
   # gate and tier-2 members; a ci/** push runs the gate members plus those

@@ -90,9 +90,7 @@ The report is a kill matrix plus a parity result: parity holds when every mutant
 A mutant the old core killed but the gate missed is rerun on both sides once, so a flake on either side cannot decide parity.
 Its mutate jobs run up to 300 minutes each, because every mutant runs its whole test set twice; the audit is rare and off the landing path, so that bound sits outside the timeout policy below.
 
-The "Mutation check on changed risky lines" job in `ci.yml` runs on `ci/**` pushes that change a risky-area script, including pushes that escalate to the main layout.
-It samples up to 20 mutants on the changed lines and runs each against the script's gate-tier tests, stopping at the first kill, within a 15-minute budget.
-It is non-blocking: survivors show in the job summary, and the job cannot fail the run.
+[`lean-review`](../.agents/skills/lean-review/SKILL.md) owns the nightly-only mutation policy for reviews and landings; the one-off audit above is not a review step.
 
 ## Local entry points
 
@@ -108,7 +106,7 @@ A job that reaches its tier bound needs investigation and a distribution or runt
 | Tier | Jobs | Bound | Rationale |
 |---|---|---|---|
 | Fast | plan, static checks, timing aggregate, weekly alert | 5 to 10 minutes | Seconds-long work, so the tripwire only catches a hung runner. |
-| Normal | lint partitions, test shards, changed area, mutation check, macOS stock Bash, test-file lint | 30 minutes, one value shared by every job in the tier | One shared hang tripwire keeps every ordinary test and lint job on the same policy instead of letting packing estimates or one-off caps set the bound. |
+| Normal | lint partitions, test shards, changed area, macOS stock Bash, test-file lint | 30 minutes, one value shared by every job in the tier | One shared hang tripwire keeps every ordinary test and lint job on the same policy instead of letting packing estimates or one-off caps set the bound. |
 | Heavy | Herdr | family-run step 20 minutes under a 75-minute job-level last-resort backstop | The step tripwire fails a wedged suite while the `always()` cleanup and timing upload still run, and the job cap only catches a hang outside that step. |
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) holds the executable values and names each job's tier beside its `timeout-minutes`.
