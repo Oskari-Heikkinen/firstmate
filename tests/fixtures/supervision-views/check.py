@@ -328,6 +328,13 @@ class Scheduling(unittest.IsolatedAsyncioTestCase):
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, call)
                 self.assertEqual(result["open"][0]["key"], "x")
+                status_info = (state / "task.status").stat()
+                presentation = await loop.run_in_executor(None, lambda: call("e1", "status-presentation", {
+                    "rows": [{"task": "task", "end": status_info.st_size, "offset": 0,
+                              "identity": [status_info.st_dev, status_info.st_ino],
+                              "classified": 0, "fully_presented": False}]}))
+                self.assertEqual(presentation["rows"][0]["open"][0]["key"], "x")
+                self.assertEqual(presentation["rows"][0]["acknowledged_end"], 0)
                 crew = await loop.run_in_executor(None, lambda: call("e1", "crew-state", {
                     "task": "task", "options": {"FM_CREW_STATE_NO_FORGE": "1"}}))
                 self.assertEqual((crew["state"], crew["source"]), ("unknown", "none"))
@@ -355,4 +362,5 @@ class Scheduling(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     from crew_checks import CrewParity, PassiveProcess
+    from presentation_checks import PresentationParity, PresentationScheduling
     unittest.main()

@@ -251,7 +251,9 @@ class Engine:
 
     async def request(self, operation, arguments, timeout):
         deadline = time.monotonic() + timeout
-        require(operation in ("status-fold", "crew-state"), "unsupported read verb")
+        require(operation in ("status-fold", "crew-state", "status-presentation"), "unsupported read verb")
+        if operation == "status-presentation":
+            return await self.presentation_request(arguments, timeout)
         allowed = {"task", "kind", "vocabulary"} if operation == "status-fold" else {"task", "options"}
         require(type(arguments) is dict and set(arguments) <= allowed
                 and "task" in arguments, "invalid fold arguments")
@@ -317,6 +319,56 @@ class Engine:
         current = await self.critical.run(capture_generation, remaining)
         require(current == generation, "task generation changed before reply")
         return observed
+
+    async def presentation_request(self, arguments, timeout):
+        from fm_view_presentation import MAX_ROWS, Presentation
+        require(type(arguments) is dict and set(arguments) == {"rows"}, "invalid presentation arguments")
+        rows = arguments["rows"]
+        require(type(rows) is list and len(rows) <= MAX_ROWS, "presentation row bound exceeded")
+        for row in rows:
+            require(type(row) is dict and "task" in row, "invalid presentation row")
+            self.inputs.task_path(row["task"], ".status")
+        deadline = time.monotonic() + timeout
+        def generations():
+            self.inputs.check()
+            result, total = {}, 0
+            for row in rows:
+                task = row["task"]
+                require(task not in result, "duplicate presentation task")
+                meta = self.inputs.metadata(task)
+                total += len(meta["bytes"]) if meta else 0
+                require(total <= MAX_FILE, "presentation metadata byte bound exceeded")
+                result[task] = meta
+            self.inputs.check()
+            return result
+        generation = await self.ordinary.run(generations, timeout)
+        token = json.dumps(["status-presentation", arguments,
+                            {task: meta["sha256"] if meta else None for task, meta in generation.items()}], sort_keys=True)
+        def observe():
+            require(generations() == generation, "presentation task generation changed before observation")
+            return Presentation(self.inputs).read(rows)
+        future = self.inflight.get(token)
+        if future is None or future.done():
+            self.operations += 1
+            # Large presentation batches yield to status-delivery capacity.
+            future = asyncio.create_task(self.ordinary.run(observe, MAX_TIMEOUT))
+            self.inflight[token] = future
+            def finished(done):
+                if self.inflight.get(token) is done:
+                    del self.inflight[token]
+                if not done.cancelled():
+                    done.exception()
+            future.add_done_callback(finished)
+        else:
+            self.shared += 1
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "presentation request deadline expired")
+        result = await asyncio.wait_for(asyncio.shield(future), remaining)
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "presentation request deadline expired")
+        current = await self.ordinary.run(generations, remaining)
+        require(current == generation, "presentation task generation changed before reply")
+        return result
 
     def close(self):
         self.ordinary.close()
