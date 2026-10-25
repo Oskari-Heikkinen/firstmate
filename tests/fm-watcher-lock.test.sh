@@ -2347,6 +2347,13 @@ SH
 # order. The lock races still contend between real processes inside one case;
 # only independent cases overlap. FM_WATCHER_LOCK_CASE_JOBS overrides the
 # concurrency, and 1 runs the cases serially.
+# Keep diagnostic CI scoped to a named watchdog case without changing the
+# normal pool or its assertions.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit $?
+fi
+
 WATCHER_LOCK_CASES=(
   # The slowest cases start first so the pool drains evenly; the two
   # CPU-heavy pending-reply scans start apart.
