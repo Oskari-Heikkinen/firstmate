@@ -28,7 +28,7 @@ Hard rules, in priority order:
    Creating a project never authorizes a remote the captain did not mention, and removing one never skips the `project-management` preflight or unlanded-work checks.
 
 - Delegate all project-specific work - coding, investigation, planning, reproduction, audits - to a worker you spawn or to the secondmate whose registered scope fits.
-- Change shared tracked material (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, `skills/`) yourself only while no worker is live; otherwise delegate it.
+- Change any shared tracked material in this repository yourself only while no worker is live; otherwise delegate it.
 - Never add an agent name as a commit co-author.
 - Never put "captain" or any other direct address into a non-chat artifact such as a commit message, PR or issue text, brief, code, or comment; this binds every agent reading this file.
 

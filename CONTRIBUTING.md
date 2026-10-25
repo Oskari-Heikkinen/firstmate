@@ -54,7 +54,7 @@ Coordinate any workflow rollback with its required-check names so a retired chec
 
 - This repo is a template for running a firstmate orchestrator agent.
   [`AGENTS.md`](AGENTS.md) owns the supervisor contract, role boundary, and bundled firstmate skill triggers; `CLAUDE.md` is a real `@AGENTS.md` pointer to it, and `.claude/skills` is a symlink to `.agents/skills`.
-- Only shared material is tracked: `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and `skills/`.
+- Tracked material is shared, including operating instructions, documentation, helpers, harness integrations, skills, tests, and CI configuration.
   `.agents/skills/` holds agent-loaded skills that assume a live firstmate home and carry `metadata.internal: true` so installers such as [skills.sh](https://skills.sh) hide them from discovery; `skills/` holds standalone, installer-facing public skills with no firstmate dependency (see the README's "Two-tier skill layout").
   `.claude/mods/` holds Claude Code mods, plugins whose behavior lives in one function-hooks module; each is reached through an `.agents/skills/<mod>` symlink because Claude Code adopts project plugins only from `.claude/skills`, carries no `SKILL.md` so every other harness's skill loader ignores that entry, and imports only files physically inside its own folder because Claude Code refuses anything else.
   A module may load through `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` or Claude Code's `tengu_plugin_hooks_modules` rollout flag, but the Calm mod activates only when `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is exactly `1` and is otherwise a complete no-op; Firstmate never sets that variable in any settings file, and [`docs/calm.md`](docs/calm.md) owns the contract.
@@ -63,9 +63,9 @@ Coordinate any workflow rollback with its required-check names so a retired chec
   A local `config/backlog-backend=manual` opt-out forces firstmate's routine backlog updates to hand-editing and stays gitignored; validated secondmate handoffs still delegate through `tasks-axi mv`.
   A local `config/backend` file explicitly overrides runtime auto-detection for new task endpoints and stays gitignored; spawn-supported values are `tmux`, `herdr` (which has its own required CI lane), and `zellij`, `orca`, and `cmux`, which remain experimental with no dedicated real-backend CI lane, while `codex-app` is documented only in `docs/codex-app-backend.md`.
   It does not make `data/` tracked.
-- Helper scripts in `bin/` are plain bash.
-  Each starts with a usage header comment; keep it accurate when you change behavior.
-  Test scripts and helpers in `tests/` are plain bash too.
+- Helper code in `bin/` includes Bash, Python, and JavaScript.
+  Each helper starts with a usage header comment that stays accurate when behavior changes.
+  Shell scripts and shell test helpers in `bin/` and `tests/` use Bash.
   `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, pinned shellcheck version, pinned actionlint workflow lint, and the backend-purity check rejecting direct Beads CLI calls in core `bin/` scripts).
   CI uses its full canonical partitions; the no-mistakes pre-push gate uses its context-selected default.
   `docs/fm-test-portable-shards.md` owns partition verification and performance evidence.
@@ -83,7 +83,7 @@ Coordinate any workflow rollback with its required-check names so a retired chec
 
 ## Development
 
-Tracked changes to firstmate itself - `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and `skills/` - ship through the `no-mistakes` pipeline on a feature branch and require an explicit merge approval.
+All tracked changes to firstmate itself ship through the `no-mistakes` pipeline on a feature branch and require an explicit merge approval.
 Before making any such change, load the agent-only `firstmate-coding-guidelines` skill (`.agents/skills/firstmate-coding-guidelines/SKILL.md`).
 It has the knowledge-placement rules that keep `AGENTS.md` from regrowing after each diet pass.
 There is no reliable way for `bin/fm-brief.sh`'s scaffold to detect that a task's repo is firstmate itself, so firstmate adds this skill's load line to firstmate-repo briefs by hand.
@@ -136,10 +136,8 @@ Every test in `tests/safety-core.list` must exist and be selected by the gate ti
 A commit that changes a risky-area script must also pass the lean pre-push review before it is pushed: run `bin/fm-lean-review.sh` right after making it, and a pass adds the `Lean-Review:` receipt trailer that the guard's receipt rule requires, with no override line.
 That script's header owns the reviewer's questions (Q1-Q4, plus Q5 architecture conformance when the commit touches a component-map path), its strict verdict, and what to do with each finding; commits that change no risky-area script need no review.
 Use `bin/fm-test-run.sh --list-tiers` for the tiers and `--help` for `--jobs` rules and required gate-skip flags when reproducing a CI shard locally.
-Leave the `sleep 0.1` cadence in the suites' bounded condition waits alone.
-Those sleeps look like recoverable overhead - `fm-watch-triage.test.sh` alone issues about 1,900 of them, each paying a flat ~100ms scheduler wake-up penalty on macOS - but they are not overhead added to the clock; they are how a test waits for a subject that only moves on `fm-watch.sh`'s own one-second `FM_POLL` cadence.
-Sampling less often does not remove that wait, it only delays detection: raising the interval to 0.5s and charging each sample proportionally measured `fm-watch-triage.test.sh` at 435s and 440s against 390s and 393s for the unchanged script, back to back on 2026-09-03, because each of its ~40 poll-cycle waits and ~73 process-exit waits paid up to half a second more.
-Some of those loops are also catching a transient rather than waiting for a settled condition, so a coarser sample can step over the state they assert on.
+Keep the suites' bounded condition-wait sampling cadence test-owned; do not coarsen it to reduce apparent overhead.
+Coarser sampling delays detection and can miss transient states; [`tests/fm-watch-triage.test.sh`](tests/fm-watch-triage.test.sh) exercises these waits.
 Discover tests by listing `tests/*.test.sh`: each is a self-contained bash script named `<subject>.test.sh`, and its header comment describes what it covers, so pass one to `bin/fm-test-run.sh` to focus on a subject with canonical timing output.
 Shared test helpers live in `tests/lib.sh` (reporters, temp roots, git fixtures), `tests/fixtures.sh` (fake toolchain and spawn-world builders), `tests/wake-helpers.sh`, `tests/secondmate-helpers.sh`, and `tests/git-config-helpers.sh` (fixture Git isolation from the host's global and system configuration and from an inherited repository location such as `GIT_DIR`, already sourced by `tests/lib.sh` and `tests/herdr-test-safety.sh`; a suite that sources neither must source it itself before its first Git operation so a direct invocation stays isolated).
 Source those instead of copying a fake toolchain into a new suite.
