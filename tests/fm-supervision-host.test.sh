@@ -2690,7 +2690,9 @@ if [ "$0" = "$FM_REPO/bin/fm-supervision-host.sh" ]; then
       *' record_process '*) ;;
       *) _fm_fault_real_hex_to "$@"; return $? ;;
     esac
+    printf 'record sample host=%s path=%s\n' "$$" "$2" >> "$FM_HOME/identity-samples"
     if [ -e "$FM_HOME/identity-fault-disabled" ]; then
+      printf 'fault disabled\n' >> "$FM_HOME/identity-samples"
       _fm_fault_real_hex_to "$@"
       return $?
     fi
@@ -2701,6 +2703,7 @@ if [ "$0" = "$FM_REPO/bin/fm-supervision-host.sh" ]; then
           read -r -a fields <<< "${stat##*)}"
           parent=${fields[1]}
           [ ! -f "$FM_HOME/identity-fault-mode" ] || IFS= read -r mode < "$FM_HOME/identity-fault-mode"
+          printf 'sample target=%s parent=%s mode=%s\n' "$target" "$parent" "$mode" >> "$FM_HOME/identity-samples"
           if [ "$parent" = "$$" ]; then
             if [ "$mode" = first-read ] && [ -e "$FM_HOME/identity-read-intercepted" ]; then
               _fm_fault_real_hex_to "$@"
@@ -2955,7 +2958,7 @@ test_restart_exec_rejects_a_short_row() { test_restart_across_the_real_arm_exec_
 # owned watcher, and an unrelated live process carrying a rejected stale row.
 # No accepted empty row, unrelated signal, or owned-child leak is allowed.
 arm_identity_startup_failure_case() {  # <fault mode> [first|successor|pass-through]
-  local home mode=$1 phase=${2:-first} arm watcher host unrelated unrelated_identity rc first_arm
+  local home mode=$1 phase=${2:-first} arm watcher host unrelated unrelated_identity rc first_arm fault_file
   [ -d /proc/self/fd ] || { printf 'skip: initial identity fault needs /proc\n'; return 0; }
     if [ "$phase" = pass-through ]; then
       home=$(make_home "initial-identity-$phase-$mode" attended)
@@ -2995,7 +2998,14 @@ arm_identity_startup_failure_case() {  # <fault mode> [first|successor|pass-thro
         wait_until 150 test -s "$home/launch-signal-intercepted" || fail "$mode: no signal across launch"
         arm=$(cat "$home/launch-signal-intercepted") ;;
       *)
-        wait_until 150 test -s "$home/identity-read-intercepted" || fail "$mode: own-child read not intercepted"
+        wait_until 150 test -s "$home/identity-read-intercepted" || {
+          shutdown_diagnostics "$home" "${first_arm:-}" "$unrelated"
+          for fault_file in identity-samples identity-fault-mode identity-fault-disabled helper-blocked; do
+            printf '\n--- %s ---\n' "$fault_file"
+            tail -n 20 "$home/$fault_file" 2>/dev/null || true
+          done
+          fail "$mode: own-child read not intercepted"
+        }
         arm=$(cat "$home/identity-read-intercepted")
         wait_until 150 test -s "$home/helper-blocked" || fail "$mode: real arm did not reach held health helper"
         watcher=$(cat "$home/state/.watch.lock/pid")
