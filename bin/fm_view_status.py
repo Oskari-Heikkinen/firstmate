@@ -158,6 +158,8 @@ class Fold:
         self.latest = ""
         fallback = ""
         for line in self.lines:
+            if len(line) > 65536:
+                raise ValueError("native status line bound exceeded; use legacy")
             if line.strip(SPACE):
                 fallback = line
                 if self.vocabulary.is_event(line):
