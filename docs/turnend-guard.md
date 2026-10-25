@@ -208,12 +208,18 @@ With `state/.afk` absent the daemon lock proves nothing and the strict watcher p
 
 `bin/fm-watch.sh` touches `state/.last-watcher-beat` at the top of every cycle and refreshes it at the cycle's step boundaries (`watcher_beat`: each registered check, each window's pane scan, around the signal grace, and immediately before its terminal wait `event_wait_or_sleep`).
 A healthy watcher's beacon therefore ages by at most its longest single step or `FM_POLL` seconds, however long the whole cycle runs.
-The top-of-cycle touch also writes that cycle's sequence number into the file, so a reader can tell a new cycle from a step refresh.
+The beacon's first line holds the cycle sequence number, advanced only at the top of a cycle, so a reader can tell a new cycle from a step refresh.
+Its second line holds the last published beat's caller location (`file:line`, or `cycle-start` at the top of a cycle).
+The once-per-second step throttle is unchanged: one builtin write replaces the touch, with no extra per-beat fork or file write.
 A step that walks many records refreshes it per record too: the pending-reply scan (`fm_pending_reply_tick`) revisits every durable record each poll, and a parent home with about 1200 resolved records spends minutes in that one step.
 The secondmate liveness pass (`secondmate_liveness_tick`) refreshes it per mate, because each relaunch is bounded only by `FM_SECONDMATE_LIVENESS_TIMEOUT` and several in one pass can outlast the grace together.
 A single step that stays blocked still ages the beacon, which is why the loop refreshes it itself rather than from a background timer: a genuinely wedged watcher still reads stale once that step passes grace.
 A wedged watcher is recovered without a manual kill: its own watchdog, which only reads the beacon and never touches it, stops it once it has counted that grace of its own check intervals without seeing the beacon change (TERM, then KILL if the blocked step holds on), so a host suspend that only ages the beacon's wall-clock mtime is not mistaken for a wedge.
 A step blocked on one child that never exits (such as a hung `tmux capture-pane`), on a pipe a detached process holds open, or spinning on a lock a live holder never releases is recovered the same way.
+At stop time the watchdog starts an independent, bounded process snapshot for its `.watch-triage.log` stop line: cycle, last published beat location, and descendant pids, parents, elapsed times and command lines.
+This is evidence of the last beat, not an inference about the blocking operation; throttled boundaries have no separate record.
+The snapshot omits the watchdog's own subtree, limits output to 32 descendants and 240 command bytes each, and reports unavailable on failure or timeout.
+It runs concurrently with termination, so children that exit or reparent during cleanup may already be absent, and a slow or failed `ps` cannot delay TERM or the existing KILL grace.
 The watchdog signals only the pid this home's lock records with a matching identity, never a pattern match across homes.
 It exits once that pid is gone or the lock names another pid, but an identity read that cannot prove ownership while the lock still names the live watcher is logged and retried next interval rather than ending the watchdog.
 If the watchdog is gone too, a re-arm evicts the holder once its beacon passes the hard stall bound described below.

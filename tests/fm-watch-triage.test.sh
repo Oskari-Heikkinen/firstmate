@@ -82,7 +82,7 @@ wait_live() {
 # ever ran - and then every "no wake, no marker" assertion passes vacuously
 # while every "marker written" assertion fails spuriously.
 # The liveness beacon is refreshed at every step, but only the TOP of every
-# poll writes that cycle's sequence number into it, so this drops any beacon
+# poll advances the first-line cycle number, so this drops any beacon
 # left by an earlier round, waits for THIS watcher to stamp a fresh one (some
 # poll's top), then waits for that stamp to advance (the next poll's top) - and
 # the whole cycle in between is what the caller's assertions describe.
@@ -94,14 +94,14 @@ wait_poll_cycle() {  # <state> <pid> [limit-ticks]
   first=""
   while [ "$i" -lt "$limit" ]; do
     kill -0 "$pid" 2>/dev/null || return 1
-    first=$(cat "$beat" 2>/dev/null)
+    first=$(head -n 1 "$beat" 2>/dev/null)
     [ -n "$first" ] && break
     sleep 0.1
     i=$((i + 1))
   done
   while [ "$i" -lt "$limit" ]; do
     kill -0 "$pid" 2>/dev/null || return 1
-    now=$(cat "$beat" 2>/dev/null)
+    now=$(head -n 1 "$beat" 2>/dev/null)
     if [ -n "$now" ] && [ "$now" != "$first" ]; then
       return 0
     fi
