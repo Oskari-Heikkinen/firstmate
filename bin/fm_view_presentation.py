@@ -35,6 +35,16 @@ class Presentation:
     def __init__(self, inputs):
         self.inputs = inputs
 
+    def read_from_snapshot(self, snapshots):
+        from fm_view_engine import require
+        from fm_view_offsets import Offsets
+        require(type(snapshots) is list and len(snapshots) <= MAX_ROWS, "presentation row bound exceeded")
+        offsets = Offsets(self.inputs)
+        rows, captured = offsets.capture(snapshots)
+        result = self.read(rows)
+        offsets.verify(captured)
+        return result
+
     def read(self, rows, vocabulary=None):
         # Imports are local to avoid a cycle through the engine's input owner.
         from fm_view_engine import MAX_FILE, fields, require
@@ -94,7 +104,8 @@ class Presentation:
                 acknowledged = max(row["offset"], min(row["end"], row["classified"]))
             result = {"task": task, "identity": row["identity"], "end": row["end"],
                       "generation": selected.get("spawn_gen", ""), "new_lines": lines,
-                      "unread": unread, "open": folded["open"], "acknowledged_end": acknowledged}
+                      "unread": unread, "open": folded["open"], "observed_offset": row["offset"],
+                      "acknowledged_end": acknowledged}
             captured.append((task, meta, status, result))
         # All metadata generations and status identities must still match at
         # the batch barrier. Appends are allowed but replacing/truncating a

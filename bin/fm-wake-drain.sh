@@ -785,26 +785,24 @@ cap_outcome_line() {  # <line> <max-bytes>
   OUTCOME_LINE_BYTES=${#OUTCOME_LINE}
 }
 
-# Capture offsets through their original owner, then obtain all native facts in
-# one bounded read. No response writes a cursor or grants queue authority. A
-# refusal happens before stdout/commit and retains the complete legacy route.
+# Obtain offsets and facts in one bounded native batch from the existing
+# presentation owner's records. No response writes a cursor or grants queue
+# authority. Refusal before stdout/commit retains the complete legacy route.
 prepare_native_status_facts() {  # <snapshot> <fully-presented-task-ids>
-  local snapshot=$1 fully_presented=$2 task endpoint ident offset classified fully input='' facts tag rest line
+  local snapshot=$1 fully_presented=$2 task endpoint ident fully input='' facts tag rest line
   [ -n "${FM_VIEW_SOCKET:-}" ] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
   while IFS=$'\t' read -r task endpoint ident; do
     [ -n "$task" ] || continue
-    offset=$(status_presentation_cursor_offset "$STATE/$task.status") || return 1
-    classified=$(status_presentation_marker_offset "$(status_signal_seen_marker_path "$STATE" "$task")" "$STATE/$task.status") || return 1
     fully=0
     case "
 $fully_presented
 " in *$'\n'"$task"$'\n'*) fully=1 ;; esac
-    input="$input$task"$'\t'"$endpoint"$'\t'"$ident"$'\t'"$offset"$'\t'"$classified"$'\t'"$fully"$'\n'
+    input="$input$task"$'\t'"$endpoint"$'\t'"$ident"$'\t'"$fully"$'\n'
   done <<EOF
 $snapshot
 EOF
-  facts=$(FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm-view-client.py" status-presentation <<< "$input") || return 1
+  facts=$(FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm-view-client.py" drain-presentation <<< "$input") || return 1
   NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED='' NATIVE_NEW_LINES=''
   while IFS= read -r line; do
     tag=${line%%$'\t'*}
@@ -820,6 +818,10 @@ EOF
   done <<EOF
 $facts
 EOF
+  if ! status_presentation_suggestions_valid "$STATE" "$snapshot" "$NATIVE_ACKNOWLEDGED"; then
+    printf 'wake drain: malformed or regressive native endpoints; using legacy presentation\n' >&2
+    return 1
+  fi
   if ! fm_wake_captured_lines_valid "$NATIVE_NEW_LINES"; then
     printf 'wake drain: malformed native annotation facts; using legacy presentation\n' >&2
     return 1

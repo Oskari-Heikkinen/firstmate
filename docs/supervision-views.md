@@ -16,7 +16,7 @@ A missing status file is an empty span; an existing unreadable or unsupported ob
 The native fold reads registered alert-store levels on every request, even when status bytes have not changed.
 The shell classifier remains the parity oracle; it has not been replaced by these modules.
 
-The transport admits `status-fold`, `crew-state` and `status-presentation` requests.
+The transport admits `status-fold`, `crew-state`, `status-presentation` and `drain-presentation` requests.
 It cannot claim, acknowledge, append, retire, resume, publish a summary or alter custody.
 It writes no authoritative state, including presentation cursors.
 The calling transaction owner remains responsible for any presentation commit after successfully writing its output.
@@ -39,9 +39,15 @@ The captured-presentation verb takes only `rows`, at most 256 objects with exact
 Its classifier owner is [`fm_view_presentation.py`](../bin/fm_view_presentation.py).
 The invoking presentation transaction supplies captured byte endpoints, contiguous presentation/classification offsets, device/inode pairs and the annotation's fully-presented flags.
 Every offset is a nonnegative integer within the per-file bound, with `offset <= end`; booleans are not offsets.
-The reply preserves request order and returns each row's captured endpoint/generation, new nonblank lines, unread informational lines, open decisions and a suggested `acknowledged_end`.
+The reply preserves request order and returns each row's captured endpoint/generation, new nonblank lines, unread informational lines, open decisions, its `observed_offset` and a suggested `acknowledged_end`.
+The client requires an integer observed offset within the captured endpoint and rejects suggestions below it; the captured-offset API also requires exact equality to its caller-supplied offset.
 A suggestion has no acknowledgement effect: the invoking owner must still verify its original strong birth-time identity and commit only after the prepared output reaches stdout.
 Device/inode pairs are observation checks and disposable index keys, never substitutes for those strong cursor identities.
+The `drain-presentation` verb instead accepts rows with exactly `task`, `end`, `identity`, `strong_identity` and `fully_presented`.
+[`fm_view_offsets.py`](../bin/fm_view_offsets.py) reads the existing presentation manifest once for that batch, and reads each task's classification marker without spawning a helper.
+The original transaction supplies `strong_identity`; native code compares its persisted value, never upgrades it or substitutes a new identity proof.
+A missing manifest with a legacy migration cursor refuses for its existing owner to migrate, while a missing row in an existing manifest starts at zero.
+Malformed, unsupported or changing cursor state refuses the whole read before native selection.
 The batch folds only through each captured endpoint, so concurrent appends remain unread for a subsequent presentation.
 A missing, replaced or truncated input, changed prefix or changed metadata generation refuses the entire batch, without a partial successful result or cursor write.
 Batches retain at most 64 MiB of captured status bytes and four MiB of metadata; oversized batches refuse for explicit legacy fallback rather than silently omitting rows.
@@ -90,14 +96,18 @@ Selection requires explicit `FM_VIEW_SOCKET`, `FM_VIEW_EPOCH` and canonical `FM_
 Without explicit selection, existing entrypoints do not require Python.
 Unsupported input roots, captured crew overrides, custom classifier/read seams, missing transport or typed service refusals keep the legacy route and report the refusal to stderr.
 A successful crew-state read returns before loading the legacy observation graph.
-The drain still owns annotation rendering, strong-identity capture, cursor/marker offsets, actor eligibility, preparation, stdout and cursor commit.
+The drain still owns annotation rendering, strong-identity capture, cursor/marker mutation, actor eligibility, preparation, stdout and cursor commit.
 It asks once for native captured annotation lines, unread/open-decision facts and suggested endpoints before printing any status annotation or section, keeping divergence, capped branch outcomes and the latest-outcome backstop with their existing owners.
 The annotation renderer consumes those captured lines without reopening each span or cursor; historical replay suppression remains with its existing signature owner.
-The drain validates the private client's sorted task groups before native selection, so malformed annotation facts fall back before any annotation or section is printed.
+Before native selection, the existing presentation owner independently validates every suggested task/identity/endpoint against its captured snapshot and current cursor manifest under the held presentation lock.
+That guard reads the cursor once for the whole batch, rejects missing, duplicate, foreign, malformed or regressive suggestions, and preserves the existing identity/size-reset and legacy-migration boundaries.
+A service's claimed observed offset is not sufficient authority to rewind the owner's cursor.
+The drain also validates the private client's sorted task groups before native selection, so malformed annotation facts fall back before any annotation or section is printed.
 A failed native read falls back before the prepared status sections reach stdout.
 Native observation device/inode pairs never replace the original strong identity passed to the commit owner.
 A failed stdout leaves the presentation cursor untouched, and concurrent appends past the captured endpoints remain unread.
-The native path currently still pays the legacy per-row offset and historical-signature reads; it is not a completed hot-path migration or a performance acceptance claim.
+The native path no longer invokes per-row cursor/marker-offset helpers, but still pays the legacy snapshot, commit and historical-signature reads.
+It is not a completed hot-path migration or a performance acceptance claim.
 
 ## Verification and remaining migration
 
@@ -112,6 +122,9 @@ Real public entrypoint fixtures additionally compare native/legacy drain renderi
 Queued-signal fixtures also compare full annotation bytes and committed cursor bytes, including whitespace, invalid UTF-8, repeated latest lines and an append after native capture.
 A renderer tripwire refuses any attempted cursor/span reopen when captured annotation facts are supplied.
 A real-client corruption fixture reverses its annotation groups after a successful socket read and requires complete legacy output and cursor parity, detecting validation that happens only after native selection.
+The presentation parity matrix also exercises native offset batching against those same real owner-written cursor and marker records.
+Additional cases cover missing manifests/rows, legacy migration refusal, identity/size reset, malformed and replaced cursors, fresh offsets without status changes and the new verb's ordinary-lane generation barriers.
+Real-client regressions corrupt the service's observed offset or suggested endpoint, then separately corrupt successful client output after its reply checks, requiring full legacy output/cursor parity and an explicit refusal diagnostic for regressive, duplicate, missing, foreign, identity-mismatched and past-end suggestions.
 They require an observed native call to prevent a silent legacy-only pass.
 The suite does not test against live endpoints or start a backend.
 

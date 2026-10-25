@@ -124,13 +124,17 @@ class Inputs:
             raise Refused("state root identity changed")
         return fd
 
-    def state_read(self, task, suffix):
-        path = self.task_path(task, suffix)
+    def state_named_read(self, name):
+        require(type(name) is str and name not in ("", ".", "..")
+                and "/" not in name and "\0" not in name, "invalid state filename")
         fd = self.open_state()
         try:
-            return read_file(path.name, missing=True, dir_fd=fd)
+            return read_file(name, missing=True, dir_fd=fd)
         finally:
             os.close(fd)
+
+    def state_read(self, task, suffix):
+        return self.state_named_read(self.task_path(task, suffix).name)
 
     def metadata(self, task):
         return self.state_read(task, ".meta")
@@ -251,9 +255,9 @@ class Engine:
 
     async def request(self, operation, arguments, timeout):
         deadline = time.monotonic() + timeout
-        require(operation in ("status-fold", "crew-state", "status-presentation"), "unsupported read verb")
-        if operation == "status-presentation":
-            return await self.presentation_request(arguments, timeout)
+        require(operation in ("status-fold", "crew-state", "status-presentation", "drain-presentation"), "unsupported read verb")
+        if operation in ("status-presentation", "drain-presentation"):
+            return await self.presentation_request(arguments, timeout, operation)
         allowed = {"task", "kind", "vocabulary"} if operation == "status-fold" else {"task", "options"}
         require(type(arguments) is dict and set(arguments) <= allowed
                 and "task" in arguments, "invalid fold arguments")
@@ -320,7 +324,7 @@ class Engine:
         require(current == generation, "task generation changed before reply")
         return observed
 
-    async def presentation_request(self, arguments, timeout):
+    async def presentation_request(self, arguments, timeout, operation="status-presentation"):
         from fm_view_presentation import MAX_ROWS, Presentation
         require(type(arguments) is dict and set(arguments) == {"rows"}, "invalid presentation arguments")
         rows = arguments["rows"]
@@ -342,11 +346,14 @@ class Engine:
             self.inputs.check()
             return result
         generation = await self.ordinary.run(generations, timeout)
-        token = json.dumps(["status-presentation", arguments,
+        token = json.dumps([operation, arguments,
                             {task: meta["sha256"] if meta else None for task, meta in generation.items()}], sort_keys=True)
         def observe():
             require(generations() == generation, "presentation task generation changed before observation")
-            return Presentation(self.inputs).read(rows)
+            presentation = Presentation(self.inputs)
+            if operation == "drain-presentation":
+                return presentation.read_from_snapshot(rows)
+            return presentation.read(rows)
         future = self.inflight.get(token)
         if future is None or future.done():
             self.operations += 1
