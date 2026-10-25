@@ -1060,7 +1060,11 @@ pacing_writer() {
     "$PACING_BIN/fm-home-summary-refresh.sh" --best-effort
 }
 pacing_watch() {
+  # This fixture handles its intentional predecessor stop. Use the normal
+  # handling-successor posture so recovery does not end the observation cycle
+  # with rearm-resurface before the cadence assertions can observe three polls.
   PATH="$FAKEBIN:$PATH" FM_HOME="$PACING_HOME" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_WATCH_HANDLING_SUCCESSOR=1 \
     FM_HOME_SUMMARY_INTERVAL=86400 FM_POLL=0.2 FM_SIGNAL_GRACE=0 \
     FM_INACTIVE_RECONCILE_BIN=true FM_CHECK_INTERVAL=9999999 FM_HEARTBEAT=9999999 \
     FM_TEST_LEDGER="$TMP_ROOT/prior-ledger.json" \
