@@ -537,21 +537,35 @@ reference_clear() {
   esac
 }
 
-# reservation_listing DIR DEPTH: absent is empty only after its parent can be
-# enumerated. Shell globs cannot distinguish an unreadable directory from empty.
-reservation_listing() {
-  local d=$1 parent
+# reservation_directory DIR: 0 = readable directory, 3 = proven absent,
+# 1 = unknown/error. A failed metadata predicate is never proof of absence.
+reservation_directory() {
+  local d=$1 parent pattern found rc
   [ ! -L "$d" ] || return 1
-  if [ ! -e "$d" ]; then
-    parent=$(dirname -- "$d") || return 1
-    [ "$parent" != "$d" ] || return 1
-    reservation_listing "$parent" 0 >/dev/null || return 1
-    # Read the parent directory too, not just its metadata.
-    if [ -d "$parent" ]; then find "$parent" -mindepth 1 -maxdepth 1 -print >/dev/null || return 1; fi
-    return 0
-  fi
-  [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || return 1
-  find -L "$d" -mindepth 1 -maxdepth "$2" -print
+  if [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ]; then return 0; fi
+  case "$d" in
+    */*) parent=${d%/*}; [ -n "$parent" ] || parent=/ ;;
+    *) parent=. ;;
+  esac
+  [ "$parent" != "$d" ] || return 1
+  reservation_directory "$parent"; rc=$?
+  case "$rc" in 3) return 3 ;; 0) ;; *) return 1 ;; esac
+  # Match the literal child, including glob metacharacters or newlines, and
+  # consume the complete enumeration before accepting its empty result.
+  pattern=${d##*/}
+  pattern=${pattern//\\/\\\\}; pattern=${pattern//\*/\\*}
+  pattern=${pattern//\?/\\?}; pattern=${pattern//\[/\\[}
+  found=$(find "$parent" -mindepth 1 -maxdepth 1 -name "$pattern" -printf '.') || return 1
+  [ -z "$found" ] || return 1
+  return 3
+}
+
+# reservation_listing DIR DEPTH: only a proven absent directory is empty.
+reservation_listing() {
+  local rc
+  reservation_directory "$1"; rc=$?
+  case "$rc" in 3) return 0 ;; 0) ;; *) return 1 ;; esac
+  find -L "$1" -mindepth 1 -maxdepth "$2" -print
 }
 
 # reservations_named NAME...: each live fm-disk-room reservation file, Linux or
