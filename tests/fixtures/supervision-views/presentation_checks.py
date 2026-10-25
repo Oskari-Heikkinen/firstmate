@@ -259,23 +259,27 @@ class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
             meta = home / "state/task.meta"
             meta.write_text("kind=secondmate\nspawn_gen=g1\n")
             (home / "state/task.status").write_bytes(b"blocked [key=x]: held\n")
-            engine = Engine(Inputs(str(home)), workers=1)
+            # One slot holds the observation; another admits the fresh
+            # generation captures required before any caller can join it.
+            engine = Engine(Inputs(str(home)), workers=2)
             entered, release = threading.Event(), threading.Event()
-            calls = []
+            calls, requests = [], []
             class CapturedFixture:
                 def __init__(self, inputs):
                     pass
                 def read(self, rows):
                     calls.append(rows)
                     entered.set()
-                    release.wait(5)
+                    release.wait(20)
                     return {"rows": []}
             try:
                 with patch.object(fm_view_presentation, "Presentation", CapturedFixture):
                     args = {"rows": [{"task": "task"}]}
-                    first = asyncio.create_task(engine.request("status-presentation", args, 4))
-                    await asyncio.get_running_loop().run_in_executor(None, entered.wait, 2)
-                    second = asyncio.create_task(engine.request("status-presentation", args, 4))
+                    first = asyncio.create_task(engine.request("status-presentation", args, 10))
+                    requests.append(first)
+                    self.assertTrue(await asyncio.get_running_loop().run_in_executor(None, entered.wait, 5))
+                    second = asyncio.create_task(engine.request("status-presentation", args, 10))
+                    requests.append(second)
                     for _ in range(200):
                         if engine.shared:
                             break
@@ -294,6 +298,49 @@ class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
                             await pending
             finally:
                 release.set()
+                await asyncio.gather(*requests, return_exceptions=True)
+                engine.close()
+
+    async def test_saturated_batch_refuses_before_joining_and_preserves_critical_lane(self):
+        import threading
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            (home / "state").mkdir()
+            (home / "state/task.meta").write_text("kind=secondmate\nspawn_gen=g1\n")
+            path = home / "state/task.status"
+            path.write_bytes(b"blocked [key=x]: held\n")
+            entered, release = threading.Event(), threading.Event()
+            class StalledInputs(Inputs):
+                def state_read(self, task, suffix):
+                    if task == "task" and suffix == ".status":
+                        entered.set()
+                        release.wait(20)
+                    return super().state_read(task, suffix)
+            inputs = StalledInputs(str(home))
+            engine = Engine(inputs, workers=1)
+            info = path.stat()
+            args = {"rows": [{"task": "task", "end": info.st_size, "offset": 0,
+                              "identity": [info.st_dev, info.st_ino],
+                              "classified": 0, "fully_presented": False}]}
+            first = asyncio.create_task(engine.request("status-presentation", args, 10))
+            try:
+                self.assertTrue(await asyncio.get_running_loop().run_in_executor(None, entered.wait, 5))
+                with self.assertRaisesRegex(Refused, "capacity exhausted"):
+                    await engine.request("status-presentation", args, 2)
+                self.assertEqual(engine.shared, 0)
+                self.assertEqual(engine.operations, 1)
+                self.assertEqual(engine.ordinary.active, 1)
+                # Another task's missing status avoids the held batch read.
+                # It still exercises the real critical fold and both barriers.
+                folded = await engine.request("status-fold", {"task": "critical"}, 2)
+                self.assertEqual(folded["open"], [])
+                self.assertFalse(release.is_set())
+                release.set()
+                result = await first
+                self.assertEqual(result["rows"][0]["open"][0]["key"], "x")
+            finally:
+                release.set()
+                await asyncio.gather(first, return_exceptions=True)
                 engine.close()
 
     async def test_batch_rpc_and_fresh_generation(self):
