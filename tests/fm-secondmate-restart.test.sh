@@ -341,6 +341,9 @@ test_answer_between_resolution_and_timeout_wins() {
   local dir out rc
   dir=$(new_case answer-at-timeout-decision)
   add_local_mate "$dir" sm1
+  # Observe a real empty input, not a missing file: the incremental reader must
+  # not publish a successful scan for an input it could not open.
+  : > "$dir/home/state/sm1.status"
 
   # Delay the modelled answer until the first resolution attempt has completed
   # its unsuccessful status scan. The real pending-reply machinery publishes
@@ -367,6 +370,7 @@ SH
 
   out=$(FM_TEST_PERSIST_WAIT=0 run_restart "$dir" sm1); rc=$?
 
+  assert_present "$dir/fake/answer-after-scan" "the boundary fixture never injected its answer"
   expect_code 0 "$rc" "an answer already on disk at the timeout decision must release the gate"$'\n'"$out"
   assert_contains "$out" "restarted: sm1" "the reply that raced the timeout was ignored"
   assert_not_contains "$out" "nudged: sm1" "a confirmed mate must not take the timeout fallback"
