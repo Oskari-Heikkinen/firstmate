@@ -9,8 +9,7 @@ metadata:
 # firstmate-coding-guidelines
 
 Load this before changing firstmate's shared, tracked material, as defined by `AGENTS.md` section 1.
-It exists because `AGENTS.md` grew from 585 to 958 lines between its last two restructures, entirely from conditional detail added inline instead of routed to its right home.
-Applying the rules below on every change is what keeps that from happening again.
+Route conditional detail to its on-demand owner so always-loaded instructions stay focused on rules needed in every session.
 Each component's goals and review checks live in the skill that `docs/component-map.json` names for it; load it before changing a mapped path.
 
 ## Knowledge-placement decision tree
@@ -115,7 +114,7 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 
 Never configure a deterministic suite-walk `commands.test` in any repository's no-mistakes config, whether it selects the full suite, changed tests, a family, or a fixed script list.
 Targeted validation belongs to the no-mistakes evidence path, while CI owns broad deterministic regression coverage.
-Firstmate PR #3644 demonstrated the cost: pinning a 75-162-script walk took 32.7 minutes per validation, while removing it restored the 3.6-minute targeted-validation posture.
+The parsed configuration regression is [`tests/fm-nm-test-contract.test.sh`](../../../tests/fm-nm-test-contract.test.sh).
 
 ## Repo style rules
 

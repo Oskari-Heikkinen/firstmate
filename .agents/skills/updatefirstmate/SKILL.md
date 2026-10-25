@@ -15,9 +15,10 @@ Only `AGENTS.md`, `bin/`, and `.agents/skills/` are a running firstmate instruct
 This skill performs that pull for the running main firstmate and every secondmate, without disturbing any in-flight work.
 
 Pulling the files is only half of it.
-A running agent holds `AGENTS.md` and every skill it has already loaded frozen from the moment it launched, and no verified harness offers a reload, so new bytes on disk change nothing for it until it starts a fresh conversation.
-A re-read cannot substitute: it appends a second copy of the mate's own job description with no defined precedence, and it cannot reach a skill that is already loaded.
-Replacing the agent is also the only thing that re-resolves the launch-time wiring - turn-end hooks, harness flags, per-harness feature switches - which the mate froze when it started and which nothing on disk describes.
+Updating files alone does not refresh a running conversation's native instruction cache or previously loaded skill text.
+Deliberately supplying current text can refresh the operating instructions without reloading that cache; [`session-start re-emit mechanics`](../../../docs/sessionstart-nudge.md#re-emit-mechanics) owns the supported refresh path, with [`post-start instruction-refresh verification`](../../../docs/verification/supervision.md#post-start-instruction-refresh) recording its proven scope.
+The primary's re-read below supplies current `AGENTS.md` text, not a native reload of every previously loaded skill.
+Replacing the agent is still required to re-resolve launch-time wiring - turn-end hooks, harness flags, per-harness feature switches - which an instruction-text refresh does not change.
 
 That is why **every live second mate is restarted after a successful update, including one that was already on the target commit.**
 Launch-time wiring is not derivable from a file diff, so an unchanged tracked surface is not evidence the running agent is already on the current behavior.
@@ -53,8 +54,9 @@ This touches only the firstmate repo and its own worktrees, never anything under
 
 2. **Re-read AGENTS.md if your own instructions changed.**
    When the updater printed `reread-firstmate: yes`, the tracked instruction surface (`AGENTS.md`, `bin/`, or `.agents/skills/`) just advanced under you.
-   **Read `AGENTS.md` now** (CLAUDE.md is a real `@AGENTS.md` pointer to it) to refresh your operating instructions before doing anything else, so you are acting on the new instructions rather than the stale ones you were started with.
-   When it printed `reread-firstmate: no`, nothing changed for you - skip the re-read.
+   **Read `AGENTS.md` now** (CLAUDE.md is a real `@AGENTS.md` pointer to it) and apply that current text in place of the earlier Firstmate instruction copy before further work.
+   This supplies current instructions; it does not reset the native cache, refresh all previously loaded skills, or change launch-time settings.
+   When it printed `reread-firstmate: no`, the tracked instruction surface did not advance in this pass - skip the re-read.
 
 3. **Restart every second mate the updater named.**
    Pass the whole `restart-secondmates:` list to one command (skip this step entirely when it says `none`):
@@ -72,8 +74,8 @@ This touches only the firstmate repo and its own worktrees, never anything under
 
    Read its per-mate lines and its closing `summary:` line as the outcome:
    - `restarted: <id>` - that mate is now genuinely running the current instructions and launch-time settings.
-   - `nudged: <id>: <reason>` - the restart was not safe, so the mate got the older re-read message instead and is still running the conversation and launch-time settings it started with.
-     Never report one of these as a clean reload.
+   - `nudged: <id>: <reason>` - the restart was not safe, so the mate got a re-read message instead and keeps its existing conversation and launch-time settings.
+     Supplying current instruction text is not proof of a native cache or settings reload; never report one of these as a clean reload.
    - `unreached: <id>: <reason>` - no safe running outcome could be confirmed, including an ambiguous relaunch result.
 
 4. **Send the re-read message to the rest.**
