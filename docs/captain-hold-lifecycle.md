@@ -502,7 +502,7 @@ If tasks-axi is unavailable or its listing cannot be parsed, the guard cannot re
 ## Compatibility with pre-collapse installs
 
 The collapse is the change that made a decision an ordinary captain-held task whose key is its task id.
-Older installs created derived `<origin>-decision-<key>` identities through the retired `bin/fm-decision-hold.sh`.
+Older installs created derived `<origin>-decision-<key>` identities through the old command interface, retained as the `bin/fm-decision-hold.sh` compatibility shim.
 Those rows are already plain task ids, so they render, answer, verify, and close through the collapsed surfaces with no data migration.
 
 Three legacy inputs are resolved in place:
@@ -525,10 +525,19 @@ A markdown home keeps its legacy identities verbatim, including in its configure
 
 ### The `fm-decision-hold.sh` shim
 
-`bin/fm-decision-hold.sh` itself remains for one release as a thin command-mapping shim over `bin/fm-captain-hold.sh`.
-In-flight work briefed before the collapse therefore keeps working, and the shim's header owns the exact mapping.
+`bin/fm-decision-hold.sh` remains a thin command-mapping shim over `bin/fm-captain-hold.sh`.
+In-flight work briefed before the collapse keeps working, and the shim's header owns the exact mapping and minimum one-release compatibility period.
+As of 2026-10-24, the **decision-interface retirement gate** requires an explicit withdrawal release after that compatibility period, evidence that all supported in-flight and resumable briefs have stopped calling the old interface, and closure of its rollback window.
+The release boundary is not yet certified; the shim remains supported until that gate is met.
 The shim recognizes an exact replay of a pre-collapse routed resolution by its historical answer digest and routed ids.
 It then finishes any still-recorded dependency-edge cleanup without rewriting the old decision text.
+
+### Migrated-identity retirement gate
+
+As of 2026-10-24, the **migrated-identity retirement gate** is separate from removing the command shim.
+Derived identities, Beads migration-note and prefix resolution, and old resolution records remain readable until every supported inventory, binding, and live or archived hold can be verified and answered without those compatibility paths.
+Retirement requires owner-recorded migration or supported-data withdrawal evidence, preserved completion and replay coverage, an explicit compatibility-withdrawal release, and closure of the rollback window.
+All identity and record readers remain supported until that gate is met.
 
 ## Verification record
 

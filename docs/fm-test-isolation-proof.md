@@ -20,10 +20,16 @@ This record owns concurrent isolation evidence for the portable parallel candida
 | failed | 0 |
 | wall duration | 113278 ms |
 
+## Current candidate navigation
+
+[`bin/fm-test-isolation-proof.sh`](../bin/fm-test-isolation-proof.sh)'s `--list` entry point owns the current portable candidate paths.
+The merged coverage lives in [`tests/fm-composer-lib.test.sh`](../tests/fm-composer-lib.test.sh) and [`tests/fm-send-settle.test.sh`](../tests/fm-send-settle.test.sh), not the removed `fm-composer-ghost` and `fm-send-popup-settle` scripts.
+This navigation does not constitute a new concurrent proof.
+
 ## Candidate set
 
-This is the set the dated run above proved.
-On 2026-10-15 `tests/fm-composer-ghost.test.sh` merged into `tests/fm-composer-lib.test.sh` and `tests/fm-send-popup-settle.test.sh` merged into `tests/fm-send-settle.test.sh`, so the current candidate set is these paths without the two merged-away files.
+The list below is the exact 24-candidate set the dated run above proved, not the current runnable list.
+Its removed paths and the original durations are retained as verification evidence.
 
 - `tests/fm-arm-pretool-check.test.sh`
 - `tests/fm-backend-herdr.test.sh`

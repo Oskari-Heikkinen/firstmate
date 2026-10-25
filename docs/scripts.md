@@ -47,7 +47,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | [`fm-backlog-handoff.sh`](../bin/fm-backlog-handoff.sh) | Move queued backlog items into a secondmate home; its header owns route-specific wake outcomes and retries |
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
 | `fm-captain-hold.sh`     | Hold tasks for the captain, record the captain's answers, gate investigation completion, and report record divergence between the status log and the backlog |
-| `fm-decision-hold.sh`    | One-release compatibility shim mapping the retired decision commands onto fm-captain-hold.sh |
+| `fm-decision-hold.sh`    | Retained compatibility shim mapping the old decision command interface onto fm-captain-hold.sh ([retirement gate](captain-hold-lifecycle.md#the-fm-decision-holdsh-shim)) |
 | `fm-brief.sh`            | Scaffold ship (explicit `--mode`, plus the project's registered `--forge`), scout, secondmate-charter, and Herdr-lab briefs, with Captain's intent and Firstmate spec subsections on ship/scout |
 | `fm-rereview-brief.sh`   | Scaffold and fill a re-review scout brief from a first review's Verdict and Findings, the landed commit, and candidate digests at that commit |
 | [`fm-dod-lib.sh`](../bin/fm-dod-lib.sh) | Own ship/scout worker role scope, ship definitions of done, the named-head reachability gate on ship `done:` acceptance, and the no-mistakes `--intent` contract |
@@ -222,3 +222,16 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-voice-client.py`     | The laptop end of the spoken interface: capture, playback, and turn timing over SSH; audio devices unverified |
 | `fm_voice_frame.py`      | The wire format both machines share, copied to the laptop beside the client          |
 | `fm_voice_records.py`    | What a spoken answer may read, and the handover that queues real work                |
+
+## Compatibility retention
+
+As of 2026-10-24, none of the following compatibility paths is retired.
+A new pipeline or writer is not evidence that supported old readers, persisted data, or rollback needs have ended.
+
+| Path | Retirement gate and current owner |
+| --- | --- |
+| Decision command shim | [Decision-interface retirement gate](captain-hold-lifecycle.md#the-fm-decision-holdsh-shim). |
+| Derived and Beads-migrated hold identities | [Migrated-identity retirement gate](captain-hold-lifecycle.md#migrated-identity-retirement-gate). |
+| Bare operational markers | [Bare-marker retirement gate](herdr-backend.md#operational-input-markers); construction and parsing remain owned by `fm-operational-input.sh`. |
+| Old Calm preferences and stored operational messages | **Calm-data retirement gate**: explicit supported-config and supported-session withdrawal or migration evidence for every supported harness, verified replay and rendering of retained sessions, and closure of the rollback window; [configuration](configuration.md#calm-preference-configcalm) and [Calm](calm.md#what-stays-unchanged-on-pi) remain the behavior owners. |
+| Host protocol 1 and `process-event-adapter/1` | **Protocol-1 retirement gate**: the [extension compatibility release boundary](extension-bindings.md#compatibility-and-failure-semantics), plus evidence that enrolled adapters and retained source/capture readers have migrated or drained, explicit withdrawal, and closure of the downgrade window. |

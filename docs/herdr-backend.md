@@ -645,9 +645,9 @@ The adapter is a thin capture.
 It hands the visible pane's ANSI viewport plus Herdr's capability facts to the fleet-wide classifier in `bin/fm-composer-lib.sh`, which owns every shape:
 
 - Bordered boxes.
-- Bare agent-glyph rows, including muse's `⟩`, which the adapter's retired local pattern silently omitted.
+- Bare agent-glyph rows, including muse's `⟩`.
 - opencode's left bar.
-- The Pi separator region this adapter pioneered, admitted only when native `agent get` identity is exactly Pi and state is idle or done.
+- The Pi separator region, admitted only when native `agent get` identity is exactly Pi and state is idle or done.
 
 ### Pi composer states
 
@@ -675,9 +675,11 @@ This prevents a dead agent pane from receiving and possibly executing an escalat
 
 The current operational envelope starts with U+2063 and `FIRSTMATE_OP: `.
 The separate routed-request carrier uses `[fm-from-firstmate]` plus U+2063.
-U+2063 survives Herdr terminal input as text, unlike the legacy ASCII control separator that could erase the visible routing label.
+U+2063 survives Herdr terminal input as text and preserves the visible routing label.
 Claude Code itself then removes it from the submitted prompt, so a Claude Code primary receives away-mode escalations as the owner's record-backed doorbell instead.
-`bin/fm-operational-input.sh` owns current operational construction and parsing, and the AFK skill owns legacy away-input compatibility.
+`bin/fm-operational-input.sh` owns current operational construction and parsing, and the [AFK skill](../.agents/skills/afk/SKILL.md) owns legacy away-input compatibility.
+As of 2026-10-24, the **bare-marker retirement gate** requires explicit withdrawal of support for old persisted sessions and carriers, proof that supported producers and replay readers no longer need those inputs, and closure of the rollback window.
+Until that gate is met, legacy matching and its exact-match anti-spoof boundaries remain live; a new envelope writer alone does not retire a reader.
 No Herdr-specific copy of that protocol exists.
 
 ## Restart and liveness behavior
@@ -696,7 +698,8 @@ This prevents closing the workspace's last tab before a replacement exists.
 A registration alone never proves an agent.
 Herdr keeps a Pi registration after the Pi process has exited to a plain shell, whenever a nested interactive shell sits under the pane's top shell.
 In that case `agent get` still reports `agent=pi` with its last status.
-That nested shell is the crew shape `treehouse get` leaves behind (measured on Herdr 0.9.0 - [verification](verification/runtime-backends.md) "Stale agent registration"; upstream issue #4115).
+That nested shell is the crew shape `treehouse get` leaves behind.
+[Stale agent registration verification](verification/runtime-backends.md#stale-agent-registration) records the measured Herdr version and process evidence.
 
 So before a registered agent counts as live, the pane classifier reads `pane process-info` and the real process table.
 It uses the shared harness-process classifier in `bin/fm-agent-process-lib.sh`, the same rule the tmux adapter proves liveness with:
@@ -751,10 +754,11 @@ Idle secondmates remain exempt from stale-pane escalation.
 A pane has ONE status authority, and for Pi with the integration installed that authority is the lifecycle hooks - Herdr then skips screen detection for the pane, which is the `full_lifecycle_hook_authority` reason `herdr agent explain` prints for it.
 That authority is bound to a session identity, and in the crew shape the registration outliving its process ([above](#restart-and-liveness-behavior)) is that same binding: the record stays, the agent it named is gone.
 
-An agent started FRESH in such a pane reports a new session and Herdr ignores its reports, so the pane stays frozen at whatever the previous agent last reported - a crewmate running its pipeline reads `idle` until its task ends, and nothing from outside repairs it (measured 2026-09-21 on Herdr 0.9.1 against a real Pi; `pane report-agent-session` and `pane report-agent` for `herdr:pi` are accepted without being applied unless the reporter is the registered pane agent, and `pane release-agent` on the stale record changes nothing).
-A fresh spawn never meets this: it gets a new pane with nothing bound.
+A fresh session in a pane still bound to another session can leave the pane's status frozen because the replacement's reports do not match that authority.
+[Pane status authority verification](verification/runtime-backends.md#pane-status-authority-across-a-relaunch) owns the version-scoped evidence and the limits of external report or release attempts; it is not a guarantee about unmeasured Herdr releases.
+A fresh spawn gets a new pane with nothing bound.
 
-So a **relaunch** preserves the binding instead of fighting it: before the Pi-family launch line is composed, `bin/fm-spawn.sh` reads the pane's recorded session reference through `fm_backend_herdr_pane_agent_session_ref` and passes it back as Pi's own `--session <path-or-id>` (`relaunch_resume_args`; `bin/fm-control-lib.sh`'s `fm_control_relaunch_resume_flag` owns which adapters and which registration labels qualify).
+A **relaunch** therefore preserves the binding: before the Pi-family launch line is composed, `bin/fm-spawn.sh` reads the pane's recorded session reference through `fm_backend_herdr_pane_agent_session_ref` and passes it back as Pi's own `--session <path-or-id>` (`relaunch_resume_args`; `bin/fm-control-lib.sh`'s `fm_control_relaunch_resume_flag` owns which adapters and which registration labels qualify).
 The replacement therefore starts on the exact identity the authority is bound to, and its `working`/`idle`/`blocked` reports land again.
 The reference is the endpoint's own record, never a guess about which session is recent, and only a `pi` label may supply it: a registration belonging to another adapter is ignored, as is an unreadable, missing, or malformed one, in which case the relaunch is the ordinary fresh session it always was.
 A relaunch that changes harness AWAY from Pi is not repaired by this and keeps the pre-existing behavior; only the adapter the authority belongs to can resume its session.
