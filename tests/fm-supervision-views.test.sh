@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Isolated native fold/crew-state/captured-presentation/IPC/admission tests,
+# including missing-SQLite unknowns and real SQLite contention/recovery parity;
 # plus real drain/client stdout/cursor/fallback transaction checks.
 # Queued annotations consume the same captured span as the fold, preserve byte
 # rendering and append boundaries, and never reopen its cursor/span readers.

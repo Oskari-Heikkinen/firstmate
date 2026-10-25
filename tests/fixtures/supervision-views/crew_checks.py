@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -156,6 +158,45 @@ exit 1
         self.compare()
         self.env["FM_FAKE_SELECTED"] = self.run_record("running").replace("id: run1", "id: wrong")
         self.compare()
+
+    def test_capped_inventory_real_sqlite_contention_and_recovery(self):
+        database = self.home / "state.sqlite"
+        self.env.update(NM_HOME=str(self.home), FM_CREW_STATE_NM_TIMEOUT="1",
+                        FM_FAKE_STATUS=self.run_record(),
+                        FM_FAKE_OVERVIEW=f'repo: {json.dumps(str(self.worktree))}\ncount: 1 of 2 total\nruns[1]{{id,branch,status,head,pr}}:\n  run1,fm/task,running,{self.head},\n')
+        with sqlite3.connect(database) as db:
+            db.executescript("CREATE TABLE repos (id TEXT, working_path TEXT);"
+                             "CREATE TABLE runs (id TEXT, repo_id TEXT, branch TEXT, status TEXT, head_sha TEXT, created_at INTEGER);")
+            db.execute("INSERT INTO repos VALUES ('repo', ?)", (str(self.worktree),))
+            db.executemany("INSERT INTO runs VALUES (?, 'repo', 'fm/task', 'running', ?, ?)",
+                           [("run1", self.head, 2), ("run2", self.head, 1)])
+        lock = sqlite3.connect(database)
+        try:
+            lock.execute("BEGIN EXCLUSIVE")
+            started = time.monotonic()
+            blocked = self.compare()
+            self.assertLess(time.monotonic() - started, 8, "both readers must finish within their bounded read budgets")
+            self.assertEqual(blocked["state"], "unknown")
+            self.assertIn("inventory reader unavailable; run ids: run1", blocked["detail"])
+            self.assertNotIn("run2", blocked["detail"], "unreadable inventory cannot supply the hidden id")
+        finally:
+            lock.close()
+        recovered = self.compare()
+        self.assertIn("competing live runs; run ids: run1, run2", recovered["detail"])
+        self.assertNotEqual(blocked["raw"], recovered["raw"])
+        # A busy lock and a running SQLite VM use different timeout mechanisms.
+        # This real query cannot produce its sorted first row within the read
+        # budget, even though it never waits on another connection's lock.
+        with sqlite3.connect(database) as db:
+            db.execute("ALTER TABLE runs RENAME TO seed_runs")
+            db.execute("CREATE TABLE expansion (n INTEGER)")
+            db.executemany("INSERT INTO expansion VALUES (?)", [(n,) for n in range(100)])
+            db.execute("CREATE VIEW runs AS SELECT seed_runs.* FROM seed_runs "
+                       "CROSS JOIN expansion a CROSS JOIN expansion b CROSS JOIN expansion c CROSS JOIN expansion d")
+        started = time.monotonic()
+        expensive = self.compare()
+        self.assertLess(time.monotonic() - started, 8, "SQL execution must share the same total read bound")
+        self.assertEqual(expensive["raw"], blocked["raw"])
 
     def test_coarse_dead_instrument(self):
         self.env["FM_FAKE_STATUS"] = self.run_record("completed", branch="fm/other")
