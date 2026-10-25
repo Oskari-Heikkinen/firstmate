@@ -8,7 +8,11 @@ published root. It refuses unless FM_SUPERVISION_CAPTURE_LIVE=1 AND
 --acknowledge-ptrace are supplied; never use it as a routine check.
 `capture-proc` is a separate opt-in, unprivileged Linux /proc-only route:
 --manifest FILE --output NEW_DIR --seconds 1..300 [--interval-ms 1000..10000]
-[--max-bytes 4096..67108864]. Requires FM_SUPERVISION_PROC_LIVE=1, non-root,
+[--max-bytes 4096..67108864] [--model FILE]. Optional model supplies CI
+exclusive costs and owner-admitted append-only tick logs (64 KiB each).
+Model estimates are separate from measurements, cross-checked against exact
+machine totals; missing families and negative residuals stay explicit.
+Requires FM_SUPERVISION_PROC_LIVE=1, non-root,
 no effective capabilities, local single-machine enrollment and published roots.
 No subprocess, attach, target signals, policy writes or workload. Output cap is TOTAL.
 `account-proc FILE` replays its proc.json (including synthetic CI fixtures).
@@ -41,6 +45,7 @@ import subprocess
 import sys
 import time
 from decimal import Decimal
+from fractions import Fraction
 
 MAX_BYTES = 64 * 1024 * 1024
 SCHEMAS = Path(__file__).resolve().parent.parent / "docs" / "supervision-accounting"
@@ -436,6 +441,129 @@ def proc_hints(tasks, enrollment):
     return result
 
 
+def proc_model_spec(value, enrollment):
+    checked(value, "proc-model")
+    homes = {h["id"]: h for h in enrollment["homes"]}
+    pairs, paths = set(), set()
+    for profile in value["profiles"]:
+        home, family = profile["home"], profile["family"]
+        require(home in homes, "model home not enrolled")
+        require((home, family) not in pairs, "duplicate model home/family")
+        pairs.add((home, family))
+        owner = homes[home]
+        require(profile["code_ref"] == owner["code_ref"] and
+                profile["configuration_sha256"] == owner["configuration_sha256"],
+                "model code/configuration mismatch")
+        path = profile["record_path"]
+        require(os.path.normpath(path) == path and path.startswith(owner["home"] + "/"),
+                "model record outside published home")
+        # One record has one exclusive owner. Disallow even different selectors
+        # on the same record: their events could overlap without detection.
+        require(path not in paths, "shared model tick record")
+        paths.add(path)
+    return value
+
+
+def read_proc_ticks(specification, byte_budget):
+    readings = []
+    for profile in specification["profiles"]:
+        before = time.monotonic_ns()
+        path = Path(profile["record_path"])
+        # Walk with openat + NOFOLLOW, not a check/open race through a mutable
+        # ancestor symlink. Files are read only; no owner state is created.
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in path.parts[1:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            record_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            with os.fdopen(record_fd, "rb") as stream:
+                identity = os.fstat(stream.fileno())
+                require(stat.S_ISREG(identity.st_mode), "model tick record not regular")
+                data = stream.read(65537)
+                require(len(data) <= 65536, "model tick record exceeds 64 KiB")
+        finally:
+            os.close(fd)
+        row = {"before_ns": before, "after_ns": time.monotonic_ns(),
+               "device": identity.st_dev, "inode": identity.st_ino,
+               "base64": base64.b64encode(data).decode("ascii"), "sha256": digest(data)}
+        byte_budget -= len(dump(row).encode()) + 128
+        require(byte_budget >= 0, "proc total output cap exceeded")
+        readings.append(row)
+    return readings
+
+
+def account_proc_model(model, enrollment, synthetic, first, last, machine_births, machine_cpu, hz):
+    spec = proc_model_spec(model["specification"], enrollment)
+    require(synthetic or not spec["synthetic"], "synthetic model in real proc recording")
+    samples = model["samples"]
+    require(all(len(s) == len(spec["profiles"]) for s in samples), "model tick sample count mismatch")
+    rows, totals = [], [Fraction(0), Fraction(0), Fraction(0)]
+    for sample in samples:
+        require(len({(r["device"], r["inode"]) for r in sample}) == len(sample),
+                "aliased model tick records")
+    duration = last["monotonic_ns"] - first["monotonic_ns"]
+    for profile, begin, end in zip(spec["profiles"], *samples):
+        raw = []
+        for reading in (begin, end):
+            require(reading["before_ns"] <= reading["after_ns"], "model tick read clock reversed")
+            data = base64.b64decode(reading["base64"], validate=True)
+            require(len(data) <= 65536 and digest(data) == reading["sha256"], "model tick seal mismatch")
+            raw.append(data)
+        require((begin["device"], begin["inode"]) == (end["device"], end["inode"])
+                and raw[1].startswith(raw[0]), "model tick record rotated, truncated or rewritten")
+        # Record reads enclose the measured machine window. Their longer rate
+        # window is explicit; scaling it is part of the model, not measurement.
+        require(begin["after_ns"] <= first["monotonic_ns"] < last["monotonic_ns"]
+                <= end["before_ns"], "model tick reads do not enclose machine window")
+        elapsed = end["after_ns"] - begin["after_ns"]
+        require(0 < elapsed <= 310000000000, "invalid model tick duration")
+        needle = profile["line_contains"].encode("utf-8")
+        counts = [sum(needle in line for line in data.split(b"\n")[:-1]) for data in raw]
+        ticks = counts[1] - counts[0]
+        calibration = profile["calibration"]
+        scale = Fraction(ticks * duration, elapsed * calibration["ticks"])
+        estimates = [calibration[key] * scale for key in ("births", "user_ns", "system_ns")]
+        totals = [a + b for a, b in zip(totals, estimates)]
+        rows.append({"home": profile["home"], "family": profile["family"],
+                     "tick_unit": profile["tick_unit"], "observed_record_ticks": ticks,
+                     "record_window_ns": elapsed, "record_ticks_per_second": ticks * 1e9 / elapsed,
+                     "record_boundary_skew_ns": {"before": first["monotonic_ns"] - begin["after_ns"],
+                                                 "after": end["after_ns"] - last["monotonic_ns"]},
+                     "estimated_births": float(estimates[0]),
+                     "estimated_births_per_second": float(estimates[0] * 1000000000 / duration),
+                     "estimated_user_ns": float(estimates[1]), "estimated_system_ns": float(estimates[2]),
+                     "estimated_cpu_one_core_percent": float(sum(estimates[1:]) * 100 / duration),
+                     "calibration": calibration, "ci_url": profile["ci_url"],
+                     "evidence_sha256": profile["evidence_sha256"]})
+    births_residual = machine_births - totals[0]
+    cpu_residual = Fraction(machine_cpu * 1000000000, hz) - sum(totals[1:])
+    covered = {(p["home"], p["family"]) for p in spec["profiles"]}
+    uncovered = [{"home": h["id"], "family": f} for h in enrollment["homes"]
+                 for f in FAMILIES if (h["id"], f) not in covered]
+    contradiction = births_residual < 0 or cpu_residual < 0
+    return {"basis": "CI-per-tick-model-times-live-record-rate; NOT measured attribution",
+            "status": "model-total-contradiction" if contradiction else "pending-reviewed-model-baseline",
+            "synthetic_calibration": spec["synthetic"], "by_home_family": rows,
+            "estimated_births": float(totals[0]),
+            "estimated_births_per_second": float(totals[0] * 1000000000 / duration),
+            "estimated_user_ns": float(totals[1]), "estimated_system_ns": float(totals[2]),
+            "estimated_cpu_one_core_percent": float(sum(totals[1:]) * 100 / duration),
+            "machine_minus_model_residual": {"births": float(births_residual),
+                "births_per_second": float(births_residual * 1000000000 / duration),
+                "busy_cpu_ns": float(cpu_residual),
+                "busy_cpu_one_core_percent": float(cpu_residual * 100 / duration)},
+            "exact_machine_total_check": "contradiction" if contradiction else "nonnegative-not-proof",
+            "uncovered_named_families": uncovered,
+            "other_families": "unmodeled unless explicitly supplied; coverage is owner-attested, not discovered",
+            "uncertainty": "No statistical error bound. CI work mix, unseen callers/children, version "
+                "and tick-unit equivalence require review; observed log rates use a wider window. "
+                "Positive residual mixes unmodeled supervision, workload, collector and model error; "
+                "negative residual is a contradiction, never clipped. Do not add observed lower bounds "
+                "to these estimates. No per-tick model recovers resident startup or partial boundary work."}
+
+
 def account_proc(value):
     checked(value, "proc")
     enrollment = proc_enrollment(value["manifest"])
@@ -489,7 +617,7 @@ def account_proc(value):
     machine_cpu = busy(last) - busy(first)
     require(machine_cpu >= 0, "machine CPU counter reset")
     buckets = sorted(set(birth_hints) | set(cpu_hints))
-    return {"format": "fm-supervision-proc-accounting.v1", "synthetic": value["synthetic"],
+    result = {"format": "fm-supervision-proc-accounting.v1", "synthetic": value["synthetic"],
             "b0_status": "incomplete-unprivileged-attribution", "claimed_births_per_second_saved": 0,
             "duration_ns": duration, "clock_ticks": hz,
             "machine": {"births": machine_births, "births_per_second": machine_births * 1e9 / duration,
@@ -524,6 +652,12 @@ def account_proc(value):
             "unseen short-lived processes/threads, boundary ticks, unreadable tasks, CPU before first/"
             "after last observation and between-sample exits. Observed work also includes workload/"
             "collector. Negative values are retained contradictions. No residual is claimed as savings."}
+    result["model_derived_supervision"] = None
+    if "model" in value:
+        result["model_derived_supervision"] = account_proc_model(
+            value["model"], enrollment, value["synthetic"], first, last, machine_births, machine_cpu, hz)
+        result["b0_status"] = result["model_derived_supervision"]["status"]
+    return result
 
 
 def proc_with_deadline(seconds, action):
@@ -570,6 +704,8 @@ def collect_proc(args):
     require(1000 <= args.interval_ms <= 10000, "proc interval must be 1000..10000 ms")
     require(4096 <= args.max_bytes <= MAX_BYTES, "proc byte bound must be 4096..67108864")
     enrollment = proc_enrollment(load_json(args.manifest))
+    specification = proc_model_spec(load_json(args.model), enrollment) if args.model else None
+    require(specification is None or not specification["synthetic"], "live capture refuses synthetic model")
     hz = os.sysconf("SC_CLK_TCK")
     value = {"format": "fm-supervision-proc.v1", "synthetic": False,
              "manifest": enrollment, "clock_ticks": hz, "snapshots": []}
@@ -583,6 +719,9 @@ def collect_proc(args):
     used = len(dump(started).encode())
     deadline = time.monotonic() + args.seconds
     hard_deadline = deadline + 2  # final scan budget, no unbounded catch-up
+    if specification is not None:
+        value["model"] = {"specification": specification, "samples": [read_proc_ticks(
+            specification, args.max_bytes - used - len(dump(value).encode()) - 16384)]}
     before = proc_boundary(hz)
     while True:
         scan = proc_scan(hard_deadline, args.max_bytes - len(dump(value).encode()) - used - 16384)
@@ -600,6 +739,9 @@ def collect_proc(args):
         if time.monotonic() >= deadline and len(value["snapshots"]) >= 2:
             break
         time.sleep(max(0, min(args.interval_ms / 1000, deadline - time.monotonic())))
+    if specification is not None:
+        value["model"]["samples"].append(read_proc_ticks(
+            specification, args.max_bytes - used - len(dump(value).encode()) - 16384))
     result = account_proc(value)
     raw, report = dump(value).encode(), dump(result).encode()
     require(len(raw) + len(report) + used <= args.max_bytes, "proc total output cap exceeded")
@@ -1027,6 +1169,7 @@ def main():
     sub.add_argument("--seconds", type=int, required=True)
     sub.add_argument("--interval-ms", type=int, default=1000)
     sub.add_argument("--max-bytes", type=int, default=8 * 1024 * 1024)
+    sub.add_argument("--model", help="owner-supplied CI costs and admitted append-only tick records")
     sub = commands.add_parser("capture", help="bounded attach only; never executes a workload")
     sub.add_argument("--manifest", required=True)
     sub.add_argument("--home", required=True)

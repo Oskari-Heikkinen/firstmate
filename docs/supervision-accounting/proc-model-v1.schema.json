@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Owner-supplied CI exclusive per-tick costs and admitted live tick records",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "synthetic", "allocation", "profiles"],
+  "properties": {
+    "format": {"const": "fm-supervision-proc-model.v1"},
+    "synthetic": {"type": "boolean"},
+    "allocation": {"const": "exclusive-home-family-v1"},
+    "profiles": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/profile"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "[a-z0-9][a-z0-9-]{0,63}"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "count": {"type": "integer", "minimum": 0, "maximum": 1000000000000000000},
+    "profile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["home", "family", "code_ref", "configuration_sha256", "tick_unit", "record_path", "line_contains", "ci_url", "evidence_sha256", "calibration"],
+      "properties": {
+        "home": {"$ref": "#/$defs/id"}, "family": {"$ref": "#/$defs/id"},
+        "code_ref": {"type": "string", "pattern": "[0-9a-f]{40}"},
+        "configuration_sha256": {"type": "string", "pattern": "[0-9a-f]{64}"},
+        "tick_unit": {"$ref": "#/$defs/text"},
+        "record_path": {"type": "string", "pattern": "/[^\u0000\n\r]+", "maxLength": 4096},
+        "line_contains": {"type": "string", "pattern": "[^\u0000\n\r]+", "maxLength": 1024},
+        "ci_url": {"type": "string", "pattern": "https://[^\u0000\n\r ]+", "maxLength": 4096},
+        "evidence_sha256": {"type": "string", "pattern": "[0-9a-f]{64}"},
+        "calibration": {
+          "type": "object", "additionalProperties": false,
+          "required": ["ticks", "births", "user_ns", "system_ns"],
+          "properties": {
+            "ticks": {"type": "integer", "minimum": 1, "maximum": 1000000000},
+            "births": {"$ref": "#/$defs/count"},
+            "user_ns": {"$ref": "#/$defs/count"}, "system_ns": {"$ref": "#/$defs/count"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -967,6 +967,135 @@ for label, mutate in (
     run('account-proc', save('proc-bad-' + label + '.json', changed), good=False)
     checks += 1
 
+# CI costs x live record rates: estimates NEVER replace measured totals or the
+# observed lower bound. The raw append-only record bytes replay offline.
+def tick_read(at, data, inode=1):
+    return dict(before_ns=at * 1000000000 - 100, after_ns=at * 1000000000,
+                device=1, inode=inode, base64=base64.b64encode(data).decode(),
+                sha256=hashlib.sha256(data).hexdigest())
+
+
+def model_profile(home, family, record, births, user, system):
+    owner = next(h for h in proc_manifest['homes'] if h['id'] == home)
+    return dict(home=home, family=family, code_ref=owner['code_ref'],
+                configuration_sha256=owner['configuration_sha256'], tick_unit='completed exclusive tick',
+                record_path=owner['home'] + '/state/' + record, line_contains='TICK',
+                ci_url='https://example.invalid/actions/runs/1', evidence_sha256='a' * 64,
+                calibration=dict(ticks=1, births=births, user_ns=user, system_ns=system))
+
+
+modeled = copy.deepcopy(proc_value)
+modeled['model'] = dict(specification=dict(format='fm-supervision-proc-model.v1', synthetic=True,
+    allocation='exclusive-home-family-v1', profiles=[
+        model_profile('fixture', 'watch', 'watch.log', 2, 100000000, 50000000),
+        model_profile('other', 'crew-state', 'crew.log', 1, 20000000, 10000000)]),
+    samples=[[tick_read(9, b'TICK old\n'), tick_read(9, b'', inode=2)],
+             [tick_read(13, b'TICK old\nignored\nTICK 1\nTICK 2\nTICK 3\nTICK 4\n'),
+              tick_read(13, b'TICK 1\nTICK 2\n', inode=2)]])
+m = proc_report(modeled, 'proc-modeled')
+estimate = m['model_derived_supervision']
+assert m['machine'] == p['machine'] and m['observed'] == p['observed'] and m['residual'] == p['residual']
+assert m['exclusive_measured_supervision_by_home_family'] is None
+assert m['b0_status'] == 'pending-reviewed-model-baseline'
+assert estimate['estimated_births'] == 5 and estimate['estimated_births_per_second'] == 2.5
+assert estimate['estimated_user_ns'] == 220000000 and estimate['estimated_system_ns'] == 110000000
+assert estimate['estimated_cpu_one_core_percent'] == 16.5
+assert estimate['machine_minus_model_residual'] == dict(births=15.0, births_per_second=7.5,
+    busy_cpu_ns=270000000.0, busy_cpu_one_core_percent=13.5)
+assert estimate['exact_machine_total_check'] == 'nonnegative-not-proof'
+assert len(estimate['uncovered_named_families']) == 10 and estimate['synthetic_calibration']
+assert [(r['home'], r['family'], r['observed_record_ticks'], r['record_ticks_per_second'])
+        for r in estimate['by_home_family']] == [('fixture', 'watch', 4, 1.0), ('other', 'crew-state', 2, 0.5)]
+assert all(r['record_boundary_skew_ns'] == dict(before=1000000000, after=1000000000)
+           for r in estimate['by_home_family'])
+checks += 1
+
+# Calibration totals are divided by the CI tick count, not assumed per tick.
+changed = copy.deepcopy(modeled)
+calibration = changed['model']['specification']['profiles'][0]['calibration']
+for key in calibration:
+    calibration[key] *= 2
+assert proc_report(changed, 'proc-model-divisor')['model_derived_supervision']['estimated_births'] == 5
+assert proc_report(changed, 'proc-model-divisor')['model_derived_supervision']['estimated_cpu_one_core_percent'] == 16.5
+checks += 1
+
+# Counterfactual: one CI cost changes; measured machine/observed data still
+# agrees, but the modeled total exceeds it. Removing the model-total check,
+# clipping the residual or checking only sampled births makes this fail.
+for key, cost, residual_key in (('births', 20, 'births'), ('system_ns', 1000000000, 'busy_cpu_ns')):
+    changed = copy.deepcopy(modeled)
+    changed['model']['specification']['profiles'][0]['calibration'][key] = cost
+    result = proc_report(changed, 'proc-model-over-' + key)
+    assert result['residual']['births_not_observed'] == 17
+    assert result['b0_status'] == 'model-total-contradiction'
+    model_result = result['model_derived_supervision']
+    assert model_result['exact_machine_total_check'] == 'contradiction'
+    assert model_result['machine_minus_model_residual'][residual_key] < 0
+    checks += 1
+
+# Whole six-family coverage is explicit per home, not inferred from zero read
+# errors or a certified manifest. Generic additional families are data too.
+changed = copy.deepcopy(modeled)
+for i in range(4):
+    owner = copy.deepcopy(proc_manifest['homes'][0])
+    owner.update(id='home-' + str(i), home='/home-' + str(i), state_root='/home-' + str(i) + '/state',
+                 capture_roots=[dict(pid=100 + i, start_ticks='1')])
+    changed['manifest']['homes'].append(owner)
+    changed['manifest']['enrolled_homes'].append(owner['id'])
+spec = changed['model']['specification']
+spec['profiles'] = []
+for owner in changed['manifest']['homes']:
+    for family in ('crew-state', 'watch', 'wake-drain', 'fleet-snapshot', 'spawn', 'control', 'owner-guard'):
+        profile = model_profile('fixture', family, family + '.log', 0, 0, 0)
+        profile.update(home=owner['id'], record_path=owner['home'] + '/state/' + family + '.log')
+        spec['profiles'].append(profile)
+changed['model']['samples'] = [[tick_read(9, b'', inode=i + 1) for i, _ in enumerate(spec['profiles'])],
+                              [tick_read(13, b'TICK\n', inode=i + 1) for i, _ in enumerate(spec['profiles'])]]
+result = proc_report(changed, 'proc-model-complete-named')
+assert result['model_derived_supervision']['uncovered_named_families'] == []
+assert len(result['model_derived_supervision']['by_home_family']) == 42
+assert result['b0_status'] == 'pending-reviewed-model-baseline'
+checks += 1
+
+# Zero ticks stays zero (not configured cadence); complete LF-terminated
+# matching lines only. An old partial line completed in-window is one event.
+changed = copy.deepcopy(modeled)
+changed['model']['samples'][0][0] = tick_read(9, b'TICK old\nTIC')
+changed['model']['samples'][1][0] = tick_read(13, b'TICK old\nTICK new\nTICK partial')
+changed['model']['samples'][1][1] = tick_read(13, b'ignored\n', inode=2)
+result = proc_report(changed, 'proc-model-partial-line')['model_derived_supervision']
+assert [r['observed_record_ticks'] for r in result['by_home_family']] == [1, 0]
+assert result['estimated_births'] == 1
+checks += 1
+
+for label, mutate in (
+    ('unknown-field', lambda v: v['model']['specification'].update(command='sudo perf')),
+    ('nonexclusive', lambda v: v['model']['specification'].update(allocation='inclusive')),
+    ('unknown-home', lambda v: v['model']['specification']['profiles'][0].update(home='foreign')),
+    ('code-ref', lambda v: v['model']['specification']['profiles'][0].update(code_ref='f' * 40)),
+    ('config', lambda v: v['model']['specification']['profiles'][0].update(configuration_sha256='f' * 64)),
+    ('path', lambda v: v['model']['specification']['profiles'][0].update(record_path='/foreign/state/log')),
+    ('dotdot', lambda v: v['model']['specification']['profiles'][0].update(record_path='/fixture/../foreign/log')),
+    ('zero-denominator', lambda v: v['model']['specification']['profiles'][0]['calibration'].update(ticks=0)),
+    ('boolean-cost', lambda v: v['model']['specification']['profiles'][0]['calibration'].update(births=True)),
+    ('duplicate-family', lambda v: v['model']['specification']['profiles'][1].update(
+        home='fixture', family='watch', record_path='/fixture/state/crew.log')),
+    ('shared-record', lambda v: v['model']['specification']['profiles'][1].update(
+        home='fixture', record_path=v['model']['specification']['profiles'][0]['record_path'])),
+    ('seal', lambda v: v['model']['samples'][1][0].update(sha256='b' * 64)),
+    ('base64', lambda v: v['model']['samples'][1][0].update(base64='!!!')),
+    ('rotation', lambda v: v['model']['samples'][1][0].update(inode=3)),
+    ('hardlink', lambda v: [sample[1].update(inode=1) for sample in v['model']['samples']]),
+    ('rewrite', lambda v: v['model']['samples'][1].__setitem__(0, tick_read(13, b'TICK replaced\n'))),
+    ('clock', lambda v: v['model']['samples'][1].__setitem__(0, tick_read(11, b'TICK old\n'))),
+    ('count', lambda v: v['model']['samples'][0].pop()),
+    ('provenance', lambda v: v.update(synthetic=False)),
+):
+    changed = copy.deepcopy(modeled)
+    mutate(changed)
+    run('account-proc', save('proc-bad-model-' + label + '.json', changed), good=False)
+    checks += 1
+
 # Authorized fixture-only seam: the real whole-run alarm and the same scan
 # deadline/task-cap guards as live capture. Each starts from a successful
 # fixture, changes ONE guard input and requires that guard's exact refusal.
@@ -1025,6 +1154,45 @@ if sys.platform == 'linux':
         assert json.loads(result.stdout)['total_bytes'] < 8 * 1024 * 1024
         for pth in [output, *output.iterdir()]:
             assert pth.stat().st_mode & 0o077 == 0
+        # Static, owner-admitted tick log integration: no process is launched
+        # to generate ticks. A quiet log measures zero rather than cadence.
+        model_local = copy.deepcopy(local)
+        model_local['homes'][0].update(home=str(tmp), state_root=str(tmp / 'state'))
+        model_manifest_path = save('proc-model-live-manifest.json', model_local)
+        log_path = tmp / 'ticks.log'
+        log_path.write_bytes(b'TICK existing\n')
+        profile = model_profile('fixture', 'watch', 'unused', 2, 10, 10)
+        profile['record_path'] = str(log_path)
+        model_spec = dict(format='fm-supervision-proc-model.v1', synthetic=False,
+                          allocation='exclusive-home-family-v1', profiles=[profile])
+        model_path = save('proc-live-model.json', model_spec)
+        model_output = tmp / 'proc-model-bounded-ci'
+        model_receipt = run('capture-proc', '--manifest', model_manifest_path, '--model', model_path,
+                            '--seconds', 1, '--output', model_output, env=env_proc, timeout=12)
+        model_recorded = json.loads((model_output / 'proc.json').read_bytes())
+        model_report = json.loads((model_output / 'report.json').read_bytes())
+        assert model_report == proc_report(model_recorded, 'proc-ci-model-replay')
+        assert model_report['model_derived_supervision']['estimated_births'] == 0
+        assert model_report['model_derived_supervision']['by_home_family'][0]['observed_record_ticks'] == 0
+        assert json.loads(model_receipt.stdout)['total_bytes'] == sum(p.stat().st_size for p in model_output.iterdir())
+        for label, edit_spec in (
+            ('synthetic', lambda s: s.update(synthetic=True)),
+            ('oversize', lambda s: None),
+            ('symlink', lambda s: s['profiles'][0].update(record_path=str(tmp / 'linked-ticks.log'))),
+            ('symlink-parent', lambda s: s['profiles'][0].update(record_path=str(tmp / 'linked-parent/ticks.log'))),
+        ):
+            bad_spec = copy.deepcopy(model_spec)
+            edit_spec(bad_spec)
+            if label == 'oversize':
+                log_path.write_bytes(b'x' * 65537)
+            elif label == 'symlink':
+                log_path.write_bytes(b'TICK\n')
+                (tmp / 'linked-ticks.log').symlink_to(log_path)
+            elif label == 'symlink-parent':
+                (tmp / 'linked-parent').symlink_to(tmp, target_is_directory=True)
+            run('capture-proc', '--manifest', model_manifest_path,
+                '--model', save('proc-live-model-bad-' + label + '.json', bad_spec),
+                '--seconds', 1, '--output', tmp / ('proc-model-refuse-' + label), env=env_proc, good=False)
         for label, extra, environment in (
             ('no-live', [], dict(env_proc, FM_SUPERVISION_PROC_LIVE='0')),
             ('duration', ['--seconds', '301'], env_proc),

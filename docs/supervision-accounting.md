@@ -9,7 +9,7 @@ The agent entry point is the [`supervision-accounting` skill](../.agents/skills/
 
 The Python 3.9+ standard-library tool is an explicitly invoked, finite task utility, not a check, daemon, notification service or recurring poller.
 It never discovers homes or endpoint namespaces, runs a supplied workload, starts a backend, consumes a queue, writes a status input, acquires custody or activates a supervisor.
-The separately authorized proc route enumerates machine process leaders only, not home state or endpoint directories.
+The separately authorized proc route enumerates machine process leaders and optionally reads exact owner-admitted tick-log paths, never home state or endpoint directories by discovery.
 The invoking task owner reads its stdout/artifacts and routes success or refusal through the task's existing status path.
 Exit 2 means refused or invalid input, not an empty successful observation.
 No unattended actor is installed and no live handoff fragment or receipt is published in P0.
@@ -76,7 +76,7 @@ No summary's process labels are converted into such evidence.
 
 ## Unprivileged machine baseline and its irreducible gap
 
-The explicit proc route reads Linux procfs using the current unprivileged uid, with no additional dependency, external command, attach, target signal, policy write, workload or standing process.
+The explicit proc route reads Linux procfs and optional owner-admitted tick logs using the current unprivileged uid, with no additional dependency, external command, attach, target signal, policy write, workload or standing process.
 Root and any nonzero effective capability set are refused, even if those privileges would not be needed.
 It does not invoke strace, perf, BPF, audit or sudo, and it has no option to select a privileged route or execute an arbitrary command.
 It needs its own live opt-in and an owner-published, single-machine local manifest; remote entries, shared root PIDs and absent roots are refused.
@@ -142,14 +142,67 @@ Unseen short-lived tasks, intermediate execs and reparentings have unknown cardi
 Clock quantization and non-atomic counter reads can contradict a small window; negative arithmetic residuals are preserved, never clipped.
 Startup coverage is a finite sequential inventory, not historical exec coverage or a simultaneous all-process barrier.
 
-Consequently the route yields a reproducible **incomplete unprivileged machine baseline**, not the plan's fully attributed B0 performance gate.
-The report always says `incomplete-unprivileged-attribution`, even with complete enrollment and zero visible read errors.
+Without a supplied model the route yields a reproducible **incomplete unprivileged machine baseline** and says `incomplete-unprivileged-attribution`, even with complete enrollment and zero visible read errors.
 Two workloads can have identical snapshots but different source families for arbitrarily many short-lived children; a machine fork total cannot distinguish them.
-Per-source record tick rates multiplied by CI births/tick would be a model, not a measurement: live work mixes, callers, children, errors and boundary versions differ.
-No such estimate is silently substituted for measured supervision births/s or CPU.
-Under the unprivileged-only constraint, fully exclusive B0 remains unavailable without additional reviewed source evidence or an explicitly revised acceptance contract.
-This limitation is a visible promotion blocker, not an unexplained extra supervision bucket or permission to widen capture privileges.
+Fully exclusive measured attribution remains unavailable for every family.
+The explicit model route below supports acceptance defined in terms of CI per-tick costs and observed live record rates, not measured live source attribution.
+No estimate is silently substituted for measurement and no output automatically certifies B0.
 All claimed savings remain zero.
+
+### CI per-tick model with live rates and exact machine cross-check
+
+[`proc-model-v1.schema.json`](supervision-accounting/proc-model-v1.schema.json) owns the optional model specification; its sealed tick readings are part of the proc raw envelope.
+The capture CLI accepts that specification explicitly and the offline CLI reproduces both measured and modeled tables from the raw envelope alone.
+There is no implicit model, historical constant, configured-cadence rate, discovered log path or synthetic live workload.
+A specification supplies one profile for each admitted home/family, the exact manifest code/configuration pins, a definition of its tick unit, the CI evidence URL/digest, and calibrated exclusive totals for births, user CPU nanoseconds and system CPU nanoseconds over a positive number of CI ticks.
+Additional families such as park checks, guards, arms and hosts are data, not new classifier branches.
+Every missing home/six-leading-family pair is listed, and additional supervision is explicitly unmodeled unless supplied.
+The tool cannot infer completeness of the profile set from procfs or enrollment.
+
+`exclusive-home-family-v1` means each CI birth and CPU interval is allocated to exactly one home/family, including that family's entry and children but excluding work allocated to another profile, even when nested.
+An inclusive watcher cost plus a separately modeled nested crew-state cost is invalid evidence.
+Use the existing trace accounting CLI's exclusive births and per-invocation table for traced CI calibration, with matching tick counts; obtain user/system CPU from a CI measurement that covers the same exclusive scope, including reaped children without counting them twice.
+The calibration artifact's SHA-256 must seal the retained counts, workload/shape, code/configuration, tick definition, startup treatment, attribution method and CPU evidence, not merely a prose assertion of tracing availability.
+A multi-tick calibration divides its totals by its tick count; it is not interpreted as cost per one tick.
+The URL and digest are provenance references for review, not network-fetched or authenticated by this utility.
+Calibration must be refreshed at each code/configuration/work-mix change and compared at each rewrite stage on matched replay and tick units.
+Synthetic calibration is allowed only in synthetic offline recordings, not live capture or a real recording.
+
+Live rates are measured only from explicitly admitted append-only regular logs inside each published canonical home.
+Each LF-terminated line containing the literal UTF-8 selector counts once, irrespective of multiple matches on that line; nonmatching and unfinished lines are not ticks.
+The owner must attest that those lines represent the calibrated unit exactly once, not retries, duplicate debug messages, or a sample of a faster loop.
+The utility reads each log twice, around the machine sampling window, retaining the complete bounded bytes, SHA-256, file identity and monotonic read brackets for replay.
+It refuses symlinked path components, shared paths or aliased file identities, nonregular files, changed identity, rewritten/truncated prefixes, mismatched pins, or more than 64 KiB per reading.
+These reads share the existing invocation deadline and aggregate output cap; the format admits at most 128 profiles.
+Log rotation or unreadability refuses the capture rather than turning unknown into zero ticks.
+An old partial line completed by the second read counts as one completion.
+A quiet log measures zero, not the configured cadence.
+
+Not every existing source has a countable record: an overwritten watcher beacon is not a tick counter, a cycle-exit log is not every inner watcher iteration, and host/arm/park loops do not necessarily log each tick.
+Likewise crew-state, drain, snapshot, spawn and control entries cannot be counted from mutable proc cmdlines or from unrelated status changes.
+For each of those uninstrumented units the live invocation/tick rate is unavailable and its modeled cost must remain uncovered, unless an owner supplies an existing countable record and matching CI unit.
+The collector does not add instrumentation, write a counter into a home, treat an observed beacon transition as every tick, or divide by configured sleeps to manufacture that rate.
+Missing real calibrations or live tick records are evidence still to obtain, not a reason to run a privileged route or mark a partial model complete.
+
+For each profile, the observed log count delta divided by its measured log-read interval is the live record rate.
+That interval encloses, but is slightly wider than, the machine window because sequential reads cannot form an atomic barrier.
+The report publishes the before/after skew; extrapolating the rate to the machine interval is explicitly part of the model.
+Estimated births and user/system CPU equal CI cost per tick times record rate times machine-window duration.
+The model-derived table is exclusive by declared home/family scope; duplicate pairs and repeated records are refused, but exclusivity of the underlying CI experiment and semantic tick-unit match remain review obligations.
+Observed lower bounds and provisional hints are never added to model estimates: that would count the same work twice.
+
+The model is checked against the **same exact machine task-birth delta and busy CPU denominator** as the proc report, with rational arithmetic before presentation rounding.
+`machine_minus_model_residual` is machine total minus model estimate, separately from the measured machine-minus-observed residual.
+A negative birth or CPU residual sets `model-total-contradiction`; negative values are preserved and a small observed lower bound cannot excuse an oversized model.
+A nonnegative residual says `nonnegative-not-proof`, not that the model explained the machine.
+Positive residual includes unmodeled supervision, ordinary workload, collector overhead and model error; it is not all supervision and no bucket is inferred from it.
+No statistical error bound is claimed: unseen callers, live work mix, CI/runtime differences and observation skew remain explicit uncertainties.
+Per-tick costs also do not recover resident startup or partial in-flight boundary work; the startup inventory/history qualifications above remain unchanged.
+
+With a supplied model, `pending-reviewed-model-baseline` is a request for evidence review under a model-based acceptance contract, not certification or permission to promote P1-P5.
+Review must establish coverage of every enrolled home's relevant source families, calibrated exclusive costs, actual tick-unit equivalence, startup treatment and an explained residual; a list of missing profiles blocks complete fleet acceptance.
+The measured exclusive supervision table remains null, even if all named profiles exist and both cross-checks are nonnegative.
+Reports distinguish no-model incompleteness, pending model review, and a contradicted model without widening collection privileges.
 
 ## Exclusive accounting
 
@@ -254,6 +307,9 @@ It uses fake trace inputs and a fake tracer, never a live endpoint or actual ptr
 Proc regressions additionally replay synthetic multi-home samples with shared code roots, boundary ambiguity, CPU and birth contradictions, PID reuse, re-exec, read losses and every provisional family.
 CI exercises a one-second proc capture against its already-running test process, with no launched workload; privileged CI containers assert the refusal instead of claiming unprivileged live coverage.
 The public CLI counterfactual requires the new proc mode, exact machine denominator and null measured-attribution verdict, so removing the route or treating hints as proof fails the regression.
+Model regressions replay sealed multi-home tick records, non-unit calibration divisors, all named families and an additional family, missing coverage, wider-window rates, partial lines, zero ticks, code/configuration mismatch, shared records, aliases, loss and tampering.
+Independent birth and CPU overestimate cases leave the observed lower bound consistent while requiring negative model residuals and `model-total-contradiction`; removing the model-total check fails them.
+The CI-only collector integration reads a static fixture tick log, measures zero new ticks, and reproduces the recorded report offline without launching a tick-generating workload.
 The separate [`proc-bounds-fixture-v1.schema.json`](supervision-accounting/proc-bounds-fixture-v1.schema.json) admits only explicitly synthetic guard probes with closed, small clock/limit/pause inputs.
 That fixture-only command exercises the same process-local real-time alarm, per-scan deadline and task-count guard as live capture, without reading procfs, writing evidence or running a workload.
 A passing fixture and three independent one-input changes require the exact refusal for each guard; removing any guard makes its negative case succeed and fails the regression.
