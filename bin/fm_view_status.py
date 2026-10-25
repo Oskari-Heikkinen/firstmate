@@ -6,7 +6,9 @@ proved. See docs/supervision-views.md for the opt-in service boundary.
 """
 from collections import OrderedDict
 from dataclasses import dataclass
+import copy
 import re
+import threading
 
 SPACE = " \t\r\v\f"
 SLUG = re.compile(r"[A-Za-z0-9._-]+\Z")
@@ -153,19 +155,36 @@ class Fold:
         self.protected = frozenset(protected)
         self.protect_all = protect_all
         self.open = OrderedDict()
-        self.events = []
-        self.lines = data.replace(b"\0", b"").decode("utf-8", "surrogateescape").split("\n")
         self.latest = ""
-        fallback = ""
-        for line in self.lines:
-            if len(line) > 65536:
-                raise ValueError("native status line bound exceeded; use legacy")
-            if line.strip(SPACE):
-                fallback = line
-                if self.vocabulary.is_event(line):
-                    self.events.append(line)
-            self.apply(line)
-        self.latest = self.events[-1] if self.events else fallback
+        self._latest_event = ""
+        self._fallback = ""
+        self._wait_candidate = ""
+        for line in data.replace(b"\0", b"").decode("utf-8", "surrogateescape").split("\n"):
+            self.feed_line(line)
+
+    def clone(self):
+        result = copy.copy(self)
+        result.open = OrderedDict(self.open)
+        return result
+
+    def feed_line(self, line):
+        if len(line) > 65536:
+            raise ValueError("native status line bound exceeded; use legacy")
+        if line.strip(SPACE):
+            self._fallback = line
+            if self.vocabulary.is_event(line):
+                self._latest_event = line
+                value = verb(line)
+                if value == self.vocabulary.resolved:
+                    if verb(self._wait_candidate) != self.vocabulary.paused or (
+                            (key(line, "\x1edefault") or "") == (key(self._wait_candidate, "\x1edefault") or "")):
+                        self._wait_candidate = ""
+                elif value in (self.vocabulary.paused, self.vocabulary.held):
+                    self._wait_candidate = line
+                else:
+                    self._wait_candidate = ""
+        self.apply(line)
+        self.latest = self._latest_event or self._fallback
 
     def protected_key(self, value):
         return (self.protect_all or value in self.protected
@@ -200,17 +219,7 @@ class Fold:
             return self.latest
         if verb(self.latest) != self.vocabulary.resolved:
             return ""
-        closed = set()
-        for line in reversed(self.events):
-            value = verb(line)
-            if value not in (self.vocabulary.resolved, self.vocabulary.paused):
-                return ""
-            phase = key(line, "")
-            if value == self.vocabulary.resolved:
-                closed.add(phase)
-            else:
-                return "" if phase in closed else line
-        return ""
+        return self._wait_candidate
 
     def current_line(self):
         if self.open:
@@ -220,4 +229,59 @@ class Fold:
 
     def result(self):
         return {"latest": self.latest, "current": self.current_line(),
-                "declared_wait": self.declared_wait(), "open": list(self.open.values())}
+                "declared_wait": self.declared_wait(), "open": [dict(row) for row in self.open.values()]}
+
+
+class FoldIndex:
+    """Disposable bounded index, never an on-disk cursor or a fresh verdict cache.
+
+    Bytes are captured by the caller on EVERY read. Only an identity-matching,
+    byte-verified append reuses the completed-prefix fold. An unfinished line is
+    replayed from its pre-line state so a later continuation cannot freeze a
+    partial key or note. All mutable tool levels and vocabulary join the key.
+    """
+    VERSION = 1
+
+    def __init__(self, max_entries=128, max_bytes=32 * 1024 * 1024):
+        self.entries = OrderedDict()
+        self.max_entries, self.max_bytes = max_entries, max_bytes
+        self.bytes = 0
+        self.last_processed_bytes = 0
+        self.lock = threading.RLock()
+
+    def fold(self, name, identity, data, kind="unknown", vocabulary=None, protected=(), protect_all=False):
+        vocabulary = vocabulary or Vocabulary()
+        context = (self.VERSION, tuple(identity), kind, vocabulary.paused, vocabulary.resolved,
+                   vocabulary.held, vocabulary.relevant, tuple(vocabulary.reserved),
+                   tuple(sorted(protected)), bool(protect_all))
+        with self.lock:
+            previous = self.entries.pop(name, None)
+            if previous:
+                self.bytes -= len(previous["data"])
+            if previous and previous["context"] == context and data == previous["data"]:
+                self.last_processed_bytes = 0
+                entry = previous
+            else:
+                if previous and previous["context"] == context and data.startswith(previous["data"]):
+                    base, offset = previous["base"].clone(), previous["offset"]
+                else:
+                    base, offset = Fold(b"", kind, vocabulary, protected, protect_all), 0
+                chunk = data[offset:]
+                self.last_processed_bytes = len(chunk)
+                complete = chunk.split(b"\n")
+                partial = complete.pop()
+                for raw in complete:
+                    base.feed_line(raw.replace(b"\0", b"").decode("utf-8", "surrogateescape"))
+                    offset += len(raw) + 1
+                current = base.clone()
+                if partial:
+                    current.feed_line(partial.replace(b"\0", b"").decode("utf-8", "surrogateescape"))
+                entry = {"context": context, "data": data, "base": base, "offset": offset,
+                         "incomplete": partial, "current": current}
+            if len(data) <= self.max_bytes:
+                self.entries[name] = entry
+                self.bytes += len(data)
+                while self.entries and (len(self.entries) > self.max_entries or self.bytes > self.max_bytes):
+                    _, evicted = self.entries.popitem(last=False)
+                    self.bytes -= len(evicted["data"])
+            return entry["current"].result()
