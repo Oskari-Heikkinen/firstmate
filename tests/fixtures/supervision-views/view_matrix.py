@@ -38,7 +38,8 @@ async def invoke(root, home, command, arguments):
         except Exception as error:
             requests.append({"verb": operation, "ok": False, "reason": str(error)})
             raise
-        requests.append({"verb": operation, "ok": True})
+        items = len(result.get("tasks", result.get("rows", [])))
+        requests.append({"verb": operation, "ok": True, "items": items})
         return result
 
     # Keep AF_UNIX paths short even for the longest existing case directory.
@@ -99,7 +100,7 @@ async def invoke(root, home, command, arguments):
 def main(arguments):
     root = Path(os.environ["FM_VIEW_COMPAT_MATRIX_ROOT"]).resolve(strict=True)
     if arguments == ["--summary"]:
-        counts, reasons, verbs = {}, {}, {}
+        counts, reasons, verbs, items = {}, {}, {}, 0
         for path in sorted((root / ".view-matrix-metrics").glob("*.json")):
             row = json.loads(path.read_text())
             outcome = row["outcome"]
@@ -108,11 +109,13 @@ def main(arguments):
             for request in detail["requests"]:
                 label = request["verb"] + (":native" if request["ok"] else ":refused")
                 verbs[label] = verbs.get(label, 0) + 1
+                if request["ok"]:
+                    items += request["items"]
             for reason in detail["refusals"]:
                 reasons[reason] = reasons.get(reason, 0) + 1
-        print("native view matrix: " + json.dumps({"counts": counts, "requests": verbs,
+        print("native view matrix: " + json.dumps({"counts": counts, "requests": verbs, "native_items": items,
                                                     "legacy_or_refusal_reasons": reasons}, sort_keys=True))
-        return 0 if counts.get("native", 0) and not counts.get("unexpected-refusal", 0) else 1
+        return 0 if counts.get("native", 0) and items > 0 and not counts.get("unexpected-refusal", 0) else 1
     if not arguments or arguments[0] not in COMMANDS:
         raise ValueError("view matrix requires its declared executable selector")
     command = COMMANDS[arguments[0]]
