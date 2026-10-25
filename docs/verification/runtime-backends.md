@@ -603,6 +603,30 @@ ok - unseeded path without --approve still prompts on Trust project folder?
 # all fm-pi-seeded-home-trust-live-e2e checks passed (3)
 ```
 
+Verified 2026-10-25 on Pi 0.87.1 in the existing weekly CI live tier, including the extended worker cases:
+
+```sh
+bin/fm-test-run.sh --tier weekly,live --exclude-family real-herdr-gated \
+  --shard 2/5 --jobs 4 \
+  --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
+  --json "$RUNNER_TEMP/fm-test/fm-test-timing-tests-2.json"
+```
+
+The guard ran rather than capability-skipping and produced:
+
+```text
+# live pi version: 0.87.1
+ok - fresh seeded Pi secondmate-shaped home stalls on Trust project folder? without --approve
+ok - seeded home with --approve starts past the trust dialog without rewriting trust.json
+ok - unseeded path without --approve still prompts on Trust project folder?
+# scout stale reason: blocked on a prompt: Pi project-trust dialog; inspect the worker
+# ship stale reason: blocked on a prompt: Pi project-trust dialog; inspect the worker
+ok - real worker trust viewport is unknown and named by composer and watcher for scout and ship
+ok - worker --approve loads only its launch cwd; ordinary idle composer is not a trust dialog
+ok - approval is session-only: same copy, sibling and parent still prompt; trust.json is byte-identical
+# all fm-pi-seeded-home-trust-live-e2e checks passed (6)
+```
+
 Portable launch-command coverage lives in `tests/fm-spawn-dispatch-profile.test.sh` (`test_pi_seeded_secondmate_preapproves_project_trust`, `test_pi_workers_preapprove_only_the_launch_cwd_when_supported`, `test_pi_approve_probe_omits_unsupported_flag`).
 The worker matrix uses fake Pi/pi-signed help and pane commands for both ship and scout, proves the cwd transition names only the task copy, and verifies old help without the flag still launches.
 `tests/fm-composer-lib.test.sh` pins the named `Pi project-trust dialog` against footer-last and bordered viewports, including ordinary idle Pi composers and quoted-dialog negative controls.
