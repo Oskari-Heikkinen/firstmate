@@ -263,6 +263,7 @@ register_slow_check() {  # <dir> <id> <secs>
   cat > "$stage/$id.check.sh" <<SH
 #!/usr/bin/env bash
 printf '%s\\n' "\$\$" > "$dir/check-$id.pid"
+printf '%s\\n' "\$0" > "$dir/check-$id.path"
 printf '%s %s\n' "\$(date +%s)" "$id" >> "$dir/check-starts.log"
 sleep $secs
 SH
@@ -569,7 +570,7 @@ test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
 }
 
 test_watchdog_records_last_beat_and_blocking_descendants() {
-  local dir state i=0 check_pid check_group stop_line
+  local dir state i=0 check_pid check_path check_group stop_line
   dir=$(make_case watchdog-step-evidence)
   state="$dir/state"
   # Let one check finish after the throttle's second, so the wedged check's
@@ -581,6 +582,7 @@ test_watchdog_records_last_beat_and_blocking_descendants() {
   # Hold the process graph stable while the independent snapshot starts. In a
   # real stop, children may exit/reparent as soon as TERM starts cleanup.
   check_pid=$(cat "$dir/check-wedge.pid")
+  check_path=$(cat "$dir/check-wedge.path")
   check_group=$(ps -o pgid= -p "$check_pid" | tr -d '[:space:]')
   [ -n "$check_group" ] || { reap_watcher "$SEED_PID"; fail "no owned check group"; }
   kill -STOP "$SEED_PID"
@@ -598,8 +600,12 @@ test_watchdog_records_last_beat_and_blocking_descendants() {
   stop_line=$(grep -F 'watchdog: stopping wedged watcher' "$state/.watch-triage.log")
   printf '%s\n' "$stop_line" | grep -E 'cycle=[0-9]+ last-beat=fm-watch.sh:[0-9]+; descendants-at-stop=' >/dev/null \
     || fail "stop receipt omitted its last published step boundary: $stop_line"
-  printf '%s\n' "$stop_line" | grep -E "pid=$check_pid ppid=[0-9]+ elapsed=[0-9:-]+ command=.*wedge.check.sh" >/dev/null \
+  # Checks execute a verified private snapshot, not the registered pathname.
+  # Compare the actual invocation recorded by the fixture, not an assumed name.
+  printf '%s\n' "$stop_line" | grep -E "pid=$check_pid ppid=[0-9]+ elapsed=[0-9:-]+ command=" | grep -F "command=bash $check_path" >/dev/null \
     || fail "stop receipt omitted the blocking child, elapsed time, or command: $stop_line"
+  printf '%s\n' "$stop_line" | grep -E "ppid=$check_pid elapsed=[0-9:-]+ command=sleep 120" >/dev/null \
+    || fail "stop receipt omitted the blocking check's live sleep: $stop_line"
   pass "watchdog stop records the last beat caller and the blocking descendant's elapsed time and command"
 }
 
@@ -650,7 +656,7 @@ SH
         || fail "snapshot did not limit its descendant count"
       ! printf '%s\n' "$stop_line" | grep -q 'SHOULDNOTAPPEAR' || fail "snapshot leaked a foreign process or an overlong command"
     else
-      assert_grep 'descendants-at-stop=\[unavailable' "$state/.watch-triage.log"
+      assert_grep 'descendants-at-stop=[unavailable' "$state/.watch-triage.log" "$mode ps did not produce an unavailable snapshot receipt"
     fi
     snapshot_pid=$(cat "$dir/snapshot.pid")
     ! is_live_non_zombie "$snapshot_pid" || { kill -KILL "$snapshot_pid"; fail "$mode ps survived the diagnostic bound"; }
@@ -805,7 +811,7 @@ start_idle_watcher() {  # <dir> [env assignments...]
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" &
   SEED_PID=$!
   while [ "$i" -lt 100 ]; do
-    IFS= read -r cycle < "$dir/state/.last-watcher-beat" 2>/dev/null || cycle=0
+    { IFS= read -r cycle < "$dir/state/.last-watcher-beat"; } 2>/dev/null || cycle=0
     case "$cycle" in ''|*[!0-9]*) cycle=0 ;; esac
     [ "$cycle" -lt 1 ] || break
     kill -0 "$SEED_PID" 2>/dev/null || fail "seed watcher exited before its first cycle: $(cat "$dir/watch.err")"
