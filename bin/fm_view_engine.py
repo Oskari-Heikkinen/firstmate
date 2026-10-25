@@ -255,7 +255,9 @@ class Engine:
 
     async def request(self, operation, arguments, timeout):
         deadline = time.monotonic() + timeout
-        require(operation in ("status-fold", "crew-state", "status-presentation", "drain-presentation"), "unsupported read verb")
+        require(operation in ("status-fold", "crew-state", "status-presentation", "drain-presentation", "snapshot-tasks"), "unsupported read verb")
+        if operation == "snapshot-tasks":
+            return await self.snapshot_request(arguments, timeout)
         if operation in ("status-presentation", "drain-presentation"):
             return await self.presentation_request(arguments, timeout, operation)
         allowed = {"task", "kind", "vocabulary"} if operation == "status-fold" else {"task", "options"}
@@ -376,6 +378,64 @@ class Engine:
         current = await self.ordinary.run(generations, remaining)
         require(current == generation, "presentation task generation changed before reply")
         return result
+
+    async def snapshot_request(self, arguments, timeout):
+        from fm_view_snapshot import Snapshot
+        require(type(arguments) is dict and set(arguments) == {"observed_at", "epoch", "concurrency", "task_timeout", "options"},
+                "invalid snapshot arguments")
+        require(type(arguments["observed_at"]) is str and re.fullmatch(r"[0-9TZ:+.\-]{1,64}", arguments["observed_at"]),
+                "invalid snapshot observation time")
+        require(type(arguments["epoch"]) is int and 0 <= arguments["epoch"] <= 10**12,
+                "invalid snapshot epoch")
+        require(type(arguments["concurrency"]) is int and 1 <= arguments["concurrency"] <= 256
+                and type(arguments["task_timeout"]) is int and 1 <= arguments["task_timeout"] <= 30,
+                "unsupported snapshot bounds")
+        options = arguments["options"]
+        require(type(options) is dict and set(options) <= {"FM_CREW_STATE_NM_TIMEOUT", "FM_CREW_STATE_RUNS_LIMIT", "FM_CREW_STATE_NO_FORGE"}
+                and all(type(value) is str and len(value) <= 32 for value in options.values()), "invalid snapshot crew options")
+        deadline = time.monotonic() + timeout
+        snapshot = Snapshot(self.inputs, dict(os.environ, **options))
+        inventory = await self.ordinary.run(snapshot.inventory, timeout)
+        token = json.dumps(["snapshot-tasks", arguments, [(row["task"], row["meta"]["sha256"]) for row in inventory]], sort_keys=True)
+        async def observe():
+            observation_deadline = time.monotonic() + MAX_TIMEOUT
+            def budget():
+                remaining = observation_deadline - time.monotonic()
+                require(remaining > 0, "snapshot observation deadline expired")
+                return remaining
+            captures = await self.ordinary.run(lambda: snapshot.capture(inventory), budget())
+            rows = [None] * len(captures)
+            pending = iter(enumerate(captures))
+            async def worker():
+                # A fixed coroutine pool, not a task/thread per row or batch
+                # occupying an I/O lane while it waits for child observations.
+                for index, row in pending:
+                    rows[index] = await self.ordinary.run(
+                        lambda row=row: snapshot.compose(row, arguments["observed_at"], arguments["epoch"]),
+                        min(arguments["task_timeout"], budget()))
+            outcomes = await asyncio.gather(*(worker() for _ in range(min(
+                len(captures), self.ordinary.capacity, arguments["concurrency"]))), return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+            return await self.ordinary.run(lambda: snapshot.finish(captures, rows,
+                arguments["observed_at"], arguments["epoch"]), budget())
+        future = self.inflight.get(token)
+        if future is None or future.done():
+            self.operations += 1
+            future = asyncio.create_task(observe())
+            self.inflight[token] = future
+            def finished(done):
+                if self.inflight.get(token) is done:
+                    del self.inflight[token]
+                if not done.cancelled():
+                    done.exception()
+            future.add_done_callback(finished)
+        else:
+            self.shared += 1
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "snapshot request deadline expired")
+        return await asyncio.wait_for(asyncio.shield(future), remaining)
 
     def close(self):
         self.ordinary.close()
