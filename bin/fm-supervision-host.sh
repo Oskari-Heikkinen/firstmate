@@ -135,7 +135,13 @@
 # left running (recorded with identities, never by name), including the
 # engine descendants its turn recorded. Arm rows also carry a unique launch
 # token in argv: recovery may match its unchanged birth plus that home/role
-# token across exec; legacy rows still require the full identity. Activation
+# token across exec; legacy rows still require the full identity. Before an
+# arm row is published, startup samples its own child for at most five seconds
+# (0.05 s between unavailable samples), requiring a valid nonempty identity.
+# Exhaustion or a failed write wakes the owner and retires the tracked child.
+# Catchable stop signals are deferred only across launch/pid registration;
+# during identity acquisition ordinary EXIT cleanup already owns that child.
+# Activation
 # stops the home-bound watcher directly when a recorded arm could not relay
 # its stop, removes that turn's files, and
 # releases the branch actor's leases; it releases them again after every
@@ -263,6 +269,7 @@ GRANT_ACTIVE=0
 ARM_PID=
 ARM_OUT=
 ARM_TEXT=
+ARM_START_FAILURE=
 CLOSED_ARM_PID=
 HANDLE_WHY=
 HANDLE_RC=0
@@ -288,6 +295,8 @@ WAIT_BUILTIN=0
 WAIT_DIR=
 WAIT_READING=0
 WAIT_SIGNAL=0
+ARM_LAUNCHING=0
+LAUNCH_SIGNAL=0
 
 log_line() {  # <text>
   local tmp
@@ -305,9 +314,18 @@ identity_of() {  # <pid>
   printf '%s\n' "$identity"
 }
 
-# Record one process this host runs, so a successor host can stop exactly it.
+# Startup only: never publish an empty proof when a child crosses exec.
+# The caller has registered this child with cleanup before entering here.
 record_process() {  # <role> <pid> [launch-token]
-  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(identity_of "$2")" "${3:-}" >> "$HOST_RECORD" 2>/dev/null || true
+  local identity deadline=$((SECONDS + 5))
+  while :; do
+    if _fm_engine_identity_to identity "$2" && [ -n "$identity" ]; then
+      printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$identity" "${3:-}" >> "$HOST_RECORD" 2>/dev/null
+      return $?
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep 0.05
+  done
 }
 
 # Re-record a process under its current identity. Safe only for this host's
@@ -359,19 +377,19 @@ recorded_identity_matches() {  # <pid> <identity> [launch-token]
     *-starttime=*' cmdline-hex='*)
       recorded_birth=${2%% cmdline-hex=*}
       current_birth=${current%% cmdline-hex=*}
-      MATCH_REASON=birth-mismatch
+      MATCH_REASON='birth-mismatch'
       [ "$recorded_birth" = "$current_birth" ] || return 1
       MATCH_REASON=launch-argv-mismatch
       argv_hex=$(printf '%s\0' "$SCRIPT_DIR/fm-watch-arm.sh" --host-arm "$token" | od -An -v -tx1)
       argv_hex=${argv_hex//[[:space:]]/}
-      case "${current#* cmdline-hex=}" in *"00$argv_hex"*) MATCH_REASON=birth-and-launch; return 0 ;; esac
+      case "${current#* cmdline-hex=}" in *"00$argv_hex"*) MATCH_REASON='birth-and-launch'; return 0 ;; esac
       ;;
     *)
       # Portable ps identity: the first 24 C-locale characters are lstart.
-      MATCH_REASON=birth-mismatch
+      MATCH_REASON='birth-mismatch'
       [ "${2:0:24}" = "${current:0:24}" ] || return 1
       MATCH_REASON=launch-argv-mismatch
-      case "$current" in *" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token"|*" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token "*) MATCH_REASON=birth-and-launch; return 0 ;; esac
+      case "$current" in *" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token"|*" $SCRIPT_DIR/fm-watch-arm.sh --host-arm $token "*) MATCH_REASON='birth-and-launch'; return 0 ;; esac
       ;;
   esac
   return 1
@@ -611,10 +629,17 @@ host_still_owner() {
     && [ "$FM_AUTOARM_OUTCOME" = arming ]
 }
 
-start_arm() {  # <predecessor-arm-pid or empty> [--restart]; sets the started pid/output
-  local predecessor=$1 out pid
-  shift
+start_arm() {  # <pid-variable> <output-variable> <predecessor or empty> [arm flags]
+  local pid_variable=$1 out_variable=$2 predecessor=$3 out pid
+  shift 3
+  ARM_START_FAILURE=
   out=$(mktemp "$STATE/.supervision-host-arm.XXXXXX") || return 1
+  printf -v "$out_variable" '%s' "$out"
+  # No stop may exit between the asynchronous launch and cleanup owning $!.
+  ARM_LAUNCHING=1
+  LAUNCH_SIGNAL=0
+  trap 'host_signal 129' HUP
+  trap 'host_signal 143' TERM
   # An arm left for main outlives this host, and Claude tears the hook's
   # process group down after the exit-2 rewake, so it gets a group of its own
   # (the shape start_handling_successor in bin/fm-claude-stop-autoarm.sh uses).
@@ -627,10 +652,16 @@ start_arm() {  # <predecessor-arm-pid or empty> [--restart]; sets the started pi
     FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" --host-arm "$out" "$@" >"$out" 2>&1 </dev/null &
   fi
   pid=$!
+  printf -v "$pid_variable" '%s' "$pid"
+  ARM_LAUNCHING=0
+  host_stop_signals
+  [ "$LAUNCH_SIGNAL" -eq 0 ] || exit "$LAUNCH_SIGNAL"
   [ "${ARM_OWN_GROUP:-0}" -ne 1 ] || set +m 2>/dev/null || true
-  record_process arm "$pid" "$out"
-  STARTED_ARM_PID=$pid
-  STARTED_ARM_OUT=$out
+  if ! record_process arm "$pid" "$out"; then
+    log_line "arm-start-failed	pid=$pid	initial identity unavailable within 5s or record unwritable"
+    ARM_START_FAILURE='supervision-host: initial arm identity could not be recorded within 5s; retiring the owned child; drain and re-arm supervision'
+    return 1
+  fi
 }
 
 park_elapsed() {  # Sets PARK_ELAPSED without a production clock/helper fork.
@@ -705,7 +736,9 @@ host_stop_signals() {
 }
 
 host_signal() {  # <exit-status>
-  if [ "$WAIT_READING" -eq 1 ]; then
+  if [ "$ARM_LAUNCHING" -eq 1 ]; then
+    [ "$LAUNCH_SIGNAL" -ne 0 ] || LAUNCH_SIGNAL=$1
+  elif [ "$WAIT_READING" -eq 1 ]; then
     [ "$WAIT_SIGNAL" -ne 0 ] || WAIT_SIGNAL=$1
   else
     exit "$1"
@@ -860,9 +893,7 @@ start_successor() {  # <predecessor-arm-pid>
   local deadline line
   SUCCESSOR_WATCHER=
   SUCCESSOR_GENERATION=
-  start_arm "$1" || return 1
-  SUCCESSOR_PID=$STARTED_ARM_PID
-  SUCCESSOR_OUT=$STARTED_ARM_OUT
+  start_arm SUCCESSOR_PID SUCCESSOR_OUT "$1" || return 1
   deadline=$(( $(date +%s) + READY_TIMEOUT ))
   while :; do
     line=$(grep -E '^watcher: (started|attached) pid=[0-9]+' "$SUCCESSOR_OUT" 2>/dev/null | head -n 1)
@@ -1263,15 +1294,13 @@ log_line "start	gen=$GEN	primary=$PRIMARY"
 
 # The first cycle.
 if [ "$FIRST_ARM_RESTART" -eq 1 ]; then
-  start_arm "$OWNER_PREDECESSOR" --restart
+  start_arm ARM_PID ARM_OUT "$OWNER_PREDECESSOR" --restart
 elif [ -n "$LEFT_ARM" ]; then
   log_line "take-over	arm=$LEFT_ARM"
-  start_arm "$OWNER_PREDECESSOR" --take-over "$LEFT_ARM"
+  start_arm ARM_PID ARM_OUT "$OWNER_PREDECESSOR" --take-over "$LEFT_ARM"
 else
-  start_arm "$OWNER_PREDECESSOR"
-fi || { echo "watcher: FAILED - the supervision host could not start a watcher cycle"; exit 1; }
-ARM_PID=$STARTED_ARM_PID
-ARM_OUT=$STARTED_ARM_OUT
+  start_arm ARM_PID ARM_OUT "$OWNER_PREDECESSOR"
+fi || { emit "$ARM_START_FAILURE" 'watcher: FAILED - the supervision host could not start a watcher cycle'; exit 1; }
 
 while :; do
   boundary_reached && boundary_exit
@@ -1300,7 +1329,7 @@ while :; do
       if [ "$ATTENDED_WHY" = main-only ]; then
         leave_successor_for_main || true
       fi
-      emit
+      emit "$ARM_START_FAILURE"
       exit 0
     fi
     host_still_owner || stand_down "this session no longer owns supervision"
@@ -1325,7 +1354,7 @@ while :; do
   # A turn that could outlive the boundary would outlive the hook registration.
   turn_crosses_boundary && boundary_exit
   if ! ARM_OWN_GROUP=1 start_successor "$CLOSED_ARM_PID"; then
-    exit_to_main "the successor watcher cycle could not be verified before handling; this wake is yours"
+    exit_to_main "the successor watcher cycle could not be verified before handling; this wake is yours" "$ARM_START_FAILURE"
   fi
   if [ -n "$SUCCESSOR_GENERATION" ]; then
     if ! "$SCRIPT_DIR/fm-watch-arm.sh" --handling-delivered "$SUCCESSOR_GENERATION" --watcher-pid "$SUCCESSOR_WATCHER" >/dev/null 2>&1; then

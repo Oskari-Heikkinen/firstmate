@@ -358,7 +358,7 @@ release_held_helper() {  # <home>
   done
 }
 
-hold_arm_health_helper() {  # <home>
+hold_arm_health_helper() {  # <home> [arm-pid-to-exclude]
   local home=$1 real_stat
   real_stat=$(command -v stat)
   mkfifo "$home/helper-gate"
@@ -368,7 +368,7 @@ case "\$*" in
   *'.last-watcher-beat'*)
     case "\$(ps -p "\$PPID" -o args= 2>/dev/null)" in
       *fm-watch-arm.sh*)
-        if [ ! -e "\$FM_HOME/helper-blocked" ]; then
+        if [ "\$PPID" != "${2:-}" ] && [ ! -e "\$FM_HOME/helper-blocked" ]; then
           exec 7<> "\$FM_HOME/helper-gate"
           printf '%s\\n' "\$\$" > "\$FM_HOME/helper-blocked"
           read -r -t "\$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 7 _ || true
@@ -2682,17 +2682,43 @@ fail_first_arm_identity_read() {  # <home>
   cat > "$1/identity-fault.bash" <<'SH'
 if [ "$0" = "$FM_REPO/bin/fm-supervision-host.sh" ]; then
   _fm_fault_hex_to() {
-    local target stat parent
+    local target stat parent mode=first-read
     local -a fields
+    # A live first arm is still refreshed while its close is pending. Only
+    # intercept startup acquisition, never that independent bookkeeping read.
+    case " ${FUNCNAME[*]} " in
+      *' record_process '*) ;;
+      *) _fm_fault_real_hex_to "$@"; return $? ;;
+    esac
+    if [ -e "$FM_HOME/identity-fault-disabled" ]; then
+      _fm_fault_real_hex_to "$@"
+      return $?
+    fi
     case "$2" in
       /proc/*/cmdline)
         target=${2#/proc/}; target=${target%/cmdline}
-        if [ "$target" != "$$" ] && [ ! -e "$FM_HOME/identity-read-intercepted" ] \
-          && IFS= read -r stat < "/proc/$target/stat"; then
+        if [ "$target" != "$$" ] && IFS= read -r stat < "/proc/$target/stat"; then
           read -r -a fields <<< "${stat##*)}"
           parent=${fields[1]}
+          [ ! -f "$FM_HOME/identity-fault-mode" ] || IFS= read -r mode < "$FM_HOME/identity-fault-mode"
           if [ "$parent" = "$$" ]; then
+            if [ "$mode" = first-read ] && [ -e "$FM_HOME/identity-read-intercepted" ]; then
+              _fm_fault_real_hex_to "$@"
+              return $?
+            fi
             printf '%s\n' "$target" > "$FM_HOME/identity-read-intercepted"
+            case "$mode" in
+              acquire-*)
+                exec 6<> "$FM_HOME/identity-acquire-gate"
+                printf '%s\n' "$$" > "$FM_HOME/identity-acquire-held"
+                read -r -t "$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 6 _ || true
+                exec 6>&- ;;
+              write-failure)
+                rm -f "$HOST_RECORD"
+                mkdir "$HOST_RECORD"
+                _fm_fault_real_hex_to "$@"
+                return $? ;;
+            esac
             printf -v "$1" '%s' ''
             return 1
           fi
@@ -2701,18 +2727,36 @@ if [ "$0" = "$FM_REPO/bin/fm-supervision-host.sh" ]; then
     _fm_fault_real_hex_to "$@"
   }
   _fm_fault_debug() {
-    local definition
+    local definition mode=first-read child=${!:-} stat
+    local -a fields
+    [ ! -f "$FM_HOME/identity-fault-mode" ] || IFS= read -r mode < "$FM_HOME/identity-fault-mode"
     if [ "${_fm_fault_installed:-0}" = 0 ] && declare -F _fm_engine_identity_to >/dev/null; then
       definition=$(declare -f fm_file_hex_to)
       eval "${definition/fm_file_hex_to /_fm_fault_real_hex_to }"
       fm_file_hex_to() { _fm_fault_hex_to "$@"; }
       _fm_fault_installed=1
     fi
-    if [ "${FUNCNAME[1]:-}" = refresh_process ] && [ ! -e "$FM_HOME/host-bookkeeping-held" ]; then
+    if [ "$mode" = first-read ] && [ "${FUNCNAME[1]:-}" = refresh_process ] && [ ! -e "$FM_HOME/host-bookkeeping-held" ]; then
       exec 6<> "$FM_HOME/host-bookkeeping-gate"
       printf '%s\n' "$$" > "$FM_HOME/host-bookkeeping-held"
       read -r -t "$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 6 _ || true
       exec 6>&-
+    fi
+    # Observe the real child at runtime between fork and pid registration,
+    # not a parsed command or a simulated classifier.
+    case "$mode" in launch-*)
+      if [ ! -e "$FM_HOME/identity-fault-disabled" ] && [ "${ARM_LAUNCHING:-0}" = 1 ] && [ -n "$child" ] \
+        && [ ! -e "$FM_HOME/launch-signal-intercepted" ] \
+        && IFS= read -r stat < "/proc/$child/stat"; then
+        read -r -a fields <<< "${stat##*)}"
+        if [ "${fields[1]}" = "$$" ]; then
+          printf '%s\n' "$child" > "$FM_HOME/launch-signal-intercepted"
+          kill -"${mode#launch-}" "$$"
+        fi
+      fi ;;
+    esac
+    if [ "${FUNCNAME[1]:-}" = cleanup ] && [ ! -e "$FM_HOME/cleanup-record" ]; then
+      [ ! -f "$HOST_RECORD" ] || cp "$HOST_RECORD" "$FM_HOME/cleanup-record"
     fi
   }
   set -T
@@ -2866,7 +2910,7 @@ SH
       expected_reason=birth-and-launch
       [ -n "$(awk -F '\t' '$1 == "arm" { print $3 }' "$home/recovery-record")" ] || expected_reason=empty-recorded-identity ;;
     birth) expected_reason=birth-mismatch ;;
-    token) expected_reason=launch-argv-mismatch ;;
+    token) expected_reason='launch-argv-mismatch' ;;
     empty|short-row) expected_reason=empty-recorded-identity ;;
     missing-token) expected_reason='identity-mismatch-without-launch-token' ;;
   esac
@@ -2906,6 +2950,116 @@ test_restart_exec_recovers_from_an_empty_initial_read() { test_restart_across_th
 test_restart_exec_rejects_an_empty_identity() { test_restart_across_the_real_arm_exec_transition empty; }
 test_restart_exec_rejects_a_missing_token() { test_restart_across_the_real_arm_exec_transition missing-token; }
 test_restart_exec_rejects_a_short_row() { test_restart_across_the_real_arm_exec_transition short-row; }
+
+# Exercise the real host's startup failure and stop paths with an actual held
+# owned watcher, and an unrelated live process carrying a rejected stale row.
+# No accepted empty row, unrelated signal, or owned-child leak is allowed.
+arm_identity_startup_failure_case() {  # <fault mode> [first|successor|pass-through]
+  local home mode=$1 phase=${2:-first} arm watcher host unrelated unrelated_identity rc first_arm
+  [ -d /proc/self/fd ] || { printf 'skip: initial identity fault needs /proc\n'; return 0; }
+    if [ "$phase" = pass-through ]; then
+      home=$(make_home "initial-identity-$phase-$mode" attended)
+    else
+      home=$(make_home "initial-identity-$phase-$mode" away)
+    fi
+    if [ "$phase" = first ]; then
+      hold_arm_health_helper "$home"
+    else
+      : > "$home/identity-fault-disabled"
+    fi
+    mkfifo "$home/identity-acquire-gate"
+    printf '%s\n' "$mode" > "$home/identity-fault-mode"
+    sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS" &
+    unrelated=$!
+    printf '%s\n' "$unrelated" >> "$home/orphan-pid"
+    unrelated_identity=$(fm_test_pid_identity "$unrelated")
+    printf 'arm\t%s\tunproven-unrelated-identity\t%s/state/.supervision-host-arm.AAAAAA\n' "$unrelated" "$home" \
+      > "$home/state/.supervision-host"
+    fail_first_arm_identity_read "$home"
+    BASH_ENV="$home/identity-fault.bash" start_host "$home"
+    if [ "$phase" != first ]; then
+      wait_until 150 grep -q '^watcher: started ' "$home/host.out" || fail "$mode: no first cycle"
+      first_arm=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
+      [ -n "$first_arm" ] || fail "$mode: first arm was not recorded"
+      hold_arm_health_helper "$home" "$first_arm"
+      rm -f "$home/identity-fault-disabled"
+      if [ "$phase" = pass-through ]; then
+        append_status "$home" 'exercise main-only successor acquisition' needs-decision
+      else
+        append_status "$home" 'exercise successor identity acquisition'
+      fi
+    fi
+    watcher=
+    case "$mode" in
+      launch-*)
+        wait_until 150 test -s "$home/launch-signal-intercepted" || fail "$mode: no signal across launch"
+        arm=$(cat "$home/launch-signal-intercepted") ;;
+      *)
+        wait_until 150 test -s "$home/identity-read-intercepted" || fail "$mode: own-child read not intercepted"
+        arm=$(cat "$home/identity-read-intercepted")
+        wait_until 150 test -s "$home/helper-blocked" || fail "$mode: real arm did not reach held health helper"
+        watcher=$(cat "$home/state/.watch.lock/pid")
+        case "$mode" in acquire-*)
+          wait_until 150 test -s "$home/identity-acquire-held" || fail "$mode: no held acquisition"
+          host=$(cat "$home/identity-acquire-held")
+          kill -"${mode#acquire-}" "$host" ;;
+        esac ;;
+    esac
+    if [ "$phase" != first ]; then
+      [ "$arm" != "$first_arm" ] || fail "$mode: intercepted a first-arm refresh instead of successor startup"
+    fi
+    printf 'identity startup fault phase=%s mode=%s intercepted actual child pid=%s\n' "$phase" "$mode" "$arm"
+    printf '%s\n' "$arm" >> "$home/orphan-pid"
+    wait_until 300 host_exited "$home" || { shutdown_diagnostics "$home" "$arm" "$watcher"; fail "$mode: host did not exit"; }
+    rc=$(cat "$home/host.rc")
+    case "$mode" in
+      *-TERM) expect_code 143 "$rc" "$mode: signal exit disposition changed" ;;
+      *-HUP) expect_code 129 "$rc" "$mode: signal exit disposition changed" ;;
+      *)
+        if [ "$phase" = successor ]; then
+          expect_code 0 "$rc" "$mode: failed successor must hand the original wake back"
+          assert_grep 'the successor watcher cycle could not be verified before handling; this wake is yours' "$home/host.out" "$mode: successor failure swallowed the wake"
+        elif [ "$phase" = pass-through ]; then
+          expect_code 0 "$rc" "$mode: failed pass-through successor must deliver main's close"
+          assert_re $'\tpass-through\tattended\tmain-only\tsignal:' "$home/state/.supervision-host.log" "$mode: not a main-only successor"
+          [ "$(engine_calls "$home")" -eq 0 ] || fail "$mode: pass-through ran an engine turn"
+          assert_grep 'demo.status' "$home/state/.wake-queue" "$mode: original decision wake was lost"
+        else
+          expect_code 1 "$rc" "$mode: failed startup must fail visibly"
+        fi
+        assert_grep 'supervision-host: initial arm identity could not be recorded within 5s;' "$home/host.out" "$mode: missing failure wake"
+        [ "$(grep -c '^supervision-host: initial arm identity ' "$home/host.out")" -eq 1 ] || fail "$mode: failure wake printed more than once"
+        if [ "$phase" != first ]; then
+          [ "$(grep -c '^signal: ' "$home/host.out")" -eq 1 ] || fail "$mode: original close was lost or printed twice"
+        fi
+        assert_grep 'arm-start-failed' "$home/state/.supervision-host.log" "$mode: missing failure ledger" ;;
+    esac
+    ! kill -0 "$arm" 2>/dev/null || fail "$mode: owned arm leaked"
+    [ -z "$watcher" ] || { ! kill -0 "$watcher" 2>/dev/null || fail "$mode: owned watcher leaked"; }
+    watcher_live "$home" && fail "$mode: a watcher outlived its owning host"
+    if [ "$mode" = write-failure ]; then
+      [ -d "$home/state/.supervision-host" ] || fail "$mode: publication failure was not actually forced"
+    else
+      [ -f "$home/cleanup-record" ] || fail "$mode: no pre-cleanup ownership snapshot"
+      assert_no_re $'^arm\t' "$home/cleanup-record" "$mode: failed startup published a recoverable arm row"
+    fi
+    [ "$(fm_test_pid_identity "$unrelated")" = "$unrelated_identity" ] || fail "$mode: unrelated process was signalled"
+    assert_grep 'reason=birth-mismatch' "$home/state/.supervision-host.log" "$mode: unrelated stale row was not rejected"
+    release_held_helper "$home"
+    kill -TERM "$unrelated"
+    wait "$unrelated" 2>/dev/null || true
+    pass "host: initial identity $mode retires only its owned child without accepting an empty proof"
+}
+
+test_arm_initial_identity_exhaustion() { arm_identity_startup_failure_case exhaust; }
+test_arm_initial_identity_acquisition_term() { arm_identity_startup_failure_case acquire-TERM; }
+test_arm_initial_identity_acquisition_hup() { arm_identity_startup_failure_case acquire-HUP; }
+test_arm_initial_identity_launch_term() { arm_identity_startup_failure_case launch-TERM; }
+test_arm_initial_identity_launch_hup() { arm_identity_startup_failure_case launch-HUP; }
+test_arm_initial_identity_write_failure() { arm_identity_startup_failure_case write-failure; }
+test_successor_initial_identity_exhaustion() { arm_identity_startup_failure_case exhaust successor; }
+test_successor_initial_identity_acquisition_term() { arm_identity_startup_failure_case acquire-TERM successor; }
+test_pass_through_initial_identity_exhaustion() { arm_identity_startup_failure_case exhaust pass-through; }
 
 test_shutdown_rejects_blocked_or_unreadable_watcher_records() {
   local home host arm watcher mode stopped record
@@ -3940,6 +4094,15 @@ HOST_CASES=(
   test_restart_exec_ps_rejects_a_different_birth
   test_restart_exec_ps_rejects_a_different_launch
   test_restart_exec_recovers_from_an_empty_initial_read
+  test_arm_initial_identity_exhaustion
+  test_arm_initial_identity_acquisition_term
+  test_arm_initial_identity_acquisition_hup
+  test_arm_initial_identity_launch_term
+  test_arm_initial_identity_launch_hup
+  test_arm_initial_identity_write_failure
+  test_successor_initial_identity_exhaustion
+  test_successor_initial_identity_acquisition_term
+  test_pass_through_initial_identity_exhaustion
   test_restart_exec_rejects_an_empty_identity
   test_restart_exec_rejects_a_missing_token
   test_restart_exec_rejects_a_short_row
