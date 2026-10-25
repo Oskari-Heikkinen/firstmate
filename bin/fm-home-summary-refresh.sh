@@ -19,6 +19,19 @@
 # (default 60 seconds). No reader can observe temporary output through the
 # ledger path.
 #
+# Under the publication lock, state/.home-summary-refresh.attempt is stamped
+# immediately before production and removed only after successful publication.
+# Watcher (FM_HOME_SUMMARY_IF_IDLE=1) retries wait FM_HOME_SUMMARY_INTERVAL
+# (default 300 seconds) from that start, including across watcher replacement.
+# Start-based pacing bounds admissions without adding an interval after a slow
+# failure. Lock-busy skips never stamp an attempt. Explicit lifecycle and direct
+# calls still attempt immediately; their failures also pace subsequent watchers.
+# Every trigger leaves .home-summary-refresh.pending; the lock holder renames
+# it to .home-summary-refresh.owed before computation and removes owed only on
+# success. A newer pending request survives, and the watcher serves both markers
+# when retry pacing allows, even if the old ledger is not yet interval-due.
+# Neither marker changes the published ledger's freshness.
+#
 # With --best-effort, a failure is appended to the bounded home-local
 # state/.home-summary-refresh.log when available, with stderr as the bounded
 # fallback, and the command exits zero. Session start, watcher, spawn, and
@@ -40,6 +53,7 @@ REFRESH_LOCK="$STATE/.home-summary-refresh.lock"
 ERROR_LOG_MAX_BYTES=${FM_HOME_SUMMARY_ERROR_LOG_MAX_BYTES:-65536}
 HOME_SUMMARY_TIMEOUT=${FM_HOME_SUMMARY_TIMEOUT:-60}
 HOME_SUMMARY_IF_IDLE=${FM_HOME_SUMMARY_IF_IDLE:-0}
+HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
 BEST_EFFORT=0
 HOME_SUMMARY_MODE=parent
 HOME_SUMMARY_ERROR=
@@ -73,6 +87,9 @@ esac
 case "$HOME_SUMMARY_TIMEOUT" in
   ''|*[!0-9]*|0) HOME_SUMMARY_TIMEOUT=60 ;;
 esac
+case "$HOME_SUMMARY_INTERVAL" in
+  ''|*[!0-9]*|0) HOME_SUMMARY_INTERVAL=300 ;;
+esac
 case "$HOME_SUMMARY_IF_IDLE" in
   0|1) ;;
   *) HOME_SUMMARY_IF_IDLE=0 ;;
@@ -82,6 +99,8 @@ if [ "$HOME_SUMMARY_MODE" != parent ]; then
   # shellcheck source=bin/fm-wake-lib.sh
   # shellcheck disable=SC1091
   . "$SCRIPT_DIR/fm-wake-lib.sh"
+  # shellcheck source=bin/fm-home-summary-refresh-lib.sh
+  . "$SCRIPT_DIR/fm-home-summary-refresh-lib.sh"
 fi
 
 # shellcheck disable=SC2329 # Invoked by the signal and EXIT traps below.
@@ -105,6 +124,11 @@ home_summary_refresh_once() {
     home_summary_fail "state directory is unavailable: $STATE"
     return 1
   fi
+  # Register before lock admission, including a busy skip or a paced retry.
+  if ! (umask 077; : > "$STATE/.home-summary-refresh.pending"); then
+    home_summary_fail "could not record the summary request"
+    return 1
+  fi
   trap home_summary_cleanup EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
@@ -115,6 +139,20 @@ home_summary_refresh_once() {
     fm_lock_acquire_wait "$REFRESH_LOCK"
   fi
   HOME_SUMMARY_LOCK_HELD=1
+  if [ "$HOME_SUMMARY_IF_IDLE" -eq 1 ] \
+    && ! fm_home_summary_retry_due "$STATE" "$HOME_SUMMARY_INTERVAL"; then
+    return 0
+  fi
+  if [ -e "$STATE/.home-summary-refresh.pending" ]; then
+    mv -f -- "$STATE/.home-summary-refresh.pending" "$STATE/.home-summary-refresh.owed" || {
+      home_summary_fail "could not claim the pending summary request"
+      return 1
+    }
+  fi
+  if ! (umask 077; touch "$STATE/.home-summary-refresh.attempt"); then
+    home_summary_fail "could not record the summary attempt start"
+    return 1
+  fi
   HOME_SUMMARY_TMP=$(umask 077; mktemp "$STATE/.home-summary.json.XXXXXX") || {
     home_summary_fail "could not create an atomic publication file in $STATE"
     return 1
@@ -182,6 +220,10 @@ home_summary_refresh_once() {
     return 1
   fi
   HOME_SUMMARY_TMP=
+  if ! rm -f -- "$STATE/.home-summary-refresh.attempt" "$STATE/.home-summary-refresh.owed"; then
+    home_summary_fail "could not retire the successful summary attempt"
+    return 1
+  fi
   fm_lock_release "$REFRESH_LOCK"
   HOME_SUMMARY_LOCK_HELD=0
   trap - EXIT HUP INT TERM

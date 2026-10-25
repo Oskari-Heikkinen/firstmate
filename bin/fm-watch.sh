@@ -3200,19 +3200,26 @@ fi
 # The poll loop owns the liveness beacon below, and fm-guard.sh reads that
 # beacon's freshness as proof that supervision is alive. Publication is a
 # side-band nicety bounded by FM_HOME_SUMMARY_TIMEOUT, but that bound is far
-# larger than one poll and, in a home whose publication keeps failing, it is
-# paid on every poll - so running it inline puts up to a full publication
-# deadline between two beacon touches and can starve the guard's grace. Nothing
+# larger than one poll - so running it inline puts up to a full publication
+# deadline between two beacon touches and can starve the guard's grace. Failed
+# attempts are durably paced by the publisher (see its header). Nothing
 # in the poll depends on the ledger, so start it and move on: the beacon keeps
 # advancing no matter how slow the publication is.
 #
 # The trade the detachment makes: a reader can briefly see a ledger that
 # predates the event this poll just surfaced, where the inline call published
-# first. Publication is eventually consistent by design and every reader
-# re-derives current state from the owning home anyway, while beacon freshness
+# first. Publication is eventually consistent by design, while beacon freshness
 # is what the whole supervision chain rests on.
+# shellcheck source=bin/fm-home-summary-refresh-lib.sh
+. "$SCRIPT_DIR/fm-home-summary-refresh-lib.sh"
 HOME_SUMMARY_PID=
 home_summary_refresh_detached() {
+  # Remember a coalesced signal even while a producer is alive or retry-paced.
+  # The publisher claims requests under its cross-watcher publication lock.
+  if [ "${1:-}" = event ]; then
+    (umask 077; : > "$STATE/.home-summary-refresh.pending") || \
+      triage_log "home-summary: could not record an owed event refresh"
+  fi
   if [ -n "$HOME_SUMMARY_PID" ]; then
     if kill -0 "$HOME_SUMMARY_PID" 2>/dev/null; then
       return 0
@@ -3220,7 +3227,8 @@ home_summary_refresh_detached() {
     wait "$HOME_SUMMARY_PID" 2>/dev/null || true
     HOME_SUMMARY_PID=
   fi
-  FM_HOME_SUMMARY_IF_IDLE=1 \
+  fm_home_summary_retry_due "$STATE" "$HOME_SUMMARY_INTERVAL" || return 0
+  FM_HOME_SUMMARY_IF_IDLE=1 FM_HOME_SUMMARY_INTERVAL="$HOME_SUMMARY_INTERVAL" \
     "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort </dev/null >/dev/null 2>&1 &
   HOME_SUMMARY_PID=$!
 }
@@ -3526,7 +3534,9 @@ while :; do
   [ ! -e "$CONFIG/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" capture || true
 
   age_of_to summary_age "$STATE/home-summary.json"
-  if [ "$summary_age" -ge "$HOME_SUMMARY_INTERVAL" ]; then
+  if [ "$summary_age" -ge "$HOME_SUMMARY_INTERVAL" ] \
+    || [ -e "$STATE/.home-summary-refresh.pending" ] \
+    || [ -e "$STATE/.home-summary-refresh.owed" ]; then
     home_summary_refresh_detached
   fi
 
@@ -3800,7 +3810,7 @@ EOF
     # surfacing or absorbing the signal, but never wait on it: see
     # home_summary_refresh_detached for why publication stays off the beacon's
     # path. Publication failure stays side-band.
-    home_summary_refresh_detached
+    home_summary_refresh_detached event
     files=""
     while IFS=$(printf '\t') read -r sf sig f; do
       [ -n "$sf" ] || continue

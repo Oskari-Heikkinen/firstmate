@@ -199,6 +199,28 @@ reap() {
   [ "$rc" -ne 124 ] || fail "watcher pid $1 did not exit within 10s of TERM"
 }
 
+# A coalesced signal must be retained even when the last failed publication
+# started too recently. Wake classification/delivery must not wait for retry.
+test_summary_paced_signal_is_owed() {
+  local dir state pid
+  dir=$(make_case summary-paced-signal); state="$dir/state"
+  printf '{}\n' > "$state/home-summary.json"
+  : > "$state/.home-summary-refresh.attempt"
+  printf 'needs-decision: fixture decision\n' > "$state/summary.status"
+  watch_bg "$state" "$dir/fakebin" "$dir/out" env \
+    FM_HOME_SUMMARY_INTERVAL=86400 FM_WAKE_BATCH_SECS=0
+  pid=$!
+  wait_for_exit "$pid" 300
+  [ "$?" -ne 124 ] || { reap "$pid"; fail "paced publication delayed the signal wake"; }
+  grep -F 'signal:' "$dir/out" >/dev/null \
+    || fail "paced publication suppressed signal delivery"
+  [ -e "$state/.home-summary-refresh.pending" ] \
+    || fail "coalesced signal was lost while publication was retry-paced"
+  [ "$(cat "$state/home-summary.json")" = '{}' ] \
+    || fail "a paced event republished before its retry interval"
+  pass "paced summary retains the coalesced signal without delaying its wake"
+}
+
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
 size_of() { LC_ALL=C wc -c < "$1" | tr -d '[:space:]'; }
@@ -8141,6 +8163,7 @@ TRIAGE_CASES=(
   test_heartbeat_backstop_surfaces_unsurfaced_status
   test_heartbeat_backstop_surfaces_a_masked_status
   test_beacon_stays_fresh_while_absorbing
+  test_summary_paced_signal_is_owed
   test_afk_signal_records_heartbeat_endpoint
   test_afk_present_reverts_watcher_to_one_shot
   test_afk_paused_changed_pane_hands_off_plain_stale

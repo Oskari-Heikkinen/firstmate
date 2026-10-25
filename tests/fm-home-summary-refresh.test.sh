@@ -1028,6 +1028,134 @@ jq -e '.schema == "fm-secondmate-home-summary.v1"' \
   || fail "stale-lock recovery published an invalid ledger"
 pass "publication remains single-flight across watcher restart"
 
+# Failure retry admission uses a scratch home, fake producer, and no endpoints.
+# Keep the interval large and expire only the attempt marker explicitly so slow
+# CI cannot accidentally turn a negative assertion into a second due attempt.
+PACING_HOME="$TMP_ROOT/pacing-home"
+PACING_BIN="$TMP_ROOT/pacing-bin"
+mkdir -p "$PACING_HOME/state" "$PACING_HOME/data" "$PACING_HOME/config" \
+  "$PACING_HOME/projects" "$PACING_BIN"
+for helper in "$ROOT"/bin/*; do
+  ln -s "$helper" "$PACING_BIN/${helper##*/}"
+done
+rm "$PACING_BIN/fm-fleet-snapshot.sh"
+cat > "$PACING_BIN/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'attempt\n' >> "$FM_HOME/attempts"
+if [ ! -e "$FM_HOME/succeed" ]; then
+  echo 'fixture producer failure' >&2
+  exit 23
+fi
+jq --arg home "$FM_HOME" '.home = $home' "$FM_TEST_LEDGER"
+SH
+chmod +x "$PACING_BIN/fm-fleet-snapshot.sh"
+cp "$TMP_ROOT/prior-ledger.json" "$PACING_HOME/state/home-summary.json"
+cp "$PACING_HOME/state/home-summary.json" "$TMP_ROOT/pacing-old.json"
+touch -t 200001010000 "$PACING_HOME/state/home-summary.json"
+
+pacing_writer() {
+  PATH="$FAKEBIN:$PATH" FM_HOME="$PACING_HOME" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_HOME_SUMMARY_INTERVAL=86400 FM_HOME_SUMMARY_IF_IDLE=1 \
+    FM_TEST_LEDGER="$TMP_ROOT/prior-ledger.json" \
+    "$PACING_BIN/fm-home-summary-refresh.sh" --best-effort
+}
+pacing_watch() {
+  PATH="$FAKEBIN:$PATH" FM_HOME="$PACING_HOME" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_HOME_SUMMARY_INTERVAL=86400 FM_POLL=0.2 FM_SIGNAL_GRACE=0 \
+    FM_INACTIVE_RECONCILE_BIN=true FM_CHECK_INTERVAL=9999999 FM_HEARTBEAT=9999999 \
+    FM_TEST_LEDGER="$TMP_ROOT/prior-ledger.json" \
+    "$PACING_BIN/fm-watch.sh" > "$TMP_ROOT/pacing-watch.out" 2> "$TMP_ROOT/pacing-watch.err" &
+  WATCH_PID=$!
+}
+pacing_cycles() {
+  local previous='' current='' changes=0 tick=0
+  while [ "$changes" -lt 3 ] && [ "$tick" -lt 400 ]; do
+    kill -0 "$WATCH_PID" 2>/dev/null || fail "pacing watcher exited"
+    current=$(cat "$PACING_HOME/state/.last-watcher-beat" 2>/dev/null || true)
+    if [ -n "$current" ] && [ "$current" != "$previous" ]; then
+      changes=$((changes + 1))
+      previous=$current
+    fi
+    sleep 0.05
+    tick=$((tick + 1))
+  done
+  [ "$changes" -ge 3 ] || fail "pacing watcher did not complete consecutive polls"
+}
+pacing_stop() {
+  kill "$WATCH_PID" 2>/dev/null || true
+  wait "$WATCH_PID" 2>/dev/null || true
+  WATCH_PID=
+  rm -f "$PACING_HOME/state/.last-watcher-beat"
+}
+pacing_expire() {
+  touch -t 200001010000 "$PACING_HOME/state/.home-summary-refresh.attempt"
+}
+pacing_writer || fail "failing producer changed best-effort result"
+[ -e "$PACING_HOME/state/.home-summary-refresh.attempt" ] \
+  || fail "failure did not record a durable attempt"
+pacing_watch
+pacing_cycles
+[ "$(wc -l < "$PACING_HOME/attempts" | tr -d ' ')" = 1 ] \
+  || fail "consecutive polls retried a failed producer before its interval"
+pacing_stop
+pacing_watch
+pacing_cycles
+[ "$(wc -l < "$PACING_HOME/attempts" | tr -d ' ')" = 1 ] \
+  || fail "watcher replacement reset the failed-attempt cadence"
+pacing_stop
+cmp -s "$TMP_ROOT/pacing-old.json" "$PACING_HOME/state/home-summary.json" \
+  || fail "failure changed the old ledger"
+
+# A busy admission must not postpone an already-due retry.
+pacing_expire
+cp -p "$PACING_HOME/state/.home-summary-refresh.attempt" "$TMP_ROOT/pacing-attempt"
+mkfifo "$PACING_HOME/release"
+FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$PACING_HOME" bash -c '
+  . "$1/bin/fm-wake-lib.sh"
+  fm_lock_acquire_wait "$2/state/.home-summary-refresh.lock"
+  trap '\''fm_lock_release "$2/state/.home-summary-refresh.lock"'\'' EXIT
+  : > "$2/lock-held"
+  read -r release < "$2/release"
+' _ "$ROOT" "$PACING_HOME" &
+LOCK_HOLDER_PID=$!
+i=0
+while [ ! -e "$PACING_HOME/lock-held" ] && [ "$i" -lt 200 ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
+[ -e "$PACING_HOME/lock-held" ] || fail "pacing lock holder did not start"
+pacing_writer || fail "busy skip changed best-effort result"
+[ "$(beat_mtime "$PACING_HOME/state/.home-summary-refresh.attempt")" = \
+  "$(beat_mtime "$TMP_ROOT/pacing-attempt")" ] \
+  || fail "lock-busy skip reset the retry interval"
+printf 'release\n' > "$PACING_HOME/release"
+wait "$LOCK_HOLDER_PID" || fail "could not release pacing fixture lock"
+LOCK_HOLDER_PID=
+
+# This owed request is independent of stale-ledger scheduling: make the old
+# ledger fresh, without changing the failed attempt's due marker.
+touch "$PACING_HOME/state/home-summary.json"
+: > "$PACING_HOME/succeed"
+pacing_watch
+pacing_cycles
+i=0
+while [ -e "$PACING_HOME/state/.home-summary-refresh.attempt" ] && [ "$i" -lt 200 ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
+[ ! -e "$PACING_HOME/state/.home-summary-refresh.attempt" ] \
+  || fail "owed refresh did not run against a still-fresh old ledger"
+[ "$(wc -l < "$PACING_HOME/attempts" | tr -d ' ')" = 2 ] \
+  || fail "owed retry did not produce exactly one successful refresh"
+pacing_cycles
+[ "$(wc -l < "$PACING_HOME/attempts" | tr -d ' ')" = 2 ] \
+  || fail "success did not restore normal fresh-ledger scheduling"
+pacing_stop
+[ ! -e "$PACING_HOME/state/.home-summary-refresh.pending" ] \
+  && [ ! -e "$PACING_HOME/state/.home-summary-refresh.owed" ] \
+  || fail "successful refresh left its claimed request owed"
+pass "failed attempts are paced durably; busy skips preserve cadence and owed work survives"
+
 # A publication that keeps failing is deliberately non-fatal to its caller, so
 # the only way an operator learns about it is a session start saying so. Seed
 # the home-local failure record a real failing home would have, and require the
