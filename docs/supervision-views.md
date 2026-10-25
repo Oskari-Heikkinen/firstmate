@@ -58,6 +58,13 @@ These bounds are prototype limits, not a claim that every existing fleet input f
 
 The `snapshot-tasks` verb composes the local `tasks[]` rows through [`fm_view_snapshot.py`](../bin/fm_view_snapshot.py).
 Its arguments are `observed_at`, integer `epoch`, positive integer `concurrency` and `task_timeout`, plus the same bounded crew `options` vocabulary as current-state reads.
+Its reply contains `tasks` and an equally ordered `captures` array, each capture containing exactly `task`, raw decoded `meta`, raw decoded `status` (null when absent or discarded), and integer `status_mtime_ns` (null with absent status).
+The shared regular-file reader captures mtime from the same verified descriptor as the bytes; raw capture strings use the protocol's lossless surrogateescape encoding.
+The compatibility client validates capture count, task binding, status presence and timestamp types before staging any file in its invoking owner's empty, same-UID, mode-0700 nonsymlink capture directory.
+It creates only task-id-bound metadata/status files with exclusive nonsymlink opens, preserves original status mtimes and verifies the directory identity before returning task JSON.
+The unchanged legacy cross-home collector consumes those captured files for parent activity, fallback freshness and terminal generation checks; it never substitutes an uncaptured live status read.
+These files are disposable transport owned and cleaned by the invoking snapshot, not a new durable artifact, service publication or acknowledgement.
+A malformed capture or staging refusal invokes the complete legacy path before output; a partial private stage is discarded by that same existing cleanup owner.
 It captures at most 256 selected metadata records (four MiB total) and their status spans (64 MiB total), then composes rows with a fixed ordinary-lane coroutine pool capped by both the request's concurrency and available worker count.
 Per-task timeouts are at most 30 seconds; an exhausted lane, oversized response, timeout or unsupported integration refuses the whole native batch for legacy fallback before output.
 Timed-out I/O still occupies its original worker slot; neither a timeout nor a subscriber disconnect creates replacement threads.
@@ -142,7 +149,9 @@ Real-client regressions corrupt the service's observed offset or suggested endpo
 They require an observed native call to prevent a silent legacy-only pass.
 The suite does not test against live endpoints or start a backend.
 
-Native task-row snapshot tests compare complete legacy rows across task kinds, timestamp/decision histories, reports, remote rows and missing worktrees, plus captured append boundaries and metadata replacement that discards every mutable surface.
+Native task-row snapshot tests compare complete legacy rows (before the public composer's backlog enrichment) across task kinds, timestamp/decision histories, reports, remote rows and missing worktrees, plus captured append boundaries and metadata replacement that discards every mutable surface.
+Real-client tests retain whole public JSON equality, including parent activity, original status-mtime freshness and metadata-bound terminal evidence after status bytes and mtime change beyond the native capture barrier.
+Malformed capture bindings/counts/presence/timestamp types and occupied, public-mode or symlink staging directories must refuse before native selection and preserve complete legacy fallback without writing a protected target.
 They include a fresh semantic-pane negative control without status changes, unsupported backend refusal, bounded inventory/file rejection, prefix-related task-id ordering, real-client whole-snapshot equality/fallback, batch single-flight and a timed-out subscriber while both ordinary workers are held and critical folds still complete.
 Separate real-client atomic same-generation metadata-rewrite cases exercise initial and final barriers and require complete legacy recapture, updated PR/decision fields and an explicit refusal diagnostic; actual replacement-generation evidence discard is tested independently.
 A real summary-refresh fixture holds native composition while a newer trigger arrives, verifies the first atomic ledger contains only its captured decision, and requires the surviving pending marker to produce the newer decision on the next refresh.
