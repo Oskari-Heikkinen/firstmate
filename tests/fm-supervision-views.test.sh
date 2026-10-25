@@ -15,9 +15,15 @@
 # whole-batch fallback; existing publication and dirty-trigger owners stay shell.
 # Full public snapshot parity retains captured parent activity/mtime/metadata;
 # malformed captures or unsafe private staging refuse before native selection.
+# The existing complete crew-state behavior matrix is also executed through a
+# fresh real native socket/client per isolated case request; only explicitly
+# unsupported integrations may fall back, with every reason counted in output.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 command -v python3 >/dev/null 2>&1 || fail 'Python 3.9+ required for view-engine tests'
-PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.py"
+rc=0
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.py" || rc=1
+FM_VIEW_CREW_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-crew-state.test.sh" || rc=1
+exit "$rc"
