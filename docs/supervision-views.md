@@ -158,7 +158,7 @@ Malformed capture bindings/counts/presence/timestamp types and occupied, public-
 They include a fresh semantic-pane negative control without status changes, unsupported backend refusal, bounded inventory/file rejection, prefix-related task-id ordering, real-client whole-snapshot equality/fallback, batch single-flight and a timed-out subscriber while both ordinary workers are held and critical folds still complete.
 Separate real-client atomic same-generation metadata-rewrite cases exercise initial and final barriers and require complete legacy recapture, updated PR/decision fields and an explicit refusal diagnostic; actual replacement-generation evidence discard is tested independently.
 A real summary-refresh fixture holds native composition while a newer trigger arrives, verifies the first atomic ledger contains only its captured decision, and requires the surviving pending marker to produce the newer decision on the next refresh.
-Full snapshot/publication parity, service lifecycle registration and the complete existing parity matrix are not implemented by this foundation.
+Service lifecycle registration and promotion of this foundation remain incomplete.
 The same CI entrypoint also runs the existing complete [`fm-crew-state.test.sh`](../tests/fm-crew-state.test.sh) case pool with its assertions unchanged, selecting a real native socket/client for each suite-owned isolated request through [`crew_matrix.py`](../tests/fixtures/supervision-views/crew_matrix.py).
 Its fixture refuses any state root outside that suite's temporary tree and uses each case's existing fake adapters, not live endpoints.
 Only the declared unsupported integration refusals, missing client interpreter and the explicitly marked legacy fake-interpreter timeout seam retain the original legacy executable; every native selection and fallback reason is counted, zero native coverage fails, and any unexpected refusal fails instead of silently converting coverage to legacy.
@@ -166,7 +166,7 @@ Separate real-SQLite exclusive-lock and expensive-query cases compare whole nati
 The complete case pool also exercises missing SQLite through the real socket/client, requiring capped-inventory unknowns and complete-inventory gate retention rather than a transport exception.
 The default legacy matrix remains independently selected by its existing CI tier.
 The same entrypoint additionally selects isolated native services for every existing fleet-snapshot/view and drain/open-decision case through [`view_matrix.py`](../tests/fixtures/supervision-views/view_matrix.py).
-Those matrices keep their existing assertions, collect all independent case failures, count successful RPC verbs and explicit fallback reasons, and fail on unexpected refusals or zero native coverage.
+Those matrices keep their existing assertions, collect all independent case failures, count successful RPC verbs/nonempty items and explicit fallback reasons, and fail on unexpected refusals or zero native coverage, including an empty-batch-only pass.
 The wrapper passes the original stdout descriptor directly to the shell owner so failed-output regressions cannot accidentally commit before a buffered wrapper write fails.
 A no-request path is disclosed separately, not counted as native coverage; these include early lock/validation refusals that never reach read selection.
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.
