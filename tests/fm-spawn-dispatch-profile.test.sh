@@ -1345,10 +1345,15 @@ test_pi_workers_preapprove_only_the_launch_cwd_when_supported() {
         id="profile-${harness}-${kind}-approve-${version//./-}"
         rec=$(make_spawn_case "$id" "$harness" "$id")
         read_case_record "$rec"
-        # Fresh task-copy resources, with no persisted trust. The fake launch
-        # captures the command and cwd transition, never drives a real pane.
-        mkdir -p "$WT_DIR/.pi/extensions"
-        printf 'export default () => {};\n' > "$WT_DIR/.pi/extensions/fixture.ts"
+        # Commit resources to the fixture origin so the pool's clean-base
+        # refresh brings them into the task copy without discarding dirty work.
+        # The fake launch captures the command and cwd, never a real pane.
+        mkdir -p "$PROJ_DIR/.pi/extensions"
+        printf 'export default () => {};\n' > "$PROJ_DIR/.pi/extensions/fixture.ts"
+        git -C "$PROJ_DIR" add .pi/extensions/fixture.ts
+        git -C "$PROJ_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+          commit -qm 'add trust-requiring project fixture'
+        git -C "$PROJ_DIR" push --quiet origin main
         FM_TEST_PANE_LOG="$CASE_DIR/pane.log"
         FM_TEST_PI_VERSION=$version
         if [ "$kind" = scout ]; then
@@ -1359,6 +1364,8 @@ test_pi_workers_preapprove_only_the_launch_cwd_when_supported() {
         status=$?
         unset FM_TEST_PANE_LOG FM_TEST_PI_VERSION
         expect_code 0 "$status" "$harness $kind on $version should launch: $out"
+        [ -s "$WT_DIR/.pi/extensions/fixture.ts" ] \
+          || fail "$harness $kind task copy lost its trust-requiring project resource"
         launch=$(cat "$LAUNCH_LOG")
         assert_contains "$launch" "FM_PI_HARNESS=$harness '$FAKEBIN_DIR/$harness'" \
           "$harness $kind must launch the executable whose help was probed"
