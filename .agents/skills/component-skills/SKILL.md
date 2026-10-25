@@ -22,9 +22,9 @@ metadata:
     - path: bin/fm-lean-review.sh
       sha256: 3fab912ec49bcb2d0255aa6b03d17c7cfc10a633d98c68ccbe1c237abdf5318e
     - path: bin/fm-rereview-brief.sh
-      sha256: 31c86611956bb83704c7a226f24a6a1fc94527e9402e5e8c475f7a207fa5960d
+      sha256: ea7b845531d394253c06f2bd75bdb823170a0c6c2b8c0f64c1e7aa01411f7d50
     - path: .agents/skills/independent-rereview/SKILL.md
-      sha256: e3310fd6677f13487dc167ab73a7c42a6a3aad32e310847645e6ad9e96b0b07d
+      sha256: 1d749d8c07bf0a041de7eb555f0804b89f50e445f5b0d30e72cd42da1bd25595
 ---
 
 # component-skills

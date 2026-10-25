@@ -44,7 +44,9 @@ Destructive, irreversible and security-sensitive steps still go to the operator 
 ## Verdicts
 
 - FAIL needs at least one major; a test gap that would let a wrong result through is a major.
-- Otherwise PASS with minors, which close in one light follow-up (read the delta, light tests) with no new heavy round unless non-test code changes.
+- Otherwise PASS with minors; batch their closure in the author's delta and proportionate checks.
+  For low-risk changes the independent review ends after that one round; commission another only for a real blocker or major, not merely to re-confirm minors.
+  Higher-risk changed behavior keeps the delivery path's required delta checks.
 - A re-review checks closures plus the delta (`bin/fm-rereview-brief.sh` for landed fixes), not a fresh full review.
-- Review never grants merge authority: landing authority is the operator's word or the project's `yolo` posture (`AGENTS.md` sections 1 and 7), and a recorded standing go applies only within the scope it names.
+- Review never grants merge authority; apply `AGENTS.md` section 1 to the exact ready head and route a qualifying head immediately under its existing authority.
 - A red head, or one whose required check has not reported, never lands.

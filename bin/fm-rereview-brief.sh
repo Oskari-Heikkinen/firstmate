@@ -5,7 +5,7 @@
 # Usage: fm-rereview-brief.sh <task-id> <repo-name> --first <review-task-id|report.md>
 #          --commit <rev> --file <path> [--file <path>...] [--base <rev>]
 #          [--repo-dir <dir>] [--heavy-slot <path>] [--context <text>]
-#          [--spec <text>]
+#          [--spec <text>] [--cutover]
 #   <task-id>        the new re-review scout's task id.
 #   <repo-name>      the project the candidate lives in, passed to fm-brief.sh.
 #   --first          the first review: a task id whose data/<id>/report.md exists
@@ -25,6 +25,11 @@
 #                    such as the live copy's path and digest.
 #   --spec           optional extra build line appended to the Firstmate spec;
 #                    repeatable.
+#   --cutover        opt in to an actual cutover review, retaining the safe-to-
+#                    cut-over verdict and live-baseline/digest/rollback checklist.
+#                    Default: closure-and-delta review with exact-head evidence,
+#                    not a cutover gate. Invocation is conditional on lean-review
+#                    and the delivery path, never an automatic second round.
 #
 # The first report must have exactly one `#`/`##` heading starting with
 # "Verdict" and exactly one starting with "Findings", each with non-empty
@@ -38,11 +43,12 @@
 # <base-sha>...<commit-sha>`, so the spawn appends the review checklists of the
 # components the fixes touch (docs/component-map.md "Review paths"), replaces the
 # {TASK} and {FIRSTMATE_SPEC} placeholders atomically, and prints
-# `filled: <brief path>`. The filled brief asks for a verdict (safe to cut over /
-# safe with named fixes / not safe), each first-review finding closed or open
-# with evidence, anything newly broken, and final cutover steps pinned to the
-# computed digests with the live pre-check and a rollback copy. Dispatch stays
-# with firstmate through the usual fm-spawn path.
+# `filled: <brief path>`. The filled brief asks for a closure-and-delta verdict,
+# each first-review finding closed or open with exact-head evidence, and anything
+# newly broken. Only --cutover asks for a verdict (safe to cut over / safe with
+# named fixes / not safe) and final cutover steps pinned to the computed digests
+# with the live-baseline pre-check and a rollback copy. Dispatch stays with
+# firstmate through the usual fm-spawn path.
 set -u
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -74,10 +80,12 @@ BASE=
 REPO_DIR=
 HEAVY_SLOT=${FM_HEAVY_SLOT:-}
 CONTEXT=
+CUTOVER=0
 FILES=()
 SPECS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --cutover) CUTOVER=1; shift ;;
     --first|--commit|--file|--base|--repo-dir|--heavy-slot|--context|--spec)
       [ "$#" -ge 2 ] || die "$1 needs a value"
       case "$1" in
@@ -203,7 +211,12 @@ else
 fi
 
 {
-  printf '%s\n' "Short independent re-review of the fixes a builder landed after the first review of this $REPO candidate: are the first review's findings closed, is anything new broken, and is the candidate now safe to cut over?"
+  if [ "$CUTOVER" -eq 1 ]; then
+    printf '%s\n' "Short independent re-review of the fixes a builder landed after the first review of this $REPO candidate: are the first review's findings closed, is anything new broken, and is the candidate now safe to cut over?"
+  else
+    printf '%s\n' "Short independent closure-and-delta review of the named blocker/major fixes in this $REPO candidate."
+  fi
+  printf '%s\n' "Apply lean-review and the selected risk tier."
   if [ -n "$CONTEXT" ]; then printf '%s\n' "$CONTEXT"; fi
   printf '\n%s\n\n' "The first independent review (\`$REPORT\`) reached this verdict:"
   cat "$WORK/verdict"
@@ -219,7 +232,12 @@ fi
   printf '%s\n' "Read the first report at \`$REPORT\` and check each of its findings item by item against the candidate, reproducing each original failure where the report shows how."
   printf '%s\n' "$HEAVY_LINE"
   for s in ${SPECS[@]+"${SPECS[@]}"}; do printf '%s\n' "$s"; done
-  printf '%s\n' "Report: a clear verdict (safe to cut over / safe with named fixes / not safe); each first-review finding marked closed or still open with evidence (commands, output, file:line); anything new broken; and the final cutover steps pinned to the digests above, including the pre-check that the live copy is still the reviewed baseline and the rollback copy, carried forward from the first report where it gave them."
+  if [ "$CUTOVER" -eq 1 ]; then
+    printf '%s\n' "Report: a clear verdict (safe to cut over / safe with named fixes / not safe); each first-review finding marked closed or still open with evidence (commands, output, file:line); anything new broken; and the final cutover steps pinned to the digests above, including the pre-check that the live copy is still the reviewed baseline and the rollback copy, carried forward from the first report where it gave them."
+  else
+    printf '%s\n' "Report: a clear verdict (PASS / PASS with minors / FAIL under lean-review); each first-review finding marked closed or still open with exact-head evidence (commit, commands, output, file:line); anything new broken."
+    printf '%s\n' "This is a closure-and-delta review only, not a cutover gate."
+  fi
 } > "$WORK/spec"
 
 out=$("$SCRIPT_DIR/fm-brief.sh" "$ID" "$REPO" --scout --review-range "$BASE_SHA...$SHA") || exit 1
