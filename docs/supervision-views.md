@@ -3,7 +3,7 @@
 This is the maintainer owner of the Python 3.9+ view-engine primitives in [`fm_view_engine.py`](../bin/fm_view_engine.py) and [`fm_view_status.py`](../bin/fm_view_status.py).
 These modules are an **uninstalled foundation**, not a completed replacement for crew-state, wake drain or fleet snapshots.
 Existing shell entrypoints remain selected without a new runtime dependency.
-There is no production CLI, mode switch, service installer, health beacon, lease or watcher integration.
+There is no service launcher, mode switch, service installer, health beacon, lease or watcher integration.
 The [`supervision-views` skill](../.agents/skills/supervision-views/SKILL.md) owns the agent load trigger.
 
 ## Authority boundary
@@ -20,7 +20,7 @@ The transport admits `status-fold`, `crew-state` and `status-presentation` reque
 It cannot claim, acknowledge, append, retire, resume, publish a summary or alter custody.
 It writes no authoritative state, including presentation cursors.
 The calling transaction owner remains responsible for any presentation commit after successfully writing its output.
-No client currently calls this transport from a production shell entrypoint.
+The crew-state and drain entrypoints can use the explicit compatibility client below; without its socket selection they retain legacy behavior.
 
 ## Read protocol
 
@@ -82,6 +82,21 @@ Missing pidfd/nonreaping-wait support or a nondefault SIGCHLD handler refuses th
 The native IPC and external-observation path are not yet admitted on non-Linux platforms; their unchanged legacy entrypoints remain selected.
 No process-birth or CPU saving has been measured or claimed.
 
+## Explicit compatibility clients
+
+[`fm-view-client.py`](../bin/fm-view-client.py) is a bounded one-request client for an already owner-managed service.
+Its header owns invocation and the captured-row TSV interface.
+Selection requires explicit `FM_VIEW_SOCKET`, `FM_VIEW_EPOCH` and canonical `FM_HOME`; no config file, home mode or service is changed by a read.
+Without explicit selection, existing entrypoints do not require Python.
+Unsupported input roots, captured crew overrides, custom classifier/read seams, missing transport or typed service refusals keep the legacy route and report the refusal to stderr.
+A successful crew-state read returns before loading the legacy observation graph.
+The drain still owns annotation, strong-identity capture, cursor/marker offsets, actor eligibility, preparation, stdout and cursor commit.
+It asks once for native unread/open-decision facts and suggested endpoints, keeping divergence, capped branch outcomes and the latest-outcome backstop with their existing owners.
+A failed native read falls back before the prepared status sections reach stdout.
+Native observation device/inode pairs never replace the original strong identity passed to the commit owner.
+A failed stdout leaves the presentation cursor untouched, and concurrent appends past the captured endpoints remain unread.
+The native path currently still pays the legacy per-row offset and annotation reads; it is not a completed hot-path migration or a performance acceptance claim.
+
 ## Verification and remaining migration
 
 [`tests/fm-supervision-views.test.sh`](../tests/fm-supervision-views.test.sh) runs isolated real-socket, bounded-lane and legacy-fold comparison tests in CI.
@@ -91,11 +106,13 @@ They include fresh HEAD, daemon and semantic-pane negative controls without stat
 Captured-presentation tests compare unread rows, folded decisions, new-line spans and suggested contiguous endpoints against the existing shell presentation transaction APIs across all task kinds, classified/fully-presented combinations, partial lines and invalid UTF-8.
 They also exercise append-bounded snapshots, whole-batch refusal on replacement/truncation/generation changes, fresh protected tool levels and batch single-flight/timeout fairness without writing a native cursor.
 Separate initial/final-generation-barrier stalls saturate ordinary capacity with concurrent batches and prove both critical slots still admit status-fold observations.
-It does not test against live endpoints or start a backend.
+Real public entrypoint fixtures additionally compare native/legacy drain rendering and committed cursor bytes, failed-stdout retry, append during observation, epoch-refusal fallback and captured-crew override fallback.
+They require an observed native call to prevent a silent legacy-only pass.
+The suite does not test against live endpoints or start a backend.
 
-Production current-state compatibility routing, coupling native drain facts to the existing presentation transaction, snapshot composition, dirty-trigger publication and the complete existing parity matrix are not implemented by this foundation.
+Snapshot composition, dirty-trigger publication, service lifecycle registration and the complete existing parity matrix are not implemented by this foundation.
 The focused native current-state tests are not the full existing crew-state matrix.
 There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).
-Production fallback and identity-bound service shutdown also remain future integration work.
+Identity-bound service shutdown remains future integration work; compatibility refusals already fall back to legacy before presentation commits.
 Rollback of this uninstalled foundation is removal or non-use of the modules; no queue, cursor, custody or home mode changes to undo exist.
