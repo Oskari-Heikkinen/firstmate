@@ -19,6 +19,9 @@
 # The existing complete crew-state behavior matrix is also executed through a
 # fresh real native socket/client per isolated case request; only explicitly
 # unsupported integrations may fall back, with every reason counted in output.
+# Complete existing snapshot/view and drain/open-decision matrices also run
+# through isolated native selection, retaining the real stdout descriptor so
+# failed-output/commit assertions still exercise the transaction owner.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh
@@ -27,4 +30,6 @@ command -v python3 >/dev/null 2>&1 || fail 'Python 3.9+ required for view-engine
 rc=0
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.py" || rc=1
 FM_VIEW_CREW_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-crew-state.test.sh" || rc=1
+FM_VIEW_COMPAT_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-fleet-snapshot-view.test.sh" || rc=1
+FM_VIEW_COMPAT_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-wake-drain-open-decisions.test.sh" || rc=1
 exit "$rc"
