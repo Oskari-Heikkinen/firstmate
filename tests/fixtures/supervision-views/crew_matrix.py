@@ -109,6 +109,12 @@ def main(arguments):
     original = dict(os.environ)
     original.pop("FM_VIEW_SOCKET", None)
     original.pop("FM_VIEW_EPOCH", None)
+    if original.get("FM_VIEW_MATRIX_LEGACY_READER") == "1":
+        # Only the legacy subprocess reader executes the case's fake Python.
+        # Native SQLite contention has its own real-input parity regression;
+        # do not claim this interpreter-injection seam as native coverage.
+        record(root, arguments[0], "legacy", "explicit legacy interpreter-timeout seam")
+        return subprocess.call(["bash", LEGACY, *arguments], env=original)
     if not shutil.which("python3"):
         # The public compatibility entrypoint cannot select a client without
         # an interpreter; keep the no-optional-reader matrix cases unchanged.

@@ -31,6 +31,9 @@ Each one-request connection carries a newline-terminated JSON object with exactl
 The fold verb's arguments contain `task`, an optional explicit `kind`, and optional classifier vocabulary overrides.
 The current-state verb accepts `task` and bounded `FM_CREW_STATE_NM_TIMEOUT`, `FM_CREW_STATE_RUNS_LIMIT` and `FM_CREW_STATE_NO_FORGE` options.
 Its native run attribution and state mapping live in [`fm_view_runs.py`](../bin/fm_view_runs.py) and [`fm_view_crew.py`](../bin/fm_view_crew.py).
+SQLite support is needed only for capped run inventories; an unavailable module returns an explicit inventory-reader unknown with the available ids, while complete overviews remain usable.
+The native SQLite reader shares one elapsed bound across connection, lock waits, query execution and validation, with VM-progress interruption and per-query remaining lock budgets.
+Unreliable filesystem stalls still retain their original bounded worker slot rather than spawning a replacement.
 Fixed passive backend, custody, done-head and forge reads retain their existing owners through [`fm-view-adapter.sh`](../bin/fm-view-adapter.sh); the native engine does not duplicate those contracts.
 Backend fallback currently admits tmux only, and remote endpoint reads remain legacy-owned.
 A run-step observation that needs no backend probe can still be computed natively on other recorded backends.
@@ -158,7 +161,9 @@ A real summary-refresh fixture holds native composition while a newer trigger ar
 Full snapshot/publication parity, service lifecycle registration and the complete existing parity matrix are not implemented by this foundation.
 The same CI entrypoint also runs the existing complete [`fm-crew-state.test.sh`](../tests/fm-crew-state.test.sh) case pool with its assertions unchanged, selecting a real native socket/client for each suite-owned isolated request through [`crew_matrix.py`](../tests/fixtures/supervision-views/crew_matrix.py).
 Its fixture refuses any state root outside that suite's temporary tree and uses each case's existing fake adapters, not live endpoints.
-Only the declared unsupported integration refusals and missing client interpreter retain the original legacy executable; every native selection and fallback reason is counted, zero native coverage fails, and any unexpected refusal fails instead of silently converting coverage to legacy.
+Only the declared unsupported integration refusals, missing client interpreter and the explicitly marked legacy fake-interpreter timeout seam retain the original legacy executable; every native selection and fallback reason is counted, zero native coverage fails, and any unexpected refusal fails instead of silently converting coverage to legacy.
+Separate real-SQLite exclusive-lock and expensive-query cases compare whole native/legacy current-state output within the read bound, require available-id preservation, and prove fresh recovery after releasing the lock without changing status bytes.
+The complete case pool also exercises missing SQLite through the real socket/client, requiring capped-inventory unknowns and complete-inventory gate retention rather than a transport exception.
 The default legacy matrix remains independently selected by its existing CI tier.
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.
 There is no P0 replay adapter or B0 performance acceptance yet.
