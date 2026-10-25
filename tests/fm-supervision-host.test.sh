@@ -1636,10 +1636,121 @@ leave_a_cycle_for_main_and_restart() {  # <home>
   start_hook_session "$home"
 }
 
+# Fixture-only executable seams: the receipt lookup still runs the real awk
+# against the real ledger. Quiet mode holds that read until the owner's actual
+# post-wait row exists; delayed mode holds only the owner's date call at ledger
+# publication until the taking arm has exhausted its unchanged read bound.
+# Neither wrapper changes watcher cleanup, queue writes, or receipt contents.
+install_takeover_receipt_seam() {  # <home> <quiet|delayed>
+  local home=$1 mode=$2
+  mkdir "$home/takeover-seam"
+  printf '%s\n' "$mode" > "$home/takeover-seam/mode"
+  {
+    printf '#!/usr/bin/env bash\nREAL_AWK=%q\n' "$(command -v awk)"
+    cat <<'SH'
+seam="$FM_HOME/takeover-seam"
+owner=$(cat "$seam/owner" 2>/dev/null || true)
+match=0
+for arg in "$@"; do
+  [ "$arg" != "arm=$owner" ] || match=1
+done
+if [ -z "$owner" ] || [ "$match" != 1 ]; then exec "$REAL_AWK" "$@"; fi
+# This wrapper is installed only in these two fixture homes. Match the public
+# lookup's arguments, not its awk program or production source text.
+receipt=$("$REAL_AWK" "$@")
+if [ "$(cat "$seam/mode")" = quiet ]; then
+  i=0
+  while [ -z "$receipt" ] && [ "$i" -lt 400 ]; do
+    sleep 0.05
+    i=$((i + 1))
+    receipt=$("$REAL_AWK" "$@")
+  done
+fi
+{
+  printf 'receipt=<%s>\n' "$receipt"
+  printf 'marker='; cat "$FM_HOME/state/.watcher-down" 2>/dev/null || true
+  printf 'seq='; cat "$FM_HOME/state/.wake-queue.seq" 2>/dev/null || true
+} > "$seam/read.$$"
+printf '%s\n' "$receipt"
+SH
+  } > "$home/fakebin/awk"
+  {
+    printf '#!/usr/bin/env bash\nREAL_DATE=%q\n' "$(command -v date)"
+    cat <<'SH'
+seam="$FM_HOME/takeover-seam"
+owner=$(cat "$seam/owner" 2>/dev/null || true)
+if [ "$PPID" = "$owner" ] && [ "$(cat "$seam/mode")" = delayed ]; then
+  # The owner is blocked in wait until its watcher finishes. Its next date is
+  # the lifecycle publisher's timestamp, before the ledger lock is acquired.
+  : > "$seam/publication-held"
+  i=0
+  while [ ! -e "$seam/release" ] && [ "$i" -lt 600 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$seam/release" ] || printf 'receipt publication gate timed out\n' > "$seam/timeout"
+fi
+exec "$REAL_DATE" "$@"
+SH
+  } > "$home/fakebin/date"
+  chmod +x "$home/fakebin/awk" "$home/fakebin/date"
+}
+
+# Dump before teardown: a late TERM row alone cannot tell us what the taking
+# arm saw. The read.* records are captured by the actual receipt-read seam.
+takeover_failure_evidence() {  # <home>
+  local home=$1 file
+  printf '\n# takeover failure evidence (old arm=%s watcher=%s)\n' "$LEFT_ARM" "$LEFT_WATCHER"
+  for file in "$home/state/.supervision-host.log" "$home/state/.supervision-host" \
+    "$home/state/.supervision-host-left" "$home/state/.watch-cycle-exits.log" \
+    "$home/state/.watch-deliveries.log" "$home/state/.watcher-down" \
+    "$home/state/.wake-queue.seq" "$home/state/.wake-queue" \
+    "$home/hook.rc" "$home/hook.out" "$home/hook.err" "$home/claude.err" \
+    "$home"/state/.supervision-host-errors.* "$home"/state/.supervision-host-arm.* \
+    "$home"/state/.watch-arm-output.* \
+    "$home"/takeover-seam/*; do
+    printf '# %s\n' "${file#"$home/"}"
+    if [ -f "$file" ]; then cat "$file"; else printf '(absent)\n'; fi
+  done
+}
+
+prepare_takeover_receipt_case() {  # <name> <quiet|delayed>
+  TAKEOVER_HOME=$(make_primary_home "$1")
+  install_takeover_receipt_seam "$TAKEOVER_HOME" "$2"
+  trap 'rc=$?; if [ "$rc" -ne 0 ]; then takeover_failure_evidence "$TAKEOVER_HOME"; fi; : > "$TAKEOVER_HOME/takeover-seam/release"; exit "$rc"' EXIT
+  leave_a_cycle_for_main_and_restart "$TAKEOVER_HOME"
+  printf '%s\n' "$LEFT_ARM" > "$TAKEOVER_HOME/takeover-seam/owner"
+  printf '%s\n' "$LEFT_WATCHER" > "$TAKEOVER_HOME/takeover-seam/watcher"
+  cp "$TAKEOVER_HOME/state/.watcher-down" "$TAKEOVER_HOME/takeover-seam/marker.before"
+  cp "$TAKEOVER_HOME/state/.wake-queue.seq" "$TAKEOVER_HOME/takeover-seam/seq.before"
+  assert_re '^acked:' "$TAKEOVER_HOME/takeover-seam/marker.before" "takeover: main did not acknowledge the token"
+}
+
+assert_takeover_receipt_reads() {  # <home> <TERM|empty> <count>
+  local home=$1 expected=$2 count=$3 file n=0 seq
+  seq=$(cat "$home/takeover-seam/seq.before")
+  [ "$expected" != empty ] || expected=
+  for file in "$home"/takeover-seam/read.*; do
+    [ -f "$file" ] || fail "takeover: no decision-time receipt observation"
+    n=$((n + 1))
+    assert_re "^receipt=<$expected>$" "$file" "takeover: wrong receipt at decision"
+    assert_re "^seq=$seq$" "$file" "takeover: queue append sequence changed during the decision"
+    assert_re '^marker=pending:downtime:' "$file" "takeover: stop did not publish downtime before the receipt read"
+  done
+  [ "$n" -eq "$count" ] || fail "takeover: expected $count receipt reads, got $n"
+}
+
+old_owner_term_row() {  # <home>
+  awk -F '\t' -v arm="$LEFT_ARM" -v watcher="$LEFT_WATCHER" '
+    $1 == "arm_pid=" arm && $2 == "watcher_pid=" watcher && $7 == "signal=TERM" { found=1 }
+    END { exit !found }
+  ' "$1/state/.watch-cycle-exits.log"
+}
+
 test_next_park_takes_over_the_cycle_a_pass_through_left_for_main() {
   local home left_watcher left_arm
-  home=$(make_primary_home hook-takeover)
-  leave_a_cycle_for_main_and_restart "$home"
+  prepare_takeover_receipt_case hook-takeover quiet
+  home=$TAKEOVER_HOME
   left_watcher=$LEFT_WATCHER
   left_arm=$LEFT_ARM
   turn_end "$home"
@@ -1647,6 +1758,12 @@ test_next_park_takes_over_the_cycle_a_pass_through_left_for_main() {
     || fail "takeover: the next park did not own the home's only watcher cycle (left arm $left_arm, watcher $left_watcher):"$'\n'"$(home_arms "$home")"$'\n'"$(cat "$home/state/.supervision-host.log")"
   ! kill -0 "$left_arm" 2>/dev/null || fail "takeover: the successor arm a pass-through left still runs (pid $left_arm)"
   ! kill -0 "$left_watcher" 2>/dev/null || fail "takeover: the successor watcher still runs (pid $left_watcher)"
+  assert_takeover_receipt_reads "$home" TERM 1
+  old_owner_term_row "$home" || fail "takeover: no real owner TERM row"
+  cmp -s "$home/takeover-seam/marker.before" "$home/state/.watcher-down" \
+    || fail "takeover: the acknowledged token was not restored exactly"
+  cmp -s "$home/takeover-seam/seq.before" "$home/state/.wake-queue.seq" \
+    || fail "takeover: queue sequence changed during takeover"
   sleep 2
   ! hook_exited "$home" || fail "takeover: the takeover woke main: $(cat "$home/hook.err")"
   host_owns_the_only_cycle "$home" || fail "takeover: the park did not keep the cycle it took over"
@@ -1657,6 +1774,36 @@ test_next_park_takes_over_the_cycle_a_pass_through_left_for_main() {
   assert_rewoke_main "$home" "takeover (next close)"
   assert_re '^signal: .*demo.status' "$home/hook.err" "takeover: the next close must carry the watcher's reason line"
   pass "host+hook: the next park takes over the cycle a main-only pass-through left, so one arm owns it"
+}
+
+# Same host/hook path, but only the old arm's post-wait publication is held.
+# The watcher has finished cleanup and no wake is appended by the fixture.
+# The real taking arm must classify all 50 missing reads as unconfirmed and
+# retain downtime, even though the delayed row eventually proves TERM.
+test_next_park_resurfaces_when_the_old_arm_receipt_is_delayed() {
+  local home
+  prepare_takeover_receipt_case hook-takeover-delayed delayed
+  home=$TAKEOVER_HOME
+  turn_end "$home"
+  wait_until 400 test -e "$home/takeover-seam/publication-held" \
+    || fail "delayed takeover: old arm never reached post-wait publication"
+  wait_until 400 grep -q 'reason=taken-over-unconfirmed-stop' "$home/state/.watch-cycle-exits.log" \
+    || fail "delayed takeover: missing receipt was not classified as unconfirmed"
+  ! kill -0 "$LEFT_WATCHER" 2>/dev/null || fail "delayed takeover: watcher cleanup was delayed"
+  kill -0 "$LEFT_ARM" 2>/dev/null || fail "delayed takeover: old arm was not held"
+  ! old_owner_term_row "$home" || fail "delayed takeover: owner receipt was published before classification"
+  assert_absent "$home/takeover-seam/timeout" "delayed takeover: publication gate timed out"
+  assert_takeover_receipt_reads "$home" empty 50
+  cmp -s "$home/takeover-seam/seq.before" "$home/state/.wake-queue.seq" \
+    || fail "delayed takeover: an extra wake was appended"
+  : > "$home/takeover-seam/release"
+  wait_until 150 old_owner_term_row "$home" || fail "delayed takeover: released owner did not publish TERM"
+  wait_until 250 hook_exited "$home" || fail "delayed takeover: recovery never reached main"
+  assert_rewoke_main "$home" "delayed takeover"
+  assert_re '^check: rearm-resurface' "$home/hook.err" "delayed takeover: required recovery reason is missing"
+  assert_re 'reason=taken-over-unconfirmed-stop' "$home/state/.watch-cycle-exits.log" "delayed takeover: classification changed"
+  assert_no_re 'reason=taken-over[[:space:]]' "$home/state/.watch-cycle-exits.log" "delayed takeover: missing receipt was treated as confirmed"
+  pass "host+hook: a delayed old-arm TERM receipt requires unconfirmed-stop recovery, not quiet restoration"
 }
 
 # A park stopped before its take-over stops the left cycle (here held in the
@@ -3218,6 +3365,7 @@ HOST_CASES=(
   test_successor_left_at_the_turn_survives_the_hook_process_group_teardown
   test_pass_through_successor_survives_the_hook_process_group_teardown
   test_next_park_takes_over_the_cycle_a_pass_through_left_for_main
+  test_next_park_resurfaces_when_the_old_arm_receipt_is_delayed
   test_a_park_stopped_mid_take_over_leaves_the_take_over_to_the_next_park
   test_unrecorded_successor_is_stopped_rather_than_left_for_main
 )
