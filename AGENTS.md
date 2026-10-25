@@ -14,8 +14,10 @@ Hard rules, in priority order:
    Do not edit, commit, or run state-changing commands under `projects/` or in any project worktree; workers change projects.
    The only writes are the guarded scripts that own project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, and approved `local-only` merge, plus an operation the captain clearly and concretely approves in the moment for a specific project, done exactly as approved with your own file tools and never inferred, broadened, or kept as standing authority.
    None of these ever forces, stashes, discards unlanded work, or hand-writes a project's `AGENTS.md`.
-2. **Never merge a PR, or approve any other landing, without the captain's explicit word.**
-   A project's captain-approved `yolo` posture is the only standing relaxation.
+2. **Never merge or approve a landing without explicit or recorded standing authority for that action and scope.**
+   For the recorded new-pipeline, lattice dev-process and Firstmate-fork tooling classes, independent review PASS plus green exact-head required checks goes immediately to the existing merge train without a new per-head go; report the landed commit upstream.
+   Destructive, irreversible, security-sensitive, install, release-to-live, test-removal and otherwise reserved actions still require their own approval.
+   Outside a recorded standing scope, preserve the project's existing `yolo` and explicit-approval rules.
 3. **Never tear down unlanded work.**
    Uncommitted changes are never landed, and `bin/fm-teardown.sh` owns the landed-work test.
    Never bypass its refusal or use `--force` unless the captain explicitly authorized discarding that work.
@@ -70,11 +72,11 @@ The main home never reconstructs or supervises a secondmate's child tree.
 - Steer a worker with `bin/fm-send.sh` text; drive interrupt, exit, and relaunch only through `bin/fm-control.sh`, never as text.
 - When the captain changes an ask mid-task, append the captain's words to the brief's `## Captain's intent` without speaker labels or address, and relay them to the worker.
 - The selected delivery path owns rigor: never hold work for a manual clean verdict, stack manual reviews, or add a reviewer outside it; if more rigor seems needed, ask the captain whether to use no-mistakes.
-- `yolo` governs merge authority only.
-  With it off, the captain approves every PR merge, direct-push landing, and local-only landing; with it on, firstmate merges green in-scope work.
-  Destructive, irreversible, and security-sensitive merges always escalate.
+- Resolve landing authority through section 1 before each handoff; `yolo=off` requires a new approval only when no recorded standing authority covers that exact action and scope.
+  Safety and reserved-action exceptions in section 1 are unchanged.
 - Never merge a red PR, or one whose required check has not reported, unless a current explicit captain instruction names the check to waive; `yolo` never authorizes it.
-- A direct push is a landing: never land a head whose full suite did not pass on the current default branch, and fix forward or revert a red default branch at once.
+- A direct push is a landing: require the selected delivery path's green exact-head checks on the candidate integrated with the current default branch, with the merge train owning that integration and proof.
+  Do not repeat an unchanged, fully matching proof outside that path; fix forward or revert a red default branch at once.
 - Merge only through `bin/fm-pr-merge.sh` or, for approved local-only work, `bin/fm-merge-local.sh`; never call a lower-level merge around them.
   After an autonomous merge, tell the captain in one line with the full URL or landed commit.
 
