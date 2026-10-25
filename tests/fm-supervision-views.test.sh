@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Isolated native fold/crew-state/IPC/admission tests; no live home or backend.
+# Isolated native fold/crew-state/captured-presentation/IPC/admission tests.
+# Presentation compares unread rows, decisions and suggested contiguous cursor
+# endpoints to the existing shell transaction APIs; no live home or backend.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh

@@ -16,7 +16,7 @@ A missing status file is an empty span; an existing unreadable or unsupported ob
 The native fold reads registered alert-store levels on every request, even when status bytes have not changed.
 The shell classifier remains the parity oracle; it has not been replaced by these modules.
 
-The transport admits `status-fold` and `crew-state` requests.
+The transport admits `status-fold`, `crew-state` and `status-presentation` requests.
 It cannot claim, acknowledge, append, retire, resume, publish a summary or alter custody.
 It writes no authoritative state, including presentation cursors.
 The calling transaction owner remains responsible for any presentation commit after successfully writing its output.
@@ -35,6 +35,16 @@ Fixed passive backend, custody, done-head and forge reads retain their existing 
 Backend fallback currently admits tmux only, and remote endpoint reads remain legacy-owned.
 A run-step observation that needs no backend probe can still be computed natively on other recorded backends.
 An unsupported integration refuses for explicit legacy fallback, never an optimistic current-state answer.
+The captured-presentation verb takes only `rows`, at most 256 objects with exactly `task`, `end`, `offset`, `identity`, `classified` and `fully_presented`.
+Its classifier owner is [`fm_view_presentation.py`](../bin/fm_view_presentation.py).
+The invoking presentation transaction supplies captured byte endpoints, contiguous presentation/classification offsets, device/inode pairs and the annotation's fully-presented flags.
+Every offset is a nonnegative integer within the per-file bound, with `offset <= end`; booleans are not offsets.
+The reply preserves request order and returns each row's captured endpoint/generation, new nonblank lines, unread informational lines, open decisions and a suggested `acknowledged_end`.
+A suggestion has no acknowledgement effect: the invoking owner must still verify its original strong birth-time identity and commit only after the prepared output reaches stdout.
+Device/inode pairs are observation checks and disposable index keys, never substitutes for those strong cursor identities.
+The batch folds only through each captured endpoint, so concurrent appends remain unread for a subsequent presentation.
+A missing, replaced or truncated input, changed prefix or changed metadata generation refuses the entire batch, without a partial successful result or cursor write.
+Batches retain at most 64 MiB of captured status bytes and four MiB of metadata; oversized batches refuse for explicit legacy fallback rather than silently omitting rows.
 Unsupported fields, duplicate JSON keys, nonfinite numbers, unsupported verbs and mismatched home/epoch refuse the request.
 A response binds the same protocol, home, epoch and nonce, with `ok` and either `result` or a typed refusal message in `error`.
 Requests and responses are limited to one MiB; regular input files are limited to four MiB.
@@ -54,6 +64,7 @@ There is no unbounded executor queue or worker-per-item scheduling.
 A timed-out filesystem read still occupies its slot until it actually completes.
 Caller cancellation therefore cannot create an unlimited population of abandoned reads.
 The critical lane remains independent of hung ordinary work.
+Every phase of a presentation batch, including its initial and pre-reply metadata generation barriers, uses ordinary capacity rather than the reserved critical slots.
 Kernel syscalls on an unreliable filesystem cannot be forcibly cancelled by Python threads; capacity exhaustion returns a refusal, and this foundation must not be installed as authoritative supervision.
 
 Only concurrent in-flight requests for the same argument set share a native fold.
@@ -77,9 +88,12 @@ No process-birth or CPU saving has been measured or claimed.
 It checks keyed transitions, correlation tokens, malformed time tags, terminal-task versus persistent-mate folds, protected tool blockers, incomplete final lines, invalid UTF-8, fresh tool levels without status changes, generation/root refusal, single-flight and timeout reservation.
 Native crew-state cases also compare the legacy public CLI on identical isolated git repositories and captured fake no-mistakes/backend/forge responses.
 They include fresh HEAD, daemon and semantic-pane negative controls without status changes, selected-run identity, gate authority, coarse dead-instrument outcomes and a backend no-lifecycle tripwire.
+Captured-presentation tests compare unread rows, folded decisions, new-line spans and suggested contiguous endpoints against the existing shell presentation transaction APIs across all task kinds, classified/fully-presented combinations, partial lines and invalid UTF-8.
+They also exercise append-bounded snapshots, whole-batch refusal on replacement/truncation/generation changes, fresh protected tool levels and batch single-flight/timeout fairness without writing a native cursor.
+Separate initial/final-generation-barrier stalls saturate ordinary capacity with concurrent batches and prove both critical slots still admit status-fold observations.
 It does not test against live endpoints or start a backend.
 
-Production current-state compatibility routing, native drain presentation, snapshot composition, dirty-trigger publication and the complete existing parity matrix are not implemented by this foundation.
+Production current-state compatibility routing, coupling native drain facts to the existing presentation transaction, snapshot composition, dirty-trigger publication and the complete existing parity matrix are not implemented by this foundation.
 The focused native current-state tests are not the full existing crew-state matrix.
 There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).
