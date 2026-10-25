@@ -15,6 +15,9 @@ operation=${1:-}
 ID=${2:-}
 case "$ID" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2 ;; esac
 META="$STATE/$ID.meta"
+# Out-variable readers assign these at runtime; initialize explicitly so source-
+# aware lint does not confuse their uppercase names with library-local fields.
+KIND='' WT='' BACKEND='' TARGET='' HARNESS='' MODE='' PROJECT=''
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
 fm_meta_get_to KIND "$META" kind
