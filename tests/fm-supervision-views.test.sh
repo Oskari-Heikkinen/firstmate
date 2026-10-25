@@ -13,6 +13,8 @@
 # Native task-row snapshot composition compares complete legacy JSON rows,
 # generation discard, fresh pane evidence, fixed-pool fairness and real-client
 # whole-batch fallback; existing publication and dirty-trigger owners stay shell.
+# Full public snapshot parity retains captured parent activity/mtime/metadata;
+# malformed captures or unsafe private staging refuse before native selection.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh

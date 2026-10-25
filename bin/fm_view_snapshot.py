@@ -99,7 +99,7 @@ class Snapshot:
         crew = Crew(captured, task, self.environment, expected_generation=row["meta"])
         endpoint_exists, agent_alive = None, "not_checked"
         if remote:
-            current = result("unknown", "none", "remote endpoint liveness not collected by fleet snapshot")
+            current = dict(result("unknown", "none", "remote endpoint liveness not collected by fleet snapshot"), raw="")
             agent_alive = "unknown"
         elif self.current(row):
             current = crew.read()
@@ -110,7 +110,7 @@ class Snapshot:
             endpoint_exists = {"null": None, "true": True, "false": False}[packet[0]]
             agent_alive = packet[1]
         else:
-            current = result("unknown", "none", "task generation changed during snapshot")
+            current = dict(result("unknown", "none", "task generation changed during snapshot"), raw="")
             agent_alive = "unknown"
         # Only ordinary worker capacity performs path observations or row folds.
         report = os.path.isfile(self.inputs.home / "data" / task / "report.md")
@@ -174,10 +174,20 @@ class Snapshot:
     def finish(self, captures, rows, observed_at, epoch):
         # Bracket ALL evidence, including folds/report/endpoint, with the selected
         # metadata identity. Replacements never inherit the predecessor's facts.
+        staged = []
         for index, captured in enumerate(captures):
+            status = captured["status"]
             if not self.current(captured):
+                status = None
                 rows[index] = self.row(captured, fields(captured["meta"]["bytes"]), None, {"open": []},
-                    result("unknown", "none", "task generation changed during snapshot"), None, "unknown", False,
+                    dict(result("unknown", "none", "task generation changed during snapshot"), raw=""), None, "unknown", False,
                     observed_at, epoch)
+            # The legacy cross-home collector consumes these SAME captured
+            # inputs, not a second live read or an invented missing file. Only
+            # its invoking client writes disposable private transport files.
+            staged.append({"task": captured["task"],
+                "meta": captured["meta"]["bytes"].decode("utf-8", "surrogateescape"),
+                "status": status["bytes"].decode("utf-8", "surrogateescape") if status else None,
+                "status_mtime_ns": status["mtime_ns"] if status else None})
         self.inputs.check()
-        return {"tasks": rows}
+        return {"tasks": rows, "captures": staged}

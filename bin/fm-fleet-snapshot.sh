@@ -2113,8 +2113,15 @@ if [ "$OUTPUT_MODE" = contribution-input ]; then
 fi
 TASKS_JSON=
 if [ -n "${FM_VIEW_SOCKET:-}" ]; then
-  TASKS_JSON=$(python3 "$SCRIPT_DIR/fm-view-client.py" snapshot-tasks "$SNAPSHOT_NOW" "$SNAPSHOT_EPOCH" \
-    "$FM_SNAPSHOT_LOCAL_READ_CONCURRENCY" "$FM_SNAPSHOT_CREW_STATE_TIMEOUT") || TASKS_JSON=
+  # The cross-home collector still owns parent activity/terminal evidence. Give
+  # it the native batch's captured bytes and mtimes, not a second live read.
+  SNAPSHOT_TASK_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-fleet-tasks.XXXXXX") || SNAPSHOT_TASK_DIR=
+  if [ -n "$SNAPSHOT_TASK_DIR" ]; then
+    TASKS_JSON=$(python3 "$SCRIPT_DIR/fm-view-client.py" snapshot-tasks "$SNAPSHOT_NOW" "$SNAPSHOT_EPOCH" \
+      "$FM_SNAPSHOT_LOCAL_READ_CONCURRENCY" "$FM_SNAPSHOT_CREW_STATE_TIMEOUT" "$SNAPSHOT_TASK_DIR") || TASKS_JSON=
+  else
+    echo 'fm-fleet-snapshot: native capture staging unavailable; use legacy' >&2
+  fi
 fi
 if [ -z "$TASKS_JSON" ]; then
   prefetch_task_current_states || { echo "fm-fleet-snapshot: task observation failed" >&2; exit 1; }

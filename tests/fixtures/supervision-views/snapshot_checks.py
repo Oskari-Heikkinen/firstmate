@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import unittest
 from unittest.mock import patch
@@ -23,6 +24,8 @@ def arguments(concurrency=4):
 
 
 class SnapshotParity(unittest.TestCase):
+    maxDiff = None
+
     def setUp(self):
         self.fixture = CrewParity("runTest")
         self.fixture.setUp()
@@ -48,7 +51,13 @@ class SnapshotParity(unittest.TestCase):
         self.assertEqual(legacy.returncode, 0, legacy.stderr)
         # JSON transport replaces undecodable argument bytes like jq; normal
         # metadata is UTF-8 and status encoding has a separate fold matrix.
-        self.assertEqual(self.native(), json.loads(legacy.stdout)["tasks"])
+        expected = json.loads(legacy.stdout)["tasks"]
+        # The public composer enriches task rows with backlog AFTER either
+        # engine returns. This unit oracle compares only that engine boundary;
+        # real-client tests below retain full public JSON equality.
+        for row in expected:
+            self.assertIsNone(row.pop("backlog"))
+        self.assertEqual(self.native(), expected)
 
     def test_full_local_row_matrix(self):
         for kind in ("ship", "scout", "secondmate"):
@@ -93,8 +102,12 @@ class SnapshotParity(unittest.TestCase):
         captures = snapshot.capture(snapshot.inventory())
         rows = [snapshot.compose(row, NOW, EPOCH) for row in captures]
         (self.state / "task.meta").write_text("kind=scout\nspawn_gen=replacement\n")
-        row = snapshot.finish(captures, rows, NOW, EPOCH)["tasks"][0]
+        finished = snapshot.finish(captures, rows, NOW, EPOCH)
+        row = finished["tasks"][0]
+        self.assertIsNone(finished["captures"][0]["status"])
+        self.assertIsNone(finished["captures"][0]["status_mtime_ns"])
         self.assertEqual(row["spawn_gen"], "g1")
+        self.assertEqual(row["current_state"]["raw"], "")
         self.assertEqual(row["current_state"]["detail"], "task generation changed during snapshot")
         self.assertEqual(row["hints"]["open_decisions"], [])
         self.assertFalse(row["paths"]["status_log"]["present"])
@@ -129,6 +142,8 @@ class SnapshotParity(unittest.TestCase):
 
 
 class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
+    maxDiff = None
+
     # Reuse the isolated real transport/entrypoint fixture, not any live home.
     asyncSetUp = Compatibility.asyncSetUp
     asyncTearDown = Compatibility.asyncTearDown
@@ -153,6 +168,40 @@ class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(refused), json.loads(legacy))
             self.assertIn(b"use legacy", error)
 
+
+    async def test_parent_collector_uses_captured_bytes_mtime_and_metadata(self):
+        self.status(b"working [key=activity]: captured work\nnote: captured answer\n")
+        stamp = (EPOCH - 120) * 1_000_000_000
+        os.utime(self.state / "task.status", ns=(stamp, stamp))
+        with (self.state / "task.meta").open("a") as stream:
+            stream.write("window=fixture:task\nbackend=tmux\n")
+        # A present endpoint and a terminal capture require the collector's
+        # captured metadata, not just its captured status history.
+        tmux = self.home / "fakebin/tmux"
+        tmux.write_text('#!/bin/sh\ncase "$1" in display-message) printf "%%1\\n"; exit 0;; capture-pane) printf "captured answer\\n"; exit 0;; esac\nexit 1\n')
+        tmux.chmod(0o700)
+        legacy, _ = await self.invoke("fm-fleet-snapshot.sh", "--json", native=False,
+                                      FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+        baseline = json.loads(legacy)
+        parent = baseline["secondmate_current"]["records"][0]
+        self.assertEqual(parent["freshness"]["age_seconds"], 120)
+        self.assertEqual(parent["parent_event"]["open_activities"][0]["key"], "activity")
+        self.assertTrue(parent["terminal_evidence"]["captured"])
+        calls = []
+        original = Snapshot.finish
+        def finish(instance, captures, rows, observed_at, epoch):
+            reply = original(instance, captures, rows, observed_at, epoch)
+            calls.append(True)
+            # A new status, including a new mtime, arrives after capture. It
+            # cannot leak into ANY selected row or parent-evidence surface.
+            (self.state / "task.status").write_bytes(b"working [key=newer]: after capture\n")
+            return reply
+        with patch.dict(os.environ, self.env), patch.object(Snapshot, "finish", finish):
+            native, error = await self.invoke("fm-fleet-snapshot.sh", "--json",
+                                              FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+        self.assertEqual(calls, [True])
+        self.assertNotIn(b"use legacy", error)
+        self.assertEqual(json.loads(native), baseline)
 
     async def test_atomic_same_generation_metadata_rewrite_uses_complete_legacy_fallback(self):
         original = Snapshot.compose
@@ -191,7 +240,8 @@ class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
     async def test_malformed_snapshot_reply_falls_back_before_output(self):
         self.status(b"blocked [key=x]: question\n")
         original = Snapshot.finish
-        for damage in ("duplicate", "path", "state", "missing"):
+        for damage in ("duplicate", "path", "state", "missing", "capture-missing", "capture-foreign",
+                       "capture-presence", "capture-time", "capture-duplicate"):
             calls = []
             def finish(instance, captures, rows, observed_at, epoch):
                 reply = original(instance, captures, rows, observed_at, epoch)
@@ -202,8 +252,18 @@ class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
                     reply["tasks"][0]["paths"]["meta"]["path"] = "/foreign/task.meta"
                 elif damage == "state":
                     reply["tasks"][0]["current_state"]["state"] = "invented"
-                else:
+                elif damage == "missing":
                     del reply["tasks"][0]["hints"]
+                elif damage == "capture-missing":
+                    del reply["captures"]
+                elif damage == "capture-foreign":
+                    reply["captures"][0]["task"] = "foreign"
+                elif damage == "capture-presence":
+                    reply["captures"][0]["status"] = None
+                elif damage == "capture-time":
+                    reply["captures"][0]["status_mtime_ns"] = True
+                else:
+                    reply["captures"].append(reply["captures"][0])
                 return reply
             with self.subTest(damage=damage), patch.dict(os.environ, self.env), patch.object(Snapshot, "finish", finish):
                 native, error = await self.invoke("fm-fleet-snapshot.sh", "--json", FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
@@ -211,6 +271,43 @@ class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(json.loads(native), json.loads(legacy))
                 self.assertEqual(calls, [True])
                 self.assertIn(b"use legacy", error)
+
+    async def test_unsafe_capture_directory_refuses_before_native_selection(self):
+        self.status(b"working [key=activity]: captured\nnote: answer\n")
+        legacy, _ = await self.invoke("fm-fleet-snapshot.sh", "--json", native=False,
+                                      FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+        protected = self.home / "protected-captures"
+        protected.mkdir()
+        (protected / "sentinel").write_bytes(b"untouched")
+        marker = self.home / "staging-refusal-reached"
+        wrapper = self.home / "fakebin/python3"
+        for damage in ("occupied", "public", "symlink"):
+            wrapper.write_text(f'''#!{sys.executable}
+import os
+from pathlib import Path
+import sys
+if len(sys.argv) > 2 and sys.argv[1].endswith("fm-view-client.py") and sys.argv[2] == "snapshot-tasks":
+    directory = Path(sys.argv[-1])
+    damage = {damage!r}
+    if damage == "occupied":
+        (directory / ".occupied").touch()
+    elif damage == "public":
+        directory.chmod(0o755)
+    else:
+        directory.rmdir()
+        directory.symlink_to({str(protected)!r}, target_is_directory=True)
+    Path({str(marker)!r}).write_text(damage)
+os.execv({sys.executable!r}, [{sys.executable!r}] + sys.argv[1:])
+''')
+            wrapper.chmod(0o700)
+            with self.subTest(damage=damage), patch.dict(os.environ, self.env):
+                native, error = await self.invoke("fm-fleet-snapshot.sh", "--json",
+                                                  FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+                self.assertEqual(marker.read_text(), damage)
+                self.assertIn(b"use legacy", error)
+                self.assertEqual(json.loads(native), json.loads(legacy))
+                self.assertEqual(list(protected.iterdir()), [protected / "sentinel"])
+                self.assertEqual((protected / "sentinel").read_bytes(), b"untouched")
 
     async def test_dirty_trigger_during_native_publication_survives_for_next_refresh(self):
         self.status(b"blocked [key=first]: captured\n")
@@ -299,7 +396,7 @@ class SnapshotScheduling(unittest.IsolatedAsyncioTestCase):
                             if isinstance(outcome, Refused):
                                 self.assertIn("capacity", str(outcome))
                             else:
-                                self.assertEqual(outcome, {"tasks": []})
+                                self.assertEqual(outcome, {"tasks": [], "captures": []})
                 finally:
                     release.set()
                     await asyncio.gather(*subscribers, return_exceptions=True)

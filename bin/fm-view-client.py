@@ -4,7 +4,7 @@
 Usage: fm-view-client.py crew-state TASK
        fm-view-client.py status-presentation < captured-rows.tsv
        fm-view-client.py drain-presentation < captured-snapshot.tsv
-       fm-view-client.py snapshot-tasks OBSERVED_AT EPOCH CONCURRENCY TASK_TIMEOUT
+       fm-view-client.py snapshot-tasks OBSERVED_AT EPOCH CONCURRENCY TASK_TIMEOUT CAPTURE_DIR
 
 Explicit FM_VIEW_SOCKET, FM_VIEW_EPOCH and canonical FM_HOME select an already
 owner-managed read service. There is no discovery, startup, mode switch or PID
@@ -18,10 +18,15 @@ A acknowledgement suggestions, U unread facts, O open-decision facts and N
 captured annotation lines only;
 it is private call output, not a durable acknowledgement or receipt. Strong
 identities pass through unchanged to the existing commit transaction owner.
+Snapshot calls stage their validated captured metadata/status in the invoking
+owner's empty private CAPTURE_DIR before emitting task JSON. The existing
+cross-home collector consumes those bytes and original status mtimes; these are
+disposable transport files, never authoritative state or service-owned writes.
 """
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 
 from fm_view_engine import MAX_MESSAGE, TASK_ID, client, encoded, require
@@ -108,18 +113,54 @@ def presentation_output(result, rows, originals):
     return "".join(output)
 
 
+def stage_snapshot(result, directory):
+    rows, captures = result["tasks"], result.get("captures")
+    require(type(captures) is list and len(captures) == len(rows), "snapshot capture count mismatch")
+    for row, capture in zip(rows, captures):
+        require(type(capture) is dict and set(capture) == {"task", "meta", "status", "status_mtime_ns"}
+                and capture["task"] == row["id"] and type(capture["meta"]) is str,
+                "invalid snapshot capture binding")
+        present = capture["status"] is not None
+        require(present == row["paths"]["status_log"]["present"], "snapshot captured status presence mismatch")
+        require((present and type(capture["status"]) is str and type(capture["status_mtime_ns"]) is int
+                 and -(2 ** 63) <= capture["status_mtime_ns"] < 2 ** 63)
+                or (not present and capture["status_mtime_ns"] is None), "invalid snapshot captured status")
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700
+                and not os.listdir(fd), "snapshot capture directory must be empty, private and owned")
+        for capture in captures:
+            for suffix in ("meta", "status"):
+                text = capture[suffix]
+                if text is None:
+                    continue
+                name = capture["task"] + "." + suffix
+                output = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+                with os.fdopen(output, "wb") as stream:
+                    stream.write(text.encode("utf-8", "surrogateescape"))
+                if suffix == "status":
+                    stamp = capture["status_mtime_ns"]
+                    os.utime(name, ns=(stamp, stamp), dir_fd=fd, follow_symlinks=False)
+        selected = os.stat(directory, follow_symlinks=False)
+        require((selected.st_dev, selected.st_ino) == (info.st_dev, info.st_ino),
+                "snapshot capture directory replaced")
+    finally:
+        os.close(fd)
+
+
 def main(arguments, environment):
     path, home, epoch = binding(environment)
     require(arguments and arguments[0] in ("crew-state", "status-presentation", "drain-presentation", "snapshot-tasks"), "unsupported client operation")
     verb = arguments[0]
     if verb == "snapshot-tasks":
-        require(len(arguments) == 5 and all(re.fullmatch(r"[0-9]{1,13}", value) for value in arguments[2:]),
+        require(len(arguments) == 6 and all(re.fullmatch(r"[0-9]{1,13}", value) for value in arguments[2:5]),
                 "invalid snapshot client arguments")
         options = {name: environment[name] for name in (
             "FM_CREW_STATE_NM_TIMEOUT", "FM_CREW_STATE_RUNS_LIMIT", "FM_CREW_STATE_NO_FORGE") if name in environment}
         result = client(path, home, epoch, verb, {"observed_at": arguments[1], "epoch": int(arguments[2]),
             "concurrency": int(arguments[3]), "task_timeout": int(arguments[4]), "options": options}, timeout=30)
-        require(type(result) is dict and set(result) == {"tasks"} and type(result["tasks"]) is list
+        require(type(result) is dict and set(result) == {"tasks", "captures"} and type(result["tasks"]) is list
                 and len(result["tasks"]) <= 256, "invalid snapshot reply")
         previous = ""
         for row in result["tasks"]:
@@ -163,7 +204,9 @@ def main(arguments, environment):
             for opened in row["hints"]["open_decisions"]:
                 require(type(opened) is dict and all(type(opened.get(name)) is str for name in ("key", "verb", "summary"))
                         and opened["verb"] in ("blocked", "needs-decision"), "invalid snapshot decision")
-        return encoded(result["tasks"]).decode("ascii")
+        output = encoded(result["tasks"]).decode("ascii")
+        stage_snapshot(result, arguments[5])
+        return output
     if verb == "crew-state":
         require(len(arguments) == 2, "crew-state requires one task")
         options = {name: environment[name] for name in (
