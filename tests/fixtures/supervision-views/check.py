@@ -364,4 +364,5 @@ if __name__ == "__main__":
     from crew_checks import CrewParity, PassiveProcess
     from presentation_checks import PresentationParity, PresentationScheduling
     from compatibility_checks import Compatibility
+    from snapshot_checks import SnapshotParity, SnapshotCompatibility, SnapshotScheduling
     unittest.main()

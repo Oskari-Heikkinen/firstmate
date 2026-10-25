@@ -10,6 +10,9 @@
 # independent owner-side lower bound before native selection or stdout.
 # Presentation compares unread rows, decisions and suggested contiguous cursor
 # endpoints to the existing shell transaction APIs; no live home or backend.
+# Native task-row snapshot composition compares complete legacy JSON rows,
+# generation discard, fresh pane evidence, fixed-pool fairness and real-client
+# whole-batch fallback; existing publication and dirty-trigger owners stay shell.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh
