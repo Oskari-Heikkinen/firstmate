@@ -16,6 +16,9 @@
 # whole-batch fallback; existing publication and dirty-trigger owners stay shell.
 # Full public snapshot parity retains captured parent activity/mtime/metadata;
 # malformed captures or unsafe private staging refuse before native selection.
+# Whole home-summary JSON and the atomic published ledger match legacy on a
+# pinned wall timestamp; native publication timeout preserves the prior complete
+# ledger and owed trigger, then a fresh retry publishes the updated decision.
 # The existing complete crew-state behavior matrix is also executed through a
 # fresh real native socket/client per isolated case request; only explicitly
 # unsupported integrations may fall back, with every reason counted in output.
