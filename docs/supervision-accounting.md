@@ -92,6 +92,7 @@ Offline accounting reproduces the report without touching a home or starting a p
 Synthetic fixture provenance remains explicit and cannot certify B0.
 Duration is explicitly 1-300 seconds, samples are spaced by at least one second with no catch-up scans, and each scan admits at most 32,768 leaders.
 A final scan has at most two seconds of slack, and a process-local real-time alarm bounds the entire invocation to duration plus five seconds, including validation, accounting and output.
+Alarm expiry is fatal, not a recoverable unreadable PID or unavailable hint, even during the final task read.
 The reliable-local-filesystem caveat in Ownership and bounds still applies.
 The explicit byte cap is an aggregate cap over all three files, at most 64 MiB, not a cap per sample.
 The default is 8 MiB, well below 1 GiB; cap, identity, scan or deadline refusal leaves incomplete evidence and exit 2, never a successful baseline.
@@ -310,9 +311,13 @@ The public CLI counterfactual requires the new proc mode, exact machine denomina
 Model regressions replay sealed multi-home tick records, non-unit calibration divisors, all named families and an additional family, missing coverage, wider-window rates, partial lines, zero ticks, code/configuration mismatch, shared records, aliases, loss and tampering.
 Independent birth and CPU overestimate cases leave the observed lower bound consistent while requiring negative model residuals and `model-total-contradiction`; removing the model-total check fails them.
 The CI-only collector integration reads a static fixture tick log, measures zero new ticks, and reproduces the recorded report offline without launching a tick-generating workload.
-The separate [`proc-bounds-fixture-v1.schema.json`](supervision-accounting/proc-bounds-fixture-v1.schema.json) admits only explicitly synthetic guard probes with closed, small clock/limit/pause inputs.
-That fixture-only command exercises the same process-local real-time alarm, per-scan deadline and task-count guard as live capture, without reading procfs, writing evidence or running a workload.
-A passing fixture and three independent one-input changes require the exact refusal for each guard; removing any guard makes its negative case succeed and fails the regression.
+An otherwise-valid admitted FIFO tick record must refuse with the nonregular-record diagnostic within a bounded subprocess, not publish an empty zero-tick report.
+The separate [`proc-bounds-fixture-v1.schema.json`](supervision-accounting/proc-bounds-fixture-v1.schema.json) admits only explicitly synthetic guard probes with closed, small clock/limit/pause, read-region and credential inputs.
+That fixture-only command exercises the same process-local real-time alarm, per-scan deadline, task-count guard and credential validator as live capture, without reading procfs, writing evidence or running a workload.
+Paired positive/negative fixtures require the exact refusal for each guard; removing any guard makes its negative case succeed and fails the regression.
+The read-region probe runs the real per-PID reader and scan exception handlers over synthetic bytes, delivering the process-local alarm deterministically during the last PID of the final scan at stat, stat reread, cmdline or executable lookup.
+Every expiry must exit 2 with the deadline diagnostic and no success stdout; the ordinary pause probe separately checks real timer scheduling.
+Credential cases independently test root with zero effective capabilities and nonroot with nonzero effective capabilities, requiring their respective diagnostics and no success output, without requesting or changing privileges.
 Fixture controls have no live flags or environment inputs, cannot be included in a closed live manifest, and the synthetic probe format is refused as a live manifest or raw recording.
 The fixture pause is capped at 200ms and its task array at sixteen items; it is not an alternate live capture source.
 The default-refusing [`fm-supervision-accounting-live.test.sh`](../tests/fm-supervision-accounting-live.test.sh) guard exercises the real collector, importer, ptrace/pidfd cleanup and strace format against only an explicitly supplied owner manifest during ordinary workload.

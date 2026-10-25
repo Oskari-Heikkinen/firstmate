@@ -1114,6 +1114,38 @@ for label, updates, diagnostic in (
     refusal = run('check-proc-fixture', save('proc-bounds-' + label + '.json', changed), good=False)
     assert diagnostic in refusal.stderr, refusal.stderr
     checks += 1
+# Deliver the SAME alarm handler deterministically during both protected
+# PID-read regions, including stat reread and exe lookup. The first scan and
+# first PID of the final scan succeed; only its LAST PID gets the alarm. A
+# swallowed fatal exception would return a successful JSON report instead.
+for region in ('stat-first', 'stat-last', 'cmdline', 'exe'):
+    positive = dict(bounds, read_region=region, expire_on_final_task=False)
+    assert json.loads(run('check-proc-fixture', save('proc-read-valid-' + region + '.json', positive),
+                          timeout=3).stdout) == dict(synthetic=True, tasks_read=2)
+    negative = dict(positive, expire_on_final_task=True)
+    refusal = run('check-proc-fixture', save('proc-read-expired-' + region + '.json', negative),
+                  good=False, timeout=3)
+    assert b'proc total deadline exceeded' in refusal.stderr, refusal.stderr
+    assert refusal.stdout == b'', refusal.stdout
+    checks += 1
+
+# Independent credentials, not the runner's root OR caps state. These
+# closed synthetic values reach the same credential validator as live capture,
+# never change process credentials and cannot override a live invocation.
+credentials = dict(bounds, credentials=dict(euid=1000, cap_eff='0000000000000000'))
+for label, euid, cap_eff, diagnostic in (
+    ('root-zero-caps', 0, '0000000000000000', b'proc capture refuses root'),
+    ('nonroot-caps', 1000, '0000000000000001', b'proc capture refuses effective capabilities'),
+):
+    assert json.loads(run('check-proc-fixture', save('proc-credentials-valid-' + label + '.json',
+                                                  credentials), timeout=3).stdout) == dict(synthetic=True, tasks_read=2)
+    negative = dict(credentials, credentials=dict(euid=euid, cap_eff=cap_eff))
+    refusal = run('check-proc-fixture', save('proc-credentials-' + label + '.json', negative),
+                  good=False, timeout=3)
+    assert diagnostic in refusal.stderr, refusal.stderr
+    assert refusal.stdout == b'', refusal.stdout
+    checks += 1
+
 for label, updates in (
     ('not-synthetic', dict(synthetic=False)),
     ('privileged-route', dict(proc_root='/proc')),
@@ -1121,6 +1153,9 @@ for label, updates in (
     ('alarm-bound', dict(deadline_ms=0)),
     ('scan-bound', dict(scan_deadline_ms=0)),
     ('cap-bound', dict(task_limit=32768)),
+    ('unknown-read-region', dict(read_region='foreign-read')),
+    ('expiry-without-region', dict(expire_on_final_task=True)),
+    ('credential-route', dict(credentials=dict(euid=1000, cap_eff='0000000000000000', sudo=True))),
 ):
     run('check-proc-fixture', save('proc-bounds-bad-' + label + '.json', dict(bounds, **updates)), good=False)
     checks += 1
@@ -1178,6 +1213,7 @@ if sys.platform == 'linux':
         for label, edit_spec in (
             ('synthetic', lambda s: s.update(synthetic=True)),
             ('oversize', lambda s: None),
+            ('fifo', lambda s: None),
             ('symlink', lambda s: s['profiles'][0].update(record_path=str(tmp / 'linked-ticks.log'))),
             ('symlink-parent', lambda s: s['profiles'][0].update(record_path=str(tmp / 'linked-parent/ticks.log'))),
         ):
@@ -1185,14 +1221,27 @@ if sys.platform == 'linux':
             edit_spec(bad_spec)
             if label == 'oversize':
                 log_path.write_bytes(b'x' * 65537)
+            elif label == 'fifo':
+                log_path.unlink()
+                os.mkfifo(log_path)
             elif label == 'symlink':
+                log_path.unlink()
                 log_path.write_bytes(b'TICK\n')
                 (tmp / 'linked-ticks.log').symlink_to(log_path)
             elif label == 'symlink-parent':
                 (tmp / 'linked-parent').symlink_to(tmp, target_is_directory=True)
-            run('capture-proc', '--manifest', model_manifest_path,
-                '--model', save('proc-live-model-bad-' + label + '.json', bad_spec),
-                '--seconds', 1, '--output', tmp / ('proc-model-refuse-' + label), env=env_proc, good=False)
+            bad_output = tmp / ('proc-model-refuse-' + label)
+            refusal = run('capture-proc', '--manifest', model_manifest_path,
+                          '--model', save('proc-live-model-bad-' + label + '.json', bad_spec),
+                          '--seconds', 1, '--output', bad_output, env=env_proc, good=False, timeout=12)
+            if label == 'fifo':
+                # Same otherwise-valid profile/log path as the positive above;
+                # without regular-file admission an unwritten FIFO reads EOF
+                # twice and wrongly publishes a zero-tick successful report.
+                assert b'model tick record not regular' in refusal.stderr, refusal.stderr
+                assert refusal.stdout == b''
+                assert not (bad_output / 'proc.json').exists() and not (bad_output / 'report.json').exists()
+                checks += 1
         for label, extra, environment in (
             ('no-live', [], dict(env_proc, FM_SUPERVISION_PROC_LIVE='0')),
             ('duration', ['--seconds', '301'], env_proc),
@@ -1216,10 +1265,13 @@ if sys.platform == 'linux':
         run('capture-proc', '--manifest', save('proc-stale.json', local), '--seconds', 1,
             '--output', tmp / 'proc-stale-root', env=env_proc, good=False)
     else:
-        assert not output.exists()
+        diagnostic = b'proc capture refuses root' if os.geteuid() == 0 else b'proc capture refuses effective capabilities'
+        assert diagnostic in result.stderr, result.stderr
+        assert result.stdout == b'' and not output.exists()
     # There is no flag to request sudo, ptrace, perf, BPF or arbitrary commands.
     for flag in ('--sudo', '--ptrace', '--perf', '--bpf', '--command', '--fixture',
-                 '--proc-root', '--clock-ms', '--task-limit', '--deadline-ms'):
+                 '--proc-root', '--clock-ms', '--task-limit', '--deadline-ms',
+                 '--read-region', '--expire-on-final-task', '--credentials', '--euid', '--cap-eff'):
         refused = subprocess.run([sys.executable, str(cli), 'capture-proc', '--manifest', str(local_path),
                                   '--seconds', '1', '--output', str(tmp / 'privileged'), flag],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)

@@ -16,9 +16,11 @@ Requires FM_SUPERVISION_PROC_LIVE=1, non-root,
 no effective capabilities, local single-machine enrollment and published roots.
 No subprocess, attach, target signals, policy writes or workload. Output cap is TOTAL.
 `account-proc FILE` replays its proc.json (including synthetic CI fixtures).
-`check-proc-fixture FILE` exercises the SAME deadline/scan/task-cap guards with
-closed synthetic JSON clocks/limits and at most 200ms of pause; no /proc reads,
-output directory or live capture. Fixture controls cannot be supplied to live
+`check-proc-fixture FILE` exercises the SAME deadline/scan/task-cap/credential
+guards with closed synthetic JSON inputs and at most 200ms of pause. Optional
+read_region + expire_on_final_task deliver the alarm at a synthetic final-scan
+read; credentials supplies synthetic euid/cap_eff. No /proc reads, output
+directory or live capture. Fixture controls cannot be supplied to live
 capture, by flags, environment or manifest fields.
 Proc reports measured machine totals and observed lower bounds, NOT complete B0.
 Capture output is private and may contain command arguments.
@@ -56,6 +58,10 @@ SHELL_EXECUTABLES = ("/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh")
 
 class Refused(ValueError):
     pass
+
+
+class ProcDeadline(Exception):
+    """Fatal invocation expiry, never a recoverable per-PID read loss."""
 
 
 def require(condition, message):
@@ -355,18 +361,18 @@ def proc_boundary(hz):
                 "boot_id": read_bytes("/proc/sys/kernel/random/boot_id", 128).decode("ascii").strip()}
 
 
-def proc_task(pid):
+def proc_task(pid, *, read_file=read_bytes, read_link=os.readlink):
     base = "/proc/" + str(pid)
 
     def fields():
-        text = read_bytes(base + "/stat", 16384).decode("utf-8", "surrogateescape")
+        text = read_file(base + "/stat", 16384).decode("utf-8", "surrogateescape")
         return text[text.rfind(")") + 2:].split()
 
     first = fields()
     hint_unavailable = False
     try:
-        raw = read_bytes(base + "/cmdline", 65536)
-        executable = os.readlink(base + "/exe") if raw else ""
+        raw = read_file(base + "/cmdline", 65536)
+        executable = read_link(base + "/exe") if raw else ""
     except (PermissionError, Refused):
         raw, executable, hint_unavailable = b"", "", True
     last = fields()
@@ -377,7 +383,7 @@ def proc_task(pid):
             if raw else [], "executable": executable, "hint_unavailable": hint_unavailable}
 
 
-def proc_scan(deadline, byte_budget, fixture=None):
+def proc_scan(deadline, byte_budget, fixture=None, *, task_reader=None):
     # Only check-proc-fixture can supply fixture data. The live caller always
     # uses /proc, its real monotonic clock and the fixed 32768-leader ceiling.
     started = time.monotonic_ns()
@@ -394,9 +400,13 @@ def proc_scan(deadline, byte_budget, fixture=None):
                 continue
             require(len(tasks) + unreadable + vanished < task_limit, "proc task cap exceeded")
             try:
-                task = proc_task(int(name)) if fixture is None else {
-                    "pid": item, "ppid": 0, "start_ticks": 0, "user_ticks": 0,
-                    "system_ticks": 0, "argv": [], "executable": "", "hint_unavailable": False}
+                if task_reader is not None:
+                    task = task_reader(int(name))
+                elif fixture is None:
+                    task = proc_task(int(name))
+                else:
+                    task = {"pid": item, "ppid": 0, "start_ticks": 0, "user_ticks": 0,
+                            "system_ticks": 0, "argv": [], "executable": "", "hint_unavailable": False}
             except (FileNotFoundError, ProcessLookupError):
                 vanished += 1
                 continue
@@ -662,7 +672,7 @@ def account_proc(value):
 
 def proc_with_deadline(seconds, action):
     def expired(_signum, _frame):
-        raise Refused("proc total deadline exceeded; retain incomplete output")
+        raise ProcDeadline("proc total deadline exceeded; retain incomplete output")
 
     previous = signal.signal(signal.SIGALRM, expired)
     signal.setitimer(signal.ITIMER_REAL, seconds)
@@ -684,21 +694,57 @@ def check_proc_fixture(value):
     require(hasattr(signal, "setitimer"), "fixture needs interval timer support")
 
     def exercise():
-        # The bounded pause exercises the real process-local alarm, not a mock
-        # verdict. The scanner's clock and task limit are deterministic data.
+        if "credentials" in value:
+            credentials = value["credentials"]
+            proc_credentials(credentials["euid"], "CapEff:\t" + credentials["cap_eff"] + "\n")
+        # The bounded pause exercises timer delivery. The optional read probe
+        # instead delivers that same handler deterministically inside the real
+        # proc_task/scan catch regions, on the last PID of the second scan.
+        # Only this closed fixture command constructs substitute readers.
         time.sleep(value["pause_ms"] / 1000)
-        scan = proc_scan(value["scan_deadline_ms"] / 1000, 65536, value)
+        region = value.get("read_region")
+        require(not value.get("expire_on_final_task") or region is not None,
+                "fixture expiry needs read_region")
+
+        def scan_once(final):
+            def task_reader(pid):
+                stat_reads = 0
+
+                def read_probe(path, _limit=None):
+                    nonlocal stat_reads
+                    part = path.rsplit("/", 1)[1]
+                    if part == "stat":
+                        stat_reads += 1
+                        part = "stat-first" if stat_reads == 1 else "stat-last"
+                    if (final and value.get("expire_on_final_task") and
+                            pid == value["pids"][-1] and part == region):
+                        signal.raise_signal(signal.SIGALRM)
+                    if part.startswith("stat-"):
+                        return b"1 (fixture) S " + b"0 " * 19
+                    return b"/fixture/exe" if part == "exe" else b"fixture\0"
+
+                return proc_task(pid, read_file=read_probe,
+                                 read_link=lambda path: read_probe(path).decode("ascii"))
+
+            return proc_scan(value["scan_deadline_ms"] / 1000, 65536, value,
+                             task_reader=task_reader if region is not None else None)
+
+        scan_once(False)
+        scan = scan_once(True)
         return {"synthetic": True, "tasks_read": len(scan["tasks"])}
 
     return proc_with_deadline(value["deadline_ms"] / 1000, exercise)
 
 
-def collect_proc(args):
-    require(os.geteuid() != 0, "proc capture refuses root")
-    capabilities = read_bytes("/proc/self/status", 16384).decode("ascii")
+def proc_credentials(euid, capabilities):
+    require(euid != 0, "proc capture refuses root")
     effective = re.search(r"^CapEff:\s*([0-9a-fA-F]+)$", capabilities, re.M)
     require(effective is not None and int(effective[1], 16) == 0,
             "proc capture refuses effective capabilities; no privileged route")
+
+
+def collect_proc(args):
+    proc_credentials(os.geteuid(), read_bytes("/proc/self/status", 16384).decode("ascii"))
     require(os.environ.get("FM_SUPERVISION_PROC_LIVE") == "1", "proc live capture disabled")
     require(1 <= args.seconds <= 300, "proc duration must be 1..300 seconds")
     require(1000 <= args.interval_ms <= 10000, "proc interval must be 1000..10000 ms")
@@ -1213,7 +1259,7 @@ def main():
     except KeyboardInterrupt:
         print("supervision-accounting: refused: interrupted; capture evidence retained", file=sys.stderr)
         return 2
-    except (Refused, OSError, ValueError, KeyError, IndexError, TypeError, RecursionError) as error:
+    except (ProcDeadline, Refused, OSError, ValueError, KeyError, IndexError, TypeError, RecursionError) as error:
         print("supervision-accounting: refused: " + str(error), file=sys.stderr)
         return 2
 
