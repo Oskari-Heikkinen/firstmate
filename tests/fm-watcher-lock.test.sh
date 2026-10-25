@@ -262,6 +262,7 @@ register_slow_check() {  # <dir> <id> <secs>
   mkdir -p "$stage"
   cat > "$stage/$id.check.sh" <<SH
 #!/usr/bin/env bash
+printf '%s\\n' "\$\$" > "$dir/check-$id.pid"
 printf '%s %s\n' "\$(date +%s)" "$id" >> "$dir/check-starts.log"
 sleep $secs
 SH
@@ -344,7 +345,7 @@ start_watcher_in_long_pending_reply_scan() {  # <dir> [env assignments...]
   seed_open_pending_replies "$dir/state" "$SCAN_RECORDS"
   start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" "$@"
   sleep "$LONG_CYCLE_GRACE"
-  [ "$(cat "$dir/state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan ($SCAN_RECORDS records) finished inside the grace"; }
+  [ "$(head -n 1 "$dir/state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan ($SCAN_RECORDS records) finished inside the grace"; }
 }
 
 test_long_pending_reply_scan_keeps_beacon_fresh() {
@@ -360,7 +361,7 @@ test_long_pending_reply_scan_keeps_beacon_fresh() {
   start_watcher_in_long_pending_reply_scan "$dir" FM_WATCHER_WATCHDOG_INTERVAL=3600
   status=0
   out=$(PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_POLL=1 "$WATCH" 2>&1) || status=$?
-  [ "$(cat "$state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the re-arm did not land inside the pending-reply scan"; }
+  [ "$(head -n 1 "$state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the re-arm did not land inside the pending-reply scan"; }
   reap_watcher "$SEED_PID"
   expect_code 0 "$status" "re-arm inside a long pending-reply scan"
   assert_contains "$out" "watcher: already running pid $SEED_PID" "re-arm did not attach to the watcher inside its pending-reply scan: $out"
@@ -376,14 +377,14 @@ test_long_pending_reply_scan_survives_watchdog() {
   state="$dir/state"
   start_watcher_in_long_pending_reply_scan "$dir" FM_WATCHER_WATCHDOG_INTERVAL=1
   i=0
-  while [ "$i" -lt "$SCAN_WAIT_TICKS" ] && [ "$(cat "$state/.last-watcher-beat" 2>/dev/null)" = 1 ]; do
+  while [ "$i" -lt "$SCAN_WAIT_TICKS" ] && [ "$(head -n 1 "$state/.last-watcher-beat" 2>/dev/null)" = 1 ]; do
     is_live_non_zombie "$SEED_PID" || fail "the watchdog stopped a watcher inside its pending-reply scan"
     sleep 0.1
     i=$((i + 1))
   done
   is_live_non_zombie "$SEED_PID" || fail "the watcher did not survive its pending-reply scan"
   ! grep -qF 'watchdog: stopping' "$state/.watch-triage.log" 2>/dev/null || { reap_watcher "$SEED_PID"; fail "the watchdog tried to stop a watcher inside its pending-reply scan"; }
-  [ "$(cat "$state/.last-watcher-beat")" != 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan never finished its cycle"; }
+  [ "$(head -n 1 "$state/.last-watcher-beat")" != 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan never finished its cycle"; }
   reap_watcher "$SEED_PID"
   pass "the watchdog leaves a watcher in a long pending-reply scan running"
 }
@@ -567,6 +568,96 @@ test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
   pass "a step blocked on one child that never exits is stopped by the watcher's watchdog"
 }
 
+test_watchdog_records_last_beat_and_blocking_descendants() {
+  local dir state i=0 check_pid check_group stop_line
+  dir=$(make_case watchdog-step-evidence)
+  state="$dir/state"
+  # Let one check finish after the throttle's second, so the wedged check's
+  # boundary is a published caller location rather than the cycle-start beat.
+  register_slow_check "$dir" a-warmup 2
+  register_slow_check "$dir" wedge 120
+  start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" FM_WATCHER_WATCHDOG_INTERVAL=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=600
+  wait_for_check_start "$dir" wedge "$SEED_PID" || { reap_watcher "$SEED_PID"; fail "watcher never reached the evidence check"; }
+  # Hold the process graph stable while the independent snapshot starts. In a
+  # real stop, children may exit/reparent as soon as TERM starts cleanup.
+  check_pid=$(cat "$dir/check-wedge.pid")
+  check_group=$(ps -o pgid= -p "$check_pid" | tr -d '[:space:]')
+  [ -n "$check_group" ] || { reap_watcher "$SEED_PID"; fail "no owned check group"; }
+  kill -STOP "$SEED_PID"
+  while [ "$i" -lt 400 ] && is_live_non_zombie "$SEED_PID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -KILL -- "-$check_group" 2>/dev/null || true
+  if is_live_non_zombie "$SEED_PID"; then
+    kill -CONT "$SEED_PID"
+    reap_watcher "$SEED_PID"
+    fail "watchdog did not stop the frozen evidence watcher"
+  fi
+  wait "$SEED_PID" 2>/dev/null || true
+  stop_line=$(grep -F 'watchdog: stopping wedged watcher' "$state/.watch-triage.log")
+  printf '%s\n' "$stop_line" | grep -E 'cycle=[0-9]+ last-beat=fm-watch.sh:[0-9]+; descendants-at-stop=' >/dev/null \
+    || fail "stop receipt omitted its last published step boundary: $stop_line"
+  printf '%s\n' "$stop_line" | grep -E "pid=$check_pid ppid=[0-9]+ elapsed=[0-9:-]+ command=.*wedge.check.sh" >/dev/null \
+    || fail "stop receipt omitted the blocking child, elapsed time, or command: $stop_line"
+  pass "watchdog stop records the last beat caller and the blocking descendant's elapsed time and command"
+}
+
+test_watchdog_snapshot_is_bounded_and_cannot_delay_stop() {
+  local mode dir state real_ps i snapshot_pid stop_line
+  real_ps=$(command -v ps)
+  for mode in slow failed bounded; do
+    dir=$(make_case "watchdog-ps-$mode")
+    state="$dir/state"
+    cat > "$dir/fakebin/ps" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = -ax ]; then
+  printf '%s\\n' "\$\$" > "$dir/snapshot.pid"
+  [ "$mode" = failed ] && exit 1
+  if [ "$mode" = bounded ]; then
+    root=; read -r root < "$state/.watch.lock/pid"
+    awk -v parent="\$root" 'BEGIN {
+      for (n = 1; n <= 40; n++) printf "%d %d 00:01 child-%d-%0250d-SHOULDNOTAPPEAR\\n", 100000 + n, parent, n, 0
+      print "999998 999999 00:01 FOREIGN-SHOULDNOTAPPEAR"
+    }'
+    exit 0
+  fi
+  trap '' TERM
+  exec sleep 300
+fi
+exec "$real_ps" "\$@"
+SH
+    chmod +x "$dir/fakebin/ps"
+    start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" FM_WATCHER_WATCHDOG_INTERVAL=1
+    # A stopped watcher holds TERM until resumed; the unchanged KILL path has
+    # to finish even if ps ignores TERM. No blocking check subtree to orphan.
+    kill -STOP "$SEED_PID"
+    i=0
+    while [ "$i" -lt 400 ] && is_live_non_zombie "$SEED_PID"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    if is_live_non_zombie "$SEED_PID"; then
+      kill -CONT "$SEED_PID"
+      reap_watcher "$SEED_PID"
+      fail "$mode ps delayed the watchdog stop beyond its bounded wait"
+    fi
+    wait "$SEED_PID" 2>/dev/null || true
+    if [ "$mode" = bounded ]; then
+      stop_line=$(grep -F 'watchdog: stopping wedged watcher' "$state/.watch-triage.log")
+      assert_contains "$stop_line" '[truncated after 32 descendants]' "snapshot omitted the row limit marker"
+      [ "$(printf '%s\n' "$stop_line" | grep -o 'command=' | wc -l | tr -d '[:space:]')" = 32 ] \
+        || fail "snapshot did not limit its descendant count"
+      ! printf '%s\n' "$stop_line" | grep -q 'SHOULDNOTAPPEAR' || fail "snapshot leaked a foreign process or an overlong command"
+    else
+      assert_grep 'descendants-at-stop=\[unavailable' "$state/.watch-triage.log"
+    fi
+    snapshot_pid=$(cat "$dir/snapshot.pid")
+    ! is_live_non_zombie "$snapshot_pid" || { kill -KILL "$snapshot_pid"; fail "$mode ps survived the diagnostic bound"; }
+  done
+  pass "snapshots cap rows and command bytes, exclude foreign processes, and cannot delay stop or leak slow ps"
+}
+
 test_watchdog_retries_unproven_identity_then_stops_wedge() {
   # An identity read that cannot prove ownership while the lock still names this
   # live watcher (a fork refused under memory pressure; here, a recorded
@@ -709,16 +800,19 @@ backdate() {  # <path> <secs>
 # Start a quiet watcher with extra env and wait until it has stamped its first
 # cycle and settled into that cycle's terminal wait. Sets SEED_PID.
 start_idle_watcher() {  # <dir> [env assignments...]
-  local dir=$1 i=0
+  local dir=$1 i=0 cycle=0
   shift
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" &
   SEED_PID=$!
-  while [ "$i" -lt 100 ] && [ ! -s "$dir/state/.last-watcher-beat" ]; do
+  while [ "$i" -lt 100 ]; do
+    IFS= read -r cycle < "$dir/state/.last-watcher-beat" 2>/dev/null || cycle=0
+    case "$cycle" in ''|*[!0-9]*) cycle=0 ;; esac
+    [ "$cycle" -lt 1 ] || break
     kill -0 "$SEED_PID" 2>/dev/null || fail "seed watcher exited before its first cycle: $(cat "$dir/watch.err")"
     sleep 0.1
     i=$((i + 1))
   done
-  [ -s "$dir/state/.last-watcher-beat" ] || { reap_watcher "$SEED_PID"; fail "seed watcher never stamped a cycle"; }
+  [ "$cycle" -ge 1 ] || { reap_watcher "$SEED_PID"; fail "seed watcher never stamped a cycle"; }
   sleep 1
 }
 
@@ -2259,6 +2353,8 @@ WATCHER_LOCK_CASES=(
   test_long_pending_reply_scan_keeps_beacon_fresh
   test_nonprogressing_status_parser_still_goes_stale
   test_step_blocked_on_one_live_child_is_stopped_by_watchdog
+  test_watchdog_records_last_beat_and_blocking_descendants
+  test_watchdog_snapshot_is_bounded_and_cannot_delay_stop
   test_orphaned_pipe_read_is_stopped_by_watchdog
   test_watchdog_ignores_wall_clock_jump
   test_watch_restart_attaches_to_healthy_peer

@@ -463,7 +463,7 @@ while kill -0 "\$pid" 2>/dev/null && [ "\$n" -lt 40 ]; do
   # means cycle 1 - the one supervision pass this window exists for, liveness
   # tick included - has run to its end. Stop there instead of idling out the
   # whole window.
-  beat=\$(cat "$dir/home/state/.last-watcher-beat" 2>/dev/null)
+  beat=\$(head -n 1 "$dir/home/state/.last-watcher-beat" 2>/dev/null)
   case "\$beat" in ''|*[!0-9]*) ;; *) [ "\$beat" -lt 2 ] || break ;; esac
   /bin/sleep 0.1
   n=\$((n + 1))

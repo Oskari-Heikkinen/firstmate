@@ -3321,8 +3321,56 @@ watcher_watchdog_owns() {
   [ "$owner_pid" = "$WATCHER_PID" ] \
     && fm_watcher_lock_matches_pid "$STATE" "$WATCH_PATH" "$WATCHER_PID" "$FM_HOME"
 }
+# Evidence is best effort and independent of the signal path: even a ps that
+# never exits cannot postpone TERM or the existing KILL grace. The snapshot is
+# initiated at stop time; exiting/reparented children may already be absent.
+watcher_watchdog_record_stop() {  # <still> <cycle> <last-beat> <observer-pid>
+  local still=$1 cycle=$2 step=$3 observer=$4 descendants
+  trap '' HUP INT TERM
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$SCRIPT_DIR/fm-timeout-lib.sh"
+  # The whole snapshot (including filtering) has a hard bound. Never log the
+  # machine-wide ps output: keep only this watcher's descendants, omitting the
+  # watchdog/diagnostic subtree, at most 32 rows and 240 command bytes per row.
+  # shellcheck disable=SC2016 # The snapshot shell expands its own arguments.
+  if ! descendants=$(fm_run_timed 1 bash -c '
+    set -o pipefail
+    LC_ALL=C ps -ax -o pid=,ppid=,etime=,args= | LC_ALL=C awk -v root="$1" -v observer="$2" '\''
+      function walk(parent, child) {
+        for (child = first[parent]; child; child = next_child[child]) {
+          if (child == observer) continue
+          if (count == 32) { truncated = 1; return }
+          printf "%spid=%s ppid=%s elapsed=%s command=%s", sep, child, parent, elapsed[child], command[child]
+          sep = "; "; count++
+          walk(child)
+          if (truncated) return
+        }
+      }
+      $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && NF >= 4 {
+        pid = $1; parent = $2; elapsed[pid] = $3
+        $1 = $2 = $3 = ""; sub(/^ +/, "")
+        command[pid] = substr($0, 1, 240)
+        gsub(/[[:cntrl:]]/, "?", command[pid])
+        next_child[pid] = first[parent]; first[parent] = pid
+      }
+      END {
+        walk(root)
+        if (!count) printf "none observed"
+        if (truncated) printf "; [truncated after 32 descendants]"
+        printf "\n"
+      }
+    '\''
+  ' _ "$WATCHER_PID" "$observer" 2>/dev/null); then
+    descendants='unavailable (snapshot failed or exceeded 1s bound)'
+  fi
+  triage_log "watchdog: stopping wedged watcher pid $WATCHER_PID (beacon unchanged for ${still}s >= ${WATCHER_STALE_GRACE}s); cycle=${cycle:-unknown} last-beat=${step:-unavailable}; descendants-at-stop=[$descendants]"
+}
 watcher_watchdog_start() {
   (
+    # BASHPID is absent in stock macOS bash 3.2. Exec in the substitution makes
+    # the short-lived sh's parent this watchdog, not an intermediate subshell.
+    observer_pid=${BASHPID:-}
+    [ -n "$observer_pid" ] || observer_pid=$(exec sh -c 'printf "%s\n" "$PPID"')
     nap=''
     trap - EXIT HUP INT
     trap '[ -z "$nap" ] || kill "$nap" 2>/dev/null; exit 0' TERM
@@ -3350,7 +3398,9 @@ watcher_watchdog_start() {
       fi
       still=$((still + WATCHDOG_INTERVAL))
       [ "$still" -ge "$WATCHER_STALE_GRACE" ] || continue
-      triage_log "watchdog: stopping wedged watcher pid $WATCHER_PID (beacon unchanged for ${still}s >= ${WATCHER_STALE_GRACE}s)"
+      cycle='' step=''
+      { IFS= read -r cycle; IFS= read -r step; } < "$STATE/.last-watcher-beat" 2>/dev/null || true
+      watcher_watchdog_record_stop "$still" "$cycle" "$step" "$observer_pid" &
       kill -TERM "$WATCHER_PID" 2>/dev/null || exit 0
       i=0
       while [ "$i" -lt 100 ] && kill -0 "$WATCHER_PID" 2>/dev/null; do
@@ -3497,17 +3547,19 @@ resurface_after_downtime() {
 # (fm-classify-lib.sh owns that callback contract), never from a background
 # timer, so a blocked read or parser still ages the beacon and reads wedged.
 # The top of each cycle also records that cycle's sequence number as the
-# beacon's content, so a reader can tell a new cycle from a step beat. The
-# beacon's mtime has one-second resolution, so a beat within the same second
-# as the previous one skips the touch; a per-record caller such as the
-# pending-reply scan then costs no process per record.
+# beacon's first line, so a reader can tell a new cycle from a step beat. The
+# second line records the caller location of the last published beat for wedge
+# evidence, not an inference about which operation hung. The beacon's mtime has
+# one-second resolution, so a beat within the same second as the previous one
+# skips publication; one builtin printf replaces the old touch, adding neither
+# a fork nor a file write per beat. Per-record callers still cost no process.
 WATCHER_CYCLE=0
 WATCHER_BEAT_AT=
 lock_owner='' summary_age='' heartbeat_age=''  # set each pass by the *_to readers in the loop
 watcher_beat() {
   [ "$SECONDS" != "$WATCHER_BEAT_AT" ] || return 0
   WATCHER_BEAT_AT=$SECONDS
-  touch "$STATE/.last-watcher-beat"
+  printf '%s\n%s:%s\n' "$WATCHER_CYCLE" "${BASH_SOURCE[1]##*/}" "${BASH_LINENO[0]}" > "$STATE/.last-watcher-beat"
 }
 watcher_beat
 watcher_watchdog_start
@@ -3548,7 +3600,7 @@ while :; do
   fi
 
   WATCHER_CYCLE=$((WATCHER_CYCLE + 1))
-  printf '%s\n' "$WATCHER_CYCLE" > "$STATE/.last-watcher-beat"
+  printf '%s\n%s\n' "$WATCHER_CYCLE" 'cycle-start' > "$STATE/.last-watcher-beat"
   WAKE_BATCH_HELD=0
 
   # Opt-in fleet activity ledger (docs/fleet-ledger.md): pick up newly appended

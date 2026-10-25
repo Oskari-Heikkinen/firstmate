@@ -3258,7 +3258,7 @@ run_liveness_leg() {
 await_liveness_leg_quiet() {
   local dir=$1 pid=$2 i=0 cycle
   while [ "$i" -lt 600 ] && is_live_non_zombie "$pid"; do
-    cycle=$(cat "$dir/state/.last-watcher-beat" 2>/dev/null || true)
+    cycle=$(head -n 1 "$dir/state/.last-watcher-beat" 2>/dev/null || true)
     case "$cycle" in ''|*[!0-9]*) cycle=0 ;; esac
     [ "$cycle" -lt 2 ] || return 0
     sleep 0.1
