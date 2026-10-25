@@ -1672,28 +1672,35 @@ EOF
 }
 
 # fm_composer_blocking_dialog: name a screen whose next Enter would answer it.
-# Prints the name and returns 0 only for the recorded structure of one dialog:
-# the heading on its own line, then its selected row alone on a row, with the
-# recorded footer as the last non-blank row. A heading buried in a sentence,
+# Prints the name and returns 0 only for a recorded dialog structure: its
+# heading alone on a row, then its selected/decline row, with the recorded
+# footer as the last non-blank row. A heading buried in a sentence,
 # or a last line that only starts with the same words, is not that dialog.
 # The strings alone are not enough, because a diff, a note, or a test fixture
 # on the pane can quote all of them above a normal composer. A miss returns 1
 # and prints nothing.
 # Recorded 2026-10-05 on Claude Code 2.1.289: /exit while a background shell
 # is still running opens this picker, and its selected row is Exit and stop tasks.
+# Pi project trust uses the heading, decline choice and bottom navigation footer
+# captured on Pi 0.86.1 in docs/verification/runtime-backends.md (2026-09-22).
+# Requiring the footer at the bottom excludes dialog text above an idle composer.
 fm_composer_blocking_dialog() {  # <screen> -> dialog name
   local screen=${1-}
   [ -n "$screen" ] || return 1
-  if printf '%s\n' "$screen" | fm_composer_strip_ansi | LC_ALL=C awk '
+  printf '%s\n' "$screen" | fm_composer_strip_ansi | LC_ALL=C awk '
     /^[ \t]*Background work is running[ \t\r]*$/ { heading = 1 }
     heading && /^[ \t]*❯ 1\. Exit and stop tasks[ \t\r]*$/ { selected = 1 }
+    /^[ \t]*Trust project folder\?[ \t\r]*$/ { pi_heading = 1 }
+    pi_heading && /^[ \t]*(→[ \t]+)?Do not trust( \(this session only\))?[ \t\r]*$/ { pi_decline = 1 }
     /[^ \t\r]/ { last = $0 }
-    END { exit !(selected && last ~ /^[ \t]*Enter to confirm · Esc to cancel[ \t\r]*$/) }
-  '; then
-    printf '%s' 'Claude background-task exit picker'
-    return 0
-  fi
-  return 1
+    END {
+      if (selected && last ~ /^[ \t]*Enter to confirm · Esc to cancel[ \t\r]*$/) {
+        printf "Claude background-task exit picker"
+      } else if (pi_decline && last ~ /^[ \t]*↑↓ navigate[ \t]+enter select[ \t]+escape\/ctrl\+c cancel[ \t\r]*$/) {
+        printf "Pi project-trust dialog"
+      } else { exit 1 }
+    }
+  '
 }
 
 # A command substitution drops a shell variable, and every composer read runs

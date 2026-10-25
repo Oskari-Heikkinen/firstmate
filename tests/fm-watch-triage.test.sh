@@ -3167,6 +3167,57 @@ SH
   pass "an idle ship with no declared wait is steered to park or finish, then surfaced if still idle past the grace"
 }
 
+# A fresh Pi task stopped at trust must be named, not treated as an ignored
+# park nudge. Exercise the actual selected tmux composer adapter with fakes.
+test_pi_worker_trust_dialog_bypasses_idle_park_nudge() {
+  local harness kind prior dir state fakebin out capture_file window key sig pid sendlog
+  for harness in pi pi-signed; do
+    for kind in ship scout; do
+      for prior in fresh nudged; do
+        dir=$(make_case "trust-${harness}-${kind}-${prior}"); state="$dir/state"; fakebin="$dir/fakebin"
+        out="$dir/watch.out"; capture_file="$dir/pane.txt"; sendlog="$dir/send.log"
+        window="test:fm-trustworker"; key=test_fm-trustworker
+        printf '%s\n' 'Trust project folder?' '/tmp/task-copy' '' \
+          '→ Trust' '  Trust parent folder (/tmp)' '  Trust (this session only)' \
+          '  Do not trust' '  Do not trust (this session only)' '' \
+          '↑↓ navigate  enter select  escape/ctrl+c cancel' > "$capture_file"
+        printf 'window=%s\nkind=%s\nharness=%s\nbackend=tmux\n' "$window" "$kind" "$harness" > "$state/trustworker.meta"
+        printf 'working: launched\n' > "$state/trustworker.status"
+        sig=$(seen_sig "$state/trustworker.status"); printf '%s' "$sig" > "$state/.seen-trustworker_status"
+        printf '%s' "$(hash_text "$(cat "$capture_file")")" > "$state/.hash-$key"
+        printf '1\n' > "$state/.count-$key"
+        if [ "$prior" = nudged ]; then
+          printf 'nudged %s\n' "$(( $(date +%s) - 1000 ))" > "$state/.idle-nudge-$key"
+        fi
+        mv "$fakebin/tmux" "$fakebin/tmux-base"
+        cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "$*" in *cursor_y*) printf '3\n'; exit 0 ;; esac
+exec "${0%/*}/tmux-base" "$@"
+SH
+        chmod +x "$fakebin/tmux"
+        # shellcheck disable=SC2016 # the fake script expands its own $1
+        printf '#!/usr/bin/env bash\necho "$1" >> %q\n' "$sendlog" > "$fakebin/fake-send.sh"
+        chmod +x "$fakebin/fake-send.sh"
+        export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+        PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+          FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 \
+          FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_IDLE_PARK_NUDGE=on FM_IDLE_PARK_GRACE=999 \
+          FM_SEND_BIN="$fakebin/fake-send.sh" "$WATCH" > "$out" &
+        pid=$!
+        wait_for_exit "$pid" 100 || { reap "$pid"; fail "$harness $kind trust dialog did not surface"; }
+        grep -F "stale: $window (blocked on a prompt: Pi project-trust dialog" "$out" >/dev/null \
+          || fail "trust dialog not named distinctly: $(cat "$out")"
+        grep -F 'Pi project-trust dialog' "$state/.wake-queue" >/dev/null \
+          || fail "trust dialog reason did not reach the durable wake queue"
+        [ ! -s "$sendlog" ] || fail "a trust dialog was steered to park"
+        if grep -q 'told to park or finish' "$out"; then fail "trust dialog misclassified as an ignored nudge"; fi
+      done
+    done
+  done
+  pass "Pi/pi-signed ships and scouts on trust surface distinctly before any idle nudge"
+}
+
 # Inside the nudge grace an unchanged idle pane is absorbed on every poll: the
 # wedge timer must not wake firstmate before the steer has had its grace.
 test_idle_ship_nudge_grace_not_wedge_escalated() {
@@ -5004,6 +5055,40 @@ test_open_captain_call_bounds_stale_churn() {
 }
 
 
+
+# A launch dialog must not jump ahead of the existing open-call throttle.
+# The first generic hold wake still fires; a subsequent trust dialog is absorbed.
+test_pi_trust_dialog_preserves_open_call_bound() {
+  local harness dir state out capture dialog c
+  command -v tasks-axi >/dev/null 2>&1 \
+    || { echo "skip: tasks-axi not found (Pi trust hold bound)"; return 0; }
+  dialog=$'Trust project folder?\n/tmp/task-copy\n→ Trust\n  Do not trust\n↑↓ navigate  enter select  escape/ctrl+c cancel'
+  for harness in pi pi-signed; do
+    dir=$(make_hold_home "trust-held-$harness" 'working: launched' hold) \
+      || fail "could not build a Pi trust hold fixture"
+    state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
+    printf 'window=test:fm-held-merge\nkind=scout\nharness=%s\nbackend=tmux\n' "$harness" > "$state/held-merge.meta"
+    mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-base"
+    cat > "$dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "$*" in *cursor_y*) printf '2\n'; exit 0 ;; esac
+exec "${0%/*}/tmux-base" "$@"
+SH
+    chmod +x "$dir/fakebin/tmux"
+    hold_watch_surface "$dir" "$out" "$capture" 'idle before trust dialog' \
+      || fail "first sight of Pi held work did not surface"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the first Pi hold surface"
+    printf '%s\n' "$dialog" > "$capture"
+    hold_watch_launch "$dir" "$out" "$capture"
+    for c in 1 2 3; do
+      wait_poll_cycle "$state" "$HOLD_WATCH_PID" 300 \
+        || { reap "$HOLD_WATCH_PID"; fail "Pi dialog bypassed the existing hold"; }
+    done
+    reap "$HOLD_WATCH_PID"
+    [ "$(hold_stale_wakes "$state")" -eq 0 ] || fail "Pi dialog re-alarmed an already surfaced hold"
+  done
+  pass "Pi/pi-signed trust dialogs preserve an existing open-call bound"
+}
 
 # The other half of the same bound, and the one that decides whether widening the
 # wait was safe: the identical fixtures with NO hold must keep alarming on every
@@ -8000,6 +8085,7 @@ TRIAGE_CASES=(
   test_live_declared_wait_churn_honors_the_resurface_throttle
   test_wedge_threshold_defers_to_a_parked_gate_awaiting_a_human
   test_open_captain_call_bounds_stale_churn
+  test_pi_trust_dialog_preserves_open_call_bound
   test_wedge_threshold_recheck_names_the_captain_for_a_held_lane
   test_gone_endpoint_reports_once_instead_of_escalating_forever
   test_wedge_threshold_defers_to_a_declared_wait_under_a_working_verdict
@@ -8128,6 +8214,7 @@ TRIAGE_CASES=(
   test_afk_busy_declared_pause_hands_off_plain_stale
   test_nonterminal_stale_not_working_surfaced
   test_idle_ship_nudged_to_park_then_escalated
+  test_pi_worker_trust_dialog_bypasses_idle_park_nudge
   test_idle_ship_nudge_grace_not_wedge_escalated
   test_idle_secondmate_not_nudged
   test_idle_park_nudge_cleared_by_declared_wait

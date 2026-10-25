@@ -1188,7 +1188,7 @@ test_pi_threads_model_and_max_effort() {
   expect_code 0 "$status" "pi spawn with max effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi '$FAKEBIN_DIR/pi' --tui-mode regular --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
+  assert_contains "$launch" "FM_PI_HARNESS=pi '$FAKEBIN_DIR/pi' --tui-mode regular --approve --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
     "pi launch did not force the regular TUI while threading the requested model and max thinking level"
   assert_not_contains "$launch" "FM_FIRSTMATE_PI_LAUNCH_BRIEF=" \
     "pi launch still exports the removed Calm input-reroute binding"
@@ -1210,7 +1210,7 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   assert_contains "$out" "spawned $id harness=pi-signed" "pi-signed spawn did not preserve its visible identity"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
+  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular --approve --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
     "pi-signed launch did not force the regular TUI with Pi's model, thinking, and extension semantics"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi-signed launch lost the canonical typed launch-brief envelope"
@@ -1337,21 +1337,44 @@ test_pi_seeded_secondmate_preapproves_project_trust() {
   pass "seeded Pi/pi-signed secondmate launches carry session --approve when advertised"
 }
 
-test_pi_worker_launch_omits_seeded_home_approve() {
-  local rec id out status launch
-  id=profile-pi-worker-no-approve-z8f
-  rec=$(make_spawn_case profile-pi-worker-no-approve pi "$id")
-  read_case_record "$rec"
-
-  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
-  status=$?
-  expect_code 0 "$status" "pi ship spawn should succeed"
-  launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi '$FAKEBIN_DIR/pi' --tui-mode regular" \
-    "pi worker launch lost its regular TUI probe"
-  assert_not_contains "$launch" "--approve" \
-    "ordinary Pi worker launches must not receive secondmate seeded-home --approve"
-  pass "ordinary Pi worker launches omit --approve"
+test_pi_workers_preapprove_only_the_launch_cwd_when_supported() {
+  local harness kind version rec id out status launch
+  for harness in pi pi-signed; do
+    for kind in ship scout; do
+      for version in 0.84.0 0.50.0; do
+        id="profile-${harness}-${kind}-approve-${version//./-}"
+        rec=$(make_spawn_case "$id" "$harness" "$id")
+        read_case_record "$rec"
+        # Fresh task-copy resources, with no persisted trust. The fake launch
+        # captures the command and cwd transition, never drives a real pane.
+        mkdir -p "$WT_DIR/.pi/extensions"
+        printf 'export default () => {};\n' > "$WT_DIR/.pi/extensions/fixture.ts"
+        FM_TEST_PANE_LOG="$CASE_DIR/pane.log"
+        FM_TEST_PI_VERSION=$version
+        if [ "$kind" = scout ]; then
+          out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+        else
+          out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+        fi
+        status=$?
+        unset FM_TEST_PANE_LOG FM_TEST_PI_VERSION
+        expect_code 0 "$status" "$harness $kind on $version should launch: $out"
+        launch=$(cat "$LAUNCH_LOG")
+        assert_contains "$launch" "FM_PI_HARNESS=$harness '$FAKEBIN_DIR/$harness'" \
+          "$harness $kind must launch the executable whose help was probed"
+        assert_grep "cd -- '$WT_DIR'" "$CASE_DIR/pane.log" \
+          "$harness $kind must start in its own task copy, not a parent path"
+        if [ "$version" = 0.84.0 ]; then
+          assert_contains "$launch" "--tui-mode regular --approve -e " \
+            "$harness $kind must approve the launch cwd with no path argument"
+        else
+          assert_not_contains "$launch" "--approve" \
+            "$harness $kind must omit unsupported --approve"
+        fi
+      done
+    done
+  done
+  pass "Pi/pi-signed ships and scouts approve only the launch cwd when help supports it"
 }
 
 test_pi_approve_probe_omits_unsupported_flag() {
@@ -2789,7 +2812,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata \
   test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity \
   test_pi_seeded_secondmate_preapproves_project_trust \
-  test_pi_worker_launch_omits_seeded_home_approve \
+  test_pi_workers_preapprove_only_the_launch_cwd_when_supported \
   test_pi_approve_probe_omits_unsupported_flag \
   test_pi_exclude_tools_do_not_leak_across_homes_or_to_secondmates \
   test_batch_forwards_shared_profile_flags \

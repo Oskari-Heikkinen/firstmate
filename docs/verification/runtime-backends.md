@@ -584,10 +584,10 @@ Rovo Dev documents loading instruction files from parent directories without nam
 Cursor Agent CLI 2026.09.18 walks to the filesystem root, and Oh My Pi 18.2.11 walks past the git root up to `$HOME`, so both load the home's `AGENTS.md` for a nested worker and stay unfixed.
 Cursor offers no per-path exclusion: its hidden `--exclude-workspace-context` drops every workspace instruction including the project's own, and its third-party toggle drops only `CLAUDE.md` files.
 Oh My Pi's only per-launch controls are coarse `--config` switches such as disabling the whole `claude-md` provider, its `before_agent_start` event exposes the system prompt without the list of loaded files, and its subagents receive the discovered files directly, so no per-task extension can remove just the home file.
-## Pi seeded-secondmate project trust
+## Pi launch project trust
 
-[`fm-spawn.sh --help`](../../bin/fm-spawn.sh) owns the seeded-secondmate project-trust approval contract and compatibility fallback.
-The live guard below isolates Pi's trust-gate behavior in secondmate-shaped homes; portable launch-command coverage separately verifies that spawn selects the flag for the intended launches.
+[`fm-spawn.sh --help`](../../bin/fm-spawn.sh) owns the ship/scout/seeded-secondmate project-trust approval contract and compatibility fallback.
+The live guard below isolates Pi's trust-gate behavior in secondmate-shaped homes; portable launch-command coverage separately verifies that spawn selects the flag for both worker kinds as well as seeded homes.
 
 Verified 2026-10-02 on pi 0.82.0 through the default-on live guard (disposable `PI_CODING_AGENT_DIR` / `HOME` only; never `~/.pi`):
 
@@ -603,7 +603,14 @@ ok - unseeded path without --approve still prompts on Trust project folder?
 # all fm-pi-seeded-home-trust-live-e2e checks passed (3)
 ```
 
-Portable launch-command coverage lives in `tests/fm-spawn-dispatch-profile.test.sh` (`test_pi_seeded_secondmate_preapproves_project_trust`, `test_pi_worker_launch_omits_seeded_home_approve`, `test_pi_approve_probe_omits_unsupported_flag`).
+Portable launch-command coverage lives in `tests/fm-spawn-dispatch-profile.test.sh` (`test_pi_seeded_secondmate_preapproves_project_trust`, `test_pi_workers_preapprove_only_the_launch_cwd_when_supported`, `test_pi_approve_probe_omits_unsupported_flag`).
+The worker matrix uses fake Pi/pi-signed help and pane commands for both ship and scout, proves the cwd transition names only the task copy, and verifies old help without the flag still launches.
+`tests/fm-composer-lib.test.sh` pins the named `Pi project-trust dialog` against the Pi 0.86.1 viewport recorded below, including an ordinary idle Pi composer and quoted-dialog negative controls.
+`tests/fm-watch-triage.test.sh` (`test_pi_worker_trust_dialog_bypasses_idle_park_nudge`) carries that name through the selected tmux composer adapter into the stale wake, both before any nudge and after an expired one, without sending a park steer.
+Live-proof gap: the real-Pi guard covers seeded homes only, not worker-copy approval or named stale-dialog delivery in a live tmux/Herdr viewport.
+Those worker behaviors have fake-only regression coverage; the dated live captures here establish the vendor surface, not live worker verification.
+Extending the real-Pi guard to worker-shaped worktrees is deferred to a separate verification change.
+The probe runs only before the idle park nudge, after existing open-call/declared-wait/hold bounds: a dialog behind such a bound retains its existing wait handling and may not get a separately named dialog wake.
 
 ## Launch-prompt backstop signatures
 

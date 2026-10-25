@@ -2521,6 +2521,8 @@ surface_nonterminal_stale() {  # <window> <hash>
     throttled=0
   elif [ -n "$STALE_WAIT_DECLARATION" ]; then
     bounded=0
+  elif stale_worker_dialog "$win"; then
+    : # Preserve existing wait/hold bounds; a launch dialog is not an idle nudge.
   elif idle_park_nudge "$win" "$key" "$task"; then
     printf '%s' "$h" > "$STATE/.stale-$key"
     rm -f "$STATE/.stale-since-$key"
@@ -2551,6 +2553,26 @@ surface_nonterminal_stale() {  # <window> <hash>
     return 0
   fi
   wake "$reason"
+}
+
+# On first-sight stale (or an expired nudge), use the selected backend's existing
+# composer read to name a Pi worker launch dialog. This is not a per-poll probe;
+# its viewport/sink contract belongs to fm-composer-lib.sh and the backend.
+# Keep the semantic busy classifier separate: a dialog is a reason to inspect,
+# not a new source of idle or busy authority.
+stale_worker_dialog() {  # <window>, sets IDLE_PARK_REASON on a match
+  local WR_TASK WR_KIND WR_BACKEND WR_HARNESS WR_LABEL dialog=''
+  window_resolve "$1"
+  case "$WR_KIND:$WR_HARNESS" in ship:pi|ship:pi-signed|scout:pi|scout:pi-signed) ;; *) return 1 ;; esac
+  if ! fm_composer_dialog_sink_prepare; then
+    IDLE_PARK_REASON='could not prepare the Pi worker dialog check; inspect the worker'
+    return 0
+  fi
+  fm_backend_composer_state "$WR_BACKEND" "$1" "$WR_LABEL" >/dev/null || true
+  dialog=$(fm_composer_blocking_dialog_noted) || dialog=''
+  fm_composer_dialog_sink_release
+  [ -n "$dialog" ] || return 1
+  IDLE_PARK_REASON="blocked on a prompt: $dialog; inspect the worker"
 }
 
 # The idle park nudge (knobs above). Its one marker, .idle-nudge-<key>, holds

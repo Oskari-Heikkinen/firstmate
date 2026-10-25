@@ -1249,6 +1249,54 @@ test_quoted_exit_picker_text_is_not_a_dialog() {
   pass "picker text quoted above a normal composer is not read as a live picker"
 }
 
+# Recorded real Pi 0.86.1 viewport, runtime-backends.md launch-prompt evidence.
+pi_trust_dialog_screen() {
+  printf '%s\n' \
+    ' Trust project folder?' \
+    ' /tmp/task-copy' \
+    '' \
+    ' This allows pi to load .pi settings and resources, install missing project packages, and execute project extensions.' \
+    '' \
+    ' → Trust' \
+    '   Trust parent folder (/tmp)' \
+    '   Trust (this session only)' \
+    '   Do not trust' \
+    '   Do not trust (this session only)' \
+    '' \
+    ' ↑↓ navigate  enter select  escape/ctrl+c cancel'
+}
+
+test_pi_project_trust_dialog_is_named_not_idle() {
+  local screen out caps sink candidate
+  screen=$(pi_trust_dialog_screen)
+  out=$(fm_composer_blocking_dialog "$screen")
+  [ "$out" = 'Pi project-trust dialog' ] || fail "Pi trust dialog was not named: $out"
+  fm_composer_dialog_sink_prepare || fail "could not prepare dialog sink"
+  sink=$FM_COMPOSER_DIALOG_SINK
+  for caps in 'styled=1' 'styled=0' $'styled=1\ncursor=1'; do
+    out=$(fm_composer_classify_screen "$caps" "$screen" 6)
+    [ "$out" != empty ] || fail "a Pi trust dialog must never authorize injection"
+    [ "$(cat "$sink")" = 'Pi project-trust dialog' ] || fail "Pi dialog did not cross the classifier sink"
+  done
+  # A normal Pi composer, including one below an exact transcript of the
+  # dialog, is not a live dialog. A near-matching footer is not one either.
+  for candidate in \
+    $'────────────────────\n\n────────────────────' \
+    "$screen"$'\n────────────────────\n\n────────────────────' \
+    "${screen%↑↓*}"'↑↓ navigate  enter select  another action'; do
+    out=$(fm_composer_blocking_dialog "$candidate")
+    [ -z "$out" ] || fail "ordinary composer or different footer was named as a dialog: $out"
+    out=$(fm_composer_classify_screen $'styled=1\nidentity=1' "$candidate" '' $'pi\tidle')
+    [ ! -s "$sink" ] || fail "an ordinary composer retained the old dialog note"
+  done
+  out=$(fm_composer_classify_screen $'styled=1\nidentity=1' \
+    $'────────────────────\n\n────────────────────' '' $'pi\tidle')
+  [ "$out" = empty ] || fail "ordinary idle Pi composer must remain empty: $out"
+  fm_composer_dialog_sink_release
+  pass "Pi project trust is named across composer capabilities, never on an ordinary idle composer"
+}
+
+test_pi_project_trust_dialog_is_named_not_idle
 test_background_exit_picker_stays_pending_and_blocks_retry
 test_dialog_heading_and_footer_must_be_the_recorded_lines
 test_dialog_note_skips_the_match_when_no_sink_is_set

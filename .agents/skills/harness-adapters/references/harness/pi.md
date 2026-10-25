@@ -31,9 +31,12 @@ Keep the instructions as one positional argument.
 Multiple positional arguments become separate queued messages; the spawn template already preserves the one-argument shape.
 
 A project trust dialog can appear on the first Pi run in any not-yet-trusted directory that holds a trust-requiring resource such as `.pi/extensions/`, including a clean worktree and a freshly seeded secondmate home.
-Accept it with Enter and verify the instructions begin processing.
-The decision persists per path in `~/.pi/agent/trust.json`, or in the pinned root's `trust.json` under a worker account pin, so later spawns in the same pooled slot under that root skip it.
-For unattended seeded-secondmate launches, `../../../bin/fm-spawn.sh --help` owns the capability-gated project-trust approval mechanics; [runtime verification](../../../../../docs/verification/runtime-backends.md#pi-seeded-secondmate-project-trust) owns the regression evidence.
+For an already-stalled launch, accept it with Enter only after verifying the selected choice is the task directory, never its parent, and verify the instructions begin processing.
+A manual persistent decision is stored per path in `~/.pi/agent/trust.json`, or in the pinned root's `trust.json` under a worker account pin, so later spawns in the same pooled slot under that root skip it.
+For unattended ships, scouts, and seeded secondmates, `../../../bin/fm-spawn.sh --help` owns the capability-gated project-trust approval mechanics; [runtime verification](../../../../../docs/verification/runtime-backends.md#pi-launch-project-trust) owns the regression evidence.
+The composer owner's named blocking-dialog classification also reaches a stale Pi worker's wake reason rather than treating it as idle after a park nudge.
+Live-proof limit: the real-Pi approval guard covers seeded homes only; worker-copy approval and named stale-dialog delivery have fake-only regression coverage, not a live worker verification.
+Existing open-call, declared-wait, and hold bounds retain precedence: a worker already covered by one may remain on the dialog without a distinct dialog wake until that wait is inspected; dialog naming does not override those absorptions.
 
 ## Worker turn-end extension
 
