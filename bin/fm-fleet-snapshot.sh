@@ -54,6 +54,9 @@
 #     generation changes while observations run, its selected metadata remains
 #     but mutable current-state, status, report, and endpoint evidence is discarded
 #     rather than attributed to the replacement generation.
+#     Explicit FM_VIEW_SOCKET/FM_VIEW_EPOCH selection can compose local task rows
+#     in the read service; a refused batch falls back before output. Backlog,
+#     cross-home reads, caching and ledger publication keep their existing owners.
 #     Local current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately. Remote secondmate rows use
 #     an explicit unknown value because their endpoint liveness belongs to
@@ -2108,8 +2111,15 @@ if [ "$OUTPUT_MODE" = contribution-input ]; then
     || { echo "fm-fleet-snapshot: contribution input assembly failed" >&2; exit 1; }
   exit 0
 fi
-prefetch_task_current_states || { echo "fm-fleet-snapshot: task observation failed" >&2; exit 1; }
-TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
+TASKS_JSON=
+if [ -n "${FM_VIEW_SOCKET:-}" ]; then
+  TASKS_JSON=$(python3 "$SCRIPT_DIR/fm-view-client.py" snapshot-tasks "$SNAPSHOT_NOW" "$SNAPSHOT_EPOCH" \
+    "$FM_SNAPSHOT_LOCAL_READ_CONCURRENCY" "$FM_SNAPSHOT_CREW_STATE_TIMEOUT") || TASKS_JSON=
+fi
+if [ -z "$TASKS_JSON" ]; then
+  prefetch_task_current_states || { echo "fm-fleet-snapshot: task observation failed" >&2; exit 1; }
+  TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
+fi
 
 JSON_TRANSPORT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.XXXXXX") \
   || { echo "fm-fleet-snapshot: temporary transport directory creation failed" >&2; exit 1; }

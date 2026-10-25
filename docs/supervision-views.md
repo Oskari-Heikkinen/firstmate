@@ -16,7 +16,7 @@ A missing status file is an empty span; an existing unreadable or unsupported ob
 The native fold reads registered alert-store levels on every request, even when status bytes have not changed.
 The shell classifier remains the parity oracle; it has not been replaced by these modules.
 
-The transport admits `status-fold`, `crew-state`, `status-presentation` and `drain-presentation` requests.
+The transport admits `status-fold`, `crew-state`, `status-presentation`, `drain-presentation` and `snapshot-tasks` requests.
 It cannot claim, acknowledge, append, retire, resume, publish a summary or alter custody.
 It writes no authoritative state, including presentation cursors.
 The calling transaction owner remains responsible for any presentation commit after successfully writing its output.
@@ -56,6 +56,17 @@ A response binds the same protocol, home, epoch and nonce, with `ok` and either 
 Requests and responses are limited to one MiB; regular input files are limited to four MiB.
 These bounds are prototype limits, not a claim that every existing fleet input fits them.
 
+The `snapshot-tasks` verb composes the local `tasks[]` rows through [`fm_view_snapshot.py`](../bin/fm_view_snapshot.py).
+Its arguments are `observed_at`, integer `epoch`, positive integer `concurrency` and `task_timeout`, plus the same bounded crew `options` vocabulary as current-state reads.
+It captures at most 256 selected metadata records (four MiB total) and their status spans (64 MiB total), then composes rows with a fixed ordinary-lane coroutine pool capped by both the request's concurrency and available worker count.
+Per-task timeouts are at most 30 seconds; an exhausted lane, oversized response, timeout or unsupported integration refuses the whole native batch for legacy fallback before output.
+Timed-out I/O still occupies its original worker slot; neither a timeout nor a subscriber disconnect creates replacement threads.
+Selected local status bytes are shared by the row fold and current-state classifier rather than reopened for each field.
+Fresh tool levels and external observations remain required, and only concurrent in-flight requests for the same inventory and arguments share a batch.
+A pre-reply metadata barrier discards mutable status, decision, current-state, report and endpoint evidence for a replaced task while retaining its selected metadata and an explicit generation-changed unknown result.
+A changed metadata capture within the legacy generation equivalence (equal nonempty `spawn_gen`, or byte-identical legacy metadata without a generation token) instead refuses the whole native batch for a complete legacy recapture before output.
+This preserves strict Crew attribution barriers without turning ordinary same-generation metadata publication into a new unknown-state rule.
+Remote secondmate rows do not probe endpoints; local endpoint reads remain in the fixed passive adapter and currently require tmux.
 The socket must be inside an existing canonical, same-UID, mode-0700 directory.
 Both peers verify the other's UID; unsupported peer-credential platforms refuse rather than silently weakening the check.
 The socket is mode 0600.
@@ -106,6 +117,9 @@ The drain also validates the private client's sorted task groups before native s
 A failed native read falls back before the prepared status sections reach stdout.
 Native observation device/inode pairs never replace the original strong identity passed to the commit owner.
 A failed stdout leaves the presentation cursor untouched, and concurrent appends past the captured endpoints remain unread.
+The fleet snapshot can select the same explicit client once for all local task rows, before legacy per-task capture or composition.
+Its backlog parser, contribution collector, cross-home ledger/cache collector and summary/publication owners remain unchanged; the read service cannot write their output or retire a dirty trigger.
+A refused native batch invokes the entire legacy task capture/composition path before any snapshot output.
 The native path no longer invokes per-row cursor/marker-offset helpers, but still pays the legacy snapshot, commit and historical-signature reads.
 It is not a completed hot-path migration or a performance acceptance claim.
 
@@ -128,7 +142,11 @@ Real-client regressions corrupt the service's observed offset or suggested endpo
 They require an observed native call to prevent a silent legacy-only pass.
 The suite does not test against live endpoints or start a backend.
 
-Snapshot composition, dirty-trigger publication, service lifecycle registration and the complete existing parity matrix are not implemented by this foundation.
+Native task-row snapshot tests compare complete legacy rows across task kinds, timestamp/decision histories, reports, remote rows and missing worktrees, plus captured append boundaries and metadata replacement that discards every mutable surface.
+They include a fresh semantic-pane negative control without status changes, unsupported backend refusal, bounded inventory/file rejection, prefix-related task-id ordering, real-client whole-snapshot equality/fallback, batch single-flight and a timed-out subscriber while both ordinary workers are held and critical folds still complete.
+Separate real-client atomic same-generation metadata-rewrite cases exercise initial and final barriers and require complete legacy recapture, updated PR/decision fields and an explicit refusal diagnostic; actual replacement-generation evidence discard is tested independently.
+A real summary-refresh fixture holds native composition while a newer trigger arrives, verifies the first atomic ledger contains only its captured decision, and requires the surviving pending marker to produce the newer decision on the next refresh.
+Full snapshot/publication parity, service lifecycle registration and the complete existing parity matrix are not implemented by this foundation.
 The focused native current-state tests are not the full existing crew-state matrix.
 There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).

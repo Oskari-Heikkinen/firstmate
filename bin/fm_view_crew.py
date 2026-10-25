@@ -89,20 +89,20 @@ class Crew:
         value = int(value)
         return value if zero or value > 0 else default
 
-    def command(self, adapter, argv, timeout):
+    def command(self, adapter, argv, timeout, cwd=None):
         # Legacy accepts 0 as a no-timeout CLI bound; the native service cannot
         # admit an unbounded adapter. Explicit legacy fallback keeps that setting.
         if not 0 < timeout <= 120:
             raise LegacyRequired("passive adapter bound unsupported; use legacy")
-        observation = run(list(argv), self.worktree or self.home, timeout, self.env)
+        observation = run(list(argv), cwd or self.worktree or self.home, timeout, self.env)
         self.observations.append((adapter, self.meta.get("spawn_gen", ""), observation))
         return observation
 
     def nm(self, *args):
         return self.command("no-mistakes:" + "-".join(args[:2]), ("no-mistakes", *args), self.nm_timeout)
 
-    def packet(self, operation, *args, timeout=5):
-        observation = self.command(operation, ("bash", str(self.script), operation, self.task, *args), timeout)
+    def packet(self, operation, *args, timeout=5, cwd=None):
+        observation = self.command(operation, ("bash", str(self.script), operation, self.task, *args), timeout, cwd=cwd)
         if observation.status == 3:
             raise LegacyRequired("passive " + operation + " integration unsupported; use legacy")
         if observation.problem or observation.status:
