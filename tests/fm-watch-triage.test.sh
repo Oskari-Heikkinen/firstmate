@@ -83,8 +83,9 @@ wait_live() {
 # while every "marker written" assertion fails spuriously.
 # The liveness beacon is refreshed at every step, but only the TOP of every
 # poll advances the first-line cycle number, so this drops any beacon
-# left by an earlier round, waits for THIS watcher to stamp a fresh one (some
-# poll's top), then waits for that stamp to advance (the next poll's top) - and
+# left by an earlier round, ignores the startup beat's cycle 0 (no poll has
+# started), waits for THIS watcher to stamp a positive cycle (some poll's top),
+# then waits for that stamp to advance (the next poll's top) - and
 # the whole cycle in between is what the caller's assertions describe.
 # 0 if the watcher is still alive after a completed cycle, 1 if it exited.
 wait_poll_cycle() {  # <state> <pid> [limit-ticks]
@@ -95,7 +96,10 @@ wait_poll_cycle() {  # <state> <pid> [limit-ticks]
   while [ "$i" -lt "$limit" ]; do
     kill -0 "$pid" 2>/dev/null || return 1
     first=$(head -n 1 "$beat" 2>/dev/null)
-    [ -n "$first" ] && break
+    case "$first" in
+      ''|*[!0-9]*|0) ;;
+      *) break ;;
+    esac
     sleep 0.1
     i=$((i + 1))
   done
@@ -5957,7 +5961,28 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
 # lifting the declaration on the SAME busy over-age pane restores the wedge
 # escalation, proving the discriminator is the worker's own declaration and not a
 # blanket silencing of the escalator (C).
+# Pin the completion helper's startup boundary deterministically: a scripted
+# beacon reader exposes startup 0, cycle 1, a step beat still in cycle 1, then
+# cycle 2. No live watcher timing or retry can hide a premature 0 -> 1 success.
+assert_poll_cycle_ignores_startup() (
+  local probe="$TMP_ROOT/poll-cycle-startup-${BASHPID:-$$}" reads=0 cycle
+  mkdir -p "$probe"
+  printf '0\n' > "$probe/reads"
+  head() {
+    IFS= read -r reads < "$probe/reads"
+    reads=$((reads + 1))
+    printf '%s\n' "$reads" > "$probe/reads"
+    case "$reads" in 1) cycle=0 ;; 2|3) cycle=1 ;; *) cycle=2 ;; esac
+    printf '%s\nstep-%s\n' "$cycle" "$reads" > "$probe/.last-watcher-beat"
+    command head "$@"
+  }
+  wait_poll_cycle "$probe" "$$" 30 || fail "scripted poll completion was not observed"
+  IFS= read -r reads < "$probe/reads"
+  [ "$reads" -eq 4 ] || fail "poll completion accepted startup or a step beat (read $reads)"
+)
+
 test_busy_declared_pause_is_rechecked_not_wedge_escalated() {
+  assert_poll_cycle_ignores_startup || fail "poll completion helper accepted an incomplete cycle"
   local dir state fakebin out capture_file window key sig pid statusf back
   dir=$(make_case busy-declared-pause); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-review-scout"
