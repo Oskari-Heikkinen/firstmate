@@ -313,7 +313,7 @@ family_for_basename() {
     fm-harness-adapter-references.test.sh|fm-project-mode.test.sh|\
     fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
-    fm-supervision-accounting.test.sh|fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
+    fm-supervision-accounting.test.sh|fm-supervision-views.test.sh|fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-timeout-lib.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
     fm-transition-lib.test.sh|\
