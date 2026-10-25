@@ -741,7 +741,13 @@ make_read_mutant() {
 import pathlib, sys
 source, mode, dest = sys.argv[1:]
 text = pathlib.Path(source).read_text()
-if mode.startswith('links-') or mode == 'also':
+if mode.startswith('links-'):
+    # Revert the producer guard, so --also metadata still reaches awk after
+    # find fails. Masking only the caller would skip that metadata and let
+    # the independent outside-hard-link guard refuse instead of releasing.
+    old = '''find "$src" -xdev -type f -printf 'i\\t%D:%i\\t%n\\t%s\\t%p\\n' || return 1'''
+    new = old.removesuffix(' || return 1') + '; :'
+elif mode == 'also':
     old, new = 'out=$(links "$src" "${names[@]}")', 'out=$(links "$src" "${names[@]}"; :)'
 elif mode in ('tree-source', 'tree-aside', 'tree-sort'):
     old, new = 'if tree_list "$1" >"$tmp"; then', 'if tree_list "$1" >"$tmp"; true; then'
