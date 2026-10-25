@@ -85,7 +85,7 @@ def read_file(path, limit=MAX_FILE, missing=False, dir_fd=None):
     signature = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
     require(signature(before) == signature(after), "input changed during capture")
     require(signature(after) == signature(os.stat(path, dir_fd=dir_fd, follow_symlinks=False)), "input replaced during capture")
-    return {"bytes": data, "identity": [after.st_dev, after.st_ino],
+    return {"bytes": data, "identity": [after.st_dev, after.st_ino], "mtime_ns": after.st_mtime_ns,
             "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
