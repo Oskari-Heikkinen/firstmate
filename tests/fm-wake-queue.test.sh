@@ -2431,7 +2431,7 @@ SH
 }
 
 test_interruption_before_and_after_raw_commit() {
-  local dir state before_out after_out replay_out empty_out pid rc count i sequence generation
+  local dir state before_out after_out replay_out empty_out pid owner holder rc count i sequence generation
   dir=$(make_case interruption)
   state="$dir/state"
   before_out="$dir/before.out"
@@ -2445,7 +2445,18 @@ test_interruption_before_and_after_raw_commit() {
   pid=$!
   i=0
   while [ "$i" -lt 100 ]; do
-    if [ "$(cat "$state/.wake-queue.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+    holder=$(cat "$state/.wake-queue.lock/pid" 2>/dev/null || true)
+    owner=$pid
+    if [ "${FM_VIEW_COMPAT_MATRIX:-0}" = 1 ]; then
+      # The isolated socket wrapper launches the real transaction owner as a
+      # direct child and forwards signals to it. Verify that kernel relation,
+      # never accept an arbitrary live lock holder as this drain's boundary.
+      case "$holder" in
+        ''|*[!0-9]*) ;;
+        *) if [ "$(ps -p "$holder" -o ppid= 2>/dev/null | tr -d '[:space:]')" = "$pid" ]; then owner=$holder; fi ;;
+      esac
+    fi
+    if [ "$holder" = "$owner" ] \
       && grep -Eq '^(pending|announced):handling:' "$state/.watcher-down" 2>/dev/null; then
       break
     fi
