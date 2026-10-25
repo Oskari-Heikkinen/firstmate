@@ -169,6 +169,32 @@ class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
             self.assertIn(b"use legacy", error)
 
 
+    async def test_unsupported_snapshot_backend_uses_complete_legacy_fallback(self):
+        self.status(b"blocked [key=backend]: retain decision\n", kind="ship")
+        (self.state / "task.meta").write_text(
+            "kind=ship\nspawn_gen=g1\nbackend=cmux\nwindow=workspace:surface\n"
+            + "worktree=" + str(self.home / "missing") + "\n")
+        # Isolated passive fake only; neither path can reach a real backend.
+        cmux = self.home / "fakebin/cmux"
+        cmux.write_text("#!/bin/sh\nexit 1\n")
+        cmux.chmod(0o700)
+        calls = []
+        original = Snapshot.compose
+
+        def compose(instance, row, observed_at, epoch):
+            calls.append(row["task"])
+            return original(instance, row, observed_at, epoch)
+
+        with patch.dict(os.environ, self.env), patch.object(Snapshot, "compose", compose):
+            actual, error = await self.invoke("fm-fleet-snapshot.sh", "--json",
+                FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+        self.assertEqual(calls, ["task"], error)
+        self.assertIn(b"passive snapshot-endpoint integration unsupported; use legacy", error)
+        expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--json", native=False,
+            FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+        self.assertEqual(json.loads(actual), json.loads(expected))
+        self.assertEqual(json.loads(actual)["tasks"][0]["hints"]["open_decisions"][0]["key"], "backend")
+
     async def test_parent_collector_uses_captured_bytes_mtime_and_metadata(self):
         self.status(b"working [key=activity]: captured work\nnote: captured answer\n")
         stamp = (EPOCH - 120) * 1_000_000_000
