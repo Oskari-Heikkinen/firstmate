@@ -7,10 +7,12 @@ No production home, installed actor, backend start or endpoint discovery.
 """
 import asyncio
 import contextlib
+import errno
 import io
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -19,7 +21,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from crew_matrix import ROOT, allowed_refusal, record
-from fm_view_engine import Engine, serve
+from fm_view_engine import Engine, Inputs, serve
 
 COMMANDS = {"snapshot": "fm-fleet-snapshot.sh", "view": "fm-fleet-view.sh", "drain": "fm-wake-drain.sh"}
 
@@ -37,6 +39,35 @@ def admitted(error):
 async def invoke(root, home, command, arguments):
     requests = []
     original = Engine.request
+    original_read = Inputs.state_read
+    swap = os.environ.get("FM_WAKE_ENRICH_SWAP_PATH")
+    swapped = []
+    # The original case injects a symlink swap at its Perl regular-file read.
+    # Inject the same filesystem event at the native regular-file reader, not
+    # a synthetic refusal. The actual O_NOFOLLOW read and full shell fallback
+    # must reject the secret, retaining every original raw-row assertion.
+    if swap:
+        swap = Path(swap)
+        target = Path(os.environ["FM_WAKE_ENRICH_SWAP_TARGET"])
+        if swap.parent != home / "state" or target.parent != home or not swap.name.endswith(".status"):
+            raise ValueError("native swap seam requires suite-owned status and target")
+
+    def read(inputs, task, suffix):
+        path = inputs.task_path(task, suffix)
+        if swap and path == swap and not swapped:
+            swapped.append(True)
+            path.unlink()
+            path.symlink_to(target)
+        return original_read(inputs, task, suffix)
+
+    def expected_race_refusal(error):
+        # Only these two explicit destructive fixture events admit a race
+        # fallback. Other identity/symlink errors still fail the whole matrix.
+        if swapped and error == ("fm-view-client: read refused; use legacy: service refused: "
+                                 f"[Errno {errno.ELOOP}] {os.strerror(errno.ELOOP)}: '{swap.name}'").encode():
+            return True
+        return (os.environ.get("FM_WAKE_ENRICH_TEST_DELAY") in ("3", "5")
+                and error == b"fm-view-client: read refused; use legacy: service refused: presentation status identity changed")
 
     async def observed(engine, operation, values, timeout):
         try:
@@ -54,9 +85,25 @@ async def invoke(root, home, command, arguments):
         socket = str(Path(temporary) / "read.sock")
         epoch = uuid.uuid4().hex
         stop = asyncio.Event()
-        with patch.object(Engine, "request", observed), contextlib.redirect_stdout(io.StringIO()):
+        with (patch.object(Engine, "request", observed), patch.object(Inputs, "state_read", read),
+              contextlib.redirect_stdout(io.StringIO())):
             service = asyncio.create_task(serve(str(home), socket, epoch, stop))
             process = None
+            pending_signal = []
+            loop = asyncio.get_running_loop()
+
+            def forward(signum):
+                pending_signal.append(signum)
+                if process is not None and process.returncode is None:
+                    try:
+                        process.send_signal(signum)
+                    except ProcessLookupError:
+                        pass
+
+            # The wrapper must not hide the shell owner's TERM/cleanup path or
+            # orphan it when interruption tests signal the launched endpoint.
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(signum, forward, signum)
             try:
                 for _ in range(500):
                     if os.path.exists(socket):
@@ -72,13 +119,18 @@ async def invoke(root, home, command, arguments):
                 process = await asyncio.create_subprocess_exec(
                     "bash", str(ROOT / "bin" / command), *arguments, env=environment,
                     stderr=asyncio.subprocess.PIPE)
+                for signum in tuple(pending_signal):
+                    try:
+                        process.send_signal(signum)
+                    except ProcessLookupError:
+                        pass
                 _, error = await asyncio.wait_for(process.communicate(), 120)
                 refusals = [line for line in error.split(b"\n") if line.startswith(b"fm-view-client:")]
-                unexpected = [line for line in refusals if not admitted(line)]
+                unexpected = [line for line in refusals if not (admitted(line) or expected_race_refusal(line))]
                 # A failed native RPC must also reach the compatibility owner
                 # as an explicit refusal, never disappear behind green output.
                 failed = [row for row in requests if not row["ok"]]
-                if unexpected or (failed and not refusals):
+                if unexpected or (failed and not refusals) or (swap and not swapped):
                     outcome = "unexpected-refusal"
                 elif refusals:
                     outcome = "legacy"
@@ -88,7 +140,8 @@ async def invoke(root, home, command, arguments):
                     outcome = "not-requested"
                 detail = json.dumps({"command": command, "requests": requests,
                                      "refusals": [line.decode("utf-8", "replace") for line in refusals],
-                                     "shell_exit": process.returncode}, sort_keys=True)
+                                     "shell_exit": process.returncode, "native_swap": bool(swapped),
+                                     "forwarded_signals": pending_signal}, sort_keys=True)
                 record(root, str(home.relative_to(root)), outcome, detail)
                 sys.stderr.buffer.write(error)
                 if outcome == "unexpected-refusal":
@@ -100,7 +153,11 @@ async def invoke(root, home, command, arguments):
                     process.kill()
                     await process.communicate()
                 stop.set()
-                await asyncio.wait_for(service, 5)
+                try:
+                    await asyncio.wait_for(service, 5)
+                finally:
+                    for signum in (signal.SIGTERM, signal.SIGINT):
+                        loop.remove_signal_handler(signum)
 
 
 def main(arguments):

@@ -173,6 +173,9 @@ A separate resident real-client lifecycle regression compares complete output an
 The wrapper passes the original stdout descriptor directly to the shell owner so failed-output regressions cannot accidentally commit before a buffered wrapper write fails.
 A no-request path is disclosed separately, not counted as native coverage; these include early lock/validation refusals that never reach read selection.
 The complete existing [`fm-wake-queue.test.sh`](../tests/fm-wake-queue.test.sh) case pool also selects this isolated drain wrapper, retaining concurrent append/ack, actor exclusion, recovery generations, interruption and lock/claim assertions with all independent cases collected before its summary.
+The wrapper forwards interruption signals to its actual shell child and the lock-boundary test verifies that direct parent relation rather than confusing wrapper and transaction-owner PIDs.
+The symlink-swap fixture injects its filesystem event at the native regular-file reader; the real nonsymlink read must refuse and the complete legacy fallback must preserve raw rows without exposing the target.
+Only that injected refusal and the existing explicit delayed-deletion fixture's identity-change refusal are admitted as race fallbacks, never native successes or arbitrary-error exceptions.
 Its default legacy selection remains independently exercised by the existing CI tier.
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.
 There is no P0 replay adapter or B0 performance acceptance yet.
