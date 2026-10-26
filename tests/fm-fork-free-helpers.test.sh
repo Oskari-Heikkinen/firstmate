@@ -2707,9 +2707,9 @@ got=$(status_open_decisions_incremental "$prefixes/split.status" "$(wc -c < "$pr
 rm -rf "$prefixes/killed" "$prefixes/killed-tmp"
 mkdir -p "$prefixes/killed" "$prefixes/killed-tmp"
 cp "$cases/long.status" "$prefixes/killed/t.status"
-TMPDIR="$prefixes/killed-tmp" "$BASH" -c '. "$1/bin/fm-classify-lib.sh"; _fm_od_fold_line() { kill -9 $$; }
+TMPDIR="$prefixes/killed-tmp" "$BASH" -c '. "$1/bin/fm-classify-lib.sh"; eval "$3"; _fm_od_fold_line() { kill -9 $$; }
   status_open_decisions_incremental "$2" "$(wc -c < "$2" | tr -d " ")" exact' _ "$1" "$prefixes/killed/t.status" \
-  > /dev/null 2>&1 && printf 'the killed exact fold was not killed\n'
+  "$(declare -f fm_alert_store_holds)" > /dev/null 2>&1 && printf 'the killed exact fold was not killed\n'
 left=$(cd "$prefixes/killed" && ls -A | grep -vx 't.status')
 [ -z "$left" ] || printf 'a killed exact fold left %s beside the status log\n' "$left"
 case "$(cd "$prefixes/killed-tmp" && ls -A)" in
@@ -2717,16 +2717,19 @@ case "$(cd "$prefixes/killed-tmp" && ls -A)" in
   *) printf 'a killed exact fold did not keep its chunk under TMPDIR: %s\n' "$(ls -A "$prefixes/killed-tmp")" ;;
 esac
 # A cold fold killed partway still leaves a checkpoint at a line boundary, so
-# the next fold reads only the rest and answers as a whole fold does.
+# the next fold reads only the rest and answers as a whole fold does. The child
+# carries the same alert-store stub, or its checkpoint drops held keys the
+# reference keeps.
 rm -rf "$prefixes/killed-tmp"
 mkdir -p "$prefixes/killed-tmp"
 size=$(wc -c < "$prefixes/killed/t.status" | tr -d ' ')
 TMPDIR="$prefixes/killed-tmp" FM_OPEN_DECISIONS_CHECKPOINT_BYTES=512 "$BASH" -c '. "$1/bin/fm-classify-lib.sh"
+  eval "$4"
   eval "_fm_real_fold() $(declare -f _fm_od_fold_line | sed 1d)"
   n=0
   _fm_od_fold_line() { n=$((n + 1)); [ "$n" -lt 100 ] || kill -9 $$; _fm_real_fold "$@"; }
   status_open_decisions_incremental "$2" "$3" exact' _ "$1" "$prefixes/killed/t.status" "$size" \
-  > /dev/null 2>&1 && printf 'the checkpointed exact fold was not killed\n'
+  "$(declare -f fm_alert_store_holds)" > /dev/null 2>&1 && printf 'the checkpointed exact fold was not killed\n'
 cursor="$prefixes/killed/.t.snapshot-open-decisions-cursor"
 cursor_offset=$(sed -n 's/^offset=//p' "$cursor" 2>/dev/null)
 case "$cursor_offset" in
