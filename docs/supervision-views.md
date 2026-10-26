@@ -158,7 +158,8 @@ Malformed capture bindings/counts/presence/timestamp types and occupied, public-
 They include a fresh semantic-pane negative control without status changes, unsupported backend refusal, bounded inventory/file rejection, prefix-related task-id ordering, real-client whole-snapshot equality/fallback, batch single-flight and a timed-out subscriber while both ordinary workers are held and critical folds still complete.
 Separate real-client atomic same-generation metadata-rewrite cases exercise initial and final barriers and require complete legacy recapture, updated PR/decision fields and an explicit refusal diagnostic; actual replacement-generation evidence discard is tested independently.
 Whole public home-summary JSON and the atomically published ledger are compared against legacy with a pinned primary-readiness wall timestamp and unchanged real elapsed-time calls.
-The real-client fixture requires nonempty native task observations, compares every summary field without normalization, checks changed decisions on a fresh publication and retains complete fallback on epoch refusal.
+The real-client fixture requires nonempty native task observations, compares every summary field without normalization, retains an empty-child parity control and establishes a backlog-owned working child with isolated Git and passive endpoint inputs before requiring nonempty active-child parity.
+It checks changed decisions on a fresh publication and retains complete fallback on epoch refusal.
 A separate native-composition timeout fixture preserves the previous ledger bytes and owed trigger, then requires a fresh retry to publish a complete legacy-equal updated ledger.
 A real summary-refresh fixture also holds native composition while a newer trigger arrives, verifies the first atomic ledger contains only its captured decision, and requires the surviving pending marker to produce the newer decision on the next refresh.
 Service lifecycle registration and promotion of this foundation remain incomplete.
@@ -177,8 +178,11 @@ The wrapper passes the original stdout descriptor directly to the shell owner so
 A no-request path is disclosed separately, not counted as native coverage; these include early lock/validation refusals that never reach read selection.
 The complete existing [`fm-wake-queue.test.sh`](../tests/fm-wake-queue.test.sh) case pool also selects this isolated drain wrapper, retaining concurrent append/ack, actor exclusion, recovery generations, interruption and lock/claim assertions with all independent cases collected before its summary.
 The wrapper forwards interruption signals to its actual shell child and the lock-boundary test verifies that direct parent relation rather than confusing wrapper and transaction-owner PIDs.
-The symlink-swap fixture injects its filesystem event at the native regular-file reader; the real nonsymlink read must refuse and the complete legacy fallback must preserve raw rows without exposing the target.
-Only that injected refusal and the existing explicit delayed-deletion fixture's identity-change refusal are admitted as race fallbacks, never native successes or arbitrary-error exceptions.
+The original late Perl-reader symlink-swap case retains every assertion through its legacy owner and is counted separately, not as native coverage.
+A separate real-client early-swap regression injects at the native regular-file reader and requires its actual nonsymlink refusal plus complete output parity with legacy on that same early-swap input, ordered raw rows, equal annotation counts and no target disclosure.
+It also probes the legacy cursor API before and after the swap: a regular file must be accepted and the early symlink must refuse, independently of output parity.
+That early cursor refusal precedes the historical annotation in legacy too; the original late-reader case still requires that annotation.
+Only the existing explicit delayed-deletion fixture's identity-change refusal is admitted as a matrix race fallback, never a native success or arbitrary-error exception.
 Its default legacy selection remains independently exercised by the existing CI tier.
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.
 There is no P0 replay adapter or B0 performance acceptance yet.

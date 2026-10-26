@@ -1,13 +1,15 @@
 """Real compatibility entrypoints retain stdout/identity/commit ownership."""
 import asyncio
+import errno
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
 
-from fm_view_engine import serve
+from fm_view_engine import Inputs, serve
 from fm_view_presentation import Presentation
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -200,6 +202,83 @@ class Compatibility(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cursor, (self.state / ".status-presentation-cursor").read_bytes())
         again, _ = await self.invoke("fm-wake-drain.sh")
         self.assertNotIn(b"wake annotation:", again)
+
+    async def test_early_symlink_refusal_matches_legacy_cursor_refusal_and_raw_rows(self):
+        # This is deliberately NOT the original late Perl-reader race. A swap
+        # before fallback makes the legacy cursor lookup refuse before it can
+        # reach the independent historical row. Pin that parity, not a new rule.
+        raw = b"working: first\n\ndone: latest event\n"
+        self.status(raw, kind="ship")
+        self.status(b"working: old turn-end context\n", task="turn-only", kind="ship")
+        secret = self.home / "outside-secret"
+        secret.write_bytes(b"must-not-be-read\n")
+        status = self.state / "task.status"
+        (self.state / "escape.status").symlink_to(secret)
+        rows = b"".join(f"100\t{seq}\t{kind}\t{key}\t{payload}\n".encode() for seq, (kind, key, payload) in enumerate((
+            ("signal", "task.status", "signal: " + str(secret)),
+            ("signal", "task.turn-ended", "signal: " + str(secret)),
+            ("signal", "turn-only.turn-ended", "signal: " + str(secret)),
+            ("signal", "escape.status", "signal: " + str(secret)),
+            ("signal", "arbitrary-key", "signal: " + str(secret)),
+            ("check", "task.check.sh", "check: complete payload"),
+            ("stale", "test:fm-task", "stale: test:fm-task"),
+            ("heartbeat", "heartbeat", "heartbeat"),
+        ), 1))
+        (self.state / ".wake-queue").write_bytes(rows)
+        manifest = self.state / ".status-presentation-cursor"
+        manifest.write_bytes(b"")
+
+        def cursor():
+            # Probe the real legacy cursor API on the exact attacked path at
+            # the swap boundary. If it succeeds, the causal explanation is
+            # falsified even if the two complete drain outputs happen to match.
+            return subprocess.run(["bash", "-c", '. "$1"; status_presentation_cursor_offset "$2"', "_",
+                                   str(ROOT / "bin/fm-classify-lib.sh"), str(status)],
+                                  env=self.env, capture_output=True, timeout=10)
+
+        status.unlink()
+        status.symlink_to(secret)
+        refused = await asyncio.to_thread(cursor)
+        self.assertEqual(refused.returncode, 1, refused.stderr)
+        self.assertEqual(refused.stdout, b"")
+        expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        self.assertEqual(manifest.read_bytes(), b"")
+        status.unlink()
+        status.write_bytes(raw)
+        accepted = await asyncio.to_thread(cursor)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(accepted.stdout, b"0")
+        swapped = []
+        original = Inputs.state_read
+
+        def read(inputs, task, suffix):
+            if inputs.task_path(task, suffix) == status and not swapped:
+                status.unlink()
+                status.symlink_to(secret)
+                swapped.append(cursor())
+            # Actual O_NOFOLLOW must refuse; do not synthesize a transport error.
+            return original(inputs, task, suffix)
+
+        with patch.object(Inputs, "state_read", read):
+            actual, error = await self.invoke("fm-wake-drain.sh")
+        self.assertEqual(len(swapped), 1, error)
+        self.assertEqual(swapped[0].returncode, 1, swapped[0].stderr)
+        self.assertEqual(swapped[0].stdout, b"")
+        refusal = (f"fm-view-client: read refused; use legacy: service refused: "
+                   f"[Errno {errno.ELOOP}] {os.strerror(errno.ELOOP)}: 'task.status'").encode()
+        self.assertIn(refusal, error)
+        self.assertEqual(actual, expected)
+        for label, output in (("native fallback", actual), ("early-swap legacy", expected)):
+            with self.subTest(path=label):
+                self.assertEqual(b"".join(line + b"\n" for line in output.split(b"\n")
+                                          if len(line.split(b"\t")) == 5), rows)
+                self.assertEqual(sum(line.startswith(b"wake annotation:") for line in output.split(b"\n")), 0)
+                self.assertNotIn(b"historical / not necessarily the triggering event: turn-only.status:", output)
+                self.assertNotIn(b"must-not-be-read", output)
+        self.assertNotIn(b"must-not-be-read", error)
+        self.assertEqual(secret.read_bytes(), b"must-not-be-read\n")
+        self.assertEqual(manifest.read_bytes(), b"")
+        self.assertEqual((self.state / ".wake-queue").read_bytes(), rows)
 
     async def test_native_annotation_index_keeps_queue_order_across_tasks(self):
         for task in ("A-task", "a.task", "z-task"):
