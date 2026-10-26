@@ -7,9 +7,10 @@
 # mutate backlog state, or write reports. Its default ledger collector may
 # atomically refresh parent-side cached copies of remote home summaries under
 # state/secondmate-summary-cache, and each task's open-decision fold advances
-# that status log's cursor (state/.<task>.open-decisions-cursor, owned by
-# fm-classify-lib.sh's status_open_decisions_incremental, which the wake drain
-# shares); those observational cache writes are its only fleet-state mutation.
+# that status log's snapshot cursor (state/.<task>.snapshot-open-decisions-cursor,
+# owned by fm-classify-lib.sh's status_open_decisions_incremental in exact mode;
+# the wake drain's own cursor is never read or moved here); those observational
+# cache writes are its only fleet-state mutation.
 #
 # Top-level fields:
 #   schema: stable schema id.
@@ -65,7 +66,7 @@
 #     hints.open_decisions is the keyed open-decision set of the status bytes
 #     this snapshot captured: exactly what fm-classify-lib.sh's authoritative
 #     status_open_decisions fold returns for them, computed through the log's
-#     cursor so only bytes appended since the cursor last moved are read, and
+#     snapshot cursor so only bytes appended since the last snapshot are read, and
 #     reconciled against current_state; hints.pending_decision and hints.blocked_event are
 #     booleans derived from that set. Each open decision carries opened_at_epoch,
 #     the emission time of the line that opened it (fm-classify-lib.sh's
@@ -631,9 +632,9 @@ snapshot_capture_optional() {  # <source> <destination>
 
 # Publish the open-decision set of exactly the captured status bytes beside the
 # capture, for crew state and task composition to read instead of each folding
-# the whole log again. The set comes through the live log's cursor-backed fold,
-# bounded at the captured size, so a refresh folds only what was appended since
-# the cursor last moved; when that fold cannot answer for exactly these bytes,
+# the whole log again. The set comes through the live log's cursor-backed fold
+# in exact mode, bounded at the captured size, so a refresh folds only what was
+# appended since the last snapshot; when that fold cannot answer for exactly these bytes,
 # the capture itself is folded whole, which yields the same set. <kind> is the
 # captured meta's kind, which the capture has no meta beside it to name.
 snapshot_capture_open_decisions() {  # <status-log> <status-capture> <kind> <destination>
