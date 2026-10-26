@@ -1807,7 +1807,7 @@ test_worker_role_scope
 # scaffold must prohibit the administrative act itself. The rule is emitted from
 # one shared string so the ship and scout copies cannot drift apart.
 test_crewmate_scaffolds_forbid_pool_administration() {
-  local home id brief mode ship_rule scout_rule ref
+  local home id brief mode ship_rule scout_rule ship_cd_rule scout_cd_rule ref
   home="$TMP_ROOT/pool-admin-home"
   mkdir -p "$home/data"
 
@@ -1850,6 +1850,13 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   [ -n "$ship_rule" ] || fail "ship brief emitted no shared-infrastructure rule to compare"
   [ "$ship_rule" = "$scout_rule" ] \
     || fail "ship and scout shared-infrastructure rules have drifted apart"
+
+  ship_cd_rule=$(awk '/^10\. Never start a shell command with/,/^$/' "$home/data/brief-pool-no-mistakes/brief.md")
+  scout_cd_rule=$(awk '/^10\. Never start a shell command with/,/^$/' "$brief")
+  [ -n "$ship_cd_rule" ] || fail "ship brief emitted no leading-cd rule"
+  [ "$ship_cd_rule" = "$scout_cd_rule" ] \
+    || fail "scout brief leading-cd rule is missing or differs from the ship brief"
+  assert_grep "every sub-agent you launch" "$brief" "scout brief did not pass the leading-cd rule to sub-agents"
 
   # The daemon half of the rule survived the fold as a one-line ban in every
   # kind, while the check for when a pipeline block is real reaches only a

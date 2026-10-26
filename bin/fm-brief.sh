@@ -683,6 +683,14 @@ TOOL_DESIGN_RULE="9. If this task builds or changes a tool, script, service, wat
 OBSTACLE_RULE="5. If you are stuck and need help, or hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop."
 RESOLVE_RULE="   Only a \`resolved\` line with an opened decision's or blocker's exact key closes it, never a later \`done:\` or \`working:\`, even when the answer is what started that work; firstmate's reply normally writes it, and when a blocker or wait clears without one, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one)."
 
+# One shared string keeps the ship and scout shell-path rule identical.
+IFS= read -r -d '' SHARED_NO_CD_RULE <<'EOF' || true
+10. Never start a shell command with `cd`, and never run a search whose path depends on the current directory.
+    Use absolute paths, `git -C <abs>`, or a `( cd <abs> && ... )` subshell.
+    Pass this rule to every sub-agent you launch.
+EOF
+SHARED_NO_CD_RULE=${SHARED_NO_CD_RULE%$'\n'}
+
 if [ -n "$BASE_BRANCH" ]; then
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean copy of its base branch.
 Base branch: $BASE_BRANCH"
@@ -718,6 +726,7 @@ $RESOLVE_RULE
 $SHARED_INFRA_RULE
 $JUDGING_RULE
 $TOOL_DESIGN_RULE
+$SHARED_NO_CD_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
@@ -781,6 +790,7 @@ $RESOLVE_RULE
 $SHARED_INFRA_RULE
 $JUDGING_RULE
 $TOOL_DESIGN_RULE
+$SHARED_NO_CD_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
