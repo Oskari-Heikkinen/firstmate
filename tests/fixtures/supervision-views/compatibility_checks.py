@@ -105,13 +105,15 @@ args = sys.argv[1:]
 if len(args) > 2 and args[0] == "-c" and "\\t" in args[1] and "--" in args:
     with open(os.environ["FM_FIXTURE_BATCH_LOG"], "ab") as stream:
         stream.write(b"batch\\n")
-    if os.environ.get("FM_FIXTURE_BATCH_CORRUPT") == "1":
+    mode = os.environ.get("FM_FIXTURE_BATCH_CORRUPT")
+    count = len(open(os.environ["FM_FIXTURE_BATCH_LOG"], "rb").readlines())
+    if mode == "1" or (mode == "commit" and count == 2):
         print("malformed")
         sys.exit(0)
 sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
 ''')
         stat.chmod(0o700)
-        for malformed in ("0", "1"):
+        for malformed in ("0", "1", "commit"):
             with self.subTest(malformed=malformed):
                 log.unlink(missing_ok=True)
                 manifest.write_bytes(b"")
@@ -126,17 +128,20 @@ sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
                     actual, error = await self.invoke("fm-wake-drain.sh", **environment)
                 self.assertEqual(len(calls), 1, error)
                 self.assertEqual(len(calls[0]), 2, error)
-                self.assertEqual(log.read_bytes(), b"batch\n")
+                self.assertEqual(log.read_bytes(), b"batch\nbatch\n")
                 self.assertNotIn(b"fm-view-client:", error)
                 diagnostic = b"native status capture refused; recapturing the complete legacy snapshot"
                 if malformed == "1": self.assertIn(diagnostic, error)
                 else: self.assertNotIn(diagnostic, error)
+                commit_diagnostic = b"batch verification refused; using complete legacy commit"
+                if malformed in ("1", "commit"): self.assertIn(commit_diagnostic, error)
+                else: self.assertNotIn(commit_diagnostic, error)
                 cursor = manifest.read_bytes()
                 manifest.write_bytes(b"")
                 expected, _ = await self.invoke("fm-wake-drain.sh", native=False, **environment)
                 self.assertEqual(actual, expected)
                 self.assertEqual(manifest.read_bytes(), cursor)
-                self.assertEqual(log.read_bytes(), b"batch\n", "legacy must not select the optional batch")
+                self.assertEqual(log.read_bytes(), b"batch\nbatch\n", "legacy must not select either optional batch")
                 self.assertIn(b"a note: first", actual)
                 self.assertIn(b"b [key=held] blocked: obstacle", actual)
 
