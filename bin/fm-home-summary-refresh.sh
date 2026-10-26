@@ -22,16 +22,19 @@
 # Every temporary file a refresh makes lives in one private directory,
 # state/.home-summary-run.<parent-pid>: the publication and diagnostic files,
 # and, because the producer runs with TMPDIR pointed there, every scratch file
-# and directory fm-fleet-snapshot.sh and its children make. The worker removes
-# it when it ends; a worker killed at its deadline cannot, so the parent removes
+# and directory fm-fleet-snapshot.sh and its children make. The one exception
+# is a snapshot cursor's rename temp, which must sit beside its cursor in
+# state/ and lives only for one write. The worker removes the directory when
+# it ends; a worker killed at its deadline cannot, so the parent removes
 # it after the timeout owner has killed the worker's process group. Before it
 # produces, the lock holder sweeps what killed refreshes left before this
 # layout or when the parent itself was killed: state/.home-summary-run.*,
-# state/.home-summary.json.?????? and state/.home-summary-error.?????? older
-# than one deadline, and this user's $TMPDIR/fm-fleet-tasks.??????,
-# fm-fleet-ledgers.?????? and fm-fleet-snapshot.?????? directories older than
-# an hour. The longer bound there is because $TMPDIR is shared with snapshots
-# run outside any refresh, which no deadline bounds.
+# state/.home-summary.json.??????, state/.home-summary-error.?????? and
+# state/.<task>.snapshot-open-decisions-cursor.tmp.* older than one deadline,
+# and this user's $TMPDIR/fm-fleet-tasks.??????, fm-fleet-ledgers.?????? and
+# fm-fleet-snapshot.?????? directories and fm-open-decisions-read.?????? files
+# older than an hour. The longer bound there is because $TMPDIR is shared
+# with snapshots run outside any refresh, which no deadline bounds.
 #
 # Under the publication lock, state/.home-summary-refresh.attempt is stamped
 # immediately before production and removed only after successful publication.
@@ -75,7 +78,7 @@ HOME_SUMMARY_FAILURE_STAMP=
 HOME_SUMMARY_TMP=
 HOME_SUMMARY_ERR_TMP=
 HOME_SUMMARY_LOCK_HELD=0
-HOME_SUMMARY_RUN_DIR=${FM_HOME_SUMMARY_RUN_DIR:-"$STATE/.home-summary-run.$$"}
+HOME_SUMMARY_RUN_DIR="$STATE/.home-summary-run.$$"
 HOME_SUMMARY_RUN_DIR_MADE=0
 
 # shellcheck source=bin/fm-timeout-lib.sh
@@ -97,6 +100,14 @@ case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
+# Only a worker takes its directory from its parent, and only under the one
+# name a parent gives it, since both remove that path recursively.
+if [ "$HOME_SUMMARY_MODE" = worker ]; then
+  case "${FM_HOME_SUMMARY_RUN_DIR:-}" in
+    "$STATE"/.home-summary-run.*[!0-9]*|"$STATE"/.home-summary-run.) ;;
+    "$STATE"/.home-summary-run.*) HOME_SUMMARY_RUN_DIR=$FM_HOME_SUMMARY_RUN_DIR ;;
+  esac
+fi
 case "$ERROR_LOG_MAX_BYTES" in
   ''|*[!0-9]*|0) ERROR_LOG_MAX_BYTES=65536 ;;
 esac
@@ -136,7 +147,7 @@ home_summary_cleanup() {
 home_summary_sweep_stale() {
   local entry minutes found=0
   for entry in "$STATE"/.home-summary-run.* "$STATE"/.home-summary.json.?????? \
-    "$STATE"/.home-summary-error.??????; do
+    "$STATE"/.home-summary-error.?????? "$STATE"/.*.snapshot-open-decisions-cursor.tmp.*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     [ "$entry" = "$HOME_SUMMARY_RUN_DIR" ] && continue
     found=1
@@ -146,23 +157,25 @@ home_summary_sweep_stale() {
     minutes=$(( (HOME_SUMMARY_TIMEOUT + 59) / 60 ))
     find "$STATE" -mindepth 1 -maxdepth 1 \
       \( -name '.home-summary-run.*' -o -name '.home-summary.json.??????' \
-         -o -name '.home-summary-error.??????' \) \
+         -o -name '.home-summary-error.??????' \
+         -o -name '.*.snapshot-open-decisions-cursor.tmp.*' \) \
       ! -path "$HOME_SUMMARY_RUN_DIR" -mmin "+$minutes" \
       -exec rm -rf -- {} + 2>/dev/null || true
   fi
   found=0
   for entry in "${TMPDIR:-/tmp}"/fm-fleet-tasks.?????? "${TMPDIR:-/tmp}"/fm-fleet-ledgers.?????? \
-    "${TMPDIR:-/tmp}"/fm-fleet-snapshot.??????; do
-    [ -d "$entry" ] || continue
+    "${TMPDIR:-/tmp}"/fm-fleet-snapshot.?????? "${TMPDIR:-/tmp}"/fm-open-decisions-read.??????; do
+    [ -e "$entry" ] || continue
     found=1
     break
   done
   [ "$found" -eq 1 ] || return 0
   minutes=$(( (HOME_SUMMARY_TIMEOUT + 59) / 60 ))
   [ "$minutes" -ge 60 ] || minutes=60
-  find "${TMPDIR:-/tmp}" -mindepth 1 -maxdepth 1 -type d -user "$UID" \
-    \( -name 'fm-fleet-tasks.??????' -o -name 'fm-fleet-ledgers.??????' \
-       -o -name 'fm-fleet-snapshot.??????' \) \
+  find "${TMPDIR:-/tmp}" -mindepth 1 -maxdepth 1 -user "$UID" \
+    \( \( -type d \( -name 'fm-fleet-tasks.??????' -o -name 'fm-fleet-ledgers.??????' \
+             -o -name 'fm-fleet-snapshot.??????' \) \) \
+       -o \( -type f -name 'fm-open-decisions-read.??????' \) \) \
     -mmin "+$minutes" -exec rm -rf -- {} + 2>/dev/null || true
 }
 
@@ -230,6 +243,7 @@ home_summary_refresh_once() {
     FM_DATA_OVERRIDE="$DATA" \
     FM_CONFIG_OVERRIDE="$CONFIG" \
     FM_PROJECTS_OVERRIDE="$PROJECTS" \
+    FM_HOME_SUMMARY_RUN_DIR= \
     TMPDIR="$HOME_SUMMARY_RUN_DIR" \
     "$SCRIPT_DIR/fm-fleet-snapshot.sh" --secondmate-home-summary \
       > "$HOME_SUMMARY_TMP" 2> "$HOME_SUMMARY_ERR_TMP"; then
