@@ -175,9 +175,39 @@ A refused native batch invokes the entire legacy task capture/composition path b
 The native path no longer invokes per-row cursor/marker-offset helpers, and its optional commit, annotation and fresh backstop batches remove repeated identity/size/cursor, historical-signature and latest-span reads when admitted, but still pays the legacy transaction and passive-adapter graphs.
 It is not a completed hot-path migration or a performance acceptance claim.
 
+## Immutable code preparation
+
+[`fm-view-bundle.py`](../bin/fm-view-bundle.py) prepares code for future read-service integration without installing an actor, starting a service or changing home selection.
+Its header owns invocation, bounds and exit handling; the invoking owner must consume and route any refusal through its existing status/wake path.
+[`fm_view_bundle.py`](../bin/fm_view_bundle.py) owns the fixed dependency closure and the `fm-view-bundle.v1` manifest.
+The closure includes every native reader and the admitted fixed passive adapter's conditional library graph and tmux backend sibling set, not just Python modules.
+Non-tmux passive integrations remain unsupported; preparation grants no new backend capability.
+An added reader dependency must update that closure and its relocated-code behavior tests before it is admitted.
+
+Preparation reads regular tracked blobs from a full pinned Git commit, never copies the mutable working tree and refuses dirty tracked source.
+Git observation groups reuse the bounded passive-process owner, with a shared 120-second Git preparation deadline and no more than 20 seconds per command.
+Inherited Git repository/config injection and replace refs are ignored, and repository hooks/fsmonitor callbacks are disabled for these reads.
+The existing private owned canonical store must be outside the operational home and every Git checkout, including pool copies.
+A version is published by same-filesystem staging, fsync and atomic nonreplacing rename; unsupported publication primitives refuse.
+Existing versions are only verified and reused, never repaired, overwritten or pruned.
+Only this invocation's unpublished identity-matching staging directory is disposable.
+These are local bounded code objects, not lifecycle receipts, registered actors or health evidence.
+
+The manifest is a canonical sorted-key ASCII JSON object terminated by one newline, with exactly `schema`, pinned `commit`, pinned `tree` and sorted `files`.
+Each file row has exactly `path`, Git `mode` (`100644` or `100755`), integer `bytes` and lowercase SHA256 `sha256`.
+The SHA256 of the complete manifest bytes is the version directory name and the caller's expected content identity.
+Files are owned single-link regular objects with mode 0400 (nonexecutables) or 0500 (executables); version directories are 0500 and the manifest is 0400.
+Verification rejects duplicate/unknown manifest fields, unsupported schemas, traversal, missing/extra files, links, special files, mode/count/byte-bound violations, mismatched hashes and changed read identities.
+It reads no code from the version being checked and does not import that version as part of verification.
+The manifest is content binding, not a signature or authority to run arbitrary code: the future launch owner must select a reviewed identity and revalidate it before loading.
+Preparing code neither registers nor starts a production actor, and the foreground identity/receipt/stop owner remains unfinished.
+
 ## Verification and remaining migration
 
 [`tests/fm-supervision-views.test.sh`](../tests/fm-supervision-views.test.sh) runs isolated real-socket, bounded-lane and legacy-fold comparison tests in CI.
+Its public bundle CLI cases additionally exercise pinned old/new versions, full verification and idempotent concurrent publication, dirty/missing/symlink/oversized source refusal, unsafe stores, invalid identities/manifests and immutable existing-version refusal without repair.
+Each damaged-member control first verifies an independent intact version, so an unrelated corrupt member cannot make that check vacuous.
+Relocated-code controls hide their source checkout and require complete passive packet equality across all five fixed operations, a native fold and unchanged home records; these are code-closure controls, not proof of every successful custody/forge branch or a service lifecycle gate.
 It checks keyed transitions, correlation tokens, malformed time tags, terminal-task versus persistent-mate folds, protected tool blockers, incomplete final lines, invalid UTF-8, fresh tool levels without status changes, generation/root refusal, single-flight and timeout reservation.
 Native crew-state cases also compare the legacy public CLI on identical isolated git repositories and captured fake no-mistakes/backend/forge responses.
 They include fresh HEAD, daemon and semantic-pane negative controls without status changes, selected-run identity, gate authority, coarse dead-instrument outcomes and a backend no-lifecycle tripwire.
