@@ -47,6 +47,9 @@
 # complete over-bound/backend fallback parity cover the native boundary.
 # The complete queue safety case pool also selects the native drain, retaining
 # concurrent append/ack, branch/main actor exclusion and interrupted ownership.
+# Immutable code preparation also runs through its public CLI in CI, covering
+# pinned regular Git closure, relocation, refusal, concurrent publication and
+# nonreplacement; this does not install or start a service/actor/home mode.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh
@@ -173,6 +176,7 @@ else
   printf 'not ok - classification marker evidence and late freshness guard\n' >&2
   rc=1
 fi
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/bundle_checks.py" || rc=1
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.py" || rc=1
 FM_VIEW_CREW_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-crew-state.test.sh" || rc=1
 FM_VIEW_COMPAT_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-fleet-snapshot-view.test.sh" || rc=1
