@@ -1710,9 +1710,22 @@ EOF
 # drain's cursor offset is also where the UNREAD STATUS presentation resumes
 # (status_presentation_cursor_offset), so a snapshot moving it would mark
 # lines presented that no drain showed. A cursor already past the captured end
-# (a later snapshot advanced it) is not moved back: the captured prefix is
-# folded from byte 0 and the cursor left as it is. Otherwise it reads and
+# (a later snapshot advanced it) is not moved back: when the captured end is a
+# line boundary and no line between it and the cursor is one the fold acts on,
+# the cursor's set is the answer; otherwise the captured prefix is folded from
+# byte 0 and the cursor left as it is. A capture that ends inside a line still
+# answers with that partial line folded, as a whole fold of the captured bytes
+# would, but the cursor advances only to the last newline and persists only the
+# fold of complete lines, so the next snapshot reads that line whole. Exact mode
+# folds at most FM_OPEN_DECISIONS_CHECKPOINT_BYTES (default 1 MiB) per read and
+# checkpoints the cursor at each step's last newline, so a cold fold longer
+# than one refresh deadline still converges across killed runs, and it reads
+# into files under $TMPDIR, never beside the cursor, so a snapshot killed
+# mid-fold leaves nothing in state/ but a whole cursor. Otherwise it reads and
 # advances its cursor exactly as above.
+#
+# In either mode a cursor that cannot be written leaves the old one in place
+# and the call still answers, since persistence only saves later reading.
 #
 # Not a pure status-file read: this writes/rewrites the sibling cursor file as a
 # side effect (state/.<task>.open-decisions-cursor, or the snapshot cursor in
@@ -1899,10 +1912,16 @@ _fm_open_decisions_unread() {  # <exact> <trusted-open>
   printf '%s' "$2"
 }
 
+# The length of <text> in bytes, into <out-var>, whatever the caller's locale.
+_fm_byte_length_to() {  # <out-var> <text>
+  local LC_ALL=C
+  printf -v "$1" '%s' "${#2}"
+}
+
 status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [exact]]
   local f=$1 captured_end=${2:-} exact_mode=0 cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
   local version='' size actual_size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0 persist=1
-  local target_cursor kind fold_version
+  local kind fold_version persisted_open partial_size step want last folded
   local _fm_fold_status_file=$1 _fm_od_n=0
   local -a _fm_od_r
   [ "${3:-}" = exact ] && exact_mode=1
@@ -1987,16 +2006,85 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
     cursor_dirty=1
   fi
   # Exact mode answers for the captured bytes only. A cursor already past them
-  # (a later snapshot advanced it after this capture) holds a newer set, so the
-  # captured prefix is folded from byte 0 instead, and the cursor is left where
-  # it is rather than moved back.
+  # (a later snapshot advanced it after this capture) holds a newer set and is
+  # never moved back. When the lines between the capture and the cursor cannot
+  # have moved the set, that newer set is also the captured bytes' set and
+  # answers without a fold; otherwise the captured prefix is folded from byte 0
+  # and nothing is persisted.
   if [ "$exact_mode" = 1 ] && [ "$offset" -gt "$size" ]; then
+    if _fm_open_decisions_span_inert "$f" "$size" "$offset"; then
+      printf '%s' "$open"
+      return 0
+    fi
     offset=0
     open=''
     persist=0
   fi
 
-  if [ "$offset" -lt "$size" ]; then
+  persisted_open=$open
+  if [ "$offset" -lt "$size" ] && [ "$exact_mode" = 1 ]; then
+    # Exact mode reads into the caller's temp directory rather than beside the
+    # cursor: a fleet snapshot killed at its deadline cannot remove the chunk,
+    # and the home-summary refresh points TMPDIR at its per-run directory,
+    # which it removes after a kill. It folds at most a checkpoint step of
+    # bytes per read and persists the cursor at the last newline of each step,
+    # so a cold fold of a log too long to finish inside one deadline still
+    # advances across killed runs. A capture can end inside a line a writer was
+    # still appending: the answer folds that partial tail, as a whole fold of
+    # the captured bytes does, but the cursor stops at the last newline and
+    # holds only the fold of complete lines, so the next snapshot reads the
+    # line whole.
+    chunk_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX" 2>/dev/null) || return 1
+    step=${FM_OPEN_DECISIONS_CHECKPOINT_BYTES:-1048576}
+    case "$step" in ''|*[!0-9]*|0*) step=1048576 ;; esac
+    resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+    held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+    folded=0
+    _fm_od_load "$open"
+    while :; do
+      want=$((size - offset))
+      last=1
+      if [ "$want" -gt "$step" ]; then
+        want=$step
+        last=0
+      fi
+      _fm_status_read_span "$f" "$offset" "$want" > "$chunk_file" 2>/dev/null \
+        || { rm -f "$chunk_file"; return 1; }
+      chunk_size=$(LC_ALL=C wc -c < "$chunk_file" 2>/dev/null) || { rm -f "$chunk_file"; return 1; }
+      [ "${chunk_size//[[:space:]]/}" = "$want" ] || { rm -f "$chunk_file"; return 1; }
+      folded=$((folded + want))
+      line=''
+      while IFS= read -r line; do
+        _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
+        line=''
+      done < "$chunk_file"
+      partial_size=0
+      [ -z "$line" ] || _fm_byte_length_to partial_size "$line"
+      [ "$partial_size" -le "$want" ] || { rm -f "$chunk_file"; return 1; }
+      if [ "$last" = 1 ]; then
+        _fm_od_emit_to persisted_open
+        [ -z "$line" ] || _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
+        _fm_od_emit_to open
+        offset=$((size - partial_size))
+        break
+      fi
+      if [ "$partial_size" -eq "$want" ]; then
+        # One line longer than the step: read it again, wider.
+        step=$((step * 2))
+        continue
+      fi
+      offset=$((offset + want - partial_size))
+      if [ "$persist" = 1 ]; then
+        _fm_od_emit_to persisted_open
+        _fm_open_decisions_cursor_write "$cf" "$fold_version" "$offset" "$cur_ident" "$persisted_open" || true
+      fi
+    done
+    rm -f "$chunk_file"
+    # Test-only observability seam, as below: the bytes this call read.
+    [ -n "${FM_OPEN_DECISIONS_READ_PROBE:-}" ] \
+      && printf '%s\t%s\n' "$f" "$folded" >> "$FM_OPEN_DECISIONS_READ_PROBE"
+    cursor_dirty=1
+  elif [ "$offset" -lt "$size" ]; then
     chunk_file="$cf.read.$$"
     _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
       || { rm -f "$chunk_file"; _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
@@ -2019,21 +2107,70 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
       _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
     done < "$chunk_file"
     _fm_od_emit_to open
+    persisted_open=$open
     rm -f "$chunk_file"
     offset=$size
     cursor_dirty=1
   fi
+  # The answer is already right when the cursor cannot be written, so a failed
+  # write keeps the old cursor and still answers: the next call only redoes
+  # this call's reading.
   if [ "$cursor_dirty" -eq 1 ] && [ "$persist" = 1 ]; then
-    target_cursor="$cf.tmp.$$"
-    {
-      printf 'version=%s\n' "$fold_version"
-      printf 'offset=%s\n' "$offset"
-      printf 'ident=%s\n' "$cur_ident"
-      if [ -n "$open" ]; then printf '%s' "$open"; fi
-    } > "$target_cursor" || return 1
-    mv -f "$target_cursor" "$cf" || return 1
+    _fm_open_decisions_cursor_write "$cf" "$fold_version" "$offset" "$cur_ident" "$persisted_open" || true
   fi
   printf '%s' "$open"
+}
+
+# Atomically replace <cursor> through a temp file beside it, which the rename
+# needs on the same file system. Nonzero, with the old cursor and no temp left,
+# when it cannot.
+_fm_open_decisions_cursor_write() {  # <cursor> <version> <offset> <ident> <open-set>
+  local _ocw_tmp="$1.tmp.$$"
+  if {
+    printf 'version=%s\n' "$2"
+    printf 'offset=%s\n' "$3"
+    printf 'ident=%s\n' "$4"
+    if [ -n "$5" ]; then printf '%s' "$5"; fi
+  } > "$_ocw_tmp" 2>/dev/null && mv -f "$_ocw_tmp" "$1" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$_ocw_tmp" 2>/dev/null
+  return 1
+}
+
+# 0 when the bytes of <status-file> from <start> to <end> cannot move the
+# open-decision set, so a cursor at <end> holds the set of the first <start>
+# bytes too: <start> is a line boundary, the span is no longer than the prefix
+# it would spare a fold of, and none of its lines is one the fold acts on (the
+# verbs status_open_decisions passes to the fold, behind the fold's own
+# declaration guard). Nonzero, conservatively, on any doubt or failed read.
+_fm_open_decisions_span_inert() {  # <status-file> <start> <end>
+  local f=$1 start=$2 end=$3 boundary span_file span_size line unstamped verb resolve held rc=0
+  [ "$((end - start))" -le "$start" ] || return 1
+  boundary=$(_fm_status_read_span "$f" "$((start - 1))" 1 2>/dev/null; printf x) || return 1
+  [ "$boundary" = $'\nx' ] || return 1
+  span_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX" 2>/dev/null) || return 1
+  if ! _fm_status_read_span "$f" "$start" "$((end - start))" > "$span_file" 2>/dev/null \
+    || ! span_size=$(LC_ALL=C wc -c < "$span_file" 2>/dev/null) \
+    || [ "${span_size//[[:space:]]/}" != "$((end - start))" ]; then
+    rm -f "$span_file"
+    return 1
+  fi
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  while IFS= read -r line || [ -n "$line" ]; do
+    _fm_status_unstamped "$line" unstamped
+    case "$unstamped" in
+      *:*|*\[key=*\]*) ;;
+      *) continue ;;
+    esac
+    status_line_verb "$line" verb
+    case "$verb" in
+      needs-decision|blocked|done|failed|note|"$resolve"|"$held") rc=1; break ;;
+    esac
+  done < "$span_file"
+  rm -f "$span_file"
+  return "$rc"
 }
 
 # Incremental sibling of scan_open_decisions: same fleet-wide directory walk and
