@@ -721,9 +721,10 @@ fm_dod_note_reports_ci_ready() {  # <note>
 
 # 0 when a note contains a PR/MR URL or a PR #<n> / PR#<n> token,
 # not the bare letters PR inside words such as PROD or PROPERTIES.
+# Matched in-shell, so a crew-state read forks nothing for it.
 fm_dod_note_has_pr_reference() {  # <note>
-  printf '%s' "$1" \
-    | grep -Eq '(^|[^[:alnum:]])PR[[:space:]]*#[0-9]+([^[:alnum:]]|$)|/pull/[0-9]+([^[:alnum:]]|$)|/pulls/[0-9]+([^[:alnum:]]|$)|/merge_requests/[0-9]+([^[:alnum:]]|$)'
+  local re='(^|[^[:alnum:]])PR[[:space:]]*#[0-9]+([^[:alnum:]]|$)|/pull/[0-9]+([^[:alnum:]]|$)|/pulls/[0-9]+([^[:alnum:]]|$)|/merge_requests/[0-9]+([^[:alnum:]]|$)'
+  [[ "$1" =~ $re ]]
 }
 
 # 0 when a done: note reports a change published to a Gerrit review server
