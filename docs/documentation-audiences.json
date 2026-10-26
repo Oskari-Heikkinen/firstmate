@@ -341,6 +341,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/stow/references/archive-format.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/stuck-crewmate-recovery/SKILL.md",
       "audience": "agent-runtime"
     },

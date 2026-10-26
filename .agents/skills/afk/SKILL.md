@@ -1,6 +1,6 @@
 ---
 name: afk
-description: Load on /afk or the captain going afk, when state/.afk-contract or state/.afk exists, on a message starting FM_INJECT_MARK, or any state/.subsuper-* marker.
+description: Load on /afk or the operator going away, when state/.afk-contract or state/.afk exists, on a message starting FM_INJECT_MARK or any state/.subsuper-* marker, when away escalations stop arriving or an away-daemon wedge alarm fires, and when the operator returns from away mode.
 user-invocable: true
 metadata:
   internal: true
@@ -16,6 +16,8 @@ A record carrying quiet mode (`bin/fm-afk-contract.sh mode`) is not this posture
 Typing `/afk` is itself the go: the captain may not look at the screen again, so entry never waits for a further human response, and no read-back gates it or asks for a go.
 Hold-for-return is the default and the only reach profile this release records: there is no phone channel, and the entry announcement says so aloud every time.
 
+Why this skill exists: away supervision depends on the pane it injects into, and text left typed in the composer once deferred every escalation for hours with nothing telling anyone why (root causes R9 and R7, problem P19).
+
 ## Entering: `/afk [words]`
 
 1. **Write the record first, in this same turn.**
@@ -26,6 +28,8 @@ Hold-for-return is the default and the only reach profile this release records: 
    Plain `/afk` with no words is a valid entry with no mandate; the announcement says no instructions were recorded.
    Re-invoking `/afk` while already away with no new words is a refresh and leaves the standing record untouched; new words replace the mandate at once, preserve the original session entry, and archive the superseded words for the return brief.
 2. **Per harness, after the record exists:**
+   Where an away daemon will inject (the last two bullets below), first check that the primary composer is empty: typed text left in it, such as a message saved to send later, defers every injection until it clears.
+   With text pending that should stay, do not launch the away daemon; rely on the Stop-hook watcher, whose rewakes do not type into the composer, and say so in the announcement.
    - **Pi and pi-signed**: nothing to launch; go on to the announcement.
      The away daemon is no longer launched on Pi; the ordinary supervision session (`docs/pi-supervision-branch.md`) keeps running with the record present, and `bin/fm-afk-launch.sh start` refuses on these harnesses.
      With the record present main is parked: the supervision branch takes every safe actionable wake, captain outcomes accumulate for the return brief, and main's standing authority relocates to the branch through the guarded scripts (`docs/pi-supervision-branch.md` "Postures"); only a wake the branch declines (including a broken branch or unsafe scan) or a watcher failure wakes main.
@@ -46,7 +50,7 @@ Hold-for-return is the default and the only reach profile this release records: 
    The daemon is **presence-gated**: it injects escalations only while `state/.afk` exists, and stays quiet otherwise.
 3. **Announce, then read back after entry.**
    Relay the announcement in spirit: hold-for-return only, no phone channel, your instructions are recorded and the away session will carry them out where it can, anything it is unsure of, or that needs you, waits for your return, and destructive, irreversible, and security-sensitive actions are never pre-authorizable whatever the words say.
-   Then give your own plain-sentence restatement of the words in `AGENTS.md` section 9 language - what you read them as asking for, sentence by sentence, never a numbered field list - beside the expected return, the spend cap, and the one-sentence reach announcement.
+   Then give your own plain-sentence restatement of the words in `AGENTS.md` section 9's plain-language form and the chat style in `data/captain-shared.md` - what you read them as asking for, sentence by sentence, never a numbered field list - beside the expected return, the spend cap, and the one-sentence reach announcement.
    Say plainly which sentence, if any, you could not act on while away (a red merge, a discard, anything on the never-set, local-only landing); it waits for their return.
    This read-back is informational: the record already stands, so never ask for a go or wait for a reply; a captain who wants a different reading sends `/afk` again with new words.
 4. **Do not separately arm `fm-watch.sh` where the daemon runs.** The daemon manages the watcher as its child; the singleton lock no-ops a stray arm harmlessly.
@@ -76,7 +80,7 @@ No `/back` is needed. The first genuine message is the return signal:
 - A message that is none of the internal forms below, and **not** starting with `/afk` -> the captain is back.
   Run `bin/fm-afk-return.sh` before acting on the message that brought the captain back.
   That script owns the correct-ordered daemon shutdown where a daemon ran, the archive of the posture record, durable wake presentation and post-handling acknowledgement, escalation and wedge evidence, the return brief, and the return-catch-up gate.
-  Relay every section of the return brief in its emitted order and in section 9 language; `bin/fm-afk-return.sh` owns that order.
+  Relay every section of the return brief in its emitted order, in `AGENTS.md` section 9's plain-language form; `bin/fm-afk-return.sh` owns that order.
   The gate keeps every open `blocked:` event until that blocker's own resolution is proven: remediate each immediately through the normal lifecycle, or explicitly reclassify it with a durable reason and close its decision key with `resolved [key=...]`, then run `bin/fm-afk-return.sh check`.
   Captain-verdict outcomes are listed under "waiting on you", but do not exempt open blockers: per-blocker provenance is deferred with no owner, and the gate fails safe by keeping every open blocker.
   Once the record is archived, resume full per-wake responsiveness through the emitted primary-harness supervision protocol while blocker handling proceeds, so the gate never creates a blind wait.
@@ -135,7 +139,7 @@ backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
   `pane_input_pending` is the tested fail-closed predicate for callers that need to know whether the composer is unsafe: it treats every result except exact `empty` as pending.
 
 A busy primary pane, or any composer verdict other than `empty`, defers the injection; the buffered escalation survives in `state/.subsuper-escalations` and is retried on the next housekeeping tick.
-In afk mode the composer guard is belt-and-suspenders (no human is typing), but it protects against the race window between the captain returning and their message landing, a dead shell, and the daemon's own previous injection sitting unsent.
+In afk mode the composer guard is belt-and-suspenders (no human is typing), but text typed before leaving still counts as pending, which is why entry checks the composer first; the guard also protects against the race window between the captain returning and their message landing, a dead shell, and the daemon's own previous injection sitting unsent.
 
 **Max-defer escape (the daemon must never silently wedge).**
 If anything stays buffered past `FM_MAX_DEFER_SECS` (default 300), the daemon

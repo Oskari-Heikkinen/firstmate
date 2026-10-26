@@ -1,6 +1,6 @@
 ---
 name: stow
-description: Load when the captain invokes /stow or asks to stow what was learned, and before a session reset or context compaction.
+description: Load when the operator invokes /stow or asks to stow, save or record what was learned - a lesson, a preference, a new ruling or a decision to remember - before adding, superseding or archiving an entry in data/captain.md, data/captain-shared.md, data/learnings.md or data/memory-archive.md, before turning a lesson into a local skill, and before a session reset or context compaction.
 user-invocable: true
 metadata:
   internal: true
@@ -13,6 +13,8 @@ metadata:
 Sweep this session for durable knowledge and open-work record state that exist only in conversation, then leave the next session with a compact current operating map rather than an accumulating journal.
 Memory entries are tiered and decay between passes, and stale material retires to a cold archive instead of being deleted.
 This skill writes only through the existing Firstmate ownership and write boundaries.
+
+Why this skill exists: rulings were stored as dated prose with nothing naming what they superseded or when they ended, and work-specific lessons were copied into always-loaded files and briefs instead of the skill that owns the work, so stale and duplicated rules kept steering sessions (root causes R8 and R1, problem P16).
 
 ## Memory tiers and entry markers
 
@@ -142,14 +144,10 @@ Never describe the session as reset-safe while the memory total is over budget o
 ## The cold tier: data/memory-archive.md
 
 Stale never means deleted: pruning an entry from an editable memory file always means moving it to `data/memory-archive.md`, this home's append-only, never-injected cold tier, gitignored with the rest of `data/` and never counted by the budget report.
-Each archived entry keeps its provenance under a dated pass heading: source file, tier, last-reinforced date, and the reason it left.
+Each archived entry keeps its exact original words and its provenance under a dated batch heading: source file and line, tier, last-reinforced date, the reason it left, and a `Moved to:` line naming its new owner or `archived only`.
+[`references/archive-format.md`](references/archive-format.md) owns the batch and entry format; batches written in the earlier one-line format stay as they are.
 Include the unreinforced-pass counter only when the optional pass horizon itself made the entry stale, using the exact reason `unreinforced <N>p`; omit the counter when the wall-clock horizon or any other reason caused archival, even if the active marker carried one.
 Archive provenance stays verbose rather than compact because the cold tier is never budget-counted.
-
-```markdown
-## 2026-08-08 stow
-- (from learnings.md, tier: perishable, reinforced: 2026-06-30) The example staging export needs a manual checksum until example-export-checksum lands. [archived: unreinforced 39d]
-```
 
 Reasons include `unreinforced <N>d`, `unreinforced <N>p`, `budget oldest-first`, and `legacy-unvalidated`.
 Archiving is a move, not a removal, and recovery is `grep` plus copy back with no tooling.
@@ -179,13 +177,14 @@ Every test must hold for a candidate:
 ### Destinations
 
 **Hard rule: the stow process never creates or writes a firstmate-repo-tracked skill.**
-**Every skill stow's offload produces for a Firstmate home is user-owned and local, excluded through that active home's repository-local exclude file resolved with `git -C "$home_root" rev-parse --git-path info/exclude`; contributing a lesson to the shared tracked template is a separate deliberate captain action, never automatic.**
+**Every skill stow's offload produces for a Firstmate home is user-owned and local: its one canonical copy lives in the primary home's gitignored `data/skills/<name>/`, linked into every harness skill folder on the machine; contributing a lesson to the shared tracked template is a separate deliberate captain action, never automatic.**
 Approved project-level destinations are not produced by stow: they ship normally through that project's own registered delivery path.
 
-- A user-owned local skill: a directory under `.agents/skills/<freeform-name>/` whose path is appended to the active home clone's repository-local exclude file, never to a `.gitignore`.
-  Resolve `home_root` to `$FM_HOME` when it is set and otherwise to the Firstmate code root, and anchor every destination index check, exclude-path lookup, and ignore verification to that root with `git -C "$home_root"`.
-  Before approval and again before migration, validate that the chosen freeform destination under `home_root` is absent from that home's git index and collides with no existing file or directory, and reject the destination if either check fails.
-  The name is freeform with no user-vs-firstmate naming convention, the skill stays per-home and untracked, and the harness still lists and JIT-loads it because skill discovery scans the filesystem and ignores git status (verified in `docs/verification/stow-memory.md`).
+- A user-owned local skill: a directory `data/skills/<freeform-name>/` in the primary home (`$FM_HOME` when it is set, otherwise the Firstmate code root), symlinked by the same name into the shared `~/.agents/skills/` and into the `skills/` folder of every Claude config dir on the machine (`~/.claude/skills/` by default, and each account's `$CLAUDE_CONFIG_DIR/skills/`).
+  One copy linked everywhere keeps every home and every account loading the same text, where a per-home copy reaches only the home that wrote it and drifts from the others.
+  Only the primary creates one: a secondmate routes a local-skill destination to the primary through marked status, and the primary writes it after the same checks.
+  Before approval and again before migration, validate that `data/skills/<name>` and every link path are absent (no file, directory or link there), that no tracked or local skill already uses the name, and that `git -C "<primary home>" check-ignore data/skills/<name>/SKILL.md` reports it ignored; reject the destination if any check fails.
+  The name is freeform with no user-vs-firstmate naming convention, the skill stays untracked, and the harness still lists and JIT-loads it because skill discovery scans those folders, follows links and ignores git status.
   Its precise, condition-stated description line is its entire trigger; it gets no `AGENTS.md` declaration because `AGENTS.md` is shared tracked material.
   Because this destination is local and untracked, it is also the JIT home for private conditional knowledge that no committed surface may hold.
 - An already-existing user-owned local on-demand note with an established trigger, after confirming it is untracked, private, and able to hold the quoted entry.
@@ -207,16 +206,15 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
    Preserve each candidate's approval state in that item, and require explicit plain-chat approval for that named item before any migration.
    If the captain never answers, nothing migrates and the held item persists, but it is never treated as budget relief.
 3. Migrate an approved pinned candidate outside this pass.
-   Resolve `home_root` to `$FM_HOME` when it is set and otherwise to the Firstmate code root, then re-validate the approved local-skill destination under that root for both index absence with `git -C "$home_root"` and filesystem collision absence.
-   Before creating the destination or writing any private content, resolve the exclude file with `git -C "$home_root" rev-parse --git-path info/exclude`, append the destination directory path to it, and verify the future `SKILL.md` path is ignored with `git -C "$home_root" check-ignore`.
-   Only after that verification succeeds, create the destination and write the `SKILL.md` with its precise description trigger, then confirm the skill appears in a fresh session's skill index.
-   If any migration step fails, remove the destination content and the exclude rule written by this attempt, leaving neither partial private content nor a partial rule behind.
+   In the primary home, re-run the destination checks above for the approved local skill.
+   Only after they pass, create `data/skills/<name>/` and write the `SKILL.md` with its precise description trigger, create each link, then confirm the skill appears in a fresh session's skill index.
+   If any migration step fails, remove the destination content and every link written by this attempt, leaving neither partial private content nor a dangling link behind.
    An approved project destination ships as a normal task through that project's registered delivery mode.
    The migration's source of truth is the entry as quoted in the proposal.
 4. Remove only once live.
-   The memory entry leaves its always-injected file only after the destination is live: the local skill exists with its verified line in the active home's resolved repository-local exclude file, or the project change has landed.
+   The memory entry leaves its always-injected file only after the destination is live: the local skill exists in `data/skills/` with every link in place, or the project change has landed.
    Until then the entry stays, so knowledge is never in limbo between owners.
-   Leave no pointer behind by default, and at most one line only when the destination's discoverability is genuinely doubtful.
+   Leave no pointer behind in the memory file by default, and at most one line only when the destination's discoverability is genuinely doubtful; the archive entry's `Moved to:` line is the pointer from the old words to their new owner.
 
 ## Knowledge sweep and routing
 
@@ -230,6 +228,9 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
      When the owning tier is unreachable from this session, write the finding to the startup-loaded local memory file its class would otherwise use, or keep it where it already lives, carrying the pending-capture marker for that tier; it is still an exception for the receipt, never a reason to treat the local copy as sufficient.
    - Home-domain captain preferences and working style go to `data/captain.md`, the domain-local record, after inspect-then-update.
    - Captain preferences shared across secondmate domains go to the primary home's `data/captain-shared.md`, the main-authoritative file secondmates inherit, under the `secondmate-provisioning` contract.
+   - A lesson about one kind of work, tool or failure goes to the skill that owns that work, not to `data/learnings.md`, because a skill loads at the moment that work starts and an always-loaded line is paid for in every session while still being missed.
+     A local owning skill takes the lesson directly; for a tracked owning skill, file a Firstmate repository task to change it and keep the memory entry until that change lands.
+   - A decision applied to a config file is recorded in that file (its `why` field where it has one, and a dated backup), never as a preference entry: the tools read the file, and a second copy in memory drifts from it.
    - Fleet-local operational facts no declared tier owns go to curated, home-local `data/learnings.md`, regardless of harness memory.
    - Task-scoped notes go with the backlog item, and investigation findings go in the scout report.
    - Knowledge useful to almost every contributor to one project belongs in that project's committed `AGENTS.md`, which only deliberate human edits extend.
@@ -244,7 +245,7 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
      Keep the candidate in `data/learnings.md` or surface it in the completion receipt so the captain can extend the file by hand.
    - Knowledge general to every Firstmate user belongs in this repo's shared tracked material through the normal branch, no-mistakes, PR, and captain-merge path.
    - For task-scoped notes, inspect the item with `bin/fm-tasks-axi.sh show <id> --full`, classify the change as new, duplicate, superseding, or obsolete, then use a considered replacement body through `bin/fm-tasks-axi.sh update <id> --body-file <path>`.
-     Use `--archive-body` when recoverability matters.
+     Always pass `--archive-body` when replacing a note, so the earlier body stays recoverable.
      Never append.
      Keep notes free of temporary paths, moving versions, ephemeral identifiers, and copied state that will rot; verify volatile details against their authoritative config, live system, or API before acting, and correct or delete stale prose at once.
      Preserve durable structured identifiers, dependencies, and completion artifact links.
@@ -254,6 +255,16 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
    The only graduation moves are promotion to tracked shared material through a PR, folding a learning into the captain-preference destination selected in step 2, archiving a stale entry to `data/memory-archive.md`, autonomous offload of an eligible non-pinned conditional entry to an already-existing allowed owner through the reduce flow above, captain-approved offload of a pinned durable conditional entry to a JIT-loaded owner executed through the migration step above, or deletion of an entry that is a duplicate or already preserved through a stronger existing owner.
    A stale unique fact is never deleted, only archived.
    Do not invent another graduation path.
+
+## Superseding, temporary and shared rules
+
+These keep a ruling from outliving its reason or living in two places at once.
+
+- Every dated ruling names what it supersedes and when it expires or is next reviewed.
+- When a new entry supersedes an older one, move the older entry's exact words to the archive in the same edit; never keep a superseded entry in a hot file for history.
+- A new restriction lists the earlier approvals it retires, so work is not carried out under an approval the restriction withdrew.
+- A rule given for a temporary reason (quota, an open cutover, a freeze) records its end condition and a backlog hold that owns checking it; the `captain-hold-lifecycle` skill owns that hold.
+- One owner per shared rule: other homes link to it and never restate it, and a restated copy found during a pass is archived with a `Moved to:` line naming the owner.
 
 ## Open-record persistence
 

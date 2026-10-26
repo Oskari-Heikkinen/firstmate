@@ -1,9 +1,11 @@
 ---
 name: disk-room
-description: Load before a 1 GiB+ write to the WSL Linux disk, on a disk-room or storage alert or the Windows drive filling, and before proposing space reclaim.
+description: Load before a 1 GiB+ write to the WSL Linux disk, before reading free space or proposing space reclaim, and whenever fm-disk-room output, a disk-room hold, a storage alert or a runway alert appears - including one quoting a margin or C: floor that looks wrong - or the Windows drive is filling.
 ---
 
 # disk-room
+
+Why this skill exists: a disk default silently replaced the home's own margin and floor files, so writes were held or allowed against numbers nobody set (root causes R2 and R9, problems P12 and P23).
 
 On WSL the Linux disk is a non-sparse `ext4.vhdx` on the Windows drive, so `df /` overstates room and space Linux frees stays reserved on C: until the file is compacted.
 [`docs/disk-room.md`](../../../docs/disk-room.md) owns the contract; `bin/fm-disk-room.sh`'s header owns the commands, sizes, and exit codes.
@@ -13,6 +15,8 @@ On WSL the Linux disk is a non-sparse `ext4.vhdx` on the Windows drive, so `df /
 - The startup compaction task is installed but disabled on this laptop, so nothing compacts the disk files at Windows start; freed space comes back to C: only through the reclaim-now step in `docs/disk-room.md`. Re-running `fm-wsl-reclaim.ps1 -Install` re-enables the task, so disable it again afterwards.
 - In a home that registered the watcher check, `fm-disk-room.sh watch-line` stays silent until real room is under the margin (the home's `config/disk-room-margin`, 20 GiB by default), then produces one notification, repeated only after a further 5 GiB drop or 6 hours.
   The same check prints one "storage alert" line when a growth or runway alert starts or clears; `docs/disk-room.md` owns the thresholds, and the C: runway floor is the home's `config/disk-room-c-free-min` (100 GiB by default), which the alert line quotes.
+- A hold or alert quoting the built-in 20 GiB margin or 100 GiB floor, or any margin other than the home's `config/disk-room-margin`, means the file is missing or unreadable, or the waiter or armed check still carries an `FM_DISK_ROOM_MARGIN` override.
+  Fix that before acting: it is a configuration fault, not a disk shortage, and relaying it as low room sends the operator after space that is not missing.
 
 Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows the most recent compaction, which with the startup task disabled is the last reclaim-now run.
 
@@ -29,6 +33,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - To move a finished, rarely read tree to D:, pack it with `bin/fm-pack.sh pack TASK UNIT SRC`; [`docs/storage.md`](../../../docs/storage.md#packing-cold-data) owns the command and the retention rule.
 - For packed-source release, follow [retention rule R2 in `docs/storage.md`](../../../docs/storage.md#retention-rule-r2).
 - A home that pins `fm-disk-room.sh` pins its consumer interface, not its bytes, and runs the self-test for that version before trusting a new copy; `docs/disk-room.md` "Consumer interface" owns the rule.
+  A helper-consumer declaration still accepts exact bytes ([`docs/helper-consumers.md`](../../../docs/helper-consumers.md)), so a byte change with an unchanged interface still holds the update until that consumer accepts the new copy; `updatefirstmate` owns that hold.
 
 ## What a low reading means and who acts
 

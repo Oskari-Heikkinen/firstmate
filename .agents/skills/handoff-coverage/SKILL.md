@@ -1,6 +1,6 @@
 ---
 name: handoff-coverage
-description: Load before building or changing anything that hands a record across a home, machine or process boundary (a new artifact type, a stage, a timer, service or custom check that reads or writes handoff records), before publishing or editing a handoff-registry/v1 fragment, a dated-rule-schedule/v1 schedule or handoff-receipt/v1 receipts, before writing a dated constant into code, when a handoff coverage or dated-rule alarm names your home, and on a weekly handoff coverage line.
+description: Load before building or changing anything that hands a record across a home, machine or process boundary (a new artifact type, a request or record format another home consumes, a stage, a timer, service or custom check that reads or writes handoff records), before filing a request another home's intake will validate, before re-pinning a helper after its interface changed, before recording an approval another home's gate will read, before publishing or editing a handoff-registry/v1 fragment, a dated-rule-schedule/v1 schedule or handoff-receipt/v1 receipts, before writing a dated constant into code, when bin/fm-check-register.sh or an intake refuses, when a handoff coverage or dated-rule alarm names your home, and on a weekly handoff coverage line.
 user-invocable: false
 metadata:
   internal: true
@@ -16,6 +16,17 @@ Load this before building or changing anything that hands a record across a home
 `bin/fm-handoff-watch.sh` is the watcher that raises the coverage alarms; its header owns the commands and arming.
 `bin/fm-handoff-measure.py` measures time to notice and prints the weekly coverage line; its header owns the commands and exit codes.
 This skill owns only when an agent or home must act, and how.
+
+Why this skill exists: cross-home contracts had no owner, no check the author could run before filing and no compatibility window, so intakes refused requests, pinned helpers broke on every change and approvals sat where no gate read them (root cause R6, problems P13 and P5).
+
+## Contracts between homes
+
+These rules keep a producer and its consumer from finding out about a mismatch only when a live record is refused.
+
+- Before filing a record another home consumes, run that consumer's published validator on it read-only; until the consumer publishes one, read its schema or fragment and check the record against it, rather than relying on fixtures or an earlier accepted record.
+- A versioned contract names its owner and a compatibility window, and during the window the consumer accepts both the new version N and N-1, so producers can move one at a time; declare both in the protocol's `versions` and the stage's `accepts`.
+- A pinned helper declares an interface version, and a pin that crosses a major interface version is a planned migration with its owner, not a surprise break discovered by the update gate.
+- Record an approval where the gate that enforces it reads it, in the owning home's record, never only in the requesting home's notes or chat; an approval the gate cannot read leaves the work blocked however clearly it was given.
 
 ## When you must publish a fragment
 
@@ -48,6 +59,13 @@ Every installer runs the shared install check before it installs a timer, servic
 - A tool that touches no handoff is declared with `bin/fm-handoff-actors.py declare --home <home> --none --reason <text> <actor>`; a tool that does is named in its stage's `actors`, never declared `none`.
 - A refusal is not a fault to work around: declare the tool, or do not install it.
   Never write a trust record, unit or crontab by hand to get past it; `bin/fm-handoff-actors.py list` reports that as `undeclared-actor`.
+
+### Custom checks
+
+For any custom check you write yourself, write it to a hidden file in `state/` (such as one from `mktemp state/.<id>.XXXXXX`), keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then install it with `bin/fm-check-register.sh <id> --from <that file>`.
+That binds its bytes before it becomes `state/<id>.check.sh`: a watcher sweep that finds `state/<id>.check.sh` without its binding rejects it and wakes, so never write a check there directly.
+Registration refuses a check no handoff fragment declares: pass `--no-handoff <reason>` for a check that reads and writes no handoff record, or list it in its stage's `actors` as above.
+Retire a custom check only through `bin/fm-check-unregister.sh <id>` (or `bin/fm-teardown.sh` for a spawned task); never hand-compose an `rm` with `$STATE`/`$ID`.
 
 ## When you must write receipts
 

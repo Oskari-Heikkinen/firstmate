@@ -1,6 +1,6 @@
 ---
 name: merge-queue
-description: Load before briefing, dispatching, or handing a head off for a task that lands through an external merge queue, and on any `procevent merge-queue` wake.
+description: Only for a project that lands through an external merge queue or merge train - load before briefing, spawning, dispatching, relaunching or handing a head off for one of its tasks, before withdrawing or replacing a car in that train, and on any `procevent merge-queue` wake. Not for a PR or landing in a project without a queue (ship-landing) or for building merge-queue tooling (tool-design).
 user-invocable: false
 metadata:
   internal: true
@@ -10,6 +10,8 @@ metadata:
 
 Load this before briefing or dispatching a task whose project lands through an external merge queue, before handing a head to that queue, and whenever a `check:` wake carries `procevent merge-queue <source-id> <sequence>`.
 
+Why this skill exists: workers pushed around the train, because the tool let them and their briefs restated a landing mode that later drifted (root causes R2 and R1, problems P21 and P16).
+
 `bin/fm-procevent-merge-queue.sh` is the owner-side glue, and its header and `--help` own the exact commands, the outcome classes, and what settling each one does.
 It is a built-in process-event adapter, so the `process-event-sources` skill still owns the runner, the durable result, and the `handled` acknowledgement.
 [`docs/configuration.md`](../../../docs/configuration.md#merge-queue-configmerge-queue) owns the per-home `config/merge-queue` schema; a home with no configured queue refuses every handoff.
@@ -17,6 +19,10 @@ It is a built-in process-event adapter, so the `process-event-sources` skill sti
 ## Briefing a queue-landed task
 
 The worker never lands and never waits.
+Spawn every queue-landed ship with `--yolo off`.
+On a direct-push task, `--yolo on` writes a `# Current landing authority` section into the launch brief that supersedes the spec and pre-authorizes the worker's own landing, so a relaunched worker obeys it and pushes to the default branch around the queue.
+A steer sent after spawn does not survive a relaunch, while the launch brief does, so fix the brief rather than steering: for a ship already spawned with `--yolo on`, rewrite that section's pre-authorized line in its stored launch brief to the stop-at-ready form before any relaunch.
+Point the brief at this skill rather than restating the landing mode in prose; a restated copy is what drifts.
 Put the exact handoff command in the brief's `## Firstmate spec`, with this home's own paths, so the worker runs it once its head is pushed to its task branch and its gate is green:
 
 ```sh
@@ -70,3 +76,5 @@ Then acknowledge it with `bin/fm-procevent.sh handled <source-id> <sequence>`.
 - Never run cleanup, refresh the clone, or relaunch a worker by hand for an outcome the glue settles; a result it left unhandled is the only one that needs you.
 - Never write the landed, failed, decision, or stall line to the parent channel yourself; the glue and the existing ledger delivery publish them.
 - Never edit `queue.log` or anything else in the queue directory; the train owns it, and handoff goes only through the command above.
+- Never withdraw or replace a car by pushing its head, or a fix, straight to the default branch: the train still holds the car and lands or rejects it against a main that moved under it.
+  Withdraw it through the train's own interface or its owner, and hand a replacement head over through the command above.

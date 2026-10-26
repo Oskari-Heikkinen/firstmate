@@ -1,6 +1,6 @@
 ---
 name: secondmate-provisioning
-description: Load before any secondmate home step (create, seed, validate, launch, recover, retire, hand off backlog or local material), a charter brief, or editing data/secondmates.md.
+description: Load before creating, seeding, validating, launching, relaunching, recovering or retiring a secondmate home, before refreshing its charter or writing a charter brief, before handing it backlog or local material, before editing data/secondmates.md or registering a project inside a secondmate home, and before working on, supervising or reconciling anything inside a secondmate's own tree from the main home.
 user-invocable: false
 metadata:
   internal: true
@@ -11,6 +11,8 @@ metadata:
 Use this reference before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a persistent secondmate, and before editing `data/secondmates.md`.
 
 Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default.
+
+Why this skill exists: provisioning and recovery steps lived only in the main home's always-loaded rules, so the main home ended up doing a secondmate's own work hands-on and supervising its crew (root cause R1, problem P27).
 
 ## Routing table
 
@@ -96,7 +98,7 @@ When the file's tokens do apply, an explicit per-spawn `--model` or `--effort` f
 Because this resolves from the file on every spawn, the pin is durable across every respawn (recovery, `/updatefirstmate`, restart) exactly like the harness axis itself - e.g. `config/secondmate-harness` containing `claude opus` keeps a secondmate pinned to Opus even if the primary's own default model later changes.
 This is secondmate-only: crewmate/scout model resolution is untouched by this file.
 
-This section is the single owner of the secondmate sync and inherited-local-material propagation contract; `AGENTS.md` sections 3 and 4 point here.
+This section is the single owner of the secondmate sync and inherited-local-material propagation contract.
 Before a local launch, `fm-spawn.sh --secondmate` locally fast-forwards the home to the primary firstmate checkout's current default-branch commit when it is safe, or reconciles a clean divergence whose complete local result is already present there (e.g. after a squash merge) with `reset --keep`; dirty, uniquely diverged, or in-flight homes launch unchanged with a warning, and a genuine divergence gets the same durable reconciliation record `bin/fm-ff-lib.sh` writes for `/updatefirstmate`.
 The locked session-start deferred network stage runs the same bootstrap sweep for every live local secondmate home, discovered from `state/<id>.meta` records with `kind=secondmate` (`data/secondmates.md` only backfills `home=` for older records).
 That no-fetch path is a purely local fast-forward or redundant-divergence reconcile of tracked files, never an origin fetch, and it never touches the gitignored operational dirs, so a secondmate's backlog, projects, and in-flight work are never disturbed; a linked worktree advances immediately, while a standalone clone that lacks the target receives firstmate updates through `/updatefirstmate`'s origin refresh.
@@ -236,8 +238,8 @@ Move a REMOTE one with `bin/fm-remote-secondmate-relaunch.sh <id> <harness> <mod
 Never call `fm-remote-secondmate-control.sh relaunch` through `fm-on.sh` directly for this: it leaves this primary's own record naming the runtime the mate used to run.
 A successful update restarts every live mate of both placements on its own, including one already on the target commit; the `/updatefirstmate` skill owns that pass, and `bin/fm-secondmate-restart.sh` owns its persist gate and failure vocabulary.
 
-Do not reconstruct a secondmate's whole tree from the main home.
-The main firstmate reconciles only direct reports.
+The main home never reconstructs or supervises a secondmate's child tree.
+The main firstmate reconciles only direct reports: work inside a secondmate's tree goes to that secondmate as a request, because the secondmate owns its crew and the main home acting there leaves two supervisors for one worker.
 Each secondmate is a firstmate in its own home, so it runs recovery on startup and reconciles its own crewmates.
 A secondmate's recovery reconciles only work that is already its own and then idles.
 It never initiates a survey or audit during recovery.

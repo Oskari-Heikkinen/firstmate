@@ -1,12 +1,14 @@
 ---
 name: updatefirstmate
-description: Load when the captain invokes /updatefirstmate or asks to update or pull the latest firstmate.
+description: Load on /updatefirstmate or any request to update or pull the latest firstmate, before running bin/fm-update.sh or bin/fm-secondmate-restart.sh, and when fm-update prints held-for-helper, skipped, reread-firstmate, restart-secondmates or nudge-secondmates lines.
 user-invocable: true
 metadata:
   internal: true
 ---
 
 # updatefirstmate
+
+Why this skill exists: pinned helper consumers hold updates on byte changes, and the agent cannot itself run the override that breaks a pin, so held updates stalled with no clear hand-over (root cause R6, problem P13).
 
 Self-update firstmate in place.
 Firstmate is its own repo, so new tracked material (`AGENTS.md`, `bin/`, `.agents/skills/`, and public `skills/`) reaches `main` and then sits there until each running firstmate pulls it.
@@ -23,8 +25,6 @@ Replacing the agent is still required to re-resolve launch-time wiring - turn-en
 That is why **every live second mate is restarted after a successful update, including one that was already on the target commit.**
 Launch-time wiring is not derivable from a file diff, so an unchanged tracked surface is not evidence the running agent is already on the current behavior.
 The only live mates that do not restart are the ones whose home the update pass had to skip, and the ones whose runtime cannot prove a restart; the updater keeps both cases honest and neither is reported as a reload.
-
-**One-time rollout note:** the update that carries this change is still executed by the previous release, which restarts only the mates whose `AGENTS.md` or `.agents/skills/` moved on that pass. After it completes, run `bin/fm-secondmate-restart.sh <fm-id>...` once with every live second mate ID, not only the ones that release named; later updates follow the normal flow below.
 
 The primary update is fast-forward only, while each secondmate uses the same guarded convergence path plus one narrow recovery for squash-merged local history.
 For a remote route, it updates the configured Firstmate code root on that host from its own origin, then guardedly fast-forwards the persistent home to that code-root commit.
@@ -51,6 +51,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
    A mate reaches neither set only because its home was skipped, because it has no live endpoint recorded here, or because its endpoint was positively classified as dead or missing.
    A skipped genuine divergence still requires attention through its durable reconciliation record; the other two cases need no update action from you.
    When it also printed `held-for-helper: <helper>@<version> awaiting <consumer>...`, nothing moved because a home that runs that helper under a pin has not accepted the new version yet, or its declaration is malformed (`awaiting malformed declaration <name>`) and must be fixed first ([`docs/helper-consumers.md`](../../../docs/helper-consumers.md)); relay it to the captain as a plain choice - wait for that consumer's review (typically about an hour), or update now and that consumer's work waits until it accepts - and rerun with `--allow-helper-break <consumer>` only on the captain's explicit word to update anyway.
+   In Claude's auto mode the permission classifier refuses an agent-run `--allow-helper-break`, so once the operator chooses to update anyway, hand over the exact line to run, `! bin/fm-update.sh --allow-helper-break <consumer>`, and continue from its output instead of retrying the command yourself.
 
 2. **Re-read AGENTS.md if your own instructions changed.**
    When the updater printed `reread-firstmate: yes`, the tracked instruction surface (`AGENTS.md`, `bin/`, or `.agents/skills/`) just advanced under you.
@@ -88,7 +89,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
    Never describe one of these as reloaded; its agent is still running the wiring it launched with.
 
 5. **Report to the captain in plain outcomes, in one line where you can.**
-   Summarize what landed under `AGENTS.md` section 9 without firstmate's internal vocabulary: which parts of the fleet are now on the latest, and which were left as-is and why.
+   Summarize what landed in `AGENTS.md` section 9's outcome form and the chat style in `data/captain-shared.md`, without firstmate's internal vocabulary: which parts of the fleet are now on the latest, and which were left as-is and why.
    For example: "Firstmate and both second mates are now on the latest."
    Say plainly when a mate got the message rather than a clean reload, and why - never let a partial reload read as a full one.
    Surface any skipped target whose reason needs the captain's attention - for instance a home with its own un-landed changes (diverged) or local edits (dirty), which were left untouched on purpose.

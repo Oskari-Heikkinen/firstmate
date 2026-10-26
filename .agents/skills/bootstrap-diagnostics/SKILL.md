@@ -1,6 +1,6 @@
 ---
 name: bootstrap-diagnostics
-description: Load when session-start or bootstrap output prints an actionable diagnostic code (list in body) or BOOTSTRAP_INFO reports an interrupted backlog cleanup.
+description: Load when session-start, bootstrap or a supervision guard prints an actionable diagnostic - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, NETWORK_CHECKS, REBOOT_RELAUNCH, TANGLE or a WORKTREE TANGLE banner, STARTUP_MEMORY_BUDGET, SUPERVISOR_COMPACT_AT, CREW_DISPATCH, FLEET_SYNC skipped or STUCK, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES or FMX - or when BOOTSTRAP_INFO reports an interrupted backlog cleanup.
 user-invocable: false
 metadata:
   internal: true
@@ -10,8 +10,10 @@ metadata:
 
 Handle each printed line as below, before dispatching work that depends on it.
 The line formats themselves are owned by `bin/fm-bootstrap.sh`'s header; this playbook owns the response to actionable lines.
+
+Why this skill exists: each diagnostic's safe response lived in always-loaded rules far from the line that needs it, so cleanup-style fixes were improvised and could touch unlanded work (root cause R1, problem P15).
 The session-start rules in `session-start-recovery` still bind: detect, then consent, then install - never install anything the captain has not approved in this session - and no work is dispatched until the tools it needs are present and GitHub auth is good.
-When any diagnostic needs captain attention, report the plain consequence and requested action using `AGENTS.md` section 9's captain-facing translation contract; do not name the diagnostic label unless the captain needs to paste it into a command or issue.
+When any diagnostic needs captain attention, report the plain consequence and requested action in `AGENTS.md` section 9's escalation form and the chat style in `data/captain-shared.md`; do not name the diagnostic label unless the captain needs to paste it into a command or issue.
 
 - `MISSING: <tool> (install: <command>)` - list the missing tools to the captain with a one-line purpose each plus the printed install commands, wait for consent (one approval may cover the list), then run `bin/fm-bootstrap.sh install <approved tools...>`.
   For `treehouse`, this also covers an installed version whose `treehouse get` lacks `--lease`; treat it as an upgrade request.
@@ -27,7 +29,9 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Rerun the printed command; it is idempotent and re-derives every finding.
   A `hit the ...s bound` line means one of those checks is slow or unreachable - most often a remote secondmate host - and the stage stopped rather than letting it wedge; a `lock was no longer held` line means the session that asked for the sweeps no longer owns them, so leave them to the session that does.
 - `REBOOT_RELAUNCH: <id>: <what happened>` or `REBOOT_RELAUNCH: <switch or bound problem>` - the session-start dead-worker relaunch left that worker stopped for recovery, its relaunch failed, or the step itself could not run; load `stuck-crewmate-recovery`, which owns the response.
-- `TANGLE: <remediation>` - the primary checkout is stranded on a feature branch instead of its default branch; `AGENTS.md` section 8 explains why this guard exists and what it protects.
+- `TANGLE: <remediation>`, or the `WORKTREE TANGLE` banner `bin/fm-guard.sh` prints - the primary checkout is stranded on a feature branch instead of its default branch, usually because a worker branched or committed in the primary instead of its own copy.
+  The guard exists because every home and helper assumes the primary sits on its default branch, so a stranded primary quietly breaks syncs, updates and spawns that read it.
+  Resolve it without touching unlanded work: never reset, discard, delete or rebase the stranded branch or anything uncommitted in the primary.
   The work is safe on that branch ref; restore the primary to its default branch with the printed `git -C <root> checkout <default>`, then re-validate that branch in a proper worktree.
   This is the only sanctioned firstmate-initiated git write to the primary, and it is a non-destructive branch switch that strands nothing.
 - `STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>` - the visible startup-memory budget is not a safe one-line positive decimal file; do not infer the default or propagate it.

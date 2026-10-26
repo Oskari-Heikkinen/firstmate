@@ -1,6 +1,6 @@
 ---
 name: quiet-waits
-description: Load before putting a worker on a machine-checkable wait or resuming saved copy-free work, on a wait-condition, no-agent, supersedes, or config-reread wake, and before hand-closing a blocker.
+description: Load before putting a worker on a machine-checkable wait, before sending work, a fix or an answer to a parked or saved worker, before resuming saved copy-free work, on a wait-condition, no-agent, supersedes, or config-reread wake, and before hand-closing a blocker.
 user-invocable: false
 metadata:
   internal: true
@@ -9,6 +9,8 @@ metadata:
 # quiet-waits
 
 Load this before briefing or steering a worker onto a machine-checkable wait, on a wake that says a declared wait condition no longer holds or that its endpoint has no agent, when a drain shows a `note [supersedes=...]` or `note [receipt=config-reread]` line, and before closing a blocker or acknowledging a config push by hand.
+
+Why this skill exists: a message sent to a parked worker sat unread, because sending never wakes an inbox-only park, and waits a script could prove still woke the supervisor (root causes R2 and R7, problem P10).
 
 Three automations share one purpose: a wake whose answer a script can already prove never reaches the supervisor's chat.
 Each is deterministic, leaves a durable record, and never suppresses a needs-decision, blocked, failed, done, or check wake.
@@ -49,6 +51,8 @@ A positively validated saved wait is still the same commissioned task, not a mis
 Ordinary text, reminders, timer expiry and results that still need a captain decision never grant pickup authority.
 Resolve the actual decision through its existing owner before authorizing continuation; suspension and cancellation do not resolve approvals or obligations.
 Shared keyed answers use `fm-send.sh`'s explicit fan-out form; its header owns recipient discovery, delivery, closure and inbox pickup.
+An ordinary `fm-send.sh` to a worker parked on an inbox-only wait delivers the message but does not wake it: the message waits in its inbox until the supervisor runs `bin/fm-park.sh pickup <task-id>`.
+So when the message is actionable work, run that pickup right after the send; when it is only context the worker can read at its next resume, leave the park alone.
 Use the normal owner control/park continuation, never a generic fresh spawn, a worker-chosen pickup, an old-path inspection or ordinary teardown.
 The ordinary wait condition stays cheap; the separate incarnation-bound release source owns expensive saving/return and its own bounded outcome, as described by the park owner.
 An interrupted or invalid saved transaction remains blocked with its evidence intact: reconcile only its exact acquisition, never re-run allocation blindly or edit records to manufacture a valid proof.

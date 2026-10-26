@@ -1,6 +1,6 @@
 ---
 name: stuck-crewmate-recovery
-description: Load on a dead or windowless direct-report endpoint, REBOOT_RELAUNCH line, stale wake, looping, confused, or unresponsive worker, failed steer, or a worker calling no-mistakes dead.
+description: Load on a dead or windowless direct-report endpoint, a REBOOT_RELAUNCH line, a stale wake, a looping, confused, silent or unresponsive worker, a failed or unanswered steer, a worker pane showing a bare shell or `backgrounded · <id>`, or a worker calling no-mistakes dead - before relaunching, respawning or sending text to that worker. Not for spawning new work or a launch-time trust or permission dialog (harness-adapters).
 user-invocable: false
 metadata:
   internal: true
@@ -8,8 +8,10 @@ metadata:
 
 # stuck-crewmate-recovery
 
+Why this skill exists: restarts, harness changes and background sessions make a live worker look dead and a dead one look live, and a wrong guess either duplicates a task or types into a shell (root cause R9, problem P20).
+
 Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, or when a steer failed to land.
-A stale or dead-endpoint report for a worker whose pull request has already landed is not a recovery case: the work is finished, so close the task through ordinary teardown (`AGENTS.md` section 7 for firstmate, the landed-work rule in `bin/fm-branch-prompt.sh` for the supervision branch) instead of this playbook, never with `--force`.
+A stale or dead-endpoint report for a worker whose pull request has already landed is not a recovery case: the work is finished, so close the task through ordinary teardown (`bin/fm-teardown.sh`, which owns the landed-work test, and the `ship-landing` skill's teardown rules for firstmate, the landed-work rule in `bin/fm-branch-prompt.sh` for the supervision branch) instead of this playbook, never with `--force`.
 
 Interrupt, stop, and relaunch a worker through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which resolves the recorded runtime itself, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](../../../docs/agent-control.md)).
 That plane covers workers running in this home; a remotely placed secondmate is refused by name and reconciled through `secondmate-provisioning` instead.
@@ -60,7 +62,6 @@ Intake protects ambiguous, claim-only and secondmate copies under a `firstmate:r
 That reservation remains after records are reconciled: this landing intentionally has no automatic transfer to a task holder.
 Only the owning home's explicit ordinary reservation handling can release or re-adopt the copy after records cease naming it or establish exclusive ownership; the same landed-work and discard-authorization boundaries still apply, and nothing else frees it.
 The matching task-holder reservation is finished automatically by owner cleanup before its unchanged landed-work checks.
-Live-worker adoption coverage proves the kernel task/pane environment with real PTY jobs across pooled backends and real Herdr/native Treehouse idle/get cases, but has not exercised a real Claude or Codex worker.
 
 ## A live crewmate claiming the pipeline is dead
 
@@ -86,6 +87,9 @@ Only positive socket refusal or absence is a daemon-down finding; escalate that 
 Escalate in order:
 
 1. Peek the pane, and check the task's steering inbox (`state/<id>.inbox/`) for unhandled `*.msg` records - a stale wake naming an unread firstmate instruction means the worker never acknowledged a durable steer, and the record itself shows exactly what was intended.
+   A Claude worker whose pane shows a bare shell with `backgrounded · <id>` is still alive as a background session, not dead.
+   Confirm it with `claude agents --json` (a row with that `id` and the task's worktree as `cwd`), run under the worker's `CLAUDE_CONFIG_DIR`, then reattach it in its own pane with `claude attach <id>` under that same config dir.
+   Never `fm-send` to that pane, because the shell would run the text as a command, and never relaunch over it, because the background session still owns the worktree; `harness-adapters` owns how the Claude adapter reads that state.
 2. If the crewmate is waiting on a question its brief already answers, answer in one line via `FM_HOME=<this-firstmate-home> bin/fm-send.sh` from an active firstmate session unless `FM_HOME` is already set to the active firstmate home.
 3. If the crewmate is confused or looping, interrupt with `FM_HOME=<this-firstmate-home> bin/fm-control.sh <task-id> interrupt`, then redirect with one corrective line through `fm-send`.
 4. If the crewmate is genuinely wedged after redirection, relaunch it with `FM_HOME=<this-firstmate-home> bin/fm-control.sh <task-id> relaunch --note '<progress so far>'`, which stops the agent, carries the brief plus that note into a replacement in the same local copy, and restores the prior record if the replacement cannot start.
@@ -93,4 +97,4 @@ Escalate in order:
    Genuine wedging means looping, unresponsive, repeating the same obstacle, or truly dead.
    A low context reading is not wedging; modern harnesses auto-compact and keep going.
    The worktree and commits persist, so relaunch is cheap.
-5. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, and consequence using `AGENTS.md` section 9; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.
+5. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, and consequence in `AGENTS.md` section 9's escalation form and the home's chat style in `data/captain-shared.md`; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.

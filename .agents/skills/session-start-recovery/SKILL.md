@@ -1,12 +1,14 @@
 ---
 name: session-start-recovery
-description: Load when the session-start digest reports unfinished checks, actionable diagnostics, recovery inputs, or output requiring interpretation.
+description: Load when bin/fm-session-start.sh or a wake drain prints NETWORK CHECKS in progress, OPEN DECISIONS, UNREAD STATUS, STATUS OUTCOME BACKSTOP, an ABSENT file, a read-only (unlocked) session, a WAKE_ACK_REQUIRED line or a check: startup-network wake, when a saved wake-ack command comes back empty, and before acting on the fleet-state digest. Not for a status report or recap (bearings).
 user-invocable: false
 metadata:
   internal: true
 ---
 
 # Session-start recovery
+
+Why this skill exists: startup output is easy to misread after a restart, and the drain prints its acknowledgement where a plain capture misses it, so wakes were left unacknowledged or acted on twice (root causes R2 and R9, problem P20).
 
 The digest itself makes no external-network call and never waits for one.
 Every network check a session start owes - GitHub auth, dead-worker relaunch, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh - runs off the digest's blocking path in a bounded worker owned by `bin/fm-startup-network.sh` and is reported in the digest's own `NETWORK CHECKS` section.
@@ -20,6 +22,8 @@ The locked startup inactive-outcome scan joins that worker so a slow local curre
    Ordinary supervision continues the same guarantee through the watcher's cadence-gated liveness tick over the shared `bin/fm-secondmate-liveness-lib.sh`, so a mate that dies mid-session is relaunched without waiting for the next session start.
 3. **Wake queue** - when locked, drains and presents the durable wake queue without running the inactive-outcome scan inline, and prints the raw records prominently as this turn's first work queue; a clearly labeled status-event annotation may follow a valid `signal` record and includes every status line still unread at the presentation cursor, but never replaces the raw record or current-state reconciliation, and a lapsed watcher chain still surfaces here via the same guard alarm.
    Presented records remain durable until the handling turn runs the generation-bound acknowledgement printed by the drain.
+   `bin/fm-wake-drain.sh` prints that `WAKE_ACK_REQUIRED:` command on stderr, so capture the drain with `2>&1`; a capture of stdout alone saves an empty command, and running it acknowledges nothing while the rows stay pending.
+   Never run a saved acknowledgement that is empty or lacks `--recovery-generation`: re-run the drain and use the command it prints.
    Every locked drain also prints a bounded fleet-wide `OPEN DECISIONS` section when durable decision records remain open, including when the queue itself is empty, and names any entry past its byte cap by task and key; reconcile those entries before continuing.
    A main drain may also print a bounded, one-shot `STATUS OUTCOME BACKSTOP` when a task's newest captain-facing status event has no covering supervision-branch outcome; handle it as a recovered wake even when no queue row remains.
    The same drain prints every still-unread `note:` line and pending-reply resolution since the last presentation in an unbounded `UNREAD STATUS` section, so an answer buried under a later routine line is not dropped; those lines are not re-printed after that presentation.

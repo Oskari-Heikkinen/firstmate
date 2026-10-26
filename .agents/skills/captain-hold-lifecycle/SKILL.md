@@ -1,6 +1,6 @@
 ---
 name: captain-hold-lifecycle
-description: Load before treating an investigation, scout report, or review as complete, when recording or routing the captain's answer, and on any RECORD DIVERGENCE line.
+description: Load before treating an investigation, scout report, or review as complete, before holding or deferring a decision (including a "later" or "not now" answer), when recording or routing the operator's answer, before recording time-boxed authority, a temporary rule or an open condition ("until X is live", "for this week"), and on any RECORD DIVERGENCE line.
 user-invocable: false
 metadata:
   internal: true
@@ -11,6 +11,8 @@ metadata:
 A decision is not a separate thing: it is simply a task waiting on the captain.
 The one primitive is an ordinary backlog task held for the captain through `bin/fm-captain-hold.sh hold`; its identity is the task id, and that wrapper owns the deterministic mechanics this policy relies on.
 The agent performs the semantic inventory because scripts must not infer captain calls from report prose, visual-review artifacts, terminal output, or chat.
+
+Why this skill exists: open decisions and time-boxed authority were written as prose with no owner or end condition, so they outlived their reason, or work waited on a go that was already given (root causes R8 and R7, problems P17 and P18).
 
 ## Policy
 
@@ -59,13 +61,20 @@ Read such a line as "these two records disagree", never as "the captain ruled an
 Reconcile it with what actually happened - `answer` when the captain's own words exist to record, and a fresh `needs-decision` line re-opening the status decision when that resolution was not the captain's word.
 The absence of a routed work item is not a divergence and the guard never requires one: when the decision IS the deliverable there is nothing to route.
 
+## Time-boxed authority and open conditions
+
+Authority or a rule given for a bounded time or until a condition ("until the new train is live", "while the quota is short", "for this week") is an open condition, and an open condition needs an owner that checks it.
+Record it as a captain-held backlog task whose reason names the condition and what changes when it ends, with `--until <date>` when the bound is a date, and point to that task from wherever the authority itself is recorded.
+Never record it as prose alone in a preference or learnings file: prose has no clock, so it keeps granting or blocking after its condition has passed.
+When the condition ends, close the task through this owner with the evidence or the operator's words, and retire the authority in the same step; the `stow` skill owns archiving the superseded entry's exact words.
+
 ## Operating sequence
 
 1. Read the complete investigation result and complete the visual review before declaring either complete.
 2. Inventory only genuine unresolved choices that require the captain, and find the task each one gates.
 3. Hold that task - or create one captain-held task for the review's open questions - with a concise reason carrying the question and options.
 4. Run `complete` with the full captain-held inventory for that review pass.
-5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
+5. Relay the choices to the captain as decisions from Bearings' Captain's Call section, in `AGENTS.md` section 9's escalation form and the chat style in `data/captain-shared.md`; do not use the word hold in captain chat.
 6. Close each call only through `answer` (or a channel that feeds `answers`), close a source-requested moot call through evidence-backed `reconcile close`, record a still-active reconciliation through `reconcile note`, use `--until` for deferrals covered by the policy above, or confirm a channel already closed it.
 7. On each heartbeat run `apply-defaults`, and record words that change an applied default with `reverse`.
 8. Confirm Bearings reflects the outcome: answered or reconciled-moot calls leave Captain's Call, released work resumes, active reconciliations remain held, and deferred calls sit in Charted Next with their date.
