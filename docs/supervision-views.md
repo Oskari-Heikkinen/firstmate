@@ -126,11 +126,16 @@ This optional batch never substitutes the service's device/inode observation ide
 Unsupported platforms, custom size/identity readers, larger or incompatible inventories, partial stat failure, nonregular inputs or malformed rows refuse atomically before output and recapture the entire snapshot through the unchanged legacy owner.
 Without explicit selection, the ordinary legacy snapshot is unchanged.
 It asks once for native captured annotation lines, unread/open-decision facts and suggested endpoints before printing any status annotation or section, keeping divergence, capped branch outcomes and the latest-outcome backstop with their existing owners.
-The annotation renderer consumes those captured lines without reopening each span or cursor.
-At annotation time, after any enrichment delay, its existing signature owner can observe up to 256 historical-only regular-file signatures in one fresh GNU-stat call and read their reported markers in shell.
+After the actual enrichment delay, the annotation owner admits the whole captured inventory against one fresh bounded strong-identity snapshot from its existing GNU-stat reader, covering direct and historical rows before any annotation output.
+Every captured task must still be present, regular, readable and nonsymlink, with its original strong identity and at least its captured byte endpoint; changed inventory, unsupported readers/platforms or malformed/uncertain evidence refuses the entire selection.
+Growth beyond a captured endpoint remains admitted but is not presented by this snapshot.
+On refusal, all captured annotation groups are discarded and the complete existing legacy annotation reader decides every row on the same snapshot, preserving raw wakes and unrelated readable annotations rather than partially repairing native rows.
+This guard never reads a span or cursor, writes a record or changes the status-section and acknowledgement owners; admitted annotations still consume their captured lines without per-row span/cursor reopens.
+The existing signature owner then observes up to 256 historical-only regular-file signatures in one fresh GNU-stat call and reads their reported markers in shell.
 The batch shares the ordinary signature parser and encoder, never reuses the earlier presentation capture, and never consults owned-append coverage to suppress an annotation.
 Direct rows retain priority and first-seen queue order.
-An empty historical inventory returns its unchanged manifest without loading the classifier or attempting a signature batch; a nonempty inventory loads the existing classifier owner before invoking its reader.
+An empty annotation manifest does not load the classifier for path admission.
+Every nonempty captured selection needs that existing classifier owner for its fresh path guard; the historical filter itself still returns an empty historical inventory unchanged without an additional load or signature batch.
 Unsupported readers/platforms, nonregular or unreadable paths and malformed or incomplete captures discard the entire optional filter before annotation output and run the original per-row replay checks with an explicit diagnostic.
 Missing or malformed reported markers remain unreported, preserving the historical warning and every raw wake.
 Before native selection, the existing presentation owner independently validates every suggested task/identity/endpoint against its captured snapshot and current cursor manifest under the held presentation lock.
@@ -167,7 +172,12 @@ They also exercise append-bounded snapshots, whole-batch refusal on replacement/
 Separate initial/final-generation-barrier stalls saturate ordinary capacity with concurrent batches and prove both critical slots still admit status-fold observations.
 Real public entrypoint fixtures additionally compare native/legacy drain rendering and committed cursor bytes, failed-stdout retry, append during observation, epoch-refusal fallback and captured-crew override fallback.
 Queued-signal fixtures also compare full annotation bytes and committed cursor bytes, including whitespace, invalid UTF-8, repeated latest lines and an append after native capture.
-A renderer tripwire refuses any attempted cursor/span reopen when captured annotation facts are supplied.
+A renderer tripwire supplies a real strong-identity snapshot and refuses any attempted cursor/span reopen on the admitted path.
+Annotation path-admission cases require one whole-inventory stat and no per-row identity/size/span/cursor helpers, admit captured-end growth, and refuse deletion, rotation, truncation, symlinks, unreadable/nonregular paths, incomplete/malformed/error captures and malformed inventories without output or record mutation.
+Real-client actual-enrichment controls pin deletion both after a successful nonempty native capture and before its status read, separating whole legacy annotation fallback from early native refusal.
+They cover direct and historical rows, preserve ordered raw wakes and unrelated first/later annotations, and compare complete output/cursor bytes against the legacy owner at the same annotation-time input.
+An intentionally incomplete unaffected native group must also be discarded on late deletion or malformed/error admission captures, detecting partial repair or output before whole-batch validation.
+The original delayed-deletion queue case and actual-delay append/classified-marker regression remain unchanged.
 A real-client corruption fixture reverses its annotation groups after a successful socket read and requires complete legacy output and cursor parity, detecting validation that happens only after native selection.
 The presentation parity matrix also exercises native offset batching against those same real owner-written cursor and marker records.
 Strong-snapshot capture tests compare every output byte with the legacy owner in C and UTF-8 locales, including unavailable birth time, growth, rotation, empty/nonregular inputs and parent-channel bindings.
@@ -225,7 +235,8 @@ The original late Perl-reader symlink-swap case retains every assertion through 
 A separate real-client early-swap regression injects at the native regular-file reader and requires its actual nonsymlink refusal plus complete output parity with legacy on that same early-swap input, ordered raw rows, equal annotation counts and no target disclosure.
 It also probes the legacy cursor API before and after the swap: a regular file must be accepted and the early symlink must refuse, independently of output parity.
 That early cursor refusal precedes the historical annotation in legacy too; the original late-reader case still requires that annotation.
-Only the existing explicit delayed-deletion fixture's identity-change refusal is admitted as a matrix race fallback, never a native success or arbitrary-error exception.
+Only the existing explicit delayed-deletion fixture's identity-change refusal is admitted as an early matrix race fallback, never a native success or arbitrary-error exception.
+Deletion after successful native capture instead reaches the annotation-time whole-selection fallback above; its explicit legacy annotation diagnostic is not native annotation proof.
 Its default legacy selection remains independently exercised by the existing CI tier.
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.
 There is no P0 replay adapter or B0 performance acceptance yet.

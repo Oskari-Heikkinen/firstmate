@@ -422,6 +422,192 @@ sys.exit(88)
                 else: self.assertNotIn(b"wake annotation:", actual)
                 self.assertNotIn(b"task.status: working: appended during delay", actual)
 
+    async def test_annotation_path_guard_is_bounded_atomic_and_never_reads_spans_or_cursors(self):
+        self.status(b"working: a\n", "a", kind="ship")
+        self.status(b"working: b\n", "b", kind="ship")
+        b = self.state / "b.status"
+        protected = self.home / "protected"
+        protected.write_bytes(b"outside data\n")
+        cursor = self.state / ".status-presentation-cursor"
+        cursor.write_bytes(b"prior cursor must not change\n")
+        stat, log = self.home / "fakebin/stat", self.home / "path-admission-stat"
+        stat.write_text('''#!/usr/bin/env python3
+import os, pathlib, subprocess, sys
+args = sys.argv[1:]
+if len(args) > 2 and args[0] == "-c" and "\\t" in args[1] and "--" in args:
+    with open(os.environ["FM_FIXTURE_PATH_LOG"], "ab") as stream: stream.write(b"batch\\n")
+    mode = os.environ.get("FM_FIXTURE_PATH_FAULT", "")
+    if mode == "error": sys.exit(1)
+    run = subprocess.run([os.environ["FM_FIXTURE_REAL_STAT"], *args], capture_output=True)
+    rows = run.stdout.splitlines()
+    if mode == "malformed": rows = [b"malformed"]
+    elif mode == "short": rows = rows[:-1]
+    elif mode == "extra": rows += rows[:1]
+    sys.stdout.buffer.write(b"\\n".join(rows) + b"\\n")
+    sys.exit(run.returncode)
+sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
+'''.replace('os.environ["FM_FIXTURE_REAL_STAT"]', repr(shutil.which("stat"))))
+        stat.chmod(0o700)
+        script = '''_fm_wake_require_classify || exit 1
+_fm_status_file_size() { echo 'unexpected per-row size read' >&2; return 86; }
+_fm_open_decisions_file_ident() { echo 'unexpected per-row identity read' >&2; return 86; }
+fm_wake_status_cursor_offset() { echo 'unexpected cursor read' >&2; return 86; }
+fm_wake_unread_events() { echo 'unexpected span read' >&2; return 86; }
+if fm_wake_annotation_paths_current "$1" "$2"; then printf admitted; else printf refused; fi
+'''
+        for action in ("unchanged", "growth", "delete", "rotate", "truncate", "symlink", "unreadable", "directory", "fifo",
+                       "malformed", "short", "extra", "error", "empty-snapshot", "duplicate", "foreign"):
+            with self.subTest(action=action):
+                if b.is_dir(): b.rmdir()
+                elif b.is_symlink() or (b.exists() and not b.is_file()): b.unlink()
+                b.write_bytes(b"working: b\n"); b.chmod(0o600)
+                snapshot = await self.owner('_fm_wake_require_classify; status_presentation_snapshot "$1"')
+                log.unlink(missing_ok=True)
+                if action == "growth":
+                    with b.open("ab") as stream: stream.write(b"working: appended\n")
+                elif action == "delete": b.unlink()
+                elif action == "rotate":
+                    replacement = self.state / ".replacement"
+                    replacement.write_bytes(b.read_bytes()); replacement.replace(b)
+                elif action == "truncate": b.write_bytes(b"w")
+                elif action == "symlink": b.unlink(); b.symlink_to(protected)
+                elif action == "directory": b.unlink(); b.mkdir()
+                elif action == "fifo": b.unlink(); os.mkfifo(b)
+                elif action == "unreadable":
+                    b.chmod(0)
+                    self.assertFalse(os.access(b, os.R_OK), "unreadable path control is ineffective")
+                elif action == "empty-snapshot": snapshot = b""
+                elif action == "duplicate": snapshot += snapshot.splitlines(keepends=True)[0]
+                elif action == "foreign": snapshot = snapshot.replace(b"a\t", b"foreign\t", 1)
+                env = dict(self.env, FM_FIXTURE_REAL_STAT=shutil.which("stat"), FM_FIXTURE_PATH_LOG=str(log),
+                           FM_FIXTURE_PATH_FAULT=action)
+                process = await asyncio.create_subprocess_exec("bash", "-c",
+                    '. "$1/bin/fm-wake-lib.sh"; shift; ' + script, "fixture", str(ROOT), str(self.state), snapshot,
+                    env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                output, error = await asyncio.wait_for(process.communicate(), 15)
+                self.assertEqual(process.returncode, 0, error)
+                self.assertEqual(error, b"", error.decode("utf-8", "backslashreplace"))
+                self.assertEqual(output, b"admitted" if action in ("unchanged", "growth") else b"refused")
+                self.assertEqual(log.read_bytes() if log.exists() else b"",
+                                 b"" if action == "empty-snapshot" else b"batch\n")
+                self.assertEqual(cursor.read_bytes(), b"prior cursor must not change\n")
+                self.assertEqual(protected.read_bytes(), b"outside data\n")
+                if action == "unreadable": b.chmod(0o600)
+
+    async def test_actual_enrichment_path_admission_preserves_whole_legacy_annotations(self):
+        # The original queue case remains unchanged. Pin both sides of the
+        # capture boundary here so an early refusal cannot mask late churn.
+        for task in ("a", "b", "c"):
+            self.status(b"working: " + task.encode() + b" context\n", task, kind="ship")
+        status = self.state / "a.status"
+        manifest = self.state / ".status-presentation-cursor"
+        ready, release = self.home / "paths-ready", self.home / "paths-release"
+        fault, triggered = self.home / "path-fault", self.home / "path-fault-triggered"
+        sleep, stat = self.home / "fakebin/sleep", self.home / "fakebin/stat"
+        sleep.write_text('''#!/usr/bin/env python3
+import os, pathlib, subprocess, sys, time
+if sys.argv[1:] != ["713"]:
+    sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_SLEEP"], *sys.argv[1:]]))
+pathlib.Path(os.environ["FM_FIXTURE_DELAY_READY"]).touch()
+for _ in range(3000):
+    if pathlib.Path(os.environ["FM_FIXTURE_DELAY_RELEASE"]).exists(): sys.exit(0)
+    time.sleep(0.01)
+sys.exit(88)
+''')
+        sleep.chmod(0o700)
+        stat.write_text('''#!/usr/bin/env python3
+import os, pathlib, subprocess, sys
+args = sys.argv[1:]
+fault = pathlib.Path(os.environ["FM_FIXTURE_PATH_FAULT_FILE"])
+if len(args) > 2 and args[0] == "-c" and "\\t" in args[1] and "--" in args and fault.exists():
+    mode = fault.read_text(); fault.unlink()
+    pathlib.Path(os.environ["FM_FIXTURE_PATH_TRIGGERED"]).write_text(mode)
+    if mode == "error": sys.exit(1)
+    print("malformed"); sys.exit(0)
+sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
+''')
+        stat.chmod(0o700)
+        original, original_read = Presentation.read, Inputs.state_read
+        diagnostic = b"captured paths changed or unsupported; using complete legacy annotations"
+        for mode in ("unchanged", "late-direct", "late-historical", "early-direct", "early-historical", "malformed", "error"):
+            with self.subTest(mode=mode):
+                attempts, replies, deleted = [], [], []
+                historical = mode.endswith("historical")
+                raw = (b"100\t1\tsignal\tb.status\tsignal: unrelated first\n"
+                       + b"100\t2\tsignal\ta." + (b"turn-ended" if historical else b"status") + b"\tsignal: disappears\n"
+                       + b"100\t3\tsignal\tc.turn-ended\tsignal: unrelated historical\n")
+                (self.state / ".wake-queue").write_bytes(raw)
+                def read(inputs, task, suffix):
+                    if mode.startswith("early-") and task == "a" and suffix == ".status" and not deleted:
+                        status.unlink(); deleted.append(True)
+                    return original_read(inputs, task, suffix)
+                def observed(instance, rows, vocabulary=None):
+                    attempts.append(rows)
+                    reply = original(instance, rows, vocabulary)
+                    replies.append(reply)
+                    # A valid but incomplete unaffected annotation proves the
+                    # WHOLE selection is discarded, not just the deleted row.
+                    if mode != "unchanged":
+                        next(row for row in reply["rows"] if row["task"] == "b")["new_lines"] = []
+                    return reply
+                async def run(native):
+                    status.write_bytes(b"working: a context\n")
+                    manifest.write_bytes(b"")
+                    for path in (ready, release, fault, triggered): path.unlink(missing_ok=True)
+                    invoke = asyncio.create_task(self.invoke("fm-wake-drain.sh", native=native,
+                        FM_WAKE_ENRICH_TEST_DELAY="713", FM_FIXTURE_DELAY_READY=str(ready),
+                        FM_FIXTURE_DELAY_RELEASE=str(release), FM_FIXTURE_REAL_SLEEP=shutil.which("sleep"),
+                        FM_FIXTURE_REAL_STAT=shutil.which("stat"), FM_FIXTURE_PATH_FAULT_FILE=str(fault),
+                        FM_FIXTURE_PATH_TRIGGERED=str(triggered)))
+                    try:
+                        for _ in range(2000):
+                            if ready.exists() or invoke.done(): break
+                            await asyncio.sleep(0.01)
+                        self.assertTrue(ready.exists(), "actual enrichment seam never reached")
+                        if native:
+                            self.assertEqual(len(attempts), 1)
+                            self.assertEqual(len(attempts[0]), 3)
+                            if not mode.startswith("early-"):
+                                self.assertEqual(len(replies), 1, "late mutation must follow a successful nonempty native read")
+                                self.assertEqual(len(replies[0]["rows"]), 3)
+                        if mode.startswith(("late-", "early-")):
+                            status.unlink(missing_ok=True)
+                        elif native and mode in ("malformed", "error"):
+                            fault.write_text(mode)
+                    finally:
+                        release.touch()
+                    output, error = await invoke
+                    if mode.startswith(("late-", "early-")):
+                        self.assertEqual(manifest.read_bytes(), b"")
+                    if native and mode.startswith("early-"):
+                        self.assertEqual(len(deleted), 1)
+                        self.assertEqual(replies, [])
+                        self.assertIn(b"fm-view-client: read refused; use legacy: service refused: presentation status identity changed", error)
+                        self.assertNotIn(diagnostic, error)
+                    else:
+                        self.assertNotIn(b"fm-view-client:", error, error.decode("utf-8", "backslashreplace"))
+                        if native and mode != "unchanged": self.assertIn(diagnostic, error)
+                        else: self.assertNotIn(diagnostic, error)
+                    if native and mode in ("malformed", "error"):
+                        self.assertEqual(triggered.read_text(), mode)
+                        self.assertFalse(fault.exists())
+                    return output, manifest.read_bytes()
+                with patch.object(Presentation, "read", observed), patch.object(Inputs, "state_read", read):
+                    actual, cursor = await run(True)
+                # Legacy has the same original snapshot and missing path at
+                # annotation time; it has no native read hook. Its deletion
+                # occurs at the actual enrichment seam, never before capture.
+                expected, legacy_cursor = await run(False)
+                self.assertEqual(actual, expected)
+                self.assertEqual(cursor, legacy_cursor)
+                self.assertTrue(actual.startswith(raw))
+                self.assertEqual((self.state / ".wake-queue").read_bytes(), raw)
+                annotations = [line for line in actual.splitlines() if line.startswith(b"wake annotation:")]
+                expected_keys = (b"b", b"c") if mode.startswith(("late-", "early-")) else (b"b", b"a", b"c")
+                self.assertEqual(len(annotations), len(expected_keys), actual)
+                for task, line in zip(expected_keys, annotations):
+                    self.assertIn(b": " + task + b".status: working: " + task + b" context", line)
+
     async def test_late_classification_marker_guard_keeps_whole_legacy_acknowledgement_parity(self):
         self.status(b"working: first\nworking: last\n", "a")
         self.status(b"working: unchanged task\n", "b")
@@ -600,8 +786,9 @@ sys.exit(run.returncode)
                 self.assertEqual(actual, expected)
                 self.assertEqual(cursor, manifest.read_bytes())
 
-    async def test_captured_renderer_loads_classifier_only_for_historical_inventory(self):
+    async def test_captured_renderer_loads_classifier_only_for_nonempty_inventory(self):
         self.status(b"working: captured\n")
+        snapshot = await self.owner('_fm_wake_require_classify; status_presentation_snapshot "$1"')
         captured = b"task\tworking: captured\n"
         script = '''. "$1/bin/fm-wake-lib.sh"
 fm_wake_status_cursor_offset() { echo 'unexpected cursor read' >&2; return 1; }
@@ -609,14 +796,14 @@ fm_wake_unread_events() { echo 'unexpected span read' >&2; return 1; }
 if [ "$4" = no-classifier ]; then
   _fm_wake_require_classify() { echo 'unexpected classifier load' >&2; return 1; }
 fi
-fm_wake_print_annotations "$2" '' "$3"
+fm_wake_print_annotations "$2" "$5" "$3"
 '''
         for case in ("empty", "direct", "historical", "reported"):
             with self.subTest(case=case):
                 if case == "reported": await self.owner('fm_wake_status_mark_current "$1" "$1/task.status"')
                 rows = b"" if case == "empty" else b"100\t1\tsignal\ttask." + (b"status" if case == "direct" else b"turn-ended") + b"\tsignal: event\n"
                 process = await asyncio.create_subprocess_exec("bash", "-c", script, "fixture", str(ROOT), rows, captured,
-                    "no-classifier" if case in ("empty", "direct") else "allow-classifier",
+                    "no-classifier" if case == "empty" else "allow-classifier", snapshot,
                     env=self.env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 output, error = await asyncio.wait_for(process.communicate(), 15)
                 self.assertEqual(process.returncode, 0, error)
@@ -922,11 +1109,13 @@ sys.exit(run.returncode)
                 self.assertEqual(cursor.read_bytes(), expected_cursor)
 
     async def test_native_annotation_rendering_never_reopens_a_span_or_cursor(self):
-        self.status()
+        for task in ("task", "A-task", "z-task"):
+            self.status(task=task)
+        snapshot = await self.owner('_fm_wake_require_classify; status_presentation_snapshot "$1"')
         script = '''. "$1/bin/fm-wake-lib.sh"
 fm_wake_status_cursor_offset() { echo 'unexpected cursor read' >&2; return 1; }
 fm_wake_unread_events() { echo 'unexpected span read' >&2; return 1; }
-fm_wake_print_annotations "$2" '' "$3"
+fm_wake_print_annotations "$2" "$4" "$3"
 '''
         # Include leading/trailing tabs, CR, invalid UTF-8 and duplicate latest
         # lines; each output must retain all bytes except the legacy tr mapping.
@@ -936,7 +1125,7 @@ fm_wake_print_annotations "$2" '' "$3"
                b"100\t4\tsignal\tmissing.status\tsignal: absent capture")
         captured = b"A-task\tfirst group\ntask\t\tfirst\t\r\ntask\tlast\ntask\tlast\nz-task\tlast group\n"
         process = await asyncio.create_subprocess_exec(
-            "bash", "-c", script, "fixture", str(ROOT), row, captured,
+            "bash", "-c", script, "fixture", str(ROOT), row, captured, snapshot,
             env=self.env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         output, error = await asyncio.wait_for(process.communicate(), 10)
         self.assertEqual(process.returncode, 0, error)

@@ -3389,6 +3389,36 @@ $2
 EOF
 }
 
+# Fresh annotation-time admission for the WHOLE captured inventory, not a
+# per-row repair. Reuse the strong-identity owner in one bounded stat capture;
+# allow growth beyond the captured ends but reject replacement, truncation,
+# missing/nonregular/unreadable paths and uncertain or changed inventories.
+# This never reads a cursor or span and never writes authoritative state.
+fm_wake_annotation_paths_current() {  # <state> <presentation-snapshot>
+  local state=$1 snapshot=$2 current
+  [ -n "$snapshot" ] || return 1
+  _fm_wake_require_classify || return 1
+  current=$(status_presentation_snapshot_batch "$state") || return 1
+  LC_ALL=C awk -F '\t' '
+    BEGIN { section=0 }
+    $0 == "@current" { if (section) { bad=1; exit }; section=1; next }
+    NF == 0 { next }
+    {
+      if (NF != 3 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || length($1) > 128 ||
+          $2 !~ /^[0-9]+$/ || $3 == "" || seen[section, $1]++ || ++count[section] > 256) {
+        bad=1; exit
+      }
+      if (!section) { ends[$1]=$2; identities[$1]=$3 }
+      else if (!($1 in ends) || identities[$1] != $3 || $2 + 0 < ends[$1] + 0) { bad=1; exit }
+    }
+    END { if (bad || !section || !count[0] || count[0] != count[1]) exit 1 }
+  ' <<EOF
+$snapshot
+@current
+$current
+EOF
+}
+
 # All-or-nothing optional historical replay filter. Marker reads and signature
 # policy stay with their current owners; no owned-append or cursor test belongs
 # here. The caller stages this result before printing any annotation.
@@ -3479,6 +3509,17 @@ EOF
     ''|*[!0-9]*) ;;
     *) sleep "$FM_WAKE_ENRICH_TEST_DELAY" ;;
   esac
+
+  # Revalidate ALL captured paths after the actual enrichment seam, covering
+  # direct as well as historical annotations. On uncertainty discard the entire
+  # annotation selection before printing even an unaffected row. The existing
+  # legacy owner below then decides every annotation on the same snapshot.
+  if [ "$use_captured" = x ] && [ -n "$manifest" ] \
+    && ! fm_wake_annotation_paths_current "$STATE" "$snapshot"; then
+    printf 'wake annotation: captured paths changed or unsupported; using complete legacy annotations\n' >&2
+    use_captured=''
+    captured_tasks=() captured_texts=()
+  fi
 
   # Observe after the enrichment seam, not from the earlier captured span: a
   # concurrent append or marker update must affect historical replay suppression.
