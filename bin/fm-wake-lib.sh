@@ -3306,12 +3306,47 @@ $1
 EOF
 }
 
+# All-or-nothing optional historical replay filter. Marker reads and signature
+# policy stay with their current owners; no owned-append or cursor test belongs
+# here. The caller stages this result before printing any annotation.
+_fm_wake_annotation_unreported_batch() {  # <deduplicated-manifest>
+  local manifest=$1 key mode sig signatures rest result='' count=0
+  local -a annotation_batch_paths=()
+  while IFS=$'\t' read -r key mode; do
+    [ -n "$key" ] || continue
+    case "$key" in *.status) ;; *) return 1 ;; esac
+    case "$mode" in
+      direct) ;;
+      historical) annotation_batch_paths[count]="$STATE/$key"; count=$((count + 1)) ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$manifest
+EOF
+  signatures=$(status_observed_signatures_batch "${annotation_batch_paths[@]}") || return 1
+  rest=$signatures
+  while IFS=$'\t' read -r key mode; do
+    [ -n "$key" ] || continue
+    if [ "$mode" = historical ]; then
+      [ -n "$rest" ] || return 1
+      sig=${rest%%$'\n'*}
+      case "$rest" in *$'\n'*) rest=${rest#*$'\n'} ;; *) rest='' ;; esac
+      fm_wake_signal_reported_current "$STATE" "$STATE/$key" "$sig" && continue
+    fi
+    result="$result$key"$'\t'"$mode"$'\n'
+  done <<EOF
+$manifest
+EOF
+  [ -z "$rest" ] || return 1
+  printf '%s' "$result"
+}
+
 # Print supplemental drain-time context only after the caller has committed the
 # raw queue consumption and released the append lock.
 fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot> [<captured-lines>]]
   local rows=$1 snapshot=${2:-} manifest status_key mode path prefix line task endpoint
   local captured_lines=${3-} use_captured=${3+x} captured_task captured_line
-  local captured_count=0 capture_index=0 left right middle
+  local captured_count=0 capture_index=0 left right middle historical_batch=0 filtered_manifest
   local -a captured_tasks=() captured_texts=()
   local snapshot_task snapshot_endpoint _snapshot_ident offset last_event event_line
   local LC_ALL=C
@@ -3360,7 +3395,18 @@ EOF
     *) sleep "$FM_WAKE_ENRICH_TEST_DELAY" ;;
   esac
 
-  while IFS=$(printf '\t') read -r status_key mode; do
+  # Observe after the enrichment seam, not from the earlier captured span: a
+  # concurrent append or marker update must affect historical replay suppression.
+  if [ "$use_captured" = x ]; then
+    if filtered_manifest=$(_fm_wake_annotation_unreported_batch "$manifest"); then
+      manifest=$filtered_manifest
+      historical_batch=1
+    else
+      printf 'wake annotation: signature batch refused; using complete legacy replay checks\n' >&2
+    fi
+  fi
+
+  while IFS=$'\t' read -r status_key mode; do
     [ -n "$status_key" ] || continue
     path="$STATE/$status_key"
     # A turn-ended-only (historical) row's annotation would show unread status
@@ -3373,7 +3419,7 @@ EOF
     # existing historical caveat. A direct status row is annotated for every
     # still-unread line since the last drain presentation; already-presented
     # bytes are not replayed.
-    if [ "$mode" = historical ] && fm_wake_signal_reported_current "$STATE" "$path"; then
+    if [ "$historical_batch" = 0 ] && [ "$mode" = historical ] && fm_wake_signal_reported_current "$STATE" "$path"; then
       continue
     fi
     if [ "$use_captured" = x ]; then
