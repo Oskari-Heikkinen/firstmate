@@ -12,7 +12,7 @@ On WSL the Linux disk is a non-sparse `ext4.vhdx` on the Windows drive, so `df /
 
 - The startup compaction task is installed but disabled on this laptop, so nothing compacts the disk files at Windows start; freed space comes back to C: only through the reclaim-now step in `docs/disk-room.md`. Re-running `fm-wsl-reclaim.ps1 -Install` re-enables the task, so disable it again afterwards.
 - In a home that registered the watcher check, `fm-disk-room.sh watch-line` stays silent until real room is under the margin (the home's `config/disk-room-margin`, 20 GiB by default), then produces one notification, repeated only after a further 5 GiB drop or 6 hours.
-  The same check prints one "storage alert" line when a growth or runway alert starts or clears; `docs/disk-room.md` owns the thresholds.
+  The same check prints one "storage alert" line when a growth or runway alert starts or clears; `docs/disk-room.md` owns the thresholds, and the C: runway floor is the home's `config/disk-room-c-free-min` (100 GiB by default), which the alert line quotes.
 
 Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows the most recent compaction, which with the startup task disabled is the last reclaim-now run.
 

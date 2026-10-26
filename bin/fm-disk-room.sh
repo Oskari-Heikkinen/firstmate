@@ -231,7 +231,10 @@
 #   FM_DISK_ROOM_GROWTH_MAX  alert when Linux used grew faster than this per day
 #                         over the last week (SIZE, default 0.5G; off disables)
 #   FM_DISK_ROOM_C_FREE_MIN  alert when the Windows drive's actual free space is
-#                         under this (SIZE, default 100G; off disables)
+#                         under this (SIZE or off); when unset or empty, the
+#                         first line of <home>/config/disk-room-c-free-min (same
+#                         home as the margin; an empty file reads as absent),
+#                         else 100G; an unparsable value or file is a failed reading
 #   FM_DISK_ROOM_D_FREE_MIN  alert when D: free space minus live D: reservations
 #                         is under this (SIZE, default 50G; off disables)
 #   FM_DISK_ROOM_STATE    reservations, alert records and the hourly history
@@ -836,6 +839,24 @@ resolve_margin() {
   MARGIN=$((20 * GIB))
 }
 
+# resolve_c_free_min: sets C_FREE_MIN (bytes or off) from FM_DISK_ROOM_C_FREE_MIN,
+# else the first line of the home's config/disk-room-c-free-min, else 100G, the
+# same home as resolve_margin. An empty file reads as absent. Sets ERR and
+# returns 1 when the chosen value does not parse.
+resolve_c_free_min() {
+  local f line=''
+  if [ -n "${FM_DISK_ROOM_C_FREE_MIN:-}" ]; then
+    C_FREE_MIN=$(threshold FM_DISK_ROOM_C_FREE_MIN 100G) || { ERR="bad FM_DISK_ROOM_C_FREE_MIN"; return 1; }
+    return 0
+  fi
+  f=${FM_CONFIG_OVERRIDE:-${FM_HOME:-${SCRIPT_DIR%/*}}/config}/disk-room-c-free-min
+  if [ -e "$f" ] || [ -L "$f" ]; then
+    IFS= read -r line <"$f" 2>/dev/null
+    line=${line//[$' \t\r']/}
+  fi
+  C_FREE_MIN=$(threshold line 100G) || { ERR="bad C: free floor in $f"; return 1; }
+}
+
 # measure [EXCLUDE]: sets globals; returns 1 when a required reading fails.
 measure() {
   local host root line bs vhdx result fs_size dev bat
@@ -1063,9 +1084,10 @@ signed_gib() { awk -v b="$1" 'BEGIN { printf "%+.1f", b / 1073741824 }'; }
 storage_alerts() {
   local gmax cmin dmin rate
   gmax=$(threshold FM_DISK_ROOM_GROWTH_MAX 0.5G) || { ERR="bad FM_DISK_ROOM_GROWTH_MAX"; return 1; }
-  cmin=$(threshold FM_DISK_ROOM_C_FREE_MIN 100G) || { ERR="bad FM_DISK_ROOM_C_FREE_MIN"; return 1; }
+  resolve_c_free_min || return 1
+  cmin=$C_FREE_MIN
   dmin=$(threshold FM_DISK_ROOM_D_FREE_MIN 50G) || { ERR="bad FM_DISK_ROOM_D_FREE_MIN"; return 1; }
-  GROWTH_MAX=$gmax C_FREE_MIN=$cmin D_FREE_MIN=$dmin
+  GROWTH_MAX=$gmax D_FREE_MIN=$dmin
   sample_growth; d_runway; substitution
   AL_growth='' AL_c_runway='' AL_d_runway='' AL_d_substitution=''
   # A week's rate needs at least six days of samples and a sample under 2 hours old.

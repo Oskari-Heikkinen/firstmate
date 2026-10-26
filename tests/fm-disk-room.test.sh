@@ -998,6 +998,48 @@ test_growth_alerts() {
   pass "growth and C: runway alerts speak once per change and growth reports daily and weekly values"
 }
 
+test_c_free_min_sources() {
+  reset_state
+  set_sizes 60 600 400
+  local home="$TMP_ROOT/c-floor-home" f out items t0
+  f="$home/config/disk-room-c-free-min"
+  t0=$(date +%s)
+  mkdir -p "$home/config"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "storage alert: $HOSTDIR has 60.0 GiB actually free (floor 100.0 GiB)" "no file and no variable keeps 100G"
+  reset_state
+  printf ' 80G\r\nignored\n' >"$f"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "storage alert: $HOSTDIR has 60.0 GiB actually free (floor 80.0 GiB)" "the home's file wins over the default"
+  reset_state
+  printf '1G\n' >"$f"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_not_contains "$out" "actually free" "a 1G floor in the file stays quiet at 60 GiB free"
+  reset_state
+  out=$(FM_DISK_ROOM_C_FREE_MIN=70G TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "storage alert: $HOSTDIR has 60.0 GiB actually free (floor 70.0 GiB)" "the variable wins over the file"
+  reset_state
+  printf 'off\n' >"$f"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_not_contains "$out" "actually free" "off in the file disables the C: alert"
+  reset_state
+  printf 'lots\n' >"$f"
+  out=$(FM_DISK_ROOM_C_FREE_MIN=70G TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "(floor 70.0 GiB)" "the variable wins over a bad file"
+  reset_state
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "storage alerts: cannot evaluate (bad C: free floor in $f)" "a bad file is a failed reading that names it"
+  reset_state
+  : >"$f"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "storage alert: $HOSTDIR has 60.0 GiB actually free (floor 100.0 GiB)" "an empty file falls back to 100G"
+  rm -f "$f"
+  reset_state
+  items=$(env -u FM_INHERITABLE_CONFIG bash -c '. "$1" && fm_config_inherit_items' _ "$ROOT/bin/fm-config-inherit-lib.sh")
+  assert_contains "$items" "config/disk-room-c-free-min" "the C: floor file is inherited into secondmate homes"
+  pass "the C: free floor comes from the variable, else the home's config file, else 100G"
+}
+
 test_c_runway_reclaim() {
   reset_state
   set_sizes 60 600 400
@@ -1951,4 +1993,5 @@ test_vhdx_discovery_cached
 test_arm_and_disarm
 test_growth_alerts
 test_c_runway_reclaim
+test_c_free_min_sources
 test_d_runway_and_substitution
