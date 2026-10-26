@@ -352,6 +352,9 @@ os.execv({sys.executable!r}, [{sys.executable!r}] + sys.argv[1:])
 
     async def test_complete_home_summary_and_publication_equal_legacy(self):
         self.pin_summary_wall_timestamp()
+        self.env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                        GIT_AUTHOR_NAME="fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                        GIT_COMMITTER_NAME="fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
         for task, kind, raw in (
             ("ship", "ship", b"blocked [key=dependency]: dependency\nnote: later\n"),
             ("scout", "scout", b"needs-decision [key=route]: route\nworking: later\n"),
@@ -379,9 +382,58 @@ os.execv({sys.executable!r}, [{sys.executable!r}] + sys.argv[1:])
             self.assertNotIn(b"use legacy", error)
             self.assertCountEqual(calls, ["ship", "scout", "mate"])
             expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", native=False, **clock)
+            # Retain the original three-row input as an explicit empty-child
+            # parity control: none is both backlog-owned and currently working.
+            empty = json.loads(native)
+            self.assertEqual(empty, json.loads(expected))
+            self.assertEqual(empty["active_children"], [])
+            self.assertEqual(empty["counts"]["active_children"], 0)
+
+            # Make the resident mate a genuinely eligible working child. Both
+            # classifiers see a real isolated Git tree and the same passive
+            # endpoint fake; no live backend or harness is contacted.
+            worktree = self.home / "projects/mate"
+            worktree.mkdir(parents=True)
+            for command in (("init", "-q"), ("checkout", "-q", "-b", "fm/mate"),
+                            ("commit", "-q", "--allow-empty", "-m", "fixture")):
+                result = await asyncio.to_thread(subprocess.run, ["git", "-C", str(worktree), *command],
+                                                 env=self.env, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            with (self.state / "mate.meta").open("a") as stream:
+                stream.write(f"worktree={worktree}\nbackend=tmux\nwindow=fixture:mate\n")
+            backlog = self.home / "data/backlog.md"
+            backlog.write_text(backlog.read_text().replace("## Queued\n",
+                "- [ ] mate - Resident work (repo: fixture) (kind: secondmate)\n## Queued\n"))
+            tmux = self.home / "fakebin/tmux"
+            tmux.write_text('''#!/bin/sh
+case "$1" in
+  list-windows) printf 'mate\\n'; exit 0;;
+  display-message)
+    case "$5" in
+      '#{pane_tty}') exit 1;;
+      '#{pane_current_command}') printf 'claude\\n';;
+      *) printf '%%1\\n';;
+    esac
+    exit 0;;
+  capture-pane) printf 'resident answer\\n'; exit 0;;
+esac
+exit 1
+''')
+            tmux.chmod(0o700)
+            calls.clear()
+            native, error = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", **clock)
+            self.assertNotIn(b"use legacy", error)
+            self.assertCountEqual(calls, ["ship", "scout", "mate"])
+            expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", native=False, **clock)
             summary = json.loads(native)
             self.assertEqual(summary, json.loads(expected))
-            self.assertTrue(summary["active_children"])
+            self.assertEqual([row["id"] for row in summary["active_children"]], ["mate"])
+            self.assertEqual(summary["active_children"][0]["state"], "working")
+            self.assertEqual(summary["counts"]["active_children"], 1)
+            endpoint = next(row for row in summary["endpoints"] if row["id"] == "mate")
+            self.assertEqual(endpoint["backlog_state"], "in_flight")
+            self.assertTrue(endpoint["endpoint"]["exists"])
+            self.assertEqual(endpoint["endpoint"]["agent_alive"], "alive")
             self.assertTrue(summary["decisions_open"])
             calls.clear()
             await self.invoke("fm-home-summary-refresh.sh", **clock)
