@@ -1152,6 +1152,98 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
+# The snapshot folds each status log through its cursor, bounded at the bytes it
+# captured: a second run reads only what was appended since the first, and what
+# it publishes is exactly the whole fold of the captured bytes, even when another
+# reader moves the cursor past the capture before the snapshot folds.
+test_open_decisions_fold_only_appended_bytes() {
+  local home fakebin out probe real_cp size1 size2 size3 want got before
+  home=$(make_home fold-cursor)
+  mkdir -p "$home/projects/fold-wt"
+  fm_write_meta "$home/state/fold-scout.meta" \
+    "window=firstmate:fm-fold-scout" \
+    "worktree=$home/projects/fold-wt" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=scout" \
+    "mode=scout"
+  record_claude_idle "$home/state" fold-scout
+  printf '%s\n' 'needs-decision [key=k1]: first' 'blocked [key=b1]: stuck' \
+    'resolved [key=k1]: yes' 'needs-decision [key=k2]: second' 'working: on it' \
+    > "$home/state/fold-scout.status"
+  fakebin=$(make_fakebin "$home")
+  # A cp that, for the status log only and when asked, appends a line and
+  # advances the log's cursor right after copying: another reader draining
+  # between the snapshot's capture and its fold.
+  real_cp=$(command -v cp)
+  cat > "$fakebin/cp" <<SH
+#!/usr/bin/env bash
+"$real_cp" "\$@" || exit
+src=\${*: -2:1}
+if [ -n "\${FAKE_CP_RACE_LINE:-}" ] && [ "\$src" = "\${FAKE_CP_RACE_LOG:-}" ]; then
+  printf '%s\n' "\$FAKE_CP_RACE_LINE" >> "\$src"
+  FM_OPEN_DECISIONS_READ_PROBE= bash -c '. "\$1/bin/fm-classify-lib.sh"; status_open_decisions_incremental "\$2" >/dev/null' _ "$ROOT" "\$src"
+fi
+SH
+  chmod +x "$fakebin/cp"
+  probe="$home/read-probe"
+  open_set() {  # <status-file> <bytes>: the whole fold of the first <bytes> bytes, as JSON keys
+    head -c "$2" "$1" > "$home/prefix.status"
+    ( . "$ROOT/bin/fm-classify-lib.sh"; status_open_decisions "$home/prefix.status" scout ) \
+      | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {key:.[0],verb:.[1],note:.[2]})'
+  }
+  published() {  # <snapshot-json>
+    printf '%s' "$1" | jq -c '.tasks[] | select(.id == "fold-scout") | .hints.open_decisions | map({key,verb,note:.summary})'
+  }
+  probed() {  # <run-number>: the byte counts folded for the status log, one per line
+    awk -F '\t' -v f="$home/state/fold-scout.status" '$1 == f { print $2 }' "$probe.$1"
+  }
+
+  size1=$(wc -c < "$home/state/fold-scout.status" | tr -d ' ')
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_OPEN_DECISIONS_READ_PROBE="$probe.1" "$SNAPSHOT" --json) \
+    || fail "first snapshot failed: $out"
+  [ "$(probed 1)" = "$size1" ] || fail "first snapshot should fold the whole log once, folded: $(probed 1)"
+  want=$(open_set "$home/state/fold-scout.status" "$size1")
+  got=$(published "$out")
+  [ "$got" = "$want" ] || fail "first snapshot published $got, whole fold gives $want"
+
+  printf '%s\n' 'resolved [key=k2]: answered' 'blocked [key=b2]: another' \
+    'note [supersedes=relaunch]: relaunched' 'needs-decision [key=k3]: third' >> "$home/state/fold-scout.status"
+  size2=$(wc -c < "$home/state/fold-scout.status" | tr -d ' ')
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_OPEN_DECISIONS_READ_PROBE="$probe.2" "$SNAPSHOT" --json) \
+    || fail "second snapshot failed: $out"
+  [ "$(probed 2)" = "$((size2 - size1))" ] \
+    || fail "second snapshot should fold only the $((size2 - size1)) appended bytes, folded: $(probed 2)"
+  want=$(open_set "$home/state/fold-scout.status" "$size2")
+  got=$(published "$out")
+  [ "$got" = "$want" ] || fail "second snapshot published $got, whole fold gives $want"
+  [ "$got" = '[{"key":"k3","verb":"needs-decision","note":"third"}]' ] \
+    || fail "second snapshot lost the appended transitions: $got"
+
+  # The cursor moves past the capture before the fold: the snapshot still
+  # publishes the set of the captured bytes, and leaves the newer cursor alone.
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_OPEN_DECISIONS_READ_PROBE="$probe.3" \
+    FAKE_CP_RACE_LOG="$home/state/fold-scout.status" FAKE_CP_RACE_LINE='needs-decision [key=k4]: after the capture' \
+    "$SNAPSHOT" --json) || fail "racing snapshot failed: $out"
+  size3=$(wc -c < "$home/state/fold-scout.status" | tr -d ' ')
+  [ "$size3" -gt "$size2" ] || fail "the race line was not appended"
+  want=$(open_set "$home/state/fold-scout.status" "$size2")
+  got=$(published "$out")
+  [ "$got" = "$want" ] || fail "racing snapshot published $got, whole fold of the captured bytes gives $want"
+  before=$(cat "$home/state/.fold-scout.open-decisions-cursor")
+  case "$before" in *$'\n'"offset=$size3"$'\n'*) ;; *) fail "the cursor was moved back from the racing reader's offset: $before" ;; esac
+  [ "$(probed 3)" = "$size2" ] || fail "racing snapshot should fold the captured prefix from byte 0, folded: $(probed 3)"
+
+  # The next run folds only what came after the cursor the other reader left.
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_OPEN_DECISIONS_READ_PROBE="$probe.4" "$SNAPSHOT" --json) \
+    || fail "fourth snapshot failed: $out"
+  [ -z "$(probed 4)" ] || fail "fourth snapshot should fold nothing new, folded: $(probed 4)"
+  want=$(open_set "$home/state/fold-scout.status" "$size3")
+  got=$(published "$out")
+  [ "$got" = "$want" ] || fail "fourth snapshot published $got, whole fold gives $want"
+  pass "the snapshot folds only appended status bytes and publishes the whole fold of exactly what it captured"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
@@ -1166,6 +1258,7 @@ test_open_decision_transfers_to_captain_hold
 test_open_decision_clears_on_keyed_resolution
 test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending
+test_open_decisions_fold_only_appended_bytes
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot

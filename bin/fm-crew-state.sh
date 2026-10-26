@@ -127,8 +127,11 @@
 #      (nm_daemon_probe_down).
 #   3. Reconcile the status log through fm-classify-lib.sh's status_current_line:
 #      open decisions survive unrelated events and continuation prose cannot
-#      hide a declaration. Ship/scout terminal declarations supersede stale log
-#      decisions. If it says needs-decision/blocked but
+#      hide a declaration. Under fleet snapshot composition the open-decision
+#      set comes from FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE, the snapshot's own
+#      fold of the same captured bytes, instead of a second fold here.
+#      Ship/scout terminal declarations supersede stale log decisions. If it
+#      says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
 #      agree, and are reported as parked. A `blocked:` line that reports a
@@ -198,6 +201,9 @@ ID=${1:-}
 # state read resolves the same task generation selected by that snapshot.
 META=${FM_CREW_STATE_META_OVERRIDE:-"$STATE/$ID.meta"}
 LOG=${FM_CREW_STATE_STATUS_OVERRIDE:-"$STATE/$ID.status"}
+# Beside that status copy the snapshot publishes the open-decision set it already
+# folded for exactly those bytes, so step 3 reads it rather than folding again.
+OPEN_DECISIONS=${FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE:-}
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
 # How many of the most recent `no-mistakes runs` rows each ledger read
@@ -292,7 +298,7 @@ map_log_state() {  # <line>
   esac
 }
 
-LOG_LINE=$(status_current_line "$LOG" "$KIND")
+LOG_LINE=$(status_current_line "$LOG" "$KIND" "$OPEN_DECISIONS")
 status_line_verb "$LOG_LINE" LOG_VERB
 
 # --- remote secondmate: the true source is the remote endpoint ---------------
