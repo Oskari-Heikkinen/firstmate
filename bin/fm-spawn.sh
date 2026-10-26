@@ -130,8 +130,11 @@
 #   integration drops a settle it sees mid-compaction), and is skipped without
 #   spending an attempt when a new run or other native work began first, so
 #   the next settle above the threshold still compacts; a skip caused by other
-#   native work arms the same one-shot bound to publish idle once Pi reads
-#   idle. Early compaction holds semantic busy
+#   native work publishes idle when that work's session_compact,
+#   session_compact_failed or session_tree event finds Pi idle, with the same
+#   one-shot ten-minute bound as a backstop that publishes idle if Pi reads
+#   idle when it fires. A throw in the detached start is contained and frees
+#   the in-flight slot. Early compaction holds semantic busy
 #   state and suppresses turn-end notifications until completion/error confirms
 #   the latest settled run is still idle. A task-local one-shot ten-minute
 #   timer recovers a missing callback only on positive native idle, without
@@ -5831,11 +5834,12 @@ export default function (pi: any) {
     await publishSettlement();
   };
   // A skipped start already wrote busy "early-compact". When other native
-  // work rather than a new run made Pi busy, no settle follows it, so arm the
-  // same one-shot bound to publish the settlement once Pi reads idle.
+  // work rather than a new run made Pi busy, no settle follows it: that work's
+  // end event publishes the settlement (afterNativeWork below), and the same
+  // one-shot bound publishes it if Pi reads idle when it fires.
   const settleAfterSkip = async () => {
     await publishSettlement();
-    if (sessionEnded || !settledCtx || settledEpoch !== runEpoch || settledCtx.isIdle()) return;
+    if (sessionEnded || compactInFlight || !settledCtx || settledEpoch !== runEpoch || settledCtx.isIdle()) return;
     clearCompactTimer();
     compactTimer = setTimeout(async () => {
       compactTimer = undefined;
@@ -5873,7 +5877,19 @@ export default function (pi: any) {
     // settlement they see while compacting; Pi never re-emits agent_settled
     // after compaction. This assumes every later handler reads isIdle()
     // without first awaiting a macrotask.
-    setImmediate(() => { void startCompact(ctx, attempt, settled); });
+    const attemptsBefore = compactAttempts;
+    setImmediate(() => {
+      // The start runs outside Pi's handler error boundary, where a throw
+      // would end the process. Free the slot when no compaction started so a
+      // later settle retries.
+      startCompact(ctx, attempt, settled).catch(() => {
+        if (compactSerial === attempt && compactAttempts === attemptsBefore) {
+          compactInFlight = false;
+          clearCompactTimer();
+        }
+        publishSettlement().catch(() => { /* The next settle publishes. */ });
+      });
+    });
     return true;
   };
   const startCompact = async (ctx: any, attempt: number, settled: () => boolean) => {
@@ -5921,6 +5937,22 @@ export default function (pi: any) {
       runEpoch === epoch && !compactInFlight && (typeof ctx?.isIdle !== "function" || ctx.isIdle()));
   });
   pi.on("turn_end", () => compactInFlight ? undefined : turnEnded());
+  // Only a skip's bound is armed while no early compaction is in flight. Pi
+  // 0.85.1 clears its compaction or summary state right after awaiting these
+  // events' handlers (session_compact_failed after a manual failure comes
+  // after it), so publish on the next macrotask. This assumes no handler of
+  // these events awaits a macrotask; if one does, the bound still settles.
+  const afterNativeWork = () => {
+    setImmediate(() => {
+      if (sessionEnded || compactInFlight || compactTimer === undefined) return;
+      try { if (!settledCtx?.isIdle?.()) return; } catch { return; }
+      clearCompactTimer();
+      publishSettlement().catch(() => { /* The next settle publishes. */ });
+    });
+  };
+  pi.on("session_compact", afterNativeWork);
+  pi.on("session_compact_failed", afterNativeWork);
+  pi.on("session_tree", afterNativeWork);
 EOF
     fi
     cat >>"$STATE/$ID.pi-ext.ts" <<EOF

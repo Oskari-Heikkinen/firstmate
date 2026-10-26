@@ -1419,7 +1419,7 @@ Firstmate passes it as `--compact-at <tokens>` when resolving manually too; an e
 A rule without it changes nothing: the worker keeps its tool's current compaction point.
 Claude gets a worker-launch-scoped `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, overriding an inherited value for that launch only.
 Pi and pi-signed (including Sol) request native compaction only above the threshold at a settled, confirmed-idle boundary; a long active run may still reach Pi's unchanged normal hard-window protection first.
-The request starts after every `agent_settled` handler has run, so Herdr's native pane status still records the settle ([Herdr backend](herdr-backend.md#early-compaction-and-the-native-settle)).
+The request starts after every `agent_settled` handler has run (assuming no later handler awaits a macrotask first), so Herdr's native pane status still records the settle ([Herdr backend](herdr-backend.md#early-compaction-and-the-native-settle)).
 The spawn script's header owns the bounded retry mechanics, metadata and relaunch behavior.
 Other tools record the requested value and report that it is not applied, without refusing the spawn.
 Secondmate spawns ignore the option; supervisors take the separate home knob below.

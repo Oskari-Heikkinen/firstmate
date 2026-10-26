@@ -3045,12 +3045,12 @@ const until = async (cond, what) => {
 };
 // Pi 0.85.1: isIdle = !runActive && !isCompacting; compact() awaits abort(),
 // which awaits waitForIdle(), and only then marks the session compacting.
-let runActive = false, compacting = false, tokens = 210000, calls = 0, callbacks;
+let runActive = false, compacting = false, staleCtx = false, tokens = 210000, calls = 0, callbacks;
 const waitForIdle = async () => {};
 const abort = async () => { await waitForIdle(); };
 const sessionCompact = async () => { await abort(); compacting = true; };
 const ctx = {
-  isIdle: () => !runActive && !compacting,
+  isIdle: () => { if (staleCtx) throw new Error("stale ctx"); return !runActive && !compacting; },
   getContextUsage: () => ({ tokens }),
   compact: (options) => { calls++; callbacks = options; void (async () => { await sessionCompact(); })(); },
 };
@@ -3095,7 +3095,8 @@ await until(() => compacting, "native compaction did not begin after the skip");
 await finish(); stateIs("idle");
 
 // Native work that is not a new run also skips, without spending attempts,
-// and no settle follows it: the one-shot bound publishes idle once Pi is idle.
+// and no settle follows it: that work's end event publishes idle once Pi is
+// idle, and the one-shot bound is the backstop.
 const fireTimer = async () => {
   assert.equal(timers.size, 1, "one recovery timer at a time");
   const [id, fn] = [...timers][0]; timers.delete(id); await fn();
@@ -3105,20 +3106,30 @@ await dispatch(h); compacting = true; await tick();
 assert.equal(calls, 2, "a non-idle start must skip");
 stateIs("busy");
 assert.equal(timers.size, 1, "a non-idle skip arms the recovery bound");
+await h.session_compact({}, ctx); await tick(); await tick();
+stateIs("busy");
+assert.equal(timers.size, 1, "an end event while Pi is still busy keeps the bound");
+compacting = false; await h.session_compact_failed({}, ctx);
+await until(() => /state=idle /.test(busy()), "the other work's end event did not publish idle");
+assert.equal(timers.size, 0, "publishing on the end event clears the bound");
+await dispatch(h); compacting = true; await tick();
+assert.equal(calls, 2, "a second non-idle start must skip");
 compacting = false; await fireTimer(); stateIs("idle");
 await dispatch(h); compacting = true; await tick(); compacting = false;
-assert.equal(calls, 2, "a second non-idle start must skip");
+assert.equal(calls, 2, "a third non-idle start must skip");
 await dispatch(h); await tick();
 assert.equal(calls, 3, "skips must not spend the two-attempt budget");
 assert.equal(timers.size, 1, "the started compaction replaces the skip's bound");
 await until(() => compacting, "native compaction did not begin after idle skips");
 await finish(); stateIs("idle");
 
-// A newer run that settles while the start is pending is evaluated, not lost.
+// A newer run that settles while the start is pending is evaluated, not lost:
+// its agent_start is not awaited, so its settle lands before the start runs.
 h = load();
 await start(h); await dispatch(h);
-await start(h); await dispatch(h);
-await until(() => calls === 4, "the newer settlement's compaction was lost");
+runActive = true; void h.agent_start({}, ctx); await dispatch(h);
+assert.equal(calls, 3, "the newer settle must not start a second compaction itself");
+await until(() => calls === 4, "the newer settlement must compact once the stale start is skipped");
 await until(() => compacting, "native compaction did not begin for the newer settle");
 stateIs("busy");
 await finish(); stateIs("idle");
@@ -3131,6 +3142,23 @@ await until(() => compacting, "native compaction did not begin");
 assert.equal(timers.size, 1, "one recovery timer per started compaction");
 compacting = false; await fireTimer(); stateIs("idle");
 await callbacks.onComplete({}); stateIs("idle");
+
+// A throw in the detached start is contained and frees the slot for retry.
+h = load();
+await start(h); await dispatch(h);
+staleCtx = true; await tick(); await tick(); staleCtx = false;
+assert.equal(calls, 5, "a throwing start must not compact");
+await dispatch(h); await tick();
+assert.equal(calls, 6, "a later settle must compact after a contained throw");
+await until(() => compacting, "native compaction did not begin after the throw");
+await finish(); stateIs("idle");
+
+// No compaction starts when the session ends while the start is pending.
+h = load();
+await start(h); await dispatch(h);
+await h.session_shutdown({}, ctx); await tick();
+await new Promise((resolve) => realSetTimeout(resolve, 50));
+assert.equal(calls, 6, "no compaction may start after session end");
 assert.ok(herdrSaw.every(Boolean), "every later settle handler read idle: " + JSON.stringify(herdrSaw));
 JS
   pass "Pi early compaction starts after the settle dispatch and a skipped start loses nothing"

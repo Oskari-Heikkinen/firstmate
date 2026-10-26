@@ -7,7 +7,7 @@ Verified on 2026-07-27 with Pi and Pi-signed 0.82.0 unless a fact gives another 
 
 | Fact | Value |
 |---|---|
-| Busy state | The Firstmate-owned extension's `agent_start` marks busy and `agent_settled`, confirmed by `ctx.isIdle()`, marks idle; this covers retries, compaction, tool loops, and queued continuations. A `--compact-at` early compaction starts only after the `agent_settled` dispatch, so a later extension's settle handler, Herdr's pane-status integration among them, still reads idle (`../../../docs/herdr-backend.md` "Early compaction and the native settle"). |
+| Busy state | The Firstmate-owned extension's `agent_start` marks busy and `agent_settled`, confirmed by `ctx.isIdle()`, marks idle; this covers retries, compaction, tool loops, and queued continuations. A `--compact-at` early compaction starts only after the `agent_settled` dispatch (verified on Pi 0.85.1), so a later extension's settle handler, Herdr's pane-status integration among them, still reads idle (`../../../docs/herdr-backend.md` "Early compaction and the native settle"). |
 | Exit command | `/quit`. |
 | Resume | `--session <path-or-id>` resumes that exact session, and creates it at that path when the file is gone. `../../../bin/fm-spawn.sh` passes it on a relaunch so a Herdr pane's already-bound status authority keeps applying (`../../../bin/fm-control-lib.sh`'s `fm_control_relaunch_resume_flag`; `../../../docs/herdr-backend.md` "Agent status authority and relaunch"). There is still no `resume` control verb. |
 | Interrupt | Single Escape. |
