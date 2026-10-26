@@ -298,6 +298,17 @@ wait_for_beacon_age() {  # <state> <secs>
   return 1
 }
 
+# The watchdog writes its stop receipt from a background child (bounded by a
+# 1 s ps snapshot) and sends TERM without waiting for it, so the watcher can be
+# gone before the receipt lands. Wait for the receipt in <state> before reading it.
+wait_for_stop_receipt() {  # <state>
+  local i=0
+  while [ "$i" -lt 100 ] && ! grep -qF 'watchdog: stopping wedged watcher' "$1/.watch-triage.log" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
 # Stop a test watcher and reap it (it is a direct child of this shell).
 reap_watcher() {  # <pid>
   kill -TERM "$1" 2>/dev/null || true
@@ -488,6 +499,7 @@ test_pending_correlation_watchdog_counterfactual() {
       records=$(wc -c < "$dir/parsed" | tr -d ' ')
       [ "$records" -lt 300 ] || fail "fixed scanner reprocessed unchanged history: $records lines"
     else
+      wait_for_stop_receipt "$dir/state"
       assert_grep 'watchdog: stopping wedged watcher' "$dir/state/.watch-triage.log" "$mode scan did not reach watchdog stop"
       assert_no_grep 'phase=resolved' "$dir/state/pending-replies/abcdef0123456789" "$mode scan prematurely resolved"
       [ ! -s "$dir/state/.wake-queue" ] || fail "$mode scan delivered an unprocessed reply"
@@ -618,6 +630,7 @@ test_nonprogressing_status_parser_still_goes_stale() {
   kill -TERM "$parser" 2>/dev/null || true
   is_live_non_zombie "$SEED_PID" && { reap_watcher "$SEED_PID"; fail "nonprogressing parser kept the watcher fresh"; }
   wait "$SEED_PID" 2>/dev/null || true
+  wait_for_stop_receipt "$state"
   assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log"
   cmp -s "$dir/seen-before" "$state/.seen-mate_status" || fail "stuck classification advanced its endpoint"
   [ ! -s "$state/.wake-queue" ] || fail "stuck classification published an unclassified signal"
@@ -677,6 +690,7 @@ test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
   done
   is_live_non_zombie "$SEED_PID" && { reap_watcher "$SEED_PID"; fail "watchdog did not stop a watcher blocked on one live child"; }
   wait "$SEED_PID" 2>/dev/null || true
+  wait_for_stop_receipt "$state"
   assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log"
   is_live_non_zombie "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" \
     && fail "a live process still holds the lock after the watchdog stop"
@@ -711,6 +725,7 @@ test_watchdog_records_last_beat_and_blocking_descendants() {
     fail "watchdog did not stop the frozen evidence watcher"
   fi
   wait "$SEED_PID" 2>/dev/null || true
+  wait_for_stop_receipt "$state"
   stop_line=$(grep -F 'watchdog: stopping wedged watcher' "$state/.watch-triage.log")
   printf '%s\n' "$stop_line" | grep -E 'cycle=[0-9]+ last-beat=fm-watch.sh:[0-9]+; descendants-at-stop=' >/dev/null \
     || fail "stop receipt omitted its last published step boundary: $stop_line"
@@ -763,6 +778,7 @@ SH
       fail "$mode ps delayed the watchdog stop beyond its bounded wait"
     fi
     wait "$SEED_PID" 2>/dev/null || true
+    wait_for_stop_receipt "$state"
     if [ "$mode" = bounded ]; then
       stop_line=$(grep -F 'watchdog: stopping wedged watcher' "$state/.watch-triage.log")
       assert_contains "$stop_line" '[truncated after 32 descendants]' "snapshot omitted the row limit marker"
@@ -811,6 +827,7 @@ test_watchdog_retries_unproven_identity_then_stops_wedge() {
   done
   is_live_non_zombie "$SEED_PID" && { reap_watcher "$SEED_PID"; fail "the watchdog ended on an unproven identity read and never stopped the later wedge"; }
   wait "$SEED_PID" 2>/dev/null || true
+  wait_for_stop_receipt "$state"
   assert_grep 'watchdog: stopping wedged watcher' "$state/.watch-triage.log"
   pass "the watchdog retries an unproven identity read and still stops a later wedge"
 }
@@ -900,6 +917,7 @@ SH
   fi
   wait "$pid" 2>/dev/null || true
   kill "$holder" 2>/dev/null || true
+  wait_for_stop_receipt "$state"
   if ! grep -qF 'watchdog: stopping wedged watcher' "$state/.watch-triage.log" 2>/dev/null; then
     printf '%s\n' 'orphaned-pipe watcher diagnostics:' >&2
     cat "$dir/watch.out" "$dir/watch.err" "$dir/holder.ready" "$dir/holder.err" >&2
