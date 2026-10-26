@@ -767,6 +767,19 @@ The session file may not exist any more: Pi creates it at exactly that path, so 
 The read grants no send, close, or lifecycle authority of its own - it is a read of Herdr's record.
 The portable halves are pinned by `tests/fm-backend-herdr.test.sh` (the read, against a canned CLI) and `tests/fm-control.test.sh` (the per-adapter rule), and `tests/fm-control-herdr-smoke.test.sh` exercises the relaunch path against the real binary; the versioned live measurement, including the reproduction and the resume that lifts it, is [`verification/runtime-backends.md`](verification/runtime-backends.md) "Pane status authority across a relaunch".
 
+### Early compaction and the native settle
+
+Herdr's Pi integration is a global Pi extension, so it runs after the task's `-e` busy extension, and it publishes idle only when `ctx.isIdle()` reads true inside its own `agent_settled` handler.
+Pi emits `agent_settled` once per run and never again after a compaction finishes, and the integration has no compaction handler, so a settlement it sees while compacting is lost: native status stays `working` over an idle, empty composer, and the composer classifier rightly defers on it.
+A `--compact-at` early compaction started inside the busy extension's `agent_settled` handler made exactly that happen (Pi 0.85.1 marks the session compacting two microtasks into `ctx.compact()`, before the next extension's handler runs).
+The busy extension therefore starts the native compaction on a later macrotask, after the dispatch, and skips it when a new run or other native work began first; a skip spends no attempt, so the next settle above the threshold still compacts, and a skip caused by other native work arms the extension's one-shot ten-minute bound to publish the task's idle once Pi reads idle.
+The ordering assumption is that every later `agent_settled` handler reads `isIdle()` without first awaiting a macrotask; `bin/fm-spawn.sh` states it beside the deferral.
+
+Nothing besides Herdr's integration reports on `herdr:pi`.
+A Firstmate re-report of idle after compaction cannot work on Herdr 0.9.0: a source's report with a sequence number not above the last accepted one is ignored, the integration's counter is private, and a higher Firstmate number would make every later integration report (the next run's `working`, `blocked`) stale.
+The accepted consequence is that native status reads idle while an idle-time early compaction runs, as it does for a manual `/compact`; native idle during an agent run is never acceptable, and the task's own busy record stays busy until the compaction's completion or error confirms the latest settled run is still idle.
+`tests/fm-spawn-dispatch-profile.test.sh` (`test_compact_at_pi_defers_past_settle_dispatch`) pins the ordering against a Pi-shaped dispatch.
+
 ## Push events and polling fallback
 
 Protocol 16 can subscribe to `pane.agent_status_changed` over one bounded Unix-socket reader.

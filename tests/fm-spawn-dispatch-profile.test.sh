@@ -2564,10 +2564,12 @@ globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 let tokens = 200000, calls = 0;
 const ctx = { isIdle: () => true, getContextUsage: () => ({ tokens }), compact: () => { calls++; } };
-await handlers.agent_settled({}, ctx);
+// Native compaction starts on a later macrotask, after the settle dispatch.
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+await handlers.agent_settled({}, ctx); await tick();
 assert.equal(calls, 0, "at the window it must not compact");
 tokens = 200001;
-await handlers.agent_settled({}, ctx);
+await handlers.agent_settled({}, ctx); await tick();
 assert.equal(calls, 1, "above the window it must compact once");
 JS
   pass "config/supervisor-compact-at sets every secondmate's window, refuses invalid values, and leaves workers on their own"
@@ -2614,7 +2616,9 @@ const ctx = {
   getContextUsage: () => tokens === undefined ? undefined : { tokens },
   compact: (options) => { calls++; callbacks = options; },
 };
-const settle = () => handlers.agent_settled({}, ctx);
+// Native compaction starts on a later macrotask, after the settle dispatch.
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const settle = async () => { await handlers.agent_settled({}, ctx); await tick(); };
 await handlers.turn_end({}, ctx);
 assert.equal(calls, 0, "inner turn must never compact");
 idle = false; await settle(); assert.equal(calls, 0);
@@ -2722,6 +2726,134 @@ JS
   pass "Pi compacts only settled idle workers with one request in flight and bounded retries"
 }
 
+# Herdr's Pi integration (a global extension, so it runs after this task's -e
+# extension) reads ctx.isIdle() in its own agent_settled handler and drops a
+# settlement it sees while compacting. Drive the generated extension through a
+# Pi-shaped sequential dispatch and Pi's compact() timing to prove the early
+# compaction starts only after every settle handler has read idle, and that a
+# skipped start loses neither the compaction nor its attempt budget.
+test_compact_at_pi_defers_past_settle_dispatch() {
+  local rec id out
+  id=compact-defer-pi
+  rec=$(make_spawn_case "$id" pi "$id")
+  read_case_record "$rec"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --compact-at 200000 --model openai-codex/gpt-6.1-sol)
+  expect_code 0 $? "compact_at deferral spawn failed: $out"
+  EXT_PATH="$HOME_DIR/state/$id.pi-ext.ts" node --input-type=module <<'JS' || fail "Pi early compaction does not defer past the settle dispatch"
+import { pathToFileURL } from "node:url";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const record = process.env.EXT_PATH.replace(/\.pi-ext\.ts$/, ".busy-state");
+const busy = () => readFileSync(record, "utf8");
+const stateIs = (state) => assert.match(busy(), new RegExp("state=" + state + " "));
+const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
+const realSetTimeout = globalThis.setTimeout;
+const timers = new Map();
+let timerId = 0;
+globalThis.setTimeout = (fn, ms) => {
+  assert.equal(ms, 600000, "task-local callback recovery bound");
+  timers.set(++timerId, fn);
+  return timerId;
+};
+globalThis.clearTimeout = (id) => timers.delete(id);
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const until = async (cond, what) => {
+  for (let i = 0; i < 300 && !cond(); i++) await new Promise((resolve) => realSetTimeout(resolve, 10));
+  assert.ok(cond(), what);
+};
+// Pi 0.85.1: isIdle = !runActive && !isCompacting; compact() awaits abort(),
+// which awaits waitForIdle(), and only then marks the session compacting.
+let runActive = false, compacting = false, tokens = 210000, calls = 0, callbacks;
+const waitForIdle = async () => {};
+const abort = async () => { await waitForIdle(); };
+const sessionCompact = async () => { await abort(); compacting = true; };
+const ctx = {
+  isIdle: () => !runActive && !compacting,
+  getContextUsage: () => ({ tokens }),
+  compact: (options) => { calls++; callbacks = options; void (async () => { await sessionCompact(); })(); },
+};
+const herdrSaw = [];
+const herdrSettled = (_event, c) => { herdrSaw.push(c.isIdle()); };
+const load = () => {
+  const handlers = {};
+  mod.default({ on: (name, fn) => { handlers[name] = fn; }, events: { on() {} } });
+  return handlers;
+};
+const start = async (h) => { runActive = true; await h.agent_start({}, ctx); };
+// Pi's _emitAgentSettled: run inactive, then each extension's handlers in load order.
+const dispatch = async (h) => {
+  runActive = false;
+  for (const handler of [h.agent_settled, herdrSettled]) await handler({}, ctx);
+};
+const finish = async () => { compacting = false; await callbacks.onComplete({}); };
+
+// The deferral lets the later settle handler record idle before compaction.
+let h = load();
+await start(h); await dispatch(h);
+assert.deepEqual(herdrSaw, [true], "a later agent_settled handler must read idle");
+assert.equal(calls, 0, "compaction must not start inside the settle dispatch");
+stateIs("busy");
+await tick();
+assert.equal(calls, 1, "compaction starts once the dispatch is done");
+await until(() => compacting, "native compaction did not begin");
+stateIs("busy");
+await finish(); stateIs("idle");
+assert.equal(timers.size, 0, "completion clears the recovery timer");
+
+// A new run before the deferred start skips it; the next settle still compacts.
+h = load();
+await start(h); await dispatch(h);
+await start(h); await tick();
+assert.equal(calls, 1, "a new run must skip the pending compaction");
+assert.match(busy(), /state=busy .*event=agent-start/, "the new run's busy state stands");
+assert.equal(timers.size, 0, "a skipped start installs no recovery timer");
+await dispatch(h); await tick();
+assert.equal(calls, 2, "the next settle above the threshold must still compact");
+await until(() => compacting, "native compaction did not begin after the skip");
+await finish(); stateIs("idle");
+
+// Native work that is not a new run also skips, without spending attempts,
+// and no settle follows it: the one-shot bound publishes idle once Pi is idle.
+const fireTimer = async () => {
+  assert.equal(timers.size, 1, "one recovery timer at a time");
+  const [id, fn] = [...timers][0]; timers.delete(id); await fn();
+};
+h = load();
+await dispatch(h); compacting = true; await tick();
+assert.equal(calls, 2, "a non-idle start must skip");
+stateIs("busy");
+assert.equal(timers.size, 1, "a non-idle skip arms the recovery bound");
+compacting = false; await fireTimer(); stateIs("idle");
+await dispatch(h); compacting = true; await tick(); compacting = false;
+assert.equal(calls, 2, "a second non-idle start must skip");
+await dispatch(h); await tick();
+assert.equal(calls, 3, "skips must not spend the two-attempt budget");
+assert.equal(timers.size, 1, "the started compaction replaces the skip's bound");
+await until(() => compacting, "native compaction did not begin after idle skips");
+await finish(); stateIs("idle");
+
+// A newer run that settles while the start is pending is evaluated, not lost.
+h = load();
+await start(h); await dispatch(h);
+await start(h); await dispatch(h);
+await until(() => calls === 4, "the newer settlement's compaction was lost");
+await until(() => compacting, "native compaction did not begin for the newer settle");
+stateIs("busy");
+await finish(); stateIs("idle");
+
+// The missing-callback recovery still settles on positive native idle.
+h = load();
+await start(h); await dispatch(h); await tick();
+assert.equal(calls, 5);
+await until(() => compacting, "native compaction did not begin");
+assert.equal(timers.size, 1, "one recovery timer per started compaction");
+compacting = false; await fireTimer(); stateIs("idle");
+await callbacks.onComplete({}); stateIs("idle");
+assert.ok(herdrSaw.every(Boolean), "every later settle handler read idle: " + JSON.stringify(herdrSaw));
+JS
+  pass "Pi early compaction starts after the settle dispatch and a skipped start loses nothing"
+}
+
 test_compact_at_validation_and_unsupported_tool() {
   local rec id out value
   id=compact-invalid
@@ -2759,6 +2891,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_launch_environment_inheritance_preserves_on_source_errors \
   test_launch_environment_allowlist \
   test_compact_at_pi_settled_and_retry_limit \
+  test_compact_at_pi_defers_past_settle_dispatch \
   test_launch_environment_invalid_config_refuses \
   test_launch_environment_inaccessible_config_refuses \
   test_pi_tui_mode_probe_is_safe_for_old_and_new_pi \

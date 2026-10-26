@@ -125,7 +125,13 @@
 #   (integer 100000..1000000). Claude receives a launch-scoped
 #   CLAUDE_CODE_AUTO_COMPACT_WINDOW; Pi/pi-signed use their task extension at
 #   agent_settled + isIdle, with at most two attempts per above-threshold
-#   excursion and a 60-second cooldown. Early compaction holds semantic busy
+#   excursion and a 60-second cooldown. The native compaction starts on a
+#   later macrotask, after every agent_settled handler has read isIdle (Herdr's
+#   integration drops a settle it sees mid-compaction), and is skipped without
+#   spending an attempt when a new run or other native work began first, so
+#   the next settle above the threshold still compacts; a skip caused by other
+#   native work arms the same one-shot bound to publish idle once Pi reads
+#   idle. Early compaction holds semantic busy
 #   state and suppresses turn-end notifications until completion/error confirms
 #   the latest settled run is still idle. A task-local one-shot ten-minute
 #   timer recovers a missing callback only on positive native idle, without
@@ -5594,6 +5600,18 @@ export default function (pi: any) {
     settledCtx = ctx;
     await publishSettlement();
   };
+  // A skipped start already wrote busy "early-compact". When other native
+  // work rather than a new run made Pi busy, no settle follows it, so arm the
+  // same one-shot bound to publish the settlement once Pi reads idle.
+  const settleAfterSkip = async () => {
+    await publishSettlement();
+    if (sessionEnded || !settledCtx || settledEpoch !== runEpoch || settledCtx.isIdle()) return;
+    clearCompactTimer();
+    compactTimer = setTimeout(async () => {
+      compactTimer = undefined;
+      await publishSettlement();
+    }, 600000);
+  };
   const maybeCompact = async (ctx: any) => {
     if (sessionEnded || typeof ctx?.isIdle !== "function" || !ctx.isIdle()) return false;
     if (typeof ctx.getContextUsage !== "function" || typeof ctx.compact !== "function") return false;
@@ -5613,12 +5631,33 @@ export default function (pi: any) {
     await busyEvent("busy", "early-compact");
     if (!settled()) {
       compactInFlight = false;
-      await publishSettlement();
+      await settleAfterSkip();
       return true;
     }
     try { unlinkSync("$TURNEND"); } catch { /* An absent notification is fine. */ }
-    compactAttempts++;
     const attempt = ++compactSerial;
+    // Start native compaction on a later macrotask, after the agent_settled
+    // dispatch. ctx.compact() makes ctx.isIdle() false within microtasks, and
+    // extensions loaded after this one (Herdr's pane-status integration among
+    // them) read isIdle() in their own agent_settled handlers and drop a
+    // settlement they see while compacting; Pi never re-emits agent_settled
+    // after compaction. This assumes every later handler reads isIdle()
+    // without first awaiting a macrotask.
+    setImmediate(() => { void startCompact(ctx, attempt, settled); });
+    return true;
+  };
+  const startCompact = async (ctx: any, attempt: number, settled: () => boolean) => {
+    if (sessionEnded || !compactInFlight || compactSerial !== attempt) return;
+    if (!settled()) {
+      // A new run or other native work began before the start. Skip without
+      // spending the attempt budget; a newer settlement that arrived while
+      // this start was pending is evaluated now, otherwise the next one is.
+      compactInFlight = false;
+      if (!sessionEnded && settledCtx && settledEpoch === runEpoch && await maybeCompact(settledCtx)) return;
+      await settleAfterSkip();
+      return;
+    }
+    compactAttempts++;
     const finished = async () => {
       // A missing-callback recovery must not accept a delayed old callback.
       if (sessionEnded || !compactInFlight || compactSerial !== attempt) return;
@@ -5628,13 +5667,13 @@ export default function (pi: any) {
       // Only a later below-threshold observation rearms the attempt budget.
       await publishSettlement();
     };
+    clearCompactTimer();
     compactTimer = setTimeout(async () => {
       compactTimer = undefined;
       await recoverMissingCallback(ctx);
     }, 600000);
     try { ctx.compact({ onComplete: finished, onError: finished }); }
     catch { await finished(); }
-    return true;
   };
   pi.on("agent_start", () => {
     runEpoch++;
