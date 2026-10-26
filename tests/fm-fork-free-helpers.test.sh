@@ -963,6 +963,23 @@ for f in "$cases"/*.status "$cases/absent.status"; do
   [ "$got" = "$want" ] && [ "$grc" = "$wrc" ] \
     || printf 'signal sig_to %s: helper %q (%s), reference %q (%s)\n' "${f##*/}" "$got" "$grc" "$want" "$wrc"
 done
+# The optional annotation batch reuses exactly this signature policy, including
+# empty files, under each interpreter/locale admitted by run_everywhere.
+if [ "$_FM_CLASSIFY_UNAME_S" = Linux ] && [ "$_FM_CLASSIFY_HEX_BYTEWISE" = 1 ]; then
+  want=$(reference_signature "$cases/regular.status"; printf '\n'; reference_signature "$cases/empty.status")
+  : > "$log"
+  got=$(PATH="$shim:$PATH" status_observed_signatures_batch "$cases/regular.status" "$cases/empty.status"); grc=$?
+  [ "$grc" = 0 ] && [ "$got" = "$want" ] \
+    || printf 'signature batch differs: helper %q (%s), reference %q\n' "$got" "$grc" "$want"
+  spawned=$(sort "$log" | tr '\n' ' ')
+  [ "$spawned" = 'stat ' ] || printf 'signature batch spawned [%s], not one stat\n' "$spawned"
+  : > "$log"
+  got=$(PATH="$shim:$PATH" status_observed_signatures_batch); grc=$?
+  [ "$grc" = 0 ] && [ -z "$got" ] && [ ! -s "$log" ] || printf 'empty signature batch read a path\n'
+else
+  got=$(status_observed_signatures_batch "$cases/regular.status"); grc=$?
+  [ "$grc" != 0 ] && [ -z "$got" ] || printf 'unsupported signature batch did not refuse\n'
+fi
 for f in "$state/crew.turn-ended" "$state/absent.turn-ended"; do
   if [ "$_FM_UNAME" = Darwin ]; then
     want=$(/usr/bin/stat -f '%z:%Fm' "$f" 2>/dev/null); wrc=$?

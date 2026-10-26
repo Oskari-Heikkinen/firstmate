@@ -257,6 +257,171 @@ sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
         again, _ = await self.invoke("fm-wake-drain.sh")
         self.assertNotIn(b"wake annotation:", again)
 
+    async def owner(self, script, *arguments):
+        process = await asyncio.create_subprocess_exec(
+            "bash", "-c", '. "$1/bin/fm-wake-lib.sh"; shift; ' + script, "owner", str(ROOT),
+            str(self.state), *map(str, arguments), env=self.env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        output, error = await asyncio.wait_for(process.communicate(), 15)
+        self.assertEqual(process.returncode, 0, error)
+        return output
+
+    async def test_historical_signature_batch_preserves_marker_policy_direct_priority_and_order(self):
+        tasks = ("z", "A", "missing", "bad", "old", "owned")
+        for task in tasks: self.status(b"working: " + task.encode() + b"\n", task)
+        for task in ("z", "A", "owned"):
+            await self.owner('fm_wake_status_mark_current "$1" "$1/$2.status"', task)
+        # The reported signature must not be replaced by an old classified-only
+        # marker or an owned-append coverage decision.
+        (self.state / ".seen-bad_status").write_bytes(b"v2\tmalformed\t-\n")
+        old = await self.owner('_fm_wake_require_classify; _fm_open_decisions_file_ident "$1/old.status"')
+        end = (self.state / "old.status").stat().st_size
+        (self.state / ".seen-old_status").write_bytes(str(end).encode() + b"@" + old)
+        await self.owner('fm_wake_status_append_self_announced "$1" "$1/owned.status" "working: owned update"')
+        owned_line = (self.state / "owned.status").read_bytes().splitlines()[-1]
+        # Regress only the reported observation behind the owned append. Its
+        # wake suppression policy is intentionally not presentation authority.
+        await self.owner('''_fm_wake_require_classify
+file="$1/owned.status"
+ident=$(_fm_open_decisions_file_ident "$file")
+fm_wake_status_seen_commit "$1" "$file" 15 "$ident"
+fm_wake_signal_seen_current "$1" "$file"
+''')
+        rows = b"100\t1\tsignal\tz.turn-ended\tsignal: z\n" + b"".join(
+            f"100\t{i}\tsignal\t{task}.turn-ended\tsignal: {task}\n".encode()
+            for i, task in enumerate(tasks[1:], 2)) + b"100\t7\tsignal\tA.status\tsignal: direct\n"
+        (self.state / ".wake-queue").write_bytes(rows)
+        manifest = self.state / ".status-presentation-cursor"
+        log = self.home / "signature-reads"
+        stat = self.home / "fakebin/stat"
+        stat.write_text('''#!/usr/bin/env python3
+import os, subprocess, sys
+args = sys.argv[1:]
+if len(args) > 1 and args[0] == "-c" and "\\n" in args[1]:
+    batch = "--" in args
+    with open(os.environ["FM_FIXTURE_SIGNATURE_LOG"], "ab") as stream:
+        stream.write(b"batch\\n" if batch else b"row\\n")
+    if batch:
+        mode = os.environ.get("FM_FIXTURE_SIGNATURE_CORRUPT", "")
+        if mode == "error": sys.exit(1)
+        if mode == "malformed":
+            print("malformed")
+            sys.exit(0)
+    elif not os.environ.get("FM_FIXTURE_SIGNATURE_CORRUPT"):
+        print("unexpected per-row signature read", file=sys.stderr)
+        sys.exit(89)
+sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
+''')
+        stat.chmod(0o700)
+        calls = []
+        original = Presentation.read
+        def observed(instance, rows, vocabulary=None):
+            calls.append(rows)
+            return original(instance, rows, vocabulary)
+        for locale in ("C", "C.UTF-8"):
+            for mode in ("", "malformed", "error"):
+                with self.subTest(locale=locale, mode=mode):
+                    log.unlink(missing_ok=True)
+                    manifest.write_bytes(b"")
+                    env = dict(LC_ALL=locale, FM_FIXTURE_SIGNATURE_LOG=str(log),
+                               FM_FIXTURE_SIGNATURE_CORRUPT=mode, FM_FIXTURE_REAL_STAT=shutil.which("stat"))
+                    before = len(calls)
+                    with patch.object(Presentation, "read", observed):
+                        actual, error = await self.invoke("fm-wake-drain.sh", **env)
+                    self.assertEqual(len(calls), before + 1, error)
+                    self.assertEqual(len(calls[-1]), len(tasks), error)
+                    reads = log.read_bytes().splitlines()
+                    self.assertEqual(reads.count(b"batch"), 1, reads)
+                    if not mode: self.assertNotIn(b"row", reads)
+                    else: self.assertIn(b"row", reads)
+                    diagnostic = b"signature batch refused; using complete legacy replay checks"
+                    if mode: self.assertIn(diagnostic, error)
+                    else: self.assertNotIn(diagnostic, error)
+                    self.assertNotIn(b"fm-view-client:", error)
+                    cursor = manifest.read_bytes()
+                    manifest.write_bytes(b"")
+                    # The ordinary legacy CLI never attempts the optional batch.
+                    log.unlink()
+                    legacy, _ = await self.invoke("fm-wake-drain.sh", native=False,
+                        **dict(env, FM_FIXTURE_SIGNATURE_CORRUPT="allow-row"))
+                    self.assertNotIn(b"batch", log.read_bytes().splitlines())
+                    self.assertEqual(actual, legacy)
+                    self.assertEqual(manifest.read_bytes(), cursor)
+                    self.assertTrue(actual.startswith(rows))
+                    annotations = [line for line in actual.split(b"\n") if line.startswith(b"wake annotation:")]
+                    keys = [next(task.encode() + b".status" for task in tasks
+                                 if b": " + task.encode() + b".status: " in line) for line in annotations]
+                    self.assertEqual(keys, [b"A.status", b"missing.status", b"bad.status", b"old.status",
+                                            b"owned.status", b"owned.status"], actual)
+                    self.assertNotIn(b"historical / not necessarily the triggering event: A.status", actual)
+                    self.assertIn(b"historical / not necessarily the triggering event: owned.status: " + owned_line, actual)
+
+    async def test_historical_signature_is_observed_after_actual_enrichment_delay(self):
+        self.status(b"working: before delay\n")
+        status = self.state / "task.status"
+        marker = self.state / ".seen-task_status"
+        manifest = self.state / ".status-presentation-cursor"
+        (self.state / ".wake-queue").write_bytes(b"100\t1\tsignal\ttask.turn-ended\tsignal: historical\n")
+        ready = self.home / "delay-ready"
+        release = self.home / "delay-release"
+        sleep = self.home / "fakebin/sleep"
+        sleep.write_text('''#!/usr/bin/env python3
+import os, pathlib, subprocess, sys, time
+if sys.argv[1:] != ["711"]:
+    sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_SLEEP"], *sys.argv[1:]]))
+pathlib.Path(os.environ["FM_FIXTURE_DELAY_READY"]).touch()
+for _ in range(3000):
+    if pathlib.Path(os.environ["FM_FIXTURE_DELAY_RELEASE"]).exists(): sys.exit(0)
+    time.sleep(0.01)
+sys.exit(88)
+''')
+        sleep.chmod(0o700)
+        calls = []
+        original = Presentation.read
+        def observed(instance, rows, vocabulary=None):
+            calls.append(rows)
+            return original(instance, rows, vocabulary)
+
+        async def run(native, action):
+            ready.unlink(missing_ok=True); release.unlink(missing_ok=True)
+            manifest.write_bytes(b"")
+            status.write_bytes(b"working: before delay\n")
+            marker.unlink(missing_ok=True)
+            if action == "append":
+                await self.owner('fm_wake_status_mark_current "$1" "$1/task.status"')
+            invoke = asyncio.create_task(self.invoke("fm-wake-drain.sh", native=native,
+                FM_WAKE_ENRICH_TEST_DELAY="711", FM_FIXTURE_DELAY_READY=str(ready),
+                FM_FIXTURE_DELAY_RELEASE=str(release), FM_FIXTURE_REAL_SLEEP=shutil.which("sleep")))
+            try:
+                for _ in range(2000):
+                    if ready.exists() or invoke.done(): break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(ready.exists(), "real enrichment seam never reached")
+                if action == "append":
+                    with status.open("ab") as stream: stream.write(b"working: appended during delay\n")
+                else:
+                    await self.owner('fm_wake_status_mark_current "$1" "$1/task.status"')
+            finally:
+                release.touch()
+            output, error = await invoke
+            self.assertNotIn(b"signature batch refused", error)
+            return output, manifest.read_bytes()
+
+        for action in ("append", "marker-update"):
+            with self.subTest(action=action):
+                before = len(calls)
+                with patch.object(Presentation, "read", observed):
+                    actual, cursor = await run(True, action)
+                self.assertEqual(len(calls), before + 1)
+                self.assertTrue(calls[-1])
+                expected, legacy_cursor = await run(False, action)
+                self.assertEqual(actual, expected)
+                self.assertEqual(cursor, legacy_cursor)
+                annotation = b"historical / not necessarily the triggering event: task.status: working: before delay"
+                if action == "append": self.assertIn(annotation, actual)
+                else: self.assertNotIn(b"wake annotation:", actual)
+                self.assertNotIn(b"task.status: working: appended during delay", actual)
+
     async def test_early_symlink_refusal_matches_legacy_cursor_refusal_and_raw_rows(self):
         # This is deliberately NOT the original late Perl-reader race. A swap
         # before fallback makes the legacy cursor lookup refuse before it can

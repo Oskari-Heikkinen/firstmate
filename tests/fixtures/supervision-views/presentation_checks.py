@@ -49,13 +49,22 @@ if batch:
     if mode == "short": rows = rows[:-1]
     if mode == "extra": rows = rows + rows[:1]
     if mode == "malformed": rows[-1] = b"malformed"
-    if mode == "nonregular": rows[-1] = b"a1ff" + rows[-1][rows[-1].index(b"\\t"):]
-    if mode == "empty-field": rows[-1] = rows[-1].replace(b"\\t", b"\\t\\t", 1)
-    if mode == "weak":
-        rows = [b"\\t".join(row.split(b"\\t")[:3] + [b"0", b"-"]) for row in rows]
+    signature = "\\n" in args[1]
+    if signature:
+        if mode == "nonregular": rows[-5] = b"symbolic link:a1ff"
+        if mode == "empty-field": rows[-4] = b""
+        if mode == "weak":
+            for index in range(0, len(rows), 5): rows[index+3:index+5] = [b"0", b"-"]
+    else:
+        if mode == "nonregular": rows[-1] = b"a1ff" + rows[-1][rows[-1].index(b"\\t"):]
+        if mode == "empty-field": rows[-1] = rows[-1].replace(b"\\t", b"\\t\\t", 1)
+        if mode == "weak":
+            rows = [b"\\t".join(row.split(b"\\t")[:3] + [b"0", b"-"]) for row in rows]
     data = b"\\n".join(rows) + b"\\n"
 elif mode == "weak" and args[:2] == ["-c", "%W"]:
     data = b"0\\n"
+elif mode == "weak" and "\\n" in args[1]:
+    data = b"\\n".join(data.splitlines()[:3] + [b"0", b"-"]) + b"\\n"
 sys.stdout.buffer.write(data)
 sys.exit(reply.returncode)
 ''')
@@ -101,6 +110,88 @@ status_commit_presentation_snapshot "$2" "$3" "$5"
         if actual.returncode: self.assertEqual(before, after)
         self.assertFalse(list(self.state.glob(".status-presentation-cursor.tmp.*")))
         return actual, calls, after
+
+    def signatures(self, paths, batch=True, **environment):
+        script = '''. "$1/bin/fm-classify-lib.sh"
+shift
+if [ "$1" = batch ]; then
+  shift; status_observed_signatures_batch "$@"
+else
+  shift
+  for path in "$@"; do status_observed_signature "$path" || exit; printf '\\n'; done
+fi
+'''
+        return subprocess.run(["bash", "-c", script, "signature", str(ROOT),
+                               "batch" if batch else "legacy", *map(str, paths)],
+                              env=dict(self.env, **environment), capture_output=True, timeout=30)
+
+    def test_fresh_signature_batch_matches_reported_owner_without_per_row_commands(self):
+        paths = [self.state / name for name in ("b.status", "A.status", "a.x.status")]
+        for path in paths: path.write_bytes(b"note: \xff answer\n")
+        paths[1].write_bytes(b"")
+        for locale in ("C", "C.UTF-8"):
+            for mode in ("", "weak"):
+                with self.subTest(locale=locale, mode=mode):
+                    self.log.unlink(missing_ok=True)
+                    actual = self.signatures(paths, LC_ALL=locale, FM_FIXTURE_STAT_MODE=mode)
+                    self.assertEqual(actual.returncode, 0, actual.stderr)
+                    calls = [json.loads(row) for row in self.log.read_text().splitlines()]
+                    self.assertEqual(len(calls), 1, calls)
+                    self.assertEqual(calls[0][calls[0].index("--")+1:], list(map(str, paths)))
+                    expected = self.signatures(paths, batch=False, LC_ALL=locale, FM_FIXTURE_STAT_MODE=mode)
+                    self.assertEqual(expected.returncode, 0, expected.stderr)
+                    self.assertEqual(actual.stdout, expected.stdout)
+                    self.assertEqual(len(actual.stdout.splitlines()), 3)
+        before = self.signatures(paths).stdout
+        paths[0].chmod(0o400)
+        changed = self.signatures(paths).stdout
+        self.assertNotEqual(before, changed)
+        self.assertEqual(changed, self.signatures(paths, batch=False).stdout)
+        paths[0].chmod(0o600)
+        with paths[0].open("ab") as stream: stream.write(b"note: grew\n")
+        grown = self.signatures(paths).stdout
+        self.assertNotEqual(before, grown)
+        self.assertEqual(grown, self.signatures(paths, batch=False).stdout)
+        replacement = self.state / ".replacement"
+        replacement.write_bytes(paths[0].read_bytes())
+        replacement.replace(paths[0])
+        rotated = self.signatures(paths).stdout
+        self.assertNotEqual(grown, rotated)
+        self.assertEqual(rotated, self.signatures(paths, batch=False).stdout)
+
+    def test_signature_batch_refuses_whole_uncertain_inventory_without_output(self):
+        paths = [self.state / (name + ".status") for name in ("a", "z")]
+        for path in paths: path.write_bytes(b"working: event\n")
+        for mode in ("error", "short", "extra", "malformed", "nonregular", "empty-field"):
+            with self.subTest(mode=mode):
+                reply = self.signatures(paths, FM_FIXTURE_STAT_MODE=mode)
+                self.assertNotEqual(reply.returncode, 0, reply.stderr)
+                self.assertEqual(reply.stdout, b"")
+        for name in ("FM_STATUS_SIZE_READER", "FM_STATUS_IDENTITY_READER"):
+            reply = self.signatures(paths, **{name: "/missing"})
+            self.assertNotEqual(reply.returncode, 0)
+            self.assertEqual(reply.stdout, b"")
+        reply = self.signatures(paths * 129)
+        self.assertNotEqual(reply.returncode, 0)
+        self.assertEqual(reply.stdout, b"")
+        self.log.unlink(missing_ok=True)
+        empty = self.signatures([])
+        self.assertEqual((empty.returncode, empty.stdout), (0, b""))
+        self.assertFalse(self.log.exists())
+        secret = self.home / "secret"
+        secret.write_bytes(b"private\n")
+        for mode in ("swap", "delete"):
+            reply = self.signatures(paths, FM_FIXTURE_STAT_MODE=mode, FM_FIXTURE_STAT_SECRET=str(secret))
+            self.assertNotEqual(reply.returncode, 0)
+            self.assertEqual(reply.stdout, b"")
+            self.assertEqual(secret.read_bytes(), b"private\n")
+            paths[-1].unlink(missing_ok=True)
+            Path(str(paths[-1]) + ".original").replace(paths[-1])
+        directory = self.state / "directory.status"
+        directory.mkdir()
+        reply = self.signatures([*paths, directory])
+        self.assertNotEqual(reply.returncode, 0)
+        self.assertEqual(reply.stdout, b"")
 
     def test_commit_batch_matches_whole_legacy_cursor_without_per_row_reads(self):
         for task in ("b", "a", "a-2", "a.x"):

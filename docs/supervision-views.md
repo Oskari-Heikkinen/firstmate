@@ -123,7 +123,12 @@ This optional batch never substitutes the service's device/inode observation ide
 Unsupported platforms, custom size/identity readers, larger or incompatible inventories, partial stat failure, nonregular inputs or malformed rows refuse atomically before output and recapture the entire snapshot through the unchanged legacy owner.
 Without explicit selection, the ordinary legacy snapshot is unchanged.
 It asks once for native captured annotation lines, unread/open-decision facts and suggested endpoints before printing any status annotation or section, keeping divergence, capped branch outcomes and the latest-outcome backstop with their existing owners.
-The annotation renderer consumes those captured lines without reopening each span or cursor; historical replay suppression remains with its existing signature owner.
+The annotation renderer consumes those captured lines without reopening each span or cursor.
+At annotation time, after any enrichment delay, its existing signature owner can observe up to 256 historical-only regular-file signatures in one fresh GNU-stat call and read their reported markers in shell.
+The batch shares the ordinary signature parser and encoder, never reuses the earlier presentation capture, and never consults owned-append coverage to suppress an annotation.
+Direct rows retain priority and first-seen queue order.
+Unsupported readers/platforms, nonregular or unreadable paths and malformed or incomplete captures discard the entire optional filter before annotation output and run the original per-row replay checks with an explicit diagnostic.
+Missing or malformed reported markers remain unreported, preserving the historical warning and every raw wake.
 Before native selection, the existing presentation owner independently validates every suggested task/identity/endpoint against its captured snapshot and current cursor manifest under the held presentation lock.
 That guard reads the cursor once for the whole batch, rejects missing, duplicate, foreign, malformed or regressive suggestions, and preserves the existing identity/size-reset and legacy-migration boundaries.
 A service's claimed observed offset is not sufficient authority to rewind the owner's cursor.
@@ -138,7 +143,7 @@ Ordinary legacy selection never attempts this optimization, and selected-row rep
 The fleet snapshot can select the same explicit client once for all local task rows, before legacy per-task capture or composition.
 Its backlog parser, contribution collector, cross-home ledger/cache collector and summary/publication owners remain unchanged; the read service cannot write their output or retire a dirty trigger.
 A refused native batch invokes the entire legacy task capture/composition path before any snapshot output.
-The native path no longer invokes per-row cursor/marker-offset helpers, and its optional commit batch removes repeated identity/size/cursor reads when admitted, but still pays the legacy transaction graph and historical-signature reads.
+The native path no longer invokes per-row cursor/marker-offset helpers, and its optional commit and annotation batches remove repeated identity/size/cursor and historical-signature reads when admitted, but still pays the legacy transaction and passive-adapter graphs and latest-outcome backstop reads.
 It is not a completed hot-path migration or a performance acceptance claim.
 
 ## Verification and remaining migration
@@ -161,6 +166,12 @@ A real native-service/client drain case also requires full output and committed-
 Presentation-commit cases compare complete manifests with the legacy owner under C/UTF-8 for old/new/missing cursors, ordering, carried/acknowledged/reset backstops, growth beyond the selected endpoint and newly arrived unselected rows.
 They require one fresh stat for the admitted inventory with per-row identity/size/backstop readers forbidden, preserve the old cursor and protected target on selected-row rotation/deletion/truncation/symlink or past-end acknowledgement, and retain complete legacy fallback for malformed captures or cursor packets.
 The real-client whole-drain case observes successful nonempty native reads for both normal commit batching and a separately corrupted commit-time capture, requiring identical full output/cursor bytes and no batch attempt by ordinary legacy selection.
+Historical-signature cases compare complete signatures against the original owner in C/UTF-8, including empty files, unavailable birth time, mode changes, growth and same-size replacement.
+They require one stat for an admitted inventory, none for an empty inventory, and atomic refusal on malformed, short, extra, nonregular, symlink-swapped, deleted, oversized or custom-reader inputs.
+Real-client drain fixtures compare full output and cursor bytes across new/old/missing/malformed markers, owned growth and mixed direct/historical duplicate keys, requiring successful nonempty native reads and forbidding per-row signature commands on the admitted path.
+Separate malformed/error captures require the complete legacy replay filter, while ordinary legacy selection never attempts the batch.
+A controlled real enrichment-delay fixture changes either the status bytes or reported marker after native capture and requires the same late-observed suppression decision and captured-end cursor as legacy.
+The original late-reader and independent early-swap regressions remain separate.
 These invocation assertions are mechanism checks, not a B0 performance result.
 Additional cases cover missing manifests/rows, legacy migration refusal, identity/size reset, malformed and replaced cursors, fresh offsets without status changes and the new verb's ordinary-lane generation barriers.
 Real-client regressions corrupt the service's observed offset or suggested endpoint, then separately corrupt successful client output after its reply checks, requiring full legacy output/cursor parity and an explicit refusal diagnostic for regressive, duplicate, missing, foreign, identity-mismatched and past-end suggestions.
