@@ -41,6 +41,7 @@ Undo it with `wsl -d <distro> -u root -- rm /etc/sudoers.d/lattice-storage`.
 2. The SSD is a lettered volume other than C:, Fixed or Removable, of at least 1.5 TB; once set up, its remembered volume id wins, so a small USB stick is never picked.
 3. NTFS or exFAT is usable; a RAW, unformatted, or other filesystem is reported and nothing is ever written to it, because formatting needs the captain.
 4. Mount it through the rule with `sudo -n` when `/mnt/<l>` is not mounted; a refusal is `not-mounted`, never a password prompt.
+   When `/mnt/<l>` is listed but a 10 s bounded `stat` of it fails with `No such device` (or `Transport endpoint is not connected`), as a drvfs mount does after the SSD dropped out and came back, the mount is dead: release it with `umount -l /mnt/<l>` and mount it again through the same rule; a refused release or remount, or a remount that still fails, is `stale-mount`. A mount that answers takes no extra `sudo` call.
 5. Create `<L>:\lattice-data\tetjet-results`, `<L>:\lattice-data\research` and `<L>:\lattice-data\archive` when missing; first time only, write the marker `lattice-data\.lattice-storage-id` holding the volume id, and measure sequential write speed with one 1 GiB temp file (deleted after); a failed measurement is retried on the next check.
 6. Probe a small write, then publish the results-root file atomically.
 
@@ -65,7 +66,7 @@ Readers treat that `ok` exactly like any other.
 | `ok` | SSD usable; line 1 is `/mnt/<l>/lattice-data/tetjet-results/{task}` |
 | `absent` | no SSD in Windows (a stale mount of a removed SSD is released unless another volume now holds its letter) |
 | `not-mounted` | SSD in Windows but not mounted in WSL and the rule is missing or refused |
-| `stale-mount` | SSD removed but its mount could not be released |
+| `stale-mount` | SSD removed but its mount could not be released, or SSD in Windows but its dead mount could not be released and mounted again |
 | `full` | SSD free space under the minimum (50 GiB, `min_free`) |
 | `raw` | RAW, unformatted, or unsupported filesystem; nothing written |
 | `unwritable` | folders, marker, or the write probe failed |

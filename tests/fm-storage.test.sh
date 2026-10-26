@@ -23,6 +23,7 @@ NOTE="$TMP_ROOT/parent.status"
 PSOUT="$TMP_ROOT/ps.txt"
 MOUNTS="$TMP_ROOT/mountinfo"
 SUDOLOG="$TMP_ROOT/sudo.log"
+DEAD="$TMP_ROOT/dead-mount"
 # A C: template the removed fallback setting names; nothing may ever print it.
 FB="$TMP_ROOT/c-home/data/{task}/tetjet-results"
 TB=2000000000000
@@ -51,10 +52,21 @@ printf '%s\n' "$*" >>"$FAKE_SUDO_LOG"
 [ "$1" = -n ] || exit 1
 [ -n "${FAKE_SUDO_OK:-}" ] || { echo "sudo: a password is required" >&2; exit 1; }
 case "$2" in
-  /usr/bin/mount) printf '1 2 0:1 / %s rw - 9p %s rw\n' "$6" "$5" >>"$FAKE_MOUNTS" ;;
+  /usr/bin/mount)
+    [ -n "${FAKE_SUDO_MOUNT_FAIL:-}" ] && exit 1
+    printf '1 2 0:1 / %s rw - 9p %s rw\n' "$6" "$5" >>"$FAKE_MOUNTS"
+    [ -n "${FAKE_DEAD_STAYS:-}" ] || rm -f "$FAKE_DEAD" ;;
   /usr/bin/umount) mp=${!#}; awk -v mp="$mp" '$5 != mp' "$FAKE_MOUNTS" >"$FAKE_MOUNTS.n"; mv "$FAKE_MOUNTS.n" "$FAKE_MOUNTS" ;;
   *) exit 1 ;;
 esac
+SH
+# The dead-mount probe: while $FAKE_DEAD exists, a stat of the mount point
+# fails the way a dropped drvfs mount does; a fresh mount clears it.
+cat >"$TMP_ROOT/mount-probe" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${!#}" >>"$FAKE_DEAD.probes"
+[ -e "$FAKE_DEAD" ] && { printf "stat: cannot statx '%s': No such device\n" "${!#}" >&2; exit 1; }
+exec stat "$@"
 SH
 cat >"$FAKEBIN/dd" <<SH
 #!/usr/bin/env bash
@@ -78,10 +90,10 @@ if [ -n "\${FAKE_BULK_STATFS:-}" ] && [ "\$1 \$2 \$3" = '-f -c %a %b %S' ] && [ 
 fi
 exec $(command -v stat) "\$@"
 SH
-chmod +x "$PSBIN/powershell.exe" "$FAKEBIN/sudo" "$FAKEBIN/dd" "$FAKEBIN/stat"
+chmod +x "$TMP_ROOT/mount-probe" "$PSBIN/powershell.exe" "$FAKEBIN/sudo" "$FAKEBIN/dd" "$FAKEBIN/stat"
 
 reset() {
-  rm -rf "$MNT" "$CFG" "$ST" "$NOTE" "$SUDOLOG" "$PSOUT.calls"
+  rm -rf "$MNT" "$CFG" "$ST" "$NOTE" "$SUDOLOG" "$PSOUT.calls" "$DEAD" "$DEAD.probes"
   mkdir -p "$MNT/d" "$MNT/e"
   : >"$MOUNTS"
 }
@@ -93,6 +105,7 @@ ssd_vol() { printf 'VOL|%s|%s|%s|Removable|%s|%s|\\\\?\\Volume{%s}\\|%s' "$1" "$
 
 run() {
   PATH="$FAKEBIN:$PSBIN:$PATH" FAKE_PS="$PSOUT" FAKE_MOUNTS="$MOUNTS" FAKE_SUDO_LOG="$SUDOLOG" FAKE_BULK_MNT="$MNT" \
+    FAKE_DEAD="$DEAD" FM_STORAGE_MOUNT_PROBE="$TMP_ROOT/mount-probe" \
     FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$ST" FM_STORAGE_MNT="$MNT" FM_STORAGE_MOUNTINFO="$MOUNTS" \
     FM_STORAGE_FALLBACK="$FB" FM_STORAGE_NOTIFY="$NOTE" FM_STORAGE_SPEED_SIZE=1M FM_STORAGE_PS_BACKOFF='0 0' \
     "$STORAGE" "$@"
@@ -233,6 +246,71 @@ test_stale_mount() {
   assert_grep 'stale WSL mount was released' "$CFG/results-root" "the reason says so"
   assert_equals 3 "$(notes)" "ok, stale-mount and absent each notify once"
   pass "a removed SSD releases its stale mount"
+}
+
+test_healthy_mount_no_sudo() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "setup exits 0"
+  : >"$SUDOLOG"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "check exits 0"
+  assert_equals ok "$(rr state)" "a live listed mount stays ok"
+  [ -s "$SUDOLOG" ] && fail "a live listed mount takes no sudo call"
+  assert_grep "$MNT/d" "$DEAD.probes" "the listed mount is probed"
+  pass "a healthy listed mount keeps the fast path"
+}
+
+test_dead_mount_repaired() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "setup exits 0"
+  : >"$SUDOLOG"; : >"$DEAD"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "check exits 0"
+  assert_equals ok "$(rr state)" "a dead mount of a listed SSD is repaired"
+  assert_equals "umount -l $MNT/d" "$(sed -n 's/^-n \/usr\/bin\///p' "$SUDOLOG" | sed -n 1p)" "the dead mount is released lazily first"
+  assert_equals "mount -t drvfs D: $MNT/d -o uid=$(id -u),gid=$(id -g)" "$(sed -n 's/^-n \/usr\/bin\///p' "$SUDOLOG" | sed -n 2p)" "then mounted through the rule"
+  assert_equals 2 "$(wc -l <"$SUDOLOG" | tr -d ' ')" "the repair takes exactly two sudo calls"
+  assert_equals 1 "$(grep -c " $MNT/d " "$MOUNTS")" "one mount is listed afterwards"
+  assert_equals 1 "$(notes)" "a repair that ends ok does not notify again"
+  pass "a dead listed mount is released and mounted again"
+}
+
+test_dead_mount_repair_refused() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "setup exits 0"
+  : >"$DEAD"
+  run check >/dev/null || fail "check exits 0"
+  assert_equals stale-mount "$(rr state)" "a refused release is stale-mount"
+  assert_grep 'releasing it with umount -l was refused' "$CFG/results-root" "the reason names the refused release"
+  assert_equals unavailable "$(head -n 1 "$CFG/results-root")" "stale-mount names no directory"
+  root_waits 'storage-unavailable: stale-mount' t
+  FAKE_SUDO_OK=1 FAKE_SUDO_MOUNT_FAIL=1 run check >/dev/null || fail "check exits 0"
+  assert_equals stale-mount "$(rr state)" "a refused remount is stale-mount"
+  assert_grep 'mounting it again was refused' "$CFG/results-root" "the reason names the refused remount"
+  root_waits 'storage-unavailable: stale-mount' t
+  : >"$DEAD"
+  printf '1 2 0:1 / %s rw - 9p D: rw\n' "$MNT/d" >>"$MOUNTS"
+  FAKE_SUDO_OK=1 FAKE_DEAD_STAYS=1 run check >/dev/null || fail "check exits 0"
+  assert_equals stale-mount "$(rr state)" "a remount that still fails is stale-mount"
+  assert_grep 'still fails with a dead-mount error' "$CFG/results-root" "the reason names the failed remount"
+  root_waits 'storage-unavailable: stale-mount' t
+  assert_equals 2 "$(notes)" "ok and stale-mount each notify once"
+  pass "a refused dead-mount repair is stale-mount and writers wait"
+}
+
+test_dead_mount_drive_absent() {
+  reset
+  listing "$(ssd_vol D NTFS)"
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "setup exits 0"
+  : >"$SUDOLOG"; : >"$DEAD"
+  listing
+  FAKE_SUDO_OK=1 run check >/dev/null || fail "check exits 0"
+  assert_equals absent "$(rr state)" "a dead mount of a removed SSD reads as absent"
+  assert_grep "umount -l $MNT/d" "$SUDOLOG" "it is released"
+  assert_no_grep 'mount -t drvfs' "$SUDOLOG" "it is not mounted again"
+  assert_grep 'stale WSL mount was released' "$CFG/results-root" "the release path names it"
+  pass "a dead mount of an SSD gone from Windows takes the release path"
 }
 
 test_other_volume_keeps_letter() {
@@ -581,6 +659,10 @@ test_full
 test_small_stick_ignored
 test_not_mounted
 test_stale_mount
+test_healthy_mount_no_sudo
+test_dead_mount_repaired
+test_dead_mount_repair_refused
+test_dead_mount_drive_absent
 test_other_volume_keeps_letter
 test_speed_remeasured_after_failure
 test_timer_path_without_interop

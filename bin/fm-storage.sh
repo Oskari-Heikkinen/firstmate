@@ -11,7 +11,9 @@
 #       candidate SSD and the state a check would reach before mounting.
 #   fm-storage.sh check
 #       The periodic entry point: detect, mount through the narrow sudoers
-#       rule when needed (sudo -n only; a refusal is state not-mounted), set up
+#       rule when needed (sudo -n only; a refusal is state not-mounted; a listed
+#       mount that fails with No such device is released with umount -l and
+#       mounted again, and a refused repair is state stale-mount), set up
 #       the folder layout and measure write speed once, probe, then write the
 #       results-root file atomically and notify on a state change.
 #       The Windows listing is tried up to 3 times; a check that still cannot
@@ -66,6 +68,8 @@
 #   FM_STORAGE_RESULTS_ROOT  publication override for mandatory-bulk readers
 #   FM_STORAGE_MNT       WSL mount base (default /mnt)
 #   FM_STORAGE_MOUNTINFO mount table (default /proc/self/mountinfo)
+#   FM_STORAGE_MOUNT_PROBE  command run as PROBE -- MOUNTPOINT to tell a dead
+#                        listed mount from a live one (default stat)
 #   FM_STORAGE_SPEED_SIZE  write-speed test size (default 1G)
 #   FM_STORAGE_PS_BACKOFF  seconds slept before each listing retry (default "5 15")
 #   FM_STORAGE_POWERSHELL  powershell.exe to use (default: the one on PATH, else
@@ -253,14 +257,44 @@ cmd_detect() {
   printf 'state: %s%s\n' "${STATE:-usable}" "${REASON:+ - $REASON}"
 }
 
-# mount_ssd MP: 0 when MP is mounted afterwards.
+# mount_dead MP: 0 when MP is listed but a bounded stat fails with a dead-mount
+# error (ENODEV or ENOTCONN), as a drvfs mount does after its device dropped
+# out under it; a healthy, slow or otherwise failing mount is not dead.
+mount_dead() {
+  local err
+  err=$(LC_ALL=C timeout 10 "${FM_STORAGE_MOUNT_PROBE:-stat}" -- "$1" 2>&1 >/dev/null) && return 1
+  case "$err" in *'No such device'*|*'Transport endpoint is not connected'*) return 0 ;; esac
+  return 1
+}
+
+# mount_ssd MP: 0 when MP is mounted and answers afterwards. A listed mount
+# that answers is used as is; a dead one is released with umount -l and
+# mounted again through the same rule. Sets STATE and REASON on failure.
 mount_ssd() {
-  local mp=$1 l
-  is_mounted "$mp" && return 0
+  local mp=$1 l dead=''
+  if is_mounted "$mp"; then
+    mount_dead "$mp" || return 0
+    dead=1
+  fi
   l=$(lower "$SSD_LETTER")
-  case "$l" in [d-h]) ;; *) REASON="SSD is $SSD_LETTER:, outside the mount rule's letters D to H"; return 1 ;; esac
+  case "$l" in [d-h]) ;; *)
+    STATE=${dead:+stale-mount} REASON="SSD is $SSD_LETTER:, outside the mount rule's letters D to H${dead:+, and $mp is a dead mount}"
+    return 1 ;;
+  esac
+  if [ -n "$dead" ] && { ! sudo -n /usr/bin/umount -l "$mp" >/dev/null 2>&1 || is_mounted "$mp"; }; then
+    STATE=stale-mount REASON="SSD $SSD_LETTER: is in Windows but $mp is a dead mount and releasing it with umount -l was refused"
+    return 1
+  fi
   if ! sudo -n /usr/bin/mount -t drvfs "$SSD_LETTER:" "$mp" -o "uid=$(id -u),gid=$(id -g)" >/dev/null 2>&1 || ! is_mounted "$mp"; then
-    REASON="SSD $SSD_LETTER: is in Windows but not mounted in WSL; restart the laptop with the SSD plugged in, or see the mount rule section in docs/storage.md"
+    if [ -n "$dead" ]; then
+      STATE=stale-mount REASON="SSD $SSD_LETTER: is in Windows; the dead mount $mp was released but mounting it again was refused"
+    else
+      STATE=not-mounted REASON="SSD $SSD_LETTER: is in Windows but not mounted in WSL; restart the laptop with the SSD plugged in, or see the mount rule section in docs/storage.md"
+    fi
+    return 1
+  fi
+  if [ -n "$dead" ] && mount_dead "$mp"; then
+    STATE=stale-mount REASON="SSD $SSD_LETTER: is in Windows but $mp still fails with a dead-mount error after mounting it again"
     return 1
   fi
 }
@@ -371,7 +405,7 @@ run_check() {
     if [ "$SSD_FREE" -lt "$MIN_FREE" ] 2>/dev/null; then
       STATE=full REASON="SSD $SSD_LETTER: has $(tib "$SSD_FREE") free, under the $(tib "$MIN_FREE") minimum"
     elif ! mount_ssd "$mp"; then
-      STATE=not-mounted
+      STATE=${STATE:-not-mounted}
     elif setup_and_probe "$mp"; then
       STATE=ok REASON="SSD $SSD_LETTER: $SSD_FS, $(tib "$SSD_FREE") free${IDENTITY:+; identity from the marker (Windows listing failed)}"
     fi
