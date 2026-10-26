@@ -4,6 +4,7 @@ import errno
 import os
 from pathlib import Path
 import tempfile
+import shutil
 import subprocess
 import sys
 import unittest
@@ -90,6 +91,54 @@ class Compatibility(unittest.IsolatedAsyncioTestCase):
         legacy, _ = await self.invoke("fm-wake-drain.sh", native=False)
         self.assertEqual(native, legacy)
         self.assertEqual(cursor, (self.state / ".status-presentation-cursor").read_bytes())
+
+    async def test_batched_strong_snapshot_and_atomic_recapture_keep_whole_drain_parity(self):
+        self.status(b"note: first\nworking: next\n", "a")
+        self.status(b"blocked [key=held]: obstacle\nnote: second\n", "b")
+        manifest = self.state / ".status-presentation-cursor"
+        log = self.home / "batch-captures"
+        stat = self.home / "fakebin/stat"
+        real_stat = shutil.which("stat")
+        stat.write_text('''#!/usr/bin/env python3
+import os, subprocess, sys
+args = sys.argv[1:]
+if len(args) > 2 and args[0] == "-c" and "\\t" in args[1] and "--" in args:
+    with open(os.environ["FM_FIXTURE_BATCH_LOG"], "ab") as stream:
+        stream.write(b"batch\\n")
+    if os.environ.get("FM_FIXTURE_BATCH_CORRUPT") == "1":
+        print("malformed")
+        sys.exit(0)
+sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
+''')
+        stat.chmod(0o700)
+        for malformed in ("0", "1"):
+            with self.subTest(malformed=malformed):
+                log.unlink(missing_ok=True)
+                manifest.write_bytes(b"")
+                calls = []
+                original = Presentation.read
+                def observed(instance, rows, vocabulary=None):
+                    calls.append(rows)
+                    return original(instance, rows, vocabulary)
+                environment = {"FM_FIXTURE_BATCH_LOG": str(log), "FM_FIXTURE_REAL_STAT": real_stat,
+                               "FM_FIXTURE_BATCH_CORRUPT": malformed}
+                with patch.object(Presentation, "read", observed):
+                    actual, error = await self.invoke("fm-wake-drain.sh", **environment)
+                self.assertEqual(len(calls), 1, error)
+                self.assertEqual(len(calls[0]), 2, error)
+                self.assertEqual(log.read_bytes(), b"batch\n")
+                self.assertNotIn(b"fm-view-client:", error)
+                diagnostic = b"native status capture refused; recapturing the complete legacy snapshot"
+                if malformed == "1": self.assertIn(diagnostic, error)
+                else: self.assertNotIn(diagnostic, error)
+                cursor = manifest.read_bytes()
+                manifest.write_bytes(b"")
+                expected, _ = await self.invoke("fm-wake-drain.sh", native=False, **environment)
+                self.assertEqual(actual, expected)
+                self.assertEqual(manifest.read_bytes(), cursor)
+                self.assertEqual(log.read_bytes(), b"batch\n", "legacy must not select the optional batch")
+                self.assertIn(b"a note: first", actual)
+                self.assertIn(b"b [key=held] blocked: obstacle", actual)
 
     async def test_resident_drain_growth_replacement_and_cache_independence(self):
         self.status(b"needs-decision [key=x]: question\nnote: initial answer\nworking: later\n")
