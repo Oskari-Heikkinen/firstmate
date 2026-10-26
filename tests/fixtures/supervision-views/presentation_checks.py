@@ -1,8 +1,10 @@
 """Captured native drain facts versus the existing presentation transaction APIs."""
 import asyncio
+import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 import unittest
 
@@ -10,6 +12,177 @@ from fm_view_engine import Engine, Inputs, Refused
 from fm_view_presentation import Presentation
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+class SnapshotCapture(unittest.TestCase):
+    """Public shell capture parity and stat-boundary refusal, CI only."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = Path(self.temporary.name).resolve()
+        self.state = self.home / "state with spaces"
+        self.state.mkdir()
+        self.fakebin = self.home / "fakebin"
+        self.fakebin.mkdir()
+        self.log = self.home / "stat-calls.jsonl"
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
+        self.env.update(PATH=str(self.fakebin) + os.pathsep + os.environ["PATH"],
+                        FM_FIXTURE_STAT=shutil.which("stat"), FM_FIXTURE_STAT_LOG=str(self.log),
+                        PYTHONDONTWRITEBYTECODE="1")
+        wrapper = self.fakebin / "stat"
+        wrapper.write_text('''#!/usr/bin/env python3
+import json, os, subprocess, sys
+args = sys.argv[1:]
+with open(os.environ["FM_FIXTURE_STAT_LOG"], "a") as stream:
+    stream.write(json.dumps(args) + "\\n")
+mode = os.environ.get("FM_FIXTURE_STAT_MODE", "")
+batch = "--" in args
+if batch and mode == "error":
+    sys.exit(1)
+if batch and mode in ("swap", "delete"):
+    victim = args[-1]
+    os.rename(victim, victim + ".original")
+    if mode == "swap": os.symlink(os.environ["FM_FIXTURE_STAT_SECRET"], victim)
+reply = subprocess.run([os.environ["FM_FIXTURE_STAT"], *args], stdout=subprocess.PIPE)
+data = reply.stdout
+if batch:
+    rows = data.splitlines()
+    if mode == "short": rows = rows[:-1]
+    if mode == "extra": rows = rows + rows[:1]
+    if mode == "malformed": rows[-1] = b"malformed"
+    if mode == "nonregular": rows[-1] = b"a1ff" + rows[-1][rows[-1].index(b"\\t"):]
+    if mode == "empty-field": rows[-1] = rows[-1].replace(b"\\t", b"\\t\\t", 1)
+    if mode == "weak":
+        rows = [b"\\t".join(row.split(b"\\t")[:3] + [b"0", b"-"]) for row in rows]
+    data = b"\\n".join(rows) + b"\\n"
+elif mode == "weak" and args[:2] == ["-c", "%W"]:
+    data = b"0\\n"
+sys.stdout.buffer.write(data)
+sys.exit(reply.returncode)
+''')
+        wrapper.chmod(0o700)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def invoke(self, operation, **environment):
+        return subprocess.run(["bash", "-c", '. "$1/bin/fm-classify-lib.sh"; "$3" "$2"',
+                               "capture", str(ROOT), str(self.state), operation],
+                              env=dict(self.env, **environment), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=20)
+
+    def test_whole_snapshot_matches_legacy_and_one_stat_covers_inventory(self):
+        for name, raw in (("foo", b"note: a\n"), ("foo-2", b""), ("foo.x", b"note: \xff\n"),
+                          ("Z", b"working: next\n"), ("a_2", b"note: answer\n")):
+            (self.state / (name + ".status")).write_bytes(raw)
+        (self.state / "directory.status").mkdir()
+        (self.state / "link.status").symlink_to(self.state / "foo.status")
+        (self.state / "dangling.status").symlink_to(self.state / "missing")
+        os.mkfifo(self.state / "pipe.status")
+        for locale in ("C", "C.UTF-8"):
+            for mode in ("", "weak"):
+                with self.subTest(locale=locale, mode=mode):
+                    self.log.unlink(missing_ok=True)
+                    actual = self.invoke("status_presentation_snapshot_batch", LC_ALL=locale,
+                                         FM_FIXTURE_STAT_MODE=mode)
+                    self.assertEqual(actual.returncode, 0, actual.stderr)
+                    calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                    self.assertEqual(len(calls), 1, calls)
+                    self.assertEqual(len(calls[0][calls[0].index("--") + 1:]), 5, calls)
+                    expected = self.invoke("status_presentation_snapshot", LC_ALL=locale,
+                                           FM_FIXTURE_STAT_MODE=mode)
+                    self.assertEqual(expected.returncode, 0, expected.stderr)
+                    self.assertEqual(actual.stdout, expected.stdout)
+                    self.assertEqual(len(actual.stdout.splitlines()), 5)
+                    if mode == "weak": self.assertIn(b"\tweak:", actual.stdout)
+                    for line in actual.stdout.splitlines():
+                        self.assertEqual(len(line.split(b"\t")), 3)
+        # The next fresh capture must observe growth, then same-size rotation.
+        before = self.invoke("status_presentation_snapshot_batch").stdout
+        with (self.state / "foo.status").open("ab") as stream:
+            stream.write(b"note: append\n")
+        grown = self.invoke("status_presentation_snapshot_batch").stdout
+        self.assertNotEqual(before, grown)
+        replacement = self.state / ".replacement"
+        replacement.write_bytes((self.state / "foo.status").read_bytes())
+        replacement.replace(self.state / "foo.status")
+        rotated = self.invoke("status_presentation_snapshot_batch")
+        self.assertEqual(rotated.returncode, 0, rotated.stderr)
+        self.assertNotEqual(grown, rotated.stdout)
+        self.assertEqual(rotated.stdout, self.invoke("status_presentation_snapshot").stdout)
+
+    def test_refusal_is_atomic_and_override_or_inventory_never_truncates(self):
+        for task in ("a", "b"):
+            (self.state / (task + ".status")).write_text("note: answer\n")
+        for mode in ("error", "short", "extra", "malformed", "nonregular", "empty-field"):
+            with self.subTest(mode=mode):
+                reply = self.invoke("status_presentation_snapshot_batch", FM_FIXTURE_STAT_MODE=mode)
+                self.assertNotEqual(reply.returncode, 0, reply)
+                self.assertEqual(reply.stdout, b"")
+        for name in ("FM_STATUS_SIZE_READER", "FM_STATUS_IDENTITY_READER"):
+            reply = self.invoke("status_presentation_snapshot_batch", **{name: "/missing"})
+            self.assertNotEqual(reply.returncode, 0)
+            self.assertEqual(reply.stdout, b"")
+        for index in range(255):
+            (self.state / ("task%03d.status" % index)).touch()
+        reply = self.invoke("status_presentation_snapshot_batch")
+        self.assertNotEqual(reply.returncode, 0)
+        self.assertEqual(reply.stdout, b"")
+        # The oversized legacy control needs no per-stat Python instrument.
+        legacy = self.invoke("status_presentation_snapshot", PATH=os.environ["PATH"])
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertEqual(len(legacy.stdout.splitlines()), 257)
+
+    def test_real_symlink_swap_and_deletion_cannot_publish_partial_capture(self):
+        secret = self.home / "secret"
+        secret.write_text("protected bytes\n")
+        for mode in ("swap", "delete"):
+            with self.subTest(mode=mode):
+                for task in ("a", "z"):
+                    (self.state / (task + ".status")).write_text("note: safe\n")
+                reply = self.invoke("status_presentation_snapshot_batch", FM_FIXTURE_STAT_MODE=mode,
+                                    FM_FIXTURE_STAT_SECRET=str(secret))
+                self.assertNotEqual(reply.returncode, 0, reply)
+                self.assertEqual(reply.stdout, b"")
+                self.assertEqual(secret.read_text(), "protected bytes\n")
+                victim = self.state / "z.status"
+                if mode == "swap": self.assertTrue(victim.is_symlink())
+                else: self.assertFalse(victim.exists())
+                victim.unlink(missing_ok=True)
+                (self.state / "z.status.original").replace(victim)
+
+    def test_parent_channel_exclusion_matches_legacy_binding_not_filename(self):
+        self.state = self.home / "state"
+        self.state.mkdir()
+        for task in ("task", "parent-replies"):
+            (self.state / (task + ".status")).write_text("note: present\n")
+        marker = self.home / ".fm-secondmate-home"
+        parent = self.home / ".fm-secondmate-parent"
+        for shape in ("main", "remote", "local", "invalid"):
+            with self.subTest(shape=shape):
+                if shape != "main": marker.write_text("mate\n")
+                if shape == "remote": parent.write_text("schema=fm-secondmate-parent.v1\nroute=remote\n")
+                if shape == "local":
+                    parent.write_text("schema=fm-secondmate-parent.v1\nroute=local\nparent_home=" + str(self.home) + "\n")
+                if shape == "invalid": parent.write_text("schema=unsupported\nroute=remote\n")
+                actual = self.invoke("status_presentation_snapshot_batch")
+                legacy = self.invoke("status_presentation_snapshot")
+                self.assertEqual(actual.returncode, 0, actual.stderr)
+                self.assertEqual(legacy.returncode, 0, legacy.stderr)
+                self.assertEqual(actual.stdout, legacy.stdout)
+                self.assertEqual(len(actual.stdout.splitlines()), 1 if shape == "remote" else 2)
+
+    def test_empty_snapshot_has_no_stat_and_invalid_task_keeps_legacy(self):
+        self.log.unlink(missing_ok=True)
+        reply = self.invoke("status_presentation_snapshot_batch")
+        self.assertEqual((reply.returncode, reply.stdout), (0, b""), reply.stderr)
+        self.assertFalse(self.log.exists())
+        (self.state / "odd task.status").write_text("note: legacy\n")
+        reply = self.invoke("status_presentation_snapshot_batch")
+        self.assertNotEqual(reply.returncode, 0)
+        self.assertEqual(reply.stdout, b"")
+        legacy = self.invoke("status_presentation_snapshot")
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertTrue(legacy.stdout.startswith(b"odd task\t"))
 
 
 class PresentationParity(unittest.TestCase):

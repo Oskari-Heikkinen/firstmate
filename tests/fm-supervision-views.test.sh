@@ -5,6 +5,9 @@
 # Queued annotations consume the same captured span as the fold, preserve byte
 # rendering and append boundaries, and never reopen its cursor/span readers.
 # Malformed client annotation groups fall back before native selection.
+# Explicit native drains batch strong Linux snapshot identities in one stat;
+# whole-byte legacy parity covers weak birth times, rotation, parent bindings,
+# atomic malformed/deleted/symlink recapture and complete real-client output.
 # Native offset batching reads real owner-written cursor/marker bytes, refuses
 # unmigrated legacy cursors and leaves all publication/commit authority intact.
 # Real-client corrupt replies exercise observed-offset validation plus the

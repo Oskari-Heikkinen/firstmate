@@ -118,6 +118,10 @@ Without explicit selection, existing entrypoints do not require Python.
 Unsupported input roots, captured crew overrides, custom classifier/read seams, missing transport or typed service refusals keep the legacy route and report the refusal to stderr.
 A successful crew-state read returns before loading the legacy observation graph.
 The drain still owns annotation rendering, strong-identity capture, cursor/marker mutation, actor eligibility, preparation, stdout and cursor commit.
+With explicit native selection on Linux, its existing classifier owner can capture up to 256 eligible status endpoints and strong birth-time identities in one GNU-stat call, preserving glob order and outbound-parent-channel exclusion.
+This optional batch never substitutes the service's device/inode observation identity for the owner's strong identity.
+Unsupported platforms, custom size/identity readers, larger or incompatible inventories, partial stat failure, nonregular inputs or malformed rows refuse atomically before output and recapture the entire snapshot through the unchanged legacy owner.
+Without explicit selection, the ordinary legacy snapshot is unchanged.
 It asks once for native captured annotation lines, unread/open-decision facts and suggested endpoints before printing any status annotation or section, keeping divergence, capped branch outcomes and the latest-outcome backstop with their existing owners.
 The annotation renderer consumes those captured lines without reopening each span or cursor; historical replay suppression remains with its existing signature owner.
 Before native selection, the existing presentation owner independently validates every suggested task/identity/endpoint against its captured snapshot and current cursor manifest under the held presentation lock.
@@ -147,6 +151,10 @@ Queued-signal fixtures also compare full annotation bytes and committed cursor b
 A renderer tripwire refuses any attempted cursor/span reopen when captured annotation facts are supplied.
 A real-client corruption fixture reverses its annotation groups after a successful socket read and requires complete legacy output and cursor parity, detecting validation that happens only after native selection.
 The presentation parity matrix also exercises native offset batching against those same real owner-written cursor and marker records.
+Strong-snapshot capture tests compare every output byte with the legacy owner in C and UTF-8 locales, including unavailable birth time, growth, rotation, empty/nonregular inputs and parent-channel bindings.
+They require one stat invocation for the entire admitted inventory, zero for an empty inventory, and no partial output on malformed, short, extra, nonregular, symlink-swapped or deleted inputs; unsupported overrides and oversized inventories retain legacy admission rather than truncating.
+A real native-service/client drain case also requires full output and committed-cursor equality after both successful batching and malformed-stat whole-snapshot recapture, while the nonselected legacy CLI never attempts that batch.
+These invocation assertions are mechanism checks, not a B0 performance result.
 Additional cases cover missing manifests/rows, legacy migration refusal, identity/size reset, malformed and replaced cursors, fresh offsets without status changes and the new verb's ordinary-lane generation barriers.
 Real-client regressions corrupt the service's observed offset or suggested endpoint, then separately corrupt successful client output after its reply checks, requiring full legacy output/cursor parity and an explicit refusal diagnostic for regressive, duplicate, missing, foreign, identity-mismatched and past-end suggestions.
 They require an observed native call to prevent a silent legacy-only pass.
