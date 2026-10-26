@@ -52,7 +52,7 @@ for family in accounting.SOURCE_FAMILIES:
             ticks, unit = 2, 'half-second-wait-v1'
             qualification = 'Synthetic stable-identity wait interval at POLL=1, two native half-second waits plus real periodic identity/boundary work; includes source/FIFO startup. Private self identity, no arm/engine activation; readiness/changed-identity/engine work excluded.'
         else:
-            qualification = 'Synthetic admission-refusal invocation only (invalid task id for spawn, missing operands for control); NOT successful lifecycle cost.'
+            qualification = 'Synthetic admission-refusal invocation only (invalid task id with explicit delivery operands and pre-spawn guard skipped for spawn, missing operands for control); NOT successful lifecycle or guard cost.'
     profile = dict(home='fixture', family=family, code_ref=revision,
                    configuration_sha256=hashlib.sha256(b'backend=tmux\n').hexdigest(),
                    work_mix_sha256=hashlib.sha256(accounting.dump(files).encode()).hexdigest(),

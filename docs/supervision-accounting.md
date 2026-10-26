@@ -239,6 +239,7 @@ The default synthetic plan measures empty-home crew-state, drain and contributio
 The host fixture calls the actual bounded interval, including periodic identity and boundary checks and two native half-second waits, without activating an arm, watcher or engine.
 Source/FIFO setup remains in its average; readiness, changed-identity and engine work are excluded.
 The watcher fixture includes startup/watchdog/close and is not a quiet steady iteration price; spawn/control refusal costs are not successful lifecycle prices.
+The spawn fixture supplies explicit delivery operands to reach its invalid-id refusal and skips the pre-spawn watcher guard; it prices neither successful spawning nor that guard.
 Every remaining registry family is explicitly unavailable rather than priced from help output or configured cadence.
 These synthetic-shape costs cannot price real captures.
 

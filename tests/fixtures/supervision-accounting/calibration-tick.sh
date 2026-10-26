@@ -34,13 +34,21 @@ case "$family" in
     # applies only to the reviewed matching refusal mix, not ordinary launches.
     rc=0
     if [ "$family" = spawn ]; then
-      output=$(/bin/bash "$root/bin/fm-spawn.sh" bad/id 2>&1) || rc=$?
+      # The invalid id remains an unconditional admission barrier, with enough
+      # operands to reach it. Skip only the ordinary pre-spawn guard (no home
+      # actor is under test); never try to repair/arm a watcher from this scope.
+      output=$(FM_SPAWN_NO_GUARD=1 /bin/bash "$root/bin/fm-spawn.sh" \
+        bad/id "$FM_PROJECTS_OVERRIDE/missing" --mode local-only --yolo off 2>&1) || rc=$?
       expected='invalid task id'
     else
       output=$(/bin/bash "$root/bin/fm-control.sh" 2>&1) || rc=$?
       expected='Usage:'
     fi
     [ "$rc" -eq 2 ] && [[ "$output" = *"$expected"* ]] || { printf '%s\n' "$output" >&2; exit 2; }
+    # Refusal must not publish a task or successful start. The logger's one
+    # matching invocation is checked separately in both calibration phases.
+    [ ! -e "$FM_STATE_OVERRIDE/spawn-starts.jsonl" ] || exit 2
+    for meta in "$FM_STATE_OVERRIDE/"*.meta; do [ ! -e "$meta" ] || exit 2; done
     ;;
   *) exit 2 ;;
 esac
