@@ -879,10 +879,17 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
     return 1
   fi
-  snapshot=$(status_presentation_snapshot "$STATE") || {
-    printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
-    rc=1
-  }
+  if [ -n "${FM_VIEW_SOCKET:-}" ] && snapshot=$(status_presentation_snapshot_batch "$STATE"); then
+    :
+  else
+    if [ -n "${FM_VIEW_SOCKET:-}" ]; then
+      printf 'wake drain: native status capture refused; recapturing the complete legacy snapshot\n' >&2
+    fi
+    if ! snapshot=$(status_presentation_snapshot "$STATE"); then
+      printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
+      rc=1
+    fi
+  fi
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
     annotation_manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
     fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1

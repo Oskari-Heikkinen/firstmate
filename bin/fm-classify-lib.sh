@@ -1837,6 +1837,65 @@ EOF
   return 0
 }
 
+# Optional GNU-stat batch for explicitly selected native drain reads. Preserve
+# the existing strong birth-time identity owner, not Python's device/inode-only
+# observation identity. No cursor, marker or status byte is written here.
+# Unsupported platforms/overrides, oversized inventories and any malformed or
+# incomplete stat result refuse with NO output so the caller can recapture the
+# entire snapshot through status_presentation_snapshot before native selection.
+status_presentation_snapshot_batch() {  # <state>
+  local state=$1 f task exclude packet row mode size devino epoch birth extra ident result=''
+  local index=0 count=0
+  local -a files=() tasks=()
+  [ "$_FM_CLASSIFY_UNAME_S" = Linux ] && [ -z "${FM_STATUS_SIZE_READER:-}" ] \
+    && [ -z "${FM_STATUS_IDENTITY_READER:-}" ] || return 1
+  exclude=$(status_scan_parent_channel_exclude "$state") || return 1
+  for f in "$state"/*.status; do
+    [ -e "$f" ] || continue
+    [ "$f" = "$exclude" ] && continue
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
+    # This is only an optional bounded read; the legacy owner retains larger
+    # inventories rather than truncating or changing its existing admission.
+    [ "$count" -lt 256 ] || return 1
+    task=${f##*/}; task=${task%.status}
+    case "$task" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+    [ "${#task}" -le 128 ] || return 1
+    files[count]=$f tasks[count]=$task
+    count=$((count + 1))
+  done
+  [ "$count" -gt 0 ] || return 0
+  # One stat observes every selected path, in argument order, without putting
+  # filenames into the packet. A final-component symlink race is nonregular.
+  { packet=$(LC_ALL=C exec stat -c $'%f\t%s\t%d:%i\t%W\t%w' -- "${files[@]}"); } 2>/dev/null || return 1
+  while IFS= read -r row; do
+    [ "$index" -lt "$count" ] || return 1
+    # read's whitespace-IFS collapsing must not admit missing/extra columns.
+    case "$row" in *$'\t\t'*|$'\t'*|*$'\t') return 1 ;; esac
+    IFS=$'\t' read -r mode size devino epoch birth extra <<EOF
+$row
+EOF
+    [ -z "$extra" ] && [ -n "$birth" ] || return 1
+    case "$mode" in ''|*[!0-9a-f]*|?????????*) return 1 ;; esac
+    [ "$((16#$mode & 61440))" -eq 32768 ] || return 1
+    case "$size" in ''|*[!0-9]*) return 1 ;; esac
+    case "$devino" in *:*) ;; *) return 1 ;; esac
+    case "${devino%%:*}" in ''|*[!0-9]*) return 1 ;; esac
+    case "${devino#*:}" in ''|*[!0-9]*) return 1 ;; esac
+    case "${epoch#-}" in ''|*[!0-9]*) return 1 ;; esac
+    _fm_file_ident_compose_to ident "$devino" "$epoch" "$birth" || return 1
+    # Recheck eligibility, like the legacy capture. The existing transaction
+    # still verifies this exact identity/endpoint at its commit boundary.
+    f=${files[$index]}
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+    result="$result${tasks[$index]}"$'\t'"$size"$'\t'"$ident"$'\n'
+    index=$((index + 1))
+  done <<EOF
+$packet
+EOF
+  [ "$index" -eq "$count" ] || return 1
+  printf '%s' "$result"
+}
+
 status_presentation_snapshot() {  # <state>
   local state=$1 f task size ident exclude
   exclude=$(status_scan_parent_channel_exclude "$state")
