@@ -353,7 +353,7 @@ EOF
 
 print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
   local snapshot=$1 task endpoint ident event event_endpoint line verb key receipt store lock ready
-  local input=$1 facts request='' native_backstop=0 native_mtime packed
+  local input=$1 facts request='' native_backstop=0 _native_mtime packed
   local output='' used=0 shown=0 omitted=0 bytes item_bytes=220 global_bytes=4000 rc=0
   [ "$ACTOR" = main ] || return 0
 
@@ -398,7 +398,7 @@ EOF
     fi
   fi
   STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED=
-  while IFS=$'\t' read -r task endpoint ident receipt native_mtime event_endpoint packed; do
+  while IFS=$'\t' read -r task endpoint ident receipt _native_mtime event_endpoint packed; do
     [ -n "$task" ] || continue
     if [ "$native_backstop" = 1 ]; then
       [ "$receipt" -lt "$endpoint" ] || continue
