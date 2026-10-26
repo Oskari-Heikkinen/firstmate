@@ -6,8 +6,10 @@
 # The command does not acquire the session lock, drain wakes, arm watchers,
 # mutate backlog state, or write reports. Its default ledger collector may
 # atomically refresh parent-side cached copies of remote home summaries under
-# state/secondmate-summary-cache; those observational cache writes are its only
-# fleet-state mutation.
+# state/secondmate-summary-cache, and each task's open-decision fold advances
+# that status log's cursor (state/.<task>.open-decisions-cursor, owned by
+# fm-classify-lib.sh's status_open_decisions_incremental, which the wake drain
+# shares); those observational cache writes are its only fleet-state mutation.
 #
 # Top-level fields:
 #   schema: stable schema id.
@@ -60,9 +62,11 @@
 #     fm-classify-lib.sh owns the optional emission-time field, and only the
 #     age derived from it is published here. A future event time leaves that age
 #     unknown rather than clamped to zero.
-#     hints.open_decisions is the keyed open-decision set returned by
-#     fm-classify-lib.sh's authoritative status_open_decisions fold and reconciled
-#     against current_state; hints.pending_decision and hints.blocked_event are
+#     hints.open_decisions is the keyed open-decision set of the status bytes
+#     this snapshot captured: exactly what fm-classify-lib.sh's authoritative
+#     status_open_decisions fold returns for them, computed through the log's
+#     cursor so only bytes appended since the cursor last moved are read, and
+#     reconciled against current_state; hints.pending_decision and hints.blocked_event are
 #     booleans derived from that set. Each open decision carries opened_at_epoch,
 #     the emission time of the line that opened it (fm-classify-lib.sh's
 #     status_decision_opened_at), and age_seconds from it; both are null when
@@ -338,8 +342,8 @@ last_nonempty_line() {  # <file>
 # A local crew-state read is bounded so one slow child cannot extend this
 # snapshot without limit. Remote secondmate endpoint liveness is never read here.
 # A local read that hits the bound folds to state unknown.
-crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
-  local id=$1 captured_meta=${2:-} captured_status=${3:-} raw rest state source detail sep
+crew_state_json() {  # <id> [<captured-meta>] [<captured-status>] [<captured-open-decisions>]
+  local id=$1 captured_meta=${2:-} captured_status=${3:-} captured_open=${4:-} raw rest state source detail sep
   raw=$(
     fm_run_timed "$FM_SNAPSHOT_CREW_STATE_TIMEOUT" \
       env FM_ROOT_OVERRIDE="$FM_ROOT" \
@@ -347,6 +351,7 @@ crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
       FM_STATE_OVERRIDE="$STATE" \
       FM_CREW_STATE_META_OVERRIDE="$captured_meta" \
       FM_CREW_STATE_STATUS_OVERRIDE="$captured_status" \
+      FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$captured_open" \
       FM_DATA_OVERRIDE="$DATA" \
       FM_PROJECTS_OVERRIDE="$PROJECTS" \
       FM_CONFIG_OVERRIDE="$CONFIG" \
@@ -624,6 +629,23 @@ snapshot_capture_optional() {  # <source> <destination>
   return 1
 }
 
+# Publish the open-decision set of exactly the captured status bytes beside the
+# capture, for crew state and task composition to read instead of each folding
+# the whole log again. The set comes through the live log's cursor-backed fold,
+# bounded at the captured size, so a refresh folds only what was appended since
+# the cursor last moved; when that fold cannot answer for exactly these bytes,
+# the capture itself is folded whole, which yields the same set. <kind> is the
+# captured meta's kind, which the capture has no meta beside it to name.
+snapshot_capture_open_decisions() {  # <status-log> <status-capture> <kind> <destination>
+  local log=$1 capture=$2 kind=${3:-ship} destination=$4 size open=
+  [ -f "$capture" ] || return 0
+  if ! { size=$(_fm_status_file_size "$capture") \
+         && open=$(status_open_decisions_incremental "$log" "${size//[[:space:]]/}" exact); }; then
+    open=$(status_open_decisions "$capture" "$kind")
+  fi
+  printf '%s' "$open" > "$destination"
+}
+
 snapshot_mark_optional_present() {  # <source> <destination>
   local source=$1 destination=$2
   [ -f "$source" ] || return 0
@@ -649,19 +671,22 @@ snapshot_task_generation_is_current() {  # <captured-meta> <id>
 
 prefetch_task_observations() {  # <meta> <id>
   local meta=$1 id=$2 remote_host current_file endpoint_file current_pid='' current_rc=0
-  local status_log status_capture report_path report_capture
+  local status_log status_capture open_capture report_path report_capture
   local kind backend target endpoint_exists=null agent_alive=not_checked generation_current=1
   fm_meta_get_to remote_host "$meta" remote_host
   current_file="$SNAPSHOT_TASK_DIR/$id.json"
   endpoint_file="$SNAPSHOT_TASK_DIR/$id.endpoint"
   status_log="$STATE/$id.status"
   status_capture="$SNAPSHOT_TASK_DIR/$id.status"
+  open_capture="$SNAPSHOT_TASK_DIR/$id.open-decisions"
   report_path="$DATA/$id/report.md"
   report_capture="$SNAPSHOT_TASK_DIR/$id.report"
 
+  fm_meta_get_to kind "$meta" kind
   snapshot_task_generation_is_current "$meta" "$id" || generation_current=0
   if [ "$generation_current" = 1 ]; then
     snapshot_capture_optional "$status_log" "$status_capture" || current_rc=1
+    snapshot_capture_open_decisions "$status_log" "$status_capture" "$kind" "$open_capture" || current_rc=1
     snapshot_mark_optional_present "$report_path" "$report_capture" || current_rc=1
   fi
 
@@ -670,9 +695,8 @@ prefetch_task_observations() {  # <meta> <id>
       > "$current_file" || current_rc=1
     agent_alive=unknown
   elif [ "$generation_current" = 1 ]; then
-    crew_state_json "$id" "$meta" "$status_capture" > "$current_file" &
+    crew_state_json "$id" "$meta" "$status_capture" "$open_capture" > "$current_file" &
     current_pid=$!
-    fm_meta_get_to kind "$meta" kind
     fm_backend_of_meta_to backend "$meta"
     fm_backend_target_of_meta_to target "$meta" || true
     if [ -n "$target" ]; then
@@ -695,7 +719,7 @@ prefetch_task_observations() {  # <meta> <id>
   # All mutable observations must belong to the metadata generation captured in
   # the manifest. If teardown/relaunch raced any read, discard the whole sample.
   if ! snapshot_task_generation_is_current "$meta" "$id"; then
-    rm -f -- "$status_capture" "$report_capture"
+    rm -f -- "$status_capture" "$open_capture" "$report_capture"
     jq -n '{state:"unknown",source:"none",detail:"task generation changed during snapshot",raw:""}' \
       > "$current_file" || current_rc=1
     endpoint_exists=null
@@ -764,7 +788,7 @@ task_json_lines() {
   local branch pr pr_source pr_head current_json endpoint_exists agent_alive
   local current_state current_source report_present pr_from_status
   local meta_present report_file_present worktree_present home_present
-  local open_decisions_tsv open_decisions_json decision_line decision_at
+  local open_decisions_file open_decisions_tsv open_decisions_json decision_line decision_at
 
   while [ "$index" -lt "$SNAPSHOT_TASK_META_COUNT" ]; do
     meta=${SNAPSHOT_TASK_METAS[index]}
@@ -816,8 +840,9 @@ task_json_lines() {
       jq -r '[.state // "", .source // ""] | @tsv' "$current_file"
     )
 
-    # Durable keyed open-decision set: fold the WHOLE status stream
-    # (fm-classify-lib.sh's status_open_decisions) so a later unrelated event can
+    # Durable keyed open-decision set: the fold of the WHOLE captured status
+    # stream (fm-classify-lib.sh's status_open_decisions, published beside the
+    # capture by snapshot_capture_open_decisions) so a later unrelated event can
     # never mask a still-open captain decision. The set is derived purely from the
     # keyed fold - never from report bodies or decision-like prose - and then
     # reconciled against the crew LIFECYCLE, which only clears a stale decision the
@@ -833,7 +858,12 @@ task_json_lines() {
     # never clear another concern's keyed decision. A parked/blocked state, or a
     # non-authoritative status-log/none read on a still-live task, keeps the fold's
     # open decision surfacing.
-    open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
+    open_decisions_file="$SNAPSHOT_TASK_DIR/$id.open-decisions"
+    if [ -f "$open_decisions_file" ]; then
+      open_decisions_tsv=$(<"$open_decisions_file")
+    else
+      open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
+    fi
     if [ "$kind" != secondmate ] && \
        { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
            && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
