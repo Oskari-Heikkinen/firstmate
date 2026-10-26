@@ -10,6 +10,8 @@ import re
 
 from fm_view_engine import MAX_FILE, require
 
+MAX_MARKER_TEXT = 4096
+
 STRONG_IDENTITY = re.compile(r"(?:strong:([0-9]+):([0-9]+):([^\t\n]+)|weak:([0-9]+):([0-9]+))\Z")
 
 
@@ -83,7 +85,7 @@ class Offsets:
     def capture(self, snapshots):
         captured = self.inputs.state_named_read(".status-presentation-cursor")
         manifest = manifest_rows(captured)
-        rows = []
+        rows, self.markers = [], []
         for snapshot in snapshots:
             require(type(snapshot) is dict and set(snapshot) == {
                 "task", "end", "identity", "strong_identity", "fully_presented"}, "invalid drain snapshot row")
@@ -101,6 +103,10 @@ class Offsets:
             # The signal marker's historical path maps every dot in the full
             # status filename, not just in the task id.
             marker = self.inputs.state_named_read(".seen-" + (task + ".status").replace(".", "_"))
+            marker_text = text(marker) if marker is not None else None
+            require(marker_text is None or len(marker_text.encode("utf-8", "surrogateescape")) <= MAX_MARKER_TEXT,
+                    "classification marker evidence bound exceeded")
+            self.markers.append({"task": task, "text": marker_text})
             row = {name: snapshot[name] for name in ("task", "end", "identity", "fully_presented")}
             row.update(offset=offset, classified=marker_offset(marker, strong))
             # The folding interface bounds classified endpoints to its file

@@ -43,6 +43,9 @@ class Presentation:
         rows, captured = offsets.capture(snapshots)
         result = self.read(rows)
         offsets.verify(captured)
+        # Evidence, not authority: the shell owner rechecks these exact marker
+        # texts at its original post-annotation acknowledgement boundary.
+        result["classification_markers"] = offsets.markers
         return result
 
     def read(self, rows, vocabulary=None):

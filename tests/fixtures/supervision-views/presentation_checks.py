@@ -603,7 +603,18 @@ status_presentation_marker_offset "$2/.seen-task_status" "$2/task.status"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 rows, _ = Offsets(self.inputs).capture([snapshot])
                 self.assertEqual(rows[0]["classified"], int(result.stdout))
+                evidence = Presentation(self.inputs).read_from_snapshot([snapshot])["classification_markers"]
+                self.assertEqual(evidence, [{"task": "task", "text": raw_marker}])
                 self.assertEqual(marker.read_bytes(), before)
+        marker.write_bytes(b"r1:ab\0\n\n")
+        self.assertEqual(Presentation(self.inputs).read_from_snapshot([snapshot])["classification_markers"],
+                         [{"task": "task", "text": "r1:ab"}])
+        marker.unlink()
+        self.assertEqual(Presentation(self.inputs).read_from_snapshot([snapshot])["classification_markers"],
+                         [{"task": "task", "text": None}])
+        marker.write_bytes(b"x" * 4097)
+        with self.assertRaisesRegex(Refused, "classification marker evidence bound exceeded"):
+            Presentation(self.inputs).read_from_snapshot([snapshot])
 
     def test_offset_batch_missing_rows_identity_reset_migration_and_cursor_barrier(self):
         from unittest.mock import patch
