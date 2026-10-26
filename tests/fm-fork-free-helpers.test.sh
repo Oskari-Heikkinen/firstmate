@@ -2516,6 +2516,135 @@ SH
   pass 'pending-reply whole-token matching equals the old substitution without invoking its helper'
 }
 
+test_open_decisions_fold_matches_the_text_fold() {
+  local script="$TMP_ROOT/open-decisions.sh" cases="$TMP_ROOT/open-decisions" i
+  mkdir -p "$cases"
+  printf 'working: a\nneeds-decision [key=k1]: first\nblocked [key=b1]: stuck\nresolved [key=k1]: yes\nneeds-decision [key=k2]: second\nneeds-decision [key=k2]: second again\n' > "$cases/basic.status"
+  printf 'blocked [key=b1]: one\nblocked [key=held-b2]: alert store\nneeds-decision [key=d1]: keep\nblocked [key=pending-reply-x]: pending-reply-x: reserved\nnote [supersedes=relaunch]: relaunched\nblocked [key=b3]: after\nnote [supersedes=bogus]: kept\nnote: plain note\n' > "$cases/supersede.status"
+  printf 'needs-decision [key=pending-reply-a]: no prefix in note\nneeds-decision [key=pending-reply-b]: pending-reply-b: proper\nresolved [key=pending-reply-b]: wrong closer\nresolved [key=handoff-tj-c]: handoff-tj-c: nothing open\nblocked [key=handoff-pickup-d]: handoff-pickup-d: open\n' > "$cases/reserved.status"
+  printf 'needs-decision [key=a]: x\ndone: shipped\nneeds-decision [key=b]: y\nfailed: gone\nblocked [key=c]: z\ndone without colon\n' > "$cases/done.status"
+  printf 'needs-decision: keyless\nblocked: keyless blocker\ncaptain-held [key=default]: held\nneeds-decision [key=Bad Slug]: refused\nneeds-decision corr=0123456789abcdef [key=c1]: corr\nresolved corr=0123456789abcdef [key=c1]: closed\nneeds-decision [at=1792600000] [key=t1]: stamped\nneeds-decision [key=h1]\nprose with [key=p1] inside\nneeds-decision [at=17:00]: time tag\n' > "$cases/shapes.status"
+  printf 'needs-decision [key=a]: x\r\nblocked [key=b]: \377\376\nneeds-decision [key=c]: caf\303\251\nblocked [key=d]: tab\there\n\n\n  \nneeds-decision [key=e]: unterminated' > "$cases/bytes.status"
+  {
+    for ((i = 1; i <= 120; i++)); do
+      printf 'needs-decision [key=k%s]: open %s\n' "$((i % 17))" "$i"
+      printf 'blocked [key=b%s]: block %s\n' "$((i % 5))" "$i"
+      [ $((i % 7)) -eq 0 ] && printf 'resolved [key=k%s]: closed\n' "$((i % 17))"
+      [ $((i % 11)) -eq 0 ] && printf 'note [supersedes=resume]: resumed\n'
+      [ $((i % 13)) -eq 0 ] && printf 'blocked [key=held-%s]: held\n' "$i"
+      printf 'working: step %s\n' "$i"
+    done
+  } > "$cases/long.status"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-classify-lib.sh"
+set -u
+cases=$2
+# A registered alert store holds every held-* key. The stub also sets a
+# registration global, which the fold must not leak into its caller.
+fm_alert_store_holds() {
+  FM_ALERT_REG_LEAK=1
+  case "$2" in held-*) return 0 ;; esac
+  return 1
+}
+# The text fold the in-shell fold replaced, kept as the reference.
+ref_drop_blocked() {  # <open-set>
+  local line out='' rest
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    rest=${line#*$'\t'}
+    case "$rest" in
+      blocked$'\t'*) _fm_decision_key_protected "${line%%$'\t'*}" || continue ;;
+    esac
+    out="${out}${line}"$'\n'
+  done <<EOF
+$1
+EOF
+  printf '%s' "$out"
+}
+ref_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind>
+  local open=$1 line=$2 resolve=$3 held=$4 kind=$5 verb key note unstamped
+  _fm_status_unstamped "$line" unstamped
+  case "$unstamped" in
+    *:*|*\[key=*\]*) ;;
+    *) printf '%s' "$open"; return 0 ;;
+  esac
+  status_line_verb "$line" verb
+  case "$unstamped" in
+    *:*) case "$verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) return 0 ;; esac ;;
+  esac
+  if [ "$verb" = note ]; then
+    case "$unstamped" in
+      *:*) status_supersedes_kind "$line" >/dev/null && open=$(ref_drop_blocked "$open") ;;
+    esac
+    [ -n "$open" ] && open="${open}"$'\n'
+    printf '%s' "$open"
+    return 0
+  fi
+  case "$verb" in
+    needs-decision|blocked|"$resolve"|"$held") ;;
+    *) printf '%s' "$open"; return 0 ;;
+  esac
+  key=$(_fm_decision_key "$line") || { printf '%s' "$open"; return 0; }
+  _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
+    || { printf '%s' "$open"; return 0; }
+  case "$verb" in
+    needs-decision|blocked)
+      note=$(status_line_note "$line")
+      open=$(_fm_decision_drop "$open" "$key")
+      [ -n "$open" ] && open="${open}"$'\n'
+      open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
+      ;;
+    "$resolve"|"$held")
+      open=$(_fm_decision_drop "$open" "$key")
+      [ -n "$open" ] && open="${open}"$'\n'
+      ;;
+  esac
+  printf '%s' "$open"
+}
+ref_open_decisions() {  # <status-file> <kind>
+  local f=$1 kind=$2 line resolve held open='' verb
+  local _fm_fold_status_file=$1
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  while IFS= read -r line || [ -n "$line" ]; do
+    status_line_verb "$line" verb
+    case "$verb" in
+      needs-decision|blocked|done|failed|note|"$resolve"|"$held")
+        open=$(ref_fold_line "$open" "$line" "$resolve" "$held" "$kind")
+        ;;
+    esac
+  done < "$f"
+  printf '%s' "$open"
+}
+for f in "$cases"/*.status; do
+  for kind in ship scout secondmate; do
+    want=$(ref_open_decisions "$f" "$kind"; printf x)
+    got=$(status_open_decisions "$f" "$kind"; printf x)
+    [ "$got" = "$want" ] || printf 'whole fold %s (%s): new %q, old %q\n' "${f##*/}" "$kind" "$got" "$want"
+    unset FM_ALERT_REG_LEAK
+    status_open_decisions "$f" "$kind" > /dev/null
+    [ -z "${FM_ALERT_REG_LEAK+x}" ] || printf 'whole fold %s (%s) leaked alert-store globals\n' "${f##*/}" "$kind"
+  done
+done
+# The text-form wrapper on sets carrying blank lines and a trailing newline,
+# which a persisted cursor set may hold, read as every caller reads it: through
+# a command substitution, which drops the trailing newlines the old fold left.
+_fm_fold_status_file=$cases/supersede.status
+for set in '' $'a\tblocked\tx' $'\na\tblocked\tx' $'a\tblocked\tx\n\nb\tneeds-decision\ty' \
+  $'a\tblocked\tx\n' $'a\tblocked\tx\n\n' $'\n' $'held-z\tblocked\th\n\nq\tblocked\tr'; do
+  for line in 'working: x' 'note: plain' 'note [supersedes=relaunch]: r' 'needs-decision [key=a]: n' \
+    'resolved [key=a]: r' 'blocked [key=c]: c' 'done: d' 'resolved [key=zz]: none' 'prose' ''; do
+    want=$(ref_fold_line "$set" "$line" resolved captain-held ship)
+    got=$(_fm_decision_fold_line "$set" "$line" resolved captain-held ship)
+    [ "$got" = "$want" ] || printf 'fold line %q on %q: new %q, old %q\n' "$line" "$set" "$got" "$want"
+  done
+done
+exit 0
+SH
+  run_everywhere "open-decisions fold" "$script" "$cases"
+  pass "status_open_decisions and _fm_decision_fold_line match the text fold they replaced on every log and set shape"
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -2539,4 +2668,5 @@ else
   test_watcher_capture_matches_what_it_replaced
   test_busy_classify_matches_what_it_replaced
   test_pending_reply_correlation_matches_forked_token
+  test_open_decisions_fold_matches_the_text_fold
 fi
