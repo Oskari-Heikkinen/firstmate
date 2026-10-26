@@ -16,9 +16,9 @@ Hard rules, in priority order:
    None of these ever forces, stashes, discards unlanded work, or hand-writes a project's `AGENTS.md`.
 2. **Never merge or approve a landing without authority for that action and scope.**
    Authority is an explicit approval or a recorded standing authority that covers that exact action and scope.
-   A go given for a build with stated readiness goals covers its landing once those goals are met: independent review PASS plus green exact-head required checks through its normal delivery path, with no new per-head go.
+   A go the captain gave for a build, with readiness goals the captain stated, covers its landing once those goals are met and independent review PASS plus green exact-head required checks through its normal delivery path confirm them, with no new per-head go.
    For the recorded new-pipeline, lattice dev-process and Firstmate-fork tooling classes, independent review PASS plus green exact-head required checks goes immediately to the existing merge train without a new per-head go; report the landed commit upstream.
-   Ambiguity in the goals or spec, an open issue, or a deviation from the instructions needs specific permission for that landing.
+   Ambiguity in the goals or spec, an open issue, or a deviation from the instructions needs the captain's specific permission for that landing.
    Destructive, irreversible, security-sensitive, install, release-to-live, test-removal and otherwise reserved actions still require their own approval.
    Outside such a go or a recorded standing scope, preserve the project's existing `yolo` and explicit-approval rules.
 3. **Never tear down unlanded work.**
@@ -74,8 +74,8 @@ The main home never reconstructs or supervises a secondmate's child tree.
 - Spawn only through `bin/fm-spawn.sh`, into a genuine isolated task copy; a failed isolation check stops the task.
 - Steer a worker with `bin/fm-send.sh` text; drive interrupt, exit, and relaunch only through `bin/fm-control.sh`, never as text.
 - When the captain changes an ask mid-task, append the captain's words to the brief's `## Captain's intent` without speaker labels or address, and relay them to the worker.
-- The selected delivery path owns rigor: never hold work for a manual clean verdict, stack manual reviews, or add a reviewer outside it; if more rigor seems needed, ask the captain whether to use no-mistakes.
-- Resolve landing authority through section 1 before each handoff; `yolo=off` requires a new approval only when no authority under section 1 covers that exact action and scope.
+- The selected delivery path owns rigor: never hold work for a manual clean verdict, stack manual reviews, or add a reviewer outside it or outside a review section 1 rule 2 requires; if more rigor seems needed, ask the captain whether to use no-mistakes.
+- Resolve landing authority through section 1 before each handoff; `yolo=off` requires a new approval only when no authority under section 1 covers that exact action and scope, and `yolo=on` is recorded standing authority for green in-scope work.
   Safety and reserved-action exceptions in section 1 are unchanged.
 - Never merge a red PR, or one whose required check has not reported, unless a current explicit captain instruction names the check to waive; `yolo` never authorizes it.
 - A direct push is a landing: require the selected delivery path's green exact-head checks on the candidate integrated with the current default branch, with the merge train owning that integration and proof.
@@ -119,4 +119,4 @@ Keep the generated scaffold's safety sections, including the ship brief's worktr
 
 A current, explicit, concrete captain instruction overrides a conflicting rule above, only within the exact action, object, or bounded set it names.
 Never infer, broaden, carry over, or turn one into standing authority; ask one concise question when its scope is ambiguous.
-Destructive, irreversible, security-sensitive, discard, and merge actions still need the captain to name that action; once named and permitted by higher-priority instructions, a conflicting Firstmate-written rule must not rigidly block it, and `yolo` is never a substitute.
+Destructive, irreversible, security-sensitive, discard, and merge actions not already authorized by section 1 rule 2 still need the captain to name that action; once named and permitted by higher-priority instructions, a conflicting Firstmate-written rule must not rigidly block it, and `yolo` is never a substitute.
