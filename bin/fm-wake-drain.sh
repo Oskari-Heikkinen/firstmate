@@ -830,7 +830,7 @@ EOF
 }
 
 print_status_sections() {
-  local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
+  local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared commit_mode=''
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
   if [ "${NATIVE_PRESENTATION:-0}" = 1 ]; then
@@ -855,7 +855,10 @@ print_status_sections() {
     rm -f -- "$prepared"
     return 1
   fi
-  if ! status_commit_presentation_snapshot "$STATE" "$acknowledged"; then
+  # Only an actually selected native presentation attempts the optional fresh
+  # owner-side commit batch. Legacy reads keep their original commit path.
+  if [ "${NATIVE_PRESENTATION:-0}" = 1 ]; then commit_mode='batch'; fi
+  if ! status_commit_presentation_snapshot "$STATE" "$acknowledged" "$commit_mode"; then
     rm -f -- "$prepared"
     return 1
   fi

@@ -8,6 +8,9 @@
 # Explicit native drains batch strong Linux snapshot identities in one stat;
 # whole-byte legacy parity covers weak birth times, rotation, parent bindings,
 # atomic malformed/deleted/symlink recapture and complete real-client output.
+# The existing shell commit owner joins fresh strong proofs/cursors once after
+# stdout; per-row tripwires and whole manifests cover backstop/growth parity,
+# mutation refusal and full legacy fallback on a corrupt commit-time capture.
 # Native offset batching reads real owner-written cursor/marker bytes, refuses
 # unmigrated legacy cursors and leaves all publication/commit authority intact.
 # Real-client corrupt replies exercise observed-offset validation plus the
@@ -39,6 +42,30 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 command -v python3 >/dev/null 2>&1 || fail 'Python 3.9+ required for view-engine tests'
 rc=0
+# Independently exercise the ordinary legacy transaction with the optional
+# batch reader forbidden; native matrix success must not change its selection.
+if bash -s -- "$ROOT" <<'SH'
+set -u
+. "$1/bin/fm-classify-lib.sh"
+home=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$home"' EXIT
+mkdir "$home/state" || exit 1
+printf 'note: legacy commit\n' > "$home/state/task.status"
+snapshot=$(status_presentation_snapshot "$home/state") || exit 1
+ident=${snapshot##*$'\t'}
+endpoint=${snapshot#*$'\t'}; endpoint=${endpoint%%$'\t'*}
+status_presentation_snapshot_batch() { echo 'unexpected legacy commit batch' >&2; return 85; }
+status_commit_presentation_snapshot "$home/state" "$snapshot" || exit 1
+expected=$(printf 'task\t%s\t%s\t0' "$ident" "$endpoint")
+actual=$(cat "$home/state/.status-presentation-cursor") || exit 1
+[ "$actual" = "$expected" ]
+SH
+then
+  pass 'ordinary legacy presentation commit never selects the optional batch'
+else
+  printf 'not ok - ordinary legacy presentation commit selection\n' >&2
+  rc=1
+fi
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.py" || rc=1
 FM_VIEW_CREW_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-crew-state.test.sh" || rc=1
 FM_VIEW_COMPAT_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-fleet-snapshot-view.test.sh" || rc=1

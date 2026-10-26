@@ -2978,35 +2978,115 @@ $snapshot
 EOF
 }
 
-status_commit_presentation_snapshot() {  # <state> <snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f cur_ident size tmp backstop acknowledged_task acknowledged_endpoint
-  tmp="$state/.status-presentation-cursor.tmp.$$"
-  : > "$tmp" || return 1
-  while IFS=$(printf '\t') read -r task endpoint ident; do
-    [ -n "$task" ] || continue
-    case "$endpoint" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
-    [ -n "$ident" ] || { rm -f "$tmp"; return 1; }
-    f="$state/$task.status"
-    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { rm -f "$tmp"; return 1; }
-    cur_ident=$(_fm_open_decisions_file_ident "$f") || { rm -f "$tmp"; return 1; }
-    size=$(_fm_status_file_size "$f") || { rm -f "$tmp"; return 1; }
-    size=${size//[[:space:]]/}
-    case "$size" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
-    [ "$cur_ident" = "$ident" ] && [ "$endpoint" -le "$size" ] \
-      || { rm -f "$tmp"; return 1; }
-    backstop=$(status_outcome_backstop_cursor_offset "$f") || { rm -f "$tmp"; return 1; }
-    while IFS=$(printf '\t') read -r acknowledged_task acknowledged_endpoint; do
-      if [ "$acknowledged_task" = "$task" ]; then backstop=$acknowledged_endpoint; fi
-    done <<EOF
+# Optional preparation inside the EXISTING presentation commit owner. Capture
+# current strong identities/sizes afresh AFTER stdout, never reuse service
+# evidence or the pre-presentation snapshot. Join the cursor/backstop records
+# once in linear work; any unsupported/uncertain packet retains the entire
+# original commit path below. This helper writes no record or partial output.
+_status_presentation_commit_rows_batch() {  # <state> <snapshot>
+  local state=$1 snapshot=$2 current manifest present=0
+  current=$(status_presentation_snapshot_batch "$state") || return 1
+  manifest="$state/.status-presentation-cursor"
+  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+    [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
+    present=1
+  fi
+  FM_STATUS_COMMIT_MANIFEST="$manifest" LC_ALL=C awk -F '\t' -v present="$present" '
+    function uint(value) { return value ~ /^[0-9]+$/ && length(value) <= 15 }
+    function taskid(value) { return value ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ && length(value) <= 128 }
+    BEGIN {
+      section=1; manifest=ENVIRON["FM_STATUS_COMMIT_MANIFEST"]
+      if (present) {
+        while ((rc = getline line < manifest) > 0) {
+          if (line == "") continue
+          n = split(line, fields, "\t")
+          if (++old_count > 256 || (n != 3 && n != 4) || !taskid(fields[1]) || fields[2] == "" ||
+              !uint(fields[3]) || (n == 4 && !uint(fields[4])) || (fields[1] in old_ids)) { bad=1; exit }
+          old_ids[fields[1]]=fields[2]; old_backstop[fields[1]]=(n == 4 ? fields[4] : 0)
+        }
+        if (rc < 0) { bad=1; exit }
+        close(manifest)
+      }
+    }
+    $0 == "@selected" { if (section != 1) { bad=1; exit }; section=2; next }
+    $0 == "@backstops" { if (section != 2) { bad=1; exit }; section=3; next }
+    $0 == "" { next }
+    section == 1 {
+      if (NF != 3 || !taskid($1) || !uint($2) || $3 == "" || ($1 in current_ids) || ++current_count > 256) { bad=1; exit }
+      current_ids[$1]=$3; sizes[$1]=$2; next
+    }
+    section == 2 {
+      if (NF != 3 || !taskid($1) || !uint($2) || $3 == "" || ($1 in selected_ids) || ++selected_count > 256 ||
+          !($1 in current_ids) || $3 != current_ids[$1] || $2 + 0 > sizes[$1] + 0) { bad=1; exit }
+      order[selected_count]=$1; selected_ids[$1]=$3; endpoints[$1]=$2
+      backstops[$1]=(old_ids[$1] == $3 && old_backstop[$1] + 0 <= sizes[$1] + 0) ? old_backstop[$1] : 0
+      next
+    }
+    section == 3 {
+      if (NF != 2 || !taskid($1) || !uint($2) || ++ack_count > 256) { bad=1; exit }
+      if ($1 in selected_ids) backstops[$1]=$2
+      next
+    }
+    { bad=1; exit }
+    END {
+      if (bad || section != 3) exit 1
+      for (i=1; i<=selected_count; i++) {
+        task=order[i]
+        if (backstops[task] + 0 > sizes[task] + 0) exit 1
+      }
+      for (i=1; i<=selected_count; i++) {
+        task=order[i]
+        printf "%s\t%s\t%s\t%s\n", task, selected_ids[task], endpoints[task], backstops[task]
+      }
+    }
+  ' <<EOF
+$current
+@selected
+$snapshot
+@backstops
 ${STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED:-}
 EOF
-    case "$backstop" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
-    [ "$backstop" -le "$size" ] || { rm -f "$tmp"; return 1; }
-    printf '%s\t%s\t%s\t%s\n' "$task" "$ident" "$endpoint" "$backstop" >> "$tmp" \
-      || { rm -f "$tmp"; return 1; }
-  done <<EOF
+}
+
+status_commit_presentation_snapshot() {  # <state> <snapshot> [batch]
+  local state=$1 snapshot=$2 task endpoint ident f cur_ident size tmp backstop acknowledged_task acknowledged_endpoint
+  local prepared_commit_rows
+  tmp="$state/.status-presentation-cursor.tmp.$$"
+  : > "$tmp" || return 1
+  if [ "${3:-}" = batch ] && prepared_commit_rows=$(_status_presentation_commit_rows_batch "$state" "$snapshot"); then
+    if [ -n "$prepared_commit_rows" ]; then
+      printf '%s\n' "$prepared_commit_rows" > "$tmp" || { rm -f "$tmp"; return 1; }
+    fi
+  else
+    if [ "${3:-}" = batch ]; then
+      printf 'status commit: batch verification refused; using complete legacy commit\n' >&2
+    fi
+    while IFS=$(printf '\t') read -r task endpoint ident; do
+      [ -n "$task" ] || continue
+      case "$endpoint" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
+      [ -n "$ident" ] || { rm -f "$tmp"; return 1; }
+      f="$state/$task.status"
+      [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { rm -f "$tmp"; return 1; }
+      cur_ident=$(_fm_open_decisions_file_ident "$f") || { rm -f "$tmp"; return 1; }
+      size=$(_fm_status_file_size "$f") || { rm -f "$tmp"; return 1; }
+      size=${size//[[:space:]]/}
+      case "$size" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
+      [ "$cur_ident" = "$ident" ] && [ "$endpoint" -le "$size" ] \
+        || { rm -f "$tmp"; return 1; }
+      backstop=$(status_outcome_backstop_cursor_offset "$f") || { rm -f "$tmp"; return 1; }
+      while IFS=$(printf '\t') read -r acknowledged_task acknowledged_endpoint; do
+        if [ "$acknowledged_task" = "$task" ]; then backstop=$acknowledged_endpoint; fi
+      done <<EOF
+${STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED:-}
+EOF
+      case "$backstop" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
+      [ "$backstop" -le "$size" ] || { rm -f "$tmp"; return 1; }
+      printf '%s\t%s\t%s\t%s\n' "$task" "$ident" "$endpoint" "$backstop" >> "$tmp" \
+        || { rm -f "$tmp"; return 1; }
+    done <<EOF
 $snapshot
 EOF
+  fi
   mv -f "$tmp" "$state/.status-presentation-cursor" || { rm -f "$tmp"; return 1; }
 }
 
