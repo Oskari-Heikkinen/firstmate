@@ -1074,6 +1074,39 @@ test_genuine_daemon_down_reports_blocked() {
   pass "genuine daemon-down blocked line still reports blocked"
 }
 
+# Under snapshot composition the open-decision set the snapshot already folded
+# for the captured status bytes stands in for a second fold here: the same set
+# reports the same current line, and a set file is read, never re-derived from
+# the log. A missing or symlinked set file falls back to the fold.
+test_snapshot_open_decision_set_replaces_the_fold() {
+  reset_fakes
+  local d out plain
+  d=$(new_case open-decision-set)
+  make_repo_on_branch "$d/wt" fm/feat-os
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-os.meta" "window=fm:fm-feat-os" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'needs-decision [key=k1]: pick A or B\nblocked [key=b1]: waiting on access\nresolved [key=b1]: granted\nworking: still here\n' \
+    > "$d/state/feat-os.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-os
+  plain=$(run_crew_state "$d" feat-os)
+  assert_contains "$plain" "pick A or B" "the fold supplies the open decision"
+  ( . "$ROOT/bin/fm-classify-lib.sh"; status_open_decisions "$d/state/feat-os.status" ship ) > "$d/open-set"
+  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/open-set" run_crew_state "$d" feat-os)
+  [ "$out" = "$plain" ] || fail "the snapshot's set changed the reading: $out (fold: $plain)"
+  printf 'k9\tneeds-decision\tfrom the published set\n' > "$d/other-set"
+  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/other-set" run_crew_state "$d" feat-os)
+  assert_contains "$out" "from the published set" "the set file is read instead of folding the log"
+  assert_not_contains "$out" "pick A or B" "no second fold of the log"
+  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/missing-set" run_crew_state "$d" feat-os)
+  [ "$out" = "$plain" ] || fail "a missing set file must fall back to the fold: $out"
+  ln -s other-set "$d/linked-set"
+  out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/linked-set" run_crew_state "$d" feat-os)
+  [ "$out" = "$plain" ] || fail "a symlinked set file must fall back to the fold: $out"
+  pass "the snapshot's open-decision set reports the same current line without a second fold"
+}
+
 # (c) genuine parked run + needs-decision log AGREE -> parked, NOT superseded
 test_genuine_parked_not_superseded() {
   reset_fakes
@@ -5747,6 +5780,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_socket_refusal_override_expires_when_the_crew_moves_on \
   test_ordinary_blocked_over_live_run_keeps_plain_superseded \
   test_genuine_daemon_down_reports_blocked \
+  test_snapshot_open_decision_set_replaces_the_fold \
   test_newest_open_decision_supplies_the_reported_detail \
   test_latest_status_preserves_legacy_completions \
   test_latest_status_subshell_work_does_not_grow_with_history \
