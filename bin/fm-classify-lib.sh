@@ -2302,8 +2302,11 @@ EOF
 # Unsupported platforms/overrides, oversized inventories and any malformed or
 # incomplete stat result refuse with NO output so the caller can recapture the
 # entire snapshot through status_presentation_snapshot before native selection.
-status_presentation_snapshot_batch() {  # <state>
-  local state=$1 f task exclude packet row mode size devino epoch birth extra ident result=''
+status_presentation_snapshot_batch() {  # <state> [mtime]
+  local state=$1 capture_mode=${2:-} f task exclude packet row mode size devino epoch birth extra ident result=''
+  local mtime format=$'%f\t%s\t%d:%i\t%W\t%w'
+  case "$capture_mode" in ''|mtime) ;; *) return 1 ;; esac
+  if [ "$capture_mode" = mtime ]; then format+=$'\t%Y'; fi
   local index=0 count=0
   local -a snapshot_batch_files=() snapshot_batch_tasks=()
   [ "$_FM_CLASSIFY_UNAME_S" = Linux ] && [ -z "${FM_STATUS_SIZE_READER:-}" ] \
@@ -2325,14 +2328,22 @@ status_presentation_snapshot_batch() {  # <state>
   [ "$count" -gt 0 ] || return 0
   # One stat observes every selected path, in argument order, without putting
   # filenames into the packet. A final-component symlink race is nonregular.
-  { packet=$(LC_ALL=C exec stat -c $'%f\t%s\t%d:%i\t%W\t%w' -- "${snapshot_batch_files[@]}"); } 2>/dev/null || return 1
+  { packet=$(LC_ALL=C exec stat -c "$format" -- "${snapshot_batch_files[@]}"); } 2>/dev/null || return 1
   while IFS= read -r row; do
     [ "$index" -lt "$count" ] || return 1
     # read's whitespace-IFS collapsing must not admit missing/extra columns.
     case "$row" in *$'\t\t'*|$'\t'*|*$'\t') return 1 ;; esac
-    IFS=$'\t' read -r mode size devino epoch birth extra <<EOF
+    mtime=''
+    if [ "$capture_mode" = mtime ]; then
+      IFS=$'\t' read -r mode size devino epoch birth mtime extra <<EOF
 $row
 EOF
+      case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+    else
+      IFS=$'\t' read -r mode size devino epoch birth extra <<EOF
+$row
+EOF
+    fi
     [ -z "$extra" ] && [ -n "$birth" ] || return 1
     case "$mode" in ''|*[!0-9a-f]*|?????????*) return 1 ;; esac
     [ "$((16#$mode & 61440))" -eq 32768 ] || return 1
@@ -2346,7 +2357,9 @@ EOF
     # still verifies this exact identity/endpoint at its commit boundary.
     f=${snapshot_batch_files[$index]}
     [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
-    result="$result${snapshot_batch_tasks[$index]}"$'\t'"$size"$'\t'"$ident"$'\n'
+    result="$result${snapshot_batch_tasks[$index]}"$'\t'"$size"$'\t'"$ident"
+    if [ "$capture_mode" = mtime ]; then result+=$'\t'"$mtime"; fi
+    result+=$'\n'
     index=$((index + 1))
   done <<EOF
 $packet
@@ -2548,6 +2561,100 @@ EOF
 $snapshot
 @suggestions
 $suggestions
+EOF
+}
+
+# Avoid issuing a native backstop request for an already-deferred captured
+# endpoint. The post-reply guard below still supplies independent fresh proof.
+status_backstop_inputs_current() {  # <state> <captured-snapshot>
+  local current
+  current=$(status_presentation_snapshot_batch "$1" mtime) || return 1
+  LC_ALL=C awk -F '\t' '
+    $0 == "@current" { if (section) { bad=1; exit }; section=1; next }
+    NF == 0 { next }
+    !section {
+      if (NF != 3 || ($1 in ends)) { bad=1; exit }
+      ends[$1]=$2; proofs[$1]=$3; count++; next
+    }
+    {
+      if (NF != 4 || ($1 in seen)) { bad=1; exit }
+      seen[$1]=1
+      if ($1 in ends) {
+        if ($2 != ends[$1] || $3 != proofs[$1]) { bad=1; exit }
+        matched++
+      }
+    }
+    END { if (bad || !section || !count || matched != count) exit 1 }
+  ' <<EOF
+$2
+@current
+$current
+EOF
+}
+
+# Independent late-phase admission for optional read-service backstop facts.
+# The original presentation lock is held. One fresh strong snapshot and one
+# manifest read prove ALL rows before selection; any uncertainty keeps the
+# complete original backstop reader, never per-row repair or partial output.
+status_backstop_facts_current() {  # <state> <captured-snapshot> <facts>
+  local state=$1 snapshot=$2 facts=$3 fresh manifest present=0
+  manifest="$state/.status-presentation-cursor"
+  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+    [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
+    present=1
+  fi
+  fresh=$(status_presentation_snapshot_batch "$state" mtime) || return 1
+  LC_ALL=C awk -F '\t' -v manifest="$manifest" -v present="$present" '
+    function uint(value) { return value ~ /^[0-9]+$/ && length(value) <= 16 && value + 0 <= 9007199254740991 }
+    BEGIN {
+      section=1
+      if (present) {
+        while ((rc = getline line < manifest) > 0) {
+          if (line == "") continue
+          n = split(line, f, "\t")
+          if ((n != 3 && n != 4) || f[1] == "" || f[2] == "" || !uint(f[3]) ||
+              (n == 4 && f[4] != "" && !uint(f[4])) || (f[1] in ids)) { bad=1; exit }
+          ids[f[1]]=f[2]; receipts[f[1]]=(f[4] == "" ? 0 : f[4] + 0)
+        }
+        if (rc < 0) { bad=1; exit }
+        close(manifest)
+      }
+    }
+    $0 == "@facts" { if (section != 1) { bad=1; exit }; section=2; next }
+    $0 == "@fresh" { if (section != 2) { bad=1; exit }; section=3; next }
+    NF == 0 { next }
+    section == 1 {
+      if (NF != 3 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || !uint($2) || $3 == "" || ($1 in ends)) { bad=1; exit }
+      order[++count]=$1; ends[$1]=$2; proofs[$1]=$3; next
+    }
+    section == 2 {
+      if (NF < 7 || $1 != order[++selected] || $2 != ends[$1] || $3 != proofs[$1] ||
+          !uint($4) || !uint($5) || !uint($6) || $4 + 0 > $2 + 0 || $6 + 0 > $2 + 0) { bad=1; exit }
+      receipt=(ids[$1] == $3 && receipts[$1] <= $2 + 0) ? receipts[$1] : 0
+      if ($4 + 0 != receipt) { bad=1; exit }
+      packed=$0
+      for (i=1; i<=6; i++) sub(/^[^\t]*\t/, "", packed)
+      if (($6 + 0 == 0 && packed != ".") || ($6 + 0 != 0 && (packed !~ /^l:.*:l$/ ||
+          length(packed) <= 4 || length(packed) - 4 > $6 + 0 || length(packed) - 4 > 65536))) { bad=1; exit }
+      times[$1]=$5; next
+    }
+    section == 3 {
+      if (NF != 4 || ($1 in seen) || !uint($2) || $3 == "" || !uint($4)) { bad=1; exit }
+      seen[$1]=1
+      if ($1 in ends) {
+        if ($2 != ends[$1] || $3 != proofs[$1] || $4 != times[$1]) { bad=1; exit }
+        matched++
+      }
+      next
+    }
+    { bad=1; exit }
+    END { if (bad || section != 3 || count != selected || count != matched) exit 1 }
+  ' <<EOF
+$snapshot
+@facts
+$facts
+@fresh
+$fresh
 EOF
 }
 

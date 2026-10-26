@@ -16,7 +16,7 @@ A missing status file is an empty span; an existing unreadable or unsupported ob
 The native fold reads registered alert-store levels on every request, even when status bytes have not changed.
 The shell classifier remains the parity oracle; it has not been replaced by these modules.
 
-The transport admits `status-fold`, `crew-state`, `status-presentation`, `drain-presentation` and `snapshot-tasks` requests.
+The transport admits `status-fold`, `crew-state`, `status-presentation`, `drain-presentation`, `status-backstop` and `snapshot-tasks` requests.
 It cannot claim, acknowledge, append, retire, resume, publish a summary or alter custody.
 It writes no authoritative state, including presentation cursors.
 The calling transaction owner remains responsible for any presentation commit after successfully writing its output.
@@ -57,6 +57,10 @@ Malformed, unsupported or changing cursor state refuses the whole read before na
 The batch folds only through each captured endpoint, so concurrent appends remain unread for a subsequent presentation.
 A missing, replaced or truncated input, changed prefix or changed metadata generation refuses the entire batch, without a partial successful result or cursor write.
 Batches retain at most 64 MiB of captured status bytes and four MiB of metadata; oversized batches refuse for explicit legacy fallback rather than silently omitting rows.
+The `status-backstop` verb accepts the same snapshot rows as `drain-presentation` but performs a separate fresh observation at the original late backstop boundary, never reusing earlier unread facts.
+It reads the existing presentation manifest once and returns each captured task's reset-aware backstop offset, coherent status mtime, latest nonblank line and that line's byte endpoint, without writing a receipt.
+Latest-line selection matches the legacy owner's final-64-KiB bound, incomplete-first-line exclusion, byte whitespace, CRLF, NUL and unfinished-last-line behavior.
+Its ordinary-lane generation barriers, per-file and batch bounds, fresh manifest/status checks and all-or-nothing refusal retain the presentation transport's capacity rules.
 Unsupported fields, duplicate JSON keys, nonfinite numbers, unsupported verbs and mismatched home/epoch refuse the request.
 A response binds the same protocol, home, epoch and nonce, with `ok` and either `result` or a typed refusal message in `error`.
 Requests and responses are limited to one MiB; regular input files are limited to four MiB.
@@ -125,7 +129,7 @@ With explicit native selection on Linux, its existing classifier owner can captu
 This optional batch never substitutes the service's device/inode observation identity for the owner's strong identity.
 Unsupported platforms, custom size/identity readers, larger or incompatible inventories, partial stat failure, nonregular inputs or malformed rows refuse atomically before output and recapture the entire snapshot through the unchanged legacy owner.
 Without explicit selection, the ordinary legacy snapshot is unchanged.
-It asks once for native captured annotation lines, unread/open-decision facts and suggested endpoints before printing any status annotation or section, keeping divergence, capped branch outcomes and the latest-outcome backstop with their existing owners.
+It asks once for native captured annotation lines, unread/open-decision facts and suggested endpoints before printing any status annotation or section, keeping divergence, capped branch outcomes and backstop policy/receipt assignment with their existing owners.
 After the actual enrichment delay, the annotation owner admits the whole captured inventory against one fresh bounded strong-identity snapshot from its existing GNU-stat reader, covering direct and historical rows before any annotation output.
 Every captured task must still be present, regular, readable and nonsymlink, with its original strong identity and at least its captured byte endpoint; changed inventory, unsupported readers/platforms or malformed/uncertain evidence refuses the entire selection.
 Growth beyond a captured endpoint remains admitted but is not presented by this snapshot.
@@ -149,6 +153,15 @@ Changed, unreadable, malformed, nonregular, symlink or unsupported evidence disc
 The existing bytewise encoder's 512-byte limit or unavailable bytewise support is unsupported here, never permission to retain stale suggestions.
 This late fallback does not replay annotations, replace captured unread/open facts, partially commit endpoints or introduce another writer.
 The reported signature and classified offset remain distinct: reported-only changes can alter annotation suppression, whereas the late classified position governs absorption at its original phase.
+At the original main-only backstop phase, the existing owner first checks that the captured inventory still has its exact live endpoints and original strong identities with one bounded snapshot.
+Only actual native presentation selection attempts the separate fresh backstop read.
+Before selecting any returned row, the shell independently rechecks the whole ordered inventory, every receipt against its current locked manifest, and every original strong identity, exact endpoint and returned mtime against another fresh bounded GNU-stat capture.
+The optional mtime packet uses the existing snapshot reader and identity composer; neither Python device/inode pairs nor service-claimed receipts acquire cursor authority.
+Malformed, regressive, missing, uncertain or changed facts discard the entire optional result for the complete original backstop loop with an explicit diagnostic, never partial repair.
+Growth beyond a captured endpoint still defers its backstop, unlike captured unread presentation.
+Outcome-store locking, index rebuild/validation, relevance/reserved-key policy, byte caps, receipt assignment and post-stdout commit remain the existing owners.
+The admitted native path does not invoke per-row backstop cursor, identity, mtime or latest-span helpers.
+Ordinary legacy selection never attempts these reads.
 A failed native read falls back before the prepared status sections reach stdout.
 Native observation device/inode pairs never replace the original strong identity passed to the commit owner.
 A failed stdout leaves the presentation cursor untouched, and concurrent appends past the captured endpoints remain unread.
@@ -159,7 +172,7 @@ Ordinary legacy selection never attempts this optimization, and selected-row rep
 The fleet snapshot can select the same explicit client once for all local task rows, before legacy per-task capture or composition.
 Its backlog parser, contribution collector, cross-home ledger/cache collector and summary/publication owners remain unchanged; the read service cannot write their output or retire a dirty trigger.
 A refused native batch invokes the entire legacy task capture/composition path before any snapshot output.
-The native path no longer invokes per-row cursor/marker-offset helpers, and its optional commit and annotation batches remove repeated identity/size/cursor and historical-signature reads when admitted, but still pays the legacy transaction and passive-adapter graphs and latest-outcome backstop reads.
+The native path no longer invokes per-row cursor/marker-offset helpers, and its optional commit, annotation and fresh backstop batches remove repeated identity/size/cursor, historical-signature and latest-span reads when admitted, but still pays the legacy transaction and passive-adapter graphs.
 It is not a completed hot-path migration or a performance acceptance claim.
 
 ## Verification and remaining migration
@@ -201,6 +214,13 @@ A late-fallback failed-stdout control preserves the previous cursor and requires
 Standalone captured-renderer cases retain cursor/span tripwires, require no classifier load for empty/direct-only inventories, exercise historical lazy loading and print complete stderr on failure.
 The fork-free-helper suite compares late marker evidence against the original normalized text reader in its interpreter/locale matrix and forbids per-row spawned commands on the supported path.
 The original late-reader and independent early-swap regressions remain separate.
+Backstop cases compare complete late latest-event/receipt facts with the original public shell APIs across the 64-KiB boundary, whitespace, CRLF, NUL, invalid UTF-8, partial lines and old/reset/missing cursor rows without record mutation.
+Independent shell-guard controls require a single stat and no per-row readers, and reject malformed/duplicate/missing/reordered facts, changed receipts, mtime, endpoints, identities and incomplete/error captures before selection.
+Real-client full-drain controls require a successful nonempty backstop RPC, fresh same-size status text after the initial capture, whole stdout/cursor parity and per-row stat/latest-reader tripwires.
+Malformed service replies and valid but incorrect receipts/mtimes must discard every returned row, including an independently poisoned unaffected row; a separate post-read same-size rewrite must reach complete legacy fallback.
+The existing full drain/queue matrices keep empty queues, delayed signals, actor exclusion, failed stdout/retry, bounded history, receipt failures and outcome-index refusal/rebuild coverage.
+Backstop initial/final-generation stalls must leave both critical slots available; repeated calls must reread a changed receipt without any status change.
+The capture/commit fixture's existing five-field stat tripwire remains scoped to those phases, not the distinct six-field backstop mtime captures.
 These invocation assertions are mechanism checks, not a B0 performance result.
 Additional cases cover missing manifests/rows, legacy migration refusal, identity/size reset, malformed and replaced cursors, fresh offsets without status changes and the new verb's ordinary-lane generation barriers.
 Real-client regressions corrupt the service's observed offset or suggested endpoint, then separately corrupt successful client output after its reply checks, requiring full legacy output/cursor parity and an explicit refusal diagnostic for regressive, duplicate, missing, foreign, identity-mismatched and past-end suggestions.

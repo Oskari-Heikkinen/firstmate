@@ -19,6 +19,9 @@
 # Classification evidence is validated before selection and rechecked by its
 # owner after annotations; whole-ack fallback retains late marker/cursor parity,
 # malformed-client refusal, unchanged admission and failed-stdout retry.
+# Fresh late backstop batches retain exact live endpoints, original strong
+# identities/coherent mtimes and independent locked-manifest receipt proof;
+# whole-fallback, no-per-row-helper and full stdout/cursor controls run in CI.
 # Native offset batching reads real owner-written cursor/marker bytes, refuses
 # unmigrated legacy cursors and leaves all publication/commit authority intact.
 # Real-client corrupt replies exercise observed-offset validation plus the
@@ -72,6 +75,34 @@ then
   pass 'ordinary legacy presentation commit never selects the optional batch'
 else
   printf 'not ok - ordinary legacy presentation commit selection\n' >&2
+  rc=1
+fi
+# Public backstop admission proves its own receipt floor before selecting any
+# service output. The real-client fixtures separately prove whole CLI fallback.
+if bash -s -- "$ROOT" <<'SH'
+set -u
+. "$1/bin/fm-classify-lib.sh"
+home=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$home"' EXIT
+mkdir "$home/state" || exit 1
+printf 'done: latest\n' > "$home/state/task.status"
+snapshot=$(status_presentation_snapshot "$home/state") || exit 1
+ident=${snapshot##*$'\t'}
+endpoint=${snapshot#*$'\t'}; endpoint=${endpoint%%$'\t'*}
+status_snapshot_latest_event "$home/state/task.status" "$endpoint" "$ident" || exit 1
+printf 'task\t%s\t0\t4\n' "$ident" > "$home/state/.status-presentation-cursor"
+facts=$(printf '%s\t4\t%s\t%s\tl:%s:l' "$snapshot" "$FM_STATUS_SNAPSHOT_EVENT_MTIME" "$endpoint" "$FM_STATUS_SNAPSHOT_EVENT_LINE")
+status_outcome_backstop_cursor_offset() { echo unexpected-per-row-receipt >&2; return 85; }
+status_snapshot_latest_event() { echo unexpected-per-row-latest >&2; return 85; }
+status_backstop_inputs_current "$home/state" "$snapshot" || exit 1
+status_backstop_facts_current "$home/state" "$snapshot" "$facts" || exit 1
+printf 'task\t%s\t0\t5\n' "$ident" > "$home/state/.status-presentation-cursor"
+! status_backstop_facts_current "$home/state" "$snapshot" "$facts"
+SH
+then
+  pass 'backstop selection independently proves fresh inventory and current receipt'
+else
+  printf 'not ok - backstop inventory/receipt proof\n' >&2
   rc=1
 fi
 # A separate public legacy renderer probe must not become an optional-batch
