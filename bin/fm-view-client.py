@@ -4,6 +4,7 @@
 Usage: fm-view-client.py crew-state TASK
        fm-view-client.py status-presentation < captured-rows.tsv
        fm-view-client.py drain-presentation < captured-snapshot.tsv
+       fm-view-client.py status-backstop < captured-snapshot.tsv
        fm-view-client.py snapshot-tasks OBSERVED_AT EPOCH CONCURRENCY TASK_TIMEOUT CAPTURE_DIR
 
 Explicit FM_VIEW_SOCKET, FM_VIEW_EPOCH and canonical FM_HOME select an already
@@ -20,6 +21,11 @@ evidence. M rows are task plus '-' for missing or 'h:' plus lowercase hex of
 normalized marker text (NULs/trailing newlines removed, at most 4096 bytes);
 it is private call output, not a durable acknowledgement or receipt. Strong
 identities pass through unchanged to the existing commit transaction owner.
+status-backstop accepts the same snapshot rows, freshly reads the latest bounded
+line and backstop offset at its owner's late phase, and emits task/end/strong-
+identity/receipt/mtime/event-end/packed-line TSV. The packed last field is '.'
+for no event, otherwise 'l:' plus lossless text plus ':l', preserving leading
+and trailing tabs/spaces in shell read. This is not a receipt or index write.
 Snapshot calls stage their validated captured metadata/status in the invoking
 owner's empty private CAPTURE_DIR before emitting task JSON. The existing
 cross-home collector consumes those bytes and original status mtimes; these are
@@ -129,6 +135,30 @@ def presentation_output(result, rows, originals, from_state=False):
     return "".join(output)
 
 
+def backstop_output(result, rows, originals):
+    require(type(result) is dict and set(result) == {"rows"} and type(result["rows"]) is list
+            and len(result["rows"]) == len(rows), "backstop reply row mismatch")
+    output = []
+    for returned, expected, strong in zip(result["rows"], rows, originals):
+        require(type(returned) is dict and set(returned) == {
+            "task", "end", "identity", "receipt", "mtime", "event_end", "line"}
+            and all(returned[name] == expected[name] for name in ("task", "end", "identity")),
+            "backstop reply capture mismatch")
+        for name in ("receipt", "event_end"):
+            require(type(returned[name]) is int and 0 <= returned[name] <= expected["end"],
+                    "invalid backstop reply endpoint")
+        require(type(returned["mtime"]) is int and 0 <= returned["mtime"] <= 2**53 - 1,
+                "invalid backstop reply mtime")
+        line = returned["line"]
+        require(type(line) is str and "\0" not in line and "\n" not in line
+                and len(line.encode("utf-8", "surrogateescape")) <= min(65536, returned["event_end"])
+                and bool(line) == bool(returned["event_end"]), "invalid backstop reply line")
+        packed = "l:" + line + ":l" if line else "."
+        output.append(f'{expected["task"]}\t{expected["end"]}\t{strong}\t{returned["receipt"]}\t'
+                      f'{returned["mtime"]}\t{returned["event_end"]}\t{packed}\n')
+    return "".join(output)
+
+
 def stage_snapshot(result, directory):
     rows, captures = result["tasks"], result.get("captures")
     require(type(captures) is list and len(captures) == len(rows), "snapshot capture count mismatch")
@@ -167,7 +197,7 @@ def stage_snapshot(result, directory):
 
 def main(arguments, environment):
     path, home, epoch = binding(environment)
-    require(arguments and arguments[0] in ("crew-state", "status-presentation", "drain-presentation", "snapshot-tasks"), "unsupported client operation")
+    require(arguments and arguments[0] in ("crew-state", "status-presentation", "drain-presentation", "status-backstop", "snapshot-tasks"), "unsupported client operation")
     verb = arguments[0]
     if verb == "snapshot-tasks":
         require(len(arguments) == 6 and all(re.fullmatch(r"[0-9]{1,13}", value) for value in arguments[2:5]),
@@ -234,8 +264,10 @@ def main(arguments, environment):
     require(len(arguments) == 1, "unexpected presentation argument")
     raw = sys.stdin.buffer.read(MAX_MESSAGE + 1)
     require(len(raw) <= MAX_MESSAGE, "presentation input exceeds bound")
-    rows, originals = presentation_rows(raw, from_state=verb == "drain-presentation")
+    rows, originals = presentation_rows(raw, from_state=verb in ("drain-presentation", "status-backstop"))
     result = client(path, home, epoch, verb, {"rows": rows}, timeout=30)
+    if verb == "status-backstop":
+        return backstop_output(result, rows, originals)
     return presentation_output(result, rows, originals, from_state=verb == "drain-presentation")
 
 

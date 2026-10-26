@@ -102,7 +102,7 @@ class Compatibility(unittest.IsolatedAsyncioTestCase):
         stat.write_text('''#!/usr/bin/env python3
 import os, subprocess, sys
 args = sys.argv[1:]
-if len(args) > 2 and args[0] == "-c" and "\\t" in args[1] and "--" in args:
+if len(args) > 2 and args[0] == "-c" and args[1].count("\\t") == 4 and "--" in args:
     with open(os.environ["FM_FIXTURE_BATCH_LOG"], "ab") as stream:
         stream.write(b"batch\\n")
     mode = os.environ.get("FM_FIXTURE_BATCH_CORRUPT")
@@ -144,6 +144,102 @@ sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
                 self.assertEqual(log.read_bytes(), b"batch\nbatch\n", "legacy must not select either optional batch")
                 self.assertIn(b"a note: first", actual)
                 self.assertIn(b"b [key=held] blocked: obstacle", actual)
+
+    async def test_native_backstop_is_fresh_and_never_reads_per_row_helpers(self):
+        self.status(b"done: older\t \n", "a", "ship")
+        self.status(b"blocked [key=bad key]: obstacle\n", "b", "ship")
+        self.status(b"blocked [key=held]: folded not backstop\n", "c", "ship")
+        manifest = self.state / ".status-presentation-cursor"
+        manifest.write_bytes(b"")
+        # No unread information changes in this same-size replacement; the
+        # backstop must read the NEW late-phase bytes, not its initial capture.
+        original_read, original_backstop = Presentation.read, Presentation.backstop
+        calls = []
+        def early(instance, rows, vocabulary=None):
+            reply = original_read(instance, rows, vocabulary)
+            path = self.state / "a.status"
+            path.write_bytes(path.read_bytes().replace(b"older", b"newer"))
+            return reply
+        def observed(instance, rows):
+            reply = original_backstop(instance, rows)
+            calls.append(reply)
+            return reply
+        stat, perl = self.home / "fakebin/stat", self.home / "fakebin/perl"
+        real_stat, real_perl = shutil.which("stat"), shutil.which("perl")
+        log = self.home / "backstop-tripwire"
+        stat.write_text('''#!/usr/bin/env python3
+import os, subprocess, sys
+args = sys.argv[1:]
+if args and args[-1].endswith(".status") and len(args) > 1 and "\\t" not in args[1]:
+    with open(os.environ["FM_FIXTURE_BACKSTOP_TRIPWIRE"], "ab") as f: f.write(b"stat\\n")
+    sys.exit(85)
+sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
+''')
+        perl.write_text('''#!/usr/bin/env python3
+import os, subprocess, sys
+if any(arg.endswith(".latest") for arg in sys.argv[1:]):
+    with open(os.environ["FM_FIXTURE_BACKSTOP_TRIPWIRE"], "ab") as f: f.write(b"latest\\n")
+    sys.exit(85)
+sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_PERL"], *sys.argv[1:]]))
+''')
+        stat.chmod(0o700); perl.chmod(0o700)
+        with patch.object(Presentation, "read", early), patch.object(Presentation, "backstop", observed):
+            actual, error = await self.invoke("fm-wake-drain.sh", FM_FIXTURE_BACKSTOP_TRIPWIRE=str(log),
+                FM_FIXTURE_REAL_STAT=real_stat, FM_FIXTURE_REAL_PERL=real_perl)
+        self.assertEqual(len(calls), 1, error)
+        self.assertEqual(len(calls[0]["rows"]), 3, error)
+        self.assertNotIn(b"fm-view-client:", error)
+        self.assertNotIn(b"complete legacy backstop", error)
+        self.assertFalse(log.exists(), log.read_bytes() if log.exists() else b"")
+        cursor = manifest.read_bytes()
+        stat.unlink(); perl.unlink(); manifest.write_bytes(b"")
+        expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        self.assertEqual(actual, expected)
+        self.assertEqual(cursor, manifest.read_bytes())
+        section = actual.split(b"STATUS OUTCOME BACKSTOP", 1)[1].split(b"OPEN DECISIONS", 1)[0]
+        self.assertIn(b"a done: newer\t ", section)
+        self.assertIn(b"b blocked [key=bad key]", section)
+        self.assertNotIn(b"c blocked", section)
+        self.assertNotIn(b"older", actual)
+
+    async def test_backstop_bad_reply_or_late_mtime_change_discards_every_native_row(self):
+        self.status(b"done: first\n", "a", "ship")
+        self.status(b"done: other\n", "b", "ship")
+        manifest = self.state / ".status-presentation-cursor"
+        original = Presentation.backstop
+        diagnostic = b"native backstop facts refused; using complete legacy backstop reads"
+        for mode in ("receipt", "missing", "type", "mtime", "late-rewrite"):
+            with self.subTest(mode=mode):
+                self.status(b"done: first\n", "a", "ship")
+                manifest.write_bytes(b"")
+                calls = []
+                def corrupt(instance, rows):
+                    reply = original(instance, rows)
+                    calls.append(reply)
+                    # Valid poisoned unaffected row detects partial repair.
+                    reply["rows"][1]["line"] = "done: bogus"
+                    if mode == "receipt": reply["rows"][0]["receipt"] = 1
+                    elif mode == "missing": reply["rows"].pop(0)
+                    elif mode == "type": reply["rows"][0]["event_end"] = True
+                    elif mode == "mtime": reply["rows"][0]["mtime"] += 1
+                    else:
+                        path = self.state / "a.status"
+                        stamp = path.stat().st_mtime_ns + 2*10**9
+                        path.write_bytes(b"done: newer\n")
+                        os.utime(path, ns=(stamp, stamp))
+                    return reply
+                with patch.object(Presentation, "backstop", corrupt):
+                    actual, error = await self.invoke("fm-wake-drain.sh")
+                self.assertEqual(len(calls), 1, error)
+                self.assertIn(diagnostic, error)
+                cursor = manifest.read_bytes()
+                manifest.write_bytes(b"")
+                expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+                self.assertEqual(actual, expected)
+                self.assertEqual(cursor, manifest.read_bytes())
+                self.assertNotIn(b"bogus", actual)
+                self.assertIn(b"b done: other", actual)
+                self.assertIn(b"a done: newer" if mode == "late-rewrite" else b"a done: first", actual)
 
     async def test_resident_drain_growth_replacement_and_cache_independence(self):
         self.status(b"needs-decision [key=x]: question\nnote: initial answer\nworking: later\n")

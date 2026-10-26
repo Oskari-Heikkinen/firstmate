@@ -125,6 +125,67 @@ fi
                                "batch" if batch else "legacy", *map(str, paths)],
                               env=dict(self.env, **environment), capture_output=True, timeout=30)
 
+    def test_backstop_guard_proves_whole_inventory_receipts_and_mtime_once(self):
+        for task in ("a", "b"):
+            (self.state / (task + ".status")).write_bytes(b"done: latest\n")
+        snapshot = self.invoke("status_presentation_snapshot_batch")
+        self.assertEqual(snapshot.returncode, 0, snapshot.stderr)
+        captured = snapshot.stdout.decode().strip().split("\n")
+        facts = []
+        for row in captured:
+            task, end, ident = row.split("\t")
+            mtime = (self.state / (task + ".status")).stat().st_mtime_ns // 10**9
+            facts.append(f"{row}\t4\t{mtime}\t{end}\tl:done: latest:l")
+        cursor = self.state / ".status-presentation-cursor"
+        cursor.write_text("".join(f"{row.split(chr(9))[0]}\t{row.split(chr(9))[2]}\t0\t4\n" for row in captured))
+        script = '''. "$1/bin/fm-classify-lib.sh"
+_fm_status_file_size() { echo per-row-size >&2; return 85; }
+_fm_open_decisions_file_ident() { echo per-row-identity >&2; return 85; }
+_fm_status_file_mtime() { echo per-row-mtime >&2; return 85; }
+status_outcome_backstop_cursor_offset() { echo per-row-receipt >&2; return 85; }
+status_snapshot_latest_event() { echo per-row-latest >&2; return 85; }
+status_backstop_facts_current "$2" "$3" "$4"
+'''
+        def guard(selected, **environment):
+            self.log.unlink(missing_ok=True)
+            result = subprocess.run(["bash", "-c", script, "guard", str(ROOT), str(self.state),
+                                     snapshot.stdout.decode(), "\n".join(selected)],
+                                    env=dict(self.env, **environment), capture_output=True, timeout=20)
+            calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+            self.assertLessEqual(len(calls), 1)
+            self.assertEqual(result.stdout, b"")
+            self.assertNotIn(b"per-row-", result.stderr)
+            return result
+        original = {p.name: p.read_bytes() for p in self.state.iterdir()}
+        self.assertEqual(guard(facts).returncode, 0)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+        self.assertEqual(original, {p.name: p.read_bytes() for p in self.state.iterdir()})
+        altered = [facts[:-1], facts + facts[:1], facts[::-1]]
+        for field, value in ((0, "foreign"), (1, "1"), (2, "wrong"), (3, "3"), (3, "5"),
+                             (4, "0"), (5, "999999"), (6, "."), (6, "l::l")):
+            row = facts[0].split("\t"); row[field] = value
+            altered.append(["\t".join(row), facts[1]])
+        for selected in altered:
+            with self.subTest(selected=selected): self.assertNotEqual(guard(selected).returncode, 0)
+        for mode in ("short", "extra", "malformed", "empty-field", "nonregular", "error"):
+            with self.subTest(mode=mode):
+                self.assertNotEqual(guard(facts, FM_FIXTURE_STAT_MODE=mode).returncode, 0)
+        status = self.state / "a.status"
+        raw, stamp = status.read_bytes(), status.stat().st_mtime_ns
+        status.write_bytes(raw + b"done: grew\n")
+        self.assertNotEqual(guard(facts).returncode, 0)
+        status.write_bytes(raw); os.utime(status, ns=(stamp + 2*10**9, stamp + 2*10**9))
+        self.assertNotEqual(guard(facts).returncode, 0)
+        os.utime(status, ns=(stamp, stamp))
+        self.assertEqual(guard(facts).returncode, 0)
+        replacement = self.state / ".replacement"; replacement.write_bytes(raw)
+        replacement.replace(status)
+        self.assertNotEqual(guard(facts).returncode, 0)
+        status.unlink(); status.symlink_to(self.home / "secret")
+        self.assertNotEqual(guard(facts).returncode, 0)
+        cursor.write_text("malformed\n")
+        self.assertNotEqual(guard(facts).returncode, 0)
+
     def test_fresh_signature_batch_matches_reported_owner_without_per_row_commands(self):
         paths = [self.state / name for name in ("b.status", "A.status", "a.x.status")]
         for path in paths: path.write_bytes(b"note: \xff answer\n")
@@ -478,6 +539,92 @@ status_new_lines_since_cursor "$f" "$3" || exit 1
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.state.iterdir() if p.is_file()})
         return native
 
+    def test_backstop_latest_and_receipt_equal_original_owner_without_writes(self):
+        cases = [b"", b" \t\r\n", b"done: one\r\n\t \n", b"failed: unfinished\t ",
+                 b"done: old\n\0\n", b"done: nul\0 byte\r\n", b"done: \xff\n",
+                 b"done: old\n\x85\n", b"done: old\n\xa0\n", b"done: old\n\x1c\n",
+                 b"x" * 65536 + b"\ndone: bounded\n", b"done: " + b"x" * 65536,
+                 b"x" * 65536 + b"\n", b"x" * 65535 + b"\n", b"\vdone: one\rinside\n"]
+        script = '''. "$1/bin/fm-classify-lib.sh"
+f="$2/task.status"
+ident=$(_fm_open_decisions_file_ident "$f") || exit 1
+printf "%s\\0" "$ident"
+status_outcome_backstop_cursor_offset "$f" || exit 1
+printf "\\0"
+if status_snapshot_latest_event "$f" "$3" "$ident"; then
+  printf "%s\\0%s\\0%s" "$FM_STATUS_SNAPSHOT_EVENT_MTIME" "$FM_STATUS_SNAPSHOT_EVENT_ENDPOINT" "$FM_STATUS_SNAPSHOT_EVENT_LINE"
+else
+  printf "%s\\0%s\\0%s" - 0 ''
+fi
+'''
+        cursor = self.state / ".status-presentation-cursor"
+        for raw in cases:
+            with self.subTest(raw=raw[:30], size=len(raw)):
+                row = self.row(raw)
+                # A four-column receipt is read, not consumed or rewritten.
+                ident_run = subprocess.run(["bash", "-c", '. "$1/bin/fm-classify-lib.sh"; _fm_open_decisions_file_ident "$2"',
+                                            "identity", str(ROOT), str(self.state / "task.status")],
+                                           capture_output=True, timeout=20)
+                self.assertEqual(ident_run.returncode, 0, ident_run.stderr)
+                strong = ident_run.stdout.decode()
+                for saved in (None, f"task\t{strong}\t0\n", f"task\t{strong}\t0\t3\n",
+                              "task\tother\t0\t999999\n"):
+                    with self.subTest(saved=saved):
+                        if saved is None: cursor.unlink(missing_ok=True)
+                        else: cursor.write_text(saved)
+                        before = {p.name: p.read_bytes() for p in self.state.iterdir() if p.is_file()}
+                        snapshot = {name: row[name] for name in ("task", "end", "identity", "fully_presented")}
+                        snapshot["strong_identity"] = strong
+                        native = Presentation(self.inputs).backstop([snapshot])["rows"][0]
+                        oracle = subprocess.run(["bash", "-c", script, "oracle", str(ROOT), str(self.state), str(len(raw))],
+                                                capture_output=True, timeout=20)
+                        self.assertEqual(oracle.returncode, 0, oracle.stderr)
+                        identity, receipt, mtime, end, line = oracle.stdout.split(b"\0")
+                        self.assertEqual(identity.decode(), strong)
+                        self.assertEqual(native["receipt"], int(receipt))
+                        self.assertEqual(native["event_end"], int(end))
+                        self.assertEqual(native["line"].encode("utf-8", "surrogateescape"), line)
+                        if mtime != b"-": self.assertEqual(native["mtime"], int(mtime))
+                        self.assertEqual(before, {p.name: p.read_bytes() for p in self.state.iterdir() if p.is_file()})
+
+    def test_backstop_whole_batch_refuses_growth_replacement_and_late_changes(self):
+        from unittest.mock import patch
+        rows = []
+        for task in ("a", "b"):
+            row = self.row(b"done: first\n", task=task)
+            rows.append({**{name: row[name] for name in ("task", "end", "identity", "fully_presented")},
+                         "strong_identity": "weak:" + ":".join(map(str, row["identity"]))})
+        reader = Presentation(self.inputs)
+        self.assertEqual(len(reader.backstop(rows)["rows"]), 2)
+        status = self.state / "a.status"
+        original = status.read_bytes()
+        for raw in (original + b"done: grew\n", original[:-1]):
+            status.write_bytes(raw)
+            with self.assertRaisesRegex(Refused, "live endpoint changed"):
+                reader.backstop(rows)
+        status.write_bytes(original)
+        capture = self.inputs.state_read
+        calls = 0
+        def changed(task, suffix):
+            nonlocal calls
+            result = capture(task, suffix)
+            if task == "a" and suffix == ".status":
+                calls += 1
+                if calls == 1: status.write_bytes(b"done: other\n")
+            return result
+        with patch.object(self.inputs, "state_read", changed):
+            with self.assertRaisesRegex(Refused, "input changed before reply"):
+                reader.backstop(rows)
+        replacement = self.state / ".replacement"
+        replacement.write_bytes(original)
+        replacement.replace(status)
+        with self.assertRaisesRegex(Refused, "live endpoint changed"):
+            reader.backstop(rows)
+        cursor = self.state / ".status-presentation-cursor"
+        cursor.write_text("malformed\n")
+        with self.assertRaisesRegex(Refused, "invalid presentation cursor"):
+            reader.backstop(rows)
+
     def test_kind_unread_and_decision_matrix(self):
         cases = [
             b"", b"working: progress\n", b"note: answer\nworking: later\n",
@@ -687,7 +834,7 @@ class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
     async def test_both_generation_barriers_leave_both_critical_slots_reserved(self):
         import threading
         cases = [(call, phase, operation) for call, phase in ((1, "pre-observe"), (5, "pre-reply"))
-                 for operation in ("status-presentation", "drain-presentation")]
+                 for operation in ("status-presentation", "drain-presentation", "status-backstop")]
         for stalled_call, phase, operation in cases:
             with self.subTest(phase=phase, operation=operation), tempfile.TemporaryDirectory() as temporary:
                 home = Path(temporary).resolve()
@@ -732,7 +879,7 @@ class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
                         args = {"rows": [{"task": task, "end": info.st_size, "offset": 0,
                                           "identity": [info.st_dev, info.st_ino],
                                           "classified": 0, "fully_presented": False}]}
-                        if operation == "drain-presentation":
+                        if operation in ("drain-presentation", "status-backstop"):
                             row = args["rows"][0]
                             row.pop("offset")
                             row.pop("classified")
@@ -753,7 +900,10 @@ class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(release_batch.is_set())
                     release_batch.set()
                     results = await asyncio.wait_for(asyncio.gather(*requests[:4]), 5)
-                    self.assertTrue(all(result["rows"][0]["open"][0]["key"] == "x" for result in results))
+                    if operation == "status-backstop":
+                        self.assertTrue(all(result["rows"][0]["line"] == "blocked [key=x]: held" for result in results))
+                    else:
+                        self.assertTrue(all(result["rows"][0]["open"][0]["key"] == "x" for result in results))
                 finally:
                     release_batch.set()
                     release_critical.set()
@@ -874,6 +1024,12 @@ class PresentationScheduling(unittest.IsolatedAsyncioTestCase):
                 second = await engine.request("drain-presentation", args, 2)
                 self.assertEqual(second["rows"][0]["unread"], [])
                 self.assertEqual(engine.operations, 2)
+                backstop = await engine.request("status-backstop", args, 2)
+                self.assertEqual(backstop["rows"][0]["receipt"], 0)
+                (home / "state/.status-presentation-cursor").write_text(f"task\t{strong}\t{info.st_size}\t1\n")
+                changed = await engine.request("status-backstop", args, 2)
+                self.assertEqual(changed["rows"][0]["receipt"], 1)
+                self.assertEqual(engine.operations, 4)
                 # These shapes are different APIs; a drain snapshot cannot be
                 # admitted as a pre-captured-offset presentation request.
                 with self.assertRaisesRegex(Refused, "invalid presentation row"):
