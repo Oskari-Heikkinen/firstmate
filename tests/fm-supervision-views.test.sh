@@ -13,6 +13,9 @@
 # mutation refusal and full legacy fallback on a corrupt commit-time capture.
 # Fresh annotation-time historical signatures share their owner's parser/encoder;
 # late append/marker-update races and complete-filter fallback match legacy.
+# Classification evidence is validated before selection and rechecked by its
+# owner after annotations; whole-ack fallback retains late marker/cursor parity,
+# malformed-client refusal, unchanged admission and failed-stdout retry.
 # Native offset batching reads real owner-written cursor/marker bytes, refuses
 # unmigrated legacy cursors and leaves all publication/commit authority intact.
 # Real-client corrupt replies exercise observed-offset validation plus the
@@ -92,6 +95,47 @@ then
   pass 'ordinary legacy annotations retain reported-marker checks without the optional batch'
 else
   printf 'not ok - ordinary legacy annotation selection\n' >&2
+  rc=1
+fi
+# Independent public owner probe: malformed inventories cannot be selected,
+# while an unchanged supported marker uses no legacy per-row offset reader.
+if bash -s -- "$ROOT" <<'SH'
+set -u
+. "$1/bin/fm-wake-lib.sh"
+_fm_wake_require_classify || exit 1
+home=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$home"' EXIT
+STATE="$home/state"
+mkdir "$STATE" || exit 1
+printf 'working: a\n' > "$STATE/a.status"
+printf 'working: b\n' > "$STATE/b.status"
+snapshot=$(status_presentation_snapshot "$STATE") || exit 1
+fm_wake_status_mark_current "$STATE" "$STATE/a.status" || exit 1
+fm_wake_status_mark_current "$STATE" "$STATE/b.status" || exit 1
+fm_file_text_to raw_a "$STATE/.seen-a_status" || exit 1
+fm_file_text_to raw_b "$STATE/.seen-b_status" || exit 1
+if [ "$_FM_CLASSIFY_HEX_BYTEWISE" != 1 ]; then
+  if fm_wake_classification_markers_current "$STATE" $'a\t-'; then exit 1; fi
+  printf '# native late marker comparison unsupported; legacy acknowledgement retained\n'
+  exit 0
+fi
+_status_observed_hex_c_to hex_a "$raw_a" || exit 1
+_status_observed_hex_c_to hex_b "$raw_b" || exit 1
+evidence=$(printf 'a\th:%s\nb\th:%s\n' "$hex_a" "$hex_b")
+fm_wake_classification_markers_valid "$snapshot" "$evidence" || exit 1
+status_presentation_marker_offset() { echo 'unexpected per-row classification' >&2; return 86; }
+fm_wake_classification_markers_current "$STATE" "$evidence" || exit 1
+for bad in '' "$evidence"$'\na\t-' $'foreign\t-\nb\t-' $'a\th:0\nb\t-' $'a\th:xy\nb\t-' $'a\t-\textra\nb\t-'; do
+  if fm_wake_classification_markers_valid "$snapshot" "$bad"; then exit 1; fi
+done
+printf 'malformed\n' > "$STATE/.seen-b_status"
+if fm_wake_classification_markers_current "$STATE" "$evidence"; then exit 1; fi
+fm_wake_classification_markers_valid '' ''
+SH
+then
+  pass 'classification evidence admission and whole late freshness guard retain their owner'
+else
+  printf 'not ok - classification marker evidence and late freshness guard\n' >&2
   rc=1
 fi
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.py" || rc=1
