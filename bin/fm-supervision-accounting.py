@@ -963,7 +963,10 @@ def normalize(raw, metadata):
         except Refused:
             losses["unknown_lines"] += 1
             continue
-        if call in ("wait4", "waitid", "exit", "exit_group"):
+        # trace=process also includes signal sends (for example the watcher's
+        # watchdog cleanup). They create neither births nor executable entries;
+        # delivery/termination is represented by strace's separate signal/exit rows.
+        if call in ("wait4", "waitid", "exit", "exit_group", "kill", "tkill", "tgkill", "pidfd_send_signal"):
             continue
         returned = RETURN.match(outcome)
         if call in ("clone", "clone3", "fork", "vfork"):

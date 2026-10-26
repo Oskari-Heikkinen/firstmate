@@ -1307,6 +1307,14 @@ saved_ticks = dict(format='fm-supervision-tick-records.v1', synthetic=True,
 raw_cal = (b'100 1.0 execve("/usr/bin/time", ["time"], []) = 0\n'
            b'100 1.1 clone(child_stack=NULL, flags=SIGCHLD) = 101\n'
            b'101 1.2 execve("/bin/bash", ["bash", "/fixture/code/bin/fm-watch.sh"], []) = 0\n'
+           # Actual watcher shutdown sends SIGTERM to its watchdog; process
+           # tracing includes the send as well as signal delivery and exits.
+           b'101 1.20 kill(101, 0) = 0\n'
+           b'101 1.21 kill(99999, SIGTERM <unfinished ...>\n'
+           b'101 1.22 <... kill resumed>) = -1 ESRCH (No such process)\n'
+           b'101 1.23 tkill(99999, 0) = -1 ESRCH (No such process)\n'
+           b'101 1.24 tgkill(99999, 99999, 0) = -1 ESRCH (No such process)\n'
+           b'101 1.25 pidfd_send_signal(-1, SIGTERM, NULL, 0) = -1 EBADF (Bad file descriptor)\n'
            b'101 1.3 +++ exited with 0 +++\n100 1.4 +++ exited with 0 +++\n')
 cal_profile = dict(identity, argv=['/bin/bash', '/fixture/code/bin/fm-watch.sh'], environment=[], fixture_files=[], ticks_per_sample=1)
 cal_plan = dict(format='fm-supervision-calibration-plan.v1', synthetic=True,
@@ -1399,6 +1407,16 @@ quiet = copy.deepcopy(saved_ticks)
 quiet['profiles'][0].update(line_contains='never written')
 assert retrospective(quiet)['modelled_subtotal']['births'] == 0
 checks += 3
+
+# Signal-only syscalls above must not mask a genuinely unknown trace event.
+lossy_cal = copy.deepcopy(cal_payload)
+lossy_raw = raw_cal.replace(b'101 1.23 tkill(99999, 0)', b'101 1.23 mystery(99999, 0)')
+for sample in lossy_cal['results'][0]['samples']:
+    sample.update(trace_base64=base64.b64encode(lossy_raw).decode(), trace_sha256=hashlib.sha256(lossy_raw).hexdigest())
+refused = run('reconcile', proc_path, '--ticks', save('lossy-cal-ticks.json', saved_ticks),
+              '--calibration', save('lossy-calibration.json', seal_payload(lossy_cal)), good=False)
+assert b'lossy calibration trace' in refused.stderr, refused.stderr
+checks += 1
 
 for label, change in (
     ('outer-seal', lambda v: v.update(sha256='f' * 64)),

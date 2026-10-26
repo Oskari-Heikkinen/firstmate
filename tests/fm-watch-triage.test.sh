@@ -898,11 +898,15 @@ test_secondmate_status_routine_absorbed_routed_surfaced_classifier() {
 # --- benign wakes are absorbed ONLY when the crew is provably working ---------
 
 test_tick_summary_stat_is_portable() {
-  local dir rows path mtime size summary_seen=0 entries_seen=0
+  local dir rows='' path mtime size summary_seen=0 entries_seen=0
+  # This case calls the shared stat API directly, not through a watcher child.
+  # shellcheck source=bin/fm-supervision-lib.sh
+  . "$ROOT/bin/fm-supervision-lib.sh"
   dir=$(make_case tick-summary-stat)
   printf '{}\n' > "$dir/state/home-summary.json"
   printf 'entry\n' > "$dir/state/.supervision-entries.tsv"
-  fm_supervision_tick_stat_to rows "$(uname)" "$dir/state/home-summary.json" "$dir/state/.supervision-entries.tsv"
+  fm_supervision_tick_stat_to rows "$(uname)" "$dir/state/home-summary.json" "$dir/state/.supervision-entries.tsv" \
+    || fail 'portable summary stat API failed'
   while IFS=$'\t' read -r path mtime size; do
     case "$mtime:$size" in *[!0-9:]*|:*|*:) fail 'portable summary stat returned invalid numbers' ;; esac
     case "$path:$size" in
