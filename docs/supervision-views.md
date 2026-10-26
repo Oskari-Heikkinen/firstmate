@@ -131,10 +131,14 @@ The drain also validates the private client's sorted task groups before native s
 A failed native read falls back before the prepared status sections reach stdout.
 Native observation device/inode pairs never replace the original strong identity passed to the commit owner.
 A failed stdout leaves the presentation cursor untouched, and concurrent appends past the captured endpoints remain unread.
+Only after successful stdout and actual native selection, the existing shell commit owner can capture current strong identities and sizes afresh with the same bounded GNU-stat reader and linearly join its cursor/backstop records once for the whole batch.
+It stages the identical four-column manifest and retains the same atomic replacement, selected order, backstop resets and original captured endpoints; newly arrived rows are not consumed.
+Unsupported or uncertain captures and strict packet-admission refusals discard the entire private batch and invoke the complete original commit path with an explicit diagnostic.
+Ordinary legacy selection never attempts this optimization, and selected-row replacement, deletion, symlink or past-end failure still preserves the previous manifest for retry.
 The fleet snapshot can select the same explicit client once for all local task rows, before legacy per-task capture or composition.
 Its backlog parser, contribution collector, cross-home ledger/cache collector and summary/publication owners remain unchanged; the read service cannot write their output or retire a dirty trigger.
 A refused native batch invokes the entire legacy task capture/composition path before any snapshot output.
-The native path no longer invokes per-row cursor/marker-offset helpers, but still pays the legacy snapshot, commit and historical-signature reads.
+The native path no longer invokes per-row cursor/marker-offset helpers, and its optional commit batch removes repeated identity/size/cursor reads when admitted, but still pays the legacy transaction graph and historical-signature reads.
 It is not a completed hot-path migration or a performance acceptance claim.
 
 ## Verification and remaining migration
@@ -154,6 +158,9 @@ The presentation parity matrix also exercises native offset batching against tho
 Strong-snapshot capture tests compare every output byte with the legacy owner in C and UTF-8 locales, including unavailable birth time, growth, rotation, empty/nonregular inputs and parent-channel bindings.
 They require one stat invocation for the entire admitted inventory, zero for an empty inventory, and no partial output on malformed, short, extra, nonregular, symlink-swapped or deleted inputs; unsupported overrides and oversized inventories retain legacy admission rather than truncating.
 A real native-service/client drain case also requires full output and committed-cursor equality after both successful batching and malformed-stat whole-snapshot recapture, while the nonselected legacy CLI never attempts that batch.
+Presentation-commit cases compare complete manifests with the legacy owner under C/UTF-8 for old/new/missing cursors, ordering, carried/acknowledged/reset backstops, growth beyond the selected endpoint and newly arrived unselected rows.
+They require one fresh stat for the admitted inventory with per-row identity/size/backstop readers forbidden, preserve the old cursor and protected target on selected-row rotation/deletion/truncation/symlink or past-end acknowledgement, and retain complete legacy fallback for malformed captures or cursor packets.
+The real-client whole-drain case observes successful nonempty native reads for both normal commit batching and a separately corrupted commit-time capture, requiring identical full output/cursor bytes and no batch attempt by ordinary legacy selection.
 These invocation assertions are mechanism checks, not a B0 performance result.
 Additional cases cover missing manifests/rows, legacy migration refusal, identity/size reset, malformed and replaced cursors, fresh offsets without status changes and the new verb's ordinary-lane generation barriers.
 Real-client regressions corrupt the service's observed offset or suggested endpoint, then separately corrupt successful client output after its reply checks, requiring full legacy output/cursor parity and an explicit refusal diagnostic for regressive, duplicate, missing, foreign, identity-mismatched and past-end suggestions.
