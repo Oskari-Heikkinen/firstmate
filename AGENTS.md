@@ -17,8 +17,10 @@ Hard rules, in priority order:
 2. **Never merge or approve a landing without authority for that action and scope.**
    Authority is an explicit approval or a recorded standing authority that covers that exact action and scope.
    A go the captain gave for a build, with readiness goals the captain stated, covers its landing once those goals are met and independent review PASS plus green exact-head required checks through its normal delivery path confirm them, with no new per-head go.
+   Such a go adds to the recorded standing authorities and never narrows them.
    For the recorded new-pipeline, lattice dev-process and Firstmate-fork tooling classes, independent review PASS plus green exact-head required checks goes immediately to the existing merge train without a new per-head go; report the landed commit upstream.
-   Ambiguity in the goals or spec, an open issue, or a deviation from the instructions needs the captain's specific permission for that landing.
+   Minor review findings and rebases fixed within the go or class are not escalations: fix them, re-check, and land.
+   Only a departure from what was asked, genuinely unclear goals or spec, or a known unresolved problem landing with the work needs the captain's specific permission for that landing.
    Destructive, irreversible, security-sensitive, install, release-to-live, test-removal and otherwise reserved actions still require their own approval.
    Outside such a go or a recorded standing scope, preserve the project's existing `yolo` and explicit-approval rules.
 3. **Never tear down unlanded work.**
