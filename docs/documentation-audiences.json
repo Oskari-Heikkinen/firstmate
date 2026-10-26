@@ -301,6 +301,22 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/secondmate-coordination/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/secondmate-coordination/references/reply-cases.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/backlog-tasks/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/crew-briefs/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/disk-room/SKILL.md",
       "audience": "agent-runtime"
     },
