@@ -176,7 +176,9 @@ else
   printf 'not ok - classification marker evidence and late freshness guard\n' >&2
   rc=1
 fi
-PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/bundle_checks.py" || rc=1
+# Name every immutable-code/preflight case, including previously unreachable
+# fault controls, while retaining the independent non-fail-fast stage boundary.
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/bundle_checks.py" -v || rc=1
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.py" || rc=1
 FM_VIEW_CREW_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-crew-state.test.sh" || rc=1
 FM_VIEW_COMPAT_MATRIX=1 PYTHONDONTWRITEBYTECODE=1 bash "$ROOT/tests/fm-fleet-snapshot-view.test.sh" || rc=1
