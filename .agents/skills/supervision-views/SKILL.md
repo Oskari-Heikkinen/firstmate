@@ -13,5 +13,5 @@ They and their explicitly selected read clients are an uninstalled foundation, n
 Keep existing transaction owners and production entrypoints selected until the complete behavior, protocol and performance gates are proved.
 Load `tool-design`, `lean-supervision` and `handoff-coverage` before adding a service, client or recurring actor.
 Do not install or start a production service from this skill.
-For immutable code preparation only, use the bundle helper named by the view-engine owner; a verified code object is not startup, actor or home-mode authority.
+For immutable code preparation and read-primitive preflight only, use the helpers named by the view-engine owner; a verified code object or preflight response is not startup, actor, health or home-mode authority.
 Report any failed observation as refusal/unknown to its invoking owner, never as an empty successful read.

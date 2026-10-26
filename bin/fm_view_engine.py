@@ -18,12 +18,8 @@ import struct
 import time
 
 from fm_view_status import FoldIndex, Vocabulary
-
-PROTOCOL = "fm-supervision-views.v1"
-MAX_MESSAGE = 1024 * 1024
-MAX_FILE = 4 * 1024 * 1024
-MAX_CLIENTS = 64
-MAX_TIMEOUT = 30.0
+from fm_view_protocol import (PROTOCOL, VERBS, MAX_MESSAGE, MAX_FILE, MAX_CLIENTS,
+                              MAX_TIMEOUT, MAX_WORKERS, MAX_CRITICAL_WORKERS)
 TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
@@ -245,7 +241,7 @@ class BoundedLane:
 
 class Engine:
     def __init__(self, inputs, workers=4, critical_workers=2):
-        require(1 <= workers <= 16 and 1 <= critical_workers <= 4, "worker count outside bound")
+        require(1 <= workers <= MAX_WORKERS and 1 <= critical_workers <= MAX_CRITICAL_WORKERS, "worker count outside bound")
         self.inputs = inputs
         self.ordinary = BoundedLane(workers)
         self.critical = BoundedLane(critical_workers)
@@ -255,7 +251,7 @@ class Engine:
 
     async def request(self, operation, arguments, timeout):
         deadline = time.monotonic() + timeout
-        require(operation in ("status-fold", "crew-state", "status-presentation", "drain-presentation", "status-backstop", "snapshot-tasks"), "unsupported read verb")
+        require(operation in VERBS, "unsupported read verb")
         if operation == "snapshot-tasks":
             return await self.snapshot_request(arguments, timeout)
         if operation in ("status-presentation", "drain-presentation", "status-backstop"):

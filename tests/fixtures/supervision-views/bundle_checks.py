@@ -226,6 +226,66 @@ sys.exit(87)
 '''
 
 
+CAPABILITY_DRIVER = r'''
+import errno
+import os
+from pathlib import Path
+import runpy
+import signal
+import socket
+import struct
+import subprocess
+import sys
+
+tool, fault = sys.argv[1:3]
+sys.path.insert(0, str(Path(tool).parent))
+sys.argv = [tool, *sys.argv[3:]]
+# Load the selected CLI's ordinary modules before changing runtime facts;
+# refusal controls must reach its preflight, not break stdlib import selection.
+import argparse
+import fm_view_capabilities
+
+def denied(*args, **kwargs):
+    raise PermissionError(errno.EPERM, "fixture syscall refused")
+def unavailable(*args, **kwargs):
+    raise OSError(errno.EINVAL, "fixture waitid unavailable")
+def no_children(*args, **kwargs):
+    raise AssertionError("preflight must not create children")
+subprocess.Popen = no_children
+if fault == "python": sys.version_info = (3, 8, 20)
+elif fault == "platform": sys.platform = "darwin"
+elif fault == "peer-symbol": del socket.SO_PEERCRED
+elif fault == "pidfd-symbol": del os.pidfd_open
+elif fault == "signal-symbol": del signal.pidfd_send_signal
+elif fault == "wait-symbol": del os.P_PIDFD
+elif fault == "nonreap-symbol": del os.WNOWAIT
+elif fault == "pidfd-denied": os.pidfd_open = denied
+elif fault == "signal-denied": signal.pidfd_send_signal = denied
+elif fault == "wait-denied": os.waitid = unavailable
+elif fault == "sigchld": signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+elif fault.startswith("replace-"):
+    def selected(option): return Path(sys.argv[sys.argv.index(option) + 1])
+    live = {"replace-home": selected("--home"), "replace-state": selected("--home") / "state",
+            "replace-store": selected("--bundle").parent, "replace-bundle": selected("--bundle")}[fault]
+    real_pidfd = os.pidfd_open
+    def replace(*args, **kwargs):
+        live.rename(live.with_name("retained-" + live.name))
+        live.mkdir(mode=0o500 if fault == "replace-bundle" else 0o700)
+        if fault == "replace-home": (live / "state").mkdir(mode=0o700)
+        return real_pidfd(*args, **kwargs)
+    os.pidfd_open = replace
+elif fault == "peer-mismatch":
+    real_pair = socket.socketpair
+    class Peer:
+        def __init__(self, sock): self.sock = sock
+        def getsockopt(self, *args): return struct.pack("3i", os.getpid(), os.getuid() + 1, os.getgid())
+        def close(self): self.sock.close()
+    socket.socketpair = lambda *args: tuple(Peer(s) for s in real_pair(*args))
+elif fault != "none": raise AssertionError("unrecognized capability control")
+runpy.run_path(tool, run_name="__main__")
+'''
+
+
 @unittest.skipUnless(sys.platform == "linux", "immutable native bundle publication is Linux-only; legacy remains selected")
 class BundlePreparation(unittest.TestCase):
     @classmethod
@@ -762,6 +822,137 @@ class BundlePreparation(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["open"][0]["key"], "x")
         self.assertEqual(before, {p.name: p.read_bytes() for p in (self.home / "state").iterdir()})
         self.assertTrue(self.command("verify", "--bundle", bundle)["verified"])
+
+    def capabilities(self, bundle, *, tool=None, fault=None, ok=True, home=None, identity=None):
+        tool = tool or ROOT / "bin/fm-view-capabilities.py"
+        arguments = ["--bundle", str(bundle), "--identity", identity or bundle.name,
+                     "--home", str(home or self.home)]
+        command = ([sys.executable, "-I", "-B", "-c", CAPABILITY_DRIVER, str(tool), fault, *arguments]
+                   if fault else [sys.executable, str(tool), *arguments])
+        result = subprocess.run(command, capture_output=True, env=self.environment, timeout=20, cwd=self.home)
+        if ok:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, b"")
+            return json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"fm-view-capabilities: refused:", result.stderr)
+        return result
+
+    def test_capability_whole_response_and_relocated_code_have_no_state_or_actor_effect(self):
+        bundle = self.prepared()
+        state = self.home / "state"
+        for name in ("task.status", ".wake-queue", ".status-presentation-cursor", ".last-watcher-beat"):
+            (state / name).write_bytes(b"unchanged preflight input\n")
+        def snapshot(root):
+            return {str(p.relative_to(root)): (p.lstat().st_ino, p.lstat().st_mode,
+                    p.lstat().st_mtime_ns, p.read_bytes() if p.is_file() else None)
+                    for p in root.rglob("*")}
+        before_home, before_store = snapshot(self.home), snapshot(self.store)
+        manifest = json.loads((bundle / "manifest.json").read_bytes())
+        expected = {"schema": "fm-view-capabilities.v1", "scope": "read-only-primitives",
+                    "home": str(self.home),
+                    "roots": {"home": [self.home.stat().st_dev, self.home.stat().st_ino],
+                              "state": [state.stat().st_dev, state.stat().st_ino]},
+                    "bundle": {"path": str(bundle), "identity": bundle.name,
+                               "commit": self.commit, "tree": manifest["tree"]},
+                    "python": {"minimum": [3, 9], "running": list(sys.version_info[:3])},
+                    "platform": "linux", "features": {"peer_uid": "SO_PEERCRED", "pidfd": True,
+                                                        "nonreaping_wait": True, "sigchld": "default"},
+                    "read_protocol": "fm-supervision-views.v1",
+                    "verbs": ["status-fold", "crew-state", "status-presentation", "drain-presentation",
+                              "status-backstop", "snapshot-tasks"],
+                    "bounds": {"message_bytes": 1048576, "input_bytes": 4194304, "clients": 64,
+                               "timeout_ms": 30000, "ordinary_workers_max": 16, "critical_workers_max": 4},
+                    "authority": {"installed": False, "monitoring": False,
+                                  "identity_bound_shutdown": False, "transactions": False}}
+        self.assertEqual(self.capabilities(bundle, fault="none"), expected)
+        self.repo.rename(self.root / "source-hidden")
+        self.assertEqual(self.capabilities(bundle, tool=bundle / "bin/fm-view-capabilities.py", fault="none"), expected)
+        self.assertEqual(snapshot(self.home), before_home)
+        self.assertEqual(snapshot(self.store), before_store)
+        self.assertTrue(self.command("verify", "--bundle", bundle, "--identity", bundle.name)["verified"])
+
+    def test_capability_missing_symbols_and_actual_kernel_refusals_never_emit_success(self):
+        bundle = self.prepared()
+        self.capabilities(bundle, fault="none")  # Independent positive control.
+        faults = {"python": b"Python", "platform": b"Linux", "peer-symbol": b"peer UID",
+                  "pidfd-symbol": b"pidfd", "signal-symbol": b"pidfd", "wait-symbol": b"pidfd",
+                  "nonreap-symbol": b"pidfd", "pidfd-denied": b"fixture syscall refused",
+                  "signal-denied": b"fixture syscall refused", "wait-denied": b"fixture waitid unavailable",
+                  "sigchld": b"SIGCHLD", "peer-mismatch": b"peer UID probe mismatch"}
+        for fault, message in faults.items():
+            with self.subTest(fault=fault):
+                self.assertIn(message, self.capabilities(bundle, fault=fault, ok=False).stderr)
+        self.capabilities(bundle, fault="none")
+
+    def test_capability_bundle_corruption_identity_and_inspector_version_are_refused(self):
+        original = self.prepared()
+        self.capabilities(original)
+        for name in ("bin/fm-view-capabilities.py", "bin/fm_view_capabilities.py", "bin/fm_view_protocol.py"):
+            with self.subTest(member=name):
+                bundle = self.clone_bundle(original)
+                path = bundle / name
+                mode = path.stat().st_mode & 0o777
+                path.chmod(0o600); path.write_bytes(path.read_bytes() + b"\n# content corruption\n"); path.chmod(mode)
+                self.assertIn(b"dependency hash mismatch", self.capabilities(bundle, ok=False).stderr)
+        self.assertIn(b"identity", self.capabilities(original, identity="0" * 64, ok=False).stderr)
+        self.assertIn(b"identity required", self.capabilities(original, identity="not-a-hash", ok=False).stderr)
+        # A valid newer bundle still cannot be certified by a different
+        # inspector; that version's own tool must inspect its matching bytes.
+        changed = self.repo / "bin/fm_view_protocol.py"
+        changed.write_bytes(changed.read_bytes() + b"\n# distinct reviewed fixture protocol version\n")
+        self.git("add", "--all"); self.git("commit", "-qm", "Distinct inspector fixture")
+        self.commit = self.git("rev-parse", "HEAD").stdout.decode().strip()
+        newer = self.prepared()
+        self.assertIn(b"inspector/protocol differs", self.capabilities(newer, ok=False).stderr)
+        self.capabilities(newer, tool=newer / "bin/fm-view-capabilities.py")
+        self.capabilities(original)  # Old immutable version remains usable.
+
+    def test_capability_root_replacements_refuse_and_preserve_originals(self):
+        bundle = self.prepared()
+        state = self.home / "state"
+        (state / "task.status").write_bytes(b"protected original status\n")
+        for fault, live in (("replace-home", self.home), ("replace-state", state),
+                            ("replace-store", self.store), ("replace-bundle", bundle)):
+            with self.subTest(fault=fault):
+                self.capabilities(bundle, fault="none")
+                previous = (live.stat().st_dev, live.stat().st_ino, live.stat().st_mode)
+                result = self.capabilities(bundle, fault=fault, ok=False)
+                self.assertIn(b"preflight root replaced", result.stderr)
+                retained = live.with_name("retained-" + live.name)
+                self.assertEqual((retained.stat().st_dev, retained.stat().st_ino, retained.stat().st_mode), previous)
+                if fault == "replace-home":
+                    self.assertEqual(list((live / "state").iterdir()), [])
+                    (live / "state").rmdir()
+                self.assertEqual(list(live.iterdir()), [])
+                live.rmdir(); retained.rename(live)
+                self.assertEqual((state / "task.status").read_bytes(), b"protected original status\n")
+                self.assertTrue(self.command("verify", "--bundle", bundle)["verified"])
+                self.capabilities(bundle)
+
+    def test_capability_unsafe_home_state_store_and_checkout_refuse_without_mutation(self):
+        original = self.prepared()
+        self.capabilities(original)
+        link = self.root / "home-link"; link.symlink_to(self.home, target_is_directory=True)
+        self.assertIn(b"noncanonical", self.capabilities(original, home=link, ok=False).stderr)
+        state = self.home / "state"
+        retained = self.home / "state-retained"; state.rename(retained)
+        state.symlink_to(retained, target_is_directory=True)
+        self.assertIn(b"noncanonical", self.capabilities(original, ok=False).stderr)
+        state.unlink(); retained.rename(state)
+        self.store.chmod(0o755)
+        self.assertIn(b"mode mismatch", self.capabilities(original, ok=False).stderr)
+        self.store.chmod(0o700)
+        for parent in (self.home / "inside", self.repo / "inside"):
+            with self.subTest(parent=parent):
+                parent.mkdir(mode=0o700)
+                bundle = parent / original.name
+                shutil.copytree(original, bundle)
+                result = self.capabilities(bundle, ok=False)
+                self.assertTrue(b"outside operational home" in result.stderr or b"inside a Git checkout" in result.stderr)
+                self.assertTrue(self.command("verify", "--bundle", bundle)["verified"])
+        self.capabilities(original)
 
 
 if __name__ == "__main__":

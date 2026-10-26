@@ -26,6 +26,7 @@ MAX_MANIFEST = 64 * 1024
 # backend's dynamic sibling set. Non-tmux backend operations remain refused.
 FILES = tuple(sorted((
     "bin/fm-view-bundle.py", "bin/fm_view_bundle.py", "bin/fm-view-client.py",
+    "bin/fm-view-capabilities.py", "bin/fm_view_capabilities.py", "bin/fm_view_protocol.py",
     "bin/fm_view_engine.py", "bin/fm_view_status.py", "bin/fm_view_crew.py",
     "bin/fm_view_runs.py", "bin/fm_view_process.py", "bin/fm_view_offsets.py",
     "bin/fm_view_presentation.py", "bin/fm_view_snapshot.py",
