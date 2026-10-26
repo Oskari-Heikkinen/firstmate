@@ -129,7 +129,8 @@ It asks once for native captured annotation lines, unread/open-decision facts an
 After the actual enrichment delay, the annotation owner admits the whole captured inventory against one fresh bounded strong-identity snapshot from its existing GNU-stat reader, covering direct and historical rows before any annotation output.
 Every captured task must still be present, regular, readable and nonsymlink, with its original strong identity and at least its captured byte endpoint; changed inventory, unsupported readers/platforms or malformed/uncertain evidence refuses the entire selection.
 Growth beyond a captured endpoint remains admitted but is not presented by this snapshot.
-On refusal, all captured annotation groups are discarded and the complete existing legacy annotation reader decides every row on the same snapshot, preserving raw wakes and unrelated readable annotations rather than partially repairing native rows.
+On refusal, all captured annotation groups are discarded and the complete existing legacy annotation reader runs on the same snapshot rather than partially repairing native rows.
+Raw wakes remain intact; the existing legacy cursor-lookup refusal still stops the annotation loop at a missing path, so later unrelated rows can be omitted too.
 This guard never reads a span or cursor, writes a record or changes the status-section and acknowledgement owners; admitted annotations still consume their captured lines without per-row span/cursor reopens.
 The existing signature owner then observes up to 256 historical-only regular-file signatures in one fresh GNU-stat call and reads their reported markers in shell.
 The batch shares the ordinary signature parser and encoder, never reuses the earlier presentation capture, and never consults owned-append coverage to suppress an annotation.
@@ -175,7 +176,8 @@ Queued-signal fixtures also compare full annotation bytes and committed cursor b
 A renderer tripwire supplies a real strong-identity snapshot and refuses any attempted cursor/span reopen on the admitted path.
 Annotation path-admission cases require one whole-inventory stat and no per-row identity/size/span/cursor helpers, admit captured-end growth, and refuse deletion, rotation, truncation, symlinks, unreadable/nonregular paths, incomplete/malformed/error captures and malformed inventories without output or record mutation.
 Real-client actual-enrichment controls pin deletion both after a successful nonempty native capture and before its status read, separating whole legacy annotation fallback from early native refusal.
-They cover direct and historical rows, preserve ordered raw wakes and unrelated first/later annotations, and compare complete output/cursor bytes against the legacy owner at the same annotation-time input.
+They cover direct and historical rows and compare complete output/cursor bytes against the legacy owner at the same annotation-time input while preserving ordered raw wakes.
+Deleted-middle-path controls explicitly retain the legacy one-annotation boundary; separate deleted-last-path controls require both unrelated annotations in order.
 An intentionally incomplete unaffected native group must also be discarded on late deletion or malformed/error admission captures, detecting partial repair or output before whole-batch validation.
 The original delayed-deletion queue case and actual-delay append/classified-marker regression remain unchanged.
 A real-client corruption fixture reverses its annotation groups after a successful socket read and requires complete legacy output and cursor parity, detecting validation that happens only after native selection.
