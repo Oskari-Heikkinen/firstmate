@@ -529,13 +529,18 @@ sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
         stat.chmod(0o700)
         original, original_read = Presentation.read, Inputs.state_read
         diagnostic = b"captured paths changed or unsupported; using complete legacy annotations"
-        for mode in ("unchanged", "late-direct", "late-historical", "early-direct", "early-historical", "malformed", "error"):
-            with self.subTest(mode=mode):
+        modes = ("unchanged", "late-direct", "late-historical", "early-direct", "early-historical", "malformed", "error")
+        cases = [(mode, "middle") for mode in modes]
+        cases.extend((mode, "last") for mode in modes if mode.startswith(("late-", "early-")))
+        for mode, placement in cases:
+            with self.subTest(mode=mode, placement=placement):
                 attempts, replies, deleted = [], [], []
                 historical = mode.endswith("historical")
+                victim = b"signal\ta." + (b"turn-ended" if historical else b"status") + b"\tsignal: disappears\n"
+                later = b"signal\tc.turn-ended\tsignal: unrelated historical\n"
                 raw = (b"100\t1\tsignal\tb.status\tsignal: unrelated first\n"
-                       + b"100\t2\tsignal\ta." + (b"turn-ended" if historical else b"status") + b"\tsignal: disappears\n"
-                       + b"100\t3\tsignal\tc.turn-ended\tsignal: unrelated historical\n")
+                       + b"100\t2\t" + (victim if placement == "middle" else later)
+                       + b"100\t3\t" + (later if placement == "middle" else victim))
                 (self.state / ".wake-queue").write_bytes(raw)
                 def read(inputs, task, suffix):
                     if mode.startswith("early-") and task == "a" and suffix == ".status" and not deleted:
@@ -603,10 +608,19 @@ sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_STAT"], *args]))
                 self.assertTrue(actual.startswith(raw))
                 self.assertEqual((self.state / ".wake-queue").read_bytes(), raw)
                 annotations = [line for line in actual.splitlines() if line.startswith(b"wake annotation:")]
-                expected_keys = (b"b", b"c") if mode.startswith(("late-", "early-")) else (b"b", b"a", b"c")
+                if mode.startswith(("late-", "early-")):
+                    # The existing legacy cursor lookup aborts on a missing
+                    # middle path, so c is omitted too. Keep that boundary
+                    # separate from the deleted-last whole-fallback proof.
+                    expected_keys = (b"b",) if placement == "middle" else (b"b", b"c")
+                    self.assertNotIn(b": a.status:", b"\n".join(annotations))
+                else:
+                    expected_keys = (b"b", b"a", b"c")
                 self.assertEqual(len(annotations), len(expected_keys), actual)
                 for task, line in zip(expected_keys, annotations):
                     self.assertIn(b": " + task + b".status: working: " + task + b" context", line)
+                    if task == b"c":
+                        self.assertIn(b"historical / not necessarily the triggering event", line)
 
     async def test_late_classification_marker_guard_keeps_whole_legacy_acknowledgement_parity(self):
         self.status(b"working: first\nworking: last\n", "a")
