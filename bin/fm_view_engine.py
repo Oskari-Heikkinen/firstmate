@@ -255,10 +255,10 @@ class Engine:
 
     async def request(self, operation, arguments, timeout):
         deadline = time.monotonic() + timeout
-        require(operation in ("status-fold", "crew-state", "status-presentation", "drain-presentation", "snapshot-tasks"), "unsupported read verb")
+        require(operation in ("status-fold", "crew-state", "status-presentation", "drain-presentation", "status-backstop", "snapshot-tasks"), "unsupported read verb")
         if operation == "snapshot-tasks":
             return await self.snapshot_request(arguments, timeout)
-        if operation in ("status-presentation", "drain-presentation"):
+        if operation in ("status-presentation", "drain-presentation", "status-backstop"):
             return await self.presentation_request(arguments, timeout, operation)
         allowed = {"task", "kind", "vocabulary"} if operation == "status-fold" else {"task", "options"}
         require(type(arguments) is dict and set(arguments) <= allowed
@@ -355,6 +355,8 @@ class Engine:
             presentation = Presentation(self.inputs)
             if operation == "drain-presentation":
                 return presentation.read_from_snapshot(rows)
+            if operation == "status-backstop":
+                return presentation.backstop(rows)
             return presentation.read(rows)
         future = self.inflight.get(token)
         if future is None or future.done():

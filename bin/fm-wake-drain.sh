@@ -353,6 +353,7 @@ EOF
 
 print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
   local snapshot=$1 task endpoint ident event event_endpoint line verb key receipt store lock ready
+  local input=$1 facts request='' native_backstop=0 native_mtime packed
   local output='' used=0 shown=0 omitted=0 bytes item_bytes=220 global_bytes=4000 rc=0
   [ "$ACTOR" = main ] || return 0
 
@@ -378,17 +379,41 @@ print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
     fi
   fi
 
+  # Fresh read at the original late boundary, not the earlier unread capture.
+  # Index initialization/lock, policy, caps and receipt assignment stay here.
+  if [ "${NATIVE_PRESENTATION:-0}" = 1 ]; then
+    while IFS=$'\t' read -r task endpoint ident; do
+      [ -n "$task" ] || continue
+      request+="$task"$'\t'"$endpoint"$'\t'"$ident"$'\t0\n'
+    done <<EOF
+$snapshot
+EOF
+    if status_backstop_inputs_current "$STATE" "$snapshot" \
+      && facts=$(FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm-view-client.py" status-backstop <<< "$request") \
+      && status_backstop_facts_current "$STATE" "$snapshot" "$facts"; then
+      input=$facts
+      native_backstop=1
+    else
+      printf 'wake drain: native backstop facts refused; using complete legacy backstop reads\n' >&2
+    fi
+  fi
   STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED=
-  while IFS=$(printf '\t') read -r task endpoint ident; do
+  while IFS=$'\t' read -r task endpoint ident receipt native_mtime event_endpoint packed; do
     [ -n "$task" ] || continue
-    receipt=$(status_outcome_backstop_cursor_offset "$STATE/$task.status") || { rc=1; break; }
-    [ "$receipt" -lt "$endpoint" ] || continue
-    status_snapshot_latest_event "$STATE/$task.status" "$endpoint" "$ident" || continue
-    event=$FM_STATUS_SNAPSHOT_EVENT_LINE
-    event_endpoint=$FM_STATUS_SNAPSHOT_EVENT_ENDPOINT
+    if [ "$native_backstop" = 1 ]; then
+      [ "$receipt" -lt "$endpoint" ] || continue
+      [ "$packed" != . ] || continue
+      event=${packed#l:}; event=${event%:l}
+    else
+      receipt=$(status_outcome_backstop_cursor_offset "$STATE/$task.status") || { rc=1; break; }
+      [ "$receipt" -lt "$endpoint" ] || continue
+      status_snapshot_latest_event "$STATE/$task.status" "$endpoint" "$ident" || continue
+      event=$FM_STATUS_SNAPSHOT_EVENT_LINE
+      event_endpoint=$FM_STATUS_SNAPSHOT_EVENT_ENDPOINT
+    fi
     [ "$receipt" -lt "$event_endpoint" ] || continue
     status_is_captain_relevant "$event" || continue
-    verb=$(status_line_verb "$event")
+    status_line_verb "$event" verb
     case "$verb" in
       needs-decision|blocked)
         key=$(_fm_decision_key "$event") || key=
@@ -426,7 +451,7 @@ print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
     used=$((used + bytes))
     shown=$((shown + 1))
   done <<EOF
-$snapshot
+$input
 EOF
 
   if [ -e "$store" ] || [ -L "$store" ]; then fm_lock_release "$lock"; fi
