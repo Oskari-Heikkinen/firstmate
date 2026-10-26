@@ -523,7 +523,7 @@ pass "best-effort refresh bounds validation and publication"
 refresh_temps() {  # <state-dir> <tmp-dir>
   local entry
   for entry in "$1"/.home-summary.json.* "$1"/.home-summary-error.* \
-    "$1"/.home-summary-run.* "$2"/*; do
+    "$1"/.home-summary-run.* "$1"/.*-cursor.read.* "$1"/.*-cursor.tmp.* "$2"/*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     printf '%s\n' "$entry"
   done
@@ -570,29 +570,60 @@ mkdir "$STALE_STATE/.home-summary-run.99999" "$STALE_STATE/.home-summary-run.999
 : > "$STALE_STATE/.home-summary-error.abcdef"
 : > "$STALE_STATE/.home-summary.json.ghijkl"
 : > "$STALE_STATE/.home-summary.json.keep"
+: > "$STALE_STATE/.stale-task.snapshot-open-decisions-cursor.tmp.4242"
+: > "$STALE_STATE/.fresh-task.snapshot-open-decisions-cursor.tmp.4343"
+: > "$STALE_STATE/.stale-task.open-decisions-cursor.tmp.4242"
+: > "$WRITER_TMP/fm-open-decisions-read.abcdef"
+: > "$WRITER_TMP/fm-open-decisions-read.ghijkl"
 fm_touch_epoch "$(( $(date +%s) - 600 ))" "$STALE_STATE/.home-summary-run.99999" \
   "$STALE_STATE/.home-summary.json.abcdef" "$STALE_STATE/.home-summary-error.abcdef" \
-  "$STALE_STATE/.home-summary.json.keep"
+  "$STALE_STATE/.home-summary.json.keep" \
+  "$STALE_STATE/.stale-task.snapshot-open-decisions-cursor.tmp.4242" \
+  "$STALE_STATE/.stale-task.open-decisions-cursor.tmp.4242"
 fm_touch_epoch "$(( $(date +%s) - 7200 ))" "$WRITER_TMP/fm-fleet-tasks.abcdef" \
-  "$WRITER_TMP/fm-fleet-ledgers.abcdef" "$WRITER_TMP/fm-fleet-tasks-other"
-fm_touch_epoch "$(( $(date +%s) - 600 ))" "$WRITER_TMP/fm-fleet-tasks.ghijkl"
+  "$WRITER_TMP/fm-fleet-ledgers.abcdef" "$WRITER_TMP/fm-fleet-tasks-other" \
+  "$WRITER_TMP/fm-open-decisions-read.abcdef"
+fm_touch_epoch "$(( $(date +%s) - 600 ))" "$WRITER_TMP/fm-fleet-tasks.ghijkl" \
+  "$WRITER_TMP/fm-open-decisions-read.ghijkl"
 PATH="$FAKEBIN:$PATH" TMPDIR="$WRITER_TMP" \
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" FM_HOME_SUMMARY_TIMEOUT=60 \
   FM_SNAPSHOT_NOW="$NOW_THREE" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_THREE" \
   "$WRITER" || fail "the sweeping refresh failed"
 for gone in "$STALE_STATE/.home-summary-run.99999" "$STALE_STATE/.home-summary.json.abcdef" \
   "$STALE_STATE/.home-summary-error.abcdef" "$WRITER_TMP/fm-fleet-tasks.abcdef" \
-  "$WRITER_TMP/fm-fleet-ledgers.abcdef"; do
+  "$WRITER_TMP/fm-fleet-ledgers.abcdef" \
+  "$STALE_STATE/.stale-task.snapshot-open-decisions-cursor.tmp.4242" \
+  "$WRITER_TMP/fm-open-decisions-read.abcdef"; do
   [ ! -e "$gone" ] || fail "the refresh did not sweep the stale temp $gone"
 done
 for kept in "$STALE_STATE/.home-summary-run.99998" "$STALE_STATE/.home-summary.json.ghijkl" \
   "$STALE_STATE/.home-summary.json.keep" "$WRITER_TMP/fm-fleet-tasks.ghijkl" \
-  "$WRITER_TMP/fm-fleet-tasks-other"; do
+  "$WRITER_TMP/fm-fleet-tasks-other" \
+  "$STALE_STATE/.fresh-task.snapshot-open-decisions-cursor.tmp.4343" \
+  "$STALE_STATE/.stale-task.open-decisions-cursor.tmp.4242" \
+  "$WRITER_TMP/fm-open-decisions-read.ghijkl"; do
   [ -e "$kept" ] || fail "the refresh swept $kept, which is fresh or not its own"
 done
 rm -rf -- "$STALE_STATE/.home-summary-run.99998" "$WRITER_TMP"
-rm -f -- "$STALE_STATE/.home-summary.json.ghijkl" "$STALE_STATE/.home-summary.json.keep"
+rm -f -- "$STALE_STATE/.home-summary.json.ghijkl" "$STALE_STATE/.home-summary.json.keep" \
+  "$STALE_STATE/.fresh-task.snapshot-open-decisions-cursor.tmp.4343" \
+  "$STALE_STATE/.stale-task.open-decisions-cursor.tmp.4242"
 pass "the next refresh sweeps stale temps from killed refreshes"
+
+# Only a worker takes its directory from the environment, and only under the
+# name its parent gives it: a stray value never names a path a refresh removes.
+CANARY="$TMP_ROOT/run-dir-canary"
+for stray in "$CANARY" "$HOME_DIR/state/.home-summary-run.12x"; do
+  mkdir -p "$stray"
+  : > "$stray/keep"
+  PATH="$FAKEBIN:$PATH" FM_HOME_SUMMARY_RUN_DIR="$stray" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" FM_HOME_SUMMARY_TIMEOUT=60 \
+    FM_SNAPSHOT_NOW="$NOW_THREE" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_THREE" \
+    "$WRITER" || fail "the refresh with a stray run directory failed"
+  [ -f "$stray/keep" ] || fail "a parent refresh removed the stray run directory $stray"
+  rm -rf -- "$stray"
+done
+pass "a refresh never removes a run directory named only by the environment"
 
 MKBIN="$TMP_ROOT/mkdir-hangbin"
 REAL_MKDIR=$(command -v mkdir)

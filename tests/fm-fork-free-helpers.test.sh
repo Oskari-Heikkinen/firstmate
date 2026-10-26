@@ -2643,6 +2643,8 @@ done
 # and a fold split at a line boundary carries its set through the cursor. Both
 # must equal the old text fold of every line, which is what the old incremental
 # loop ran.
+prefixes=$cases.prefixes
+mkdir -p "$prefixes"
 ref_incremental() {  # <status-file>
   local f=$1 line open='' kind
   local _fm_fold_status_file=$1
@@ -2667,7 +2669,120 @@ for f in "$cases"/*.status; do
   [ "$got" = "$want" ] || printf 'incremental split %s at %s: new %q, old %q\n' "$name" "$half" "$got" "$want"
   [ ! -e "$cases/.${name%.status}.open-decisions-cursor" ] \
     || printf 'exact fold of %s wrote the drain cursor\n' "$name"
+  # A capture that ends inside a line answers with the whole fold of exactly
+  # those bytes, but the cursor stops at the last newline and holds only the
+  # fold of complete lines, so the next fold reads that line whole.
+  rm -f "$cases/.${name%.status}.snapshot-open-decisions-cursor"
+  mid=$((half + 3))
+  [ "$mid" -lt "$size" ] || continue
+  head -c "$mid" "$f" > "$prefixes/$name"
+  want_mid=$(ref_incremental "$prefixes/$name"; printf x)
+  got=$(status_open_decisions_incremental "$f" "$mid" exact; printf x)
+  [ "$got" = "$want_mid" ] || printf 'incremental mid-line capture %s at %s: new %q, old %q\n' "$name" "$mid" "$got" "$want_mid"
+  cursor_offset=$(sed -n 's/^offset=//p' "$cases/.${name%.status}.snapshot-open-decisions-cursor")
+  [ "$cursor_offset" -le "$mid" ] && { [ "$cursor_offset" = 0 ] \
+    || [ "$(head -c "$cursor_offset" "$f" | tail -c 1 | od -An -tx1 | tr -d ' ')" = 0a ]; } \
+    || printf 'mid-line capture %s at %s left the cursor off a line boundary at %s\n' "$name" "$mid" "$cursor_offset"
+  got=$(status_open_decisions_incremental "$f" "$size" exact; printf x)
+  [ "$got" = "$want" ] || printf 'incremental after mid-line capture %s at %s: new %q, old %q\n' "$name" "$mid" "$got" "$want"
+  # A checkpoint step shorter than some lines reads them again, wider, and
+  # ends at the same answer and cursor as one read.
+  whole_cursor=$(cat "$cases/.${name%.status}.snapshot-open-decisions-cursor")
+  rm -f "$cases/.${name%.status}.snapshot-open-decisions-cursor"
+  got=$(FM_OPEN_DECISIONS_CHECKPOINT_BYTES=16 status_open_decisions_incremental "$f" "$size" exact; printf x)
+  [ "$got" = "$want" ] || printf 'incremental in 16-byte steps %s: new %q, old %q\n' "$name" "$got" "$want"
+  [ "$(cat "$cases/.${name%.status}.snapshot-open-decisions-cursor")" = "$whole_cursor" ] \
+    || printf 'incremental in 16-byte steps %s left a different cursor\n' "$name"
 done
+# The reviewer's case: a capture ending inside a closer must not leave the
+# decision open once the closer is whole.
+rm -f "$prefixes/.split.snapshot-open-decisions-cursor"
+printf 'needs-decision [key=k1]: a\nresolved [key=k1]: done\nneeds-decision [key=k2]: b\n' > "$prefixes/split.status"
+mid=$(printf 'needs-decision [key=k1]: a\nresolved [key=k' | wc -c | tr -d ' ')
+status_open_decisions_incremental "$prefixes/split.status" "$mid" exact > /dev/null
+got=$(status_open_decisions_incremental "$prefixes/split.status" "$(wc -c < "$prefixes/split.status" | tr -d ' ')" exact)
+[ "$got" = $'k2\tneeds-decision\tb' ] || printf 'a closer split by the capture left %q open\n' "$got"
+# Exact mode keeps its read chunk under TMPDIR: a fold killed mid-read leaves
+# nothing beside the status log for a refresh's sweep to miss.
+rm -rf "$prefixes/killed" "$prefixes/killed-tmp"
+mkdir -p "$prefixes/killed" "$prefixes/killed-tmp"
+cp "$cases/long.status" "$prefixes/killed/t.status"
+TMPDIR="$prefixes/killed-tmp" "$BASH" -c '. "$1/bin/fm-classify-lib.sh"; _fm_od_fold_line() { kill -9 $$; }
+  status_open_decisions_incremental "$2" "$(wc -c < "$2" | tr -d " ")" exact' _ "$1" "$prefixes/killed/t.status" \
+  > /dev/null 2>&1 && printf 'the killed exact fold was not killed\n'
+left=$(cd "$prefixes/killed" && ls -A | grep -vx 't.status')
+[ -z "$left" ] || printf 'a killed exact fold left %s beside the status log\n' "$left"
+case "$(cd "$prefixes/killed-tmp" && ls -A)" in
+  fm-open-decisions-read.??????) ;;
+  *) printf 'a killed exact fold did not keep its chunk under TMPDIR: %s\n' "$(ls -A "$prefixes/killed-tmp")" ;;
+esac
+# A cold fold killed partway still leaves a checkpoint at a line boundary, so
+# the next fold reads only the rest and answers as a whole fold does.
+rm -rf "$prefixes/killed-tmp"
+mkdir -p "$prefixes/killed-tmp"
+size=$(wc -c < "$prefixes/killed/t.status" | tr -d ' ')
+TMPDIR="$prefixes/killed-tmp" FM_OPEN_DECISIONS_CHECKPOINT_BYTES=512 "$BASH" -c '. "$1/bin/fm-classify-lib.sh"
+  eval "_fm_real_fold() $(declare -f _fm_od_fold_line | sed 1d)"
+  n=0
+  _fm_od_fold_line() { n=$((n + 1)); [ "$n" -lt 100 ] || kill -9 $$; _fm_real_fold "$@"; }
+  status_open_decisions_incremental "$2" "$3" exact' _ "$1" "$prefixes/killed/t.status" "$size" \
+  > /dev/null 2>&1 && printf 'the checkpointed exact fold was not killed\n'
+cursor="$prefixes/killed/.t.snapshot-open-decisions-cursor"
+cursor_offset=$(sed -n 's/^offset=//p' "$cursor" 2>/dev/null)
+case "$cursor_offset" in
+  ''|0|*[!0-9]*) printf 'a killed cold fold left no checkpoint: %q\n' "$cursor_offset" ;;
+  *)
+    [ "$(head -c "$cursor_offset" "$prefixes/killed/t.status" | tail -c 1 | od -An -tx1 | tr -d ' ')" = 0a ] \
+      || printf 'a killed cold fold checkpointed off a line boundary at %s\n' "$cursor_offset"
+    rm -f "$prefixes/probe"
+    want=$(ref_incremental "$prefixes/killed/t.status"; printf x)
+    got=$(FM_OPEN_DECISIONS_READ_PROBE="$prefixes/probe" status_open_decisions_incremental \
+      "$prefixes/killed/t.status" "$size" exact; printf x)
+    [ "$got" = "$want" ] || printf 'the fold after a killed cold fold: new %q, old %q\n' "$got" "$want"
+    [ "$(cut -f2 "$prefixes/probe")" = "$((size - cursor_offset))" ] \
+      || printf 'the fold after a killed cold fold read %s bytes, not the %s after its checkpoint\n' \
+        "$(cut -f2 "$prefixes/probe")" "$((size - cursor_offset))"
+    ;;
+esac
+# A cursor already past the capture answers for the capture without a fold
+# when the lines between cannot move the set, and folds the capture from byte 0
+# when they can; the newer cursor stays either way.
+printf 'working: one\nworking: two\nworking: three\nneeds-decision [key=a]: x\nblocked [key=b]: y\nresolved [key=a]: z\n' > "$prefixes/ahead.status"
+rm -f "$prefixes/.ahead.snapshot-open-decisions-cursor" "$prefixes/probe"
+size=$(wc -c < "$prefixes/ahead.status" | tr -d ' ')
+want=$(ref_incremental "$prefixes/ahead.status"; printf x)
+printf 'working: later\nprose: [key=a] in passing\n' >> "$prefixes/ahead.status"
+status_open_decisions_incremental "$prefixes/ahead.status" "$(wc -c < "$prefixes/ahead.status" | tr -d ' ')" exact > /dev/null
+ahead_cursor=$(cat "$prefixes/.ahead.snapshot-open-decisions-cursor")
+got=$(FM_OPEN_DECISIONS_READ_PROBE="$prefixes/probe" status_open_decisions_incremental "$prefixes/ahead.status" "$size" exact; printf x)
+[ "$got" = "$want" ] || printf 'a cursor ahead over inert lines: new %q, whole fold %q\n' "$got" "$want"
+[ ! -s "$prefixes/probe" ] || printf 'a cursor ahead over inert lines still folded %s\n' "$(cat "$prefixes/probe")"
+printf 'needs-decision [key=c]: later\n' >> "$prefixes/ahead.status"
+status_open_decisions_incremental "$prefixes/ahead.status" "$(wc -c < "$prefixes/ahead.status" | tr -d ' ')" exact > /dev/null
+ahead_cursor=$(cat "$prefixes/.ahead.snapshot-open-decisions-cursor")
+got=$(FM_OPEN_DECISIONS_READ_PROBE="$prefixes/probe" status_open_decisions_incremental "$prefixes/ahead.status" "$size" exact; printf x)
+[ "$got" = "$want" ] || printf 'a cursor ahead over a transition: new %q, whole fold %q\n' "$got" "$want"
+[ "$(cut -f2 "$prefixes/probe")" = "$size" ] || printf 'a cursor ahead over a transition did not fold the capture whole: %s\n' "$(cat "$prefixes/probe")"
+[ "$(cat "$prefixes/.ahead.snapshot-open-decisions-cursor")" = "$ahead_cursor" ] \
+  || printf 'a cursor ahead of the capture was moved\n'
+# A cursor that cannot be written costs only the saved reading: the call still
+# answers, and the old cursor stays.
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$prefixes/ro"
+  printf 'needs-decision [key=a]: x\n' > "$prefixes/ro/r.status"
+  status_open_decisions_incremental "$prefixes/ro/r.status" 26 exact > /dev/null
+  ro_cursor=$(cat "$prefixes/ro/.r.snapshot-open-decisions-cursor")
+  printf 'blocked [key=b]: y\n' >> "$prefixes/ro/r.status"
+  chmod 555 "$prefixes/ro"
+  got=$(status_open_decisions_incremental "$prefixes/ro/r.status" 45 exact; printf x)
+  chmod 755 "$prefixes/ro"
+  [ "$got" = $'a\tneeds-decision\tx\nb\tblocked\tyx' ] || printf 'an unwritable cursor lost the answer: %q\n' "$got"
+  [ "$(cat "$prefixes/ro/.r.snapshot-open-decisions-cursor")" = "$ro_cursor" ] \
+    || printf 'an unwritable cursor directory still changed the cursor\n'
+  [ "$(cd "$prefixes/ro" && ls -A | tr '\n' ' ')" = '.r.snapshot-open-decisions-cursor r.status ' ] \
+    || printf 'an unwritable cursor directory gained %s\n' "$(ls -A "$prefixes/ro")"
+  rm -rf "$prefixes/ro"
+fi
 # status_key_closing_verb folds its candidates in the current shell too. Its
 # candidate grep warns on the binary bytes case in both versions.
 ref_key_closing_verb() {  # <status-file> <key>
