@@ -6943,7 +6943,7 @@ test_evidence_bulk_scan_reads_each_record_once() {
   printf proof > "$case_dir/tasktmp/uncovered"
   cat > "$case_dir/fakebin/grep" <<SH
 #!/usr/bin/env bash
-if [ "\${1:-}" = -IHZF ]; then
+if [ "\${1:-}" = -IHF ]; then
   printf 'batch\n' >> "$case_dir/batches"
   for arg in "\$@"; do
     case "\$arg" in "$case_dir/data/task-x1/"*) printf '%s\n' "\$arg" >> "$case_dir/reads" ;; esac
@@ -6968,19 +6968,171 @@ SH
   pass 'one bulk content pass covers both roots with bounded grep batches, not per-record processes'
 }
 
+test_evidence_grep_errors_retry_every_record() {
+  local variant case_dir rc later
+  for variant in partial fatal named mixed; do
+    case_dir=$(make_case "evidence-grep-error-$variant")
+    write_meta "$case_dir" local-only ship
+    ignore_workspace "$case_dir"
+    land_shippable_commit "$case_dir"
+    mkdir -p "$case_dir/wt/workspace" "$case_dir/data/task-x1"
+    printf proof > "$case_dir/wt/workspace/proof"
+    printf '%s/absent\n' "$case_dir/wt" > "$case_dir/data/task-x1/a.md"
+    later="$case_dir/data/task-x1/b"$'\n'"cite.md"
+    printf '%s/workspace/proof\n' "$case_dir/wt" > "$later"
+    cat > "$case_dir/fakebin/grep" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = -IHF ]; then
+  files=(); after=0
+  for arg in "\$@"; do
+    if [ "\$after" = 1 ]; then files+=("\$arg"); fi
+    if [ "\$arg" = -- ]; then after=1; fi
+  done
+  if [ "\${#files[@]}" -gt 1 ]; then
+    "$(command -v grep)" -IHF --null -e "$case_dir/wt/" -- "\${files[0]}"
+    echo 'grep: memory exhausted' >&2
+    : > "$case_dir/batch-failed"
+    exit 2
+  fi
+  printf 'retry\n' >> "$case_dir/retries"
+  if [ "$variant" = fatal ]; then echo 'grep: memory exhausted' >&2; exit 2; fi
+  if [ "$variant" = named ] || [ "$variant" = mixed ]; then
+    if [ "\${files[0]}" = "$case_dir/data/task-x1/a.md" ]; then
+      printf 'grep: %s: Permission denied\n' "\${files[0]}" >&2
+      if [ "$variant" = mixed ]; then echo 'grep: memory exhausted' >&2; fi
+      exit 2
+    fi
+  fi
+fi
+exec "$(command -v grep)" "\$@"
+SH
+    chmod +x "$case_dir/fakebin/grep"
+    rc=0
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    expect_code 1 "$rc" 'partial grep output must never authorize teardown'
+    assert_present "$case_dir/batch-failed" 'fatal bulk grep fixture was not reached'
+    assert_present "$case_dir/retries" 'failed bulk grep did not retry individual records'
+    if [ "$variant" = partial ] || [ "$variant" = named ]; then
+      assert_grep "references $case_dir/wt/workspace/proof, which cleanup would destroy" \
+        "$case_dir/stderr" 'retry lost the later record citation after fatal bulk grep'
+      [ "$(wc -l < "$case_dir/retries" | tr -d ' ')" = 2 ] || fail 'failed batch did not retry every member'
+      if [ "$variant" = named ]; then
+        [ "$(grep -Fc "WARNING: skipping unreadable evidence record or directory $case_dir/data/task-x1/a.md" "$case_dir/stderr")" = 1 ] \
+          || fail 'single-record read error must keep exactly one skip warning'
+      fi
+    else
+      assert_grep 'REFUSED: evidence record scan: grep could not scan record' "$case_dir/stderr" 'single-record fatal grep must refuse'
+    fi
+    assert_present "$case_dir/wt/workspace/proof" 'grep failure destroyed cited evidence'
+    assert_present "$case_dir/state/task-x1.meta" 'grep failure removed task metadata'
+    assert_absent "$case_dir/data/task-x1/evidence" 'grep failure installed evidence'
+  done
+  pass 'fatal bulk grep discards partial output and retries every member; persistent single-record errors refuse'
+}
+
+test_evidence_matches_framing_refuses() {
+  local stage variant case_dir rc
+  for stage in grep reader; do
+    for variant in non-nul missing-lf partial-record empty-record foreign-record missing-file; do
+      [ "$stage:$variant" != grep:missing-file ] || continue
+      case_dir=$(make_case "evidence-framing-$stage-$variant")
+      mkdir -p "$case_dir/data/task-x1" "$case_dir/scan"
+      printf '%s/proof\n' "$case_dir/wt" > "$case_dir/data/task-x1/report.md"
+      printf proof > "$case_dir/wt/proof"
+      case "$variant" in
+        non-nul) printf '%s:%s/proof\n' "$case_dir/data/task-x1/report.md" "$case_dir/wt" ;;
+        missing-lf) printf '%s\0%s/proof' "$case_dir/data/task-x1/report.md" "$case_dir/wt" ;;
+        partial-record) printf '%s\0%s/proof\nunterminated' "$case_dir/data/task-x1/report.md" "$case_dir/wt" ;;
+        empty-record) printf '\0%s/proof\n' "$case_dir/wt" ;;
+        foreign-record) printf '%s\0%s/proof\n' "$case_dir/not-a-record" "$case_dir/wt" ;;
+        missing-file) : ;;
+      esac > "$case_dir/bad-matches"
+      rc=0
+      if [ "$stage" = grep ]; then
+        cat > "$case_dir/fakebin/grep" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = -IHF ]; then cat "$case_dir/bad-matches"; exit 0; fi
+exec "$(command -v grep)" "\$@"
+SH
+        chmod +x "$case_dir/fakebin/grep"
+        # shellcheck disable=SC2016 # Child positional parameters.
+        PATH="$case_dir/fakebin:$PATH" bash -c \
+          '. "$1"; fm_task_evidence_preserve task-x1 "$2" "$3" 1 ""' \
+          _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" \
+          > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      else
+        # Membership is the producer's responsibility, not the frame reader's.
+        [ "$variant" != foreign-record ] || continue
+        # Prepare through the public interface, then inject transport damage.
+        # shellcheck disable=SC2016 # Child positional parameters.
+        bash -c '
+          . "$1"
+          fm_task_evidence_scan prepare "$2/task-x1" "$4" "$3" "" || exit
+          cp "$5" "$4/matches" || exit
+          if [ "$6" = missing-file ]; then rm "$4/matches" || exit; fi
+          fm_task_evidence_preserve task-x1 "$2" "$3" 1 "" "$4"
+        ' _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" \
+          "$case_dir/scan" "$case_dir/bad-matches" "$variant" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      fi
+      expect_code 1 "$rc" "$stage $variant framing must refuse"
+      if [ "$variant" = missing-file ]; then
+        assert_grep 'REFUSED: evidence record scan: cannot read prepared matches' "$case_dir/stderr" 'missing matches read as no citations'
+      else
+        assert_grep 'REFUSED: evidence record scan: malformed' "$case_dir/stderr" 'bad framing read as no citations'
+      fi
+      assert_present "$case_dir/wt/proof" 'bad framing changed source evidence'
+      assert_absent "$case_dir/data/task-x1/evidence" 'bad framing installed evidence'
+    done
+  done
+  pass 'grep output validates batch membership and complete NUL/LF frames; the bash reader independently refuses truncated frames'
+}
+
+test_evidence_matching_lines_group_by_record() {
+  local case_dir rc
+  case_dir=$(make_case evidence-record-groups)
+  mkdir -p "$case_dir/data/task-x1"
+  printf proof > "$case_dir/wt/proof"
+  printf '%s/proof\n%s/proof\n%s/proof\n' "$case_dir/wt" "$case_dir/wt" "$case_dir/wt" > "$case_dir/data/task-x1/a.md"
+  printf '%s/proof\n' "$case_dir/wt" > "$case_dir/data/task-x1/b.md"
+  rc=0
+  # Wrap the parser to count public preservation's calls while retaining its
+  # real output and classification, rather than asserting implementation bytes.
+  # shellcheck disable=SC2016 # Child function and positional parameters.
+  bash -c '
+    . "$1"
+    original=$(declare -f fm_task_evidence_references)
+    eval "${original/fm_task_evidence_references/fm_test_real_references}"
+    parse_log=$4
+    fm_task_evidence_references() {
+      printf "%s\n" "$1" >> "$parse_log"
+      fm_test_real_references "$@"
+    }
+    fm_task_evidence_preserve task-x1 "$2" "$3" 1 ""
+  ' _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" "$case_dir/parser-calls" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" 'grouping must preserve undeclared-reference refusal'
+  [ "$(wc -l < "$case_dir/parser-calls" | tr -d ' ')" = 2 ] || fail 'parser must run once per record, not once per matching line'
+  [ "$(grep -Fc "references $case_dir/wt/proof, which cleanup would destroy" "$case_dir/stderr")" = 4 ] \
+    || fail 'grouping changed the per-citation refusal output'
+  pass 'consecutive matching lines use one parser call per record with identical per-citation refusals'
+}
+
 test_evidence_text_scan_is_outside_project_lock_and_changes_refuse() {
   local variant case_dir wt rc
-  for variant in stable edit add remove replace declaration during-scan during-copy meta-worktree meta-tasktmp meta-kind; do
+  for variant in stable duplicate-tasktmp edit add remove replace declaration during-scan during-copy meta-worktree meta-tasktmp meta-kind; do
     case_dir=$(make_case "evidence-unlocked-$variant")
     wt=$(move_case_to_pool_slot "$case_dir" 1)
     write_meta "$case_dir" local-only ship "$wt"
+    if [ "$variant" = duplicate-tasktmp ]; then
+      printf 'tasktmp=%s/oldtmp\ntasktmp=%s/tasktmp\n' "$case_dir" "$case_dir" >> "$case_dir/state/task-x1.meta"
+    fi
     mkdir -p "$case_dir/data/task-x1"
     printf 'plain durable record\n' > "$case_dir/data/task-x1/report.md"
     printf proof > "$wt/proof"
     printf 'proof\n' > "$case_dir/data/task-x1/evidence.list"
     cat > "$case_dir/fakebin/grep" <<SH
 #!/usr/bin/env bash
-if [ "\${1:-}" = -IHZF ]; then
+if [ "\${1:-}" = -IHF ]; then
   for lock in "$case_dir/state/".treehouse-project-*.lock; do
     [ ! -e "\$lock" ] || { echo 'text scan held project lock' >&2; exit 2; }
   done
@@ -7053,7 +7205,7 @@ SH
     if [ "$variant" != during-scan ]; then
       assert_present "$case_dir/mutated" "test did not reach project-lock acquisition ($variant, rc=$rc): $(cat "$case_dir/stderr")"
     fi
-    if [ "$variant" = stable ]; then
+    if [ "$variant" = stable ] || [ "$variant" = duplicate-tasktmp ]; then
       expect_code 0 "$rc" "unchanged records should clean up: $(cat "$case_dir/stderr")"
       assert_present "$case_dir/returned-locked" 'destructive return did not hold the project lock'
       assert_present "$case_dir/copied-locked" 'evidence preservation did not hold the project lock'
@@ -8289,6 +8441,9 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_run_abort_precedes_process_reap_precedes_worktree_removal \
   test_unreadable_evidence_records_skip_with_one_warning \
   test_evidence_bulk_scan_reads_each_record_once \
+  test_evidence_grep_errors_retry_every_record \
+  test_evidence_matches_framing_refuses \
+  test_evidence_matching_lines_group_by_record \
   test_evidence_text_scan_is_outside_project_lock_and_changes_refuse \
   test_evidence_citation_scan_completes_for_a_plain_missing_path \
   test_evidence_physical_root_aliases_do_not_hide_existing_citations \

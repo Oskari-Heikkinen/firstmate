@@ -466,7 +466,9 @@ fm_task_evidence_carry_prior() {
   return 0
 }
 
-# fm_task_evidence_preserve <id> <data-dir> <copy-root> <copy-owned 0|1> <tmp-root>
+# fm_task_evidence_preserve <id> <data-dir> <copy-root> <copy-owned 0|1> <tmp-root> [<prepared-scan-dir>]
+# The optional scan must be prepared for these same roots; its caller cleans it
+# up. Without it, this wrapper prepares and cleans up its own temporary scan.
 # Returns 0 when every declared path is copied and verified and no durable
 # record references an existing uncovered path; prints each refusal and returns 1
 # otherwise. Either root may be empty.
@@ -491,8 +493,13 @@ fm_task_evidence_preserve_scanned() {
   local id=$1 data=$2 copy_root=$3 copy_owned=$4 tmp_root=$5 scan=$6
   local dir="$data/$id" list evidence staging manifest line path src root key
   local declared='' refused=0 refs ref ref_mode d overlap record
+  local next_record next_line record_lines scan_eof
   local link target label rel physical_copy physical_tmp suffix hash rc
   [ -d "$dir" ] || return 0
+  if [ ! -r "$scan/matches" ]; then
+    echo "REFUSED: evidence record scan: cannot read prepared matches; retry teardown" >&2
+    return 1
+  fi
   copy_root=${copy_root%/}
   tmp_root=${tmp_root%/}
   list="$dir/evidence.list"
@@ -626,15 +633,39 @@ fm_task_evidence_preserve_scanned() {
   # existence-aware parsing and preservation still share the destructive lock.
   for root in "$copy_root" "$tmp_root"; do
     [ -n "$root" ] || continue
-    while IFS= read -r -d '' record && IFS= read -r line; do
-    [[ "$line" == *"$root/"* ]] || continue
-    # Never stat a foreign slot, even to disambiguate a citation's suffix.
-    if [ "$root" = "$copy_root" ] && [ "$copy_owned" != 1 ]; then
-      echo "warning: record $record cites $line inside a copy already reassigned to another task" >&2
-      continue
+    record=; record_lines=; scan_eof=0
+    while :; do
+    next_record=; next_line=
+    if IFS= read -r -d '' next_record; then
+      if [ -z "$next_record" ] || ! IFS= read -r next_line; then
+        echo "REFUSED: evidence record scan: malformed matches framing; retry teardown" >&2
+        refused=1; break
+      fi
+      if [ -z "$record" ] || [ "$record" = "$next_record" ]; then
+        record=$next_record
+        record_lines="$record_lines$next_line"$'\n'
+        continue
+      fi
+    else
+      if [ -n "$next_record" ]; then
+        echo "REFUSED: evidence record scan: malformed matches framing; retry teardown" >&2
+        refused=1; break
+      fi
+      scan_eof=1
     fi
-    refs=$(fm_task_evidence_references "$record" "$root" <<< "$line") || refused=1
-    [ -n "$refs" ] || continue
+    [ -n "$record" ] || break
+    # One parser call per consecutive record group, as in the old per-record
+    # scan. Keep foreign-slot warnings per matching line without statting it.
+    refs=
+    if [ "$root" = "$copy_root" ] && [ "$copy_owned" != 1 ]; then
+      while IFS= read -r line; do
+        [[ "$line" == *"$root/"* ]] || continue
+        echo "warning: record $record cites $line inside a copy already reassigned to another task" >&2
+      done <<< "$record_lines"
+    else
+      refs=$(fm_task_evidence_references "$record" "$root" <<< "$record_lines") || refused=1
+    fi
+    if [ -n "$refs" ]; then
     while IFS= read -r ref; do
       ref_mode=${ref%%$'\t'*}; ref=${ref#*$'\t'}
       fm_task_evidence_classify "$ref" "$copy_root" "$tmp_root" || continue
@@ -658,6 +689,10 @@ fm_task_evidence_preserve_scanned() {
         refused=1
       fi
     done <<< "$refs"
+    fi
+    [ "$scan_eof" = 0 ] || break
+    record=$next_record
+    record_lines="$next_line"$'\n'
     done < "$scan/matches"
   done
 

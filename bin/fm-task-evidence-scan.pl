@@ -2,7 +2,8 @@
 # Bulk text prefilter for fm-task-evidence-lib.sh; never inspects a disposable
 # root. Usage: perl fm-task-evidence-scan.pl prepare|verify <dir> <scratch>
 # [<copy-root> <tmp-root>]. prepare inventories records, runs grep in bounded
-# argv batches (not per record), and saves filename-NUL/line pairs in matches.
+# argv batches (per-record retries only after grep errors), and saves validated
+# filename-NUL/line-LF pairs in matches. GNU and BSD grep share --null framing.
 # verify does one metadata-only walk, refusing additions, removals, replacement
 # or edits since prepare. Evidence and staging trees are excluded in both walks.
 # Citation parsing, object survival, copy verification and manifests remain in
@@ -84,8 +85,45 @@ binmode($out);
 s{/$}{} for @roots; # Match the library's lexical root normalization.
 my @patterns = map { ('-e', "$_/") } grep { length } @roots;
 my @files = sort grep { -f $_ && !-l $_ } keys %$before;
-# Stay below ARG_MAX even with long names; one process per bounded batch,
-# never one per record. -I preserves the previous grep binary-file policy.
+# Stage each attempt separately: exit 2 may mean a fatal error that leaves
+# later files unread, not just a per-file read error. Never consume its partial
+# output. Retry all members individually to preserve readable siblings' matches.
+sub run_grep {
+    my (@batch) = @_;
+    my $pid = fork();
+    defined($pid) or refuse("cannot start grep: $!");
+    if (!$pid) {
+        open(STDOUT, '>', "$scratch/grep-matches") or refuse("cannot stage grep matches: $!");
+        open(STDERR, '>', "$scratch/grep-errors") or refuse("cannot stage grep errors: $!");
+        exec('grep', '-IHF', '--null', @patterns, '--', @batch) or refuse("cannot start grep: $!");
+    }
+    waitpid($pid, 0) == $pid or refuse('cannot wait for grep');
+    my $status = $?;
+    $status == 0 || $status == 256 || $status == 512 or refuse('grep failed');
+    return $status;
+}
+
+sub append_matches {
+    my (@batch) = @_;
+    my %member = map { $_ => 1 } @batch;
+    open(my $matches, '<', "$scratch/grep-matches") or refuse('cannot read grep matches');
+    binmode($matches);
+    while (1) {
+        my $record = do { local $/ = "\0"; <$matches> };
+        last unless defined($record);
+        $record =~ s/\0\z// && exists($member{$record})
+            or refuse('malformed grep record framing');
+        my $line = <$matches>;
+        defined($line) && $line =~ /\n\z/ && index($line, "\0") < 0
+            or refuse('malformed grep line framing');
+        print {$out} $record, "\0", $line or refuse("cannot write matches: $!");
+    }
+    eof($matches) or refuse("cannot read grep matches: $!");
+    close($matches) or refuse("cannot close grep matches: $!");
+}
+
+# Stay below ARG_MAX even with long names; -I preserves the previous grep
+# binary-file policy. Successful batches read every record once for both roots.
 while (@files && @patterns) {
     my @batch;
     my $bytes = 0;
@@ -94,35 +132,25 @@ while (@files && @patterns) {
         push @batch, shift @files;
     }
     @batch or refuse('record filename exceeds batch bound');
-    my $pid = open(my $grep, '-|');
-    defined($pid) or refuse("cannot start grep: $!");
-    if (!$pid) {
-        open(STDERR, '>', "$scratch/grep-errors") or refuse("cannot stage grep errors: $!");
-        exec('grep', '-IHZF', @patterns, '--', @batch) or refuse("cannot start grep: $!");
-    }
-    binmode($grep);
-    my $buffer;
-    while (read($grep, $buffer, 65536)) {
-        print {$out} $buffer or refuse("cannot write matches: $!");
-    }
-    eof($grep) or refuse("cannot read grep: $!");
-    close($grep);
-    if ($? == 512) {
-        # Retain other records' matches when grep cannot read one member, as
-        # the old per-record loop did. Match known paths, not localized prose.
-        open(my $errors, '<', "$scratch/grep-errors") or refuse('cannot read grep errors');
-        my $text = do { local $/; <$errors> };
-        close($errors);
-        my @unreadable = grep { index($text, "$_:") >= 0 } @batch;
-        if (@unreadable) {
-            skip_path($_) for @unreadable;
-        } else {
-            # An unusual grep error without a recognizable filename still
-            # must not restore the old silent skip: name the affected batch.
-            warn 'WARNING: evidence grep could not complete for records: ' . join(', ', @batch) . "\n";
+    if (run_grep(@batch) == 512) {
+        for my $record (@batch) {
+            if (run_grep($record) == 512) {
+                open(my $errors, '<', "$scratch/grep-errors") or refuse('cannot read grep errors');
+                my $text = do { local $/; <$errors> };
+                close($errors);
+                # Only a named per-file read error retains the agreed skip
+                # policy. A fatal error on a single record cannot prove absence.
+                # Recognize the entire diagnostic, not a filename substring:
+                # a named read error followed by a fatal error still refuses.
+                $text =~ /\Agrep: \Q$record\E: [^\n]*\n\z/
+                    or refuse("grep could not scan record $record");
+                skip_path($record);
+                next;
+            }
+            append_matches($record);
         }
-    } elsif ($? != 0 && $? != 256) {
-        refuse('grep failed');
+    } else {
+        append_matches(@batch);
     }
 }
 close($out) or refuse("cannot close matches: $!");

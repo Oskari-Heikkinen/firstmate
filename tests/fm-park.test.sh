@@ -1060,7 +1060,7 @@ SH
     cat > "$dir/fakebin/grep" <<'SH'
 #!/usr/bin/env bash
 # Delay the evidence content pass, not unrelated metadata/qualification work.
-if [ "${1-}" = -IHZF ]; then /bin/sleep 8; fi
+if [ "${1-}" = -IHF ]; then /bin/sleep 8; fi
 exec "$(cat "$SUSPEND_DIR/real-grep")" "$@"
 SH
     chmod +x "$dir/fakebin/grep"
