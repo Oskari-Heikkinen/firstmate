@@ -86,7 +86,10 @@ def fsync(fd):
         return None
     if fault in ("replace-store", "replace-stage"):
         old = store if fault == "replace-store" else stage
-        displaced = fixture / ("displaced-" + fault)
+        # A read-only stage cannot be moved across parents on Linux: that
+        # requires write permission for its '..' update. Displace it within
+        # the writable store so its original read-only mode stays intact.
+        displaced = (fixture if fault == "replace-store" else store) / ("displaced-" + fault)
         old.rename(displaced)
         old.mkdir(mode=0o700)
         protected = old
@@ -387,6 +390,8 @@ class BundlePreparation(unittest.TestCase):
                 else:
                     self.assertEqual(protected, Path(facts["stage"]))
                     self.assertEqual([self.store.stat().st_dev, self.store.stat().st_ino], facts["store_identity"])
+                    self.assertEqual(displaced.parent, self.store)
+                    self.assertEqual(set(self.store.iterdir()), {original, protected, displaced})
                     retained_stage, retained_original = displaced, original
                 self.assertEqual([retained_stage.stat().st_dev, retained_stage.stat().st_ino], facts["stage_identity"])
                 self.assertEqual(retained_stage.stat().st_mode & 0o777, 0o500)
@@ -648,7 +653,9 @@ class BundlePreparation(unittest.TestCase):
         pristine = self.clone_bundle(original)
         self.assertTrue(self.command("verify", "--bundle", pristine)["verified"])
         victim = original / "bin/fm-tmux-lib.sh"
-        victim.chmod(0o600); victim.write_bytes(b"corrupt dependency\n"); victim.chmod(0o400)
+        victim_mode = victim.stat().st_mode & 0o777
+        victim.chmod(0o600); victim.write_bytes(b"corrupt dependency\n"); victim.chmod(victim_mode)
+        self.assertEqual(victim.stat().st_mode & 0o777, victim_mode)
         self.assertIn(b"hash mismatch", self.prepare(ok=False).stderr)
         self.assertEqual(victim.read_bytes(), b"corrupt dependency\n")
         self.assertEqual((original / "manifest.json").read_bytes(), before_manifest)
@@ -703,7 +710,17 @@ class BundlePreparation(unittest.TestCase):
         # An existing empty path is never replaced, even when its name equals
         # the expected content identity. This is a refusal, not stale cleanup.
         moved = self.root / original.name
-        original.rename(moved); original.mkdir(mode=0o500)
+        # Only this fixture's setup temporarily permits the cross-parent
+        # directory move. Restore the immutable root before any verifier or
+        # preparation call, retaining its original object identity.
+        moved_identity = (original.stat().st_dev, original.stat().st_ino)
+        self.assertEqual(original.stat().st_mode & 0o777, 0o500)
+        original.chmod(0o700)
+        original.rename(moved)
+        moved.chmod(0o500)
+        self.assertEqual((moved.stat().st_dev, moved.stat().st_ino), moved_identity)
+        self.assertEqual(moved.stat().st_mode & 0o777, 0o500)
+        original.mkdir(mode=0o500)
         inode = original.stat().st_ino
         self.prepare(ok=False)
         self.assertEqual(original.stat().st_ino, inode)
