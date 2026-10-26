@@ -1846,7 +1846,7 @@ EOF
 status_presentation_snapshot_batch() {  # <state>
   local state=$1 f task exclude packet row mode size devino epoch birth extra ident result=''
   local index=0 count=0
-  local -a files=() tasks=()
+  local -a snapshot_batch_files=() snapshot_batch_tasks=()
   [ "$_FM_CLASSIFY_UNAME_S" = Linux ] && [ -z "${FM_STATUS_SIZE_READER:-}" ] \
     && [ -z "${FM_STATUS_IDENTITY_READER:-}" ] || return 1
   exclude=$(status_scan_parent_channel_exclude "$state") || return 1
@@ -1860,13 +1860,13 @@ status_presentation_snapshot_batch() {  # <state>
     task=${f##*/}; task=${task%.status}
     case "$task" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) return 1 ;; esac
     [ "${#task}" -le 128 ] || return 1
-    files[count]=$f tasks[count]=$task
+    snapshot_batch_files[count]=$f snapshot_batch_tasks[count]=$task
     count=$((count + 1))
   done
   [ "$count" -gt 0 ] || return 0
   # One stat observes every selected path, in argument order, without putting
   # filenames into the packet. A final-component symlink race is nonregular.
-  { packet=$(LC_ALL=C exec stat -c $'%f\t%s\t%d:%i\t%W\t%w' -- "${files[@]}"); } 2>/dev/null || return 1
+  { packet=$(LC_ALL=C exec stat -c $'%f\t%s\t%d:%i\t%W\t%w' -- "${snapshot_batch_files[@]}"); } 2>/dev/null || return 1
   while IFS= read -r row; do
     [ "$index" -lt "$count" ] || return 1
     # read's whitespace-IFS collapsing must not admit missing/extra columns.
@@ -1885,9 +1885,9 @@ EOF
     _fm_file_ident_compose_to ident "$devino" "$epoch" "$birth" || return 1
     # Recheck eligibility, like the legacy capture. The existing transaction
     # still verifies this exact identity/endpoint at its commit boundary.
-    f=${files[$index]}
+    f=${snapshot_batch_files[$index]}
     [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
-    result="$result${tasks[$index]}"$'\t'"$size"$'\t'"$ident"$'\n'
+    result="$result${snapshot_batch_tasks[$index]}"$'\t'"$size"$'\t'"$ident"$'\n'
     index=$((index + 1))
   done <<EOF
 $packet
