@@ -1497,6 +1497,27 @@ counted fm_rm_present "$r/none" "$r/none2"
 [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'fm_rm_present of absent paths ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
 counted clear_write_tracking absent-key
 [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'clear_write_tracking with no markers ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+# clear_pause_tracking's own stale and wedge markers, with clear_pause_state's
+# separate clear set aside: no rm while they are absent, all of them gone when
+# one is present.
+pause_tracking_markers_only() {  # <window-key>
+  clear_pause_state() { :; }
+  clear_pause_tracking "$1"
+}
+counted pause_tracking_markers_only absent-key
+[ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'clear_pause_tracking with no markers ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
+: > "$STATE/.stale-p$$"
+: > "$STATE/.waiting-resurfaced-p$$"
+counted pause_tracking_markers_only "p$$"
+[ "$TOOLS" = 'rm ' ] || printf 'clear_pause_tracking with markers ran [%s], not [rm ]\n' "$TOOLS"
+[ ! -e "$STATE/.stale-p$$" ] && [ ! -e "$STATE/.waiting-resurfaced-p$$" ] \
+  || printf 'clear_pause_tracking kept a marker\n'
+# The pause and stale paths clear .stale-since-* only through fm_rm_present.
+for fn in handle_paused_stale surface_nonterminal_stale clear_pause_tracking; do
+  case "$(declare -f "$fn")" in
+    *'rm -f "$STATE/.stale-since-'*) printf '%s clears .stale-since- with an unconditional rm -f\n' "$fn" ;;
+  esac
+done
 : > "$r/b"
 counted fm_rm_present "$r/none" "$r/b"
 [ "$TOOLS" = 'rm ' ] || printf 'fm_rm_present of a present path ran [%s], not [rm ]\n' "$TOOLS"
@@ -1527,7 +1548,7 @@ SH
   if ! command -v md5 >/dev/null 2>&1 && command -v md5sum >/dev/null 2>&1; then
     run_everywhere "watcher poll helpers with md5" "$script" "$dir" "$shim" "$log" "$count_shim" "$count_log"
   fi
-  pass "hash_pane_to and its per-window memory, window_key_to, age_of_to, fm_rm_present and the loop's file reads match what they replaced and start no more processes"
+  pass "hash_pane_to and its per-window memory, window_key_to, age_of_to, fm_rm_present, the pause and stale marker clears and the loop's file reads match what they replaced and start no more processes"
 }
 
 test_inbox_due_action_matches_what_it_replaced() {
@@ -1766,8 +1787,9 @@ STATE=$dir/state
 reference_pgid() {  # <pid>
   ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
 }
+# Its own FM_CAPTURE_OUTPUT leaves the watcher's lifetime file alone.
 reference_capture() {  # <backend> <target> <lines> [expected-label]
-  local rc pgid
+  local rc pgid FM_CAPTURE_OUTPUT=
   fm_capture_output_cleanup
   WATCHER_CAPTURE=
   FM_CAPTURE_OUTPUT=$(mktemp "$STATE/.fm-capture-output.XXXXXX") || return 1
@@ -1801,6 +1823,7 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     text) printf 'first line\n  indented line  \n\n\n' ;;
     empty) ;;
     failed) printf 'partial\n'; return 3 ;;
+    silent) return 3 ;;
     prompt) printf 'prompt> ' ;;
     long)
       while [ "$i" -le 100 ]; do
@@ -1824,16 +1847,44 @@ captures_left() {  # the capture files left in the state directory
   printf '%s' "$out"
 }
 # The replaced read printed bash's null-byte warning, the accepted difference,
-# so only its value and status are compared.
-for CAPTURE_CASE in text empty failed prompt long bytes nul vanished args slow; do
+# so only its value and status are compared. Short and empty reads follow long
+# ones, so a byte kept from an earlier capture shows as a difference. The
+# watcher keeps one capture file across captures and makes a new one only after
+# a read removed it.
+expected_path=
+for CAPTURE_CASE in text empty failed prompt long empty long silent bytes long nul vanished args slow long prompt; do
   reference_capture herdr sess:fm-a 40 fm-a 2>/dev/null; want_rc=$?
   want=$WATCHER_CAPTURE
   WATCHER_CAPTURE=unset
   watcher_capture herdr sess:fm-a 40 fm-a; got_rc=$?
   [ "$WATCHER_CAPTURE/$got_rc" = "$want/$want_rc" ] || printf '%s: capture %q (status %s), replaced %q (status %s)\n' "$CAPTURE_CASE" "$WATCHER_CAPTURE" "$got_rc" "$want" "$want_rc"
   left=$(captures_left)
-  [ -z "$FM_CAPTURE_OUTPUT" ] && [ -z "$left" ] || printf '%s: capture left [%s] (%s)\n' "$CAPTURE_CASE" "$left" "$FM_CAPTURE_OUTPUT"
+  want_left=" ${FM_CAPTURE_OUTPUT##*/}"
+  [ "$CAPTURE_CASE" != vanished ] || want_left=
+  [ -n "$FM_CAPTURE_OUTPUT" ] && [ "$left" = "$want_left" ] || printf '%s: capture left [%s] (%s)\n' "$CAPTURE_CASE" "$left" "$FM_CAPTURE_OUTPUT"
+  [ -z "$expected_path" ] || [ "$FM_CAPTURE_OUTPUT" = "$expected_path" ] || printf '%s: capture file moved from %s to %s\n' "$CAPTURE_CASE" "$expected_path" "$FM_CAPTURE_OUTPUT"
+  expected_path=$FM_CAPTURE_OUTPUT
+  [ "$CAPTURE_CASE" != vanished ] || expected_path=
 done
+# A capture in a subshell leaves the main shell's file alone and removes its own.
+lifetime_path=$FM_CAPTURE_OUTPUT
+CAPTURE_CASE=text
+sub=$(watcher_capture herdr sess:fm-a 40 fm-a; printf '%s|%s' "$WATCHER_CAPTURE" "$FM_CAPTURE_OUTPUT")
+[ "$sub" = 'first line
+  indented line  |' ] || printf 'subshell capture returned %q\n' "$sub"
+left=$(captures_left)
+[ "$FM_CAPTURE_OUTPUT" = "$lifetime_path" ] && [ "$left" = " ${lifetime_path##*/}" ] \
+  || printf 'subshell capture left [%s] (%s)\n' "$left" "$FM_CAPTURE_OUTPUT"
+# A replaced file is never written through: a link is dropped for a new file.
+rm -f "$lifetime_path"
+ln -s "$dir/elsewhere" "$lifetime_path"
+watcher_capture herdr sess:fm-a 40 fm-a
+[ "$FM_CAPTURE_OUTPUT" != "$lifetime_path" ] && [ ! -e "$dir/elsewhere" ] && [ ! -L "$lifetime_path" ] \
+  || printf 'capture wrote through a replaced file (%s)\n' "$FM_CAPTURE_OUTPUT"
+# The watcher's cleanup removes the lifetime file.
+fm_capture_output_cleanup
+left=$(captures_left)
+[ -z "$FM_CAPTURE_OUTPUT" ] && [ -z "$left" ] || printf 'cleanup left [%s] (%s)\n' "$left" "$FM_CAPTURE_OUTPUT"
 pgid_check() {  # <label> <pid>
   local want got
   want=$(reference_pgid "$2")
@@ -1879,19 +1930,27 @@ counted() {  # <command> [args...]
   SUBSHELLS=$(grep -c . "$count_log.sub" || true)
 }
 # On Linux with Bash 4.2 and later the group and the text are read in the
-# shell, so a capture starts mktemp and rm and nothing else besides its pane
-# read, whose own commands run in the capture's subshell.
+# shell, so a capture starts nothing besides its pane read, whose own commands
+# run in the capture's subshell: the main shell's first capture starts mktemp,
+# later ones nothing, and a subshell's capture mktemp and rm.
 if [ "$_FM_UNAME" = Linux ] && { [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; }; then
   counted fm_pid_pgid_to got "$own"
   [ -z "$TOOLS" ] && [ "$SUBSHELLS" -eq 0 ] || printf 'fm_pid_pgid_to ran [%s] and %s subshell commands\n' "$TOOLS" "$SUBSHELLS"
   CAPTURE_CASE=slow
   counted watcher_capture herdr sess:fm-a 40 fm-a
-  [ "$TOOLS" = 'mktemp rm ' ] || printf 'watcher_capture ran [%s], not [mktemp rm ]\n' "$TOOLS"
+  [ "$TOOLS" = 'mktemp rm ' ] || printf 'watcher_capture in a subshell ran [%s], not [mktemp rm ]\n' "$TOOLS"
+  for want in 'mktemp ' ''; do
+    : > "$count_log"
+    PATH="$count_shim:$PATH" watcher_capture herdr sess:fm-a 40 fm-a
+    TOOLS=$(sort "$count_log" | tr '\n' ' ')
+    [ "$TOOLS" = "$want" ] || printf 'watcher_capture in the main shell ran [%s], not [%s]\n' "$TOOLS" "$want"
+  done
+  fm_capture_output_cleanup
 fi
 exit 0
 SH
   run_everywhere "watcher capture" "$script" "$dir" "$count_shim" "$count_log"
-  pass "watcher_capture and fm_pid_pgid_to match what they replaced, and a capture runs no ps, tr or cat"
+  pass "watcher_capture and fm_pid_pgid_to match what they replaced, a capture runs no ps, tr or cat, and the watcher keeps one capture file for its lifetime"
 }
 
 test_busy_classify_matches_what_it_replaced() {

@@ -1849,7 +1849,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   window_key_to key "$win"
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
-  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" "$STATE/.idle-nudge-$key"
+  fm_rm_present "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" "$STATE/.idle-nudge-$key"
   clear_write_tracking "$key"
   statusf="$STATE/$task.status"
   mtime=$(stat_mtime "$statusf")
@@ -2373,7 +2373,7 @@ clear_pause_tracking() {  # <window-key>
   local key=$1
   clear_pause_state "$key"
   clear_write_tracking "$key"
-  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" \
+  fm_rm_present "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" \
     "$STATE/.waiting-resurfaced-$key"
 }
 
@@ -2528,7 +2528,7 @@ surface_nonterminal_stale() {  # <window> <hash>
     : # Preserve existing wait/hold bounds; a launch dialog is not an idle nudge.
   elif idle_park_nudge "$win" "$key" "$task"; then
     printf '%s' "$h" > "$STATE/.stale-$key"
-    rm -f "$STATE/.stale-since-$key"
+    fm_rm_present "$STATE/.stale-since-$key"
     clear_write_tracking "$key"
     return 0
   fi
@@ -2538,7 +2538,7 @@ surface_nonterminal_stale() {  # <window> <hash>
     stale_wait_record "$key"
   fi
   printf '%s' "$h" > "$STATE/.stale-$key"
-  rm -f "$STATE/.stale-since-$key"
+  fm_rm_present "$STATE/.stale-since-$key"
   clear_write_tracking "$key"
   if [ "$bounded" -eq 0 ]; then
     # A backlog hold is NOT a declared pause, and must not be dressed up as one:
@@ -2864,17 +2864,37 @@ fm_capture_output_cleanup() {
   FM_CAPTURE_OUTPUT=
 }
 
+# Point FM_CAPTURE_OUTPUT at an empty private capture file. The watcher's main
+# shell keeps one file for its lifetime, emptied before each capture so no
+# capture reads a previous window's bytes, and watcher_cleanup removes it; a new
+# file replaces one that is gone or is no longer a regular file. A subshell's
+# file would outlive it uncleaned, so a capture there leaves the main shell's
+# file alone and gets a fresh one that watcher_capture removes.
+fm_capture_output_ready() {
+  if [ "$BASH_SUBSHELL" -ne 0 ]; then
+    FM_CAPTURE_OUTPUT=
+  elif [ -n "$FM_CAPTURE_OUTPUT" ] && [ ! -L "$FM_CAPTURE_OUTPUT" ] && [ -f "$FM_CAPTURE_OUTPUT" ] \
+    && { : > "$FM_CAPTURE_OUTPUT"; } 2>/dev/null; then
+    return 0
+  else
+    fm_capture_output_cleanup
+  fi
+  FM_CAPTURE_OUTPUT=$(mktemp "$STATE/.fm-capture-output.XXXXXX") || { FM_CAPTURE_OUTPUT=; return 1; }
+}
+
 # watcher_capture: fm_backend_capture into WATCHER_CAPTURE with its exit status.
 # The read runs as a waited background process group rather than inside $(...),
 # so a stop is not held for a blocked read (watcher_stop_signals). The group is
 # recorded like a check's, so watcher_cleanup stops a read still in flight. Its
 # process group and the captured text are read in the shell where it can
-# (fm_pid_pgid_to, fm_file_text_to), since every window's poll runs a capture.
+# (fm_pid_pgid_to, fm_file_text_to), and the output file is reused
+# (fm_capture_output_ready), since every window's poll runs a capture. A read
+# that could not be stopped drops the file, so its late bytes never reach the
+# next capture.
 watcher_capture() {  # <backend> <target> <lines> [expected-label]
   local rc pgid
-  fm_capture_output_cleanup
   WATCHER_CAPTURE=
-  FM_CAPTURE_OUTPUT=$(mktemp "$STATE/.fm-capture-output.XXXXXX") || return 1
+  fm_capture_output_ready || return 1
   FM_CHECK_SIGNAL_PENDING=
   trap 'FM_CHECK_SIGNAL_PENDING=1' HUP INT TERM
   # The group's stderr is redirected before the fork: bash 3.2 on macOS can
@@ -2898,7 +2918,7 @@ watcher_capture() {  # <backend> <target> <lines> [expected-label]
   FM_ACTIVE_CHECK_PID=
   fm_active_check_stop || { fm_capture_output_cleanup; return 1; }
   fm_file_text_to WATCHER_CAPTURE "$FM_CAPTURE_OUTPUT" || true
-  fm_capture_output_cleanup
+  [ "$BASH_SUBSHELL" -eq 0 ] || fm_capture_output_cleanup
   return "$rc"
 }
 
