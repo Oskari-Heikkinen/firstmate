@@ -634,21 +634,48 @@ fm_wake_print_annotations "$2" '' "$3"
         manifest.write_bytes(b"")
         calls = []
         original = Presentation.read
-        def update(instance, rows, vocabulary=None):
-            reply = original(instance, rows, vocabulary)
-            calls.append(reply)
+        marker = self.state / ".seen-task_status"
+        diagnostic = b"using complete legacy acknowledgement preparation"
+        prior_cursor = manifest.read_bytes()
+
+        def mark_current():
             process = subprocess.run(["bash", "-c", '. "$1/bin/fm-wake-lib.sh"; fm_wake_status_mark_current "$2" "$2/task.status"',
                 "fixture", str(ROOT), str(self.state)], env=self.env, capture_output=True, timeout=15)
             self.assertEqual(process.returncode, 0, process.stderr)
+
+        def update(instance, rows, vocabulary=None):
+            reply = original(instance, rows, vocabulary)
+            calls.append(reply)
+            mark_current()
             return reply
-        with patch.object(Presentation, "read", update), open("/dev/full", "wb") as full:
-            process = await asyncio.create_subprocess_exec("bash", str(ROOT / "bin/fm-wake-drain.sh"),
-                env=self.env, stdout=full, stderr=asyncio.subprocess.PIPE)
-            _, error = await asyncio.wait_for(process.communicate(), 40)
-        self.assertNotEqual(process.returncode, 0, error)
-        self.assertIn(b"using complete legacy acknowledgement preparation", error)
+
+        codes = []
+        for native in (False, True):
+            with self.subTest(native=native):
+                manifest.write_bytes(prior_cursor)
+                marker.unlink(missing_ok=True)
+                env = dict(self.env, LC_ALL="C")
+                if not native:
+                    env.pop("FM_VIEW_SOCKET")
+                    # Legacy has no native capture seam: publish the same
+                    # marker its acknowledgement preparation must observe.
+                    await asyncio.to_thread(mark_current)
+                with patch.object(Presentation, "read", update), open("/dev/full", "wb") as full:
+                    process = await asyncio.create_subprocess_exec("bash", str(ROOT / "bin/fm-wake-drain.sh"),
+                        env=env, stdout=full, stderr=asyncio.subprocess.PIPE)
+                    _, error = await asyncio.wait_for(process.communicate(), 40)
+                codes.append(process.returncode)
+                # Supplemental presentation failure is nonfatal to the public
+                # drain, but must be visible and never commit its cursor.
+                self.assertEqual(process.returncode, 0, error)
+                self.assertIn(b"cat: write error: No space left on device", error)
+                self.assertNotIn(b"fm-view-client:", error)
+                if native: self.assertIn(diagnostic, error)
+                else: self.assertNotIn(diagnostic, error)
+                self.assertEqual(manifest.read_bytes(), prior_cursor)
+        self.assertEqual(codes, [0, 0])
         self.assertEqual(len(calls), 1)
-        self.assertEqual(manifest.read_bytes(), b"")
+        self.assertTrue(calls[0]["rows"])
         actual, error = await self.invoke("fm-wake-drain.sh")
         self.assertNotIn(b"using complete legacy acknowledgement preparation", error)
         cursor = manifest.read_bytes()
