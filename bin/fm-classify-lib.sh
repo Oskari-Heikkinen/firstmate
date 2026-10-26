@@ -2200,7 +2200,7 @@ status_observed_signature() {  # <file> [size] [identity]
 # exactly five lines keep the separate reads above; Bash 3.2 keeps od.
 status_observed_signature_to() {  # <output-variable> <file> [size] [identity]
   local _sos_f=$2 _sos_size=${3-} _sos_ident=${4-} _sos_path_state _sos_link_target=- _sos_access _sos_kind
-  local _sos_stat='' _sos_stat_size _sos_dev_ino _sos_epoch _sos_birth _sos_encoded
+  local _sos_stat='' _sos_stat_size _sos_stat_ident
   printf -v "$1" '%s' ''
   if [ "$_FM_CLASSIFY_UNAME_S" != Darwin ] && [ -z "${FM_STATUS_IDENTITY_READER:-}" ] \
     && [ -z "${FM_STATUS_SIZE_READER:-}" ]; then
@@ -2211,12 +2211,10 @@ status_observed_signature_to() {  # <output-variable> <file> [size] [identity]
       *) _sos_stat='' ;;
     esac
   fi
-  if [ -n "$_sos_stat" ]; then
-    _sos_path_state=${_sos_stat%%$'\n'*}; _sos_stat=${_sos_stat#*$'\n'}
-    _sos_stat_size=${_sos_stat%%$'\n'*}; _sos_stat=${_sos_stat#*$'\n'}
-    _sos_dev_ino=${_sos_stat%%$'\n'*}; _sos_stat=${_sos_stat#*$'\n'}
-    _sos_epoch=${_sos_stat%%$'\n'*}; _sos_birth=${_sos_stat#*$'\n'}
+  if [ -n "$_sos_stat" ] && _status_observed_stat_parse_to _sos_path_state _sos_stat_size _sos_stat_ident "$_sos_stat"; then
+    :
   else
+    _sos_stat=''
     _sos_path_state=$(_status_observed_path_state "$_sos_f") || _sos_path_state=stat-error
   fi
   if [ -L "$_sos_f" ]; then
@@ -2242,20 +2240,96 @@ status_observed_signature_to() {  # <output-variable> <file> [size] [identity]
   fi
   if [ -z "$_sos_ident" ]; then
     if [ -n "$_sos_stat" ]; then
-      _fm_file_ident_compose_to _sos_ident "$_sos_dev_ino" "$_sos_epoch" "$_sos_birth" || _sos_ident=identity-error
+      _sos_ident=$_sos_stat_ident
     else
       _sos_ident=$(_fm_open_decisions_file_ident "$_sos_f") || _sos_ident=identity-error
     fi
     [ -n "$_sos_ident" ] || _sos_ident=identity-error
   fi
   if [ -r "$_sos_f" ]; then _sos_access=readable; else _sos_access=unreadable; fi
-  if [ "$_FM_CLASSIFY_HEX_BYTEWISE" != 1 ] || ! _status_observed_hex_c_to _sos_encoded "$_sos_size" "$_sos_ident" \
-    "$_sos_path_state" "$_sos_link_target" "$_sos_access" "$_sos_kind" 2>/dev/null; then
-    _sos_encoded=$(printf '%s\0%s\0%s\0%s\0%s\0%s' \
-      "$_sos_size" "$_sos_ident" "$_sos_path_state" "$_sos_link_target" "$_sos_access" "$_sos_kind" \
-      | LC_ALL=C od -An -v -tx1 | tr -d ' \n') || return 1
+  _status_observed_signature_compose_to "$1" "$_sos_size" "$_sos_ident" \
+    "$_sos_path_state" "$_sos_link_target" "$_sos_access" "$_sos_kind"
+}
+
+# One owner for the GNU five-line observation packet, whether a caller read one
+# file or a bounded inventory. Output names must not use this helper's prefix.
+_status_observed_stat_parse_to() {  # <path-state-var> <size-var> <identity-var> <packet>
+  local _osp_rest=$4 _osp_path _osp_size _osp_devino _osp_epoch _osp_birth _osp_mode _osp_ident
+  case "$_osp_rest" in
+    *$'\n'*$'\n'*$'\n'*$'\n'*$'\n'*) return 1 ;;
+    *$'\n'*$'\n'*$'\n'*$'\n'*) ;;
+    *) return 1 ;;
+  esac
+  _osp_path=${_osp_rest%%$'\n'*}; _osp_rest=${_osp_rest#*$'\n'}
+  _osp_size=${_osp_rest%%$'\n'*}; _osp_rest=${_osp_rest#*$'\n'}
+  _osp_devino=${_osp_rest%%$'\n'*}; _osp_rest=${_osp_rest#*$'\n'}
+  _osp_epoch=${_osp_rest%%$'\n'*}; _osp_birth=${_osp_rest#*$'\n'}
+  case "$_osp_path" in *:*) _osp_mode=${_osp_path##*:} ;; *) return 1 ;; esac
+  case "$_osp_mode" in ''|*[!0-9a-f]*|?????????*) return 1 ;; esac
+  case "$_osp_size" in ''|*[!0-9]*) return 1 ;; esac
+  case "$_osp_devino" in *:*) ;; *) return 1 ;; esac
+  case "${_osp_devino%%:*}" in ''|*[!0-9]*) return 1 ;; esac
+  case "${_osp_devino#*:}" in ''|*[!0-9]*) return 1 ;; esac
+  case "${_osp_epoch#-}" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$_osp_birth" ] || return 1
+  if [ "$_osp_epoch" != 0 ]; then
+    case "$_osp_birth" in
+      *[!0-9.\ :+-]*) return 1 ;;
+      ????-??-??\ ??:??:??*) ;;
+      *) return 1 ;;
+    esac
+    [ "${#_osp_birth}" -le 64 ] || return 1
+  else
+    [ "$_osp_birth" = - ] || return 1
   fi
-  printf -v "$1" 'r1:%s' "$_sos_encoded"
+  _fm_file_ident_compose_to _osp_ident "$_osp_devino" "$_osp_epoch" "$_osp_birth" || return 1
+  printf -v "$1" '%s' "$_osp_path"
+  printf -v "$2" '%s' "$_osp_size"
+  printf -v "$3" '%s' "$_osp_ident"
+}
+
+_status_observed_signature_compose_to() {  # <output-variable> <size> <identity> <path-state> <link-target> <access> <kind>
+  local _osc_output=$1 _osc_encoded
+  shift
+  if [ "$_FM_CLASSIFY_HEX_BYTEWISE" != 1 ] || ! _status_observed_hex_c_to _osc_encoded "$@" 2>/dev/null; then
+    _osc_encoded=$(printf '%s\0%s\0%s\0%s\0%s\0%s' "$@" | LC_ALL=C od -An -v -tx1 | tr -d ' \n') || return 1
+  fi
+  printf -v "$_osc_output" 'r1:%s' "$_osc_encoded"
+}
+
+# Fresh regular-file signatures in argument order. The annotation owner calls
+# this only at rendering time, never reuses its earlier presentation snapshot.
+# Unsupported/uncertain inputs refuse the whole optional read with no output.
+status_observed_signatures_batch() {  # <file>...
+  local packet row group='' field=0 index=0 f path_state size ident mode sig result=''
+  local -a signature_batch_files=("$@")
+  [ "$_FM_CLASSIFY_UNAME_S" = Linux ] && [ "$_FM_CLASSIFY_HEX_BYTEWISE" = 1 ] \
+    && [ -z "${FM_STATUS_SIZE_READER:-}" ] && [ -z "${FM_STATUS_IDENTITY_READER:-}" ] || return 1
+  [ "$#" -le 256 ] || return 1
+  [ "$#" -gt 0 ] || return 0
+  for f in "$@"; do
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  done
+  { packet=$(LC_ALL=C exec stat -c $'%F:%f\n%s\n%d:%i\n%W\n%w' -- "$@"); } 2>/dev/null || return 1
+  while IFS= read -r row; do
+    [ "$index" -lt "$#" ] || return 1
+    if [ "$field" -eq 0 ]; then group=$row; else group="$group"$'\n'"$row"; fi
+    field=$((field + 1))
+    [ "$field" -eq 5 ] || continue
+    _status_observed_stat_parse_to path_state size ident "$group" || return 1
+    case "$path_state" in 'regular file:'*|'regular empty file:'*) ;; *) return 1 ;; esac
+    mode=${path_state##*:}
+    [ "$((16#$mode & 61440))" -eq 32768 ] || return 1
+    f=${signature_batch_files[$index]}
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+    _status_observed_signature_compose_to sig "$size" "$ident" "$path_state" - readable readable || return 1
+    result="$result$sig"$'\n'
+    index=$((index + 1)); field=0
+  done <<EOF
+$packet
+EOF
+  [ "$index" -eq "$#" ] && [ "$field" -eq 0 ] || return 1
+  printf '%s' "$result"
 }
 
 # What `printf '%s\0...' <field>... | LC_ALL=C od -An -v -tx1 | tr -d ' \n'` prints:

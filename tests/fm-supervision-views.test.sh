@@ -11,6 +11,8 @@
 # The existing shell commit owner joins fresh strong proofs/cursors once after
 # stdout; per-row tripwires and whole manifests cover backstop/growth parity,
 # mutation refusal and full legacy fallback on a corrupt commit-time capture.
+# Fresh annotation-time historical signatures share their owner's parser/encoder;
+# late append/marker-update races and complete-filter fallback match legacy.
 # Native offset batching reads real owner-written cursor/marker bytes, refuses
 # unmigrated legacy cursors and leaves all publication/commit authority intact.
 # Real-client corrupt replies exercise observed-offset validation plus the
@@ -64,6 +66,32 @@ then
   pass 'ordinary legacy presentation commit never selects the optional batch'
 else
   printf 'not ok - ordinary legacy presentation commit selection\n' >&2
+  rc=1
+fi
+# A separate public legacy renderer probe must not become an optional-batch
+# test accidentally; both missing and matching reported markers keep their owner.
+if bash -s -- "$ROOT" <<'SH'
+set -u
+. "$1/bin/fm-wake-lib.sh"
+_fm_wake_require_classify || exit 1
+home=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$home"' EXIT
+STATE="$home/state"
+mkdir "$STATE" || exit 1
+printf 'working: legacy annotation\n' > "$STATE/task.status"
+snapshot=$(status_presentation_snapshot "$STATE") || exit 1
+rows=$(printf '100\t1\tsignal\ttask.turn-ended\tsignal: historical\n')
+status_observed_signatures_batch() { : > "$home/unexpected-batch"; return 85; }
+actual=$(fm_wake_print_annotations "$rows" "$snapshot") || exit 1
+[ "$actual" = 'wake annotation: latest wake-EVENT observed at drain, not current state; historical / not necessarily the triggering event: task.status: working: legacy annotation' ] || exit 1
+fm_wake_status_mark_current "$STATE" "$STATE/task.status" || exit 1
+actual=$(fm_wake_print_annotations "$rows" "$snapshot") || exit 1
+[ -z "$actual" ] && [ ! -e "$home/unexpected-batch" ]
+SH
+then
+  pass 'ordinary legacy annotations retain reported-marker checks without the optional batch'
+else
+  printf 'not ok - ordinary legacy annotation selection\n' >&2
   rc=1
 fi
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/fixtures/supervision-views/check.py" || rc=1
