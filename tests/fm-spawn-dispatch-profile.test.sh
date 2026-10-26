@@ -785,7 +785,13 @@ test_launch_preserves_inherited_git_config() {
   printf '%s\n' "$launch" > "$launch_file"
   expected=$'\n!gh auth git-credential\n'"$(cd "$HOME_DIR/state" && pwd -P)/$id.git-hooks"
   for pane_shell in /bin/sh /bin/bash /bin/zsh; do
-    [ -x "$pane_shell" ] || continue
+    if [ ! -x "$pane_shell" ]; then
+      # CI installs every POSIX pane shell, so a missing one there would let the
+      # pass line claim a shell that never ran.
+      [ "${CI:-}" != true ] || fail "$pane_shell is required in CI for the pane launch Git config cases"
+      echo "skip: $pane_shell not found (pane launch)"
+      continue
+    fi
     for count in 2 02; do
       result=$(isolated_pane_env GIT_CONFIG_COUNT="$count" \
         GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0='' \
