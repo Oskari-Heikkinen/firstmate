@@ -553,6 +553,17 @@ test_arm_and_disarm() {
   out=$(env -u FM_DISK_ROOM_HOST PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" FM_STORAGE_MNT="$TMP_ROOT/mnt" "$home/state/disk-room.check.sh")
   assert_contains "$out" "disk room low: 15.0 GiB real room on $HOSTDIR" "the shim carries the arm-time settings"
   assert_contains "$out" " | storage alert: $HOSTDIR has 15.0 GiB actually free (floor 40.0 GiB)" "the shim carries the alert thresholds"
+  out=$(env -u FM_DISK_ROOM_C_FREE_MIN FM_HOME="$home" FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_MARGIN=20G FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" \
+    FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/mb_groups" FM_DISK_ROOM_STATE="$TMP_ROOT/state" \
+    FM_DISK_ROOM_RESULTS_ROOT="$TMP_ROOT/missing-results-root" FM_DISK_ROOM_SAMPLES="$TMP_ROOT/no-samples" \
+    FM_DISK_ROOM_WSLCONFIG='' "$DISK_ROOM" arm) || fail "a default arm exits 0"
+  assert_not_contains "$(cat "$home/state/disk-room.check.sh")" "FM_DISK_ROOM_C_FREE_MIN" "a default arm pins no C: floor"
+  mkdir -p "$home/config"
+  printf '40G\n' >"$home/config/disk-room-c-free-min"
+  reset_state
+  out=$(env -u FM_DISK_ROOM_HOST -u FM_DISK_ROOM_C_FREE_MIN FM_HOME="$home" PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" FM_STORAGE_MNT="$TMP_ROOT/mnt" "$home/state/disk-room.check.sh")
+  assert_contains "$out" "(floor 40.0 GiB)" "a default-armed shim reads a floor file written after arming"
+  rm -f "$home/config/disk-room-c-free-min"
   FM_HOME="$home" "$DISK_ROOM" disarm >/dev/null || fail "disarm exits 0"
   assert_absent "$home/state/disk-room.check.sh" "disarm removes the shim"
   assert_absent "$home/state/disk-room.check-trust" "disarm removes the trust binding"
@@ -1029,10 +1040,27 @@ test_c_free_min_sources() {
   reset_state
   out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
   assert_contains "$out" "storage alerts: cannot evaluate (bad C: free floor in $f)" "a bad file is a failed reading that names it"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room growth 2>&1) && fail "growth fails on a bad file"
+  assert_contains "$out" "bad C: free floor in $f" "growth names the bad file"
   reset_state
   : >"$f"
   out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
-  assert_contains "$out" "storage alert: $HOSTDIR has 60.0 GiB actually free (floor 100.0 GiB)" "an empty file falls back to 100G"
+  assert_contains "$out" "storage alerts: cannot evaluate (bad C: free floor in $f)" "an empty file is a failed reading that names it"
+  reset_state
+  printf '\n1G\n' >"$f"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_contains "$out" "storage alerts: cannot evaluate (bad C: free floor in $f)" "a blank first line is a failed reading"
+  reset_state
+  rm -f "$f"
+  ln -s "$home/config/missing" "$f"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room watch-line 2>&1)
+  assert_contains "$out" "storage alerts: cannot evaluate (bad C: free floor in $f)" "a dangling file link is a failed reading"
+  assert_not_contains "$out" "No such file" "an unreadable file adds no shell error"
+  rm -f "$f"
+  reset_state
+  printf ' 80G\n' >"$f"
+  out=$(FM_DISK_ROOM_C_FREE_MIN='' TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$t0 run_room growth) || fail "growth exits 0 with a file floor"
+  assert_contains "$out" "C: free 80.0 GiB" "growth reads the file's floor"
   rm -f "$f"
   reset_state
   items=$(env -u FM_INHERITABLE_CONFIG bash -c '. "$1" && fm_config_inherit_items' _ "$ROOT/bin/fm-config-inherit-lib.sh")

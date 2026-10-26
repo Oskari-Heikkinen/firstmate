@@ -233,8 +233,9 @@
 #   FM_DISK_ROOM_C_FREE_MIN  alert when the Windows drive's actual free space is
 #                         under this (SIZE or off); when unset or empty, the
 #                         first line of <home>/config/disk-room-c-free-min (same
-#                         home as the margin; an empty file reads as absent),
-#                         else 100G; an unparsable value or file is a failed reading
+#                         home as the margin), else 100G; an unparsable value or
+#                         a present file that does not parse, including an empty
+#                         one, is a failed reading
 #   FM_DISK_ROOM_D_FREE_MIN  alert when D: free space minus live D: reservations
 #                         is under this (SIZE, default 50G; off disables)
 #   FM_DISK_ROOM_STATE    reservations, alert records and the hourly history
@@ -831,7 +832,7 @@ resolve_margin() {
   fi
   f=${FM_CONFIG_OVERRIDE:-${FM_HOME:-${SCRIPT_DIR%/*}}/config}/disk-room-margin
   if [ -e "$f" ] || [ -L "$f" ]; then
-    IFS= read -r line <"$f" 2>/dev/null
+    { IFS= read -r line <"$f"; } 2>/dev/null
     line=${line//[$' \t\r']/}
     MARGIN=$(to_bytes "$line") || { ERR="bad margin in $f"; return 1; }
     return 0
@@ -841,8 +842,8 @@ resolve_margin() {
 
 # resolve_c_free_min: sets C_FREE_MIN (bytes or off) from FM_DISK_ROOM_C_FREE_MIN,
 # else the first line of the home's config/disk-room-c-free-min, else 100G, the
-# same home as resolve_margin. An empty file reads as absent. Sets ERR and
-# returns 1 when the chosen value does not parse.
+# same home as resolve_margin. Sets ERR and returns 1 when the chosen value does
+# not parse; a present file that is empty or unreadable does not parse.
 resolve_c_free_min() {
   local f line=''
   if [ -n "${FM_DISK_ROOM_C_FREE_MIN:-}" ]; then
@@ -851,10 +852,15 @@ resolve_c_free_min() {
   fi
   f=${FM_CONFIG_OVERRIDE:-${FM_HOME:-${SCRIPT_DIR%/*}}/config}/disk-room-c-free-min
   if [ -e "$f" ] || [ -L "$f" ]; then
-    IFS= read -r line <"$f" 2>/dev/null
+    { IFS= read -r line <"$f"; } 2>/dev/null
     line=${line//[$' \t\r']/}
+    if [ -z "$line" ] || ! C_FREE_MIN=$(threshold line 100G); then
+      ERR="bad C: free floor in $f"
+      return 1
+    fi
+    return 0
   fi
-  C_FREE_MIN=$(threshold line 100G) || { ERR="bad C: free floor in $f"; return 1; }
+  C_FREE_MIN=$((100 * GIB))
 }
 
 # measure [EXCLUDE]: sets globals; returns 1 when a required reading fails.
