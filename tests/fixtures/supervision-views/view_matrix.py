@@ -26,12 +26,14 @@ COMMANDS = {"snapshot": "fm-fleet-snapshot.sh", "view": "fm-fleet-view.sh", "dra
 
 
 def admitted(error):
-    # These are the foundation's declared unsupported backend/boundary paths,
-    # not successful native coverage. Keep exact reasons, never a broad catch.
+    # Declared unsupported integrations and exact late backstop race refusals
+    # are counted fallback, never successful native coverage. No broad catch.
     return (allowed_refusal(error) or error in (
         b"fm-view-client: read refused; use legacy: service refused: legacy migration cursor requires legacy presentation",
         b"fm-view-client: read refused; use legacy: service refused: passive snapshot-endpoint integration unsupported; use legacy",
         b"fm-view-client: read refused; use legacy: service refused: native status line bound exceeded; use legacy",
+        b"fm-view-client: read refused; use legacy: service refused: backstop live endpoint changed",
+        b"fm-view-client: read refused; use legacy: service refused: backstop input changed before reply",
     ))
 
 

@@ -31,7 +31,7 @@ def number(value):
     return int(value)
 
 
-def manifest_rows(captured):
+def manifest_rows(captured, backstops=False):
     result = {}
     if captured is None:
         return result
@@ -42,9 +42,9 @@ def manifest_rows(captured):
         require(len(parts) in (3, 4) and parts[0] and parts[1], "invalid presentation cursor row")
         task, identity, offset = parts[:3]
         require(task not in result, "duplicate presentation cursor task")
-        if len(parts) == 4 and parts[3]:
-            number(parts[3])
-        result[task] = (identity, number(offset))
+        backstop = number(parts[3]) if len(parts) == 4 and parts[3] else 0
+        result[task] = ((identity, number(offset), backstop) if backstops
+                        else (identity, number(offset)))
     return result
 
 
@@ -78,6 +78,19 @@ def marker_offset(captured, strong):
     return number(offset) if identity == strong else 0
 
 
+def snapshot_row(snapshot, inputs):
+    require(type(snapshot) is dict and set(snapshot) == {
+        "task", "end", "identity", "strong_identity", "fully_presented"}, "invalid drain snapshot row")
+    inputs.task_path(snapshot["task"], ".status")
+    require(type(snapshot["identity"]) is list and len(snapshot["identity"]) == 2
+            and all(type(value) is int and value >= 0 for value in snapshot["identity"])
+            and snapshot["identity"] == observation_identity(snapshot["strong_identity"]),
+            "drain snapshot identity mismatch")
+    require(type(snapshot["end"]) is int and 0 <= snapshot["end"] <= MAX_FILE,
+            "invalid drain snapshot endpoint")
+    require(type(snapshot["fully_presented"]) is bool, "invalid annotation presentation flag")
+
+
 class Offsets:
     def __init__(self, inputs):
         self.inputs = inputs
@@ -87,13 +100,8 @@ class Offsets:
         manifest = manifest_rows(captured)
         rows, self.markers = [], []
         for snapshot in snapshots:
-            require(type(snapshot) is dict and set(snapshot) == {
-                "task", "end", "identity", "strong_identity", "fully_presented"}, "invalid drain snapshot row")
+            snapshot_row(snapshot, self.inputs)
             task, strong = snapshot["task"], snapshot["strong_identity"]
-            self.inputs.task_path(task, ".status")
-            require(snapshot["identity"] == observation_identity(strong), "drain snapshot identity mismatch")
-            require(type(snapshot["end"]) is int and 0 <= snapshot["end"] <= MAX_FILE,
-                    "invalid drain snapshot endpoint")
             if captured is None:
                 require(self.inputs.state_named_read("." + task + ".open-decisions-cursor") is None,
                         "legacy migration cursor requires legacy presentation")
