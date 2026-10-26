@@ -1912,10 +1912,17 @@ _fm_open_decisions_unread() {  # <exact> <trusted-open>
   printf '%s' "$2"
 }
 
-# The length of <text> in bytes, into <out-var>, whatever the caller's locale.
-_fm_byte_length_to() {  # <out-var> <text>
-  local LC_ALL=C
-  printf -v "$1" '%s' "${#2}"
+# "<size> <tail>" for <chunk-file>: its length in bytes and the bytes after its
+# last newline (its length when it has none), counted on the bytes themselves,
+# so a NUL that read drops or a multibyte character cannot move a cursor offset.
+_fm_chunk_size_and_tail() {  # <chunk-file>
+  LC_ALL=C perl -e '
+    open(my $h, "<:raw", $ARGV[0]) or exit 1;
+    local $/;
+    my $d = <$h>;
+    $d = "" unless defined $d;
+    print length($d), " ", length($d) - 1 - rindex($d, "\n"), "\n";
+  ' "$1"
 }
 
 status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [exact]]
@@ -2050,17 +2057,16 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
       fi
       _fm_status_read_span "$f" "$offset" "$want" > "$chunk_file" 2>/dev/null \
         || { rm -f "$chunk_file"; return 1; }
-      chunk_size=$(LC_ALL=C wc -c < "$chunk_file" 2>/dev/null) || { rm -f "$chunk_file"; return 1; }
-      [ "${chunk_size//[[:space:]]/}" = "$want" ] || { rm -f "$chunk_file"; return 1; }
+      chunk_size=$(_fm_chunk_size_and_tail "$chunk_file" 2>/dev/null) || { rm -f "$chunk_file"; return 1; }
+      partial_size=${chunk_size#* }
+      [ "${chunk_size%% *}" = "$want" ] || { rm -f "$chunk_file"; return 1; }
+      case "$partial_size" in ''|*[!0-9]*) rm -f "$chunk_file"; return 1 ;; esac
       folded=$((folded + want))
       line=''
       while IFS= read -r line; do
         _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
         line=''
       done < "$chunk_file"
-      partial_size=0
-      [ -z "$line" ] || _fm_byte_length_to partial_size "$line"
-      [ "$partial_size" -le "$want" ] || { rm -f "$chunk_file"; return 1; }
       if [ "$last" = 1 ]; then
         _fm_od_emit_to persisted_open
         [ -z "$line" ] || _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
@@ -2148,7 +2154,7 @@ _fm_open_decisions_cursor_write() {  # <cursor> <version> <offset> <ident> <open
 _fm_open_decisions_span_inert() {  # <status-file> <start> <end>
   local f=$1 start=$2 end=$3 boundary span_file span_size line unstamped verb resolve held rc=0
   [ "$((end - start))" -le "$start" ] || return 1
-  boundary=$(_fm_status_read_span "$f" "$((start - 1))" 1 2>/dev/null; printf x) || return 1
+  boundary=$(_fm_status_read_span "$f" "$((start - 1))" 1 2>/dev/null | LC_ALL=C tr -d '\000'; printf x)
   [ "$boundary" = $'\nx' ] || return 1
   span_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX" 2>/dev/null) || return 1
   if ! _fm_status_read_span "$f" "$start" "$((end - start))" > "$span_file" 2>/dev/null \

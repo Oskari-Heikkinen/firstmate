@@ -2525,6 +2525,9 @@ test_open_decisions_fold_matches_the_text_fold() {
   printf 'needs-decision [key=a]: x\ndone: shipped\nneeds-decision [key=b]: y\nfailed: gone\nblocked [key=c]: z\ndone without colon\n' > "$cases/done.status"
   printf 'needs-decision: keyless\nblocked: keyless blocker\ncaptain-held [key=default]: held\nneeds-decision [key=Bad Slug]: refused\nneeds-decision corr=0123456789abcdef [key=c1]: corr\nresolved corr=0123456789abcdef [key=c1]: closed\nneeds-decision [at=1792600000] [key=t1]: stamped\nneeds-decision [key=h1]\nprose with [key=p1] inside\nneeds-decision [at=17:00]: time tag\n' > "$cases/shapes.status"
   printf 'needs-decision [key=a]: x\r\nblocked [key=b]: \377\376\nneeds-decision [key=c]: caf\303\251\nblocked [key=d]: tab\there\n\n\n  \nneeds-decision [key=e]: unterminated' > "$cases/bytes.status"
+  # A NUL run inside a line, which read drops: the mid-line capture ends just
+  # after it, and a 16-byte step crosses it.
+  printf 'working: s\nn\000\000eeds-decision [key=q]: x\nworking: z\n' > "$cases/nul.status"
   {
     for ((i = 1; i <= 120; i++)); do
       printf 'needs-decision [key=k%s]: open %s\n' "$((i % 17))" "$i"
@@ -2532,6 +2535,7 @@ test_open_decisions_fold_matches_the_text_fold() {
       [ $((i % 7)) -eq 0 ] && printf 'resolved [key=k%s]: closed\n' "$((i % 17))"
       [ $((i % 11)) -eq 0 ] && printf 'note [supersedes=resume]: resumed\n'
       [ $((i % 13)) -eq 0 ] && printf 'blocked [key=held-%s]: held\n' "$i"
+      [ $((i % 19)) -eq 0 ] && printf 'blocked [key=n%s]: nul\000\000\000\000\000\000\000\000 run %s\n' "$i" "$i"
       printf 'working: step %s\n' "$i"
     done
   } > "$cases/long.status"
@@ -2702,6 +2706,23 @@ mid=$(printf 'needs-decision [key=k1]: a\nresolved [key=k' | wc -c | tr -d ' ')
 status_open_decisions_incremental "$prefixes/split.status" "$mid" exact > /dev/null
 got=$(status_open_decisions_incremental "$prefixes/split.status" "$(wc -c < "$prefixes/split.status" | tr -d ' ')" exact)
 [ "$got" = $'k2\tneeds-decision\tb' ] || printf 'a closer split by the capture left %q open\n' "$got"
+# A capture ending in a NUL run that read drops still leaves the cursor on the
+# line's first byte: neither the decision whose closer follows the NULs nor a
+# line that only becomes a decision after them may change the answer.
+for nul_case in 'working: s\nneeds-decision [key=q]: pi|resolved [key=q]: ok\n' \
+  'working: sta|needs-decision [key=q]: x\n'; do
+  rm -f "$prefixes/.nul.snapshot-open-decisions-cursor"
+  { printf "${nul_case%%|*}"; head -c 30 /dev/zero; } > "$prefixes/nul.status"
+  size=$(wc -c < "$prefixes/nul.status" | tr -d ' ')
+  status_open_decisions_incremental "$prefixes/nul.status" "$size" exact > /dev/null
+  cursor_offset=$(sed -n 's/^offset=//p' "$prefixes/.nul.snapshot-open-decisions-cursor")
+  [ "$cursor_offset" = "$(printf "${nul_case%%|*}" | sed '$d' | wc -c | tr -d ' ')" ] \
+    || printf 'a NUL tail %q left the cursor at %s\n' "${nul_case%%|*}" "$cursor_offset"
+  printf "${nul_case#*|}" >> "$prefixes/nul.status"
+  want=$(ref_incremental "$prefixes/nul.status"; printf x)
+  got=$(status_open_decisions_incremental "$prefixes/nul.status" "$(wc -c < "$prefixes/nul.status" | tr -d ' ')" exact; printf x)
+  [ "$got" = "$want" ] || printf 'the fold after a NUL tail %q: new %q, old %q\n' "${nul_case%%|*}" "$got" "$want"
+done
 # Exact mode keeps its read chunk under TMPDIR: a fold killed mid-read leaves
 # nothing beside the status log for a refresh's sweep to miss. Each killed
 # child runs in a subshell with stderr closed, and exits after it rather than
