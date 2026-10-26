@@ -11,6 +11,9 @@
 # The existing shell commit owner joins fresh strong proofs/cursors once after
 # stdout; per-row tripwires and whole manifests cover backstop/growth parity,
 # mutation refusal and full legacy fallback on a corrupt commit-time capture.
+# Fresh whole-inventory path admission after enrichment covers direct and
+# historical annotations without span/cursor rereads; late deletion and early
+# refusal controls retain unrelated rows through whole legacy annotation fallback.
 # Fresh annotation-time historical signatures share their owner's parser/encoder;
 # late append/marker-update races and complete-filter fallback match legacy.
 # Classification evidence is validated before selection and rechecked by its
@@ -85,6 +88,7 @@ printf 'working: legacy annotation\n' > "$STATE/task.status"
 snapshot=$(status_presentation_snapshot "$STATE") || exit 1
 rows=$(printf '100\t1\tsignal\ttask.turn-ended\tsignal: historical\n')
 status_observed_signatures_batch() { : > "$home/unexpected-batch"; return 85; }
+status_presentation_snapshot_batch() { : > "$home/unexpected-batch"; return 85; }
 actual=$(fm_wake_print_annotations "$rows" "$snapshot") || exit 1
 [ "$actual" = 'wake annotation: latest wake-EVENT observed at drain, not current state; historical / not necessarily the triggering event: task.status: working: legacy annotation' ] || exit 1
 fm_wake_status_mark_current "$STATE" "$STATE/task.status" || exit 1
