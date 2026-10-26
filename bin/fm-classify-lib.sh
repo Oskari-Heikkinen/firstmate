@@ -1612,7 +1612,8 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # are discarded.
 FM_OPEN_DECISIONS_FOLD_VERSION=12
 
-# Portable device:inode identity for the rotation/recreation check below.
+# Portable file identity for the rotation/recreation check below: strong:<ino>:<birth>
+# when the filesystem reports a birth time, weak:<dev>:<ino> when it does not.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
   local f=$1 epoch birth ident
   if [ -n "${FM_STATUS_IDENTITY_READER:-}" ]; then
@@ -1635,16 +1636,52 @@ _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
 # The identity above from its stat fields, shared with status_observed_signature_to,
 # which reads the same fields in one call. A birth time counts only when its epoch
 # is known (not 0).
+# A strong identity leaves out the device number: the inode plus the birth time to
+# the nanosecond already name one file object, and a device number can change under
+# an unchanged file (a WSL restart renumbered a state disk), which would otherwise
+# reset every cursor and force a full rescan of every status log. A weak identity
+# keeps the device, its only guard against a same-inode file on another filesystem.
 _fm_file_ident_compose_to() {  # <output-variable> <dev:ino> <birth-epoch> <birth-time>
   local _fic_birth=$4
   printf -v "$1" '%s' ''
   [ "$3" != 0 ] || _fic_birth=''
   case "$2$_fic_birth" in *$'\t'*|*$'\n'*|'') return 1 ;; esac
   if [ -n "$_fic_birth" ]; then
-    printf -v "$1" 'strong:%s:%s' "$2" "$_fic_birth"
+    printf -v "$1" 'strong:%s:%s' "${2#*:}" "$_fic_birth"
   else
     printf -v "$1" 'weak:%s' "$2"
   fi
+}
+
+# Map a stored identity to the current form: the strong:<dev>:<ino>:<birth> form
+# written before the device was left out becomes strong:<ino>:<birth>; anything
+# else is returned unchanged. Both forms are unambiguous, because a birth time
+# never starts with a run of digits followed by a colon (Linux writes
+# "YYYY-MM-DD HH:...", macOS writes seconds with no colon).
+_fm_file_ident_canon_to() {  # <output-variable> <identity>
+  local _fc_rest _fc_dev _fc_ino
+  printf -v "$1" '%s' "$2"
+  case "$2" in strong:*:*:*) ;; *) return 0 ;; esac
+  _fc_rest=${2#strong:}
+  _fc_dev=${_fc_rest%%:*}
+  _fc_rest=${_fc_rest#*:}
+  _fc_ino=${_fc_rest%%:*}
+  case "$_fc_dev" in ''|*[!0-9]*) return 0 ;; esac
+  case "$_fc_ino" in ''|*[!0-9]*) return 0 ;; esac
+  printf -v "$1" 'strong:%s' "$_fc_rest"
+}
+
+# Whether a stored identity names the same file as a fresh one. Every check of a
+# persisted identity against the file's current one goes through here, so a record
+# written in the device-bearing form keeps matching its unchanged file, and the
+# next normal write of that record stores the current form.
+_fm_file_ident_same() {  # <stored-identity> <current-identity>
+  local _fis_a _fis_b
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  [ "$1" = "$2" ] && return 0
+  _fm_file_ident_canon_to _fis_a "$1"
+  _fm_file_ident_canon_to _fis_b "$2"
+  [ "$_fis_a" = "$_fis_b" ]
 }
 
 _fm_status_file_size() {  # <status-file>
@@ -1768,10 +1805,14 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
     size=$actual_size
   fi
 
-  if [ -z "$version" ] || [ -z "$ident" ] || [ "$ident" != "$cur_ident" ] || [ "$offset" -gt "$actual_size" ]; then
+  if [ -z "$version" ] || ! _fm_file_ident_same "$ident" "$cur_ident" || [ "$offset" -gt "$actual_size" ]; then
     offset=0
     open=''
     trusted_open=''
+    cursor_dirty=1
+  elif [ "$ident" != "$cur_ident" ]; then
+    # The same file under a stored identity of the older form: keep the cursor
+    # and rewrite it now in the current form.
     cursor_dirty=1
   fi
 
@@ -1968,7 +2009,7 @@ EOF
   size=$(_fm_status_file_size "$f") || return 1
   size=${size//[[:space:]]/}
   case "$size:$offset" in *[!0-9:]*) return 1 ;; esac
-  if [ "$ident" != "$cur_ident" ] || [ "$offset" -gt "$size" ]; then offset=0; fi
+  if ! _fm_file_ident_same "$ident" "$cur_ident" || [ "$offset" -gt "$size" ]; then offset=0; fi
   printf '%s' "$offset"
 }
 
@@ -1992,7 +2033,7 @@ status_outcome_backstop_cursor_offset() {  # <status-file>
       size=$(_fm_status_file_size "$f") || return 1
       size=${size//[[:space:]]/}
       case "$size" in ''|*[!0-9]*) return 1 ;; esac
-      [ "$ident" = "$current" ] || { printf '0'; return 0; }
+      _fm_file_ident_same "$ident" "$current" || { printf '0'; return 0; }
       backstop=${row_backstop:-0}
       [ "$backstop" -le "$size" ] || backstop=0
       printf '%s' "$backstop"
@@ -2183,10 +2224,45 @@ status_presentation_marker_reported_matches() {
   status_presentation_text_reported_matches "$raw" "$2"
 }
 
-# The same test on marker text the caller has already read.
+# The same test on marker text the caller has already read. A stored signature
+# that differs only by carrying its file identity in the older, device-bearing
+# form (_fm_file_ident_canon_to) still matches, so a device renumber under an
+# unchanged file does not read as a changed one.
 status_presentation_text_reported_matches() {  # <marker-text> <reported-signature>
+  local _ptr_stored _ptr_current
   status_presentation_marker_parse "$1" || return 1
-  [ "$STATUS_PRESENTATION_REPORTED" = "$2" ]
+  [ "$STATUS_PRESENTATION_REPORTED" = "$2" ] && return 0
+  _status_signature_canon_to _ptr_stored "$STATUS_PRESENTATION_REPORTED" || return 1
+  _status_signature_canon_to _ptr_current "$2" || return 1
+  [ "$_ptr_stored" = "$_ptr_current" ]
+}
+
+# Rewrite an r1 signature whose identity field is the device-bearing
+# strong:<dev>:<ino>:<birth> into the strong:<ino>:<birth> form, working on the
+# hex text in the shell: the size field runs to the first 00 byte, and the
+# identity field must start "strong:" (7374726f6e673a) followed by two digit runs
+# each ended by ":" (3a); the first run, the device, is dropped. Any other
+# signature is returned unchanged. Returns 1 only for a value that is not r1.
+_status_signature_canon_to() {  # <output-variable> <signature>
+  local _sc_hex _sc_i=0 _sc_j _sc_size _sc_rest _sc_strong=7374726f6e673a
+  printf -v "$1" '%s' "$2"
+  case "$2" in r1:*) ;; *) return 1 ;; esac
+  _sc_hex=${2#r1:}
+  while [ "$_sc_i" -lt "${#_sc_hex}" ] && [ "${_sc_hex:$_sc_i:2}" != 00 ]; do
+    _sc_i=$((_sc_i + 2))
+  done
+  [ "$_sc_i" -lt "${#_sc_hex}" ] || return 0
+  _sc_size=${_sc_hex:0:$_sc_i}
+  _sc_rest=${_sc_hex:$((_sc_i + 2))}
+  case "$_sc_rest" in "$_sc_strong"*) ;; *) return 0 ;; esac
+  _sc_rest=${_sc_rest#"$_sc_strong"}
+  _sc_i=0
+  while case "${_sc_rest:$_sc_i:2}" in 3[0-9]) true ;; *) false ;; esac; do _sc_i=$((_sc_i + 2)); done
+  [ "$_sc_i" -gt 0 ] && [ "${_sc_rest:$_sc_i:2}" = 3a ] || return 0
+  _sc_j=$((_sc_i + 2))
+  while case "${_sc_rest:$_sc_j:2}" in 3[0-9]) true ;; *) false ;; esac; do _sc_j=$((_sc_j + 2)); done
+  [ "$_sc_j" -gt "$((_sc_i + 2))" ] && [ "${_sc_rest:$_sc_j:2}" = 3a ] || return 0
+  printf -v "$1" 'r1:%s00%s%s' "$_sc_size" "$_sc_strong" "${_sc_rest:$((_sc_i + 2))}"
 }
 
 status_presentation_marker_offset() {
@@ -2197,7 +2273,7 @@ status_presentation_marker_offset() {
   [ "$classified" != - ] || { printf '0'; return 0; }
   offset=${classified%%@*}; ident=${classified#*@}
   current=$(_fm_open_decisions_file_ident "$2") || { printf '0'; return 0; }
-  [ "$ident" = "$current" ] || { printf '0'; return 0; }
+  _fm_file_ident_same "$ident" "$current" || { printf '0'; return 0; }
   printf '%s' "$offset"
 }
 
@@ -2300,6 +2376,9 @@ EOF
 
 status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
   local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe kind absorbable classified
+  local verb resolve held
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
@@ -2311,7 +2390,11 @@ $fully_presented
       f="$state/$task.status"
       kind=$(_fm_status_kind "$f")
       offset=$(status_presentation_cursor_offset "$f") || return 1
-      lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
+      if [ "$kind" = secondmate ]; then
+        lines=$(status_new_lines_since_cursor "$f" "$endpoint" note working "$resolve" "$held") || return 1
+      else
+        lines=$(status_new_lines_since_cursor "$f" "$endpoint" note "$resolve" "$held") || return 1
+      fi
       # Once any informational line in this span is presented fleet-wide, the
       # contiguous cursor may advance through the captured endpoint. Routine
       # lines remain unacknowledged only while they are the sole unread content,
@@ -2322,7 +2405,8 @@ $fully_presented
           *[![:space:]]*)
             status_line_is_unread_surface "$line" "$kind" || continue
             if [ "$kind" = secondmate ]; then
-              case "$(status_line_verb "$line")" in
+              status_line_verb "$line" verb
+              case "$verb" in
                 working) absorbable=true; continue ;;
                 note) _fm_status_line_has_corr "$line" && { absorbable=true; continue; } ;;
               esac
@@ -2478,7 +2562,7 @@ status_open_decisions_cursor_offset() {  # <status-file>
   size=$(_fm_status_file_size "$f") || return 1
   size=${size//[[:space:]]/}
   case "$size" in ''|*[!0-9]*) return 1 ;; esac
-  if [ -z "$version" ] || [ -z "$ident" ] || [ "$ident" != "$cur_ident" ] || [ "$offset" -gt "$size" ]; then
+  if [ -z "$version" ] || ! _fm_file_ident_same "$ident" "$cur_ident" || [ "$offset" -gt "$size" ]; then
     offset=0
     open=''
   fi
@@ -2498,9 +2582,19 @@ status_open_decisions_cursor_offset() {  # <status-file>
 # changed status identity reads the current file from offset 0; malformed or
 # unreadable cursor state fails the scan. Symlinks and unreadable status files
 # print nothing.
-status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
+# With <verb> arguments, lines that cannot carry one of those verbs
+# (status_line_verb) may be left out: a caller that keeps only such lines passes
+# them so a whole-log read after a cursor reset hands it the few candidates, not
+# every line. Without them every non-blank line prints.
+# The span is filtered in one perl pass, not a bash loop per line. A line counts
+# as blank exactly when it holds only [[:space:]], whose members past ASCII depend
+# on the locale, so a span with a NUL byte or a line made only of ASCII spaces
+# and bytes some locale may call space (0x1c-0x1f, 0x80-0xff) keeps the bash loop,
+# which prints every non-blank line.
+status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>] [<verb>...]
   local f=$1 captured_end=${2:-} cf offset size actual_size chunk_file line rc=0
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  if [ "$#" -gt 2 ]; then shift 2; else set --; fi
   cf=$(_fm_open_decisions_cursor_path "$f")
   chunk_file="$cf.unread.$$"
   offset=$(status_presentation_cursor_offset "$f") || return 1
@@ -2518,11 +2612,37 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
   [ "$offset" -lt "$size" ] || return 0
   _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
     || { rm -f "$chunk_file"; return 1; }
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      *[![:space:]]*) printf '%s\n' "$line" || { rc=1; break; } ;;
-    esac
-  done < "$chunk_file"
+  LC_ALL=C perl -e '
+    my ($path, @verbs) = @ARGV;
+    my $verb = @verbs ? join("|", map { quotemeta } @verbs) : undef;
+    open(my $in, "<", $path) or exit 1;
+    binmode($in);
+    while (my $line = <$in>) {
+      exit 3 if index($line, "\0") >= 0;
+      $line =~ s/\n\z//;
+      exit 3 if $line =~ /\A[\t\x0b\x0c\r \x1c-\x1f\x80-\xff]*\z/ && $line =~ /[\x1c-\x1f\x80-\xff]/;
+    }
+    seek($in, 0, 0) or exit 1;
+    binmode(STDOUT);
+    while (my $line = <$in>) {
+      $line =~ s/\n\z//;
+      next unless $line =~ /[^\t\x0b\x0c\r \x1c-\x1f\x80-\xff]/;
+      next if defined($verb) && $line !~ /\A[\t\x0b\x0c\r \x1c-\x1f\x80-\xff]*(?:$verb)/;
+      print $line, "\n" or exit 1;
+    }
+    close($in) or exit 1;
+    close(STDOUT) or exit 1;
+  ' "$chunk_file" "$@" || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    rc=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        *[![:space:]]*) printf '%s\n' "$line" || { rc=1; break; } ;;
+      esac
+    done < "$chunk_file"
+  elif [ "$rc" -ne 0 ]; then
+    rc=1
+  fi
   rm -f "$chunk_file"
   return "$rc"
 }
@@ -2538,7 +2658,7 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
 status_line_is_unread_surface() {  # <status-line> [<kind>]
   local line=$1 kind=${2:-} verb key note resolve held prefix
   [ -n "$line" ] || return 1
-  verb=$(status_line_verb "$line")
+  status_line_verb "$line" verb
   [ "$verb" = note ] && return 0
   [ "$verb" = working ] && [ "$kind" = secondmate ] && return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
@@ -2565,16 +2685,26 @@ status_line_is_unread_surface() {  # <status-line> [<kind>]
 # in glob (task id) order.
 # Prints nothing when none are unread. Directory scan rejects status symlinks
 # the same way scan_open_decisions does.
+# Both scans hand status_new_lines_since_cursor the verbs
+# status_line_is_unread_surface can admit for the log's kind, so a log whose
+# cursor reset is read in one pass and only its candidate lines reach the loop
+# below.
 scan_unread_surface_lines() {  # <state>
-  local state=$1 f task lines line kind exclude
+  local state=$1 f task lines line kind exclude resolve held
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   exclude=$(status_scan_parent_channel_exclude "$state")
   for f in "$state"/*.status; do
     [ -e "$f" ] || continue
     [ "$f" = "$exclude" ] && continue
     task=$(basename "$f"); task="${task%.status}"
-    lines=$(status_new_lines_since_cursor "$f") || return 1
-    [ -n "$lines" ] || continue
     kind=$(_fm_status_kind "$f")
+    if [ "$kind" = secondmate ]; then
+      lines=$(status_new_lines_since_cursor "$f" '' note working "$resolve" "$held") || return 1
+    else
+      lines=$(status_new_lines_since_cursor "$f" '' note "$resolve" "$held") || return 1
+    fi
+    [ -n "$lines" ] || continue
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       status_line_is_unread_surface "$line" "$kind" || continue
@@ -2587,13 +2717,19 @@ EOF
 }
 
 scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f lines line kind
+  local state=$1 snapshot=$2 task endpoint ident f lines line kind resolve held
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
-    lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
-    [ -n "$lines" ] || continue
     kind=$(_fm_status_kind "$f")
+    if [ "$kind" = secondmate ]; then
+      lines=$(status_new_lines_since_cursor "$f" "$endpoint" note working "$resolve" "$held") || return 1
+    else
+      lines=$(status_new_lines_since_cursor "$f" "$endpoint" note "$resolve" "$held") || return 1
+    fi
+    [ -n "$lines" ] || continue
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       status_line_is_unread_surface "$line" "$kind" || continue
@@ -2735,7 +2871,9 @@ window_to_task() {
 # ledger once and ignores any range starting past the point it has reached, so
 # a ledger written out of order would refuse to prove coverage and fail toward
 # waking, never toward silence.
-# An identity mismatch (file rotated) discards the ledger. Teardown deletes it.
+# An identity mismatch (file rotated) discards the ledger; a ledger whose stored
+# identity is the older device-bearing form of the current one still applies, and
+# the next record rewrites it in the current form. Teardown deletes it.
 # Not a pure status-file read: status_home_appends_record writes this sidecar.
 # That read-merge-write serializes through bin/fm-wake-lib.sh's fm_lock_*
 # helpers, exactly as status_retire_presentation_task above does, so a caller
@@ -2760,7 +2898,7 @@ status_home_appends_ranges() {  # <status-file> -> start<TAB>end lines
   [ "$rest" != "$data" ] || return 0
   line=${rest%%$'\n'*}
   case "$line" in ident=*) ;; *) return 0 ;; esac
-  [ "${line#ident=}" = "$ident" ] || return 0
+  _fm_file_ident_same "${line#ident=}" "$ident" || return 0
   case "$rest" in
     *$'\n'*) rest=${rest#*$'\n'} ;;
     *) return 0 ;;

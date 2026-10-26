@@ -868,7 +868,7 @@ reference_ident() {
     if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -c '%w' "$f" 2>/dev/null) || birth=''; else birth=''; fi
   fi
   case "$ident$birth" in *$'\t'*|*$'\n'*|'') return 1 ;; esac
-  if [ -n "$birth" ]; then printf 'strong:%s:%s' "$ident" "$birth"; else printf 'weak:%s' "$ident"; fi
+  if [ -n "$birth" ]; then printf 'strong:%s:%s' "${ident#*:}" "$birth"; else printf 'weak:%s' "$ident"; fi
 }
 reference_signature() {  # <file> [size] [identity]
   local f=$1 size=${2-} ident=${3-} path_state link_target=- access kind encoded
@@ -1004,6 +1004,23 @@ for f in "$state/crew.status" "$state/crew.turn-ended"; do
   (PATH="$shim:$PATH"; fm_wake_signal_reported_current "$state" "$f" "$sig") \
     || printf 'reported_current %s: the marked signature did not match\n' "${f##*/}"
   [ "$counts" = 1 ] && [ -s "$log" ] && printf 'reported_current %s with its signature spawned [%s]\n' "${f##*/}" "$(tr '\n' ' ' < "$log")"
+  # A marker written while the identity still carried the device number is
+  # current for the same file under any device number, and not for another inode.
+  case "$f" in
+    *.status)
+      ident=$(_fm_open_decisions_file_ident "$f")
+      rest=${ident#strong:}
+      if [ "$rest" != "$ident" ]; then
+        status_observed_signature_to oldsig "$f" '' "strong:2096:$rest"
+        status_presentation_marker_report "$marker" "$oldsig"
+        current 0 "marked in the device-bearing form" fm_wake_signal_reported_current "$state" "$f"
+        status_observed_signature_to oldsig "$f" '' "strong:2096:9$rest"
+        status_presentation_marker_report "$marker" "$oldsig"
+        current 1 "marked for another inode" fm_wake_signal_reported_current "$state" "$f"
+        fm_wake_status_mark_current "$state" "$f"
+      fi
+      ;;
+  esac
   printf 'more\n' >> "$f"
   fm_wake_signal_sig_to newsig "$f"
   for predicate in fm_wake_signal_reported_current fm_wake_signal_seen_current; do
@@ -1037,6 +1054,61 @@ SH
   done < <(test_interpreters)
   chmod 600 "$cases/unreadable.status"
   pass "status_observed_signature_to reads each status file once and signs it exactly as the forked readers did"
+}
+
+test_unread_line_scan_matches_the_loop_it_replaced() {
+  local script="$TMP_ROOT/unread-scan.sh" cases="$TMP_ROOT/unread-scan-cases"
+  mkdir -p "$cases"
+  printf '%s\n' 'note: first' '' '   ' $'\t' $'\r' $'\v\f' 'working: progress' \
+    '  note [corr=0123456789abcdef]: indented ack' $'\tnote: tabbed' 'notes: not a note' \
+    'resolved [key=pending-reply-ab]: pending-reply-ab: closed' 'resolved [key=other]: closed' \
+    'captain-held [key=pending-reply-cd]: pending-reply-cd: held' 'done: finished' \
+    'blocked: stuck' $'note: caf\xc3\xa9' $'\xe3\x80\x80note: after an ideographic space' \
+    $'note: \xff\xfe invalid bytes' > "$cases/mixed.status"
+  printf 'note: no final newline' >> "$cases/mixed.status"
+  printf 'note: before\n\034\nnote: after\n' > "$cases/separator-only.status"
+  printf 'note: before\n\342\200\200 \nnote: after\n' > "$cases/multibyte-space-only.status"
+  printf 'note: before\nno\000te: nul\nnote: after\n' > "$cases/nul.status"
+  printf '\n\n  \n' > "$cases/blank.status"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-wake-lib.sh"
+_fm_wake_require_classify || { printf 'the classify library did not load\n'; exit 0; }
+out=$3
+# The per-line loops the single pass replaced, kept as the reference.
+reference_lines() {  # <status-file>
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *[![:space:]]*) printf '%s\n' "$line" ;; esac
+  done < "$1"
+}
+surface() {  # <kind>: the unread-surface filter over standard input
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    status_line_is_unread_surface "$line" "$1" || continue
+    printf '%s\n' "$line"
+  done
+}
+for f in "$2"/*.status; do
+  reference_lines "$f" > "$out/want" 2>/dev/null
+  status_new_lines_since_cursor "$f" > "$out/got" 2>/dev/null \
+    || printf 'lines %s: the scan failed\n' "${f##*/}"
+  cmp -s "$out/want" "$out/got" || printf 'lines %s: the single pass differs from the loop\n' "${f##*/}"
+  for kind in ship secondmate; do
+    verbs='note resolved captain-held'
+    [ "$kind" = ship ] || verbs="$verbs working"
+    surface "$kind" < "$out/want" > "$out/want-surface"
+    # shellcheck disable=SC2086 # One argument per verb.
+    status_new_lines_since_cursor "$f" '' $verbs 2>/dev/null | surface "$kind" > "$out/got-surface"
+    cmp -s "$out/want-surface" "$out/got-surface" \
+      || printf 'surface %s (%s): the verb-filtered pass admits other lines\n' "${f##*/}" "$kind"
+  done
+done
+exit 0
+SH
+  mkdir -p "$TMP_ROOT/unread-scan-out"
+  run_everywhere "unread line scan" "$script" "$cases" "$TMP_ROOT/unread-scan-out"
+  pass "status_new_lines_since_cursor prints, in one pass, exactly the lines the per-line loop printed"
 }
 
 test_status_event_reads_match_the_tail_pipeline() {
@@ -2451,6 +2523,7 @@ else
   test_engine_identity_matches_the_pipeline_it_replaced
   test_path_age_helpers_match_stat_and_the_clock
   test_status_signature_reads_once_and_matches_the_forked_reader
+  test_unread_line_scan_matches_the_loop_it_replaced
   test_status_event_reads_match_the_tail_pipeline
   test_watcher_poll_helpers_match_what_they_replaced
   test_inbox_due_action_matches_what_it_replaced

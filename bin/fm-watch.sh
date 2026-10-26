@@ -2248,7 +2248,7 @@ EOF
 # captain-held, or any other captain-relevant line except a plain done:. A log
 # whose unshown lines cannot be read counts as urgent.
 wake_queue_rows_urgent() {
-  local kind key payload task lines line
+  local kind key payload task lines line verb
   [ -s "$FM_WAKE_QUEUE" ] || return 1
   while IFS=$(printf '\t') read -r _ _ kind key payload; do
     case "$payload" in needs-decision:*) return 0 ;; esac
@@ -2264,7 +2264,8 @@ wake_queue_rows_urgent() {
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       status_is_captain_held "$line" && return 0
-      if status_is_captain_relevant "$line" && [ "$(status_line_verb "$line")" != "done" ]; then
+      status_line_verb "$line" verb
+      if status_is_captain_relevant "$line" && [ "$verb" != "done" ]; then
         return 0
       fi
     done <<EOF

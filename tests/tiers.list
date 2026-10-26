@@ -193,6 +193,7 @@ full tests/fm-usage-audit.test.sh
 full tests/fm-usage-report.test.sh
 full tests/fm-vendor-auth-probe.test.sh
 full tests/fm-wake-drain-open-decisions.test.sh
+full tests/fm-wake-file-ident-renumber.test.sh
 full tests/fm-wake-queue.test.sh
 full tests/fm-watch-dated-rules.test.sh
 full tests/fm-watch-quiet-waits.test.sh
