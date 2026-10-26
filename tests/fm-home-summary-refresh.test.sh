@@ -517,6 +517,77 @@ grep -F 'refresh exceeded its 1-second deadline' \
   || fail "publication validation timeout was not logged"
 pass "best-effort refresh bounds validation and publication"
 
+# A worker killed at its deadline cannot run its own cleanup, so the parent
+# removes the refresh directory. Neither the publication temps in state/ nor
+# the producer's scratch directories under TMPDIR may outlive the refresh.
+refresh_temps() {  # <state-dir> <tmp-dir>
+  local entry
+  for entry in "$1"/.home-summary.json.* "$1"/.home-summary-error.* \
+    "$1"/.home-summary-run.* "$2"/*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    printf '%s\n' "$entry"
+  done
+}
+WRITER_TMP="$TMP_ROOT/writer-tmp"
+mkdir -p "$WRITER_TMP"
+[ -z "$(refresh_temps "$HOME_DIR/state" "$WRITER_TMP")" ] \
+  || fail "the timed-out validation left refresh temps: $(refresh_temps "$HOME_DIR/state" "$WRITER_TMP")"
+TIMEOUT_MARKER="$TMP_ROOT/timeout-no-mistakes.pid"
+started=$(date +%s)
+PATH="$FAKEBIN:$PATH" TMPDIR="$WRITER_TMP" \
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" FM_HOME_SUMMARY_TIMEOUT=1 \
+  FM_TEST_NM_MARKER="$TIMEOUT_MARKER" FM_TEST_NM_SLEEP=30 \
+  "$WRITER" --best-effort \
+  || fail "producer timeout changed the best-effort caller result"
+elapsed=$(( $(date +%s) - started ))
+[ "$elapsed" -lt 6 ] || fail "best-effort refresh waited $elapsed seconds on its producer"
+# A slow host may hit the deadline before the producer reaches the slow read;
+# when it did reach it, the read must have died with the worker's group.
+SLOW_NM_PID=$(cat "$TIMEOUT_MARKER" 2>/dev/null || true)
+if [ -n "$SLOW_NM_PID" ] && kill -0 "$SLOW_NM_PID" 2>/dev/null; then
+  fail "the deadline left the producer's slow read running"
+fi
+SLOW_NM_PID=
+[ -z "$(refresh_temps "$HOME_DIR/state" "$WRITER_TMP")" ] \
+  || fail "the producer timeout left refresh temps: $(refresh_temps "$HOME_DIR/state" "$WRITER_TMP")"
+pass "a refresh killed at its deadline leaves no temporary files"
+
+# Earlier refreshes killed before this layout, or killed with their parent,
+# left temps behind. The next refresh sweeps only this tool's names, and only
+# those older than one deadline (an hour under the shared TMPDIR).
+STALE_STATE="$HOME_DIR/state"
+mkdir "$STALE_STATE/.home-summary-run.99999" "$STALE_STATE/.home-summary-run.99998" \
+  "$WRITER_TMP/fm-fleet-tasks.abcdef" "$WRITER_TMP/fm-fleet-tasks.ghijkl" \
+  "$WRITER_TMP/fm-fleet-ledgers.abcdef" "$WRITER_TMP/fm-fleet-tasks-other"
+: > "$STALE_STATE/.home-summary-run.99999/.home-summary.json.abcdef"
+: > "$STALE_STATE/.home-summary.json.abcdef"
+: > "$STALE_STATE/.home-summary-error.abcdef"
+: > "$STALE_STATE/.home-summary.json.ghijkl"
+: > "$STALE_STATE/.home-summary.json.keep"
+fm_touch_epoch "$(( $(date +%s) - 600 ))" "$STALE_STATE/.home-summary-run.99999" \
+  "$STALE_STATE/.home-summary.json.abcdef" "$STALE_STATE/.home-summary-error.abcdef" \
+  "$STALE_STATE/.home-summary.json.keep"
+fm_touch_epoch "$(( $(date +%s) - 7200 ))" "$WRITER_TMP/fm-fleet-tasks.abcdef" \
+  "$WRITER_TMP/fm-fleet-ledgers.abcdef" "$WRITER_TMP/fm-fleet-tasks-other"
+fm_touch_epoch "$(( $(date +%s) - 600 ))" "$WRITER_TMP/fm-fleet-tasks.ghijkl"
+PATH="$FAKEBIN:$PATH" TMPDIR="$WRITER_TMP" \
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" FM_HOME_SUMMARY_TIMEOUT=60 \
+  FM_SNAPSHOT_NOW="$NOW_THREE" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_THREE" \
+  "$WRITER" || fail "the sweeping refresh failed"
+for gone in "$STALE_STATE/.home-summary-run.99999" "$STALE_STATE/.home-summary.json.abcdef" \
+  "$STALE_STATE/.home-summary-error.abcdef" "$WRITER_TMP/fm-fleet-tasks.abcdef" \
+  "$WRITER_TMP/fm-fleet-ledgers.abcdef"; do
+  [ ! -e "$gone" ] || fail "the refresh did not sweep the stale temp $gone"
+done
+for kept in "$STALE_STATE/.home-summary-run.99998" "$STALE_STATE/.home-summary.json.ghijkl" \
+  "$STALE_STATE/.home-summary.json.keep" "$WRITER_TMP/fm-fleet-tasks.ghijkl" \
+  "$WRITER_TMP/fm-fleet-tasks-other"; do
+  [ -e "$kept" ] || fail "the refresh swept $kept, which is fresh or not its own"
+done
+rm -rf -- "$STALE_STATE/.home-summary-run.99998" "$WRITER_TMP"
+rm -f -- "$STALE_STATE/.home-summary.json.ghijkl" "$STALE_STATE/.home-summary.json.keep"
+pass "the next refresh sweeps stale temps from killed refreshes"
+
 MKBIN="$TMP_ROOT/mkdir-hangbin"
 REAL_MKDIR=$(command -v mkdir)
 mkdir -p "$MKBIN"
