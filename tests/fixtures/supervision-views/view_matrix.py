@@ -7,7 +7,6 @@ No production home, installed actor, backend start or endpoint discovery.
 """
 import asyncio
 import contextlib
-import errno
 import io
 import json
 import os
@@ -21,7 +20,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from crew_matrix import ROOT, allowed_refusal, record
-from fm_view_engine import Engine, Inputs, serve
+from fm_view_engine import Engine, serve
 
 COMMANDS = {"snapshot": "fm-fleet-snapshot.sh", "view": "fm-fleet-view.sh", "drain": "fm-wake-drain.sh"}
 
@@ -39,33 +38,9 @@ def admitted(error):
 async def invoke(root, home, command, arguments):
     requests = []
     original = Engine.request
-    original_read = Inputs.state_read
-    swap = os.environ.get("FM_WAKE_ENRICH_SWAP_PATH")
-    swapped = []
-    # The original case injects a symlink swap at its Perl regular-file read.
-    # Inject the same filesystem event at the native regular-file reader, not
-    # a synthetic refusal. The actual O_NOFOLLOW read and full shell fallback
-    # must reject the secret, retaining every original raw-row assertion.
-    if swap:
-        swap = Path(swap)
-        target = Path(os.environ["FM_WAKE_ENRICH_SWAP_TARGET"])
-        if swap.parent != home / "state" or target.parent != home or not swap.name.endswith(".status"):
-            raise ValueError("native swap seam requires suite-owned status and target")
-
-    def read(inputs, task, suffix):
-        path = inputs.task_path(task, suffix)
-        if swap and path == swap and not swapped:
-            swapped.append(True)
-            path.unlink()
-            path.symlink_to(target)
-        return original_read(inputs, task, suffix)
-
     def expected_race_refusal(error):
-        # Only these two explicit destructive fixture events admit a race
-        # fallback. Other identity/symlink errors still fail the whole matrix.
-        if swapped and error == ("fm-view-client: read refused; use legacy: service refused: "
-                                 f"[Errno {errno.ELOOP}] {os.strerror(errno.ELOOP)}: '{swap.name}'").encode():
-            return True
+        # Only the explicit delayed-deletion event admits this race fallback.
+        # Other identity/symlink errors still fail the whole matrix.
         return (os.environ.get("FM_WAKE_ENRICH_TEST_DELAY") in ("3", "5")
                 and error == b"fm-view-client: read refused; use legacy: service refused: presentation status identity changed")
 
@@ -85,8 +60,7 @@ async def invoke(root, home, command, arguments):
         socket = str(Path(temporary) / "read.sock")
         epoch = uuid.uuid4().hex
         stop = asyncio.Event()
-        with (patch.object(Engine, "request", observed), patch.object(Inputs, "state_read", read),
-              contextlib.redirect_stdout(io.StringIO())):
+        with (patch.object(Engine, "request", observed), contextlib.redirect_stdout(io.StringIO())):
             service = asyncio.create_task(serve(str(home), socket, epoch, stop))
             process = None
             pending_signal = []
@@ -130,7 +104,7 @@ async def invoke(root, home, command, arguments):
                 # A failed native RPC must also reach the compatibility owner
                 # as an explicit refusal, never disappear behind green output.
                 failed = [row for row in requests if not row["ok"]]
-                if unexpected or (failed and not refusals) or (swap and not swapped):
+                if unexpected or (failed and not refusals):
                     outcome = "unexpected-refusal"
                 elif refusals:
                     outcome = "legacy"
@@ -140,7 +114,7 @@ async def invoke(root, home, command, arguments):
                     outcome = "not-requested"
                 detail = json.dumps({"command": command, "requests": requests,
                                      "refusals": [line.decode("utf-8", "replace") for line in refusals],
-                                     "shell_exit": process.returncode, "native_swap": bool(swapped),
+                                     "shell_exit": process.returncode,
                                      "forwarded_signals": pending_signal}, sort_keys=True)
                 record(root, str(home.relative_to(root)), outcome, detail)
                 sys.stderr.buffer.write(error)
@@ -187,16 +161,26 @@ def main(arguments):
     home.relative_to(root)
     if home == root or (selected and Path(selected).resolve().name != "state"):
         raise ValueError("view matrix requires an isolated suite-owned case home")
-    if os.environ.get("FM_VIEW_COMPAT_LEGACY_CACHE") == "1":
-        # These original assertions require the legacy persistent fold cache
-        # and its shell read-probe. The native service cannot write that cache;
-        # its resident-index/output parity has separate real-client coverage.
+    late_swap = os.environ.get("FM_WAKE_ENRICH_SWAP_PATH")
+    if late_swap:
+        # Preserve the original Perl-reader fault at its original stage, AFTER
+        # the cursor lookup. A native pre-fallback swap is a different input;
+        # its real-client parity/cursor-refusal regression runs separately.
+        swap = Path(late_swap)
+        target = Path(os.environ["FM_WAKE_ENRICH_SWAP_TARGET"])
+        if (command != "fm-wake-drain.sh" or swap.parent != home / "state"
+                or target.parent != home or not swap.name.endswith(".status")):
+            raise ValueError("late-reader seam requires suite-owned status and target")
+    if os.environ.get("FM_VIEW_COMPAT_LEGACY_CACHE") == "1" or late_swap:
+        # These original assertions require their legacy cache/probe or late
+        # Perl-reader owner. Count them as legacy, never native coverage.
         environment = dict(os.environ)
         environment.pop("FM_VIEW_SOCKET", None)
         environment.pop("FM_VIEW_EPOCH", None)
         code = subprocess.call(["bash", str(ROOT / "bin" / command), *arguments[1:]], env=environment)
         detail = {"command": command, "requests": [], "refusals": [], "shell_exit": code,
-                  "legacy_seam": "explicit legacy persistent fold-cache/probe seam"}
+                  "legacy_seam": ("explicit legacy late Perl-reader race seam" if late_swap else
+                                  "explicit legacy persistent fold-cache/probe seam")}
         record(root, str(home.relative_to(root)), "legacy", json.dumps(detail, sort_keys=True))
         return code
     return asyncio.run(invoke(root, home, command, arguments[1:]))
