@@ -371,11 +371,14 @@ os.execv({sys.executable!r}, [{sys.executable!r}] + sys.argv[1:])
             "## Done\n- [x] prior - Prior (repo: fixture) (kind: ship)\n")
         clock = dict(FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
         calls = []
+        composed = {}
         original = Snapshot.compose
 
         def compose(instance, row, observed_at, epoch):
             calls.append(row["task"])
-            return original(instance, row, observed_at, epoch)
+            result = original(instance, row, observed_at, epoch)
+            composed[row["task"]] = result
+            return result
 
         with patch.dict(os.environ, self.env), patch.object(Snapshot, "compose", compose):
             native, error = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", **clock)
@@ -420,14 +423,21 @@ esac
 exit 1
 ''')
             tmux.chmod(0o700)
+            # Only this expanded input ends in a current working event; retain
+            # the note-tailed empty-child control above without changing bytes.
+            with (self.state / "mate.status").open("ab") as stream:
+                stream.write(b"working: resident activity\n")
             calls.clear()
+            composed.clear()
             native, error = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", **clock)
             self.assertNotIn(b"use legacy", error)
             self.assertCountEqual(calls, ["ship", "scout", "mate"])
             expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--secondmate-home-summary", native=False, **clock)
             summary = json.loads(native)
-            self.assertEqual(summary, json.loads(expected))
-            self.assertEqual([row["id"] for row in summary["active_children"]], ["mate"])
+            admission = json.dumps({"mate": composed.get("mate"), "endpoints": summary["endpoints"],
+                                    "summary": summary}, indent=2, sort_keys=True)
+            self.assertEqual(summary, json.loads(expected), admission)
+            self.assertEqual([row["id"] for row in summary["active_children"]], ["mate"], admission)
             self.assertEqual(summary["active_children"][0]["state"], "working")
             self.assertEqual(summary["counts"]["active_children"], 1)
             endpoint = next(row for row in summary["endpoints"] if row["id"] == "mate")
