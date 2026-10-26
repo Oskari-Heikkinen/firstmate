@@ -19,6 +19,20 @@
 # (default 60 seconds). No reader can observe temporary output through the
 # ledger path.
 #
+# Every temporary file a refresh makes lives in one private directory,
+# state/.home-summary-run.<parent-pid>: the publication and diagnostic files,
+# and, because the producer runs with TMPDIR pointed there, every scratch file
+# and directory fm-fleet-snapshot.sh and its children make. The worker removes
+# it when it ends; a worker killed at its deadline cannot, so the parent removes
+# it after the timeout owner has killed the worker's process group. Before it
+# produces, the lock holder sweeps what killed refreshes left before this
+# layout or when the parent itself was killed: state/.home-summary-run.*,
+# state/.home-summary.json.?????? and state/.home-summary-error.?????? older
+# than one deadline, and this user's $TMPDIR/fm-fleet-tasks.??????,
+# fm-fleet-ledgers.?????? and fm-fleet-snapshot.?????? directories older than
+# an hour. The longer bound there is because $TMPDIR is shared with snapshots
+# run outside any refresh, which no deadline bounds.
+#
 # Under the publication lock, state/.home-summary-refresh.attempt is stamped
 # immediately before production and removed only after successful publication.
 # Watcher (FM_HOME_SUMMARY_IF_IDLE=1) retries wait FM_HOME_SUMMARY_INTERVAL
@@ -61,6 +75,8 @@ HOME_SUMMARY_FAILURE_STAMP=
 HOME_SUMMARY_TMP=
 HOME_SUMMARY_ERR_TMP=
 HOME_SUMMARY_LOCK_HELD=0
+HOME_SUMMARY_RUN_DIR=${FM_HOME_SUMMARY_RUN_DIR:-"$STATE/.home-summary-run.$$"}
+HOME_SUMMARY_RUN_DIR_MADE=0
 
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
@@ -105,12 +121,49 @@ fi
 
 # shellcheck disable=SC2329 # Invoked by the signal and EXIT traps below.
 home_summary_cleanup() {
-  [ -z "$HOME_SUMMARY_TMP" ] || rm -f -- "$HOME_SUMMARY_TMP" 2>/dev/null || true
-  [ -z "$HOME_SUMMARY_ERR_TMP" ] || rm -f -- "$HOME_SUMMARY_ERR_TMP" 2>/dev/null || true
+  if [ "$HOME_SUMMARY_RUN_DIR_MADE" -eq 1 ]; then
+    rm -rf -- "$HOME_SUMMARY_RUN_DIR" 2>/dev/null || true
+    HOME_SUMMARY_RUN_DIR_MADE=0
+  fi
   if [ "$HOME_SUMMARY_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$REFRESH_LOCK" || true
     HOME_SUMMARY_LOCK_HELD=0
   fi
+}
+
+# Remove what earlier refreshes killed at their deadline left behind (see the
+# header). A glob looks first, so a clean home pays no find.
+home_summary_sweep_stale() {
+  local entry minutes found=0
+  for entry in "$STATE"/.home-summary-run.* "$STATE"/.home-summary.json.?????? \
+    "$STATE"/.home-summary-error.??????; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    [ "$entry" = "$HOME_SUMMARY_RUN_DIR" ] && continue
+    found=1
+    break
+  done
+  if [ "$found" -eq 1 ]; then
+    minutes=$(( (HOME_SUMMARY_TIMEOUT + 59) / 60 ))
+    find "$STATE" -mindepth 1 -maxdepth 1 \
+      \( -name '.home-summary-run.*' -o -name '.home-summary.json.??????' \
+         -o -name '.home-summary-error.??????' \) \
+      ! -path "$HOME_SUMMARY_RUN_DIR" -mmin "+$minutes" \
+      -exec rm -rf -- {} + 2>/dev/null || true
+  fi
+  found=0
+  for entry in "${TMPDIR:-/tmp}"/fm-fleet-tasks.?????? "${TMPDIR:-/tmp}"/fm-fleet-ledgers.?????? \
+    "${TMPDIR:-/tmp}"/fm-fleet-snapshot.??????; do
+    [ -d "$entry" ] || continue
+    found=1
+    break
+  done
+  [ "$found" -eq 1 ] || return 0
+  minutes=$(( (HOME_SUMMARY_TIMEOUT + 59) / 60 ))
+  [ "$minutes" -ge 60 ] || minutes=60
+  find "${TMPDIR:-/tmp}" -mindepth 1 -maxdepth 1 -type d -user "$UID" \
+    \( -name 'fm-fleet-tasks.??????' -o -name 'fm-fleet-ledgers.??????' \
+       -o -name 'fm-fleet-snapshot.??????' \) \
+    -mmin "+$minutes" -exec rm -rf -- {} + 2>/dev/null || true
 }
 
 home_summary_fail() {
@@ -153,11 +206,19 @@ home_summary_refresh_once() {
     home_summary_fail "could not record the summary attempt start"
     return 1
   fi
-  HOME_SUMMARY_TMP=$(umask 077; mktemp "$STATE/.home-summary.json.XXXXXX") || {
+  home_summary_sweep_stale
+  # A directory under this name outlived an earlier parent with the same pid.
+  [ ! -e "$HOME_SUMMARY_RUN_DIR" ] || rm -rf -- "$HOME_SUMMARY_RUN_DIR" 2>/dev/null || true
+  if ! (umask 077; mkdir -- "$HOME_SUMMARY_RUN_DIR") 2>/dev/null; then
+    home_summary_fail "could not create a private refresh directory in $STATE"
+    return 1
+  fi
+  HOME_SUMMARY_RUN_DIR_MADE=1
+  HOME_SUMMARY_TMP=$(umask 077; mktemp "$HOME_SUMMARY_RUN_DIR/.home-summary.json.XXXXXX") || {
     home_summary_fail "could not create an atomic publication file in $STATE"
     return 1
   }
-  HOME_SUMMARY_ERR_TMP=$(umask 077; mktemp "$STATE/.home-summary-error.XXXXXX") || {
+  HOME_SUMMARY_ERR_TMP=$(umask 077; mktemp "$HOME_SUMMARY_RUN_DIR/.home-summary-error.XXXXXX") || {
     home_summary_fail "could not create a producer diagnostic file in $STATE"
     return 1
   }
@@ -169,6 +230,7 @@ home_summary_refresh_once() {
     FM_DATA_OVERRIDE="$DATA" \
     FM_CONFIG_OVERRIDE="$CONFIG" \
     FM_PROJECTS_OVERRIDE="$PROJECTS" \
+    TMPDIR="$HOME_SUMMARY_RUN_DIR" \
     "$SCRIPT_DIR/fm-fleet-snapshot.sh" --secondmate-home-summary \
       > "$HOME_SUMMARY_TMP" 2> "$HOME_SUMMARY_ERR_TMP"; then
     producer_rc=0
@@ -185,8 +247,6 @@ home_summary_refresh_once() {
     fi
     return 1
   fi
-  rm -f -- "$HOME_SUMMARY_ERR_TMP"
-  HOME_SUMMARY_ERR_TMP=
   if ! jq -e --arg home "$FM_HOME" '
     .schema == "fm-secondmate-home-summary.v1"
     and .hold_classifier_schema == "fm-captain-hold-buckets.v1"
@@ -224,8 +284,7 @@ home_summary_refresh_once() {
     home_summary_fail "could not retire the successful summary attempt"
     return 1
   fi
-  fm_lock_release "$REFRESH_LOCK"
-  HOME_SUMMARY_LOCK_HELD=0
+  home_summary_cleanup
   trap - EXIT HUP INT TERM
   return 0
 }
@@ -262,11 +321,16 @@ if [ "$HOME_SUMMARY_MODE" = parent ]; then
   if fm_run_timed "$HOME_SUMMARY_TIMEOUT" env \
     FM_HOME_SUMMARY_WORKER_BEST_EFFORT="$BEST_EFFORT" \
     FM_HOME_SUMMARY_IF_IDLE="$HOME_SUMMARY_IF_IDLE" \
+    FM_HOME_SUMMARY_RUN_DIR="$HOME_SUMMARY_RUN_DIR" \
     "$SCRIPT_DIR/fm-home-summary-refresh.sh" --_worker; then
     exit 0
   else
     refresh_rc=$?
   fi
+  # A worker that failed on its own removed its directory; one killed at the
+  # deadline could not, and its process group is gone now. The removal is
+  # bounded too, so a slow state directory cannot hold the caller.
+  fm_run_timed 2 rm -rf -- "$HOME_SUMMARY_RUN_DIR" 2>/dev/null || true
   if [ "$BEST_EFFORT" -eq 1 ]; then
     if [ "$refresh_rc" -eq 124 ]; then
       parent_error="refresh exceeded its ${HOME_SUMMARY_TIMEOUT}-second deadline"
