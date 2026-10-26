@@ -14,8 +14,10 @@ different root. stdin presentation rows are task/end/strong-identity/offset/
 classified/fully-presented (0 or 1), tab-separated. drain-presentation instead
 accepts task/end/strong-identity/fully-presented, and reads offsets in one native
 batch through the existing cursor/marker formats. Output tagged TSV contains
-A acknowledgement suggestions, U unread facts, O open-decision facts and N
-captured annotation lines only;
+A acknowledgement suggestions, U unread facts, O open-decision facts, N
+captured annotation lines and (for drain-presentation) M classification-marker
+evidence. M rows are task plus '-' for missing or 'h:' plus lowercase hex of
+normalized marker text (NULs/trailing newlines removed, at most 4096 bytes);
 it is private call output, not a durable acknowledgement or receipt. Strong
 identities pass through unchanged to the existing commit transaction owner.
 Snapshot calls stage their validated captured metadata/status in the invoking
@@ -30,7 +32,7 @@ import stat
 import sys
 
 from fm_view_engine import MAX_MESSAGE, TASK_ID, client, encoded, require
-from fm_view_offsets import observation_identity
+from fm_view_offsets import MAX_MARKER_TEXT, observation_identity
 
 
 def binding(environment):
@@ -77,10 +79,24 @@ def presentation_rows(raw, from_state=False):
     return rows, originals
 
 
-def presentation_output(result, rows, originals):
+def presentation_output(result, rows, originals, from_state=False):
     require(type(result) is dict and type(result.get("rows")) is list
             and len(result["rows"]) == len(rows), "presentation reply row mismatch")
     output = []
+    # Validate the entire evidence inventory before any private TSV is emitted.
+    # It is required for drain batches, never inferred from a suggestion alone.
+    if from_state:
+        markers = result.get("classification_markers")
+        require(type(markers) is list and len(markers) == len(rows), "classification marker evidence count mismatch")
+        for marker, expected in zip(markers, rows):
+            require(type(marker) is dict and set(marker) == {"task", "text"}
+                    and marker["task"] == expected["task"], "classification marker evidence binding mismatch")
+            raw = marker["text"]
+            require(raw is None or type(raw) is str and "\0" not in raw and not raw.endswith("\n")
+                    and len(raw.encode("utf-8", "surrogateescape")) <= MAX_MARKER_TEXT,
+                    "invalid classification marker evidence")
+            proof = "-" if raw is None else "h:" + raw.encode("utf-8", "surrogateescape").hex()
+            output.append(f'M\t{expected["task"]}\t{proof}\n')
     for returned, expected, strong in zip(result["rows"], rows, originals):
         require(type(returned) is dict and all(returned.get(name) == expected[name]
                     for name in ("task", "end", "identity")), "presentation reply capture mismatch")
@@ -220,7 +236,7 @@ def main(arguments, environment):
     require(len(raw) <= MAX_MESSAGE, "presentation input exceeds bound")
     rows, originals = presentation_rows(raw, from_state=verb == "drain-presentation")
     result = client(path, home, epoch, verb, {"rows": rows}, timeout=30)
-    return presentation_output(result, rows, originals)
+    return presentation_output(result, rows, originals, from_state=verb == "drain-presentation")
 
 
 if __name__ == "__main__":

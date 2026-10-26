@@ -1054,6 +1054,33 @@ for f in "$state/crew.status" "$state/crew.turn-ended"; do
     current 0 "changed with the marked signature" "$predicate" "$state" "$f" "$sig"
   done
 done
+# Late native acknowledgement freshness compares exactly the old text reader's
+# normalized bytes, not file metadata, a status span or a reported-only policy.
+fm_wake_signal_seen_path_to marker "$state" "$state/crew.status"
+raw=$(cat "$marker")
+hex=$(printf '%s' "$raw" | LC_ALL=C od -An -v -tx1 | tr -d ' \n')
+evidence=$(printf 'crew\th:%s\n' "$hex")
+if [ "$_FM_CLASSIFY_HEX_BYTEWISE" = 1 ]; then
+  : > "$log"
+  (PATH="$shim:$PATH"; fm_wake_classification_markers_current "$state" "$evidence") \
+    || printf 'late classification evidence did not match the old marker reader\n'
+  [ ! -s "$log" ] || printf 'late classification evidence spawned a per-row helper\n'
+  printf '%s\n\n' "$raw" > "$marker"
+  fm_wake_classification_markers_current "$state" "$evidence" \
+    || printf 'late classification evidence changed on trailing newlines\n'
+  printf 'malformed\n' > "$marker"
+  fm_wake_classification_markers_current "$state" "$evidence" \
+    && printf 'late malformed marker retained native acknowledgement\n'
+  rm -f "$marker"
+  fm_wake_classification_markers_current "$state" "$evidence" \
+    && printf 'late deleted marker retained native acknowledgement\n'
+  evidence=$(printf 'crew\t-\n')
+  fm_wake_classification_markers_current "$state" "$evidence" \
+    || printf 'stable missing marker refused native acknowledgement\n'
+else
+  fm_wake_classification_markers_current "$state" "$evidence" \
+    && printf 'unsupported late classification evidence did not refuse\n'
+fi
 exit 0
 SH
   run_everywhere "status signature" "$script" "$cases" "$state" "$shim" "$log" "$seams"

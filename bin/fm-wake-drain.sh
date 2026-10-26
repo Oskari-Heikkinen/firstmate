@@ -780,7 +780,7 @@ $fully_presented
 $snapshot
 EOF
   facts=$(FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm-view-client.py" drain-presentation <<< "$input") || return 1
-  NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED='' NATIVE_NEW_LINES=''
+  NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED='' NATIVE_NEW_LINES='' NATIVE_CLASSIFICATION_MARKERS=''
   while IFS= read -r line; do
     tag=${line%%$'\t'*}
     rest=${line#*$'\t'}
@@ -789,6 +789,7 @@ EOF
       U) NATIVE_UNREAD="$NATIVE_UNREAD$rest"$'\n' ;;
       O) NATIVE_OPEN="$NATIVE_OPEN$rest"$'\n' ;;
       N) NATIVE_NEW_LINES="$NATIVE_NEW_LINES$rest"$'\n' ;;
+      M) NATIVE_CLASSIFICATION_MARKERS="$NATIVE_CLASSIFICATION_MARKERS$rest"$'\n' ;;
       '') ;;
       *) return 1 ;;
     esac
@@ -797,6 +798,10 @@ $facts
 EOF
   if ! status_presentation_suggestions_valid "$STATE" "$snapshot" "$NATIVE_ACKNOWLEDGED"; then
     printf 'wake drain: malformed or regressive native endpoints; using legacy presentation\n' >&2
+    return 1
+  fi
+  if ! fm_wake_classification_markers_valid "$snapshot" "$NATIVE_CLASSIFICATION_MARKERS"; then
+    printf 'wake drain: malformed native classification evidence; using legacy presentation\n' >&2
     return 1
   fi
   if ! fm_wake_captured_lines_valid "$NATIVE_NEW_LINES"; then
@@ -810,9 +815,13 @@ print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared commit_mode=''
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
-  if [ "${NATIVE_PRESENTATION:-0}" = 1 ]; then
+  if [ "${NATIVE_PRESENTATION:-0}" = 1 ] \
+    && fm_wake_classification_markers_current "$STATE" "$NATIVE_CLASSIFICATION_MARKERS"; then
     acknowledged=$NATIVE_ACKNOWLEDGED
   else
+    if [ "${NATIVE_PRESENTATION:-0}" = 1 ]; then
+      printf 'wake drain: classification markers changed or unsupported; using complete legacy acknowledgement preparation\n' >&2
+    fi
     acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
   fi
   prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
@@ -872,6 +881,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
   local lock_rc holder_pid
   local NATIVE_PRESENTATION=0 NATIVE_UNREAD='' NATIVE_OPEN='' NATIVE_ACKNOWLEDGED='' NATIVE_NEW_LINES=''
+  local NATIVE_CLASSIFICATION_MARKERS=''
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else

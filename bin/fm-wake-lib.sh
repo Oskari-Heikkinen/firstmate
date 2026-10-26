@@ -3306,6 +3306,54 @@ $1
 EOF
 }
 
+# Private classification evidence is required once per captured task, in the
+# owner's snapshot order. Validate before native selection; a malformed local
+# client packet must retain the COMPLETE legacy presentation before stdout.
+fm_wake_classification_markers_valid() {  # <snapshot> <marker-evidence>
+  LC_ALL=C awk -F '\t' '
+    $0 == "@markers" { if (section) { bad=1; exit }; section=1; next }
+    NF == 0 { next }
+    !section { tasks[++count]=$1; next }
+    {
+      if (NF != 2 || ++seen > count || $1 != tasks[seen] ||
+          ($2 != "-" && ($2 !~ /^h:[0-9a-f]*$/ || length($2) > 8194 || length($2) % 2))) { bad=1; exit }
+    }
+    END { if (bad || !section || seen != count) exit 1 }
+  ' <<EOF
+$1
+@markers
+$2
+EOF
+}
+
+# At the original post-annotation acknowledgement-preparation boundary, keep
+# native suggestions only while ALL evidenced classification markers remain
+# supported and equal. The caller already validated inventory/bindings. This
+# reads through existing owners, without per-row subprocesses on the admitted
+# path; uncertainty returns the WHOLE acknowledgement batch to its legacy owner.
+fm_wake_classification_markers_current() {  # <state> <validated-marker-evidence>
+  local state=$1 task proof extra marker raw encoded LC_ALL=C
+  _fm_wake_require_classify || return 1
+  [ "$_FM_CLASSIFY_HEX_BYTEWISE" = 1 ] || return 1
+  while IFS=$'\t' read -r task proof extra; do
+    [ -n "$task" ] || continue
+    [ -z "$extra" ] || return 1
+    case "$task" in [!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+    fm_wake_signal_seen_path_to marker "$state" "$state/$task.status"
+    if [ "$proof" = - ]; then
+      [ ! -e "$marker" ] && [ ! -L "$marker" ] || return 1
+    else
+      [ -f "$marker" ] && [ -r "$marker" ] && [ ! -L "$marker" ] || return 1
+      fm_file_text_to raw "$marker" || return 1
+      status_presentation_marker_parse "$raw" || return 1
+      _status_observed_hex_c_to encoded "$raw" 2>/dev/null || return 1
+      [ "$proof" = "h:$encoded" ] || return 1
+    fi
+  done <<EOF
+$2
+EOF
+}
+
 # All-or-nothing optional historical replay filter. Marker reads and signature
 # policy stay with their current owners; no owned-append or cursor test belongs
 # here. The caller stages this result before printing any annotation.
@@ -3323,6 +3371,8 @@ _fm_wake_annotation_unreported_batch() {  # <deduplicated-manifest>
   done <<EOF
 $manifest
 EOF
+  if [ "$count" -eq 0 ]; then printf '%s' "$manifest"; return 0; fi
+  _fm_wake_require_classify || return 1
   signatures=$(status_observed_signatures_batch "${annotation_batch_paths[@]}") || return 1
   rest=$signatures
   while IFS=$'\t' read -r key mode; do

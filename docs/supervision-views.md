@@ -48,6 +48,9 @@ A suggestion has no acknowledgement effect: the invoking owner must still verify
 Device/inode pairs are observation checks and disposable index keys, never substitutes for those strong cursor identities.
 The `drain-presentation` verb instead accepts rows with exactly `task`, `end`, `identity`, `strong_identity` and `fully_presented`.
 [`fm_view_offsets.py`](../bin/fm_view_offsets.py) reads the existing presentation manifest once for that batch, and reads each task's classification marker without spawning a helper.
+Its reply additionally carries `classification_markers` in request order, each with exactly `task` and `text`: null for an absent marker, otherwise the captured text with NULs and trailing newlines removed, bounded to 4096 bytes.
+The client validates the complete count, binding, text type, normalization and bound before emitting any private marker-evidence records; its header owns that TSV encoding.
+This evidence is not a classification receipt or acknowledgement and writes no record.
 The original transaction supplies `strong_identity`; native code compares its persisted value, never upgrades it or substitutes a new identity proof.
 A missing manifest with a legacy migration cursor refuses for its existing owner to migrate, while a missing row in an existing manifest starts at zero.
 Malformed, unsupported or changing cursor state refuses the whole read before native selection.
@@ -127,12 +130,19 @@ The annotation renderer consumes those captured lines without reopening each spa
 At annotation time, after any enrichment delay, its existing signature owner can observe up to 256 historical-only regular-file signatures in one fresh GNU-stat call and read their reported markers in shell.
 The batch shares the ordinary signature parser and encoder, never reuses the earlier presentation capture, and never consults owned-append coverage to suppress an annotation.
 Direct rows retain priority and first-seen queue order.
+An empty historical inventory returns its unchanged manifest without loading the classifier or attempting a signature batch; a nonempty inventory loads the existing classifier owner before invoking its reader.
 Unsupported readers/platforms, nonregular or unreadable paths and malformed or incomplete captures discard the entire optional filter before annotation output and run the original per-row replay checks with an explicit diagnostic.
 Missing or malformed reported markers remain unreported, preserving the historical warning and every raw wake.
 Before native selection, the existing presentation owner independently validates every suggested task/identity/endpoint against its captured snapshot and current cursor manifest under the held presentation lock.
 That guard reads the cursor once for the whole batch, rejects missing, duplicate, foreign, malformed or regressive suggestions, and preserves the existing identity/size-reset and legacy-migration boundaries.
 A service's claimed observed offset is not sufficient authority to rewind the owner's cursor.
-The drain also validates the private client's sorted task groups before native selection, so malformed annotation facts fall back before any annotation or section is printed.
+The drain also validates the private client's sorted task groups and complete ordered classification-marker evidence before native selection, so malformed private output falls back to the complete legacy presentation before any annotation or section is printed.
+After annotations, at the original acknowledgement-preparation boundary under the held presentation lock, the existing owner rereads every evidenced marker with its existing text reader, validates present markers through its existing parser and compares their normalized bytes.
+Unchanged supported evidence retains native suggestions without per-row subprocesses.
+Changed, unreadable, malformed, nonregular, symlink or unsupported evidence discards the entire native acknowledgement batch and runs the complete original legacy acknowledgement preparation on the same captured snapshot before any status-section output or commit.
+The existing bytewise encoder's 512-byte limit or unavailable bytewise support is unsupported here, never permission to retain stale suggestions.
+This late fallback does not replay annotations, replace captured unread/open facts, partially commit endpoints or introduce another writer.
+The reported signature and classified offset remain distinct: reported-only changes can alter annotation suppression, whereas the late classified position governs absorption at its original phase.
 A failed native read falls back before the prepared status sections reach stdout.
 Native observation device/inode pairs never replace the original strong identity passed to the commit owner.
 A failed stdout leaves the presentation cursor untouched, and concurrent appends past the captured endpoints remain unread.
@@ -170,7 +180,14 @@ Historical-signature cases compare complete signatures against the original owne
 They require one stat for an admitted inventory, none for an empty inventory, and atomic refusal on malformed, short, extra, nonregular, symlink-swapped, deleted, oversized or custom-reader inputs.
 Real-client drain fixtures compare full output and cursor bytes across new/old/missing/malformed markers, owned growth and mixed direct/historical duplicate keys, requiring successful nonempty native reads and forbidding per-row signature commands on the admitted path.
 Separate malformed/error captures require the complete legacy replay filter, while ordinary legacy selection never attempts the batch.
-A controlled real enrichment-delay fixture changes either the status bytes or reported marker after native capture and requires the same late-observed suppression decision and captured-end cursor as legacy.
+A controlled real enrichment-delay fixture changes either the status bytes or marker after native capture and requires the same late-observed suppression decision and captured-end cursor as legacy.
+The classified-marker update in that original regression remains at its actual post-native delay seam, not replaced by a reported-only edit or moved ahead of observation.
+Separate real-client controls cover unchanged admission, reported-only edits, classified advances/regressions, deletion, malformed/unreadable/nonregular markers and the bounded encoder's unsupported case.
+On every late-fallback control, a deliberately conservative valid suggestion for another unchanged task must also be discarded, distinguishing whole-batch legacy acknowledgement preparation from per-row repair.
+Malformed service evidence and corrupted successful-client evidence must instead cause complete legacy presentation before annotation output, with full output/cursor equality.
+A late-fallback failed-stdout control preserves the previous cursor and requires a fresh successful retry.
+Standalone captured-renderer cases retain cursor/span tripwires, require no classifier load for empty/direct-only inventories, exercise historical lazy loading and print complete stderr on failure.
+The fork-free-helper suite compares late marker evidence against the original normalized text reader in its interpreter/locale matrix and forbids per-row spawned commands on the supported path.
 The original late-reader and independent early-swap regressions remain separate.
 These invocation assertions are mechanism checks, not a B0 performance result.
 Additional cases cover missing manifests/rows, legacy migration refusal, identity/size reset, malformed and replaced cursors, fresh offsets without status changes and the new verb's ordinary-lane generation barriers.
