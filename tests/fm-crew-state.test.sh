@@ -1092,7 +1092,8 @@ test_snapshot_open_decision_set_replaces_the_fold() {
   arm_idle_record "$d/state" feat-os
   plain=$(run_crew_state "$d" feat-os)
   assert_contains "$plain" "pick A or B" "the fold supplies the open decision"
-  ( . "$ROOT/bin/fm-classify-lib.sh"; status_open_decisions "$d/state/feat-os.status" ship ) > "$d/open-set"
+  bash -c '. "$1/bin/fm-classify-lib.sh"; status_open_decisions "$2" ship' _ "$ROOT" "$d/state/feat-os.status" \
+    > "$d/open-set"
   out=$(FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE="$d/open-set" run_crew_state "$d" feat-os)
   [ "$out" = "$plain" ] || fail "the snapshot's set changed the reading: $out (fold: $plain)"
   printf 'k9\tneeds-decision\tfrom the published set\n' > "$d/other-set"

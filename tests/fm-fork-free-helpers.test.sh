@@ -2630,10 +2630,86 @@ for set in '' $'a\tblocked\tx' $'\na\tblocked\tx' $'a\tblocked\tx\n\nb\tneeds-de
     [ "$got" = "$want" ] || printf 'fold line %q on %q: new %q, old %q\n' "$line" "$set" "$got" "$want"
   done
 done
+# The cursor-backed fold: a reset (no cursor) folds the whole log from byte 0,
+# and a fold split at a line boundary carries its set through the cursor. Both
+# must equal the old text fold of every line, which is what the old incremental
+# loop ran.
+ref_incremental() {  # <status-file>
+  local f=$1 line open='' kind
+  local _fm_fold_status_file=$1
+  kind=$(_fm_status_kind "$f")
+  while IFS= read -r line || [ -n "$line" ]; do
+    open=$(ref_fold_line "$open" "$line" resolved captain-held "$kind")
+  done < "$f"
+  printf '%s' "$open"
+}
+for f in "$cases"/*.status; do
+  name=${f##*/}
+  want=$(ref_incremental "$f"; printf x)
+  rm -f "$cases/.${name%.status}.open-decisions-cursor"
+  got=$(status_open_decisions_incremental "$f"; printf x)
+  [ "$got" = "$want" ] || printf 'incremental reset %s: new %q, old %q\n' "$name" "$got" "$want"
+  rm -f "$cases/.${name%.status}.open-decisions-cursor" "$cases/.${name%.status}.snapshot-open-decisions-cursor"
+  size=$(wc -c < "$f" | tr -d ' ')
+  half=$(head -c $((size / 2)) "$f" | wc -l | tr -d ' ')
+  half=$(head -n "$half" "$f" | wc -c | tr -d ' ')
+  status_open_decisions_incremental "$f" "$half" exact > /dev/null
+  got=$(status_open_decisions_incremental "$f" "$size" exact; printf x)
+  [ "$got" = "$want" ] || printf 'incremental split %s at %s: new %q, old %q\n' "$name" "$half" "$got" "$want"
+  [ ! -e "$cases/.${name%.status}.open-decisions-cursor" ] \
+    || printf 'exact fold of %s wrote the drain cursor\n' "$name"
+done
+# status_key_closing_verb folds its candidates in the current shell too. Its
+# candidate grep warns on the binary bytes case in both versions.
+ref_key_closing_verb() {  # <status-file> <key>
+  local f=$1 want=$2 line resolve held open='' was verb='' kind event candidates
+  local _fm_fold_status_file=$1
+  kind=$(_fm_status_kind "$f")
+  resolve=resolved held=captain-held
+  candidates=$(grep -E \
+    "^[[:space:]]*(needs-decision|blocked|done|failed|note|$resolve|$held)[[:space:]:[]" \
+    "$f") || [ "$?" -eq 1 ] || candidates=$(cat "$f")
+  while IFS= read -r line || [ -n "$line" ]; do
+    status_line_verb "$line" event
+    case "$event:$kind" in
+      done:ship|done:scout|failed:ship|failed:scout) ;;
+      note:*) status_supersedes_kind "$line" >/dev/null || continue ;;
+      *)
+        case "$event" in
+          needs-decision|blocked|"$resolve"|"$held") ;;
+          *) continue ;;
+        esac
+        if [ "$want" != default ]; then
+          case "$line" in *"[key=$want]"*) ;; *) continue ;; esac
+        fi
+        ;;
+    esac
+    was=0
+    _fm_open_set_has "$open" "$want" && was=1
+    open=$(ref_fold_line "$open" "$line" "$resolve" "$held" "$kind")
+    if [ "$was" = 1 ] && ! _fm_open_set_has "$open" "$want"; then
+      verb=$event
+    fi
+  done <<EOF
+$candidates
+EOF
+  if _fm_open_set_has "$open" "$want"; then
+    _fm_open_set_verb "$open" "$want"
+    return 0
+  fi
+  printf '%s' "$verb"
+}
+for f in "$cases"/*.status; do
+  for key in default k1 k2 b1 b3 held-b2 c1 pending-reply-b handoff-pickup-d k5 b2 absent; do
+    want=$(ref_key_closing_verb "$f" "$key" 2>/dev/null; printf x)
+    got=$(status_key_closing_verb "$f" "$key" 2>/dev/null; printf x)
+    [ "$got" = "$want" ] || printf 'closing verb %s %s: new %q, old %q\n' "${f##*/}" "$key" "$got" "$want"
+  done
+done
 exit 0
 SH
   run_everywhere "open-decisions fold" "$script" "$cases"
-  pass "status_open_decisions and _fm_decision_fold_line match the text fold they replaced on every log and set shape"
+  pass "the whole, incremental and closing-verb folds match the text fold they replaced on every log and set shape"
 }
 
 if [ -n "${FM_TEST_ONLY:-}" ]; then

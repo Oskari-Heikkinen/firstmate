@@ -1280,6 +1280,22 @@ _fm_od_drop_blocked() {
   done
 }
 
+# 0 when the working open set holds a record for <key>, with its verb assigned
+# to <out-var>; 1, the out-variable untouched, when it holds none.
+_fm_od_verb_to() {  # <key> <out-var>
+  local _odv_i _odv_rest
+  for _odv_i in ${_fm_od_r[@]+"${!_fm_od_r[@]}"}; do
+    case "${_fm_od_r[_odv_i]}" in
+      "$1"$'\t'*)
+        _odv_rest=${_fm_od_r[_odv_i]#*$'\t'}
+        printf -v "$2" '%s' "${_odv_rest%%$'\t'*}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 # Fold ONE status line into the working open set above. This is the ONE place
 # the per-line rule is written; the whole-file fold, the incremental fold and
 # the text-form wrapper _fm_decision_fold_line below all call it.
@@ -1537,8 +1553,9 @@ EOF
 # whose leading word is followed by neither whitespace, a colon, nor a bracket
 # tag cannot be a transition, because the fold's own declaration guard rejects it.
 status_key_closing_verb() {  # <status-file> <key>
-  local f=$1 want=$2 line resolve held open='' was verb='' kind event candidates
-  local _fm_fold_status_file=$1
+  local f=$1 want=$2 line resolve held was verb='' kind event candidates open_verb
+  local _fm_fold_status_file=$1 _fm_od_n=0
+  local -a _fm_od_r
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   [ -n "$want" ] || return 0
   kind=$(_fm_status_kind "$f")
@@ -1563,16 +1580,16 @@ status_key_closing_verb() {  # <status-file> <key>
         ;;
     esac
     was=0
-    _fm_open_set_has "$open" "$want" && was=1
-    open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind")
-    if [ "$was" = 1 ] && ! _fm_open_set_has "$open" "$want"; then
+    _fm_od_verb_to "$want" open_verb && was=1
+    _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
+    if [ "$was" = 1 ] && ! _fm_od_verb_to "$want" open_verb; then
       verb=$event
     fi
   done <<EOF
 $candidates
 EOF
-  if _fm_open_set_has "$open" "$want"; then
-    _fm_open_set_verb "$open" "$want"
+  if _fm_od_verb_to "$want" open_verb; then
+    printf '%s' "$open_verb"
     return 0
   fi
   printf '%s' "$verb"
@@ -1678,13 +1695,19 @@ EOF
 # fleet snapshot. It never answers with a set for other bytes. Every failed
 # read, a captured end beyond the current size, and a status path that is not
 # a plain readable file make it fail instead (status 1, nothing printed), so the
-# caller folds its copy whole. A cursor already past the captured end is not
-# moved back: the captured prefix is folded from byte 0 and the cursor left as
-# it is. Otherwise it reads and advances the cursor exactly as above, so the
-# snapshot and the drain share one cursor per status file.
+# caller folds its copy whole. Exact mode keeps its own cursor beside the
+# drain's (state/.<task>.snapshot-open-decisions-cursor, same format) and never
+# reads or moves the drain's: in a home without a presentation manifest the
+# drain's cursor offset is also where the UNREAD STATUS presentation resumes
+# (status_presentation_cursor_offset), so a snapshot moving it would mark
+# lines presented that no drain showed. A cursor already past the captured end
+# (a later snapshot advanced it) is not moved back: the captured prefix is
+# folded from byte 0 and the cursor left as it is. Otherwise it reads and
+# advances its cursor exactly as above.
 #
 # Not a pure status-file read: this writes/rewrites the sibling cursor file as a
-# side effect (state/.<task>.open-decisions-cursor), the library's second
+# side effect (state/.<task>.open-decisions-cursor, or the snapshot cursor in
+# exact mode), the library's second
 # documented exception to the pure-read rule after crew_absorb_class. The write
 # is atomic (temp file + rename), so a crash between calls leaves either the
 # prior cursor or the new one, never a partial one. bin/fm-wake-drain.sh calls
@@ -1698,6 +1721,13 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   dir=$(dirname "$f")
   base=$(basename "$f")
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
+}
+
+_fm_open_decisions_snapshot_cursor_path() {  # <status-file>
+  local f=$1 dir base
+  dir=$(dirname "$f")
+  base=$(basename "$f")
+  printf '%s/.%s.snapshot-open-decisions-cursor' "$dir" "${base%.status}"
 }
 
 # 4: verb parsing ends at the first "[name=value]" tag rather than only at a
@@ -1861,16 +1891,20 @@ _fm_open_decisions_unread() {  # <exact> <trusted-open>
 }
 
 status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [exact]]
-  local f=$1 captured_end=${2:-} exact=0 cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
+  local f=$1 captured_end=${2:-} exact_mode=0 cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
   local version='' size actual_size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0 persist=1
   local target_cursor kind fold_version
   local _fm_fold_status_file=$1 _fm_od_n=0
   local -a _fm_od_r
-  [ "${3:-}" = exact ] && exact=1
-  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { [ "$exact" = 0 ] || return 1; return 0; }
+  [ "${3:-}" = exact ] && exact_mode=1
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { [ "$exact_mode" = 0 ] || return 1; return 0; }
   kind=$(_fm_status_kind "$f")
   fold_version="$FM_OPEN_DECISIONS_FOLD_VERSION:$kind"
-  cf=$(_fm_open_decisions_cursor_path "$f")
+  if [ "$exact_mode" = 1 ]; then
+    cf=$(_fm_open_decisions_snapshot_cursor_path "$f")
+  else
+    cf=$(_fm_open_decisions_cursor_path "$f")
+  fi
   offset=0
   ident=''
   if [ -f "$cf" ] && [ -r "$cf" ] && [ ! -L "$cf" ]; then
@@ -1917,17 +1951,17 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
   # A stat/size-read failure is a genuine I/O error, not "the file is empty" -
   # report the already-trusted persisted set unchanged rather than risking a
   # silent invalidation that would wipe it.
-  cur_ident=$(_fm_open_decisions_file_ident "$f") || { _fm_open_decisions_unread "$exact" "$trusted_open"; return; }
-  [ -n "$cur_ident" ] || { _fm_open_decisions_unread "$exact" "$trusted_open"; return; }
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || { _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
+  [ -n "$cur_ident" ] || { _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
   actual_size=$(_fm_status_file_size "$f") \
-    || { _fm_open_decisions_unread "$exact" "$trusted_open"; return; }
+    || { _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
   actual_size=${actual_size//[[:space:]]/}
-  case "$actual_size" in ''|*[!0-9]*) _fm_open_decisions_unread "$exact" "$trusted_open"; return ;; esac
+  case "$actual_size" in ''|*[!0-9]*) _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return ;; esac
   if [ -n "$captured_end" ]; then
     case "$captured_end" in
-      ''|*[!0-9]*) _fm_open_decisions_unread "$exact" "$trusted_open"; return ;;
+      ''|*[!0-9]*) _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return ;;
     esac
-    [ "$captured_end" -le "$actual_size" ] || { _fm_open_decisions_unread "$exact" "$trusted_open"; return; }
+    [ "$captured_end" -le "$actual_size" ] || { _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
     size=$captured_end
   else
     size=$actual_size
@@ -1944,10 +1978,10 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
     cursor_dirty=1
   fi
   # Exact mode answers for the captured bytes only. A cursor already past them
-  # (another reader advanced it after the capture) holds a newer set, so the
+  # (a later snapshot advanced it after this capture) holds a newer set, so the
   # captured prefix is folded from byte 0 instead, and the cursor is left where
   # it is rather than moved back.
-  if [ "$exact" = 1 ] && [ "$offset" -gt "$size" ]; then
+  if [ "$exact_mode" = 1 ] && [ "$offset" -gt "$size" ]; then
     offset=0
     open=''
     persist=0
@@ -1956,12 +1990,12 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
   if [ "$offset" -lt "$size" ]; then
     chunk_file="$cf.read.$$"
     _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
-      || { rm -f "$chunk_file"; _fm_open_decisions_unread "$exact" "$trusted_open"; return; }
+      || { rm -f "$chunk_file"; _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
     chunk_size=$(LC_ALL=C wc -c < "$chunk_file" 2>/dev/null) \
-      || { rm -f "$chunk_file"; _fm_open_decisions_unread "$exact" "$trusted_open"; return; }
+      || { rm -f "$chunk_file"; _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
     chunk_size=${chunk_size//[[:space:]]/}
     case "$chunk_size" in
-      ''|*[!0-9]*) rm -f "$chunk_file"; _fm_open_decisions_unread "$exact" "$trusted_open"; return ;;
+      ''|*[!0-9]*) rm -f "$chunk_file"; _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return ;;
     esac
     # Test-only observability seam (off by default, no production behavior
     # change): when set, records exactly how many bytes THIS call folded, so a
@@ -2455,6 +2489,8 @@ status_retire_presentation_task() {  # <state> <task-id>
   if [ ! -e "$state/$task.status" ] && [ ! -L "$state/$task.status" ] \
     && [ ! -e "$state/.$task.open-decisions-cursor" ] \
     && [ ! -L "$state/.$task.open-decisions-cursor" ] \
+    && [ ! -e "$state/.$task.snapshot-open-decisions-cursor" ] \
+    && [ ! -L "$state/.$task.snapshot-open-decisions-cursor" ] \
     && [ ! -e "$home_appends" ] && [ ! -L "$home_appends" ] \
     && [ ! -e "$home_appends_lock" ] && [ ! -L "$home_appends_lock" ] \
     && [ ! -e "$signal_marker" ] && [ ! -L "$signal_marker" ] \
@@ -2506,6 +2542,7 @@ EOF
   fi
   if [ "$rc" -eq 0 ]; then
     rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" \
+      "$state/.$task.snapshot-open-decisions-cursor" \
       "$home_appends" "$signal_marker" "$heartbeat_marker" "$daemon_marker" || rc=1
     fm_lock_remove_path "$home_appends_lock" 2>/dev/null || true
   fi
