@@ -2123,7 +2123,8 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
 
 # Atomically replace <cursor> through a temp file beside it, which the rename
 # needs on the same file system. Nonzero, with the old cursor and no temp left,
-# when it cannot.
+# when it cannot. Stderr closes before the temp opens, so an unwritable
+# directory fails silently.
 _fm_open_decisions_cursor_write() {  # <cursor> <version> <offset> <ident> <open-set>
   local _ocw_tmp="$1.tmp.$$"
   if {
@@ -2131,7 +2132,7 @@ _fm_open_decisions_cursor_write() {  # <cursor> <version> <offset> <ident> <open
     printf 'offset=%s\n' "$3"
     printf 'ident=%s\n' "$4"
     if [ -n "$5" ]; then printf '%s' "$5"; fi
-  } > "$_ocw_tmp" 2>/dev/null && mv -f "$_ocw_tmp" "$1" 2>/dev/null; then
+  } 2>/dev/null > "$_ocw_tmp" && mv -f "$_ocw_tmp" "$1" 2>/dev/null; then
     return 0
   fi
   rm -f "$_ocw_tmp" 2>/dev/null
