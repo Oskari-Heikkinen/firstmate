@@ -422,6 +422,242 @@ sys.exit(88)
                 else: self.assertNotIn(b"wake annotation:", actual)
                 self.assertNotIn(b"task.status: working: appended during delay", actual)
 
+    async def test_late_classification_marker_guard_keeps_whole_legacy_acknowledgement_parity(self):
+        self.status(b"working: first\nworking: last\n", "a")
+        self.status(b"working: unchanged task\n", "b")
+        (self.state / ".wake-queue").write_bytes(b"100\t1\tsignal\ta.turn-ended\tsignal: historical\n")
+        manifest = self.state / ".status-presentation-cursor"
+        marker = self.state / ".seen-a_status"
+        ready, release = self.home / "ack-ready", self.home / "ack-release"
+        sleep = self.home / "fakebin/sleep"
+        sleep.write_text('''#!/usr/bin/env python3
+import os, pathlib, subprocess, sys, time
+if sys.argv[1:] != ["712"]:
+    sys.exit(subprocess.call([os.environ["FM_FIXTURE_REAL_SLEEP"], *sys.argv[1:]]))
+pathlib.Path(os.environ["FM_FIXTURE_DELAY_READY"]).touch()
+for _ in range(3000):
+    if pathlib.Path(os.environ["FM_FIXTURE_DELAY_RELEASE"]).exists(): sys.exit(0)
+    time.sleep(0.01)
+sys.exit(88)
+''')
+        sleep.chmod(0o700)
+        calls = []
+        original = Presentation.read
+        diagnostic = b"classification markers changed or unsupported; using complete legacy acknowledgement preparation"
+
+        async def run(native, action):
+            ready.unlink(missing_ok=True); release.unlink(missing_ok=True)
+            manifest.write_bytes(b"")
+            if marker.is_dir(): marker.rmdir()
+            marker.unlink(missing_ok=True)
+            await self.owner('fm_wake_status_mark_current "$1" "$1/b.status"')
+            if action in ("regression", "deletion", "malformed", "nonregular", "unreadable", "unsupported"):
+                await self.owner('fm_wake_status_mark_current "$1" "$1/a.status"')
+                if action == "unsupported":
+                    classified = marker.read_bytes().rstrip(b"\n").split(b"\t")[-1]
+                    marker.write_bytes(b"v2\tr1:" + b"ab" * 400 + b"\t" + classified)
+            else:
+                await self.owner('''_fm_wake_require_classify
+ident=$(_fm_open_decisions_file_ident "$1/a.status")
+fm_wake_status_seen_commit "$1" "$1/a.status" 0 "$ident"
+''')
+            invoke = asyncio.create_task(self.invoke("fm-wake-drain.sh", native=native,
+                FM_WAKE_ENRICH_TEST_DELAY="712", FM_FIXTURE_DELAY_READY=str(ready),
+                FM_FIXTURE_DELAY_RELEASE=str(release), FM_FIXTURE_REAL_SLEEP=shutil.which("sleep")))
+            try:
+                for _ in range(2000):
+                    if ready.exists() or invoke.done(): break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(ready.exists(), "post-native acknowledgement seam never reached")
+                if action == "advance":
+                    await self.owner('fm_wake_status_mark_current "$1" "$1/a.status"')
+                elif action == "reported-only":
+                    await self.owner('sig=$(fm_wake_signal_sig "$1/a.status"); fm_wake_status_reported_commit "$1" "$1/a.status" "$sig"')
+                elif action == "regression":
+                    await self.owner('''_fm_wake_require_classify
+ident=$(_fm_open_decisions_file_ident "$1/a.status")
+fm_wake_status_seen_commit "$1" "$1/a.status" 0 "$ident"
+''')
+                elif action == "deletion": marker.unlink()
+                elif action == "malformed": marker.write_bytes(b"v2\tmalformed\t123@wrong\n")
+                elif action == "nonregular":
+                    marker.unlink(); marker.mkdir()
+                elif action == "unreadable":
+                    marker.chmod(0)
+                    self.assertFalse(os.access(marker, os.R_OK), "unreadable-marker control is not effective")
+            finally:
+                release.touch()
+            output, error = await invoke
+            self.assertNotIn(b"fm-view-client:", error, error.decode("utf-8", "backslashreplace"))
+            if native and action != "unchanged": self.assertIn(diagnostic, error)
+            else: self.assertNotIn(diagnostic, error)
+            return output, manifest.read_bytes()
+
+        for action in ("unchanged", "reported-only", "advance", "regression", "deletion", "malformed", "nonregular", "unreadable", "unsupported"):
+            with self.subTest(action=action):
+                before = len(calls)
+                def observed(instance, rows, vocabulary=None):
+                    reply = original(instance, rows, vocabulary)
+                    calls.append(reply)
+                    unchanged = next(row for row in reply["rows"] if row["task"] == "b")
+                    self.assertEqual(unchanged["acknowledged_end"], unchanged["end"])
+                    # A valid conservative suggestion on the UNCHANGED task
+                    # distinguishes whole-batch fallback from per-row repair.
+                    if action != "unchanged": unchanged["acknowledged_end"] = 0
+                    return reply
+                with patch.object(Presentation, "read", observed):
+                    actual, cursor = await run(True, action)
+                self.assertEqual(len(calls), before + 1)
+                self.assertEqual(len(calls[-1]["rows"]), 2)
+                expected, legacy_cursor = await run(False, action)
+                self.assertEqual(actual, expected)
+                self.assertEqual(cursor, legacy_cursor)
+                offsets = {row.split(b"\t")[0]: int(row.split(b"\t")[2]) for row in cursor.splitlines()}
+                self.assertEqual(offsets[b"b"], (self.state / "b.status").stat().st_size)
+                self.assertEqual(offsets[b"a"], (self.state / "a.status").stat().st_size if action in ("advance", "unsupported") else 0)
+
+    async def test_malformed_classification_evidence_falls_back_before_native_selection(self):
+        self.status(b"working: progress\nnote: answer\n")
+        manifest = self.state / ".status-presentation-cursor"
+        manifest.write_bytes(b"")
+        original = Presentation.read_from_snapshot
+        for corruption in ("missing", "count", "binding", "type", "oversize", "nul", "newline"):
+            with self.subTest(corruption=corruption):
+                manifest.write_bytes(b"")
+                calls = []
+                def corrupt(instance, rows):
+                    reply = original(instance, rows)
+                    calls.append(reply)
+                    if corruption == "missing": del reply["classification_markers"]
+                    elif corruption == "count": reply["classification_markers"] = []
+                    else:
+                        evidence = reply["classification_markers"][0]
+                        if corruption == "binding": evidence["task"] = "foreign"
+                        elif corruption == "type": evidence["text"] = True
+                        elif corruption == "oversize": evidence["text"] = "x" * 4097
+                        elif corruption == "nul": evidence["text"] = "x\0y"
+                        elif corruption == "newline": evidence["text"] = "x\n"
+                    return reply
+                with patch.object(Presentation, "read_from_snapshot", corrupt):
+                    actual, error = await self.invoke("fm-wake-drain.sh")
+                self.assertEqual(len(calls), 1, error)
+                self.assertIn(b"fm-view-client: read refused; use legacy:", error)
+                self.assertIn(b"classification marker evidence", error)
+                self.assertNotIn(b"using complete legacy acknowledgement preparation", error)
+                cursor = manifest.read_bytes()
+                manifest.write_bytes(b"")
+                expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+                self.assertEqual(actual, expected)
+                self.assertEqual(cursor, manifest.read_bytes())
+
+    async def test_corrupt_private_marker_output_keeps_complete_legacy_presentation(self):
+        self.status(b"working: captured\nnote: answer\n")
+        (self.state / ".wake-queue").write_bytes(b"100\t1\tsignal\ttask.status\tsignal: direct\n")
+        manifest = self.state / ".status-presentation-cursor"
+        wrapper = self.home / "fakebin/python3"
+        marker = self.home / "corrupted-marker-output"
+        for corruption in ("missing", "duplicate", "foreign", "hex", "odd", "extra", "oversize"):
+            with self.subTest(corruption=corruption):
+                manifest.write_bytes(b"")
+                marker.unlink(missing_ok=True)
+                wrapper.write_text(f'''#!{sys.executable}
+import subprocess, sys
+from pathlib import Path
+run = subprocess.run([{sys.executable!r}] + sys.argv[1:], stdout=subprocess.PIPE)
+output = run.stdout
+if run.returncode == 0 and sys.argv[1].endswith("fm-view-client.py"):
+    lines = output.splitlines(keepends=True)
+    rows = [line for line in lines if line.startswith(b"M\\t")]
+    assert len(rows) == 1, output
+    corruption = {corruption!r}
+    row = rows[0]
+    if corruption == "missing": row = b""
+    elif corruption == "duplicate": row += row
+    elif corruption == "foreign": row = b"M\\tother\\t-\\n"
+    elif corruption == "hex": row = b"M\\ttask\\th:xyz0\\n"
+    elif corruption == "odd": row = b"M\\ttask\\th:0\\n"
+    elif corruption == "extra": row = b"M\\ttask\\t-\\textra\\n"
+    elif corruption == "oversize": row = b"M\\ttask\\th:" + b"00" * 4097 + b"\\n"
+    output = b"".join(line for line in lines if not line.startswith(b"M\\t")) + row
+    Path({str(marker)!r}).write_bytes(output)
+sys.stdout.buffer.write(output)
+sys.exit(run.returncode)
+''')
+                wrapper.chmod(0o700)
+                calls = []
+                original = Presentation.read
+                def observed(instance, rows, vocabulary=None):
+                    calls.append(rows)
+                    return original(instance, rows, vocabulary)
+                with patch.object(Presentation, "read", observed):
+                    actual, error = await self.invoke("fm-wake-drain.sh")
+                self.assertTrue(marker.exists(), error)
+                self.assertEqual(len(calls), 1, error)
+                self.assertIn(b"malformed native classification evidence; using legacy presentation", error)
+                cursor = manifest.read_bytes()
+                manifest.write_bytes(b"")
+                expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+                self.assertEqual(actual, expected)
+                self.assertEqual(cursor, manifest.read_bytes())
+
+    async def test_captured_renderer_loads_classifier_only_for_historical_inventory(self):
+        self.status(b"working: captured\n")
+        captured = b"task\tworking: captured\n"
+        script = '''. "$1/bin/fm-wake-lib.sh"
+fm_wake_status_cursor_offset() { echo 'unexpected cursor read' >&2; return 1; }
+fm_wake_unread_events() { echo 'unexpected span read' >&2; return 1; }
+if [ "$4" = no-classifier ]; then
+  _fm_wake_require_classify() { echo 'unexpected classifier load' >&2; return 1; }
+fi
+fm_wake_print_annotations "$2" '' "$3"
+'''
+        for case in ("empty", "direct", "historical", "reported"):
+            with self.subTest(case=case):
+                if case == "reported": await self.owner('fm_wake_status_mark_current "$1" "$1/task.status"')
+                rows = b"" if case == "empty" else b"100\t1\tsignal\ttask." + (b"status" if case == "direct" else b"turn-ended") + b"\tsignal: event\n"
+                process = await asyncio.create_subprocess_exec("bash", "-c", script, "fixture", str(ROOT), rows, captured,
+                    "no-classifier" if case in ("empty", "direct") else "allow-classifier",
+                    env=self.env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                output, error = await asyncio.wait_for(process.communicate(), 15)
+                self.assertEqual(process.returncode, 0, error)
+                self.assertEqual(error, b"", error.decode("utf-8", "backslashreplace"))
+                if case in ("empty", "reported"): self.assertEqual(output, b"")
+                else:
+                    prefix = b"wake annotation: latest wake-EVENT observed at drain, not current state"
+                    if case == "historical": prefix += b"; historical / not necessarily the triggering event"
+                    self.assertEqual(output, prefix + b": task.status: working: captured\n")
+
+    @unittest.skipUnless(Path("/dev/full").exists(), "requires failing stdout device")
+    async def test_late_ack_fallback_failed_stdout_preserves_cursor_and_retries(self):
+        self.status(b"working: captured\n")
+        manifest = self.state / ".status-presentation-cursor"
+        manifest.write_bytes(b"")
+        calls = []
+        original = Presentation.read
+        def update(instance, rows, vocabulary=None):
+            reply = original(instance, rows, vocabulary)
+            calls.append(reply)
+            process = subprocess.run(["bash", "-c", '. "$1/bin/fm-wake-lib.sh"; fm_wake_status_mark_current "$2" "$2/task.status"',
+                "fixture", str(ROOT), str(self.state)], env=self.env, capture_output=True, timeout=15)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            return reply
+        with patch.object(Presentation, "read", update), open("/dev/full", "wb") as full:
+            process = await asyncio.create_subprocess_exec("bash", str(ROOT / "bin/fm-wake-drain.sh"),
+                env=self.env, stdout=full, stderr=asyncio.subprocess.PIPE)
+            _, error = await asyncio.wait_for(process.communicate(), 40)
+        self.assertNotEqual(process.returncode, 0, error)
+        self.assertIn(b"using complete legacy acknowledgement preparation", error)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(manifest.read_bytes(), b"")
+        actual, error = await self.invoke("fm-wake-drain.sh")
+        self.assertNotIn(b"using complete legacy acknowledgement preparation", error)
+        cursor = manifest.read_bytes()
+        manifest.write_bytes(b"")
+        expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        self.assertEqual(actual, expected)
+        self.assertEqual(cursor, manifest.read_bytes())
+        self.assertIn(b"task working: captured", actual)
+
     async def test_early_symlink_refusal_matches_legacy_cursor_refusal_and_raw_rows(self):
         # This is deliberately NOT the original late Perl-reader race. A swap
         # before fallback makes the legacy cursor lookup refuse before it can
@@ -677,7 +913,7 @@ fm_wake_print_annotations "$2" '' "$3"
             env=self.env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         output, error = await asyncio.wait_for(process.communicate(), 10)
         self.assertEqual(process.returncode, 0, error)
-        self.assertEqual(error, b"")
+        self.assertEqual(error, b"", error.decode("utf-8", "backslashreplace"))
         self.assertEqual(output, b"wake annotation: latest wake-EVENT observed at drain, not current state: z-task.status: last group\n"
                          + b"wake annotation: unread wake-EVENT since last drain, not current state: task.status:  first  \n"
                          + b"wake annotation: latest wake-EVENT observed at drain, not current state: task.status: last\n" * 2
