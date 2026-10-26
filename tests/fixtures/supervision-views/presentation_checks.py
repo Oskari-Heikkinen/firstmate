@@ -70,6 +70,148 @@ sys.exit(reply.returncode)
                               env=dict(self.env, **environment), stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=20)
 
+    def commit(self, snapshot, batch=True, acknowledgements="", **environment):
+        script = '''. "$1/bin/fm-classify-lib.sh"
+STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED=$4
+if [ "${FM_FIXTURE_FORBID_ROW_READS:-0}" = 1 ]; then
+  _fm_open_decisions_file_ident() { echo unexpected-identity-read >&2; return 81; }
+  _fm_status_file_size() { echo unexpected-size-read >&2; return 82; }
+  status_outcome_backstop_cursor_offset() { echo unexpected-backstop-read >&2; return 83; }
+fi
+status_commit_presentation_snapshot "$2" "$3" "$5"
+'''
+        return subprocess.run(["bash", "-c", script, "commit", str(ROOT), str(self.state),
+                               snapshot, acknowledgements, "batch" if batch else ""],
+                              env=dict(self.env, **environment), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=30)
+
+    def compare_commit(self, snapshot, acknowledgements="", **environment):
+        manifest = self.state / ".status-presentation-cursor"
+        before = manifest.read_bytes() if manifest.exists() else None
+        self.log.unlink(missing_ok=True)
+        actual = self.commit(snapshot, acknowledgements=acknowledgements, **environment)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+        after = manifest.read_bytes() if manifest.exists() else None
+        if before is None: manifest.unlink(missing_ok=True)
+        else: manifest.write_bytes(before)
+        expected = self.commit(snapshot, batch=False, acknowledgements=acknowledgements)
+        self.assertEqual(actual.returncode, expected.returncode, (actual.stderr, expected.stderr))
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertEqual(after, manifest.read_bytes() if manifest.exists() else None)
+        if actual.returncode: self.assertEqual(before, after)
+        self.assertFalse(list(self.state.glob(".status-presentation-cursor.tmp.*")))
+        return actual, calls, after
+
+    def test_commit_batch_matches_whole_legacy_cursor_without_per_row_reads(self):
+        for task in ("b", "a", "a-2", "a.x"):
+            (self.state / (task + ".status")).write_text("note: answer\nworking: more\n")
+        snapshot = self.invoke("status_presentation_snapshot_batch").stdout.decode().rstrip("\n")
+        rows = [line.split("\t") for line in snapshot.splitlines()]
+        manifest = self.state / ".status-presentation-cursor"
+        for locale in ("C", "C.UTF-8"):
+            for shape in ("missing", "empty", "old", "carry", "reset", "duplicate"):
+                with self.subTest(locale=locale, shape=shape):
+                    manifest.unlink(missing_ok=True)
+                    if shape == "empty": manifest.write_bytes(b"")
+                    if shape in ("old", "carry", "reset", "duplicate"):
+                        lines = []
+                        for task, end, ident in rows:
+                            row = [task, ident, "0"]
+                            if shape in ("carry", "duplicate"): row.append("3")
+                            if shape == "reset":
+                                row[1] = "strong:old-identity"
+                                row.append("99999")
+                            lines.append("\t".join(row))
+                        if shape == "duplicate": lines.append(lines[0])
+                        manifest.write_text("\n".join(lines) + "\n")
+                    # Last matching acknowledgement wins; foreign acks have no
+                    # cursor effect, and row ordering is the selected ordering.
+                    acks = "b\t2\nb\t4\nforeign\t999999\n"
+                    actual, calls, after = self.compare_commit(snapshot, acks, LC_ALL=locale,
+                        **({} if shape == "duplicate" else {"FM_FIXTURE_FORBID_ROW_READS": "1"}))
+                    self.assertEqual(actual.returncode, 0, actual.stderr)
+                    if shape == "duplicate":
+                        self.assertIn(b"batch verification refused", actual.stderr)
+                    else:
+                        self.assertEqual(actual.stderr, b"")
+                        self.assertEqual(len(calls), 1, calls)
+                    self.assertEqual([line.split(b"\t")[0] for line in after.splitlines()],
+                                     [row[0].encode() for row in rows])
+                    self.assertEqual(after.splitlines()[-1].split(b"\t")[-1], b"4")
+
+    def test_commit_capture_is_fresh_growth_preserves_selected_end_and_backstop(self):
+        status = self.state / "task.status"
+        status.write_text("note: original\n")
+        snapshot = self.invoke("status_presentation_snapshot_batch").stdout.decode().rstrip("\n")
+        task, end, ident = snapshot.split("\t")
+        status.write_text("note: original\nnote: appended after presentation\n")
+        # A newly arrived status is not in this presentation's selection.
+        (self.state / "new.status").write_text("note: unread\n")
+        manifest = self.state / ".status-presentation-cursor"
+        for old_ident, backstop, expected in ((ident, status.stat().st_size, status.stat().st_size),
+                                             (ident, status.stat().st_size + 1, 0), ("replaced", 2, 0)):
+            with self.subTest(old_ident=old_ident, backstop=backstop):
+                manifest.write_text(f"{task}\t{old_ident}\t0\t{backstop}\n")
+                actual, calls, after = self.compare_commit(snapshot, FM_FIXTURE_FORBID_ROW_READS="1")
+                self.assertEqual(actual.returncode, 0, actual.stderr)
+                self.assertEqual(actual.stderr, b"")
+                self.assertEqual(len(calls), 1, calls)
+                self.assertEqual(after, f"{task}\t{ident}\t{end}\t{expected}\n".encode())
+
+    def test_commit_batch_refuses_replacement_deletion_truncation_and_symlink(self):
+        status = self.state / "task.status"
+        secret = self.home / "secret"
+        secret.write_text("protected bytes\n")
+        manifest = self.state / ".status-presentation-cursor"
+        for attack in ("rotation", "deletion", "truncation", "symlink", "past-end-ack"):
+            with self.subTest(attack=attack):
+                status.unlink(missing_ok=True)
+                status.write_text("note: original\n")
+                snapshot = self.invoke("status_presentation_snapshot_batch").stdout.decode().rstrip("\n")
+                manifest.write_bytes(b"unselected\tproof\t0\t0\n")
+                if attack == "rotation":
+                    replacement = self.state / ".new"
+                    replacement.write_bytes(status.read_bytes())
+                    replacement.replace(status)
+                elif attack == "deletion": status.unlink()
+                elif attack == "truncation": status.write_bytes(b"")
+                elif attack == "symlink":
+                    status.unlink()
+                    status.symlink_to(secret)
+                acks = "task\t99999" if attack == "past-end-ack" else ""
+                actual, _, after = self.compare_commit(snapshot, acks)
+                self.assertNotEqual(actual.returncode, 0, actual.stderr)
+                self.assertIn(b"batch verification refused", actual.stderr)
+                self.assertEqual(after, b"unselected\tproof\t0\t0\n")
+                self.assertEqual(secret.read_text(), "protected bytes\n")
+
+    def test_commit_batch_malformed_capture_and_cursor_use_complete_legacy_owner(self):
+        (self.state / "task.status").write_text("note: answer\n")
+        snapshot = self.invoke("status_presentation_snapshot_batch").stdout.decode().rstrip("\n")
+        manifest = self.state / ".status-presentation-cursor"
+        for mode in ("error", "short", "extra", "malformed", "nonregular", "empty-field"):
+            with self.subTest(mode=mode):
+                manifest.write_bytes(b"")
+                actual, _, _ = self.compare_commit(snapshot, FM_FIXTURE_STAT_MODE=mode)
+                self.assertEqual(actual.returncode, 0, actual.stderr)
+                self.assertIn(b"batch verification refused", actual.stderr)
+        for raw in (b"malformed\n", b"task\tproof\tno-offset\n", b"task\tproof\t0\t0\textra\n"):
+            with self.subTest(raw=raw):
+                manifest.write_bytes(raw)
+                actual, _, after = self.compare_commit(snapshot)
+                self.assertNotEqual(actual.returncode, 0)
+                self.assertEqual(after, raw)
+        manifest.write_bytes(b"")
+        self.log.unlink(missing_ok=True)
+        legacy = self.commit(snapshot, batch=False)
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertFalse(any("--" in json.loads(line) for line in self.log.read_text().splitlines()),
+                         "ordinary legacy commit must not attempt a batch")
+        # Empty selections still atomically publish the original empty manifest.
+        actual, _, after = self.compare_commit("")
+        self.assertEqual(actual.returncode, 0, actual.stderr)
+        self.assertEqual(after, b"")
+
     def test_whole_snapshot_matches_legacy_and_one_stat_covers_inventory(self):
         for name, raw in (("foo", b"note: a\n"), ("foo-2", b""), ("foo.x", b"note: \xff\n"),
                           ("Z", b"working: next\n"), ("a_2", b"note: answer\n")):
