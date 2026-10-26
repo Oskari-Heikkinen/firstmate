@@ -202,11 +202,35 @@ It reads no code from the version being checked and does not import that version
 The manifest is content binding, not a signature or authority to run arbitrary code: the future launch owner must select a reviewed identity and revalidate it before loading.
 Preparing code neither registers nor starts a production actor, and the foreground identity/receipt/stop owner remains unfinished.
 
+## Read-primitive preflight
+
+[`fm-view-capabilities.py`](../bin/fm-view-capabilities.py) inspects a selected immutable bundle without installing, publishing or starting anything.
+Its header owns invocation and exit handling; its invoking owner must consume refusal through its existing status/wake path and retain the complete legacy read selection.
+[`fm_view_capabilities.py`](../bin/fm_view_capabilities.py) owns its ephemeral `fm-view-capabilities.v1` response, and [`fm_view_protocol.py`](../bin/fm_view_protocol.py) is the single owner of the engine's admitted verbs and transport/lane limits.
+The response has exactly `schema`, `scope`, `home`, `roots`, `bundle`, `python`, `platform`, `features`, `read_protocol`, `verbs`, `bounds` and `authority`.
+`scope` is `read-only-primitives`; `roots` binds the observed home/state device-inode pairs, and `bundle` binds its canonical path, manifest identity and pinned commit/tree.
+`python` names the minimum and running version; `features` reports successful local peer-UID, pidfd, nonreaping-wait and default-SIGCHLD checks, while `bounds` names the shared primitive limits.
+`authority` explicitly sets `installed`, `monitoring`, `identity_bound_shutdown` and `transactions` false.
+These observations are not a home lease, health beacon, actor registration, signal target or service-readiness record.
+
+Before emitting any output, inspection verifies every immutable member, checks that its inspector and protocol bytes match this inspector, and requires the store to be outside the operational home and every Git checkout.
+A different inspector/protocol refuses rather than borrowing a newer implementation's capabilities; an old version remains inspectable using its own matching tools.
+It probes only its own PID with signal0 and a nonreaping self-wait, and uses a private unbound socket pair for peer-UID verification.
+Missing Python/kernel facilities, actual syscall refusals, a nondefault SIGCHLD handler, mismatched credentials or changed root identities refuse without successful stdout.
+Inspection creates no child, listener, capability file, registry record or receipt, and never dynamically imports an inspected member to discover capabilities.
+Like the bundle verifier, the selected inspector and its ordinary modules must themselves be trusted code; self-inspection is not a signature or authority to execute an arbitrary object.
+The response is synchronous observation for its invoking owner, not a durable handoff to publish or reuse as fresh evidence.
+Future foreground startup must still publish and validate its own lifecycle capabilities, registered actor, request/receipt contracts and identity-bound exit/stop proof before any service effect; this inspector grants none of them.
+No recurring actor or home mode is introduced by inspection.
+
 ## Verification and remaining migration
 
 [`tests/fm-supervision-views.test.sh`](../tests/fm-supervision-views.test.sh) runs isolated real-socket, bounded-lane and legacy-fold comparison tests in CI.
 Its public bundle CLI cases additionally exercise pinned old/new versions, full verification and idempotent concurrent publication, dirty/missing/symlink/oversized source refusal, unsafe stores, invalid identities/manifests and immutable existing-version refusal without repair.
 Each damaged-member control first verifies an independent intact version, so an unrelated corrupt member cannot make that check vacuous.
+Public capability-CLI controls compare the complete response, relocate matching inspectors while hiding their source checkout, forbid child creation and compare all home/store entries and bytes before and after inspection.
+Independent unsupported-symbol and actual syscall/peer-UID refusals require empty stdout, while corrupt bundles, mismatched inspector versions, unsafe roots and probe-time replacement of each root refuse without modifying retained originals.
+Both old and new immutable versions remain inspectable with their own matching tools.
 Relocated-code controls hide their source checkout and require complete passive packet equality across all five fixed operations, a native fold and unchanged home records; these are code-closure controls, not proof of every successful custody/forge branch or a service lifecycle gate.
 It checks keyed transitions, correlation tokens, malformed time tags, terminal-task versus persistent-mate folds, protected tool blockers, incomplete final lines, invalid UTF-8, fresh tool levels without status changes, generation/root refusal, single-flight and timeout reservation.
 Native crew-state cases also compare the legacy public CLI on identical isolated git repositories and captured fake no-mistakes/backend/forge responses.
