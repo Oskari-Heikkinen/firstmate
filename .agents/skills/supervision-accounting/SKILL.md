@@ -1,12 +1,14 @@
 ---
 name: supervision-accounting
-description: Load before collecting, calibrating, recording ticks for, reconciling or judging supervision accounting, validating an owner fleet manifest or replay corpus, or using the legacy reader capability/fence APIs.
+description: "Load before running, calibrating or judging the supervision accounting collector (tick logs, strace or proc-only capture, fleet manifests, replay corpora, B0/P0 claims), and before using the legacy reader capability/fence APIs."
 user-invocable: false
 metadata:
   internal: true
 ---
 
 # Supervision accounting
+
+Why this skill exists: supervision savings claimed from estimates or records not bound to real capture did not hold up (root causes R4, R5; problem class P4).
 
 [`docs/supervision-accounting.md`](../../../docs/supervision-accounting.md) owns the P0 formats, accounting rules, collector limits and inert legacy bridge.
 The Python utility's header and help own its exact CLI.

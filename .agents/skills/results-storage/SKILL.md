@@ -1,6 +1,6 @@
 ---
 name: results-storage
-description: "Load before changing bin/fm-storage.sh, bin/fm-pack.sh, docs/storage.md or their tests. Results go only to the verified external SSD, writers wait with exit 75 rather than fall back to C: or Linux, cold trees pack to verified SquashFS, and only a guarded R2 release deletes a source."
+description: "Load before writing experiment results or other bulk output, choosing where result bytes go, packing or releasing a cold tree, on an exit-75 storage wait, and before changing bin/fm-storage.sh, bin/fm-pack.sh, docs/storage.md or their tests."
 user-invocable: false
 metadata:
   internal: true
@@ -14,6 +14,8 @@ metadata:
 ---
 
 # results-storage
+
+Why this skill exists: bulk results written wherever each writer chose filled the laptop's C: and Linux disks (root causes R9, R1; problem class P23).
 
 ## Goal and operating principle
 

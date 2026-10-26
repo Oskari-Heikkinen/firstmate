@@ -1,12 +1,14 @@
 ---
 name: operational-home-layout
-description: Load when locating, interpreting, or changing Firstmate home, config, data, state, project, or generated runtime paths.
+description: "Load before reading, writing or deleting a file under a home's config/, data/, state/ or projects/ that you have not used this session, when a state/ dotfile, lock or cursor looks stale or unknown, and before adding a new config key or state record."
 user-invocable: false
 metadata:
   internal: true
 ---
 
 # Operational home layout
+
+Why this skill exists: agents acted on home files they had not read, deleting a record that was still the only copy or missing an override held in config/ (root causes R1, R2; problem classes P15, P12).
 
 ```
 AGENTS.md            supervisor contract and safety boundaries (CLAUDE.md is a real @AGENTS.md pointer to it)

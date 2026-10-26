@@ -1,6 +1,6 @@
 ---
 name: loop-observability
-description: Load before changing bin/fm-loop.sh, bin/fm-loop.py, bin/fm-project-capacity-lib.sh, docs/loop-status.md or their tests. The loop view only reads records, says why each request waits, reads unknown as unknown and alerts once per occurrence; it never launches or edits a queue, and capacity admission fails closed.
+description: "Load before changing bin/fm-loop.sh, bin/fm-loop.py, bin/fm-project-capacity-lib.sh, docs/loop-status.md or their tests."
 user-invocable: false
 metadata:
   internal: true
@@ -16,6 +16,8 @@ metadata:
 ---
 
 # loop-observability
+
+Why this skill exists: a lane refusal went unseen for hours because an idle alarm was muted in the very state it should report, and a queue read `ok` while blocked (root cause R7; problem class P19).
 
 ## Goal and operating principle
 
@@ -38,13 +40,13 @@ Sources, thresholds and limits are data (`config/loop-sources`, a stage's `<home
 - Writing, consuming, acknowledging, rotating or repairing any source, or contacting the capacity filler, its service or TETJET (`bin/fm-loop.py` docstring; `docs/loop-status.md` "What it reads" and "Capacity filler watch").
 - Launching, retrying, re-queuing or unsticking a request from the loop view (`docs/loop-status.md`: "nothing is woken, consumed or acknowledged"; the plan's one start authority).
 - Reading a missing or unreadable source as empty, or letting an alert clear while `source-unreadable` is raised (`docs/loop-status.md` "Alerts").
-- Suppressing an alert in the very state it should report, such as an idle alarm muted while a lane is broken (wave-2 history H16: a ~50 h lane refusal went unseen this way; wave-2 queue section 7: queue state read `ok` while blocked).
+- Suppressing an alert in the very state it should report, such as an idle alarm muted while a lane is broken, or a queue state read `ok` while it is blocked.
 - Folding supply and lane health into one derived status (`docs/loop-status.md`: shown "as separate fields, never one derived from the other").
 - Raising TETJET's own capacity alerts again as loop alerts (`docs/loop-status.md`: tetjet-mate owns them).
 - A watcher check that prints every open alert on each run, prints acknowledged alerts, hides `source-unreadable`, or moves its cursor before printing (`docs/loop-status.md` "Watcher check").
 - Accepting an unknown schema leniently, or replaying the lane journal to recover a bad cursor (`docs/loop-status.md` "Capacity filler watch").
 - A hard-coded source path, threshold, home or request family in code where a `config/loop-sources` line belongs (`docs/configuration.md` "Loop sources"; tool-design rule 4).
-- Unbounded reads, tree walks or runs past the cap, a source read outside the per-source bound, or a sync to disk for an alert record that has not changed (`bin/fm-loop.sh` header: niced and capped at 60 s, sources read within a quarter of the cap; `docs/loop-status.md` "Alerts"; wave-2 history H9 unbounded read volume).
+- Unbounded reads, tree walks or runs past the cap, a source read outside the per-source bound, or a sync to disk for an alert record that has not changed (`bin/fm-loop.sh` header: niced and capped at 60 s, sources read within a quarter of the cap; `docs/loop-status.md` "Alerts").
 - Writing outside `<home>/state` from `arm` or `disarm` (`bin/fm-loop.sh` header).
 - Guessing a capacity from a malformed declaration, counting holders outside the shared project lock, or adding a per-project branch to the capacity code (`bin/fm-project-capacity-lib.sh` header).
 

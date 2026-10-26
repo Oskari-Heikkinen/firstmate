@@ -1,12 +1,14 @@
 ---
 name: landed-sync
-description: "Load on any `check: landed-sync <project>` wake."
+description: "Load on a `check: landed-sync <project>` wake, when the main home's project clone is behind, dirty, diverged or off its default branch after a landing, or when a stale git lock blocks a clone refresh."
 user-invocable: false
 metadata:
   internal: true
 ---
 
 # landed-sync
+
+Why this skill exists: work started from a main clone left behind after a landing, and hand repairs of a dirty clone or a stale lock can destroy work the clone still holds (root causes R2, R1; problem classes P21, P15).
 
 Load this on any `check: landed-sync <project>` wake.
 

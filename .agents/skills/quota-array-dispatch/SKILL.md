@@ -1,12 +1,14 @@
 ---
 name: quota-array-dispatch
-description: Load when a dispatch rule or default resolves to more than one profile candidate.
+description: "Load when bin/fm-dispatch-resolve.sh or a crew-dispatch rule yields more than one harness/model/profile candidate, before choosing between them with quota-axi, and before arming bin/fm-procevent-quota.sh."
 user-invocable: false
 metadata:
   internal: true
 ---
 
 # quota-array-dispatch
+
+Why this skill exists: when a dispatch rule offered several candidates, picking one by habit instead of measured quota and runway could start work on an account about to run out (root causes R1, R2; problem class P20).
 
 This skill is the single owner of the completion-aware profile-array selection procedure.
 This skill also owns the intake boundary, malformed-config refusal, every-candidate accounting, and strongest-reasoning/tie safety rules; `AGENTS.md` section 4 only names when to come here.
@@ -35,11 +37,11 @@ It never removes this skill's authority, and its `ambiguous`, `escalate`, and `e
 ## Read the default TOON
 
 Start each intake by running `quota-axi` once with no `--json`, and reuse that TOON for every candidate.
-Post-consolidation quota-axi (the floor owned by `bin/fm-quota-axi-lib.sh`) puts `spendPriority` in the default `quota[]` block beside `effectivePercentRemaining`, `runway`, `confidence`, `limitedBy`, and `resetsAt`.
+At or above the floor owned by `bin/fm-quota-axi-lib.sh`, quota-axi puts `spendPriority` in the default `quota[]` block beside `effectivePercentRemaining`, `runway`, `confidence`, `limitedBy`, and `resetsAt`.
 Sparse `exhaustion[]` carries finite-runway seconds only for `projected_exhaustion` and `exhausted_now`.
 Sparse `attention[]` names auth, stale, and unmeasurable facts.
 `spendPriority` is THE quota-perspective ranker.
-It already computes the economics that older instructions reconstructed by hand from headroom, pace, reserve, and window-id lists; do not recompute those.
+It already computes the economics from headroom, pace, reserve, and window-id lists; do not recompute those.
 Do not read `--json` on the normal path, and do not reach for `--full` to rebuild that economics.
 
 After reading the TOON, fall back to one `quota-axi --json` call only when that TOON is genuinely ambiguous for the decision, or when the installed quota-axi is somehow below the floor so its TOON lacks `spendPriority`.

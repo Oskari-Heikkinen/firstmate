@@ -1,12 +1,14 @@
 ---
 name: process-event-sources
-description: Load before arming a long-poll source, condition->action watch, or land-after order, and on any procevent or process-event source stranded/failed-start wake.
+description: "Load before waiting on any external process instead of polling in a turn (PR merge, CI run, remote reply, queue result, land-after order, condition->action watch), when arming or retiring one with bin/fm-procevent*.sh, and on any procevent, stranded or failed-start wake."
 user-invocable: false
 metadata:
   internal: true
 ---
 
 # process-event-sources
+
+Why this skill exists: watches built by hand inside a turn missed their event, because this skill did not load at the moment an agent decided to wait (root cause R1, a trigger gap; problem class P27).
 
 Load this before arming a long-polling source, before registering a deterministic condition->action watch or ordering one task's landing after another's, whenever a `check:` wake carries `procevent <adapter> <source-id> <sequence>`, and whenever the watcher headlines a `process-event source stranded` or `process-event source failed to start` wake.
 

@@ -1,12 +1,14 @@
 ---
 name: independent-rereview
-description: Load before briefing any independent review of a builder's change, including the re-review of fixes landed for an earlier review's findings.
+description: "Load before writing a reviewer brief (bin/fm-brief.sh --review-range) for any independent review, and before running bin/fm-rereview-brief.sh to re-review fixes for an earlier review's findings."
 user-invocable: false
 metadata:
   internal: true
 ---
 
 # independent-rereview
+
+Why this skill exists: hand-written re-review briefs paraphrased the first review's findings and retyped its rules, so re-reviews checked the wrong thing and review chains grew (root causes R5, R8; problem classes P3, P16).
 
 This skill owns how firstmate briefs an independent reviewer, and when and how it commissions a re-review of landed fixes.
 [`bin/fm-rereview-brief.sh`](../../../bin/fm-rereview-brief.sh)'s header owns its flags, extraction rules, refusals, and the filled brief's content.
