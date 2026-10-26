@@ -2,9 +2,11 @@
 # Scaffold a crewmate brief or persistent secondmate charter at
 # data/<task-id>/brief.md under the active firstmate home.
 # For ordinary tasks, the standard Setup/Rules/Definition-of-done contract is
-# filled in. Ship and scout `# Task` sections have two subsections Firstmate
-# fills before dispatch: `{TASK}` under `## Captain's intent` (the captain's
-# own ask plus the context needed to read it, including the substance of any
+# filled in. Its Rules always state the only criteria for judging options
+# (for planners, evaluators and reviewers alike) and point any tool work at the
+# tool-design skill by absolute path. Ship and scout `# Task` sections have
+# two subsections Firstmate fills before dispatch: `{TASK}` under
+# `## Captain's intent` (the captain's own ask plus the context needed to read it, including the substance of any
 # report, decision, or PR the ask refers to, without added speaker labels or
 # direct address) and `{FIRSTMATE_SPEC}`
 # under `## Firstmate spec` (build instructions, which are never the captain's
@@ -563,7 +565,10 @@ When the marker carries \`expect=ack\`, reply with \`bin/fm-secondmate-report.sh
 For a terse result, a status line is the whole answer.
 For a detailed one, write a doc under this home's \`data/\` and append a status line that points to that doc.
 A marked request requires one correlated answer after the work; it does not require a separate receipt or start acknowledgement.
-Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
+Every marked request gets that line, including one that asks for a reply only if affected: answer it with \`note\` and \`not affected: {why}\` or \`noted\`.
+If the answer is not ready when the turn that took the request up ends - you dispatched a worker, armed a watch, or wait on an approval - append one correlated \`working:\` line naming what you wait on, because the parent asks for a repost once a request turn ends with no correlated line; a dispatch or an armed watch is not an answer.
+That correlated \`working:\` line settles the parent's guard, so nothing reminds you of the answer still owed: post it with the same \`corr=<id>\` when the wait ends.
+Apart from that one turn-end line, never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
 Before treating an investigation or visual review as complete, load \`captain-hold-lifecycle\` and pass its completion gate.
 A message with NO marker is the captain typing directly into your pane: authoritative, answered conversationally, not on the status path. An inbox request follows the same marker rules.
 
@@ -669,6 +674,12 @@ IFS= read -r -d '' SHARED_INFRA_RULE <<'EOF' || true
    If you need a second checkout, another slot, or the daemon touched, append `blocked [at=<epoch>]: {what you need}` and stop.
 EOF
 SHARED_INFRA_RULE=${SHARED_INFRA_RULE%$'\n'}
+# Every ship and scout carries both rules unconditionally: a brief has no
+# planner, evaluator, reviewer or tool-work kind, so a rule gated on one would
+# depend on the dispatcher remembering to mark it, and the workers that need
+# these rules never load the home's preferences or the skill index.
+JUDGING_RULE="8. When you compare, rank, or recommend options - in a plan, an evaluation, a review verdict, or a decision request - judge them only on how well they work (safety included), future-proofing, and maintainability; development time, effort, size, or rollout cost is never a reason, a tie-breaker, or a factor you report."
+TOOL_DESIGN_RULE="9. If this task builds or changes a tool, script, service, watcher, or automation, in this repo or any other, read \`$FM_ROOT/.agents/skills/tool-design/SKILL.md\` before designing it."
 OBSTACLE_RULE="5. If you are stuck and need help, or hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop."
 RESOLVE_RULE="   Only a \`resolved\` line with an opened decision's or blocker's exact key closes it, never a later \`done:\` or \`working:\`, even when the answer is what started that work; firstmate's reply normally writes it, and when a blocker or wait clears without one, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one)."
 
@@ -705,6 +716,8 @@ $OBSTACLE_RULE
 6. If a decision belongs to a human (product choices, destructive actions), append \`needs-decision [at=<epoch>]: {options}\` and stop; firstmate replies with the decision.
 $RESOLVE_RULE
 $SHARED_INFRA_RULE
+$JUDGING_RULE
+$TOOL_DESIGN_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
@@ -766,6 +779,8 @@ $OBSTACLE_RULE
 $ASK_USER_BLOCK
 $RESOLVE_RULE
 $SHARED_INFRA_RULE
+$JUDGING_RULE
+$TOOL_DESIGN_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 

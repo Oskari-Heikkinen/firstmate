@@ -901,7 +901,13 @@ test_secondmate_marked_request_reporting_contract() {
     assert_section_line_with "$brief" "$requests" "secondmate charter did not reject a separate receipt/start acknowledgement" \
       'marked request' 'not require' 'receipt' 'acknowledgement'
     assert_section_line_with "$brief" "$requests" "secondmate charter did not forbid a generic working acknowledgement" \
-      'Never' '`working:`' 'acknowledge'
+      'never append' '`working:`' 'acknowledge'
+    assert_section_line_with "$brief" "$requests" "secondmate charter let a reply-only-if-affected request go unanswered" \
+      'Every marked request' 'only if affected' '`not affected: {why}`'
+    assert_section_line_with "$brief" "$requests" "secondmate charter did not cover an answer still pending at turn end" \
+      'not ready' 'turn' 'one correlated `working:` line' 'repost' 'not an answer'
+    assert_section_line_with "$brief" "$requests" "secondmate charter did not keep the deferred answer owed after the turn-end line" \
+      'correlated `working:` line settles' 'same `corr=<id>`' 'wait ends'
     assert_section_no_line_with "$brief" "$escalation" "secondmate charter retained the unconditional working opener" \
       'every routed-work phase'
     assert_section_line_with "$brief" "$escalation" "secondmate charter did not limit keyed phases to reportable material changes" \
@@ -1268,6 +1274,31 @@ test_ship_and_scout_point_at_the_task_evidence_skill() {
       "$kind brief did not name the task's own data folder for evidence records"
   done
   pass "fm-brief.sh: ship and scout scaffolds point workers at the task-evidence skill"
+}
+
+# Planners, evaluators and reviewers are ordinary ship and scout briefs, and
+# tool work can land in any repo, so both rules reach every crew brief rather
+# than one the dispatcher has to remember to mark; a review brief keeps them.
+test_ship_and_scout_state_judging_criteria_and_tool_design() {
+  local home kind id brief
+  home="$TMP_ROOT/judging-criteria-home"
+  mkdir -p "$home/data"
+  for kind in ship scout review; do
+    id="judging-$kind"
+    case "$kind" in
+      scout) FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" sample --scout >/dev/null 2>&1 ;;
+      review) FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" sample --scout --review-range 'aaa111...bbb222' >/dev/null 2>&1 ;;
+      *) FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" sample --mode direct-PR >/dev/null 2>&1 ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_section_line_with "$brief" "# Rules" "$kind brief did not state the only criteria for judging options" \
+      'compare, rank, or recommend options' 'how well they work' 'safety' 'future-proofing' 'maintainability'
+    assert_section_line_with "$brief" "# Rules" "$kind brief let development time count when judging options" \
+      'development time' 'never a reason' 'tie-breaker'
+    assert_section_line_with "$brief" "# Rules" "$kind brief did not point tool work at the tool-design skill" \
+      'tool, script, service, watcher, or automation' 'any other' "\`$ROOT/.agents/skills/tool-design/SKILL.md\`"
+  done
+  pass "fm-brief.sh: ship, scout and review briefs state the judging criteria and the tool-design skill"
 }
 
 test_scout_and_secondmate_load_decision_hold_policy() {
@@ -1923,6 +1954,7 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_ship_and_scout_teach_validation_round_pause
 test_ship_and_scout_point_at_the_task_evidence_skill
+test_ship_and_scout_state_judging_criteria_and_tool_design
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_scout_visual_deliverable_is_a_file_beside_the_report
