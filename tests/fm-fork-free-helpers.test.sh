@@ -1017,6 +1017,14 @@ for f in "$state/crew.status" "$state/crew.turn-ended"; do
         status_observed_signature_to oldsig "$f" '' "strong:2096:9$rest"
         status_presentation_marker_report "$marker" "$oldsig"
         current 1 "marked for another inode" fm_wake_signal_reported_current "$state" "$f"
+        # The same inode under another birth time is a recreated file, in
+        # either form.
+        status_observed_signature_to oldsig "$f" '' "strong:2096:${rest%%:*}:2001-01-01 00:00:00.000000000 +0000"
+        status_presentation_marker_report "$marker" "$oldsig"
+        current 1 "marked in the device-bearing form for another birth time" fm_wake_signal_reported_current "$state" "$f"
+        status_observed_signature_to oldsig "$f" '' "strong:${rest%%:*}:2001-01-01 00:00:00.000000000 +0000"
+        status_presentation_marker_report "$marker" "$oldsig"
+        current 1 "marked for another birth time" fm_wake_signal_reported_current "$state" "$f"
         fm_wake_status_mark_current "$state" "$f"
       fi
       ;;
@@ -1069,6 +1077,7 @@ test_unread_line_scan_matches_the_loop_it_replaced() {
   printf 'note: before\n\034\nnote: after\n' > "$cases/separator-only.status"
   printf 'note: before\n\342\200\200 \nnote: after\n' > "$cases/multibyte-space-only.status"
   printf 'note: before\nno\000te: nul\nnote: after\n' > "$cases/nul.status"
+  printf 'note: before\n\000\000\000\n\000\000note: after zeros\n \000\t\nnote: last\n\000\000\000\000' > "$cases/nul-tail.status"
   printf '\n\n  \n' > "$cases/blank.status"
   cat > "$script" <<'SH'
 . "$1/bin/fm-wake-lib.sh"

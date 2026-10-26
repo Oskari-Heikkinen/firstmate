@@ -1181,15 +1181,24 @@ _fm_is_pending_reply_escalation() {  # <key> <note>
 }
 
 _fm_status_kind() {
-  local meta=${1%.status}.meta kind=${2:-} line
-  if [ -z "$kind" ]; then
-    [ -f "$meta" ] && [ -r "$meta" ] && [ ! -L "$meta" ] || { printf unknown; return 0; }
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in kind=*) kind=${line#kind=} ;; esac
-    done < "$meta"
-    kind=${kind:-ship}
+  local kind
+  _fm_status_kind_to kind "$@"
+  printf '%s' "$kind"
+}
+
+# Same as _fm_status_kind, into <out-var> without a subshell, for per-file scans.
+_fm_status_kind_to() {  # <out-var> <status-file> [<kind>]
+  local _fm_sk_meta=${2%.status}.meta _fm_sk_kind=${3:-} _fm_sk_line
+  if [ -z "$_fm_sk_kind" ]; then
+    if [ -f "$_fm_sk_meta" ] && [ -r "$_fm_sk_meta" ] && [ ! -L "$_fm_sk_meta" ]; then
+      while IFS= read -r _fm_sk_line || [ -n "$_fm_sk_line" ]; do
+        case "$_fm_sk_line" in kind=*) _fm_sk_kind=${_fm_sk_line#kind=} ;; esac
+      done < "$_fm_sk_meta"
+      _fm_sk_kind=${_fm_sk_kind:-ship}
+    fi
   fi
-  case "$kind" in ship|scout|secondmate) printf '%s' "$kind" ;; *) printf unknown ;; esac
+  case "$_fm_sk_kind" in ship|scout|secondmate) ;; *) _fm_sk_kind=unknown ;; esac
+  printf -v "$1" '%s' "$_fm_sk_kind"
 }
 
 _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind>
@@ -2388,7 +2397,7 @@ $fully_presented
 " in *$'\n'"$task"$'\n'*) safe=true ;; esac
     if [ "$safe" = false ]; then
       f="$state/$task.status"
-      kind=$(_fm_status_kind "$f")
+      _fm_status_kind_to kind "$f"
       offset=$(status_presentation_cursor_offset "$f") || return 1
       if [ "$kind" = secondmate ]; then
         lines=$(status_new_lines_since_cursor "$f" "$endpoint" note working "$resolve" "$held") || return 1
@@ -2586,11 +2595,12 @@ status_open_decisions_cursor_offset() {  # <status-file>
 # (status_line_verb) may be left out: a caller that keeps only such lines passes
 # them so a whole-log read after a cursor reset hands it the few candidates, not
 # every line. Without them every non-blank line prints.
-# The span is filtered in one perl pass, not a bash loop per line. A line counts
-# as blank exactly when it holds only [[:space:]], whose members past ASCII depend
-# on the locale, so a span with a NUL byte or a line made only of ASCII spaces
-# and bytes some locale may call space (0x1c-0x1f, 0x80-0xff) keeps the bash loop,
-# which prints every non-blank line.
+# The span is filtered in one perl pass, not a bash loop per line. NUL bytes are
+# dropped first, as bash read drops them, so a zero-filled tail left by a crash
+# stays on the single pass. A line counts as blank exactly when it holds only
+# [[:space:]], whose members past ASCII depend on the locale, so a span with a
+# line made only of ASCII spaces and bytes some locale may call space (0x1c-0x1f,
+# 0x80-0xff) keeps the bash loop, which prints every non-blank line.
 status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>] [<verb>...]
   local f=$1 captured_end=${2:-} cf offset size actual_size chunk_file line rc=0
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
@@ -2618,13 +2628,14 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>] [<ver
     open(my $in, "<", $path) or exit 1;
     binmode($in);
     while (my $line = <$in>) {
-      exit 3 if index($line, "\0") >= 0;
+      $line =~ tr/\0//d;
       $line =~ s/\n\z//;
       exit 3 if $line =~ /\A[\t\x0b\x0c\r \x1c-\x1f\x80-\xff]*\z/ && $line =~ /[\x1c-\x1f\x80-\xff]/;
     }
     seek($in, 0, 0) or exit 1;
     binmode(STDOUT);
     while (my $line = <$in>) {
+      $line =~ tr/\0//d;
       $line =~ s/\n\z//;
       next unless $line =~ /[^\t\x0b\x0c\r \x1c-\x1f\x80-\xff]/;
       next if defined($verb) && $line !~ /\A[\t\x0b\x0c\r \x1c-\x1f\x80-\xff]*(?:$verb)/;
@@ -2698,7 +2709,7 @@ scan_unread_surface_lines() {  # <state>
     [ -e "$f" ] || continue
     [ "$f" = "$exclude" ] && continue
     task=$(basename "$f"); task="${task%.status}"
-    kind=$(_fm_status_kind "$f")
+    _fm_status_kind_to kind "$f"
     if [ "$kind" = secondmate ]; then
       lines=$(status_new_lines_since_cursor "$f" '' note working "$resolve" "$held") || return 1
     else
@@ -2723,7 +2734,7 @@ scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
-    kind=$(_fm_status_kind "$f")
+    _fm_status_kind_to kind "$f"
     if [ "$kind" = secondmate ]; then
       lines=$(status_new_lines_since_cursor "$f" "$endpoint" note working "$resolve" "$held") || return 1
     else

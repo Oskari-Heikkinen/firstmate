@@ -135,6 +135,21 @@ assert_cursors_held() {
     || fail "$label: $(cat "$state/.test-lib.out")"
 }
 
+# assert_cursors_reset <label> <state> <task>: the watcher's seen and reported
+# markers and the home-append ledger no longer apply to the file.
+assert_cursors_reset() {
+  local label=$1 state=$2 task=$3 range
+  range=$(cat "$state/.test-range")
+  lib '
+    f=$1/$2.status
+    fm_wake_signal_reported_current "$1" "$f" && { echo "reported marker still current"; exit 1; }
+    fm_wake_signal_seen_current "$1" "$f" && { echo "seen marker still current"; exit 1; }
+    status_home_appends_covers "$f" "${3%%	*}" "${3#*	}" && { echo "home-append ledger still applies"; exit 1; }
+    exit 0
+  ' "$state" "$task" "$range" >"$state/.test-lib.out" 2>&1 \
+    || fail "$label: $(cat "$state/.test-lib.out")"
+}
+
 test_device_renumber_keeps_every_cursor() {
   local dir state out probe
   dir=$(make_case renumber); state="$dir/state"; out="$dir/drain.out"; probe="$dir/fold-probe"
@@ -210,7 +225,12 @@ test_recreated_file_still_resets() {
   grep -F 'new note: release context attached' "$out" >/dev/null \
     || fail "the first drain did not present the note: $(cat "$out")"
 
+  FM_STATUS_IDENTITY_READER="$OLD_READER" mark_watcher_and_ledger "$state" new \
+    || fail "could not mark the watcher and ledger cursors"
+
   # The same inode under another birth time is another file.
+  FM_STATUS_IDENTITY_READER="$OLD_READER" FM_TEST_FAKE_BIRTH='2001-01-01 00:00:00.000000000 +0000' \
+    assert_cursors_reset "new birth time" "$state" new
   FM_STATUS_IDENTITY_READER="$OLD_READER" FM_TEST_FAKE_BIRTH='2001-01-01 00:00:00.000000000 +0000' \
     FM_OPEN_DECISIONS_READ_PROBE="$probe" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "drain under a new birth time failed"
@@ -221,8 +241,11 @@ test_recreated_file_still_resets() {
   # A replacement file (a new inode) after cursors stored in the device-bearing form.
   FM_STATUS_IDENTITY_READER="$OLD_READER" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "settling drain failed"
+  FM_STATUS_IDENTITY_READER="$OLD_READER" mark_watcher_and_ledger "$state" new \
+    || fail "could not mark the watcher and ledger cursors"
   seed "$state" new.next
   mv -f "$state/new.next.status" "$state/new.status"
+  assert_cursors_reset "replaced file" "$state" new
   : > "$probe"
   FM_OPEN_DECISIONS_READ_PROBE="$probe" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "drain after the replacement failed"
@@ -257,6 +280,26 @@ test_reset_rescan_is_one_pass() {
     || fail "the unread scan printed other lines than the three notes: $(cat "$dir/unread.out")"
   [ "$(wc -c < "$counts")" -le 3 ] \
     || fail "the per-line surface test ran $(wc -c < "$counts") times for 3 candidate lines"
+
+  # The snapshot scan and the presentation acknowledgement read the same reset
+  # span through their own verb lists, and must hand it over in one pass too.
+  : > "$counts"
+  FM_TEST_SURFACE_CALLS="$counts" lib '
+    eval "_counted_$(declare -f status_line_is_unread_surface)"
+    status_line_is_unread_surface() { printf x >> "$FM_TEST_SURFACE_CALLS"; _counted_status_line_is_unread_surface "$@"; }
+    f=$1/big.status
+    size=$(_fm_status_file_size "$f") || exit 1
+    snapshot=$(printf "big\t%s\t%s" "${size//[[:space:]]/}" "$(_fm_open_decisions_file_ident "$f")")
+    scan_unread_surface_snapshot "$1" "$snapshot" > "$2" || exit 1
+    printf "%s\n" "$(wc -c < "$FM_TEST_SURFACE_CALLS")" > "$2.snapshot-calls"
+    status_acknowledge_presented_snapshot "$1" "$snapshot" > /dev/null || exit 1
+  ' "$state" "$dir/snapshot.out" || fail "the snapshot scan or acknowledgement failed on a large log"
+  cmp -s "$dir/unread.want" "$dir/snapshot.out" \
+    || fail "the snapshot scan printed other lines than the three notes: $(cat "$dir/snapshot.out")"
+  [ "$(cat "$dir/snapshot.out.snapshot-calls")" -le 3 ] \
+    || fail "the snapshot scan ran the per-line surface test $(cat "$dir/snapshot.out.snapshot-calls") times for 3 candidate lines"
+  [ "$(wc -c < "$counts")" -le 6 ] \
+    || fail "the acknowledgement ran the per-line surface test $(( $(wc -c < "$counts") - $(cat "$dir/snapshot.out.snapshot-calls") )) times for 3 candidate lines"
   pass "a reset rescan of a large log filters it in one pass and tests only its candidate lines"
 }
 
