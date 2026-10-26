@@ -643,7 +643,7 @@ fm_task_evidence_preserve_scanned() {
       fi
       if [ -z "$record" ] || [ "$record" = "$next_record" ]; then
         record=$next_record
-        record_lines="$record_lines$next_line"$'\n'
+        record_lines+="$next_line"$'\n'
         continue
       fi
     else

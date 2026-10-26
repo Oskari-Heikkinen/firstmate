@@ -86,8 +86,8 @@ s{/$}{} for @roots; # Match the library's lexical root normalization.
 my @patterns = map { ('-e', "$_/") } grep { length } @roots;
 my @files = sort grep { -f $_ && !-l $_ } keys %$before;
 # Stage each attempt separately: exit 2 may mean a fatal error that leaves
-# later files unread, not just a per-file read error. Never consume its partial
-# output. Retry all members individually to preserve readable siblings' matches.
+# later files unread, not just a per-file read error. Discard batch partial
+# output and retry all members individually to preserve siblings' matches.
 sub run_grep {
     my (@batch) = @_;
     my $pid = fork();
@@ -142,8 +142,11 @@ while (@files && @patterns) {
                 # policy. A fatal error on a single record cannot prove absence.
                 # Recognize the entire diagnostic, not a filename substring:
                 # a named read error followed by a fatal error still refuses.
-                $text =~ /\Agrep: \Q$record\E: [^\n]*\n\z/
-                    or refuse("grep could not scan record $record");
+                $text =~ /\A[^\n]*grep: \Q$record\E: [^\n]*\n\z/
+                    or refuse("grep could not scan record $record; split the record, or declare its citations and remove the record before retrying");
+                # The old per-record scan retained matches read before a named
+                # read error. Validate them before keeping that skip policy.
+                append_matches($record);
                 skip_path($record);
                 next;
             }
