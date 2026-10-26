@@ -2704,14 +2704,15 @@ got=$(status_open_decisions_incremental "$prefixes/split.status" "$(wc -c < "$pr
 [ "$got" = $'k2\tneeds-decision\tb' ] || printf 'a closer split by the capture left %q open\n' "$got"
 # Exact mode keeps its read chunk under TMPDIR: a fold killed mid-read leaves
 # nothing beside the status log for a refresh's sweep to miss. Each killed
-# child runs in a subshell with stderr closed, so the shell's own "Killed"
-# notice stays out of the case output.
+# child runs in a subshell with stderr closed, and exits after it rather than
+# being exec'd as the subshell's last command, so the shell's own "Killed"
+# notice lands on that closed stderr and stays out of the case output.
 rm -rf "$prefixes/killed" "$prefixes/killed-tmp"
 mkdir -p "$prefixes/killed" "$prefixes/killed-tmp"
 cp "$cases/long.status" "$prefixes/killed/t.status"
 ( TMPDIR="$prefixes/killed-tmp" "$BASH" -c '. "$1/bin/fm-classify-lib.sh"; eval "$3"; _fm_od_fold_line() { kill -9 $$; }
   status_open_decisions_incremental "$2" "$(wc -c < "$2" | tr -d " ")" exact' _ "$1" "$prefixes/killed/t.status" \
-  "$(declare -f fm_alert_store_holds)" > /dev/null 2>&1 ) 2>/dev/null && printf 'the killed exact fold was not killed\n'
+  "$(declare -f fm_alert_store_holds)" > /dev/null 2>&1; exit $? ) 2>/dev/null && printf 'the killed exact fold was not killed\n'
 left=$(cd "$prefixes/killed" && ls -A | grep -vx 't.status')
 [ -z "$left" ] || printf 'a killed exact fold left %s beside the status log\n' "$left"
 case "$(cd "$prefixes/killed-tmp" && ls -A)" in
@@ -2731,7 +2732,7 @@ size=$(wc -c < "$prefixes/killed/t.status" | tr -d ' ')
   n=0
   _fm_od_fold_line() { n=$((n + 1)); [ "$n" -lt 100 ] || kill -9 $$; _fm_real_fold "$@"; }
   status_open_decisions_incremental "$2" "$3" exact' _ "$1" "$prefixes/killed/t.status" "$size" \
-  "$(declare -f fm_alert_store_holds)" > /dev/null 2>&1 ) 2>/dev/null && printf 'the checkpointed exact fold was not killed\n'
+  "$(declare -f fm_alert_store_holds)" > /dev/null 2>&1; exit $? ) 2>/dev/null && printf 'the checkpointed exact fold was not killed\n'
 cursor="$prefixes/killed/.t.snapshot-open-decisions-cursor"
 cursor_offset=$(sed -n 's/^offset=//p' "$cursor" 2>/dev/null)
 case "$cursor_offset" in
