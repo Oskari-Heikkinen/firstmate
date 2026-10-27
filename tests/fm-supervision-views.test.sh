@@ -58,6 +58,9 @@
 # The separate internal journal API commits immutable filename-bound decisions
 # under its own new-stage mutex; replayed acceptance remains ambiguous, never
 # automatic effect retry. Fault/counterfactual cases do not start a service.
+# Failed-entry controls require descriptor retirement and reacquisition of the
+# same surviving journal anchor; counterfactuals retain displaced files outside
+# the receipt outbox so unrelated decode guards cannot mask the selected guard.
 # Neither structural readers nor journal decisions authorize service effects.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u

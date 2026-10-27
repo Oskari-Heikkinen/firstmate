@@ -263,6 +263,7 @@ All roots, the private outbox staging directory and the owning home's validated 
 The stage's private canonical input and outbox must be disjoint beneath the selected state root.
 Its new journal-only nonblocking flock serializes only this stage's receipt writers, never a legacy writer, watcher, queue, presentation, source or custody transaction.
 The persistent single-link mode-0600 lock anchor is not a process owner or health record and is never unlinked or recovered by PID.
+Failed construction or context entry closes the acquired descriptor and releases its lock without removing the anchor or suppressing the original failure.
 A future start owner takes its separate service singleton before this journal; no journal transaction may remain held across an external effect or wait.
 
 Intake selects a filename `<record>.<attempt>.json`, with the existing bounded token grammar for `record` and a positive decimal attempt within the declared retry limit.
@@ -394,5 +395,5 @@ This matrix execution is a behavior gate, not evidence that all integrations are
 There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).
 Identity-bound service shutdown remains future integration work; compatibility refusals already fall back to legacy before presentation commits.
-The journal API's CI cases cover immutable replay and completion, filename-bound malformed/unknown/unreadable input, independent root/anchor replacement, serialization, bounded history, failed writes/rename/fsync and single-guard counterfactuals without any service, signal, socket or authoritative record effect.
+The journal API's CI cases cover immutable replay and completion, filename-bound malformed/unknown/unreadable input, independent root/anchor replacement, failed-entry descriptor retirement and same-anchor reacquisition, serialization, bounded history, failed writes/rename/fsync and single-guard counterfactuals without any service, signal, socket or authoritative record effect.
 Rollback of this uninstalled foundation is removal or non-use of the modules; no queue, cursor, custody or home mode changes to undo exist.

@@ -251,7 +251,12 @@ class LifecycleJournal:
             os.close(fd)
 
     def __enter__(self):
-        self.fresh()
+        try:
+            self.fresh()
+        except BaseException:
+            # Python does not call __exit__ when entry itself fails.
+            self.close()
+            raise
         return self
 
     def __exit__(self, *_):
