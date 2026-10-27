@@ -235,7 +235,13 @@ runpy.run_path(tool, run_name="__main__")
         ]
         for field, value, message in cases:
             with self.subTest(field=field, message=message):
-                changed = copy.deepcopy(self.request); changed[field] = value
+                baseline = copy.deepcopy(self.request)
+                if field == "operation":
+                    # Bypassing only the operation refusal reaches the stop
+                    # branch. Keep every owner-shape/binding guard satisfied.
+                    baseline.update(operation="stop", expected_owner=copy.deepcopy(self.owner))
+                self.assertEqual(self.inspect_request(baseline)["request"], baseline)
+                changed = copy.deepcopy(baseline); changed[field] = value
                 self.assertIn(message, self.inspect_request(changed, ok=False))
                 selected = self.file("request.json", changed)
                 result = subprocess.run([sys.executable, str(driver), str(TOOL), message, "request",
