@@ -9,10 +9,140 @@ from dataclasses import dataclass
 import os
 import selectors
 import signal
+import stat
 import subprocess
+import sys
 import time
 
 MAX_OUTPUT = 1024 * 1024
+
+
+def _proc_bytes(name, directory_fd=None, limit=8192):
+    """Read a fixed procfs observation, never an unbounded record or FIFO."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("process identity input is not regular")
+        raw = bytearray()
+        while len(raw) <= limit:
+            chunk = os.read(fd, min(4096, limit + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(fd)
+        signature = lambda s: (s.st_dev, s.st_ino, s.st_mode, s.st_uid)
+        if len(raw) > limit or signature(before) != signature(after):
+            raise ValueError("process identity input changed or exceeds bound")
+        return bytes(raw)
+    finally:
+        os.close(fd)
+
+
+@dataclass(frozen=True)
+class ProcessGeneration:
+    """Ephemeral kernel observation, not a service record or signal authority."""
+    pid: int
+    uid: int
+    start_ticks: int
+    boot: str
+
+    def __post_init__(self):
+        import re
+        if (type(self.pid) is not int or self.pid <= 0 or type(self.uid) is not int or self.uid < 0
+                or type(self.start_ticks) is not int or self.start_ticks <= 0
+                or type(self.boot) is not str
+                or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", self.boot)):
+            raise ValueError("invalid process generation")
+
+
+def process_generation(pid):
+    """Observe Linux PID/start-ticks/UID/boot without using a command line.
+
+    The directory descriptor pins this procfs incarnation through the read.
+    This alone is not a PID-reuse fence: ProcessPin opens a pidfd first, checks
+    this generation and rejects an exit on either side of that observation.
+    """
+    if sys.platform != "linux":
+        raise ValueError("process identity requires Linux; retain legacy")
+    if type(pid) is not int or pid <= 0:
+        raise ValueError("invalid process id")
+    boot = _proc_bytes("/proc/sys/kernel/random/boot_id", limit=128).decode("ascii").rstrip("\n")
+    folder = os.open("/proc/" + str(pid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(folder)
+        raw = _proc_bytes("stat", folder)
+        prefix, separator, fields = raw.rpartition(b") ")
+        if (not separator or not raw.endswith(b"\n") or b"\0" in raw
+                or not prefix.startswith(str(pid).encode() + b" (")):
+            raise ValueError("invalid process stat identity")
+        fields = fields.split()
+        if len(fields) < 20 or not fields[19].isdigit():
+            raise ValueError("invalid process start ticks")
+        return ProcessGeneration(pid, info.st_uid, int(fields[19]), boot)
+    finally:
+        os.close(folder)
+
+
+class ProcessPin:
+    """Read-only, generation-verified pidfd and bounded actual-exit observation.
+
+    No signal, stop, readiness, receipt or actor effect is provided. A future
+    lifecycle owner must validate its home/code/socket/epoch and persist its
+    receipt before any signal. Closing an engine/socket is not process exit;
+    only this pinned descriptor's kernel exit readiness proves that fact.
+    """
+    def __init__(self, expected):
+        self.fd = None
+        if type(expected) is not ProcessGeneration or expected.uid != os.getuid():
+            raise ValueError("process generation must belong to this UID")
+        if not hasattr(os, "pidfd_open"):
+            raise ValueError("pidfd unavailable; retain legacy")
+        fd = os.pidfd_open(expected.pid, 0)
+        try:
+            self.fd = fd
+            if process_generation(expected.pid) != expected or self.exited():
+                raise ValueError("process generation changed or exited")
+            self.generation = expected
+        except BaseException:
+            self.close()
+            raise
+
+    def fileno(self):
+        if self.fd is None:
+            raise ValueError("process pin is closed")
+        return self.fd
+
+    def exited(self):
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.fileno(), selectors.EVENT_READ)
+            return bool(selector.select(0))
+
+    def wait_exit(self, timeout):
+        if type(timeout) not in (int, float) or not 0 < timeout <= 30:
+            raise ValueError("invalid process exit observation bound")
+        deadline = time.monotonic() + timeout
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.fileno(), selectors.EVENT_READ)
+            # A signal/spurious wake cannot reset the original wall bound.
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("pinned process has not exited")
+                if selector.select(remaining):
+                    return
+
+    def close(self):
+        if self.fd is not None:
+            fd, self.fd = self.fd, None
+            os.close(fd)
+
+    def __enter__(self):
+        self.fileno()
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
 
 @dataclass(frozen=True)

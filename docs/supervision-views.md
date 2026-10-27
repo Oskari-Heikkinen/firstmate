@@ -118,6 +118,13 @@ There is no monitoring timer, status-tail inference or cross-cycle verdict cache
 [`fm_view_process.py`](../bin/fm_view_process.py) bounds each passive child group and output stream, using pidfds to observe exit without reaping the leader before cleanup.
 A parent that exits while a descendant holds a pipe open cannot strand the observation or orphan that process group.
 Missing pidfd/nonreaping-wait support or a nondefault SIGCHLD handler refuses the native passive adapter.
+The same process module provides a read-only `ProcessGeneration`/`ProcessPin` primitive for future lifecycle integration.
+It opens a pidfd before comparing the selected PID, procfs UID, boot identity and start ticks, then rejects an already-exited pinned incarnation even if a later numeric-PID observation matches.
+The generation is an ephemeral in-memory observation, not a new durable owner format.
+`wait_exit` waits on that descriptor within one fixed monotonic bound and observes actual kernel process exit without reaping or sending a signal.
+A closed socket, returned executor shutdown or stopped process is not exit; a surviving non-daemon thread keeps the observation pending and timeout refuses.
+This primitive does not validate home, code, actor, epoch, socket or lifecycle receipts and confers no service readiness or shutdown authority.
+Those gates remain with the unfinished foreground lifecycle owner; a future owner must complete them before any signal.
 The native IPC and external-observation path are not yet admitted on non-Linux platforms; their unchanged legacy entrypoints remain selected.
 No process-birth or CPU saving has been measured or claimed.
 
@@ -239,6 +246,9 @@ Public capability-CLI controls compare the complete response, relocate matching 
 Independent unsupported-symbol and actual syscall/peer-UID refusals require empty stdout, while corrupt bundles, mismatched inspector versions, unsafe roots and probe-time replacement of each root refuse without modifying retained originals.
 Both old and new immutable versions remain inspectable with their own matching tools.
 Relocated-code controls hide their source checkout and require complete passive packet equality across all five fixed operations, a native fold and unchanged home records; these are code-closure controls, not proof of every successful custody/forge branch or a service lifecycle gate.
+Read-only process-pin cases exercise real exec-stable identity, parent-owned unreaped exit, PID/start/UID/boot mismatches, descriptor retirement, a real non-daemon thread surviving simulated socket/executor cleanup, SIGSTOP, and exit between pidfd acquisition and generation validation.
+They refuse unsupported facilities and malformed, partial, oversized, missing, symlink and nonregular identity reads without any signal or reaping effect.
+The fixture alone owns child teardown; these are kernel-observation controls, not service-stop or lifecycle-receipt acceptance.
 It checks keyed transitions, correlation tokens, malformed time tags, terminal-task versus persistent-mate folds, protected tool blockers, incomplete final lines, invalid UTF-8, fresh tool levels without status changes, generation/root refusal, single-flight and timeout reservation.
 Native crew-state cases also compare the legacy public CLI on identical isolated git repositories and captured fake no-mistakes/backend/forge responses.
 They include fresh HEAD, daemon and semantic-pane negative controls without status changes, selected-run identity, gate authority, coarse dead-instrument outcomes and a backend no-lifecycle tripwire.
