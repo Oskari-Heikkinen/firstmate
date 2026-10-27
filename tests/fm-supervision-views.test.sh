@@ -2,6 +2,8 @@
 # Isolated native fold/crew-state/captured-presentation/IPC/admission tests,
 # including missing-SQLite unknowns and real SQLite contention/recovery parity;
 # plus real drain/client stdout/cursor/fallback transaction checks.
+# Read-only pidfd tests distinguish actual process exit from a closed socket,
+# an executor returning with live threads, SIGSTOP and reused-PID observations.
 # Queued annotations consume the same captured span as the fold, preserve byte
 # rendering and append boundaries, and never reopen its cursor/span readers.
 # Malformed client annotation groups fall back before native selection.
