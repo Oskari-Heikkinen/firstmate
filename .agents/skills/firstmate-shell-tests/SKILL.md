@@ -16,8 +16,9 @@ Each trap here was fixed several times in different files; [`references/history.
 
 ## 1. Wait on the condition, not on time
 
-A test waits for the observable condition its assertion reads - a receipt file, a beacon, a status or log line, a process exit - and never for a fixed sleep or a fixed window.
-The wall-clock cap on that wait is only a hang guard, set far above what the work costs on a loaded CI runner, and `CONTRIBUTING.md` "Testing" owns the exact rule for shortened production timeouts.
+`CONTRIBUTING.md` "Testing" owns the rule: its timeout paragraph says how far a fixture may shorten a production timeout, and that a test's own waits end on the observable condition, with a wall-clock cap only as a hang guard.
+This section says how to apply that rule at the edit site.
+The condition is whatever the assertion reads: a receipt file, a beacon, a status or log line, or a process exit. A fixed sleep, a sized window or a widened poll count is never the condition.
 Tests are usually written on an idle machine, where a fork, exec, lock or beacon takes no visible time; a loaded runner stretches all of them, which is why a sized window passes locally and flakes in CI.
 Read a receipt only after the wait for its existence has ended, and never assert on a file the code under test may still be writing.
 
