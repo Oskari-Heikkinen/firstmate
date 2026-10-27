@@ -264,7 +264,10 @@ The stage's private canonical input and outbox must be disjoint beneath the sele
 Its new journal-only nonblocking flock serializes only this stage's receipt writers, never a legacy writer, watcher, queue, presentation, source or custody transaction.
 [`fm_view_lock.py`](../bin/fm_view_lock.py) is the shared private-anchor owner for this journal and the future service singleton.
 The persistent single-link mode-0600 lock anchor is not a process owner or health record and is never unlinked or recovered by PID.
-Failed construction or context entry closes the acquired descriptor and releases its lock without removing the anchor or suppressing the original failure.
+Before opening or creating that anchor, the shared owner pins its private parent directory and checks the descriptor's mode, UID and identity against the caller's already selected parent incarnation.
+Anchor creation is relative to that verified descriptor, so pathname replacement cannot create an anchor in a successor tree; the final root/anchor barriers still refuse changed observations.
+Failed construction or context entry closes acquired descriptors and releases its lock without removing the anchor or suppressing the original failure.
+The parent descriptor is also retired on successful construction.
 A future start owner takes its separate service singleton before this journal; no journal transaction may remain held across an external effect or wait.
 
 Intake selects a filename `<record>.<attempt>.json`, with the existing bounded token grammar for `record` and a positive decimal attempt within the declared retry limit.
@@ -401,5 +404,7 @@ Before an installed service or compatibility client is added, its owner must com
 Identity-bound service shutdown remains future integration work; compatibility refusals already fall back to legacy before presentation commits.
 The journal API's CI cases cover immutable replay and completion, filename-bound malformed/unknown/unreadable input, independent root/anchor replacement, failed-entry descriptor retirement and same-anchor reacquisition, serialization, bounded history, failed writes/rename/fsync and single-guard counterfactuals without any service, signal, socket or authoritative record effect.
 Service-singleton cases additionally cover cross-process and cross-runtime contention, independence from the journal, opaque healthy anchor bytes, unsafe roots and anchor types, failed-entry descriptor retirement after root/anchor replacement, same-original-anchor reuse and independent selected-root/namespace counterfactuals.
+Both public constructors have before/after-parent-open replacement controls requiring untouched successor trees, descriptor retirement before reuse and same-original-anchor reacquisition.
+Independent selected-parent/privacy guard and descriptor-relative-creation counterfactuals keep the later root/anchor barriers intact; failed parent observation, interruption, anchor open and parent close also require descriptor retirement.
 These are mutex-admission controls, not proof of a foreground service lifetime, receipt-before-effect ordering or identity-bound shutdown.
 Rollback of this uninstalled foundation is removal or non-use of the modules; no queue, cursor, custody or home mode changes to undo exist.
