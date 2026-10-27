@@ -52,6 +52,10 @@
 # Immutable code preparation also runs through its public CLI in CI, covering
 # pinned regular Git closure, relocation, refusal, concurrent publication and
 # nonreplacement; this does not install or start a service/actor/home mode.
+# Reader-first lifecycle contract CLI cases use the shared handoff validator,
+# hostile-file and single-guard counterfactuals, stop-owner bindings and explicit
+# no-effect tripwires; relocated readers retain the bundled schema owner.
+# These are structural contracts, not service-start/stop or committed receipts.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh

@@ -27,6 +27,10 @@ MAX_MANIFEST = 64 * 1024
 FILES = tuple(sorted((
     "bin/fm-view-bundle.py", "bin/fm_view_bundle.py", "bin/fm-view-client.py",
     "bin/fm-view-capabilities.py", "bin/fm_view_capabilities.py", "bin/fm_view_protocol.py",
+    "bin/fm-view-lifecycle.py", "bin/fm_view_lifecycle.py", "bin/fm_handoff_registry.py",
+    "bin/fm-handoff-validate.py",
+    "docs/handoff-coverage/handoff-registry-v1.schema.json",
+    "docs/handoff-coverage/handoff-receipt-v1.schema.json",
     "bin/fm_view_engine.py", "bin/fm_view_status.py", "bin/fm_view_crew.py",
     "bin/fm_view_runs.py", "bin/fm_view_process.py", "bin/fm_view_offsets.py",
     "bin/fm_view_presentation.py", "bin/fm_view_snapshot.py",
@@ -172,6 +176,12 @@ def manifest_check(manifest):
     require(tuple(names) == FILES and total <= MAX_TOTAL, "unordered, duplicate or oversized dependency closure")
 
 
+def member_directories():
+    """Only parents of the fixed admitted closure, shallowest first."""
+    return tuple(sorted({str(parent) for name in FILES for parent in Path(name).parents
+                         if str(parent) != "."}, key=lambda name: (len(Path(name).parts), name)))
+
+
 def verify(bundle, expected=None):
     bundle, original = directory(bundle, 0o500)
     require(re.fullmatch(r"[0-9a-f]{64}", bundle.name), "bundle name is not its content identity")
@@ -182,17 +192,18 @@ def verify(bundle, expected=None):
     manifest = json.loads(raw, object_pairs_hook=unique)
     manifest_check(manifest)
     require(packed(manifest) == raw, "noncanonical bundle manifest")
-    expected_paths = {"manifest.json", "bin", "bin/backends", *FILES}
+    folders = member_directories()
+    expected_paths = {"manifest.json", *folders, *FILES}
     actual_paths = set()
     # The tree is shallow and its permitted contents are fixed before walking.
     for folder, dirs, files in os.walk(bundle, followlinks=False):
-        require(len(dirs) + len(files) <= len(FILES) + 3, "bundle directory exceeds bound")
+        require(len(dirs) + len(files) <= len(expected_paths), "bundle directory exceeds bound")
         for name in dirs + files:
             path = Path(folder) / name
             relative = str(path.relative_to(bundle))
             require(relative in expected_paths, "unexpected bundle member")
             actual_paths.add(relative)
-            if relative in ("bin", "bin/backends"):
+            if relative in folders:
                 directory(path, 0o500)
     require(actual_paths == expected_paths, "missing bundle member")
     for row in manifest["files"]:
@@ -250,12 +261,12 @@ def prepare(repo, commit, store, home):
     stage = Path(tempfile.mkdtemp(prefix=".prepare-", dir=store))
     staging_identity = directory(stage)[1]
     try:
-        (stage / "bin").mkdir(mode=0o700)
-        (stage / "bin/backends").mkdir(mode=0o700)
+        for relative in member_directories():
+            (stage / relative).mkdir(mode=0o700)
         for name, (mode, content) in members.items():
             write_new(stage / name, content, 0o500 if mode == "100755" else 0o400)
         write_new(stage / "manifest.json", raw, 0o400)
-        for path in (stage / "bin/backends", stage / "bin", stage):
+        for path in (*(stage / relative for relative in reversed(member_directories())), stage):
             os.chmod(path, 0o500)
             fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
@@ -284,7 +295,7 @@ def prepare(repo, commit, store, home):
             # chmod refuses links; rmtree's fd walk never follows nested links.
             require(directory(store, 0o700)[1] == store_identity
                     and directory(stage)[1] == staging_identity, "staging identity changed; cleanup refused")
-            for relative in ("", "bin", "bin/backends"):
+            for relative in ("", *member_directories()):
                 path = stage / relative
                 if not os.path.lexists(path):
                     continue
