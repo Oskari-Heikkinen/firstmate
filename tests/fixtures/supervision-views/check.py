@@ -363,6 +363,7 @@ class Scheduling(unittest.IsolatedAsyncioTestCase):
 if __name__ == "__main__":
     from crew_checks import CrewParity, PassiveProcess
     from process_checks import ProcessPins
+    from lifecycle_checks import LifecycleContracts
     from presentation_checks import PresentationParity, PresentationScheduling, SnapshotCapture
     from compatibility_checks import Compatibility
     from snapshot_checks import SnapshotParity, SnapshotCompatibility, SnapshotScheduling
