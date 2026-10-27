@@ -15,4 +15,5 @@ Load `tool-design`, `lean-supervision` and `handoff-coverage` before adding a se
 Do not install or start a production service from this skill.
 The process owner's in-memory pidfd pin is read-only exit observation, not service shutdown authority; the view-engine owner names its limits and the still-required lifecycle gates.
 For immutable code preparation, read-primitive preflight and reader-first lifecycle contract inspection only, use the helpers named by the view-engine owner; their planned fragments and candidate receipts are not publication, committed outcomes, startup, actor, health or home-mode authority.
-Report any failed observation as refusal/unknown to its invoking owner, never as an empty successful read.
+For the unfinished foreground owner's internal immutable decision API, use the view-engine owner's journal section; a replayed accepted decision is ambiguous, never permission to repeat an effect.
+Report any failed observation or journal transaction to its invoking owner, never as an empty successful read.

@@ -53,7 +53,10 @@ def path(value, what):
 
 
 def read_json(filename):
-    raw = read_regular(filename, LIMIT, 0o600)
+    return decode(read_regular(filename, LIMIT, 0o600))
+
+
+def decode(raw):
     require(bool(raw.strip()) and raw.endswith(b"\n") and b"\0" not in raw, "incomplete lifecycle JSON")
     return json.loads(raw, object_pairs_hook=unique,
                       parse_constant=lambda _: require(False, "nonfinite lifecycle JSON"))
@@ -209,6 +212,18 @@ def receipt(request, fragment, home, state, seq, code=None):
     else:
         request_record(request, fragment, home)
     require(state in ("accepted", "refused", "done"), "unsupported lifecycle decision")
+    return envelope_receipt(request, fragment, home, state, seq, code)
+
+
+def envelope_receipt(request, fragment, home, state, seq, code=None):
+    """Construct a decision for a previously bound identity envelope.
+
+    The journal alone uses this for malformed intake: its record/attempt come
+    from the selected filename, never a partially decoded hostile payload.
+    This function still only constructs bytes; it publishes no decision.
+    """
+    protocol, stage = contract(fragment, home)
+    envelope(request, stage, home)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     raw = packed(request)
     require(len(raw) <= LIMIT, "lifecycle request exceeds byte bound")
@@ -219,9 +234,13 @@ def receipt(request, fragment, home, state, seq, code=None):
               "ext": {stage["owner"] + ".request-sha256": hashlib.sha256(raw).hexdigest()}}
     if code is not None:
         result["code"] = code
+    validate_receipt(result, protocol)
+    return result
+
+
+def validate_receipt(result, protocol):
     check = validator()
     problems = schema_errors(check, "handoff-receipt-v1.schema.json", result)
     if not problems:
         problems = check.receipt_problems(result, {protocol["id"]: protocol})
     require(not problems, "invalid lifecycle receipt: " + str(problems[:1]))
-    return result
