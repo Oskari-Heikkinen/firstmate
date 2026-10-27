@@ -1250,6 +1250,10 @@ SH
   [ "$(probed 3)" = "$size2" ] || fail "racing snapshot should fold the captured prefix from byte 0, folded: $(probed 3)"
 
   # The next run folds only what came after the cursor the later snapshot left.
+  # A zero-read run appends no probe record and need not create the file.
+  # Start it empty so the unchanged zero-record assertion reads a real file;
+  # any unexpected fold still appends its byte count and fails that assertion.
+  : > "$probe.4" || fail "cannot initialize fourth snapshot read probe"
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_OPEN_DECISIONS_READ_PROBE="$probe.4" "$SNAPSHOT" --json) \
     || fail "fourth snapshot failed: $out"
   [ -z "$(probed 4)" ] || fail "fourth snapshot should fold nothing new, folded: $(probed 4)"
