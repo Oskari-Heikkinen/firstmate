@@ -25,6 +25,19 @@ def arguments(concurrency=4):
     return dict(observed_at=NOW, epoch=EPOCH, concurrency=concurrency, task_timeout=10, options={})
 
 
+def fresh_history(test, path, raw):
+    """Start an independent history without reusing a persisted fold's identity."""
+    before = path.stat()
+    replacement = path.with_name("." + path.name + ".independent")
+    replacement.write_bytes(raw)
+    after = replacement.stat()
+    # Keep the old file alive until the new one exists: inode reuse cannot
+    # accidentally make this independent case look like an in-place rewrite.
+    test.assertNotEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
+    replacement.replace(path)
+    test.assertEqual(path.read_bytes(), raw)
+
+
 class SnapshotParity(unittest.TestCase):
     maxDiff = None
 
@@ -70,7 +83,7 @@ class SnapshotParity(unittest.TestCase):
                         b"working: https://github.com/example/fixture/pull/42\npaused: waiting"):
                 with self.subTest(kind=kind, raw=raw):
                     self.fixture.write_meta(kind=kind)
-                    self.fixture.status(raw)
+                    fresh_history(self, self.state / "task.status", raw)
                     self.compare()
         (self.home / "data/task").mkdir()
         (self.home / "data/task/report.md").write_text("report body never parsed\n")
@@ -305,6 +318,10 @@ class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
         original = Snapshot.compose
         for phase in ("before", "after"):
             self.status(b"blocked [key=old]: captured predecessor\n")
+            # Each phase is independent; the preceding fallback may have
+            # persisted a legacy snapshot fold for its replacement history.
+            path = self.state / "task.status"
+            fresh_history(self, path, path.read_bytes())
             calls = []
             def compose(instance, row, observed_at, epoch):
                 calls.append(row["task"])
@@ -524,7 +541,7 @@ exit 1
                 self.assertFalse((self.state / (".home-summary-refresh." + marker)).exists())
             # A later fresh read must update the complete ledger, not reuse its
             # predecessor or normalize away the changed decision/publication.
-            (self.state / "ship.status").write_bytes(b"blocked [key=newer]: new dependency\n")
+            fresh_history(self, self.state / "ship.status", b"blocked [key=newer]: new dependency\n")
             calls.clear()
             await self.invoke("fm-home-summary-refresh.sh", **clock)
             self.assertCountEqual(calls, ["ship", "scout", "mate"])
