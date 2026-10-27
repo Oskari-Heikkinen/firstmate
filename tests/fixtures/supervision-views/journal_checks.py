@@ -4,15 +4,18 @@ import copy
 import errno
 import hashlib
 import os
+from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
 from lifecycle_checks import LifecycleContracts
 from fm_view_bundle import packed
 import fm_view_journal as journal
+import fm_view_lock as locks
 
 
 class LifecycleDecisions(unittest.TestCase):
@@ -45,6 +48,176 @@ class LifecycleDecisions(unittest.TestCase):
     def admit(self, name=None):
         with self.open() as transaction:
             return transaction.admit(name or self.filename)
+
+    def singleton(self, roots=None, runtime=None):
+        return locks.ServiceSingleton(self.home, runtime or self.runtime, roots or self.request["roots"])
+
+    def test_service_singleton_is_independent_of_journal_and_preserves_anchor(self):
+        before = {p.name: p.read_bytes() for p in self.state.glob("*.status")}
+        with self.singleton() as singleton, self.open() as transaction:
+            identity = singleton.anchor_identity
+            self.assertNotEqual(singleton.anchor, transaction.anchor)
+            self.assertEqual(transaction.history(), ({}, 0, 0))
+            with self.assertRaises(BlockingIOError): self.singleton()
+            other_runtime = self.state / "other-read-service"; other_runtime.mkdir(mode=0o700)
+            roots = copy.deepcopy(self.request["roots"])
+            roots["runtime"] = [other_runtime.stat().st_dev, other_runtime.stat().st_ino]
+            with self.assertRaises(BlockingIOError): self.singleton(roots, other_runtime)
+            with self.assertRaises(BlockingIOError): self.open()
+            singleton.anchor.write_bytes(b"opaque lock bytes are not a health record")
+            singleton.fresh()
+        with self.singleton() as again:
+            self.assertEqual(again.anchor_identity, identity)
+            self.assertEqual(again.anchor.read_bytes(), b"opaque lock bytes are not a health record")
+        self.assertEqual(self.receipts(), {})
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.state.glob("*.status")})
+        self.assertFalse((self.runtime / "read.sock").exists())
+        self.assertFalse((self.runtime / "owner.json").exists())
+
+    def test_service_singleton_competing_process_refuses_then_reuses_same_anchor(self):
+        # The child ONLY acquires this new mutex, never a service/backend.
+        script = '''import json,sys
+from fm_view_lock import ServiceSingleton
+try:
+    with ServiceSingleton(sys.argv[1],sys.argv[2],json.loads(sys.argv[3])) as hold:
+        print(json.dumps(hold.anchor_identity))
+except BlockingIOError:
+    print("contended")
+    sys.exit(4)
+'''
+        env = dict(self.environment, PYTHONPATH=str(Path(journal.__file__).parent))
+        def child():
+            return subprocess.run([sys.executable, "-c", script, str(self.home), str(self.runtime),
+                                   packed(self.request["roots"]).decode()],
+                                  env=env, capture_output=True, timeout=10)
+        with self.singleton() as singleton:
+            identity = list(singleton.anchor_identity)
+            result = child()
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (4, b"contended\n", b""))
+        result = child()
+        self.assertEqual((result.returncode, result.stderr), (0, b""))
+        self.assertEqual(journal.decode(result.stdout), identity)
+
+    def test_service_singleton_selected_roots_refuse_before_anchor_creation(self):
+        for name in ("home", "state", "runtime"):
+            with self.subTest(root=name):
+                roots = copy.deepcopy(self.request["roots"])
+                roots[name][1] += 1
+                with self.assertRaisesRegex(ValueError, "service singleton root replaced"):
+                    self.singleton(roots)
+                self.assertFalse((self.state / ".view-service.lock").exists())
+        outside = self.root / "unrelated-runtime"
+        outside.mkdir(mode=0o700)
+        roots = copy.deepcopy(self.request["roots"])
+        roots["runtime"] = [outside.stat().st_dev, outside.stat().st_ino]
+        with self.assertRaisesRegex(ValueError, "outside selected state root"):
+            self.singleton(roots, outside)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_service_singleton_unsafe_roots_and_anchor_shapes_refuse(self):
+        for mode in (0o755, 0o000):
+            self.runtime.chmod(mode)
+            try:
+                with self.assertRaises(ValueError): self.singleton()
+            finally:
+                self.runtime.chmod(0o700)
+        anchor = self.state / ".view-service.lock"
+        protected = self.file("protected-lock", b"protected")
+        for shape in ("directory", "fifo", "symlink", "dangling", "hardlink", "public", "unreadable"):
+            with self.subTest(shape=shape):
+                if shape == "directory": anchor.mkdir()
+                elif shape == "fifo": os.mkfifo(anchor)
+                elif shape in ("symlink", "dangling"): anchor.symlink_to(protected if shape == "symlink" else self.root / "absent")
+                elif shape == "hardlink": os.link(protected, anchor)
+                else:
+                    anchor.write_bytes(b"not private"); anchor.chmod(0o644 if shape == "public" else 0)
+                try:
+                    with self.assertRaises((OSError, ValueError)): self.singleton()
+                    self.assertEqual(protected.read_bytes(), b"protected")
+                finally:
+                    anchor.rmdir() if shape == "directory" else anchor.unlink()
+        with self.singleton() as healthy:
+            self.assertEqual(healthy.anchor.read_bytes(), b"")
+
+    def test_service_singleton_failed_entry_releases_same_original_anchor(self):
+        singleton = self.singleton()
+        anchor, identity, fd = singleton.anchor, singleton.anchor_identity, singleton.fd
+        retained = self.root / "retained-service-anchor"
+        anchor.rename(retained)
+        anchor.write_bytes(b"replacement"); anchor.chmod(0o600)
+        try:
+            with self.assertRaisesRegex(ValueError, "service singleton anchor replaced"):
+                with singleton:
+                    self.fail("replaced anchor entered its context")
+            self.assertIsNone(singleton.fd)
+            with self.assertRaises(OSError) as caught: os.fstat(fd)
+            self.assertEqual(caught.exception.errno, errno.EBADF)
+            self.assertEqual(anchor.read_bytes(), b"replacement")
+        finally:
+            anchor.unlink(); retained.rename(anchor); singleton.close()
+        with self.singleton() as again:
+            self.assertEqual(again.anchor_identity, identity)
+
+    def test_service_singleton_construction_interruption_releases_original_descriptor(self):
+        observed = []
+        def interrupt(hold):
+            observed.append((hold.fd, hold.anchor_identity))
+            raise KeyboardInterrupt("constructor interrupted")
+        with patch.object(locks.ServiceSingleton, "fresh", interrupt):
+            with self.assertRaisesRegex(KeyboardInterrupt, "constructor interrupted"): self.singleton()
+        self.assertEqual(len(observed), 1)
+        fd, identity = observed[0]
+        with self.assertRaises(OSError) as caught: os.fstat(fd)
+        self.assertEqual(caught.exception.errno, errno.EBADF)
+        with self.singleton() as again:
+            self.assertEqual(again.anchor_identity, identity)
+            self.assertEqual(again.anchor.read_bytes(), b"")
+        self.assertEqual(self.receipts(), {})
+
+    def test_service_singleton_root_replacement_releases_original_descriptor(self):
+        for name in ("home", "state", "runtime"):
+            with self.subTest(root=name):
+                fixture = LifecycleDecisions(); fixture.setUp()
+                try:
+                    hold = fixture.singleton()
+                    fd, identity = hold.fd, hold.anchor_identity
+                    selected = {"home": fixture.home, "state": fixture.state, "runtime": fixture.runtime}[name]
+                    retained = fixture.root / ("retained-" + name)
+                    selected.rename(retained)
+                    selected.mkdir(mode=0o700)
+                    try:
+                        with self.assertRaisesRegex(ValueError, "service singleton root replaced"):
+                            with hold: self.fail("replaced root entered its context")
+                        with self.assertRaises(OSError) as caught: os.fstat(fd)
+                        self.assertEqual(caught.exception.errno, errno.EBADF)
+                        self.assertEqual(list(selected.iterdir()), [])
+                    finally:
+                        selected.rmdir(); retained.rename(selected); hold.close()
+                    with fixture.singleton() as again:
+                        self.assertEqual(again.anchor_identity, identity)
+                finally:
+                    fixture.doCleanups()
+
+    def test_service_singleton_root_and_namespace_guard_counterfactuals(self):
+        def root_probe():
+            roots = copy.deepcopy(self.request["roots"]); roots["runtime"][1] += 1
+            with self.assertRaisesRegex(ValueError, "service singleton root replaced"):
+                with self.singleton(roots): pass
+        root_probe()
+        with patch.object(locks.ServiceSingleton, "roots_fresh", lambda _: None):
+            with self.assertRaises(AssertionError): root_probe()
+        outside = self.root / "counterfactual-runtime"; outside.mkdir(mode=0o700)
+        roots = copy.deepcopy(self.request["roots"])
+        roots["runtime"] = [outside.stat().st_dev, outside.stat().st_ino]
+        def namespace_probe():
+            with self.assertRaisesRegex(ValueError, "outside selected state root"):
+                with self.singleton(roots, outside): pass
+        namespace_probe()
+        original = locks.require
+        def unchecked_namespace(value, message):
+            if message != "singleton runtime outside selected state root": original(value, message)
+        with patch.object(locks, "require", unchecked_namespace):
+            with self.assertRaises(AssertionError): namespace_probe()
 
     def test_fresh_and_replayed_acceptance_never_imply_effect_completion(self):
         before = {str(p): p.read_bytes() for p in self.state.glob("*.status")}
@@ -417,14 +590,15 @@ class LifecycleDecisions(unittest.TestCase):
                             message = "lifecycle attempt is not the next refused attempt"
                         else:
                             message = "published lifecycle receipt changed; effect refused"
-                        original = journal.require
+                        guard_owner = locks if case == "anchor" else journal
+                        original = guard_owner.require
                         hits = []
                         def reverted(value, why):
                             if not value and why == message: hits.append(why); return
                             return original(value, why)
                         if case != "published":
                             with self.assertRaisesRegex(ValueError, message): transaction.admit(fixture.filename)
-                            with patch.object(journal, "require", reverted): transaction.admit(fixture.filename)
+                            with patch.object(guard_owner, "require", reverted): transaction.admit(fixture.filename)
                         else:
                             rename = journal.rename_new
                             def corrupt(source, target):

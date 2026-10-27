@@ -12,7 +12,6 @@ Future start acquires its service singleton before this journal, never reverse.
 No lock is held while waiting on an external effect. The persistent anchor is
 never unlinked, recovered by PID, or treated as a liveness record.
 """
-import fcntl
 import hashlib
 import os
 from pathlib import Path
@@ -23,6 +22,7 @@ from fm_view_bundle import (directory, packed, read_regular, rename_new, require
                             write_new)
 from fm_view_lifecycle import (LIMIT, SCHEMA, VERSION, contract, decode, envelope,
                                envelope_receipt, request_record, validate_receipt)
+from fm_view_lock import PrivateAnchor
 
 MAX_RECEIPTS = 1024
 MAX_JOURNAL_BYTES = 8 * 1024 * 1024
@@ -40,7 +40,7 @@ def next_attempt(previous, attempt):
             and attempt == previous["attempt"] + 1))
 
 
-class LifecycleJournal:
+class LifecycleJournal(PrivateAnchor):
     """One bounded journal transaction; use as a context manager per decision.
 
     admit(filename) returns {fresh, receipt}. fresh=True means ONLY that this
@@ -62,31 +62,13 @@ class LifecycleJournal:
         self.roots = [(self.home, None), (self.home / "state", 0o700),
                       (self.inbox, 0o700), (self.outbox, 0o700), (self.outbox / ".tmp", 0o700)]
         self.identities = [directory(path, mode)[1] for path, mode in self.roots]
-        self.anchor = self.outbox / ".lifecycle-journal.lock"
-        fd = os.open(self.anchor, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-        try:
-            info = os.fstat(fd)
-            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-                    and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600,
-                    "unsafe lifecycle journal anchor")
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.fd = fd
-            self.anchor_identity = (info.st_dev, info.st_ino)
-            self.fresh()
-        except BaseException:
-            self.fd = None
-            os.close(fd)
-            raise
+        super().__init__(self.outbox / ".lifecycle-journal.lock", "lifecycle journal")
 
     def fresh(self):
         require(self.fd is not None, "lifecycle journal transaction closed")
         require(all(directory(path, mode)[1] == identity for (path, mode), identity
                     in zip(self.roots, self.identities)), "lifecycle journal root replaced")
-        info = self.anchor.lstat()
-        require((info.st_dev, info.st_ino) == self.anchor_identity
-                and stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-                and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600,
-                "lifecycle journal anchor replaced")
+        super().fresh()
 
     def history(self):
         self.fresh()
@@ -244,20 +226,3 @@ class LifecycleJournal:
         value = envelope_receipt(request, self.fragment, self.home, final_state, 2, code)
         value["ext"] = previous[-1]["ext"].copy()
         return self._publish(value, count, total)
-
-    def close(self):
-        if self.fd is not None:
-            fd, self.fd = self.fd, None
-            os.close(fd)
-
-    def __enter__(self):
-        try:
-            self.fresh()
-        except BaseException:
-            # Python does not call __exit__ when entry itself fails.
-            self.close()
-            raise
-        return self
-
-    def __exit__(self, *_):
-        self.close()
