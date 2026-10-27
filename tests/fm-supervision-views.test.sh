@@ -61,7 +61,10 @@
 # Failed-entry controls require descriptor retirement and reacquisition of the
 # same surviving journal anchor; counterfactuals retain displaced files outside
 # the receipt outbox so unrelated decode guards cannot mask the selected guard.
-# Neither structural readers nor journal decisions authorize service effects.
+# The shared private-anchor owner also exercises a home-scoped service-only
+# singleton: cross-runtime/process contention, independent journal admission,
+# unsafe roots/anchor types and failed-entry original-inode reacquisition.
+# Neither these mutexes nor structural/journal decisions authorize service effects.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh

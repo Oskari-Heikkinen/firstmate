@@ -262,6 +262,7 @@ Its invoking owner must check declared-actor admission before using it and route
 All roots, the private outbox staging directory and the owning home's validated nonplanned fragment must already exist; this API creates no root or registration.
 The stage's private canonical input and outbox must be disjoint beneath the selected state root.
 Its new journal-only nonblocking flock serializes only this stage's receipt writers, never a legacy writer, watcher, queue, presentation, source or custody transaction.
+[`fm_view_lock.py`](../bin/fm_view_lock.py) is the shared private-anchor owner for this journal and the future service singleton.
 The persistent single-link mode-0600 lock anchor is not a process owner or health record and is never unlinked or recovered by PID.
 Failed construction or context entry closes the acquired descriptor and releases its lock without removing the anchor or suppressing the original failure.
 A future start owner takes its separate service singleton before this journal; no journal transaction may remain held across an external effect or wait.
@@ -286,7 +287,10 @@ A retry is the next attempt after a prior refusal, never after acceptance, compl
 A failed publication or directory fsync never returns success; if rename committed before failure, the next transaction discovers that original decision and cannot treat it as fresh.
 These primitives alone validate no actor, capability, code, socket or process, and do not prove actual exit.
 
-The foreground owner remains responsible for trusted immutable code selection, declared-actor admission, reader capability publication, live root/socket/epoch/process revalidation, service-only singleton serialization and receipt-before-effect ordering.
+The internal `ServiceSingleton` primitive binds canonical home/state/runtime identities and serializes starts across all runtime directories of that one home with the persistent state-root `.view-service.lock` anchor.
+Its boundary is independent of the journal and every legacy transaction; admission creates no service, socket, owner record, receipt or health evidence.
+The unfinished foreground owner must retain that descriptor through actual process exit after effects begin, including surviving non-daemon observation threads; leaving a context or closing a listener is not that proof.
+The foreground owner remains responsible for trusted immutable code selection, declared-actor admission, reader capability publication, live root/socket/epoch/process revalidation, service-singleton lifetime and receipt-before-effect ordering.
 It must also prove actual generation-pinned process exit and preserve replacement paths on cleanup.
 A candidate receipt or structurally matching PID is not permission to bypass any of those gates.
 The read-only `ProcessPin` primitive remains distinct from this wire reader and from that future effect owner.
@@ -396,4 +400,6 @@ There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).
 Identity-bound service shutdown remains future integration work; compatibility refusals already fall back to legacy before presentation commits.
 The journal API's CI cases cover immutable replay and completion, filename-bound malformed/unknown/unreadable input, independent root/anchor replacement, failed-entry descriptor retirement and same-anchor reacquisition, serialization, bounded history, failed writes/rename/fsync and single-guard counterfactuals without any service, signal, socket or authoritative record effect.
+Service-singleton cases additionally cover cross-process and cross-runtime contention, independence from the journal, opaque healthy anchor bytes, unsafe roots and anchor types, failed-entry descriptor retirement after root/anchor replacement, same-original-anchor reuse and independent selected-root/namespace counterfactuals.
+These are mutex-admission controls, not proof of a foreground service lifetime, receipt-before-effect ordering or identity-bound shutdown.
 Rollback of this uninstalled foundation is removal or non-use of the modules; no queue, cursor, custody or home mode changes to undo exist.
