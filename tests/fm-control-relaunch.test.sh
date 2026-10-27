@@ -3024,12 +3024,12 @@ test_herdr_relaunch_resumes_only_the_registered_pi_session() {
     }
     dir=$HERDR_CASE_DIR
     rm -f "$dir/fake/herdr-stopped"
-    sed -i 's/^harness=claude$/harness=pi/; s|^model=default$|model=openai-codex/gpt-5.6-sol|' "$dir/home/state/resume-$registered.meta"
+    sed -i 's/^harness=claude$/harness=pi/' "$dir/home/state/resume-$registered.meta"
     # Keep the pane's status authority registered to an existing Pi session,
     # while process-info proves that its previous agent has exited.
     printf '{"result":{"agent":{"agent":"%s","agent_status":"idle","agent_session":{"kind":"path","value":"/tmp/pi-bound-session.jsonl"}}}}\n' \
       "$registered" > "$dir/fake/herdr-agent-registration"
-    out=$(run_spawn "$dir" "resume-$registered" --relaunch --harness pi) || rc=$?
+    out=$(run_spawn "$dir" "resume-$registered" --relaunch --harness pi --model openai-codex/gpt-5.6-sol) || rc=$?
     expect_code 0 "$rc" "Herdr Pi relaunch should complete ($registered registration)"$'\n'"$out"
     command=$(cat "$dir/fake/launched-command")
     if [ "$registered" = pi ]; then

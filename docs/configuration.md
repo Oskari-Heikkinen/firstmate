@@ -1494,7 +1494,7 @@ This single-provider table is separate from the frozen legacy mapping used by `f
 - Bootstrap reports unsupported harness/model/effort combinations as a `CREW_DISPATCH` diagnostic when they are visible in the file.
 - A `pi` or `pi-signed` profile that names a Claude model, or names no model, is malformed: bootstrap reports it as `CREW_DISPATCH`, `bin/fm-dispatch-resolve.sh` refuses the file, and `bin/fm-spawn.sh` refuses the launch ([Pi harness reference](../.agents/skills/harness-adapters/references/harness/pi.md#claude-models-never-run-on-pi)).
 
-See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a starting point to copy into local `config/crew-dispatch.json`; its Pi default declares the `codex` provider required for typed resolution of that `openai-codex` model.
+See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a starting point to copy into local `config/crew-dispatch.json`; its Pi default declares the `google` provider required for typed resolution of that `google` model, so the two defaults rank on separate quotas.
 
 **Validation and diagnostics**
 

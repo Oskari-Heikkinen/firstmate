@@ -477,7 +477,7 @@ JSON
 reset_log
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
 assert_contains "$out" '  status: clear' "the documented example passes opted-in resolution"
-assert_contains "$out" 'candidate: pi:anthropic/claude-sonnet-5  provider=claude' "the documented Pi default uses its declared Claude provider"
+assert_contains "$out" 'candidate: pi:google/gemini-3.8-flash  provider=google' "the documented Pi default uses its declared Google provider"
 assert_not_contains "$err" 'malformed rules file' "the documented example reaches resolution"
 cp "$BASE_RULES" "$RULES"
 pass "no-rule fallback, Agy, Gemini, and documented configurations resolve"

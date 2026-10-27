@@ -21,6 +21,6 @@
   ],
   "default": [
     { "harness": "codex", "model": "gpt-5.5", "effort": "medium" },
-    { "harness": "pi", "model": "openai-codex/gpt-5.6-sol", "effort": "medium", "provider": "codex" }
+    { "harness": "pi", "model": "google/gemini-3.8-flash", "effort": "medium", "provider": "google" }
   ]
 }
