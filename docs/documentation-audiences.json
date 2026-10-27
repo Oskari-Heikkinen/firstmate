@@ -141,6 +141,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/builder-self-check/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/diagnostic-reasoning/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -150,6 +154,14 @@
     },
     {
       "path": ".agents/skills/firstmate-coding-guidelines/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/firstmate-shell-tests/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/firstmate-shell-tests/references/history.md",
       "audience": "agent-runtime"
     },
     {
@@ -342,6 +354,10 @@
     },
     {
       "path": ".agents/skills/tool-design/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/tool-design/references/evidence.md",
       "audience": "agent-runtime"
     },
     {

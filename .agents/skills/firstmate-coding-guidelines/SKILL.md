@@ -1,6 +1,6 @@
 ---
 name: firstmate-coding-guidelines
-description: Load before editing firstmate's shared tracked material (the AGENTS.md section 1 list), as firstmate or as a worker on a firstmate-repo task.
+description: Load first, before reading code, whenever you will edit any tracked file in the Firstmate repository - a script or library under bin/, a test under tests/, a skill under .agents/skills/ (including adding a new one), a doc under docs/, AGENTS.md, CONTRIBUTING.md or the README - as firstmate or as a worker on a Firstmate-repo task, even when a more specific skill also applies; and before deciding where a new rule or fact belongs, moving text out of AGENTS.md, or writing a worker brief for a Firstmate-repo change. Holds the knowledge-placement tree, the one-owner rule for prose and for code that parses a shared format, size and trigger hygiene, harness-dependent proof and the repo style rules.
 user-invocable: false
 metadata:
   internal: true
@@ -8,9 +8,12 @@ metadata:
 
 # firstmate-coding-guidelines
 
-Load this before changing firstmate's shared, tracked material, as defined by `AGENTS.md` section 1.
+Load this before changing firstmate's shared, tracked material: any file tracked in this repository.
+
 Route conditional detail to its on-demand owner so always-loaded instructions stay focused on rules needed in every session.
 Each component's goals and review checks live in the skill that `docs/component-map.json` names for it; load it before changing a mapped path.
+
+Why this skill exists: rules were written where no agent would read them at the moment of action, the same fact was restated in several files that then drifted, and dated rules accumulated in always-loaded text (root causes R1, R4 and R8).
 
 ## Knowledge-placement decision tree
 
@@ -42,6 +45,7 @@ Every other mention of it is a one-line cross-reference, never a restatement.
 A single deliberate one-line reinforcement at a genuine risk point is allowed, for example a "don't forget X" placed exactly where forgetting X is costly.
 Restating the contract's substance a second time is not allowed: the two copies will drift the moment only one is edited.
 When you touch a contract, patch, replace, or prune the owner's existing language rather than appending a new clause or paragraph wherever possible, then grep the repo for its other mentions and update the cross-references, not duplicate the change into a second full copy.
+The rule covers code too: each shared format (a registry line, an outcome vocabulary, a status line) has one parsing function that every reader sources, and a value it does not recognize surfaces as unrecognized - an alarm or a detail - never as a silent default, because a fix in one hand-rolled parser never reaches its siblings.
 
 ## Inline-stub pattern
 
@@ -50,6 +54,7 @@ That is the trigger condition for loading the skill, plus any safety-critical fa
 Everything else - the procedure, the mechanism, the surrounding detail - moves out completely.
 Do not leave a partial restatement behind "just in case".
 A partial copy is exactly the duplication the one-owner rule forbids.
+After moving, renumbering or retitling `AGENTS.md` text, grep `.agents/skills/`, `docs/` and `bin/` for references to the old section number or heading (`AGENTS.md` section N) and repoint each one in the same change, because nothing else fails on a dangling section reference.
 Usually nothing stays: the skill's own description is its trigger, so `AGENTS.md` keeps a line only for a safety rule or a recorded-mistake fix that must hold with no skill loaded.
 
 ## Size discipline
@@ -60,16 +65,15 @@ If an addition needs more than a few lines of conditional detail (detail that ma
 `AGENTS.md`'s token cost is paid by every session of every fleet member, every time, whether or not that session ever hits the situation the new lines describe.
 A skill's cost is paid only by the sessions that actually load it.
 When in doubt, write the fact into the skill or doc first by patching that owner's existing language, and add only the one-line trigger to `AGENTS.md`.
+A rule that keeps recurring while its skill is already loaded needs a tool or guard that enforces it, not more prose.
 
 ## Trigger hygiene
 
 A new skill is dead weight if nothing loads it.
 Every new skill needs its load trigger declared in its description, which is the always-loaded trigger index; add an inline `AGENTS.md` pointer only in the operating section whose always-loaded rule must name it.
 State the trigger as a condition ("load before X", "load on Y wake"), never as a vague pointer.
-Briefs for tasks that touch firstmate's own tracked material should tell the crewmate to load this skill.
-`bin/fm-brief.sh`'s `REPO` argument is a caller-supplied string with no reliable signal that it names firstmate's own repo, unlike a project registered in `data/projects.md`, so there is no clean point inside the scaffold to detect this case automatically.
-Firstmate adds this skill's load instruction to firstmate-repo briefs by hand instead.
-`CONTRIBUTING.md`'s "Development" section carries the same instruction as a durable reminder.
+`fm_brief_worker_role` in `bin/fm-dod-lib.sh` names this skill, with its file path as the fallback, in every launch brief whose project may be Firstmate, and `CONTRIBUTING.md`'s "Development" section carries the same instruction for contributors.
+A brief points at a skill by name and by its absolute path in the home's checkout instead of copying the skill's rule text, so a worker in another repository, which cannot see Firstmate's skill index, can still read it, and the rule keeps one owner.
 
 ## Compatibility and enforcement
 
@@ -109,6 +113,11 @@ For every changed maintained prose surface, identify its inventory audience, aut
 Move or delete evidence only after the current owner and regression pointer are verified.
 After all documentation, review-fix, and lint-fix commits, review the complete branch diff again against those criteria rather than reviewing only the latest commit.
 Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup routing, local link targets, and owner pointers without keyword-linting legitimate evidence prose.
+
+## Shell, tests and handoff
+
+Before writing or changing a test under `tests/` or a script under `bin/`, load `firstmate-shell-tests`; it holds the shell and test traps (condition waits, hermetic fixtures, stock bash 3.2, SIGPIPE, argv limits, lint, assert helpers), while `CONTRIBUTING.md` "Testing" owns the shared helpers and the wait rule.
+Before reporting READY or answering review findings, load `builder-self-check`.
 
 ## No-mistakes test configuration
 

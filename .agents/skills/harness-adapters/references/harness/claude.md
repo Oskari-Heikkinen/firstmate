@@ -47,6 +47,12 @@ Inspect the pane to identify which dialog is on screen, and report it rather tha
 A launch under `config/claude-permission-mode=auto` never meets the bypass confirmation, because it does not request bypass mode: on 2.1.269 `claude --permission-mode auto` reached the composer directly with the footer `⏵⏵ auto mode on (shift+tab to cycle)`, so a captain who refuses the bypass dialog selects `auto` there instead of accepting it.
 The workspace-trust dialog is unaffected by the permission mode and still needs the pre-registration above.
 
+## Background session after relaunch
+
+A relaunched Claude worker can come up as a background session: its pane drops to a bare shell showing `backgrounded · <id>` while the agent keeps working and posting status, so crew state reads it as missing.
+Confirm with `claude agents --json` under the worker's `CLAUDE_CONFIG_DIR`, where the background session is the row with an `id` whose `cwd` is the task's copy, then reattach it in its own pane with `claude attach <id>`.
+Never relaunch over it: a relaunch sees no agent in the pane and starts a second one in the same copy beside the live session, and a doorbell sent to the bare shell runs as shell commands.
+
 ## Composer ghost
 
 Completed turns can render dim predicted text inside an empty composer, indistinguishable in plain `tmux capture-pane`.

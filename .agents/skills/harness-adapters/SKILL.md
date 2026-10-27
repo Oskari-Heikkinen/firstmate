@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Load before spawning or recovering a worker or secondmate, a trust dialog, a skill invocation, an interrupt, exit, or resume, or verifying a new adapter.
+description: Load before spawning a worker or secondmate, before a harness-specific step in recovering one (relaunch, resume, a pane that shows a backgrounded Claude session), on a spawn refusal or a worker account pin refusal, when choosing the harness for a dispatch profile, and before answering a trust dialog, invoking a skill, sending an interrupt or exit, or changing or verifying an adapter or a launch surface. Also load first, before reading code, when you add or change a harness's launch, resume, trust-seeding or exit path, or when a trust or exit dialog reappears after a harness update. Routes each operation to its common and per-harness references.
 user-invocable: false
 metadata:
   internal: true
@@ -12,6 +12,8 @@ This is the one skill, trigger, and routing owner for harness-specific Firstmate
 Load this router first, then exactly the common reference and one harness reference selected below.
 When an action spans rows, load the union once rather than every reference.
 Files under `references/` are resources of this skill, not additional catalogued skills.
+
+Why this skill exists: vendor interfaces change under every adapter, and adapter checks listed task kinds rather than every launch kind and harness pair, so each new dialog or launch shape was fixed one surface at a time (root causes R2 and R9).
 
 ## Path contract
 
@@ -34,6 +36,10 @@ Never type an interrupt key or exit command through `fm-send`, where routing-mar
 Trust handling is complete only when inspection proves the target started processing its instructions; delivery success alone is not proof.
 Muse, Gemini, AGY, and Devin are verified only for crewmate and scout work, never a secondmate or primary.
 
+A spawn refusal - a missing dependency, an authentication failure, an unsupported backend, a version refusal - is a blocker to report; never retry silently on another backend or harness, because the refusal is the evidence of what is missing.
+An explicit `--backend` applies only to the task it was authorized for, never as precedent for later tasks.
+Only the operator chooses or changes a worker account pin (`config/claude-account`, `config/pi-account`); on a pin refusal, report the login it needs and never edit or remove the file.
+
 ## Detection
 
 `../../../bin/fm-harness.sh` prints firstmate's own harness from verified environment markers and process ancestry, and owns how they combine.
@@ -45,6 +51,17 @@ omp publishes no marker of its own; `FM_OMP_HARNESS=omp` is Firstmate's launch m
 `../../../bin/fm-harness.sh secondmate` resolves `config/secondmate-harness` -> `config/crew-harness` -> firstmate's own harness.
 `../../../bin/fm-spawn.sh` re-resolves on every spawn, and an explicit per-spawn argument wins for that spawn.
 A new adapter's verified marker and command name must land in `../../../bin/fm-harness.sh`.
+
+## Verify a change
+
+Adapter fixes have repeatedly passed for the case they were written for and failed in a neighbouring cell, so verify every cell a change can reach, not only the one that failed:
+
+- List each launch kind and harness pair the change touches - ship, scout, secondmate in each seeded shape (a leased worktree and a standalone clone), relaunch and resume - and verify each one, because a check gated on the task kind rather than on the harness misses the other harnesses.
+- Seed trust for a launch surface through that harness's existing seeding step in `../../../bin/fm-spawn.sh`, and route a new surface or seeded-home shape through the same step rather than adding a surface-specific one, because each surface seeded separately met the trust dialog again.
+- Verify each spawn past its first-run dialogs (folder trust, external imports, project picker) on the live harness, or against a recorded screen where one exists; no observed dialog proves only that launch.
+- After a harness version bump, re-check every dialog, composer and exit fix for that harness, because a vendor release re-renders the text those fixes key on.
+
+`references/common/dispatch.md` "Adapter verification" owns the checks for a new adapter, and `../firstmate-coding-guidelines/SKILL.md` owns harness-dependent proof.
 
 ## Operation-to-reference matrix
 

@@ -1,6 +1,6 @@
 ---
 name: component-skills
-description: Load before changing the component map tools, the component hook, review injection or a repo's docs/component-map.json. One map per repo is the only path-to-skill source; the hook informs on every touch and never guesses or blocks, and every review path gets the touched components' Review checks.
+description: Load first, before reading the code, whenever you change bin/fm-component-map.sh or another component map tool (its drift check, size caps or resolver), the component hook, review injection or a repo's docs/component-map.json, when you add or re-pin a component skill's metadata.sources, and before committing a change to any file a component skill pins. One map per repo is the only path-to-skill source; the hook informs on every touch and never guesses or blocks, and every review path gets the touched components' Review checks.
 user-invocable: false
 metadata:
   internal: true
@@ -29,6 +29,8 @@ metadata:
 
 # component-skills
 
+Why this skill exists: pins were left for the drift run to catch after the source had changed, because nothing made the author re-pin at commit time (root causes R3 and R5).
+
 ## Goal and operating principle
 
 Every agent that touches a mapped path gets that component's goals, and every review of a change gets that component's review checks, without depending on the model choosing a skill from its description.
@@ -52,6 +54,7 @@ This mechanism is owned here; each skill's contents belong to its component's ow
 - Relying on description triggering alone, or on skills loading inside a reviewer that runs without project settings (plan sections 3 and 4).
 - Weakening any rule `check` enforces so a map passes: accepting unknown keys, letting a non-provisional glob match no tracked file, leaving a tracked file under `roots` in no component, allowing more than six components on one path or a goal section over 1,500 characters; or marking a component `provisional`, narrowing or dropping `roots` to silence a no-match or coverage error (`docs/component-map.md` "Repository map", "Component roots", "Provisional components" and the skill-shape table; `bin/fm-component-map.sh` header).
 - Re-pinning a hash to silence drift without reading the source delta and updating the skill (plan section 5 "Update path").
+- Committing a change to a pinned source without re-pinning it in the same commit, after checking that the pinning skill's rules still hold and updating them where they do not; a pin left for the drift run turns a change the author already understood into a later item for someone else (Review check 11).
 - Running the cross-home drift check as an agent task or a remembered command instead of the timer-run `bin/fm-component-drift.sh`, detecting drift other than through `drift`, a second open item for one skill, or an owner registry beside `metadata.owner` (`docs/component-map.md` "Drift run"; `bin/fm-component-drift.sh` header).
 - A project-, repo- or component-specific branch in the hook, resolver or checker code (tool-design rule 4).
 - Editing another repo's tracked settings to install the hook (plan section 3 item 3).

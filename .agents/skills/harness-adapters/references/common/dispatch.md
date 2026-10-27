@@ -7,7 +7,7 @@ Load this with the selected tool reference for dispatch, start, or adapter verif
 Use the router's detection and safety sections for static crew and secondmate harness resolution and all explicit overrides.
 `config/crew-dispatch.json` can override that static default for one crewmate or scout with concrete harness, model, and effort axes.
 For a profile array, load `quota-array-dispatch` after establishing harness and provider facts here.
-When the opt-in `bin/fm-dispatch-resolve.sh` is on, its `clear` answer already names the concrete axes; `docs/configuration.md` "Typed dispatch resolution" owns that contract.
+When dispatch profiles exist, run `bin/fm-dispatch-resolve.sh` on the written brief at every crewmate or scout intake; when it is on, its `clear` answer already names the concrete axes, and when it prints its off line, match the brief against the rules by hand; `docs/configuration.md` "Typed dispatch resolution" owns that contract.
 Pass the matched rule's `label` as `--dispatch-rule <label>` with those axes, or `--dispatch-rule default` for the file's default profile, so the spawn record names the rule that chose them; `docs/configuration.md` "Rule labels and the routing record" owns the label and routine-mark contract.
 
 `../secondmate-provisioning/SKILL.md` owns inherited local material.
