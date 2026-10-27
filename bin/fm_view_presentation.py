@@ -80,7 +80,7 @@ class Presentation:
         this read's mtime after the reply, before selecting any native row.
         """
         from fm_view_engine import MAX_FILE, require
-        from fm_view_offsets import manifest_rows, snapshot_row
+        from fm_view_offsets import manifest_rows, same_identity, snapshot_row
         require(type(snapshots) is list and len(snapshots) <= MAX_ROWS, "backstop row bound exceeded")
         self.inputs.check()
         cursor = self.inputs.state_named_read(".status-presentation-cursor")
@@ -100,7 +100,7 @@ class Presentation:
             mtime = status["mtime_ns"] // 10**9
             require(mtime >= 0, "unsupported backstop mtime")
             identity, _, receipt = manifest.get(task, (snapshot["strong_identity"], 0, 0))
-            if identity != snapshot["strong_identity"] or receipt > end:
+            if not same_identity(identity, snapshot["strong_identity"]) or receipt > end:
                 receipt = 0
             line, event_end = latest_event(status["bytes"])
             result = {"task": task, "end": end, "identity": status["identity"],

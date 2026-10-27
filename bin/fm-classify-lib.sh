@@ -2417,12 +2417,58 @@ EOF
 # snapshot, not once per row; never trust a service's own claimed lower bound
 # as the authority to rewind it. Identity/size resets retain legacy semantics.
 # This does not commit a cursor or change the legacy presentation transaction.
+# Read a presentation manifest once and project only its identity field through
+# the existing identity owner. The batch guards consume this via stdin, not an
+# argv document or a second interpretation of old strong identities in awk.
+# This is an ephemeral observation, never a cursor migration or record write.
+_status_presentation_manifest_canonical() {  # <manifest-path>
+  local _pmc_raw _pmc_line _pmc_task _pmc_rest _pmc_ident _pmc_current
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then return 0; fi
+  [ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] || return 1
+  # Keep malformed binary bytes malformed: a Bash text reader would discard
+  # NULs before the guard could reject them. One bounded regular-file read
+  # supplies the whole inventory; canonicalization below stays in its owner.
+  _pmc_raw=$(LC_ALL=C perl -e '
+    use Fcntl qw(O_RDONLY O_NOFOLLOW O_NONBLOCK S_ISREG);
+    sysopen(my $file, $ARGV[0], O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 1;
+    my @before = stat($file);
+    @before && S_ISREG($before[2]) && $before[7] <= 4194304 or exit 1;
+    my $data = "";
+    while (1) {
+      my $read = sysread($file, my $part, 65536);
+      defined($read) or exit 1;
+      last if $read == 0;
+      $data .= $part;
+      length($data) <= 4194304 or exit 1;
+    }
+    index($data, "\0") < 0 or exit 1;
+    my @after = stat($file);
+    my @path = lstat($ARGV[0]);
+    @after && @path && length($data) == $before[7] or exit 1;
+    for my $index (0, 1, 2, 7, 9, 10) {
+      $before[$index] == $after[$index] && $after[$index] == $path[$index] or exit 1;
+    }
+    close($file) or exit 1;
+    print $data or exit 1;
+  ' "$1") || return 1
+  while IFS= read -r _pmc_line; do
+    [ -n "$_pmc_line" ] || continue
+    case "$_pmc_line" in *$'\t'*) ;; *) return 1 ;; esac
+    _pmc_task=${_pmc_line%%$'\t'*}; _pmc_rest=${_pmc_line#*$'\t'}
+    case "$_pmc_rest" in *$'\t'*) ;; *) return 1 ;; esac
+    _pmc_ident=${_pmc_rest%%$'\t'*}
+    _fm_file_ident_canon_to _pmc_current "$_pmc_ident"
+    printf '%s\t%s\t%s\n' "$_pmc_task" "$_pmc_current" "${_pmc_rest#*$'\t'}" || return 1
+  done <<EOF
+$_pmc_raw
+EOF
+}
+
 status_presentation_suggestions_valid() {  # <state> <captured-snapshot> <suggestions>
-  local state=$1 snapshot=$2 suggestions=$3 manifest present=0 task endpoint ident
+  local state=$1 snapshot=$2 suggestions=$3 manifest task endpoint ident canonical
   manifest="$state/.status-presentation-cursor"
   if [ -e "$manifest" ] || [ -L "$manifest" ]; then
     [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
-    present=1
   else
     # Only the legacy owner can interpret its migration cursor. The service
     # also refuses that format; independently retain the same boundary here.
@@ -2434,26 +2480,23 @@ status_presentation_suggestions_valid() {  # <state> <captured-snapshot> <sugges
 $snapshot
 EOF
   fi
-  LC_ALL=C awk -F '\t' -v manifest="$manifest" -v present="$present" '
+  canonical=$(_status_presentation_manifest_canonical "$manifest") || return 1
+  LC_ALL=C awk -F '\t' '
     function uint(value) { return value ~ /^[0-9]+$/ && length(value) <= 16 }
-    BEGIN {
-      section=1
-      if (present) {
-        while ((rc = getline line < manifest) > 0) {
-          if (line == "") continue
-          n = split(line, fields, "\t")
-          if ((n != 3 && n != 4) || fields[1] == "" || fields[2] == "" || !uint(fields[3]) ||
-              (n == 4 && fields[4] != "" && !uint(fields[4])) || (fields[1] in offsets)) { bad=1; exit }
-          identities[fields[1]]=fields[2]; offsets[fields[1]]=fields[3]
-        }
-        if (rc < 0) { bad=1; exit }
-        close(manifest)
-      }
+    BEGIN { section=0 }
+    $0 == "@snapshot" { if (section != 0) { bad=1; exit }; section=1; next }
+    section == 0 && NF != 0 {
+      if ((NF != 3 && NF != 4) || $1 == "" || $2 == "" || !uint($3) ||
+          (NF == 4 && $4 != "" && !uint($4)) || ($1 in offsets)) { bad=1; exit }
+      identities[$1]=$2; offsets[$1]=$3; next
     }
     $0 == "@suggestions" { if (section != 1) { bad=1; exit }; section=2; next }
     NF == 0 { next }
     section == 1 {
       if (NF != 3 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || !uint($2) || $3 == "" || ($1 in ends)) { bad=1; exit }
+      # Current transaction captures use canonical strong identities. An old
+      # device-bearing CAPTURE needs its legacy owner, not a zero cursor floor.
+      if ($3 ~ /^strong:[0-9]+:[0-9]+:/) { bad=1; exit }
       ends[$1]=$2; proofs[$1]=$3; count++
       floor[$1]=(identities[$1] == $3 && offsets[$1] + 0 <= $2 + 0) ? offsets[$1] + 0 : 0
       next
@@ -2466,6 +2509,8 @@ EOF
     { bad=1; exit }
     END { if (bad || section != 2 || suggested != count) exit 1 }
   ' <<EOF
+$canonical
+@snapshot
 $snapshot
 @suggestions
 $suggestions
@@ -2505,34 +2550,25 @@ EOF
 # manifest read prove ALL rows before selection; any uncertainty keeps the
 # complete original backstop reader, never per-row repair or partial output.
 status_backstop_facts_current() {  # <state> <captured-snapshot> <facts>
-  local state=$1 snapshot=$2 facts=$3 fresh manifest present=0
+  local state=$1 snapshot=$2 facts=$3 fresh manifest canonical
   manifest="$state/.status-presentation-cursor"
-  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
-    [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
-    present=1
-  fi
+  canonical=$(_status_presentation_manifest_canonical "$manifest") || return 1
   fresh=$(status_presentation_snapshot_batch "$state" mtime) || return 1
-  LC_ALL=C awk -F '\t' -v manifest="$manifest" -v present="$present" '
+  LC_ALL=C awk -F '\t' '
     function uint(value) { return value ~ /^[0-9]+$/ && length(value) <= 16 && value + 0 <= 9007199254740991 }
-    BEGIN {
-      section=1
-      if (present) {
-        while ((rc = getline line < manifest) > 0) {
-          if (line == "") continue
-          n = split(line, f, "\t")
-          if ((n != 3 && n != 4) || f[1] == "" || f[2] == "" || !uint(f[3]) ||
-              (n == 4 && f[4] != "" && !uint(f[4])) || (f[1] in ids)) { bad=1; exit }
-          ids[f[1]]=f[2]; receipts[f[1]]=(f[4] == "" ? 0 : f[4] + 0)
-        }
-        if (rc < 0) { bad=1; exit }
-        close(manifest)
-      }
+    BEGIN { section=0 }
+    $0 == "@snapshot" { if (section != 0) { bad=1; exit }; section=1; next }
+    section == 0 && NF != 0 {
+      if ((NF != 3 && NF != 4) || $1 == "" || $2 == "" || !uint($3) ||
+          (NF == 4 && $4 != "" && !uint($4)) || ($1 in ids)) { bad=1; exit }
+      ids[$1]=$2; receipts[$1]=($4 == "" ? 0 : $4 + 0); next
     }
     $0 == "@facts" { if (section != 1) { bad=1; exit }; section=2; next }
     $0 == "@fresh" { if (section != 2) { bad=1; exit }; section=3; next }
     NF == 0 { next }
     section == 1 {
       if (NF != 3 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || !uint($2) || $3 == "" || ($1 in ends)) { bad=1; exit }
+      if ($3 ~ /^strong:[0-9]+:[0-9]+:/) { bad=1; exit }
       order[++count]=$1; ends[$1]=$2; proofs[$1]=$3; next
     }
     section == 2 {
@@ -2558,6 +2594,8 @@ status_backstop_facts_current() {  # <state> <captured-snapshot> <facts>
     { bad=1; exit }
     END { if (bad || section != 3 || count != selected || count != matched) exit 1 }
   ' <<EOF
+$canonical
+@snapshot
 $snapshot
 @facts
 $facts
@@ -3073,29 +3111,19 @@ EOF
 # once in linear work; any unsupported/uncertain packet retains the entire
 # original commit path below. This helper writes no record or partial output.
 _status_presentation_commit_rows_batch() {  # <state> <snapshot>
-  local state=$1 snapshot=$2 current manifest present=0
+  local state=$1 snapshot=$2 current manifest canonical
   current=$(status_presentation_snapshot_batch "$state") || return 1
   manifest="$state/.status-presentation-cursor"
-  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
-    [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
-    present=1
-  fi
-  FM_STATUS_COMMIT_MANIFEST="$manifest" LC_ALL=C awk -F '\t' -v present="$present" '
+  canonical=$(_status_presentation_manifest_canonical "$manifest") || return 1
+  LC_ALL=C awk -F '\t' '
     function uint(value) { return value ~ /^[0-9]+$/ && length(value) <= 15 }
     function taskid(value) { return value ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ && length(value) <= 128 }
-    BEGIN {
-      section=1; manifest=ENVIRON["FM_STATUS_COMMIT_MANIFEST"]
-      if (present) {
-        while ((rc = getline line < manifest) > 0) {
-          if (line == "") continue
-          n = split(line, fields, "\t")
-          if (++old_count > 256 || (n != 3 && n != 4) || !taskid(fields[1]) || fields[2] == "" ||
-              !uint(fields[3]) || (n == 4 && !uint(fields[4])) || (fields[1] in old_ids)) { bad=1; exit }
-          old_ids[fields[1]]=fields[2]; old_backstop[fields[1]]=(n == 4 ? fields[4] : 0)
-        }
-        if (rc < 0) { bad=1; exit }
-        close(manifest)
-      }
+    BEGIN { section=0 }
+    $0 == "@current" { if (section != 0) { bad=1; exit }; section=1; next }
+    section == 0 && NF != 0 {
+      if (++old_count > 256 || (NF != 3 && NF != 4) || !taskid($1) || $2 == "" ||
+          !uint($3) || (NF == 4 && !uint($4)) || ($1 in old_ids)) { bad=1; exit }
+      old_ids[$1]=$2; old_backstop[$1]=(NF == 4 ? $4 : 0); next
     }
     $0 == "@selected" { if (section != 1) { bad=1; exit }; section=2; next }
     $0 == "@backstops" { if (section != 2) { bad=1; exit }; section=3; next }
@@ -3129,6 +3157,8 @@ _status_presentation_commit_rows_batch() {  # <state> <snapshot>
       }
     }
   ' <<EOF
+$canonical
+@current
 $current
 @selected
 $snapshot

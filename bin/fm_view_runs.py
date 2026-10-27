@@ -173,10 +173,14 @@ def status_class(status):
 
 
 def ci_checks(text):
-    pattern = re.compile(r"CI checks passed|no CI checks reported - still monitoring|no CI checks reported yet|checks failed|issues detected|CI checks running")
+    pattern = re.compile(r"CI checks passed|repository declares no CI \(no_ci: true\)|no CI checks reported - still monitoring|no CI checks reported yet|checks failed|issues detected|CI checks running")
     marker = next((line for line in reversed(text.splitlines()) if pattern.search(line)), "")
-    if "checks passed" in marker or "no CI checks reported - still monitoring" in marker:
+    if "repository declares no CI (no_ci: true)" in marker:
+        return "no-checks"
+    if "checks passed" in marker:
         return "green"
+    if "no CI checks reported - still monitoring" in marker:
+        return "no-checks"
     return "not-ready" if marker else "unknown"
 
 
