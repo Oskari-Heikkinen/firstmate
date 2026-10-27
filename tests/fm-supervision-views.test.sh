@@ -64,6 +64,10 @@
 # The shared private-anchor owner also exercises a home-scoped service-only
 # singleton: cross-runtime/process contention, independent journal admission,
 # unsafe roots/anchor types and failed-entry original-inode reacquisition.
+# A separate first-creation stage requires parent replacement to leave every
+# successor untouched when no anchor existed, and proves its relative-creation
+# counterfactual with the final refusal intact; shared oracles keep both callers
+# and preexisting-anchor controls aligned without rerunning identical inputs.
 # Neither these mutexes nor structural/journal decisions authorize service effects.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
@@ -189,6 +193,42 @@ then
   pass 'classification evidence admission and whole late freshness guard retain their owner'
 else
   printf 'not ok - classification marker evidence and late freshness guard\n' >&2
+  rc=1
+fi
+# First-use creation is distinct from reacquiring a preexisting anchor. Keep
+# this independent stage non-fail-fast with the unchanged complete unit pool.
+if PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+import unittest
+
+root = Path(sys.argv.pop())
+sys.path[:0] = [str(root / "bin"), str(root / "tests/fixtures/supervision-views")]
+from journal_checks import LifecycleDecisions
+
+
+class FirstAnchorCreation(unittest.TestCase):
+    def test_both_first_creations_preserve_successor_and_retire_descriptors(self):
+        oracle = LifecycleDecisions()
+        for kind in ("singleton", "journal"):
+            for seam in ("before-open", "after-open"):
+                with self.subTest(kind=kind, seam=seam):
+                    oracle.assert_constructor_parent_binding(kind, seam, first_creation=True)
+
+    def test_first_creation_pathname_counterfactual_keeps_final_refusal(self):
+        oracle = LifecycleDecisions()
+        for kind in ("singleton", "journal"):
+            with self.subTest(kind=kind), self.assertRaisesRegex(AssertionError, "successor tree changed"):
+                oracle.assert_constructor_parent_binding(kind, "after-open", pathname_creation=True,
+                                                         first_creation=True)
+
+
+unittest.main(defaultTest="FirstAnchorCreation", verbosity=2)
+PY
+then
+  pass 'first anchor creation preserves successor trees and retires descriptors for both callers'
+else
+  printf 'not ok - first anchor creation parent-binding regression\n' >&2
   rc=1
 fi
 # Name every immutable-code/preflight case, including previously unreachable

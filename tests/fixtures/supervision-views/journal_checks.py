@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import unittest
@@ -218,6 +219,243 @@ except BlockingIOError:
             if message != "singleton runtime outside selected state root": original(value, message)
         with patch.object(locks, "require", unchecked_namespace):
             with self.assertRaises(AssertionError): namespace_probe()
+
+    @staticmethod
+    def tree_bytes(root):
+        return {str(p.relative_to(root)): (p.stat().st_mode, p.read_bytes() if p.is_file() else None)
+                for p in root.rglob("*")}
+
+    def assert_retired_descriptors(self, descriptors):
+        self.assertTrue(descriptors, "constructor seam did not observe a descriptor")
+        for fd in descriptors:
+            with self.assertRaises(OSError) as caught: os.fstat(fd)
+            self.assertEqual(caught.exception.errno, errno.EBADF)
+
+    def assert_constructor_parent_binding(self, kind, seam, pathname_creation=False, first_creation=False):
+        fixture = LifecycleDecisions(); fixture.setUp()
+        try:
+            constructor = fixture.singleton if kind == "singleton" else fixture.open
+            if first_creation:
+                parent = fixture.state if kind == "singleton" else fixture.outbox
+                anchor = parent / (".view-service.lock" if kind == "singleton" else ".lifecycle-journal.lock")
+                identity = None
+                self.assertFalse(anchor.exists(), "first-creation fixture already has an anchor")
+            else:
+                with constructor() as hold:
+                    identity, anchor = hold.anchor_identity, hold.anchor
+            parent, retained = anchor.parent, fixture.root / "retained-constructor-parent"
+            parent_identity = (parent.stat().st_dev, parent.stat().st_ino)
+            original = self.tree_bytes(parent)
+            descriptors, snapshots, hits = [], [], []
+            real_open = os.open
+            def replace():
+                parent.rename(retained); parent.mkdir(mode=0o700)
+                (parent / "protected").write_bytes(b"successor must remain untouched")
+                (parent / "child").mkdir(mode=0o700)
+                snapshots.append(self.tree_bytes(parent))
+            def controlled_open(target, flags, *args, **kwargs):
+                is_parent = Path(target) == parent and flags & os.O_DIRECTORY
+                is_anchor = target == anchor.name and kwargs.get("dir_fd") is not None
+                if (seam == "before-open" and is_parent) or (seam == "after-open" and is_anchor):
+                    hits.append(seam); replace()
+                if pathname_creation and is_anchor:
+                    # Revert only descriptor-relative creation. The final root
+                    # refusal stays intact; the write oracle must still fail.
+                    target = anchor
+                    kwargs = dict(kwargs); kwargs.pop("dir_fd")
+                fd = real_open(target, flags, *args, **kwargs)
+                if is_parent or is_anchor: descriptors.append(fd)
+                return fd
+            failure = None
+            with patch.object(locks.os, "open", controlled_open):
+                try:
+                    with constructor(): self.fail("replacement constructor executed its body")
+                except (OSError, ValueError) as error:
+                    failure = error
+            # Check EBADF BEFORE any new open/read could reuse these numbers.
+            self.assert_retired_descriptors(descriptors)
+            self.assertEqual(hits, [seam])
+            self.assertEqual(len(snapshots), 1)
+            self.assertEqual(self.tree_bytes(parent), snapshots[0], "successor tree changed")
+            self.assertIsNotNone(failure, "replacement constructor returned success")
+            self.assertIn("parent replaced" if seam == "before-open" else "root replaced", str(failure))
+            self.assertEqual((retained.stat().st_dev, retained.stat().st_ino), parent_identity)
+            if first_creation and seam == "after-open":
+                # Only the pinned original may acquire the previously absent
+                # anchor; final refusal must not write into the successor.
+                original[anchor.name] = (stat.S_IFREG | 0o600, b"")
+                created = (retained / anchor.name).stat()
+                identity = (created.st_dev, created.st_ino)
+            self.assertEqual(self.tree_bytes(retained), original)
+            parent.rename(fixture.root / "retained-constructor-successor")
+            retained.rename(parent)
+            with constructor() as again:
+                if identity is not None:
+                    self.assertEqual(again.anchor_identity, identity)
+                if first_creation:
+                    self.assertEqual(again.anchor.read_bytes(), b"")
+            self.assertEqual(fixture.receipts(), {})
+        finally:
+            fixture.doCleanups()
+
+    def test_both_constructors_preserve_successor_before_and_after_parent_open(self):
+        for kind in ("singleton", "journal"):
+            for seam in ("before-open", "after-open"):
+                with self.subTest(kind=kind, seam=seam):
+                    self.assert_constructor_parent_binding(kind, seam)
+
+    def test_relative_anchor_creation_counterfactual_preserves_final_refusal(self):
+        for kind in ("singleton", "journal"):
+            with self.subTest(kind=kind), self.assertRaisesRegex(AssertionError, "successor tree changed"):
+                self.assert_constructor_parent_binding(kind, "after-open", pathname_creation=True)
+
+    def test_selected_parent_guard_counterfactual_has_no_other_changed_guard(self):
+        # Real replacements above prove both callers supply the earlier parent
+        # selection. Here ONLY that argument is stale, isolating its guard from
+        # the later root/anchor barriers, which must all pass in the mutant.
+        for kind in ("singleton", "journal"):
+            def probe(reverted):
+                fixture = LifecycleDecisions(); fixture.setUp()
+                try:
+                    constructor = fixture.singleton if kind == "singleton" else fixture.open
+                    label = "service singleton" if kind == "singleton" else "lifecycle journal"
+                    original_init, original_require = locks.PrivateAnchor.__init__, locks.require
+                    hits = []
+                    def stale_parent(hold, anchor, name, identity):
+                        return original_init(hold, anchor, name, (identity[0], identity[1] + 1))
+                    def bypass(value, message):
+                        if reverted and message == label + " parent replaced":
+                            self.assertFalse(value); hits.append(message); return
+                        original_require(value, message)
+                    with patch.object(locks.PrivateAnchor, "__init__", stale_parent), \
+                            patch.object(locks, "require", bypass):
+                        with self.assertRaisesRegex(ValueError, label + " parent replaced"):
+                            with constructor() as hold:
+                                hold.fresh()
+                    self.assertEqual(hits, [])
+                finally:
+                    fixture.doCleanups()
+            with self.subTest(kind=kind):
+                probe(False)
+                with self.assertRaisesRegex(AssertionError, "not raised"): probe(True)
+
+    def test_private_parent_descriptor_guard_counterfactual(self):
+        # Only the opened-descriptor observation is unsafe. Path/root/anchor
+        # observations remain intact, so reverting this guard admits the body.
+        for kind in ("singleton", "journal"):
+            for field in ("mode", "uid"):
+                def probe(reverted):
+                    fixture = LifecycleDecisions(); fixture.setUp()
+                    try:
+                        constructor = fixture.singleton if kind == "singleton" else fixture.open
+                        parent = fixture.state if kind == "singleton" else fixture.outbox
+                        label = "service singleton" if kind == "singleton" else "lifecycle journal"
+                        real_open, real_fstat, original_require = os.open, os.fstat, locks.require
+                        descriptors, hits = [], []
+                        def observed_open(target, flags, *args, **kwargs):
+                            fd = real_open(target, flags, *args, **kwargs)
+                            if Path(target) == parent and flags & os.O_DIRECTORY: descriptors.append(fd)
+                            return fd
+                        def unsafe_stat(fd):
+                            info = real_fstat(fd)
+                            if fd in descriptors:
+                                values = list(info)
+                                if field == "mode": values[0] = (info.st_mode & ~0o777) | 0o755
+                                else: values[4] += 1
+                                return os.stat_result(values)
+                            return info
+                        def bypass(value, message):
+                            if reverted and message == "unsafe " + label + " parent":
+                                self.assertFalse(value); hits.append(message); return
+                            original_require(value, message)
+                        with patch.object(locks.os, "open", observed_open), \
+                                patch.object(locks.os, "fstat", unsafe_stat), patch.object(locks, "require", bypass):
+                            with self.assertRaisesRegex(ValueError, "unsafe " + label + " parent"):
+                                with constructor() as hold: hold.fresh()
+                        self.assert_retired_descriptors(descriptors)
+                        self.assertEqual(hits, [])
+                    finally:
+                        fixture.doCleanups()
+                with self.subTest(kind=kind, field=field):
+                    probe(False)
+                    with self.assertRaisesRegex(AssertionError, "not raised"): probe(True)
+
+    def test_parent_descriptor_failures_close_before_anchor_or_context_effect(self):
+        for kind in ("singleton", "journal"):
+            for failure in ("fstat", "interrupt", "anchor-open", "private-mode"):
+                with self.subTest(kind=kind, failure=failure):
+                    fixture = LifecycleDecisions(); fixture.setUp()
+                    try:
+                        constructor = fixture.singleton if kind == "singleton" else fixture.open
+                        parent = fixture.state if kind == "singleton" else fixture.outbox
+                        real_open, real_fstat = os.open, os.fstat
+                        descriptors, hits = [], []
+                        def controlled_open(target, flags, *args, **kwargs):
+                            if kwargs.get("dir_fd") is not None and failure == "anchor-open":
+                                hits.append(failure); raise OSError("anchor open refused")
+                            fd = real_open(target, flags, *args, **kwargs)
+                            if Path(target) == parent and flags & os.O_DIRECTORY:
+                                descriptors.append(fd)
+                                if failure == "private-mode": parent.chmod(0o755)
+                            return fd
+                        def controlled_stat(fd):
+                            if fd in descriptors:
+                                if failure == "fstat":
+                                    hits.append(failure); raise OSError("parent fstat refused")
+                                if failure == "interrupt":
+                                    hits.append(failure); raise KeyboardInterrupt("parent interrupted")
+                            return real_fstat(fd)
+                        try:
+                            with patch.object(locks.os, "open", controlled_open), \
+                                    patch.object(locks.os, "fstat", controlled_stat):
+                                with self.assertRaises((OSError, ValueError, KeyboardInterrupt)):
+                                    with constructor(): self.fail("failed constructor executed body")
+                        finally:
+                            parent.chmod(0o700)
+                        self.assert_retired_descriptors(descriptors)
+                        self.assertEqual(hits, [] if failure == "private-mode" else [failure])
+                        name = ".view-service.lock" if kind == "singleton" else ".lifecycle-journal.lock"
+                        self.assertFalse((parent / name).exists())
+                        with constructor() as hold: hold.fresh()
+                        self.assertEqual(fixture.receipts(), {})
+                    finally:
+                        fixture.doCleanups()
+
+    def test_constructor_retires_parent_descriptor_on_success_and_close_error(self):
+        for kind in ("singleton", "journal"):
+            for close_error in (False, True):
+                with self.subTest(kind=kind, close_error=close_error):
+                    fixture = LifecycleDecisions(); fixture.setUp()
+                    try:
+                        constructor = fixture.singleton if kind == "singleton" else fixture.open
+                        with constructor() as hold: identity = hold.anchor_identity
+                        parent = fixture.state if kind == "singleton" else fixture.outbox
+                        real_open, real_close = os.open, os.close
+                        parents, anchors, hits = [], [], []
+                        def observed_open(target, flags, *args, **kwargs):
+                            fd = real_open(target, flags, *args, **kwargs)
+                            if Path(target) == parent and flags & os.O_DIRECTORY: parents.append(fd)
+                            if kwargs.get("dir_fd") is not None: anchors.append(fd)
+                            return fd
+                        def controlled_close(fd):
+                            real_close(fd)
+                            if close_error and fd in parents:
+                                hits.append(fd); raise OSError("parent close reported failure")
+                        with patch.object(locks.os, "open", observed_open), \
+                                patch.object(locks.os, "close", controlled_close):
+                            if close_error:
+                                with self.assertRaisesRegex(OSError, "parent close reported failure"):
+                                    with constructor(): self.fail("parent close error admitted context")
+                            else:
+                                with constructor() as hold:
+                                    self.assert_retired_descriptors(parents)
+                                    self.assertEqual(hold.anchor_identity, identity)
+                        self.assert_retired_descriptors(parents + anchors)
+                        self.assertEqual(hits, parents if close_error else [])
+                        with constructor() as again: self.assertEqual(again.anchor_identity, identity)
+                        self.assertEqual(fixture.receipts(), {})
+                    finally:
+                        fixture.doCleanups()
 
     def test_fresh_and_replayed_acceptance_never_imply_effect_completion(self):
         before = {str(p): p.read_bytes() for p in self.state.glob("*.status")}

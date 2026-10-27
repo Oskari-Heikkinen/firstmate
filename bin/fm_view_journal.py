@@ -62,7 +62,7 @@ class LifecycleJournal(PrivateAnchor):
         self.roots = [(self.home, None), (self.home / "state", 0o700),
                       (self.inbox, 0o700), (self.outbox, 0o700), (self.outbox / ".tmp", 0o700)]
         self.identities = [directory(path, mode)[1] for path, mode in self.roots]
-        super().__init__(self.outbox / ".lifecycle-journal.lock", "lifecycle journal")
+        super().__init__(self.outbox / ".lifecycle-journal.lock", "lifecycle journal", self.identities[3])
 
     def fresh(self):
         require(self.fd is not None, "lifecycle journal transaction closed")
