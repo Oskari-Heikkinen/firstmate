@@ -1,16 +1,17 @@
 """Bounded immutable lifecycle decisions for the uninstalled foreground owner.
 
 Internal API, not an intake daemon or effect owner. All directories/fragment
-must already exist. A future owner must check its declared actor BEFORE using
-this journal, then separately revalidate code, capabilities and live identities
+must already exist. Its invoking owner checks its declared actor BEFORE using
+this journal, then separately revalidates code, capabilities and live identities
 before any effect. An accepted receipt never proves an effect completed and a
 replayed accepted receipt MUST NOT authorize an automatic retry.
 
 The new journal-only flock serializes this stage's writers; no legacy writer
 uses its outbox. It is not a watcher/task/custody lock or service singleton.
-Future start acquires its service singleton before this journal, never reverse.
-No lock is held while waiting on an external effect. The persistent anchor is
-never unlinked, recovered by PID, or treated as a liveness record.
+Start takes the service singleton before ANY journal construction/admission;
+stop intake never takes the live singleton. No journal lock spans an effect.
+The persistent anchor is never unlinked, recovered by PID, or treated as a
+liveness record.
 """
 import hashlib
 import os
@@ -40,6 +41,52 @@ def next_attempt(previous, attempt):
             and attempt == previous["attempt"] + 1))
 
 
+def _read_intake(home, fragment, stage, inbox, filename):
+    """One filename/payload grammar for preliminary and locked intake alike."""
+    require(type(filename) is str, "invalid lifecycle input filename")
+    match = INPUT_NAME.fullmatch(filename)
+    require(match is not None, "invalid lifecycle input filename")
+    record, attempt = match[1], int(match[2])
+    base = {"schema": SCHEMA, "version": VERSION, "record": record, "attempt": attempt,
+            "home": str(home), "owner": stage["owner"]}
+    envelope(base, stage, home)
+    raw = None
+    request, code = base, "input-invalid"
+    try:
+        raw = read_regular(inbox / filename, LIMIT, 0o600)
+        selected = decode(raw)
+        envelope(selected, stage, home)
+        require(selected["record"] == record and selected["attempt"] == attempt,
+                "lifecycle input filename binding mismatch")
+        if selected["version"] != VERSION:
+            request, code = selected, "version-unsupported"
+        else:
+            request_record(selected, fragment, home)
+            request, code = selected, None
+    except (OSError, ValueError, TypeError, KeyError, RecursionError, OverflowError):
+        pass
+    fingerprint = hashlib.sha256(raw).hexdigest() if raw is not None else "unreadable"
+    return request, code, fingerprint
+
+
+def preview_intake(home, fragment, filename):
+    """Read-only operation selection, with NO lock anchor or journal write.
+
+    This is the same bounded filename/payload reader as locked intake. Its
+    tuple is only a selection fence; admit(expected=...) must independently
+    match it under the journal boundary before publishing any decision.
+    """
+    home = Path(home)
+    _, stage = contract(fragment, home)
+    inbox = Path(stage["input"]["path"])
+    roots = ((home, None), (home / "state", 0o700), (inbox, 0o700))
+    identities = [directory(root, mode)[1] for root, mode in roots]
+    selected = _read_intake(home, fragment, stage, inbox, filename)
+    require(all(directory(root, mode)[1] == identity for (root, mode), identity
+                in zip(roots, identities)), "lifecycle preview root replaced")
+    return selected
+
+
 class LifecycleJournal(PrivateAnchor):
     """One bounded journal transaction; use as a context manager per decision.
 
@@ -47,7 +94,7 @@ class LifecycleJournal(PrivateAnchor):
     invocation newly committed that decision. No return value grants process,
     socket, actor, capability or home-mode authority. Repeated input returns its
     existing decision unchanged. Accepted-without-completion is ambiguous after
-    a crash; only the future effect owner may verify and complete it.
+    a crash; only the invoking effect owner may verify and complete it.
     """
     def __init__(self, home, fragment):
         self.fd = None
@@ -157,39 +204,18 @@ class LifecycleJournal(PrivateAnchor):
         return value
 
     def intake(self, filename):
-        require(type(filename) is str, "invalid lifecycle input filename")
-        match = INPUT_NAME.fullmatch(filename)
-        require(match is not None, "invalid lifecycle input filename")
-        record, attempt = match[1], int(match[2])
-        base = {"schema": SCHEMA, "version": VERSION, "record": record, "attempt": attempt,
-                "home": str(self.home), "owner": self.stage["owner"]}
-        envelope(base, self.stage, self.home)
-        raw = None
-        request = base
-        code = "input-invalid"
         self.fresh()
-        try:
-            raw = read_regular(self.inbox / filename, LIMIT, 0o600)
-            selected = decode(raw)
-            envelope(selected, self.stage, self.home)
-            require(selected["record"] == record and selected["attempt"] == attempt,
-                    "lifecycle input filename binding mismatch")
-            if selected["version"] != VERSION:
-                request, code = selected, "version-unsupported"
-            else:
-                request_record(selected, self.fragment, self.home)
-                request, code = selected, None
-        except (OSError, ValueError, TypeError, KeyError, RecursionError, OverflowError):
-            # A malformed payload cannot select another identity/version. Even
-            # unreadable objects have the selected filename's refusal identity;
-            # no bytes means explicit unreadable, not an empty successful read.
-            pass
+        selected = _read_intake(self.home, self.fragment, self.stage, self.inbox, filename)
         self.fresh()
-        fingerprint = hashlib.sha256(raw).hexdigest() if raw is not None else "unreadable"
-        return request, code, fingerprint
+        return selected
 
-    def admit(self, filename):
-        request, code, fingerprint = self.intake(filename)
+    def admit(self, filename, *, expected=None):
+        selected = self.intake(filename)
+        # A preliminary operation selector confers no admission. Bind it to
+        # THIS locked read before any history/receipt publication, so a stop
+        # replaced by a start cannot bypass the start owner's singleton.
+        require(expected is None or selected == expected, "lifecycle intake changed before admission")
+        request, code, fingerprint = selected
         histories, count, total = self.history()
         key = request["record"], request["attempt"]
         previous = histories.get(key, [])

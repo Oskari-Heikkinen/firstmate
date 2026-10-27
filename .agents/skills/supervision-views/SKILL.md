@@ -11,9 +11,11 @@ metadata:
 Read [the view-engine owner](../../../docs/supervision-views.md) before changing the primitives or their callers.
 They and their explicitly selected read clients are an uninstalled foundation, not a completed crew-state/drain/snapshot migration or an authorized home mode.
 Keep existing transaction owners and production entrypoints selected until the complete behavior, protocol and performance gates are proved.
-Load `tool-design`, `lean-supervision` and `handoff-coverage` before adding a service, client or recurring actor.
+Load `tool-design`, `lean-review` and `handoff-coverage` before adding a service, client or recurring actor.
 Do not install or start a production service from this skill.
 The process owner's in-memory pidfd pin is read-only exit observation, not service shutdown authority; the view-engine owner names its limits and the still-required lifecycle gates.
 For immutable code preparation, read-primitive preflight and reader-first lifecycle contract inspection only, use the helpers named by the view-engine owner; their planned fragments and candidate receipts are not publication, committed outcomes, startup, actor, health or home-mode authority.
-For the unfinished foreground owner's shared private-anchor/service-singleton and immutable decision APIs, use the view-engine owner's journal section; neither mutex admission nor replayed acceptance grants permission for an effect.
+For the shared private-anchor/service-singleton and immutable decision APIs, use the view-engine owner's journal section; neither mutex admission nor replayed acceptance grants permission for an effect.
+For the explicit foreground owner's immutable-code, declared-actor, receipt and actual-exit gates, read its section in that same owner before briefing or using it.
+A returned foreground command is not actual exit proof, and a worker must not start the service in a live home.
 Report any failed observation or journal transaction to its invoking owner, never as an empty successful read.
