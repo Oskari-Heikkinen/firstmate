@@ -27,7 +27,7 @@ MAX_MANIFEST = 64 * 1024
 FILES = tuple(sorted((
     "bin/fm-view-bundle.py", "bin/fm_view_bundle.py", "bin/fm-view-client.py",
     "bin/fm-view-capabilities.py", "bin/fm_view_capabilities.py", "bin/fm_view_protocol.py",
-    "bin/fm-view-lifecycle.py", "bin/fm_view_lifecycle.py", "bin/fm_view_journal.py", "bin/fm_handoff_registry.py",
+    "bin/fm-view-lifecycle.py", "bin/fm_view_lifecycle.py", "bin/fm_view_journal.py", "bin/fm_view_lock.py", "bin/fm_handoff_registry.py",
     "bin/fm-handoff-validate.py",
     "docs/handoff-coverage/handoff-registry-v1.schema.json",
     "docs/handoff-coverage/handoff-receipt-v1.schema.json",
