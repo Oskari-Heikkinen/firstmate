@@ -31,6 +31,7 @@ fm_live_gate opt-in FM_AFK_PI_HERDR_E2E herdr jq pi python3
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 SESSION=$("$LAB_HELPER" name fm-afk-pi-return-e2e)
 TMP_ROOT=$(fm_test_tmproot fm-afk-pi-return-e2e)
+fm_pi_faux_model "$TMP_ROOT"
 HOME_DIR="$TMP_ROOT/home"
 STATE="$HOME_DIR/state"
 PROJECT="$TMP_ROOT/project"
@@ -112,7 +113,7 @@ WORKSPACE=$(printf '%s' "$PRIMARY_OUT" | jq -r '.result.workspace.workspace_id')
 PRIMARY_PANE=$(printf '%s' "$PRIMARY_OUT" | jq -r '.result.root_pane.pane_id')
 PRIMARY_TARGET="$SESSION:$PRIMARY_PANE"
 EXT="$CAPTURE_EXT"
-PI_CMD=$(printf 'exec env PI_CODING_AGENT_DIR=%q FM_HOME=%q FM_PI_CAPTURE_PATH=%q pi -e %q --no-context-files --no-session' "$PI_DIR" "$HOME_DIR" "$CAPTURE" "$EXT")
+PI_CMD=$(printf 'exec env PI_CODING_AGENT_DIR=%q FM_HOME=%q FM_PI_CAPTURE_PATH=%q pi --model %q -e %q -e %q --no-context-files --no-session' "$PI_DIR" "$HOME_DIR" "$CAPTURE" "$PI_FAUX_MODEL" "$PI_FAUX_EXT" "$EXT")
 "$LAB_HELPER" run "$SESSION" pane run "$PRIMARY_PANE" "$PI_CMD" >/dev/null
 
 wait_for_idle() {

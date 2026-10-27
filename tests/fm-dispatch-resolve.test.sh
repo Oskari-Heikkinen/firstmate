@@ -973,7 +973,9 @@ for bad in \
   '{"rules":[{"when":"x","use":{"harness":"grok","effort":"max"}}]}|each use profile effort must be supported by its harness and model' \
   '{"rules":[{"when":"x","use":{"harness":"opencode","model":"anthropic/claude-sonnet-4-5"}}]}|use profiles whose harness lacks one authoritative provider family require provider: opencode' \
   '{"rules":[{"when":"x","use":{"harness":"rovo"}}]}|use profiles whose harness lacks one authoritative provider family require provider: rovo' \
-  '{"rules":[{"when":"x","use":{"harness":"codex"}}],"default":{"harness":"pi","model":"anthropic/claude-sonnet-5"}}|default profiles whose harness lacks one authoritative provider family require provider: pi'; do
+  '{"rules":[{"when":"x","use":{"harness":"codex"}}],"default":{"harness":"pi","model":"openai-codex/gpt-5.6-sol"}}|default profiles whose harness lacks one authoritative provider family require provider: pi' \
+  '{"rules":[{"when":"x","use":{"harness":"pi","model":"anthropic/claude-sonnet-5","provider":"claude"}}]}|refusing to launch pi with --model anthropic/claude-sonnet-5: Claude work never runs through Pi' \
+  '{"rules":[{"when":"x","use":{"harness":"codex"}}],"default":[{"harness":"pi","model":"openai-codex/gpt-5.6-sol","provider":"codex"},{"harness":"pi-signed","model":"sonnet","provider":"claude"}]}|refusing to launch pi-signed with --model sonnet: Claude work never runs through Pi'; do
   printf '%s\n' "${bad%%|*}" > "$RULES"
   TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --summary "$SUMMARY"
   expect_code 2 "$code" "malformed rules exit 2: ${bad#*|}"

@@ -89,6 +89,10 @@
 #              The same pre-stop refusal applies to this home's worker tool
 #              exclusions (bin/fm-exclude-tools-lib.sh): a malformed list, or a
 #              replacement runtime that cannot hide the listed tools.
+#              A Pi target refuses a Claude model, or no model, before the old
+#              agent stops too (bin/fm-pi-model-guard-lib.sh), so park resume
+#              and reboot relaunch, which reach this verb, never move Claude
+#              onto Pi.
 #              --note is required for a ship or scout, whose replacement
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
@@ -210,6 +214,8 @@ fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" cont
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-pi-model-guard-lib.sh
+. "$SCRIPT_DIR/fm-pi-model-guard-lib.sh"
 # shellcheck source=bin/fm-account-lib.sh
 . "$SCRIPT_DIR/fm-account-lib.sh"
 # shellcheck source=bin/fm-secondmate-liveness-lib.sh
@@ -1208,6 +1214,10 @@ resolve_relaunch_profile() {
   # signed out must refuse here, while nothing has changed yet.
   local account_model=$TARGET_MODEL
   [ "$account_model" != default ] || account_model=
+  # Claude never runs through Pi, and Pi never starts on a model it picks
+  # itself (bin/fm-pi-model-guard-lib.sh): refuse here, while nothing has
+  # changed, rather than after the old agent stops.
+  fm_pi_model_guard "$TARGET_HARNESS" "$account_model" || return 1
   fm_worker_account_select "$TARGET_HARNESS" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" \
     "$account_model" "$TARGET_HARNESS" >/dev/null || return 1
   # The launch owner also refuses a subscription account it cannot honor

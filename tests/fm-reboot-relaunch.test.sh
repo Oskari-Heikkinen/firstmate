@@ -200,6 +200,42 @@ test_dead_worker_relaunches_from_its_resume_note() {
   pass "reboot relaunch: a dead worker with a reboot-safe pause and resume note is relaunched from that note"
 }
 
+# pi_case <name> <id> <model>: a dead Pi worker recorded with <model>.
+pi_case() {
+  local dir
+  dir=$(new_case "$1" "$2")
+  sed "s|^harness=claude$|harness=pi|; s|^model=default$|model=$3|" \
+    "$dir/home/state/$2.meta" > "$dir/home/state/$2.meta.tmp"
+  mv "$dir/home/state/$2.meta.tmp" "$dir/home/state/$2.meta"
+  printf 'pi' > "$dir/fake/becomes"
+  printf '#!/usr/bin/env bash\nprintf "Options: --tui-mode\\n"\n' > "$dir/fakebin/pi"
+  chmod +x "$dir/fakebin/pi"
+  status "$dir" "$2" "paused [key=reboot] [at=1790000000]: reboot-safe; resume note written"
+  printf 'Step 2 of 4 done.\n' > "$dir/home/data/$2/resume.md"
+  printf '%s\n' "$dir"
+}
+
+test_pi_worker_recorded_with_claude_is_left_stopped() {
+  local dir out rc=0
+  track rr1p
+  dir=$(pi_case pi-claude rr1p anthropic/claude-sonnet-5)
+  out=$(run_relaunch "$dir") || rc=$?
+  expect_code 0 "$rc" "the relaunch step should finish"$'\n'"$out"
+  assert_contains "$out" "REBOOT_RELAUNCH: rr1p: relaunch failed:" "the refused relaunch should be actionable"
+  assert_contains "$out" "anthropic/claude-sonnet-5: Claude work never runs through Pi" \
+    "the report should name the model and the reason"
+  [ "$(launches "$dir")" = 0 ] || fail "a Claude model must never be relaunched on Pi"
+
+  track rr1q
+  dir=$(pi_case pi-other rr1q openai-codex/gpt-6-astra)
+  rc=0
+  out=$(run_relaunch "$dir") || rc=$?
+  expect_code 0 "$rc" "the relaunch step should succeed"$'\n'"$out"
+  assert_contains "$out" "BOOTSTRAP_INFO: reboot relaunch: relaunched rr1q" "a non-Claude Pi worker should relaunch"
+  [ "$(launches "$dir")" = 1 ] || fail "exactly one launch should have been delivered"
+  pass "reboot relaunch: a Pi worker recorded with a Claude model is left stopped and a non-Claude one relaunches"
+}
+
 test_second_run_in_the_same_boot_does_not_relaunch_again() {
   local dir out
   track rr2
@@ -520,6 +556,7 @@ test_herdr_pane_that_survived_a_server_restart_is_relaunched_in_place() {
 }
 
 test_dead_worker_relaunches_from_its_resume_note
+test_pi_worker_recorded_with_claude_is_left_stopped
 test_second_run_in_the_same_boot_does_not_relaunch_again
 test_alive_worker_is_untouched_and_silent
 test_handoff_done_relaunches_but_ready_done_stays_stopped

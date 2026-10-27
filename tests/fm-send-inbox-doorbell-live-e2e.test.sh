@@ -36,6 +36,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fm_live_gate opt-in FM_SEND_INBOX_LIVE_E2E tmux
+fm_pi_live_model
 
 unset NO_MISTAKES_GATE
 
@@ -86,7 +87,7 @@ launch_cmd() {  # <name>
     claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\''' ;;
     codex) printf '%s' 'codex --dangerously-bypass-approvals-and-sandbox --disable hooks' ;;
     opencode) printf '%s' "OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"allow\"}}' opencode" ;;
-    pi|pi-signed) printf '%s' "$1" ;;
+    pi|pi-signed) printf '%s' "$1 --model $PI_LIVE_MODEL" ;;
     grok) printf '%s' 'grok --always-approve' ;;
     kimi) printf '%s' 'kimi --auto' ;;
     muse) printf '%s' 'MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on muse --yolo' ;;

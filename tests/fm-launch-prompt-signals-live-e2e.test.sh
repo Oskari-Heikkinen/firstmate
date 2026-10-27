@@ -62,6 +62,7 @@ trap cleanup_all EXIT
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 
 fm_live_gate opt-in FM_LAUNCH_PROMPT_SIGNALS_LIVE tmux
+fm_pi_live_model
 
 # shellcheck source=bin/fm-busy-lib.sh
 . "$ROOT/bin/fm-busy-lib.sh"
@@ -172,7 +173,7 @@ if [ -x "${PI_BIN:-}" ]; then
   LABS+=("$PI_TAIL_FILE")
   check_harness pi fm-lp-pi-$$ '.pi/extensions/dummy.ts' 'export default {};' \
     'Trust project folder' "$PI_TAIL_FILE" \
-    env HOME="$PI_HOME_LAB" "$PI_BIN" hello
+    env HOME="$PI_HOME_LAB" "$PI_BIN" --model "$PI_LIVE_MODEL" hello
   # pi-signed and omp share Pi's engine and the same project-trust gate
   # (fm_busy_launch_prompt_parked), so the one real capture also proves them,
   # each against its own freshly armed fm-spawn seed record.

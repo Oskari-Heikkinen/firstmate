@@ -259,23 +259,28 @@ test_pi_pin_refusals() {
   new_case pi-refusals pi
   mkdir -p "$CASE/pi-work"
   printf 'openai-codex\n' > "$CASE/pi-work/signed-in"
-  printf '%s\nopenai-codex anthropic\n' "$CASE/pi-work" > "$HOME_DIR/config/pi-account"
+  printf '%s\nopenai-codex google anthropic\n' "$CASE/pi-work" > "$HOME_DIR/config/pi-account"
   out=$(spawn_ship "$id-bare" --model gpt-5.5); rc=$?
   expect_code 1 "$rc" "an unqualified Pi model must refuse under a pin"
   assert_refused_before_launch "$id-bare" "$out" "'gpt-5.5' names no provider"
   out=$(spawn_ship "$id-none"); rc=$?
-  expect_code 1 "$rc" "a Pi launch with no model must refuse under a pin"
-  assert_refused_before_launch "$id-none" "$out" "'none' names no provider"
+  expect_code 1 "$rc" "a Pi launch with no model must refuse, pin or no pin"
+  assert_refused_before_launch "$id-none" "$out" "refusing to launch pi with no model"
   out=$(spawn_ship "$id-other" --model openrouter/gpt-5.5); rc=$?
   expect_code 1 "$rc" "an undeclared Pi provider must refuse"
   assert_refused_before_launch "$id-other" "$out" "names provider 'openrouter'"
-  out=$(OPENAI_API_KEY=ambient-invoker-openai spawn_ship "$id-out" --model anthropic/claude-sonnet); rc=$?
+  out=$(OPENAI_API_KEY=ambient-invoker-openai spawn_ship "$id-out" --model google/gemini-3-pro); rc=$?
   expect_code 1 "$rc" "a declared provider the root is not signed in to must refuse"
-  assert_refused_before_launch "$id-out" "$out" "which is not signed in for provider 'anthropic'"
+  assert_refused_before_launch "$id-out" "$out" "which is not signed in for provider 'google'"
+  printf 'openai-codex\nanthropic\n' > "$CASE/pi-work/signed-in"
+  out=$(spawn_ship "$id-claude" --model anthropic/claude-sonnet-5); rc=$?
+  expect_code 1 "$rc" "a pin that declares anthropic must still refuse a Claude model on Pi"
+  assert_refused_before_launch "$id-claude" "$out" "refusing to launch pi with --model anthropic/claude-sonnet-5: Claude work never runs through Pi"
+  printf 'openai-codex\n' > "$CASE/pi-work/signed-in"
   out=$(spawn_ship "$id-raw" --harness "pi --provider openai-codex --model openai-codex/gpt-5.5"); rc=$?
   expect_code 1 "$rc" "a raw Pi launch must refuse under a pin"
   assert_refused_before_launch "$id-raw" "$out" "a raw Pi launch command runs verbatim"
-  pass "a Pi pin refuses unqualified, missing, undeclared, signed-out, and raw launches"
+  pass "a Pi pin refuses unqualified, missing, undeclared, signed-out, Claude, and raw launches"
 }
 
 test_pi_extension_provider_and_old_pi_fall_back_to_the_model_listing() {

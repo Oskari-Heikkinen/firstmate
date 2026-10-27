@@ -35,6 +35,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_live_gate default-on FM_HARNESS_LIVENESS_DRIFT tmux
+fm_pi_live_model
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -125,8 +126,10 @@ for harness in claude codex opencode pi pi-signed grok kimi cursor muse; do
   # cursor blocks on a workspace-trust prompt in a directory it has never seen,
   # which would hang this probe rather than classify anything; --trust is the
   # same flag fm-spawn passes for the same reason.
+  # Pi with no model picks its own start model, which can be Claude.
   launch_args=""
   [ "$harness" = cursor ] && launch_args="--trust"
+  case "$harness" in pi | pi-signed) launch_args="--model $PI_LIVE_MODEL" ;; esac
   # shellcheck disable=SC2086  # deliberate: an empty value must add no argument
   "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$harness" -c "$LAB/wt" -- "$bin_path" $launch_args \
     || fail "$harness ($version): could not launch a window for the liveness probe"

@@ -1043,7 +1043,7 @@ Both files are local and gitignored.
 ### File format and provider selection
 
 `config/claude-account` holds one line: `ordinary`, or the absolute path of an existing Claude config directory.
-`config/pi-account` holds that same root on line 1 and, on line 2, the providers this home may spend, separated by spaces, for example `openai-codex anthropic`.
+`config/pi-account` holds that same root on line 1 and, on line 2, the providers this home may spend, separated by spaces, for example `openai-codex google`.
 
 A final newline is optional; any other line, a relative path, or a control character such as a CR refuses.
 For Claude, `ordinary` unsets `CLAUDE_CONFIG_DIR` rather than pointing it at `~/.claude`, because Claude reads `$CLAUDE_CONFIG_DIR/.claude.json` and keys its macOS Keychain entry to any directory that is set ([authentication, "Credential management"](https://code.claude.com/docs/en/authentication#credential-management)).
@@ -1052,6 +1052,7 @@ A Pi root can hold several provider logins at once, so the root alone does not s
 A pinned Pi launch therefore needs `--model <provider>/<id>` naming a declared provider, and Firstmate also passes `--provider <that provider>` so Pi cannot resolve the model under another signed-in provider.
 
 An unqualified model, an undeclared provider, or a raw Pi launch command, which cannot receive that flag, refuses; Firstmate never guesses a provider.
+Declaring `anthropic` does not let a Pi worker run Claude: every Pi launch refuses a Claude model with or without this file ([Pi harness reference](../.agents/skills/harness-adapters/references/harness/pi.md#claude-models-never-run-on-pi)).
 
 ### Launch scope and sign-in checks
 
@@ -1491,8 +1492,9 @@ This single-provider table is separate from the frozen legacy mapping used by `f
 - Routing precedence is an explicit per-task captain override, then the best-fit dispatch rule, then `default` (resolved through the same object-or-array path), then `config/crew-harness`.
 - Except for `ultra`, which refuses unsupported profiles under the native-effort contract above, an effort value the chosen harness does not accept is recorded as `effort=` in task meta for traceability but omitted from the launch flags.
 - Bootstrap reports unsupported harness/model/effort combinations as a `CREW_DISPATCH` diagnostic when they are visible in the file.
+- A `pi` or `pi-signed` profile that names a Claude model, or names no model, is malformed: bootstrap reports it as `CREW_DISPATCH`, `bin/fm-dispatch-resolve.sh` refuses the file, and `bin/fm-spawn.sh` refuses the launch ([Pi harness reference](../.agents/skills/harness-adapters/references/harness/pi.md#claude-models-never-run-on-pi)).
 
-See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a starting point to copy into local `config/crew-dispatch.json`; its Pi default declares the `claude` provider required for typed resolution of that Anthropic model.
+See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a starting point to copy into local `config/crew-dispatch.json`; its Pi default declares the `codex` provider required for typed resolution of that `openai-codex` model.
 
 **Validation and diagnostics**
 

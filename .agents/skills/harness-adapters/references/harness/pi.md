@@ -12,7 +12,7 @@ Verified on 2026-07-27 with Pi and Pi-signed 0.82.0 unless a fact gives another 
 | Resume | `--session <path-or-id>` resumes that exact session, and creates it at that path when the file is gone. `../../../bin/fm-spawn.sh` passes it on a relaunch so a Herdr pane's already-bound status authority keeps applying (`../../../bin/fm-control-lib.sh`'s `fm_control_relaunch_resume_flag`; `../../../docs/herdr-backend.md` "Agent status authority and relaunch"). There is still no `resume` control verb. |
 | Interrupt | Single Escape. |
 | Skill invocation | No separate verified form beyond normal command behavior; use natural language when the exact command is uncertain. |
-| Model flag | `--model <model>`; under a home's worker account pin the model must be `<provider>/<id>` and Firstmate also passes `--provider <provider>` (`../../../docs/configuration.md` "Worker account pin"). |
+| Model flag | `--model <model>`; under a home's worker account pin the model must be `<provider>/<id>` and Firstmate also passes `--provider <provider>` (`../../../docs/configuration.md` "Worker account pin"). A Claude model, and a launch with no model, always refuses ([Claude models never run on Pi](#claude-models-never-run-on-pi)). |
 | Effort flag | `--thinking <low\|medium\|high\|xhigh\|max>`; both identities expose the same levels and completed the same model-qualified max-thinking smoke. |
 | Model discovery | Run the selected executable as `<executable> --list-models [search]`; Pi's installed `docs/models.md` owns how built-in, extension-registered, and custom provider/model entries reach that list. |
 
@@ -38,6 +38,19 @@ The composer owner's named blocking-dialog classification also reaches a stale P
 The same real-Pi guard checks worker-shaped copies, session-only approval scope, and composer/watch dialog naming from a live tmux viewport; the runtime verification record owns its evidence and limits.
 It does not allocate a worker through fm-spawn, submit a brief, or exercise stale-wake scheduling/delivery.
 Existing open-call, declared-wait, and hold bounds retain precedence: a worker already covered by one may remain on the dialog without a distinct dialog wake until that wait is inspected; dialog naming does not override those absorptions.
+
+## Claude models never run on Pi
+
+Pi bills Anthropic subscription use as per-token extra usage, so Claude work never runs through `pi` or `pi-signed`.
+`../../../bin/fm-pi-model-guard-lib.sh` owns this enforced guard and its model-identity test.
+It refuses a Claude model, naming the model and the reason, on every path that starts a Pi agent: spawn, ship, scout, restore, relaunch (before the old agent stops, so park resume and reboot relaunch too), local and remote secondmate launch, and dispatch-profile resolution.
+It holds whether the model comes from a flag, a dispatch profile, the recorded relaunch model, `config/secondmate-harness`, or a raw Pi command's `--model`, `--models`, or `--provider anthropic`.
+It needs no `config/pi-account` and never reads one; a pin that declares `anthropic` still refuses, and the pin's own provider check runs after it.
+A model names Claude when any provider path segment is `anthropic`, or it holds one of the tokens claude, anthropic, opus, opusplan, sonnet, haiku, or fable, so `sonnet`, `opus[1m]`, `sonnet:high`, and Bedrock or gateway ids such as `us.anthropic.claude-...` all refuse.
+`bin/fm-harness.sh validate-pi-model <harness> <model>` runs the same test.
+A Pi launch must name its model: with no model, `default`, or a raw command without `--model` or `--models`, Pi would pick its own start model (a saved session model, its settings default, or the first signed-in provider's default), which can be Claude.
+The guard refuses such a launch on the same paths, naming the reason and asking for an explicit non-Claude `--model <provider>/<id>`.
+`config/crew-harness` carries no model, so a home whose crew harness is Pi passes `--model` on each spawn or names it in a dispatch profile; `config/secondmate-harness` takes it as its second token.
 
 ## Worker turn-end extension
 

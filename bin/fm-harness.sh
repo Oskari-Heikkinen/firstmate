@@ -19,6 +19,11 @@
 #                                        codex-native/<id>. Other efforts retain
 #                                        their adapter's existing policy. Native
 #                                        Codex validates model support at startup.
+#        fm-harness.sh validate-pi-model <harness> <model>
+#                                        Refuse a Claude or Anthropic model, or no
+#                                        model, on pi or pi-signed
+#                                        (bin/fm-pi-model-guard-lib.sh owns the
+#                                        rule); exit 0 for any other pair.
 #        fm-harness.sh ancestry [<pid>] print "<strength> <harness>" for the nearest
 #                                        harness process at or above <pid> (default this
 #                                        process), or nothing when the walk finds none.
@@ -76,6 +81,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-gemini-lib.sh
 . "$SCRIPT_DIR/fm-gemini-lib.sh"
+# shellcheck source=bin/fm-pi-model-guard-lib.sh
+. "$SCRIPT_DIR/fm-pi-model-guard-lib.sh"
 
 # Print the harness named by a verified environment marker, or nothing when no
 # marker is present. Markers only report what the environment CLAIMS; detect_own
@@ -530,6 +537,7 @@ validate_native_effort() {
 
 case "${1:-}" in
   validate-native-effort) shift; validate_native_effort "$@" ;;
+  validate-pi-model) fm_pi_model_guard "${2:-}" "${3:-}" ;;
   ancestry)
     case "${2:-}" in
       ''|*[!0-9]*) [ -z "${2:-}" ] || { echo "error: ancestry takes a numeric pid" >&2; exit 2; } ;;

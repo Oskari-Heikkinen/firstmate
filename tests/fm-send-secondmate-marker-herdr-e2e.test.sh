@@ -23,6 +23,7 @@ set -u
 . "$ROOT/bin/fm-backend.sh"
 
 fm_live_gate opt-in FM_SEND_MARKER_HERDR_E2E git herdr jq pi
+fm_pi_live_model
 
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 SESSION=$("$LAB_HELPER" name fm-send-secondmate-marker-v7)
@@ -109,7 +110,7 @@ chmod +x "$FAKEBIN/pi"
 
 "$LAB_HELPER" provision "$SESSION"
 PATH="$FAKEBIN:$ORIGINAL_PATH" FM_GATE_REFUSE_BYPASS=1 FM_HOME="$SENDER_HOME" HERDR_SESSION="$SESSION" \
-  "$ROOT/bin/fm-spawn.sh" "$ID" "$SECOND_HOME" --secondmate --harness pi --backend herdr >/dev/null
+  "$ROOT/bin/fm-spawn.sh" "$ID" "$SECOND_HOME" --secondmate --harness pi --model "$PI_LIVE_MODEL" --backend herdr >/dev/null
 
 META="$SENDER_HOME/state/$ID.meta"
 [ -f "$META" ] || fail "real secondmate spawn did not write exact-id metadata"

@@ -549,6 +549,61 @@ fm_live_gate() {
   return 0
 }
 
+# fm_pi_live_model
+# Sets PI_LIVE_MODEL to the model every live Pi guard launches real Pi with:
+# FM_PI_LIVE_MODEL, or openai-codex/gpt-6.1-sol when it is unset or empty, so
+# a lab machine can name its own signed-in model without editing a test. The
+# value passes the same Pi model guard as any launch
+# (bin/fm-pi-model-guard-lib.sh), so a Claude model fails the guard rather
+# than run Claude through Pi.
+fm_pi_live_model() {
+  local err
+  PI_LIVE_MODEL=${FM_PI_LIVE_MODEL:-openai-codex/gpt-6.1-sol}
+  err=$("$ROOT/bin/fm-harness.sh" validate-pi-model pi "$PI_LIVE_MODEL" 2>&1) \
+    || fail "FM_PI_LIVE_MODEL: ${err#error: }"
+}
+
+# fm_pi_faux_model <dir>
+# Writes <dir>/fm-lab-faux.ts, a Pi extension that registers the provider
+# fm-lab-faux with one deterministic faux model, and sets PI_FAUX_EXT to that
+# file and PI_FAUX_MODEL to fm-lab-faux/deterministic. A credential-less lab
+# passes `--model "$PI_FAUX_MODEL" -e "$PI_FAUX_EXT"` so its Pi start never
+# depends on how Pi resolves a provider that is not signed in, and never names
+# a Claude model. The model only has to exist: no lab using it takes a turn.
+fm_pi_faux_model() {
+  PI_FAUX_EXT=$1/fm-lab-faux.ts
+  # shellcheck disable=SC2034 # read by the sourcing test file
+  PI_FAUX_MODEL=fm-lab-faux/deterministic
+  cat >"$PI_FAUX_EXT" <<'TS' || fail "could not write $PI_FAUX_EXT"
+import { createFauxCore } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI): void {
+  const faux = createFauxCore({
+    api: "fm-lab-faux-api",
+    provider: "fm-lab-faux",
+    models: [{
+      id: "deterministic",
+      name: "Firstmate lab faux model",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 4096,
+      maxTokens: 128,
+    }],
+    tokenSize: { min: 1, max: 1 },
+  });
+  pi.registerProvider("fm-lab-faux", {
+    baseUrl: "http://127.0.0.1/unused",
+    apiKey: "test-only",
+    api: faux.api,
+    models: faux.models,
+    streamSimple: faux.streamSimple,
+  });
+}
+TS
+}
+
 # --- fakebin / PATH shims ---------------------------------------------------
 #
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to

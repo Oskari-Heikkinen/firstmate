@@ -35,6 +35,7 @@ gate tests/fm-lean-review.test.sh
 gate tests/fm-operational-input.test.sh
 gate tests/fm-pack.test.sh
 gate tests/fm-park.test.sh
+gate tests/fm-pi-model-guard.test.sh
 gate tests/fm-pr-merge.test.sh
 gate tests/fm-procevent-when.test.sh
 gate tests/fm-safety-guard.test.sh

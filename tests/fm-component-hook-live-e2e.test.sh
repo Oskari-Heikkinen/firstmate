@@ -12,8 +12,9 @@
 # FM_COMPONENT_HOOK_LIVE_HARNESSES picks the cases (default "claude pi"); a
 # requested harness that is not installed fails rather than skips.
 # The project, home and hook records are isolated; each harness keeps using its
-# existing authentication and default model. No live fleet home, worktree, or
-# session is touched.
+# existing authentication. Claude keeps its default model and Pi runs the
+# fm_pi_live_model model (tests/lib.sh), since Claude work never runs through
+# Pi. No live fleet home, worktree, or session is touched.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -24,12 +25,15 @@ fm_live_gate opt-in FM_COMPONENT_HOOK_LIVE_E2E jq
 LAB=$(fm_test_tmproot fm-component-hook-live-e2e)
 NONCE="nonce-$$-$(date +%s)"
 export FM_COMPONENT_STATE_DIR="$LAB/component-state"
+fm_pi_live_model
 PROMPT='Use the read tool exactly once, on src/ledger/store.py. Use no other tool and read no other file. Then reply with only the token that follows LEDGER-NONCE= in any component goal your context received after that read, or NONE if none arrived.'
 
 # spawn_case <harness>: a spawn home, a mapped project and a worktree of it,
 # spawned for <harness>. Sets HOME_DIR, WT and ID.
 spawn_case() {
-  local harness=$1 proj fakebin out
+  local harness=$1 proj fakebin out model=
+  # A Pi launch must name a non-Claude model; live_pi starts the same one.
+  [ "$harness" != pi ] || model=$PI_LIVE_MODEL
   HOME_DIR="$LAB/$harness/home"
   proj="$LAB/$harness/project"
   ID="comp-live-$harness"
@@ -63,7 +67,7 @@ EOF
   git -C "$proj" worktree add --quiet -b "wt-live-$harness" "$LAB/$harness/wt"
   WT=$(cd "$LAB/$harness/wt" && pwd -P)
   fm_test_spawn_brief "$HOME_DIR" "$ID"
-  out=$(fm_test_run_spawn "$HOME_DIR" "$WT" "$fakebin" "$ID" "$proj" --mode no-mistakes --yolo off) \
+  out=$(fm_test_run_spawn "$HOME_DIR" "$WT" "$fakebin" "$ID" "$proj" --mode no-mistakes --yolo off ${model:+--model "$model"}) \
     || fail "$harness fixture spawn failed: $out"
   assert_grep '## Component skills' "$HOME_DIR/data/$ID/launch-brief.md" "$harness spawn did not append the component section"
 }
@@ -134,7 +138,7 @@ live_pi() {
   mkfifo "$LAB/pi.in"
   (
     cd "$WT" || exit 1
-    exec env FM_HOME="$HOME_DIR" pi --mode rpc --session-dir "$LAB/pi-sessions" --no-context-files \
+    exec env FM_HOME="$HOME_DIR" pi --mode rpc --model "$PI_LIVE_MODEL" --session-dir "$LAB/pi-sessions" --no-context-files \
       --no-extensions --no-skills --tools read -e "$ext"
   ) <"$LAB/pi.in" >"$PI_TRANSCRIPT" 2>&1 &
   PI_PID=$!

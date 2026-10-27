@@ -32,6 +32,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_live_gate default-on FM_PI_BRANCH_RESPONSIVENESS_E2E pi tmux node
+fm_pi_live_model
 
 PI_VERSION=$(pi --version 2>/dev/null || printf 'unknown')
 TMUX=$(command -v tmux)
@@ -173,7 +174,7 @@ run_arm() {
   "$TMUX" -L "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
   rm -f "$HOME_DIR/state/.lock"
   local -a pi_args
-  pi_args=(pi -ns -np -nc --no-themes --offline --approve --session-dir "$SESSION_DIR")
+  pi_args=(pi --model "$PI_LIVE_MODEL" -ns -np -nc --no-themes --offline --approve --session-dir "$SESSION_DIR")
   if [ "$load_extension" = yes ]; then
     pi_args+=(-e "$EXT")
   else

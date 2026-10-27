@@ -56,6 +56,7 @@ if printf '%s\n' "$HELP" | grep -q -- '--tui-mode'; then
 fi
 
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-pi-seeded-trust.XXXXXX") || fail "could not create disposable lab"
+fm_pi_faux_model "$LAB"
 LAB_HOME=$("$LAB_HOME_HELPER" create "$LAB/supervisor") || fail "could not create lab home"
 LAB_TMUX_DIR=$("$LAB_HOME_HELPER" tmux-dir "$LAB_HOME") || fail "could not isolate tmux"
 export TMUX_TMPDIR="$LAB_TMUX_DIR"
@@ -87,7 +88,7 @@ launch() {  # <session> <cwd> [Pi flags...]
     env -i PATH="$PATH" TERM=xterm-256color LANG=C.UTF-8 \
     HOME="$LAB/home" PI_CODING_AGENT_DIR="$PI_DIR" PI_OFFLINE=1 \
     FM_PI_HARNESS=pi FM_TRUST_PROOF="$LAB/$session.loaded" \
-    "$PI_BIN" "${TUI_ARGS[@]}" --no-session --no-skills --no-prompt-templates "$@" \
+    "$PI_BIN" "${TUI_ARGS[@]}" --model "$PI_FAUX_MODEL" -e "$PI_FAUX_EXT" --no-session --no-skills --no-prompt-templates "$@" \
     || fail "could not launch $session in $cwd"
 }
 

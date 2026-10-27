@@ -88,20 +88,20 @@ new_firstmate_case() {
   : > "$LAUNCH_LOG"
 }
 
-spawn_firstmate_ship() {
+spawn_firstmate_ship() {  # <id> [<spawn-args>...]
   local id=$1
   fm_test_spawn_brief "$HOME_DIR" "$id"
   FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" ROOT=$FM_CODE_ROOT fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" \
-    "$id" "$FM_CODE_ROOT" --mode direct-push --yolo off
+    "$id" "$FM_CODE_ROOT" --mode direct-push --yolo off "${@:2}"
 }
 
 WORKER_BANS='Never add an agent name as a commit co-author, and never put "captain" or any other direct address into a non-chat artifact'
 
-spawn_ship() {
+spawn_ship() {  # <id> [<spawn-args>...]
   local id=$1
   fm_test_spawn_brief "$HOME_DIR" "$id"
   FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" \
-    "$id" "$PROJ_DIR" --mode no-mistakes --yolo off
+    "$id" "$PROJ_DIR" --mode no-mistakes --yolo off "${@:2}"
 }
 
 # Claude --settings accepts either inline JSON or a generated settings file.
@@ -228,7 +228,7 @@ test_secondmate_launch_keeps_its_contract() {
 test_nested_pi_worker_drops_only_the_home_context_file() {
   local out ext result home_block project_block
   new_case pi-nested pi nested
-  out=$(spawn_ship nested-pi-z4) || fail "nested pi spawn failed: $out"
+  out=$(spawn_ship nested-pi-z4 --model openai-codex/gpt-5.6-sol) || fail "nested pi spawn failed: $out"
   ext="$HOME_DIR/state/nested-pi-z4.pi-ext.ts"
   assert_present "$ext" "pi spawn did not write the per-task extension"
   result=$(drive_pi_filter "$ext" "$HOME_DIR" "$WT_DIR") || fail "pi extension drive failed: $result"
@@ -245,7 +245,7 @@ test_nested_pi_worker_drops_only_the_home_context_file() {
 test_outside_pi_worker_extension_adds_no_filter() {
   local out ext result
   new_case pi-outside pi outside
-  out=$(spawn_ship outside-pi-z5) || fail "outside pi spawn failed: $out"
+  out=$(spawn_ship outside-pi-z5 --model openai-codex/gpt-5.6-sol) || fail "outside pi spawn failed: $out"
   ext="$HOME_DIR/state/outside-pi-z5.pi-ext.ts"
   assert_present "$ext" "pi spawn did not write the per-task extension"
   result=$(drive_pi_filter "$ext" "$HOME_DIR" "$WT_DIR") || fail "pi extension drive failed: $result"
@@ -271,7 +271,7 @@ test_firstmate_repo_claude_worker_excludes_its_own_contract() {
 test_firstmate_repo_pi_worker_drops_its_own_contract() {
   local out ext result other
   new_firstmate_case pi-firstmate pi
-  out=$(spawn_firstmate_ship firstmate-pi-z7) || fail "firstmate-repo pi spawn failed: $out"
+  out=$(spawn_firstmate_ship firstmate-pi-z7 --model openai-codex/gpt-5.6-sol) || fail "firstmate-repo pi spawn failed: $out"
   ext="$HOME_DIR/state/firstmate-pi-z7.pi-ext.ts"
   assert_present "$ext" "pi spawn did not write the per-task extension"
   other="$CASE_DIR/elsewhere"
@@ -286,7 +286,7 @@ test_firstmate_repo_pi_worker_drops_its_own_contract() {
 test_firstmate_repo_pi_worker_drops_its_contract_from_live_options() {
   local out ext result other
   new_firstmate_case pi-firstmate-live pi
-  out=$(spawn_firstmate_ship firstmate-pi-z8) || fail "firstmate-repo pi spawn failed: $out"
+  out=$(spawn_firstmate_ship firstmate-pi-z8 --model openai-codex/gpt-5.6-sol) || fail "firstmate-repo pi spawn failed: $out"
   ext="$HOME_DIR/state/firstmate-pi-z8.pi-ext.ts"
   assert_present "$ext" "pi spawn did not write the per-task extension"
   other="$CASE_DIR/elsewhere"

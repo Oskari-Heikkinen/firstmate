@@ -172,6 +172,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-quota-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-quota-axi-lib.sh"
+# shellcheck source=bin/fm-pi-model-guard-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-pi-model-guard-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-env-lib.sh disable=SC1091
@@ -1155,6 +1157,16 @@ crew_dispatch_validate() {
     echo "CREW_DISPATCH: invalid config/crew-dispatch.json - $err"
     return 0
   fi
+  local harness model
+  while IFS=$'\t' read -r harness model; do
+    err=$(fm_pi_model_guard "$harness" "$model" 2>&1) || {
+      echo "CREW_DISPATCH: invalid config/crew-dispatch.json - ${err#error: }"
+      return 0
+    }
+  done < <(jq -r '
+    def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
+    ([(.rules // [])[]? | profiles(.use?)[]?] + profiles(.default?))[]? | select(type == "object")
+    | "\(.harness // "")\t\(.model // "")"' "$file" 2>/dev/null)
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ]; then
     jq -r '
     def profile($p):

@@ -21,6 +21,7 @@ HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
 HERDR_ORIGINAL_PATH=$PATH
 TMP_ROOT=$(fm_test_tmproot fm-herdr-agent-exit-shell-e2e)
+fm_pi_faux_model "$TMP_ROOT"
 FAKEBIN="$TMP_ROOT/fakebin"
 PROJECT="$TMP_ROOT/project"
 PI_DIR="$TMP_ROOT/pi-agent"
@@ -163,7 +164,7 @@ export default function (pi: ExtensionAPI) {
 EOF
 
 # Child of the pane shell, never exec, so /quit and SIGKILL return to zsh.
-PI_CMD=$(printf 'env PI_CODING_AGENT_DIR=%q pi -e %q --no-context-files --no-session' "$PI_DIR" "$TRUST")
+PI_CMD=$(printf 'env PI_CODING_AGENT_DIR=%q pi --model %q -e %q -e %q --no-context-files --no-session' "$PI_DIR" "$PI_FAUX_MODEL" "$PI_FAUX_EXT" "$TRUST")
 
 CREATE=$(lab workspace create --cwd "$PROJECT" --label 'agent-exit-shell' --no-focus) \
   || fail 'could not create the lab workspace'

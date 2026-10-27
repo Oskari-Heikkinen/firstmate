@@ -68,8 +68,8 @@ make_case() {
   fm_test_spawn_brief "$HOME_DIR" "$id"
 }
 
-run_spawn() {  # <id>
-  fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$1" "$PROJ_DIR" --mode no-mistakes --yolo off
+run_spawn() {  # <id> [<spawn-args>...]
+  fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$1" "$PROJ_DIR" --mode no-mistakes --yolo off "${@:2}"
 }
 
 # component_command <settings> <event> <matcher>: the component hook command
@@ -226,7 +226,7 @@ EOF
 test_pi_extension_injects_the_component_goal() {
   local id=comp-pi out ext
   make_case pi pi "$id" map
-  out=$(run_spawn "$id")
+  out=$(run_spawn "$id" --model openai-codex/gpt-5.6-sol)
   expect_code 0 $? "pi spawn should succeed: $out"
   ext="$HOME_DIR/state/$id.pi-ext.ts"
   assert_present "$ext" "pi spawn did not write the per-task extension"

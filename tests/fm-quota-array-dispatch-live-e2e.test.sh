@@ -12,6 +12,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_live_gate opt-in FM_QUOTA_ARRAY_DISPATCH_LIVE_E2E pi python3
+fm_pi_live_model
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OWNER="$ROOT/.agents/skills/quota-array-dispatch/SKILL.md"
@@ -167,7 +168,7 @@ run_case() {
       PATH="$FAKEBIN:$PATH" QUOTA_AXI_CALLS="$CALLS" QUOTA_AXI_FIXTURE="$FIXTURE" \
         pi --print --approve --no-session --no-context-files --no-extensions \
           --no-skills --skill .agents/skills --tools bash \
-          --model openai-codex/gpt-5.6-sol --thinking high \
+          --model "$PI_LIVE_MODEL" --thinking high \
           "$prompt"
   ) || fail "$label: Pi skill run failed: $out"
   calls=$(cat "$CALLS")

@@ -37,6 +37,7 @@ pass() { printf 'ok - %s\n' "$1"; }
 note() { printf '# %s\n' "$1"; }
 
 fm_live_gate default-on FM_HERDR_PI_STALE_REGISTRATION_LIVE_E2E herdr pi jq
+fm_pi_live_model
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
@@ -100,7 +101,7 @@ registered_status() {
 # the real Pi TUI with no prompt.
 lab pane run "$PANE_ID" zsh >/dev/null 2>&1 || fail "could not start the nested shell in the pane"
 sleep 1
-lab pane run "$PANE_ID" pi >/dev/null 2>&1 || fail "could not start pi in the pane"
+lab pane run "$PANE_ID" "pi --model $PI_LIVE_MODEL" >/dev/null 2>&1 || fail "could not start pi in the pane"
 
 # Herdr creates the record with its own placeholder status (`unknown`, verified
 # 0.9.0) the moment it notices Pi, before Pi's extension reports a lifecycle

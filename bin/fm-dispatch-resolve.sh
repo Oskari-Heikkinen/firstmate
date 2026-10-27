@@ -102,6 +102,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-env-lib.sh"
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
+# shellcheck source=bin/fm-pi-model-guard-lib.sh
+. "$SCRIPT_DIR/fm-pi-model-guard-lib.sh"
 
 CONFIDENCE_FLOOR=0.6
 TS_MODEL=jev-latest
@@ -235,6 +237,16 @@ if [ -n "$missing_provider" ]; then
   done <<< "$missing_provider"
   die "malformed rules file: $RULES_PATH - $missing_provider_detail"
 fi
+
+# A Claude model on Pi is never a profile fm-spawn.sh could launch
+# (bin/fm-pi-model-guard-lib.sh), so the rules file is malformed, not a
+# candidate to rank below others.
+while IFS=$'\t' read -r harness model; do
+  pi_claude=$(fm_pi_model_guard "$harness" "$model" 2>&1) ||
+    die "malformed rules file: $RULES_PATH - ${pi_claude#error: }"
+done < <(jq -r '
+  def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
+  ([((.rules // [])[]) | profiles(.use)[]] + profiles(.default // null))[] | "\(.harness)\t\(.model // "")"' "$RULES")
 
 # ---- harness -> provider map, from the single owner in fm-quota-axi-lib.sh -----
 PMAP='{}'

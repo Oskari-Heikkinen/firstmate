@@ -44,6 +44,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_live_gate opt-in FM_SESSIONSTART_HOOK_LIVE_E2E,FM_PI_SESSIONSTART_RACE_LIVE_E2E tmux
+fm_pi_live_model
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 unset NO_MISTAKES_GATE
@@ -612,10 +613,10 @@ for harness in claude codex pi; do
       ;;
     pi)
       probe_process_opens pi "$version" "$lab" resume \
-        pi -p -e "$lab/.pi/extensions/fm-primary-turnend-guard.ts" --no-context-files --no-tools \
-        -- pi -p -c -e "$lab/.pi/extensions/fm-primary-turnend-guard.ts" --no-context-files --no-tools
+        pi -p --model "$PI_LIVE_MODEL" -e "$lab/.pi/extensions/fm-primary-turnend-guard.ts" --no-context-files --no-tools \
+        -- pi -p -c --model "$PI_LIVE_MODEL" -e "$lab/.pi/extensions/fm-primary-turnend-guard.ts" --no-context-files --no-tools
       probe_context_reset pi "$version" "$lab" /new \
-        pi -e "$lab/.pi/extensions/fm-primary-turnend-guard.ts" --no-context-files
+        pi --model "$PI_LIVE_MODEL" -e "$lab/.pi/extensions/fm-primary-turnend-guard.ts" --no-context-files
       ;;
   esac
   CHECKED=$((CHECKED + 1))

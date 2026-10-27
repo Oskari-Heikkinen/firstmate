@@ -321,4 +321,15 @@ try_flag 'requires a non-empty value' \
   --secondmate --traceparent=
 pass "delivery: a parent-supplied carrier is accepted only for a secondmate launch and only as a strict W3C value"
 
+# --- Pi model guard: a Claude model never reaches the remote host on Pi -------
+: > "$HERDR_LOG"
+cp "$PARENT/state/ios.meta" "$TMP_ROOT/ios-meta-before"
+OUT=$(remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate --harness pi --model anthropic/claude-sonnet-5 2>&1); RC=$?
+expect_code 1 "$RC" "a remote Pi secondmate with a Claude model must refuse"
+assert_contains "$OUT" "refusing to launch pi with --model anthropic/claude-sonnet-5: Claude work never runs through Pi" \
+  "the remote refusal should name the model and the reason"
+[ ! -s "$HERDR_LOG" ] || fail "a refused remote Pi launch reached the remote host: $(cat "$HERDR_LOG")"
+cmp -s "$TMP_ROOT/ios-meta-before" "$PARENT/state/ios.meta" || fail "a refused remote Pi launch rewrote the parent record"
+pass "pi guard: a remote Pi secondmate refuses a Claude model before any remote call"
+
 echo "ALL TESTS PASSED"

@@ -324,7 +324,7 @@ test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
       CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
       GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
-      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
+      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off --model openai-codex/gpt-5.6-sol 2>&1
   )
   status=$?
   expect_code 0 "$status" "spawn with relative home overrides should succeed"
@@ -353,7 +353,7 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
       CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
       GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
-      "$SPAWN" "$relative_id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
+      "$SPAWN" "$relative_id" "$PROJ_DIR" --mode no-mistakes --yolo off --model openai-codex/gpt-5.6-sol 2>&1
   )
   status=$?
   expect_code 0 "$status" "spawn with relative FM_HOME defaults should succeed"
@@ -373,7 +373,7 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
       CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
       GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
-      "$SPAWN" "$absolute_id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
+      "$SPAWN" "$absolute_id" "$PROJ_DIR" --mode no-mistakes --yolo off --model openai-codex/gpt-5.6-sol 2>&1
   )
   status=$?
   expect_code 0 "$status" "spawn with absolute symlink-spelled FM_HOME defaults should succeed"
@@ -401,7 +401,7 @@ test_absolute_override_spelling_is_preserved_in_launch_paths() {
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
       CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
       GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
-      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
+      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off --model openai-codex/gpt-5.6-sol 2>&1
   )
   status=$?
   expect_code 0 "$status" "spawn with absolute symlink-spelled overrides should succeed"
@@ -1536,7 +1536,7 @@ test_pi_scout_launch_enters_recorded_worktree() {
 
   FM_TEST_PANE_LOG="$CASE_DIR/pane.log"
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-    "$id" "$PROJ_DIR" --scout --harness pi)
+    "$id" "$PROJ_DIR" --scout --harness pi --model openai-codex/gpt-5.6-sol)
   status=$?
   unset FM_TEST_PANE_LOG
   expect_code 0 "$status" "Pi scout spawn should succeed"
@@ -1600,7 +1600,7 @@ test_pi_tui_mode_probe_is_safe_for_old_and_new_pi() {
 
       out=$(FM_TEST_PI_VERSION="$version" \
         run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-        "$id" "$PROJ_DIR")
+        "$id" "$PROJ_DIR" --model openai-codex/gpt-5.6-sol)
       status=$?
       expect_code 0 "$status" "$harness $version spawn should succeed"
       launch=$(cat "$LAUNCH_LOG")
@@ -1643,12 +1643,136 @@ test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
   pass "pi-signed refuses safely and actionably when the selected executable is unavailable"
 }
 
+# assert_pi_model_refused <id> <out> <needle>: the Pi model guard refused,
+# naming the model or its absence and the reason, before any endpoint, task
+# record, or launch.
+assert_pi_model_refused() {
+  local id=$1 out=$2 needle=$3
+  assert_contains "$out" "$needle: " "the refusal should name the model or its absence: $needle"
+  assert_contains "$out" "Claude work never runs through Pi" "the refusal should name the reason: $needle"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused Pi launch wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "a refused Pi launch typed a launch command: $(cat "$LAUNCH_LOG")"
+}
+
+test_pi_refuses_claude_models_from_every_spawn_source() {
+  local rec id out status
+  id=profile-pi-claude-z8f
+  rec=$(make_spawn_case profile-pi-claude pi "$id-flag" "$id-signed" "$id-raw" "$id-scout" "$id-dispatch" "$id-ok")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-flag" "$PROJ_DIR" \
+    --model anthropic/claude-sonnet-5)
+  status=$?
+  expect_code 1 "$status" "a Pi ship with a Claude --model must refuse"
+  assert_pi_model_refused "$id-flag" "$out" "refusing to launch pi with --model anthropic/claude-sonnet-5"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-signed" "$PROJ_DIR" \
+    --harness pi-signed --model sonnet)
+  status=$?
+  expect_code 1 "$status" "a pi-signed ship with a bare Claude family name must refuse"
+  assert_pi_model_refused "$id-signed" "$out" "refusing to launch pi-signed with --model sonnet"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-raw" "$PROJ_DIR" \
+    --harness "pi --model claude-opus-5-5")
+  status=$?
+  expect_code 1 "$status" "a raw Pi command naming a Claude model must refuse"
+  assert_pi_model_refused "$id-raw" "$out" "refusing to launch pi with --model claude-opus-5-5"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-scout" "$PROJ_DIR" \
+    --scout --model 'opus[1m]')
+  status=$?
+  expect_code 1 "$status" "a Pi scout with a Claude alias must refuse"
+  assert_pi_model_refused "$id-scout" "$out" "refusing to launch pi with --model opus[1m]"
+
+  enable_dispatch_profile "$HOME_DIR"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-dispatch" "$PROJ_DIR" \
+    --harness pi --model openrouter/anthropic/claude-sonnet-5 --effort high)
+  status=$?
+  expect_code 1 "$status" "a dispatch-profile Pi spawn with a Claude model must refuse"
+  assert_pi_model_refused "$id-dispatch" "$out" "refusing to launch pi with --model openrouter/anthropic/claude-sonnet-5"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-ok" "$PROJ_DIR" \
+    --harness pi --model openai-codex/gpt-5.6-sol --effort high)
+  status=$?
+  expect_code 0 "$status" "a dispatch-profile Pi spawn with a non-Claude model should launch: $out"
+  assert_meta_profile "$HOME_DIR/state/$id-ok.meta" pi openai-codex/gpt-5.6-sol high
+  assert_contains "$(cat "$LAUNCH_LOG")" "--model 'openai-codex/gpt-5.6-sol'" \
+    "the non-Claude Pi launch lost its model"
+  pass "Pi refuses a Claude model from a flag, alias, raw command, scout, or dispatch profile and launches a non-Claude one"
+}
+
+test_pi_secondmate_refuses_a_claude_model_pin() {
+  local rec id sm out status
+  id=profile-pi-claude-secondmate-z8g
+  rec=$(make_spawn_case profile-pi-claude-secondmate codex "$id")
+  read_case_record "$rec"
+  printf '%s\n' 'pi anthropic/claude-sonnet-5 high' > "$HOME_DIR/config/secondmate-harness"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  sm=$(cd "$sm" && pwd -P)
+  cp "$ROOT/AGENTS.md" "$sm/AGENTS.md"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 1 "$status" "a Pi secondmate pinned to a Claude model must refuse"
+  assert_pi_model_refused "$id" "$out" "refusing to launch pi with --model anthropic/claude-sonnet-5"
+
+  printf '%s\n' 'pi openai-codex/gpt-5.6-sol high' > "$HOME_DIR/config/secondmate-harness"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "a Pi secondmate pinned to a non-Claude model should launch: $out"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" pi openai-codex/gpt-5.6-sol high
+  pass "a local Pi secondmate refuses a Claude model pin and launches a non-Claude one"
+}
+
+# With no model Pi picks its own start model, which can be Claude, so every
+# spawn source that leaves the model unset or `default` refuses.
+test_pi_refuses_a_launch_with_no_model() {
+  local rec id sm out status
+  id=profile-pi-no-model-z8h
+  rec=$(make_spawn_case profile-pi-no-model pi "$id-crew" "$id-default" "$id-scout" "$id-raw" "$id-sm")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-crew" "$PROJ_DIR")
+  status=$?
+  expect_code 1 "$status" "a Pi ship from config/crew-harness with no model must refuse"
+  assert_pi_model_refused "$id-crew" "$out" "refusing to launch pi with no model"
+  assert_contains "$out" "give Pi a non-Claude --model <provider>/<id>" "the no-model refusal should say how to pass a model"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-default" "$PROJ_DIR" \
+    --harness pi-signed --model default)
+  status=$?
+  expect_code 1 "$status" "a pi-signed ship with --model default must refuse"
+  assert_pi_model_refused "$id-default" "$out" "refusing to launch pi-signed with no model"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-scout" "$PROJ_DIR" --scout)
+  status=$?
+  expect_code 1 "$status" "a Pi scout with no model must refuse"
+  assert_pi_model_refused "$id-scout" "$out" "refusing to launch pi with no model"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-raw" "$PROJ_DIR" \
+    --harness "pi --offline")
+  status=$?
+  expect_code 1 "$status" "a raw Pi command with no --model must refuse"
+  assert_pi_model_refused "$id-raw" "$out" "refusing to launch pi with no model"
+
+  printf '%s\n' pi > "$HOME_DIR/config/secondmate-harness"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id-sm"
+  sm=$(cd "$sm" && pwd -P)
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id-sm" "$sm" --secondmate)
+  status=$?
+  expect_code 1 "$status" "a Pi secondmate with no model pin must refuse"
+  assert_pi_model_refused "$id-sm" "$out" "refusing to launch pi with no model"
+  pass "Pi refuses a launch with no model or default from config, flag, scout, raw command, or secondmate pin"
+}
+
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   local rec id sm out status launch
   id=profile-pi-signed-secondmate-z8d
   rec=$(make_spawn_case profile-pi-signed-secondmate codex "$id")
   read_case_record "$rec"
-  printf '%s\n' pi-signed > "$HOME_DIR/config/secondmate-harness"
+  printf '%s\n' 'pi-signed openai-codex/gpt-5.6-sol' > "$HOME_DIR/config/secondmate-harness"
   sm="$CASE_DIR/secondmate-home"
   make_seeded_secondmate_home "$sm" "$id"
   sm=$(cd "$sm" && pwd -P)
@@ -1662,13 +1786,13 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   [ -s "$HOME_DIR/state/$id.pi-ext.ts" ] || fail "Pi secondmate lacks its parent-home semantic busy extension"
   assert_contains "$out" "spawned $id harness=pi-signed kind=secondmate" \
     "pi-signed secondmate spawn did not preserve its runtime identity"
-  assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed default default
+  assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed openai-codex/gpt-5.6-sol default
   cmp -s "$ROOT/AGENTS.md" "$sm/AGENTS.md" || fail "secondmate launch rewrote the supervisor contract"
   cmp -s "$CASE_DIR/charter-before" "$sm/data/charter.md" || fail "secondmate launch rewrote the charter"
   assert_absent "$HOME_DIR/data/$id/launch-brief.md" "secondmate launch received a worker overlay"
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "< '$sm/data/charter.md'" "secondmate launch lost its original charter"
-  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular --approve -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
+  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular --approve --model 'openai-codex/gpt-5.6-sol' -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
     "pi-signed secondmate did not force the regular TUI with Pi's primary extension launch shape and seeded-home --approve"
   assert_contains "$launch" "-e '$HOME_DIR/state/$id.pi-ext.ts'" \
     "pi-signed secondmate lost the parent-home busy wiring; worker compaction remains disabled"
@@ -1687,7 +1811,7 @@ test_pi_seeded_secondmate_preapproves_project_trust() {
     id="profile-${harness}-seeded-approve-z8e"
     rec=$(make_spawn_case "profile-${harness}-seeded-approve" codex "$id")
     read_case_record "$rec"
-    printf '%s\n' "$harness" > "$HOME_DIR/config/secondmate-harness"
+    printf '%s\n' "$harness openai-codex/gpt-5.6-sol" > "$HOME_DIR/config/secondmate-harness"
     sm="$CASE_DIR/secondmate-home"
     make_seeded_secondmate_home "$sm" "$id"
     sm=$(cd "$sm" && pwd -P)
@@ -1726,9 +1850,11 @@ test_pi_workers_preapprove_only_the_launch_cwd_when_supported() {
         FM_TEST_PANE_LOG="$CASE_DIR/pane.log"
         FM_TEST_PI_VERSION=$version
         if [ "$kind" = scout ]; then
-          out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+          out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout \
+            --model openai-codex/gpt-5.6-sol)
         else
-          out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+          out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+            --model openai-codex/gpt-5.6-sol)
         fi
         status=$?
         unset FM_TEST_PANE_LOG FM_TEST_PI_VERSION
@@ -1741,7 +1867,7 @@ test_pi_workers_preapprove_only_the_launch_cwd_when_supported() {
         assert_grep "cd -- '$WT_DIR'" "$CASE_DIR/pane.log" \
           "$harness $kind must start in its own task copy, not a parent path"
         if [ "$version" = 0.84.0 ]; then
-          assert_contains "$launch" "--tui-mode regular --approve -e " \
+          assert_contains "$launch" "--tui-mode regular --approve --model 'openai-codex/gpt-5.6-sol' -e " \
             "$harness $kind must approve the launch cwd with no path argument"
         else
           assert_not_contains "$launch" "--approve" \
@@ -1759,7 +1885,7 @@ test_pi_approve_probe_omits_unsupported_flag() {
     id="profile-${harness}-no-approve-z8g"
     rec=$(make_spawn_case "profile-${harness}-no-approve" codex "$id")
     read_case_record "$rec"
-    printf '%s\n' "$harness" > "$HOME_DIR/config/secondmate-harness"
+    printf '%s\n' "$harness openai-codex/gpt-5.6-sol" > "$HOME_DIR/config/secondmate-harness"
     sm="$CASE_DIR/secondmate-home"
     make_seeded_secondmate_home "$sm" "$id"
     sm=$(cd "$sm" && pwd -P)
@@ -1796,9 +1922,11 @@ test_pi_exclude_tools_reach_ship_and_scout_launches() {
       write_exclude_file "$HOME_DIR" '# hide the write tools' '' \
         '  mcp__tracker__editIssue  ' 'mcp__tracker__createPage' 'mcp__other-srv__tool.v2'
       if [ "$kindflag" = --scout ]; then
-        out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+        out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout \
+          --model openai-codex/gpt-5.6-sol)
       else
-        out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+        out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+          --model openai-codex/gpt-5.6-sol)
       fi
       status=$?
       expect_code 0 "$status" "$harness $kindflag spawn with exclusions should succeed"$'\n'"$out"
@@ -1827,9 +1955,11 @@ test_pi_exclude_tools_worker_registry_reports() {
           unverified) write_exclude_file "$HOME_DIR" 'mcp__offline__executeWrite' ;;
         esac
         if [ "$kindflag" = --scout ]; then
-          out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+          out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout \
+            --model openai-codex/gpt-5.6-sol)
         else
-          out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+          out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+            --model openai-codex/gpt-5.6-sol)
         fi
         expect_code 0 "$?" "$harness $kindflag registry-report spawn should succeed: $out"
         out=$(EXT_PATH="$HOME_DIR/state/$id.pi-ext.ts" STATUS_FILE="$HOME_DIR/state/$id.status" \
@@ -1938,7 +2068,8 @@ test_pi_exclude_tools_absent_and_empty_lists() {
   id=excl-absent-z9b
   rec=$(make_spawn_case excl-absent pi "$id")
   read_case_record "$rec"
-  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --model openai-codex/gpt-5.6-sol)
   expect_code 0 "$?" "Pi spawn without the file should succeed"
   assert_not_contains "$(cat "$LAUNCH_LOG")" "--exclude-tools" "an absent file must add no exclusions"
 
@@ -1946,7 +2077,8 @@ test_pi_exclude_tools_absent_and_empty_lists() {
   rec=$(make_spawn_case excl-empty pi "$id")
   read_case_record "$rec"
   write_exclude_file "$HOME_DIR" '# nothing yet' ''
-  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --model openai-codex/gpt-5.6-sol)
   expect_code 0 "$?" "Pi spawn with a comment-only file should succeed"
   assert_not_contains "$(cat "$LAUNCH_LOG")" "--exclude-tools" "a file with no entries must add no exclusions"
 
@@ -2057,14 +2189,16 @@ test_pi_exclude_tools_do_not_leak_across_homes_or_to_secondmates() {
   rec_a=$(make_spawn_case excl-home-a pi "$id_a")
   read_case_record "$rec_a"
   write_exclude_file "$HOME_DIR" 'mcp__srv__writeTool'
-  run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id_a" "$PROJ_DIR" >/dev/null
+  run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id_a" "$PROJ_DIR" \
+    --model openai-codex/gpt-5.6-sol >/dev/null
   expect_code 0 "$?" "home A spawn should succeed"
   assert_contains "$(cat "$LAUNCH_LOG")" "--exclude-tools 'mcp__srv__writeTool'" "home A lost its own exclusions"
 
   # A second home running the same code, with no file of its own, inherits nothing.
   rec_b=$(make_spawn_case excl-home-b pi "$id_b")
   read_case_record "$rec_b"
-  run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id_b" "$PROJ_DIR" >/dev/null
+  run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id_b" "$PROJ_DIR" \
+    --model openai-codex/gpt-5.6-sol >/dev/null
   expect_code 0 "$?" "home B spawn should succeed"
   assert_not_contains "$(cat "$LAUNCH_LOG")" "--exclude-tools" "home B must not inherit home A's exclusions"
 
@@ -2072,7 +2206,7 @@ test_pi_exclude_tools_do_not_leak_across_homes_or_to_secondmates() {
   id_a=excl-sm-z9h
   rec_a=$(make_spawn_case excl-sm codex "$id_a")
   read_case_record "$rec_a"
-  printf '%s\n' pi > "$HOME_DIR/config/secondmate-harness"
+  printf '%s\n' 'pi openai-codex/gpt-5.6-sol' > "$HOME_DIR/config/secondmate-harness"
   write_exclude_file "$HOME_DIR" 'mcp__srv__writeTool'
   sm="$CASE_DIR/secondmate-home"
   make_seeded_secondmate_home "$sm" "$id_a"
@@ -2914,7 +3048,7 @@ test_supervisor_compact_at_knob() {
   id=supervisor-compact-pi
   rec=$(make_spawn_case supervisor-compact-pi codex "$id")
   read_case_record "$rec"
-  printf '%s\n' pi > "$HOME_DIR/config/secondmate-harness"
+  printf '%s\n' 'pi openai-codex/gpt-5.6-sol' > "$HOME_DIR/config/secondmate-harness"
   printf '200000\n' > "$HOME_DIR/config/supervisor-compact-at"
   sm="$CASE_DIR/secondmate-home"
   make_seeded_secondmate_home "$sm" "$id"
@@ -3359,6 +3493,9 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_pi_threads_model_and_max_effort \
   test_pi_signed_threads_shared_pi_profile_and_preserves_identity \
   test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata \
+  test_pi_refuses_claude_models_from_every_spawn_source \
+  test_pi_secondmate_refuses_a_claude_model_pin \
+  test_pi_refuses_a_launch_with_no_model \
   test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity \
   test_pi_seeded_secondmate_preapproves_project_trust \
   test_pi_workers_preapprove_only_the_launch_cwd_when_supported \

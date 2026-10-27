@@ -741,7 +741,7 @@ test_sweep_respawns_authoritatively_missing_pi_secondmate() {
 test_sweep_respawns_authoritatively_missing_pi_signed_secondmate() {
   local w fb tmuxfb log out
   w=$(new_world sweep-missing-pi-signed)
-  printf '%s\n' pi-signed > "$w/home/config/secondmate-harness"
+  printf '%s\n' 'pi-signed openai-codex/gpt-5.6-sol' > "$w/home/config/secondmate-harness"
   add_sm_home "$w" sm1 firstmate:fm-sm1 pi-signed
   fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
   log="$w/calls.log"; : > "$log"

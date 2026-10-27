@@ -1416,6 +1416,45 @@ test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop() {
   pass "native Ultra relaunch preserves its profile and rejects an unsupported model before stopping"
 }
 
+test_pi_relaunch_refuses_a_claude_model_before_stop() {
+  local dir out rc id=rl-pi-claude
+  dir=$(new_case pi-claude "$id")
+  add_ship_task "$dir" "$id" pi
+  printf pi > "$dir/fake/command"
+  printf pi > "$dir/fake/becomes"
+  printf '#!/usr/bin/env bash\nprintf "Options: --tui-mode\\n"\n' > "$dir/fakebin/pi"
+  chmod +x "$dir/fakebin/pi"
+  printf 'resume after a park\n' > "$dir/resume-note"
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_control "$dir" "$id" relaunch --note-file "$dir/resume-note"); rc=$?
+  expect_code 1 "$rc" "a Pi relaunch of a record with model=default must refuse"
+  assert_contains "$out" "refusing to launch pi with no model: Pi would pick its own start model, which can be Claude; Claude work never runs through Pi" \
+    "the refusal should name the missing model and the reason"
+  [ "$(cat "$dir/fake/command")" = pi ] || fail "a no-model Pi relaunch stopped the running agent"
+  [ ! -s "$dir/fake/literal" ] || fail "a no-model Pi relaunch sent lifecycle input"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a refused relaunch must leave the task record untouched"
+  sed 's|^model=default$|model=anthropic/claude-sonnet-5|' \
+    "$dir/home/state/$id.meta" > "$dir/home/state/$id.meta.tmp"
+  mv "$dir/home/state/$id.meta.tmp" "$dir/home/state/$id.meta"
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_control "$dir" "$id" relaunch --note-file "$dir/resume-note"); rc=$?
+  expect_code 1 "$rc" "a Pi relaunch of a recorded Claude model must refuse"
+  assert_contains "$out" "refusing to launch pi with --model anthropic/claude-sonnet-5: Claude work never runs through Pi" \
+    "the refusal should name the recorded model and the reason"
+  [ "$(cat "$dir/fake/command")" = pi ] || fail "a Claude-on-Pi relaunch stopped the running agent"
+  [ ! -s "$dir/fake/literal" ] || fail "a Claude-on-Pi relaunch sent lifecycle input"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a refused relaunch must leave the task record untouched"
+  out=$(run_control "$dir" "$id" relaunch --model sonnet --note "explicit Claude alias"); rc=$?
+  expect_code 1 "$rc" "a Pi relaunch with an explicit Claude alias must refuse"
+  assert_contains "$out" "refusing to launch pi with --model sonnet" "the refusal should name the explicit model"
+  [ "$(cat "$dir/fake/command")" = pi ] || fail "an explicit Claude-on-Pi relaunch stopped the running agent"
+  out=$(run_control "$dir" "$id" relaunch --model openai-codex/gpt-6-astra --note "non-Claude model"); rc=$?
+  expect_code 0 "$rc" "a Pi relaunch with a non-Claude model should succeed: $out"
+  [ "$(meta_field "$dir" "$id" model)" = openai-codex/gpt-6-astra ] || fail "relaunch lost the non-Claude model"
+  assert_contains "$(cat "$dir/fake/literal")" "--model 'openai-codex/gpt-6-astra'" "relaunch lost the model flag"
+  pass "fm-control relaunch: a Pi target refuses a Claude model or no model before the old agent stops and relaunches a non-Claude one"
+}
+
 # A fake claude that answers `claude auth status` the way the real runner
 # does: signed in only when the selected config root holds a stored login.
 make_claude_auth_stub() {  # <case-dir>
@@ -1472,6 +1511,7 @@ test_pi_exclude_tools_follow_the_relaunch() {
   local dir out rc id=rl-pi-excl
   dir=$(new_case pi-exclude "$id")
   add_ship_task "$dir" "$id" pi
+  sed -i 's|^model=default$|model=openai-codex/gpt-5.6-sol|' "$dir/home/state/$id.meta"
   printf pi > "$dir/fake/command"
   printf pi > "$dir/fake/becomes"
   printf '#!/usr/bin/env bash\nprintf "Options: --tui-mode\\n"\n' > "$dir/fakebin/pi"
@@ -1496,6 +1536,7 @@ test_exclude_tools_refusals_happen_before_the_agent_stops() {
   local dir out rc id=rl-excl-refuse
   dir=$(new_case excl-refuse "$id")
   add_ship_task "$dir" "$id" pi
+  sed -i 's|^model=default$|model=openai-codex/gpt-5.6-sol|' "$dir/home/state/$id.meta"
   printf pi > "$dir/fake/command"
   printf pi > "$dir/fake/becomes"
   printf '#!/usr/bin/env bash\nprintf "Options: --tui-mode\\n"\n' > "$dir/fakebin/pi"
@@ -2983,7 +3024,7 @@ test_herdr_relaunch_resumes_only_the_registered_pi_session() {
     }
     dir=$HERDR_CASE_DIR
     rm -f "$dir/fake/herdr-stopped"
-    sed -i 's/^harness=claude$/harness=pi/' "$dir/home/state/resume-$registered.meta"
+    sed -i 's/^harness=claude$/harness=pi/; s|^model=default$|model=openai-codex/gpt-5.6-sol|' "$dir/home/state/resume-$registered.meta"
     # Keep the pane's status authority registered to an existing Pi session,
     # while process-info proves that its previous agent has exited.
     printf '{"result":{"agent":{"agent":"%s","agent_status":"idle","agent_session":{"kind":"path","value":"/tmp/pi-bound-session.jsonl"}}}}\n' \
@@ -3514,6 +3555,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_prefixed_recorded_harness_requires_explicit_replacement \
   test_same_harness_relaunch_keeps_the_profile_axes \
   test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop \
+  test_pi_relaunch_refuses_a_claude_model_before_stop \
   test_signed_out_worker_account_pin_refuses_before_stop \
   test_worker_account_pin_follows_the_relaunch \
   test_pi_exclude_tools_follow_the_relaunch \

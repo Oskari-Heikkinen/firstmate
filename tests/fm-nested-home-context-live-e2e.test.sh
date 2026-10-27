@@ -26,6 +26,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 fm_live_gate default-on FM_NESTED_HOME_CONTEXT_LIVE python3 jq node git
+fm_pi_live_model
 
 TMP_ROOT=$(fm_test_tmproot fm-nested-home-context-live)
 trap fm_test_cleanup EXIT
@@ -103,7 +104,7 @@ mkdir -p "$(dirname "$FM_WT")"
 git -C "$FM_CODE_ROOT" worktree add --quiet -b wt-firstmate "$FM_WT"
 FAKEBIN_DIR=$(fm_test_make_spawn_fakebin "$TMP_ROOT/fake")
 
-# spawn_nested <id> <harness> writes the brief, runs the real fm-spawn against
+# spawn_nested <id> <harness> [<spawn-args>...] writes the brief, runs the real fm-spawn against
 # the nested worktree through the fake pane, and echoes the captured launch.
 spawn_nested() {
   local id=$1 harness=$2 log="$TMP_ROOT/$1.launch" out
@@ -111,19 +112,19 @@ spawn_nested() {
   printf '%s\n' "$harness" > "$HOME_DIR/config/crew-harness"
   : > "$log"
   out=$(FM_FAKE_LAUNCH_LOG="$log" PATH="$FAKEBIN_DIR:$PATH" fm_test_run_spawn "$HOME_DIR" "$NESTED_WT" "$FAKEBIN_DIR" \
-    "$id" "$PROJ_DIR" --harness "$harness" --mode no-mistakes --yolo off) \
+    "$id" "$PROJ_DIR" --harness "$harness" --mode no-mistakes --yolo off "${@:3}") \
     || fail "fm-spawn $harness nested launch failed: $out"
   cat "$log"
 }
 
-# spawn_firstmate <id> <harness> does the same for the Firstmate-repo worktree.
+# spawn_firstmate <id> <harness> [<spawn-args>...] does the same for the Firstmate-repo worktree.
 spawn_firstmate() {
   local id=$1 harness=$2 log="$TMP_ROOT/$1.launch" out
   fm_test_spawn_brief "$HOME_DIR" "$id"
   printf '%s\n' "$harness" > "$HOME_DIR/config/crew-harness"
   : > "$log"
   out=$(FM_FAKE_LAUNCH_LOG="$log" PATH="$FAKEBIN_DIR:$PATH" ROOT=$FM_CODE_ROOT fm_test_run_spawn "$HOME_DIR" "$FM_WT" "$FAKEBIN_DIR" \
-    "$id" "$FM_CODE_ROOT" --harness "$harness" --mode direct-push --yolo off) \
+    "$id" "$FM_CODE_ROOT" --harness "$harness" --mode direct-push --yolo off "${@:3}") \
     || fail "fm-spawn $harness Firstmate-repo launch failed: $out"
   cat "$log"
 }
@@ -209,7 +210,7 @@ run_pi() {
   local launch ext version body agent_dir
   harness_present pi || return 0
   version=$(pi --version 2>/dev/null | head -n 1)
-  launch=$(spawn_nested live-pi-nested pi)
+  launch=$(spawn_nested live-pi-nested pi --model "$PI_LIVE_MODEL")
   ext="$HOME_DIR/state/live-pi-nested.pi-ext.ts"
   [ -f "$ext" ] || fail "pi $version: fm-spawn wrote no per-task extension: $launch"
   agent_dir="$TMP_ROOT/pi-agent"
@@ -230,7 +231,7 @@ run_pi() {
   body=$(capture pi-home "$HOME_DIR" bash -c 'pi_run "$@"' _)
   expect_markers "pi $version session whose cwd is the home" "$body" yes no
   pass "pi $version: a nested worker's first request drops the home contract, keeps the project's, and a home session keeps its own"
-  spawn_firstmate live-pi-firstmate pi >/dev/null
+  spawn_firstmate live-pi-firstmate pi --model "$PI_LIVE_MODEL" >/dev/null
   ext="$HOME_DIR/state/live-pi-firstmate.pi-ext.ts"
   [ -f "$ext" ] || fail "pi $version: fm-spawn wrote no per-task extension for the Firstmate-repo worktree"
   body=$(capture pi-firstmate-baseline "$FM_WT" bash -c 'pi_run "$@"' _)

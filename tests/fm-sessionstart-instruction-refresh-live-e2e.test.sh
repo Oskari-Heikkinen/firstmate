@@ -28,6 +28,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_live_gate opt-in FM_SESSIONSTART_INSTRUCTION_REFRESH_LIVE_E2E pi tmux git
+fm_pi_live_model
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMUX_SOCKET="fm-sessionstart-instruction-refresh-$$"
@@ -139,7 +140,7 @@ printf '%s\n' '{"compaction":{"keepRecentTokens":200}}' > "$PROJECT/.pi/settings
 
 tmux -L "$TMUX_SOCKET" new-session -d -s "$TMUX_SESSION" -c "$PROJECT" -x 220 -y 55 \
   -e "FM_HOME=$HOME_DIR" -e "FM_ROOT_OVERRIDE=$PROJECT" -e "FM_GATE_REFUSE_BYPASS=1" \
-  pi --no-tools -e "$PROJECT/.pi/extensions/fm-primary-turnend-guard.ts" \
+  pi --model "$PI_LIVE_MODEL" --no-tools -e "$PROJECT/.pi/extensions/fm-primary-turnend-guard.ts" \
   || fail "could not start isolated Pi session"
 
 # Pi may ask for project trust before project-local context files and extensions

@@ -83,7 +83,7 @@ test_pi_extension_semantic_lifecycle() {
   local rec id=busy-pi-1 out state ext
   rec=$(make_spawn_case pi-lifecycle pi "$id")
   read_case_record "$rec"
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR" --model openai-codex/gpt-5.6-sol)
   expect_code 0 $? "pi spawn should succeed: $out"
   state="$HOME_DIR/state"
   ext="$state/$id.pi-ext.ts"
@@ -125,7 +125,7 @@ test_pi_extension_serializes_settle_before_next_start() {
   local rec id=busy-pi-order out state ext
   rec=$(make_spawn_case pi-order pi "$id")
   read_case_record "$rec"
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR" --model openai-codex/gpt-5.6-sol)
   expect_code 0 $? "pi spawn should succeed: $out"
   state="$HOME_DIR/state"
   ext="$state/$id.pi-ext.ts"
@@ -140,7 +140,7 @@ test_pi_extension_stale_incarnation_rejected() {
   local rec id=busy-pi-2 out state ext
   rec=$(make_spawn_case pi-stale pi "$id")
   read_case_record "$rec"
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR" --model openai-codex/gpt-5.6-sol)
   expect_code 0 $? "pi spawn should succeed: $out"
   state="$HOME_DIR/state"
   ext="$state/$id.pi-ext.ts"
@@ -542,7 +542,10 @@ seed_secondmate_home() { # <home> <id> [home Stop guard]
 
 spawn_secondmate_harness() { # <case-dir> <id> <harness> [extra fake tools...]
   local case_dir=$1 id=$2 harness=$3 primary sm fakebin
+  local -a model=()
   shift 3
+  # A Pi launch must name a non-Claude model.
+  case "$harness" in pi | pi-signed) model=(--model openai-codex/gpt-5.6-sol) ;; esac
   primary="$case_dir/primary"
   sm="$case_dir/sm"
   mkdir -p "$case_dir"
@@ -555,7 +558,7 @@ spawn_secondmate_harness() { # <case-dir> <id> <harness> [extra fake tools...]
   fi
   : > "$case_dir/launch.log"
   FM_BACKEND=tmux FM_FAKE_LAUNCH_LOG="$case_dir/launch.log" \
-    fm_test_run_spawn "$primary" "$sm" "$fakebin" "$id" "$sm" "$harness" --secondmate
+    fm_test_run_spawn "$primary" "$sm" "$fakebin" "$id" "$sm" "$harness" --secondmate ${model[@]+"${model[@]}"}
 }
 
 secondmate_stall_watch() { # <primary> <id> <out> [seconds]
@@ -872,6 +875,7 @@ test_raw_secondmate_launch_writes_no_busy_wiring() {
     case_dir="$TMP_ROOT/sm-raw-$harness"
     id="sm-raw-$harness"
     raw="$harness --fm-raw-flag"
+    case "$harness" in pi | pi-signed) raw="$raw --model openai-codex/gpt-5.6-sol" ;; esac
     out=$(spawn_secondmate_harness "$case_dir" "$id" "$raw" "$harness") \
       || fail "raw $harness secondmate spawn must still succeed: $out"
     state="$case_dir/primary/state"

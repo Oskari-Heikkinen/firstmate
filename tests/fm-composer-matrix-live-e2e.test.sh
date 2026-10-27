@@ -38,6 +38,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fm_live_gate opt-in FM_COMPOSER_MATRIX_LIVE tmux
+fm_pi_live_model
 
 SOCKET="fm-cmx-live-$$"
 SESSION="cmxlive"
@@ -162,7 +163,10 @@ check_harness_idle_cursorless() {  # <name> <version> <target>
 # --- 1. Every installed verified harness must reach a proven-empty composer --
 for h in claude codex opencode pi grok kimi muse; do
   if command -v "$h" >/dev/null 2>&1; then
-    check_harness_idle_empty "$h" "$h"
+    # Pi with no model picks its own start model, which can be Claude.
+    launch=("$h")
+    [ "$h" = pi ] && launch+=(--model "$PI_LIVE_MODEL")
+    check_harness_idle_empty "$h" "${launch[@]}"
   else
     note "harness absent, not verified here: $h"
   fi
