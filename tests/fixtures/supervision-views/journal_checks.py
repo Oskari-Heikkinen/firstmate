@@ -1,5 +1,7 @@
 """CI-only immutable journal API controls, not service/effect-owner acceptance."""
+from contextlib import nullcontext
 import copy
+import errno
 import hashlib
 import os
 import signal
@@ -150,6 +152,80 @@ class LifecycleDecisions(unittest.TestCase):
             first.admit(self.filename)
         self.assertEqual((anchor.stat().st_dev, anchor.stat().st_ino), (before.st_dev, before.st_ino))
         self.assertFalse(self.admit()["fresh"])
+
+    def assert_entry_failure_releases(self, failure):
+        fixture = LifecycleDecisions(); fixture.setUp()
+        transaction = None
+        try:
+            transaction = fixture.open()
+            self.assertEqual(transaction.history(), ({}, 0, 0))
+            anchor = transaction.anchor
+            info = anchor.stat()
+            identity, raw, fd = (info.st_dev, info.st_ino), anchor.read_bytes(), transaction.fd
+            path = {"inbox": fixture.inbox, "outbox": fixture.outbox,
+                    "anchor": anchor, "missing-anchor": anchor}.get(failure)
+            retained = fixture.root / "retained-entry-original"
+            expected, message = ValueError, "lifecycle journal root replaced"
+            if path is not None:
+                path.rename(retained)
+                if failure in ("inbox", "outbox"):
+                    path.mkdir(mode=0o700)
+                elif failure == "anchor":
+                    path.write_bytes(b"successor"); path.chmod(0o600)
+                    expected, message = ValueError, "lifecycle journal anchor replaced"
+                else:
+                    expected, message = FileNotFoundError, "No such file"
+            else:
+                expected, message = KeyboardInterrupt, "entry interrupted"
+            try:
+                interrupted = (patch.object(transaction, "fresh", side_effect=KeyboardInterrupt(message))
+                               if failure == "interrupt" else nullcontext())
+                with interrupted, self.assertRaisesRegex(expected, message):
+                    with transaction:
+                        self.fail("failed context entry executed its body")
+            finally:
+                if path is not None:
+                    if path.exists():
+                        if failure == "anchor": self.assertEqual(path.read_bytes(), b"successor")
+                        else: self.assertEqual(list(path.iterdir()), [])
+                        path.rename(fixture.root / "retained-entry-successor")
+                    retained.rename(path)
+            self.assertEqual((anchor.stat().st_dev, anchor.stat().st_ino), identity)
+            self.assertEqual(anchor.read_bytes(), raw)
+            # Observe descriptor retirement before any new open can reuse its
+            # numeric fd, but require public same-anchor acquisition as well.
+            retired = False
+            try:
+                os.fstat(fd)
+            except OSError as error:
+                self.assertEqual(error.errno, errno.EBADF)
+                retired = True
+            try:
+                with fixture.open() as replacement:
+                    self.assertEqual(replacement.anchor_identity, identity)
+                    self.assertEqual(replacement.history(), ({}, 0, 0))
+            except BlockingIOError:
+                self.fail("failed context entry retained journal lock")
+            self.assertTrue(retired, "failed context entry retained journal descriptor")
+            self.assertEqual(fixture.receipts(), {})
+        finally:
+            if transaction is not None: transaction.close()
+            fixture.doCleanups()
+
+    def test_context_entry_failures_release_descriptor_and_same_surviving_anchor(self):
+        for failure in ("inbox", "outbox", "anchor", "missing-anchor", "interrupt"):
+            with self.subTest(failure=failure):
+                self.assert_entry_failure_releases(failure)
+
+    def test_context_entry_release_counterfactual(self):
+        # Revert only entry-failure cleanup. The same regression must then fail
+        # through public reacquisition, not an unrelated identity refusal.
+        def unreleased_entry(transaction):
+            transaction.fresh()
+            return transaction
+        with patch.object(journal.LifecycleJournal, "__enter__", unreleased_entry):
+            with self.assertRaisesRegex(AssertionError, "failed context entry retained journal lock"):
+                self.assert_entry_failure_releases("inbox")
 
     def test_planned_public_symlink_and_nested_places_refuse(self):
         planned = copy.deepcopy(self.fragment); planned["protocols"][0]["stages"][0]["planned"] = True
@@ -321,8 +397,15 @@ class LifecycleDecisions(unittest.TestCase):
                             fixture.input(fixture.request)
                             message = "lifecycle journal root replaced"
                         elif case == "anchor":
-                            transaction.anchor.rename(transaction.anchor.with_name("retained-anchor"))
+                            before = transaction.anchor.stat()
+                            retained = fixture.root / "retained-anchor"
+                            transaction.anchor.rename(retained)
                             transaction.anchor.write_bytes(b""); transaction.anchor.chmod(0o600)
+                            self.assertEqual((retained.stat().st_dev, retained.stat().st_ino),
+                                             (before.st_dev, before.st_ino))
+                            self.assertEqual(retained.read_bytes(), b"")
+                            self.assertNotEqual((transaction.anchor.stat().st_dev, transaction.anchor.stat().st_ino),
+                                                (before.st_dev, before.st_ino))
                             message = "lifecycle journal anchor replaced"
                         elif case == "attempt":
                             fixture.fragment["protocols"][0]["stages"][0]["retry_limit"] = 1
