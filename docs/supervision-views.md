@@ -197,6 +197,7 @@ Its header owns invocation, bounds and exit handling; the invoking owner must co
 The closure includes every native reader and the admitted fixed passive adapter's conditional library graph and tmux backend sibling set, not just Python modules.
 Non-tmux passive integrations remain unsupported; preparation grants no new backend capability.
 An added reader dependency must update that closure and its relocated-code behavior tests before it is admitted.
+Only parent directories derived from that fixed member set are admitted, including the shared lifecycle registry/receipt schemas; arbitrary directories remain unsupported.
 
 Preparation reads regular tracked blobs from a full pinned Git commit, never copies the mutable working tree and refuses dirty tracked source.
 Git observation groups reuse the bounded passive-process owner, with a shared 120-second Git preparation deadline and no more than 20 seconds per command.
@@ -237,10 +238,34 @@ The response is synchronous observation for its invoking owner, not a durable ha
 Future foreground startup must still publish and validate its own lifecycle capabilities, registered actor, request/receipt contracts and identity-bound exit/stop proof before any service effect; this inspector grants none of them.
 No recurring actor or home mode is introduced by inspection.
 
+## Reader-first lifecycle contracts
+
+[`fm_view_lifecycle.py`](../bin/fm_view_lifecycle.py) owns the initial `fm-view-lifecycle.v1` request and `fm-view-owner.v1` structural record readers for the unfinished foreground owner.
+[`fm-view-lifecycle.py`](../bin/fm-view-lifecycle.py) exposes bounded inspection and planned-fragment/candidate-receipt construction; its header owns invocation and input-file requirements.
+No command publishes its output, commits a receipt, starts or stops a process, binds a socket, installs an actor or selects a home mode.
+A structurally valid record explicitly carries no readiness or signal authority: the inspector deliberately does not verify the selected process, code, socket or root against live state.
+Its invoking owner consumes refusal through its existing wake path.
+
+Candidate fragments use home-scoped protocol and process-actor identities, caller-supplied bounds/retry/retention policy and `planned: true`.
+They are data for the owning home's future publisher, never an installation declaration from this tool.
+The public handoff validator and schemas remain the only registry/receipt grammar owners; they are included in the immutable closure rather than reimplemented or borrowed from a newer checkout.
+The first wire version has no historical version-zero writer; an unknown version is refused, with only its common identity envelope read to construct a `version-unsupported` candidate receipt.
+A stop request binds its complete selected owner snapshot; a start request cannot claim replacement authority.
+Generated receipts bind the canonical request digest, but are only candidate bytes until the future stage persists them immutably through its declared outbox.
+The inspector neither allocates receipt sequence numbers nor provides replay/idempotency admission.
+Malformed or unreadable input cannot manufacture a valid record identity for a refusal receipt; the eventual stage still needs its filename-bound intake/refusal owner.
+
+The foreground owner remains responsible for trusted immutable code selection, declared-actor admission, reader capability publication, live root/socket/epoch/process revalidation, service-only singleton serialization and receipt-before-effect ordering.
+It must also prove actual generation-pinned process exit and preserve replacement paths on cleanup.
+A candidate receipt or structurally matching PID is not permission to bypass any of those gates.
+The read-only `ProcessPin` primitive remains distinct from this wire reader and from that future effect owner.
+
 ## Verification and remaining migration
 
 [`tests/fm-supervision-views.test.sh`](../tests/fm-supervision-views.test.sh) runs isolated real-socket, bounded-lane and legacy-fold comparison tests in CI.
 Its public bundle CLI cases additionally exercise pinned old/new versions, full verification and idempotent concurrent publication, dirty/missing/symlink/oversized source refusal, unsafe stores, invalid identities/manifests and immutable existing-version refusal without repair.
+Lifecycle-contract cases exercise the public inspector CLI, public registry/receipt validation, independent malformed-field and stop-binding controls, unknown-version envelope refusal, bounded hostile file shapes and process/socket/record-effect tripwires.
+A relocated contract-reader control hides its source checkout, verifies a planned candidate through the bundled shared schema owner, then corrupts that schema alone and requires explicit refusal rather than borrowing another copy.
 Each damaged-member control first verifies an independent intact version, so an unrelated corrupt member cannot make that check vacuous.
 Public capability-CLI controls compare the complete response, relocate matching inspectors while hiding their source checkout, forbid child creation and compare all home/store entries and bytes before and after inspection.
 Independent unsupported-symbol and actual syscall/peer-UID refusals require empty stdout, while corrupt bundles, mismatched inspector versions, unsafe roots and probe-time replacement of each root refuse without modifying retained originals.

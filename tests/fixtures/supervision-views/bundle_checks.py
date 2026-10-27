@@ -823,6 +823,69 @@ class BundlePreparation(unittest.TestCase):
         self.assertEqual(before, {p.name: p.read_bytes() for p in (self.home / "state").iterdir()})
         self.assertTrue(self.command("verify", "--bundle", bundle)["verified"])
 
+    def test_fixed_schema_directory_closure_refuses_mode_links_and_extra_tree(self):
+        bundle = self.prepared()
+        for relative in ("docs", "docs/handoff-coverage"):
+            for defect in ("mode", "symlink"):
+                with self.subTest(relative=relative, defect=defect):
+                    copy = self.clone_bundle(bundle)
+                    self.assertTrue(self.command("verify", "--bundle", copy)["verified"])
+                    member = copy / relative
+                    if defect == "mode":
+                        member.chmod(0o700)
+                    else:
+                        parent = member.parent
+                        parent.chmod(0o700)
+                        retained = parent / (member.name + "-retained")
+                        member.rename(retained)
+                        # Keep the retained original OUTSIDE the immutable tree,
+                        # so only the directory-link guard can reject this tree.
+                        external = self.root / ("retained-" + os.urandom(4).hex())
+                        retained.rename(external)
+                        member.symlink_to(external, target_is_directory=True)
+                        parent.chmod(0o500)
+                    self.command("verify", "--bundle", copy, ok=False)
+        copy = self.clone_bundle(bundle)
+        self.assertTrue(self.command("verify", "--bundle", copy)["verified"])
+        (copy / "docs").chmod(0o700)
+        (copy / "docs/unadmitted").mkdir(mode=0o500)
+        (copy / "docs").chmod(0o500)
+        self.command("verify", "--bundle", copy, ok=False)
+
+    def test_relocated_lifecycle_contract_reader_keeps_shared_schema_owner(self):
+        bundle = self.prepared()
+        policy = self.root / "lifecycle-policy.json"
+        policy.write_text(json.dumps({"bounds": {"accepted": "1m", "waiting": "1m", "held": "1m"},
+                                     "retry_limit": 0, "cleanup": {"stage": "lifecycle",
+                                     "receipts_after": "7d", "records_after": "7d"}}) + "\n")
+        policy.chmod(0o600)
+        state = self.home / "state"
+        before = {p.name: p.read_bytes() for p in state.iterdir()}
+        self.repo.rename(self.root / "source-hidden")
+        result = subprocess.run([sys.executable, "-B", str(bundle / "bin/fm-view-lifecycle.py"),
+                                 "candidate", "--home", str(self.home), "--owner", "main",
+                                 "--inbox", str(state / "read-requests"), "--outbox", str(state / "read-receipts"),
+                                 "--policy", str(policy)], capture_output=True, env=self.environment, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b"")
+        candidate = json.loads(result.stdout)
+        self.assertTrue(candidate["protocols"][0]["stages"][0]["planned"])
+        self.assertEqual(before, {p.name: p.read_bytes() for p in state.iterdir()})
+        self.assertTrue(self.command("verify", "--bundle", bundle)["verified"])
+        # Corrupt just the relocated registry schema after the healthy control.
+        # This reader must not borrow the source checkout's newer validator.
+        schema = bundle / "docs/handoff-coverage/handoff-registry-v1.schema.json"
+        schema.chmod(0o600)
+        schema.write_bytes(b'{"unsupported-keyword": true}\n')
+        result = subprocess.run([sys.executable, "-B", str(bundle / "bin/fm-view-lifecycle.py"),
+                                 "candidate", "--home", str(self.home), "--owner", "main",
+                                 "--inbox", str(state / "read-requests"), "--outbox", str(state / "read-receipts"),
+                                 "--policy", str(policy)], capture_output=True, env=self.environment, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"fm-view-lifecycle: refused: lifecycle schema unavailable:", result.stderr)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in state.iterdir()})
+
     def capabilities(self, bundle, *, tool=None, fault=None, ok=True, home=None, identity=None):
         tool = tool or ROOT / "bin/fm-view-capabilities.py"
         arguments = ["--bundle", str(bundle), "--identity", identity or bundle.name,
