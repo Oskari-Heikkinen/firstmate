@@ -42,6 +42,7 @@ def allowed_refusal(error):
     return reason in (
         "captured crew inputs require legacy", "custom classifier/input reader requires legacy",
         "nonstandard input root requires legacy",
+        "service refused: configured no-mistakes home resolver requires legacy",
         "service refused: passive adapter bound unsupported; use legacy",
         "service refused: custom ERE classification remains with legacy",
         "service refused: relative worktree spelling remains with legacy",

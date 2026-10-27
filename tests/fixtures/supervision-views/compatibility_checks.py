@@ -1218,6 +1218,60 @@ sys.exit(run.returncode)
                 self.assertEqual(actual, legacy)
                 self.assertEqual(cursor.read_bytes(), expected_cursor)
 
+    async def test_device_renumber_keeps_real_client_parity_and_independent_rewind_guard(self):
+        self.status(b"note: already handled\n")
+        await self.invoke("fm-wake-drain.sh")
+        cursor = self.state / ".status-presentation-cursor"
+        fields = cursor.read_bytes().rstrip(b"\n").split(b"\t")
+        if not fields[1].startswith(b"strong:"):
+            self.skipTest("filesystem lacks birth-time identities; weak identity stays device-bound")
+        fields[1] = b"strong:2096:" + fields[1][len(b"strong:"):]
+        old_cursor = b"\t".join(fields) + b"\n"
+        cursor.write_bytes(old_cursor)
+        with (self.state / "task.status").open("ab") as stream:
+            stream.write(b"note: new answer\n")
+        expected, _ = await self.invoke("fm-wake-drain.sh", native=False)
+        expected_cursor = cursor.read_bytes()
+        wrapper = self.home / "fakebin/python3"
+        marker = self.home / "device-renumber-client-output"
+        for rewind in (False, True):
+            cursor.write_bytes(old_cursor)
+            wrapper.write_text(f'''#!{sys.executable}
+import subprocess, sys
+from pathlib import Path
+run = subprocess.run([{sys.executable!r}] + sys.argv[1:], stdout=subprocess.PIPE)
+output = run.stdout
+if run.returncode == 0 and len(sys.argv) > 2 and sys.argv[1].endswith("fm-view-client.py") and sys.argv[2] == "drain-presentation":
+    Path({str(marker)!r}).write_bytes(output)
+    if {rewind!r}:
+        rows = []
+        for line in output.splitlines(keepends=True):
+            if line.startswith(b"A\\t"):
+                parts = line.rstrip(b"\\n").split(b"\\t")
+                parts[2] = b"0"
+                line = b"\\t".join(parts) + b"\\n"
+            rows.append(line)
+        output = b"".join(rows)
+sys.stdout.buffer.write(output)
+sys.exit(run.returncode)
+''')
+            wrapper.chmod(0o700)
+            calls = []
+            original = Presentation.read
+            def observed(instance, rows, vocabulary=None):
+                calls.append(rows)
+                return original(instance, rows, vocabulary)
+            with self.subTest(rewind=rewind), patch.object(Presentation, "read", observed):
+                actual, error = await self.invoke("fm-wake-drain.sh")
+                self.assertEqual(len(calls), 1, error)
+                self.assertTrue(marker.exists(), error)
+                self.assertGreater(calls[0][0]["offset"], 0)
+                diagnostic = b"malformed or regressive native endpoints; using legacy presentation"
+                if rewind: self.assertIn(diagnostic, error)
+                else: self.assertNotIn(b"use legacy", error)
+                self.assertEqual(actual, expected)
+                self.assertEqual(cursor.read_bytes(), expected_cursor)
+
     async def test_native_annotation_rendering_never_reopens_a_span_or_cursor(self):
         for task in ("task", "A-task", "z-task"):
             self.status(task=task)

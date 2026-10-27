@@ -37,7 +37,7 @@ import re
 import stat
 import sys
 
-from fm_view_engine import MAX_MESSAGE, TASK_ID, client, encoded, require
+from fm_view_engine import MAX_MESSAGE, TASK_ID, client, encoded, identity, require
 from fm_view_offsets import MAX_MARKER_TEXT, observation_identity
 
 
@@ -55,14 +55,15 @@ def binding(environment):
     # substitute it for a caller's custom vocabulary/identity observation seam.
     require(not any(value for name, value in environment.items()
                     if name.startswith("FM_CLASSIFY_") or name in (
-                        "FM_STATUS_IDENTITY_READER", "FM_STATUS_SIZE_READER", "FM_STATUS_SPAN_READER")),
+                        "FM_STATUS_IDENTITY_READER", "FM_STATUS_SIZE_READER", "FM_STATUS_SPAN_READER",
+                        "FM_OPEN_DECISIONS_READ_PROBE")),
             "custom classifier/input reader requires legacy")
     path, epoch = environment.get("FM_VIEW_SOCKET", ""), environment.get("FM_VIEW_EPOCH", "")
     require(path and epoch, "explicit socket and epoch required")
     return path, home, epoch
 
 
-def presentation_rows(raw, from_state=False):
+def presentation_rows(raw, from_state=False, state_device=None):
     rows, originals = [], []
     for line in raw.decode("utf-8", "surrogateescape").split("\n"):
         if not line:
@@ -74,7 +75,7 @@ def presentation_rows(raw, from_state=False):
         values = [end] if from_state else [end, parts[3], parts[4]]
         require(all(re.fullmatch(r"[0-9]{1,16}", value) for value in values)
                 and fully in ("0", "1"), "invalid captured offsets")
-        row = {"task": task, "end": int(end), "identity": observation_identity(strong),
+        row = {"task": task, "end": int(end), "identity": observation_identity(strong, state_device),
                "fully_presented": fully == "1"}
         if from_state:
             row["strong_identity"] = strong
@@ -264,8 +265,12 @@ def main(arguments, environment):
     require(len(arguments) == 1, "unexpected presentation argument")
     raw = sys.stdin.buffer.read(MAX_MESSAGE + 1)
     require(len(raw) <= MAX_MESSAGE, "presentation input exceeds bound")
-    rows, originals = presentation_rows(raw, from_state=verb in ("drain-presentation", "status-backstop"))
+    state_root = Path(home) / "state"
+    state_binding = identity(state_root)
+    rows, originals = presentation_rows(raw, from_state=verb in ("drain-presentation", "status-backstop"),
+                                        state_device=state_binding[0])
     result = client(path, home, epoch, verb, {"rows": rows}, timeout=30)
+    require(identity(state_root) == state_binding, "state root changed during presentation request")
     if verb == "status-backstop":
         return backstop_output(result, rows, originals)
     return presentation_output(result, rows, originals, from_state=verb == "drain-presentation")

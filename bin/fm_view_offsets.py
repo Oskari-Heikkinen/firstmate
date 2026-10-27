@@ -12,13 +12,36 @@ from fm_view_engine import MAX_FILE, require
 
 MAX_MARKER_TEXT = 4096
 
-STRONG_IDENTITY = re.compile(r"(?:strong:([0-9]+):([0-9]+):([^\t\n]+)|weak:([0-9]+):([0-9]+))\Z")
+LEGACY_STRONG = re.compile(r"strong:([0-9]+):([0-9]+):([^\t\n]+)\Z")
+CURRENT_STRONG = re.compile(r"strong:([0-9]+):([^\t\n]+)\Z")
+WEAK_IDENTITY = re.compile(r"weak:([0-9]+):([0-9]+)\Z")
 
 
-def observation_identity(strong):
-    match = STRONG_IDENTITY.fullmatch(strong) if type(strong) is str else None
-    require(match is not None, "unsupported captured file identity")
-    return [int(match.group(1) or match.group(4)), int(match.group(2) or match.group(5))]
+def canonical_identity(value):
+    # Compatibility projection of the shell owner's _fm_file_ident_canon_to.
+    # Only the old strong form loses its device. Weak forms never do.
+    match = LEGACY_STRONG.fullmatch(value) if type(value) is str else None
+    return "strong:" + match.group(2) + ":" + match.group(3) if match else value
+
+
+def same_identity(stored, current):
+    return bool(stored and current and canonical_identity(stored) == canonical_identity(current))
+
+
+def observation_identity(strong, state_device=None):
+    require(type(strong) is str, "unsupported captured file identity")
+    match = LEGACY_STRONG.fullmatch(strong) or WEAK_IDENTITY.fullmatch(strong)
+    if match:
+        return [int(match.group(1)), int(match.group(2))]
+    match = CURRENT_STRONG.fullmatch(strong)
+    require(match is not None and type(state_device) is int and state_device >= 0,
+            "unsupported captured file identity")
+    # A canonical strong identity no longer carries a device. Admit only the
+    # state root's identity-bound filesystem: the native regular-file capture
+    # must independently MATCH this pair before any facts can succeed. A file
+    # mounted from a different device refuses for complete legacy fallback.
+    # This prediction grants no birth-time proof or cursor authority.
+    return [state_device, int(match.group(1))]
 
 
 def text(captured):
@@ -75,7 +98,7 @@ def marker_offset(captured, strong):
     offset, _, identity = classified.partition("@")
     # Arbitrary/corrupt integer widths fall back to legacy rather than allowing
     # unbounded integer parsing in the resident reader.
-    return number(offset) if identity == strong else 0
+    return number(offset) if same_identity(identity, strong) else 0
 
 
 def snapshot_row(snapshot, inputs):
@@ -84,7 +107,7 @@ def snapshot_row(snapshot, inputs):
     inputs.task_path(snapshot["task"], ".status")
     require(type(snapshot["identity"]) is list and len(snapshot["identity"]) == 2
             and all(type(value) is int and value >= 0 for value in snapshot["identity"])
-            and snapshot["identity"] == observation_identity(snapshot["strong_identity"]),
+            and snapshot["identity"] == observation_identity(snapshot["strong_identity"], inputs.state_identity[0]),
             "drain snapshot identity mismatch")
     require(type(snapshot["end"]) is int and 0 <= snapshot["end"] <= MAX_FILE,
             "invalid drain snapshot endpoint")
@@ -106,7 +129,7 @@ class Offsets:
                 require(self.inputs.state_named_read("." + task + ".open-decisions-cursor") is None,
                         "legacy migration cursor requires legacy presentation")
             identity, offset = manifest.get(task, (strong, 0))
-            if identity != strong or offset > snapshot["end"]:
+            if not same_identity(identity, strong) or offset > snapshot["end"]:
                 offset = 0
             # The signal marker's historical path maps every dot in the full
             # status filename, not just in the task id.

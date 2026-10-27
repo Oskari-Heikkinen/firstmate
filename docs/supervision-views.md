@@ -38,6 +38,7 @@ Fixed passive backend, custody, done-head and forge reads retain their existing 
 Backend fallback currently admits tmux only, and remote endpoint reads remain legacy-owned.
 A run-step observation that needs no backend probe can still be computed natively on other recorded backends.
 An unsupported integration refuses for explicit legacy fallback, never an optimistic current-state answer.
+A configured no-mistakes home resolver also remains legacy-owned unless an explicit `NM_HOME` overrides it; native code must not observe an ambient daemon or SQLite inventory instead of the resolved one.
 The captured-presentation verb takes only `rows`, at most 256 objects with exactly `task`, `end`, `offset`, `identity`, `classified` and `fully_presented`.
 Its classifier owner is [`fm_view_presentation.py`](../bin/fm_view_presentation.py).
 The invoking presentation transaction supplies captured byte endpoints, contiguous presentation/classification offsets, device/inode pairs and the annotation's fully-presented flags.
@@ -46,6 +47,10 @@ The reply preserves request order and returns each row's captured endpoint/gener
 The client requires an integer observed offset within the captured endpoint and rejects suggestions below it; the captured-offset API also requires exact equality to its caller-supplied offset.
 A suggestion has no acknowledgement effect: the invoking owner must still verify its original strong birth-time identity and commit only after the prepared output reaches stdout.
 Device/inode pairs are observation checks and disposable index keys, never substitutes for those strong cursor identities.
+The client accepts the owner's current `strong:<inode>:<birth>` identity and its older device-bearing form without changing the original identity passed back for commit.
+For the current form, native observation is limited to the state root's identity-bound filesystem: its predicted device/inode pair must match the independently captured regular file, otherwise the whole request refuses for legacy fallback.
+A different-device mounted status file is not admitted by that current-form native path.
+Persisted strong identities compare through the owner's device-independent equivalence, while weak identities retain their device.
 The `drain-presentation` verb instead accepts rows with exactly `task`, `end`, `identity`, `strong_identity` and `fully_presented`.
 [`fm_view_offsets.py`](../bin/fm_view_offsets.py) reads the existing presentation manifest once for that batch, and reads each task's classification marker without spawning a helper.
 Its reply additionally carries `classification_markers` in request order, each with exactly `task` and `text`: null for an absent marker, otherwise the captured text with NULs and trailing newlines removed, bounded to 4096 bytes.
@@ -146,6 +151,8 @@ Missing or malformed reported markers remain unreported, preserving the historic
 Before native selection, the existing presentation owner independently validates every suggested task/identity/endpoint against its captured snapshot and current cursor manifest under the held presentation lock.
 That guard reads the cursor once for the whole batch, rejects missing, duplicate, foreign, malformed or regressive suggestions, and preserves the existing identity/size-reset and legacy-migration boundaries.
 A service's claimed observed offset is not sufficient authority to rewind the owner's cursor.
+The cursor floor, backstop receipt and commit batch share a bounded nonsymlink regular-file manifest read and project persisted identities through the existing shell identity owner before comparing them.
+Binary, oversized, changing or nonregular manifests refuse the optional batch; canonicalization never rewrites the manifest or grants a new mutation owner.
 The drain also validates the private client's sorted task groups and complete ordered classification-marker evidence before native selection, so malformed private output falls back to the complete legacy presentation before any annotation or section is printed.
 After annotations, at the original acknowledgement-preparation boundary under the held presentation lock, the existing owner rereads every evidenced marker with its existing text reader, validates present markers through its existing parser and compares their normalized bytes.
 Unchanged supported evidence retains native suggestions without per-row subprocesses.
@@ -305,6 +312,10 @@ Seven cases whose assertions specifically require the legacy persistent fold cac
 A separate resident real-client lifecycle regression compares complete output and presentation cursors through repeated growth, resolution, truncation, same-size rotation and a kind change without status mutation; it also requires native calls and proves obsolete legacy fold caches are neither authoritative nor rewritten by the native read.
 The wrapper passes the original stdout descriptor directly to the shell owner so failed-output regressions cannot accidentally commit before a buffered wrapper write fails.
 A no-request path is disclosed separately, not counted as native coverage; these include early lock/validation refusals that never reach read selection.
+The snapshot's legacy fold-cursor, fake-copy race and byte-probe assertions additionally require real-client pre-RPC refusal and complete legacy fallback, never native cursor coverage.
+Separate resident append cases compare whole public snapshot output without native writes to the legacy snapshot cursor.
+Current-state parity also covers explicit no-run answers, positive daemon-running evidence and no-checks/no-CI markers that cannot promote a reported green claim.
+Device-renumber cases retain whole drain/cursor parity, independent corrupt-client rewind refusal, receipt preservation and descriptor device/inode checks.
 The complete existing [`fm-wake-queue.test.sh`](../tests/fm-wake-queue.test.sh) case pool also selects this isolated drain wrapper, retaining concurrent append/ack, actor exclusion, recovery generations, interruption and lock/claim assertions with all independent cases collected before its summary.
 The wrapper forwards interruption signals to its actual shell child and the lock-boundary test verifies that direct parent relation rather than confusing wrapper and transaction-owner PIDs.
 The original late Perl-reader symlink-swap case retains every assertion through its legacy owner and is counted separately, not as native coverage.
