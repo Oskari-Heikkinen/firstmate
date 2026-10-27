@@ -17,6 +17,9 @@ no effective capabilities, local single-machine enrollment and published roots.
 No subprocess, attach, target signals, policy writes or workload. Output cap is TOTAL.
 `account-proc FILE` replays its proc.json (including synthetic CI fixtures).
 `source-families` prints the retrospective coverage/plan source registry.
+`validate-workload FILE` validates sealed v2 replay data without executing or
+materializing it. A valid v1 corpus remains readable through replay/read-record,
+but is insufficient here. This reader never certifies B0 or production adapters.
 `prepare-calibration-plan FILE --revision SHA --checkout ABSOLUTE` resolves
 @REVISION@ and @CHECKOUT@ tokens offline, validates the complete plan and
 preserves its provenance/pins; it executes nothing and reads no home.
@@ -1216,6 +1219,18 @@ def corpus(value):
     return records
 
 
+def workload(value):
+    """Reader-first v2 factory; leave the v1 corpus path and semantics intact."""
+    if type(value) is dict and value.get("format") == "fm-supervision-replay.v1":
+        corpus(value)
+        raise Refused("v1 accounting corpus is insufficient for P1 whole-workload measurement")
+    validate(value, load_json(SCHEMAS / "replay-v2.schema.json"))
+    manifest(value["manifest"])
+    checked(value["trace"], "trace")
+    from fm_supervision_replay import _Workload
+    return _Workload(value)
+
+
 def content_seal(payload):
     return {"payload": payload, "sha256": digest(dump(payload).encode())}
 
@@ -1740,7 +1755,7 @@ def main():
     commands = parser.add_subparsers(dest="verb", required=True)
     commands.add_parser("source-families", help="print the complete retrospective source registry")
     commands.add_parser("probe", help="read-only availability/privilege report; never attaches")
-    for name in ("validate-manifest", "account", "replay", "read-record", "import-strace"):
+    for name in ("validate-manifest", "validate-workload", "account", "replay", "read-record", "import-strace"):
         sub = commands.add_parser(name)
         sub.add_argument("input")
         if name == "account":
@@ -1809,6 +1824,8 @@ def main():
             value = manifest(load_json(args.input))
             result = {"valid": True, "certified_complete": value["certified_complete"],
                       "homes": len(value["homes"])}
+        elif args.verb == "validate-workload":
+            result = workload(load_json(args.input)).summary()
         elif args.verb == "import-strace":
             result = import_strace(args.input)
         elif args.verb == "account":

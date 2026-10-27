@@ -438,7 +438,7 @@ Only the existing explicit delayed-deletion fixture's identity-change refusal is
 Deletion after successful native capture instead reaches the annotation-time whole-selection fallback above; its explicit legacy annotation diagnostic is not native annotation proof.
 Its default legacy selection remains independently exercised by the existing CI tier.
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.
-There is no P0 replay adapter or B0 performance acceptance yet.
+The [P0 v2 workload reader](supervision-accounting.md#reader-first-v2-workload-extension) is available as data-only infrastructure; production legacy/resident replay adapters and B0 performance acceptance remain unfinished.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).
 Identity-bound shutdown is confined to the explicit foreground owner above; compatibility refusals already fall back to legacy before presentation commits.
 The journal API's CI cases cover immutable replay and completion, filename-bound malformed/unknown/unreadable input, independent root/anchor replacement, failed-entry descriptor retirement and same-anchor reacquisition, serialization, bounded history, failed writes/rename/fsync and single-guard counterfactuals without any service, signal, socket or authoritative record effect.
