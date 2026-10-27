@@ -82,13 +82,14 @@ class PrivateAnchor:
 
 
 class ServiceSingleton(PrivateAnchor):
-    """Private runtime admission for the unfinished foreground owner only.
+    """Private runtime admission for the explicit foreground owner only.
 
     This is NOT the watcher/queue/presentation/source/custody boundary. It
     serializes native read-service starts across all runtimes of one home.
+    Start takes this before ANY journal construction/admission; stop does not.
     The caller must retain it through actual process exit after service effects
     begin; socket or executor cleanup does not authorize releasing it. This API
-    neither starts a process nor supplies that future lifecycle/exit gate.
+    neither starts a process nor supplies the caller's lifecycle/exit gate.
     """
     def __init__(self, home, runtime, roots):
         home, runtime = path(str(home), "singleton home"), path(str(runtime), "singleton runtime")
