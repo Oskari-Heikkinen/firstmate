@@ -1,6 +1,6 @@
 ---
 name: afk
-description: Load on /afk or the operator going away, when state/.afk-contract or state/.afk exists, on a message starting FM_INJECT_MARK or any state/.subsuper-* marker, when away escalations stop arriving or an away-daemon wedge alarm fires, and when the operator returns from away mode.
+description: Load on /afk or the operator going away, when state/.afk-contract or state/.afk exists, on a message starting FM_INJECT_MARK or any state/.subsuper-* marker, when away escalations stop arriving or an away-daemon wedge alarm fires, and when the operator returns from away mode. Not for holding one decision until the operator is back (captain-hold-lifecycle).
 user-invocable: true
 metadata:
   internal: true

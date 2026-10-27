@@ -1,6 +1,6 @@
 ---
 name: quiet-waits
-description: Load before putting a worker on a machine-checkable wait, before sending work, a fix or an answer to a parked or saved worker, before resuming saved copy-free work, on a wait-condition, no-agent, supersedes, or config-reread wake, and before hand-closing a blocker.
+description: Load before putting a worker on a machine-checkable wait, before sending work, a fix or an answer to a parked or saved worker, before resuming saved copy-free work, on a wait-condition, no-agent, supersedes, or config-reread wake, and before hand-closing a blocker. Not for steering a worker that is running and not parked.
 user-invocable: false
 metadata:
   internal: true

@@ -1,6 +1,6 @@
 ---
 name: stuck-crewmate-recovery
-description: Load on a dead or windowless direct-report endpoint, a REBOOT_RELAUNCH line, a stale wake, a looping, confused, silent or unresponsive worker, a failed or unanswered steer, a worker pane showing a bare shell or `backgrounded · <id>`, or a worker calling no-mistakes dead - before relaunching, respawning or sending text to that worker. Not for spawning new work or a launch-time trust or permission dialog (harness-adapters).
+description: Load on a dead or windowless direct-report endpoint, a REBOOT_RELAUNCH line, a stale wake, a looping, confused, silent or unresponsive worker, a failed or unanswered steer, a worker pane showing a bare shell or `backgrounded · <id>`, or a worker calling no-mistakes dead - before relaunching or respawning that same worker or sending it text. Not for spawning new work or a launch-time trust or permission dialog (harness-adapters).
 user-invocable: false
 metadata:
   internal: true

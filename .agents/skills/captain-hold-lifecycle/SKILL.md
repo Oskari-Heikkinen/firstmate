@@ -1,6 +1,6 @@
 ---
 name: captain-hold-lifecycle
-description: Load before treating an investigation, scout report, or review as complete, before holding or deferring a decision (including a "later" or "not now" answer), when recording or routing the operator's answer, before recording time-boxed authority, a temporary rule or an open condition ("until X is live", "for this week"), and on any RECORD DIVERGENCE line.
+description: Load before treating an investigation, scout report, or review as complete, before holding or deferring a decision (including a "later" or "not now" answer), when recording or routing the operator's answer, before recording time-boxed authority, a temporary rule or an open condition ("until X is live", "for this week"), and on any RECORD DIVERGENCE line. Not for writing a report yourself or answering a worker's routine question from your own judgment.
 user-invocable: false
 metadata:
   internal: true

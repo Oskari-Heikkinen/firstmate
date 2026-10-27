@@ -1,6 +1,6 @@
 ---
 name: merge-queue
-description: Only for a project that lands through an external merge queue or merge train - load before briefing, spawning, dispatching, relaunching or handing a head off for one of its tasks, before withdrawing or replacing a car in that train, and on any `procevent merge-queue` wake. Not for a PR or landing in a project without a queue (ship-landing) or for building merge-queue tooling (tool-design).
+description: Only for a project that lands through an external merge queue or merge train - load before briefing, spawning, dispatching, relaunching or handing a head off for one of its tasks, before withdrawing or replacing a car in that train, and on any `procevent merge-queue` wake. Not for a PR, red checks or landing in a project without a queue (ship-landing), cleanup after a landing, or building merge-queue tooling (tool-design).
 user-invocable: false
 metadata:
   internal: true
