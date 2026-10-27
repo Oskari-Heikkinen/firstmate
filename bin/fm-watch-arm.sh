@@ -719,14 +719,40 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
 confirm_started=$(date +%s)
 deadline=$(( confirm_started + CONFIRM_TIMEOUT + 1 ))
 confirm_cap=$(( confirm_started + START_CAP_SECONDS + 1 ))
+# No stop may run handle_arm_signal between the asynchronous launch and $child
+# owning $!: it would find no child to stop and leave the started watcher
+# orphaned, holding the home lock. Defer a stop until the cycle names the child,
+# then replay it.
+launch_signal=
+trap '[ -n "$launch_signal" ] || launch_signal=HUP' HUP
+trap '[ -n "$launch_signal" ] || launch_signal=TERM' TERM
+trap '[ -n "$launch_signal" ] || launch_signal=INT' INT
 if [ -n "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ]; then
   FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$child_out" &
 else
   "$WATCH" >"$child_out" &
 fi
+# Test seam, honored only under tests/lib.sh's FM_TEST_SEAM=1:
+# FM_TEST_ARM_LAUNCH_HOLD holds the arm inside that window until the named path
+# exists (at most 30s), so a test can stop it there.
+if [ "${FM_TEST_SEAM:-}" = 1 ] && [ -n "${FM_TEST_ARM_LAUNCH_HOLD:-}" ]; then
+  hold_polls=0
+  while [ ! -e "$FM_TEST_ARM_LAUNCH_HOLD" ] && [ "$hold_polls" -lt 600 ]; do
+    sleep 0.05
+    hold_polls=$((hold_polls + 1))
+  done
+fi
 child=$!
 cycle_begin "$child" started "$(fm_pid_identity "$child" 2>/dev/null || true)"
 child_done=0
+trap 'handle_arm_signal HUP 129' HUP
+trap 'handle_arm_signal TERM 143' TERM
+trap 'handle_arm_signal INT 130' INT
+case "$launch_signal" in
+  HUP) handle_arm_signal HUP 129 ;;
+  TERM) handle_arm_signal TERM 143 ;;
+  INT) handle_arm_signal INT 130 ;;
+esac
 
 owned_child_finished() {
   local rc=$1 signal reason_type status

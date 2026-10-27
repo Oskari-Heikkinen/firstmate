@@ -1449,6 +1449,48 @@ test_watcher_exits_when_its_home_is_removed() {
   pass "watch-arm: a watcher exits when its home is removed"
 }
 
+# A stop that reached the arm after it forked its watcher but before it recorded
+# the pid found no child to stop, so the arm exited and left a live watcher,
+# reparented and holding the home lock. The seam holds the arm in that window
+# until the watcher has taken the lock; the stop must still end that watcher and
+# close the cycle with a row that names it.
+test_stop_during_watcher_launch_stops_the_watcher() {
+  local dir home state fakebin armout hold watcher_pid rc i=0
+  dir=$(make_case launch-stop)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  hold="$dir/release-launch"
+  mkdir -p "$home/data"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_ARM_CONFIRM_TIMEOUT="$REARM_CONFIRM_SECONDS" FM_TEST_ARM_LAUNCH_HOLD="$hold" \
+    "$WATCH_ARM" > "$armout" 2>&1 &
+  ARM_PID=$!
+  while [ "$i" -lt 400 ]; do
+    watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    [ -n "$watcher_pid" ] && is_live_non_zombie "$watcher_pid" && break
+    is_live_non_zombie "$ARM_PID" || break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  if [ -z "$watcher_pid" ] || ! is_live_non_zombie "$watcher_pid"; then
+    : > "$hold"
+    fail "held arm's watcher did not take the lock: $(cat "$armout")"
+  fi
+  kill -TERM "$ARM_PID" 2>/dev/null || fail "could not stop the held arm"
+  : > "$hold"
+  rc=0
+  wait_for_exit "$ARM_PID" 200 || rc=$?
+  [ "$rc" -eq 143 ] || fail "stopped arm exited $rc, not through its TERM handler: $(cat "$armout")"
+  wait_for_pid_gone "$watcher_pid" 200 \
+    || { kill -TERM "$watcher_pid" 2>/dev/null; fail "a stop during launch left watcher pid $watcher_pid running"; }
+  grep -q "watcher_pid=$watcher_pid	.*reason=arm-interrupted" "$state/.watch-cycle-exits.log" \
+    || fail "the interrupted cycle row does not name the watcher: $(cat "$state/.watch-cycle-exits.log" 2>/dev/null)"
+  pass "watch-arm: a stop during the watcher launch still stops the watcher"
+}
+
 # tests/lib.sh's exit-time reaper must stop a watcher a suite armed for a
 # temporary home, through the home-scoped stop, so no test leaves one behind.
 # The reaper is driven with a private registry so this suite's own registry
@@ -2008,6 +2050,7 @@ WATCH_ARM_CASES=(
   test_malformed_marker_is_quarantined_once
   test_markerless_legacy_queue_is_recovered_on_arm
   test_watcher_exits_when_its_home_is_removed
+  test_stop_during_watcher_launch_stops_the_watcher
   test_reaper_stops_a_tracked_watcher
   test_restart_preserves_recovery_across_reused_pid_lock
   test_stop_ends_the_home_watcher_and_publishes_downtime
