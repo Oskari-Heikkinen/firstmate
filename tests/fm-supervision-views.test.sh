@@ -69,6 +69,14 @@
 # counterfactual with the final refusal intact; shared oracles keep both callers
 # and preexisting-anchor controls aligned without rerunning identical inputs.
 # Neither these mutexes nor structural/journal decisions authorize service effects.
+# A separate foreground-owner stage uses trusted immutable bundles and real
+# fixture processes: declared actor/receipts before bind, live listener binding,
+# pidfd-only stop, actual thread/STOP/ignored-TERM exit refusal, singleton lifetime
+# and replacement-preserving cleanup. Competing starts cannot write even the
+# first journal anchor before singleton admission; shared preliminary/locked
+# intake fences stop-to-start swaps. Public ambiguous start/stop replay remains
+# a nonzero no-effect result. Each guard has its own unchanged-oracle control.
+# No installed or live home is exercised.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh
@@ -193,6 +201,25 @@ then
   pass 'classification evidence admission and whole late freshness guard retain their owner'
 else
   printf 'not ok - classification marker evidence and late freshness guard\n' >&2
+  rc=1
+fi
+# The foreground safety batch remains separate from the complete primitive and
+# compatibility pools; a failure never suppresses their reachable checks.
+if PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+import unittest
+
+root = Path(sys.argv.pop())
+sys.path[:0] = [str(root / "bin"), str(root / "tests/fixtures/supervision-views")]
+from service_checks import ForegroundService
+
+unittest.main(defaultTest="ForegroundService", verbosity=2)
+PY
+then
+  pass 'isolated immutable foreground lifecycle and actual pidfd exit safety'
+else
+  printf 'not ok - foreground read-service lifecycle safety\n' >&2
   rc=1
 fi
 # First-use creation is distinct from reacquiring a preexisting anchor. Keep

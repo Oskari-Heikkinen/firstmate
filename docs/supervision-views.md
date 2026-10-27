@@ -3,7 +3,7 @@
 This is the maintainer owner of the Python 3.9+ view-engine primitives in [`fm_view_engine.py`](../bin/fm_view_engine.py) and [`fm_view_status.py`](../bin/fm_view_status.py).
 These modules are an **uninstalled foundation**, not a completed replacement for crew-state, wake drain or fleet snapshots.
 Existing shell entrypoints remain selected without a new runtime dependency.
-There is no service launcher, mode switch, service installer, health beacon, lease or watcher integration.
+There is an explicit immutable-code foreground lifecycle entrypoint, but no automatic launcher, mode switch, service installer, health beacon, lease or watcher integration.
 The [`supervision-views` skill](../.agents/skills/supervision-views/SKILL.md) owns the agent load trigger.
 
 ## Authority boundary
@@ -118,13 +118,13 @@ There is no monitoring timer, status-tail inference or cross-cycle verdict cache
 [`fm_view_process.py`](../bin/fm_view_process.py) bounds each passive child group and output stream, using pidfds to observe exit without reaping the leader before cleanup.
 A parent that exits while a descendant holds a pipe open cannot strand the observation or orphan that process group.
 Missing pidfd/nonreaping-wait support or a nondefault SIGCHLD handler refuses the native passive adapter.
-The same process module provides a read-only `ProcessGeneration`/`ProcessPin` primitive for future lifecycle integration.
+The same process module provides the read-only `ProcessGeneration`/`ProcessPin` primitive used by the explicit foreground owner below.
 It opens a pidfd before comparing the selected PID, procfs UID, boot identity and start ticks, then rejects an already-exited pinned incarnation even if a later numeric-PID observation matches.
 The generation is an ephemeral in-memory observation, not a new durable owner format.
 `wait_exit` waits on that descriptor within one fixed monotonic bound and observes actual kernel process exit without reaping or sending a signal.
 A closed socket, returned executor shutdown or stopped process is not exit; a surviving non-daemon thread keeps the observation pending and timeout refuses.
 This primitive does not validate home, code, actor, epoch, socket or lifecycle receipts and confers no service readiness or shutdown authority.
-Those gates remain with the unfinished foreground lifecycle owner; a future owner must complete them before any signal.
+Those gates belong to the explicit foreground lifecycle owner below, not this observation primitive.
 The native IPC and external-observation path are not yet admitted on non-Linux platforms; their unchanged legacy entrypoints remain selected.
 No process-birth or CPU saving has been measured or claimed.
 
@@ -191,7 +191,7 @@ It is not a completed hot-path migration or a performance acceptance claim.
 
 ## Immutable code preparation
 
-[`fm-view-bundle.py`](../bin/fm-view-bundle.py) prepares code for future read-service integration without installing an actor, starting a service or changing home selection.
+[`fm-view-bundle.py`](../bin/fm-view-bundle.py) prepares code for read-service integration without installing an actor, starting a service or changing home selection.
 Its header owns invocation, bounds and exit handling; the invoking owner must consume and route any refusal through its existing status/wake path.
 [`fm_view_bundle.py`](../bin/fm_view_bundle.py) owns the fixed dependency closure and the `fm-view-bundle.v1` manifest.
 The closure includes every native reader and the admitted fixed passive adapter's conditional library graph and tmux backend sibling set, not just Python modules.
@@ -214,8 +214,8 @@ The SHA256 of the complete manifest bytes is the version directory name and the 
 Files are owned single-link regular objects with mode 0400 (nonexecutables) or 0500 (executables); version directories are 0500 and the manifest is 0400.
 Verification rejects duplicate/unknown manifest fields, unsupported schemas, traversal, missing/extra files, links, special files, mode/count/byte-bound violations, mismatched hashes and changed read identities.
 It reads no code from the version being checked and does not import that version as part of verification.
-The manifest is content binding, not a signature or authority to run arbitrary code: the future launch owner must select a reviewed identity and revalidate it before loading.
-Preparing code neither registers nor starts a production actor, and the foreground identity/receipt/stop owner remains unfinished.
+The manifest is content binding, not a signature or authority to run arbitrary code: the invoking launch owner must select an already trusted reviewed identity.
+Preparing code neither registers nor starts a production actor; the explicit foreground tool below separately revalidates the selected bundle.
 
 ## Read-primitive preflight
 
@@ -235,12 +235,12 @@ Missing Python/kernel facilities, actual syscall refusals, a nondefault SIGCHLD 
 Inspection creates no child, listener, capability file, registry record or receipt, and never dynamically imports an inspected member to discover capabilities.
 Like the bundle verifier, the selected inspector and its ordinary modules must themselves be trusted code; self-inspection is not a signature or authority to execute an arbitrary object.
 The response is synchronous observation for its invoking owner, not a durable handoff to publish or reuse as fresh evidence.
-Future foreground startup must still publish and validate its own lifecycle capabilities, registered actor, request/receipt contracts and identity-bound exit/stop proof before any service effect; this inspector grants none of them.
+The explicit foreground owner below must separately apply its lifecycle gates; this inspector grants none of them.
 No recurring actor or home mode is introduced by inspection.
 
 ## Reader-first lifecycle contracts
 
-[`fm_view_lifecycle.py`](../bin/fm_view_lifecycle.py) owns the initial `fm-view-lifecycle.v1` request and `fm-view-owner.v1` structural record readers for the unfinished foreground owner.
+[`fm_view_lifecycle.py`](../bin/fm_view_lifecycle.py) owns the initial `fm-view-lifecycle.v1` request and `fm-view-owner.v1` structural record readers used by the explicit foreground owner.
 [`fm-view-lifecycle.py`](../bin/fm-view-lifecycle.py) exposes bounded inspection and planned-fragment/candidate-receipt construction; its header owns invocation and input-file requirements.
 No command publishes its output, commits a receipt, starts or stops a process, binds a socket, installs an actor or selects a home mode.
 A structurally valid record explicitly carries no readiness or signal authority: the inspector deliberately does not verify the selected process, code, socket or root against live state.
@@ -251,24 +251,24 @@ They are data for the owning home's future publisher, never an installation decl
 The public handoff validator and schemas remain the only registry/receipt grammar owners; they are included in the immutable closure rather than reimplemented or borrowed from a newer checkout.
 The first wire version has no historical version-zero writer; an unknown version is refused, with only its common identity envelope read to construct a `version-unsupported` candidate receipt.
 A stop request binds its complete selected owner snapshot; a start request cannot claim replacement authority.
-Generated receipts bind the canonical request digest, but are only candidate bytes until the future stage persists them immutably through its declared outbox.
+Generated receipts bind the canonical request digest, but are only candidate bytes until the owning stage persists them immutably through its declared outbox.
 The inspector neither allocates receipt sequence numbers nor provides replay/idempotency admission; the separate internal journal below supplies those primitives without effect authority.
 Malformed or unreadable payloads cannot manufacture a valid record identity for a refusal receipt.
 
 ### Immutable lifecycle decisions
 
-[`fm_view_journal.py`](../bin/fm_view_journal.py) supplies an internal transaction API for the unfinished foreground owner, not an intake daemon, publisher, launcher or installer.
+[`fm_view_journal.py`](../bin/fm_view_journal.py) supplies the explicit foreground owner's internal transaction API, not an intake daemon, launcher or installer.
 Its invoking owner must check declared-actor admission before using it and route every refusal through its existing wake path.
 All roots, the private outbox staging directory and the owning home's validated nonplanned fragment must already exist; this API creates no root or registration.
 The stage's private canonical input and outbox must be disjoint beneath the selected state root.
 Its new journal-only nonblocking flock serializes only this stage's receipt writers, never a legacy writer, watcher, queue, presentation, source or custody transaction.
-[`fm_view_lock.py`](../bin/fm_view_lock.py) is the shared private-anchor owner for this journal and the future service singleton.
+[`fm_view_lock.py`](../bin/fm_view_lock.py) is the shared private-anchor owner for this journal and the service singleton.
 The persistent single-link mode-0600 lock anchor is not a process owner or health record and is never unlinked or recovered by PID.
 Before opening or creating that anchor, the shared owner pins its private parent directory and checks the descriptor's mode, UID and identity against the caller's already selected parent incarnation.
 Anchor creation is relative to that verified descriptor, so pathname replacement cannot create an anchor in a successor tree; the final root/anchor barriers still refuse changed observations.
 Failed construction or context entry closes acquired descriptors and releases its lock without removing the anchor or suppressing the original failure.
 The parent descriptor is also retired on successful construction.
-A future start owner takes its separate service singleton before this journal; no journal transaction may remain held across an external effect or wait.
+The start owner takes its separate service singleton before any journal construction or admission; stop intake never takes the live singleton, and no journal transaction spans an external effect or wait.
 
 Intake selects a filename `<record>.<attempt>.json`, with the existing bounded token grammar for `record` and a positive decimal attempt within the declared retry limit.
 A valid payload must match that filename's identity, selected home and stage owner.
@@ -292,11 +292,50 @@ These primitives alone validate no actor, capability, code, socket or process, a
 
 The internal `ServiceSingleton` primitive binds canonical home/state/runtime identities and serializes starts across all runtime directories of that one home with the persistent state-root `.view-service.lock` anchor.
 Its boundary is independent of the journal and every legacy transaction; admission creates no service, socket, owner record, receipt or health evidence.
-The unfinished foreground owner must retain that descriptor through actual process exit after effects begin, including surviving non-daemon observation threads; leaving a context or closing a listener is not that proof.
-The foreground owner remains responsible for trusted immutable code selection, declared-actor admission, reader capability publication, live root/socket/epoch/process revalidation, service-singleton lifetime and receipt-before-effect ordering.
+The explicit foreground owner retains that descriptor through actual process exit after effects begin, including surviving non-daemon observation threads; leaving a context or closing a listener is not that proof.
+The foreground owner below is responsible for trusted immutable code selection, declared-actor admission, reader capability publication, live root/socket/epoch/process revalidation, service-singleton lifetime and receipt-before-effect ordering.
 It must also prove actual generation-pinned process exit and preserve replacement paths on cleanup.
 A candidate receipt or structurally matching PID is not permission to bypass any of those gates.
-The read-only `ProcessPin` primitive remains distinct from this wire reader and from that future effect owner.
+The read-only `ProcessPin` primitive remains distinct from this wire reader and from that effect owner.
+
+## Explicit foreground lifecycle owner
+
+[`fm-view-service.py`](../bin/fm-view-service.py) invokes [`fm_view_service.py`](../bin/fm_view_service.py) synchronously from an already trusted immutable bundle.
+Its header owns invocation, fixed runtime names, output and exit handling.
+It neither installs nor commissions itself, creates roots, publishes a registry fragment, chooses a home mode or repairs a previous service.
+Its invoking home owner must consume every output and the eventual process exit and route failures through its existing wake path; there is no autonomous recovery or independent health claim.
+The immutable closure includes the shared actor checker and its schema/IO dependencies.
+A mutable checkout or nonisolated interpreter refuses before actor or lifecycle writes.
+The selected contract must be a canonical private file in this home's published registry, not a candidate or planned stage.
+The existing actor install check must return declared against that exact published fragment; none, grandfathered and foreign declarations do not grant admission.
+
+The journal's shared bounded filename/payload reader first supplies a read-only selection without a lock anchor or decision.
+A start acquires the service singleton before constructing or admitting through the journal, then passes that same descriptor to the foreground owner.
+A contended start refuses synchronously without a journal anchor, receipt, ready or runtime effect, preserving the original service.
+Stop intake remains separate and never takes the live singleton.
+Locked admission independently matches that exact preliminary selection, including its raw-input fingerprint, before publishing any decision; an input replaced between stop selection and admission therefore cannot become an unlocked start.
+Malformed and unknown-version inputs retain filename-bound refusals through that same reader, never an operation-only second parser.
+Acceptance still precedes every runtime publication, bind or signal, with fresh request/receipt revalidation at the effect boundary.
+After its required admission boundary, terminal replay returns only historical results without a new ready or effect, and accepted-without-completion replay refuses as ambiguous without rewriting its history.
+The runtime pins its selected private directory descriptor before any creation; bounded publication and socket bind are relative to that descriptor, with namespace rechecks as additional refusals.
+It never unlinks an existing runtime object to make startup work.
+Fresh primitive capabilities must match the selected digest and are published immutably before bind; they remain observations, not a monitoring lease.
+Owner publication binds roots, code, capabilities, epoch, start request, actual process generation and socket identity.
+Clients are accepted only after those startup gates; ready output additionally requires the completed start receipt.
+The read transport, classifier modules and existing transaction owners are unchanged.
+
+The start owner releases that same singleton only on pre-effect failure or non-effect replay; once effects can begin it deliberately has no Python close path.
+The kernel alone releases its descriptor on actual process exit, including interpreter shutdown while non-daemon observation threads remain alive.
+Closing the listener, returning executor shutdown or returning the foreground command does not release that admission.
+No legacy watcher, presentation, queue, custody, source or lease boundary is substituted.
+Stop revalidates the exact selected owner, original completed start input/receipt, fresh capabilities, roots and socket, opens a pidfd before checking process generation, and verifies actual listener peer PID/UID against that pin.
+It repeats the live bindings after receipt/request revalidation, signals TERM only through that pidfd and waits within the original operation deadline for actual kernel exit.
+SIGSTOP, ignored TERM and surviving threads therefore refuse a successful shutdown; there is no automatic SIGKILL, numeric-PID or process-group fallback.
+Normal cleanup addresses only this invocation's still-matching owner/socket in its pinned runtime; replacement objects are preserved and reported, and a changed root refuses cleanup.
+Capabilities, requests and immutable receipts remain retained for their owning protocol; a new incarnation requires explicit fresh runtime/epoch selection rather than stale-object removal.
+The ephemeral `fm-view-service-result.v1` stream distinguishes ready/owner, historical receipt results, verified exited results and `foreground-return` with `exited: false` and explicit per-object cleanup outcomes.
+It is consumed synchronously by the invoking owner, never as an authoritative watcher beacon or new recurring alarm store.
+No live installation, home selection, complete hot-path migration or B0 performance acceptance follows from this entrypoint.
 
 ## Verification and remaining migration
 
@@ -371,7 +410,7 @@ The real-client fixture requires nonempty native task observations, compares eve
 It checks changed decisions on a fresh publication and retains complete fallback on epoch refusal.
 A separate native-composition timeout fixture preserves the previous ledger bytes and owed trigger, then requires a fresh retry to publish a complete legacy-equal updated ledger.
 A real summary-refresh fixture also holds native composition while a newer trigger arrives, verifies the first atomic ledger contains only its captured decision, and requires the surviving pending marker to produce the newer decision on the next refresh.
-Service lifecycle registration and promotion of this foundation remain incomplete.
+Live service lifecycle registration and promotion of this foundation remain incomplete.
 The same CI entrypoint also runs the existing complete [`fm-crew-state.test.sh`](../tests/fm-crew-state.test.sh) case pool with its assertions unchanged, selecting a real native socket/client for each suite-owned isolated request through [`crew_matrix.py`](../tests/fixtures/supervision-views/crew_matrix.py).
 Its fixture refuses any state root outside that suite's temporary tree and uses each case's existing fake adapters, not live endpoints.
 Only the declared unsupported integration refusals, missing client interpreter and the explicitly marked legacy fake-interpreter timeout seam retain the original legacy executable; every native selection and fallback reason is counted, zero native coverage fails, and any unexpected refusal fails instead of silently converting coverage to legacy.
@@ -401,10 +440,20 @@ Its default legacy selection remains independently exercised by the existing CI 
 This matrix execution is a behavior gate, not evidence that all integrations are implemented natively or that the performance contract passed.
 There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).
-Identity-bound service shutdown remains future integration work; compatibility refusals already fall back to legacy before presentation commits.
+Identity-bound shutdown is confined to the explicit foreground owner above; compatibility refusals already fall back to legacy before presentation commits.
 The journal API's CI cases cover immutable replay and completion, filename-bound malformed/unknown/unreadable input, independent root/anchor replacement, failed-entry descriptor retirement and same-anchor reacquisition, serialization, bounded history, failed writes/rename/fsync and single-guard counterfactuals without any service, signal, socket or authoritative record effect.
 Service-singleton cases additionally cover cross-process and cross-runtime contention, independence from the journal, opaque healthy anchor bytes, unsafe roots and anchor types, failed-entry descriptor retirement after root/anchor replacement, same-original-anchor reuse and independent selected-root/namespace counterfactuals.
 Both public constructors have existing-anchor and first-creation before/after-parent-open replacement controls requiring untouched successor trees, descriptor retirement before reuse and same-original-anchor reacquisition when one survives.
 Independent selected-parent/privacy guard and descriptor-relative-creation counterfactuals keep the later root/anchor barriers intact; failed parent observation, interruption, anchor open and parent close also require descriptor retirement.
 These are mutex-admission controls, not proof of a foreground service lifetime, receipt-before-effect ordering or identity-bound shutdown.
+A separate isolated foreground stage prepares its actual immutable dependency closure and exercises the public service command with real fixture-owned processes and sockets.
+It witnesses durable acceptance and capability publication at the actual bind, refuses actor/receipt/bind failures without ready, validates public lifecycle receipts and preserves queue/status/custody bytes and the ordinary legacy selection.
+Competing-start cases require no new journal receipt or anchor even for a first-use outbox, unchanged runtime and preservation of the original live service; reverting only pre-journal singleton admission must fail those same no-write oracles.
+Public start and stop accepted-without-completion controls require explicit nonzero ambiguous refusal, no new ready/effect and unchanged immutable history; reverting only that guard must fail the same public exit oracle.
+A separate stop-to-start input replacement at the preliminary/locked-read seam refuses before any receipt, and reverting only that selection fence must fail its same public refusal oracle.
+Terminal done and refused replay remain separately covered, and a stop replay must not contend with the original live singleton.
+Wrong process generations, live listener identity, epoch, capability, start receipt, root or socket bindings refuse stop without signalling a separately owned process.
+Stopped, TERM-ignoring and non-daemon-thread processes prove actual-exit refusal and singleton retention after foreground return; only fixture teardown restores or forcibly retires those children.
+Runtime constructor and publication replacement controls retain successor trees, retire descriptors and require the same preservation oracle to fail when only descriptor-relative creation is reverted.
+These fixture results do not authorize a live service, actor installation or home mode.
 Rollback of this uninstalled foundation is removal or non-use of the modules; no queue, cursor, custody or home mode changes to undo exist.
