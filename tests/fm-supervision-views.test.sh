@@ -55,7 +55,10 @@
 # Reader-first lifecycle contract CLI cases use the shared handoff validator,
 # hostile-file and single-guard counterfactuals, stop-owner bindings and explicit
 # no-effect tripwires; relocated readers retain the bundled schema owner.
-# These are structural contracts, not service-start/stop or committed receipts.
+# The separate internal journal API commits immutable filename-bound decisions
+# under its own new-stage mutex; replayed acceptance remains ambiguous, never
+# automatic effect retry. Fault/counterfactual cases do not start a service.
+# Neither structural readers nor journal decisions authorize service effects.
 # The full P1 current-state/drain/snapshot migration is NOT certified by this test.
 set -u
 # shellcheck source=tests/lib.sh

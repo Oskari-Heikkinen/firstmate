@@ -252,8 +252,38 @@ The public handoff validator and schemas remain the only registry/receipt gramma
 The first wire version has no historical version-zero writer; an unknown version is refused, with only its common identity envelope read to construct a `version-unsupported` candidate receipt.
 A stop request binds its complete selected owner snapshot; a start request cannot claim replacement authority.
 Generated receipts bind the canonical request digest, but are only candidate bytes until the future stage persists them immutably through its declared outbox.
-The inspector neither allocates receipt sequence numbers nor provides replay/idempotency admission.
-Malformed or unreadable input cannot manufacture a valid record identity for a refusal receipt; the eventual stage still needs its filename-bound intake/refusal owner.
+The inspector neither allocates receipt sequence numbers nor provides replay/idempotency admission; the separate internal journal below supplies those primitives without effect authority.
+Malformed or unreadable payloads cannot manufacture a valid record identity for a refusal receipt.
+
+### Immutable lifecycle decisions
+
+[`fm_view_journal.py`](../bin/fm_view_journal.py) supplies an internal transaction API for the unfinished foreground owner, not an intake daemon, publisher, launcher or installer.
+Its invoking owner must check declared-actor admission before using it and route every refusal through its existing wake path.
+All roots, the private outbox staging directory and the owning home's validated nonplanned fragment must already exist; this API creates no root or registration.
+The stage's private canonical input and outbox must be disjoint beneath the selected state root.
+Its new journal-only nonblocking flock serializes only this stage's receipt writers, never a legacy writer, watcher, queue, presentation, source or custody transaction.
+The persistent single-link mode-0600 lock anchor is not a process owner or health record and is never unlinked or recovered by PID.
+A future start owner takes its separate service singleton before this journal; no journal transaction may remain held across an external effect or wait.
+
+Intake selects a filename `<record>.<attempt>.json`, with the existing bounded token grammar for `record` and a positive decimal attempt within the declared retry limit.
+A valid payload must match that filename's identity, selected home and stage owner.
+An unknown version reads only its common bound envelope and produces `version-unsupported`; malformed or unreadable payloads produce `input-invalid` using the filename identity rather than partially trusted JSON.
+An invalid filename cannot supply a receipt identity and refuses synchronously to its invoking owner.
+Receipts retain the shared handoff grammar, with the owner's `input-sha256` extension binding exact input bytes or the explicit value `unreadable` when no complete bounded regular read succeeded.
+The shared candidate constructor additionally binds canonical request bytes; neither extension grants process authority.
+
+Each decision validates before writing, fsyncs a private `.tmp` file, publishes with nonreplacing rename and fsyncs both directories, then rechecks roots, lock anchor and exact published inode/bytes before returning success.
+Incomplete staging refuses another publication for owner reconciliation rather than accumulating files or deleting uncertain evidence.
+Existing receipts are never edited or replaced; only this invocation's identity-matching unpublished staging file can be removed.
+The journal scans at most 1024 entries and eight MiB of receipt bytes per transaction, with the lifecycle reader's per-file limit, and refuses the whole history on malformed, foreign, misnamed, unbound or discontinuous decisions.
+It has no recurring scan or polling loop.
+
+A first decision has sequence 1 and is `accepted` or `refused`; only matching accepted input can transition to sequence 2, `done` or a declared refusal.
+A replay returns the existing immutable decision with `fresh: false`, not another acceptance or permission to retry an effect.
+Accepted-without-completion after a crash is ambiguous: the foreground owner must verify the effect, not repeat it.
+A retry is the next attempt after a prior refusal, never after acceptance, completion or `effect-failed`, which may represent an ambiguous effect.
+A failed publication or directory fsync never returns success; if rename committed before failure, the next transaction discovers that original decision and cannot treat it as fresh.
+These primitives alone validate no actor, capability, code, socket or process, and do not prove actual exit.
 
 The foreground owner remains responsible for trusted immutable code selection, declared-actor admission, reader capability publication, live root/socket/epoch/process revalidation, service-only singleton serialization and receipt-before-effect ordering.
 It must also prove actual generation-pinned process exit and preserve replacement paths on cleanup.
@@ -364,4 +394,5 @@ This matrix execution is a behavior gate, not evidence that all integrations are
 There is no P0 replay adapter or B0 performance acceptance yet.
 Before an installed service or compatibility client is added, its owner must complete those migrations and the registration/actor/receipt requirements in [handoff coverage](handoff-coverage.md).
 Identity-bound service shutdown remains future integration work; compatibility refusals already fall back to legacy before presentation commits.
+The journal API's CI cases cover immutable replay and completion, filename-bound malformed/unknown/unreadable input, independent root/anchor replacement, serialization, bounded history, failed writes/rename/fsync and single-guard counterfactuals without any service, signal, socket or authoritative record effect.
 Rollback of this uninstalled foundation is removal or non-use of the modules; no queue, cursor, custody or home mode changes to undo exist.
