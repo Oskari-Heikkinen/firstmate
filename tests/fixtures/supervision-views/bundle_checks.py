@@ -841,7 +841,20 @@ class BundlePreparation(unittest.TestCase):
                         # Keep the retained original OUTSIDE the immutable tree,
                         # so only the directory-link guard can reject this tree.
                         external = self.root / ("retained-" + os.urandom(4).hex())
+                        original_identity = (retained.stat().st_dev, retained.stat().st_ino)
+                        original_bytes = {str(p.relative_to(retained)): p.read_bytes()
+                                          for p in retained.rglob("*") if p.is_file()}
+                        self.assertEqual(retained.stat().st_mode & 0o777, 0o500)
+                        # Cross-parent moves update '..' on Linux. Only setup
+                        # is writable; restore the exact immutable object before
+                        # invoking the verifier, as in the publication control.
+                        retained.chmod(0o700)
                         retained.rename(external)
+                        external.chmod(0o500)
+                        self.assertEqual((external.stat().st_dev, external.stat().st_ino), original_identity)
+                        self.assertEqual(external.stat().st_mode & 0o777, 0o500)
+                        self.assertEqual({str(p.relative_to(external)): p.read_bytes()
+                                          for p in external.rglob("*") if p.is_file()}, original_bytes)
                         member.symlink_to(external, target_is_directory=True)
                         parent.chmod(0o500)
                     self.command("verify", "--bundle", copy, ok=False)
