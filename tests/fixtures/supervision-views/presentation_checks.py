@@ -125,6 +125,97 @@ fi
                                "batch" if batch else "legacy", *map(str, paths)],
                               env=dict(self.env, **environment), capture_output=True, timeout=30)
 
+    def test_device_bearing_manifest_preserves_owner_floor_receipt_and_commit(self):
+        path = self.state / "task.status"
+        path.write_bytes(b"note: owner identity\n")
+        captured = self.invoke("status_presentation_snapshot_batch")
+        self.assertEqual(captured.returncode, 0, captured.stderr)
+        task, end, strong = captured.stdout.decode().strip().split("\t")
+        if not strong.startswith("strong:"):
+            self.skipTest("filesystem lacks birth-time identities; weak identity remains device-bound")
+        old = "strong:2096:" + strong[len("strong:"):]
+        manifest = self.state / ".status-presentation-cursor"
+        initial = f"{task}\t{old}\t{int(end)-1}\t2\n".encode()
+        manifest.write_bytes(initial)
+        script = '''. "$1/bin/fm-classify-lib.sh"
+status_presentation_suggestions_valid "$2" "$3" "$4"
+'''
+        def suggestions(endpoint):
+            return subprocess.run(["bash", "-c", script, "guard", str(ROOT), str(self.state),
+                                   captured.stdout.decode(), f"{task}\t{endpoint}\t{strong}"],
+                                  env=self.env, capture_output=True, timeout=20)
+        with self.subTest(stage="independent cursor floor"):
+            self.assertEqual(suggestions(end).returncode, 0)
+            self.assertNotEqual(suggestions(str(int(end)-2)).returncode, 0,
+                                "an old device number must not erase the independent non-regression floor")
+            self.assertEqual(manifest.read_bytes(), initial)
+            old_capture = f"{task}\t{end}\t{old}"
+            old_reply = subprocess.run(["bash", "-c", script, "guard", str(ROOT), str(self.state),
+                                        old_capture, old_capture], env=self.env, capture_output=True, timeout=20)
+            self.assertNotEqual(old_reply.returncode, 0, "old transaction captures must refuse, not zero the independent floor")
+        facts = f"{task}\t{end}\t{strong}\t2\t{path.stat().st_mtime_ns // 10**9}\t{end}\tl:note: owner identity:l"
+        script = '''. "$1/bin/fm-classify-lib.sh"
+status_backstop_facts_current "$2" "$3" "$4"
+'''
+        def backstop(selected):
+            return subprocess.run(["bash", "-c", script, "guard", str(ROOT), str(self.state),
+                                   captured.stdout.decode(), selected], env=self.env, capture_output=True, timeout=20)
+        with self.subTest(stage="independent backstop receipt"):
+            self.assertEqual(backstop(facts).returncode, 0)
+            self.assertNotEqual(backstop(facts.replace("\t2\t", "\t0\t", 1)).returncode, 0)
+            self.assertEqual(manifest.read_bytes(), initial)
+        with self.subTest(stage="whole commit parity"):
+            actual, _, after = self.compare_commit(captured.stdout.decode())
+            self.assertEqual(actual.returncode, 0, actual.stderr)
+            self.assertNotIn(b"batch verification refused", actual.stderr)
+            self.assertEqual(after, f"{task}\t{strong}\t{end}\t2\n".encode())
+
+    def test_manifest_projection_refuses_binary_partial_and_nonregular_inputs(self):
+        path = self.state / "task.status"
+        path.write_bytes(b"note: reader boundary\n")
+        captured = self.invoke("status_presentation_snapshot_batch")
+        self.assertEqual(captured.returncode, 0, captured.stderr)
+        task, end, strong = captured.stdout.decode().strip().split("\t")
+        manifest = self.state / ".status-presentation-cursor"
+        suggestion = f"{task}\t{end}\t{strong}"
+        script = '''. "$1/bin/fm-classify-lib.sh"
+status_presentation_suggestions_valid "$2" "$3" "$4"
+'''
+        def guard():
+            return subprocess.run(["bash", "-c", script, "guard", str(ROOT), str(self.state),
+                                   captured.stdout.decode(), suggestion], env=self.env, capture_output=True, timeout=20)
+        for raw in (b"", f"{task}\t{strong}\t0\t0".encode()):
+            with self.subTest(healthy=raw):
+                manifest.write_bytes(raw)
+                self.assertEqual(guard().returncode, 0)
+                self.assertEqual(manifest.read_bytes(), raw)
+        for raw in (b" ", b"partial", b"@snapshot", b"task\t", b"task\tweak:1:2\t0\x00\t0\n",
+                    b"x" * (4*1024*1024 + 1)):
+            with self.subTest(malformed_size=len(raw)):
+                manifest.write_bytes(raw)
+                self.assertNotEqual(guard().returncode, 0)
+                self.assertEqual(manifest.read_bytes(), raw)
+        manifest.unlink()
+        protected = self.home / "protected-manifest"
+        protected.write_text(f"{task}\t{strong}\t0\t0\n")
+        for kind in ("link", "dangling", "directory", "fifo", "unreadable"):
+            with self.subTest(kind=kind):
+                if kind == "link": manifest.symlink_to(protected)
+                elif kind == "dangling": manifest.symlink_to(self.home / "absent-manifest")
+                elif kind == "directory": manifest.mkdir()
+                elif kind == "fifo": os.mkfifo(manifest)
+                else:
+                    manifest.write_bytes(protected.read_bytes())
+                    manifest.chmod(0)
+                if kind != "unreadable" or os.getuid() != 0:
+                    self.assertNotEqual(guard().returncode, 0)
+                self.assertEqual(protected.read_text(), f"{task}\t{strong}\t0\t0\n")
+                if kind == "directory": manifest.rmdir()
+                else:
+                    if kind == "unreadable": manifest.chmod(0o600)
+                    manifest.unlink()
+        self.assertEqual(guard().returncode, 0, "truly missing manifest is a healthy initial cursor")
+
     def test_backstop_guard_proves_whole_inventory_receipts_and_mtime_once(self):
         for task in ("a", "b"):
             (self.state / (task + ".status")).write_bytes(b"done: latest\n")
@@ -538,6 +629,53 @@ status_new_lines_since_cursor "$f" "$3" || exit 1
         self.assertEqual(Presentation(self.inputs).read_from_snapshot([snapshot])["rows"][0], native)
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.state.iterdir() if p.is_file()})
         return native
+
+    def test_current_and_device_bearing_strong_forms_share_native_offsets_not_authority(self):
+        from unittest.mock import patch
+        row = self.row(b"note: first\nnote: second\n")
+        path = self.state / "task.status"
+        answer = subprocess.run(["bash", "-c", '. "$1/bin/fm-classify-lib.sh"; _fm_open_decisions_file_ident "$2"',
+                                 "identity", str(ROOT), str(path)], capture_output=True, timeout=20)
+        self.assertEqual(answer.returncode, 0, answer.stderr)
+        strong = answer.stdout.decode()
+        if not strong.startswith("strong:"):
+            self.skipTest("filesystem lacks birth-time identities; weak identity remains device-bound")
+        old = "strong:2096:" + strong[len("strong:"):]
+        snapshot = {name: row[name] for name in ("task", "end", "identity", "fully_presented")}
+        snapshot["strong_identity"] = strong
+        cursor = self.state / ".status-presentation-cursor"
+        marker = self.state / ".seen-task_status"
+        cursor.write_text(f"task\t{old}\t12\t2\n")
+        marker.write_text(f"12@{old}\n")
+        before = {p.name: p.read_bytes() for p in self.state.iterdir()}
+        native = Presentation(self.inputs).read_from_snapshot([snapshot])["rows"][0]
+        expected = Presentation(self.inputs).read([dict(row, offset=12, classified=12)])["rows"][0]
+        self.assertEqual(native, expected)
+        self.assertEqual(native["observed_offset"], 12)
+        self.assertEqual(Presentation(self.inputs).backstop([snapshot])["rows"][0]["receipt"], 2)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.state.iterdir()})
+        # Birth/inode changes still reset; weak identities never lose a device.
+        for changed in ("strong:2096:9" + strong[len("strong:"):],
+                        "strong:" + strong.split(":", 2)[1] + ":different-birth",
+                        "weak:" + str(row["identity"][0] + 1) + ":" + str(row["identity"][1])):
+            with self.subTest(changed=changed):
+                cursor.write_text(f"task\t{changed}\t12\t2\n")
+                marker.write_text(f"12@{changed}\n")
+                self.assertEqual(Presentation(self.inputs).read_from_snapshot([snapshot])["rows"][0]["observed_offset"], 0)
+                self.assertEqual(Presentation(self.inputs).backstop([snapshot])["rows"][0]["receipt"], 0)
+        # A canonical identity predicts the root filesystem only; it never
+        # suppresses the descriptor's device/inode capture check.
+        original = self.inputs.state_read
+        def foreign_device(task, suffix):
+            captured = original(task, suffix)
+            if captured is not None and suffix == ".status":
+                captured = dict(captured, identity=[row["identity"][0] + 1, row["identity"][1]])
+            return captured
+        with patch.object(self.inputs, "state_read", foreign_device):
+            with self.assertRaisesRegex(Refused, "status identity changed"):
+                Presentation(self.inputs).read_from_snapshot([snapshot])
+        with self.assertRaisesRegex(Refused, "snapshot identity mismatch"):
+            Presentation(self.inputs).read_from_snapshot([dict(snapshot, identity=[row["identity"][0] + 1, row["identity"][1]])])
 
     def test_backstop_latest_and_receipt_equal_original_owner_without_writes(self):
         cases = [b"", b" \t\r\n", b"done: one\r\n\t \n", b"failed: unfinished\t ",

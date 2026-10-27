@@ -171,6 +171,76 @@ class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
             self.assertIn(b"use legacy", error)
 
 
+    async def test_snapshot_fold_probe_requires_whole_legacy_fallback(self):
+        from fm_view_engine import Engine
+        self.status(b"needs-decision [key=first]: retained\nnote: later\n")
+        probe = self.home / "fold-probe"
+        cursor = self.state / ".task.snapshot-open-decisions-cursor"
+        calls = []
+        original = Engine.request
+
+        async def observed(engine, operation, values, timeout):
+            calls.append(operation)
+            return await original(engine, operation, values, timeout)
+
+        options = dict(FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH),
+                       FM_OPEN_DECISIONS_READ_PROBE=str(probe))
+        # Equal initial cursor bytes for both public owners, not an output-only
+        # comparison after the first execution has consumed the legacy fold.
+        cursor.write_bytes(b"")
+        with patch.object(Engine, "request", observed):
+            actual, error = await self.invoke("fm-fleet-snapshot.sh", "--json", **options)
+        self.assertEqual(calls, [], error)
+        self.assertIn(b"custom classifier/input reader requires legacy", error)
+        expected_probe = str(self.state / "task.status") + "\t" + str((self.state / "task.status").stat().st_size) + "\n"
+        self.assertEqual(probe.read_text(), expected_probe)
+        actual_cursor = cursor.read_bytes()
+        self.assertTrue(actual_cursor)
+        cursor.write_bytes(b"")
+        # A fresh probe path permits a whole-byte comparison without deleting
+        # the first run's evidence or conflating two appends to one probe.
+        expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--json", native=False,
+            **dict(options, FM_OPEN_DECISIONS_READ_PROBE=str(self.home / "legacy-fold-probe")))
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual_cursor, cursor.read_bytes())
+        self.assertEqual((self.home / "legacy-fold-probe").read_text(), expected_probe)
+        # Empty is not a custom reader: prove the same public client can still
+        # select native composition, not blanket fallback for all snapshots.
+        with patch.dict(os.environ, self.env), patch.object(Engine, "request", observed):
+            empty, error = await self.invoke("fm-fleet-snapshot.sh", "--json",
+                **dict(options, FM_OPEN_DECISIONS_READ_PROBE=""))
+        self.assertEqual(calls, ["snapshot-tasks"], error)
+        self.assertNotIn(b"use legacy", error)
+        self.assertEqual(empty, expected)
+        print("snapshot fold-probe: real-client pre-RPC refusal, whole stdout/probe/cursor parity; empty probe stays native")
+
+    async def test_resident_snapshot_appends_keep_whole_output_parity_without_legacy_cursor_writes(self):
+        self.status(b"needs-decision [key=first]: initial\nnote: unrelated\n")
+        cursor = self.state / ".task.snapshot-open-decisions-cursor"
+        calls = []
+        original = Snapshot.compose
+
+        def observed(instance, row, observed_at, epoch):
+            calls.append(row["task"])
+            return original(instance, row, observed_at, epoch)
+
+        options = dict(FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
+        before = None
+        for addition in (b"", b"resolved [key=first]: answered\nblocked [key=next]: new\nnote: later\n"):
+            with (self.state / "task.status").open("ab") as stream:
+                stream.write(addition)
+            with patch.dict(os.environ, self.env), patch.object(Snapshot, "compose", observed):
+                actual, error = await self.invoke("fm-fleet-snapshot.sh", "--json", **options)
+            self.assertEqual(calls, ["task"], error)
+            calls.clear()
+            self.assertNotIn(b"use legacy", error)
+            self.assertEqual(cursor.read_bytes() if cursor.exists() else None, before)
+            expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--json", native=False, **options)
+            self.assertEqual(actual, expected)
+            before = cursor.read_bytes()
+        self.assertEqual(json.loads(actual)["tasks"][0]["hints"]["open_decisions"][0]["key"], "next")
+        print("resident snapshot append: two native compositions, whole stdout parity, no native legacy-cursor write")
+
     async def test_unsupported_snapshot_backend_uses_complete_legacy_fallback(self):
         self.status(b"blocked [key=backend]: retain decision\n", kind="ship")
         (self.state / "task.meta").write_text(

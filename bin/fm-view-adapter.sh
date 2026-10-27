@@ -112,7 +112,7 @@ case "$operation" in
     fi
     RC=0
     case "$PROVIDER" in
-      github) fm_pr_github_read_record "${PROJECT_PATH%%/*}" "${PROJECT_PATH#*/}" "$NUMBER" || RC=$? ;;
+      github) fm_pr_github_read_record "$HOST" "${PROJECT_PATH%%/*}" "${PROJECT_PATH#*/}" "$NUMBER" || RC=$? ;;
       gitlab) fm_pr_gitlab_read_record "$HOST" "$PROJECT_PATH" "$NUMBER" || RC=$? ;;
       forgejo) fm_pr_forgejo_read_record "$HOST" "$PROJECT_PATH" "$NUMBER" || RC=$? ;;
       gerrit) fm_pr_gerrit_read_record "$HOST" "$NUMBER" || RC=$? ;;

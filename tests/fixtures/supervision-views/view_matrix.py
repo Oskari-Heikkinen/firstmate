@@ -103,6 +103,14 @@ async def invoke(root, home, command, arguments):
                 _, error = await asyncio.wait_for(process.communicate(), 120)
                 refusals = [line for line in error.split(b"\n") if line.startswith(b"fm-view-client:")]
                 unexpected = [line for line in refusals if not (admitted(line) or expected_race_refusal(line))]
+                fold_probe = command == "fm-fleet-snapshot.sh" and bool(os.environ.get("FM_OPEN_DECISIONS_READ_PROBE"))
+                probe_refusal = b"fm-view-client: read refused; use legacy: custom classifier/input reader requires legacy"
+                # The unchanged upstream cursor/cp/probe regression observes
+                # legacy mechanics, not the resident read-only fold. Require
+                # the REAL client to refuse before any RPC, then let every
+                # original probe/cursor/output assertion exercise that owner.
+                if fold_probe and (requests or probe_refusal not in refusals):
+                    unexpected.append(b"snapshot fold probe did not select complete legacy fallback")
                 # A failed native RPC must also reach the compatibility owner
                 # as an explicit refusal, never disappear behind green output.
                 failed = [row for row in requests if not row["ok"]]
@@ -114,10 +122,12 @@ async def invoke(root, home, command, arguments):
                     outcome = "native"
                 else:
                     outcome = "not-requested"
-                detail = json.dumps({"command": command, "requests": requests,
-                                     "refusals": [line.decode("utf-8", "replace") for line in refusals],
-                                     "shell_exit": process.returncode,
-                                     "forwarded_signals": pending_signal}, sort_keys=True)
+                detail = {"command": command, "requests": requests,
+                          "refusals": [line.decode("utf-8", "replace") for line in refusals],
+                          "shell_exit": process.returncode, "forwarded_signals": pending_signal}
+                if fold_probe:
+                    detail["legacy_seam"] = "real-client refusal for legacy snapshot fold cursor/cp/probe seam"
+                detail = json.dumps(detail, sort_keys=True)
                 record(root, str(home.relative_to(root)), outcome, detail)
                 sys.stderr.buffer.write(error)
                 if outcome == "unexpected-refusal":

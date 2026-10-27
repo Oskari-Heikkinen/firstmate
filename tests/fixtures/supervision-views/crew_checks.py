@@ -70,7 +70,7 @@ class CrewParity(unittest.TestCase):
 "axi ") printf '%s\\n' "${FM_FAKE_OVERVIEW:-${FM_FAKE_STATUS:-}}"; exit "${FM_FAKE_OVERVIEW_RC:-0}" ;;
 "axi logs") printf '%s\\n' "${FM_FAKE_CI_LOG:-}" ;;
 "runs --limit") printf '%s\\n' "${FM_FAKE_LEDGER:-}" ;;
-"daemon status") exit "${FM_FAKE_DAEMON_RC:-0}" ;;
+"daemon status") printf '%s\\n' "${FM_FAKE_DAEMON_TEXT-daemon running (pid 4242)}"; exit "${FM_FAKE_DAEMON_RC:-0}" ;;
 esac
 ''')
         self.fake("tmux", '''case "${1:-}" in
@@ -139,6 +139,70 @@ exit 1
             with self.subTest(record=record):
                 self.env.update(FM_FAKE_STATUS=record, FM_FAKE_CI_LOG=ci)
                 self.compare()
+
+    def test_current_main_ci_markers_never_promote_unverified_green_claims(self):
+        self.status(b"done: PR https://github.com/example/fixture/pull/1 checks green\n")
+        self.env["FM_FAKE_STATUS"] = self.run_record("ci")
+        no_ci = "repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed"
+        for log, expected in (("no CI checks reported - still monitoring until merged or closed", "no CI checks reported"),
+                              (no_ci, "repository declares no CI"),
+                              ("CI checks passed\n" + no_ci, "repository declares no CI"),
+                              (no_ci + "\nCI checks failed: build", "ci running")):
+            with self.subTest(log=log):
+                self.env["FM_FAKE_CI_LOG"] = log
+                actual = self.compare()
+                self.assertEqual((actual["state"], actual["source"]), ("working", "run-step"))
+                self.assertIn(expected, actual["detail"])
+
+    def test_current_main_daemon_requires_positive_running_output(self):
+        # Move beyond the recorded head; the daemon answer is now load-bearing
+        # for live-run attribution, not masked by equal code identity.
+        self.git("commit", "-q", "--allow-empty", "-m", "advanced fixture")
+        self.status(b"failed: earlier run failed\n")
+        self.env["FM_FAKE_STATUS"] = self.run_record()
+        for text, rc, expected in (("daemon running (pid 4242)", "0", "working"),
+                                   ("  ○ daemon not running", "0", "failed"),
+                                   ("", "0", "failed"), ("unknown daemon status", "0", "failed"),
+                                   ("daemon running (pid 4242)", "1", "failed"),
+                                   ("", "124", "working")):
+            with self.subTest(text=text, rc=rc):
+                self.env.update(FM_FAKE_DAEMON_TEXT=text, FM_FAKE_DAEMON_RC=rc)
+                self.assertEqual(self.compare()["state"], expected)
+
+    def test_current_main_explicit_no_run_bypasses_capped_inventory(self):
+        self.status(b"working: implementation continues\n")
+        self.env.update(FM_FAKE_STATUS="current_branch: fm/task\nruns_on_current_branch: 0\n",
+                        FM_FAKE_OVERVIEW="not an inventory", FM_FAKE_OVERVIEW_RC="1",
+                        FM_FAKE_LEDGER=f"running fm/task {self.head[:12]} 2026-01-01 10:00\n")
+        answer = self.compare()
+        self.assertEqual((answer["state"], answer["source"]), ("working", "status-log"))
+        self.assertIn("implementation continues", answer["detail"])
+
+    def test_current_main_forge_adapter_passes_the_addressed_host(self):
+        config = self.home / "config"
+        config.mkdir(exist_ok=True)
+        (config / "github-hosts").write_text("ghe.example.invalid\n")
+        log = self.home / "forge-hosts"
+        self.env.update(FM_CONFIG_OVERRIDE=str(config), FM_CREW_STATE_NO_FORGE="0",
+                        FM_FAKE_GH_HOST_LOG=str(log),
+                        FM_FAKE_STATUS=self.run_record("completed", "passed", extra="pr: https://ghe.example.invalid/o/r/pull/1\n"))
+        self.fake("gh", '''printf '%s\\n' "${GH_HOST:-}" >> "$FM_FAKE_GH_HOST_LOG"
+printf 'state=OPEN\\nmerged=false\\n'
+''')
+        actual = self.compare()
+        self.assertIn("run passed: PR open", actual["detail"])
+        self.assertEqual(log.read_text().splitlines(), ["ghe.example.invalid", "ghe.example.invalid"])
+
+    def test_configured_nm_home_resolver_stays_with_legacy_owner(self):
+        config = self.home / "config"
+        config.mkdir(exist_ok=True)
+        (config / "nm-home-resolver").write_text("/not/an/executable\n")
+        self.env.pop("NM_HOME", None)
+        with self.assertRaisesRegex(LegacyRequired, "home resolver requires legacy"):
+            Crew(Inputs(str(self.home)), "task", self.env).read()
+        # An explicit NM_HOME wins over that setting under the current owner.
+        self.env["NM_HOME"] = str(self.home)
+        self.compare()
 
     def test_status_reconciliation(self):
         for status in (b"needs-decision [key=x]: question\n", b"blocked [key=x]: timeout reaching daemon\n",

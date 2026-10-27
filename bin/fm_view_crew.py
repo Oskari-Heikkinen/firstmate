@@ -113,8 +113,10 @@ class Crew:
 
     def daemon(self):
         if not self.daemon_answer:
-            rc = self.nm("daemon", "status").status
-            self.daemon_answer = "up" if rc == 0 else "unanswered" if rc == 124 else "down"
+            observation = self.nm("daemon", "status")
+            rc = observation.status
+            running = re.search(r"(^|\s)daemon running(\s|$)", observation.text)
+            self.daemon_answer = "up" if rc == 0 and running else "unanswered" if rc == 124 else "down"
         return self.daemon_answer
 
     def ledger(self, expected=""):
@@ -134,6 +136,10 @@ class Crew:
                for line in self.run.lines):
             self.run = Run("")
         if not self.run.text:
+            return None
+        # The current legacy owner treats this addressed CLI answer as absent
+        # without consulting a capped overview or the coarse fallback ledger.
+        if self.run.field("current_branch") == self.branch and self.run.field("runs_on_current_branch") == "0":
             return None
         overview = self.nm("axi")
         if not overview.text:
@@ -276,6 +282,8 @@ class Crew:
                             state, detail = "done", "checks green: PR ready for review (still monitoring for merge/close)"
                             if self.run.field("pr"):
                                 detail += ": " + self.run.field("pr")
+                        elif ci == "no-checks":
+                            detail = "no CI checks reported (or repository declares no CI): nothing has verified the PR (still monitoring for merge/close)"
                     elif step == "fixing":
                         ci = "not-ready"
         logverb = verb(self.log)
@@ -287,7 +295,7 @@ class Crew:
                 ci = "not-ready"
             elif step == "running" and not ci:
                 ci = self.ci()
-            if ci != "not-ready":
+            if ci not in ("not-ready", "no-checks"):
                 return self.ship_done("run still monitoring PR")
         if logverb in ("needs-decision", "blocked"):
             latest = self.latest.lower()
@@ -348,6 +356,12 @@ class Crew:
             return result("unknown", "none", "task generation changed before observation")
         if not self.meta_capture:
             return result("unknown", "none", "no metadata for " + self.task)
+        if (not self.env.get("NM_HOME") and self.kind == "ship"
+                and os.path.lexists(Path(self.env.get("FM_CONFIG_OVERRIDE") or str(self.inputs.home / "config")) / "nm-home-resolver")):
+            # The resolver can select a different daemon AND SQLite inventory.
+            # Keep that external policy with its legacy owner, not an ambient
+            # native read of another no-mistakes home.
+            raise LegacyRequired("configured no-mistakes home resolver requires legacy")
         copy_state = self.meta.get("copy_state", "")
         if copy_state not in ("", "retained"):
             if copy_state == "released":
