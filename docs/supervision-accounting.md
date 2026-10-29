@@ -397,6 +397,142 @@ Those counts test accounting, not laptop performance or actual historical per-ca
 Both are explicitly synthetic and cannot serve as real B0 evidence.
 Contradictory machine totals and lossy inputs are preserved in the same public-interface regression.
 
+### Reader-first v2 workload extension
+
+[`replay-v2.schema.json`](supervision-accounting/replay-v2.schema.json) is the closed workload envelope; [`fm_supervision_replay.py`](../bin/fm_supervision_replay.py) owns its semantic reader and deterministic two-consumer boundary.
+The public Python factory is `workload(value)` in the accounting utility, and its header owns the offline validation CLI.
+The existing v1 schema, `corpus` loader, `replay` accounting report and `read-record` byte interface remain unchanged.
+A valid v1-only input is explicitly insufficient for a P1 whole-workload measurement, not invalid accounting evidence.
+V2 is admitted only through the new workload reader, not guessed by the v1 verbs.
+Both versions remain readable; there is no v1 retirement or automatic conversion.
+
+The v2 envelope pins its manifest, trace, deterministic clock, initial files, changes and requests with `sha256` of every other top-level field serialized as sorted-key, two-space-indented, ASCII-escaped JSON plus one newline.
+Every content, actor-claim and passive stdout/stderr blob separately binds strict base64 to SHA256 of decoded bytes.
+Each blob is at most four MiB, and decoded file versions, claims and observations together are at most 64 MiB per envelope.
+The outer accounting reader's existing 64-MiB input bound also applies before JSON parsing.
+A seal proves byte binding, not trustworthy provenance, capture completeness, adapter correctness or B0.
+Synthetic provenance must match the embedded trace; losses and manifest incompleteness are retained, not upgraded by this reader.
+
+A file place binds an enrolled home, a logical root (`state`, `config`, `data` or one enrolled task's `worktree`), task and canonical relative path.
+Home-local roots have an empty task field; only `worktree` takes a task id.
+An empty path denotes that logical root, never an operating-system path to open.
+Initial entries explicitly record either an object or known absence (`null`); unrecorded paths are unknown and refuse, never inferred missing.
+Objects retain opaque identity tokens, mode, mtime, regular/directory/symlink/FIFO kind, captured read error and exact content bytes.
+Directory content is an exact NUL-terminated sequence of unique UTF-8 immediate-child names, or empty bytes for an empty directory.
+Every present object has a captured parent directory, and every directory listing agrees with its present immediate objects.
+Unrepresentable names, traversal, empty path components, backslashes and unknown homes/tasks refuse rather than being normalized.
+Symlink targets and special-file content remain opaque and are never opened, followed or materialized.
+The memory-only regular-file reader preserves empty/binary/partial content, reports captured errors and unreadable mode, and refuses special files; it does not impersonate kernel access checks.
+
+Changes carry contiguous sequence numbers, monotonic timestamps, a full replacement object or explicit absence, and the previous object's canonical JSON seal (null for previous absence).
+A change must name an initially captured place and match its immediate preimage.
+Changes are ordered by timestamp, with no duplicate change to one place at the same timestamp.
+All changes at a timestamp form one atomic inventory update; directory consistency is checked between timestamp groups.
+Reads at that timestamp see the complete updated group, not intermediate entries.
+Append, rewrite, truncate, rotation, permission changes and disappearance are represented by their complete byte/identity images, not executable operations or inferred inode continuity.
+The clock names its owner-attested machine, boot UUID and clock namespace; every file/request home must belong to that machine in the pinned manifest.
+Other machines require their own envelope and owner-attested time mapping before any later cross-machine comparison; the reader never infers that mapping from wall timestamps.
+The initial clock interval exactly matches the trace start/end/duration, is at most 310 seconds and provides one wall origin; wall readings are origin plus monotonic elapsed time, with no wall-clock calls.
+Clock identities and alignment remain capture-review obligations, not proof obtained from self-asserted JSON.
+
+Each request binds id, enrolled home, task/generation, one P1 read family, exact literal argument array, actor name/token/opaque claim and start/end interval.
+Crew requests name an enrolled task; drain and snapshot requests name the whole home with an empty task field.
+A branch actor requires a nonempty claim token; neither the token nor its bytes grants a real claim or acknowledgement.
+Requests are ordered by start time and bounded to 30 seconds each, but may overlap.
+Each request's passive observations carry unique ids, fixed operation names, exact literal arguments, home-bound logical cwd, generation, ordered nonoverlapping start/end intervals, exit status and sealed output bytes.
+The semantic reader's `passive` method is the single fixed operation/argument grammar owner; it admits only the existing view engine's addressed Git identity/ancestry reads, no-mistakes status/inventory/CI-log reads and task-bound fixed passive owner packets.
+Git/no-mistakes observations require an explicitly captured enrolled worktree cwd; arbitrary executable paths, Git configuration injection, plugins, shell programs and lifecycle arguments refuse.
+Corpus argument strings are comparison data and are never passed to a command by this reader.
+Future production adapters must use this grammar and their original observation owners, not turn accepted strings into a generic command runner.
+
+Trusted caller-supplied adapters open independent `legacy` and `candidate` consumers of the same validated model, in the pinned request order with exactly matching arguments and actor context.
+Each request has its own monotonic clock and version-indexed file observations, so overlapping requests do not mutate a shared synthetic clock or overwrite each other's inputs.
+A passive read must match the next observation's operation, arguments, cwd, generation and start time exactly and advances only that request to the captured end time.
+Missing, extra, reordered, foreign or otherwise mismatched requests/observations refuse; a caught protocol refusal still poisons that consumer, so it cannot later report equality.
+Completion requires every passive observation, whole stdout/stderr/exit status and complete named owner-effect byte images; an effect may name only a captured place in that request home's state/data namespace.
+These effects are comparison data, not applied writes, and no queue/cursor/claim/custody owner is replaced.
+Comparison requires both opposite consumers of the same sealed model to have completed every request, and compares complete output, diagnostics, status and effect sets without normalization.
+There is no execution callback selected by corpus data, materialization, process, profiler, service, live clock or filesystem access in this boundary.
+
+The reader's report explicitly says `sealed-workload-reader-only`, with production adapters false and B0 still pending reviewed real capture.
+Caller-supplied result equality is explicitly scoped to those supplied adapters; it certifies neither their use of the production owner graph nor performance.
+The existing CI entrypoint adds synthetic six/thirty-task full inventories and all three request families, fresh HEAD-without-status changes, both consumer sides, output/effect parity and malformed/unknown/binary/identity/clock/order/seal controls.
+Those test adapters exercise the contract, not a completed production legacy/resident replay engine.
+Production adapter integration, independently reviewed real capture supplementation and identical-replay measurement remain separate gates; no live capture or home selection follows from validation.
+
+### Bounded directories and capture bindings (v3)
+
+[`replay-v3.schema.json`](supervision-accounting/replay-v3.schema.json) reuses the v2 field definitions and passive grammar, with a different directory-admission rule.
+The unchanged v1 accounting and v2 workload readers remain supported; a v3 object is never silently interpreted as v2.
+[`fm_supervision_bindings.py`](../bin/fm_supervision_bindings.py) implements the additional memory-only reader boundary, not a recorder, adapter launcher or live hook.
+The accounting utility header owns the validation CLI and optional `--bindings` operand.
+
+A v3 directory's sealed NUL-delimited content is its complete immediate-child listing, not a filtered listing of selected inputs.
+Every admitted present object still needs admitted parents back to its logical root and must appear in its parent's listing.
+An explicitly absent place must not appear in that listing.
+Other listed children are unadmitted, not absent: neither content, stat nor existence may be inferred for them.
+Only the explicitly captured objects are readable, so admitting a root no longer recursively admits unrelated private evidence, credentials or worktree contents.
+Directory listing bytes, unknown paths, symlinks, special files and captured errors retain the shared v2 bounds and refusal behavior.
+Changes retain complete images, preimage seals and atomic timestamp groups; a change cannot introduce an initially unknown place.
+
+[`capture-bindings-v1.schema.json`](supervision-accounting/capture-bindings-v1.schema.json) owns the sealed companion's structure.
+Its outer seal uses the same canonical serialization as the workload seal and covers every other field.
+It pins the exact v3 workload digest, a separately reviewed admission digest, the manifest's exact code SHA and the request-start window.
+Code/admission pins and seals are provenance references, not authentication or proof of the supplied owners' assertions.
+The selected start interval is exactly sixty seconds from the workload clock origin.
+All selected requests must start inside it and complete within their existing thirty-second limit; the workload/trace acquisition interval ends between the sixty-second cutoff and thirty seconds after it.
+This reader validates supplied intervals only; it starts no acquisition or deadline process and grants no capture authority.
+The companion must have exactly the workload's ordered request inventory.
+Both inputs retain the outer 64 MiB input limit; decoded file versions, claims, passive outputs, scheduled results and live blobs share the workload's aggregate 64 MiB budget and per-blob 4 MiB limit.
+There are at most 100,000 scheduled reads in a bound workload and at most 10,000 per request.
+
+Each read has a request-local logical point id, operation, logical place or clock selector, byte range, interval, exact object-version seal, result blob and error.
+The operation vocabulary is `read`, `list`, `stat`, `exists` and `clock`; the reader never executes corpus strings.
+`read` returns the requested bytes; `list` returns the full NUL listing; `stat` returns canonical JSON containing identity, kind, mode and mtime; `exists` returns a canonical boolean; clocks return a canonical integer.
+These are logical reader results, not arbitrary kernel-stat structures or proof of access privileges.
+Captured errors are separate from result bytes; unknown, special-file and unreadable results must not become healthy absence.
+The binder recomputes every result from the captured version and deterministic clock and refuses a file changing during its scheduled read, an unknown range or an inconsistent result.
+More detailed syscall, transaction, remote or runtime observations require a separately reviewed contract rather than a guessed conversion.
+
+Legacy replay must consume every read point in exact order, with exact arguments, range and time, and cannot use the unscheduled v2 object/clock APIs.
+Candidate replay need not copy legacy's I/O structure.
+For a place/operation/range whose witnessed versions are stable within that request, the candidate may repeat, skip, merge compatible covered byte ranges or reorder reads.
+If legacy witnessed more than one version of that place, a candidate access must name the corresponding logical read point.
+Distinct witnessed clock values likewise require a logical point.
+A place, operation or range that legacy never read in that request refuses even if another request read it or it exists in the global admitted inventory.
+Merging cannot expand a partially captured range, combine different versions or infer a file's existence from a listing-only access.
+A candidate cannot select an arbitrary input time or reuse a previous request's result.
+Skipped redundant legacy file reads are allowed; **all logical passive observations remain exact, ordered and mandatory on both sides**.
+Equal mutable Git, daemon, pane or forge bytes are not permission to alias observations or add cross-request caching.
+
+The fixed caller registry in the binding module identifies the selected producer family and projection at the pinned source boundary.
+It admits only the reviewed identity/file-output, stdout-only, command-substitution, first-line, retained-stderr and merged-stream caller classes.
+The companion records the actual caller-observed bytes and status, not invented raw stderr, stripped final LFs or a producer exit masked by an `|| true` continuation.
+Command-substitution projections remove NUL bytes and trailing LFs as the admitted shell-value boundary does; retained-stderr projections keep the separate captured stderr bytes.
+Merged-stream projection requires a complete bounded ordered stdout/stderr delivery event stream whose per-stream bytes equal the full replay outputs, never a guessed concatenation.
+Caller/shell semantics and their exact code identity still need independent provenance review before a real input is admitted.
+Unknown callers, direct harness output, unmodelled early-closing readers and lab-only callers are not silently admitted.
+The reader reports the fixed excluded classes with unknown counts, never inferred zeros.
+
+Live effect images refer to existing captured state/data changes by sequence and original-owner commit id, retaining their preimage seals through the change timeline.
+One commit id can bind multiple places in the same atomic timestamp group but cannot span different groups; completion pairs commit ids with their named places rather than comparing two unrelated lists.
+The binder validates home, interval and exact content for each effect, with `null` content denoting a captured deletion rather than empty bytes.
+Present effects may bind the bytes of any captured object kind, including directory listings, without following or materializing it.
+The comparison boundary is complete named after-images; the change references also bind the original before-images, metadata and identities without applying a write.
+V2's effect API still accepts bytes only; nullable after-images are a v3 extension.
+Legacy completion first requires the recorded caller projection and complete effect images/commit ids to match the live observations.
+A kept-output or effect mismatch refuses even if candidate and legacy replays would agree.
+Differences affecting only bytes the original caller discarded can pass this projected live check; that is not proof of raw-live-byte equality.
+Candidate-versus-legacy comparison still checks the complete unprojected replay stdout, stderr, status, ordered delivery and owner effects/commit identities.
+Protocol refusals remain sticky even when caught, and unfinished sides or unconsumed legacy reads/passive observations never compare successfully.
+
+All v3 reports remain `captured-subset-reader-only`, with production adapters and whole-workload coverage false and B0 pending independent review.
+A diagnostic subset ratio must name its exclusions and cannot establish the whole drain family, fleet coverage or the full P1 reduction target.
+No live recorder, enable file, quota, mode switch, lifecycle operation or installation is supplied by these readers.
+CI extends the existing accounting entrypoint with positive six/thirty-task bound workloads, optimized candidate reads, live projection/effect fidelity, unknown/malformed/adversarial inputs, sticky refusal and independent single-guard controls.
+It retains the original v1 accounting/bridge and v2 controls in separate stages even when a new stage fails.
+These are supplied test adapters, not completed production legacy/resident replay or an authorized capture.
+
 ## Legacy capability and fencing bridge
 
 The existing [`fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh) owns the shell APIs.

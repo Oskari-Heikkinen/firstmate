@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sealed request read schedules and live caller outcomes; not capture authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "workload_sha256", "admission_sha256", "code_ref", "start_ns", "cutoff_ns", "requests", "sha256"],
+  "properties": {
+    "format": {"const": "fm-supervision-capture-bindings.v1"},
+    "workload_sha256": {"$ref": "replay-v2.schema.json#/$defs/sha"},
+    "admission_sha256": {"$ref": "replay-v2.schema.json#/$defs/sha"},
+    "code_ref": {"type": "string", "pattern": "[0-9a-f]{40}"},
+    "start_ns": {"$ref": "replay-v2.schema.json#/$defs/time"},
+    "cutoff_ns": {"$ref": "replay-v2.schema.json#/$defs/time"},
+    "requests": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/request"}},
+    "sha256": {"$ref": "replay-v2.schema.json#/$defs/sha"}
+  },
+  "$defs": {
+    "nullable-blob": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["base64", "sha256"],
+      "properties": {
+        "base64": {"type": "string", "maxLength": 5592408},
+        "sha256": {"$ref": "replay-v2.schema.json#/$defs/sha"}
+      }
+    },
+    "read": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operation", "place", "clock", "offset", "length", "start_ns", "end_ns", "version_sha256", "result", "error"],
+      "properties": {
+        "id": {"$ref": "replay-v2.schema.json#/$defs/token"},
+        "operation": {"enum": ["read", "list", "stat", "exists", "clock"]},
+        "place": {"type": ["object", "null"]},
+        "clock": {"enum": ["", "wall", "monotonic"]},
+        "offset": {"type": "integer", "minimum": 0, "maximum": 4194304},
+        "length": {"type": "integer", "minimum": 0, "maximum": 4194304},
+        "start_ns": {"$ref": "replay-v2.schema.json#/$defs/time"},
+        "end_ns": {"$ref": "replay-v2.schema.json#/$defs/time"},
+        "version_sha256": {"type": ["string", "null"], "pattern": "[0-9a-f]{64}"},
+        "result": {"$ref": "replay-v2.schema.json#/$defs/blob"},
+        "error": {"enum": ["", "ENOENT", "EACCES", "EIO", "ESTALE", "EISDIR", "EINVAL"]}
+      }
+    },
+    "effect": {
+      "type": "object", "additionalProperties": false,
+      "required": ["place", "content", "change_seq", "commit_id"],
+      "properties": {
+        "place": {"$ref": "replay-v2.schema.json#/$defs/place"},
+        "content": {"$ref": "#/$defs/nullable-blob"},
+        "change_seq": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "commit_id": {"$ref": "replay-v2.schema.json#/$defs/token"}
+      }
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "caller", "reads", "live"],
+      "properties": {
+        "id": {"$ref": "replay-v2.schema.json#/$defs/token"},
+        "caller": {"type": "string", "minLength": 1, "maxLength": 200},
+        "reads": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/read"}},
+        "live": {
+          "type": "object", "additionalProperties": false,
+          "required": ["stdout", "stderr", "exit_status", "effects"],
+          "properties": {
+            "stdout": {"$ref": "replay-v2.schema.json#/$defs/blob"},
+            "stderr": {"$ref": "replay-v2.schema.json#/$defs/blob"},
+            "exit_status": {"type": "integer", "minimum": 0, "maximum": 255},
+            "effects": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/effect"}}
+          }
+        }
+      }
+    }
+  }
+}
