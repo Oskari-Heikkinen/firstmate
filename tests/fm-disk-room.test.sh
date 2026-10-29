@@ -16,7 +16,8 @@ set -u
 unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_COMPACT_RESULT FM_DISK_ROOM_STATE \
   FM_DISK_ROOM_SHADOW_RECORD FM_DISK_ROOM_SHADOW_MAX FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_POWERSHELL FM_DISK_ROOM_RESULTS_ROOT \
   FM_DISK_ROOM_SAMPLES FM_DISK_ROOM_GROWTH_MAX FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_STORAGE_MNT \
-  FM_DISK_ROOM_WSLCONFIG FM_DISK_ROOM_MEMINFO FM_DISK_ROOM_WRITE_PROC FM_CONFIG_OVERRIDE FM_INHERITABLE_CONFIG
+  FM_DISK_ROOM_WSLCONFIG FM_DISK_ROOM_MEMINFO FM_DISK_ROOM_WRITE_PROC FM_CONFIG_OVERRIDE FM_INHERITABLE_CONFIG \
+  FM_DISK_ROOM_POLICY FM_DISK_ROOM_LOCK_WAIT FM_DISK_ROOM_RANDOM
 TMP_ROOT=$(fm_test_tmproot fm-disk-room)
 DISK_ROOM="$ROOT/bin/fm-disk-room.sh"
 GIB=1073741824
@@ -1304,7 +1305,7 @@ test_self_test() {
   assert_equals "" "$(find "$TMP_ROOT" -maxdepth 1 -name 'fm-disk-room-self-test.*')" "the self-test removes its temp state"
   out=$(TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test v99); rc=$?
   expect_code 1 "$rc" "--self-test of an unserved version exits 1"
-  assert_contains "$out" "serves fm-disk-room-interface/v2" "an unserved version names the latest served"
+  assert_contains "$out" "serves fm-disk-room-interface/v3" "an unserved version names the latest served"
   TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test >/dev/null 2>&1; rc=$?
   expect_code 2 "$rc" "--self-test without a version is misuse"
   pass "--self-test reports whether this script serves the pinned interface"
@@ -1316,8 +1317,10 @@ test_interface_v2_history() {
   reset_state
   set_sizes 60 600 400
   local out rc high
+  out=$(run_room --interface v2)
+  assert_equals 'fm-disk-room-interface/v2' "$out" "v3 still explicitly serves v2"
   out=$(run_room --interface)
-  assert_equals 'fm-disk-room-interface/v2' "$out" "latest interface is v2"
+  assert_equals 'fm-disk-room-interface/v3' "$out" "latest interface is v3"
   out=$(run_room write-history seal)
   assert_equals '{"kind":"seal","samples":0,"high_bytes":0}' "$out" "missing history is explicitly empty"
   out=$(run_room check --kind seal); rc=$?
@@ -1981,6 +1984,19 @@ test_self_test_v2() {
   assert_contains "$out" 'self-test v2 passed' "pinned v2 probe passes"
 }
 
+test_self_test_v3() {
+  [ -r /proc/$$/io ] || return 0
+  local out rc
+  out=$(TMPDIR="$TMP_ROOT" "$DISK_ROOM" --self-test v3); rc=$?
+  expect_code 0 "$rc" "the v3 self-test includes the v2 probe and a token probe"
+  assert_equals 'fm-disk-room: self-test v3 passed (fm-disk-room-interface/v3)' "$out" "v3 probe reports its version"
+  out=$(TMPDIR="$TMP_ROOT" bash -c "$(cat "$DISK_ROOM")" "$DISK_ROOM" --self-test v3); rc=$?
+  expect_code 0 "$rc" "pinned bash -c bytes can probe v3, loading the library beside PATH"
+  assert_contains "$out" 'self-test v3 passed' "pinned v3 probe passes"
+  assert_equals "" "$(find "$TMP_ROOT" -maxdepth 1 -name 'fm-disk-room-self-test.*')" "the v3 self-test removes its temp state"
+  pass "--self-test v3 probes token admissions under a temp strict policy"
+}
+
 test_unavailable_write_counter
 test_history_capacity_boundary
 test_unrecorded_write_blocks_kind
@@ -1992,6 +2008,7 @@ test_orphaned_accounting_helper
 test_interface_v2_history
 test_corrupt_write_history
 test_self_test_v2
+test_self_test_v3
 test_interface_v1_contract
 test_self_test
 test_pinned_mode

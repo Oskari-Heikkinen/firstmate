@@ -57,6 +57,13 @@
 #   fm-disk-room.sh release-bulk NAME
 #       Release this name from the D: pools without needing the drive present.
 #   fm-disk-room.sh release NAME
+#   fm-disk-room.sh reserve-token TASK --volume linux|host-c|d --class CLASS
+#                                 --name NAME --bytes BYTES --pid PID [--root DIR]
+#       Token admission under the storage admission site policy: check and
+#       record one write peak owned by PID in one hold of the state lock, and
+#       print only the token. See Interface v3.
+#   fm-disk-room.sh release-token TASK --token TOKEN
+#       Release one of TASK's token admissions. See Interface v3.
 #   fm-disk-room.sh watch-line
 #       For a firstmate custom watcher check: print one line only when real
 #       room is under the margin (repeated only after a further 5 GiB drop or
@@ -75,11 +82,12 @@
 #       fm-check-register.sh, or retire it with fm-check-unregister.sh.
 #   fm-disk-room.sh --interface [VERSION]
 #       Print the consumer interface this script serves, one line:
-#       fm-disk-room-interface/v2. Optional VERSION (v1 or v2) queries an
-#       older supported interface explicitly; an unsupported version exits 1.
+#       fm-disk-room-interface/v3. Optional VERSION (v1, v2 or v3) queries a
+#       supported interface explicitly; an unsupported version exits 1, and so
+#       do v1 and v2 while strict C: terms are active (Interface v3).
 #   fm-disk-room.sh --self-test VERSION
 #       Before trusting a new copy, a consumer runs this with the version it
-#       pins (v1 or v2). Exit 0 with one line when this script serves VERSION and a
+#       pins (v1, v2 or v3). Exit 0 with one line when this script serves VERSION and a
 #       hermetic probe of it passes (temp state, Linux-only, no Windows
 #       readings, no reservation outside the temp state); 1 with one line
 #       naming what failed or the version served; 2 on misuse.
@@ -169,6 +177,68 @@
 # held across COMMAND. The command caller consumes refusals and recording
 # errors through the existing stdout/stderr path and reports holds to its owner.
 #
+# Interface v3 keeps every v1 and v2 command and adds the storage admission
+# site policy and token admissions. The policy is the file FM_DISK_ROOM_POLICY;
+# bin/fm-storage-admission-lib.sh, which must sit beside this script, owns its
+# format. The library loads only from bytes matching the digest embedded here,
+# so a pin on this script covers it; any other copy reads as "cannot load".
+# Without the file every v1 and v2 result is unchanged and the library is never
+# loaded. With it:
+#   - status, check, run, reserve-bulk and reserve-token read the reservation
+#     records strictly: an unreadable, malformed, misplaced or non-regular
+#     record is a failed reading starting "owner-state: ", never zero. A token
+#     record lapses when its pid's start ticks or the boot id differ.
+#   - c-terms=strict replaces the shadow storage and swap file readings with
+#     the policy's measurer (c-terms-command with its c-terms-arg values, a 60 s
+#     timeout, jq required), bin/fm-storage-c-terms.py run as "measure
+#     --linux-pending 0". It prints one fm-storage-c-terms/v1 object whose
+#     c_terms has exactly ext4_vhdx, swap_vhdx, vss and pagefile; the reserved
+#     bytes of the last three come off C: free. ext4_vhdx is mapping proof
+#     only, because Linux tokens already charge Linux and C: here. The
+#     measurer's first reason, under its exit 75 or not, is the failed reading
+#     "VOLUME:TERM: DETAIL"; an unknown term, a failed or malformed reading, a
+#     bounded reading without c-terms-bounded=accept, or a bounded vss whose
+#     cap is not proven is "host-c:TERM: WHY". Either is the failed reading for
+#     status and every Linux and C: admission; D: admissions never run the
+#     measurer.
+#   - While c-terms=strict, or while the policy is present but unreadable,
+#     --interface v1|v2 and --self-test v1|v2 exit 1 with one stdout line,
+#     because their readings assumed the older C: terms.
+#   status --json  with the policy adds admission and c_terms_mode (strings,
+#       the policy's values), host_c_reserved and pagefile_reserved (integers)
+#       and c_terms (the measurer's object, or null when not strict). While
+#       strict, shadow_reserved and swap_reserved are the measurer's vss and
+#       swap_vhdx bytes, shadow_source, shadow_reading and swap_source read
+#       "strict", and the other shadow and swap fields are null.
+#       reserved stays the Linux-and-C: charge; host-c tokens count only in
+#       host_c_reserved.
+#   reserve-token  needs admission=on, and c-terms=strict for linux and
+#       host-c. BYTES is a base-10 integer from 0 to 999999999999999999,
+#       leading zeros allowed, no unit. TASK and NAME are
+#       [A-Za-z0-9][A-Za-z0-9._-]{0,127}; CLASS is [a-z0-9-]{1,40}.
+#       linux charges Linux free and C: free once (a Linux peak grows the disk
+#       file); host-c charges C: only; d charges the D: pool of the verified
+#       D: filesystem, which must hold --root, and reads nothing on C:. Linux,
+#       host-c and legacy records share one pool and every admission takes the
+#       same state lock, so legacy admissions see token charges and tokens see
+#       legacy ones. Exit 0 with stdout exactly the token: 64 lowercase hex,
+#       the admission's generation, never overwritten. Otherwise stdout is
+#       empty and stderr is one line, "fm-storage: wait: CODE: DETAIL" with
+#       exit 75 or "fm-storage: refused: CODE: DETAIL" with exit 2 (1 for
+#       owner-state). Wait codes: insufficient-space, cannot-measure,
+#       owner-busy, reservation-exists (TASK/NAME is live on that volume) and
+#       storage-offline; a wait DETAIL starts "VOLUME:CLASS: ". Refused codes:
+#       invalid-argument, not-activated, policy, invalid-pid, placement and
+#       owner-state.
+#   release-token  exit 0 when the token's record is removed or absent, so a
+#       repeat is 0; 2 with invalid-argument, invalid-token or wrong-task; 1
+#       with owner-state when the lock, a pool or the record cannot be read or
+#       the record cannot be removed. Needs no policy and no D: drive.
+#   Token records are STATE/reservations/token@TOKEN (linux, host-c) or
+#   STATE/reservations-d/DEVICE/token@TOKEN (d), eleven lines: bytes, pid,
+#   start, format=fm-storage-admission/v1, token, task, class, volume, name,
+#   boot and admitted.
+#
 # SIZE is bytes or a number with K, M, G or T (binary: G = GiB, matching what
 # Windows Explorer shows as GB).
 #
@@ -216,7 +286,7 @@
 #                         <drive>/Users/<user>/.wslconfig beside the disk file;
 #                         empty disables the reservation)
 #   FM_DISK_ROOM_MEMINFO  meminfo read for that default (default /proc/meminfo)
-#   FM_DISK_ROOM_BOOT_ID  boot id keying that swap file cache
+#   FM_DISK_ROOM_BOOT_ID  boot id keying that swap file cache and token records
 #                         (default /proc/sys/kernel/random/boot_id)
 #   FM_DISK_ROOM_WEVTUTIL  wevtutil command used on every reading to count
 #                         volsnap System events 25/33/36 of the last 7 days
@@ -242,6 +312,11 @@
 #                         (default ${XDG_STATE_HOME:-~/.local/state}/fm-disk-room)
 #   FM_DISK_ROOM_WRITE_PROC  procfs mount for per-pid storage accounting
 #                         (default /proc); unreadable/malformed counters refuse
+#   FM_DISK_ROOM_POLICY   the storage admission site policy (default
+#                         <home>/config/storage-admission, the margin's home)
+#   FM_DISK_ROOM_LOCK_WAIT  seconds reserve-token and release-token wait for the
+#                         state lock (default 30; 0-999)
+#   FM_DISK_ROOM_RANDOM   token random source, for tests (default /dev/urandom)
 #   FM_DISK_ROOM_NOW      epoch override for tests
 set -u
 
@@ -262,7 +337,13 @@ SHADOW_LIVE_CACHE_SECS=300
 BAT_CACHE_SECS=300
 # sha256 of bin/fm-vhdx-bat.py; only a reader with exactly these bytes runs.
 VHDX_BAT_SHA256=bc4917f5d8a697c8916671307d6d909219fe16fd45574bb89718ecd92fe69c03
-INTERFACE=v2
+# sha256 of bin/fm-storage-admission-lib.sh; only a library with exactly these
+# bytes loads.
+ADM_LIB_SHA256=c39b10edcfb59a9d0db79f1d2c3e21511243607416807679b4d7d2dd2eda717d
+INTERFACE=v3
+# The storage admission site policy; absent, nothing below loads it.
+POLICY=${FM_DISK_ROOM_POLICY:-${FM_CONFIG_OVERRIDE:-${FM_HOME:-${SCRIPT_DIR%/*}}/config}/storage-admission}
+ADM=''
 INTERFACE_V1_FIELDS='margin:int linux_free:int linux_used:int reserved:int shadow_reserved:int swap_reserved:int room:int
   host_free:opt vhdx_size:opt fragmented_free:opt fs_overhead:opt slack:opt reclaimable:opt
   ssd_free:opt ssd_total:opt shadow_max:opt shadow_used:opt shadow_allocated:opt shadow_events:opt
@@ -818,6 +899,45 @@ with_lock() {
   flock -w 30 9 || die "state lock busy"
 }
 
+# Storage admission policy -----------------------------------------------------
+
+# adm_load_lib: loads bin/fm-storage-admission-lib.sh beside this script from
+# the bytes that were hashed, and only when they match ADM_LIB_SHA256, so a pin
+# on this script covers it.
+adm_load_lib() {
+  local adm_lib_text
+  [ -z "${ADM_LIB_LOADED:-}" ] || return 0
+  adm_lib_text=$(cat -- "$SCRIPT_DIR/fm-storage-admission-lib.sh" 2>/dev/null && printf x) || return 1
+  adm_lib_text=${adm_lib_text%x}
+  [ "$(printf '%s' "$adm_lib_text" | sha256sum | cut -d' ' -f1)" = "$ADM_LIB_SHA256" ] || return 1
+  eval "$adm_lib_text" 2>/dev/null
+  [ -n "${ADM_LIB_LOADED:-}" ]
+}
+
+# adm_init: sets ADM to none (no policy file), ok (policy read; POL_* set)
+# or bad (POL_ERR says why). Only a present policy loads the library.
+adm_init() {
+  [ -z "$ADM" ] || return 0
+  ADM=none
+  [ -e "$POLICY" ] || [ -L "$POLICY" ] || return 0
+  if ! adm_load_lib; then ADM=bad POL_ERR="cannot load $SCRIPT_DIR/fm-storage-admission-lib.sh"; return 0; fi
+  if adm_policy_load "$POLICY"; then ADM=ok; else ADM=bad; fi
+}
+
+# pre_measure: with strict C: terms, read them before taking the state lock,
+# so a slow Windows reading never holds every other admission waiting.
+pre_measure() {
+  strict_active && [ "$ADM" = ok ] && adm_cterms
+  return 0
+}
+
+# strict_active: the policy is present and asks for strict C: terms, or is
+# present and unreadable (then nothing may assume the older meanings).
+strict_active() {
+  adm_init
+  [ "$ADM" = bad ] || { [ "$ADM" = ok ] && [ "$POL_CTERMS" = strict ]; }
+}
+
 # Measurement ----------------------------------------------------------------
 
 # resolve_margin: sets MARGIN from FM_DISK_ROOM_MARGIN, else the first line of
@@ -864,11 +984,17 @@ resolve_c_free_min() {
 }
 
 # measure [EXCLUDE]: sets globals; returns 1 when a required reading fails.
+# With the storage admission policy present, records are read strictly and
+# host-c token records charge C: only (HOSTC_RES); with strict C: terms the
+# measurer's swap, VSS and pagefile terms replace the legacy shadow and swap
+# readings (PAGEFILE_RES is otherwise 0).
 measure() {
   local host root line bs vhdx result fs_size dev bat
-  ERR=''
+  ERR='' HOSTC_RES=0 PAGEFILE_RES=0
   root=${FM_DISK_ROOM_ROOT:-/}
   host=$(host_mount)
+  adm_init
+  [ "$ADM" != bad ] || { ERR="storage admission policy: $POL_ERR"; return 1; }
   resolve_margin || return 1
   LINUX_FREE=$(df_field "$root" avail); LINUX_USED=$(df_field "$root" used)
   [ -n "$LINUX_FREE" ] && [ -n "$LINUX_USED" ] || { ERR="cannot read Linux free space on $root"; return 1; }
@@ -881,21 +1007,37 @@ measure() {
     ERR="host drive $host is not mounted"; return 1
   fi
   RESERVED=0; RES_LIST=''
-  while read -r line; do
-    [ -n "$line" ] || continue
-    RESERVED=$(( RESERVED + ${line##* } ))
-    RES_LIST="$RES_LIST${RES_LIST:+, }${line% *} $(gib "${line##* }") GiB"
-  done < <(live_reservations "${1:-}")
-  shadow_reservation || return 1
+  if [ "$ADM" = ok ]; then
+    adm_collect "$(state_dir)/reservations" "${1:-}" c || { ERR="owner-state: $ADM_ERR"; return 1; }
+    RESERVED=$ADM_SUM HOSTC_RES=$ADM_HOSTC RES_LIST=$ADM_LIST
+  else
+    while read -r line; do
+      [ -n "$line" ] || continue
+      RESERVED=$(( RESERVED + ${line##* } ))
+      RES_LIST="$RES_LIST${RES_LIST:+, }${line% *} $(gib "${line##* }") GiB"
+    done < <(live_reservations "${1:-}")
+  fi
+  if strict_active; then
+    [ -n "$HOST" ] || { ERR="host-c:mount: host drive is not mounted"; return 1; }
+    adm_cterms || { ERR="$CT_TERM: $CT_WHY"; return 1; }
+    SHADOW_RES=$CT_VSS SHADOW_SRC=strict SHADOW_READING=strict SHADOW_MAX='' SHADOW_USED='' SHADOW_ALLOC='' SHADOW_EVENTS=''
+    PAGEFILE_RES=$CT_PAGEFILE
+  else
+    shadow_reservation || return 1
+  fi
   VHDX=''; VHDX_SIZE=''; FRAG=''; OVERHEAD=''; SLACK=''; RECLAIM=''; TRIM_MORE=''
   if [ -n "$HOST" ] && vhdx=$(discover_vhdx); then
     VHDX=$vhdx
     VHDX_SIZE=$(stat -c %s -- "$vhdx" 2>/dev/null) || VHDX_SIZE=''
   fi
-  swap_reservation
+  if strict_active; then
+    SWAP_RES=$CT_SWAP SWAP_SRC=strict SWAP_SIZE='' SWAP_LEN='' SWAP_FILE='' SWAP_WHY=''
+  else
+    swap_reservation
+  fi
   ROOM=$(( LINUX_FREE - RESERVED ))
-  if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - SWAP_RES - RESERVED )) -lt "$ROOM" ]; then
-    ROOM=$(( HOST_FREE - SHADOW_RES - SWAP_RES - RESERVED ))
+  if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - SWAP_RES - PAGEFILE_RES - RESERVED - HOSTC_RES )) -lt "$ROOM" ]; then
+    ROOM=$(( HOST_FREE - SHADOW_RES - SWAP_RES - PAGEFILE_RES - RESERVED - HOSTC_RES ))
   fi
   bs=$(stat -f -c %S -- "$root" 2>/dev/null)
   [ -n "$bs" ] && FRAG=$(fragmented_free "$bs") || FRAG=''
@@ -924,7 +1066,7 @@ measure() {
   return 0
 }
 
-limit_name() { if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - SWAP_RES )) -le "$LINUX_FREE" ]; then printf '%s\n' "$HOST"; else printf 'Linux\n'; fi; }
+limit_name() { if [ -n "$HOST_FREE" ] && [ $(( HOST_FREE - SHADOW_RES - SWAP_RES - PAGEFILE_RES - HOSTC_RES )) -le "$LINUX_FREE" ]; then printf '%s\n' "$HOST"; else printf 'Linux\n'; fi; }
 
 # advice -> the next step when room is low.
 advice() {
@@ -1201,17 +1343,25 @@ cmd_growth() {
 }
 
 cmd_status() {
-  local json=0
+  local json=0 ct out
   [ "${1:-}" = "--json" ] && json=1
   measure || die "$ERR"
   results_root
   if [ "$json" = 1 ]; then
-    printf '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s,"shadow_reading":"%s","shadow_allocated":%s,"swap_reserved":%s,"swap_source":"%s","swap_size":%s,"swap_file_size":%s,"trim_reclaimable":%s}\n' \
+    printf -v out '{"margin":%s,"host":"%s","host_free":%s,"linux_free":%s,"linux_used":%s,"reserved":%s,"room":%s,"low":%s,"vhdx":"%s","vhdx_size":%s,"fragmented_free":%s,"fs_overhead":%s,"slack":%s,"reclaimable":%s,"results_active":"%s","results_state":"%s","ssd_free":%s,"ssd_total":%s,"shadow_reserved":%s,"shadow_source":"%s","shadow_max":%s,"shadow_used":%s,"shadow_events":%s,"shadow_reading":"%s","shadow_allocated":%s,"swap_reserved":%s,"swap_source":"%s","swap_size":%s,"swap_file_size":%s,"trim_reclaimable":%s}' \
       "$MARGIN" "$HOST" "${HOST_FREE:-null}" "$LINUX_FREE" "$LINUX_USED" "$RESERVED" "$ROOM" \
       "$([ "$ROOM" -lt "$MARGIN" ] && echo true || echo false)" "$VHDX" "${VHDX_SIZE:-null}" \
       "${FRAG:-null}" "${OVERHEAD:-null}" "${SLACK:-null}" "${RECLAIM:-null}" "$RR_ACTIVE" "$RR_STATE" "${RR_FREE:-null}" "${RR_TOTAL:-null}" \
       "$SHADOW_RES" "$SHADOW_SRC" "${SHADOW_MAX:-null}" "${SHADOW_USED:-null}" "${SHADOW_EVENTS:-null}" "$SHADOW_READING" "${SHADOW_ALLOC:-null}" \
       "$SWAP_RES" "$SWAP_SRC" "${SWAP_SIZE:-null}" "${SWAP_LEN:-null}" "${TRIM_MORE:-null}"
+    if [ "$ADM" = ok ]; then
+      # v3 fields, present only with the storage admission policy.
+      ct=null
+      strict_active && ct=$CT_JSON
+      printf -v out '%s,"admission":"%s","c_terms_mode":"%s","host_c_reserved":%s,"pagefile_reserved":%s,"c_terms":%s}' \
+        "${out%\}}" "$POL_ADMISSION" "$POL_CTERMS" "$HOSTC_RES" "$PAGEFILE_RES" "$ct"
+    fi
+    printf '%s\n' "$out"
     return 0
   fi
   printf 'real room: %s GiB (limited by %s; margin %s GiB)%s\n' "$(gib "$ROOM")" "$(limit_name)" "$(gib "$MARGIN")" \
@@ -1219,7 +1369,11 @@ cmd_status() {
   [ -n "$HOST_FREE" ] && printf '%s free: %s GiB\n' "$HOST" "$(gib "$HOST_FREE")"
   printf 'Linux free: %s GiB, used %s GiB\n' "$(gib "$LINUX_FREE")" "$(gib "$LINUX_USED")"
   printf 'reserved writes: %s GiB%s\n' "$(gib "$RESERVED")" "${RES_LIST:+ ($RES_LIST)}"
-  if [ -n "$HOST" ]; then
+  [ "$HOSTC_RES" -eq 0 ] || printf 'reserved C: only: %s GiB\n' "$(gib "$HOSTC_RES")"
+  if strict_active; then
+    printf 'C: terms (strict): ext4.vhdx %s; swap file %s GiB; shadow storage %s GiB; pagefile %s GiB\n' \
+      "$CT_EXT4" "$(gib "$SWAP_RES")" "$(gib "$SHADOW_RES")" "$(gib "$PAGEFILE_RES")"
+  elif [ -n "$HOST" ]; then
     shadow_line
     [ -n "$(shadow_warning)" ] && printf '%s\n' "$(shadow_warning)"
     swap_line
@@ -1416,6 +1570,7 @@ cmd_check() {
   done
   [ -n "$expect$kind" ] || die "check needs --expect-write SIZE or --kind KIND"
   if [ -n "$kind" ]; then
+    pre_measure
     with_lock
     kind_expect "$kind" "$expect"; rc=$?
     [ "$rc" -eq 0 ] || { printf '%s\n' "$LINE"; return "$rc"; }
@@ -1438,6 +1593,7 @@ cmd_run() {
     esac
   done
   [ -n "$name" ] && [ -n "$expect$kind" ] && [ "$#" -gt 0 ] || die "run needs --name, --expect-write or --kind, and -- COMMAND"
+  pre_measure
   with_lock
   if [ -n "$kind" ]; then
     live_reservations >/dev/null
@@ -1534,9 +1690,15 @@ cmd_reserve_bulk() {
   device=$(stat -c %d -- "$mp/lattice-data/tetjet-results" 2>/dev/null)
   case "$device" in ''|*[!0-9]*) printf 'fm-disk-room: wait: wrong-filesystem-identity\n' >&2; return 75 ;; esac
   dir="$(state_dir)/reservations-d/$device"
-  while read -r line; do
-    [ -n "$line" ] && reserved=$(( reserved + ${line##* } ))
-  done < <(live_reservations '' "$dir")
+  adm_init
+  case "$ADM" in
+    ok) adm_collect "$dir" '' d || { printf 'fm-disk-room: wait: owner-state: %s\n' "$ADM_ERR" >&2; return 75; }
+      reserved=$ADM_SUM ;;
+    bad) printf 'fm-disk-room: wait: owner-state: storage admission policy: %s\n' "$POL_ERR" >&2; return 75 ;;
+    *) while read -r line; do
+        [ -n "$line" ] && reserved=$(( reserved + ${line##* } ))
+      done < <(live_reservations '' "$dir") ;;
+  esac
   [ ! -e "$dir/$name" ] || { printf 'fm-disk-room: wait: reservation-exists: %s\n' "$name" >&2; return 75; }
   free=$(df_field "$mp/lattice-data/tetjet-results" avail)
   case "$free" in ''|*[!0-9]*|???????????????????*) printf 'fm-disk-room: wait: cannot-measure-D\n' >&2; return 75 ;; esac
@@ -1569,6 +1731,155 @@ cmd_release_bulk() {
 cmd_release() {
   valid_name "${1:-}" || die "release needs a NAME"
   rm -f -- "$(state_dir)/reservations/$1"
+}
+
+# Token admissions (interface v3) ---------------------------------------------
+
+# adm_say wait|refused CODE DETAIL: the one stderr line fm-storage passes
+# through; returns 75 for a wait, 1 for owner-state, else 2.
+adm_say() {
+  local detail=${3//[^[:print:]]/?}
+  printf 'fm-storage: %s: %s: %s\n' "$1" "$2" "${detail:0:300}" >&2
+  [ "$1" = wait ] && return 75
+  [ "$2" = owner-state ] && return 1
+  return 2
+}
+
+# adm_lock: takes the shared state lock on fd 9, the same lock every legacy
+# admission takes. 0 held, 75 busy, 1 when it cannot be opened (ADM_ERR).
+adm_lock() {
+  local dir wait=${FM_DISK_ROOM_LOCK_WAIT:-30}
+  case "$wait" in ''|*[!0-9]*|????*) ADM_ERR="bad FM_DISK_ROOM_LOCK_WAIT"; return 1 ;; esac
+  dir=$(state_dir)
+  if ! mkdir -p -- "$dir" 2>/dev/null || ! { exec 9>"$dir/.lock"; } 2>/dev/null; then
+    ADM_ERR="cannot open the state lock in $dir"; return 1
+  fi
+  flock -w "$wait" 9 2>/dev/null || { ADM_ERR="state lock busy after ${wait}s"; return 75; }
+}
+
+cmd_reserve_token() {
+  local volume='' class='' task='' name='' bytes='' pid='' root='' seen=' ' opt rc start dir device dev pool
+  local where free avail margin out
+  adm_load_lib || { printf 'fm-storage: refused: owner-state: cannot load %s\n' "$SCRIPT_DIR/fm-storage-admission-lib.sh" >&2; return 1; }
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --volume|--class|--name|--bytes|--pid|--root)
+        opt=${1#--}
+        [ "$#" -ge 2 ] || { adm_say refused invalid-argument "$1 needs a value"; return; }
+        case "$seen" in *" $opt "*) adm_say refused invalid-argument "$1 given twice"; return ;; esac
+        seen="$seen$opt "
+        printf -v "$opt" '%s' "$2"; shift 2 ;;
+      -*) adm_say refused invalid-argument "unknown option $1"; return ;;
+      *) case "$seen" in *" task "*) adm_say refused invalid-argument "unexpected argument $1"; return ;; esac
+        seen="${seen}task "; task=$1; shift ;;
+    esac
+  done
+  case "$volume" in linux|host-c|d) ;; *) adm_say refused invalid-argument "--volume must be linux, host-c or d"; return ;; esac
+  adm_class "$class" || { adm_say refused invalid-argument "--class must be 1-40 of a-z 0-9 -"; return; }
+  adm_id "$task" || { adm_say refused invalid-argument "TASK must be 1-128 of A-Z a-z 0-9 . _ - starting with a letter or digit"; return; }
+  adm_id "$name" || { adm_say refused invalid-argument "--name must be 1-128 of A-Z a-z 0-9 . _ - starting with a letter or digit"; return; }
+  adm_bytes "$bytes" || { adm_say refused invalid-argument "--bytes must be a base-10 integer from 0 to $ADM_MAX"; return; }
+  bytes=$ADM_N
+  case "$pid" in ''|0|*[!0-9]*|???????????*) adm_say refused invalid-argument "--pid must be a process id"; return ;; esac
+  case "$volume:$root" in
+    d:) adm_say refused invalid-argument "--volume d needs --root"; return ;;
+    *:|*:/*) ;;
+    *) adm_say refused invalid-argument "--root must be an absolute path"; return ;;
+  esac
+  where="$volume:$class"
+  adm_init
+  case "$ADM" in
+    none) adm_say refused not-activated "no storage admission policy at $POLICY"; return ;;
+    bad) adm_say refused policy "$POL_ERR"; return ;;
+  esac
+  [ "$POL_ADMISSION" = on ] || { adm_say refused not-activated "admission=off in $POLICY"; return; }
+  if [ "$volume" != d ] && [ "$POL_CTERMS" != strict ]; then
+    adm_say refused not-activated "$volume admissions need c-terms=strict in $POLICY"; return
+  fi
+  adm_boot || { adm_say wait cannot-measure "$where: boot-id: cannot read the boot id"; return; }
+  adm_start_of "$pid" || { adm_say refused invalid-pid "process $pid is not running"; return; }
+  start=$ADM_START
+  [ "$volume" = d ] || adm_cterms
+  adm_lock; rc=$?
+  case "$rc" in
+    0) ;;
+    75) adm_say wait owner-busy "$where: $ADM_ERR"; return ;;
+    *) adm_say refused owner-state "$ADM_ERR"; return ;;
+  esac
+  if [ "$volume" = d ]; then
+    margin=$(to_bytes "${FM_DISK_ROOM_BULK_MARGIN:-50G}") || { adm_say refused owner-state "bad FM_DISK_ROOM_BULK_MARGIN"; return; }
+    out=$(FM_STORAGE_RESULTS_ROOT="${FM_DISK_ROOM_RESULTS_ROOT:-${FM_STORAGE_RESULTS_ROOT:-}}" \
+      "$SCRIPT_DIR/fm-storage.sh" verify-bulk-root 2>&1 >/dev/null) ||
+      { out=${out%%$'\n'*}; adm_say wait storage-offline "$where: ${out#fm-storage: wait: }"; return; }
+    device=$(stat -c %d -- "${FM_STORAGE_MNT:-/mnt}/d/lattice-data/tetjet-results" 2>/dev/null)
+    case "$device" in ''|*[!0-9]*) adm_say wait storage-offline "$where: the D: results directory has no filesystem identity"; return ;; esac
+    dev=$(stat -c %d -- "$root" 2>/dev/null)
+    [ "$dev" = "$device" ] || { adm_say refused placement "$root is not a directory on the verified D: filesystem"; return; }
+    for pool in "$(state_dir)/reservations-d/"*; do
+      [ -e "$pool" ] || [ -L "$pool" ] || continue
+      adm_collect "$pool" '' d || { adm_say refused owner-state "$ADM_ERR"; return; }
+      case "$ADM_KEYS" in *" d:$task:$name "*) adm_say wait reservation-exists "$where: $task/$name is live"; return ;; esac
+    done
+    dir="$(state_dir)/reservations-d/$device"
+    adm_collect "$dir" '' d || { adm_say refused owner-state "$ADM_ERR"; return; }
+    free=$(df_field "$root" avail)
+    case "$free" in ''|*[!0-9]*|???????????????????*) adm_say wait cannot-measure "$where: d-free: cannot read free space on $root"; return ;; esac
+    avail=$(( free - ADM_SUM - margin ))
+  else
+    if [ -n "$root" ]; then
+      dev=$(stat -c %d -- "$root" 2>/dev/null)
+      if [ "$volume" = linux ]; then device=$(stat -c %d -- "${FM_DISK_ROOM_ROOT:-/}" 2>/dev/null)
+      else device=$(stat -c %d -- "$(host_mount)" 2>/dev/null); fi
+      [ -n "$dev" ] && [ "$dev" = "$device" ] || { adm_say refused placement "$root is not on the $volume filesystem"; return; }
+    fi
+    dir="$(state_dir)/reservations"
+    adm_collect "$dir" '' c || { adm_say refused owner-state "$ADM_ERR"; return; }
+    case "$ADM_KEYS" in *" $volume:$task:$name "*) adm_say wait reservation-exists "$where: $task/$name is live"; return ;; esac
+    if ! measure; then
+      case "$ERR" in owner-state:*) adm_say refused owner-state "${ERR#owner-state: }"; return ;; esac
+      adm_say wait cannot-measure "$where: $ERR"; return
+    fi
+    if [ "$volume" = linux ]; then avail=$(( ROOM - MARGIN ))
+    else avail=$(( HOST_FREE - SHADOW_RES - SWAP_RES - PAGEFILE_RES - RESERVED - HOSTC_RES - MARGIN )); fi
+  fi
+  [ "$avail" -ge "$bytes" ] || { adm_say wait insufficient-space "$where: required=$bytes available=$avail"; return; }
+  if [ "$volume" = d ] && [ "$(stat -c %d -- "$root" 2>/dev/null)" != "$device" ]; then
+    adm_say wait storage-offline "$where: $root left the verified D: filesystem"; return
+  fi
+  adm_new_token || { adm_say refused owner-state "cannot generate a token"; return; }
+  # shellcheck disable=SC2034 # adm_write_record reads the R_* fields.
+  R_BYTES=$bytes R_PID=$pid R_START=$start R_TASK=$task R_CLASS=$class R_VOLUME=$volume R_NAME=$name \
+    R_BOOT=$ADM_BOOT R_ADMITTED=$(now)
+  adm_write_record "$dir" || { adm_say refused owner-state "$ADM_ERR"; return; }
+  if ! adm_start_of "$pid" || [ "$ADM_START" != "$start" ]; then
+    rm -f -- "$dir/token@$ADM_TOKEN"
+    adm_say refused invalid-pid "process $pid exited during admission"; return
+  fi
+  printf '%s\n' "$ADM_TOKEN"
+}
+
+cmd_release_token() {
+  local task=${1:-} token=${3:-} f pool rc
+  adm_load_lib || { printf 'fm-storage: refused: owner-state: cannot load %s\n' "$SCRIPT_DIR/fm-storage-admission-lib.sh" >&2; return 1; }
+  [ "$#" -eq 3 ] && [ "$2" = --token ] || { adm_say refused invalid-argument "release-token needs TASK --token TOKEN"; return; }
+  adm_id "$task" || { adm_say refused invalid-argument "TASK must be 1-128 of A-Z a-z 0-9 . _ - starting with a letter or digit"; return; }
+  adm_token "$token" || { adm_say refused invalid-token "a token is 64 lowercase hex characters"; return; }
+  adm_lock; rc=$?
+  [ "$rc" -eq 0 ] || { adm_say refused owner-state "$ADM_ERR"; return; }
+  for pool in "$(state_dir)/reservations" "$(state_dir)/reservations-d" "$(state_dir)/reservations-d/"*; do
+    [ -e "$pool" ] || [ -L "$pool" ] || continue
+    [ -d "$pool" ] && [ -r "$pool" ] && [ -x "$pool" ] || { adm_say refused owner-state "cannot read reservation pool $pool"; return; }
+  done
+  for f in "$(state_dir)/reservations/token@$token" "$(state_dir)/reservations-d/"*"/token@$token"; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    if [ -L "$f" ] || [ ! -f "$f" ] || ! adm_record_read "$f" || [ "$R_KIND" != v2 ] || [ "$R_TOKEN" != "$token" ]; then
+      adm_say refused owner-state "unreadable or malformed reservation $f"; return
+    fi
+    [ "$R_TASK" = "$task" ] || { adm_say refused wrong-task "the token belongs to another task"; return; }
+    rm -f -- "$f" 2>/dev/null
+    [ ! -e "$f" ] || { adm_say refused owner-state "cannot remove $f"; return; }
+  done
+  return 0
 }
 
 cmd_watch_line() {
@@ -1658,7 +1969,7 @@ self_probe() {
   shift
   (
     for v in $(compgen -e); do case "$v" in FM_DISK_ROOM_*) unset "$v" ;; esac; done
-    export FM_DISK_ROOM_HOST='' FM_DISK_ROOM_ROOT="$SELF_TMP" FM_DISK_ROOM_STATE="$SELF_TMP/state" \
+    export FM_DISK_ROOM_HOST="${SELF_HOST-}" FM_DISK_ROOM_POLICY="${SELF_POLICY:-$SELF_TMP/none}" FM_DISK_ROOM_ROOT="$SELF_TMP" FM_DISK_ROOM_STATE="$SELF_TMP/state" \
       FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_WEVTUTIL='' FM_DISK_ROOM_MB_GROUPS="$SELF_TMP/none" \
       FM_DISK_ROOM_RESULTS_ROOT="$SELF_TMP/none" FM_DISK_ROOM_SAMPLES="$SELF_TMP/none" \
       FM_DISK_ROOM_COMPACT_RESULT="$SELF_TMP/none" FM_DISK_ROOM_MARGIN="$margin"
@@ -1708,7 +2019,7 @@ self_test_v2() {
   local failure out rc
   failure=$(self_test_v1)
   [ -z "$failure" ] || { printf '%s\n' "$failure"; return; }
-  [ "$(self_probe 0 --interface)" = "fm-disk-room-interface/v2" ] || { echo "--interface does not print fm-disk-room-interface/v2"; return; }
+  [ "$(self_probe 0 --interface v2)" = "fm-disk-room-interface/v2" ] || { echo "--interface v2 does not print fm-disk-room-interface/v2"; return; }
   self_probe 0 run --name fm-self-kind --kind self-kind --expect-write 1M -- sh -c 'exit 7' >/dev/null 2>&1; rc=$?
   [ "$rc" -eq 7 ] || { echo "kind run did not return command status (exit $rc)"; return; }
   out=$(self_probe 0 write-history self-kind 2>/dev/null); rc=$?
@@ -1727,13 +2038,75 @@ self_test_v2() {
   [ "$rc" -eq 0 ] && [ "$(json_value "$out" samples)" = 2 ] && [ "$(json_value "$out" high_bytes)" = 1048576 ] || { echo "recovery did not record its conservative observation"; return; }
 }
 
+# served_or_exit VERSION: v1 and v2 readings assume the older C: terms, so
+# neither is served while the storage admission policy is strict or unreadable.
+served_or_exit() {
+  strict_active || return 0
+  printf 'fm-disk-room: interface %s is not served while strict C: terms are active (serves fm-disk-room-interface/%s)\n' "$1" "$INTERFACE"
+  exit 1
+}
+
+# self_test_v3 -> nothing on success, else what failed. v2 without a policy,
+# then token admissions under a temp strict policy whose C: terms come from a
+# fixture measurer.
+self_test_v3() {
+  local failure out rc token pid
+  failure=$(self_test_v2)
+  [ -z "$failure" ] || { printf '%s\n' "$failure"; return; }
+  [ "$(self_probe 0 --interface)" = "fm-disk-room-interface/v3" ] || { echo "--interface does not print fm-disk-room-interface/v3"; return; }
+  pid=$$
+  out=$(self_probe 0 reserve-token --volume linux --class self T1 --name n --bytes 1 --pid "$pid" 2>&1); rc=$?
+  [ "$rc" -eq 2 ] && [ "$out" = "fm-storage: refused: not-activated: no storage admission policy at $SELF_TMP/none" ] || { echo "reserve-token without a policy did not refuse not-activated (exit $rc)"; return; }
+  mkdir -p "$SELF_TMP/host" || { echo "cannot create the host fixture"; return; }
+  { printf '#!/bin/sh\n'; printf 'exec cat "%s"\n' "$SELF_TMP/cterms.json"; } >"$SELF_TMP/measurer" || { echo "cannot write the fixture measurer"; return; }
+  chmod +x "$SELF_TMP/measurer" || { echo "cannot write the fixture measurer"; return; }
+  self_cterms not-applicable || { echo "cannot write the C: terms fixture"; return; }
+  printf 'fm-storage-admission-policy/v1\nadmission=on\nc-terms=strict\nc-terms-command=%s\n' \
+    "$SELF_TMP/measurer" >"$SELF_TMP/policy" || { echo "cannot write the policy fixture"; return; }
+  export SELF_POLICY="$SELF_TMP/policy" SELF_HOST="$SELF_TMP/host"
+  self_probe 0 --interface v1 >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 1 ] || { echo "--interface v1 was served under strict C: terms (exit $rc)"; return; }
+  token=$(self_probe 0 reserve-token --volume linux --class self T1 --name n --bytes 1024 --pid "$pid" 2>/dev/null); rc=$?
+  case "$rc:$token" in 0:*[!0-9a-f]*|0:) echo "reserve-token did not print a token (exit $rc)"; return ;; 0:*) ;; *) echo "reserve-token with room exited $rc"; return ;; esac
+  [ "${#token}" -eq 64 ] || { echo "reserve-token printed a token of ${#token} characters"; return; }
+  [ "$(json_value "$(self_probe 0 status --json 2>/dev/null)" reserved)" = 1024 ] || { echo "status --json reserved does not count a linux token"; return; }
+  out=$(self_probe 0 reserve-token --volume linux --class self T1 --name n --bytes 1 --pid "$pid" 2>&1); rc=$?
+  [ "$rc" -eq 75 ] && [ "${out#fm-storage: wait: reservation-exists: }" != "$out" ] || { echo "a live task/name was admitted twice (exit $rc)"; return; }
+  out=$(self_probe 0 reserve-token --volume host-c --class self T1 --name c --bytes 2048 --pid "$pid" 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ "$(json_value "$(self_probe 0 status --json 2>/dev/null)" host_c_reserved)" = 2048 ] || { echo "status --json host_c_reserved does not count a host-c token (exit $rc)"; return; }
+  self_probe 0 release-token T2 --token "$token" >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 2 ] || { echo "release-token for another task did not exit 2 (exit $rc)"; return; }
+  self_probe 0 release-token T1 --token "$token" >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] && [ "$(json_value "$(self_probe 0 status --json 2>/dev/null)" reserved)" = 0 ] || { echo "release-token did not exit 0 and drop the token (exit $rc)"; return; }
+  self_probe 0 release-token T1 --token "$token" >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] || { echo "a repeated release-token did not exit 0 (exit $rc)"; return; }
+  out=$(self_probe 0 reserve-token --volume linux --class self T1 --name big --bytes 1000000000000000000 --pid "$pid" 2>&1); rc=$?
+  [ "$rc" -eq 2 ] && [ "${out#fm-storage: refused: invalid-argument: }" != "$out" ] || { echo "an over-ceiling size was not refused (exit $rc)"; return; }
+  self_cterms unknown || { echo "cannot write the C: terms fixture"; return; }
+  out=$(self_probe 0 reserve-token --volume linux --class self T1 --name u --bytes 1 --pid "$pid" 2>&1); rc=$?
+  [ "$rc" -eq 75 ] && [ "${out#fm-storage: wait: cannot-measure: linux:self: host-c:pagefile: }" != "$out" ] || { echo "an unknown pagefile term did not wait cannot-measure (exit $rc)"; return; }
+}
+
+# self_cterms STATE: the fixture measurer's fm-storage-c-terms/v1 reading, every
+# term not-applicable but the pagefile, which is STATE.
+self_cterms() {
+  local c='"source":"self-test","sampled_at":null' pf='"reason":null,"reserved_bytes":0'
+  [ "$1" = unknown ] && pf='"reason":"self-test","reserved_bytes":null'
+  printf '{"schema":"fm-storage-c-terms/v1","sampled_at":0,"free":{},"c_terms":{"ext4_vhdx":{"state":"not-applicable",%s,"reason":null,"reserved_bytes":0,"path":null,"file_bytes":null,"linux_free_bytes":null,"linux_pending_bytes":null,"growth_reserved_bytes":null},' "$c" &&
+  printf '"swap_vhdx":{"state":"not-applicable",%s,"reason":null,"reserved_bytes":0,"path":null,"configured_bytes":null,"file_bytes":null,"hosting_volume":null},' "$c" &&
+  printf '"vss":{"state":"not-applicable",%s,"reason":null,"reserved_bytes":0,"cap_bytes":null,"allocated_bytes":null,"used_bytes":null,"cap_proven":null},' "$c" &&
+  printf '"pagefile":{"state":"%s",%s,%s,"mode":null,"allocation_bytes":null,"maximum_bytes":null,"operator_growth_reservation_bytes":null,"policy_id":null,"hosting_volumes":null}},"reasons":[]}\n' "$1" "$c" "$pf"
+} >"$SELF_TMP/cterms.json"
+
 cmd_self_test() {
   local want=${1:-} failure
   [ "$#" -eq 1 ] && [ -n "$want" ] || die "--self-test needs one interface version, such as v1"
-  if [ "$want" != v1 ] && [ "$want" != v2 ]; then
-    printf 'fm-disk-room: does not serve interface %s (serves fm-disk-room-interface/%s)\n' "$want" "$INTERFACE"
-    return 1
-  fi
+  case "$want" in
+    v1|v2) served_or_exit "$want" ;;
+    v3) ;;
+    *) printf 'fm-disk-room: does not serve interface %s (serves fm-disk-room-interface/%s)\n' "$want" "$INTERFACE"
+      return 1 ;;
+  esac
   SELF_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-disk-room-self-test.XXXXXX") || die "cannot create a temp directory"
   failure=$("self_test_$want")
   rm -rf -- "$SELF_TMP"
@@ -1748,7 +2121,8 @@ case "${1:-}" in
   --interface)
     [ "$#" -le 2 ] || die "--interface takes at most one version"
     case "${2:-$INTERFACE}" in
-      v1|v2) printf 'fm-disk-room-interface/%s\n' "${2:-$INTERFACE}" ;;
+      v1|v2) served_or_exit "$2"; printf 'fm-disk-room-interface/%s\n' "$2" ;;
+      v3) printf 'fm-disk-room-interface/%s\n' "${2:-$INTERFACE}" ;;
       *) printf 'fm-disk-room: unsupported interface %s\n' "$2"; exit 1 ;;
     esac ;;
   --self-test) shift; cmd_self_test "$@" ;;
@@ -1761,6 +2135,8 @@ case "${1:-}" in
   reserve-bulk) shift; cmd_reserve_bulk "$@" ;;
   release-bulk) shift; cmd_release_bulk "$@" ;;
   release) shift; cmd_release "$@" ;;
+  reserve-token) shift; cmd_reserve_token "$@" ;;
+  release-token) shift; cmd_release_token "$@" ;;
   watch-line) shift; cmd_watch_line ;;
   growth) shift; cmd_growth "$@" ;;
   arm) cmd_arm ;;

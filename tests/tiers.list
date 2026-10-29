@@ -53,6 +53,7 @@ gate tests/fm-spawn-nested-home-context.test.sh
 gate tests/fm-spawn-orca-worktree.test.sh
 gate tests/fm-spawn-pool-base-freshen.test.sh
 gate tests/fm-spawn-worktree-settle.test.sh
+gate tests/fm-storage-admission.test.sh
 gate tests/fm-storage-c-terms.test.sh
 gate tests/fm-storage.test.sh
 gate tests/fm-supervision-accounting.test.sh
