@@ -52,7 +52,10 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   direct-push  implement -> rebase + full local suite -> fast-forward push to the
 #                default branch, no PR; the launch brief's landing authority (from
-#                the spawn's yolo) says whether to land at once or stop at ready
+#                the spawn's yolo) says whether to land at once or stop at ready.
+#                A scaffold cannot tell the target repository, so the spawn swaps
+#                in Firstmate's own CI-verified block for Firstmate's repository
+#                (bin/fm-dod-lib.sh's header)
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of

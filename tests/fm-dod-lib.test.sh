@@ -444,7 +444,7 @@ test_direct_push_landed_and_ready_heads() {
   pass "direct-push: an unpushed head is refused, a ready head is accepted but not landed, a pushed head is landed"
 }
 
-# Firstmate's GitHub-verified direct-push section is selected only for a project
+# Firstmate's CI-verified direct-push Definition of done is selected only for a project
 # that shares the Firstmate code root's git object store: the root itself and its
 # pooled worktrees, never an unrelated clone of anything.
 test_firstmate_repo_detection_uses_the_object_store() {
@@ -467,31 +467,166 @@ test_firstmate_repo_detection_uses_the_object_store() {
   pass "Firstmate repository detection follows the shared git object store"
 }
 
-test_firstmate_verification_block_verifies_on_github() {
-  local block ref
-  block=$(fm_firstmate_verification_block fm-task)
-  assert_contains "$block" "# Firstmate repository verification" "the section lacks its heading"
-  assert_contains "$block" "Run no local Firstmate test suite" "the section does not forbid the local suite"
-  assert_contains "$block" "git push origin HEAD:refs/heads/ci/fm-task" "the section does not push to the task's CI branch"
-  assert_contains "$block" "only a head whose ci/fm-task run passed" "the section lets an unverified head land"
-  assert_contains "$block" "Lean-Review:" "the section does not name the lean-review receipt"
-  assert_not_contains "$block" "--force" "the section mentions a force push"
-  # The procedure lives in the worker-guide reference the section names.
+# The testing instructions a direct-push worker must never meet on Firstmate's
+# own repository, whose suite runs only on GitHub.
+FM_DOD_LOCAL_SUITE_LINES=(
+  "full local suite"
+  "as thorough as CI"
+  "every matrix leg"
+  "If a CI leg cannot run on this machine"
+)
+
+# Fails unless <text> gives a direct-push worker on Firstmate's own repository
+# exactly one testing instruction: one Definition of done, none of the generic
+# local-suite lines, and the exact-head ci/<task-id> run as the landing proof.
+assert_single_firstmate_testing_instruction() {  # <text> <task-id> <what>
+  local text=$1 id=$2 what=$3 line n
+  n=$(printf '%s\n' "$text" | grep -c '^# Definition of done$')
+  [ "$n" = 1 ] || fail "$what has $n Definition of done sections, not one"
+  for line in "${FM_DOD_LOCAL_SUITE_LINES[@]}"; do
+    assert_not_contains "$text" "$line" "$what still carries a generic local-suite instruction"
+  done
+  assert_contains "$text" "a green CI run on the exact head you land, pushed to your CI branch \`ci/$id\`, is the landing proof" \
+    "$what does not name the exact-head ci/$id run as the landing proof"
+}
+
+test_firstmate_direct_push_dod_verifies_on_ci() {
+  local generic block line ref other
+  generic=$(fm_dod_block direct-push fm-task)
+  for line in "${FM_DOD_LOCAL_SUITE_LINES[@]}"; do
+    assert_contains "$generic" "$line" "the generic direct-push Definition of done lost a local-suite line"
+  done
+  [ "$(fm_dod_block direct-push fm-task "" none "" generic)" = "$generic" ] \
+    || fail "an explicit generic kind changed the generic direct-push Definition of done"
+  block=$(FM_HOME=/fixture/home fm_dod_block direct-push fm-task "" none "" firstmate) \
+    || fail "the Firstmate direct-push Definition of done did not render"
+  assert_single_firstmate_testing_instruction "$block" fm-task "the Firstmate direct-push Definition of done"
+  assert_contains "$block" "Delivery contract: mode=direct-push" "the Firstmate block lost its contract line"
+  assert_contains "$block" "Ship branch: fm/fm-task" "the Firstmate block lost its ship branch line"
+  assert_contains "$block" "run no local Firstmate test suite" "the Firstmate block does not forbid the local suite"
+  assert_contains "$block" "\`bash -n\`, single-file \`shellcheck\`, and \`bin/fm-lint.sh\`" "the Firstmate block does not name the seconds-long checks"
+  assert_contains "$block" "git push origin HEAD:refs/heads/ci/fm-task" "the Firstmate block does not push to the task's CI branch"
+  assert_contains "$block" "Never push to the default branch a head whose exact-head \`ci/fm-task\` run did not pass" \
+    "the Firstmate block lets a head land without its own CI run"
+  assert_contains "$block" "a rebased head needs its own exact-head \`ci/fm-task\` run" \
+    "the Firstmate block lands a rebased head on an older run"
+  assert_contains "$block" "Do not rebase between fix rounds" "the Firstmate block rebases between fix rounds"
+  assert_contains "$block" "--log-failed" "the Firstmate block does not read every failed job before fixing"
+  assert_contains "$block" "gh run rerun <run-id> --failed" "the Firstmate block does not rerun an infra failure's failed jobs only"
+  assert_contains "$block" "bin/fm-ci-errors.sh --out" "the Firstmate block does not build its error list with fm-ci-errors"
+  assert_contains "$block" "tests/known-flakes.list" "the Firstmate block does not class flaky rows from the known-flakes list"
+  assert_contains "$block" "\`ci/fm-task-mutant-<name>\` branch only for a guard whose test is new or changed" \
+    "the Firstmate block does not limit mutant pushes to new or changed guard tests"
+  assert_contains "$block" "Never push a tree that already has a CI run" "the Firstmate block re-runs an already-tested tree"
+  assert_contains "$block" "Lean-Review:" "the Firstmate block does not name the lean-review receipt"
+  assert_contains "$block" "FM_HOME='/fixture/home' bin/fm-helper-consumers.sh pending HEAD" \
+    "the Firstmate block does not record a landed helper change for its declared consumers"
+  # ci/full/ appears only in the rule that forbids it outside its one exception.
+  while IFS= read -r line; do
+    case "$line" in
+      *ci/full/*) assert_contains "$line" "Do not push \`ci/full/fm-task\`" "a line other than the ci/full rule names ci/full/" ;;
+    esac
+  done <<EOF
+$block
+EOF
+  # The procedure lives in the worker-guide reference the block names.
   ref=$(worker_guide_ref <(printf '%s\n' "$block") firstmate-verification) \
-    || fail "the section names no readable verification reference"
+    || fail "the Firstmate block names no readable verification reference"
   assert_grep "gh run watch <run-id> --exit-status" "$ref" "the reference does not wait on the CI branch run"
   assert_grep "no-test-needed: <reason>" "$ref" "the reference does not name the test-touch override line"
   assert_grep "safety-core-removal: <reason>" "$ref" "the reference does not name the safety-core removal line"
   assert_grep "bin/fm-lean-review.sh --intent-file" "$ref" "the reference does not run the lean pre-push review"
   assert_grep "git push origin --delete ci/<task-id>" "$ref" "the reference does not delete the CI branch"
-  block=$(fm_firstmate_verification_block fm-task /fixture/home)
-  assert_contains "$block" "FM_HOME='/fixture/home' bin/fm-helper-consumers.sh pending HEAD" \
-    "the section does not record a landed helper change for its declared consumers"
-  pass "the Firstmate verification section lands only a head whose CI branch run passed"
+  assert_grep "## Parity tests" "$ref" "the reference does not say how a parity test reports"
+  # Only direct-push has a Firstmate variant; an unknown kind is refused.
+  for other in no-mistakes direct-PR local-only; do
+    [ "$(fm_dod_block "$other" fm-task "" none "" firstmate)" = "$(fm_dod_block "$other" fm-task)" ] \
+      || fail "the firstmate kind changed the $other Definition of done"
+  done
+  ! fm_dod_block direct-push fm-task "" none "" bogus >/dev/null 2>&1 \
+    || fail "an unknown project kind was rendered instead of refused"
+  [ "$(fm_dod_project_kind "$TMP_ROOT/fm-root" "$TMP_ROOT/fm-root")" = firstmate ] \
+    || fail "the Firstmate code root was not given the firstmate kind"
+  [ "$(fm_dod_project_kind "$TMP_ROOT/other-project" "$TMP_ROOT/fm-root")" = generic ] \
+    || fail "an unrelated project was not given the generic kind"
+  pass "the Firstmate direct-push Definition of done lands only an exact-head ci/<task-id> run and never asks for a local suite"
+}
+
+# A launch brief for a direct-push task on Firstmate's own repository swaps the
+# scaffolded generic Definition of done for the Firstmate one; every other brief
+# is copied byte for byte. It and the test above reuse the repositories the
+# detection test made.
+test_launch_brief_swaps_in_the_firstmate_dod() {
+  local root other dir brief out err edited
+  root="$TMP_ROOT/fm-root"
+  other="$TMP_ROOT/other-project"
+  dir="$TMP_ROOT/launch-brief"
+  mkdir -p "$dir"
+  brief="$dir/brief.md"
+  {
+    printf 'You are a crewmate.\n\n# Task\n## Firstmate spec\nChange a helper.\n\n'
+    fm_dod_block direct-push lb-task
+    printf '\n# Project memory\nKeep this section.\n'
+  } > "$brief"
+  out=$(fm_dod_launch_brief "$brief" direct-push lb-task fm/lb-task "$root" "$root" 2>"$dir/err") \
+    || fail "the Firstmate launch brief did not render"
+  assert_single_firstmate_testing_instruction "$out" lb-task "the Firstmate launch brief"
+  assert_contains "$out" "Change a helper." "the Firstmate launch brief lost the brief's task"
+  assert_contains "$out" $'Do NOT run /no-mistakes and do NOT open a PR.\n\n# Project memory\nKeep this section.' \
+    "the Firstmate launch brief did not keep the section after the Definition of done in place"
+  [ ! -s "$dir/err" ] || fail "a scaffolded Firstmate brief rendered with a warning: $(cat "$dir/err")"
+  printf '%s\n' "$out" > "$dir/firstmate.md"
+  fm_dod_launch_brief "$dir/firstmate.md" direct-push lb-task fm/lb-task "$root" "$root" > "$dir/again.md" 2>"$dir/err" \
+    || fail "an already-Firstmate launch brief did not render"
+  cmp -s "$dir/firstmate.md" "$dir/again.md" || fail "rendering an already-Firstmate brief changed it"
+  [ ! -s "$dir/err" ] || fail "an already-Firstmate brief rendered with a warning"
+  # A fenced heading is text, never a section to replace.
+  { printf '~~~\n# Definition of done\nkept\n~~~\n\n'; cat "$brief"; } > "$dir/fenced.md"
+  out=$(fm_dod_launch_brief "$dir/fenced.md" direct-push lb-task fm/lb-task "$root" "$root") \
+    || fail "a Firstmate brief with a fenced heading did not render"
+  [ "$out" = "$(printf '~~~\n# Definition of done\nkept\n~~~\n\n'; cat "$dir/firstmate.md")" ] \
+    || fail "a fenced Definition of done heading was replaced or the real one was not"
+
+  fm_dod_launch_brief "$brief" direct-push lb-task fm/lb-task "$other" "$root" > "$dir/generic.md" \
+    || fail "a non-Firstmate launch brief did not render"
+  cmp -s "$brief" "$dir/generic.md" || fail "a non-Firstmate direct-push brief was changed"
+  fm_dod_launch_brief "$brief" direct-PR lb-task fm/lb-task "$root" "$root" > "$dir/pr.md" \
+    || fail "a Firstmate direct-PR launch brief did not render"
+  cmp -s "$brief" "$dir/pr.md" || fail "a Firstmate brief of another mode was changed"
+
+  # Guard: the shape a reverted swap leaves - the generic block kept, with the
+  # Firstmate one added after it - must fail the single-instruction check.
+  out=$(cat "$brief"; printf '\n'; fm_dod_block direct-push lb-task "" none "" firstmate)
+  if (assert_single_firstmate_testing_instruction "$out" lb-task "reverted" >/dev/null 2>&1); then
+    fail "the single-instruction check passed a launch brief that kept the generic Definition of done"
+  fi
+
+  # A hand-edited Definition of done is kept and superseded, with a warning.
+  edited="$dir/edited.md"
+  sed 's/^The task is complete only when committed/Also note the edit. The task is complete only when committed/' "$brief" > "$edited"
+  out=$(fm_dod_launch_brief "$edited" direct-push lb-task fm/lb-task "$root" "$root" 2>"$dir/err") \
+    || fail "a hand-edited Firstmate launch brief did not render"
+  err=$(cat "$dir/err")
+  assert_contains "$err" "warning: $edited has no generated direct-push Definition of done" \
+    "a hand-edited Definition of done was superseded without a warning naming the brief"
+  [ "${out#"$(cat "$edited")"}" != "$out" ] || fail "a hand-edited brief was not kept ahead of its superseding section"
+  assert_contains "$out" $'# Current Definition of done\nThis section supersedes every earlier testing, CI and landing instruction in this brief, including any instruction to run a full local suite.' \
+    "a hand-edited brief got no superseding Definition of done"
+  assert_contains "$out" "a green CI run on the exact head you land, pushed to your CI branch \`ci/lb-task\`, is the landing proof" \
+    "the superseding section does not name the exact-head CI run as the landing proof"
+  [ "$(printf '%s\n' "$out" | grep -c '^Ship branch: ')" = 1 ] \
+    || fail "the superseding section repeated the brief's ship branch line"
+  [ "$(printf '%s\n' "$out" | grep -c '^Delivery contract: ')" = 1 ] \
+    || fail "the superseding section repeated the brief's delivery contract line"
+
+  ! fm_dod_launch_brief "$dir/missing.md" direct-push lb-task fm/lb-task "$root" "$root" >/dev/null 2>&1 \
+    || fail "a missing Firstmate brief rendered"
+  pass "a Firstmate direct-push launch brief carries one Definition of done; every other brief is unchanged"
 }
 
 test_firstmate_repo_detection_uses_the_object_store
-test_firstmate_verification_block_verifies_on_github
+test_firstmate_direct_push_dod_verifies_on_ci
+test_launch_brief_swaps_in_the_firstmate_dod
 # A scout spawned on a named base keeps that base through promotion: the ship
 # instructions start from it and the PR targets it; local-only and direct-push cannot carry it.
 test_promotion_keeps_the_recorded_base_branch() {

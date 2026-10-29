@@ -39,8 +39,9 @@
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
 #   direct-PR              push + PR via gh-axi, no pipeline
-#   direct-push            full local suite, then fast-forward push to the
-#                          default branch, no PR (bin/fm-dod-lib.sh owns it)
+#   direct-push            full local suite (CI for Firstmate's own repository),
+#                          then fast-forward push to the default branch, no PR
+#                          (bin/fm-dod-lib.sh owns it)
 #   local-only             local branch, no remote/PR, guarded local merge
 #   no-mistakes-prod-only  a conditional policy, not a task mode: firstmate
 #                          classifies each task's surface at intake (the

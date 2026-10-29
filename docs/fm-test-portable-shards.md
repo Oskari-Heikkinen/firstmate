@@ -37,7 +37,7 @@ Lint and test jobs wait only on `plan`, the static job waits on nothing, and the
 
 `main` runs the full suite on every push that did not already pass it, and `green-pointer.yml` advances only on a successful `push` run, so a weekly run never moves the green pointer.
 Landing after a green `ci/**` run is allowed, so a landing needs no `ci/full/**` push; `main` then catches tier-2 regressions outside the changed area.
-The worker guide's [Firstmate verification reference](../.agents/skills/worker-guide/references/firstmate-verification.md) owns when a task pushes to which CI branch and how it handles a red run.
+The Definition of done that [`bin/fm-dod-lib.sh`](../bin/fm-dod-lib.sh) renders for a direct-push task on Firstmate's own repository owns when a task pushes to which CI branch and how it handles a red run.
 
 A red weekly run opens, or comments on, one open issue titled `Weekly CI run failed` in the repository, so it reaches someone instead of sitting in the Actions tab.
 Where repository issues are disabled, the alert job instead fails with an error annotation and a job summary naming the run, so GitHub's failed-run notification carries it.

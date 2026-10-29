@@ -39,7 +39,7 @@
 # binding and bin/fm-dod-lib.sh owns what it changes for the worker, including
 # the refusal of a forge on local-only.
 # A direct-push promotion's instructions also carry the landing-authority section
-# for --yolo, preceded on Firstmate's own repo by its GitHub verification section
+# for --yolo, and on Firstmate's own repo its CI-verified Definition of done
 # (bin/fm-dod-lib.sh).
 # --switch-mode records the one supported mid-flight delivery change: a live
 # direct-push ship task that now ships a PR, through no-mistakes or direct-PR.
@@ -302,6 +302,9 @@ grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (ki
 # captain's project binding, so promotion takes it from the registry rather than
 # from a flag firstmate must remember.
 PROMOTE_PROJECT=$(sed -n 's/^project=//p' "$META" | head -n 1)
+# Firstmate's own repository gets its own direct-push Definition of done.
+PROMOTE_KIND=generic
+[ -z "$PROMOTE_PROJECT" ] || PROMOTE_KIND=$(fm_dod_project_kind "$PROMOTE_PROJECT" "$FM_ROOT")
 if [ -n "$PROMOTE_PROJECT" ]; then
   PROMOTE_PROJECT_NAME=$(basename "$PROMOTE_PROJECT")
   if ! PROMOTE_STANDING_FORGE=$("$FM_ROOT/bin/fm-project-mode.sh" --forge "$PROMOTE_PROJECT_NAME"); then
@@ -384,7 +387,7 @@ EOF
     printf '%s\n' "$PROMOTION_ASK_USER_BLOCK"
   fi
   printf '\n'
-  fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH"
+  fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$PROMOTE_KIND"
 }
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
@@ -407,10 +410,6 @@ EOF
   # The current worker never re-reads a launch brief, so it receives the
   # yolo-dependent landing section here; a relaunch gets it from bin/fm-spawn.sh.
   if [ "$MODE" = direct-push ]; then
-    if [ -n "$PROMOTE_PROJECT" ] && fm_dod_project_is_firstmate_repo "$PROMOTE_PROJECT" "$FM_ROOT"; then
-      printf '\n'
-      fm_firstmate_verification_block "$ID"
-    fi
     printf '\n'
     fm_landing_authority_block "$YOLO"
   fi

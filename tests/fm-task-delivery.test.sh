@@ -423,11 +423,14 @@ STUB
     "promoted direct-push worker under yolo off was not held for landing approval"
   assert_no_grep "no-mistakes axi respond" "$payload" \
     "promoted direct-push worker received the pipeline gate contract"
-  assert_no_grep "# Firstmate repository verification" "$payload" \
-    "a direct-push project other than Firstmate received Firstmate's GitHub verification"
+  assert_grep "as thorough as CI" "$payload" \
+    "a direct-push project other than Firstmate lost its local-suite Definition of done"
+  assert_no_grep "This task changes Firstmate's own repository" "$payload" \
+    "a direct-push project other than Firstmate received Firstmate's CI-verified Definition of done"
 
   # A direct-push promotion on Firstmate's own repository (this checkout, read
-  # only) verifies on GitHub instead of a local suite, ahead of its landing authority.
+  # only) gets one CI-verified Definition of done, ahead of its landing authority,
+  # in both its instructions and the brief a relaunch reads.
   id=promote-dod-firstmate
   printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\nproject=%s\n' "$id" "$ROOT" > "$home/state/$id.meta"
   FM_HOME="$home" "$BRIEF" "$id" firstmate --scout >/dev/null 2>&1 \
@@ -436,13 +439,21 @@ STUB
     "Ship the delivery-contract change." "Preserve the selected delivery mode."
   FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode direct-push --yolo on >/dev/null 2>&1 \
     || fail "firstmate: direct-push promotion should succeed"
+  for payload in "$home/data/$id/ship-instructions.md" "$home/data/$id/brief.md"; do
+    assert_grep "git push origin HEAD:refs/heads/ci/$id" "$payload" \
+      "a Firstmate direct-push promotion was not told to verify on its CI branch ($payload)"
+    assert_grep "run no local Firstmate test suite" "$payload" \
+      "a Firstmate direct-push promotion was not told to skip the local suite ($payload)"
+    assert_no_grep "full local suite" "$payload" \
+      "a Firstmate direct-push promotion was still told to run the full local suite ($payload)"
+    assert_no_grep "as thorough as CI" "$payload" \
+      "a Firstmate direct-push promotion was still told to match CI locally ($payload)"
+  done
   payload="$home/data/$id/ship-instructions.md"
-  assert_grep "git push origin HEAD:refs/heads/ci/$id" "$payload" \
-    "a Firstmate direct-push promotion was not told to verify on its CI branch"
-  assert_grep "Run no local Firstmate test suite" "$payload" \
-    "a Firstmate direct-push promotion was not told to skip the local suite"
-  [ "$(awk '/^# Firstmate repository verification$/ { v=NR } /^# Current landing authority$/ { l=NR } END { print (v && l && v < l) ? "ordered" : "no" }' "$payload")" = ordered ] \
-    || fail "a Firstmate direct-push promotion lacks its verification section ahead of the landing authority"
+  [ "$(grep -c '^# Definition of done$' "$payload")" = 1 ] \
+    || fail "a Firstmate direct-push promotion does not carry exactly one Definition of done"
+  [ "$(awk '/^# Definition of done$/ { v=NR } /^# Current landing authority$/ { l=NR } END { print (v && l && v < l) ? "ordered" : "no" }' "$payload")" = ordered ] \
+    || fail "a Firstmate direct-push promotion lacks its Definition of done ahead of the landing authority"
   pass "fm-promote: a promoted worker receives the same mode-specific delivery contract a briefed one does"
 }
 
@@ -1741,8 +1752,10 @@ EOF
     assert_present "$launch" "direct-push spawn with yolo $yolo rendered no launch brief"
     [ "$(grep -c '^# Current landing authority$' "$launch")" = 1 ] \
       || fail "direct-push launch brief with yolo $yolo lacks exactly one landing authority"
-    assert_no_grep "# Firstmate repository verification" "$launch" \
-      "a direct-push project other than Firstmate received Firstmate's GitHub verification"
+    assert_grep "every matrix leg" "$launch" \
+      "a direct-push launch brief other than Firstmate's lost its local-suite Definition of done"
+    assert_no_grep "This task changes Firstmate's own repository" "$launch" \
+      "a direct-push project other than Firstmate received Firstmate's CI-verified Definition of done"
     case "$yolo" in
       on)
         assert_grep "Landing is pre-authorized" "$launch" "yolo on did not pre-authorize the landing"
@@ -1762,6 +1775,47 @@ EOF
   assert_no_grep '^pr=' "$home/state/$id.meta" "refused direct-push PR check recorded a PR"
   assert_absent "$home/state/$id.check.sh" "refused direct-push PR check armed a merge poll"
   pass "direct-push: the brief lands by fast-forward push, the spawn adds landing authority per yolo, and no PR poll is armed"
+}
+
+# A direct-push spawn on Firstmate's own repository swaps the brief's scaffolded
+# generic Definition of done for the CI-verified one, so the worker reads one
+# testing instruction. The fixture project doubles as the spawn's code root
+# (FM_ROOT_OVERRIDE), reaching this checkout's scripts through a link, so it is
+# "Firstmate's own repository" without touching this checkout's worktrees.
+test_direct_push_spawn_on_firstmate_repo_has_one_dod() {
+  local rec home proj fakebin id brief launch line
+  rec=$(make_home direct-push-fm "- proj [direct-push] - fixture (added 2026-01-01)")
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  ln -s "$ROOT/bin" "$proj/bin"
+  ln -s "$ROOT/.agents" "$proj/.agents"
+  printf '%s\n' /bin /.agents >> "$proj/.git/info/exclude"
+  id=delivery-push-fm
+  brief="$home/data/$id/brief.md"
+  # The scaffold and the spawn share one code root, as in a home, because the
+  # generated text names reference files under it.
+  FM_ROOT_OVERRIDE="$proj" FM_HOME="$home" "$BRIEF" "$id" proj --mode direct-push >/dev/null 2>&1 \
+    || fail "a direct-push brief should scaffold"
+  fill_brief_subsections "$brief" "Ship the change without a PR." "Land through the direct push."
+  FM_ROOT_OVERRIDE="$proj" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$TMP_ROOT/projects-unused" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$proj" claude --mode direct-push --yolo off >/dev/null 2>&1
+  launch="$home/data/$id/launch-brief.md"
+  assert_present "$launch" "a direct-push spawn on Firstmate's repository rendered no launch brief"
+  [ "$(grep -c '^# Definition of done$' "$launch")" = 1 ] \
+    || fail "a Firstmate direct-push launch brief does not carry exactly one Definition of done"
+  for line in "full local suite" "as thorough as CI" "every matrix leg"; do
+    assert_grep "$line" "$brief" "the scaffolded direct-push brief lost its generic '$line' line"
+    assert_no_grep "$line" "$launch" "a Firstmate direct-push launch brief still carries '$line'"
+  done
+  assert_grep "git push origin HEAD:refs/heads/ci/$id" "$launch" \
+    "a Firstmate direct-push launch brief does not verify on its CI branch"
+  [ "$(awk '/^# Definition of done$/ { v=NR } /^# Current landing authority$/ { l=NR } END { print (v && l && v < l) ? "ordered" : "no" }' "$launch")" = ordered ] \
+    || fail "a Firstmate direct-push launch brief lacks its Definition of done ahead of the landing authority"
+  pass "direct-push: a spawn on Firstmate's own repository carries one CI-verified Definition of done"
 }
 
 # A task dispatched direct-push that now ships a PR must be able to record the
@@ -1957,6 +2011,7 @@ test_forge_forgejo_rides_the_same_binding
 test_spawn_and_promote_require_filled_task_subsections
 test_project_mode_resolves_branch_prefix
 test_direct_push_brief_spawn_and_pr_check
+test_direct_push_spawn_on_firstmate_repo_has_one_dod
 test_switch_mode_records_a_direct_push_switch_to_a_pr
 # Logging an admitted spawn invocation must not bypass a delivery refusal or
 # require an endpoint. The same safe refusal is the entry-unit counterfactual.

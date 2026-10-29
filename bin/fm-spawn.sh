@@ -25,8 +25,9 @@
 #   Every ship or scout spawn renders `launch-brief.md`; for a no-mistakes ship
 #   it also carries the current `--intent` contract and the extracted captain
 #   intent, and for a direct-push ship the landing-authority section
-#   bin/fm-dod-lib.sh renders from this task's yolo, preceded on Firstmate's own
-#   repo by that library's GitHub verification section. A legacy mixed Task is accepted there only under bin/fm-dod-lib.sh's
+#   bin/fm-dod-lib.sh renders from this task's yolo; on Firstmate's own repo
+#   that library's CI-verified Definition of done replaces the brief's generic
+#   one. A legacy mixed Task is accepted there only under bin/fm-dod-lib.sh's
 #   provenance-marking rules; unmarked legacy Tasks stop for migration rather
 #   than becoming intent. That library owns the parsing and intent rules. When
 #   the explicit mode carries less rigor than the project's standing posture, a
@@ -3619,7 +3620,13 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   {
     fm_brief_worker_role "$STATE" "$ID" "$FM_ROOT" "$PROJ_ABS" &&
       printf '\n' &&
-      cat "$SOURCE_BRIEF" &&
+      if [ "$KIND" = ship ]; then
+        # Firstmate's own repo gets its own direct-push Definition of done
+        # (bin/fm-dod-lib.sh's header); every other brief is copied as is.
+        fm_dod_launch_brief "$SOURCE_BRIEF" "$MODE" "$ID" "$BRANCH" "$PROJ_ABS" "$FM_ROOT"
+      else
+        cat "$SOURCE_BRIEF"
+      fi &&
       if [ "$RESTORE" = 1 ]; then
         printf '\n# Saved-task continuation\n'
         printf '%s\n' 'Original branch/setup steps are already complete. Do not recreate the branch or automatically rebase it. Read this restoration note and the handoff before continuing:'
@@ -3629,10 +3636,6 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
         fm_brief_intent_overlay "$CAPTAIN_INTENT"
       fi &&
       if [ "$KIND" = ship ] && [ "$MODE" = direct-push ]; then
-        # Firstmate's own repo verifies on GitHub (bin/fm-dod-lib.sh's header).
-        if fm_dod_project_is_firstmate_repo "$PROJ_ABS" "$FM_ROOT"; then
-          printf '\n' && fm_firstmate_verification_block "$ID"
-        fi &&
         printf '\n' && fm_landing_authority_block "$YOLO"
       fi
   } >"$BRIEF_TMP" || {

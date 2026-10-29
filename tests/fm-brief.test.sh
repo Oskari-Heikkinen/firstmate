@@ -292,6 +292,48 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/direct-push/local-only briefs generate cleanly"
 }
 
+# A scaffold cannot tell the target repository, so a direct-push brief carries
+# the generic Definition of done and the spawn's launch brief
+# (fm_dod_launch_brief) swaps it for Firstmate's own on Firstmate's repository:
+# one Definition of done, no local suite, the exact-head ci/<task-id> run as the
+# landing proof. Any other project's launch brief is the scaffold unchanged.
+render_direct_push_launch() {  # <brief> <task-id> <project> <out>
+  bash -c '. "$1/bin/fm-dod-lib.sh" && fm_dod_launch_brief "$2" direct-push "$3" "fm/$3" "$4" "$1"' \
+    _ "$ROOT" "$1" "$2" "$3" > "$4" 2>"$4.err"
+}
+
+test_direct_push_launch_brief_has_one_testing_instruction() {
+  local home id brief other launch line
+  home="$TMP_ROOT/launch-dod-home"
+  id="launch-dod-a1"
+  other="$TMP_ROOT/launch-dod-other"
+  fm_git_init_commit "$other"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode direct-push >/dev/null 2>&1 \
+    || fail "a direct-push brief did not scaffold"
+  brief="$home/data/$id/brief.md"
+  launch="$TMP_ROOT/$id-launch.md"
+  render_direct_push_launch "$brief" "$id" "$ROOT" "$launch" || fail "the Firstmate launch brief did not render"
+  [ ! -s "$launch.err" ] || fail "a scaffolded Firstmate brief rendered with a warning: $(cat "$launch.err")"
+  [ "$(grep -c -x '# Definition of done' "$launch")" = 1 ] \
+    || fail "the Firstmate launch brief does not carry exactly one Definition of done"
+  for line in "full local suite" "as thorough as CI" "every matrix leg"; do
+    assert_grep "$line" "$brief" "the scaffolded direct-push brief lost the generic '$line' instruction"
+    assert_no_grep "$line" "$launch" "the Firstmate launch brief still carries '$line'"
+  done
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_section_line_with "$launch" "# Definition of done" "the Firstmate launch brief does not land on its exact-head CI run" \
+    'exact-head' "\`ci/$id\`" 'Never push to the default branch'
+  assert_section_no_line_with "$launch" "# Definition of done" "the Firstmate launch brief names a ci/full/ push outside its one exception" \
+    "git push origin HEAD:refs/heads/ci/full/"
+  [ "$(sed -n '/^# Definition of done$/q;p' "$launch")" = "$(sed -n '/^# Definition of done$/q;p' "$brief")" ] \
+    || fail "the Firstmate launch brief changed the scaffold ahead of its Definition of done"
+
+  render_direct_push_launch "$brief" "$id" "$other" "$launch" || fail "a non-Firstmate launch brief did not render"
+  cmp -s "$brief" "$launch" || fail "a non-Firstmate direct-push launch brief differs from its scaffold"
+  pass "fm-brief.sh: a Firstmate direct-push launch brief carries one testing instruction; other projects keep the scaffold"
+}
+
 # --forge forgejo is the Forgejo value of the project's registered forge binding
 # (bin/fm-project-mode.sh --forge), passed at intake exactly like --mode. It
 # names tea instead of gh-axi in the ship brief's forge-CLI rule and in the
@@ -1939,6 +1981,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_direct_push_launch_brief_has_one_testing_instruction
 test_forge_selection_renders_correct_cli
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry

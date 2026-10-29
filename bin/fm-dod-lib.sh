@@ -6,7 +6,7 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|direct-push|local-only> <task-id> [branch] [<forge>]
+# fm_dod_block <no-mistakes|direct-PR|direct-push|local-only> <task-id> [branch] [<forge>] [<base>] [<kind>]
 # prints the block on stdout with no trailing blank line. The caller validates the
 # mode; an unknown mode is refused rather than silently rendered as the pipeline
 # contract.
@@ -120,7 +120,7 @@
 # a worker off a remote is exactly the rule that changes when the forge does.
 # direct-push is the one mode whose worker lands its own work: it fast-forwards
 # origin's default branch itself, with no PR, after the project's full local
-# suite passes on top of that branch. Its block is yolo-agnostic because a
+# suite (CI, for Firstmate's own repository) passes on top of that branch. Its block is yolo-agnostic because a
 # brief never carries yolo; fm_landing_authority_block owns the yolo-dependent
 # "land now or stop at ready" section, which bin/fm-spawn.sh appends to every
 # direct-push launch brief from the task's recorded yolo and bin/fm-promote.sh
@@ -128,15 +128,19 @@
 # nothing mode-specific for it: a landed head is on origin's default branch and
 # a ready head on origin's ship branch, both remote-tracking refs.
 # A direct-push task on Firstmate's own repository verifies on GitHub instead of
-# a local suite: fm_firstmate_verification_block owns that section, and the same
-# two callers append it, ahead of the landing authority, exactly when
-# fm_dod_project_is_firstmate_repo proves the task's project shares this Firstmate
-# code root's git object store. It is selected there rather than by a registry
-# token or a brief flag because Firstmate's own repo is never a registered
-# project and bin/fm-brief.sh's repo string cannot identify it, while the spawn
-# and promotion both hold the project path; every other project's direct-push
-# brief is unchanged. That section also makes the worker run the lean pre-push
-# review (bin/fm-lean-review.sh) on each risky-area commit before pushing it.
+# a local suite, so fm_dod_block's optional sixth argument, the project kind
+# (generic, the default, or firstmate), selects a different direct-push block
+# for it; every other mode ignores the kind, and an unknown kind is refused.
+# The kind is chosen where the project path is known: bin/fm-promote.sh passes
+# fm_dod_project_kind for the task's project, and bin/fm-spawn.sh renders the
+# launch brief through fm_dod_launch_brief, which swaps the generic block
+# bin/fm-brief.sh scaffolded for the Firstmate one. It is selected there rather
+# than by a registry token or a brief flag because Firstmate's own repo is never
+# a registered project and bin/fm-brief.sh's repo string cannot identify it;
+# fm_dod_project_is_firstmate_repo proves the project shares this Firstmate code
+# root's git object store. Every other project's direct-push brief is unchanged.
+# The Firstmate block also makes the worker run the lean pre-push review
+# (bin/fm-lean-review.sh) on each risky-area commit before pushing it.
 
 # This library's directory, resolved once at source time for the siblings below
 # and the call-time helpers that read them.
@@ -481,11 +485,17 @@ There is no pull request, no \`gh-axi\` call, and no forge CI result to report: 
 EOF
 }
 
-fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>]
-  local mode=$1 id=$2 forge=${4:-none} base=${5:-}
+fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<generic|firstmate>]
+  local mode=$1 id=$2 forge=${4:-none} base=${5:-} kind=${6:-generic}
   local branch=${3:-fm/$id} pr_base='' nm_base='' base_q contract_forge='' forge_cli=gh-axi draft_check landing_ref
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
   fm_base_branch_valid "$base" "$mode" "$forge" fm_dod_block || return 1
+  case "$kind" in
+    generic|firstmate) ;;
+    *)
+      echo "error: fm_dod_block: unknown project kind '$kind' (expected generic or firstmate)" >&2
+      return 1 ;;
+  esac
   draft_check="(\`gh-axi pr view <number>\` must print \`draft: no\`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with \`gh-axi pr ready <number>\`."
   if [ "$forge" = forgejo ]; then
     contract_forge=' forge=forgejo'
@@ -571,6 +581,11 @@ Ship branch: $branch
 This task ships **direct-push**: no PR and no pipeline; your tested commit lands on the project's default branch as a plain fast-forward push.
 Below, \`<default-branch>\` is origin's bare default-branch name such as \`main\`, without an \`origin/\` prefix: \`git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##'\` prints it, after \`git remote set-head origin --auto\` if that ref is missing.
 The task is complete only when committed on your branch \`$branch\`.
+EOF
+      if [ "$kind" = firstmate ]; then
+        fm_dod_firstmate_direct_push_body "$id" "$branch" "$landing_ref"
+      else
+        cat <<EOF
 Before landing, discover what the project's CI runs - its workflow files such as \`.github/workflows/\`, plus its \`AGENTS.md\` or README - and run that same full suite locally, as thorough as CI: every job and every matrix leg (for example each language version CI tests), including its lint and build steps.
 If a CI leg cannot run on this machine, append \`blocked [at=<epoch>]: {the leg and why}\` and stop rather than landing without it.
 The \`# Current landing authority\` section of your launch instructions says whether you land now or stop at ready; without that section, stop at ready.
@@ -578,18 +593,19 @@ The \`# Current landing authority\` section of your launch instructions says whe
 Landing loop:
 1. \`git fetch origin\`, then \`git rebase origin/<default-branch>\`, resolving any conflict in keeping with the task.
 2. Run the full local suite on the rebased head. If anything fails, fix it, commit, and go back to step 1.
-3. \`git push origin HEAD:<default-branch>\` - a plain push. Never add \`--force\`, \`--force-with-lease\`, or a \`+\` refspec.
-4. If the push is refused as a non-fast-forward because another change landed first, go back to step 1 within the push-race bound in \`$landing_ref\`.
-5. After the push succeeds, follow that file to wait for the default branch's checks on your pushed commit, within one bounded blocking wait of at most $FM_DIRECT_PUSH_CHECK_WAIT_MINUTES minutes.
-6. If a check on your change goes red because of your change, fix it forward at once through this same landing loop from step 1 and wait again on the new pushed commit, or revert your commit at once through the same loop.
-   A revert ends the task with \`blocked [at=<epoch>]: reverted {sha} on {default-branch} because {red check}\`, never a landed \`done:\`.
-   If you cannot get those checks green, or the wait's bound elapses first, append \`blocked [at=<epoch>]: {the red or pending check} on {default-branch} at {sha}\` and stop.
+EOF
+        fm_dod_direct_push_landing_steps 3 "$landing_ref"
+        cat <<EOF
 Never push to the default branch a head whose full suite did not pass on top of the current \`origin/<default-branch>\`.
-Only once the default branch's checks are green on your change, or on a fix-forward of it, append \`done [at=<epoch>]: landed {sha} on {default-branch}\` naming your own last pushed commit, and stop.
-Once landed, delete the task branch from origin (\`git push origin --delete $branch\`) if you pushed one for ready.
+EOF
+        fm_dod_direct_push_landed_lines "$branch"
+        cat <<EOF
 
 Stopping at ready: run steps 1 and 2, push the tested head to your own task branch with \`git push origin HEAD:refs/heads/$branch\`, append \`done [at=<epoch>]: ready in branch $branch tested on {default-branch} at {sha}\`, and stop.
 To refresh that already-pushed ready branch, add commits, run the full local suite on the new head, and push it the same plain way without re-running step 1; only the landing loop rebases, so never rebase or force the ready branch.
+EOF
+      fi
+      cat <<EOF
 When firstmate relays landing approval, run the landing loop and report the landed \`done:\` the same way.
 Either \`done:\` is accepted only when this copy's HEAD - your latest commit - is on origin: the default branch once landed, your task branch when ready. The check tests that commit, not merely that a branch moved.
 Do NOT run /no-mistakes and do NOT open a PR.
@@ -635,6 +651,71 @@ EOF
   esac
 }
 
+# The push, push-race, post-landing wait and red-check steps both direct-push
+# landing loops share, numbered from <first-step>.
+fm_dod_direct_push_landing_steps() {  # <first-step> <landing-ref>
+  local n=$1 ref=$2
+  cat <<EOF
+$n. \`git push origin HEAD:<default-branch>\` - a plain push. Never add \`--force\`, \`--force-with-lease\`, or a \`+\` refspec.
+$((n + 1)). If the push is refused as a non-fast-forward because another change landed first, go back to step 1 within the push-race bound in \`$ref\`.
+$((n + 2)). After the push succeeds, follow that file to wait for the default branch's checks on your pushed commit, within one bounded blocking wait of at most $FM_DIRECT_PUSH_CHECK_WAIT_MINUTES minutes.
+$((n + 3)). If a check on your change goes red because of your change, fix it forward at once through this same landing loop from step 1 and wait again on the new pushed commit, or revert your commit at once through the same loop.
+   A revert ends the task with \`blocked [at=<epoch>]: reverted {sha} on {default-branch} because {red check}\`, never a landed \`done:\`.
+   If you cannot get those checks green, or the wait's bound elapses first, append \`blocked [at=<epoch>]: {the red or pending check} on {default-branch} at {sha}\` and stop.
+EOF
+}
+
+fm_dod_direct_push_landed_lines() {  # <branch>
+  cat <<EOF
+Only once the default branch's checks are green on your change, or on a fix-forward of it, append \`done [at=<epoch>]: landed {sha} on {default-branch}\` naming your own last pushed commit, and stop.
+Once landed, delete the task branch from origin (\`git push origin --delete $1\`) if you pushed one for ready.
+EOF
+}
+
+# The testing and landing part of the direct-push Definition of done for
+# Firstmate's own repository (this file's header says when it is chosen). Its
+# CI runs on ci/** pushes (.github/workflows/ci.yml), and homes follow the
+# green pointer that main's passing CI advances (bin/fm-green-pointer.sh), so
+# a landed commit reaches no home until main's CI has passed on it.
+# Its helper-consumer line runs bin/fm-helper-consumers.sh pending right after a
+# landing, against the supervising home (the caller's FM_HOME) so the note
+# reaches that home's root.
+fm_dod_firstmate_direct_push_body() {  # <task-id> <branch> <landing-ref>
+  local id=$1 branch=$2 landing_ref=$3 ci="ci/$1" ref pending_env=""
+  [ -z "${FM_HOME:-}" ] || pending_env="FM_HOME='$FM_HOME' "
+  ref=$(fm_worker_guide_ref firstmate-verification)
+  cat <<EOF
+This task changes Firstmate's own repository, whose suite runs only on GitHub: a green CI run on the exact head you land, pushed to your CI branch \`$ci\`, is the landing proof, and you run no local Firstmate test suite (no \`tests/*.test.sh\`, no \`bin/fm-test-run.sh\`).
+The \`# Current landing authority\` section of your launch instructions says whether you land now or stop at ready; without that section, stop at ready.
+
+Testing on CI:
+- Between pushes, run only the seconds-long checks on the files you touched: \`bash -n\`, single-file \`shellcheck\`, and \`bin/fm-lint.sh\`.
+- Before your first push, read \`$ref\`: it owns the lean pre-push review, the commit-message lines CI requires, waiting on your CI branch, and how a parity test reports. Never write a \`Lean-Review:\` trailer by hand. Review once per batch commit, the one you will push, never per intermediate commit.
+- Push a head to CI only when you will act on its result, and only with \`git push origin HEAD:refs/heads/$ci\`, never forced; to keep work safe, commit locally or push \`$branch\` instead. Never push a tree that already has a CI run (compare \`git rev-parse HEAD^{tree}\` with each head you pushed, which \`gh run list -R <owner>/<repo> --branch $ci --json headSha,url\` lists): it proves nothing new, so carry on with the head that ran, because only a head's own run lets that head land.
+- Do not push \`ci/full/$id\`: the CI plan job escalates a \`ci/\` push to the main layout by itself when the changed files call for it. The one exception is a landing candidate whose \`$ci\` run used the changed-area layout while your brief explicitly requires a full-suite pass: push that same head to \`ci/full/$id\` once.
+- Push a mutant head, the head with one guard reverted, to its own \`$ci-mutant-<name>\` branch only for a guard whose test is new or changed in this round; a mutant whose guard and tests did not change gets no new push, so cite its earlier run.
+- On a red run, once it has finished, run \`bin/fm-ci-errors.sh --out <your task data folder>/ci-errors/<run-id> <run-id>\` and read its whole \`errors.md\` before changing anything: its header owns how it reads every failed job and every failing test in every shard and how it classes each row (real, flaky, infra, or unknown). Decide each unknown row's class yourself from the job log the list saved. If the tool refuses, build the same list by hand from \`gh run view <run-id> --log-failed -R <owner>/<repo>\` and, in each failed test shard, every \`FM_TEST_END\` line whose \`exit=\` is not 0. Fix every real row, a real bug or a test defect, in one commit and push it once; that push is the round's only new run.
+- A run whose only failures have no cause in your change gets no new push. Those are infra rows - a job that never got a runner (the Darwin calibration job included), was cancelled before its first step, or lost its runner mid-job - and flaky rows, tests on \`tests/known-flakes.list\` whose subject your change does not touch. Run \`gh run rerun <run-id> --failed -R <owner>/<repo>\` once and name the run URL in your status line, and if the same job fails the same way again, append \`blocked [at=<epoch>]: {job} failed twice with no cause in this change: {run url}\` and stop.
+- Do not rebase between fix rounds: rebase only when a conflict forces it, and once for the landing candidate, in step 1 of the loop below or before the push of a fix round you expect to be the last, so that run is the landing candidate's.
+
+Landing loop:
+1. \`git fetch origin\`, then \`git rebase origin/<default-branch>\`, resolving any conflict in keeping with the task.
+2. Push that head to \`$ci\` and wait for its run. If it goes red, fix it as above and push the fix to \`$ci\` without rebasing, until a run is green.
+3. \`git fetch origin\` again. If \`git merge-base --is-ancestor origin/<default-branch> HEAD\` fails, the default branch moved: go back to step 1, because a rebased head needs its own exact-head \`$ci\` run.
+EOF
+  fm_dod_direct_push_landing_steps 4 "$landing_ref"
+  cat <<EOF
+Never push to the default branch a head whose exact-head \`$ci\` run did not pass on top of the current \`origin/<default-branch>\`.
+Right after a landing push succeeds, run \`${pending_env}bin/fm-helper-consumers.sh pending HEAD\` from this worktree; its output never changes whether the task landed.
+EOF
+  fm_dod_direct_push_landed_lines "$branch"
+  cat <<EOF
+
+Stopping at ready: run steps 1 to 3, push the tested head to your own task branch with \`git push origin HEAD:refs/heads/$branch\`, append \`done [at=<epoch>]: ready in branch $branch tested on {default-branch} at {sha}\`, and stop.
+To refresh that already-pushed ready branch, add commits, push the new head to \`$ci\` and wait for a green run on it, then push it the same plain way without re-running step 1; only the landing loop rebases, so never rebase or force the ready branch.
+EOF
+}
+
 # The yolo-dependent landing section of a direct-push worker's instructions.
 # yolo on pre-authorizes the worker's own landing; yolo off stops it at ready
 # until firstmate relays approval, so AGENTS.md hard rule 2 holds for a push
@@ -675,26 +756,49 @@ fm_dod_project_is_firstmate_repo() {  # <project-dir> <fm-root>
   [ "$project_common" = "$root_common" ]
 }
 
-# The GitHub-verified replacement for a direct-push Definition of done's local
-# suite, appended for Firstmate's own repository only (see this file's header).
-# Its CI runs on ci/** pushes (.github/workflows/ci.yml), and homes follow the
-# green pointer that main's passing CI advances (bin/fm-green-pointer.sh), so
-# a landed commit reaches no home until main's CI has passed on it.
-# Its helper-consumer line runs bin/fm-helper-consumers.sh pending right after a
-# landing, against the supervising home (the caller's FM_HOME, or the optional
-# second argument) so the note reaches that home's root.
-fm_firstmate_verification_block() {  # <task-id> [<fm-home>]
-  local ci_branch="ci/$1" home=${2:-${FM_HOME:-}} pending_env="" ref
-  [ -z "$home" ] || pending_env="FM_HOME='$home' "
-  ref=$(fm_worker_guide_ref firstmate-verification)
+# Prints the project kind fm_dod_block's last argument takes: firstmate for a
+# checkout of this Firstmate code root's own repository, generic otherwise.
+fm_dod_project_kind() {  # <project-dir> <fm-root>
+  if fm_dod_project_is_firstmate_repo "$1" "$2"; then
+    echo firstmate
+  else
+    echo generic
+  fi
+}
+
+# Prints <brief> as a launch brief carries it (bin/fm-spawn.sh). Only a
+# direct-push task on Firstmate's own repository changes: its generic
+# `# Definition of done`, which bin/fm-brief.sh rendered because a scaffold
+# cannot tell the target repository, is replaced by the Firstmate one, so the
+# worker reads one testing instruction. A brief whose Definition of done is
+# already the Firstmate one is printed unchanged. One that carries neither -
+# hand-edited, or rendered by an older library - is kept, a warning naming it
+# goes to stderr, and a section that supersedes its testing and landing text is
+# appended, so the worker never meets two live instructions. Direct-push takes
+# neither a forge nor a base branch (fm_base_branch_valid), so none is passed.
+fm_dod_launch_brief() {  # <brief> <mode> <task-id> <branch> <project-dir> <fm-root>
+  local brief=$1 mode=$2 id=$3 branch=$4 generic firstmate rc=0
+  if [ "$mode" != direct-push ] || ! fm_dod_project_is_firstmate_repo "$5" "$6"; then
+    cat -- "$brief"
+    return
+  fi
+  generic=$(fm_dod_block direct-push "$id" "$branch" none "" generic) || return 1
+  firstmate=$(fm_dod_block direct-push "$id" "$branch" none "" firstmate) || return 1
+  fm_brief_heading_replace "$brief" "# Definition of done" "$generic" "$firstmate" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    2) ;;
+    *) return 1 ;;
+  esac
+  echo "warning: $brief has no generated direct-push Definition of done to replace; appending the Firstmate one, which supersedes it (re-scaffold the brief with bin/fm-brief.sh to drop the old text)" >&2
   cat <<EOF
-# Firstmate repository verification
-This task changes Firstmate's own repository, whose suite runs on GitHub, so this section replaces every Definition of done instruction to run the full suite locally; everything else there still holds.
-- Run no local Firstmate test suite (no \`tests/*.test.sh\`, no \`bin/fm-test-run.sh\`); locally run only \`bash -n\`, single-file \`shellcheck\`, and \`bin/fm-lint.sh\` on the files you touched.
-- Before your first push, read \`$ref\`: it owns the lean pre-push review, the commit-message lines CI requires, and waiting on your CI branch. Never write a \`Lean-Review:\` trailer by hand.
-- Verify a head with \`git push origin HEAD:refs/heads/$ci_branch\`, never forced, and land or mark ready only a head whose $ci_branch run passed on top of the current \`origin/<default-branch>\`.
-- Right after a landing push succeeds, run \`${pending_env}bin/fm-helper-consumers.sh pending HEAD\` from this worktree; its output never changes whether the task landed.
+
+# Current Definition of done
+This section supersedes every earlier testing, CI and landing instruction in this brief, including any instruction to run a full local suite.
+
 EOF
+  # The brief's own contract lines stay the ones bin/fm-spawn.sh reads.
+  printf '%s\n' "$firstmate" | sed -e '1d' -e '/^Delivery contract: /d' -e '/^Ship branch: /d'
 }
 
 # 0 when <sha> is contained in a ref under <namespace> in <repo>.
