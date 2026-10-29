@@ -16,6 +16,10 @@
 #       mtime first, under one fm-disk-room.sh admission sized to the batch
 #       and under fm-io-cap --strict. --max-bytes (bytes, or with K, M, G, T)
 #       takes only the oldest candidates up to SIZE. Nothing schedules a run.
+#       A run holds the one machine-wide pack slot it shares with fm-pack.sh
+#       (a flock on ~/.cache/fm-pack/slot.lock, taken after the home's lock)
+#       from before its scan until its batch ends, and waits, saying so once,
+#       while another pack or repack holds it.
 #   fm-repack.sh baseline --home HOME [--at EPOCH]
 #       Records EPOCH (default now) in HOME/state/fm-repack/baseline: files
 #       whose inode last changed at or before it are skipped, because a
@@ -53,6 +57,8 @@
 #   75  held, nothing written: admission refused the batch's write, or
 #       another run for this home holds the lock.
 #
+# Every command runs at nice 19 and ionice -c3; without ionice it refuses.
+#
 # State, all under HOME/state/fm-repack/: lock; log (append-only, one UTC
 # line per run, hold, refusal, recovery and non-routine skip); repacked.tsv
 # (inode, mtime_ns of every copy, compacted after a complete scan);
@@ -63,6 +69,7 @@
 #   FM_REPACK_NOW         epoch to treat as now (tests);
 #   FM_REPACK_DISK_ROOM   fm-disk-room.sh to admit with (default: beside this);
 #   FM_IO_CAP             fm-io-cap command (default: fm-io-cap on PATH);
+#   FM_PACK_SLOT_LOCK     the machine-wide pack slot's lock file (tests);
 #   FM_REPACK_TEST_CRASH  before-swap or after-swap: exit there with no
 #                         cleanup (tests);
 #   FM_REPACK_TEST_DURING_COPY  command run with the path after the copy,
@@ -82,8 +89,6 @@ case "${1:-}" in
 esac
 [ "$(uname -s)" = Linux ] || die "runs only on Linux (needs file leases and renameat2)"
 command -v python3 >/dev/null 2>&1 || die "needs python3"
+command -v ionice >/dev/null 2>&1 || die "needs ionice: every repack runs at idle I/O priority"
 
-if command -v ionice >/dev/null 2>&1; then
-  exec nice -n 19 ionice -c3 python3 -I "$SCRIPT_DIR/fm-repack.py" "$@"
-fi
-exec nice -n 19 python3 -I "$SCRIPT_DIR/fm-repack.py" "$@"
+exec nice -n 19 ionice -c3 python3 -I "$SCRIPT_DIR/fm-repack.py" "$@"
