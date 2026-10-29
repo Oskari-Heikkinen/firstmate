@@ -118,7 +118,7 @@ test_weekly_and_full_layouts() {
   expect_layout cifull full gate,full '[1,2,3,4,5,6,7]' '["changed","1of3","2of3","3of3"]'
   expect_output cifull try_list ''
   expect_output cifull herdr_paths ''
-  assert_grep "$TMP/cifull.sum" "Layout: full (event push, ref refs/heads/ci/full/demo)" "the summary must name the layout"
+  assert_grep "Layout: full (event push, ref refs/heads/ci/full/demo)" "$TMP/cifull.sum" "the summary must name the layout"
   pass "schedule and dispatch run weekly; ci/full runs the main layout"
 }
 
@@ -137,7 +137,7 @@ test_main_skips_only_after_a_ci_full_pass() {
   FAKE_GH_RUNS="$TMP/runs.json" plan_run mainskip --event push --ref refs/heads/main --sha "$sha" \
     --repo o/r --run-id 42 || fail "main plan failed: $(cat "$TMP/mainskip.log")"
   expect_layout mainskip skip '' '[]' '[]'
-  assert_grep "$TMP/mainskip.sum" "Suites skipped: https://example.invalid/runs/41 (ci/full/demo) already passed this workflow on \`$sha\`." \
+  assert_grep "Suites skipped: https://example.invalid/runs/41 (ci/full/demo) already passed this workflow on \`$sha\`." "$TMP/mainskip.sum" \
     "a skip must name the run it trusts"
 
   runs_json ci/demo 41
@@ -169,13 +169,13 @@ test_ci_layout_and_its_escalations() {
   expect_output ci changed true
   expect_output ci herdr_paths 'tests/fm-backend-herdr-launcher-workspace-e2e.test.sh tests/fm-backend-herdr-presentation-e2e.test.sh '
   expect_output ci try_list ''
-  assert_grep "$TMP/ci.sum" "Changed-area tier-2 tests: 2" "the ci summary must count the changed area"
+  assert_grep "Changed-area tier-2 tests: 2" "$TMP/ci.sum" "the ci summary must count the changed area"
 
   printf '\n' >>"$REPO/src/unmapped.ts"
   commit_msg <<<"unmapped"
   plan_run ciunmapped --event push --ref refs/heads/ci/demo || fail "ci plan failed"
   expect_output ciunmapped layout full
-  assert_grep "$TMP/ciunmapped.sum" "Changed files include a path the test map cannot place: running the main layout." \
+  assert_grep "Changed files include a path the test map cannot place: running the main layout." "$TMP/ciunmapped.sum" \
     "an unmapped path must escalate a ci push"
 
   fresh_work
@@ -183,7 +183,7 @@ test_ci_layout_and_its_escalations() {
   commit_msg <<<"wide"
   plan_run ciwide --event push --ref refs/heads/ci/demo || fail "ci plan failed"
   expect_output ciwide layout full
-  assert_grep "$TMP/ciwide.sum" "Changed files select more than 30 tier-2 tests: running the main layout." \
+  assert_grep "Changed files select more than 30 tier-2 tests: running the main layout." "$TMP/ciwide.sum" \
     "a wide change must escalate a ci push"
   pass "a ci push runs the changed area and escalates on an unmapped path or a wide change"
 }
@@ -201,7 +201,7 @@ MSG
   expect_output tryone try_list tests/fm-a.test.sh
   expect_output tryone herdr_paths ''
   expect_output tryone changed false
-  assert_grep "$TMP/tryone.sum" "Try selection from Fm-Try trailers: 1 tests in 1 shards, 0 in the Herdr job." \
+  assert_grep "Try selection from Fm-Try trailers: 1 tests in 1 shards, 0 in the Herdr job." "$TMP/tryone.sum" \
     "the summary must name the selection source and size"
   pass "a try push naming one script runs one shard with just that script"
 }
@@ -257,8 +257,8 @@ test_try_refuses_malformed_trailers() {
       fail "a try push must refuse '${msg%%$'\n'*}': $(cat "$TMP/$name.log")"
     fi
     [ ! -s "$TMP/$name.out" ] || fail "a refused plan must write no outputs: ${msg%%$'\n'*}"
-    assert_grep "$TMP/$name.log" "::error::" "a refusal must annotate the run: ${msg%%$'\n'*}"
-    assert_grep "$TMP/$name.sum" "Refused: " "a refusal must reach the summary: ${msg%%$'\n'*}"
+    assert_grep "::error::" "$TMP/$name.log" "a refusal must annotate the run: ${msg%%$'\n'*}"
+    assert_grep "Refused: " "$TMP/$name.sum" "a refusal must reach the summary: ${msg%%$'\n'*}"
   done
   pass "a try push refuses misspelled, misplaced, unknown, caseless and conflicting trailers"
 }
@@ -274,9 +274,9 @@ test_try_without_trailers_never_widens() {
   expect_layout trywide try '' '[1,2,3]' '["changed"]'
   [ "$(output_of trywide try_list | wc -w)" -eq 31 ] \
     || fail "a try push must keep the whole changed selection: $(output_of trywide try_list)"
-  assert_grep "$TMP/trywide.sum" "Try selection from changed files against base: 31 tests in 3 shards" \
+  assert_grep "Try selection from changed files against base: 31 tests in 3 shards" "$TMP/trywide.sum" \
     "the summary must name the changed-file source"
-  assert_grep "$TMP/trywide.sum" "Unmapped changed path, skipped (a try run never widens): \`src/unmapped.ts\`" \
+  assert_grep "Unmapped changed path, skipped (a try run never widens): \`src/unmapped.ts\`" "$TMP/trywide.sum" \
     "the summary must list the unmapped path"
 
   fresh_work
@@ -285,7 +285,7 @@ test_try_without_trailers_never_widens() {
   try_push tryempty || fail "try plan failed: $(cat "$TMP/tryempty.log")"
   expect_layout tryempty try '' '[]' '["changed"]'
   expect_output tryempty herdr_paths ''
-  assert_grep "$TMP/tryempty.sum" "No tests selected: only the static checks and changed-file lint run." \
+  assert_grep "No tests selected: only the static checks and changed-file lint run." "$TMP/tryempty.sum" \
     "an empty try selection must say what still runs"
   pass "a try push without trailers runs its changed area, skips unmapped paths and never escalates"
 }
