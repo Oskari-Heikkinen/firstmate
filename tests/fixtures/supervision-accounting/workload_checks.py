@@ -114,11 +114,11 @@ def consume(request, row, *, suffix=b"", omit=False, extra=False, effect=b"1\n")
 
 
 class WorkloadChecks(unittest.TestCase):
-    def rejected(self, mutate, message=None):
+    def rejected(self, mutate, message):
         value = make()
         mutate(value)
         reseal(value)
-        with self.assertRaisesRegex((ValueError, KeyError), message or "."):
+        with self.assertRaisesRegex(ValueError, message):
             accounting.workload(value)
 
     def test_six_thirty_and_both_supplied_adapters_consume_identical_schedule(self):
@@ -179,7 +179,7 @@ class WorkloadChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "envelope seal"):
             accounting.workload(value)
         self.rejected(lambda v: v["files"][1]["object"]["content"].update(base64="eA=="), "blob")
-        self.rejected(lambda v: v["requests"][0]["observations"][0]["stderr"].update(base64="AA!"))
+        self.rejected(lambda v: v["requests"][0]["observations"][0]["stderr"].update(base64="AA!"), "Only base64 data")
 
     def test_closed_shapes_versions_types_paths_and_bounds(self):
         cases = [lambda v: v.update(format="fm-supervision-replay.v99"),
@@ -200,9 +200,15 @@ class WorkloadChecks(unittest.TestCase):
                  lambda v: v["files"][1]["object"].update(mode=True),
                  lambda v: v["requests"][0].update(start_ns=-1),
                  lambda v: v["requests"][0]["observations"][0].update(exit_status=256)]
-        for index, mutate in enumerate(cases):
+        messages = ["unsupported format/value", "unknown field", "wrong type", "place home/root/machine",
+                    "pattern", "noncanonical relative path", "noncanonical relative path", "noncanonical relative path",
+                    "invalid relative path", "place home/root/machine", "place task binding", "request task/home binding",
+                    "request task/home binding", "unadmitted passive", "branch actor lacks claim token", "wrong type",
+                    "numeric bound", "numeric bound"]
+        self.assertEqual(len(cases), len(messages))
+        for index, (mutate, message) in enumerate(zip(cases, messages)):
             with self.subTest(index=index):
-                self.rejected(mutate)
+                self.rejected(mutate, message)
 
     def test_clock_order_preimages_duplicates_and_inventory_completeness(self):
         cases = [lambda v: v["clock"].update(monotonic_end_ns=1),
@@ -218,9 +224,14 @@ class WorkloadChecks(unittest.TestCase):
                  lambda v: v["files"].append(copy.deepcopy(v["files"][0])),
                  lambda v: v["files"].pop(1),
                  lambda v: v["files"][0]["object"].update(content=blob(b"cursor"))]
-        for index, mutate in enumerate(cases):
+        messages = ["clock/trace interval mismatch", "synthetic provenance mismatch", "change sequence/clock",
+                    "change preimage mismatch", "change sequence/clock", "duplicate request id", "request order/interval",
+                    "observation interval/order", "duplicate observation id", "observation interval/order",
+                    "duplicate initial file", "directory inventory/file mismatch", "partial directory inventory"]
+        self.assertEqual(len(cases), len(messages))
+        for index, (mutate, message) in enumerate(zip(cases, messages)):
             with self.subTest(index=index):
-                self.rejected(mutate)
+                self.rejected(mutate, message)
 
     def test_missing_empty_partial_binary_and_hostile_file_objects(self):
         for kind, mode, error, expected in (("regular", 0o600, "", None),
@@ -340,7 +351,7 @@ class WorkloadChecks(unittest.TestCase):
     def test_byte_bounds_and_remaining_inventory_guards(self):
         self.rejected(lambda v: v["files"][1]["object"].update(content=blob(b"x" * (replay.MAX_FILE + 1))), "blob byte bound")
         self.rejected(lambda v: v["requests"][0].update(end_ns=31_000_000_011), "request order/interval")
-        self.rejected(lambda v: v["files"][0]["object"].update(kind="regular"), "parent directory|root object")
+        self.rejected(lambda v: v["files"][0]["object"].update(kind="regular"), "root object is not a directory")
         self.rejected(duplicate_directory, "duplicate directory entry")
         self.rejected(lambda v: v["requests"][0]["observations"][0]["cwd"].update(path="uncaptured"), "uncaptured observation cwd")
         self.rejected(lambda v: v.update(files=[row for row in v["files"] if row["place"]["root"] != "state"]), "state inventory")
@@ -427,7 +438,7 @@ class WorkloadChecks(unittest.TestCase):
                 if update_seal:
                     reseal(value)
                 def oracle():
-                    with self.assertRaises(ValueError):
+                    with self.assertRaisesRegex(ValueError, message):
                         accounting.workload(value)
                 oracle()
                 def reverted(condition, detail):

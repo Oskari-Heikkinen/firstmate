@@ -19,6 +19,7 @@ watcher test tests/fm-pending-reply.test.sh
 watcher test tests/fm-watcher-*.test.sh
 watcher test tests/fm-wake-*.test.sh
 watcher test tests/fm-supervision-*.test.sh
+watcher test tests/fixtures/supervision-accounting/*.py
 watcher test tests/fm-branch-supervision.test.sh
 watcher test tests/fm-afk-launch.test.sh
 
