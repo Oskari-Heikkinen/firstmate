@@ -941,65 +941,133 @@ families_for_test_reference() {  # <needle>...
   [ "$found" -eq 1 ]
 }
 
-# Tests that name <needle>, selected as individual scripts rather than widened
-# to each referencing test's whole family. A direct reference is per-script
-# evidence, so it selects per script: one real-Herdr E2E sourcing a shared
-# helper must not drag in every other script of that expensive family.
-scripts_for_test_reference() {
-  local needle=$1 s
-  local found=0
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    if grep -Fq "$needle" "$s"; then
-      printf '__script__:%s\n' "$(basename "$s")"
-      found=1
-    fi
-  done < <(all_repo_tests)
-  [ "$found" -eq 1 ]
+# grep -l over <file>..., one sorted path per line. A read error is a failed
+# scan, never "nothing names it", so callers fail closed on it; grep's own
+# stderr names the unreadable file.
+files_matching() {  # <grep pattern args>... -- <file>...
+  local out rc=0
+  local -a opts=()
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+    opts+=("$1")
+    shift
+  done
+  [ "$#" -gt 1 ] || return 0
+  shift
+  out=$(grep -l "${opts[@]}" -- "$@") || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    log "reference scan failed (grep exit $rc)"
+    return 1
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out" | LC_ALL=C sort
 }
 
-# bin/ scripts other than <needle> itself that name <needle>.
-bin_consumers_of() {
-  local needle=$1 b
-  for b in bin/*.sh bin/backends/*.sh; do
-    [ -f "$b" ] || continue
-    [ "$(basename "$b")" = "$needle" ] || ! grep -Fq "$needle" "$b" || printf '%s\n' "$b"
-  done
+# Prints __script__:<basename> for each test path in <paths>; false when none.
+print_test_scripts() {  # <newline-separated test paths>
+  local t none=1
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    printf '__script__:%s\n' "${t##*/}"
+    none=0
+  done <<<"$1"
+  return "$none"
+}
+
+# Sets NAME_ARGS to the grep pattern arguments that find a reference to
+# <path>. A Python module whose stem is an identifier is named by that stem as
+# a whole word, so an import counts as well as its file name; any other file
+# is named by its basename.
+NAME_ARGS=()
+name_args_for() {  # <path>
+  local base=${1##*/}
+  case "$base" in
+    *.py)
+      case "${base%.py}" in
+        ''|[0-9]*|*[!A-Za-z0-9_]*) ;;
+        *)
+          NAME_ARGS=(-wF -e "${base%.py}")
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+  NAME_ARGS=(-F -e "$base")
 }
 
 # An unmapped bin/ path has no curated family of its own. Its blast radius is
-# the tests that name it, plus the curated families of the bin/ scripts that
-# consume it. Direct test references resolve per script (above) while consumer
-# scripts resolve back through the curated map, so genuine family-level
-# coupling a maintainer recorded is preserved while an incidental single-script
-# reference no longer selects that script's whole family.
-BIN_FALLBACK_DEPTH=0
-families_for_unmapped_bin() {
-  local path=$1 needle consumer out found=0
-  needle=$(basename "$path")
-  if out=$(scripts_for_test_reference "$needle"); then
-    printf '%s\n' "$out"
-    found=1
-  fi
-  if [ "$BIN_FALLBACK_DEPTH" -lt 2 ]; then
-    BIN_FALLBACK_DEPTH=$((BIN_FALLBACK_DEPTH + 1))
+# what reaches it: the tests that name it, the tests that read a fixture
+# directory or Python test helper naming it, and the curated families of the
+# bin/ files of any language that name it. Direct references resolve per
+# script while consumers resolve back through the curated map, so genuine
+# family-level coupling a maintainer recorded is preserved while an incidental
+# single-script reference does not select that script's whole family. An
+# unmapped consumer is walked the same way, breadth first over a seen set, so
+# a chain of any length is followed to its end and a cycle stops.
+families_for_unmapped_bin() {  # <path>
+  local node out line consumer t b support found=0 i=0
+  local seen=$'\n'"$1"$'\n'
+  local -a queue=("$1") tests=() files=() helpers=() needles=()
+  for t in tests/*.test.sh; do
+    [ -f "$t" ] && tests+=("$t")
+  done
+  [ "${#tests[@]}" -gt 0 ] || return 1
+  for b in bin/* bin/backends/*; do
+    [ -f "$b" ] && files+=("$b")
+  done
+  [ ! -d tests/fixtures ] || helpers+=(tests/fixtures)
+  for t in tests/*.py; do
+    [ -f "$t" ] && helpers+=("$t")
+  done
+  while [ "$i" -lt "${#queue[@]}" ]; do
+    node=${queue[$i]}
+    i=$((i + 1))
+    name_args_for "$node"
+    out=$(files_matching "${NAME_ARGS[@]}" -- "${tests[@]}") || return 1
+    if print_test_scripts "$out"; then found=1; fi
+    # A fixture is read through its directory, a Python helper by its name.
+    needles=()
+    if [ "${#helpers[@]}" -gt 0 ]; then
+      out=$(files_matching -r "${NAME_ARGS[@]}" -- "${helpers[@]}") || return 1
+      while IFS= read -r support; do
+        case "$support" in
+          '') continue ;;
+          tests/fixtures/*/*)
+            support=${support#tests/}
+            support=${support%"${support#fixtures/*/}"}
+            ;;
+          *) support=${support##*/} ;;
+        esac
+        needles+=(-e "${support%/}")
+      done <<<"$out"
+    fi
+    if [ "${#needles[@]}" -gt 0 ]; then
+      out=$(files_matching -F "${needles[@]}" -- "${tests[@]}") || return 1
+      if print_test_scripts "$out"; then found=1; fi
+    fi
+    out=$(files_matching "${NAME_ARGS[@]}" -- ${files[@]+"${files[@]}"}) || return 1
     while IFS= read -r consumer; do
       [ -n "$consumer" ] || continue
-      out=$(families_for_changed_path "$consumer" | grep -v '^__unmapped__:' || true)
-      if [ -n "$out" ]; then
-        printf '%s\n' "$out"
-        found=1
-      fi
-    done < <(bin_consumers_of "$needle")
-    BIN_FALLBACK_DEPTH=$((BIN_FALLBACK_DEPTH - 1))
-  fi
+      case "$seen" in *$'\n'"$consumer"$'\n'*) continue ;; esac
+      seen=$seen$consumer$'\n'
+      while IFS= read -r line; do
+        case "$line" in
+          ''|__unmapped__:*) ;;
+          __bin_fallback__:*) queue+=("${line#__bin_fallback__:}") ;;
+          *)
+            printf '%s\n' "$line"
+            found=1
+            ;;
+        esac
+      done <<<"$(BIN_FALLBACK_WALK=1 families_for_changed_path "$consumer")"
+    done <<<"$out"
+  done
   [ "$found" -eq 1 ]
 }
 
 # Conservative path → family map. Over-selects rather than under-selects.
 # Never expands to the complete suite.
 families_for_changed_path() {
-  local path=$1 fixture_ref capture_ref
+  local path=$1 fixture_ref capture_ref refs plugin_ref
+  local -a plugin_args=()
   case "$path" in
     tests/fm-backend-herdr-eventwait.test.py)
       printf '%s\n' real-herdr-gated
@@ -1301,8 +1369,14 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' live-harness-optin
       ;;
-    .agents/skills/*/SKILL.md)
-      printf '%s\n' pure-contract-unit
+    .agents/skills/*/SKILL.md|.agents/skills/*/references/*.md)
+      # Skill prose is checked by the static job's documentation guards, like
+      # docs/. Only a suite that reads this exact file has more to prove.
+      if refs=$(files_matching -F -e "$path" -- tests/*.test.sh); then
+        print_test_scripts "$refs" || true
+      else
+        printf '%s\n' "__unmapped__:$path"
+      fi
       ;;
     .github/workflows/ci.yml|.no-mistakes.yaml)
       printf '%s\n' pure-contract-unit
@@ -1313,6 +1387,12 @@ families_for_changed_path() {
       # check them, and these suites pin how the runner and guard read them.
       printf '%s\n' "__script__:fm-test-run.test.sh"
       printf '%s\n' "__script__:fm-safety-guard.test.sh"
+      ;;
+    tests/risky-areas.list)
+      # Read by the safety guard and the lean review; the static job's safety
+      # guard checks the list itself, and these suites pin how both read it.
+      printf '%s\n' "__script__:fm-safety-guard.test.sh"
+      printf '%s\n' "__script__:fm-lean-review.test.sh"
       ;;
     tests/known-flakes.list)
       # Data read only by bin/fm-ci-errors.sh, whose suite pins its format.
@@ -1367,7 +1447,11 @@ families_for_changed_path() {
       # A deleted script has no consuming suite left to select, the same rule
       # the fixture case above applies. Refusing on its absent mapping would
       # make every retirement branch unable to select its changed tests.
-      if [ -e "$path" ]; then
+      # Inside the consumer walk an unmapped consumer is handed back to the
+      # walk's queue instead of starting a walk of its own.
+      if [ "${BIN_FALLBACK_WALK:-0}" = 1 ]; then
+        printf '%s\n' "__bin_fallback__:$path"
+      elif [ -e "$path" ]; then
         families_for_unmapped_bin "$path" \
           || printf '%s\n' "__unmapped__:$path"
       fi
@@ -1376,6 +1460,20 @@ families_for_changed_path() {
       printf '%s\n' "__unmapped__:$path"
       ;;
     README.md|LICENSE|assets/*|docs/*|.gitignore)
+      ;;
+    .opencode/plugins/*.js)
+      # Plugins share their lib/ modules and their suites name a plugin by
+      # basename, so a plugin or lib change selects every suite naming any
+      # plugin file or the plugin directory.
+      plugin_args=(-e .opencode/plugins)
+      for plugin_ref in .opencode/plugins/*.js .opencode/plugins/lib/*.js; do
+        [ -f "$plugin_ref" ] && plugin_args+=(-e "${plugin_ref##*/}")
+      done
+      if ! refs=$(files_matching -F "${plugin_args[@]}" -- tests/*.test.sh); then
+        printf '%s\n' "__unmapped__:$path"
+      elif ! print_test_scripts "$refs" && [ -e "$path" ]; then
+        printf '%s\n' "__unmapped__:$path"
+      fi
       ;;
     *)
       if [ -e "$path" ]; then
