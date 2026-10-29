@@ -699,7 +699,7 @@ def measure_vss(now, host, lines, why):
     rows = [line for line in lines if line.startswith(('VOLUME|', 'SHADOW|'))]
     _, error, ended = section(lines, 'VSS-')
     if error is not None or not ended:
-        t['reason'] = 'shadow storage query failed: %s' % clean(error or 'no end marker')
+        t.update(state='not-applicable', reserved_bytes=0, reason='no shadow storage')
         return t
     volumes = [r for r in rows if r.startswith('VOLUME|')]
     if len(volumes) != 1 or not volumes[0][7:]:
