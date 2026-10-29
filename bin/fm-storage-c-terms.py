@@ -830,7 +830,7 @@ def measure_pagefile(now, host, lines, why, policy):
                        '(a change waits for a restart)' % c)
         return t
     t['maximum_bytes'] = checked_sum(m for _, m in c_settings.values())
-    growth = checked_sum(max(c_settings[k][1] - c_usage[k], 0) for k in c_settings)
+    growth = checked_sum(c_settings[k][1] for k in c_settings)
     if t['maximum_bytes'] is None or growth is None:
         t['reason'] = 'pagefile maximum is past the integer ceiling'
         return t
