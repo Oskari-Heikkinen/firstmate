@@ -1263,16 +1263,28 @@ fm_pending_reply_escalation_payload() {  # <record-path> <kind>
 # unkeyed escalation is matched and closed under the shared default key while
 # that exact escalation remains open. If an unrelated decision has since taken
 # over that key, the close is withheld so the unrelated decision is not cleared.
+# The scan forks nothing per line: the verb is read in the shell, and the three
+# payloads, which depend only on the record, are read once at the first blocked
+# line, so a long parent log costs the same few subshells as a short one.
 fm_pending_reply_escalation_line() {  # <status-file> <record-path> <corr_id>
-  local status_file=$1 rec=$2 corr=$3 line found='' kind payload own_key untimed
+  local status_file=$1 rec=$2 corr=$3 line found='' payload own_key untimed
+  local line_verb payloads_read='' payload_missed payload_unknown payload_recovery
   [ -f "$status_file" ] || return 0
   [ "$(fm_pending_reply_get "$rec" corr_id)" = "$corr" ] || return 0
   own_key=$(fm_pending_reply_escalation_key "$corr")
   while IFS= read -r line || [ -n "$line" ]; do
-    [ "$(status_line_verb "$line")" = blocked ] || continue
+    status_line_verb "$line" line_verb
+    [ "$line_verb" = blocked ] || continue
     _fm_status_untimed "$line" untimed
-    for kind in missed delivery-unknown recovery-delivery; do
-      payload=$(fm_pending_reply_escalation_payload "$rec" "$kind") || continue
+    if [ -z "$payloads_read" ]; then
+      # A payload that cannot be built is empty, and no built one is.
+      payload_missed=$(fm_pending_reply_escalation_payload "$rec" missed) || payload_missed=''
+      payload_unknown=$(fm_pending_reply_escalation_payload "$rec" delivery-unknown) || payload_unknown=''
+      payload_recovery=$(fm_pending_reply_escalation_payload "$rec" recovery-delivery) || payload_recovery=''
+      payloads_read=1
+    fi
+    for payload in "$payload_missed" "$payload_unknown" "$payload_recovery"; do
+      [ -n "$payload" ] || continue
       case "$untimed" in
         "blocked [key=$own_key]: $payload"|"blocked: $payload") found=$line; break ;;
         "blocked [key=$own_key]: $payload "*|"blocked: $payload "*) found=$line; break ;;

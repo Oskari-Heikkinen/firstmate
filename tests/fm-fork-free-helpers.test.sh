@@ -2575,6 +2575,142 @@ SH
   pass 'pending-reply whole-token matching equals the old substitution without invoking its helper'
 }
 
+test_pending_reply_escalation_line_matches_the_per_line_scan() {
+  local script="$TMP_ROOT/escalation-line.sh" cases="$TMP_ROOT/escalation-line" corr=0123456789abcdef i token
+  local key="pending-reply-0123456789abcdef" ids="task=hibit pending-reply-id=0123456789abcdef"
+  mkdir -p "$cases/records" "$cases/dir.status"
+  esc_record() {  # <name> <record-lines>...
+    local name=$1
+    shift
+    printf '%s\n' "$@" > "$cases/records/$name"
+  }
+  esc_record failed "corr_id=$corr" task_id=hibit 'request_summary=S' recovery_delivery_outcome=failed
+  esc_record unknown "corr_id=$corr" task_id=hibit 'request_summary=S' recovery_delivery_outcome=unknown
+  esc_record confirmed "corr_id=$corr" task_id=hibit 'request_summary=S' recovery_delivery_outcome=confirmed
+  esc_record no-outcome "corr_id=$corr" task_id=hibit 'request_summary=S'
+  esc_record glob "corr_id=$corr" task_id=hibit 'request_summary=S*[a]?' recovery_delivery_outcome=failed
+  esc_record empty-summary "corr_id=$corr" task_id=hibit 'request_summary=' recovery_delivery_outcome=unknown
+  esc_record accents "corr_id=$corr" task_id=hibit $'request_summary=caf\303\251 S' recovery_delivery_outcome=failed
+  esc_record rewritten "corr_id=$corr" task_id=old 'request_summary=old' task_id=hibit 'request_summary=S'
+  esc_record no-task "corr_id=$corr" 'request_summary=S' recovery_delivery_outcome=failed
+  esc_record other-corr corr_id=fedcba9876543210 task_id=hibit 'request_summary=S'
+  esc_record no-corr task_id=hibit 'request_summary=S'
+  : > "$cases/records/empty"
+  esc_status() {  # <name> <line>...: a status file of exactly these lines
+    local name=$1
+    shift
+    printf '%s\n' "$@" > "$cases/$name.status"
+  }
+  for token in missed delivery-unknown recovery-delivery-failed recovery-delivery-unknown; do
+    esc_status "keyed-$token" "blocked [key=$key]: pending-reply-$token: $ids request=S"
+    esc_status "suffix-$token" "blocked [key=$key]: pending-reply-$token: $ids request=S more words"
+    esc_status "legacy-$token" "blocked: pending-reply-$token: $ids request=S"
+    esc_status "legacy-suffix-$token" "blocked: pending-reply-$token: $ids request=S tail"
+  done
+  esc_status timed "working: a" "blocked [key=$key] [at=1792600000]: pending-reply-missed: $ids request=S"
+  esc_status timed-legacy "blocked [at=1792600000]: pending-reply-recovery-delivery-failed: $ids request=S"
+  esc_status bad-time "blocked [key=$key] [at=17:00]: pending-reply-missed: $ids request=S"
+  esc_status corr-verb "blocked corr=$corr [key=$key]: pending-reply-missed: $ids request=S"
+  esc_status foreign-key "blocked [key=release]: pending-reply-missed: $ids request=S"
+  esc_status glued "blocked [key=$key]: pending-reply-missed: $ids request=Sx"
+  esc_status glob-literal "blocked [key=$key]: pending-reply-missed: $ids request=S*[a]?"
+  esc_status glob-wild "blocked [key=$key]: pending-reply-missed: $ids request=Sxxa!"
+  esc_status accents "blocked: pending-reply-missed: $ids request="$'caf\303\251 S'
+  esc_status empty-summary "blocked [key=$key]: pending-reply-delivery-unknown: $ids request="
+  esc_status not-blocked "needs-decision [key=$key]: pending-reply-missed: $ids request=S" \
+    "resolved [key=$key]: pending-reply-missed: $ids request=S"
+  esc_status verbs "Blocked: pending-reply-missed: $ids request=S" \
+    "  blocked: pending-reply-missed: $ids request=S" "blockedx: pending-reply-missed: $ids request=S"
+  esc_status last-wins "blocked: pending-reply-missed: $ids request=S first" "working: between" \
+    "blocked [key=$key]: pending-reply-delivery-unknown: $ids request=S second" "blocked: unrelated"
+  esc_status prose "working: a" "plain prose" ""
+  : > "$cases/empty.status"
+  printf 'blocked [key=%s]: pending-reply-missed: %s request=S\r\n' "$key" "$ids" > "$cases/crlf.status"
+  printf 'working: a\nblocked [key=%s]: pending-reply-missed: %s request=S' "$key" "$ids" > "$cases/unterminated.status"
+  printf 'blo\0cked [key=%s]: pending-reply-missed: %s request=S\n' "$key" "$ids" > "$cases/nul.status"
+  printf 'blocked: \377\376\nblocked [key=%s]: pending-reply-missed: %s request=S \342\n' "$key" "$ids" > "$cases/high-bytes.status"
+  esc_status short "blocked [key=$key]: pending-reply-missed: $ids request=S"
+  {
+    for ((i = 1; i <= 300; i++)); do
+      printf 'working [at=%s]: step %s\n' "$((1792000000 + i))" "$i"
+      printf 'blocked [key=b%s]: unrelated blocker %s\n' "$((i % 7))" "$i"
+    done
+    printf 'blocked [key=%s]: pending-reply-missed: %s request=S\n' "$key" "$ids"
+  } > "$cases/long.status"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-pending-reply-lib.sh"
+set -u
+cases=$2 corr=0123456789abcdef
+# The per-line scan the fork-free one replaced, kept as the reference.
+ref_escalation_line() {  # <status-file> <record-path> <corr_id>
+  local status_file=$1 rec=$2 corr=$3 line found='' kind payload own_key untimed
+  [ -f "$status_file" ] || return 0
+  [ "$(fm_pending_reply_get "$rec" corr_id)" = "$corr" ] || return 0
+  own_key=$(fm_pending_reply_escalation_key "$corr")
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$(status_line_verb "$line")" = blocked ] || continue
+    _fm_status_untimed "$line" untimed
+    for kind in missed delivery-unknown recovery-delivery; do
+      payload=$(fm_pending_reply_escalation_payload "$rec" "$kind") || continue
+      case "$untimed" in
+        "blocked [key=$own_key]: $payload"|"blocked: $payload") found=$line; break ;;
+        "blocked [key=$own_key]: $payload "*|"blocked: $payload "*) found=$line; break ;;
+      esac
+    done
+  done < "$status_file"
+  printf '%s' "$found"
+}
+matched=0
+compare() {  # <status-file> <record-name> [corr]
+  local want got
+  want=$(ref_escalation_line "$1" "$cases/records/$2" "${3:-$corr}" 2>&1; printf 'rc=%s' "$?")
+  got=$(fm_pending_reply_escalation_line "$1" "$cases/records/$2" "${3:-$corr}" 2>&1; printf 'rc=%s' "$?")
+  [ "$got" = "$want" ] || printf 'escalation line %s %s %s: new %q, old %q\n' "${1##*/}" "$2" "${3:-$corr}" "$got" "$want"
+  [ "$want" = rc=0 ] || matched=$((matched + 1))
+}
+# Every line shape against the records that build each payload kind, and every
+# record shape against the line shapes its payload decides.
+for f in "$cases"/*.status "$cases/missing.status"; do
+  [ "${f##*/}" != long.status ] || continue
+  for r in failed unknown no-outcome; do compare "$f" "$r"; done
+done
+for r in "$cases"/records/* "$cases/records/missing"; do
+  for f in keyed-missed legacy-recovery-delivery-failed suffix-recovery-delivery-unknown \
+    glob-literal glob-wild accents empty-summary last-wins; do
+    compare "$cases/$f.status" "${r##*/}"
+  done
+done
+for f in keyed-missed legacy-delivery-unknown long; do compare "$cases/$f.status" failed fedcba9876543210; done
+# Non-vacuity: the shapes above must select an escalation in many cases.
+[ "$matched" -ge 40 ] || printf 'only %s cases selected an escalation\n' "$matched"
+subshells() {  # <function> <status-file>: subshell commands one scan runs
+  local log=$cases/subshells.$$ __level
+  : > "$log"
+  __level=$BASH_SUBSHELL
+  set -T
+  trap '[ "$BASH_SUBSHELL" -le "$__level" ] || printf "%s\n" "$BASH_COMMAND" >> "$log"' DEBUG
+  "$1" "$2" "$cases/records/failed" "$corr" > /dev/null
+  trap - DEBUG
+  set +T
+  grep -c . "$log" || true
+  rm -f "$log"
+}
+short=$(subshells fm_pending_reply_escalation_line "$cases/short.status")
+long=$(subshells fm_pending_reply_escalation_line "$cases/long.status")
+[ "$short" -gt 0 ] && [ "$long" = "$short" ] \
+  || printf 'a 601-line scan ran %s subshell commands, a 1-line scan %s\n' "$long" "$short"
+none=$(subshells fm_pending_reply_escalation_line "$cases/prose.status")
+[ "$none" -lt "$short" ] || printf 'a scan with no blocked line ran %s subshell commands, not fewer than %s\n' "$none" "$short"
+# The counter sees the per-line subshells of the scan it replaced.
+ref_short=$(subshells ref_escalation_line "$cases/short.status")
+ref_long=$(subshells ref_escalation_line "$cases/long.status")
+[ "$ref_long" -gt $((ref_short * 10)) ] || printf 'the reference scan ran %s and %s subshell commands\n' "$ref_long" "$ref_short"
+exit 0
+SH
+  run_everywhere "pending-reply escalation line" "$script" "$cases"
+  pass "the escalation-line scan selects what the per-line scan did, and its subshells do not grow with the log"
+}
+
 test_open_decisions_fold_matches_the_text_fold() {
   local script="$TMP_ROOT/open-decisions.sh" cases="$TMP_ROOT/open-decisions" i
   mkdir -p "$cases"
@@ -2945,5 +3081,6 @@ else
   test_watcher_capture_matches_what_it_replaced
   test_busy_classify_matches_what_it_replaced
   test_pending_reply_correlation_matches_forked_token
+  test_pending_reply_escalation_line_matches_the_per_line_scan
   test_open_decisions_fold_matches_the_text_fold
 fi

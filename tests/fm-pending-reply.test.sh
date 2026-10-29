@@ -34,7 +34,8 @@
 #  17. The expect= kind is persisted, defaults to answer, and only a correlated
 #      note on an ack request is a routine acknowledgement
 #  18. Resolved records past retention are pruned by the tick, open ones never,
-#      and a tick over many settled records stays fast
+#      and a tick over many settled records stays fast, as does an escalation
+#      close in an aged 6,500-line parent log
 #  17. Recovery and escalation grace are measured from the relevant turn's
 #      completion, never from delivery or send time, and each takes one fresh,
 #      uncached status read - accepting any verb - immediately before firing
@@ -2336,6 +2337,65 @@ test_tick_over_many_resolved_records_is_fast() {
   pass "a tick over 1500 resolved records stays fast and prunes them once aged"
 }
 
+# The subshells one escalation-close tick enters, and its exit code, on a
+# parent log of <lines> aged lines whose escalation sits near the start.
+aged_close_tick() {  # <name> <lines> -> "<subshells> <rc>"
+  (
+    local home state corr=0123456789abcdef rec i log __level __seen='' rc
+    home=$(setup_parent "$1")
+    state="$home/state"
+    # shellcheck disable=SC2030,SC2031
+    export FM_PENDING_REPLY_NOW=600000
+    write_record "$state" "$corr" hibit resolved 100 599000 500 ''
+    rec=$(fm_pending_reply_path "$state" "$corr")
+    printf '%s\n' 'request_summary=aged close' resolved_via=status >> "$rec"
+    for ((i = 0; i < $2; i++)); do
+      [ "$i" -ne $(($2 / 60)) ] || printf 'blocked [key=pending-reply-%s] [at=1792000100]: pending-reply-missed: task=hibit pending-reply-id=%s request=aged close\n' "$corr" "$corr"
+      case $((i % 3)) in
+        0) printf 'working [at=%s]: step %s\n' "$((1792000000 + i))" "$i" ;;
+        1) printf 'blocked [key=b%s] [at=%s]: aged blocker %s\n' "$((i % 7))" "$((1792000000 + i))" "$i" ;;
+        2) printf 'resolved [key=b%s]: cleared\n' "$((i % 7))" ;;
+      esac
+    done > "$state/hibit.status"
+    cp "$state/hibit.status" "$home/before.status"
+    log="$home/subshells"
+    : > "$log"
+    # Log the first command of every subshell the tick enters, once each.
+    __level=$BASH_SUBSHELL
+    set -T
+    trap '[ "$BASH_SUBSHELL" -le "$__level" ] || [ "${__seen:-}" = "$BASH_SUBSHELL" ] || { __seen=$BASH_SUBSHELL; printf "%s\n" "$BASH_SUBSHELL" >> "$log"; }' DEBUG
+    rc=0
+    fm_pending_reply_tick "$state" || rc=$?
+    trap - DEBUG
+    set +T
+    [ "$rc" = 0 ] || fail "the aged-log close tick failed with $rc"
+    [ "$(sed -E 's/ \[at=[0-9]+\]//' "$state/hibit.status" | tail -1)" \
+      = "resolved [key=pending-reply-$corr]: pending-reply-resolved: task=hibit pending-reply-id=$corr via=status" ] \
+      || fail "the aged-log close did not append the guarded resolution last: $(tail -1 "$state/hibit.status")"
+    [ "$(head -n "$(($2 + 1))" "$state/hibit.status")" = "$(cat "$home/before.status")" ] \
+      || fail "the aged-log close rewrote the log it scanned"
+    [ "$(wc -l < "$state/hibit.status" | tr -d ' ')" = $(($2 + 2)) ] \
+      || fail "the aged-log close appended more than its one resolution"
+    [ "$(fm_pending_reply_get "$rec" escalation_closed_epoch)" = 600000 ] \
+      || fail "the aged-log close was not recorded"
+    assert_not_contains "$(status_open_decisions "$state/hibit.status")" "pending-reply-$corr" \
+      "the aged-log escalation stayed open"
+    printf '%s %s\n' "$(grep -c . "$log")" "$rc"
+  )
+}
+
+test_escalation_close_cost_does_not_grow_with_the_log() {
+  local aged short
+  aged=$(aged_close_tick aged-close 6500) || fail "aged-log close fixture failed"
+  short=$(aged_close_tick short-close 120) || fail "short-log close fixture failed"
+  aged=${aged% *} short=${short% *}
+  # The per-line scan entered about 35,000 subshells on this log.
+  [ "$aged" -le 200 ] || fail "closing an escalation in a 6,500-line log entered $aged subshells"
+  [ "$aged" -le "$short" ] \
+    || fail "closing in a 6,500-line log entered $aged subshells, a 120-line log $short"
+  pass "closing an escalation in an aged 6,500-line log enters as few subshells as in a short one"
+}
+
 test_same_kind_escalation_reopens_after_operator_close() {
   (
     local dir fb log home state corr status blocked open FM_PENDING_REPLY_NOW
@@ -3006,6 +3066,7 @@ test_escalated_undelivered_correlation_stays_retryable
 test_expect_kind_is_persisted_and_types_acknowledgements
 test_tick_prunes_resolved_records_past_retention
 test_tick_over_many_resolved_records_is_fast
+test_escalation_close_cost_does_not_grow_with_the_log
 test_same_kind_escalation_reopens_after_operator_close
 test_summary_keeps_accents_and_caps_by_character
 test_summary_drops_non_ascii_controls_and_invalid_utf8
