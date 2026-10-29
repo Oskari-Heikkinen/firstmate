@@ -6,6 +6,7 @@ Your Definition of done names the wait bound, what a red check means, and when y
 ## Push races
 
 Lost push races are governed by this bound instead of the general rule to stop after hitting the same obstacle twice: after 5 refused pushes, append `blocked [at=<epoch>]: lost the push race 5 times; {what keeps landing}` and stop instead of looping.
+A lost race whose rebase was clean and left an already-green patch unchanged (an equal `git patch-id --stable`) follows the landing rule in force for your task, which your Definition of done or firstmate's latest landing instruction states; unless that rule lets the rebased head land on its earlier run, it gets a new exact-head run before the next push, a `ci/<task-id>` run on a Firstmate-repository task.
 
 ## Post-landing check wait
 

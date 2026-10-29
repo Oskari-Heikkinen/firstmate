@@ -128,7 +128,8 @@ Its header and `--help` own the flags, family labels, tiers, and changed-file ma
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
 The tiers, CI layouts, and shard packing are described in `docs/fm-test-portable-shards.md`.
 Family selection is the ordinary local path; `--all` is deliberate full regression only.
-CI owns broad regression by tier in [`.github/workflows/ci.yml`](.github/workflows/ci.yml): the gate on every push, the full suite on `main` and `ci/full/**`, and the weekly tier with stock macOS Bash compatibility once a week.
+CI owns broad regression by tier in [`.github/workflows/ci.yml`](.github/workflows/ci.yml), from the gate on every push to the weekly tier with stock macOS Bash compatibility once a week.
+An agent changing this repository takes its local checks, its CI pushes and its handling of a red run from the worker guide's [Firstmate verification reference](.agents/skills/worker-guide/references/firstmate-verification.md), not from the local entry points above.
 CI runs are never cancelled, and `bin/fm-lint-workflows.sh` enforces that.
 The static checks job also runs `bin/fm-safety-guard.sh`, whose header owns its agent-free rules judged on every pushed commit, for `ci/**` pushes and pushes to `main` alike.
 A commit that changes a risky-area script matched by `tests/risky-areas.list` must also add or change a test in that area; when the change truly needs none, such as a comment-only edit, give the reason in a `no-test-needed: <reason>` line of that commit's message.
