@@ -163,6 +163,49 @@
 #             release of the unit holds its lock (a file in XDG_RUNTIME_DIR,
 #             else TMPDIR, else /tmp).
 #
+#   fm-pack.sh candidates --home HOME [--root ROOT]... [--timeout SECONDS]
+#                         [--small SIZE]
+#       Read-only report of HOME's pack candidates: it packs, releases and
+#       writes nothing outside its own temp directory. A tree is each
+#       directory directly under HOME/data, dot names included; a symlink, a
+#       directory on another filesystem than HOME/data, and a name holding a
+#       tab, newline or backslash are skipped and counted. Each tree is walked
+#       once with find -xdev (same filesystem, no symlink followed) at nice 19
+#       and idle I/O, under timeout SECONDS (default 900) per tree. NEWEST is
+#       the newest mtime of any entry, the tree's own directory included; a
+#       tree is listed when NEWEST is 7 or more whole days old. PACK comes from
+#       the UNIT.json beside every UNIT.sqfs one directory under each ROOT's
+#       verified D: directory (fm-storage.sh verify-bulk-root; default ROOTs
+#       tetjet-results and research) whose fm-pack-unit/v1 source is the tree,
+#       best first:
+#         verified   a committed unit whose tree list the tree still matches
+#                    (a second walk, bounded the same way);
+#         releasing  a release started and did not finish;
+#         released   released under R2;
+#         changed    a committed unit, but the tree changed since;
+#         none       no unit names the tree;
+#         unknown    a ROOT is waiting, or a sidecar or the second walk could
+#                    not be read (stderr names it).
+#       tj-fetch-arrival-unit/v2 sidecars name no home tree and are passed
+#       over; any other format, or a UNIT.sqfs without a readable UNIT.json,
+#       leaves trees no unit names unknown rather than none.
+#       Prints a header, a column line, then one tab-separated row per listed
+#       tree, 30d+ before 7d+ before failed, larger first:
+#         fm-pack-candidates/v1 home=HOME now=EPOCH small=BYTES listed=N recent=N skipped=N failed=N
+#         bucket days allocated logical files small_pct newest pack tree
+#       bucket is 30d+ or 7d+, or failed for a tree whose walk failed or timed
+#       out (its other fields -, pack timeout or read-error). allocated is
+#       du -sB1 -x's measure and logical the regular files' sizes, each inode
+#       once; files counts regular-file names as find does; small_pct is the
+#       share of them under --small (default 64K, a size in bytes or with
+#       K, M or G); newest is UTC ISO-8601. recent counts trees walked and not
+#       listed. By hand, for one tree: du -sB1 -x TREE;
+#       find TREE -xdev -type f | wc -l;
+#       find TREE -xdev -printf '%T@\n' | sort -n | tail -n 1.
+#       Exit codes: 0 listed; 1 a walk failed or a pack state could not be
+#       read (every row still printed); 2 misuse or an unreadable HOME/data;
+#       75 otherwise when a ROOT is waiting (its wait: line on stderr).
+#
 # Reading the image afresh: a new squashfuse -o ro mount on a temporary
 # directory (fusermount3 -u afterwards). pack, verify and verify-tar refuse
 # with exit 2 before any work when squashfuse, fusermount3 or a usable
@@ -179,20 +222,22 @@
 # beside the image are the manifest), and pack and restore never remove
 # anything they did not create in this run.
 #
-# Machine share: pack, verify, verify-tar, restore and release re-execute
-# themselves once at nice 19 and idle I/O priority (ionice -c3, where ionice
-# exists), so every step and every tool they run inherits both. On Linux
-# they first build bin/fm-pack-retry.c with cc into a per-run directory
-# (removed at exit), check that it loads and retries, and preload it into
-# themselves and every tool, so a read, write, open or readdir that fails
-# with ENOMEM is retried (docs/storage.md "Packing cold data" owns why);
+# Machine share: pack, verify, verify-tar, restore, release and candidates
+# re-execute themselves once at nice 19 and idle I/O priority (ionice -c3,
+# where ionice exists), so every step and every tool they run inherits both.
+# On Linux they first build bin/fm-pack-retry.c with cc into a per-run
+# directory (removed at exit), check that it loads and retries, and preload
+# it into themselves and every tool, so a read, write, open or readdir that
+# fails with ENOMEM is retried (docs/storage.md "Packing cold data" owns why);
 # no cc, a failed build or a shim that does not load exits 2. Retried calls
 # are summed in one stderr line at exit (fm-pack: retried N calls ...), and
 # calls still failing after the shim's limit in one more (... still failed
 # with ENOMEM ...); verify-tar prints them only when it exits non-zero.
 #
-# Machine-wide pack slot: each of those commands holds an exclusive flock on
-# one lock file for the whole command, so one runs at a time on the machine.
+# Machine-wide pack slot: each of those commands but candidates holds an
+# exclusive flock on one lock file for the whole command, so one runs at a
+# time on the machine. candidates only reads metadata under bounded walks, and
+# a listing that waited out a multi-hour pack would be stale when it printed.
 # A command that finds the slot taken prints one line and blocks until it is
 # free; it never fails or exits for the slot:
 #   fm-pack: waiting for the machine-wide pack slot LOCK, held by HOLDER
@@ -214,6 +259,7 @@
 #                   the file count
 #   FM_HOME         owner home recorded in UNIT.json (default this checkout)
 #   FM_PACK_RELEASE_WINDOW  release's default window in seconds (0)
+#   FM_PACK_NOW     candidates' clock in epoch seconds (default now), for tests
 #   FM_PACK_MOUNTINFO  the mount table release reads (/proc/self/mountinfo)
 #   FM_DISK_ROOM_STATE  fm-disk-room's state directory, for release's
 #                   reservation check (the same default as fm-disk-room.sh)
@@ -308,8 +354,9 @@ take_slot() {
 valid_unit() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
 
 # tree_list DIR: the tree list of DIR on stdout (pack step 3 above).
+TREE_FORMAT='%y\t%s\t%m\t%n\t%T@\t%l\t%p\n'
 tree_list() {
-  (cd "$1" && find . -xdev -printf '%y\t%s\t%m\t%n\t%T@\t%l\t%p\n' | LC_ALL=C sort -t$'\t' -k7)
+  (cd "$1" && find . -xdev -printf "$TREE_FORMAT" | LC_ALL=C sort -t$'\t' -k7)
 }
 
 # tree_matches DIR LIST: capture the complete listing before comparing bytes.
@@ -939,11 +986,183 @@ cmd_release() {
     "$IMG" "$src" "$freed" "$REL_ACCEPTED" "$released" "$REL_RECORD"
 }
 
+# ---------------------------------------------------------------- candidates
+
+CAND_TMP=''
+CAND_TIMEOUT=900
+CAND_FAILED=0 CAND_UNREAD=0 CAND_WAIT=0 CAND_GAP=0
+
+# shellcheck disable=SC2329 # Run through CLEANUP by finish.
+cand_cleanup() { [ -z "$CAND_TMP" ] || rm -rf -- "$CAND_TMP"; }
+
+# cand_index ROOT...: CAND_TMP/units gets one STATE<TAB>TREE_LIST<TAB>SOURCE
+# line per fm-pack-unit/v1 unit; a waiting ROOT sets CAND_WAIT, an unreadable
+# sidecar or listing sets CAND_UNREAD and CAND_GAP (a unit may be missing).
+cand_index() {
+  local root out rc base list img json line fmt src state
+  : >"$CAND_TMP/units" || fail1 "cannot write $CAND_TMP/units"
+  list=$CAND_TMP/images
+  for root in "$@"; do
+    out=$("$BIN/fm-storage.sh" verify-bulk-root --root "$root"); rc=$?
+    case "$rc" in
+      0) ;;
+      75) CAND_WAIT=1; continue ;;
+      *) exit 2 ;;
+    esac
+    base=${out%/\{task\}}
+    [ "$base/{task}" = "$out" ] && [ -d "$base" ] || { note "candidates: $root: unexpected root $out"; CAND_UNREAD=1 CAND_GAP=1; continue; }
+    if ! timeout "$CAND_TIMEOUT" find "$base" -mindepth 2 -maxdepth 2 -name '*.sqfs' -type f -print0 >"$list"; then
+      note "candidates: listing the units under $base failed"; CAND_UNREAD=1 CAND_GAP=1; continue
+    fi
+    while IFS= read -r -d '' img; do
+      json=${img%.sqfs}.json
+      if ! line=$(jq -er '.format + "\t" + (.source // "" | tostring)' "$json" 2>/dev/null); then
+        note "candidates: unreadable sidecar $json"; CAND_UNREAD=1 CAND_GAP=1; continue
+      fi
+      fmt=${line%%$'\t'*} src=${line#*$'\t'}
+      case "$fmt" in
+        fm-pack-unit/v1) ;;
+        tj-fetch-arrival-unit/v2) continue ;;
+        *) note "candidates: unknown unit format $fmt in $json"; CAND_UNREAD=1 CAND_GAP=1; continue ;;
+      esac
+      state=committed
+      if [ -e "${img%.sqfs}.release.json" ]; then
+        state=$(jq -er .state "${img%.sqfs}.release.json" 2>/dev/null) || state=''
+        case "$state" in released|releasing) ;; *) state=unreadable ;; esac
+      fi
+      printf '%s\t%s\t%s\n' "$state" "${img%.sqfs}.tree.tsv" "$src" >>"$CAND_TMP/units"
+    done <"$list"
+  done
+}
+
+# cand_unchanged TREE TREE_LIST: 0 the tree matches the list, 1 it differs,
+# 2 the walk or the comparison failed.
+cand_unchanged() {
+  local raw=$CAND_TMP/tree.raw sorted=$CAND_TMP/tree.tsv
+  (cd "$1" && timeout "$CAND_TIMEOUT" find . -xdev -printf "$TREE_FORMAT") >"$raw" 2>/dev/null || return 2
+  LC_ALL=C sort -t$'\t' -k7 "$raw" >"$sorted" || return 2
+  cmp -s "$sorted" "$2"
+  case "$?" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
+# cand_pack TREE: sets CAND_PACK to the pack column for TREE (see the header).
+CAND_PACK=''
+cand_pack() {
+  local tree=$1 state list src best='' rank=9 r
+  while IFS=$'\t' read -r state list src; do
+    [ "$src" = "$tree" ] || continue
+    case "$state" in
+      committed)
+        cand_unchanged "$tree" "$list"
+        case "$?" in
+          0) state=verified ;;
+          1) state=changed ;;
+          *) note "candidates: re-walking $tree against $list failed"; state=unknown ;;
+        esac ;;
+      unreadable) note "candidates: unreadable release record beside $list"; state=unknown ;;
+    esac
+    case "$state" in verified) r=0 ;; releasing) r=1 ;; released) r=2 ;; changed) r=3 ;; *) r=4 ;; esac
+    [ "$r" -ge "$rank" ] || { rank=$r best=$state; }
+  done <"$CAND_TMP/units"
+  if [ "$best" = unknown ]; then CAND_UNREAD=1; fi
+  if [ -z "$best" ]; then
+    if [ "$CAND_GAP" = 1 ] || [ "$CAND_WAIT" = 1 ]; then best=unknown; else best=none; fi
+  fi
+  CAND_PACK=$best
+}
+
+cmd_candidates() {
+  local home='' small=65536 now data datadev roots=() line kind dev tree name out err rc
+  local alloc logical files smallc newest days bucket label listed=0 recent=0 skipped=0 pct
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --home) [ "$#" -ge 2 ] || die "--home needs a directory"; home=$2; shift 2 ;;
+      --root) [ "$#" -ge 2 ] || die "--root needs a name"; roots+=("$2"); shift 2 ;;
+      --timeout)
+        [ "$#" -ge 2 ] && [[ $2 =~ ^[1-9][0-9]{0,5}$ ]] || die "--timeout needs whole seconds"
+        CAND_TIMEOUT=$2; shift 2 ;;
+      --small)
+        [ "$#" -ge 2 ] && [[ $2 =~ ^[1-9][0-9]{0,8}[KMG]?$ ]] || die "--small needs a size in bytes or with K, M or G"
+        small=${2%[KMG]}
+        case "$2" in
+          *K) small=$((small * 1024)) ;;
+          *M) small=$((small * 1048576)) ;;
+          *G) small=$((small * 1073741824)) ;;
+        esac
+        shift 2 ;;
+      *) die "candidates takes --home HOME [--root ROOT]... [--timeout SECONDS] [--small SIZE]" ;;
+    esac
+  done
+  [ -n "$home" ] || die "candidates needs --home HOME"
+  [ "${#roots[@]}" -gt 0 ] || roots=(tetjet-results research)
+  now=${FM_PACK_NOW:-$(date +%s)}
+  [[ $now =~ ^[0-9]{1,12}$ ]] || die "FM_PACK_NOW must be epoch seconds"
+  need find jq timeout sort awk
+  [ -d "$home" ] || die "$home is not a directory"
+  home=$(cd -P -- "$home" && pwd -P) || die "cannot resolve $home"
+  CAND_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-pack-candidates.XXXXXX") || fail1 "cannot create a temp directory"
+  CLEANUP=cand_cleanup
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  : >"$CAND_TMP/rows" || fail1 "cannot write $CAND_TMP/rows"
+  data=''
+  if [ -e "$home/data" ] || [ -L "$home/data" ]; then
+    [ -d "$home/data" ] || die "$home/data is not a directory"
+    data=$(cd -P -- "$home/data" && pwd -P) || die "cannot resolve $home/data"
+    datadev=$(find "$data" -maxdepth 0 -printf '%D') && [ -n "$datadev" ] || die "cannot read $data"
+    find "$data" -mindepth 1 -maxdepth 1 -printf '%y %D %f\0' >"$CAND_TMP/trees" || die "cannot list $data"
+  else
+    : >"$CAND_TMP/trees"
+  fi
+  cand_index "${roots[@]}"
+
+  while IFS= read -r -d '' line; do
+    kind=${line%% *} line=${line#* }
+    dev=${line%% *} name=${line#* }
+    case "$kind" in d) ;; l) skipped=$((skipped + 1)); continue ;; *) continue ;; esac
+    case "$name" in *$'\t'*|*$'\n'*|*\\*) note "candidates: skipped a tree name holding a tab, newline or backslash"; skipped=$((skipped + 1)); continue ;; esac
+    tree=$data/$name
+    [ "$dev" = "$datadev" ] || { skipped=$((skipped + 1)); continue; }
+    out=$CAND_TMP/walk err=$CAND_TMP/walk.err
+    timeout "$CAND_TIMEOUT" find "$tree" -xdev -printf '%y %n %i %s %b %T@\n' 2>"$err" |
+      awk -v small="$small" '
+        { first = 1
+          if ($1 != "d" && $2 > 1) { if ($3 in seen) first = 0; else seen[$3] = 1 }
+          if (first) { alloc += $5 * 512; if ($1 == "f") logical += $4 }
+          if ($1 == "f") { files++; if ($4 < small) smallc++ }
+          if (NR == 1 || $6 > newest) newest = $6 }
+        END { printf "%.0f %.0f %.0f %.0f %.0f\n", alloc, logical, files, smallc, int(newest) }' >"$out"
+    rc="${PIPESTATUS[0]} ${PIPESTATUS[1]}"
+    if [ "$rc" != "0 0" ] || ! read -r alloc logical files smallc newest <"$out" || [ -z "$newest" ]; then
+      CAND_FAILED=$((CAND_FAILED + 1))
+      case "${rc%% *}" in 124) label=timeout ;; *) label=read-error ;; esac
+      note "candidates: walking $tree failed ($label): $(head -n 1 "$err" 2>/dev/null)"
+      printf '2\t0\tfailed\t-\t-\t-\t-\t-\t-\t%s\t%s\n' "$label" "$tree" >>"$CAND_TMP/rows"
+      continue
+    fi
+    days=$(( (now - newest) / 86400 ))
+    if [ "$days" -lt 7 ]; then recent=$((recent + 1)); continue; fi
+    if [ "$days" -ge 30 ]; then bucket=0 label=30d+; else bucket=1 label=7d+; fi
+    cand_pack "$tree"
+    if [ "$files" -gt 0 ]; then pct=$(awk -v s="$smallc" -v f="$files" 'BEGIN { printf "%.1f", 100 * s / f }'); else pct=0.0; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$bucket" "$alloc" "$label" "$days" "$alloc" \
+      "$logical" "$files" "$pct" "$(date -u -d "@$newest" +%Y-%m-%dT%H:%M:%SZ)" "$CAND_PACK" "$tree" >>"$CAND_TMP/rows"
+    listed=$((listed + 1))
+  done <"$CAND_TMP/trees"
+
+  printf 'fm-pack-candidates/v1 home=%s now=%s small=%s listed=%s recent=%s skipped=%s failed=%s\n' \
+    "$home" "$now" "$small" "$listed" "$recent" "$skipped" "$CAND_FAILED"
+  printf 'bucket\tdays\tallocated\tlogical\tfiles\tsmall_pct\tnewest\tpack\ttree\n'
+  LC_ALL=C sort -t$'\t' -k1,1n -k2,2nr -k11 "$CAND_TMP/rows" | cut -f3- || fail1 "cannot sort the rows"
+  if [ "$CAND_FAILED" -gt 0 ] || [ "$CAND_UNREAD" = 1 ]; then exit 1; fi
+  [ "$CAND_WAIT" = 0 ] || exit 75
+}
+
 # One block, read whole before it runs, so an update of this file during a
 # long command cannot change what the running command reads next.
 {
   case "${1:-}" in
-    pack|verify|verify-tar|restore|release) prepare "$@" ;;
+    pack|verify|verify-tar|restore|release|candidates) prepare "$@" ;;
   esac
   case "${1:-}" in
     pack) shift; cmd_pack "$@" ;;
@@ -951,6 +1170,7 @@ cmd_release() {
     verify-tar) shift; cmd_verify_tar "$@" ;;
     restore) shift; cmd_restore "$@" ;;
     release) shift; cmd_release "$@" ;;
+    candidates) shift; cmd_candidates "$@" ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
   esac

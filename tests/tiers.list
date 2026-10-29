@@ -118,6 +118,7 @@ full tests/fm-disk-inventory.test.sh
 full tests/fm-dispatch-resolve.test.sh
 full tests/fm-dod-lib.test.sh
 full tests/fm-ensure-agents-md.test.sh
+full tests/fm-ext4-alloc-trial.test.sh
 full tests/fm-extension-binding.test.sh
 full tests/fm-fleet-ledger.test.sh
 full tests/fm-fleet-provenance.test.sh

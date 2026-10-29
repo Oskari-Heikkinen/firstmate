@@ -6,11 +6,11 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: 82145e75478f6cc7a7249ad1b04214322533ea8dc7c552ce31d606c66096ed6e
+      sha256: 0bfb9996939a08dbe3c687956d2a91ab9618fa6c5b2e04acab7021953d53dd41
     - path: bin/fm-storage.sh
       sha256: 7a2a13928bbc6c4848e25702b0663def23e0d55e455eb7312ecfb6434fd64d27
     - path: bin/fm-pack.sh
-      sha256: 322a6eaf5cd881c35b2057db871f91f50821990d3e06fb5922f60779ea60fd62
+      sha256: 2df42413f4d1a1f1fb1921429a5bab75182d27ee6bda7a4ac0d6771e4231d128
     - path: bin/fm-pack-retry.c
       sha256: 3eeff66fcf5e63e6ab6fd0da33d75f66d7df0b197e6b822ae4614c5527dfcf5b
     - path: bin/fm-pack-parity.py
@@ -35,7 +35,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 - `docs/storage.md`: the results-root file `lattice-storage-results-root/v1`, the states, the reader rules, mandatory bulk admission, named roots, when to pack, and retention rule R2.
 - `bin/fm-storage.sh` header: commands, files, environment.
 - `bin/fm-spawn.sh` header: when a worker launch carries `LATTICE_STORAGE_TOOL`, the absolute path workers resolve `fm-storage.sh` from, since it is not on their `PATH`.
-- `bin/fm-pack.sh` header: pack, verify, verify-tar (the G5-equivalent tar/image parity check), restore and release steps, sidecar fields, the release guards' exact checks, exit codes, the ENOMEM retry shim (`bin/fm-pack-retry.c`) and the machine-wide pack slot another heavy D: tool shares.
+- `bin/fm-pack.sh` header: pack, verify, verify-tar (the G5-equivalent tar/image parity check), restore and release steps, the read-only candidates report and its pack states, sidecar fields, the release guards' exact checks, exit codes, the ENOMEM retry shim (`bin/fm-pack-retry.c`) and the machine-wide pack slot another heavy D: tool shares.
 - `docs/disk-room.md` and `bin/fm-disk-room.sh`: the reservation pools and the runway alerts this component admits through.
 
 ## Long-term-correct patterns

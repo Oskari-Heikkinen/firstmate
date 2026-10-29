@@ -172,6 +172,7 @@ A finished directory tree that no reader opens often (a unit) can live on D: as 
 `bin/fm-pack.sh`'s header owns the steps, the sidecar fields and the exit codes; this section owns when to use it and the retention rule.
 
 ```sh
+bin/fm-pack.sh candidates --home HOME
 bin/fm-pack.sh pack [--root ROOT] TASK UNIT SRC
 bin/fm-pack.sh verify D_ROOT/UNIT.sqfs [--against SRC]
 bin/fm-pack.sh restore D_ROOT/UNIT.sqfs DEST
@@ -199,6 +200,10 @@ On WSL, a read, write, open or directory read on the 9p D: mount can fail with E
 The failed call moves no bytes and the same call succeeds moments later, but mksquashfs, sha256sum and unsquashfs treat it as fatal, so multi-GB packs failed with "Output filesystem corrupted?", "Failed to read data from output filesystem" or "Cannot allocate memory".
 `fm-pack.sh` therefore preloads a small shim, `bin/fm-pack-retry.c`, that retries such a call with backoff, and reports the calls it retried on stderr.
 Each command also runs at nice 19 and idle I/O and holds one machine-wide pack slot, so two heavy D: jobs never run at once; the header's "Machine share" and "Machine-wide pack slot" paragraphs own the mechanics and the lock another tool takes to share the slot.
+`candidates` is where choosing a unit starts: it lists the home's `data/` trees untouched for 7 or 30 days or more, with their size, file count, small-file share, newest change and pack state, and packs, releases and writes nothing.
+A tree listed `none` is a pack candidate, `verified` is ready for its owner's R2 release, and `changed` means the tree moved on after its pack, so it needs a new unit, not a release.
+It runs at nice 19 and idle I/O with the retry shim like the other commands but takes no pack slot, so a listing never waits behind a pack.
+Its walks stay on the tree's filesystem, follow no symlink and stop at a per-tree timeout; a failed walk or an unreadable pack state exits 1 and a waiting D: exits 75, with every row still printed.
 
 ### Retention rule R2
 

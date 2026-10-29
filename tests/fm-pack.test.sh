@@ -137,8 +137,14 @@ chmod +x "$FAKEBIN/stat"
 export PACK_PROC_PID=''
 export PACK_REAL_FIND
 PACK_REAL_FIND=$(command -v find)
+# PACK_FIND_HANG and PACK_FIND_FAIL make a walk of that one path hang or fail.
 cat >"$FAKEBIN/find" <<'SH'
 #!/usr/bin/env bash
+if [ -n "${PACK_FIND_HANG:-}" ] && [ "$1" = "$PACK_FIND_HANG" ]; then exec sleep 60; fi
+if [ -n "${PACK_FIND_FAIL:-}" ] && [ "$1" = "$PACK_FIND_FAIL" ]; then
+  echo "find: '$1/held': Permission denied" >&2
+  exit 1
+fi
 if [ "$1" = /proc ] && [ "${3:-}" = 2 ]; then
   [ -n "${PACK_PROC_PID:-}" ] || exit 0
   p=/proc/$PACK_PROC_PID
@@ -1050,6 +1056,106 @@ test_release_read_failures() {
   [ -z "$errors" ] || fail "read-failure regressions: $errors"
 }
 
+# cand_row OUT TREE: the candidates row for TREE.
+cand_row() { printf '%s\n' "$1" | awk -F'\t' -v t="$2" '$9 == t'; }
+
+# hand_row TREE BUCKET DAYS SMALL_PCT PACK: the row a hand du and find give.
+hand_row() {
+  local newest
+  newest=$(find "$1" -xdev -printf '%T@\n' | sort -n | tail -n 1)
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$(du -sB1 -x "$1" | cut -f1)" \
+    "$(find "$1" -xdev -type f -printf '%i %s\n' | sort -u | awk '{ n += $2 } END { printf "%.0f", n }')" \
+    "$(find "$1" -xdev -type f | wc -l | tr -d ' ')" "$4" "$(date -u -d "@${newest%.*}" +%Y-%m-%dT%H:%M:%SZ)" "$5" "$1"
+}
+
+# The candidates home: a 30-day tree per pack state, a 7-day tree, a young
+# tree, a symlinked tree and a plain file, behind a clock 100 days ahead.
+test_candidates() {
+  local h d now out rc before after t
+  h="$(cd -P -- "$TMP_ROOT" && pwd -P)/cand-home" d="$h/data"
+  mkdir -p "$d/old/sub" "$d/packed" "$d/changed" "$d/gone" "$d/pending" "$d/week" "$d/young" "$d/.dot" \
+    "$MP/lattice-data/research"
+  publish_d
+  printf '%010d' 0 >"$d/old/a"; head -c 70000 /dev/zero >"$d/old/sub/big"; printf 'x' >"$d/old/sub/b"
+  ln "$d/old/sub/b" "$d/old/b2"; ln -s sub/big "$d/old/to-big"
+  for t in packed changed gone pending; do printf '%s' "$t" >"$d/$t/f"; done
+  printf 'w' >"$d/week/f"; printf 'y' >"$d/young/f"; printf 'z' >"$d/.dot/f"
+  ln -s old "$d/link"; printf 'p' >"$d/plain"
+  now=$(( $(date +%s) + 100 * 86400 ))
+  find "$d/week" -exec touch -h -d "@$((now - 10 * 86400))" {} +
+  find "$d/young" -exec touch -h -d "@$((now - 86400))" {} +
+  for t in packed changed gone pending; do
+    out=$(run_pack pack cand "unit-$t" "$d/$t"); rc=$?
+    expect_code 0 "$rc" "the $t candidate packs"
+  done
+  out=$(run_pack release "$MP/lattice-data/tetjet-results/cand/unit-gone.sqfs" "$d/gone" --accepted-by tester); rc=$?
+  expect_code 0 "$rc" "the gone candidate is released"
+  printf '{"format":"fm-pack-release/v1","state":"releasing"}\n' >"$MP/lattice-data/tetjet-results/cand/unit-pending.release.json"
+  printf 'more' >"$d/changed/g"
+  touch -d "@$((now - 40 * 86400))" "$d/changed/g"
+  before=$(snapshot "$h"; snapshot "$MP")
+
+  out=$(FM_PACK_NOW=$now run_pack candidates --home "$h"); rc=$?
+  expect_code 0 "$rc" "candidates lists a readable home"
+  after=$(snapshot "$h"; snapshot "$MP")
+  assert_equals "$before" "$after" "candidates changes nothing in the home or on D:"
+  assert_equals "fm-pack-candidates/v1 home=$h now=$now small=65536 listed=7 recent=1 skipped=1 failed=0" \
+    "$(printf '%s\n' "$out" | sed -n 1p)" "the header counts listed, recent and skipped trees"
+  assert_equals "$(printf 'bucket\tdays\tallocated\tlogical\tfiles\tsmall_pct\tnewest\tpack\ttree')" \
+    "$(printf '%s\n' "$out" | sed -n 2p)" "the column line"
+  assert_equals "$(hand_row "$d/old" 30d+ 100 75.0 none)" "$(cand_row "$out" "$d/old")" \
+    "an unpacked tree matches a hand du and find, each inode once, symlink not followed"
+  assert_equals "$(hand_row "$d/packed" 30d+ 100 100.0 verified)" "$(cand_row "$out" "$d/packed")" "a packed, unchanged tree is verified"
+  assert_equals changed "$(cand_row "$out" "$d/changed" | cut -f8)" "a tree changed after its pack says changed"
+  assert_equals released "$(cand_row "$out" "$d/gone" | cut -f8)" "a released tree says released"
+  assert_equals releasing "$(cand_row "$out" "$d/pending" | cut -f8)" "an unfinished release says releasing"
+  assert_equals "$(hand_row "$d/week" 7d+ 10 100.0 none)" "$(cand_row "$out" "$d/week")" "a tree quiet for 10 days is in the 7-day bucket"
+  assert_equals "$d/.dot" "$(cand_row "$out" "$d/.dot" | cut -f9)" "a dot tree is listed"
+  assert_equals "" "$(cand_row "$out" "$d/young")" "a tree touched a day ago is not listed"
+  assert_equals "" "$(cand_row "$out" "$d/link")" "a symlinked tree is not walked"
+  assert_equals "30d+ 30d+ 30d+ 30d+ 30d+ 30d+ 7d+" "$(printf '%s\n' "$out" | sed -n '3,$p' | cut -f1 | tr '\n' ' ' | sed 's/ $//')" \
+    "30-day trees come before 7-day trees"
+  assert_equals "$d/old" "$(printf '%s\n' "$out" | sed -n 3p | cut -f9)" "the largest tree comes first"
+
+  out=$(FM_PACK_NOW=$now run_pack candidates --home "$h" --small 1 --root tetjet-results); rc=$?
+  expect_code 0 "$rc" "one named root reads"
+  assert_equals 0.0 "$(cand_row "$out" "$d/old" | cut -f6)" "--small sets the small-file size"
+
+  out=$(FM_PACK_NOW=$now PACK_FIND_HANG="$d/old" PACK_FIND_FAIL="$d/week" run_pack candidates --home "$h" --timeout 3 2>"$TMP_ROOT/cand.err"); rc=$?
+  expect_code 1 "$rc" "a failed or timed-out walk exits 1"
+  assert_equals "$(printf 'failed\t-\t-\t-\t-\t-\t-\ttimeout\t%s' "$d/old")" "$(cand_row "$out" "$d/old")" "a timed-out walk is a failed row"
+  assert_equals "$(printf 'failed\t-\t-\t-\t-\t-\t-\tread-error\t%s' "$d/week")" "$(cand_row "$out" "$d/week")" "a failed walk is a failed row"
+  assert_contains "$(cat "$TMP_ROOT/cand.err")" "walking $d/week failed (read-error): find: '$d/week/held': Permission denied" "stderr names the failed walk"
+  assert_equals verified "$(cand_row "$out" "$d/packed" | cut -f8)" "the other trees are still listed"
+  assert_contains "$(printf '%s\n' "$out" | sed -n 1p)" " failed=2" "the header counts failed walks"
+
+  mkdir -p "$MP/lattice-data/research/odd"
+  printf 'x' >"$MP/lattice-data/research/odd/bad.sqfs"; printf 'not json' >"$MP/lattice-data/research/odd/bad.json"
+  out=$(FM_PACK_NOW=$now run_pack candidates --home "$h" 2>"$TMP_ROOT/cand.err"); rc=$?
+  expect_code 1 "$rc" "an unreadable sidecar exits 1"
+  assert_equals unknown "$(cand_row "$out" "$d/old" | cut -f8)" "an unreadable sidecar leaves an unpacked tree unknown, not none"
+  assert_equals verified "$(cand_row "$out" "$d/packed" | cut -f8)" "a tree with a readable pack is still verified"
+  assert_contains "$(cat "$TMP_ROOT/cand.err")" "unreadable sidecar $MP/lattice-data/research/odd/bad.json" "stderr names the sidecar"
+  rm -rf -- "$MP/lattice-data/research/odd"
+
+  out=$(FM_PACK_NOW=$now FM_STORAGE_RESULTS_ROOT="$TMP_ROOT/no-publication" run_pack candidates --home "$h" 2>"$TMP_ROOT/cand.err"); rc=$?
+  expect_code 75 "$rc" "an unpublished D: is a wait"
+  assert_equals unknown "$(cand_row "$out" "$d/packed" | cut -f8)" "pack state is unknown while D: waits"
+  assert_contains "$(cat "$TMP_ROOT/cand.err")" "wait: missing-publication" "the wait reason is on stderr"
+  assert_equals "$(hand_row "$d/old" 30d+ 100 75.0 unknown)" "$(cand_row "$out" "$d/old")" "the walk still reports while D: waits"
+
+  out=$(FM_PACK_NOW=$now run_pack candidates --home "$TMP_ROOT/src"); rc=$?
+  expect_code 0 "$rc" "a home without data/ lists nothing"
+  assert_contains "$out" " listed=0 recent=0 skipped=0 failed=0" "nothing is listed"
+  for t in "" "--home" "--home $TMP_ROOT/missing" "--home $h --timeout 0" "--home $h --small 1.5K" \
+    "--home $h --small 0" "--home $h --root other" "--home $h extra"; do
+    # shellcheck disable=SC2086 # each case is a word list
+    out=$(run_pack candidates $t 2>&1); rc=$?
+    expect_code 2 "$rc" "candidates misuse: '$t'"
+  done
+  pass "candidates lists cold data/ trees with sizes a hand du and find match, and each pack state"
+}
+
 test_no_publication_waits
 test_pack_round_trip
 test_machine_share
@@ -1068,3 +1174,4 @@ test_release_setup
 test_release_refusals
 test_release_read_failures
 test_release
+test_candidates

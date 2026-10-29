@@ -74,8 +74,17 @@
 #       Read-only report: Linux used and C: used change over the last day and
 #       week from the data-gate sampler, C: free, the disk file's length and
 #       D: free (with their daily and weekly change from the watcher's hourly
+#       history), ext4's fragmented free space (free space in buddies under
+#       1 MiB, with its daily, weekly and two-week change from the same
 #       history), D: and Linux/C: reservations, and each alert's state.
 #       Never runs, schedules or triggers a compaction.
+#   fm-disk-room.sh mb-groups FILE BLOCKSIZE
+#       Read-only parse of an ext4 mb_groups FILE (/proc/fs/ext4/<dev>/mb_groups
+#       layout) for a filesystem of BLOCKSIZE bytes. Prints one line
+#       "fragmented=B free=B largest=B": free bytes in buddies under 1 MiB,
+#       all free bytes, and the largest free buddy. Exit 2 when FILE cannot be
+#       read or holds no group line, or on misuse. The one mb_groups parser,
+#       shared with bin/fm-ext4-alloc-trial.sh.
 #   fm-disk-room.sh arm | disarm
 #       Write FM_HOME's state/disk-room.check.sh shim (running watch-line with
 #       this script's environment settings) and bind it with
@@ -300,6 +309,12 @@
 #                         only its last 3500 lines are read)
 #   FM_DISK_ROOM_GROWTH_MAX  alert when Linux used grew faster than this per day
 #                         over the last week (SIZE, default 0.5G; off disables)
+#   FM_DISK_ROOM_FRAGMENTED_MAX  alert when fragmented free space grew faster
+#                         than this per day over the last week (SIZE or off);
+#                         when unset or empty, the first line of
+#                         <home>/config/disk-room-fragmented-max-per-day (same
+#                         home as the margin), else 1G; an unparsable value or a
+#                         present file that does not parse is a failed reading
 #   FM_DISK_ROOM_C_FREE_MIN  alert when the Windows drive's actual free space is
 #                         under this (SIZE or off); when unset or empty, the
 #                         first line of <home>/config/disk-room-c-free-min (same
@@ -445,17 +460,35 @@ dev_size() {
   printf '%s\n' "$size"
 }
 
-# fragmented_free BLOCKSIZE -> bytes of ext4 free space in buddies smaller than
-# 1 MiB (the VHDX block), i.e. free space that shares a disk-file block with
-# live data and so cannot be reclaimed by compaction.
+# mb_groups_read FILE BLOCKSIZE -> "FRAGMENTED FREE LARGEST" bytes from an ext4
+# mb_groups file: free space in buddies smaller than 1 MiB (the VHDX block),
+# i.e. free space that shares a disk-file block with live data and so cannot
+# be reclaimed by compaction; all free space; and the largest free buddy.
+# Fails when FILE is unreadable or holds no group line. After the sed, $1 is
+# the group, $2 its free blocks and $(i+5) its count of free 2^i-block buddies.
+mb_groups_read() {
+  local file=$1 bs=$2 text
+  case "$bs" in ''|0|*[!0-9]*) return 1 ;; esac
+  [ -f "$file" ] && [ -r "$file" ] || return 1
+  text=$(sed 's/[#:]/ /g; s/\[/ /; s/\]/ /' "$file" 2>/dev/null) || return 1
+  awk -v bs="$bs" '
+    BEGIN { top = -1; while (bs * 2 ^ (top + 2) <= 1048576) top++ }
+    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {
+      seen = 1; free += $2
+      for (i = 0; i + 5 <= NF; i++) if ($(i + 5) > 0) {
+        if (i <= top) frag += $(i + 5) * 2 ^ i
+        if (i > big) big = i; any = 1
+      }
+    }
+    END { if (!seen) exit 1; printf "%.0f %.0f %.0f\n", frag * bs, free * bs, any ? 2 ^ big * bs : 0 }' <<<"$text"
+}
+
+# fragmented_free BLOCKSIZE -> fragmented free bytes of the measured root.
 fragmented_free() {
-  local bs=$1 file max_order
+  local file out
   file=$(mb_groups_path) || return 1
-  [ -r "$file" ] || return 1
-  max_order=$(awk -v bs="$bs" 'BEGIN { o = 0; while (bs * 2 ^ (o + 1) <= 1048576) o++; print o - 1 }')
-  sed 's/[#:]/ /g; s/\[/ /; s/\]/ /' "$file" | awk -v bs="$bs" -v top="$max_order" '
-    $1 ~ /^[0-9]+$/ { for (i = 0; i <= top; i++) s += $(i + 5) * 2 ^ i; seen = 1 }
-    END { if (!seen) exit 1; printf "%.0f\n", s * bs }'
+  out=$(mb_groups_read "$file" "$1") || return 1
+  printf '%s\n' "${out%% *}"
 }
 
 # bat_reclaim FILE SIZE [FS_BLOCK_SIZE] -> "RECLAIM TRIM": bytes a compaction
@@ -983,6 +1016,30 @@ resolve_c_free_min() {
   C_FREE_MIN=$((100 * GIB))
 }
 
+# resolve_fragmented_max: sets FRAG_MAX (bytes per day or off) from
+# FM_DISK_ROOM_FRAGMENTED_MAX, else the first line of the home's
+# config/disk-room-fragmented-max-per-day, else 1G, the same home as
+# resolve_margin. Sets ERR and returns 1 when the chosen value does not parse;
+# a present file that is empty or unreadable does not parse.
+resolve_fragmented_max() {
+  local f line=''
+  if [ -n "${FM_DISK_ROOM_FRAGMENTED_MAX:-}" ]; then
+    FRAG_MAX=$(threshold FM_DISK_ROOM_FRAGMENTED_MAX 1G) || { ERR="bad FM_DISK_ROOM_FRAGMENTED_MAX"; return 1; }
+    return 0
+  fi
+  f=${FM_CONFIG_OVERRIDE:-${FM_HOME:-${SCRIPT_DIR%/*}}/config}/disk-room-fragmented-max-per-day
+  if [ -e "$f" ] || [ -L "$f" ]; then
+    { IFS= read -r line <"$f"; } 2>/dev/null
+    line=${line//[$' \t\r']/}
+    if [ -z "$line" ] || ! FRAG_MAX=$(threshold line 1G); then
+      ERR="bad fragmented growth limit in $f"
+      return 1
+    fi
+    return 0
+  fi
+  FRAG_MAX=$GIB
+}
+
 # measure [EXCLUDE]: sets globals; returns 1 when a required reading fails.
 # With the storage admission policy present, records are read strictly and
 # host-c token records charge C: only (HOSTC_RES); with strict C: terms the
@@ -1141,29 +1198,32 @@ sample_growth() {
 }
 
 # history_record: append "epoch disk-file-bytes host-free-bytes D-free-bytes
-# D-reserved-bytes" to the small history at most once an hour, keeping the
-# last 200 entries, so disk-file and D: changes have daily and weekly values.
+# D-reserved-bytes fragmented-free-bytes" ("-" for an unknown reading) to the
+# small history at most once an hour, keeping the last 400 entries (at least
+# 16 days), so disk-file, D: and fragmented changes have daily, weekly and
+# two-week values. Lines written before the sixth column existed have five.
 history_record() {
   local f t last=''
   f="$(state_dir)/history"
   t=$(now)
   [ -r "$f" ] && last=$(tail -n 1 -- "$f" | awk '{ print $1 }')
   case "$last" in ''|*[!0-9]*) ;; *) [ $(( t - last )) -lt 3600 ] && [ "$t" -ge "$last" ] && return 0 ;; esac
-  printf '%s %s %s %s %s\n' "$t" "${VHDX_SIZE:--}" "${HOST_FREE:--}" "${D_FREE:--}" "${D_RES:--}" >>"$f" 2>/dev/null || return 0
-  if [ "$(wc -l <"$f")" -gt 200 ]; then
-    tail -n 200 -- "$f" >"$f.tmp" 2>/dev/null && mv -f -- "$f.tmp" "$f"
+  printf '%s %s %s %s %s %s\n' "$t" "${VHDX_SIZE:--}" "${HOST_FREE:--}" "${D_FREE:--}" "${D_RES:--}" "${FRAG:--}" >>"$f" 2>/dev/null || return 0
+  if [ "$(wc -l <"$f")" -gt 400 ]; then
+    tail -n 400 -- "$f" >"$f.tmp" 2>/dev/null && mv -f -- "$f.tmp" "$f"
   fi
   return 0
 }
 
-# history_change COLUMN WINDOW -> "span change" between the newest entry and the
-# oldest within WINDOW seconds of it that both have the column, or nothing.
+# history_change COLUMN WINDOW [MAX_AGE] -> "span change" between the newest
+# entry and the oldest within WINDOW seconds of it that both have the column,
+# or nothing; with MAX_AGE, also nothing when that newest entry is older.
 history_change() {
   local f
   f="$(state_dir)/history"
   [ -r "$f" ] || return 0
-  awk -v c="$1" -v w="$2" '$c ~ /^[0-9]+$/ { n++; T[n] = $1; V[n] = $c }
-    END { if (n < 2) exit; for (i = 1; i < n && T[i] < T[n] - w; i++) ;
+  awk -v c="$1" -v w="$2" -v age="${3:-}" -v now="$(now)" '$c ~ /^[0-9]+$/ { n++; T[n] = $1; V[n] = $c }
+    END { if (n < 2 || (age != "" && now - T[n] >= age)) exit; for (i = 1; i < n && T[i] < T[n] - w; i++) ;
       if (i < n) printf "%.0f %.0f\n", T[n] - T[i], V[n] - V[i] }' "$f"
 }
 
@@ -1227,23 +1287,34 @@ signed_gib() { awk -v b="$1" 'BEGIN { printf "%+.1f", b / 1073741824 }'; }
 # storage_alerts: evaluates the growth and runway alerts after measure. Sets
 # AL_<key> to 1 (alerting), 0 (clear) or empty (unknown, so the last state
 # holds) and AL_TEXT_<key> to the alert's words, for the keys growth,
-# c_runway, d_runway and d_substitution; they are read through indirection.
+# fragmented, c_runway, d_runway and d_substitution; they are read through
+# indirection.
 # shellcheck disable=SC2034
 storage_alerts() {
-  local gmax cmin dmin rate
+  local gmax cmin dmin rate fw
+  # Readings first, so the hourly history still records under a bad threshold.
+  sample_growth; d_runway; substitution
   gmax=$(threshold FM_DISK_ROOM_GROWTH_MAX 0.5G) || { ERR="bad FM_DISK_ROOM_GROWTH_MAX"; return 1; }
   resolve_c_free_min || return 1
   cmin=$C_FREE_MIN
+  resolve_fragmented_max || return 1
   dmin=$(threshold FM_DISK_ROOM_D_FREE_MIN 50G) || { ERR="bad FM_DISK_ROOM_D_FREE_MIN"; return 1; }
   GROWTH_MAX=$gmax D_FREE_MIN=$dmin
-  sample_growth; d_runway; substitution
-  AL_growth='' AL_c_runway='' AL_d_runway='' AL_d_substitution=''
+  AL_growth='' AL_fragmented='' AL_c_runway='' AL_d_runway='' AL_d_substitution=''
   # A week's rate needs at least six days of samples and a sample under 2 hours old.
   if [ "$gmax" != off ] && [ -n "$LG_WEEK_SPAN" ] && [ "$LG_WEEK_SPAN" -ge 518400 ] &&
     [ $(( $(now) - SAMPLE_AT )) -lt 7200 ]; then
     rate=$(awk -v b="$LG_WEEK" -v s="$LG_WEEK_SPAN" 'BEGIN { printf "%.0f", b * 86400 / s }')
     if [ "$rate" -gt "$gmax" ]; then AL_growth=1; else AL_growth=0; fi
     AL_TEXT_growth="Linux used grew $(per_day "$LG_WEEK" "$LG_WEEK_SPAN") GiB/day over the last $(days "$LG_WEEK_SPAN") days (limit $(gib "$gmax") GiB/day, approved installs and kept datasets included)"
+  fi
+  # The same week rule over the hourly history, whose newest entry must be under 2 hours old.
+  fw=''
+  [ "$FRAG_MAX" != off ] && fw=$(history_change 6 604800 7200)
+  if [ -n "$fw" ] && [ "${fw% *}" -ge 518400 ]; then
+    rate=$(awk -v b="${fw#* }" -v s="${fw% *}" 'BEGIN { printf "%.0f", b * 86400 / s }')
+    if [ "$rate" -gt "$FRAG_MAX" ]; then AL_fragmented=1; else AL_fragmented=0; fi
+    AL_TEXT_fragmented="fragmented free space (partly used 1 MiB blocks a compaction cannot return) grew $(per_day "${fw#* }" "${fw% *}") GiB/day over the last $(days "${fw% *}") days (limit $(gib "$FRAG_MAX") GiB/day)"
   fi
   if [ "$cmin" != off ] && [ -n "$HOST_FREE" ]; then
     if [ "$HOST_FREE" -lt "$cmin" ]; then AL_c_runway=1; else AL_c_runway=0; fi
@@ -1261,7 +1332,7 @@ storage_alerts() {
   return 0
 }
 
-ALERT_KEYS='growth c_runway d_runway d_substitution'
+ALERT_KEYS='growth fragmented c_runway d_runway d_substitution'
 
 # storage_alert_line: compares the evaluated alerts with the recorded ones and
 # prints one line naming each alert that started or cleared; an unchanged
@@ -1319,6 +1390,9 @@ cmd_growth() {
     printf 'disk file: %s GiB; %s; %s\n' "$(gib "$VHDX_SIZE")" \
       "$(window_line 'last day' "${h% *}" "${h#* }")" "$(window_line 'last week' "${k% *}" "${k#* }")"
   fi
+  h=$(history_change 6 86400); k=$(history_change 6 604800); v=$(history_change 6 1209600)
+  printf 'fragmented: %s; %s; %s; %s\n' "$(if [ -n "$FRAG" ]; then printf '%s GiB' "$(gib "$FRAG")"; else printf 'unknown (ext4 mb_groups unreadable)'; fi)" \
+    "$(window_line 'last day' "${h% *}" "${h#* }")" "$(window_line 'last week' "${k% *}" "${k#* }")" "$(window_line 'last 2 weeks' "${v% *}" "${v#* }")"
   if [ -n "$D_FREE" ]; then
     h=$(history_change 4 86400); k=$(history_change 4 604800)
     printf 'D: free %s GiB (%s), reserved %s GiB, after reservations %s GiB; free %s; %s\n' \
@@ -1336,10 +1410,19 @@ cmd_growth() {
       *) printf 'unknown %s (not enough readings, or turned off)\n' "${k//_/ }" ;;
     esac
   done
-  printf 'thresholds: growth %s, C: free %s, D: free after reservations %s\n' \
+  printf 'thresholds: growth %s, fragmented growth %s, C: free %s, D: free after reservations %s\n' \
     "$([ "$GROWTH_MAX" = off ] && echo off || echo "$(gib "$GROWTH_MAX") GiB/day")" \
+    "$([ "$FRAG_MAX" = off ] && echo off || echo "$(gib "$FRAG_MAX") GiB/day")" \
     "$([ "$C_FREE_MIN" = off ] && echo off || echo "$(gib "$C_FREE_MIN") GiB")" \
     "$([ "$D_FREE_MIN" = off ] && echo off || echo "$(gib "$D_FREE_MIN") GiB")"
+}
+
+cmd_mb_groups() {
+  local out frag free big
+  [ "$#" -eq 2 ] || die "mb-groups needs FILE BLOCKSIZE"
+  out=$(mb_groups_read "$1" "$2") || die "cannot read ext4 mb_groups from $1 with block size $2"
+  read -r frag free big <<<"$out"
+  printf 'fragmented=%s free=%s largest=%s\n' "$frag" "$free" "$big"
 }
 
 cmd_status() {
@@ -1905,13 +1988,13 @@ cmd_watch_line() {
   [ -n "$msg" ] && { printf '%s %s %s\n' "$kind" "$t" "$ROOM" >"$rec" 2>/dev/null || true; }
   if [ "$measured" = 1 ]; then
     if storage_alerts; then
-      history_record
       storage=$(storage_alert_line)
       rm -f -- "$(state_dir)/storage-alerts-error"
     elif [ "$(cat "$(state_dir)/storage-alerts-error" 2>/dev/null)" != "$ERR" ]; then
       printf '%s\n' "$ERR" >"$(state_dir)/storage-alerts-error" 2>/dev/null || true
       storage="storage alerts: cannot evaluate ($ERR)"
     fi
+    history_record
   fi
   if [ -n "$msg" ] && [ -n "$storage" ]; then
     printf '%s | %s\n' "$msg" "$storage"
@@ -1934,7 +2017,7 @@ cmd_arm() {
   {
     printf '%s\n' '#!/usr/bin/env bash' '# Auto-generated by fm-disk-room.sh arm - real disk room watcher check.'
     for v in MARGIN HOST ROOT VHDX MB_GROUPS DEV_SIZE COMPACT_RESULT POWERSHELL SHADOW_RECORD SHADOW_MAX WEVTUTIL STATE \
-      WSLCONFIG MEMINFO BOOT_ID RESULTS_ROOT SAMPLES GROWTH_MAX C_FREE_MIN D_FREE_MIN; do
+      WSLCONFIG MEMINFO BOOT_ID RESULTS_ROOT SAMPLES GROWTH_MAX FRAGMENTED_MAX C_FREE_MIN D_FREE_MIN; do
       name=FM_DISK_ROOM_$v
       [ -z "${!name+x}" ] || printf 'export %s=%q\n' "$name" "${!name}"
     done
@@ -2139,6 +2222,7 @@ case "${1:-}" in
   release-token) shift; cmd_release_token "$@" ;;
   watch-line) shift; cmd_watch_line ;;
   growth) shift; cmd_growth "$@" ;;
+  mb-groups) shift; cmd_mb_groups "$@" ;;
   arm) cmd_arm ;;
   disarm) cmd_disarm ;;
   -h|--help|help) usage ;;

@@ -1219,6 +1219,16 @@ A present file that does not parse, including an empty or unreadable one, is a f
 Every reading uses the file's current contents, so a change applies at once with no re-arm, except that a watcher check armed while `FM_DISK_ROOM_C_FREE_MIN` was set, or one that exports it by hand, keeps that value until it is re-armed without it.
 The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 
+## Disk room fragmented growth limit (config/disk-room-fragmented-max-per-day)
+
+The optional local, gitignored `config/disk-room-fragmented-max-per-day` sets the daily growth of ext4's fragmented free space above which [`bin/fm-disk-room.sh`](../bin/fm-disk-room.sh) raises its fragmented storage alert, described in [`disk-room.md`](disk-room.md#growth-and-runway-alerts).
+Its first line is a size per day in the same form as the margin file, or `off` to disable the alert; surrounding whitespace is ignored and later lines are not read.
+A non-empty `FM_DISK_ROOM_FRAGMENTED_MAX` wins over the file, and with neither the limit is 1 GiB/day.
+The script reads the file from the same home as the margin file.
+A present file that does not parse, including an empty or unreadable one, is a failed reading: the watcher check reports that the storage alerts cannot be evaluated, naming the file, and `growth` exits with the same error.
+Every reading uses the file's current contents, so a change applies at once with no re-arm, except that a watcher check armed while `FM_DISK_ROOM_FRAGMENTED_MAX` was set keeps that value until it is re-armed without it.
+The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
+
 ## Repack trees (config/repack-trees)
 
 The optional local, gitignored `config/repack-trees` lists the cold trees [`bin/fm-repack.sh`](../bin/fm-repack.sh) may rewrite, described in [`disk-room.md`](disk-room.md#repacking-cold-trees).

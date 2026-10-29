@@ -64,3 +64,4 @@ The next low reading asks again under the monitor's existing notification cadenc
 - Proposing `wsl --manage <distro> --set-sparse true --allow-unsafe`: Microsoft gates it for potential data corruption, and it would not recover fragmented slack.
 - Hand-written diskpart sequences, `fstrim`, or `drop_caches` runs: the reclaim-now step trims the distro root and then compacts, so no agent trims or compacts by hand.
 - Every Windows, root, elevation, or WSL-shutdown step still goes to the captain as the exact command from `docs/disk-room.md`; no agent runs one.
+- Trying an ext4 allocator setting by hand on the live root: `bin/fm-ext4-alloc-trial.sh` measures settings on a scratch loop image, run by the operator with the command in `docs/disk-room.md` "Allocator settings"; its `answer:` line is evidence for a decision, and no agent writes the live root's `/sys/fs/ext4` values.

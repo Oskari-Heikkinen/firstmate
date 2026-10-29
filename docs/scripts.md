@@ -81,6 +81,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-disk-room.sh`        | Real free room on a WSL laptop, admission of big writes with reservations, and the standing low-room watcher check (docs/disk-room.md) |
 | `fm-claude-update.sh`    | Install each Claude Code release into its own verified folder, switch by one rename with rollback, and arm the update alarm check (docs/claude-update.md) |
 | `fm-usage-report.sh`     | Read-only storage usage readouts: the D: days-to-full line from the growth report and the per-tier, owner, kind and age usage report from existing records (docs/disk-room.md) |
+| `fm-ext4-alloc-trial.sh` | Root-only, operator-run trial of ext4 allocator settings on a scratch loop image, measuring fragmented free space growth (docs/disk-room.md) |
 | `fm-storage.sh`          | Detect and prepare an external SSD for fetched results and publish the results root (writers wait when it is unusable), on a user timer (docs/storage.md) |
 | `fm-pack.sh`             | Pack a finished, rarely read tree into one verified read-only SquashFS image on D:, verify it, restore it, and release the packed source under retention rule R2 (docs/storage.md) |
 | `fm-repack.sh`          | Rewrite the cold files of the trees a home lists in `config/repack-trees` in one time-ordered batch, so they stop holding partly used 1 MiB blocks; `plan` estimates the blocks emptied, `run` is never scheduled (docs/disk-room.md) |

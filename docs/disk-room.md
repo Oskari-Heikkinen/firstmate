@@ -101,6 +101,7 @@ The same watcher check also reports storage growth and runway, from readings tha
 It raises an alert when any of these holds:
 
 - Linux used grew faster than 0.5 GiB/day over the last week (`FM_DISK_ROOM_GROWTH_MAX`), judged only from at least six days of samples whose newest is under 2 hours old;
+- ext4's fragmented free space (free space in buddies under 1 MiB, which shares a disk-file block with live data, so the disk file keeps it and a compaction cannot return it) grew faster than the home's fragmented growth limit over the last week, judged only from at least six days of hourly history whose newest entry is under 2 hours old; the limit is 1 GiB/day unless the home's `config/disk-room-fragmented-max-per-day` or `FM_DISK_ROOM_FRAGMENTED_MAX` sets it, and [`configuration.md`](configuration.md#disk-room-fragmented-growth-limit-configdisk-room-fragmented-max-per-day) owns the format, precedence, and inheritance;
 - the Windows drive has less actually free than the home's C: free floor, before reservations, shadow storage headroom, and swap file growth; the floor is 100 GiB unless the home's `config/disk-room-c-free-min` or `FM_DISK_ROOM_C_FREE_MIN` sets it, and [`configuration.md`](configuration.md#disk-room-c-free-floor-configdisk-room-c-free-min) owns the format, precedence, and inheritance;
 - D: has under 50 GiB free after its live bulk reservations (`FM_DISK_ROOM_D_FREE_MIN`), measured live when the publication's D: device is mounted and otherwise from the last published reading;
 - mandatory D: bulk substituted Linux storage: a D: reservation pool sits on the Linux disk or C:, or the D: mount path's `lattice-data` folder sits on the Linux disk, where writes to a pinned D: root land once D: is not mounted.
@@ -111,8 +112,33 @@ An unknown reading, such as too few or stale samples, leaves the last state in p
 The C: alert may say how much a compaction could return, but nothing here schedules, triggers, or runs a compaction or a WSL shutdown; the captain runs the reclaim-now step.
 The growth figure includes approved software installs and intentionally kept datasets, so a jump is attributed from the owners' records, never from a recursive scan.
 
-`bin/fm-disk-room.sh growth` is the read-only report: Linux used and C: used change over the last day and week, C: free, the disk file's length and D: free with their daily and weekly change, D: and Linux/C: reservations, each alert's state, and the thresholds in force.
-The disk file and D: changes come from a history of at most 200 hourly entries that `watch-line` keeps in its state directory, so they read unknown until the armed check has run for a day.
+`bin/fm-disk-room.sh growth` is the read-only report: Linux used and C: used change over the last day and week, C: free, the disk file's length and D: free with their daily and weekly change, the fragmented free space with its daily, weekly and two-week change, D: and Linux/C: reservations, each alert's state, and the thresholds in force.
+The disk file, D: and fragmented changes come from a history of at most 400 hourly entries (at least 16 days) that `watch-line` keeps in its state directory, so they read unknown until the armed check has run for a day.
+Each entry holds the time, the disk file's length, C: free, D: free, D: reservations and the fragmented free bytes, with `-` for a reading that failed; entries written before the fragmented column existed have five fields and still read, without a fragmented value.
+`watch-line` writes the hourly entry even when a threshold is bad, so the history has no gap while the alerts cannot be evaluated.
+
+## Allocator settings
+
+`bin/fm-ext4-alloc-trial.sh` answers whether an ext4 allocator setting slows the growth of fragmented free space, measured on a scratch loop image and never on a live filesystem.
+For each setting it formats a fresh image, sets that setting only on the image's own loop device, replays a seeded workload shaped like this machine's writes, reads the image's `mb_groups` after every round through `fm-disk-room.sh mb-groups` (the same parser as the fragmented reading above), and prints one table.
+A setting passes when its fragmented growth is under 10% of the default's without more than twice the default's allocation time; the table's `answer:` line names each setting that passes.
+The script's header owns its options, refusals, cleanup, results format, and exit codes.
+
+It runs as root, so the operator runs it; no agent does.
+It refuses `/`, anything on `/mnt`, system directories, network and FUSE filesystems, and any directory that is not empty, all before it checks for root.
+As root it then refuses a scratch directory or results directory that a user other than root could swap, so both are made with `sudo`.
+The image is sparse and mounted with discard, but its blocks are allocated on the filesystem that holds the scratch directory, so on the WSL Linux disk it can grow the disk file by up to the image size until the next compaction.
+Admit it like any other big write, with an empty scratch directory and a results file outside it:
+
+```
+sudo mkdir -p /var/tmp/fm-ext4-trial/scratch
+bin/fm-disk-room.sh run --name ext4-alloc-trial --expect-write 8G -- \
+  sudo bin/fm-ext4-alloc-trial.sh run --dir /var/tmp/fm-ext4-trial/scratch --results /var/tmp/fm-ext4-trial/results.tsv
+```
+
+`bin/fm-ext4-alloc-trial.sh table /var/tmp/fm-ext4-trial/results.tsv` prints the table again from the results file.
+Allocator values set on the loop device vanish with it, so a trial never changes the live root's settings; applying a setting to the live disk is a separate decision for the operator.
+The test suite runs a smaller trial of every default setting on GitHub's Linux runners, where `sudo -n` works, and prints its table in the CI log.
 
 ## Usage report
 

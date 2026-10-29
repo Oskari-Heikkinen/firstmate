@@ -36,8 +36,10 @@
 # threshold to drop the window their supervisor's environment carries.
 # Primary config/disk-room-margin is the room bin/fm-disk-room.sh keeps after
 # a job's expected write, so every home admits big writes against one margin,
-# and primary config/disk-room-c-free-min is the Windows drive's free floor
-# its storage alert uses, so one file sets every home's floor.
+# primary config/disk-room-c-free-min is the Windows drive's free floor its
+# storage alert uses, so one file sets every home's floor, and primary
+# config/disk-room-fragmented-max-per-day is the fragmented growth limit of
+# the same machine's one Linux disk.
 # It also pushes
 # the one primary-authoritative shared captain-preference file,
 # data/captain-shared.md, into each secondmate home's data/ as a read-only copy.
@@ -92,7 +94,7 @@ FM_SHARED_CAPTAIN_MODE="444"
 # The declared inheritable set (space-separated, config-dir-relative item paths).
 # Extend here to inherit more of the primary's local config; override via the
 # environment only in tests. Items must not contain whitespace.
-FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-never-send crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context launch-env-allowlist claude-permission-mode keep-ai-trailers accounts account-floor account-auto supervision-host-off supervisor-compact-at disk-room-margin disk-room-c-free-min}"
+FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-never-send crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context launch-env-allowlist claude-permission-mode keep-ai-trailers accounts account-floor account-auto supervision-host-off supervisor-compact-at disk-room-margin disk-room-c-free-min disk-room-fragmented-max-per-day}"
 
 # Home-owned routing: seed from the primary only while the destination is absent.
 # Local propagation and remote receivers derive the exception from this set.

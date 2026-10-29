@@ -990,7 +990,7 @@ test_growth_alerts() {
   assert_contains "$out" "last day +2.0 GiB over 1.0 days (2.00 GiB/day)" "daily Linux change is reported"
   assert_contains "$out" "ALERT growth: Linux used grew 2.00 GiB/day" "the report shows the alert"
   assert_contains "$out" "ok c runway" "the report shows clear alerts"
-  assert_contains "$out" "thresholds: growth 0.5 GiB/day, C: free 100.0 GiB, D: free after reservations 50.0 GiB" "the report names the thresholds"
+  assert_contains "$out" "thresholds: growth 0.5 GiB/day, fragmented growth 1.0 GiB/day, C: free 100.0 GiB, D: free after reservations 50.0 GiB" "the report names the thresholds"
   out=$(FM_DISK_ROOM_GROWTH_MAX=3G FM_DISK_ROOM_NOW=$(( t0 + 1200 )) run_room watch-line)
   assert_equals "storage alert cleared: growth" "$out" "a raised growth limit clears the alert"
   out=$(FM_DISK_ROOM_NOW=$(( t0 + 3 * 3600 )) run_room watch-line)
@@ -1131,6 +1131,130 @@ test_d_runway_and_substitution() {
   assert_contains "$out" "last day -10.00 GiB/day: full in 9.0 days ($(date -u -d "@$(( t0 + 86400 + 9 * 86400 ))" +%Y-%m-%d))" "the D: line turns growth's daily rate into days to full"
   rm -rf "$TMP_ROOT/state/reservations-d/$rootdev" "$cfg/results-root"
   pass "D: runway and Linux substitution alerts, with disk file and D: history"
+}
+
+# write_history END DAYS FRAG_RATE_GIB [FIVE_COLUMN_DAYS]: hourly history lines up
+# to END over DAYS days, with fragmented free growing FRAG_RATE_GIB a day from
+# 10 GiB; the oldest FIVE_COLUMN_DAYS days use the old five-column layout.
+write_history() {
+  mkdir -p "$TMP_ROOT/state"
+  awk -v end="$1" -v days="$2" -v rate="$3" -v old="${4:-0}" -v g="$GIB" 'BEGIN {
+    start = end - days * 86400
+    for (t = start; t <= end; t += 3600) {
+      printf "%d %.0f %.0f - -", t, 470 * g + (t - start) * g / 86400, 60 * g
+      if (t >= start + old * 86400) printf " %.0f", 10 * g + (t - start) * rate * g / 86400
+      printf "\n"
+    }
+  }' >"$TMP_ROOT/state/history"
+}
+
+test_fragmented_history() {
+  reset_state
+  set_sizes 60 600 400
+  truncate -s $(( 470 * GIB )) "$VHDX"
+  write_mb_groups 10
+  local out t0 frag line home f
+  t0=$(date +%s)
+  out=$(FM_DISK_ROOM_NOW=$t0 run_room watch-line)
+  assert_equals "" "$out" "a first reading with no history is quiet"
+  frag=$(json_field "$(run_room status --json)" fragmented_free)
+  line=$(tail -n 1 "$TMP_ROOT/state/history")
+  assert_equals "$t0 $(( 470 * GIB )) $(( 60 * GIB )) - 0 $frag" "$line" "the history records fragmented free as column 6"
+  rm -f "$TMP_ROOT/mb_groups"
+  FM_DISK_ROOM_NOW=$(( t0 + 3600 )) run_room watch-line >/dev/null
+  line=$(tail -n 1 "$TMP_ROOT/state/history")
+  assert_equals "$(( t0 + 3600 )) $(( 470 * GIB )) $(( 60 * GIB )) - 0 -" "$line" "an unknown fragmented reading is recorded as -"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 3700 )) run_room growth) || fail "growth exits 0 with fragmented unknown"
+  assert_contains "$out" "fragmented: unknown (ext4 mb_groups unreadable); last day unknown" "growth names an unknown reading, and one numeric entry gives no change"
+  write_mb_groups 10
+
+  reset_state
+  write_history "$t0" 15 2 3
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room growth) || fail "growth reads mixed five- and six-column history"
+  assert_contains "$out" "disk file: 470.0 GiB; last day +1.0 GiB over 1.0 days (1.00 GiB/day); last week +7.0 GiB over 7.0 days (1.00 GiB/day)" "five-column lines still give the disk file's change"
+  assert_contains "$out" "; last day +2.0 GiB over 1.0 days (2.00 GiB/day); last week +14.0 GiB over 7.0 days (2.00 GiB/day); last 2 weeks +24.0 GiB over 12.0 days (2.00 GiB/day)" "fragmented change reads only the six-column lines"
+  if [ "$BS" = 4096 ]; then
+    assert_contains "$out" "fragmented: 10.0 GiB; last day" "growth prints the live fragmented figure"
+  fi
+  assert_contains "$out" "ALERT fragmented: fragmented free space (partly used 1 MiB blocks a compaction cannot return) grew 2.00 GiB/day over the last 7.0 days (limit 1.0 GiB/day)" "the report shows the fragmented alert"
+  assert_contains "$out" "thresholds: growth 0.5 GiB/day, fragmented growth 1.0 GiB/day, C: free" "the report names the fragmented limit"
+
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room watch-line)
+  assert_equals "storage alert: fragmented free space (partly used 1 MiB blocks a compaction cannot return) grew 2.00 GiB/day over the last 7.0 days (limit 1.0 GiB/day)" "$out" "fragmented growth over the limit alerts"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 600 )) run_room watch-line)
+  assert_equals "" "$out" "a standing fragmented alert is not repeated"
+  out=$(FM_DISK_ROOM_FRAGMENTED_MAX=2G FM_DISK_ROOM_NOW=$(( t0 + 900 )) run_room watch-line)
+  assert_equals "storage alert cleared: fragmented" "$out" "growth exactly at the limit clears the alert"
+  out=$(FM_DISK_ROOM_FRAGMENTED_MAX=1.9G FM_DISK_ROOM_NOW=$(( t0 + 1200 )) run_room watch-line)
+  assert_contains "$out" "grew 2.00 GiB/day over the last 7.0 days (limit 1.9 GiB/day)" "growth just over the limit alerts again"
+  out=$(FM_DISK_ROOM_FRAGMENTED_MAX=off FM_DISK_ROOM_NOW=$(( t0 + 1500 )) run_room growth)
+  assert_contains "$out" "unknown fragmented" "off leaves the fragmented verdict unknown"
+  assert_contains "$out" "fragmented growth off" "off is named in the thresholds"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 3 * 3600 )) run_room growth)
+  assert_contains "$out" "unknown fragmented" "a history whose newest entry is stale gives no verdict"
+  out=$(FM_DISK_ROOM_FRAGMENTED_MAX=3G FM_DISK_ROOM_NOW=$(( t0 + 3 * 3600 )) run_room watch-line)
+  assert_not_contains "$out" "fragmented" "a stale history leaves the recorded alert standing"
+
+  reset_state
+  write_history "$t0" 5 2
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room growth)
+  assert_contains "$out" "unknown fragmented" "under six days of history gives no weekly verdict"
+  assert_contains "$out" "last week +10.0 GiB over 5.0 days (2.00 GiB/day); last 2 weeks +10.0 GiB over 5.0 days" "a short history reports the span it has"
+
+  reset_state
+  home="$TMP_ROOT/frag-home"
+  f="$home/config/disk-room-fragmented-max-per-day"
+  mkdir -p "$home/config"
+  write_history "$t0" 8 0.8
+  out=$(TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$(( t0 + 300 )) run_room watch-line)
+  assert_equals "" "$out" "0.8 GiB/day stays under the default 1 GiB/day"
+  printf ' 0.5G\r\nignored\n' >"$f"
+  out=$(TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$(( t0 + 600 )) run_room watch-line)
+  assert_contains "$out" "grew 0.80 GiB/day over the last 7.0 days (limit 0.5 GiB/day)" "the home's file sets the limit"
+  out=$(FM_DISK_ROOM_FRAGMENTED_MAX=1G TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$(( t0 + 900 )) run_room watch-line)
+  assert_equals "storage alert cleared: fragmented" "$out" "the variable wins over the file"
+  printf 'lots\n' >"$f"
+  out=$(TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$(( t0 + 1200 )) run_room watch-line)
+  assert_contains "$out" "storage alerts: cannot evaluate (bad fragmented growth limit in $f)" "a bad file is a failed reading that names it"
+  FM_DISK_ROOM_NOW=$(( t0 + 3600 )) TEST_FM_HOME="$home" run_room watch-line >/dev/null
+  assert_contains "$(tail -n 1 "$TMP_ROOT/state/history")" "$(( t0 + 3600 )) " "a bad limit file does not stop the hourly history"
+  out=$(TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$(( t0 + 1200 )) run_room growth 2>&1) && fail "growth fails on a bad fragmented limit file"
+  assert_contains "$out" "bad fragmented growth limit in $f" "growth names the bad file"
+  : >"$f"
+  out=$(TEST_FM_HOME="$home" FM_DISK_ROOM_NOW=$(( t0 + 1500 )) run_room growth 2>&1) && fail "growth fails on an empty fragmented limit file"
+  assert_contains "$out" "bad fragmented growth limit in $f" "an empty file is a failed reading"
+  rm -f "$f"
+  out=$(env -u FM_INHERITABLE_CONFIG bash -c '. "$1" && fm_config_inherit_items' _ "$ROOT/bin/fm-config-inherit-lib.sh")
+  assert_contains "$out" "config/disk-room-fragmented-max-per-day" "the fragmented limit file is inherited into secondmate homes"
+
+  reset_state
+  write_history "$t0" 17 1
+  assert_equals 409 "$(wc -l <"$TMP_ROOT/state/history" | tr -d ' ')" "the fixture history is over the cap"
+  FM_DISK_ROOM_NOW=$(( t0 + 3600 )) run_room watch-line >/dev/null
+  assert_equals 400 "$(wc -l <"$TMP_ROOT/state/history" | tr -d ' ')" "the history keeps its last 400 entries"
+  out=$(FM_DISK_ROOM_NOW=$(( t0 + 3700 )) run_room growth)
+  assert_contains "$out" "last 2 weeks" "400 hourly entries still hold two weeks"
+  assert_not_contains "$out" "last 2 weeks unknown" "the two-week window has a value"
+  pass "fragmented free space is recorded hourly, reported over a day, a week and two weeks, and alerts above its limit"
+}
+
+test_mb_groups_reader() {
+  local out rc
+  write_mb_groups 3
+  out=$("$DISK_ROOM" mb-groups "$TMP_ROOT/mb_groups" 4096) || fail "mb-groups reads a fixture"
+  assert_equals "fragmented=$(( 3 * GIB )) free=$(( 3 * GIB + 128 * 1048576 )) largest=$(( 32 * 1048576 ))" "$out" "mb-groups counts sub-1 MiB buddies, all free space and the largest buddy"
+  out=$("$DISK_ROOM" mb-groups "$TMP_ROOT/mb_groups" 65536) || fail "mb-groups reads a 64 KiB block fixture"
+  assert_contains "$out" "fragmented=$(( 3 * 262144 * 65536 )) " "a larger block keeps only buddies under 1 MiB fragmented"
+  printf '#group: free frags first [ 2^0 ]\n' >"$TMP_ROOT/mb_groups.empty"
+  "$DISK_ROOM" mb-groups "$TMP_ROOT/mb_groups.empty" 4096 >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "a file with no group line is a failed reading"
+  "$DISK_ROOM" mb-groups "$TMP_ROOT/missing" 4096 >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "a missing file is a failed reading"
+  "$DISK_ROOM" mb-groups "$TMP_ROOT/mb_groups" 0 >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "a zero block size is misuse"
+  "$DISK_ROOM" mb-groups "$TMP_ROOT/mb_groups" >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "a missing block size is misuse"
+  pass "mb-groups is the one mb_groups parser and refuses what it cannot read"
 }
 
 # Consumers pin interface v1, not the script's bytes, so this case pins v1's
@@ -2040,3 +2164,5 @@ test_growth_alerts
 test_c_runway_reclaim
 test_c_free_min_sources
 test_d_runway_and_substitution
+test_fragmented_history
+test_mb_groups_reader
