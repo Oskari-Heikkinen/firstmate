@@ -1,0 +1,17 @@
+{
+  "schema": "fm-storage-class-map/v1",
+  "hosts": {
+    "lap": {"machine_id": "@MID@", "aliases": ["lap-alias"]},
+    "tj": {"machine_id": "1111111111111111111111111111111a", "aliases": []}
+  },
+  "roots": {
+    "xp-meta": {"host": "lap", "path": "@W@/home/meta", "transport": "local", "volume": "linux"},
+    "xp-units": {"host": "lap", "path": "@MNT@/d/lattice-data/xp-units", "transport": "local", "volume": "d"},
+    "xp-images": {"host": "lap-alias", "path": "@MNT@/d/lattice-data/xp-images", "transport": "local", "volume": "d"}
+  },
+  "classes": {
+    "metadata-view": "xp-meta",
+    "undeclared-default": "xp-units",
+    "example-result": "xp-images"
+  }
+}
