@@ -29,6 +29,7 @@ Load `lean-review` before judging results; High risk applies to supervision cont
 - Read the CLI result and artifacts and report success/refusal through the existing task status owner; do not leave an unobserved artifact or add a poller.
 - Preserve raw evidence, losses, contradictory residuals and synthetic provenance.
 - Code never certifies B0, even from self-asserted complete inputs; review of real capture evidence is required and no P0 saving is claimed.
+- Before consuming a v2/v3 workload, its capture bindings, or requesting P1 capture supplementation, read the owning doc's versioned Replay corpus sections; supplied test-adapter equality or caller-projected subset fidelity never grants production replay, whole-workload/B0 acceptance or capture authority.
 - Publish only owner-attested inventory, not inferred foreign endpoint state.
 - The bridge does not activate a resident mode or assert that running readers/callbacks are already capable.
 - Keep real fleet data and traces in private task evidence; only synthetic fixtures belong in git.
