@@ -19,6 +19,9 @@
 #     locked request supersedes an in-flight probe-only worker
 #   - a publish lock a live process holds past the budget ends the worker with a
 #     failed-rerun record instead of an unbounded wait
+#   - the delivery wait looks once a second within a birth bound, and each of its
+#     exits (delivered, newer generation, dead claimant, deadline, held lock)
+#     keeps its wake outcome
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -153,15 +156,22 @@ wait_for_startup_network_wake() {  # <home> [tenths]
 # hold_publish_lock <home>: take the stage's publish lock from a separate live
 # process, the way a harvest wedged on a stalled stdout holds it, and print that
 # holder's pid. The holder keeps the pid the lock records, so the lock's
-# stale-owner recovery never reclaims it while the test runs.
+# stale-owner recovery never reclaims it while the test runs. A worker waiting
+# on delivery holds the lock for a moment each look, so the holder retries.
 hold_publish_lock() {  # <home>
   local lock="$1/state/.startup-network.lock" holder waited=0
   FM_STATE_OVERRIDE="$1/state" FM_ROOT_OVERRIDE="$ROOT" bash -c '
     . "$1/fm-wake-lib.sh"
-    fm_lock_try_acquire "$2" || exit 1
+    tries=0
+    until fm_lock_try_acquire "$2"; do
+      tries=$((tries + 1))
+      [ "$tries" -lt 50 ] || exit 1
+      sleep 0.1
+    done
     exec sleep 120' _ "$ROOT/bin" "$lock" >/dev/null 2>&1 </dev/null &
   holder=$!
-  while [ "$(cat "$lock/pid" 2>/dev/null || true)" != "$holder" ] && [ "$waited" -lt 50 ]; do
+  while [ "$(cat "$lock/pid" 2>/dev/null || true)" != "$holder" ] && kill -0 "$holder" 2>/dev/null \
+    && [ "$waited" -lt 100 ]; do
     sleep 0.1
     waited=$((waited + 1))
   done
@@ -292,6 +302,176 @@ EOF
   assert_absent "$home/state/.startup-network.delivered" \
     "an unharvested result was recorded as delivered"
   pass "fm-startup-network: a claimant crash after publication still surfaces the result"
+}
+
+# The delivery wait after publication looks once a second, not ten times. Each
+# case below gives the claimant a long delivery budget unless the deadline is the
+# point, so every exit can only come from the path the case names.
+
+# install_birth_counter <root> <log>: a counting stand-in for each common
+# external command in the world's bin/, ahead of the real one on PATH, so every
+# exec the stage makes of them appends that command's name to <log>.
+install_birth_counter() {  # <root> <log>
+  local tool real
+  for tool in sleep date sed tail head cat mktemp ln readlink rm rmdir mv awk grep stat; do
+    real=$(command -v "$tool") || continue
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' "$tool" "$2" "$real" > "$1/bin/$tool"
+    chmod +x "$1/bin/$tool"
+  done
+}
+
+# A live claimant that never harvests keeps the worker waiting for the whole
+# delivery budget. At a tenth-second poll that wait cost about 370 counted
+# births and 24 pauses over 5s; at one look a second it costs about 70-100
+# births, and at most six pauses fit in the budget.
+test_the_delivery_wait_stays_within_its_birth_bound() {
+  local rec home root log births claimant worker offset total window pauses
+  rec=$(new_world delivery-wait-births)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  births="${home%/home}/births.log"
+  install_birth_counter "$root" "$births"
+  sleep 30 &
+  claimant=$!
+  FM_SESSION_START_TIMEOUT=5 FM_FAKE_BOOTSTRAP_LOG="$log" \
+    run_stage "$home" "$root" start --locked 0 --harvest-pid "$claimant"
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the claimed worker never published"
+  offset=$(wc -l < "$births")
+  worker=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+  await_pid_exit "$worker" 150 || fail "the worker outlived its 5s delivery budget"
+  window=$(tail -n +"$((offset + 1))" "$births")
+  total=$(printf '%s\n' "$window" | grep -c .)
+  pauses=$(printf '%s\n' "$window" | grep -cx sleep)
+  kill "$claimant" 2>/dev/null || true
+  wait "$claimant" 2>/dev/null || true
+  [ "$pauses" -le 6 ] && [ "$total" -le 150 ] \
+    || fail "the 5s delivery wait made $total counted births (bound 150) and $pauses pauses (bound 6): $(printf '%s\n' "$window" | sort | uniq -c | tr -s ' ' | tr '\n' ';')"
+  [ ! -s "$home/state/.wake-queue" ] \
+    || fail "a clean result whose claimant outlived the budget queued a wake: $(cat "$home/state/.wake-queue")"
+  pass "fm-startup-network: the delivery wait looks once a second ($total counted births, $pauses pauses in a 5s wait)"
+}
+
+# The allowed slower worst case: a claimant that dies without harvesting is
+# noticed within a second, so its wake lands within 1s plus slack, long before
+# the 60s budget could explain it.
+test_a_dropped_delivery_wakes_within_a_second() {
+  local rec home root log claimant worker began took
+  rec=$(new_world dropped-delivery)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  sleep 30 &
+  claimant=$!
+  FM_SESSION_START_TIMEOUT=60 FM_FAKE_BOOTSTRAP_LOG="$log" \
+    FM_FAKE_BOOTSTRAP_OUT='MISSING: some-tool (install: brew install some-tool)' \
+    run_stage "$home" "$root" start --locked 0 --harvest-pid "$claimant"
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the dropped-delivery worker never published"
+  worker=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+  [ ! -s "$home/state/.wake-queue" ] || fail "the worker woke while its claimant was still alive"
+  kill "$claimant" 2>/dev/null || true
+  wait "$claimant" 2>/dev/null || true
+  began=$(date +%s)
+  wait_for_startup_network_wake "$home" 100 || fail "a dropped delivery never queued its wake"
+  took=$(( $(date +%s) - began ))
+  [ "$took" -le 3 ] || fail "a dropped delivery took ${took}s to wake (1s plus slack)"
+  await_pid_exit "$worker" 50 || fail "the worker did not exit after waking for a dropped delivery"
+  assert_absent "$home/state/.startup-network.claim" "the dead claimant's claim was not reaped"
+  assert_absent "$home/state/.startup-network.delivered" "an unharvested result was recorded as delivered"
+  pass "fm-startup-network: a claimant that dies without harvesting wakes within a second"
+}
+
+# A newer start replaces the generation the worker publishes for, so the older
+# worker stops waiting at once and leaves the wake decision to the newer one.
+test_a_newer_generation_ends_the_older_delivery_wait() {
+  local rec home root log first second old_worker new_worker
+  rec=$(new_world generation-bump)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  sleep 30 &
+  first=$!
+  FM_SESSION_START_TIMEOUT=60 FM_FAKE_BOOTSTRAP_LOG="$log" \
+    FM_FAKE_BOOTSTRAP_OUT='MISSING: some-tool (install: brew install some-tool)' \
+    run_stage "$home" "$root" start --locked 0 --harvest-pid "$first"
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the first worker never published"
+  old_worker=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+
+  sleep 30 &
+  second=$!
+  FM_SESSION_START_TIMEOUT=60 FM_FAKE_BOOTSTRAP_LOG="$log" \
+    run_stage "$home" "$root" start --locked 0 --harvest-pid "$second"
+  await_pid_exit "$old_worker" 50 \
+    || fail "the older worker kept waiting on delivery after a newer generation replaced it"
+  kill -0 "$first" 2>/dev/null || fail "the first claimant died before the generation changed"
+  [ ! -s "$home/state/.wake-queue" ] \
+    || fail "a superseded result queued a wake: $(cat "$home/state/.wake-queue")"
+
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the second worker never published"
+  new_worker=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+  kill "$first" "$second" 2>/dev/null || true
+  wait "$first" "$second" 2>/dev/null || true
+  await_pid_exit "$new_worker" 50 || fail "the second worker did not exit after its claimant died"
+  [ ! -s "$home/state/.wake-queue" ] \
+    || fail "the clean newer result queued a wake: $(cat "$home/state/.wake-queue")"
+  pass "fm-startup-network: a newer generation ends the older worker's delivery wait without a wake"
+}
+
+# A claimant still alive at the delivery deadline is no longer waited for: the
+# wake decision is made as if it were gone, and its claim stays in place.
+test_the_delivery_deadline_wakes_while_the_claimant_lives() {
+  local rec home root log claimant worker began took
+  rec=$(new_world delivery-deadline)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  sleep 30 &
+  claimant=$!
+  FM_SESSION_START_TIMEOUT=6 FM_FAKE_BOOTSTRAP_LOG="$log" \
+    FM_FAKE_BOOTSTRAP_OUT='MISSING: some-tool (install: brew install some-tool)' \
+    run_stage "$home" "$root" start --locked 0 --harvest-pid "$claimant"
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the deadline worker never published"
+  began=$(date +%s)
+  worker=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+  wait_for_startup_network_wake "$home" 150 || fail "the delivery deadline passed without a wake"
+  took=$(( $(date +%s) - began ))
+  kill -0 "$claimant" 2>/dev/null || fail "the claimant died, so the deadline path was not the one taken"
+  [ "$took" -ge 3 ] || fail "the wake came ${took}s after publication, before the 6s delivery deadline"
+  await_pid_exit "$worker" 50 || fail "the worker did not exit at its delivery deadline"
+  [ -s "$home/state/.startup-network.claim" ] \
+    || fail "the deadline path removed a live claimant's claim"
+  kill "$claimant" 2>/dev/null || true
+  wait "$claimant" 2>/dev/null || true
+  pass "fm-startup-network: the delivery deadline wakes for an actionable result while the claimant lives"
+}
+
+# A publish lock held through the rest of the delivery budget ends the wait
+# with a wake, because the claim can no longer be judged under the lock.
+test_a_lock_held_through_the_delivery_wait_still_wakes() {
+  local rec home root log claimant worker holder
+  rec=$(new_world delivery-lock-held)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  sleep 30 &
+  claimant=$!
+  FM_SESSION_START_TIMEOUT=6 FM_FAKE_BOOTSTRAP_LOG="$log" \
+    FM_FAKE_BOOTSTRAP_OUT='MISSING: some-tool (install: brew install some-tool)' \
+    run_stage "$home" "$root" start --locked 0 --harvest-pid "$claimant"
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the lock-held worker never published"
+  worker=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+  holder=$(hold_publish_lock "$home")
+  kill -0 "$worker" 2>/dev/null || fail "the worker left its delivery wait before the lock was held"
+  [ ! -s "$home/state/.wake-queue" ] || fail "the worker woke before the lock was held"
+  await_pid_exit "$worker" 150 || fail "the worker outlived its delivery budget behind a held lock"
+  assert_grep 'check	startup-network' "$home/state/.wake-queue" \
+    "a delivery wait that lost the lock did not wake"
+  kill -0 "$claimant" 2>/dev/null || fail "the claimant died, so the held-lock path was not the one taken"
+  [ "$(sed -n 's/^state=//p' "$home/state/.startup-network.status")" = 'done' ] \
+    || fail "the held lock changed the published state"
+  kill "$holder" "$claimant" 2>/dev/null || true
+  wait "$claimant" 2>/dev/null || true
+  pass "fm-startup-network: a publish lock held through the delivery wait still wakes"
 }
 
 test_a_report_publication_failure_is_failed_and_still_wakes() {
@@ -944,6 +1124,11 @@ EOF
 build_template_bin
 POOL_CASES=(
   test_a_held_publish_lock_cannot_keep_the_worker_alive_past_its_budget
+  test_a_newer_generation_ends_the_older_delivery_wait
+  test_the_delivery_wait_stays_within_its_birth_bound
+  test_the_delivery_deadline_wakes_while_the_claimant_lives
+  test_a_lock_held_through_the_delivery_wait_still_wakes
+  test_a_dropped_delivery_wakes_within_a_second
   test_dead_worker_relaunch_runs_only_in_locked_work_and_reports_its_failures
   test_start_returns_without_holding_the_callers_stdout
   test_lock_takeover_stays_read_only_while_a_sweep_holds_the_lease

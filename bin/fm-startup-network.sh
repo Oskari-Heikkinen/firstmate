@@ -439,8 +439,28 @@ EOF
       return 0
     fi
     fm_lock_release "$PUBLISH_LOCK"
-    sleep 0.1
+    delivery_pause
   done
+}
+
+# One look a second while a live claimant may still print the result inline: a
+# claimant that delivers or exits is noticed up to a second later, at a tenth
+# of the lock and status churn a tenth-second poll cost. The last pause ends at
+# DELIVERY_DEADLINE itself, so the deadline exit comes when it always did. Where
+# fm_timing_now_ms has only whole seconds, the last second before the deadline
+# reads as exactly 1000 ms left and keeps the tenth-second poll, for the same
+# reason.
+delivery_pause() {
+  local left_ms
+  left_ms=$(( DELIVERY_DEADLINE * 1000 - $(fm_timing_now_ms) ))
+  if [ "$left_ms" -gt 1000 ]; then
+    sleep 1
+  elif [ "$left_ms" -eq 1000 ]; then
+    sleep 0.1
+  elif [ "$left_ms" -gt 0 ]; then
+    printf -v left_ms '0.%03d' "$left_ms"
+    sleep "$left_ms"
+  fi
 }
 
 # Write the result files. Prints the final state, which differs from the
