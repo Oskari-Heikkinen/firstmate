@@ -11,6 +11,7 @@
 #   fm-procevent.sh reconcile
 #   fm-procevent.sh classify <result-file>
 #   fm-procevent.sh handled <source-id> <sequence>
+#   fm-procevent.sh show <source-id> <sequence>
 #   fm-procevent.sh retire <source-id> [--if-absent|--if-matches <adapter> -- <argv>...|--if-owner <registration-token>]
 #   fm-procevent.sh sweep-home [--preflight]
 #   fm-procevent.sh binding-retirement-preflight <binding-digest>
@@ -90,6 +91,12 @@
 #            twice. Until this is called, the result stays eligible for
 #            bounded re-announcement on every reconcile. Marking a result
 #            handled does not retire its source registration or claim.
+#            A result moved into the inbox's handled-record log
+#            (bin/fm-records-consolidate.sh) still answers already-handled.
+# show       Print a captured result's bytes: <source-id> <sequence>. Reads the
+#            result file, or the inbox's handled-record log once the result was
+#            consolidated there. Exit 1 when no such result exists, 2 when it
+#            cannot be read.
 # retire     Drop a registration, stop a runner this home owns, release the claim.
 #            Idempotent, and still the supported explicit path after a source has
 #            already retired itself on its adapter's terminal verdict. Existing
@@ -546,7 +553,8 @@ extension_source_request_id() {  # <adapter> <source-id> <next-sequence> <regist
 next_result_sequence() {  # <source-id>
   local id=$1 inbox seq=1
   inbox=$(fm_procevent_inbox_dir "$STATE")
-  while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
+  while [ -e "$inbox/$id.$seq.result" ] || [ -e "$inbox/$id.$seq.handled" ] \
+    || [ -L "$inbox/$id.$seq.handled" ]; do seq=$((seq + 1)); done
   printf '%s\n' "$seq"
 }
 
@@ -1885,6 +1893,18 @@ cmd_handled() {
   esac
 }
 
+cmd_show() {
+  local id=${1-} seq=${2-} status=0
+  fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
+  case "$seq" in ''|*[!0-9]*) die "sequence must be a nonnegative integer: $seq" ;; esac
+  fm_procevent_result_read "$STATE" "$id" "$seq" || status=$?
+  case "$status" in
+    0) ;;
+    1) printf 'no captured result: %s %s\n' "$id" "$seq" >&2; exit 1 ;;
+    *) printf 'error: cannot read captured result: %s %s\n' "$id" "$seq" >&2; exit 2 ;;
+  esac
+}
+
 cmd_retire() {
   local id=${1-} condition=${2-} adapter='' sep='' expected_owner='' owner='' pid='' token='' identity='' stop_state owner_state
   local extension_binding_digest=''
@@ -2295,6 +2315,7 @@ case "${1-}" in
   reconcile)          shift; cmd_reconcile "$@" ;;
   classify)           shift; cmd_classify "$@" ;;
   handled)            shift; cmd_handled "$@" ;;
+  show)               shift; cmd_show "$@" ;;
   retire)             shift; cmd_retire "$@" ;;
   sweep-home)         shift; cmd_sweep_home "$@" ;;
   binding-retirement-preflight) shift; cmd_binding_retirement_preflight "$@" ;;

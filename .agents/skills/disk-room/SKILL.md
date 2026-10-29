@@ -32,6 +32,8 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - A refusal is a wait, not a failure: hold the job and report the refusal line to firstmate.
 - To move a finished, rarely read tree to D:, pack it with `bin/fm-pack.sh pack TASK UNIT SRC`; [`docs/storage.md`](../../../docs/storage.md#packing-cold-data) owns the command and the retention rule.
 - For packed-source release, follow [retention rule R2 in `docs/storage.md`](../../../docs/storage.md#retention-rule-r2).
+- Old handled process-event results and acknowledged inbox records each hold a 1 MiB block of their own; `bin/fm-records-consolidate.sh --dry-run --state <state-dir>` prints, per tree, the files, bytes and blocks that moving them into one log would empty, and its header owns the trees, the 7-day age limit and the exit codes.
+  Nothing schedules it, and a real run changes where those records live, so running it without `--dry-run` on a live home is the operator's call: bring the dry-run lines.
 - A home that pins `fm-disk-room.sh` pins its consumer interface, not its bytes, and runs the self-test for that version before trusting a new copy; `docs/disk-room.md` "Consumer interface" owns the rule.
   A helper-consumer declaration still accepts exact bytes ([`docs/helper-consumers.md`](../../../docs/helper-consumers.md)), so a byte change with an unchanged interface still holds the update until that consumer accepts the new copy; `updatefirstmate` owns that hold.
 

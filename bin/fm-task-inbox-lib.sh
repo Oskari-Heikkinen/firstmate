@@ -27,6 +27,12 @@
 # Layout under <state-dir>:
 #   <task>.inbox/NNN.msg       one durable steer, numeric sequence, atomic rename
 #   <task>.inbox/handled/      the worker's `mv` here IS the acknowledgement
+#   <task>.inbox/handled/.records-log/
+#                              handled records older than 7 days that
+#                              bin/fm-records-consolidate.sh moved out of their
+#                              files (format: bin/fm-records-log-lib.sh); every
+#                              reader of handled/ also reads this log, through
+#                              fm_task_inbox_handled_has and _handled_body
 #   <task>.inbox/.seq.lock     serializes sequence allocation across writers
 #                              (the session and the away daemon)
 #   <task>.inbox/.ring-state   watcher re-ring ladder: "<msg>\t<count>\t<epoch>"
@@ -48,7 +54,7 @@
 #    its from-firstmate marker and corr token verbatim in this body>
 #
 # Sequence numbers are never reused within a task: allocation scans the inbox
-# root, handled/ and quarantine/, so a message is processed at most once per worker
+# root, handled/, its handled-record log and quarantine/, so a message is processed at most once per worker
 # lifetime even if every doorbell is duplicated. Concurrent writers serialize
 # on .seq.lock; the worst racing outcome is ordering, never loss.
 #
@@ -104,6 +110,8 @@ _FM_TASK_INBOX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_FM_TASK_INBOX_LIB_DIR/fm-wake-lib.sh"
 # shellcheck source=/dev/null
 . "$_FM_TASK_INBOX_LIB_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-records-log-lib.sh
+. "$_FM_TASK_INBOX_LIB_DIR/fm-records-log-lib.sh"
 
 FM_TASK_INBOX_SCHEMA='fm-task-inbox.v1'
 FM_TASK_INBOX_GRACE_DEFAULT=90
@@ -179,10 +187,11 @@ fm_task_inbox_seq_of() {  # <basename>
   printf '%s' "$((10#$n))"
 }
 
-# Next unused sequence, scanning the inbox root, handled/ and quarantine/ so an
-# acknowledged or quarantined sequence is never reissued. Caller must hold .seq.lock.
+# Next unused sequence, scanning the inbox root, handled/, its handled-record
+# log and quarantine/ so an acknowledged or quarantined sequence is never
+# reissued; an unreadable log fails. Caller must hold .seq.lock.
 fm_task_inbox_next_seq() {  # <inbox-dir>
-  local dir=$1 max=0 d f n
+  local dir=$1 max=0 d f n logged=''
   for d in "$dir" "$dir/handled" "$dir/quarantine"; do
     for f in "$d"/*.msg; do
       [ -e "$f" ] || continue
@@ -190,7 +199,38 @@ fm_task_inbox_next_seq() {  # <inbox-dir>
       [ "$n" -le "$max" ] || max=$n
     done
   done
+  if [ -e "$dir/handled/.records-log" ]; then
+    logged=$(fm_records_log_names "$dir/handled") || return 1
+  fi
+  while IFS= read -r f; do
+    n=$(fm_task_inbox_seq_of "$f") || continue
+    [ "$n" -le "$max" ] || max=$n
+  done <<< "$logged"
   printf '%03d' "$((max + 1))"
+}
+
+# 0 = <record-name> is acknowledged (in handled/ or its handled-record log),
+# 1 = it is not, 2 = the log cannot be read.
+fm_task_inbox_handled_has() {  # <inbox-dir> <record-name>
+  [ ! -f "$1/handled/$2" ] || return 0
+  fm_records_log_has "$1/handled" "$2"
+}
+
+# The exact enqueued text of an acknowledged record, from handled/ or its
+# handled-record log. 0 = printed, 1 = not acknowledged, 2 = unreadable.
+fm_task_inbox_handled_body() {  # <inbox-dir> <record-name>
+  local raw rc=0
+  if [ -f "$1/handled/$2" ]; then
+    fm_task_inbox_body "$1/handled/$2" || return 2
+    return 0
+  fi
+  raw=$(fm_records_log_cat "$1/handled" "$2" && printf x) || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  raw=${raw%x}
+  case "$raw" in
+    *$'\n--\n'*) printf '%s' "${raw#*$'\n--\n'}" ;;
+    *) return 2 ;;
+  esac
 }
 
 fm_task_inbox_lock_acquire() {  # <lock-path>
@@ -213,7 +253,7 @@ fm_task_inbox_lock_acquire() {  # <lock-path>
 # rename. Prints the record path. Caller must hold .seq.lock.
 _fm_task_inbox_write_record_locked() {  # <inbox-dir> <text> [delivery-mode] [generation]
   local dir=$1 text=$2 delivery_mode=${3:-} generation=${4:-} seq tmp rec status=0
-  seq=$(fm_task_inbox_next_seq "$dir")
+  seq=$(fm_task_inbox_next_seq "$dir") || return 1
   rec="$dir/$seq.msg"
   tmp=$(mktemp "$dir/.staging.XXXXXX") || return 1
   {
@@ -243,8 +283,9 @@ fm_task_inbox_write() {  # <state-dir> <task-id> <text> [delivery-mode]
 }
 
 # Durably enqueue one steer at most once: when a record with the exact same
-# body already exists - unhandled or already acknowledged in handled/ - no new
-# record is written and the existing record's path is printed instead.
+# body already exists - unhandled or already acknowledged in handled/ or its
+# handled-record log - no new record is written and the existing record's path
+# is printed instead (a handled/ path for an acknowledged one).
 # This is the enqueue primitive for a transport that can fail with completion
 # unknown (the remote steer leg over ssh): the caller's safe recovery is to run
 # the same enqueue again, and this dedup is what makes the re-run land on the
@@ -293,6 +334,9 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
         rec=$f
         break
       done
+      if [ "$status" -eq 0 ] && [ -z "$rec" ] && [ -e "$dir/handled/.records-log" ]; then
+        rec=$(_fm_task_inbox_dedup_logged "$dir" "$want" "$have" "$delivery_mode" "$generation") || status=1
+      fi
     else
       status=1
     fi
@@ -306,6 +350,36 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
   fi
   fm_lock_release "$lock"
   [ "$status" -eq 0 ] || return 1
+  printf '%s' "$rec"
+}
+
+# The idempotent dedup over handled records consolidated into the inbox's
+# handled-record log: the same match as the live loop, against the log's
+# copies extracted into a scratch directory under the inbox. Prints the
+# matching record as its handled/ path, which callers read as acknowledged,
+# or nothing. Fails when the log cannot be read. Caller holds .seq.lock.
+_fm_task_inbox_dedup_logged() {  # <inbox-dir> <want-file> <have-file> <delivery-mode> <generation>
+  local dir=$1 want=$2 have=$3 delivery_mode=$4 generation=$5 x f record_generation rec=''
+  x=$(mktemp -d "$dir/.dedup-log.XXXXXX") || return 1
+  if ! fm_records_log_extract "$dir/handled" "$x"; then
+    rm -rf "$x"
+    return 1
+  fi
+  for f in "$x"/*.msg; do
+    [ -f "$f" ] || continue
+    record_generation=$(fm_task_inbox_generation "$f") || { rm -rf "$x"; return 1; }
+    [ "$record_generation" = "$generation" ] || continue
+    if [ "$delivery_mode" = fire-and-forget ]; then
+      fm_task_inbox_is_fire_and_forget "$f" || continue
+    elif fm_task_inbox_is_fire_and_forget "$f"; then
+      continue
+    fi
+    fm_task_inbox_body "$f" > "$have" 2>/dev/null || continue
+    cmp -s "$want" "$have" || continue
+    rec="$dir/handled/${f##*/}"
+    break
+  done
+  rm -rf "$x"
   printf '%s' "$rec"
 }
 

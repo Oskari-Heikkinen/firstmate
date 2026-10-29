@@ -97,6 +97,7 @@ Two rules the commands cannot enforce for you:
 
 `procevent <adapter> <source-id> <sequence>`
 : The named durable result is waiting at `state/procevent-inbox/<source-id>.<sequence>.result`. Read that exact result; separate wakes identify later results independently.
+: A handled result older than 7 days may have moved into that inbox's handled-record log; `bin/fm-procevent.sh show <source-id> <sequence>` reads a result from either place.
 : **When the adapter owns applying the result, run the adapter, not the generic acknowledgement below.** The `<adapter>` field of the wake decides this, and `remote-reply` is such an adapter: a captured delta is applied only by
   ```sh
   bin/fm-procevent-remote-reply.sh handle <secondmate-id> <sequence> <result-file>

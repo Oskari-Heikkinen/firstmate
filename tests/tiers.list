@@ -159,6 +159,7 @@ full tests/fm-procevent.test.sh
 full tests/fm-project-origin.test.sh
 full tests/fm-quota-choose.test.sh
 full tests/fm-reboot-relaunch.test.sh
+full tests/fm-records-consolidate.test.sh
 full tests/fm-rereview-brief.test.sh
 full tests/fm-review-diff.test.sh
 full tests/fm-schedule.test.sh

@@ -292,7 +292,14 @@ if [ -f "$SEQUENCE" ]; then
   RECORD="$INBOX/$BASE"
   [ ! -f "$INBOX/handled/$BASE" ] || RECORD="$INBOX/handled/$BASE"
   [ ! -f "$INBOX/quarantine/$BASE" ] || RECORD="$INBOX/quarantine/$BASE"
-  [ -f "$RECORD" ] && [ "$(fm_task_inbox_body "$RECORD")" = "$BODY" ] \
+  if [ -f "$RECORD" ]; then
+    RECORDED=$(fm_task_inbox_body "$RECORD") || RECORDED=
+  else
+    # An old acknowledged record may live in handled/'s handled-record log.
+    RECORDED=$(fm_task_inbox_handled_body "$INBOX" "$BASE") || RECORDED=
+    RECORD="$INBOX/handled/$BASE"
+  fi
+  [ -n "$RECORDED" ] && [ "$RECORDED" = "$BODY" ] \
     || fail 'recorded delivery is missing or changed; reconcile rather than replay'
 else
   RECORD=$(fm_task_inbox_write_idempotent "$CONSUMER_HOME/state" "$CONSUMER_TASK" "$BODY" '' "$(jq -r .consumer.generation "$REG")")
@@ -302,7 +309,13 @@ else
   TMP=
 fi
 OUTCOME=enqueued
-[ ! -f "$INBOX/handled/${RECORD##*/}" ] || OUTCOME=consumed
+HANDLED_RC=0
+fm_task_inbox_handled_has "$INBOX" "${RECORD##*/}" || HANDLED_RC=$?
+case "$HANDLED_RC" in
+  0) OUTCOME=consumed ;;
+  1) ;;
+  *) fail 'the inbox handled-record log is unreadable; reconcile rather than replay' ;;
+esac
 [ ! -f "$INBOX/quarantine/${RECORD##*/}" ] || OUTCOME=quarantined
 TMP=$(mktemp "$ROUTES/.staging.XXXXXX")
 jq -nc --arg route "$ROUTE" --arg key "$KEY" --arg outcome "$OUTCOME" \

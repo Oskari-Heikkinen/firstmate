@@ -180,6 +180,22 @@ evaluate() {
 # Keep the generic capture small even when the receipt/manifest is large.
 # Consumers read the retained payload via pending/snapshot, not a truncated wake.
 emit() { jq -c '{source,event,status,recovery,at}'; }
+# Print 1 when the procevent inbox's handled-record log holds a capture of
+# <event> for this source, else 0; fail when the log cannot be read.
+captured_in_log() {  # <event>
+  local inbox="$STATE/procevent-inbox" names name seq capture
+  names=$(fm_records_log_names "$inbox") || return 1
+  while IFS= read -r name; do
+    case "$name" in "$SID".*.result) ;; *) continue ;; esac
+    seq=${name#"$SID".}; seq=${seq%.result}
+    case "$seq" in ''|*[!0-9]*) continue ;; esac
+    capture=$(fm_records_log_cat "$inbox" "$name") || return 1
+    if printf '%s' "$capture" | jq -e --arg s "$SID" --argjson e "$1" '.source==$s and .event==$e' >/dev/null 2>&1; then
+      printf '1\n'; return 0
+    fi
+  done <<< "$names"
+  printf '0\n'
+}
 run() {
   local now status old event file captured receipt tmp evidence revision observed_at last_event
   while :; do
@@ -193,6 +209,8 @@ run() {
         [ -f "$file" ] || continue
         if jq -e --arg s "$SID" --argjson e "$event" '.source==$s and .event==$e' "$file" >/dev/null 2>&1; then captured=1; break; fi
       done
+      # A handled capture may live in the inbox's handled-record log instead.
+      [ "$captured" = 1 ] || captured=$(captured_in_log "$event") || die 'handled-record log is unreadable'
       if [ "$captured" = 0 ]; then printf '%s\n' "$last_event" | emit; return; fi
       # A re-armed observation is pending again; only a still-terminal one ends here.
       case "$(jq -r .status "$DB")" in expired|closed) printf '%s\n' "$last_event" | emit; return ;; esac
