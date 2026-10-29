@@ -345,7 +345,6 @@ test_changed_dependency_selection_and_unmapped_failure() {
   printf '\n' >>"$repo/.pi/extensions/fm-primary-pi-watch.ts"
   printf '\n' >>"$repo/.pi/extensions/fm-primary-turnend-guard.ts"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
-  assert_contains "$listed" "tests/fm-dod-lib.test.sh" "skill source selects pure contract coverage"
   assert_contains "$listed" "tests/fm-cd-pretool-check.test.sh" "Claude and Pi source selects hook coverage"
   assert_contains "$listed" "tests/fm-pi-watch-extension.test.sh" "Pi source selects watcher coverage"
   assert_contains "$listed" "tests/fm-pi-windows-shell-invocation.test.sh" \
@@ -456,6 +455,188 @@ test_changed_bin_reference_selects_per_script_not_per_family() {
 
   rm -rf "$tmp"
   pass "a bin reference selects the referencing scripts, and consumers still select their curated families"
+}
+
+# Commit everything in <repo> so the next change is the only changed path.
+commit_fixture_setup() {
+  git -C "$1" add -A
+  git -C "$1" -c user.name=test -c user.email=test@example.invalid commit -qm "$2"
+}
+
+# Sets LISTED to the changed-path listing of <repo>, failing the case unless
+# the runner exits 0, since any exit 2 would escalate a CI push to the full
+# layout.
+LISTED=
+changed_listing() {  # <repo> <label>
+  local rc
+  set +e
+  LISTED=$(cd "$1" && bin/fm-test-run.sh --list --changed --base HEAD 2>"$1.err")
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "$2 must not escalate, got exit $rc: $(cat "$1.err")"
+}
+
+# The safety guard's risky-area list and skill prose used to fall through to
+# the unmapped refusal. The list selects the two suites that read it; a skill
+# file selects only a suite naming that exact file, and otherwise nothing,
+# as docs/ does.
+test_changed_risky_list_and_skill_prose_map_without_escalating() {
+  local tmp repo listed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-lists.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+  printf 'bin/fm-spawn.sh\n' >"$repo/tests/risky-areas.list"
+  printf '#!/usr/bin/env bash\n' >"$repo/tests/fm-safety-guard.test.sh"
+  printf '#!/usr/bin/env bash\n' >"$repo/tests/fm-lean-review.test.sh"
+  mkdir -p "$repo/.agents/skills/example/references"
+  : >"$repo/.agents/skills/example/references/notes.md"
+  : >"$repo/.agents/skills/example/references/read-by-a-suite.md"
+  printf '# .agents/skills/example/references/read-by-a-suite.md\n' \
+    >>"$repo/tests/fm-brief.test.sh"
+  commit_fixture_setup "$repo" list-and-skill-setup
+
+  printf 'bin/fm-control-lib.sh\n' >>"$repo/tests/risky-areas.list"
+  changed_listing "$repo" "a risky-area list change"
+  listed=$LISTED
+  [ "$listed" = "tests/fm-safety-guard.test.sh"$'\n'"tests/fm-lean-review.test.sh" ] \
+    || fail "the risky-area list must select exactly its two reader suites, got: $listed"
+  commit_fixture_setup "$repo" risky-list-change
+
+  printf '\n' >>"$repo/.agents/skills/example/SKILL.md"
+  printf '\n' >>"$repo/.agents/skills/example/references/notes.md"
+  changed_listing "$repo" "skill prose no suite reads"
+  listed=$LISTED
+  [ -z "$listed" ] || fail "skill prose no suite reads selected tests: $listed"
+  commit_fixture_setup "$repo" skill-prose-change
+
+  printf '\n' >>"$repo/.agents/skills/example/references/read-by-a-suite.md"
+  changed_listing "$repo" "a skill reference a suite reads"
+  listed=$LISTED
+  [ "$listed" = "tests/fm-brief.test.sh" ] \
+    || fail "a skill reference must select exactly the suite naming it, got: $listed"
+
+  rm -rf "$tmp"
+  pass "the risky-area list selects its readers and skill prose selects only a suite naming it"
+}
+
+# Plugin suites name a plugin by basename, and plugins share lib/ modules, so
+# any plugin file selects every suite naming a plugin file or the plugin
+# directory. With no such suite left, a live plugin still refuses.
+test_changed_opencode_plugin_selects_plugin_suites() {
+  local tmp repo listed rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-plugin.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+  mkdir -p "$repo/.opencode/plugins/lib"
+  : >"$repo/.opencode/plugins/fm-primary-demo-check.js"
+  : >"$repo/.opencode/plugins/lib/fm-demo-shared.js"
+  printf 'for plugin in fm-primary-demo-check.js; do :; done\n' \
+    >>"$repo/tests/fm-cd-pretool-check.test.sh"
+  printf '# .opencode/plugins\n' >>"$repo/tests/fm-daemon.test.sh"
+  commit_fixture_setup "$repo" plugin-setup
+
+  printf '\n' >>"$repo/.opencode/plugins/fm-primary-demo-check.js"
+  changed_listing "$repo" "a plugin change"
+  listed=$LISTED
+  assert_contains "$listed" "tests/fm-cd-pretool-check.test.sh" "a plugin selects the suite naming it"
+  assert_contains "$listed" "tests/fm-daemon.test.sh" "a plugin selects a suite naming the plugin directory"
+  assert_not_contains "$listed" "tests/fm-pi-watch-extension.test.sh" \
+    "a plugin selected a family-mate of a plugin suite"
+  commit_fixture_setup "$repo" plugin-change
+
+  printf '\n' >>"$repo/.opencode/plugins/lib/fm-demo-shared.js"
+  changed_listing "$repo" "a plugin lib change"
+  listed=$LISTED
+  assert_contains "$listed" "tests/fm-cd-pretool-check.test.sh" "a plugin lib selects the plugin suites"
+  commit_fixture_setup "$repo" plugin-lib-change
+
+  printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/fm-cd-pretool-check.test.sh"
+  printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/fm-daemon.test.sh"
+  commit_fixture_setup "$repo" plugin-suites-gone
+  printf '\n' >>"$repo/.opencode/plugins/fm-primary-demo-check.js"
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "a plugin no suite names must fail with exit 2, got $rc"
+  grep -Fq 'no changed-test mapping for source path: .opencode/plugins/fm-primary-demo-check.js' "$tmp/err" \
+    || fail "the plugin refusal did not name the plugin: $(cat "$tmp/err")"
+
+  rm -rf "$tmp"
+  pass "a plugin or plugin lib selects the plugin suites, and an unread plugin refuses"
+}
+
+# An unmapped bin/ file reaches tests through consumers of any language and any
+# depth: a shell helper named by a Python module, imported by another module,
+# imported by a client script that a curated watcher runs. Python modules count
+# as named by their import, and a fixture or Python test helper importing a
+# module selects the suites that read it. A file nothing reaches still refuses,
+# and an import cycle with no reader ends in that refusal.
+test_changed_bin_walk_follows_python_imports_to_any_depth() {
+  local tmp repo listed rc path
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-walk.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+  : >"$repo/bin/fm-zview-adapter.sh"
+  printf 'ADAPTER = HERE / "fm-zview-adapter.sh"\n' >"$repo/bin/fm_zview_crew.py"
+  printf 'import fm_zview_crew\n' >"$repo/bin/fm_zview_engine.py"
+  printf 'from fm_zview_engine import run\n' >"$repo/bin/fm-zview-client.py"
+  # shellcheck disable=SC2016  # literal fixture text the scan must find verbatim
+  printf 'python3 "$ROOT/bin/fm-zview-client.py"\n' >>"$repo/bin/fm-watch-probe.sh"
+  : >"$repo/bin/fm_zfixture_only.py"
+  mkdir -p "$repo/tests/fixtures/zviews"
+  printf 'import fm_zfixture_only\n' >"$repo/tests/fixtures/zviews/check.py"
+  printf '# tests/fixtures/zviews\n' >>"$repo/tests/fm-session-start.test.sh"
+  : >"$repo/bin/fm_zhelper_only.py"
+  printf 'from fm_zhelper_only import cases\n' >"$repo/tests/zcases.py"
+  printf '# zcases.py\n' >>"$repo/tests/fm-pr-merge.test.sh"
+  : >"$repo/bin/fm_zorphan.py"
+  printf 'import fm_zloop_b\n' >"$repo/bin/fm_zloop_a.py"
+  printf 'import fm_zloop_a\n' >"$repo/bin/fm_zloop_b.py"
+  commit_fixture_setup "$repo" walk-setup
+
+  printf '\n' >>"$repo/bin/fm-zview-adapter.sh"
+  changed_listing "$repo" "a helper four consumers from a curated script"
+  listed=$LISTED
+  assert_contains "$listed" "tests/fm-daemon.test.sh" \
+    "the walk must reach the curated watcher four consumers away"
+  commit_fixture_setup "$repo" adapter-change
+
+  printf '\n' >>"$repo/bin/fm_zview_crew.py"
+  changed_listing "$repo" "an imported Python module"
+  listed=$LISTED
+  assert_contains "$listed" "tests/fm-daemon.test.sh" \
+    "a module must reach the curated watcher through its importers"
+  commit_fixture_setup "$repo" module-change
+
+  printf '\n' >>"$repo/bin/fm_zfixture_only.py"
+  changed_listing "$repo" "a module a fixture imports"
+  listed=$LISTED
+  [ "$listed" = "tests/fm-session-start.test.sh" ] \
+    || fail "a module a fixture imports must select exactly the fixture's reader, got: $listed"
+  commit_fixture_setup "$repo" fixture-module-change
+
+  printf '\n' >>"$repo/bin/fm_zhelper_only.py"
+  changed_listing "$repo" "a module a Python test helper imports"
+  listed=$LISTED
+  [ "$listed" = "tests/fm-pr-merge.test.sh" ] \
+    || fail "a module a Python test helper imports must select exactly the helper's reader, got: $listed"
+  commit_fixture_setup "$repo" helper-module-change
+
+  for path in bin/fm_zorphan.py bin/fm_zloop_a.py; do
+    printf '\n' >>"$repo/$path"
+    set +e
+    (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "$path reaches no test and must fail with exit 2, got $rc"
+    grep -Fq "no changed-test mapping for source path: $path" "$tmp/err" \
+      || fail "the refusal did not name $path: $(cat "$tmp/err")"
+    git -C "$repo" checkout -q -- "$path"
+  done
+
+  rm -rf "$tmp"
+  pass "the bin walk follows Python imports, fixtures and helpers to any depth, and an unreached file refuses"
 }
 
 # Exercise begin/end markers from real fixture processes to prove the automatic
@@ -1808,6 +1989,9 @@ test_changed_runner_surfaces_select_their_family
 test_shell_line_ending_policy_selects_runner_contract
 test_changed_dependency_selection_and_unmapped_failure
 test_changed_bin_reference_selects_per_script_not_per_family
+test_changed_risky_list_and_skill_prose_map_without_escalating
+test_changed_opencode_plugin_selects_plugin_suites
+test_changed_bin_walk_follows_python_imports_to_any_depth
 test_changed_uses_bounded_automatic_concurrency
 test_windows_posix_mode_emulation_does_not_fail_parallel_runs
 test_script_list_uses_bounded_automatic_concurrency
