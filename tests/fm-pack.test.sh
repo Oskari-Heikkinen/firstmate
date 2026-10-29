@@ -296,8 +296,11 @@ test_machine_share() {
 test_slot_waits() {
   local lock="$TMP_ROOT/held-slot.lock" ready="$TMP_ROOT/slot-ready" go="$TMP_ROOT/slot-go"
   local out="$TMP_ROOT/slot.out" err="$TMP_ROOT/slot.err" holder verify rc
-  flock "$lock" bash -c 'printf "pid=%s started=1 command=test-holder\n" "$$" >"$1"; : >"$2"
-    until [ -e "$3" ]; do sleep 0.05; done' _ "$lock" "$ready" "$go" &
+  # The holder keeps no output pipe open and gives up after 300 s, so a failed
+  # assertion below ends the test instead of leaving it waiting on the holder.
+  flock "$lock" bash -c 'printf "pid=%s started=1 command=test-holder\n" "$$" >"$1"; : >"$2"; n=0
+    until [ -e "$3" ] || [ "$n" -ge 6000 ]; do sleep 0.05; n=$((n + 1)); done' _ "$lock" "$ready" "$go" \
+    </dev/null >/dev/null 2>&1 &
   holder=$!
   wait_for 30 test -e "$ready" || fail "the test holder never took the slot"
   PACK_SLOT_LOCK=$lock run_pack verify "$R/unit-a.sqfs" >"$out" 2>"$err" &
