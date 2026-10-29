@@ -95,8 +95,8 @@ run() {
   RC=$?
   set -e
   ERR=$(cat "$T/err")
-  case "$RC" in
-    0|75)
+  case "${1:-}:$RC" in
+    measure:0|measure:75)
       jq -e '[.c_terms[] | select(.state == "unknown" and .reserved_bytes != null)] == []
         and ([.free[] | select(.state == "unknown" and .free_bytes != null)] == [])
         and ([.c_terms[] | select(.state != "unknown" and (.reserved_bytes | type) != "number")] == [])' \
@@ -106,9 +106,15 @@ run() {
         assert_equals '' "$ERR" "$CASE: rc 0 stderr"
       else
         assert_not_equals '[]' "$(j .reasons)" "$CASE: rc 75 without reasons"
+        case "$ERR" in
+          *$'\n'*|'') fail "$CASE: rc 75 needs exactly one stderr line: $ERR" ;;
+        esac
+        assert_contains "$ERR" "fm-storage-c-terms: wait: cannot-measure: " "$CASE: rc 75 stderr"
       fi
       ;;
-    *) assert_equals '' "$OUT" "$CASE: refusal stdout" ;;
+    *:1|*:2) assert_equals '' "$OUT" "$CASE: refusal stdout" ;;
+    --help:0) : ;;
+    *) fail "$CASE: unexpected exit $RC" ;;
   esac
 }
 
@@ -174,8 +180,10 @@ new_world not-ext4
 mountinfo 8:64 xfs > "$W/proc/self/mountinfo"
 measure
 expect_code 75 "$RC" "$CASE"
-assert_equals "fm-storage-c-terms: wait: cannot-measure: linux:linux-free: $W/root is xfs, not ext4 (and 1 more)" "$ERR" "$CASE"
+assert_equals "fm-storage-c-terms: wait: cannot-measure: linux:linux-free: $W/root is xfs, not ext4 (and 2 more)" "$ERR" "$CASE"
 assert_equals '["unknown",null,"the Linux root is not a proven ext4 mount"]' "$(term ext4_vhdx)" "$CASE ext4"
+# The swap location comes from the profile holding the ext4.vhdx.
+assert_equals '["unknown",null,"the Windows profile holding .wslconfig is not known"]' "$(term swap_vhdx)" "$CASE swap"
 pass "a Linux root that is not ext4 refuses free space and ext4 growth"
 
 CASE='no-host-mount'
