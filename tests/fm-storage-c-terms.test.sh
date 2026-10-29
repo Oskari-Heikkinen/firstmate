@@ -71,13 +71,15 @@ END
 EOF
 }
 
-# The tree's names, sizes, modes and mtimes, to prove a run wrote nothing.
+# The tree's names, sizes, modes and mtimes, to prove a run wrote nothing; the
+# fake PowerShell's own directory (its reply and recorded argv) is left out.
 snapshot() {
   python3 -c 'import os, sys
-for d, dirs, files in sorted(os.walk(sys.argv[1])):
+for d, dirs, files in os.walk(sys.argv[1]):
+    dirs[:] = sorted(x for x in dirs if os.path.join(d, x) != sys.argv[2])
     for n in sorted(dirs + files):
         st = os.lstat(os.path.join(d, n))
-        print(os.path.join(d, n), st.st_size, st.st_mode, st.st_mtime_ns)' "$W"
+        print(os.path.join(d, n), st.st_size, st.st_mode, st.st_mtime_ns)' "$W" "$W/ps"
 }
 
 # run ARGS...: OUT, ERR and RC of one measure run in world W, plus the
