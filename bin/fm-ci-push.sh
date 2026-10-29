@@ -45,12 +45,15 @@
 # A plain push refused as non-fast-forward deletes the task's own CI branch and
 # pushes again, which docs say to do by hand; it never forces.
 #
-# rerun-infra reads the classes from
-#   fm-ci-errors.sh --tsv -R <owner/repo> <run-id>
-# which must exit 0 and print one `<job-id><TAB><class>[<TAB>...]` row per
-# failed job or failing test (`#` lines and blank lines ignored), class one of
-# infra, flaky, real, test-defect, unknown. A missing classifier, a failed job
-# with no row, a row naming a job that did not fail, or any other line refuses.
+# rerun-infra reads the classes from bin/fm-ci-errors.sh (fm-ci-errors/v1):
+#   fm-ci-errors.sh --repo <owner/repo> --out $FM_HOME/data/ci-errors/<run-id> <run-id>
+# which must exit 0 (75 means the run is still going) and write errors.json in
+# that directory: schema fm-ci-errors/v1, run.id and run.attempt this run's,
+# and one row per failed job and failing test, each with a numeric job_id and
+# a class, one of infra, flaky, real, unknown. A missing classifier, any other
+# exit, a list of another run or attempt, a failed job with no row, a row
+# naming a job that did not fail, or any other class refuses. The list stays
+# in that directory for the worker to read.
 #
 # Every gh call names the repository: --repo, else origin's GitHub URL. A gh
 # call that fails or prints anything but the JSON expected refuses; no state
@@ -483,8 +486,8 @@ raise_blocked() {  # <note>
 }
 
 mode_rerun_infra() {
-  local run_id=$1 flaky_ok=$2 branch status conclusion url attempt jobs failed errors_bin rows
-  local line jid class rest name n_failed ok_classes bad seen
+  local run_id=$1 flaky_ok=$2 branch status conclusion url attempt run_attempt jobs failed errors_bin
+  local errors_dir rc rows jid class name n_failed ok_classes bad seen
   gh_json "run $run_id" '(.id | type == "number") and (.head_branch | type == "string") and (.status | type == "string") and (.html_url | type == "string") and (.run_attempt | type == "number")' \
     api "repos/$REPO/actions/runs/$run_id"
   IFS=$'\t' read -r branch status conclusion url attempt <<< "$(printf '%s' "$GH_OUT" \
@@ -499,6 +502,7 @@ mode_rerun_infra() {
   open_log "$TASK"
   [ "$status" = completed ] || refuse "run $url is $status (attempt $attempt); a rerun waits until it finishes"
   [ "$conclusion" != success ] || finish "nothing to rerun: run $url is green"
+  run_attempt=$attempt
 
   gh_json "the jobs of run $run_id" '(.jobs | type == "array") and all(.jobs[]; (.id | type == "number") and (.name | type == "string") and (.status | type == "string") and (.run_attempt | type == "number"))' \
     api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100&filter=latest"
@@ -524,16 +528,28 @@ mode_rerun_infra() {
   errors_bin=${FM_CI_PUSH_ERRORS_BIN:-$SCRIPT_DIR/fm-ci-errors.sh}
   [ -x "$errors_bin" ] \
     || refuse "the classifier $errors_bin (bin/fm-ci-errors.sh) is not on this base; classify every failed job of $url by hand, and only when all are infra run gh run rerun $run_id --failed -R $REPO once"
-  rows=$("$errors_bin" --tsv -R "$REPO" "$run_id") || refuse "$errors_bin could not classify run $url"
+  errors_dir=$FM_HOME/data/ci-errors/$run_id
+  rc=0
+  "$errors_bin" --repo "$REPO" --out "$errors_dir" "$run_id" >/dev/null || rc=$?
+  case "$rc" in
+    0) ;;
+    75) refuse "$errors_bin says run $url has not completed; rerun-infra once it has" ;;
+    *) refuse "$errors_bin could not classify run $url (exit $rc)" ;;
+  esac
+  rows=$(jq -r --argjson id "$run_id" --argjson attempt "$run_attempt" '
+    if .schema == "fm-ci-errors/v1" and .run.id == $id and .run.attempt == $attempt
+      and (.rows | type == "array")
+      and all(.rows[]; (.job_id | type == "number") and (.class | type == "string"))
+    then .rows[] | [.job_id, .class] | @tsv
+    else error("not the list of this run attempt") end' "$errors_dir/errors.json" 2>/dev/null) \
+    || refuse "$errors_dir/errors.json is not an fm-ci-errors/v1 list for attempt $run_attempt of $url"
   ok_classes=' infra '
   [ "$flaky_ok" = 0 ] || ok_classes=' infra flaky '
   bad=
   seen=' '
-  while IFS= read -r line; do
-    case "$line" in ''|'#'*) continue ;; esac
-    IFS=$'\t' read -r jid class rest <<< "$line"
-    case "$jid" in ''|*[!0-9]*) refuse "unrecognized classifier line: $line" ;; esac
-    case "$class" in infra|flaky|real|test-defect|unknown) ;; *) refuse "unrecognized class '$class' in classifier line: $line" ;; esac
+  while IFS=$'\t' read -r jid class; do
+    [ -n "$jid" ] || continue
+    case "$class" in infra|flaky|real|unknown) ;; *) refuse "unrecognized class '$class' for job $jid in $errors_dir/errors.json" ;; esac
     case "$failed" in
       "$jid"$'\t'*|*$'\n'"$jid"$'\t'*) ;;
       *) refuse "the classifier names job $jid, which did not fail in $url" ;;
@@ -545,10 +561,10 @@ mode_rerun_infra() {
     [ -n "$jid" ] || continue
     case "$seen" in *" $jid "*) ;; *) refuse "the classifier gave failed job '$name' ($jid) no row" ;; esac
   done <<< "$failed"
-  [ -z "$bad" ] || refuse "not every failure of $url is infra:$bad; read them with bin/fm-ci-errors.sh and fix the real ones"
+  [ -z "$bad" ] || refuse "not every failure of $url is infra:$bad; read $errors_dir/errors.md and fix the real ones"
   log_event "every failed job of $url is classed${ok_classes% }; rerunning $n_failed failed jobs"
   gh run rerun "$run_id" --failed -R "$REPO" >/dev/null || refuse "gh run rerun $run_id --failed failed"
-  finish "reran the $n_failed failed jobs of $url once (attempt $((attempt + 1))); a second failure of the same job is a blocker"
+  finish "reran the $n_failed failed jobs of $url once (attempt $((run_attempt + 1))); a second failure of the same job is a blocker"
 }
 
 case "${1:-}" in

@@ -433,7 +433,9 @@ pass "a missing FM_HOME refuses before any push"
 # --- rerun-infra --------------------------------------------------------------
 
 # infra_case <job-attempt>: a finished red ci/<task> run with one green and two
-# failed jobs, and a classifier printing $GHD/classes.
+# failed jobs, and a classifier that writes an fm-ci-errors/v1 errors.json
+# with one job row per `<job-id>\t<class>` line of $GHD/classes, edited by the
+# jq filter in $GHD/edit; a $GHD/classifier-exit file makes it exit with that.
 infra_case() {
   new_case
   commit_file a.txt one "task: add a"
@@ -443,13 +445,29 @@ infra_case() {
     {"id": 2, "name": "Behavior shard 1", "status": "completed", "conclusion": "failure", "run_attempt": %s},
     {"id": 3, "name": "Supervision calibration", "status": "completed", "conclusion": "cancelled", "run_attempt": %s}]}\n' \
     "${1:-1}" "${1:-1}" >"$GHD/jobs-301.json"
+  printf '%s\n' "${1:-1}" >"$GHD/attempt"
+  printf '.\n' >"$GHD/edit"
   cat >"$C/classifier" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_GH_DIR/classifier.log"
-cat "$FAKE_GH_DIR/classes"
+[ ! -f "$FAKE_GH_DIR/classifier-exit" ] || exit "$(cat "$FAKE_GH_DIR/classifier-exit")"
+out='' run=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --out) out=$2; shift 2 ;;
+    --repo) shift 2 ;;
+    *) run=$1; shift ;;
+  esac
+done
+mkdir -p "$out" || exit 1
+jq -R -s --argjson id "$run" --argjson attempt "$(cat "$FAKE_GH_DIR/attempt")" '
+  {schema: "fm-ci-errors/v1", run: {id: $id, attempt: $attempt},
+   rows: [split("\n")[] | select(length > 0) | split("\t")
+          | {kind: "job", job_id: (.[0] | tonumber), class: .[1]}]}' "$FAKE_GH_DIR/classes" \
+  | jq "$(cat "$FAKE_GH_DIR/edit")" >"$out/errors.json"
 EOF
   chmod +x "$C/classifier"
-  printf '# job\tclass\n2\tinfra\tno runner\n3\tinfra\tcancelled before its first step\n' >"$GHD/classes"
+  printf '2\tinfra\n3\tinfra\n' >"$GHD/classes"
 }
 
 run_infra() {  # <args...>
@@ -466,7 +484,7 @@ infra_case
 run_infra 301
 expect_code 0 "$RC" "an all-infra run is rerun"
 assert_grep "301" "$GHD/reruns.log" "gh run rerun was called"
-assert_grep "--tsv -R $REPO 301" "$GHD/classifier.log" "the classifier gets the run and repo"
+assert_grep "--repo $REPO --out $HOMEDIR/data/ci-errors/301 301" "$GHD/classifier.log" "the classifier gets the run, repo and list directory"
 assert_contains "$OUT" "reran the 2 failed jobs" "the rerun is reported"
 assert_grep "reran the 2 failed jobs" "$HOMEDIR/state/$T.ci-push.log" "the rerun is logged"
 assert_grep "run rerun 301 --failed -R $REPO" "$GHD/calls.log" "the rerun names the repo"
@@ -481,10 +499,11 @@ assert_absent "$GHD/reruns.log" "nothing is rerun"
 pass "rerun-infra refuses without bin/fm-ci-errors.sh"
 
 infra_case
-printf '2\tinfra\n3\treal\ttests/x.test.sh exit=1\n' >"$GHD/classes"
+printf '2\tinfra\n3\treal\n' >"$GHD/classes"
 run_infra 301
 expect_code 1 "$RC" "a real failure refuses"
-assert_contains "$ERR" "not every failure" "the non-infra row is named"
+assert_contains "$ERR" "not every failure of https://github.com/$REPO/actions/runs/301 is infra: 3:real" "the non-infra row is named"
+assert_contains "$ERR" "$HOMEDIR/data/ci-errors/301/errors.md" "the list to read is named"
 assert_absent "$GHD/reruns.log" "nothing is rerun"
 pass "rerun-infra refuses when any failure is not infra"
 
@@ -512,14 +531,41 @@ run_infra 301
 expect_code 1 "$RC" "a row for a green job refuses"
 assert_contains "$ERR" "names job 1, which did not fail" "the stray row is named"
 assert_absent "$GHD/reruns.log" "nothing is rerun"
-printf '2 infra\n3\tinfra\n' >"$GHD/classes"
-run_infra 301
-expect_code 1 "$RC" "an unrecognized classifier line refuses"
-assert_contains "$ERR" "unrecognized classifier line" "the bad line is named"
 printf '2\tinfrastructure\n3\tinfra\n' >"$GHD/classes"
 run_infra 301
 expect_code 1 "$RC" "an unknown class refuses"
-assert_contains "$ERR" "unrecognized class 'infrastructure'" "the bad class is named"
+assert_contains "$ERR" "unrecognized class 'infrastructure' for job 2" "the bad class is named"
+printf '2\ttest-defect\n3\tinfra\n' >"$GHD/classes"
+run_infra 301
+expect_code 1 "$RC" "a class fm-ci-errors/v1 does not emit refuses"
+assert_contains "$ERR" "unrecognized class 'test-defect'" "the foreign class is named"
+printf '2\tinfra\n3\tinfra\n' >"$GHD/classes"
+printf '.schema = "fm-ci-errors/v2"\n' >"$GHD/edit"
+run_infra 301
+expect_code 1 "$RC" "another schema refuses"
+assert_contains "$ERR" "is not an fm-ci-errors/v1 list for attempt 1" "the bad list is named"
+printf '.run.id = 302\n' >"$GHD/edit"
+run_infra 301
+expect_code 1 "$RC" "another run's list refuses"
+printf '.run.attempt = 2\n' >"$GHD/edit"
+run_infra 301
+expect_code 1 "$RC" "another attempt's list refuses"
+printf '.rows[0].job_id = "2"\n' >"$GHD/edit"
+run_infra 301
+expect_code 1 "$RC" "a non-numeric job id refuses"
+printf '.rows = {}\n' >"$GHD/edit"
+run_infra 301
+expect_code 1 "$RC" "rows that are not a list refuse"
+assert_absent "$GHD/reruns.log" "nothing is rerun"
+printf '.\n' >"$GHD/edit"
+printf '75\n' >"$GHD/classifier-exit"
+run_infra 301
+expect_code 1 "$RC" "a classifier exit 75 refuses"
+assert_contains "$ERR" "has not completed" "the unfinished run is named"
+printf '1\n' >"$GHD/classifier-exit"
+run_infra 301
+expect_code 1 "$RC" "a failed classifier refuses"
+assert_contains "$ERR" "could not classify run https://github.com/$REPO/actions/runs/301 (exit 1)" "the failure is named"
 assert_absent "$GHD/reruns.log" "nothing is rerun"
 pass "rerun-infra refuses classifier output it does not recognize"
 
