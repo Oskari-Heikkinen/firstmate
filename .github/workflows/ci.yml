@@ -6,7 +6,7 @@ name: CI
 on:
   push:
     # ci/** verifies scratch work before it lands; ci/full/** runs the main
-    # layout before landing.
+    # layout before landing; ci/try/** runs only the tests a push names.
     branches: [main, 'ci/**']
   schedule:
     # Weekly tier: Mondays 04:17 UTC.
@@ -37,6 +37,7 @@ jobs:
       lint: ${{ steps.layout.outputs.lint }}
       changed: ${{ steps.layout.outputs.changed }}
       herdr_paths: ${{ steps.layout.outputs.herdr_paths }}
+      try_list: ${{ steps.layout.outputs.try_list }}
       baseline: ${{ steps.baseline.outputs.found }}
     steps:
       - uses: actions/checkout@v6
@@ -52,90 +53,10 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
+        # bin/fm-ci-plan.sh owns the layouts and every output below.
         run: |
-          set -u
-          out() { printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; }
-          summary() { printf '%s\n' "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
-
-          # A main push whose exact commit already passed this same workflow
-          # on a ci/full/** push (the main layout) skips the suites. Any doubt
-          # (an API error, no matching run) runs them.
-          prior_full_pass() {
-            local workflow_id runs prior
-            workflow_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id) \
-              && [ -n "$workflow_id" ] || return 1
-            runs=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?head_sha=$HEAD_SHA&event=push&status=success&per_page=100") \
-              || return 1
-            prior=$(printf '%s' "$runs" | jq -r --arg sha "$HEAD_SHA" --arg repo "$REPO" \
-              --argjson wid "$workflow_id" --argjson self "$RUN_ID" '
-              [.workflow_runs[]?
-                | select(.head_sha == $sha and .event == "push" and .conclusion == "success"
-                  and .workflow_id == $wid and .id != $self
-                  and (.head_branch // "" | startswith("ci/full/"))
-                  and .head_repository.full_name == $repo)]
-              | sort_by(.run_started_at) | last // empty
-              | "\(.html_url) \(.head_branch)"') || return 1
-            [ -n "$prior" ] || return 1
-            summary "Suites skipped: ${prior%% *} (${prior#* }) already passed this workflow on \`$HEAD_SHA\`."
-          }
-
-          layout=full
-          case "$EVENT" in
-            schedule|workflow_dispatch) layout=weekly ;;
-            push)
-              case "$REF" in
-                refs/heads/main) prior_full_pass && layout=skip ;;
-                refs/heads/ci/full/*) layout=full ;;
-                refs/heads/ci/*) layout=ci ;;
-              esac
-              ;;
-          esac
-
-          changed=false
-          herdr_paths=
-          if [ "$layout" = ci ]; then
-            # Tier-2 and weekly tests mapped to the changed files. An unmapped
-            # path, or a widely sourced change selecting more than 30 tests,
-            # escalates the push to the main layout.
-            herdr_family=$(bin/fm-test-run.sh --list --family real-herdr-gated) || exit 1
-            if ! selected=$(bin/fm-test-run.sh --list --changed --base origin/main --tier full,weekly); then
-              summary "Changed files include a path the test map cannot place: running the main layout."
-              layout=full
-            elif [ "$(printf '%s\n' "$selected" | grep -c .)" -gt 30 ]; then
-              summary "Changed files select more than 30 tier-2 tests: running the main layout."
-              layout=full
-            else
-              portable=$(printf '%s\n' "$selected" | grep -vxF -e "$herdr_family" | grep . || true)
-              [ -z "$portable" ] || changed=true
-              herdr_gate=$(bin/fm-test-run.sh --list --family real-herdr-gated --tier gate) || exit 1
-              herdr_paths=$( { printf '%s\n' "$herdr_gate"; printf '%s\n' "$selected" | grep -xF -e "$herdr_family" || true; } \
-                | grep . | LC_ALL=C sort -u | tr '\n' ' ')
-              summary "Changed-area tier-2 tests: $(printf '%s\n' "$selected" | grep -c .)"
-            fi
-          fi
-
-          case "$layout" in
-            skip) tiers=; shards='[]' ;;
-            ci) tiers=gate; shards='[1,2,3]' ;;
-            full) tiers=gate,full; shards='[1,2,3,4,5,6,7]' ;;
-            weekly) tiers=weekly,live; shards='[1,2,3,4,5]' ;;
-          esac
-          # Lint scopes: the changed files on every ci/** push, all of bin/ in
-          # three partitions on the main layout; the weekly test-lint job
-          # covers every test file.
-          lint='[]'
-          case "$layout:$REF" in
-            ci:*) lint='["changed"]' ;;
-            full:refs/heads/main) lint='["1of3","2of3","3of3"]' ;;
-            full:*) lint='["changed","1of3","2of3","3of3"]' ;;
-          esac
-          summary "Layout: $layout (event $EVENT, ref $REF)"
-          out layout "$layout"
-          out tiers "$tiers"
-          out shards "$shards"
-          out lint "$lint"
-          out changed "$changed"
-          out herdr_paths "$herdr_paths"
+          bin/fm-ci-plan.sh --event "$EVENT" --ref "$REF" --sha "$HEAD_SHA" \
+            --repo "$REPO" --run-id "$RUN_ID"
       # Shards pack by measured durations: the aggregate timing artifact of the
       # newest successful main or ci/full/** run, merged with the newest
       # successful weekly run's. Without one every test weighs the same.
@@ -244,6 +165,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --tier static \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-static.json"
+      # A ci/try/** run is advisory, but a static failure there blocks the
+      # same head on ci/<task>.
+      - name: Name the landing guard on a try run
+        if: failure() && startsWith(github.ref, 'refs/heads/ci/try/')
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::landing guard: would block ci/${REF#refs/heads/ci/try/}"
       - name: Upload static timing artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -255,7 +184,7 @@ jobs:
   lint:
     name: Lint ${{ matrix.scope }}
     needs: plan
-    if: needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full'
+    if: needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full' || needs.plan.outputs.layout == 'try'
     runs-on: ubuntu-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -313,12 +242,12 @@ jobs:
             ${{ runner.temp }}/fm-lint/lint-${{ matrix.scope }}.roots.tsv
           if-no-files-found: warn
 
-  # The plan's tiers, packed into duration-balanced shards by bin/fm-test-run.sh
-  # --shard. Real Herdr stays in tests-herdr.
+  # The plan's tiers, or a try run's named tests, packed into duration-balanced
+  # shards by bin/fm-test-run.sh --shard. Real Herdr stays in tests-herdr.
   tests:
     name: Behavior shard ${{ matrix.shard }}
     needs: plan
-    if: needs.plan.outputs.layout != 'skip'
+    if: needs.plan.outputs.layout != 'skip' && needs.plan.outputs.shards != '[]'
     runs-on: ubuntu-latest
     # Normal tier (see the timeout policy above).
     timeout-minutes: 30
@@ -384,7 +313,9 @@ jobs:
           path: ${{ runner.temp }}/fm-timing
       - name: Run shard ${{ matrix.shard }}
         env:
+          LAYOUT: ${{ needs.plan.outputs.layout }}
           TIERS: ${{ needs.plan.outputs.tiers }}
+          TRY_LIST: ${{ needs.plan.outputs.try_list }}
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           SHARD_NUMBER: ${{ matrix.shard }}
         run: |
@@ -393,10 +324,19 @@ jobs:
           timing=()
           baseline="$RUNNER_TEMP/fm-timing/fm-timing-baseline.json"
           [ ! -s "$baseline" ] || timing=(--timing "$baseline")
+          if [ "$LAYOUT" = try ]; then
+            # The plan's --from-list entries. A list runs at the runner's own
+            # concurrency, since an explicit --jobs refuses unproven scripts.
+            read -r -a entries <<<"$TRY_LIST"
+            printf '%s\n' "${entries[@]}" >"$RUNNER_TEMP/fm-try.list"
+            selection=(--from-list "$RUNNER_TEMP/fm-try.list")
+          else
+            selection=(--tier "$TIERS" --exclude-family real-herdr-gated --jobs 4)
+          fi
           # The Pi package is installed above and CI provides npm and tsc, so
           # any missing typecheck prerequisite is a broken shard, not a valid skip.
-          bin/fm-test-run.sh --tier "$TIERS" --exclude-family real-herdr-gated \
-            --shard "$SHARD" --jobs 4 ${timing[@]+"${timing[@]}"} \
+          bin/fm-test-run.sh "${selection[@]}" \
+            --shard "$SHARD" ${timing[@]+"${timing[@]}"} \
             --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-tests-${SHARD_NUMBER}.json"
       - name: Upload shard ${{ matrix.shard }} timing artifact
@@ -467,13 +407,16 @@ jobs:
   # Required real-Herdr job: pinned install, the real-herdr-gated family run
   # serially, hard-fail on "skip: herdr not found". The main layout runs its
   # gate and tier-2 members; a ci/** push runs the gate members plus those
-  # mapped to the changed files. Starts on Linux x86_64; if a genuine platform
+  # mapped to the changed files; a ci/try/** push runs only the members it
+  # selected, and skips the job when it selected none. Starts on Linux x86_64; if a genuine platform
   # invariant fails (focus, cleanup, default-session tripwire), keep the
   # failure evidence and move the job to macOS rather than skip assertions.
   tests-herdr:
     name: Behavior tests (Herdr)
     needs: plan
-    if: needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full'
+    if: >-
+      needs.plan.outputs.layout == 'ci' || needs.plan.outputs.layout == 'full'
+      || (needs.plan.outputs.layout == 'try' && needs.plan.outputs.herdr_paths != '')
     runs-on: ubuntu-latest
     # Heavy tier (see the timeout policy above): the last-resort job backstop.
     # The family-run step below owns the hang tripwire, so a wedged suite fails
@@ -570,6 +513,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fm-test"
           if [ "$LAYOUT" = full ]; then
             selection=(--family real-herdr-gated --tier 'gate,full')
+          elif [ "$LAYOUT" = try ]; then
+            # The plan's --from-list entries for this job.
+            read -r -a entries <<<"$HERDR_PATHS"
+            printf '%s\n' "${entries[@]}" >"$RUNNER_TEMP/fm-try-herdr.list"
+            selection=(--from-list "$RUNNER_TEMP/fm-try-herdr.list")
           else
             # Paths the plan job listed: the gate members and the changed area.
             read -r -a selection <<<"$HERDR_PATHS"
@@ -603,6 +551,7 @@ jobs:
           if-no-files-found: warn
 
   # Aggregate per-job timing into the artifact later runs pack their shards by.
+  # A try run's partial selection is never a baseline.
   tests-timing-aggregate:
     name: Behavior timing aggregate
     runs-on: ubuntu-latest
@@ -614,7 +563,9 @@ jobs:
       - tests
       - tests-changed
       - tests-herdr
-    if: always() && needs.plan.outputs.layout != 'skip' && needs.plan.result == 'success'
+    if: >-
+      always() && needs.plan.outputs.layout != 'skip' && needs.plan.outputs.layout != 'try'
+      && needs.plan.result == 'success'
     steps:
       - uses: actions/checkout@v6
       - name: Download job timing artifacts

@@ -1926,6 +1926,117 @@ SH
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
 }
 
+test_from_list_selects_entries_and_refuses_bad_ones() {
+  local tmp repo out rc
+  tmp=$(fm_test_tmproot fm-test-run-from-list)
+  repo="$tmp/repo"
+  init_stub_suite_repo "$repo" fm-a.test.sh fm-b.test.sh
+  printf '# try list\n\ntests/fm-a.test.sh\r\nfm-b.test.sh:test_x\ntests/fm-a.test.sh\n' >"$tmp/ok.list"
+  out=$(cd "$repo" && bin/fm-test-run.sh --list --from-list "$tmp/ok.list") \
+    || fail "--from-list with a comment, a blank, CRLF and a duplicate must list"
+  [ "$out" = "tests/fm-a.test.sh
+tests/fm-b.test.sh:test_x" ] || fail "--from-list must print each entry once in canonical form: $out"
+
+  for bad in 'tests/fm-a.test.sh
+tests/fm-a.test.sh:test_y' 'tests/fm-a.test.sh:bad-name' 'tests/fm-a.test.sh:' \
+    'tests/fm-missing.test.sh' '# only a comment'; do
+    printf '%s\n' "$bad" >"$tmp/bad.list"
+    rc=0
+    (cd "$repo" && bin/fm-test-run.sh --list --from-list "$tmp/bad.list") >/dev/null 2>"$tmp/bad.err" || rc=$?
+    [ "$rc" -eq 2 ] || fail "--from-list must refuse with exit 2 (got $rc) for: $bad"
+  done
+  printf 'tests/fm-a.test.sh\ntests/fm-a.test.sh:test_y\n' >"$tmp/bad.list"
+  (cd "$repo" && bin/fm-test-run.sh --list --from-list "$tmp/bad.list") >/dev/null 2>"$tmp/bad.err" || true
+  assert_grep "$tmp/bad.err" "twice with different cases" "a whole and a case entry for one script must name the conflict"
+  rc=0
+  (cd "$repo" && bin/fm-test-run.sh --list --from-list "$tmp/nowhere.list") >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "--from-list must refuse an unreadable list file (got $rc)"
+  pass "--from-list lists entries once and refuses conflicts, malformed cases, missing scripts and empty lists"
+}
+
+# A case suite sourcing a real copy of tests/lib.sh, so the FM_TEST_ONLY filter
+# and the runner's no-match verdict meet as they do in CI.
+init_case_suite_repo() {
+  local repo=$1
+  init_stub_suite_repo "$repo"
+  cp "$ROOT/tests/lib.sh" "$repo/tests/lib.sh"
+  cat >"$repo/tests/fm-cases.test.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+case_helper() { printf 'helper ran\n'; }
+test_one() { pass "one"; }
+test_two() { case_helper; test_three_helper_case; pass "two"; }
+test_three_helper_case() { pass "three"; }
+test_one
+test_two
+test_three_helper_case
+SH
+  cat >"$repo/tests/fm-gated.test.sh" <<'SH'
+#!/usr/bin/env bash
+echo "skip: fixture tool not found"
+SH
+}
+
+test_from_list_case_entry_runs_one_case() {
+  local tmp repo rc
+  tmp=$(fm_test_tmproot fm-test-run-from-list-case)
+  repo="$tmp/repo"
+  init_case_suite_repo "$repo"
+
+  printf 'tests/fm-cases.test.sh:test_two\n' >"$tmp/two.list"
+  (cd "$repo" && bin/fm-test-run.sh --from-list "$tmp/two.list") >"$tmp/two.out" 2>&1 \
+    || fail "a case entry naming a case must pass: $(cat "$tmp/two.out")"
+  assert_grep "$tmp/two.out" "ok - two" "the named case must run"
+  assert_grep "$tmp/two.out" "helper ran" "the named case's helpers must run"
+  assert_grep "$tmp/two.out" "ok - three" "a sibling case the named case calls must run"
+  assert_no_grep "$tmp/two.out" "ok - one" "a sibling case at top level must not run"
+  assert_grep "$tmp/two.out" "# FM_TEST_ONLY: skipped test_one" "a skipped sibling must say so"
+
+  printf 'tests/fm-cases.test.sh:test_four\n' >"$tmp/four.list"
+  rc=0
+  (cd "$repo" && bin/fm-test-run.sh --from-list "$tmp/four.list") >"$tmp/four.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "a case entry matching no case must fail: $(cat "$tmp/four.out")"
+  assert_grep "$tmp/four.out" "not ok - FM_TEST_ONLY=test_four matched no case in tests/fm-cases.test.sh" \
+    "a case entry matching no case must say which"
+
+  printf 'tests/fm-gated.test.sh:test_any\n' >"$tmp/gated.list"
+  (cd "$repo" && bin/fm-test-run.sh --from-list "$tmp/gated.list") >"$tmp/gated.out" 2>&1 \
+    || fail "a gate-skipped script must not fail its case entry: $(cat "$tmp/gated.out")"
+  assert_no_grep "$tmp/gated.out" "matched no case" "a gate skip is not a missed case"
+
+  printf 'tests/fm-cases.test.sh\n' >"$tmp/whole.list"
+  (cd "$repo" && FM_TEST_ONLY=test_one bin/fm-test-run.sh --from-list "$tmp/whole.list") >"$tmp/whole.out" 2>&1 \
+    || fail "a whole-script entry must pass: $(cat "$tmp/whole.out")"
+  assert_grep "$tmp/whole.out" "ok - two" "an inherited FM_TEST_ONLY must not filter a whole-script entry"
+
+  rc=0
+  (cd "$repo" && FM_TEST_ONLY=bad-name bash tests/fm-cases.test.sh) >"$tmp/bad.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "tests/lib.sh must refuse a malformed FM_TEST_ONLY"
+  assert_grep "$tmp/bad.out" "FM_TEST_ONLY=bad-name is not a case function name" "the refusal must name the value"
+  pass "a case entry runs only its case, fails a miss, and leaves whole entries and gate skips alone"
+}
+
+test_changed_skip_unmapped_reports_and_carries_on() {
+  local tmp repo listed rc
+  tmp=$(fm_test_tmproot fm-test-run-skip-unmapped)
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+  printf '\n' >>"$repo/src/unmapped.ts"
+  printf '\n' >>"$repo/tests/fm-backend.test.sh"
+  rc=0
+  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "an unmapped changed path must still refuse plain --changed (got $rc)"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --skip-unmapped --base HEAD 2>"$tmp/err") \
+    || fail "--skip-unmapped must carry on past an unmapped path: $(cat "$tmp/err")"
+  assert_contains "$listed" "tests/fm-backend.test.sh" "--skip-unmapped must keep the mapped selection"
+  assert_grep "$tmp/err" "FM_TEST_UNMAPPED path=src/unmapped.ts" "--skip-unmapped must report the unmapped path"
+  rc=0
+  (cd "$repo" && bin/fm-test-run.sh --list --skip-unmapped tests/fm-backend.test.sh) >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "--skip-unmapped without --changed must be a usage error (got $rc)"
+  pass "--skip-unmapped reports an unmapped changed path and keeps the rest"
+}
+
 test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr job's hang tripwire is the family-run *step* bound, not
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
@@ -2043,5 +2154,8 @@ test_per_script_timeout_bounds_a_hang
 test_changed_bound_gives_slow_watcher_suites_headroom
 test_max_wall_ms_is_a_result_not_advice
 test_jobs_parallel_scheduler_and_failure_propagation
+test_from_list_selects_entries_and_refuses_bad_ones
+test_from_list_case_entry_runs_one_case
+test_changed_skip_unmapped_reports_and_carries_on
 test_herdr_ci_family_run_has_a_step_timeout
 test_aggregate_json

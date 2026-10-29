@@ -1116,12 +1116,20 @@ fm_test_base_path_sans() {
 # in that job after it, pass or fail, with its output appended to the case log. Output is printed in
 # list order, each case's whole log at once, with a "# case <name> took Ns"
 # line, and the pool returns 1 when any case failed. A <jobs> of 1 runs the
-# cases serially; a non-numeric or zero <jobs> is refused.
+# cases serially; a non-numeric or zero <jobs> is refused. Under FM_TEST_ONLY
+# only that case runs.
 fm_run_case_pool() {
   local jobs=$1 logs=$2 next=0 printed=0 running i status=0 start rc n
   local -a names pids
   shift 2
   case "$jobs" in ''|*[!0-9]*|0) fail "fm_run_case_pool: invalid job count '$jobs'" ;; esac
+  if [ -n "${FM_TEST_ONLY_CASE:-}" ]; then
+    # The FM_TEST_ONLY filter at the end of this file: keep only its case.
+    for i in "$@"; do
+      [ "$i" != "$FM_TEST_ONLY_CASE" ] || { set -- "$i"; break; }
+    done
+    [ "${1:-}" = "$FM_TEST_ONLY_CASE" ] || return 0
+  fi
   [ "$#" -gt 0 ] || return 0
   n=$#
   names=("$@")
@@ -1219,3 +1227,71 @@ SH
   } >"$dir/tasks-axi"
   chmod +x "$dir/tasks-axi"
 }
+
+# FM_TEST_ONLY=<case>: run one case function of the sourcing test file and skip
+# its other cases, so a targeted run (bin/fm-test-run.sh --from-list with a
+# <file>:<case> entry) pays for one case rather than the whole file.
+# A case is a function whose name shares <case>'s prefix up to its first
+# underscore (test_ for test_foo). Before each top-level command, a DEBUG trap
+# wraps every such function defined so far: <case> itself runs and writes
+# FM_TEST_ONLY_MARKER when that is set, a sibling called from inside <case> runs
+# as the helper it is, and a sibling called anywhere else returns 0 with a
+# "# FM_TEST_ONLY: skipped" line. fm_run_case_pool keeps only <case> as well.
+# Both variables are unexported here, so a fixture suite the case starts runs
+# whole. The trap does not fire inside functions or subshells, so a sibling
+# defined and then run with no top-level command in between, as in
+# `test_b() {...}; ( test_b )`, is not filtered. The runner owns the no-match
+# verdict: it fails a script whose marker was never written, which also covers
+# a file that never sources this library. A value that is not a case-function
+# name fails here.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  case "$FM_TEST_ONLY" in
+    *[!A-Za-z0-9_]*|[!A-Za-z]*|*_) fail "FM_TEST_ONLY=$FM_TEST_ONLY is not a case function name" ;;
+    [A-Za-z]*_*) ;;
+    *) fail "FM_TEST_ONLY=$FM_TEST_ONLY has no prefix_ naming its case family" ;;
+  esac
+  export -n FM_TEST_ONLY FM_TEST_ONLY_MARKER 2>/dev/null || true
+  FM_TEST_ONLY_CASE=$FM_TEST_ONLY
+  FM_TEST_ONLY_PREFIX="${FM_TEST_ONLY%%_*}_"
+  FM_TEST_ONLY_WRAPPED=' '
+
+  # The wrappers' locals carry a reserved prefix because the wrapped case sees
+  # them through bash's dynamic scope.
+  fm_test_only_run_case() {  # <case> <args>...
+    local __fm_test_only_active=1 __fm_test_only_name=$1
+    shift
+    [ -z "${FM_TEST_ONLY_MARKER:-}" ] || : >"$FM_TEST_ONLY_MARKER"
+    "__fm_test_only_orig_$__fm_test_only_name" "$@"
+  }
+
+  fm_test_only_run_sibling() {  # <name> <args>...
+    local __fm_test_only_name=$1
+    shift
+    if [ -z "${__fm_test_only_active:-}" ]; then
+      printf '# FM_TEST_ONLY: skipped %s\n' "$__fm_test_only_name"
+      return 0
+    fi
+    "__fm_test_only_orig_$__fm_test_only_name" "$@"
+  }
+
+  # The DEBUG trap body. It runs under the test's own errexit, so every step is
+  # guarded, and bash restores $? around the trap.
+  fm_test_only_tick() {
+    local name names def IFS=$' \t\n'
+    [ "${#FUNCNAME[@]}" -le 2 ] || return 0
+    names=$(compgen -A function "$FM_TEST_ONLY_PREFIX") || return 0
+    for name in $names; do
+      case "$FM_TEST_ONLY_WRAPPED" in *" $name "*) continue ;; esac
+      def=$(declare -f "$name") || continue
+      eval "__fm_test_only_orig_$def" || continue
+      if [ "$name" = "$FM_TEST_ONLY_CASE" ]; then
+        eval "$name() { fm_test_only_run_case $name \"\$@\"; }" || continue
+      else
+        eval "$name() { fm_test_only_run_sibling $name \"\$@\"; }" || continue
+      fi
+      FM_TEST_ONLY_WRAPPED="$FM_TEST_ONLY_WRAPPED$name "
+    done
+    return 0
+  }
+  trap 'fm_test_only_tick || true' DEBUG
+fi

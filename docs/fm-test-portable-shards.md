@@ -22,10 +22,11 @@ Put it in `gate` only when it guards a safety property or is the one smoke for a
 
 ## Triggers and layouts
 
-The `plan` job picks one layout for each run.
+The `plan` job picks one layout for each run; [`bin/fm-ci-plan.sh`](../bin/fm-ci-plan.sh) owns the choice and its header owns the exact outputs.
 
 | Trigger | Layout | Jobs |
 |---|---|---|
+| push to `ci/try/**` | `try` | static, changed-file lint, up to three shards of the tests the push selects, and the real-Herdr job only when it selects a real-Herdr test |
 | push to `ci/**` | `ci` | static, lint partitions, three gate shards, one changed-area job, and the real-Herdr job running the gate members plus the changed area |
 | push to `ci/full/**` | `full` | static, lint partitions, seven shards of `gate` and `full`, and the real-Herdr job running its `gate` and `full` members |
 | push to `main` | `full`, or `skip` | as `ci/full/**`; `skip` when the same commit already passed this workflow on a `ci/full/**` push, and then only the static job runs |
@@ -33,6 +34,11 @@ The `plan` job picks one layout for each run.
 
 The changed-area selection is `bin/fm-test-run.sh --changed --tier full,weekly`, so a change to a weekly feature still runs that feature's tests before landing.
 A changed path the map cannot place, or a change selecting more than 30 tests (a widely sourced library), escalates a `ci/**` push to the `full` layout.
+A `ci/try/**` push is a development run, not landing proof.
+It selects the tests its head commit names in `Fm-Try:` trailers (test files or families) and runs single cases named in `Fm-Try-Only: <file>:<case>` trailers through `FM_TEST_ONLY`, which `tests/lib.sh` owns.
+Without such a trailer it runs the changed-area selection over the `gate`, `full` and `weekly` tiers, lists any changed path the map cannot place, and skips it.
+A try run never escalates to a wider layout, and its timing never becomes a packing baseline.
+A static failure on a try run is annotated as a landing guard, because the same head would fail it on `ci/<task>`.
 Lint and test jobs wait only on `plan`, the static job waits on nothing, and the timing aggregate and the weekly alert wait on the test jobs.
 
 `main` runs the full suite on every push that did not already pass it, and `green-pointer.yml` advances only on a successful `push` run, so a weekly run never moves the green pointer.

@@ -4,12 +4,13 @@
 # timing markers, and the tier-map coverage guard.
 #
 # Selection modes (exactly one of: --all, --family, --changed, --tier,
-# --proven-isolated, or script paths):
+# --proven-isolated, --from-list, or script paths):
 #   fm-test-run.sh --all
 #   fm-test-run.sh --family <name>
-#   fm-test-run.sh --changed [--base <git-ref>]
+#   fm-test-run.sh --changed [--base <git-ref>] [--skip-unmapped]
 #   fm-test-run.sh --tier <tier>[,<tier>...]
 #   fm-test-run.sh --proven-isolated
+#   fm-test-run.sh --from-list <file>
 #   fm-test-run.sh tests/<name>.test.sh [more scripts...]
 #
 # Inspection (no execution):
@@ -68,6 +69,25 @@
 #                   weights are ordered by path under LC_ALL=C.
 #   --list-tiers    print "<tier> <path>" for every test, from tests/tiers.list
 #   --base <ref>    with --changed, compare against this ref (default: origin/main)
+#   --skip-unmapped with --changed, report a changed path the map cannot place
+#                   as one "FM_TEST_UNMAPPED path=<path>" line on stderr and
+#                   carry on, instead of refusing with exit 2. The ci/try/**
+#                   layout uses it, because a targeted run never widens.
+#   --from-list <file>
+#                   select the entries of <file>, one per line: a test script
+#                   path, or <script>:<case> to run only that case function of
+#                   the script. Blank lines and lines starting with # are
+#                   ignored. A repeated entry counts once; a script named twice
+#                   with different cases, or both whole and with a case, is
+#                   refused with exit 2. A <script>:<case> entry runs the script
+#                   with FM_TEST_ONLY=<case> and a per-script marker path in
+#                   FM_TEST_ONLY_MARKER (tests/lib.sh owns the filter), and the
+#                   script fails with "FM_TEST_ONLY=<case> matched no case" when
+#                   the marker was never written and it did not gate-skip, so a
+#                   case filter that matches nothing cannot pass empty. Every
+#                   other entry runs with FM_TEST_ONLY unset. --list prints the
+#                   entries back in the same form. Concurrency is as for a plain
+#                   list of script paths.
 #   --exclude-family <name>
 #                   drop scripts whose primary family matches <name> after selection
 #                   (repeatable; portable CI jobs exclude real-herdr-gated so the
@@ -166,7 +186,7 @@
 # evidence. Consumer bin/ scripts still resolve through the curated map, so
 # recorded family-level coupling still expands to the whole family. A changed
 # path the map cannot place refuses with exit 2, which CI treats as a reason to
-# run the full tier instead.
+# run the full tier instead; --skip-unmapped reports it and carries on.
 # tests/lib.sh, tests/fixtures.sh, tests/*-helpers.sh and tests/*-fixture.sh are
 # shared files that map to the suites naming them; a fixture under
 # tests/fixtures/<dir>/ or a recorded capture under tests/captures/<dir>/ is
@@ -197,6 +217,12 @@ CHECK_COVERAGE=0
 AGGREGATE_OUT=
 FAMILY=
 BASE_REF=origin/main
+SKIP_UNMAPPED=0
+FROM_LIST=
+# --from-list entries, as parallel arrays because stock bash 3.2 has no
+# associative arrays: a script path and its case ('' for the whole script).
+LIST_ENTRY_SCRIPTS=()
+LIST_ENTRY_CASES=()
 JSON_PATH=
 SCRIPTS=()
 EXCLUDE_FAMILIES=()
@@ -1490,7 +1516,7 @@ families_for_changed_path() {
 }
 
 select_changed() {
-  local base=$1 path entry fam script_name s
+  local base=$1 path entry fam script_name s unmapped_seen=' '
   local -a wanted_families=()
   local -a wanted_scripts=()
 
@@ -1508,7 +1534,15 @@ select_changed() {
           wanted_scripts+=("$script_name")
           ;;
         __unmapped__:*)
-          die "no changed-test mapping for source path: ${entry#__unmapped__:}"
+          [ "$SKIP_UNMAPPED" -eq 1 ] \
+            || die "no changed-test mapping for source path: ${entry#__unmapped__:}"
+          case "$unmapped_seen" in
+            *" ${entry#__unmapped__:} "*) ;;
+            *)
+              unmapped_seen="$unmapped_seen${entry#__unmapped__:} "
+              printf 'FM_TEST_UNMAPPED path=%s\n' "${entry#__unmapped__:}" >&2
+              ;;
+          esac
           ;;
         *)
           wanted_families+=("$entry")
@@ -1548,6 +1582,68 @@ select_changed() {
   if [ "${#SCRIPTS[@]}" -eq 0 ]; then
     log "no tests selected for changes vs $base (map is conservative; use --all for the complete suite)"
   fi
+}
+
+# Print the --from-list case recorded for <script>, or nothing for a whole
+# script or any other selection mode.
+list_case_for_script() {  # <script>
+  local i=0
+  while [ "$i" -lt "${#LIST_ENTRY_SCRIPTS[@]}" ]; do
+    if [ "${LIST_ENTRY_SCRIPTS[$i]}" = "$1" ]; then
+      printf '%s\n' "${LIST_ENTRY_CASES[$i]}"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+}
+
+# Print <script> as its --from-list entry: <script>:<case> when it has a case.
+list_entry_for_script() {  # <script>
+  local case_name
+  case_name=$(list_case_for_script "$1")
+  if [ -n "$case_name" ]; then
+    printf '%s:%s\n' "$1" "$case_name"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+select_from_list() {  # <file>
+  local file=$1 line script case_name i known
+  [ -f "$file" ] && [ -r "$file" ] || die "--from-list file not readable: $file"
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in ''|'#'*) continue ;; esac
+    script=${line%%:*}
+    case_name=
+    [ "$script" = "$line" ] || case_name=${line#*:}
+    case "$case_name" in
+      *[!A-Za-z0-9_]*) die "--from-list entry has a malformed case name: $line" ;;
+    esac
+    if [ "$script" != "$line" ] && [ -z "$case_name" ]; then
+      die "--from-list entry has an empty case name: $line"
+    fi
+    script=$(normalize_script_path "$script")
+    [ -f "$script" ] || die "--from-list entry names no test script: $line"
+    known=0
+    i=0
+    while [ "$i" -lt "${#LIST_ENTRY_SCRIPTS[@]}" ]; do
+      if [ "${LIST_ENTRY_SCRIPTS[$i]}" = "$script" ]; then
+        [ "${LIST_ENTRY_CASES[$i]}" = "$case_name" ] \
+          || die "--from-list names $script twice with different cases: '${LIST_ENTRY_CASES[$i]}' and '$case_name'"
+        known=1
+      fi
+      i=$((i + 1))
+    done
+    [ "$known" -eq 0 ] || continue
+    LIST_ENTRY_SCRIPTS+=("$script")
+    LIST_ENTRY_CASES+=("$case_name")
+    add_script "$script"
+  done <"$file"
+  [ "${#SCRIPTS[@]}" -gt 0 ] || die "--from-list names no test script: $file"
+  # Only an entry's own case may filter a script; an inherited value must not
+  # filter a whole-script entry.
+  unset FM_TEST_ONLY FM_TEST_ONLY_MARKER
 }
 
 detect_gate_skip() {
@@ -1724,6 +1820,23 @@ while [ "$#" -gt 0 ]; do
     --changed)
       [ -z "$MODE" ] || die "only one selection mode is allowed"
       MODE=changed
+      shift
+      ;;
+    --skip-unmapped)
+      SKIP_UNMAPPED=1
+      shift
+      ;;
+    --from-list)
+      [ -z "$MODE" ] || die "only one selection mode is allowed"
+      [ "$#" -gt 1 ] || die "--from-list requires a file"
+      MODE=list
+      FROM_LIST=$2
+      shift 2
+      ;;
+    --from-list=*)
+      [ -z "$MODE" ] || die "only one selection mode is allowed"
+      MODE=list
+      FROM_LIST=${1#--from-list=}
       shift
       ;;
     --base)
@@ -1907,6 +2020,10 @@ case "$PER_SCRIPT_TIMEOUT_SECS" in
   ''|*[!0-9]*) die "--per-script-timeout-secs requires a whole number of seconds (0 disables)" ;;
 esac
 
+if [ "$SKIP_UNMAPPED" -eq 1 ] && [ "${MODE:-}" != changed ]; then
+  die "--skip-unmapped applies only to --changed"
+fi
+
 if [ -n "$TIER_FILTER" ]; then
   check_tier_list "$TIER_FILTER"
   TIER_MODE=1
@@ -1963,6 +2080,10 @@ case "${MODE:-}" in
     select_changed "$BASE_REF"
     SELECTION_DESC="changed:base=$BASE_REF"
     ;;
+  list)
+    select_from_list "$FROM_LIST"
+    SELECTION_DESC="list"
+    ;;
   scripts)
     # Normalize and re-add through add_script for consistent paths.
     raw=("${SCRIPTS[@]+"${SCRIPTS[@]}"}")
@@ -1973,7 +2094,7 @@ case "${MODE:-}" in
     SELECTION_DESC="scripts"
     ;;
   *)
-    die "select with --all, --family <name>, --tier <list>, --proven-isolated, --changed, or one or more script paths (see --help)"
+    die "select with --all, --family <name>, --tier <list>, --proven-isolated, --changed, --from-list <file>, or one or more script paths (see --help)"
     ;;
 esac
 
@@ -1996,10 +2117,11 @@ if [ "$LIST_ONLY" -eq 1 ] || [ "$LIST_SCHEDULED" -eq 1 ]; then
   if [ "$LIST_SCHEDULED" -eq 1 ]; then
     for s in "${SCRIPTS[@]+"${SCRIPTS[@]}"}"; do
       printf '%s\n' "$s"
-    done | timing_weights | LC_ALL=C sort -t"$(printf '\t')" -k1,1nr -k2,2 | cut -f2-
+    done | timing_weights | LC_ALL=C sort -t"$(printf '\t')" -k1,1nr -k2,2 | cut -f2- \
+      | while IFS= read -r s; do list_entry_for_script "$s"; done
   else
     for s in "${SCRIPTS[@]+"${SCRIPTS[@]}"}"; do
-      printf '%s\n' "$s"
+      list_entry_for_script "$s"
     done
   fi
   exit 0
@@ -2056,7 +2178,7 @@ done
 # Under --tier only the proven-isolated set counts, as script_overlaps_in_this_run
 # says. --family, --all and a plain --tier take only an explicit --jobs.
 AUTO_CONCURRENCY=0
-if { [ "$MODE" = changed ] || [ "$MODE" = scripts ]; } && [ "$JOBS_EXPLICIT" -eq 0 ]; then
+if { [ "$MODE" = changed ] || [ "$MODE" = scripts ] || [ "$MODE" = list ]; } && [ "$JOBS_EXPLICIT" -eq 0 ]; then
   if [ "$MODE" = changed ] && [ "${#SCRIPTS[@]}" -gt 0 ] && [ "$PER_SCRIPT_TIMEOUT_SECS" -eq 0 ]; then
     PER_SCRIPT_TIMEOUT_SECS=$CHANGED_DEFAULT_TIMEOUT_SECS
   fi
@@ -2071,7 +2193,7 @@ if { [ "$MODE" = changed ] || [ "$MODE" = scripts ]; } && [ "$JOBS_EXPLICIT" -eq
     [ "$JOBS" -eq 1 ] || AUTO_CONCURRENCY=1
   fi
 fi
-if [ "$JOBS" -gt 1 ] || [ "$MODE" = changed ] || [ "$MODE" = scripts ]; then
+if [ "$JOBS" -gt 1 ] || [ "$MODE" = changed ] || [ "$MODE" = scripts ] || [ "$MODE" = list ]; then
   SELECTION_DESC="${SELECTION_DESC};jobs=$JOBS"
 fi
 
@@ -2251,8 +2373,15 @@ run_script_bounded() {  # <script> <out> <stream> <id>
   local GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
   # shellcheck source=tests/git-config-helpers.sh
   . "$ROOT/tests/git-config-helpers.sh" || return
-  local rc
-  : "$id"
+  local rc only_case='' marker=''
+  # A --from-list <script>:<case> entry, scoped the same way.
+  [ "$MODE" != list ] || only_case=$(list_case_for_script "$script")
+  if [ -n "$only_case" ]; then
+    marker="$RUN_TMP/only-marker.$id"
+    rm -f "$marker"
+    local FM_TEST_ONLY=$only_case FM_TEST_ONLY_MARKER=$marker
+    export FM_TEST_ONLY FM_TEST_ONLY_MARKER
+  fi
   set +e
   if [ "$stream" -eq 1 ]; then
     if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
@@ -2276,6 +2405,11 @@ run_script_bounded() {  # <script> <out> <stream> <id>
     printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
       "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
     [ "$stream" -eq 1 ] && tail -1 "$out"
+  fi
+  if [ -n "$only_case" ] && [ ! -e "$marker" ] && ! detect_gate_skip "$out"; then
+    printf 'not ok - FM_TEST_ONLY=%s matched no case in %s\n' "$only_case" "$script" >>"$out"
+    [ "$stream" -eq 1 ] && tail -1 "$out"
+    [ "$rc" -ne 0 ] || rc=1
   fi
   return "$rc"
 }
