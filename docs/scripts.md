@@ -82,6 +82,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-usage-report.sh`     | Read-only storage usage readouts: the D: days-to-full line from the growth report and the per-tier, owner, kind and age usage report from existing records (docs/disk-room.md) |
 | `fm-storage.sh`          | Detect and prepare an external SSD for fetched results and publish the results root (writers wait when it is unusable), on a user timer (docs/storage.md) |
 | `fm-pack.sh`             | Pack a finished, rarely read tree into one verified read-only SquashFS image on D:, verify it, restore it, and release the packed source under retention rule R2 (docs/storage.md) |
+| `fm-repack.sh`          | Rewrite the cold files of the trees a home lists in `config/repack-trees` in one time-ordered batch, so they stop holding partly used 1 MiB blocks; `plan` estimates the blocks emptied, `run` is never scheduled (docs/disk-room.md) |
 | `fm-component-map.sh`    | Validate a repository or home component map and its skills, resolve paths to component skills, print a component's goal, build a diff's review pack, and report drifted source pins (docs/component-map.md) |
 | `fm-component-check.sh`  | Component hook: inject a touched component's goal once per session, after file tools and Bash changes (docs/component-skills.md) |
 | `fm-component-map.py`   | Map schema, glob, skill-shape and pin logic behind fm-component-map.sh |
