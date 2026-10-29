@@ -7656,12 +7656,9 @@ if [ "${0##*/}" = fm-teardown.sh ]; then
   }
   printf() {
     case "$FM_APPEND_KIND:${1-}" in
-      fresh-directory:'%s  %s%s\n')
+      # A declared file appends its row with an empty relative suffix.
+      fresh-*:'%s  %s%s\n')
         if [ "${3-}${4-}" = "$FM_APPEND_KEY" ]; then
-          : > "$FM_APPEND_SEEN"; return 1
-        fi ;;
-      fresh-file:'%s  %s\n')
-        if [ "${3-}" = "$FM_APPEND_KEY" ]; then
           : > "$FM_APPEND_SEEN"; return 1
         fi ;;
       prior:'%s\n')
