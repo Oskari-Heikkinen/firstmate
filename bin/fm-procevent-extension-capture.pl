@@ -241,8 +241,7 @@ chdir($inbox_dir) or fail("cannot enter inbox directory");
 $sequence = 1;
 # A handled marker keeps its sequence taken after the handled-record log holds
 # that result (bin/fm-records-log-lib.sh).
-$sequence++ while -e "$id.$sequence.result" || -l "$id.$sequence.result"
-  || -e "$id.$sequence.handled" || -l "$id.$sequence.handled";
+$sequence++ while -e "$id.$sequence.result" || -l "$id.$sequence.result";
 my $prefix = "$id.$sequence";
 my $nonce = ".$prefix.$$";
 my $result_tmp = "$nonce.result";
