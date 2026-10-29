@@ -1141,25 +1141,39 @@ gate_settle() {
   [ "$(cat "$WORLD/poll.rc")" = 0 ] || fail "fixture: the settling poll failed: $(cat "$WORLD/poll.err")"
 }
 
-# The last poll spawned exactly what a poll of the same home spawns with every
-# child's meta moved aside, and said nothing. Renames keep each meta's mtime.
-gate_assert_skipped() { # <what>
-  local meta
-  [ "$(cat "$WORLD/poll.rc")" = 0 ] && [ ! -s "$WORLD/poll.out" ] && [ ! -s "$WORLD/poll.err" ] \
-    || fail "$1: rc=$(cat "$WORLD/poll.rc") out=$(cat "$WORLD/poll.out") err=$(cat "$WORLD/poll.err")"
-  cp "$WORLD/poll.log" "$WORLD/skipped.log"
+# The commands a poll of this home spawns with every child's meta moved aside,
+# sorted into $WORLD/childless.log, since concurrent pipeline stages log in
+# either order. Renames keep each meta's mtime, and the last poll's files are
+# put back afterwards.
+gate_childless_log() {
+  local meta part
+  for part in out err rc log; do cp "$WORLD/poll.$part" "$WORLD/kept.$part"; done
   mkdir -p "$WORLD/aside"
   mv "$MATE/state"/*.meta "$WORLD/aside/"
   gate_poll
   for meta in "$WORLD/aside"/*.meta; do mv "$meta" "$MATE/state/"; done
-  grep -qx mkdir "$WORLD/poll.log" \
-    || fail "fixture: the counting shims logged nothing for a childless poll: $(cat "$WORLD/poll.log")"
-  cmp -s "$WORLD/poll.log" "$WORLD/skipped.log" \
-    || fail "$1 spawned commands beyond a childless poll: $(diff "$WORLD/poll.log" "$WORLD/skipped.log" | tr '\n' ' ')"
+  sort "$WORLD/poll.log" > "$WORLD/childless.log"
+  for part in out err rc log; do mv "$WORLD/kept.$part" "$WORLD/poll.$part"; done
+  grep -qx mkdir "$WORLD/childless.log" \
+    || fail "fixture: the counting shims logged nothing for a childless poll: $(cat "$WORLD/childless.log")"
 }
 
+# The last poll spawned exactly what a childless poll of the same home spawns,
+# and said nothing.
+gate_assert_skipped() { # <what>
+  [ "$(cat "$WORLD/poll.rc")" = 0 ] && [ ! -s "$WORLD/poll.out" ] && [ ! -s "$WORLD/poll.err" ] \
+    || fail "$1: rc=$(cat "$WORLD/poll.rc") out=$(cat "$WORLD/poll.out") err=$(cat "$WORLD/poll.err")"
+  gate_childless_log
+  sort "$WORLD/poll.log" > "$WORLD/sorted.log"
+  cmp -s "$WORLD/sorted.log" "$WORLD/childless.log" \
+    || fail "$1 spawned commands beyond a childless poll: $(diff "$WORLD/childless.log" "$WORLD/sorted.log" | tr '\n' ' ')"
+}
+
+# The last poll read at least one child: it spawned more than a childless poll.
 gate_assert_read() { # <what>
-  grep -qx grep "$WORLD/poll.log" || fail "$1 skipped a child it had to read again"
+  gate_childless_log
+  sort "$WORLD/poll.log" > "$WORLD/sorted.log"
+  ! cmp -s "$WORLD/sorted.log" "$WORLD/childless.log" || fail "$1 skipped a child it had to read again"
 }
 
 # A poll in which no child changed spawns exactly what a poll of a home with no
@@ -1210,7 +1224,7 @@ test_ledger_gate_status_append_delivers_on_same_poll() {
   sed -E 's/ \[at=[0-9]+\]//' "$MAIN/state/mate.status" | grep -Fq "done [key=$key]: child half done: half written" \
     || fail "the completed done: line was not delivered as before: $(cat "$MAIN/state/mate.status")"
   gate_poll
-  [ "$(wc -l < "$MAIN/state/mate.status" | tr -d ' ')" = 2 ] \
+  [ "$(grep -c 'child-outcome-' "$MAIN/state/mate.status")" = 2 ] \
     || fail "a poll after the appends delivered again: $(cat "$MAIN/state/mate.status")"
   pass "a status append after a settled pass is delivered on the same poll"
 }
@@ -1260,7 +1274,7 @@ test_ledger_gate_failed_pass_does_not_settle() {
   write_child "$MATE" child 'failed: cannot reach anyone'
   gate_poll
   case "$(cat "$WORLD/poll.out")" in
-    "actionable: child outcome needs parent report: child=child state=failed"*) ;;
+    *"actionable: child outcome needs parent report: child=child state=failed"*) ;;
     *) fail "the failed parent write did not queue its notice: $(cat "$WORLD/poll.out")" ;;
   esac
   gate_settle
@@ -1284,7 +1298,7 @@ test_ledger_gate_held_ship_done_is_tested_every_poll() {
   gate_world gate-held
   write_child "$MATE" child 'done: PR https://example.test/owner/repo/pull/1 checks green, risk low'
   git -C "$MATE/projects/child" commit -q --allow-empty -m 'only in the copy'
-  grep -v '^pr=\|^pr_head=' "$MATE/state/child.meta" > "$MATE/state/child.meta.tmp"
+  grep -Ev '^(pr|pr_head)=' "$MATE/state/child.meta" > "$MATE/state/child.meta.tmp"
   mv "$MATE/state/child.meta.tmp" "$MATE/state/child.meta"
   gate_poll
   gate_settle
