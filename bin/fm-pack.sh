@@ -47,6 +47,67 @@
 #       arrival, whose members list carries paths without ./), and refuse any
 #       other or missing format with exit 2 before any work. An arrival unit's
 #       tree list is not fm-pack's, so --against and release refuse it with 2.
+#   fm-pack.sh verify-tar IMAGE --tar TAR --expect EXPECTATION.json
+#       The G5-equivalent parity check of a transit tar against the image
+#       built from it (docs/storage.md owns when a caller runs it). Read-only:
+#       it extracts, writes and deletes nothing, and a pass is not permission
+#       to delete the tar. bin/fm-pack-parity.py does the work:
+#         1. EXPECTATION.json (at most 64 MiB), made by the caller from its
+#            committed records, is one closed JSON object:
+#              {"format": "fm-pack-tar-expectation/v1",
+#               "tar_sha256": HEX, "image_sha256": HEX,
+#               "layout": {"image_prefix": PREFIX, "tar_directories": DIRS},
+#               "members": [{"name": NAME, "bytes": N, "sha256": HEX}, ...]}
+#            HEX is 64 lowercase hex digits; at most 262144 members; each
+#            NAME (and a non-empty PREFIX) is unique, relative, UTF-8, at most
+#            4095 bytes, with no empty, . or .. component, no control
+#            character or backslash, and is no other member's directory.
+#            PREFIX is "" when the image root holds the members (a phase-D
+#            sqfstar image) or the directory holding them (basename(SRC) for
+#            a pack tree); DIRS is "none" or "ancestors" (the tar may carry
+#            entries for its members' directories);
+#         2. TAR, opened without following a link, is read once in 1 MiB
+#            chunks: every byte, padding and trailing zeros included, feeds
+#            its sha256, and every entry is parsed without extraction. Only
+#            POSIX ustar and GNU headers with valid checksums, regular files
+#            and, by DIRS, directories are admitted; one GNU long name (L,
+#            GNU headers) or one PAX header (x, POSIX headers; keys path size
+#            mtime atime ctime uid gid uname gname, each once) may precede an
+#            entry, whose own header name must be a prefix of the long path,
+#            and a header size may differ from a PAX size only as 0 above 8 GiB.
+#            Links, other types, unsafe or duplicate names, non-zero padding,
+#            a missing end-of-archive marker and any non-zero byte after it
+#            are refused;
+#         3. the tar's sha256 must equal tar_sha256, and its regular members
+#            must be exactly the expected ones, with equal bytes and sha256;
+#         4. IMAGE, opened the same way, must hash to image_sha256; then a
+#            fresh view of that same opened file (a new squashfuse mount, or
+#            unsquashfs -lln and -cat with FM_PACK_MOUNT=unsquashfs) must hold
+#            exactly the expected members under PREFIX, their directories and
+#            PREFIX's, and nothing else, with equal bytes and sha256;
+#         5. after FM_PACK_TEST_BEFORE_RECHECK, each opened file and the name
+#            it was opened by must still have the device, inode, size, mtime
+#            and ctime it had when opened, so the caller binds the pass to
+#            the inode it holds.
+#       Prints one line on success, stderr empty:
+#         fm-pack-tar-parity/v1 tar_sha256=HEX image_sha256=HEX members=N
+#       Exit codes, stdout empty on every non-zero code:
+#         0   parity holds;
+#         1   one line fm-pack: refused: G5: CODE[: DETAIL], CODE one of
+#             tar-digest, image-digest; tar- or image-extra-member,
+#             -missing-member, -member-size, -member-digest, -identity-changed,
+#             -read; tar-checksum, -header, -unsupported, -link, -directory,
+#             -unsafe-name, -duplicate, -padding, -truncated, -trailing-data;
+#             image-member-type; expectation-read; interrupted (SIGTERM or
+#             SIGINT); internal-error;
+#         2   one refusal line: misuse, an input missing or not a regular
+#             file, or an invalid or unsupported expectation;
+#         75  one line fm-pack: wait: storage-offline: REASON, only when an
+#             input failed to open or read and fm-storage.sh health --volume d
+#             then exited 75 with the line offline REASON; any other answer
+#             keeps the exit 1 or 2 refusal, so unknown is never parity.
+#       It has no deadline of its own: the caller's timeout bounds a run, and
+#       a run killed by SIGKILL can leave its squashfuse mount, as verify can.
 #   fm-pack.sh restore IMAGE DEST
 #       Check the image sha256, then fm-disk-room.sh run --name restore-UNIT
 #       --expect-write <logical bytes> -- unsquashfs -d DEST IMAGE, then the
@@ -102,10 +163,10 @@
 #             else TMPDIR, else /tmp).
 #
 # Reading the image afresh: a new squashfuse -o ro mount on a temporary
-# directory (fusermount3 -u afterwards). pack and verify refuse with exit 2
-# before any work when squashfuse, fusermount3 or a usable /dev/fuse is
-# missing, unless FM_PACK_MOUNT=unsquashfs names the slow path. The UNIT.json
-# verify_method field and verify's output name the path taken.
+# directory (fusermount3 -u afterwards). pack, verify and verify-tar refuse
+# with exit 2 before any work when squashfuse, fusermount3 or a usable
+# /dev/fuse is missing, unless FM_PACK_MOUNT=unsquashfs names the slow path.
+# The UNIT.json verify_method field and verify's output name the path taken.
 #
 # UNIT.json (fm-pack-unit/v1) holds the source, its directory name, the owner
 # home, task, root, counts, both sha256 values, the mksquashfs version, and
@@ -119,9 +180,10 @@
 # idle I/O priority.
 #
 # Environment (all optional):
-#   FM_PACK_MOUNT   mount (default): verify through a fresh squashfuse mount;
-#                   unsquashfs: for tests and hosts without FUSE, unsquashfs
-#                   -lln for the count and one unsquashfs -cat per member,
+#   FM_PACK_MOUNT   mount (default): verify and verify-tar read the image
+#                   through a fresh squashfuse mount; unsquashfs: for tests
+#                   and hosts without FUSE, unsquashfs -lln for the entries
+#                   and one unsquashfs -cat per member,
 #                   each rereading the image tables, so roughly quadratic in
 #                   the file count
 #   FM_HOME         owner home recorded in UNIT.json (default this checkout)
@@ -130,8 +192,9 @@
 #   FM_DISK_ROOM_STATE  fm-disk-room's state directory, for release's
 #                   reservation check (the same default as fm-disk-room.sh)
 #   FM_PACK_TEST_BEFORE_RECHECK  test hook only: a command run by bash -c
-#                   between packing and the source re-check, and between
-#                   release's rename aside and its re-check
+#                   between packing and the source re-check, between
+#                   release's rename aside and its re-check, and before
+#                   verify-tar's identity re-check
 set -u
 set -o pipefail
 
@@ -434,6 +497,13 @@ cmd_verify() {
     tree_matches "$against" "$IDIR/$IUNIT.tree.tsv" || fail1 "$against no longer matches $IUNIT.tree.tsv"
   fi
   printf 'fm-pack: verified %s (%s files, %s)%s\n' "$IMG" "$(wc -l <"$IMEMBERS")" "$METHOD" "${against:+, source unchanged}"
+}
+
+cmd_verify_tar() {
+  need python3
+  need_reader
+  [ "$METHOD" = mount ] || need unsquashfs
+  heavy python3 "$BIN/fm-pack-parity.py" --reader "$METHOD" --storage-tool "$BIN/fm-storage.sh" "$@"
 }
 
 cmd_restore() {
@@ -773,6 +843,7 @@ cmd_release() {
 case "${1:-}" in
   pack) shift; cmd_pack "$@" ;;
   verify) shift; cmd_verify "$@" ;;
+  verify-tar) shift; cmd_verify_tar "$@" ;;
   restore) shift; cmd_restore "$@" ;;
   release) shift; cmd_release "$@" ;;
   -h|--help|help) usage ;;

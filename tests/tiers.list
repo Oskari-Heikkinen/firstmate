@@ -33,6 +33,7 @@ gate tests/fm-green-pointer.test.sh
 gate tests/fm-handoff-actors.test.sh
 gate tests/fm-lean-review.test.sh
 gate tests/fm-operational-input.test.sh
+gate tests/fm-pack-parity.test.sh
 gate tests/fm-pack.test.sh
 gate tests/fm-park.test.sh
 gate tests/fm-pi-model-guard.test.sh
