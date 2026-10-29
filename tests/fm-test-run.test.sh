@@ -1954,16 +1954,14 @@ tests/fm-a.test.sh:test_y' 'tests/fm-a.test.sh:bad-name' 'tests/fm-a.test.sh:' \
   pass "--from-list lists entries once and refuses conflicts, malformed cases, missing scripts and empty lists"
 }
 
-# A case suite sourcing a real copy of tests/lib.sh, so the FM_TEST_ONLY filter
-# and the runner's no-match verdict meet as they do in CI.
+# A case suite sourcing this checkout's tests/lib.sh, so the FM_TEST_ONLY filter
+# and the runner's no-match verdict meet as they do in CI. It sources the real
+# file by path: lib.sh runs bin/ helpers from its own checkout.
 init_case_suite_repo() {
   local repo=$1
   init_stub_suite_repo "$repo"
-  cp "$ROOT/tests/lib.sh" "$repo/tests/lib.sh"
-  cat >"$repo/tests/fm-cases.test.sh" <<'SH'
-#!/usr/bin/env bash
-set -eu
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+  printf '#!/usr/bin/env bash\nset -eu\n. %q\n' "$ROOT/tests/lib.sh" >"$repo/tests/fm-cases.test.sh"
+  cat >>"$repo/tests/fm-cases.test.sh" <<'SH'
 case_helper() { printf 'helper ran\n'; }
 test_one() { pass "one"; }
 test_two() { case_helper; test_three_helper_case; pass "two"; }
