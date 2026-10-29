@@ -11,6 +11,18 @@
 #           machine-wide admission ledger and exits 0. When the bound runs out
 #           it prints `error: admission refused after <n>s: <unmet conditions>`
 #           and exits 3 - never a silent refusal.
+#           Waiters share one fresh result: a try that is not admitted leaves its
+#           unmet conditions in the wait-result file below, and another waiter's
+#           try that finds them written by a different process less than 5 s
+#           ago, keyed by the same inputs, sleeps again on them instead of
+#           evaluating. Only a try that would sleep again reuses a result: every
+#           admission, refusal and secondmate start comes from the waiter's own
+#           fresh evaluation, so the only effect is that a freed slot may be seen
+#           up to 5 s later. The key is everything an evaluation reads except
+#           the live host signals: this script's directory, the proc root, the
+#           rules file's path and bytes, the memory guard's environment, the
+#           launch kind (and home, for a restart-shaped one) and the ledger's
+#           bytes, so a rules change or any admission is seen at once.
 #           --override admits at once, prints a notice naming what it skipped,
 #           and still records the ledger line so later admissions see it.
 #           --secondmate never refuses: after secondmate_wait_max_s it admits
@@ -44,9 +56,12 @@
 # Ledger: ${FM_ADMISSION_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/fm-admission-<uid>}/admitted,
 # lines `<epoch> <relaunch|fresh> <home>`, pruned to the last hour on every
 # write and guarded by a mkdir lock beside it. It is runtime scratch only.
+# The shared wait result lives beside it in wait-result, read and written only
+# under that lock, and every admission deletes it.
 #
 # Test seams: FM_PROC_ROOT_OVERRIDE (default /proc), FM_ADMISSION_NPROC (CPU
-# count), FM_ADMISSION_SLEEP (command run with the wait seconds; default sleep).
+# count), FM_ADMISSION_SLEEP (command run with the wait seconds; default sleep),
+# FM_ADMISSION_NOW (epoch every clock read returns).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +70,8 @@ RULES_FILE=${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json}
 RUN_DIR=${FM_ADMISSION_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/fm-admission-$(id -u)}
 LEDGER="$RUN_DIR/admitted"
 LOCK="$RUN_DIR/admitted.lock"
+SHARE="$RUN_DIR/wait-result"
+SHARE_S=5
 RECENT_S=60
 
 # Built-in defaults (the budget design the rules file overrides key by key).
@@ -93,6 +110,13 @@ load_rules() {
   done
   val=$(jq -r '.agent_process_names // empty | select(type == "array") | map(select(type == "string")) | join(" ")' "$RULES_FILE" 2>/dev/null) || val=
   [ -z "$val" ] || R_agent_process_names=$val
+}
+
+# epoch_to <var>: the current epoch seconds, without a fork where bash has them.
+epoch_to() {
+  local t=${FM_ADMISSION_NOW:-${EPOCHSECONDS:-}}
+  [ -n "$t" ] || t=$(date +%s)
+  printf -v "$1" '%s' "$t"
 }
 
 # num_gt <a> <b>: true when decimal a > b.
@@ -174,7 +198,7 @@ evaluate() {
   local now avail need psi load agents recent paced guard
   UNMET=
   SKIPPED=
-  now=$(date +%s)
+  epoch_to now
   recent=$(recent_admissions $((now - RECENT_S)))
   if avail=$(mem_available_mib) && [ -n "$avail" ]; then
     need=$((R_mem_floor_mib + R_agent_cost_mib * (1 + recent)))
@@ -237,11 +261,58 @@ lock_release() { rmdir "$LOCK" 2>/dev/null || true; }
 record_admission() {
   local now kind=fresh
   [ "$RESTART" = 1 ] && kind=relaunch
-  now=$(date +%s)
+  epoch_to now
+  rm -f "$SHARE" 2>/dev/null
   if [ -f "$LEDGER" ] && awk -v since=$((now - 3600)) '$1 >= since' "$LEDGER" >"$LEDGER.tmp" 2>/dev/null; then
     mv -f "$LEDGER.tmp" "$LEDGER"
   fi
   printf '%s %s %s\n' "$now" "$kind" "$HOME_DIR" >>"$LEDGER"
+}
+
+# share_key_to <var>: the inputs a shared wait result is keyed by, read in this
+# shell. The header's acquire paragraph says what they are and why.
+share_key_to() {
+  local rules='' ledger='' k
+  [ ! -f "$RULES_FILE" ] || { IFS= read -r -d '' rules <"$RULES_FILE"; } 2>/dev/null
+  [ ! -f "$LEDGER" ] || { IFS= read -r -d '' ledger <"$LEDGER"; } 2>/dev/null
+  k="fm-admission-wait-key v1"$'\n'"script=$SCRIPT_DIR"$'\n'"proc=$PROC"$'\n'"nproc=${FM_ADMISSION_NPROC:-}"$'\n'
+  k="${k}guard=${FM_MEM_GUARD+set:$FM_MEM_GUARD}"$'\n'"guard_dir=${FM_MEM_GUARD_DIR:-}"$'\n'"guard_now=${FM_MEM_GUARD_NOW:-}"$'\n'
+  k="${k}xdg_state=${XDG_STATE_HOME:-}"$'\n'"user_home=${HOME:-}"$'\n'"kind=$RESTART"$'\n'
+  [ "$RESTART" = 0 ] || k="${k}home=$HOME_DIR"$'\n'
+  printf -v "$1" '%s' "${k}rules_file=$RULES_FILE"$'\n'"${#rules}:$rules"$'\n'"${#ledger}:$ledger"$'\n'
+}
+
+# shared_wait_to <key>: under the lock, set UNMET from a wait result another
+# process wrote less than SHARE_S ago with this key; false when there is none.
+shared_wait_to() {
+  local text='' head pid at rest now
+  [ -f "$SHARE" ] || return 1
+  { IFS= read -r -d '' text <"$SHARE"; } 2>/dev/null
+  head=${text%%$'\n'*}
+  [ "$head" != "$text" ] || return 1
+  rest=${text#*$'\n'}
+  case "$head" in "fm-admission-wait v1 "*) ;; *) return 1 ;; esac
+  head=${head#fm-admission-wait v1 }
+  pid=${head%% *}
+  at=${head#* }
+  case "$pid:$at" in *[!0-9:]* | :* | *:) return 1 ;; esac
+  [ "$pid" != "$$" ] || return 1
+  epoch_to now
+  [ $((now - at)) -ge 0 ] && [ $((now - at)) -lt "$SHARE_S" ] || return 1
+  case "$rest" in "$1"*) rest=${rest#"$1"} ;; *) return 1 ;; esac
+  case "$rest" in "unmet="?*$'\n'"end"$'\n') ;; *) return 1 ;; esac
+  rest=${rest#unmet=}
+  UNMET=${rest%$'\n'end$'\n'}
+}
+
+# share_wait <key>: under the lock, leave this try's unmet conditions for the
+# other waiters. A failed write leaves no usable result, so they evaluate.
+share_wait() {
+  local now
+  [ ! -e "$SHARE" ] || [ -f "$SHARE" ] || return 0
+  epoch_to now
+  { printf 'fm-admission-wait v1 %s %s\n%sunmet=%s\nend\n' "$$" "$now" "$1" "$UNMET" >"$SHARE"; } 2>/dev/null ||
+    rm -f "$SHARE" 2>/dev/null
 }
 
 do_sleep() {
@@ -344,30 +415,45 @@ bound=$R_wait_max_s
 [ "$SECONDMATE" = 1 ] && bound=$R_secondmate_wait_max_s
 case "$bound" in *.*) bound=${bound%%.*} ;; esac
 case "$bound" in '' | *[!0-9]*) bound=300 ;; esac
-start=$(date +%s)
+epoch_to now
+start=$now
 delay=5
 announced=0
 while :; do
   lock_acquire
-  evaluate
-  if [ -z "$UNMET" ]; then
-    record_admission
+  share_key_to key
+  epoch_to now
+  # A try at or past the bound evaluates for itself, so a refusal or a
+  # secondmate's warned start never rests on another waiter's result.
+  if [ $((now - start)) -lt "$bound" ] && shared_wait_to "$key"; then
     lock_release
-    [ "$announced" = 0 ] || echo "admission: $LABEL admitted after $(($(date +%s) - start))s" >&2
-    exit 0
-  fi
-  lock_release
-  elapsed=$(($(date +%s) - start))
-  if [ "$elapsed" -ge "$bound" ]; then
-    if [ "$SECONDMATE" = 1 ]; then
-      lock_acquire
+    epoch_to now
+    elapsed=$((now - start))
+    [ "$elapsed" -lt "$bound" ] || continue
+  else
+    evaluate
+    if [ -z "$UNMET" ]; then
       record_admission
       lock_release
-      echo "warning: admission: secondmate $LABEL starting after ${elapsed}s despite: $UNMET (a home's own recovery is never refused)" >&2
+      epoch_to now
+      [ "$announced" = 0 ] || echo "admission: $LABEL admitted after $((now - start))s" >&2
       exit 0
     fi
-    echo "error: admission refused for $LABEL after ${elapsed}s: $UNMET; retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override" >&2
-    exit 3
+    share_wait "$key"
+    lock_release
+    epoch_to now
+    elapsed=$((now - start))
+    if [ "$elapsed" -ge "$bound" ]; then
+      if [ "$SECONDMATE" = 1 ]; then
+        lock_acquire
+        record_admission
+        lock_release
+        echo "warning: admission: secondmate $LABEL starting after ${elapsed}s despite: $UNMET (a home's own recovery is never refused)" >&2
+        exit 0
+      fi
+      echo "error: admission refused for $LABEL after ${elapsed}s: $UNMET; retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override" >&2
+      exit 3
+    fi
   fi
   if [ "$announced" = 0 ]; then
     echo "admission: $LABEL waiting (up to ${bound}s): $UNMET" >&2

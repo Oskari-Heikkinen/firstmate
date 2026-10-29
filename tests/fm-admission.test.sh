@@ -54,6 +54,74 @@ new_case() {
 
 adm() { "$ADMISSION" "$@" 2>&1; }
 
+# hold_one_agent: one live agent under a fleet cap of one, so every try waits.
+hold_one_agent() {
+  printf '{"max_agents": 1}\n' > "$C/rules.json"
+  add_proc "$C/proc" 100 1 bash
+  add_proc "$C/proc" 101 100 claude claude
+}
+
+# free_the_slot: the held agent exits. free_the_slot_cmd prints the same step
+# for a sleep seam to run.
+free_the_slot() { add_proc "$C/proc" 101 100 bash; }
+free_the_slot_cmd() { printf "printf '101 (bash) S 100 1 1 0 -1\\\\n' > '%s'\n" "$C/proc/101/stat"; }
+
+# seed_wait <epoch>: one waiter tries at <epoch>, finds the cap full, and is
+# stopped while it sleeps, leaving its fresh wait result for the next waiter.
+seed_wait() {
+  local out rc
+  out=$(FM_ADMISSION_NOW=$1 FM_ADMISSION_SLEEP="$C/stop-waiter.sh" adm acquire --label seed 2>&1); rc=$?
+  expect_code 143 "$rc" "the seeding waiter is stopped while it sleeps"$'\n'"$out"
+  assert_contains "$out" "seed waiting (up to 300s): 1 live agents plus 0 just admitted would exceed the fleet cap of 1" "the seeding waiter waits on the cap"
+}
+
+# write_sleep_seams: stop-waiter.sh stops the waiter that runs it; sleep-log.sh
+# logs each wait and, on the call that sleeps.at names, runs sleeps.do. Both use
+# only builtins, so a counted run counts only the gate's own commands.
+write_sleep_seams() {
+  # shellcheck disable=SC2016 # $PPID expands when the seam runs
+  printf '#!/bin/sh\nkill -TERM "$PPID"\n' > "$C/stop-waiter.sh"
+  cat > "$C/sleep-log.sh" <<SH
+#!$BASH
+n=0
+{ read -r n < "$C/sleeps.n"; } 2>/dev/null
+n=\$((n + 1))
+printf '%s\\n' "\$n" > "$C/sleeps.n"
+printf '%s\\n' "\$1" >> "$C/sleeps.log"
+at=0
+{ read -r at < "$C/sleeps.at"; } 2>/dev/null
+[ "\$n" != "\$at" ] || . "$C/sleeps.do"
+SH
+  chmod +x "$C/stop-waiter.sh" "$C/sleep-log.sh"
+  rm -f "$C/sleeps.n" "$C/sleeps.log" "$C/sleeps.at" "$C/sleeps.do"
+}
+
+sleeps() { if [ -f "$C/sleeps.log" ]; then wc -l < "$C/sleeps.log" | tr -d ' '; else echo 0; fi; }
+
+# make_count_shims <dir>: PATH shims that log every external command the gate
+# (and the memory guard it asks) runs to $COUNT_LOG, then run the real one.
+make_count_shims() {
+  local tool real
+  mkdir -p "$1"
+  for tool in awk jq find xargs cat getconf nproc date dirname mkdir rmdir chmod mv rm cut sleep id; do
+    real=$(type -P "$tool") || continue
+    # shellcheck disable=SC2016 # $COUNT_LOG and $@ expand when the shim runs
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "$COUNT_LOG"\nexec "%s" "$@"\n' "$tool" "$real" > "$1/$tool"
+    chmod +x "$1/$tool"
+  done
+}
+
+# counted <log> <command...>: run the gate with every external command logged.
+counted() {
+  local log=$1
+  shift
+  : > "$log"
+  PATH="$C/shims:$PATH" COUNT_LOG="$log" "$@"
+}
+
+count_all() { wc -l < "$1" | tr -d ' '; }
+count_eval_tools() { grep -c -E '^(awk|jq|find|xargs|getconf)$' "$1" || true; }
+
 test_healthy_host_admits_and_records() {
   local out rc
   new_case healthy
@@ -211,6 +279,130 @@ test_spawn_refuses_before_creating_anything() {
   pass "fm-spawn refuses before creating anything, and --admission-override launches"
 }
 
+test_waiters_share_one_fresh_result() {
+  local out rc check_all check_eval rules_eval one_eval all eval_tools
+  new_case share
+  hold_one_agent
+  write_sleep_seams
+  make_count_shims "$C/shims"
+  seed_wait 1000
+  counted "$C/check.log" "$ADMISSION" check > /dev/null 2>&1
+  counted "$C/rules.log" "$ADMISSION" rules > /dev/null 2>&1
+  check_all=$(count_all "$C/check.log")
+  check_eval=$(count_eval_tools "$C/check.log")
+  rules_eval=$(count_eval_tools "$C/rules.log")
+  one_eval=$((check_eval - rules_eval))
+  [ $((4 * one_eval)) -gt $((6 * 4 + 8)) ] ||
+    fail "one evaluation runs only $one_eval awk/jq/find/xargs/getconf commands, too few for the bound below to catch four re-evaluations"
+  # The fourth wait frees the slot and an admission another writer recorded
+  # changes the ledger, so the fifth try evaluates afresh and admits.
+  echo 4 > "$C/sleeps.at"
+  { free_the_slot_cmd; printf 'printf "1 fresh %s\\n" >> "%s"\n' "$C/elsewhere" "$C/run/admitted"; } > "$C/sleeps.do"
+  out=$(FM_ADMISSION_NOW=1004 FM_ADMISSION_SLEEP="$C/sleep-log.sh" counted "$C/count.log" "$ADMISSION" acquire --label "task w2" 2>&1); rc=$?
+  expect_code 0 "$rc" "the second waiter is admitted once the slot frees"$'\n'"$out"
+  assert_equals "admission: task w2 waiting (up to 300s): 1 live agents plus 0 just admitted would exceed the fleet cap of 1
+admission: task w2 admitted after 0s" "$out" "the waiter reports the shared condition and its admission"
+  assert_equals 4 "$(sleeps)" "the waiter slept four times on the shared result"
+  all=$(count_all "$C/count.log")
+  eval_tools=$(count_eval_tools "$C/count.log")
+  [ "$eval_tools" -le $((check_eval + 1)) ] ||
+    fail "five tries ran $eval_tools awk/jq/find/xargs/getconf commands, more than one evaluation ($check_eval) plus the ledger write"
+  [ "$all" -le $((check_all + 6 * 4 + 8)) ] ||
+    fail "five tries ran $all external commands, more than one evaluation ($check_all) plus 6 per shared try and 8 for the lock and ledger"
+  pass "a waiter sleeps on another waiter's fresh result without re-evaluating, and a ledger change is seen at once"
+}
+
+test_shared_result_freshness_rules_and_release() {
+  local out rc
+  new_case fresh
+  hold_one_agent
+  write_sleep_seams
+  # Past the 5 s window another waiter evaluates for itself and sees the release.
+  seed_wait 1000
+  free_the_slot
+  out=$(FM_ADMISSION_NOW=1005 FM_ADMISSION_SLEEP="$C/sleep-log.sh" adm acquire --label "task late"); rc=$?
+  expect_code 0 "$rc" "a waiter past the window"$'\n'"$out"
+  assert_equals "" "$out" "a waiter past the window is admitted at once"
+  assert_equals 0 "$(sleeps)" "a waiter past the window does not sleep"
+  # Inside the window it may see the release one sleep later, never past it.
+  hold_one_agent
+  seed_wait 2000
+  free_the_slot
+  echo 1 > "$C/sleeps.at"
+  printf 'printf "1 fresh %s\\n" >> "%s"\n' "$C/elsewhere" "$C/run/admitted" > "$C/sleeps.do"
+  out=$(FM_ADMISSION_NOW=2004 FM_ADMISSION_SLEEP="$C/sleep-log.sh" adm acquire --label "task lag"); rc=$?
+  expect_code 0 "$rc" "a waiter inside the window"$'\n'"$out"
+  assert_contains "$out" "admission: task lag waiting (up to 300s): 1 live agents plus 0 just admitted would exceed the fleet cap of 1" "inside the window the shared wait holds"
+  assert_contains "$out" "admission: task lag admitted after 0s" "the next try after a ledger change admits"
+  assert_equals 1 "$(sleeps)" "the shared wait cost one sleep"
+  # A rules change is seen at once.
+  write_sleep_seams
+  hold_one_agent
+  seed_wait 3000
+  printf '{"max_agents": 5}\n' > "$C/rules.json"
+  out=$(FM_ADMISSION_NOW=3001 FM_ADMISSION_SLEEP="$C/sleep-log.sh" adm acquire --label "task rules"); rc=$?
+  expect_code 0 "$rc" "a waiter after a rules change"$'\n'"$out"
+  assert_equals "" "$out" "a rules change admits at once"
+  assert_equals 0 "$(sleeps)" "a rules change costs no sleep"
+  # A release is seen by the same waiter's next try: it never reuses its own result.
+  write_sleep_seams
+  hold_one_agent
+  echo 1 > "$C/sleeps.at"
+  free_the_slot_cmd > "$C/sleeps.do"
+  out=$(FM_ADMISSION_NOW=4000 FM_ADMISSION_SLEEP="$C/sleep-log.sh" adm acquire --label "task own"); rc=$?
+  expect_code 0 "$rc" "a lone waiter after a release"$'\n'"$out"
+  assert_contains "$out" "admission: task own admitted after 0s" "a lone waiter sees the release on its next try"
+  assert_equals 1 "$(sleeps)" "a lone waiter sleeps once"
+  pass "a shared result is reused only inside its 5 s window, and a rules change, a ledger change, or a lone waiter's next try evaluates afresh"
+}
+
+test_refusal_at_the_bound_evaluates_for_itself() {
+  local out rc
+  new_case bound
+  add_proc "$C/proc" 100 1 bash
+  add_proc "$C/proc" 101 100 claude claude
+  printf '{"max_agents": 1, "wait_max_s": 0}\n' > "$C/rules.json"
+  out=$(FM_ADMISSION_NOW=1000 adm acquire --label "task a"); rc=$?
+  expect_code 3 "$rc" "the first waiter at its bound"
+  assert_equals "error: admission refused for task a after 0s: 1 live agents plus 0 just admitted would exceed the fleet cap of 1; retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override" "$out" "the refusal is unchanged"
+  out=$(FM_ADMISSION_NOW=1001 adm acquire --label "task b"); rc=$?
+  expect_code 3 "$rc" "a second waiter at its bound with the slot still held"
+  assert_equals "error: admission refused for task b after 0s: 1 live agents plus 0 just admitted would exceed the fleet cap of 1; retry later; only a spawn firstmate directs because a landing depends on it may pass --admission-override" "$out" "the second refusal is unchanged"
+  assert_absent "$C/run/admitted" "a refusal records nothing"
+  add_proc "$C/proc" 101 100 bash
+  out=$(FM_ADMISSION_NOW=1002 adm acquire --label "task c"); rc=$?
+  expect_code 0 "$rc" "a waiter at its bound after the slot freed, despite a fresh shared wait"$'\n'"$out"
+  assert_equals "" "$out" "it is admitted silently"
+  assert_grep "1002 fresh $C/home" "$C/run/admitted" "the admission is recorded"
+  pass "a try at its bound refuses or admits on its own evaluation, never on another waiter's result"
+}
+
+test_concurrent_waiters_never_both_admit_past_the_cap() {
+  local i rc admitted=0 refused=0
+  new_case race
+  printf '{"max_agents": 2, "wait_max_s": 1}\n' > "$C/rules.json"
+  add_proc "$C/proc" 100 1 bash
+  add_proc "$C/proc" 101 100 claude claude
+  for i in 1 2 3; do
+    (FM_ADMISSION_SLEEP=true adm acquire --label "task r$i" > "$C/out$i"; echo $? > "$C/rc$i") &
+  done
+  wait
+  for i in 1 2 3; do
+    rc=$(cat "$C/rc$i")
+    case "$rc" in
+    0) admitted=$((admitted + 1)) ;;
+    3)
+      refused=$((refused + 1))
+      assert_contains "$(cat "$C/out$i")" "would exceed the fleet cap of 2" "waiter $i names the cap"
+      ;;
+    *) fail "waiter $i exited $rc: $(cat "$C/out$i")" ;;
+    esac
+  done
+  assert_equals "1 2" "$admitted $refused" "exactly one of three waiters fits under the cap"
+  assert_equals 1 "$(wc -l < "$C/run/admitted" | tr -d ' ')" "exactly one admission is recorded"
+  pass "three waiters racing for one slot admit exactly one and refuse the others"
+}
+
 test_healthy_host_admits_and_records
 test_each_signal_holds_admission
 test_fleet_cap_counts_agent_trees_machine_wide
@@ -220,5 +412,9 @@ test_relaunches_are_paced_per_home_and_secondmates_never_refused
 test_malformed_rules_and_disabled_gate
 test_memory_guard_refusal_holds_admission
 test_spawn_refuses_before_creating_anything
+test_waiters_share_one_fresh_result
+test_shared_result_freshness_rules_and_release
+test_refusal_at_the_bound_evaluates_for_itself
+test_concurrent_waiters_never_both_admit_past_the_cap
 
 echo "# all fm-admission tests passed"
