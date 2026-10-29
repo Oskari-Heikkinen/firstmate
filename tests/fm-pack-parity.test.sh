@@ -171,7 +171,7 @@ fx() { python3 -I "$FX" "$@" || fail "fixture builder failed: $*"; }
 # make_bin DIR [MUTANT]: a copy of the command, with a fake fm-storage.sh.
 make_bin() {
   mkdir -p "$1"
-  cp "$ROOT/bin/fm-pack.sh" "$1/fm-pack.sh"
+  cp "$ROOT/bin/fm-pack.sh" "$ROOT/bin/fm-pack-retry.c" "$1/"
   if [ -n "${2:-}" ]; then
     fx mutant "$ROOT/bin/fm-pack-parity.py" "$2" "$1/fm-pack-parity.py"
   else
@@ -198,6 +198,7 @@ vt() {
   [ -z "${HOOK:-}" ] || hook=("FM_PACK_TEST_BEFORE_RECHECK=$HOOK")
   rm -f "$T/storage.log"
   OUT=$(env -u FM_PACK_TEST_BEFORE_RECHECK FM_PACK_MOUNT="${MOUNT:-unsquashfs}" TMPDIR="$T/tmp" \
+    FM_PACK_SLOT_LOCK="$T/slot.lock" \
     FAKE_STORAGE_LOG="$T/storage.log" FAKE_HEALTH="${HEALTH:-}" ${hook[@]+"${hook[@]}"} \
     "$VB/fm-pack.sh" verify-tar "$@" 2>"$T/err")
   RC=$?

@@ -195,6 +195,11 @@ Without squashfuse, fusermount3 and a usable `/dev/fuse`, `pack` and `verify` re
 `restore` unpacks into a new DEST behind an ordinary `fm-disk-room.sh run` admission for the logical size and checks every member there.
 Packing is cheap to undo: the source stays where it is until its owner releases it under R2.
 
+On WSL, a read, write, open or directory read on the 9p D: mount can fail with ENOMEM while Linux memory is fragmented, because each 9p request needs a 64 KiB kernel buffer that the kernel does not retry for.
+The failed call moves no bytes and the same call succeeds moments later, but mksquashfs, sha256sum and unsquashfs treat it as fatal, so multi-GB packs failed with "Output filesystem corrupted?", "Failed to read data from output filesystem" or "Cannot allocate memory".
+`fm-pack.sh` therefore preloads a small shim, `bin/fm-pack-retry.c`, that retries such a call with backoff, and reports the calls it retried on stderr.
+Each command also runs at nice 19 and idle I/O and holds one machine-wide pack slot, so two heavy D: jobs never run at once; the header's "Machine share" and "Machine-wide pack slot" paragraphs own the mechanics and the lock another tool takes to share the slot.
+
 ### Retention rule R2
 
 The home that owns the data releases a packed source as soon as its pack verifies, with `fm-pack.sh release`, the only Firstmate command that deletes a packed source.

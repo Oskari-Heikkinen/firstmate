@@ -89,7 +89,8 @@
 #            it was opened by must still have the device, inode, size, mtime
 #            and ctime it had when opened, so the caller binds the pass to
 #            the inode it holds.
-#       Prints one line on success, stderr empty:
+#       Prints one line on success, stderr empty apart from the pack slot's
+#       one waiting line (see "Machine-wide pack slot" below):
 #         fm-pack-tar-parity/v1 tar_sha256=HEX image_sha256=HEX members=N
 #       Exit codes, stdout empty on every non-zero code:
 #         0   parity holds;
@@ -176,8 +177,33 @@
 # Only release deletes SRC, and only after every guard holds; pack, verify and
 # restore never delete or rewrite it. fm-pack.sh keeps no index (the sidecars
 # beside the image are the manifest), and pack and restore never remove
-# anything they did not create in this run. Heavy steps run at nice 19 and
-# idle I/O priority.
+# anything they did not create in this run.
+#
+# Machine share: pack, verify, verify-tar, restore and release re-execute
+# themselves once at nice 19 and idle I/O priority (ionice -c3, where ionice
+# exists), so every step and every tool they run inherits both. On Linux
+# they first build bin/fm-pack-retry.c with cc into a per-run directory
+# (removed at exit), check that it loads and retries, and preload it into
+# themselves and every tool, so a read, write, open or readdir that fails
+# with ENOMEM is retried (docs/storage.md "Packing cold data" owns why);
+# no cc, a failed build or a shim that does not load exits 2. Retried calls
+# are summed in one stderr line at exit (fm-pack: retried N calls ...), and
+# calls still failing after the shim's limit in one more (... still failed
+# with ENOMEM ...); verify-tar prints them only when it exits non-zero.
+#
+# Machine-wide pack slot: each of those commands holds an exclusive flock on
+# one lock file for the whole command, so one runs at a time on the machine.
+# A command that finds the slot taken prints one line and blocks until it is
+# free; it never fails or exits for the slot:
+#   fm-pack: waiting for the machine-wide pack slot LOCK, held by HOLDER
+# The holder truncates LOCK and writes one line, pid=PID started=EPOCH
+# command=TEXT, which HOLDER quotes. LOCK is FM_PACK_SLOT_LOCK, default
+# $HOME/.cache/fm-pack/slot.lock, outside every home. Another heavy D: tool
+# (fm-repack) shares the slot by taking flock on the same file the same way,
+# and closes it for any process that may outlive it, as fm-pack does for the
+# squashfuse daemon. release takes its per-unit lock first and the slot
+# second, because its last guard reads the whole image and its removal is
+# heavy I/O; a holder of the slot never waits on a release's unit lock.
 #
 # Environment (all optional):
 #   FM_PACK_MOUNT   mount (default): verify and verify-tar read the image
@@ -191,10 +217,14 @@
 #   FM_PACK_MOUNTINFO  the mount table release reads (/proc/self/mountinfo)
 #   FM_DISK_ROOM_STATE  fm-disk-room's state directory, for release's
 #                   reservation check (the same default as fm-disk-room.sh)
+#   FM_PACK_SLOT_LOCK  the machine-wide pack slot's lock file
+#   FM_PACK_RETRY_LIMIT  seconds the shim keeps retrying one call (600)
 #   FM_PACK_TEST_BEFORE_RECHECK  test hook only: a command run by bash -c
 #                   between packing and the source re-check, between
 #                   release's rename aside and its re-check, and before
 #                   verify-tar's identity re-check
+#   FM_PACK_RETRY_TEST_EVERY  test hook only: the shim fails the first try
+#                   of every Nth wrapped call in each process with ENOMEM
 set -u
 set -o pipefail
 
@@ -206,13 +236,72 @@ fail1() { printf 'fm-pack: %s\n' "$*" >&2; exit 1; }
 note() { printf 'fm-pack: %s\n' "$*" >&2; }
 usage() { sed -n '2,/^set -u$/{/^set -u$/d;s/^# \{0,1\}//;p}' "$0"; }
 
-heavy() {
-  if command -v ionice >/dev/null 2>&1; then nice -n 19 ionice -c3 -t "$@"; else nice -n 19 "$@"; fi
-}
-
 need() {
   local t
   for t in "$@"; do command -v "$t" >/dev/null 2>&1 || die "$t is not installed"; done
+}
+
+# prepare ARGS: re-execute once at nice 19 and idle I/O, with the ENOMEM
+# retry shim preloaded on Linux (see "Machine share" above); then, in the
+# re-executed process, own the run directory and the exit report.
+RUN='' CMD=${1:-} CLEANUP=''
+prepare() {
+  local so err
+  if [ "${FM_PACK_SELF:-}" = "$$" ]; then
+    RUN=${FM_PACK_RUN:-}
+    unset FM_PACK_SELF FM_PACK_RUN
+    trap finish EXIT
+    return 0
+  fi
+  RUN=$(mktemp -d "${TMPDIR:-/tmp}/fm-pack-run.XXXXXX") || die "cannot create a run directory"
+  if [ "$(uname -s)" = Linux ]; then
+    so=$RUN/fm-pack-retry.so
+    case "$so" in *[[:space:]:]*) rm -rf -- "$RUN"; die "the run directory $RUN cannot be preloaded from (a space or colon)" ;; esac
+    command -v cc >/dev/null 2>&1 || { rm -rf -- "$RUN"; die "cc is not installed; it builds the ENOMEM retry shim $BIN/fm-pack-retry.c"; }
+    if ! err=$(nice -n 19 cc -O2 -shared -fPIC -o "$so" "$BIN/fm-pack-retry.c" -ldl 2>&1); then
+      rm -rf -- "$RUN"; die "cannot build the ENOMEM retry shim: ${err%%"$NL"*}"
+    fi
+    if ! LD_PRELOAD=$so FM_PACK_RETRY_TEST_EVERY=1 FM_PACK_RETRY_LIMIT=5 FM_PACK_RETRY_LOG=$RUN/probe.log \
+      cat /dev/null || [ ! -s "$RUN/probe.log" ]; then
+      rm -rf -- "$RUN"; die "the ENOMEM retry shim did not load or retry"
+    fi
+    export LD_PRELOAD="$so${LD_PRELOAD:+ $LD_PRELOAD}"
+  fi
+  export FM_PACK_SELF=$$ FM_PACK_RUN=$RUN FM_PACK_RETRY_LOG=$RUN/retry.log
+  if command -v ionice >/dev/null 2>&1; then exec nice -n 19 ionice -c3 -t "$BASH" "$0" "$@"; fi
+  exec nice -n 19 "$BASH" "$0" "$@"
+}
+
+# finish: the command's cleanup, the retry report, then the run directory.
+finish() {
+  local rc=$? report
+  [ -z "$CLEANUP" ] || "$CLEANUP"
+  if [ -n "$RUN" ] && [ -s "$RUN/retry.log" ] && { [ "$CMD" != verify-tar ] || [ "$rc" != 0 ]; }; then
+    report=$(awk '{ n++; split($5, w, "="); if (w[2] + 0 > m) m = w[2] + 0; c[$3]++
+        if ($6 == "result=gave-up") g++ }
+      END { for (k in c) s = s (s == "" ? "" : ", ") k " " c[k]
+        printf "fm-pack: retried %d calls that failed with ENOMEM (%s), the longest for %d ms\n", n, s, m
+        if (g) printf "fm-pack: %d calls still failed with ENOMEM after the retry limit\n", g }' "$RUN/retry.log")
+    [ -z "$report" ] || printf '%s\n' "$report" >&2
+  fi
+  [ -z "$RUN" ] || rm -rf -- "$RUN"
+}
+
+# take_slot TEXT: hold the machine-wide pack slot on fd 7 until exit, waiting
+# with one line while another holder has it (see "Machine-wide pack slot").
+take_slot() {
+  local lock=${FM_PACK_SLOT_LOCK:-${HOME:-/tmp}/.cache/fm-pack/slot.lock} holder
+  need flock
+  mkdir -p -- "${lock%/*}" || die "cannot create the directory of the pack slot $lock"
+  exec 7>>"$lock" || die "cannot open the pack slot $lock"
+  if ! flock -n 7; then
+    holder=$(cat -- "$lock" 2>/dev/null)
+    holder=${holder%%"$NL"*}
+    note "waiting for the machine-wide pack slot $lock, held by ${holder:-a holder that has not named itself}"
+    flock 7 || die "cannot take the pack slot $lock"
+  fi
+  printf 'pid=%s started=%s command=%s\n' "$$" "$(date +%s)" "$*" >"$lock" ||
+    note "cannot name this holder in $lock"
 }
 
 valid_unit() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
@@ -239,7 +328,7 @@ tree_matches() {
 
 # members_list DIR: sha256sum lines of every regular file under DIR, sorted.
 members_list() {
-  (cd "$1" && set -o pipefail && find . -xdev -type f -print0 | LC_ALL=C sort -z | heavy xargs -0 -r sha256sum --)
+  (cd "$1" && set -o pipefail && find . -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --)
 }
 
 # census DIR -> "FILES LOGICAL FREES"
@@ -268,7 +357,8 @@ unmount_verify() {
 check_members_mount() {
   local img=$1 dir=$2 members=$3 count expected rc
   MNT=$(mktemp -d "${TMPDIR:-/tmp}/fm-pack-verify.XXXXXX") || return 1
-  if ! squashfuse -o ro "$img" "$MNT" 2>/dev/null; then
+  # The daemon may outlive a killed run, so it must not inherit the slot.
+  if ! squashfuse -o ro "$img" "$MNT" 2>/dev/null 7>&-; then
     rmdir "$MNT"; MNT=''
     note "squashfuse could not mount $img"; return 1
   fi
@@ -276,7 +366,7 @@ check_members_mount() {
     note "the image holds no directory $dir"; unmount_verify; return 1
   fi
   rc=0
-  (cd "$MNT/$dir" && heavy sha256sum --quiet --strict -c -- "$members") || rc=1
+  (cd "$MNT/$dir" && sha256sum --quiet --strict -c -- "$members") || rc=1
   if [ "$rc" = 0 ]; then
     if ! count=$(cd "$MNT/$dir" && find . -type f -printf '.\n' | wc -l) ||
       ! expected=$(wc -l <"$members"); then
@@ -305,7 +395,7 @@ check_members_unsquashfs() {
     if [ "${path:0:2}" = './' ]; then path=${path#./}; elif [ -z "$bare" ]; then path=''; fi
     [[ $want =~ ^[0-9a-f]{64}$ ]] && [ "${line:64:2}" = '  ' ] && [ -n "$path" ] ||
       { note "members line $n is malformed"; return 1; }
-    got=$(heavy unsquashfs -no-wildcards -cat "$img" "$dir/$path" | sha256sum) ||
+    got=$(unsquashfs -no-wildcards -cat "$img" "$dir/$path" | sha256sum) ||
       { note "member-read-failed: $path"; return 1; }
     [ "${got%% *}" = "$want" ] || { note "$path: FAILED"; return 1; }
   done <<<"$manifest"
@@ -336,7 +426,7 @@ outside_src() {
 }
 
 # image_sha_ok DIR UNIT
-image_sha_ok() { (cd "$1" && heavy sha256sum --quiet --strict -c -- "$2.sqfs.sha256"); }
+image_sha_ok() { (cd "$1" && sha256sum --quiet --strict -c -- "$2.sqfs.sha256"); }
 
 # ---------------------------------------------------------------- pack
 
@@ -370,6 +460,7 @@ cmd_pack() {
   dir=${src##*/}
   [ -n "$dir" ] || die "cannot pack /"
   case "$src" in *"$NL"*|*\\*) die "$src: a newline or backslash in the path" ;; esac
+  take_slot "fm-pack pack $task $UNIT $src"
   R=$("$BIN/fm-storage.sh" verify-bulk-root --root "$root" "$task"); rc=$?
   case "$rc" in
     0) ;;
@@ -384,7 +475,7 @@ cmd_pack() {
   [ -n "$frees" ] || die "census of $src failed"
   packaging=$(( logical + logical / 100 + 1048576 ))
 
-  trap pack_cleanup EXIT
+  CLEANUP=pack_cleanup
   trap 'exit 130' INT
   trap 'exit 143' TERM
   R=$("$BIN/fm-storage.sh" bulk-root --root "$root" "$task" --name "pack-$UNIT" \
@@ -410,7 +501,7 @@ cmd_pack() {
   [ "$(wc -l <"$I/$UNIT.members.sha256")" = "$files" ] || fail1 "$src changed during the census"
 
   packed_at=$(date +%s)
-  heavy mksquashfs "$src" "$I/$UNIT.sqfs" -noappend -keep-as-directory -one-file-system -comp gzip -no-xattrs \
+  mksquashfs "$src" "$I/$UNIT.sqfs" -noappend -keep-as-directory -one-file-system -comp gzip -no-xattrs \
     -processors 2 -mem 512M -quiet -no-progress >&2 || fail1 "mksquashfs failed"
   sync -f "$I/$UNIT.sqfs" 2>/dev/null || sync
   (cd "$I" && sha256sum -- "$UNIT.sqfs" >"$UNIT.sqfs.sha256") || fail1 "hashing the image failed"
@@ -489,7 +580,8 @@ cmd_verify() {
   elif [ "$#" != 0 ]; then
     die "unknown verify argument: $1"
   fi
-  trap unmount_verify EXIT
+  take_slot "fm-pack verify $IMG"
+  CLEANUP=unmount_verify
   image_sha_ok "$IDIR" "$IUNIT" || fail1 "$IMG does not match $IUNIT.sqfs.sha256"
   check_members "$IMG" "$IDIRNAME" "$IMEMBERS" || fail1 "$IMG failed the member check ($METHOD)"
   if [ -n "$against" ]; then
@@ -503,7 +595,8 @@ cmd_verify_tar() {
   need python3
   need_reader
   [ "$METHOD" = mount ] || need unsquashfs
-  heavy python3 "$BIN/fm-pack-parity.py" --reader "$METHOD" --storage-tool "$BIN/fm-storage.sh" "$@"
+  take_slot "fm-pack verify-tar $*"
+  python3 "$BIN/fm-pack-parity.py" --reader "$METHOD" --storage-tool "$BIN/fm-storage.sh" "$@"
 }
 
 cmd_restore() {
@@ -516,15 +609,16 @@ cmd_restore() {
   [ ! -e "$dest" ] && [ ! -L "$dest" ] || die "$dest exists; restore never writes into an existing path"
   [ -d "$(dirname -- "$dest")" ] || die "the parent of $dest does not exist"
   logical=$(sidecar logical_bytes "$IJSON") || die "$IJSON has no logical_bytes"
+  take_slot "fm-pack restore $IMG $dest"
   image_sha_ok "$IDIR" "$IUNIT" || fail1 "$IMG does not match $IUNIT.sqfs.sha256"
   "$BIN/fm-disk-room.sh" run --name "restore-$IUNIT" --expect-write "$logical" -- \
-    nice -n 19 unsquashfs -no-progress -quiet -d "$dest" "$IMG" >&2
+    unsquashfs -no-progress -quiet -d "$dest" "$IMG" >&2
   case $? in
     0) ;;
     75) exit 75 ;;
     *) fail1 "unsquashfs into $dest failed" ;;
   esac
-  (cd "$dest/$IDIRNAME" && heavy sha256sum --quiet --strict -c -- "$IMEMBERS") || fail1 "$dest failed the member check"
+  (cd "$dest/$IDIRNAME" && sha256sum --quiet --strict -c -- "$IMEMBERS") || fail1 "$dest failed the member check"
   printf 'fm-pack: restored %s into %s/%s and checked %s files\n' "$IMG" "$dest" "$IDIRNAME" "$(wc -l <"$IMEMBERS")"
 }
 
@@ -775,7 +869,8 @@ cmd_release() {
   # The lock lives on Linux: D:'s 9p mount need not support flock.
   exec 8>>"${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/fm-pack-release.$IUNIT.lock" || die "cannot open the release lock for $IUNIT"
   flock -n 8 || rel_refuse 75 "another release of $IUNIT holds its lock"
-  trap release_cleanup EXIT
+  take_slot "fm-pack release $IMG $src"
+  CLEANUP=release_cleanup
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -819,7 +914,7 @@ cmd_release() {
   in_use "$REL_ASIDE" "${names[@]}"
 
   REL_MOVED='' REL_PENDING=''
-  if ! heavy rm -rf --one-file-system -- "$REL_ASIDE"; then
+  if ! rm -rf --one-file-system -- "$REL_ASIDE"; then
     note "removing $REL_ASIDE failed partway; what is left stays there and $REL_RECORD stays in state releasing"
     rel_log "failed $IUNIT $src: removing $REL_ASIDE stopped partway; the image verified, the remainder stays there"
     exit 1
@@ -840,12 +935,20 @@ cmd_release() {
     "$IMG" "$src" "$freed" "$REL_ACCEPTED" "$released" "$REL_RECORD"
 }
 
-case "${1:-}" in
-  pack) shift; cmd_pack "$@" ;;
-  verify) shift; cmd_verify "$@" ;;
-  verify-tar) shift; cmd_verify_tar "$@" ;;
-  restore) shift; cmd_restore "$@" ;;
-  release) shift; cmd_release "$@" ;;
-  -h|--help|help) usage ;;
-  *) usage >&2; exit 2 ;;
-esac
+# One block, read whole before it runs, so an update of this file during a
+# long command cannot change what the running command reads next.
+{
+  case "${1:-}" in
+    pack|verify|verify-tar|restore|release) prepare "$@" ;;
+  esac
+  case "${1:-}" in
+    pack) shift; cmd_pack "$@" ;;
+    verify) shift; cmd_verify "$@" ;;
+    verify-tar) shift; cmd_verify_tar "$@" ;;
+    restore) shift; cmd_restore "$@" ;;
+    release) shift; cmd_release "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  exit
+}

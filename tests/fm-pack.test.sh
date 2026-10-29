@@ -49,7 +49,7 @@ head, tree = git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD^{tree}')
 interpreter = os.readlink(f'/proc/{os.getppid()}/exe')
 # The tree pins repository inputs; this manifest pins the external executable
 # inputs used by the fixtures and production command, including the C compiler.
-tools = '''bash sh python3 gcc mksquashfs unsquashfs jq sha256sum find stat awk
+tools = '''bash sh python3 gcc cc uname mksquashfs unsquashfs jq sha256sum find stat awk
 sed grep cut wc sort cat df du flock nice ionice realpath dirname basename
 readlink date mkdir mktemp mv rm cp ln chmod cmp head tail tr dd sleep touch'''.split()
 pins = []
@@ -89,7 +89,8 @@ fi
 unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_NOW FM_DISK_ROOM_STATE \
   FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_POWERSHELL FM_DISK_ROOM_RESULTS_ROOT FM_DISK_ROOM_SAMPLES \
   FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_DISK_ROOM_BULK_MARGIN FM_STORAGE_MNT FM_STORAGE_CONFIG \
-  FM_STORAGE_MOUNTINFO FM_STORAGE_RESULTS_ROOT FM_PACK_MOUNT FM_PACK_TEST_BEFORE_RECHECK
+  FM_STORAGE_MOUNTINFO FM_STORAGE_RESULTS_ROOT FM_PACK_MOUNT FM_PACK_TEST_BEFORE_RECHECK \
+  FM_PACK_SLOT_LOCK FM_PACK_RETRY_LIMIT FM_PACK_RETRY_TEST_EVERY FM_PACK_RETRY_LOG FM_PACK_SELF FM_PACK_RUN
 TMP_ROOT=$(fm_test_tmproot fm-pack)
 PACK="$ROOT/bin/fm-pack.sh"
 GIB=1073741824
@@ -174,6 +175,7 @@ run_pack() {
     FM_DISK_ROOM_SAMPLES="$TMP_ROOT/no-samples" FM_DISK_ROOM_C_FREE_MIN=off FM_DISK_ROOM_MB_GROUPS="$TMP_ROOT/no-mb-groups" \
     FM_DISK_ROOM_VHDX="$TMP_ROOT/no-vhdx" FM_DISK_ROOM_DEV_SIZE=$((1000 * GIB)) FM_DISK_ROOM_MARGIN=1G \
     FM_DISK_ROOM_BULK_MARGIN=1G FM_PACK_MOUNT="${FM_PACK_MOUNT-unsquashfs}" FM_HOME="$TMP_ROOT/home" \
+    FM_PACK_SLOT_LOCK="${PACK_SLOT_LOCK:-$TMP_ROOT/slot.lock}" \
     bash "${PACK_EXEC:-$PACK}" "$@"
 }
 
@@ -245,6 +247,75 @@ test_pack_round_trip() {
   assert_contains "$out" "source unchanged" "verify --against says so"
   assert_equals "$SNAP" "$(snapshot "$SRC")" "the source is untouched"
   pass "pack commits a verified image with its sidecars and one receipt line"
+}
+
+# wait_for SECONDS COMMAND...: wait until COMMAND succeeds; SECONDS only
+# bounds a hang.
+wait_for() {
+  local cap=$(($1 * 20)) _; shift
+  for _ in $(seq "$cap"); do
+    "$@" && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+test_machine_share() {
+  local out err rc src="$TMP_ROOT/src/unit-s" probe="$TMP_ROOT/share-probe" linux=''
+  [ "$(uname -s)" != Linux ] || linux=1
+  make_src "$src"
+  mkdir -p "$probe"
+  # On Linux every process fails its first wrapped call (and every 40th) with
+  # ENOMEM; without the retry the shell itself, mksquashfs or the member check
+  # fails. Elsewhere there is no shim and the hook does nothing.
+  err="$TMP_ROOT/share.err"
+  out=$(FM_PACK_RETRY_TEST_EVERY=40 \
+    FM_PACK_TEST_BEFORE_RECHECK="nice >'$probe/nice'; ionice -p \$\$ >'$probe/io' 2>&1; grep -c fm-pack-retry.so /proc/\$\$/maps >'$probe/maps'" \
+    run_pack pack job unit-s "$src" 2>"$err"); rc=$?
+  expect_code 0 "$rc" "pack commits while its reads, writes and opens fail with ENOMEM: $(cat "$err")"
+  assert_contains "$out" "fm-pack-receipt/v1 image=$R/unit-s.sqfs " "the receipt names the image"
+  if [ -n "$linux" ]; then
+    assert_grep "fm-pack: retried " "$err" "pack reports the calls it retried"
+    [ "$(cat "$probe/maps")" -ge 1 ] || fail "every step runs with the retry shim loaded"
+  fi
+  assert_no_grep "still failed with ENOMEM" "$err" "no call gave up"
+  assert_equals 19 "$(cat "$probe/nice")" "every step runs at nice 19"
+  if command -v ionice >/dev/null 2>&1; then
+    assert_equals idle "$(cat "$probe/io")" "every step runs at idle I/O priority"
+  fi
+  out=$(FM_PACK_RETRY_TEST_EVERY=40 run_pack verify "$R/unit-s.sqfs" --against "$src" 2>"$err"); rc=$?
+  expect_code 0 "$rc" "verify passes while its reads fail with ENOMEM: $(cat "$err")"
+  assert_contains "$out" "verified $R/unit-s.sqfs (6 files, unsquashfs), source unchanged" "verify reads every member"
+  [ -z "$linux" ] || assert_grep "fm-pack: retried " "$err" "verify reports the calls it retried"
+  out=$(run_pack verify "$R/unit-s.sqfs" 2>&1); rc=$?
+  expect_code 0 "$rc" "verify without injected failures passes"
+  assert_not_contains "$out" "retried" "no retry note when nothing was retried"
+  pass "fm-pack runs at nice 19 and idle I/O and retries calls that fail with ENOMEM"
+}
+
+test_slot_waits() {
+  local lock="$TMP_ROOT/held-slot.lock" ready="$TMP_ROOT/slot-ready" go="$TMP_ROOT/slot-go"
+  local out="$TMP_ROOT/slot.out" err="$TMP_ROOT/slot.err" holder verify rc
+  flock "$lock" bash -c 'printf "pid=%s started=1 command=test-holder\n" "$$" >"$1"; : >"$2"
+    until [ -e "$3" ]; do sleep 0.05; done' _ "$lock" "$ready" "$go" &
+  holder=$!
+  wait_for 30 test -e "$ready" || fail "the test holder never took the slot"
+  PACK_SLOT_LOCK=$lock run_pack verify "$R/unit-a.sqfs" >"$out" 2>"$err" &
+  verify=$!
+  wait_for 60 grep -F "waiting for the machine-wide pack slot $lock" "$err" >/dev/null ||
+    fail "a second caller never said it waits: $(cat "$err")"
+  kill -0 "$verify" 2>/dev/null || fail "the waiting caller exited instead of waiting"
+  assert_equals "" "$(cat "$out")" "the waiting caller does no work while the slot is held"
+  : >"$go"
+  wait "$holder"
+  wait "$verify"; rc=$?
+  expect_code 0 "$rc" "the waiting caller runs once the slot is free"
+  assert_contains "$(cat "$out")" "verified $R/unit-a.sqfs" "the waiting caller verifies"
+  assert_equals 1 "$(grep -c 'waiting for the machine-wide pack slot' "$err")" "one waiting line"
+  assert_grep "held by pid=" "$err" "the waiting line names the holder"
+  assert_grep "command=test-holder" "$err" "the waiting line quotes the holder's command"
+  assert_grep "command=fm-pack verify $R/unit-a.sqfs" "$lock" "the holder names itself in the slot"
+  pass "a second caller prints one line and waits for the machine-wide slot"
 }
 
 test_against_changed_source() {
@@ -864,6 +935,7 @@ read_failure_case() (
 # only the public-command regression's exit status decides whether it is killed.
 make_read_mutant() {
   local mode=$1 dest=$2
+  cp "$ROOT/bin/fm-pack-retry.c" "${dest%/*}/" || return 1
   python3 - "$PACK" "$mode" "$dest" <<'PY'
 import pathlib, sys
 source, mode, dest = sys.argv[1:]
@@ -929,7 +1001,7 @@ elif mode == 'image-list':
     old = '''count=$(unsquashfs -no-wildcards -lln "$img" "$dir" | awk '/^-/ {n++} END {print n+0}')'''
     new = old[:-1] + '; :)'
 elif mode in ('image-cat', 'member-hash'):
-    old = 'got=$(heavy unsquashfs -no-wildcards -cat "$img" "$dir/$path" | sha256sum)'
+    old = 'got=$(unsquashfs -no-wildcards -cat "$img" "$dir/$path" | sha256sum)'
     new = old[:-1] + '; :)'
 elif mode == 'member-count':
     old, new = 'expected=$(wc -l <"$members")', 'expected=$(wc -l <"$members"; :)'
@@ -980,6 +1052,8 @@ test_release_read_failures() {
 
 test_no_publication_waits
 test_pack_round_trip
+test_machine_share
+test_slot_waits
 test_against_changed_source
 test_source_change_refuses
 test_tampering_fails_verify
