@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bounded-directory workload; capture bindings required for replay",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "synthetic", "label", "manifest", "trace", "clock", "files", "changes", "requests", "sha256"],
+  "properties": {
+    "format": {"const": "fm-supervision-replay.v3"},
+    "synthetic": {"type": "boolean"},
+    "label": {"type": "string", "minLength": 1, "maxLength": 200},
+    "manifest": {"type": "object"}, "trace": {"type": "object"},
+    "clock": {"$ref": "replay-v2.schema.json#/properties/clock"},
+    "files": {"$ref": "replay-v2.schema.json#/properties/files"},
+    "changes": {"$ref": "replay-v2.schema.json#/properties/changes"},
+    "requests": {"$ref": "replay-v2.schema.json#/properties/requests"},
+    "sha256": {"$ref": "replay-v2.schema.json#/$defs/sha"}
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sealed P1 replay workload data, never an executable program",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "synthetic", "label", "manifest", "trace", "clock", "files", "changes", "requests", "sha256"],
+  "properties": {
+    "format": {"const": "fm-supervision-replay.v2"},
+    "synthetic": {"type": "boolean"},
+    "label": {"type": "string", "minLength": 1, "maxLength": 200},
+    "manifest": {"type": "object"}, "trace": {"type": "object"},
+    "clock": {
+      "type": "object", "additionalProperties": false,
+      "required": ["machine", "boot_id", "namespace", "monotonic_start_ns", "monotonic_end_ns", "wall_start_ns"],
+      "properties": {
+        "machine": {"$ref": "#/$defs/text"},
+        "boot_id": {"type": "string", "pattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"},
+        "namespace": {"$ref": "#/$defs/token"},
+        "monotonic_start_ns": {"$ref": "#/$defs/time"},
+        "monotonic_end_ns": {"$ref": "#/$defs/time"},
+        "wall_start_ns": {"$ref": "#/$defs/time"}
+      }
+    },
+    "files": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/file"}},
+    "changes": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/change"}},
+    "requests": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/request"}},
+    "sha256": {"$ref": "#/$defs/sha"}
+  },
+  "$defs": {
+    "time": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "token": {"type": "string", "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,199}"},
+    "sha": {"type": "string", "pattern": "[0-9a-f]{64}"},
+    "text": {"type": "string", "pattern": "[^\u0000]*", "maxLength": 4096},
+    "blob": {
+      "type": "object", "additionalProperties": false, "required": ["base64", "sha256"],
+      "properties": {
+        "base64": {"type": "string", "maxLength": 5592408},
+        "sha256": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "place": {
+      "type": "object", "additionalProperties": false, "required": ["home", "root", "task", "path"],
+      "properties": {
+        "home": {"$ref": "#/$defs/token"},
+        "root": {"enum": ["state", "config", "data", "worktree"]},
+        "task": {"type": "string", "maxLength": 128},
+        "path": {"$ref": "#/$defs/text"}
+      }
+    },
+    "object": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["identity", "kind", "mode", "mtime_ns", "error", "content"],
+      "properties": {
+        "identity": {"$ref": "#/$defs/token"},
+        "kind": {"enum": ["regular", "directory", "symlink", "fifo"]},
+        "mode": {"type": "integer", "minimum": 0, "maximum": 4095},
+        "mtime_ns": {"$ref": "#/$defs/time"},
+        "error": {"enum": ["", "EACCES", "EIO", "ESTALE"]},
+        "content": {"$ref": "#/$defs/blob"}
+      }
+    },
+    "file": {
+      "type": "object", "additionalProperties": false, "required": ["place", "object"],
+      "properties": {"place": {"$ref": "#/$defs/place"}, "object": {"$ref": "#/$defs/object"}}
+    },
+    "change": {
+      "type": "object", "additionalProperties": false,
+      "required": ["seq", "at_ns", "place", "before_sha256", "object"],
+      "properties": {
+        "seq": {"type": "integer", "minimum": 1}, "at_ns": {"$ref": "#/$defs/time"},
+        "place": {"$ref": "#/$defs/place"},
+        "before_sha256": {"type": ["string", "null"], "pattern": "[0-9a-f]{64}"},
+        "object": {"$ref": "#/$defs/object"}
+      }
+    },
+    "actor": {
+      "type": "object", "additionalProperties": false, "required": ["name", "token", "claim"],
+      "properties": {
+        "name": {"enum": ["main", "branch", "diagnostic"]},
+        "token": {"$ref": "#/$defs/text"}, "claim": {"$ref": "#/$defs/blob"}
+      }
+    },
+    "observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operation", "arguments", "cwd", "generation", "start_ns", "end_ns", "exit_status", "stdout", "stderr"],
+      "properties": {
+        "id": {"$ref": "#/$defs/token"},
+        "operation": {"$ref": "#/$defs/token"},
+        "arguments": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/text"}},
+        "cwd": {"$ref": "#/$defs/place"}, "generation": {"$ref": "#/$defs/token"},
+        "start_ns": {"$ref": "#/$defs/time"}, "end_ns": {"$ref": "#/$defs/time"},
+        "exit_status": {"type": "integer", "minimum": 0, "maximum": 255},
+        "stdout": {"$ref": "#/$defs/blob"}, "stderr": {"$ref": "#/$defs/blob"}
+      }
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "home", "task", "generation", "kind", "arguments", "actor", "start_ns", "end_ns", "observations"],
+      "properties": {
+        "id": {"$ref": "#/$defs/token"}, "home": {"$ref": "#/$defs/token"},
+        "task": {"type": "string", "maxLength": 128}, "generation": {"$ref": "#/$defs/token"},
+        "kind": {"enum": ["crew-state", "wake-drain", "fleet-snapshot"]},
+        "arguments": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/text"}},
+        "actor": {"$ref": "#/$defs/actor"},
+        "start_ns": {"$ref": "#/$defs/time"}, "end_ns": {"$ref": "#/$defs/time"},
+        "observations": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/observation"}}
+      }
+    }
+  }
+}

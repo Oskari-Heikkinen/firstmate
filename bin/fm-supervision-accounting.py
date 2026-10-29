@@ -17,6 +17,10 @@ no effective capabilities, local single-machine enrollment and published roots.
 No subprocess, attach, target signals, policy writes or workload. Output cap is TOTAL.
 `account-proc FILE` replays its proc.json (including synthetic CI fixtures).
 `source-families` prints the retrospective coverage/plan source registry.
+`validate-workload FILE [--bindings FILE]` validates sealed v2/v3 data offline.
+V3 replay needs the sealed capture-bindings/v1 sidecar; validation launches no
+adapter or capture. V1 remains readable through replay/read-record but is
+insufficient here. No reader certifies B0 or production adapters.
 `prepare-calibration-plan FILE --revision SHA --checkout ABSOLUTE` resolves
 @REVISION@ and @CHECKOUT@ tokens offline, validates the complete plan and
 preserves its provenance/pins; it executes nothing and reads no home.
@@ -117,16 +121,29 @@ def dump(value):
     return json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n"
 
 
-def validate(value, schema, root=None, where="$"):
-    """The closed schema subset used by the shipped v1 schemas."""
+def validate(value, schema, root=None, where="$", references=None):
+    """Closed owner-schema subset; only fixed local cross-schema references."""
     root = root or schema
+    references = {} if references is None else references
     if "$ref" in schema:
         ref = schema["$ref"]
-        if ref in ("tick-counts-v1.schema.json",):
-            validate(value, load_json(SCHEMAS / ref), where=where)
+        if ref == "tick-counts-v1.schema.json":
+            if ref not in references:
+                references[ref] = load_json(SCHEMAS / ref)
+            validate(value, references[ref], where=where, references=references)
+        elif ref.startswith("replay-v2.schema.json#/"):
+            name, pointer = ref.split("#/", 1)
+            if name not in references:
+                references[name] = load_json(SCHEMAS / name)
+            external = references[name]
+            target = external
+            for part in pointer.split("/"):
+                require(type(target) is dict and part in target, "unknown schema reference")
+                target = target[part]
+            validate(value, target, external, where, references)
         else:
             require(ref.startswith("#/$defs/"), "unsupported schema reference")
-            validate(value, root["$defs"][ref[8:]], root, where)
+            validate(value, root["$defs"][ref[8:]], root, where, references)
         return
     types = {"object": dict, "array": list, "string": str, "integer": int,
              "boolean": bool, "null": type(None)}
@@ -145,7 +162,7 @@ def validate(value, schema, root=None, where="$"):
             require(value.keys() <= properties.keys(), where + ": unknown field")
         for key, item in value.items():
             if key in properties:
-                validate(item, properties[key], root, where + "." + key)
+                validate(item, properties[key], root, where + "." + key, references)
     elif isinstance(value, list):
         require(schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", 1000000),
                 where + ": array size")
@@ -153,7 +170,7 @@ def validate(value, schema, root=None, where="$"):
             require(len({json.dumps(v, sort_keys=True) for v in value}) == len(value),
                     where + ": duplicate array item")
         for index, item in enumerate(value):
-            validate(item, schema.get("items", {}), root, where + "[" + str(index) + "]")
+            validate(item, schema.get("items", {}), root, where + "[" + str(index) + "]", references)
     elif isinstance(value, str):
         require(schema.get("minLength", 0) <= len(value) <= schema.get("maxLength", MAX_BYTES),
                 where + ": string size")
@@ -1216,6 +1233,30 @@ def corpus(value):
     return records
 
 
+def workload(value):
+    """Versioned read-only factory; v1 accounting semantics remain unchanged."""
+    if type(value) is dict and value.get("format") == "fm-supervision-replay.v1":
+        corpus(value)
+        raise Refused("v1 accounting corpus is insufficient for P1 whole-workload measurement")
+    version = 3 if type(value) is dict and value.get("format") == "fm-supervision-replay.v3" else 2
+    validate(value, load_json(SCHEMAS / ("replay-v" + str(version) + ".schema.json")))
+    manifest(value["manifest"])
+    checked(value["trace"], "trace")
+    if version == 3:
+        from fm_supervision_bindings import WorkloadV3
+        return WorkloadV3(value)
+    from fm_supervision_replay import _Workload
+    return _Workload(value)
+
+
+def bound_workload(value, bindings):
+    """Bind v3 to its closed, sealed live-outcome/read-schedule sidecar."""
+    model = workload(value)
+    require(value["format"] == "fm-supervision-replay.v3", "capture bindings require workload v3")
+    validate(bindings, load_json(SCHEMAS / "capture-bindings-v1.schema.json"))
+    return model.bind(bindings)
+
+
 def content_seal(payload):
     return {"payload": payload, "sha256": digest(dump(payload).encode())}
 
@@ -1740,9 +1781,11 @@ def main():
     commands = parser.add_subparsers(dest="verb", required=True)
     commands.add_parser("source-families", help="print the complete retrospective source registry")
     commands.add_parser("probe", help="read-only availability/privilege report; never attaches")
-    for name in ("validate-manifest", "account", "replay", "read-record", "import-strace"):
+    for name in ("validate-manifest", "validate-workload", "account", "replay", "read-record", "import-strace"):
         sub = commands.add_parser(name)
         sub.add_argument("input")
+        if name == "validate-workload":
+            sub.add_argument("--bindings", help="sealed v3 capture bindings; validation only")
         if name == "account":
             sub.add_argument("--manifest", required=True)
         if name == "read-record":
@@ -1809,6 +1852,10 @@ def main():
             value = manifest(load_json(args.input))
             result = {"valid": True, "certified_complete": value["certified_complete"],
                       "homes": len(value["homes"])}
+        elif args.verb == "validate-workload":
+            value = load_json(args.input)
+            model = bound_workload(value, load_json(args.bindings)) if args.bindings else workload(value)
+            result = model.summary()
         elif args.verb == "import-strace":
             result = import_strace(args.input)
         elif args.verb == "account":
