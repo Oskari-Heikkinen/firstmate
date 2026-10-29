@@ -204,6 +204,21 @@ Because it shuts WSL down, any `.wslconfig` change waiting for a restart takes e
 `fm-wsl-reclaim.ps1 -Uninstall`, elevated, removes the task and the ProgramData script, file list, and shadow storage record, and keeps the logs.
 Compaction changes no data inside the disk, so there is nothing else to roll back.
 
+## Re-importing the distro
+
+A `wsl --export` and `wsl --import` writes every file densely, which returns the fragmented free space a compaction cannot.
+It also gives every file a new inode and birth time, so every status cursor that stores a file identity would reset and the first session start would rescan every status log from the start.
+`bin/fm-reimport-rekey.sh` carries those cursors across, once per home:
+
+1. Park the fleet and end the session, so no cursor moves.
+2. Before the export, run `bin/fm-reimport-rekey.sh record` in each home.
+3. Export, import and start the distro; the operator runs every Windows and WSL step.
+4. Before the first session start, run `bin/fm-reimport-rekey.sh apply` in each home, then start the session.
+
+`apply` rekeys a cursor only when its log is still at the same path with the same size and the same bytes up to the cursor, and leaves every other cursor to the normal reset, which rescans that one log.
+It refuses while a session, watcher or away daemon holds the home's locks, and a second run changes nothing.
+The script header lists the cursor families it covers, the record format, each outcome and the exit codes; its log is `state/.reimport-rekey.log`.
+
 ## Consumer interface
 
 `fm-disk-room.sh --interface` prints the latest consumer interface this copy serves, now `fm-disk-room-interface/v2`, while an explicit version query can confirm v1 support.
@@ -228,6 +243,6 @@ The script then finds its sibling helpers beside PATH, never in the working dire
 ## Limits
 
 - Sparse mode (`wsl --manage <distro> --set-sparse true`) is not used: WSL 2.5.6 and later require `--allow-unsafe` for it because of potential data corruption, a sparse file cannot be compacted by diskpart, and it frees space at the same 1 MiB granularity.
-- Fragmented free space that already exists stays allocated until the files around it are rewritten: moving bulk data off the disk, re-importing the distro, or repacking cold trees with `fm-repack.sh`.
+- Fragmented free space that already exists stays allocated until the files around it are rewritten: moving bulk data off the disk, [re-importing the distro](#re-importing-the-distro), or repacking cold trees with `fm-repack.sh`.
 - A reservation counts its whole expected write until the job exits, while the part already written also shows as used space, so room reads low (never high) while a reserved job runs.
 - The monitor is WSL-aware but works anywhere: without a Windows drive mount it measures the Linux filesystem alone.
