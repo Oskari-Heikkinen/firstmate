@@ -273,6 +273,7 @@ prepare() {
 }
 
 # finish: the command's cleanup, the retry report, then the run directory.
+# shellcheck disable=SC2329 # Registered as the EXIT trap in prepare.
 finish() {
   local rc=$? report
   [ -z "$CLEANUP" ] || "$CLEANUP"
@@ -354,6 +355,7 @@ unmount_verify() {
 }
 
 # check_members_mount IMAGE DIR MEMBERS: 0 match, 1 mismatch or no mount.
+# shellcheck disable=SC2329 # Called by name through check_members.
 check_members_mount() {
   local img=$1 dir=$2 members=$3 count expected rc
   MNT=$(mktemp -d "${TMPDIR:-/tmp}/fm-pack-verify.XXXXXX") || return 1
@@ -380,6 +382,7 @@ check_members_mount() {
 }
 
 # check_members_unsquashfs IMAGE DIR MEMBERS: 0 match, 1 mismatch.
+# shellcheck disable=SC2329 # Called by name through check_members.
 check_members_unsquashfs() {
   local img=$1 dir=$2 members=$3 line want path got count expected manifest n=0 bare=''
   [ "${IFORMAT:-}" = tj-fetch-arrival-unit/v2 ] && bare=1
@@ -626,6 +629,7 @@ cmd_restore() {
 
 REL_SRC='' REL_ASIDE='' REL_RECORD='' REL_PENDING='' REL_MOVED='' REL_IMAGE_SHA=''
 
+# shellcheck disable=SC2329 # Called through CLEANUP by finish.
 release_cleanup() {
   unmount_verify
   if [ -n "$REL_MOVED" ]; then

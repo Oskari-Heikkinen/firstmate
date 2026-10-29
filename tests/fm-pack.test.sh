@@ -390,13 +390,10 @@ test_repack_refuses() {
   pass "pack never overwrites a unit"
 }
 
-# no_fuse_path: a PATH dir holding only what pack and verify need before the
-# reader check, so squashfuse and fusermount3 are missing.
+# no_fuse_path: a PATH dir holding every tool on PATH except squashfuse and
+# fusermount3.
 no_fuse_path() {
-  local d="$TMP_ROOT/no-fuse-bin" t
-  mkdir -p "$d"
-  for t in bash dirname mksquashfs unsquashfs sha256sum jq; do ln -sf "$(command -v "$t")" "$d/$t"; done
-  printf '%s\n' "$d"
+  fm_test_base_path_sans "$PATH" squashfuse fusermount3
 }
 
 test_reader_mode_refuses() {
