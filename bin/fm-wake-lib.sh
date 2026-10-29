@@ -772,11 +772,19 @@ fm_lock_claim_blocked_by_steal() {
 fm_lock_claim() {
   local lockdir=$1 ownerdir=$2 allowed_steal_owner=${3:-} mypid back
   fm_current_pid mypid || return 1
-  if ! { printf '%s\n' "$mypid" > "$ownerdir/pid"; } 2>/dev/null; then
-    fm_lock_discard_owner "$ownerdir"
-    return 1
-  fi
+  # The link is already published, so a rival may read this pid through it.
+  # Rewriting a pid fm_lock_prepare_owner already wrote would truncate it first,
+  # and a rival reading in that instant sees an empty holder pid. Write only an
+  # owner that does not yet hold our pid; the read-back still fails for an
+  # owner directory a stealer discarded.
   fm_file_text_to back "$ownerdir/pid" || true
+  if [ "$back" != "$mypid" ]; then
+    if ! { printf '%s\n' "$mypid" > "$ownerdir/pid"; } 2>/dev/null; then
+      fm_lock_discard_owner "$ownerdir"
+      return 1
+    fi
+    fm_file_text_to back "$ownerdir/pid" || true
+  fi
   if [ "$back" != "$mypid" ]; then
     fm_lock_discard_owner "$ownerdir"
     return 1

@@ -198,9 +198,13 @@ EOF
 job 22 'Behavior shard 10' failure 'GitHub Actions 22'
 : >"$F/log-22"
 pages
+# A fixture flake list, so the repository's own list can shrink as flakes are
+# fixed without changing this case.
+printf '%s\n' 'tests/fm-watcher-lock.test.sh fixture flake' \
+  'tests/fm-supervision-host.test.sh fixture flake' >"$T/flakes"
 
 OUT=$T/out-all
-run_tool --repo "$REPO" --out "$OUT" 100
+run_tool --repo "$REPO" --out "$OUT" --flakes "$T/flakes" 100
 expect_code 0 "$RC" "all classes: exit"
 assert_equals "fm-ci-errors/v1 run=100 attempt=2 rows=18 real=7 flaky=3 infra=3 unknown=5 list=$OUT/errors.md" \
   "$OUTPUT" "all classes: summary line"
@@ -284,7 +288,7 @@ pass "errors.md carries the header, counts, next step and one escaped row per en
 # --- a rerun rewrites the same list ---------------------------------------
 
 jq -S 'del(.run.read_at)' "$OUT/errors.json" >"$T/first.json"
-run_tool --repo "$REPO" --out "$OUT" 100
+run_tool --repo "$REPO" --out "$OUT" --flakes "$T/flakes" 100
 expect_code 0 "$RC" "rerun: exit"
 assert_equals "$(cat "$T/first.json")" "$(jq -S 'del(.run.read_at)' "$OUT/errors.json")" "rerun: same rows"
 assert_equals 2 "$(grep -c ' written: rows=18 ' "$OUT/fm-ci-errors.log")" "rerun: the log gains one written line per run"

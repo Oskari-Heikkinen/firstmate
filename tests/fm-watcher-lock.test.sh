@@ -133,7 +133,8 @@ test_singleton_start() {
     sleep 0.02
     i=$((i + 1))
   done
-  grep -h 'watcher: already running pid ' "$out1" "$out2" >/dev/null || fail "second watcher did not report existing singleton"
+  grep -h 'watcher: already running pid ' "$out1" "$out2" >/dev/null \
+    || fail "second watcher did not report existing singleton: $(cat "$out1" "$out2" 2>/dev/null)"
   kill "$pid1" "$pid2" 2>/dev/null || true
   wait "$pid1" 2>/dev/null || true
   wait "$pid2" 2>/dev/null || true
@@ -298,6 +299,41 @@ wait_for_beacon_age() {  # <state> <secs>
   return 1
 }
 
+# Read the cycle number on the first line of the beacon in <state> into <var>.
+# The watcher rewrites the beacon in place, truncating it before it writes, so
+# a look in between finds an empty file: only a complete numeric first line
+# counts, and a torn read is looked at again up to <tries> times, 0.02 s apart.
+beat_cycle_to() {  # <var> <state> [tries]
+  local _bc_var=$1 _bc_state=$2 _bc_tries=${3:-50} _bc_line _bc_i=0
+  while [ "$_bc_i" -lt "$_bc_tries" ]; do
+    _bc_line=
+    { IFS= read -r _bc_line < "$_bc_state/.last-watcher-beat"; } 2>/dev/null || _bc_line=
+    case "$_bc_line" in
+      ''|*[!0-9]*) ;;
+      *) printf -v "$_bc_var" '%s' "$_bc_line"; return 0 ;;
+    esac
+    sleep 0.02
+    _bc_i=$((_bc_i + 1))
+  done
+  printf -v "$_bc_var" '%s' ''
+  return 1
+}
+
+# Wait until the beacon in <state> shows a cycle past <cycle>. Returns 0 once it
+# does, 2 as soon as watcher <pid> is gone, and 1 after <ticks> looks 0.1 s apart.
+wait_for_beat_cycle_past() {  # <state> <cycle> <pid> <ticks>
+  local state=$1 cycle=$2 pid=$3 ticks=$4 i=0 now
+  while [ "$i" -lt "$ticks" ]; do
+    is_live_non_zombie "$pid" || return 2
+    if beat_cycle_to now "$state" && [ "$now" -gt "$cycle" ]; then
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # The watchdog writes its stop receipt from a background child (bounded by a
 # 1 s ps snapshot) and sends TERM without waiting for it, so the watcher can be
 # gone before the receipt lands. Wait for the receipt in <state> before reading it.
@@ -346,7 +382,7 @@ pending_reply_ms_per_record() {  # <scratch-dir>
 # Start a watcher behind open pending-reply records, sized so its
 # pending-reply scan outlasts the grace, and wait past the grace into that scan.
 start_watcher_in_long_pending_reply_scan() {  # <dir> [env assignments...]
-  local dir=$1 per
+  local dir=$1 per cycle
   shift
   per=$(pending_reply_ms_per_record "$dir/calibrate")
   SCAN_RECORDS=$(( LONG_CYCLE_GRACE * 4000 / per + 1 ))
@@ -357,7 +393,8 @@ start_watcher_in_long_pending_reply_scan() {  # <dir> [env assignments...]
   seed_open_pending_replies "$dir/state" "$SCAN_RECORDS"
   start_idle_watcher "$dir" FM_POLL=1 FM_GUARD_GRACE="$LONG_CYCLE_GRACE" "$@"
   sleep "$LONG_CYCLE_GRACE"
-  [ "$(head -n 1 "$dir/state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan ($SCAN_RECORDS records) finished inside the grace"; }
+  beat_cycle_to cycle "$dir/state" && [ "$cycle" = 1 ] \
+    || { reap_watcher "$SEED_PID"; fail "the pending-reply scan ($SCAN_RECORDS records) finished inside the grace (beacon cycle ${cycle:-unreadable})"; }
 }
 
 test_long_pending_reply_scan_keeps_beacon_fresh() {
@@ -367,13 +404,14 @@ test_long_pending_reply_scan_keeps_beacon_fresh() {
   # With the watchdog idle, only the scan's own per-record beat can keep the
   # beacon fresh, so a re-arm in the middle of that step must attach instead
   # of refusing a stale heartbeat.
-  local dir state status out
+  local dir state status out cycle
   dir=$(make_case long-pending-reply-scan)
   state="$dir/state"
   start_watcher_in_long_pending_reply_scan "$dir" FM_WATCHER_WATCHDOG_INTERVAL=3600
   status=0
   out=$(PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=$LONG_CYCLE_GRACE FM_POLL=1 "$WATCH" 2>&1) || status=$?
-  [ "$(head -n 1 "$state/.last-watcher-beat")" = 1 ] || { reap_watcher "$SEED_PID"; fail "the re-arm did not land inside the pending-reply scan"; }
+  beat_cycle_to cycle "$state" && [ "$cycle" = 1 ] \
+    || { reap_watcher "$SEED_PID"; fail "the re-arm did not land inside the pending-reply scan (beacon cycle ${cycle:-unreadable})"; }
   reap_watcher "$SEED_PID"
   expect_code 0 "$status" "re-arm inside a long pending-reply scan"
   assert_contains "$out" "watcher: already running pid $SEED_PID" "re-arm did not attach to the watcher inside its pending-reply scan: $out"
@@ -384,21 +422,58 @@ test_long_pending_reply_scan_survives_watchdog() {
   # The same long step under a short watchdog interval beats per record, so it
   # is not a wedge: the watcher finishes its scan and its cycle without being
   # stopped.
-  local dir state i
+  local dir state status
   dir=$(make_case long-pending-reply-watchdog)
   state="$dir/state"
   start_watcher_in_long_pending_reply_scan "$dir" FM_WATCHER_WATCHDOG_INTERVAL=1
+  status=0
+  wait_for_beat_cycle_past "$state" 1 "$SEED_PID" "$SCAN_WAIT_TICKS" || status=$?
+  [ "$status" != 2 ] || fail "the watchdog stopped a watcher inside its pending-reply scan"
+  is_live_non_zombie "$SEED_PID" || fail "the watcher did not survive its pending-reply scan"
+  ! grep -qF 'watchdog: stopping' "$state/.watch-triage.log" 2>/dev/null || { reap_watcher "$SEED_PID"; fail "the watchdog tried to stop a watcher inside its pending-reply scan"; }
+  [ "$status" = 0 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan never finished its cycle"; }
+  reap_watcher "$SEED_PID"
+  pass "the watchdog leaves a watcher in a long pending-reply scan running"
+}
+
+test_cycle_wait_reads_a_torn_beacon_as_no_progress() {
+  # The pending-reply cases wait for the beacon's cycle to move past 1. A look
+  # inside the watcher's in-place rewrite finds the beacon truncated and not
+  # yet written; reading that as a new cycle ended the wait early, and the
+  # next read found cycle 1 again. A fixture writer pauses in that instant.
+  local dir state writer status cycle i
+  dir=$(make_case torn-beacon-wait)
+  state="$dir/state"
+  printf '1\nfixture:1\n' > "$state/.last-watcher-beat"
+  bash -c '
+    marker=$2
+    printf() {
+      : > "$marker.torn"
+      i=0
+      while [ ! -e "$marker.go" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+      builtin printf "$@"
+    }
+    printf "%s\n%s\n" 1 fixture:2 > "$1"
+  ' _ "$state/.last-watcher-beat" "$dir/writer" &
+  writer=$!
   i=0
-  while [ "$i" -lt "$SCAN_WAIT_TICKS" ] && [ "$(head -n 1 "$state/.last-watcher-beat" 2>/dev/null)" = 1 ]; do
-    is_live_non_zombie "$SEED_PID" || fail "the watchdog stopped a watcher inside its pending-reply scan"
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/writer.torn" ]; do
     sleep 0.1
     i=$((i + 1))
   done
-  is_live_non_zombie "$SEED_PID" || fail "the watcher did not survive its pending-reply scan"
-  ! grep -qF 'watchdog: stopping' "$state/.watch-triage.log" 2>/dev/null || { reap_watcher "$SEED_PID"; fail "the watchdog tried to stop a watcher inside its pending-reply scan"; }
-  [ "$(head -n 1 "$state/.last-watcher-beat")" != 1 ] || { reap_watcher "$SEED_PID"; fail "the pending-reply scan never finished its cycle"; }
-  reap_watcher "$SEED_PID"
-  pass "the watchdog leaves a watcher in a long pending-reply scan running"
+  [ -e "$dir/writer.torn" ] || { kill "$writer" 2>/dev/null; fail "the fixture writer never paused inside its beacon rewrite"; }
+  [ ! -s "$state/.last-watcher-beat" ] || { : > "$dir/writer.go"; fail "the fixture beacon was not torn while its writer paused"; }
+  status=0
+  wait_for_beat_cycle_past "$state" 1 "$writer" 3 || status=$?
+  : > "$dir/writer.go"
+  wait "$writer" || fail "the fixture writer failed"
+  [ "$status" = 1 ] || fail "a torn beacon ended the cycle wait with status $status, not 1 (no progress)"
+  beat_cycle_to cycle "$state" && [ "$cycle" = 1 ] || fail "the rewritten beacon read as cycle ${cycle:-unreadable}, not 1"
+  printf '2\ncycle-start\n' > "$state/.last-watcher-beat"
+  status=0
+  wait_for_beat_cycle_past "$state" 1 "$$" 1 || status=$?
+  [ "$status" = 0 ] || fail "a beacon at cycle 2 did not end the cycle wait (status $status)"
+  pass "a cycle wait reads a beacon torn mid-rewrite as no progress"
 }
 
 # Restore the immutable pre-fix library, rather than a "legacy" switch in
@@ -1520,6 +1595,57 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
   pass "paused mid-acquire claimant backs off to active stealer"
 }
 
+test_lock_pid_stays_readable_once_link_is_published() {
+  # A rival finding the lock reads the holder pid through the published link.
+  # A claimant that rewrote its pid after publishing truncated it first, so a
+  # rival reading in that instant got no pid, and a second watcher printed
+  # "already running" without one. A fixture printf pauses the claimant inside
+  # every redirected write it makes once the link exists.
+  local dir state lockdir claimant out want status i
+  dir=$(make_case lock-published-pid)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    lockdir=$2 marker=$3
+    echo "$$" > "$marker.pid"
+    . "$1"
+    printf() {
+      if [ "${1:-}" = "%s\n" ] && [ -L "$lockdir" ] && [ ! -e "$marker.go" ]; then
+        : > "$marker.paused"
+        i=0
+        while [ ! -e "$marker.go" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+      fi
+      builtin printf "$@"
+    }
+    fm_lock_try_acquire "$lockdir" || exit 1
+    : > "$marker.acquired"
+    i=0
+    while [ ! -e "$marker.go" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+    fm_lock_release "$lockdir"
+  ' _ "$LIB" "$lockdir" "$dir/claimant" &
+  claimant=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/claimant.paused" ] && [ ! -e "$dir/claimant.acquired" ]; do
+    kill -0 "$claimant" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
+    printf "rc=%s held=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}"
+  ' _ "$LIB" "$lockdir")
+  : > "$dir/claimant.go"
+  status=0
+  wait "$claimant" || status=$?
+  want=$(cat "$dir/claimant.pid" 2>/dev/null || true)
+  [ -e "$dir/claimant.paused" ] || [ -e "$dir/claimant.acquired" ] || fail "the claimant never reached its published lock (exit $status)"
+  [ "$status" = 0 ] || fail "the claimant did not take and release the lock (exit $status)"
+  [ -n "$want" ] && [ "$out" = "rc=1 held=$want" ] \
+    || fail "a rival read the published lock without its holder pid: $out (holder ${want:-unknown})"
+  pass "a published lock always shows its holder pid"
+}
+
 test_watch_restart_rejects_reused_pid() {
   local dir state fakebin out live pid i
   dir=$(make_case restart-reused-pid)
@@ -2536,6 +2662,8 @@ WATCHER_LOCK_CASES=(
   test_lock_empty_pid_uses_minimum_grace
   test_lock_late_claim_loses_after_recreate
   test_lock_paused_mid_acquire_claim_fails_during_steal
+  test_lock_pid_stays_readable_once_link_is_published
+  test_cycle_wait_reads_a_torn_beacon_as_no_progress
   test_watch_restart_rejects_reused_pid
   test_watcher_self_evicts_on_lock_takeover
   test_attached_arm_signal_is_recorded_in_cycle_ledger

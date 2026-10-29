@@ -2,5 +2,4 @@
 # bin/fm-ci-errors.sh to class such a failure as flaky rather than real.
 # Format: "<repo-relative test path> <reason>" per line; `#` starts a comment.
 # Remove a line in the change that fixes its flake.
-tests/fm-watcher-lock.test.sh red in 8 unrelated tasks since 2026-10-25 (test-churn-plan A4)
 tests/fm-supervision-host.test.sh red in 8 unrelated tasks since 2026-10-25 (test-churn-plan A4)
