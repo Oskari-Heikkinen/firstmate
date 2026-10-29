@@ -26,7 +26,7 @@ Claude Code on this laptop is updated by `bin/fm-claude-update.sh`, which instal
 ## What the lines mean
 
 - "claude-update failed ... npm install ... exited" - npm itself failed; the install log names the npm error.
-- "under the ... byte floor (a stub ...)" - the package's install step did not place the native binary; the log shows whether the platform package was fetched and what the postinstall printed.
+- "under the ... byte floor (a stub ...)" - the package's install step did not place the native binary on any of its attempts; `reify failed optional dependency` in the log means the platform package's download failed (on this laptop, TLS corruption on the WSL network path), and the postinstall output follows it.
 - "printed '...', not VERSION" - the binary runs but is not the version installed.
 - "version check failed" or "not enough room" - nothing was installed; fix the network or free space and rerun.
 - "has had no healthy run since" or "no healthy run on record" - the timer is not running or keeps being skipped; check `systemctl --user status claude-update.timer` and the log.

@@ -16,7 +16,8 @@ An in-place install also overwrites the only working copy, so there is nothing t
 
 - One npm `--global` prefix per version under `~/.local/share/claude-code/versions/<version>/`.
 - `current` and `previous` are relative symlinks to two of those folders; `current/bin/claude` is the stable path to run.
-- An install goes into `staging/`, runs with `--allow-scripts=@anthropic-ai/claude-code --foreground-scripts --include=optional`, and keeps its full npm output in the version's `.fm-claude-update/install.log`.
+- An install goes into `staging/`, runs with `--allow-scripts=@anthropic-ai/claude-code --foreground-scripts --include=optional`, and keeps its full verbose npm output in the version's `.fm-claude-update/install.log`, where a dropped optional package shows as `reify failed optional dependency`.
+- npm reports success even when the optional native package's download failed, and on this laptop's WSL network a large download can fail its TLS check mid-stream, so an attempt that fails or leaves the stub is rerun into the same folder, up to five attempts (`FM_CLAUDE_UPDATE_INSTALL_TRIES`), before the install fails.
 - Verification requires `bin/claude` to resolve to a regular executable inside the version folder, at least 50 MB (the stub is under 4 KB), whose `--version` prints exactly the version installed.
 - Only a verified folder is renamed into `versions/`, and only then is `previous` pointed at the old version and `current` at the new one, each by one atomic rename.
 - `current` is verified again after the switch and switched back if that fails.

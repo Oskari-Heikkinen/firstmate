@@ -5,14 +5,15 @@
 # Every case runs against a fake npm: `view` prints a fixture registry answer,
 # and `install --global --prefix P PKG@V` lays out an npm global prefix whose
 # bin/claude links to a fake binary that prints V, or fails, leaves a stub, or
-# prints the wrong version, as the case's mode file says. A fake df reports the
+# prints the wrong version, as the case's mode file says (stub-N leaves the stub
+# on the first N installs of that version only). A fake df reports the
 # free space, so nothing touches the registry or the real Claude Code.
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-for v in ROOT STATE PACKAGE BIN TAG MIN_AGE_HOURS MIN_BYTES MIN_FREE_MB KEEP KEEP_FAILED INSTALL_SECS VIEW_RETRY_SECS STALE_HOURS NPM NOW; do
+for v in ROOT STATE PACKAGE BIN TAG MIN_AGE_HOURS MIN_BYTES MIN_FREE_MB KEEP KEEP_FAILED INSTALL_SECS INSTALL_TRIES VIEW_RETRY_SECS STALE_HOURS NPM NOW; do
   unset "FM_CLAUDE_UPDATE_$v"
 done
 TMP_ROOT=$(fm_test_tmproot fm-claude-update)
@@ -25,7 +26,9 @@ NOW=1792454400 # 2026-10-20T00:00:00Z
 cat >"$FAKEBIN/npm" <<'SH'
 #!/usr/bin/env bash
 # Fake npm. view: $FAKE/view (absent = failure). install: lay out a prefix whose
-# binary behaves as $FAKE/mode-<version> says (ok, fail, stub, wrong).
+# binary behaves as $FAKE/mode-<version> says (ok, fail, stub, wrong, or stub-N:
+# a stub on the first N installs of that version, as a dropped optional download
+# leaves it, then ok).
 printf '%s\n' "$*" >>"$FAKE/calls"
 case "$1" in
   view)
@@ -43,6 +46,11 @@ case "$1" in
     done
     ver=${spec##*@}
     mode=$(cat "$FAKE/mode-$ver" 2>/dev/null || echo ok)
+    tries=$(( $(cat "$FAKE/tries-$ver" 2>/dev/null || echo 0) + 1 ))
+    echo "$tries" >"$FAKE/tries-$ver"
+    case "$mode" in
+      stub-*) if [ "$tries" -le "${mode#stub-}" ]; then mode=stub; else mode=ok; fi ;;
+    esac
     echo "fake install $spec into $prefix ($mode)"
     [ "$mode" = fail ] && { echo "npm error ETARGET" >&2; exit 1; }
     pkg="$prefix/lib/node_modules/@anthropic-ai/claude-code"
@@ -52,7 +60,7 @@ case "$1" in
     printf '#!/usr/bin/env bash\necho "%s (Claude Code)"\n' "$printed" >"$pkg/bin/claude.exe"
     [ "$mode" = stub ] || head -c 4000 /dev/zero | tr '\0' '#' >>"$pkg/bin/claude.exe"
     chmod +x "$pkg/bin/claude.exe"
-    ln -s ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe "$prefix/bin/claude" ;;
+    ln -sfn ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe "$prefix/bin/claude" ;;
 esac
 SH
 cat >"$FAKEBIN/df" <<'SH'
@@ -169,6 +177,33 @@ test_failures_leave_live_untouched() {
   out=$(run_tool run 2>&1) || fail "the fixed release installs: $out"
   assert_absent "$S/alarm" "a healthy run clears the alarm"
   pass "a failed install, a stub binary and a wrong version alarm and leave live claude untouched"
+}
+
+test_dropped_native_download_retries() {
+  reset
+  run_tool install 2.1.300 >/dev/null 2>&1 || fail "seed install"
+  registry 2.1.301 2.1.300=2026-10-17T00:00:00Z 2.1.301=2026-10-18T00:00:00Z
+  echo stub-2 >"$FAKE/mode-2.1.301"
+  local out code
+  out=$(run_tool run 2>&1) || fail "a stub on two attempts still installs: $out"
+  assert_contains "$out" "switched 2.1.300 -> 2.1.301" "the third attempt places the native binary"
+  assert_equals 3 "$(cat "$FAKE/tries-2.1.301")" "npm ran once per attempt and stopped at the first verified one"
+  assert_grep "attempt 2 of 5 for @anthropic-ai/claude-code@2.1.301 failed" "$S/log" "each failed attempt is logged"
+  assert_grep "verified $R/staging/2.1.301-" "$S/log" "the retried folder is the one verified"
+  assert_grep "== fm-claude-update: attempt 3 of 5" "$R/versions/2.1.301/.fm-claude-update/install.log" "the install log keeps every attempt"
+  assert_grep "--loglevel=verbose" "$FAKE/calls" "the npm log shows dropped optional packages"
+  reset
+  run_tool install 2.1.300 >/dev/null 2>&1 || fail "seed install"
+  registry 2.1.301 2.1.300=2026-10-17T00:00:00Z 2.1.301=2026-10-18T00:00:00Z
+  echo stub-2 >"$FAKE/mode-2.1.301"
+  out=$(FM_CLAUDE_UPDATE_INSTALL_TRIES=2 run_tool run 2>&1)
+  code=$?
+  expect_code 1 "$code" "a stub on every allowed attempt"
+  check_failure "a stub on every allowed attempt"
+  assert_grep "failed after 2 attempts" "$S/alarm" "the alarm says how many attempts ran"
+  assert_grep "under the 2000-byte floor" "$S/alarm" "the alarm still names the stub"
+  assert_absent "$R/versions/2.1.301" "a stub never reaches versions/"
+  pass "a dropped native download is rerun into the same folder, and still fails closed when every attempt leaves the stub"
 }
 
 test_version_check_and_room() {
@@ -298,6 +333,7 @@ test_install_adopts_and_verifies
 test_run_waits_for_release_age
 test_run_never_downgrades
 test_failures_leave_live_untouched
+test_dropped_native_download_retries
 test_version_check_and_room
 test_lock_skips_run
 test_rollback

@@ -57,6 +57,10 @@
 # The install always passes --allow-scripts=<package>: the package's postinstall
 # is what replaces bin/claude.exe (a ~500-byte stub) with the native binary, and
 # npm documents unreviewed install scripts as skipped by default.
+# npm treats a failed download of the optional native package as success and
+# leaves the stub, so a failed attempt is rerun into the same folder, up to
+# INSTALL_TRIES attempts, before the install fails; the log is --loglevel=verbose
+# so each dropped optional package shows as "reify failed optional dependency".
 #
 # Environment (all optional):
 #   FM_CLAUDE_UPDATE_ROOT, FM_CLAUDE_UPDATE_STATE   see above
@@ -69,6 +73,7 @@
 #   FM_CLAUDE_UPDATE_KEEP           verified versions kept, current and previous included (default 3)
 #   FM_CLAUDE_UPDATE_KEEP_FAILED    failed folders kept (default 3)
 #   FM_CLAUDE_UPDATE_INSTALL_SECS   npm install timeout (default 900)
+#   FM_CLAUDE_UPDATE_INSTALL_TRIES  npm install attempts per version before it fails (default 5)
 #   FM_CLAUDE_UPDATE_VIEW_RETRY_SECS  wait before the one retry of a failed version check (default 60)
 #   FM_CLAUDE_UPDATE_STALE_HOURS    no healthy run for this long is reported (default 50)
 #   FM_CLAUDE_UPDATE_NPM            npm to run (default: npm on PATH, else /opt/node24/bin/npm)
@@ -87,10 +92,11 @@ MIN_FREE_MB=${FM_CLAUDE_UPDATE_MIN_FREE_MB:-2048}
 KEEP=${FM_CLAUDE_UPDATE_KEEP:-3}
 KEEP_FAILED=${FM_CLAUDE_UPDATE_KEEP_FAILED:-3}
 INSTALL_SECS=${FM_CLAUDE_UPDATE_INSTALL_SECS:-900}
+INSTALL_TRIES=${FM_CLAUDE_UPDATE_INSTALL_TRIES:-5}
 VIEW_RETRY_SECS=${FM_CLAUDE_UPDATE_VIEW_RETRY_SECS:-60}
 STALE_HOURS=${FM_CLAUDE_UPDATE_STALE_HOURS:-50}
 REPEAT_SECS=21600
-SETTINGS="ROOT STATE PACKAGE BIN TAG MIN_AGE_HOURS MIN_BYTES MIN_FREE_MB KEEP KEEP_FAILED INSTALL_SECS VIEW_RETRY_SECS STALE_HOURS NPM"
+SETTINGS="ROOT STATE PACKAGE BIN TAG MIN_AGE_HOURS MIN_BYTES MIN_FREE_MB KEEP KEEP_FAILED INSTALL_SECS INSTALL_TRIES VIEW_RETRY_SECS STALE_HOURS NPM"
 
 die() { printf 'fm-claude-update: %s\n' "$*" >&2; exit 2; }
 usage() { sed -n '2,/^set -u$/{/^set -u$/d;s/^# \{0,1\}//;p}' "$0"; }
@@ -99,10 +105,11 @@ utc() { date -u -d "@${1:-$(now)}" +%Y-%m-%dT%H:%M:%SZ; }
 stamp() { printf '%s-%s\n' "$(date -u -d "@$(now)" +%Y%m%dT%H%M%SZ)" "$$"; }
 valid_version() { [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 
-for v in MIN_AGE_HOURS MIN_BYTES MIN_FREE_MB KEEP KEEP_FAILED INSTALL_SECS VIEW_RETRY_SECS STALE_HOURS; do
+for v in MIN_AGE_HOURS MIN_BYTES MIN_FREE_MB KEEP KEEP_FAILED INSTALL_SECS INSTALL_TRIES VIEW_RETRY_SECS STALE_HOURS; do
   [[ ${!v} =~ ^[0-9]+$ ]] || die "FM_CLAUDE_UPDATE_$v must be a whole number, not '${!v}'"
 done
 [ "$KEEP" -ge 2 ] || die "FM_CLAUDE_UPDATE_KEEP must be at least 2 (current and previous)"
+[ "$INSTALL_TRIES" -ge 1 ] || die "FM_CLAUDE_UPDATE_INSTALL_TRIES must be at least 1"
 
 # ver_lt A B: A sorts before B as major.minor.patch.
 ver_lt() {
@@ -254,30 +261,42 @@ print(best or "none", cap)
 ' "$TAG" "$MIN_AGE_HOURS" "$(now)" "$skips"
 }
 
-# install_fresh VERSION: npm-install VERSION into a new staging folder and
-# verify it there. On success STAGED names the folder; on failure the folder
+# install_fresh VERSION WHY: npm-install VERSION into a new staging folder and
+# verify it there, rerunning a failed attempt into the same folder up to
+# INSTALL_TRIES times. On success STAGED names the folder; on failure the folder
 # moves to failed/ and the alarm fires.
 install_fresh() {
-  local ver=$1 npm stage rc
+  local ver=$1 npm stage rc try=0 log_file
   npm=$(npm_cmd)
   room_ok || alarm "not enough room: under ${MIN_FREE_MB} MiB free for $ROOT" "df $ROOT" "free space, then rerun fm-claude-update.sh run"
   mkdir -p "$ROOT/staging" "$ROOT/failed" "$ROOT/versions"
   stage="$ROOT/staging/$ver-$(stamp)"
   mkdir -p "$stage/.fm-claude-update"
+  log_file="$stage/.fm-claude-update/install.log"
+  : >"$log_file"
   log "installing $PKG@$ver into $stage; why: $2; next: verify it there"
-  heavy timeout "$INSTALL_SECS" "$npm" install --global --prefix "$stage" \
-    --allow-scripts="$PKG" --foreground-scripts --include=optional --no-audit --no-fund \
-    "$PKG@$ver" >"$stage/.fm-claude-update/install.log" 2>&1
-  rc=$?
-  if [ "$rc" -ne 0 ]; then
-    fail_folder "$stage" "$ver" "npm install exited $rc"
-    alarm "npm install of $PKG@$ver exited $rc" "$FAILED/.fm-claude-update/install.log" "read that log, then rerun fm-claude-update.sh run"
-  fi
-  if ! verify "$stage" "$ver"; then
-    fail_folder "$stage" "$ver" "$DETAIL"
-    alarm "verification of $PKG@$ver failed: $DETAIL" "$FAILED/.fm-claude-update/install.log" "read that log, then rerun fm-claude-update.sh run"
-  fi
-  log "verified $stage: $DETAIL"
+  while :; do
+    try=$((try + 1))
+    printf '== fm-claude-update: attempt %s of %s at %s\n' "$try" "$INSTALL_TRIES" "$(utc)" >>"$log_file"
+    heavy timeout "$INSTALL_SECS" "$npm" install --global --prefix "$stage" \
+      --allow-scripts="$PKG" --foreground-scripts --include=optional --no-audit --no-fund \
+      --loglevel=verbose "$PKG@$ver" >>"$log_file" 2>&1
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      DETAIL="npm install exited $rc"
+    elif verify "$stage" "$ver"; then
+      break
+    fi
+    if [ "$try" -ge "$INSTALL_TRIES" ]; then
+      fail_folder "$stage" "$ver" "$DETAIL (after $try attempts)"
+      if [ "$rc" -ne 0 ]; then
+        alarm "npm install of $PKG@$ver exited $rc (after $try attempts)" "$FAILED/.fm-claude-update/install.log" "read that log, then rerun fm-claude-update.sh run"
+      fi
+      alarm "verification of $PKG@$ver failed after $try attempts: $DETAIL" "$FAILED/.fm-claude-update/install.log" "read that log, then rerun fm-claude-update.sh run"
+    fi
+    log "attempt $try of $INSTALL_TRIES for $PKG@$ver failed: $DETAIL; why: a dropped optional download leaves the stub; next: rerun npm install into $stage"
+  done
+  log "verified $stage on attempt $try: $DETAIL"
   STAGED=$stage
 }
 
