@@ -7,6 +7,12 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP=$(fm_test_tmproot fm-supervision-accounting)
 export FM_ACCOUNTING_TEST_ROOT="$ROOT" FM_ACCOUNTING_TEST_TMP="$TMP"
+# Run both independent reader stages before the unchanged v1/bridge coverage.
+# A refused stage must not hide the remaining reachable diagnostics.
+WORKLOAD_RC=0
+BINDINGS_RC=0
+python3 "$ROOT/tests/fixtures/supervision-accounting/workload_checks.py" || WORKLOAD_RC=$?
+python3 "$ROOT/tests/fixtures/supervision-accounting/binding_checks.py" || BINDINGS_RC=$?
 python3 - <<'PY'
 import base64
 import copy
@@ -1924,3 +1930,5 @@ if fm_supervision_fence_check 1 7 "$TMP"; then fail 'directory owner accepted'; 
 ) > "$TMP/capabilities" || fail 'bridge unexpectedly needed an external command'
 cmp -s "$TMP/expected-capabilities" "$TMP/capabilities" || fail 'fork-free capability inventory differs'
 pass 'legacy bridge is inert when disabled, fork-free, epoch-fenced and refuses unsupported activation'
+[ "$WORKLOAD_RC" -eq 0 ] || fail "v2 workload reader tests failed ($WORKLOAD_RC)"
+[ "$BINDINGS_RC" -eq 0 ] || fail "v3 capture binding tests failed ($BINDINGS_RC)"
