@@ -630,6 +630,10 @@ test_owner_state_failures() {
   flock 8
   FM_DISK_ROOM_LOCK_WAIT=0 lin a 1
   expect_err 75 "fm-storage: wait: owner-busy: linux:results: state lock busy after 0s" "a busy owner lock waits"
+  FM_DISK_ROOM_LOCK_WAIT=0 hostc a 1
+  expect_err 75 "fm-storage: wait: owner-busy: host-c:results: state lock busy after 0s" "host-c admissions take the same owner lock"
+  FM_DISK_ROOM_LOCK_WAIT=0 dvol a 1
+  expect_err 75 "fm-storage: wait: owner-busy: d:results: state lock busy after 0s" "D admissions take the same owner lock"
   FM_DISK_ROOM_LOCK_WAIT=0 try release-token job --token "$(hex64 d)"
   expect_err 1 "fm-storage: refused: owner-state: state lock busy after 0s" "release under a busy lock"
   flock -u 8
