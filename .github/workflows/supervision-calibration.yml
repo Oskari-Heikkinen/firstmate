@@ -45,8 +45,50 @@ jobs:
             ${{ runner.temp }}/calibration-homes/write-probe.trace
           if-no-files-found: error
 
+  # The Darwin runner queue is scarce, so a ci/** push runs native-stat only
+  # when it changes the watcher graph that test covers; main and manual runs
+  # always run it. bin/fm-ci-job-scope.sh owns the scope rules; an unknown
+  # answer runs the job with a warning rather than skipping it.
+  native-stat-scope:
+    name: Native summary stat scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.scope.outputs.run }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The scope diffs against origin/main.
+          fetch-depth: 0
+      - name: Decide whether this push changes the Darwin test's scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -u
+          if [ "$EVENT" = push ]; then
+            decision=$(bin/fm-ci-job-scope.sh --ref "$REF" --base origin/main \
+              .github/workflows/supervision-calibration.yml bin/fm-ci-job-scope.sh \
+              tests/fm-watch-triage.test.sh bin/fm-watch*.sh) \
+              || decision="unknown: bin/fm-ci-job-scope.sh exited $?"
+          else
+            decision="run: a $EVENT event always runs it"
+          fi
+          printf 'Darwin native-stat %s\n' "$decision" >> "$GITHUB_STEP_SUMMARY"
+          case "$decision" in
+            skip:*) run=false ;;
+            run:*) run=true ;;
+            *) run=true; printf '::warning title=Darwin scope unknown::%s\n' "$decision" ;;
+          esac
+          printf 'run=%s\n' "$run" >> "$GITHUB_OUTPUT"
+
   native-stat:
     name: Native summary stat (Darwin)
+    needs: native-stat-scope
+    # Only an explicit skip skips: a scope job that failed or never ran
+    # leaves the output empty, and the Darwin check still runs.
+    if: ${{ !cancelled() && needs.native-stat-scope.outputs.run != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
