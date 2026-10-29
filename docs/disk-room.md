@@ -127,6 +127,24 @@ A path several records name counts once, under the first source in that order, a
 Sources that live in another home, the TETJET pack index, census, and receipts, are read only when their environment variables name them, and the report lists every source as read, absent, unreadable, or not configured.
 The script's `--help` owns its exact output, its environment, and its exit codes.
 
+## Repacking cold trees
+
+ext4 packs small files into partly used 1 MiB blocks, and a compaction returns only whole free 1 MiB blocks, so space freed inside a partly used block stays allocated on the Windows drive; the `fragmented` figure in `fm-disk-room.sh status` is that space.
+`bin/fm-repack.sh` rewrites the files of a home's cold trees, oldest first, in one batch from one process pinned to one CPU, so the copies land together in whole blocks and the blocks the originals shared can empty.
+It covers only the trees the home lists in `config/repack-trees`, and [`configuration.md`](configuration.md#repack-trees-configrepack-trees) owns that file's format.
+A file is a candidate when it has not changed for 7 days, is a regular file with one link owned by the running user, and has not been repacked already.
+`state` directories, `.git` directories, bare repository object directories, SQLite databases with a `-wal` or `-journal` file, open files, and files that change during the copy are skipped and counted.
+
+`plan` is read-only: it prints each tree's files and bytes and the 1 MiB blocks a run would empty, and without a block sample that estimate prints as unknown.
+The estimate takes a sample of the disk's partly used 1 MiB blocks with each block's free 4 KiB blocks, counts a sampled block as emptied when the tree's files hold all of its used blocks, scales the count by the number of partly used blocks over the sample size, and gives a 95% Wilson interval.
+Taking the sample reads the filesystem's block bitmaps, which needs root, so it is an operator step.
+`run` admits the whole batch once through `fm-disk-room.sh run --expect-write` and runs it under `fm-io-cap --strict`, so a refusal holds the batch with exit 75 and nothing is written.
+Each file is copied beside itself, fsynced, given the original's owner, mode, xattrs, and times, compared byte for byte, and then exchanged with the original in one atomic rename, so a crash leaves each path holding the original or a verified copy.
+A write lease, which the kernel grants only while no other process has the file open and breaks when one opens it, is held through the copy and the exchange, so a file open anywhere is skipped and an open during the copy or the exchange keeps the original.
+A process that looks up the path just before the exchange and opens it just after the last lease check gets the original after it is unlinked, so its writes would be lost; that window is microseconds wide, and the 7-day rule keeps it to files nobody has written for a week.
+`baseline` marks the files a fresh distro import wrote, so the first run after an import does not rewrite data that is already dense.
+Nothing schedules a run: no timer, unit, or watcher check starts `fm-repack.sh`, and the script header owns its commands, state files, exit codes, and test seams.
+
 ## Reclaim (one-time Windows install)
 
 `bin/fm-wsl-reclaim.ps1` is run by a Windows administrator; nothing in this repo runs elevated or as root on its own.
@@ -209,6 +227,6 @@ The script then finds its sibling helpers beside PATH, never in the working dire
 ## Limits
 
 - Sparse mode (`wsl --manage <distro> --set-sparse true`) is not used: WSL 2.5.6 and later require `--allow-unsafe` for it because of potential data corruption, a sparse file cannot be compacted by diskpart, and it frees space at the same 1 MiB granularity.
-- Fragmented free space that already exists stays allocated; only moving bulk data off the disk or re-importing the distro rewrites it.
+- Fragmented free space that already exists stays allocated until the files around it are rewritten: moving bulk data off the disk, re-importing the distro, or repacking cold trees with `fm-repack.sh`.
 - A reservation counts its whole expected write until the job exits, while the part already written also shows as used space, so room reads low (never high) while a reserved job runs.
 - The monitor is WSL-aware but works anywhere: without a Windows drive mount it measures the Linux filesystem alone.

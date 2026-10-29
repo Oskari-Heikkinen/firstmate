@@ -39,6 +39,7 @@ gate tests/fm-park.test.sh
 gate tests/fm-pi-model-guard.test.sh
 gate tests/fm-pr-merge.test.sh
 gate tests/fm-procevent-when.test.sh
+gate tests/fm-repack.test.sh
 gate tests/fm-safety-guard.test.sh
 gate tests/fm-secondmate-lifecycle-e2e.test.sh
 gate tests/fm-secondmate-sync.test.sh
