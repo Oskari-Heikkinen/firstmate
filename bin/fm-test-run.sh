@@ -1314,6 +1314,10 @@ families_for_changed_path() {
       printf '%s\n' "__script__:fm-test-run.test.sh"
       printf '%s\n' "__script__:fm-safety-guard.test.sh"
       ;;
+    tests/known-flakes.list)
+      # Data read only by bin/fm-ci-errors.sh, whose suite pins its format.
+      printf '%s\n' "__script__:fm-ci-errors.test.sh"
+      ;;
     docs/fm-test-portable-shards.md|docs/fm-test-isolation-proof.md|\
     docs/fm-test-isolation-proof.json)
       printf '%s\n' pure-contract-unit
