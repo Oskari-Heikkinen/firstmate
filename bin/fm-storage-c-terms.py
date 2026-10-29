@@ -899,7 +899,7 @@ def measure(argv):
         if term['reason'] is not None:
             term['reason'] = clean(term['reason'])
         if term['state'] == 'unknown':
-            term['reserved_bytes'] = None
+            term['reserved_bytes'] = 0
             reasons.append({'code': 'cannot-measure', 'volume': 'host-c', 'term': name,
                             'detail': term['reason']})
     for fs in (linux, host):
