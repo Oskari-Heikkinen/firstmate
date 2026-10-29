@@ -515,8 +515,10 @@ test_firstmate_direct_push_dod_verifies_on_ci() {
   assert_contains "$block" "gh run rerun <run-id> --failed" "the Firstmate block does not rerun an infra failure's failed jobs only"
   assert_contains "$block" "bin/fm-ci-errors.sh --out" "the Firstmate block does not build its error list with fm-ci-errors"
   assert_contains "$block" "tests/known-flakes.list" "the Firstmate block does not class flaky rows from the known-flakes list"
-  assert_contains "$block" "\`ci/fm-task-mutant-<name>\` branch only for a guard whose test is new or changed" \
-    "the Firstmate block does not limit mutant pushes to new or changed guard tests"
+  assert_contains "$block" "\`ci/try/fm-task-mutant-<name>\` branch with an \`Fm-Try:\` trailer naming the guard's test, only for a guard whose test is new or changed" \
+    "the Firstmate block does not send mutant pushes, only for new or changed guard tests, to the try layout"
+  assert_contains "$block" "push it to \`ci/try/fm-task\` instead" "the Firstmate block does not route iteration pushes to the try layout"
+  assert_contains "$block" "a try run is never landing proof" "the Firstmate block lets a try run prove a landing"
   assert_contains "$block" "Never push a tree that already has a CI run" "the Firstmate block re-runs an already-tested tree"
   assert_contains "$block" "Lean-Review:" "the Firstmate block does not name the lean-review receipt"
   assert_contains "$block" "FM_HOME='/fixture/home' bin/fm-helper-consumers.sh pending HEAD" \
