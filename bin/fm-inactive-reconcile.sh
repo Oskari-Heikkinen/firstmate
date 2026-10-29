@@ -27,6 +27,19 @@
 # and failure outcomes from depending on the mate model appending them
 # (docs/secondmate-parent-channel.md). A main home has no parent channel and
 # skips this path: its watcher already signals every child status line.
+# The pass is change-gated per child, so an unchanged child costs no process.
+# After a pass that owed nothing (a ledger with no terminal line, or one
+# whose terminal line is still being appended or is already delivered), the
+# child gets a marker in terminal-outcomes/.ledger-gate/<child>.gate whose
+# mtime is the moment just before that pass read anything; a ship done that
+# the definition-of-done gate holds back is never marked, since it waits on
+# git and forge state. A later poll skips the child, before its lock, only
+# while that marker is strictly newer than the child's meta, its status
+# ledger, the record store directory (every record is created, renamed or
+# removed there) and the cadence marker, and not newer than the poll's own
+# clock reference, so any append, meta rewrite, record change, cadence scan
+# or backward clock step takes the full path on that same poll. A pass that
+# records, delivers, fails, or cannot read the ledger removes the marker.
 # `report <task-id>` runs that same delivery for one child on behalf of a
 # caller that already holds the child's meta lock, which bin/fm-teardown.sh
 # does before it removes the child's record; it exits 0 when the line is
@@ -94,6 +107,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 OUTCOME_DIR="$STATE/terminal-outcomes"
 SCAN_MARKER="$STATE/.inactive-outcome-reconcile"
 SCAN_LOCK="$STATE/.inactive-outcome-reconcile.lock"
+# Dot-named inside the record store, so marker writes leave the store's own
+# mtime alone and no record glob sees them.
+LEDGER_GATE_DIR="$OUTCOME_DIR/.ledger-gate"
+LEDGER_SETTLED=0
 CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 
 FM_INACTIVE_RECONCILE_SECS=${FM_INACTIVE_RECONCILE_SECS:-900}
@@ -353,8 +370,9 @@ notice_parent_report_failed() { # <record> <fingerprint> <payload>
 }
 
 # The whole terminal event a child's ledger states, or non-zero when the ledger
-# is absent, unusable, or states no done or failed event (1), or when that event
-# is the line still being appended (2, no trailing newline yet). The event is
+# is absent, unusable, or states no done or failed event (1), when that event
+# is the line still being appended (2, no trailing newline yet), or when a
+# non-empty ledger could not be read (3). The event is
 # selected through the shared latest-event reader, so the ledger path owns a
 # terminal record whose continuation prose trails it, and an unfinished line of
 # ordinary prose withholds nothing.
@@ -362,8 +380,9 @@ child_terminal_ledger_line() { # <status>
   local status=$1 snapshot last marker='__FM_LEDGER_SNAPSHOT_END__'
   [ -f "$status" ] && [ ! -L "$status" ] && [ -s "$status" ] || return 1
   last=$(last_status_line "$status")
+  [ -n "$last" ] || return 3
   case "$(status_line_verb "$last")" in done|failed) ;; *) return 1 ;; esac
-  snapshot=$(cat "$status"; printf '%s' "$marker") || return 1
+  snapshot=$(cat "$status"; printf '%s' "$marker") || return 3
   case "$snapshot" in
     *$'\n'"$marker") ;;
     "$last$marker"|*$'\n'"$last$marker") return 2 ;;
@@ -400,11 +419,16 @@ claim_inactive_report_for_ledger() { # <task> <incarnation> <state> <ledger-fing
 # The ledger-first parent delivery for one direct child, for a caller holding
 # the child's meta lock. Returns 0 when the line is delivered, already
 # delivered, or nothing is owed, and 1 when it is owed but the parent channel
-# could not be written (the notice is queued once per record).
+# could not be written (the notice is queued once per record). Sets
+# LEDGER_SETTLED=1 only when nothing is owed for a reason a ledger_pass gate
+# can hold: no whole terminal line, or that line is already delivered.
 report_child_ledger_locked() { # <id> <meta>
   local id=$1 meta=$2 status last previous state note pr mode yolo data incarnation fingerprint predecessor_head outcome_key line
   status="$STATE/$id.status"
-  last=$(child_terminal_ledger_line "$status") || return 0
+  last=$(child_terminal_ledger_line "$status") || {
+    [ "$?" -eq 3 ] || LEDGER_SETTLED=1
+    return 0
+  }
   state=$(status_line_verb "$last")
   pr=$(pr_for_task "$meta" "$last")
   incarnation=$(meta_incarnation "$meta")
@@ -418,7 +442,7 @@ report_child_ledger_locked() { # <id> <meta>
   fi
   outcome_key="child-outcome-$id-$state-${fingerprint:0:8}"
   ensure_record "$fingerprint" "$id" "$incarnation" "$state" "$outcome_key" direct upstream "$pr" || return 1
-  [ -n "$RECORD_PENDING" ] || return 0
+  [ -n "$RECORD_PENDING" ] || { LEDGER_SETTLED=1; return 0; }
   last_status_line "$status" previous >/dev/null
   predecessor_head=$(sha256_text "$previous")
   if claim_inactive_report_for_ledger "$id" "$incarnation" "$state" "$fingerprint" "$predecessor_head"; then
@@ -449,16 +473,38 @@ report_child_ledger_locked() { # <id> <meta>
   return 1
 }
 
+# A child's gate holds while nothing its last settled pass read has changed
+# since (see the header). Only shell tests, so a held gate forks nothing.
+ledger_gate_holds() { # <gate> <meta> <status>
+  local gate=$1
+  [ -f "$gate" ] && [ ! -L "$gate" ] \
+    && [ "$gate" -nt "$2" ] && [ "$gate" -nt "$3" ] \
+    && [ "$gate" -nt "$OUTCOME_DIR" ] && [ "$gate" -nt "$SCAN_MARKER" ] \
+    && [ ! "$gate" -nt "$LEDGER_GATE_DIR/.now" ]
+}
+
 # Every direct child's ledger, under its meta lock. File reads, plus a local
 # git reachability check for a ship done: with no delivery record yet, so it
-# runs on every poll in a secondmate home; a delivery failure is already queued as a
-# notice and never fails the scan.
+# runs on every poll in a secondmate home for each child whose gate does not
+# hold; a delivery failure is already queued as a notice and never fails the
+# scan. Without a usable gate directory every child takes the full path.
 ledger_pass() {
-  local meta id lock
+  local meta id lock gating=0 gate next
+  if { [ -d "$LEDGER_GATE_DIR" ] || mkdir "$LEDGER_GATE_DIR" 2>/dev/null; } \
+    && [ ! -L "$LEDGER_GATE_DIR" ] && [ ! -L "$LEDGER_GATE_DIR/.now" ] \
+    && { printf '%s\n' "$$" > "$LEDGER_GATE_DIR/.now"; } 2>/dev/null; then
+    gating=1
+  fi
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
-    id=$(basename "$meta" .meta)
+    id=${meta##*/}
+    id=${id%.meta}
     valid_id "$id" || continue
+    gate="$LEDGER_GATE_DIR/$id.gate"
+    next="$LEDGER_GATE_DIR/$id.next"
+    if [ "$gating" = 1 ] && ledger_gate_holds "$gate" "$meta" "$STATE/$id.status"; then
+      continue
+    fi
     [ "$(meta_field "$meta" kind)" != secondmate ] || continue
     lock=$(fm_meta_lock_path "$meta") || continue
     fm_lock_try_acquire "$lock" || continue
@@ -467,7 +513,18 @@ ledger_pass() {
       fm_lock_release "$lock"
       continue
     fi
-    report_child_ledger_locked "$id" "$meta" || true
+    # The next gate is written before the pass reads anything, so a write that
+    # lands during the read leaves its file no older than the gate.
+    if [ "$gating" = 1 ] && [ ! -L "$next" ] && [ ! -L "$gate" ] && [ ! -d "$gate" ] \
+      && { printf '%s\n' "$id" > "$next"; } 2>/dev/null; then
+      LEDGER_SETTLED=0
+      report_child_ledger_locked "$id" "$meta" || LEDGER_SETTLED=0
+      if [ "$LEDGER_SETTLED" != 1 ] || ! mv -f "$next" "$gate" 2>/dev/null; then
+        fm_rm_present "$next" "$gate" || true
+      fi
+    else
+      report_child_ledger_locked "$id" "$meta" || true
+    fi
     fm_lock_release "$lock"
   done
 }
@@ -475,6 +532,7 @@ ledger_pass() {
 # The `report <task-id>` entry point: the caller holds the child's meta lock.
 report_child() { # <id>
   local id=$1 meta rc=0
+  fm_rm_present "$LEDGER_GATE_DIR/$id.gate" "$LEDGER_GATE_DIR/$id.next" || true
   mkdir -p "$STATE" "$OUTCOME_DIR" || return 1
   [ ! -L "$OUTCOME_DIR" ] || return 1
   home_secondmate_id >/dev/null || { rc=$?; [ "$rc" -eq 1 ] && return 0; return 1; }

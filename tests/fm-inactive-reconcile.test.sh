@@ -1101,6 +1101,229 @@ SH
   pass "reconciliation state reads set no-forge mode"
 }
 
+# Change-gate fixtures for the per-poll ledger pass. Every poll here sees a
+# fresh cadence marker through the pinned clock, so only the ledger pass runs,
+# and the commands each poll spawns are logged by shims ahead of PATH.
+gate_world() { # <name>
+  local tool real
+  make_world "$1"; bind_secondmate local
+  mkdir -p "$MATE/state/terminal-outcomes" "$WORLD/counted"
+  GATE_CADENCE=$(( $(date +%s) - 100 ))
+  printf 'epoch=%s\ncursor=\n' "$GATE_CADENCE" > "$MATE/state/.inactive-outcome-reconcile"
+  set_mtime "$GATE_CADENCE" "$MATE/state/.inactive-outcome-reconcile"
+  for tool in basename cat cut git grep head ln mkdir mktemp mv readlink rm rmdir sed shasum sha256sum tail tr wc; do
+    real=$(command -v "$tool") || continue
+    printf '#!/bin/sh\nprintf "%%s\\n" %s >> "%s"\nexec "%s" "$@"\n' \
+      "$tool" "$WORLD/spawned.log" "$real" > "$WORLD/counted/$tool"
+    chmod +x "$WORLD/counted/$tool"
+  done
+}
+
+# One watcher poll of the mate home: rc, stdout and stderr in $WORLD/poll.*,
+# spawned commands in $WORLD/poll.log.
+gate_poll() {
+  local rc=0
+  : > "$WORLD/spawned.log"
+  PATH="$WORLD/counted:$PATH" FM_INACTIVE_RECONCILE_NOW=$((GATE_CADENCE + 1)) FM_FAKE_CREW_STATE=unknown \
+    run_reconcile "$MATE" > "$WORLD/poll.out" 2> "$WORLD/poll.err" || rc=$?
+  printf '%s\n' "$rc" > "$WORLD/poll.rc"
+  cp "$WORLD/spawned.log" "$WORLD/poll.log"
+}
+
+# Age every child file and the record store behind the cadence marker, then
+# poll once so each child that owes nothing settles on unchanged inputs.
+gate_settle() {
+  local file old=$((GATE_CADENCE - 20))
+  for file in "$MATE/state"/*.meta "$MATE/state"/*.status "$MATE/state"/*.turn-ended "$MATE/state/terminal-outcomes"; do
+    [ -e "$file" ] && set_mtime "$old" "$file"
+  done
+  gate_poll
+  [ "$(cat "$WORLD/poll.rc")" = 0 ] || fail "fixture: the settling poll failed: $(cat "$WORLD/poll.err")"
+}
+
+# The last poll spawned exactly what a poll of the same home spawns with every
+# child's meta moved aside, and said nothing. Renames keep each meta's mtime.
+gate_assert_skipped() { # <what>
+  local meta
+  [ "$(cat "$WORLD/poll.rc")" = 0 ] && [ ! -s "$WORLD/poll.out" ] && [ ! -s "$WORLD/poll.err" ] \
+    || fail "$1: rc=$(cat "$WORLD/poll.rc") out=$(cat "$WORLD/poll.out") err=$(cat "$WORLD/poll.err")"
+  cp "$WORLD/poll.log" "$WORLD/skipped.log"
+  mkdir -p "$WORLD/aside"
+  mv "$MATE/state"/*.meta "$WORLD/aside/"
+  gate_poll
+  for meta in "$WORLD/aside"/*.meta; do mv "$meta" "$MATE/state/"; done
+  grep -qx mkdir "$WORLD/poll.log" \
+    || fail "fixture: the counting shims logged nothing for a childless poll: $(cat "$WORLD/poll.log")"
+  cmp -s "$WORLD/poll.log" "$WORLD/skipped.log" \
+    || fail "$1 spawned commands beyond a childless poll: $(diff "$WORLD/poll.log" "$WORLD/skipped.log" | tr '\n' ' ')"
+}
+
+gate_assert_read() { # <what>
+  grep -qx grep "$WORLD/poll.log" || fail "$1 skipped a child it had to read again"
+}
+
+# A poll in which no child changed spawns exactly what a poll of a home with no
+# children spawns: delivered, non-terminal and half-written ledgers each cost
+# nothing, and nothing is delivered twice.
+test_ledger_gate_unchanged_children_spawn_nothing() {
+  gate_world gate-unchanged
+  write_child "$MATE" delivered 'done: PR https://example.test/owner/repo/pull/1 checks green'
+  write_child "$MATE" failing 'failed: could not finish'
+  write_child "$MATE" busy 'working: still going'
+  write_child "$MATE" half 'working: nearly there'
+  printf 'done: half writ' >> "$MATE/state/half.status"
+  gate_poll
+  [ "$(grep -c 'child-outcome-' "$MAIN/state/mate.status")" = 2 ] \
+    || fail "fixture: the first poll did not deliver both terminal lines: $(cat "$MAIN/state/mate.status")"
+  gate_settle
+  gate_assert_read "the settling poll"
+  gate_poll
+  gate_assert_skipped "a poll with every child unchanged"
+  gate_poll
+  gate_assert_skipped "a second poll with every child unchanged"
+  [ "$(grep -c 'child-outcome-' "$MAIN/state/mate.status")" = 2 ] \
+    || fail "an unchanged poll delivered again: $(cat "$MAIN/state/mate.status")"
+  [ "$(outcome_count "$MATE" reported)" = 2 ] || fail "an unchanged poll changed the delivery receipts"
+  pass "a poll with no changed child spawns nothing per child"
+}
+
+# A status append after a child settled is delivered on that same poll, whether
+# it is a new terminal line or the newline that completes one.
+test_ledger_gate_status_append_delivers_on_same_poll() {
+  local key
+  gate_world gate-append
+  write_child "$MATE" busy 'working: still going'
+  write_child "$MATE" half 'working: nearly there'
+  printf 'done: half writ' >> "$MATE/state/half.status"
+  gate_poll
+  gate_settle
+  gate_poll
+  gate_assert_skipped "a settled poll before the appends"
+  printf 'failed: gave up on the busy one\n' >> "$MATE/state/busy.status"
+  printf 'ten\n' >> "$MATE/state/half.status"
+  gate_poll
+  [ "$(cat "$WORLD/poll.rc")" = 0 ] || fail "the poll after the appends failed: $(cat "$WORLD/poll.err")"
+  key=$(reported_outcome_key "$MATE" busy failed) || fail "an appended failed: line was not delivered on the same poll"
+  sed -E 's/ \[at=[0-9]+\]//' "$MAIN/state/mate.status" | grep -Fxq "failed [key=$key]: child busy failed: gave up on the busy one pr=https://example.test/owner/repo/pull/1 mode=no-mistakes yolo=off" \
+    || fail "the appended failed: line was not delivered as before: $(cat "$MAIN/state/mate.status")"
+  key=$(reported_outcome_key "$MATE" half 'done') || fail "a completing newline was not delivered on the same poll"
+  sed -E 's/ \[at=[0-9]+\]//' "$MAIN/state/mate.status" | grep -Fq "done [key=$key]: child half done: half written" \
+    || fail "the completed done: line was not delivered as before: $(cat "$MAIN/state/mate.status")"
+  gate_poll
+  [ "$(wc -l < "$MAIN/state/mate.status" | tr -d ' ')" = 2 ] \
+    || fail "a poll after the appends delivered again: $(cat "$MAIN/state/mate.status")"
+  pass "a status append after a settled pass is delivered on the same poll"
+}
+
+# A meta rewrite (here a new spawn incarnation under the same task id) is read
+# on the same poll, so the new incarnation's terminal line is delivered.
+test_ledger_gate_meta_rewrite_delivers() {
+  gate_world gate-meta
+  write_child "$MATE" child 'failed: first incarnation'
+  gate_poll
+  gate_settle
+  gate_poll
+  gate_assert_skipped "a settled poll before the meta rewrite"
+  sed 's/^spawn_gen=.*/spawn_gen=respawned/' "$MATE/state/child.meta" > "$MATE/state/child.meta.tmp"
+  mv "$MATE/state/child.meta.tmp" "$MATE/state/child.meta"
+  gate_poll
+  [ "$(grep -c 'child-outcome-child-failed' "$MAIN/state/mate.status")" = 2 ] \
+    || fail "a meta rewrite was not read on the same poll: $(cat "$MAIN/state/mate.status")"
+  [ "$(outcome_count "$MATE" reported)" = 2 ] || fail "the new incarnation got no receipt of its own"
+  pass "a meta rewrite after a settled pass is read on the same poll"
+}
+
+# A delivery receipt the settled pass relied on is gone: the next poll reads
+# the child again and writes the receipt, as a poll always did.
+test_ledger_gate_record_change_invalidates() {
+  gate_world gate-record
+  write_child "$MATE" child 'failed: needs a receipt'
+  gate_poll
+  gate_settle
+  gate_poll
+  gate_assert_skipped "a settled poll before the record change"
+  rm -f "$MATE/state/terminal-outcomes"/*.reported
+  gate_poll
+  gate_assert_read "a poll after a receipt was removed"
+  [ "$(outcome_count "$MATE" reported)" = 1 ] || fail "a removed receipt was not written again on the same poll"
+  pass "a ledger record change sends the child through the full pass"
+}
+
+# A pass that could not write the parent channel never settles the child: each
+# poll retries, and the first poll after the binding is repaired delivers,
+# although the binding is no input the settled state depends on.
+test_ledger_gate_failed_pass_does_not_settle() {
+  local key
+  gate_world gate-failed
+  cp "$MATE/.fm-secondmate-parent" "$WORLD/parent-binding"
+  printf 'schema=fm-secondmate-parent.v1\nroute=invalid\n' > "$MATE/.fm-secondmate-parent"
+  write_child "$MATE" child 'failed: cannot reach anyone'
+  gate_poll
+  case "$(cat "$WORLD/poll.out")" in
+    "actionable: child outcome needs parent report: child=child state=failed"*) ;;
+    *) fail "the failed parent write did not queue its notice: $(cat "$WORLD/poll.out")" ;;
+  esac
+  gate_settle
+  gate_poll
+  gate_assert_read "a poll after a failed delivery"
+  [ ! -s "$WORLD/poll.out" ] || fail "a retry queued the notice again: $(cat "$WORLD/poll.out")"
+  [ "$(outcome_count "$MATE" pending)" = 1 ] || fail "the failed delivery lost its pending record"
+  cp "$WORLD/parent-binding" "$MATE/.fm-secondmate-parent"
+  gate_poll
+  key=$(reported_outcome_key "$MATE" child failed) || fail "the repaired binding did not deliver on the next poll"
+  sed -E 's/ \[at=[0-9]+\]//' "$MAIN/state/mate.status" | grep -Fq "failed [key=$key]: child child failed: cannot reach anyone" \
+    || fail "the retried line was not delivered as before: $(cat "$MAIN/state/mate.status")"
+  pass "a failed delivery never settles the child, so the retry runs every poll"
+}
+
+# A ship done: the definition-of-done gate holds back depends on git, which no
+# settled state tracks, so it is tested again on every poll and delivered on
+# the first poll after its head is pushed.
+test_ledger_gate_held_ship_done_is_tested_every_poll() {
+  local key
+  gate_world gate-held
+  write_child "$MATE" child 'done: PR https://example.test/owner/repo/pull/1 checks green, risk low'
+  git -C "$MATE/projects/child" commit -q --allow-empty -m 'only in the copy'
+  grep -v '^pr=\|^pr_head=' "$MATE/state/child.meta" > "$MATE/state/child.meta.tmp"
+  mv "$MATE/state/child.meta.tmp" "$MATE/state/child.meta"
+  gate_poll
+  gate_settle
+  [ ! -s "$MAIN/state/mate.status" ] || fail "fixture: an unpushed done: was published: $(cat "$MAIN/state/mate.status")"
+  gate_poll
+  grep -qx git "$WORLD/poll.log" || fail "a held ship done: was not tested again on a later poll"
+  git -C "$MATE/projects/child" update-ref refs/remotes/origin/main HEAD
+  gate_poll
+  key=$(reported_outcome_key "$MATE" child 'done') || fail "a pushed head was not delivered on the next poll"
+  sed -E 's/ \[at=[0-9]+\]//' "$MAIN/state/mate.status" | grep -Fq "done [key=$key]: child child done: PR https://example.test/owner/repo/pull/1 checks green, risk low" \
+    || fail "the pushed done: was not delivered as before: $(cat "$MAIN/state/mate.status")"
+  pass "a held ship done: is tested on every poll and delivered once pushed"
+}
+
+# A ledger that exists but cannot be read never settles: restoring read access
+# changes no mtime, and the first poll after it delivers.
+test_ledger_gate_unreadable_ledger_is_read_again() {
+  local key
+  gate_world gate-unreadable
+  write_child "$MATE" child 'failed: behind a closed door'
+  chmod 000 "$MATE/state/child.status"
+  if [ -r "$MATE/state/child.status" ]; then
+    chmod 644 "$MATE/state/child.status"
+    pass "an unreadable ledger is read again (skipped: this user reads mode-000 files)"
+    return 0
+  fi
+  gate_poll
+  gate_settle
+  gate_poll
+  gate_assert_read "a poll of an unreadable ledger"
+  [ ! -s "$MAIN/state/mate.status" ] || fail "an unreadable ledger was delivered: $(cat "$MAIN/state/mate.status")"
+  chmod 644 "$MATE/state/child.status"
+  gate_poll
+  key=$(reported_outcome_key "$MATE" child failed) || fail "a ledger made readable again was not delivered on the next poll"
+  sed -E 's/ \[at=[0-9]+\]//' "$MAIN/state/mate.status" | grep -Fq "failed [key=$key]: child child failed: behind a closed door" \
+    || fail "the readable ledger's line was not delivered as before: $(cat "$MAIN/state/mate.status")"
+  pass "an unreadable ledger never settles, so it is read again once readable"
+}
+
 test_main_direct_terminal_presentation_receipt
 test_branch_ack_retires_inactive_outcome_receipt
 test_unpushed_ci_ready_done_is_not_published
@@ -1139,5 +1362,12 @@ test_notice_recovery_does_not_duplicate_wake
 test_missing_parent_binding_names_itself
 test_reconciliation_never_calls_forge
 test_reconciliation_sets_no_forge_mode_for_state_read
+test_ledger_gate_unchanged_children_spawn_nothing
+test_ledger_gate_status_append_delivers_on_same_poll
+test_ledger_gate_meta_rewrite_delivers
+test_ledger_gate_record_change_invalidates
+test_ledger_gate_failed_pass_does_not_settle
+test_ledger_gate_held_ship_done_is_tested_every_poll
+test_ledger_gate_unreadable_ledger_is_read_again
 
 echo "all inactive reconciliation tests passed"
