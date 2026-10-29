@@ -144,8 +144,6 @@ init_changed_fixture_repo() {
   # shellcheck disable=SC2016  # literal fixture text: the reference must reach
   # the file verbatim so the changed-file scan can find it, not expand here.
   printf '. "$ROOT/bin/shared-probe-lib.sh"\n' >"$repo/bin/fm-watch-probe.sh"
-  printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
-    >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
   mkdir -p \
     "$repo/.agents/skills/example" \
@@ -345,7 +343,7 @@ test_changed_dependency_selection_and_unmapped_failure() {
   printf '\n' >>"$repo/.pi/extensions/fm-primary-pi-watch.ts"
   printf '\n' >>"$repo/.pi/extensions/fm-primary-turnend-guard.ts"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
-  assert_contains "$listed" "tests/fm-cd-pretool-check.test.sh" "Claude and Pi source selects hook coverage"
+  assert_contains "$listed" "tests/fm-session-start.test.sh" "Claude settings and turn-end guard select session coverage"
   assert_contains "$listed" "tests/fm-pi-watch-extension.test.sh" "Pi source selects watcher coverage"
   assert_contains "$listed" "tests/fm-pi-windows-shell-invocation.test.sh" \
     "turn-end extension selects native-Windows shell coverage"
@@ -571,7 +569,8 @@ test_changed_opencode_plugin_selects_plugin_suites() {
 # imported by a client script that a curated watcher runs. Python modules count
 # as named by their import, and a fixture or Python test helper importing a
 # module selects the suites that read it. A file nothing reaches still refuses,
-# and an import cycle with no reader ends in that refusal.
+# an import cycle with no reader ends in that refusal, and so does a scan that
+# cannot read a file.
 test_changed_bin_walk_follows_python_imports_to_any_depth() {
   local tmp repo listed rc path
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-walk.XXXXXX")
@@ -635,8 +634,30 @@ test_changed_bin_walk_follows_python_imports_to_any_depth() {
     git -C "$repo" checkout -q -- "$path"
   done
 
+  # A bin file the scan cannot read is a failed reading, never "nothing names
+  # it". The file is git-ignored so only the scan meets it, not the diff.
+  printf 'bin/fm-zunreadable.sh\n' >"$repo/.gitignore"
+  commit_fixture_setup "$repo" ignore-unreadable
+  : >"$repo/bin/fm-zunreadable.sh"
+  chmod 000 "$repo/bin/fm-zunreadable.sh"
+  if [ -r "$repo/bin/fm-zunreadable.sh" ]; then
+    echo "# skip: mode 000 stays readable for this user, so the unreadable-scan case cannot run"
+  else
+    printf '\n' >>"$repo/bin/fm_zview_crew.py"
+    set +e
+    (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "a bin file the scan cannot read must fail with exit 2, got $rc: $(cat "$tmp/out")"
+    grep -Fq 'reference scan failed' "$tmp/err" \
+      || fail "the failed scan was not reported: $(cat "$tmp/err")"
+    grep -Fq 'no changed-test mapping for source path: bin/fm_zview_crew.py' "$tmp/err" \
+      || fail "the failed scan did not refuse the changed path: $(cat "$tmp/err")"
+  fi
+  chmod 600 "$repo/bin/fm-zunreadable.sh"
+
   rm -rf "$tmp"
-  pass "the bin walk follows Python imports, fixtures and helpers to any depth, and an unreached file refuses"
+  pass "the bin walk follows Python imports, fixtures and helpers to any depth, and an unreached or unreadable file refuses"
 }
 
 # Exercise begin/end markers from real fixture processes to prove the automatic
