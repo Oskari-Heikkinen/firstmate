@@ -27,6 +27,17 @@ def canonical(value):
     return (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("ascii")
 
 
+def strict_equal(left, right):
+    """Adapter API equality must not alias bool/int/float or nested shapes."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        return left.keys() == right.keys() and all(strict_equal(left[k], right[k]) for k in left)
+    if type(left) in (list, tuple):
+        return len(left) == len(right) and all(strict_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
 def seal(value):
     return hashlib.sha256(canonical(value)).hexdigest()
 
@@ -117,7 +128,7 @@ class _Workload:
             require(change["seq"] == seq and previous <= at <= self.end,
                     "change sequence/clock gap or regression")
             if at != previous:
-                self.topology(current)
+                self.topology(current, touched)
                 touched.clear()
             previous = at
             key = self.place(change["place"])
@@ -128,7 +139,7 @@ class _Workload:
             self.object(change["object"])
             current[key] = change["object"]
             self._history[key].append((at, change["object"]))
-        self.topology(current)
+        self.topology(current, touched)
         self._times = {key: tuple(at for at, _ in rows) for key, rows in self._history.items()}
         self._requests, self._order = {}, []
         previous = self.start
@@ -218,7 +229,7 @@ class _Workload:
                 parts = path_parts(name.decode("utf-8"))
                 require(len(parts) == 1, "invalid directory entry")
 
-    def topology(self, current):
+    def topology(self, current, changed=None):
         """Explicit inventories prevent an omitted file becoming false absence."""
         children = {}
         for key, value in current.items():
@@ -275,7 +286,7 @@ class _Side:
                     and owner._order[len(self._opened)] == ident, "missing/extra/out-of-order request")
             expected = owner._requests[ident]
             actual = dict(home=home, task=task, generation=generation, kind=kind, arguments=arguments, actor=actor)
-            require(all(actual[key] == expected[key] for key in actual), "request argument/actor/generation mismatch")
+            require(all(strict_equal(actual[key], expected[key]) for key in actual), "request argument/actor/generation mismatch")
             self._opened.append(ident)
             return self._make_request(expected)
         except (ValueError, KeyError, TypeError):
@@ -338,12 +349,15 @@ class _Request:
             require(self._next < len(observations), "extra passive observation")
             expected = observations[self._next]
             actual = dict(operation=operation, arguments=arguments, cwd=cwd, generation=generation, start_ns=at_ns)
-            require(all(actual[key] == expected[key] for key in actual), "passive observation binding/order mismatch")
+            require(all(strict_equal(actual[key], expected[key]) for key in actual), "passive observation binding/order mismatch")
             self._advance(expected["end_ns"])
             self._next += 1
             return CapturedObservation(expected["exit_status"], blob(expected["stdout"]), blob(expected["stderr"]),
                                        expected["start_ns"], expected["end_ns"])
         return self._guard(action)
+
+    def _effect_fields(self):
+        return {"place", "content"}
 
     def _effect_valid(self, content):
         return type(content) is bytes and len(content) <= MAX_FILE
@@ -362,7 +376,7 @@ class _Request:
             owner = self._side._workload
             keys, effect_bytes = set(), 0
             for effect in effects:
-                require(type(effect) is dict and set(effect) == {"place", "content"}, "invalid effect shape")
+                require(type(effect) is dict and set(effect) == self._effect_fields(), "invalid effect shape")
                 key = owner.place(effect["place"])
                 require(key[0] == self._request["home"] and key[1] in ("state", "data")
                         and key in owner._history and key not in keys, "unbound or duplicate owner effect")

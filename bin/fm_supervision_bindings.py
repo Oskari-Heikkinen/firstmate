@@ -11,34 +11,55 @@ from dataclasses import dataclass
 
 from fm_supervision_replay import (MAX_FILE, _Request, _Side,
                                    _Workload, blob, canonical, object_seal,
-                                   path_parts, require, seal)
+                                   path_parts, require, seal, strict_equal)
 
 MAX_CAPTURE_READS = 100000
 
-# Fixed projection registry, never a corpus-selected executable. Caller source
-# identities/pins are provenance assertions requiring independent review.
-CALLERS = {
-    "bin/fm-classify-lib.sh:4120": ("crew-state", "value", "continued"),
-    "bin/fm-classify-lib.sh:4166": ("crew-state", "value", "continued"),
-    "bin/fm-classify-lib.sh:4295": ("crew-state", "value", "continued"),
-    "bin/fm-inactive-reconcile.sh:503": ("crew-state", "value", "status"),
-    "bin/fm-fleet-snapshot.sh:354": ("crew-state", "first", "continued"),
-    "bin/fm-supervise-daemon.sh:1556": ("wake-drain", "identity", "boolean"),
-    "bin/fm-session-start.sh:944": ("wake-drain", "merged", "status"),
-    "bin/fm-afk-return.sh:784": ("wake-drain", "value-stderr", "boolean"),
-    "bin/fm-home-summary-refresh.sh:248": ("fleet-snapshot", "identity", "status"),
-    "bin/fm-contributions.sh:184": ("fleet-snapshot", "stdout", "status"),
-    "bin/fm-fleet-view.sh:29": ("fleet-snapshot", "value", "status"),
-    "bin/fm-secondmate-reconcile.sh:420": ("fleet-snapshot", "value", "boolean"),
-    "bin/fm-bearings-snapshot.sh:236": ("fleet-snapshot", "value", "status"),
-    "bin/fm-bearings-snapshot.sh:238": ("fleet-snapshot", "value", "status"),
-    "bin/fm-bearings-snapshot.sh:241": ("fleet-snapshot", "value", "status"),
+# Fixed code-provenance contract, never corpus-selected code. Pins name the
+# physical invocation line (not the start of a multiline command). Audit the
+# complete invocation tail, including redirection/continuation, in CI. A real
+# capture's code_ref still needs independent provenance review.
+CALLER_SITES = {
+    "bin/fm-classify-lib.sh:3709": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:3755": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$task" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:3884": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
+    "bin/fm-inactive-reconcile.sh:504": ("crew-state", "value", "status", '"$CREW_STATE_BIN" "$id" 2>/dev/null) || state_rc=$?'),
+    "bin/fm-fleet-snapshot.sh:362": ("crew-state", "first", "continued", '"$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true'),
+    "bin/fm-supervise-daemon.sh:1556": ("wake-drain", "identity", "boolean", 'if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then'),
+    "bin/fm-session-start.sh:944": ("wake-drain", "merged", "status", 'DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)'),
+    "bin/fm-afk-return.sh:784": ("wake-drain", "value-stderr", "boolean", 'if drained=$("$SCRIPT_DIR/fm-wake-drain.sh" 2> "$drain_err"); then'),
+    "bin/fm-home-summary-refresh.sh:248": ("fleet-snapshot", "identity", "status", '"$SCRIPT_DIR/fm-fleet-snapshot.sh" --secondmate-home-summary \\\n> "$HOME_SUMMARY_TMP" 2> "$HOME_SUMMARY_ERR_TMP"; then'),
+    "bin/fm-contributions.sh:184": ("fleet-snapshot", "identity", "status", '"$SCRIPT_DIR/fm-fleet-snapshot.sh" --contribution-input > "$TMP/input.json"'),
+    "bin/fm-fleet-view.sh:29": ("fleet-snapshot", "value-stderr", "status", 'SNAPSHOT=$("$SCRIPT_DIR/fm-fleet-snapshot.sh" --json) || exit $?'),
+    "bin/fm-secondmate-reconcile.sh:420": ("fleet-snapshot", "value-stderr", "boolean", 'snapshot=$("$SCRIPT_DIR/fm-fleet-snapshot.sh" --json) || fail "cannot read the fleet snapshot"'),
+    "bin/fm-bearings-snapshot.sh:236": ("fleet-snapshot", "value-stderr", "status", 'SNAP=$(FM_SNAPSHOT_NOW="$NOW" FM_SNAPSHOT_SECONDMATES=0 FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=0 "$FLEET" --json) || exit $?'),
+    "bin/fm-bearings-snapshot.sh:238": ("fleet-snapshot", "value-stderr", "status", 'SNAP=$(FM_SNAPSHOT_NOW="$NOW" FM_SNAPSHOT_SECONDMATES=0 "$FLEET" --json) || exit $?'),
+    "bin/fm-bearings-snapshot.sh:241": ("fleet-snapshot", "value-stderr", "status", 'SNAP=$(FM_SNAPSHOT_NOW="$NOW" "$FLEET" --json) || exit $?'),
 }
-EXCLUDED_CALLERS = (
-    "bin/fm-mem-guard.sh:490", "bin/fm-account.sh:303",
-    "bin/fm-supervise-daemon.sh:1584", "bin/fm-fleet-view.sh:22",
-    "harness/direct-output", "bin/fm-live-lab.sh:336",
-)
+EXCLUDED_SITES = {
+    "bin/fm-mem-guard.sh:490": 'st=$(FM_CREW_STATE_NO_FORGE=1 bounded "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null | head -1)',
+    "bin/fm-account.sh:303": 'line=$(FM_CREW_STATE_NO_FORGE=1 FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-crew-state.sh" "$1" 2>/dev/null | head -1)',
+    "bin/fm-supervise-daemon.sh:1584": '"$FM_DAEMON_DIR/fm-wake-drain.sh" --ack-through "$ack_through" \\\n--recovery-generation "$ack_generation"',
+    "bin/fm-fleet-view.sh:22": '--json) "$SCRIPT_DIR/fm-fleet-snapshot.sh" --json; exit $? ;;',
+    "bin/fm-live-lab.sh:336": 'state=$(cd "$LAB" && lab_run FM_HOME="$LAB" FM_CREW_STATE_NO_FORGE=1 "$LAB/bin/fm-crew-state.sh" "$WORKER_ID" 2>/dev/null)',
+}
+CALLERS = {key: spec[:3] for key, spec in CALLER_SITES.items()}
+EXCLUDED_CALLERS = tuple(EXCLUDED_SITES) + ("harness/direct-output",)
+
+
+def audit_callers(sources):
+    """Validate explicit in-memory code snapshots, not live paths or Git refs."""
+    sites = {key: spec[3] for key, spec in CALLER_SITES.items()}
+    sites.update(EXCLUDED_SITES)
+    require(type(sources) is dict and all(type(sources.get(key.rsplit(":", 1)[0])) is str for key in sites),
+            "caller source inventory mismatch")
+    for key, expected in sites.items():
+        path, number = key.rsplit(":", 1)
+        lines = sources[path].splitlines()
+        start = int(number) - 1
+        actual = "\n".join(line.strip() for line in lines[start:start + len(expected.splitlines())])
+        require(actual == expected, "caller source pin mismatch: " + key)
+    return tuple(sites)
 
 
 @dataclass(frozen=True)
@@ -55,7 +76,8 @@ def delivery_bytes(result, delivery):
     combined, total = [], 0
     for item in delivery:
         require(type(item) is dict and set(item) == {"stream", "content"}
-                and item["stream"] in chunks and type(item["content"]) is bytes, "invalid delivery event")
+                and type(item["stream"]) is str and item["stream"] in chunks
+                and type(item["content"]) is bytes, "invalid delivery event")
         total += len(item["content"])
         require(total <= 2 * MAX_FILE, "delivery byte bound")
         chunks[item["stream"]].append(item["content"])
@@ -85,22 +107,43 @@ def project(caller, result, delivery):
 
 class WorkloadV3(_Workload):
     def __init__(self, value):
+        self._children, self._parents, self._listing_cache = {}, {}, {}
         super().__init__(value)
         self._bindings = None
 
-    def topology(self, current):
-        # Parent listings remain complete; only admitted objects need content.
-        # A listed but unrecorded child is NEVER inferred absent or openable.
-        for key, value in current.items():
-            parts = path_parts(key[3])
-            if not parts:
+    def topology(self, current, changed=None):
+        # Keys never change. Index once; after an atomic group revisit only its
+        # changed objects and their admitted immediate children, not all files.
+        if changed is None:
+            for key in current:
+                parts = path_parts(key[3])
+                if parts:
+                    parent = key[:3] + ("/".join(parts[:-1]),)
+                    self._parents[key] = (parent, parts[-1].encode("utf-8"))
+                    self._children.setdefault(parent, set()).add(key)
+            selected = current.keys()
+        else:
+            selected = set(changed)
+            for key in changed:
+                selected.update(self._children.get(key, ()))
+        for key in selected:
+            value = current[key]
+            if key not in self._parents:
                 require(value is None or value["kind"] == "directory", "root object is not a directory")
                 continue
-            parent = key[:3] + ("/".join(parts[:-1]),)
-            directory = current.get(parent)
+            parent, name = self._parents[key]
+            # Known absence may propagate below an explicitly absent admitted
+            # parent, but never below an unadmitted or non-directory object.
+            require(parent in current, "unadmitted captured parent")
+            directory = current[parent]
+            if directory is None and value is None:
+                continue
             require(directory is not None and directory["kind"] == "directory", "missing captured parent directory")
-            raw = blob(directory["content"])
-            listed = parts[-1].encode("utf-8") in (raw[:-1].split(b"\0") if raw else [])
+            digest = directory["content"]["sha256"]
+            if digest not in self._listing_cache:
+                raw = blob(directory["content"])
+                self._listing_cache[digest] = frozenset(raw[:-1].split(b"\0") if raw else ())
+            listed = name in self._listing_cache[digest]
             require(listed == (value is not None), "admitted child/listing disagreement")
 
     def version(self, key, at):
@@ -153,8 +196,9 @@ class WorkloadV3(_Workload):
                 "binding selection window mismatch")
         require([row["id"] for row in value["requests"]] == self._order, "binding request inventory mismatch")
         total_reads = 0
+        claimed_changes, commit_requests = {}, {}
         for captured, request in zip(value["requests"], self.requests):
-            require(self.start <= request["start_ns"] < value["cutoff_ns"], "request outside start window")
+            require(request["start_ns"] < value["cutoff_ns"], "request outside start window")
             require(captured["caller"] in CALLERS and CALLERS[captured["caller"]][0] == request["kind"],
                     "unknown or foreign caller projection")
             seen, previous = set(), request["start_ns"]
@@ -174,7 +218,8 @@ class WorkloadV3(_Workload):
                     require(key[0] == request["home"], "foreign scheduled read")
                     version = self.version(key, row["start_ns"])
                     require(object_seal(version) == row["version_sha256"], "read version mismatch")
-                    require(not any(row["start_ns"] < at <= row["end_ns"] for at in self._times[key]),
+                    require(bisect.bisect_right(self._times[key], row["start_ns"]) ==
+                            bisect.bisect_right(self._times[key], row["end_ns"]),
                             "file changed during scheduled read")
                 require(row["operation"] == "read" or (row["offset"] == 0 and row["length"] == 0),
                         "range on non-read operation")
@@ -192,14 +237,21 @@ class WorkloadV3(_Workload):
                 seq = effect["change_seq"]
                 require(seq <= len(self._value["changes"]), "effect change missing")
                 change = self._value["changes"][seq - 1]
+                require(seq not in claimed_changes or claimed_changes[seq] == request["id"],
+                        "change claimed by multiple requests")
+                claimed_changes[seq] = request["id"]
                 commit = effect["commit_id"]
+                require(commit not in commit_requests or commit_requests[commit] == request["id"],
+                        "commit claimed by multiple requests")
+                commit_requests[commit] = request["id"]
                 require(commit not in commits or commits[commit] == change["at_ns"], "commit spans atomic groups")
                 commits[commit] = change["at_ns"]
                 obj = change["object"]
                 content = self._add_blob(effect["content"]) if effect["content"] is not None else None
                 expected = blob(obj["content"]) if obj is not None else None
                 require(self.place(change["place"]) == key and request["start_ns"] <= change["at_ns"] <= request["end_ns"]
-                        and expected == content, "effect commit/image mismatch")
+                        and expected == content and effect["object_sha256"] == object_seal(obj),
+                        "effect commit/image mismatch")
         self._bindings = value
         self._bound_requests = {r["id"]: r for r in value["requests"]}
         return self
@@ -230,6 +282,28 @@ class BoundRequest(_Request):
         super().__init__(side, request)
         self._captured = side._workload._bound_requests[request["id"]]
         self._read_index = 0
+        self._peers, self._points, self._versions, self._ranges = {}, {}, {}, {}
+        self._point_selectors = {}
+        for row in self._captured["reads"]:
+            key = side._workload.place(row["place"]) if row["place"] is not None else None
+            selector = (row["operation"], key, row["clock"])
+            self._peers.setdefault(selector, []).append(row)
+            self._points[row["id"]] = row
+            self._point_selectors[row["id"]] = selector
+            version_key = key if key is not None else selector
+            version = row["version_sha256"] if key is not None else blob(row["result"])
+            self._versions.setdefault(version_key, set()).add(version)
+            if row["operation"] == "read":
+                group = (selector, row["version_sha256"], row["error"])
+                self._ranges.setdefault(group, []).append((row["offset"], row["offset"] + row["length"]))
+        for group, intervals in self._ranges.items():
+            merged = []
+            for left, right in sorted(intervals):
+                if merged and left <= merged[-1][1]:
+                    merged[-1] = (merged[-1][0], max(right, merged[-1][1]))
+                else:
+                    merged.append((left, right))
+            self._ranges[group] = merged
 
     def object(self, place, at_ns):
         return self._guard(lambda: require(False, "unscheduled object API forbidden in v3"))
@@ -247,40 +321,38 @@ class BoundRequest(_Request):
             if self._side.name == "legacy":
                 require(self._read_index < len(rows), "extra legacy read")
                 row = rows[self._read_index]
-                require((operation, place, clock, offset, length, point, at_ns) ==
-                        (row["operation"], row["place"], row["clock"], row["offset"], row["length"], row["id"], row["start_ns"]),
+                require(strict_equal((operation, place, clock, offset, length, point, at_ns),
+                        (row["operation"], row["place"], row["clock"], row["offset"], row["length"], row["id"], row["start_ns"])),
                         "legacy read schedule mismatch")
                 self._advance(at_ns)
                 self._advance(row["end_ns"])
                 self._read_index += 1
                 return owner.derive(row)
             require(at_ns is None, "candidate cannot choose a read time")
-            peers = [r for r in rows if r["place"] == place and r["operation"] == operation and r["clock"] == clock]
+            selector = (operation, key, clock)
+            peers = self._peers.get(selector)
             require(peers, "candidate input instance was not read by legacy")
-            if key is None:
-                require(operation == "clock", "invalid candidate clock input")
-                versions = {blob(r["result"]) for r in peers}
-            else:
-                versions = {r["version_sha256"] for r in rows if r["place"] == place}
+            # The bound selector inventory admits a null place only for a
+            # validated clock; no second, unreachable clock guard is needed.
+            versions = self._versions[key if key is not None else selector]
             if point is not None:
-                selected = [r for r in peers if r["id"] == point]
-                require(selected, "unknown candidate logical read point")
-                row = selected[0]
+                row = self._points.get(point)
+                require(row is not None and self._point_selectors[point] == selector, "unknown candidate logical read point")
             else:
                 require(len(versions) == 1, "changed input requires logical read point")
                 row = peers[0]
             if operation == "read":
-                compatible = [r for r in peers if r["version_sha256"] == row["version_sha256"] and r["error"] == row["error"]]
-                end = offset
-                for left, right in sorted((r["offset"], r["offset"] + r["length"]) for r in compatible):
-                    if left <= end:
-                        end = max(end, right)
-                require(end >= offset + length and any(r["offset"] <= offset <= r["offset"] + r["length"] for r in compatible),
+                intervals = self._ranges[(selector, row["version_sha256"], row["error"])]
+                index = bisect.bisect_right(intervals, (offset, MAX_FILE + 1)) - 1
+                require(index >= 0 and intervals[index][0] <= offset <= offset + length <= intervals[index][1],
                         "candidate range exceeds captured reads")
             else:
                 require(offset == 0 and length == 0, "range on non-read operation")
             return owner.derive(row, offset, length)
         return self._guard(action)
+
+    def _effect_fields(self):
+        return super()._effect_fields() | {"object_sha256"}
 
     def _effect_valid(self, content):
         return content is None or super()._effect_valid(content)
@@ -293,7 +365,7 @@ class BoundRequest(_Request):
             require(self._side.name != "legacy" or self._read_index == len(self._captured["reads"]),
                     "unconsumed legacy reads")
             require(type(commits) in (list, tuple) and type(effects) is list and len(commits) == len(effects)
-                    and all(type(c) is str for c in commits), "owner commit identity mismatch")
+                    and all(type(c) is str for c in commits), "invalid owner commit inventory")
             super(BoundRequest, self).complete(stdout=stdout, stderr=stderr, exit_status=exit_status, effects=effects)
             owner = self._side._workload
             expected_commits = sorted((owner.place(e["place"]), e["commit_id"]) for e in self._captured["live"]["effects"])
@@ -306,7 +378,8 @@ class BoundRequest(_Request):
             result["commits"] = actual_commits
             if self._side.name == "legacy":
                 live = self._captured["live"]
-                expected_effects = sorted([dict(place=e["place"], content=blob(e["content"]) if e["content"] is not None else None)
+                expected_effects = sorted([dict(place=e["place"], content=blob(e["content"]) if e["content"] is not None else None,
+                                                object_sha256=e["object_sha256"])
                                            for e in live["effects"]],
                                           key=lambda e: self._side._workload.place(e["place"]))
                 require(project(self._captured["caller"], result, delivery) ==
