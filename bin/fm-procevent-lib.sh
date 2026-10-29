@@ -28,6 +28,12 @@
 # acknowledgement can still repeat the effect on replay. Never describe this
 # runner as at-least-once, no-loss, or lossless, and never claim generic
 # exactly-once effects from the handled acknowledgement alone.
+#
+# A handled result older than 7 days may move from its files into the inbox's
+# handled-record log (bin/fm-records-consolidate.sh; format owned by
+# bin/fm-records-log-lib.sh). Its zero-byte handled marker stays, so it still
+# answers already-handled, is never pending again, and keeps its sequence from
+# reuse; fm_procevent_result_read reads its bytes from either place.
 
 # Machine-wide claim root. Homes can share one underlying source store, so the
 # "one owner per canonical source" rule cannot live inside a single home.
@@ -45,6 +51,9 @@ fm_procevent_claim_root_to() {  # <output-variable>
   while [ "${fm_claim_root%$'\n'}" != "$fm_claim_root" ]; do fm_claim_root=${fm_claim_root%$'\n'}; done
   printf -v "$1" '%s' "$fm_claim_root"
 }
+
+# shellcheck source=bin/fm-records-log-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-records-log-lib.sh"
 
 fm_procevent_registry_dir() { printf '%s\n' "$1/procevent"; }
 fm_procevent_registry_dir_to() { printf -v "$1" '%s' "$2/procevent"; }  # <output-variable> <state-root>
@@ -1207,7 +1216,10 @@ fm_procevent_capture() {
     (umask 077; mkdir -p "$inbox") || return 1
   fi
   seq=1
-  while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
+  # A handled marker keeps its sequence taken after the handled-record log
+  # holds that result (bin/fm-records-log-lib.sh).
+  while [ -e "$inbox/$id.$seq.result" ] || [ -e "$inbox/$id.$seq.handled" ] \
+    || [ -L "$inbox/$id.$seq.handled" ]; do seq=$((seq + 1)); done
   dest="$inbox/$id.$seq.result"
   adapter_dest="$inbox/$id.$seq.adapter"
   if [ "$#" -eq 9 ]; then
@@ -1324,7 +1336,8 @@ fm_procevent_is_handled() {
 # announcing a result never blocks it from being re-announced, only this does.
 # 0 = newly recorded (first-ever handling for this generation, safe to perform
 # a paired effect that has not yet run), 1 = already recorded (repeat call; do
-# not repeat a paired effect), 2 = error.
+# not repeat a paired effect, including for a result consolidated into the
+# handled-record log), 2 = error.
 fm_procevent_mark_handled() {
   local state=$1 id=$2 seq=$3 inbox result adapter_file marker tmp
   fm_procevent_source_id_valid "$id" || return 2
@@ -1336,9 +1349,12 @@ fm_procevent_mark_handled() {
   fi
   result="$inbox/$id.$seq.result"
   adapter_file="$inbox/$id.$seq.adapter"
-  [ -f "$result" ] && [ ! -L "$result" ] || return 2
-  [ -f "$adapter_file" ] && [ ! -L "$adapter_file" ] || return 2
   marker=$(fm_procevent_handled_marker "$state" "$id" "$seq")
+  if [ ! -f "$result" ] || [ -L "$result" ] || [ ! -f "$adapter_file" ] || [ -L "$adapter_file" ]; then
+    # A result consolidated into the handled-record log keeps its marker.
+    [ -f "$marker" ] && [ ! -L "$marker" ] && fm_records_log_has "$inbox" "$id.$seq.result" && return 1
+    return 2
+  fi
   [ ! -L "$marker" ] || return 2
   tmp=$(umask 077; mktemp "$inbox/.handled.XXXXXX") || return 2
   if ! chmod 0600 "$tmp"; then
@@ -1352,6 +1368,23 @@ fm_procevent_mark_handled() {
   rm -f -- "$tmp"
   [ -f "$marker" ] && [ ! -L "$marker" ] && return 1
   return 2
+}
+
+# fm_procevent_result_read <state> <source-id> <sequence>
+# Print a captured result's bytes from its file or, once consolidated, from
+# the inbox's handled-record log. 0 = printed, 1 = no such result, 2 = error.
+fm_procevent_result_read() {
+  local inbox name
+  fm_procevent_source_id_valid "$2" || return 2
+  case "$3" in ''|*[!0-9]*) return 2 ;; esac
+  inbox=$(fm_procevent_inbox_dir "$1")
+  name="$2.$3.result"
+  if [ -e "$inbox/$name" ] || [ -L "$inbox/$name" ]; then
+    [ -f "$inbox/$name" ] && [ ! -L "$inbox/$name" ] || return 2
+    cat -- "$inbox/$name" || return 2
+    return 0
+  fi
+  fm_records_log_cat "$inbox" "$name"
 }
 
 # fm_procevent_result_source_id <result-path>

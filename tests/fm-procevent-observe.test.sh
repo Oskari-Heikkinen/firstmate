@@ -62,6 +62,40 @@ ci_evidence() {
   mv "$W/ci.json" "$H/ci.json"
 }
 
+# A handled capture that bin/fm-records-consolidate.sh moved into the inbox's
+# handled-record log still counts as captured, so a restarted observer polls on
+# instead of announcing it again, and an unreadable log refuses.
+test_handled_capture_in_log() {
+  local inbox file out
+  use_home logged
+  inbox="$H/state/procevent-inbox"
+  make_spec logged
+  SID=$(obs arm "$W/spec.json")
+  evidence ready; round
+  [ "$(status)" = ready ] || fail 'the fixture observation did not become ready'
+  [ -e "$inbox/$SID.1.handled" ] || fail 'the fixture capture was not handled'
+  : > "$W/logged-list"
+  for file in "$inbox/$SID".1.*; do
+    case "$file" in *.handled) ;; *) printf '%s\n' "${file##*/}" >> "$W/logged-list" ;; esac
+  done
+  bash -c '
+    . "$1/bin/fm-records-log-lib.sh"
+    (umask 077; mkdir "$2/.records-log") || exit 1
+    fm_records_log_run_dir_to run "$2" && fm_records_log_commit "$2" "$3" "$run" && rm -rf "$run"
+  ' _ "$ROOT" "$inbox" "$W/logged-list" || fail 'the fixture commit into the handled-record log failed'
+  while IFS= read -r file; do rm -f -- "$inbox/$file"; done < "$W/logged-list"
+  cp "$inbox/.records-log/index" "$W/index"
+  printf 'not an index\n' > "$inbox/.records-log/index"
+  refuse obs run "$SID"
+  assert_grep 'handled-record log is unreadable' "$W/refuse.out" 'an unreadable handled-record log did not refuse'
+  cp "$W/index" "$inbox/.records-log/index"
+  evidence red 2
+  out=$(obs run "$SID") || fail 'the observer failed with its capture in the handled-record log'
+  assert_equals 2 "$(printf '%s' "$out" | jq -r .event)" 'a restarted observer announced a logged capture again'
+  pe retire "$SID" >/dev/null
+  pass 'a capture in the handled-record log is not announced again, and an unreadable log refuses'
+}
+
 ready() { FM_HOME="$H" "$CODE/bin/fm-procevent-ready.sh" "$@"; }
 task() { FM_HOME="$H" "$ROOT/bin/fm-tasks-axi.sh" "$@"; }
 prepare_ready() {
@@ -313,6 +347,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_main_ci_required_jobs \
   test_deadline_rearm_and_generation_handoff \
   test_ready_dispatches_once \
+  test_handled_capture_in_log \
   || fail 'one or more shared observation cases failed'
 
 printf 'all shared observation tests passed\n'

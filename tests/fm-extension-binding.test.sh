@@ -1043,6 +1043,40 @@ core_request_ids="$H_CORE_REPLAY/state/extensions/org.example.matrix/request-ids
 FM_HOME="$H_CORE_REPLAY" "$PROCEVENT" retire replay-source --if-owner "$core_token" >/dev/null
 pass "the generic runner reuses one request id until that source sequence is durably captured"
 
+# A handled capture that bin/fm-records-consolidate.sh moved into the inbox's
+# handled-record log keeps only its zero-byte marker, which still holds its
+# sequence for the request identity and for the extension capture's file name.
+H_CORE_LOGGED="$HOMES/core-logged"; new_home "$H_CORE_LOGGED"
+bind_package "$H_CORE_LOGGED" "$P_MATRIX" ext-matrix >/dev/null
+logged_inbox="$H_CORE_LOGGED/state/procevent-inbox"
+FM_HOME="$H_CORE_LOGGED" "$PROCEVENT" register-extension ext-matrix logged-source --config-ref replay >/dev/null
+FM_HOME="$H_CORE_LOGGED" "$PROCEVENT" start logged-source >/dev/null
+assert_present "$logged_inbox/logged-source.1.result" "the first extension capture is missing"
+FM_HOME="$H_CORE_LOGGED" "$PROCEVENT" handled logged-source 1 >/dev/null
+: > "$TMP_ROOT/logged-list"
+for logged_file in "$logged_inbox"/logged-source.1.*; do
+  case "$logged_file" in *.handled) ;; *) printf '%s\n' "${logged_file##*/}" >> "$TMP_ROOT/logged-list" ;; esac
+done
+bash -c '
+  . "$1/bin/fm-records-log-lib.sh"
+  (umask 077; mkdir "$2/.records-log") || exit 1
+  fm_records_log_run_dir_to run "$2" && fm_records_log_commit "$2" "$3" "$run" && rm -rf "$run"
+' _ "$ROOT" "$logged_inbox" "$TMP_ROOT/logged-list" || fail "the fixture commit into the handled-record log failed"
+while IFS= read -r logged_file; do rm -f -- "$logged_inbox/$logged_file"; done < "$TMP_ROOT/logged-list"
+logged_registration=$(FM_HOME="$H_CORE_LOGGED" "$PROCEVENT" register-extension ext-matrix logged-source --config-ref replay)
+logged_token=$(printf '%s\n' "$logged_registration" | sed -n 's/^owner-token: //p')
+logged_digest=$(sed -n 's/^package_digest=//p' "$H_CORE_LOGGED/state/procevent/logged-source.source")
+logged_request=$(printf 'firstmate-process-event-request-v1\n%s\n%s\n%s\n%s\n%s\n' \
+  ext-matrix logged-source 2 "$logged_token" "$logged_digest" \
+  | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
+FM_HOME="$H_CORE_LOGGED" "$PROCEVENT" start logged-source >/dev/null
+assert_absent "$logged_inbox/logged-source.1.result" "the extension capture reused a consolidated sequence"
+assert_present "$logged_inbox/logged-source.2.result" "the extension capture skipped past the next free sequence"
+assert_grep "replay sha256:$logged_request" "$logged_inbox/logged-source.2.result" \
+  "the extension request identity did not name the next free sequence"
+FM_HOME="$H_CORE_LOGGED" "$PROCEVENT" handled logged-source 2 >/dev/null
+pass "a consolidated extension capture keeps its sequence for the next request and capture"
+
 P_TIMEOUT="$PACKAGES/timeout"
 make_package "$P_TIMEOUT" org.example.timeout ext-timeout
 H_TIMEOUT="$HOMES/timeout"; new_home "$H_TIMEOUT"
