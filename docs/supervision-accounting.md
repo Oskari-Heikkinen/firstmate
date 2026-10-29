@@ -466,10 +466,13 @@ Production adapter integration, independently reviewed real capture supplementat
 The unchanged v1 accounting and v2 workload readers remain supported; a v3 object is never silently interpreted as v2.
 [`fm_supervision_bindings.py`](../bin/fm_supervision_bindings.py) implements the additional memory-only reader boundary, not a recorder, adapter launcher or live hook.
 The accounting utility header owns the validation CLI and optional `--bindings` operand.
+Validation without bindings may report `capture_bindings: false` with exit zero, but that is structural validation only, not replayable evidence; every v3 replay consumer requires validated bindings.
 
 A v3 directory's sealed NUL-delimited content is its complete immediate-child listing, not a filtered listing of selected inputs.
 Every admitted present object still needs admitted parents back to its logical root and must appear in its parent's listing.
-An explicitly absent place must not appear in that listing.
+An explicitly absent place must not appear in a present parent's listing; it may also have an explicitly admitted absent parent, recursively back to an admitted logical root.
+Absence is never inferred below an unadmitted parent or a present non-directory, and a present child below an absent parent refuses.
+The same rule applies after each complete atomic change group, including directory deletion and first-run absence.
 Other listed children are unadmitted, not absent: neither content, stat nor existence may be inferred for them.
 Only the explicitly captured objects are readable, so admitting a root no longer recursively admits unrelated private evidence, credentials or worktree contents.
 Directory listing bytes, unknown paths, symlinks, special files and captured errors retain the shared v2 bounds and refusal behavior.
@@ -481,6 +484,9 @@ It pins the exact v3 workload digest, a separately reviewed admission digest, th
 Code/admission pins and seals are provenance references, not authentication or proof of the supplied owners' assertions.
 The selected start interval is exactly sixty seconds from the workload clock origin.
 All selected requests must start inside it and complete within their existing thirty-second limit; the workload/trace acquisition interval ends between the sixty-second cutoff and thirty seconds after it.
+The separate recorder/controller owns the approved 116-second hard stop, including its control/finalization margin; it is not an extension to the request-start window or the thirty-second request limit.
+A request terminated at its thirty-second limit is representable only with a witnessed end within the limit, actual nonzero exit status, complete delivered output/effects and complete logical read outcomes up to termination.
+If termination leaves a read, effect or delivery outcome unwitnessed, the future recorder must invalidate the capture rather than fabricate a completion or over-limit interval.
 This reader validates supplied intervals only; it starts no acquisition or deadline process and grants no capture authority.
 The companion must have exactly the workload's ordered request inventory.
 Both inputs retain the outer 64 MiB input limit; decoded file versions, claims, passive outputs, scheduled results and live blobs share the workload's aggregate 64 MiB budget and per-blob 4 MiB limit.
@@ -502,24 +508,33 @@ Distinct witnessed clock values likewise require a logical point.
 A place, operation or range that legacy never read in that request refuses even if another request read it or it exists in the global admitted inventory.
 Merging cannot expand a partially captured range, combine different versions or infer a file's existence from a listing-only access.
 A candidate cannot select an arbitrary input time or reuse a previous request's result.
+Adapter argument comparisons preserve exact Python scalar/container types, including nested values; booleans, integers and floats are not interchangeable.
 Skipped redundant legacy file reads are allowed; **all logical passive observations remain exact, ordered and mandatory on both sides**.
 Equal mutable Git, daemon, pane or forge bytes are not permission to alias observations or add cross-request caching.
 
 The fixed caller registry in the binding module identifies the selected producer family and projection at the pinned source boundary.
+Each physical source pin names the invocation line, not the first line of a multiline command.
+The memory-only `audit_callers` API resolves every admitted and excluded physical pin against explicit source snapshots, including the full invocation tail/redirection; CI audits the exact checked-out sources and rejects drift.
+The abstract `harness/direct-output` exclusion is not a physical source pin.
+The binder never opens a Git tree: the capture owner still independently validates those source snapshots at the declared `code_ref` before admitting real evidence.
 It admits only the reviewed identity/file-output, stdout-only, command-substitution, first-line, retained-stderr and merged-stream caller classes.
 The companion records the actual caller-observed bytes and status, not invented raw stderr, stripped final LFs or a producer exit masked by an `|| true` continuation.
-Command-substitution projections remove NUL bytes and trailing LFs as the admitted shell-value boundary does; retained-stderr projections keep the separate captured stderr bytes.
+Command-substitution projections remove NUL bytes and trailing LFs as the admitted shell-value boundary does; inherited or file-retained stderr remains caller-visible and is preserved separately.
+In particular, the fleet-view, secondmate-reconcile and bearings substitutions inherit stderr, while the contributions file-output caller preserves it alongside the stdout file.
 Merged-stream projection requires a complete bounded ordered stdout/stderr delivery event stream whose per-stream bytes equal the full replay outputs, never a guessed concatenation.
 Caller/shell semantics and their exact code identity still need independent provenance review before a real input is admitted.
 Unknown callers, direct harness output, unmodelled early-closing readers and lab-only callers are not silently admitted.
 The reader reports the fixed excluded classes with unknown counts, never inferred zeros.
 
 Live effect images refer to existing captured state/data changes by sequence and original-owner commit id, retaining their preimage seals through the change timeline.
-One commit id can bind multiple places in the same atomic timestamp group but cannot span different groups; completion pairs commit ids with their named places rather than comparing two unrelated lists.
-The binder validates home, interval and exact content for each effect, with `null` content denoting a captured deletion rather than empty bytes.
-Present effects may bind the bytes of any captured object kind, including directory listings, without following or materializing it.
-The comparison boundary is complete named after-images; the change references also bind the original before-images, metadata and identities without applying a write.
-V2's effect API still accepts bytes only; nullable after-images are a v3 extension.
+One commit id can bind multiple places in the same request's atomic timestamp group but cannot span different groups or requests; a change sequence likewise has exactly one owning request.
+Completion pairs commit ids with their named places rather than comparing two unrelated lists.
+The binder validates home, interval, exact content and full object-version seal for each effect, with `null` content and `null` `object_sha256` denoting a captured deletion rather than empty bytes.
+Present effects may bind any captured object kind, including directory listings, without following or materializing it.
+A v3 adapter effect includes `place`, byte-or-null `content` and `object_sha256`, the seal of the complete after-object (identity, kind, mode, mtime, error and sealed content), not merely a hash of its bytes.
+This makes kind-only, mode-only and identity/metadata-only divergences observable at the same comparison boundary as bytes and deletion.
+The change references retain the original before-image seals without applying a write.
+V2's effect API remains the unchanged place/bytes shape; full nullable object after-images are a v3 extension.
 Legacy completion first requires the recorded caller projection and complete effect images/commit ids to match the live observations.
 A kept-output or effect mismatch refuses even if candidate and legacy replays would agree.
 Differences affecting only bytes the original caller discarded can pass this projected live check; that is not proof of raw-live-byte equality.
@@ -529,7 +544,9 @@ Protocol refusals remain sticky even when caught, and unfinished sides or uncons
 All v3 reports remain `captured-subset-reader-only`, with production adapters and whole-workload coverage false and B0 pending independent review.
 A diagnostic subset ratio must name its exclusions and cannot establish the whole drain family, fleet coverage or the full P1 reduction target.
 No live recorder, enable file, quota, mode switch, lifecycle operation or installation is supplied by these readers.
-CI extends the existing accounting entrypoint with positive six/thirty-task bound workloads, optimized candidate reads, live projection/effect fidelity, unknown/malformed/adversarial inputs, sticky refusal and independent single-guard controls.
+V3 indexes admitted parents and children once, validates only changed objects and their admitted children per atomic group, and decodes each sealed directory-listing version once.
+Each bound request indexes its read points/selectors/version sets and merged covered ranges once; candidate accesses do not rescan the captured schedule.
+CI extends the existing accounting entrypoint with positive six/thirty-task bound workloads, optimized candidate reads, live projection/effect fidelity, unknown/malformed/adversarial inputs, sticky refusal, source-pin audits, bounded index/decoding controls and independent single-guard controls.
 It retains the original v1 accounting/bridge and v2 controls in separate stages even when a new stage fails.
 These are supplied test adapters, not completed production legacy/resident replay or an authorized capture.
 

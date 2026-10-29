@@ -42,9 +42,9 @@ def make(count=6):
         reads.append(dict(id="wall", operation="clock", place=None, clock="wall", offset=0, length=0,
                           start_ns=start + 11, end_ns=start + 11, version_sha256=None,
                           result=blob(replay.canonical(1_000_000 + start + 11)), error=""))
-        caller, err, status = {"crew-state": ("bin/fm-classify-lib.sh:4120", b"", 0),
+        caller, err, status = {"crew-state": ("bin/fm-classify-lib.sh:3709", b"", 0),
                                "wake-drain": ("bin/fm-afk-return.sh:784", b"discard\n", 1),
-                               "fleet-snapshot": ("bin/fm-fleet-view.sh:29", b"", 7)}[request["kind"]]
+                               "fleet-snapshot": ("bin/fm-fleet-view.sh:29", b"discard\n", 7)}[request["kind"]]
         capture["requests"].append(dict(id=request["id"], caller=caller, reads=reads,
                                        live=dict(stdout=blob(b"hello"), stderr=blob(err), exit_status=status, effects=[])))
     reseal(value)
@@ -83,11 +83,17 @@ def consume(side, owner, *, stdout=b"hello\n\n", stderr=b"discard\n", status=7, 
             access(request, captured["reads"][-1])
         else:
             request.access("clock", clock="wall")
-        request.complete(stdout=stdout, stderr=stderr, exit_status=status, effects=effects or [], delivery=delivery, commits=commits)
+        images = []
+        for effect in effects or []:
+            image = dict(effect)
+            expected = next((e for e in captured["live"]["effects"] if e["place"] == effect["place"]), None)
+            image.setdefault("object_sha256", expected["object_sha256"] if expected is not None else None)
+            images.append(image)
+        request.complete(stdout=stdout, stderr=stderr, exit_status=status, effects=images, delivery=delivery, commits=commits)
 
 
 class BindingChecks(unittest.TestCase):
-    def reject(self, mutate, message="."):
+    def reject(self, mutate, message):
         value, captured = make()
         mutate(value, captured)
         reseal(value)
@@ -240,10 +246,10 @@ class BindingChecks(unittest.TestCase):
 
     def test_projection_registry_identity_first_merge_and_masked_status(self):
         result = dict(stdout=b"first\nsecond\n\n", stderr=b"err\n", exit_status=7)
-        self.assertEqual(bindings.project("bin/fm-fleet-snapshot.sh:354", result, None), (b"first", b"", 0))
+        self.assertEqual(bindings.project("bin/fm-fleet-snapshot.sh:362", result, None), (b"first", b"", 0))
         self.assertEqual(bindings.project("bin/fm-home-summary-refresh.sh:248", result, None),
                          (result["stdout"], result["stderr"], 7))
-        self.assertEqual(bindings.project("bin/fm-contributions.sh:184", result, None), (result["stdout"], b"", 7))
+        self.assertEqual(bindings.project("bin/fm-contributions.sh:184", result, None), (result["stdout"], result["stderr"], 7))
         chunks = [dict(stream="stdout", content=b"first\n"), dict(stream="stderr", content=b"err\n"),
                   dict(stream="stdout", content=b"second\n\n")]
         self.assertEqual(bindings.project("bin/fm-session-start.sh:944", result, chunks), (b"first\nerr\nsecond", b"", 7))
@@ -252,7 +258,7 @@ class BindingChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bytes mismatch"):
             bindings.project("bin/fm-session-start.sh:944", result, chunks[:-1])
         nul = dict(result, stdout=b"a\0b\n\n")
-        self.assertEqual(bindings.project("bin/fm-classify-lib.sh:4120", nul, None), (b"ab", b"", 0))
+        self.assertEqual(bindings.project("bin/fm-classify-lib.sh:3709", nul, None), (b"ab", b"", 0))
 
     def test_passive_omission_still_refuses_both_sides(self):
         for name in ("legacy", "candidate"):
@@ -312,6 +318,7 @@ class BindingChecks(unittest.TestCase):
                                        before_sha256=replay.object_seal(before), object=obj(b"1\n")))
         value["changes"][1]["seq"] = 2
         captured["requests"][0]["live"]["effects"] = [dict(place=place("cursor"), content=blob(b"1\n"),
+                                                           object_sha256=replay.object_seal(value["changes"][0]["object"]),
                                                            change_seq=1, commit_id="owner-commit-1")]
         reseal(value)
         captured["workload_sha256"] = value["sha256"]
@@ -326,7 +333,7 @@ class BindingChecks(unittest.TestCase):
             consume(owner.side("legacy"), owner, effects=[dict(place=place("cursor"), content=b"wrong after-image")],
                     commits=["owner-commit-1"])
         owner = model((value, captured))
-        with self.assertRaisesRegex(ValueError, "commit identity"):
+        with self.assertRaisesRegex(ValueError, "invalid owner commit inventory"):
             consume(owner.side("candidate"), owner, commits=["wrong"])
         corrupt = copy.deepcopy(captured)
         corrupt["requests"][0]["live"]["effects"][0]["content"] = blob(b"not the committed bytes")
@@ -344,8 +351,9 @@ class BindingChecks(unittest.TestCase):
         value["changes"] = [dict(seq=1, at_ns=50, place=place("cursor"), before_sha256=replay.object_seal(before), object=None),
                             dict(seq=2, at_ns=50, place=place(), before_sha256=replay.object_seal(root), object=after)]
         captured["requests"][0]["live"]["effects"] = [
-            dict(place=place("cursor"), content=None, change_seq=1, commit_id="atomic-delete"),
-            dict(place=place(), content=after["content"], change_seq=2, commit_id="atomic-delete")]
+            dict(place=place("cursor"), content=None, object_sha256=None, change_seq=1, commit_id="atomic-delete"),
+            dict(place=place(), content=after["content"], object_sha256=replay.object_seal(after),
+                 change_seq=2, commit_id="atomic-delete")]
         reseal(value)
         captured["workload_sha256"] = value["sha256"]
         reseal(captured)

@@ -41,10 +41,11 @@
     },
     "effect": {
       "type": "object", "additionalProperties": false,
-      "required": ["place", "content", "change_seq", "commit_id"],
+      "required": ["place", "content", "object_sha256", "change_seq", "commit_id"],
       "properties": {
         "place": {"$ref": "replay-v2.schema.json#/$defs/place"},
         "content": {"$ref": "#/$defs/nullable-blob"},
+        "object_sha256": {"type": ["string", "null"], "pattern": "[0-9a-f]{64}"},
         "change_seq": {"type": "integer", "minimum": 1, "maximum": 10000},
         "commit_id": {"$ref": "replay-v2.schema.json#/$defs/token"}
       }
