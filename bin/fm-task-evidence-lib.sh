@@ -75,14 +75,94 @@
 # paths. Its earlier verified copy is still carried forward; a staging failure
 # refuses rather than being treated as proof that the old source is lost.
 
-fm_task_evidence_hash() {
+# The one hash tool choice: sets FM_TE_HASH_TOOL to shasum or sha256sum.
+fm_task_evidence_hash_tool() {
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    FM_TE_HASH_TOOL=shasum
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    FM_TE_HASH_TOOL=sha256sum
   else
     return 1
   fi
+}
+
+fm_task_evidence_hash() {
+  fm_task_evidence_hash_tool || return 1
+  if [ "$FM_TE_HASH_TOOL" = shasum ]; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  else
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+# Hash every path in FM_TE_PATHS with one NUL-delimited batch of that tool and
+# set FM_TE_HASHES to each line's first field, in order, as
+# fm_task_evidence_hash prints it. Unless the batch exits 0 with one non-empty
+# hash per path, leave FM_TE_HASHES empty and return 1, so
+# fm_task_evidence_hash_at hashes each path alone and every refusal keeps its
+# per-file order, message and early stop.
+fm_task_evidence_hash_paths() {
+  local line hash batch want=${#FM_TE_PATHS[@]}
+  local out=()
+  FM_TE_HASHES=()
+  [ "$want" -gt 0 ] && fm_task_evidence_hash_tool || return 1
+  if [ "$FM_TE_HASH_TOOL" = shasum ]; then set -- shasum -a 256; else set -- sha256sum; fi
+  # The batch's exit status follows its output as one final line. Capture it
+  # whole: read from a pipe costs one system call per byte.
+  { batch=$(printf '%s\0' "${FM_TE_PATHS[@]}" | xargs -0 "$@" 2>/dev/null; printf '%s\n' "$?"); } 2>/dev/null
+  while IFS= read -r line; do
+    out+=("$line")
+  done <<< "$batch"
+  [ "${#out[@]}" = $((want + 1)) ] && [ "${out[want]}" = 0 ] || return 1
+  for line in "${out[@]:0:want}"; do
+    line=${line#"${line%%[![:blank:]]*}"}
+    hash=${line%%[[:blank:]]*}
+    [ -n "$hash" ] || { FM_TE_HASHES=(); return 1; }
+    FM_TE_HASHES+=("$hash")
+  done
+}
+
+# Set FM_TE_HASH to the hash of FM_TE_PATHS[<index>]: the batch's when
+# fm_task_evidence_hash_paths succeeded, otherwise fm_task_evidence_hash's,
+# whose status it returns.
+fm_task_evidence_hash_at() {
+  if [ "${#FM_TE_HASHES[@]}" -gt 0 ]; then
+    FM_TE_HASH=${FM_TE_HASHES[$1]}
+  else
+    FM_TE_HASH=$(fm_task_evidence_hash "${FM_TE_PATHS[$1]}")
+  fi
+}
+
+# Read sha256sum-format manifest lines on stdin into FM_TE_EXPECT (hash),
+# FM_TE_RELS (name) and FM_TE_PATHS (<dir>/<name>), then batch their hashes.
+fm_task_evidence_load_hashes() {
+  local line
+  FM_TE_PATHS=(); FM_TE_RELS=(); FM_TE_EXPECT=()
+  while IFS= read -r line; do
+    FM_TE_EXPECT+=("${line%%  *}")
+    FM_TE_RELS+=("${line#*  }")
+    FM_TE_PATHS+=("$1/${line#*  }")
+  done
+  fm_task_evidence_hash_paths || :
+}
+
+# Compare the sources in FM_TE_PATHS' first half with their copies in its
+# second half and append each copy's manifest line, <hash>  <key><rel>, with
+# <rel> from FM_TE_RELS.
+fm_task_evidence_verify_copies() {
+  local manifest=$1 key=$2 n=${#FM_TE_RELS[@]} i h1
+  fm_task_evidence_hash_paths || :
+  for ((i = 0; i < n; i++)); do
+    # A name that gained a newline after the scan refuses at its place.
+    case "${FM_TE_RELS[i]}" in *$'\n'*) return 1 ;; esac
+    fm_task_evidence_hash_at "$i" && h1=$FM_TE_HASH && [ -n "$h1" ] || return 1
+    fm_task_evidence_hash_at $((n + i)) && [ -n "$FM_TE_HASH" ] || return 1
+    [ "$h1" = "$FM_TE_HASH" ] || {
+      echo "REFUSED: copied evidence ${FM_TE_PATHS[n + i]} does not match its source" >&2
+      return 1
+    }
+    printf '%s  %s%s\n' "$FM_TE_HASH" "$key" "${FM_TE_RELS[i]}" >> "$manifest" || return 1
+  done
 }
 
 # Lexical classification of one declared or referenced path.
@@ -392,7 +472,7 @@ fm_task_evidence_reference_path() {
 
 # Copy one source into staging and append its verified manifest lines.
 fm_task_evidence_copy_source() {
-  local src=$1 root=$2 dest=$3 key=$4 manifest=$5 src_parent root_phys odd f rel h1 h2
+  local src=$1 root=$2 dest=$3 key=$4 manifest=$5 src_parent root_phys odd f rel h1 h2 i n
   root_phys=$(cd -P -- "$root" 2>/dev/null && pwd -P) || return 1
   src_parent=$(cd -P -- "$(dirname -- "$src")" 2>/dev/null && pwd -P) || return 1
   case "$src_parent" in
@@ -418,18 +498,19 @@ fm_task_evidence_copy_source() {
   if [ -L "$src" ]; then
     return 0
   elif [ -d "$src" ]; then
-    while IFS= read -r f; do
-      rel=${f#"$src"}
-      h1=$(fm_task_evidence_hash "$f") && [ -n "$h1" ] || return 1
-      h2=$(fm_task_evidence_hash "$dest$rel") && [ -n "$h2" ] || return 1
-      [ "$h1" = "$h2" ] || { echo "REFUSED: copied evidence $dest$rel does not match its source" >&2; return 1; }
-      printf '%s  %s%s\n' "$h2" "$key" "$rel" >> "$manifest" || return 1
-    done < <(find "$src" -type f -print)
+    FM_TE_PATHS=(); FM_TE_RELS=()
+    while IFS= read -r -d '' f; do
+      FM_TE_PATHS+=("$f")
+      FM_TE_RELS+=("${f#"$src"}")
+    done < <(find "$src" -type f -print0)
+    n=${#FM_TE_RELS[@]}
+    for ((i = 0; i < n; i++)); do
+      FM_TE_PATHS+=("$dest${FM_TE_RELS[i]}")
+    done
+    fm_task_evidence_verify_copies "$manifest" "$key"
   else
-    h1=$(fm_task_evidence_hash "$src") && [ -n "$h1" ] || return 1
-    h2=$(fm_task_evidence_hash "$dest") && [ -n "$h2" ] || return 1
-    [ "$h1" = "$h2" ] || { echo "REFUSED: copied evidence $dest does not match its source" >&2; return 1; }
-    printf '%s  %s\n' "$h2" "$key" >> "$manifest" || return 1
+    FM_TE_PATHS=("$src" "$dest"); FM_TE_RELS=('')
+    fm_task_evidence_verify_copies "$manifest" "$key"
   fi
 }
 
@@ -437,7 +518,7 @@ fm_task_evidence_copy_source() {
 # Return 1 for unavailable/unverifiable prior evidence, 2 for staging failure.
 # A foreign copy may excuse old source loss, never a failure saving valid proof.
 fm_task_evidence_carry_prior() {
-  local prior=$1 key=$2 staging=$3 manifest=$4 lines hash path line suffix found=0
+  local prior=$1 key=$2 staging=$3 manifest=$4 lines hash path line suffix i found=0
   local regular_lines='' link_lines=''
   [ -f "$prior/MANIFEST.sha256" ] || return 1
   [ -e "$prior/$key" ] || [ -L "$prior/$key" ] || return 1
@@ -446,17 +527,22 @@ fm_task_evidence_carry_prior() {
     lines=$(awk -v k="$key" '{ p = substr($0, 67) } p == k || index(p, k "/") == 1' "$prior/MANIFEST.sha256$suffix")
     [ -n "$lines" ] || continue
     found=1
-    while IFS= read -r line; do
-      hash=${line%%  *}
-      path=${line#*  }
-      if [ "$suffix" = .links ]; then
+    if [ "$suffix" = .links ]; then
+      while IFS= read -r line; do
+        hash=${line%%  *}
+        path=${line#*  }
         [ "$(fm_task_evidence_link_hash "$prior/$path")" = "$hash" ] || return 1
         echo "warning: preserving earlier evidence symlink $prior/$path as a link, not following it" >&2
-      else
-        [ "$(fm_task_evidence_hash "$prior/$path")" = "$hash" ] || return 1
-      fi
-    done <<< "$lines"
-    if [ "$suffix" = .links ]; then link_lines=$lines; else regular_lines=$lines; fi
+      done <<< "$lines"
+      link_lines=$lines
+    else
+      fm_task_evidence_load_hashes "$prior" <<< "$lines"
+      for ((i = 0; i < ${#FM_TE_RELS[@]}; i++)); do
+        fm_task_evidence_hash_at "$i" || :
+        [ "$FM_TE_HASH" = "${FM_TE_EXPECT[i]}" ] || return 1
+      done
+      regular_lines=$lines
+    fi
   done
   [ "$found" = 1 ] || return 1
   mkdir -p -- "$(dirname -- "$staging/$key")" || return 2
@@ -494,7 +580,7 @@ fm_task_evidence_preserve_scanned() {
   local dir="$data/$id" list evidence staging manifest line path src root key
   local declared='' refused=0 refs ref ref_mode d overlap record
   local next_record next_line record_lines scan_eof
-  local link target label rel physical_copy physical_tmp suffix hash rc
+  local link target label rel physical_copy physical_tmp suffix hash rc i
   [ -d "$dir" ] || return 0
   if [ ! -r "$scan/matches" ]; then
     echo "REFUSED: evidence record scan: cannot read prepared matches; retry teardown" >&2
@@ -577,17 +663,24 @@ fm_task_evidence_preserve_scanned() {
           refused=1
           break
         fi
-        while IFS= read -r line; do
-          if [ "$suffix" = .links ]; then
+        if [ "$suffix" = .links ]; then
+          while IFS= read -r line; do
             hash=$(fm_task_evidence_link_hash "$staging/${line#*  }")
-          else
-            hash=$(fm_task_evidence_hash "$staging/${line#*  }")
-          fi
-          [ "$hash" = "${line%%  *}" ] || {
-            echo "REFUSED: staged evidence ${line#*  } for $id failed verification" >&2
+            [ "$hash" = "${line%%  *}" ] || {
+              echo "REFUSED: staged evidence ${line#*  } for $id failed verification" >&2
+              refused=1
+            }
+          done < "$manifest$suffix"
+          continue
+        fi
+        fm_task_evidence_load_hashes "$staging" < "$manifest"
+        for ((i = 0; i < ${#FM_TE_RELS[@]}; i++)); do
+          fm_task_evidence_hash_at "$i" || :
+          [ "$FM_TE_HASH" = "${FM_TE_EXPECT[i]}" ] || {
+            echo "REFUSED: staged evidence ${FM_TE_RELS[i]} for $id failed verification" >&2
             refused=1
           }
-        done < "$manifest$suffix"
+        done
       done
     fi
   fi

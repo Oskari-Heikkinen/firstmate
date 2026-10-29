@@ -8221,18 +8221,23 @@ test_failed_final_staged_verification_refuses_without_replacing_prior_evidence()
   real_shasum=$(command -v shasum) || fail "shasum needed for final-verification fixture"
   # The first staging hash agrees with the source; a second staging hash
   # disagrees to exercise the final verification independently of copy-out.
+  # Each path is hashed alone, so a batched run sees the same fault.
   cat > "$case_dir/fakebin/shasum" <<SH
 #!/usr/bin/env bash
-case "\$3" in
-  *'.evidence.new.'*)
-    if [ -e "$case_dir/staging-hashed" ]; then
-      printf '%064d  %s\\n' 0 "\$3"
-      exit 0
-    fi
-    : > "$case_dir/staging-hashed"
-    ;;
-esac
-exec "$real_shasum" "\$@"
+[ "\$1 \$2" = '-a 256' ] || exec "$real_shasum" "\$@"
+shift 2
+for path in "\$@"; do
+  case "\$path" in
+    *'.evidence.new.'*)
+      if [ -e "$case_dir/staging-hashed" ]; then
+        printf '%064d  %s\\n' 0 "\$path"
+        continue
+      fi
+      : > "$case_dir/staging-hashed"
+      ;;
+  esac
+  "$real_shasum" -a 256 "\$path" || exit
+done
 SH
   chmod +x "$case_dir/fakebin/shasum"
   rc=0
@@ -8274,6 +8279,208 @@ test_retried_cleanup_keeps_a_verified_earlier_evidence_copy() {
   [ "$(cat "$ev/copy/workspace/gone.txt")" = kept ] || fail "evidence-carry: the earlier copy was not kept"
   evidence_manifest_verifies "$ev" || fail "evidence-carry: the kept copy's manifest does not verify"
   pass "a retried cleanup whose declared source is already gone keeps the earlier copy only while it still verifies"
+}
+
+# Log one line per hash tool run, then run the real tool.
+make_counting_hash_tools() {  # <case-dir>
+  local tool real
+  for tool in shasum sha256sum; do
+    real=$(command -v "$tool") || continue
+    cat > "$1/fakebin/$tool" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "$tool" >> "$1/hash-runs"
+exec "$real" "\$@"
+SH
+    chmod +x "$1/fakebin/$tool"
+  done
+}
+
+test_aged_evidence_trees_hash_in_batches() {
+  local phase case_dir rc ev i runs
+  for phase in copy carry; do
+    case_dir=$(make_case "evidence-aged-$phase")
+    ignore_workspace "$case_dir"
+    write_meta "$case_dir" no-mistakes ship
+    land_shippable_commit "$case_dir"
+    ev="$case_dir/data/task-x1/evidence"
+    if [ "$phase" = copy ]; then
+      mkdir -p "$case_dir/data/task-x1"
+      for ((i = 0; i < 20; i++)); do mkdir -p "$case_dir/wt/workspace/aged/d$i"; done
+      for ((i = 0; i < 3000; i++)); do printf 'aged %d\n' "$i" > "$case_dir/wt/workspace/aged/d$((i % 20))/f$i.txt"; done
+    else
+      # A retried cleanup whose source is gone carries the earlier copy.
+      for ((i = 0; i < 20; i++)); do mkdir -p "$ev/copy/workspace/aged/d$i"; done
+      for ((i = 0; i < 3000; i++)); do printf 'aged %d\n' "$i" > "$ev/copy/workspace/aged/d$((i % 20))/f$i.txt"; done
+      if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$ev" && find copy -type f -print0 | xargs -0 sha256sum) > "$case_dir/prior-manifest"
+      else
+        (cd "$ev" && find copy -type f -print0 | xargs -0 shasum -a 256) > "$case_dir/prior-manifest"
+      fi
+      mv "$case_dir/prior-manifest" "$ev/MANIFEST.sha256"
+    fi
+    printf '%s\n' workspace > "$case_dir/data/task-x1/evidence.list"
+    make_counting_hash_tools "$case_dir"
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    expect_code 0 "$rc" "aged-$phase: teardown should preserve the aged tree: $(cat "$case_dir/stderr")"
+    [ "$(wc -l < "$ev/MANIFEST.sha256" | tr -d ' ')" = 3000 ] \
+      || fail "aged-$phase: manifest should list all 3000 files"
+    [ "$(cat "$ev/copy/workspace/aged/d7/f2987.txt")" = 'aged 2987' ] || fail "aged-$phase: a file was not preserved"
+    evidence_manifest_verifies "$ev" || fail "aged-$phase: the manifest does not verify the preserved tree"
+    assert_absent "$case_dir/state/task-x1.meta" "aged-$phase: teardown left the task record"
+    # Per-file hashing ran the tool once per file and copy, about 9,000 times
+    # for a fresh copy and 6,000 for a carry; batches need a handful.
+    runs=$(wc -l < "$case_dir/hash-runs" | tr -d ' ')
+    [ "$runs" -ge 1 ] && [ "$runs" -le 40 ] \
+      || fail "aged-$phase: 3000 evidence files took $runs hash tool runs, expected 1-40"
+  done
+  pass 'a fresh copy and a carried copy of 3000 evidence files hash in a bounded number of batched tool runs'
+}
+
+test_evidence_copy_faults_refuse_per_file_in_both_declaration_shapes() {
+  local decl fault case_dir rc real_cp shape src
+  real_cp=$(command -v cp) || fail 'cp needed for copy-fault fixture'
+  for decl in workspace workspace/proof.txt; do
+    shape=dir; [ "$decl" = workspace ] || shape=single
+    for fault in changed missing; do
+      case_dir=$(make_case "evidence-copy-fault-$shape-$fault")
+      ignore_workspace "$case_dir"
+      write_meta "$case_dir" no-mistakes ship
+      land_shippable_commit "$case_dir"
+      mkdir -p "$case_dir/wt/workspace" "$case_dir/data/task-x1"
+      printf 'first\n' > "$case_dir/wt/workspace/early.txt"
+      printf 'proof\n' > "$case_dir/wt/workspace/proof.txt"
+      printf 'last\n' > "$case_dir/wt/workspace/zz.txt"
+      printf '%s\n' "$decl" > "$case_dir/data/task-x1/evidence.list"
+      # After the real evidence copy, either the source changes or one copied
+      # file disappears, before any hash is compared.
+      cat > "$case_dir/fakebin/cp" <<SH
+#!/usr/bin/env bash
+"$real_cp" "\$@" || exit
+dest=\${@: -1}
+case "\$dest" in *'.evidence.new.'*) ;; *) exit 0 ;; esac
+if [ "$fault" = changed ]; then
+  printf 'changed after copy\n' >> "$case_dir/wt/workspace/proof.txt"
+elif [ -d "\$dest" ]; then
+  rm -f -- "\$dest/proof.txt"
+else
+  rm -f -- "\$dest"
+fi
+SH
+      chmod +x "$case_dir/fakebin/cp"
+      rc=0
+      run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      expect_code 1 "$rc" "copy-fault $shape $fault: teardown must refuse: $(cat "$case_dir/stderr")"
+      src="$case_dir/wt/$decl"
+      assert_grep "REFUSED: could not copy and verify declared evidence $src for task-x1" \
+        "$case_dir/stderr" "copy-fault $shape $fault: refusal must name the declared source"
+      if [ "$fault" = changed ]; then
+        assert_grep "REFUSED: copied evidence $case_dir/data/task-x1/.evidence.new." \
+          "$case_dir/stderr" "copy-fault $shape changed: the mismatch must be named"
+        assert_grep "/copy/workspace/proof.txt does not match its source" \
+          "$case_dir/stderr" "copy-fault $shape changed: the mismatch must name the changed file"
+        [ "$(grep -c 'does not match its source' "$case_dir/stderr")" = 1 ] \
+          || fail "copy-fault $shape changed: exactly one mismatch should be named: $(cat "$case_dir/stderr")"
+      else
+        assert_no_grep 'does not match its source' "$case_dir/stderr" \
+          "copy-fault $shape missing: a missing copy is not a content mismatch"
+      fi
+      assert_present "$case_dir/state/task-x1.meta" "copy-fault $shape $fault: refusal removed the task record"
+      assert_present "$case_dir/wt/workspace/proof.txt" "copy-fault $shape $fault: refusal removed the source"
+      assert_absent "$case_dir/data/task-x1/evidence" "copy-fault $shape $fault: refusal installed evidence"
+    done
+  done
+  pass 'a source changed after copy and a missing copied file refuse for directory and file declarations'
+}
+
+test_evidence_hash_tool_failures_refuse_and_partial_batches_fall_back() {
+  local mode case_dir rc ev real_shasum tool hash
+  real_shasum=$(command -v shasum) || fail 'shasum needed for hash-tool fixture'
+  for mode in fail-copy fail-carry batch-only; do
+    case_dir=$(make_case "evidence-hash-tool-$mode")
+    ignore_workspace "$case_dir"
+    write_meta "$case_dir" no-mistakes ship
+    land_shippable_commit "$case_dir"
+    ev="$case_dir/data/task-x1/evidence"
+    mkdir -p "$case_dir/data/task-x1"
+    if [ "$mode" = fail-carry ]; then
+      mkdir -p "$ev/copy/workspace"
+      printf 'kept\n' > "$ev/copy/workspace/proof.txt"
+      hash=$({ sha256sum "$ev/copy/workspace/proof.txt" 2>/dev/null || shasum -a 256 "$ev/copy/workspace/proof.txt"; } | awk '{print $1}')
+      printf '%s  copy/workspace/proof.txt\n' "$hash" > "$ev/MANIFEST.sha256"
+    else
+      mkdir -p "$case_dir/wt/workspace"
+      printf 'one\n' > "$case_dir/wt/workspace/a.txt"
+      printf 'two\n' > "$case_dir/wt/workspace/proof.txt"
+    fi
+    printf '%s\n' workspace > "$case_dir/data/task-x1/evidence.list"
+    if [ "$mode" = batch-only ]; then
+      # A run over more than one path fails; one path alone still hashes.
+      cat > "$case_dir/fakebin/shasum" <<SH
+#!/usr/bin/env bash
+[ "\$#" -le 3 ] || exit 1
+exec "$real_shasum" "\$@"
+SH
+      chmod +x "$case_dir/fakebin/shasum"
+    else
+      for tool in shasum sha256sum; do
+        printf '#!/usr/bin/env bash\nexit 1\n' > "$case_dir/fakebin/$tool"
+        chmod +x "$case_dir/fakebin/$tool"
+      done
+    fi
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    case "$mode" in
+      batch-only)
+        expect_code 0 "$rc" "hash-tool batch-only: per-file hashing should preserve the evidence: $(cat "$case_dir/stderr")"
+        [ "$(wc -l < "$ev/MANIFEST.sha256" | tr -d ' ')" = 2 ] || fail 'hash-tool batch-only: manifest should list both files'
+        evidence_manifest_verifies "$ev" || fail 'hash-tool batch-only: the manifest does not verify'
+        assert_absent "$case_dir/state/task-x1.meta" 'hash-tool batch-only: teardown left the task record'
+        ;;
+      fail-copy)
+        expect_code 1 "$rc" "hash-tool fail-copy: teardown must refuse: $(cat "$case_dir/stderr")"
+        assert_grep "REFUSED: could not copy and verify declared evidence $case_dir/wt/workspace for task-x1" \
+          "$case_dir/stderr" 'hash-tool fail-copy: refusal must name the declared source'
+        assert_no_grep 'does not match its source' "$case_dir/stderr" 'hash-tool fail-copy: a tool error is not a mismatch'
+        assert_absent "$ev" 'hash-tool fail-copy: refusal installed evidence'
+        assert_present "$case_dir/state/task-x1.meta" 'hash-tool fail-copy: refusal removed the task record'
+        ;;
+      fail-carry)
+        expect_code 1 "$rc" "hash-tool fail-carry: teardown must refuse: $(cat "$case_dir/stderr")"
+        assert_grep "REFUSED: declared evidence $case_dir/wt/workspace for task-x1 does not exist and no verified earlier copy is preserved" \
+          "$case_dir/stderr" 'hash-tool fail-carry: refusal must explain the unverifiable earlier copy'
+        [ "$(cat "$ev/copy/workspace/proof.txt")" = kept ] || fail 'hash-tool fail-carry: refusal changed the earlier copy'
+        assert_present "$case_dir/state/task-x1.meta" 'hash-tool fail-carry: refusal removed the task record'
+        ;;
+    esac
+  done
+  pass 'a failing hash tool refuses copy-out and carry-forward, and a batch-only failure falls back to per-file hashing'
+}
+
+test_awkward_evidence_names_are_copied_with_exact_manifest_names() {
+  local case_dir rc ev expected
+  case_dir=$(make_case evidence-awkward-names)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/wt/workspace/sub dir" "$case_dir/wt/workspace/-dash dir" "$case_dir/data/task-x1"
+  printf 'space\n' > "$case_dir/wt/workspace/sub dir/a b.txt"
+  printf 'dash\n' > "$case_dir/wt/workspace/-dash dir/-lead"
+  printf 'tab\n' > "$case_dir/wt/workspace/tab	q'uote\"d"
+  printf 'glob\n' > "$case_dir/wt/workspace/*[?].txt"
+  printf '%s\n' workspace > "$case_dir/data/task-x1/evidence.list"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "awkward-names: teardown should preserve every name: $(cat "$case_dir/stderr")"
+  ev="$case_dir/data/task-x1/evidence"
+  expected=$(printf '%s\n' 'copy/workspace/*[?].txt' 'copy/workspace/-dash dir/-lead' \
+    'copy/workspace/sub dir/a b.txt' "copy/workspace/tab	q'uote\"d" | LC_ALL=C sort)
+  [ "$(sed 's/^[0-9a-f]\{64\}  //' "$ev/MANIFEST.sha256" | LC_ALL=C sort)" = "$expected" ] \
+    || fail "awkward-names: manifest names differ: $(cat "$ev/MANIFEST.sha256")"
+  [ "$(cat "$ev/copy/workspace/-dash dir/-lead")" = dash ] || fail 'awkward-names: a leading-dash file was not copied'
+  evidence_manifest_verifies "$ev" || fail 'awkward-names: the manifest does not verify'
+  assert_absent "$case_dir/state/task-x1.meta" 'awkward-names: teardown left the task record'
+  pass 'evidence names with spaces, tabs, quotes, glob characters and leading dashes keep their exact manifest names'
 }
 
 test_teardown_retires_park_without_relocking_meta() {
@@ -8581,6 +8788,10 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_overlapping_evidence_declarations_refuse \
   test_failed_final_staged_verification_refuses_without_replacing_prior_evidence \
   test_retried_cleanup_keeps_a_verified_earlier_evidence_copy \
+  test_aged_evidence_trees_hash_in_batches \
+  test_evidence_copy_faults_refuse_per_file_in_both_declaration_shapes \
+  test_evidence_hash_tool_failures_refuse_and_partial_batches_fall_back \
+  test_awkward_evidence_names_are_copied_with_exact_manifest_names \
   test_teardown_closes_a_gerrit_task_with_its_change_url_as_a_note \
   test_herdr_teardown_presentation_lock_namespace_is_per_account \
   test_teardown_retires_task_watcher_markers_but_quarantines_unmatched_journal \
