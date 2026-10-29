@@ -563,19 +563,12 @@ make_admission_clock() {  # <world>
   mkdir -p "$1/events"
   cat > "$1/admission-clock.sh" <<'SH'
 if [ "$0" = "$FM_TEST_ADMISSION_SCRIPT" ]; then
-  FM_TEST_ADMISSION_NOW=1000
-  date() {
-    if [ "$*" = +%s ]; then
-      printf '%s\n' "$FM_TEST_ADMISSION_NOW"
-    else
-      command date "$@"
-    fi
-  }
+  FM_ADMISSION_NOW=1000
   fm_test_admission_sleep() {
     : > "$FM_TEST_EVENTS/$BASHPID.waiting"
     for ((i = 0; i < 300; i++)); do
       if [ -f "$FM_TEST_EVENTS/advance" ]; then
-        FM_TEST_ADMISSION_NOW=1025
+        FM_ADMISSION_NOW=1025
         return 0
       fi
       command sleep 0.1

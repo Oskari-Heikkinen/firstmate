@@ -285,6 +285,10 @@ test_waiters_share_one_fresh_result() {
   hold_one_agent
   write_sleep_seams
   make_count_shims "$C/shims"
+  # An old ledger line, so the baseline evaluation reads a ledger as the
+  # waiter's final one does; it is long past the recent-admission window.
+  mkdir -p "$C/run"
+  printf '1 fresh %s\n' "$C/elsewhere" > "$C/run/admitted"
   seed_wait 1000
   counted "$C/check.log" "$ADMISSION" check > /dev/null 2>&1
   counted "$C/rules.log" "$ADMISSION" rules > /dev/null 2>&1
