@@ -471,7 +471,7 @@ def cmd_baseline(home, at):
     return 0
 
 
-# run: lock, recover, scan, admit, exec, record.
+# run: lock, pack slot, recover, scan, admit, exec, record.
 
 def recover(st):
     """Remove journalled temporary names a killed run left; -> count removed."""
@@ -512,6 +512,31 @@ def recover(st):
     return removed
 
 
+def take_pack_slot(st):
+    """Hold the one machine-wide pack slot fm-pack.sh shares; wait while another pack or repack holds it.
+
+    -> the fd that holds it. The slot is a flock on one file under the user's
+    cache, the pattern of the ShellCheck guard; it is taken after the home's
+    lock, never before it.
+    """
+    path = env("FM_PACK_SLOT_LOCK") or os.path.join(os.path.expanduser("~"), ".cache", "fm-pack", "slot.lock")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    except OSError as e:
+        raise Refusal("cannot open the machine-wide pack slot %s: %s" % (path, e.strerror))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        pass
+    st.log("waiting: another pack or repack holds the machine-wide pack slot %s; the run starts when it is free" % path)
+    say("waiting: another pack or repack holds the machine-wide pack slot %s" % path)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    st.log("pack slot %s is free; the run goes on" % path)
+    return fd
+
+
 def parse_size(text):
     m = re.match(r"^([0-9]+)([KMGT]?)$", text or "")
     if not m:
@@ -535,6 +560,7 @@ def cmd_run(home, max_bytes, script_dir):
             say("held: another fm-repack run for this home is active")
             return EXIT_WAIT
         raise
+    slotfd = take_pack_slot(st)
     removed = recover(st)
     if removed:
         say("recovered %d temporary file(s) an interrupted run left" % removed)
@@ -580,7 +606,8 @@ def cmd_run(home, max_bytes, script_dir):
            io_cap, "--strict", "--", sys.executable, "-I", os.path.abspath(__file__),
            "exec", "--home", home, "--run-dir", rundir]
     child_env = dict(os.environ, FM_HOME=home)
-    proc = subprocess.run(cmd, stderr=subprocess.PIPE, env=child_env)
+    # The batch inherits the slot, so it stays held while any copy runs.
+    proc = subprocess.run(cmd, stderr=subprocess.PIPE, env=child_env, pass_fds=(slotfd,))
     err = proc.stderr.decode("utf-8", "replace").strip()
     result = read_result(rundir)
     if proc.returncode == EXIT_WAIT and result is None:

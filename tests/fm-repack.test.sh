@@ -15,7 +15,7 @@ if [ "$(uname -s)" != Linux ] || ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
-unset FM_REPACK_NOW FM_REPACK_DISK_ROOM FM_IO_CAP FM_REPACK_TEST_CRASH FM_REPACK_TEST_DURING_COPY
+unset FM_REPACK_NOW FM_REPACK_DISK_ROOM FM_IO_CAP FM_REPACK_TEST_CRASH FM_REPACK_TEST_DURING_COPY FM_PACK_SLOT_LOCK
 TMP_ROOT=$(fm_test_tmproot fm-repack)
 REPACK="$ROOT/bin/fm-repack.sh"
 NOW=1793000000 # 2026-10-26 09:33 UTC
@@ -52,7 +52,7 @@ new_home() {
 
 repack() {
   FAKE_LOG="$H.log" FM_REPACK_NOW=$NOW FM_REPACK_DISK_ROOM="$TMP_ROOT/disk-room" FM_IO_CAP="$TMP_ROOT/io-cap" \
-    "$REPACK" "$@" --home "$H"
+    FM_PACK_SLOT_LOCK="$H.slot" "$REPACK" "$@" --home "$H"
 }
 
 # cold PATH [BYTES] [AGE_DAYS]: a file of BYTES random bytes with mtime and
@@ -318,6 +318,46 @@ test_lock_and_baseline() {
   pass "a baseline skips densely written files, and a held lock holds the run"
 }
 
+test_pack_slot_waits_and_holds() {
+  local out rc=0 a pid start
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "skip: test_pack_slot_waits_and_holds needs flock(1)"
+    return 0
+  fi
+  H=$(new_home slot)
+  cold "$H/data/a"
+  printf 'data\n' >"$H/config/repack-trees"
+  a=$(ino "$H/data/a")
+  cat >"$TMP_ROOT/slot-probe" <<'SH'
+#!/usr/bin/env bash
+if flock -n "$SLOT" true; then echo free; else echo held; fi >>"$SLOT.probe"
+SH
+  chmod +x "$TMP_ROOT/slot-probe"
+  exec 5>"$H.slot"
+  flock 5
+  # 5>&-: the run must not inherit the fd that holds the slot.
+  SLOT="$H.slot" FM_REPACK_TEST_DURING_COPY="$TMP_ROOT/slot-probe" repack run >"$H.out" 2>&1 5>&- &
+  pid=$!
+  start=$SECONDS
+  until grep -qF "waiting: another pack or repack holds the machine-wide pack slot $H.slot" "$H.out"; do
+    kill -0 "$pid" 2>/dev/null || break
+    [ $((SECONDS - start)) -lt 60 ] || break
+    sleep 0.1
+  done
+  assert_grep "waiting: another pack or repack holds the machine-wide pack slot" "$H.out"
+  kill -0 "$pid" 2>/dev/null || fail "the run waits while another holds the pack slot"
+  assert_equals "" "$(cat "$H.log")" "no admission is asked while the slot is held"
+  assert_equals "$a" "$(ino "$H/data/a")" "nothing is rewritten while the slot is held"
+  exec 5>&-
+  wait "$pid" || rc=$?
+  out=$(cat "$H.out")
+  expect_code 0 "$rc" "the run once the slot is free: $out"
+  assert_contains "$out" "repacked 1 files" "the run goes on once the slot is free"
+  assert_not_equals "$a" "$(ino "$H/data/a")" "the file was rewritten"
+  assert_equals held "$(cat "$H.slot.probe")" "the slot stays held while the batch copies"
+  pass "a run waits for the machine-wide pack slot and holds it through its batch"
+}
+
 test_plan() {
   local out f sample m c per
   H=$(new_home plan)
@@ -378,4 +418,5 @@ test_crash_after_swap_keeps_copy
 test_admission_refusal_holds_batch
 test_one_batch_in_time_order
 test_lock_and_baseline
+test_pack_slot_waits_and_holds
 test_plan
