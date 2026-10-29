@@ -3,7 +3,7 @@
   "roots": ["bin/fm-alert-store*", "tests/fm-alert-store*", "bin/fm-storage*", "bin/fm-pack*", "bin/fm-loop*", "bin/fm-project-capacity*", "bin/fm-component-*", "tests/fm-storage*", "tests/fm-pack*", "tests/fm-loop*", "tests/fm-project-capacity*", "tests/fm-component-*"],
   "components": [
     {"id": "alert-store", "skill": "alert-store", "paths": ["bin/fm-alert-store.sh", "bin/fm-alert-store-lib.sh", "docs/alert-store.md", "tests/fm-alert-store.test.sh"]},
-    {"id": "results-storage", "skill": "results-storage", "paths": ["bin/fm-storage.sh", "bin/fm-pack.sh", "bin/fm-pack-retry.c", "bin/fm-pack-parity.py", "docs/storage.md", "tests/fm-storage.test.sh", "tests/fm-pack.test.sh", "tests/fm-pack-parity.test.sh"]},
+    {"id": "results-storage", "skill": "results-storage", "paths": ["bin/fm-storage.sh", "bin/fm-pack.sh", "bin/fm-pack-retry.c", "bin/fm-pack-parity.py", "docs/storage.md", "tests/fm-storage.test.sh", "tests/fm-storage-v2.test.sh", "tests/fm-pack.test.sh", "tests/fm-pack-parity.test.sh"]},
     {"id": "loop-observability", "skill": "loop-observability", "paths": ["bin/fm-loop.sh", "bin/fm-loop.py", "bin/fm-project-capacity-lib.sh", "docs/loop-status.md", "tests/fm-loop.test.sh", "tests/fm-project-capacity.test.sh"]},
     {"id": "component-skills", "skill": "component-skills", "paths": ["bin/fm-component-*", "docs/component-map.md", "docs/component-map.json", "docs/component-skills.md", "tests/fm-component-map.test.sh", "tests/fm-component-check.test.sh", "tests/fm-component-drift.test.sh", "tests/fm-component-hook-live-e2e.test.sh"]}
   ]
