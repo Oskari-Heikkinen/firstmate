@@ -183,7 +183,7 @@ test_skip_classes() {
   assert_contains "$out" "repacked 2 files" "only the plain file and the bare repository's HEAD are rewritten"
   assert_contains "$out" "young 1" "a file under 7 days old is skipped"
   assert_contains "$out" "empty 1" "an empty file is skipped"
-  assert_contains "$out" "hard-linked 2" "both names of a hard-linked file are skipped"
+  assert_contains "$out" "hard-linked 1" "a hard-linked file is skipped, and counted once for its two names"
   assert_contains "$out" "sqlite 4" "SQLite files with -wal or -journal, and those files, are skipped"
   assert_contains "$out" "open 1" "a file another process holds open is skipped"
   assert_contains "$out" "state dirs 2" "every directory named state is skipped"
@@ -339,7 +339,7 @@ SH
   SLOT="$H.slot" FM_REPACK_TEST_DURING_COPY="$TMP_ROOT/slot-probe" repack run >"$H.out" 2>&1 5>&- &
   pid=$!
   start=$SECONDS
-  until grep -qF "waiting: another pack or repack holds the machine-wide pack slot $H.slot" "$H.out"; do
+  until grep -qF "waiting: another pack or repack holds the machine-wide pack slot $H.slot" "$H.out" 2>/dev/null; do
     kill -0 "$pid" 2>/dev/null || break
     [ $((SECONDS - start)) -lt 60 ] || break
     sleep 0.1
