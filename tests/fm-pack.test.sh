@@ -130,10 +130,11 @@ exec $(command -v stat) "\$@"
 SH
 chmod +x "$FAKEBIN/stat"
 
-# Each release fixture has a controlled process world. Only the sleep process
-# a case explicitly starts is visible; unrelated host users/exit races cannot
-# turn a successful synthetic release into an environmental refusal.
-# Its cwd/fd links are still read from the real /proc by find.
+# Each release fixture has a controlled process world (FM_PACK_PROC). Only the
+# sleep process a case explicitly starts (PACK_PROC_PID) is in it, linked to its
+# real /proc entry; unrelated host processes and exit races cannot turn a
+# successful synthetic release into an environmental refusal. A case that
+# builds its own world names it in PACK_PROC_ROOT.
 export PACK_PROC_PID=''
 export PACK_REAL_FIND
 PACK_REAL_FIND=$(command -v find)
@@ -145,14 +146,16 @@ if [ -n "${PACK_FIND_FAIL:-}" ] && [ "$1" = "$PACK_FIND_FAIL" ]; then
   echo "find: '$1/held': Permission denied" >&2
   exit 1
 fi
-if [ "$1" = /proc ] && [ "${3:-}" = 2 ]; then
-  [ -n "${PACK_PROC_PID:-}" ] || exit 0
-  p=/proc/$PACK_PROC_PID
-  exec "$PACK_REAL_FIND" "$p" -mindepth 1 -maxdepth 2 \( -name cwd -o -path "$p/fd/*" \) -printf '%p\t%l\n'
-fi
 exec "$PACK_REAL_FIND" "$@"
 SH
 chmod +x "$FAKEBIN/find"
+
+proc_world() {
+  local d="$TMP_ROOT/proc-world"
+  rm -rf "$d" && mkdir "$d" || return 1
+  [ -z "$PACK_PROC_PID" ] || ln -s "/proc/$PACK_PROC_PID" "$d/$PACK_PROC_PID"
+  printf '%s\n' "$d"
+}
 
 key() { printf '%s' "$1" | tr / _; }
 
@@ -182,7 +185,7 @@ run_pack() {
     FM_DISK_ROOM_VHDX="$TMP_ROOT/no-vhdx" FM_DISK_ROOM_DEV_SIZE=$((1000 * GIB)) FM_DISK_ROOM_MARGIN=1G \
     FM_DISK_ROOM_BULK_MARGIN=1G FM_PACK_MOUNT="${FM_PACK_MOUNT-unsquashfs}" FM_HOME="$TMP_ROOT/home" \
     FM_PACK_SLOT_LOCK="${PACK_SLOT_LOCK:-$TMP_ROOT/slot.lock}" \
-    bash "${PACK_EXEC:-$PACK}" "$@"
+    FM_PACK_PROC="${PACK_PROC_ROOT:-$(proc_world)}" bash "${PACK_EXEC:-$PACK}" "$@"
 }
 
 # make_src DIR: six regular files (one empty, one with a space, a hard-linked
@@ -747,7 +750,7 @@ test_release() {
 setup_read_failure_tools() {
   local t d="$TMP_ROOT/read-failure-bin" real
   mkdir -p "$d"
-  for t in find stat awk sed grep unsquashfs sha256sum cut wc sort cat; do
+  for t in find stat awk sed grep unsquashfs sha256sum cut wc sort cat python3; do
     real=$(PATH="$FAKEBIN:$PATH" command -v "$t")
     printf -v "PACK_REAL_$t" '%s' "$real"
     export "PACK_REAL_$t"
@@ -762,8 +765,8 @@ case "$t:$mode" in
     if [ "$1" = "$PACK_FAIL_SRC" ]; then fail=1; fi ;;
   find:tree-source) [ "$1" != . ] || [ "$PWD" != "$PACK_FAIL_SRC" ] || fail=1 ;;
   find:tree-aside) [ "$1" != . ] || [ "$PWD" != "$PACK_FAIL_ASIDE" ] || fail=1 ;;
-  find:process-source) [ "$1" != /proc ] || fail=1 ;;
-  find:process-aside) [ "$1" != /proc ] || [ ! -d "$PACK_FAIL_ASIDE" ] || fail=1 ;;
+  python3:process-source) [ "${1:-}" != - ] || [ "${2:-}" != "${FM_PACK_PROC:-}" ] || fail=1 ;;
+  python3:process-aside) [ "${1:-}" != - ] || [ "${2:-}" != "${FM_PACK_PROC:-}" ] || [ ! -d "$PACK_FAIL_ASIDE" ] || fail=1 ;;
   find:reservation-list) [ "${2:-}" != "$PACK_FAIL_STATE/reservations" ] || fail=1 ;;
   find:reservation-liveness) [ "$1" != /proc ] || [ "${3:-}" != 1 ] || fail=1 ;;
   find:release-record) [ "$1" != "${PACK_FAIL_IMG%/*}" ] || fail=1 ;;
@@ -805,7 +808,7 @@ fi
 exec "$real" "$@"
 SH
   chmod +x "$d/tool"
-  for t in find stat awk sed grep unsquashfs sha256sum cut wc sort cat; do ln -s tool "$d/$t"; done
+  for t in find stat awk sed grep unsquashfs sha256sum cut wc sort cat python3; do ln -s tool "$d/$t"; done
   # Exercise the mount reader without a host FUSE device: only capability
   # discovery is shimmed; hashing, counting and the public release are real.
   cat >"$d/fuse-env" <<'SH'
@@ -1156,6 +1159,201 @@ test_candidates() {
   pass "candidates lists cold data/ trees with sizes a hand du and find match, and each pack state"
 }
 
+# scan_world NAME: an empty process table for one process-scan case.
+scan_world() {
+  local w="$TMP_ROOT/scan-world/$1"
+  mkdir -p "$w" && printf '%s\n' "$w"
+}
+
+# scan_entry WORLD PID CWD STATE: a fake process entry owned by this user, with
+# a cwd link, a stat line in STATE and an empty fd directory.
+scan_entry() {
+  mkdir -p "$1/$2/fd"
+  [ -z "$3" ] || ln -s "$3" "$1/$2/cwd"
+  printf '%s (fake) %s 1 1 1 0 -1\n' "$2" "$4" >"$1/$2/stat"
+}
+
+# process_scan_cases TAG EXE: the process-scan regressions against EXE, fail-fast
+# so a mutant is killed by the first case it breaks. Each releasing case packs
+# its own unit; the refusing cases share one and must leave it whole.
+process_scan_cases() (
+  local tag=$1 PACK_EXEC=$2 w src out rc snap unit
+  scan_unit() {
+    unit="scan-$tag-$1" src="$TMP_ROOT/src/scan-$tag-$1"
+    make_src "$src"
+    out=$(PACK_EXEC='' run_pack pack job "$unit" "$src" 2>&1); rc=$?
+    expect_code 0 "$rc" "process-scan fixture $unit packs: $out"
+    snap=$(snapshot "$src")
+  }
+  scan_release() {
+    out=$(PACK_PROC_ROOT=$1 run_pack release "$R/$unit.sqfs" "$src" --accepted-by test \
+      --also "$TMP_ROOT/outside-$unit" 2>&1); rc=$?
+  }
+  expect_scan_released() {
+    scan_release "$1"
+    expect_code 0 "$rc" "$2"
+    assert_equals STORED.md "$(ls -A "$src")" "$2: only the stub is left: $out"
+  }
+  expect_scan_refused() {
+    scan_release "$1"
+    expect_code 1 "$rc" "$2"
+    assert_contains "$out" "$3" "$2: the refusal says why"
+    assert_equals "$snap" "$(snapshot "$src")" "$2: the source is untouched"
+    assert_present "$TMP_ROOT/outside-$unit" "$2: the outside name is untouched"
+    assert_absent "$R/$unit.release.json" "$2: no release record"
+  }
+
+  # Hidden processes: the kernel denies ptrace-read access with EACCES. A
+  # directory without search permission gives that errno on the cwd read, and
+  # one that lists but cannot be searched gives it on each fd read after a
+  # readable cwd (an own process holding capabilities this caller lacks). The
+  # host's pid 1 is another user's when this user cannot read its cwd.
+  w=$(scan_world "hidden-$tag")
+  mkdir -p "$w/4000000" && chmod 000 "$w/4000000"
+  scan_entry "$w" 4000001 "$TMP_ROOT" S
+  : >"$w/4000001/fd/3" && chmod 0400 "$w/4000001/fd"
+  ln -s "/proc/$$" "$w/$$"
+  if ! readlink /proc/1/cwd >/dev/null 2>&1 && [ -d /proc/1 ]; then ln -s /proc/1 "$w/1"; fi
+  ! readlink "$w/4000000/cwd" >/dev/null 2>&1 || fail "a search-denied process entry is readable"
+  ! readlink "$w/4000001/fd/3" >/dev/null 2>&1 || fail "a search-denied fd entry is readable"
+  scan_unit hidden
+  expect_scan_released "$w" "hidden processes do not block the release"
+
+  # Exited processes: a listed pid whose entry is gone, and a zombie with no cwd.
+  w=$(scan_world "exited-$tag")
+  ln -s "$w/no-such-entry" "$w/4000002"
+  scan_entry "$w" 4000003 '' Z
+  scan_unit exited
+  expect_scan_released "$w" "exited processes do not block the release"
+
+  scan_unit refused
+  w=$(scan_world "partial-$tag")
+  scan_entry "$w" 4000004 "$src/nested" S
+  : >"$w/4000004/fd/3" && chmod 0400 "$w/4000004/fd"
+  expect_scan_refused "$w" "a hidden process's cwd read before the denial still refuses" "uses $src/nested"
+
+  w=$(scan_world "own-error-$tag")
+  scan_entry "$w" 4000005 "$TMP_ROOT" S
+  rmdir "$w/4000005/fd" && : >"$w/4000005/fd"
+  expect_scan_refused "$w" "another read error on an own process refuses" "process-scan-read-failed"
+
+  w=$(scan_world "own-missing-$tag")
+  scan_entry "$w" 4000006 "$TMP_ROOT" S
+  rmdir "$w/4000006/fd"
+  expect_scan_refused "$w" "an own live process with a missing entry refuses" "process-scan-read-failed"
+
+  w=$(scan_world "unreadable-$tag")
+  chmod 000 "$w"
+  expect_scan_refused "$w" "an unreadable process table refuses" "process-scan-read-failed"
+  chmod 755 "$w"
+
+  expect_scan_refused "$TMP_ROOT/scan-world/missing-$tag" "a missing process table refuses" "process-scan-read-failed"
+
+  w=$(scan_world "empty-$tag")
+  out=$(PATH="$TMP_ROOT/scan-bin:$PATH" PACK_PROC_ROOT=$w run_pack release "$R/$unit.sqfs" "$src" \
+    --accepted-by test --also "$TMP_ROOT/outside-$unit" 2>&1); rc=$?
+  expect_code 1 "$rc" "a process scanner that cannot start refuses"
+  assert_contains "$out" "process-scan-read-failed" "a process scanner that cannot start: the refusal says why"
+  assert_equals "$snap" "$(snapshot "$src")" "a process scanner that cannot start: the source is untouched"
+  assert_absent "$R/$unit.release.json" "a process scanner that cannot start: no release record"
+  pass "process scan ($tag): hidden and exited processes pass; every other scan failure refuses"
+)
+
+# make_scan_mutant MODE DEST: fm-pack with one process-scan rule reverted.
+make_scan_mutant() {
+  python3 - "$PACK" "$1" "$2" <<'PY'
+import pathlib, sys
+source, mode, dest = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+denied = 'if e.errno == errno.EACCES:\n                    break'
+if mode == 'old-find':
+    # The scan before this fix, reading the fixture's process table: any find
+    # error, permission denials included, fails the scan.
+    start = text.index('procs_in() {')
+    end = text.index('\nPY\n}\n', start) + len('\nPY\n}\n')
+    old = text[start:end]
+    new = r'''procs_in() {
+  local p=$1 r=${FM_PACK_PROC:-/proc}; shift
+  find "$r" -mindepth 2 -maxdepth 3 \( -path "$r/[0-9]*/cwd" -o -path "$r/[0-9]*/fd/*" \) \
+    -printf '%p\t%l\n' 2>/dev/null |
+    awk -F'\t' -v r="$r" -v p="$p" -v names="$(printf '%s\n' "$@")" '
+      BEGIN { n = split(names, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") x[a[i]] = 1 }
+      { t = $2; sub(/ \(deleted\)$/, "", t)
+        if (t == p || index(t, p "/") == 1 || (t in x)) { split(substr($1, length(r) + 2), q, "/"); print q[1] "\t" t } }' |
+    LC_ALL=C sort -u
+}
+'''
+elif mode == 'denied-fails':
+    old, new = denied, 'if False:\n                    break'
+elif mode == 'denied-drops-reads':
+    old, new = denied, 'if e.errno == errno.EACCES:\n                    targets = []\n                    break'
+elif mode == 'errors-hidden':
+    old = 'if e.errno != errno.ENOENT:\n                    raise'
+    new = 'if e.errno != errno.ENOENT:\n                    break'
+elif mode == 'exited-fails':
+    old, new = 'if gone(d) or zombie(d):', 'if False:'
+elif mode == 'missing-skipped':
+    old, new = 'if gone(d) or zombie(d):', 'if True:'
+elif mode == 'table-skipped':
+    old = 'for pid in os.listdir(root):'
+    new = 'for pid in (os.listdir(root) if os.access(root, os.R_OK) else []):'
+elif mode == 'scan-ignored':
+    old, new = 'out=$(procs_in "$@")', 'out=$(procs_in "$@"; :)'
+else:
+    raise SystemExit('unknown mutant: ' + mode)
+if old not in text:
+    raise SystemExit('mutant site not found: ' + mode)
+pathlib.Path(dest).write_text(text.replace(old, new))
+PY
+}
+
+test_release_process_scan() {
+  local mode why mutant log errors=''
+  if [ "$(id -u)" = 0 ]; then
+    pass "release process scan: hidden processes pass, other scan failures refuse (skipped as root, which reads every process)"
+    return 0
+  fi
+  mkdir -p "$TMP_ROOT/scan-bin"
+  PACK_REAL_PYTHON3=$(command -v python3)
+  export PACK_REAL_PYTHON3
+  cat >"$TMP_ROOT/scan-bin/python3" <<'SH'
+#!/usr/bin/env bash
+# The process scanner cannot start; every other python3 run is real.
+if [ "${1:-}" = - ] && [ "${2:-}" = "${FM_PACK_PROC:-}" ]; then
+  echo "python3: cannot execute: Exec format error (injected)" >&2
+  exit 126
+fi
+exec "$PACK_REAL_PYTHON3" "$@"
+SH
+  chmod +x "$TMP_ROOT/scan-bin/python3"
+  process_scan_cases baseline "$PACK" || errors+="baseline; "
+  # MODE|the case it must break, with the exit that case then sees. The list is
+  # read on fd 3, so nothing a case runs can consume it.
+  while IFS='|' read -r mode why <&3; do
+    mutant="$TMP_ROOT/scan-mutant-$mode.sh" log="$TMP_ROOT/scan-mutant-$mode.log"
+    if ! make_scan_mutant "$mode" "$mutant"; then
+      errors+="$mode mutant generation; "
+    elif process_scan_cases "$mode" "$mutant" >"$log" 2>&1; then
+      errors+="$mode mutant survived; "
+    elif ! grep -F "$why" "$log" >/dev/null; then
+      cat "$log"
+      errors+="$mode mutant failed elsewhere; "
+    else
+      pass "process-scan mutant killed: $mode"
+    fi
+  done 3<<'MUTANTS'
+old-find|hidden processes do not block the release: expected exit 0, got 1
+denied-fails|hidden processes do not block the release: expected exit 0, got 1
+denied-drops-reads|a hidden process's cwd read before the denial still refuses: expected exit 1, got 0
+errors-hidden|another read error on an own process refuses: expected exit 1, got 0
+exited-fails|exited processes do not block the release: expected exit 0, got 1
+missing-skipped|an own live process with a missing entry refuses: expected exit 1, got 0
+table-skipped|an unreadable process table refuses: expected exit 1, got 0
+scan-ignored|another read error on an own process refuses: expected exit 1, got 0
+MUTANTS
+  [ -z "$errors" ] || fail "process-scan regressions: $errors"
+}
+
 test_no_publication_waits
 test_pack_round_trip
 test_machine_share
@@ -1173,5 +1371,6 @@ test_mount_verify
 test_release_setup
 test_release_refusals
 test_release_read_failures
+test_release_process_scan
 test_release
 test_candidates

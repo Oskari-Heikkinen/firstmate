@@ -129,7 +129,14 @@
 #         4. mounts: no mount point (FM_PACK_MOUNTINFO, default
 #            /proc/self/mountinfo) is SRC or inside it;
 #         5. processes: no visible process has its cwd or an open file in
-#            SRC or on an --also name;
+#            SRC or on an --also name. The scan reads every process under
+#            FM_PACK_PROC; a process is hidden, and not seen, when reading it
+#            is denied with EACCES (the kernel refuses this caller ptrace-read
+#            access: another user's process, root's included, a non-dumpable
+#            one, or one holding capabilities the caller lacks), and gone when
+#            it exited or is a zombie; a file closed while read rereads the
+#            process, at most three times. Any other error, a missing or
+#            unreadable FM_PACK_PROC, or a scanner that fails refuses;
 #         6. reservations: no live fm-disk-room reservation, Linux or D:
 #            pool, is named UNIT, pack-UNIT or basename(SRC) (reservations
 #            record no path, so a writer is caught by name or by step 5);
@@ -147,8 +154,9 @@
 #         fm-pack-release/v1 image=PATH src=PATH freed=BYTES accepted_by=WHO released_at=EPOCH record=PATH
 #       freed counts each released inode once by size, the --also names
 #       included; GiB freed is freed / 1073741824. A failed or partial guard
-#       read refuses with a named *-read-failed diagnostic, including /proc
-#       visibility/races; no read failure is interpreted as an empty result.
+#       read refuses with a named *-read-failed diagnostic, including a /proc
+#       read that step 5 does not name as hidden or gone; no read failure is
+#       interpreted as an empty result.
 #       Exit codes:
 #         0   released;
 #         1   refused by a guard, nothing deleted; also a removal that failed
@@ -261,6 +269,7 @@
 #   FM_PACK_RELEASE_WINDOW  release's default window in seconds (0)
 #   FM_PACK_NOW     candidates' clock in epoch seconds (default now), for tests
 #   FM_PACK_MOUNTINFO  the mount table release reads (/proc/self/mountinfo)
+#   FM_PACK_PROC    the process table release scans (/proc)
 #   FM_DISK_ROOM_STATE  fm-disk-room's state directory, for release's
 #                   reservation check (the same default as fm-disk-room.sh)
 #   FM_PACK_SLOT_LOCK  the machine-wide pack slot's lock file
@@ -714,16 +723,75 @@ mounts_in() {
 }
 
 # procs_in PATH [NAME...]: "pid<TAB>path" of each visible process whose cwd or
-# open file is PATH, under it, or one of the NAMEs.
+# open file is PATH, under it, or one of the NAMEs. The header's step 5 owns
+# which processes are hidden or gone; every other read error fails the scan.
 procs_in() {
-  local p=$1; shift
-  find /proc -mindepth 2 -maxdepth 3 \( -path '/proc/[0-9]*/cwd' -o -path '/proc/[0-9]*/fd/*' \) \
-    -printf '%p\t%l\n' 2>/dev/null |
-    awk -F'\t' -v p="$p" -v names="$(printf '%s\n' "$@")" '
-      BEGIN { n = split(names, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") x[a[i]] = 1 }
-      { t = $2; sub(/ \(deleted\)$/, "", t)
-        if (t == p || index(t, p "/") == 1 || (t in x)) { split($1, q, "/"); print q[3] "\t" t } }' |
-    LC_ALL=C sort -u
+  python3 - "${FM_PACK_PROC:-/proc}" "$@" <<'PY'
+import errno, os, sys, time
+root, path, names = sys.argv[1], sys.argv[2], set(a for a in sys.argv[3:] if a)
+
+def gone(d):
+    # ENOENT on the process directory itself is the kernel's answer that it exited.
+    try:
+        os.stat(d)
+    except FileNotFoundError:
+        return True
+    return False
+
+def zombie(d):
+    try:
+        with open(d + '/stat') as f:
+            state = f.read().rsplit(')', 1)[1].split()[0]
+    except FileNotFoundError:
+        return False
+    return state in ('Z', 'X')
+
+def links(d, out):
+    out.append(os.readlink(d + '/cwd'))
+    # The scanner's own descriptors are its listing and its pipes, never SRC.
+    if d == own:
+        return
+    for fd in os.listdir(d + '/fd'):
+        out.append(os.readlink(d + '/fd/' + fd))
+
+own = root + '/' + str(os.getpid())
+hits = set()
+try:
+    for pid in os.listdir(root):
+        if not pid.isdigit():
+            continue
+        d = root + '/' + pid
+        for attempt in range(3):
+            targets = []
+            try:
+                links(d, targets)
+                break
+            except OSError as e:
+                # The kernel denies this caller ptrace-read access: the process
+                # is another user's, non-dumpable or more privileged. What was
+                # read before the denial is still checked.
+                if e.errno == errno.EACCES:
+                    break
+                if e.errno != errno.ENOENT:
+                    raise
+                if gone(d) or zombie(d):
+                    break
+                # A file closed while it was read: read the live process again.
+                err = e
+                time.sleep(0.05)
+        else:
+            raise err
+        for t in targets:
+            if t.endswith(' (deleted)'):
+                t = t[:-len(' (deleted)')]
+            if t == path or t.startswith(path + '/') or t in names:
+                hits.add(pid + '\t' + t)
+except OSError as e:
+    print('fm-pack: process scan: %s: %s' % (e.filename, e.strerror), file=sys.stderr)
+    sys.exit(1)
+for h in sorted(hits):
+    print(h)
+PY
 }
 
 # in_use PATH [NAME...]: refuse when PATH or under it is a mount point, or a
@@ -735,9 +803,9 @@ in_use() {
   out=$(mounts_in "$p") || rel_refuse 1 "mount-table-read-failed: $tab"
   out=${out%%$'\n'*}
   [ -z "$out" ] || rel_refuse 1 "$out is a mount point at or inside $p"
-  out=$(procs_in "$@") || rel_refuse 1 "process-scan-read-failed: /proc for $p"
+  out=$(procs_in "$@") || rel_refuse 1 "process-scan-read-failed: ${FM_PACK_PROC:-/proc} for $p"
   out=${out%%$'\n'*}
-  [ -z "$out" ] || rel_refuse 1 "process ${out%%$'\t'*} ($(cat "/proc/${out%%$'\t'*}/comm" 2>/dev/null)) uses ${out#*$'\t'}"
+  [ -z "$out" ] || rel_refuse 1 "process ${out%%$'\t'*} ($(cat "${FM_PACK_PROC:-/proc}/${out%%$'\t'*}/comm" 2>/dev/null)) uses ${out#*$'\t'}"
 }
 
 # reference_clear PATH FILE: grep's 1 means absent, every other failure refuses.
@@ -862,7 +930,7 @@ cmd_release() {
   local given src recorded ref a out now released files freed state
   local refs=() also=() names=()
   [ "$#" -ge 2 ] || die "release needs IMAGE SRC"
-  need unsquashfs sha256sum jq flock
+  need unsquashfs sha256sum jq flock python3
   need_reader
   load_image "$1"
   [ "$IFORMAT" = fm-pack-unit/v1 ] || die "release reads fm-pack's own tree list; $IJSON is $IFORMAT"

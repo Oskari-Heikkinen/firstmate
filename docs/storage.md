@@ -216,7 +216,7 @@ The guards are:
 1. `pack` committed the unit, and the image and SRC pass the same check as `fm-pack.sh verify UNIT.sqfs --against SRC`, run just before the removal.
 2. The owner home has accepted that its readers work from the image (mounted or restored), recorded with `--accepted-by` and an optional `--note`.
 3. No reference the owner names with `--ref` (a ledger tree literal, a delivery pin) still contains SRC's path.
-4. Nothing inside SRC is a mount point, the working directory or an open file of a live process, or held by a live disk-room reservation for the unit.
+4. Nothing inside SRC is a mount point, the working directory or an open file of a live process the releasing user can read (the `bin/fm-pack.sh` header's release step 5 names the processes the kernel hides), or held by a live disk-room reservation for the unit.
 5. Every hard-link name of a file in SRC is inside SRC or released in the same call with `--also`, so the bytes the receipt reports are really freed.
 6. The release window has passed; it is zero, so a verified pack is releasable at once.
 
