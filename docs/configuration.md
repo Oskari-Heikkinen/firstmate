@@ -1219,6 +1219,15 @@ A present file that does not parse, including an empty or unreadable one, is a f
 Every reading uses the file's current contents, so a change applies at once with no re-arm, except that a watcher check armed while `FM_DISK_ROOM_C_FREE_MIN` was set, or one that exports it by hand, keeps that value until it is re-armed without it.
 The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 
+## Repack trees (config/repack-trees)
+
+The optional local, gitignored `config/repack-trees` lists the cold trees [`bin/fm-repack.sh`](../bin/fm-repack.sh) may rewrite, described in [`disk-room.md`](disk-room.md#repacking-cold-trees).
+Each line is one directory: an absolute path, a path relative to the home, or a path starting with `~/`; blank lines and lines starting with `#` are ignored.
+A missing file, or one with no directory lines, means there is nothing to repack.
+A line that names no directory, holds a `..` component, or lies inside a `state` directory is a failed reading: `plan` and `run` refuse with exit 2, naming the file and line, and rewrite nothing.
+Agent transcripts are repacked only when the file lists their directory.
+The file belongs to the home that holds it and is not inherited into secondmate homes, because each home's trees are its own.
+
 ## Home brief include (config/brief-include.md)
 
 The optional local, gitignored `config/brief-include.md` adds standing worker instructions to every ship and scout brief.
