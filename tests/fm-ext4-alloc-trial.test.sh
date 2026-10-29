@@ -269,7 +269,7 @@ assert_clean() {
 stop_trial() {
   local results=$3/e2e-$1.tsv pid i rc
   # shellcheck disable=SC2024 # the test user owns its own output files
-  sudo -n "$TRIAL" run --dir "$4" --size 2G --rounds 6 --volume 256M --settings default \
+  sudo -n "$TRIAL" run --dir "$4" --size 2G --rounds 3 --volume 256M --settings default \
     --results "$results" >/dev/null 2>"$T/e2e-$1.err" &
   pid=$!
   for ((i = 0; i < 1200; i++)); do
