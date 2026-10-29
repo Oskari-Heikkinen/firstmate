@@ -472,6 +472,8 @@ They also prove that a legacy or handoff-phase watcher marker from an absent rep
 It also exercises a single TERM with a live foreign downtime-marker lock holder, retained stale singleton and subsequent arm-style recovery, including decimal `08` and zero `00` cleanup bounds.
 It checks that a newly appended keyed decision is classified without rereading earlier status bytes, so signal handling can return to the watcher's beacon refresh even when the status history is long.
 `tests/fm-wake-queue.test.sh` proves TERM likewise stops a watcher blocked in the drain-ring idle check's pane capture.
+It also proves a TERM still pending when `bin/fm-wake-drain.sh` parses its next command substitution stops the drain nonzero before it presents a row, releases the queue lock and leaves the row for replay.
+It proves a TERM or HUP inside the drain's queue commit rename, or a TERM inside a recovery-marker rename, lets that rename land before the drain exits.
 
 `tests/fm-watcher-lock.test.sh` covers:
 

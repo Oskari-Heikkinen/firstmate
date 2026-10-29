@@ -129,7 +129,7 @@ retire_unconsumable_rows_locked() {
       DRAIN_TMP=
       return 0
     fi
-    if _fm_atomic_replace "$DRAIN_TMP" "$FM_WAKE_QUEUE"; then
+    if drain_replace_locked "$DRAIN_TMP" "$FM_WAKE_QUEUE"; then
       DRAIN_TMP=
       printf 'wake drain: retired %s unusable queue row(s) that carried no sequence to present or acknowledge:\n%s\n' \
         "$retired" "$unusable" >&2
@@ -153,6 +153,29 @@ print_branch_held_notice() {
     "$held" "${seqs:-unknown}"
 }
 
+# drain_replace_locked <source> <target>: rename a commit made under the queue
+# lock with HUP and TERM held until the rename returns, then honor one that
+# arrived. Their native handling would otherwise run cleanup, and release the
+# lock, while the mv child can still rename after a concurrent append. The
+# window holds no command substitution, so the holding trap cannot be dropped
+# (see the stop-signal dispositions below).
+drain_replace_locked() {
+  local rc=0
+  DRAIN_SIGNAL_PENDING=
+  trap 'DRAIN_SIGNAL_PENDING=129' HUP
+  trap 'DRAIN_SIGNAL_PENDING=143' TERM
+  # Test hook: announce the queue's commit rename and hold it open, so a test
+  # can deliver a stop signal inside the held window.
+  if [ "$2" = "$FM_WAKE_QUEUE" ] && [ "${FM_WAKE_DRAIN_TEST_DELAY_IN_COMMIT:-0}" != 0 ]; then
+    printf 'in-commit\n' > "$STATE/.wake-drain-test-in-commit"
+    sleep "$FM_WAKE_DRAIN_TEST_DELAY_IN_COMMIT"
+  fi
+  _fm_atomic_replace "$1" "$2" || rc=$?
+  trap - HUP TERM
+  [ -z "$DRAIN_SIGNAL_PENDING" ] || exit "$DRAIN_SIGNAL_PENDING"
+  return "$rc"
+}
+
 write_rows_file_locked() { # <target> <source>
   local target=$1 source=$2
   if [ ! -s "$source" ]; then
@@ -160,7 +183,7 @@ write_rows_file_locked() { # <target> <source>
     return
   fi
   chmod 0600 "$source" || return 1
-  _fm_atomic_replace "$source" "$target"
+  drain_replace_locked "$source" "$target"
 }
 
 # claim_main_rows_locked [<cutoff>]: claim every unreserved queued row for main,
@@ -846,20 +869,55 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   return "$rc"
 }
 
+# shellcheck disable=SC2317,SC2329 # Called only from cleanup, which the EXIT trap invokes.
+# drain_marker_settle: native TERM does not wait for a recovery-marker
+# writer's mv child either, so a drain that stops while it holds the marker
+# lock waits a bounded 2 s for its own marker temp file to be renamed. While
+# this drain holds that lock every marker temp file is its own; one still left
+# at the bound is removed, so a rename still pending fails instead of landing
+# after the drain has gone. The lock's pid record is read only as a regular file.
+drain_marker_settle() {
+  local owner current tmp left i=0
+  [ -f "$RECOVERY_MARKER.lock/pid" ] || return 0
+  fm_file_text_to owner "$RECOVERY_MARKER.lock/pid" || return 0
+  fm_current_pid current || return 0
+  [ "$owner" = "$current" ] || return 0
+  while :; do
+    left=
+    for tmp in "$RECOVERY_MARKER".tmp.*; do
+      [ -e "$tmp" ] || [ -L "$tmp" ] || continue
+      left=$tmp
+      break
+    done
+    [ -n "$left" ] || return 0
+    [ "$i" -lt 40 ] || break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  rm -f -- "$RECOVERY_MARKER".tmp.* 2>/dev/null || true
+}
+
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
 cleanup() {
   local status=$?
   [ -z "$DRAIN_TMP" ] || rm -f -- "$DRAIN_TMP" 2>/dev/null || true
   [ -z "$DRAIN_VIEW_TMP" ] || rm -f -- "$DRAIN_VIEW_TMP" 2>/dev/null || true
+  drain_marker_settle
   if [ "$DRAIN_LOCK_HELD" = true ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   fi
   exit "$status"
 }
 
+# Stop-signal dispositions. TERM keeps bash's native fatal-signal handling,
+# which runs cleanup through the EXIT trap and exits 143, and INT keeps its
+# trap; watcher_stop_signals in bin/fm-watch.sh owns why a trap body is not
+# reliable for TERM. Native TERM ends the drain without waiting for a
+# foreground child, so a rename that commits queue-lock state runs through
+# drain_replace_locked, and cleanup settles a recovery-marker rename through
+# drain_marker_settle.
 trap cleanup EXIT
 trap 'exit 130' INT
-trap 'exit 143' TERM
 
 if [ -n "$ACK_THROUGH" ]; then
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
@@ -970,7 +1028,7 @@ if [ -n "$ACK_THROUGH" ]; then
       RECOVERY_ACK_MOVED=true
     fi
   fi
-  if ! _fm_atomic_replace "$DRAIN_TMP" "$FM_WAKE_QUEUE"; then
+  if ! drain_replace_locked "$DRAIN_TMP" "$FM_WAKE_QUEUE"; then
     echo "wake drain: acknowledged wakes could not be consumed safely" >&2
     exit 1
   fi
@@ -1095,6 +1153,12 @@ case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   ''|*[!0-9]*) ;;
   *) sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT" ;;
 esac
+# Test hook: the first substitution's child sends this drain TERM, which is
+# still pending when bash parses the second one, the worst arrival point for a
+# trapped stop signal (see the stop-signal dispositions above).
+if [ "${FM_WAKE_DRAIN_TEST_TERM_BEFORE_COMMIT:-}" = 1 ]; then
+  : "$(kill -TERM "$$")" "$(:)"
+fi
 if [ -n "$RAW_ROWS" ]; then
   printf '%s\n' "$RAW_ROWS" || exit "$?"
 fi

@@ -2483,6 +2483,135 @@ test_interruption_before_and_after_raw_commit() {
   pass "interruptions preserve durable rows until post-handling acknowledgement"
 }
 
+# A TERM still pending when the drain parses its next command substitution is
+# the arrival point where bash 5.2 drops a trap body unparsed and runs on. The
+# drain's test hook delivers TERM exactly there, so the case is deterministic:
+# the drain must still stop nonzero before presenting, release its queue lock
+# through cleanup, and leave the row for a replay.
+test_term_pending_at_substitution_parse_stops_drain() {
+  local dir state rc count sequence generation
+  dir=$(make_case term-pending-at-parse)
+  state="$dir/state"
+  printf 'done: pending-term fixture\n' > "$state/task.status"
+  append_wake "$state" signal task.status "signal: task" || fail "pending-term wake append failed"
+
+  set +e
+  FM_STATE_OVERRIDE="$state" FM_WAKE_DRAIN_TEST_TERM_BEFORE_COMMIT=1 "$DRAIN" \
+    > "$dir/term.out" 2> "$dir/term.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a TERM pending at a substitution parse let the drain succeed: $(cat "$dir/term.err")"
+  assert_no_grep 'unexpected EOF' "$dir/term.err" "the drain's stop-signal handling failed to parse"
+  count=$(awk -F '\t' 'NF == 5 { count++ } END { print count + 0 }' "$dir/term.out")
+  [ "$count" -eq 0 ] || fail "a drain stopped before commit still presented its row"
+  [ ! -e "$state/.wake-queue.lock" ] || fail "a TERM-stopped drain left its queue lock held"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/replay.out" 2> "$dir/replay.err" \
+    || fail "the row a TERM-stopped drain left did not drain"
+  count=$(awk -F '\t' 'NF == 5 { count++ } END { print count + 0 }' "$dir/replay.out")
+  [ "$count" -eq 1 ] || fail "a TERM before commit lost or duplicated the durable row"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/replay.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/replay.err")
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "the replayed row's acknowledgement failed"
+  [ ! -s "$state/.wake-queue" ] || fail "the acknowledged replayed row remained durable"
+  pass "a TERM pending at a command-substitution parse stops the drain before commit"
+}
+
+# The drain leaves TERM to bash's native handling, which does not wait for a
+# foreground child, so its queue commit rename holds HUP and TERM until the mv
+# returns. A signal delivered inside that held window must let the rename land
+# before the drain exits with the signal's status and releases its lock;
+# without the hold the drain would die with the row still queued.
+test_stop_signal_during_queue_commit_waits_for_rename() {
+  local spec signal expected dir state pid rc i sequence generation
+  for spec in TERM:143 HUP:129; do
+    signal=${spec%%:*}
+    expected=${spec#*:}
+    dir=$(make_case "commit-hold-$signal")
+    state="$dir/state"
+    printf 'done: commit-hold fixture\n' > "$state/task.status"
+    append_wake "$state" signal task.status "signal: task" || fail "commit-hold wake append failed ($signal)"
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/present.out" 2> "$dir/present.err" \
+      || fail "commit-hold presentation failed ($signal)"
+    sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/present.err")
+    generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/present.err")
+    [ -n "$sequence" ] && [ -n "$generation" ] || fail "commit-hold presentation printed no ack command ($signal)"
+
+    FM_STATE_OVERRIDE="$state" FM_WAKE_DRAIN_TEST_DELAY_IN_COMMIT=2 "$DRAIN" \
+      --ack-through "$sequence" --recovery-generation "$generation" > "$dir/ack.out" 2> "$dir/ack.err" &
+    pid=$!
+    i=0
+    while [ "$i" -lt 400 ] && ! grep -qx in-commit "$state/.wake-drain-test-in-commit" 2>/dev/null; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+    [ "$i" -lt 400 ] || { kill -KILL "$pid" 2>/dev/null || true; fail "the ack never reached its queue commit rename ($signal)"; }
+    kill "-$signal" "$pid" 2>/dev/null || fail "could not signal the drain inside its commit rename ($signal)"
+    set +e
+    wait "$pid"
+    rc=$?
+    set -e
+    [ "$rc" -eq "$expected" ] || fail "a $signal inside the commit rename exited $rc, not $expected: $(cat "$dir/ack.err")"
+    assert_no_grep 'unexpected EOF' "$dir/ack.err" "the drain's held-signal trap failed to parse ($signal)"
+    [ ! -s "$state/.wake-queue" ] || fail "a $signal inside the commit rename stopped the drain before the rename landed"
+    [ ! -e "$state/.wake-queue.lock" ] || fail "a $signal inside the commit rename left the queue lock held"
+  done
+  pass "a stop signal inside the queue commit rename waits for the rename, then exits with its status"
+}
+
+# A recovery-marker write forks its mv under the marker lock with no signal
+# hold, so the drain's cleanup settles it: a TERM while that mv is held open
+# must not let the drain exit before its own marker temp file is renamed.
+# A shim mv announces and holds the first rename onto the marker; without the
+# settle the drain would exit with the temp file still waiting to land.
+test_term_during_marker_rename_settles_before_exit() {
+  local dir state shim real_mv pid rc i tmp
+  dir=$(make_case marker-rename-settle)
+  state="$dir/state"
+  shim="$dir/shim"
+  real_mv=$(command -v mv)
+  mkdir -p "$shim"
+  cat > "$shim/mv" <<EOF
+#!/usr/bin/env bash
+for last in "\$@"; do :; done
+case "\$last" in
+  */.watcher-down)
+    if [ ! -e "\$FM_TEST_MARKER_MV_HOLD" ]; then
+      printf 'in-marker-mv\n' > "\$FM_TEST_MARKER_MV_HOLD"
+      sleep 1
+    fi
+    ;;
+esac
+exec "$real_mv" "\$@"
+EOF
+  chmod +x "$shim/mv"
+  printf 'done: marker-settle fixture\n' > "$state/task.status"
+  append_wake "$state" signal task.status "signal: task" || fail "marker-settle wake append failed"
+
+  PATH="$shim:$PATH" FM_TEST_MARKER_MV_HOLD="$dir/marker-mv-held" FM_STATE_OVERRIDE="$state" "$DRAIN" \
+    > "$dir/term.out" 2> "$dir/term.err" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 400 ] && ! grep -qx in-marker-mv "$dir/marker-mv-held" 2>/dev/null; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ "$i" -lt 400 ] || { kill -KILL "$pid" 2>/dev/null || true; fail "the drain never renamed onto its recovery marker"; }
+  kill -TERM "$pid" 2>/dev/null || fail "could not signal the drain inside its marker rename"
+  set +e
+  wait "$pid"
+  rc=$?
+  set -e
+  [ "$rc" -eq 143 ] || fail "a TERM inside the marker rename exited $rc, not 143: $(cat "$dir/term.err")"
+  for tmp in "$state"/.watcher-down.tmp.*; do
+    [ ! -e "$tmp" ] || fail "the drain exited with its marker rename still pending: $tmp"
+  done
+  assert_grep ':handling:' "$state/.watcher-down" "the held marker rename did not land before the drain exited"
+  [ ! -e "$state/.wake-queue.lock" ] || fail "a TERM inside the marker rename left the queue lock held"
+  pass "a TERM inside a recovery-marker rename lets the rename land before the drain exits"
+}
+
 # The guarded self-announced status append (fm_wake_status_append_self_announced)
 # and the seen-signature gate it shares with the watcher's signal scan. Both
 # directions of the dedup contract are pinned through the real library
@@ -3800,6 +3929,9 @@ WAKE_QUEUE_CASES=(
   test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive
   test_concurrent_append_and_drain
   test_interruption_before_and_after_raw_commit
+  test_term_pending_at_substitution_parse_stops_drain
+  test_stop_signal_during_queue_commit_waits_for_rename
+  test_term_during_marker_rename_settles_before_exit
   test_secondmate_long_lived_mate_mid_turn_is_not_a_stall
   test_live_presentation_holder_is_deadlined_without_weakening_ack
   test_secondmate_liveness_tick_relaunches_dead_endpoint_once
