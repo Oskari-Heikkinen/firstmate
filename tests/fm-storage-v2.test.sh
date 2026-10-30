@@ -281,6 +281,9 @@ world() {
   rm -rf "$W" "$IN" "$OBS"
   mkdir -p "$W/home/config" "$W/tmp" "$CFG" "$SST" "$RST" "$IN/df" "$OBS" \
     "$LNX/xp-meta" "$DL/tetjet-results" "$DL/xp-units" "$(dirname "$VHDX")" "$(dirname "$SWAPF")"
+  # The owner's empty lock file exists once it has run anywhere; a refusal under
+  # the lock must still leave it empty and every record byte-for-byte unchanged.
+  : >"$RST/.lock"
   NOW=$T0
   printf 'vhdxfile' >"$VHDX"
   truncate -s $(( 300 * GIB )) "$VHDX"
