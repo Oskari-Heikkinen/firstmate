@@ -7205,12 +7205,21 @@ test_evidence_record_group_collection_is_linear() {
   pass 'many matching lines are collected within a generous bound with byte-identical parser input'
 }
 
+# The record scan and the evidence copy both run before the shared project
+# lock: another home's slot allocation on the same project is admitted while the
+# copy runs, and a record, root, source or ownership change before the locked
+# finish refuses with nothing returned, installed or left staged.
 test_evidence_text_scan_is_outside_project_lock_and_changes_refuse() {
-  local variant case_dir wt rc
-  for variant in stable duplicate-tasktmp edit add remove replace declaration during-scan during-copy meta-worktree meta-tasktmp meta-kind; do
+  local variant case_dir wt rc child_path
+  child_path=$(printf '%q' "${FM_TEARDOWN_TEST_PATH:-$PATH}")
+  for variant in stable duplicate-tasktmp edit add remove replace declaration during-scan during-copy copy-edit ownership meta-worktree meta-tasktmp meta-kind; do
     case_dir=$(make_case "evidence-unlocked-$variant")
     wt=$(move_case_to_pool_slot "$case_dir" 1)
     write_meta "$case_dir" local-only ship "$wt"
+    # A second fixture home under this one derives the same project lock.
+    mkdir -p "$case_dir/child-home/state" "$case_dir/child-home/data" "$case_dir/child-home/config"
+    printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$case_dir" \
+      > "$case_dir/child-home/.fm-secondmate-parent"
     if [ "$variant" = duplicate-tasktmp ]; then
       printf 'tasktmp=%s/oldtmp\ntasktmp=%s/tasktmp\n' "$case_dir" "$case_dir" >> "$case_dir/state/task-x1.meta"
     fi
@@ -7234,20 +7243,31 @@ if [ "\${1:-}" = -IHF ]; then
 fi
 exec "$(command -v grep)" "\$@"
 SH
+    # The copy stands in for a long walk: it must run unlocked, and a slot
+    # allocation from the second home must be admitted while it runs.
     cat > "$case_dir/fakebin/cp" <<SH
 #!/usr/bin/env bash
 case "\$*" in
   *'.evidence.new.'*'/copy/proof')
-    held=0
     for lock in "$case_dir/state/".treehouse-project-*.lock; do
-      [ ! -d "\$lock" ] || held=1
+      [ ! -e "\$lock" ] && [ ! -L "\$lock" ] || { echo 'evidence copy held project lock' >&2; exit 1; }
     done
-    [ "\$held" = 1 ] || { echo 'evidence copy lacked project lock' >&2; exit 1; }
-    : > "$case_dir/copied-locked"
+    child_lock=\$(env -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \\
+      -u FM_ROOT_OVERRIDE PATH=$child_path FM_HOME="$case_dir/child-home" bash -c \\
+      '. "\$1"; fm_treehouse_project_lock_path "\$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$case_dir/project") \\
+      || { echo 'second home could not resolve the project lock' >&2; exit 1; }
+    printf '%s\n' "\$child_lock" > "$case_dir/child-lock"
+    env -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_ROOT_OVERRIDE \\
+      PATH=$child_path FM_HOME="$case_dir/child-home" bash -c \\
+      '. "\$1"; fm_lock_try_acquire "\$2" && fm_lock_release "\$2"' _ \\
+      "$ROOT/bin/fm-wake-lib.sh" "\$child_lock" \\
+      || { echo 'second home allocation was refused during the copy' >&2; exit 1; }
+    : > "$case_dir/copied-unlocked"
     "$(command -v cp)" "\$@" || exit
-    if [ "$variant" = during-copy ]; then
-      printf 'concurrent edit\n' >> "$case_dir/data/task-x1/report.md"
-    fi
+    case "$variant" in
+      during-copy) printf 'concurrent edit\n' >> "$case_dir/data/task-x1/report.md" ;;
+      copy-edit) printf 'concurrent edit\n' >> "$wt/proof" ;;
+    esac
     exit 0 ;;
 esac
 exec "$(command -v cp)" "\$@"
@@ -7272,6 +7292,7 @@ case "\$*" in
         meta-kind)
           sed 's/^kind=ship$/kind=scout/' "$case_dir/state/task-x1.meta" > "$case_dir/meta.new"
           mv "$case_dir/meta.new" "$case_dir/state/task-x1.meta" ;;
+        ownership) printf 'task=successor\nhome=%s\n' "$case_dir" > "$case_dir/pool/1/.fm-slot-owner" ;;
       esac
     fi ;;
 esac
@@ -7279,11 +7300,8 @@ exec "$(command -v ln)" "\$@"
 SH
     cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
-for lock in "$case_dir/state/".treehouse-project-*.lock; do
-  if [ -d "\$lock" ]; then : > "$case_dir/returned-locked"; exit 0; fi
-done
-echo 'return lacked project lock' >&2
-exit 1
+[ -d "\$(cat "$case_dir/child-lock")" ] || { echo 'return lacked the lock the second home takes' >&2; exit 1; }
+: > "$case_dir/returned-locked"
 SH
     chmod +x "$case_dir/fakebin/grep" "$case_dir/fakebin/cp" "$case_dir/fakebin/ln" "$case_dir/fakebin/treehouse"
     rc=0
@@ -7292,30 +7310,105 @@ SH
     assert_present "$case_dir/scan-state" 'bulk text prefilter did not run unlocked'
     if [ "$variant" != during-scan ]; then
       assert_present "$case_dir/mutated" "test did not reach project-lock acquisition ($variant, rc=$rc): $(cat "$case_dir/stderr")"
+      assert_present "$case_dir/copied-unlocked" "evidence copy did not run unlocked with a second home admitted ($variant): $(cat "$case_dir/stderr")"
     fi
     if [ "$variant" = stable ] || [ "$variant" = duplicate-tasktmp ]; then
       expect_code 0 "$rc" "unchanged records should clean up: $(cat "$case_dir/stderr")"
       assert_present "$case_dir/returned-locked" 'destructive return did not hold the project lock'
-      assert_present "$case_dir/copied-locked" 'evidence preservation did not hold the project lock'
       evidence_manifest_verifies "$case_dir/data/task-x1/evidence" || fail 'unlocked prefilter changed preserved manifest'
     else
       expect_code 1 "$rc" "changed $variant records must refuse even under --force"
-      if [ "$variant" = during-scan ]; then
-        assert_grep 'durable records changed during the unlocked scan' "$case_dir/stderr" 'scan-time edit did not refuse'
-      else
-        case "$variant" in
-          meta-*) assert_grep 'task evidence roots changed since the unlocked scan' "$case_dir/stderr" 'metadata-root drift did not refuse' ;;
-          *) assert_grep 'durable records changed since the unlocked scan' "$case_dir/stderr" 'inventory change did not refuse' ;;
-        esac
-      fi
-      if [ "$variant" = during-copy ]; then
-        assert_present "$case_dir/copied-locked" 'test did not mutate during locked preservation'
-      fi
+      case "$variant" in
+        during-scan) assert_grep 'durable records changed during the unlocked scan' "$case_dir/stderr" 'scan-time edit did not refuse' ;;
+        meta-*) assert_grep 'task evidence roots changed since the unlocked scan' "$case_dir/stderr" 'metadata-root drift did not refuse' ;;
+        copy-edit) assert_grep "$wt/proof changed while it was copied outside the project lock" "$case_dir/stderr" 'source edit during the unlocked copy did not refuse' ;;
+        ownership) assert_grep 'task evidence inputs changed since the unlocked copy' "$case_dir/stderr" 'slot reassigned after the unlocked copy did not refuse' ;;
+        *) assert_grep 'durable records changed since the unlocked scan' "$case_dir/stderr" 'inventory change did not refuse' ;;
+      esac
       assert_present "$case_dir/state/task-x1.meta" 'inventory refusal removed task metadata'
       assert_absent "$case_dir/returned-locked" 'inventory refusal returned the copy'
+      assert_absent "$case_dir/data/task-x1/evidence" 'refusal installed the unlocked copy'
+      assert_present "$wt/proof" 'refusal removed the declared source'
+    fi
+    if compgen -G "$case_dir/data/task-x1/.evidence.new.*" >/dev/null; then
+      fail "teardown left its staged evidence copy behind ($variant)"
     fi
   done
-  pass 'text scans run unlocked; record edits, membership, replacement and declarations are rechecked under the destructive lock'
+  pass 'text scans and evidence copies run unlocked while another home allocates; record, root, source and ownership changes refuse before the destructive lock acts'
+}
+
+# Staging copies outside every lock; finishing must refuse, with the earlier
+# evidence tree untouched and nothing left staged, when anything the copy read
+# changed afterwards. Each variant changes one thing, so each guard fires alone.
+test_evidence_unlocked_copy_changes_refuse() {
+  local variant case_dir ev hash rc
+  for variant in stable edit add remove retarget appear prior racy owned; do
+    case_dir=$(make_case "evidence-copy-change-$variant")
+    ev="$case_dir/data/task-x1/evidence"
+    mkdir -p "$case_dir/wt/ws/sub" "$ev/copy" "$case_dir/scan"
+    printf 'a bytes\n' > "$case_dir/wt/ws/a"
+    printf b > "$case_dir/wt/ws/sub/b"
+    ln -s a "$case_dir/wt/ws/lnk"
+    printf 'ws\ngone\n' > "$case_dir/data/task-x1/evidence.list"
+    printf 'plain durable record\n' > "$case_dir/data/task-x1/report.md"
+    # The declared path gone is carried from an earlier verified copy.
+    printf 'earlier bytes\n' > "$ev/copy/gone"
+    hash=$({ sha256sum "$ev/copy/gone" 2>/dev/null || shasum -a 256 "$ev/copy/gone"; } | awk '{print $1}')
+    printf '%s  copy/gone\n' "$hash" > "$ev/MANIFEST.sha256"
+    : > "$ev/MANIFEST.sha256.links"
+    cp -RPp "$ev" "$case_dir/prior-tree"
+    rc=0
+    # shellcheck disable=SC2016 # Positional parameters belong to the child bash.
+    bash -c '
+      . "$1"
+      data=$2 wt=$3 scan=$4 variant=$5 owned=1
+      fm_task_evidence_scan prepare "$data/task-x1" "$scan" "$wt" "" || exit
+      fm_task_evidence_stage task-x1 "$data" "$wt" 1 "" "$scan" || exit
+      case "$variant" in
+        edit) printf X > "$wt/ws/sub/b" ;;
+        add) printf new > "$wt/ws/new" ;;
+        remove) rm -- "$wt/ws/a" ;;
+        retarget) rm -- "$wt/ws/lnk" && ln -s sub "$wt/ws/lnk" ;;
+        appear) printf back > "$wt/gone" ;;
+        prior) printf changed > "$data/task-x1/evidence/copy/gone" ;;
+        # Stands in for a write the clock could not tell from the snapshot:
+        # identical metadata, but the staged copy no longer holds the bytes.
+        racy)
+          manifest=$FM_TE_STAGE_STAGING/MANIFEST.sha256
+          sed "s#^[0-9a-f]\{64\}  copy/ws/a\$#$(printf %064d 0)  copy/ws/a#" \
+            "$manifest" > "$manifest.new" && mv -- "$manifest.new" "$manifest" ;;
+        owned) owned=0 ;;
+      esac
+      fm_task_evidence_scan verify "$data/task-x1" "$scan" || exit
+      fm_task_evidence_finish task-x1 "$data" "$wt" "$owned" "" "$scan"
+    ' _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" "$case_dir/scan" "$variant" \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    if [ "$variant" = stable ]; then
+      expect_code 0 "$rc" "an unchanged copy should install: $(cat "$case_dir/stderr")"
+      evidence_manifest_verifies "$ev" || fail 'unlocked copy installed an unverifiable tree'
+      assert_grep '  copy/ws/sub/b' "$ev/MANIFEST.sha256" 'unlocked copy lost a declared member'
+      assert_grep '  copy/gone' "$ev/MANIFEST.sha256" 'unlocked copy lost the carried earlier copy'
+    else
+      expect_code 1 "$rc" "a $variant change after the unlocked copy must refuse"
+      case "$variant" in
+        owned) assert_grep 'task evidence inputs changed since the unlocked copy for task-x1' "$case_dir/stderr" 'ownership drift did not refuse' ;;
+        edit) assert_grep "$case_dir/wt/ws/sub/b changed while it was copied" "$case_dir/stderr" 'same-size edit did not refuse' ;;
+        add) assert_grep "$case_dir/wt/ws/new changed while it was copied" "$case_dir/stderr" 'added member did not refuse' ;;
+        remove|racy) assert_grep "$case_dir/wt/ws/a changed while it was copied" "$case_dir/stderr" "$variant member did not refuse" ;;
+        retarget) assert_grep "$case_dir/wt/ws/lnk changed while it was copied" "$case_dir/stderr" 'retargeted link did not refuse' ;;
+        appear) assert_grep "$case_dir/wt/gone changed while it was copied" "$case_dir/stderr" 'reappeared source did not refuse' ;;
+        prior) assert_grep "$ev/copy/gone changed while it was copied" "$case_dir/stderr" 'changed earlier copy did not refuse' ;;
+      esac
+      assert_grep 'nothing was changed; retry teardown' "$case_dir/stderr" "$variant refusal did not say nothing changed"
+      if [ "$variant" != prior ]; then
+        diff -r "$case_dir/prior-tree" "$ev" || fail "$variant refusal changed the earlier evidence tree"
+      fi
+    fi
+    if compgen -G "$case_dir/data/task-x1/.evidence.new.*" >/dev/null; then
+      fail "$variant left its staged evidence copy behind"
+    fi
+  done
+  pass 'an evidence copy staged outside the lock refuses when a source, member, link, earlier copy, staged byte or ownership changed before finishing'
 }
 
 test_evidence_citation_scan_completes_for_a_plain_missing_path() {
@@ -8739,6 +8832,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_evidence_matching_lines_group_by_record \
   test_evidence_record_group_collection_is_linear \
   test_evidence_text_scan_is_outside_project_lock_and_changes_refuse \
+  test_evidence_unlocked_copy_changes_refuse \
   test_evidence_citation_scan_completes_for_a_plain_missing_path \
   test_evidence_physical_root_aliases_do_not_hide_existing_citations \
   test_evidence_link_physical_failures_and_dangling_newlines_refuse \
