@@ -783,4 +783,164 @@ for local_kind in file receipt inbox merge-result opaque foreign-inbox supersede
 done
 pass 'local park observations keep change, backstop, stability, errors and deadline delivery'
 
+# --- a stop during a fired action defers until the outcome is recorded --------
+# The action marks that it started and then blocks until released, so a TERM
+# is sent while it is provably mid-action.
+SLOW_ACT="$TMP_ROOT/slow-act.sh"
+cat > "$SLOW_ACT" <<'SH'
+#!/usr/bin/env bash
+# <started-marker> <release-file> <log>
+echo invoked >> "$3"
+: > "$1"
+tries=0
+while [ ! -e "$2" ]; do
+  tries=$((tries + 1))
+  [ "$tries" -lt 600 ] || exit 3
+  sleep 0.1
+done
+echo "slow action finished"
+SH
+chmod +x "$SLOW_ACT"
+# A runner in a process group of its own, as the generic runner starts it.
+run_in_group() {  # <home> <source-id> <out>
+  FM_HOME="$1" perl -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
+    "$ROOT/bin/fm-procevent-when.sh" run "$2" > "$3" 2>&1 &
+}
+wait_for_exit() {  # <pid> [tries]
+  local n=${2:-300}
+  for _ in $(seq 1 "$n"); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done
+  return 1
+}
+wait_for_glob() {  # <pattern> [tries]
+  local n=${2:-300} g
+  for _ in $(seq 1 "$n"); do
+    for g in $1; do [ -e "$g" ] && return 0; done
+    sleep 0.1
+  done
+  return 1
+}
+wait_payload() {  # <home> <payload-text> [tries]; a result file is written before its wake
+  local n=${3:-300}
+  for _ in $(seq 1 "$n"); do
+    case $'\n'"$(wake_payloads "$1")"$'\n' in *"$2"*) return 0 ;; esac
+    sleep 0.1
+  done
+  return 1
+}
+wait_for_absent() {  # <path> [tries]
+  local n=${2:-300}
+  for _ in $(seq 1 "$n"); do [ -e "$1" ] || [ -L "$1" ] || return 0; sleep 0.1; done
+  return 1
+}
+
+H="$TMP_ROOT/h-term-defer"; new_home "$H"
+: > "$TMP_ROOT/term-defer-trigger"
+when "$H" arm term-defer --interval 0.1 --stable 1 \
+  --condition "$COND" "$TMP_ROOT/term-defer-trigger" "$TMP_ROOT/term-defer-count" \
+  --action "$SLOW_ACT" "$TMP_ROOT/term-defer-started" "$TMP_ROOT/term-defer-release" "$TMP_ROOT/term-defer-act" >/dev/null
+run_in_group "$H" when-term-defer "$TMP_ROOT/term-defer-out"
+TERM_PID=$!
+wait_for_file "$TMP_ROOT/term-defer-started" 300 || fail "the deferred-stop action never started"
+kill -TERM -- "-$TERM_PID" 2>/dev/null || fail "the runner's process group was already gone"
+kill -0 "$TERM_PID" 2>/dev/null || fail "a TERM during the action ended the run before its outcome"
+: > "$TMP_ROOT/term-defer-release"
+wait_for_exit "$TERM_PID" || fail "the run did not exit after its action finished"
+wait "$TERM_PID"
+expect_code 0 "$?" "a stopped run still exits cleanly after its outcome"
+assert_grep 'status: fired' "$TMP_ROOT/term-defer-out" "the stopped run records the fired outcome"
+assert_grep 'action_exit: 0' "$TMP_ROOT/term-defer-out" "the action finished on its own despite the TERM"
+assert_grep 'slow action finished' "$TMP_ROOT/term-defer-out" "the outcome carries the whole action output"
+assert_contains "$(count_lines "$TMP_ROOT/term-defer-act")" 1 "the action ran exactly once"
+assert_contains "$(when "$H" restart-busy when-term-defer; echo "rc=$?")" 'rc=0' \
+  "a claimed fire reads as busy to a restart"
+when "$H" retire term-defer >/dev/null 2>&1 || true
+pass "a TERM during a fired action lets the action finish and its outcome be emitted"
+
+# Before the fire is claimed, the same TERM ends the run with no outcome.
+H="$TMP_ROOT/h-term-early"; new_home "$H"
+when "$H" arm term-early --interval 0.1 --stable 1 \
+  --condition "$COND" "$TMP_ROOT/term-early-never" "$TMP_ROOT/term-early-count" \
+  --action "$ACT" "$TMP_ROOT/term-early-act" >/dev/null
+run_in_group "$H" when-term-early "$TMP_ROOT/term-early-out"
+TERM_PID=$!
+wait_for_file "$TMP_ROOT/term-early-count" 300 || fail "the early-stop condition was never polled"
+kill -TERM -- "-$TERM_PID" 2>/dev/null || fail "the early-stop runner's process group was already gone"
+wait_for_exit "$TERM_PID" || fail "a TERM before the claim did not end the run"
+wait "$TERM_PID"
+expect_code 143 "$?" "a TERM before the claim ends the run by the signal"
+assert_no_grep 'status:' "$TMP_ROOT/term-early-out" "a run stopped before the claim emits no outcome"
+assert_absent "$TMP_ROOT/term-early-act" "a run stopped before the claim never acts"
+assert_contains "$(when "$H" restart-busy when-term-early; echo "rc=$?")" 'rc=1' \
+  "an unclaimed watch reads as idle to a restart"
+when "$H" retire term-early >/dev/null 2>&1 || true
+pass "a TERM before the claim ends the run with no outcome and no action"
+
+# --- restart through the generic runner: mid-action and idle ----------------
+H="$TMP_ROOT/h-term-restart"; new_home "$H"
+: > "$TMP_ROOT/term-restart-trigger"
+when "$H" arm term-restart --interval 0.1 --stable 1 \
+  --condition "$COND" "$TMP_ROOT/term-restart-trigger" "$TMP_ROOT/term-restart-count" \
+  --action "$SLOW_ACT" "$TMP_ROOT/term-restart-started" "$TMP_ROOT/term-restart-release" "$TMP_ROOT/term-restart-act" >/dev/null
+FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=120 pe "$H" reconcile >/dev/null
+wait_for_file "$TMP_ROOT/term-restart-started" 300 || fail "the restarted watch's action never started"
+FM_PROCEVENT_RESTART_SECONDS=120 FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=120 \
+  pe "$H" restart when-term-restart > "$TMP_ROOT/term-restart-out" 2>&1 &
+RESTART_PID=$!
+# restart writes the request and signals the runner while it holds the source
+# lock, so a written request with that lock free means the TERM was sent.
+wait_for_glob "$H/state/procevent/.when-term-restart.*.restart" || fail "restart never asked the runner to stop"
+wait_for_absent "$FM_PROCEVENT_CLAIM_ROOT/when-term-restart.lock" || fail "restart kept the source lock"
+kill -0 "$RESTART_PID" 2>/dev/null || fail "restart finished before the action it stopped"
+first_result "$H" when-term-restart >/dev/null 2>&1 && fail "an outcome exists while the action still runs"
+: > "$TMP_ROOT/term-restart-release"
+wait "$RESTART_PID"
+expect_code 0 "$?" "restart reports a watch that ended with its outcome as done"
+assert_grep 'ended: when-term-restart' "$TMP_ROOT/term-restart-out" "restart reports the fired watch as ended"
+wait_for_result "$H" when-term-restart || fail "the stopped runner did not capture the action's outcome"
+RESULT=$(first_result "$H" when-term-restart)
+assert_grep 'status: fired' "$RESULT" "the outcome of the stopped runner records the fire"
+assert_grep 'action_exit: 0' "$RESULT" "the action the stop deferred exited on its own"
+assert_contains "$(count_lines "$TMP_ROOT/term-restart-act")" 1 "the deferred action ran exactly once"
+assert_absent "$H/state/procevent/when-term-restart.source" "the fired watch retired its registration"
+wait_payload "$H" "procevent when when-term-restart 1" || fail "the outcome wake never reached the durable queue"
+pass "restart during a fired action lets the action finish and record its outcome before the runner exits"
+
+H="$TMP_ROOT/h-term-idle"; new_home "$H"
+when "$H" arm term-idle --interval 0.1 --stable 1 \
+  --condition "$COND" "$TMP_ROOT/term-idle-never" "$TMP_ROOT/term-idle-count" \
+  --action "$ACT" "$TMP_ROOT/term-idle-act" >/dev/null
+FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=120 pe "$H" reconcile >/dev/null
+wait_for_file "$TMP_ROOT/term-idle-count" 300 || fail "the idle watch was never polled"
+IDLE_TOKEN=$(sed -n 3p "$FM_PROCEVENT_CLAIM_ROOT/when-term-idle.claim" 2>/dev/null)
+[ -n "$IDLE_TOKEN" ] || fail "the idle watch has no claim token"
+out=$(FM_PROCEVENT_RESTART_SECONDS=120 FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=120 pe "$H" restart when-term-idle 2>&1)
+expect_code 0 "$?" "restart of an idle watch succeeds"
+assert_contains "$out" 'restarted: when-term-idle' "an idle watch is relaunched"
+NEW_TOKEN=$(sed -n 3p "$FM_PROCEVENT_CLAIM_ROOT/when-term-idle.claim" 2>/dev/null)
+[ -n "$NEW_TOKEN" ] && [ "$NEW_TOKEN" != "$IDLE_TOKEN" ] || fail "the idle watch was not relaunched under a new claim"
+assert_present "$H/state/procevent/when-term-idle.source" "an idle restart keeps the registration"
+assert_absent "$H/state/when/when-term-idle.fired" "an idle restart never claims the fire"
+first_result "$H" when-term-idle >/dev/null 2>&1 && fail "an idle restart produced an outcome"
+POLLS=$(count_lines "$TMP_ROOT/term-idle-count")
+polled=0
+for _ in $(seq 1 300); do
+  [ "$(count_lines "$TMP_ROOT/term-idle-count")" -gt "$POLLS" ] && { polled=1; break; }
+  sleep 0.1
+done
+[ "$polled" -eq 1 ] || fail "the relaunched watch never polled again"
+assert_absent "$TMP_ROOT/term-idle-act" "the relaunched watch has not acted on a false condition"
+when "$H" retire term-idle >/dev/null 2>&1 || true
+pass "restart of an idle watch relaunches it with its registration and no outcome"
+
+H="$TMP_ROOT/h-restart-busy"; new_home "$H"
+out=$(when "$H" restart-busy 'bad/id' 2>&1; echo "rc=$?")
+assert_contains "$out" 'rc=2' "restart-busy refuses an invalid source id"
+assert_contains "$(when "$H" restart-busy when-none; echo "rc=$?")" 'rc=1' \
+  "a home with no watch directory is not busy"
+mkdir -p "$H/state/when"
+: > "$H/state/when/when-none.fired"
+assert_contains "$(when "$H" restart-busy when-none; echo "rc=$?")" 'rc=0' \
+  "a fired marker reads as busy"
+pass "restart-busy answers busy, idle and invalid"
+
 printf 'all fm-procevent-when tests passed\n'

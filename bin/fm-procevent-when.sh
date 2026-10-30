@@ -11,6 +11,7 @@
 #   fm-procevent-when.sh source-id <name>
 #   fm-procevent-when.sh retire <name>
 #   fm-procevent-when.sh rebind-all
+#   fm-procevent-when.sh restart-busy <source-id>
 #   fm-procevent-when.sh run <source-id>
 #
 # arm        Bind a (condition, action) pair as process-event source
@@ -63,6 +64,12 @@
 #            outside FM_ROOT: rebinding follows this repo's own tracked
 #            update, never an arbitrary swapped action. Idempotent: a watch
 #            whose action bytes already match its binding is left alone.
+# restart-busy
+#            Exit 0 while <source-id> may be mid-action - its fired marker
+#            exists, or the watch directory cannot be read - and 1 otherwise.
+#            `fm-procevent.sh restart` asks this before stopping a runner that
+#            predates its restart protocol, so such a runner is never stopped
+#            between claiming the fire and recording the outcome.
 # run        The blocking child the generic runner executes; never run it in a
 #            conversational turn. It polls the condition on the registered
 #            cadence (local park false polls are change-driven with a 300 s
@@ -75,6 +82,11 @@
 #            error, deadline, action failure, or an earlier fire whose outcome
 #            was never captured - emits a terminal outcome document instead of
 #            retrying silently, so firstmate is always woken with the evidence.
+#            A TERM before the fire is claimed ends it with no outcome, and the
+#            generic runner relaunches it; from the claim on, TERM is ignored
+#            and the action runs in a process group of its own, so a stop the
+#            generic runner forwards lets the action finish and its outcome be
+#            emitted before this exits, exactly as it would have anyway.
 #
 # Outcome document (the captured result named by the wake):
 #   when: <source-id>
@@ -111,7 +123,7 @@ WHEN_DIR="$STATE/when"
 OUTPUT_TAIL_BYTES=${FM_WHEN_OUTPUT_TAIL_BYTES:-8192}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,72p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
 
 spec_file()  { printf '%s/%s.spec\n' "$WHEN_DIR" "$1"; }
 trust_file() { printf '%s/%s.trust\n' "$WHEN_DIR" "$1"; }
@@ -476,6 +488,12 @@ cmd_run() {
   fi
   fm_procevent_source_lock_release "$sid"
 
+  # From here on this run always finishes and emits its outcome: a TERM - the
+  # stop the generic runner forwards on a restart - is ignored, so it can never
+  # land between the claim and the outcome. The action gets a process group of
+  # its own, so that same group signal cannot cut its bounded run short, and it
+  # starts with TERM back at default for its own bound to use.
+  trap '' TERM
   # Claim the fire durably and exclusively BEFORE the action, so no restart or
   # concurrent runner can ever run the action a second time.
   if ! (umask 077; set -o noclobber; printf '%s\n' "$(date +%s)" > "$fired") 2>/dev/null; then
@@ -484,7 +502,17 @@ cmd_run() {
     exit 0
   fi
 
-  bounded_run "$SPEC_ACTION_TIMEOUT" "$out" "${ACT_ARGV[@]}"
+  local action_pid monitor_was_on=0
+  case $- in *m*) monitor_was_on=1 ;; esac
+  set -m
+  (
+    set +m
+    trap - TERM
+    bounded_run "$SPEC_ACTION_TIMEOUT" "$out" "${ACT_ARGV[@]}"
+  ) &
+  action_pid=$!
+  [ "$monitor_was_on" -eq 1 ] || set +m
+  wait "$action_pid"
   rc=$?
   if [ "$rc" -eq 0 ]; then
     emit_doc "$sid" fired "the condition held and the action exited 0" "$polls" "$rc" "$out"
@@ -492,6 +520,19 @@ cmd_run() {
     emit_doc "$sid" action-failed "the condition held but the action exited $rc" "$polls" "$rc" "$out"
   fi
   exit 0
+}
+
+# Busy unless the watch directory is readable and holds no fired marker for
+# this source: an unreadable answer must never let a stop through.
+cmd_restart_busy() {
+  local sid=$1 fired
+  fm_procevent_source_id_valid "$sid" || exit 2
+  fired=$(fired_file "$sid")
+  [ -e "$fired" ] || [ -L "$fired" ] && exit 0
+  if [ -e "$WHEN_DIR" ] || [ -L "$WHEN_DIR" ]; then
+    [ -d "$WHEN_DIR" ] && [ -x "$WHEN_DIR" ] && [ -r "$WHEN_DIR" ] || exit 0
+  fi
+  exit 1
 }
 
 # --- result classification ---------------------------------------------------
@@ -655,6 +696,7 @@ case "${1-}" in
   source-id) shift; cmd_source_id "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
   rebind-all) shift; cmd_rebind_all "$@" ;;
+  restart-busy) shift; [ "$#" -eq 1 ] || usage; cmd_restart_busy "$@" ;;
   ''|-h|--help|help) usage ;;
   *) die "unknown command: $1" ;;
 esac
