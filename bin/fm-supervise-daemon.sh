@@ -73,7 +73,8 @@
 # The robustness shell from the prior always-inject version is preserved:
 # single-instance lock (portable helper, no flock dependency), crash-loop
 # backoff, pane-gone guard, and a signal-trapped shutdown that flushes buffered
-# escalations before exit.
+# escalations before exit. Every loop wait is an interruptible background sleep
+# (daemon_nap), so a TERM stops an idle daemon at once and leaves no sleep child.
 #
 # Usage: fm-supervise-daemon.sh
 #          Long-lived background loop. Normally started by the /afk skill, which
@@ -1727,9 +1728,14 @@ fm_super_main() {
   migrate_watcher_pause_markers "$STATE"
 
   # --- shutdown: flush buffered escalations, reap child, release lock -------
-  local WATCHER_PID="" CUR_TMP=""
+  local WATCHER_PID="" CUR_TMP="" NAP_PID=""
   cleanup() {
     trap - TERM INT
+    # Signal first: stop the wait the TERM interrupted before any bookkeeping.
+    if [ -n "${NAP_PID:-}" ]; then
+      kill "$NAP_PID" 2>/dev/null || true
+      wait "$NAP_PID" 2>/dev/null || true
+    fi
     wedge_alarm_stop_active_notifier
     escalate_flush "$STATE" 2>/dev/null || true
     if [ -n "${WATCHER_PID:-}" ]; then
@@ -1745,6 +1751,18 @@ fm_super_main() {
     exit 0
   }
   trap cleanup TERM INT
+
+  # Every wait in the loop below is a background sleep the shell waits on.
+  # Bash runs a trap only after a foreground child returns, so a plain `sleep`
+  # held a stop for up to the longest backoff and outlasted the 10 s
+  # fm-afk-launch.sh stop budget; `wait` returns at once on TERM, and cleanup
+  # reaps the interrupted sleep so no child outlives the daemon.
+  daemon_nap() {  # <seconds>
+    sleep "$1" &
+    NAP_PID=$!
+    wait "$NAP_PID" 2>/dev/null || true
+    NAP_PID=""
+  }
 
   # --- crash-loop guard -----------------------------------------------------
   local crash_times=() backoff_secs=$CRASH_NORMAL_SLEEP
@@ -1767,7 +1785,7 @@ fm_super_main() {
   }
 
   start_watcher() {
-    CUR_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-watch.XXXXXX") || { log "error: mktemp failed; retrying in 5s"; sleep 5; return 1; }
+    CUR_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-watch.XXXXXX") || { log "error: mktemp failed; retrying in 5s"; daemon_nap 5; return 1; }
     "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
     WATCHER_PID=$!
   }
@@ -1784,7 +1802,7 @@ fm_super_main() {
     if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
       log "warn: supervisor target '$TARGET' gone; backing off ${INJECT_FAIL_SLEEP}s, will retry"
       # Flush is pointless with no pane; preserve any buffered escalations.
-      sleep "$INJECT_FAIL_SLEEP"
+      daemon_nap "$INJECT_FAIL_SLEEP"
       continue
     fi
 
@@ -1805,7 +1823,7 @@ fm_super_main() {
           record_crash
           log "watcher exited rc=$rc reason='$reason'; restarting after ${backoff_secs}s"
           WATCHER_PID=""
-          sleep "$backoff_secs"
+          daemon_nap "$backoff_secs"
           continue
         fi
         # Non-wake stdout (e.g. a watcher singleton-collision "already running"
@@ -1815,7 +1833,7 @@ fm_super_main() {
         if ! is_wake_reason "$reason"; then
           log "watcher non-wake stdout, idling: $reason"
           WATCHER_PID=""
-          sleep "${HOUSEKEEPING_TICK:-$HOUSEKEEPING_TICK_DEFAULT}"
+          daemon_nap "${HOUSEKEEPING_TICK:-$HOUSEKEEPING_TICK_DEFAULT}"
           continue
         fi
         log "wake: $reason"
@@ -1832,7 +1850,7 @@ fm_super_main() {
     # to detect its exit (the kill -0 above) promptly and run housekeeping often
     # enough that batch flushes, stale rechecks, and the catch-all scan fire on
     # cadence. Gating keeps a large fleet cheap between ticks.
-    sleep 1
+    daemon_nap 1
     if [ "$(_file_age "$STATE/.subsuper-last-housekeep")" -ge "${FM_HOUSEKEEPING_TICK:-$HOUSEKEEPING_TICK_DEFAULT}" ]; then
       _now > "$STATE/.subsuper-last-housekeep"
       housekeeping "$STATE"
